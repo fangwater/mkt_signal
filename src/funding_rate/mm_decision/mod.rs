@@ -204,6 +204,10 @@ impl MmDecision {
         self.state.update_prediction_mode(enabled);
     }
 
+    pub fn update_enable_open_cancel(&mut self, enabled: bool) {
+        self.state.update_enable_open_cancel(enabled);
+    }
+
     pub fn update_model_service_roles(
         &mut self,
         return_model_service: String,

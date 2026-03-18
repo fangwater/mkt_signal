@@ -270,6 +270,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       word-break: break-word;
     }
     .kv-input input { width: 100%; }
+    .kv-input select { width: 100%; }
     .kv-desc {
       font-size: 12px;
       color: var(--muted);
@@ -355,6 +356,9 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
           <button id="reset-strategy" class="ghost">恢复默认</button>
           <button id="save-strategy">保存</button>
         </div>
+      </div>
+      <div class="hint">
+        `enable_open_cancel=false` 时，MM 会跳过 open 撤单判断，不会发 `MMCancel`；前端布尔项使用下拉框编辑。
       </div>
       <div class="kv-table" id="strategy-table"></div>
       <div id="strategy-status" class="status"></div>
@@ -499,6 +503,11 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       return `${exchange}-futures`;
     }
 
+    function isBooleanParamValue(value) {
+      const normalized = String(value ?? '').trim().toLowerCase();
+      return ['true', 'false', '1', '0', 'yes', 'no', 'on', 'off', ''].includes(normalized);
+    }
+
     function currentModelName() {
       return (state.modelName || '').trim();
     }
@@ -601,12 +610,32 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
 
         const inputWrap = document.createElement('div');
         inputWrap.className = 'kv-input';
-        const input = document.createElement('input');
-        input.type = 'text';
         const rawValue = values && values[key] !== undefined ? values[key] : (defaults[key] ?? '');
-        input.value = valueToInputText(rawValue);
-        input.dataset.key = key;
-        inputWrap.appendChild(input);
+        const useBooleanSelect =
+          containerId === 'strategy-table' &&
+          ['prediction_mode', 'enable_open_cancel'].includes(key) &&
+          isBooleanParamValue(rawValue);
+        let field;
+        if (useBooleanSelect) {
+          field = document.createElement('select');
+          [
+            ['false', 'false'],
+            ['true', 'true'],
+          ].forEach(([value, label]) => {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = label;
+            field.appendChild(option);
+          });
+          const normalized = String(rawValue ?? '').trim().toLowerCase();
+          field.value = ['true', '1', 'yes', 'on'].includes(normalized) ? 'true' : 'false';
+        } else {
+          field = document.createElement('input');
+          field.type = 'text';
+          field.value = valueToInputText(rawValue);
+        }
+        field.dataset.key = key;
+        inputWrap.appendChild(field);
 
         const descEl = document.createElement('div');
         descEl.className = 'kv-desc';
@@ -620,9 +649,11 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
 
     function collectParamRows(containerId) {
       const out = {};
-      document.querySelectorAll(`#${containerId} input[data-key]`).forEach((input) => {
-        out[input.dataset.key] = input.value.trim();
-      });
+      document
+        .querySelectorAll(`#${containerId} input[data-key], #${containerId} select[data-key], #${containerId} textarea[data-key]`)
+        .forEach((input) => {
+          out[input.dataset.key] = input.value.trim();
+        });
       return out;
     }
 

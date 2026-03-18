@@ -43,6 +43,7 @@ pub(crate) struct MmDecisionState {
     pub(crate) hedge_offset_ratio: f64,
     pub(crate) hedge_price_offset_limit_upper: f64,
     pub(crate) hedge_price_offset_limit_lower: f64,
+    pub(crate) enable_open_cancel: bool,
     pub(crate) prediction_mode: bool,
     pub(crate) return_model_service: Option<String>,
     pub(crate) environment_model_service: Option<String>,
@@ -94,6 +95,7 @@ impl MmDecisionState {
             hedge_offset_ratio: 1.3,
             hedge_price_offset_limit_upper: 0.005,
             hedge_price_offset_limit_lower: 0.0003,
+            enable_open_cancel: false,
             prediction_mode: false,
             return_model_service: None,
             environment_model_service: None,
@@ -204,6 +206,14 @@ impl MmDecisionState {
         debug!(
             "MmDecision: prediction_mode updated enabled={}",
             self.prediction_mode
+        );
+    }
+
+    pub(crate) fn update_enable_open_cancel(&mut self, enabled: bool) {
+        self.enable_open_cancel = enabled;
+        debug!(
+            "MmDecision: enable_open_cancel updated enabled={}",
+            self.enable_open_cancel
         );
     }
 

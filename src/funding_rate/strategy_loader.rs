@@ -128,6 +128,10 @@ pub struct StrategyParams {
     #[serde(default = "default_prediction_mode")]
     pub prediction_mode: bool,
 
+    /// MM 是否启用开仓撤单判断（false=跳过 MMCancel）
+    #[serde(default = "default_enable_open_cancel")]
+    pub enable_open_cancel: bool,
+
     /// xarb 是否启用 return score 拦截（false=只读取，不拦截开仓）
     #[serde(default = "default_enable_return_score_model")]
     pub enable_return_score_model: bool,
@@ -199,6 +203,9 @@ fn default_signal_cooldown() -> u64 {
 fn default_prediction_mode() -> bool {
     false
 }
+fn default_enable_open_cancel() -> bool {
+    false
+}
 fn default_enable_return_score_model() -> bool {
     false
 }
@@ -231,6 +238,7 @@ impl Default for StrategyParams {
             max_hedge_price_pct_change: default_max_hedge_price_pct_change(),
             signal_cooldown: default_signal_cooldown(),
             prediction_mode: default_prediction_mode(),
+            enable_open_cancel: default_enable_open_cancel(),
             enable_return_score_model: default_enable_return_score_model(),
             return_model_service: default_return_model_service(),
             environment_model_service: default_environment_model_service(),
@@ -421,6 +429,19 @@ impl StrategyParams {
             },
             None => default_prediction_mode(),
         };
+        let enable_open_cancel = match hash_map.get("enable_open_cancel") {
+            Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" | "on" => true,
+                "false" | "0" | "no" | "off" | "" => false,
+                _ => {
+                    panic!(
+                        "Redis hash '{}' enable_open_cancel 非法（仅支持 true/false）: {}",
+                        redis_key, raw
+                    )
+                }
+            },
+            None => default_enable_open_cancel(),
+        };
 
         let enable_return_score_model = match hash_map.get("enable_return_score_model") {
             Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
@@ -559,6 +580,7 @@ impl StrategyParams {
             max_hedge_price_pct_change,
             signal_cooldown,
             prediction_mode,
+            enable_open_cancel,
             enable_return_score_model,
             return_model_service,
             environment_model_service,
@@ -645,6 +667,7 @@ impl StrategyParams {
                 );
                 _decision.update_open_order_timeout(self.open_order_timeout);
                 _decision.update_prediction_mode(self.prediction_mode);
+                _decision.update_enable_open_cancel(self.enable_open_cancel);
                 _decision.update_model_service_roles(
                     self.return_model_service.clone(),
                     self.environment_model_service.clone(),
@@ -661,7 +684,7 @@ impl StrategyParams {
         }
 
         info!(
-            "✅ 策略参数已更新: mode={}, amount={:.2}, open_scale={:.4}, order_interval_ms={}, open_orders_per_round={}, cooldown={}s, prediction_mode={}, enable_return_score_model={}, return_model_service={}, environment_model_service={}",
+            "✅ 策略参数已更新: mode={}, amount={:.2}, open_scale={:.4}, order_interval_ms={}, open_orders_per_round={}, cooldown={}s, prediction_mode={}, enable_open_cancel={}, enable_return_score_model={}, return_model_service={}, environment_model_service={}",
             self.mode,
             self.order_amount,
             self.open_scale,
@@ -669,6 +692,7 @@ impl StrategyParams {
             self.open_orders_per_round,
             self.signal_cooldown,
             self.prediction_mode,
+            self.enable_open_cancel,
             self.enable_return_score_model,
             self.return_model_service,
             self.environment_model_service
@@ -714,5 +738,11 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(params_mt.parse_mode(), FactorMode::MT);
+    }
+
+    #[test]
+    fn test_enable_open_cancel_default_is_false() {
+        let params = StrategyParams::default();
+        assert!(!params.enable_open_cancel);
     }
 }

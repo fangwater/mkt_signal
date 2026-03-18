@@ -107,6 +107,11 @@ impl MmCancelDecision {
     }
 
     pub(crate) fn process_return_score_updates(&mut self, state: &mut MmDecisionState) {
+        if !state.enable_open_cancel {
+            let _ = state.factor_value_hub.poll_model_output_updates();
+            return;
+        }
+
         let Some(service_name) = state.return_model_service.clone() else {
             return;
         };
