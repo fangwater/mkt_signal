@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 usage() {
   cat <<'EOF'
 用法:
-  scripts/deploy_mm_binance.sh --env-suffix <suffix> [--bin]
+  scripts/deploy_mm_binance.sh --env-suffix <suffix> [--bin|--runtime-only]
   scripts/deploy_mm_binance.sh <suffix>
 
 说明:
@@ -20,7 +20,8 @@ usage() {
       trade_signal = deploy only, no dedicated HTTP port
       manual_mm_signal = 6366
     alpha 环境分别使用 18132 / 10232 / 6367。
-  - --bin: 仅替换二进制（不改脚本/配置/nginx）。
+  - --bin: 仅替换二进制（不改脚本/配置/nginx/env.sh）。
+  - --runtime-only: 仅替换二进制和脚本（不改配置/nginx/env.sh）。
 EOF
 }
 
@@ -31,6 +32,7 @@ fi
 
 ENV_SUFFIX=""
 BIN_MODE="0"
+RUNTIME_ONLY="0"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --env-suffix)
@@ -38,7 +40,19 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --bin)
+      if [[ "$RUNTIME_ONLY" == "1" ]]; then
+        echo "[ERROR] --bin 与 --runtime-only 互斥" >&2
+        exit 1
+      fi
       BIN_MODE="1"
+      shift
+      ;;
+    --runtime-only)
+      if [[ "$BIN_MODE" == "1" ]]; then
+        echo "[ERROR] --bin 与 --runtime-only 互斥" >&2
+        exit 1
+      fi
+      RUNTIME_ONLY="1"
       shift
       ;;
     -h|--help)
@@ -91,10 +105,12 @@ echo "[INFO] config_port=${CONFIG_PORT}, viz_port=${VIZ_PORT}, manual_signal_por
 echo "[INFO] 不会执行 start 命令"
 if [[ "$BIN_MODE" == "1" ]]; then
   echo "[INFO] mode=bin (仅替换二进制)"
+elif [[ "$RUNTIME_ONLY" == "1" ]]; then
+  echo "[INFO] mode=runtime-only (仅替换二进制和脚本)"
 fi
 
-if [[ "$BIN_MODE" == "1" && ! -d "$HOME/$ENV_NAME" ]]; then
-  echo "[ERROR] --bin 模式要求环境目录已存在: $HOME/$ENV_NAME" >&2
+if [[ ( "$BIN_MODE" == "1" || "$RUNTIME_ONLY" == "1" ) && ! -d "$HOME/$ENV_NAME" ]]; then
+  echo "[ERROR] 仅替换模式要求环境目录已存在: $HOME/$ENV_NAME" >&2
   exit 1
 fi
 
@@ -164,6 +180,43 @@ if [[ "$BIN_MODE" == "1" ]]; then
     --env-suffix "$ENV_SUFFIX" \
     --port "$MANUAL_SIGNAL_PORT" \
     --bin-only
+elif [[ "$RUNTIME_ONLY" == "1" ]]; then
+  run_deploy bash scripts/deploy_mm_config_server.sh \
+    --env-name "$ENV_NAME" \
+    --exchange binance \
+    --scripts-only
+
+  run_deploy bash scripts/deploy_mm_account_monitor.sh \
+    --exchange binance \
+    --env-suffix "$ENV_SUFFIX"
+
+  run_deploy bash scripts/deploy_mm_trade_engine.sh \
+    --exchange binance \
+    --env-suffix "$ENV_SUFFIX"
+
+  run_deploy bash scripts/deploy_mm_signal.sh \
+    --exchange binance \
+    --env-name "$ENV_NAME"
+
+  run_deploy bash scripts/deploy_mm_viz_server.sh \
+    --exchange binance \
+    --env-suffix "$ENV_SUFFIX" \
+    --port "$VIZ_PORT" \
+    --runtime-only
+
+  run_deploy bash scripts/deploy_mm_persist_manager.sh \
+    --exchange binance \
+    --env-suffix "$ENV_SUFFIX"
+
+  run_deploy bash scripts/deploy_mm_pre_trade.sh \
+    --exchange binance \
+    --env-suffix "$ENV_SUFFIX"
+
+  run_deploy bash scripts/deploy_mm_manual_signal.sh \
+    --exchange binance \
+    --env-suffix "$ENV_SUFFIX" \
+    --port "$MANUAL_SIGNAL_PORT" \
+    --runtime-only
 else
   run_deploy bash scripts/deploy_mm_config_server.sh \
     --env-name "$ENV_NAME" \

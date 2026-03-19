@@ -10,13 +10,13 @@ usage() {
 Usage:
   scripts/deploy_mm_manual_signal.sh --exchange <binance|okex|gate|bybit|bitget> --env-suffix <suffix>
                                      [--env-name <exchange>_mm_<suffix>]
-                                    [--port <n>] [--scripts-only|--bin-only]
+                                     [--port <n>] [--scripts-only|--bin-only|--runtime-only]
 
 Notes:
   - Default target dir: $HOME/<exchange>_mm_<suffix>/
   - --env-suffix is required (e.g. alpha -> <exchange>_mm_alpha)
   - config/manual_mm_signal.yaml will be copied to target dir.
-  - manual_mm_signal is for manual/mock testing; start/stop scripts are not deployed.
+  - --runtime-only: only replace binary and scripts; do not rewrite config/manual_mm_signal.yaml or env.sh.
   - Default port: beta/base=6366, alpha=6367 (auto when env-suffix/env-name indicates alpha).
   - --port overrides auto port.
 USAGE
@@ -34,6 +34,7 @@ PORT=""
 DO_BUILD=1
 DO_SCRIPTS=1
 ONLY_MODE=""
+RUNTIME_ONLY="0"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -81,12 +82,23 @@ while [[ $# -gt 0 ]]; do
       ;;
     --bin-only)
       if [[ -n "$ONLY_MODE" ]]; then
-        echo "[ERROR] --scripts-only conflicts with --bin-only" >&2
+        echo "[ERROR] deploy mode flags conflict" >&2
         exit 1
       fi
       ONLY_MODE="bin"
       DO_BUILD=1
       DO_SCRIPTS=0
+      shift
+      ;;
+    --runtime-only)
+      if [[ -n "$ONLY_MODE" ]]; then
+        echo "[ERROR] deploy mode flags conflict" >&2
+        exit 1
+      fi
+      ONLY_MODE="runtime"
+      RUNTIME_ONLY="1"
+      DO_BUILD=1
+      DO_SCRIPTS=1
       shift
       ;;
     *)
@@ -172,7 +184,7 @@ if [[ "$DO_BUILD" -eq 1 ]]; then
   chmod +x "$TARGET_DIR/$BIN_NAME"
 fi
 
-if [[ -f "$ROOT_DIR/config/manual_mm_signal.yaml" ]]; then
+if [[ "$ONLY_MODE" != "bin" && "$RUNTIME_ONLY" != "1" && -f "$ROOT_DIR/config/manual_mm_signal.yaml" ]]; then
   mkdir -p "$TARGET_DIR/config"
   tmp_cfg="$(mktemp)"
   awk -v p="$PORT" '
@@ -188,6 +200,12 @@ fi
 if [[ "$DO_SCRIPTS" -eq 1 ]]; then
   mkdir -p "$TARGET_DIR/mm_scripts"
   mkdir -p "$TARGET_DIR/scripts"
+  for script in start_manual_mm_signal.sh stop_manual_mm_signal.sh; do
+    if [[ -f "$ROOT_DIR/mm_scripts/$script" ]]; then
+      rsync -a "$ROOT_DIR/mm_scripts/$script" "$TARGET_DIR/mm_scripts/"
+      chmod +x "$TARGET_DIR/mm_scripts/$script"
+    fi
+  done
   for script in sync_mm_symbol_list.py print_mm_symbol_list.py sync_mm_strategy_params.py print_mm_strategy_params.py; do
     if [[ -f "$ROOT_DIR/scripts/$script" ]]; then
       rsync -a "$ROOT_DIR/scripts/$script" "$TARGET_DIR/scripts/"
@@ -197,3 +215,6 @@ if [[ "$DO_SCRIPTS" -eq 1 ]]; then
 fi
 
 echo "[INFO] $BIN_NAME deployed to $TARGET_DIR"
+if [[ "$RUNTIME_ONLY" == "1" ]]; then
+  echo "[INFO] runtime-only: 未改写 config/manual_mm_signal.yaml"
+fi

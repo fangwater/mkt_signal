@@ -69,16 +69,22 @@ json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
+shell_quote() {
+  printf '%q' "$1"
+}
+
 CFG_FILE="$(mktemp)"
 trap 'rm -f "$CFG_FILE" >/dev/null 2>&1 || true' EXIT
+
+cmd="if [[ -f $(shell_quote "$ENV_FILE") ]]; then source $(shell_quote "$ENV_FILE"); fi; exec $(shell_quote "$BIN_PATH")"
 
 cat >"$CFG_FILE" <<EOF
 {
   "apps": [
     {
       "name": "$(json_escape "$PROC_NAME")",
-      "script": "$(json_escape "$BIN_PATH")",
-      "args": [],
+      "script": "$(json_escape "/bin/bash")",
+      "args": ["-lc", "$(json_escape "$cmd")"],
       "cwd": "$(json_escape "$BASE_DIR")",
       "env": {
         "RUST_LOG": "$(json_escape "$RUST_LOG")",

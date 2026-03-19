@@ -16,7 +16,7 @@ Usage: scripts/deploy_mm_viz_server.sh --exchange <binance|okex|gate|bybit|bitge
                                       [--nginx-prefix /mm/<env-name>] [--nginx-port 4191]
                                       [--nginx-mapping-file $HOME/nginx_locations.txt]
                                       [--apply-nginx]
-                                      [--scripts-only|--bin-only]
+                                      [--scripts-only|--bin-only|--runtime-only]
 
 Notes:
   - Default target dir: $HOME/<exchange>_mm_<suffix>/.
@@ -27,6 +27,7 @@ Notes:
   - Generates config/viz.toml with pre_trade resample only.
   - Copies docs/pre_trade_dashboard.html into www/ and index.html.
   - Default nginx prefix: /mm/<env-name>.
+  - --runtime-only: only replace binary and scripts; do not rewrite viz config/www/nginx/env.sh.
 EOF
 }
 
@@ -52,6 +53,7 @@ BUILD_JOBS=""
 DO_BUILD=1
 DO_SCRIPTS=1
 ONLY_MODE=""
+RUNTIME_ONLY="0"
 
 NGINX_PREFIX=""
 NGINX_PORT="4191"
@@ -168,12 +170,23 @@ while [[ $# -gt 0 ]]; do
       ;;
     --bin-only)
       if [[ -n "$ONLY_MODE" ]]; then
-        echo "[ERROR] --scripts-only conflicts with --bin-only" >&2
+        echo "[ERROR] deploy mode flags conflict" >&2
         exit 1
       fi
       ONLY_MODE="bin"
       DO_BUILD=1
       DO_SCRIPTS=0
+      shift
+      ;;
+    --runtime-only)
+      if [[ -n "$ONLY_MODE" ]]; then
+        echo "[ERROR] deploy mode flags conflict" >&2
+        exit 1
+      fi
+      ONLY_MODE="runtime"
+      RUNTIME_ONLY="1"
+      DO_BUILD=1
+      DO_SCRIPTS=1
       shift
       ;;
     *)
@@ -230,6 +243,11 @@ fi
 
 if [[ -z "$NGINX_PREFIX" ]]; then
   NGINX_PREFIX="/mm/${ENV_NAME}"
+fi
+
+if [[ "$RUNTIME_ONLY" == "1" && "$APPLY_NGINX" == "1" ]]; then
+  echo "[ERROR] --runtime-only 与 --apply-nginx 互斥" >&2
+  exit 1
 fi
 
 if [[ -n "$CARGO_TARGET_DIR_OVERRIDE" ]]; then
@@ -402,17 +420,21 @@ upsert_main_nginx_mapping() {
 }
 
 if [[ "$DO_SCRIPTS" -eq 1 ]]; then
-  mkdir -p "$TARGET_DIR/config" "$TARGET_DIR/www" "$TARGET_DIR/mm_scripts"
+  mkdir -p "$TARGET_DIR/mm_scripts"
 
-  echo "[INFO] Writing viz config: $TARGET_DIR/config/viz.toml (namespace=$IPC_NAMESPACE)"
-  emit_server_block "$BIND" "$PORT" "$WS_PATH" > "$TARGET_DIR/config/viz.toml"
+  if [[ "$RUNTIME_ONLY" != "1" ]]; then
+    mkdir -p "$TARGET_DIR/config" "$TARGET_DIR/www"
 
-  if [[ -f "$ROOT_DIR/docs/pre_trade_dashboard.html" ]]; then
-    cp "$ROOT_DIR/docs/pre_trade_dashboard.html" "$TARGET_DIR/www/pre_trade_dashboard.html"
-    cp "$ROOT_DIR/docs/pre_trade_dashboard.html" "$TARGET_DIR/www/index.html"
-    echo "[INFO] Synced dashboard: $TARGET_DIR/www/pre_trade_dashboard.html"
-  else
-    echo "[WARN] Missing dashboard: $ROOT_DIR/docs/pre_trade_dashboard.html"
+    echo "[INFO] Writing viz config: $TARGET_DIR/config/viz.toml (namespace=$IPC_NAMESPACE)"
+    emit_server_block "$BIND" "$PORT" "$WS_PATH" > "$TARGET_DIR/config/viz.toml"
+
+    if [[ -f "$ROOT_DIR/docs/pre_trade_dashboard.html" ]]; then
+      cp "$ROOT_DIR/docs/pre_trade_dashboard.html" "$TARGET_DIR/www/pre_trade_dashboard.html"
+      cp "$ROOT_DIR/docs/pre_trade_dashboard.html" "$TARGET_DIR/www/index.html"
+      echo "[INFO] Synced dashboard: $TARGET_DIR/www/pre_trade_dashboard.html"
+    else
+      echo "[WARN] Missing dashboard: $ROOT_DIR/docs/pre_trade_dashboard.html"
+    fi
   fi
 
   EXTRA_FILES=(
@@ -430,13 +452,15 @@ if [[ "$DO_SCRIPTS" -eq 1 ]]; then
     fi
   done
 
-  upsert_main_nginx_mapping
-  if [[ "${APPLY_NGINX}" == "1" ]]; then
-    echo "[INFO] Applying nginx config (PORT=${NGINX_PORT}, MAPPING_FILE=${NGINX_MAPPING_FILE})"
-    (
-      cd "$ROOT_DIR"
-      PORT="${NGINX_PORT}" MAPPING_FILE="${NGINX_MAPPING_FILE}" scripts/setup_nginx_4191.sh
-    )
+  if [[ "$RUNTIME_ONLY" != "1" ]]; then
+    upsert_main_nginx_mapping
+    if [[ "${APPLY_NGINX}" == "1" ]]; then
+      echo "[INFO] Applying nginx config (PORT=${NGINX_PORT}, MAPPING_FILE=${NGINX_MAPPING_FILE})"
+      (
+        cd "$ROOT_DIR"
+        PORT="${NGINX_PORT}" MAPPING_FILE="${NGINX_MAPPING_FILE}" scripts/setup_nginx_4191.sh
+      )
+    fi
   fi
 fi
 
@@ -445,7 +469,11 @@ echo "[INFO] viz_server deployed: $TARGET_DIR"
 echo "[INFO] Start: cd $TARGET_DIR && ./mm_scripts/start_mm_viz_server.sh"
 echo "[INFO] Stop:  cd $TARGET_DIR && ./mm_scripts/stop_mm_viz_server.sh"
 if [[ "$DO_SCRIPTS" -eq 1 ]]; then
-  echo "[INFO] nginx mapping updated: ${NGINX_MAPPING_FILE}"
-  echo "[INFO] To apply nginx (port ${NGINX_PORT}):"
-  echo "       cd ${ROOT_DIR} && PORT=${NGINX_PORT} MAPPING_FILE=${NGINX_MAPPING_FILE} scripts/setup_nginx_4191.sh"
+  if [[ "$RUNTIME_ONLY" == "1" ]]; then
+    echo "[INFO] runtime-only: 未改写 viz config/www/nginx"
+  else
+    echo "[INFO] nginx mapping updated: ${NGINX_MAPPING_FILE}"
+    echo "[INFO] To apply nginx (port ${NGINX_PORT}):"
+    echo "       cd ${ROOT_DIR} && PORT=${NGINX_PORT} MAPPING_FILE=${NGINX_MAPPING_FILE} scripts/setup_nginx_4191.sh"
+  fi
 fi

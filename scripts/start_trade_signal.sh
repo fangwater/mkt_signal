@@ -6,6 +6,12 @@ BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # 可选：设置 PM2 namespace（默认使用部署目录名，可用环境变量覆盖）
 NAMESPACE="${PM2_NAMESPACE:-$(basename "${BASE_DIR}")}"
 
+ENV_FILE="${BASE_DIR}/env.sh"
+if [[ -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+fi
+
 # 候选二进制位置：部署目录优先，其次源码目录
 BIN_CANDIDATES=(
   "${SCRIPT_DIR}/trade_signal"

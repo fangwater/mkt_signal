@@ -13,6 +13,7 @@ usage() {
                                        [--nginx-port 4191]
                                        [--nginx-mapping-file $HOME/nginx_locations.txt]
                                        [--apply-nginx]
+                                       [--scripts-only]
 
 说明:
   - 部署 mm_config_server 到 $HOME/<env-name>/（或 --target）。
@@ -20,6 +21,7 @@ usage() {
   - 默认端口按交易所分配（okex=18111 gate=18121 binance=18131 bybit=18141 bitget=18151）。
   - 可选写入 nginx mapping（/mm/<env-name>/config）。
   - env-name/目标目录名必须匹配 <exchange>_mm_<suffix>（例如 binance_mm_beta）。
+  - --scripts-only: 仅同步脚本，不改 config/mm_config_server.env 和 nginx。
 
 示例:
   scripts/deploy_mm_config_server.sh --env-name binance_mm_beta
@@ -43,6 +45,7 @@ NGINX_PREFIX=""
 NGINX_PORT="4191"
 NGINX_MAPPING_FILE=""
 APPLY_NGINX="0"
+SCRIPTS_ONLY="0"
 
 normalize_exchange() {
   local ex="${1,,}"
@@ -199,6 +202,10 @@ while [[ $# -gt 0 ]]; do
       APPLY_NGINX="1"
       shift
       ;;
+    --scripts-only)
+      SCRIPTS_ONLY="1"
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -243,6 +250,11 @@ if [[ -n "$TARGET_DIR" ]]; then
 fi
 require_mm_env_name "$EXCHANGE" "$ENV_NAME"
 
+if [[ "$SCRIPTS_ONLY" == "1" && "$APPLY_NGINX" == "1" ]]; then
+  echo "[ERROR] --scripts-only 与 --apply-nginx 互斥" >&2
+  exit 1
+fi
+
 if [[ -z "$PORT" ]]; then
   PORT="$(default_port_for_exchange "$EXCHANGE")"
 fi
@@ -253,7 +265,9 @@ fi
 
 DEST_SCRIPT_DIR="$TARGET_DIR/scripts"
 mkdir -p "$DEST_SCRIPT_DIR"
-mkdir -p "$TARGET_DIR/config"
+if [[ "$SCRIPTS_ONLY" != "1" ]]; then
+  mkdir -p "$TARGET_DIR/config"
+fi
 
 FILES=(
   "scripts/mm_config_server.py"
@@ -281,23 +295,30 @@ for path in "$DEST_SCRIPT_DIR"/*.sh "$DEST_SCRIPT_DIR"/*.py; do
   [[ -f "$path" ]] && chmod +x "$path" 2>/dev/null || true
 done
 
-cat <<EOF2 > "$TARGET_DIR/config/mm_config_server.env"
+if [[ "$SCRIPTS_ONLY" != "1" ]]; then
+  cat <<EOF2 > "$TARGET_DIR/config/mm_config_server.env"
 HOST=${BIND}
 PORT=${PORT}
 DEFAULT_EXCHANGE=${EXCHANGE}
 ENV_NAME=${ENV_NAME}
 EOF2
 
-upsert_main_nginx_mapping
-if [[ "${APPLY_NGINX}" == "1" ]]; then
-  echo "[INFO] Applying nginx config (PORT=${NGINX_PORT}, MAPPING_FILE=${NGINX_MAPPING_FILE})"
-  (
-    cd "$ROOT_DIR"
-    PORT="$NGINX_PORT" MAPPING_FILE="$NGINX_MAPPING_FILE" ./scripts/setup_nginx_4191.sh
-  )
+  upsert_main_nginx_mapping
+  if [[ "${APPLY_NGINX}" == "1" ]]; then
+    echo "[INFO] Applying nginx config (PORT=${NGINX_PORT}, MAPPING_FILE=${NGINX_MAPPING_FILE})"
+    (
+      cd "$ROOT_DIR"
+      PORT="$NGINX_PORT" MAPPING_FILE="$NGINX_MAPPING_FILE" ./scripts/setup_nginx_4191.sh
+    )
+  fi
 fi
 
 echo "[INFO] 已部署 mm_config_server 脚本到 $DEST_SCRIPT_DIR"
-echo "[INFO] 默认端口: ${PORT}"
-echo "[INFO] 启动: cd $TARGET_DIR && PORT=${PORT} ./scripts/start_mm_config_server.sh"
+if [[ "$SCRIPTS_ONLY" == "1" ]]; then
+  echo "[INFO] scripts-only: 未改写 config/mm_config_server.env 与 nginx"
+  echo "[INFO] 启动: cd $TARGET_DIR && ./scripts/start_mm_config_server.sh"
+else
+  echo "[INFO] 默认端口: ${PORT}"
+  echo "[INFO] 启动: cd $TARGET_DIR && PORT=${PORT} ./scripts/start_mm_config_server.sh"
+fi
 echo "[INFO] 停止: cd $TARGET_DIR && ./scripts/stop_mm_config_server.sh"

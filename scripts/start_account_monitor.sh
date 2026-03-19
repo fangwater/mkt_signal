@@ -4,6 +4,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+ENV_FILE="${BASE_DIR}/env.sh"
+if [[ -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+fi
+
 PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
 PMDAEMON=("$PMDAEMON_BIN")
 if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1; then
@@ -77,21 +83,27 @@ json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
+shell_quote() {
+  printf '%q' "$1"
+}
+
 cfg_file="$(mktemp)"
 trap 'rm -f "$cfg_file" >/dev/null 2>&1 || true' EXIT
 
 json_name="$(json_escape "$PROC_NAME")"
-json_bin="$(json_escape "$BIN_PATH")"
+json_shell="$(json_escape "/bin/bash")"
 json_base="$(json_escape "$BASE_DIR")"
 json_rust_log="$(json_escape "$RUST_LOG")"
+cmd="if [[ -f $(shell_quote "$ENV_FILE") ]]; then source $(shell_quote "$ENV_FILE"); fi; exec $(shell_quote "$BIN_PATH")"
+json_cmd="$(json_escape "$cmd")"
 
 cat >"$cfg_file" <<JSON
 {
   "apps": [
     {
       "name": "${json_name}",
-      "script": "${json_bin}",
-      "args": [],
+      "script": "${json_shell}",
+      "args": ["-lc", "${json_cmd}"],
       "cwd": "${json_base}",
       "env": {
         "RUST_LOG": "${json_rust_log}"
