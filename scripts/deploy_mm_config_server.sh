@@ -271,6 +271,7 @@ fi
 
 FILES=(
   "scripts/mm_config_server.py"
+  "scripts/mm_process_name.sh"
   "scripts/start_mm_config_server.sh"
   "scripts/stop_mm_config_server.sh"
   "scripts/sync_mm_risk_params.py"

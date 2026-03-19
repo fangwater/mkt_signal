@@ -3,6 +3,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+MM_NAME_LIB="${SCRIPT_DIR}/mm_process_name.sh"
+
+if [[ -f "$MM_NAME_LIB" ]]; then
+  # shellcheck disable=SC1090
+  source "$MM_NAME_LIB"
+fi
 
 PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
 PMDAEMON=("$PMDAEMON_BIN")
@@ -15,40 +21,60 @@ fi
 dir_name="$(basename "${BASE_DIR}")"
 dir_lc="${dir_name,,}"
 dir_tag="$(echo "${dir_lc}" | sed 's/[^a-z0-9_-]/_/g')"
-case "$dir_name" in
-  okex_fr_*|*okex*|*OKEX*) EXCHANGE="okex" ;;
-  binance_fr_*|*binance*|*BINANCE*) EXCHANGE="binance" ;;
-  gate_fr_*|*gate*|*GATE*) EXCHANGE="gate" ;;
-  bitget_fr_*|*bitget*|*BITGET*) EXCHANGE="bitget" ;;
-  *)
-    echo "[ERROR] 无法从部署目录名推断 exchange: ${dir_name} (期望 okex_fr_* / binance_fr_* / gate_fr_* / bitget_fr_*)" >&2
-    exit 1
-    ;;
-esac
-
-short_exchange() {
-  case "${1,,}" in
-    binance) echo "bn" ;;
-    okex) echo "ok" ;;
-    bybit) echo "bb" ;;
-    bitget) echo "bg" ;;
-    gate) echo "gt" ;;
-    *)
-      echo "${1,,}" | sed -E 's/[^a-z0-9]+//g' | cut -c1-2
-      ;;
-  esac
-}
-
-env_tag="fr"
-if [[ "$dir_lc" =~ ^[a-z0-9]+[-_]fr[-_](.+)$ ]]; then
-  env_tag="$(echo "${BASH_REMATCH[1]}" | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//')"
-fi
-if [[ -z "$env_tag" ]]; then
-  env_tag="fr"
+MODE=""
+EXCHANGE=""
+ENV_TAG=""
+if [[ "$dir_lc" =~ ^([a-z0-9]+)[-_]fr([_-](.+))?$ ]]; then
+  MODE="fr"
+  EXCHANGE="${BASH_REMATCH[1]}"
+  ENV_TAG="$(echo "${BASH_REMATCH[3]:-fr}" | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//')"
+elif type mm_parse_deploy_dir >/dev/null 2>&1 && read -r EXCHANGE ENV_TAG < <(mm_parse_deploy_dir "$dir_lc"); then
+  MODE="mm"
+else
+  echo "[ERROR] 无法从部署目录名推断 account_monitor 环境: ${dir_name}" >&2
+  echo "[ERROR] 期望如 okex_fr_trade / binance_mm_alpha" >&2
+  exit 1
 fi
 
-PROC_NAME="${PMDAEMON_NAME:-am_$(short_exchange "$EXCHANGE")_${env_tag}}"
+if type mm_normalize_exchange >/dev/null 2>&1; then
+  EXCHANGE="$(mm_normalize_exchange "$EXCHANGE")"
+fi
+if [[ -z "$ENV_TAG" ]]; then
+  ENV_TAG="$MODE"
+fi
+
+if [[ "$MODE" == "mm" ]]; then
+  DEFAULT_PROC_NAME="mm_am_${EXCHANGE}_${ENV_TAG}"
+else
+  short_exchange() {
+    if type mm_short_exchange >/dev/null 2>&1; then
+      mm_short_exchange "$1"
+      return
+    fi
+    case "${1,,}" in
+      binance) echo "bn" ;;
+      okex) echo "ok" ;;
+      bybit) echo "bb" ;;
+      bitget) echo "bg" ;;
+      gate) echo "gt" ;;
+      *)
+        echo "${1,,}" | sed -E 's/[^a-z0-9]+//g' | cut -c1-2
+        ;;
+    esac
+  }
+  DEFAULT_PROC_NAME="am_$(short_exchange "$EXCHANGE")_${ENV_TAG}"
+fi
+
+PROC_NAME="${PMDAEMON_NAME:-$DEFAULT_PROC_NAME}"
 LEGACY_PROC_NAME="account_monitor_${dir_tag}"
+BUGGY_MM_PROC_NAME=""
+if [[ "$MODE" == "mm" ]]; then
+  if type mm_short_exchange >/dev/null 2>&1; then
+    BUGGY_MM_PROC_NAME="am_$(mm_short_exchange "$EXCHANGE")_fr"
+  else
+    BUGGY_MM_PROC_NAME="am_$(printf '%s' "${EXCHANGE,,}" | cut -c1-2)_fr"
+  fi
+fi
 KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 
 find_running_pids() {
@@ -76,6 +102,9 @@ if "${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1; then
   deleted=true
 fi
 if [[ "$LEGACY_PROC_NAME" != "$PROC_NAME" ]] && "${PMDAEMON[@]}" delete "$LEGACY_PROC_NAME" >/dev/null 2>&1; then
+  deleted=true
+fi
+if [[ -n "$BUGGY_MM_PROC_NAME" && "$BUGGY_MM_PROC_NAME" != "$PROC_NAME" ]] && "${PMDAEMON[@]}" delete "$BUGGY_MM_PROC_NAME" >/dev/null 2>&1; then
   deleted=true
 fi
 if [[ "$deleted" == true ]]; then

@@ -144,7 +144,7 @@ fi
 
 if [[ "$DO_SCRIPTS" -eq 1 ]]; then
   mkdir -p "$TARGET_DIR/scripts"
-  for script in start_account_monitor.sh stop_account_monitor.sh; do
+  for script in start_account_monitor.sh stop_account_monitor.sh mm_process_name.sh; do
     if [[ -f "$ROOT_DIR/scripts/$script" ]]; then
       rsync -a "$ROOT_DIR/scripts/$script" "$TARGET_DIR/scripts/"
       chmod +x "$TARGET_DIR/scripts/$script"

@@ -144,7 +144,7 @@ if [[ "$DO_SCRIPTS" -eq 1 ]]; then
   done
 
   mkdir -p "$TARGET_DIR/scripts"
-  for script in sync_mm_risk_params.py print_mm_risk_params.py; do
+  for script in mm_process_name.sh sync_mm_risk_params.py print_mm_risk_params.py; do
     if [[ -f "$ROOT_DIR/scripts/$script" ]]; then
       rsync -a "$ROOT_DIR/scripts/$script" "$TARGET_DIR/scripts/"
       chmod +x "$TARGET_DIR/scripts/$script"

@@ -142,6 +142,11 @@ if [[ "$DO_SCRIPTS" -eq 1 ]]; then
       chmod +x "$TARGET_DIR/mm_scripts/$script"
     fi
   done
+  mkdir -p "$TARGET_DIR/scripts"
+  if [[ -f "$ROOT_DIR/scripts/mm_process_name.sh" ]]; then
+    rsync -a "$ROOT_DIR/scripts/mm_process_name.sh" "$TARGET_DIR/scripts/"
+    chmod +x "$TARGET_DIR/scripts/mm_process_name.sh"
+  fi
 fi
 
 echo "[INFO] $BIN_NAME deployed to $TARGET_DIR"

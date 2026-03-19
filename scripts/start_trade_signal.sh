@@ -5,6 +5,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # 可选：设置 PM2 namespace（默认使用部署目录名，可用环境变量覆盖）
 NAMESPACE="${PM2_NAMESPACE:-$(basename "${BASE_DIR}")}"
+MM_NAME_LIB="${SCRIPT_DIR}/mm_process_name.sh"
+
+if [[ -f "$MM_NAME_LIB" ]]; then
+  # shellcheck disable=SC1090
+  source "$MM_NAME_LIB"
+fi
 
 ENV_FILE="${BASE_DIR}/env.sh"
 if [[ -f "$ENV_FILE" ]]; then
@@ -77,6 +83,9 @@ NS=""
 SUFFIX=""
 if read -r NS SUFFIX < <(infer_ns_and_suffix "$dir_lc"); then
   :
+elif type mm_parse_deploy_dir >/dev/null 2>&1 && read -r mm_exchange mm_env_tag < <(mm_parse_deploy_dir "$dir_lc"); then
+  NS="mm"
+  SUFFIX="${mm_exchange}_${mm_env_tag}"
 fi
 
 CLI_EXCHANGE="${1:-}"
@@ -103,16 +112,40 @@ case "$NS" in
     fi
     PM2_TAG="${open_ex}_${hedge_ex}"
     ;;
+  mm)
+    EXCHANGE="${SUFFIX%%_*}"
+    ENV_TAG="${SUFFIX#*_}"
+    if [[ -z "$EXCHANGE" || -z "$ENV_TAG" ]]; then
+      echo "[ERROR] invalid mm dir suffix: ${SUFFIX} (expect like binance_alpha)"
+      exit 1
+    fi
+    if [[ -n "$CLI_EXCHANGE" && "$CLI_EXCHANGE" != "$EXCHANGE" ]]; then
+      echo "[ERROR] exchange mismatch: dir exchange=${EXCHANGE} arg exchange=${CLI_EXCHANGE}"
+      exit 1
+    fi
+    PM2_TAG="${EXCHANGE}_${ENV_TAG}"
+    ARGS=(--exchange "$EXCHANGE")
+    ;;
   *)
     # Fallback: use directory name as tag; trade_signal will require proper CWD or args.
     PM2_TAG="$(echo "${dir_lc}" | sed 's/[^a-z0-9_-]/_/g')"
     ;;
 esac
 
-PROC_NAME="${PM2_NAME:-trade_signal_${PM2_TAG}}"
+if [[ "$NS" == "mm" ]]; then
+  DEFAULT_PROC_NAME="mm_ts_${PM2_TAG}"
+  LEGACY_PROC_NAME="trade_signal_${dir_tag}"
+else
+  DEFAULT_PROC_NAME="trade_signal_${PM2_TAG}"
+  LEGACY_PROC_NAME=""
+fi
+PROC_NAME="${PM2_NAME:-$DEFAULT_PROC_NAME}"
 RUST_LOG="${RUST_LOG:-info}"
 
 echo "[INFO] Restarting ${PROC_NAME} (namespace=${NAMESPACE})"
+if [[ -n "$LEGACY_PROC_NAME" ]]; then
+  npx pm2 delete "$LEGACY_PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+fi
 npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
 
 RUST_LOG="${RUST_LOG}" npx pm2 start "$BIN_PATH" \

@@ -206,7 +206,7 @@ if [[ "$DO_SCRIPTS" -eq 1 ]]; then
       chmod +x "$TARGET_DIR/mm_scripts/$script"
     fi
   done
-  for script in sync_mm_symbol_list.py print_mm_symbol_list.py sync_mm_strategy_params.py print_mm_strategy_params.py; do
+  for script in mm_process_name.sh sync_mm_symbol_list.py print_mm_symbol_list.py sync_mm_strategy_params.py print_mm_strategy_params.py; do
     if [[ -f "$ROOT_DIR/scripts/$script" ]]; then
       rsync -a "$ROOT_DIR/scripts/$script" "$TARGET_DIR/scripts/"
       chmod +x "$TARGET_DIR/scripts/$script"

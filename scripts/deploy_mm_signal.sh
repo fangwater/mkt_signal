@@ -150,6 +150,7 @@ SCRIPT_DIR_SRC="$ROOT_DIR/scripts"
 SCRIPTS_TO_SYNC=(
   "start_trade_signal.sh"
   "stop_trade_signal.sh"
+  "mm_process_name.sh"
   "sync_mm_strategy_params.py"
   "print_mm_strategy_params.py"
   "sync_mm_symbol_list.py"
@@ -161,7 +162,7 @@ if [[ "$DO_SCRIPTS" -eq 1 ]]; then
   for script in "${SCRIPTS_TO_SYNC[@]}"; do
     if [[ -f "$SCRIPT_DIR_SRC/$script" ]]; then
       rsync -a "$SCRIPT_DIR_SRC/$script" "$TARGET_DIR/scripts/"
-      chmod +x "$TARGET_DIR/scripts/$script"
+      chmod +x "$TARGET_DIR/scripts/$script" 2>/dev/null || true
     fi
   done
 fi

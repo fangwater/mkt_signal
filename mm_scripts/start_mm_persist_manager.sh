@@ -3,6 +3,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+MM_NAME_LIB="${SCRIPT_DIR}/../scripts/mm_process_name.sh"
+
+if [[ -f "$MM_NAME_LIB" ]]; then
+  # shellcheck disable=SC1090
+  source "$MM_NAME_LIB"
+fi
 
 BIN_CANDIDATES=(
   "${BASE_DIR}/persist_manager"
@@ -51,7 +57,16 @@ if [[ -z "$IPC_NS" ]]; then
   echo "[WARN] IPC_NAMESPACE not set; use default: ${IPC_NS}"
 fi
 
-PROC_NAME="${PMDAEMON_NAME:-mm_persist_manager_$(echo "${BASE_DIR##*/}" | tr 'A-Z' 'a-z' | sed 's/[^a-z0-9_-]/_/g')}"
+DIR_NAME="${BASE_DIR##*/}"
+DIR_TAG="$(echo "${DIR_NAME}" | tr 'A-Z' 'a-z' | sed 's/[^a-z0-9_-]/_/g')"
+DEFAULT_PROC_NAME="mm_persist_manager_${DIR_TAG}"
+if type mm_default_proc_name >/dev/null 2>&1; then
+  if inferred_name="$(mm_default_proc_name pm "$DIR_NAME" 2>/dev/null)" && [[ -n "$inferred_name" ]]; then
+    DEFAULT_PROC_NAME="$inferred_name"
+  fi
+fi
+PROC_NAME="${PMDAEMON_NAME:-$DEFAULT_PROC_NAME}"
+LEGACY_PROC_NAME="mm_persist_manager_${DIR_TAG}"
 RUST_LOG="${RUST_LOG:-info}"
 
 PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
@@ -96,6 +111,9 @@ cat >"$CFG_FILE" <<EOF
 EOF
 
 echo "[INFO] Restarting ${PROC_NAME} (ipc_namespace=${IPC_NS})"
+if [[ "$LEGACY_PROC_NAME" != "$PROC_NAME" ]]; then
+  "${PMDAEMON[@]}" delete "$LEGACY_PROC_NAME" >/dev/null 2>&1 || true
+fi
 "${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1 || true
 "${PMDAEMON[@]}" --config "$CFG_FILE" start --name "$PROC_NAME"
 

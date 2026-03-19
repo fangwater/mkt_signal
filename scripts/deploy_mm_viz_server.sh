@@ -421,6 +421,7 @@ upsert_main_nginx_mapping() {
 
 if [[ "$DO_SCRIPTS" -eq 1 ]]; then
   mkdir -p "$TARGET_DIR/mm_scripts"
+  mkdir -p "$TARGET_DIR/scripts"
 
   if [[ "$RUNTIME_ONLY" != "1" ]]; then
     mkdir -p "$TARGET_DIR/config" "$TARGET_DIR/www"
@@ -440,6 +441,7 @@ if [[ "$DO_SCRIPTS" -eq 1 ]]; then
   EXTRA_FILES=(
     "mm_scripts/start_mm_viz_server.sh"
     "mm_scripts/stop_mm_viz_server.sh"
+    "scripts/mm_process_name.sh"
     "scripts/setup_nginx_4191.sh"
   )
   for file in "${EXTRA_FILES[@]}"; do

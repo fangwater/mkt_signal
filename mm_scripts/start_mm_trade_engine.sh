@@ -3,6 +3,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+MM_NAME_LIB="${SCRIPT_DIR}/../scripts/mm_process_name.sh"
+
+if [[ -f "$MM_NAME_LIB" ]]; then
+  # shellcheck disable=SC1090
+  source "$MM_NAME_LIB"
+fi
 
 PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
 PMDAEMON=("$PMDAEMON_BIN")
@@ -120,7 +126,16 @@ if [[ -z "$EXCHANGE" ]]; then
 fi
 
 EXCHANGE="$(normalize_exchange "$EXCHANGE")"
-PROC_NAME="${PMDAEMON_NAME:-${PM2_NAME:-mm_trade_engine_$(echo "${BASE_DIR##*/}" | tr 'A-Z' 'a-z' | sed 's/[^a-z0-9_-]/_/g')}}"
+DIR_NAME="${BASE_DIR##*/}"
+DIR_TAG="$(echo "${DIR_NAME}" | tr 'A-Z' 'a-z' | sed 's/[^a-z0-9_-]/_/g')"
+DEFAULT_PROC_NAME="mm_trade_engine_${DIR_TAG}"
+if type mm_default_proc_name >/dev/null 2>&1; then
+  if inferred_name="$(mm_default_proc_name te "$DIR_NAME" 2>/dev/null)" && [[ -n "$inferred_name" ]]; then
+    DEFAULT_PROC_NAME="$inferred_name"
+  fi
+fi
+PROC_NAME="${PMDAEMON_NAME:-${PM2_NAME:-$DEFAULT_PROC_NAME}}"
+LEGACY_PROC_NAME="mm_trade_engine_${DIR_TAG}"
 RUST_LOG="${RUST_LOG:-info}"
 IPC_NS="${IPC_NAMESPACE:-}"
 if [[ -z "$IPC_NS" ]]; then
@@ -167,6 +182,9 @@ cat >"$cfg_file" <<JSON
 JSON
 
 echo "[INFO] Restarting ${PROC_NAME}"
+if [[ "$LEGACY_PROC_NAME" != "$PROC_NAME" ]]; then
+  "${PMDAEMON[@]}" delete "$LEGACY_PROC_NAME" >/dev/null 2>&1 || true
+fi
 "${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1 || true
 "${PMDAEMON[@]}" --config "$cfg_file" start --name "$PROC_NAME"
 

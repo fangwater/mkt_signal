@@ -3,6 +3,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+MM_NAME_LIB="${SCRIPT_DIR}/../scripts/mm_process_name.sh"
+
+if [[ -f "$MM_NAME_LIB" ]]; then
+  # shellcheck disable=SC1090
+  source "$MM_NAME_LIB"
+fi
 
 PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
 PMDAEMON=("$PMDAEMON_BIN")
@@ -14,7 +20,7 @@ Usage: mm_scripts/stop_mm_viz_server.sh [--exchange <binance|okex|gate|bybit|bit
 
 Notes:
   - Exchange is inferred from the directory name (<exchange>_mm_<env>), unless --exchange is set.
-  - Stops pmdaemon process: viz_server_<dir>
+  - Stops pmdaemon process: mm_viz_<exchange>_<env> (legacy viz_server_<dir> is also cleaned)
 EOF
 }
 
@@ -56,7 +62,14 @@ if [[ -z "$EXCHANGE" ]]; then
   exit 1
 fi
 
-PROC_NAME="${PMDAEMON_NAME:-viz_server_${dir_tag}}"
+DEFAULT_PROC_NAME="viz_server_${dir_tag}"
+if type mm_default_proc_name >/dev/null 2>&1; then
+  if inferred_name="$(mm_default_proc_name viz "$dir_name" 2>/dev/null)" && [[ -n "$inferred_name" ]]; then
+    DEFAULT_PROC_NAME="$inferred_name"
+  fi
+fi
+PROC_NAME="${PMDAEMON_NAME:-$DEFAULT_PROC_NAME}"
+LEGACY_PROC_NAME="viz_server_${dir_tag}"
 
 if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1; then
   echo "[ERROR] pmdaemon not found: $PMDAEMON_BIN" >&2
@@ -124,6 +137,9 @@ cleanup_leaked() {
 }
 
 echo "[INFO] Deleting ${PROC_NAME}"
+if [[ "$LEGACY_PROC_NAME" != "$PROC_NAME" ]]; then
+  "${PMDAEMON[@]}" delete "$LEGACY_PROC_NAME" >/dev/null 2>&1 || true
+fi
 if "${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1; then
   echo "[INFO] Deleted ${PROC_NAME}"
 else
