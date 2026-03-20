@@ -156,6 +156,7 @@ RUST_LOG="${RUST_LOG}" npx pm2 start "$BIN_PATH" \
 
 echo ""
 echo "[INFO] Started trade_signal (ns=${NS:-unknown} suffix=${SUFFIX:-unknown})"
+echo "Market data source: bridge/<venue>/{ask_bid_spread,derivatives}"
 echo "Namespace: ${NAMESPACE}"
 echo "Logs: npx pm2 logs --namespace ${NAMESPACE} ${PROC_NAME}"
 echo "Status: npx pm2 status --namespace ${NAMESPACE}"

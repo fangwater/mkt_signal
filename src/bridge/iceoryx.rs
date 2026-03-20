@@ -5,6 +5,8 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info, warn};
 
+use crate::bridge::cfg::RouteEndpoint;
+
 /// Supported fixed payload sizes for Iceoryx2 services.
 ///
 /// Iceoryx2 ports require compile-time sizes, so we provide a small set of
@@ -24,7 +26,12 @@ pub enum SubscriberEnum {
 }
 
 impl SubscriberEnum {
-    pub fn new(node: &Node<ipc::Service>, service_name: &str, size: usize) -> Result<Self> {
+    pub fn new(
+        node: &Node<ipc::Service>,
+        service_name: &str,
+        size: usize,
+        endpoint: &RouteEndpoint,
+    ) -> Result<Self> {
         if size >= 32_768 {
             panic!(
                 "iceoryx payload size {} is too large for ipc_bridge (>=32768 not supported)",
@@ -32,15 +39,15 @@ impl SubscriberEnum {
             );
         }
         let sub = match size {
-            64 => Self::Size64(create_subscriber::<64>(node, service_name)?),
-            128 => Self::Size128(create_subscriber::<128>(node, service_name)?),
-            256 => Self::Size256(create_subscriber::<256>(node, service_name)?),
-            512 => Self::Size512(create_subscriber::<512>(node, service_name)?),
-            1024 => Self::Size1024(create_subscriber::<1024>(node, service_name)?),
-            2048 => Self::Size2048(create_subscriber::<2048>(node, service_name)?),
-            4096 => Self::Size4096(create_subscriber::<4096>(node, service_name)?),
-            8192 => Self::Size8192(create_subscriber::<8192>(node, service_name)?),
-            16384 => Self::Size16384(create_subscriber::<16384>(node, service_name)?),
+            64 => Self::Size64(create_subscriber::<64>(node, service_name, endpoint)?),
+            128 => Self::Size128(create_subscriber::<128>(node, service_name, endpoint)?),
+            256 => Self::Size256(create_subscriber::<256>(node, service_name, endpoint)?),
+            512 => Self::Size512(create_subscriber::<512>(node, service_name, endpoint)?),
+            1024 => Self::Size1024(create_subscriber::<1024>(node, service_name, endpoint)?),
+            2048 => Self::Size2048(create_subscriber::<2048>(node, service_name, endpoint)?),
+            4096 => Self::Size4096(create_subscriber::<4096>(node, service_name, endpoint)?),
+            8192 => Self::Size8192(create_subscriber::<8192>(node, service_name, endpoint)?),
+            16384 => Self::Size16384(create_subscriber::<16384>(node, service_name, endpoint)?),
             _ => {
                 return Err(anyhow!(
                     "unsupported iceoryx payload size {} (supported: {:?})",
@@ -85,7 +92,12 @@ pub enum PublisherEnum {
 }
 
 impl PublisherEnum {
-    pub fn new(node: &Node<ipc::Service>, service_name: &str, size: usize) -> Result<Self> {
+    pub fn new(
+        node: &Node<ipc::Service>,
+        service_name: &str,
+        size: usize,
+        endpoint: &RouteEndpoint,
+    ) -> Result<Self> {
         if size >= 32_768 {
             panic!(
                 "iceoryx payload size {} is too large for ipc_bridge (>=32768 not supported)",
@@ -93,15 +105,15 @@ impl PublisherEnum {
             );
         }
         let pub_ = match size {
-            64 => Self::Size64(create_publisher::<64>(node, service_name)?),
-            128 => Self::Size128(create_publisher::<128>(node, service_name)?),
-            256 => Self::Size256(create_publisher::<256>(node, service_name)?),
-            512 => Self::Size512(create_publisher::<512>(node, service_name)?),
-            1024 => Self::Size1024(create_publisher::<1024>(node, service_name)?),
-            2048 => Self::Size2048(create_publisher::<2048>(node, service_name)?),
-            4096 => Self::Size4096(create_publisher::<4096>(node, service_name)?),
-            8192 => Self::Size8192(create_publisher::<8192>(node, service_name)?),
-            16384 => Self::Size16384(create_publisher::<16384>(node, service_name)?),
+            64 => Self::Size64(create_publisher::<64>(node, service_name, endpoint)?),
+            128 => Self::Size128(create_publisher::<128>(node, service_name, endpoint)?),
+            256 => Self::Size256(create_publisher::<256>(node, service_name, endpoint)?),
+            512 => Self::Size512(create_publisher::<512>(node, service_name, endpoint)?),
+            1024 => Self::Size1024(create_publisher::<1024>(node, service_name, endpoint)?),
+            2048 => Self::Size2048(create_publisher::<2048>(node, service_name, endpoint)?),
+            4096 => Self::Size4096(create_publisher::<4096>(node, service_name, endpoint)?),
+            8192 => Self::Size8192(create_publisher::<8192>(node, service_name, endpoint)?),
+            16384 => Self::Size16384(create_publisher::<16384>(node, service_name, endpoint)?),
             _ => {
                 return Err(anyhow!(
                     "unsupported iceoryx payload size {} (supported: {:?})",
@@ -136,10 +148,25 @@ impl PublisherEnum {
 fn create_subscriber<const SIZE: usize>(
     node: &Node<ipc::Service>,
     service_name: &str,
+    endpoint: &RouteEndpoint,
 ) -> Result<Subscriber<ipc::Service, [u8; SIZE], ()>> {
-    let service = node
+    let mut builder = node
         .service_builder(&ServiceName::new(service_name)?)
-        .publish_subscribe::<[u8; SIZE]>()
+        .publish_subscribe::<[u8; SIZE]>();
+    if let Some(value) = endpoint.max_publishers {
+        builder = builder.max_publishers(value);
+    }
+    if let Some(value) = endpoint.max_subscribers {
+        builder = builder.max_subscribers(value);
+    }
+    if let Some(value) = endpoint.history_size {
+        builder = builder.history_size(value);
+    }
+    if let Some(value) = endpoint.subscriber_max_buffer_size {
+        builder = builder.subscriber_max_buffer_size(value);
+    }
+
+    let service = builder
         .open_or_create()
         .with_context(|| format!("failed to open_or_create service {}", service_name))?;
     service
@@ -151,10 +178,25 @@ fn create_subscriber<const SIZE: usize>(
 fn create_publisher<const SIZE: usize>(
     node: &Node<ipc::Service>,
     service_name: &str,
+    endpoint: &RouteEndpoint,
 ) -> Result<Publisher<ipc::Service, [u8; SIZE], ()>> {
-    let service = node
+    let mut builder = node
         .service_builder(&ServiceName::new(service_name)?)
-        .publish_subscribe::<[u8; SIZE]>()
+        .publish_subscribe::<[u8; SIZE]>();
+    if let Some(value) = endpoint.max_publishers {
+        builder = builder.max_publishers(value);
+    }
+    if let Some(value) = endpoint.max_subscribers {
+        builder = builder.max_subscribers(value);
+    }
+    if let Some(value) = endpoint.history_size {
+        builder = builder.history_size(value);
+    }
+    if let Some(value) = endpoint.subscriber_max_buffer_size {
+        builder = builder.subscriber_max_buffer_size(value);
+    }
+
+    let service = builder
         .open_or_create()
         .with_context(|| format!("failed to open_or_create service {}", service_name))?;
     service

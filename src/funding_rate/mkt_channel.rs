@@ -28,6 +28,7 @@ const DERIVATIVES_PAYLOAD: usize = 128;
 const DERIVATIVES_HISTORY_SIZE: usize = 50;
 const DERIVATIVES_MAX_SUBSCRIBERS: usize = 10;
 const DERIVATIVES_SUBSCRIBER_MAX_BUFFER: usize = 8192;
+const MARKET_SERVICE_ROOT: &str = "bridge";
 
 // Thread-local 单例存储
 thread_local! {
@@ -52,6 +53,10 @@ fn is_futures(venue: TradingVenue) -> bool {
 fn normalize_symbol_key(symbol: &str) -> String {
     // Keep consistent with rolling_metrics/symbol_list: uppercase, remove '-'/'_', strip trailing "SWAP".
     normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures)
+}
+
+fn build_market_service(slug: &str, channel: &str) -> String {
+    format!("{}/{}/{}", MARKET_SERVICE_ROOT, slug, channel)
 }
 
 fn should_trigger_decision(symbol: &str) -> bool {
@@ -120,8 +125,8 @@ impl MktChannel {
         let open_slug = open_venue.data_pub_slug();
         let hedge_slug = hedge_venue.data_pub_slug();
 
-        let open_service = format!("dat_pbs/{}/ask_bid_spread", open_slug);
-        let hedge_service = format!("dat_pbs/{}/ask_bid_spread", hedge_slug);
+        let open_service = build_market_service(open_slug, "ask_bid_spread");
+        let hedge_service = build_market_service(hedge_slug, "ask_bid_spread");
 
         let open_node = build_node_name(open_slug, "askbid");
         let hedge_node = build_node_name(hedge_slug, "askbid");
@@ -149,7 +154,10 @@ impl MktChannel {
             }
         }
 
-        info!("MktChannel 初始化完成");
+        info!(
+            "MktChannel 初始化完成: service_root={}",
+            MARKET_SERVICE_ROOT
+        );
 
         // 启动订阅任务
         Self::spawn_askbid_listener(
@@ -171,7 +179,7 @@ impl MktChannel {
             quotes.clone(),
         );
         if is_futures(open_venue) {
-            let derivatives_service = format!("dat_pbs/{}/derivatives", open_slug);
+            let derivatives_service = build_market_service(open_slug, "derivatives");
             let derivatives_node = build_node_name(open_slug, "derivatives");
             Self::spawn_derivatives_listener(
                 derivatives_node,
@@ -185,7 +193,7 @@ impl MktChannel {
             );
         }
         if is_futures(hedge_venue) {
-            let derivatives_service = format!("dat_pbs/{}/derivatives", hedge_slug);
+            let derivatives_service = build_market_service(hedge_slug, "derivatives");
             let derivatives_node = build_node_name(hedge_slug, "derivatives");
             Self::spawn_derivatives_listener(
                 derivatives_node,

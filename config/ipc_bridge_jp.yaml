@@ -1,0 +1,118 @@
+# JP bridge fan-out config.
+#
+# This bridge republishes selected dat_pbs market-data channels into the JP
+# global bridge/<venue>/... services so downstream consumers can subscribe
+# without adding pressure to dat_pbs directly.
+
+routes:
+  - id: bridge_binance_margin_ask_bid
+    from:
+      type: ipc
+      endpoint: "dat_pbs/binance-margin/ask_bid_spread"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/binance-margin/ask_bid_spread"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 100
+      subscriber_max_buffer_size: 8192
+
+  - id: bridge_binance_margin_derivatives
+    from:
+      type: ipc
+      endpoint: "dat_pbs/binance-margin/derivatives"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/binance-margin/derivatives"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 50
+      subscriber_max_buffer_size: 8192
+
+  - id: bridge_binance_futures_ask_bid
+    from:
+      type: ipc
+      endpoint: "dat_pbs/binance-futures/ask_bid_spread"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/binance-futures/ask_bid_spread"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 100
+      subscriber_max_buffer_size: 8192
+
+  - id: bridge_binance_futures_derivatives
+    from:
+      type: ipc
+      endpoint: "dat_pbs/binance-futures/derivatives"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/binance-futures/derivatives"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 50
+      subscriber_max_buffer_size: 8192
+
+  - id: bridge_gate_margin_ask_bid
+    from:
+      type: ipc
+      endpoint: "dat_pbs/gate-margin/ask_bid_spread"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/gate-margin/ask_bid_spread"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 100
+      subscriber_max_buffer_size: 8192
+
+  - id: bridge_gate_margin_derivatives
+    from:
+      type: ipc
+      endpoint: "dat_pbs/gate-margin/derivatives"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/gate-margin/derivatives"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 50
+      subscriber_max_buffer_size: 8192
+
+  - id: bridge_gate_futures_ask_bid
+    from:
+      type: ipc
+      endpoint: "dat_pbs/gate-futures/ask_bid_spread"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/gate-futures/ask_bid_spread"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 100
+      subscriber_max_buffer_size: 8192
+
+  - id: bridge_gate_futures_derivatives
+    from:
+      type: ipc
+      endpoint: "dat_pbs/gate-futures/derivatives"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/gate-futures/derivatives"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 50
+      subscriber_max_buffer_size: 8192

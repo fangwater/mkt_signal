@@ -1,48 +1,58 @@
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
 /// Bridge process configuration.
 ///
-/// One bridge instance runs on each machine/namespace. `self_id` selects which
-/// `nodes` entry is local, and `routes` describe how to forward messages between
-/// two Iceoryx2 namespaces via ZMQ.
+/// Each route directly describes its source and destination endpoint type:
+/// - `ipc -> ipc`
+/// - `ipc -> zmq`
+/// - `zmq -> ipc`
 #[derive(Debug, Clone, Deserialize)]
 pub struct BridgeConfig {
-    /// The id of current bridge instance (must exist in `nodes`)
-    pub self_id: String,
-    /// All bridge nodes in the topology
-    pub nodes: Vec<NodeConfig>,
-    /// Forwarding routes (bidirectional routes should be declared twice)
+    /// Forwarding routes.
     pub routes: Vec<RouteConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct NodeConfig {
-    /// Unique node id
-    pub id: String,
-    /// ZMQ address (e.g. tcp://0.0.0.0:5555 for bind, or tcp://10.0.0.2:5555 for connect)
-    pub addr: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
 pub struct RouteConfig {
-    /// Route id used as ZMQ multipart header
+    /// Route id used as ZMQ multipart header and log tag.
     pub id: String,
     pub from: RouteEndpoint,
     pub to: RouteEndpoint,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum EndpointType {
+    Ipc,
+    Zmq,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct RouteEndpoint {
-    /// Node id of this endpoint
-    pub node: String,
-    /// Iceoryx base service name (will be namespaced via IPC_NAMESPACE unless starts with dat_pbs/)
-    pub service: String,
-    /// Iceoryx payload size in bytes for this endpoint
+    /// Endpoint type.
+    #[serde(rename = "type")]
+    pub kind: EndpointType,
+    /// For `ipc`, this is the service name.
+    /// For `zmq`, this is the full ZMQ address, e.g. tcp://0.0.0.0:16666.
+    pub endpoint: String,
+    /// Payload size in bytes for this route endpoint.
     pub size: usize,
+    /// Optional IceOryx service max_publishers override for open_or_create.
+    #[serde(default)]
+    pub max_publishers: Option<usize>,
+    /// Optional IceOryx service max_subscribers override for open_or_create.
+    #[serde(default)]
+    pub max_subscribers: Option<usize>,
+    /// Optional IceOryx service history size override for open_or_create.
+    #[serde(default)]
+    pub history_size: Option<usize>,
+    /// Optional IceOryx subscriber_max_buffer_size override for open_or_create.
+    #[serde(default)]
+    pub subscriber_max_buffer_size: Option<usize>,
 }
 
 impl BridgeConfig {
@@ -56,51 +66,14 @@ impl BridgeConfig {
     }
 
     fn validate(&self) -> Result<()> {
-        if self.self_id.trim().is_empty() {
-            return Err(anyhow!("self_id cannot be empty"));
-        }
-        let mut nodes: HashMap<&str, &NodeConfig> = HashMap::new();
-        for n in &self.nodes {
-            if n.id.trim().is_empty() {
-                return Err(anyhow!("node.id cannot be empty"));
-            }
-            if nodes.insert(n.id.as_str(), n).is_some() {
-                return Err(anyhow!("duplicate node id '{}'", n.id));
-            }
-            if n.addr.trim().is_empty() {
-                return Err(anyhow!("node.addr cannot be empty (id={})", n.id));
-            }
-        }
-
-        if !nodes.contains_key(self.self_id.as_str()) {
-            return Err(anyhow!("self_id '{}' not found in nodes", self.self_id));
-        }
+        let mut route_ids: HashSet<&str> = HashSet::new();
 
         for r in &self.routes {
             if r.id.trim().is_empty() {
                 return Err(anyhow!("route.id cannot be empty"));
             }
-            if !nodes.contains_key(r.from.node.as_str()) {
-                return Err(anyhow!(
-                    "route '{}' from.node '{}' not found in nodes",
-                    r.id,
-                    r.from.node
-                ));
-            }
-            if !nodes.contains_key(r.to.node.as_str()) {
-                return Err(anyhow!(
-                    "route '{}' to.node '{}' not found in nodes",
-                    r.id,
-                    r.to.node
-                ));
-            }
-            if r.from.service.trim().is_empty() || r.to.service.trim().is_empty() {
-                return Err(anyhow!(
-                    "route '{}' service cannot be empty (from='{}' to='{}')",
-                    r.id,
-                    r.from.service,
-                    r.to.service
-                ));
+            if !route_ids.insert(r.id.as_str()) {
+                return Err(anyhow!("duplicate route id '{}'", r.id));
             }
             if r.from.size == 0 || r.to.size == 0 {
                 return Err(anyhow!(
@@ -110,6 +83,17 @@ impl BridgeConfig {
                     r.to.size
                 ));
             }
+            if r.from.endpoint.trim().is_empty() || r.to.endpoint.trim().is_empty() {
+                return Err(anyhow!(
+                    "route '{}' endpoint cannot be empty (from='{}' to='{}')",
+                    r.id,
+                    r.from.endpoint,
+                    r.to.endpoint
+                ));
+            }
+            validate_endpoint_options(&r.id, "from", &r.from)?;
+            validate_endpoint_options(&r.id, "to", &r.to)?;
+            validate_route_direction(r)?;
             if r.from.size >= 32_768 || r.to.size >= 32_768 {
                 panic!(
                     "route '{}' uses too large payload size (from.size={} to.size={}); ipc_bridge does not support sizes >=32768",
@@ -120,19 +104,49 @@ impl BridgeConfig {
 
         Ok(())
     }
+}
 
-    pub fn self_node(&self) -> &NodeConfig {
-        self.nodes
-            .iter()
-            .find(|n| n.id == self.self_id)
-            .expect("self_id validated")
+fn validate_endpoint_options(route_id: &str, side: &str, endpoint: &RouteEndpoint) -> Result<()> {
+    for (field, value) in [
+        ("max_publishers", endpoint.max_publishers),
+        ("max_subscribers", endpoint.max_subscribers),
+        ("history_size", endpoint.history_size),
+        (
+            "subscriber_max_buffer_size",
+            endpoint.subscriber_max_buffer_size,
+        ),
+    ] {
+        if let Some(v) = value {
+            if v == 0 {
+                return Err(anyhow!(
+                    "route '{}' {}.{} must be >0",
+                    route_id,
+                    side,
+                    field
+                ));
+            }
+            if endpoint.kind == EndpointType::Zmq {
+                return Err(anyhow!(
+                    "route '{}' {}.{} is only supported for ipc endpoints",
+                    route_id,
+                    side,
+                    field
+                ));
+            }
+        }
     }
+    Ok(())
+}
 
-    pub fn node_addr(&self, id: &str) -> Option<&str> {
-        self.nodes
-            .iter()
-            .find(|n| n.id == id)
-            .map(|n| n.addr.as_str())
+fn validate_route_direction(route: &RouteConfig) -> Result<()> {
+    match (route.from.kind, route.to.kind) {
+        (EndpointType::Ipc, EndpointType::Ipc)
+        | (EndpointType::Ipc, EndpointType::Zmq)
+        | (EndpointType::Zmq, EndpointType::Ipc) => Ok(()),
+        (EndpointType::Zmq, EndpointType::Zmq) => Err(anyhow!(
+            "route '{}' does not support zmq->zmq forwarding",
+            route.id
+        )),
     }
 }
 
@@ -141,59 +155,118 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_and_validates_minimal_cfg() {
+    fn parses_and_validates_local_ipc_cfg() {
         let yaml = r#"
-self_id: pretrade_dc1
-nodes:
-  - id: pretrade_dc1
-    addr: "tcp://0.0.0.0:5555"
-  - id: tradeeng_dc2
-    addr: "tcp://10.0.0.2:5555"
 routes:
-  - id: order_req
+  - id: local_askbid
     from:
-      node: pretrade_dc1
-      service: "order_reqs/binance"
-      size: 4096
+      type: ipc
+      endpoint: "dat_pbs/binance-futures/ask_bid_spread"
+      size: 128
     to:
-      node: tradeeng_dc2
-      service: "order_reqs/binance"
-      size: 4096
+      type: ipc
+      endpoint: "bridge/binance-futures/ask_bid_spread"
+      size: 128
+      max_subscribers: 64
 "#;
 
         let cfg: BridgeConfig = serde_yaml::from_str(yaml).unwrap();
         cfg.validate().unwrap();
-        assert_eq!(cfg.self_node().id, "pretrade_dc1");
-        assert_eq!(cfg.node_addr("tradeeng_dc2"), Some("tcp://10.0.0.2:5555"));
+        assert_eq!(cfg.routes[0].to.kind, EndpointType::Ipc);
+        assert_eq!(cfg.routes[0].to.max_subscribers, Some(64));
     }
 
     #[test]
-    fn reject_duplicate_node_ids() {
+    fn parses_and_validates_zmq_routes() {
         let yaml = r#"
-self_id: a
-nodes:
-  - id: a
-    addr: "tcp://0.0.0.0:1"
-  - id: a
-    addr: "tcp://0.0.0.0:2"
-routes: []
+routes:
+  - id: outgoing_route
+    from:
+      type: ipc
+      endpoint: "order_reqs/binance"
+      size: 4096
+    to:
+      type: zmq
+      endpoint: "tcp://10.0.0.2:5555"
+      size: 4096
+  - id: incoming_route
+    from:
+      type: zmq
+      endpoint: "tcp://0.0.0.0:5555"
+      size: 64
+    to:
+      type: ipc
+      endpoint: "order_resps/binance"
+      size: 64
 "#;
+
+        let cfg: BridgeConfig = serde_yaml::from_str(yaml).unwrap();
+        cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn reject_duplicate_route_ids() {
+        let yaml = r#"
+routes:
+  - id: duplicate
+    from:
+      type: ipc
+      endpoint: "a"
+      size: 64
+    to:
+      type: ipc
+      endpoint: "b"
+      size: 64
+  - id: duplicate
+    from:
+      type: ipc
+      endpoint: "c"
+      size: 64
+    to:
+      type: ipc
+      endpoint: "d"
+      size: 64
+"#;
+
         let cfg: BridgeConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(cfg.validate().is_err());
     }
 
     #[test]
-    fn reject_unknown_route_nodes() {
+    fn reject_zmq_endpoint_options() {
         let yaml = r#"
-self_id: a
-nodes:
-  - id: a
-    addr: "tcp://0.0.0.0:1"
 routes:
-  - id: r1
-    from: { node: a, service: "x", size: 64 }
-    to: { node: b, service: "x", size: 64 }
+  - id: bad_route
+    from:
+      type: ipc
+      endpoint: "order_reqs/binance"
+      size: 4096
+    to:
+      type: zmq
+      endpoint: "tcp://10.0.0.2:5555"
+      size: 4096
+      max_subscribers: 64
 "#;
+
+        let cfg: BridgeConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn reject_zmq_to_zmq() {
+        let yaml = r#"
+routes:
+  - id: bad_route
+    from:
+      type: zmq
+      endpoint: "tcp://0.0.0.0:5555"
+      size: 64
+    to:
+      type: zmq
+      endpoint: "tcp://10.0.0.2:5555"
+      size: 64
+"#;
+
         let cfg: BridgeConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(cfg.validate().is_err());
     }

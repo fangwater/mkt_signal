@@ -1,65 +1,48 @@
 # Example configuration for ipc_bridge.
 #
-# Run one ipc_bridge per machine/namespace.
-# Each bridge knows all nodes (`nodes`) and decides direction using `self_id`.
+# Each route directly describes its source and destination endpoint:
+# - `type: ipc` uses an IceOryx service name
+# - `type: zmq` uses a full ZMQ address
 #
-# Iceoryx service names should be base names. They will be namespaced via
-# IPC_NAMESPACE (see src/common/ipc_service_name.rs) unless starting with
-# "dat_pbs/".
+# Iceoryx service names are namespaced via IPC_NAMESPACE unless they start with
+# `dat_pbs/` or `bridge/`.
 #
 # Supported sizes: 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384.
 
-self_id: pretrade_dc1
-
-nodes:
-  - id: pretrade_dc1
-    # Local bridge binds a PULL socket here
-    addr: "tcp://0.0.0.0:5555"
-  - id: tradeeng_dc2
-    # Remote bridge PULL bind address. Local PUSH will connect to it.
-    addr: "tcp://10.0.2.10:5555"
-
 routes:
-  # Pre-trade -> trade_engine order requests
+  # Pre-trade -> trade_engine order requests (ipc -> zmq)
   - id: order_req_binance
     from:
-      node: pretrade_dc1
-      service: "order_reqs/binance"
+      type: ipc
+      endpoint: "order_reqs/binance"
       size: 4096
     to:
-      node: tradeeng_dc2
-      service: "order_reqs/binance"
+      type: zmq
+      endpoint: "tcp://10.0.2.10:5555"
       size: 4096
 
-  # trade_engine -> pre-trade order responses
+  # trade_engine -> pre-trade order responses (zmq -> ipc)
   - id: order_resp_binance
     from:
-      node: tradeeng_dc2
-      service: "order_resps/binance"
+      type: zmq
+      endpoint: "tcp://0.0.0.0:5555"
       size: 64
     to:
-      node: pretrade_dc1
-      service: "order_resps/binance"
+      type: ipc
+      endpoint: "order_resps/binance"
       size: 64
 
-  # Pre-trade -> trade_engine query requests
-  - id: query_req_binance
+  # Local market-data fan-out (ipc -> ipc)
+  - id: bridge_binance_futures_ask_bid
     from:
-      node: pretrade_dc1
-      service: "query_reqs/binance"
-      size: 4096
+      type: ipc
+      endpoint: "dat_pbs/binance-futures/ask_bid_spread"
+      size: 128
     to:
-      node: tradeeng_dc2
-      service: "query_reqs/binance"
-      size: 4096
-
-  # trade_engine -> pre-trade query responses
-  - id: query_resp_binance
-    from:
-      node: tradeeng_dc2
-      service: "query_resps/binance"
-      size: 64
-    to:
-      node: pretrade_dc1
-      service: "query_resps/binance"
-      size: 64
+      type: ipc
+      endpoint: "bridge/binance-futures/ask_bid_spread"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 100
+      subscriber_max_buffer_size: 8192
