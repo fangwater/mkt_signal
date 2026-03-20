@@ -457,10 +457,12 @@ async fn run_reader_loop(
     let mut subscriber = MultiChannelSubscriber::new(iceoryx_node)?;
     subscriber.subscribe_channels(vec![
         SubscribeParams {
+            service_root: Some("bridge".to_string()),
             topic_prefix: open_topic.to_string(),
             channel: ChannelType::AskBidSpread,
         },
         SubscribeParams {
+            service_root: Some("bridge".to_string()),
             topic_prefix: hedge_topic.to_string(),
             channel: ChannelType::AskBidSpread,
         },

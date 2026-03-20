@@ -45,7 +45,9 @@ impl ChannelType {
 /// 订阅参数
 #[derive(Debug, Clone)]
 pub struct SubscribeParams {
-    /// dat_pbs 下的前缀（通常为 venue slug，例如 binance-futures）
+    /// 服务根前缀，默认 dat_pbs；bridge 链路可传 bridge。
+    pub service_root: Option<String>,
+    /// 服务根下的 topic 前缀（通常为 venue slug，例如 binance-futures）
     pub topic_prefix: String,
     pub channel: ChannelType,
 }
@@ -125,8 +127,13 @@ impl MultiChannelSubscriber {
 
     /// 订阅单个频道
     pub fn subscribe_single(&mut self, param: SubscribeParams) -> Result<()> {
-        let service_name: String =
-            format!("dat_pbs/{}/{}", param.topic_prefix, param.channel.as_str());
+        let service_root = param.service_root.as_deref().unwrap_or("dat_pbs");
+        let service_name: String = format!(
+            "{}/{}/{}",
+            service_root,
+            param.topic_prefix,
+            param.channel.as_str()
+        );
 
         let key = format!("{}_{}", param.topic_prefix, param.channel.as_str());
 
@@ -297,6 +304,7 @@ pub fn create_subscriber(
     let params: Vec<SubscribeParams> = subscriptions
         .into_iter()
         .map(|(topic_prefix, channel)| SubscribeParams {
+            service_root: None,
             topic_prefix,
             channel,
         })
