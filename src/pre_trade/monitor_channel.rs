@@ -35,7 +35,7 @@ const DERIVATIVES_PAYLOAD: usize = 128;
 const DERIVATIVES_HISTORY_SIZE: usize = 50;
 const DERIVATIVES_MAX_SUBSCRIBERS: usize = 10;
 const DERIVATIVES_SUBSCRIBER_MAX_BUFFER: usize = 8192;
-const DEFAULT_DERIVATIVES_SERVICE: &str = "dat_pbs/binance-futures/derivatives";
+const DEFAULT_DERIVATIVES_SERVICE: &str = "bridge/binance-futures/derivatives";
 const DEFAULT_NODE_PRE_TRADE_DERIVATIVES: &str = "pre_trade_derivatives";
 
 // ==================== Helper Functions ====================
@@ -581,7 +581,7 @@ impl MonitorChannel {
         // 启动衍生品价格监听任务（mark_price, index_price）
         //
         // 约定：pre_trade 始终使用 Binance Futures 的衍生品指标（mark/index price）作为基准。
-        // 固定订阅 dat_pbs 前缀，避免与旧链路通道互斥。
+        // 统一从 bridge 订阅，避免继续占用 dat_pbs 的 subscriber 配额。
         let node_name = DEFAULT_NODE_PRE_TRADE_DERIVATIVES.to_string();
         let service_name = DEFAULT_DERIVATIVES_SERVICE.to_string();
         Self::spawn_derivatives_listener(price_table.clone(), node_name, service_name);
