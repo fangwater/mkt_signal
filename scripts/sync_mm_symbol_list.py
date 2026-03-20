@@ -65,6 +65,28 @@ def parse_args() -> argparse.Namespace:
 SYMBOLS: List[str] = [
     "BTCUSDT",
     "ETHUSDT",
+    "SOLUSDT",
+    "AAVEUSDT",
+    "ADAUSDT",
+    "ARBUSDT",
+    "ATOMUSDT",
+    "AVAXUSDT",
+    "BCHUSDT",
+    "BNBUSDT",
+    "DOGEUSDT",
+    "DOTUSDT",
+    "ETCUSDT",
+    "FILUSDT",
+    "HBARUSDT",
+    "LINKUSDT",
+    "LTCUSDT",
+    "ONDOUSDT",
+    "TONUSDT",
+    "TRUMPUSDT",
+    "TRXUSDT",
+    "WLDUSDT",
+    "XLMUSDT",
+    "XRPUSDT",
 ]
 
 
