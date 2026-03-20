@@ -298,14 +298,24 @@ impl FactorValueHub {
             .with_context(|| format!("failed to create model_output subscriber: {service_name}"))
     }
 
+    fn normalize_model_output_service_name(service_name: &str) -> Option<String> {
+        let trimmed = service_name.trim();
+        if trimmed.is_empty() || trimmed == "-" {
+            return None;
+        }
+        if trimmed.contains('/') {
+            Some(trimmed.to_string())
+        } else {
+            Some(format!("model_output/{trimmed}"))
+        }
+    }
+
     fn normalize_model_output_services(services: Vec<String>) -> Vec<String> {
         let mut normalized = Vec::new();
         for raw in services {
-            let trimmed = raw.trim();
-            if trimmed.is_empty() {
+            let Some(service) = Self::normalize_model_output_service_name(&raw) else {
                 continue;
-            }
-            let service = trimmed.to_string();
+            };
             if !normalized.iter().any(|s| s == &service) {
                 normalized.push(service);
             }
@@ -619,10 +629,8 @@ impl FactorValueHub {
         pnlu_symbol_key: &str,
         now_us: i64,
     ) -> EnvironmentSignalResult {
-        let normalized_service = environment_model_service
-            .map(str::trim)
-            .filter(|s| !s.is_empty() && *s != "-")
-            .map(str::to_string);
+        let normalized_service =
+            environment_model_service.and_then(Self::normalize_model_output_service_name);
 
         if let Some(service_name) = normalized_service {
             let symbol_key = normalize_symbol_for_venue(hedge_symbol, hedge_venue);
@@ -698,17 +706,16 @@ impl FactorValueHub {
         hedge_symbol: &str,
         hedge_venue: TradingVenue,
     ) -> ModelOutputScoreLookupResult {
-        let service_name = model_service.trim().to_string();
-        let symbol_key = normalize_symbol_for_venue(hedge_symbol, hedge_venue);
-        if service_name.is_empty() || service_name == "-" {
+        let Some(service_name) = Self::normalize_model_output_service_name(model_service) else {
             return ModelOutputScoreLookupResult {
-                service_name,
-                symbol_key,
+                service_name: model_service.trim().to_string(),
+                symbol_key: normalize_symbol_for_venue(hedge_symbol, hedge_venue),
                 subscribed: false,
                 score: None,
                 note: "service_disabled".to_string(),
             };
-        }
+        };
+        let symbol_key = normalize_symbol_for_venue(hedge_symbol, hedge_venue);
 
         let subscribed = self
             .model_output_services
@@ -788,6 +795,32 @@ mod tests {
         assert_eq!(
             key,
             "ETHUSDT_pnlu_factor_thresholds_binance-margin-binance-futures"
+        );
+    }
+
+    #[test]
+    fn normalizes_bare_model_output_service_name() {
+        assert_eq!(
+            FactorValueHub::normalize_model_output_service_name("binance-futures-mm-xgb-test"),
+            Some("model_output/binance-futures-mm-xgb-test".to_string())
+        );
+        assert_eq!(
+            FactorValueHub::normalize_model_output_service_name(
+                "model_output/binance-futures-mm-xgb-test"
+            ),
+            Some("model_output/binance-futures-mm-xgb-test".to_string())
+        );
+    }
+
+    #[test]
+    fn ignores_disabled_model_output_service_name() {
+        assert_eq!(
+            FactorValueHub::normalize_model_output_service_name(""),
+            None
+        );
+        assert_eq!(
+            FactorValueHub::normalize_model_output_service_name("-"),
+            None
         );
     }
 }

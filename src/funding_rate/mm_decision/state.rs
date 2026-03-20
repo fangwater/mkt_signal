@@ -316,13 +316,20 @@ impl MmDecisionState {
         struct PreparedOpenSignal {
             side: Side,
             level_index: usize,
+            side_level_index: usize,
             tick_index: i64,
+            aligned_price: f64,
+            aligned_qty: f64,
+            price_offset: f64,
+            price_tick_count: i64,
+            qty_tick_count: i64,
             ctx: MmOpenCtx,
         }
 
         let mut sent = 0usize;
         let mut sent_buy = 0usize;
         let mut sent_sell = 0usize;
+        let mut emitted_details = Vec::new();
         let mut prepared = Vec::with_capacity(plan.levels.len());
 
         for level in &plan.levels {
@@ -353,7 +360,13 @@ impl MmDecisionState {
             prepared.push(PreparedOpenSignal {
                 side: level.side,
                 level_index: level.level_index,
+                side_level_index: level.side_level_index,
                 tick_index: ctx.price_count(),
+                aligned_price: level.aligned_price,
+                aligned_qty: level.aligned_qty,
+                price_offset: level.offset,
+                price_tick_count: level.price_tick_count,
+                qty_tick_count: level.qty_tick_count,
                 ctx,
             });
         }
@@ -393,21 +406,61 @@ impl MmDecisionState {
 
             let signal = TradeSignal::create(SignalType::MMOpen, now_us, 0.0, item.ctx.to_bytes());
             if let Err(err) = self.signal_pub.publish(&signal.to_bytes()) {
+                let from_key_str = String::from_utf8_lossy(&item.ctx.from_key);
                 log::warn!(
-                    "MmDecision: publish MMOpen failed symbol={} idx={} side={:?} err={:?}",
+                    "MmDecision: publish MMOpen failed symbol={} idx={} side_idx={} side={} price={:.8} qty={:.8} tick_index={} price_ticks={} qty_ticks={} offset={:.8} from_key='{}' err={:?}",
                     plan.symbol,
                     item.level_index,
-                    item.side,
+                    item.side_level_index,
+                    item.side.as_str(),
+                    item.aligned_price,
+                    item.aligned_qty,
+                    item.tick_index,
+                    item.price_tick_count,
+                    item.qty_tick_count,
+                    item.price_offset,
+                    from_key_str,
                     err
                 );
                 continue;
             }
 
+            let from_key_str = String::from_utf8_lossy(&item.ctx.from_key);
+            emitted_details.push(format!(
+                "{{idx:{},side_idx:{},side:\"{}\",price:{:.8},qty:{:.8},tick_index:{},price_ticks:{},qty_ticks:{},offset:{:.8},from_key:\"{}\"}}",
+                item.level_index,
+                item.side_level_index,
+                item.side.as_str(),
+                item.aligned_price,
+                item.aligned_qty,
+                item.tick_index,
+                item.price_tick_count,
+                item.qty_tick_count,
+                item.price_offset,
+                from_key_str
+            ));
             sent += 1;
             match item.side {
                 Side::Buy => sent_buy += 1,
                 Side::Sell => sent_sell += 1,
             }
+        }
+
+        if !emitted_details.is_empty() {
+            log::info!(
+                "MmDecision: MMOpenPlan symbol={} bid={:.8} ask={:.8} mid={:.8} volatility={:.8} price_tick={:.8} qty_tick={:.8} sent={} buy={} sell={} details=[{}]",
+                plan.symbol,
+                plan.quote.bid,
+                plan.quote.ask,
+                plan.band.mid_price,
+                plan.band.volatility,
+                plan.price_tick,
+                plan.qty_tick,
+                sent,
+                sent_buy,
+                sent_sell,
+                emitted_details.join(",")
+            );
         }
 
         (sent, sent_buy, sent_sell)

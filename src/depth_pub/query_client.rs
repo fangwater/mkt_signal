@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context, Result};
-use log::info;
+use log::{debug, info};
+use std::io::ErrorKind;
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
@@ -13,6 +14,9 @@ use super::query_msg::{
 use crate::signal::common::TradingVenue;
 
 const DEPTH_QUERY_SOCKET_TIMEOUT_MS: u64 = 200;
+const DEPTH_QUERY_BATCH_FAST_TIMEOUT_US: u64 = 2_000;
+const DEPTH_QUERY_BATCH_FAST_RETRY_ATTEMPTS: usize = 3;
+const DEPTH_QUERY_BATCH_FAST_RETRY_SLEEP_US: u64 = 200;
 
 #[derive(Debug, Clone)]
 pub struct DepthQueryClient {
@@ -72,10 +76,52 @@ impl DepthQueryClient {
         )
         .map_err(|err| anyhow!(err.to_string()))?;
 
-        let body = self.send_query(
-            &req_buf[..header_len + payload_len],
-            DepthQueryType::LoadTlenBatch,
-        )?;
+        let req = &req_buf[..header_len + payload_len];
+        let mut last_err = None;
+        let mut body = None;
+        for attempt in 0..DEPTH_QUERY_BATCH_FAST_RETRY_ATTEMPTS {
+            match self.send_query_with_timeout(
+                req,
+                DepthQueryType::LoadTlenBatch,
+                Duration::from_micros(DEPTH_QUERY_BATCH_FAST_TIMEOUT_US),
+            ) {
+                Ok(resp) => {
+                    body = Some(resp);
+                    break;
+                }
+                Err(err) => {
+                    let retryable = Self::is_fast_retryable_query_error(&err);
+                    if !retryable || attempt + 1 >= DEPTH_QUERY_BATCH_FAST_RETRY_ATTEMPTS {
+                        return Err(err).with_context(|| {
+                            format!(
+                                "depth query batch failed venue={} symbol={} levels={} attempts={} timeout_us={}",
+                                self.venue_slug,
+                                symbol,
+                                tick_indices.len(),
+                                attempt + 1,
+                                DEPTH_QUERY_BATCH_FAST_TIMEOUT_US
+                            )
+                        });
+                    }
+                    debug!(
+                        "depth query batch fast-retry venue={} symbol={} levels={} attempt={}/{} err={:#}",
+                        self.venue_slug,
+                        symbol,
+                        tick_indices.len(),
+                        attempt + 1,
+                        DEPTH_QUERY_BATCH_FAST_RETRY_ATTEMPTS,
+                        err
+                    );
+                    last_err = Some(err);
+                    std::thread::sleep(Duration::from_micros(
+                        DEPTH_QUERY_BATCH_FAST_RETRY_SLEEP_US,
+                    ));
+                }
+            }
+        }
+        let body = body.ok_or_else(|| {
+            last_err.unwrap_or_else(|| anyhow!("depth query batch failed without response"))
+        })?;
         let resp = DepthQueryLoadTlenBatchResp::from_payload(&body)
             .map_err(|err| anyhow!(err.to_string()))?;
         Ok(resp.amounts)
@@ -100,6 +146,19 @@ impl DepthQueryClient {
     }
 
     fn send_query(&self, req: &[u8], expected_type: DepthQueryType) -> Result<Vec<u8>> {
+        self.send_query_with_timeout(
+            req,
+            expected_type,
+            Duration::from_millis(DEPTH_QUERY_SOCKET_TIMEOUT_MS),
+        )
+    }
+
+    fn send_query_with_timeout(
+        &self,
+        req: &[u8],
+        expected_type: DepthQueryType,
+        timeout: Duration,
+    ) -> Result<Vec<u8>> {
         let socket_path = build_depth_query_socket_path(&self.venue_slug);
         let mut stream = UnixStream::connect(&socket_path).with_context(|| {
             format!(
@@ -107,7 +166,7 @@ impl DepthQueryClient {
                 socket_path.display()
             )
         })?;
-        let timeout = Some(Duration::from_millis(DEPTH_QUERY_SOCKET_TIMEOUT_MS));
+        let timeout = Some(timeout);
         stream.set_read_timeout(timeout)?;
         stream.set_write_timeout(timeout)?;
 
@@ -136,5 +195,18 @@ impl DepthQueryClient {
         }
 
         Ok(resp_payload[1..].to_vec())
+    }
+
+    fn is_fast_retryable_query_error(err: &anyhow::Error) -> bool {
+        err.chain().any(|cause| {
+            cause
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io_err| {
+                    matches!(
+                        io_err.kind(),
+                        ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                    )
+                })
+        })
     }
 }
