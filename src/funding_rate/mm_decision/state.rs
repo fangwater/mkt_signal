@@ -28,6 +28,16 @@ pub(crate) const TARGET_FACTOR_NAME: &str = "rl_return_volatility";
 pub(crate) const TARGET_FACTOR_KEY_PREFIX: &str = TARGET_FACTOR_NAME;
 pub(crate) const ENV_MODEL_TRUE_THRESHOLD_DEFAULT: f64 = 0.0;
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct MmOpenPublishStats {
+    pub(crate) sent: usize,
+    pub(crate) sent_buy: usize,
+    pub(crate) sent_sell: usize,
+    pub(crate) prepared_levels: usize,
+    pub(crate) zero_quantized_levels: usize,
+    pub(crate) publish_failures: usize,
+}
+
 pub(crate) struct MmDecisionState {
     pub(crate) signal_pub: SignalPublisher,
     pub(crate) depth_query_client: DepthQueryClient,
@@ -312,7 +322,7 @@ impl MmDecisionState {
         plan: &MmOpenQuotePlan,
         from_key: &str,
         prediction_side: Option<Side>,
-    ) -> (usize, usize, usize) {
+    ) -> MmOpenPublishStats {
         struct PreparedOpenSignal {
             side: Side,
             level_index: usize,
@@ -329,6 +339,8 @@ impl MmDecisionState {
         let mut sent = 0usize;
         let mut sent_buy = 0usize;
         let mut sent_sell = 0usize;
+        let mut zero_quantized_levels = 0usize;
+        let mut publish_failures = 0usize;
         let mut emitted_details = Vec::new();
         let mut prepared = Vec::with_capacity(plan.levels.len());
 
@@ -352,6 +364,7 @@ impl MmDecisionState {
             let _ = ctx.set_amount_with_tick_floor(level.aligned_qty, plan.qty_tick);
             let _ = ctx.set_price_with_tick_floor(level.aligned_price, plan.price_tick);
             if ctx.amount_count() <= 0 || ctx.price_count() <= 0 {
+                zero_quantized_levels += 1;
                 continue;
             }
             ctx.exp_time = plan.exp_time_us;
@@ -406,6 +419,7 @@ impl MmDecisionState {
 
             let signal = TradeSignal::create(SignalType::MMOpen, now_us, 0.0, item.ctx.to_bytes());
             if let Err(err) = self.signal_pub.publish(&signal.to_bytes()) {
+                publish_failures += 1;
                 let from_key_str = String::from_utf8_lossy(&item.ctx.from_key);
                 log::warn!(
                     "MmDecision: publish MMOpen failed symbol={} idx={} side_idx={} side={} price={:.8} qty={:.8} tick_index={} price_ticks={} qty_ticks={} offset={:.8} from_key='{}' err={:?}",
@@ -463,6 +477,13 @@ impl MmDecisionState {
             );
         }
 
-        (sent, sent_buy, sent_sell)
+        MmOpenPublishStats {
+            sent,
+            sent_buy,
+            sent_sell,
+            prepared_levels: prepared.len(),
+            zero_quantized_levels,
+            publish_failures,
+        }
     }
 }

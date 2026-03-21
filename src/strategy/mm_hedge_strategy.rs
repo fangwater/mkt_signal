@@ -32,6 +32,7 @@ use std::collections::{HashMap, HashSet};
 const HEDGE_QUERY_INTERVAL_US: i64 = 30_000_000;
 const HEDGE_QUERY_WATCHDOG_US: i64 = 30_000;
 const ORDER_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
+const NET_QTY_EPS: f64 = 5.0;
 
 #[derive(Debug, Clone)]
 pub struct MmHedgeSnapshot {
@@ -219,6 +220,18 @@ impl MarketMakerHedgeStrategy {
             buy_qty: self.period_buy_qty,
             sell_qty: self.period_sell_qty,
         }
+    }
+
+    fn should_send_hedge_query(&self) -> bool {
+        self.net_qty.abs() > NET_QTY_EPS
+    }
+
+    fn handle_flat_inventory_no_query(&mut self, now: i64) {
+        self.pending_query = false;
+        self.query_watchdog_due_ts = 0;
+        self.period_buy_qty = 0.0;
+        self.period_sell_qty = 0.0;
+        self.next_query_ts_us = now.saturating_add(HEDGE_QUERY_INTERVAL_US);
     }
 
     fn handle_mm_hedge_signal(&mut self, ctx: MmHedgeCtx) {
@@ -433,6 +446,11 @@ impl MarketMakerHedgeStrategy {
             return;
         }
 
+        if !self.should_send_hedge_query() {
+            self.handle_flat_inventory_no_query(now);
+            return;
+        }
+
         self.send_hedge_query();
         self.next_query_ts_us = 0;
     }
@@ -443,6 +461,10 @@ impl MarketMakerHedgeStrategy {
         }
         let now = get_timestamp_us();
         if now < self.query_watchdog_due_ts {
+            return;
+        }
+        if !self.should_send_hedge_query() {
+            self.handle_flat_inventory_no_query(now);
             return;
         }
         warn!(
@@ -1421,6 +1443,24 @@ impl MarketMakerHedgeStrategy {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MarketMakerHedgeStrategy, NET_QTY_EPS};
+
+    #[test]
+    fn zero_net_qty_does_not_send_hedge_query() {
+        let strategy = MarketMakerHedgeStrategy::new(1, "ATOMUSDT".to_string());
+        assert!(!strategy.should_send_hedge_query());
+    }
+
+    #[test]
+    fn non_zero_net_qty_sends_hedge_query() {
+        let mut strategy = MarketMakerHedgeStrategy::new(1, "ATOMUSDT".to_string());
+        strategy.net_qty = NET_QTY_EPS + 1.0;
+        assert!(strategy.should_send_hedge_query());
     }
 }
 

@@ -30,11 +30,23 @@ pub struct MmOpenQuotePlan {
     pub levels: Vec<MmOpenPlanLevel>,
 }
 
-fn build_level_specs(mid: f64, vol: f64, levels_per_side: usize) -> Vec<QuotePlanLevelSpec> {
+fn build_level_specs(
+    bid: f64,
+    ask: f64,
+    vol: f64,
+    levels_per_side: usize,
+) -> Vec<QuotePlanLevelSpec> {
     if levels_per_side == 0 {
         return Vec::new();
     }
-    if !mid.is_finite() || mid <= 0.0 || !vol.is_finite() || vol < 0.0 {
+    if !bid.is_finite()
+        || bid <= 0.0
+        || !ask.is_finite()
+        || ask <= 0.0
+        || bid >= ask
+        || !vol.is_finite()
+        || vol < 0.0
+    {
         return Vec::new();
     }
 
@@ -46,13 +58,13 @@ fn build_level_specs(mid: f64, vol: f64, levels_per_side: usize) -> Vec<QuotePla
             side: Side::Sell,
             side_level_index,
             offset,
-            base_price: mid,
+            base_price: ask,
         });
         out.push(QuotePlanLevelSpec {
             side: Side::Buy,
             side_level_index,
             offset,
-            base_price: mid,
+            base_price: bid,
         });
     }
 
@@ -112,13 +124,13 @@ pub fn build_mm_open_quote_plan(
         ));
     }
     let vol = volatility;
-    let lower_price = mid_price * (1.0 - vol);
-    let upper_price = mid_price * (1.0 + vol);
-    let specs = build_level_specs(mid_price, vol, orders_per_round as usize);
+    let lower_price = quote.bid * (1.0 - vol);
+    let upper_price = quote.ask * (1.0 + vol);
+    let specs = build_level_specs(quote.bid, quote.ask, vol, orders_per_round as usize);
     if specs.is_empty() {
         return Err(format!(
-            "empty level prices symbol={} mid={:.8} lower={:.8} upper={:.8} levels_per_side={}",
-            symbol, mid_price, lower_price, upper_price, orders_per_round
+            "empty level prices symbol={} bid={:.8} ask={:.8} lower={:.8} upper={:.8} levels_per_side={}",
+            symbol, quote.bid, quote.ask, lower_price, upper_price, orders_per_round
         ));
     }
     let (price_tick, qty_tick, levels) =
@@ -170,21 +182,39 @@ mod tests {
 
     #[test]
     fn level_prices_cover_both_sides_with_per_side_count() {
-        let specs = build_level_specs(1.0, 0.0008, 8);
+        let specs = build_level_specs(0.99, 1.01, 0.0008, 8);
         assert_eq!(specs.len(), 16);
 
         assert_eq!(specs[0].side, Side::Sell);
         assert_eq!(specs[0].side_level_index, 1);
+        assert!((specs[0].base_price - 1.01).abs() < 1e-12);
         assert!((specs[0].offset - 0.0001).abs() < 1e-12);
         assert_eq!(specs[1].side, Side::Buy);
         assert_eq!(specs[1].side_level_index, 1);
+        assert!((specs[1].base_price - 0.99).abs() < 1e-12);
         assert!((specs[1].offset - 0.0001).abs() < 1e-12);
 
         assert_eq!(specs[14].side, Side::Sell);
         assert_eq!(specs[14].side_level_index, 8);
+        assert!((specs[14].base_price - 1.01).abs() < 1e-12);
         assert!((specs[14].offset - 0.0008).abs() < 1e-12);
         assert_eq!(specs[15].side, Side::Buy);
         assert_eq!(specs[15].side_level_index, 8);
+        assert!((specs[15].base_price - 0.99).abs() < 1e-12);
         assert!((specs[15].offset - 0.0008).abs() < 1e-12);
+    }
+
+    #[test]
+    fn zero_vol_still_anchors_sell_to_ask_and_buy_to_bid() {
+        let specs = build_level_specs(100.0, 100.1, 0.0, 2);
+        assert_eq!(specs.len(), 4);
+        assert_eq!(specs[0].side, Side::Sell);
+        assert!((specs[0].base_price - 100.1).abs() < 1e-12);
+        assert_eq!(specs[1].side, Side::Buy);
+        assert!((specs[1].base_price - 100.0).abs() < 1e-12);
+        assert_eq!(specs[2].side, Side::Sell);
+        assert!((specs[2].base_price - 100.1).abs() < 1e-12);
+        assert_eq!(specs[3].side, Side::Buy);
+        assert!((specs[3].base_price - 100.0).abs() < 1e-12);
     }
 }

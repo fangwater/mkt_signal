@@ -57,3 +57,15 @@ mm_default_proc_name() {
 
   printf 'mm_%s_%s_%s\n' "$role" "$exchange" "$env_tag"
 }
+
+mm_trade_signal_proc_name() {
+  local exchange="$1"
+  local env_tag="${2:-}"
+  exchange="$(mm_normalize_exchange "$exchange")"
+  env_tag="$(mm_sanitize_tag "$env_tag")"
+  if [[ -n "$env_tag" ]]; then
+    printf 'mm_%s_futures_%s_trade_signal\n' "$exchange" "$env_tag"
+  else
+    printf 'mm_%s_futures_trade_signal\n' "$exchange"
+  fi
+}

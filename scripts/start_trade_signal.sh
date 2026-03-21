@@ -81,16 +81,17 @@ PY
 
 NS=""
 SUFFIX=""
-if read -r NS SUFFIX < <(infer_ns_and_suffix "$dir_lc"); then
-  :
-elif type mm_parse_deploy_dir >/dev/null 2>&1 && read -r mm_exchange mm_env_tag < <(mm_parse_deploy_dir "$dir_lc"); then
+if type mm_parse_deploy_dir >/dev/null 2>&1 && read -r mm_exchange mm_env_tag < <(mm_parse_deploy_dir "$dir_lc"); then
   NS="mm"
   SUFFIX="${mm_exchange}_${mm_env_tag}"
+elif read -r NS SUFFIX < <(infer_ns_and_suffix "$dir_lc"); then
+  :
 fi
 
 CLI_EXCHANGE="${1:-}"
 PM2_TAG=""
 ARGS=()
+BUGGY_PROC_NAME=""
 
 case "$NS" in
   fr)
@@ -133,7 +134,13 @@ case "$NS" in
 esac
 
 if [[ "$NS" == "mm" ]]; then
-  DEFAULT_PROC_NAME="mm_ts_${PM2_TAG}"
+  if type mm_trade_signal_proc_name >/dev/null 2>&1; then
+    DEFAULT_PROC_NAME="$(mm_trade_signal_proc_name "$EXCHANGE" "$ENV_TAG")"
+    BUGGY_PROC_NAME="$(mm_trade_signal_proc_name "$EXCHANGE" "$EXCHANGE")"
+  else
+    DEFAULT_PROC_NAME="mm_${EXCHANGE}_futures_${ENV_TAG}_trade_signal"
+    BUGGY_PROC_NAME="mm_${EXCHANGE}_futures_${EXCHANGE}_trade_signal"
+  fi
   LEGACY_PROC_NAME="trade_signal_${dir_tag}"
 else
   DEFAULT_PROC_NAME="trade_signal_${PM2_TAG}"
@@ -145,6 +152,9 @@ RUST_LOG="${RUST_LOG:-info}"
 echo "[INFO] Restarting ${PROC_NAME} (namespace=${NAMESPACE})"
 if [[ -n "$LEGACY_PROC_NAME" ]]; then
   npx pm2 delete "$LEGACY_PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+fi
+if [[ -n "$BUGGY_PROC_NAME" && "$BUGGY_PROC_NAME" != "$PROC_NAME" ]]; then
+  npx pm2 delete "$BUGGY_PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
 fi
 npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
 
