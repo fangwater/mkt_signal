@@ -66,7 +66,10 @@ impl MmOpenDecision {
         let volatility_lookup = state
             .factor_value_hub
             .lookup_target_factor_value(symbol, state.hedge_venue);
-        let Some(volatility) = volatility_lookup.target_factor_value.filter(|v| v.is_finite()) else {
+        let Some(volatility) = volatility_lookup
+            .target_factor_value
+            .filter(|v| v.is_finite())
+        else {
             return Ok(MmOpenEvalResult::skipped(
                 &symbol_key,
                 &format!("missing_volatility({})", volatility_lookup.note),
@@ -177,8 +180,7 @@ impl MmOpenDecision {
             }
         };
 
-        let publish_stats =
-            state.publish_mm_open_plan(now_us, &plan, &from_key, prediction_side);
+        let publish_stats = state.publish_mm_open_plan(now_us, &plan, &from_key, prediction_side);
 
         if publish_stats.sent > 0 {
             let side_text = match prediction_side {
@@ -424,10 +426,7 @@ fn log_interval_summary(state: &MmDecisionState, results: &[MmOpenEvalResult]) {
     let evaluated = results.len();
     let emitted = results.iter().filter(|item| item.result == "emit").count();
     let skipped = evaluated.saturating_sub(emitted);
-    let emitted_orders = results
-        .iter()
-        .filter(|item| item.result == "emit")
-        .count();
+    let emitted_orders = results.iter().filter(|item| item.result == "emit").count();
     info!(
         "MmDecision: MMOpen interval summary interval_ms={} prediction_mode={} evaluated={} emitted_symbols={} skipped_symbols={} emitted_orders={} thresholds_required={}",
         state.order_interval_ms,

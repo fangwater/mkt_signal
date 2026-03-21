@@ -1,0 +1,127 @@
+# XARB OKEX(open) - Binance(hedge) bridge config (JP side)
+#
+# Purpose:
+# - Local Binance market-data fan-out: dat_pbs/binance-* -> bridge/binance-*
+# - Send selected Binance market-data to HK via ZMQ: bridge/binance-futures/* -> ZMQ
+# - Remote Binance order channels for HK pre_trade: ZMQ <-> order_reqs/binance / order_resps/binance
+#
+# NOTE:
+# - Endpoints starting with `dat_pbs/` or `bridge/` are GLOBAL (not namespaced).
+# - Endpoints like `order_reqs/*` and `order_resps/*` are NAMESPACED via IPC_NAMESPACE.
+#   This ipc_bridge process must run with the SAME IPC_NAMESPACE as the xarb env.
+#
+# TODO:
+# - Replace HK_IP with the real HK address reachable from JP.
+
+routes:
+  # --------------------------------
+  # Local Binance market-data fan-out
+  # --------------------------------
+  - id: bridge_binance_futures_ask_bid
+    from:
+      type: ipc
+      endpoint: "dat_pbs/binance-futures/ask_bid_spread"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/binance-futures/ask_bid_spread"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 100
+      subscriber_max_buffer_size: 8192
+
+  - id: bridge_binance_futures_derivatives
+    from:
+      type: ipc
+      endpoint: "dat_pbs/binance-futures/derivatives"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/binance-futures/derivatives"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 50
+      subscriber_max_buffer_size: 8192
+
+  # Optional: binance-margin (enable only if you run that dat_pbs)
+  - id: bridge_binance_margin_ask_bid
+    from:
+      type: ipc
+      endpoint: "dat_pbs/binance-margin/ask_bid_spread"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/binance-margin/ask_bid_spread"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 100
+      subscriber_max_buffer_size: 8192
+
+  - id: bridge_binance_margin_derivatives
+    from:
+      type: ipc
+      endpoint: "dat_pbs/binance-margin/derivatives"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/binance-margin/derivatives"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 50
+      subscriber_max_buffer_size: 8192
+
+  # ------------------------------------
+  # Send Binance market-data to HK (ZMQ)
+  # ------------------------------------
+  #
+  # HK bridge should bind tcp://0.0.0.0:16666 and ingest these routes.
+  - id: xarb_bn_mkt_ask_bid_to_hk
+    from:
+      type: ipc
+      endpoint: "bridge/binance-futures/ask_bid_spread"
+      size: 128
+    to:
+      type: zmq
+      endpoint: "tcp://HK_IP:16666"
+      size: 128
+
+  - id: xarb_bn_mkt_derivatives_to_hk
+    from:
+      type: ipc
+      endpoint: "bridge/binance-futures/derivatives"
+      size: 128
+    to:
+      type: zmq
+      endpoint: "tcp://HK_IP:16666"
+      size: 128
+
+  # --------------------------------------------------
+  # Binance order channels: HK pre_trade <-> JP engine
+  # --------------------------------------------------
+  #
+  # HK -> JP: order request (ZMQ bind JP:17777 -> IPC)
+  - id: xarb_bn_order_req_from_hk
+    from:
+      type: zmq
+      endpoint: "tcp://0.0.0.0:17777"
+      size: 4096
+    to:
+      type: ipc
+      endpoint: "order_reqs/binance"
+      size: 4096
+
+  # JP -> HK: order response (IPC -> ZMQ connect HK:17778)
+  - id: xarb_bn_order_resp_to_hk
+    from:
+      type: ipc
+      endpoint: "order_resps/binance"
+      size: 64
+    to:
+      type: zmq
+      endpoint: "tcp://HK_IP:17778"
+      size: 64
+

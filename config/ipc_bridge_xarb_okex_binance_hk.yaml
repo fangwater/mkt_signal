@@ -1,0 +1,135 @@
+# XARB OKEX(open) - Binance(hedge) bridge config (HK side)
+#
+# Purpose:
+# - Local OKEX market-data fan-out: dat_pbs/okex-* -> bridge/okex-*
+# - Remote Binance market-data ingest from JP via ZMQ: ZMQ -> bridge/binance-futures/*
+# - Remote Binance order channels to JP engine: order_reqs/binance <-> order_resps/binance over ZMQ
+#
+# NOTE:
+# - Endpoints starting with `dat_pbs/` or `bridge/` are GLOBAL (not namespaced).
+# - Endpoints like `order_reqs/*` and `order_resps/*` are NAMESPACED via IPC_NAMESPACE.
+#   This ipc_bridge process must run with the SAME IPC_NAMESPACE as the xarb env.
+#
+# TODO:
+# - Replace JP_IP with the real JP address reachable from HK.
+
+routes:
+  # -----------------------------
+  # Local OKEX market-data fan-out
+  # -----------------------------
+  - id: bridge_okex_margin_ask_bid
+    from:
+      type: ipc
+      endpoint: "dat_pbs/okex-margin/ask_bid_spread"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/okex-margin/ask_bid_spread"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 100
+      subscriber_max_buffer_size: 8192
+
+  - id: bridge_okex_margin_derivatives
+    from:
+      type: ipc
+      endpoint: "dat_pbs/okex-margin/derivatives"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/okex-margin/derivatives"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 50
+      subscriber_max_buffer_size: 8192
+
+  - id: bridge_okex_futures_ask_bid
+    from:
+      type: ipc
+      endpoint: "dat_pbs/okex-futures/ask_bid_spread"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/okex-futures/ask_bid_spread"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 100
+      subscriber_max_buffer_size: 8192
+
+  - id: bridge_okex_futures_derivatives
+    from:
+      type: ipc
+      endpoint: "dat_pbs/okex-futures/derivatives"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/okex-futures/derivatives"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 50
+      subscriber_max_buffer_size: 8192
+
+  # ----------------------------------------
+  # Remote Binance market-data ingest from JP
+  # ----------------------------------------
+  #
+  # JP bridge should PUSH to HK:16666 for these routes.
+  # Multiple routes can share the same bind address; route id is used as ZMQ header.
+  - id: xarb_bn_mkt_ask_bid_from_jp
+    from:
+      type: zmq
+      endpoint: "tcp://0.0.0.0:16666"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/binance-futures/ask_bid_spread"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 100
+      subscriber_max_buffer_size: 8192
+
+  - id: xarb_bn_mkt_derivatives_from_jp
+    from:
+      type: zmq
+      endpoint: "tcp://0.0.0.0:16666"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/binance-futures/derivatives"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 50
+      subscriber_max_buffer_size: 8192
+
+  # -----------------------------------------
+  # Binance order channels: HK pre_trade <-> JP trade_engine(binance)
+  # -----------------------------------------
+  #
+  # HK -> JP: order request (IPC -> ZMQ connect JP:17777)
+  - id: xarb_bn_order_req_to_jp
+    from:
+      type: ipc
+      endpoint: "order_reqs/binance"
+      size: 4096
+    to:
+      type: zmq
+      endpoint: "tcp://JP_IP:17777"
+      size: 4096
+
+  # JP -> HK: order response (ZMQ bind HK:17778 -> IPC)
+  - id: xarb_bn_order_resp_from_jp
+    from:
+      type: zmq
+      endpoint: "tcp://0.0.0.0:17778"
+      size: 64
+    to:
+      type: ipc
+      endpoint: "order_resps/binance"
+      size: 64
+
