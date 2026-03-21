@@ -580,6 +580,27 @@ impl FrDecision {
             );
         }
         let rate_ready = RateFetcher::is_initial_ready(hedge_venue);
+        let rate_fetcher = RateFetcher::instance();
+        let loan_required = matches!(
+            hedge_venue,
+            TradingVenue::BinanceMargin
+                | TradingVenue::BinanceFutures
+                | TradingVenue::OkexMargin
+                | TradingVenue::OkexFutures
+                | TradingVenue::GateMargin
+                | TradingVenue::GateFutures
+        );
+        let has_predict_fr = rate_fetcher
+            .get_predicted_funding_rate(hedge_symbol_key.as_str(), hedge_venue)
+            .is_some();
+        let has_predict_loan = if loan_required {
+            rate_fetcher
+                .get_predict_loan_rate(hedge_symbol_key.as_str(), hedge_venue)
+                .is_some()
+        } else {
+            true
+        };
+        let open_inputs_ready = has_predict_fr && has_predict_loan;
         let spread_close_signal = || {
             if spread_factor.satisfy_forward_close(
                 open_venue,
@@ -614,28 +635,43 @@ impl FrDecision {
                 );
             }
             signal
-        } else if !rate_ready {
-            // 费率未就绪时进入降级模式：仅允许基于价差触发 close，禁止 open。
+        } else if !rate_ready && !open_inputs_ready {
+            // 费率未全局就绪且该 symbol 开仓输入不完整：降级为仅允许基于价差触发 close。
             let signal = spread_close_signal();
             if signal.is_none() {
                 log::debug!(
-                    "FrDecision rate not ready, skip open and no spread-close signal open={} hedge={} open_venue={:?} hedge_venue={:?}",
+                    "FrDecision rate not ready and open inputs incomplete, no spread-close signal open={} hedge={} open_venue={:?} hedge_venue={:?} has_predict_fr={} has_predict_loan={}",
                     open_symbol_key,
                     hedge_symbol_key,
                     open_venue,
-                    hedge_venue
+                    hedge_venue,
+                    has_predict_fr,
+                    has_predict_loan
                 );
             } else {
                 log::debug!(
-                    "FrDecision rate not ready, allow spread-close open={} hedge={} open_venue={:?} hedge_venue={:?}",
+                    "FrDecision rate not ready and open inputs incomplete, allow spread-close open={} hedge={} open_venue={:?} hedge_venue={:?} has_predict_fr={} has_predict_loan={}",
                     open_symbol_key,
                     hedge_symbol_key,
                     open_venue,
-                    hedge_venue
+                    hedge_venue,
+                    has_predict_fr,
+                    has_predict_loan
                 );
             }
             signal
         } else {
+            if !rate_ready {
+                log::debug!(
+                    "FrDecision rate not fully ready, but symbol open inputs are ready; run full FR decision open={} hedge={} open_venue={:?} hedge_venue={:?} has_predict_fr={} has_predict_loan={}",
+                    open_symbol_key,
+                    hedge_symbol_key,
+                    open_venue,
+                    hedge_venue,
+                    has_predict_fr,
+                    has_predict_loan
+                );
+            }
             self.get_funding_rate_signal(
                 open_symbol_key.as_str(),
                 hedge_symbol_key.as_str(),
@@ -661,6 +697,18 @@ impl FrDecision {
         // 步骤4: 根据资费信号验证对应的价差 satisfy
         let final_signal = match fr_signal {
             FrSignalKind::ForwardOpen => {
+                if !open_inputs_ready {
+                    log::debug!(
+                        "FrDecision forward_open blocked by incomplete open inputs open={} hedge={} open_venue={:?} hedge_venue={:?} has_predict_fr={} has_predict_loan={}",
+                        open_symbol_key,
+                        hedge_symbol_key,
+                        open_venue,
+                        hedge_venue,
+                        has_predict_fr,
+                        has_predict_loan
+                    );
+                    return Ok(None);
+                }
                 if in_dump {
                     log::debug!(
                         "FrDecision forward_open blocked by dump list open={} hedge={} open_venue={:?} hedge_venue={:?}",
@@ -715,6 +763,18 @@ impl FrDecision {
                 }
             }
             FrSignalKind::BackwardOpen => {
+                if !open_inputs_ready {
+                    log::debug!(
+                        "FrDecision backward_open blocked by incomplete open inputs open={} hedge={} open_venue={:?} hedge_venue={:?} has_predict_fr={} has_predict_loan={}",
+                        open_symbol_key,
+                        hedge_symbol_key,
+                        open_venue,
+                        hedge_venue,
+                        has_predict_fr,
+                        has_predict_loan
+                    );
+                    return Ok(None);
+                }
                 if in_dump {
                     log::debug!(
                         "FrDecision backward_open blocked by dump list open={} hedge={} open_venue={:?} hedge_venue={:?}",

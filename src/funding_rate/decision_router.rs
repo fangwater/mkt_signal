@@ -73,7 +73,7 @@ fn log_skip_not_ready(
 
         if stats.last_log.elapsed() >= Duration::from_secs(10) {
             info!(
-                "DecisionRouter: degraded mode (RateFetcher not ready, close-only path enabled) count={} last_open_symbol={} last_hedge_symbol={} open_venue={:?} hedge_venue={:?} {}",
+                "DecisionRouter: degraded mode (RateFetcher not fully ready) count={} last_open_symbol={} last_hedge_symbol={} open_venue={:?} hedge_venue={:?} {}",
                 stats.skipped,
                 stats.last_open_symbol,
                 stats.last_hedge_symbol,
