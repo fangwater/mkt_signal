@@ -65,6 +65,34 @@ DEFAULTS = {
 }
 
 
+def build_fr_factor(*, quantiles: list[float]) -> Dict[str, Any]:
+    return {
+        "resample_interval_ms": 1_000,
+        "rolling_window": 14_400,
+        "min_periods": 7_200,
+        "quantiles": quantiles,
+    }
+
+
+def apply_pair_specific_defaults(
+    open_venue: str, hedge_venue: str, payload: Dict[str, Any]
+) -> None:
+    pair = (open_venue, hedge_venue)
+
+    factors = payload.setdefault("factors", {})
+    if not isinstance(factors, dict):
+        return
+
+    if open_venue == "binance-margin" and hedge_venue == "binance-futures":
+        spread_cfg = factors.get("spread")
+        if isinstance(spread_cfg, dict):
+            spread_cfg["quantiles"] = [5, 10, 90, 95]
+        factors.setdefault("hedge_fr", build_fr_factor(quantiles=[0.5]))
+
+    if pair == ("okex-futures", "binance-futures"):
+        factors.setdefault("spread_fr", build_fr_factor(quantiles=[0.2, 0.8]))
+
+
 def try_import_redis():
     try:
         import redis  # type: ignore
@@ -159,6 +187,7 @@ def value_to_str(value: Any) -> str:
 
 def build_payload(args: argparse.Namespace) -> Dict[str, str]:
     payload = clone_defaults()
+    apply_pair_specific_defaults(args.open_venue, args.hedge_venue, payload)
     if args.max_length is not None:
         payload["MAX_LENGTH"] = args.max_length
     if args.refresh_sec is not None:

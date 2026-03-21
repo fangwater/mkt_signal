@@ -1,6 +1,10 @@
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use parking_lot::RwLock;
+
+use crate::common::sliding_quantile::SlidingQuantileWindow;
+
 /// 单生产者、多读者友好的定长环形缓冲，使用连续内存存储 f32 值。
 /// 内部通过自增计数 + 取模定位，写入覆盖最旧元素。
 pub struct RingBuffer {
@@ -8,6 +12,7 @@ pub struct RingBuffer {
     data: Vec<UnsafeCell<f32>>,
     write_cursor: AtomicU64,
     published: AtomicU64,
+    quantile_window: RwLock<SlidingQuantileWindow>,
 }
 
 unsafe impl Send for RingBuffer {}
@@ -23,6 +28,7 @@ impl RingBuffer {
             data,
             write_cursor: AtomicU64::new(0),
             published: AtomicU64::new(0),
+            quantile_window: RwLock::new(SlidingQuantileWindow::new(capacity, capacity)),
         }
     }
 
@@ -39,6 +45,7 @@ impl RingBuffer {
         unsafe {
             *self.data[idx].get() = value;
         }
+        let _ = self.quantile_window.write().push_f64(value as f64);
         std::sync::atomic::fence(Ordering::Release);
         self.published.store(pos + 1, Ordering::Release);
     }
@@ -63,32 +70,43 @@ impl RingBuffer {
         Some(value)
     }
 
-    /// 拷贝最近 `count` 条数据到 `dst`，并保持时间顺序（旧→新）。
-    /// 返回实际拷贝条数。
-    pub fn copy_latest(&self, count: usize, dst: &mut Vec<f32>) -> usize {
-        dst.clear();
-        if count == 0 {
-            return 0;
+    pub fn quantiles_linear(&self, active_window: usize, qs: &[f32]) -> (usize, Vec<Option<f64>>) {
+        let mut window = self.quantile_window.write();
+        let active_window = active_window.min(self.capacity).max(1);
+        if window.history_capacity() != self.capacity || window.active_window() != active_window {
+            window.reconfigure(self.capacity, active_window);
         }
-        let total = self.published.load(Ordering::Acquire);
-        if total == 0 {
-            return 0;
+        let sample_size = window.sample_size();
+        let values = window.quantiles_linear(qs);
+        (sample_size, values)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RingBuffer;
+
+    #[test]
+    fn quantiles_follow_latest_active_window() {
+        let ring = RingBuffer::new(5);
+        for value in [1.0_f32, 2.0, 3.0, 4.0] {
+            ring.push(value);
         }
 
-        let available = total.min(self.capacity as u64) as usize;
-        let to_copy = count.min(available);
-        dst.reserve(to_copy);
+        let (count, values) = ring.quantiles_linear(3, &[0.0, 0.5, 1.0]);
+        assert_eq!(count, 3);
+        assert_eq!(values, vec![Some(2.0), Some(3.0), Some(4.0)]);
+    }
 
-        std::sync::atomic::fence(Ordering::Acquire);
-
-        let capacity = self.capacity as u64;
-        let mut pos = total.saturating_sub(to_copy as u64);
-        for _ in 0..to_copy {
-            let idx = (pos % capacity) as usize;
-            let value = unsafe { *self.data[idx].get() };
-            dst.push(value);
-            pos += 1;
+    #[test]
+    fn quantiles_reconfigure_from_history() {
+        let ring = RingBuffer::new(6);
+        for value in [1.0_f32, 2.0, 3.0, 4.0, 5.0] {
+            ring.push(value);
         }
-        to_copy
+
+        let (count, values) = ring.quantiles_linear(4, &[0.0, 0.5, 1.0]);
+        assert_eq!(count, 4);
+        assert_eq!(values, vec![Some(2.0), Some(3.5), Some(5.0)]);
     }
 }

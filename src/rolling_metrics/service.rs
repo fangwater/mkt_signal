@@ -12,9 +12,9 @@ use parking_lot::RwLock;
 use serde::Serialize;
 
 use crate::rolling_metrics::config::{
-    FactorConfig, RollingConfig, FACTOR_ASKBID, FACTOR_BIDASK, FACTOR_SPREAD,
+    FactorConfig, RollingConfig, FACTOR_ASKBID, FACTOR_BIDASK, FACTOR_HEDGE_FR, FACTOR_OPEN_FR,
+    FACTOR_SPREAD, FACTOR_SPREAD_FR,
 };
-use crate::rolling_metrics::quantile::quantiles_linear_select_unstable;
 use crate::rolling_metrics::ring::RingBuffer;
 
 static LOG_PREFIX: OnceLock<String> = OnceLock::new();
@@ -37,6 +37,12 @@ pub struct SymbolSeries {
     pub askbid: Arc<RingBuffer>,
     pub spread: Arc<RingBuffer>,
     spread_rate: AtomicU64,
+    pub open_fr: Arc<RingBuffer>,
+    pub hedge_fr: Arc<RingBuffer>,
+    pub spread_fr: Arc<RingBuffer>,
+    open_fr_latest: AtomicU64,
+    hedge_fr_latest: AtomicU64,
+    spread_fr_latest: AtomicU64,
 }
 
 impl SymbolSeries {
@@ -46,6 +52,12 @@ impl SymbolSeries {
             askbid: Arc::new(RingBuffer::new(capacity)),
             spread: Arc::new(RingBuffer::new(capacity)),
             spread_rate: AtomicU64::new(f64::NAN.to_bits()),
+            open_fr: Arc::new(RingBuffer::new(capacity)),
+            hedge_fr: Arc::new(RingBuffer::new(capacity)),
+            spread_fr: Arc::new(RingBuffer::new(capacity)),
+            open_fr_latest: AtomicU64::new(f64::NAN.to_bits()),
+            hedge_fr_latest: AtomicU64::new(f64::NAN.to_bits()),
+            spread_fr_latest: AtomicU64::new(f64::NAN.to_bits()),
         }
     }
 
@@ -57,11 +69,38 @@ impl SymbolSeries {
         load_option_f64(&self.spread_rate)
     }
 
+    pub fn set_open_fr_latest(&self, value: Option<f64>) {
+        store_option_f64(&self.open_fr_latest, value);
+    }
+
+    pub fn open_fr_latest(&self) -> Option<f64> {
+        load_option_f64(&self.open_fr_latest)
+    }
+
+    pub fn set_hedge_fr_latest(&self, value: Option<f64>) {
+        store_option_f64(&self.hedge_fr_latest, value);
+    }
+
+    pub fn hedge_fr_latest(&self) -> Option<f64> {
+        load_option_f64(&self.hedge_fr_latest)
+    }
+
+    pub fn set_spread_fr_latest(&self, value: Option<f64>) {
+        store_option_f64(&self.spread_fr_latest, value);
+    }
+
+    pub fn spread_fr_latest(&self) -> Option<f64> {
+        load_option_f64(&self.spread_fr_latest)
+    }
+
     pub fn ring(&self, factor: &str) -> Option<&Arc<RingBuffer>> {
         match factor {
             crate::rolling_metrics::config::FACTOR_BIDASK => Some(&self.bidask),
             crate::rolling_metrics::config::FACTOR_ASKBID => Some(&self.askbid),
             crate::rolling_metrics::config::FACTOR_SPREAD => Some(&self.spread),
+            crate::rolling_metrics::config::FACTOR_OPEN_FR => Some(&self.open_fr),
+            crate::rolling_metrics::config::FACTOR_HEDGE_FR => Some(&self.hedge_fr),
+            crate::rolling_metrics::config::FACTOR_SPREAD_FR => Some(&self.spread_fr),
             _ => None,
         }
     }
@@ -109,12 +148,21 @@ struct ThresholdPayload<'a> {
     bidask_sr: Option<f64>,
     askbid_sr: Option<f64>,
     spread_rate: Option<f64>,
+    open_fr: Option<f64>,
+    hedge_fr: Option<f64>,
+    spread_fr: Option<f64>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     bidask_quantiles: Vec<QuantilePoint>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     askbid_quantiles: Vec<QuantilePoint>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     spread_quantiles: Vec<QuantilePoint>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    open_fr_quantiles: Vec<QuantilePoint>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    hedge_fr_quantiles: Vec<QuantilePoint>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    spread_fr_quantiles: Vec<QuantilePoint>,
 }
 
 pub fn spawn_compute_thread(
@@ -124,9 +172,6 @@ pub fn spawn_compute_thread(
     sender: Sender<ComputeResult>,
 ) {
     thread::spawn(move || {
-        let mut bidask_buf: Vec<f32> = Vec::new();
-        let mut askbid_buf: Vec<f32> = Vec::new();
-        let mut spread_buf: Vec<f32> = Vec::new();
         let mut last_keys: HashSet<String> = HashSet::new();
         let mut last_refresh_sec: u64 = 0;
 
@@ -161,7 +206,8 @@ pub fn spawn_compute_thread(
 
             for (symbol_pair, series) in snapshot {
                 current_keys.insert(symbol_pair.clone());
-                let (ready_count, expected_total) = factor_ready_counts(series.as_ref());
+                let (ready_count, expected_total) =
+                    factor_ready_counts(series.as_ref(), &cfg_snapshot);
                 if expected_total > 0 && ready_count == expected_total {
                     all_ready_count += 1;
                 }
@@ -170,9 +216,6 @@ pub fn spawn_compute_thread(
                     &symbol_pair,
                     &cfg_snapshot,
                     &series,
-                    &mut bidask_buf,
-                    &mut askbid_buf,
-                    &mut spread_buf,
                     now_ms,
                     &mut processed,
                     &mut skipped,
@@ -206,11 +249,7 @@ pub fn spawn_compute_thread(
             let coverage_rows = build_factor_coverage_rows(total, all_ready_count);
             let coverage_table =
                 build_three_line_table_str(["metric", "ready/total", "percent"], &coverage_rows);
-            info!(
-                "{}: factor coverage (3 factors)\n{}",
-                log_prefix(),
-                coverage_table
-            );
+            info!("{}: factor coverage\n{}", log_prefix(), coverage_table);
 
             if sender
                 .send(ComputeResult {
@@ -238,9 +277,6 @@ fn build_entry(
     symbol_pair: &str,
     config: &RollingConfig,
     series: &Arc<SymbolSeries>,
-    bidask_buf: &mut Vec<f32>,
-    askbid_buf: &mut Vec<f32>,
-    spread_buf: &mut Vec<f32>,
     now_ms: i64,
     processed: &mut usize,
     skipped: &mut usize,
@@ -250,13 +286,17 @@ fn build_entry(
 
     let latest_bidask = series.bidask.last();
     let latest_askbid = series.askbid.last();
-
     let spread_rate = series.spread_rate();
+    let latest_open_fr = series.open_fr_latest();
+    let latest_hedge_fr = series.hedge_fr_latest();
+    let latest_spread_fr = series.spread_fr_latest();
 
     let mut bidask_quantiles: Vec<QuantilePoint> = Vec::new();
-
     let mut askbid_quantiles: Vec<QuantilePoint> = Vec::new();
     let mut spread_quantiles: Vec<QuantilePoint> = Vec::new();
+    let mut open_fr_quantiles: Vec<QuantilePoint> = Vec::new();
+    let mut hedge_fr_quantiles: Vec<QuantilePoint> = Vec::new();
+    let mut spread_fr_quantiles: Vec<QuantilePoint> = Vec::new();
     let mut sample_counts: Vec<usize> = Vec::new();
     let mut factors_with_quantiles = 0usize;
     let mut factors_ready = 0usize;
@@ -268,9 +308,8 @@ fn build_entry(
             continue;
         };
         let (count, points, ready) = match factor_name {
-            FACTOR_BIDASK => compute_factor_quantiles(ring.as_ref(), bidask_buf, factor_cfg),
-            FACTOR_ASKBID => compute_factor_quantiles(ring.as_ref(), askbid_buf, factor_cfg),
-            FACTOR_SPREAD => compute_factor_quantiles(ring.as_ref(), spread_buf, factor_cfg),
+            FACTOR_BIDASK | FACTOR_ASKBID | FACTOR_SPREAD | FACTOR_OPEN_FR | FACTOR_HEDGE_FR
+            | FACTOR_SPREAD_FR => compute_factor_quantiles(ring.as_ref(), factor_cfg),
             _ => continue,
         };
 
@@ -289,6 +328,9 @@ fn build_entry(
             FACTOR_BIDASK => bidask_quantiles = points,
             FACTOR_ASKBID => askbid_quantiles = points,
             FACTOR_SPREAD => spread_quantiles = points,
+            FACTOR_OPEN_FR => open_fr_quantiles = points,
+            FACTOR_HEDGE_FR => hedge_fr_quantiles = points,
+            FACTOR_SPREAD_FR => spread_fr_quantiles = points,
             _ => {}
         }
     }
@@ -316,7 +358,11 @@ fn build_entry(
     }
 
     if sample_counts.is_empty() {
-        let fallback = series.bidask.len().min(series.askbid.len());
+        let fallback = config
+            .factors_iter()
+            .filter_map(|(factor_name, _)| series.ring(factor_name).map(|ring| ring.len()))
+            .min()
+            .unwrap_or(0);
         sample_counts.push(fallback);
     }
     let sample_size = sample_counts.into_iter().min().unwrap_or(0);
@@ -329,9 +375,15 @@ fn build_entry(
         bidask_sr: latest_bidask.and_then(to_option_f64),
         askbid_sr: latest_askbid.and_then(to_option_f64),
         spread_rate,
+        open_fr: latest_open_fr,
+        hedge_fr: latest_hedge_fr,
+        spread_fr: latest_spread_fr,
         bidask_quantiles,
         askbid_quantiles,
         spread_quantiles,
+        open_fr_quantiles,
+        hedge_fr_quantiles,
+        spread_fr_quantiles,
     };
 
     match serde_json::to_string(&payload) {
@@ -350,23 +402,21 @@ fn build_entry(
 
 fn compute_factor_quantiles(
     ring: &RingBuffer,
-    buffer: &mut Vec<f32>,
     cfg: &FactorConfig,
 ) -> (usize, Vec<QuantilePoint>, bool) {
-    let count = ring.copy_latest(cfg.rolling_window, buffer);
+    let (count, values) = ring.quantiles_linear(cfg.rolling_window, &cfg.quantiles);
     if cfg.quantiles.is_empty() {
         return (count, Vec::new(), true);
     }
 
     if count >= cfg.min_periods {
-        let values = quantiles_linear_select_unstable(buffer.as_mut_slice(), &cfg.quantiles);
         let points = cfg
             .quantiles
             .iter()
             .zip(values.into_iter())
             .map(|(q, value)| QuantilePoint {
                 quantile: *q,
-                threshold: to_option_f64(value),
+                threshold: value,
             })
             .collect();
         (count, points, true)
@@ -383,23 +433,24 @@ fn compute_factor_quantiles(
     }
 }
 
-fn factor_ready_counts(series: &SymbolSeries) -> (usize, usize) {
+fn factor_ready_counts(series: &SymbolSeries, config: &RollingConfig) -> (usize, usize) {
     let mut ready = 0usize;
     let mut total = 0usize;
 
-    total += 1;
-    if series.bidask.last().and_then(to_option_f64).is_some() {
-        ready += 1;
-    }
-
-    total += 1;
-    if series.askbid.last().and_then(to_option_f64).is_some() {
-        ready += 1;
-    }
-
-    total += 1;
-    if series.spread_rate().is_some() {
-        ready += 1;
+    for (factor_name, _) in config.factors_iter() {
+        total += 1;
+        let is_ready = match factor_name {
+            FACTOR_BIDASK => series.bidask.last().and_then(to_option_f64).is_some(),
+            FACTOR_ASKBID => series.askbid.last().and_then(to_option_f64).is_some(),
+            FACTOR_SPREAD => series.spread_rate().is_some(),
+            FACTOR_OPEN_FR => series.open_fr_latest().is_some(),
+            FACTOR_HEDGE_FR => series.hedge_fr_latest().is_some(),
+            FACTOR_SPREAD_FR => series.spread_fr_latest().is_some(),
+            _ => false,
+        };
+        if is_ready {
+            ready += 1;
+        }
     }
 
     (ready, total)

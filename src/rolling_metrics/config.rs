@@ -20,6 +20,9 @@ pub const DEFAULT_OUTPUT_HASH_KEY: &str = "rolling_metrics_thresholds";
 pub const FACTOR_BIDASK: &str = "bidask";
 pub const FACTOR_ASKBID: &str = "askbid";
 pub const FACTOR_SPREAD: &str = "spread";
+pub const FACTOR_OPEN_FR: &str = "open_fr";
+pub const FACTOR_HEDGE_FR: &str = "hedge_fr";
+pub const FACTOR_SPREAD_FR: &str = "spread_fr";
 
 #[derive(Debug, Clone)]
 pub struct RollingConfig {

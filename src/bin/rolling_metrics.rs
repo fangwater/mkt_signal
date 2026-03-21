@@ -20,12 +20,13 @@ use tokio_util::sync::CancellationToken;
 use mkt_signal::common::iceoryx_subscriber::{
     ChannelType, MultiChannelSubscriber, SubscribeParams,
 };
-use mkt_signal::common::mkt_msg::AskBidSpreadMsg;
+use mkt_signal::common::mkt_msg::{get_msg_type, AskBidSpreadMsg, FundingRateMsg, MktMsgType};
 use mkt_signal::common::redis_client::{RedisClient, RedisSettings};
 use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::rolling_metrics::config::{
     load_config_from_redis, FactorConfig, RollingConfig, DEFAULT_CONFIG_HASH_KEY,
-    DEFAULT_OUTPUT_HASH_KEY, FACTOR_ASKBID, FACTOR_BIDASK, FACTOR_SPREAD,
+    DEFAULT_OUTPUT_HASH_KEY, FACTOR_ASKBID, FACTOR_BIDASK, FACTOR_HEDGE_FR, FACTOR_OPEN_FR,
+    FACTOR_SPREAD, FACTOR_SPREAD_FR,
 };
 use mkt_signal::rolling_metrics::ring::RingBuffer;
 use mkt_signal::rolling_metrics::service::{
@@ -97,6 +98,8 @@ impl QuoteState {
 struct SymbolQuotes {
     spot: QuoteState,
     swap: QuoteState,
+    open_fr: Option<f64>,
+    hedge_fr: Option<f64>,
     factor_states: HashMap<String, FactorResampleState>,
     started: bool,
 }
@@ -106,6 +109,8 @@ impl Default for SymbolQuotes {
         Self {
             spot: QuoteState::default(),
             swap: QuoteState::default(),
+            open_fr: None,
+            hedge_fr: None,
             factor_states: HashMap::new(),
             started: false,
         }
@@ -466,6 +471,16 @@ async fn run_reader_loop(
             topic_prefix: hedge_topic.to_string(),
             channel: ChannelType::AskBidSpread,
         },
+        SubscribeParams {
+            service_root: Some("bridge".to_string()),
+            topic_prefix: open_topic.to_string(),
+            channel: ChannelType::Derivatives,
+        },
+        SubscribeParams {
+            service_root: Some("bridge".to_string()),
+            topic_prefix: hedge_topic.to_string(),
+            channel: ChannelType::Derivatives,
+        },
     ])?;
 
     let prefix = format!("{}_{}", open_topic, hedge_topic);
@@ -491,10 +506,11 @@ async fn run_reader_loop(
         }
 
         for msg in subscriber.poll_channel(open_topic, &ChannelType::AskBidSpread, Some(64)) {
-            process_spot_msg(
+            process_quote_msg(
                 &msg,
                 &prefix,
                 open_topic,
+                true,
                 &mut quotes,
                 &series_map,
                 &series_capacity,
@@ -503,10 +519,37 @@ async fn run_reader_loop(
         }
 
         for msg in subscriber.poll_channel(hedge_topic, &ChannelType::AskBidSpread, Some(64)) {
-            process_swap_msg(
+            process_quote_msg(
                 &msg,
                 &prefix,
                 hedge_topic,
+                false,
+                &mut quotes,
+                &series_map,
+                &series_capacity,
+                &config,
+            );
+        }
+
+        for msg in subscriber.poll_channel(open_topic, &ChannelType::Derivatives, Some(64)) {
+            process_funding_msg(
+                &msg,
+                &prefix,
+                open_topic,
+                true,
+                &mut quotes,
+                &series_map,
+                &series_capacity,
+                &config,
+            );
+        }
+
+        for msg in subscriber.poll_channel(hedge_topic, &ChannelType::Derivatives, Some(64)) {
+            process_funding_msg(
+                &msg,
+                &prefix,
+                hedge_topic,
+                false,
                 &mut quotes,
                 &series_map,
                 &series_capacity,
@@ -563,17 +606,18 @@ async fn run_reader_loop(
     Ok(())
 }
 
-fn process_spot_msg(
+fn process_quote_msg(
     msg: &[u8],
     prefix: &str,
-    open_topic: &str,
+    venue_topic: &str,
+    is_open_side: bool,
     quotes: &mut HashMap<String, SymbolQuotes>,
     series_map: &Arc<SeriesMap>,
     series_capacity: &Arc<AtomicUsize>,
     config: &Arc<RwLock<RollingConfig>>,
 ) {
     let raw_symbol = AskBidSpreadMsg::get_symbol(msg).to_uppercase();
-    let symbol = normalize_symbol_for_pairing(&raw_symbol, open_topic);
+    let symbol = normalize_symbol_for_pairing(&raw_symbol, venue_topic);
     if should_skip_symbol(&raw_symbol) {
         return;
     }
@@ -584,33 +628,55 @@ fn process_spot_msg(
         return;
     }
     let entry = quotes.entry(symbol.clone()).or_default();
-    entry.spot.update(bid, ask, ts);
+    if is_open_side {
+        entry.spot.update(bid, ask, ts);
+    } else {
+        entry.swap.update(bid, ask, ts);
+    }
     maybe_push_sr(prefix, &symbol, entry, series_map, series_capacity, config);
 }
 
-fn process_swap_msg(
+fn process_funding_msg(
     msg: &[u8],
     prefix: &str,
-    hedge_topic: &str,
+    venue_topic: &str,
+    is_open_side: bool,
     quotes: &mut HashMap<String, SymbolQuotes>,
     series_map: &Arc<SeriesMap>,
     series_capacity: &Arc<AtomicUsize>,
     config: &Arc<RwLock<RollingConfig>>,
 ) {
-    let raw_symbol = AskBidSpreadMsg::get_symbol(msg).to_uppercase();
-    let symbol = normalize_symbol_for_pairing(&raw_symbol, hedge_topic);
+    if get_msg_type(msg) != MktMsgType::FundingRate {
+        return;
+    }
+
+    let raw_symbol = FundingRateMsg::get_symbol(msg).to_uppercase();
+    let symbol = normalize_symbol_for_pairing(&raw_symbol, venue_topic);
     if should_skip_symbol(&raw_symbol) {
         return;
     }
-    let bid = AskBidSpreadMsg::get_bid_price(msg);
-    let ask = AskBidSpreadMsg::get_ask_price(msg);
-    let ts = AskBidSpreadMsg::get_timestamp(msg);
-    if bid <= 0.0 || ask <= 0.0 {
+
+    let funding_rate = FundingRateMsg::get_funding_rate(msg);
+    if !funding_rate.is_finite() {
         return;
     }
+
     let entry = quotes.entry(symbol.clone()).or_default();
-    entry.swap.update(bid, ask, ts);
-    maybe_push_sr(prefix, &symbol, entry, series_map, series_capacity, config);
+    if is_open_side {
+        entry.open_fr = Some(funding_rate);
+    } else {
+        entry.hedge_fr = Some(funding_rate);
+    }
+
+    maybe_push_fr(
+        prefix,
+        &symbol,
+        entry,
+        FundingRateMsg::get_timestamp(msg),
+        series_map,
+        series_capacity,
+        config,
+    );
 }
 
 fn maybe_push_sr(
@@ -662,15 +728,82 @@ fn maybe_push_sr(
         info!("{}: start collecting symbol {}", log_prefix(), key);
     }
 
-    for (factor_name, factor_cfg) in cfg_snapshot.factors_iter() {
-        let sample_value = match factor_name {
+    record_factor_samples(
+        quotes,
+        &series,
+        &cfg_snapshot,
+        ts_ms,
+        |factor_name| match factor_name {
             FACTOR_BIDASK => Some(bidask_sr),
             FACTOR_ASKBID => Some(askbid_sr),
             FACTOR_SPREAD => spread_rate.and_then(f64_to_f32),
             _ => None,
-        };
+        },
+    );
+}
 
-        let Some(value) = sample_value else {
+fn maybe_push_fr(
+    prefix: &str,
+    symbol: &str,
+    quotes: &mut SymbolQuotes,
+    ts_ms: i64,
+    series_map: &Arc<SeriesMap>,
+    series_capacity: &Arc<AtomicUsize>,
+    config: &Arc<RwLock<RollingConfig>>,
+) {
+    if should_skip_symbol(symbol) {
+        return;
+    }
+
+    let cfg_snapshot = { config.read().clone() };
+    let capacity = series_capacity.load(Ordering::SeqCst).max(1);
+    let key = format!("{}::{}", prefix, symbol);
+    let series = get_or_insert_series(&*series_map, &key, capacity);
+    series.set_open_fr_latest(quotes.open_fr);
+    series.set_hedge_fr_latest(quotes.hedge_fr);
+    let spread_fr = match (quotes.open_fr, quotes.hedge_fr) {
+        (Some(open_fr), Some(hedge_fr)) => {
+            let value = open_fr - hedge_fr;
+            value.is_finite().then_some(value)
+        }
+        _ => None,
+    };
+    series.set_spread_fr_latest(spread_fr);
+
+    if !quotes.started {
+        quotes.started = true;
+        info!("{}: start collecting symbol {}", log_prefix(), key);
+    }
+
+    let open_fr_value = quotes.open_fr.and_then(f64_to_f32);
+    let hedge_fr_value = quotes.hedge_fr.and_then(f64_to_f32);
+    let spread_fr_value = spread_fr.and_then(f64_to_f32);
+
+    record_factor_samples(
+        quotes,
+        &series,
+        &cfg_snapshot,
+        ts_ms,
+        |factor_name| match factor_name {
+            FACTOR_OPEN_FR => open_fr_value,
+            FACTOR_HEDGE_FR => hedge_fr_value,
+            FACTOR_SPREAD_FR => spread_fr_value,
+            _ => None,
+        },
+    );
+}
+
+fn record_factor_samples<F>(
+    quotes: &mut SymbolQuotes,
+    series: &Arc<SymbolSeries>,
+    cfg_snapshot: &RollingConfig,
+    ts_ms: i64,
+    sample_for: F,
+) where
+    F: Fn(&str) -> Option<f32>,
+{
+    for (factor_name, factor_cfg) in cfg_snapshot.factors_iter() {
+        let Some(value) = sample_for(factor_name) else {
             continue;
         };
 
