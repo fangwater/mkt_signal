@@ -268,6 +268,11 @@ impl SpreadFactor {
         *self.mode.borrow()
     }
 
+    pub fn clear_thresholds(&self) {
+        self.mm_thresholds.borrow_mut().clear();
+        self.mt_thresholds.borrow_mut().clear();
+    }
+
     // ===== 内部辅助方法 =====
 
     /// Venue 映射：BinanceMargin -> BinanceSpot（现货杠杆和现货共享盘口）

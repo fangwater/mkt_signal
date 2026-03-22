@@ -6,10 +6,10 @@ XARB 配置服务器（xarb_config_server）
 提供页面/接口用于查看和编辑 xarb 相关配置：
 - symbol lists
 - rolling metrics params
-- funding rate thresholds
+- funding thresholds mapping
 - strategy params
 - risk params
-- spread thresholds (可从 rolling_metrics 同步)
+- spread thresholds mapping (可从 rolling_metrics 同步)
 """
 
 from __future__ import annotations
@@ -106,19 +106,6 @@ def venue_kind(venue: str) -> str:
 
 
 def funding_thresholds_applicable(open_venue: Optional[str], hedge_venue: Optional[str]) -> bool:
-    if not open_venue or not hedge_venue:
-        return True
-    open_exchange = exchange_from_venue(open_venue)
-    hedge_exchange = exchange_from_venue(hedge_venue)
-    if not open_exchange or not hedge_exchange:
-        return True
-    if open_exchange != hedge_exchange:
-        return True
-
-    open_kind = venue_kind(open_venue)
-    hedge_kind = venue_kind(hedge_venue)
-    if open_kind in {"margin", "spot"} and hedge_kind in {"futures", "swap", "perp", "perpetual"}:
-        return False
     return True
 
 try:
@@ -140,22 +127,33 @@ except Exception:
     STRATEGY_PARAM_COMMENTS = {}
 
 try:
-    import sync_xarb_funding_rate_thresholds as funding_defaults
+    import sync_xarb_funding_thresholds as funding_defaults
 
-    DEFAULT_FUNDING_THRESHOLDS = dict(funding_defaults.FUNDING_RATE_THRESHOLDS)
-    FUNDING_THRESHOLD_COMMENTS = dict(funding_defaults.THRESHOLD_COMMENTS)
     FUNDING_THRESHOLD_ORDER = list(funding_defaults.THRESHOLD_ORDER)
 except Exception:
-    DEFAULT_FUNDING_THRESHOLDS = {}
-    FUNDING_THRESHOLD_COMMENTS = {}
     FUNDING_THRESHOLD_ORDER = []
+
+
+def default_funding_threshold_mapping(
+    open_venue: Optional[str], hedge_venue: Optional[str]
+) -> Dict[str, str]:
+    if "funding_defaults" not in globals():
+        return {}
+    open_v = (open_venue or "").strip()
+    hedge_v = (hedge_venue or "").strip()
+    if not open_v or not hedge_v:
+        return {}
+    try:
+        return dict(funding_defaults.default_funding_threshold_mapping(open_v, hedge_v))
+    except Exception:
+        return {}
 
 try:
     import sync_rolling_metrics_params as rolling_defaults
 
-    DEFAULT_ROLLING_PARAMS = dict(rolling_defaults.DEFAULTS)
+    BASE_ROLLING_PARAMS = dict(rolling_defaults.DEFAULTS)
 except Exception:
-    DEFAULT_ROLLING_PARAMS = {
+    BASE_ROLLING_PARAMS = {
         "MAX_LENGTH": 150_000,
         "refresh_sec": 30,
         "reload_param_sec": 3,
@@ -172,7 +170,7 @@ def clone_json_value(value: Any) -> Any:
 
 
 def build_xarb_rolling_defaults(
-    base_defaults: Dict[str, Any], spread_mapping: Dict[str, str]
+    base_defaults: Dict[str, Any], *mappings: Dict[str, str]
 ) -> Dict[str, Any]:
     defaults = clone_json_value(base_defaults or {})
     defaults.setdefault("MAX_LENGTH", 150_000)
@@ -183,28 +181,29 @@ def build_xarb_rolling_defaults(
     if not isinstance(base_factors, dict):
         base_factors = {}
 
-    factor_quantiles: Dict[str, set] = {
-        "bidask": set(),
-        "askbid": set(),
-        "spread": set(),
-    }
-    for field_ref in (spread_mapping or {}).values():
-        if not isinstance(field_ref, str):
-            continue
-        matched = re.fullmatch(r"(bidask|askbid|spread)_(\d+(?:\.\d+)?)", field_ref.strip())
-        if not matched:
-            continue
-        factor_name = matched.group(1)
-        raw = float(matched.group(2))
-        quantile = int(raw) if abs(raw - round(raw)) < 1e-9 else raw
-        factor_quantiles[factor_name].add(quantile)
+    factor_quantiles: Dict[str, set] = {}
+    for mapping in mappings:
+        for field_ref in (mapping or {}).values():
+            if not isinstance(field_ref, str):
+                continue
+            matched = re.fullmatch(r"([a-z_]+)_(\d+(?:\.\d+)?)", field_ref.strip())
+            if not matched:
+                continue
+            factor_name = matched.group(1)
+            raw = float(matched.group(2))
+            quantile = int(raw) if abs(raw - round(raw)) < 1e-9 else raw
+            factor_quantiles.setdefault(factor_name, set()).add(quantile)
 
     factors: Dict[str, Dict[str, Any]] = {}
     for factor_name, quantiles in factor_quantiles.items():
         factor_cfg = clone_json_value(base_factors.get(factor_name) or {})
         factor_cfg.setdefault("resample_interval_ms", 1_000)
-        factor_cfg.setdefault("rolling_window", 100_000)
-        factor_cfg.setdefault("min_periods", 1)
+        if factor_name.endswith("_fr"):
+            factor_cfg.setdefault("rolling_window", 14_400)
+            factor_cfg.setdefault("min_periods", 7_200)
+        else:
+            factor_cfg.setdefault("rolling_window", 100_000)
+            factor_cfg.setdefault("min_periods", 1)
         if quantiles:
             factor_cfg["quantiles"] = sorted(quantiles)
         else:
@@ -231,9 +230,26 @@ except Exception:
     SPREAD_THRESHOLD_MAPPING = {}
     SPREAD_THRESHOLD_ORDER = []
 
-DEFAULT_ROLLING_PARAMS = build_xarb_rolling_defaults(
-    DEFAULT_ROLLING_PARAMS, SPREAD_THRESHOLD_MAPPING
-)
+def build_runtime_rolling_defaults(
+    open_venue: Optional[str], hedge_venue: Optional[str]
+) -> Dict[str, Any]:
+    funding_mapping = default_funding_threshold_mapping(open_venue, hedge_venue)
+    defaults = build_xarb_rolling_defaults(
+        BASE_ROLLING_PARAMS,
+        SPREAD_THRESHOLD_MAPPING,
+        funding_mapping,
+    )
+    if (
+        "rolling_defaults" in globals()
+        and open_venue
+        and hedge_venue
+        and hasattr(rolling_defaults, "apply_pair_specific_defaults")
+    ):
+        try:
+            rolling_defaults.apply_pair_specific_defaults(open_venue, hedge_venue, defaults)
+        except Exception:
+            pass
+    return defaults
 
 INDEX_HTML_TEMPLATE = """<!doctype html>
 <html lang="zh-CN">
@@ -452,12 +468,19 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
 
     <section id="funding-thresholds" class="panel">
       <div class="section-header">
-        <h2>Funding Rate Thresholds</h2>
+        <h2>Funding Threshold Mapping</h2>
         <div class="actions">
-          <button id="funding-load" class="secondary">读取</button>
-          <button id="funding-save">保存</button>
-          <button id="funding-default" class="ghost">默认</button>
+          <button id="funding-config-load" class="secondary">读取配置</button>
+          <button id="funding-config-save">保存配置</button>
+          <button id="funding-sync" class="ghost">同步阈值</button>
         </div>
+      </div>
+      <div class="toolbar" style="margin-bottom: 10px;">
+        <div class="field">
+          <label for="funding-symbol">Symbol (可选)</label>
+          <input id="funding-symbol" placeholder="BTCUSDT" />
+        </div>
+        <div class="hint">格式: hedge_fr_50 / spread_fr_80 / spread_fr_20</div>
       </div>
       <div id="funding-table" class="kv-table"></div>
       <div id="funding-status" class="status"></div>
@@ -758,7 +781,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       setStatus('funding-status', '读取中...');
       try {
         const data = await fetchJson(`${apiUrl('funding-thresholds')}?${queryParams()}`);
-        buildParamRows('funding-table', BOOTSTRAP.defaults.funding_thresholds || {}, BOOTSTRAP.comments.funding_thresholds || {}, BOOTSTRAP.order.funding_thresholds || [], data.values || {});
+        buildParamRows('funding-table', BOOTSTRAP.defaults.funding_thresholds || {}, {}, BOOTSTRAP.order.funding_thresholds || [], data.values || {});
         setStatus('funding-status', '读取完成');
       } catch (err) {
         setStatus('funding-status', `读取失败: ${err}`, false);
@@ -778,15 +801,37 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
-        setStatus('funding-status', '保存成功');
+        setStatus('funding-status', '配置保存成功');
       } catch (err) {
         setStatus('funding-status', `保存失败: ${err}`, false);
       }
     }
 
     function applyFundingDefaults() {
-      buildParamRows('funding-table', BOOTSTRAP.defaults.funding_thresholds || {}, BOOTSTRAP.comments.funding_thresholds || {}, BOOTSTRAP.order.funding_thresholds || [], {});
-      setStatus('funding-status', '已载入默认参数');
+      buildParamRows('funding-table', BOOTSTRAP.defaults.funding_thresholds || {}, {}, BOOTSTRAP.order.funding_thresholds || [], {});
+      setStatus('funding-status', '已载入默认配置');
+    }
+
+    async function syncFundingThresholds() {
+      setStatus('funding-status', '同步中...');
+      try {
+        const symbol = document.getElementById('funding-symbol').value.trim();
+        const payload = {
+          open_venue: openVenueInput.value.trim(),
+          hedge_venue: hedgeVenueInput.value.trim(),
+          symbol,
+          mapping: collectParamValues('funding-table'),
+        };
+        const data = await fetchJson(apiUrl('funding-thresholds/sync'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const changed = data.changed != null ? `, changed=${data.changed}` : '';
+        setStatus('funding-status', `同步完成: ${data.written || 0} 字段${changed}`);
+      } catch (err) {
+        setStatus('funding-status', `同步失败: ${err}`, false);
+      }
     }
 
     function applyRollingDefaults() {
@@ -928,7 +973,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     buildParamRows('risk-table', BOOTSTRAP.defaults.risk_params || {}, BOOTSTRAP.comments.risk_params || {}, BOOTSTRAP.order.risk || [], {});
     buildParamRows('strategy-table', BOOTSTRAP.defaults.strategy_params || {}, BOOTSTRAP.comments.strategy_params || {}, BOOTSTRAP.order.strategy || [], {});
     if (BOOTSTRAP.features?.funding_thresholds !== false) {
-      buildParamRows('funding-table', BOOTSTRAP.defaults.funding_thresholds || {}, BOOTSTRAP.comments.funding_thresholds || {}, BOOTSTRAP.order.funding_thresholds || [], {});
+      buildParamRows('funding-table', BOOTSTRAP.defaults.funding_thresholds || {}, {}, BOOTSTRAP.order.funding_thresholds || [], {});
     }
     buildParamRows('spread-table', BOOTSTRAP.defaults.spread_mapping || {}, {}, BOOTSTRAP.order.spread_mapping || [], {});
 
@@ -945,9 +990,9 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     document.getElementById('strategy-default').addEventListener('click', applyStrategyDefaults);
 
     if (BOOTSTRAP.features?.funding_thresholds !== false) {
-      document.getElementById('funding-load').addEventListener('click', loadFundingThresholds);
-      document.getElementById('funding-save').addEventListener('click', saveFundingThresholds);
-      document.getElementById('funding-default').addEventListener('click', applyFundingDefaults);
+      document.getElementById('funding-config-load').addEventListener('click', loadFundingThresholds);
+      document.getElementById('funding-config-save').addEventListener('click', saveFundingThresholds);
+      document.getElementById('funding-sync').addEventListener('click', syncFundingThresholds);
     }
 
     document.getElementById('rolling-load').addEventListener('click', loadRollingParams);
@@ -1169,11 +1214,11 @@ def serialize_rolling_params(values: Dict[str, Any]) -> Dict[str, str]:
     return payload
 
 
-def spread_mapping_key(open_venue: str, hedge_venue: str) -> str:
-    return f"xarb_spread_thresholds_config_{open_venue}_{hedge_venue}"
+def threshold_mapping_key(kind: str, open_venue: str, hedge_venue: str) -> str:
+    return f"xarb_{kind}_thresholds_config_{open_venue}_{hedge_venue}"
 
 
-def normalize_spread_mapping(values: Dict[str, Any]) -> Dict[str, str]:
+def normalize_threshold_mapping(values: Dict[str, Any]) -> Dict[str, str]:
     mapping: Dict[str, str] = {}
     for key, value in (values or {}).items():
         k = str(key).strip()
@@ -1184,8 +1229,14 @@ def normalize_spread_mapping(values: Dict[str, Any]) -> Dict[str, str]:
     return mapping
 
 
-def read_spread_mapping(rds, open_venue: str, hedge_venue: str) -> Dict[str, str]:
-    key = spread_mapping_key(open_venue, hedge_venue)
+def read_threshold_mapping(
+    rds,
+    kind: str,
+    open_venue: str,
+    hedge_venue: str,
+    defaults: Dict[str, str],
+) -> Dict[str, str]:
+    key = threshold_mapping_key(kind, open_venue, hedge_venue)
     raw = rds.get(key)
     if raw:
         try:
@@ -1196,14 +1247,20 @@ def read_spread_mapping(rds, open_venue: str, hedge_venue: str) -> Dict[str, str
             if isinstance(parsed, dict):
                 values = parsed.get("mapping")
                 if isinstance(values, dict):
-                    return normalize_spread_mapping(values)
+                    return normalize_threshold_mapping(values)
         except Exception:
             pass
-    return normalize_spread_mapping(SPREAD_THRESHOLD_MAPPING)
+    return normalize_threshold_mapping(defaults)
 
 
-def write_spread_mapping(rds, open_venue: str, hedge_venue: str, mapping: Dict[str, str]) -> int:
-    key = spread_mapping_key(open_venue, hedge_venue)
+def write_threshold_mapping(
+    rds,
+    kind: str,
+    open_venue: str,
+    hedge_venue: str,
+    mapping: Dict[str, str],
+) -> int:
+    key = threshold_mapping_key(kind, open_venue, hedge_venue)
     existing: Dict[str, Any] = {}
     raw = rds.get(key)
     if raw:
@@ -1219,6 +1276,7 @@ def write_spread_mapping(rds, open_venue: str, hedge_venue: str, mapping: Dict[s
     payload = {
         "schema_version": 1,
         "namespace": "xarb",
+        "kind": kind,
         "open_venue": open_venue,
         "hedge_venue": hedge_venue,
         "rolling_key": existing.get(
@@ -1235,13 +1293,14 @@ def write_spread_mapping(rds, open_venue: str, hedge_venue: str, mapping: Dict[s
 def generate_threshold_fields(
     symbol_data: Dict[str, Dict],
     mapping: Dict[str, str],
+    extractor,
 ) -> tuple[Dict[str, str], set[str]]:
     all_fields: Dict[str, str] = {}
     skipped: set[str] = set()
     for symbol, obj in symbol_data.items():
         symbol_fields: Dict[str, str] = {}
         for suffix, field_ref in mapping.items():
-            value = spread_sync.extract_quantile_value(obj, field_ref)
+            value = extractor(obj, field_ref)
             if value is None:
                 skipped.add(symbol)
                 symbol_fields = {}
@@ -1251,6 +1310,68 @@ def generate_threshold_fields(
         if symbol_fields:
             all_fields.update(symbol_fields)
     return all_fields, skipped
+
+
+def sync_thresholds(
+    rds,
+    kind: str,
+    open_venue: str,
+    hedge_venue: str,
+    key_suffix: str,
+    mapping: Optional[Dict[str, str]],
+    defaults: Dict[str, str],
+    load_symbol_lists_fn,
+    read_rolling_metrics_fn,
+    normalize_symbol_fn,
+    extract_quantile_fn,
+    symbol: Optional[str] = None,
+) -> Dict[str, Any]:
+    rolling_key = f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}"
+    write_key = f"xarb_{kind}_thresholds_{open_venue}_{hedge_venue}"
+
+    mapping = normalize_threshold_mapping(mapping or {})
+    if not mapping:
+        mapping = normalize_threshold_mapping(defaults)
+    if not mapping:
+        raise RuntimeError(f"{kind} mapping is empty")
+
+    target_symbols = load_symbol_lists_fn(rds, key_suffix)
+    if symbol:
+        target_symbols = [str(symbol).strip().upper()]
+    if not target_symbols:
+        raise RuntimeError(f"no symbols found for key_suffix={key_suffix}")
+    rolling_data = read_rolling_metrics_fn(rds, rolling_key)
+    if not rolling_data:
+        raise RuntimeError(f"rolling metrics not found: {rolling_key}")
+
+    symbol_data: Dict[str, Dict] = {}
+    missing_symbols: set[str] = set()
+    for target_symbol in target_symbols:
+        rolling_key_symbol = normalize_symbol_fn(target_symbol)
+        payload = rolling_data.get(rolling_key_symbol)
+        if payload is None:
+            missing_symbols.add(rolling_key_symbol)
+            continue
+        symbol_data[rolling_key_symbol] = payload
+    all_fields, skipped_symbols = generate_threshold_fields(
+        symbol_data, mapping, extract_quantile_fn
+    )
+
+    changed = 0
+    if all_fields:
+        res = rds.hset(write_key, mapping=all_fields)
+        changed = int(res) if res is not None else 0
+        write_threshold_mapping(rds, kind, open_venue, hedge_venue, mapping)
+
+    return {
+        "written": len(all_fields),
+        "changed": changed,
+        "missing_symbols": sorted(list(missing_symbols)),
+        "skipped_symbols": sorted(list(skipped_symbols)),
+        "write_key": write_key,
+        "rolling_key": rolling_key,
+        "mapping_key": threshold_mapping_key(kind, open_venue, hedge_venue),
+    }
 
 
 def sync_spread_thresholds(
@@ -1263,51 +1384,47 @@ def sync_spread_thresholds(
 ) -> Dict[str, Any]:
     if spread_sync is None:
         raise RuntimeError("sync_xarb_spread_thresholds.py not available")
+    return sync_thresholds(
+        rds,
+        "spread",
+        open_venue,
+        hedge_venue,
+        key_suffix,
+        mapping,
+        SPREAD_THRESHOLD_MAPPING,
+        spread_sync.load_symbol_lists,
+        spread_sync.read_rolling_metrics,
+        spread_sync.normalize_for_rolling,
+        spread_sync.extract_quantile_value,
+        symbol,
+    )
 
-    rolling_key = f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}"
-    write_key = f"xarb_spread_thresholds_{open_venue}_{hedge_venue}"
 
-    mapping = normalize_spread_mapping(mapping or {})
-    if not mapping:
-        mapping = normalize_spread_mapping(SPREAD_THRESHOLD_MAPPING)
-    if not mapping:
-        raise RuntimeError("spread mapping is empty")
-
-    target_symbols = spread_sync.load_symbol_lists(rds, key_suffix)
-    if symbol:
-        target_symbols = [str(symbol).strip().upper()]
-    if not target_symbols:
-        raise RuntimeError(f"no symbols found for key_suffix={key_suffix}")
-    rolling_data = spread_sync.read_rolling_metrics(rds, rolling_key)
-    if not rolling_data:
-        raise RuntimeError(f"rolling metrics not found: {rolling_key}")
-
-    symbol_data: Dict[str, Dict] = {}
-    missing_symbols: set[str] = set()
-    for target_symbol in target_symbols:
-        rolling_key_symbol = spread_sync.normalize_for_rolling(target_symbol)
-        payload = rolling_data.get(rolling_key_symbol)
-        if payload is None:
-            missing_symbols.add(rolling_key_symbol)
-            continue
-        symbol_data[rolling_key_symbol] = payload
-    all_fields, skipped_symbols = generate_threshold_fields(symbol_data, mapping)
-
-    changed = 0
-    if all_fields:
-        res = rds.hset(write_key, mapping=all_fields)
-        changed = int(res) if res is not None else 0
-        write_spread_mapping(rds, open_venue, hedge_venue, mapping)
-
-    return {
-        "written": len(all_fields),
-        "changed": changed,
-        "missing_symbols": sorted(list(missing_symbols)),
-        "skipped_symbols": sorted(list(skipped_symbols)),
-        "write_key": write_key,
-        "rolling_key": rolling_key,
-        "mapping_key": spread_mapping_key(open_venue, hedge_venue),
-    }
+def sync_funding_thresholds(
+    rds,
+    open_venue: str,
+    hedge_venue: str,
+    key_suffix: str,
+    mapping: Optional[Dict[str, str]] = None,
+    symbol: Optional[str] = None,
+) -> Dict[str, Any]:
+    if "funding_defaults" not in globals():
+        raise RuntimeError("sync_xarb_funding_thresholds.py not available")
+    defaults = default_funding_threshold_mapping(open_venue, hedge_venue)
+    return sync_thresholds(
+        rds,
+        "funding",
+        open_venue,
+        hedge_venue,
+        key_suffix,
+        mapping,
+        defaults,
+        funding_defaults.load_symbol_lists,
+        funding_defaults.read_rolling_metrics,
+        funding_defaults.normalize_for_rolling,
+        funding_defaults.extract_quantile_value,
+        symbol,
+    )
 
 
 def render_index_html(
@@ -1315,6 +1432,12 @@ def render_index_html(
     default_open_venue: Optional[str],
     default_hedge_venue: Optional[str],
 ) -> str:
+    funding_defaults_mapping = default_funding_threshold_mapping(
+        default_open_venue, default_hedge_venue
+    )
+    rolling_defaults_mapping = build_runtime_rolling_defaults(
+        default_open_venue, default_hedge_venue
+    )
     bootstrap = {
         "env_name": infer_dir_prefix_from_cwd() or "",
         "exchanges": SUPPORTED_EXCHANGES,
@@ -1331,14 +1454,14 @@ def render_index_html(
             "symbol_lists": get_symbol_defaults(),
             "risk_params": DEFAULT_RISK_PARAMS,
             "strategy_params": DEFAULT_STRATEGY_PARAMS,
-            "funding_thresholds": DEFAULT_FUNDING_THRESHOLDS,
-            "rolling_params": DEFAULT_ROLLING_PARAMS,
+            "funding_thresholds": funding_defaults_mapping,
+            "rolling_params": rolling_defaults_mapping,
             "spread_mapping": SPREAD_THRESHOLD_MAPPING,
         },
         "comments": {
             "risk_params": RISK_PARAM_COMMENTS,
             "strategy_params": STRATEGY_PARAM_COMMENTS,
-            "funding_thresholds": FUNDING_THRESHOLD_COMMENTS,
+            "funding_thresholds": {},
         },
         "order": {
             "risk": list(DEFAULT_RISK_PARAMS.keys()),
@@ -1518,8 +1641,14 @@ class RequestHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send_error(400, str(exc))
                 return
-            key = f"xarb_funding_rate_thresholds_{open_venue}_{hedge_venue}"
-            values = read_hash(self.server.context.redis_client, key)
+            key = threshold_mapping_key("funding", open_venue, hedge_venue)
+            values = read_threshold_mapping(
+                self.server.context.redis_client,
+                "funding",
+                open_venue,
+                hedge_venue,
+                default_funding_threshold_mapping(open_venue, hedge_venue),
+            )
             self._send_json(200, {"key": key, "values": values})
             return
 
@@ -1545,10 +1674,16 @@ class RequestHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send_error(400, str(exc))
                 return
-            key = spread_mapping_key(open_venue, hedge_venue)
-            values = read_spread_mapping(self.server.context.redis_client, open_venue, hedge_venue)
+            key = threshold_mapping_key("spread", open_venue, hedge_venue)
+            values = read_threshold_mapping(
+                self.server.context.redis_client,
+                "spread",
+                open_venue,
+                hedge_venue,
+                SPREAD_THRESHOLD_MAPPING,
+            )
             if not values:
-                values = normalize_spread_mapping(SPREAD_THRESHOLD_MAPPING)
+                values = normalize_threshold_mapping(SPREAD_THRESHOLD_MAPPING)
             self._send_json(200, {"key": key, "count": len(values), "values": values})
             return
 
@@ -1686,8 +1821,16 @@ class RequestHandler(BaseHTTPRequestHandler):
             if not isinstance(values, dict):
                 self._send_error(400, "values must be object")
                 return
-            key = f"xarb_funding_rate_thresholds_{open_v}_{hedge_v}"
-            written = write_hash(self.server.context.redis_client, key, values)
+            mapping = normalize_threshold_mapping(values)
+            if not mapping:
+                mapping = default_funding_threshold_mapping(open_v, hedge_v)
+            if not mapping:
+                self._send_error(400, "mapping is empty")
+                return
+            key = threshold_mapping_key("funding", open_v, hedge_v)
+            written = write_threshold_mapping(
+                self.server.context.redis_client, "funding", open_v, hedge_v, mapping
+            )
             self._send_json(200, {"key": key, "count": written})
             return
 
@@ -1717,15 +1860,38 @@ class RequestHandler(BaseHTTPRequestHandler):
             if not isinstance(values, dict):
                 self._send_error(400, "values must be object")
                 return
-            mapping = normalize_spread_mapping(values)
+            mapping = normalize_threshold_mapping(values)
             if not mapping:
                 self._send_error(400, "mapping is empty")
                 return
-            key = spread_mapping_key(open_v, hedge_v)
-            written = write_spread_mapping(
-                self.server.context.redis_client, open_v, hedge_v, mapping
+            key = threshold_mapping_key("spread", open_v, hedge_v)
+            written = write_threshold_mapping(
+                self.server.context.redis_client, "spread", open_v, hedge_v, mapping
             )
             self._send_json(200, {"key": key, "count": written})
+            return
+
+        if parsed.path == "/api/funding-thresholds/sync":
+            try:
+                _, open_v, hedge_v, key_suffix = self._resolve_payload_context(payload)
+            except Exception as exc:
+                self._send_error(400, str(exc))
+                return
+            symbol = payload.get("symbol")
+            mapping = payload.get("mapping") if isinstance(payload, dict) else None
+            try:
+                result = sync_funding_thresholds(
+                    self.server.context.redis_client,
+                    open_v,
+                    hedge_v,
+                    key_suffix,
+                    mapping,
+                    symbol,
+                )
+            except Exception as exc:
+                self._send_error(500, f"sync failed: {exc}")
+                return
+            self._send_json(200, result)
             return
 
         if parsed.path == "/api/spread-thresholds/sync":

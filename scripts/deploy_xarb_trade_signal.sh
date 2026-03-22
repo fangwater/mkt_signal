@@ -183,8 +183,8 @@ if [[ "$SYNC_SCRIPTS" == "1" ]]; then
     "print_xarb_strategy_params.py"
     "sync_xarb_spread_thresholds.py"
     "print_xarb_spread_thresholds.py"
-    "sync_xarb_funding_rate_thresholds.py"
-    "print_xarb_funding_rate_thresholds.py"
+    "sync_xarb_funding_thresholds.py"
+    "print_xarb_funding_thresholds.py"
   )
   mkdir -p "$TARGET_DIR/xarb_scripts"
 

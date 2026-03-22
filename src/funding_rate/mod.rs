@@ -24,6 +24,7 @@ pub mod spread_threshold_loader;
 pub mod strategy_loader;
 pub mod symbol_list;
 pub mod xarb_decision;
+pub mod xarb_funding_threshold_loader;
 
 // 公共导出 - 通用定义（枚举、数据结构、辅助函数）
 pub use common::{

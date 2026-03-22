@@ -1,8 +1,8 @@
 //! Trade signal decision module (xarb cross-venue).
 //!
-//! Compared with FR decision, xarb decision is **spread-only**:
-//! - ignores funding/loan signals for Open decisions
-//! - only emits Open/Cancel (spread-only) and supports backward hedge queries
+//! Compared with FR decision, xarb decision uses spread as the first trigger,
+//! then applies funding / return-score / environment / volatility gating for Open decisions.
+//! It only emits Open/Cancel and supports backward hedge queries.
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
@@ -25,6 +25,7 @@ use super::factor_value_hub::{
 use super::mkt_channel::MktChannel;
 use super::spread_factor::SpreadFactor;
 use super::symbol_list::SymbolList;
+use super::xarb_funding_threshold_loader::XarbFundingThresholdsResolved;
 use crate::common::bbo::Bbo;
 use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
 use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
@@ -269,6 +270,7 @@ pub struct XarbDecision {
     environment_model_service: Option<String>,
     environment_model_true_threshold: f64,
     return_score_thresholds: HashMap<String, ReturnScoreThresholdsResolved>,
+    funding_open_thresholds: HashMap<String, XarbFundingThresholdsResolved>,
 
     signal_cooldown_us: i64,
     last_open_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
@@ -361,6 +363,15 @@ impl XarbDecision {
             .copied()
     }
 
+    fn lookup_funding_open_thresholds(
+        &self,
+        symbol_key: &str,
+    ) -> Option<XarbFundingThresholdsResolved> {
+        self.funding_open_thresholds
+            .get(&symbol_key.to_ascii_uppercase())
+            .copied()
+    }
+
     fn record_intercept_summary(&mut self, reason: impl Into<String>) {
         self.intercept_summary.record(reason);
         self.intercept_summary.flush_if_due();
@@ -386,6 +397,41 @@ impl XarbDecision {
             Side::Sell => thresholds.forward_open,
             Side::Buy => thresholds.backward_open,
         }
+    }
+
+    fn select_open_funding_threshold(
+        &self,
+        side: Side,
+        thresholds: XarbFundingThresholdsResolved,
+    ) -> f64 {
+        match side {
+            Side::Buy => thresholds.forward_open,
+            Side::Sell => thresholds.backward_open,
+        }
+    }
+
+    fn lookup_realtime_open_funding_value(
+        &self,
+        open_symbol: &str,
+        hedge_symbol: &str,
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
+    ) -> Option<(f64, &'static str)> {
+        let mkt_channel = MktChannel::instance();
+
+        if open_venue.is_futures() && hedge_venue.is_futures() {
+            let open_fr = mkt_channel.get_latest_funding_rate(open_symbol, open_venue)?;
+            let hedge_fr = mkt_channel.get_latest_funding_rate(hedge_symbol, hedge_venue)?;
+            return Some((hedge_fr - open_fr, "spread_fr"));
+        }
+
+        if hedge_venue.is_futures() {
+            return mkt_channel
+                .get_latest_funding_rate(hedge_symbol, hedge_venue)
+                .map(|value| (value, "hedge_fr"));
+        }
+
+        None
     }
 
     fn evaluate_environment_signal(
@@ -530,6 +576,7 @@ impl XarbDecision {
             environment_model_service: None,
             environment_model_true_threshold: ENV_MODEL_TRUE_THRESHOLD_DEFAULT,
             return_score_thresholds: HashMap::new(),
+            funding_open_thresholds: HashMap::new(),
             signal_cooldown_us: 5_000_000,
             last_open_ts: Rc::new(RefCell::new(HashMap::new())),
             last_close_ts: Rc::new(RefCell::new(HashMap::new())),
@@ -668,6 +715,17 @@ impl XarbDecision {
         );
     }
 
+    pub fn update_funding_open_thresholds(
+        &mut self,
+        thresholds: HashMap<String, XarbFundingThresholdsResolved>,
+    ) {
+        self.funding_open_thresholds = thresholds;
+        info!(
+            "XarbDecision: funding open thresholds updated symbols={}",
+            self.funding_open_thresholds.len(),
+        );
+    }
+
     pub fn update_pnlu_key_suffix(&mut self, key_suffix: String) {
         self.factor_value_hub.update_pnlu_key_suffix(key_suffix);
     }
@@ -799,6 +857,32 @@ impl XarbDecision {
         if cooldown_hit {
             return Ok(None);
         }
+        let Some(funding_thresholds) =
+            self.lookup_funding_open_thresholds(open_symbol_key.as_str())
+        else {
+            self.record_intercept_summary("drop_open_missing_funding_thresholds");
+            return Ok(None);
+        };
+        let Some((funding_value, funding_source)) = self.lookup_realtime_open_funding_value(
+            open_symbol_key.as_str(),
+            hedge_symbol_key.as_str(),
+            open_venue,
+            hedge_venue,
+        ) else {
+            self.record_intercept_summary("drop_open_funding_not_ready");
+            return Ok(None);
+        };
+        let funding_threshold = self.select_open_funding_threshold(side, funding_thresholds);
+        let funding_open_hit = match side {
+            Side::Buy => funding_value > funding_threshold,
+            Side::Sell => funding_value < funding_threshold,
+        };
+        if !funding_open_hit {
+            self.record_intercept_summary(format!(
+                "skip_open_by_funding:source={funding_source}"
+            ));
+            return Ok(None);
+        }
         let return_lookup = self.lookup_return_model_score_lookup(hedge_symbol, hedge_venue);
         let mut return_score = return_lookup
             .as_ref()
@@ -890,6 +974,8 @@ impl XarbDecision {
             side,
             return_score,
             return_threshold,
+            Some(funding_value),
+            Some(funding_threshold),
             environment_score,
             environment_signal.threshold,
             rl_return_volatility_factor,
@@ -1310,6 +1396,8 @@ impl XarbDecision {
         side: Side,
         return_score: Option<f64>,
         return_threshold: Option<f64>,
+        funding_value: Option<f64>,
+        funding_threshold: Option<f64>,
         environment_score: f64,
         environment_threshold: Option<f64>,
         rl_return_volatility_factor: f64,
@@ -1333,8 +1421,14 @@ impl XarbDecision {
             environment_threshold,
         );
         let from_key = format!(
-            "{base_from_key}:spread={spread_rate:.6}:open_scale={:.6}",
-            self.open_scale
+            "{base_from_key}:funding={}:funding_thr={}:spread={spread_rate:.6}:open_scale={:.6}",
+            funding_value
+                .map(|value| format!("{value:.6}"))
+                .unwrap_or_else(|| "NA".to_string()),
+            funding_threshold
+                .map(|value| format!("{value:.6}"))
+                .unwrap_or_else(|| "NA".to_string()),
+            self.open_scale,
         );
 
         let plan = match build_xarb_open_quote_plan(

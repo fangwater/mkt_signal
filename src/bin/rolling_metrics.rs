@@ -761,13 +761,7 @@ fn maybe_push_fr(
     let series = get_or_insert_series(&*series_map, &key, capacity);
     series.set_open_fr_latest(quotes.open_fr);
     series.set_hedge_fr_latest(quotes.hedge_fr);
-    let spread_fr = match (quotes.open_fr, quotes.hedge_fr) {
-        (Some(open_fr), Some(hedge_fr)) => {
-            let value = open_fr - hedge_fr;
-            value.is_finite().then_some(value)
-        }
-        _ => None,
-    };
+    let spread_fr = compute_spread_fr(quotes.open_fr, quotes.hedge_fr);
     series.set_spread_fr_latest(spread_fr);
 
     if !quotes.started {
@@ -791,6 +785,16 @@ fn maybe_push_fr(
             _ => None,
         },
     );
+}
+
+fn compute_spread_fr(open_fr: Option<f64>, hedge_fr: Option<f64>) -> Option<f64> {
+    match (open_fr, hedge_fr) {
+        (Some(open_fr), Some(hedge_fr)) => {
+            let value = hedge_fr - open_fr;
+            value.is_finite().then_some(value)
+        }
+        _ => None,
+    }
 }
 
 fn record_factor_samples<F>(
@@ -1456,4 +1460,21 @@ fn setup_signal_handlers(token: &CancellationToken) -> Result<()> {
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compute_spread_fr;
+
+    #[test]
+    fn spread_fr_uses_hedge_minus_open() {
+        let value = compute_spread_fr(Some(0.0025), Some(0.0031)).expect("spread_fr");
+        assert!((value - 0.0006).abs() < 1e-12);
+    }
+
+    #[test]
+    fn spread_fr_requires_both_sides() {
+        assert_eq!(compute_spread_fr(Some(0.001), None), None);
+        assert_eq!(compute_spread_fr(None, Some(0.001)), None);
+    }
 }

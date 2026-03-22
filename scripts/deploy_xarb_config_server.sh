@@ -295,7 +295,7 @@ FILES=(
   "xarb_scripts/sync_xarb_risk_params.py"
   "xarb_scripts/sync_xarb_symbol_lists.py"
   "xarb_scripts/sync_xarb_strategy_params.py"
-  "xarb_scripts/sync_xarb_funding_rate_thresholds.py"
+  "xarb_scripts/sync_xarb_funding_thresholds.py"
   "xarb_scripts/sync_xarb_spread_thresholds.py"
   "scripts/rolling_metrics/sync_rolling_metrics_params.py"
 )

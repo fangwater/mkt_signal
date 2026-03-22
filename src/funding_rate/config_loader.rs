@@ -11,11 +11,12 @@
 use anyhow::{Context, Result};
 use log::{debug, info, warn};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use crate::common::redis_client::{RedisClient, RedisSettings};
 use crate::signal::common::TradingVenue;
+use crate::symbol_match::normalize_symbol_for_whitelist;
 
 use super::common::resolve_return_score_thresholds_from_redis_map;
 use super::fr_threshold_loader::load_from_redis as load_fr_thresholds;
@@ -24,6 +25,7 @@ use super::spread_threshold_loader::load_from_redis as load_spread_thresholds;
 use super::strategy_loader::StrategyParams;
 use super::symbol_list::SymbolList;
 use super::xarb_decision::XarbDecision;
+use super::xarb_funding_threshold_loader::XarbFundingThresholdsResolved;
 
 const DEFAULT_NAMESPACE: &str = "fr";
 const RETURN_SCORE_REDIS_REFRESH_SECS: u64 = 180;
@@ -153,11 +155,14 @@ async fn reload_all_configs(
     // 2. 更新 SymbolList（建仓/平仓列表）
     reload_symbol_list(redis, namespace, symbol_key_suffix, open_venue, hedge_venue).await?;
 
-    // 3. 加载价差阈值 -> SpreadFactor
-    reload_spread_thresholds(redis, namespace, open_venue, hedge_venue).await?;
-
-    // 4. 加载资金费率阈值 -> FundingRateFactor
-    reload_fr_thresholds(redis, namespace, open_venue, hedge_venue).await?;
+    // 3. xarb 统一从 rolling_metrics + mapping 配置重建内存阈值；
+    // 其他 namespace 仍沿用原有 spread/fr Redis hash 热加载逻辑。
+    if normalize_namespace(namespace) == "xarb" {
+        reload_xarb_thresholds_from_rolling(redis, open_venue, hedge_venue).await?;
+    } else {
+        reload_spread_thresholds(redis, namespace, open_venue, hedge_venue).await?;
+        reload_fr_thresholds(redis, namespace, open_venue, hedge_venue).await?;
+    }
 
     // 5. 加载 return-model-score 阈值 -> MmDecision/XarbDecision（仅 ns=mm/xarb）
     reload_return_score_thresholds(redis, namespace, hedge_venue).await?;
@@ -487,4 +492,462 @@ fn spread_thresholds_key(
 
 fn return_model_score_thresholds_key(venue: TradingVenue) -> String {
     format!("return_model_score_thresholds_{}", venue.data_pub_slug())
+}
+
+#[derive(Debug, Clone, Default)]
+struct StoredXarbMappingConfig {
+    rolling_key: Option<String>,
+    mapping: HashMap<String, String>,
+}
+
+fn default_xarb_spread_mapping() -> HashMap<String, String> {
+    HashMap::from([
+        ("forward_open_mm".to_string(), "spread_5".to_string()),
+        ("forward_open_mt".to_string(), "bidask_10".to_string()),
+        ("forward_cancel_mm".to_string(), "spread_10".to_string()),
+        ("forward_cancel_mt".to_string(), "bidask_15".to_string()),
+        ("backward_open_mm".to_string(), "spread_95".to_string()),
+        ("backward_open_mt".to_string(), "askbid_90".to_string()),
+        ("backward_cancel_mm".to_string(), "spread_90".to_string()),
+        ("backward_cancel_mt".to_string(), "askbid_85".to_string()),
+    ])
+}
+
+fn default_xarb_funding_mapping(
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+) -> HashMap<String, String> {
+    if open_venue.is_futures() && hedge_venue.is_futures() {
+        HashMap::from([
+            ("forward_open_mm".to_string(), "spread_fr_80".to_string()),
+            ("backward_open_mm".to_string(), "spread_fr_20".to_string()),
+        ])
+    } else {
+        HashMap::from([
+            ("forward_open_mm".to_string(), "hedge_fr_50".to_string()),
+            ("backward_open_mm".to_string(), "hedge_fr_50".to_string()),
+        ])
+    }
+}
+
+fn xarb_spread_mapping_key(open_venue: TradingVenue, hedge_venue: TradingVenue) -> String {
+    format!(
+        "xarb_spread_thresholds_config_{}_{}",
+        open_venue.data_pub_slug(),
+        hedge_venue.data_pub_slug()
+    )
+}
+
+fn xarb_funding_mapping_key(open_venue: TradingVenue, hedge_venue: TradingVenue) -> String {
+    format!(
+        "xarb_funding_thresholds_config_{}_{}",
+        open_venue.data_pub_slug(),
+        hedge_venue.data_pub_slug()
+    )
+}
+
+fn default_rolling_thresholds_key(open_venue: TradingVenue, hedge_venue: TradingVenue) -> String {
+    format!(
+        "rolling_metrics_thresholds_{}_{}",
+        open_venue.data_pub_slug(),
+        hedge_venue.data_pub_slug()
+    )
+}
+
+fn normalize_threshold_mapping(mapping: HashMap<String, String>) -> HashMap<String, String> {
+    mapping
+        .into_iter()
+        .filter_map(|(key, value)| {
+            let k = key.trim().to_string();
+            let v = value.trim().to_string();
+            if k.is_empty() || v.is_empty() {
+                None
+            } else {
+                Some((k, v))
+            }
+        })
+        .collect()
+}
+
+fn parse_xarb_mapping_config(
+    raw: Option<String>,
+    default_mapping: HashMap<String, String>,
+) -> StoredXarbMappingConfig {
+    let Some(text) = raw else {
+        return StoredXarbMappingConfig {
+            rolling_key: None,
+            mapping: default_mapping,
+        };
+    };
+
+    let parsed: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(value) => value,
+        Err(err) => {
+            warn!("解析 xarb mapping config 失败，回退默认 mapping: {err}");
+            return StoredXarbMappingConfig {
+                rolling_key: None,
+                mapping: default_mapping,
+            };
+        }
+    };
+
+    let rolling_key = parsed
+        .get("rolling_key")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+
+    let mapping = parsed
+        .get("mapping")
+        .and_then(|value| value.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(key, value)| {
+                    let raw = value.as_str()?.trim();
+                    if raw.is_empty() {
+                        None
+                    } else {
+                        Some((key.trim().to_string(), raw.to_string()))
+                    }
+                })
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_else(|| default_mapping.clone());
+
+    let mapping = normalize_threshold_mapping(mapping);
+    StoredXarbMappingConfig {
+        rolling_key,
+        mapping: if mapping.is_empty() {
+            default_mapping
+        } else {
+            mapping
+        },
+    }
+}
+
+fn normalize_xarb_symbol(symbol: &str) -> String {
+    normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures).to_ascii_uppercase()
+}
+
+fn normalize_quantile(raw: &serde_json::Value) -> Option<f64> {
+    let value = match raw {
+        serde_json::Value::Number(number) => number.as_f64()?,
+        serde_json::Value::String(text) => text.trim().parse::<f64>().ok()?,
+        _ => return None,
+    };
+
+    let quantile = if value > 1.0 { value / 100.0 } else { value };
+    if (0.0..=1.0).contains(&quantile) {
+        Some(quantile)
+    } else {
+        None
+    }
+}
+
+fn normalize_quantile_value(raw: &serde_json::Value) -> Option<f64> {
+    let value = match raw {
+        serde_json::Value::Number(number) => number.as_f64()?,
+        serde_json::Value::String(text) => text.trim().parse::<f64>().ok()?,
+        _ => return None,
+    };
+    if value.is_finite() {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+fn extract_quantile_value(payload: &serde_json::Value, field_ref: &str) -> Option<f64> {
+    let (factor, percentile_text) = field_ref.rsplit_once('_')?;
+    let percentile = percentile_text.trim().parse::<f64>().ok()? / 100.0;
+    let quantiles_key = format!("{}_quantiles", factor.trim());
+    let quantiles = payload.get(&quantiles_key)?.as_array()?;
+
+    for item in quantiles {
+        let obj = item.as_object()?;
+        let q_raw = obj.get("q").or_else(|| obj.get("quantile"))?;
+        let q = normalize_quantile(q_raw)?;
+        if (q - percentile).abs() >= 1e-9 {
+            continue;
+        }
+        for value_key in ["v", "threshold", "value"] {
+            if let Some(raw) = obj.get(value_key) {
+                return normalize_quantile_value(raw);
+            }
+        }
+    }
+
+    None
+}
+
+fn parse_xarb_rolling_payloads(
+    rolling_map: HashMap<String, String>,
+    active_symbols: &HashSet<String>,
+) -> HashMap<String, serde_json::Value> {
+    let mut payloads = HashMap::new();
+
+    for (field, raw_json) in rolling_map {
+        let Ok(payload) = serde_json::from_str::<serde_json::Value>(&raw_json) else {
+            continue;
+        };
+        let symbol = payload
+            .get("base_symbol")
+            .and_then(|value| value.as_str())
+            .or_else(|| payload.get("symbol").and_then(|value| value.as_str()))
+            .unwrap_or_else(|| field.split("::").last().unwrap_or(field.as_str()));
+        let symbol_key = normalize_xarb_symbol(symbol);
+        if symbol_key.is_empty() {
+            continue;
+        }
+        if !active_symbols.is_empty() && !active_symbols.contains(&symbol_key) {
+            continue;
+        }
+        payloads.insert(symbol_key, payload);
+    }
+
+    payloads
+}
+
+fn resolve_symbol_quantile_thresholds(
+    rolling_payloads: &HashMap<String, serde_json::Value>,
+    mapping: &HashMap<String, String>,
+) -> (
+    HashMap<String, HashMap<String, f64>>,
+    usize,
+    Vec<String>,
+) {
+    let mut resolved = HashMap::new();
+    let mut missing_refs = 0usize;
+    let mut skipped_symbols = Vec::new();
+
+    for (symbol, payload) in rolling_payloads {
+        let mut values = HashMap::new();
+        let mut missing = false;
+        for (dest_field, field_ref) in mapping {
+            match extract_quantile_value(payload, field_ref) {
+                Some(value) => {
+                    values.insert(dest_field.clone(), value);
+                }
+                None => {
+                    missing_refs += 1;
+                    missing = true;
+                    break;
+                }
+            }
+        }
+
+        if missing {
+            skipped_symbols.push(symbol.clone());
+            continue;
+        }
+
+        if !values.is_empty() {
+            resolved.insert(symbol.clone(), values);
+        }
+    }
+
+    (resolved, missing_refs, skipped_symbols)
+}
+
+fn apply_xarb_spread_thresholds(
+    resolved: &HashMap<String, HashMap<String, f64>>,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+) -> usize {
+    let spread_factor = super::spread_factor::SpreadFactor::instance();
+    spread_factor.clear_thresholds();
+
+    let mut applied = 0usize;
+    for (symbol, values) in resolved {
+        if let (Some(mm), Some(mt)) = (
+            values.get("forward_open_mm"),
+            values.get("forward_open_mt"),
+        ) {
+            spread_factor.set_forward_open_threshold(
+                open_venue, symbol, hedge_venue, symbol, *mm, *mt,
+            );
+            applied += 1;
+        }
+        if let (Some(mm), Some(mt)) = (
+            values.get("forward_cancel_mm"),
+            values.get("forward_cancel_mt"),
+        ) {
+            spread_factor.set_forward_open_cancel_threshold(
+                open_venue, symbol, hedge_venue, symbol, *mm, *mt,
+            );
+            applied += 1;
+        }
+        if let (Some(mm), Some(mt)) = (
+            values.get("backward_open_mm"),
+            values.get("backward_open_mt"),
+        ) {
+            spread_factor.set_backward_open_threshold(
+                open_venue, symbol, hedge_venue, symbol, *mm, *mt,
+            );
+            applied += 1;
+        }
+        if let (Some(mm), Some(mt)) = (
+            values.get("backward_cancel_mm"),
+            values.get("backward_cancel_mt"),
+        ) {
+            spread_factor.set_backward_cancel_threshold(
+                open_venue, symbol, hedge_venue, symbol, *mm, *mt,
+            );
+            applied += 1;
+        }
+    }
+
+    applied
+}
+
+fn resolve_xarb_funding_thresholds(
+    resolved: &HashMap<String, HashMap<String, f64>>,
+) -> HashMap<String, XarbFundingThresholdsResolved> {
+    resolved
+        .iter()
+        .filter_map(|(symbol, values)| {
+            Some((
+                symbol.clone(),
+                XarbFundingThresholdsResolved {
+                    forward_open: *values.get("forward_open_mm")?,
+                    backward_open: *values.get("backward_open_mm")?,
+                },
+            ))
+        })
+        .collect()
+}
+
+async fn reload_xarb_thresholds_from_rolling(
+    redis: &RedisSettings,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+) -> Result<()> {
+    let spread_config_key = xarb_spread_mapping_key(open_venue, hedge_venue);
+    let funding_config_key = xarb_funding_mapping_key(open_venue, hedge_venue);
+    let default_rolling_key = default_rolling_thresholds_key(open_venue, hedge_venue);
+
+    let active_symbols: HashSet<String> = SymbolList::instance()
+        .get_online_symbols()
+        .into_iter()
+        .map(|symbol| normalize_xarb_symbol(&symbol))
+        .filter(|symbol| !symbol.is_empty())
+        .collect();
+
+    let mut client = RedisClient::connect(redis.clone()).await?;
+    let spread_config = parse_xarb_mapping_config(
+        client.get_string(&spread_config_key).await?,
+        default_xarb_spread_mapping(),
+    );
+    let funding_config = parse_xarb_mapping_config(
+        client.get_string(&funding_config_key).await?,
+        default_xarb_funding_mapping(open_venue, hedge_venue),
+    );
+
+    let rolling_key = spread_config
+        .rolling_key
+        .clone()
+        .or_else(|| funding_config.rolling_key.clone())
+        .unwrap_or(default_rolling_key);
+
+    let rolling_map = client.hgetall_map(&rolling_key).await.with_context(|| {
+        format!(
+            "读取 xarb rolling metrics 失败 (key={} open={} hedge={})",
+            rolling_key,
+            open_venue.data_pub_slug(),
+            hedge_venue.data_pub_slug()
+        )
+    })?;
+    if rolling_map.is_empty() {
+        anyhow::bail!("xarb rolling metrics hash '{}' 为空", rolling_key);
+    }
+
+    let rolling_payloads = parse_xarb_rolling_payloads(rolling_map, &active_symbols);
+    let (resolved_spread, spread_missing_refs, spread_skipped) =
+        resolve_symbol_quantile_thresholds(&rolling_payloads, &spread_config.mapping);
+    let (resolved_funding, funding_missing_refs, funding_skipped) =
+        resolve_symbol_quantile_thresholds(&rolling_payloads, &funding_config.mapping);
+
+    let spread_applied =
+        apply_xarb_spread_thresholds(&resolved_spread, open_venue, hedge_venue);
+    let funding_thresholds = resolve_xarb_funding_thresholds(&resolved_funding);
+    let funding_symbols = funding_thresholds.len();
+
+    let updated = XarbDecision::try_with_mut(|decision| {
+        decision.update_funding_open_thresholds(funding_thresholds);
+    });
+    if updated.is_none() {
+        warn!(
+            "xarb funding thresholds 已生成，但 XarbDecision 尚未初始化 (open={} hedge={})",
+            open_venue.data_pub_slug(),
+            hedge_venue.data_pub_slug()
+        );
+    }
+
+    info!(
+        "xarb rolling thresholds 应用完成 rolling_key={} active_symbols={} rolling_symbols={} spread_cfg_fields={} spread_applied={} spread_skipped={} spread_missing_refs={} funding_cfg_fields={} funding_symbols={} funding_skipped={} funding_missing_refs={}",
+        rolling_key,
+        active_symbols.len(),
+        rolling_payloads.len(),
+        spread_config.mapping.len(),
+        spread_applied,
+        spread_skipped.len(),
+        spread_missing_refs,
+        funding_config.mapping.len(),
+        funding_symbols,
+        funding_skipped.len(),
+        funding_missing_refs
+    );
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        default_xarb_funding_mapping, extract_quantile_value, normalize_xarb_symbol,
+        parse_xarb_mapping_config,
+    };
+    use crate::signal::common::TradingVenue;
+    use std::collections::HashMap;
+
+    #[test]
+    fn xarb_extract_quantile_value_supports_factor_refs_with_underscores() {
+        let payload = serde_json::json!({
+            "spread_fr_quantiles": [
+                {"q": 0.2, "v": -0.001},
+                {"q": 0.8, "v": 0.003}
+            ]
+        });
+        let value = extract_quantile_value(&payload, "spread_fr_80").expect("spread_fr_80");
+        assert!((value - 0.003).abs() < 1e-12);
+    }
+
+    #[test]
+    fn xarb_default_funding_mapping_depends_on_venues() {
+        let fut_fut =
+            default_xarb_funding_mapping(TradingVenue::BinanceFutures, TradingVenue::OkexFutures);
+        assert_eq!(fut_fut.get("forward_open_mm").map(String::as_str), Some("spread_fr_80"));
+        assert_eq!(fut_fut.get("backward_open_mm").map(String::as_str), Some("spread_fr_20"));
+
+        let margin_fut =
+            default_xarb_funding_mapping(TradingVenue::BinanceMargin, TradingVenue::BinanceFutures);
+        assert_eq!(margin_fut.get("forward_open_mm").map(String::as_str), Some("hedge_fr_50"));
+        assert_eq!(margin_fut.get("backward_open_mm").map(String::as_str), Some("hedge_fr_50"));
+    }
+
+    #[test]
+    fn xarb_mapping_config_falls_back_to_default_when_empty() {
+        let defaults = HashMap::from([("forward_open_mm".to_string(), "spread_5".to_string())]);
+        let parsed = parse_xarb_mapping_config(
+            Some(r#"{"schema_version":1,"mapping":{}}"#.to_string()),
+            defaults.clone(),
+        );
+        assert_eq!(parsed.mapping, defaults);
+    }
+
+    #[test]
+    fn xarb_symbol_normalization_matches_runtime() {
+        assert_eq!(normalize_xarb_symbol("BTC-USDT-SWAP"), "BTCUSDT");
+    }
 }
