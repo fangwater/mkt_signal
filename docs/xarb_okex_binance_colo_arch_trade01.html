@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>XARB OKEX-Binance trade01 Architecture</title>
+  <style>
+    :root {
+      --bg: #f6f0e7;
+      --ink: #1f2937;
+      --muted: #667085;
+      --frame: rgba(255, 250, 242, 0.82);
+      --site: rgba(255, 250, 242, 0.95);
+      --site-border: #d8c7ab;
+      --okex-dat: #dbeafe;
+      --binance-dat: #fde68a;
+      --bridge: #fecaca;
+      --decision: #dcfce7;
+      --engine: #d1fae5;
+      --account: #ffe4e6;
+      --persist: #ede9fe;
+      --line: #8b5e34;
+      --dash: #a16207;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", sans-serif;
+      background: linear-gradient(180deg, #f7f1e8 0%, #ede4d4 100%);
+      color: var(--ink);
+    }
+    .page {
+      max-width: 1820px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 30px;
+      line-height: 1.08;
+    }
+    .subtitle {
+      margin: 0 0 16px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(0,0,0,0.08);
+      background: rgba(255,255,255,0.72);
+      font-size: 13px;
+    }
+    .swatch {
+      width: 11px;
+      height: 11px;
+      border-radius: 999px;
+      border: 1px solid rgba(0,0,0,0.12);
+    }
+    .frame {
+      background: var(--frame);
+      border: 1px solid rgba(89,57,25,0.10);
+      border-radius: 28px;
+      padding: 18px;
+      box-shadow: 0 24px 48px rgba(59,43,16,0.10);
+    }
+    svg {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+    .notes {
+      margin-top: 16px;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .note {
+      background: rgba(255,255,255,0.76);
+      border: 1px solid rgba(0,0,0,0.08);
+      border-radius: 18px;
+      padding: 14px 16px;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+    .note strong {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 14px;
+    }
+    code {
+      font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+      font-size: 0.95em;
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1>XARB OKEX-Binance Colo Architecture</h1>
+    <p class="subtitle">单实例视角：<code>trade01</code>。只保留主链路，所有连线使用直线和 90 度转角。</p>
+
+    <div class="legend">
+      <span class="chip"><span class="swatch" style="background: var(--okex-dat);"></span>OKEX 行情</span>
+      <span class="chip"><span class="swatch" style="background: var(--binance-dat);"></span>Binance 行情</span>
+      <span class="chip"><span class="swatch" style="background: var(--bridge);"></span>Bridge</span>
+      <span class="chip"><span class="swatch" style="background: var(--decision);"></span>trade_signal / pre_trade</span>
+      <span class="chip"><span class="swatch" style="background: var(--engine);"></span>trade_engine</span>
+      <span class="chip"><span class="swatch" style="background: var(--account);"></span>account_monitor</span>
+      <span class="chip"><span class="swatch" style="background: var(--persist);"></span>persist_manager</span>
+    </div>
+
+    <div class="frame">
+      <svg viewBox="0 0 1760 900" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#8b5e34"/>
+          </marker>
+          <marker id="arrow-dash" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#a16207"/>
+          </marker>
+          <style>
+            .site { fill: var(--site); stroke: var(--site-border); stroke-width: 2; }
+            .node { rx: 18; ry: 18; stroke: rgba(0,0,0,0.10); stroke-width: 1.4; }
+            .title { font: 700 26px 'IBM Plex Sans', sans-serif; fill: #1f2937; }
+            .sub { font: 400 13px 'IBM Plex Sans', sans-serif; fill: #667085; }
+            .nt { font: 700 15px 'IBM Plex Sans', sans-serif; fill: #14213d; }
+            .tx { font: 400 12px 'IBM Plex Sans', sans-serif; fill: #334155; }
+            .lb { font: 700 11px 'IBM Plex Sans', sans-serif; fill: #7c2d12; }
+            .solid { fill: none; stroke: #8b5e34; stroke-width: 2.5; marker-end: url(#arrow); }
+            .bidir { fill: none; stroke: #8b5e34; stroke-width: 2.5; marker-start: url(#arrow); marker-end: url(#arrow); }
+            .dash { fill: none; stroke: #a16207; stroke-width: 2.3; stroke-dasharray: 8 7; marker-start: url(#arrow-dash); marker-end: url(#arrow-dash); }
+          </style>
+        </defs>
+
+        <rect x="20" y="20" width="760" height="860" rx="28" class="site"/>
+        <text x="50" y="58" class="title">HK colo</text>
+        <text x="50" y="82" class="sub">主控侧：trade_signal + pre_trade + OKEX 本地执行</text>
+
+        <rect x="980" y="20" width="760" height="860" rx="28" class="site"/>
+        <text x="1010" y="58" class="title">JP colo</text>
+        <text x="1010" y="82" class="sub">Binance 行情、远端执行、账户监听</text>
+
+        <rect x="60" y="130" width="220" height="86" class="node" fill="#dbeafe"/>
+        <text x="82" y="162" class="nt">dat_pbs</text>
+        <text x="82" y="184" class="tx">okex-futures</text>
+        <text x="82" y="202" class="tx">ask_bid_spread / derivatives</text>
+
+        <rect x="360" y="122" width="270" height="102" class="node" fill="#fecaca"/>
+        <text x="382" y="156" class="nt">market_hk</text>
+        <text x="382" y="178" class="tx">公共行情桥</text>
+        <text x="382" y="196" class="tx">输出 HK 本地统一 bridge/* 视图</text>
+
+        <rect x="90" y="360" width="250" height="104" class="node" fill="#dcfce7"/>
+        <text x="112" y="394" class="nt">trade_signal + pre_trade</text>
+        <text x="112" y="416" class="tx">trade01</text>
+        <text x="112" y="434" class="tx">消费本地 bridge/okex-futures/*</text>
+        <text x="112" y="452" class="tx">消费本地 bridge/binance-futures/*</text>
+
+        <rect x="430" y="330" width="210" height="84" class="node" fill="#d1fae5"/>
+        <text x="452" y="362" class="nt">trade_engine</text>
+        <text x="452" y="384" class="tx">okex trade01</text>
+
+        <rect x="430" y="452" width="210" height="78" class="node" fill="#ffe4e6"/>
+        <text x="452" y="484" class="nt">okex_account_monitor</text>
+        <text x="452" y="506" class="tx">account_pubs/okex_pm</text>
+
+        <rect x="430" y="568" width="210" height="78" class="node" fill="#ede9fe"/>
+        <text x="452" y="600" class="nt">persist_manager</text>
+        <text x="452" y="622" class="tx">trade01</text>
+
+        <rect x="90" y="612" width="250" height="108" class="node" fill="#fecaca"/>
+        <text x="112" y="646" class="nt">ctrl_bridge</text>
+        <text x="112" y="668" class="tx">trade01</text>
+        <text x="112" y="686" class="tx">binance order/query/account</text>
+
+        <rect x="1020" y="130" width="220" height="86" class="node" fill="#fde68a"/>
+        <text x="1042" y="162" class="nt">dat_pbs</text>
+        <text x="1042" y="184" class="tx">binance-futures</text>
+        <text x="1042" y="202" class="tx">ask_bid_spread / derivatives</text>
+
+        <rect x="1320" y="122" width="270" height="102" class="node" fill="#fecaca"/>
+        <text x="1342" y="156" class="nt">market_jp</text>
+        <text x="1342" y="178" class="tx">公共行情桥</text>
+        <text x="1342" y="196" class="tx">发送 bridge/binance-futures/* 到 HK</text>
+
+        <rect x="1080" y="612" width="250" height="108" class="node" fill="#fecaca"/>
+        <text x="1102" y="646" class="nt">ctrl_bridge</text>
+        <text x="1102" y="668" class="tx">trade01</text>
+        <text x="1102" y="686" class="tx">binance order/query/account</text>
+
+        <rect x="1400" y="330" width="210" height="84" class="node" fill="#d1fae5"/>
+        <text x="1422" y="362" class="nt">trade_engine</text>
+        <text x="1422" y="384" class="tx">binance trade01</text>
+
+        <rect x="1400" y="452" width="210" height="78" class="node" fill="#ffe4e6"/>
+        <text x="1422" y="484" class="nt">binance_account_monitor</text>
+        <text x="1422" y="506" class="tx">account_pubs/binance_pm</text>
+
+        <path d="M280 173 H360" class="solid"/>
+        <text x="300" y="158" class="lb">1. OKEX 行情</text>
+
+        <path d="M1240 173 H1320" class="solid"/>
+        <text x="1260" y="158" class="lb">2. Binance 行情</text>
+
+        <path d="M630 173 H860 V173 H1320" class="dash"/>
+        <text x="910" y="156" class="lb">3. 公共跨机行情桥: ZMQ 6360</text>
+
+        <path d="M495 224 V300 H215 V360" class="solid"/>
+        <text x="330" y="288" class="lb">4. HK 统一 bridge/* 行情视图</text>
+
+        <path d="M340 400 H430" class="bidir"/>
+        <text x="364" y="384" class="lb">5. OKEX order req/rsp</text>
+
+        <path d="M535 452 V412 H340" class="solid"/>
+        <text x="370" y="438" class="lb">6. OKEX account</text>
+
+        <path d="M340 438 H385 V607 H430" class="solid"/>
+        <text x="356" y="528" class="lb">7. persist</text>
+
+        <path d="M215 464 V540 V612" class="bidir"/>
+        <text x="228" y="544" class="lb">8. Binance 控制面进出业务桥</text>
+
+        <path d="M340 666 H1080" class="dash"/>
+        <text x="620" y="648" class="lb">9. trade01 私有跨机控制面</text>
+        <text x="600" y="666" class="lb">ZMQ 6361 / 6362 / 6363 / 6364 / 6369</text>
+
+        <path d="M1330 666 H1400 V372" class="bidir"/>
+        <text x="1352" y="560" class="lb">10. Binance order/query req/rsp</text>
+
+        <path d="M1505 452 V490 H1330" class="solid"/>
+        <text x="1338" y="474" class="lb">11. Binance account</text>
+      </svg>
+    </div>
+
+    <div class="notes">
+      <div class="note">
+        <strong>公共行情桥</strong>
+        <code>market_jp</code> 把 <code>bridge/binance-futures/*</code> 通过 <code>ZMQ 6360</code> 一次送到 HK，<code>market_hk</code> 形成统一本地行情视图。
+      </div>
+      <div class="note">
+        <strong>实例私有控制面</strong>
+        <code>order_reqs/binance</code>、<code>order_resps/binance</code>、<code>query_reqs/binance</code>、<code>query_resps/binance</code>、<code>account_pubs/binance_pm</code> 只走 <code>trade01</code> 自己的业务桥。
+      </div>
+      <div class="note">
+        <strong>命名规则</strong>
+        service 名保持原样，实例隔离依赖 <code>IPC_NAMESPACE</code>。不要改成 <code>account_pubs/binance_pm_trade01</code> 这类新名字。
+      </div>
+    </div>
+  </div>
+</body>
+</html>

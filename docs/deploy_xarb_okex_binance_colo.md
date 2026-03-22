@@ -13,6 +13,9 @@
 - **JP**: Binance 行情 + Binance `trade_engine` + `binance_account_monitor`
 - **公共行情 bridge**: 只负责市场数据, 是公共基础设施, 多套实例共享
 - **实例业务 bridge**: 只负责某一套实例的 `order/query req/rsp/account_pubs`, 必须按实例隔离
+- 当前首套落地实例: `IPC_NAMESPACE=okex_binance_xarb_trade01`
+- HK IP: `47.238.128.48`
+- JP IP: `54.64.147.69`
 
 ---
 
@@ -78,14 +81,14 @@ flowchart LR
   JP_CTRL1 -.->|"ZMQ 6362, 6364"| HK_CTRL1
   HK_CTRL1 -->|"IPC: order_resps/binance<br/>IPC: query_resps/binance"| HK_PT1
   JP_BN_AM1 -->|"IPC: account_pubs/binance_pm"| JP_CTRL1
-  JP_CTRL1 -.->|"ZMQ 6369"| HK_CTRL1
+  JP_CTRL1 -.->|"ZMQ 6365"| HK_CTRL1
   HK_CTRL1 -->|"IPC: account_pubs/binance_pm"| HK_PT1
 
   HK_PT2 -->|"IPC: order_reqs/binance<br/>IPC: query_reqs/binance"| HK_CTRL2
-  HK_CTRL2 -.->|"ZMQ 6365, 6367"| JP_CTRL2
+  HK_CTRL2 -.->|"ZMQ 6366, 6368"| JP_CTRL2
   JP_CTRL2 -->|"IPC: order_reqs/binance<br/>IPC: query_reqs/binance"| JP_BN_TE2
   JP_BN_TE2 -->|"IPC: order_resps/binance<br/>IPC: query_resps/binance"| JP_CTRL2
-  JP_CTRL2 -.->|"ZMQ 6366, 6368"| HK_CTRL2
+  JP_CTRL2 -.->|"ZMQ 6367, 6369"| HK_CTRL2
   HK_CTRL2 -->|"IPC: order_resps/binance<br/>IPC: query_resps/binance"| HK_PT2
   JP_BN_AM2 -->|"IPC: account_pubs/binance_pm"| JP_CTRL2
   JP_CTRL2 -.->|"ZMQ 6370"| HK_CTRL2
@@ -190,38 +193,91 @@ scripts/deploy_setup_env_xarb.sh \
 
 ### 3) ZMQ 端口与防火墙
 
-以下用你给定的 `6360-6370` 作为示例端口段:
+当前首套 `trade01` 按你给定的 `6360-6370` 端口段, 固定使用:
 
 - 公共行情桥:
-  - `6360/tcp`: JP -> HK Binance 行情 (`ask_bid_spread + derivatives`, 所有实例共享)
-- `trade01` 业务桥:
+  - `6360/tcp`: JP -> HK Binance 行情 (`ask_bid_spread + derivatives`, 公共共享)
+- `okex_binance_xarb_trade01` 业务桥:
   - `6361/tcp`: HK -> JP `order_reqs/binance`
   - `6362/tcp`: JP -> HK `order_resps/binance`
   - `6363/tcp`: HK -> JP `query_reqs/binance`
   - `6364/tcp`: JP -> HK `query_resps/binance`
-  - `6369/tcp`: JP -> HK `account_pubs/binance_pm`
-- `trade02` 业务桥:
-  - `6365/tcp`: HK -> JP `order_reqs/binance`
-  - `6366/tcp`: JP -> HK `order_resps/binance`
-  - `6367/tcp`: HK -> JP `query_reqs/binance`
-  - `6368/tcp`: JP -> HK `query_resps/binance`
-  - `6370/tcp`: JP -> HK `account_pubs/binance_pm`
+  - `6365/tcp`: JP -> HK `account_pubs/binance_pm`
+
+如果后续再增加 `trade02`, 继续从 `6366` 往后分配一组新的业务端口即可, 但:
+
+- `6360/tcp` 的公共行情桥仍然只部署一套, 不重复部署
+- `trade02` 不能复用 `trade01` 的 `6361-6365`
 
 因此需要:
 
-- HK 放行入站: `6360`, `6362`, `6364`, `6366`, `6368`, `6369`, `6370`
-- JP 放行入站: `6361`, `6363`, `6365`, `6367`
+- HK 放行入站: `6360`, `6362`, `6364`, `6365`
+- JP 放行入站: `6361`, `6363`
+
+---
+
+## 为什么需要部署这些 bridge (以 `okex_binance_xarb_trade01` 为例)
+
+- `trade_signal + pre_trade` 固定在 HK, 但 Binance 行情、Binance `trade_engine`、`binance_account_monitor` 在 JP, 所以必须有跨机 bridge.
+- 行情桥和业务桥必须分开:
+  - 行情桥是公共基础设施, 负责把 JP 的 Binance 行情一次性送到 HK 本地 `bridge/binance-futures/*`
+  - 业务桥是实例私有控制面, 负责 `order/query/account_pubs`
+- `pre_trade` 不只是发单, 还会走 Binance `query_reqs/query_resps`, 所以 query 桥必须部署, 不能只桥 `order_reqs/order_resps`.
+- `binance_account_monitor` 在 JP 就近部署更合理, 但 `pre_trade` 在 HK 需要直接消费 `account_pubs/binance_pm`, 所以这个 account stream 也必须从 JP 桥回 HK.
+- bridge 配置里不要手工拼 namespace:
+  - 配置仍写 `order_reqs/binance`
+  - 配置仍写 `query_resps/binance`
+  - 配置仍写 `account_pubs/binance_pm`
+  - 实际隔离由 `IPC_NAMESPACE=okex_binance_xarb_trade01` 完成
+- 对其他业务进程来说, 因为本地消费的都是 IPC:
+  - 行情统一读 HK 本地 `bridge/*`
+  - Binance 业务统一读/写本地 `order_*` / `query_*` / `account_pubs/*`
+  - 所以跨机器部署应当是“无感”的
+
+```text
+HK 47.238.128.48                                  JP 54.64.147.69
+----------------                                  ----------------
+dat_pbs/okex-futures                              dat_pbs/binance-futures
+        |                                                  |
+        v                                                  v
+  market_hk bridge <========== 6360 ==========>      market_jp bridge
+        |                                                  |
+        | 本地提供 bridge/okex-futures/*                  | 本地提供 bridge/binance-futures/*
+        | 本地提供 bridge/binance-futures/*               |
+        v                                                  v
+ trade_signal + pre_trade                         trade_engine --exchange binance
+        |                                                  ^
+        | 6361 order_reqs/binance                          |
+        | 6363 query_reqs/binance                          |
+        v                                                  |
+   ctrl_bridge_hk  <===== 实例业务桥 =====>          ctrl_bridge_jp
+        ^                                                  |
+        | 6362 order_resps/binance                         |
+        | 6364 query_resps/binance                         |
+        | 6365 account_pubs/binance_pm                     |
+        |                                                  v
+ trade_engine --exchange okex                     binance_account_monitor
+ okex_account_monitor
+ persist_manager
+```
 
 ---
 
 ## bridge 配置 (核心)
 
-仓库当前已提供一套**单实例**模板:
+仓库当前这两份配置已经直接写成**首套 `trade01` 实配**:
 
 - [config/ipc_bridge_xarb_okex_binance_hk.yaml](/home/ubuntu/crypto_mkt/mkt_signal/config/ipc_bridge_xarb_okex_binance_hk.yaml)
 - [config/ipc_bridge_xarb_okex_binance_jp.yaml](/home/ubuntu/crypto_mkt/mkt_signal/config/ipc_bridge_xarb_okex_binance_jp.yaml)
 
-这两份模板更适合作为 `trade01` 单实例业务桥示例, 不能直接表达 `trade01 + trade02` 并存的完整架构. 生产部署建议拆成两类配置:
+它们对应的是:
+
+- HK: `47.238.128.48`
+- JP: `54.64.147.69`
+- `IPC_NAMESPACE=okex_binance_xarb_trade01`
+- 端口: `6360-6365`
+
+如果后续要扩到 `trade01 + trade02` 并存, 这两份配置可以直接作为 `trade01` 模板, 然后复制出 `trade02` 版本并分配新的业务端口. 生产部署建议拆成两类配置:
 
 - 公共行情桥:
   - HK:
@@ -278,7 +334,7 @@ cd ~/bridge_hk_trade01
 
 # trade02
 cd ~/bridge_hk_trade02
-# 同理, 但端口使用 6365-6370 中属于 trade02 的分配
+# 同理, 但端口使用 6366-6370 中属于 trade02 的分配
 ./scripts/start_ipc_bridge.sh
 ```
 
@@ -356,19 +412,18 @@ source ./env.sh
 
 ---
 
-## 需要你确认/补充的信息 (建议下一步补齐)
+## 已确认的首套部署输入
 
-1) HK 与 JP 之间的 ZMQ 连接方式:
-   - 是公网, 还是内网, 是否有 NAT/ProxyJump?
-   - HK/JP 的真实 bind IP 与 connect IP 是什么 (决定 `tcp://<ip>:<port>`)
-2) `trade01` / `trade02` 的实例业务桥是否按本文建议, 将 `order` / `query` / `account_pubs` 一并纳入?
-   - `order_reqs`
-   - `order_resps`
-   - `query_reqs`
-   - `query_resps`
-   - `account_pubs/binance_pm`
-3) `account_monitor_*` 是否确认按交易所就近部署:
-   - OKEX 在 HK, Binance 在 JP?
-4) 专线替换时的目标形态:
-   - 仍然走 `ipc_bridge` 但换成专线网络
-   - 还是改成别的 transport (例如专线上的另一种消息通道)?
+1) 机器与网络
+   - HK: `47.238.128.48`
+   - JP: `54.64.147.69`
+   - 当前先按两台机器公网直连的 `tcp://<ip>:<port>` 方式配置 ZMQ
+2) 当前实例
+   - `IPC_NAMESPACE=okex_binance_xarb_trade01`
+   - `trade_signal` 与 `pre_trade` 始终一起部署在 HK
+3) bridge 范围
+   - 公共行情桥只做一次
+   - `order/query/account_pubs` 都走实例业务桥
+4) account monitor
+   - `okex_account_monitor` 在 HK
+   - `binance_account_monitor` 在 JP

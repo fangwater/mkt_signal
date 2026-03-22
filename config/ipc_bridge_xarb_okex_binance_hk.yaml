@@ -3,15 +3,17 @@
 # Purpose:
 # - Local OKEX market-data fan-out: dat_pbs/okex-* -> bridge/okex-*
 # - Remote Binance market-data ingest from JP via ZMQ: ZMQ -> bridge/binance-futures/*
-# - Remote Binance order channels to JP engine: order_reqs/binance <-> order_resps/binance over ZMQ
+# - Remote Binance business channels to JP engine/account_monitor over ZMQ
+#   - order_reqs/binance <-> order_resps/binance
+#   - query_reqs/binance <-> query_resps/binance
+#   - account_pubs/binance_pm (JP -> HK)
 #
 # NOTE:
 # - Endpoints starting with `dat_pbs/` or `bridge/` are GLOBAL (not namespaced).
-# - Endpoints like `order_reqs/*` and `order_resps/*` are NAMESPACED via IPC_NAMESPACE.
-#   This ipc_bridge process must run with the SAME IPC_NAMESPACE as the xarb env.
-#
-# TODO:
-# - Replace JP_IP with the real JP address reachable from HK.
+# - Endpoints like `order_reqs/*`, `query_reqs/*`, `account_pubs/*` are NAMESPACED via IPC_NAMESPACE.
+# - This concrete template is intended for:
+#   IPC_NAMESPACE=okex_binance_xarb_trade01
+#   Do not rewrite endpoint names to include the namespace manually.
 
 routes:
   # -----------------------------
@@ -77,12 +79,12 @@ routes:
   # Remote Binance market-data ingest from JP
   # ----------------------------------------
   #
-  # JP bridge should PUSH to HK:16666 for these routes.
+  # JP bridge should PUSH to HK:6360 for these routes.
   # Multiple routes can share the same bind address; route id is used as ZMQ header.
   - id: xarb_bn_mkt_ask_bid_from_jp
     from:
       type: zmq
-      endpoint: "tcp://0.0.0.0:16666"
+      endpoint: "tcp://0.0.0.0:6360"
       size: 128
     to:
       type: ipc
@@ -96,7 +98,7 @@ routes:
   - id: xarb_bn_mkt_derivatives_from_jp
     from:
       type: zmq
-      endpoint: "tcp://0.0.0.0:16666"
+      endpoint: "tcp://0.0.0.0:6360"
       size: 128
     to:
       type: ipc
@@ -107,11 +109,11 @@ routes:
       history_size: 50
       subscriber_max_buffer_size: 8192
 
-  # -----------------------------------------
-  # Binance order channels: HK pre_trade <-> JP trade_engine(binance)
-  # -----------------------------------------
+  # ---------------------------------------------------
+  # Binance business channels: HK pre_trade <-> JP side
+  # ---------------------------------------------------
   #
-  # HK -> JP: order request (IPC -> ZMQ connect JP:17777)
+  # HK -> JP: order request
   - id: xarb_bn_order_req_to_jp
     from:
       type: ipc
@@ -119,17 +121,53 @@ routes:
       size: 4096
     to:
       type: zmq
-      endpoint: "tcp://JP_IP:17777"
+      endpoint: "tcp://54.64.147.69:6361"
       size: 4096
 
-  # JP -> HK: order response (ZMQ bind HK:17778 -> IPC)
+  # JP -> HK: order response
   - id: xarb_bn_order_resp_from_jp
     from:
       type: zmq
-      endpoint: "tcp://0.0.0.0:17778"
+      endpoint: "tcp://0.0.0.0:6362"
       size: 64
     to:
       type: ipc
       endpoint: "order_resps/binance"
       size: 64
 
+  # HK -> JP: query request
+  - id: xarb_bn_query_req_to_jp
+    from:
+      type: ipc
+      endpoint: "query_reqs/binance"
+      size: 256
+    to:
+      type: zmq
+      endpoint: "tcp://54.64.147.69:6363"
+      size: 256
+
+  # JP -> HK: query response
+  - id: xarb_bn_query_resp_from_jp
+    from:
+      type: zmq
+      endpoint: "tcp://0.0.0.0:6364"
+      size: 4096
+    to:
+      type: ipc
+      endpoint: "query_resps/binance"
+      size: 4096
+
+  # JP -> HK: Binance account monitor stream
+  - id: xarb_bn_account_pub_from_jp
+    from:
+      type: zmq
+      endpoint: "tcp://0.0.0.0:6365"
+      size: 16384
+    to:
+      type: ipc
+      endpoint: "account_pubs/binance_pm"
+      size: 16384
+      max_publishers: 1
+      max_subscribers: 4
+      history_size: 2048
+      subscriber_max_buffer_size: 1024
