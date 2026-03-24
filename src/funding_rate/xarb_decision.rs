@@ -1788,42 +1788,7 @@ impl XarbDecision {
             super::common::FactorMode::MM => self.hedge_timeout_mm_us,
         };
 
-        let price_for_tlen = ctx.price_value();
-        let from_key_with_tlen = if !(raw_price_tick.is_finite() && raw_price_tick > 0.0) {
-            warn!(
-                "XarbDecision: open from_key missing price_tick open={} venue={:?} symbol_key={}",
-                open_trade_symbol, open_venue, symbol_key
-            );
-            format!("{from_key}:tlen_query_err=missing_price_tick")
-        } else if price_for_tlen <= 0.0 {
-            warn!(
-                "XarbDecision: open from_key invalid encoded price open={} venue={:?} price={:.8}",
-                open_trade_symbol, open_venue, price_for_tlen
-            );
-            format!("{from_key}:tlen_query_err=invalid_encoded_price")
-        } else if let Some(tick_index) = price_to_tick_index(price_for_tlen, raw_price_tick) {
-            let depth_query_client = if open_venue == self.venues.0 {
-                &self.open_depth_query_client
-            } else {
-                &self.hedge_depth_query_client
-            };
-            match depth_query_client.query_single_tick_index(&open_trade_symbol, tick_index) {
-                Ok(tlen) => format!("{from_key}:tlen={tlen:.8}"),
-                Err(err) => {
-                    warn!(
-                            "XarbDecision: open from_key tlen query failed open={} venue={:?} tick_index={} err={err:#}",
-                            open_trade_symbol, open_venue, tick_index
-                        );
-                    format!("{from_key}:tlen_query_err=single_query_failed")
-                }
-            }
-        } else {
-            warn!(
-                    "XarbDecision: open from_key tick conversion failed open={} venue={:?} price={:.8} price_tick={:.8}",
-                    open_trade_symbol, open_venue, price_for_tlen, raw_price_tick
-                );
-            format!("{from_key}:tlen_query_err=invalid_price_or_tick")
-        };
+        let from_key_with_tlen = format!("{from_key}:tlen=0.00000000");
 
         ctx.set_from_key(from_key_with_tlen.into_bytes());
 

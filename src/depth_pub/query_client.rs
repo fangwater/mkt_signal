@@ -14,7 +14,7 @@ use super::query_msg::{
 use crate::signal::common::TradingVenue;
 
 const DEPTH_QUERY_SOCKET_TIMEOUT_MS: u64 = 200;
-const DEPTH_QUERY_BATCH_FAST_TIMEOUT_US: u64 = 2_000;
+const DEPTH_QUERY_BATCH_FAST_TIMEOUT_US: u64 = 100_000;
 const DEPTH_QUERY_BATCH_FAST_RETRY_ATTEMPTS: usize = 3;
 const DEPTH_QUERY_BATCH_FAST_RETRY_SLEEP_US: u64 = 200;
 
