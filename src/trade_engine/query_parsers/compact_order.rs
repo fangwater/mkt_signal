@@ -2,6 +2,11 @@ use anyhow::Result;
 use bytes::{BufMut, Bytes, BytesMut};
 
 pub const COMPACT_ORDER_QUERY_RESP_LEN: usize = 8 + 8 + 1 + 8 + 1 + 8;
+pub const ORDER_QUERY_NOT_FOUND_MARKER: &[u8; 1] = b"N";
+
+pub fn is_order_query_not_found_marker(body: &[u8]) -> bool {
+    body == ORDER_QUERY_NOT_FOUND_MARKER
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CompactOrderQueryResp {

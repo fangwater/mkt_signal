@@ -17,7 +17,7 @@ use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::uniform_order_helper::{publish_uniform_order_event, UniformOrderEventKind};
 use crate::strategy::ws_order_update::WsOrderUpdate;
 use crate::trade_engine::query_parsers::compact_order::{
-    CompactOrderQueryResp, COMPACT_ORDER_QUERY_RESP_LEN,
+    is_order_query_not_found_marker, CompactOrderQueryResp, COMPACT_ORDER_QUERY_RESP_LEN,
 };
 use crate::trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
 use log::{debug, error, info, warn};
@@ -1622,6 +1622,28 @@ impl Strategy for MarketMakerOpenStrategy {
             .rposition(|&b| b != 0)
             .map(|pos| pos + 1)
             .unwrap_or(0);
+        if is_order_query_not_found_marker(&body[..actual_len]) {
+            match reason {
+                PendingOrderQueryReason::OrderWatchdog => {
+                    warn!(
+                        "MarketMakerOpenStrategy: strategy_id={} order query not found (-2013, close): client_order_id={}",
+                        self.strategy_id, client_order_id
+                    );
+                    self.alive_flag = false;
+                }
+                PendingOrderQueryReason::CancelWatchdog => {
+                    self.schedule_cancel_query_watchdog(client_order_id);
+                }
+                PendingOrderQueryReason::CancelRejected => {
+                    self.schedule_cancel_query_watchdog_with_reason(
+                        client_order_id,
+                        PendingOrderQueryReason::CancelRejected,
+                    );
+                }
+            }
+            return;
+        }
+
         if actual_len == 1 && body[0] == b'E' {
             match reason {
                 PendingOrderQueryReason::OrderWatchdog => {

@@ -6,6 +6,7 @@ use crate::trade_engine::config::ApiKey;
 use crate::trade_engine::gate_ws;
 use crate::trade_engine::okex::{OkexCancelOrderRequest, OkexNewOrderRequest, OkexWsOrderResponse};
 use crate::trade_engine::query_parsers::binance_um_order::parse_binance_um_order_query_json;
+use crate::trade_engine::query_parsers::compact_order::ORDER_QUERY_NOT_FOUND_MARKER;
 use crate::trade_engine::query_parsers::gate_order_status::{
     parse_gate_futures_order_status_json, parse_gate_spot_order_status_json,
 };
@@ -1201,6 +1202,15 @@ impl TradeWsClient {
             status,
             resp.error_code.unwrap_or(0)
         );
+        if resp.error_code == Some(-2013) {
+            self.publish_query_response(
+                req_type,
+                client_query_id,
+                status,
+                Bytes::from_static(ORDER_QUERY_NOT_FOUND_MARKER),
+            );
+            return;
+        }
         if !(200..300).contains(&(status as u32)) || resp.error_code.unwrap_or(0) != 0 {
             self.publish_query_error(req_type, client_query_id);
             return;

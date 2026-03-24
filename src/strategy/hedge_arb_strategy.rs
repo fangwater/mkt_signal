@@ -21,7 +21,7 @@ use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::uniform_order_helper::{publish_uniform_order_event, UniformOrderEventKind};
 use crate::strategy::ws_order_update::WsOrderUpdate;
 use crate::trade_engine::query_parsers::compact_order::{
-    CompactOrderQueryResp, COMPACT_ORDER_QUERY_RESP_LEN,
+    is_order_query_not_found_marker, CompactOrderQueryResp, COMPACT_ORDER_QUERY_RESP_LEN,
 };
 use crate::trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
 use log::{debug, error, info, warn};
@@ -3325,6 +3325,48 @@ impl Strategy for HedgeArbStrategy {
             .rposition(|&b| b != 0)
             .map(|pos| pos + 1)
             .unwrap_or(0);
+        if is_order_query_not_found_marker(&body[..actual_len]) {
+            match (leg, reason) {
+                (Leg::Open, PendingOrderQueryReason::OrderWatchdog) => {
+                    warn!(
+                        "HedgeArbStrategy: strategy_id={} open_leg order query not found (-2013, close): client_order_id={}",
+                        self.strategy_id, client_order_id
+                    );
+                    self.alive_flag = false;
+                    return;
+                }
+                (Leg::Hedge, PendingOrderQueryReason::OrderWatchdog) => {
+                    warn!(
+                        "HedgeArbStrategy: strategy_id={} hedge_leg order query not found (-2013, treat as open_failed): client_order_id={}",
+                        self.strategy_id, client_order_id
+                    );
+                    self.cleanup_failed_hedge_order(client_order_id);
+                    let base_pending_qty = self.cumulative_open_qty - self.cumulative_hedged_qty;
+                    self.try_resend_hedge_after_open_failed(base_pending_qty, "query_not_found");
+                    return;
+                }
+                (Leg::Open, PendingOrderQueryReason::CancelWatchdog)
+                | (Leg::Open, PendingOrderQueryReason::OpenLegCancelFailed)
+                | (Leg::Open, PendingOrderQueryReason::HedgeLegCancelFailed) => {
+                    self.schedule_cancel_query_watchdog(client_order_id);
+                    return;
+                }
+                (Leg::Hedge, PendingOrderQueryReason::CancelWatchdog)
+                | (Leg::Hedge, PendingOrderQueryReason::OpenLegCancelFailed)
+                | (Leg::Hedge, PendingOrderQueryReason::HedgeLegCancelFailed) => {
+                    self.schedule_cancel_query_watchdog(client_order_id);
+                    return;
+                }
+                (_, PendingOrderQueryReason::CancelRejected) => {
+                    self.schedule_cancel_query_watchdog_with_reason(
+                        client_order_id,
+                        PendingOrderQueryReason::CancelRejected,
+                    );
+                    return;
+                }
+            }
+        }
+
         if actual_len == 1 && body[0] == b'E' {
             match (leg, reason) {
                 (Leg::Open, PendingOrderQueryReason::OrderWatchdog) => {

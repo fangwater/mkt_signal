@@ -21,7 +21,7 @@ use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::uniform_order_helper::{publish_uniform_order_event, UniformOrderEventKind};
 use crate::strategy::ws_order_update::WsOrderUpdate;
 use crate::trade_engine::query_parsers::compact_order::{
-    CompactOrderQueryResp, COMPACT_ORDER_QUERY_RESP_LEN,
+    is_order_query_not_found_marker, CompactOrderQueryResp, COMPACT_ORDER_QUERY_RESP_LEN,
 };
 use crate::trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
 use crate::trade_engine::trade_request::TradeRequestType;
@@ -34,7 +34,7 @@ const HEDGE_QUERY_WATCHDOG_US: i64 = 30_000;
 const ORDER_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
 const CANCEL_FAILED_QUERY_MAX_RETRIES: u8 = 3;
 const CANCEL_RESEND_THROTTLE_US: i64 = 500_000;
-const NET_QTY_EPS: f64 = 5.0;
+const NET_EXPOSURE_EPS_USDT: f64 = 5.0;
 
 #[derive(Debug, Clone)]
 pub struct MmHedgeSnapshot {
@@ -317,8 +317,29 @@ impl MarketMakerHedgeStrategy {
         }
     }
 
+    fn mark_price(&self) -> Option<f64> {
+        MonitorChannel::instance()
+            .price_table()
+            .borrow()
+            .mark_price(&self.symbol)
+    }
+
+    fn net_exposure_usdt_with_mark_price(net_qty: f64, mark_price: f64) -> f64 {
+        net_qty.abs() * mark_price.abs()
+    }
+
+    fn net_exposure_usdt(&self) -> Option<f64> {
+        self.mark_price()
+            .map(|mark_price| Self::net_exposure_usdt_with_mark_price(self.net_qty, mark_price))
+    }
+
     fn should_send_hedge_query(&self) -> bool {
-        self.net_qty.abs() > NET_QTY_EPS
+        self.mark_price()
+            .map(|mark_price| {
+                Self::net_exposure_usdt_with_mark_price(self.net_qty, mark_price)
+                    > NET_EXPOSURE_EPS_USDT
+            })
+            .unwrap_or(false)
     }
 
     fn handle_flat_inventory_no_query(&mut self, now: i64) {
@@ -537,13 +558,19 @@ impl MarketMakerHedgeStrategy {
             return;
         }
 
+        let mark_price = self.mark_price();
+        let net_exposure_usdt = mark_price
+            .map(|price| Self::net_exposure_usdt_with_mark_price(self.net_qty, price))
+            .unwrap_or(0.0);
         info!(
-            "MMHedgeTrace: strategy_id={} query_timer fired symbol={} now={} next_query_ts_us={} net_qty={:.8} pending_query={} tracked_orders={}",
+            "MMHedgeTrace: strategy_id={} query_timer fired symbol={} now={} next_query_ts_us={} net_qty_base={:.8} mark_price={:?} net_exposure_usdt={:.8} pending_query={} tracked_orders={}",
             self.strategy_id,
             self.symbol,
             now,
             self.next_query_ts_us,
             self.net_qty,
+            mark_price,
+            net_exposure_usdt,
             self.pending_query,
             self.hedge_order_set_snapshot()
         );
@@ -553,6 +580,14 @@ impl MarketMakerHedgeStrategy {
         }
 
         if !self.should_send_hedge_query() {
+            info!(
+                "MMHedgeTrace: strategy_id={} query_timer skip_hedge_query threshold_usdt={} mark_price={:?} net_qty_base={:.8} net_exposure_usdt={:?}",
+                self.strategy_id,
+                NET_EXPOSURE_EPS_USDT,
+                mark_price,
+                self.net_qty,
+                self.net_exposure_usdt()
+            );
             self.handle_flat_inventory_no_query(now);
             return;
         }
@@ -1730,19 +1765,22 @@ impl MarketMakerHedgeStrategy {
 
 #[cfg(test)]
 mod tests {
-    use super::{MarketMakerHedgeStrategy, PendingOrderQueryReason, NET_QTY_EPS};
+    use super::{MarketMakerHedgeStrategy, PendingOrderQueryReason, NET_EXPOSURE_EPS_USDT};
 
     #[test]
-    fn zero_net_qty_does_not_send_hedge_query() {
-        let strategy = MarketMakerHedgeStrategy::new(1, "ATOMUSDT".to_string());
-        assert!(!strategy.should_send_hedge_query());
+    fn zero_net_exposure_does_not_send_hedge_query() {
+        assert_eq!(
+            MarketMakerHedgeStrategy::net_exposure_usdt_with_mark_price(0.0, 100.0),
+            0.0
+        );
     }
 
     #[test]
-    fn non_zero_net_qty_sends_hedge_query() {
-        let mut strategy = MarketMakerHedgeStrategy::new(1, "ATOMUSDT".to_string());
-        strategy.net_qty = NET_QTY_EPS + 1.0;
-        assert!(strategy.should_send_hedge_query());
+    fn net_exposure_threshold_uses_usdt_value() {
+        let below = MarketMakerHedgeStrategy::net_exposure_usdt_with_mark_price(0.01, 100.0);
+        let above = MarketMakerHedgeStrategy::net_exposure_usdt_with_mark_price(0.2, 100.0);
+        assert!(below < NET_EXPOSURE_EPS_USDT);
+        assert!(above > NET_EXPOSURE_EPS_USDT);
     }
 
     #[test]
@@ -1757,6 +1795,7 @@ mod tests {
             PendingOrderQueryReason::OrderWatchdog
         ));
     }
+
 }
 
 impl ForceCloseControl for MarketMakerHedgeStrategy {
@@ -1939,6 +1978,20 @@ impl Strategy for MarketMakerHedgeStrategy {
                 self.schedule_order_query_watchdog(client_order_id, reason);
                 return;
             }
+            return;
+        }
+
+        if is_order_query_not_found_marker(&body[..actual_len]) {
+            warn!(
+                "MMHedgeReconcile: strategy_id={} query_response order_not_found (-2013) reason={:?} {}",
+                self.strategy_id,
+                reason,
+                self.hedge_order_trace_snapshot(client_order_id)
+            );
+            self.mark_hedge_order_terminal_on_query_failure(
+                client_order_id,
+                "query order not found (-2013)",
+            );
             return;
         }
 
