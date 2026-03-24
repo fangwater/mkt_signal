@@ -151,6 +151,7 @@ SCRIPTS_TO_SYNC=(
   "stop_trade_signal.sh"
   "start_fr_signal.sh"
   "stop_fr_signal.sh"
+  "flatten_fr_futures_exposure.py"
   "sync_funding_rate_thresholds.py"
   "print_funding_rate_thresholds.py"
   "sync_fr_strategy_params.py"
