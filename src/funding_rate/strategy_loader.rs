@@ -69,6 +69,14 @@ pub struct StrategyParams {
     #[serde(default = "default_open_scale")]
     pub open_scale: f64,
 
+    /// MM open 买侧波动区间缩放系数 [low, high]
+    #[serde(default = "default_open_buy_vol_scale")]
+    pub open_buy_vol_scale: String,
+
+    /// MM open 卖侧波动区间缩放系数 [low, high]
+    #[serde(default = "default_open_sell_vol_scale")]
+    pub open_sell_vol_scale: String,
+
     /// MM 报单触发间隔（毫秒）
     #[serde(default = "default_order_interval_ms")]
     pub order_interval_ms: u64,
@@ -155,6 +163,12 @@ fn default_order_amount() -> f32 {
 fn default_open_scale() -> f64 {
     1.0
 }
+fn default_open_buy_vol_scale() -> String {
+    "[0.0,1.0]".to_string()
+}
+fn default_open_sell_vol_scale() -> String {
+    "[0.0,1.0]".to_string()
+}
 fn default_order_interval_ms() -> u64 {
     5_000
 }
@@ -222,6 +236,8 @@ impl Default for StrategyParams {
             mode: default_mode(),
             order_amount: default_order_amount(),
             open_scale: default_open_scale(),
+            open_buy_vol_scale: default_open_buy_vol_scale(),
+            open_sell_vol_scale: default_open_sell_vol_scale(),
             order_interval_ms: default_order_interval_ms(),
             open_orders_per_round: default_open_orders_per_round(),
             hedge_orders_per_round: default_hedge_orders_per_round(),
@@ -277,6 +293,24 @@ impl StrategyParams {
             .and_then(|s| s.parse::<f64>().ok())
             .filter(|v| v.is_finite() && *v > 0.0)
             .unwrap_or_else(default_open_scale);
+        let open_buy_vol_scale = match hash_map.get("open_buy_vol_scale") {
+            Some(raw) => raw.to_string(),
+            None => {
+                if ns == "mm" {
+                    panic!("Redis hash '{}' 缺少 open_buy_vol_scale", redis_key);
+                }
+                default_open_buy_vol_scale()
+            }
+        };
+        let open_sell_vol_scale = match hash_map.get("open_sell_vol_scale") {
+            Some(raw) => raw.to_string(),
+            None => {
+                if ns == "mm" {
+                    panic!("Redis hash '{}' 缺少 open_sell_vol_scale", redis_key);
+                }
+                default_open_sell_vol_scale()
+            }
+        };
 
         let order_interval_ms = match hash_map.get("order_interval_ms") {
             Some(raw) => {
@@ -564,6 +598,8 @@ impl StrategyParams {
             mode,
             order_amount,
             open_scale,
+            open_buy_vol_scale,
+            open_sell_vol_scale,
             order_interval_ms,
             open_orders_per_round,
             hedge_orders_per_round,
@@ -596,6 +632,34 @@ impl StrategyParams {
             );
             vec![0.0002, 0.0004, 0.0006, 0.0008, 0.001]
         })
+    }
+
+    fn parse_required_vol_scale_range(
+        &self,
+        raw: &str,
+        field_name: &str,
+    ) -> [f64; 2] {
+        let values = serde_json::from_str::<Vec<f64>>(raw).unwrap_or_else(|err| {
+            panic!(
+                "{} 必须是长度为2的 JSON 数组，例如 [0.2,0.8]；当前值='{}' err={}",
+                field_name, raw, err
+            )
+        });
+        if values.len() != 2 {
+            panic!(
+                "{} 必须是长度为2的 JSON 数组，例如 [0.2,0.8]；当前值='{}'",
+                field_name, raw
+            );
+        }
+        let low = values[0];
+        let high = values[1];
+        if !low.is_finite() || !high.is_finite() || low < 0.0 || high < low {
+            panic!(
+                "{} 必须满足 0<=low<=high；当前值='{}' 解析后=[{}, {}]",
+                field_name, raw, low, high
+            );
+        }
+        [low, high]
     }
 
     /// 解析 mode
@@ -654,9 +718,14 @@ impl StrategyParams {
             })
             .is_some()
             || MmDecision::try_with_mut(|_decision| {
+                let open_buy_vol_scale =
+                    self.parse_required_vol_scale_range(&self.open_buy_vol_scale, "open_buy_vol_scale");
+                let open_sell_vol_scale =
+                    self.parse_required_vol_scale_range(&self.open_sell_vol_scale, "open_sell_vol_scale");
                 _decision.update_order_amount(self.order_amount);
                 _decision.update_order_interval_ms(self.order_interval_ms);
                 _decision.update_open_orders_per_round(self.open_orders_per_round);
+                _decision.update_open_vol_scale_ranges(open_buy_vol_scale, open_sell_vol_scale);
                 _decision.update_mm_hedge_params(
                     self.hedge_orders_per_round,
                     self.hedge_vol_multiplier,
@@ -684,10 +753,12 @@ impl StrategyParams {
         }
 
         info!(
-            "✅ 策略参数已更新: mode={}, amount={:.2}, open_scale={:.4}, order_interval_ms={}, open_orders_per_round={}, cooldown={}s, prediction_mode={}, enable_open_cancel={}, enable_return_score_model={}, return_model_service={}, environment_model_service={}",
+            "✅ 策略参数已更新: mode={}, amount={:.2}, xarb_open_scale={:.4}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, order_interval_ms={}, open_orders_per_round={}, cooldown={}s, prediction_mode={}, enable_open_cancel={}, enable_return_score_model={}, return_model_service={}, environment_model_service={}",
             self.mode,
             self.order_amount,
             self.open_scale,
+            self.open_buy_vol_scale,
+            self.open_sell_vol_scale,
             self.order_interval_ms,
             self.open_orders_per_round,
             self.signal_cooldown,

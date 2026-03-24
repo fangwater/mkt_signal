@@ -1,4 +1,5 @@
 use crate::common::time_util::get_timestamp_us;
+use crate::common::tick_math::QuantizedValue;
 use crate::common::trade_error_code::describe_trade_error_code;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
@@ -48,6 +49,7 @@ pub struct MarketMakerOpenStrategy {
     open_side: Option<Side>,
     signal_ts: i64,
     open_from_key: String,
+    open_price_qv: QuantizedValue,
     open_price_offset: f64,
     alive_flag: bool,
     recorded_to_hedge: bool,
@@ -66,6 +68,7 @@ impl MarketMakerOpenStrategy {
             open_side: None,
             signal_ts: 0,
             open_from_key: String::new(),
+            open_price_qv: QuantizedValue::zero(),
             open_price_offset: 0.0,
             alive_flag: true,
             recorded_to_hedge: false,
@@ -328,6 +331,7 @@ impl MarketMakerOpenStrategy {
         self.open_side = Some(side);
         self.signal_ts = ctx.create_ts;
         self.open_from_key = String::from_utf8_lossy(&ctx.from_key).to_string();
+        self.open_price_qv = ctx.price_qv;
         self.open_price_offset = ctx.price_offset;
 
         let client_order_id = Self::compose_order_id(self.strategy_id);

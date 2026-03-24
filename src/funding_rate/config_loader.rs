@@ -712,11 +712,7 @@ fn parse_xarb_rolling_payloads(
 fn resolve_symbol_quantile_thresholds(
     rolling_payloads: &HashMap<String, serde_json::Value>,
     mapping: &HashMap<String, String>,
-) -> (
-    HashMap<String, HashMap<String, f64>>,
-    usize,
-    Vec<String>,
-) {
+) -> (HashMap<String, HashMap<String, f64>>, usize, Vec<String>) {
     let mut resolved = HashMap::new();
     let mut missing_refs = 0usize;
     let mut skipped_symbols = Vec::new();
@@ -760,12 +756,15 @@ fn apply_xarb_spread_thresholds(
 
     let mut applied = 0usize;
     for (symbol, values) in resolved {
-        if let (Some(mm), Some(mt)) = (
-            values.get("forward_open_mm"),
-            values.get("forward_open_mt"),
-        ) {
+        if let (Some(mm), Some(mt)) = (values.get("forward_open_mm"), values.get("forward_open_mt"))
+        {
             spread_factor.set_forward_open_threshold(
-                open_venue, symbol, hedge_venue, symbol, *mm, *mt,
+                open_venue,
+                symbol,
+                hedge_venue,
+                symbol,
+                *mm,
+                *mt,
             );
             applied += 1;
         }
@@ -774,7 +773,12 @@ fn apply_xarb_spread_thresholds(
             values.get("forward_cancel_mt"),
         ) {
             spread_factor.set_forward_open_cancel_threshold(
-                open_venue, symbol, hedge_venue, symbol, *mm, *mt,
+                open_venue,
+                symbol,
+                hedge_venue,
+                symbol,
+                *mm,
+                *mt,
             );
             applied += 1;
         }
@@ -783,7 +787,12 @@ fn apply_xarb_spread_thresholds(
             values.get("backward_open_mt"),
         ) {
             spread_factor.set_backward_open_threshold(
-                open_venue, symbol, hedge_venue, symbol, *mm, *mt,
+                open_venue,
+                symbol,
+                hedge_venue,
+                symbol,
+                *mm,
+                *mt,
             );
             applied += 1;
         }
@@ -792,7 +801,12 @@ fn apply_xarb_spread_thresholds(
             values.get("backward_cancel_mt"),
         ) {
             spread_factor.set_backward_cancel_threshold(
-                open_venue, symbol, hedge_venue, symbol, *mm, *mt,
+                open_venue,
+                symbol,
+                hedge_venue,
+                symbol,
+                *mm,
+                *mt,
             );
             applied += 1;
         }
@@ -868,8 +882,7 @@ async fn reload_xarb_thresholds_from_rolling(
     let (resolved_funding, funding_missing_refs, funding_skipped) =
         resolve_symbol_quantile_thresholds(&rolling_payloads, &funding_config.mapping);
 
-    let spread_applied =
-        apply_xarb_spread_thresholds(&resolved_spread, open_venue, hedge_venue);
+    let spread_applied = apply_xarb_spread_thresholds(&resolved_spread, open_venue, hedge_venue);
     let funding_thresholds = resolve_xarb_funding_thresholds(&resolved_funding);
     let funding_symbols = funding_thresholds.len();
 
@@ -927,13 +940,25 @@ mod tests {
     fn xarb_default_funding_mapping_depends_on_venues() {
         let fut_fut =
             default_xarb_funding_mapping(TradingVenue::BinanceFutures, TradingVenue::OkexFutures);
-        assert_eq!(fut_fut.get("forward_open_mm").map(String::as_str), Some("spread_fr_80"));
-        assert_eq!(fut_fut.get("backward_open_mm").map(String::as_str), Some("spread_fr_20"));
+        assert_eq!(
+            fut_fut.get("forward_open_mm").map(String::as_str),
+            Some("spread_fr_80")
+        );
+        assert_eq!(
+            fut_fut.get("backward_open_mm").map(String::as_str),
+            Some("spread_fr_20")
+        );
 
         let margin_fut =
             default_xarb_funding_mapping(TradingVenue::BinanceMargin, TradingVenue::BinanceFutures);
-        assert_eq!(margin_fut.get("forward_open_mm").map(String::as_str), Some("hedge_fr_50"));
-        assert_eq!(margin_fut.get("backward_open_mm").map(String::as_str), Some("hedge_fr_50"));
+        assert_eq!(
+            margin_fut.get("forward_open_mm").map(String::as_str),
+            Some("hedge_fr_50")
+        );
+        assert_eq!(
+            margin_fut.get("backward_open_mm").map(String::as_str),
+            Some("hedge_fr_50")
+        );
     }
 
     #[test]

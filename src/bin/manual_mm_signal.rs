@@ -97,6 +97,8 @@ struct AppCfg {
     open_order_ttl_us: i64,
     order_amount_u: f64,
     open_orders_per_round: u32,
+    open_buy_vol_scale: [f64; 2],
+    open_sell_vol_scale: [f64; 2],
     hedge_orders_per_round: u32,
     hedge_vol_multiplier: f64,
     hedge_offset_ratio: f64,
@@ -188,6 +190,8 @@ struct ManualOpenResponse {
     exp_time_us: i64,
     order_amount_u: f64,
     open_orders_per_round: u32,
+    open_buy_vol_scale: [f64; 2],
+    open_sell_vol_scale: [f64; 2],
     price_tick: f64,
     qty_tick: f64,
     from_key: String,
@@ -427,6 +431,8 @@ async fn load_config(path: &str) -> Result<AppCfg> {
         );
     }
     let open_timeout_s = parse_required_u64(&params, "open_order_timeout")?;
+    let open_buy_vol_scale = parse_required_f64_pair_json(&params, "open_buy_vol_scale")?;
+    let open_sell_vol_scale = parse_required_f64_pair_json(&params, "open_sell_vol_scale")?;
     let next_query_delay_ms = parse_required_u64(&params, "next_query_delay_ms")?;
     let hedge_vol_multiplier = parse_required_f64(&params, "hedge_vol_multiplier")?;
     let hedge_offset_ratio = parse_required_f64(&params, "hedge_offset_ratio")?;
@@ -460,6 +466,8 @@ async fn load_config(path: &str) -> Result<AppCfg> {
         open_order_ttl_us,
         order_amount_u,
         open_orders_per_round,
+        open_buy_vol_scale,
+        open_sell_vol_scale,
         hedge_orders_per_round,
         hedge_vol_multiplier,
         hedge_offset_ratio,
@@ -493,6 +501,32 @@ fn parse_required_u32(params: &HashMap<String, String>, key: &str) -> Result<u32
         .ok_or_else(|| anyhow::anyhow!("missing redis field: {}", key))?;
     raw.parse::<u32>()
         .with_context(|| format!("parse redis field '{}' failed: {}", key, raw))
+}
+
+fn parse_required_f64_pair_json(params: &HashMap<String, String>, key: &str) -> Result<[f64; 2]> {
+    let raw = params
+        .get(key)
+        .ok_or_else(|| anyhow::anyhow!("missing redis field: {}", key))?;
+    let values = serde_json::from_str::<Vec<f64>>(raw)
+        .with_context(|| format!("parse redis field '{}' as JSON array failed: {}", key, raw))?;
+    if values.len() != 2 {
+        anyhow::bail!(
+            "redis field '{}' must be a JSON array of length 2, got: {}",
+            key,
+            raw
+        );
+    }
+    let low = values[0];
+    let high = values[1];
+    if !low.is_finite() || !high.is_finite() || low < 0.0 || high < low {
+        anyhow::bail!(
+            "redis field '{}' must satisfy 0<=low<=high, got [{}, {}]",
+            key,
+            low,
+            high
+        );
+    }
+    Ok([low, high])
 }
 
 fn get_redis_settings() -> RedisSettings {
@@ -1000,6 +1034,8 @@ fn build_and_publish_open(
             cfg.open_orders_per_round,
             cfg.open_order_ttl_us,
             volatility,
+            cfg.open_buy_vol_scale,
+            cfg.open_sell_vol_scale,
             now_us,
             &table_guard,
         )
@@ -1119,6 +1155,8 @@ fn build_and_publish_open(
         exp_time_us: plan.exp_time_us,
         order_amount_u: plan.order_amount_u,
         open_orders_per_round: plan.orders_per_round,
+        open_buy_vol_scale: cfg.open_buy_vol_scale,
+        open_sell_vol_scale: cfg.open_sell_vol_scale,
         price_tick: plan.price_tick,
         qty_tick: plan.qty_tick,
         from_key: base_from_key,
@@ -1627,6 +1665,8 @@ const INDEX_HTML: &str = r#"<!doctype html>
           ['target_factor', cfg.target_factor || 'rl_return_volatility'],
           ['order_amount_u', cfg.order_amount_u],
           ['open_orders_per_round', cfg.open_orders_per_round],
+          ['open_buy_vol_scale', JSON.stringify(cfg.open_buy_vol_scale)],
+          ['open_sell_vol_scale', JSON.stringify(cfg.open_sell_vol_scale)],
           ['hedge_orders_per_round', cfg.hedge_orders_per_round],
           ['hedge_vol_multiplier', cfg.hedge_vol_multiplier],
           ['hedge_offset_ratio', cfg.hedge_offset_ratio],

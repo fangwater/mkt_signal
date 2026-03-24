@@ -161,6 +161,8 @@ impl MmOpenDecision {
             state.open_orders_per_round,
             state.open_order_ttl_us,
             volatility,
+            state.open_buy_vol_scale,
+            state.open_sell_vol_scale,
             now_us,
             &state.open_min_qty_table,
         ) {

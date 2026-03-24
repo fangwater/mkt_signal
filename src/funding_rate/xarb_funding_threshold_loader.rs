@@ -62,9 +62,8 @@ pub fn resolve_from_redis_map(
                 }
             };
 
-            let symbol_key =
-                normalize_symbol_for_whitelist(symbol_raw, TradingVenue::OkexFutures)
-                    .to_ascii_uppercase();
+            let symbol_key = normalize_symbol_for_whitelist(symbol_raw, TradingVenue::OkexFutures)
+                .to_ascii_uppercase();
             if symbol_key.is_empty() {
                 stats.ignored_fields += 1;
                 break;

@@ -45,6 +45,8 @@ pub(crate) struct MmDecisionState {
     pub(crate) hedge_venue: TradingVenue,
     pub(crate) order_interval_ms: u64,
     pub(crate) open_orders_per_round: u32,
+    pub(crate) open_buy_vol_scale: [f64; 2],
+    pub(crate) open_sell_vol_scale: [f64; 2],
     pub(crate) hedge_orders_per_round: u32,
     pub(crate) order_amount_u: f64,
     pub(crate) open_order_ttl_us: i64,
@@ -97,6 +99,8 @@ impl MmDecisionState {
             hedge_venue,
             order_interval_ms: 5_000,
             open_orders_per_round: 8,
+            open_buy_vol_scale: [0.0, 1.0],
+            open_sell_vol_scale: [0.0, 1.0],
             hedge_orders_per_round: 8,
             order_amount_u: 100.0,
             open_order_ttl_us: 120_000_000,
@@ -135,6 +139,36 @@ impl MmDecisionState {
         debug!(
             "MmDecision: open_orders_per_round updated value={}",
             self.open_orders_per_round
+        );
+    }
+
+    pub(crate) fn update_open_vol_scale_ranges(
+        &mut self,
+        open_buy_vol_scale: [f64; 2],
+        open_sell_vol_scale: [f64; 2],
+    ) {
+        for (name, scale) in [
+            ("open_buy_vol_scale", open_buy_vol_scale),
+            ("open_sell_vol_scale", open_sell_vol_scale),
+        ] {
+            if !scale[0].is_finite() || !scale[1].is_finite() {
+                panic!("MmDecision: {} must be finite, got {:?}", name, scale);
+            }
+            if scale[0] < 0.0 || scale[1] < scale[0] {
+                panic!(
+                    "MmDecision: {} must satisfy 0<=low<=high, got {:?}",
+                    name, scale
+                );
+            }
+        }
+        self.open_buy_vol_scale = open_buy_vol_scale;
+        self.open_sell_vol_scale = open_sell_vol_scale;
+        debug!(
+            "MmDecision: open vol scale ranges updated buy=[{:.6}, {:.6}] sell=[{:.6}, {:.6}]",
+            self.open_buy_vol_scale[0],
+            self.open_buy_vol_scale[1],
+            self.open_sell_vol_scale[0],
+            self.open_sell_vol_scale[1]
         );
     }
 

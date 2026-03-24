@@ -321,6 +321,64 @@ impl InterceptSummary {
     }
 }
 
+fn compact_environment_direction(forward_open: bool, backward_open: bool) -> &'static str {
+    match (forward_open, backward_open) {
+        (true, true) => "2",
+        (true, false) => "f",
+        (false, true) => "b",
+        (false, false) => "0",
+    }
+}
+
+fn compact_environment_source(source: EnvironmentSignalSource) -> &'static str {
+    match source {
+        EnvironmentSignalSource::ModelOutput => "mo",
+        EnvironmentSignalSource::PnluFallback => "pf",
+    }
+}
+
+fn compact_environment_note(note: &str) -> String {
+    let model_note = match note {
+        "model_score_ge_threshold" => Some("score_ge"),
+        "model_score_lt_threshold" => Some("score_lt"),
+        "invalid_model_score" => Some("score_nan"),
+        "missing_model_score" => Some("score_miss"),
+        _ => None,
+    };
+    if let Some(label) = model_note {
+        return label.to_string();
+    }
+
+    let Some(rest) = note.strip_prefix("pnlu_fallback:") else {
+        return note.to_string();
+    };
+    let pnlu_note = match rest {
+        "missing_key" => "miss_key",
+        "missing_ts" => "miss_ts",
+        "stale_ts" => "stale",
+        "missing_factor_or_threshold" => "miss_fac_thr",
+        "factor_not_gt_threshold" => "fac_le_thr",
+        "ts_in_future" => "future_ts",
+        _ if rest.starts_with("redis_error:") => "redis_err",
+        _ if rest.starts_with("invalid_json:") => "json_err",
+        _ => rest,
+    };
+    format!("pf_{pnlu_note}")
+}
+
+fn compact_environment_intercept_reason(
+    forward_open: bool,
+    backward_open: bool,
+    cooldown_hit: bool,
+    result: &EnvironmentSignalResult,
+) -> String {
+    let direction = compact_environment_direction(forward_open, backward_open);
+    let source = compact_environment_source(result.source);
+    let note = compact_environment_note(&result.note);
+    let cooldown_flag = if cooldown_hit { 1 } else { 0 };
+    format!("env_blk:d={direction}:src={source}:n={note}:cd={cooldown_flag}")
+}
+
 impl XarbDecision {
     fn normalize_symbol_key(symbol: &str) -> String {
         normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures)
@@ -878,9 +936,7 @@ impl XarbDecision {
             Side::Sell => funding_value < funding_threshold,
         };
         if !funding_open_hit {
-            self.record_intercept_summary(format!(
-                "skip_open_by_funding:source={funding_source}"
-            ));
+            self.record_intercept_summary(format!("skip_open_by_funding:source={funding_source}"));
             return Ok(None);
         }
         let return_lookup = self.lookup_return_model_score_lookup(hedge_symbol, hedge_venue);
@@ -2194,20 +2250,11 @@ impl XarbDecision {
         cooldown_hit: bool,
         result: &EnvironmentSignalResult,
     ) {
-        let direction = match (forward_open, backward_open) {
-            (true, true) => "both",
-            (true, false) => "forward",
-            (false, true) => "backward",
-            (false, false) => "none",
-        };
-        let source = match result.source {
-            EnvironmentSignalSource::ModelOutput => "model_output",
-            EnvironmentSignalSource::PnluFallback => "pnlu_fallback",
-        };
-        let service = result.service_name.as_deref().unwrap_or("-");
-        self.record_intercept_summary(format!(
-            "environment_block:dir={direction}:source={source}:service={service}:note={}:cooldown_hit={cooldown_hit}",
-            result.note
+        self.record_intercept_summary(compact_environment_intercept_reason(
+            forward_open,
+            backward_open,
+            cooldown_hit,
+            result,
         ));
     }
 
@@ -2246,7 +2293,10 @@ impl XarbDecision {
 
 #[cfg(test)]
 mod tests {
-    use super::build_xarb_level_specs;
+    use super::{
+        build_xarb_level_specs, compact_environment_intercept_reason, compact_environment_note,
+    };
+    use crate::funding_rate::factor_value_hub::{EnvironmentSignalResult, EnvironmentSignalSource};
     use crate::pre_trade::order_manager::Side;
 
     #[test]
@@ -2264,5 +2314,36 @@ mod tests {
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].side, Side::Sell);
         assert!((specs[0].offset - 0.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn xarb_environment_intercept_reason_is_compact_for_model_output() {
+        let result = EnvironmentSignalResult {
+            source: EnvironmentSignalSource::ModelOutput,
+            allow_open: false,
+            class_label: 0,
+            service_name: Some(
+                "model_output/binance-futures/some-very-long-service-name".to_string(),
+            ),
+            symbol_key: "BTCUSDT".to_string(),
+            score: Some(-0.1),
+            threshold: Some(0.0),
+            note: "model_score_lt_threshold".to_string(),
+        };
+
+        let reason = compact_environment_intercept_reason(true, false, false, &result);
+        assert_eq!(reason, "env_blk:d=f:src=mo:n=score_lt:cd=0");
+    }
+
+    #[test]
+    fn xarb_environment_intercept_reason_compacts_pnlu_note() {
+        assert_eq!(
+            compact_environment_note("pnlu_fallback:stale_ts"),
+            "pf_stale"
+        );
+        assert_eq!(
+            compact_environment_note("pnlu_fallback:redis_error: timeout"),
+            "pf_redis_err"
+        );
     }
 }

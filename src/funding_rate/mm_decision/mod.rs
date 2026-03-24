@@ -172,6 +172,15 @@ impl MmDecision {
             .update_open_orders_per_round(open_orders_per_round);
     }
 
+    pub fn update_open_vol_scale_ranges(
+        &mut self,
+        open_buy_vol_scale: [f64; 2],
+        open_sell_vol_scale: [f64; 2],
+    ) {
+        self.state
+            .update_open_vol_scale_ranges(open_buy_vol_scale, open_sell_vol_scale);
+    }
+
     pub fn update_mm_hedge_params(
         &mut self,
         hedge_orders_per_round: u32,
