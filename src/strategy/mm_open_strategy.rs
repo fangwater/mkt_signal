@@ -1,5 +1,5 @@
-use crate::common::time_util::get_timestamp_us;
 use crate::common::tick_math::QuantizedValue;
+use crate::common::time_util::get_timestamp_us;
 use crate::common::trade_error_code::describe_trade_error_code;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};

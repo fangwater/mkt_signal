@@ -634,11 +634,7 @@ impl StrategyParams {
         })
     }
 
-    fn parse_required_vol_scale_range(
-        &self,
-        raw: &str,
-        field_name: &str,
-    ) -> [f64; 2] {
+    fn parse_required_vol_scale_range(&self, raw: &str, field_name: &str) -> [f64; 2] {
         let values = serde_json::from_str::<Vec<f64>>(raw).unwrap_or_else(|err| {
             panic!(
                 "{} 必须是长度为2的 JSON 数组，例如 [0.2,0.8]；当前值='{}' err={}",
@@ -718,10 +714,12 @@ impl StrategyParams {
             })
             .is_some()
             || MmDecision::try_with_mut(|_decision| {
-                let open_buy_vol_scale =
-                    self.parse_required_vol_scale_range(&self.open_buy_vol_scale, "open_buy_vol_scale");
-                let open_sell_vol_scale =
-                    self.parse_required_vol_scale_range(&self.open_sell_vol_scale, "open_sell_vol_scale");
+                let open_buy_vol_scale = self
+                    .parse_required_vol_scale_range(&self.open_buy_vol_scale, "open_buy_vol_scale");
+                let open_sell_vol_scale = self.parse_required_vol_scale_range(
+                    &self.open_sell_vol_scale,
+                    "open_sell_vol_scale",
+                );
                 _decision.update_order_amount(self.order_amount);
                 _decision.update_order_interval_ms(self.order_interval_ms);
                 _decision.update_open_orders_per_round(self.open_orders_per_round);
