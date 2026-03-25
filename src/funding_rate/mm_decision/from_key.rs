@@ -80,14 +80,10 @@ pub(crate) fn build_mm_cancel_from_key(
         volatility,
         env,
     );
-    if let Some(value) = tlen {
-        key.push_str(":tlen=");
-        key.push_str(&format_tlen_value(value));
-    }
-    if let Some(value) = tlen_threshold {
-        key.push_str(":tlen_thr=");
-        key.push_str(&format_tlen_value(value));
-    }
+    key.push_str(":tlen=");
+    key.push_str(&format_tlen_value(tlen.unwrap_or(0.0)));
+    key.push_str(":tlen_thr=");
+    key.push_str(&format_tlen_value(tlen_threshold.unwrap_or(0.0)));
     key
 }
 
@@ -155,6 +151,25 @@ mod tests {
         assert_eq!(
             key,
             "123:ret_score=0:ret_thr=0:vol=0:env_score=0.30000000:env_thr=0.40000000:tlen=1.25000000:tlen_thr=3.50000000"
+        );
+    }
+
+    #[test]
+    fn mm_cancel_from_key_always_contains_tlen_fields() {
+        let env = EnvironmentSignalResult {
+            source: EnvironmentSignalSource::PnluFallback,
+            allow_open: true,
+            class_label: 0,
+            service_name: None,
+            symbol_key: "BTCUSDT".to_string(),
+            score: None,
+            threshold: None,
+            note: String::new(),
+        };
+        let key = build_mm_cancel_from_key(123, Some(0.5), Some(0.2), Some(0.1), &env, None, None);
+        assert_eq!(
+            key,
+            "123:ret_score=0.50000000:ret_thr=0.20000000:vol=0.10000000:env_score=0:env_thr=0:tlen=0.00000000:tlen_thr=0.00000000"
         );
     }
 }
