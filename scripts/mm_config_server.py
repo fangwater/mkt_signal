@@ -358,7 +358,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         </div>
       </div>
       <div class="hint">
-        `enable_open_cancel=false` 时，MM 会跳过 open 撤单判断，不会发 `MMCancel`；前端布尔项使用下拉框编辑。
+        `enable_open_cancel=false` 时，MM 会跳过 open 撤单判断，不会发 `MMCancel`；`enable_return_score_adjust_hegde=false` 时，MM hedge offset 不再被 return score 调整；前端布尔项使用下拉框编辑。
       </div>
       <div class="kv-table" id="strategy-table"></div>
       <div id="strategy-status" class="status"></div>
@@ -613,7 +613,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         const rawValue = values && values[key] !== undefined ? values[key] : (defaults[key] ?? '');
         const useBooleanSelect =
           containerId === 'strategy-table' &&
-          ['prediction_mode', 'enable_open_cancel'].includes(key) &&
+          ['prediction_mode', 'enable_open_cancel', 'enable_return_score_adjust_hegde'].includes(key) &&
           isBooleanParamValue(rawValue);
         let field;
         if (useBooleanSelect) {

@@ -193,6 +193,7 @@ impl MmDecision {
         hedge_price_offset_limit_lower: f64,
         hedge_price_offset_limit_upper: f64,
         next_query_delay_ms: u64,
+        enable_return_score_adjust_hedge: bool,
     ) {
         self.state.update_mm_hedge_params(
             hedge_orders_per_round,
@@ -201,6 +202,7 @@ impl MmDecision {
             hedge_price_offset_limit_lower,
             hedge_price_offset_limit_upper,
             next_query_delay_ms,
+            enable_return_score_adjust_hedge,
         );
     }
 
@@ -324,6 +326,7 @@ impl MmDecision {
             offset_low: self.state.hedge_price_offset_limit_lower,
             offset_high_limit: self.state.hedge_price_offset_limit_upper,
             next_query_delay_ms: self.state.next_query_delay_ms,
+            enable_return_score_adjust_hedge: self.state.enable_return_score_adjust_hedge,
         };
         let ctx = match build_mm_hedge_ctx_core(input, &self.state.open_min_qty_table, &query) {
             Ok(ctx) => ctx,

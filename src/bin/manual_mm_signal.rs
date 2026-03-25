@@ -102,6 +102,7 @@ struct AppCfg {
     hedge_orders_per_round: u32,
     hedge_vol_multiplier: f64,
     hedge_offset_ratio: f64,
+    enable_return_score_adjust_hedge: bool,
     hedge_price_offset_limit_upper: f64,
     hedge_price_offset_limit_lower: f64,
     next_query_delay_ms: u64,
@@ -237,6 +238,7 @@ struct ConfigResponse {
     hedge_orders_per_round: u32,
     hedge_vol_multiplier: f64,
     hedge_offset_ratio: f64,
+    enable_return_score_adjust_hedge: bool,
     hedge_price_offset_limit_upper: f64,
     hedge_price_offset_limit_lower: f64,
     next_query_delay_ms: u64,
@@ -438,6 +440,11 @@ async fn load_config(path: &str) -> Result<AppCfg> {
     let next_query_delay_ms = parse_required_u64(&params, "next_query_delay_ms")?;
     let hedge_vol_multiplier = parse_required_f64(&params, "hedge_vol_multiplier")?;
     let hedge_offset_ratio = parse_required_f64(&params, "hedge_offset_ratio")?;
+    let enable_return_score_adjust_hedge = params
+        .get("enable_return_score_adjust_hegde")
+        .or_else(|| params.get("enable_return_score_adjust_hedge"))
+        .map(|raw| matches!(raw.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes" | "on"))
+        .unwrap_or(true);
     let hedge_price_offset_limit_upper =
         parse_required_f64(&params, "hedge_price_offset_limit_upper")?;
     let hedge_price_offset_limit_lower =
@@ -473,6 +480,7 @@ async fn load_config(path: &str) -> Result<AppCfg> {
         hedge_orders_per_round,
         hedge_vol_multiplier,
         hedge_offset_ratio,
+        enable_return_score_adjust_hedge,
         hedge_price_offset_limit_upper,
         hedge_price_offset_limit_lower,
         next_query_delay_ms,
@@ -654,6 +662,7 @@ fn build_mm_hedge_ctx(
         quote,
         volatility,
         signal,
+        enable_return_score_adjust_hedge: cfg.enable_return_score_adjust_hedge,
         hedge_vol_multiplier: cfg.hedge_vol_multiplier,
         hedge_offset_ratio: cfg.hedge_offset_ratio,
         order_amount_u: cfg.order_amount_u,
@@ -1218,6 +1227,7 @@ async fn api_config(State(st): State<AppState>) -> impl IntoResponse {
         hedge_orders_per_round: st.cfg.hedge_orders_per_round,
         hedge_vol_multiplier: st.cfg.hedge_vol_multiplier,
         hedge_offset_ratio: st.cfg.hedge_offset_ratio,
+        enable_return_score_adjust_hedge: st.cfg.enable_return_score_adjust_hedge,
         hedge_price_offset_limit_upper: st.cfg.hedge_price_offset_limit_upper,
         hedge_price_offset_limit_lower: st.cfg.hedge_price_offset_limit_lower,
         next_query_delay_ms: st.cfg.next_query_delay_ms,
@@ -1674,6 +1684,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
           ['hedge_orders_per_round', cfg.hedge_orders_per_round],
           ['hedge_vol_multiplier', cfg.hedge_vol_multiplier],
           ['hedge_offset_ratio', cfg.hedge_offset_ratio],
+          ['enable_return_score_adjust_hedge', cfg.enable_return_score_adjust_hedge],
           ['hedge_price_offset_limit_upper', cfg.hedge_price_offset_limit_upper],
           ['hedge_price_offset_limit_lower', cfg.hedge_price_offset_limit_lower],
           ['default_open_ttl_ms', cfg.default_open_ttl_ms],

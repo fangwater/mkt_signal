@@ -56,6 +56,7 @@ pub(crate) struct MmDecisionState {
     pub(crate) hedge_offset_ratio: f64,
     pub(crate) hedge_price_offset_limit_upper: f64,
     pub(crate) hedge_price_offset_limit_lower: f64,
+    pub(crate) enable_return_score_adjust_hedge: bool,
     pub(crate) enable_open_cancel: bool,
     pub(crate) tlen_cancel_freq_ms: u64,
     pub(crate) prediction_mode: bool,
@@ -114,6 +115,7 @@ impl MmDecisionState {
             hedge_offset_ratio: 1.3,
             hedge_price_offset_limit_upper: 0.005,
             hedge_price_offset_limit_lower: 0.0003,
+            enable_return_score_adjust_hedge: true,
             enable_open_cancel: false,
             tlen_cancel_freq_ms: 3_000,
             prediction_mode: false,
@@ -189,6 +191,7 @@ impl MmDecisionState {
         hedge_price_offset_limit_lower: f64,
         hedge_price_offset_limit_upper: f64,
         next_query_delay_ms: u64,
+        enable_return_score_adjust_hedge: bool,
     ) {
         if hedge_orders_per_round == 0 {
             panic!("MmDecision: hedge_orders_per_round must be > 0");
@@ -216,14 +219,16 @@ impl MmDecisionState {
         self.hedge_price_offset_limit_lower = hedge_price_offset_limit_lower;
         self.hedge_price_offset_limit_upper = hedge_price_offset_limit_upper;
         self.next_query_delay_ms = next_query_delay_ms;
+        self.enable_return_score_adjust_hedge = enable_return_score_adjust_hedge;
         debug!(
-            "MmDecision: hedge params updated levels={} vol_multiplier={:.6} offset_ratio={:.6} low={:.6} high={:.6} next_query_delay_ms={}",
+            "MmDecision: hedge params updated levels={} vol_multiplier={:.6} offset_ratio={:.6} low={:.6} high={:.6} next_query_delay_ms={} enable_return_score_adjust_hedge={}",
             self.hedge_orders_per_round,
             self.hedge_vol_multiplier,
             self.hedge_offset_ratio,
             self.hedge_price_offset_limit_lower,
             self.hedge_price_offset_limit_upper,
-            self.next_query_delay_ms
+            self.next_query_delay_ms,
+            self.enable_return_score_adjust_hedge
         );
     }
 

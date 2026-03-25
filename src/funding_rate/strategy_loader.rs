@@ -144,6 +144,10 @@ pub struct StrategyParams {
     #[serde(default = "default_tlen_cancel_freq_ms")]
     pub tlen_cancel_freq_ms: u64,
 
+    /// MM hedge 是否允许 return score 调整 hedge offset（false=使用中性 score 计算）
+    #[serde(default = "default_enable_return_score_adjust_hedge")]
+    pub enable_return_score_adjust_hedge: bool,
+
     /// xarb 是否启用 return score 拦截（false=只读取，不拦截开仓）
     #[serde(default = "default_enable_return_score_model")]
     pub enable_return_score_model: bool,
@@ -227,6 +231,9 @@ fn default_enable_open_cancel() -> bool {
 fn default_tlen_cancel_freq_ms() -> u64 {
     3_000
 }
+fn default_enable_return_score_adjust_hedge() -> bool {
+    true
+}
 fn default_enable_return_score_model() -> bool {
     false
 }
@@ -263,6 +270,7 @@ impl Default for StrategyParams {
             prediction_mode: default_prediction_mode(),
             enable_open_cancel: default_enable_open_cancel(),
             tlen_cancel_freq_ms: default_tlen_cancel_freq_ms(),
+            enable_return_score_adjust_hedge: default_enable_return_score_adjust_hedge(),
             enable_return_score_model: default_enable_return_score_model(),
             return_model_service: default_return_model_service(),
             environment_model_service: default_environment_model_service(),
@@ -502,6 +510,22 @@ impl StrategyParams {
             }
             None => default_tlen_cancel_freq_ms(),
         };
+        let enable_return_score_adjust_hedge = match hash_map
+            .get("enable_return_score_adjust_hegde")
+            .or_else(|| hash_map.get("enable_return_score_adjust_hedge"))
+        {
+            Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" | "on" => true,
+                "false" | "0" | "no" | "off" | "" => false,
+                _ => {
+                    panic!(
+                        "Redis hash '{}' enable_return_score_adjust_hegde 非法（仅支持 true/false）: {}",
+                        redis_key, raw
+                    )
+                }
+            },
+            None => default_enable_return_score_adjust_hedge(),
+        };
 
         let enable_return_score_model = match hash_map.get("enable_return_score_model") {
             Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
@@ -644,6 +668,7 @@ impl StrategyParams {
             prediction_mode,
             enable_open_cancel,
             tlen_cancel_freq_ms,
+            enable_return_score_adjust_hedge,
             enable_return_score_model,
             return_model_service,
             environment_model_service,
@@ -759,6 +784,7 @@ impl StrategyParams {
                     self.hedge_price_offset_limit_lower,
                     self.hedge_price_offset_limit_upper,
                     self.next_query_delay_ms,
+                    self.enable_return_score_adjust_hedge,
                 );
                 _decision.update_open_order_timeout(self.open_order_timeout);
                 _decision.update_prediction_mode(self.prediction_mode);
@@ -779,7 +805,7 @@ impl StrategyParams {
         }
 
         info!(
-            "✅ 策略参数已更新: mode={}, amount={:.2}, xarb_open_scale={:.4}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, order_interval_ms={}, open_orders_per_round={}, cooldown={}s, prediction_mode={}, enable_open_cancel={}, tlen_cancel_freq_ms={}, enable_return_score_model={}, return_model_service={}, environment_model_service={}",
+            "✅ 策略参数已更新: mode={}, amount={:.2}, xarb_open_scale={:.4}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, order_interval_ms={}, open_orders_per_round={}, cooldown={}s, prediction_mode={}, enable_open_cancel={}, tlen_cancel_freq_ms={}, enable_return_score_adjust_hedge={}, enable_return_score_model={}, return_model_service={}, environment_model_service={}",
             self.mode,
             self.order_amount,
             self.open_scale,
@@ -791,6 +817,7 @@ impl StrategyParams {
             self.prediction_mode,
             self.enable_open_cancel,
             self.tlen_cancel_freq_ms,
+            self.enable_return_score_adjust_hedge,
             self.enable_return_score_model,
             self.return_model_service,
             self.environment_model_service
@@ -848,5 +875,11 @@ mod tests {
     fn test_tlen_cancel_freq_ms_default_is_3000() {
         let params = StrategyParams::default();
         assert_eq!(params.tlen_cancel_freq_ms, 3_000);
+    }
+
+    #[test]
+    fn test_enable_return_score_adjust_hedge_default_is_true() {
+        let params = StrategyParams::default();
+        assert!(params.enable_return_score_adjust_hedge);
     }
 }
