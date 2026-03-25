@@ -1789,7 +1789,6 @@ mod tests {
             PendingOrderQueryReason::OrderWatchdog
         ));
     }
-
 }
 
 impl ForceCloseControl for MarketMakerHedgeStrategy {

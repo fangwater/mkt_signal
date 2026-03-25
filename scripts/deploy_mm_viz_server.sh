@@ -441,6 +441,8 @@ if [[ "$DO_SCRIPTS" -eq 1 ]]; then
   EXTRA_FILES=(
     "mm_scripts/start_mm_viz_server.sh"
     "mm_scripts/stop_mm_viz_server.sh"
+    "mm_scripts/sync_mm_tlen_threshold.py"
+    "mm_scripts/print_mm_tlen_threshold.py"
     "scripts/mm_process_name.sh"
     "scripts/setup_nginx_4191.sh"
   )

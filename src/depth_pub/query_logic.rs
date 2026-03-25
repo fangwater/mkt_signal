@@ -1,19 +1,21 @@
+use std::sync::Arc;
+
 use log::{debug, warn};
 
-use super::orderbook::{key_to_price, price_to_key, OrderBook};
+use super::orderbook::price_to_key;
 use super::query_msg::{
-    price_to_tick_index, resp_status_name, tick_index_to_price, DepthQueryHeader,
-    DepthQueryLoadTlenBatchReq, DepthQueryLoadTlenBatchResp, DepthQueryLoadTlenSingleReq,
-    DepthQueryLoadTlenSingleResp, DepthQueryTop5PriceTlenReq, DepthQueryTop5PriceTlenResp,
-    DepthQueryType, DEPTH_QUERY_PAYLOAD, RESP_STATUS_BAD_REQUEST, RESP_STATUS_BOOK_INVALID,
-    RESP_STATUS_OK, RESP_STATUS_PAYLOAD_TOO_LARGE, RESP_STATUS_SYMBOL_MISSING,
-    RESP_STATUS_UNSUPPORTED_TYPE, TLEN_QUERY_AMOUNT_INVALID,
+    resp_status_name, tick_index_to_price, DepthQueryHeader, DepthQueryLoadTlenBatchReq,
+    DepthQueryLoadTlenBatchResp, DepthQueryLoadTlenSingleReq, DepthQueryLoadTlenSingleResp,
+    DepthQueryTop5PriceTlenReq, DepthQueryTop5PriceTlenResp, DepthQueryType, DEPTH_QUERY_PAYLOAD,
+    RESP_STATUS_BAD_REQUEST, RESP_STATUS_BOOK_INVALID, RESP_STATUS_OK,
+    RESP_STATUS_PAYLOAD_TOO_LARGE, RESP_STATUS_SYMBOL_MISSING, RESP_STATUS_UNSUPPORTED_TYPE,
+    TLEN_QUERY_AMOUNT_INVALID,
 };
+use super::query_snapshot::SymbolQuerySnapshot;
 
 pub trait DepthQuerySource {
     fn venue_slug(&self) -> &str;
-    fn price_tick_for_symbol(&self, symbol: &str) -> Option<f64>;
-    fn resolve_orderbook(&self, symbol: &str) -> Option<&OrderBook>;
+    fn resolve_snapshot(&self, symbol: &str) -> Option<Arc<SymbolQuerySnapshot>>;
 }
 
 pub fn build_query_response<S: DepthQuerySource>(
@@ -113,7 +115,8 @@ fn handle_load_tlen_single_query<S: DepthQuerySource>(
         }
     };
 
-    let amount = query_tlen_amount_by_tick_index(source, symbol, req.tick_index);
+    let snapshot = source.resolve_snapshot(symbol);
+    let amount = query_tlen_amount_by_tick_index(snapshot.as_deref(), req.tick_index);
     let resp = DepthQueryLoadTlenSingleResp {
         timestamp_us: req.timestamp_us,
         amount,
@@ -149,10 +152,11 @@ fn handle_load_tlen_batch_query<S: DepthQuerySource>(
         }
     };
 
+    let snapshot = source.resolve_snapshot(symbol);
     let amounts: Vec<f64> = req
         .tick_indices
         .into_iter()
-        .map(|tick_index| query_tlen_amount_by_tick_index(source, symbol, tick_index))
+        .map(|tick_index| query_tlen_amount_by_tick_index(snapshot.as_deref(), tick_index))
         .collect();
 
     match DepthQueryLoadTlenBatchResp::write_to(&mut resp_payload[1..], req.timestamp_us, &amounts)
@@ -187,29 +191,21 @@ fn handle_top5_price_tlen_query<S: DepthQuerySource>(
         }
     };
 
-    let Some(orderbook) = source.resolve_orderbook(symbol) else {
+    let Some(snapshot) = source.resolve_snapshot(symbol) else {
         return (RESP_STATUS_SYMBOL_MISSING, 1);
     };
-    if !orderbook.is_valid() {
+    if !snapshot.book_valid {
         return (RESP_STATUS_BOOK_INVALID, 1);
     }
-    let Some(tick) = source.price_tick_for_symbol(symbol) else {
+    if snapshot.price_tick.is_none() || !snapshot.top5_ready {
         return (RESP_STATUS_BAD_REQUEST, 1);
-    };
-
-    let (bids, asks) = orderbook.get_depth_keys(5);
-    let Some(top5_bids) = depth_levels_to_tick_indices(&bids, tick) else {
-        return (RESP_STATUS_BAD_REQUEST, 1);
-    };
-    let Some(top5_asks) = depth_levels_to_tick_indices(&asks, tick) else {
-        return (RESP_STATUS_BAD_REQUEST, 1);
-    };
+    }
 
     match DepthQueryTop5PriceTlenResp::write_to(
         &mut resp_payload[1..],
         req.timestamp_us,
-        &top5_bids,
-        &top5_asks,
+        &snapshot.top5_bids,
+        &snapshot.top5_asks,
     ) {
         Ok(written) => {
             resp_payload[0] = RESP_STATUS_OK;
@@ -223,12 +219,14 @@ fn handle_top5_price_tlen_query<S: DepthQuerySource>(
     }
 }
 
-fn query_tlen_amount_by_tick_index<S: DepthQuerySource>(
-    source: &S,
-    symbol: &str,
-    tick_index: i64,
-) -> f64 {
-    let Some(tick) = source.price_tick_for_symbol(symbol) else {
+fn query_tlen_amount_by_tick_index(snapshot: Option<&SymbolQuerySnapshot>, tick_index: i64) -> f64 {
+    let Some(snapshot) = snapshot else {
+        return TLEN_QUERY_AMOUNT_INVALID;
+    };
+    if !snapshot.book_valid {
+        return TLEN_QUERY_AMOUNT_INVALID;
+    }
+    let Some(tick) = snapshot.price_tick else {
         return TLEN_QUERY_AMOUNT_INVALID;
     };
     let Some(price) = tick_index_to_price(tick_index, tick) else {
@@ -236,22 +234,5 @@ fn query_tlen_amount_by_tick_index<S: DepthQuerySource>(
     };
     let price_key = price_to_key(price);
 
-    let Some(orderbook) = source.resolve_orderbook(symbol) else {
-        return TLEN_QUERY_AMOUNT_INVALID;
-    };
-    if !orderbook.is_valid() {
-        return TLEN_QUERY_AMOUNT_INVALID;
-    }
-
-    orderbook.amount_at_price_key(price_key).unwrap_or(0.0)
-}
-
-fn depth_levels_to_tick_indices(levels: &[(i64, f64)], tick: f64) -> Option<Vec<(i64, f64)>> {
-    let mut out = Vec::with_capacity(levels.len());
-    for (price_key, amount) in levels {
-        let price = key_to_price(*price_key);
-        let tick_index = price_to_tick_index(price, tick)?;
-        out.push((tick_index, *amount));
-    }
-    Some(out)
+    snapshot.amount_at_price_key(price_key).unwrap_or(0.0)
 }

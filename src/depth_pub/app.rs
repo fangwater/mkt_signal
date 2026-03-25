@@ -9,14 +9,17 @@ use iceoryx2::service::ipc;
 use indexmap::IndexSet;
 use log::{debug, info, warn};
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use super::cfg::DepthPubConfig;
 use super::depth_msg::DepthMsg;
 use super::orderbook::OrderBook;
 use super::publisher::DepthMsgPublisher;
-use super::query_logic::{build_query_response, DepthQuerySource};
+use super::query_logic::build_query_response;
 use super::query_server::DepthQuerySocketServer;
+use super::query_snapshot::{QuerySnapshotStore, SymbolQuerySnapshot};
 use crate::signal::common::TradingVenue;
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
 
@@ -34,6 +37,7 @@ const PUBLISH_OUTCOME_LOG_INTERVAL_SECS: u64 = 10;
 struct SymbolState {
     orderbook: OrderBook,
     last_push_time: Instant,
+    query_snapshot_dirty: bool,
     /// 有序去重集合：保存最近处理过的 (update_id, chunk_index)
     /// - Set 语义：O(1) 判重
     /// - 保留插入顺序：窗口超限时移除最旧 key
@@ -45,6 +49,7 @@ impl SymbolState {
         Self {
             orderbook: OrderBook::new(),
             last_push_time: Instant::now(),
+            query_snapshot_dirty: true,
             dedup_msg_keys: IndexSet::with_capacity(DEDUP_WINDOW_SIZE),
         }
     }
@@ -76,7 +81,7 @@ pub struct DepthPubApp {
     venue_slug: String,
     publisher: DepthMsgPublisher,
     subscriber: Subscriber<ipc::Service, [u8; INC_MAX_BYTES], ()>,
-    query_server: DepthQuerySocketServer,
+    query_snapshots: Arc<QuerySnapshotStore>,
     min_qty_table: VenueMinQtyTable,
     /// symbol -> SymbolState
     symbols: HashMap<String, SymbolState>,
@@ -125,7 +130,7 @@ impl DepthPubApp {
             venue_slug
         );
 
-        let query_server = Self::create_query_server(venue_slug)?;
+        let query_snapshots = Arc::new(QuerySnapshotStore::new(venue_slug));
 
         info!(
             "DepthPubApp created for {}: keepalive_push_interval={}ms, depth25={}, depth50={}",
@@ -141,7 +146,7 @@ impl DepthPubApp {
             venue_slug: venue_slug.to_string(),
             publisher,
             subscriber,
-            query_server,
+            query_snapshots,
             min_qty_table,
             symbols: HashMap::new(),
             push_interval,
@@ -175,12 +180,9 @@ impl DepthPubApp {
         Ok(subscriber)
     }
 
-    fn create_query_server(venue: &str) -> Result<DepthQuerySocketServer> {
-        DepthQuerySocketServer::bind(venue)
-    }
-
     /// 主循环
     pub fn run(&mut self) -> Result<()> {
+        let _query_thread = self.spawn_query_thread()?;
         info!("DepthMsgApp[{}] starting main loop", self.venue_slug);
         let mut last_stats_time = Instant::now();
         let stats_interval = Duration::from_secs(60);
@@ -193,10 +195,6 @@ impl DepthPubApp {
                 // 复制数据以避免借用冲突
                 let data = sample.payload().to_vec();
                 self.process_message(&data);
-            }
-
-            while self.handle_next_query_request()? {
-                has_message = true;
             }
 
             // 如果没有消息，短暂休眠避免 CPU 空转
@@ -217,6 +215,42 @@ impl DepthPubApp {
                 last_stats_time = Instant::now();
             }
         }
+    }
+
+    fn spawn_query_thread(&self) -> Result<thread::JoinHandle<()>> {
+        let venue_slug = self.venue_slug.clone();
+        let snapshots = Arc::clone(&self.query_snapshots);
+        let query_server = DepthQuerySocketServer::bind(&venue_slug)?;
+        let thread_name = format!("depth_query_{}", venue_slug.replace('-', "_"));
+        let handle = thread::Builder::new().name(thread_name).spawn(move || {
+            info!(
+                "Depth query thread started: venue={} socket={}",
+                venue_slug,
+                snapshots.venue_slug()
+            );
+            loop {
+                let mut handled_any = false;
+                loop {
+                    match query_server.serve_once(|payload, resp| {
+                        build_query_response(snapshots.as_ref(), payload, resp)
+                    }) {
+                        Ok(true) => {
+                            handled_any = true;
+                        }
+                        Ok(false) => break,
+                        Err(err) => {
+                            warn!("Depth query stream handling failed: {err:#}");
+                            break;
+                        }
+                    }
+                }
+
+                if !handled_any {
+                    thread::sleep(Duration::from_micros(IDLE_SLEEP_MICROS));
+                }
+            }
+        })?;
+        Ok(handle)
     }
 
     /// 处理增量消息
@@ -395,6 +429,7 @@ impl DepthPubApp {
                 .orderbook
                 .apply_update(&bids, &asks, final_update_id, timestamp);
         }
+        state.query_snapshot_dirty = true;
 
         self.update_count += 1;
 
@@ -453,51 +488,85 @@ impl DepthPubApp {
 
     /// 推送深度快照
     fn push_depth(&mut self, symbol: &str) {
-        let state = match self.symbols.get_mut(symbol) {
-            Some(s) => s,
-            None => return,
-        };
+        let price_tick = self.lookup_price_tick(symbol);
+        let mut snapshot_to_publish = None;
+        let mut depth25_msg = None;
+        let mut depth50_msg = None;
+        let mut attempted_channels = 0u8;
+        let mut should_return_early = false;
 
-        if !state.orderbook.is_valid() {
-            let pruned_levels = state.orderbook.prune_crossed_by_best_update_id();
-            if pruned_levels > 0 && state.orderbook.is_valid() {
-                debug!(
-                    "Crossed-book pruned before publish: venue={} symbol={} strategy=best_level_update_id pruned_levels={}",
-                    self.venue_slug, symbol, pruned_levels
-                );
-            } else {
-                self.publish_fail_invalid_count = self.publish_fail_invalid_count.saturating_add(1);
-                if state.orderbook.bids.is_empty() || state.orderbook.asks.is_empty() {
-                    self.publish_fail_missing_side_count =
-                        self.publish_fail_missing_side_count.saturating_add(1);
+        {
+            let state = match self.symbols.get_mut(symbol) {
+                Some(s) => s,
+                None => return,
+            };
+
+            if !state.orderbook.is_valid() {
+                let pruned_levels = state.orderbook.prune_crossed_by_best_update_id();
+                if pruned_levels > 0 && state.orderbook.is_valid() {
+                    debug!(
+                        "Crossed-book pruned before publish: venue={} symbol={} strategy=best_level_update_id pruned_levels={}",
+                        self.venue_slug, symbol, pruned_levels
+                    );
                 } else {
-                    self.publish_fail_crossed_book_count =
-                        self.publish_fail_crossed_book_count.saturating_add(1);
+                    self.publish_fail_invalid_count =
+                        self.publish_fail_invalid_count.saturating_add(1);
+                    if state.orderbook.bids.is_empty() || state.orderbook.asks.is_empty() {
+                        self.publish_fail_missing_side_count =
+                            self.publish_fail_missing_side_count.saturating_add(1);
+                    } else {
+                        self.publish_fail_crossed_book_count =
+                            self.publish_fail_crossed_book_count.saturating_add(1);
+                    }
+                    should_return_early = true;
                 }
-                return;
+            }
+
+            if state.query_snapshot_dirty {
+                snapshot_to_publish = Some(SymbolQuerySnapshot::from_orderbook(
+                    &state.orderbook,
+                    price_tick,
+                ));
+                state.query_snapshot_dirty = false;
+            }
+
+            if !should_return_early {
+                let timestamp = state.orderbook.timestamp;
+
+                if self.config.depth_levels.enable_depth25 {
+                    attempted_channels = attempted_channels.saturating_add(1);
+                    let (bids, asks) = state.orderbook.get_depth(25);
+                    depth25_msg =
+                        Some(DepthMsg::depth25(symbol.to_string(), timestamp, bids, asks));
+                }
+
+                if self.config.depth_levels.enable_depth50 {
+                    attempted_channels = attempted_channels.saturating_add(1);
+                    let (bids, asks) = state.orderbook.get_depth(50);
+                    depth50_msg =
+                        Some(DepthMsg::depth50(symbol.to_string(), timestamp, bids, asks));
+                }
+
+                state.last_push_time = Instant::now();
             }
         }
 
-        let timestamp = state.orderbook.timestamp;
-        let mut attempted_channels = 0u8;
-        let mut sent_channels = 0u8;
+        if let Some(snapshot) = snapshot_to_publish {
+            self.query_snapshots.publish(symbol, snapshot);
+        }
 
-        // Depth25
-        if self.config.depth_levels.enable_depth25 {
-            attempted_channels = attempted_channels.saturating_add(1);
-            let (bids, asks) = state.orderbook.get_depth(25);
-            let msg = DepthMsg::depth25(symbol.to_string(), timestamp, bids, asks);
-            if self.publisher.publish_depth25(&msg) {
+        if should_return_early {
+            return;
+        }
+
+        let mut sent_channels = 0u8;
+        if let Some(msg) = depth25_msg.as_ref() {
+            if self.publisher.publish_depth25(msg) {
                 sent_channels = sent_channels.saturating_add(1);
             }
         }
-
-        // Depth50
-        if self.config.depth_levels.enable_depth50 {
-            attempted_channels = attempted_channels.saturating_add(1);
-            let (bids, asks) = state.orderbook.get_depth(50);
-            let msg = DepthMsg::depth50(symbol.to_string(), timestamp, bids, asks);
-            if self.publisher.publish_depth50(&msg) {
+        if let Some(msg) = depth50_msg.as_ref() {
+            if self.publisher.publish_depth50(msg) {
                 sent_channels = sent_channels.saturating_add(1);
             }
         }
@@ -508,7 +577,6 @@ impl DepthPubApp {
             self.publish_fail_send_count = self.publish_fail_send_count.saturating_add(1);
         }
 
-        state.last_push_time = Instant::now();
         self.push_count += 1;
     }
 
@@ -541,19 +609,6 @@ impl DepthPubApp {
         self.publish_fail_crossed_book_count = 0;
     }
 
-    fn handle_next_query_request(&mut self) -> Result<bool> {
-        match self
-            .query_server
-            .serve_once(|payload, resp| build_query_response(self, payload, resp))
-        {
-            Ok(handled) => Ok(handled),
-            Err(err) => {
-                warn!("Depth query stream handling failed: {err:#}");
-                Ok(false)
-            }
-        }
-    }
-
     fn symbol_key_for_table(&self, symbol: &str) -> String {
         match self.venue {
             TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
@@ -564,6 +619,11 @@ impl DepthPubApp {
             }
             _ => symbol.to_uppercase(),
         }
+    }
+
+    fn lookup_price_tick(&self, symbol: &str) -> Option<f64> {
+        let table_symbol_key = self.symbol_key_for_table(symbol);
+        self.min_qty_table.price_tick(&table_symbol_key)
     }
 
     /// 打印统计
@@ -578,25 +638,5 @@ impl DepthPubApp {
         self.publisher.log_stats();
         self.update_count = 0;
         self.push_count = 0;
-    }
-}
-
-impl DepthQuerySource for DepthPubApp {
-    fn venue_slug(&self) -> &str {
-        &self.venue_slug
-    }
-
-    fn price_tick_for_symbol(&self, symbol: &str) -> Option<f64> {
-        let table_symbol_key = self.symbol_key_for_table(symbol);
-        self.min_qty_table.price_tick(&table_symbol_key)
-    }
-
-    fn resolve_orderbook(&self, symbol: &str) -> Option<&OrderBook> {
-        if let Some(state) = self.symbols.get(symbol) {
-            return Some(&state.orderbook);
-        }
-
-        let upper = symbol.to_ascii_uppercase();
-        self.symbols.get(&upper).map(|state| &state.orderbook)
     }
 }

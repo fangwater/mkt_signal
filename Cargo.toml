@@ -61,16 +61,8 @@ name = "persist_manager"
 path = "src/bin/persist_manager.rs"
 
 [[bin]]
-name = "persist_exporter"
-path = "src/bin/persist_exporter.rs"
-
-[[bin]]
-name = "persist_auto_exporter"
-path = "src/bin/persist_auto_exporter.rs"
-
-[[bin]]
-name = "persist_admin_server"
-path = "src/bin/persist_admin_server.rs"
+name = "order_export"
+path = "src/bin/order_export.rs"
 
 [[bin]]
 name = "test_minqty"
@@ -203,6 +195,7 @@ zmq = "0.10"
 ort = { version = "2.0.0-rc.11", default-features = false, features = ["std", "ndarray"] }
 indexmap = "2"
 rayon = "1.10"
+arc-swap = "1.7"
 
 [features]
 default = []

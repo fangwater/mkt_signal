@@ -12,3 +12,4 @@ pub mod query_client;
 pub mod query_logic;
 pub mod query_msg;
 pub mod query_server;
+pub mod query_snapshot;

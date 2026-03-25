@@ -85,6 +85,13 @@ impl OrderBookSide {
         result
     }
 
+    pub fn levels_keys(&self) -> Vec<(i64, f64)> {
+        self.levels
+            .iter()
+            .map(|(&price_key, &(amount, _))| (price_key, amount))
+            .collect()
+    }
+
     /// 获取最优档位价格 (price key)
     pub fn best_key(&self, is_bid: bool) -> Option<i64> {
         if is_bid {
@@ -221,6 +228,14 @@ impl OrderBook {
         let bids = self.bids.top_n_keys(n, true);
         let asks = self.asks.top_n_keys(n, false);
         (bids, asks)
+    }
+
+    pub fn bid_levels_keys(&self) -> Vec<(i64, f64)> {
+        self.bids.levels_keys()
+    }
+
+    pub fn ask_levels_keys(&self) -> Vec<(i64, f64)> {
+        self.asks.levels_keys()
     }
 
     /// 检查订单簿是否有效 (至少有一档买卖)
