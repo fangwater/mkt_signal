@@ -9,6 +9,7 @@ use crate::signal::common::{ExecutionType, OrderStatus, SignalBytes, TimeInForce
 use crate::signal::open_signal::MmOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::manager::{ForceCloseControl, Strategy};
+use crate::strategy::manager::MmOpenPriceMapEntry;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::query_engine_response::QueryEngineResponse;
 use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
@@ -1510,6 +1511,16 @@ impl Strategy for MarketMakerOpenStrategy {
         } else {
             Some(&self.open_symbol)
         }
+    }
+
+    fn mm_open_price_map_entry(&self) -> Option<MmOpenPriceMapEntry> {
+        Some(MmOpenPriceMapEntry {
+            symbol: self.open_symbol.clone(),
+            side: self.open_side?,
+            client_order_id: self.open_order_id,
+            price_qv: self.open_price_qv.into(),
+        })
+        .filter(|entry| !entry.symbol.is_empty() && entry.client_order_id != 0)
     }
 
     fn is_strategy_order(&self, order_id: i64) -> bool {

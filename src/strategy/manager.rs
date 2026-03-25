@@ -1,5 +1,7 @@
 use crate::common::time_util::get_timestamp_us;
+use crate::common::tick_math::QuantizedValue;
 use crate::pre_trade::monitor_channel::MonitorChannel;
+use crate::pre_trade::order_manager::Side;
 use crate::signal::trade_signal::TradeSignal;
 use crate::strategy::mm_hedge_strategy::{MarketMakerHedgeStrategy, MmHedgeSnapshot};
 use crate::strategy::query_engine_response::QueryEngineResponse;
@@ -10,6 +12,47 @@ use crate::strategy::{
 use log::info;
 use std::any::Any;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct QuantizedValueKey {
+    tick_i64: i64,
+    tick_exp: i32,
+    count: i64,
+}
+
+impl From<QuantizedValue> for QuantizedValueKey {
+    fn from(value: QuantizedValue) -> Self {
+        let (tick_i64, tick_exp) = value.get_tick_parts();
+        Self {
+            tick_i64,
+            tick_exp,
+            count: value.get_count(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MmOpenPriceMapKey {
+    pub symbol: String,
+    pub price_qv: QuantizedValueKey,
+}
+
+impl MmOpenPriceMapKey {
+    pub fn new(symbol: impl Into<String>, price_qv: QuantizedValue) -> Self {
+        Self {
+            symbol: symbol.into().to_ascii_uppercase(),
+            price_qv: price_qv.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MmOpenPriceMapEntry {
+    pub symbol: String,
+    pub side: Side,
+    pub client_order_id: i64,
+    pub price_qv: QuantizedValueKey,
+}
 
 /// 控制策略是否处于强平模式的 Trait
 pub trait ForceCloseControl {
@@ -30,6 +73,9 @@ pub trait Strategy: ForceCloseControl {
     fn handle_period_clock(&mut self, current_tp: i64);
     fn is_active(&self) -> bool;
     fn symbol(&self) -> Option<&str>;
+    fn mm_open_price_map_entry(&self) -> Option<MmOpenPriceMapEntry> {
+        None
+    }
 }
 
 /// Strategy id -> Strategy 映射的简单管理器
@@ -38,6 +84,8 @@ pub struct StrategyManager {
     order: VecDeque<i32>,
     known_ids: HashSet<i32>,
     symbol_index: HashMap<String, BTreeSet<i32>>,
+    mm_open_price_index: HashMap<MmOpenPriceMapKey, BTreeSet<i32>>,
+    mm_open_strategy_index: HashMap<i32, MmOpenPriceMapEntry>,
 }
 
 impl StrategyManager {
@@ -48,6 +96,36 @@ impl StrategyManager {
             order: VecDeque::new(),
             known_ids: HashSet::new(),
             symbol_index: HashMap::new(),
+            mm_open_price_index: HashMap::new(),
+            mm_open_strategy_index: HashMap::new(),
+        }
+    }
+
+    fn register_mm_open_price_entry(&mut self, strategy_id: i32, entry: MmOpenPriceMapEntry) {
+        let key = MmOpenPriceMapKey::new(
+            entry.symbol.clone(),
+            QuantizedValue::from_parts(entry.price_qv.tick_i64, entry.price_qv.tick_exp, entry.price_qv.count),
+        );
+        self.mm_open_price_index
+            .entry(key)
+            .or_default()
+            .insert(strategy_id);
+        self.mm_open_strategy_index.insert(strategy_id, entry);
+    }
+
+    fn unregister_mm_open_price_entry(&mut self, strategy_id: i32) {
+        let Some(entry) = self.mm_open_strategy_index.remove(&strategy_id) else {
+            return;
+        };
+        let key = MmOpenPriceMapKey::new(
+            entry.symbol,
+            QuantizedValue::from_parts(entry.price_qv.tick_i64, entry.price_qv.tick_exp, entry.price_qv.count),
+        );
+        if let Some(strategy_ids) = self.mm_open_price_index.get_mut(&key) {
+            strategy_ids.remove(&strategy_id);
+            if strategy_ids.is_empty() {
+                self.mm_open_price_index.remove(&key);
+            }
         }
     }
 
@@ -70,6 +148,7 @@ impl StrategyManager {
     pub fn insert(&mut self, strategy: Box<dyn Strategy>) -> Option<Box<dyn Strategy>> {
         let id = strategy.get_id();
         let new_symbol = strategy.symbol().map(|s| s.to_ascii_uppercase());
+        let mm_open_entry = strategy.mm_open_price_map_entry();
         if let Some(old_symbol) = self
             .strategies
             .get(&id)
@@ -84,6 +163,10 @@ impl StrategyManager {
         }
         let is_known = self.known_ids.contains(&id);
         let old = self.strategies.insert(id, strategy);
+        self.unregister_mm_open_price_entry(id);
+        if let Some(entry) = mm_open_entry {
+            self.register_mm_open_price_entry(id, entry);
+        }
         if let Some(symbol) = new_symbol {
             self.symbol_index.entry(symbol).or_default().insert(id);
         }
@@ -113,6 +196,7 @@ impl StrategyManager {
         self.order.retain(|id| *id != strategy_id);
         let removed = self.strategies.remove(&strategy_id);
         if removed.is_some() {
+            self.unregister_mm_open_price_entry(strategy_id);
             self.known_ids.remove(&strategy_id);
             if let Some(symbol) = removed
                 .as_ref()
@@ -138,6 +222,7 @@ impl StrategyManager {
     pub fn take(&mut self, strategy_id: i32) -> Option<Box<dyn Strategy>> {
         self.order.retain(|id| *id != strategy_id);
         let removed = self.strategies.remove(&strategy_id);
+        self.unregister_mm_open_price_entry(strategy_id);
         if let Some(symbol) = removed
             .as_ref()
             .and_then(|strategy| strategy.symbol().map(|s| s.to_ascii_uppercase()))
@@ -165,6 +250,53 @@ impl StrategyManager {
     /// 指定 symbol 是否存在活跃策略（symbol 需传入大写）
     pub fn has_symbol(&self, symbol: &str) -> bool {
         self.symbol_index.contains_key(symbol)
+    }
+
+    pub fn mm_open_strategy_ids_by_price_qv(
+        &self,
+        symbol: &str,
+        price_qv: QuantizedValue,
+    ) -> Vec<i32> {
+        let key = MmOpenPriceMapKey::new(symbol.to_ascii_uppercase(), price_qv);
+        self.mm_open_price_index
+            .get(&key)
+            .map(|strategy_ids| strategy_ids.iter().copied().collect())
+            .unwrap_or_default()
+    }
+
+    pub fn mm_open_strategy_ids_by_price_qv_and_side(
+        &self,
+        symbol: &str,
+        price_qv: QuantizedValue,
+        side: Side,
+    ) -> Vec<i32> {
+        let key = MmOpenPriceMapKey::new(symbol.to_ascii_uppercase(), price_qv);
+        let Some(strategy_ids) = self.mm_open_price_index.get(&key) else {
+            return Vec::new();
+        };
+        strategy_ids
+            .iter()
+            .copied()
+            .filter(|strategy_id| {
+                self.mm_open_strategy_index
+                    .get(strategy_id)
+                    .is_some_and(|entry| entry.side == side)
+            })
+            .collect()
+    }
+
+    pub fn mm_open_price_map_snapshot(&self) -> Vec<(MmOpenPriceMapKey, Vec<i32>)> {
+        let mut rows: Vec<(MmOpenPriceMapKey, Vec<i32>)> = self
+            .mm_open_price_index
+            .iter()
+            .map(|(key, strategy_ids)| (key.clone(), strategy_ids.iter().copied().collect()))
+            .collect();
+        rows.sort_by(|(lhs, _), (rhs, _)| lhs.symbol.cmp(&rhs.symbol));
+        rows
+    }
+
+    pub fn mm_open_price_map_entry(&self, strategy_id: i32) -> Option<&MmOpenPriceMapEntry> {
+        self.mm_open_strategy_index.get(&strategy_id)
     }
 
     /// 获取只读引用（用于快照）
@@ -291,5 +423,163 @@ impl StrategyManager {
     /// 使用时间戳的低31位，确保为正数，约35分钟循环周期
     pub fn generate_strategy_id() -> i32 {
         (get_timestamp_us() & 0x7FFF_FFFF) as i32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ForceCloseControl, MmOpenPriceMapEntry, MmOpenPriceMapKey, QuantizedValueKey, Strategy,
+        StrategyManager,
+    };
+    use crate::common::tick_math::QuantizedValue;
+    use crate::pre_trade::order_manager::Side;
+    use crate::signal::trade_signal::TradeSignal;
+    use crate::strategy::query_engine_response::QueryEngineResponse;
+    use crate::strategy::trade_engine_response::TradeEngineResponse;
+    use crate::strategy::{order_update::OrderUpdate, trade_update::TradeUpdate};
+    use std::any::Any;
+
+    struct DummyMmOpenStrategy {
+        id: i32,
+        symbol: String,
+        side: Side,
+        client_order_id: i64,
+        price_qv: QuantizedValue,
+    }
+
+    impl ForceCloseControl for DummyMmOpenStrategy {
+        fn set_force_close_mode(&mut self, _enabled: bool) {}
+
+        fn is_force_close_mode(&self) -> bool {
+            false
+        }
+    }
+
+    impl Strategy for DummyMmOpenStrategy {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn Any {
+            self
+        }
+
+        fn get_id(&self) -> i32 {
+            self.id
+        }
+
+        fn is_strategy_order(&self, order_id: i64) -> bool {
+            order_id == self.client_order_id
+        }
+
+        fn handle_signal(&mut self, _signal: &TradeSignal) {}
+
+        fn apply_order_update(&mut self, _update: &dyn OrderUpdate) {}
+
+        fn apply_trade_update(&mut self, _trade: &dyn TradeUpdate) {}
+
+        fn apply_trade_engine_response(&mut self, _response: &dyn TradeEngineResponse) {}
+
+        fn apply_query_engine_response(&mut self, _response: &dyn QueryEngineResponse) {}
+
+        fn handle_period_clock(&mut self, _current_tp: i64) {}
+
+        fn is_active(&self) -> bool {
+            true
+        }
+
+        fn symbol(&self) -> Option<&str> {
+            Some(&self.symbol)
+        }
+
+        fn mm_open_price_map_entry(&self) -> Option<MmOpenPriceMapEntry> {
+            Some(MmOpenPriceMapEntry {
+                symbol: self.symbol.clone(),
+                side: self.side,
+                client_order_id: self.client_order_id,
+                price_qv: self.price_qv.into(),
+            })
+        }
+    }
+
+    #[test]
+    fn mm_open_price_map_supports_multiple_ids_per_same_price() {
+        let mut manager = StrategyManager::new();
+        let qv = QuantizedValue::from_parts(1, -1, 1234);
+
+        manager.insert(Box::new(DummyMmOpenStrategy {
+            id: 11,
+            symbol: "BTCUSDT".to_string(),
+            side: Side::Buy,
+            client_order_id: 101,
+            price_qv: qv,
+        }));
+        manager.insert(Box::new(DummyMmOpenStrategy {
+            id: 12,
+            symbol: "BTCUSDT".to_string(),
+            side: Side::Sell,
+            client_order_id: 102,
+            price_qv: qv,
+        }));
+
+        assert_eq!(
+            manager.mm_open_strategy_ids_by_price_qv("btcusdt", qv),
+            vec![11, 12]
+        );
+        assert_eq!(
+            manager.mm_open_strategy_ids_by_price_qv_and_side("BTCUSDT", qv, Side::Buy),
+            vec![11]
+        );
+        assert_eq!(
+            manager.mm_open_strategy_ids_by_price_qv_and_side("BTCUSDT", qv, Side::Sell),
+            vec![12]
+        );
+    }
+
+    #[test]
+    fn mm_open_price_map_is_removed_on_take_and_restore_on_reinsert() {
+        let mut manager = StrategyManager::new();
+        let qv = QuantizedValue::from_parts(5, -2, 777);
+        let strategy_id = 21;
+
+        manager.insert(Box::new(DummyMmOpenStrategy {
+            id: strategy_id,
+            symbol: "ETHUSDT".to_string(),
+            side: Side::Buy,
+            client_order_id: 201,
+            price_qv: qv,
+        }));
+        assert_eq!(manager.mm_open_strategy_ids_by_price_qv("ETHUSDT", qv), vec![21]);
+
+        let strategy = manager.take(strategy_id).expect("strategy should exist");
+        assert!(manager.mm_open_strategy_ids_by_price_qv("ETHUSDT", qv).is_empty());
+
+        manager.insert(strategy);
+        assert_eq!(manager.mm_open_strategy_ids_by_price_qv("ETHUSDT", qv), vec![21]);
+    }
+
+    #[test]
+    fn mm_open_price_map_snapshot_contains_key_and_ids() {
+        let mut manager = StrategyManager::new();
+        let qv = QuantizedValue::from_parts(1, -3, 456);
+        manager.insert(Box::new(DummyMmOpenStrategy {
+            id: 31,
+            symbol: "TRXUSDT".to_string(),
+            side: Side::Buy,
+            client_order_id: 301,
+            price_qv: qv,
+        }));
+
+        let snapshot = manager.mm_open_price_map_snapshot();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(
+            snapshot[0].0,
+            MmOpenPriceMapKey {
+                symbol: "TRXUSDT".to_string(),
+                price_qv: QuantizedValueKey::from(qv),
+            }
+        );
+        assert_eq!(snapshot[0].1, vec![31]);
     }
 }
