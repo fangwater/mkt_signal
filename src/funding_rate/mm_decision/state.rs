@@ -58,6 +58,7 @@ pub(crate) struct MmDecisionState {
     pub(crate) hedge_price_offset_limit_lower: f64,
     pub(crate) enable_return_score_adjust_hedge: bool,
     pub(crate) enable_open_cancel: bool,
+    pub(crate) enable_tlen_cancel: bool,
     pub(crate) tlen_cancel_freq_ms: u64,
     pub(crate) prediction_mode: bool,
     pub(crate) return_model_service: Option<String>,
@@ -117,6 +118,7 @@ impl MmDecisionState {
             hedge_price_offset_limit_lower: 0.0003,
             enable_return_score_adjust_hedge: true,
             enable_open_cancel: false,
+            enable_tlen_cancel: false,
             tlen_cancel_freq_ms: 3_000,
             prediction_mode: false,
             return_model_service: None,
@@ -275,6 +277,14 @@ impl MmDecisionState {
         );
     }
 
+    pub(crate) fn update_enable_tlen_cancel(&mut self, enabled: bool) {
+        self.enable_tlen_cancel = enabled;
+        debug!(
+            "MmDecision: enable_tlen_cancel updated enabled={}",
+            self.enable_tlen_cancel
+        );
+    }
+
     pub(crate) fn update_tlen_cancel_freq_ms(&mut self, tlen_cancel_freq_ms: u64) {
         if tlen_cancel_freq_ms == 0 {
             panic!("MmDecision: tlen_cancel_freq_ms must be > 0");
@@ -357,19 +367,6 @@ impl MmDecisionState {
         now_us: i64,
         from_key: &str,
     ) -> Result<()> {
-        self.emit_mm_cancel_signal_precise(open_symbol, side, open_quote, now_us, from_key, 0, 0)
-    }
-
-    pub(crate) fn emit_mm_cancel_signal_precise(
-        &mut self,
-        open_symbol: &str,
-        side: Side,
-        open_quote: crate::funding_rate::common::Quote,
-        now_us: i64,
-        from_key: &str,
-        strategy_id: i32,
-        client_order_id: i64,
-    ) -> Result<()> {
         let mut ctx = MmCancelCtx::new();
         let open_trade_symbol = normalize_symbol_for_venue(open_symbol, self.open_venue);
         ctx.opening_leg = TradingLeg::new(
@@ -382,7 +379,33 @@ impl MmDecisionState {
         ctx.set_side(side);
         ctx.trigger_ts = now_us;
         ctx.set_from_key(from_key.as_bytes().to_vec());
-        ctx.set_target_strategy(strategy_id, client_order_id);
+
+        let signal = TradeSignal::create(SignalType::MMCancel, now_us, 0.0, ctx.to_bytes());
+        self.signal_pub.publish(&signal.to_bytes())?;
+        Ok(())
+    }
+
+    pub(crate) fn emit_mm_cancel_signal_precise(
+        &mut self,
+        open_symbol: &str,
+        open_quote: crate::funding_rate::common::Quote,
+        now_us: i64,
+        from_key: &str,
+        strategy_id: i32,
+    ) -> Result<()> {
+        let mut ctx = MmCancelCtx::new();
+        let open_trade_symbol = normalize_symbol_for_venue(open_symbol, self.open_venue);
+        ctx.opening_leg = TradingLeg::new(
+            self.open_venue,
+            open_quote.bid,
+            open_quote.ask,
+            open_quote.ts,
+        );
+        ctx.set_opening_symbol(&open_trade_symbol);
+        ctx.set_side(Side::Buy);
+        ctx.trigger_ts = now_us;
+        ctx.set_from_key(from_key.as_bytes().to_vec());
+        ctx.set_target_strategy(strategy_id, 0);
 
         let signal = TradeSignal::create(SignalType::MMCancel, now_us, 0.0, ctx.to_bytes());
         self.signal_pub.publish(&signal.to_bytes())?;

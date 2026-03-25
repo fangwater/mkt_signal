@@ -1,5 +1,4 @@
 use crate::common::tick_math::QuantizedValue;
-use crate::pre_trade::order_manager::Side;
 use crate::signal::common::{bytes_helper, SignalBytes};
 use crate::signal::hedge_signal::MmHedgeSignalQueryMsg;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -39,30 +38,37 @@ impl SignalBytes for MmCancelTriggerCtx {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MmCancelCandidateEntry {
     pub strategy_id: i32,
-    pub client_order_id: i64,
-    pub symbol: [u8; 32],
-    pub side: u8,
     pub price_qv: QuantizedValue,
 }
 
 impl MmCancelCandidateEntry {
-    pub fn new(
-        strategy_id: i32,
-        client_order_id: i64,
-        symbol: &str,
-        side: Side,
-        price_qv: QuantizedValue,
-    ) -> Self {
+    pub fn new(strategy_id: i32, price_qv: QuantizedValue) -> Self {
+        Self {
+            strategy_id,
+            price_qv,
+        }
+    }
+
+    pub fn encoded_len(&self) -> usize {
+        4 + 8 + 4 + 8
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MmCancelCandidateSymbolGroup {
+    pub symbol: [u8; 32],
+    pub items: Vec<MmCancelCandidateEntry>,
+}
+
+impl MmCancelCandidateSymbolGroup {
+    pub fn new(symbol: &str) -> Self {
         let mut symbol_bytes = [0u8; 32];
         let raw = symbol.as_bytes();
         let len = raw.len().min(32);
         symbol_bytes[..len].copy_from_slice(&raw[..len]);
         Self {
-            strategy_id,
-            client_order_id,
             symbol: symbol_bytes,
-            side: side.to_u8(),
-            price_qv,
+            items: Vec::new(),
         }
     }
 
@@ -71,40 +77,58 @@ impl MmCancelCandidateEntry {
         String::from_utf8_lossy(&self.symbol[..end]).to_string()
     }
 
-    pub fn get_side(&self) -> Result<Side, String> {
-        Side::from_u8(self.side).ok_or_else(|| format!("Invalid side: {}", self.side))
-    }
-
     pub fn encoded_len(&self) -> usize {
-        let symbol_len = self.symbol.iter().position(|&b| b == 0).unwrap_or(32);
-        4 + 8 + 1 + symbol_len + 1 + 8 + 4 + 8
+        32 + 4 + self.items.iter().map(MmCancelCandidateEntry::encoded_len).sum::<usize>()
     }
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MmCancelCandidateQueryMsg {
     pub trigger_ts: i64,
-    pub items: Vec<MmCancelCandidateEntry>,
+    pub groups: Vec<MmCancelCandidateSymbolGroup>,
 }
 
 impl MmCancelCandidateQueryMsg {
     pub fn new(trigger_ts: i64) -> Self {
         Self {
             trigger_ts,
-            items: Vec::new(),
+            groups: Vec::new(),
         }
     }
 
-    pub fn push(&mut self, entry: MmCancelCandidateEntry) {
-        self.items.push(entry);
+    pub fn push_grouped(&mut self, symbol: &str, entry: MmCancelCandidateEntry) {
+        if let Some(last_group) = self.groups.last_mut() {
+            if last_group.get_symbol().eq_ignore_ascii_case(symbol) {
+                last_group.items.push(entry);
+                return;
+            }
+        }
+        let mut group = MmCancelCandidateSymbolGroup::new(symbol);
+        group.items.push(entry);
+        self.groups.push(group);
     }
 
     pub fn encoded_len(&self) -> usize {
-        8 + 4 + self.items.iter().map(|item| item.encoded_len()).sum::<usize>()
+        8 + 4 + self.groups.iter().map(MmCancelCandidateSymbolGroup::encoded_len).sum::<usize>()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
+        self.groups.is_empty()
+    }
+
+    pub fn next_encoded_len_with(&self, symbol: &str, entry: &MmCancelCandidateEntry) -> usize {
+        let add_group_overhead = match self.groups.last() {
+            Some(last_group) if last_group.get_symbol().eq_ignore_ascii_case(symbol) => 0,
+            _ => 32 + 4,
+        };
+        8 + 4
+            + self
+                .groups
+                .iter()
+                .map(MmCancelCandidateSymbolGroup::encoded_len)
+                .sum::<usize>()
+            + add_group_overhead
+            + entry.encoded_len()
     }
 }
 
@@ -125,16 +149,17 @@ impl MmBackwardQueryMsg {
             Self::CancelCandidates(msg) => {
                 buf.put_u8(MM_BACKWARD_QUERY_CANCEL_CANDIDATES);
                 buf.put_i64_le(msg.trigger_ts);
-                buf.put_u32_le(msg.items.len() as u32);
-                for item in &msg.items {
-                    let (tick_i64, tick_exp) = item.price_qv.get_tick_parts();
-                    buf.put_i32_le(item.strategy_id);
-                    buf.put_i64_le(item.client_order_id);
-                    bytes_helper::write_fixed_bytes(&mut buf, &item.symbol);
-                    buf.put_u8(item.side);
-                    buf.put_i64_le(tick_i64);
-                    buf.put_i32_le(tick_exp);
-                    buf.put_i64_le(item.price_qv.get_count());
+                buf.put_u32_le(msg.groups.len() as u32);
+                for group in &msg.groups {
+                    bytes_helper::write_fixed_bytes(&mut buf, &group.symbol);
+                    buf.put_u32_le(group.items.len() as u32);
+                    for item in &group.items {
+                        let (tick_i64, tick_exp) = item.price_qv.get_tick_parts();
+                        buf.put_i32_le(item.strategy_id);
+                        buf.put_i64_le(tick_i64);
+                        buf.put_i32_le(tick_exp);
+                        buf.put_i64_le(item.price_qv.get_count());
+                    }
                 }
             }
         }
@@ -155,30 +180,36 @@ impl MmBackwardQueryMsg {
                     );
                 }
                 let trigger_ts = bytes.get_i64_le();
-                let item_len = bytes.get_u32_le() as usize;
-                let mut items = Vec::with_capacity(item_len);
-                for _ in 0..item_len {
-                    if bytes.remaining() < 4 + 8 + 1 + 1 + 8 + 4 + 8 {
+                let group_len = bytes.get_u32_le() as usize;
+                let mut groups = Vec::with_capacity(group_len);
+                for _ in 0..group_len {
+                    if bytes.remaining() < 32 + 4 {
                         return Err(
-                            "Not enough bytes for MmCancelCandidateQueryMsg item".to_string(),
+                            "Not enough bytes for MmCancelCandidateQueryMsg group header"
+                                .to_string(),
                         );
                     }
-                    let strategy_id = bytes.get_i32_le();
-                    let client_order_id = bytes.get_i64_le();
                     let symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
-                    let side = bytes.get_u8();
-                    if Side::from_u8(side).is_none() {
-                        return Err(format!("Invalid MmCancelCandidateEntry side: {}", side));
+                    let item_len = bytes.get_u32_le() as usize;
+                    let mut items = Vec::with_capacity(item_len);
+                    for _ in 0..item_len {
+                        if bytes.remaining() < 4 + 8 + 4 + 8 {
+                            return Err(
+                                "Not enough bytes for MmCancelCandidateQueryMsg item".to_string(),
+                            );
+                        }
+                        let strategy_id = bytes.get_i32_le();
+                        let tick_i64 = bytes.get_i64_le();
+                        let tick_exp = bytes.get_i32_le();
+                        let count = bytes.get_i64_le();
+                        items.push(MmCancelCandidateEntry {
+                            strategy_id,
+                            price_qv: QuantizedValue::from_parts(tick_i64, tick_exp, count),
+                        });
                     }
-                    let tick_i64 = bytes.get_i64_le();
-                    let tick_exp = bytes.get_i32_le();
-                    let count = bytes.get_i64_le();
-                    items.push(MmCancelCandidateEntry {
-                        strategy_id,
-                        client_order_id,
+                    groups.push(MmCancelCandidateSymbolGroup {
                         symbol,
-                        side,
-                        price_qv: QuantizedValue::from_parts(tick_i64, tick_exp, count),
+                        items,
                     });
                 }
                 if bytes.remaining() != 0 && bytes.iter().any(|&b| b != 0) {
@@ -189,7 +220,7 @@ impl MmBackwardQueryMsg {
                 }
                 Ok(Self::CancelCandidates(MmCancelCandidateQueryMsg {
                     trigger_ts,
-                    items,
+                    groups,
                 }))
             }
             _ => Err(format!("Unknown MmBackwardQueryMsg kind: {}", kind)),
@@ -200,10 +231,10 @@ impl MmBackwardQueryMsg {
 #[cfg(test)]
 mod tests {
     use super::{
-        MmBackwardQueryMsg, MmCancelCandidateEntry, MmCancelCandidateQueryMsg, MmCancelTriggerCtx,
+        MmBackwardQueryMsg, MmCancelCandidateEntry, MmCancelCandidateQueryMsg,
+        MmCancelTriggerCtx,
     };
     use crate::common::tick_math::QuantizedValue;
-    use crate::pre_trade::order_manager::Side;
     use crate::signal::hedge_signal::MmHedgeSignalQueryMsg;
     use crate::signal::common::SignalBytes;
 
@@ -235,25 +266,21 @@ mod tests {
     #[test]
     fn mm_backward_query_wraps_cancel_candidates() {
         let mut msg = MmCancelCandidateQueryMsg::new(456);
-        msg.push(MmCancelCandidateEntry::new(
-            11,
-            22,
+        msg.push_grouped(
             "ETHUSDT",
-            Side::Sell,
-            QuantizedValue::from_parts(1, -2, 333),
-        ));
+            MmCancelCandidateEntry::new(11, QuantizedValue::from_parts(1, -2, 333)),
+        );
         let parsed =
             MmBackwardQueryMsg::from_bytes(MmBackwardQueryMsg::CancelCandidates(msg).to_bytes())
                 .expect("roundtrip");
         match parsed {
             MmBackwardQueryMsg::CancelCandidates(inner) => {
                 assert_eq!(inner.trigger_ts, 456);
-                assert_eq!(inner.items.len(), 1);
-                assert_eq!(inner.items[0].strategy_id, 11);
-                assert_eq!(inner.items[0].client_order_id, 22);
-                assert_eq!(inner.items[0].get_symbol(), "ETHUSDT");
-                assert_eq!(inner.items[0].get_side().expect("valid side"), Side::Sell);
-                assert_eq!(inner.items[0].price_qv.get_count(), 333);
+                assert_eq!(inner.groups.len(), 1);
+                assert_eq!(inner.groups[0].get_symbol(), "ETHUSDT");
+                assert_eq!(inner.groups[0].items.len(), 1);
+                assert_eq!(inner.groups[0].items[0].strategy_id, 11);
+                assert_eq!(inner.groups[0].items[0].price_qv.get_count(), 333);
             }
             _ => panic!("expected cancel candidates"),
         }

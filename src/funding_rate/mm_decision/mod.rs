@@ -24,6 +24,7 @@ use crate::signal::common::{SignalBytes, TradingVenue};
 use crate::signal::hedge_signal::MmHedgeSignalQueryMsg;
 use crate::signal::mm_signal::{MmBackwardQueryMsg, MmCancelCandidateQueryMsg};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
+use crate::symbol_match::normalize_symbol_for_whitelist;
 
 mod cancel;
 pub mod from_key;
@@ -31,6 +32,7 @@ mod open;
 mod state;
 
 use cancel::MmCancelDecision;
+use from_key::build_mm_cancel_from_key;
 use open::MmOpenDecision;
 use state::MmDecisionState;
 
@@ -223,12 +225,16 @@ impl MmDecision {
         self.state.update_enable_open_cancel(enabled);
     }
 
+    pub fn update_enable_tlen_cancel(&mut self, enabled: bool) {
+        self.state.update_enable_tlen_cancel(enabled);
+    }
+
     pub fn update_tlen_cancel_freq_ms(&mut self, tlen_cancel_freq_ms: u64) {
         self.state.update_tlen_cancel_freq_ms(tlen_cancel_freq_ms);
     }
 
     pub fn process_cancel_trigger_interval(&mut self) {
-        if !self.state.enable_open_cancel || self.state.tlen_cancel_freq_ms == 0 {
+        if !self.state.enable_tlen_cancel || self.state.tlen_cancel_freq_ms == 0 {
             return;
         }
         let now_us = get_timestamp_us();
@@ -381,29 +387,25 @@ impl MmDecision {
     }
 
     fn handle_mm_cancel_candidate_query(&mut self, query: MmCancelCandidateQueryMsg) {
-        if query.items.is_empty() {
+        if query.groups.is_empty() {
             debug!("MmDecision: MM cancel candidate query empty");
             return;
-        }
-        let mut grouped: HashMap<String, Vec<_>> = HashMap::new();
-        for item in query.items {
-            let symbol = item.get_symbol().to_uppercase();
-            if symbol.is_empty() {
-                continue;
-            }
-            grouped.entry(symbol).or_default().push(item);
         }
 
         let now_us = get_timestamp_us();
         let mut cancel_sent = 0usize;
-        for (symbol, items) in grouped {
+        for group in query.groups {
+            let symbol = group.get_symbol().to_uppercase();
+            if symbol.is_empty() || group.items.is_empty() {
+                continue;
+            }
             let threshold_symbol = symbol.to_ascii_uppercase();
             let Some(threshold) = self.state.mm_tlen_thresholds.get(&threshold_symbol).copied() else {
                 debug!("MmDecision: missing MM tlen threshold symbol={}", threshold_symbol);
                 continue;
             };
             let tick_indices: Vec<i64> =
-                items.iter().map(|item| item.price_qv.get_count()).collect();
+                group.items.iter().map(|item| item.price_qv.get_count()).collect();
             let tlens = match self
                 .state
                 .depth_query_client
@@ -430,35 +432,51 @@ impl MmDecision {
                     continue;
                 }
             };
-            for (item, tlen) in items.iter().zip(tlens.iter().copied()) {
+            for (item, tlen) in group.items.iter().zip(tlens.iter().copied()) {
                 if tlen >= threshold {
                     continue;
                 }
-                let side = match item.get_side() {
-                    Ok(side) => side,
-                    Err(err) => {
-                        warn!("MmDecision: invalid cancel candidate side symbol={} err={}", symbol, err);
-                        continue;
-                    }
-                };
-                let from_key = format!(
-                    "{}:mm_tlen_cancel:tlen={:.8}:thr={:.8}:strategy_id={}:client_order_id={}",
-                    now_us, tlen, threshold, item.strategy_id, item.client_order_id
+                let return_score = self
+                    .state
+                    .return_model_service
+                    .clone()
+                    .and_then(|service_name| {
+                        self.state
+                            .factor_value_hub
+                            .lookup_model_output_score(&service_name, &symbol, self.state.hedge_venue)
+                            .score
+                            .filter(|value| value.is_finite())
+                    });
+                let volatility = self
+                    .state
+                    .factor_value_hub
+                    .lookup_target_factor_value(&symbol, self.state.hedge_venue)
+                    .target_factor_value
+                    .filter(|value| value.is_finite());
+                let symbol_key = normalize_symbol_for_whitelist(&symbol, TradingVenue::OkexFutures);
+                let environment_signal =
+                    self.state
+                        .evaluate_environment_signal(&symbol_key, &symbol, now_us);
+                let from_key = build_mm_cancel_from_key(
+                    now_us,
+                    return_score,
+                    None,
+                    volatility,
+                    &environment_signal,
+                    Some(tlen),
+                    Some(threshold),
                 );
                 if let Err(err) = self.state.emit_mm_cancel_signal_precise(
                     &symbol,
-                    side,
                     open_quote,
                     now_us,
                     &from_key,
                     item.strategy_id,
-                    item.client_order_id,
                 ) {
                     warn!(
-                        "MmDecision: emit precise MMCancel failed symbol={} strategy_id={} client_order_id={} err={:#}",
+                        "MmDecision: emit precise MMCancel failed symbol={} strategy_id={} err={:#}",
                         symbol,
                         item.strategy_id,
-                        item.client_order_id,
                         err
                     );
                     continue;

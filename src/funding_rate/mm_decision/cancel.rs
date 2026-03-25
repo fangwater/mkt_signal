@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use super::super::mkt_channel::MktChannel;
 use super::super::symbol_list::SymbolList;
-use super::from_key::build_from_key;
+use super::from_key::build_mm_cancel_from_key;
 use super::state::MmDecisionState;
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::order_manager::Side;
@@ -110,12 +110,14 @@ impl MmCancelDecision {
                     symbol_key, return_score_value
                 );
             } else {
-                let from_key = build_from_key(
+                let from_key = build_mm_cancel_from_key(
                     now_us,
                     Some(return_score_value),
                     Some(thresholds.forward_cancel),
                     volatility,
                     &environment_signal,
+                    None,
+                    None,
                 );
                 state.emit_mm_cancel_signal(symbol, Side::Buy, open_quote, now_us, &from_key)?;
                 self.mark_cancel_sent(symbol, Side::Buy, now_us);
@@ -131,12 +133,14 @@ impl MmCancelDecision {
                     symbol_key, return_score_value
                 );
             } else {
-                let from_key = build_from_key(
+                let from_key = build_mm_cancel_from_key(
                     now_us,
                     Some(return_score_value),
                     Some(thresholds.backward_cancel),
                     volatility,
                     &environment_signal,
+                    None,
+                    None,
                 );
                 state.emit_mm_cancel_signal(symbol, Side::Sell, open_quote, now_us, &from_key)?;
                 self.mark_cancel_sent(symbol, Side::Sell, now_us);

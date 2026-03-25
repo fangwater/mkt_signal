@@ -665,12 +665,17 @@ fn handle_trade_signal(signal: TradeSignal) {
                     if chunk.is_empty() {
                         return;
                     }
+                    let item_count = chunk
+                        .groups
+                        .iter()
+                        .map(|group| group.items.len())
+                        .sum::<usize>();
                     let payload =
                         MmBackwardQueryMsg::CancelCandidates(chunk.clone()).to_bytes();
                     match SignalChannel::with(|ch| ch.publish_backward(&payload)) {
                         Ok(true) => {
                             *published_chunks += 1;
-                            *published_items += chunk.items.len();
+                            *published_items += item_count;
                         }
                         Ok(false) => {
                             warn!("MMCancelTrigger: backward publisher unavailable");
@@ -679,22 +684,16 @@ fn handle_trade_signal(signal: TradeSignal) {
                             warn!("MMCancelTrigger: publish backward failed err={:#}", err);
                         }
                     }
-                    chunk.items.clear();
+                    chunk.groups.clear();
                 };
 
                 for candidate in candidates {
-                    let entry = MmCancelCandidateEntry::new(
-                        candidate.strategy_id,
-                        candidate.client_order_id,
-                        &candidate.symbol,
-                        candidate.side,
-                        candidate.price_qv,
-                    );
-                    let next_len = 1 + chunk.encoded_len() + entry.encoded_len();
+                    let entry = MmCancelCandidateEntry::new(candidate.strategy_id, candidate.price_qv);
+                    let next_len = 1 + chunk.next_encoded_len_with(&candidate.symbol, &entry);
                     if !chunk.is_empty() && next_len > SIGNAL_PAYLOAD {
                         flush_chunk(&mut chunk, &mut published_chunks, &mut published_items);
                     }
-                    chunk.push(entry);
+                    chunk.push_grouped(&candidate.symbol, entry);
                 }
                 flush_chunk(&mut chunk, &mut published_chunks, &mut published_items);
                 info!(
@@ -727,6 +726,22 @@ fn handle_trade_signal(signal: TradeSignal) {
                 }
 
                 let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+                if cancel_ctx.strategy_id > 0 {
+                    let strategy_id = cancel_ctx.strategy_id;
+                    let exists = { strategy_mgr.borrow().contains(strategy_id) };
+                    if !exists {
+                        return;
+                    }
+                    let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
+                    if let Some(mut strategy) = strategy_opt {
+                        strategy.handle_signal(&signal);
+                        if strategy.is_active() {
+                            strategy_mgr.borrow_mut().insert(strategy);
+                        }
+                    }
+                    return;
+                }
+
                 let candidate_ids: Vec<i32> = {
                     strategy_mgr
                         .borrow()

@@ -58,8 +58,6 @@ pub struct MmOpenPriceMapEntry {
 pub struct MmOpenCancelCandidate {
     pub strategy_id: i32,
     pub symbol: String,
-    pub side: Side,
-    pub client_order_id: i64,
     pub price_qv: QuantizedValue,
 }
 
@@ -315,8 +313,6 @@ impl StrategyManager {
             .map(|(strategy_id, entry)| MmOpenCancelCandidate {
                 strategy_id: *strategy_id,
                 symbol: entry.symbol.clone(),
-                side: entry.side,
-                client_order_id: entry.client_order_id,
                 price_qv: QuantizedValue::from_parts(
                     entry.price_qv.tick_i64,
                     entry.price_qv.tick_exp,
@@ -327,7 +323,6 @@ impl StrategyManager {
         rows.sort_by(|lhs, rhs| {
             lhs.symbol
                 .cmp(&rhs.symbol)
-                .then(lhs.client_order_id.cmp(&rhs.client_order_id))
                 .then(lhs.strategy_id.cmp(&rhs.strategy_id))
         });
         rows

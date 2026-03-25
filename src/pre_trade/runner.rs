@@ -32,8 +32,8 @@ impl PreTrade {
             throttle_log_interval_secs
         );
 
-        // 周期检查频率设为 200ms，在响应及时性与 CPU 开销间做平衡
-        let mut ticker = tokio::time::interval(Duration::from_millis(200));
+        // 周期检查频率设为 20ms，提高 MM trigger 响应及时性，同时保持较低调度开销
+        let mut ticker = tokio::time::interval(Duration::from_millis(20));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {

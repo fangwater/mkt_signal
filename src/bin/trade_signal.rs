@@ -233,7 +233,7 @@ fn spawn_mm_cancel_worker(token: CancellationToken) {
 
 fn spawn_mm_cancel_trigger_worker(token: CancellationToken) {
     tokio::task::spawn_local(async move {
-        let mut interval = time::interval(Duration::from_millis(100));
+        let mut interval = time::interval(Duration::from_millis(10));
         loop {
             tokio::select! {
                 _ = token.cancelled() => break,
