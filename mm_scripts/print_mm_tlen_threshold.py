@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-打印 MM/XARB 的 tlen 阈值配置（从 Redis 读取）。
+打印 MM 的 tlen 阈值配置（从 Redis 读取）。
 
 Redis key 约定：
   - Hash: <venue_prefix>:<strategy>:tlen_threshold
@@ -11,20 +11,19 @@ Redis key 约定：
 示例：
   python mm_scripts/print_mm_tlen_threshold.py
   python mm_scripts/print_mm_tlen_threshold.py BTCUSDT
-  python mm_scripts/print_mm_tlen_threshold.py --venue gate-futures --strategy xarb
-  python mm_scripts/print_mm_tlen_threshold.py --venue all --strategy all
+  python mm_scripts/print_mm_tlen_threshold.py --venue gate-futures
+  python mm_scripts/print_mm_tlen_threshold.py --venue all
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from typing import Dict, Iterable, List, Optional
 
 SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
 SUPPORTED_VENUES = [f"{exchange}-futures" for exchange in SUPPORTED_EXCHANGES]
-SUPPORTED_STRATEGIES = ["mm", "xarb"]
+STRATEGY = "mm"
 
 
 def try_import_redis():
@@ -58,13 +57,6 @@ def normalize_venue(venue: str) -> Optional[str]:
     return normalized
 
 
-def normalize_strategy(strategy: str) -> Optional[str]:
-    value = (strategy or "").strip().lower()
-    if value in SUPPORTED_STRATEGIES:
-        return value
-    return None
-
-
 def normalize_symbol(symbol: str) -> str:
     return "".join(ch for ch in (symbol or "").upper() if ch.isalnum())
 
@@ -73,12 +65,12 @@ def venue_prefix(venue: str) -> str:
     return venue.replace("-", "_")
 
 
-def redis_key(venue: str, strategy: str) -> str:
-    return f"{venue_prefix(venue)}:{strategy}:tlen_threshold"
+def redis_key(venue: str) -> str:
+    return f"{venue_prefix(venue)}:{STRATEGY}:tlen_threshold"
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Print mm/xarb tlen thresholds from Redis")
+    parser = argparse.ArgumentParser(description="Print mm tlen thresholds from Redis")
     parser.add_argument(
         "symbols",
         nargs="*",
@@ -88,11 +80,6 @@ def parse_args() -> argparse.Namespace:
         "--venue",
         default="binance-futures",
         help="目标 venue，支持 binance-futures/okex-futures/bybit-futures/bitget-futures/gate-futures/all，默认 binance-futures",
-    )
-    parser.add_argument(
-        "--strategy",
-        default="mm",
-        help="目标策略，支持 mm/xarb/all，默认 mm",
     )
     parser.add_argument("--redis-host", default="127.0.0.1", help="Redis host，默认 127.0.0.1")
     parser.add_argument("--redis-port", type=int, default=6379, help="Redis port，默认 6379")
@@ -109,16 +96,6 @@ def expand_venues(value: str) -> List[str]:
     if venue is None:
         raise ValueError(f"unsupported venue: {value}")
     return [venue]
-
-
-def expand_strategies(value: str) -> List[str]:
-    raw = (value or "").strip().lower()
-    if raw == "all":
-        return SUPPORTED_STRATEGIES[:]
-    strategy = normalize_strategy(raw)
-    if strategy is None:
-        raise ValueError(f"unsupported strategy: {value}")
-    return [strategy]
 
 
 def print_three_line_table(headers: List[str], rows: List[List[str]]) -> None:
@@ -153,18 +130,6 @@ def decode_hash(data: Dict[object, object]) -> Dict[str, str]:
     return decoded
 
 
-def load_meta(rds, key: str) -> Optional[Dict[str, object]]:
-    raw = rds.get(f"{key}:meta")
-    if not raw:
-        return None
-    text = raw.decode("utf-8", "ignore") if isinstance(raw, bytes) else str(raw)
-    try:
-        meta = json.loads(text)
-    except Exception:
-        return None
-    return meta if isinstance(meta, dict) else None
-
-
 def filter_symbols(data: Dict[str, str], symbols: Iterable[str]) -> Dict[str, str]:
     wanted = {normalize_symbol(symbol) for symbol in symbols if normalize_symbol(symbol)}
     if not wanted:
@@ -172,27 +137,12 @@ def filter_symbols(data: Dict[str, str], symbols: Iterable[str]) -> Dict[str, st
     return {symbol: value for symbol, value in data.items() if normalize_symbol(symbol) in wanted}
 
 
-def print_one(rds, venue: str, strategy: str, symbols: List[str]) -> None:
-    key = redis_key(venue, strategy)
-    meta = load_meta(rds, key)
+def print_one(rds, venue: str, symbols: List[str]) -> None:
+    key = redis_key(venue)
     data = filter_symbols(decode_hash(rds.hgetall(key)), symbols)
 
-    print(f"\n📍 Venue={venue} Strategy={strategy}")
+    print(f"\n📍 Venue={venue} Strategy={STRATEGY}")
     print(f"🔎 Redis Hash: {key}")
-    if meta:
-        generated_at = meta.get("generated_at")
-        symbol_count = meta.get("symbol_count")
-        print(
-            "🧾 Meta: "
-            + ", ".join(
-                part
-                for part in [
-                    f"generated_at={generated_at}" if generated_at else "",
-                    f"symbol_count={symbol_count}" if symbol_count is not None else "",
-                ]
-                if part
-            )
-        )
 
     if not data:
         print("⚠️  当前组合下没有读取到数据")
@@ -213,7 +163,6 @@ def main() -> int:
 
     try:
         venues = expand_venues(args.venue)
-        strategies = expand_strategies(args.strategy)
     except ValueError as exc:
         print(f"❌ {exc}", file=sys.stderr)
         return 1
@@ -230,8 +179,7 @@ def main() -> int:
         print(f"🔬 Symbol Filter: {', '.join(normalize_symbol(symbol) for symbol in args.symbols)}")
 
     for venue in venues:
-        for strategy in strategies:
-            print_one(rds, venue, strategy, args.symbols)
+        print_one(rds, venue, args.symbols)
 
     print()
     return 0

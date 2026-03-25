@@ -2,16 +2,15 @@
 # -*- coding: utf-8 -*-
 
 """
-同步 MM/XARB 的 tlen 阈值到 Redis。
+同步 MM 的 tlen 阈值到 Redis。
 
 Redis key 约定：
   - Hash: <venue_prefix>:<strategy>:tlen_threshold
     例如：binance_futures:mm:tlen_threshold
-  - Meta: <venue_prefix>:<strategy>:tlen_threshold:meta
 
 其中：
   - venue_prefix = venue 中的 '-' 替换为 '_'，例如 binance-futures -> binance_futures
-  - strategy 当前支持 mm / xarb
+  - strategy 在本脚本中固定为 mm
 
 脚本内明文配置：
   - 直接编辑下方 TLEN_THRESHOLD_JSON，格式必须为 JSON object，形如：
@@ -22,8 +21,8 @@ Redis key 约定：
 
 示例：
   python mm_scripts/sync_mm_tlen_threshold.py
-  python mm_scripts/sync_mm_tlen_threshold.py --venue gate-futures --strategy xarb
-  python mm_scripts/sync_mm_tlen_threshold.py --venue all --strategy all
+  python mm_scripts/sync_mm_tlen_threshold.py --venue gate-futures
+  python mm_scripts/sync_mm_tlen_threshold.py --venue all
   python mm_scripts/sync_mm_tlen_threshold.py --symbol BTCUSDT --symbol ETHUSDT
 """
 
@@ -33,16 +32,23 @@ import argparse
 import json
 import math
 import sys
-from datetime import datetime, timezone
 from typing import Dict, Iterable, List, Optional
 
 SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
 SUPPORTED_VENUES = [f"{exchange}-futures" for exchange in SUPPORTED_EXCHANGES]
-SUPPORTED_STRATEGIES = ["mm", "xarb"]
+STRATEGY = "mm"
 
 # 明文阈值配置。请按需直接编辑这里，保持 JSON object 格式：symbol -> value。
 TLEN_THRESHOLD_JSON = r"""
 {
+  "BTCUSDT": 319.0965,
+  "TRXUSDT": 3083.44555,
+  "FILUSDT": 28531.845,
+  "BNBUSDT": 98.5448,
+  "AVAXUSDT": 2572.922,
+  "DOTUSDT": 9402.1025,
+  "BCHUSDT": 242.8828,
+  "ARBUSDT": 9807.98592
 }
 """
 
@@ -78,13 +84,6 @@ def normalize_venue(venue: str) -> Optional[str]:
     return normalized
 
 
-def normalize_strategy(strategy: str) -> Optional[str]:
-    value = (strategy or "").strip().lower()
-    if value in SUPPORTED_STRATEGIES:
-        return value
-    return None
-
-
 def normalize_symbol(symbol: str) -> str:
     return "".join(ch for ch in (symbol or "").upper() if ch.isalnum())
 
@@ -93,21 +92,16 @@ def venue_prefix(venue: str) -> str:
     return venue.replace("-", "_")
 
 
-def redis_key(venue: str, strategy: str) -> str:
-    return f"{venue_prefix(venue)}:{strategy}:tlen_threshold"
+def redis_key(venue: str) -> str:
+    return f"{venue_prefix(venue)}:{STRATEGY}:tlen_threshold"
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Sync mm/xarb tlen thresholds to Redis")
+    parser = argparse.ArgumentParser(description="Sync mm tlen thresholds to Redis")
     parser.add_argument(
         "--venue",
         default="binance-futures",
         help="目标 venue，支持 binance-futures/okex-futures/bybit-futures/bitget-futures/gate-futures/all，默认 binance-futures",
-    )
-    parser.add_argument(
-        "--strategy",
-        default="mm",
-        help="目标策略，支持 mm/xarb/all，默认 mm",
     )
     parser.add_argument(
         "--symbol",
@@ -135,16 +129,6 @@ def expand_venues(value: str) -> List[str]:
     if venue is None:
         raise ValueError(f"unsupported venue: {value}")
     return [venue]
-
-
-def expand_strategies(value: str) -> List[str]:
-    raw = (value or "").strip().lower()
-    if raw == "all":
-        return SUPPORTED_STRATEGIES[:]
-    strategy = normalize_strategy(raw)
-    if strategy is None:
-        raise ValueError(f"unsupported strategy: {value}")
-    return [strategy]
 
 
 def load_thresholds_from_script() -> Dict[str, float]:
@@ -199,27 +183,19 @@ def print_three_line_table(headers: List[str], rows: List[List[str]]) -> None:
     print(rule_top)
 
 
-def sync_one(rds, venue: str, strategy: str, thresholds: Dict[str, float]) -> None:
-    key = redis_key(venue, strategy)
+def sync_one(rds, venue: str, thresholds: Dict[str, float]) -> None:
+    key = redis_key(venue)
     meta_key = f"{key}:meta"
 
     rds.delete(key)
+    rds.delete(meta_key)
     if thresholds:
         mapping = {symbol: f"{value:.8f}" for symbol, value in thresholds.items()}
         rds.hset(key, mapping=mapping)
 
-    meta = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "venue": venue,
-        "strategy": strategy,
-        "key": key,
-        "symbol_count": len(thresholds),
-    }
-    rds.set(meta_key, json.dumps(meta, ensure_ascii=False, separators=(",", ":")))
-
-    print(f"\n📍 Venue={venue} Strategy={strategy}")
+    print(f"\n📍 Venue={venue} Strategy={STRATEGY}")
     print(f"🔄 写入 Redis Hash: {key}")
-    print(f"🧾 写入 Meta Key: {meta_key}")
+    print(f"🧹 删除旧 Meta Key: {meta_key}")
     print(f"✅ 已同步 symbols: {len(thresholds)}")
 
     if thresholds:
@@ -239,7 +215,6 @@ def main() -> int:
 
     try:
         venues = expand_venues(args.venue)
-        strategies = expand_strategies(args.strategy)
         thresholds = filter_symbols(load_thresholds_from_script(), args.symbol)
     except ValueError as exc:
         print(f"❌ {exc}", file=sys.stderr)
@@ -261,11 +236,10 @@ def main() -> int:
 
     print(f"📍 Redis: {args.redis_host}:{args.redis_port}/{args.redis_db}")
     print(f"📦 Venue Targets: {', '.join(venues)}")
-    print(f"🧭 Strategy Targets: {', '.join(strategies)}")
+    print(f"🧭 Strategy Target: {STRATEGY}")
 
     for venue in venues:
-        for strategy in strategies:
-            sync_one(rds, venue, strategy, thresholds)
+        sync_one(rds, venue, thresholds)
 
     print()
     return 0
