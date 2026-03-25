@@ -84,7 +84,9 @@ impl ResolvedArgs {
         let base_dir = args
             .base_dir
             .or_else(|| env_path_multi(&["ORDER_EXPORT_BASE_DIR", "PERSIST_EXPORT_BASE_DIR"]))
-            .unwrap_or_else(|| PathBuf::from("/home/ubuntu"));
+            .ok_or_else(|| {
+                anyhow!("base_dir is required: set ORDER_EXPORT_BASE_DIR or pass --base-dir")
+            })?;
         ensure_absolute("base_dir", &base_dir)?;
 
         let env_name =
