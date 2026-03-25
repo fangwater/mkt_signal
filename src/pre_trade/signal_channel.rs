@@ -554,7 +554,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                     return;
                 }
 
-                info!(
+                debug!(
                     "🔔 收到 ArbHedge 信号: strategy_id={} hedging={} {:?} | side={:?} qty={:.4} price={:.6} is_maker={} spread_rate={:.6} from_key='{}'",
                     strategy_id,
                     hedging_symbol,
@@ -575,12 +575,12 @@ fn handle_trade_signal(signal: TradeSignal) {
                 // 取出策略，处理信号，然后放回
                 let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
                 if let Some(mut strategy) = strategy_opt {
-                    info!("ArbHedge: 处理策略 id={}", strategy_id);
+                    debug!("ArbHedge: 处理策略 id={}", strategy_id);
                     strategy.handle_signal(&signal);
                     if strategy.is_active() {
                         strategy_mgr.borrow_mut().insert(strategy);
                     } else {
-                        info!("ArbHedge: 策略 id={} 已不活跃，不再放回", strategy_id);
+                        debug!("ArbHedge: 策略 id={} 已不活跃，不再放回", strategy_id);
                     }
                 }
                 drop(strategy_mgr);

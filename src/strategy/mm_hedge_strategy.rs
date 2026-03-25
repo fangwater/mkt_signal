@@ -25,7 +25,7 @@ use crate::trade_engine::query_parsers::compact_order::{
 };
 use crate::trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
 use crate::trade_engine::trade_request::TradeRequestType;
-use log::{debug, info, warn};
+use log::{debug, warn};
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 
@@ -190,7 +190,7 @@ impl MarketMakerHedgeStrategy {
     }
 
     fn log_hedge_order_release(&self, cause: &str, client_order_id: i64) {
-        info!(
+        debug!(
             "MMHedgeTrace: strategy_id={} order_release cause={} {}",
             self.strategy_id,
             cause,
@@ -199,12 +199,23 @@ impl MarketMakerHedgeStrategy {
     }
 
     fn log_hedge_order_state(&self, stage: &str, client_order_id: i64) {
-        info!(
+        debug!(
             "MMHedgeTrace: strategy_id={} stage={} {}",
             self.strategy_id,
             stage,
             self.hedge_order_trace_snapshot(client_order_id)
         );
+    }
+
+    fn retire_hedge_order(&mut self, client_order_id: i64, cause: &str) {
+        self.log_hedge_order_release(cause, client_order_id);
+        self.clear_order_query_state(client_order_id);
+        self.hedge_order_ids.remove(&client_order_id);
+        self.hedge_order_from_keys.remove(&client_order_id);
+        self.cancel_failed_query_retries.remove(&client_order_id);
+        if let Some(order_mgr) = MonitorChannel::try_order_manager() {
+            let _ = order_mgr.borrow_mut().remove(client_order_id);
+        }
     }
 
     fn cleanup_strategy_orders(&mut self) {
@@ -361,13 +372,13 @@ impl MarketMakerHedgeStrategy {
         let strategy_mgr = MonitorChannel::instance().strategy_mgr();
         let snapshots = strategy_mgr.borrow().mm_hedge_snapshots();
         for snap in snapshots {
-            info!(
+            debug!(
                 "MMHedge snapshot: symbol={} net={:.8} buy={:.8} sell={:.8}",
                 snap.symbol, snap.net_qty, snap.buy_qty, snap.sell_qty
             );
         }
         let from_key = String::from_utf8_lossy(&self.hedge_from_key);
-        info!(
+        debug!(
             "MMHedge ctx: symbol={} price_levels={} amount_levels={} signal_ts={} next_query_ts={} from_key='{}'",
             ctx.get_opening_symbol(),
             ctx.price_qv_list.len(),
@@ -436,7 +447,7 @@ impl MarketMakerHedgeStrategy {
             })
             .collect::<Vec<_>>()
             .join(" | ");
-        info!(
+        debug!(
             "MMHedge split detail: symbol={} venue={:?} side={:?} net_qty_base={:.8} qty_multiplier={:.8} levels={} remaining_base={:.8} detail={}",
             symbol,
             venue,
@@ -464,7 +475,7 @@ impl MarketMakerHedgeStrategy {
             })
             .collect::<Vec<_>>()
             .join(",");
-        info!(
+        debug!(
             "MMHedgeSplitSummary {{\"strategy_id\":{},\"symbol\":\"{}\",\"venue\":\"{:?}\",\"side\":\"{}\",\"net_qty_base\":{:.8},\"qty_multiplier\":{:.8},\"total_qty_base\":{:.8},\"total_usdt\":{:.8},\"remaining_base\":{:.8},\"levels\":[{}]}}",
             self.strategy_id,
             symbol,
@@ -528,7 +539,7 @@ impl MarketMakerHedgeStrategy {
             Some(Side::Sell) => "SELL",
             None => "FLAT",
         };
-        info!(
+        debug!(
             "MMHedge split: symbol={} side={} net_qty={:.8} total_qty={:.8} total_usdt={:.8} remain_qty={:.8}\n{}",
             ctx.get_opening_symbol(),
             hedge_side_str,
@@ -562,7 +573,7 @@ impl MarketMakerHedgeStrategy {
         let net_exposure_usdt = mark_price
             .map(|price| Self::net_exposure_usdt_with_mark_price(self.net_qty, price))
             .unwrap_or(0.0);
-        info!(
+        debug!(
             "MMHedgeTrace: strategy_id={} query_timer fired symbol={} now={} next_query_ts_us={} net_qty_base={:.8} mark_price={:?} net_exposure_usdt={:.8} pending_query={} tracked_orders={}",
             self.strategy_id,
             self.symbol,
@@ -580,7 +591,7 @@ impl MarketMakerHedgeStrategy {
         }
 
         if !self.should_send_hedge_query() {
-            info!(
+            debug!(
                 "MMHedgeTrace: strategy_id={} query_timer skip_hedge_query threshold_usdt={} mark_price={:?} net_qty_base={:.8} net_exposure_usdt={:?}",
                 self.strategy_id,
                 NET_EXPOSURE_EPS_USDT,
@@ -620,7 +631,7 @@ impl MarketMakerHedgeStrategy {
             return false;
         }
 
-        info!(
+        debug!(
             "MMHedgeTrace: strategy_id={} cancel_scan_start tracked_orders={}",
             self.strategy_id,
             self.hedge_order_set_snapshot()
@@ -634,7 +645,7 @@ impl MarketMakerHedgeStrategy {
             match mgr.get(*order_id) {
                 Some(order) => {
                     if order.status.is_terminal() {
-                        info!(
+                        debug!(
                             "MMHedgeTrace: strategy_id={} cancel_scan terminal order will be retired: {}",
                             self.strategy_id,
                             self.hedge_order_trace_snapshot(*order_id)
@@ -643,13 +654,13 @@ impl MarketMakerHedgeStrategy {
                     } else if self.is_cancel_reconciling(*order_id) {
                         // Cancel already failed and we are reconciling via order query; do not
                         // spam repeated cancel requests every tick.
-                        info!(
+                        debug!(
                             "MMHedgeTrace: strategy_id={} cancel_scan skip due to reconcile: {}",
                             self.strategy_id,
                             self.hedge_order_trace_snapshot(*order_id)
                         );
                     } else {
-                        info!(
+                        debug!(
                             "MMHedgeTrace: strategy_id={} cancel_scan enqueue cancel: {}",
                             self.strategy_id,
                             self.hedge_order_trace_snapshot(*order_id)
@@ -670,12 +681,11 @@ impl MarketMakerHedgeStrategy {
         drop(mgr);
 
         for order_id in to_remove {
-            self.log_hedge_order_release("cancel_scan_remove", order_id);
-            self.hedge_order_ids.remove(&order_id);
+            self.retire_hedge_order(order_id, "cancel_scan_remove");
         }
 
         if self.hedge_order_ids.is_empty() {
-            info!(
+            debug!(
                 "MMHedgeTrace: strategy_id={} cancel_scan finished with no tracked orders remaining",
                 self.strategy_id
             );
@@ -683,7 +693,7 @@ impl MarketMakerHedgeStrategy {
         }
 
         if to_cancel.is_empty() {
-            info!(
+            debug!(
                 "MMHedgeTrace: strategy_id={} cancel_scan no cancel sent because all tracked orders are reconciling: tracked_orders={}",
                 self.strategy_id,
                 self.hedge_order_set_snapshot()
@@ -702,7 +712,7 @@ impl MarketMakerHedgeStrategy {
                 continue;
             };
             let exchange = order.venue.trade_engine_exchange();
-            info!(
+            debug!(
                 "MMHedgeTrace: strategy_id={} cancel_send preparing exchange={} {}",
                 self.strategy_id,
                 exchange,
@@ -716,7 +726,7 @@ impl MarketMakerHedgeStrategy {
                             self.strategy_id, exchange, order_id, e
                         );
                     } else {
-                        info!(
+                        debug!(
                             "MarketMakerHedgeStrategy: strategy_id={} cancel hedge order sent: exchange={} client_order_id={}",
                             self.strategy_id, exchange, order_id
                         );
@@ -736,7 +746,7 @@ impl MarketMakerHedgeStrategy {
         // We'll retry later if orders are still live.
         if !to_cancel.is_empty() {
             self.next_query_ts_us = get_timestamp_us().saturating_add(CANCEL_RESEND_THROTTLE_US);
-            info!(
+            debug!(
                 "MMHedgeTrace: strategy_id={} cancel_scan rescheduled next_query_ts_us={} tracked_orders={}",
                 self.strategy_id,
                 self.next_query_ts_us,
@@ -797,7 +807,7 @@ impl MarketMakerHedgeStrategy {
         let due = get_timestamp_us().saturating_add(ORDER_QUERY_WATCHDOG_DELAY_US);
         self.order_query_watchdogs
             .insert(client_order_id, (due, reason));
-        info!(
+        debug!(
             "MMHedgeReconcile: strategy_id={} schedule_watchdog due_ts={} reason={:?} {}",
             self.strategy_id,
             due,
@@ -810,7 +820,7 @@ impl MarketMakerHedgeStrategy {
         let removed_watchdog = self.order_query_watchdogs.remove(&client_order_id);
         let removed_pending = self.pending_order_queries.remove(&client_order_id);
         if removed_watchdog.is_some() || removed_pending.is_some() {
-            info!(
+            debug!(
                 "MMHedgeReconcile: strategy_id={} clear_query_state removed_pending={:?} removed_watchdog={:?} {}",
                 self.strategy_id,
                 removed_pending,
@@ -827,28 +837,12 @@ impl MarketMakerHedgeStrategy {
             reason,
             self.hedge_order_trace_snapshot(client_order_id)
         );
-        self.clear_order_query_state(client_order_id);
-        self.hedge_order_ids.remove(&client_order_id);
-        self.hedge_order_from_keys.remove(&client_order_id);
-        self.cancel_failed_query_retries.remove(&client_order_id);
-
-        let now = get_timestamp_us();
-        if let Some(order_mgr) = MonitorChannel::try_order_manager() {
-            let mut mgr = order_mgr.borrow_mut();
-            let updated = mgr.update(client_order_id, |o| {
-                o.update_status(OrderExecutionStatus::Cancelled);
-                o.set_end_time(now);
-            });
-            if !updated {
-                let _ = mgr.remove(client_order_id);
-            }
-        }
+        self.retire_hedge_order(client_order_id, "query_failure_force_terminal");
 
         warn!(
             "MarketMakerHedgeStrategy: strategy_id={} mark hedge order terminal: client_order_id={} reason={}",
             self.strategy_id, client_order_id, reason
         );
-        self.log_hedge_order_release("query_failure_force_terminal", client_order_id);
     }
 
     fn handle_order_query_watchdogs(&mut self) {
@@ -875,7 +869,7 @@ impl MarketMakerHedgeStrategy {
                 self.pending_order_queries.remove(&client_order_id);
                 let scheduled_at = now.saturating_sub(ORDER_QUERY_WATCHDOG_DELAY_US);
                 let waited_ms = now.saturating_sub(scheduled_at).saturating_div(1_000);
-                info!(
+                debug!(
                     "MMHedge OrderWatchdog触发: strategy_id={} client_order_id={} symbol={} status={:?} exch_ord_id={:?} 等待{}ms仍未收到回报，发送order query回补",
                     self.strategy_id,
                     client_order_id,
@@ -987,7 +981,7 @@ impl MarketMakerHedgeStrategy {
 
     fn send_order_query(&mut self, client_order_id: i64, reason: PendingOrderQueryReason) -> bool {
         if self.pending_order_queries.contains_key(&client_order_id) {
-            info!(
+            debug!(
                 "MMHedgeReconcile: strategy_id={} skip_send_order_query because pending already exists: reason={:?} {}",
                 self.strategy_id,
                 reason,
@@ -1020,7 +1014,7 @@ impl MarketMakerHedgeStrategy {
                 self.pending_order_queries.insert(client_order_id, reason);
                 // Ensure we eventually retry if query response is lost/empty.
                 self.schedule_order_query_watchdog(client_order_id, reason);
-                info!(
+                debug!(
                     "MMHedgeReconcile: strategy_id={} order_query_sent exchange={} reason={:?} by_exchange_order_id={} payload_len={} {}",
                     self.strategy_id,
                     exchange,
@@ -1082,7 +1076,7 @@ impl MarketMakerHedgeStrategy {
         parsed: CompactOrderQueryResp,
         reason: PendingOrderQueryReason,
     ) {
-        info!(
+        debug!(
             "MMHedgeReconcile: strategy_id={} apply_query_result reason={:?} parsed_status_u8={} parsed_exec_qty={:.8} {}",
             self.strategy_id,
             reason,
@@ -1150,7 +1144,7 @@ impl MarketMakerHedgeStrategy {
             );
         }
 
-        info!(
+        debug!(
             "MarketMakerHedgeStrategy: strategy_id={} query回补: client_order_id={} order_id={} exec_qty={:.8} status_u8={} reason={:?}",
             self.strategy_id,
             order.client_order_id,
@@ -1177,7 +1171,7 @@ impl MarketMakerHedgeStrategy {
         };
 
         let Some(parsed) = parsed else {
-            info!(
+            debug!(
                 "MMHedgeReconcile: strategy_id={} query_result parsed=None, retry by watchdog: reason={:?} {}",
                 self.strategy_id,
                 reason,
@@ -1202,11 +1196,18 @@ impl MarketMakerHedgeStrategy {
             OrderExecutionStatus::Create => {
                 self.apply_parsed_order_query_updates(&order, parsed, reason);
             }
-            OrderExecutionStatus::Rejected | OrderExecutionStatus::Commit => {
+            OrderExecutionStatus::Rejected => {
                 warn!(
                     "MarketMakerHedgeStrategy: strategy_id={} query shows {:?} client_order_id={} reason={:?}",
-                self.strategy_id, st, client_order_id, reason
-            );
+                    self.strategy_id, st, client_order_id, reason
+                );
+                self.retire_hedge_order(client_order_id, "query_result_rejected");
+            }
+            OrderExecutionStatus::Commit => {
+                warn!(
+                    "MarketMakerHedgeStrategy: strategy_id={} query shows {:?} client_order_id={} reason={:?}",
+                    self.strategy_id, st, client_order_id, reason
+                );
             }
         }
     }
@@ -1253,7 +1254,7 @@ impl MarketMakerHedgeStrategy {
                             self.strategy_id, exchange, plan.client_order_id, e
                         );
                     } else {
-                        info!(
+                        debug!(
                             "MarketMakerHedgeStrategy: strategy_id={} hedge order sent: exchange={} client_order_id={} level_index={} side={:?} price={:.8} qty={:.8} from_key='{}'",
                             self.strategy_id,
                             exchange,
@@ -1441,7 +1442,7 @@ impl MarketMakerHedgeStrategy {
     fn apply_order_update(&mut self, order_update: &dyn OrderUpdate) -> bool {
         let client_order_id = order_update.client_order_id();
         self.clear_order_query_state(client_order_id);
-        info!(
+        debug!(
             "MMHedgeTrace: strategy_id={} order_update_in execution_type={:?} status={:?} order_id={} cum_fill={:.8} {}",
             self.strategy_id,
             order_update.execution_type(),
@@ -1482,7 +1483,7 @@ impl MarketMakerHedgeStrategy {
                 order.status = OrderExecutionStatus::Create;
                 order.set_exchange_order_id(order_update.order_id());
                 order.set_create_time(order_update.event_time());
-                info!(
+                debug!(
                     "✅ MMHedge订单已挂单: strategy_id={} client_order_id={} exchange_order_id={} symbol={} side={:?} price={:.6} qty={:.4}",
                     self.strategy_id,
                     client_order_id,
@@ -1572,52 +1573,50 @@ impl MarketMakerHedgeStrategy {
             }
         }
 
-        if status.is_finished() && self.hedge_order_ids.remove(&client_order_id) {
-            self.hedge_order_from_keys.remove(&client_order_id);
-            self.log_hedge_order_release("order_update_finished", client_order_id);
+        if status.is_finished() {
+            let was_tracked = self.hedge_order_ids.contains(&client_order_id);
             let filled_qty = order_update.cumulative_filled_quantity();
-            if filled_qty <= 0.0 {
-                if status == OrderStatus::Canceled {
-                    info!(
-                        "🚫 MMHedge订单撤销: strategy_id={} client_order_id={} exchange_order_id={} filled=0",
+            if was_tracked && filled_qty > 0.0 {
+                let base_qty = MonitorChannel::instance().qty_to_base(
+                    order_update.trading_venue(),
+                    order_update.symbol(),
+                    filled_qty,
+                );
+                if base_qty > 0.0 {
+                    let signed_qty = match order_update.side() {
+                        Side::Buy => base_qty,
+                        Side::Sell => -base_qty,
+                    };
+                    let before = self.net_qty;
+                    self.net_qty += signed_qty;
+                    let action = match status {
+                        OrderStatus::Canceled => "撤销",
+                        OrderStatus::Filled => "完全成交",
+                        _ => "更新",
+                    };
+                    debug!(
+                        "✅ MMHedge订单{}: strategy_id={} client_order_id={} symbol={} side={:?} filled={:.8} base_filled={:.8} net_before={:.8} net_after={:.8}",
+                        action,
                         self.strategy_id,
                         client_order_id,
-                        order_update.order_id()
+                        order_update.symbol(),
+                        order_update.side(),
+                        filled_qty,
+                        base_qty,
+                        before,
+                        self.net_qty
                     );
                 }
-                return true;
             }
-            let base_qty = MonitorChannel::instance().qty_to_base(
-                order_update.trading_venue(),
-                order_update.symbol(),
-                filled_qty,
-            );
-            if base_qty <= 0.0 {
-                return true;
+            self.retire_hedge_order(client_order_id, "order_update_finished");
+            if was_tracked && filled_qty <= 0.0 && status == OrderStatus::Canceled {
+                debug!(
+                    "🚫 MMHedge订单撤销: strategy_id={} client_order_id={} exchange_order_id={} filled=0",
+                    self.strategy_id,
+                    client_order_id,
+                    order_update.order_id()
+                );
             }
-            let signed_qty = match order_update.side() {
-                Side::Buy => base_qty,
-                Side::Sell => -base_qty,
-            };
-            let before = self.net_qty;
-            self.net_qty += signed_qty;
-            let action = match status {
-                OrderStatus::Canceled => "撤销",
-                OrderStatus::Filled => "完全成交",
-                _ => "更新",
-            };
-            info!(
-                "✅ MMHedge订单{}: strategy_id={} client_order_id={} symbol={} side={:?} filled={:.8} base_filled={:.8} net_before={:.8} net_after={:.8}",
-                action,
-                self.strategy_id,
-                client_order_id,
-                order_update.symbol(),
-                order_update.side(),
-                filled_qty,
-                base_qty,
-                before,
-                self.net_qty
-            );
         }
 
         true
@@ -1626,7 +1625,7 @@ impl MarketMakerHedgeStrategy {
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) -> bool {
         let client_order_id = trade.client_order_id();
         self.clear_order_query_state(client_order_id);
-        info!(
+        debug!(
             "MMHedgeTrace: strategy_id={} trade_update_in order_status={:?} order_id={} cum_fill={:.8} price={:.8} {}",
             self.strategy_id,
             trade.order_status(),
@@ -1705,39 +1704,34 @@ impl MarketMakerHedgeStrategy {
             return true;
         }
 
-        if !self.hedge_order_ids.remove(&client_order_id) {
-            return true;
+        let was_tracked = self.hedge_order_ids.contains(&client_order_id);
+        if was_tracked && cumulative_qty > 0.0 {
+            let base_qty = MonitorChannel::instance().qty_to_base(
+                trade.trading_venue(),
+                trade.symbol(),
+                cumulative_qty,
+            );
+            if base_qty > 0.0 {
+                let signed_qty = match trade.side() {
+                    Side::Buy => base_qty,
+                    Side::Sell => -base_qty,
+                };
+                let before = self.net_qty;
+                self.net_qty += signed_qty;
+                debug!(
+                    "✅ MMHedge订单完全成交: strategy_id={} client_order_id={} symbol={} side={:?} filled={:.8} base_filled={:.8} net_before={:.8} net_after={:.8}",
+                    self.strategy_id,
+                    client_order_id,
+                    trade.symbol(),
+                    trade.side(),
+                    cumulative_qty,
+                    base_qty,
+                    before,
+                    self.net_qty
+                );
+            }
         }
-        self.hedge_order_from_keys.remove(&client_order_id);
-        self.log_hedge_order_release("trade_update_filled", client_order_id);
-        if cumulative_qty <= 0.0 {
-            return true;
-        }
-        let base_qty = MonitorChannel::instance().qty_to_base(
-            trade.trading_venue(),
-            trade.symbol(),
-            cumulative_qty,
-        );
-        if base_qty <= 0.0 {
-            return true;
-        }
-        let signed_qty = match trade.side() {
-            Side::Buy => base_qty,
-            Side::Sell => -base_qty,
-        };
-        let before = self.net_qty;
-        self.net_qty += signed_qty;
-        info!(
-            "✅ MMHedge订单完全成交: strategy_id={} client_order_id={} symbol={} side={:?} filled={:.8} base_filled={:.8} net_before={:.8} net_after={:.8}",
-            self.strategy_id,
-            client_order_id,
-            trade.symbol(),
-            trade.side(),
-            cumulative_qty,
-            base_qty,
-            before,
-            self.net_qty
-        );
+        self.retire_hedge_order(client_order_id, "trade_update_filled");
 
         true
     }
@@ -1903,7 +1897,7 @@ impl Strategy for MarketMakerHedgeStrategy {
                     // giving up immediately on a transient publish failure.
                     self.schedule_order_query_watchdog(client_order_id, reason);
                 }
-                info!(
+                debug!(
                     "MMHedgeReconcile: strategy_id={} ws_cancel_failed_followup req_type={} reason={:?} sent_query={} pending_now={} watchdog_now={} {}",
                     self.strategy_id,
                     req_type,
@@ -1921,7 +1915,7 @@ impl Strategy for MarketMakerHedgeStrategy {
     fn apply_query_engine_response(&mut self, response: &dyn QueryEngineResponse) {
         let client_order_id = response.client_query_id();
         let Some(reason) = self.pending_order_queries.remove(&client_order_id) else {
-            info!(
+            debug!(
                 "MMHedgeReconcile: strategy_id={} query_response_without_pending req_type={} client_order_id={} tracked={} body_len={}",
                 self.strategy_id,
                 response.req_type(),
@@ -1941,7 +1935,7 @@ impl Strategy for MarketMakerHedgeStrategy {
             .rposition(|&b| b != 0)
             .map(|pos| pos + 1)
             .unwrap_or(0);
-        info!(
+        debug!(
             "MMHedgeReconcile: strategy_id={} query_response req_type={} reason={:?} cancel_reconcile={} body_has_nonzero={} actual_len={} {}",
             self.strategy_id,
             response.req_type(),

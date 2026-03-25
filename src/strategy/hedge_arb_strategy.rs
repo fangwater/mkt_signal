@@ -688,7 +688,7 @@ impl HedgeArbStrategy {
         self.hedge_from_key = String::from_utf8_lossy(&ctx.from_key).to_string();
 
         if self.has_pending_hedge_order() {
-            info!(
+            debug!(
                 "HedgeArbStrategy: strategy_id={} 对冲信号忽略（已有活跃对冲单） qty={:.8}",
                 self.strategy_id, target_qty
             );
@@ -713,7 +713,7 @@ impl HedgeArbStrategy {
             .get_side()
             .ok_or_else(|| format!("无效的对冲方向: {}", ctx.hedge_side))?;
         if ctx.is_taker() {
-            info!(
+            debug!(
                 "HedgeArbStrategy: strategy_id={} taker hedge signal hedge_symbol={} venue={:?} side={:?} qty={:.8}",
                 self.strategy_id,
                 hedge_symbol,
@@ -1111,7 +1111,7 @@ impl HedgeArbStrategy {
         if let Some(expire_ts) = self.hedge_expire_ts {
             let now = get_timestamp_us();
             if now >= expire_ts {
-                info!(
+                debug!(
                     "HedgeArbStrategy: strategy_id={} 对冲订单超时，直接撤单 expire_ts={} now={} hedge_orders_len={}",
                     self.strategy_id,
                     expire_ts,
@@ -1126,7 +1126,7 @@ impl HedgeArbStrategy {
                         .borrow()
                         .get(hedge_order_id);
                     if let Some(order) = order {
-                        info!(
+                        debug!(
                             "HedgeArbStrategy: strategy_id={} 对冲超时撤单目标 order_id={} symbol={} status={:?} exch_ord_id={:?}",
                             self.strategy_id,
                             hedge_order_id,
@@ -1135,7 +1135,7 @@ impl HedgeArbStrategy {
                             order.exchange_order_id
                         );
                         if order.status.is_terminal() {
-                            info!(
+                            debug!(
                                 "HedgeArbStrategy: strategy_id={} 对冲订单已终结，跳过撤单 order_id={}",
                                 self.strategy_id, hedge_order_id
                             );
@@ -1151,7 +1151,7 @@ impl HedgeArbStrategy {
                                             self.strategy_id, exchange, hedge_order_id, e
                                         );
                                     } else {
-                                        info!(
+                                        debug!(
                                             "HedgeArbStrategy: strategy_id={} 已发送对冲撤单请求 order_id={} exchange={} symbol={}",
                                             self.strategy_id, hedge_order_id, exchange, order.symbol
                                         );
@@ -1384,7 +1384,7 @@ impl HedgeArbStrategy {
                     } else {
                         "CancelWatchdog触发"
                     };
-                    info!(
+                    debug!(
                         "{}: strategy_id={} client_order_id={} leg={:?} symbol={} status={:?} exch_ord_id={:?} 等待{}ms仍未收到撤单/终态回报，发送order query回补 reason={:?}",
                         hint,
                         self.strategy_id,
@@ -1418,7 +1418,7 @@ impl HedgeArbStrategy {
                     } else {
                         ""
                     };
-                    info!(
+                    debug!(
                         "OrderWatchdog触发{}: strategy_id={} client_order_id={} leg={:?} symbol={} status={:?} exch_ord_id={:?} 等待{}ms仍未收到回报，发送order query回补 (since_submit={}ms)",
                         hint,
                         self.strategy_id,
@@ -1458,7 +1458,7 @@ impl HedgeArbStrategy {
 
         let (sent, hedged_qty, _) = self.try_hedge_with_residual(base_pending_qty);
         if sent {
-            info!(
+            debug!(
                 "HedgeArbStrategy: strategy_id={} hedge retry after cooldown sent qty={:.8} reason={}",
                 self.strategy_id, hedged_qty, reason
             );
@@ -1486,7 +1486,7 @@ impl HedgeArbStrategy {
         }
 
         // 1. 创建对冲查询消息（携带开仓盘口快照，便于上游风控/止损判断）
-        info!(
+        debug!(
             "HedgeArbStrategy: strategy_id={} 第{}次对冲 hedge_symbol={} hedge_venue={:?} side={:?} qty={:.8}",
             self.strategy_id,
             self.hedge_request_seq + 1,
@@ -1683,12 +1683,12 @@ impl HedgeArbStrategy {
         let (can_hedge, hedged_qty, residual_qty) = self.try_hedge_with_residual(base_pending_qty);
 
         if can_hedge {
-            info!(
+            debug!(
                 "HedgeArbStrategy: strategy_id={} 开仓撤单后对冲成功，对冲量={:.8}",
                 self.strategy_id, hedged_qty
             );
         } else if residual_qty > 1e-12 {
-            info!(
+            debug!(
                 "HedgeArbStrategy: strategy_id={} 开仓撤单后无法对冲，残值={:.8}",
                 self.strategy_id, residual_qty
             );
@@ -1747,12 +1747,12 @@ impl HedgeArbStrategy {
         let (can_hedge, hedged_qty, residual_qty) = self.try_hedge_with_residual(base_pending_qty);
 
         if can_hedge {
-            info!(
+            debug!(
                 "HedgeArbStrategy: strategy_id={} 对冲撤单后重新对冲成功，对冲量={:.8}",
                 self.strategy_id, hedged_qty
             );
         } else if residual_qty > 1e-12 {
-            info!(
+            debug!(
                 "HedgeArbStrategy: strategy_id={} 对冲撤单后无法对冲，残值={:.8}",
                 self.strategy_id, residual_qty
             );
@@ -1822,7 +1822,7 @@ impl HedgeArbStrategy {
                     self.cumulative_open_qty += residual_qty;
                     self.cumulative_hedged_qty += hedged_qty;
                 } else if residual_qty > 1e-12 {
-                    info!(
+                    debug!(
                         "HedgeArbStrategy: strategy_id={} MT模式开仓成交但无法对冲，残值={:.8}",
                         self.strategy_id, residual_qty
                     );
@@ -1837,7 +1837,7 @@ impl HedgeArbStrategy {
 
     fn process_hedge_leg_trade(&mut self, trade: &dyn TradeUpdate) {
         // 对冲侧成交处理
-        info!(
+        debug!(
             "HedgeArbStrategy: strategy_id={} 对冲成交: 开仓量={:.8} 对冲量={:.8}",
             self.strategy_id, self.cumulative_open_qty, self.cumulative_hedged_qty
         );
@@ -1874,7 +1874,7 @@ impl HedgeArbStrategy {
                 if !can_hedge {
                     // 剩余量不足以对冲，且没有待处理的对冲订单，关闭策略
                     if !self.has_pending_hedge_order() {
-                        info!(
+                        debug!(
                             "HedgeArbStrategy: strategy_id={} MT模式，剩余量={:.8} 不足以对冲，关闭策略",
                             self.strategy_id, total_remaining
                         );
@@ -1886,7 +1886,7 @@ impl HedgeArbStrategy {
             // MM 模式：对冲侧成交需要区分成交状态
             if trade.order_status() == Some(OrderStatus::Filled) {
                 // 完全成交即表示本次对冲已完成，直接关闭策略
-                info!(
+                debug!(
                     "HedgeArbStrategy: strategy_id={} MM模式对冲已全部成交，结束策略",
                     self.strategy_id
                 );
@@ -1995,7 +1995,7 @@ impl HedgeArbStrategy {
         } else if self.hedge_order_ids.contains(&client_order_id) {
             // 对冲侧成交，增加累计对冲量
             self.cumulative_hedged_qty = cumulative_base_qty;
-            info!(
+            debug!(
                 "🛡️ 对冲成交: strategy_id={} order_id={} symbol={} price={:.6} | 开仓量={:.4} 已对冲={:.4}",
                 self.strategy_id, client_order_id, self.hedge_symbol,
                 trade.price(),
@@ -3022,7 +3022,7 @@ impl HedgeArbStrategy {
             let cooldown_ms = cooldown_us.saturating_div(1_000);
             self.hedge_retry_after_ts = Some(due_ts);
             self.hedge_retry_reason = Some(reason);
-            info!(
+            debug!(
                 "HedgeArbStrategy: strategy_id={} hedge open_failed, cooldown={}ms retry_at={} reason={} pending_qty={:.8}",
                 self.strategy_id, cooldown_ms, due_ts, reason, base_pending_qty
             );
