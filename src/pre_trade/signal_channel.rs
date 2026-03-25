@@ -6,6 +6,9 @@ use crate::pre_trade::signal_throttle::check_signal_throttle;
 use crate::signal::cancel_signal::{ArbCancelCtx, MmCancelCtx};
 use crate::signal::common::{SignalBytes, TradingVenue};
 use crate::signal::hedge_signal::{ArbHedgeCtx, MmHedgeCtx};
+use crate::signal::mm_signal::{
+    MmBackwardQueryMsg, MmCancelCandidateEntry, MmCancelCandidateQueryMsg, MmCancelTriggerCtx,
+};
 use crate::signal::open_signal::{ArbOpenCtx, MmOpenCtx};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::hedge_arb_strategy::HedgeArbStrategy;
@@ -237,6 +240,11 @@ impl SignalChannel {
 }
 
 fn handle_trade_signal(signal: TradeSignal) {
+    let is_mm_mode = {
+        let monitor = MonitorChannel::instance();
+        monitor.open_venue() == monitor.hedge_venue()
+    };
+
     match signal.signal_type {
         SignalType::ArbOpen => match ArbOpenCtx::from_bytes(signal.context.clone()) {
             Ok(open_ctx) => {
@@ -588,6 +596,10 @@ fn handle_trade_signal(signal: TradeSignal) {
             Err(err) => warn!("failed to decode hedge context: {err}"),
         },
         SignalType::MMOpen => {
+            if !is_mm_mode {
+                debug!("MMOpen ignored: pre_trade is not in MM mode");
+                return;
+            }
             let Ok(open_ctx) = MmOpenCtx::from_bytes(signal.context.clone()) else {
                 warn!("failed to decode MMOpen context");
                 return;
@@ -626,8 +638,81 @@ fn handle_trade_signal(signal: TradeSignal) {
                 warn!("⚠️ MMOpen: strategy_id={} 未激活", strategy_id);
             }
         }
+        SignalType::MMCancelTrigger => match MmCancelTriggerCtx::from_bytes(signal.context.clone()) {
+            Ok(trigger_ctx) => {
+                if !is_mm_mode {
+                    debug!("MMCancelTrigger ignored: pre_trade is not in MM mode");
+                    return;
+                }
+
+                let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+                let candidates = strategy_mgr.borrow().mm_open_cancel_candidates();
+                if candidates.is_empty() {
+                    debug!(
+                        "MMCancelTrigger: no active MM open strategies trigger_ts={}",
+                        trigger_ctx.trigger_ts
+                    );
+                    return;
+                }
+
+                let mut chunk = MmCancelCandidateQueryMsg::new(trigger_ctx.trigger_ts);
+                let mut published_chunks = 0usize;
+                let mut published_items = 0usize;
+
+                let flush_chunk = |chunk: &mut MmCancelCandidateQueryMsg,
+                                   published_chunks: &mut usize,
+                                   published_items: &mut usize| {
+                    if chunk.is_empty() {
+                        return;
+                    }
+                    let payload =
+                        MmBackwardQueryMsg::CancelCandidates(chunk.clone()).to_bytes();
+                    match SignalChannel::with(|ch| ch.publish_backward(&payload)) {
+                        Ok(true) => {
+                            *published_chunks += 1;
+                            *published_items += chunk.items.len();
+                        }
+                        Ok(false) => {
+                            warn!("MMCancelTrigger: backward publisher unavailable");
+                        }
+                        Err(err) => {
+                            warn!("MMCancelTrigger: publish backward failed err={:#}", err);
+                        }
+                    }
+                    chunk.items.clear();
+                };
+
+                for candidate in candidates {
+                    let entry = MmCancelCandidateEntry::new(
+                        candidate.strategy_id,
+                        candidate.client_order_id,
+                        &candidate.symbol,
+                        candidate.side,
+                        candidate.price_qv,
+                    );
+                    let next_len = 1 + chunk.encoded_len() + entry.encoded_len();
+                    if !chunk.is_empty() && next_len > SIGNAL_PAYLOAD {
+                        flush_chunk(&mut chunk, &mut published_chunks, &mut published_items);
+                    }
+                    chunk.push(entry);
+                }
+                flush_chunk(&mut chunk, &mut published_chunks, &mut published_items);
+                info!(
+                    "MMCancelTrigger: snapshot published chunks={} items={} trigger_ts={} freq_ms={}",
+                    published_chunks,
+                    published_items,
+                    trigger_ctx.trigger_ts,
+                    trigger_ctx.freq_ms
+                );
+            }
+            Err(err) => warn!("failed to decode MMCancelTrigger context: {err}"),
+        },
         SignalType::MMCancel => match MmCancelCtx::from_bytes(signal.context.clone()) {
             Ok(cancel_ctx) => {
+                if !is_mm_mode {
+                    debug!("MMCancel ignored: pre_trade is not in MM mode");
+                    return;
+                }
                 let symbol = cancel_ctx.get_opening_symbol().to_uppercase();
                 let opening_venue = TradingVenue::from_u8(cancel_ctx.opening_leg.venue)
                     .unwrap_or(TradingVenue::BinanceMargin);
@@ -672,6 +757,10 @@ fn handle_trade_signal(signal: TradeSignal) {
         },
         SignalType::MMHedge => match MmHedgeCtx::from_bytes(signal.context.clone()) {
             Ok(hedge_ctx) => {
+                if !is_mm_mode {
+                    debug!("MMHedge ignored: pre_trade is not in MM mode");
+                    return;
+                }
                 let symbol = hedge_ctx.get_opening_symbol().to_uppercase();
                 if symbol.is_empty() {
                     warn!("MMHedge: empty symbol");

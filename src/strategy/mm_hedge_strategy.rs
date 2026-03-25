@@ -11,6 +11,7 @@ use crate::pre_trade::signal_channel::SignalChannel;
 use crate::pre_trade::{PersistChannel, QueryEngHub, TradeEngHub};
 use crate::signal::common::{ExecutionType, OrderStatus, SignalBytes, TimeInForce, TradingVenue};
 use crate::signal::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
+use crate::signal::mm_signal::MmBackwardQueryMsg;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::manager::{ForceCloseControl, Strategy};
 use crate::strategy::order_update::OrderUpdate;
@@ -769,7 +770,8 @@ impl MarketMakerHedgeStrategy {
             self.net_qty,
             symbol_exposure_u,
         );
-        let send_result = SignalChannel::with(|ch| ch.publish_backward(&query_msg.to_bytes()));
+        let payload = MmBackwardQueryMsg::Hedge(query_msg).to_bytes();
+        let send_result = SignalChannel::with(|ch| ch.publish_backward(&payload));
         match send_result {
             Ok(true) => {
                 debug!(

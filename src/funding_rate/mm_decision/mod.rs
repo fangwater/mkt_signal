@@ -10,9 +10,11 @@ use std::time::Duration;
 use super::common::ReturnScoreThresholdsResolved;
 use super::fr_decision::DEFAULT_BACKWARD_CHANNEL;
 use super::mkt_channel::MktChannel;
+use super::mm_tlen_threshold_loader;
 use crate::common::iceoryx_publisher::SIGNAL_PAYLOAD;
 use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
 use crate::common::ipc_service_name::build_service_name;
+use crate::common::redis_client::RedisSettings;
 use crate::common::time_util::get_timestamp_us;
 use crate::market_maker::hedge_quote_plan::{
     build_mm_hedge_ctx as build_mm_hedge_ctx_core, resolve_mm_hedge_signal_inputs,
@@ -20,6 +22,7 @@ use crate::market_maker::hedge_quote_plan::{
 };
 use crate::signal::common::{SignalBytes, TradingVenue};
 use crate::signal::hedge_signal::MmHedgeSignalQueryMsg;
+use crate::signal::mm_signal::{MmBackwardQueryMsg, MmCancelCandidateQueryMsg};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 
 mod cancel;
@@ -102,6 +105,7 @@ impl MmDecision {
 
         Self::refresh_min_qty_async(open_venue).await;
         Self::spawn_backward_listener();
+        Self::spawn_tlen_threshold_loader();
         info!("MmDecision backward listener started");
         Ok(())
     }
@@ -221,6 +225,29 @@ impl MmDecision {
         self.state.update_tlen_cancel_freq_ms(tlen_cancel_freq_ms);
     }
 
+    pub fn process_cancel_trigger_interval(&mut self) {
+        if !self.state.enable_open_cancel || self.state.tlen_cancel_freq_ms == 0 {
+            return;
+        }
+        let now_us = get_timestamp_us();
+        let interval_us = (self.state.tlen_cancel_freq_ms as i64).saturating_mul(1_000);
+        if self.state.last_cancel_trigger_ts_us != 0
+            && now_us.saturating_sub(self.state.last_cancel_trigger_ts_us) < interval_us
+        {
+            return;
+        }
+        match self.state.emit_mm_cancel_trigger_signal(now_us) {
+            Ok(_) => {
+                self.state.last_cancel_trigger_ts_us = now_us;
+                debug!(
+                    "MmDecision: MMCancelTrigger emitted freq_ms={}",
+                    self.state.tlen_cancel_freq_ms
+                );
+            }
+            Err(err) => warn!("MmDecision: publish MMCancelTrigger failed: {err:#}"),
+        }
+    }
+
     pub fn update_model_service_roles(
         &mut self,
         return_model_service: String,
@@ -249,14 +276,7 @@ impl MmDecision {
             .process_return_score_updates(&mut self.state);
     }
 
-    fn handle_backward_query(&mut self, data: Bytes) {
-        let query = match MmHedgeSignalQueryMsg::from_bytes(data) {
-            Ok(query) => query,
-            Err(err) => {
-                warn!("MmDecision: decode MMHedge query failed: {err}");
-                return;
-            }
-        };
+    fn handle_mm_hedge_query(&mut self, query: MmHedgeSignalQueryMsg) {
         let symbol = query.get_symbol().to_uppercase();
         if symbol.is_empty() {
             warn!("MmDecision: MMHedge query missing symbol");
@@ -357,6 +377,114 @@ impl MmDecision {
         );
     }
 
+    fn handle_mm_cancel_candidate_query(&mut self, query: MmCancelCandidateQueryMsg) {
+        if query.items.is_empty() {
+            debug!("MmDecision: MM cancel candidate query empty");
+            return;
+        }
+        let mut grouped: HashMap<String, Vec<_>> = HashMap::new();
+        for item in query.items {
+            let symbol = item.get_symbol().to_uppercase();
+            if symbol.is_empty() {
+                continue;
+            }
+            grouped.entry(symbol).or_default().push(item);
+        }
+
+        let now_us = get_timestamp_us();
+        let mut cancel_sent = 0usize;
+        for (symbol, items) in grouped {
+            let threshold_symbol = symbol.to_ascii_uppercase();
+            let Some(threshold) = self.state.mm_tlen_thresholds.get(&threshold_symbol).copied() else {
+                debug!("MmDecision: missing MM tlen threshold symbol={}", threshold_symbol);
+                continue;
+            };
+            let tick_indices: Vec<i64> =
+                items.iter().map(|item| item.price_qv.get_count()).collect();
+            let tlens = match self
+                .state
+                .depth_query_client
+                .query_batch_tick_indices(&symbol, &tick_indices)
+            {
+                Ok(values) => values,
+                Err(err) => {
+                    warn!(
+                        "MmDecision: MMCancel tlen batch query failed symbol={} levels={} err={:#}",
+                        symbol,
+                        tick_indices.len(),
+                        err
+                    );
+                    continue;
+                }
+            };
+            let open_quote = match MktChannel::instance().get_quote(&symbol, self.state.open_venue) {
+                Some(quote) => quote,
+                None => {
+                    warn!(
+                        "MmDecision: MMCancel quote unavailable symbol={} venue={:?}",
+                        symbol, self.state.open_venue
+                    );
+                    continue;
+                }
+            };
+            for (item, tlen) in items.iter().zip(tlens.iter().copied()) {
+                if tlen >= threshold {
+                    continue;
+                }
+                let side = match item.get_side() {
+                    Ok(side) => side,
+                    Err(err) => {
+                        warn!("MmDecision: invalid cancel candidate side symbol={} err={}", symbol, err);
+                        continue;
+                    }
+                };
+                let from_key = format!(
+                    "{}:mm_tlen_cancel:tlen={:.8}:thr={:.8}:strategy_id={}:client_order_id={}",
+                    now_us, tlen, threshold, item.strategy_id, item.client_order_id
+                );
+                if let Err(err) = self.state.emit_mm_cancel_signal_precise(
+                    &symbol,
+                    side,
+                    open_quote,
+                    now_us,
+                    &from_key,
+                    item.strategy_id,
+                    item.client_order_id,
+                ) {
+                    warn!(
+                        "MmDecision: emit precise MMCancel failed symbol={} strategy_id={} client_order_id={} err={:#}",
+                        symbol,
+                        item.strategy_id,
+                        item.client_order_id,
+                        err
+                    );
+                    continue;
+                }
+                cancel_sent += 1;
+            }
+        }
+        info!(
+            "MmDecision: MMCancel candidate query processed trigger_ts={} cancels_sent={}",
+            query.trigger_ts, cancel_sent
+        );
+    }
+
+    fn handle_backward_query(&mut self, data: Bytes) {
+        let query = match MmBackwardQueryMsg::from_bytes(data) {
+            Ok(query) => query,
+            Err(err) => {
+                warn!("MmDecision: decode MM backward query failed: {err}");
+                return;
+            }
+        };
+        match query {
+            MmBackwardQueryMsg::Hedge(query) => self.handle_mm_hedge_query(query),
+            MmBackwardQueryMsg::CancelCandidates(query) => {
+                self.handle_mm_cancel_candidate_query(query)
+            }
+        }
+    }
+
     pub fn spawn_backward_listener() {
         tokio::task::spawn_local(async move {
             loop {
@@ -371,6 +499,55 @@ impl MmDecision {
                         }
                     }
                 });
+            }
+        });
+    }
+
+    fn tlen_threshold_reload_due(&self, now_us: i64) -> bool {
+        const RELOAD_INTERVAL_US: i64 = 30 * 60 * 1_000_000;
+        self.state.last_tlen_threshold_reload_ts_us == 0
+            || now_us.saturating_sub(self.state.last_tlen_threshold_reload_ts_us) >= RELOAD_INTERVAL_US
+    }
+
+    fn spawn_tlen_threshold_loader() {
+        tokio::task::spawn_local(async move {
+            let redis = RedisSettings::default();
+            let mut interval = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+                let (due, open_venue, hedge_venue, now_us) = MmDecision::with(|decision| {
+                    let now_us = get_timestamp_us();
+                    (
+                        decision.tlen_threshold_reload_due(now_us),
+                        decision.state.open_venue,
+                        decision.state.hedge_venue,
+                        now_us,
+                    )
+                });
+                if !due {
+                    continue;
+                }
+                match mm_tlen_threshold_loader::load_from_redis(&redis, open_venue, hedge_venue)
+                    .await
+                {
+                    Ok((redis_key, thresholds, bad_fields)) => {
+                        let symbols = thresholds.len();
+                        MmDecision::with_mut(|decision| {
+                            decision.state.mm_tlen_thresholds = thresholds;
+                            decision.state.last_tlen_threshold_reload_ts_us = now_us;
+                        });
+                        info!(
+                            "MmDecision: MM tlen thresholds loaded key={} symbols={} bad_fields={}",
+                            redis_key, symbols, bad_fields
+                        );
+                    }
+                    Err(err) => {
+                        warn!(
+                            "MmDecision: MM tlen threshold reload failed open={:?} hedge={:?} err={:#}",
+                            open_venue, hedge_venue, err
+                        );
+                    }
+                }
             }
         });
     }

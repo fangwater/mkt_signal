@@ -427,6 +427,13 @@ impl MarketMakerOpenStrategy {
     }
 
     fn handle_mm_cancel_signal(&mut self, ctx: MmCancelCtx) {
+        if ctx.strategy_id > 0 && ctx.strategy_id != self.strategy_id {
+            return;
+        }
+        if ctx.client_order_id > 0 && ctx.client_order_id != self.open_order_id {
+            return;
+        }
+
         let cancel_side = ctx.get_side();
         if let Some(open_side) = self.open_side {
             if open_side != cancel_side {

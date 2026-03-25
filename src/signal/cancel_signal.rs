@@ -47,6 +47,12 @@ pub struct MmCancelCtx {
 
     /// From key bytes
     pub from_key: Vec<u8>,
+
+    /// Optional precise strategy target; 0 means broadcast-by-side legacy behavior.
+    pub strategy_id: i32,
+
+    /// Optional precise client order target; 0 means unspecified.
+    pub client_order_id: i64,
 }
 
 fn set_symbol(target: &mut [u8; 32], symbol: &str) {
@@ -166,6 +172,8 @@ impl MmCancelCtx {
             trigger_ts: 0,
             from_key_len: 0,
             from_key: Vec::new(),
+            strategy_id: 0,
+            client_order_id: 0,
         }
     }
 
@@ -193,6 +201,11 @@ impl MmCancelCtx {
     pub fn set_from_key(&mut self, from_key: Vec<u8>) {
         self.from_key_len = from_key.len() as u32;
         self.from_key = from_key;
+    }
+
+    pub fn set_target_strategy(&mut self, strategy_id: i32, client_order_id: i64) {
+        self.strategy_id = strategy_id.max(0);
+        self.client_order_id = client_order_id.max(0);
     }
 }
 
@@ -272,6 +285,8 @@ impl SignalBytes for MmCancelCtx {
         let from_key_len = self.from_key.len() as u32;
         buf.put_u32_le(from_key_len);
         buf.put_slice(&self.from_key);
+        buf.put_i32_le(self.strategy_id);
+        buf.put_i64_le(self.client_order_id);
 
         buf.freeze()
     }
@@ -301,9 +316,13 @@ impl SignalBytes for MmCancelCtx {
         }
         let from_key = bytes.copy_to_bytes(from_key_len).to_vec();
 
-        if bytes.remaining() != 0 {
+        let (strategy_id, client_order_id) = if bytes.remaining() == 0 {
+            (0, 0)
+        } else if bytes.remaining() == 12 {
+            (bytes.get_i32_le(), bytes.get_i64_le())
+        } else {
             return Err("Unexpected trailing bytes for MmCancelCtx".to_string());
-        }
+        };
 
         Ok(MmCancelCtx {
             opening_leg,
@@ -312,6 +331,8 @@ impl SignalBytes for MmCancelCtx {
             trigger_ts,
             from_key_len: from_key_len as u32,
             from_key,
+            strategy_id,
+            client_order_id,
         })
     }
 }
@@ -336,5 +357,24 @@ mod tests {
         assert_eq!(parsed.get_hedging_symbol(), "BTCUSDT");
         assert_eq!(parsed.trigger_ts, 789);
         assert_eq!(parsed.from_key, b"fk");
+    }
+
+    #[test]
+    fn mm_cancel_ctx_roundtrip_with_precise_target() {
+        let mut ctx = MmCancelCtx::new();
+        ctx.opening_leg = TradingLeg::new(TradingVenue::BinanceMargin, 100.0, 100.1, 123);
+        ctx.set_opening_symbol("BTCUSDT");
+        ctx.set_side(Side::Buy);
+        ctx.trigger_ts = 789;
+        ctx.set_from_key(b"fk".to_vec());
+        ctx.set_target_strategy(42, 42001);
+
+        let parsed = MmCancelCtx::from_bytes(ctx.to_bytes()).expect("roundtrip should succeed");
+        assert_eq!(parsed.get_opening_symbol(), "BTCUSDT");
+        assert_eq!(parsed.get_side(), Side::Buy);
+        assert_eq!(parsed.trigger_ts, 789);
+        assert_eq!(parsed.from_key, b"fk");
+        assert_eq!(parsed.strategy_id, 42);
+        assert_eq!(parsed.client_order_id, 42001);
     }
 }

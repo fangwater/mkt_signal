@@ -15,6 +15,7 @@ use crate::market_maker::open_quote_plan::MmOpenQuotePlan;
 use crate::pre_trade::order_manager::{OrderType, Side};
 use crate::signal::cancel_signal::MmCancelCtx;
 use crate::signal::common::{SignalBytes, TradingLeg, TradingVenue};
+use crate::signal::mm_signal::MmCancelTriggerCtx;
 use crate::signal::open_signal::MmOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
@@ -62,8 +63,11 @@ pub(crate) struct MmDecisionState {
     pub(crate) environment_model_service: Option<String>,
     pub(crate) environment_model_true_threshold: f64,
     pub(crate) return_score_thresholds: HashMap<String, ReturnScoreThresholdsResolved>,
+    pub(crate) mm_tlen_thresholds: HashMap<String, f64>,
     pub(crate) open_min_qty_table: VenueMinQtyTable,
     pub(crate) factor_value_hub: FactorValueHub,
+    pub(crate) last_tlen_threshold_reload_ts_us: i64,
+    pub(crate) last_cancel_trigger_ts_us: i64,
 }
 
 impl MmDecisionState {
@@ -117,8 +121,11 @@ impl MmDecisionState {
             environment_model_service: None,
             environment_model_true_threshold: ENV_MODEL_TRUE_THRESHOLD_DEFAULT,
             return_score_thresholds: HashMap::new(),
+            mm_tlen_thresholds: HashMap::new(),
             open_min_qty_table: VenueMinQtyTable::new(open_venue),
             factor_value_hub,
+            last_tlen_threshold_reload_ts_us: 0,
+            last_cancel_trigger_ts_us: 0,
         })
     }
 
@@ -345,6 +352,19 @@ impl MmDecisionState {
         now_us: i64,
         from_key: &str,
     ) -> Result<()> {
+        self.emit_mm_cancel_signal_precise(open_symbol, side, open_quote, now_us, from_key, 0, 0)
+    }
+
+    pub(crate) fn emit_mm_cancel_signal_precise(
+        &mut self,
+        open_symbol: &str,
+        side: Side,
+        open_quote: crate::funding_rate::common::Quote,
+        now_us: i64,
+        from_key: &str,
+        strategy_id: i32,
+        client_order_id: i64,
+    ) -> Result<()> {
         let mut ctx = MmCancelCtx::new();
         let open_trade_symbol = normalize_symbol_for_venue(open_symbol, self.open_venue);
         ctx.opening_leg = TradingLeg::new(
@@ -357,8 +377,20 @@ impl MmDecisionState {
         ctx.set_side(side);
         ctx.trigger_ts = now_us;
         ctx.set_from_key(from_key.as_bytes().to_vec());
+        ctx.set_target_strategy(strategy_id, client_order_id);
 
         let signal = TradeSignal::create(SignalType::MMCancel, now_us, 0.0, ctx.to_bytes());
+        self.signal_pub.publish(&signal.to_bytes())?;
+        Ok(())
+    }
+
+    pub(crate) fn emit_mm_cancel_trigger_signal(&mut self, now_us: i64) -> Result<()> {
+        let ctx = MmCancelTriggerCtx {
+            trigger_ts: now_us,
+            freq_ms: self.tlen_cancel_freq_ms,
+        };
+        let signal =
+            TradeSignal::create(SignalType::MMCancelTrigger, now_us, 0.0, ctx.to_bytes());
         self.signal_pub.publish(&signal.to_bytes())?;
         Ok(())
     }

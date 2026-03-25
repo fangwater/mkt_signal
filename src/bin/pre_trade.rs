@@ -100,6 +100,10 @@ fn infer_dir_prefix_from_cwd() -> Option<String> {
     Some(leaf.to_lowercase())
 }
 
+fn is_mm_pre_trade_mode(open_venue: TradingVenue, hedge_venue: TradingVenue) -> bool {
+    open_venue == hedge_venue
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let log_env = env_logger::Env::default().default_filter_or("info");
@@ -211,6 +215,13 @@ async fn main() -> Result<()> {
             // 启动后台刷新任务（60s 间隔）
             PreTradeParamsLoader::start_background_refresh(redis_settings);
             info!("Background refresh task started (interval: 60s)");
+
+            info!(
+                "MM-only pre_trade path enabled={} (open={:?} hedge={:?})",
+                is_mm_pre_trade_mode(open_venue, hedge_venue),
+                open_venue,
+                hedge_venue
+            );
 
             // 2. 初始化 StrategyManager
             info!("Initializing StrategyManager...");

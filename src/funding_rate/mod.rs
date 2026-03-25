@@ -18,6 +18,7 @@ pub mod fr_threshold_loader;
 pub mod funding_rate_factor;
 pub mod mkt_channel;
 pub mod mm_decision;
+pub mod mm_tlen_threshold_loader;
 pub mod rate_fetcher;
 pub mod spread_factor;
 pub mod spread_threshold_loader;

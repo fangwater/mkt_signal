@@ -231,6 +231,20 @@ fn spawn_mm_cancel_worker(token: CancellationToken) {
     });
 }
 
+fn spawn_mm_cancel_trigger_worker(token: CancellationToken) {
+    tokio::task::spawn_local(async move {
+        let mut interval = time::interval(Duration::from_millis(100));
+        loop {
+            tokio::select! {
+                _ = token.cancelled() => break,
+                _ = interval.tick() => {
+                    MmDecision::with_mut(|decision| decision.process_cancel_trigger_interval());
+                }
+            }
+        }
+    });
+}
+
 /// 主运行循环
 async fn run(
     branch: DecisionBranch,
@@ -299,6 +313,7 @@ async fn run(
     if matches!(branch, DecisionBranch::Mm) {
         spawn_mm_open_worker(token.clone());
         spawn_mm_cancel_worker(token.clone());
+        spawn_mm_cancel_trigger_worker(token.clone());
         debug!("MM workers started open=interval cancel=return_score_update");
     }
 

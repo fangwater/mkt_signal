@@ -9,6 +9,7 @@ pub enum SignalType {
     MMOpen = 5,    // 做市开仓信号
     MMCancel = 6,  // 做市撤单信号
     MMHedge = 7,   // 做市对冲信号
+    MMCancelTrigger = 8, // 做市撤单触发信号
 }
 
 impl SignalType {
@@ -22,6 +23,7 @@ impl SignalType {
             5 => Some(SignalType::MMOpen),
             6 => Some(SignalType::MMCancel),
             7 => Some(SignalType::MMHedge),
+            8 => Some(SignalType::MMCancelTrigger),
             _ => None,
         }
     }

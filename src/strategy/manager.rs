@@ -54,6 +54,15 @@ pub struct MmOpenPriceMapEntry {
     pub price_qv: QuantizedValueKey,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MmOpenCancelCandidate {
+    pub strategy_id: i32,
+    pub symbol: String,
+    pub side: Side,
+    pub client_order_id: i64,
+    pub price_qv: QuantizedValue,
+}
+
 /// 控制策略是否处于强平模式的 Trait
 pub trait ForceCloseControl {
     fn set_force_close_mode(&mut self, enabled: bool);
@@ -297,6 +306,31 @@ impl StrategyManager {
 
     pub fn mm_open_price_map_entry(&self, strategy_id: i32) -> Option<&MmOpenPriceMapEntry> {
         self.mm_open_strategy_index.get(&strategy_id)
+    }
+
+    pub fn mm_open_cancel_candidates(&self) -> Vec<MmOpenCancelCandidate> {
+        let mut rows: Vec<MmOpenCancelCandidate> = self
+            .mm_open_strategy_index
+            .iter()
+            .map(|(strategy_id, entry)| MmOpenCancelCandidate {
+                strategy_id: *strategy_id,
+                symbol: entry.symbol.clone(),
+                side: entry.side,
+                client_order_id: entry.client_order_id,
+                price_qv: QuantizedValue::from_parts(
+                    entry.price_qv.tick_i64,
+                    entry.price_qv.tick_exp,
+                    entry.price_qv.count,
+                ),
+            })
+            .collect();
+        rows.sort_by(|lhs, rhs| {
+            lhs.symbol
+                .cmp(&rhs.symbol)
+                .then(lhs.client_order_id.cmp(&rhs.client_order_id))
+                .then(lhs.strategy_id.cmp(&rhs.strategy_id))
+        });
+        rows
     }
 
     /// 获取只读引用（用于快照）
