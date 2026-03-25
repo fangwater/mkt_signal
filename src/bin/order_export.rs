@@ -103,13 +103,12 @@ impl ResolvedArgs {
             }),
             Path::new(&env_name).join("data").join("persist_manager"),
         );
-        let output_root = resolve_path(
-            &base_dir,
-            args.output_root.or_else(|| {
-                env_path_multi(&["ORDER_EXPORT_OUTPUT_ROOT", "PERSIST_EXPORT_OUTPUT_ROOT"])
-            }),
-            Path::new("exporter_data").join(&env_name),
-        );
+        let output_root = match args.output_root.or_else(|| {
+            env_path_multi(&["ORDER_EXPORT_OUTPUT_ROOT", "PERSIST_EXPORT_OUTPUT_ROOT"])
+        }) {
+            Some(path) => resolve_path(&base_dir, Some(path), PathBuf::new()),
+            None => std::env::current_dir().context("failed to resolve current directory")?,
+        };
         let output_dir = output_root.join(date.format("%Y%m%d").to_string());
 
         if !input_dir.exists() {

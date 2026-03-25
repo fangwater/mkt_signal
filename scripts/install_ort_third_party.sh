@@ -75,6 +75,13 @@ for f in "${SO_FILES[@]}"; do
   cp -a "${f}" "${DEST_DIR}/"
 done
 
+VERSIONED_LIB="$(find "${DEST_DIR}" -maxdepth 1 -type f -name 'libonnxruntime.so.*' | sort | tail -n 1)"
+if [[ -n "${VERSIONED_LIB}" ]]; then
+  VERSIONED_BASENAME="$(basename "${VERSIONED_LIB}")"
+  ln -sfn "${VERSIONED_BASENAME}" "${DEST_DIR}/libonnxruntime.so.1"
+  ln -sfn "libonnxruntime.so.1" "${DEST_DIR}/libonnxruntime.so"
+fi
+
 echo "[INFO] installed ONNX Runtime libs to: ${DEST_DIR}"
 ls -l "${DEST_DIR}" | sed 's/^/[INFO] /'
 echo "[INFO] build is configured to use this path via .cargo/config.toml"
