@@ -1,5 +1,5 @@
 use anyhow::Result;
-use log::{info, warn};
+use log::{debug, info, warn};
 use std::collections::HashMap;
 
 use super::super::mkt_channel::MktChannel;
@@ -7,15 +7,63 @@ use super::super::symbol_list::SymbolList;
 use super::from_key::build_from_key;
 use super::state::MmDecisionState;
 use crate::common::time_util::get_timestamp_us;
+use crate::pre_trade::order_manager::Side;
 use crate::signal::common::TradingVenue;
 use crate::signal::trade_signal::SignalType;
 use crate::symbol_match::normalize_symbol_for_whitelist;
 
-pub(crate) struct MmCancelDecision;
+pub(crate) struct MmCancelDecision {
+    last_cancel_ts_us: HashMap<String, i64>,
+}
 
 impl MmCancelDecision {
     pub(crate) fn new() -> Self {
-        Self
+        Self {
+            last_cancel_ts_us: HashMap::new(),
+        }
+    }
+
+    fn cancel_throttle_key(symbol: &str, side: Side) -> String {
+        format!(
+            "{}:{}",
+            normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures),
+            side.as_str()
+        )
+    }
+
+    fn should_emit(last_ts_us: Option<i64>, now_us: i64, tlen_cancel_freq_ms: u64) -> bool {
+        let interval_us = (tlen_cancel_freq_ms as i64).saturating_mul(1_000);
+        let last_ts_us = last_ts_us.unwrap_or_default();
+        last_ts_us == 0 || now_us.saturating_sub(last_ts_us) >= interval_us
+    }
+
+    fn cancel_throttled(
+        &self,
+        symbol: &str,
+        side: Side,
+        state: &MmDecisionState,
+        now_us: i64,
+    ) -> bool {
+        let key = Self::cancel_throttle_key(symbol, side);
+        let should_emit = Self::should_emit(
+            self.last_cancel_ts_us.get(&key).copied(),
+            now_us,
+            state.tlen_cancel_freq_ms,
+        );
+        if !should_emit {
+            debug!(
+                "MmDecision: MMCancel throttled symbol={} side={} tlen_cancel_freq_ms={}",
+                key,
+                side.as_str(),
+                state.tlen_cancel_freq_ms
+            );
+        }
+        !should_emit
+    }
+
+    fn mark_cancel_sent(&mut self, symbol: &str, side: Side, now_us: i64) {
+        let key = Self::cancel_throttle_key(symbol, side);
+        self.last_cancel_ts_us.insert(key, now_us);
     }
 
     fn emit_for_symbol(
@@ -53,44 +101,52 @@ impl MmCancelDecision {
         let symbol_key = normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures);
         let environment_signal = state.evaluate_environment_signal(&symbol_key, symbol, now_us);
         let mut cancel_sent = false;
+        let mut forward_cancel_sent = false;
+        let mut backward_cancel_sent = false;
         if forward_cancel_hit {
-            let from_key = build_from_key(
-                now_us,
-                Some(return_score_value),
-                Some(thresholds.forward_cancel),
-                volatility,
-                &environment_signal,
-            );
-            state.emit_mm_cancel_signal(
-                symbol,
-                crate::pre_trade::order_manager::Side::Buy,
-                open_quote,
-                now_us,
-                &from_key,
-            )?;
-            cancel_sent = true;
+            if self.cancel_throttled(symbol, Side::Buy, state, now_us) {
+                debug!(
+                    "MmDecision: skip buy MMCancel due to throttle symbol={} score={:.6}",
+                    symbol_key, return_score_value
+                );
+            } else {
+                let from_key = build_from_key(
+                    now_us,
+                    Some(return_score_value),
+                    Some(thresholds.forward_cancel),
+                    volatility,
+                    &environment_signal,
+                );
+                state.emit_mm_cancel_signal(symbol, Side::Buy, open_quote, now_us, &from_key)?;
+                self.mark_cancel_sent(symbol, Side::Buy, now_us);
+                cancel_sent = true;
+                forward_cancel_sent = true;
+            }
         }
 
         if backward_cancel_hit {
-            let from_key = build_from_key(
-                now_us,
-                Some(return_score_value),
-                Some(thresholds.backward_cancel),
-                volatility,
-                &environment_signal,
-            );
-            state.emit_mm_cancel_signal(
-                symbol,
-                crate::pre_trade::order_manager::Side::Sell,
-                open_quote,
-                now_us,
-                &from_key,
-            )?;
-            cancel_sent = true;
+            if self.cancel_throttled(symbol, Side::Sell, state, now_us) {
+                debug!(
+                    "MmDecision: skip sell MMCancel due to throttle symbol={} score={:.6}",
+                    symbol_key, return_score_value
+                );
+            } else {
+                let from_key = build_from_key(
+                    now_us,
+                    Some(return_score_value),
+                    Some(thresholds.backward_cancel),
+                    volatility,
+                    &environment_signal,
+                );
+                state.emit_mm_cancel_signal(symbol, Side::Sell, open_quote, now_us, &from_key)?;
+                self.mark_cancel_sent(symbol, Side::Sell, now_us);
+                cancel_sent = true;
+                backward_cancel_sent = true;
+            }
         }
 
         if cancel_sent {
-            let side_text = match (forward_cancel_hit, backward_cancel_hit) {
+            let side_text = match (forward_cancel_sent, backward_cancel_sent) {
                 (true, true) => "both",
                 (true, false) => "buy",
                 (false, true) => "sell",
@@ -149,5 +205,40 @@ impl MmCancelDecision {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_emit_allows_first_cancel() {
+        assert!(MmCancelDecision::should_emit(None, 1_000_000, 3_000));
+    }
+
+    #[test]
+    fn should_emit_blocks_within_frequency_window() {
+        assert!(!MmCancelDecision::should_emit(
+            Some(1_000_000),
+            3_999_999,
+            3_000
+        ));
+    }
+
+    #[test]
+    fn should_emit_allows_after_frequency_window() {
+        assert!(MmCancelDecision::should_emit(
+            Some(1_000_000),
+            4_000_000,
+            3_000
+        ));
+    }
+
+    #[test]
+    fn cancel_throttle_key_is_side_specific() {
+        let buy_key = MmCancelDecision::cancel_throttle_key("BTCUSDT", Side::Buy);
+        let sell_key = MmCancelDecision::cancel_throttle_key("BTCUSDT", Side::Sell);
+        assert_ne!(buy_key, sell_key);
     }
 }

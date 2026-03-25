@@ -217,6 +217,10 @@ impl MmDecision {
         self.state.update_enable_open_cancel(enabled);
     }
 
+    pub fn update_tlen_cancel_freq_ms(&mut self, tlen_cancel_freq_ms: u64) {
+        self.state.update_tlen_cancel_freq_ms(tlen_cancel_freq_ms);
+    }
+
     pub fn update_model_service_roles(
         &mut self,
         return_model_service: String,

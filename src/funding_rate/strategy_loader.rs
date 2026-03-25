@@ -140,6 +140,10 @@ pub struct StrategyParams {
     #[serde(default = "default_enable_open_cancel")]
     pub enable_open_cancel: bool,
 
+    /// MM 开仓撤单触发频率限制（毫秒）
+    #[serde(default = "default_tlen_cancel_freq_ms")]
+    pub tlen_cancel_freq_ms: u64,
+
     /// xarb 是否启用 return score 拦截（false=只读取，不拦截开仓）
     #[serde(default = "default_enable_return_score_model")]
     pub enable_return_score_model: bool,
@@ -220,6 +224,9 @@ fn default_prediction_mode() -> bool {
 fn default_enable_open_cancel() -> bool {
     false
 }
+fn default_tlen_cancel_freq_ms() -> u64 {
+    3_000
+}
 fn default_enable_return_score_model() -> bool {
     false
 }
@@ -255,6 +262,7 @@ impl Default for StrategyParams {
             signal_cooldown: default_signal_cooldown(),
             prediction_mode: default_prediction_mode(),
             enable_open_cancel: default_enable_open_cancel(),
+            tlen_cancel_freq_ms: default_tlen_cancel_freq_ms(),
             enable_return_score_model: default_enable_return_score_model(),
             return_model_service: default_return_model_service(),
             environment_model_service: default_environment_model_service(),
@@ -476,6 +484,24 @@ impl StrategyParams {
             },
             None => default_enable_open_cancel(),
         };
+        let tlen_cancel_freq_ms = match hash_map.get("tlen_cancel_freq_ms") {
+            Some(raw) => {
+                let parsed = raw.parse::<i64>().unwrap_or_else(|_| {
+                    panic!(
+                        "Redis hash '{}' tlen_cancel_freq_ms 无法解析为整数: {}",
+                        redis_key, raw
+                    )
+                });
+                if parsed <= 0 {
+                    panic!(
+                        "Redis hash '{}' tlen_cancel_freq_ms 无效(需>0): {}",
+                        redis_key, parsed
+                    );
+                }
+                parsed as u64
+            }
+            None => default_tlen_cancel_freq_ms(),
+        };
 
         let enable_return_score_model = match hash_map.get("enable_return_score_model") {
             Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
@@ -617,6 +643,7 @@ impl StrategyParams {
             signal_cooldown,
             prediction_mode,
             enable_open_cancel,
+            tlen_cancel_freq_ms,
             enable_return_score_model,
             return_model_service,
             environment_model_service,
@@ -724,6 +751,7 @@ impl StrategyParams {
                 _decision.update_order_interval_ms(self.order_interval_ms);
                 _decision.update_open_orders_per_round(self.open_orders_per_round);
                 _decision.update_open_vol_scale_ranges(open_buy_vol_scale, open_sell_vol_scale);
+                _decision.update_tlen_cancel_freq_ms(self.tlen_cancel_freq_ms);
                 _decision.update_mm_hedge_params(
                     self.hedge_orders_per_round,
                     self.hedge_vol_multiplier,
@@ -751,7 +779,7 @@ impl StrategyParams {
         }
 
         info!(
-            "✅ 策略参数已更新: mode={}, amount={:.2}, xarb_open_scale={:.4}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, order_interval_ms={}, open_orders_per_round={}, cooldown={}s, prediction_mode={}, enable_open_cancel={}, enable_return_score_model={}, return_model_service={}, environment_model_service={}",
+            "✅ 策略参数已更新: mode={}, amount={:.2}, xarb_open_scale={:.4}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, order_interval_ms={}, open_orders_per_round={}, cooldown={}s, prediction_mode={}, enable_open_cancel={}, tlen_cancel_freq_ms={}, enable_return_score_model={}, return_model_service={}, environment_model_service={}",
             self.mode,
             self.order_amount,
             self.open_scale,
@@ -762,6 +790,7 @@ impl StrategyParams {
             self.signal_cooldown,
             self.prediction_mode,
             self.enable_open_cancel,
+            self.tlen_cancel_freq_ms,
             self.enable_return_score_model,
             self.return_model_service,
             self.environment_model_service
@@ -813,5 +842,11 @@ mod tests {
     fn test_enable_open_cancel_default_is_false() {
         let params = StrategyParams::default();
         assert!(!params.enable_open_cancel);
+    }
+
+    #[test]
+    fn test_tlen_cancel_freq_ms_default_is_3000() {
+        let params = StrategyParams::default();
+        assert_eq!(params.tlen_cancel_freq_ms, 3_000);
     }
 }

@@ -56,6 +56,7 @@ pub(crate) struct MmDecisionState {
     pub(crate) hedge_price_offset_limit_upper: f64,
     pub(crate) hedge_price_offset_limit_lower: f64,
     pub(crate) enable_open_cancel: bool,
+    pub(crate) tlen_cancel_freq_ms: u64,
     pub(crate) prediction_mode: bool,
     pub(crate) return_model_service: Option<String>,
     pub(crate) environment_model_service: Option<String>,
@@ -110,6 +111,7 @@ impl MmDecisionState {
             hedge_price_offset_limit_upper: 0.005,
             hedge_price_offset_limit_lower: 0.0003,
             enable_open_cancel: false,
+            tlen_cancel_freq_ms: 3_000,
             prediction_mode: false,
             return_model_service: None,
             environment_model_service: None,
@@ -258,6 +260,17 @@ impl MmDecisionState {
         debug!(
             "MmDecision: enable_open_cancel updated enabled={}",
             self.enable_open_cancel
+        );
+    }
+
+    pub(crate) fn update_tlen_cancel_freq_ms(&mut self, tlen_cancel_freq_ms: u64) {
+        if tlen_cancel_freq_ms == 0 {
+            panic!("MmDecision: tlen_cancel_freq_ms must be > 0");
+        }
+        self.tlen_cancel_freq_ms = tlen_cancel_freq_ms;
+        debug!(
+            "MmDecision: tlen_cancel_freq_ms updated value={}",
+            self.tlen_cancel_freq_ms
         );
     }
 
