@@ -13,7 +13,7 @@ use serde::Serialize;
 
 use crate::rolling_metrics::config::{
     FactorConfig, RollingConfig, FACTOR_ASKBID, FACTOR_BIDASK, FACTOR_HEDGE_PREMIUM_RATE,
-    FACTOR_OPEN_PREMIUM_RATE, FACTOR_SPREAD, FACTOR_SPREAD_FR,
+    FACTOR_HEDGE_VOL, FACTOR_OPEN_PREMIUM_RATE, FACTOR_OPEN_VOL, FACTOR_SPREAD, FACTOR_SPREAD_FR,
 };
 use crate::rolling_metrics::ring::RingBuffer;
 
@@ -39,9 +39,13 @@ pub struct SymbolSeries {
     spread_rate: AtomicU64,
     pub open_premium_rate: Arc<RingBuffer>,
     pub hedge_premium_rate: Arc<RingBuffer>,
+    pub open_vol: Arc<RingBuffer>,
+    pub hedge_vol: Arc<RingBuffer>,
     pub spread_fr: Arc<RingBuffer>,
     open_premium_rate_latest: AtomicU64,
     hedge_premium_rate_latest: AtomicU64,
+    open_vol_latest: AtomicU64,
+    hedge_vol_latest: AtomicU64,
     spread_fr_latest: AtomicU64,
 }
 
@@ -54,9 +58,13 @@ impl SymbolSeries {
             spread_rate: AtomicU64::new(f64::NAN.to_bits()),
             open_premium_rate: Arc::new(RingBuffer::new(capacity)),
             hedge_premium_rate: Arc::new(RingBuffer::new(capacity)),
+            open_vol: Arc::new(RingBuffer::new(capacity)),
+            hedge_vol: Arc::new(RingBuffer::new(capacity)),
             spread_fr: Arc::new(RingBuffer::new(capacity)),
             open_premium_rate_latest: AtomicU64::new(f64::NAN.to_bits()),
             hedge_premium_rate_latest: AtomicU64::new(f64::NAN.to_bits()),
+            open_vol_latest: AtomicU64::new(f64::NAN.to_bits()),
+            hedge_vol_latest: AtomicU64::new(f64::NAN.to_bits()),
             spread_fr_latest: AtomicU64::new(f64::NAN.to_bits()),
         }
     }
@@ -85,6 +93,22 @@ impl SymbolSeries {
         load_option_f64(&self.hedge_premium_rate_latest)
     }
 
+    pub fn set_open_vol_latest(&self, value: Option<f64>) {
+        store_option_f64(&self.open_vol_latest, value);
+    }
+
+    pub fn open_vol_latest(&self) -> Option<f64> {
+        load_option_f64(&self.open_vol_latest)
+    }
+
+    pub fn set_hedge_vol_latest(&self, value: Option<f64>) {
+        store_option_f64(&self.hedge_vol_latest, value);
+    }
+
+    pub fn hedge_vol_latest(&self) -> Option<f64> {
+        load_option_f64(&self.hedge_vol_latest)
+    }
+
     pub fn set_spread_fr_latest(&self, value: Option<f64>) {
         store_option_f64(&self.spread_fr_latest, value);
     }
@@ -104,6 +128,8 @@ impl SymbolSeries {
             crate::rolling_metrics::config::FACTOR_HEDGE_PREMIUM_RATE => {
                 Some(&self.hedge_premium_rate)
             }
+            crate::rolling_metrics::config::FACTOR_OPEN_VOL => Some(&self.open_vol),
+            crate::rolling_metrics::config::FACTOR_HEDGE_VOL => Some(&self.hedge_vol),
             crate::rolling_metrics::config::FACTOR_SPREAD_FR => Some(&self.spread_fr),
             _ => None,
         }
@@ -154,6 +180,8 @@ struct ThresholdPayload<'a> {
     spread_rate: Option<f64>,
     open_premium_rate: Option<f64>,
     hedge_premium_rate: Option<f64>,
+    open_vol: Option<f64>,
+    hedge_vol: Option<f64>,
     spread_fr: Option<f64>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     bidask_quantiles: Vec<QuantilePoint>,
@@ -165,6 +193,10 @@ struct ThresholdPayload<'a> {
     open_premium_rate_quantiles: Vec<QuantilePoint>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     hedge_premium_rate_quantiles: Vec<QuantilePoint>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    open_vol_quantiles: Vec<QuantilePoint>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    hedge_vol_quantiles: Vec<QuantilePoint>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     spread_fr_quantiles: Vec<QuantilePoint>,
 }
@@ -293,6 +325,8 @@ fn build_entry(
     let spread_rate = series.spread_rate();
     let latest_open_premium_rate = series.open_premium_rate_latest();
     let latest_hedge_premium_rate = series.hedge_premium_rate_latest();
+    let latest_open_vol = series.open_vol_latest();
+    let latest_hedge_vol = series.hedge_vol_latest();
     let latest_spread_fr = series.spread_fr_latest();
 
     let mut bidask_quantiles: Vec<QuantilePoint> = Vec::new();
@@ -300,6 +334,8 @@ fn build_entry(
     let mut spread_quantiles: Vec<QuantilePoint> = Vec::new();
     let mut open_premium_rate_quantiles: Vec<QuantilePoint> = Vec::new();
     let mut hedge_premium_rate_quantiles: Vec<QuantilePoint> = Vec::new();
+    let mut open_vol_quantiles: Vec<QuantilePoint> = Vec::new();
+    let mut hedge_vol_quantiles: Vec<QuantilePoint> = Vec::new();
     let mut spread_fr_quantiles: Vec<QuantilePoint> = Vec::new();
     let mut sample_counts: Vec<usize> = Vec::new();
     let mut factors_with_quantiles = 0usize;
@@ -317,6 +353,8 @@ fn build_entry(
             | FACTOR_SPREAD
             | FACTOR_OPEN_PREMIUM_RATE
             | FACTOR_HEDGE_PREMIUM_RATE
+            | FACTOR_OPEN_VOL
+            | FACTOR_HEDGE_VOL
             | FACTOR_SPREAD_FR => compute_factor_quantiles(ring.as_ref(), factor_cfg),
             _ => continue,
         };
@@ -338,6 +376,8 @@ fn build_entry(
             FACTOR_SPREAD => spread_quantiles = points,
             FACTOR_OPEN_PREMIUM_RATE => open_premium_rate_quantiles = points,
             FACTOR_HEDGE_PREMIUM_RATE => hedge_premium_rate_quantiles = points,
+            FACTOR_OPEN_VOL => open_vol_quantiles = points,
+            FACTOR_HEDGE_VOL => hedge_vol_quantiles = points,
             FACTOR_SPREAD_FR => spread_fr_quantiles = points,
             _ => {}
         }
@@ -385,12 +425,16 @@ fn build_entry(
         spread_rate,
         open_premium_rate: latest_open_premium_rate,
         hedge_premium_rate: latest_hedge_premium_rate,
+        open_vol: latest_open_vol,
+        hedge_vol: latest_hedge_vol,
         spread_fr: latest_spread_fr,
         bidask_quantiles,
         askbid_quantiles,
         spread_quantiles,
         open_premium_rate_quantiles,
         hedge_premium_rate_quantiles,
+        open_vol_quantiles,
+        hedge_vol_quantiles,
         spread_fr_quantiles,
     };
 
@@ -453,6 +497,8 @@ fn factor_ready_counts(series: &SymbolSeries, config: &RollingConfig) -> (usize,
             FACTOR_SPREAD => series.spread_rate().is_some(),
             FACTOR_OPEN_PREMIUM_RATE => series.open_premium_rate_latest().is_some(),
             FACTOR_HEDGE_PREMIUM_RATE => series.hedge_premium_rate_latest().is_some(),
+            FACTOR_OPEN_VOL => series.open_vol_latest().is_some(),
+            FACTOR_HEDGE_VOL => series.hedge_vol_latest().is_some(),
             FACTOR_SPREAD_FR => series.spread_fr_latest().is_some(),
             _ => false,
         };

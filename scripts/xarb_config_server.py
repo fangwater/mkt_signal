@@ -517,6 +517,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         <label for="rolling-factors">factors (JSON)</label>
         <textarea id="rolling-factors" class="mono"></textarea>
       </div>
+      <div class="hint" style="margin-top: 8px;">可用 factor: bidask, askbid, spread, open_premium_rate, hedge_premium_rate, open_vol, hedge_vol, spread_fr</div>
       <div id="rolling-status" class="status"></div>
     </section>
 

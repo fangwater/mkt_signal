@@ -14,6 +14,7 @@ pub enum ChannelType {
     Kline,
     Derivatives,
     AskBidSpread,
+    RlReturnVolatility,
     Signal,
 }
 
@@ -25,6 +26,7 @@ impl ChannelType {
             ChannelType::Kline => "kline",
             ChannelType::Derivatives => "derivatives",
             ChannelType::AskBidSpread => "ask_bid_spread",
+            ChannelType::RlReturnVolatility => "rl_return_volatility",
             ChannelType::Signal => "signal",
         }
     }
@@ -37,6 +39,7 @@ impl ChannelType {
             ChannelType::Kline => 128,
             ChannelType::Derivatives => 128,
             ChannelType::AskBidSpread => 128,
+            ChannelType::RlReturnVolatility => 256,
             ChannelType::Signal => 64,
         }
     }
@@ -56,6 +59,7 @@ pub struct SubscribeParams {
 enum SubscriberEnum {
     Size64(Subscriber<ipc::Service, [u8; 64], ()>),
     Size128(Subscriber<ipc::Service, [u8; 128], ()>),
+    Size256(Subscriber<ipc::Service, [u8; 256], ()>),
     Size2048(Subscriber<ipc::Service, [u8; 2048], ()>),
 }
 
@@ -64,6 +68,7 @@ impl SubscriberEnum {
         match self {
             SubscriberEnum::Size64(sub) => Self::receive_from_subscriber(sub),
             SubscriberEnum::Size128(sub) => Self::receive_from_subscriber(sub),
+            SubscriberEnum::Size256(sub) => Self::receive_from_subscriber(sub),
             SubscriberEnum::Size2048(sub) => Self::receive_from_subscriber(sub),
         }
     }
@@ -167,6 +172,17 @@ impl MultiChannelSubscriber {
                     .open_or_create()?;
                 let subscriber = service.subscriber_builder().create()?;
                 SubscriberEnum::Size64(subscriber)
+            }
+            ChannelType::RlReturnVolatility => {
+                let service = self
+                    .node
+                    .service_builder(&ServiceName::new(&service_name)?)
+                    .publish_subscribe::<[u8; 256]>()
+                    .max_publishers(1)
+                    .max_subscribers(10)
+                    .open_or_create()?;
+                let subscriber = service.subscriber_builder().create()?;
+                SubscriberEnum::Size256(subscriber)
             }
             ChannelType::Trade
             | ChannelType::AskBidSpread

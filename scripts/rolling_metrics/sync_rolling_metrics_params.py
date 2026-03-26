@@ -10,10 +10,13 @@
   - reload_param_sec：配置热更新周期（秒）
   - output_hash_key：写入结果的 Redis HASH 名称
   - factors：因子配置对象，键为因子名，值包含采样周期 / 滑窗 / 最小样本 / quantiles。
+    常见单边因子包括：open_premium_rate、hedge_premium_rate、open_vol、hedge_vol、spread_fr。
     示例：
     {
       "bidask": {"resample_interval_ms": 1000, "rolling_window": 100000,
                  "min_periods": 90000, "quantiles": [5, 70]},
+      "hedge_vol": {"resample_interval_ms": 1000, "rolling_window": 14400,
+                    "min_periods": 7200, "quantiles": [20, 80]},
       "spread": {"resample_interval_ms": 10000, "rolling_window": 60000,
                  "min_periods": 40000, "quantiles": [30, 95]}
     }

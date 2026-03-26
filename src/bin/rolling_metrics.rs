@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::thread;
 use std::time::Duration;
 
@@ -21,14 +22,16 @@ use mkt_signal::common::iceoryx_subscriber::{
     ChannelType, MultiChannelSubscriber, SubscribeParams,
 };
 use mkt_signal::common::mkt_msg::{
-    get_msg_type, AskBidSpreadMsg, FundingRateMsg, IndexPriceMsg, MarkPriceMsg, MktMsgType,
+    get_msg_type, AskBidSpreadMsg, FactorValueMsg, FundingRateMsg, IndexPriceMsg, MarkPriceMsg,
+    MktMsgType,
 };
 use mkt_signal::common::redis_client::{RedisClient, RedisSettings};
 use mkt_signal::common::time_util::get_timestamp_us;
+use mkt_signal::factor_pub::factor_index::factor_name_to_index;
 use mkt_signal::rolling_metrics::config::{
     load_config_from_redis, FactorConfig, RollingConfig, DEFAULT_CONFIG_HASH_KEY,
     DEFAULT_OUTPUT_HASH_KEY, FACTOR_ASKBID, FACTOR_BIDASK, FACTOR_HEDGE_PREMIUM_RATE,
-    FACTOR_OPEN_PREMIUM_RATE, FACTOR_SPREAD, FACTOR_SPREAD_FR,
+    FACTOR_HEDGE_VOL, FACTOR_OPEN_PREMIUM_RATE, FACTOR_OPEN_VOL, FACTOR_SPREAD, FACTOR_SPREAD_FR,
 };
 use mkt_signal::rolling_metrics::ring::RingBuffer;
 use mkt_signal::rolling_metrics::service::{
@@ -124,6 +127,8 @@ struct SymbolQuotes {
     hedge_funding_rate: Option<f64>,
     open_premium: PremiumPriceState,
     hedge_premium: PremiumPriceState,
+    open_vol: Option<f64>,
+    hedge_vol: Option<f64>,
     factor_states: HashMap<String, FactorResampleState>,
     started: bool,
 }
@@ -137,6 +142,8 @@ impl Default for SymbolQuotes {
             hedge_funding_rate: None,
             open_premium: PremiumPriceState::default(),
             hedge_premium: PremiumPriceState::default(),
+            open_vol: None,
+            hedge_vol: None,
             factor_states: HashMap::new(),
             started: false,
         }
@@ -507,6 +514,16 @@ async fn run_reader_loop(
             topic_prefix: hedge_topic.to_string(),
             channel: ChannelType::Derivatives,
         },
+        SubscribeParams {
+            service_root: Some("factor_pub".to_string()),
+            topic_prefix: open_topic.to_string(),
+            channel: ChannelType::RlReturnVolatility,
+        },
+        SubscribeParams {
+            service_root: Some("factor_pub".to_string()),
+            topic_prefix: hedge_topic.to_string(),
+            channel: ChannelType::RlReturnVolatility,
+        },
     ])?;
 
     let prefix = format!("{}_{}", open_topic, hedge_topic);
@@ -572,6 +589,33 @@ async fn run_reader_loop(
 
         for msg in subscriber.poll_channel(hedge_topic, &ChannelType::Derivatives, Some(64)) {
             process_derivatives_msg(
+                &msg,
+                &prefix,
+                hedge_topic,
+                false,
+                &mut quotes,
+                &series_map,
+                &series_capacity,
+                &config,
+            );
+        }
+
+        for msg in subscriber.poll_channel(open_topic, &ChannelType::RlReturnVolatility, Some(64)) {
+            process_vol_factor_msg(
+                &msg,
+                &prefix,
+                open_topic,
+                true,
+                &mut quotes,
+                &series_map,
+                &series_capacity,
+                &config,
+            );
+        }
+
+        for msg in subscriber.poll_channel(hedge_topic, &ChannelType::RlReturnVolatility, Some(64))
+        {
+            process_vol_factor_msg(
                 &msg,
                 &prefix,
                 hedge_topic,
@@ -805,6 +849,58 @@ fn process_premium_price_msg(
     );
 }
 
+fn process_vol_factor_msg(
+    msg: &[u8],
+    prefix: &str,
+    venue_topic: &str,
+    is_open_side: bool,
+    quotes: &mut HashMap<String, SymbolQuotes>,
+    series_map: &Arc<SeriesMap>,
+    series_capacity: &Arc<AtomicUsize>,
+    config: &Arc<RwLock<RollingConfig>>,
+) {
+    let factor_msg = match FactorValueMsg::from_bytes(msg) {
+        Ok(msg) => msg,
+        Err(err) => {
+            debug!(
+                "{}: decode rl_return_volatility failed venue={} err={}",
+                log_prefix(),
+                venue_topic,
+                err
+            );
+            return;
+        }
+    };
+
+    let raw_symbol = factor_msg.symbol.to_uppercase();
+    let symbol = normalize_symbol_for_pairing(&raw_symbol, venue_topic);
+    if should_skip_symbol(&raw_symbol) {
+        return;
+    }
+
+    let Some((value, ready)) = factor_msg.find_factor(rl_return_volatility_factor_index()) else {
+        return;
+    };
+    let latest = normalize_ready_factor_value(value, ready);
+
+    let entry = quotes.entry(symbol.clone()).or_default();
+    if is_open_side {
+        entry.open_vol = latest;
+    } else {
+        entry.hedge_vol = latest;
+    }
+
+    maybe_push_vol(
+        prefix,
+        &symbol,
+        entry,
+        factor_msg.timestamp_ms,
+        series_map,
+        series_capacity,
+        config,
+    );
+}
+
 fn maybe_push_sr(
     prefix: &str,
     symbol: &str,
@@ -911,6 +1007,47 @@ fn maybe_push_premium_rates(
     );
 }
 
+fn maybe_push_vol(
+    prefix: &str,
+    symbol: &str,
+    quotes: &mut SymbolQuotes,
+    ts_ms: i64,
+    series_map: &Arc<SeriesMap>,
+    series_capacity: &Arc<AtomicUsize>,
+    config: &Arc<RwLock<RollingConfig>>,
+) {
+    if should_skip_symbol(symbol) {
+        return;
+    }
+
+    let cfg_snapshot = { config.read().clone() };
+    let capacity = series_capacity.load(Ordering::SeqCst).max(1);
+    let key = format!("{}::{}", prefix, symbol);
+    let series = get_or_insert_series(&*series_map, &key, capacity);
+    series.set_open_vol_latest(quotes.open_vol);
+    series.set_hedge_vol_latest(quotes.hedge_vol);
+
+    if !quotes.started {
+        quotes.started = true;
+        info!("{}: start collecting symbol {}", log_prefix(), key);
+    }
+
+    let open_vol_value = quotes.open_vol.and_then(f64_to_f32);
+    let hedge_vol_value = quotes.hedge_vol.and_then(f64_to_f32);
+
+    record_factor_samples(
+        quotes,
+        &series,
+        &cfg_snapshot,
+        ts_ms,
+        |factor_name| match factor_name {
+            FACTOR_OPEN_VOL => open_vol_value,
+            FACTOR_HEDGE_VOL => hedge_vol_value,
+            _ => None,
+        },
+    );
+}
+
 fn maybe_push_spread_fr(
     prefix: &str,
     symbol: &str,
@@ -968,6 +1105,18 @@ fn compute_spread_fr(open_fr: Option<f64>, hedge_fr: Option<f64>) -> Option<f64>
         }
         _ => None,
     }
+}
+
+fn normalize_ready_factor_value(value: f64, ready: bool) -> Option<f64> {
+    (ready && value.is_finite()).then_some(value)
+}
+
+fn rl_return_volatility_factor_index() -> u16 {
+    static RL_FACTOR_INDEX: OnceLock<u16> = OnceLock::new();
+    *RL_FACTOR_INDEX.get_or_init(|| {
+        factor_name_to_index("rl_return_volatility")
+            .expect("missing factor index for rl_return_volatility")
+    })
 }
 
 fn record_factor_samples<F>(
@@ -1637,7 +1786,10 @@ fn setup_signal_handlers(token: &CancellationToken) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{compute_premium_rate, compute_spread_fr};
+    use super::{
+        compute_premium_rate, compute_spread_fr, normalize_ready_factor_value,
+        rl_return_volatility_factor_index,
+    };
 
     #[test]
     fn premium_rate_uses_mark_minus_index_over_index() {
@@ -1662,5 +1814,17 @@ mod tests {
     fn spread_fr_requires_both_sides() {
         assert_eq!(compute_spread_fr(Some(0.001), None), None);
         assert_eq!(compute_spread_fr(None, Some(0.001)), None);
+    }
+
+    #[test]
+    fn ready_factor_value_requires_ready_and_finite() {
+        assert_eq!(normalize_ready_factor_value(1.25, true), Some(1.25));
+        assert_eq!(normalize_ready_factor_value(1.25, false), None);
+        assert_eq!(normalize_ready_factor_value(f64::NAN, true), None);
+    }
+
+    #[test]
+    fn rl_return_volatility_factor_index_matches_registry() {
+        assert_eq!(rl_return_volatility_factor_index(), 0);
     }
 }

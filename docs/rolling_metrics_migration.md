@@ -291,7 +291,8 @@ rolling_metrics_thresholds_okex-margin_okex-futures
 ### Factor 配置
 常见 factor 包括：
 - `bidask` / `askbid` / `spread`
-- `hedge_premium_rate`（spot/futures 常用）
+- `open_premium_rate` / `hedge_premium_rate`（premium 基差，spot/futures 常用 `hedge_premium_rate`）
+- `open_vol` / `hedge_vol`（按 open/hedge side 自动订阅对应 venue 的 `rl_return_volatility` IPC）
 - `spread_fr`（futures/futures 常用）
 
 每个 factor 都有：
@@ -320,7 +321,7 @@ rolling_metrics_thresholds_okex-margin_okex-futures
 ### `rolling_metrics/sync_rolling_metrics_params.py` - 统计计算配置
 - **写入**: `rolling_metrics_params_{open}_{hedge}`
 - **用途**: 配置如何计算滑窗统计量
-- **内容**: MAX_LENGTH, refresh_sec, factors（如 bidask, askbid, spread, hedge_premium_rate, spread_fr）
+- **内容**: MAX_LENGTH, refresh_sec, factors（如 bidask, askbid, spread, open_premium_rate, hedge_premium_rate, open_vol, hedge_vol, spread_fr）
 - **使用者**: rolling_metrics 进程
 
 ### `sync_funding_rate_thresholds.py` - FR 交易策略阈值

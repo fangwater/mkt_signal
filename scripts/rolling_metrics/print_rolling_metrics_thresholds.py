@@ -10,7 +10,7 @@ Reads
     value = JSON payload produced by rolling_metrics service.
 
 Outputs
-  - 分别为 spread_rate、bidask_sr、askbid_sr 打印三线表；
+  - 分别为 rolling_metrics 输出中常见因子打印三线表；
     每张表包含：symbol、update_tp、sample_size、对应因子实时值，以及分位阈值列。
   - Null / missing values render as '-' by default.
 
@@ -383,6 +383,41 @@ def main() -> int:
             "value_header": "askbid_sr",
             "quantile_key": "askbid_quantiles",
             "quantile_prefix": "askbid",
+        },
+        {
+            "label": "open_premium_rate",
+            "value_field": "open_premium_rate",
+            "value_header": "open_premium_rate",
+            "quantile_key": "open_premium_rate_quantiles",
+            "quantile_prefix": "open_premium_rate",
+        },
+        {
+            "label": "hedge_premium_rate",
+            "value_field": "hedge_premium_rate",
+            "value_header": "hedge_premium_rate",
+            "quantile_key": "hedge_premium_rate_quantiles",
+            "quantile_prefix": "hedge_premium_rate",
+        },
+        {
+            "label": "open_vol",
+            "value_field": "open_vol",
+            "value_header": "open_vol",
+            "quantile_key": "open_vol_quantiles",
+            "quantile_prefix": "open_vol",
+        },
+        {
+            "label": "hedge_vol",
+            "value_field": "hedge_vol",
+            "value_header": "hedge_vol",
+            "quantile_key": "hedge_vol_quantiles",
+            "quantile_prefix": "hedge_vol",
+        },
+        {
+            "label": "spread_fr",
+            "value_field": "spread_fr",
+            "value_header": "spread_fr",
+            "quantile_key": "spread_fr_quantiles",
+            "quantile_prefix": "spread_fr",
         },
     ]
 
