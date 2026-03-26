@@ -109,7 +109,7 @@ KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 find_running_pids() {
   local pids=()
   while IFS= read -r pid; do
-    if [[ -n "$pid" ]]; then
+    if [[ -n "$pid" && "$pid" != "$$" && "$pid" != "$PPID" ]]; then
       pids+=("$pid")
     fi
   done < <(
@@ -117,6 +117,7 @@ find_running_pids() {
       index($0, "ipc_bridge") > 0 &&
       index($0, cfg_arg) > 0 &&
       index($0, base_dir) > 0 &&
+      index($0, "awk -v ") == 0 &&
       index($0, "start_ipc_bridge.sh") == 0 &&
       index($0, "stop_ipc_bridge.sh") == 0 {
         print $1

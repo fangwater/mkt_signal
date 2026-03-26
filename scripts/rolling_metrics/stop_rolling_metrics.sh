@@ -135,7 +135,7 @@ find_running_pids() {
   local hedge_arg="--hedge-venue ${HEDGE_VENUE}"
   local pids=()
   while IFS= read -r pid; do
-    if [[ -n "$pid" ]]; then
+    if [[ -n "$pid" && "$pid" != "$$" && "$pid" != "$PPID" ]]; then
       pids+=("$pid")
     fi
   done < <(
@@ -143,7 +143,8 @@ find_running_pids() {
       index($0, "rolling_metrics") > 0 &&
       index($0, open_arg) > 0 &&
       index($0, hedge_arg) > 0 &&
-      index($0, base_dir) > 0 {
+      index($0, base_dir) > 0 &&
+      index($0, "awk -v ") == 0 {
         print $1
       }
     '

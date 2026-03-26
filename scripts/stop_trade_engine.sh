@@ -108,12 +108,15 @@ find_running_pids() {
   local exchange_arg="--exchange ${EXCHANGE}"
   local pids=()
   while IFS= read -r pid; do
-    if [[ -n "$pid" ]]; then
+    if [[ -n "$pid" && "$pid" != "$$" && "$pid" != "$PPID" ]]; then
       pids+=("$pid")
     fi
   done < <(
     ps -eo pid=,args= | awk -v exchange_arg="$exchange_arg" -v base_dir="$BASE_DIR" '
-      index($0, "trade_engine") > 0 && index($0, exchange_arg) > 0 && index($0, base_dir) > 0 {
+      index($0, "trade_engine") > 0 &&
+      index($0, exchange_arg) > 0 &&
+      index($0, base_dir) > 0 &&
+      index($0, "awk -v ") == 0 {
         print $1
       }
     '

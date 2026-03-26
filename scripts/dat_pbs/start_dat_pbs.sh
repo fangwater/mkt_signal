@@ -114,13 +114,14 @@ find_running_pids() {
   local venue_arg="--venue ${venue}"
   local pids=()
   while IFS= read -r pid; do
-    if [[ -n "$pid" ]]; then
+    if [[ -n "$pid" && "$pid" != "$$" && "$pid" != "$PPID" ]]; then
       pids+=("$pid")
     fi
   done < <(
     ps -eo pid=,args= | awk -v venue_arg="$venue_arg" '
       index($0, "dat_pbs") > 0 &&
       index($0, venue_arg) > 0 &&
+      index($0, "awk -v ") == 0 &&
       index($0, "start_dat_pbs.sh") == 0 &&
       index($0, "stop_dat_pbs.sh") == 0 {
         print $1

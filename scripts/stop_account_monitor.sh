@@ -80,12 +80,14 @@ KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 find_running_pids() {
   local pids=()
   while IFS= read -r pid; do
-    if [[ -n "$pid" ]]; then
+    if [[ -n "$pid" && "$pid" != "$$" && "$pid" != "$PPID" ]]; then
       pids+=("$pid")
     fi
   done < <(
     ps -eo pid=,args= | awk -v base_dir="$BASE_DIR" '
-      index($0, "account_monitor") > 0 && index($0, base_dir) > 0 {
+      index($0, "account_monitor") > 0 &&
+      index($0, base_dir) > 0 &&
+      index($0, "awk -v ") == 0 {
         print $1
       }
     '
