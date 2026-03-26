@@ -124,7 +124,7 @@ pub struct StrategyParams {
     #[serde(default = "default_hedge_aggressive_seq_threshold")]
     pub hedge_aggressive_seq_threshold: u32,
 
-    /// 对冲触发 taker 的最大价格变动比例（百分比，1~99 表示 1%~99%）
+    /// 对冲触发 taker 的最大价格变动比例（百分比，允许小数，范围 (0, 99]）
     #[serde(default = "default_max_hedge_price_pct_change")]
     pub max_hedge_price_pct_change: f64,
 
@@ -478,9 +478,9 @@ impl StrategyParams {
                         redis_key, raw
                     )
                 });
-                if !(parsed.is_finite() && parsed >= 1.0 && parsed <= 99.0) {
+                if !(parsed.is_finite() && parsed > 0.0 && parsed <= 99.0) {
                     panic!(
-                        "Redis hash '{}' max_hedge_price_pct_change 无效(需在1~99): {}",
+                        "Redis hash '{}' max_hedge_price_pct_change 无效(需在(0,99]): {}",
                         redis_key, parsed
                     );
                 }

@@ -85,7 +85,7 @@ PARAM_COMMENTS: Dict[str, str] = {
     "enable_tlen_cancel": "是否启用基于 tlen 的 MM open 撤单链路（true=允许发 MMCancelTrigger 并走 query/cancel）",
     "return_model_service": "收益率模型输出通道名（'-' 表示禁用）",
     "environment_model_service": "环境模型输出通道名（'-' 表示禁用）",
-    "max_hedge_price_pct_change": "对冲价格最大变动阈值(%)，范围1-99，可为小数，超过则强制 taker",
+    "max_hedge_price_pct_change": "对冲价格最大变动阈值(%)，范围>0且<=99，可为小数，超过则强制 taker",
     "signal_cooldown": "信号冷却时间(秒)",
 }
 
