@@ -5,9 +5,9 @@
 Print rolling_metrics thresholds from Redis HASH as a three-line table.
 
 Reads
-  - Redis HASH `rolling_metrics_thresholds_{open_venue}_{hedge_venue}` where
-    field = symbol_pair (e.g. "binance-margin_binance-futures::BTCUSDT")
-    value = JSON payload produced by rolling_metrics service.
+  - Redis HASH `rolling_metrics_thresholds_{open_venue}_{hedge_venue}` for pair factors
+  - Redis HASH `rolling_metrics_thresholds_{open_venue}_{open_venue}` for open-side factors
+  - Redis HASH `rolling_metrics_thresholds_{hedge_venue}_{hedge_venue}` for hedge-side factors
 
 Outputs
   - 分别为 rolling_metrics 输出中常见因子打印三线表；
@@ -131,6 +131,43 @@ def read_hash(rds, key: str) -> Dict[str, Dict]:
             # Skip non-JSON entries silently
             continue
     return result
+
+
+def rolling_hash_key(open_venue: str, hedge_venue: str) -> str:
+    return f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}"
+
+
+def row_symbol_key(field: str, obj: Dict[str, Any]) -> str:
+    base_value = obj.get("base_symbol") or obj.get("symbol")
+    if isinstance(base_value, str) and base_value.strip():
+        return base_value.strip().upper()
+    return field.split("::")[-1].upper()
+
+
+def alias_single_side_row(obj: Dict[str, Any], venue: str, side: str) -> Dict[str, Any]:
+    result = dict(obj)
+    field_pairs = [
+        (f"{venue}_premium_rate", f"{side}_premium_rate"),
+        (f"{venue}_premium_rate_quantiles", f"{side}_premium_rate_quantiles"),
+        (f"{venue}_vol", f"{side}_vol"),
+        (f"{venue}_vol_quantiles", f"{side}_vol_quantiles"),
+    ]
+    for src, dst in field_pairs:
+        if dst not in result and src in result:
+            result[dst] = result[src]
+    return result
+
+
+def merge_hash_rows(*datasets: Dict[str, Dict]) -> Dict[str, Dict]:
+    merged: Dict[str, Dict] = {}
+    for dataset in datasets:
+        for field, obj in dataset.items():
+            symbol_key = row_symbol_key(field, obj)
+            entry = merged.setdefault(symbol_key, {})
+            entry.update(obj)
+            entry["base_symbol"] = obj.get("base_symbol") or entry.get("base_symbol") or symbol_key
+            entry["symbol_pair"] = obj.get("symbol_pair") or entry.get("symbol_pair") or field
+    return merged
 
 
 def is_nan(value: object) -> bool:
@@ -338,13 +375,26 @@ def main() -> int:
     if not open_venue or not hedge_venue:
         print("open-venue 和 hedge-venue 均不能为空。", file=sys.stderr)
         return 1
-    hash_key = f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}"
-    print(f"📍 Reading from Redis hash: {hash_key}")
+    pair_hash_key = rolling_hash_key(open_venue, hedge_venue)
+    open_hash_key = rolling_hash_key(open_venue, open_venue)
+    hedge_hash_key = rolling_hash_key(hedge_venue, hedge_venue)
+    print(f"📍 Reading from Redis hash: {pair_hash_key}")
+    print(f"📍 Reading from Redis hash: {open_hash_key}")
+    print(f"📍 Reading from Redis hash: {hedge_hash_key}")
     print("📍 Redis: 127.0.0.1:6379/0\n")
 
-    data = read_hash(rds, hash_key)
+    pair_data = read_hash(rds, pair_hash_key)
+    open_data = {
+        field: alias_single_side_row(obj, open_venue, "open")
+        for field, obj in read_hash(rds, open_hash_key).items()
+    }
+    hedge_data = {
+        field: alias_single_side_row(obj, hedge_venue, "hedge")
+        for field, obj in read_hash(rds, hedge_hash_key).items()
+    }
+    data = merge_hash_rows(pair_data, open_data, hedge_data)
     if not data:
-        print(f"⚠️  Redis HASH '{hash_key}' 为空或不存在。")
+        print(f"⚠️  Redis HASH '{pair_hash_key}' / '{open_hash_key}' / '{hedge_hash_key}' 为空或不存在。")
         return 0
 
     target_symbols: List[str] = []

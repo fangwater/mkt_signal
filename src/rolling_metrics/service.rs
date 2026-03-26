@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -10,10 +10,12 @@ use dashmap::DashMap;
 use log::{debug, info, warn};
 use parking_lot::RwLock;
 use serde::Serialize;
+use serde_json::{Map, Value};
 
 use crate::rolling_metrics::config::{
-    FactorConfig, RollingConfig, FACTOR_ASKBID, FACTOR_BIDASK, FACTOR_HEDGE_PREMIUM_RATE,
-    FACTOR_HEDGE_VOL, FACTOR_OPEN_PREMIUM_RATE, FACTOR_OPEN_VOL, FACTOR_SPREAD, FACTOR_SPREAD_FR,
+    FactorConfig, RollingConfig, DEFAULT_OUTPUT_HASH_KEY, FACTOR_ASKBID, FACTOR_BIDASK,
+    FACTOR_HEDGE_PREMIUM_RATE, FACTOR_HEDGE_VOL, FACTOR_OPEN_PREMIUM_RATE, FACTOR_OPEN_VOL,
+    FACTOR_SPREAD, FACTOR_SPREAD_FR,
 };
 use crate::rolling_metrics::ring::RingBuffer;
 
@@ -156,10 +158,14 @@ pub struct ComputeStats {
     pub duration_ms: u128,
 }
 
-pub struct ComputeResult {
+pub struct OutputBatch {
     pub output_key: String,
     pub payloads: Vec<(String, String)>,
     pub removals: Vec<String>,
+}
+
+pub struct ComputeResult {
+    pub batches: Vec<OutputBatch>,
     pub stats: ComputeStats,
 }
 
@@ -169,46 +175,16 @@ struct QuantilePoint {
     threshold: Option<f64>,
 }
 
-#[derive(Serialize)]
-struct ThresholdPayload<'a> {
-    symbol_pair: &'a str,
-    base_symbol: &'a str,
-    update_tp: i64,
-    sample_size: usize,
-    bidask_sr: Option<f64>,
-    askbid_sr: Option<f64>,
-    spread_rate: Option<f64>,
-    open_premium_rate: Option<f64>,
-    hedge_premium_rate: Option<f64>,
-    open_vol: Option<f64>,
-    hedge_vol: Option<f64>,
-    spread_fr: Option<f64>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    bidask_quantiles: Vec<QuantilePoint>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    askbid_quantiles: Vec<QuantilePoint>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    spread_quantiles: Vec<QuantilePoint>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    open_premium_rate_quantiles: Vec<QuantilePoint>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    hedge_premium_rate_quantiles: Vec<QuantilePoint>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    open_vol_quantiles: Vec<QuantilePoint>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    hedge_vol_quantiles: Vec<QuantilePoint>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    spread_fr_quantiles: Vec<QuantilePoint>,
-}
-
 pub fn spawn_compute_thread(
     series_map: Arc<SeriesMap>,
     config: Arc<RwLock<RollingConfig>>,
     series_capacity: Arc<AtomicUsize>,
+    open_venue: String,
+    hedge_venue: String,
     sender: Sender<ComputeResult>,
 ) {
     thread::spawn(move || {
-        let mut last_keys: HashSet<String> = HashSet::new();
+        let mut last_fields_by_hash: HashMap<String, HashSet<String>> = HashMap::new();
         let mut last_refresh_sec: u64 = 0;
 
         loop {
@@ -237,33 +213,88 @@ pub fn spawn_compute_thread(
             let mut all_ready_count = 0usize;
             let mut processed = 0usize;
             let mut skipped = 0usize;
-            let mut payloads: Vec<(String, String)> = Vec::with_capacity(total);
-            let mut current_keys: HashSet<String> = HashSet::with_capacity(total);
+            let pair_output_key = cfg_snapshot.output_hash_key.clone();
+            let open_output_key = derive_single_side_output_key(
+                &pair_output_key,
+                &open_venue,
+                &hedge_venue,
+                &open_venue,
+            );
+            let hedge_output_key = derive_single_side_output_key(
+                &pair_output_key,
+                &open_venue,
+                &hedge_venue,
+                &hedge_venue,
+            );
+            let tracked_output_keys = vec![
+                pair_output_key.clone(),
+                open_output_key.clone(),
+                hedge_output_key.clone(),
+            ];
+            let mut payloads_by_hash: HashMap<String, Vec<(String, String)>> = HashMap::new();
+            let mut current_fields_by_hash: HashMap<String, HashSet<String>> = HashMap::new();
+            for output_key in &tracked_output_keys {
+                current_fields_by_hash
+                    .entry(output_key.clone())
+                    .or_default();
+            }
 
             for (symbol_pair, series) in snapshot {
-                current_keys.insert(symbol_pair.clone());
                 let (ready_count, expected_total) =
                     factor_ready_counts(series.as_ref(), &cfg_snapshot);
                 if expected_total > 0 && ready_count == expected_total {
                     all_ready_count += 1;
                 }
 
-                let entry = build_entry(
+                let entries = build_entries(
                     &symbol_pair,
                     &cfg_snapshot,
                     &series,
                     now_ms,
                     &mut processed,
                     &mut skipped,
+                    &pair_output_key,
+                    &open_output_key,
+                    &hedge_output_key,
+                    &open_venue,
+                    &hedge_venue,
                 );
 
-                if let Some((field, json)) = entry {
-                    payloads.push((field, json));
+                for (output_key, field, json) in entries {
+                    current_fields_by_hash
+                        .entry(output_key.clone())
+                        .or_default()
+                        .insert(field.clone());
+                    payloads_by_hash
+                        .entry(output_key)
+                        .or_default()
+                        .push((field, json));
                 }
             }
 
-            let removals: Vec<String> = last_keys.difference(&current_keys).cloned().collect();
-            last_keys = current_keys;
+            let mut batch_keys: HashSet<String> = tracked_output_keys.into_iter().collect();
+            batch_keys.extend(last_fields_by_hash.keys().cloned());
+
+            let mut batches = Vec::new();
+            for output_key in batch_keys {
+                let current_fields = current_fields_by_hash
+                    .get(&output_key)
+                    .cloned()
+                    .unwrap_or_default();
+                let last_fields = last_fields_by_hash
+                    .get(&output_key)
+                    .cloned()
+                    .unwrap_or_default();
+                let removals: Vec<String> =
+                    last_fields.difference(&current_fields).cloned().collect();
+                let payloads = payloads_by_hash.remove(&output_key).unwrap_or_default();
+                batches.push(OutputBatch {
+                    output_key,
+                    payloads,
+                    removals,
+                });
+            }
+            last_fields_by_hash = current_fields_by_hash;
 
             let duration = start.elapsed();
             let stats = ComputeStats {
@@ -287,15 +318,7 @@ pub fn spawn_compute_thread(
                 build_three_line_table_str(["metric", "ready/total", "percent"], &coverage_rows);
             info!("{}: factor coverage\n{}", log_prefix(), coverage_table);
 
-            if sender
-                .send(ComputeResult {
-                    output_key: cfg_snapshot.output_hash_key.clone(),
-                    payloads,
-                    removals,
-                    stats,
-                })
-                .is_err()
-            {
+            if sender.send(ComputeResult { batches, stats }).is_err() {
                 warn!(
                     "{}: compute thread exiting because receiver dropped",
                     log_prefix()
@@ -309,14 +332,19 @@ pub fn spawn_compute_thread(
     });
 }
 
-fn build_entry(
+fn build_entries(
     symbol_pair: &str,
     config: &RollingConfig,
     series: &Arc<SymbolSeries>,
     now_ms: i64,
     processed: &mut usize,
     skipped: &mut usize,
-) -> Option<(String, String)> {
+    pair_output_key: &str,
+    open_output_key: &str,
+    hedge_output_key: &str,
+    open_venue: &str,
+    hedge_venue: &str,
+) -> Vec<(String, String, String)> {
     let parts: Vec<&str> = symbol_pair.split("::").collect();
     let base_symbol = parts.last().copied().unwrap_or(symbol_pair);
 
@@ -342,6 +370,7 @@ fn build_entry(
     let mut factors_ready = 0usize;
     let mut ready_factors: Vec<&str> = Vec::new();
     let mut missing_ready: Vec<&str> = Vec::new();
+    let mut factor_counts: HashMap<String, usize> = HashMap::new();
 
     for (factor_name, factor_cfg) in config.factors_iter() {
         let Some(ring) = series.ring(factor_name) else {
@@ -369,6 +398,7 @@ fn build_entry(
             }
             sample_counts.push(count);
         }
+        factor_counts.insert(factor_name.to_string(), count);
 
         match factor_name {
             FACTOR_BIDASK => bidask_quantiles = points,
@@ -415,41 +445,248 @@ fn build_entry(
     }
     let sample_size = sample_counts.into_iter().min().unwrap_or(0);
 
-    let payload = ThresholdPayload {
-        symbol_pair,
-        base_symbol,
-        update_tp: now_ms,
-        sample_size,
-        bidask_sr: latest_bidask.and_then(to_option_f64),
-        askbid_sr: latest_askbid.and_then(to_option_f64),
-        spread_rate,
-        open_premium_rate: latest_open_premium_rate,
-        hedge_premium_rate: latest_hedge_premium_rate,
-        open_vol: latest_open_vol,
-        hedge_vol: latest_hedge_vol,
-        spread_fr: latest_spread_fr,
-        bidask_quantiles,
-        askbid_quantiles,
-        spread_quantiles,
-        open_premium_rate_quantiles,
-        hedge_premium_rate_quantiles,
-        open_vol_quantiles,
-        hedge_vol_quantiles,
-        spread_fr_quantiles,
-    };
+    if pair_output_key.is_empty()
+        || open_output_key.is_empty()
+        || hedge_output_key.is_empty()
+        || open_venue.is_empty()
+        || hedge_venue.is_empty()
+    {
+        return Vec::new();
+    }
 
-    match serde_json::to_string(&payload) {
-        Ok(json) => Some((symbol_pair.to_string(), json)),
-        Err(err) => {
-            debug!(
-                "{}: serialize payload for {} failed: {}",
-                log_prefix(),
-                symbol_pair,
-                err
-            );
-            None
+    let pair_field = symbol_pair.to_string();
+    let open_field = same_venue_symbol_pair(open_venue, base_symbol);
+    let hedge_field = same_venue_symbol_pair(hedge_venue, base_symbol);
+    let open_sample_size = sample_size_for_factors(
+        series.as_ref(),
+        config,
+        &[FACTOR_OPEN_PREMIUM_RATE, FACTOR_OPEN_VOL],
+        &factor_counts,
+    );
+    let hedge_sample_size = sample_size_for_factors(
+        series.as_ref(),
+        config,
+        &[FACTOR_HEDGE_PREMIUM_RATE, FACTOR_HEDGE_VOL],
+        &factor_counts,
+    );
+
+    let mut pair_payload = base_payload_map(symbol_pair, base_symbol, now_ms, sample_size);
+    insert_optional_f64(
+        &mut pair_payload,
+        "bidask_sr",
+        latest_bidask.and_then(to_option_f64),
+    );
+    insert_optional_f64(
+        &mut pair_payload,
+        "askbid_sr",
+        latest_askbid.and_then(to_option_f64),
+    );
+    insert_optional_f64(&mut pair_payload, "spread_rate", spread_rate);
+    insert_optional_f64(&mut pair_payload, "spread_fr", latest_spread_fr);
+    insert_quantiles(&mut pair_payload, "bidask_quantiles", &bidask_quantiles);
+    insert_quantiles(&mut pair_payload, "askbid_quantiles", &askbid_quantiles);
+    insert_quantiles(&mut pair_payload, "spread_quantiles", &spread_quantiles);
+    insert_quantiles(
+        &mut pair_payload,
+        "spread_fr_quantiles",
+        &spread_fr_quantiles,
+    );
+
+    let open_side_payload = build_single_side_payload(
+        open_venue,
+        &open_field,
+        base_symbol,
+        now_ms,
+        open_sample_size,
+        latest_open_premium_rate,
+        &open_premium_rate_quantiles,
+        latest_open_vol,
+        &open_vol_quantiles,
+    );
+    let hedge_side_payload = build_single_side_payload(
+        hedge_venue,
+        &hedge_field,
+        base_symbol,
+        now_ms,
+        hedge_sample_size,
+        latest_hedge_premium_rate,
+        &hedge_premium_rate_quantiles,
+        latest_hedge_vol,
+        &hedge_vol_quantiles,
+    );
+
+    let mut outputs = vec![(pair_output_key.to_string(), pair_field, pair_payload)];
+    if let Some(open_payload) = open_side_payload {
+        if open_output_key == pair_output_key && open_field == outputs[0].1 {
+            merge_payload_maps(&mut outputs[0].2, open_payload);
+        } else {
+            outputs.push((open_output_key.to_string(), open_field, open_payload));
         }
     }
+    if let Some(hedge_payload) = hedge_side_payload {
+        if hedge_output_key == pair_output_key && hedge_field == outputs[0].1 {
+            merge_payload_maps(&mut outputs[0].2, hedge_payload);
+        } else {
+            outputs.push((hedge_output_key.to_string(), hedge_field, hedge_payload));
+        }
+    }
+    serialize_output_maps(outputs)
+}
+
+fn derive_single_side_output_key(
+    pair_output_key: &str,
+    open_venue: &str,
+    hedge_venue: &str,
+    target_venue: &str,
+) -> String {
+    let pair_suffix = format!("_{}_{}", open_venue, hedge_venue);
+    if let Some(prefix) = pair_output_key.strip_suffix(&pair_suffix) {
+        return format!("{prefix}_{}_{}", target_venue, target_venue);
+    }
+    format!(
+        "{DEFAULT_OUTPUT_HASH_KEY}_{}_{}",
+        target_venue, target_venue
+    )
+}
+
+fn same_venue_symbol_pair(venue: &str, base_symbol: &str) -> String {
+    format!("{venue}_{venue}::{base_symbol}")
+}
+
+fn sample_size_for_factors(
+    series: &SymbolSeries,
+    config: &RollingConfig,
+    factor_names: &[&str],
+    factor_counts: &HashMap<String, usize>,
+) -> usize {
+    let mut counts = Vec::new();
+    for factor_name in factor_names {
+        if config.factor(factor_name).is_none() {
+            continue;
+        }
+        if let Some(count) = factor_counts.get(*factor_name) {
+            counts.push(*count);
+        } else if let Some(ring) = series.ring(factor_name) {
+            counts.push(ring.len());
+        }
+    }
+    counts.into_iter().min().unwrap_or(0)
+}
+
+fn base_payload_map(
+    symbol_pair: &str,
+    base_symbol: &str,
+    update_tp: i64,
+    sample_size: usize,
+) -> Map<String, Value> {
+    let mut payload = Map::new();
+    payload.insert(
+        "symbol_pair".to_string(),
+        Value::String(symbol_pair.to_string()),
+    );
+    payload.insert(
+        "base_symbol".to_string(),
+        Value::String(base_symbol.to_string()),
+    );
+    payload.insert("update_tp".to_string(), Value::Number(update_tp.into()));
+    payload.insert(
+        "sample_size".to_string(),
+        Value::Number((sample_size as u64).into()),
+    );
+    payload
+}
+
+fn build_single_side_payload(
+    venue: &str,
+    symbol_pair: &str,
+    base_symbol: &str,
+    update_tp: i64,
+    sample_size: usize,
+    premium_rate: Option<f64>,
+    premium_rate_quantiles: &[QuantilePoint],
+    volatility: Option<f64>,
+    volatility_quantiles: &[QuantilePoint],
+) -> Option<Map<String, Value>> {
+    let mut payload = base_payload_map(symbol_pair, base_symbol, update_tp, sample_size);
+    let mut has_single_side_data = false;
+    let premium_field = format!("{venue}_premium_rate");
+    let premium_quantiles_field = format!("{venue}_premium_rate_quantiles");
+    let vol_field = format!("{venue}_vol");
+    let vol_quantiles_field = format!("{venue}_vol_quantiles");
+
+    if premium_rate.is_some() || !premium_rate_quantiles.is_empty() {
+        has_single_side_data = true;
+    }
+    if volatility.is_some() || !volatility_quantiles.is_empty() {
+        has_single_side_data = true;
+    }
+    if !has_single_side_data {
+        return None;
+    }
+
+    insert_optional_f64(&mut payload, &premium_field, premium_rate);
+    insert_quantiles(
+        &mut payload,
+        &premium_quantiles_field,
+        premium_rate_quantiles,
+    );
+    insert_optional_f64(&mut payload, &vol_field, volatility);
+    insert_quantiles(&mut payload, &vol_quantiles_field, volatility_quantiles);
+    Some(payload)
+}
+
+fn insert_optional_f64(payload: &mut Map<String, Value>, key: &str, value: Option<f64>) {
+    let json_value = match value.and_then(|v| serde_json::Number::from_f64(v).map(Value::Number)) {
+        Some(number) => number,
+        None => Value::Null,
+    };
+    payload.insert(key.to_string(), json_value);
+}
+
+fn insert_quantiles(payload: &mut Map<String, Value>, key: &str, quantiles: &[QuantilePoint]) {
+    if quantiles.is_empty() {
+        return;
+    }
+    match serde_json::to_value(quantiles) {
+        Ok(value) => {
+            payload.insert(key.to_string(), value);
+        }
+        Err(err) => {
+            debug!(
+                "{}: serialize quantiles for key {} failed: {}",
+                log_prefix(),
+                key,
+                err
+            );
+        }
+    }
+}
+
+fn merge_payload_maps(target: &mut Map<String, Value>, source: Map<String, Value>) {
+    for (key, value) in source {
+        target.insert(key, value);
+    }
+}
+
+fn serialize_output_maps(
+    outputs: Vec<(String, String, Map<String, Value>)>,
+) -> Vec<(String, String, String)> {
+    let mut serialized = Vec::new();
+    for (output_key, field, payload) in outputs {
+        match serde_json::to_string(&payload) {
+            Ok(json) => serialized.push((output_key, field, json)),
+            Err(err) => {
+                debug!(
+                    "{}: serialize payload for {} / {} failed: {}",
+                    log_prefix(),
+                    output_key,
+                    field,
+                    err
+                );
+            }
+        }
+    }
+    serialized
 }
 
 fn compute_factor_quantiles(

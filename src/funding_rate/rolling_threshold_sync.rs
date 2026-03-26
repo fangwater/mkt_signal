@@ -41,6 +41,14 @@ pub(crate) fn format_quantile_field_ref(prefix: &str, percentile: f64) -> String
     format!("{prefix}_{suffix}")
 }
 
+pub(crate) fn default_single_side_rolling_key(venue: TradingVenue) -> String {
+    format!(
+        "rolling_metrics_thresholds_{}_{}",
+        venue.data_pub_slug(),
+        venue.data_pub_slug()
+    )
+}
+
 pub(crate) fn resolve_symbol_single_quantile_thresholds(
     rolling_payloads: &HashMap<String, serde_json::Value>,
     field_ref: &str,
@@ -286,6 +294,68 @@ pub(crate) fn parse_xarb_rolling_payloads(
     }
 
     payloads
+}
+
+pub(crate) fn alias_single_side_payloads(
+    payloads: &mut HashMap<String, serde_json::Value>,
+    venue: TradingVenue,
+    side: &str,
+) {
+    let venue_slug = venue.data_pub_slug();
+    for payload in payloads.values_mut() {
+        alias_single_side_payload(payload, venue_slug, side);
+    }
+}
+
+pub(crate) fn merge_rolling_payloads(
+    payload_sets: Vec<HashMap<String, serde_json::Value>>,
+) -> HashMap<String, serde_json::Value> {
+    let mut merged = HashMap::new();
+    for payloads in payload_sets {
+        for (symbol, payload) in payloads {
+            let Some(source_map) = payload.as_object() else {
+                continue;
+            };
+            let entry = merged
+                .entry(symbol)
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            let Some(target_map) = entry.as_object_mut() else {
+                continue;
+            };
+            for (key, value) in source_map {
+                target_map.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    merged
+}
+
+fn alias_single_side_payload(payload: &mut serde_json::Value, venue_slug: &str, side: &str) {
+    let Some(map) = payload.as_object_mut() else {
+        return;
+    };
+    let premium_src = format!("{venue_slug}_premium_rate");
+    let premium_quantiles_src = format!("{venue_slug}_premium_rate_quantiles");
+    let vol_src = format!("{venue_slug}_vol");
+    let vol_quantiles_src = format!("{venue_slug}_vol_quantiles");
+    let premium_dst = format!("{side}_premium_rate");
+    let premium_quantiles_dst = format!("{side}_premium_rate_quantiles");
+    let vol_dst = format!("{side}_vol");
+    let vol_quantiles_dst = format!("{side}_vol_quantiles");
+
+    copy_missing_field(map, &premium_src, &premium_dst);
+    copy_missing_field(map, &premium_quantiles_src, &premium_quantiles_dst);
+    copy_missing_field(map, &vol_src, &vol_dst);
+    copy_missing_field(map, &vol_quantiles_src, &vol_quantiles_dst);
+}
+
+fn copy_missing_field(map: &mut serde_json::Map<String, serde_json::Value>, src: &str, dst: &str) {
+    if map.contains_key(dst) {
+        return;
+    }
+    if let Some(value) = map.get(src).cloned() {
+        map.insert(dst.to_string(), value);
+    }
 }
 
 pub(crate) fn resolve_symbol_quantile_thresholds(
@@ -564,8 +634,9 @@ pub(crate) async fn sync_xarb_spread_thresholds_to_redis(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_xarb_spread_sync_entries, default_xarb_funding_mapping, extract_quantile_value,
-        normalize_xarb_symbol, parse_xarb_mapping_config, xarb_spread_threshold_order,
+        alias_single_side_payloads, build_xarb_spread_sync_entries, default_xarb_funding_mapping,
+        extract_quantile_value, merge_rolling_payloads, normalize_xarb_symbol,
+        parse_xarb_mapping_config, xarb_spread_threshold_order,
     };
     use crate::signal::common::TradingVenue;
     use std::collections::HashMap;
@@ -648,6 +719,54 @@ mod tests {
                 ),
                 ("BTCUSDT_backward_open_mt".to_string(), "0.9".to_string()),
             ]
+        );
+    }
+
+    #[test]
+    fn alias_single_side_payloads_exposes_canonical_open_fields() {
+        let mut payloads = HashMap::from([(
+            "SOLUSDT".to_string(),
+            serde_json::json!({
+                "base_symbol": "SOLUSDT",
+                "binance-margin_vol": 1.23,
+                "binance-margin_vol_quantiles": [{"quantile": 0.7, "threshold": 2.34}],
+                "binance-margin_premium_rate": 0.01
+            }),
+        )]);
+
+        alias_single_side_payloads(&mut payloads, TradingVenue::BinanceMargin, "open");
+        let payload = payloads.get("SOLUSDT").expect("payload");
+        assert_eq!(payload.get("open_vol").and_then(|v| v.as_f64()), Some(1.23));
+        assert_eq!(
+            payload.get("open_premium_rate").and_then(|v| v.as_f64()),
+            Some(0.01)
+        );
+        assert!(payload.get("open_vol_quantiles").is_some());
+    }
+
+    #[test]
+    fn merge_rolling_payloads_combines_pair_and_single_side_fields() {
+        let merged = merge_rolling_payloads(vec![
+            HashMap::from([(
+                "SOLUSDT".to_string(),
+                serde_json::json!({"spread_rate": 0.1, "base_symbol": "SOLUSDT"}),
+            )]),
+            HashMap::from([("SOLUSDT".to_string(), serde_json::json!({"open_vol": 1.0}))]),
+            HashMap::from([(
+                "SOLUSDT".to_string(),
+                serde_json::json!({"hedge_premium_rate": 0.02}),
+            )]),
+        ]);
+
+        let payload = merged.get("SOLUSDT").expect("merged payload");
+        assert_eq!(
+            payload.get("spread_rate").and_then(|v| v.as_f64()),
+            Some(0.1)
+        );
+        assert_eq!(payload.get("open_vol").and_then(|v| v.as_f64()), Some(1.0));
+        assert_eq!(
+            payload.get("hedge_premium_rate").and_then(|v| v.as_f64()),
+            Some(0.02)
         );
     }
 }

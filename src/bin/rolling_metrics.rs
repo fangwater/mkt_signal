@@ -361,6 +361,8 @@ async fn main() -> Result<()> {
         Arc::clone(&series_map),
         Arc::clone(&config_lock),
         Arc::clone(&series_capacity),
+        open_topic.clone(),
+        hedge_topic.clone(),
         tx,
     );
     spawn_writer_thread(redis_url.clone(), rx);
@@ -1596,108 +1598,67 @@ fn spawn_writer_thread(redis_url: String, receiver: crossbeam_channel::Receiver<
             }
         };
 
-        let mut initial_cleanup_done = false;
+        let mut initial_cleanup_done: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         while let Ok(result) = receiver.recv() {
-            if result.payloads.is_empty() && result.removals.is_empty() {
-                if !initial_cleanup_done {
+            for batch in result.batches.iter() {
+                let cleanup_done = initial_cleanup_done.contains(&batch.output_key);
+                let mut removals = batch.removals.clone();
+
+                if removals.is_empty() && !cleanup_done {
                     if let Ok(stale) =
-                        load_stale_fields(&mut conn, &result.output_key, &result.payloads)
+                        load_stale_fields(&mut conn, &batch.output_key, &batch.payloads)
                     {
-                        initial_cleanup_done = true;
-                        if stale.is_empty() {
-                            continue;
-                        }
-                        if let Err(err) =
-                            write_hash_and_cleanup(&mut conn, &result.output_key, &[], &stale)
-                        {
-                            error!(
-                                "{}: redis cleanup error: {err:?}, attempting reconnect",
-                                log_prefix()
-                            );
-                            loop {
-                                match client.get_connection() {
-                                    Ok(c) => {
-                                        conn = c;
-                                        break;
-                                    }
-                                    Err(err) => {
-                                        error!(
-                                            "{}: reconnect redis failed: {err:?}, retrying in 5s",
-                                            log_prefix()
-                                        );
-                                        thread::sleep(Duration::from_secs(5));
-                                    }
-                                }
-                            }
-                            let _ =
-                                write_hash_and_cleanup(&mut conn, &result.output_key, &[], &stale);
-                        } else {
-                            info!(
-                                "{}: initial cleanup removed {} fields from {}",
-                                log_prefix(),
-                                stale.len(),
-                                result.output_key
-                            );
-                        }
-                        continue;
+                        removals.extend(stale);
                     }
-                } else {
+                    initial_cleanup_done.insert(batch.output_key.clone());
+                }
+
+                if batch.payloads.is_empty() && removals.is_empty() {
                     continue;
                 }
-            }
-            let mut removals = result.removals.clone();
-            if removals.is_empty() && !initial_cleanup_done {
-                if let Ok(stale) =
-                    load_stale_fields(&mut conn, &result.output_key, &result.payloads)
+
+                if let Err(err) =
+                    write_hash_and_cleanup(&mut conn, &batch.output_key, &batch.payloads, &removals)
                 {
-                    removals.extend(stale);
-                }
-                initial_cleanup_done = true;
-            }
-
-            if result.payloads.is_empty() && removals.is_empty() {
-                continue;
-            }
-
-            if let Err(err) =
-                write_hash_and_cleanup(&mut conn, &result.output_key, &result.payloads, &removals)
-            {
-                error!(
-                    "{}: redis write error: {err:?}, attempting reconnect",
-                    log_prefix()
-                );
-                loop {
-                    match client.get_connection() {
-                        Ok(c) => {
-                            conn = c;
-                            break;
-                        }
-                        Err(err) => {
-                            error!(
-                                "{}: reconnect redis failed: {err:?}, retrying in 5s",
-                                log_prefix()
-                            );
-                            thread::sleep(Duration::from_secs(5));
+                    error!(
+                        "{}: redis write error on {}: {err:?}, attempting reconnect",
+                        log_prefix(),
+                        batch.output_key
+                    );
+                    loop {
+                        match client.get_connection() {
+                            Ok(c) => {
+                                conn = c;
+                                break;
+                            }
+                            Err(err) => {
+                                error!(
+                                    "{}: reconnect redis failed: {err:?}, retrying in 5s",
+                                    log_prefix()
+                                );
+                                thread::sleep(Duration::from_secs(5));
+                            }
                         }
                     }
+                    let _ = write_hash_and_cleanup(
+                        &mut conn,
+                        &batch.output_key,
+                        &batch.payloads,
+                        &removals,
+                    );
+                } else {
+                    info!(
+                        "{}: wrote {} fields, removed {} from {} (processed={}, skipped={}, duration={}ms)",
+                        log_prefix(),
+                        batch.payloads.len(),
+                        removals.len(),
+                        batch.output_key,
+                        result.stats.processed,
+                        result.stats.skipped,
+                        result.stats.duration_ms
+                    );
                 }
-                let _ = write_hash_and_cleanup(
-                    &mut conn,
-                    &result.output_key,
-                    &result.payloads,
-                    &removals,
-                );
-            } else {
-                info!(
-                    "{}: wrote {} fields, removed {} from {} (processed={}, skipped={}, duration={}ms)",
-                    log_prefix(),
-                    result.payloads.len(),
-                    removals.len(),
-                    result.output_key,
-                    result.stats.processed,
-                    result.stats.skipped,
-                    result.stats.duration_ms
-                );
             }
         }
 

@@ -64,12 +64,6 @@ DEFAULTS = {
             "min_periods": 1,
             "quantiles": [15, 20, 25, 30],
         },
-        "open_vol": {
-            "resample_interval_ms": 1_000,
-            "rolling_window": 3_600,
-            "min_periods": 1,
-            "quantiles": [70],
-        },
         "hedge_vol": {
             "resample_interval_ms": 1_000,
             "rolling_window": 3_600,

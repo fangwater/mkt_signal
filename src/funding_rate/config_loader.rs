@@ -21,8 +21,9 @@ use super::common::resolve_return_score_thresholds_from_redis_map;
 use super::fr_threshold_loader::load_from_redis as load_fr_thresholds;
 use super::mm_decision::MmDecision;
 use super::rolling_threshold_sync::{
-    apply_xarb_spread_thresholds, default_xarb_funding_mapping, default_xarb_spread_mapping,
-    format_quantile_field_ref, normalize_xarb_symbol, parse_xarb_mapping_config,
+    alias_single_side_payloads, apply_xarb_spread_thresholds, default_single_side_rolling_key,
+    default_xarb_funding_mapping, default_xarb_spread_mapping, format_quantile_field_ref,
+    merge_rolling_payloads, normalize_xarb_symbol, parse_xarb_mapping_config,
     parse_xarb_rolling_payloads, resolve_symbol_quantile_thresholds,
     resolve_symbol_single_quantile_thresholds, resolve_xarb_funding_thresholds,
     sync_xarb_spread_thresholds_to_redis, xarb_funding_mapping_key, xarb_spread_mapping_key,
@@ -489,7 +490,7 @@ async fn reload_open_volatility_thresholds(
             }
         };
 
-    let rolling_key = default_rolling_thresholds_key(open_venue, hedge_venue);
+    let rolling_key = default_single_side_rolling_key(open_venue);
     let refresh_interval = Duration::from_secs(OPEN_VOL_THRESHOLD_REDIS_REFRESH_SECS);
 
     let mut cached_fields: Option<HashMap<String, String>> = None;
@@ -584,7 +585,8 @@ async fn reload_open_volatility_thresholds(
         .map(|symbol| normalize_xarb_symbol(&symbol))
         .filter(|symbol| !symbol.is_empty())
         .collect();
-    let rolling_payloads = parse_xarb_rolling_payloads(rolling_map, &active_symbols);
+    let mut rolling_payloads = parse_xarb_rolling_payloads(rolling_map, &active_symbols);
+    alias_single_side_payloads(&mut rolling_payloads, open_venue, "open");
     let field_ref = format_quantile_field_ref("open_vol", params.open_volatility_limit);
     let (thresholds, missing_refs) =
         resolve_symbol_single_quantile_thresholds(&rolling_payloads, &field_ref);
@@ -719,7 +721,43 @@ async fn reload_xarb_thresholds_from_rolling(
         anyhow::bail!("xarb rolling metrics hash '{}' 为空", rolling_key);
     }
 
-    let rolling_payloads = parse_xarb_rolling_payloads(rolling_map, &active_symbols);
+    let pair_payloads = parse_xarb_rolling_payloads(rolling_map, &active_symbols);
+    let mut open_payloads = match client
+        .hgetall_map(&default_single_side_rolling_key(open_venue))
+        .await
+    {
+        Ok(map) => parse_xarb_rolling_payloads(map, &active_symbols),
+        Err(err) => {
+            warn!(
+                "读取 open 单边 rolling metrics 失败 (key={} open={}): {:?}",
+                default_single_side_rolling_key(open_venue),
+                open_venue.data_pub_slug(),
+                err
+            );
+            HashMap::new()
+        }
+    };
+    alias_single_side_payloads(&mut open_payloads, open_venue, "open");
+
+    let mut hedge_payloads = match client
+        .hgetall_map(&default_single_side_rolling_key(hedge_venue))
+        .await
+    {
+        Ok(map) => parse_xarb_rolling_payloads(map, &active_symbols),
+        Err(err) => {
+            warn!(
+                "读取 hedge 单边 rolling metrics 失败 (key={} hedge={}): {:?}",
+                default_single_side_rolling_key(hedge_venue),
+                hedge_venue.data_pub_slug(),
+                err
+            );
+            HashMap::new()
+        }
+    };
+    alias_single_side_payloads(&mut hedge_payloads, hedge_venue, "hedge");
+
+    let rolling_payloads =
+        merge_rolling_payloads(vec![pair_payloads, open_payloads, hedge_payloads]);
     let (resolved_spread, spread_missing_refs, spread_skipped) =
         resolve_symbol_quantile_thresholds(&rolling_payloads, &spread_config.mapping);
     let (resolved_funding, funding_missing_refs, funding_skipped) =
