@@ -15,8 +15,8 @@
     {
       "bidask": {"resample_interval_ms": 1000, "rolling_window": 100000,
                  "min_periods": 90000, "quantiles": [5, 70]},
-      "hedge_vol": {"resample_interval_ms": 1000, "rolling_window": 14400,
-                    "min_periods": 7200, "quantiles": [20, 80]},
+      "hedge_vol": {"resample_interval_ms": 1000, "rolling_window": 3600,
+                    "min_periods": 1, "quantiles": [70]},
       "spread": {"resample_interval_ms": 10000, "rolling_window": 60000,
                  "min_periods": 40000, "quantiles": [30, 95]}
     }
@@ -63,6 +63,18 @@ DEFAULTS = {
             "rolling_window": 100_000,
             "min_periods": 1,
             "quantiles": [15, 20, 25, 30],
+        },
+        "open_vol": {
+            "resample_interval_ms": 1_000,
+            "rolling_window": 3_600,
+            "min_periods": 1,
+            "quantiles": [70],
+        },
+        "hedge_vol": {
+            "resample_interval_ms": 1_000,
+            "rolling_window": 3_600,
+            "min_periods": 1,
+            "quantiles": [70],
         },
     },
 }
