@@ -229,24 +229,32 @@ impl DepthPubApp {
                 snapshots.venue_slug()
             );
             loop {
-                let mut handled_any = false;
-                loop {
-                    match query_server.serve_once(|payload, resp| {
-                        build_query_response(snapshots.as_ref(), payload, resp)
-                    }) {
-                        Ok(true) => {
-                            handled_any = true;
-                        }
-                        Ok(false) => break,
-                        Err(err) => {
-                            warn!("Depth query stream handling failed: {err:#}");
-                            break;
-                        }
+                let Some(stream) = (match query_server.accept() {
+                    Ok(stream) => stream,
+                    Err(err) => {
+                        warn!("Depth query accept failed: {err:#}");
+                        thread::sleep(Duration::from_micros(IDLE_SLEEP_MICROS));
+                        continue;
                     }
-                }
-
-                if !handled_any {
+                }) else {
                     thread::sleep(Duration::from_micros(IDLE_SLEEP_MICROS));
+                    continue;
+                };
+
+                let snapshots = Arc::clone(&snapshots);
+                if let Err(err) = thread::Builder::new()
+                    .name("depth_query_conn".to_string())
+                    .spawn(move || {
+                        if let Err(err) =
+                            DepthQuerySocketServer::serve_stream(stream, |payload, resp| {
+                                build_query_response(snapshots.as_ref(), payload, resp)
+                            })
+                        {
+                            warn!("Depth query stream handling failed: {err:#}");
+                        }
+                    })
+                {
+                    warn!("Depth query worker spawn failed: {err:#}");
                 }
             }
         })?;

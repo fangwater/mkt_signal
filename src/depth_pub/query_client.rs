@@ -2,6 +2,8 @@ use anyhow::{anyhow, Context, Result};
 use log::{debug, info};
 use std::io::ErrorKind;
 use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::query_msg::{
@@ -21,6 +23,14 @@ const DEPTH_QUERY_BATCH_FAST_RETRY_SLEEP_US: u64 = 200;
 #[derive(Debug, Clone)]
 pub struct DepthQueryClient {
     venue_slug: String,
+    socket_path: PathBuf,
+    connection: Arc<Mutex<DepthQueryConnection>>,
+    persistent_connection: bool,
+}
+
+#[derive(Debug)]
+struct DepthQueryConnection {
+    stream: Option<UnixStream>,
 }
 
 impl DepthQueryClient {
@@ -28,11 +38,39 @@ impl DepthQueryClient {
         Self::from_venue_slug(venue.data_pub_slug())
     }
 
+    pub fn new_persistent(venue: TradingVenue) -> Result<Self> {
+        Self::from_venue_slug_with_mode(venue.data_pub_slug(), true)
+    }
+
+    pub fn new_short_lived(venue: TradingVenue) -> Result<Self> {
+        Self::from_venue_slug_with_mode(venue.data_pub_slug(), false)
+    }
+
     pub fn from_venue_slug(venue_slug: impl Into<String>) -> Result<Self> {
+        Self::from_venue_slug_with_mode(venue_slug, true)
+    }
+
+    pub fn from_venue_slug_persistent(venue_slug: impl Into<String>) -> Result<Self> {
+        Self::from_venue_slug_with_mode(venue_slug, true)
+    }
+
+    pub fn from_venue_slug_short_lived(venue_slug: impl Into<String>) -> Result<Self> {
+        Self::from_venue_slug_with_mode(venue_slug, false)
+    }
+
+    fn from_venue_slug_with_mode(
+        venue_slug: impl Into<String>,
+        persistent_connection: bool,
+    ) -> Result<Self> {
         let venue_slug = venue_slug.into();
         let socket_path = build_depth_query_socket_path(&venue_slug);
         info!("depth query client ready: {}", socket_path.display());
-        Ok(Self { venue_slug })
+        Ok(Self {
+            venue_slug,
+            socket_path,
+            connection: Arc::new(Mutex::new(DepthQueryConnection { stream: None })),
+            persistent_connection,
+        })
     }
 
     pub fn venue_slug(&self) -> &str {
@@ -159,19 +197,90 @@ impl DepthQueryClient {
         expected_type: DepthQueryType,
         timeout: Duration,
     ) -> Result<Vec<u8>> {
-        let socket_path = build_depth_query_socket_path(&self.venue_slug);
-        let mut stream = UnixStream::connect(&socket_path).with_context(|| {
+        if self.persistent_connection {
+            return self.send_query_with_persistent_connection(req, expected_type, timeout);
+        }
+        self.send_query_short_lived(req, expected_type, timeout)
+    }
+
+    fn send_query_short_lived(
+        &self,
+        req: &[u8],
+        expected_type: DepthQueryType,
+        timeout: Duration,
+    ) -> Result<Vec<u8>> {
+        let mut stream = self.connect_stream()?;
+        Self::configure_stream_timeout(&mut stream, timeout)?;
+        Self::exchange_query(&mut stream, req, expected_type)
+    }
+
+    fn send_query_with_persistent_connection(
+        &self,
+        req: &[u8],
+        expected_type: DepthQueryType,
+        timeout: Duration,
+    ) -> Result<Vec<u8>> {
+        let mut last_err = None;
+        for attempt in 0..2 {
+            let mut conn = self
+                .connection
+                .lock()
+                .map_err(|_| anyhow!("depth query client connection mutex poisoned"))?;
+            if conn.stream.is_none() {
+                conn.stream = Some(self.connect_stream()?);
+            }
+
+            let result = {
+                let stream = conn.stream.as_mut().expect("stream just initialized");
+                Self::configure_stream_timeout(stream, timeout)?;
+                Self::exchange_query(stream, req, expected_type)
+            };
+
+            match result {
+                Ok(payload) => return Ok(payload),
+                Err(err) => {
+                    conn.stream = None;
+                    let retryable = attempt == 0 && Self::is_reconnectable_query_error(&err);
+                    drop(conn);
+                    if retryable {
+                        debug!(
+                            "depth query reconnecting venue={} type={:?} err={:#}",
+                            self.venue_slug, expected_type, err
+                        );
+                        last_err = Some(err);
+                        continue;
+                    }
+                    return Err(err);
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| anyhow!("depth query persistent request failed")))
+    }
+
+    fn connect_stream(&self) -> Result<UnixStream> {
+        UnixStream::connect(&self.socket_path).with_context(|| {
             format!(
                 "connect depth query socket failed: {}",
-                socket_path.display()
+                self.socket_path.display()
             )
-        })?;
+        })
+    }
+
+    fn configure_stream_timeout(stream: &mut UnixStream, timeout: Duration) -> Result<()> {
         let timeout = Some(timeout);
         stream.set_read_timeout(timeout)?;
         stream.set_write_timeout(timeout)?;
+        Ok(())
+    }
 
-        write_depth_query_frame(&mut stream, req)?;
-        let payload = read_depth_query_frame(&mut stream, DEPTH_QUERY_PAYLOAD)?;
+    fn exchange_query(
+        stream: &mut UnixStream,
+        req: &[u8],
+        expected_type: DepthQueryType,
+    ) -> Result<Vec<u8>> {
+        write_depth_query_frame(stream, req)?;
+        let payload = read_depth_query_frame(stream, DEPTH_QUERY_PAYLOAD)?;
         let header = DepthQueryHeader::parse(&payload).map_err(|err| anyhow!(err.to_string()))?;
         if header.query_type != expected_type as u8 {
             return Err(anyhow!(
@@ -205,6 +314,26 @@ impl DepthQueryClient {
                     matches!(
                         io_err.kind(),
                         ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                    )
+                })
+        })
+    }
+
+    fn is_reconnectable_query_error(err: &anyhow::Error) -> bool {
+        err.chain().any(|cause| {
+            cause
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io_err| {
+                    matches!(
+                        io_err.kind(),
+                        ErrorKind::WouldBlock
+                            | ErrorKind::TimedOut
+                            | ErrorKind::Interrupted
+                            | ErrorKind::UnexpectedEof
+                            | ErrorKind::BrokenPipe
+                            | ErrorKind::ConnectionReset
+                            | ErrorKind::ConnectionAborted
+                            | ErrorKind::NotConnected
                     )
                 })
         })
