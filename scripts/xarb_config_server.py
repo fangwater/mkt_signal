@@ -169,6 +169,10 @@ def clone_json_value(value: Any) -> Any:
     return value
 
 
+def is_vol_factor_name(factor_name: str) -> bool:
+    return factor_name in {"open_vol", "hedge_vol"}
+
+
 def build_xarb_rolling_defaults(
     base_defaults: Dict[str, Any], *mappings: Dict[str, str]
 ) -> Dict[str, Any]:
@@ -197,11 +201,16 @@ def build_xarb_rolling_defaults(
     factors: Dict[str, Dict[str, Any]] = {}
     for factor_name, quantiles in factor_quantiles.items():
         factor_cfg = clone_json_value(base_factors.get(factor_name) or {})
-        factor_cfg.setdefault("resample_interval_ms", 1_000)
+        if is_vol_factor_name(factor_name):
+            factor_cfg.setdefault("resample_interval_ms", 5_000)
+            factor_cfg.setdefault("rolling_window", 720)
+            factor_cfg.setdefault("min_periods", 1)
+        else:
+            factor_cfg.setdefault("resample_interval_ms", 1_000)
         if factor_name.endswith("_fr") or factor_name.endswith("_premium_rate"):
             factor_cfg.setdefault("rolling_window", 14_400)
             factor_cfg.setdefault("min_periods", 7_200)
-        else:
+        elif not is_vol_factor_name(factor_name):
             factor_cfg.setdefault("rolling_window", 100_000)
             factor_cfg.setdefault("min_periods", 1)
         if quantiles:
@@ -1231,11 +1240,31 @@ def parse_rolling_params(values: Dict[str, str]) -> Dict[str, Any]:
     return parsed
 
 
+def normalize_rolling_factors_for_save(factors: Any) -> Dict[str, Any]:
+    if not isinstance(factors, dict):
+        return {}
+    normalized = json.loads(json.dumps(factors, ensure_ascii=False))
+    for factor_name in ("open_vol", "hedge_vol"):
+        factor_cfg = normalized.get(factor_name)
+        if not isinstance(factor_cfg, dict):
+            continue
+        quantiles = factor_cfg.get("quantiles")
+        if not isinstance(quantiles, list):
+            continue
+        while len(quantiles) > 8:
+            quantiles.pop(0)
+    return normalized
+
+
 def serialize_rolling_params(values: Dict[str, Any]) -> Dict[str, str]:
     payload: Dict[str, str] = {}
     for key, value in values.items():
         if key == "factors":
-            payload[key] = json.dumps(value or {}, ensure_ascii=False, separators=(",", ":"))
+            payload[key] = json.dumps(
+                normalize_rolling_factors_for_save(value),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
         else:
             payload[key] = str(value)
     return payload

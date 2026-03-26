@@ -15,7 +15,7 @@
     {
       "bidask": {"resample_interval_ms": 1000, "rolling_window": 100000,
                  "min_periods": 90000, "quantiles": [5, 70]},
-      "hedge_vol": {"resample_interval_ms": 1000, "rolling_window": 3600,
+      "hedge_vol": {"resample_interval_ms": 5000, "rolling_window": 720,
                     "min_periods": 1, "quantiles": [70]},
       "spread": {"resample_interval_ms": 10000, "rolling_window": 60000,
                  "min_periods": 40000, "quantiles": [30, 95]}
@@ -65,13 +65,35 @@ DEFAULTS = {
             "quantiles": [15, 20, 25, 30],
         },
         "hedge_vol": {
-            "resample_interval_ms": 1_000,
-            "rolling_window": 3_600,
+            "resample_interval_ms": 5_000,
+            "rolling_window": 720,
             "min_periods": 1,
             "quantiles": [70],
         },
     },
 }
+
+VOL_FACTOR_NAMES = {"open_vol", "hedge_vol"}
+VOL_QUANTILE_LIMIT = 8
+
+
+def is_vol_factor(factor_name: str) -> bool:
+    return factor_name in VOL_FACTOR_NAMES
+
+
+def trim_vol_quantiles(quantiles: list[float]) -> list[float]:
+    while len(quantiles) > VOL_QUANTILE_LIMIT:
+        quantiles.pop(0)
+    return quantiles
+
+
+def build_vol_factor(*, quantiles: list[float]) -> Dict[str, Any]:
+    return {
+        "resample_interval_ms": 5_000,
+        "rolling_window": 720,
+        "min_periods": 1,
+        "quantiles": trim_vol_quantiles(list(quantiles)),
+    }
 
 
 def build_single_side_factor(*, quantiles: list[float]) -> Dict[str, Any]:
@@ -258,6 +280,8 @@ def validate_factors(factors: Dict[str, Any]) -> Dict[str, Any]:
                 if not math.isfinite(num):
                     raise SystemExit(f"factors.{factor_name}.quantiles 存在无效值")
                 quantiles.append(int(round(num)) if abs(num - round(num)) < 1e-6 else num)
+        if is_vol_factor(factor_name):
+            quantiles = trim_vol_quantiles(quantiles)
         cleaned_cfg["quantiles"] = quantiles
         cleaned[factor_name] = cleaned_cfg
     return cleaned

@@ -1023,11 +1023,31 @@ def parse_rolling_params(values: Dict[str, str]) -> Dict[str, Any]:
     return parsed
 
 
+def normalize_rolling_factors_for_save(factors: Any) -> Dict[str, Any]:
+    if not isinstance(factors, dict):
+        return {}
+    normalized = json.loads(json.dumps(factors, ensure_ascii=False))
+    for factor_name in ("open_vol", "hedge_vol"):
+        factor_cfg = normalized.get(factor_name)
+        if not isinstance(factor_cfg, dict):
+            continue
+        quantiles = factor_cfg.get("quantiles")
+        if not isinstance(quantiles, list):
+            continue
+        while len(quantiles) > 8:
+            quantiles.pop(0)
+    return normalized
+
+
 def serialize_rolling_params(values: Dict[str, Any]) -> Dict[str, str]:
     payload: Dict[str, str] = {}
     for key, value in values.items():
         if key == "factors":
-            payload[key] = json.dumps(value or {}, ensure_ascii=False, separators=(",", ":"))
+            payload[key] = json.dumps(
+                normalize_rolling_factors_for_save(value),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
         else:
             payload[key] = str(value)
     return payload

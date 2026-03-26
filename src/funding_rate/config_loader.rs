@@ -10,6 +10,7 @@
 
 use anyhow::{Context, Result};
 use log::{debug, info, warn};
+use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -36,6 +37,10 @@ use super::xarb_decision::XarbDecision;
 const DEFAULT_NAMESPACE: &str = "fr";
 const RETURN_SCORE_REDIS_REFRESH_SECS: u64 = 180;
 const OPEN_VOL_THRESHOLD_REDIS_REFRESH_SECS: u64 = 180;
+const VOL_FACTOR_RESAMPLE_INTERVAL_MS: i64 = 5_000;
+const VOL_FACTOR_ROLLING_WINDOW: i64 = 720;
+const VOL_FACTOR_MIN_PERIODS: i64 = 1;
+const VOL_FACTOR_QUANTILE_LIMIT: usize = 8;
 
 #[derive(Debug, Clone)]
 struct RedisHashCacheEntry {
@@ -50,6 +55,14 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VolFactorEnsureStatus {
+    Inserted,
+    QuantileAdded,
+    Trimmed,
+    Unchanged,
+}
+
 fn normalize_namespace(namespace: &str) -> String {
     let ns = namespace
         .trim()
@@ -60,6 +73,178 @@ fn normalize_namespace(namespace: &str) -> String {
     } else {
         ns
     }
+}
+
+fn compact_percentile_value(percentile: f64) -> JsonValue {
+    if (percentile - percentile.round()).abs() < 1e-9 {
+        JsonValue::from(percentile.round() as i64)
+    } else {
+        JsonValue::from(percentile)
+    }
+}
+
+fn venue_single_side_vol_params_target(venue: TradingVenue) -> (String, &'static str) {
+    let exchange = venue.trade_engine_exchange();
+    let margin_slug = format!("{exchange}-margin");
+    let futures_slug = format!("{exchange}-futures");
+    let factor_name = if venue.is_futures() {
+        "hedge_vol"
+    } else {
+        "open_vol"
+    };
+    (
+        format!("rolling_metrics_params_{margin_slug}_{futures_slug}"),
+        factor_name,
+    )
+}
+
+fn default_single_side_vol_factor(percentile: f64) -> JsonValue {
+    JsonValue::Object(JsonMap::from_iter([
+        (
+            "resample_interval_ms".to_string(),
+            JsonValue::from(VOL_FACTOR_RESAMPLE_INTERVAL_MS),
+        ),
+        (
+            "rolling_window".to_string(),
+            JsonValue::from(VOL_FACTOR_ROLLING_WINDOW),
+        ),
+        (
+            "min_periods".to_string(),
+            JsonValue::from(VOL_FACTOR_MIN_PERIODS),
+        ),
+        (
+            "quantiles".to_string(),
+            JsonValue::Array(vec![compact_percentile_value(percentile)]),
+        ),
+    ]))
+}
+
+fn quantile_value_matches(raw: &JsonValue, percentile: f64) -> bool {
+    raw.as_f64()
+        .map(|value| (value - percentile).abs() < 1e-9)
+        .unwrap_or(false)
+}
+
+fn trim_quantiles_to_limit(values: &mut Vec<JsonValue>) -> bool {
+    let mut trimmed = false;
+    while values.len() > VOL_FACTOR_QUANTILE_LIMIT {
+        values.remove(0);
+        trimmed = true;
+    }
+    trimmed
+}
+
+fn append_quantile_if_missing(values: &mut Vec<JsonValue>, percentile: f64) -> bool {
+    if values
+        .iter()
+        .any(|value| quantile_value_matches(value, percentile))
+    {
+        return false;
+    }
+    values.push(compact_percentile_value(percentile));
+    trim_quantiles_to_limit(values);
+    true
+}
+
+fn ensure_single_side_vol_factor_config(
+    factors: &mut JsonMap<String, JsonValue>,
+    factor_name: &str,
+    percentile: f64,
+) -> Result<VolFactorEnsureStatus> {
+    match factors.get_mut(factor_name) {
+        None => {
+            factors.insert(
+                factor_name.to_string(),
+                default_single_side_vol_factor(percentile),
+            );
+            Ok(VolFactorEnsureStatus::Inserted)
+        }
+        Some(JsonValue::Object(cfg)) => {
+            let quantiles = cfg
+                .entry("quantiles".to_string())
+                .or_insert_with(|| JsonValue::Array(Vec::new()));
+            let Some(values) = quantiles.as_array_mut() else {
+                anyhow::bail!("rolling factor '{factor_name}' 的 quantiles 不是数组");
+            };
+            let appended = append_quantile_if_missing(values, percentile);
+            let trimmed = if appended {
+                false
+            } else {
+                let before = values.len();
+                let _ = trim_quantiles_to_limit(values);
+                values.len() < before
+            };
+            if appended {
+                Ok(VolFactorEnsureStatus::QuantileAdded)
+            } else if trimmed {
+                Ok(VolFactorEnsureStatus::Trimmed)
+            } else {
+                Ok(VolFactorEnsureStatus::Unchanged)
+            }
+        }
+        Some(_) => anyhow::bail!("rolling factor '{factor_name}' 不是对象"),
+    }
+}
+
+async fn ensure_open_volatility_source_params(
+    client: &mut RedisClient,
+    venue: TradingVenue,
+    percentile: f64,
+) -> Result<()> {
+    let (params_key, factor_name) = venue_single_side_vol_params_target(venue);
+    let params = client.hgetall_map(&params_key).await.with_context(|| {
+        format!(
+            "读取单边 vol rolling params 失败 (key={} venue={})",
+            params_key,
+            venue.data_pub_slug()
+        )
+    })?;
+    if params.is_empty() {
+        anyhow::bail!(
+            "单边 vol rolling params hash '{}' 为空 (venue={})",
+            params_key,
+            venue.data_pub_slug()
+        );
+    }
+
+    let mut factors = match params.get("factors") {
+        Some(raw) if !raw.trim().is_empty() => serde_json::from_str::<JsonValue>(raw)
+            .with_context(|| format!("解析 rolling factors 失败 (key={params_key})"))?
+            .as_object()
+            .cloned()
+            .with_context(|| format!("rolling factors 不是对象 (key={params_key})"))?,
+        _ => JsonMap::new(),
+    };
+
+    match ensure_single_side_vol_factor_config(&mut factors, factor_name, percentile)? {
+        VolFactorEnsureStatus::Inserted
+        | VolFactorEnsureStatus::QuantileAdded
+        | VolFactorEnsureStatus::Trimmed => {
+            let factors_text = serde_json::to_string(&JsonValue::Object(factors))
+                .with_context(|| format!("序列化 rolling factors 失败 (key={params_key})"))?;
+            client
+                .hset_multiple_str(&params_key, &[("factors".to_string(), factors_text)])
+                .await
+                .with_context(|| {
+                    format!(
+                        "写回单边 vol rolling params 失败 (key={} factor={} percentile={})",
+                        params_key, factor_name, percentile
+                    )
+                })?;
+            info!(
+                "已补齐单边 vol rolling 配置 key={} factor={} percentile={}",
+                params_key, factor_name, percentile
+            );
+        }
+        VolFactorEnsureStatus::Unchanged => {
+            debug!(
+                "单边 vol rolling 配置已存在 key={} factor={} percentile={}",
+                params_key, factor_name, percentile
+            );
+        }
+    }
+
+    Ok(())
 }
 
 /// 配置加载间隔（秒）
@@ -490,6 +675,36 @@ async fn reload_open_volatility_thresholds(
             }
         };
 
+    match RedisClient::connect(redis.clone()).await {
+        Ok(mut client) => {
+            if let Err(err) = ensure_open_volatility_source_params(
+                &mut client,
+                open_venue,
+                params.open_volatility_limit,
+            )
+            .await
+            {
+                warn!(
+                    "补齐 open volatility rolling 配置失败 (ns={} open={} hedge={} percentile={}): {:?}",
+                    ns,
+                    open_venue.data_pub_slug(),
+                    hedge_venue.data_pub_slug(),
+                    params.open_volatility_limit,
+                    err
+                );
+            }
+        }
+        Err(err) => {
+            warn!(
+                "连接 Redis 失败，无法补齐 open volatility rolling 配置 (ns={} open={} hedge={}): {:?}",
+                ns,
+                open_venue.data_pub_slug(),
+                hedge_venue.data_pub_slug(),
+                err
+            );
+        }
+    }
+
     let rolling_key = default_single_side_rolling_key(open_venue);
     let refresh_interval = Duration::from_secs(OPEN_VOL_THRESHOLD_REDIS_REFRESH_SECS);
 
@@ -768,6 +983,21 @@ async fn reload_xarb_thresholds_from_rolling(
 
     match StrategyParams::load_from_redis(redis, "xarb", open_venue, hedge_venue).await {
         Ok(params) => {
+            if let Err(err) = ensure_open_volatility_source_params(
+                &mut client,
+                open_venue,
+                params.open_volatility_limit,
+            )
+            .await
+            {
+                warn!(
+                    "补齐 xarb open volatility rolling 配置失败 (open={} hedge={} percentile={}): {:?}",
+                    open_venue.data_pub_slug(),
+                    hedge_venue.data_pub_slug(),
+                    params.open_volatility_limit,
+                    err
+                );
+            }
             open_vol_field_ref =
                 format_quantile_field_ref("open_vol", params.open_volatility_limit);
             let (thresholds, missing_refs) =
@@ -841,4 +1071,91 @@ async fn reload_xarb_thresholds_from_rolling(
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ensure_single_side_vol_factor_config, venue_single_side_vol_params_target,
+        VolFactorEnsureStatus,
+    };
+    use crate::signal::common::TradingVenue;
+    use serde_json::{json, Map as JsonMap, Value as JsonValue};
+
+    #[test]
+    fn futures_open_vol_source_uses_margin_future_pair_and_hedge_factor() {
+        let (params_key, factor_name) =
+            venue_single_side_vol_params_target(TradingVenue::BinanceFutures);
+        assert_eq!(
+            params_key,
+            "rolling_metrics_params_binance-margin_binance-futures"
+        );
+        assert_eq!(factor_name, "hedge_vol");
+    }
+
+    #[test]
+    fn missing_vol_factor_is_inserted_with_defaults() {
+        let mut factors = JsonMap::new();
+        let status = ensure_single_side_vol_factor_config(&mut factors, "hedge_vol", 70.0).unwrap();
+        assert_eq!(status, VolFactorEnsureStatus::Inserted);
+        assert_eq!(
+            factors.get("hedge_vol"),
+            Some(&json!({
+                "resample_interval_ms": 5000,
+                "rolling_window": 720,
+                "min_periods": 1,
+                "quantiles": [70],
+            }))
+        );
+    }
+
+    #[test]
+    fn existing_vol_factor_with_same_quantile_is_unchanged() {
+        let mut factors = JsonMap::from_iter([(
+            "hedge_vol".to_string(),
+            json!({
+                "quantiles": [70],
+            }),
+        )]);
+        let original = JsonValue::Object(factors.clone());
+        let status = ensure_single_side_vol_factor_config(&mut factors, "hedge_vol", 70.0).unwrap();
+        assert_eq!(status, VolFactorEnsureStatus::Unchanged);
+        assert_eq!(JsonValue::Object(factors), original);
+    }
+
+    #[test]
+    fn existing_vol_factor_drops_first_quantile_when_limit_exceeded() {
+        let mut factors = JsonMap::from_iter([(
+            "hedge_vol".to_string(),
+            json!({
+                "quantiles": [10, 20, 30, 40, 50, 60, 70, 80],
+            }),
+        )]);
+        let status = ensure_single_side_vol_factor_config(&mut factors, "hedge_vol", 90.0).unwrap();
+        assert_eq!(status, VolFactorEnsureStatus::QuantileAdded);
+        assert_eq!(
+            factors.get("hedge_vol"),
+            Some(&json!({
+                "quantiles": [20, 30, 40, 50, 60, 70, 80, 90],
+            }))
+        );
+    }
+
+    #[test]
+    fn existing_vol_factor_without_new_quantile_still_trims_to_limit() {
+        let mut factors = JsonMap::from_iter([(
+            "hedge_vol".to_string(),
+            json!({
+                "quantiles": [10, 20, 30, 40, 50, 60, 70, 80, 90],
+            }),
+        )]);
+        let status = ensure_single_side_vol_factor_config(&mut factors, "hedge_vol", 90.0).unwrap();
+        assert_eq!(status, VolFactorEnsureStatus::Trimmed);
+        assert_eq!(
+            factors.get("hedge_vol"),
+            Some(&json!({
+                "quantiles": [20, 30, 40, 50, 60, 70, 80, 90],
+            }))
+        );
+    }
 }
