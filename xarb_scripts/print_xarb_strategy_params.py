@@ -108,7 +108,7 @@ PARAM_COMMENTS: Dict[str, str] = {
     "enable_return_score_model": "是否启用 return score 拦截(true/false，false=只读取/透传，不拦截开仓)",
     "return_model_service": "收益率模型输出通道名（'-' 表示不读取；配置通道名时 false 也会读取但不拦截）",
     "environment_model_service": "环境模型输出通道名（'-' 表示禁用）",
-    "max_hedge_price_pct_change": "对冲价格最大变动阈值(%)，范围1-99，可为小数，超过则强制 taker",
+    "max_hedge_price_pct_change": "对冲价格最大变动阈值(%)，范围>0且<=99，可为小数，超过则强制 taker",
     "signal_cooldown": "信号冷却时间(秒)",
 }
 

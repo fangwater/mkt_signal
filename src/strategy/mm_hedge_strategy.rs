@@ -28,7 +28,7 @@ use crate::trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
 use crate::trade_engine::trade_request::TradeRequestType;
 use log::{debug, warn};
 use std::any::Any;
-use std::collections::{HashMap, HashSet};
+use std::collections::{hash_map::Entry, HashMap, HashSet};
 
 const HEDGE_QUERY_INTERVAL_US: i64 = 30_000_000;
 const HEDGE_QUERY_WATCHDOG_US: i64 = 30_000;
@@ -129,6 +129,53 @@ impl MarketMakerHedgeStrategy {
             reason,
             PendingOrderQueryReason::CancelFailed | PendingOrderQueryReason::CancelRejected
         )
+    }
+
+    fn pending_query_reason_priority(reason: PendingOrderQueryReason) -> u8 {
+        match reason {
+            PendingOrderQueryReason::OrderWatchdog => 0,
+            PendingOrderQueryReason::CancelFailed => 1,
+            PendingOrderQueryReason::CancelRejected => 2,
+        }
+    }
+
+    fn stronger_pending_query_reason(
+        existing: PendingOrderQueryReason,
+        incoming: PendingOrderQueryReason,
+    ) -> PendingOrderQueryReason {
+        if Self::pending_query_reason_priority(incoming)
+            > Self::pending_query_reason_priority(existing)
+        {
+            incoming
+        } else {
+            existing
+        }
+    }
+
+    fn upgrade_existing_order_query_reason(
+        &mut self,
+        client_order_id: i64,
+        reason: PendingOrderQueryReason,
+    ) -> bool {
+        let mut upgraded = false;
+
+        if let Some(existing) = self.pending_order_queries.get_mut(&client_order_id) {
+            let merged = Self::stronger_pending_query_reason(*existing, reason);
+            if merged != *existing {
+                *existing = merged;
+                upgraded = true;
+            }
+        }
+
+        if let Some((_, watchdog_reason)) = self.order_query_watchdogs.get_mut(&client_order_id) {
+            let merged = Self::stronger_pending_query_reason(*watchdog_reason, reason);
+            if merged != *watchdog_reason {
+                *watchdog_reason = merged;
+                upgraded = true;
+            }
+        }
+
+        upgraded
     }
 
     fn is_cancel_reconciling(&self, client_order_id: i64) -> bool {
@@ -827,8 +874,17 @@ impl MarketMakerHedgeStrategy {
         reason: PendingOrderQueryReason,
     ) {
         let due = get_timestamp_us().saturating_add(ORDER_QUERY_WATCHDOG_DELAY_US);
-        self.order_query_watchdogs
-            .insert(client_order_id, (due, reason));
+        match self.order_query_watchdogs.entry(client_order_id) {
+            Entry::Vacant(entry) => {
+                entry.insert((due, reason));
+            }
+            Entry::Occupied(mut entry) => {
+                let (existing_due, existing_reason) = entry.get_mut();
+                *existing_due = due;
+                *existing_reason =
+                    Self::stronger_pending_query_reason(*existing_reason, reason);
+            }
+        }
         debug!(
             "MMHedgeReconcile: strategy_id={} schedule_watchdog due_ts={} reason={:?} {}",
             self.strategy_id,
@@ -1003,10 +1059,12 @@ impl MarketMakerHedgeStrategy {
 
     fn send_order_query(&mut self, client_order_id: i64, reason: PendingOrderQueryReason) -> bool {
         if self.pending_order_queries.contains_key(&client_order_id) {
+            let upgraded = self.upgrade_existing_order_query_reason(client_order_id, reason);
             debug!(
-                "MMHedgeReconcile: strategy_id={} skip_send_order_query because pending already exists: reason={:?} {}",
+                "MMHedgeReconcile: strategy_id={} skip_send_order_query because pending already exists: reason={:?} upgraded={} {}",
                 self.strategy_id,
                 reason,
+                upgraded,
                 self.hedge_order_trace_snapshot(client_order_id)
             );
             return true;
@@ -1217,6 +1275,9 @@ impl MarketMakerHedgeStrategy {
             }
             OrderExecutionStatus::Create => {
                 self.apply_parsed_order_query_updates(&order, parsed, reason);
+                if reason == PendingOrderQueryReason::CancelRejected {
+                    self.schedule_order_query_watchdog(client_order_id, reason);
+                }
             }
             OrderExecutionStatus::Rejected => {
                 warn!(
@@ -1230,6 +1291,9 @@ impl MarketMakerHedgeStrategy {
                     "MarketMakerHedgeStrategy: strategy_id={} query shows {:?} client_order_id={} reason={:?}",
                     self.strategy_id, st, client_order_id, reason
                 );
+                if reason == PendingOrderQueryReason::CancelRejected {
+                    self.schedule_order_query_watchdog(client_order_id, reason);
+                }
             }
         }
     }
@@ -1810,6 +1874,63 @@ mod tests {
         assert!(!MarketMakerHedgeStrategy::is_cancel_reconcile_reason(
             PendingOrderQueryReason::OrderWatchdog
         ));
+    }
+
+    #[test]
+    fn stronger_pending_query_reason_prefers_cancel_reconcile() {
+        assert_eq!(
+            MarketMakerHedgeStrategy::stronger_pending_query_reason(
+                PendingOrderQueryReason::OrderWatchdog,
+                PendingOrderQueryReason::CancelFailed,
+            ),
+            PendingOrderQueryReason::CancelFailed
+        );
+        assert_eq!(
+            MarketMakerHedgeStrategy::stronger_pending_query_reason(
+                PendingOrderQueryReason::CancelFailed,
+                PendingOrderQueryReason::CancelRejected,
+            ),
+            PendingOrderQueryReason::CancelRejected
+        );
+        assert_eq!(
+            MarketMakerHedgeStrategy::stronger_pending_query_reason(
+                PendingOrderQueryReason::CancelRejected,
+                PendingOrderQueryReason::OrderWatchdog,
+            ),
+            PendingOrderQueryReason::CancelRejected
+        );
+    }
+
+    #[test]
+    fn upgrade_existing_order_query_reason_updates_pending_and_watchdog() {
+        let mut strategy = MarketMakerHedgeStrategy::new(1, "ETHUSDT".to_string());
+        let client_order_id = 42_i64;
+        strategy
+            .pending_order_queries
+            .insert(client_order_id, PendingOrderQueryReason::OrderWatchdog);
+        strategy.order_query_watchdogs.insert(
+            client_order_id,
+            (1, PendingOrderQueryReason::OrderWatchdog),
+        );
+
+        assert!(strategy
+            .upgrade_existing_order_query_reason(
+                client_order_id,
+                PendingOrderQueryReason::CancelRejected,
+            ));
+        assert_eq!(
+            strategy.pending_order_queries.get(&client_order_id).copied(),
+            Some(PendingOrderQueryReason::CancelRejected)
+        );
+        assert_eq!(
+            strategy
+                .order_query_watchdogs
+                .get(&client_order_id)
+                .map(|(_, reason)| *reason),
+            Some(PendingOrderQueryReason::CancelRejected)
+        );
+
+        std::mem::forget(strategy);
     }
 }
 
