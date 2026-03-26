@@ -12,11 +12,12 @@
   - `rolling_metrics_thresholds` - 输出结果
   - `funding_rate_thresholds` - 资金费率阈值
 
-### 变更后（新版本）
-- 每个交易所独立配置 hash key：
-  - `rolling_metrics_params_{exchange}` - 配置参数
-  - `rolling_metrics_thresholds_{exchange}` - 输出结果
-  - `funding_rate_thresholds_{exchange}` - 资金费率阈值
+### 变更后（当前版本）
+- 每个 open/hedge 组合独立配置 hash key：
+  - `rolling_metrics_params_{open_venue}_{hedge_venue}` - 配置参数
+  - `rolling_metrics_thresholds_{open_venue}_{hedge_venue}` - 输出结果
+  - `funding_rate_thresholds_{exchange}` - FR 策略阈值
+  - `xarb_funding_thresholds_{open_venue}_{hedge_venue}` - xarb 开仓过滤阈值
 
 ## 支持的交易所
 
@@ -63,16 +64,23 @@ python scripts/rolling_metrics/print_rolling_metrics_params.py --open-venue okex
 python scripts/rolling_metrics/print_rolling_metrics_params.py --open-venue binance-margin --hedge-venue binance-futures --prefix bidask_
 ```
 
-### 3. 同步资金费率阈值
+### 3. 同步策略阈值
 
-为每个交易所同步资金费率阈值：
+按策略类型分别同步：
 
 ```bash
-# 同步 binance 资金费率阈值
+# FR 策略：同步 binance 资金费率阈值
 python scripts/sync_funding_rate_thresholds.py --exchange binance
 
-# 同步 okex 资金费率阈值
+# FR 策略：同步 okex 资金费率阈值
 python scripts/sync_funding_rate_thresholds.py --exchange okex
+
+# XARB spot/futures：同步 rolling_metrics 派生的开仓过滤阈值
+python xarb_scripts/sync_xarb_funding_thresholds.py --open-venue binance-margin --hedge-venue binance-futures
+
+# 当前默认:
+# - spot/futures 使用 hedge_premium_rate_50
+# - futures/futures 使用 spread_fr_80 / spread_fr_20
 ```
 
 ### 4. 查看配置
@@ -86,24 +94,28 @@ python scripts/rolling_metrics/print_rolling_metrics_thresholds.py --open-venue 
 
 # 查看资金费率阈值
 python scripts/print_funding_rate_thresholds.py --exchange binance
+
+# 查看 xarb funding/premium 过滤阈值
+python xarb_scripts/print_xarb_funding_thresholds.py --open-venue binance-margin --hedge-venue binance-futures
 ```
 
 ### 5. 启动 rolling_metrics 服务
 
-启动时**必须指定** `--exchange` 参数：
+启动时**必须指定** `--open-venue` / `--hedge-venue`：
 
 ```bash
-# 启动 binance rolling_metrics
-cargo run --bin rolling_metrics -- --exchange binance
+# 启动 binance margin/futures rolling_metrics
+cargo run --bin rolling_metrics -- --open-venue binance-margin --hedge-venue binance-futures
 
-# 启动 okex rolling_metrics
-cargo run --bin rolling_metrics -- --exchange okex
+# 启动 okex margin/futures rolling_metrics
+cargo run --bin rolling_metrics -- --open-venue okex-margin --hedge-venue okex-futures
 
 # 自定义配置 hash key（可选）
 cargo run --bin rolling_metrics -- \
-    --exchange binance \
-    --params-hash-key custom_params_binance \
-    --output-hash-key custom_output_binance
+    --open-venue binance-margin \
+    --hedge-venue binance-futures \
+    --params-hash-key custom_params_binance_margin_binance_futures \
+    --output-hash-key custom_output_binance_margin_binance_futures
 ```
 
 ### 6. 启动使用资金费率阈值的服务
@@ -129,18 +141,14 @@ FUNDING_THRESHOLD_REDIS_KEY="funding_rate_thresholds_okex" \
 ## Redis Key 命名规范
 
 ### 配置参数 (params)
-- Binance: `rolling_metrics_params_binance`
-- OKEx: `rolling_metrics_params_okex`
-- Bybit: `rolling_metrics_params_bybit`
-- Bitget: `rolling_metrics_params_bitget`
-- Gate: `rolling_metrics_params_gate`
+- Binance margin/futures: `rolling_metrics_params_binance-margin_binance-futures`
+- OKEx margin/futures: `rolling_metrics_params_okex-margin_okex-futures`
+- OKEx futures/Binance futures: `rolling_metrics_params_okex-futures_binance-futures`
 
 ### 输出结果 (thresholds)
-- Binance: `rolling_metrics_thresholds_binance`
-- OKEx: `rolling_metrics_thresholds_okex`
-- Bybit: `rolling_metrics_thresholds_bybit`
-- Bitget: `rolling_metrics_thresholds_bitget`
-- Gate: `rolling_metrics_thresholds_gate`
+- Binance margin/futures: `rolling_metrics_thresholds_binance-margin_binance-futures`
+- OKEx margin/futures: `rolling_metrics_thresholds_okex-margin_okex-futures`
+- OKEx futures/Binance futures: `rolling_metrics_thresholds_okex-futures_binance-futures`
 
 ### 资金费率阈值
 - Binance: `funding_rate_thresholds_binance`
@@ -149,27 +157,36 @@ FUNDING_THRESHOLD_REDIS_KEY="funding_rate_thresholds_okex" \
 - Bitget: `funding_rate_thresholds_bitget`
 - Gate: `funding_rate_thresholds_gate`
 
+### XARB 开仓过滤阈值
+- Binance margin/futures: `xarb_funding_thresholds_binance-margin_binance-futures`
+- OKEx futures/Binance futures: `xarb_funding_thresholds_okex-futures_binance-futures`
+
 ## 数据隔离
 
 ### 数据 Prefix 格式
-rolling_metrics 的数据通过 prefix 在 Redis 中区分：
+rolling_metrics 的数据按 `open_venue_hedge_venue` 组合区分，例如：
 
-- Binance: `binance_binance-futures::{symbol}::...`
-- OKEx: `okex_okex-swap::{symbol}::...`
-- Bybit: `bybit-spot_bybit::{symbol}::...`
-- Bitget: `bitget_bitget-futures::{symbol}::...`
-- Gate: `gate_gate-futures::{symbol}::...`
+- Binance margin/futures: `binance-margin_binance-futures`
+- OKEx margin/futures: `okex-margin_okex-futures`
+- OKEx futures/Binance futures: `okex-futures_binance-futures`
 
-### 完整的 Redis Field 示例
+### 输出 JSON 示例
 
-```
-rolling_metrics_thresholds_binance:
-  binance_binance-futures::BTCUSDT::bidask::0.5    = "0.00012"
-  binance_binance-futures::ETHUSDT::askbid::0.99   = "0.00034"
-
-rolling_metrics_thresholds_okex:
-  okex_okex-swap::BTC-USDT-SWAP::bidask::0.5       = "0.00015"
-  okex_okex-swap::ETH-USDT-SWAP::askbid::0.99      = "0.00038"
+```json
+{
+  "symbol_pair": "binance-margin_binance-futures::BTCUSDT",
+  "base_symbol": "BTCUSDT",
+  "spread_rate": 0.00012,
+  "hedge_premium_rate": 0.00031,
+  "spread_fr": 0.0008,
+  "hedge_premium_rate_quantiles": [
+    {"quantile": 0.5, "threshold": 0.00028}
+  ],
+  "spread_fr_quantiles": [
+    {"quantile": 0.2, "threshold": -0.0005},
+    {"quantile": 0.8, "threshold": 0.0012}
+  ]
+}
 ```
 
 ## 迁移步骤
@@ -193,6 +210,8 @@ for exchange in binance okex bybit bitget gate; do
     python scripts/rolling_metrics/sync_rolling_metrics_params.py --open-venue ${exchange}-margin --hedge-venue ${exchange}-futures
     python scripts/sync_funding_rate_thresholds.py --exchange ${exchange}
 done
+
+python xarb_scripts/sync_xarb_funding_thresholds.py --open-venue binance-margin --hedge-venue binance-futures
 ```
 
 ### 3. 更新启动脚本
@@ -200,8 +219,8 @@ done
 确保 rolling_metrics 启动脚本都添加了 `--open-venue/--hedge-venue` 参数：
 
 ```bash
-# 旧版本（会失败或取默认）
-cargo run --bin rolling_metrics   # 缺少 open/hedge
+# 旧版本（会失败）
+cargo run --bin rolling_metrics
 
 # 新版本（正确）
 cargo run --bin rolling_metrics -- --open-venue binance-margin --hedge-venue binance-futures
@@ -270,11 +289,16 @@ rolling_metrics_thresholds_okex-margin_okex-futures
 - `reload_param_sec`: 配置重载间隔（秒，默认 3）
 
 ### Factor 配置
-每个 factor（bidask, askbid, spread）都有：
-- `resample_interval_ms`: 重采样间隔（毫秒，默认 1000）
-- `rolling_window`: 滑窗大小（默认 100000）
-- `min_periods`: 最小周期数（默认 90000）
-- `quantiles`: 分位数列表（默认 [0.001, 0.01, 0.05, 0.5, 0.95, 0.99, 0.999]）
+常见 factor 包括：
+- `bidask` / `askbid` / `spread`
+- `hedge_premium_rate`（spot/futures 常用）
+- `spread_fr`（futures/futures 常用）
+
+每个 factor 都有：
+- `resample_interval_ms`: 重采样间隔（毫秒）
+- `rolling_window`: 滑窗大小
+- `min_periods`: 最小周期数
+- `quantiles`: 分位数列表
 
 ## 相关文件
 
@@ -296,14 +320,22 @@ rolling_metrics_thresholds_okex-margin_okex-futures
 ### `rolling_metrics/sync_rolling_metrics_params.py` - 统计计算配置
 - **写入**: `rolling_metrics_params_{open}_{hedge}`
 - **用途**: 配置如何计算滑窗统计量
-- **内容**: MAX_LENGTH, refresh_sec, factors (bidask, askbid, spread)
+- **内容**: MAX_LENGTH, refresh_sec, factors（如 bidask, askbid, spread, hedge_premium_rate, spread_fr）
 - **使用者**: rolling_metrics 进程
 
-### `sync_funding_rate_thresholds.py` - 交易策略阈值
+### `sync_funding_rate_thresholds.py` - FR 交易策略阈值
 - **写入**: `funding_rate_thresholds_{exchange}`
 - **用途**: 配置交易策略的决策阈值
 - **内容**: 8h/4h 的正反套开平仓阈值
 - **使用者**: 交易策略进程
+
+### `xarb_scripts/sync_xarb_funding_thresholds.py` - XARB 开仓过滤阈值
+- **写入**: `xarb_funding_thresholds_{open}_{hedge}`
+- **用途**: 从 rolling_metrics 输出中提取 xarb 开仓过滤阈值
+- **内容**:
+  - spot/futures 默认取 `hedge_premium_rate_50`
+  - futures/futures 默认取 `spread_fr_80` / `spread_fr_20`
+- **使用者**: `trade_signal` 中的 xarb 决策链路
 
 两个脚本分开是为了：
 1. **职责分离**：统计层 vs 策略层

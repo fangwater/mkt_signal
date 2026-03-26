@@ -156,7 +156,9 @@ impl MktChannel {
                     .borrow_mut()
                     .insert(hedge_venue, HashMap::new());
                 mark_prices.borrow_mut().insert(hedge_venue, HashMap::new());
-                index_prices.borrow_mut().insert(hedge_venue, HashMap::new());
+                index_prices
+                    .borrow_mut()
+                    .insert(hedge_venue, HashMap::new());
             }
         }
 

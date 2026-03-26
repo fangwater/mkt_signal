@@ -198,7 +198,7 @@ def build_xarb_rolling_defaults(
     for factor_name, quantiles in factor_quantiles.items():
         factor_cfg = clone_json_value(base_factors.get(factor_name) or {})
         factor_cfg.setdefault("resample_interval_ms", 1_000)
-        if factor_name.endswith("_fr"):
+        if factor_name.endswith("_fr") or factor_name.endswith("_premium_rate"):
             factor_cfg.setdefault("rolling_window", 14_400)
             factor_cfg.setdefault("min_periods", 7_200)
         else:
@@ -480,7 +480,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
           <label for="funding-symbol">Symbol (可选)</label>
           <input id="funding-symbol" placeholder="BTCUSDT" />
         </div>
-        <div class="hint">格式: hedge_fr_50 / spread_fr_80 / spread_fr_20</div>
+        <div class="hint">格式: hedge_premium_rate_50 / spread_fr_80 / spread_fr_20</div>
       </div>
       <div id="funding-table" class="kv-table"></div>
       <div id="funding-status" class="status"></div>

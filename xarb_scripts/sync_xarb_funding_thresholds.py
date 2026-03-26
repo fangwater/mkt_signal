@@ -16,7 +16,7 @@
 说明：
   - xarb 的 funding 阈值与 spread 阈值分开维护
   - 当前只输出 forward_open_mm / backward_open_mm 两个字段
-  - 单边 futures 组合默认使用该 futures 腿的 50 分位
+  - 单边 futures 组合默认使用该 futures 腿的 premium_rate 50 分位
   - 双 futures 组合默认使用 spread_fr_80 / spread_fr_20
 """
 
@@ -98,8 +98,8 @@ def parse_args() -> argparse.Namespace:
 
 
 DEFAULT_SPOT_FUTURES_FUNDING_THRESHOLD_MAPPING = {
-    "forward_open_mm": "hedge_fr_50",
-    "backward_open_mm": "hedge_fr_50",
+    "forward_open_mm": "hedge_premium_rate_50",
+    "backward_open_mm": "hedge_premium_rate_50",
 }
 
 DEFAULT_FUTURES_FUTURES_FUNDING_THRESHOLD_MAPPING = {
@@ -193,13 +193,12 @@ def extract_quantile_value(obj: Dict, field_ref: str) -> Optional[float]:
     except ValueError:
         return None
 
-    if factor == "open_fr":
-        quantile_key = "open_fr_quantiles"
-    elif factor == "hedge_fr":
-        quantile_key = "hedge_fr_quantiles"
-    elif factor == "spread_fr":
-        quantile_key = "spread_fr_quantiles"
-    else:
+    quantile_key = {
+        "open_premium_rate": "open_premium_rate_quantiles",
+        "hedge_premium_rate": "hedge_premium_rate_quantiles",
+        "spread_fr": "spread_fr_quantiles",
+    }.get(factor)
+    if quantile_key is None:
         return None
 
     quantiles = obj.get(quantile_key)

@@ -1274,7 +1274,10 @@ impl HedgeArbStrategy {
     }
 
     fn schedule_order_query_watchdog(&mut self, client_order_id: i64) {
-        self.schedule_order_query_watchdog_with_delay(client_order_id, ORDER_QUERY_WATCHDOG_DELAY_US);
+        self.schedule_order_query_watchdog_with_delay(
+            client_order_id,
+            ORDER_QUERY_WATCHDOG_DELAY_US,
+        );
     }
 
     fn schedule_order_query_watchdog_with_delay(&mut self, client_order_id: i64, delay_us: i64) {
@@ -3412,10 +3415,7 @@ impl Strategy for HedgeArbStrategy {
         if actual_len == 1 && body[0] == b'E' {
             match (leg, reason) {
                 (Leg::Open, PendingOrderQueryReason::OrderWatchdog) => {
-                    self.retry_open_leg_order_query_after_cooldown(
-                        client_order_id,
-                        "failed (E)",
-                    );
+                    self.retry_open_leg_order_query_after_cooldown(client_order_id, "failed (E)");
                     return;
                 }
                 (Leg::Hedge, PendingOrderQueryReason::OrderWatchdog) => {

@@ -569,7 +569,10 @@ impl MarketMakerOpenStrategy {
     }
 
     fn schedule_order_query_watchdog(&mut self, client_order_id: i64) {
-        self.schedule_order_query_watchdog_with_delay(client_order_id, ORDER_QUERY_WATCHDOG_DELAY_US);
+        self.schedule_order_query_watchdog_with_delay(
+            client_order_id,
+            ORDER_QUERY_WATCHDOG_DELAY_US,
+        );
     }
 
     fn schedule_order_query_watchdog_with_delay(&mut self, client_order_id: i64, delay_us: i64) {
@@ -581,7 +584,11 @@ impl MarketMakerOpenStrategy {
         });
     }
 
-    fn retry_open_order_query_after_cooldown(&mut self, client_order_id: i64, marker: &'static str) {
+    fn retry_open_order_query_after_cooldown(
+        &mut self,
+        client_order_id: i64,
+        marker: &'static str,
+    ) {
         if self.open_order_query_retried {
             warn!(
                 "MarketMakerOpenStrategy: strategy_id={} order query {} after retry, close: client_order_id={}",
@@ -1686,7 +1693,10 @@ impl Strategy for MarketMakerOpenStrategy {
         if is_order_query_not_found_marker(&body[..actual_len]) {
             match reason {
                 PendingOrderQueryReason::OrderWatchdog => {
-                    self.retry_open_order_query_after_cooldown(client_order_id, "not found (-2013)");
+                    self.retry_open_order_query_after_cooldown(
+                        client_order_id,
+                        "not found (-2013)",
+                    );
                 }
                 PendingOrderQueryReason::CancelWatchdog => {
                     self.schedule_cancel_query_watchdog(client_order_id);

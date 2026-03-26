@@ -65,7 +65,7 @@ DEFAULTS = {
 }
 
 
-def build_fr_factor(*, quantiles: list[float]) -> Dict[str, Any]:
+def build_single_side_factor(*, quantiles: list[float]) -> Dict[str, Any]:
     return {
         "resample_interval_ms": 1_000,
         "rolling_window": 14_400,
@@ -87,10 +87,12 @@ def apply_pair_specific_defaults(
         spread_cfg = factors.get("spread")
         if isinstance(spread_cfg, dict):
             spread_cfg["quantiles"] = [5, 10, 90, 95]
-        factors.setdefault("hedge_fr", build_fr_factor(quantiles=[0.5]))
+        factors.setdefault(
+            "hedge_premium_rate", build_single_side_factor(quantiles=[0.5])
+        )
 
     if pair == ("okex-futures", "binance-futures"):
-        factors.setdefault("spread_fr", build_fr_factor(quantiles=[0.2, 0.8]))
+        factors.setdefault("spread_fr", build_single_side_factor(quantiles=[0.2, 0.8]))
 
 
 def try_import_redis():
