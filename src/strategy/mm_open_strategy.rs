@@ -1075,6 +1075,16 @@ impl MarketMakerOpenStrategy {
         let mut record_fill: Option<(TradingVenue, String, Side, f64)> = None;
         let updated = order_manager.update(client_order_id, |order| match order_update.status() {
             OrderStatus::New => {
+                if !self.alive_flag {
+                    warn!(
+                        "MarketMakerOpenStrategy: strategy_id={} revive on delayed open NEW: client_order_id={} exchange_order_id={} symbol={}",
+                        self.strategy_id,
+                        client_order_id,
+                        order_update.order_id(),
+                        order.symbol
+                    );
+                    self.alive_flag = true;
+                }
                 order.status = OrderExecutionStatus::Create;
                 order.set_exchange_order_id(order_update.order_id());
                 order.set_create_time(order_update.event_time());

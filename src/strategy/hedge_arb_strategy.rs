@@ -2093,6 +2093,16 @@ impl HedgeArbStrategy {
 
             match order_update.status() {
                 OrderStatus::New => {
+                    if client_order_id == self.open_order_id && !self.alive_flag {
+                        warn!(
+                            "HedgeArbStrategy: strategy_id={} revive on delayed open NEW: client_order_id={} exchange_order_id={} symbol={}",
+                            self.strategy_id,
+                            client_order_id,
+                            order_update.order_id(),
+                            order.symbol
+                        );
+                        self.alive_flag = true;
+                    }
                     order.status = OrderExecutionStatus::Create;
                     order.set_create_time(order_update.event_time());
                     info!(
