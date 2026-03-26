@@ -368,6 +368,65 @@ impl OrderManager {
         self.binance_account_mode == Some(BinanceAccountMode::Standard)
     }
 
+    pub fn build_unmatched_cancel_bytes(
+        &self,
+        venue: TradingVenue,
+        symbol: &str,
+        client_order_id: i64,
+    ) -> Result<Bytes, String> {
+        if client_order_id <= 0 {
+            return Err(format!(
+                "invalid unmatched client_order_id for cancel: {}",
+                client_order_id
+            ));
+        }
+
+        let params = Bytes::from(format!(
+            "symbol={}&origClientOrderId={}",
+            symbol, client_order_id
+        ));
+        match venue {
+            TradingVenue::BinanceMargin => {
+                if self.binance_is_standard() {
+                    let request = BinanceWsCancelMarginOrderRequest::create(
+                        get_timestamp_us(),
+                        client_order_id,
+                        params,
+                    );
+                    Ok(request.to_bytes())
+                } else {
+                    let request = BinanceCancelMarginOrderRequest::create(
+                        get_timestamp_us(),
+                        client_order_id,
+                        params,
+                    );
+                    Ok(request.to_bytes())
+                }
+            }
+            TradingVenue::BinanceFutures => {
+                if self.binance_is_standard() {
+                    let request = BinanceWsCancelUMOrderRequest::create(
+                        get_timestamp_us(),
+                        client_order_id,
+                        params,
+                    );
+                    Ok(request.to_bytes())
+                } else {
+                    let request = BinanceCancelUMOrderRequest::create(
+                        get_timestamp_us(),
+                        client_order_id,
+                        params,
+                    );
+                    Ok(request.to_bytes())
+                }
+            }
+            _ => Err(format!(
+                "unmatched cancel fallback not supported for venue {:?}",
+                venue
+            )),
+        }
+    }
+
     pub fn map_update_status(status: OrderStatus) -> Option<OrderExecutionStatus> {
         match status {
             OrderStatus::New => Some(OrderExecutionStatus::Create),

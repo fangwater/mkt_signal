@@ -8,8 +8,8 @@ use crate::signal::cancel_signal::MmCancelCtx;
 use crate::signal::common::{ExecutionType, OrderStatus, SignalBytes, TimeInForce, TradingVenue};
 use crate::signal::open_signal::MmOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
-use crate::strategy::manager::{ForceCloseControl, Strategy};
 use crate::strategy::manager::MmOpenPriceMapEntry;
+use crate::strategy::manager::{ForceCloseControl, Strategy};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::query_engine_response::QueryEngineResponse;
 use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
@@ -25,6 +25,7 @@ use log::{debug, error, info, warn};
 use std::any::Any;
 
 const ORDER_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
+const ORDER_QUERY_RETRY_DELAY_US: i64 = 900_000;
 const CANCEL_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +55,7 @@ pub struct MarketMakerOpenStrategy {
     open_price_offset: f64,
     alive_flag: bool,
     recorded_to_hedge: bool,
+    open_order_query_retried: bool,
     pending_order_query: Option<PendingOrderQueryReason>,
     order_query_watchdog: Option<QueryWatchdog>,
     cancel_query_watchdog: Option<QueryWatchdog>,
@@ -73,6 +75,7 @@ impl MarketMakerOpenStrategy {
             open_price_offset: 0.0,
             alive_flag: true,
             recorded_to_hedge: false,
+            open_order_query_retried: false,
             pending_order_query: None,
             order_query_watchdog: None,
             cancel_query_watchdog: None,
@@ -337,6 +340,7 @@ impl MarketMakerOpenStrategy {
 
         let client_order_id = Self::compose_order_id(self.strategy_id);
         self.open_order_id = client_order_id;
+        self.open_order_query_retried = false;
 
         let submit_ts = get_timestamp_us();
         MonitorChannel::instance()
@@ -565,12 +569,37 @@ impl MarketMakerOpenStrategy {
     }
 
     fn schedule_order_query_watchdog(&mut self, client_order_id: i64) {
-        let due = get_timestamp_us().saturating_add(ORDER_QUERY_WATCHDOG_DELAY_US);
+        self.schedule_order_query_watchdog_with_delay(client_order_id, ORDER_QUERY_WATCHDOG_DELAY_US);
+    }
+
+    fn schedule_order_query_watchdog_with_delay(&mut self, client_order_id: i64, delay_us: i64) {
+        let due = get_timestamp_us().saturating_add(delay_us);
         self.order_query_watchdog = Some(QueryWatchdog {
             client_order_id,
             due_ts_us: due,
             reason: PendingOrderQueryReason::OrderWatchdog,
         });
+    }
+
+    fn retry_open_order_query_after_cooldown(&mut self, client_order_id: i64, marker: &'static str) {
+        if self.open_order_query_retried {
+            warn!(
+                "MarketMakerOpenStrategy: strategy_id={} order query {} after retry, close: client_order_id={}",
+                self.strategy_id, marker, client_order_id
+            );
+            self.alive_flag = false;
+            return;
+        }
+
+        self.open_order_query_retried = true;
+        warn!(
+            "MarketMakerOpenStrategy: strategy_id={} order query {} on first attempt, retry after {}ms: client_order_id={}",
+            self.strategy_id,
+            marker,
+            ORDER_QUERY_RETRY_DELAY_US / 1_000,
+            client_order_id
+        );
+        self.schedule_order_query_watchdog_with_delay(client_order_id, ORDER_QUERY_RETRY_DELAY_US);
     }
 
     fn schedule_cancel_query_watchdog(&mut self, client_order_id: i64) {
@@ -1657,11 +1686,7 @@ impl Strategy for MarketMakerOpenStrategy {
         if is_order_query_not_found_marker(&body[..actual_len]) {
             match reason {
                 PendingOrderQueryReason::OrderWatchdog => {
-                    warn!(
-                        "MarketMakerOpenStrategy: strategy_id={} order query not found (-2013, close): client_order_id={}",
-                        self.strategy_id, client_order_id
-                    );
-                    self.alive_flag = false;
+                    self.retry_open_order_query_after_cooldown(client_order_id, "not found (-2013)");
                 }
                 PendingOrderQueryReason::CancelWatchdog => {
                     self.schedule_cancel_query_watchdog(client_order_id);
@@ -1679,11 +1704,7 @@ impl Strategy for MarketMakerOpenStrategy {
         if actual_len == 1 && body[0] == b'E' {
             match reason {
                 PendingOrderQueryReason::OrderWatchdog => {
-                    warn!(
-                        "MarketMakerOpenStrategy: strategy_id={} order query failed (E, close): client_order_id={}",
-                        self.strategy_id, client_order_id
-                    );
-                    self.alive_flag = false;
+                    self.retry_open_order_query_after_cooldown(client_order_id, "failed (E)");
                 }
                 PendingOrderQueryReason::CancelWatchdog => {
                     self.schedule_cancel_query_watchdog(client_order_id);

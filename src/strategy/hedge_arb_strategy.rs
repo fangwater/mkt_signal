@@ -31,6 +31,7 @@ use std::collections::{HashMap, HashSet};
 // 下单后若迟迟收不到 account monitor 的推送（New/Filled 等），用一次 query 回补。
 // 仅用于“发出请求但没收到回报”的兜底，不做持续轮询，避免 maker 长时间挂单时产生额外负担。
 const ORDER_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
+const ORDER_QUERY_RETRY_DELAY_US: i64 = 900_000;
 const CANCEL_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
 const HEDGE_RESIDUAL_EPS: f64 = 1e-12;
 
@@ -49,6 +50,7 @@ pub struct HedgeArbStrategy {
     pub open_qty_multiplier: f64,      //开仓侧数量乘数（venue qty -> base qty）
     pub hedge_qty_multiplier: f64,     //对冲侧数量乘数（venue qty -> base qty）
     pub open_filled_hedge_triggered: bool, //开仓成交已触发对冲（防止query重复触发）
+    pub open_order_query_retried: bool, //开仓单 query not found/E 后是否已做过一次延迟重试
     pub alive_flag: bool,              //策略是否存活
     pub hedge_symbol: String,          //对冲侧symbol
     pub hedge_venue: TradingVenue,     //对冲侧交易场所
@@ -125,6 +127,7 @@ impl HedgeArbStrategy {
             open_qty_multiplier: 1.0,
             hedge_qty_multiplier: 1.0,
             open_filled_hedge_triggered: false,
+            open_order_query_retried: false,
             alive_flag: true,
             hedge_symbol: String::new(),
             hedge_venue: TradingVenue::BinanceMargin, // 默认值，将在开仓时更新
@@ -369,6 +372,7 @@ impl HedgeArbStrategy {
 
         // 6、根据资产类型创建开仓订单，并保存对冲侧信息
         self.open_order_id = order_id;
+        self.open_order_query_retried = false;
         self.cumulative_open_qty = 0.0;
         self.alive_flag = true;
         let ts = get_timestamp_us();
@@ -1270,12 +1274,41 @@ impl HedgeArbStrategy {
     }
 
     fn schedule_order_query_watchdog(&mut self, client_order_id: i64) {
-        let due = get_timestamp_us().saturating_add(ORDER_QUERY_WATCHDOG_DELAY_US);
+        self.schedule_order_query_watchdog_with_delay(client_order_id, ORDER_QUERY_WATCHDOG_DELAY_US);
+    }
+
+    fn schedule_order_query_watchdog_with_delay(&mut self, client_order_id: i64, delay_us: i64) {
+        let due = get_timestamp_us().saturating_add(delay_us);
         self.order_query_watchdog = Some(QueryWatchdog {
             client_order_id,
             due_ts_us: due,
             reason: PendingOrderQueryReason::OrderWatchdog,
         });
+    }
+
+    fn retry_open_leg_order_query_after_cooldown(
+        &mut self,
+        client_order_id: i64,
+        marker: &'static str,
+    ) {
+        if self.open_order_query_retried {
+            warn!(
+                "HedgeArbStrategy: strategy_id={} open_leg order query {} after retry, close: client_order_id={}",
+                self.strategy_id, marker, client_order_id
+            );
+            self.alive_flag = false;
+            return;
+        }
+
+        self.open_order_query_retried = true;
+        warn!(
+            "HedgeArbStrategy: strategy_id={} open_leg order query {} on first attempt, retry after {}ms: client_order_id={}",
+            self.strategy_id,
+            marker,
+            ORDER_QUERY_RETRY_DELAY_US / 1_000,
+            client_order_id
+        );
+        self.schedule_order_query_watchdog_with_delay(client_order_id, ORDER_QUERY_RETRY_DELAY_US);
     }
 
     fn schedule_cancel_query_watchdog(&mut self, client_order_id: i64) {
@@ -3338,11 +3371,10 @@ impl Strategy for HedgeArbStrategy {
         if is_order_query_not_found_marker(&body[..actual_len]) {
             match (leg, reason) {
                 (Leg::Open, PendingOrderQueryReason::OrderWatchdog) => {
-                    warn!(
-                        "HedgeArbStrategy: strategy_id={} open_leg order query not found (-2013, close): client_order_id={}",
-                        self.strategy_id, client_order_id
+                    self.retry_open_leg_order_query_after_cooldown(
+                        client_order_id,
+                        "not found (-2013)",
                     );
-                    self.alive_flag = false;
                     return;
                 }
                 (Leg::Hedge, PendingOrderQueryReason::OrderWatchdog) => {
@@ -3380,11 +3412,10 @@ impl Strategy for HedgeArbStrategy {
         if actual_len == 1 && body[0] == b'E' {
             match (leg, reason) {
                 (Leg::Open, PendingOrderQueryReason::OrderWatchdog) => {
-                    warn!(
-                        "HedgeArbStrategy: strategy_id={} open_leg order query failed (E, close): client_order_id={}",
-                        self.strategy_id, client_order_id
+                    self.retry_open_leg_order_query_after_cooldown(
+                        client_order_id,
+                        "failed (E)",
                     );
-                    self.alive_flag = false;
                     return;
                 }
                 (Leg::Hedge, PendingOrderQueryReason::OrderWatchdog) => {
