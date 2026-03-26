@@ -9,6 +9,7 @@
 //! 使用 tokio::spawn_local 单线程异步
 
 use anyhow::{Context, Result};
+use chrono::Utc;
 use log::{debug, info, warn};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -30,6 +31,7 @@ use super::xarb_funding_threshold_loader::XarbFundingThresholdsResolved;
 const DEFAULT_NAMESPACE: &str = "fr";
 const RETURN_SCORE_REDIS_REFRESH_SECS: u64 = 180;
 const OPEN_VOL_THRESHOLD_REDIS_REFRESH_SECS: u64 = 180;
+const XARB_SPREAD_REDIS_SYNC_SECS: u64 = 1800;
 
 #[derive(Debug, Clone)]
 struct RedisHashCacheEntry {
@@ -41,6 +43,8 @@ thread_local! {
     static MM_RETURN_SCORE_CACHE: RefCell<HashMap<String, RedisHashCacheEntry>> =
         RefCell::new(HashMap::new());
     static OPEN_VOL_THRESHOLD_CACHE: RefCell<HashMap<String, RedisHashCacheEntry>> =
+        RefCell::new(HashMap::new());
+    static XARB_SPREAD_REDIS_SYNC_CACHE: RefCell<HashMap<String, Instant>> =
         RefCell::new(HashMap::new());
 }
 
@@ -716,6 +720,19 @@ fn default_xarb_spread_mapping() -> HashMap<String, String> {
     ])
 }
 
+fn default_xarb_spread_threshold_order() -> Vec<&'static str> {
+    vec![
+        "forward_open_mm",
+        "forward_open_mt",
+        "forward_cancel_mm",
+        "forward_cancel_mt",
+        "backward_open_mm",
+        "backward_open_mt",
+        "backward_cancel_mm",
+        "backward_cancel_mt",
+    ]
+}
+
 fn default_xarb_funding_mapping(
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
@@ -1041,6 +1058,154 @@ fn resolve_xarb_funding_thresholds(
         .collect()
 }
 
+fn xarb_spread_threshold_order(mapping: &HashMap<String, String>) -> Vec<String> {
+    let mut ordered = Vec::new();
+    let mut seen = HashSet::new();
+
+    for key in default_xarb_spread_threshold_order() {
+        if mapping.contains_key(key) {
+            ordered.push(key.to_string());
+            seen.insert(key.to_string());
+        }
+    }
+
+    let mut extra_keys: Vec<String> = mapping
+        .keys()
+        .filter(|key| !seen.contains(*key))
+        .cloned()
+        .collect();
+    extra_keys.sort();
+    ordered.extend(extra_keys);
+    ordered
+}
+
+fn build_xarb_spread_sync_entries(
+    resolved: &HashMap<String, HashMap<String, f64>>,
+    threshold_order: &[String],
+) -> Vec<(String, String)> {
+    let mut symbols: Vec<&String> = resolved.keys().collect();
+    symbols.sort();
+
+    let mut entries = Vec::new();
+    for symbol in symbols {
+        let Some(values) = resolved.get(symbol) else {
+            continue;
+        };
+        for suffix in threshold_order {
+            let Some(value) = values.get(suffix) else {
+                continue;
+            };
+            let rendered = format!("{value:.8}")
+                .trim_end_matches('0')
+                .trim_end_matches('.')
+                .to_string();
+            entries.push((format!("{symbol}_{suffix}"), rendered));
+        }
+    }
+
+    entries
+}
+
+async fn sync_xarb_spread_thresholds_to_redis(
+    redis: &RedisSettings,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+    rolling_key: &str,
+    mapping: &HashMap<String, String>,
+    resolved: &HashMap<String, HashMap<String, f64>>,
+) -> Result<()> {
+    let sync_key = spread_thresholds_key("xarb", open_venue, hedge_venue);
+    let config_key = xarb_spread_mapping_key(open_venue, hedge_venue);
+    let refresh_interval = Duration::from_secs(XARB_SPREAD_REDIS_SYNC_SECS);
+
+    let mut cache_fresh = false;
+    XARB_SPREAD_REDIS_SYNC_CACHE.with(|cell| {
+        let cache = cell.borrow();
+        if let Some(last_sync_at) = cache.get(&sync_key) {
+            cache_fresh = last_sync_at.elapsed() < refresh_interval;
+        }
+    });
+    if cache_fresh {
+        debug!(
+            "xarb spread 阈值 Redis sync 命中缓存 (key={} refresh={}s)",
+            sync_key, XARB_SPREAD_REDIS_SYNC_SECS
+        );
+        return Ok(());
+    }
+
+    let threshold_order = xarb_spread_threshold_order(mapping);
+    let entries = build_xarb_spread_sync_entries(resolved, &threshold_order);
+    if entries.is_empty() {
+        warn!(
+            "xarb spread 阈值 Redis sync 跳过：无可写入字段 (key={} rolling_key={} mapping_fields={})",
+            sync_key,
+            rolling_key,
+            mapping.len()
+        );
+        XARB_SPREAD_REDIS_SYNC_CACHE.with(|cell| {
+            cell.borrow_mut().insert(sync_key.clone(), Instant::now());
+        });
+        return Ok(());
+    }
+
+    let entry_fields: HashSet<String> = entries.iter().map(|(field, _)| field.clone()).collect();
+    let mut client = RedisClient::connect(redis.clone()).await?;
+    let stale_fields = match client.hgetall_map(&sync_key).await {
+        Ok(existing) => existing
+            .keys()
+            .filter(|field| !entry_fields.contains(*field))
+            .cloned()
+            .collect::<Vec<_>>(),
+        Err(err) => {
+            warn!(
+                "读取旧 xarb spread 阈值失败，继续覆盖写入 (key={}): {:?}",
+                sync_key, err
+            );
+            Vec::new()
+        }
+    };
+
+    client
+        .hset_multiple_str(&sync_key, &entries)
+        .await
+        .with_context(|| format!("写入 xarb spread 阈值失败 (key={sync_key})"))?;
+    if !stale_fields.is_empty() {
+        client
+            .hdel_fields(&sync_key, &stale_fields)
+            .await
+            .with_context(|| format!("清理旧 xarb spread 阈值失败 (key={sync_key})"))?;
+    }
+
+    let payload = serde_json::json!({
+        "schema_version": 1,
+        "namespace": "xarb",
+        "open_venue": open_venue.data_pub_slug(),
+        "hedge_venue": hedge_venue.data_pub_slug(),
+        "rolling_key": rolling_key,
+        "mapping": mapping,
+        "threshold_order": threshold_order,
+        "generated_at": Utc::now().to_rfc3339(),
+    });
+    client
+        .set_json(&config_key, &payload)
+        .await
+        .with_context(|| format!("写入 xarb spread sync 配置失败 (key={config_key})"))?;
+
+    XARB_SPREAD_REDIS_SYNC_CACHE.with(|cell| {
+        cell.borrow_mut().insert(sync_key.clone(), Instant::now());
+    });
+    info!(
+        "xarb spread 阈值已同步到 Redis key={} config_key={} fields={} stale_removed={} interval={}s",
+        sync_key,
+        config_key,
+        entries.len(),
+        stale_fields.len(),
+        XARB_SPREAD_REDIS_SYNC_SECS
+    );
+
+    Ok(())
+}
+
 async fn reload_xarb_thresholds_from_rolling(
     redis: &RedisSettings,
     open_venue: TradingVenue,
@@ -1092,6 +1257,15 @@ async fn reload_xarb_thresholds_from_rolling(
         resolve_symbol_quantile_thresholds(&rolling_payloads, &funding_config.mapping);
 
     let spread_applied = apply_xarb_spread_thresholds(&resolved_spread, open_venue, hedge_venue);
+    sync_xarb_spread_thresholds_to_redis(
+        redis,
+        open_venue,
+        hedge_venue,
+        &rolling_key,
+        &spread_config.mapping,
+        &resolved_spread,
+    )
+    .await?;
     let funding_thresholds = resolve_xarb_funding_thresholds(&resolved_funding);
     let funding_symbols = funding_thresholds.len();
 
@@ -1127,8 +1301,8 @@ async fn reload_xarb_thresholds_from_rolling(
 #[cfg(test)]
 mod tests {
     use super::{
-        default_xarb_funding_mapping, extract_quantile_value, normalize_xarb_symbol,
-        parse_xarb_mapping_config,
+        build_xarb_spread_sync_entries, default_xarb_funding_mapping, extract_quantile_value,
+        normalize_xarb_symbol, parse_xarb_mapping_config, xarb_spread_threshold_order,
     };
     use crate::signal::common::TradingVenue;
     use std::collections::HashMap;
@@ -1183,5 +1357,34 @@ mod tests {
     #[test]
     fn xarb_symbol_normalization_matches_runtime() {
         assert_eq!(normalize_xarb_symbol("BTC-USDT-SWAP"), "BTCUSDT");
+    }
+
+    #[test]
+    fn xarb_spread_sync_entries_follow_expected_field_format() {
+        let mapping = HashMap::from([
+            ("forward_open_mm".to_string(), "spread_5".to_string()),
+            ("backward_open_mt".to_string(), "askbid_90".to_string()),
+        ]);
+        let resolved = HashMap::from([(
+            "BTCUSDT".to_string(),
+            HashMap::from([
+                ("forward_open_mm".to_string(), 0.12345678),
+                ("backward_open_mt".to_string(), 0.9),
+            ]),
+        )]);
+
+        let order = xarb_spread_threshold_order(&mapping);
+        let entries = build_xarb_spread_sync_entries(&resolved, &order);
+
+        assert_eq!(
+            entries,
+            vec![
+                (
+                    "BTCUSDT_forward_open_mm".to_string(),
+                    "0.12345678".to_string()
+                ),
+                ("BTCUSDT_backward_open_mt".to_string(), "0.9".to_string()),
+            ]
+        );
     }
 }
