@@ -55,6 +55,12 @@ pub struct HedgePlanOrder {
     pub from_key: Vec<u8>,
 }
 
+#[derive(Debug, Clone)]
+struct HedgeOrderMeta {
+    from_key: Vec<u8>,
+    price_offset: f64,
+}
+
 /// 做市对冲策略（每个 symbol 仅一个实例）
 pub struct MarketMakerHedgeStrategy {
     strategy_id: i32,
@@ -66,7 +72,7 @@ pub struct MarketMakerHedgeStrategy {
     hedge_from_key: Vec<u8>,
     order_seq: u32,
     hedge_plan: Vec<HedgePlanOrder>,
-    hedge_order_from_keys: HashMap<i64, Vec<u8>>,
+    hedge_order_meta: HashMap<i64, HedgeOrderMeta>,
     hedge_order_ids: HashSet<i64>,
     alive_flag: bool,
     next_query_ts_us: i64,
@@ -97,7 +103,7 @@ impl MarketMakerHedgeStrategy {
             hedge_from_key: Vec::new(),
             order_seq: 0,
             hedge_plan: Vec::new(),
-            hedge_order_from_keys: HashMap::new(),
+            hedge_order_meta: HashMap::new(),
             hedge_order_ids: HashSet::new(),
             alive_flag: true,
             next_query_ts_us: now.saturating_add(HEDGE_QUERY_INTERVAL_US),
@@ -212,7 +218,7 @@ impl MarketMakerHedgeStrategy {
         self.log_hedge_order_release(cause, client_order_id);
         self.clear_order_query_state(client_order_id);
         self.hedge_order_ids.remove(&client_order_id);
-        self.hedge_order_from_keys.remove(&client_order_id);
+        self.hedge_order_meta.remove(&client_order_id);
         self.cancel_failed_query_retries.remove(&client_order_id);
         if let Some(order_mgr) = MonitorChannel::try_order_manager() {
             let _ = order_mgr.borrow_mut().remove(client_order_id);
@@ -237,7 +243,7 @@ impl MarketMakerHedgeStrategy {
             let _ = mgr.remove(order_id);
         }
         self.hedge_order_ids.clear();
-        self.hedge_order_from_keys.clear();
+        self.hedge_order_meta.clear();
     }
 
     fn build_order_from_key(&self, batch_from_key: &[u8], tlen: f64) -> Vec<u8> {
@@ -246,10 +252,17 @@ impl MarketMakerHedgeStrategy {
     }
 
     fn order_from_key_bytes(&self, client_order_id: i64) -> Vec<u8> {
-        self.hedge_order_from_keys
+        self.hedge_order_meta
             .get(&client_order_id)
-            .cloned()
+            .map(|meta| meta.from_key.clone())
             .unwrap_or_else(|| self.hedge_from_key.clone())
+    }
+
+    fn order_price_offset(&self, client_order_id: i64) -> f64 {
+        self.hedge_order_meta
+            .get(&client_order_id)
+            .map(|meta| meta.price_offset)
+            .unwrap_or(0.0)
     }
 
     fn try_apply_ws_order_update(&mut self, response: &dyn TradeEngineResponse) -> bool {
@@ -380,10 +393,11 @@ impl MarketMakerHedgeStrategy {
         }
         let from_key = String::from_utf8_lossy(&self.hedge_from_key);
         debug!(
-            "MMHedge ctx: symbol={} price_levels={} amount_levels={} signal_ts={} next_query_ts={} from_key='{}'",
+            "MMHedge ctx: symbol={} price_levels={} amount_levels={} offset_levels={} signal_ts={} next_query_ts={} from_key='{}'",
             ctx.get_opening_symbol(),
             ctx.price_qv_list.len(),
             ctx.amount_qv_list.len(),
+            ctx.price_offsets.len(),
             ctx.signal_ts,
             ctx.next_query_ts,
             from_key
@@ -491,7 +505,7 @@ impl MarketMakerHedgeStrategy {
         );
 
         self.hedge_plan.clear();
-        self.hedge_order_from_keys.clear();
+        self.hedge_order_meta.clear();
         for HedgeSplitOrder {
             level_index,
             side,
@@ -510,8 +524,14 @@ impl MarketMakerHedgeStrategy {
             let client_order_id = Self::compose_order_id(self.strategy_id, self.order_seq);
             let tlen = ctx.tlen_values.get(level_index).copied().unwrap_or(0.0);
             let order_from_key = self.build_order_from_key(&ctx.from_key, tlen);
-            self.hedge_order_from_keys
-                .insert(client_order_id, order_from_key.clone());
+            let price_offset = ctx.price_offsets.get(level_index).copied().unwrap_or(0.0);
+            self.hedge_order_meta.insert(
+                client_order_id,
+                HedgeOrderMeta {
+                    from_key: order_from_key.clone(),
+                    price_offset,
+                },
+            );
             self.hedge_plan.push(HedgePlanOrder {
                 client_order_id,
                 level_index,
@@ -1292,7 +1312,7 @@ impl MarketMakerHedgeStrategy {
                 String::from_utf8_lossy(&self.order_from_key_bytes(client_order_id))
             )
             .into_bytes(),
-            0.0,
+            self.order_price_offset(client_order_id),
         )
     }
 

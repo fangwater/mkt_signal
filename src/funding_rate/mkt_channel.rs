@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use super::common::{FundingRateData, Quote};
 use super::symbol_list::SymbolList;
 use crate::common::mkt_msg::{
-    get_msg_type, AskBidSpreadMsg, FundingRateMsg, MarkPriceMsg, MktMsgType,
+    get_msg_type, AskBidSpreadMsg, FundingRateMsg, IndexPriceMsg, MarkPriceMsg, MktMsgType,
 };
 use crate::signal::common::TradingVenue;
 use crate::symbol_match::normalize_symbol_for_whitelist;
@@ -79,6 +79,9 @@ struct MktChannelInner {
 
     /// Mark Price 数据：TradingVenue -> HashMap<Symbol, f64> (只存最新值)
     mark_prices: Rc<RefCell<HashMap<TradingVenue, HashMap<String, f64>>>>,
+
+    /// Index Price 数据：TradingVenue -> HashMap<Symbol, f64> (只存最新值)
+    index_prices: Rc<RefCell<HashMap<TradingVenue, HashMap<String, f64>>>>,
 }
 
 impl MktChannel {
@@ -102,7 +105,7 @@ impl MktChannel {
     /// 初始化单例并启动订阅任务
     ///
     /// open/hedge 由调用方传入；每个 venue 都订阅 ask_bid_spread。
-    /// 若某个 venue 是 futures，则额外订阅 funding/mark price 衍生品频道。
+    /// 若某个 venue 是 futures，则额外订阅 funding/mark/index price 衍生品频道。
     pub fn init_singleton(open_venue: TradingVenue, hedge_venue: TradingVenue) -> Result<()> {
         Self::init_singleton_with_mode(open_venue, hedge_venue, true)
     }
@@ -134,6 +137,7 @@ impl MktChannel {
         let quotes = Rc::new(RefCell::new(HashMap::new()));
         let funding_rates = Rc::new(RefCell::new(HashMap::new()));
         let mark_prices = Rc::new(RefCell::new(HashMap::new()));
+        let index_prices = Rc::new(RefCell::new(HashMap::new()));
 
         // 初始化 HashMap（为每个 TradingVenue 创建子 HashMap）
         {
@@ -145,12 +149,14 @@ impl MktChannel {
                     .borrow_mut()
                     .insert(open_venue, HashMap::new());
                 mark_prices.borrow_mut().insert(open_venue, HashMap::new());
+                index_prices.borrow_mut().insert(open_venue, HashMap::new());
             }
             if is_futures(hedge_venue) {
                 funding_rates
                     .borrow_mut()
                     .insert(hedge_venue, HashMap::new());
                 mark_prices.borrow_mut().insert(hedge_venue, HashMap::new());
+                index_prices.borrow_mut().insert(hedge_venue, HashMap::new());
             }
         }
 
@@ -190,6 +196,7 @@ impl MktChannel {
                 hedge_venue,
                 funding_rates.clone(),
                 mark_prices.clone(),
+                index_prices.clone(),
             );
         }
         if is_futures(hedge_venue) {
@@ -204,6 +211,7 @@ impl MktChannel {
                 hedge_venue,
                 funding_rates.clone(),
                 mark_prices.clone(),
+                index_prices.clone(),
             );
         }
 
@@ -212,6 +220,7 @@ impl MktChannel {
             quotes,
             funding_rates,
             mark_prices,
+            index_prices,
         };
 
         MKT_CHANNEL.with(|mc| {
@@ -261,6 +270,26 @@ impl MktChannel {
             let venue_prices = mark_prices_map.get(&venue)?;
             venue_prices.get(&symbol_upper).copied()
         })
+    }
+
+    /// 查询 Index Price（只返回最新值）
+    pub fn get_index_price(&self, symbol: &str, venue: TradingVenue) -> Option<f64> {
+        let symbol_upper = normalize_symbol_key(symbol);
+
+        Self::with_inner(|inner| {
+            let index_prices_map = inner.index_prices.borrow();
+            let venue_prices = index_prices_map.get(&venue)?;
+            venue_prices.get(&symbol_upper).copied()
+        })
+    }
+
+    /// 查询 Premium Rate = (mark_price - index_price) / index_price
+    pub fn get_premium_rate(&self, symbol: &str, venue: TradingVenue) -> Option<f64> {
+        let mark_price = self.get_mark_price(symbol, venue)?;
+        let index_price = self.get_index_price(symbol, venue)?;
+        (index_price > 0.0)
+            .then_some((mark_price - index_price) / index_price)
+            .filter(|value| value.is_finite())
     }
 
     /// 查询 Funding Rate 均值
@@ -456,7 +485,7 @@ impl MktChannel {
         });
     }
 
-    /// 启动衍生品（资金费率 + mark price）监听任务
+    /// 启动衍生品（资金费率 + mark/index price）监听任务
     fn spawn_derivatives_listener(
         node_name: String,
         service_name: String,
@@ -466,6 +495,7 @@ impl MktChannel {
         hedge_venue: TradingVenue,
         funding_rates: Rc<RefCell<HashMap<TradingVenue, HashMap<String, FundingRateData>>>>,
         mark_prices: Rc<RefCell<HashMap<TradingVenue, HashMap<String, f64>>>>,
+        index_prices: Rc<RefCell<HashMap<TradingVenue, HashMap<String, f64>>>>,
     ) {
         tokio::task::spawn_local(async move {
             let result: Result<()> = async move {
@@ -566,6 +596,18 @@ impl MktChannel {
                                         //     "Mark Price 更新: {} price={:.6}",
                                         //     symbol, mark_price
                                         // );
+                                    }
+                                }
+                                MktMsgType::IndexPrice => {
+                                    let symbol_raw = IndexPriceMsg::get_symbol(payload);
+                                    let symbol = normalize_symbol_key(symbol_raw);
+                                    let index_price = IndexPriceMsg::get_index_price(payload);
+
+                                    let mut index_prices_map = index_prices.borrow_mut();
+                                    if let Some(venue_prices) =
+                                        index_prices_map.get_mut(&feed_venue)
+                                    {
+                                        venue_prices.insert(symbol, index_price);
                                     }
                                 }
                                 _ => {}

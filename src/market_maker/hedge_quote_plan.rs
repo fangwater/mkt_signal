@@ -362,12 +362,14 @@ pub fn build_mm_hedge_ctx(
         }
         ctx.price_qv_list.push(price_qv);
         ctx.amount_qv_list.push(amount_qv);
+        ctx.price_offsets.push(level.offset);
     }
-    if ctx.price_qv_list.is_empty() || ctx.amount_qv_list.is_empty() {
+    if ctx.price_qv_list.is_empty() || ctx.amount_qv_list.is_empty() || ctx.price_offsets.is_empty()
+    {
         return Err("empty price/amount list after alignment".to_string());
     }
     info!(
-        "MMHedge ctx levels: symbol={} levels={} price_values={:?} amount_values={:?}",
+        "MMHedge ctx levels: symbol={} levels={} price_values={:?} amount_values={:?} offsets={:?}",
         plan.symbol,
         ctx.price_qv_list.len(),
         ctx.price_qv_list
@@ -378,6 +380,7 @@ pub fn build_mm_hedge_ctx(
             .iter()
             .map(crate::common::tick_math::QuantizedValue::get_val)
             .collect::<Vec<_>>(),
+        ctx.price_offsets,
     );
     info!(
         "MMHedgeCtxSummary {{\"symbol\":\"{}\",\"side\":\"{}\",\"levels\":{},\"next_query_delay_ms\":{},\"signal_ts\":{}}}",
@@ -447,7 +450,13 @@ mod tests {
 
     #[test]
     fn disable_return_score_adjust_hedge_uses_identity_factor() {
-        assert_eq!(resolve_score_adjust_factor(0.002, 0.001, false).unwrap(), 1.0);
-        assert_eq!(resolve_score_adjust_factor(0.004, 0.002, true).unwrap(), 2.0);
+        assert_eq!(
+            resolve_score_adjust_factor(0.002, 0.001, false).unwrap(),
+            1.0
+        );
+        assert_eq!(
+            resolve_score_adjust_factor(0.004, 0.002, true).unwrap(),
+            2.0
+        );
     }
 }

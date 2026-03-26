@@ -400,12 +400,23 @@ impl MmDecision {
                 continue;
             }
             let threshold_symbol = symbol.to_ascii_uppercase();
-            let Some(threshold) = self.state.mm_tlen_thresholds.get(&threshold_symbol).copied() else {
-                debug!("MmDecision: missing MM tlen threshold symbol={}", threshold_symbol);
+            let Some(threshold) = self
+                .state
+                .mm_tlen_thresholds
+                .get(&threshold_symbol)
+                .copied()
+            else {
+                debug!(
+                    "MmDecision: missing MM tlen threshold symbol={}",
+                    threshold_symbol
+                );
                 continue;
             };
-            let tick_indices: Vec<i64> =
-                group.items.iter().map(|item| item.price_qv.get_count()).collect();
+            let tick_indices: Vec<i64> = group
+                .items
+                .iter()
+                .map(|item| item.price_qv.get_count())
+                .collect();
             let tlens = match self
                 .state
                 .depth_query_client
@@ -422,7 +433,8 @@ impl MmDecision {
                     continue;
                 }
             };
-            let open_quote = match MktChannel::instance().get_quote(&symbol, self.state.open_venue) {
+            let open_quote = match MktChannel::instance().get_quote(&symbol, self.state.open_venue)
+            {
                 Some(quote) => quote,
                 None => {
                     warn!(
@@ -436,17 +448,21 @@ impl MmDecision {
                 if tlen >= threshold {
                     continue;
                 }
-                let return_score = self
-                    .state
-                    .return_model_service
-                    .clone()
-                    .and_then(|service_name| {
-                        self.state
-                            .factor_value_hub
-                            .lookup_model_output_score(&service_name, &symbol, self.state.hedge_venue)
-                            .score
-                            .filter(|value| value.is_finite())
-                    });
+                let return_score =
+                    self.state
+                        .return_model_service
+                        .clone()
+                        .and_then(|service_name| {
+                            self.state
+                                .factor_value_hub
+                                .lookup_model_output_score(
+                                    &service_name,
+                                    &symbol,
+                                    self.state.hedge_venue,
+                                )
+                                .score
+                                .filter(|value| value.is_finite())
+                        });
                 let volatility = self
                     .state
                     .factor_value_hub
@@ -527,7 +543,8 @@ impl MmDecision {
     fn tlen_threshold_reload_due(&self, now_us: i64) -> bool {
         const RELOAD_INTERVAL_US: i64 = 30 * 60 * 1_000_000;
         self.state.last_tlen_threshold_reload_ts_us == 0
-            || now_us.saturating_sub(self.state.last_tlen_threshold_reload_ts_us) >= RELOAD_INTERVAL_US
+            || now_us.saturating_sub(self.state.last_tlen_threshold_reload_ts_us)
+                >= RELOAD_INTERVAL_US
     }
 
     fn spawn_tlen_threshold_loader() {

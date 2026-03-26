@@ -417,8 +417,7 @@ impl MmDecisionState {
             trigger_ts: now_us,
             freq_ms: self.tlen_cancel_freq_ms,
         };
-        let signal =
-            TradeSignal::create(SignalType::MMCancelTrigger, now_us, 0.0, ctx.to_bytes());
+        let signal = TradeSignal::create(SignalType::MMCancelTrigger, now_us, 0.0, ctx.to_bytes());
         self.signal_pub.publish(&signal.to_bytes())?;
         Ok(())
     }

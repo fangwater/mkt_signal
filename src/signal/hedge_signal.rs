@@ -78,6 +78,9 @@ pub struct MmHedgeCtx {
     /// Amount levels encoded by QuantizedValue (same encoding style as MmOpenCtx::amount_qv)
     pub amount_qv_list: Vec<QuantizedValue>,
 
+    /// Explicit price offsets aligned with `price_qv_list`
+    pub price_offsets: Vec<f64>,
+
     /// Queried tlen values aligned with `price_qv_list`
     pub tlen_values: Vec<f64>,
 
@@ -314,6 +317,7 @@ impl MmHedgeCtx {
             opening_symbol: [0u8; 32],
             price_qv_list: Vec::new(),
             amount_qv_list: Vec::new(),
+            price_offsets: Vec::new(),
             tlen_values: Vec::new(),
             signal_ts: 0,
             next_query_ts: 0,
@@ -516,6 +520,12 @@ impl SignalBytes for MmHedgeCtx {
             buf.put_i64_le(amount_qv.get_count());
         }
 
+        // offset list
+        buf.put_u32_le(self.price_offsets.len() as u32);
+        for offset in &self.price_offsets {
+            buf.put_f64_le(*offset);
+        }
+
         // tlen list
         buf.put_u32_le(self.tlen_values.len() as u32);
         for tlen in &self.tlen_values {
@@ -596,6 +606,30 @@ impl SignalBytes for MmHedgeCtx {
         }
 
         if bytes.remaining() < 4 {
+            return Err("Not enough bytes for price_offsets length".to_string());
+        }
+        let price_offset_len = bytes.get_u32_le() as usize;
+        if bytes.remaining() < price_offset_len.saturating_mul(8) {
+            return Err(format!(
+                "Not enough bytes for price_offsets: need {}, have {}",
+                price_offset_len.saturating_mul(8),
+                bytes.remaining()
+            ));
+        }
+        let mut price_offsets = Vec::with_capacity(price_offset_len);
+        for _ in 0..price_offset_len {
+            price_offsets.push(bytes.get_f64_le());
+        }
+
+        if price_qv_list.len() != price_offsets.len() {
+            return Err(format!(
+                "price_qv_list/price_offsets length mismatch: price_len={} offset_len={}",
+                price_qv_list.len(),
+                price_offsets.len()
+            ));
+        }
+
+        if bytes.remaining() < 4 {
             return Err("Not enough bytes for tlen_values length".to_string());
         }
         let tlen_len = bytes.get_u32_le() as usize;
@@ -656,6 +690,7 @@ impl SignalBytes for MmHedgeCtx {
             opening_symbol,
             price_qv_list,
             amount_qv_list,
+            price_offsets,
             tlen_values,
             signal_ts,
             next_query_ts,
@@ -1022,6 +1057,7 @@ mod tests {
             .push(QuantizedValue::from_parts(1, -1, 724310));
         ctx.amount_qv_list
             .push(QuantizedValue::from_parts(1, -3, 5000));
+        ctx.price_offsets.push(0.0015);
         ctx.tlen_values.push(0.1234);
         ctx.signal_ts = 111;
         ctx.next_query_ts = 222;
@@ -1031,6 +1067,7 @@ mod tests {
         assert_eq!(parsed.get_opening_symbol(), "BTCUSDT");
         assert_eq!(parsed.price_qv_list.len(), 1);
         assert_eq!(parsed.amount_qv_list.len(), 1);
+        assert_eq!(parsed.price_offsets, vec![0.0015]);
         assert_eq!(parsed.tlen_values, vec![0.1234]);
         assert_eq!(parsed.signal_ts, 111);
         assert_eq!(parsed.next_query_ts, 222);

@@ -73,13 +73,7 @@ pub(crate) fn build_mm_cancel_from_key(
     tlen: Option<f64>,
     tlen_threshold: Option<f64>,
 ) -> String {
-    let mut key = build_from_key(
-        now_us,
-        return_score,
-        cancel_threshold,
-        volatility,
-        env,
-    );
+    let mut key = build_from_key(now_us, return_score, cancel_threshold, volatility, env);
     key.push_str(":tlen=");
     key.push_str(&format_tlen_value(tlen.unwrap_or(0.0)));
     key.push_str(":tlen_thr=");
@@ -139,15 +133,7 @@ mod tests {
             threshold: Some(0.4),
             note: String::new(),
         };
-        let key = build_mm_cancel_from_key(
-            123,
-            None,
-            None,
-            None,
-            &env,
-            Some(1.25),
-            Some(3.5),
-        );
+        let key = build_mm_cancel_from_key(123, None, None, None, &env, Some(1.25), Some(3.5));
         assert_eq!(
             key,
             "123:ret_score=0:ret_thr=0:vol=0:env_score=0.30000000:env_thr=0.40000000:tlen=1.25000000:tlen_thr=3.50000000"

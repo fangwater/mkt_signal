@@ -277,6 +277,7 @@ struct MmHedgeTlenLevel {
     index: usize,
     price: f64,
     amount: f64,
+    offset: f64,
     price_tick_i64: i64,
     price_tick_exp: i32,
     price_count: i64,
@@ -316,11 +317,13 @@ fn build_mm_hedge_tlen_snapshot(
     {
         let (price_tick_i64, price_tick_exp) = price_qv.get_tick_parts();
         let price_count = price_qv.get_count();
+        let offset = ctx.price_offsets.get(index).copied().unwrap_or(0.0);
         let tlen = tlen_values.and_then(|values| values.get(index)).copied();
         rows.push(MmHedgeTlenLevel {
             index,
             price: price_qv.get_val(),
             amount: amount_qv.get_val(),
+            offset,
             price_tick_i64,
             price_tick_exp,
             price_count,
@@ -352,13 +355,14 @@ fn format_mm_hedge_tlen_rows(rows: &[MmHedgeTlenLevel]) -> String {
                 None => "NA".to_string(),
             };
             format!(
-                "#{} p={:.8}(tick={}/10^{},cnt={}) qty={:.8} tlen={}",
+                "#{} p={:.8}(tick={}/10^{},cnt={}) qty={:.8} offset={:.8} tlen={}",
                 row.index,
                 row.price,
                 row.price_tick_i64,
                 row.price_tick_exp,
                 row.price_count,
                 row.amount,
+                row.offset,
                 tlen_text
             )
         })
@@ -443,7 +447,12 @@ async fn load_config(path: &str) -> Result<AppCfg> {
     let enable_return_score_adjust_hedge = params
         .get("enable_return_score_adjust_hegde")
         .or_else(|| params.get("enable_return_score_adjust_hedge"))
-        .map(|raw| matches!(raw.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes" | "on"))
+        .map(|raw| {
+            matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "true" | "1" | "yes" | "on"
+            )
+        })
         .unwrap_or(true);
     let hedge_price_offset_limit_upper =
         parse_required_f64(&params, "hedge_price_offset_limit_upper")?;
@@ -1598,6 +1607,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
                   <th>#</th>
                   <th>price</th>
                   <th>qty</th>
+                  <th>offset</th>
                   <th>price_tick_i64</th>
                   <th>price_tick_exp</th>
                   <th>price_count</th>
@@ -1605,7 +1615,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
                 </tr>
               </thead>
               <tbody id="hedgeTlenRows">
-                <tr><td colspan="7" class="muted" style="text-align:center;">No data</td></tr>
+                <tr><td colspan="8" class="muted" style="text-align:center;">No data</td></tr>
               </tbody>
             </table>
           </div>
@@ -1801,7 +1811,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
         els.hedgeFromKey.value = snapshot.from_key || '';
 
         if (!rows.length) {
-          els.hedgeTlenRows.innerHTML = '<tr><td colspan="7" class="muted" style="text-align:center;">No levels</td></tr>';
+          els.hedgeTlenRows.innerHTML = '<tr><td colspan="8" class="muted" style="text-align:center;">No levels</td></tr>';
           return;
         }
 
@@ -1812,6 +1822,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
               <td>${row.index}</td>
               <td>${fmtNum(row.price, 8)}</td>
               <td>${fmtNum(row.amount, 8)}</td>
+              <td>${fmtNum(row.offset, 8)}</td>
               <td>${row.price_tick_i64}</td>
               <td>${row.price_tick_exp}</td>
               <td>${row.price_count}</td>

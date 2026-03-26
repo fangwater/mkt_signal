@@ -485,8 +485,8 @@ impl XarbDecision {
 
         if hedge_venue.is_futures() {
             return mkt_channel
-                .get_latest_funding_rate(hedge_symbol, hedge_venue)
-                .map(|value| (value, "hedge_fr"));
+                .get_premium_rate(hedge_symbol, hedge_venue)
+                .map(|value| (value, "hedge_premium_rate"));
         }
 
         None

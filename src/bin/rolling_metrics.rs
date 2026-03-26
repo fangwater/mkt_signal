@@ -20,13 +20,15 @@ use tokio_util::sync::CancellationToken;
 use mkt_signal::common::iceoryx_subscriber::{
     ChannelType, MultiChannelSubscriber, SubscribeParams,
 };
-use mkt_signal::common::mkt_msg::{get_msg_type, AskBidSpreadMsg, FundingRateMsg, MktMsgType};
+use mkt_signal::common::mkt_msg::{
+    get_msg_type, AskBidSpreadMsg, FundingRateMsg, IndexPriceMsg, MarkPriceMsg, MktMsgType,
+};
 use mkt_signal::common::redis_client::{RedisClient, RedisSettings};
 use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::rolling_metrics::config::{
     load_config_from_redis, FactorConfig, RollingConfig, DEFAULT_CONFIG_HASH_KEY,
-    DEFAULT_OUTPUT_HASH_KEY, FACTOR_ASKBID, FACTOR_BIDASK, FACTOR_HEDGE_FR, FACTOR_OPEN_FR,
-    FACTOR_SPREAD, FACTOR_SPREAD_FR,
+    DEFAULT_OUTPUT_HASH_KEY, FACTOR_ASKBID, FACTOR_BIDASK, FACTOR_HEDGE_PREMIUM_RATE,
+    FACTOR_OPEN_PREMIUM_RATE, FACTOR_SPREAD, FACTOR_SPREAD_FR,
 };
 use mkt_signal::rolling_metrics::ring::RingBuffer;
 use mkt_signal::rolling_metrics::service::{
@@ -94,12 +96,34 @@ impl QuoteState {
     }
 }
 
+#[derive(Debug, Default, Clone)]
+struct PremiumPriceState {
+    mark_price: Option<f64>,
+    index_price: Option<f64>,
+}
+
+impl PremiumPriceState {
+    fn update_mark_price(&mut self, mark_price: f64) {
+        self.mark_price = Some(mark_price);
+    }
+
+    fn update_index_price(&mut self, index_price: f64) {
+        self.index_price = Some(index_price);
+    }
+
+    fn premium_rate(&self) -> Option<f64> {
+        compute_premium_rate(self.mark_price, self.index_price)
+    }
+}
+
 #[derive(Debug, Clone)]
 struct SymbolQuotes {
     spot: QuoteState,
     swap: QuoteState,
-    open_fr: Option<f64>,
-    hedge_fr: Option<f64>,
+    open_funding_rate: Option<f64>,
+    hedge_funding_rate: Option<f64>,
+    open_premium: PremiumPriceState,
+    hedge_premium: PremiumPriceState,
     factor_states: HashMap<String, FactorResampleState>,
     started: bool,
 }
@@ -109,8 +133,10 @@ impl Default for SymbolQuotes {
         Self {
             spot: QuoteState::default(),
             swap: QuoteState::default(),
-            open_fr: None,
-            hedge_fr: None,
+            open_funding_rate: None,
+            hedge_funding_rate: None,
+            open_premium: PremiumPriceState::default(),
+            hedge_premium: PremiumPriceState::default(),
             factor_states: HashMap::new(),
             started: false,
         }
@@ -532,7 +558,7 @@ async fn run_reader_loop(
         }
 
         for msg in subscriber.poll_channel(open_topic, &ChannelType::Derivatives, Some(64)) {
-            process_funding_msg(
+            process_derivatives_msg(
                 &msg,
                 &prefix,
                 open_topic,
@@ -545,7 +571,7 @@ async fn run_reader_loop(
         }
 
         for msg in subscriber.poll_channel(hedge_topic, &ChannelType::Derivatives, Some(64)) {
-            process_funding_msg(
+            process_derivatives_msg(
                 &msg,
                 &prefix,
                 hedge_topic,
@@ -636,6 +662,53 @@ fn process_quote_msg(
     maybe_push_sr(prefix, &symbol, entry, series_map, series_capacity, config);
 }
 
+fn process_derivatives_msg(
+    msg: &[u8],
+    prefix: &str,
+    venue_topic: &str,
+    is_open_side: bool,
+    quotes: &mut HashMap<String, SymbolQuotes>,
+    series_map: &Arc<SeriesMap>,
+    series_capacity: &Arc<AtomicUsize>,
+    config: &Arc<RwLock<RollingConfig>>,
+) {
+    match get_msg_type(msg) {
+        MktMsgType::FundingRate => process_funding_msg(
+            msg,
+            prefix,
+            venue_topic,
+            is_open_side,
+            quotes,
+            series_map,
+            series_capacity,
+            config,
+        ),
+        MktMsgType::MarkPrice => process_premium_price_msg(
+            msg,
+            prefix,
+            venue_topic,
+            is_open_side,
+            PremiumPriceField::MarkPrice,
+            quotes,
+            series_map,
+            series_capacity,
+            config,
+        ),
+        MktMsgType::IndexPrice => process_premium_price_msg(
+            msg,
+            prefix,
+            venue_topic,
+            is_open_side,
+            PremiumPriceField::IndexPrice,
+            quotes,
+            series_map,
+            series_capacity,
+            config,
+        ),
+        _ => {}
+    }
+}
+
 fn process_funding_msg(
     msg: &[u8],
     prefix: &str,
@@ -646,10 +719,6 @@ fn process_funding_msg(
     series_capacity: &Arc<AtomicUsize>,
     config: &Arc<RwLock<RollingConfig>>,
 ) {
-    if get_msg_type(msg) != MktMsgType::FundingRate {
-        return;
-    }
-
     let raw_symbol = FundingRateMsg::get_symbol(msg).to_uppercase();
     let symbol = normalize_symbol_for_pairing(&raw_symbol, venue_topic);
     if should_skip_symbol(&raw_symbol) {
@@ -663,16 +732,73 @@ fn process_funding_msg(
 
     let entry = quotes.entry(symbol.clone()).or_default();
     if is_open_side {
-        entry.open_fr = Some(funding_rate);
+        entry.open_funding_rate = Some(funding_rate);
     } else {
-        entry.hedge_fr = Some(funding_rate);
+        entry.hedge_funding_rate = Some(funding_rate);
     }
 
-    maybe_push_fr(
+    maybe_push_spread_fr(
         prefix,
         &symbol,
         entry,
         FundingRateMsg::get_timestamp(msg),
+        series_map,
+        series_capacity,
+        config,
+    );
+}
+
+enum PremiumPriceField {
+    MarkPrice,
+    IndexPrice,
+}
+
+fn process_premium_price_msg(
+    msg: &[u8],
+    prefix: &str,
+    venue_topic: &str,
+    is_open_side: bool,
+    field: PremiumPriceField,
+    quotes: &mut HashMap<String, SymbolQuotes>,
+    series_map: &Arc<SeriesMap>,
+    series_capacity: &Arc<AtomicUsize>,
+    config: &Arc<RwLock<RollingConfig>>,
+) {
+    let (raw_symbol, value, ts_ms) = match field {
+        PremiumPriceField::MarkPrice => (
+            MarkPriceMsg::get_symbol(msg).to_uppercase(),
+            MarkPriceMsg::get_mark_price(msg),
+            MarkPriceMsg::get_timestamp(msg),
+        ),
+        PremiumPriceField::IndexPrice => (
+            IndexPriceMsg::get_symbol(msg).to_uppercase(),
+            IndexPriceMsg::get_index_price(msg),
+            IndexPriceMsg::get_timestamp(msg),
+        ),
+    };
+
+    let symbol = normalize_symbol_for_pairing(&raw_symbol, venue_topic);
+    if should_skip_symbol(&raw_symbol) || !value.is_finite() || value <= 0.0 {
+        return;
+    }
+
+    let entry = quotes.entry(symbol.clone()).or_default();
+    let premium_state = if is_open_side {
+        &mut entry.open_premium
+    } else {
+        &mut entry.hedge_premium
+    };
+
+    match field {
+        PremiumPriceField::MarkPrice => premium_state.update_mark_price(value),
+        PremiumPriceField::IndexPrice => premium_state.update_index_price(value),
+    }
+
+    maybe_push_premium_rates(
+        prefix,
+        &symbol,
+        entry,
+        ts_ms,
         series_map,
         series_capacity,
         config,
@@ -742,7 +868,7 @@ fn maybe_push_sr(
     );
 }
 
-fn maybe_push_fr(
+fn maybe_push_premium_rates(
     prefix: &str,
     symbol: &str,
     quotes: &mut SymbolQuotes,
@@ -759,9 +885,50 @@ fn maybe_push_fr(
     let capacity = series_capacity.load(Ordering::SeqCst).max(1);
     let key = format!("{}::{}", prefix, symbol);
     let series = get_or_insert_series(&*series_map, &key, capacity);
-    series.set_open_fr_latest(quotes.open_fr);
-    series.set_hedge_fr_latest(quotes.hedge_fr);
-    let spread_fr = compute_spread_fr(quotes.open_fr, quotes.hedge_fr);
+    let open_premium_rate = quotes.open_premium.premium_rate();
+    let hedge_premium_rate = quotes.hedge_premium.premium_rate();
+    series.set_open_premium_rate_latest(open_premium_rate);
+    series.set_hedge_premium_rate_latest(hedge_premium_rate);
+
+    if !quotes.started {
+        quotes.started = true;
+        info!("{}: start collecting symbol {}", log_prefix(), key);
+    }
+
+    let open_premium_rate_value = open_premium_rate.and_then(f64_to_f32);
+    let hedge_premium_rate_value = hedge_premium_rate.and_then(f64_to_f32);
+
+    record_factor_samples(
+        quotes,
+        &series,
+        &cfg_snapshot,
+        ts_ms,
+        |factor_name| match factor_name {
+            FACTOR_OPEN_PREMIUM_RATE => open_premium_rate_value,
+            FACTOR_HEDGE_PREMIUM_RATE => hedge_premium_rate_value,
+            _ => None,
+        },
+    );
+}
+
+fn maybe_push_spread_fr(
+    prefix: &str,
+    symbol: &str,
+    quotes: &mut SymbolQuotes,
+    ts_ms: i64,
+    series_map: &Arc<SeriesMap>,
+    series_capacity: &Arc<AtomicUsize>,
+    config: &Arc<RwLock<RollingConfig>>,
+) {
+    if should_skip_symbol(symbol) {
+        return;
+    }
+
+    let cfg_snapshot = { config.read().clone() };
+    let capacity = series_capacity.load(Ordering::SeqCst).max(1);
+    let key = format!("{}::{}", prefix, symbol);
+    let series = get_or_insert_series(&*series_map, &key, capacity);
+    let spread_fr = compute_spread_fr(quotes.open_funding_rate, quotes.hedge_funding_rate);
     series.set_spread_fr_latest(spread_fr);
 
     if !quotes.started {
@@ -769,8 +936,6 @@ fn maybe_push_fr(
         info!("{}: start collecting symbol {}", log_prefix(), key);
     }
 
-    let open_fr_value = quotes.open_fr.and_then(f64_to_f32);
-    let hedge_fr_value = quotes.hedge_fr.and_then(f64_to_f32);
     let spread_fr_value = spread_fr.and_then(f64_to_f32);
 
     record_factor_samples(
@@ -779,12 +944,20 @@ fn maybe_push_fr(
         &cfg_snapshot,
         ts_ms,
         |factor_name| match factor_name {
-            FACTOR_OPEN_FR => open_fr_value,
-            FACTOR_HEDGE_FR => hedge_fr_value,
             FACTOR_SPREAD_FR => spread_fr_value,
             _ => None,
         },
     );
+}
+
+fn compute_premium_rate(mark_price: Option<f64>, index_price: Option<f64>) -> Option<f64> {
+    match (mark_price, index_price) {
+        (Some(mark_price), Some(index_price)) if index_price > 0.0 => {
+            let value = (mark_price - index_price) / index_price;
+            value.is_finite().then_some(value)
+        }
+        _ => None,
+    }
 }
 
 fn compute_spread_fr(open_fr: Option<f64>, hedge_fr: Option<f64>) -> Option<f64> {
@@ -1464,7 +1637,20 @@ fn setup_signal_handlers(token: &CancellationToken) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::compute_spread_fr;
+    use super::{compute_premium_rate, compute_spread_fr};
+
+    #[test]
+    fn premium_rate_uses_mark_minus_index_over_index() {
+        let value = compute_premium_rate(Some(101.5), Some(100.0)).expect("open_premium_rate");
+        assert!((value - 0.015).abs() < 1e-12);
+    }
+
+    #[test]
+    fn premium_rate_requires_positive_index() {
+        assert_eq!(compute_premium_rate(Some(100.0), None), None);
+        assert_eq!(compute_premium_rate(None, Some(100.0)), None);
+        assert_eq!(compute_premium_rate(Some(100.0), Some(0.0)), None);
+    }
 
     #[test]
     fn spread_fr_uses_hedge_minus_open() {

@@ -638,7 +638,8 @@ fn handle_trade_signal(signal: TradeSignal) {
                 warn!("⚠️ MMOpen: strategy_id={} 未激活", strategy_id);
             }
         }
-        SignalType::MMCancelTrigger => match MmCancelTriggerCtx::from_bytes(signal.context.clone()) {
+        SignalType::MMCancelTrigger => match MmCancelTriggerCtx::from_bytes(signal.context.clone())
+        {
             Ok(trigger_ctx) => {
                 if !is_mm_mode {
                     debug!("MMCancelTrigger ignored: pre_trade is not in MM mode");
@@ -670,8 +671,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                         .iter()
                         .map(|group| group.items.len())
                         .sum::<usize>();
-                    let payload =
-                        MmBackwardQueryMsg::CancelCandidates(chunk.clone()).to_bytes();
+                    let payload = MmBackwardQueryMsg::CancelCandidates(chunk.clone()).to_bytes();
                     match SignalChannel::with(|ch| ch.publish_backward(&payload)) {
                         Ok(true) => {
                             *published_chunks += 1;
@@ -688,7 +688,8 @@ fn handle_trade_signal(signal: TradeSignal) {
                 };
 
                 for candidate in candidates {
-                    let entry = MmCancelCandidateEntry::new(candidate.strategy_id, candidate.price_qv);
+                    let entry =
+                        MmCancelCandidateEntry::new(candidate.strategy_id, candidate.price_qv);
                     let next_len = 1 + chunk.next_encoded_len_with(&candidate.symbol, &entry);
                     if !chunk.is_empty() && next_len > SIGNAL_PAYLOAD {
                         flush_chunk(&mut chunk, &mut published_chunks, &mut published_items);

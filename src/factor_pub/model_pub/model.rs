@@ -28,19 +28,24 @@ impl OnnxModel {
             anyhow::bail!("invalid ONNX model feature dim=0: {}", path.display());
         }
 
-        let session_builder = Session::builder().context("build ONNX Runtime session builder failed")?;
+        let session_builder =
+            Session::builder().context("build ONNX Runtime session builder failed")?;
         let session_builder = session_builder
             .with_parallel_execution(false)
-            .map_err(|err| anyhow::anyhow!("set ONNX Runtime parallel execution mode failed: {err}"))?;
+            .map_err(|err| {
+                anyhow::anyhow!("set ONNX Runtime parallel execution mode failed: {err}")
+            })?;
         let session_builder = session_builder
             .with_intra_threads(1)
             .map_err(|err| anyhow::anyhow!("set ONNX Runtime intra-op threads failed: {err}"))?;
         let session_builder = session_builder
             .with_inter_threads(1)
             .map_err(|err| anyhow::anyhow!("set ONNX Runtime inter-op threads failed: {err}"))?;
-        let mut session_builder = session_builder
+        let session_builder = session_builder
             .with_optimization_level(GraphOptimizationLevel::Level3)
-            .map_err(|err| anyhow::anyhow!("set ONNX Runtime graph optimization level failed: {err}"))?;
+            .map_err(|err| {
+                anyhow::anyhow!("set ONNX Runtime graph optimization level failed: {err}")
+            })?;
         let session = session_builder.commit_from_file(path).with_context(|| {
             format!(
                 "load ONNX model with ONNX Runtime failed: {}",

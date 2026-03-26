@@ -1,5 +1,5 @@
-use crate::common::time_util::get_timestamp_us;
 use crate::common::tick_math::QuantizedValue;
+use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::Side;
 use crate::signal::trade_signal::TradeSignal;
@@ -111,7 +111,11 @@ impl StrategyManager {
     fn register_mm_open_price_entry(&mut self, strategy_id: i32, entry: MmOpenPriceMapEntry) {
         let key = MmOpenPriceMapKey::new(
             entry.symbol.clone(),
-            QuantizedValue::from_parts(entry.price_qv.tick_i64, entry.price_qv.tick_exp, entry.price_qv.count),
+            QuantizedValue::from_parts(
+                entry.price_qv.tick_i64,
+                entry.price_qv.tick_exp,
+                entry.price_qv.count,
+            ),
         );
         self.mm_open_price_index
             .entry(key)
@@ -126,7 +130,11 @@ impl StrategyManager {
         };
         let key = MmOpenPriceMapKey::new(
             entry.symbol,
-            QuantizedValue::from_parts(entry.price_qv.tick_i64, entry.price_qv.tick_exp, entry.price_qv.count),
+            QuantizedValue::from_parts(
+                entry.price_qv.tick_i64,
+                entry.price_qv.tick_exp,
+                entry.price_qv.count,
+            ),
         );
         if let Some(strategy_ids) = self.mm_open_price_index.get_mut(&key) {
             strategy_ids.remove(&strategy_id);
@@ -579,13 +587,21 @@ mod tests {
             client_order_id: 201,
             price_qv: qv,
         }));
-        assert_eq!(manager.mm_open_strategy_ids_by_price_qv("ETHUSDT", qv), vec![21]);
+        assert_eq!(
+            manager.mm_open_strategy_ids_by_price_qv("ETHUSDT", qv),
+            vec![21]
+        );
 
         let strategy = manager.take(strategy_id).expect("strategy should exist");
-        assert!(manager.mm_open_strategy_ids_by_price_qv("ETHUSDT", qv).is_empty());
+        assert!(manager
+            .mm_open_strategy_ids_by_price_qv("ETHUSDT", qv)
+            .is_empty());
 
         manager.insert(strategy);
-        assert_eq!(manager.mm_open_strategy_ids_by_price_qv("ETHUSDT", qv), vec![21]);
+        assert_eq!(
+            manager.mm_open_strategy_ids_by_price_qv("ETHUSDT", qv),
+            vec![21]
+        );
     }
 
     #[test]

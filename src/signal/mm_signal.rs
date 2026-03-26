@@ -78,7 +78,12 @@ impl MmCancelCandidateSymbolGroup {
     }
 
     pub fn encoded_len(&self) -> usize {
-        32 + 4 + self.items.iter().map(MmCancelCandidateEntry::encoded_len).sum::<usize>()
+        32 + 4
+            + self
+                .items
+                .iter()
+                .map(MmCancelCandidateEntry::encoded_len)
+                .sum::<usize>()
     }
 }
 
@@ -109,7 +114,12 @@ impl MmCancelCandidateQueryMsg {
     }
 
     pub fn encoded_len(&self) -> usize {
-        8 + 4 + self.groups.iter().map(MmCancelCandidateSymbolGroup::encoded_len).sum::<usize>()
+        8 + 4
+            + self
+                .groups
+                .iter()
+                .map(MmCancelCandidateSymbolGroup::encoded_len)
+                .sum::<usize>()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -175,9 +185,7 @@ impl MmBackwardQueryMsg {
             MM_BACKWARD_QUERY_HEDGE => Ok(Self::Hedge(MmHedgeSignalQueryMsg::from_bytes(bytes)?)),
             MM_BACKWARD_QUERY_CANCEL_CANDIDATES => {
                 if bytes.remaining() < 8 + 4 {
-                    return Err(
-                        "Not enough bytes for MmCancelCandidateQueryMsg header".to_string(),
-                    );
+                    return Err("Not enough bytes for MmCancelCandidateQueryMsg header".to_string());
                 }
                 let trigger_ts = bytes.get_i64_le();
                 let group_len = bytes.get_u32_le() as usize;
@@ -195,7 +203,7 @@ impl MmBackwardQueryMsg {
                     for _ in 0..item_len {
                         if bytes.remaining() < 4 + 8 + 4 + 8 {
                             return Err(
-                                "Not enough bytes for MmCancelCandidateQueryMsg item".to_string(),
+                                "Not enough bytes for MmCancelCandidateQueryMsg item".to_string()
                             );
                         }
                         let strategy_id = bytes.get_i32_le();
@@ -207,10 +215,7 @@ impl MmBackwardQueryMsg {
                             price_qv: QuantizedValue::from_parts(tick_i64, tick_exp, count),
                         });
                     }
-                    groups.push(MmCancelCandidateSymbolGroup {
-                        symbol,
-                        items,
-                    });
+                    groups.push(MmCancelCandidateSymbolGroup { symbol, items });
                 }
                 if bytes.remaining() != 0 && bytes.iter().any(|&b| b != 0) {
                     return Err(
@@ -231,12 +236,11 @@ impl MmBackwardQueryMsg {
 #[cfg(test)]
 mod tests {
     use super::{
-        MmBackwardQueryMsg, MmCancelCandidateEntry, MmCancelCandidateQueryMsg,
-        MmCancelTriggerCtx,
+        MmBackwardQueryMsg, MmCancelCandidateEntry, MmCancelCandidateQueryMsg, MmCancelTriggerCtx,
     };
     use crate::common::tick_math::QuantizedValue;
-    use crate::signal::hedge_signal::MmHedgeSignalQueryMsg;
     use crate::signal::common::SignalBytes;
+    use crate::signal::hedge_signal::MmHedgeSignalQueryMsg;
 
     #[test]
     fn mm_cancel_trigger_ctx_roundtrip() {
@@ -251,9 +255,8 @@ mod tests {
 
     #[test]
     fn mm_backward_query_wraps_hedge_query() {
-        let msg = MmBackwardQueryMsg::Hedge(MmHedgeSignalQueryMsg::new(
-            "BTCUSDT", 1.0, 2.0, 3.0, 100.0,
-        ));
+        let msg =
+            MmBackwardQueryMsg::Hedge(MmHedgeSignalQueryMsg::new("BTCUSDT", 1.0, 2.0, 3.0, 100.0));
         let parsed = MmBackwardQueryMsg::from_bytes(msg.to_bytes()).expect("roundtrip");
         match parsed {
             MmBackwardQueryMsg::Hedge(inner) => {

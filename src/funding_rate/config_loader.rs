@@ -524,8 +524,14 @@ fn default_xarb_funding_mapping(
         ])
     } else {
         HashMap::from([
-            ("forward_open_mm".to_string(), "hedge_fr_50".to_string()),
-            ("backward_open_mm".to_string(), "hedge_fr_50".to_string()),
+            (
+                "forward_open_mm".to_string(),
+                "hedge_premium_rate_50".to_string(),
+            ),
+            (
+                "backward_open_mm".to_string(),
+                "hedge_premium_rate_50".to_string(),
+            ),
         ])
     }
 }
@@ -953,11 +959,11 @@ mod tests {
             default_xarb_funding_mapping(TradingVenue::BinanceMargin, TradingVenue::BinanceFutures);
         assert_eq!(
             margin_fut.get("forward_open_mm").map(String::as_str),
-            Some("hedge_fr_50")
+            Some("hedge_premium_rate_50")
         );
         assert_eq!(
             margin_fut.get("backward_open_mm").map(String::as_str),
-            Some("hedge_fr_50")
+            Some("hedge_premium_rate_50")
         );
     }
 
