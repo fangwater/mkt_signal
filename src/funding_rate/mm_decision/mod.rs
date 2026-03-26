@@ -233,6 +233,14 @@ impl MmDecision {
         self.state.update_enable_environment_model(enabled);
     }
 
+    pub fn update_enable_volatility_limit(&mut self, enabled: bool) {
+        self.state.update_enable_volatility_limit(enabled);
+    }
+
+    pub fn update_open_volatility_limit(&mut self, percentile: f64) {
+        self.state.update_open_volatility_limit(percentile);
+    }
+
     pub fn update_tlen_cancel_freq_ms(&mut self, tlen_cancel_freq_ms: u64) {
         self.state.update_tlen_cancel_freq_ms(tlen_cancel_freq_ms);
     }
@@ -277,6 +285,10 @@ impl MmDecision {
         thresholds: HashMap<String, ReturnScoreThresholdsResolved>,
     ) {
         self.state.update_return_score_thresholds(thresholds);
+    }
+
+    pub fn update_open_volatility_thresholds(&mut self, thresholds: HashMap<String, f64>) {
+        self.state.update_open_volatility_thresholds(thresholds);
     }
 
     pub fn process_open_interval(&mut self) {

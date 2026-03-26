@@ -661,5 +661,4 @@ mod tests {
         assert_eq!(parsed_resp.bids, vec![(1010, 1.2), (1005, 2.3)]);
         assert_eq!(parsed_resp.asks, vec![(1015, 1.1)]);
     }
-
 }

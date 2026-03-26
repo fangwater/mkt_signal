@@ -358,7 +358,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         </div>
       </div>
       <div class="hint">
-        `enable_open_cancel` 只控制旧的 return-score MMCancel；`enable_tlen_cancel` 单独控制基于 tlen 的 trigger/query/cancel 链路；`enable_return_score_adjust_hegde=false` 时，MM hedge offset 不再被 return score 调整；`enable_environment_model=false` 时 env/pnlu 仍会写入 from_key，但不阻拦开仓；前端布尔项使用下拉框编辑。
+        `enable_open_cancel` 只控制旧的 return-score MMCancel；`enable_tlen_cancel` 单独控制基于 tlen 的 trigger/query/cancel 链路；`enable_return_score_adjust_hegde=false` 时，MM hedge offset 不再被 return score 调整；`enable_environment_model=false` 时 env/pnlu 仍会写入 from_key，但不阻拦开仓；`enable_volatility_limit` 为波动率限制下单预留开关；前端布尔项使用下拉框编辑。
       </div>
       <div class="kv-table" id="strategy-table"></div>
       <div id="strategy-status" class="status"></div>
@@ -613,7 +613,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         const rawValue = values && values[key] !== undefined ? values[key] : (defaults[key] ?? '');
         const useBooleanSelect =
           containerId === 'strategy-table' &&
-          ['prediction_mode', 'enable_open_cancel', 'enable_tlen_cancel', 'enable_return_score_adjust_hegde', 'enable_environment_model'].includes(key) &&
+          ['prediction_mode', 'enable_open_cancel', 'enable_tlen_cancel', 'enable_return_score_adjust_hegde', 'enable_environment_model', 'enable_volatility_limit'].includes(key) &&
           isBooleanParamValue(rawValue);
         let field;
         if (useBooleanSelect) {

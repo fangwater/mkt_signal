@@ -62,10 +62,13 @@ pub(crate) struct MmDecisionState {
     pub(crate) tlen_cancel_freq_ms: u64,
     pub(crate) prediction_mode: bool,
     pub(crate) enable_environment_model: bool,
+    pub(crate) enable_volatility_limit: bool,
+    pub(crate) open_volatility_limit: f64,
     pub(crate) return_model_service: Option<String>,
     pub(crate) environment_model_service: Option<String>,
     pub(crate) environment_model_true_threshold: f64,
     pub(crate) return_score_thresholds: HashMap<String, ReturnScoreThresholdsResolved>,
+    pub(crate) open_volatility_thresholds: HashMap<String, f64>,
     pub(crate) mm_tlen_thresholds: HashMap<String, f64>,
     pub(crate) open_min_qty_table: VenueMinQtyTable,
     pub(crate) factor_value_hub: FactorValueHub,
@@ -123,10 +126,13 @@ impl MmDecisionState {
             tlen_cancel_freq_ms: 3_000,
             prediction_mode: false,
             enable_environment_model: true,
+            enable_volatility_limit: true,
+            open_volatility_limit: 70.0,
             return_model_service: None,
             environment_model_service: None,
             environment_model_true_threshold: ENV_MODEL_TRUE_THRESHOLD_DEFAULT,
             return_score_thresholds: HashMap::new(),
+            open_volatility_thresholds: HashMap::new(),
             mm_tlen_thresholds: HashMap::new(),
             open_min_qty_table: VenueMinQtyTable::new(open_venue),
             factor_value_hub,
@@ -295,6 +301,28 @@ impl MmDecisionState {
         );
     }
 
+    pub(crate) fn update_enable_volatility_limit(&mut self, enabled: bool) {
+        self.enable_volatility_limit = enabled;
+        debug!(
+            "MmDecision: enable_volatility_limit updated enabled={}",
+            self.enable_volatility_limit
+        );
+    }
+
+    pub(crate) fn update_open_volatility_limit(&mut self, percentile: f64) {
+        if !(percentile.is_finite() && percentile >= 0.0 && percentile <= 100.0) {
+            panic!(
+                "MmDecision: open_volatility_limit must be finite and within [0,100], got {}",
+                percentile
+            );
+        }
+        self.open_volatility_limit = percentile;
+        debug!(
+            "MmDecision: open_volatility_limit updated percentile={}",
+            self.open_volatility_limit
+        );
+    }
+
     pub(crate) fn update_tlen_cancel_freq_ms(&mut self, tlen_cancel_freq_ms: u64) {
         if tlen_cancel_freq_ms == 0 {
             panic!("MmDecision: tlen_cancel_freq_ms must be > 0");
@@ -350,6 +378,14 @@ impl MmDecisionState {
         debug!(
             "MmDecision: return score thresholds updated symbols={}",
             self.return_score_thresholds.len(),
+        );
+    }
+
+    pub(crate) fn update_open_volatility_thresholds(&mut self, thresholds: HashMap<String, f64>) {
+        self.open_volatility_thresholds = thresholds;
+        debug!(
+            "MmDecision: open volatility thresholds updated symbols={}",
+            self.open_volatility_thresholds.len(),
         );
     }
 

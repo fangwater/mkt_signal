@@ -156,6 +156,14 @@ pub struct StrategyParams {
     #[serde(default = "default_enable_environment_model")]
     pub enable_environment_model: bool,
 
+    /// 是否启用波动率限制下单（预留开关，当前先只做配置透传）
+    #[serde(default = "default_enable_volatility_limit")]
+    pub enable_volatility_limit: bool,
+
+    /// 波动率限制分位数（读取 rolling_metrics 的 open_vol_xx）
+    #[serde(default = "default_open_volatility_limit")]
+    pub open_volatility_limit: f64,
+
     /// xarb 是否启用 return score 拦截（false=只读取，不拦截开仓）
     #[serde(default = "default_enable_return_score_model")]
     pub enable_return_score_model: bool,
@@ -248,6 +256,12 @@ fn default_enable_return_score_adjust_hedge() -> bool {
 fn default_enable_environment_model() -> bool {
     true
 }
+fn default_enable_volatility_limit() -> bool {
+    true
+}
+fn default_open_volatility_limit() -> f64 {
+    70.0
+}
 fn default_enable_return_score_model() -> bool {
     false
 }
@@ -287,6 +301,8 @@ impl Default for StrategyParams {
             tlen_cancel_freq_ms: default_tlen_cancel_freq_ms(),
             enable_return_score_adjust_hedge: default_enable_return_score_adjust_hedge(),
             enable_environment_model: default_enable_environment_model(),
+            enable_volatility_limit: default_enable_volatility_limit(),
+            open_volatility_limit: default_open_volatility_limit(),
             enable_return_score_model: default_enable_return_score_model(),
             return_model_service: default_return_model_service(),
             environment_model_service: default_environment_model_service(),
@@ -568,6 +584,24 @@ impl StrategyParams {
             },
             None => default_enable_environment_model(),
         };
+        let enable_volatility_limit = match hash_map.get("enable_volatility_limit") {
+            Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" | "on" => true,
+                "false" | "0" | "no" | "off" | "" => false,
+                _ => {
+                    panic!(
+                        "Redis hash '{}' enable_volatility_limit 非法（仅支持 true/false）: {}",
+                        redis_key, raw
+                    )
+                }
+            },
+            None => default_enable_volatility_limit(),
+        };
+        let open_volatility_limit = hash_map
+            .get("open_volatility_limit")
+            .and_then(|s| s.parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v >= 0.0 && *v <= 100.0)
+            .unwrap_or_else(default_open_volatility_limit);
 
         let enable_return_score_model = match hash_map.get("enable_return_score_model") {
             Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
@@ -713,6 +747,8 @@ impl StrategyParams {
             tlen_cancel_freq_ms,
             enable_return_score_adjust_hedge,
             enable_environment_model,
+            enable_volatility_limit,
+            open_volatility_limit,
             enable_return_score_model,
             return_model_service,
             environment_model_service,
@@ -802,6 +838,8 @@ impl StrategyParams {
                 decision.update_max_hedge_price_pct_change(self.max_hedge_price_pct_change);
                 decision.update_signal_cooldown(self.signal_cooldown);
                 decision.update_enable_environment_model(self.enable_environment_model);
+                decision.update_enable_volatility_limit(self.enable_volatility_limit);
+                decision.update_open_volatility_limit(self.open_volatility_limit);
                 decision.update_enable_return_score_model(self.enable_return_score_model);
                 decision.update_model_service_roles(
                     self.return_model_service.clone(),
@@ -836,6 +874,8 @@ impl StrategyParams {
                 _decision.update_prediction_mode(self.prediction_mode);
                 _decision.update_enable_open_cancel(self.enable_open_cancel);
                 _decision.update_enable_environment_model(self.enable_environment_model);
+                _decision.update_enable_volatility_limit(self.enable_volatility_limit);
+                _decision.update_open_volatility_limit(self.open_volatility_limit);
                 _decision.update_model_service_roles(
                     self.return_model_service.clone(),
                     self.environment_model_service.clone(),
@@ -852,7 +892,7 @@ impl StrategyParams {
         }
 
         info!(
-            "✅ 策略参数已更新: mode={}, amount={:.2}, xarb_open_scale={:.4}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, order_interval_ms={}, open_orders_per_round={}, cooldown={}s, prediction_mode={}, enable_open_cancel={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, enable_return_score_adjust_hedge={}, enable_environment_model={}, enable_return_score_model={}, return_model_service={}, environment_model_service={}",
+            "✅ 策略参数已更新: mode={}, amount={:.2}, xarb_open_scale={:.4}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, order_interval_ms={}, open_orders_per_round={}, cooldown={}s, prediction_mode={}, enable_open_cancel={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, enable_return_score_adjust_hedge={}, enable_environment_model={}, enable_volatility_limit={}, open_volatility_limit={}, enable_return_score_model={}, return_model_service={}, environment_model_service={}",
             self.mode,
             self.order_amount,
             self.open_scale,
@@ -867,6 +907,8 @@ impl StrategyParams {
             self.tlen_cancel_freq_ms,
             self.enable_return_score_adjust_hedge,
             self.enable_environment_model,
+            self.enable_volatility_limit,
+            self.open_volatility_limit,
             self.enable_return_score_model,
             self.return_model_service,
             self.environment_model_service
@@ -942,5 +984,17 @@ mod tests {
     fn test_enable_environment_model_default_is_true() {
         let params = StrategyParams::default();
         assert!(params.enable_environment_model);
+    }
+
+    #[test]
+    fn test_enable_volatility_limit_default_is_true() {
+        let params = StrategyParams::default();
+        assert!(params.enable_volatility_limit);
+    }
+
+    #[test]
+    fn test_open_volatility_limit_default_is_70() {
+        let params = StrategyParams::default();
+        assert!((params.open_volatility_limit - 70.0).abs() < 1e-12);
     }
 }

@@ -81,6 +81,33 @@ impl MmOpenDecision {
                 None,
             ));
         };
+        if state.enable_volatility_limit {
+            let Some(open_volatility_threshold) = state
+                .open_volatility_thresholds
+                .get(&symbol_key.to_ascii_uppercase())
+                .copied()
+            else {
+                return Ok(MmOpenEvalResult::skipped(
+                    &symbol_key,
+                    "missing_open_volatility_threshold",
+                    None,
+                    Some(volatility),
+                    None,
+                ));
+            };
+            if volatility > open_volatility_threshold {
+                return Ok(MmOpenEvalResult::skipped(
+                    &symbol_key,
+                    &format!(
+                        "volatility_limited(value={:.8}>threshold={:.8})",
+                        volatility, open_volatility_threshold
+                    ),
+                    None,
+                    Some(volatility),
+                    None,
+                ));
+            }
+        }
 
         let Some(service_name) = state.return_model_service.clone() else {
             return Ok(MmOpenEvalResult::skipped(

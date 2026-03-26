@@ -266,12 +266,15 @@ pub struct XarbDecision {
     hedge_aggressive_seq_threshold: u32,
     max_hedge_price_pct_change: f64, // percent, 1~99
     enable_environment_model: bool,
+    enable_volatility_limit: bool,
+    open_volatility_limit: f64,
     enable_return_score_model: bool,
     return_model_service: Option<String>,
     environment_model_service: Option<String>,
     environment_model_true_threshold: f64,
     return_score_thresholds: HashMap<String, ReturnScoreThresholdsResolved>,
     funding_open_thresholds: HashMap<String, XarbFundingThresholdsResolved>,
+    open_volatility_thresholds: HashMap<String, f64>,
 
     signal_cooldown_us: i64,
     last_open_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
@@ -427,6 +430,12 @@ impl XarbDecision {
         symbol_key: &str,
     ) -> Option<XarbFundingThresholdsResolved> {
         self.funding_open_thresholds
+            .get(&symbol_key.to_ascii_uppercase())
+            .copied()
+    }
+
+    fn lookup_open_volatility_threshold(&self, symbol_key: &str) -> Option<f64> {
+        self.open_volatility_thresholds
             .get(&symbol_key.to_ascii_uppercase())
             .copied()
     }
@@ -631,12 +640,15 @@ impl XarbDecision {
             hedge_aggressive_seq_threshold: 6,
             max_hedge_price_pct_change: 5.0,
             enable_environment_model: true,
+            enable_volatility_limit: true,
+            open_volatility_limit: 70.0,
             enable_return_score_model: false,
             return_model_service: None,
             environment_model_service: None,
             environment_model_true_threshold: ENV_MODEL_TRUE_THRESHOLD_DEFAULT,
             return_score_thresholds: HashMap::new(),
             funding_open_thresholds: HashMap::new(),
+            open_volatility_thresholds: HashMap::new(),
             signal_cooldown_us: 5_000_000,
             last_open_ts: Rc::new(RefCell::new(HashMap::new())),
             last_close_ts: Rc::new(RefCell::new(HashMap::new())),
@@ -751,6 +763,29 @@ impl XarbDecision {
         );
     }
 
+    pub fn update_enable_volatility_limit(&mut self, enabled: bool) {
+        self.enable_volatility_limit = enabled;
+        info!(
+            "XarbDecision: enable_volatility_limit updated enabled={}",
+            self.enable_volatility_limit
+        );
+    }
+
+    pub fn update_open_volatility_limit(&mut self, percentile: f64) {
+        if !(percentile.is_finite() && percentile >= 0.0 && percentile <= 100.0) {
+            warn!(
+                "XarbDecision: 忽略无效的 open_volatility_limit={}",
+                percentile
+            );
+            return;
+        }
+        self.open_volatility_limit = percentile;
+        info!(
+            "XarbDecision: open_volatility_limit 已更新为 {}",
+            self.open_volatility_limit
+        );
+    }
+
     pub fn update_open_orders_per_round(&mut self, open_orders_per_round: u32) {
         if open_orders_per_round == 0 {
             warn!("XarbDecision: 忽略无效的 open_orders_per_round=0 更新请求");
@@ -791,6 +826,14 @@ impl XarbDecision {
         info!(
             "XarbDecision: funding open thresholds updated symbols={}",
             self.funding_open_thresholds.len(),
+        );
+    }
+
+    pub fn update_open_volatility_thresholds(&mut self, thresholds: HashMap<String, f64>) {
+        self.open_volatility_thresholds = thresholds;
+        info!(
+            "XarbDecision: open volatility thresholds updated symbols={}",
+            self.open_volatility_thresholds.len(),
         );
     }
 
@@ -1033,6 +1076,21 @@ impl XarbDecision {
                 return Ok(None);
             }
         };
+        if self.enable_volatility_limit {
+            let Some(open_volatility_threshold) =
+                self.lookup_open_volatility_threshold(open_symbol_key.as_str())
+            else {
+                self.record_intercept_summary("drop_open_missing_open_volatility_threshold");
+                return Ok(None);
+            };
+            if rl_return_volatility_factor > open_volatility_threshold {
+                self.record_intercept_summary(format!(
+                    "skip_open_by_volatility_limit:value={:.8}:threshold={:.8}",
+                    rl_return_volatility_factor, open_volatility_threshold
+                ));
+                return Ok(None);
+            }
+        }
 
         self.emit_open_signals(
             open_symbol_key.as_str(),

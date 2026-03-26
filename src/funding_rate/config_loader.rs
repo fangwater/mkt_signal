@@ -29,15 +29,18 @@ use super::xarb_funding_threshold_loader::XarbFundingThresholdsResolved;
 
 const DEFAULT_NAMESPACE: &str = "fr";
 const RETURN_SCORE_REDIS_REFRESH_SECS: u64 = 180;
+const OPEN_VOL_THRESHOLD_REDIS_REFRESH_SECS: u64 = 180;
 
 #[derive(Debug, Clone)]
-struct MmReturnScoreCacheEntry {
+struct RedisHashCacheEntry {
     fields: HashMap<String, String>,
     fetched_at: Instant,
 }
 
 thread_local! {
-    static MM_RETURN_SCORE_CACHE: RefCell<HashMap<String, MmReturnScoreCacheEntry>> =
+    static MM_RETURN_SCORE_CACHE: RefCell<HashMap<String, RedisHashCacheEntry>> =
+        RefCell::new(HashMap::new());
+    static OPEN_VOL_THRESHOLD_CACHE: RefCell<HashMap<String, RedisHashCacheEntry>> =
         RefCell::new(HashMap::new());
 }
 
@@ -166,6 +169,7 @@ async fn reload_all_configs(
 
     // 5. 加载 return-model-score 阈值 -> MmDecision/XarbDecision（仅 ns=mm/xarb）
     reload_return_score_thresholds(redis, namespace, hedge_venue).await?;
+    reload_open_volatility_thresholds(redis, namespace, open_venue, hedge_venue).await?;
 
     info!("✅ 配置重载完成");
     Ok(())
@@ -364,7 +368,7 @@ async fn reload_return_score_thresholds(
                     MM_RETURN_SCORE_CACHE.with(|cell| {
                         cell.borrow_mut().insert(
                             redis_key.clone(),
-                            MmReturnScoreCacheEntry {
+                            RedisHashCacheEntry {
                                 fields: map.clone(),
                                 fetched_at: Instant::now(),
                             },
@@ -449,6 +453,205 @@ async fn reload_return_score_thresholds(
         stats.ignored_fields,
         stats.bad_value_fields
     );
+    Ok(())
+}
+
+fn format_quantile_field_ref(prefix: &str, percentile: f64) -> String {
+    let suffix = if (percentile - percentile.round()).abs() < 1e-9 {
+        format!("{}", percentile.round() as i64)
+    } else {
+        let mut text = percentile.to_string();
+        while text.contains('.') && text.ends_with('0') {
+            text.pop();
+        }
+        if text.ends_with('.') {
+            text.pop();
+        }
+        text
+    };
+    format!("{prefix}_{suffix}")
+}
+
+fn resolve_symbol_single_quantile_thresholds(
+    rolling_payloads: &HashMap<String, serde_json::Value>,
+    field_ref: &str,
+) -> (HashMap<String, f64>, usize) {
+    let mut resolved = HashMap::new();
+    let mut missing_refs = 0usize;
+
+    for (symbol, payload) in rolling_payloads {
+        match extract_quantile_value(payload, field_ref) {
+            Some(value) => {
+                resolved.insert(symbol.clone(), value);
+            }
+            None => {
+                missing_refs += 1;
+            }
+        }
+    }
+
+    (resolved, missing_refs)
+}
+
+async fn reload_open_volatility_thresholds(
+    redis: &RedisSettings,
+    namespace: &str,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+) -> Result<()> {
+    let ns = normalize_namespace(namespace);
+    if ns != "mm" && ns != "xarb" {
+        return Ok(());
+    }
+
+    let params =
+        match StrategyParams::load_from_redis(redis, namespace, open_venue, hedge_venue).await {
+            Ok(params) => params,
+            Err(err) => {
+                warn!(
+                    "读取 open volatility limit 策略参数失败 (ns={} open={} hedge={}): {:?}",
+                    ns,
+                    open_venue.data_pub_slug(),
+                    hedge_venue.data_pub_slug(),
+                    err
+                );
+                return Ok(());
+            }
+        };
+
+    let rolling_key = default_rolling_thresholds_key(open_venue, hedge_venue);
+    let refresh_interval = Duration::from_secs(OPEN_VOL_THRESHOLD_REDIS_REFRESH_SECS);
+
+    let mut cached_fields: Option<HashMap<String, String>> = None;
+    let mut cache_fresh = false;
+    OPEN_VOL_THRESHOLD_CACHE.with(|cell| {
+        let cache = cell.borrow();
+        if let Some(entry) = cache.get(&rolling_key) {
+            cached_fields = Some(entry.fields.clone());
+            cache_fresh = entry.fetched_at.elapsed() < refresh_interval;
+        }
+    });
+
+    let rolling_map = if cache_fresh {
+        debug!(
+            "open volatility thresholds 命中缓存 (ns={} key={} refresh={}s)",
+            ns, rolling_key, OPEN_VOL_THRESHOLD_REDIS_REFRESH_SECS
+        );
+        cached_fields.unwrap_or_default()
+    } else {
+        match RedisClient::connect(redis.clone()).await {
+            Ok(mut client) => match client.hgetall_map(&rolling_key).await {
+                Ok(map) => {
+                    OPEN_VOL_THRESHOLD_CACHE.with(|cell| {
+                        cell.borrow_mut().insert(
+                            rolling_key.clone(),
+                            RedisHashCacheEntry {
+                                fields: map.clone(),
+                                fetched_at: Instant::now(),
+                            },
+                        );
+                    });
+                    info!(
+                        "open volatility thresholds 从 Redis 刷新 (ns={} key={} fields={} interval={}s)",
+                        ns,
+                        rolling_key,
+                        map.len(),
+                        OPEN_VOL_THRESHOLD_REDIS_REFRESH_SECS
+                    );
+                    map
+                }
+                Err(err) => {
+                    if let Some(cache) = cached_fields {
+                        warn!(
+                            "读取 rolling_metrics hash 失败: {} ({:?}), 使用缓存 open volatility thresholds ns={} fields={}",
+                            rolling_key,
+                            err,
+                            ns,
+                            cache.len()
+                        );
+                        cache
+                    } else {
+                        warn!(
+                            "读取 rolling_metrics hash 失败: {} ({:?}), 且无可用缓存，跳过 open volatility thresholds ns={}",
+                            rolling_key, err, ns
+                        );
+                        return Ok(());
+                    }
+                }
+            },
+            Err(err) => {
+                if let Some(cache) = cached_fields {
+                    warn!(
+                        "连接 Redis 失败 ({:?}), 使用缓存 open volatility thresholds ns={} key={} fields={}",
+                        err,
+                        ns,
+                        rolling_key,
+                        cache.len()
+                    );
+                    cache
+                } else {
+                    warn!(
+                        "连接 Redis 加载 open volatility thresholds 失败: {:?} (ns={} key={}, 无缓存)",
+                        err, ns, rolling_key
+                    );
+                    return Ok(());
+                }
+            }
+        }
+    };
+
+    if rolling_map.is_empty() {
+        warn!(
+            "rolling_metrics hash '{}' 为空，跳过 open volatility thresholds 加载 (ns={})",
+            rolling_key, ns
+        );
+        return Ok(());
+    }
+
+    let active_symbols: HashSet<String> = SymbolList::instance()
+        .get_online_symbols()
+        .into_iter()
+        .map(|symbol| normalize_xarb_symbol(&symbol))
+        .filter(|symbol| !symbol.is_empty())
+        .collect();
+    let rolling_payloads = parse_xarb_rolling_payloads(rolling_map, &active_symbols);
+    let field_ref = format_quantile_field_ref("open_vol", params.open_volatility_limit);
+    let (thresholds, missing_refs) =
+        resolve_symbol_single_quantile_thresholds(&rolling_payloads, &field_ref);
+
+    let updated = if ns == "xarb" {
+        XarbDecision::try_with_mut(|decision| {
+            decision.update_open_volatility_thresholds(thresholds.clone());
+        })
+        .is_some()
+    } else {
+        MmDecision::try_with_mut(|decision| {
+            decision.update_open_volatility_thresholds(thresholds.clone());
+        })
+        .is_some()
+    };
+
+    if !updated {
+        warn!(
+            "open volatility thresholds 已生成，但 decision 尚未初始化 (ns={} open={} hedge={})",
+            ns,
+            open_venue.data_pub_slug(),
+            hedge_venue.data_pub_slug()
+        );
+    }
+
+    info!(
+        "open volatility thresholds 应用完成 ns={} rolling_key={} field_ref={} active_symbols={} rolling_symbols={} loaded_symbols={} missing_refs={} enabled={}",
+        ns,
+        rolling_key,
+        field_ref,
+        active_symbols.len(),
+        rolling_payloads.len(),
+        thresholds.len(),
+        missing_refs,
+        params.enable_volatility_limit
+    );
+
     Ok(())
 }
 

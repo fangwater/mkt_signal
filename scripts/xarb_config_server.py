@@ -647,7 +647,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         const rawValue = values[key] ?? defaults[key] ?? '';
         const useBooleanSelect =
           containerId === 'strategy-table' &&
-          ['enable_return_score_model', 'enable_environment_model'].includes(key) &&
+          ['enable_return_score_model', 'enable_environment_model', 'enable_volatility_limit'].includes(key) &&
           isBooleanParamValue(rawValue);
         let input;
         if (useBooleanSelect) {
