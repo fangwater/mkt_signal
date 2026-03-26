@@ -20,6 +20,7 @@ pub mod mkt_channel;
 pub mod mm_decision;
 pub mod mm_tlen_threshold_loader;
 pub mod rate_fetcher;
+pub mod rolling_threshold_sync;
 pub mod spread_factor;
 pub mod spread_threshold_loader;
 pub mod strategy_loader;
