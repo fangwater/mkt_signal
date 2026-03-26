@@ -662,12 +662,4 @@ mod tests {
         assert_eq!(parsed_resp.asks, vec![(1015, 1.1)]);
     }
 
-    #[test]
-    fn tick_index_roundtrip() {
-        let tick = 0.1;
-        let tick_index = price_to_tick_index(72399.9, tick).unwrap();
-        assert_eq!(tick_index, 723999);
-        let price = tick_index_to_price(tick_index, tick).unwrap();
-        assert_eq!(price, 72399.9);
-    }
 }

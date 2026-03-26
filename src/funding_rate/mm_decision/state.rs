@@ -61,6 +61,7 @@ pub(crate) struct MmDecisionState {
     pub(crate) enable_tlen_cancel: bool,
     pub(crate) tlen_cancel_freq_ms: u64,
     pub(crate) prediction_mode: bool,
+    pub(crate) enable_environment_model: bool,
     pub(crate) return_model_service: Option<String>,
     pub(crate) environment_model_service: Option<String>,
     pub(crate) environment_model_true_threshold: f64,
@@ -121,6 +122,7 @@ impl MmDecisionState {
             enable_tlen_cancel: false,
             tlen_cancel_freq_ms: 3_000,
             prediction_mode: false,
+            enable_environment_model: true,
             return_model_service: None,
             environment_model_service: None,
             environment_model_true_threshold: ENV_MODEL_TRUE_THRESHOLD_DEFAULT,
@@ -282,6 +284,14 @@ impl MmDecisionState {
         debug!(
             "MmDecision: enable_tlen_cancel updated enabled={}",
             self.enable_tlen_cancel
+        );
+    }
+
+    pub(crate) fn update_enable_environment_model(&mut self, enabled: bool) {
+        self.enable_environment_model = enabled;
+        debug!(
+            "MmDecision: enable_environment_model updated enabled={}",
+            self.enable_environment_model
         );
     }
 

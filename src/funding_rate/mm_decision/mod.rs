@@ -229,6 +229,10 @@ impl MmDecision {
         self.state.update_enable_tlen_cancel(enabled);
     }
 
+    pub fn update_enable_environment_model(&mut self, enabled: bool) {
+        self.state.update_enable_environment_model(enabled);
+    }
+
     pub fn update_tlen_cancel_freq_ms(&mut self, tlen_cancel_freq_ms: u64) {
         self.state.update_tlen_cancel_freq_ms(tlen_cancel_freq_ms);
     }

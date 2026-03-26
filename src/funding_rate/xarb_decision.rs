@@ -265,6 +265,7 @@ pub struct XarbDecision {
     hedge_price_offset: f64,
     hedge_aggressive_seq_threshold: u32,
     max_hedge_price_pct_change: f64, // percent, 1~99
+    enable_environment_model: bool,
     enable_return_score_model: bool,
     return_model_service: Option<String>,
     environment_model_service: Option<String>,
@@ -629,6 +630,7 @@ impl XarbDecision {
             hedge_price_offset: 0.0003,
             hedge_aggressive_seq_threshold: 6,
             max_hedge_price_pct_change: 5.0,
+            enable_environment_model: true,
             enable_return_score_model: false,
             return_model_service: None,
             environment_model_service: None,
@@ -738,6 +740,14 @@ impl XarbDecision {
         info!(
             "XarbDecision: enable_return_score_model updated enabled={}",
             self.enable_return_score_model
+        );
+    }
+
+    pub fn update_enable_environment_model(&mut self, enabled: bool) {
+        self.enable_environment_model = enabled;
+        info!(
+            "XarbDecision: enable_environment_model updated enabled={}",
+            self.enable_environment_model
         );
     }
 
@@ -997,7 +1007,7 @@ impl XarbDecision {
             hedge_venue,
             now,
         );
-        if !environment_signal.allow_open {
+        if self.enable_environment_model && !environment_signal.allow_open {
             self.record_environment_intercept_summary(
                 forward_open,
                 backward_open,

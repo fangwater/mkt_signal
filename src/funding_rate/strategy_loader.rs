@@ -152,6 +152,10 @@ pub struct StrategyParams {
     #[serde(default = "default_enable_return_score_adjust_hedge")]
     pub enable_return_score_adjust_hedge: bool,
 
+    /// 是否启用 env / pnlu 开仓限制（false=只读取并写入 from_key，不阻拦开仓）
+    #[serde(default = "default_enable_environment_model")]
+    pub enable_environment_model: bool,
+
     /// xarb 是否启用 return score 拦截（false=只读取，不拦截开仓）
     #[serde(default = "default_enable_return_score_model")]
     pub enable_return_score_model: bool,
@@ -241,6 +245,9 @@ fn default_tlen_cancel_freq_ms() -> u64 {
 fn default_enable_return_score_adjust_hedge() -> bool {
     true
 }
+fn default_enable_environment_model() -> bool {
+    true
+}
 fn default_enable_return_score_model() -> bool {
     false
 }
@@ -279,6 +286,7 @@ impl Default for StrategyParams {
             enable_tlen_cancel: default_enable_tlen_cancel(),
             tlen_cancel_freq_ms: default_tlen_cancel_freq_ms(),
             enable_return_score_adjust_hedge: default_enable_return_score_adjust_hedge(),
+            enable_environment_model: default_enable_environment_model(),
             enable_return_score_model: default_enable_return_score_model(),
             return_model_service: default_return_model_service(),
             environment_model_service: default_environment_model_service(),
@@ -547,6 +555,19 @@ impl StrategyParams {
             },
             None => default_enable_return_score_adjust_hedge(),
         };
+        let enable_environment_model = match hash_map.get("enable_environment_model") {
+            Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" | "on" => true,
+                "false" | "0" | "no" | "off" | "" => false,
+                _ => {
+                    panic!(
+                        "Redis hash '{}' enable_environment_model 非法（仅支持 true/false）: {}",
+                        redis_key, raw
+                    )
+                }
+            },
+            None => default_enable_environment_model(),
+        };
 
         let enable_return_score_model = match hash_map.get("enable_return_score_model") {
             Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
@@ -691,6 +712,7 @@ impl StrategyParams {
             enable_tlen_cancel,
             tlen_cancel_freq_ms,
             enable_return_score_adjust_hedge,
+            enable_environment_model,
             enable_return_score_model,
             return_model_service,
             environment_model_service,
@@ -779,6 +801,7 @@ impl StrategyParams {
                 decision.update_hedge_aggressive_seq_threshold(self.hedge_aggressive_seq_threshold);
                 decision.update_max_hedge_price_pct_change(self.max_hedge_price_pct_change);
                 decision.update_signal_cooldown(self.signal_cooldown);
+                decision.update_enable_environment_model(self.enable_environment_model);
                 decision.update_enable_return_score_model(self.enable_return_score_model);
                 decision.update_model_service_roles(
                     self.return_model_service.clone(),
@@ -812,6 +835,7 @@ impl StrategyParams {
                 _decision.update_open_order_timeout(self.open_order_timeout);
                 _decision.update_prediction_mode(self.prediction_mode);
                 _decision.update_enable_open_cancel(self.enable_open_cancel);
+                _decision.update_enable_environment_model(self.enable_environment_model);
                 _decision.update_model_service_roles(
                     self.return_model_service.clone(),
                     self.environment_model_service.clone(),
@@ -828,7 +852,7 @@ impl StrategyParams {
         }
 
         info!(
-            "✅ 策略参数已更新: mode={}, amount={:.2}, xarb_open_scale={:.4}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, order_interval_ms={}, open_orders_per_round={}, cooldown={}s, prediction_mode={}, enable_open_cancel={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, enable_return_score_adjust_hedge={}, enable_return_score_model={}, return_model_service={}, environment_model_service={}",
+            "✅ 策略参数已更新: mode={}, amount={:.2}, xarb_open_scale={:.4}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, order_interval_ms={}, open_orders_per_round={}, cooldown={}s, prediction_mode={}, enable_open_cancel={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, enable_return_score_adjust_hedge={}, enable_environment_model={}, enable_return_score_model={}, return_model_service={}, environment_model_service={}",
             self.mode,
             self.order_amount,
             self.open_scale,
@@ -842,6 +866,7 @@ impl StrategyParams {
             self.enable_tlen_cancel,
             self.tlen_cancel_freq_ms,
             self.enable_return_score_adjust_hedge,
+            self.enable_environment_model,
             self.enable_return_score_model,
             self.return_model_service,
             self.environment_model_service
@@ -911,5 +936,11 @@ mod tests {
     fn test_enable_return_score_adjust_hedge_default_is_true() {
         let params = StrategyParams::default();
         assert!(params.enable_return_score_adjust_hedge);
+    }
+
+    #[test]
+    fn test_enable_environment_model_default_is_true() {
+        let params = StrategyParams::default();
+        assert!(params.enable_environment_model);
     }
 }

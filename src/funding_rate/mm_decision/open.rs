@@ -17,8 +17,11 @@ pub(crate) struct MmOpenDecision {
     last_eval_ts_us: HashMap<String, i64>,
 }
 
-fn mm_open_blocked_by_environment(environment_signal: &EnvironmentSignalResult) -> bool {
-    !environment_signal.allow_open
+fn mm_open_blocked_by_environment(
+    enable_environment_model: bool,
+    environment_signal: &EnvironmentSignalResult,
+) -> bool {
+    enable_environment_model && !environment_signal.allow_open
 }
 
 impl MmOpenDecision {
@@ -136,7 +139,7 @@ impl MmOpenDecision {
         }
 
         let environment_signal = state.evaluate_environment_signal(&symbol_key, symbol, now_us);
-        if mm_open_blocked_by_environment(&environment_signal) {
+        if mm_open_blocked_by_environment(state.enable_environment_model, &environment_signal) {
             return Ok(MmOpenEvalResult::skipped(
                 &symbol_key,
                 &format!("environment_blocked({})", environment_signal.note),
@@ -473,15 +476,25 @@ mod tests {
 
     #[test]
     fn mm_open_is_blocked_when_environment_disallows_open() {
-        assert!(mm_open_blocked_by_environment(&sample_environment_signal(
-            false
-        )));
+        assert!(mm_open_blocked_by_environment(
+            true,
+            &sample_environment_signal(false)
+        ));
     }
 
     #[test]
     fn mm_open_is_allowed_when_environment_allows_open() {
-        assert!(!mm_open_blocked_by_environment(&sample_environment_signal(
-            true
-        )));
+        assert!(!mm_open_blocked_by_environment(
+            true,
+            &sample_environment_signal(true)
+        ));
+    }
+
+    #[test]
+    fn mm_open_ignores_environment_block_when_disabled() {
+        assert!(!mm_open_blocked_by_environment(
+            false,
+            &sample_environment_signal(false)
+        ));
     }
 }

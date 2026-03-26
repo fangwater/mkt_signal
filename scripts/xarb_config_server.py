@@ -610,6 +610,11 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       return `${base}api/${clean}`;
     }
 
+    function isBooleanParamValue(value) {
+      const normalized = String(value ?? '').trim().toLowerCase();
+      return ['true', 'false', '1', '0', 'yes', 'no', 'on', 'off', ''].includes(normalized);
+    }
+
     async function fetchJson(url, opts = {}) {
       const resp = await fetch(url, opts);
       if (!resp.ok) {
@@ -639,10 +644,31 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
 
         const inputCell = document.createElement('div');
         inputCell.className = 'kv-input';
-        const input = document.createElement('input');
+        const rawValue = values[key] ?? defaults[key] ?? '';
+        const useBooleanSelect =
+          containerId === 'strategy-table' &&
+          ['enable_return_score_model', 'enable_environment_model'].includes(key) &&
+          isBooleanParamValue(rawValue);
+        let input;
+        if (useBooleanSelect) {
+          input = document.createElement('select');
+          [
+            ['false', 'false'],
+            ['true', 'true'],
+          ].forEach(([value, label]) => {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = label;
+            input.appendChild(option);
+          });
+          const normalized = String(rawValue ?? '').trim().toLowerCase();
+          input.value = ['true', '1', 'yes', 'on'].includes(normalized) ? 'true' : 'false';
+        } else {
+          input = document.createElement('input');
+          input.className = 'mono';
+          input.value = rawValue;
+        }
         input.dataset.key = key;
-        input.className = 'mono';
-        input.value = values[key] ?? defaults[key] ?? '';
         inputCell.appendChild(input);
 
         const descCell = document.createElement('div');
@@ -658,7 +684,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     function collectParamValues(containerId) {
       const container = document.getElementById(containerId);
       const values = {};
-      container.querySelectorAll('input[data-key]').forEach(input => {
+      container.querySelectorAll('input[data-key], select[data-key]').forEach(input => {
         values[input.dataset.key] = input.value.trim();
       });
       return values;
