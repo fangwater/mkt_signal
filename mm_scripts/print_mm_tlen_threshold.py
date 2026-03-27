@@ -5,8 +5,8 @@
 打印 MM 的 tlen 阈值配置（从 Redis 读取）。
 
 Redis key 约定：
-  - Hash: <venue_prefix>:<strategy>:tlen_threshold
-    例如：binance_futures:mm:tlen_threshold
+  - Hash: <hedge_venue_prefix>_<open_venue_prefix>:<strategy>:tlen_threshold
+    单 venue MM 例如：binance_futures_binance_futures:mm:tlen_threshold
 
 示例：
   python mm_scripts/print_mm_tlen_threshold.py
@@ -66,7 +66,8 @@ def venue_prefix(venue: str) -> str:
 
 
 def redis_key(venue: str) -> str:
-    return f"{venue_prefix(venue)}:{STRATEGY}:tlen_threshold"
+    prefix = venue_prefix(venue)
+    return f"{prefix}_{prefix}:{STRATEGY}:tlen_threshold"
 
 
 def parse_args() -> argparse.Namespace:
