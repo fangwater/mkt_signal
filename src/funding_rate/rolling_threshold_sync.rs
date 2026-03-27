@@ -13,6 +13,7 @@ use super::spread_factor::SpreadFactor;
 use super::xarb_funding_threshold_loader::XarbFundingThresholdsResolved;
 
 const XARB_SPREAD_REDIS_SYNC_SECS: u64 = 1800;
+const QUANTILE_MATCH_EPSILON: f64 = 1e-6;
 
 thread_local! {
     static XARB_SPREAD_REDIS_SYNC_CACHE: RefCell<HashMap<String, Instant>> =
@@ -255,7 +256,7 @@ pub(crate) fn extract_quantile_value(payload: &serde_json::Value, field_ref: &st
         let obj = item.as_object()?;
         let q_raw = obj.get("q").or_else(|| obj.get("quantile"))?;
         let q = normalize_quantile(q_raw)?;
-        if (q - percentile).abs() >= 1e-9 {
+        if (q - percentile).abs() > QUANTILE_MATCH_EPSILON {
             continue;
         }
         for value_key in ["v", "threshold", "value"] {
@@ -651,6 +652,17 @@ mod tests {
         });
         let value = extract_quantile_value(&payload, "spread_fr_80").expect("spread_fr_80");
         assert!((value - 0.003).abs() < 1e-12);
+    }
+
+    #[test]
+    fn extract_quantile_value_tolerates_float32_quantile_rounding() {
+        let payload = serde_json::json!({
+            "open_vol_quantiles": [
+                {"quantile": 0.699999988079071, "threshold": 0.000745}
+            ]
+        });
+        let value = extract_quantile_value(&payload, "open_vol_70").expect("open_vol_70");
+        assert!((value - 0.000745).abs() < 1e-12);
     }
 
     #[test]

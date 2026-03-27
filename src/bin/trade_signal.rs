@@ -261,8 +261,6 @@ async fn run(
     info!("初始化单例...");
     init_decision_branch(branch)?;
     SymbolList::init_singleton()?;
-    MktChannel::init_singleton(open_venue, hedge_venue)?;
-    RateFetcher::init_for_venues(open_venue, hedge_venue)?;
     match branch {
         DecisionBranch::Fr => {
             let exchange = exchange.context("missing exchange for FR branch")?;
@@ -275,15 +273,6 @@ async fn run(
             MmDecision::init_singleton(open_venue, hedge_venue).await?;
         }
     }
-    info!("所有单例初始化完成");
-
-    // SpreadFactor 和 FundingRateFactor 会在首次访问时自动初始化
-    let spread_factor = SpreadFactor::instance();
-    let _ = FundingRateFactor::instance();
-
-    // 调试：延迟2秒后打印价差数据（等待盘口数据）
-    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-    spread_factor.debug_print_stored_spreads(open_venue, hedge_venue);
 
     // 2️⃣ 立即加载所有配置（策略参数、符号列表、阈值等）
     let redis = get_redis_settings();
@@ -299,6 +288,18 @@ async fn run(
     {
         log::warn!("配置加载失败: {:?}，将使用默认值", err);
     }
+
+    MktChannel::init_singleton(open_venue, hedge_venue)?;
+    RateFetcher::init_for_venues(open_venue, hedge_venue)?;
+
+    // SpreadFactor 和 FundingRateFactor 会在首次访问时自动初始化
+    let spread_factor = SpreadFactor::instance();
+    let _ = FundingRateFactor::instance();
+    info!("所有单例初始化完成");
+
+    // 调试：延迟2秒后打印价差数据（等待盘口数据）
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    spread_factor.debug_print_stored_spreads(open_venue, hedge_venue);
 
     // 3️⃣ 启动统一配置定时重载器（60秒）
     spawn_config_loader_with_namespace(

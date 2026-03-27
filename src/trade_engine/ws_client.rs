@@ -30,7 +30,11 @@ use tokio::sync::mpsc;
 use tokio::time;
 use tokio_native_tls::TlsConnector as TokioTlsConnector;
 use tokio_tungstenite::{
-    client_async, tungstenite::protocol::frame::coding::CloseCode, tungstenite::Message,
+    client_async,
+    tungstenite::{
+        protocol::{frame::coding::CloseCode, CloseFrame},
+        Error as WsError, Message,
+    },
     MaybeTlsStream, WebSocketStream,
 };
 use url::Url;
@@ -42,6 +46,71 @@ fn extract_okex_login_timestamp(payload: &str) -> Option<String> {
         .get("timestamp")?
         .as_str()
         .map(|s| s.to_string())
+}
+
+fn truncate_for_log(text: &str, max_chars: usize) -> String {
+    let mut truncated = String::new();
+    for (idx, ch) in text.chars().enumerate() {
+        if idx >= max_chars {
+            truncated.push_str("...");
+            break;
+        }
+        truncated.push(ch);
+    }
+    truncated
+}
+
+fn format_error_chain(err: &anyhow::Error) -> String {
+    let mut parts = Vec::new();
+    for cause in err.chain() {
+        let part = cause.to_string();
+        if parts.last() != Some(&part) {
+            parts.push(part);
+        }
+    }
+    parts.join(": ")
+}
+
+fn format_ws_error(err: &WsError) -> String {
+    match err {
+        WsError::Http(resp) => {
+            let status = resp.status();
+            let content_type = resp
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("-");
+            let body = resp
+                .body()
+                .as_ref()
+                .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                .map(str::trim)
+                .filter(|body| !body.is_empty())
+                .map(|body| truncate_for_log(&body.replace(['\r', '\n'], " "), 256));
+            match body {
+                Some(body) => format!(
+                    "HTTP {} content-type={} body={}",
+                    status, content_type, body
+                ),
+                None => format!("HTTP {} content-type={}", status, content_type),
+            }
+        }
+        _ => err.to_string(),
+    }
+}
+
+fn format_close_frame(frame: Option<&CloseFrame<'_>>) -> String {
+    match frame {
+        Some(frame) if frame.reason.is_empty() => {
+            format!("websocket closed by remote (code={:?})", frame.code)
+        }
+        Some(frame) => format!(
+            "websocket closed by remote (code={:?}, reason={})",
+            frame.code,
+            truncate_for_log(frame.reason.as_ref(), 256)
+        ),
+        None => format!("websocket closed by remote (code={:?})", CloseCode::Normal),
+    }
 }
 
 #[derive(Debug)]
@@ -314,15 +383,22 @@ impl TradeWsClient {
                             backoff_ms = 500;
                             if let Err(err) = self.event_loop(&mut ws).await {
                                 warn!(
-                                    "trade ws client id={} connection loop exited: {}",
-                                    self.id, err
+                                    "trade ws client id={} exchange={} url={} connection loop exited: {}",
+                                    self.id,
+                                    self.exchange,
+                                    self.url,
+                                    format_error_chain(&err)
                                 );
                             }
                         }
                         Err(err) => {
                             warn!(
-                                "trade ws client id={} failed to connect ({}), retrying in {} ms",
-                                self.id, err, backoff_ms
+                                "trade ws client id={} exchange={} url={} failed to connect ({}), retrying in {} ms",
+                                self.id,
+                                self.exchange,
+                                self.url,
+                                format_error_chain(&err),
+                                backoff_ms
                             );
                         }
                     }
@@ -405,10 +481,10 @@ impl TradeWsClient {
                             self.handle_incoming(ws, msg).await?;
                         }
                         Some(Err(err)) => {
-                            return Err(anyhow!("websocket errored: {}", err));
+                            return Err(anyhow!("websocket errored: {}", format_ws_error(&err)));
                         }
                         None => {
-                            return Err(anyhow!("websocket closed by remote"));
+                            return Err(anyhow!("websocket stream ended without close frame"));
                         }
                     }
                 }
@@ -487,11 +563,11 @@ impl TradeWsClient {
                 .with_context(|| "tls handshake failed")?;
             client_async(url.as_str(), MaybeTlsStream::NativeTls(tls))
                 .await
-                .with_context(|| "websocket handshake (wss)")?
+                .map_err(|err| anyhow!("websocket handshake (wss): {}", format_ws_error(&err)))?
         } else {
             client_async(url.as_str(), MaybeTlsStream::Plain(stream))
                 .await
-                .with_context(|| "websocket handshake (ws)")?
+                .map_err(|err| anyhow!("websocket handshake (ws): {}", format_ws_error(&err)))?
         };
 
         Ok(ws_stream)
@@ -822,8 +898,7 @@ impl TradeWsClient {
                 debug!("trade ws client id={} received pong", self.id);
             }
             Message::Close(frame) => {
-                let code = frame.as_ref().map(|f| f.code).unwrap_or(CloseCode::Normal);
-                return Err(anyhow!("websocket closed (code={:?})", code));
+                return Err(anyhow!("{}", format_close_frame(frame.as_ref())));
             }
             Message::Frame(_) => {}
         }
