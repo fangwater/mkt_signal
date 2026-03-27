@@ -28,6 +28,18 @@ mod tests {
             Some("Cancel rejected")
         );
         assert_eq!(
+            describe_trade_error_code(Exchange::Binance, -4116),
+            Some("Duplicated client order id")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Binance, -4118),
+            Some("Reduce only margin check failed")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Binance, -4131),
+            Some("Market order rejected: price outside percent-price filter")
+        );
+        assert_eq!(
             describe_trade_error_code(Exchange::Binance, -4060),
             Some("Invalid position side")
         );

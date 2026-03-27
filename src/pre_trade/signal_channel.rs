@@ -21,6 +21,7 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info, warn};
 use std::cell::OnceCell;
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 thread_local! {
@@ -648,10 +649,36 @@ fn handle_trade_signal(signal: TradeSignal) {
 
                 let strategy_mgr = MonitorChannel::instance().strategy_mgr();
                 let candidates = strategy_mgr.borrow().mm_open_cancel_candidates();
+                let mut symbol_counts: BTreeMap<String, usize> = BTreeMap::new();
+                for candidate in &candidates {
+                    *symbol_counts.entry(candidate.symbol.clone()).or_default() += 1;
+                }
+                let symbol_count = symbol_counts.len();
+                let symbol_sample = {
+                    let preview: Vec<String> = symbol_counts
+                        .iter()
+                        .take(8)
+                        .map(|(symbol, count)| format!("{symbol}:{count}"))
+                        .collect();
+                    if preview.is_empty() {
+                        "-".to_string()
+                    } else {
+                        preview.join(",")
+                    }
+                };
+                info!(
+                    "MMCancelTrigger: received trigger_ts={} freq_ms={} candidates={} symbols={} sample={}",
+                    trigger_ctx.trigger_ts,
+                    trigger_ctx.freq_ms,
+                    candidates.len(),
+                    symbol_count,
+                    symbol_sample
+                );
                 if candidates.is_empty() {
-                    debug!(
-                        "MMCancelTrigger: no active MM open strategies trigger_ts={}",
-                        trigger_ctx.trigger_ts
+                    info!(
+                        "MMCancelTrigger: no active MM open strategies trigger_ts={} freq_ms={}",
+                        trigger_ctx.trigger_ts,
+                        trigger_ctx.freq_ms
                     );
                     return;
                 }
@@ -698,9 +725,11 @@ fn handle_trade_signal(signal: TradeSignal) {
                 }
                 flush_chunk(&mut chunk, &mut published_chunks, &mut published_items);
                 info!(
-                    "MMCancelTrigger: snapshot published chunks={} items={} trigger_ts={} freq_ms={}",
+                    "MMCancelTrigger: snapshot published chunks={} items={} symbols={} sample={} trigger_ts={} freq_ms={}",
                     published_chunks,
                     published_items,
+                    symbol_count,
+                    symbol_sample,
                     trigger_ctx.trigger_ts,
                     trigger_ctx.freq_ms
                 );
@@ -784,6 +813,14 @@ fn handle_trade_signal(signal: TradeSignal) {
                 }
                 let strategy_mgr = MonitorChannel::instance().strategy_mgr();
                 let strategy_id = strategy_mgr.borrow_mut().ensure_mm_hedge_strategy(&symbol);
+                info!(
+                    "MMHedge: received symbol={} strategy_id={} price_levels={} amount_levels={} next_query_ts={}",
+                    symbol,
+                    strategy_id,
+                    hedge_ctx.price_qv_list.len(),
+                    hedge_ctx.amount_qv_list.len(),
+                    hedge_ctx.next_query_ts
+                );
                 let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
                 if let Some(mut strategy) = strategy_opt {
                     strategy.handle_signal(&signal);

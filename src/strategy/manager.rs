@@ -11,7 +11,46 @@ use crate::strategy::{
 };
 use log::info;
 use std::any::Any;
+use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::sync::OnceLock;
+use std::thread::{self, ThreadId};
+
+const STRATEGY_ID_MASK: i64 = 0x7FFF_FFFF;
+
+static STRATEGY_ID_OWNER_THREAD: OnceLock<ThreadId> = OnceLock::new();
+
+thread_local! {
+    static STRATEGY_ID_ALLOCATOR: Cell<i64> = Cell::new(initial_strategy_id_seed());
+}
+
+fn initial_strategy_id_seed() -> i64 {
+    let seed = get_timestamp_us() & STRATEGY_ID_MASK;
+    if seed <= 0 { 1 } else { seed }
+}
+
+fn next_strategy_id_state(current: i64) -> (i32, i64) {
+    let current = if current <= 0 || current > STRATEGY_ID_MASK {
+        1
+    } else {
+        current
+    };
+    let next = if current >= STRATEGY_ID_MASK {
+        1
+    } else {
+        current + 1
+    };
+    (current as i32, next)
+}
+
+fn assert_strategy_id_owner_thread() {
+    let current = thread::current().id();
+    let owner = *STRATEGY_ID_OWNER_THREAD.get_or_init(|| current);
+    assert_eq!(
+        current, owner,
+        "StrategyManager::generate_strategy_id must run on a single owner thread"
+    );
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct QuantizedValueKey {
@@ -457,17 +496,22 @@ impl StrategyManager {
     }
 
     /// 基于当前时间戳生成策略 ID
-    /// 使用时间戳的低31位，确保为正数，约35分钟循环周期
+    /// 首次调用线程会成为 owner 线程；之后仅允许该线程单调分配 strategy_id。
     pub fn generate_strategy_id() -> i32 {
-        (get_timestamp_us() & 0x7FFF_FFFF) as i32
+        assert_strategy_id_owner_thread();
+        STRATEGY_ID_ALLOCATOR.with(|allocator| {
+            let (assigned, next) = next_strategy_id_state(allocator.get());
+            allocator.set(next);
+            assigned
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ForceCloseControl, MmOpenPriceMapEntry, MmOpenPriceMapKey, QuantizedValueKey, Strategy,
-        StrategyManager,
+        next_strategy_id_state, ForceCloseControl, MmOpenPriceMapEntry, MmOpenPriceMapKey,
+        QuantizedValueKey, Strategy, StrategyManager, STRATEGY_ID_MASK,
     };
     use crate::common::tick_math::QuantizedValue;
     use crate::pre_trade::order_manager::Side;
@@ -626,5 +670,12 @@ mod tests {
             }
         );
         assert_eq!(snapshot[0].1, vec![31]);
+    }
+
+    #[test]
+    fn next_strategy_id_state_is_monotonic_and_wraps() {
+        assert_eq!(next_strategy_id_state(123), (123, 124));
+        assert_eq!(next_strategy_id_state(STRATEGY_ID_MASK), (STRATEGY_ID_MASK as i32, 1));
+        assert_eq!(next_strategy_id_state(0), (1, 2));
     }
 }

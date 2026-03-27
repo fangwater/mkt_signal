@@ -358,7 +358,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         </div>
       </div>
       <div class="hint">
-        `enable_open_cancel` 只控制旧的 return-score MMCancel；`enable_tlen_cancel` 单独控制基于 tlen 的 trigger/query/cancel 链路；`enable_return_score_adjust_hegde=false` 时，MM hedge offset 不再被 return score 调整；`enable_environment_model=false` 时 env/pnlu 仍会写入 from_key，但不阻拦开仓；`enable_volatility_limit` 为波动率限制下单预留开关；前端布尔项使用下拉框编辑。MM 的 `open_volatility_limit` 会挂靠同交易所 `margin-future` rolling 的 `hedge_vol` 配置。
+        `enable_open_cancel` 只控制旧的 return-score MMCancel；`enable_tlen_cancel` 单独控制基于 tlen 的 trigger/query/cancel 链路；`tlen_cancel_freq_ms` 控制 MMCancelTrigger 的发送频率；`enable_return_score_adjust_hegde=false` 时，MM hedge offset 不再被 return score 调整；`enable_environment_model=false` 时 env/pnlu 仍会写入 from_key，但不阻拦开仓；`enable_volatility_limit` 为波动率限制下单预留开关；前端布尔项使用下拉框编辑。MM 的 `open_volatility_limit` 会挂靠同交易所 `margin-future` rolling 的 `hedge_vol` 配置。
       </div>
       <div class="kv-table" id="strategy-table"></div>
       <div id="strategy-vol-preview" class="status"></div>
@@ -1336,7 +1336,30 @@ def sanitize_mapping_by_schema(
 ) -> Dict[str, str]:
     mapping = sanitize_string_mapping(values)
     allowed = set(ordered_schema_keys(defaults, comments, order))
-    return {key: mapping[key] for key in mapping.keys() if key in allowed}
+    sanitized = {key: mapping[key] for key in mapping.keys() if key in allowed}
+    return normalize_strategy_params_by_schema(sanitized)
+
+
+def normalize_positive_int_text(raw: Any, field_name: str) -> str:
+    text = str(raw).strip()
+    if not text:
+        raise ValueError(f"{field_name} is required")
+    try:
+        value = int(text)
+    except Exception as exc:
+        raise ValueError(f"{field_name} must be a positive integer: {text}") from exc
+    if value <= 0:
+        raise ValueError(f"{field_name} must be > 0: {text}")
+    return str(value)
+
+
+def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, str]:
+    normalized = dict(mapping)
+    if "tlen_cancel_freq_ms" in normalized:
+        normalized["tlen_cancel_freq_ms"] = normalize_positive_int_text(
+            normalized["tlen_cancel_freq_ms"], "tlen_cancel_freq_ms"
+        )
+    return normalized
 
 
 def sanitize_return_mapping(values: Any) -> Dict[str, str]:
