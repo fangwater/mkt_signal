@@ -92,6 +92,22 @@ impl MarketMakerOpenStrategy {
         (order_id >> 32) as i32
     }
 
+    fn preview_text(raw: &str, max_chars: usize) -> String {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return "-".to_string();
+        }
+        let mut out = String::new();
+        for (idx, ch) in trimmed.chars().enumerate() {
+            if idx >= max_chars {
+                out.push_str("...");
+                break;
+            }
+            out.push(ch);
+        }
+        out
+    }
+
     fn cleanup_strategy_orders(&mut self) {
         let Some(order_mgr) = MonitorChannel::try_order_manager() else {
             return;
@@ -432,24 +448,64 @@ impl MarketMakerOpenStrategy {
 
     fn handle_mm_cancel_signal(&mut self, ctx: MmCancelCtx) {
         let precise_target = ctx.strategy_id > 0;
+        let from_key_preview =
+            Self::preview_text(&String::from_utf8_lossy(&ctx.from_key), 160);
         if precise_target {
             if ctx.strategy_id != self.strategy_id {
+                info!(
+                    "MarketMakerOpenStrategy: strategy_id={} ignore targeted MMCancel target_strategy_id={} trigger_ts={} from_key='{}'",
+                    self.strategy_id,
+                    ctx.strategy_id,
+                    ctx.trigger_ts,
+                    from_key_preview
+                );
                 return;
             }
         } else {
             if ctx.client_order_id > 0 && ctx.client_order_id != self.open_order_id {
+                info!(
+                    "MarketMakerOpenStrategy: strategy_id={} ignore MMCancel due to client_order_id mismatch signal_client_order_id={} open_order_id={} trigger_ts={} from_key='{}'",
+                    self.strategy_id,
+                    ctx.client_order_id,
+                    self.open_order_id,
+                    ctx.trigger_ts,
+                    from_key_preview
+                );
                 return;
             }
 
             let cancel_side = ctx.get_side();
             if let Some(open_side) = self.open_side {
                 if open_side != cancel_side {
+                    info!(
+                        "MarketMakerOpenStrategy: strategy_id={} skip MMCancel due to side mismatch open_side={:?} cancel_side={:?} open_order_id={} trigger_ts={} from_key='{}'",
+                        self.strategy_id,
+                        open_side,
+                        cancel_side,
+                        self.open_order_id,
+                        ctx.trigger_ts,
+                        from_key_preview
+                    );
                     return;
                 }
             }
         }
 
+        info!(
+            "MarketMakerOpenStrategy: strategy_id={} processing MMCancel precise={} open_order_id={} trigger_ts={} from_key='{}'",
+            self.strategy_id,
+            precise_target,
+            self.open_order_id,
+            ctx.trigger_ts,
+            from_key_preview
+        );
         if self.open_order_id == 0 {
+            info!(
+                "MarketMakerOpenStrategy: strategy_id={} skip MMCancel because open_order_id=0 trigger_ts={} from_key='{}'",
+                self.strategy_id,
+                ctx.trigger_ts,
+                from_key_preview
+            );
             return;
         }
 
@@ -460,8 +516,8 @@ impl MarketMakerOpenStrategy {
         if let Some(order) = order {
             if order.status.is_terminal() {
                 info!(
-                    "MarketMakerOpenStrategy: strategy_id={} open order already terminal {:?}, skip cancel order_id={}",
-                    self.strategy_id, order.status, self.open_order_id
+                    "MarketMakerOpenStrategy: strategy_id={} open order already terminal {:?}, skip cancel order_id={} trigger_ts={} from_key='{}'",
+                    self.strategy_id, order.status, self.open_order_id, ctx.trigger_ts, from_key_preview
                 );
                 return;
             }
@@ -471,28 +527,28 @@ impl MarketMakerOpenStrategy {
                     let exchange = order.venue.trade_engine_exchange();
                     if let Err(e) = TradeEngHub::publish_order_request(exchange, &cancel_bytes) {
                         error!(
-                            "MarketMakerOpenStrategy: strategy_id={} exchange={} 发送撤单请求失败: {}",
-                            self.strategy_id, exchange, e
+                            "MarketMakerOpenStrategy: strategy_id={} exchange={} 发送撤单请求失败 order_id={} trigger_ts={} from_key='{}' err={}",
+                            self.strategy_id, exchange, self.open_order_id, ctx.trigger_ts, from_key_preview, e
                         );
                     } else {
                         info!(
-                            "MarketMakerOpenStrategy: strategy_id={} 已发送撤单请求 order_id={}",
-                            self.strategy_id, self.open_order_id
+                            "MarketMakerOpenStrategy: strategy_id={} 已发送撤单请求 order_id={} exchange={} trigger_ts={} from_key='{}'",
+                            self.strategy_id, self.open_order_id, exchange, ctx.trigger_ts, from_key_preview
                         );
                         self.schedule_cancel_query_watchdog(order.client_order_id);
                     }
                 }
                 Err(e) => {
                     error!(
-                        "MarketMakerOpenStrategy: strategy_id={} 获取撤单请求字节失败: {}",
-                        self.strategy_id, e
+                        "MarketMakerOpenStrategy: strategy_id={} 获取撤单请求字节失败 order_id={} trigger_ts={} from_key='{}' err={}",
+                        self.strategy_id, self.open_order_id, ctx.trigger_ts, from_key_preview, e
                     );
                 }
             }
         } else {
-            warn!(
-                "MarketMakerOpenStrategy: strategy_id={} 未找到要撤销的订单 order_id={}",
-                self.strategy_id, self.open_order_id
+            info!(
+                "MarketMakerOpenStrategy: strategy_id={} 未找到要撤销的订单 order_id={} trigger_ts={} from_key='{}'",
+                self.strategy_id, self.open_order_id, ctx.trigger_ts, from_key_preview
             );
         }
     }
