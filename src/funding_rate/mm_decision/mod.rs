@@ -410,6 +410,7 @@ impl MmDecision {
 
         let now_us = get_timestamp_us();
         let mut cancel_sent = 0usize;
+        let mut matched_symbols = 0usize;
         for group in query.groups {
             let symbol = group.get_symbol().to_uppercase();
             if symbol.is_empty() || group.items.is_empty() {
@@ -460,9 +461,20 @@ impl MmDecision {
                     continue;
                 }
             };
+            let mut matched_preview: Vec<String> = Vec::new();
+            let mut group_cancel_sent = 0usize;
             for (item, tlen) in group.items.iter().zip(tlens.iter().copied()) {
                 if tlen >= threshold {
                     continue;
+                }
+                if matched_preview.len() < 12 {
+                    matched_preview.push(format!(
+                        "{}@{}:{:.4}<{:.4}",
+                        item.strategy_id,
+                        item.price_qv.get_count(),
+                        tlen,
+                        threshold
+                    ));
                 }
                 let return_score =
                     self.state
@@ -514,11 +526,24 @@ impl MmDecision {
                     continue;
                 }
                 cancel_sent += 1;
+                group_cancel_sent += 1;
+            }
+            if group_cancel_sent > 0 {
+                matched_symbols += 1;
+                info!(
+                    "MmDecision: MMCancel tlen hits symbol={} trigger_ts={} candidates={} matched={} threshold={:.4} strategies={}",
+                    symbol,
+                    query.trigger_ts,
+                    tick_indices.len(),
+                    group_cancel_sent,
+                    threshold,
+                    matched_preview.join(",")
+                );
             }
         }
         info!(
-            "MmDecision: MMCancel candidate query processed trigger_ts={} cancels_sent={}",
-            query.trigger_ts, cancel_sent
+            "MmDecision: MMCancel candidate query processed trigger_ts={} matched_symbols={} cancels_sent={}",
+            query.trigger_ts, matched_symbols, cancel_sent
         );
     }
 
