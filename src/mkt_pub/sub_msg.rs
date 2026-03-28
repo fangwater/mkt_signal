@@ -5,6 +5,24 @@ use log::warn;
 use serde_json::Value;
 use std::collections::HashSet;
 
+const BINANCE_SPOT_WS_URL: &str = "wss://stream.binance.com:9443/ws";
+const BINANCE_FUTURES_PUBLIC_WS_URL: &str = "wss://fstream.binance.com/public/ws";
+const BINANCE_FUTURES_MARKET_WS_URL: &str = "wss://fstream.binance.com/market/ws";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinanceFuturesWsRoute {
+    Public,
+    Market,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinanceFuturesStreamKind {
+    Depth,
+    BookTicker,
+    Trade,
+    Kline,
+}
+
 fn bitget_inst_type_for_venue(venue: TradingVenue) -> &'static str {
     match venue {
         TradingVenue::BitgetFutures => "USDT-FUTURES",
@@ -216,7 +234,7 @@ pub struct BinancePerpsSubscribeMsgs {
 }
 
 impl BinancePerpsSubscribeMsgs {
-    pub const WS_URL: &'static str = "wss://fstream.binance.com/ws";
+    pub const WS_URL: &'static str = BINANCE_FUTURES_MARKET_WS_URL;
     pub async fn new() -> Self {
         Self {
             mark_price_stream_for_all_market: serde_json::json!({
@@ -618,13 +636,41 @@ impl SubscribeMsgs {
 }
 
 impl SubscribeMsgs {
+    pub fn get_binance_ws_url_with_route(
+        venue: TradingVenue,
+        route: BinanceFuturesWsRoute,
+    ) -> &'static str {
+        match venue {
+            TradingVenue::BinanceMargin => BINANCE_SPOT_WS_URL,
+            _ => match route {
+                BinanceFuturesWsRoute::Public => BINANCE_FUTURES_PUBLIC_WS_URL,
+                BinanceFuturesWsRoute::Market => BINANCE_FUTURES_MARKET_WS_URL,
+            },
+        }
+    }
+
+    pub fn get_binance_ws_url_for_stream_kind(
+        venue: TradingVenue,
+        stream_kind: BinanceFuturesStreamKind,
+    ) -> &'static str {
+        let route = match stream_kind {
+            BinanceFuturesStreamKind::Depth
+            | BinanceFuturesStreamKind::BookTicker
+            | BinanceFuturesStreamKind::Trade => BinanceFuturesWsRoute::Public,
+            BinanceFuturesStreamKind::Kline => BinanceFuturesWsRoute::Market,
+        };
+        Self::get_binance_ws_url_with_route(venue, route)
+    }
+
     pub fn get_exchange_mkt_data_url_with_venue(
         exchange: &Exchange,
         venue: TradingVenue,
     ) -> &'static str {
         match exchange {
             //币安u本位期货合约和现货
-            Exchange::Binance => "wss://fstream.binance.com/ws",
+            Exchange::Binance => {
+                Self::get_binance_ws_url_with_route(venue, BinanceFuturesWsRoute::Market)
+            }
             //OKEXu本位期货合约和现货
             Exchange::Okex => "wss://ws.okx.com:8443/ws/v5/public",
             //Bybitu本位期货合约和现货
@@ -650,7 +696,9 @@ impl SubscribeMsgs {
     ) -> &'static str {
         match exchange {
             //币安u本位期货合约和现货
-            Exchange::Binance => "wss://fstream.binance.com/ws",
+            Exchange::Binance => {
+                Self::get_binance_ws_url_with_route(venue, BinanceFuturesWsRoute::Market)
+            }
             //OKEXu本位期货合约和现货
             Exchange::Okex => "wss://ws.okx.com:8443/ws/v5/business",
             //Bybitu本位期货合约和现货
@@ -899,5 +947,59 @@ mod tests {
         assert_eq!(payload[0].as_str(), Some("BTC_USDT"));
         assert_eq!(payload[1].as_str(), Some("100ms"));
         assert_eq!(payload[2].as_str(), Some("100"));
+    }
+
+    #[test]
+    fn binance_futures_stream_kinds_match_new_url_split() {
+        assert_eq!(
+            SubscribeMsgs::get_binance_ws_url_for_stream_kind(
+                TradingVenue::BinanceFutures,
+                BinanceFuturesStreamKind::Depth,
+            ),
+            BINANCE_FUTURES_PUBLIC_WS_URL
+        );
+        assert_eq!(
+            SubscribeMsgs::get_binance_ws_url_for_stream_kind(
+                TradingVenue::BinanceFutures,
+                BinanceFuturesStreamKind::BookTicker,
+            ),
+            BINANCE_FUTURES_PUBLIC_WS_URL
+        );
+        assert_eq!(
+            SubscribeMsgs::get_binance_ws_url_for_stream_kind(
+                TradingVenue::BinanceFutures,
+                BinanceFuturesStreamKind::Trade,
+            ),
+            BINANCE_FUTURES_PUBLIC_WS_URL
+        );
+        assert_eq!(
+            SubscribeMsgs::get_binance_ws_url_for_stream_kind(
+                TradingVenue::BinanceFutures,
+                BinanceFuturesStreamKind::Kline,
+            ),
+            BINANCE_FUTURES_MARKET_WS_URL
+        );
+        assert_eq!(
+            BinancePerpsSubscribeMsgs::WS_URL,
+            BINANCE_FUTURES_MARKET_WS_URL
+        );
+    }
+
+    #[test]
+    fn binance_margin_keeps_spot_ws_url_for_all_routes() {
+        assert_eq!(
+            SubscribeMsgs::get_binance_ws_url_with_route(
+                TradingVenue::BinanceMargin,
+                BinanceFuturesWsRoute::Public,
+            ),
+            BINANCE_SPOT_WS_URL
+        );
+        assert_eq!(
+            SubscribeMsgs::get_binance_ws_url_with_route(
+                TradingVenue::BinanceMargin,
+                BinanceFuturesWsRoute::Market,
+            ),
+            BINANCE_SPOT_WS_URL
+        );
     }
 }

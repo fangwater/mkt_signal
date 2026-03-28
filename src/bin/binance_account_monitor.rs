@@ -35,12 +35,17 @@ use url::form_urlencoded;
 type HmacSha256 = Hmac<Sha256>;
 
 /// 构造最终的用户数据 WS URL。
-/// 如果配置的 `ws_base` 已经以 `/ws` 结尾（例如 `.../pm/ws`），则直接追加 listenKey；
-/// 否则默认追加 `/ws/{listenKey}`。
+/// - 新版 private 入口优先使用 `.../private/ws?listenKey=...`
 fn build_ws_url(ws_base: &str, listen_key: &str) -> String {
     let base = ws_base.trim_end_matches('/');
-    if base.ends_with("/ws") {
-        format!("{}/{}", base, listen_key)
+    if base.ends_with("/private/ws") {
+        let mut serializer = form_urlencoded::Serializer::new(String::new());
+        serializer.append_pair("listenKey", listen_key);
+        format!("{}?{}", base, serializer.finish())
+    } else if base.ends_with("/private") {
+        let mut serializer = form_urlencoded::Serializer::new(String::new());
+        serializer.append_pair("listenKey", listen_key);
+        format!("{}/ws?{}", base, serializer.finish())
     } else {
         format!("{}/ws/{}", base, listen_key)
     }
@@ -229,7 +234,7 @@ async fn main() -> Result<()> {
     // Resolve endpoints from config
     const BINANCE_PM_WS: &str = "wss://fstream.binance.com/pm";
     const BINANCE_PM_REST: &str = "https://papi.binance.com";
-    const BINANCE_STD_FAPI_WS: &str = "wss://fstream.binance.com/ws";
+    const BINANCE_STD_FAPI_WS: &str = "wss://fstream.binance.com/private";
     const BINANCE_STD_FAPI_REST: &str = "https://fapi.binance.com";
     const BINANCE_STD_SPOT_WS_API: &str = "wss://ws-api.binance.com:443/ws-api/v3";
     const BINANCE_STD_SPOT_REST: &str = "https://api.binance.com";
@@ -383,6 +388,31 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_ws_url;
+
+    #[test]
+    fn build_ws_url_uses_private_query_format_for_new_private_base() {
+        assert_eq!(
+            build_ws_url("wss://fstream.binance.com/private", "abc123"),
+            "wss://fstream.binance.com/private/ws?listenKey=abc123"
+        );
+        assert_eq!(
+            build_ws_url("wss://fstream.binance.com/private/ws", "abc123"),
+            "wss://fstream.binance.com/private/ws?listenKey=abc123"
+        );
+    }
+
+    #[test]
+    fn build_ws_url_keeps_pm_path_format() {
+        assert_eq!(
+            build_ws_url("wss://fstream.binance.com/pm", "abc123"),
+            "wss://fstream.binance.com/pm/ws/abc123"
+        );
+    }
 }
 
 fn setup_signals(shutdown_tx: watch::Sender<bool>) {

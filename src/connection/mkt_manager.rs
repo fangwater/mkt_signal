@@ -27,7 +27,7 @@ use crate::parser::okex_parser::{
     OkexSignalParser, OkexTradeParser,
 };
 use crate::signal::common::TradingVenue;
-use crate::sub_msg::{DerivativesMetricsSubscribeMsgs, SubscribeMsgs};
+use crate::sub_msg::{BinanceFuturesStreamKind, DerivativesMetricsSubscribeMsgs, SubscribeMsgs};
 use bytes::Bytes;
 use log::{debug, error, info};
 use std::sync::Arc;
@@ -222,7 +222,11 @@ impl MktManager {
                         .await;
                     }
                     _ => {
-                        let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
+                        let url = SubscribeMsgs::get_binance_ws_url_for_stream_kind(
+                            self.cfg.venue,
+                            BinanceFuturesStreamKind::Depth,
+                        )
+                        .to_string();
                         let parser = BinanceIncParser::futures_incremental(max_levels);
                         self.spawn_connection_with_mpsc(
                             exchange,
@@ -339,7 +343,11 @@ impl MktManager {
                     .await;
                 }
                 _ => {
-                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
+                    let url = SubscribeMsgs::get_binance_ws_url_for_stream_kind(
+                        self.cfg.venue,
+                        BinanceFuturesStreamKind::Depth,
+                    )
+                    .to_string();
                     let parser = BinanceIncParser::futures_snapshot(max_levels);
                     self.spawn_connection_with_mpsc(
                         exchange,
@@ -378,7 +386,11 @@ impl MktManager {
                         .await;
                     }
                     _ => {
-                        let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
+                        let url = SubscribeMsgs::get_binance_ws_url_for_stream_kind(
+                            self.cfg.venue,
+                            BinanceFuturesStreamKind::Trade,
+                        )
+                        .to_string();
                         let parser = BinanceTradeParser::new();
                         self.spawn_connection_with_mpsc(
                             exchange,
@@ -484,9 +496,14 @@ impl MktManager {
             match exchange {
                 Exchange::Binance => {
                     let parser = BinanceKlineParser::new();
+                    let url = SubscribeMsgs::get_binance_ws_url_for_stream_kind(
+                        self.cfg.venue,
+                        BinanceFuturesStreamKind::Kline,
+                    )
+                    .to_string();
                     self.spawn_connection_with_mpsc(
                         exchange,
-                        url.clone(),
+                        url,
                         subscribe_msg,
                         format!("kline batch {}", i),
                         parser,
@@ -576,7 +593,11 @@ impl MktManager {
                         .await;
                     }
                     _ => {
-                        let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
+                        let url = SubscribeMsgs::get_binance_ws_url_for_stream_kind(
+                            self.cfg.venue,
+                            BinanceFuturesStreamKind::BookTicker,
+                        )
+                        .to_string();
                         let parser = BinanceAskBidSpreadParser::new();
                         self.spawn_connection_with_mpsc(
                             exchange,
@@ -936,8 +957,15 @@ impl MktManager {
 
     async fn start_signal_connection(&mut self) {
         let exchange = self.cfg.get_exchange();
-        let url = SubscribeMsgs::get_exchange_mkt_data_url_with_venue(&exchange, self.cfg.venue)
-            .to_string();
+        let url = match exchange {
+            Exchange::Binance => SubscribeMsgs::get_binance_ws_url_for_stream_kind(
+                self.cfg.venue,
+                BinanceFuturesStreamKind::Depth,
+            )
+            .to_string(),
+            _ => SubscribeMsgs::get_exchange_mkt_data_url_with_venue(&exchange, self.cfg.venue)
+                .to_string(),
+        };
         let signal_subscribe_msg = self.subscribe_msgs.get_time_signal_subscribe_msg();
         let tx = self.signal_tx.clone();
 
