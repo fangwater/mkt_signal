@@ -6,10 +6,13 @@ use log::{debug, warn};
 use reqwest::{header::HeaderMap, Client};
 use serde_json::Value;
 use sha2::Sha256;
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 type HmacSha256 = Hmac<Sha256>;
+const REST_HOT_LOG_INTERVAL: Duration = Duration::from_secs(10);
+const REST_HOT_TOP_N: usize = 5;
 
 #[derive(Debug)]
 struct IpClient {
@@ -68,6 +71,45 @@ pub struct Dispatcher {
     base_url_sapi: String,
     ip_clients: Vec<IpClient>,
     accounts: Vec<AccountState>,
+    rest_hot_window_started_at: Instant,
+    rest_hot_stats: HashMap<RestHotKey, RestHotStat>,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct RestHotKey {
+    req_type: String,
+    endpoint: String,
+    account: String,
+    ip: IpAddr,
+    symbol: String,
+}
+
+#[derive(Debug, Default, Clone)]
+struct RestHotStat {
+    count: u32,
+    error_count: u32,
+    last_status: u16,
+    last_code: Option<i32>,
+    max_ip_used_weight_1m: Option<u32>,
+    max_order_count_1m: Option<u32>,
+}
+
+fn hot_symbol(params: &std::collections::BTreeMap<String, String>) -> String {
+    params
+        .get("symbol")
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+        .unwrap_or("-")
+        .to_string()
+}
+
+fn max_option_u32(current: Option<u32>, next: Option<u32>) -> Option<u32> {
+    match (current, next) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
 }
 
 impl Dispatcher {
@@ -123,6 +165,8 @@ impl Dispatcher {
             base_url_sapi,
             ip_clients,
             accounts,
+            rest_hot_window_started_at: Instant::now(),
+            rest_hot_stats: HashMap::new(),
         })
     }
 
@@ -184,7 +228,91 @@ impl Dispatcher {
         best.map(|(i, _)| i)
     }
 
+    fn maybe_log_rest_hot_stats(&mut self) {
+        let now = Instant::now();
+        if now.duration_since(self.rest_hot_window_started_at) < REST_HOT_LOG_INTERVAL {
+            return;
+        }
+        if self.rest_hot_stats.is_empty() {
+            self.rest_hot_window_started_at = now;
+            return;
+        }
+
+        let window_secs = now
+            .duration_since(self.rest_hot_window_started_at)
+            .as_secs_f32();
+        let mut stats: Vec<(RestHotKey, RestHotStat)> = self.rest_hot_stats.drain().collect();
+        stats.sort_by(|a, b| {
+            b.1.count
+                .cmp(&a.1.count)
+                .then(b.1.error_count.cmp(&a.1.error_count))
+                .then(a.0.req_type.cmp(&b.0.req_type))
+                .then(a.0.endpoint.cmp(&b.0.endpoint))
+        });
+
+        let summary = stats
+            .iter()
+            .take(REST_HOT_TOP_N)
+            .map(|(key, stat)| {
+                format!(
+                    "req_type={} endpoint={} account={} ip={} symbol={} count={} err_count={} last_status={} last_code={:?} max_ip_used_weight_1m={:?} max_order_count_1m={:?}",
+                    key.req_type,
+                    key.endpoint,
+                    key.account,
+                    key.ip,
+                    key.symbol,
+                    stat.count,
+                    stat.error_count,
+                    stat.last_status,
+                    stat.last_code,
+                    stat.max_ip_used_weight_1m,
+                    stat.max_order_count_1m
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" | ");
+
+        warn!(
+            "rest hot summary: window_s={:.1} unique_keys={} top={}",
+            window_secs,
+            stats.len(),
+            summary
+        );
+        self.rest_hot_window_started_at = now;
+    }
+
+    fn record_rest_hot_stat(
+        &mut self,
+        req_type: &str,
+        endpoint: &str,
+        account: &str,
+        ip: IpAddr,
+        symbol: &str,
+        status: u16,
+        code: Option<i32>,
+        ip_used_weight_1m: Option<u32>,
+        order_count_1m: Option<u32>,
+    ) {
+        let key = RestHotKey {
+            req_type: req_type.to_string(),
+            endpoint: endpoint.to_string(),
+            account: account.to_string(),
+            ip,
+            symbol: symbol.to_string(),
+        };
+        let stat = self.rest_hot_stats.entry(key).or_default();
+        stat.count = stat.count.saturating_add(1);
+        if status >= 400 || status == 0 {
+            stat.error_count = stat.error_count.saturating_add(1);
+        }
+        stat.last_status = status;
+        stat.last_code = code;
+        stat.max_ip_used_weight_1m = max_option_u32(stat.max_ip_used_weight_1m, ip_used_weight_1m);
+        stat.max_order_count_1m = max_option_u32(stat.max_order_count_1m, order_count_1m);
+    }
+
     pub async fn dispatch(&mut self, evt: OrderRequestEvent) -> Result<DispatchResponse> {
+        self.maybe_log_rest_hot_stats();
         self.refresh_limit_windows();
         let ip_idx = self
             .select_ip(evt.weight())
@@ -258,10 +386,19 @@ impl Dispatcher {
             ser.append_pair(k, v);
         }
         let query = ser.finish();
+        let req_type = evt.req_type.as_deref().unwrap_or("unknown");
+        let symbol = hot_symbol(&evt.params);
         debug!(
-            "dispatch request: method={}, url_path={}, qs_keys={:?}",
+            "rest dispatch start: req_type={} req_id={:?} method={} endpoint={} account={} ip={} symbol={} weight={} counts_toward_order_limit={} qs_keys={:?}",
+            req_type,
+            evt.req_id,
             evt.method,
             evt.endpoint,
+            account_name,
+            ip,
+            symbol,
+            evt.weight(),
+            evt.counts_toward_order_limit,
             parts.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>()
         );
 
@@ -305,19 +442,41 @@ impl Dispatcher {
                 }
                 let suppress_http_warn = should_suppress_http_error_log(status.as_u16(), &text);
                 let top_level_code = parse_top_level_error_code(&text);
+                let top_level_msg = parse_top_level_error_msg(&text);
                 // 打印完整响应 JSON（调试模式）；4xx/5xx 同时以 warn 级别输出
                 debug!("dispatch response body (raw): {}", text);
+                self.record_rest_hot_stat(
+                    req_type,
+                    &evt.endpoint,
+                    &account_name,
+                    ip,
+                    &symbol,
+                    status.as_u16(),
+                    top_level_code,
+                    ip_used_1m,
+                    acc_used_1m,
+                );
                 if !status.is_success() {
-                    if suppress_http_warn {
-                        debug!(
-                            "http {} body: [suppressed code={}]",
+                    if status.as_u16() == 403
+                        || status.as_u16() == 418
+                        || status.as_u16() == 429
+                        || !suppress_http_warn
+                    {
+                        warn!(
+                            "rest dispatch error: req_type={} req_id={:?} method={} endpoint={} account={} ip={} symbol={} status={} code={:?} msg={:?} ip_used_weight_1m={:?} order_count_1m={:?}",
+                            req_type,
+                            evt.req_id,
+                            evt.method,
+                            evt.endpoint,
+                            account_name,
+                            ip,
+                            symbol,
                             status.as_u16(),
-                            top_level_code
-                                .map(|c| c.to_string())
-                                .unwrap_or_else(|| "unknown".to_string())
+                            top_level_code,
+                            top_level_msg,
+                            ip_used_1m,
+                            acc_used_1m
                         );
-                    } else {
-                        warn!("http {} body: {}", status.as_u16(), text);
                     }
                 }
                 if !suppress_http_warn {
@@ -354,7 +513,32 @@ impl Dispatcher {
                 })
             }
             Err(e) => {
-                debug!("dispatch network error: {}", e);
+                self.record_rest_hot_stat(
+                    req_type,
+                    &evt.endpoint,
+                    &account_name,
+                    ip,
+                    &symbol,
+                    0,
+                    None,
+                    Some(self.ip_clients[ip_idx].used_weight_1m),
+                    Some(self.accounts[acc_idx].used_orders_1m),
+                );
+                warn!(
+                    "rest dispatch network error: req_type={} req_id={:?} method={} endpoint={} account={} ip={} symbol={} weight={} counts_toward_order_limit={} ip_used_weight_1m={} order_count_1m={} err={}",
+                    req_type,
+                    evt.req_id,
+                    evt.method,
+                    evt.endpoint,
+                    account_name,
+                    ip,
+                    symbol,
+                    evt.weight(),
+                    evt.counts_toward_order_limit,
+                    self.ip_clients[ip_idx].used_weight_1m,
+                    self.accounts[acc_idx].used_orders_1m,
+                    e
+                );
                 Ok(DispatchResponse {
                     status: 0,
                     body: format!("request error: {}", e),

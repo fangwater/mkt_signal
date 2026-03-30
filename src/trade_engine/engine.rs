@@ -536,6 +536,7 @@ impl TradeEngine {
                             };
 
                         let evt = crate::trade_engine::order_event::OrderRequestEvent {
+                            req_type: Some(format!("{:?}", msg.req_type)),
                             endpoint,
                             method,
                             params,
@@ -751,6 +752,7 @@ impl TradeEngine {
                                 };
 
                             let evt = crate::trade_engine::order_event::OrderRequestEvent {
+                                req_type: Some(format!("{:?}", msg.req_type)),
                                 endpoint,
                                 method,
                                 params,

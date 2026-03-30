@@ -3,12 +3,13 @@ use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct OrderRequestEvent {
-    pub endpoint: String,                 // e.g. "/papi/v1/um/order"
-    pub method: String,                   // "POST" | "DELETE" | ...
+    pub req_type: Option<String>, // human-readable request type for logging
+    pub endpoint: String,         // e.g. "/papi/v1/um/order"
+    pub method: String,           // "POST" | "DELETE" | ...
     pub params: BTreeMap<String, String>, // key/value params (will be signed)
-    pub weight: Option<u32>,              // default 1
-    pub account: Option<String>,          // choose specific account key
-    pub req_id: Option<String>,           // optional correlation id
+    pub weight: Option<u32>,      // default 1
+    pub account: Option<String>,  // choose specific account key
+    pub req_id: Option<String>,   // optional correlation id
     #[serde(default)]
     pub counts_toward_order_limit: bool,
 }
