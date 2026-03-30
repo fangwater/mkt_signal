@@ -34,6 +34,12 @@ if [[ -z "$BIN_PATH" ]]; then
   exit 1
 fi
 
+ENV_FILE="${BASE_DIR}/env.sh"
+if [[ -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+fi
+
 dir_name="$(basename "${BASE_DIR}")"
 dir_lc="$(echo "${dir_name}" | tr 'A-Z' 'a-z')"
 dir_tag="$(echo "${dir_lc}" | sed 's/[^a-z0-9_-]/_/g')"
