@@ -448,8 +448,7 @@ impl MarketMakerOpenStrategy {
 
     fn handle_mm_cancel_signal(&mut self, ctx: MmCancelCtx) {
         let precise_target = ctx.strategy_id > 0;
-        let from_key_preview =
-            Self::preview_text(&String::from_utf8_lossy(&ctx.from_key), 160);
+        let from_key_preview = Self::preview_text(&String::from_utf8_lossy(&ctx.from_key), 160);
         if precise_target {
             if ctx.strategy_id != self.strategy_id {
                 info!(

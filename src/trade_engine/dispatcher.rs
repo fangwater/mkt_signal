@@ -628,5 +628,8 @@ fn should_suppress_http_error_log(status: u16, body: &str) -> bool {
     if status != 400 {
         return false;
     }
-    matches!(parse_top_level_error_code(body), Some(51169 | 51061))
+    matches!(
+        parse_top_level_error_code(body),
+        Some(51006 | 51061 | 51169)
+    )
 }

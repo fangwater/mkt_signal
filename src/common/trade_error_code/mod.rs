@@ -52,6 +52,10 @@ mod tests {
             Some("Post Only rejected")
         );
         assert_eq!(
+            describe_trade_error_code(Exchange::Binance, 51006),
+            Some("Exceeds maximum borrowable amount")
+        );
+        assert_eq!(
             describe_trade_error_code(Exchange::Binance, 51169),
             Some("Token pledged collateral limit reached")
         );

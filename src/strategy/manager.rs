@@ -26,7 +26,11 @@ thread_local! {
 
 fn initial_strategy_id_seed() -> i64 {
     let seed = get_timestamp_us() & STRATEGY_ID_MASK;
-    if seed <= 0 { 1 } else { seed }
+    if seed <= 0 {
+        1
+    } else {
+        seed
+    }
 }
 
 fn next_strategy_id_state(current: i64) -> (i32, i64) {
@@ -675,7 +679,10 @@ mod tests {
     #[test]
     fn next_strategy_id_state_is_monotonic_and_wraps() {
         assert_eq!(next_strategy_id_state(123), (123, 124));
-        assert_eq!(next_strategy_id_state(STRATEGY_ID_MASK), (STRATEGY_ID_MASK as i32, 1));
+        assert_eq!(
+            next_strategy_id_state(STRATEGY_ID_MASK),
+            (STRATEGY_ID_MASK as i32, 1)
+        );
         assert_eq!(next_strategy_id_state(0), (1, 2));
     }
 }

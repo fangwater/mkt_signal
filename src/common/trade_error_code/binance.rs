@@ -15,6 +15,7 @@ pub fn describe_trade_error_code(code: i32) -> Option<&'static str> {
         -4116 => Some("Duplicated client order id"),
         -4118 => Some("Reduce only margin check failed"),
         -4131 => Some("Market order rejected: price outside percent-price filter"),
+        51006 => Some("Exceeds maximum borrowable amount"),
         51061 => Some("Insufficient loanable assets"),
         51169 => Some("Token pledged collateral limit reached"),
         -4060 => Some("Invalid position side"),

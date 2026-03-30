@@ -461,6 +461,25 @@ impl MmDecision {
                     continue;
                 }
             };
+            let compared_preview = group
+                .items
+                .iter()
+                .zip(tlens.iter().copied())
+                .take(12)
+                .map(|(item, tlen)| {
+                    format!(
+                        "{}@{}:{:.4}{}",
+                        item.strategy_id,
+                        item.price_qv.get_count(),
+                        tlen,
+                        if tlen < threshold { "<hit" } else { ">=skip" }
+                    )
+                })
+                .collect::<Vec<_>>();
+            let (min_tlen, max_tlen) = tlens.iter().copied().fold(
+                (f64::INFINITY, f64::NEG_INFINITY),
+                |(min_v, max_v), value| (min_v.min(value), max_v.max(value)),
+            );
             let mut matched_preview: Vec<String> = Vec::new();
             let mut group_cancel_sent = 0usize;
             for (item, tlen) in group.items.iter().zip(tlens.iter().copied()) {
@@ -528,6 +547,20 @@ impl MmDecision {
                 cancel_sent += 1;
                 group_cancel_sent += 1;
             }
+            info!(
+                "MmDecision: MMCancel tlen compare symbol={} trigger_ts={} candidates={} threshold={:.4} min_tlen={:.4} max_tlen={:.4} details={}",
+                symbol,
+                query.trigger_ts,
+                tick_indices.len(),
+                threshold,
+                min_tlen,
+                max_tlen,
+                if compared_preview.is_empty() {
+                    "-".to_string()
+                } else {
+                    compared_preview.join(",")
+                }
+            );
             if group_cancel_sent > 0 {
                 matched_symbols += 1;
                 info!(

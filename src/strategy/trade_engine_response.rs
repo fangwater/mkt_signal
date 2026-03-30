@@ -111,7 +111,9 @@ pub trait TradeEngineResponse {
     /// OKX: insufficient margin / loanable assets.
     fn is_insufficient_margin(&self) -> bool {
         match self.exchange_enum() {
-            Some(Exchange::Binance) => matches!(self.error_code(), -2018 | -2019 | 51061 | 51169),
+            Some(Exchange::Binance) => {
+                matches!(self.error_code(), -2018 | -2019 | 51006 | 51061 | 51169)
+            }
             Some(Exchange::Okex) => matches!(self.error_code(), 51008 | 51061),
             _ => false,
         }
@@ -220,11 +222,14 @@ mod tests {
         let binance_ex = crate::common::exchange::Exchange::Binance as u32;
         let balance_insufficient = TradeEngineResponseMessage::new(400, 1, binance_ex, 123, -2018);
         let margin_insufficient = TradeEngineResponseMessage::new(400, 1, binance_ex, 123, -2019);
+        let max_borrowable_exceeded =
+            TradeEngineResponseMessage::new(400, 1, binance_ex, 123, 51006);
         let loanable_unavailable = TradeEngineResponseMessage::new(400, 1, binance_ex, 123, 51061);
         let collateral_cap = TradeEngineResponseMessage::new(400, 1, binance_ex, 123, 51169);
 
         assert!(balance_insufficient.is_insufficient_margin());
         assert!(margin_insufficient.is_insufficient_margin());
+        assert!(max_borrowable_exceeded.is_insufficient_margin());
         assert!(loanable_unavailable.is_insufficient_margin());
         assert!(collateral_cap.is_insufficient_margin());
     }

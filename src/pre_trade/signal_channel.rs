@@ -713,8 +713,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                 if candidates.is_empty() {
                     info!(
                         "MMCancelTrigger: no active MM open strategies trigger_ts={} freq_ms={}",
-                        trigger_ctx.trigger_ts,
-                        trigger_ctx.freq_ms
+                        trigger_ctx.trigger_ts, trigger_ctx.freq_ms
                     );
                     return;
                 }
@@ -793,18 +792,13 @@ fn handle_trade_signal(signal: TradeSignal) {
                 }
 
                 let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-                let from_key_preview = preview_signal_text(
-                    &String::from_utf8_lossy(&cancel_ctx.from_key),
-                    160,
-                );
+                let from_key_preview =
+                    preview_signal_text(&String::from_utf8_lossy(&cancel_ctx.from_key), 160);
                 if cancel_ctx.strategy_id > 0 {
                     let strategy_id = cancel_ctx.strategy_id;
                     info!(
                         "MMCancel: targeted strategy_id={} symbol={} trigger_ts={} from_key='{}'",
-                        strategy_id,
-                        symbol,
-                        cancel_ctx.trigger_ts,
-                        from_key_preview
+                        strategy_id, symbol, cancel_ctx.trigger_ts, from_key_preview
                     );
                     let exists = { strategy_mgr.borrow().contains(strategy_id) };
                     if !exists {

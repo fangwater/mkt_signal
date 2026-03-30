@@ -881,8 +881,7 @@ impl MarketMakerHedgeStrategy {
             Entry::Occupied(mut entry) => {
                 let (existing_due, existing_reason) = entry.get_mut();
                 *existing_due = due;
-                *existing_reason =
-                    Self::stronger_pending_query_reason(*existing_reason, reason);
+                *existing_reason = Self::stronger_pending_query_reason(*existing_reason, reason);
             }
         }
         debug!(
@@ -1908,18 +1907,19 @@ mod tests {
         strategy
             .pending_order_queries
             .insert(client_order_id, PendingOrderQueryReason::OrderWatchdog);
-        strategy.order_query_watchdogs.insert(
-            client_order_id,
-            (1, PendingOrderQueryReason::OrderWatchdog),
-        );
+        strategy
+            .order_query_watchdogs
+            .insert(client_order_id, (1, PendingOrderQueryReason::OrderWatchdog));
 
-        assert!(strategy
-            .upgrade_existing_order_query_reason(
-                client_order_id,
-                PendingOrderQueryReason::CancelRejected,
-            ));
+        assert!(strategy.upgrade_existing_order_query_reason(
+            client_order_id,
+            PendingOrderQueryReason::CancelRejected,
+        ));
         assert_eq!(
-            strategy.pending_order_queries.get(&client_order_id).copied(),
+            strategy
+                .pending_order_queries
+                .get(&client_order_id)
+                .copied(),
             Some(PendingOrderQueryReason::CancelRejected)
         );
         assert_eq!(
