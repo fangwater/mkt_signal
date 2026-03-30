@@ -4,7 +4,10 @@ use hmac::{Hmac, Mac};
 use log::{error, info};
 use mkt_signal::common::binance_account_mode::{init_binance_account_mode, BinanceAccountMode};
 use mkt_signal::common::exchange::Exchange;
-use mkt_signal::common::mkt_cfg::{home_mkt_cfg_path, load_local_ips_from_path};
+use mkt_signal::common::mkt_cfg::{
+    find_trade_engine_local_cfg_path, home_mkt_cfg_path, load_local_ips_from_path,
+    load_trade_engine_local_ips_from_toml_path,
+};
 use mkt_signal::trade_engine::config::RestConstants;
 use mkt_signal::{ApiKey, TradeEngine};
 use sha2::Sha256;
@@ -98,6 +101,40 @@ fn setup_signal_handlers(token: &CancellationToken) {
 }
 
 type HmacSha256 = Hmac<Sha256>;
+
+async fn load_trade_engine_local_ips() -> Result<(Vec<IpAddr>, String)> {
+    if let Some(path) = find_trade_engine_local_cfg_path()? {
+        let ip_values = load_trade_engine_local_ips_from_toml_path(&path).await?;
+        let local_ips = ip_values
+            .into_iter()
+            .enumerate()
+            .map(|(idx, ip)| {
+                ip.parse().with_context(|| {
+                    format!(
+                        "invalid local_ips[{}] in trade_engine config {}: {}",
+                        idx,
+                        path.display(),
+                        ip
+                    )
+                })
+            })
+            .collect::<Result<Vec<IpAddr>>>()?;
+        return Ok((local_ips, path.display().to_string()));
+    }
+
+    let cfg_path = home_mkt_cfg_path()?;
+    let (primary_ip_raw, secondary_ip_raw) = load_local_ips_from_path(&cfg_path).await?;
+    let primary_ip: IpAddr = primary_ip_raw
+        .parse()
+        .with_context(|| format!("invalid primary_local_ip: {}", primary_ip_raw))?;
+    let secondary_ip: IpAddr = secondary_ip_raw
+        .parse()
+        .with_context(|| format!("invalid secondary_local_ip: {}", secondary_ip_raw))?;
+    Ok((
+        vec![primary_ip, secondary_ip],
+        format!("{} (fallback mkt_cfg.yaml)", cfg_path.display()),
+    ))
+}
 
 fn sign_binance_query(params: &BTreeMap<String, String>, api_secret: &str) -> Result<String> {
     let mut ser = url::form_urlencoded::Serializer::new(String::new());
@@ -228,22 +265,16 @@ async fn main() -> Result<()> {
         None
     };
 
-    // 从 /home/<user>/mkt_pub/config/mkt_cfg.yaml 解析
-    let cfg_path = home_mkt_cfg_path()?;
-    let (primary_ip_raw, secondary_ip_raw) = load_local_ips_from_path(&cfg_path).await?;
-    let primary_ip: IpAddr = primary_ip_raw
-        .parse()
-        .with_context(|| format!("invalid primary_local_ip: {}", primary_ip_raw))?;
-    let secondary_ip: IpAddr = secondary_ip_raw
-        .parse()
-        .with_context(|| format!("invalid secondary_local_ip: {}", secondary_ip_raw))?;
+    let (local_ips, local_ip_source) = load_trade_engine_local_ips().await?;
     info!(
-        "using local IPs from {}: {}, {}",
-        cfg_path.display(),
-        primary_ip,
-        secondary_ip
+        "using local IPs from {}: {}",
+        local_ip_source,
+        local_ips
+            .iter()
+            .map(|ip| ip.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
     );
-    let local_ips = vec![primary_ip, secondary_ip];
 
     if !local_ips.is_empty() {
         info!(
@@ -273,7 +304,7 @@ async fn main() -> Result<()> {
         }
         info!("Required env vars: {}", required_env.join(", "));
         info!(
-            "Optional env vars: TRADE_ENGINE_CFG, {} (default=\"default\")",
+            "Optional local config: ./trade_engine.toml or ./trade engine.toml; optional env vars: {} (default=\"default\")",
             api_name_var
         );
 

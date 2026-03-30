@@ -192,7 +192,8 @@ elif [[ "$RUNTIME_ONLY" == "1" ]]; then
 
   run_deploy bash scripts/deploy_mm_trade_engine.sh \
     --exchange binance \
-    --env-suffix "$ENV_SUFFIX"
+    --env-suffix "$ENV_SUFFIX" \
+    --runtime-only
 
   run_deploy bash scripts/deploy_mm_signal.sh \
     --exchange binance \
