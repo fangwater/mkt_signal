@@ -35,5 +35,5 @@ async fn main() -> Result<()> {
     );
 
     let mut app = FusionFactorPubApp::new(&args.config, args.venue).await?;
-    app.run()
+    app.run().await
 }

@@ -6,10 +6,20 @@ use std::fs;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct FusionFactorPubConfig {
-    pub symbols: Vec<String>,
-    pub model_manager: ModelManagerConfig,
+    pub tlen_server: TlenServerConfig,
+    #[serde(default)]
+    pub model_manager: Option<ModelManagerConfig>,
     #[serde(default)]
     pub rl_factor: RlFactorConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TlenServerConfig {
+    pub base_url: String,
+    #[serde(default = "default_request_timeout_ms")]
+    pub request_timeout_ms: u64,
+    #[serde(default = "default_symbol_reload_secs")]
+    pub symbol_reload_secs: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -62,21 +72,18 @@ impl FusionFactorPubConfig {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.symbols.is_empty() {
-            anyhow::bail!("symbols must not be empty");
-        }
-        if self.symbols.iter().any(|s| s.trim().is_empty()) {
-            anyhow::bail!("symbols must not contain empty item");
-        }
+        self.tlen_server.validate()?;
 
-        if self.model_manager.base_url.trim().is_empty() {
-            anyhow::bail!("model_manager.base_url must not be empty");
-        }
-        if self.model_manager.model_name.trim().is_empty() {
-            anyhow::bail!("model_manager.model_name must not be empty");
-        }
-        if self.model_manager.request_timeout_ms == 0 {
-            anyhow::bail!("model_manager.request_timeout_ms must be > 0");
+        if let Some(model_manager) = &self.model_manager {
+            if model_manager.base_url.trim().is_empty() {
+                anyhow::bail!("model_manager.base_url must not be empty");
+            }
+            if model_manager.model_name.trim().is_empty() {
+                anyhow::bail!("model_manager.model_name must not be empty");
+            }
+            if model_manager.request_timeout_ms == 0 {
+                anyhow::bail!("model_manager.request_timeout_ms must be > 0");
+            }
         }
         self.rl_factor.validate()?;
         Ok(())
@@ -88,8 +95,10 @@ impl FusionFactorPubConfig {
     }
 
     /// 自动生成 output service path: fusion_factor/{model_name}
-    pub fn output_service_path(&self) -> String {
-        format!("fusion_factor/{}", self.model_manager.model_name)
+    pub fn output_service_path(&self) -> Option<String> {
+        self.model_manager
+            .as_ref()
+            .map(|mm| format!("fusion_factor/{}", mm.model_name))
     }
 }
 
@@ -137,4 +146,23 @@ fn default_rl_rolling_window() -> usize {
 
 fn default_rl_scale_factor() -> f64 {
     1.0
+}
+
+fn default_symbol_reload_secs() -> u64 {
+    180
+}
+
+impl TlenServerConfig {
+    fn validate(&self) -> Result<()> {
+        if self.base_url.trim().is_empty() {
+            anyhow::bail!("tlen_server.base_url must not be empty");
+        }
+        if self.request_timeout_ms == 0 {
+            anyhow::bail!("tlen_server.request_timeout_ms must be > 0");
+        }
+        if self.symbol_reload_secs == 0 {
+            anyhow::bail!("tlen_server.symbol_reload_secs must be > 0");
+        }
+        Ok(())
+    }
 }

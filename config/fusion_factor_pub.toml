@@ -1,14 +1,14 @@
 # Fusion factor 发布配置
 
-symbols = [
-  "BTCUSDT", "ETHUSDT", "SOLUSDT",
-  "AAVEUSDT", "ADAUSDT", "ARBUSDT", "ATOMUSDT", "AVAXUSDT", "BCHUSDT",
-  "BNBUSDT", "DOGEUSDT", "DOTUSDT", "ETCUSDT",
-  "FILUSDT", "HBARUSDT", "LINKUSDT", "LTCUSDT", "ONDOUSDT",
-  "TONUSDT", "TRUMPUSDT", "TRXUSDT", "WLDUSDT", "XLMUSDT", "XRPUSDT",
-]
+# 从 tlen_config_server 的 amount_thresholds 拉 symbol 列表
+[tlen_server]
+base_url = "http://127.0.0.1:6322"
+request_timeout_ms = 5000
+symbol_reload_secs = 180
 
-# 启动时按 symbol 拉取有序 factor 列表，并固化到进程内
+# 可选: 配置后进入 fusion+rl 模式。
+# 启动/刷新 symbol 时会按当前 symbol 集合从 model_manager 拉取有序 factor 列表，
+# 并发送 fusion FeatureMsg；留空/删除该段时进入 rl_only 模式，仅发布 rl_return_volatility。
 [model_manager]
 base_url = "http://127.0.0.1:6300"
 model_name = "binance-futures-mm-xgb-test"

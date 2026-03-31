@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use super::cfg::{
     ClipRange as FusionClipRange, FusionFactorPubConfig, ModelManagerConfig,
-    RlFactorConfig as FusionRlFactorConfig,
+    RlFactorConfig as FusionRlFactorConfig, TlenServerConfig,
 };
 use super::factor_enum::FusionFactorId;
 use super::publisher::FusionFactorPublisher;
@@ -58,6 +58,7 @@ const RL_FACTOR_PAYLOAD_MAX_BYTES: usize = 256;
 const RL_FACTOR_PUBLISHER_HISTORY_SIZE: usize = 128;
 const RL_FACTOR_SUBSCRIBER_MAX_BUFFER_SIZE: usize = 1024;
 const RL_FACTOR_WARN_INTERVAL_SECS: u64 = 5;
+const SYMBOL_RELOAD_WARN_INTERVAL_SECS: u64 = 60;
 const ROLLING_CORR_CLOSE_VOLUME_14_WINDOW: usize = 14;
 const ROLLING_CORR_OPEN_VOLUME_300_WINDOW: usize = 300;
 const ROLLING_CORR_MID_MIDVOL_300_WINDOW: usize = 300;
@@ -951,12 +952,14 @@ pub struct FusionFactorPubApp {
     venue: TradingVenue,
     trade_flow_feature_rocksdb_path: String,
     trade_flow_subscriber: Subscriber<ipc::Service, [u8; TRADE_FLOW_MAX_BYTES], ()>,
-    publisher: FusionFactorPublisher,
+    tlen_server: Option<TlenServerConfig>,
+    model_manager: Option<ModelManagerConfig>,
+    publisher: Option<FusionFactorPublisher>,
     rl_config: RlReturnVolatilityRuntimeConfig,
     rl_publisher: RlFactorPublisher,
     allowed_symbols: HashSet<String>,
     symbol_all_ready_seen: HashSet<String>,
-    symbol_factor_plans: HashMap<String, SymbolFactorPlan>,
+    symbol_factor_plans: Option<HashMap<String, SymbolFactorPlan>>,
     symbol_states: HashMap<String, SymbolCalcState>,
     symbol_rolling_stats: HashMap<String, SymbolRollingStats>,
     depth_attached_count: u64,
@@ -980,6 +983,9 @@ pub struct FusionFactorPubApp {
     publish_failed_count: u64,
     rl_published_count: u64,
     rl_publish_failed_count: u64,
+    last_symbol_reload: Instant,
+    symbol_reload_interval: Option<Duration>,
+    last_symbol_reload_warn: Instant,
     last_stats_log: Instant,
 }
 
@@ -988,52 +994,65 @@ impl FusionFactorPubApp {
         let cfg = FusionFactorPubConfig::load(config_path)?;
         let venue_slug = venue.data_pub_slug().to_string();
         let trade_flow_feature_rocksdb_path = resolve_trade_flow_feature_rocksdb_path(&venue_slug)?;
-
-        let allowed_symbols: Vec<String> = cfg
-            .symbols
-            .iter()
-            .map(|s| normalize_symbol_for_venue(s, venue))
-            .filter(|s| !s.is_empty())
-            .collect();
-        if allowed_symbols.is_empty() {
-            anyhow::bail!(
-                "no valid symbols after normalization for venue={}",
-                venue_slug
-            );
-        }
-
-        let symbol_factor_plans = load_symbol_factor_plans(&cfg.model_manager, &allowed_symbols)
+        let tlen_server = cfg.tlen_server.clone();
+        let model_manager = cfg.model_manager.clone();
+        let allowed_symbols = load_symbols_from_tlen_server(&cfg.tlen_server, venue, &venue_slug)
             .await
             .with_context(|| {
-                format!(
-                    "load symbol factor plans failed: model={} symbols={}",
-                    cfg.model_manager.model_name,
-                    allowed_symbols.len()
-                )
+                format!("load symbols from tlen_server failed: venue={}", venue_slug)
             })?;
+        if allowed_symbols.is_empty() {
+            anyhow::bail!("tlen_server returned no symbols for venue={}", venue_slug);
+        }
+
         let trade_flow_subscriber =
             Self::create_trade_flow_subscriber(&venue_slug, cfg.trade_flow_channel())?;
-
-        let output_service_path = cfg.output_service_path();
-        let publisher_node_name = format!("fusion_pub_{}", venue_slug.replace('-', "_"));
-        let publisher = FusionFactorPublisher::new(&publisher_node_name, &output_service_path)
-            .with_context(|| {
-                format!(
-                    "create fusion factor publisher failed: service_path={}",
-                    output_service_path
-                )
-            })?;
         let rl_config = RlReturnVolatilityRuntimeConfig::from_fusion_config(&cfg.rl_factor)?;
         let rl_publisher = RlFactorPublisher::new(&venue_slug)?;
+        let (publisher, symbol_factor_plans, output_service_path, mode_label) =
+            if let Some(model_manager) = &model_manager {
+                let symbol_factor_plans = load_symbol_factor_plans(model_manager, &allowed_symbols)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "load symbol factor plans failed: model={} symbols={}",
+                            model_manager.model_name,
+                            allowed_symbols.len()
+                        )
+                    })?;
+                let output_service_path = cfg
+                    .output_service_path()
+                    .context("missing output_service_path for configured model_manager")?;
+                let publisher_node_name = format!("fusion_pub_{}", venue_slug.replace('-', "_"));
+                let publisher =
+                    FusionFactorPublisher::new(&publisher_node_name, &output_service_path)
+                        .with_context(|| {
+                            format!(
+                                "create fusion factor publisher failed: service_path={}",
+                                output_service_path
+                            )
+                        })?;
+                (
+                    Some(publisher),
+                    Some(symbol_factor_plans),
+                    Some(output_service_path),
+                    "fusion+rl",
+                )
+            } else {
+                (None, None, None, "rl_only")
+            };
 
         info!(
-            "FusionFactorPubApp created: venue={} symbols={} trade_flow_channel=factor_pub/{}/{} rocksdb_path={} output_service={}",
+            "FusionFactorPubApp created: venue={} mode={} symbol_source={} symbols={} sample={} trade_flow_channel=factor_pub/{}/{} rocksdb_path={} output_service={}",
             venue_slug,
+            mode_label,
+            "tlen_server.amount_thresholds",
             allowed_symbols.len(),
+            format_symbol_sample(&allowed_symbols),
             venue_slug,
             cfg.trade_flow_channel(),
             trade_flow_feature_rocksdb_path,
-            output_service_path,
+            output_service_path.as_deref().unwrap_or("-"),
         );
         info!(
             "FusionFactorPubApp[{}] rl config: factor={} source={} pct_change_period={} rolling_window={} scale_factor={} clip={:?}",
@@ -1051,6 +1070,8 @@ impl FusionFactorPubApp {
             venue,
             trade_flow_feature_rocksdb_path,
             trade_flow_subscriber,
+            tlen_server: tlen_server.clone(),
+            model_manager,
             publisher,
             rl_config,
             rl_publisher,
@@ -1080,6 +1101,12 @@ impl FusionFactorPubApp {
             publish_failed_count: 0,
             rl_published_count: 0,
             rl_publish_failed_count: 0,
+            last_symbol_reload: Instant::now(),
+            symbol_reload_interval: tlen_server
+                .as_ref()
+                .map(|cfg| Duration::from_secs(cfg.symbol_reload_secs)),
+            last_symbol_reload_warn: Instant::now()
+                - Duration::from_secs(SYMBOL_RELOAD_WARN_INTERVAL_SECS),
             last_stats_log: Instant::now(),
         })
     }
@@ -1125,7 +1152,97 @@ impl FusionFactorPubApp {
         Ok(subscriber)
     }
 
-    pub fn run(&mut self) -> Result<()> {
+    async fn maybe_reload_symbols(&mut self) {
+        let Some(interval) = self.symbol_reload_interval else {
+            return;
+        };
+        if self.last_symbol_reload.elapsed() < interval {
+            return;
+        }
+        self.last_symbol_reload = Instant::now();
+
+        let Some(tlen_server) = self.tlen_server.clone() else {
+            return;
+        };
+        match load_symbols_from_tlen_server(&tlen_server, self.venue, &self.venue_slug).await {
+            Ok(symbols) => {
+                if let Err(err) = self.apply_allowed_symbols_update(symbols).await {
+                    self.warn_symbol_reload_throttled(&format!(
+                        "fusion symbol reload apply failed: venue={} err={:#}",
+                        self.venue_slug, err
+                    ));
+                }
+            }
+            Err(err) => {
+                self.warn_symbol_reload_throttled(&format!(
+                    "fusion symbol reload failed: venue={} err={:#}",
+                    self.venue_slug, err
+                ));
+            }
+        }
+    }
+
+    async fn apply_allowed_symbols_update(&mut self, symbols: Vec<String>) -> Result<()> {
+        let new_allowed: HashSet<String> = symbols.into_iter().collect();
+        if new_allowed.is_empty() {
+            anyhow::bail!("symbol reload produced empty set");
+        }
+        if new_allowed == self.allowed_symbols {
+            return Ok(());
+        }
+
+        let retired: HashSet<String> = self
+            .allowed_symbols
+            .difference(&new_allowed)
+            .cloned()
+            .collect();
+        if let Some(model_manager) = self.model_manager.clone() {
+            let mut sorted_symbols: Vec<String> = new_allowed.iter().cloned().collect();
+            sorted_symbols.sort_unstable();
+            let plans = load_symbol_factor_plans(&model_manager, &sorted_symbols)
+                .await
+                .with_context(|| {
+                    format!(
+                        "reload symbol factor plans failed: model={} symbols={}",
+                        model_manager.model_name,
+                        sorted_symbols.len()
+                    )
+                })?;
+            self.symbol_factor_plans = Some(plans);
+        }
+
+        self.allowed_symbols = new_allowed;
+        self.symbol_states
+            .retain(|symbol, _| self.allowed_symbols.contains(symbol));
+        self.symbol_rolling_stats
+            .retain(|symbol, _| self.allowed_symbols.contains(symbol));
+        self.symbol_all_ready_seen
+            .retain(|symbol| self.allowed_symbols.contains(symbol));
+        if let Some(plans) = self.symbol_factor_plans.as_mut() {
+            plans.retain(|symbol, _| self.allowed_symbols.contains(symbol));
+        }
+
+        info!(
+            "FusionFactorPubApp[{}] symbols reloaded: online_symbols={} sample={} retired_symbols={} retired_sample={}",
+            self.venue_slug,
+            self.allowed_symbols.len(),
+            format_symbol_sample_set(&self.allowed_symbols),
+            retired.len(),
+            format_symbol_sample_set(&retired),
+        );
+        Ok(())
+    }
+
+    fn warn_symbol_reload_throttled(&mut self, msg: &str) {
+        if self.last_symbol_reload_warn.elapsed()
+            >= Duration::from_secs(SYMBOL_RELOAD_WARN_INTERVAL_SECS)
+        {
+            warn!("{}", msg);
+            self.last_symbol_reload_warn = Instant::now();
+        }
+    }
+
+    pub async fn run(&mut self) -> Result<()> {
         self.bootstrap_from_rocksdb()?;
 
         // Drain stale IPC messages buffered before this process started.
@@ -1134,13 +1251,15 @@ impl FusionFactorPubApp {
             drained += 1;
         }
         info!(
-            "FusionFactorPubApp[{}] started: symbols={} trade_flow=single_stream drained_stale={}",
+            "FusionFactorPubApp[{}] started: symbols={} sample={} trade_flow=single_stream drained_stale={}",
             self.venue_slug,
             self.allowed_symbols.len(),
+            format_symbol_sample_set(&self.allowed_symbols),
             drained,
         );
 
         loop {
+            self.maybe_reload_symbols().await;
             let mut has_message = false;
 
             // trade_flow 是计算触发源，优先消费可降低触发延迟。
@@ -1191,6 +1310,11 @@ impl FusionFactorPubApp {
             }
 
             if self.last_stats_log.elapsed() >= Duration::from_secs(STATS_LOG_INTERVAL_SECS) {
+                let (pub_total, pub_dropped) = self
+                    .publisher
+                    .as_ref()
+                    .map(|publisher| (publisher.published_count(), publisher.dropped_count()))
+                    .unwrap_or((0, 0));
                 info!(
                     "FusionFactorPubApp[{}] stats: raw_msgs={} trade_flow_msgs={} triggers={} decode_errors={} depth_attached={} missing_depth={} factor118_ready={} trade_drop_symbols={} drop_symbol_samples={:?} calc_symbols={} factor_plan={} factor_eval={} factor_ready={} factor_warming_up={} factor_invalid={} factor_missing_depth={} published={} publish_failed={} pub_total={} pub_dropped={} rl_published={} rl_publish_failed={} rl_pub_total={} rl_pub_dropped={} last_decode_error={}",
                     self.venue_slug,
@@ -1212,8 +1336,8 @@ impl FusionFactorPubApp {
                     self.factor_missing_depth_count,
                     self.published_count,
                     self.publish_failed_count,
-                    self.publisher.published_count(),
-                    self.publisher.dropped_count(),
+                    pub_total,
+                    pub_dropped,
                     self.rl_published_count,
                     self.rl_publish_failed_count,
                     self.rl_publisher.published_count(),
@@ -1332,10 +1456,11 @@ impl FusionFactorPubApp {
         for symbol in symbol_list {
             let cf_name = trade_flow_feature_cf_name(&self.venue_slug, &symbol);
             let Some(cf) = db.cf_handle(&cf_name) else {
-                panic!(
+                warn!(
                     "fusion bootstrap missing rocksdb history: venue={} symbol={} cf={} path={}",
                     self.venue_slug, symbol, cf_name, self.trade_flow_feature_rocksdb_path
                 );
+                continue;
             };
 
             let mut records = Vec::new();
@@ -1370,10 +1495,11 @@ impl FusionFactorPubApp {
             }
 
             if records.is_empty() {
-                panic!(
+                warn!(
                     "fusion bootstrap missing rocksdb history rows: venue={} symbol={} cf={} path={}",
                     self.venue_slug, symbol, cf_name, self.trade_flow_feature_rocksdb_path
                 );
+                continue;
             }
 
             // 裁掉尾部连续的全零 volume/amount bar（rocksdb 写入了未完成的空槽位）
@@ -1405,6 +1531,7 @@ impl FusionFactorPubApp {
         );
         let venue_slug = self.venue_slug.clone();
         let symbol_factor_plans = self.symbol_factor_plans.clone();
+        let mut publisher = self.publisher.take();
 
         let mut total_loaded = 0usize;
         let mut total_calculated = 0u64;
@@ -1417,9 +1544,9 @@ impl FusionFactorPubApp {
         for sr in symbol_records_vec {
             let symbol_result = Self::replay_symbol_records(
                 &venue_slug,
-                &symbol_factor_plans,
+                symbol_factor_plans.as_ref(),
                 sr,
-                &mut self.publisher,
+                publisher.as_mut(),
             );
             let BootstrapSymbolReplayResult {
                 symbol,
@@ -1464,14 +1591,15 @@ impl FusionFactorPubApp {
             total_bootstrap_published,
             started.elapsed().as_millis()
         );
+        self.publisher = publisher;
         Ok(())
     }
 
     fn replay_symbol_records(
         venue_slug: &str,
-        symbol_factor_plans: &HashMap<String, SymbolFactorPlan>,
+        symbol_factor_plans: Option<&HashMap<String, SymbolFactorPlan>>,
         symbol_records: BootstrapSymbolRecords,
-        publisher: &mut FusionFactorPublisher,
+        mut publisher: Option<&mut FusionFactorPublisher>,
     ) -> BootstrapSymbolReplayResult {
         let BootstrapSymbolRecords {
             symbol,
@@ -1489,7 +1617,7 @@ impl FusionFactorPubApp {
         let mut interval_warming_up = 0u64;
         let mut interval_other_status = 0u64;
         let mut rolling_stats = SymbolRollingStats::default();
-        let plan = symbol_factor_plans.get(&symbol);
+        let plan = symbol_factor_plans.and_then(|plans| plans.get(&symbol));
         let needs_factor_118 = plan
             .map(|plan| {
                 plan.ordered_factors
@@ -1530,16 +1658,18 @@ impl FusionFactorPubApp {
                     );
                     if eval_result.status == 0 {
                         all_ready_seen = true;
-                        let ts_ms = msg.ts / 1000;
-                        let feature_msg = FeatureMsg::create(
-                            symbol.clone(),
-                            ts_ms,
-                            FeatureStatus::Reload as u8,
-                            eval_result.factor_values.clone(),
-                        );
-                        if let Ok(bytes) = feature_msg.to_bytes() {
-                            publisher.publish(&bytes);
-                            bootstrap_published = bootstrap_published.saturating_add(1);
+                        if let Some(publisher) = publisher.as_deref_mut() {
+                            let ts_ms = msg.ts / 1000;
+                            let feature_msg = FeatureMsg::create(
+                                symbol.clone(),
+                                ts_ms,
+                                FeatureStatus::Reload as u8,
+                                eval_result.factor_values.clone(),
+                            );
+                            if let Ok(bytes) = feature_msg.to_bytes() {
+                                publisher.publish(&bytes);
+                                bootstrap_published = bootstrap_published.saturating_add(1);
+                            }
                         }
                     } else if eval_result.status == 1 && all_ready_seen {
                         let warming_factors: Vec<&str> = eval_result
@@ -1806,6 +1936,10 @@ impl FusionFactorPubApp {
             }
         }
 
+        if self.symbol_factor_plans.is_none() {
+            return Some(ReplayEvalSummary::missing_plan());
+        }
+
         let eval_started = Instant::now();
         let Some(eval_result) = self.evaluate_ordered_factors(&symbol, depth_opt) else {
             if emit_output {
@@ -1875,7 +2009,12 @@ impl FusionFactorPubApp {
             FeatureMsg::create(symbol, ts_ms, eval_result.status, eval_result.factor_values);
         match feature_msg.to_bytes() {
             Ok(bytes) => {
-                if self.publisher.publish(&bytes) {
+                if self
+                    .publisher
+                    .as_mut()
+                    .map(|publisher| publisher.publish(&bytes))
+                    .unwrap_or(false)
+                {
                     self.published_count = self.published_count.saturating_add(1);
                     if self.published_count % 500 == 1 {
                         info!(
@@ -1907,12 +2046,14 @@ impl FusionFactorPubApp {
         symbol: &str,
         depth: Option<&DepthDerived>,
     ) -> Option<OrderedEvalResult> {
-        let needs_factor_118 = self
-            .symbol_factor_plans
-            .get(symbol)?
-            .ordered_factors
-            .iter()
-            .any(|factor| factor.factor_id == Some(FusionFactorId::Factor118));
+        let needs_factor_118 = {
+            let symbol_factor_plans = self.symbol_factor_plans.as_ref()?;
+            symbol_factor_plans
+                .get(symbol)?
+                .ordered_factors
+                .iter()
+                .any(|factor| factor.factor_id == Some(FusionFactorId::Factor118))
+        };
         let factor_118_result = if needs_factor_118 {
             depth.and_then(|d| self.compute_factor_118(symbol, d))
         } else {
@@ -1922,7 +2063,8 @@ impl FusionFactorPubApp {
             let state = self.symbol_states.get_mut(symbol)?;
             Self::build_symbol_series_from_state(state)
         };
-        let plan = self.symbol_factor_plans.get(symbol)?;
+        let symbol_factor_plans = self.symbol_factor_plans.as_ref()?;
+        let plan = symbol_factor_plans.get(symbol)?;
         Some(Self::evaluate_ordered_factors_with_plan(
             plan,
             factor_118_result,
@@ -5758,6 +5900,17 @@ struct SymbolDetailResp {
 }
 
 #[derive(Debug, Deserialize)]
+struct AmountThresholdResp {
+    thresholds: HashMap<String, AmountThresholdItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AmountThresholdItem {
+    medium_notional_threshold: f64,
+    large_notional_threshold: f64,
+}
+
+#[derive(Debug, Deserialize)]
 struct LoginResp {
     token: String,
 }
@@ -5765,6 +5918,52 @@ struct LoginResp {
 #[derive(Debug, Serialize)]
 struct LoginReq<'a> {
     password: &'a str,
+}
+
+async fn load_symbols_from_tlen_server(
+    tlen: &TlenServerConfig,
+    venue: TradingVenue,
+    venue_slug: &str,
+) -> Result<Vec<String>> {
+    let base_url = tlen.base_url.trim_end_matches('/');
+    let client = Client::builder()
+        .timeout(Duration::from_millis(tlen.request_timeout_ms))
+        .build()
+        .context("build reqwest client for tlen_server failed")?;
+
+    let url = format!("{}/api/thresholds", base_url);
+    let resp = client
+        .get(&url)
+        .query(&[("venue", venue_slug), ("config_type", "amount_thresholds")])
+        .send()
+        .await
+        .with_context(|| format!("GET {} failed", url))?
+        .error_for_status()
+        .with_context(|| format!("GET {} returned error status", url))?;
+
+    let payload: AmountThresholdResp = resp
+        .json()
+        .await
+        .with_context(|| format!("decode amount thresholds failed: {}", url))?;
+
+    let mut symbols = Vec::with_capacity(payload.thresholds.len());
+    for (raw_symbol, threshold) in payload.thresholds {
+        if !threshold.medium_notional_threshold.is_finite()
+            || !threshold.large_notional_threshold.is_finite()
+            || threshold.medium_notional_threshold <= 0.0
+            || threshold.large_notional_threshold <= 0.0
+            || threshold.medium_notional_threshold > threshold.large_notional_threshold
+        {
+            continue;
+        }
+        let symbol = normalize_symbol_for_venue(&raw_symbol, venue);
+        if !symbol.is_empty() {
+            symbols.push(symbol);
+        }
+    }
+    symbols.sort_unstable();
+    symbols.dedup();
+    Ok(symbols)
 }
 
 async fn load_symbol_factor_plans(
@@ -6413,6 +6612,21 @@ fn resolve_trade_flow_feature_rocksdb_path(venue_slug: &str) -> Result<String> {
     path.push("data");
     path.push("trade_flow_feature_pub_rocksdb");
     Ok(path.to_string_lossy().to_string())
+}
+
+fn format_symbol_sample(symbols: &[String]) -> String {
+    let sample: Vec<&str> = symbols.iter().take(5).map(|s| s.as_str()).collect();
+    if sample.is_empty() {
+        "[]".to_string()
+    } else {
+        format!("[{}]", sample.join(","))
+    }
+}
+
+fn format_symbol_sample_set(symbols: &HashSet<String>) -> String {
+    let mut sorted: Vec<String> = symbols.iter().cloned().collect();
+    sorted.sort_unstable();
+    format_symbol_sample(&sorted)
 }
 
 fn parse_trade_flow_symbol(data: &[u8]) -> Result<&str> {
