@@ -200,7 +200,7 @@ fi
 if [[ "$DO_SCRIPTS" -eq 1 ]]; then
   mkdir -p "$TARGET_DIR/mm_scripts"
   mkdir -p "$TARGET_DIR/scripts"
-  for script in start_manual_mm_signal.sh stop_manual_mm_signal.sh sync_mm_tlen_threshold.py print_mm_tlen_threshold.py; do
+  for script in start_manual_mm_signal.sh stop_manual_mm_signal.sh print_mm_tlen_threshold.py; do
     if [[ -f "$ROOT_DIR/mm_scripts/$script" ]]; then
       rsync -a "$ROOT_DIR/mm_scripts/$script" "$TARGET_DIR/mm_scripts/"
       chmod +x "$TARGET_DIR/mm_scripts/$script"

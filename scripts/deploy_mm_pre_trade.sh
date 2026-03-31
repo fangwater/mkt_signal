@@ -136,7 +136,7 @@ fi
 
 if [[ "$DO_SCRIPTS" -eq 1 ]]; then
   mkdir -p "$TARGET_DIR/mm_scripts"
-  for script in start_mm_pre_trade.sh stop_mm_pre_trade.sh sync_mm_tlen_threshold.py print_mm_tlen_threshold.py; do
+  for script in start_mm_pre_trade.sh stop_mm_pre_trade.sh print_mm_tlen_threshold.py; do
     if [[ -f "$ROOT_DIR/mm_scripts/$script" ]]; then
       rsync -a "$ROOT_DIR/mm_scripts/$script" "$TARGET_DIR/mm_scripts/"
       chmod +x "$TARGET_DIR/mm_scripts/$script"

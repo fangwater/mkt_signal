@@ -18,7 +18,7 @@ if [[ ! -f "$APP_SCRIPT" ]]; then
 fi
 
 HOST="${HOST:-0.0.0.0}"
-PORT="${PORT:-18161}"
+PORT="${PORT:-6322}"
 DEFAULT_VENUE="${DEFAULT_VENUE:-${DEFAULT_OPEN_VENUE:-binance-futures}}"
 APP_NAME="${PM2_NAME:-tlen_config_server_shared}"
 
