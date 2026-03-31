@@ -361,6 +361,7 @@ impl MmDecision {
             }
         };
         let mut ctx = ctx;
+        ctx.request_seq = query.request_seq;
         let hedge_symbol = ctx.get_opening_symbol();
         let tick_indices: Vec<i64> = ctx.price_qv_list.iter().map(|qv| qv.get_count()).collect();
         if tick_indices.is_empty() {
@@ -396,9 +397,10 @@ impl MmDecision {
             return;
         }
         info!(
-            "MmDecision: MMHedge query reply symbol={} levels={}",
+            "MmDecision: MMHedge query reply symbol={} levels={} request_seq={}",
             symbol,
-            ctx.price_qv_list.len()
+            ctx.price_qv_list.len(),
+            ctx.request_seq
         );
     }
 

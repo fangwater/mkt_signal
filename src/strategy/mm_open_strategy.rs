@@ -1179,7 +1179,7 @@ impl MarketMakerOpenStrategy {
                 order.status = OrderExecutionStatus::Create;
                 order.set_exchange_order_id(order_update.order_id());
                 order.set_create_time(order_update.event_time());
-                info!(
+                debug!(
                     "✅ MM订单已挂单: strategy_id={} client_order_id={} exchange_order_id={} symbol={} side={:?} price={:.6} qty={:.4}",
                     self.strategy_id,
                     client_order_id,
@@ -1201,7 +1201,7 @@ impl MarketMakerOpenStrategy {
                     order.side,
                     order.cumulative_filled_quantity,
                 ));
-                info!(
+                debug!(
                     "🚫 MM订单已撤销: strategy_id={} client_order_id={} exchange_order_id={} symbol={} filled={:.4}/{:.4}",
                     self.strategy_id,
                     client_order_id,
@@ -1224,7 +1224,7 @@ impl MarketMakerOpenStrategy {
                     order.side,
                     order.cumulative_filled_quantity,
                 ));
-                info!(
+                debug!(
                     "✅ MM订单已完全成交: strategy_id={} client_order_id={} exchange_order_id={} symbol={}",
                     self.strategy_id,
                     client_order_id,
@@ -1545,7 +1545,7 @@ impl MarketMakerOpenStrategy {
         drop(order_manager);
 
         if status == OrderStatus::Filled {
-            info!(
+            debug!(
                 "✅ MM订单成交完成: strategy_id={} client_order_id={} symbol={} price={:.6} cumulative={:.4}",
                 self.strategy_id,
                 client_order_id,

@@ -74,6 +74,8 @@ pub struct MarketMakerHedgeStrategy {
     hedge_plan: Vec<HedgePlanOrder>,
     hedge_order_meta: HashMap<i64, HedgeOrderMeta>,
     hedge_order_ids: HashSet<i64>,
+    hedge_request_seq: u64,
+    pending_hedge_request_seq: Option<u64>,
     alive_flag: bool,
     next_query_ts_us: i64,
     pending_query: bool,
@@ -105,6 +107,8 @@ impl MarketMakerHedgeStrategy {
             hedge_plan: Vec::new(),
             hedge_order_meta: HashMap::new(),
             hedge_order_ids: HashSet::new(),
+            hedge_request_seq: 0,
+            pending_hedge_request_seq: None,
             alive_flag: true,
             next_query_ts_us: now.saturating_add(HEDGE_QUERY_INTERVAL_US),
             pending_query: false,
@@ -417,12 +421,41 @@ impl MarketMakerHedgeStrategy {
     fn handle_flat_inventory_no_query(&mut self, now: i64) {
         self.pending_query = false;
         self.query_watchdog_due_ts = 0;
+        self.pending_hedge_request_seq = None;
         self.period_buy_qty = 0.0;
         self.period_sell_qty = 0.0;
         self.next_query_ts_us = now.saturating_add(HEDGE_QUERY_INTERVAL_US);
     }
 
+    fn next_hedge_request_seq(&mut self) -> u64 {
+        self.hedge_request_seq = self.hedge_request_seq.wrapping_add(1);
+        if self.hedge_request_seq == 0 {
+            self.hedge_request_seq = 1;
+        }
+        self.hedge_request_seq
+    }
+
     fn handle_mm_hedge_signal(&mut self, ctx: MmHedgeCtx) {
+        let Some(expected_request_seq) = self.pending_hedge_request_seq else {
+            warn!(
+                "MarketMakerHedgeStrategy: strategy_id={} drop unexpected MMHedge reply without pending query: symbol={} request_seq={}",
+                self.strategy_id,
+                ctx.get_opening_symbol(),
+                ctx.request_seq
+            );
+            return;
+        };
+        if ctx.request_seq != expected_request_seq {
+            warn!(
+                "MarketMakerHedgeStrategy: strategy_id={} drop stale/duplicate MMHedge reply: symbol={} request_seq={} expected_request_seq={}",
+                self.strategy_id,
+                ctx.get_opening_symbol(),
+                ctx.request_seq,
+                expected_request_seq
+            );
+            return;
+        }
+        self.pending_hedge_request_seq = None;
         self.signal_ts = ctx.signal_ts;
         self.hedge_from_key = ctx.from_key.clone();
         self.next_query_ts_us = ctx.next_query_ts;
@@ -440,13 +473,14 @@ impl MarketMakerHedgeStrategy {
         }
         let from_key = String::from_utf8_lossy(&self.hedge_from_key);
         debug!(
-            "MMHedge ctx: symbol={} price_levels={} amount_levels={} offset_levels={} signal_ts={} next_query_ts={} from_key='{}'",
+            "MMHedge ctx: symbol={} price_levels={} amount_levels={} offset_levels={} signal_ts={} next_query_ts={} request_seq={} from_key='{}'",
             ctx.get_opening_symbol(),
             ctx.price_qv_list.len(),
             ctx.amount_qv_list.len(),
             ctx.price_offsets.len(),
             ctx.signal_ts,
             ctx.next_query_ts,
+            ctx.request_seq,
             from_key
         );
 
@@ -830,20 +864,25 @@ impl MarketMakerHedgeStrategy {
         let risk_loader = PreTradeParamsLoader::instance();
         let symbol_exposure_u =
             risk_loader.max_pos_u().max(0.0) * risk_loader.max_symbol_exposure_ratio().max(0.0);
+        let request_seq = self
+            .pending_hedge_request_seq
+            .unwrap_or_else(|| self.next_hedge_request_seq());
+        self.pending_hedge_request_seq = Some(request_seq);
         let query_msg = MmHedgeSignalQueryMsg::new(
             &self.symbol,
             self.period_buy_qty,
             self.period_sell_qty,
             self.net_qty,
             symbol_exposure_u,
+            request_seq,
         );
         let payload = MmBackwardQueryMsg::Hedge(query_msg).to_bytes();
         let send_result = SignalChannel::with(|ch| ch.publish_backward(&payload));
         match send_result {
             Ok(true) => {
                 debug!(
-                    "MarketMakerHedgeStrategy: strategy_id={} send hedge query ok symbol={}",
-                    self.strategy_id, self.symbol
+                    "MarketMakerHedgeStrategy: strategy_id={} send hedge query ok symbol={} request_seq={}",
+                    self.strategy_id, self.symbol, request_seq
                 );
                 let now = get_timestamp_us();
                 self.pending_query = true;
@@ -851,16 +890,16 @@ impl MarketMakerHedgeStrategy {
             }
             Ok(false) => {
                 warn!(
-                    "MarketMakerHedgeStrategy: backward publisher 未配置，无法发送对冲查询 symbol={}",
-                    self.symbol
+                    "MarketMakerHedgeStrategy: backward publisher 未配置，无法发送对冲查询 symbol={} request_seq={}",
+                    self.symbol, request_seq
                 );
                 self.pending_query = false;
                 self.query_watchdog_due_ts = 0;
             }
             Err(err) => {
                 warn!(
-                    "MarketMakerHedgeStrategy: 发送对冲查询失败 symbol={} err={:#}",
-                    self.symbol, err
+                    "MarketMakerHedgeStrategy: 发送对冲查询失败 symbol={} request_seq={} err={:#}",
+                    self.symbol, request_seq, err
                 );
                 self.pending_query = false;
                 self.query_watchdog_due_ts = 0;

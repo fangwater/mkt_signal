@@ -701,20 +701,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                         preview.join(",")
                     }
                 };
-                info!(
-                    "MMCancelTrigger: received trigger_ts={} freq_ms={} candidates={} symbols={} sample={} strategies={}",
-                    trigger_ctx.trigger_ts,
-                    trigger_ctx.freq_ms,
-                    candidates.len(),
-                    symbol_count,
-                    symbol_sample,
-                    strategy_sample
-                );
                 if candidates.is_empty() {
-                    info!(
-                        "MMCancelTrigger: no active MM open strategies trigger_ts={} freq_ms={}",
-                        trigger_ctx.trigger_ts, trigger_ctx.freq_ms
-                    );
                     return;
                 }
 
