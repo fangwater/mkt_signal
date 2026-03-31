@@ -109,6 +109,12 @@ STRATEGY_PARAMS = {
     # 对冲激进阈值（request_seq>=该值时不偏移，但仍为maker限价单）
     "hedge_aggressive_seq_threshold": "6",
 
+    # 是否启用基于 tlen 的 open 撤单链路
+    "enable_tlen_cancel": "false",
+
+    # tlen 撤单触发频率（毫秒）
+    "tlen_cancel_freq_ms": "3000",
+
     # 信号冷却时间（秒）
     "signal_cooldown": "5",
 }
@@ -123,8 +129,23 @@ PARAM_COMMENTS: Dict[str, str] = {
     "hedge_timeout": "对冲订单超时(秒)",
     "hedge_price_offset": "对冲价格偏移(万分之几)",
     "hedge_aggressive_seq_threshold": "对冲激进阈值(request_seq>=该值时不偏移，但仍为maker限价单)",
+    "enable_tlen_cancel": "是否启用基于 tlen 的 open 撤单链路（true=允许发 trigger/query/cancel）",
+    "tlen_cancel_freq_ms": "tlen 撤单触发频率(ms)，需为正整数，默认 3000",
     "signal_cooldown": "信号冷却时间(秒)",
 }
+
+PARAM_PRINT_ORDER = [
+    "mode",
+    "order_amount",
+    "price_offsets",
+    "open_order_timeout",
+    "hedge_timeout",
+    "hedge_price_offset",
+    "hedge_aggressive_seq_threshold",
+    "enable_tlen_cancel",
+    "tlen_cancel_freq_ms",
+    "signal_cooldown",
+]
 
 
 def sync_strategy_params(rds, key: str) -> int:
@@ -197,14 +218,16 @@ def print_strategy_params(rds, key: str) -> None:
     rows: List[List[str]] = []
 
     # 按照定义顺序输出
-    for param_key in STRATEGY_PARAMS.keys():
+    printed = set()
+    for param_key in PARAM_PRINT_ORDER:
         value = kv.get(param_key, "-")
         comment = PARAM_COMMENTS.get(param_key, "-")
         rows.append([param_key, value, comment])
+        printed.add(param_key)
 
     # 输出额外的参数（如果有）
     for k in sorted(kv.keys()):
-        if k not in STRATEGY_PARAMS:
+        if k not in printed:
             rows.append([k, kv[k], "-"])
 
     print_three_line_table(headers, rows)

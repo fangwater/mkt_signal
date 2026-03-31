@@ -2,15 +2,14 @@
 # -*- coding: utf-8 -*-
 
 """
-同步 MM 的 tlen 阈值到 Redis。
+同步共享 tlen 阈值到 Redis。
 
 Redis key 约定：
-  - Hash: <hedge_venue_prefix>_<open_venue_prefix>:<strategy>:tlen_threshold
-    单 venue MM 例如：binance_futures_binance_futures:mm:tlen_threshold
+  - Hash: <venue_prefix>:tlen_threshold
+    例如：binance_futures:tlen_threshold
 
 其中：
   - venue_prefix = venue 中的 '-' 替换为 '_'，例如 binance-futures -> binance_futures
-  - strategy 在本脚本中固定为 mm
 
 脚本内明文配置：
   - 直接编辑下方 TLEN_THRESHOLD_JSON，格式必须为 JSON object，形如：
@@ -21,8 +20,7 @@ Redis key 约定：
 
 示例：
   python mm_scripts/sync_mm_tlen_threshold.py
-  python mm_scripts/sync_mm_tlen_threshold.py --venue gate-futures
-  python mm_scripts/sync_mm_tlen_threshold.py --venue all
+  python mm_scripts/sync_mm_tlen_threshold.py --venue okex-futures
   python mm_scripts/sync_mm_tlen_threshold.py --symbol BTCUSDT --symbol ETHUSDT
 """
 
@@ -34,9 +32,13 @@ import math
 import sys
 from typing import Dict, Iterable, List, Optional
 
-SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
-SUPPORTED_VENUES = [f"{exchange}-futures" for exchange in SUPPORTED_EXCHANGES]
-STRATEGY = "mm"
+SUPPORTED_VENUES = [
+    "binance-margin",
+    "binance-futures",
+    "okex-margin",
+    "okex-futures",
+]
+QUOTE_ASSETS = ("USDT", "USDC", "BUSD", "FDUSD", "USD")
 
 # 明文阈值配置。请按需直接编辑这里，保持 JSON object 格式：symbol -> value。
 TLEN_THRESHOLD_JSON = r"""
@@ -84,8 +86,33 @@ def normalize_venue(venue: str) -> Optional[str]:
     return normalized
 
 
-def normalize_symbol(symbol: str) -> str:
-    return "".join(ch for ch in (symbol or "").upper() if ch.isalnum())
+def split_assets(symbol: str):
+    text = "".join(ch for ch in (symbol or "").upper() if ch.isalnum())
+    for quote in QUOTE_ASSETS:
+        if text.endswith(quote) and len(text) > len(quote):
+            return text[: -len(quote)], quote
+    return text, "USDT"
+
+
+def normalize_symbol_for_venue(symbol: str, venue: str) -> str:
+    text = (symbol or "").strip().upper().replace("_", "-").replace("/", "-")
+    if not text:
+        return ""
+    if venue == "okex-margin":
+        if text.endswith("-SWAP"):
+            text = text[: -len("-SWAP")]
+        if "-" in text:
+            return text
+        base, quote = split_assets(text)
+        return f"{base}-{quote}"
+    if venue == "okex-futures":
+        if text.endswith("-SWAP"):
+            return text
+        if "-" in text:
+            return f"{text}-SWAP"
+        base, quote = split_assets(text)
+        return f"{base}-{quote}-SWAP"
+    return text.replace("-", "").replace("SWAP", "")
 
 
 def venue_prefix(venue: str) -> str:
@@ -93,16 +120,15 @@ def venue_prefix(venue: str) -> str:
 
 
 def redis_key(venue: str) -> str:
-    prefix = venue_prefix(venue)
-    return f"{prefix}_{prefix}:{STRATEGY}:tlen_threshold"
+    return f"{venue_prefix(venue)}:tlen_threshold"
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Sync mm tlen thresholds to Redis")
+    parser = argparse.ArgumentParser(description="Sync shared tlen thresholds to Redis")
     parser.add_argument(
         "--venue",
         default="binance-futures",
-        help="目标 venue，支持 binance-futures/okex-futures/bybit-futures/bitget-futures/gate-futures/all，默认 binance-futures",
+        help="目标 venue，支持 binance-margin/binance-futures/okex-margin/okex-futures/all，默认 binance-futures",
     )
     parser.add_argument(
         "--symbol",
@@ -132,7 +158,7 @@ def expand_venues(value: str) -> List[str]:
     return [venue]
 
 
-def load_thresholds_from_script() -> Dict[str, float]:
+def load_thresholds_from_script(venue: str) -> Dict[str, float]:
     try:
         parsed = json.loads(TLEN_THRESHOLD_JSON)
     except Exception as exc:
@@ -143,7 +169,7 @@ def load_thresholds_from_script() -> Dict[str, float]:
 
     result: Dict[str, float] = {}
     for raw_symbol, raw_value in parsed.items():
-        symbol = normalize_symbol(str(raw_symbol))
+        symbol = normalize_symbol_for_venue(str(raw_symbol), venue)
         if not symbol:
             continue
         try:
@@ -156,8 +182,12 @@ def load_thresholds_from_script() -> Dict[str, float]:
     return dict(sorted(result.items()))
 
 
-def filter_symbols(data: Dict[str, float], symbols: Iterable[str]) -> Dict[str, float]:
-    wanted = {normalize_symbol(symbol) for symbol in symbols if normalize_symbol(symbol)}
+def filter_symbols(data: Dict[str, float], symbols: Iterable[str], venue: str) -> Dict[str, float]:
+    wanted = {
+        normalize_symbol_for_venue(symbol, venue)
+        for symbol in symbols
+        if normalize_symbol_for_venue(symbol, venue)
+    }
     if not wanted:
         return data
     return {symbol: value for symbol, value in data.items() if symbol in wanted}
@@ -194,7 +224,7 @@ def sync_one(rds, venue: str, thresholds: Dict[str, float]) -> None:
         mapping = {symbol: f"{value:.8f}" for symbol, value in thresholds.items()}
         rds.hset(key, mapping=mapping)
 
-    print(f"\n📍 Venue={venue} Strategy={STRATEGY}")
+    print(f"\n📍 Venue={venue}")
     print(f"🔄 写入 Redis Hash: {key}")
     print(f"🧹 删除旧 Meta Key: {meta_key}")
     print(f"✅ 已同步 symbols: {len(thresholds)}")
@@ -216,16 +246,8 @@ def main() -> int:
 
     try:
         venues = expand_venues(args.venue)
-        thresholds = filter_symbols(load_thresholds_from_script(), args.symbol)
     except ValueError as exc:
         print(f"❌ {exc}", file=sys.stderr)
-        return 1
-
-    if not thresholds and not args.allow_empty:
-        print(
-            "❌ 当前 TLEN_THRESHOLD_JSON 为空，或经 --symbol 过滤后为空。请先在脚本里填写 JSON 配置；如需强制清空 Redis，请显式加 --allow-empty",
-            file=sys.stderr,
-        )
         return 1
 
     rds = redis.Redis(
@@ -237,9 +259,15 @@ def main() -> int:
 
     print(f"📍 Redis: {args.redis_host}:{args.redis_port}/{args.redis_db}")
     print(f"📦 Venue Targets: {', '.join(venues)}")
-    print(f"🧭 Strategy Target: {STRATEGY}")
 
     for venue in venues:
+        thresholds = filter_symbols(load_thresholds_from_script(venue), args.symbol, venue)
+        if not thresholds and not args.allow_empty:
+            print(
+                f"❌ venue={venue} 当前 TLEN_THRESHOLD_JSON 为空，或经 --symbol 过滤后为空。请先在脚本里填写 JSON 配置；如需强制清空 Redis，请显式加 --allow-empty",
+                file=sys.stderr,
+            )
+            return 1
         sync_one(rds, venue, thresholds)
 
     print()

@@ -2,6 +2,27 @@ use crate::pre_trade::order_manager::Side;
 use crate::signal::common::{bytes_helper, SignalBytes, TradingLeg};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ArbCancelReason {
+    Spread = 1,
+    Tlen = 2,
+}
+
+impl ArbCancelReason {
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            1 => Some(Self::Spread),
+            2 => Some(Self::Tlen),
+            _ => None,
+        }
+    }
+
+    pub fn to_u8(self) -> u8 {
+        self as u8
+    }
+}
+
 /// Generic arbitrage cancel signal context
 #[derive(Debug, Clone)]
 pub struct ArbCancelCtx {
@@ -25,6 +46,12 @@ pub struct ArbCancelCtx {
 
     /// From key bytes
     pub from_key: Vec<u8>,
+
+    /// Cancel reason. Defaults to spread for legacy payloads.
+    pub reason: u8,
+
+    /// Optional precise strategy target; 0 means broadcast-by-symbol legacy behavior.
+    pub strategy_id: i32,
 }
 
 /// Market maker cancel signal context
@@ -127,6 +154,8 @@ impl ArbCancelCtx {
             trigger_ts: 0,
             from_key_len: 0,
             from_key: Vec::new(),
+            reason: ArbCancelReason::Spread.to_u8(),
+            strategy_id: 0,
         }
     }
 
@@ -154,6 +183,18 @@ impl ArbCancelCtx {
     pub fn set_from_key(&mut self, from_key: Vec<u8>) {
         self.from_key_len = from_key.len() as u32;
         self.from_key = from_key;
+    }
+
+    pub fn set_reason(&mut self, reason: ArbCancelReason) {
+        self.reason = reason.to_u8();
+    }
+
+    pub fn get_reason(&self) -> ArbCancelReason {
+        ArbCancelReason::from_u8(self.reason).unwrap_or(ArbCancelReason::Spread)
+    }
+
+    pub fn set_target_strategy(&mut self, strategy_id: i32) {
+        self.strategy_id = strategy_id.max(0);
     }
 }
 
@@ -225,6 +266,8 @@ impl SignalBytes for ArbCancelCtx {
         let from_key_len = self.from_key.len() as u32;
         buf.put_u32_le(from_key_len);
         buf.put_slice(&self.from_key);
+        buf.put_u8(self.reason);
+        buf.put_i32_le(self.strategy_id);
 
         buf.freeze()
     }
@@ -253,6 +296,11 @@ impl SignalBytes for ArbCancelCtx {
             ));
         }
         let from_key = bytes.copy_to_bytes(from_key_len).to_vec();
+        let (reason, strategy_id) = match bytes.remaining() {
+            0 => (ArbCancelReason::Spread.to_u8(), 0),
+            n if n >= 1 + 4 => (bytes.get_u8(), bytes.get_i32_le()),
+            _ => return Err("Unexpected trailing bytes for ArbCancelCtx".to_string()),
+        };
         if bytes.remaining() != 0 {
             return Err("Unexpected trailing bytes for ArbCancelCtx".to_string());
         }
@@ -265,6 +313,8 @@ impl SignalBytes for ArbCancelCtx {
             trigger_ts,
             from_key_len: from_key_len as u32,
             from_key,
+            reason,
+            strategy_id,
         })
     }
 }

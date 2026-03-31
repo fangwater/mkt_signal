@@ -58,18 +58,24 @@ try:
 
     DEFAULT_RISK_PARAMS = dict(risk_defaults.RISK_PARAMS)
     RISK_PARAM_COMMENTS = dict(risk_defaults.PARAM_COMMENTS)
+    RISK_PARAM_ORDER = list(getattr(risk_defaults, "PARAM_PRINT_ORDER", DEFAULT_RISK_PARAMS.keys()))
 except Exception:
     DEFAULT_RISK_PARAMS = {}
     RISK_PARAM_COMMENTS = {}
+    RISK_PARAM_ORDER = []
 
 try:
     import sync_fr_strategy_params as strategy_defaults
 
     DEFAULT_STRATEGY_PARAMS = dict(strategy_defaults.STRATEGY_PARAMS)
     STRATEGY_PARAM_COMMENTS = dict(strategy_defaults.PARAM_COMMENTS)
+    STRATEGY_PARAM_ORDER = list(
+        getattr(strategy_defaults, "PARAM_PRINT_ORDER", DEFAULT_STRATEGY_PARAMS.keys())
+    )
 except Exception:
     DEFAULT_STRATEGY_PARAMS = {}
     STRATEGY_PARAM_COMMENTS = {}
+    STRATEGY_PARAM_ORDER = []
 
 try:
     import sync_funding_rate_thresholds as funding_defaults
@@ -309,6 +315,9 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
           <button id="strategy-default" class="ghost">默认</button>
         </div>
       </div>
+      <div class="hint">
+        `enable_tlen_cancel` 控制基于 tlen 的 open 撤单 trigger/query/cancel 链路；`tlen_cancel_freq_ms` 控制触发频率(ms)。
+      </div>
       <div id="strategy-table" class="kv-table"></div>
       <div id="strategy-status" class="status"></div>
     </section>
@@ -476,6 +485,11 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       return await resp.json();
     }
 
+    function isBooleanParamValue(value) {
+      const normalized = String(value ?? '').trim().toLowerCase();
+      return ['true', 'false', '1', '0', 'yes', 'no', 'on', 'off', ''].includes(normalized);
+    }
+
     function buildParamRows(containerId, defaults, comments, order, values = {}) {
       const container = document.getElementById(containerId);
       container.innerHTML = '';
@@ -496,10 +510,31 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
 
         const inputCell = document.createElement('div');
         inputCell.className = 'kv-input';
-        const input = document.createElement('input');
+        const rawValue = values[key] ?? defaults[key] ?? '';
+        const useBooleanSelect =
+          containerId === 'strategy-table' &&
+          ['enable_tlen_cancel'].includes(key) &&
+          isBooleanParamValue(rawValue);
+        let input;
+        if (useBooleanSelect) {
+          input = document.createElement('select');
+          [
+            ['false', 'false'],
+            ['true', 'true'],
+          ].forEach(([value, label]) => {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = label;
+            input.appendChild(option);
+          });
+          const normalized = String(rawValue ?? '').trim().toLowerCase();
+          input.value = ['true', '1', 'yes', 'on'].includes(normalized) ? 'true' : 'false';
+        } else {
+          input = document.createElement('input');
+          input.className = 'mono';
+          input.value = rawValue;
+        }
         input.dataset.key = key;
-        input.className = 'mono';
-        input.value = values[key] ?? defaults[key] ?? '';
         inputCell.appendChild(input);
 
         const descCell = document.createElement('div');
@@ -515,7 +550,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     function collectParamValues(containerId) {
       const container = document.getElementById(containerId);
       const values = {};
-      container.querySelectorAll('input[data-key]').forEach(input => {
+      container.querySelectorAll('input[data-key], select[data-key]').forEach(input => {
         values[input.dataset.key] = input.value.trim();
       });
       return values;
@@ -966,6 +1001,109 @@ def write_hash(rds, key: str, values: Dict[str, Any]) -> int:
     return len(payload)
 
 
+def replace_hash(rds, key: str, mapping: Dict[str, str]) -> Dict[str, Any]:
+    existing = {
+        decode_redis_value(item)
+        for item in (rds.hkeys(key) or [])
+    }
+    stale_fields = sorted(existing - set(mapping.keys()))
+
+    pipe = rds.pipeline()
+    if mapping:
+        pipe.hset(key, mapping=mapping)
+    if stale_fields:
+        pipe.hdel(key, *stale_fields)
+    pipe.execute()
+
+    return {
+        "key": key,
+        "count": len(mapping),
+        "values": mapping,
+        "removed_count": len(stale_fields),
+        "removed_fields": stale_fields,
+    }
+
+
+def sanitize_string_mapping(values: Any) -> Dict[str, str]:
+    if not isinstance(values, dict):
+        raise ValueError("values must be object")
+
+    mapping: Dict[str, str] = {}
+    for raw_key, raw_value in values.items():
+        key = str(raw_key).strip()
+        if not key:
+            continue
+        if raw_value is None:
+            mapping[key] = ""
+        else:
+            mapping[key] = str(raw_value).strip()
+    return mapping
+
+
+def ordered_schema_keys(
+    defaults: Dict[str, Any], comments: Dict[str, str], order: List[str]
+) -> List[str]:
+    keys: List[str] = []
+    seen = set()
+    for key in [*order, *defaults.keys(), *comments.keys()]:
+        if key in seen:
+            continue
+        seen.add(key)
+        keys.append(key)
+    return keys
+
+
+def filter_mapping_by_schema(
+    raw_values: Dict[str, str],
+    defaults: Dict[str, Any],
+    comments: Dict[str, str],
+    order: List[str],
+) -> Tuple[Dict[str, str], Dict[str, str]]:
+    allowed_keys = ordered_schema_keys(defaults, comments, order)
+    seen = set(allowed_keys)
+    filtered = {key: raw_values[key] for key in allowed_keys if key in raw_values}
+    stale = {key: value for key, value in raw_values.items() if key not in seen}
+    return filtered, stale
+
+
+def normalize_positive_int_text(raw: Any, field_name: str) -> str:
+    text = str(raw).strip()
+    if not text:
+        raise ValueError(f"{field_name} is required")
+    try:
+        value = int(text)
+    except Exception as exc:
+        raise ValueError(f"{field_name} must be a positive integer: {text}") from exc
+    if value <= 0:
+        raise ValueError(f"{field_name} must be > 0: {text}")
+    return str(value)
+
+
+def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, str]:
+    normalized = dict(mapping)
+    if "tlen_cancel_freq_ms" in normalized:
+        normalized["tlen_cancel_freq_ms"] = normalize_positive_int_text(
+            normalized["tlen_cancel_freq_ms"], "tlen_cancel_freq_ms"
+        )
+    return normalized
+
+
+def sanitize_mapping_by_schema(
+    values: Any,
+    defaults: Dict[str, Any],
+    comments: Dict[str, str],
+    order: List[str],
+    *,
+    normalize_strategy: bool = False,
+) -> Dict[str, str]:
+    mapping = sanitize_string_mapping(values)
+    allowed = set(ordered_schema_keys(defaults, comments, order))
+    sanitized = {key: mapping[key] for key in mapping.keys() if key in allowed}
+    if normalize_strategy:
+        return normalize_strategy_params_by_schema(sanitized)
+    return sanitized
+
+
 def make_key_suffix(open_venue: str, hedge_venue: str) -> str:
     return f"{open_venue.strip().lower()}_{hedge_venue.strip().lower()}"
 
@@ -1162,8 +1300,8 @@ def render_index_html(default_exchange: str) -> str:
             "funding_thresholds": FUNDING_THRESHOLD_COMMENTS,
         },
         "order": {
-            "risk": list(DEFAULT_RISK_PARAMS.keys()),
-            "strategy": list(DEFAULT_STRATEGY_PARAMS.keys()),
+            "risk": RISK_PARAM_ORDER,
+            "strategy": STRATEGY_PARAM_ORDER,
             "funding_thresholds": FUNDING_THRESHOLD_ORDER,
             "spread_mapping": SPREAD_THRESHOLD_ORDER,
         },
@@ -1270,11 +1408,24 @@ class RequestHandler(BaseHTTPRequestHandler):
                 f"[risk-params][GET] exchange={exchange} open={open_venue} hedge={hedge_venue} key={key}"
             )
             sys.stdout.flush()
-            values = read_hash(self.server.context.redis_client, key)
+            raw_values = read_hash(self.server.context.redis_client, key)
+            values, stale_values = filter_mapping_by_schema(
+                raw_values, DEFAULT_RISK_PARAMS, RISK_PARAM_COMMENTS, RISK_PARAM_ORDER
+            )
             if not values:
                 self._send_error(404, f"risk params not found: {key}")
                 return
-            self._send_json(200, {"key": key, "values": values})
+            self._send_json(
+                200,
+                {
+                    "key": key,
+                    "values": values,
+                    "raw_count": len(raw_values),
+                    "count": len(values),
+                    "stale_count": len(stale_values),
+                    "stale_values": stale_values,
+                },
+            )
             return
 
         if parsed.path == "/api/strategy-params":
@@ -1284,8 +1435,24 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._send_error(400, str(exc))
                 return
             key = f"fr_strategy_params_{open_venue}_{hedge_venue}"
-            values = read_hash(self.server.context.redis_client, key)
-            self._send_json(200, {"key": key, "values": values})
+            raw_values = read_hash(self.server.context.redis_client, key)
+            values, stale_values = filter_mapping_by_schema(
+                raw_values,
+                DEFAULT_STRATEGY_PARAMS,
+                STRATEGY_PARAM_COMMENTS,
+                STRATEGY_PARAM_ORDER,
+            )
+            self._send_json(
+                200,
+                {
+                    "key": key,
+                    "values": values,
+                    "raw_count": len(raw_values),
+                    "count": len(values),
+                    "stale_count": len(stale_values),
+                    "stale_values": stale_values,
+                },
+            )
             return
 
         if parsed.path == "/api/funding-thresholds":
@@ -1442,17 +1609,21 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._send_error(400, str(exc))
                 return
             values = payload.get("values") or {}
-            if not isinstance(values, dict):
-                self._send_error(400, "values must be object")
-                return
             key = build_risk_params_key(open_v, hedge_v)
-            written = write_hash(self.server.context.redis_client, key, values)
+            try:
+                mapping = sanitize_mapping_by_schema(
+                    values, DEFAULT_RISK_PARAMS, RISK_PARAM_COMMENTS, RISK_PARAM_ORDER
+                )
+            except Exception as exc:
+                self._send_error(400, str(exc))
+                return
+            result = replace_hash(self.server.context.redis_client, key, mapping)
             print(
                 f"[risk-params][POST] exchange={exchange} open={open_v} hedge={hedge_v} "
-                f"key={key} fields={len(values)}"
+                f"key={key} fields={len(mapping)} removed={result['removed_count']}"
             )
             sys.stdout.flush()
-            self._send_json(200, {"key": key, "count": written})
+            self._send_json(200, result)
             return
 
         if parsed.path == "/api/strategy-params":
@@ -1467,12 +1638,20 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._send_error(400, str(exc))
                 return
             values = payload.get("values") or {}
-            if not isinstance(values, dict):
-                self._send_error(400, "values must be object")
-                return
             key = f"fr_strategy_params_{open_v}_{hedge_v}"
-            written = write_hash(self.server.context.redis_client, key, values)
-            self._send_json(200, {"key": key, "count": written})
+            try:
+                mapping = sanitize_mapping_by_schema(
+                    values,
+                    DEFAULT_STRATEGY_PARAMS,
+                    STRATEGY_PARAM_COMMENTS,
+                    STRATEGY_PARAM_ORDER,
+                    normalize_strategy=True,
+                )
+            except Exception as exc:
+                self._send_error(400, str(exc))
+                return
+            result = replace_hash(self.server.context.redis_client, key, mapping)
+            self._send_json(200, result)
             return
 
         if parsed.path == "/api/funding-thresholds":

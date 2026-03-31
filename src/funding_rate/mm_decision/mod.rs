@@ -10,7 +10,7 @@ use std::time::Duration;
 use super::common::ReturnScoreThresholdsResolved;
 use super::fr_decision::DEFAULT_BACKWARD_CHANNEL;
 use super::mkt_channel::MktChannel;
-use super::mm_tlen_threshold_loader;
+use super::tlen_threshold_loader;
 use crate::common::iceoryx_publisher::SIGNAL_PAYLOAD;
 use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
 use crate::common::ipc_service_name::build_service_name;
@@ -421,7 +421,7 @@ impl MmDecision {
             let threshold_symbol = symbol.to_ascii_uppercase();
             let Some(threshold) = self
                 .state
-                .mm_tlen_thresholds
+                .tlen_thresholds
                 .get(&threshold_symbol)
                 .copied()
             else {
@@ -629,36 +629,33 @@ impl MmDecision {
             let mut interval = tokio::time::interval(Duration::from_secs(5));
             loop {
                 interval.tick().await;
-                let (due, open_venue, hedge_venue, now_us) = MmDecision::with(|decision| {
+                let (due, open_venue, now_us) = MmDecision::with(|decision| {
                     let now_us = get_timestamp_us();
                     (
                         decision.tlen_threshold_reload_due(now_us),
                         decision.state.open_venue,
-                        decision.state.hedge_venue,
                         now_us,
                     )
                 });
                 if !due {
                     continue;
                 }
-                match mm_tlen_threshold_loader::load_from_redis(&redis, open_venue, hedge_venue)
-                    .await
-                {
+                match tlen_threshold_loader::load_from_redis(&redis, open_venue).await {
                     Ok((redis_key, thresholds, bad_fields)) => {
                         let symbols = thresholds.len();
                         MmDecision::with_mut(|decision| {
-                            decision.state.mm_tlen_thresholds = thresholds;
+                            decision.state.tlen_thresholds = thresholds;
                             decision.state.last_tlen_threshold_reload_ts_us = now_us;
                         });
                         info!(
-                            "MmDecision: MM tlen thresholds loaded key={} symbols={} bad_fields={}",
+                            "MmDecision: tlen thresholds loaded key={} symbols={} bad_fields={}",
                             redis_key, symbols, bad_fields
                         );
                     }
                     Err(err) => {
                         warn!(
-                            "MmDecision: MM tlen threshold reload failed open={:?} hedge={:?} err={:#}",
-                            open_venue, hedge_venue, err
+                            "MmDecision: tlen threshold reload failed venue={:?} err={:#}",
+                            open_venue, err
                         );
                     }
                 }

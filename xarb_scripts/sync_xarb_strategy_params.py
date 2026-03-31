@@ -102,6 +102,8 @@ STRATEGY_PARAMS = {
     "hedge_timeout": "60",
     "hedge_price_offset_fallback": "0.001",
     "hedge_aggressive_seq_threshold": "50",
+    "enable_tlen_cancel": "false",
+    "tlen_cancel_freq_ms": "3000",
     "enable_return_score_model": "false",
     "enable_environment_model": "true",
     "enable_volatility_limit": "true",
@@ -121,6 +123,8 @@ PARAM_COMMENTS: Dict[str, str] = {
     "hedge_timeout": "对冲订单超时(秒)",
     "hedge_price_offset_fallback": "波动率因子不可用时的对冲默认价格偏移(万分之几)",
     "hedge_aggressive_seq_threshold": "对冲激进阈值(request_seq>=该值时不偏移，但仍为maker限价单)",
+    "enable_tlen_cancel": "是否启用基于 tlen 的 open 撤单链路（true=允许发 trigger/query/cancel）",
+    "tlen_cancel_freq_ms": "tlen 撤单触发频率(ms)，需为正整数，默认 3000",
     "enable_return_score_model": "是否启用 return score 拦截(true/false，false=只读取/透传，不拦截开仓)",
     "enable_environment_model": "是否启用 env 开仓限制（false=继续读取 env / pnlu 并写入 from_key，但不阻拦开仓）",
     "enable_volatility_limit": "是否启用波动率限制下单",
@@ -130,6 +134,27 @@ PARAM_COMMENTS: Dict[str, str] = {
     "max_hedge_price_pct_change": "对冲价格最大变动阈值(%)，范围>0且<=99，可为小数，超过则强制 taker",
     "signal_cooldown": "信号冷却时间(秒)",
 }
+
+PARAM_PRINT_ORDER = [
+    "mode",
+    "order_amount",
+    "open_scale",
+    "open_orders_per_round",
+    "open_order_timeout",
+    "hedge_timeout",
+    "hedge_price_offset_fallback",
+    "hedge_aggressive_seq_threshold",
+    "enable_tlen_cancel",
+    "tlen_cancel_freq_ms",
+    "enable_return_score_model",
+    "enable_environment_model",
+    "enable_volatility_limit",
+    "open_volatility_limit",
+    "return_model_service",
+    "environment_model_service",
+    "max_hedge_price_pct_change",
+    "signal_cooldown",
+]
 
 
 def sync_strategy_params(rds, key: str) -> int:
@@ -148,14 +173,29 @@ def print_params(rds, key: str) -> None:
         print(f"⚠️  HASH '{key}' 为空或不存在")
         return
 
-    for raw_k, raw_v in sorted(data.items(), key=lambda kv: str(kv[0])):
+    decoded: Dict[str, str] = {}
+    for raw_k, raw_v in data.items():
         k = raw_k.decode("utf-8", "ignore") if isinstance(raw_k, bytes) else str(raw_k)
         v = raw_v.decode("utf-8", "ignore") if isinstance(raw_v, bytes) else str(raw_v)
+        decoded[k] = v
+
+    def print_one(k: str, v: str) -> None:
         comment = PARAM_COMMENTS.get(k, "")
         if comment:
             print(f"  {k:28} {v:>12}  # {comment}")
         else:
             print(f"  {k:28} {v:>12}")
+
+    printed = set()
+    for k in PARAM_PRINT_ORDER:
+        if k in decoded:
+            print_one(k, decoded[k])
+            printed.add(k)
+
+    for k in sorted(decoded.keys()):
+        if k in printed:
+            continue
+        print_one(k, decoded[k])
 
 
 def main() -> int:

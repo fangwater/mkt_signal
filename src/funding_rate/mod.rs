@@ -18,13 +18,13 @@ pub mod fr_threshold_loader;
 pub mod funding_rate_factor;
 pub mod mkt_channel;
 pub mod mm_decision;
-pub mod mm_tlen_threshold_loader;
 pub mod rate_fetcher;
 pub mod rolling_threshold_sync;
 pub mod spread_factor;
 pub mod spread_threshold_loader;
 pub mod strategy_loader;
 pub mod symbol_list;
+pub mod tlen_threshold_loader;
 pub mod xarb_decision;
 pub mod xarb_funding_threshold_loader;
 

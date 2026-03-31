@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use bytes::Bytes;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{info, warn};
+use log::{debug, info, warn};
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -25,6 +25,7 @@ use super::factor_value_hub::{
 use super::mkt_channel::MktChannel;
 use super::spread_factor::SpreadFactor;
 use super::symbol_list::SymbolList;
+use super::tlen_threshold_loader;
 use super::xarb_funding_threshold_loader::XarbFundingThresholdsResolved;
 use crate::common::bbo::Bbo;
 use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
@@ -39,7 +40,10 @@ use crate::market_maker::quote_plan_levels::{
     build_quote_plan_levels, QuotePlanLevel, QuotePlanLevelSpec,
 };
 use crate::pre_trade::order_manager::{OrderType, Side};
-use crate::signal::cancel_signal::ArbCancelCtx;
+use crate::signal::arb_signal::{
+    ArbBackwardQueryMsg, ArbCancelCandidateQueryMsg, ArbCancelTriggerCtx,
+};
+use crate::signal::cancel_signal::{ArbCancelCtx, ArbCancelReason};
 use crate::signal::common::{
     align_price_ceil, align_price_floor, SignalBytes, TradingLeg, TradingVenue,
 };
@@ -275,11 +279,16 @@ pub struct XarbDecision {
     return_score_thresholds: HashMap<String, ReturnScoreThresholdsResolved>,
     funding_open_thresholds: HashMap<String, XarbFundingThresholdsResolved>,
     open_volatility_thresholds: HashMap<String, f64>,
+    tlen_thresholds: HashMap<String, f64>,
 
+    enable_tlen_cancel: bool,
+    tlen_cancel_freq_ms: u64,
     signal_cooldown_us: i64,
     last_open_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
     last_close_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
     last_cancel_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
+    last_tlen_threshold_reload_ts_us: i64,
+    last_cancel_trigger_ts_us: i64,
     intercept_summary: InterceptSummary,
 }
 
@@ -576,6 +585,7 @@ impl XarbDecision {
 
         Self::refresh_min_qty_async(venues).await;
         Self::spawn_backward_listener();
+        Self::spawn_tlen_threshold_loader();
         info!("XarbDecision backward listener started");
 
         Ok(())
@@ -649,10 +659,15 @@ impl XarbDecision {
             return_score_thresholds: HashMap::new(),
             funding_open_thresholds: HashMap::new(),
             open_volatility_thresholds: HashMap::new(),
+            tlen_thresholds: HashMap::new(),
+            enable_tlen_cancel: false,
+            tlen_cancel_freq_ms: 3_000,
             signal_cooldown_us: 5_000_000,
             last_open_ts: Rc::new(RefCell::new(HashMap::new())),
             last_close_ts: Rc::new(RefCell::new(HashMap::new())),
             last_cancel_ts: Rc::new(RefCell::new(HashMap::new())),
+            last_tlen_threshold_reload_ts_us: 0,
+            last_cancel_trigger_ts_us: 0,
             intercept_summary: InterceptSummary::new(),
         })
     }
@@ -805,6 +820,26 @@ impl XarbDecision {
         }
         self.open_scale = open_scale;
         info!("XarbDecision: open_scale 已更新为 {:.6}", self.open_scale);
+    }
+
+    pub fn update_enable_tlen_cancel(&mut self, enabled: bool) {
+        self.enable_tlen_cancel = enabled;
+        info!(
+            "XarbDecision: enable_tlen_cancel updated enabled={}",
+            self.enable_tlen_cancel
+        );
+    }
+
+    pub fn update_tlen_cancel_freq_ms(&mut self, tlen_cancel_freq_ms: u64) {
+        if tlen_cancel_freq_ms == 0 {
+            warn!("XarbDecision: 忽略无效的 tlen_cancel_freq_ms=0 更新请求");
+            return;
+        }
+        self.tlen_cancel_freq_ms = tlen_cancel_freq_ms;
+        info!(
+            "XarbDecision: tlen_cancel_freq_ms updated value={}",
+            self.tlen_cancel_freq_ms
+        );
     }
 
     pub fn update_return_score_thresholds(
@@ -1113,14 +1148,22 @@ impl XarbDecision {
     }
 
     fn handle_backward_query(&mut self, data: Bytes) {
-        let query = match ArbHedgeSignalQueryMsg::from_bytes(data) {
+        let query = match ArbBackwardQueryMsg::from_bytes(data) {
             Ok(q) => q,
             Err(err) => {
-                warn!("XarbDecision: 解析 hedge query 失败: {err}");
+                warn!("XarbDecision: 解析 backward query 失败: {err}");
                 return;
             }
         };
+        match query {
+            ArbBackwardQueryMsg::Hedge(query) => self.handle_hedge_query(query),
+            ArbBackwardQueryMsg::CancelCandidates(query) => {
+                self.handle_arb_cancel_candidate_query(query)
+            }
+        }
+    }
 
+    fn handle_hedge_query(&mut self, query: ArbHedgeSignalQueryMsg) {
         let Some(side) = query.get_side() else {
             warn!("XarbDecision: hedge query side 无效: {}", query.hedge_side);
             return;
@@ -1470,6 +1513,137 @@ impl XarbDecision {
         );
     }
 
+    fn handle_arb_cancel_candidate_query(&mut self, query: ArbCancelCandidateQueryMsg) {
+        if query.groups.is_empty() {
+            return;
+        }
+        let now_us = get_timestamp_us();
+        let mut cancel_sent = 0usize;
+        let mut matched_symbols = 0usize;
+        for group in query.groups {
+            let open_symbol = group.get_symbol().to_uppercase();
+            if open_symbol.is_empty() || group.items.is_empty() {
+                continue;
+            }
+            let Some(threshold) = self.tlen_thresholds.get(&open_symbol).copied() else {
+                debug!(
+                    "XarbDecision: missing tlen threshold symbol={}",
+                    open_symbol
+                );
+                continue;
+            };
+            let tick_indices: Vec<i64> = group
+                .items
+                .iter()
+                .map(|item| item.price_qv.get_count())
+                .collect();
+            let tlens = match self
+                .open_depth_query_client
+                .query_batch_tick_indices(&open_symbol, &tick_indices)
+            {
+                Ok(values) => values,
+                Err(err) => {
+                    warn!(
+                        "XarbDecision: ArbCancel tlen batch query failed symbol={} levels={} err={:#}",
+                        open_symbol,
+                        tick_indices.len(),
+                        err
+                    );
+                    continue;
+                }
+            };
+            let compared_preview = group
+                .items
+                .iter()
+                .zip(tlens.iter().copied())
+                .take(12)
+                .map(|(item, tlen)| {
+                    format!(
+                        "{}@{}:{:.4}{}",
+                        item.strategy_id,
+                        item.price_qv.get_count(),
+                        tlen,
+                        if tlen < threshold { "<hit" } else { ">=skip" }
+                    )
+                })
+                .collect::<Vec<_>>();
+            let (min_tlen, max_tlen) = tlens.iter().copied().fold(
+                (f64::INFINITY, f64::NEG_INFINITY),
+                |(min_v, max_v), value| (min_v.min(value), max_v.max(value)),
+            );
+            let hedge_symbol =
+                normalize_symbol_for_venue(&open_symbol, self.venues.1).to_ascii_uppercase();
+            let mut matched_preview: Vec<String> = Vec::new();
+            let mut group_cancel_sent = 0usize;
+            for (item, tlen) in group.items.iter().zip(tlens.iter().copied()) {
+                if tlen >= threshold {
+                    continue;
+                }
+                if matched_preview.len() < 12 {
+                    matched_preview.push(format!(
+                        "{}@{}:{:.4}<{:.4}",
+                        item.strategy_id,
+                        item.price_qv.get_count(),
+                        tlen,
+                        threshold
+                    ));
+                }
+                if let Err(err) = self.emit_cancel_signal_precise(
+                    &open_symbol,
+                    &hedge_symbol,
+                    self.venues.0,
+                    self.venues.1,
+                    item.strategy_id,
+                    tlen,
+                    threshold,
+                    now_us,
+                ) {
+                    warn!(
+                        "XarbDecision: emit precise ArbCancel failed symbol={} strategy_id={} err={:#}",
+                        open_symbol,
+                        item.strategy_id,
+                        err
+                    );
+                    continue;
+                }
+                cancel_sent += 1;
+                group_cancel_sent += 1;
+            }
+            info!(
+                "XarbDecision: ArbCancel tlen compare symbol={} trigger_ts={} candidates={} threshold={:.4} min_tlen={:.4} max_tlen={:.4} details={}",
+                open_symbol,
+                query.trigger_ts,
+                tick_indices.len(),
+                threshold,
+                min_tlen,
+                max_tlen,
+                if compared_preview.is_empty() {
+                    "-".to_string()
+                } else {
+                    compared_preview.join(",")
+                }
+            );
+            if group_cancel_sent > 0 {
+                matched_symbols += 1;
+                info!(
+                    "XarbDecision: ArbCancel tlen hits symbol={} trigger_ts={} candidates={} matched={} threshold={:.4} strategies={}",
+                    open_symbol,
+                    query.trigger_ts,
+                    tick_indices.len(),
+                    group_cancel_sent,
+                    threshold,
+                    matched_preview.join(",")
+                );
+            }
+        }
+        if cancel_sent > 0 {
+            info!(
+                "XarbDecision: ArbCancel candidate query processed trigger_ts={} matched_symbols={} cancels_sent={}",
+                query.trigger_ts, matched_symbols, cancel_sent
+            );
+        }
+    }
+
     fn load_valid_quotes(
         &self,
         open_symbol: &str,
@@ -1757,9 +1931,70 @@ impl XarbDecision {
             &hedge_quote,
             batch_ts,
             &from_key,
+            ArbCancelReason::Spread,
+            0,
         );
 
         let signal = TradeSignal::create(SignalType::ArbCancel, batch_ts, 0.0, ctx.to_bytes());
+        self.signal_pub.publish(&signal.to_bytes())?;
+        Ok(())
+    }
+
+    fn emit_cancel_signal_precise(
+        &mut self,
+        open_symbol: &str,
+        hedge_symbol: &str,
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
+        strategy_id: i32,
+        tlen: f64,
+        threshold: f64,
+        now_us: i64,
+    ) -> Result<()> {
+        let (open_quote, hedge_quote) =
+            match self.load_valid_quotes(open_symbol, hedge_symbol, open_venue, hedge_venue) {
+                Some(quotes) => quotes,
+                None => return Ok(()),
+            };
+        let spread_rate = compute_spread_rate(&open_quote, &hedge_quote);
+        let return_score = self
+            .lookup_return_model_score_lookup(hedge_symbol, hedge_venue)
+            .and_then(|lookup| lookup.score)
+            .filter(|v| v.is_finite());
+        let environment_signal =
+            self.evaluate_environment_signal(open_symbol, hedge_symbol, hedge_venue, now_us);
+        let environment_score = environment_signal
+            .score
+            .unwrap_or(environment_signal.class_label as f64);
+        let volatility = self
+            .lookup_target_factor_value(hedge_symbol, hedge_venue)
+            .target_factor_value;
+        let from_key = build_decision_from_key_base(
+            now_us,
+            return_score,
+            None,
+            volatility,
+            Some(environment_score),
+            environment_signal.threshold,
+        );
+        let from_key = format!(
+            "{from_key}:spread={spread_rate:.6}:cancel_reason=tlen:tlen={tlen:.8}:tlen_thr={threshold:.8}"
+        );
+
+        let ctx = self.build_cancel_context(
+            open_symbol,
+            hedge_symbol,
+            open_venue,
+            hedge_venue,
+            &open_quote,
+            &hedge_quote,
+            now_us,
+            &from_key,
+            ArbCancelReason::Tlen,
+            strategy_id,
+        );
+
+        let signal = TradeSignal::create(SignalType::ArbCancel, now_us, 0.0, ctx.to_bytes());
         self.signal_pub.publish(&signal.to_bytes())?;
         Ok(())
     }
@@ -1943,6 +2178,8 @@ impl XarbDecision {
         hedge_quote: &Quote,
         now: i64,
         from_key: &str,
+        reason: ArbCancelReason,
+        strategy_id: i32,
     ) -> ArbCancelCtx {
         let mut ctx = ArbCancelCtx::new();
         let open_trade_symbol = normalize_symbol_for_venue(open_symbol, open_venue);
@@ -1962,6 +2199,8 @@ impl XarbDecision {
 
         ctx.trigger_ts = now;
         ctx.set_from_key(from_key.as_bytes().to_vec());
+        ctx.set_reason(reason);
+        ctx.set_target_strategy(strategy_id);
         ctx
     }
 
@@ -2240,6 +2479,47 @@ impl XarbDecision {
         );
     }
 
+    pub fn process_cancel_trigger_interval(&mut self) {
+        if !self.enable_tlen_cancel || self.tlen_cancel_freq_ms == 0 {
+            return;
+        }
+        let now_us = get_timestamp_us();
+        let interval_us = (self.tlen_cancel_freq_ms as i64).saturating_mul(1_000);
+        if self.last_cancel_trigger_ts_us != 0
+            && now_us.saturating_sub(self.last_cancel_trigger_ts_us) < interval_us
+        {
+            return;
+        }
+        match self.emit_arb_cancel_trigger_signal(now_us) {
+            Ok(_) => {
+                self.last_cancel_trigger_ts_us = now_us;
+                debug!(
+                    "XarbDecision: ArbCancelTrigger emitted freq_ms={}",
+                    self.tlen_cancel_freq_ms
+                );
+            }
+            Err(err) => warn!("XarbDecision: publish ArbCancelTrigger failed: {err:#}"),
+        }
+    }
+
+    fn emit_arb_cancel_trigger_signal(&mut self, now_us: i64) -> Result<()> {
+        let ctx = ArbCancelTriggerCtx {
+            trigger_ts: now_us,
+            freq_ms: self.tlen_cancel_freq_ms,
+        };
+        let signal =
+            TradeSignal::create(SignalType::ArbCancelTrigger, now_us, 0.0, ctx.to_bytes());
+        self.signal_pub.publish(&signal.to_bytes())?;
+        Ok(())
+    }
+
+    fn tlen_threshold_reload_due(&self, now_us: i64) -> bool {
+        const RELOAD_INTERVAL_US: i64 = 30 * 60 * 1_000_000;
+        self.last_tlen_threshold_reload_ts_us == 0
+            || now_us.saturating_sub(self.last_tlen_threshold_reload_ts_us)
+                >= RELOAD_INTERVAL_US
+    }
+
     fn threshold_key(
         open_symbol: &str,
         hedge_symbol: &str,
@@ -2291,6 +2571,44 @@ impl XarbDecision {
             cooldown_hit,
             result,
         ));
+    }
+
+    fn spawn_tlen_threshold_loader() {
+        tokio::task::spawn_local(async move {
+            let redis = RedisSettings::default();
+            let mut interval = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+                let (due, open_venue, now_us) = XarbDecision::with(|decision| {
+                    let now_us = get_timestamp_us();
+                    (
+                        decision.tlen_threshold_reload_due(now_us),
+                        decision.venues.0,
+                        now_us,
+                    )
+                });
+                if !due {
+                    continue;
+                }
+                match tlen_threshold_loader::load_from_redis(&redis, open_venue).await {
+                    Ok((redis_key, thresholds, bad_fields)) => {
+                        let symbols = thresholds.len();
+                        XarbDecision::with_mut(|decision| {
+                            decision.tlen_thresholds = thresholds;
+                            decision.last_tlen_threshold_reload_ts_us = now_us;
+                        });
+                        info!(
+                            "XarbDecision: tlen thresholds loaded key={} symbols={} bad_fields={}",
+                            redis_key, symbols, bad_fields
+                        );
+                    }
+                    Err(err) => warn!(
+                        "XarbDecision: tlen threshold reload failed venue={:?} err={:#}",
+                        open_venue, err
+                    ),
+                }
+            }
+        });
     }
 
     pub fn spawn_backward_listener() {

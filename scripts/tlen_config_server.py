@@ -4,8 +4,8 @@
 TLEN 配置服务器（tlen_config_server）。
 
 用途：
-  - 以 HTTP + 简单页面的方式管理 MM tlen threshold。
-  - 支持 open/hedge 双 venue 组合。
+  - 以 HTTP + 简单页面的方式管理共享 tlen threshold。
+  - tlen 阈值永远按 open venue 维度存取。
   - 当前默认支持：
       - binance-margin
       - binance-futures
@@ -13,7 +13,7 @@ TLEN 配置服务器（tlen_config_server）。
       - okex-futures
 
 Redis key 约定：
-  <hedge_venue_prefix>_<open_venue_prefix>:mm:tlen_threshold
+  <venue_prefix>:tlen_threshold
 
 示例：
   python scripts/tlen_config_server.py
@@ -36,8 +36,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 SERVICE_NAME = "tlen_config_server"
 DEFAULT_PORT = 18161
-DEFAULT_OPEN_VENUE = "binance-futures"
-DEFAULT_HEDGE_VENUE = "binance-futures"
+DEFAULT_VENUE = "binance-futures"
 SUPPORTED_VENUES = [
     "binance-margin",
     "binance-futures",
@@ -101,10 +100,10 @@ def split_assets(symbol: str) -> Tuple[str, str]:
     return text, "USDT"
 
 
-def normalize_symbol_for_open_venue(symbol: str, open_venue: str) -> str:
-    venue = normalize_venue(open_venue)
+def normalize_symbol_for_venue(symbol: str, venue: str) -> str:
+    venue = normalize_venue(venue)
     if venue is None:
-        raise ValueError(f"unsupported open_venue: {open_venue}")
+        raise ValueError(f"unsupported venue: {venue}")
 
     text = (symbol or "").strip().upper().replace("_", "-").replace("/", "-")
     if not text:
@@ -140,14 +139,11 @@ def parse_threshold_value(raw_value: object) -> float:
     return value
 
 
-def redis_key(open_venue: str, hedge_venue: str) -> str:
-    open_norm = normalize_venue(open_venue)
-    hedge_norm = normalize_venue(hedge_venue)
-    if open_norm is None:
-        raise ValueError(f"unsupported open_venue: {open_venue}")
-    if hedge_norm is None:
-        raise ValueError(f"unsupported hedge_venue: {hedge_venue}")
-    return f"{venue_prefix(hedge_norm)}_{venue_prefix(open_norm)}:mm:tlen_threshold"
+def redis_key(venue: str) -> str:
+    venue_norm = normalize_venue(venue)
+    if venue_norm is None:
+        raise ValueError(f"unsupported venue: {venue}")
+    return f"{venue_prefix(venue_norm)}:tlen_threshold"
 
 
 def meta_key(key: str) -> str:
@@ -177,10 +173,10 @@ def decode_hash(data: Dict[object, object]) -> Dict[str, str]:
 
 
 def build_rows_payload(
-    data: Dict[str, str], open_venue: str, symbol_filters: Iterable[str]
+    data: Dict[str, str], venue: str, symbol_filters: Iterable[str]
 ) -> Tuple[List[Dict[str, object]], int]:
     wanted = {
-        normalize_symbol_for_open_venue(symbol, open_venue)
+        normalize_symbol_for_venue(symbol, venue)
         for symbol in symbol_filters
         if str(symbol).strip()
     }
@@ -212,21 +208,21 @@ def build_rows_payload(
     return rows, bad_fields
 
 
-def coerce_rows(payload: dict, open_venue: str) -> List[Tuple[str, float]]:
+def coerce_rows(payload: dict, venue: str) -> List[Tuple[str, float]]:
     rows_raw = payload.get("rows")
     thresholds_raw = payload.get("thresholds")
 
     rows: List[Tuple[str, float]] = []
     if isinstance(thresholds_raw, dict):
         for raw_symbol, raw_value in thresholds_raw.items():
-            symbol = normalize_symbol_for_open_venue(str(raw_symbol), open_venue)
+            symbol = normalize_symbol_for_venue(str(raw_symbol), venue)
             value = parse_threshold_value(raw_value)
             rows.append((symbol, value))
     elif isinstance(rows_raw, list):
         for item in rows_raw:
             if not isinstance(item, dict):
                 raise ValueError("rows item must be an object")
-            symbol = normalize_symbol_for_open_venue(str(item.get("symbol", "")), open_venue)
+            symbol = normalize_symbol_for_venue(str(item.get("symbol", "")), venue)
             value = parse_threshold_value(item.get("tlen_threshold"))
             rows.append((symbol, value))
     else:
@@ -246,8 +242,7 @@ class ServerConfig:
     redis_port: int
     redis_db: int
     redis_password: Optional[str]
-    default_open_venue: str
-    default_hedge_venue: str
+    default_venue: str
 
 
 class TlenConfigStore:
@@ -265,22 +260,20 @@ class TlenConfigStore:
 
     def fetch(
         self,
-        open_venue: str,
-        hedge_venue: str,
+        venue: str,
         symbol_filters: Iterable[str],
     ) -> Dict[str, object]:
-        key = redis_key(open_venue, hedge_venue)
+        key = redis_key(venue)
         rows, bad_fields = build_rows_payload(
             decode_hash(self._redis.hgetall(key)),
-            open_venue,
+            venue,
             symbol_filters,
         )
         meta = decode_hash(self._redis.hgetall(meta_key(key)))
         return {
             "redis_key": key,
             "meta_key": meta_key(key),
-            "open_venue": open_venue,
-            "hedge_venue": hedge_venue,
+            "venue": venue,
             "count": len(rows),
             "bad_fields": bad_fields,
             "rows": rows,
@@ -289,45 +282,42 @@ class TlenConfigStore:
 
     def replace(
         self,
-        open_venue: str,
-        hedge_venue: str,
+        venue: str,
         rows: List[Tuple[str, float]],
         allow_empty: bool,
     ) -> Dict[str, object]:
         if not rows and not allow_empty:
             raise ValueError("replace with empty rows requires allow_empty=true")
-        key = redis_key(open_venue, hedge_venue)
+        key = redis_key(venue)
         self._redis.delete(key)
         if rows:
             mapping = {symbol: f"{value:.8f}" for symbol, value in rows}
             self._redis.hset(key, mapping=mapping)
-        self._write_meta(key, open_venue, hedge_venue, len(rows), "replace")
-        return self.fetch(open_venue, hedge_venue, [])
+        self._write_meta(key, venue, len(rows), "replace")
+        return self.fetch(venue, [])
 
     def upsert(
         self,
-        open_venue: str,
-        hedge_venue: str,
+        venue: str,
         rows: List[Tuple[str, float]],
     ) -> Dict[str, object]:
         if not rows:
             raise ValueError("upsert rows cannot be empty")
-        key = redis_key(open_venue, hedge_venue)
+        key = redis_key(venue)
         mapping = {symbol: f"{value:.8f}" for symbol, value in rows}
         self._redis.hset(key, mapping=mapping)
         row_count = self._redis.hlen(key)
-        self._write_meta(key, open_venue, hedge_venue, int(row_count), "upsert")
-        return self.fetch(open_venue, hedge_venue, [])
+        self._write_meta(key, venue, int(row_count), "upsert")
+        return self.fetch(venue, [])
 
     def delete_symbols(
         self,
-        open_venue: str,
-        hedge_venue: str,
+        venue: str,
         symbols: Iterable[str],
     ) -> Dict[str, object]:
-        key = redis_key(open_venue, hedge_venue)
+        key = redis_key(venue)
         normalized = [
-            normalize_symbol_for_open_venue(symbol, open_venue)
+            normalize_symbol_for_venue(symbol, venue)
             for symbol in symbols
             if str(symbol).strip()
         ]
@@ -335,14 +325,13 @@ class TlenConfigStore:
             raise ValueError("delete requires at least one symbol")
         self._redis.hdel(key, *normalized)
         row_count = self._redis.hlen(key)
-        self._write_meta(key, open_venue, hedge_venue, int(row_count), "delete")
-        return self.fetch(open_venue, hedge_venue, [])
+        self._write_meta(key, venue, int(row_count), "delete")
+        return self.fetch(venue, [])
 
     def _write_meta(
         self,
         key: str,
-        open_venue: str,
-        hedge_venue: str,
+        venue: str,
         row_count: int,
         action: str,
     ) -> None:
@@ -352,8 +341,7 @@ class TlenConfigStore:
             "updated_at_ts_ms": str(now_ts_ms()),
             "hostname": socket.gethostname(),
             "pid": str(os.getpid()),
-            "open_venue": open_venue,
-            "hedge_venue": hedge_venue,
+            "venue": venue,
             "row_count": str(row_count),
             "last_action": action,
         }
@@ -362,8 +350,7 @@ class TlenConfigStore:
 
 def page_html(config: ServerConfig) -> str:
     venue_options = json.dumps(SUPPORTED_VENUES, ensure_ascii=False)
-    default_open = json.dumps(config.default_open_venue, ensure_ascii=False)
-    default_hedge = json.dumps(config.default_hedge_venue, ensure_ascii=False)
+    default_venue = json.dumps(config.default_venue, ensure_ascii=False)
     service_name = json.dumps(SERVICE_NAME, ensure_ascii=False)
     return f"""<!doctype html>
 <html lang="zh-CN">
@@ -417,7 +404,7 @@ def page_html(config: ServerConfig) -> str:
     }}
     .toolbar {{
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 12px;
       align-items: end;
     }}
@@ -522,18 +509,14 @@ def page_html(config: ServerConfig) -> str:
   <div class="wrap">
     <div class="card">
       <h1>{SERVICE_NAME}</h1>
-      <div class="muted">共享 TLEN threshold 管理服务。Redis key 按 <code>&lt;hedge&gt;_&lt;open&gt;:mm:tlen_threshold</code> 写入。</div>
+      <div class="muted">共享 TLEN threshold 管理服务。Redis key 按 <code>&lt;venue&gt;:tlen_threshold</code> 写入。</div>
     </div>
 
     <div class="card">
       <div class="toolbar">
         <div class="field">
-          <label for="openVenue">open_venue</label>
-          <select id="openVenue"></select>
-        </div>
-        <div class="field">
-          <label for="hedgeVenue">hedge_venue</label>
-          <select id="hedgeVenue"></select>
+          <label for="venue">venue</label>
+          <select id="venue"></select>
         </div>
         <div class="field">
           <label for="symbolFilter">symbol filter</label>
@@ -582,11 +565,9 @@ def page_html(config: ServerConfig) -> str:
   <script>
     const SERVICE_NAME = {service_name};
     const SUPPORTED_VENUES = {venue_options};
-    const DEFAULT_OPEN_VENUE = {default_open};
-    const DEFAULT_HEDGE_VENUE = {default_hedge};
+    const DEFAULT_VENUE = {default_venue};
 
-    const openVenueEl = document.getElementById('openVenue');
-    const hedgeVenueEl = document.getElementById('hedgeVenue');
+    const venueEl = document.getElementById('venue');
     const symbolFilterEl = document.getElementById('symbolFilter');
     const redisKeyEl = document.getElementById('redisKey');
     const bulkJsonEl = document.getElementById('bulkJson');
@@ -696,8 +677,7 @@ def page_html(config: ServerConfig) -> str:
 
     function currentQuery() {{
       const params = new URLSearchParams();
-      params.set('open_venue', openVenueEl.value);
-      params.set('hedge_venue', hedgeVenueEl.value);
+      params.set('venue', venueEl.value);
       if (symbolFilterEl.value.trim()) {{
         params.set('symbols', symbolFilterEl.value.trim());
       }}
@@ -723,8 +703,7 @@ def page_html(config: ServerConfig) -> str:
         return;
       }}
       const body = {{
-        open_venue: openVenueEl.value,
-        hedge_venue: hedgeVenueEl.value,
+        venue: venueEl.value,
         allow_empty: rows.length === 0,
         rows,
       }};
@@ -764,8 +743,7 @@ def page_html(config: ServerConfig) -> str:
       }}
     }});
 
-    fillVenueSelect(openVenueEl, DEFAULT_OPEN_VENUE);
-    fillVenueSelect(hedgeVenueEl, DEFAULT_HEDGE_VENUE);
+    fillVenueSelect(venueEl, DEFAULT_VENUE);
     renderRows([]);
     loadRows().catch((err) => setStatus(String(err), 'err'));
   </script>
@@ -801,18 +779,13 @@ class TlenConfigRequestHandler(BaseHTTPRequestHandler):
                     {
                         "service": SERVICE_NAME,
                         "venues": SUPPORTED_VENUES,
-                        "default_open_venue": self.config.default_open_venue,
-                        "default_hedge_venue": self.config.default_hedge_venue,
+                        "default_venue": self.config.default_venue,
                     }
                 )
                 return
             if parsed.path == "/api/thresholds":
-                open_venue, hedge_venue = self._venues_from_params(params)
-                payload = self.store.fetch(
-                    open_venue,
-                    hedge_venue,
-                    parse_symbol_filters(params),
-                )
+                venue = self._venue_from_params(params)
+                payload = self.store.fetch(venue, parse_symbol_filters(params))
                 self._write_json(payload)
                 return
         except Exception as exc:  # noqa: BLE001
@@ -826,29 +799,27 @@ class TlenConfigRequestHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         try:
             payload = self._read_json_body()
-            open_venue = normalize_venue(str(payload.get("open_venue", self.config.default_open_venue)))
-            hedge_venue = normalize_venue(str(payload.get("hedge_venue", self.config.default_hedge_venue)))
-            if open_venue is None:
-                raise ValueError("unsupported open_venue")
-            if hedge_venue is None:
-                raise ValueError("unsupported hedge_venue")
+            venue_raw = payload.get("venue", payload.get("open_venue", self.config.default_venue))
+            venue = normalize_venue(str(venue_raw))
+            if venue is None:
+                raise ValueError("unsupported venue")
 
             if parsed.path == "/api/thresholds/replace":
-                rows = coerce_rows(payload, open_venue)
+                rows = coerce_rows(payload, venue)
                 allow_empty = bool(payload.get("allow_empty"))
-                self._write_json(self.store.replace(open_venue, hedge_venue, rows, allow_empty))
+                self._write_json(self.store.replace(venue, rows, allow_empty))
                 return
 
             if parsed.path == "/api/thresholds/upsert":
-                rows = coerce_rows(payload, open_venue)
-                self._write_json(self.store.upsert(open_venue, hedge_venue, rows))
+                rows = coerce_rows(payload, venue)
+                self._write_json(self.store.upsert(venue, rows))
                 return
 
             if parsed.path == "/api/thresholds/delete":
                 symbols = payload.get("symbols")
                 if not isinstance(symbols, list):
                     raise ValueError("symbols must be an array")
-                self._write_json(self.store.delete_symbols(open_venue, hedge_venue, symbols))
+                self._write_json(self.store.delete_symbols(venue, symbols))
                 return
         except Exception as exc:  # noqa: BLE001
             self._write_json({"error": str(exc)}, status=400)
@@ -870,18 +841,13 @@ class TlenConfigRequestHandler(BaseHTTPRequestHandler):
             raise ValueError("JSON body must be an object")
         return payload
 
-    def _venues_from_params(self, params: Dict[str, List[str]]) -> Tuple[str, str]:
-        open_venue = normalize_venue(
-            (params.get("open_venue") or [self.config.default_open_venue])[0]
+    def _venue_from_params(self, params: Dict[str, List[str]]) -> str:
+        venue = normalize_venue(
+            (params.get("venue") or params.get("open_venue") or [self.config.default_venue])[0]
         )
-        hedge_venue = normalize_venue(
-            (params.get("hedge_venue") or [self.config.default_hedge_venue])[0]
-        )
-        if open_venue is None:
-            raise ValueError("unsupported open_venue")
-        if hedge_venue is None:
-            raise ValueError("unsupported hedge_venue")
-        return open_venue, hedge_venue
+        if venue is None:
+            raise ValueError("unsupported venue")
+        return venue
 
     def _write_html(self, html: str, status: int = 200) -> None:
         body = html.encode("utf-8")
@@ -921,21 +887,18 @@ def parse_args() -> ServerConfig:
     )
     parser.add_argument("--redis-password", default=os.environ.get("REDIS_PASSWORD"))
     parser.add_argument(
-        "--default-open-venue",
-        default=os.environ.get("DEFAULT_OPEN_VENUE", DEFAULT_OPEN_VENUE),
+        "--default-venue",
+        default=os.environ.get("DEFAULT_VENUE", os.environ.get("DEFAULT_OPEN_VENUE", DEFAULT_VENUE)),
     )
     parser.add_argument(
-        "--default-hedge-venue",
-        default=os.environ.get("DEFAULT_HEDGE_VENUE", DEFAULT_HEDGE_VENUE),
+        "--default-open-venue",
+        default=None,
     )
     args = parser.parse_args()
 
-    default_open_venue = normalize_venue(args.default_open_venue)
-    default_hedge_venue = normalize_venue(args.default_hedge_venue)
-    if default_open_venue is None:
-        raise ValueError(f"unsupported default open venue: {args.default_open_venue}")
-    if default_hedge_venue is None:
-        raise ValueError(f"unsupported default hedge venue: {args.default_hedge_venue}")
+    default_venue = normalize_venue(args.default_open_venue or args.default_venue)
+    if default_venue is None:
+        raise ValueError(f"unsupported default venue: {args.default_open_venue or args.default_venue}")
 
     return ServerConfig(
         host=args.host,
@@ -944,8 +907,7 @@ def parse_args() -> ServerConfig:
         redis_port=args.redis_port,
         redis_db=args.redis_db,
         redis_password=args.redis_password,
-        default_open_venue=default_open_venue,
-        default_hedge_venue=default_hedge_venue,
+        default_venue=default_venue,
     )
 
 
@@ -960,7 +922,7 @@ def main() -> int:
     print(
         f"[INFO] {SERVICE_NAME} listening on http://{config.host}:{config.port} "
         f"(redis={config.redis_host}:{config.redis_port}/{config.redis_db}, "
-        f"default_open={config.default_open_venue}, default_hedge={config.default_hedge_venue})"
+        f"default_venue={config.default_venue})"
     )
 
     try:

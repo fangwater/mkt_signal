@@ -3,6 +3,9 @@ use crate::common::ipc_service_name::build_service_name;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{OrderType, Side};
 use crate::pre_trade::signal_throttle::check_signal_throttle;
+use crate::signal::arb_signal::{
+    ArbBackwardQueryMsg, ArbCancelCandidateEntry, ArbCancelCandidateQueryMsg, ArbCancelTriggerCtx,
+};
 use crate::signal::cancel_signal::{ArbCancelCtx, MmCancelCtx};
 use crate::signal::common::{SignalBytes, TradingVenue};
 use crate::signal::hedge_signal::{ArbHedgeCtx, MmHedgeCtx};
@@ -503,6 +506,29 @@ fn handle_trade_signal(signal: TradeSignal) {
 
                 let strategy_mgr = MonitorChannel::instance().strategy_mgr();
 
+                if cancel_ctx.strategy_id > 0 {
+                    let strategy_id = cancel_ctx.strategy_id;
+                    let exists = { strategy_mgr.borrow().contains(strategy_id) };
+                    if !exists {
+                        warn!(
+                            "ArbCancel: targeted strategy missing strategy_id={} symbol={} trigger_ts={}",
+                            strategy_id,
+                            symbol,
+                            cancel_ctx.trigger_ts
+                        );
+                        return;
+                    }
+                    let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
+                    if let Some(mut strategy) = strategy_opt {
+                        info!("ArbCancel: targeted strategy id={}", strategy_id);
+                        strategy.handle_signal(&signal);
+                        if strategy.is_active() {
+                            strategy_mgr.borrow_mut().insert(strategy);
+                        }
+                    }
+                    return;
+                }
+
                 // 使用代码块限制借用作用域，确保在进入循环前释放
                 let candidate_ids: Vec<i32> = {
                     strategy_mgr
@@ -543,6 +569,113 @@ fn handle_trade_signal(signal: TradeSignal) {
                 drop(strategy_mgr);
             }
             Err(err) => warn!("failed to decode ArbCancel context: {err}"),
+        },
+        SignalType::ArbCancelTrigger => match ArbCancelTriggerCtx::from_bytes(signal.context.clone())
+        {
+            Ok(trigger_ctx) => {
+                if is_mm_mode {
+                    debug!("ArbCancelTrigger ignored: pre_trade is in MM mode");
+                    return;
+                }
+
+                let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+                let price_map_snapshot = strategy_mgr.borrow().arb_open_price_map_snapshot();
+                if price_map_snapshot.is_empty() {
+                    return;
+                }
+
+                let mut symbol_counts: BTreeMap<String, usize> = BTreeMap::new();
+                let mut indexed_strategy_count = 0usize;
+                for (key, strategy_ids) in &price_map_snapshot {
+                    *symbol_counts.entry(key.symbol.clone()).or_default() += strategy_ids.len();
+                    indexed_strategy_count += strategy_ids.len();
+                }
+                let symbol_count = symbol_counts.len();
+                let symbol_sample = {
+                    let preview: Vec<String> = symbol_counts
+                        .iter()
+                        .take(8)
+                        .map(|(symbol, count)| format!("{symbol}:{count}"))
+                        .collect();
+                    if preview.is_empty() {
+                        "-".to_string()
+                    } else {
+                        preview.join(",")
+                    }
+                };
+                let strategy_sample = {
+                    let preview: Vec<String> = price_map_snapshot
+                        .iter()
+                        .flat_map(|(key, strategy_ids)| {
+                            strategy_ids.iter().map(move |strategy_id| {
+                                format!("{}#{}@{}", key.symbol, strategy_id, key.price_qv.count())
+                            })
+                        })
+                        .take(12)
+                        .collect();
+                    if preview.is_empty() {
+                        "-".to_string()
+                    } else {
+                        preview.join(",")
+                    }
+                };
+
+                let mut chunk = ArbCancelCandidateQueryMsg::new(trigger_ctx.trigger_ts);
+                let mut published_chunks = 0usize;
+                let mut published_items = 0usize;
+
+                let flush_chunk = |chunk: &mut ArbCancelCandidateQueryMsg,
+                                   published_chunks: &mut usize,
+                                   published_items: &mut usize| {
+                    if chunk.is_empty() {
+                        return;
+                    }
+                    let item_count = chunk
+                        .groups
+                        .iter()
+                        .map(|group| group.items.len())
+                        .sum::<usize>();
+                    let payload = ArbBackwardQueryMsg::CancelCandidates(chunk.clone()).to_bytes();
+                    match SignalChannel::with(|ch| ch.publish_backward(&payload)) {
+                        Ok(true) => {
+                            *published_chunks += 1;
+                            *published_items += item_count;
+                        }
+                        Ok(false) => {
+                            warn!("ArbCancelTrigger: backward publisher unavailable");
+                        }
+                        Err(err) => {
+                            warn!("ArbCancelTrigger: publish backward failed err={:#}", err);
+                        }
+                    }
+                    chunk.groups.clear();
+                };
+
+                for (key, strategy_ids) in price_map_snapshot {
+                    let price_qv = key.price_qv.to_quantized_value();
+                    for strategy_id in strategy_ids {
+                        let entry = ArbCancelCandidateEntry::new(strategy_id, price_qv);
+                        let next_len = 1 + chunk.next_encoded_len_with(&key.symbol, &entry);
+                        if !chunk.is_empty() && next_len > SIGNAL_PAYLOAD {
+                            flush_chunk(&mut chunk, &mut published_chunks, &mut published_items);
+                        }
+                        chunk.push_grouped(&key.symbol, entry);
+                    }
+                }
+                flush_chunk(&mut chunk, &mut published_chunks, &mut published_items);
+                debug!(
+                    "ArbCancelTrigger: dynamic index published chunks={} items={} indexed_strategies={} symbols={} sample={} strategies={} trigger_ts={} freq_ms={}",
+                    published_chunks,
+                    published_items,
+                    indexed_strategy_count,
+                    symbol_count,
+                    symbol_sample,
+                    strategy_sample,
+                    trigger_ctx.trigger_ts,
+                    trigger_ctx.freq_ms
+                );
+            }
+            Err(err) => warn!("failed to decode ArbCancelTrigger context: {err}"),
         },
         SignalType::ArbHedge => match ArbHedgeCtx::from_bytes(signal.context.clone()) {
             Ok(hedge_ctx) => {
@@ -648,10 +781,12 @@ fn handle_trade_signal(signal: TradeSignal) {
                 }
 
                 let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-                let candidates = strategy_mgr.borrow().mm_open_cancel_candidates();
+                let price_map_snapshot = strategy_mgr.borrow().mm_open_price_map_snapshot();
                 let mut symbol_counts: BTreeMap<String, usize> = BTreeMap::new();
-                for candidate in &candidates {
-                    *symbol_counts.entry(candidate.symbol.clone()).or_default() += 1;
+                let mut indexed_strategy_count = 0usize;
+                for (key, strategy_ids) in &price_map_snapshot {
+                    *symbol_counts.entry(key.symbol.clone()).or_default() += strategy_ids.len();
+                    indexed_strategy_count += strategy_ids.len();
                 }
                 let symbol_count = symbol_counts.len();
                 let symbol_sample = {
@@ -667,17 +802,14 @@ fn handle_trade_signal(signal: TradeSignal) {
                     }
                 };
                 let strategy_sample = {
-                    let preview: Vec<String> = candidates
+                    let preview: Vec<String> = price_map_snapshot
                         .iter()
-                        .take(12)
-                        .map(|candidate| {
-                            format!(
-                                "{}#{}@{}",
-                                candidate.symbol,
-                                candidate.strategy_id,
-                                candidate.price_qv.get_count()
-                            )
+                        .flat_map(|(key, strategy_ids)| {
+                            strategy_ids.iter().map(move |strategy_id| {
+                                format!("{}#{}@{}", key.symbol, strategy_id, key.price_qv.count())
+                            })
                         })
+                        .take(12)
                         .collect();
                     if preview.is_empty() {
                         "-".to_string()
@@ -685,7 +817,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                         preview.join(",")
                     }
                 };
-                if candidates.is_empty() {
+                if price_map_snapshot.is_empty() {
                     return;
                 }
 
@@ -720,20 +852,23 @@ fn handle_trade_signal(signal: TradeSignal) {
                     chunk.groups.clear();
                 };
 
-                for candidate in candidates {
-                    let entry =
-                        MmCancelCandidateEntry::new(candidate.strategy_id, candidate.price_qv);
-                    let next_len = 1 + chunk.next_encoded_len_with(&candidate.symbol, &entry);
-                    if !chunk.is_empty() && next_len > SIGNAL_PAYLOAD {
-                        flush_chunk(&mut chunk, &mut published_chunks, &mut published_items);
+                for (key, strategy_ids) in price_map_snapshot {
+                    let price_qv = key.price_qv.to_quantized_value();
+                    for strategy_id in strategy_ids {
+                        let entry = MmCancelCandidateEntry::new(strategy_id, price_qv);
+                        let next_len = 1 + chunk.next_encoded_len_with(&key.symbol, &entry);
+                        if !chunk.is_empty() && next_len > SIGNAL_PAYLOAD {
+                            flush_chunk(&mut chunk, &mut published_chunks, &mut published_items);
+                        }
+                        chunk.push_grouped(&key.symbol, entry);
                     }
-                    chunk.push_grouped(&candidate.symbol, entry);
                 }
                 flush_chunk(&mut chunk, &mut published_chunks, &mut published_items);
                 debug!(
-                    "MMCancelTrigger: snapshot published chunks={} items={} symbols={} sample={} strategies={} trigger_ts={} freq_ms={}",
+                    "MMCancelTrigger: dynamic index published chunks={} items={} indexed_strategies={} symbols={} sample={} strategies={} trigger_ts={} freq_ms={}",
                     published_chunks,
                     published_items,
+                    indexed_strategy_count,
                     symbol_count,
                     symbol_sample,
                     strategy_sample,

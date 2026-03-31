@@ -19,8 +19,7 @@ fi
 
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-18161}"
-DEFAULT_OPEN_VENUE="${DEFAULT_OPEN_VENUE:-binance-futures}"
-DEFAULT_HEDGE_VENUE="${DEFAULT_HEDGE_VENUE:-binance-futures}"
+DEFAULT_VENUE="${DEFAULT_VENUE:-${DEFAULT_OPEN_VENUE:-binance-futures}}"
 APP_NAME="${PM2_NAME:-tlen_config_server_shared}"
 
 if [[ -z "${PYTHON_BIN:-}" ]]; then
@@ -61,7 +60,7 @@ fi
 echo "[INFO] 启动 tlen_config_server (port=${PORT}, namespace=${NAMESPACE}, app=${APP_NAME})"
 (
   cd "$BASE_DIR"
-  HOST="$HOST" PORT="$PORT" DEFAULT_OPEN_VENUE="$DEFAULT_OPEN_VENUE" DEFAULT_HEDGE_VENUE="$DEFAULT_HEDGE_VENUE" \
+  HOST="$HOST" PORT="$PORT" DEFAULT_VENUE="$DEFAULT_VENUE" \
   npx pm2 start "$PYTHON_BIN" \
     --name "$APP_NAME" \
     --namespace "$NAMESPACE" \
@@ -70,8 +69,7 @@ echo "[INFO] 启动 tlen_config_server (port=${PORT}, namespace=${NAMESPACE}, ap
     "$APP_SCRIPT" \
     --host "$HOST" \
     --port "$PORT" \
-    --default-open-venue "$DEFAULT_OPEN_VENUE" \
-    --default-hedge-venue "$DEFAULT_HEDGE_VENUE"
+    --default-venue "$DEFAULT_VENUE"
 )
 
 echo "[INFO] 已启动：npx pm2 status --namespace ${NAMESPACE} ${APP_NAME}"

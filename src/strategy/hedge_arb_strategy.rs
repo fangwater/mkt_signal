@@ -1,10 +1,12 @@
 use crate::common::bbo::{Bbo, DualBbo};
+use crate::common::tick_math::QuantizedValue;
 use crate::common::time_util::get_timestamp_us;
 use crate::common::trade_error_code::describe_trade_error_code;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
 use crate::pre_trade::signal_throttle::register_signal_throttle;
 use crate::pre_trade::{PersistChannel, SignalChannel, TradeEngHub};
+use crate::signal::arb_signal::ArbBackwardQueryMsg;
 use crate::signal::cancel_signal::ArbCancelCtx;
 use crate::signal::common::{
     align_price_floor, ExecutionType, OrderStatus, SignalBytes, TimeInForce, TradingVenue,
@@ -12,7 +14,7 @@ use crate::signal::common::{
 use crate::signal::hedge_signal::ArbHedgeCtx;
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
-use crate::strategy::manager::{ForceCloseControl, Strategy};
+use crate::strategy::manager::{ArbOpenPriceMapEntry, ForceCloseControl, Strategy};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::query_engine_response::QueryEngineResponse;
 use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
@@ -58,6 +60,7 @@ pub struct HedgeArbStrategy {
     pub hedge_request_seq: u32,        //累计对冲请求次数
     pub open_signal_ts: i64,           //开仓信号时间戳（微秒）
     pub hedge_signal_ts: i64,          //对冲信号时间戳（微秒）
+    pub open_price_qv: QuantizedValue, //开仓信号 price_qv
     pub open_price_offset: f64,        //开仓信号 price_offset
     pub hedge_price_offset: f64,       //对冲信号 price_offset
     pub open_from_key: String,         //开仓来源标记
@@ -135,6 +138,7 @@ impl HedgeArbStrategy {
             hedge_request_seq: 0,
             open_signal_ts: 0,
             hedge_signal_ts: 0,
+            open_price_qv: QuantizedValue::zero(),
             open_price_offset: 0.0,
             hedge_price_offset: 0.0,
             open_from_key: String::new(),
@@ -404,6 +408,7 @@ impl HedgeArbStrategy {
             Side::Buy
         };
         self.open_signal_ts = ctx.create_ts;
+        self.open_price_qv = ctx.price_qv;
         self.open_price_offset = ctx.price_offset;
         self.open_from_key = String::from_utf8_lossy(&ctx.from_key).to_string();
         self.open_bbo.open = Bbo::new(
@@ -1554,7 +1559,8 @@ impl HedgeArbStrategy {
         self.hedge_request_seq = self.hedge_request_seq.wrapping_add(1);
 
         // 2. 通过 SignalChannel 直接发送到上游
-        let send_result = SignalChannel::with(|ch| ch.publish_backward(&query_msg.to_bytes()));
+        let payload = ArbBackwardQueryMsg::Hedge(query_msg).to_bytes();
+        let send_result = SignalChannel::with(|ch| ch.publish_backward(&payload));
 
         match send_result {
             Ok(true) => {
@@ -3297,6 +3303,25 @@ impl Strategy for HedgeArbStrategy {
 
     fn symbol(&self) -> Option<&str> {
         Some(&self.open_symbol)
+    }
+
+    fn arb_open_price_map_entry(&self) -> Option<ArbOpenPriceMapEntry> {
+        if self.open_symbol.is_empty() || self.open_order_id == 0 {
+            return None;
+        }
+        let open_active = MonitorChannel::instance()
+            .order_manager()
+            .borrow()
+            .get(self.open_order_id)
+            .is_some_and(|order| !order.status.is_terminal());
+        if !open_active {
+            return None;
+        }
+        Some(ArbOpenPriceMapEntry {
+            symbol: self.open_symbol.clone(),
+            client_order_id: self.open_order_id,
+            price_qv: self.open_price_qv.into(),
+        })
     }
 
     fn is_strategy_order(&self, order_id: i64) -> bool {

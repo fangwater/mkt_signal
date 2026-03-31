@@ -2,16 +2,15 @@
 # -*- coding: utf-8 -*-
 
 """
-打印 MM 的 tlen 阈值配置（从 Redis 读取）。
+打印共享 tlen 阈值配置（从 Redis 读取）。
 
 Redis key 约定：
-  - Hash: <hedge_venue_prefix>_<open_venue_prefix>:<strategy>:tlen_threshold
-    单 venue MM 例如：binance_futures_binance_futures:mm:tlen_threshold
+  - Hash: <venue_prefix>:tlen_threshold
+    例如：binance_futures:tlen_threshold
 
 示例：
   python mm_scripts/print_mm_tlen_threshold.py
   python mm_scripts/print_mm_tlen_threshold.py BTCUSDT
-  python mm_scripts/print_mm_tlen_threshold.py --venue gate-futures
   python mm_scripts/print_mm_tlen_threshold.py --venue all
 """
 
@@ -21,9 +20,13 @@ import argparse
 import sys
 from typing import Dict, Iterable, List, Optional
 
-SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
-SUPPORTED_VENUES = [f"{exchange}-futures" for exchange in SUPPORTED_EXCHANGES]
-STRATEGY = "mm"
+SUPPORTED_VENUES = [
+    "binance-margin",
+    "binance-futures",
+    "okex-margin",
+    "okex-futures",
+]
+QUOTE_ASSETS = ("USDT", "USDC", "BUSD", "FDUSD", "USD")
 
 
 def try_import_redis():
@@ -57,8 +60,33 @@ def normalize_venue(venue: str) -> Optional[str]:
     return normalized
 
 
-def normalize_symbol(symbol: str) -> str:
-    return "".join(ch for ch in (symbol or "").upper() if ch.isalnum())
+def split_assets(symbol: str):
+    text = "".join(ch for ch in (symbol or "").upper() if ch.isalnum())
+    for quote in QUOTE_ASSETS:
+        if text.endswith(quote) and len(text) > len(quote):
+            return text[: -len(quote)], quote
+    return text, "USDT"
+
+
+def normalize_symbol_for_venue(symbol: str, venue: str) -> str:
+    text = (symbol or "").strip().upper().replace("_", "-").replace("/", "-")
+    if not text:
+        return ""
+    if venue == "okex-margin":
+        if text.endswith("-SWAP"):
+            text = text[: -len("-SWAP")]
+        if "-" in text:
+            return text
+        base, quote = split_assets(text)
+        return f"{base}-{quote}"
+    if venue == "okex-futures":
+        if text.endswith("-SWAP"):
+            return text
+        if "-" in text:
+            return f"{text}-SWAP"
+        base, quote = split_assets(text)
+        return f"{base}-{quote}-SWAP"
+    return text.replace("-", "").replace("SWAP", "")
 
 
 def venue_prefix(venue: str) -> str:
@@ -66,12 +94,11 @@ def venue_prefix(venue: str) -> str:
 
 
 def redis_key(venue: str) -> str:
-    prefix = venue_prefix(venue)
-    return f"{prefix}_{prefix}:{STRATEGY}:tlen_threshold"
+    return f"{venue_prefix(venue)}:tlen_threshold"
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Print mm tlen thresholds from Redis")
+    parser = argparse.ArgumentParser(description="Print shared tlen thresholds from Redis")
     parser.add_argument(
         "symbols",
         nargs="*",
@@ -80,7 +107,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--venue",
         default="binance-futures",
-        help="目标 venue，支持 binance-futures/okex-futures/bybit-futures/bitget-futures/gate-futures/all，默认 binance-futures",
+        help="目标 venue，支持 binance-margin/binance-futures/okex-margin/okex-futures/all，默认 binance-futures",
     )
     parser.add_argument("--redis-host", default="127.0.0.1", help="Redis host，默认 127.0.0.1")
     parser.add_argument("--redis-port", type=int, default=6379, help="Redis port，默认 6379")
@@ -131,18 +158,22 @@ def decode_hash(data: Dict[object, object]) -> Dict[str, str]:
     return decoded
 
 
-def filter_symbols(data: Dict[str, str], symbols: Iterable[str]) -> Dict[str, str]:
-    wanted = {normalize_symbol(symbol) for symbol in symbols if normalize_symbol(symbol)}
+def filter_symbols(data: Dict[str, str], symbols: Iterable[str], venue: str) -> Dict[str, str]:
+    wanted = {
+        normalize_symbol_for_venue(symbol, venue)
+        for symbol in symbols
+        if normalize_symbol_for_venue(symbol, venue)
+    }
     if not wanted:
         return data
-    return {symbol: value for symbol, value in data.items() if normalize_symbol(symbol) in wanted}
+    return {symbol: value for symbol, value in data.items() if symbol in wanted}
 
 
 def print_one(rds, venue: str, symbols: List[str]) -> None:
     key = redis_key(venue)
-    data = filter_symbols(decode_hash(rds.hgetall(key)), symbols)
+    data = filter_symbols(decode_hash(rds.hgetall(key)), symbols, venue)
 
-    print(f"\n📍 Venue={venue} Strategy={STRATEGY}")
+    print(f"\n📍 Venue={venue}")
     print(f"🔎 Redis Hash: {key}")
 
     if not data:
@@ -177,7 +208,7 @@ def main() -> int:
 
     print(f"📍 Redis: {args.redis_host}:{args.redis_port}/{args.redis_db}")
     if args.symbols:
-        print(f"🔬 Symbol Filter: {', '.join(normalize_symbol(symbol) for symbol in args.symbols)}")
+        print(f"🔬 Raw Symbol Filter: {', '.join(args.symbols)}")
 
     for venue in venues:
         print_one(rds, venue, args.symbols)

@@ -836,6 +836,8 @@ impl StrategyParams {
                 decision.update_hedge_price_offset(self.hedge_price_offset);
                 decision.update_hedge_aggressive_seq_threshold(self.hedge_aggressive_seq_threshold);
                 decision.update_max_hedge_price_pct_change(self.max_hedge_price_pct_change);
+                decision.update_enable_tlen_cancel(self.enable_tlen_cancel);
+                decision.update_tlen_cancel_freq_ms(self.tlen_cancel_freq_ms);
                 decision.update_signal_cooldown(self.signal_cooldown);
                 decision.update_enable_environment_model(self.enable_environment_model);
                 decision.update_enable_volatility_limit(self.enable_volatility_limit);

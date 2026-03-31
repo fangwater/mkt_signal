@@ -92,6 +92,8 @@ PARAM_COMMENTS: Dict[str, str] = {
     "hedge_timeout": "对冲订单超时(秒)",
     "hedge_price_offset": "对冲价格偏移(万分之几)",
     "hedge_aggressive_seq_threshold": "对冲激进阈值(request_seq>=该值时不偏移，但仍为maker限价单)",
+    "enable_tlen_cancel": "是否启用基于 tlen 的 open 撤单链路（true=允许发 trigger/query/cancel）",
+    "tlen_cancel_freq_ms": "tlen 撤单触发频率(ms)，需为正整数，默认 3000",
     "signal_cooldown": "信号冷却时间(秒)",
 }
 
@@ -104,6 +106,8 @@ PARAM_ORDER = [
     "hedge_timeout",
     "hedge_price_offset",
     "hedge_aggressive_seq_threshold",
+    "enable_tlen_cancel",
+    "tlen_cancel_freq_ms",
     "signal_cooldown",
 ]
 
