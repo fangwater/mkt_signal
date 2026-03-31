@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TLEN 配置服务器（tlen_config_server）。
+统一阈值配置服务器（沿用 tlen_config_server 名称）。
 
 用途：
-  - 以 HTTP + 简单页面的方式管理共享 tlen threshold。
-  - tlen 阈值永远按 open venue 维度存取。
-  - 当前默认支持：
-      - binance-margin
-      - binance-futures
-      - okex-margin
-      - okex-futures
+  - 以 HTTP + 简单页面的方式管理共享阈值配置。
+  - 当前支持：
+      - tlen_threshold
+      - amount_thresholds
+  - 配置按 venue 维度存取。
 
 Redis key 约定：
-  <venue_prefix>:tlen_threshold
+  - TLEN: <venue_prefix>:tlen_threshold
+  - Amount thresholds: <venue>:amount-thresholds
 
 示例：
   python scripts/tlen_config_server.py
@@ -37,6 +36,11 @@ from typing import Dict, Iterable, List, Optional, Tuple
 SERVICE_NAME = "tlen_config_server"
 DEFAULT_PORT = 18161
 DEFAULT_VENUE = "binance-futures"
+DEFAULT_CONFIG_TYPE = "tlen"
+SUPPORTED_CONFIG_TYPES = [
+    "tlen",
+    "amount_thresholds",
+]
 SUPPORTED_VENUES = [
     "binance-margin",
     "binance-futures",
@@ -139,11 +143,25 @@ def parse_threshold_value(raw_value: object) -> float:
     return value
 
 
-def redis_key(venue: str) -> str:
+def normalize_config_type(value: object) -> Optional[str]:
+    raw = str(value or "").strip().lower().replace("-", "_")
+    if raw in ("tlen", "tlen_threshold", "tlen_thresholds"):
+        return "tlen"
+    if raw in ("amount", "amount_threshold", "amount_thresholds"):
+        return "amount_thresholds"
+    return None
+
+
+def redis_key(venue: str, config_type: str) -> str:
     venue_norm = normalize_venue(venue)
     if venue_norm is None:
         raise ValueError(f"unsupported venue: {venue}")
-    return f"{venue_prefix(venue_norm)}:tlen_threshold"
+    normalized_type = normalize_config_type(config_type)
+    if normalized_type == "tlen":
+        return f"{venue_prefix(venue_norm)}:tlen_threshold"
+    if normalized_type == "amount_thresholds":
+        return f"{venue_norm}:amount-thresholds"
+    raise ValueError(f"unsupported config_type: {config_type}")
 
 
 def meta_key(key: str) -> str:
@@ -172,8 +190,34 @@ def decode_hash(data: Dict[object, object]) -> Dict[str, str]:
     return decoded
 
 
+def parse_amount_threshold_value(raw_value: object) -> Dict[str, float]:
+    if isinstance(raw_value, str):
+        try:
+            payload = json.loads(raw_value)
+        except Exception as exc:
+            raise ValueError(f"invalid amount threshold json: {raw_value!r}") from exc
+    elif isinstance(raw_value, dict):
+        payload = raw_value
+    else:
+        raise ValueError(f"invalid amount threshold payload: {raw_value!r}")
+
+    if not isinstance(payload, dict):
+        raise ValueError("amount threshold payload must be an object")
+
+    medium = parse_threshold_value(payload.get("medium_notional_threshold"))
+    large = parse_threshold_value(payload.get("large_notional_threshold"))
+    if medium > large:
+        raise ValueError(
+            f"medium_notional_threshold must be <= large_notional_threshold: {medium} > {large}"
+        )
+    return {
+        "medium_notional_threshold": medium,
+        "large_notional_threshold": large,
+    }
+
+
 def build_rows_payload(
-    data: Dict[str, str], venue: str, symbol_filters: Iterable[str]
+    data: Dict[str, str], venue: str, symbol_filters: Iterable[str], config_type: str
 ) -> Tuple[List[Dict[str, object]], int]:
     wanted = {
         normalize_symbol_for_venue(symbol, venue)
@@ -186,49 +230,104 @@ def build_rows_payload(
         if wanted and symbol not in wanted:
             continue
         raw_value = data[symbol]
-        try:
-            value = parse_threshold_value(raw_value)
-        except ValueError:
-            bad_fields += 1
+        if config_type == "tlen":
+            try:
+                value = parse_threshold_value(raw_value)
+            except ValueError:
+                bad_fields += 1
+                rows.append(
+                    {
+                        "symbol": symbol,
+                        "tlen_threshold": raw_value,
+                        "valid": False,
+                    }
+                )
+                continue
             rows.append(
                 {
                     "symbol": symbol,
-                    "tlen_threshold": raw_value,
-                    "valid": False,
+                    "tlen_threshold": value,
+                    "valid": True,
                 }
             )
             continue
-        rows.append(
-            {
-                "symbol": symbol,
-                "tlen_threshold": value,
-                "valid": True,
-            }
-        )
+
+        if config_type == "amount_thresholds":
+            try:
+                value = parse_amount_threshold_value(raw_value)
+            except ValueError:
+                bad_fields += 1
+                rows.append(
+                    {
+                        "symbol": symbol,
+                        "medium_notional_threshold": raw_value,
+                        "large_notional_threshold": raw_value,
+                        "valid": False,
+                    }
+                )
+                continue
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "medium_notional_threshold": value["medium_notional_threshold"],
+                    "large_notional_threshold": value["large_notional_threshold"],
+                    "valid": True,
+                }
+            )
+            continue
+
+        raise ValueError(f"unsupported config_type: {config_type}")
     return rows, bad_fields
 
 
-def coerce_rows(payload: dict, venue: str) -> List[Tuple[str, float]]:
+def coerce_rows(payload: dict, venue: str, config_type: str) -> List[Tuple[str, str]]:
     rows_raw = payload.get("rows")
     thresholds_raw = payload.get("thresholds")
 
-    rows: List[Tuple[str, float]] = []
-    if isinstance(thresholds_raw, dict):
-        for raw_symbol, raw_value in thresholds_raw.items():
-            symbol = normalize_symbol_for_venue(str(raw_symbol), venue)
-            value = parse_threshold_value(raw_value)
-            rows.append((symbol, value))
-    elif isinstance(rows_raw, list):
-        for item in rows_raw:
-            if not isinstance(item, dict):
-                raise ValueError("rows item must be an object")
-            symbol = normalize_symbol_for_venue(str(item.get("symbol", "")), venue)
-            value = parse_threshold_value(item.get("tlen_threshold"))
-            rows.append((symbol, value))
+    rows: List[Tuple[str, str]] = []
+    if config_type == "tlen":
+        if isinstance(thresholds_raw, dict):
+            for raw_symbol, raw_value in thresholds_raw.items():
+                symbol = normalize_symbol_for_venue(str(raw_symbol), venue)
+                value = parse_threshold_value(raw_value)
+                rows.append((symbol, f"{value:.8f}"))
+        elif isinstance(rows_raw, list):
+            for item in rows_raw:
+                if not isinstance(item, dict):
+                    raise ValueError("rows item must be an object")
+                symbol = normalize_symbol_for_venue(str(item.get("symbol", "")), venue)
+                value = parse_threshold_value(item.get("tlen_threshold"))
+                rows.append((symbol, f"{value:.8f}"))
+        else:
+            raise ValueError(
+                "payload must contain either object field 'thresholds' or array field 'rows'"
+            )
+    elif config_type == "amount_thresholds":
+        if isinstance(thresholds_raw, dict):
+            for raw_symbol, raw_value in thresholds_raw.items():
+                symbol = normalize_symbol_for_venue(str(raw_symbol), venue)
+                value = parse_amount_threshold_value(raw_value)
+                rows.append((symbol, json.dumps(value, ensure_ascii=False, sort_keys=True)))
+        elif isinstance(rows_raw, list):
+            for item in rows_raw:
+                if not isinstance(item, dict):
+                    raise ValueError("rows item must be an object")
+                symbol = normalize_symbol_for_venue(str(item.get("symbol", "")), venue)
+                value = parse_amount_threshold_value(
+                    {
+                        "medium_notional_threshold": item.get("medium_notional_threshold"),
+                        "large_notional_threshold": item.get("large_notional_threshold"),
+                    }
+                )
+                rows.append((symbol, json.dumps(value, ensure_ascii=False, sort_keys=True)))
+        else:
+            raise ValueError(
+                "payload must contain either object field 'thresholds' or array field 'rows'"
+            )
     else:
-        raise ValueError("payload must contain either object field 'thresholds' or array field 'rows'")
+        raise ValueError(f"unsupported config_type: {config_type}")
 
-    deduped: Dict[str, float] = {}
+    deduped: Dict[str, str] = {}
     for symbol, value in rows:
         deduped[symbol] = value
     return sorted(deduped.items())
@@ -243,6 +342,7 @@ class ServerConfig:
     redis_db: int
     redis_password: Optional[str]
     default_venue: str
+    default_config_type: str
 
 
 class TlenConfigStore:
@@ -261,19 +361,22 @@ class TlenConfigStore:
     def fetch(
         self,
         venue: str,
+        config_type: str,
         symbol_filters: Iterable[str],
     ) -> Dict[str, object]:
-        key = redis_key(venue)
+        key = redis_key(venue, config_type)
         rows, bad_fields = build_rows_payload(
             decode_hash(self._redis.hgetall(key)),
             venue,
             symbol_filters,
+            config_type,
         )
         meta = decode_hash(self._redis.hgetall(meta_key(key)))
         return {
             "redis_key": key,
             "meta_key": meta_key(key),
             "venue": venue,
+            "config_type": config_type,
             "count": len(rows),
             "bad_fields": bad_fields,
             "rows": rows,
@@ -283,39 +386,42 @@ class TlenConfigStore:
     def replace(
         self,
         venue: str,
-        rows: List[Tuple[str, float]],
+        config_type: str,
+        rows: List[Tuple[str, str]],
         allow_empty: bool,
     ) -> Dict[str, object]:
         if not rows and not allow_empty:
             raise ValueError("replace with empty rows requires allow_empty=true")
-        key = redis_key(venue)
+        key = redis_key(venue, config_type)
         self._redis.delete(key)
         if rows:
-            mapping = {symbol: f"{value:.8f}" for symbol, value in rows}
+            mapping = {symbol: value for symbol, value in rows}
             self._redis.hset(key, mapping=mapping)
-        self._write_meta(key, venue, len(rows), "replace")
-        return self.fetch(venue, [])
+        self._write_meta(key, venue, config_type, len(rows), "replace")
+        return self.fetch(venue, config_type, [])
 
     def upsert(
         self,
         venue: str,
-        rows: List[Tuple[str, float]],
+        config_type: str,
+        rows: List[Tuple[str, str]],
     ) -> Dict[str, object]:
         if not rows:
             raise ValueError("upsert rows cannot be empty")
-        key = redis_key(venue)
-        mapping = {symbol: f"{value:.8f}" for symbol, value in rows}
+        key = redis_key(venue, config_type)
+        mapping = {symbol: value for symbol, value in rows}
         self._redis.hset(key, mapping=mapping)
         row_count = self._redis.hlen(key)
-        self._write_meta(key, venue, int(row_count), "upsert")
-        return self.fetch(venue, [])
+        self._write_meta(key, venue, config_type, int(row_count), "upsert")
+        return self.fetch(venue, config_type, [])
 
     def delete_symbols(
         self,
         venue: str,
+        config_type: str,
         symbols: Iterable[str],
     ) -> Dict[str, object]:
-        key = redis_key(venue)
+        key = redis_key(venue, config_type)
         normalized = [
             normalize_symbol_for_venue(symbol, venue)
             for symbol in symbols
@@ -325,13 +431,14 @@ class TlenConfigStore:
             raise ValueError("delete requires at least one symbol")
         self._redis.hdel(key, *normalized)
         row_count = self._redis.hlen(key)
-        self._write_meta(key, venue, int(row_count), "delete")
-        return self.fetch(venue, [])
+        self._write_meta(key, venue, config_type, int(row_count), "delete")
+        return self.fetch(venue, config_type, [])
 
     def _write_meta(
         self,
         key: str,
         venue: str,
+        config_type: str,
         row_count: int,
         action: str,
     ) -> None:
@@ -342,6 +449,7 @@ class TlenConfigStore:
             "hostname": socket.gethostname(),
             "pid": str(os.getpid()),
             "venue": venue,
+            "config_type": config_type,
             "row_count": str(row_count),
             "last_action": action,
         }
@@ -351,6 +459,8 @@ class TlenConfigStore:
 def page_html(config: ServerConfig) -> str:
     venue_options = json.dumps(SUPPORTED_VENUES, ensure_ascii=False)
     default_venue = json.dumps(config.default_venue, ensure_ascii=False)
+    config_type_options = json.dumps(SUPPORTED_CONFIG_TYPES, ensure_ascii=False)
+    default_config_type = json.dumps(config.default_config_type, ensure_ascii=False)
     service_name = json.dumps(SERVICE_NAME, ensure_ascii=False)
     return f"""<!doctype html>
 <html lang="zh-CN">
@@ -509,11 +619,15 @@ def page_html(config: ServerConfig) -> str:
   <div class="wrap">
     <div class="card">
       <h1>{SERVICE_NAME}</h1>
-      <div class="muted">共享 TLEN threshold 管理服务。Redis key 按 <code>&lt;venue&gt;:tlen_threshold</code> 写入。</div>
+      <div class="muted">共享阈值管理服务。当前支持 <code>tlen_threshold</code> 与 <code>amount_thresholds</code>。</div>
     </div>
 
     <div class="card">
       <div class="toolbar">
+        <div class="field">
+          <label for="configType">config type</label>
+          <select id="configType"></select>
+        </div>
         <div class="field">
           <label for="venue">venue</label>
           <select id="venue"></select>
@@ -538,7 +652,12 @@ def page_html(config: ServerConfig) -> str:
     </div>
 
     <div class="card">
-      <div class="muted">批量 JSON 格式：<code>{{"BTCUSDT": 123.45}}</code>。OKEX 建议直接填目标 venue 格式，例如 <code>BTC-USDT</code> 或 <code>BTC-USDT-SWAP</code>。</div>
+      <div class="muted">批量 JSON：
+        <code>{{"BTCUSDT": 123.45}}</code>
+        或
+        <code>{{"BTCUSDT": {{"medium_notional_threshold": 10000, "large_notional_threshold": 50000}}}}</code>。
+        OKEX 建议直接填目标 venue 格式，例如 <code>BTC-USDT</code> 或 <code>BTC-USDT-SWAP</code>。
+      </div>
       <textarea id="bulkJson" spellcheck="false"></textarea>
     </div>
 
@@ -552,9 +671,10 @@ def page_html(config: ServerConfig) -> str:
       <table>
         <thead>
           <tr>
-            <th style="width: 46%">symbol</th>
-            <th style="width: 34%">tlen_threshold</th>
-            <th style="width: 20%">action</th>
+            <th style="width: 34%">symbol</th>
+            <th style="width: 22%">value 1</th>
+            <th style="width: 22%">value 2</th>
+            <th style="width: 22%">action</th>
           </tr>
         </thead>
         <tbody id="tableBody"></tbody>
@@ -566,7 +686,10 @@ def page_html(config: ServerConfig) -> str:
     const SERVICE_NAME = {service_name};
     const SUPPORTED_VENUES = {venue_options};
     const DEFAULT_VENUE = {default_venue};
+    const SUPPORTED_CONFIG_TYPES = {config_type_options};
+    const DEFAULT_CONFIG_TYPE = {default_config_type};
 
+    const configTypeEl = document.getElementById('configType');
     const venueEl = document.getElementById('venue');
     const symbolFilterEl = document.getElementById('symbolFilter');
     const redisKeyEl = document.getElementById('redisKey');
@@ -589,16 +712,48 @@ def page_html(config: ServerConfig) -> str:
       }}
     }}
 
+    function fillConfigTypeSelect(selectEl, value) {{
+      selectEl.innerHTML = '';
+      for (const configType of SUPPORTED_CONFIG_TYPES) {{
+        const option = document.createElement('option');
+        option.value = configType;
+        option.textContent = configType;
+        if (configType === value) option.selected = true;
+        selectEl.appendChild(option);
+      }}
+    }}
+
     function setStatus(message, kind = '') {{
       statusEl.className = `status ${{kind}}`;
       statusEl.textContent = message;
     }}
 
-    function makeRow(symbol = '', threshold = '') {{
+    function currentConfigType() {{
+      return configTypeEl.value || DEFAULT_CONFIG_TYPE;
+    }}
+
+    function firstValueKey() {{
+      return currentConfigType() === 'amount_thresholds'
+        ? 'medium_notional_threshold'
+        : 'tlen_threshold';
+    }}
+
+    function secondValueKey() {{
+      return currentConfigType() === 'amount_thresholds'
+        ? 'large_notional_threshold'
+        : '';
+    }}
+
+    function makeRow(symbol = '', value1 = '', value2 = '') {{
       const tr = document.createElement('tr');
+      const configType = currentConfigType();
+      const secondCell = configType === 'amount_thresholds'
+        ? `<td><input data-role="value2" value="${{escapeHtml(String(value2))}}" placeholder="50000" /></td>`
+        : `<td class="muted">-</td>`;
       tr.innerHTML = `
         <td><input data-role="symbol" value="${{escapeHtml(String(symbol))}}" placeholder="BTCUSDT / BTC-USDT / BTC-USDT-SWAP" /></td>
-        <td><input data-role="threshold" value="${{escapeHtml(String(threshold))}}" placeholder="123.45" /></td>
+        <td><input data-role="value1" value="${{escapeHtml(String(value1))}}" placeholder="${{configType === 'amount_thresholds' ? '10000' : '123.45'}}" /></td>
+        ${{secondCell}}
         <td><button type="button" data-role="remove" class="danger">Remove</button></td>
       `;
       tr.querySelector('[data-role="remove"]').addEventListener('click', () => {{
@@ -606,7 +761,9 @@ def page_html(config: ServerConfig) -> str:
         updateBulkPreview();
       }});
       tr.querySelector('[data-role="symbol"]').addEventListener('input', updateBulkPreview);
-      tr.querySelector('[data-role="threshold"]').addEventListener('input', updateBulkPreview);
+      tr.querySelector('[data-role="value1"]').addEventListener('input', updateBulkPreview);
+      const value2El = tr.querySelector('[data-role="value2"]');
+      if (value2El) value2El.addEventListener('input', updateBulkPreview);
       return tr;
     }}
 
@@ -622,9 +779,18 @@ def page_html(config: ServerConfig) -> str:
     function readTableRows() {{
       return [...tableBodyEl.querySelectorAll('tr')].map((tr) => {{
         const symbol = tr.querySelector('[data-role="symbol"]').value.trim();
-        const threshold = tr.querySelector('[data-role="threshold"]').value.trim();
-        return {{ symbol, tlen_threshold: threshold }};
-      }}).filter((row) => row.symbol || row.tlen_threshold);
+        const value1 = tr.querySelector('[data-role="value1"]').value.trim();
+        const value2El = tr.querySelector('[data-role="value2"]');
+        const value2 = value2El ? value2El.value.trim() : '';
+        if (currentConfigType() === 'amount_thresholds') {{
+          return {{
+            symbol,
+            medium_notional_threshold: value1,
+            large_notional_threshold: value2,
+          }};
+        }}
+        return {{ symbol, tlen_threshold: value1 }};
+      }}).filter((row) => Object.values(row).some((value) => String(value || '').trim()));
     }}
 
     function renderRows(rows) {{
@@ -633,7 +799,13 @@ def page_html(config: ServerConfig) -> str:
         tableBodyEl.appendChild(makeRow());
       }} else {{
         for (const row of rows) {{
-          tableBodyEl.appendChild(makeRow(row.symbol || '', row.tlen_threshold ?? ''));
+          tableBodyEl.appendChild(
+            makeRow(
+              row.symbol || '',
+              row[firstValueKey()] ?? '',
+              row[secondValueKey()] ?? '',
+            )
+          );
         }}
       }}
       updateBulkPreview();
@@ -643,7 +815,14 @@ def page_html(config: ServerConfig) -> str:
       const payload = {{}};
       for (const row of readTableRows()) {{
         if (!row.symbol) continue;
-        payload[row.symbol] = row.tlen_threshold === '' ? '' : Number(row.tlen_threshold);
+        if (currentConfigType() === 'amount_thresholds') {{
+          payload[row.symbol] = {{
+            medium_notional_threshold: row.medium_notional_threshold === '' ? '' : Number(row.medium_notional_threshold),
+            large_notional_threshold: row.large_notional_threshold === '' ? '' : Number(row.large_notional_threshold),
+          }};
+        }} else {{
+          payload[row.symbol] = row.tlen_threshold === '' ? '' : Number(row.tlen_threshold);
+        }}
       }}
       bulkJsonEl.value = JSON.stringify(payload, null, 2);
       rowCountEl.textContent = String(readTableRows().length);
@@ -655,6 +834,13 @@ def page_html(config: ServerConfig) -> str:
       const parsed = JSON.parse(raw);
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {{
         throw new Error('bulk JSON 必须是 object，格式如 {{"BTCUSDT": 123.45}}');
+      }}
+      if (currentConfigType() === 'amount_thresholds') {{
+        return Object.entries(parsed).map(([symbol, value]) => ({
+          symbol,
+          medium_notional_threshold: value && typeof value === 'object' ? value.medium_notional_threshold : '',
+          large_notional_threshold: value && typeof value === 'object' ? value.large_notional_threshold : '',
+        }));
       }}
       return Object.entries(parsed).map(([symbol, tlen_threshold]) => ({{ symbol, tlen_threshold }}));
     }}
@@ -677,6 +863,7 @@ def page_html(config: ServerConfig) -> str:
 
     function currentQuery() {{
       const params = new URLSearchParams();
+      params.set('config_type', currentConfigType());
       params.set('venue', venueEl.value);
       if (symbolFilterEl.value.trim()) {{
         params.set('symbols', symbolFilterEl.value.trim());
@@ -704,6 +891,7 @@ def page_html(config: ServerConfig) -> str:
       }}
       const body = {{
         venue: venueEl.value,
+        config_type: currentConfigType(),
         allow_empty: rows.length === 0,
         rows,
       }};
@@ -722,6 +910,10 @@ def page_html(config: ServerConfig) -> str:
       setStatus(`saved ${{payload.count || 0}} rows`, 'ok');
     }}
 
+    configTypeEl.addEventListener('change', () => {{
+      renderRows([]);
+      loadRows().catch((err) => setStatus(String(err), 'err'));
+    }});
     document.getElementById('loadBtn').addEventListener('click', () => {{
       loadRows().catch((err) => setStatus(String(err), 'err'));
     }});
@@ -743,6 +935,7 @@ def page_html(config: ServerConfig) -> str:
       }}
     }});
 
+    fillConfigTypeSelect(configTypeEl, DEFAULT_CONFIG_TYPE);
     fillVenueSelect(venueEl, DEFAULT_VENUE);
     renderRows([]);
     loadRows().catch((err) => setStatus(String(err), 'err'));
@@ -779,13 +972,16 @@ class TlenConfigRequestHandler(BaseHTTPRequestHandler):
                     {
                         "service": SERVICE_NAME,
                         "venues": SUPPORTED_VENUES,
+                        "config_types": SUPPORTED_CONFIG_TYPES,
+                        "default_config_type": self.config.default_config_type,
                         "default_venue": self.config.default_venue,
                     }
                 )
                 return
             if parsed.path == "/api/thresholds":
                 venue = self._venue_from_params(params)
-                payload = self.store.fetch(venue, parse_symbol_filters(params))
+                config_type = self._config_type_from_params(params)
+                payload = self.store.fetch(venue, config_type, parse_symbol_filters(params))
                 self._write_json(payload)
                 return
         except Exception as exc:  # noqa: BLE001
@@ -803,23 +999,28 @@ class TlenConfigRequestHandler(BaseHTTPRequestHandler):
             venue = normalize_venue(str(venue_raw))
             if venue is None:
                 raise ValueError("unsupported venue")
+            config_type = normalize_config_type(
+                payload.get("config_type", self.config.default_config_type)
+            )
+            if config_type is None:
+                raise ValueError("unsupported config_type")
 
             if parsed.path == "/api/thresholds/replace":
-                rows = coerce_rows(payload, venue)
+                rows = coerce_rows(payload, venue, config_type)
                 allow_empty = bool(payload.get("allow_empty"))
-                self._write_json(self.store.replace(venue, rows, allow_empty))
+                self._write_json(self.store.replace(venue, config_type, rows, allow_empty))
                 return
 
             if parsed.path == "/api/thresholds/upsert":
-                rows = coerce_rows(payload, venue)
-                self._write_json(self.store.upsert(venue, rows))
+                rows = coerce_rows(payload, venue, config_type)
+                self._write_json(self.store.upsert(venue, config_type, rows))
                 return
 
             if parsed.path == "/api/thresholds/delete":
                 symbols = payload.get("symbols")
                 if not isinstance(symbols, list):
                     raise ValueError("symbols must be an array")
-                self._write_json(self.store.delete_symbols(venue, symbols))
+                self._write_json(self.store.delete_symbols(venue, config_type, symbols))
                 return
         except Exception as exc:  # noqa: BLE001
             self._write_json({"error": str(exc)}, status=400)
@@ -848,6 +1049,14 @@ class TlenConfigRequestHandler(BaseHTTPRequestHandler):
         if venue is None:
             raise ValueError("unsupported venue")
         return venue
+
+    def _config_type_from_params(self, params: Dict[str, List[str]]) -> str:
+        config_type = normalize_config_type(
+            (params.get("config_type") or [self.config.default_config_type])[0]
+        )
+        if config_type is None:
+            raise ValueError("unsupported config_type")
+        return config_type
 
     def _write_html(self, html: str, status: int = 200) -> None:
         body = html.encode("utf-8")
@@ -894,11 +1103,18 @@ def parse_args() -> ServerConfig:
         "--default-open-venue",
         default=None,
     )
+    parser.add_argument(
+        "--default-config-type",
+        default=os.environ.get("DEFAULT_CONFIG_TYPE", DEFAULT_CONFIG_TYPE),
+    )
     args = parser.parse_args()
 
     default_venue = normalize_venue(args.default_open_venue or args.default_venue)
     if default_venue is None:
         raise ValueError(f"unsupported default venue: {args.default_open_venue or args.default_venue}")
+    default_config_type = normalize_config_type(args.default_config_type)
+    if default_config_type is None:
+        raise ValueError(f"unsupported default config type: {args.default_config_type}")
 
     return ServerConfig(
         host=args.host,
@@ -908,6 +1124,7 @@ def parse_args() -> ServerConfig:
         redis_db=args.redis_db,
         redis_password=args.redis_password,
         default_venue=default_venue,
+        default_config_type=default_config_type,
     )
 
 
@@ -922,7 +1139,7 @@ def main() -> int:
     print(
         f"[INFO] {SERVICE_NAME} listening on http://{config.host}:{config.port} "
         f"(redis={config.redis_host}:{config.redis_port}/{config.redis_db}, "
-        f"default_venue={config.default_venue})"
+        f"default_venue={config.default_venue}, default_config_type={config.default_config_type})"
     )
 
     try:

@@ -4,14 +4,14 @@
 """
 Print trade_flow_feature amount thresholds from Redis.
 
-Reads keys:
-  {venue}:{symbol}:amount-threshold
+Reads hash key:
+  {venue}:amount-thresholds
 
-Value can be a JSON object/array; this script recursively extracts entries that
-contain:
-  - medium_notional_threshold
-  - large_notional_threshold
-  - optional symbol
+Hash field:
+  - symbol
+
+Hash value:
+  - JSON object containing medium_notional_threshold / large_notional_threshold
 
 Examples:
   python scripts/print_trade_flow_thresholds.py --venue binance-futures
@@ -29,7 +29,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-AMOUNT_THRESHOLD_SUFFIX = "amount-threshold"
+AMOUNT_THRESHOLD_SUFFIX = "amount-thresholds"
 VENUE_RE = r"[a-z0-9]+-(?:margin|futures|spot|swap|perp|perpetual)"
 
 
@@ -52,8 +52,8 @@ def infer_venue_from_cwd() -> Optional[str]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Print trade_flow_feature amount thresholds from Redis keys "
-            "'{venue}:*:amount-threshold'."
+            "Print trade_flow_feature amount thresholds from Redis hash key "
+            "'{venue}:amount-thresholds'."
         )
     )
     parser.add_argument("--venue", help="Venue, e.g. binance-futures")
@@ -89,23 +89,6 @@ def parse_args() -> argparse.Namespace:
 
 def with_prefix(prefix: str, key: str) -> str:
     return f"{prefix}{key}" if prefix else key
-
-
-def strip_prefix(prefix: str, full_key: str) -> str:
-    if prefix and full_key.startswith(prefix):
-        return full_key[len(prefix) :]
-    return full_key
-
-
-def parse_symbol_from_key(logical_key: str, venue: str) -> Optional[str]:
-    parts = logical_key.split(":")
-    if len(parts) != 3:
-        return None
-    key_venue, symbol, suffix = parts
-    if key_venue.lower() != venue.lower() or suffix != AMOUNT_THRESHOLD_SUFFIX:
-        return None
-    symbol = symbol.strip()
-    return symbol or None
 
 
 def to_f64(value: Any) -> Optional[float]:
@@ -202,28 +185,29 @@ def main() -> int:
         )
         return 1
 
-    pattern = with_prefix(args.prefix, f"{args.venue}:*:{AMOUNT_THRESHOLD_SUFFIX}")
+    logical_key = f"{args.venue}:{AMOUNT_THRESHOLD_SUFFIX}"
+    full_key = with_prefix(args.prefix, logical_key)
     symbol_filter = args.symbol.upper() if args.symbol else None
 
     rows: List[Dict[str, str]] = []
-    total_keys = 0
+    total_fields = 0
     parse_failed = 0
     invalid_count = 0
 
-    for raw_key in sorted(client.scan_iter(match=pattern, count=1000)):
-        total_keys += 1
-        full_key = raw_key.decode("utf-8", "ignore") if isinstance(raw_key, bytes) else str(raw_key)
-        logical_key = strip_prefix(args.prefix, full_key)
-        key_symbol = parse_symbol_from_key(logical_key, args.venue)
-
-        raw_value = client.get(full_key)
-        if raw_value is None:
+    raw_map = client.hgetall(full_key)
+    for raw_symbol in sorted(raw_map.keys(), key=lambda item: item.decode("utf-8", "ignore") if isinstance(item, bytes) else str(item)):
+        total_fields += 1
+        raw_value = raw_map[raw_symbol]
+        symbol = (
+            raw_symbol.decode("utf-8", "ignore")
+            if isinstance(raw_symbol, bytes)
+            else str(raw_symbol)
+        ).strip()
+        if not symbol:
             continue
-        raw_json = (
-            raw_value.decode("utf-8", "ignore")
-            if isinstance(raw_value, bytes)
-            else str(raw_value)
-        )
+        if symbol_filter and symbol.upper() != symbol_filter:
+            continue
+        raw_json = raw_value.decode("utf-8", "ignore") if isinstance(raw_value, bytes) else str(raw_value)
 
         try:
             payload = json.loads(raw_json)
@@ -236,11 +220,11 @@ def main() -> int:
 
         for entry in entries:
             entry_symbol = entry.get("symbol")
-            symbol = str(entry_symbol).strip() if entry_symbol else (key_symbol or "")
-            if not symbol:
+            row_symbol = str(entry_symbol).strip() if entry_symbol else symbol
+            if not row_symbol:
                 continue
 
-            if symbol_filter and symbol.upper() != symbol_filter:
+            if symbol_filter and row_symbol.upper() != symbol_filter:
                 continue
 
             medium = to_f64(entry.get("medium_notional_threshold"))
@@ -261,7 +245,7 @@ def main() -> int:
 
             rows.append(
                 {
-                    "symbol": symbol,
+                    "symbol": row_symbol,
                     "medium_notional": format_num(medium),
                     "large_notional": format_num(large),
                     "valid": "yes" if valid else "no",
@@ -272,8 +256,8 @@ def main() -> int:
     rows.sort(key=lambda x: (x["symbol"].upper(), x["source_key"]))
 
     print(
-        f"[INFO] venue={args.venue} pattern='{pattern}' keys={total_keys} "
-        f"rows={len(rows)} parse_failed_keys={parse_failed} invalid_rows={invalid_count}"
+        f"[INFO] venue={args.venue} redis_key='{logical_key}' fields={total_fields} "
+        f"rows={len(rows)} parse_failed_fields={parse_failed} invalid_rows={invalid_count}"
     )
 
     if not rows:

@@ -29,8 +29,7 @@ use crate::signal::common::TradingVenue;
 const TRADE_MAX_BYTES: usize = 128;
 const IDLE_SLEEP_MICROS: u64 = 200;
 const TIMER_CHECK_INTERVAL_MICROS: u64 = 500;
-const AMOUNT_THRESHOLD_REDIS_KEY_SUFFIX: &str = "amount-threshold";
-const REDIS_SCAN_COUNT: usize = 256;
+const AMOUNT_THRESHOLD_REDIS_KEY_SUFFIX: &str = "amount-thresholds";
 const REDIS_WARN_INTERVAL_SECS: u64 = 60;
 const ROCKSDB_WARN_INTERVAL_SECS: u64 = 60;
 const MISSING_DEPTH_WARN_INTERVAL_SECS: u64 = 60;
@@ -604,8 +603,8 @@ impl AmountThresholdRedisStore {
     ) -> Result<HashMap<String, AmountThreshold>> {
         let prefix_owned = self.settings.prefix.clone().filter(|p| !p.is_empty());
         let prefix = prefix_owned.as_deref();
-        let key_pattern = format!("{}:*:{}", venue_slug, AMOUNT_THRESHOLD_REDIS_KEY_SUFFIX);
-        let full_pattern = with_prefix(prefix, &key_pattern);
+        let redis_key = amount_threshold_hash_key(venue_slug);
+        let full_key = with_prefix(prefix, &redis_key);
 
         self.ensure_connected()?;
         let Some(conn) = self.conn.as_mut() else {
@@ -613,69 +612,47 @@ impl AmountThresholdRedisStore {
         };
 
         let mut out = HashMap::new();
-        let mut cursor = 0u64;
-        loop {
-            let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
-                .arg(cursor)
-                .arg("MATCH")
-                .arg(full_pattern.as_str())
-                .arg("COUNT")
-                .arg(REDIS_SCAN_COUNT)
-                .query(conn)
-                .with_context(|| format!("redis SCAN failed for pattern={}", full_pattern))?;
+        let hash_map: HashMap<String, String> = conn
+            .hgetall(full_key.clone())
+            .with_context(|| format!("redis HGETALL failed for key={}", full_key))?;
 
-            for full_key in keys {
-                let logical_key = strip_prefix_with(prefix, &full_key).to_string();
-                let symbol_from_key =
-                    parse_symbol_from_threshold_key(&logical_key, venue_slug, venue);
-                let raw: Option<String> = conn
-                    .get(full_key.clone())
-                    .with_context(|| format!("redis GET failed for key={}", full_key))?;
-                let Some(raw_json) = raw else {
+        for (raw_symbol, raw_json) in hash_map {
+            let symbol = normalize_symbol_for_venue(raw_symbol.trim(), venue);
+            if symbol.is_empty() {
+                continue;
+            }
+
+            let parsed_entries = parse_threshold_entries(&raw_json)
+                .with_context(|| format!("parse threshold json failed: key={} field={}", redis_key, raw_symbol))?;
+
+            for entry in parsed_entries {
+                let entry_symbol = entry
+                    .symbol
+                    .as_ref()
+                    .map(|s| normalize_symbol_for_venue(s.trim(), venue))
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| symbol.clone());
+
+                if !entry.medium_notional_threshold.is_finite()
+                    || !entry.large_notional_threshold.is_finite()
+                {
                     continue;
-                };
-
-                let parsed_entries = parse_threshold_entries(&raw_json)
-                    .with_context(|| format!("parse threshold json failed: key={}", logical_key))?;
-
-                for entry in parsed_entries {
-                    let symbol = entry
-                        .symbol
-                        .as_ref()
-                        .map(|s| normalize_symbol_for_venue(s.trim(), venue))
-                        .filter(|s| !s.is_empty())
-                        .or_else(|| symbol_from_key.clone())
-                        .unwrap_or_default();
-
-                    if symbol.is_empty() {
-                        continue;
-                    }
-                    if !entry.medium_notional_threshold.is_finite()
-                        || !entry.large_notional_threshold.is_finite()
-                    {
-                        continue;
-                    }
-                    if entry.medium_notional_threshold <= 0.0
-                        || entry.large_notional_threshold <= 0.0
-                        || entry.medium_notional_threshold > entry.large_notional_threshold
-                    {
-                        continue;
-                    }
-
-                    out.insert(
-                        symbol,
-                        AmountThreshold {
-                            medium_notional_threshold: entry.medium_notional_threshold,
-                            large_notional_threshold: entry.large_notional_threshold,
-                        },
-                    );
                 }
-            }
+                if entry.medium_notional_threshold <= 0.0
+                    || entry.large_notional_threshold <= 0.0
+                    || entry.medium_notional_threshold > entry.large_notional_threshold
+                {
+                    continue;
+                }
 
-            if next_cursor == 0 {
-                break;
+                out.insert(
+                    entry_symbol,
+                    AmountThreshold {
+                        medium_notional_threshold: entry.medium_notional_threshold,
+                        large_notional_threshold: entry.large_notional_threshold,
+                    },
+                );
             }
-            cursor = next_cursor;
         }
 
         Ok(out)
@@ -923,13 +900,6 @@ fn with_prefix(prefix: Option<&str>, key: &str) -> String {
     match prefix {
         Some(prefix) => format!("{}{}", prefix, key),
         None => key.to_string(),
-    }
-}
-
-fn strip_prefix_with<'a>(prefix: Option<&str>, full_key: &'a str) -> &'a str {
-    match prefix {
-        Some(prefix) if full_key.starts_with(prefix) => &full_key[prefix.len()..],
-        _ => full_key,
     }
 }
 
@@ -1547,11 +1517,10 @@ impl TradeFlowFeaturePubApp {
             Ok(new_map) => {
                 if !new_map.contains_key(&self.heartbeat_symbol) {
                     panic!(
-                        "trade_flow_feature heartbeat threshold missing: venue={} symbol={} key_pattern='{}:*:{}'",
+                        "trade_flow_feature heartbeat threshold missing: venue={} symbol={} key='{}'",
                         self.venue_slug,
                         self.heartbeat_symbol,
-                        self.venue_slug,
-                        AMOUNT_THRESHOLD_REDIS_KEY_SUFFIX
+                        amount_threshold_hash_key(&self.venue_slug)
                     );
                 }
 
@@ -1663,27 +1632,8 @@ fn json_as_f64(value: &Value) -> Option<f64> {
     }
 }
 
-fn parse_symbol_from_threshold_key(
-    key: &str,
-    venue_slug: &str,
-    venue_cfg: TradingVenue,
-) -> Option<String> {
-    let mut parts = key.split(':');
-    let key_venue = parts.next()?;
-    let symbol = parts.next()?;
-    let suffix = parts.next()?;
-    if parts.next().is_some() {
-        return None;
-    }
-    if !key_venue.eq_ignore_ascii_case(venue_slug) || suffix != AMOUNT_THRESHOLD_REDIS_KEY_SUFFIX {
-        return None;
-    }
-    let symbol = normalize_symbol_for_venue(symbol.trim(), venue_cfg);
-    if symbol.is_empty() {
-        None
-    } else {
-        Some(symbol)
-    }
+fn amount_threshold_hash_key(venue_slug: &str) -> String {
+    format!("{}:{}", venue_slug, AMOUNT_THRESHOLD_REDIS_KEY_SUFFIX)
 }
 
 fn fixed_redis_settings() -> RedisSettings {
