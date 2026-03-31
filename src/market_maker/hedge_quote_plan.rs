@@ -9,7 +9,7 @@ use crate::pre_trade::order_manager::Side;
 use crate::signal::common::TradingVenue;
 use crate::signal::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
-use log::info;
+use log::{debug, info};
 
 pub struct MmHedgeBuildInput<'a> {
     pub venue: TradingVenue,
@@ -257,7 +257,7 @@ pub fn build_mm_hedge_quote_plan(
         return Err("empty levels after alignment".to_string());
     }
 
-    info!(
+    debug!(
         "MMHedge query->scale: symbol={} side={:?} net_qty_base={:.8} bid0={:.8} ask0={:.8} signal={:.8} enable_return_score_adjust_hedge={} clipped_signal={:.8} normalized_signal={:.8} volatility={:.8} hedge_vol_multiplier={:.8} bound={:.8} offset_low={:.8} offset_high_limit={:.8} neutral_offset={:.8} mapped_offset={:.8} score_adjust_factor={:.8} inv_notional={:.8} inventory_scale={:.8} hedge_offset_ratio={:.8} final_offset={:.8}",
         symbol,
         side,
@@ -368,7 +368,7 @@ pub fn build_mm_hedge_ctx(
     {
         return Err("empty price/amount list after alignment".to_string());
     }
-    info!(
+    debug!(
         "MMHedge ctx levels: symbol={} levels={} price_values={:?} amount_values={:?} offsets={:?}",
         plan.symbol,
         ctx.price_qv_list.len(),
@@ -381,14 +381,6 @@ pub fn build_mm_hedge_ctx(
             .map(crate::common::tick_math::QuantizedValue::get_val)
             .collect::<Vec<_>>(),
         ctx.price_offsets,
-    );
-    info!(
-        "MMHedgeCtxSummary {{\"symbol\":\"{}\",\"side\":\"{}\",\"levels\":{},\"next_query_delay_ms\":{},\"signal_ts\":{}}}",
-        plan.symbol,
-        plan.side.as_str(),
-        ctx.price_qv_list.len(),
-        (plan.next_query_ts - plan.now_us) / 1000,
-        plan.now_us,
     );
     ctx.signal_ts = plan.now_us;
     ctx.next_query_ts = plan.next_query_ts;
