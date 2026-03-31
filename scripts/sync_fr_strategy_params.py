@@ -94,8 +94,11 @@ STRATEGY_PARAMS = {
     # 单笔下单量（USDT）
     "order_amount": "100.0",
 
-    # 开仓挂单档位（JSON 数组）
-    "price_offsets": "[0.0001, 0.0002, 0.0004, 0.0006, 0.0008, 0.001, 0.0012, 0.0014, 0.0016, 0.0018, 0.002]",
+    # 开仓波动缩放系数（实际边界=vol*open_scale）
+    "open_scale": "1.0",
+
+    # 每轮开仓档位数
+    "open_orders_per_round": "10",
     
     # 开仓订单超时（秒）
     "open_order_timeout": "150",
@@ -124,7 +127,8 @@ STRATEGY_PARAMS = {
 PARAM_COMMENTS: Dict[str, str] = {
     "mode": "做市模式(MM=双边挂单/MT=吃单对冲)",
     "order_amount": "单笔下单量(USDT)",
-    "price_offsets": "开仓挂单档位(JSON数组)",
+    "open_scale": "开仓 plan 的波动边界缩放系数（实际边界=vol*open_scale）",
+    "open_orders_per_round": "每轮开仓档位数",
     "open_order_timeout": "开仓订单超时(秒)",
     "hedge_timeout": "对冲订单超时(秒)",
     "hedge_price_offset": "对冲价格偏移(万分之几)",
@@ -137,7 +141,8 @@ PARAM_COMMENTS: Dict[str, str] = {
 PARAM_PRINT_ORDER = [
     "mode",
     "order_amount",
-    "price_offsets",
+    "open_scale",
+    "open_orders_per_round",
     "open_order_timeout",
     "hedge_timeout",
     "hedge_price_offset",

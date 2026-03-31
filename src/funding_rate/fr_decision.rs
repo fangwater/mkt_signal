@@ -11,22 +11,33 @@ use serde::Serialize;
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::time::Duration;
 
 use super::common::{compute_spread_rate, Quote, ThresholdKey, VenuePair};
+use super::factor_value_hub::FactorValueHub;
 use super::funding_rate_factor::FundingRateFactor;
 use super::mkt_channel::MktChannel;
 use super::rate_fetcher::RateFetcher;
 use super::spread_factor::SpreadFactor;
 use super::symbol_list::SymbolList;
+use super::tlen_threshold_loader;
 use crate::common::exchange::Exchange;
 use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
 use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
 use crate::common::ipc_service_name::build_service_name;
+use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::time_util::get_timestamp_us;
+use crate::depth_pub::query_client::DepthQueryClient;
 use crate::funding_rate::FundingRatePeriod;
+use crate::market_maker::quote_plan_levels::{
+    build_quote_plan_levels, QuotePlanLevel, QuotePlanLevelSpec,
+};
 use crate::pre_trade::order_manager::{OrderType, Side};
-use crate::signal::cancel_signal::ArbCancelCtx;
+use crate::signal::arb_signal::{
+    ArbBackwardQueryMsg, ArbCancelCandidateQueryMsg, ArbCancelTriggerCtx,
+};
+use crate::signal::cancel_signal::{ArbCancelCtx, ArbCancelReason};
 use crate::signal::common::{
     align_price_ceil, align_price_floor, SignalBytes, TradingLeg, TradingVenue,
 };
@@ -105,6 +116,126 @@ pub const DEFAULT_SIGNAL_CHANNEL: &str = "trade_signal";
 /// 默认反向订阅频道名称（来自 pre_trade 的查询反馈）
 /// 对应 pre_trade/signal_channel.rs 中的 DEFAULT_BACKWARD_CHANNEL
 pub const DEFAULT_BACKWARD_CHANNEL: &str = "trade_query";
+
+const DEFAULT_PNLU_REDIS_HOST: &str = "127.0.0.1";
+const DEFAULT_PNLU_REDIS_PORT: u16 = 6379;
+const DEFAULT_PNLU_REDIS_DB: i64 = 0;
+const DEFAULT_PNLU_KEY_SUFFIX: &str = "_pnlu_factor_thresholds";
+const PNLU_MAX_AGE_SECS: i64 = 30 * 60;
+const TARGET_FACTOR_NAME: &str = "rl_return_volatility";
+const TARGET_FACTOR_KEY_PREFIX: &str = TARGET_FACTOR_NAME;
+
+#[derive(Debug, Clone)]
+struct FrOpenQuotePlan {
+    side: Side,
+    inner_price: f64,
+    outer_price: f64,
+    price_tick: f64,
+    qty_tick: f64,
+    levels: Vec<QuotePlanLevel>,
+}
+
+fn build_fr_level_specs(
+    side: Side,
+    inner_price: f64,
+    volatility: f64,
+    level_count: usize,
+) -> Vec<QuotePlanLevelSpec> {
+    if level_count == 0 || !inner_price.is_finite() || inner_price <= 0.0 {
+        return Vec::new();
+    }
+    if !volatility.is_finite() || volatility < 0.0 {
+        return Vec::new();
+    }
+    if level_count == 1 || volatility <= 0.0 {
+        return vec![QuotePlanLevelSpec {
+            side,
+            side_level_index: 1,
+            offset: 0.0,
+            base_price: inner_price,
+        }];
+    }
+
+    let step = volatility / (level_count - 1) as f64;
+    (0..level_count)
+        .map(|idx| QuotePlanLevelSpec {
+            side,
+            side_level_index: idx + 1,
+            offset: step * idx as f64,
+            base_price: inner_price,
+        })
+        .collect()
+}
+
+fn build_fr_open_quote_plan(
+    venue: TradingVenue,
+    symbol: &str,
+    quote: Quote,
+    order_amount_u: f64,
+    orders_per_round: u32,
+    side: Side,
+    volatility: f64,
+    table: &VenueMinQtyTable,
+) -> Result<FrOpenQuotePlan, String> {
+    if symbol.trim().is_empty() {
+        return Err("symbol is empty".to_string());
+    }
+    if quote.bid <= 0.0 || quote.ask <= 0.0 || quote.bid >= quote.ask {
+        return Err(format!(
+            "invalid quote bid={} ask={} symbol={}",
+            quote.bid, quote.ask, symbol
+        ));
+    }
+    if !(order_amount_u.is_finite() && order_amount_u > 0.0) {
+        return Err(format!(
+            "invalid order_amount_u={} (must be finite and >0)",
+            order_amount_u
+        ));
+    }
+    if orders_per_round == 0 {
+        return Err("orders_per_round must be > 0".to_string());
+    }
+    if !volatility.is_finite() || volatility < 0.0 {
+        return Err(format!(
+            "invalid volatility symbol={} volatility={}",
+            symbol, volatility
+        ));
+    }
+
+    let inner_price = match side {
+        Side::Buy => quote.bid,
+        Side::Sell => quote.ask,
+    };
+    let outer_price = match side {
+        Side::Buy => inner_price * (1.0 - volatility),
+        Side::Sell => inner_price * (1.0 + volatility),
+    };
+    let specs = build_fr_level_specs(side, inner_price, volatility, orders_per_round as usize);
+    if specs.is_empty() {
+        return Err(format!(
+            "empty fr level specs symbol={} side={:?} inner={:.8} volatility={:.8} levels={}",
+            symbol, side, inner_price, volatility, orders_per_round
+        ));
+    }
+
+    let (price_tick, qty_tick, levels) =
+        build_quote_plan_levels(venue, symbol, order_amount_u, &specs, table)?;
+    if levels.is_empty() {
+        return Err(format!(
+            "empty levels after alignment symbol={} side={:?} levels={}",
+            symbol, side, orders_per_round
+        ));
+    }
+
+    Ok(FrOpenQuotePlan {
+        side,
+        inner_price,
+        outer_price,
+        price_tick,
+        qty_tick,
+        levels,
+    })
+}
 
 // ========== 无状态设计 ==========
 // FrDecision 不维护任何状态，所有状态由外部（如 Engine）维护
@@ -196,12 +327,20 @@ pub struct FrDecision {
     /// IceOryx Node（用于创建服务）
     _node: Node<ipc::Service>,
 
-    /// 挂单价格偏移列表（用于 open 信号的多档位挂单）
-    /// 默认：[0.0002, 0.0004, 0.0006, 0.0008, 0.001]
-    price_offsets: Vec<f64>,
+    /// 因子订阅 / pnlu 回退，用于读取 rl_return_volatility
+    factor_value_hub: FactorValueHub,
+
+    /// 开仓波动边界缩放系数（实际边界=vol*open_scale）
+    open_scale: f64,
+
+    /// 每轮开/平仓档位数
+    open_orders_per_round: u32,
 
     /// 开仓侧交易对过滤器（固定 venue）
     open_min_qty_table: VenueMinQtyTable,
+
+    /// 开仓侧 depth query client（用于 tlen batch query）
+    open_depth_query_client: DepthQueryClient,
 
     /// 对冲侧交易对过滤器（固定 venue）
     hedge_min_qty_table: VenueMinQtyTable,
@@ -240,6 +379,21 @@ pub struct FrDecision {
     /// 最后触发 ArbCancel 的时间戳（微秒）
     /// key: (open_venue, open_symbol, hedge_venue, hedge_symbol)
     last_cancel_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
+
+    /// tlen 阈值表（按 open_symbol）
+    tlen_thresholds: HashMap<String, f64>,
+
+    /// 是否启用基于 tlen 的精确 ArbCancel
+    enable_tlen_cancel: bool,
+
+    /// tlen 撤单触发频率（毫秒）
+    tlen_cancel_freq_ms: u64,
+
+    /// 上次 tlen 阈值刷新时间
+    last_tlen_threshold_reload_ts_us: i64,
+
+    /// 上次 ArbCancelTrigger 发送时间
+    last_cancel_trigger_ts_us: i64,
 }
 
 struct SignalTableEntry {
@@ -341,6 +495,7 @@ impl FrDecision {
 
         // 启动 backward 监听任务（处理来自 pre_trade 的查询）
         Self::spawn_backward_listener();
+        Self::spawn_tlen_threshold_loader();
         info!("FrDecision backward listener started");
 
         Ok(())
@@ -367,19 +522,39 @@ impl FrDecision {
             DEFAULT_BACKWARD_CHANNEL
         );
 
-        // 默认挂单偏移：万2 到 千1，共5档
-        let price_offsets = vec![0.0002, 0.0004, 0.0006, 0.0008, 0.001];
         // min_qty_table 将在 init_singleton 中异步加载
         let open_min_qty_table = VenueMinQtyTable::new(venues.0);
         let hedge_min_qty_table = VenueMinQtyTable::new(venues.1);
+        let open_depth_query_client = DepthQueryClient::new(venues.0)?;
+        let pnlu_settings = RedisSettings {
+            host: DEFAULT_PNLU_REDIS_HOST.to_string(),
+            port: DEFAULT_PNLU_REDIS_PORT,
+            db: DEFAULT_PNLU_REDIS_DB,
+            username: None,
+            password: None,
+            prefix: None,
+        };
+        let factor_value_hub = FactorValueHub::new(
+            &node,
+            venues.0,
+            venues.1,
+            TARGET_FACTOR_NAME,
+            TARGET_FACTOR_KEY_PREFIX,
+            pnlu_settings,
+            DEFAULT_PNLU_KEY_SUFFIX.to_string(),
+            PNLU_MAX_AGE_SECS,
+        )?;
 
         Ok(Self {
             signal_pub,
             backward_sub,
             channel_name: DEFAULT_SIGNAL_CHANNEL.to_string(),
             _node: node,
-            price_offsets,
+            factor_value_hub,
+            open_scale: 1.0,
+            open_orders_per_round: 1,
             open_min_qty_table,
+            open_depth_query_client,
             hedge_min_qty_table,
             venues,
             order_amount: 100.0,
@@ -391,6 +566,11 @@ impl FrDecision {
             last_open_ts: Rc::new(RefCell::new(HashMap::new())),
             last_close_ts: Rc::new(RefCell::new(HashMap::new())),
             last_cancel_ts: Rc::new(RefCell::new(HashMap::new())),
+            tlen_thresholds: HashMap::new(),
+            enable_tlen_cancel: false,
+            tlen_cancel_freq_ms: 3_000,
+            last_tlen_threshold_reload_ts_us: 0,
+            last_cancel_trigger_ts_us: 0,
         })
     }
 
@@ -951,14 +1131,22 @@ impl FrDecision {
 
     /// 处理反向查询（来自 pre_trade 的 backward channel）
     fn handle_backward_query(&mut self, data: Bytes) {
-        let query = match ArbHedgeSignalQueryMsg::from_bytes(data) {
+        let query = match ArbBackwardQueryMsg::from_bytes(data) {
             Ok(q) => q,
             Err(err) => {
-                warn!("FrDecision: 解析 hedge query 失败: {err}");
+                warn!("FrDecision: 解析 backward query 失败: {err}");
                 return;
             }
         };
+        match query {
+            ArbBackwardQueryMsg::Hedge(query) => self.handle_hedge_query(query),
+            ArbBackwardQueryMsg::CancelCandidates(query) => {
+                self.handle_arb_cancel_candidate_query(query)
+            }
+        }
+    }
 
+    fn handle_hedge_query(&mut self, query: ArbHedgeSignalQueryMsg) {
         let Some(side) = query.get_side() else {
             warn!("FrDecision: hedge query side 无效: {}", query.hedge_side);
             return;
@@ -1024,11 +1212,56 @@ impl FrDecision {
         let now = get_timestamp_us();
         let seq_threshold = self.hedge_aggressive_seq_threshold;
         let aggressive = query.request_seq >= seq_threshold;
-        let offset = if aggressive {
-            0.0
+        let target_factor_lookup = self.lookup_target_factor_value(&hedge_symbol, hedge_venue);
+        let default_offset = self.hedge_price_offset.abs();
+        let mut offset = default_offset;
+        let mut offset_source = "config";
+        let mut offset_note = String::new();
+        let ready = target_factor_lookup.ready.unwrap_or(false);
+
+        if ready {
+            if let Some(value) = target_factor_lookup.target_factor_value {
+                if value.is_finite() && value > 0.0 {
+                    offset = value;
+                    offset_source = "rl_return_volatility_factor";
+                } else {
+                    offset_note = "invalid_factor".to_string();
+                }
+            } else {
+                offset_note = "missing_factor".to_string();
+            }
+        } else if target_factor_lookup.note == "ok" {
+            offset_note = "not_ready".to_string();
         } else {
-            self.hedge_price_offset.abs()
-        };
+            offset_note = target_factor_lookup.note.clone();
+        }
+
+        if aggressive {
+            offset = 0.0;
+            offset_source = "aggressive";
+            if offset_note.is_empty() {
+                offset_note = "aggressive_override".to_string();
+            } else {
+                offset_note = format!("aggressive_override({})", offset_note);
+            }
+        }
+
+        info!(
+            "FrDecision: hedge query offset source={} key={} symbol={} venue={:?} norm_symbol={} ready={} factor={:?} factor_index={:?} ts_ms={:?} offset={:.6} default_offset={:.6} aggressive={} note={}",
+            offset_source,
+            target_factor_lookup.key,
+            hedge_symbol,
+            hedge_venue,
+            target_factor_lookup.symbol_key,
+            ready,
+            target_factor_lookup.target_factor_value,
+            target_factor_lookup.factor_index,
+            target_factor_lookup.ts_ms,
+            offset,
+            default_offset,
+            aggressive,
+            offset_note
+        );
 
         // 统一按 maker 限价对冲：aggressive 仅代表不使用偏移（直接挂在 bid/ask）
         let base_price = match side {
@@ -1136,6 +1369,137 @@ impl FrDecision {
         );
     }
 
+    fn handle_arb_cancel_candidate_query(&mut self, query: ArbCancelCandidateQueryMsg) {
+        if query.groups.is_empty() {
+            return;
+        }
+        let now_us = get_timestamp_us();
+        let mut cancel_sent = 0usize;
+        let mut matched_symbols = 0usize;
+        for group in query.groups {
+            let open_symbol = group.get_symbol().to_uppercase();
+            if open_symbol.is_empty() || group.items.is_empty() {
+                continue;
+            }
+            let Some(threshold) = self.tlen_thresholds.get(&open_symbol).copied() else {
+                log::debug!(
+                    "FrDecision: missing tlen threshold symbol={}",
+                    open_symbol
+                );
+                continue;
+            };
+            let tick_indices: Vec<i64> = group
+                .items
+                .iter()
+                .map(|item| item.price_qv.get_count())
+                .collect();
+            let tlens = match self
+                .open_depth_query_client
+                .query_batch_tick_indices(&open_symbol, &tick_indices)
+            {
+                Ok(values) => values,
+                Err(err) => {
+                    warn!(
+                        "FrDecision: ArbCancel tlen batch query failed symbol={} levels={} err={:#}",
+                        open_symbol,
+                        tick_indices.len(),
+                        err
+                    );
+                    continue;
+                }
+            };
+            let compared_preview = group
+                .items
+                .iter()
+                .zip(tlens.iter().copied())
+                .take(12)
+                .map(|(item, tlen)| {
+                    format!(
+                        "{}@{}:{:.4}{}",
+                        item.strategy_id,
+                        item.price_qv.get_count(),
+                        tlen,
+                        if tlen < threshold { "<hit" } else { ">=skip" }
+                    )
+                })
+                .collect::<Vec<_>>();
+            let (min_tlen, max_tlen) = tlens.iter().copied().fold(
+                (f64::INFINITY, f64::NEG_INFINITY),
+                |(min_v, max_v), value| (min_v.min(value), max_v.max(value)),
+            );
+            let hedge_symbol =
+                normalize_symbol_for_venue(&open_symbol, self.venues.1).to_ascii_uppercase();
+            let mut matched_preview: Vec<String> = Vec::new();
+            let mut group_cancel_sent = 0usize;
+            for (item, tlen) in group.items.iter().zip(tlens.iter().copied()) {
+                if tlen >= threshold {
+                    continue;
+                }
+                if matched_preview.len() < 12 {
+                    matched_preview.push(format!(
+                        "{}@{}:{:.4}<{:.4}",
+                        item.strategy_id,
+                        item.price_qv.get_count(),
+                        tlen,
+                        threshold
+                    ));
+                }
+                if let Err(err) = self.emit_cancel_signal_precise(
+                    &open_symbol,
+                    &hedge_symbol,
+                    self.venues.0,
+                    self.venues.1,
+                    item.strategy_id,
+                    tlen,
+                    threshold,
+                    now_us,
+                ) {
+                    warn!(
+                        "FrDecision: emit precise ArbCancel failed symbol={} strategy_id={} err={:#}",
+                        open_symbol,
+                        item.strategy_id,
+                        err
+                    );
+                    continue;
+                }
+                cancel_sent += 1;
+                group_cancel_sent += 1;
+            }
+            info!(
+                "FrDecision: ArbCancel tlen compare symbol={} trigger_ts={} candidates={} threshold={:.4} min_tlen={:.4} max_tlen={:.4} details={}",
+                open_symbol,
+                query.trigger_ts,
+                tick_indices.len(),
+                threshold,
+                min_tlen,
+                max_tlen,
+                if compared_preview.is_empty() {
+                    "-".to_string()
+                } else {
+                    compared_preview.join(",")
+                }
+            );
+            if group_cancel_sent > 0 {
+                matched_symbols += 1;
+                info!(
+                    "FrDecision: ArbCancel tlen hits symbol={} trigger_ts={} candidates={} matched={} threshold={:.4} strategies={}",
+                    open_symbol,
+                    query.trigger_ts,
+                    tick_indices.len(),
+                    group_cancel_sent,
+                    threshold,
+                    matched_preview.join(",")
+                );
+            }
+        }
+        if cancel_sent > 0 {
+            info!(
+                "FrDecision: ArbCancel candidate query processed trigger_ts={} matched_symbols={} cancels_sent={}",
+                query.trigger_ts, matched_symbols, cancel_sent
+            );
+        }
+    }
+
     // ========== 信号发布 ==========
 
     /// 发布交易信号到 pre_trade（支持多信号发送）
@@ -1148,8 +1512,8 @@ impl FrDecision {
     /// - `signal_type`: 信号类型
     ///
     /// # 行为
-    /// - ArbOpen: 根据 price_offsets 发送多个信号（每个偏移一个）
-    /// - ArbClose / ArbCancel: 发送单个信号
+    /// - ArbOpen / ArbClose: 基于 rl_return_volatility 生成多档 quote plan
+    /// - ArbCancel: 发送单个信号
     ///
     /// # 设计对齐
     /// 与 pre_trade/signal_channel.rs 的 publish_backward 对应
@@ -1215,18 +1579,46 @@ impl FrDecision {
                     }
                 };
 
-                // Open/Close 信号：都使用多档位发送
-                for offset in &self.price_offsets {
-                    let ctx = self.build_open_context(
+                let raw_volatility = self
+                    .lookup_target_factor_value(futures_symbol, futures_venue)
+                    .target_factor_value
+                    .filter(|v| v.is_finite() && *v >= 0.0)
+                    .unwrap_or(0.0);
+                let plan_volatility = if matches!(signal_type, SignalType::ArbOpen) {
+                    (raw_volatility * self.open_scale).max(0.0)
+                } else {
+                    raw_volatility
+                };
+                let plan = match build_fr_open_quote_plan(
+                    spot_venue,
+                    spot_symbol,
+                    spot_quote,
+                    self.order_amount as f64,
+                    self.open_orders_per_round,
+                    side,
+                    plan_volatility,
+                    self.table_for(spot_venue),
+                ) {
+                    Ok(plan) => plan,
+                    Err(err) => {
+                        warn!(
+                            "FrDecision: build quote plan failed open={} hedge={} side={:?} signal={:?} err={}",
+                            spot_symbol, futures_symbol, side, signal_type, err
+                        );
+                        return Ok(());
+                    }
+                };
+
+                for level in &plan.levels {
+                    let ctx = self.build_open_context_from_level(
                         spot_symbol,
                         futures_symbol,
                         spot_venue,
                         futures_venue,
                         &spot_quote,
                         &futures_quote,
-                        *offset,
+                        level,
                         batch_ts,
-                        side,
                         &from_key,
                     );
 
@@ -1236,12 +1628,20 @@ impl FrDecision {
                 }
 
                 info!(
-                    "FrDecision: emitted {} {:?} signal(s) to '{}' spot={} futures={}",
-                    self.price_offsets.len(),
+                    "FrDecision: emitted {} {:?} signal(s) to '{}' open={} hedge={} side={:?} inner={:.8} outer={:.8} vol={:.8} open_scale={:.6} plan_vol={:.8} price_tick={:.8} qty_tick={:.8}",
+                    plan.levels.len(),
                     signal_type,
                     self.channel_name,
                     spot_symbol,
-                    futures_symbol
+                    futures_symbol,
+                    plan.side,
+                    plan.inner_price,
+                    plan.outer_price,
+                    raw_volatility,
+                    self.open_scale,
+                    plan_volatility,
+                    plan.price_tick,
+                    plan.qty_tick
                 );
             }
 
@@ -1255,6 +1655,9 @@ impl FrDecision {
                     &spot_quote,
                     &futures_quote,
                     batch_ts,
+                    &String::from_utf8_lossy(&from_key),
+                    ArbCancelReason::Spread,
+                    0,
                 );
 
                 let context = ctx.to_bytes();
@@ -1268,6 +1671,58 @@ impl FrDecision {
             }
         }
 
+        Ok(())
+    }
+
+    fn emit_cancel_signal_precise(
+        &mut self,
+        spot_symbol: &str,
+        futures_symbol: &str,
+        spot_venue: TradingVenue,
+        futures_venue: TradingVenue,
+        strategy_id: i32,
+        tlen: f64,
+        threshold: f64,
+        now_us: i64,
+    ) -> Result<()> {
+        let mkt_channel = MktChannel::instance();
+        let spot_quote = match mkt_channel.get_quote(spot_symbol, spot_venue) {
+            Some(q) => q,
+            None => return Ok(()),
+        };
+        let futures_quote = match mkt_channel.get_quote(futures_symbol, futures_venue) {
+            Some(q) => q,
+            None => return Ok(()),
+        };
+        if spot_quote.bid >= spot_quote.ask || futures_quote.bid >= futures_quote.ask {
+            return Ok(());
+        }
+        let spread_rate = compute_spread_rate(&spot_quote, &futures_quote);
+        let volatility = self
+            .lookup_target_factor_value(futures_symbol, futures_venue)
+            .target_factor_value
+            .filter(|v| v.is_finite());
+        let from_key = format!(
+            "{}:{}:0:0:{spread_rate:.6}:cancel_reason=tlen:tlen={tlen:.8}:tlen_thr={threshold:.8}",
+            now_us, 0
+        );
+        let ctx = self.build_cancel_context(
+            spot_symbol,
+            futures_symbol,
+            spot_venue,
+            futures_venue,
+            &spot_quote,
+            &futures_quote,
+            now_us,
+            &from_key,
+            ArbCancelReason::Tlen,
+            strategy_id,
+        );
+        let signal = TradeSignal::create(SignalType::ArbCancel, now_us, 0.0, ctx.to_bytes());
+        self.signal_pub.publish(&signal.to_bytes())?;
+        if let Some(_vol) = volatility {
+            // keep parity with other decision paths by forcing factor lookup side effects/log readiness
+        }
         Ok(())
     }
 
@@ -1299,11 +1754,17 @@ impl FrDecision {
         format!("{now}:{request_seq}:{spread_rate:.6}").into_bytes()
     }
 
-    /// 构造 ArbOpen/ArbClose 信号上下文
-    ///
-    /// opening_leg: 现货（主动腿），hedging_leg: 合约（对冲腿）
-    /// 定价逻辑：Buy用bid降价，Sell用ask加价
-    fn build_open_context(
+    fn lookup_target_factor_value(
+        &mut self,
+        hedge_symbol: &str,
+        hedge_venue: TradingVenue,
+    ) -> super::factor_value_hub::FactorValueLookupResult {
+        self.factor_value_hub
+            .lookup_target_factor_value(hedge_symbol, hedge_venue)
+    }
+
+    /// 构造 ArbOpen/ArbClose 信号上下文（基于 quote plan level）
+    fn build_open_context_from_level(
         &self,
         spot_symbol: &str,
         futures_symbol: &str,
@@ -1311,9 +1772,8 @@ impl FrDecision {
         futures_venue: TradingVenue,
         spot_quote: &Quote,
         futures_quote: &Quote,
-        price_offset: f64,
+        level: &QuotePlanLevel,
         now: i64,
-        side: Side,
         from_key: &[u8],
     ) -> ArbOpenCtx {
         let mut ctx = ArbOpenCtx::new();
@@ -1334,25 +1794,9 @@ impl FrDecision {
         );
         ctx.set_hedging_symbol(&futures_trade_symbol);
 
-        // 交易参数
-        ctx.set_side(side);
+        ctx.set_side(level.side);
         ctx.set_order_type(OrderType::Limit);
-
-        // 定价：Buy基于bid降价，Sell基于ask加价
-        let base_price = match side {
-            Side::Buy => spot_quote.bid,
-            Side::Sell => spot_quote.ask,
-        };
-        let raw_open_price = if base_price > 0.0 {
-            match side {
-                Side::Buy => base_price * (1.0 - price_offset),
-                Side::Sell => base_price * (1.0 + price_offset),
-            }
-        } else {
-            0.0
-        };
-        let aligned_open_price =
-            self.align_open_price_for_signal(spot_venue, &spot_trade_symbol, raw_open_price);
+        let aligned_open_price = level.aligned_price;
 
         let base_qty = self.convert_order_amount_to_aligned_base_qty(
             spot_venue,
@@ -1362,7 +1806,7 @@ impl FrDecision {
             spot_quote,
             futures_quote,
             aligned_open_price,
-            side,
+            level.side,
         );
         let aligned_open_qty = self.convert_aligned_base_qty_to_open_venue_qty(
             spot_venue,
@@ -1406,7 +1850,7 @@ impl FrDecision {
 
         ctx.exp_time = now + self.open_order_ttl_us;
         ctx.create_ts = now;
-        ctx.price_offset = price_offset;
+        ctx.price_offset = level.offset;
         ctx.spread_rate = compute_spread_rate(spot_quote, futures_quote);
 
         // hedge_timeout_us 根据 SpreadFactor 的 mode 决定
@@ -1427,25 +1871,6 @@ impl FrDecision {
             &self.open_min_qty_table
         } else {
             &self.hedge_min_qty_table
-        }
-    }
-
-    fn align_open_price_for_signal(
-        &self,
-        open_venue: TradingVenue,
-        open_symbol: &str,
-        raw_price: f64,
-    ) -> f64 {
-        if raw_price <= 0.0 {
-            return 0.0;
-        }
-        let table = self.table_for(open_venue);
-        let symbol_key = min_qty_symbol_key(open_venue, open_symbol);
-        let tick = table.price_tick(&symbol_key).unwrap_or(0.0);
-        if tick > 0.0 {
-            align_price_floor(raw_price, tick)
-        } else {
-            raw_price
         }
     }
 
@@ -1649,16 +2074,24 @@ impl FrDecision {
         }
     }
 
-    /// 更新挂单档位
-    pub fn update_price_offsets(&mut self, offsets: Vec<f64>) {
-        if offsets.is_empty() {
-            warn!("FrDecision: 忽略空的 price_offsets 更新请求");
+    pub fn update_open_scale(&mut self, open_scale: f64) {
+        if !(open_scale.is_finite() && open_scale > 0.0) {
+            warn!("FrDecision: 忽略无效的 open_scale={}", open_scale);
             return;
         }
-        self.price_offsets = offsets;
+        self.open_scale = open_scale;
+        info!("FrDecision: open_scale 已更新为 {:.6}", self.open_scale);
+    }
+
+    pub fn update_open_orders_per_round(&mut self, open_orders_per_round: u32) {
+        if open_orders_per_round == 0 {
+            warn!("FrDecision: 忽略无效的 open_orders_per_round=0 更新请求");
+            return;
+        }
+        self.open_orders_per_round = open_orders_per_round;
         info!(
-            "FrDecision: price_offsets 已更新，总档位 {}",
-            self.price_offsets.len()
+            "FrDecision: open_orders_per_round 已更新，总档位 {}",
+            self.open_orders_per_round
         );
     }
 
@@ -1732,6 +2165,67 @@ impl FrDecision {
             "FrDecision: signal_cooldown 更新为 {}s ({}us)",
             cooldown_secs, self.signal_cooldown_us
         );
+    }
+
+    pub fn update_enable_tlen_cancel(&mut self, enabled: bool) {
+        self.enable_tlen_cancel = enabled;
+        info!(
+            "FrDecision: enable_tlen_cancel updated enabled={}",
+            self.enable_tlen_cancel
+        );
+    }
+
+    pub fn update_tlen_cancel_freq_ms(&mut self, tlen_cancel_freq_ms: u64) {
+        if tlen_cancel_freq_ms == 0 {
+            warn!("FrDecision: tlen_cancel_freq_ms=0 无效，忽略更新");
+            return;
+        }
+        self.tlen_cancel_freq_ms = tlen_cancel_freq_ms;
+        info!(
+            "FrDecision: tlen_cancel_freq_ms updated value={}",
+            self.tlen_cancel_freq_ms
+        );
+    }
+
+    pub fn process_cancel_trigger_interval(&mut self) {
+        if !self.enable_tlen_cancel || self.tlen_cancel_freq_ms == 0 {
+            return;
+        }
+        let now_us = get_timestamp_us();
+        let interval_us = (self.tlen_cancel_freq_ms as i64).saturating_mul(1_000);
+        if self.last_cancel_trigger_ts_us != 0
+            && now_us.saturating_sub(self.last_cancel_trigger_ts_us) < interval_us
+        {
+            return;
+        }
+        match self.emit_arb_cancel_trigger_signal(now_us) {
+            Ok(_) => {
+                self.last_cancel_trigger_ts_us = now_us;
+                log::debug!(
+                    "FrDecision: ArbCancelTrigger emitted freq_ms={}",
+                    self.tlen_cancel_freq_ms
+                );
+            }
+            Err(err) => warn!("FrDecision: publish ArbCancelTrigger failed: {err:#}"),
+        }
+    }
+
+    fn emit_arb_cancel_trigger_signal(&mut self, now_us: i64) -> Result<()> {
+        let ctx = ArbCancelTriggerCtx {
+            trigger_ts: now_us,
+            freq_ms: self.tlen_cancel_freq_ms,
+        };
+        let signal =
+            TradeSignal::create(SignalType::ArbCancelTrigger, now_us, 0.0, ctx.to_bytes());
+        self.signal_pub.publish(&signal.to_bytes())?;
+        Ok(())
+    }
+
+    fn tlen_threshold_reload_due(&self, now_us: i64) -> bool {
+        const RELOAD_INTERVAL_US: i64 = 30 * 60 * 1_000_000;
+        self.last_tlen_threshold_reload_ts_us == 0
+            || now_us.saturating_sub(self.last_tlen_threshold_reload_ts_us)
+                >= RELOAD_INTERVAL_US
     }
 
     /// 检查交易对是否在冷却期内
@@ -1838,6 +2332,9 @@ impl FrDecision {
         spot_quote: &Quote,
         futures_quote: &Quote,
         now: i64,
+        from_key: &str,
+        reason: ArbCancelReason,
+        strategy_id: i32,
     ) -> ArbCancelCtx {
         let mut ctx = ArbCancelCtx::new();
         let spot_trade_symbol = normalize_symbol_for_venue(spot_symbol, spot_venue);
@@ -1856,8 +2353,49 @@ impl FrDecision {
         ctx.set_hedging_symbol(&futures_trade_symbol);
 
         ctx.trigger_ts = now;
+        ctx.set_from_key(from_key.as_bytes().to_vec());
+        ctx.set_reason(reason);
+        ctx.set_target_strategy(strategy_id);
 
         ctx
+    }
+
+    fn spawn_tlen_threshold_loader() {
+        tokio::task::spawn_local(async move {
+            let redis = RedisSettings::default();
+            let mut interval = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+                let (due, open_venue, now_us) = FrDecision::with(|decision| {
+                    let now_us = get_timestamp_us();
+                    (
+                        decision.tlen_threshold_reload_due(now_us),
+                        decision.venues.0,
+                        now_us,
+                    )
+                });
+                if !due {
+                    continue;
+                }
+                match tlen_threshold_loader::load_from_redis(&redis, open_venue).await {
+                    Ok((redis_key, thresholds, bad_fields)) => {
+                        let symbols = thresholds.len();
+                        FrDecision::with_mut(|decision| {
+                            decision.tlen_thresholds = thresholds;
+                            decision.last_tlen_threshold_reload_ts_us = now_us;
+                        });
+                        info!(
+                            "FrDecision: tlen thresholds loaded key={} symbols={} bad_fields={}",
+                            redis_key, symbols, bad_fields
+                        );
+                    }
+                    Err(err) => warn!(
+                        "FrDecision: tlen threshold reload failed venue={:?} err={:#}",
+                        open_venue, err
+                    ),
+                }
+            }
+        });
     }
 
     // ========== 信号状态监控 ==========

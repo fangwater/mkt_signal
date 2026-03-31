@@ -88,11 +88,6 @@ pub struct StrategyParams {
     #[serde(default = "default_hedge_orders_per_round")]
     pub hedge_orders_per_round: u32,
 
-    /// 开仓挂单档位（JSON 数组）
-    /// 例如: "[0.0002, 0.0004, 0.0006, 0.0008, 0.001]"
-    #[serde(default = "default_price_offsets")]
-    pub price_offsets: String,
-
     /// 开仓订单超时（秒）
     #[serde(default = "default_open_order_timeout")]
     pub open_order_timeout: u64,
@@ -202,9 +197,6 @@ fn default_open_orders_per_round() -> u32 {
 fn default_hedge_orders_per_round() -> u32 {
     8
 }
-fn default_price_offsets() -> String {
-    "[0.0002, 0.0004, 0.0006, 0.0008, 0.001]".to_string()
-}
 fn default_open_order_timeout() -> u64 {
     120
 }
@@ -283,7 +275,6 @@ impl Default for StrategyParams {
             order_interval_ms: default_order_interval_ms(),
             open_orders_per_round: default_open_orders_per_round(),
             hedge_orders_per_round: default_hedge_orders_per_round(),
-            price_offsets: default_price_offsets(),
             open_order_timeout: default_open_order_timeout(),
             next_query_delay_ms: default_next_query_delay_ms(),
             hedge_vol_multiplier: default_hedge_vol_multiplier(),
@@ -402,11 +393,6 @@ impl StrategyParams {
             .and_then(|s| s.parse::<u32>().ok())
             .filter(|v| *v > 0)
             .unwrap_or_else(default_hedge_orders_per_round);
-
-        let price_offsets = hash_map
-            .get("price_offsets")
-            .map(|s| s.to_string())
-            .unwrap_or_else(default_price_offsets);
 
         let open_order_timeout = hash_map
             .get("open_order_timeout")
@@ -729,7 +715,6 @@ impl StrategyParams {
             order_interval_ms,
             open_orders_per_round,
             hedge_orders_per_round,
-            price_offsets,
             open_order_timeout,
             next_query_delay_ms,
             hedge_vol_multiplier,
@@ -752,17 +737,6 @@ impl StrategyParams {
             enable_return_score_model,
             return_model_service,
             environment_model_service,
-        })
-    }
-
-    /// 解析 price_offsets JSON 数组
-    fn parse_price_offsets(&self) -> Vec<f64> {
-        serde_json::from_str::<Vec<f64>>(&self.price_offsets).unwrap_or_else(|err| {
-            warn!(
-                "无法解析 price_offsets: {} (err: {}), 使用默认值",
-                self.price_offsets, err
-            );
-            vec![0.0002, 0.0004, 0.0006, 0.0008, 0.001]
         })
     }
 
@@ -819,11 +793,14 @@ impl StrategyParams {
         // 1. 更新 decision（FR or xarb）
         let applied = FrDecision::try_with_mut(|decision| {
             decision.update_order_amount(self.order_amount);
-            decision.update_price_offsets(self.parse_price_offsets());
+            decision.update_open_scale(self.open_scale);
+            decision.update_open_orders_per_round(self.open_orders_per_round);
             decision.update_open_order_timeout(self.open_order_timeout);
             decision.update_hedge_timeout(self.hedge_timeout);
             decision.update_hedge_price_offset(self.hedge_price_offset);
             decision.update_hedge_aggressive_seq_threshold(self.hedge_aggressive_seq_threshold);
+            decision.update_enable_tlen_cancel(self.enable_tlen_cancel);
+            decision.update_tlen_cancel_freq_ms(self.tlen_cancel_freq_ms);
             decision.update_signal_cooldown(self.signal_cooldown);
         })
         .is_some()
@@ -921,27 +898,6 @@ impl StrategyParams {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_parse_price_offsets() {
-        let params = StrategyParams {
-            price_offsets: "[0.0001, 0.0002, 0.0003]".to_string(),
-            ..Default::default()
-        };
-        let offsets = params.parse_price_offsets();
-        assert_eq!(offsets, vec![0.0001, 0.0002, 0.0003]);
-    }
-
-    #[test]
-    fn test_parse_invalid_price_offsets() {
-        let params = StrategyParams {
-            price_offsets: "invalid json".to_string(),
-            ..Default::default()
-        };
-        let offsets = params.parse_price_offsets();
-        // 应该返回默认值
-        assert_eq!(offsets.len(), 5);
-    }
 
     #[test]
     fn test_parse_mode() {

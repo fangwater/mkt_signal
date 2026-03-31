@@ -87,7 +87,8 @@ def parse_args() -> argparse.Namespace:
 PARAM_COMMENTS: Dict[str, str] = {
     "mode": "做市模式(MM=双边挂单/MT=吃单对冲)",
     "order_amount": "单笔下单量(USDT)",
-    "price_offsets": "开仓挂单档位(JSON数组)",
+    "open_scale": "开仓 plan 的波动边界缩放系数（实际边界=vol*open_scale）",
+    "open_orders_per_round": "每轮开仓档位数",
     "open_order_timeout": "开仓订单超时(秒)",
     "hedge_timeout": "对冲订单超时(秒)",
     "hedge_price_offset": "对冲价格偏移(万分之几)",
@@ -101,7 +102,8 @@ PARAM_COMMENTS: Dict[str, str] = {
 PARAM_ORDER = [
     "mode",
     "order_amount",
-    "price_offsets",
+    "open_scale",
+    "open_orders_per_round",
     "open_order_timeout",
     "hedge_timeout",
     "hedge_price_offset",
