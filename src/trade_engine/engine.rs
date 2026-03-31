@@ -187,6 +187,7 @@ impl TradeEngine {
             Some(Rc::new(tokio::sync::Mutex::new(Dispatcher::new(
                 &self.local_ips,
                 &self.accounts,
+                shutdown.clone(),
             )?)))
         } else {
             None
@@ -253,6 +254,7 @@ impl TradeEngine {
                     None,
                     rx,
                     resp_tx.clone(),
+                    shutdown.clone(),
                 );
                 info!(
                     "spawning ws client id={} ip={} max_inflight={}",
@@ -297,6 +299,7 @@ impl TradeEngine {
                     Some(query_resp_tx.clone()),
                     spot_rx,
                     resp_tx.clone(),
+                    shutdown.clone(),
                 );
                 info!(
                     "spawning gate spot ws client id={} ip={} max_inflight={}",
@@ -325,6 +328,7 @@ impl TradeEngine {
                     Some(query_resp_tx.clone()),
                     fut_rx,
                     resp_tx.clone(),
+                    shutdown.clone(),
                 );
                 info!(
                     "spawning gate futures ws client id={} ip={} max_inflight={}",
@@ -371,6 +375,7 @@ impl TradeEngine {
                     Some(query_resp_tx.clone()),
                     um_rx,
                     resp_tx.clone(),
+                    shutdown.clone(),
                 );
                 info!(
                     "spawning binance um ws client id={} ip={} max_inflight={}",
@@ -399,6 +404,7 @@ impl TradeEngine {
                     None,
                     spot_rx,
                     resp_tx.clone(),
+                    shutdown.clone(),
                 );
                 info!(
                     "spawning binance spot ws client id={} ip={} max_inflight={}",
@@ -425,6 +431,7 @@ impl TradeEngine {
         let rest_dispatcher_for_orders = rest_dispatcher.clone();
         let resp_tx_for_req_worker = resp_tx.clone();
         let exchange_for_req_worker = exchange;
+        let shutdown_for_req_worker = shutdown.clone();
         let req_worker = tokio::task::spawn_local(async move {
             let mut ws_endpoints = ws_endpoints_for_req_worker;
             let mut gate_futures_ws_endpoints = gate_futures_ws_endpoints_for_req_worker;
@@ -432,7 +439,16 @@ impl TradeEngine {
             let mut ws_rr_cursor = 0usize; // 轮询计数器
             let rest_dispatcher = rest_dispatcher_for_orders;
 
-            while let Some(msg) = req_rx.recv().await {
+            loop {
+                let Some(msg) = ({
+                    tokio::select! {
+                        biased;
+                        _ = shutdown_for_req_worker.cancelled() => None,
+                        msg = req_rx.recv() => msg,
+                    }
+                }) else {
+                    break;
+                };
                 debug!(
                     "routing request: type={:?}, client_order_id={}",
                     msg.req_type, msg.client_order_id
@@ -621,6 +637,7 @@ impl TradeEngine {
             let binance_spot_ws_endpoints = binance_spot_ws_endpoints.clone();
             let gate_spot_ws_endpoints = ws_endpoints.clone();
             let gate_futures_ws_endpoints = gate_futures_ws_endpoints.clone();
+            let shutdown_for_query_router = shutdown.clone();
             let query_router = tokio::task::spawn_local(async move {
                 let okex_http = reqwest::Client::new();
                 let okex_creds =
@@ -632,7 +649,16 @@ impl TradeEngine {
                 let mut gate_query_rr = 0usize;
                 let mut gate_futures_query_rr = 0usize;
 
-                while let Some(msg) = query_req_rx.recv().await {
+                loop {
+                    let Some(msg) = ({
+                        tokio::select! {
+                            biased;
+                            _ = shutdown_for_query_router.cancelled() => None,
+                            msg = query_req_rx.recv() => msg,
+                        }
+                    }) else {
+                        break;
+                    };
                     debug!(
                         "routing query: type={:?} client_query_id={}",
                         msg.req_type, msg.client_query_id

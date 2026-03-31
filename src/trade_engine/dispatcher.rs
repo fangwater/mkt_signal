@@ -9,6 +9,7 @@ use sha2::Sha256;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
+use tokio_util::sync::CancellationToken;
 
 type HmacSha256 = Hmac<Sha256>;
 const REST_HOT_LOG_INTERVAL: Duration = Duration::from_secs(10);
@@ -73,6 +74,7 @@ pub struct Dispatcher {
     accounts: Vec<AccountState>,
     rest_hot_window_started_at: Instant,
     rest_hot_stats: HashMap<RestHotKey, RestHotStat>,
+    shutdown: CancellationToken,
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -113,7 +115,11 @@ fn max_option_u32(current: Option<u32>, next: Option<u32>) -> Option<u32> {
 }
 
 impl Dispatcher {
-    pub fn new(local_ips: &[IpAddr], account_keys: &[ApiKey]) -> Result<Self> {
+    pub fn new(
+        local_ips: &[IpAddr],
+        account_keys: &[ApiKey],
+        shutdown: CancellationToken,
+    ) -> Result<Self> {
         // Build clients per IP
         let mut ip_clients = Vec::new();
         for ip in local_ips {
@@ -167,6 +173,7 @@ impl Dispatcher {
             accounts,
             rest_hot_window_started_at: Instant::now(),
             rest_hot_stats: HashMap::new(),
+            shutdown,
         })
     }
 
@@ -495,12 +502,20 @@ impl Dispatcher {
                     self.ip_clients[ip_idx].cooldown_until = Some(
                         Instant::now() + Duration::from_millis(LimitConstants::COOLDOWN_MS_429),
                     );
+                    warn!(
+                        "trade_engine fuse tripped by Binance REST 429; shutting down request processing"
+                    );
+                    self.shutdown.cancel();
                 }
                 if status.as_u16() == 418 {
                     warn!("418 Banned for IP {}. Backing off.", ip);
                     self.ip_clients[ip_idx].banned_until = Some(
                         Instant::now() + Duration::from_millis(LimitConstants::BAN_BACKOFF_MS_418),
                     );
+                    warn!(
+                        "trade_engine fuse tripped by Binance REST 418; shutting down request processing"
+                    );
+                    self.shutdown.cancel();
                 }
                 // Build uniform response regardless of success or error
                 Ok(DispatchResponse {
@@ -633,6 +648,7 @@ mod tests {
                 key: "key".to_string(),
                 secret: "secret".to_string(),
             }],
+            CancellationToken::new(),
         )
         .expect("dispatcher")
     }

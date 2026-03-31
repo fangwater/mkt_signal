@@ -28,22 +28,6 @@ thread_local! {
     static SIGNAL_CHANNEL: OnceCell<SignalChannel> = OnceCell::new();
 }
 
-fn preview_signal_text(raw: &str, max_chars: usize) -> String {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return "-".to_string();
-    }
-    let mut out = String::new();
-    for (idx, ch) in trimmed.chars().enumerate() {
-        if idx >= max_chars {
-            out.push_str("...");
-            break;
-        }
-        out.push(ch);
-    }
-    out
-}
-
 /// 默认信号频道名称（与 trade_signal 的发布频道一致）
 pub const DEFAULT_SIGNAL_CHANNEL: &str = "trade_signal";
 
@@ -746,7 +730,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                     chunk.push_grouped(&candidate.symbol, entry);
                 }
                 flush_chunk(&mut chunk, &mut published_chunks, &mut published_items);
-                info!(
+                debug!(
                     "MMCancelTrigger: snapshot published chunks={} items={} symbols={} sample={} strategies={} trigger_ts={} freq_ms={}",
                     published_chunks,
                     published_items,
@@ -779,17 +763,11 @@ fn handle_trade_signal(signal: TradeSignal) {
                 }
 
                 let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-                let from_key_preview =
-                    preview_signal_text(&String::from_utf8_lossy(&cancel_ctx.from_key), 160);
                 if cancel_ctx.strategy_id > 0 {
                     let strategy_id = cancel_ctx.strategy_id;
-                    info!(
-                        "MMCancel: targeted strategy_id={} symbol={} trigger_ts={} from_key='{}'",
-                        strategy_id, symbol, cancel_ctx.trigger_ts, from_key_preview
-                    );
                     let exists = { strategy_mgr.borrow().contains(strategy_id) };
                     if !exists {
-                        info!(
+                        debug!(
                             "MMCancel: targeted strategy missing strategy_id={} symbol={} trigger_ts={}",
                             strategy_id,
                             symbol,
@@ -818,23 +796,6 @@ fn handle_trade_signal(signal: TradeSignal) {
                 if candidate_ids.is_empty() {
                     return;
                 }
-                let candidate_preview = candidate_ids
-                    .iter()
-                    .take(12)
-                    .map(|id| id.to_string())
-                    .collect::<Vec<_>>()
-                    .join(",");
-                info!(
-                    "MMCancel: broadcast symbol={} strategies={} trigger_ts={} from_key='{}'",
-                    symbol,
-                    if candidate_preview.is_empty() {
-                        "-".to_string()
-                    } else {
-                        candidate_preview
-                    },
-                    cancel_ctx.trigger_ts,
-                    from_key_preview
-                );
                 for strategy_id in candidate_ids {
                     let exists = { strategy_mgr.borrow().contains(strategy_id) };
                     if !exists {

@@ -28,6 +28,7 @@ use std::time::Duration;
 use tokio::net::{lookup_host, TcpSocket, TcpStream};
 use tokio::sync::mpsc;
 use tokio::time;
+use tokio_util::sync::CancellationToken;
 use tokio_native_tls::TlsConnector as TokioTlsConnector;
 use tokio_tungstenite::{
     client_async,
@@ -142,6 +143,7 @@ pub struct TradeWsClient {
     query_inflight: HashMap<i64, QueryRequestType>,
     last_dispatched_type: TradeRequestType,
     last_dispatched_query_type: QueryRequestType,
+    engine_shutdown: CancellationToken,
     shutdown: bool,
     should_reconnect: bool, // 标记是否需要重连（用于 notice 触发的重连）
     last_okex_login_ts: Option<String>,
@@ -164,6 +166,7 @@ impl TradeWsClient {
         query_resp_tx: Option<mpsc::UnboundedSender<QueryExecOutcome>>,
         cmd_rx: mpsc::UnboundedReceiver<WsCommand>,
         resp_tx: mpsc::UnboundedSender<TradeExecOutcome>,
+        engine_shutdown: CancellationToken,
     ) -> Self {
         let (login_payload, okex_creds, gate_creds) = match exchange {
             Exchange::Okex => {
@@ -254,6 +257,7 @@ impl TradeWsClient {
                 }
                 _ => QueryRequestType::GateUnifiedOrderQuery,
             },
+            engine_shutdown,
             shutdown: false,
             should_reconnect: false,
             last_okex_login_ts: None,
@@ -265,6 +269,41 @@ impl TradeWsClient {
         self.local_ip
     }
 
+    fn binance_rate_limit_payload(status: Option<u16>, error_code: Option<i32>, text: &str) -> bool {
+        matches!(status, Some(418 | 429))
+            || matches!(error_code, Some(-1003))
+            || text.contains("HTTP 418")
+            || text.contains("HTTP 429")
+            || text.contains("\"code\":-1003")
+            || text.contains("Too Many Requests")
+            || text.contains("Way too many requests")
+    }
+
+    fn trigger_engine_shutdown_on_binance_rate_limit(
+        &mut self,
+        status: Option<u16>,
+        error_code: Option<i32>,
+        text: &str,
+        context: &str,
+    ) {
+        if self.exchange != Exchange::Binance || self.engine_shutdown.is_cancelled() {
+            return;
+        }
+        if !Self::binance_rate_limit_payload(status, error_code, text) {
+            return;
+        }
+        warn!(
+            "trade ws client id={} exchange=binance tripping trade_engine shutdown due to rate limit at {} status={:?} code={:?} detail={}",
+            self.id,
+            context,
+            status,
+            error_code,
+            text
+        );
+        self.engine_shutdown.cancel();
+        self.shutdown = true;
+    }
+
     pub async fn run(mut self) {
         let mut backoff_ms = 500u64;
         while !self.shutdown {
@@ -273,6 +312,11 @@ impl TradeWsClient {
             let connect_timeout_ms = self.connect_timeout_ms;
             tokio::select! {
                 biased;
+                _ = self.engine_shutdown.cancelled() => {
+                    info!("trade ws client id={} observed trade_engine shutdown while disconnected", self.id);
+                    self.shutdown = true;
+                    break;
+                }
                 cmd = self.cmd_rx.recv() => {
                     match cmd {
                         Some(WsCommand::Send(msg)) => {
@@ -392,12 +436,19 @@ impl TradeWsClient {
                             }
                         }
                         Err(err) => {
+                            let err_text = format_error_chain(&err);
+                            self.trigger_engine_shutdown_on_binance_rate_limit(
+                                None,
+                                None,
+                                &err_text,
+                                "connect",
+                            );
                             warn!(
                                 "trade ws client id={} exchange={} url={} failed to connect ({}), retrying in {} ms",
                                 self.id,
                                 self.exchange,
                                 self.url,
-                                format_error_chain(&err),
+                                err_text,
                                 backoff_ms
                             );
                         }
@@ -409,6 +460,10 @@ impl TradeWsClient {
             }
             tokio::select! {
                 biased;
+                _ = self.engine_shutdown.cancelled() => {
+                    info!("trade ws client id={} observed trade_engine shutdown during backoff", self.id);
+                    self.shutdown = true;
+                }
                 cmd = self.cmd_rx.recv() => {
                     match cmd {
                         Some(WsCommand::Send(msg)) => {
@@ -448,6 +503,12 @@ impl TradeWsClient {
         loop {
             tokio::select! {
                 biased;
+                _ = self.engine_shutdown.cancelled() => {
+                    info!("trade ws client id={} observed trade_engine shutdown in event loop", self.id);
+                    self.shutdown = true;
+                    let _ = ws.close(None).await;
+                    return Ok(());
+                }
                 cmd = self.cmd_rx.recv() => {
                     match cmd {
                         Some(WsCommand::Send(msg)) => {
@@ -1190,6 +1251,12 @@ impl TradeWsClient {
         let Some(resp) = binance_ws::parse_ws_response(payload) else {
             return false;
         };
+        self.trigger_engine_shutdown_on_binance_rate_limit(
+            resp.status,
+            resp.error_code,
+            payload,
+            "binance_ws_response",
+        );
         let id = resp.id.unwrap_or(0);
         if id <= 0 {
             return false;
