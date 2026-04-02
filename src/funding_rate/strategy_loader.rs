@@ -602,8 +602,7 @@ impl StrategyParams {
             None => default_enable_return_score_model(),
         };
 
-        let strict_return_model_required =
-            ns == "mm" || (ns == "xarb" && enable_return_score_model);
+        let strict_return_model_required = ns == "mm";
         let strict_env_model_dash_only = false;
         let allow_missing_model_service = ns == "fr";
         let return_model_service = match hash_map.get("return_model_service") {
@@ -807,16 +806,22 @@ impl StrategyParams {
             arb.order_amount = self.order_amount;
             arb.open_scale = self.open_scale;
             arb.open_orders_per_round = self.open_orders_per_round;
-            arb.open_order_ttl_us =
-                self.open_order_timeout.saturating_mul(1_000_000).min(i64::MAX as u64) as i64;
-            arb.hedge_timeout_mm_us =
-                self.hedge_timeout.saturating_mul(1_000_000).min(i64::MAX as u64) as i64;
+            arb.open_order_ttl_us = self
+                .open_order_timeout
+                .saturating_mul(1_000_000)
+                .min(i64::MAX as u64) as i64;
+            arb.hedge_timeout_mm_us = self
+                .hedge_timeout
+                .saturating_mul(1_000_000)
+                .min(i64::MAX as u64) as i64;
             arb.hedge_price_offset = self.hedge_price_offset;
             arb.hedge_aggressive_seq_threshold = self.hedge_aggressive_seq_threshold;
             arb.enable_tlen_cancel = self.enable_tlen_cancel;
             arb.tlen_cancel_freq_ms = self.tlen_cancel_freq_ms;
-            arb.signal_cooldown_us =
-                self.signal_cooldown.saturating_mul(1_000_000).min(i64::MAX as u64) as i64;
+            arb.signal_cooldown_us = self
+                .signal_cooldown
+                .saturating_mul(1_000_000)
+                .min(i64::MAX as u64) as i64;
 
             arb.max_hedge_price_pct_change = self.max_hedge_price_pct_change;
             arb.enable_environment_model = self.enable_environment_model;
@@ -828,7 +833,9 @@ impl StrategyParams {
             arb.environment_model_true_threshold = 0.0;
         })
         .is_some()
-            || ArbDecision::try_update_spread_arb_model_output_services(self.parse_model_output_services())
+            || ArbDecision::try_update_spread_arb_model_output_services(
+                self.parse_model_output_services(),
+            )
             || MmDecision::try_with_mut(|_decision| {
                 let open_buy_vol_scale = self
                     .parse_required_vol_scale_range(&self.open_buy_vol_scale, "open_buy_vol_scale");

@@ -141,39 +141,38 @@ pub fn build_arb_open_context_from_level_with_tables(
         factor_mode: input.factor_mode,
         open_symbol_key: symbol_key,
         table: input.open_table,
-        convert_order_amount_to_aligned_base_qty: &|open_venue,
-                                                     open_symbol,
-                                                     hedge_venue,
-                                                     hedge_symbol,
-                                                     open_quote,
-                                                     hedge_quote,
-                                                     aligned_open_price,
-                                                     side| {
-            convert_order_amount_to_aligned_base_qty(
-                input.order_amount as f32,
-                input.open_table,
-                open_venue,
-                open_symbol,
-                input.hedge_table,
-                hedge_venue,
-                hedge_symbol,
-                open_quote,
-                hedge_quote,
-                aligned_open_price,
-                side,
-            )
-        },
-        convert_aligned_base_qty_to_open_venue_qty: &|open_venue,
-                                                       open_symbol,
-                                                       open_price,
-                                                       aligned_base_qty| {
-            convert_aligned_base_qty_to_open_venue_qty(
-                input.open_table,
-                open_venue,
-                open_symbol,
-                open_price,
-                aligned_base_qty,
-            )
-        },
+        convert_order_amount_to_aligned_base_qty:
+            &|open_venue,
+              open_symbol,
+              hedge_venue,
+              hedge_symbol,
+              open_quote,
+              hedge_quote,
+              aligned_open_price,
+              side| {
+                convert_order_amount_to_aligned_base_qty(
+                    input.order_amount as f32,
+                    input.open_table,
+                    open_venue,
+                    open_symbol,
+                    input.hedge_table,
+                    hedge_venue,
+                    hedge_symbol,
+                    open_quote,
+                    hedge_quote,
+                    aligned_open_price,
+                    side,
+                )
+            },
+        convert_aligned_base_qty_to_open_venue_qty:
+            &|open_venue, open_symbol, open_price, aligned_base_qty| {
+                convert_aligned_base_qty_to_open_venue_qty(
+                    input.open_table,
+                    open_venue,
+                    open_symbol,
+                    open_price,
+                    aligned_base_qty,
+                )
+            },
     })
 }

@@ -66,7 +66,7 @@ pub fn resolve_mm_hedge_signal_inputs(
                 score_lookup.service_name, score_lookup.note
             )
         })?;
-    let factor_lookup = factor_value_hub.lookup_target_factor_value(symbol, venue);
+    let factor_lookup = factor_value_hub.lookup_factor_value(symbol, venue);
     let volatility = factor_lookup
         .target_factor_value
         .filter(|v| v.is_finite())

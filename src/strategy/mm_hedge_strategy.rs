@@ -2085,8 +2085,12 @@ mod tests {
 
         assert!(!strategy.hedge_order_ids.contains(&client_order_id));
         assert!(!strategy.hedge_order_meta.contains_key(&client_order_id));
-        assert!(!strategy.pending_order_queries.contains_key(&client_order_id));
-        assert!(!strategy.order_query_watchdogs.contains_key(&client_order_id));
+        assert!(!strategy
+            .pending_order_queries
+            .contains_key(&client_order_id));
+        assert!(!strategy
+            .order_query_watchdogs
+            .contains_key(&client_order_id));
         assert!(!strategy
             .cancel_reconcile_query_attempts
             .contains_key(&client_order_id));

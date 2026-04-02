@@ -1,19 +1,19 @@
-use anyhow::Result;
-use log::warn;
 use crate::common::iceoryx_publisher::SignalPublisher;
 use crate::common::symbol_util::normalize_symbol_for_venue;
+use crate::depth_pub::query_client::DepthQueryClient;
+use crate::depth_pub::query_msg::price_to_tick_index;
+use crate::signal::common::SignalBytes;
 use crate::signal::common::TradingLeg;
 use crate::signal::common::TradingVenue;
 use crate::signal::hedge_signal::ArbHedgeCtx;
-use crate::signal::common::SignalBytes;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
-use crate::depth_pub::query_client::DepthQueryClient;
-use crate::depth_pub::query_msg::price_to_tick_index;
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
+use anyhow::Result;
+use log::warn;
 
-use super::common::Quote;
-use super::common::build_decision_from_key_base;
 use super::arb_qty_align::min_qty_symbol_key;
+use super::common::build_decision_from_key_base;
+use super::common::Quote;
 
 pub struct ArbHedgeContextCommonInput<'a> {
     pub open_symbol: &'a str,
@@ -179,9 +179,7 @@ pub struct ArbMakerHedgeBuildInput<'a> {
     pub common: ArbHedgeContextCommonInput<'a>,
 }
 
-pub fn build_and_fill_arb_maker_hedge(
-    input: ArbMakerHedgeBuildInput<'_>,
-) -> Option<ArbHedgeCtx> {
+pub fn build_and_fill_arb_maker_hedge(input: ArbMakerHedgeBuildInput<'_>) -> Option<ArbHedgeCtx> {
     let Some(mut ctx) = build_arb_maker_hedge_ctx(
         input.strategy_id,
         input.client_order_id,
@@ -204,7 +202,7 @@ pub fn build_spread_arb_hedge_from_key_base(
     return_threshold: Option<f64>,
     environment_score: f64,
     environment_threshold: Option<f64>,
-    rl_return_volatility_factor: Option<f64>,
+    hedge_volatility_factor: Option<f64>,
     pct_change: f64,
     spread_rate: f64,
 ) -> String {
@@ -212,7 +210,7 @@ pub fn build_spread_arb_hedge_from_key_base(
         now,
         return_score,
         return_threshold,
-        rl_return_volatility_factor,
+        hedge_volatility_factor,
         Some(environment_score),
         environment_threshold,
     );
@@ -278,7 +276,7 @@ pub fn build_spread_arb_hedge_from_key(
     return_threshold: Option<f64>,
     environment_score: f64,
     environment_threshold: Option<f64>,
-    rl_return_volatility_factor: Option<f64>,
+    hedge_volatility_factor: Option<f64>,
     pct_change: f64,
     spread_rate: f64,
     hedge_venue: TradingVenue,
@@ -293,7 +291,7 @@ pub fn build_spread_arb_hedge_from_key(
         return_threshold,
         environment_score,
         environment_threshold,
-        rl_return_volatility_factor,
+        hedge_volatility_factor,
         pct_change,
         spread_rate,
     );

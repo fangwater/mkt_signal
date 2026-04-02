@@ -510,7 +510,7 @@ impl MmDecision {
                 let volatility = self
                     .state
                     .factor_value_hub
-                    .lookup_target_factor_value(&symbol, self.state.hedge_venue)
+                    .lookup_factor_value(&symbol, self.state.hedge_venue)
                     .target_factor_value
                     .filter(|value| value.is_finite());
                 let symbol_key = normalize_symbol_for_whitelist(&symbol, TradingVenue::OkexFutures);

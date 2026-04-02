@@ -68,7 +68,7 @@ impl MmOpenDecision {
 
         let volatility_lookup = state
             .factor_value_hub
-            .lookup_target_factor_value(symbol, state.hedge_venue);
+            .lookup_factor_value(symbol, state.hedge_venue);
         let Some(volatility) = volatility_lookup
             .target_factor_value
             .filter(|v| v.is_finite())

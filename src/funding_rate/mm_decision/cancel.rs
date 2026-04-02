@@ -96,7 +96,7 @@ impl MmCancelDecision {
         };
         let factor_lookup = state
             .factor_value_hub
-            .lookup_target_factor_value(symbol, state.hedge_venue);
+            .lookup_factor_value(symbol, state.hedge_venue);
         let volatility = factor_lookup.target_factor_value.filter(|v| v.is_finite());
         let symbol_key = normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures);
         let environment_signal = state.evaluate_environment_signal(&symbol_key, symbol, now_us);

@@ -1027,7 +1027,7 @@ fn build_and_publish_open(
     }
 
     let now_us = get_timestamp_us();
-    let factor_lookup = factor_value_hub.lookup_target_factor_value(&symbol, cfg.venue);
+    let factor_lookup = factor_value_hub.lookup_factor_value(&symbol, cfg.venue);
     let factor_ready = factor_lookup.ready.unwrap_or(false);
     let volatility = factor_lookup
         .target_factor_value

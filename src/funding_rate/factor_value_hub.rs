@@ -440,7 +440,7 @@ impl FactorValueHub {
         events
     }
 
-    pub fn lookup_target_factor_value(
+    pub fn lookup_factor_value(
         &mut self,
         hedge_symbol: &str,
         hedge_venue: TradingVenue,

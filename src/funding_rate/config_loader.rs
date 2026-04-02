@@ -524,14 +524,14 @@ async fn reload_fr_thresholds(
     Ok(())
 }
 
-/// 重载 return-model-score 阈值（仅 namespace=mm/xarb）
+/// 重载 return-model-score 阈值（仅 namespace=mm/xarb/fr）
 async fn reload_return_score_thresholds(
     redis: &RedisSettings,
     namespace: &str,
     hedge_venue: TradingVenue,
 ) -> Result<()> {
     let ns = normalize_namespace(namespace);
-    if ns != "mm" && ns != "xarb" {
+    if ns != "mm" && ns != "xarb" && ns != "fr" {
         return Ok(());
     }
 
@@ -623,7 +623,7 @@ async fn reload_return_score_thresholds(
         "mm" => MmDecision::try_with_mut(|decision| {
             decision.update_return_score_thresholds(thresholds);
         }),
-        "xarb" => ArbDecision::with_state_mut(|arb| {
+        "xarb" | "fr" => ArbDecision::with_state_mut(|arb| {
             arb.return_score_thresholds = thresholds;
         }),
         _ => None,
@@ -656,7 +656,7 @@ async fn reload_open_volatility_thresholds(
     hedge_venue: TradingVenue,
 ) -> Result<()> {
     let ns = normalize_namespace(namespace);
-    if ns != "mm" && ns != "xarb" {
+    if ns != "mm" && ns != "xarb" && ns != "fr" {
         return Ok(());
     }
 
@@ -806,14 +806,14 @@ async fn reload_open_volatility_thresholds(
     let (thresholds, missing_refs) =
         resolve_symbol_single_quantile_thresholds(&rolling_payloads, &field_ref);
 
-    let updated = if ns == "xarb" {
-        ArbDecision::with_state_mut(|arb| {
-            arb.open_volatility_thresholds = thresholds.clone();
+    let updated = if ns == "mm" {
+        MmDecision::try_with_mut(|decision| {
+            decision.update_open_volatility_thresholds(thresholds.clone());
         })
         .is_some()
     } else {
-        MmDecision::try_with_mut(|decision| {
-            decision.update_open_volatility_thresholds(thresholds.clone());
+        ArbDecision::with_state_mut(|arb| {
+            arb.open_volatility_thresholds = thresholds.clone();
         })
         .is_some()
     };
