@@ -2057,6 +2057,42 @@ mod tests {
 
         std::mem::forget(strategy);
     }
+
+    #[test]
+    fn retire_hedge_order_clears_open_failed_tracking_state() {
+        let mut strategy = MarketMakerHedgeStrategy::new(1, "ETHUSDT".to_string());
+        let client_order_id = 42_i64;
+        strategy.hedge_order_ids.insert(client_order_id);
+        strategy.hedge_order_meta.insert(
+            client_order_id,
+            HedgeOrderMeta {
+                from_key: b"hedge".to_vec(),
+                price_offset: 1.5,
+            },
+        );
+        strategy
+            .pending_order_queries
+            .insert(client_order_id, PendingOrderQueryReason::CancelRejected);
+        strategy.order_query_watchdogs.insert(
+            client_order_id,
+            (123, PendingOrderQueryReason::CancelRejected),
+        );
+        strategy
+            .cancel_reconcile_query_attempts
+            .insert(client_order_id, 2);
+
+        strategy.retire_hedge_order(client_order_id, "open_failed");
+
+        assert!(!strategy.hedge_order_ids.contains(&client_order_id));
+        assert!(!strategy.hedge_order_meta.contains_key(&client_order_id));
+        assert!(!strategy.pending_order_queries.contains_key(&client_order_id));
+        assert!(!strategy.order_query_watchdogs.contains_key(&client_order_id));
+        assert!(!strategy
+            .cancel_reconcile_query_attempts
+            .contains_key(&client_order_id));
+
+        std::mem::forget(strategy);
+    }
 }
 
 impl ForceCloseControl for MarketMakerHedgeStrategy {
@@ -2131,14 +2167,16 @@ impl Strategy for MarketMakerHedgeStrategy {
         let req_type = response.req_type();
         match response.request_kind() {
             TradeRequestKind::Open => {
+                let client_order_id = response.client_order_id();
                 warn!(
                     "MarketMakerHedgeStrategy: strategy_id={} ws open failed: req_type={} status={} code={} client_order_id={}",
                     self.strategy_id,
                     req_type,
                     response.status(),
                     response.error_code(),
-                    response.client_order_id()
+                    client_order_id
                 );
+                self.retire_hedge_order(client_order_id, "open_failed");
             }
             TradeRequestKind::Cancel => {
                 let client_order_id = response.client_order_id();

@@ -234,6 +234,14 @@ impl MarketMakerOpenStrategy {
         }
     }
 
+    fn handle_open_failed_cleanup(&mut self, client_order_id: i64) {
+        self.pending_order_query = None;
+        self.clear_query_watchdogs(client_order_id);
+        self.reset_cancel_reconcile_state();
+        self.cleanup_strategy_orders();
+        self.alive_flag = false;
+    }
+
     fn try_apply_ws_order_update(&mut self, response: &dyn TradeEngineResponse) -> bool {
         if !WsOrderUpdate::supports_trade_response_req_type(response.req_type()) {
             return false;
@@ -1827,7 +1835,7 @@ impl Strategy for MarketMakerOpenStrategy {
                     code_desc,
                     client_order_id
                 );
-                self.alive_flag = false;
+                self.handle_open_failed_cleanup(client_order_id);
             }
             TradeRequestKind::Cancel => {
                 warn!(
@@ -1963,6 +1971,39 @@ impl Strategy for MarketMakerOpenStrategy {
 
     fn is_active(&self) -> bool {
         self.alive_flag
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MarketMakerOpenStrategy, PendingOrderQueryReason, QueryWatchdog};
+
+    #[test]
+    fn handle_open_failed_cleanup_clears_local_strategy_state() {
+        let mut strategy = MarketMakerOpenStrategy::new(7);
+        strategy.open_order_id = 7_i64 << 32 | 1;
+        strategy.pending_order_query = Some(PendingOrderQueryReason::OrderWatchdog);
+        strategy.order_query_watchdog = Some(QueryWatchdog {
+            client_order_id: strategy.open_order_id,
+            due_ts_us: 10,
+            reason: PendingOrderQueryReason::OrderWatchdog,
+        });
+        strategy.cancel_query_watchdog = Some(QueryWatchdog {
+            client_order_id: strategy.open_order_id,
+            due_ts_us: 20,
+            reason: PendingOrderQueryReason::CancelRejected,
+        });
+        strategy.cancel_query_attempts = 2;
+        strategy.cancel_recancel_attempts = 1;
+
+        strategy.handle_open_failed_cleanup(strategy.open_order_id);
+
+        assert!(!strategy.alive_flag);
+        assert!(strategy.pending_order_query.is_none());
+        assert!(strategy.order_query_watchdog.is_none());
+        assert!(strategy.cancel_query_watchdog.is_none());
+        assert_eq!(strategy.cancel_query_attempts, 0);
+        assert_eq!(strategy.cancel_recancel_attempts, 0);
     }
 }
 
