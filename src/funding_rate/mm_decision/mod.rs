@@ -7,8 +7,8 @@ use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::time::Duration;
 
+use super::arb_decision::DEFAULT_ARBITRAGE_BACKWARD_CHANNEL;
 use super::common::ReturnScoreThresholdsResolved;
-use super::fr_decision::DEFAULT_BACKWARD_CHANNEL;
 use super::mkt_channel::MktChannel;
 use super::tlen_threshold_loader;
 use crate::common::iceoryx_publisher::SIGNAL_PAYLOAD;
@@ -118,7 +118,7 @@ impl MmDecision {
             .name(&node_name)
             .create::<ipc::Service>()?;
         let state = MmDecisionState::new(&node, open_venue, hedge_venue)?;
-        let backward_sub = Self::create_subscriber(&node, DEFAULT_BACKWARD_CHANNEL)?;
+        let backward_sub = Self::create_subscriber(&node, DEFAULT_ARBITRAGE_BACKWARD_CHANNEL)?;
 
         Ok(Self {
             state,
@@ -419,12 +419,7 @@ impl MmDecision {
                 continue;
             }
             let threshold_symbol = symbol.to_ascii_uppercase();
-            let Some(threshold) = self
-                .state
-                .tlen_thresholds
-                .get(&threshold_symbol)
-                .copied()
-            else {
+            let Some(threshold) = self.state.tlen_thresholds.get(&threshold_symbol).copied() else {
                 debug!(
                     "MmDecision: missing MM tlen threshold symbol={}",
                     threshold_symbol

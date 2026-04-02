@@ -13,6 +13,9 @@ use crate::signal::common::{ExecutionType, OrderStatus, SignalBytes, TimeInForce
 use crate::signal::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
 use crate::signal::mm_signal::MmBackwardQueryMsg;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
+use crate::strategy::cancel_reconcile_backoff::{
+    cancel_reconcile_attempts_exhausted, cancel_reconcile_query_delay_us,
+};
 use crate::strategy::manager::{ForceCloseControl, Strategy};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::query_engine_response::QueryEngineResponse;
@@ -33,7 +36,6 @@ use std::collections::{hash_map::Entry, HashMap, HashSet};
 const HEDGE_QUERY_INTERVAL_US: i64 = 30_000_000;
 const HEDGE_QUERY_WATCHDOG_US: i64 = 30_000;
 const ORDER_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
-const CANCEL_FAILED_QUERY_MAX_RETRIES: u8 = 3;
 const CANCEL_RESEND_THROTTLE_US: i64 = 500_000;
 const NET_EXPOSURE_EPS_USDT: f64 = 5.0;
 
@@ -82,7 +84,7 @@ pub struct MarketMakerHedgeStrategy {
     query_watchdog_due_ts: i64,
     pending_order_queries: HashMap<i64, PendingOrderQueryReason>,
     order_query_watchdogs: HashMap<i64, (i64, PendingOrderQueryReason)>,
-    cancel_failed_query_retries: HashMap<i64, u8>,
+    cancel_reconcile_query_attempts: HashMap<i64, u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,7 +117,7 @@ impl MarketMakerHedgeStrategy {
             query_watchdog_due_ts: 0,
             pending_order_queries: HashMap::new(),
             order_query_watchdogs: HashMap::new(),
-            cancel_failed_query_retries: HashMap::new(),
+            cancel_reconcile_query_attempts: HashMap::new(),
         }
     }
 
@@ -194,17 +196,65 @@ impl MarketMakerHedgeStrategy {
                 .is_some_and(Self::is_cancel_reconcile_reason)
     }
 
+    fn cancel_reconcile_query_attempts(&self, client_order_id: i64) -> u8 {
+        self.cancel_reconcile_query_attempts
+            .get(&client_order_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    fn increment_cancel_reconcile_query_attempts(&mut self, client_order_id: i64) -> u8 {
+        let next = self
+            .cancel_reconcile_query_attempts(client_order_id)
+            .saturating_add(1);
+        self.cancel_reconcile_query_attempts
+            .insert(client_order_id, next);
+        next
+    }
+
+    fn schedule_order_query_watchdog_with_delay(
+        &mut self,
+        client_order_id: i64,
+        reason: PendingOrderQueryReason,
+        delay_us: i64,
+    ) {
+        let due = get_timestamp_us().saturating_add(delay_us);
+        match self.order_query_watchdogs.entry(client_order_id) {
+            Entry::Vacant(entry) => {
+                entry.insert((due, reason));
+            }
+            Entry::Occupied(mut entry) => {
+                let (existing_due, existing_reason) = entry.get_mut();
+                *existing_due = due;
+                *existing_reason = Self::stronger_pending_query_reason(*existing_reason, reason);
+            }
+        }
+        debug!(
+            "MMHedgeReconcile: strategy_id={} schedule_watchdog due_ts={} reason={:?} {}",
+            self.strategy_id,
+            due,
+            reason,
+            self.hedge_order_trace_snapshot(client_order_id)
+        );
+    }
+
+    fn schedule_next_cancel_reconcile_query(
+        &mut self,
+        client_order_id: i64,
+        reason: PendingOrderQueryReason,
+    ) {
+        let delay =
+            cancel_reconcile_query_delay_us(self.cancel_reconcile_query_attempts(client_order_id));
+        self.schedule_order_query_watchdog_with_delay(client_order_id, reason, delay);
+    }
+
     fn hedge_order_trace_snapshot(&self, client_order_id: i64) -> String {
         let pending_reason = self.pending_order_queries.get(&client_order_id).copied();
         let watchdog = self
             .order_query_watchdogs
             .get(&client_order_id)
             .map(|(due_ts, reason)| (*due_ts, *reason));
-        let retry = self
-            .cancel_failed_query_retries
-            .get(&client_order_id)
-            .copied()
-            .unwrap_or(0);
+        let query_attempt = self.cancel_reconcile_query_attempts(client_order_id);
         let tracked = self.hedge_order_ids.contains(&client_order_id);
 
         let order_desc = if let Some(order_mgr) = MonitorChannel::try_order_manager() {
@@ -229,8 +279,8 @@ impl MarketMakerHedgeStrategy {
         };
 
         format!(
-            "client_order_id={} tracked={} pending_query={:?} watchdog={:?} cancel_retry={} {}",
-            client_order_id, tracked, pending_reason, watchdog, retry, order_desc
+            "client_order_id={} tracked={} pending_query={:?} watchdog={:?} query_attempt={} {}",
+            client_order_id, tracked, pending_reason, watchdog, query_attempt, order_desc
         )
     }
 
@@ -270,7 +320,8 @@ impl MarketMakerHedgeStrategy {
         self.clear_order_query_state(client_order_id);
         self.hedge_order_ids.remove(&client_order_id);
         self.hedge_order_meta.remove(&client_order_id);
-        self.cancel_failed_query_retries.remove(&client_order_id);
+        self.cancel_reconcile_query_attempts
+            .remove(&client_order_id);
         if let Some(order_mgr) = MonitorChannel::try_order_manager() {
             let _ = order_mgr.borrow_mut().remove(client_order_id);
         }
@@ -912,23 +963,10 @@ impl MarketMakerHedgeStrategy {
         client_order_id: i64,
         reason: PendingOrderQueryReason,
     ) {
-        let due = get_timestamp_us().saturating_add(ORDER_QUERY_WATCHDOG_DELAY_US);
-        match self.order_query_watchdogs.entry(client_order_id) {
-            Entry::Vacant(entry) => {
-                entry.insert((due, reason));
-            }
-            Entry::Occupied(mut entry) => {
-                let (existing_due, existing_reason) = entry.get_mut();
-                *existing_due = due;
-                *existing_reason = Self::stronger_pending_query_reason(*existing_reason, reason);
-            }
-        }
-        debug!(
-            "MMHedgeReconcile: strategy_id={} schedule_watchdog due_ts={} reason={:?} {}",
-            self.strategy_id,
-            due,
+        self.schedule_order_query_watchdog_with_delay(
+            client_order_id,
             reason,
-            self.hedge_order_trace_snapshot(client_order_id)
+            ORDER_QUERY_WATCHDOG_DELAY_US,
         );
     }
 
@@ -994,7 +1032,24 @@ impl MarketMakerHedgeStrategy {
                     order.exchange_order_id,
                     waited_ms
                 );
-                let _ = self.send_order_query(client_order_id, reason);
+                if Self::is_cancel_reconcile_reason(reason) {
+                    if cancel_reconcile_attempts_exhausted(
+                        self.cancel_reconcile_query_attempts(client_order_id),
+                    ) {
+                        self.mark_hedge_order_terminal_on_query_failure(
+                            client_order_id,
+                            "cancel_reconcile query max attempts exhausted",
+                        );
+                        continue;
+                    }
+                    self.increment_cancel_reconcile_query_attempts(client_order_id);
+                    let sent = self.send_order_query(client_order_id, reason);
+                    if sent || self.hedge_order_ids.contains(&client_order_id) {
+                        self.schedule_next_cancel_reconcile_query(client_order_id, reason);
+                    }
+                } else {
+                    let _ = self.send_order_query(client_order_id, reason);
+                }
             }
         }
     }
@@ -1131,7 +1186,9 @@ impl MarketMakerHedgeStrategy {
                 }
                 self.pending_order_queries.insert(client_order_id, reason);
                 // Ensure we eventually retry if query response is lost/empty.
-                self.schedule_order_query_watchdog(client_order_id, reason);
+                if !Self::is_cancel_reconcile_reason(reason) {
+                    self.schedule_order_query_watchdog(client_order_id, reason);
+                }
                 debug!(
                     "MMHedgeReconcile: strategy_id={} order_query_sent exchange={} reason={:?} by_exchange_order_id={} payload_len={} {}",
                     self.strategy_id,
@@ -1295,7 +1352,18 @@ impl MarketMakerHedgeStrategy {
                 reason,
                 self.hedge_order_trace_snapshot(client_order_id)
             );
-            self.schedule_order_query_watchdog(client_order_id, reason);
+            if Self::is_cancel_reconcile_reason(reason)
+                && cancel_reconcile_attempts_exhausted(
+                    self.cancel_reconcile_query_attempts(client_order_id),
+                )
+            {
+                self.mark_hedge_order_terminal_on_query_failure(
+                    client_order_id,
+                    "cancel_reconcile parsed none (max attempts)",
+                );
+            } else {
+                self.schedule_next_cancel_reconcile_query(client_order_id, reason);
+            }
             return;
         };
 
@@ -1313,8 +1381,17 @@ impl MarketMakerHedgeStrategy {
             }
             OrderExecutionStatus::Create => {
                 self.apply_parsed_order_query_updates(&order, parsed, reason);
-                if reason == PendingOrderQueryReason::CancelRejected {
-                    self.schedule_order_query_watchdog(client_order_id, reason);
+                if Self::is_cancel_reconcile_reason(reason) {
+                    if cancel_reconcile_attempts_exhausted(
+                        self.cancel_reconcile_query_attempts(client_order_id),
+                    ) {
+                        self.mark_hedge_order_terminal_on_query_failure(
+                            client_order_id,
+                            "cancel_reconcile query still create (max attempts)",
+                        );
+                    } else {
+                        self.schedule_next_cancel_reconcile_query(client_order_id, reason);
+                    }
                 }
             }
             OrderExecutionStatus::Rejected => {
@@ -1329,8 +1406,17 @@ impl MarketMakerHedgeStrategy {
                     "MarketMakerHedgeStrategy: strategy_id={} query shows {:?} client_order_id={} reason={:?}",
                     self.strategy_id, st, client_order_id, reason
                 );
-                if reason == PendingOrderQueryReason::CancelRejected {
-                    self.schedule_order_query_watchdog(client_order_id, reason);
+                if Self::is_cancel_reconcile_reason(reason) {
+                    if cancel_reconcile_attempts_exhausted(
+                        self.cancel_reconcile_query_attempts(client_order_id),
+                    ) {
+                        self.mark_hedge_order_terminal_on_query_failure(
+                            client_order_id,
+                            "cancel_reconcile query still commit (max attempts)",
+                        );
+                    } else {
+                        self.schedule_next_cancel_reconcile_query(client_order_id, reason);
+                    }
                 }
             }
         }
@@ -2072,18 +2158,13 @@ impl Strategy for MarketMakerHedgeStrategy {
                 } else {
                     PendingOrderQueryReason::CancelFailed
                 };
-                let sent = self.send_order_query(client_order_id, reason);
-                if !sent {
-                    // Keep the local order and retry query reconciliation via watchdog instead of
-                    // giving up immediately on a transient publish failure.
-                    self.schedule_order_query_watchdog(client_order_id, reason);
-                }
+                self.schedule_next_cancel_reconcile_query(client_order_id, reason);
                 debug!(
                     "MMHedgeReconcile: strategy_id={} ws_cancel_failed_followup req_type={} reason={:?} sent_query={} pending_now={} watchdog_now={} {}",
                     self.strategy_id,
                     req_type,
                     reason,
-                    sent,
+                    false,
                     self.pending_order_queries.contains_key(&client_order_id),
                     self.order_query_watchdogs.contains_key(&client_order_id),
                     self.hedge_order_trace_snapshot(client_order_id)
@@ -2128,29 +2209,16 @@ impl Strategy for MarketMakerHedgeStrategy {
         );
         if !has_any_byte {
             if is_cancel_reconcile {
-                let retry = self
-                    .cancel_failed_query_retries
-                    .entry(client_order_id)
-                    .and_modify(|v| *v = v.saturating_add(1))
-                    .or_insert(1);
-                let retry_count = *retry;
-                warn!(
-                    "MMHedgeReconcile: strategy_id={} query_response empty_body retry={} max_retries={} {}",
-                    self.strategy_id,
-                    retry_count,
-                    CANCEL_FAILED_QUERY_MAX_RETRIES,
-                    self.hedge_order_trace_snapshot(client_order_id)
-                );
-                if retry_count >= CANCEL_FAILED_QUERY_MAX_RETRIES {
+                if cancel_reconcile_attempts_exhausted(
+                    self.cancel_reconcile_query_attempts(client_order_id),
+                ) {
                     self.mark_hedge_order_terminal_on_query_failure(
                         client_order_id,
-                        "cancel_reconcile query empty (max retries)",
+                        "cancel_reconcile query empty (max attempts)",
                     );
                     return;
                 }
-                // Keep it in "reconcile" mode and retry query later.
-                self.pending_order_queries.insert(client_order_id, reason);
-                self.schedule_order_query_watchdog(client_order_id, reason);
+                self.schedule_next_cancel_reconcile_query(client_order_id, reason);
                 return;
             }
             return;
@@ -2205,33 +2273,20 @@ impl Strategy for MarketMakerHedgeStrategy {
                 text
             );
             if is_cancel_reconcile {
-                let retry = self
-                    .cancel_failed_query_retries
-                    .entry(client_order_id)
-                    .and_modify(|v| *v = v.saturating_add(1))
-                    .or_insert(1);
-                let retry_count = *retry;
-                warn!(
-                    "MMHedgeReconcile: strategy_id={} query_response decode_failed retry={} max_retries={} {}",
-                    self.strategy_id,
-                    retry_count,
-                    CANCEL_FAILED_QUERY_MAX_RETRIES,
-                    self.hedge_order_trace_snapshot(client_order_id)
-                );
-                if retry_count >= CANCEL_FAILED_QUERY_MAX_RETRIES {
+                if cancel_reconcile_attempts_exhausted(
+                    self.cancel_reconcile_query_attempts(client_order_id),
+                ) {
                     self.mark_hedge_order_terminal_on_query_failure(
                         client_order_id,
-                        "cancel_reconcile query decode_failed (max retries)",
+                        "cancel_reconcile query decode_failed (max attempts)",
                     );
                     return;
                 }
-                self.pending_order_queries.insert(client_order_id, reason);
-                self.schedule_order_query_watchdog(client_order_id, reason);
+                self.schedule_next_cancel_reconcile_query(client_order_id, reason);
                 return;
             }
         }
 
-        self.cancel_failed_query_retries.remove(&client_order_id);
         self.handle_query_result(client_order_id, reason, parsed);
     }
 

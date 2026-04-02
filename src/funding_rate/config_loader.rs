@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use crate::common::redis_client::{RedisClient, RedisSettings};
 use crate::signal::common::TradingVenue;
 
+use super::arb_decision::ArbDecision;
 use super::common::resolve_return_score_thresholds_from_redis_map;
 use super::fr_threshold_loader::load_from_redis as load_fr_thresholds;
 use super::mm_decision::MmDecision;
@@ -32,7 +33,6 @@ use super::rolling_threshold_sync::{
 use super::spread_threshold_loader::load_from_redis as load_spread_thresholds;
 use super::strategy_loader::StrategyParams;
 use super::symbol_list::SymbolList;
-use super::xarb_decision::XarbDecision;
 
 const DEFAULT_NAMESPACE: &str = "fr";
 const RETURN_SCORE_REDIS_REFRESH_SECS: u64 = 180;
@@ -343,7 +343,7 @@ async fn reload_all_configs(
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
 ) -> Result<()> {
-    // 1. 加载策略参数 -> FrDecision + SpreadFactor
+    // 1. 加载策略参数 -> ArbDecision + SpreadFactor
     reload_strategy_params(redis, namespace, open_venue, hedge_venue).await?;
 
     // 2. 更新 SymbolList（建仓/平仓列表）
@@ -358,7 +358,7 @@ async fn reload_all_configs(
         reload_fr_thresholds(redis, namespace, open_venue, hedge_venue).await?;
     }
 
-    // 5. 加载 return-model-score 阈值 -> MmDecision/XarbDecision（仅 ns=mm/xarb）
+    // 5. 加载 return-model-score 阈值 -> MmDecision/ArbDecision（仅 ns=mm/xarb）
     reload_return_score_thresholds(redis, namespace, hedge_venue).await?;
     if normalize_namespace(namespace) != "xarb" {
         reload_open_volatility_thresholds(redis, namespace, open_venue, hedge_venue).await?;
@@ -623,8 +623,8 @@ async fn reload_return_score_thresholds(
         "mm" => MmDecision::try_with_mut(|decision| {
             decision.update_return_score_thresholds(thresholds);
         }),
-        "xarb" => XarbDecision::try_with_mut(|decision| {
-            decision.update_return_score_thresholds(thresholds);
+        "xarb" => ArbDecision::with_state_mut(|arb| {
+            arb.return_score_thresholds = thresholds;
         }),
         _ => None,
     };
@@ -807,8 +807,8 @@ async fn reload_open_volatility_thresholds(
         resolve_symbol_single_quantile_thresholds(&rolling_payloads, &field_ref);
 
     let updated = if ns == "xarb" {
-        XarbDecision::try_with_mut(|decision| {
-            decision.update_open_volatility_thresholds(thresholds.clone());
+        ArbDecision::with_state_mut(|arb| {
+            arb.open_volatility_thresholds = thresholds.clone();
         })
         .is_some()
     } else {
@@ -1005,12 +1005,12 @@ async fn reload_xarb_thresholds_from_rolling(
             open_vol_loaded_symbols = thresholds.len();
             open_vol_missing_refs = missing_refs;
 
-            let updated = XarbDecision::try_with_mut(|decision| {
-                decision.update_open_volatility_thresholds(thresholds);
+            let updated = ArbDecision::with_state_mut(|arb| {
+                arb.open_volatility_thresholds = thresholds;
             });
             if updated.is_none() {
                 warn!(
-                    "xarb open volatility thresholds 已生成，但 XarbDecision 尚未初始化 (open={} hedge={})",
+                    "xarb open volatility thresholds 已生成，但 ArbDecision 尚未初始化 (open={} hedge={})",
                     open_venue.data_pub_slug(),
                     hedge_venue.data_pub_slug()
                 );
@@ -1041,12 +1041,12 @@ async fn reload_xarb_thresholds_from_rolling(
     let funding_thresholds = resolve_xarb_funding_thresholds(&resolved_funding);
     let funding_symbols = funding_thresholds.len();
 
-    let updated = XarbDecision::try_with_mut(|decision| {
-        decision.update_funding_open_thresholds(funding_thresholds);
+    let updated = ArbDecision::with_state_mut(|arb| {
+        arb.funding_open_thresholds = funding_thresholds;
     });
     if updated.is_none() {
         warn!(
-            "xarb funding thresholds 已生成，但 XarbDecision 尚未初始化 (open={} hedge={})",
+            "xarb funding thresholds 已生成，但 ArbDecision 尚未初始化 (open={} hedge={})",
             open_venue.data_pub_slug(),
             hedge_venue.data_pub_slug()
         );

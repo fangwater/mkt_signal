@@ -1,7 +1,7 @@
 //! 策略参数定义
 //!
 //! 定义策略参数结构及其 Redis 加载逻辑：
-//! - FrDecision: 下单量、超时、偏移、冷却时间
+//! - ArbDecision: 套利参数（订单量、超时、偏移、冷却时间等）
 //! - SpreadFactor: MM/MT 模式
 
 use anyhow::Result;
@@ -10,11 +10,10 @@ use serde::Deserialize;
 
 use crate::common::redis_client::{RedisClient, RedisSettings};
 
+use super::arb_decision::ArbDecision;
 use super::common::FactorMode;
-use super::fr_decision::FrDecision;
 use super::mm_decision::MmDecision;
 use super::spread_factor::SpreadFactor;
-use super::xarb_decision::XarbDecision;
 use crate::signal::common::TradingVenue;
 
 /// Redis Key 配置
@@ -65,7 +64,7 @@ pub struct StrategyParams {
     #[serde(default = "default_order_amount")]
     pub order_amount: f32,
 
-    /// xarb 开仓 plan 的波动边界缩放系数
+    /// arb 开仓 plan 的波动边界缩放系数
     #[serde(default = "default_open_scale")]
     pub open_scale: f64,
 
@@ -790,43 +789,46 @@ impl StrategyParams {
 
     /// 应用参数到所有单例
     pub(crate) fn apply(&self) {
-        // 1. 更新 decision（FR or xarb）
-        let applied = FrDecision::try_with_mut(|decision| {
-            decision.update_order_amount(self.order_amount);
-            decision.update_open_scale(self.open_scale);
-            decision.update_open_orders_per_round(self.open_orders_per_round);
-            decision.update_open_order_timeout(self.open_order_timeout);
-            decision.update_hedge_timeout(self.hedge_timeout);
-            decision.update_hedge_price_offset(self.hedge_price_offset);
-            decision.update_hedge_aggressive_seq_threshold(self.hedge_aggressive_seq_threshold);
-            decision.update_enable_tlen_cancel(self.enable_tlen_cancel);
-            decision.update_tlen_cancel_freq_ms(self.tlen_cancel_freq_ms);
-            decision.update_signal_cooldown(self.signal_cooldown);
+        // 1. 更新 ArbDecision / MmDecision
+        let return_trimmed = self.return_model_service.trim();
+        let return_model_service = if return_trimmed.is_empty() || return_trimmed == "-" {
+            None
+        } else {
+            Some(return_trimmed.to_string())
+        };
+        let env_trimmed = self.environment_model_service.trim();
+        let environment_model_service = if env_trimmed.is_empty() || env_trimmed == "-" {
+            None
+        } else {
+            Some(env_trimmed.to_string())
+        };
+
+        let applied = ArbDecision::with_state_mut(|arb| {
+            arb.order_amount = self.order_amount;
+            arb.open_scale = self.open_scale;
+            arb.open_orders_per_round = self.open_orders_per_round;
+            arb.open_order_ttl_us =
+                self.open_order_timeout.saturating_mul(1_000_000).min(i64::MAX as u64) as i64;
+            arb.hedge_timeout_mm_us =
+                self.hedge_timeout.saturating_mul(1_000_000).min(i64::MAX as u64) as i64;
+            arb.hedge_price_offset = self.hedge_price_offset;
+            arb.hedge_aggressive_seq_threshold = self.hedge_aggressive_seq_threshold;
+            arb.enable_tlen_cancel = self.enable_tlen_cancel;
+            arb.tlen_cancel_freq_ms = self.tlen_cancel_freq_ms;
+            arb.signal_cooldown_us =
+                self.signal_cooldown.saturating_mul(1_000_000).min(i64::MAX as u64) as i64;
+
+            arb.max_hedge_price_pct_change = self.max_hedge_price_pct_change;
+            arb.enable_environment_model = self.enable_environment_model;
+            arb.enable_volatility_limit = self.enable_volatility_limit;
+            arb.open_volatility_limit = self.open_volatility_limit;
+            arb.enable_return_score_model = self.enable_return_score_model;
+            arb.return_model_service = return_model_service.clone();
+            arb.environment_model_service = environment_model_service.clone();
+            arb.environment_model_true_threshold = 0.0;
         })
         .is_some()
-            || XarbDecision::try_with_mut(|decision| {
-                decision.update_order_amount(self.order_amount);
-                decision.update_open_scale(self.open_scale);
-                decision.update_open_orders_per_round(self.open_orders_per_round);
-                decision.update_open_order_timeout(self.open_order_timeout);
-                decision.update_hedge_timeout(self.hedge_timeout);
-                decision.update_hedge_price_offset(self.hedge_price_offset);
-                decision.update_hedge_aggressive_seq_threshold(self.hedge_aggressive_seq_threshold);
-                decision.update_max_hedge_price_pct_change(self.max_hedge_price_pct_change);
-                decision.update_enable_tlen_cancel(self.enable_tlen_cancel);
-                decision.update_tlen_cancel_freq_ms(self.tlen_cancel_freq_ms);
-                decision.update_signal_cooldown(self.signal_cooldown);
-                decision.update_enable_environment_model(self.enable_environment_model);
-                decision.update_enable_volatility_limit(self.enable_volatility_limit);
-                decision.update_open_volatility_limit(self.open_volatility_limit);
-                decision.update_enable_return_score_model(self.enable_return_score_model);
-                decision.update_model_service_roles(
-                    self.return_model_service.clone(),
-                    self.environment_model_service.clone(),
-                );
-                decision.update_model_output_services(self.parse_model_output_services());
-            })
-            .is_some()
+            || ArbDecision::try_update_spread_arb_model_output_services(self.parse_model_output_services())
             || MmDecision::try_with_mut(|_decision| {
                 let open_buy_vol_scale = self
                     .parse_required_vol_scale_range(&self.open_buy_vol_scale, "open_buy_vol_scale");
@@ -871,7 +873,7 @@ impl StrategyParams {
         }
 
         info!(
-            "✅ 策略参数已更新: mode={}, amount={:.2}, xarb_open_scale={:.4}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, order_interval_ms={}, open_orders_per_round={}, cooldown={}s, prediction_mode={}, enable_open_cancel={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, enable_return_score_adjust_hedge={}, enable_environment_model={}, enable_volatility_limit={}, open_volatility_limit={}, enable_return_score_model={}, return_model_service={}, environment_model_service={}",
+            "✅ 策略参数已更新: mode={}, amount={:.2}, arb_open_scale={:.4}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, order_interval_ms={}, open_orders_per_round={}, cooldown={}s, prediction_mode={}, enable_open_cancel={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, enable_return_score_adjust_hedge={}, enable_environment_model={}, enable_volatility_limit={}, open_volatility_limit={}, enable_return_score_model={}, return_model_service={}, environment_model_service={}",
             self.mode,
             self.order_amount,
             self.open_scale,

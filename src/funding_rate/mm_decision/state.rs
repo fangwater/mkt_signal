@@ -4,9 +4,9 @@ use iceoryx2::service::ipc;
 use log::debug;
 use std::collections::HashMap;
 
+use super::super::arb_decision::DEFAULT_ARBITRAGE_SIGNAL_CHANNEL;
 use super::super::common::ReturnScoreThresholdsResolved;
 use super::super::factor_value_hub::{EnvironmentSignalResult, FactorValueHub};
-use super::super::fr_decision::DEFAULT_SIGNAL_CHANNEL;
 use crate::common::iceoryx_publisher::SignalPublisher;
 use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
@@ -82,7 +82,7 @@ impl MmDecisionState {
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
     ) -> Result<Self> {
-        let signal_pub = SignalPublisher::new(DEFAULT_SIGNAL_CHANNEL)?;
+        let signal_pub = SignalPublisher::new(DEFAULT_ARBITRAGE_SIGNAL_CHANNEL)?;
         let depth_query_client = DepthQueryClient::new(open_venue)?;
         let pnlu_settings = RedisSettings {
             host: DEFAULT_PNLU_REDIS_HOST.to_string(),

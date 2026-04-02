@@ -18,8 +18,8 @@ use mkt_signal::signal::common::TradingVenue;
 // 使用模块化的 funding_rate
 use mkt_signal::funding_rate::{
     init_decision_branch, load_all_once_with_namespace, spawn_config_loader_with_namespace,
-    DecisionBranch, FrDecision, FundingRateFactor, MktChannel, MmDecision, RateFetcher,
-    SpreadFactor, SymbolList, XarbDecision,
+    ArbDecision, ArbMode, DecisionBranch, FundingRateFactor, MktChannel, MmDecision, RateFetcher,
+    SpreadFactor, SymbolList,
 };
 
 const PROCESS_NAME: &str = "trade_signal";
@@ -245,28 +245,14 @@ fn spawn_mm_cancel_trigger_worker(token: CancellationToken) {
     });
 }
 
-fn spawn_xarb_cancel_trigger_worker(token: CancellationToken) {
+fn spawn_arb_cancel_trigger_worker(token: CancellationToken) {
     tokio::task::spawn_local(async move {
         let mut interval = time::interval(Duration::from_millis(10));
         loop {
             tokio::select! {
                 _ = token.cancelled() => break,
                 _ = interval.tick() => {
-                    XarbDecision::with_mut(|decision| decision.process_cancel_trigger_interval());
-                }
-            }
-        }
-    });
-}
-
-fn spawn_fr_cancel_trigger_worker(token: CancellationToken) {
-    tokio::task::spawn_local(async move {
-        let mut interval = time::interval(Duration::from_millis(10));
-        loop {
-            tokio::select! {
-                _ = token.cancelled() => break,
-                _ = interval.tick() => {
-                    FrDecision::with_mut(|decision| decision.process_cancel_trigger_interval());
+                    ArbDecision::process_cancel_trigger_interval();
                 }
             }
         }
@@ -276,6 +262,7 @@ fn spawn_fr_cancel_trigger_worker(token: CancellationToken) {
 /// 主运行循环
 async fn run(
     branch: DecisionBranch,
+    arb_mode: Option<ArbMode>,
     exchange: Option<Exchange>,
     symbol_namespace: String,
     symbol_key_suffix: String,
@@ -290,12 +277,9 @@ async fn run(
     init_decision_branch(branch)?;
     SymbolList::init_singleton()?;
     match branch {
-        DecisionBranch::Fr => {
-            let exchange = exchange.context("missing exchange for FR branch")?;
-            FrDecision::init_singleton(exchange).await?;
-        }
-        DecisionBranch::Xarb => {
-            XarbDecision::init_singleton(open_venue, hedge_venue).await?;
+        DecisionBranch::Arb => {
+            let mode = arb_mode.context("missing arb_mode for Arb branch")?;
+            ArbDecision::init_singleton(mode, open_venue, hedge_venue, exchange).await?;
         }
         DecisionBranch::Mm => {
             MmDecision::init_singleton(open_venue, hedge_venue).await?;
@@ -344,12 +328,12 @@ async fn run(
         spawn_mm_cancel_worker(token.clone());
         spawn_mm_cancel_trigger_worker(token.clone());
         debug!("MM workers started open=interval cancel=return_score_update");
-    } else if matches!(branch, DecisionBranch::Fr) {
-        spawn_fr_cancel_trigger_worker(token.clone());
-        debug!("FR workers started cancel_trigger=tlen");
-    } else if matches!(branch, DecisionBranch::Xarb) {
-        spawn_xarb_cancel_trigger_worker(token.clone());
-        debug!("XARB workers started cancel_trigger=tlen");
+    } else if matches!(branch, DecisionBranch::Arb) {
+        spawn_arb_cancel_trigger_worker(token.clone());
+        debug!(
+            "ARB workers started cancel_trigger=tlen mode={:?}",
+            arb_mode
+        );
     }
 
     // if matches!(branch, DecisionBranch::Fr) {
@@ -410,7 +394,7 @@ async fn main() -> Result<()> {
             PROCESS_NAME
         );
     }
-    let (branch, symbol_namespace, symbol_key_suffix, exchange, open_venue, hedge_venue) =
+    let (branch, arb_mode, symbol_namespace, symbol_key_suffix, exchange, open_venue, hedge_venue) =
         match infer_namespace_and_key_suffix_from_cwd() {
             Some((ns, suffix)) if ns.eq_ignore_ascii_case("xarb") => {
                 let (open_venue, hedge_venue) = infer_xarb_venues_from_env()
@@ -421,8 +405,10 @@ async fn main() -> Result<()> {
                             suffix
                         )
                     })?;
+                let arb_mode = ArbMode::from_venues(open_venue, hedge_venue);
                 (
-                    DecisionBranch::Xarb,
+                    DecisionBranch::Arb,
+                    Some(arb_mode),
                     ns,
                     suffix,
                     None,
@@ -467,7 +453,8 @@ async fn main() -> Result<()> {
                     }
                 }
                 (
-                    DecisionBranch::Fr,
+                    DecisionBranch::Arb,
+                    Some(ArbMode::FundingArb),
                     ns,
                     fr_symbol_key_suffix(open_venue, hedge_venue),
                     Some(inferred),
@@ -481,6 +468,7 @@ async fn main() -> Result<()> {
                 })?;
                 (
                     DecisionBranch::Mm,
+                    None,
                     "mm".to_string(),
                     venue.data_pub_slug().to_string(),
                     None,
@@ -494,6 +482,7 @@ async fn main() -> Result<()> {
                 })?;
                 (
                     DecisionBranch::Mm,
+                    None,
                     "mm".to_string(),
                     venue.data_pub_slug().to_string(),
                     None,
@@ -509,7 +498,8 @@ async fn main() -> Result<()> {
                 let (open_venue, hedge_venue) =
                     mkt_signal::funding_rate::common::venue_pair_for_exchange(exchange);
                 (
-                    DecisionBranch::Fr,
+                    DecisionBranch::Arb,
+                    Some(ArbMode::FundingArb),
                     "fr".to_string(),
                     fr_symbol_key_suffix(open_venue, hedge_venue),
                     Some(exchange),
@@ -533,6 +523,7 @@ async fn main() -> Result<()> {
     local
         .run_until(run(
             branch,
+            arb_mode,
             exchange,
             symbol_namespace,
             symbol_key_suffix,

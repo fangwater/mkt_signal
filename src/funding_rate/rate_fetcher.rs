@@ -2239,7 +2239,7 @@ impl RateFetcher {
 
     /// 打印信号状态表
     pub fn print_signal_table(symbols: &[String]) {
-        super::fr_decision::FrDecision::print_signal_table(symbols);
+        super::arb_decision::ArbDecision::print_signal_table(symbols);
     }
 }
 

@@ -22,7 +22,7 @@ use crate::funding_rate::common::{
 };
 use crate::funding_rate::funding_rate_factor::{FrThresholdConfig, BWD_OPEN_LOAN_RATE_MULTIPLIER};
 use crate::funding_rate::{
-    load_all_once_with_namespace, spawn_config_loader_with_namespace, FrDecision, FrSignalKind,
+    load_all_once_with_namespace, spawn_config_loader_with_namespace, ArbDecision, ArbSignalKind,
     FundingRateFactor, MktChannel, RateFetcher, SymbolList,
 };
 use crate::signal::common::TradingVenue;
@@ -377,7 +377,7 @@ fn build_row(cfg: &FrDashboardConfig, symbol: &str) -> FrDashboardRow {
         .map(|(fr, loan)| fr + loan * BWD_OPEN_LOAN_RATE_MULTIPLIER);
     let ma_plus_cur_loan = fr_ma.zip(cur_loan).map(|(fr, loan)| fr + loan);
 
-    let signal = FrDecision::evaluate_funding_rate_signal(symbol, cfg.hedge_venue)
+    let signal = ArbDecision::evaluate_funding_rate_signal(symbol, cfg.hedge_venue)
         .ok()
         .flatten();
     let signal_name = signal.map(|item| item.as_str()).unwrap_or("-");
@@ -439,7 +439,7 @@ fn build_rule_state(
     label: &str,
     cfg: Option<FrThresholdConfig>,
     value: Option<f64>,
-    active_signal: Option<FrSignalKind>,
+    active_signal: Option<ArbSignalKind>,
 ) -> FrDashboardRuleState {
     let compare_op = cfg.as_ref().map(|item| item.compare_op);
     let threshold = cfg.as_ref().map(|item| item.threshold);
@@ -490,7 +490,7 @@ fn signal_name(direction: ArbDirection, operation: OperationType) -> &'static st
     }
 }
 
-fn signal_tone(signal: FrSignalKind) -> &'static str {
+fn signal_tone(signal: ArbSignalKind) -> &'static str {
     signal_tone_from_name(signal.as_str())
 }
 

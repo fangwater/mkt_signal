@@ -1070,7 +1070,7 @@ impl FusionFactorPubApp {
             venue,
             trade_flow_feature_rocksdb_path,
             trade_flow_subscriber,
-            tlen_server: tlen_server.clone(),
+            tlen_server: Some(tlen_server.clone()),
             model_manager,
             publisher,
             rl_config,
@@ -1102,9 +1102,7 @@ impl FusionFactorPubApp {
             rl_published_count: 0,
             rl_publish_failed_count: 0,
             last_symbol_reload: Instant::now(),
-            symbol_reload_interval: tlen_server
-                .as_ref()
-                .map(|cfg| Duration::from_secs(cfg.symbol_reload_secs)),
+            symbol_reload_interval: Some(Duration::from_secs(tlen_server.symbol_reload_secs)),
             last_symbol_reload_warn: Instant::now()
                 - Duration::from_secs(SYMBOL_RELOAD_WARN_INTERVAL_SECS),
             last_stats_log: Instant::now(),

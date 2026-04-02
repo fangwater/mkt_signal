@@ -1,5 +1,6 @@
 pub mod binance_basic_impl;
 pub mod bitget_basic_impl;
+pub mod cancel_reconcile_backoff;
 pub mod gate_basic_impl;
 pub mod hedge_arb_strategy;
 pub mod manager;

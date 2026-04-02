@@ -622,8 +622,12 @@ impl AmountThresholdRedisStore {
                 continue;
             }
 
-            let parsed_entries = parse_threshold_entries(&raw_json)
-                .with_context(|| format!("parse threshold json failed: key={} field={}", redis_key, raw_symbol))?;
+            let parsed_entries = parse_threshold_entries(&raw_json).with_context(|| {
+                format!(
+                    "parse threshold json failed: key={} field={}",
+                    redis_key, raw_symbol
+                )
+            })?;
 
             for entry in parsed_entries {
                 let entry_symbol = entry

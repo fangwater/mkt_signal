@@ -28,7 +28,6 @@ use std::time::Duration;
 use tokio::net::{lookup_host, TcpSocket, TcpStream};
 use tokio::sync::mpsc;
 use tokio::time;
-use tokio_util::sync::CancellationToken;
 use tokio_native_tls::TlsConnector as TokioTlsConnector;
 use tokio_tungstenite::{
     client_async,
@@ -38,6 +37,7 @@ use tokio_tungstenite::{
     },
     MaybeTlsStream, WebSocketStream,
 };
+use tokio_util::sync::CancellationToken;
 use url::Url;
 
 fn extract_okex_login_timestamp(payload: &str) -> Option<String> {
@@ -269,7 +269,11 @@ impl TradeWsClient {
         self.local_ip
     }
 
-    fn binance_rate_limit_payload(status: Option<u16>, error_code: Option<i32>, text: &str) -> bool {
+    fn binance_rate_limit_payload(
+        status: Option<u16>,
+        error_code: Option<i32>,
+        text: &str,
+    ) -> bool {
         matches!(status, Some(418 | 429))
             || matches!(error_code, Some(-1003))
             || text.contains("HTTP 418")

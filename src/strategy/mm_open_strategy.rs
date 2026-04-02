@@ -8,6 +8,10 @@ use crate::signal::cancel_signal::MmCancelCtx;
 use crate::signal::common::{ExecutionType, OrderStatus, SignalBytes, TimeInForce, TradingVenue};
 use crate::signal::open_signal::MmOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
+use crate::strategy::cancel_reconcile_backoff::{
+    cancel_reconcile_attempts_exhausted, cancel_reconcile_query_delay_us,
+    cancel_reconcile_query_max_attempts,
+};
 use crate::strategy::manager::MmOpenPriceMapEntry;
 use crate::strategy::manager::{ForceCloseControl, Strategy};
 use crate::strategy::order_update::OrderUpdate;
@@ -26,8 +30,6 @@ use std::any::Any;
 
 const ORDER_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
 const ORDER_QUERY_RETRY_DELAY_US: i64 = 900_000;
-const CANCEL_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
-const MAX_CANCEL_QUERY_ATTEMPTS: u8 = 2;
 const MAX_CANCEL_RECANCEL_ATTEMPTS: u8 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,6 +121,71 @@ impl MarketMakerOpenStrategy {
         self.cancel_recancel_attempts = 0;
     }
 
+    fn is_cancel_reconcile_reason(reason: PendingOrderQueryReason) -> bool {
+        matches!(
+            reason,
+            PendingOrderQueryReason::CancelWatchdog | PendingOrderQueryReason::CancelRejected
+        )
+    }
+
+    fn stop_cancel_reconcile(
+        &mut self,
+        client_order_id: i64,
+        reason: PendingOrderQueryReason,
+        trigger: &'static str,
+    ) -> bool {
+        warn!(
+            "MarketMakerOpenStrategy: strategy_id={} stop cancel reconcile: trigger={} client_order_id={} reason={:?} query_attempts={} recancel_attempts={}",
+            self.strategy_id,
+            trigger,
+            client_order_id,
+            reason,
+            self.cancel_query_attempts,
+            self.cancel_recancel_attempts
+        );
+        self.pending_order_query = None;
+        self.clear_query_watchdogs(client_order_id);
+        self.alive_flag = false;
+        false
+    }
+
+    fn schedule_cancel_query_watchdog_with_delay(
+        &mut self,
+        client_order_id: i64,
+        reason: PendingOrderQueryReason,
+        delay_us: i64,
+    ) {
+        let due = get_timestamp_us().saturating_add(delay_us);
+        self.cancel_query_watchdog = Some(QueryWatchdog {
+            client_order_id,
+            due_ts_us: due,
+            reason,
+        });
+        if self
+            .order_query_watchdog
+            .is_some_and(|w| w.client_order_id == client_order_id)
+        {
+            self.order_query_watchdog = None;
+        }
+    }
+
+    fn schedule_next_cancel_reconcile_query(
+        &mut self,
+        client_order_id: i64,
+        reason: PendingOrderQueryReason,
+    ) -> bool {
+        if !Self::is_cancel_reconcile_reason(reason) {
+            return true;
+        }
+        if cancel_reconcile_attempts_exhausted(self.cancel_query_attempts) {
+            return self.stop_cancel_reconcile(client_order_id, reason, "query_budget_exhausted");
+        }
+
+        let delay_us = cancel_reconcile_query_delay_us(self.cancel_query_attempts);
+        self.schedule_cancel_query_watchdog_with_delay(client_order_id, reason, delay_us);
+        true
+    }
+
     fn try_send_bounded_cancel_query(
         &mut self,
         client_order_id: i64,
@@ -133,20 +200,8 @@ impl MarketMakerOpenStrategy {
             return true;
         }
 
-        if self.cancel_query_attempts >= MAX_CANCEL_QUERY_ATTEMPTS {
-            warn!(
-                "MarketMakerOpenStrategy: strategy_id={} stop cancel reconcile after query budget exhausted: trigger={} client_order_id={} reason={:?} query_attempts={} recancel_attempts={}",
-                self.strategy_id,
-                trigger,
-                client_order_id,
-                reason,
-                self.cancel_query_attempts,
-                self.cancel_recancel_attempts
-            );
-            self.pending_order_query = None;
-            self.clear_query_watchdogs(client_order_id);
-            self.alive_flag = false;
-            return false;
+        if cancel_reconcile_attempts_exhausted(self.cancel_query_attempts) {
+            return self.stop_cancel_reconcile(client_order_id, reason, trigger);
         }
 
         self.cancel_query_attempts = self.cancel_query_attempts.saturating_add(1);
@@ -154,7 +209,7 @@ impl MarketMakerOpenStrategy {
             "MarketMakerOpenStrategy: strategy_id={} cancel query attempt={}/{} trigger={} client_order_id={} reason={:?}",
             self.strategy_id,
             self.cancel_query_attempts,
-            MAX_CANCEL_QUERY_ATTEMPTS,
+            cancel_reconcile_query_max_attempts(),
             trigger,
             client_order_id,
             reason
@@ -734,18 +789,8 @@ impl MarketMakerOpenStrategy {
         client_order_id: i64,
         reason: PendingOrderQueryReason,
     ) {
-        let due = get_timestamp_us().saturating_add(CANCEL_QUERY_WATCHDOG_DELAY_US);
-        self.cancel_query_watchdog = Some(QueryWatchdog {
-            client_order_id,
-            due_ts_us: due,
-            reason,
-        });
-        if self
-            .order_query_watchdog
-            .is_some_and(|w| w.client_order_id == client_order_id)
-        {
-            self.order_query_watchdog = None;
-        }
+        let delay_us = cancel_reconcile_query_delay_us(self.cancel_query_attempts);
+        self.schedule_cancel_query_watchdog_with_delay(client_order_id, reason, delay_us);
     }
 
     fn clear_query_watchdogs(&mut self, client_order_id: i64) {
@@ -912,7 +957,9 @@ impl MarketMakerOpenStrategy {
                 let order_mgr = MonitorChannel::instance().order_manager();
                 let order_opt = order_mgr.borrow().get(w.client_order_id);
                 if let Some(order) = order_opt.as_ref().filter(|o| !o.status.is_terminal()) {
-                    let scheduled_at = w.due_ts_us.saturating_sub(CANCEL_QUERY_WATCHDOG_DELAY_US);
+                    let scheduled_delay_us =
+                        cancel_reconcile_query_delay_us(self.cancel_query_attempts);
+                    let scheduled_at = w.due_ts_us.saturating_sub(scheduled_delay_us);
                     let waited_ms = now.saturating_sub(scheduled_at).saturating_div(1_000);
                     let hint = if w.reason == PendingOrderQueryReason::CancelRejected {
                         "CancelRejectedWatchdog触发"
@@ -1106,10 +1153,13 @@ impl MarketMakerOpenStrategy {
                     self.schedule_order_query_watchdog(client_order_id);
                 }
                 PendingOrderQueryReason::CancelWatchdog => {
-                    self.schedule_cancel_query_watchdog(client_order_id);
+                    let _ = self.schedule_next_cancel_reconcile_query(
+                        client_order_id,
+                        PendingOrderQueryReason::CancelWatchdog,
+                    );
                 }
                 PendingOrderQueryReason::CancelRejected => {
-                    self.schedule_cancel_query_watchdog_with_reason(
+                    let _ = self.schedule_next_cancel_reconcile_query(
                         client_order_id,
                         PendingOrderQueryReason::CancelRejected,
                     );
@@ -1137,7 +1187,7 @@ impl MarketMakerOpenStrategy {
                 }
                 PendingOrderQueryReason::CancelRejected => {
                     self.apply_parsed_order_query_updates(&order, parsed, reason);
-                    self.schedule_cancel_query_watchdog_with_reason(
+                    let _ = self.schedule_next_cancel_reconcile_query(
                         client_order_id,
                         PendingOrderQueryReason::CancelRejected,
                     );
@@ -1157,8 +1207,7 @@ impl MarketMakerOpenStrategy {
                         self.alive_flag = false;
                         return;
                     }
-                    self.cancel_recancel_attempts =
-                        self.cancel_recancel_attempts.saturating_add(1);
+                    self.cancel_recancel_attempts = self.cancel_recancel_attempts.saturating_add(1);
                     let exchange = order.venue.trade_engine_exchange();
                     match order.get_order_cancel_bytes() {
                         Ok(cancel_bytes) => {
@@ -1179,7 +1228,10 @@ impl MarketMakerOpenStrategy {
                                     self.cancel_recancel_attempts,
                                     MAX_CANCEL_RECANCEL_ATTEMPTS
                                 );
-                                self.schedule_cancel_query_watchdog(client_order_id);
+                                let _ = self.schedule_next_cancel_reconcile_query(
+                                    client_order_id,
+                                    PendingOrderQueryReason::CancelWatchdog,
+                                );
                             }
                         }
                         Err(e) => {
@@ -1187,7 +1239,10 @@ impl MarketMakerOpenStrategy {
                                 "MarketMakerOpenStrategy: strategy_id={} get cancel bytes failed: client_order_id={} err={}",
                                 self.strategy_id, client_order_id, e
                             );
-                            self.schedule_cancel_query_watchdog(client_order_id);
+                            let _ = self.schedule_next_cancel_reconcile_query(
+                                client_order_id,
+                                PendingOrderQueryReason::CancelWatchdog,
+                            );
                         }
                     }
                 }
@@ -1786,21 +1841,14 @@ impl Strategy for MarketMakerOpenStrategy {
                 );
                 if response.is_cancel_not_cancellable() {
                     self.clear_query_watchdogs(client_order_id);
-                    if self.try_send_bounded_cancel_query(
+                    let _ = self.schedule_next_cancel_reconcile_query(
                         client_order_id,
                         PendingOrderQueryReason::CancelRejected,
-                        "cancel_failed_rejected",
-                    ) {
-                        self.schedule_cancel_query_watchdog_with_reason(
-                            client_order_id,
-                            PendingOrderQueryReason::CancelRejected,
-                        );
-                    }
+                    );
                 } else {
-                    let _ = self.try_send_bounded_cancel_query(
+                    let _ = self.schedule_next_cancel_reconcile_query(
                         client_order_id,
                         PendingOrderQueryReason::CancelWatchdog,
-                        "cancel_failed",
                     );
                 }
             }
@@ -1831,6 +1879,9 @@ impl Strategy for MarketMakerOpenStrategy {
         let body = response.body_bytes().as_ref();
         let has_any_byte = body.iter().any(|&b| b != 0);
         if !has_any_byte {
+            if Self::is_cancel_reconcile_reason(reason) {
+                let _ = self.schedule_next_cancel_reconcile_query(client_order_id, reason);
+            }
             return;
         }
 
@@ -1848,10 +1899,13 @@ impl Strategy for MarketMakerOpenStrategy {
                     );
                 }
                 PendingOrderQueryReason::CancelWatchdog => {
-                    self.schedule_cancel_query_watchdog(client_order_id);
+                    let _ = self.schedule_next_cancel_reconcile_query(
+                        client_order_id,
+                        PendingOrderQueryReason::CancelWatchdog,
+                    );
                 }
                 PendingOrderQueryReason::CancelRejected => {
-                    self.schedule_cancel_query_watchdog_with_reason(
+                    let _ = self.schedule_next_cancel_reconcile_query(
                         client_order_id,
                         PendingOrderQueryReason::CancelRejected,
                     );
@@ -1866,10 +1920,13 @@ impl Strategy for MarketMakerOpenStrategy {
                     self.retry_open_order_query_after_cooldown(client_order_id, "failed (E)");
                 }
                 PendingOrderQueryReason::CancelWatchdog => {
-                    self.schedule_cancel_query_watchdog(client_order_id);
+                    let _ = self.schedule_next_cancel_reconcile_query(
+                        client_order_id,
+                        PendingOrderQueryReason::CancelWatchdog,
+                    );
                 }
                 PendingOrderQueryReason::CancelRejected => {
-                    self.schedule_cancel_query_watchdog_with_reason(
+                    let _ = self.schedule_next_cancel_reconcile_query(
                         client_order_id,
                         PendingOrderQueryReason::CancelRejected,
                     );

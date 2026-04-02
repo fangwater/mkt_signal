@@ -1,8 +1,7 @@
 //! Decision router for trade_signal.
 //!
 //! Dispatches event-driven decision triggers to one of:
-//! - `FrDecision` (single-venue FR)
-//! - `XarbDecision` (cross-venue xarb)
+//! - `ArbDecision` (mode-driven arb core)
 //! - `MmDecision` (market-making framework)
 //! based on a startup-selected branch.
 
@@ -12,12 +11,12 @@ use std::cell::{OnceCell, RefCell};
 use std::time::{Duration, Instant};
 
 use crate::funding_rate::RateFetcher;
+use crate::funding_rate::{ArbDecision, ArbMode};
 use crate::signal::common::TradingVenue;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecisionBranch {
-    Fr,
-    Xarb,
+    Arb,
     Mm,
 }
 
@@ -114,30 +113,14 @@ pub fn trigger_decision(
     };
 
     match branch {
-        DecisionBranch::Fr => {
-            use super::fr_decision::FrDecision;
-            if !RateFetcher::is_initial_ready(hedge_venue) {
+        DecisionBranch::Arb => {
+            let mode = ArbDecision::mode();
+            if matches!(mode, Some(ArbMode::FundingArb))
+                && !RateFetcher::is_initial_ready(hedge_venue)
+            {
                 log_skip_not_ready(open_symbol, hedge_symbol, open_venue, hedge_venue);
             }
-            FrDecision::with_mut(|decision| {
-                let _ = decision.make_combined_decision(
-                    open_symbol,
-                    hedge_symbol,
-                    open_venue,
-                    hedge_venue,
-                );
-            });
-        }
-        DecisionBranch::Xarb => {
-            use super::xarb_decision::XarbDecision;
-            XarbDecision::with_mut(|decision| {
-                let _ = decision.make_spread_only_decision(
-                    open_symbol,
-                    hedge_symbol,
-                    open_venue,
-                    hedge_venue,
-                );
-            });
+            ArbDecision::trigger_decision(open_symbol, hedge_symbol, open_venue, hedge_venue);
         }
         DecisionBranch::Mm => {
             let _ = (open_symbol, hedge_symbol, open_venue, hedge_venue);

@@ -1,19 +1,25 @@
-//! Funding Rate 资金费率套利信号模块
+//! Funding Rate / Arbitrage decision module.
 //!
-//! 该模块实现了基于资金费率的套利信号生成逻辑，包括：
-//! - 通用定义（common）：枚举类型、数据结构、辅助函数
-//! - 配置加载器（config_loader）：统一的 Redis 配置热加载
-//! - 策略参数（strategy_loader）：策略参数结构定义
-//! - 阈值加载器：
-//!   - fr_threshold_loader：资金费率阈值加载
-//!   - spread_threshold_loader：价差阈值加载
-//! - 行情频道（mkt_channel）：市场数据订阅
+//! Runtime decision logic is centralized in `arb_decision`.
+//! Legacy FR/XARB implementations have been folded into that single arb core.
 
+pub mod arb_cancel_context;
+pub mod arb_cancel_emit;
+pub mod arb_cooldown;
+pub mod arb_decision;
+pub mod arb_emit;
+pub mod arb_from_key;
+pub mod arb_hedge_context;
+pub mod arb_mode;
+pub mod arb_open_context;
+pub mod arb_open_filter;
+pub mod arb_qty_align;
+pub mod arb_quote_plan;
+pub mod arb_tlen_cancel;
 pub mod common;
 pub mod config_loader;
 pub mod decision_router;
 pub mod factor_value_hub;
-pub mod fr_decision;
 pub mod fr_threshold_loader;
 pub mod funding_rate_factor;
 pub mod mkt_channel;
@@ -25,7 +31,6 @@ pub mod spread_threshold_loader;
 pub mod strategy_loader;
 pub mod symbol_list;
 pub mod tlen_threshold_loader;
-pub mod xarb_decision;
 pub mod xarb_funding_threshold_loader;
 
 // 公共导出 - 通用定义（枚举、数据结构、辅助函数）
@@ -46,13 +51,16 @@ pub use fr_threshold_loader::load_from_redis as load_fr_thresholds;
 pub use spread_threshold_loader::load_from_redis as load_spread_thresholds;
 
 // 公共导出 - 单例访问器
+pub use arb_decision::{
+    ArbDecision, ArbSignalKind, DEFAULT_ARBITRAGE_BACKWARD_CHANNEL,
+    DEFAULT_ARBITRAGE_SIGNAL_CHANNEL,
+};
+pub use arb_mode::ArbMode;
 pub use decision_router::{init_decision_branch, trigger_decision, DecisionBranch};
-pub use fr_decision::{FrDecision, FrSignalKind};
 pub use mkt_channel::MktChannel;
 pub use mm_decision::MmDecision;
 pub use rate_fetcher::{ExchangeConfig, RateFetcher, BINANCE_CONFIG, OKEX_CONFIG};
 pub use symbol_list::SymbolList;
-pub use xarb_decision::XarbDecision;
 
 // 公共导出 - 价差因子
 pub use spread_factor::{SpreadFactor, SpreadThresholdConfig, SpreadType};

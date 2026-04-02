@@ -570,100 +570,114 @@ fn handle_trade_signal(signal: TradeSignal) {
             }
             Err(err) => warn!("failed to decode ArbCancel context: {err}"),
         },
-        SignalType::ArbCancelTrigger => match ArbCancelTriggerCtx::from_bytes(signal.context.clone())
-        {
-            Ok(trigger_ctx) => {
-                if is_mm_mode {
-                    debug!("ArbCancelTrigger ignored: pre_trade is in MM mode");
-                    return;
-                }
-
-                let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-                let price_map_snapshot = strategy_mgr.borrow().arb_open_price_map_snapshot();
-                if price_map_snapshot.is_empty() {
-                    return;
-                }
-
-                let mut symbol_counts: BTreeMap<String, usize> = BTreeMap::new();
-                let mut indexed_strategy_count = 0usize;
-                for (key, strategy_ids) in &price_map_snapshot {
-                    *symbol_counts.entry(key.symbol.clone()).or_default() += strategy_ids.len();
-                    indexed_strategy_count += strategy_ids.len();
-                }
-                let symbol_count = symbol_counts.len();
-                let symbol_sample = {
-                    let preview: Vec<String> = symbol_counts
-                        .iter()
-                        .take(8)
-                        .map(|(symbol, count)| format!("{symbol}:{count}"))
-                        .collect();
-                    if preview.is_empty() {
-                        "-".to_string()
-                    } else {
-                        preview.join(",")
-                    }
-                };
-                let strategy_sample = {
-                    let preview: Vec<String> = price_map_snapshot
-                        .iter()
-                        .flat_map(|(key, strategy_ids)| {
-                            strategy_ids.iter().map(move |strategy_id| {
-                                format!("{}#{}@{}", key.symbol, strategy_id, key.price_qv.count())
-                            })
-                        })
-                        .take(12)
-                        .collect();
-                    if preview.is_empty() {
-                        "-".to_string()
-                    } else {
-                        preview.join(",")
-                    }
-                };
-
-                let mut chunk = ArbCancelCandidateQueryMsg::new(trigger_ctx.trigger_ts);
-                let mut published_chunks = 0usize;
-                let mut published_items = 0usize;
-
-                let flush_chunk = |chunk: &mut ArbCancelCandidateQueryMsg,
-                                   published_chunks: &mut usize,
-                                   published_items: &mut usize| {
-                    if chunk.is_empty() {
+        SignalType::ArbCancelTrigger => {
+            match ArbCancelTriggerCtx::from_bytes(signal.context.clone()) {
+                Ok(trigger_ctx) => {
+                    if is_mm_mode {
+                        debug!("ArbCancelTrigger ignored: pre_trade is in MM mode");
                         return;
                     }
-                    let item_count = chunk
-                        .groups
-                        .iter()
-                        .map(|group| group.items.len())
-                        .sum::<usize>();
-                    let payload = ArbBackwardQueryMsg::CancelCandidates(chunk.clone()).to_bytes();
-                    match SignalChannel::with(|ch| ch.publish_backward(&payload)) {
-                        Ok(true) => {
-                            *published_chunks += 1;
-                            *published_items += item_count;
-                        }
-                        Ok(false) => {
-                            warn!("ArbCancelTrigger: backward publisher unavailable");
-                        }
-                        Err(err) => {
-                            warn!("ArbCancelTrigger: publish backward failed err={:#}", err);
-                        }
-                    }
-                    chunk.groups.clear();
-                };
 
-                for (key, strategy_ids) in price_map_snapshot {
-                    let price_qv = key.price_qv.to_quantized_value();
-                    for strategy_id in strategy_ids {
-                        let entry = ArbCancelCandidateEntry::new(strategy_id, price_qv);
-                        let next_len = 1 + chunk.next_encoded_len_with(&key.symbol, &entry);
-                        if !chunk.is_empty() && next_len > SIGNAL_PAYLOAD {
-                            flush_chunk(&mut chunk, &mut published_chunks, &mut published_items);
-                        }
-                        chunk.push_grouped(&key.symbol, entry);
+                    let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+                    let price_map_snapshot = strategy_mgr.borrow().arb_open_price_map_snapshot();
+                    if price_map_snapshot.is_empty() {
+                        return;
                     }
-                }
-                flush_chunk(&mut chunk, &mut published_chunks, &mut published_items);
-                debug!(
+
+                    let mut symbol_counts: BTreeMap<String, usize> = BTreeMap::new();
+                    let mut indexed_strategy_count = 0usize;
+                    for (key, strategy_ids) in &price_map_snapshot {
+                        *symbol_counts.entry(key.symbol.clone()).or_default() += strategy_ids.len();
+                        indexed_strategy_count += strategy_ids.len();
+                    }
+                    let symbol_count = symbol_counts.len();
+                    let symbol_sample = {
+                        let preview: Vec<String> = symbol_counts
+                            .iter()
+                            .take(8)
+                            .map(|(symbol, count)| format!("{symbol}:{count}"))
+                            .collect();
+                        if preview.is_empty() {
+                            "-".to_string()
+                        } else {
+                            preview.join(",")
+                        }
+                    };
+                    let strategy_sample = {
+                        let preview: Vec<String> = price_map_snapshot
+                            .iter()
+                            .flat_map(|(key, strategy_ids)| {
+                                strategy_ids.iter().map(move |strategy_id| {
+                                    format!(
+                                        "{}#{}@{}",
+                                        key.symbol,
+                                        strategy_id,
+                                        key.price_qv.count()
+                                    )
+                                })
+                            })
+                            .take(12)
+                            .collect();
+                        if preview.is_empty() {
+                            "-".to_string()
+                        } else {
+                            preview.join(",")
+                        }
+                    };
+
+                    let mut chunk = ArbCancelCandidateQueryMsg::new(trigger_ctx.trigger_ts);
+                    let mut published_chunks = 0usize;
+                    let mut published_items = 0usize;
+
+                    let flush_chunk =
+                        |chunk: &mut ArbCancelCandidateQueryMsg,
+                         published_chunks: &mut usize,
+                         published_items: &mut usize| {
+                            if chunk.is_empty() {
+                                return;
+                            }
+                            let item_count = chunk
+                                .groups
+                                .iter()
+                                .map(|group| group.items.len())
+                                .sum::<usize>();
+                            let payload =
+                                ArbBackwardQueryMsg::CancelCandidates(chunk.clone()).to_bytes();
+                            match SignalChannel::with(|ch| ch.publish_backward(&payload)) {
+                                Ok(true) => {
+                                    *published_chunks += 1;
+                                    *published_items += item_count;
+                                }
+                                Ok(false) => {
+                                    warn!("ArbCancelTrigger: backward publisher unavailable");
+                                }
+                                Err(err) => {
+                                    warn!(
+                                        "ArbCancelTrigger: publish backward failed err={:#}",
+                                        err
+                                    );
+                                }
+                            }
+                            chunk.groups.clear();
+                        };
+
+                    for (key, strategy_ids) in price_map_snapshot {
+                        let price_qv = key.price_qv.to_quantized_value();
+                        for strategy_id in strategy_ids {
+                            let entry = ArbCancelCandidateEntry::new(strategy_id, price_qv);
+                            let next_len = 1 + chunk.next_encoded_len_with(&key.symbol, &entry);
+                            if !chunk.is_empty() && next_len > SIGNAL_PAYLOAD {
+                                flush_chunk(
+                                    &mut chunk,
+                                    &mut published_chunks,
+                                    &mut published_items,
+                                );
+                            }
+                            chunk.push_grouped(&key.symbol, entry);
+                        }
+                    }
+                    flush_chunk(&mut chunk, &mut published_chunks, &mut published_items);
+                    debug!(
                     "ArbCancelTrigger: dynamic index published chunks={} items={} indexed_strategies={} symbols={} sample={} strategies={} trigger_ts={} freq_ms={}",
                     published_chunks,
                     published_items,
@@ -674,9 +688,10 @@ fn handle_trade_signal(signal: TradeSignal) {
                     trigger_ctx.trigger_ts,
                     trigger_ctx.freq_ms
                 );
+                }
+                Err(err) => warn!("failed to decode ArbCancelTrigger context: {err}"),
             }
-            Err(err) => warn!("failed to decode ArbCancelTrigger context: {err}"),
-        },
+        }
         SignalType::ArbHedge => match ArbHedgeCtx::from_bytes(signal.context.clone()) {
             Ok(hedge_ctx) => {
                 let strategy_id = hedge_ctx.strategy_id;
