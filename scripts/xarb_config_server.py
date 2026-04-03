@@ -273,6 +273,174 @@ def default_funding_threshold_mapping(
     except Exception:
         return {}
 
+
+def funding_filter_factor(open_venue: Optional[str], hedge_venue: Optional[str]) -> str:
+    open_v = (open_venue or "").strip().lower()
+    hedge_v = (hedge_venue or "").strip().lower()
+    if open_v.endswith("-futures") and hedge_v.endswith("-futures"):
+        return "spread_fr"
+    return "hedge_premium_rate"
+
+
+def default_funding_filter_percentile(
+    open_venue: Optional[str], hedge_venue: Optional[str]
+) -> float:
+    return 80.0 if funding_filter_factor(open_venue, hedge_venue) == "spread_fr" else 50.0
+
+
+def percentile_text_from_value(value: float) -> str:
+    rounded = round(value)
+    if abs(value - rounded) < 1e-9:
+        return str(int(rounded))
+    return f"{value:.12g}"
+
+
+def build_funding_threshold_mapping_from_percentiles(
+    open_venue: Optional[str],
+    hedge_venue: Optional[str],
+    forward_percentile_raw: Any,
+    backward_percentile_raw: Any,
+) -> Dict[str, str]:
+    forward_value, forward_text = normalize_percentile_text(forward_percentile_raw)
+    backward_value, backward_text = normalize_percentile_text(backward_percentile_raw)
+    if not (0.0 < forward_value <= 99.0):
+        raise ValueError("forward percentile must be in (0,99]")
+    if not (0.0 < backward_value <= 99.0):
+        raise ValueError("backward percentile must be in (0,99]")
+    factor = funding_filter_factor(open_venue, hedge_venue)
+    return {
+        "forward_open_mm": f"{factor}_{forward_text}",
+        "backward_open_mm": f"{factor}_{backward_text}",
+    }
+
+
+def default_funding_threshold_config(
+    open_venue: Optional[str], hedge_venue: Optional[str]
+) -> Dict[str, str]:
+    percentile = default_funding_filter_percentile(open_venue, hedge_venue)
+    return {
+        "enabled": "true",
+        "factor": funding_filter_factor(open_venue, hedge_venue),
+        "forward_open_mm": percentile_text_from_value(percentile),
+        "backward_open_mm": percentile_text_from_value(
+            100.0 - percentile if funding_filter_factor(open_venue, hedge_venue) == "spread_fr" else percentile
+        ),
+    }
+
+
+def parse_bool_text(raw: Any, default: bool = True) -> bool:
+    if raw is None:
+        return default
+    normalized = str(raw).strip().lower()
+    if normalized in ("1", "true", "yes", "on"):
+        return True
+    if normalized in ("0", "false", "no", "off"):
+        return False
+    return default
+
+
+def infer_percentile_from_mapping(
+    mapping: Dict[str, str], field_name: str, factor: str, default_text: str
+) -> str:
+    field = (mapping or {}).get(field_name, "").strip()
+    prefix = f"{factor}_"
+    if field.startswith(prefix):
+        return field[len(prefix) :].strip() or default_text
+    return default_text
+
+
+def read_funding_threshold_config(
+    rds, open_venue: str, hedge_venue: str
+) -> Dict[str, str]:
+    defaults = default_funding_threshold_config(open_venue, hedge_venue)
+    key = threshold_mapping_key("funding", open_venue, hedge_venue)
+    raw = rds.get(key)
+    if not raw:
+        return defaults
+    try:
+        decoded = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
+        parsed = json.loads(decoded)
+    except Exception:
+        return defaults
+    if not isinstance(parsed, dict):
+        return defaults
+    factor = funding_filter_factor(open_venue, hedge_venue)
+    mapping = normalize_threshold_mapping(parsed.get("mapping") or {})
+    forward_text = infer_percentile_from_mapping(
+        mapping, "forward_open_mm", factor, defaults["forward_open_mm"]
+    )
+    backward_text = infer_percentile_from_mapping(
+        mapping, "backward_open_mm", factor, defaults["backward_open_mm"]
+    )
+    return {
+        "enabled": "true" if parsed.get("enabled", True) else "false",
+        "factor": factor,
+        "forward_open_mm": str(parsed.get("forward_open_mm") or forward_text).strip()
+        or defaults["forward_open_mm"],
+        "backward_open_mm": str(parsed.get("backward_open_mm") or backward_text).strip()
+        or defaults["backward_open_mm"],
+    }
+
+
+def write_funding_threshold_config(
+    rds,
+    open_venue: str,
+    hedge_venue: str,
+    values: Dict[str, Any],
+) -> Dict[str, Any]:
+    defaults = default_funding_threshold_config(open_venue, hedge_venue)
+    enabled = parse_bool_text((values or {}).get("enabled"), True)
+    factor = funding_filter_factor(open_venue, hedge_venue)
+    forward_raw = (values or {}).get("forward_open_mm", defaults["forward_open_mm"])
+    backward_raw = (values or {}).get("backward_open_mm", defaults["backward_open_mm"])
+    mapping = (
+        build_funding_threshold_mapping_from_percentiles(
+            open_venue, hedge_venue, forward_raw, backward_raw
+        )
+        if enabled
+        else {}
+    )
+    forward_value, forward_text = normalize_percentile_text(forward_raw)
+    backward_value, backward_text = normalize_percentile_text(backward_raw)
+    key = threshold_mapping_key("funding", open_venue, hedge_venue)
+    existing: Dict[str, Any] = {}
+    raw = rds.get(key)
+    if raw:
+        try:
+            decoded = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
+            parsed = json.loads(decoded)
+            if isinstance(parsed, dict):
+                existing = parsed
+        except Exception:
+            existing = {}
+    payload = {
+        "schema_version": 2,
+        "namespace": "xarb",
+        "kind": "funding",
+        "open_venue": open_venue,
+        "hedge_venue": hedge_venue,
+        "enabled": enabled,
+        "forward_open_mm": forward_value,
+        "backward_open_mm": backward_value,
+        "rolling_key": existing.get(
+            "rolling_key", f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}"
+        ),
+        "mapping": mapping,
+        "threshold_order": list(mapping.keys()),
+        "generated_at": existing.get("generated_at"),
+    }
+    rds.set(key, json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    return {
+        "key": key,
+        "count": 3,
+        "values": {
+            "enabled": "true" if enabled else "false",
+            "factor": factor,
+            "forward_open_mm": forward_text,
+            "backward_open_mm": backward_text,
+        },
+    }
+
 try:
     import sync_rolling_metrics_params as rolling_defaults
 
@@ -367,11 +535,26 @@ except Exception:
 def build_runtime_rolling_defaults(
     open_venue: Optional[str], hedge_venue: Optional[str]
 ) -> Dict[str, Any]:
-    funding_mapping = default_funding_threshold_mapping(open_venue, hedge_venue)
+    funding_mapping = build_funding_threshold_mapping_from_percentiles(
+        open_venue,
+        hedge_venue,
+        default_funding_threshold_config(open_venue, hedge_venue)["forward_open_mm"],
+        default_funding_threshold_config(open_venue, hedge_venue)["backward_open_mm"],
+    )
+    strategy_open_vol_limit = (
+        DEFAULT_STRATEGY_PARAMS.get("open_volatility_limit", "70")
+        if isinstance(DEFAULT_STRATEGY_PARAMS, dict)
+        else "70"
+    )
+    open_vol_factor = attached_vol_factor_name_for_venue(open_venue or "")
+    open_vol_mapping = {}
+    if open_vol_factor:
+        open_vol_mapping = {"open_vol_limit": f"{open_vol_factor}_{strategy_open_vol_limit}"}
     defaults = build_xarb_rolling_defaults(
         BASE_ROLLING_PARAMS,
         SPREAD_THRESHOLD_MAPPING,
         funding_mapping,
+        open_vol_mapping,
     )
     if (
         "rolling_defaults" in globals()
@@ -606,20 +789,14 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
 
     <section id="funding-thresholds" class="panel">
       <div class="section-header">
-        <h2>Funding Threshold Mapping</h2>
+        <h2>Funding Filter Config</h2>
         <div class="actions">
           <button id="funding-config-load" class="secondary">读取配置</button>
           <button id="funding-config-save">保存配置</button>
-          <button id="funding-sync" class="ghost">同步阈值</button>
+          <button id="funding-default" class="ghost">默认</button>
         </div>
       </div>
-      <div class="toolbar" style="margin-bottom: 10px;">
-        <div class="field">
-          <label for="funding-symbol">Symbol (可选)</label>
-          <input id="funding-symbol" placeholder="BTCUSDT" />
-        </div>
-        <div class="hint">格式: hedge_premium_rate_50 / spread_fr_80 / spread_fr_20</div>
-      </div>
+      <div class="hint" style="margin-bottom: 10px;">只配置 enable 与 forward/backward 两个分位数。futures/futures 固定使用 spread_fr；spot/futures 固定使用 hedge_premium_rate；trade_signal 会自动读取 rolling quantiles，不需要手工同步阈值。</div>
       <div id="funding-table" class="kv-table"></div>
       <div id="funding-status" class="status"></div>
     </section>
@@ -655,7 +832,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         <label for="rolling-factors">factors (JSON)</label>
         <textarea id="rolling-factors" class="mono"></textarea>
       </div>
-      <div class="hint" style="margin-top: 8px;">可用 factor: bidask, askbid, spread, open_premium_rate, hedge_premium_rate, open_vol, hedge_vol, spread_fr</div>
+      <div class="hint" style="margin-top: 8px;">可用 factor: bidask, askbid, spread, open_premium_rate, hedge_premium_rate, open_vol, hedge_vol, spread_fr。xarb 的 funding filter 不再单独配置 mapping：futures/futures 固定读取 spread_fr 的 quantiles，spot/futures 固定读取 hedge_premium_rate 的 quantiles。</div>
       <div id="rolling-status" class="status"></div>
     </section>
 
@@ -784,8 +961,9 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         inputCell.className = 'kv-input';
         const rawValue = values[key] ?? defaults[key] ?? '';
         const useBooleanSelect =
-          containerId === 'strategy-table' &&
-          ['enable_tlen_cancel', 'enable_environment_model', 'enable_volatility_limit'].includes(key) &&
+          ((containerId === 'strategy-table' &&
+            ['enable_tlen_cancel', 'enable_environment_model', 'enable_volatility_limit'].includes(key)) ||
+           (containerId === 'funding-table' && ['enabled'].includes(key))) &&
           isBooleanParamValue(rawValue);
         let input;
         if (useBooleanSelect) {
@@ -805,6 +983,9 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
           input = document.createElement('input');
           input.className = 'mono';
           input.value = rawValue;
+          if (containerId === 'funding-table' && key === 'factor') {
+            input.readOnly = true;
+          }
         }
         input.dataset.key = key;
         inputCell.appendChild(input);
@@ -995,7 +1176,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       setStatus('funding-status', '读取中...');
       try {
         const data = await fetchJson(`${apiUrl('funding-thresholds')}?${queryParams()}`);
-        buildParamRows('funding-table', BOOTSTRAP.defaults.funding_thresholds || {}, {}, BOOTSTRAP.order.funding_thresholds || [], data.values || {});
+        buildParamRows('funding-table', BOOTSTRAP.defaults.funding_thresholds || {}, BOOTSTRAP.comments.funding_thresholds || {}, BOOTSTRAP.order.funding_thresholds || [], data.values || {});
         setStatus('funding-status', '读取完成');
       } catch (err) {
         setStatus('funding-status', `读取失败: ${err}`, false);
@@ -1022,30 +1203,8 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     }
 
     function applyFundingDefaults() {
-      buildParamRows('funding-table', BOOTSTRAP.defaults.funding_thresholds || {}, {}, BOOTSTRAP.order.funding_thresholds || [], {});
+      buildParamRows('funding-table', BOOTSTRAP.defaults.funding_thresholds || {}, BOOTSTRAP.comments.funding_thresholds || {}, BOOTSTRAP.order.funding_thresholds || [], {});
       setStatus('funding-status', '已载入默认配置');
-    }
-
-    async function syncFundingThresholds() {
-      setStatus('funding-status', '同步中...');
-      try {
-        const symbol = document.getElementById('funding-symbol').value.trim();
-        const payload = {
-          open_venue: openVenueInput.value.trim(),
-          hedge_venue: hedgeVenueInput.value.trim(),
-          symbol,
-          mapping: collectParamValues('funding-table'),
-        };
-        const data = await fetchJson(apiUrl('funding-thresholds/sync'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-        const changed = data.changed != null ? `, changed=${data.changed}` : '';
-        setStatus('funding-status', `同步完成: ${data.written || 0} 字段${changed}`);
-      } catch (err) {
-        setStatus('funding-status', `同步失败: ${err}`, false);
-      }
     }
 
     function applyRollingDefaults() {
@@ -1187,7 +1346,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     buildParamRows('risk-table', BOOTSTRAP.defaults.risk_params || {}, BOOTSTRAP.comments.risk_params || {}, BOOTSTRAP.order.risk || [], {});
     buildParamRows('strategy-table', BOOTSTRAP.defaults.strategy_params || {}, BOOTSTRAP.comments.strategy_params || {}, BOOTSTRAP.order.strategy || [], {});
     if (BOOTSTRAP.features?.funding_thresholds !== false) {
-      buildParamRows('funding-table', BOOTSTRAP.defaults.funding_thresholds || {}, {}, BOOTSTRAP.order.funding_thresholds || [], {});
+      buildParamRows('funding-table', BOOTSTRAP.defaults.funding_thresholds || {}, BOOTSTRAP.comments.funding_thresholds || {}, BOOTSTRAP.order.funding_thresholds || [], {});
     }
     buildParamRows('spread-table', BOOTSTRAP.defaults.spread_mapping || {}, {}, BOOTSTRAP.order.spread_mapping || [], {});
 
@@ -1206,7 +1365,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     if (BOOTSTRAP.features?.funding_thresholds !== false) {
       document.getElementById('funding-config-load').addEventListener('click', loadFundingThresholds);
       document.getElementById('funding-config-save').addEventListener('click', saveFundingThresholds);
-      document.getElementById('funding-sync').addEventListener('click', syncFundingThresholds);
+      document.getElementById('funding-default').addEventListener('click', applyFundingDefaults);
     }
 
     document.getElementById('rolling-load').addEventListener('click', loadRollingParams);
@@ -1551,6 +1710,93 @@ def serialize_rolling_params(values: Dict[str, Any]) -> Dict[str, str]:
     return payload
 
 
+def default_factor_config_for_name(factor_name: str) -> Dict[str, Any]:
+    cfg: Dict[str, Any] = {}
+    if is_vol_factor_name(factor_name):
+        cfg["resample_interval_ms"] = 5_000
+        cfg["rolling_window"] = 720
+        cfg["min_periods"] = 1
+    else:
+        cfg["resample_interval_ms"] = 1_000
+        if factor_name.endswith("_fr") or factor_name.endswith("_premium_rate"):
+            cfg["rolling_window"] = 14_400
+            cfg["min_periods"] = 7_200
+        else:
+            cfg["rolling_window"] = 100_000
+            cfg["min_periods"] = 1
+    cfg["quantiles"] = []
+    return cfg
+
+
+def ensure_factor_quantile_config(
+    factors: Dict[str, Any], factor_name: str, percentile_raw: Any
+) -> bool:
+    percentile_value, percentile_text = normalize_percentile_text(percentile_raw)
+    quantile_value = (
+        int(percentile_value) if abs(percentile_value - round(percentile_value)) < 1e-9 else percentile_value
+    )
+    factor_cfg = factors.get(factor_name)
+    if not isinstance(factor_cfg, dict):
+        factor_cfg = default_factor_config_for_name(factor_name)
+        factors[factor_name] = factor_cfg
+    quantiles = factor_cfg.get("quantiles")
+    if not isinstance(quantiles, list):
+        quantiles = []
+        factor_cfg["quantiles"] = quantiles
+    normalized_existing: List[str] = []
+    for item in quantiles:
+        try:
+            value = float(item)
+        except Exception:
+            continue
+        normalized_existing.append(percentile_text_from_value(value))
+    if percentile_text in normalized_existing:
+        return False
+    quantiles.append(quantile_value)
+    while len(quantiles) > 8:
+        quantiles.pop(0)
+    return True
+
+
+def ensure_xarb_runtime_quantiles(
+    rds,
+    open_venue: str,
+    hedge_venue: str,
+    funding_values: Optional[Dict[str, Any]] = None,
+    open_volatility_limit_raw: Optional[Any] = None,
+) -> Dict[str, Any]:
+    key = f"rolling_metrics_params_{open_venue}_{hedge_venue}"
+    parsed = parse_rolling_params(read_hash(rds, key))
+    factors = parsed.get("factors")
+    if not isinstance(factors, dict):
+        factors = {}
+        parsed["factors"] = factors
+
+    changed_factors: List[str] = []
+    if funding_values is not None and parse_bool_text(funding_values.get("enabled"), True):
+        factor = funding_filter_factor(open_venue, hedge_venue)
+        for field in ("forward_open_mm", "backward_open_mm"):
+            raw = funding_values.get(field)
+            if raw in (None, ""):
+                continue
+            if ensure_factor_quantile_config(factors, factor, raw):
+                changed_factors.append(f"{factor}_{field}")
+
+    if open_volatility_limit_raw not in (None, ""):
+        vol_factor = attached_vol_factor_name_for_venue(open_venue)
+        if vol_factor and ensure_factor_quantile_config(factors, vol_factor, open_volatility_limit_raw):
+            changed_factors.append(f"{vol_factor}_open_volatility_limit")
+
+    if changed_factors:
+        write_hash(rds, key, serialize_rolling_params(parsed))
+
+    return {
+        "key": key,
+        "changed": bool(changed_factors),
+        "changed_factors": changed_factors,
+    }
+
+
 def threshold_mapping_key(kind: str, open_venue: str, hedge_venue: str) -> str:
     return f"xarb_{kind}_thresholds_config_{open_venue}_{hedge_venue}"
 
@@ -1798,12 +2044,17 @@ def render_index_html(
         "comments": {
             "risk_params": RISK_PARAM_COMMENTS,
             "strategy_params": STRATEGY_PARAM_COMMENTS,
-            "funding_thresholds": {},
+            "funding_thresholds": {
+                "enabled": "是否启用 funding filter（false=trade_signal 跳过这层判断）",
+                "factor": "当前场景固定使用的因子（只读）",
+                "forward_open_mm": "正向开仓分位数（0,99]；futures/futures 固定作用于 spread_fr，spot/futures 固定作用于 hedge_premium_rate）",
+                "backward_open_mm": "反向开仓分位数（0,99]；futures/futures 固定作用于 spread_fr，spot/futures 固定作用于 hedge_premium_rate）",
+            },
         },
         "order": {
             "risk": RISK_PARAM_ORDER,
             "strategy": STRATEGY_PARAM_ORDER,
-            "funding_thresholds": FUNDING_THRESHOLD_ORDER,
+            "funding_thresholds": ["enabled", "factor", "forward_open_mm", "backward_open_mm"],
             "spread_mapping": SPREAD_THRESHOLD_ORDER,
         },
     }
@@ -2026,12 +2277,10 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._send_error(400, str(exc))
                 return
             key = threshold_mapping_key("funding", open_venue, hedge_venue)
-            values = read_threshold_mapping(
+            values = read_funding_threshold_config(
                 self.server.context.redis_client,
-                "funding",
                 open_venue,
                 hedge_venue,
-                default_funding_threshold_mapping(open_venue, hedge_venue),
             )
             self._send_json(200, {"key": key, "values": values})
             return
@@ -2204,6 +2453,13 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._send_error(400, str(exc))
                 return
             result = replace_hash(self.server.context.redis_client, key, mapping)
+            rolling_attach = ensure_xarb_runtime_quantiles(
+                self.server.context.redis_client,
+                open_v,
+                hedge_v,
+                open_volatility_limit_raw=mapping.get("open_volatility_limit"),
+            )
+            result["rolling_attach"] = rolling_attach
             self._send_json(200, result)
             return
 
@@ -2217,17 +2473,20 @@ class RequestHandler(BaseHTTPRequestHandler):
             if not isinstance(values, dict):
                 self._send_error(400, "values must be object")
                 return
-            mapping = normalize_threshold_mapping(values)
-            if not mapping:
-                mapping = default_funding_threshold_mapping(open_v, hedge_v)
-            if not mapping:
-                self._send_error(400, "mapping is empty")
+            try:
+                result = write_funding_threshold_config(
+                    self.server.context.redis_client, open_v, hedge_v, values
+                )
+            except Exception as exc:
+                self._send_error(400, str(exc))
                 return
-            key = threshold_mapping_key("funding", open_v, hedge_v)
-            written = write_threshold_mapping(
-                self.server.context.redis_client, "funding", open_v, hedge_v, mapping
+            result["rolling_attach"] = ensure_xarb_runtime_quantiles(
+                self.server.context.redis_client,
+                open_v,
+                hedge_v,
+                funding_values=result.get("values"),
             )
-            self._send_json(200, {"key": key, "count": written})
+            self._send_json(200, result)
             return
 
         if parsed.path == "/api/rolling-params":
@@ -2268,26 +2527,10 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/funding-thresholds/sync":
-            try:
-                _, open_v, hedge_v, key_suffix = self._resolve_payload_context(payload)
-            except Exception as exc:
-                self._send_error(400, str(exc))
-                return
-            symbol = payload.get("symbol")
-            mapping = payload.get("mapping") if isinstance(payload, dict) else None
-            try:
-                result = sync_funding_thresholds(
-                    self.server.context.redis_client,
-                    open_v,
-                    hedge_v,
-                    key_suffix,
-                    mapping,
-                    symbol,
-                )
-            except Exception as exc:
-                self._send_error(500, f"sync failed: {exc}")
-                return
-            self._send_json(200, result)
+            self._send_error(
+                410,
+                "funding threshold sync is deprecated; trade_signal reads rolling quantiles directly",
+            )
             return
 
         if parsed.path == "/api/spread-thresholds/sync":

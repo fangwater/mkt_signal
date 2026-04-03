@@ -879,7 +879,7 @@ async fn reload_xarb_thresholds_from_rolling(
     hedge_venue: TradingVenue,
 ) -> Result<()> {
     let spread_config_key = xarb_spread_mapping_key(open_venue, hedge_venue);
-    let funding_config_key = fr_funding_mapping_key(open_venue, hedge_venue);
+    let funding_config_key = xarb_funding_mapping_key(open_venue, hedge_venue);
     let default_rolling_key = default_rolling_thresholds_key(open_venue, hedge_venue);
 
     let active_symbols: HashSet<String> = SymbolList::instance()
@@ -1023,6 +1023,7 @@ async fn reload_xarb_thresholds_from_rolling(
     let funding_symbols = funding_thresholds.len();
 
     let updated = ArbDecision::with_state_mut(|arb| {
+        arb.enable_funding_open_filter = funding_config.enabled;
         arb.funding_open_thresholds = funding_thresholds;
     });
     if updated.is_none() {

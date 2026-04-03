@@ -22,6 +22,7 @@ thread_local! {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct StoredXarbMappingConfig {
+    pub(crate) enabled: bool,
     pub(crate) rolling_key: Option<String>,
     pub(crate) mapping: HashMap<String, String>,
 }
@@ -197,6 +198,7 @@ pub(crate) fn parse_xarb_mapping_config(
 ) -> StoredXarbMappingConfig {
     let Some(text) = raw else {
         return StoredXarbMappingConfig {
+            enabled: true,
             rolling_key: None,
             mapping: default_mapping,
         };
@@ -207,11 +209,17 @@ pub(crate) fn parse_xarb_mapping_config(
         Err(err) => {
             warn!("解析 xarb mapping config 失败，回退默认 mapping: {err}");
             return StoredXarbMappingConfig {
+                enabled: true,
                 rolling_key: None,
                 mapping: default_mapping,
             };
         }
     };
+
+    let enabled = parsed
+        .get("enabled")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true);
 
     let rolling_key = parsed
         .get("rolling_key")
@@ -239,6 +247,7 @@ pub(crate) fn parse_xarb_mapping_config(
 
     let mapping = normalize_threshold_mapping(mapping);
     StoredXarbMappingConfig {
+        enabled,
         rolling_key,
         mapping: if mapping.is_empty() {
             default_mapping
@@ -254,6 +263,7 @@ pub(crate) fn parse_plain_mapping_config(
 ) -> StoredXarbMappingConfig {
     let mapping = normalize_threshold_mapping(raw);
     StoredXarbMappingConfig {
+        enabled: true,
         rolling_key: None,
         mapping: if mapping.is_empty() {
             default_mapping

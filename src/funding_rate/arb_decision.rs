@@ -2892,6 +2892,7 @@ pub(crate) struct ArbDecisionState {
     pub max_hedge_price_pct_change: f64,
     pub enable_tlen_cancel: bool,
     pub tlen_cancel_freq_ms: u64,
+    pub enable_funding_open_filter: bool,
     pub enable_environment_model: bool,
     pub enable_volatility_limit: bool,
     pub open_volatility_limit: f64,
@@ -2926,6 +2927,7 @@ impl ArbDecisionState {
             max_hedge_price_pct_change: 5.0,
             enable_tlen_cancel: false,
             tlen_cancel_freq_ms: 3_000,
+            enable_funding_open_filter: true,
             enable_environment_model: true,
             enable_volatility_limit: true,
             open_volatility_limit: 70.0,
@@ -3579,23 +3581,29 @@ impl ArbDecisionState {
         forward_open: bool,
         backward_open: bool,
     ) -> Option<ArbOpenGatePassed> {
-        let open_filter_thresholds = self.lookup_funding_open_thresholds(open_symbol_key)?;
-        let (open_filter_value, open_filter_source) = lookup_realtime_open_filter_value(
+        let open_filter_lookup = lookup_realtime_open_filter_value(
             open_symbol_key,
             hedge_symbol_key,
             open_venue,
             hedge_venue,
-        )?;
-        let open_filter_threshold = select_open_filter_threshold(side, open_filter_thresholds);
-        let open_filter_hit = match side {
-            Side::Buy => open_filter_value > open_filter_threshold,
-            Side::Sell => open_filter_value < open_filter_threshold,
-        };
-        if !open_filter_hit {
-            self.record_intercept_summary(format!(
-                "skip_open_by_filter:source={open_filter_source}"
-            ));
-            return None;
+        );
+        let open_filter_value = open_filter_lookup.map(|(value, _)| value);
+
+        if self.enable_funding_open_filter {
+            let open_filter_thresholds = self.lookup_funding_open_thresholds(open_symbol_key)?;
+            let (open_filter_value_ready, open_filter_source) = open_filter_lookup?;
+            let open_filter_threshold =
+                select_open_filter_threshold(side, open_filter_thresholds);
+            let open_filter_hit = match side {
+                Side::Buy => open_filter_value_ready > open_filter_threshold,
+                Side::Sell => open_filter_value_ready < open_filter_threshold,
+            };
+            if !open_filter_hit {
+                self.record_intercept_summary(format!(
+                    "skip_open_by_filter:source={open_filter_source}"
+                ));
+                return None;
+            }
         }
 
         let return_lookup = self.lookup_return_model_score_lookup(hedge_symbol, hedge_venue);
@@ -3662,7 +3670,7 @@ impl ArbDecisionState {
         Some(ArbOpenGatePassed {
             return_score,
             return_threshold,
-            open_filter_value: Some(open_filter_value),
+            open_filter_value,
             environment_score,
             environment_threshold: environment_signal.threshold,
             open_volatility_factor,

@@ -31,6 +31,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
 NAMESPACE = "xarb"
+QUANTILE_MATCH_EPSILON = 1e-6
 
 
 def try_import_redis():
@@ -228,7 +229,7 @@ def extract_quantile_value(obj: Dict, field_ref: str) -> Optional[float]:
         q = _to_q(item.get("q") if "q" in item else item.get("quantile"))
         if q is None:
             continue
-        if abs(q - percentile) < 1e-9:
+        if abs(q - percentile) < QUANTILE_MATCH_EPSILON:
             return _to_v(item)
 
     return None
@@ -343,3 +344,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+QUANTILE_MATCH_EPSILON = 1e-6
