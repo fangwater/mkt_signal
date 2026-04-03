@@ -70,6 +70,7 @@ pub struct HedgeArbStrategy {
     pub force_close_mode: bool,        //是否强平模式
     pub hedge_retry_after_ts: Option<i64>, //对冲报单失败后的冷却截止时间
     pub hedge_retry_reason: Option<&'static str>, //对冲报单失败的重试原因
+    pub last_cancel_trigger_ts: Option<i64>,
     pending_order_queries: HashMap<i64, PendingOrderQueryReason>,
     order_query_watchdog: Option<QueryWatchdog>,
     cancel_query_watchdog: Option<QueryWatchdog>,
@@ -148,6 +149,7 @@ impl HedgeArbStrategy {
             force_close_mode: false,
             hedge_retry_after_ts: None,
             hedge_retry_reason: None,
+            last_cancel_trigger_ts: None,
             pending_order_queries: HashMap::new(),
             order_query_watchdog: None,
             cancel_query_watchdog: None,
@@ -948,7 +950,26 @@ impl HedgeArbStrategy {
     // cancel时，不能直接对开仓单cancel。要先区分开仓单当前是否处于terminal状态
     // 如果已经完全成交，则不需要cancel，跳过cancel流程即可。
     // 只有非中止状态，挂单中或者部分成交，才需要发送cancel。
-    fn handle_arb_cancel_signal(&mut self, _ctx: ArbCancelCtx) -> Result<(), String> {
+    fn handle_arb_cancel_signal(&mut self, ctx: ArbCancelCtx) -> Result<(), String> {
+        if self.last_cancel_trigger_ts == Some(ctx.trigger_ts) {
+            debug!(
+                "HedgeArbStrategy: strategy_id={} 跳过重复 ArbCancel trigger_ts={} order_id={}",
+                self.strategy_id, ctx.trigger_ts, self.open_order_id
+            );
+            return Ok(());
+        }
+        if self.pending_order_queries.contains_key(&self.open_order_id)
+            || self
+                .cancel_query_watchdog
+                .is_some_and(|w| w.client_order_id == self.open_order_id)
+        {
+            debug!(
+                "HedgeArbStrategy: strategy_id={} 跳过 ArbCancel，因为撤单回补已在进行 order_id={} trigger_ts={}",
+                self.strategy_id, self.open_order_id, ctx.trigger_ts
+            );
+            self.last_cancel_trigger_ts = Some(ctx.trigger_ts);
+            return Ok(());
+        }
         // 从 order manager 获取开仓订单
         let order = MonitorChannel::instance()
             .order_manager()
@@ -981,6 +1002,7 @@ impl HedgeArbStrategy {
                         );
                         return Err(format!("发送撤单请求失败: {}", e));
                     }
+                    self.last_cancel_trigger_ts = Some(ctx.trigger_ts);
                     self.schedule_cancel_query_watchdog(order.client_order_id);
                 }
                 Err(e) => {

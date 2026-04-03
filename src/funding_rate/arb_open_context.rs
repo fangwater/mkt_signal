@@ -21,7 +21,6 @@ pub struct ArbOpenContextInput<'a> {
     pub level: &'a QuotePlanLevel,
     pub now: i64,
     pub from_key: &'a str,
-    pub append_zero_tlen: bool,
     pub open_order_ttl_us: i64,
     pub hedge_timeout_mm_us: i64,
     pub factor_mode: FactorMode,
@@ -42,7 +41,6 @@ pub struct ArbOpenContextTablesInput<'a> {
     pub level: &'a QuotePlanLevel,
     pub now: i64,
     pub from_key: &'a str,
-    pub append_zero_tlen: bool,
     pub open_order_ttl_us: i64,
     pub hedge_timeout_mm_us: i64,
     pub factor_mode: FactorMode,
@@ -111,11 +109,7 @@ pub fn build_arb_open_context_from_level(input: ArbOpenContextInput<'_>) -> ArbO
         FactorMode::MM => input.hedge_timeout_mm_us,
     };
 
-    if input.append_zero_tlen {
-        ctx.set_from_key(format!("{}:tlen=0.00000000", input.from_key).into_bytes());
-    } else {
-        ctx.set_from_key(input.from_key.as_bytes().to_vec());
-    }
+    ctx.set_from_key(input.from_key.as_bytes().to_vec());
 
     ctx
 }
@@ -135,7 +129,6 @@ pub fn build_arb_open_context_from_level_with_tables(
         level: input.level,
         now: input.now,
         from_key: input.from_key,
-        append_zero_tlen: input.append_zero_tlen,
         open_order_ttl_us: input.open_order_ttl_us,
         hedge_timeout_mm_us: input.hedge_timeout_mm_us,
         factor_mode: input.factor_mode,

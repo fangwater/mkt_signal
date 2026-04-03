@@ -1,4 +1,7 @@
-use super::super::common::{build_decision_from_key_base, ReturnScoreThresholdsResolved};
+use super::super::common::{
+    append_tlen_to_from_key, build_decision_from_key_base, format_tlen_value,
+    ReturnScoreThresholdsResolved,
+};
 use super::super::factor_value_hub::EnvironmentSignalResult;
 use crate::pre_trade::order_manager::Side;
 
@@ -56,14 +59,6 @@ pub(crate) fn build_from_key(
     )
 }
 
-fn format_tlen_value(value: f64) -> String {
-    if value.is_finite() {
-        format!("{value:.8}")
-    } else {
-        "nan".to_string()
-    }
-}
-
 pub(crate) fn build_mm_cancel_from_key(
     now_us: i64,
     return_score: Option<f64>,
@@ -82,11 +77,11 @@ pub(crate) fn build_mm_cancel_from_key(
 }
 
 pub fn append_mm_open_tlens_to_from_key(base_from_key: &str, level_tlen: f64) -> String {
-    format!("{base_from_key}:tlen={}", format_tlen_value(level_tlen))
+    append_tlen_to_from_key(base_from_key, level_tlen)
 }
 
 pub fn append_mm_hedge_tlen_to_from_key(base_from_key: &str, level_tlen: f64) -> String {
-    format!("{base_from_key}:tlen={}", format_tlen_value(level_tlen))
+    append_tlen_to_from_key(base_from_key, level_tlen)
 }
 
 #[cfg(test)]

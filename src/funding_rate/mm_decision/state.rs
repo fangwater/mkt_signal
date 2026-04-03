@@ -5,7 +5,9 @@ use log::debug;
 use std::collections::HashMap;
 
 use super::super::arb_decision::DEFAULT_ARBITRAGE_SIGNAL_CHANNEL;
-use super::super::common::ReturnScoreThresholdsResolved;
+use super::super::common::{
+    append_tlen_to_from_key, query_batch_tlens_or_zero, ReturnScoreThresholdsResolved,
+};
 use super::super::factor_value_hub::{EnvironmentSignalResult, FactorValueHub};
 use crate::common::iceoryx_publisher::SignalPublisher;
 use crate::common::redis_client::RedisSettings;
@@ -540,30 +542,15 @@ impl MmDecisionState {
             Vec::new()
         } else {
             let tick_indices: Vec<i64> = prepared.iter().map(|item| item.tick_index).collect();
-            match self
-                .depth_query_client
-                .query_batch_tick_indices(&plan.symbol, &tick_indices)
-            {
-                Ok(tlens) => prepared
-                    .iter()
-                    .zip(tlens.iter().copied())
-                    .map(|(_, level_tlen)| {
-                        super::from_key::append_mm_open_tlens_to_from_key(from_key, level_tlen)
-                    })
-                    .collect(),
-                Err(err) => {
-                    log::warn!(
-                        "MmDecision: MMOpen tlen batch query failed symbol={} levels={} err={:#}",
-                        plan.symbol,
-                        prepared.len(),
-                        err
-                    );
-                    prepared
-                        .iter()
-                        .map(|_| super::from_key::append_mm_open_tlens_to_from_key(from_key, 0.0))
-                        .collect()
-                }
-            }
+            query_batch_tlens_or_zero(
+                "MmDecision: MMOpen",
+                &self.depth_query_client,
+                &plan.symbol,
+                &tick_indices,
+            )
+            .into_iter()
+            .map(|level_tlen| append_tlen_to_from_key(from_key, level_tlen))
+            .collect()
         };
 
         for (item, level_from_key) in prepared.iter_mut().zip(batch_from_keys.into_iter()) {

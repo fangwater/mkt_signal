@@ -484,7 +484,6 @@ fn handle_trade_signal(signal: TradeSignal) {
         SignalType::ArbCancel => match ArbCancelCtx::from_bytes(signal.context.clone()) {
             Ok(cancel_ctx) => {
                 let symbol = cancel_ctx.get_opening_symbol().to_uppercase();
-                let hedging_symbol = cancel_ctx.get_hedging_symbol();
                 let opening_venue = TradingVenue::from_u8(cancel_ctx.opening_leg.venue)
                     .unwrap_or(TradingVenue::BinanceMargin);
                 let hedging_venue = TradingVenue::from_u8(cancel_ctx.hedging_leg.venue)
@@ -510,7 +509,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                     let strategy_id = cancel_ctx.strategy_id;
                     let exists = { strategy_mgr.borrow().contains(strategy_id) };
                     if !exists {
-                        warn!(
+                        debug!(
                             "ArbCancel: targeted strategy missing strategy_id={} symbol={} trigger_ts={}",
                             strategy_id,
                             symbol,
@@ -520,7 +519,6 @@ fn handle_trade_signal(signal: TradeSignal) {
                     }
                     let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
                     if let Some(mut strategy) = strategy_opt {
-                        info!("ArbCancel: targeted strategy id={}", strategy_id);
                         strategy.handle_signal(&signal);
                         if strategy.is_active() {
                             strategy_mgr.borrow_mut().insert(strategy);
@@ -541,15 +539,6 @@ fn handle_trade_signal(signal: TradeSignal) {
                 if candidate_ids.is_empty() {
                     return;
                 }
-                info!(
-                    "ArbCancel: 找到 {} 个活跃策略 {:?}, opening={} {:?} hedging={} {:?}",
-                    candidate_ids.len(),
-                    candidate_ids,
-                    symbol,
-                    opening_venue,
-                    hedging_symbol,
-                    hedging_venue
-                );
                 for strategy_id in candidate_ids {
                     let exists = { strategy_mgr.borrow().contains(strategy_id) };
                     if !exists {
@@ -557,12 +546,9 @@ fn handle_trade_signal(signal: TradeSignal) {
                     }
                     let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
                     if let Some(mut strategy) = strategy_opt {
-                        info!("ArbCancel: 处理策略 id={}", strategy_id);
                         strategy.handle_signal(&signal);
                         if strategy.is_active() {
                             strategy_mgr.borrow_mut().insert(strategy);
-                        } else {
-                            info!("ArbCancel: 策略 id={} 已不活跃，不再放回", strategy_id);
                         }
                     }
                 }

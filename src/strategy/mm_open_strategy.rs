@@ -65,6 +65,7 @@ pub struct MarketMakerOpenStrategy {
     pending_order_query: Option<PendingOrderQueryReason>,
     order_query_watchdog: Option<QueryWatchdog>,
     cancel_query_watchdog: Option<QueryWatchdog>,
+    last_cancel_trigger_ts: Option<i64>,
 }
 
 impl MarketMakerOpenStrategy {
@@ -87,6 +88,7 @@ impl MarketMakerOpenStrategy {
             pending_order_query: None,
             order_query_watchdog: None,
             cancel_query_watchdog: None,
+            last_cancel_trigger_ts: None,
         }
     }
 
@@ -569,6 +571,16 @@ impl MarketMakerOpenStrategy {
     fn handle_mm_cancel_signal(&mut self, ctx: MmCancelCtx) {
         let precise_target = ctx.strategy_id > 0;
         let from_key_preview = Self::preview_text(&String::from_utf8_lossy(&ctx.from_key), 160);
+        if self.last_cancel_trigger_ts == Some(ctx.trigger_ts) {
+            debug!(
+                "MarketMakerOpenStrategy: strategy_id={} skip duplicate MMCancel trigger_ts={} open_order_id={} from_key='{}'",
+                self.strategy_id,
+                ctx.trigger_ts,
+                self.open_order_id,
+                from_key_preview
+            );
+            return;
+        }
         if precise_target {
             if ctx.strategy_id != self.strategy_id {
                 info!(
@@ -610,14 +622,21 @@ impl MarketMakerOpenStrategy {
             }
         }
 
-        info!(
-            "MarketMakerOpenStrategy: strategy_id={} processing MMCancel precise={} open_order_id={} trigger_ts={} from_key='{}'",
-            self.strategy_id,
-            precise_target,
-            self.open_order_id,
-            ctx.trigger_ts,
-            from_key_preview
-        );
+        if self.pending_order_query.is_some()
+            || self
+                .cancel_query_watchdog
+                .is_some_and(|w| w.client_order_id == self.open_order_id)
+        {
+            debug!(
+                "MarketMakerOpenStrategy: strategy_id={} skip MMCancel because cancel reconcile already in flight open_order_id={} trigger_ts={} from_key='{}'",
+                self.strategy_id,
+                self.open_order_id,
+                ctx.trigger_ts,
+                from_key_preview
+            );
+            self.last_cancel_trigger_ts = Some(ctx.trigger_ts);
+            return;
+        }
         if self.open_order_id == 0 {
             info!(
                 "MarketMakerOpenStrategy: strategy_id={} skip MMCancel because open_order_id=0 trigger_ts={} from_key='{}'",
@@ -650,10 +669,7 @@ impl MarketMakerOpenStrategy {
                             self.strategy_id, exchange, self.open_order_id, ctx.trigger_ts, from_key_preview, e
                         );
                     } else {
-                        info!(
-                            "MarketMakerOpenStrategy: strategy_id={} 已发送撤单请求 order_id={} exchange={} trigger_ts={} from_key='{}'",
-                            self.strategy_id, self.open_order_id, exchange, ctx.trigger_ts, from_key_preview
-                        );
+                        self.last_cancel_trigger_ts = Some(ctx.trigger_ts);
                         self.reset_cancel_reconcile_state();
                         self.schedule_cancel_query_watchdog(order.client_order_id);
                     }

@@ -9,7 +9,58 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::common::exchange::Exchange;
 use crate::common::symbol_util::normalize_symbol_for_venue;
+use crate::depth_pub::query_client::DepthQueryClient;
 use crate::signal::common::TradingVenue;
+use log::warn;
+
+pub fn format_tlen_value(value: f64) -> String {
+    if value.is_finite() {
+        format!("{value:.8}")
+    } else {
+        "nan".to_string()
+    }
+}
+
+pub fn append_tlen_to_from_key(base_from_key: &str, level_tlen: f64) -> String {
+    format!("{base_from_key}:tlen={}", format_tlen_value(level_tlen))
+}
+
+pub fn query_batch_tlens_or_zero(
+    source: &str,
+    depth_query_client: &DepthQueryClient,
+    symbol: &str,
+    tick_indices: &[i64],
+) -> Vec<f64> {
+    if tick_indices.is_empty() {
+        return Vec::new();
+    }
+
+    match depth_query_client.query_batch_tick_indices(symbol, tick_indices) {
+        Ok(mut tlens) => {
+            if tlens.len() < tick_indices.len() {
+                warn!(
+                    "{source}: tlen batch query partial result symbol={} requested={} got={}, missing -> 0.0",
+                    symbol,
+                    tick_indices.len(),
+                    tlens.len()
+                );
+                tlens.resize(tick_indices.len(), 0.0);
+            } else if tlens.len() > tick_indices.len() {
+                tlens.truncate(tick_indices.len());
+            }
+            tlens
+        }
+        Err(err) => {
+            warn!(
+                "{source}: tlen batch query failed symbol={} levels={} err={:#}",
+                symbol,
+                tick_indices.len(),
+                err
+            );
+            vec![0.0; tick_indices.len()]
+        }
+    }
+}
 
 // ========== 资金费率周期 ==========
 

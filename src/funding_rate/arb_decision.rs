@@ -1034,7 +1034,6 @@ fn drive_funding_decision(
             hedge_symbol_key.as_str(),
             open_venue,
             hedge_venue,
-            now,
         )
     })
     .flatten()
@@ -1169,7 +1168,6 @@ fn drive_spread_arb_decision(
             hedge_symbol_key.as_str(),
             open_venue,
             hedge_venue,
-            now,
         )
     })
     .flatten()
@@ -2101,7 +2099,6 @@ fn emit_spread_arb_open_signals(
                 level,
                 now: batch_ts,
                 from_key: from_key.as_str(),
-                append_zero_tlen: true,
                 open_order_ttl_us,
                 hedge_timeout_mm_us,
                 factor_mode,
@@ -2119,10 +2116,32 @@ fn emit_spread_arb_open_signals(
             },
         )
     };
-    let contexts = plan.levels.iter().map(build_ctx);
+    let mut contexts: Vec<_> = plan.levels.iter().map(build_ctx).collect();
+    if !contexts.is_empty() {
+        let tick_indices: Vec<i64> = contexts.iter().map(|ctx| ctx.price_count()).collect();
+        let query_symbol = contexts[0].get_opening_symbol();
+        let open_depth_query_client = if open_venue == decision.runtime.venues.0 {
+            &decision.runtime.open_depth_query_client
+        } else {
+            decision
+                .runtime
+                .hedge_depth_query_client
+                .as_ref()
+                .expect("missing open-side depth query client")
+        };
+        let tlens = super::common::query_batch_tlens_or_zero(
+            SPREAD_ARB_SHELL_NAME,
+            open_depth_query_client,
+            &query_symbol,
+            &tick_indices,
+        );
+        for (ctx, level_tlen) in contexts.iter_mut().zip(tlens.into_iter()) {
+            ctx.set_from_key(super::common::append_tlen_to_from_key(&from_key, level_tlen).into_bytes());
+        }
+    }
 
     if panic_on_first_open_dry_run {
-        if let Some(first_ctx) = plan.levels.first().map(build_ctx) {
+        if let Some(first_ctx) = contexts.first() {
             let from_key_str = String::from_utf8_lossy(&first_ctx.from_key);
             log::warn!(
                 "{SPREAD_ARB_SHELL_NAME}: dry-run trap hit first ArbOpen open={} hedge={} side={:?} price={:.8} qty={:.8} from_key='{}'",
@@ -2239,7 +2258,6 @@ fn emit_spread_arb_close_signals(
                 level,
                 now: batch_ts,
                 from_key: from_key.as_str(),
-                append_zero_tlen: true,
                 open_order_ttl_us,
                 hedge_timeout_mm_us,
                 factor_mode,
@@ -2257,6 +2275,29 @@ fn emit_spread_arb_close_signals(
             },
         )
     });
+    let mut contexts: Vec<_> = contexts.collect();
+    if !contexts.is_empty() {
+        let tick_indices: Vec<i64> = contexts.iter().map(|ctx| ctx.price_count()).collect();
+        let query_symbol = contexts[0].get_opening_symbol();
+        let open_depth_query_client = if open_venue == decision.runtime.venues.0 {
+            &decision.runtime.open_depth_query_client
+        } else {
+            decision
+                .runtime
+                .hedge_depth_query_client
+                .as_ref()
+                .expect("missing open-side depth query client")
+        };
+        let tlens = super::common::query_batch_tlens_or_zero(
+            SPREAD_ARB_SHELL_NAME,
+            open_depth_query_client,
+            &query_symbol,
+            &tick_indices,
+        );
+        for (ctx, level_tlen) in contexts.iter_mut().zip(tlens.into_iter()) {
+            ctx.set_from_key(super::common::append_tlen_to_from_key(&from_key, level_tlen).into_bytes());
+        }
+    }
     let _ = super::arb_emit::emit_levels_as_signals(
         &decision.runtime.signal_pub,
         SignalType::ArbClose,
@@ -2388,7 +2429,6 @@ fn emit_funding_open_close_signals(
                 level,
                 now: batch_ts,
                 from_key: std::str::from_utf8(&from_key).unwrap_or(""),
-                append_zero_tlen: false,
                 open_order_ttl_us,
                 hedge_timeout_mm_us,
                 factor_mode,
@@ -2570,7 +2610,6 @@ pub(crate) struct ArbSharedBootstrap {
     pub signal_cooldown_us: i64,
     pub last_open_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
     pub last_close_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
-    pub last_cancel_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -2632,7 +2671,6 @@ pub(crate) struct ArbDecisionState {
     pub signal_cooldown_us: i64,
     pub last_open_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
     pub last_close_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
-    pub last_cancel_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
     pub last_tlen_threshold_reload_ts_us: i64,
     pub last_cancel_trigger_ts_us: i64,
     pub intercept_counts: HashMap<String, u64>,
@@ -2667,7 +2705,6 @@ impl ArbDecisionState {
             signal_cooldown_us: 5_000_000,
             last_open_ts: Rc::new(RefCell::new(HashMap::new())),
             last_close_ts: Rc::new(RefCell::new(HashMap::new())),
-            last_cancel_ts: Rc::new(RefCell::new(HashMap::new())),
             last_tlen_threshold_reload_ts_us: 0,
             last_cancel_trigger_ts_us: 0,
             intercept_counts: HashMap::new(),
@@ -2740,16 +2777,12 @@ impl ArbDecisionState {
         hedge_symbol_key: &str,
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
-        now: i64,
     ) -> Option<ArbCancelGatePassed> {
         if !forward_cancel && !backward_cancel {
             return None;
         }
         let key =
             Self::build_threshold_key(open_symbol_key, hedge_symbol_key, open_venue, hedge_venue);
-        if is_cooldown_hit(&self.last_cancel_ts, &key, now, self.signal_cooldown_us) {
-            return None;
-        }
         Some(ArbCancelGatePassed { key })
     }
 
@@ -2811,7 +2844,6 @@ impl ArbDecisionState {
         self.signal_cooldown_us = bootstrap.signal_cooldown_us;
         self.last_open_ts = bootstrap.last_open_ts;
         self.last_close_ts = bootstrap.last_close_ts;
-        self.last_cancel_ts = bootstrap.last_cancel_ts;
     }
 
     pub fn default_shared_bootstrap(open_orders_per_round: u32) -> ArbSharedBootstrap {
@@ -2828,7 +2860,6 @@ impl ArbDecisionState {
             signal_cooldown_us: 5_000_000,
             last_open_ts: Rc::new(RefCell::new(HashMap::new())),
             last_close_ts: Rc::new(RefCell::new(HashMap::new())),
-            last_cancel_ts: Rc::new(RefCell::new(HashMap::new())),
         }
     }
 
@@ -3132,9 +3163,6 @@ impl ArbDecisionState {
         match signal_type {
             SignalType::ArbOpen => self.is_open_cooldown_hit(key, now),
             SignalType::ArbClose => self.is_close_cooldown_hit(key, now),
-            SignalType::ArbCancel => {
-                is_cooldown_hit(&self.last_cancel_ts, key, now, self.signal_cooldown_us)
-            }
             _ => false,
         }
     }
@@ -3143,7 +3171,6 @@ impl ArbDecisionState {
         match signal_type {
             SignalType::ArbOpen => self.mark_open_triggered(key, now),
             SignalType::ArbClose => self.mark_close_triggered(key, now),
-            SignalType::ArbCancel => update_last_ts(&self.last_cancel_ts, key, now),
             _ => {}
         }
     }
