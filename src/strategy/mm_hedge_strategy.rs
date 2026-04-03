@@ -1969,7 +1969,9 @@ impl MarketMakerHedgeStrategy {
 
 #[cfg(test)]
 mod tests {
-    use super::{MarketMakerHedgeStrategy, PendingOrderQueryReason, NET_EXPOSURE_EPS_USDT};
+    use super::{
+        HedgeOrderMeta, MarketMakerHedgeStrategy, PendingOrderQueryReason, NET_EXPOSURE_EPS_USDT,
+    };
 
     #[test]
     fn zero_net_exposure_does_not_send_hedge_query() {

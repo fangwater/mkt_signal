@@ -46,6 +46,8 @@ const TRADE_FLOW_MAX_BYTES: usize = 1024;
 const IDLE_SLEEP_MICROS: u64 = 200;
 const STATS_LOG_INTERVAL_SECS: u64 = 60;
 const TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE: usize = 8192;
+const TRADE_FLOW_SERVICE_HISTORY_SIZE: usize = 128;
+const TRADE_FLOW_MAX_SUBSCRIBERS: usize = 10;
 const TRADE_FLOW_FEATURE_CF_SUFFIX: &str = "trade_flow:feature";
 const ROCKSDB_BOOTSTRAP_LOG_EVERY: usize = 12 * 60 * 4;
 const MAX_SYMBOL_HISTORY: usize = 4096;
@@ -55,8 +57,6 @@ const FACTOR_118_WINDOW: usize = 120;
 const FACTOR_118_VWAP_LEVELS: usize = 5;
 const RL_FACTOR_NAME: &str = "rl_return_volatility";
 const RL_FACTOR_PAYLOAD_MAX_BYTES: usize = 256;
-const RL_FACTOR_PUBLISHER_HISTORY_SIZE: usize = 128;
-const RL_FACTOR_SUBSCRIBER_MAX_BUFFER_SIZE: usize = 1024;
 const RL_FACTOR_WARN_INTERVAL_SECS: u64 = 5;
 const SYMBOL_RELOAD_WARN_INTERVAL_SECS: u64 = 60;
 const ROLLING_CORR_CLOSE_VOLUME_14_WINDOW: usize = 14;
@@ -149,10 +149,6 @@ impl RlFactorPublisher {
         let service = node
             .service_builder(&ServiceName::new(&service_path)?)
             .publish_subscribe::<[u8; RL_FACTOR_PAYLOAD_MAX_BYTES]>()
-            .max_publishers(1)
-            .max_subscribers(10)
-            .history_size(RL_FACTOR_PUBLISHER_HISTORY_SIZE)
-            .subscriber_max_buffer_size(RL_FACTOR_SUBSCRIBER_MAX_BUFFER_SIZE)
             .open_or_create()?;
         let publisher = service.publisher_builder().create()?;
 
@@ -1122,7 +1118,11 @@ impl FusionFactorPubApp {
         let service = node
             .service_builder(&ServiceName::new(&service_name)?)
             .publish_subscribe::<[u8; TRADE_FLOW_MAX_BYTES]>()
-            .open()?;
+            .max_publishers(1)
+            .max_subscribers(TRADE_FLOW_MAX_SUBSCRIBERS)
+            .subscriber_max_buffer_size(TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE)
+            .history_size(TRADE_FLOW_SERVICE_HISTORY_SIZE)
+            .open_or_create()?;
         let service_max_buffer = service.static_config().subscriber_max_buffer_size();
         let service_history = service.static_config().history_size();
         if service_max_buffer < TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE {

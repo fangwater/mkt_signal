@@ -66,9 +66,21 @@ impl Default for RlFactorConfig {
 impl FusionFactorPubConfig {
     pub fn load(path: &str) -> Result<Self> {
         let content = fs::read_to_string(path)?;
-        let cfg: FusionFactorPubConfig = toml::from_str(&content)?;
+        let mut cfg: FusionFactorPubConfig = toml::from_str(&content)?;
+        cfg.normalize_model_manager();
         cfg.validate()?;
         Ok(cfg)
+    }
+
+    fn normalize_model_manager(&mut self) {
+        if self
+            .model_manager
+            .as_ref()
+            .map(|mm| mm.model_name.trim().is_empty())
+            .unwrap_or(false)
+        {
+            self.model_manager = None;
+        }
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -129,6 +141,69 @@ impl ClipRange {
             anyhow::bail!("{} min must be < max", name);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn write_temp_config(body: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "fusion_factor_pub_cfg_test_{}_{}.toml",
+            std::process::id(),
+            suffix
+        ));
+        fs::write(&path, body).unwrap();
+        path
+    }
+
+    #[test]
+    fn empty_model_name_switches_to_rl_only() {
+        let path = write_temp_config(
+            r#"
+[tlen_server]
+base_url = "http://127.0.0.1:6322"
+
+[model_manager]
+base_url = "http://127.0.0.1:6300"
+model_name = "   "
+"#,
+        );
+
+        let cfg = FusionFactorPubConfig::load(path.to_str().unwrap()).unwrap();
+        assert!(cfg.model_manager.is_none());
+        assert!(cfg.output_service_path().is_none());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn non_empty_model_name_keeps_model_manager() {
+        let path = write_temp_config(
+            r#"
+[tlen_server]
+base_url = "http://127.0.0.1:6322"
+
+[model_manager]
+base_url = "http://127.0.0.1:6300"
+model_name = "binance-futures-mm-xgb-test"
+"#,
+        );
+
+        let cfg = FusionFactorPubConfig::load(path.to_str().unwrap()).unwrap();
+        assert_eq!(
+            cfg.output_service_path().as_deref(),
+            Some("fusion_factor/binance-futures-mm-xgb-test")
+        );
+
+        let _ = fs::remove_file(path);
     }
 }
 

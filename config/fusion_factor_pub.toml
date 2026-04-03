@@ -8,7 +8,8 @@ symbol_reload_secs = 180
 
 # 可选: 配置后进入 fusion+rl 模式。
 # 启动/刷新 symbol 时会按当前 symbol 集合从 model_manager 拉取有序 factor 列表，
-# 并发送 fusion FeatureMsg；留空/删除该段时进入 rl_only 模式，仅发布 rl_return_volatility。
+# 并发送 fusion FeatureMsg；删除该段，或保留该段但将 model_name 置空时，进入 rl_only 模式，
+# 仅发布 rl_return_volatility。
 [model_manager]
 base_url = "http://127.0.0.1:6300"
 model_name = "binance-futures-mm-xgb-test"
