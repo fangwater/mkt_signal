@@ -1,15 +1,15 @@
 use crate::signal::common::TradingVenue;
 
-use super::common::build_decision_from_key_base;
+use super::common::{
+    append_key_value_fields, build_decision_from_key_base, format_from_key_optional_value,
+};
 use super::mkt_channel::MktChannel;
 use super::rate_fetcher::RateFetcher;
 
-pub fn build_funding_decision_from_key(
-    now: i64,
+fn funding_runtime_fields(
     futures_symbol: &str,
     futures_venue: TradingVenue,
-    spread_rate: f64,
-) -> Vec<u8> {
+) -> (f64, f64, f64) {
     let mkt_channel = MktChannel::instance();
     let rate_fetcher = RateFetcher::instance();
     let funding_ma = mkt_channel
@@ -23,8 +23,58 @@ pub fn build_funding_decision_from_key(
         .get_predict_loan_rate(futures_symbol, futures_venue)
         .map(|(_, v)| v)
         .unwrap_or(0.0);
+    (funding_ma, predicted, loan)
+}
 
-    format!("{now}:{funding_ma:.6}:{predicted:.6}:{loan:.6}:{spread_rate:.6}").into_bytes()
+pub fn build_funding_decision_from_key_base(
+    now: i64,
+    return_score: Option<f64>,
+    return_threshold: Option<f64>,
+    volatility: Option<f64>,
+    env_score: Option<f64>,
+    env_threshold: Option<f64>,
+    futures_symbol: &str,
+    futures_venue: TradingVenue,
+    spread_rate: f64,
+) -> String {
+    let base = build_decision_from_key_base(
+        now,
+        return_score,
+        return_threshold,
+        volatility,
+        env_score,
+        env_threshold,
+    );
+    let (funding_ma, predicted, loan) = funding_runtime_fields(futures_symbol, futures_venue);
+    append_key_value_fields(
+        base,
+        &[
+            ("funding_ma", format!("{funding_ma:.6}")),
+            ("predicted", format!("{predicted:.6}")),
+            ("loan", format!("{loan:.6}")),
+            ("spread", format!("{spread_rate:.6}")),
+        ],
+    )
+}
+
+pub fn build_funding_decision_from_key(
+    now: i64,
+    futures_symbol: &str,
+    futures_venue: TradingVenue,
+    spread_rate: f64,
+) -> Vec<u8> {
+    build_funding_decision_from_key_base(
+        now,
+        None,
+        None,
+        None,
+        None,
+        None,
+        futures_symbol,
+        futures_venue,
+        spread_rate,
+    )
+    .into_bytes()
 }
 
 pub fn build_funding_decision_from_key_with_gate(
@@ -37,46 +87,22 @@ pub fn build_funding_decision_from_key_with_gate(
     volatility: Option<f64>,
     env_score: Option<f64>,
     env_threshold: Option<f64>,
-    open_filter_value: Option<f64>,
-    open_filter_threshold: Option<f64>,
     open_scale: Option<f64>,
 ) -> Vec<u8> {
-    let mkt_channel = MktChannel::instance();
-    let rate_fetcher = RateFetcher::instance();
-    let funding_ma = mkt_channel
-        .get_funding_rate_mean(futures_symbol, futures_venue)
-        .unwrap_or(0.0);
-    let predicted = rate_fetcher
-        .get_predicted_funding_rate(futures_symbol, futures_venue)
-        .map(|(_, v)| v)
-        .unwrap_or(0.0);
-    let loan = rate_fetcher
-        .get_predict_loan_rate(futures_symbol, futures_venue)
-        .map(|(_, v)| v)
-        .unwrap_or(0.0);
-    let base = build_decision_from_key_base(
+    let base = build_funding_decision_from_key_base(
         now,
         return_score,
         return_threshold,
         volatility,
         env_score,
         env_threshold,
+        futures_symbol,
+        futures_venue,
+        spread_rate,
     );
-    let open_filter_value_text = open_filter_value
-        .filter(|v| v.is_finite())
-        .map(|v| format!("{v:.6}"))
-        .unwrap_or_else(|| "NA".to_string());
-    let open_filter_threshold_text = open_filter_threshold
-        .filter(|v| v.is_finite())
-        .map(|v| format!("{v:.6}"))
-        .unwrap_or_else(|| "NA".to_string());
-    let open_scale_text = open_scale
-        .filter(|v| v.is_finite())
-        .map(|v| format!("{v:.6}"))
-        .unwrap_or_else(|| "NA".to_string());
-
-    format!(
-        "{base}:funding_ma={funding_ma:.6}:predicted={predicted:.6}:loan={loan:.6}:spread={spread_rate:.6}:open_signal={open_filter_value_text}:open_signal_thr={open_filter_threshold_text}:open_scale={open_scale_text}"
+    append_key_value_fields(
+        base,
+        &[("open_scale", format_from_key_optional_value(open_scale, 6))],
     )
     .into_bytes()
 }
@@ -97,7 +123,7 @@ pub fn build_spread_arb_cancel_from_key(
         Some(environment_score),
         environment_threshold,
     );
-    format!("{from_key}:spread={spread_rate:.6}")
+    append_key_value_fields(from_key, &[("spread", format!("{spread_rate:.6}"))])
 }
 
 pub fn build_spread_arb_tlen_cancel_from_key(
@@ -127,7 +153,13 @@ pub fn build_funding_tlen_cancel_from_key(
     tlen: f64,
     threshold: f64,
 ) -> String {
-    format!(
-        "{now}:0:0:0:{spread_rate:.6}:cancel_reason=tlen:tlen={tlen:.8}:tlen_thr={threshold:.8}"
+    append_key_value_fields(
+        build_decision_from_key_base(now, None, None, None, None, None),
+        &[
+            ("spread", format!("{spread_rate:.6}")),
+            ("cancel_reason", "tlen".to_string()),
+            ("tlen", format!("{tlen:.8}")),
+            ("tlen_thr", format!("{threshold:.8}")),
+        ],
     )
 }

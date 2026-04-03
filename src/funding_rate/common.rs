@@ -323,6 +323,24 @@ pub fn build_decision_from_key_base(
     )
 }
 
+pub fn format_from_key_optional_value(value: Option<f64>, precision: usize) -> String {
+    value
+        .filter(|v| v.is_finite())
+        .map(|v| format!("{v:.precision$}"))
+        .unwrap_or_else(|| "NA".to_string())
+}
+
+pub fn append_key_value_fields(base: String, fields: &[(&str, String)]) -> String {
+    let mut out = base;
+    for (key, value) in fields {
+        out.push(':');
+        out.push_str(key);
+        out.push('=');
+        out.push_str(value);
+    }
+    out
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ReturnScoreThresholdsResolved {
     pub forward_open: f64,

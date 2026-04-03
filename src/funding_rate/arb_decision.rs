@@ -2043,15 +2043,20 @@ fn emit_spread_arb_open_signals(
         Some(environment_score),
         environment_threshold,
     );
-    let from_key = format!(
-        "{base_from_key}:open_signal={}:open_signal_thr={}:spread={spread_rate:.6}:open_scale={:.6}",
-        open_filter_value
-            .map(|value| format!("{value:.6}"))
-            .unwrap_or_else(|| "NA".to_string()),
-        open_filter_threshold
-            .map(|value| format!("{value:.6}"))
-            .unwrap_or_else(|| "NA".to_string()),
-        open_scale,
+    let from_key = super::common::append_key_value_fields(
+        base_from_key,
+        &[
+            (
+                "open_filter_value",
+                super::common::format_from_key_optional_value(open_filter_value, 6),
+            ),
+            (
+                "open_filter_threshold",
+                super::common::format_from_key_optional_value(open_filter_threshold, 6),
+            ),
+            ("spread", format!("{spread_rate:.6}")),
+            ("open_scale", format!("{open_scale:.6}")),
+        ],
     );
     let order_amount = ArbDecision::with_state_mut(|arb| arb.order_amount)
         .expect("ArbDecisionState should be initialized") as f64;
@@ -2382,8 +2387,6 @@ fn emit_funding_open_close_signals(
             gate.map(|v| v.open_volatility_factor),
             gate.map(|v| v.environment_score),
             gate.and_then(|v| v.environment_threshold),
-            gate.and_then(|v| v.open_filter_value),
-            gate.and_then(|v| v.open_filter_threshold),
             Some(open_scale),
         )
     } else {

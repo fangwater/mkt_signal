@@ -46,7 +46,7 @@ pub fn lookup_realtime_open_filter_value(
     if hedge_venue.is_futures() {
         return mkt_channel
             .get_premium_rate(hedge_symbol, hedge_venue)
-            .map(|value| (value, "hedge_premium_rate"));
+            .map(|value| (value, "premium_rate"));
     }
 
     None
