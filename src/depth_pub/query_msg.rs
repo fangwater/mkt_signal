@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
-pub const DEPTH_QUERY_PAYLOAD: usize = 256;
+pub const DEPTH_QUERY_PAYLOAD: usize = 1024;
 pub const DEPTH_QUERY_SOCKET_PREFIX: &str = "/tmp/mkt_signal_depth_query";
 const HEADER_LEN: usize = 2;
 const FRAME_LEN: usize = 2;

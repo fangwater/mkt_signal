@@ -1,5 +1,5 @@
 use anyhow::Result;
-use log::{debug, info, warn};
+use log::{debug, warn};
 use std::collections::HashMap;
 
 use super::super::mkt_channel::MktChannel;
@@ -156,7 +156,7 @@ impl MmCancelDecision {
                 (false, true) => "sell",
                 (false, false) => "-",
             };
-            info!(
+            debug!(
                 "MmDecision: MMCancel symbol={} side={} score={:.6}",
                 symbol_key, side_text, return_score_value,
             );

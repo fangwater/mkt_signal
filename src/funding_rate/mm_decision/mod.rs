@@ -544,7 +544,7 @@ impl MmDecision {
                 cancel_sent += 1;
                 group_cancel_sent += 1;
             }
-            info!(
+            debug!(
                 "MmDecision: MMCancel tlen compare symbol={} trigger_ts={} candidates={} threshold={:.4} min_tlen={:.4} max_tlen={:.4} details={}",
                 symbol,
                 query.trigger_ts,
@@ -560,7 +560,7 @@ impl MmDecision {
             );
             if group_cancel_sent > 0 {
                 matched_symbols += 1;
-                info!(
+                debug!(
                     "MmDecision: MMCancel tlen hits symbol={} trigger_ts={} candidates={} matched={} threshold={:.4} strategies={}",
                     symbol,
                     query.trigger_ts,
@@ -571,7 +571,7 @@ impl MmDecision {
                 );
             }
         }
-        info!(
+        debug!(
             "MmDecision: MMCancel candidate query processed trigger_ts={} matched_symbols={} cancels_sent={}",
             query.trigger_ts, matched_symbols, cancel_sent
         );
