@@ -1309,6 +1309,17 @@ fn drive_shared_arb_hedge_query(
     let aggressive = hedge_inputs.aggressive;
     let default_offset = hedge_inputs.default_offset;
     let stop_loss = hedge_inputs.stop_loss;
+    let (premium_rate, spread_fr) =
+        match super::arb_open_filter::lookup_realtime_open_filter_value(
+            &open_symbol,
+            &hedge_symbol,
+            open_venue,
+            hedge_venue,
+        ) {
+            Some((value, "premium_rate")) => (Some(value), None),
+            Some((value, "spread_fr")) => (None, Some(value)),
+            _ => (None, None),
+        };
 
     log::info!(
         "{source}: hedge stop-loss check strategy_id={} pct_change={:.6} threshold_pct={:.2} trigger={} valid={}",
@@ -1352,6 +1363,8 @@ fn drive_shared_arb_hedge_query(
             target_factor_lookup.target_factor_value,
             stop_loss.pct_change,
             spread_rate,
+            premium_rate,
+            spread_fr,
             hedge_venue,
             &hedge_symbol,
             market_price,
@@ -1511,6 +1524,8 @@ fn drive_shared_arb_hedge_query(
         target_factor_lookup.target_factor_value,
         stop_loss.pct_change,
         spread_rate,
+        premium_rate,
+        spread_fr,
         hedge_venue,
         &hedge_symbol,
         ctx.hedge_price_value(),

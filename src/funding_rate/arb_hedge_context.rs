@@ -12,7 +12,10 @@ use anyhow::Result;
 use log::warn;
 
 use super::arb_qty_align::min_qty_symbol_key;
-use super::common::build_decision_from_key_base;
+use super::common::{
+    append_key_value_fields, append_tlen_to_from_key, build_decision_from_key_base,
+    format_tlen_value,
+};
 use super::common::Quote;
 
 pub struct ArbHedgeContextCommonInput<'a> {
@@ -205,6 +208,8 @@ pub fn build_spread_arb_hedge_from_key_base(
     hedge_volatility_factor: Option<f64>,
     pct_change: f64,
     spread_rate: f64,
+    premium_rate: Option<f64>,
+    spread_fr: Option<f64>,
 ) -> String {
     let base = build_decision_from_key_base(
         now,
@@ -214,7 +219,27 @@ pub fn build_spread_arb_hedge_from_key_base(
         Some(environment_score),
         environment_threshold,
     );
-    format!("{base}:spread={spread_rate:.6}:pct_change={pct_change:.6}")
+    append_key_value_fields(
+        base,
+        &[
+            ("spread", format!("{spread_rate:.6}")),
+            (
+                "premium_rate",
+                premium_rate
+                    .filter(|v| v.is_finite())
+                    .map(|v| format!("{v:.6}"))
+                    .unwrap_or_else(|| "NA".to_string()),
+            ),
+            (
+                "spread_fr",
+                spread_fr
+                    .filter(|v| v.is_finite())
+                    .map(|v| format!("{v:.6}"))
+                    .unwrap_or_else(|| "NA".to_string()),
+            ),
+            ("pct_change", format!("{pct_change:.6}")),
+        ],
+    )
 }
 
 pub fn build_simple_hedge_from_key(now: i64, request_seq: u32, spread_rate: f64) -> Vec<u8> {
@@ -239,31 +264,31 @@ pub fn append_single_tlen_to_hedge_from_key(
             "{source}: hedge from_key missing price_tick hedge={} venue={:?} symbol_key={}",
             hedge_trade_symbol, hedge_venue, symbol_key
         );
-        return format!("{base_from_key}:tlen_query_err=missing_price_tick").into_bytes();
+        return append_tlen_to_from_key(&base_from_key, 0.0).into_bytes();
     }
     if hedge_price <= 0.0 {
         warn!(
             "{source}: hedge from_key invalid price hedge={} venue={:?} price={:.8}",
             hedge_trade_symbol, hedge_venue, hedge_price
         );
-        return format!("{base_from_key}:tlen_query_err=invalid_price").into_bytes();
+        return append_tlen_to_from_key(&base_from_key, 0.0).into_bytes();
     }
     let Some(tick_index) = price_to_tick_index(hedge_price, raw_price_tick) else {
         warn!(
             "{source}: hedge from_key tick conversion failed hedge={} venue={:?} price={:.8} price_tick={:.8}",
             hedge_trade_symbol, hedge_venue, hedge_price, raw_price_tick
         );
-        return format!("{base_from_key}:tlen_query_err=invalid_price_or_tick").into_bytes();
+        return append_tlen_to_from_key(&base_from_key, 0.0).into_bytes();
     };
 
     match depth_query_client.query_single_tick_index(&hedge_trade_symbol, tick_index) {
-        Ok(tlen) => format!("{base_from_key}:tlen={tlen:.8}").into_bytes(),
+        Ok(tlen) => format!("{base_from_key}:tlen={}", format_tlen_value(tlen)).into_bytes(),
         Err(err) => {
             warn!(
                 "{source}: hedge from_key tlen query failed hedge={} venue={:?} tick_index={} err={err:#}",
                 hedge_trade_symbol, hedge_venue, tick_index
             );
-            format!("{base_from_key}:tlen_query_err=single_query_failed").into_bytes()
+            append_tlen_to_from_key(&base_from_key, 0.0).into_bytes()
         }
     }
 }
@@ -279,6 +304,8 @@ pub fn build_spread_arb_hedge_from_key(
     hedge_volatility_factor: Option<f64>,
     pct_change: f64,
     spread_rate: f64,
+    premium_rate: Option<f64>,
+    spread_fr: Option<f64>,
     hedge_venue: TradingVenue,
     hedge_symbol: &str,
     hedge_price: f64,
@@ -294,6 +321,8 @@ pub fn build_spread_arb_hedge_from_key(
         hedge_volatility_factor,
         pct_change,
         spread_rate,
+        premium_rate,
+        spread_fr,
     );
     append_single_tlen_to_hedge_from_key(
         source,
