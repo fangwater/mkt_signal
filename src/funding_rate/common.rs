@@ -62,6 +62,35 @@ pub fn query_batch_tlens_or_zero(
     }
 }
 
+pub fn apply_open_tlen_gate_and_build_from_keys(
+    source: &str,
+    depth_query_client: &DepthQueryClient,
+    symbol: &str,
+    tick_indices: &[i64],
+    base_from_key: &str,
+    threshold: Option<f64>,
+) -> (Vec<Option<Vec<u8>>>, usize) {
+    if tick_indices.is_empty() {
+        return (Vec::new(), 0);
+    }
+
+    let tlens = query_batch_tlens_or_zero(source, depth_query_client, symbol, tick_indices);
+    let mut filtered = 0usize;
+    let out = tlens
+        .into_iter()
+        .map(|level_tlen| {
+            if let Some(threshold) = threshold {
+                if level_tlen < threshold {
+                    filtered += 1;
+                    return None;
+                }
+            }
+            Some(append_tlen_to_from_key(base_from_key, level_tlen).into_bytes())
+        })
+        .collect();
+    (out, filtered)
+}
+
 // ========== 资金费率周期 ==========
 
 /// 资金费率周期类型

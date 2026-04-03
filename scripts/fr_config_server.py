@@ -117,6 +117,30 @@ except Exception:
     SPREAD_THRESHOLD_MAPPING = {}
     SPREAD_THRESHOLD_ORDER = []
 
+xarb_funding_sync = None
+try:
+    import sync_xarb_funding_thresholds as xarb_funding_sync
+
+    def default_dynamic_funding_mapping(open_venue: str, hedge_venue: str) -> Dict[str, str]:
+        return dict(
+            xarb_funding_sync.default_funding_threshold_mapping(open_venue, hedge_venue)
+        )
+except Exception:
+    def default_dynamic_funding_mapping(open_venue: str, hedge_venue: str) -> Dict[str, str]:
+        if open_venue.endswith("-futures") and hedge_venue.endswith("-futures"):
+            return {
+                "forward_open_mm": "spread_fr_80",
+                "backward_open_mm": "spread_fr_20",
+            }
+        return {
+            "forward_open_mm": "hedge_premium_rate_50",
+            "backward_open_mm": "hedge_premium_rate_50",
+        }
+
+
+def dynamic_funding_threshold_order() -> List[str]:
+    return ["forward_open_mm", "backward_open_mm"]
+
 INDEX_HTML_TEMPLATE = """<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -272,7 +296,8 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       <a href="#symbol-lists">Symbol Lists</a>
       <a href="#strategy-params">Strategy Params</a>
       <a href="#risk-params">Risk Params</a>
-      <a href="#funding-thresholds">Funding Thresholds</a>
+      <a href="#funding-thresholds">Static Funding Thresholds</a>
+      <a href="#funding-filter-thresholds">Dynamic Funding Mapping</a>
       <a href="#rolling-params">Rolling Params</a>
       <a href="#spread-thresholds">Spread Thresholds</a>
     </div>
@@ -338,7 +363,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
 
     <section id="funding-thresholds" class="panel">
       <div class="section-header">
-        <h2>Funding Rate Thresholds</h2>
+        <h2>Static Funding Rate Thresholds</h2>
         <div class="actions">
           <button id="funding-load" class="secondary">读取</button>
           <button id="funding-save">保存</button>
@@ -347,6 +372,26 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       </div>
       <div id="funding-table" class="kv-table"></div>
       <div id="funding-status" class="status"></div>
+    </section>
+
+    <section id="funding-filter-thresholds" class="panel">
+      <div class="section-header">
+        <h2>Dynamic Funding Filter Mapping</h2>
+        <div class="actions">
+          <button id="funding-map-load" class="secondary">读取配置</button>
+          <button id="funding-map-save">保存配置</button>
+          <button id="funding-map-sync" class="ghost">同步阈值</button>
+        </div>
+      </div>
+      <div class="toolbar" style="margin-bottom: 10px;">
+        <div class="field">
+          <label for="funding-map-symbol">Symbol (可选)</label>
+          <input id="funding-map-symbol" placeholder="BTCUSDT" />
+        </div>
+        <div class="hint">格式: spread_fr_80 / hedge_premium_rate_50 / 0.0005</div>
+      </div>
+      <div id="funding-map-table" class="kv-table"></div>
+      <div id="funding-map-status" class="status"></div>
     </section>
 
     <section id="rolling-params" class="panel">
@@ -759,6 +804,65 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       setStatus('funding-status', '已载入默认参数');
     }
 
+    async function loadFundingMapping() {
+      setStatus('funding-map-status', '读取中...');
+      try {
+        const data = await fetchJson(`${apiUrl('funding-filter-thresholds')}?${queryParams()}`);
+        buildParamRows('funding-map-table', BOOTSTRAP.defaults.funding_mapping || {}, {}, BOOTSTRAP.order.funding_mapping || [], data.values || {});
+        setStatus('funding-map-status', '读取完成');
+      } catch (err) {
+        setStatus('funding-map-status', `读取失败: ${err}`, false);
+      }
+    }
+
+    async function saveFundingMapping() {
+      setStatus('funding-map-status', '保存中...');
+      try {
+        const payload = {
+          exchange: normalizeExchange(exchangeSelect.value),
+          open_venue: openVenueInput.value.trim(),
+          hedge_venue: hedgeVenueInput.value.trim(),
+          values: collectParamValues('funding-map-table'),
+        };
+        const data = await fetchJson(apiUrl('funding-filter-thresholds'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        setStatus('funding-map-status', `保存成功 (${data.count || 0} 字段)`);
+      } catch (err) {
+        setStatus('funding-map-status', `保存失败: ${err}`, false);
+      }
+    }
+
+    async function syncFundingMapping() {
+      setStatus('funding-map-status', '同步中...');
+      try {
+        const symbol = document.getElementById('funding-map-symbol').value.trim();
+        const payload = {
+          exchange: normalizeExchange(exchangeSelect.value),
+          open_venue: openVenueInput.value.trim(),
+          hedge_venue: hedgeVenueInput.value.trim(),
+          symbol,
+          mapping: collectParamValues('funding-map-table'),
+        };
+        const data = await fetchJson(apiUrl('funding-filter-thresholds/sync'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const changed = data.changed != null ? `, changed=${data.changed}` : '';
+        setStatus('funding-map-status', `同步完成: ${data.written || 0} 字段${changed}`);
+      } catch (err) {
+        setStatus('funding-map-status', `同步失败: ${err}`, false);
+      }
+    }
+
+    function applyFundingMappingDefaults() {
+      buildParamRows('funding-map-table', BOOTSTRAP.defaults.funding_mapping || {}, {}, BOOTSTRAP.order.funding_mapping || [], {});
+      setStatus('funding-map-status', '已载入默认配置');
+    }
+
     function applyRollingDefaults() {
       const open = openVenueInput.value.trim().toLowerCase();
       const hedge = hedgeVenueInput.value.trim().toLowerCase();
@@ -879,6 +983,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       await loadStrategyParams();
       await loadRiskParams();
       await loadFundingThresholds();
+      await loadFundingMapping();
       await loadRollingParams();
       await loadSpreadMapping();
     }
@@ -888,6 +993,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     buildParamRows('risk-table', BOOTSTRAP.defaults.risk_params || {}, BOOTSTRAP.comments.risk_params || {}, BOOTSTRAP.order.risk || [], {});
     buildParamRows('strategy-table', BOOTSTRAP.defaults.strategy_params || {}, BOOTSTRAP.comments.strategy_params || {}, BOOTSTRAP.order.strategy || [], {});
     buildParamRows('funding-table', BOOTSTRAP.defaults.funding_thresholds || {}, BOOTSTRAP.comments.funding_thresholds || {}, BOOTSTRAP.order.funding_thresholds || [], {});
+    buildParamRows('funding-map-table', BOOTSTRAP.defaults.funding_mapping || {}, {}, BOOTSTRAP.order.funding_mapping || [], {});
     buildParamRows('spread-table', BOOTSTRAP.defaults.spread_mapping || {}, {}, BOOTSTRAP.order.spread_mapping || [], {});
 
     exchangeSelect.addEventListener('change', () => {
@@ -914,6 +1020,10 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     document.getElementById('funding-load').addEventListener('click', loadFundingThresholds);
     document.getElementById('funding-save').addEventListener('click', saveFundingThresholds);
     document.getElementById('funding-default').addEventListener('click', applyFundingDefaults);
+
+    document.getElementById('funding-map-load').addEventListener('click', loadFundingMapping);
+    document.getElementById('funding-map-save').addEventListener('click', saveFundingMapping);
+    document.getElementById('funding-map-sync').addEventListener('click', syncFundingMapping);
 
     document.getElementById('rolling-load').addEventListener('click', loadRollingParams);
     document.getElementById('rolling-save').addEventListener('click', saveRollingParams);
@@ -1364,7 +1474,11 @@ def spread_mapping_key(open_venue: str, hedge_venue: str) -> str:
     return f"fr_spread_threshold_mapping_{open_venue}_{hedge_venue}"
 
 
-def normalize_spread_mapping(values: Dict[str, Any]) -> Dict[str, str]:
+def funding_mapping_key(open_venue: str, hedge_venue: str) -> str:
+    return f"fr_funding_threshold_mapping_{open_venue}_{hedge_venue}"
+
+
+def normalize_threshold_mapping(values: Dict[str, Any]) -> Dict[str, str]:
     mapping: Dict[str, str] = {}
     for key, value in (values or {}).items():
         k = str(key).strip()
@@ -1375,12 +1489,24 @@ def normalize_spread_mapping(values: Dict[str, Any]) -> Dict[str, str]:
     return mapping
 
 
+def normalize_spread_mapping(values: Dict[str, Any]) -> Dict[str, str]:
+    return normalize_threshold_mapping(values)
+
+
 def read_spread_mapping(rds, open_venue: str, hedge_venue: str) -> Dict[str, str]:
     key = spread_mapping_key(open_venue, hedge_venue)
     values = read_hash(rds, key)
     if values:
         return normalize_spread_mapping(values)
     return normalize_spread_mapping(SPREAD_THRESHOLD_MAPPING)
+
+
+def read_funding_mapping(rds, open_venue: str, hedge_venue: str) -> Dict[str, str]:
+    key = funding_mapping_key(open_venue, hedge_venue)
+    values = read_hash(rds, key)
+    if values:
+        return normalize_threshold_mapping(values)
+    return normalize_threshold_mapping(default_dynamic_funding_mapping(open_venue, hedge_venue))
 
 
 def generate_threshold_fields(
@@ -1450,6 +1576,67 @@ def sync_spread_thresholds(
     }
 
 
+def sync_funding_thresholds(
+    rds,
+    open_venue: str,
+    hedge_venue: str,
+    key_suffix: str,
+    mapping: Optional[Dict[str, str]] = None,
+    symbol: Optional[str] = None,
+) -> Dict[str, Any]:
+    if xarb_funding_sync is None:
+        raise RuntimeError("sync_xarb_funding_thresholds.py not available")
+
+    dump_keys = [f"fr_dump_symbols:{key_suffix}"]
+    fwd_keys = [f"fr_fwd_trade_symbols:{key_suffix}"]
+    bwd_keys = [f"fr_bwd_trade_symbols:{key_suffix}"]
+    rolling_key = f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}"
+    write_key = f"fr_funding_thresholds_{open_venue}_{hedge_venue}"
+
+    mapping = normalize_threshold_mapping(mapping or {})
+    if not mapping:
+        mapping = normalize_threshold_mapping(
+            default_dynamic_funding_mapping(open_venue, hedge_venue)
+        )
+    if not mapping:
+        raise RuntimeError("funding mapping is empty")
+
+    target_symbols = xarb_funding_sync.load_symbol_lists(rds, dump_keys, fwd_keys, bwd_keys)
+    if symbol:
+        target_symbols = [str(symbol).strip().upper()]
+    if not target_symbols:
+        raise RuntimeError(f"no symbols found for key_suffix={key_suffix}")
+
+    rolling_data = xarb_funding_sync.read_rolling_metrics(rds, rolling_key)
+    if not rolling_data:
+        raise RuntimeError(f"rolling metrics not found: {rolling_key}")
+
+    symbol_data: Dict[str, Dict] = {}
+    missing_symbols: set[str] = set()
+    for sym in target_symbols:
+        obj = xarb_funding_sync.find_symbol_data(rolling_data, sym)
+        if obj is None:
+            missing_symbols.add(sym)
+        else:
+            symbol_data[sym] = obj
+
+    all_fields, skipped_symbols = xarb_funding_sync.generate_threshold_fields(symbol_data, mapping)
+    changed = 0
+    if all_fields:
+        res = rds.hset(write_key, mapping=all_fields)
+        changed = int(res) if res is not None else 0
+
+    return {
+        "written": len(all_fields),
+        "changed": changed,
+        "missing_symbols": sorted(list(missing_symbols)),
+        "skipped_symbols": sorted(list(skipped_symbols)),
+        "write_key": write_key,
+        "rolling_key": rolling_key,
+        "mapping_key": funding_mapping_key(open_venue, hedge_venue),
+    }
+
+
 def render_index_html(default_exchange: str) -> str:
     bootstrap = {
         "exchanges": SUPPORTED_EXCHANGES,
@@ -1460,6 +1647,10 @@ def render_index_html(default_exchange: str) -> str:
             "risk_params": DEFAULT_RISK_PARAMS,
             "strategy_params": DEFAULT_STRATEGY_PARAMS,
             "funding_thresholds": DEFAULT_FUNDING_THRESHOLDS,
+            "funding_mapping": default_dynamic_funding_mapping(
+                EXCHANGE_DEFAULTS.get(default_exchange, ("", ""))[0],
+                EXCHANGE_DEFAULTS.get(default_exchange, ("", ""))[1],
+            ),
             "rolling_params": DEFAULT_ROLLING_PARAMS,
             "spread_mapping": SPREAD_THRESHOLD_MAPPING,
         },
@@ -1472,6 +1663,7 @@ def render_index_html(default_exchange: str) -> str:
             "risk": RISK_PARAM_ORDER,
             "strategy": STRATEGY_PARAM_ORDER,
             "funding_thresholds": FUNDING_THRESHOLD_ORDER,
+            "funding_mapping": dynamic_funding_threshold_order(),
             "spread_mapping": SPREAD_THRESHOLD_ORDER,
         },
     }
@@ -1651,6 +1843,19 @@ class RequestHandler(BaseHTTPRequestHandler):
             key = f"funding_rate_thresholds_{open_venue}_{hedge_venue}"
             values = read_hash(self.server.context.redis_client, key)
             self._send_json(200, {"key": key, "values": values})
+            return
+
+        if parsed.path == "/api/funding-filter-thresholds":
+            try:
+                _, open_venue, hedge_venue, _ = self._resolve_request_context(params)
+            except Exception as exc:
+                self._send_error(400, str(exc))
+                return
+            key = funding_mapping_key(open_venue, hedge_venue)
+            values = read_funding_mapping(
+                self.server.context.redis_client, open_venue, hedge_venue
+            )
+            self._send_json(200, {"key": key, "count": len(values), "values": values})
             return
 
         if parsed.path == "/api/rolling-params":
@@ -1861,6 +2066,34 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"key": key, "count": written})
             return
 
+        if parsed.path == "/api/funding-filter-thresholds":
+            exchange = normalize_exchange(
+                str(payload.get("exchange") or self.server.context.default_exchange)
+            )
+            try:
+                _, open_v, hedge_v, _ = resolve_venues(
+                    exchange, payload.get("open_venue"), payload.get("hedge_venue")
+                )
+            except Exception as exc:
+                self._send_error(400, str(exc))
+                return
+            values = payload.get("values") or {}
+            if not isinstance(values, dict):
+                self._send_error(400, "values must be object")
+                return
+            mapping = normalize_threshold_mapping(values)
+            if not mapping:
+                mapping = normalize_threshold_mapping(
+                    default_dynamic_funding_mapping(open_v, hedge_v)
+                )
+            if not mapping:
+                self._send_error(400, "mapping is empty")
+                return
+            key = funding_mapping_key(open_v, hedge_v)
+            written = write_hash(self.server.context.redis_client, key, mapping)
+            self._send_json(200, {"key": key, "count": written})
+            return
+
         if parsed.path == "/api/rolling-params":
             exchange = normalize_exchange(
                 str(payload.get("exchange") or self.server.context.default_exchange)
@@ -1921,6 +2154,34 @@ class RequestHandler(BaseHTTPRequestHandler):
             mapping = payload.get("mapping") if isinstance(payload, dict) else None
             try:
                 result = sync_spread_thresholds(
+                    self.server.context.redis_client,
+                    open_v,
+                    hedge_v,
+                    key_suffix,
+                    mapping,
+                    symbol,
+                )
+            except Exception as exc:
+                self._send_error(500, f"sync failed: {exc}")
+                return
+            self._send_json(200, result)
+            return
+
+        if parsed.path == "/api/funding-filter-thresholds/sync":
+            exchange = normalize_exchange(
+                str(payload.get("exchange") or self.server.context.default_exchange)
+            )
+            try:
+                _, open_v, hedge_v, key_suffix = resolve_venues(
+                    exchange, payload.get("open_venue"), payload.get("hedge_venue")
+                )
+            except Exception as exc:
+                self._send_error(400, str(exc))
+                return
+            symbol = payload.get("symbol")
+            mapping = payload.get("mapping") if isinstance(payload, dict) else None
+            try:
+                result = sync_funding_thresholds(
                     self.server.context.redis_client,
                     open_v,
                     hedge_v,

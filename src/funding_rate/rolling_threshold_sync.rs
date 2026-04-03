@@ -71,6 +71,27 @@ pub(crate) fn resolve_symbol_single_quantile_thresholds(
     (resolved, missing_refs)
 }
 
+pub(crate) fn resolve_symbol_single_thresholds(
+    rolling_payloads: &HashMap<String, serde_json::Value>,
+    field_ref: &str,
+) -> (HashMap<String, f64>, usize) {
+    let mut resolved = HashMap::new();
+    let mut missing_refs = 0usize;
+
+    for (symbol, payload) in rolling_payloads {
+        match resolve_threshold_value(payload, field_ref) {
+            Some(value) => {
+                resolved.insert(symbol.clone(), value);
+            }
+            None => {
+                missing_refs += 1;
+            }
+        }
+    }
+
+    (resolved, missing_refs)
+}
+
 pub(crate) fn default_xarb_spread_mapping() -> HashMap<String, String> {
     HashMap::from([
         ("forward_open_mm".to_string(), "spread_5".to_string()),
@@ -80,6 +101,19 @@ pub(crate) fn default_xarb_spread_mapping() -> HashMap<String, String> {
         ("backward_open_mm".to_string(), "spread_95".to_string()),
         ("backward_open_mt".to_string(), "askbid_90".to_string()),
         ("backward_cancel_mm".to_string(), "spread_90".to_string()),
+        ("backward_cancel_mt".to_string(), "askbid_85".to_string()),
+    ])
+}
+
+pub(crate) fn default_fr_spread_mapping() -> HashMap<String, String> {
+    HashMap::from([
+        ("forward_open_mm".to_string(), "spread_15".to_string()),
+        ("forward_open_mt".to_string(), "bidask_10".to_string()),
+        ("forward_cancel_mm".to_string(), "spread_20".to_string()),
+        ("forward_cancel_mt".to_string(), "bidask_15".to_string()),
+        ("backward_open_mm".to_string(), "spread_30".to_string()),
+        ("backward_open_mt".to_string(), "askbid_90".to_string()),
+        ("backward_cancel_mm".to_string(), "spread_25".to_string()),
         ("backward_cancel_mt".to_string(), "askbid_85".to_string()),
     ])
 }
@@ -214,6 +248,21 @@ pub(crate) fn parse_xarb_mapping_config(
     }
 }
 
+pub(crate) fn parse_plain_mapping_config(
+    raw: HashMap<String, String>,
+    default_mapping: HashMap<String, String>,
+) -> StoredXarbMappingConfig {
+    let mapping = normalize_threshold_mapping(raw);
+    StoredXarbMappingConfig {
+        rolling_key: None,
+        mapping: if mapping.is_empty() {
+            default_mapping
+        } else {
+            mapping
+        },
+    }
+}
+
 pub(crate) fn normalize_xarb_symbol(symbol: &str) -> String {
     normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures).to_ascii_uppercase()
 }
@@ -267,6 +316,26 @@ pub(crate) fn extract_quantile_value(payload: &serde_json::Value, field_ref: &st
     }
 
     None
+}
+
+fn extract_direct_numeric_value(payload: &serde_json::Value, field_ref: &str) -> Option<f64> {
+    let map = payload.as_object()?;
+    normalize_quantile_value(map.get(field_ref.trim())?)
+}
+
+fn parse_literal_threshold_value(field_ref: &str) -> Option<f64> {
+    let value = field_ref.trim().parse::<f64>().ok()?;
+    if value.is_finite() {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn resolve_threshold_value(payload: &serde_json::Value, field_ref: &str) -> Option<f64> {
+    extract_quantile_value(payload, field_ref)
+        .or_else(|| extract_direct_numeric_value(payload, field_ref))
+        .or_else(|| parse_literal_threshold_value(field_ref))
 }
 
 pub(crate) fn parse_xarb_rolling_payloads(
@@ -371,7 +440,7 @@ pub(crate) fn resolve_symbol_quantile_thresholds(
         let mut values = HashMap::new();
         let mut missing = false;
         for (dest_field, field_ref) in mapping {
-            match extract_quantile_value(payload, field_ref) {
+            match resolve_threshold_value(payload, field_ref) {
                 Some(value) => {
                     values.insert(dest_field.clone(), value);
                 }
@@ -635,9 +704,10 @@ pub(crate) async fn sync_xarb_spread_thresholds_to_redis(
 #[cfg(test)]
 mod tests {
     use super::{
-        alias_single_side_payloads, build_xarb_spread_sync_entries, default_xarb_funding_mapping,
-        extract_quantile_value, merge_rolling_payloads, normalize_xarb_symbol,
-        parse_xarb_mapping_config, xarb_spread_threshold_order,
+        alias_single_side_payloads, build_xarb_spread_sync_entries, default_fr_spread_mapping,
+        default_xarb_funding_mapping, extract_quantile_value, merge_rolling_payloads,
+        normalize_xarb_symbol, parse_plain_mapping_config, parse_xarb_mapping_config,
+        resolve_symbol_quantile_thresholds, resolve_threshold_value, xarb_spread_threshold_order,
     };
     use crate::signal::common::TradingVenue;
     use std::collections::HashMap;
@@ -698,6 +768,56 @@ mod tests {
             defaults.clone(),
         );
         assert_eq!(parsed.mapping, defaults);
+    }
+
+    #[test]
+    fn plain_mapping_config_falls_back_to_default_when_empty() {
+        let defaults = default_fr_spread_mapping();
+        let parsed = parse_plain_mapping_config(HashMap::new(), defaults.clone());
+        assert_eq!(parsed.mapping, defaults);
+        assert!(parsed.rolling_key.is_none());
+    }
+
+    #[test]
+    fn resolve_threshold_value_supports_direct_payload_field() {
+        let payload = serde_json::json!({
+            "spread_fr": 0.00123,
+        });
+        let value = resolve_threshold_value(&payload, "spread_fr").expect("spread_fr");
+        assert!((value - 0.00123).abs() < 1e-12);
+    }
+
+    #[test]
+    fn resolve_threshold_value_supports_literal_numeric_value() {
+        let payload = serde_json::json!({});
+        let value = resolve_threshold_value(&payload, "-0.0005").expect("literal");
+        assert!((value + 0.0005).abs() < 1e-12);
+    }
+
+    #[test]
+    fn resolve_symbol_thresholds_supports_mixed_quantile_and_literal_refs() {
+        let rolling_payloads = HashMap::from([(
+            "BTCUSDT".to_string(),
+            serde_json::json!({
+                "spread_quantiles": [{"quantile": 0.15, "threshold": 0.0015}],
+            }),
+        )]);
+        let mapping = HashMap::from([
+            ("forward_open_mm".to_string(), "spread_15".to_string()),
+            ("forward_open_mt".to_string(), "0.0009".to_string()),
+        ]);
+
+        let (resolved, missing_refs, skipped) =
+            resolve_symbol_quantile_thresholds(&rolling_payloads, &mapping);
+        assert_eq!(missing_refs, 0);
+        assert!(skipped.is_empty());
+        let values = resolved.get("BTCUSDT").expect("BTCUSDT");
+        assert!(
+            (values.get("forward_open_mm").copied().unwrap_or_default() - 0.0015).abs() < 1e-12
+        );
+        assert!(
+            (values.get("forward_open_mt").copied().unwrap_or_default() - 0.0009).abs() < 1e-12
+        );
     }
 
     #[test]

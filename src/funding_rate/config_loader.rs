@@ -23,14 +23,15 @@ use super::common::resolve_return_score_thresholds_from_redis_map;
 use super::fr_threshold_loader::load_from_redis as load_fr_thresholds;
 use super::mm_decision::MmDecision;
 use super::rolling_threshold_sync::{
-    alias_single_side_payloads, apply_xarb_spread_thresholds, default_single_side_rolling_key,
-    default_xarb_funding_mapping, default_xarb_spread_mapping, format_quantile_field_ref,
-    merge_rolling_payloads, normalize_xarb_symbol, parse_xarb_mapping_config,
-    parse_xarb_rolling_payloads, resolve_symbol_quantile_thresholds,
-    resolve_symbol_single_quantile_thresholds, resolve_xarb_funding_thresholds,
-    sync_xarb_spread_thresholds_to_redis, xarb_funding_mapping_key, xarb_spread_mapping_key,
+    alias_single_side_payloads, apply_xarb_spread_thresholds, default_fr_spread_mapping,
+    default_single_side_rolling_key, default_xarb_funding_mapping, default_xarb_spread_mapping,
+    format_quantile_field_ref, merge_rolling_payloads, normalize_xarb_symbol,
+    parse_plain_mapping_config, parse_xarb_mapping_config, parse_xarb_rolling_payloads,
+    resolve_symbol_quantile_thresholds, resolve_symbol_single_quantile_thresholds,
+    resolve_symbol_single_thresholds,
+    resolve_xarb_funding_thresholds, sync_xarb_spread_thresholds_to_redis,
+    xarb_funding_mapping_key, xarb_spread_mapping_key,
 };
-use super::spread_threshold_loader::load_from_redis as load_spread_thresholds;
 use super::strategy_loader::StrategyParams;
 use super::symbol_list::SymbolList;
 
@@ -349,20 +350,12 @@ async fn reload_all_configs(
     // 2. 更新 SymbolList（建仓/平仓列表）
     reload_symbol_list(redis, namespace, symbol_key_suffix, open_venue, hedge_venue).await?;
 
-    // 3. xarb 统一从 rolling_metrics + mapping 配置重建内存阈值；
-    // 其他 namespace 仍沿用原有 spread/fr Redis hash 热加载逻辑。
-    if normalize_namespace(namespace) == "xarb" {
-        reload_xarb_thresholds_from_rolling(redis, open_venue, hedge_venue).await?;
-    } else {
-        reload_spread_thresholds(redis, namespace, open_venue, hedge_venue).await?;
-        reload_fr_thresholds(redis, namespace, open_venue, hedge_venue).await?;
-    }
+    // 3. 动态阈值统一走 rolling + mapping，静态 funding 阈值单独直读。
+    reload_dynamic_thresholds(redis, namespace, open_venue, hedge_venue).await?;
+    reload_fr_thresholds(redis, namespace, open_venue, hedge_venue).await?;
 
     // 5. 加载 return-model-score 阈值 -> MmDecision/ArbDecision（仅 ns=mm/xarb）
     reload_return_score_thresholds(redis, namespace, hedge_venue).await?;
-    if normalize_namespace(namespace) != "xarb" {
-        reload_open_volatility_thresholds(redis, namespace, open_venue, hedge_venue).await?;
-    }
 
     info!("✅ 配置重载完成");
     Ok(())
@@ -419,55 +412,24 @@ async fn reload_symbol_list(
     Ok(())
 }
 
-/// 重载价差阈值
-async fn reload_spread_thresholds(
+async fn reload_dynamic_thresholds(
     redis: &RedisSettings,
     namespace: &str,
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
 ) -> Result<()> {
-    let redis_key = spread_thresholds_key(namespace, open_venue, hedge_venue);
     let ns = normalize_namespace(namespace);
-    let strict_required = ns == "fr" || ns == "xarb";
+    if ns != "fr" && ns != "xarb" {
+        if ns == "mm" {
+            reload_open_volatility_thresholds(redis, namespace, open_venue, hedge_venue).await?;
+        }
+        return Ok(());
+    }
 
-    match RedisClient::connect(redis.clone()).await {
-        Ok(mut client) => {
-            let spread_map = match client.hgetall_map(&redis_key).await {
-                Ok(map) => map,
-                Err(err) => {
-                    if strict_required {
-                        panic!(
-                            "读取 Redis Hash '{}' 失败，无法加载价差阈值: {:?}",
-                            redis_key, err
-                        );
-                    }
-                    warn!(
-                        "读取 Redis Hash 失败: {} ({:?}), 跳过价差阈值加载 (ns={})",
-                        redis_key, err, ns
-                    );
-                    return Ok(());
-                }
-            };
-            if spread_map.is_empty() {
-                if strict_required {
-                    panic!("Redis hash '{}' 为空或不存在，无法加载价差阈值", redis_key);
-                }
-                warn!(
-                    "Redis hash '{}' 为空或不存在，跳过价差阈值加载 (ns={})",
-                    redis_key, ns
-                );
-                return Ok(());
-            }
-            load_spread_thresholds(spread_map, open_venue, hedge_venue)
-                .with_context(|| format!("解析价差阈值失败 (key: {})", redis_key))?;
-            info!("价差阈值重载成功 (key: {})", redis_key);
-        }
-        Err(err) => {
-            if strict_required {
-                panic!("连接 Redis 失败，无法加载价差阈值: {:?}", err);
-            }
-            warn!("连接 Redis 加载价差阈值失败: {:?} (ns={})", err, ns);
-        }
+    match ns.as_str() {
+        "xarb" => reload_xarb_thresholds_from_rolling(redis, open_venue, hedge_venue).await?,
+        "fr" => reload_fr_dynamic_thresholds_from_rolling(redis, open_venue, hedge_venue).await?,
+        _ => {}
     }
     Ok(())
 }
@@ -481,13 +443,16 @@ async fn reload_fr_thresholds(
 ) -> Result<()> {
     let redis_key = funding_thresholds_key(namespace, open_venue, hedge_venue);
     let ns = normalize_namespace(namespace);
+    if ns != "fr" && ns != "xarb" {
+        return Ok(());
+    }
 
     match RedisClient::connect(redis.clone()).await {
         Ok(mut client) => {
             let funding_map = match client.hgetall_map(&redis_key).await {
                 Ok(map) => map,
                 Err(err) => {
-                    if ns == "fr" {
+                    if ns == "fr" || ns == "xarb" {
                         panic!(
                             "读取 Redis Hash '{}' 失败，无法加载资金费率阈值: {:?}",
                             redis_key, err
@@ -498,7 +463,7 @@ async fn reload_fr_thresholds(
                 }
             };
             if funding_map.is_empty() {
-                if ns == "fr" {
+                if ns == "fr" || ns == "xarb" {
                     panic!(
                         "Redis hash '{}' 为空或不存在，无法加载资金费率阈值",
                         redis_key
@@ -842,6 +807,22 @@ async fn reload_open_volatility_thresholds(
     Ok(())
 }
 
+fn fr_spread_mapping_key(open_venue: TradingVenue, hedge_venue: TradingVenue) -> String {
+    format!(
+        "fr_spread_threshold_mapping_{}_{}",
+        open_venue.data_pub_slug(),
+        hedge_venue.data_pub_slug()
+    )
+}
+
+fn fr_funding_mapping_key(open_venue: TradingVenue, hedge_venue: TradingVenue) -> String {
+    format!(
+        "fr_funding_threshold_mapping_{}_{}",
+        open_venue.data_pub_slug(),
+        hedge_venue.data_pub_slug()
+    )
+}
+
 fn funding_thresholds_key(
     namespace: &str,
     open_venue: TradingVenue,
@@ -898,7 +879,7 @@ async fn reload_xarb_thresholds_from_rolling(
     hedge_venue: TradingVenue,
 ) -> Result<()> {
     let spread_config_key = xarb_spread_mapping_key(open_venue, hedge_venue);
-    let funding_config_key = xarb_funding_mapping_key(open_venue, hedge_venue);
+    let funding_config_key = fr_funding_mapping_key(open_venue, hedge_venue);
     let default_rolling_key = default_rolling_thresholds_key(open_venue, hedge_venue);
 
     let active_symbols: HashSet<String> = SymbolList::instance()
@@ -1054,6 +1035,152 @@ async fn reload_xarb_thresholds_from_rolling(
 
     info!(
         "xarb rolling thresholds 应用完成 rolling_key={} active_symbols={} rolling_symbols={} spread_cfg_fields={} spread_applied={} spread_skipped={} spread_missing_refs={} funding_cfg_fields={} funding_symbols={} funding_skipped={} funding_missing_refs={} open_vol_field_ref={} open_vol_symbols={} open_vol_missing_refs={}",
+        rolling_key,
+        active_symbols.len(),
+        rolling_payloads.len(),
+        spread_config.mapping.len(),
+        spread_applied,
+        spread_skipped.len(),
+        spread_missing_refs,
+        funding_config.mapping.len(),
+        funding_symbols,
+        funding_skipped.len(),
+        funding_missing_refs,
+        open_vol_field_ref,
+        open_vol_loaded_symbols,
+        open_vol_missing_refs
+    );
+
+    Ok(())
+}
+
+async fn reload_fr_dynamic_thresholds_from_rolling(
+    redis: &RedisSettings,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+) -> Result<()> {
+    let spread_config_key = fr_spread_mapping_key(open_venue, hedge_venue);
+    let funding_config_key = xarb_funding_mapping_key(open_venue, hedge_venue);
+    let default_rolling_key = default_rolling_thresholds_key(open_venue, hedge_venue);
+    let active_symbols: HashSet<String> = SymbolList::instance()
+        .get_online_symbols()
+        .into_iter()
+        .map(|symbol| normalize_xarb_symbol(&symbol))
+        .filter(|symbol| !symbol.is_empty())
+        .collect();
+
+    let params = StrategyParams::load_from_redis(redis, "fr", open_venue, hedge_venue)
+        .await
+        .with_context(|| {
+            format!(
+                "读取 fr 策略参数失败 (open={} hedge={})",
+                open_venue.data_pub_slug(),
+                hedge_venue.data_pub_slug()
+            )
+        })?;
+
+    let mut client = RedisClient::connect(redis.clone()).await?;
+    let spread_config = parse_plain_mapping_config(
+        client.hgetall_map(&spread_config_key).await.unwrap_or_default(),
+        default_fr_spread_mapping(),
+    );
+    let funding_config = parse_xarb_mapping_config(
+        client.get_string(&funding_config_key).await.unwrap_or(None),
+        default_xarb_funding_mapping(open_venue, hedge_venue),
+    );
+    let rolling_key = funding_config
+        .rolling_key
+        .clone()
+        .unwrap_or(default_rolling_key);
+    let rolling_map = client.hgetall_map(&rolling_key).await.with_context(|| {
+        format!(
+            "读取 fr rolling metrics 失败 (key={} open={} hedge={})",
+            rolling_key,
+            open_venue.data_pub_slug(),
+            hedge_venue.data_pub_slug()
+        )
+    })?;
+    if rolling_map.is_empty() {
+        anyhow::bail!("fr rolling metrics hash '{}' 为空", rolling_key);
+    }
+
+    let pair_payloads = parse_xarb_rolling_payloads(rolling_map, &active_symbols);
+    let mut open_payloads = match client
+        .hgetall_map(&default_single_side_rolling_key(open_venue))
+        .await
+    {
+        Ok(map) => parse_xarb_rolling_payloads(map, &active_symbols),
+        Err(err) => {
+            warn!(
+                "读取 fr open 单边 rolling metrics 失败 (key={} open={}): {:?}",
+                default_single_side_rolling_key(open_venue),
+                open_venue.data_pub_slug(),
+                err
+            );
+            HashMap::new()
+        }
+    };
+    alias_single_side_payloads(&mut open_payloads, open_venue, "open");
+
+    let mut hedge_payloads = match client
+        .hgetall_map(&default_single_side_rolling_key(hedge_venue))
+        .await
+    {
+        Ok(map) => parse_xarb_rolling_payloads(map, &active_symbols),
+        Err(err) => {
+            warn!(
+                "读取 fr hedge 单边 rolling metrics 失败 (key={} hedge={}): {:?}",
+                default_single_side_rolling_key(hedge_venue),
+                hedge_venue.data_pub_slug(),
+                err
+            );
+            HashMap::new()
+        }
+    };
+    alias_single_side_payloads(&mut hedge_payloads, hedge_venue, "hedge");
+
+    let rolling_payloads =
+        merge_rolling_payloads(vec![pair_payloads, open_payloads, hedge_payloads]);
+    let (resolved_spread, spread_missing_refs, spread_skipped) =
+        resolve_symbol_quantile_thresholds(&rolling_payloads, &spread_config.mapping);
+    let (resolved_funding, funding_missing_refs, funding_skipped) =
+        resolve_symbol_quantile_thresholds(&rolling_payloads, &funding_config.mapping);
+
+    if let Err(err) =
+        ensure_open_volatility_source_params(&mut client, open_venue, params.open_volatility_limit)
+            .await
+    {
+        warn!(
+            "补齐 fr open volatility rolling 配置失败 (open={} hedge={} percentile={}): {:?}",
+            open_venue.data_pub_slug(),
+            hedge_venue.data_pub_slug(),
+            params.open_volatility_limit,
+            err
+        );
+    }
+    let open_vol_field_ref = format_quantile_field_ref("open_vol", params.open_volatility_limit);
+    let (open_vol_thresholds, open_vol_missing_refs) =
+        resolve_symbol_single_thresholds(&rolling_payloads, &open_vol_field_ref);
+
+    let spread_applied = apply_xarb_spread_thresholds(&resolved_spread, open_venue, hedge_venue);
+    let funding_thresholds = resolve_xarb_funding_thresholds(&resolved_funding);
+    let funding_symbols = funding_thresholds.len();
+    let open_vol_loaded_symbols = open_vol_thresholds.len();
+
+    let updated = ArbDecision::with_state_mut(|arb| {
+        arb.funding_open_thresholds = funding_thresholds;
+        arb.open_volatility_thresholds = open_vol_thresholds;
+    });
+    if updated.is_none() {
+        warn!(
+            "fr dynamic thresholds 已生成，但 ArbDecision 尚未初始化 (open={} hedge={})",
+            open_venue.data_pub_slug(),
+            hedge_venue.data_pub_slug()
+        );
+    }
+
+    info!(
+        "fr rolling thresholds 应用完成 rolling_key={} active_symbols={} rolling_symbols={} spread_cfg_fields={} spread_applied={} spread_skipped={} spread_missing_refs={} funding_cfg_fields={} funding_symbols={} funding_skipped={} funding_missing_refs={} open_vol_field_ref={} open_vol_symbols={} open_vol_missing_refs={}",
         rolling_key,
         active_symbols.len(),
         rolling_payloads.len(),

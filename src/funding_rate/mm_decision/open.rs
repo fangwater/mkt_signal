@@ -347,10 +347,17 @@ fn env_fields(env: Option<&EnvironmentSignalResult>) -> (String, Option<f64>, Op
 
 fn publish_failure_reason(stats: &MmOpenPublishStats) -> String {
     if stats.prepared_levels == 0 {
-        format!(
-            "all_levels_filtered_zero_qty_or_price(zero_quantized={})",
-            stats.zero_quantized_levels
-        )
+        if stats.tlen_filtered_levels > 0 {
+            format!(
+                "all_levels_filtered_by_tlen_or_quantization(zero_quantized={} tlen_filtered={})",
+                stats.zero_quantized_levels, stats.tlen_filtered_levels
+            )
+        } else {
+            format!(
+                "all_levels_filtered_zero_qty_or_price(zero_quantized={})",
+                stats.zero_quantized_levels
+            )
+        }
     } else if stats.publish_failures >= stats.prepared_levels {
         format!(
             "publish_failed_all(prepared={} failures={})",
@@ -358,8 +365,11 @@ fn publish_failure_reason(stats: &MmOpenPublishStats) -> String {
         )
     } else {
         format!(
-            "no_level_emitted(prepared={} zero_quantized={} failures={})",
-            stats.prepared_levels, stats.zero_quantized_levels, stats.publish_failures
+            "no_level_emitted(prepared={} zero_quantized={} tlen_filtered={} failures={})",
+            stats.prepared_levels,
+            stats.zero_quantized_levels,
+            stats.tlen_filtered_levels,
+            stats.publish_failures
         )
     }
 }

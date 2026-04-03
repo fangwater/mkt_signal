@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use super::super::arb_decision::DEFAULT_ARBITRAGE_SIGNAL_CHANNEL;
 use super::super::common::{
-    append_tlen_to_from_key, query_batch_tlens_or_zero, ReturnScoreThresholdsResolved,
+    apply_open_tlen_gate_and_build_from_keys, ReturnScoreThresholdsResolved,
 };
 use super::super::factor_value_hub::{EnvironmentSignalResult, FactorValueHub};
 use crate::common::iceoryx_publisher::SignalPublisher;
@@ -38,6 +38,7 @@ pub(crate) struct MmOpenPublishStats {
     pub(crate) sent_sell: usize,
     pub(crate) prepared_levels: usize,
     pub(crate) zero_quantized_levels: usize,
+    pub(crate) tlen_filtered_levels: usize,
     pub(crate) publish_failures: usize,
 }
 
@@ -494,6 +495,7 @@ impl MmDecisionState {
         let mut sent_buy = 0usize;
         let mut sent_sell = 0usize;
         let mut zero_quantized_levels = 0usize;
+        let mut tlen_filtered_levels = 0usize;
         let mut publish_failures = 0usize;
         let mut emitted_details = Vec::new();
         let mut prepared = Vec::with_capacity(plan.levels.len());
@@ -538,24 +540,45 @@ impl MmDecisionState {
             });
         }
 
-        let batch_from_keys = if prepared.is_empty() {
+        let tlen_gate = if self.enable_tlen_cancel {
+            self.tlen_thresholds
+                .get(&plan.symbol.to_ascii_uppercase())
+                .copied()
+        } else {
+            None
+        };
+        if self.enable_tlen_cancel && tlen_gate.is_none() {
+            debug!(
+                "MmDecision: missing MM tlen threshold for open gating symbol={}",
+                plan.symbol
+            );
+        }
+
+        let gated_prepared = if prepared.is_empty() {
             Vec::new()
         } else {
             let tick_indices: Vec<i64> = prepared.iter().map(|item| item.tick_index).collect();
-            query_batch_tlens_or_zero(
+            let (from_keys, filtered_levels) = apply_open_tlen_gate_and_build_from_keys(
                 "MmDecision: MMOpen",
                 &self.depth_query_client,
                 &plan.symbol,
                 &tick_indices,
-            )
-            .into_iter()
-            .map(|level_tlen| append_tlen_to_from_key(from_key, level_tlen))
-            .collect()
+                from_key,
+                tlen_gate,
+            );
+            tlen_filtered_levels += filtered_levels;
+            from_keys
+                .into_iter()
+                .zip(prepared.into_iter())
+                .filter_map(|(from_key_bytes, mut item)| {
+                    let from_key_bytes = from_key_bytes?;
+                    item.ctx.set_from_key(from_key_bytes);
+                    Some(item)
+                })
+                .collect()
         };
 
-        for (item, level_from_key) in prepared.iter_mut().zip(batch_from_keys.into_iter()) {
-            item.ctx.set_from_key(level_from_key.into_bytes());
-
+        for item in gated_prepared.iter() {
             let signal = TradeSignal::create(SignalType::MMOpen, now_us, 0.0, item.ctx.to_bytes());
             if let Err(err) = self.signal_pub.publish(&signal.to_bytes()) {
                 publish_failures += 1;
@@ -620,8 +643,9 @@ impl MmDecisionState {
             sent,
             sent_buy,
             sent_sell,
-            prepared_levels: prepared.len(),
+            prepared_levels: gated_prepared.len(),
             zero_quantized_levels,
+            tlen_filtered_levels,
             publish_failures,
         }
     }

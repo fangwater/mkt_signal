@@ -2129,14 +2129,39 @@ fn emit_spread_arb_open_signals(
                 .as_ref()
                 .expect("missing open-side depth query client")
         };
-        let tlens = super::common::query_batch_tlens_or_zero(
+        let tlen_gate = ArbDecision::with_state_mut(|arb| {
+            if arb.enable_tlen_cancel {
+                arb.tlen_thresholds.get(&query_symbol.to_ascii_uppercase()).copied()
+            } else {
+                None
+            }
+        })
+        .flatten();
+        let (from_keys, filtered_levels) = super::common::apply_open_tlen_gate_and_build_from_keys(
             SPREAD_ARB_SHELL_NAME,
             open_depth_query_client,
             &query_symbol,
             &tick_indices,
+            &from_key,
+            tlen_gate,
         );
-        for (ctx, level_tlen) in contexts.iter_mut().zip(tlens.into_iter()) {
-            ctx.set_from_key(super::common::append_tlen_to_from_key(&from_key, level_tlen).into_bytes());
+        contexts = from_keys
+            .into_iter()
+            .zip(contexts.into_iter())
+            .filter_map(|(from_key_bytes, mut ctx)| {
+                let from_key_bytes = from_key_bytes?;
+                ctx.set_from_key(from_key_bytes);
+                Some(ctx)
+            })
+            .collect();
+        if filtered_levels > 0 {
+            log::info!(
+                "{SPREAD_ARB_SHELL_NAME}: ArbOpen tlen gated symbol={} threshold={:?} filtered_levels={} kept_levels={}",
+                query_symbol,
+                tlen_gate,
+                filtered_levels,
+                contexts.len()
+            );
         }
     }
 
@@ -2446,6 +2471,55 @@ fn emit_funding_open_close_signals(
             },
         )
     });
+    let mut contexts: Vec<_> = contexts.collect();
+    if matches!(signal_type, SignalType::ArbOpen) && !contexts.is_empty() {
+        let tick_indices: Vec<i64> = contexts.iter().map(|ctx| ctx.price_count()).collect();
+        let query_symbol = contexts[0].get_opening_symbol();
+        let open_depth_query_client = if spot_venue == decision.runtime.venues.0 {
+            &decision.runtime.open_depth_query_client
+        } else {
+            decision
+                .runtime
+                .hedge_depth_query_client
+                .as_ref()
+                .expect("missing open-side depth query client")
+        };
+        let tlen_gate = ArbDecision::with_state_mut(|arb| {
+            if arb.enable_tlen_cancel {
+                arb.tlen_thresholds.get(&query_symbol.to_ascii_uppercase()).copied()
+            } else {
+                None
+            }
+        })
+        .flatten();
+        let from_key_str = std::str::from_utf8(&from_key).unwrap_or("");
+        let (from_keys, filtered_levels) = super::common::apply_open_tlen_gate_and_build_from_keys(
+            FUNDING_ARB_SHELL_NAME,
+            open_depth_query_client,
+            &query_symbol,
+            &tick_indices,
+            from_key_str,
+            tlen_gate,
+        );
+        contexts = from_keys
+            .into_iter()
+            .zip(contexts.into_iter())
+            .filter_map(|(from_key_bytes, mut ctx)| {
+                let from_key_bytes = from_key_bytes?;
+                ctx.set_from_key(from_key_bytes);
+                Some(ctx)
+            })
+            .collect();
+        if filtered_levels > 0 {
+            log::info!(
+                "{FUNDING_ARB_SHELL_NAME}: ArbOpen tlen gated symbol={} threshold={:?} filtered_levels={} kept_levels={}",
+                query_symbol,
+                tlen_gate,
+                filtered_levels,
+                contexts.len()
+            );
+        }
+    }
     let _ = super::arb_emit::emit_levels_as_signals(
         &decision.runtime.signal_pub,
         signal_type.clone(),
