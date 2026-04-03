@@ -1815,14 +1815,34 @@ fn emit_funding_precise_tlen_cancel(
             None => return Ok(()),
         };
     let spread_rate = super::common::compute_spread_rate(&open_quote, &hedge_quote);
-    let _ = ArbDecision::with_state_mut(|arb| {
-        arb.lookup_hedge_factor_value(hedge_symbol, hedge_venue)
-            .target_factor_value
-            .filter(|v| v.is_finite())
-    });
+    let snapshot = ArbDecision::with_state_mut(|arb| {
+        arb.snapshot_open_from_key_fields(
+            open_symbol,
+            hedge_symbol,
+            open_venue,
+            hedge_venue,
+            Side::Buy,
+            now_us,
+        )
+    })
+    .unwrap_or_default();
+    let premium_rate = super::arb_open_filter::lookup_realtime_open_filter_value(
+        open_symbol,
+        hedge_symbol,
+        open_venue,
+        hedge_venue,
+    )
+    .map(|(value, _)| value);
     let from_key = super::arb_from_key::build_funding_tlen_cancel_from_key(
         now_us,
+        snapshot.return_score,
+        snapshot.return_threshold,
+        snapshot.volatility,
+        snapshot.open_scale,
+        snapshot.env_score,
+        snapshot.env_threshold,
         spread_rate,
+        premium_rate,
         tlen,
         threshold,
     );
@@ -1879,10 +1899,19 @@ fn emit_spread_arb_precise_tlen_cancel(
     let from_key = super::arb_from_key::build_spread_arb_tlen_cancel_from_key(
         now_us,
         return_score,
+        None,
         environment_score,
         environment_signal.threshold,
         volatility,
+        ArbDecision::with_state_mut(|arb| Some(arb.open_scale)).flatten(),
         spread_rate,
+        super::arb_open_filter::lookup_realtime_open_filter_value(
+            open_symbol,
+            hedge_symbol,
+            open_venue,
+            hedge_venue,
+        )
+        .map(|(value, _)| value),
         tlen,
         threshold,
     );
@@ -1936,10 +1965,19 @@ fn emit_spread_arb_spread_cancel(
     let from_key = super::arb_from_key::build_spread_arb_cancel_from_key(
         batch_ts,
         return_score,
+        None,
         environment_score,
         environment_signal.threshold,
         volatility,
+        ArbDecision::with_state_mut(|arb| Some(arb.open_scale)).flatten(),
         spread_rate,
+        super::arb_open_filter::lookup_realtime_open_filter_value(
+            open_symbol,
+            hedge_symbol,
+            open_venue,
+            hedge_venue,
+        )
+        .map(|(value, _)| value),
     );
     super::arb_cancel_emit::emit_precise_arb_cancel(super::arb_cancel_emit::ArbCancelEmitInput {
         signal_pub: &decision.runtime.signal_pub,
@@ -2638,6 +2676,17 @@ fn emit_funding_spread_cancel(
     };
     let batch_ts = get_timestamp_us();
     let spread_rate = super::common::compute_spread_rate(&spot_quote, &futures_quote);
+    let snapshot = ArbDecision::with_state_mut(|arb| {
+        arb.snapshot_open_from_key_fields(
+            spot_symbol,
+            futures_symbol,
+            spot_venue,
+            futures_venue,
+            Side::Buy,
+            batch_ts,
+        )
+    })
+    .unwrap_or_default();
     let premium_rate = super::arb_open_filter::lookup_realtime_open_filter_value(
         spot_symbol,
         futures_symbol,
@@ -2645,8 +2694,14 @@ fn emit_funding_spread_cancel(
         futures_venue,
     )
     .map(|(value, _)| value);
-    let from_key = super::arb_from_key::build_funding_decision_from_key(
+    let from_key = super::arb_from_key::build_funding_decision_from_key_base(
         batch_ts,
+        snapshot.return_score,
+        snapshot.return_threshold,
+        snapshot.volatility,
+        snapshot.open_scale,
+        snapshot.env_score,
+        snapshot.env_threshold,
         futures_symbol,
         futures_venue,
         spread_rate,
@@ -2661,7 +2716,7 @@ fn emit_funding_spread_cancel(
         open_quote: &spot_quote,
         hedge_quote: &futures_quote,
         now: batch_ts,
-        from_key: &String::from_utf8_lossy(&from_key),
+        from_key: &from_key,
         reason: crate::signal::cancel_signal::ArbCancelReason::Spread,
         strategy_id: 0,
     })

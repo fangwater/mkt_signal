@@ -1,9 +1,39 @@
 use crate::signal::common::TradingVenue;
 
 use super::common::{
-    append_key_value_fields, build_decision_from_key_base, build_open_from_key_base,
+    append_key_value_fields, append_tlen_suffix, build_open_from_key_base,
     format_from_key_optional_value,
 };
+
+pub fn build_spread_decision_from_key_base(
+    now: i64,
+    return_score: Option<f64>,
+    return_threshold: Option<f64>,
+    volatility: Option<f64>,
+    open_scale: Option<f64>,
+    env_score: Option<f64>,
+    env_threshold: Option<f64>,
+    spread_rate: f64,
+    spread_fr: Option<f64>,
+) -> String {
+    let base = build_open_from_key_base(
+        now,
+        return_score,
+        return_threshold,
+        volatility,
+        open_scale,
+        env_score,
+        env_threshold,
+        spread_rate,
+    );
+    append_key_value_fields(
+        base,
+        &[(
+            "spread_fr",
+            format_from_key_optional_value(spread_fr, 6),
+        )],
+    )
+}
 pub fn build_funding_decision_from_key_base(
     now: i64,
     return_score: Option<f64>,
@@ -92,56 +122,82 @@ pub fn build_funding_decision_from_key_with_gate(
 pub fn build_spread_arb_cancel_from_key(
     now: i64,
     return_score: Option<f64>,
+    return_threshold: Option<f64>,
     environment_score: f64,
     environment_threshold: Option<f64>,
     volatility: Option<f64>,
+    open_scale: Option<f64>,
     spread_rate: f64,
+    spread_fr: Option<f64>,
 ) -> String {
-    let from_key = build_decision_from_key_base(
+    build_spread_decision_from_key_base(
         now,
         return_score,
-        None,
+        return_threshold,
         volatility,
+        open_scale,
         Some(environment_score),
         environment_threshold,
-    );
-    append_key_value_fields(from_key, &[("spread", format!("{spread_rate:.6}"))])
+        spread_rate,
+        spread_fr,
+    )
 }
 
 pub fn build_spread_arb_tlen_cancel_from_key(
     now: i64,
     return_score: Option<f64>,
+    return_threshold: Option<f64>,
     environment_score: f64,
     environment_threshold: Option<f64>,
     volatility: Option<f64>,
+    open_scale: Option<f64>,
     spread_rate: f64,
+    spread_fr: Option<f64>,
     tlen: f64,
     threshold: f64,
 ) -> String {
     let from_key = build_spread_arb_cancel_from_key(
         now,
         return_score,
+        return_threshold,
         environment_score,
         environment_threshold,
         volatility,
+        open_scale,
         spread_rate,
+        spread_fr,
     );
-    format!("{from_key}:cancel_reason=tlen:tlen={tlen:.8}:tlen_thr={threshold:.8}")
+    append_tlen_suffix(from_key, tlen, threshold)
 }
 
 pub fn build_funding_tlen_cancel_from_key(
     now: i64,
+    return_score: Option<f64>,
+    return_threshold: Option<f64>,
+    volatility: Option<f64>,
+    open_scale: Option<f64>,
+    env_score: Option<f64>,
+    env_threshold: Option<f64>,
     spread_rate: f64,
+    premium_rate: Option<f64>,
     tlen: f64,
     threshold: f64,
 ) -> String {
-    append_key_value_fields(
-        build_decision_from_key_base(now, None, None, None, None, None),
-        &[
-            ("spread", format!("{spread_rate:.6}")),
-            ("cancel_reason", "tlen".to_string()),
-            ("tlen", format!("{tlen:.8}")),
-            ("tlen_thr", format!("{threshold:.8}")),
-        ],
+    append_tlen_suffix(
+        build_funding_decision_from_key_base(
+            now,
+            return_score,
+            return_threshold,
+            volatility,
+            open_scale,
+            env_score,
+            env_threshold,
+            "",
+            TradingVenue::OkexFutures,
+            spread_rate,
+            premium_rate,
+        ),
+        tlen,
+        threshold,
     )
 }

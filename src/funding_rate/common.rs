@@ -368,9 +368,24 @@ pub fn build_open_from_key_base(
 }
 
 pub fn append_dump_suffix(base: String) -> String {
+    append_suffix_token(base, "dump")
+}
+
+pub fn append_suffix_token(base: String, suffix: &str) -> String {
     let mut out = base;
-    out.push_str(":dump");
+    out.push(':');
+    out.push_str(suffix);
     out
+}
+
+pub fn append_tlen_suffix(base: String, tlen: f64, threshold: f64) -> String {
+    append_key_value_fields(
+        base,
+        &[
+            ("tlen", format!("{tlen:.8}")),
+            ("tlen_thr", format!("{threshold:.8}")),
+        ],
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
