@@ -927,6 +927,22 @@ impl MarketMakerHedgeStrategy {
             symbol_exposure_u,
             request_seq,
         );
+        let monitor = MonitorChannel::instance();
+        let hedge_venue = monitor.hedge_venue();
+        let risk_position_qty = monitor.get_position_qty(&self.symbol, hedge_venue);
+        let risk_position_diff = self.net_qty - risk_position_qty;
+        debug!(
+            "MarketMakerHedgeStrategy: strategy_id={} submit hedge query symbol={} request_seq={} query_net_qty={:.8} risk_position_qty={:.8} diff_qty={:.8} hedge_venue={:?} period_buy_qty={:.8} period_sell_qty={:.8}",
+            self.strategy_id,
+            self.symbol,
+            request_seq,
+            self.net_qty,
+            risk_position_qty,
+            risk_position_diff,
+            hedge_venue,
+            self.period_buy_qty,
+            self.period_sell_qty
+        );
         let payload = MmBackwardQueryMsg::Hedge(query_msg).to_bytes();
         let send_result = SignalChannel::with(|ch| ch.publish_backward(&payload));
         match send_result {
