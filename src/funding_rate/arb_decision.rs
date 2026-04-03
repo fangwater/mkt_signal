@@ -401,7 +401,6 @@ fn build_spread_arb_shell(venues: VenuePair) -> Result<SpreadArbShell> {
         arb.open_factor_value_hub = Some(open_factor_value_hub);
         arb.hedge_factor_value_hub = Some(hedge_factor_value_hub);
         arb.apply_shared_bootstrap(ArbDecisionState::default_shared_bootstrap(5));
-        arb.enable_return_score_model = false;
         arb.enable_environment_model = true;
         arb.enable_volatility_limit = true;
         arb.open_volatility_limit = 70.0;
@@ -2620,7 +2619,6 @@ pub(crate) struct ArbDecisionState {
     pub max_hedge_price_pct_change: f64,
     pub enable_tlen_cancel: bool,
     pub tlen_cancel_freq_ms: u64,
-    pub enable_return_score_model: bool,
     pub enable_environment_model: bool,
     pub enable_volatility_limit: bool,
     pub open_volatility_limit: f64,
@@ -2656,7 +2654,6 @@ impl ArbDecisionState {
             max_hedge_price_pct_change: 5.0,
             enable_tlen_cancel: false,
             tlen_cancel_freq_ms: 3_000,
-            enable_return_score_model: false,
             enable_environment_model: true,
             enable_volatility_limit: true,
             open_volatility_limit: 70.0,

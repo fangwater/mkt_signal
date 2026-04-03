@@ -100,11 +100,10 @@ STRATEGY_PARAMS = {
     "open_orders_per_round": "10",
     "open_order_timeout": "120",
     "hedge_timeout": "60",
-    "hedge_price_offset_fallback": "0.001",
+    "hedge_price_offset": "0.001",
     "hedge_aggressive_seq_threshold": "50",
     "enable_tlen_cancel": "false",
     "tlen_cancel_freq_ms": "3000",
-    "enable_return_score_model": "false",
     "enable_environment_model": "true",
     "enable_volatility_limit": "true",
     "open_volatility_limit": "70",
@@ -121,11 +120,10 @@ PARAM_COMMENTS: Dict[str, str] = {
     "open_orders_per_round": "单边 plan 的档位数（从同侧盘口线性铺到 vol 边界）",
     "open_order_timeout": "开仓订单超时(秒)",
     "hedge_timeout": "对冲订单超时(秒)",
-    "hedge_price_offset_fallback": "波动率因子不可用时的对冲默认价格偏移(万分之几)",
+    "hedge_price_offset": "对冲价格偏移(万分之几)",
     "hedge_aggressive_seq_threshold": "对冲激进阈值(request_seq>=该值时不偏移，但仍为maker限价单)",
     "enable_tlen_cancel": "是否启用基于 tlen 的 open 撤单链路（true=允许发 trigger/query/cancel）",
     "tlen_cancel_freq_ms": "tlen 撤单触发频率(ms)，需为正整数，默认 3000",
-    "enable_return_score_model": "是否启用 return score 拦截(true/false，false=只读取/透传，不拦截开仓)",
     "enable_environment_model": "是否启用 env 开仓限制（false=继续读取 env / pnlu 并写入 from_key，但不阻拦开仓）",
     "enable_volatility_limit": "是否启用波动率限制下单",
     "open_volatility_limit": "波动率限制分位数（读取 rolling_metrics 的 open_vol_xx，默认 70）",
@@ -142,11 +140,10 @@ PARAM_PRINT_ORDER = [
     "open_orders_per_round",
     "open_order_timeout",
     "hedge_timeout",
-    "hedge_price_offset_fallback",
+    "hedge_price_offset",
     "hedge_aggressive_seq_threshold",
     "enable_tlen_cancel",
     "tlen_cancel_freq_ms",
-    "enable_return_score_model",
     "enable_environment_model",
     "enable_volatility_limit",
     "open_volatility_limit",
@@ -159,7 +156,7 @@ PARAM_PRINT_ORDER = [
 
 def sync_strategy_params(rds, key: str) -> int:
     rds.hdel(key, "price_offsets")
-    rds.hdel(key, "hedge_price_offset")
+    rds.hdel(key, "hedge_price_offset_fallback")
     rds.hset(key, mapping=STRATEGY_PARAMS)
     print(f"✅ 已写入 {len(STRATEGY_PARAMS)} 个参数到 HASH '{key}'")
     return len(STRATEGY_PARAMS)

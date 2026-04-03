@@ -158,10 +158,6 @@ pub struct StrategyParams {
     #[serde(default = "default_open_volatility_limit")]
     pub open_volatility_limit: f64,
 
-    /// xarb 是否启用 return score 拦截（false=只读取，不拦截开仓）
-    #[serde(default = "default_enable_return_score_model")]
-    pub enable_return_score_model: bool,
-
     /// 收益率模型输出通道（"-" 表示禁用）
     #[serde(default = "default_return_model_service")]
     pub return_model_service: String,
@@ -253,9 +249,6 @@ fn default_enable_volatility_limit() -> bool {
 fn default_open_volatility_limit() -> f64 {
     70.0
 }
-fn default_enable_return_score_model() -> bool {
-    false
-}
 fn default_return_model_service() -> String {
     "return_model".to_string()
 }
@@ -293,7 +286,6 @@ impl Default for StrategyParams {
             enable_environment_model: default_enable_environment_model(),
             enable_volatility_limit: default_enable_volatility_limit(),
             open_volatility_limit: default_open_volatility_limit(),
-            enable_return_score_model: default_enable_return_score_model(),
             return_model_service: default_return_model_service(),
             environment_model_service: default_environment_model_service(),
         }
@@ -427,27 +419,10 @@ impl StrategyParams {
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or_else(default_hedge_timeout);
 
-        let hedge_price_offset = if ns == "xarb" {
-            match hash_map.get("hedge_price_offset_fallback") {
-                Some(raw) => raw.parse::<f64>().unwrap_or_else(|_| {
-                    panic!(
-                        "Redis hash '{}' hedge_price_offset_fallback 无法解析: {}",
-                        redis_key, raw
-                    )
-                }),
-                None => {
-                    panic!(
-                        "Redis hash '{}' 缺少 hedge_price_offset_fallback",
-                        redis_key
-                    );
-                }
-            }
-        } else {
-            hash_map
-                .get("hedge_price_offset")
-                .and_then(|s| s.parse::<f64>().ok())
-                .unwrap_or_else(default_hedge_price_offset)
-        };
+        let hedge_price_offset = hash_map
+            .get("hedge_price_offset")
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or_else(default_hedge_price_offset);
 
         let hedge_aggressive_seq_threshold = hash_map
             .get("hedge_aggressive_seq_threshold")
@@ -588,20 +563,6 @@ impl StrategyParams {
             .filter(|v| v.is_finite() && *v >= 0.0 && *v <= 100.0)
             .unwrap_or_else(default_open_volatility_limit);
 
-        let enable_return_score_model = match hash_map.get("enable_return_score_model") {
-            Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
-                "true" | "1" | "yes" | "on" => true,
-                "false" | "0" | "no" | "off" | "" => false,
-                _ => {
-                    panic!(
-                        "Redis hash '{}' enable_return_score_model 非法（仅支持 true/false）: {}",
-                        redis_key, raw
-                    )
-                }
-            },
-            None => default_enable_return_score_model(),
-        };
-
         let strict_return_model_required = ns == "mm";
         let strict_env_model_dash_only = false;
         let allow_missing_model_service = ns == "fr";
@@ -732,7 +693,6 @@ impl StrategyParams {
             enable_environment_model,
             enable_volatility_limit,
             open_volatility_limit,
-            enable_return_score_model,
             return_model_service,
             environment_model_service,
         })
@@ -827,7 +787,6 @@ impl StrategyParams {
             arb.enable_environment_model = self.enable_environment_model;
             arb.enable_volatility_limit = self.enable_volatility_limit;
             arb.open_volatility_limit = self.open_volatility_limit;
-            arb.enable_return_score_model = self.enable_return_score_model;
             arb.return_model_service = return_model_service.clone();
             arb.environment_model_service = environment_model_service.clone();
             arb.environment_model_true_threshold = 0.0;
@@ -880,7 +839,7 @@ impl StrategyParams {
         }
 
         info!(
-            "✅ 策略参数已更新: mode={}, amount={:.2}, arb_open_scale={:.4}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, order_interval_ms={}, open_orders_per_round={}, cooldown={}s, prediction_mode={}, enable_open_cancel={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, enable_return_score_adjust_hedge={}, enable_environment_model={}, enable_volatility_limit={}, open_volatility_limit={}, enable_return_score_model={}, return_model_service={}, environment_model_service={}",
+            "✅ 策略参数已更新: mode={}, amount={:.2}, arb_open_scale={:.4}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, order_interval_ms={}, open_orders_per_round={}, cooldown={}s, prediction_mode={}, enable_open_cancel={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, enable_return_score_adjust_hedge={}, enable_environment_model={}, enable_volatility_limit={}, open_volatility_limit={}, return_model_service={}, environment_model_service={}",
             self.mode,
             self.order_amount,
             self.open_scale,
@@ -897,7 +856,6 @@ impl StrategyParams {
             self.enable_environment_model,
             self.enable_volatility_limit,
             self.open_volatility_limit,
-            self.enable_return_score_model,
             self.return_model_service,
             self.environment_model_service
         );
