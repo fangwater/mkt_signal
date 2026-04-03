@@ -341,6 +341,38 @@ pub fn append_key_value_fields(base: String, fields: &[(&str, String)]) -> Strin
     out
 }
 
+pub fn build_open_from_key_base(
+    now_us: i64,
+    return_score: Option<f64>,
+    return_threshold: Option<f64>,
+    volatility: Option<f64>,
+    open_scale: Option<f64>,
+    env_score: Option<f64>,
+    env_threshold: Option<f64>,
+    spread: f64,
+) -> String {
+    append_key_value_fields(
+        build_decision_from_key_base(
+            now_us,
+            return_score,
+            return_threshold,
+            volatility,
+            env_score,
+            env_threshold,
+        ),
+        &[
+            ("open_scale", format_from_key_optional_value(open_scale, 6)),
+            ("spread", format!("{spread:.6}")),
+        ],
+    )
+}
+
+pub fn append_dump_suffix(base: String) -> String {
+    let mut out = base;
+    out.push_str(":dump");
+    out
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ReturnScoreThresholdsResolved {
     pub forward_open: f64,

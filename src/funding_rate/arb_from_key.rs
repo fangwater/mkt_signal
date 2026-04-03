@@ -1,59 +1,39 @@
 use crate::signal::common::TradingVenue;
 
 use super::common::{
-    append_key_value_fields, build_decision_from_key_base, format_from_key_optional_value,
+    append_key_value_fields, build_decision_from_key_base, build_open_from_key_base,
+    format_from_key_optional_value,
 };
-use super::mkt_channel::MktChannel;
-use super::rate_fetcher::RateFetcher;
-
-fn funding_runtime_fields(
-    futures_symbol: &str,
-    futures_venue: TradingVenue,
-) -> (f64, f64, f64) {
-    let mkt_channel = MktChannel::instance();
-    let rate_fetcher = RateFetcher::instance();
-    let funding_ma = mkt_channel
-        .get_funding_rate_mean(futures_symbol, futures_venue)
-        .unwrap_or(0.0);
-    let predicted = rate_fetcher
-        .get_predicted_funding_rate(futures_symbol, futures_venue)
-        .map(|(_, v)| v)
-        .unwrap_or(0.0);
-    let loan = rate_fetcher
-        .get_predict_loan_rate(futures_symbol, futures_venue)
-        .map(|(_, v)| v)
-        .unwrap_or(0.0);
-    (funding_ma, predicted, loan)
-}
-
 pub fn build_funding_decision_from_key_base(
     now: i64,
     return_score: Option<f64>,
     return_threshold: Option<f64>,
     volatility: Option<f64>,
+    open_scale: Option<f64>,
     env_score: Option<f64>,
     env_threshold: Option<f64>,
     futures_symbol: &str,
     futures_venue: TradingVenue,
     spread_rate: f64,
+    premium_rate: Option<f64>,
 ) -> String {
-    let base = build_decision_from_key_base(
+    let _ = (futures_symbol, futures_venue);
+    let base = build_open_from_key_base(
         now,
         return_score,
         return_threshold,
         volatility,
+        open_scale,
         env_score,
         env_threshold,
+        spread_rate,
     );
-    let (funding_ma, predicted, loan) = funding_runtime_fields(futures_symbol, futures_venue);
     append_key_value_fields(
         base,
-        &[
-            ("funding_ma", format!("{funding_ma:.6}")),
-            ("predicted", format!("{predicted:.6}")),
-            ("loan", format!("{loan:.6}")),
-            ("spread", format!("{spread_rate:.6}")),
-        ],
+        &[(
+            "premium_rate",
+            format_from_key_optional_value(premium_rate, 6),
+        )],
     )
 }
 
@@ -62,6 +42,7 @@ pub fn build_funding_decision_from_key(
     futures_symbol: &str,
     futures_venue: TradingVenue,
     spread_rate: f64,
+    premium_rate: Option<f64>,
 ) -> Vec<u8> {
     build_funding_decision_from_key_base(
         now,
@@ -70,9 +51,11 @@ pub fn build_funding_decision_from_key(
         None,
         None,
         None,
+        None,
         futures_symbol,
         futures_venue,
         spread_rate,
+        premium_rate,
     )
     .into_bytes()
 }
@@ -87,6 +70,7 @@ pub fn build_funding_decision_from_key_with_gate(
     volatility: Option<f64>,
     env_score: Option<f64>,
     env_threshold: Option<f64>,
+    premium_rate: Option<f64>,
     open_scale: Option<f64>,
 ) -> Vec<u8> {
     let base = build_funding_decision_from_key_base(
@@ -94,17 +78,15 @@ pub fn build_funding_decision_from_key_with_gate(
         return_score,
         return_threshold,
         volatility,
+        open_scale,
         env_score,
         env_threshold,
         futures_symbol,
         futures_venue,
         spread_rate,
+        premium_rate,
     );
-    append_key_value_fields(
-        base,
-        &[("open_scale", format_from_key_optional_value(open_scale, 6))],
-    )
-    .into_bytes()
+    base.into_bytes()
 }
 
 pub fn build_spread_arb_cancel_from_key(

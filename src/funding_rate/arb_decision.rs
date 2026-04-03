@@ -1243,7 +1243,6 @@ fn drive_spread_arb_decision(
         open_control.gate.return_score,
         open_control.gate.return_threshold,
         open_control.gate.open_filter_value,
-        open_control.gate.open_filter_threshold,
         open_control.gate.environment_score,
         open_control.gate.environment_threshold,
         open_control.gate.open_volatility_factor,
@@ -2012,7 +2011,6 @@ fn emit_spread_arb_open_signals(
     return_score: Option<f64>,
     return_threshold: Option<f64>,
     open_filter_value: Option<f64>,
-    open_filter_threshold: Option<f64>,
     environment_score: f64,
     environment_threshold: Option<f64>,
     open_volatility_factor: f64,
@@ -2035,28 +2033,22 @@ fn emit_spread_arb_open_signals(
     let open_scale = ArbDecision::with_state_mut(|arb| arb.open_scale)
         .expect("ArbDecisionState should be initialized");
     let scaled_volatility = (open_volatility_factor * open_scale).max(0.0);
-    let base_from_key = super::common::build_decision_from_key_base(
+    let base_from_key = super::common::build_open_from_key_base(
         batch_ts,
         return_score,
         return_threshold,
         Some(open_volatility_factor),
+        Some(open_scale),
         Some(environment_score),
         environment_threshold,
+        spread_rate,
     );
     let from_key = super::common::append_key_value_fields(
         base_from_key,
-        &[
-            (
-                "open_filter_value",
-                super::common::format_from_key_optional_value(open_filter_value, 6),
-            ),
-            (
-                "open_filter_threshold",
-                super::common::format_from_key_optional_value(open_filter_threshold, 6),
-            ),
-            ("spread", format!("{spread_rate:.6}")),
-            ("open_scale", format!("{open_scale:.6}")),
-        ],
+        &[(
+            "spread_fr",
+            super::common::format_from_key_optional_value(open_filter_value, 6),
+        )],
     );
     let order_amount = ArbDecision::with_state_mut(|arb| arb.order_amount)
         .expect("ArbDecisionState should be initialized") as f64;
@@ -2234,7 +2226,40 @@ fn emit_spread_arb_close_signals(
         };
     let batch_ts = get_timestamp_us();
     let spread_rate = super::common::compute_spread_rate(&open_quote, &hedge_quote);
-    let from_key = format!("{batch_ts}:dump:{spread_rate:.6}");
+    let snapshot = ArbDecision::with_state_mut(|arb| {
+        arb.snapshot_open_from_key_fields(
+            open_symbol,
+            hedge_symbol,
+            open_venue,
+            hedge_venue,
+            side,
+            batch_ts,
+        )
+    })
+    .unwrap_or_default();
+    let spread_fr = super::arb_open_filter::lookup_realtime_open_filter_value(
+        open_symbol,
+        hedge_symbol,
+        open_venue,
+        hedge_venue,
+    )
+    .map(|(value, _)| value);
+    let from_key = super::common::append_dump_suffix(super::common::append_key_value_fields(
+        super::common::build_open_from_key_base(
+            batch_ts,
+            snapshot.return_score,
+            snapshot.return_threshold,
+            snapshot.volatility,
+            snapshot.open_scale,
+            snapshot.env_score,
+            snapshot.env_threshold,
+            spread_rate,
+        ),
+        &[(
+            "spread_fr",
+            super::common::format_from_key_optional_value(spread_fr, 6),
+        )],
+    ));
     let volatility = ArbDecision::with_state_mut(|arb| {
         arb.lookup_hedge_factor_value(hedge_symbol, hedge_venue)
             .target_factor_value
@@ -2376,6 +2401,17 @@ fn emit_funding_open_close_signals(
     let spread_rate = super::common::compute_spread_rate(&spot_quote, &futures_quote);
     let open_scale = ArbDecision::with_state_mut(|arb| arb.open_scale)
         .expect("ArbDecisionState should be initialized");
+    let premium_rate = if matches!(signal_type, SignalType::ArbOpen) {
+        gate.and_then(|v| v.open_filter_value)
+    } else {
+        super::arb_open_filter::lookup_realtime_open_filter_value(
+            spot_symbol,
+            futures_symbol,
+            spot_venue,
+            futures_venue,
+        )
+        .map(|(value, _)| value)
+    };
     let from_key = if matches!(signal_type, SignalType::ArbOpen) {
         super::arb_from_key::build_funding_decision_from_key_with_gate(
             batch_ts,
@@ -2387,6 +2423,7 @@ fn emit_funding_open_close_signals(
             gate.map(|v| v.open_volatility_factor),
             gate.map(|v| v.environment_score),
             gate.and_then(|v| v.environment_threshold),
+            premium_rate,
             Some(open_scale),
         )
     } else {
@@ -2395,7 +2432,40 @@ fn emit_funding_open_close_signals(
             futures_symbol,
             futures_venue,
             spread_rate,
+            premium_rate,
         )
+        .to_vec()
+    };
+    let from_key = if matches!(signal_type, SignalType::ArbClose) {
+        let snapshot = ArbDecision::with_state_mut(|arb| {
+            arb.snapshot_open_from_key_fields(
+                spot_symbol,
+                futures_symbol,
+                spot_venue,
+                futures_venue,
+                side,
+                batch_ts,
+            )
+        })
+        .unwrap_or_default();
+        super::common::append_dump_suffix(
+            super::arb_from_key::build_funding_decision_from_key_base(
+                batch_ts,
+                snapshot.return_score,
+                snapshot.return_threshold,
+                snapshot.volatility,
+                snapshot.open_scale,
+                snapshot.env_score,
+                snapshot.env_threshold,
+                futures_symbol,
+                futures_venue,
+                spread_rate,
+                premium_rate,
+            ),
+        )
+        .into_bytes()
+    } else {
+        from_key
     };
     let raw_volatility = gate.map(|v| v.open_volatility_factor).unwrap_or_else(|| {
         ArbDecision::with_state_mut(|arb| {
@@ -2568,11 +2638,19 @@ fn emit_funding_spread_cancel(
     };
     let batch_ts = get_timestamp_us();
     let spread_rate = super::common::compute_spread_rate(&spot_quote, &futures_quote);
+    let premium_rate = super::arb_open_filter::lookup_realtime_open_filter_value(
+        spot_symbol,
+        futures_symbol,
+        spot_venue,
+        futures_venue,
+    )
+    .map(|(value, _)| value);
     let from_key = super::arb_from_key::build_funding_decision_from_key(
         batch_ts,
         futures_symbol,
         futures_venue,
         spread_rate,
+        premium_rate,
     );
     super::arb_cancel_emit::emit_precise_arb_cancel(super::arb_cancel_emit::ArbCancelEmitInput {
         signal_pub: &decision.runtime.signal_pub,
@@ -2620,7 +2698,6 @@ pub(crate) struct ArbOpenGatePassed {
     pub return_score: Option<f64>,
     pub return_threshold: Option<f64>,
     pub open_filter_value: Option<f64>,
-    pub open_filter_threshold: Option<f64>,
     pub environment_score: f64,
     pub environment_threshold: Option<f64>,
     pub open_volatility_factor: f64,
@@ -2631,6 +2708,16 @@ pub(crate) struct ArbOpenControlPassed {
     pub side: Side,
     pub key: ThresholdKey,
     pub gate: ArbOpenGatePassed,
+}
+
+#[derive(Debug, Clone, Default)]
+struct OpenFromKeySnapshot {
+    return_score: Option<f64>,
+    return_threshold: Option<f64>,
+    volatility: Option<f64>,
+    env_score: Option<f64>,
+    env_threshold: Option<f64>,
+    open_scale: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -3329,6 +3416,45 @@ impl ArbDecisionState {
             .copied()
     }
 
+    fn snapshot_open_from_key_fields(
+        &mut self,
+        open_symbol_key: &str,
+        hedge_symbol: &str,
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
+        side: Side,
+        now_us: i64,
+    ) -> OpenFromKeySnapshot {
+        let return_lookup = self.lookup_return_model_score_lookup(hedge_symbol, hedge_venue);
+        let return_score = return_lookup
+            .as_ref()
+            .and_then(|lookup| lookup.score)
+            .filter(|v| v.is_finite());
+        let return_threshold = return_lookup.as_ref().and_then(|lookup| {
+            self.lookup_return_score_thresholds(&lookup.symbol_key)
+                .map(|thresholds| select_open_return_threshold(side, thresholds))
+        });
+        let environment_signal =
+            self.evaluate_environment_signal(open_symbol_key, hedge_symbol, hedge_venue, now_us);
+        let env_score = environment_signal
+            .score
+            .or(Some(environment_signal.class_label as f64))
+            .filter(|v| v.is_finite());
+        let volatility = self
+            .lookup_open_factor_value(open_symbol_key, open_venue)
+            .target_factor_value
+            .filter(|v| v.is_finite());
+
+        OpenFromKeySnapshot {
+            return_score,
+            return_threshold,
+            volatility,
+            env_score,
+            env_threshold: environment_signal.threshold,
+            open_scale: Some(self.open_scale),
+        }
+    }
+
     pub fn evaluate_environment_signal(
         &mut self,
         open_symbol_key: &str,
@@ -3484,7 +3610,6 @@ impl ArbDecisionState {
             return_score,
             return_threshold,
             open_filter_value: Some(open_filter_value),
-            open_filter_threshold: Some(open_filter_threshold),
             environment_score,
             environment_threshold: environment_signal.threshold,
             open_volatility_factor,
