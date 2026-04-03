@@ -3599,7 +3599,7 @@ impl ArbDecisionState {
         }
 
         let return_lookup = self.lookup_return_model_score_lookup(hedge_symbol, hedge_venue);
-        let mut return_score = return_lookup
+        let return_score = return_lookup
             .as_ref()
             .and_then(|lookup| lookup.score)
             .filter(|v| v.is_finite());
@@ -3607,23 +3607,6 @@ impl ArbDecisionState {
             self.lookup_return_score_thresholds(&lookup.symbol_key)
                 .map(|thresholds| select_open_return_threshold(side, thresholds))
         });
-
-        if let Some(service_name) = self.return_model_service.clone() {
-            let Some(score_lookup) = return_lookup.as_ref() else {
-                self.record_intercept_summary(format!(
-                    "drop_open_missing_return_model_service:service={service_name}"
-                ));
-                return None;
-            };
-            let Some(score_value) = score_lookup.score.filter(|v| v.is_finite()) else {
-                self.record_intercept_summary(format!(
-                    "drop_open_score_not_ready:note={}",
-                    score_lookup.note
-                ));
-                return None;
-            };
-            return_score = Some(score_value);
-        }
 
         let environment_signal =
             self.evaluate_environment_signal(open_symbol_key, hedge_symbol, hedge_venue, now);
