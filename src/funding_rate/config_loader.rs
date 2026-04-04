@@ -443,7 +443,7 @@ async fn reload_fr_thresholds(
 ) -> Result<()> {
     let redis_key = funding_thresholds_key(namespace, open_venue, hedge_venue);
     let ns = normalize_namespace(namespace);
-    if ns != "fr" && ns != "xarb" {
+    if ns != "fr" {
         return Ok(());
     }
 
@@ -810,14 +810,6 @@ async fn reload_open_volatility_thresholds(
 fn fr_spread_mapping_key(open_venue: TradingVenue, hedge_venue: TradingVenue) -> String {
     format!(
         "fr_spread_threshold_mapping_{}_{}",
-        open_venue.data_pub_slug(),
-        hedge_venue.data_pub_slug()
-    )
-}
-
-fn fr_funding_mapping_key(open_venue: TradingVenue, hedge_venue: TradingVenue) -> String {
-    format!(
-        "fr_funding_threshold_mapping_{}_{}",
         open_venue.data_pub_slug(),
         hedge_venue.data_pub_slug()
     )

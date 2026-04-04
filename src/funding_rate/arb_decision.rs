@@ -6,6 +6,7 @@ use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::thread::LocalKey;
+use std::time::{Duration, Instant};
 
 use crate::common::bbo::Bbo;
 use crate::common::exchange::Exchange;
@@ -1141,6 +1142,9 @@ fn drive_spread_arb_decision(
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
 ) -> Result<Option<SignalType>> {
+    let _ = ArbDecision::with_state_mut(|arb| {
+        arb.maybe_log_intercept_summary(SPREAD_ARB_SHELL_NAME);
+    });
     let _ = ArbDecision::with_state_mut(|arb| arb.poll_model_output_updates());
     let spread_factor = super::spread_factor::SpreadFactor::instance();
     let now = get_timestamp_us();
@@ -2909,6 +2913,7 @@ pub(crate) struct ArbDecisionState {
     pub last_tlen_threshold_reload_ts_us: i64,
     pub last_cancel_trigger_ts_us: i64,
     pub intercept_counts: HashMap<String, u64>,
+    pub last_intercept_log: Instant,
 }
 
 impl ArbDecisionState {
@@ -2944,6 +2949,7 @@ impl ArbDecisionState {
             last_tlen_threshold_reload_ts_us: 0,
             last_cancel_trigger_ts_us: 0,
             intercept_counts: HashMap::new(),
+            last_intercept_log: Instant::now(),
         }
     }
 
@@ -3551,6 +3557,68 @@ impl ArbDecisionState {
         *self.intercept_counts.entry(reason.into()).or_insert(0) += 1;
     }
 
+    pub fn maybe_log_intercept_summary(&mut self, source: &str) {
+        const INTERCEPT_LOG_INTERVAL_SECS: u64 = 30;
+        if self.intercept_counts.is_empty() {
+            return;
+        }
+        if self.last_intercept_log.elapsed() < Duration::from_secs(INTERCEPT_LOG_INTERVAL_SECS) {
+            return;
+        }
+
+        let mut rows: Vec<(String, u64)> = self
+            .intercept_counts
+            .iter()
+            .filter(|(reason, _)| reason.as_str() != "cooldown")
+            .map(|(reason, count)| (reason.clone(), *count))
+            .collect();
+        if rows.is_empty() {
+            self.intercept_counts.clear();
+            self.last_intercept_log = Instant::now();
+            return;
+        }
+        rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+        let reason_width = rows
+            .iter()
+            .map(|(reason, _)| reason.len())
+            .max()
+            .unwrap_or(6)
+            .max("reason".len());
+        let count_width = rows
+            .iter()
+            .map(|(_, count)| count.to_string().len())
+            .max()
+            .unwrap_or(5)
+            .max("count".len());
+
+        let fmt_row = |reason: &str, count: &str| -> String {
+            format!(
+                "{:<reason_width$}  {:>count_width$}",
+                reason,
+                count,
+                reason_width = reason_width,
+                count_width = count_width
+            )
+        };
+
+        let header = fmt_row("reason", "count");
+        let rule = "=".repeat(header.len());
+        let mid = "-".repeat(header.len());
+
+        log::info!("{source}: xarb blocked-open summary (last {}s)", INTERCEPT_LOG_INTERVAL_SECS);
+        log::info!("{rule}");
+        log::info!("{header}");
+        log::info!("{mid}");
+        for (reason, count) in rows {
+            log::info!("{}", fmt_row(&reason, &count.to_string()));
+        }
+        log::info!("{rule}");
+
+        self.intercept_counts.clear();
+        self.last_intercept_log = Instant::now();
+    }
+
     pub fn record_environment_intercept_summary(
         &mut self,
         forward_open: bool,
@@ -3560,7 +3628,7 @@ impl ArbDecisionState {
     ) {
         let reason = match (forward_open, backward_open, cooldown_hit, result.allow_open) {
             (_, _, true, _) => "cooldown".to_string(),
-            (_, _, _, false) => format!("env_block:{}", result.note),
+            (_, _, _, false) => "env_block".to_string(),
             (true, false, false, true) => "forward_open".to_string(),
             (false, true, false, true) => "backward_open".to_string(),
             (true, true, false, true) => "both_open".to_string(),
@@ -3588,10 +3656,22 @@ impl ArbDecisionState {
             hedge_venue,
         );
         let open_filter_value = open_filter_lookup.map(|(value, _)| value);
+        let missing_filter_reason = if open_venue.is_futures() && hedge_venue.is_futures() {
+            "miss_spread_fr"
+        } else {
+            "miss_premium_rate"
+        };
 
         if self.enable_funding_open_filter {
-            let open_filter_thresholds = self.lookup_funding_open_thresholds(open_symbol_key)?;
-            let (open_filter_value_ready, open_filter_source) = open_filter_lookup?;
+            let Some(open_filter_thresholds) = self.lookup_funding_open_thresholds(open_symbol_key)
+            else {
+                self.record_intercept_summary(missing_filter_reason);
+                return None;
+            };
+            let Some((open_filter_value_ready, open_filter_source)) = open_filter_lookup else {
+                self.record_intercept_summary(missing_filter_reason);
+                return None;
+            };
             let open_filter_threshold =
                 select_open_filter_threshold(side, open_filter_thresholds);
             let open_filter_hit = match side {
@@ -3599,9 +3679,7 @@ impl ArbDecisionState {
                 Side::Sell => open_filter_value_ready < open_filter_threshold,
             };
             if !open_filter_hit {
-                self.record_intercept_summary(format!(
-                    "skip_open_by_filter:source={open_filter_source}"
-                ));
+                self.record_intercept_summary(open_filter_source);
                 return None;
             }
         }
@@ -3634,19 +3712,14 @@ impl ArbDecisionState {
             match self.lookup_open_factor_value(open_symbol_key, open_venue) {
                 lookup if lookup.ready == Some(true) => {
                     let Some(value) = lookup.target_factor_value.filter(|v| v.is_finite()) else {
-                        self.record_intercept_summary(format!(
-                            "drop_open_target_factor_not_ready:note={}",
-                            lookup.note
-                        ));
+                        self.record_intercept_summary("vol");
                         return None;
                     };
                     value
                 }
                 lookup => {
-                    self.record_intercept_summary(format!(
-                        "drop_open_target_factor_not_ready:note={}",
-                        lookup.note
-                    ));
+                    let _ = lookup;
+                    self.record_intercept_summary("vol");
                     return None;
                 }
             };
@@ -3655,14 +3728,11 @@ impl ArbDecisionState {
             let Some(open_volatility_threshold) =
                 self.lookup_open_volatility_threshold(open_symbol_key)
             else {
-                self.record_intercept_summary("drop_open_missing_open_volatility_threshold");
+                self.record_intercept_summary("miss_vol");
                 return None;
             };
             if open_volatility_factor > open_volatility_threshold {
-                self.record_intercept_summary(format!(
-                    "skip_open_by_volatility_limit:value={:.8}:threshold={:.8}",
-                    open_volatility_factor, open_volatility_threshold
-                ));
+                self.record_intercept_summary("vol");
                 return None;
             }
         }

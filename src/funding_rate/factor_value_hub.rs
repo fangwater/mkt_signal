@@ -17,8 +17,6 @@ use crate::factor_pub::model_pub::publisher::MODEL_PAYLOAD_MAX_BYTES;
 use crate::signal::common::TradingVenue;
 
 const FACTOR_VALUE_PAYLOAD_MAX_BYTES: usize = 256;
-const FACTOR_VALUE_HISTORY_SIZE: usize = 128;
-const FACTOR_VALUE_SUBSCRIBER_BUFFER_SIZE: usize = 1024;
 const MODEL_OUTPUT_HISTORY_SIZE: usize = 128;
 const MODEL_OUTPUT_SUBSCRIBER_BUFFER_SIZE: usize = 256;
 const MODEL_OUTPUT_POLL_MAX_PER_CHANNEL: usize = 256;
@@ -258,11 +256,9 @@ impl FactorValueHub {
             .publish_subscribe::<[u8; FACTOR_VALUE_PAYLOAD_MAX_BYTES]>()
             .max_publishers(1)
             .max_subscribers(10)
-            .history_size(FACTOR_VALUE_HISTORY_SIZE)
-            .subscriber_max_buffer_size(FACTOR_VALUE_SUBSCRIBER_BUFFER_SIZE)
-            .open_or_create()
+            .open()
             .with_context(|| {
-                format!("failed to open/create factor subscriber service={service_name}")
+                format!("failed to open factor subscriber service={service_name}")
             })?;
 
         info!(
