@@ -33,14 +33,11 @@ use super::arb_open_filter::{
     select_open_return_threshold_by_hedge_side,
 };
 use super::common::Quote;
-use super::common::{
-    ArbDirection, CompareOp, OperationType, ReturnScoreThresholdsResolved, ThresholdKey, VenuePair,
-};
+use super::common::{ReturnScoreThresholdsResolved, ThresholdKey, VenuePair};
 use super::factor_value_hub::{
     EnvironmentSignalResult, FactorValueHub, FactorValueLookupResult, ModelOutputScoreLookupResult,
 };
 use super::funding_rate_factor::FundingRateFactor;
-use super::spread_factor::SpreadType;
 use super::mkt_channel::MktChannel;
 use super::rate_fetcher::RateFetcher;
 use super::xarb_funding_threshold_loader::XarbFundingThresholdsResolved;
@@ -1158,30 +1155,19 @@ fn drive_spread_arb_decision(
         || symbol_list.is_in_bwd_trade_list(open_symbol_key.as_str())
     {
         let _ = ArbDecision::with_state_mut(|arb| {
-            let forward_hit = spread_factor.satisfy_forward_open(
+            let _ = spread_factor.satisfy_forward_open(
                 open_venue,
                 open_symbol_key.as_str(),
                 hedge_venue,
                 hedge_symbol_key.as_str(),
             );
-            let backward_hit = spread_factor.satisfy_backward_open(
+            let _ = spread_factor.satisfy_backward_open(
                 open_venue,
                 open_symbol_key.as_str(),
                 hedge_venue,
                 hedge_symbol_key.as_str(),
             );
             arb.record_intercept_summary("spread_seen");
-            arb.record_spread_reference_sample(
-                open_symbol_key.as_str(),
-                spread_factor.get_spread_rate(
-                    open_venue,
-                    open_symbol_key.as_str(),
-                    hedge_venue,
-                    hedge_symbol_key.as_str(),
-                ),
-                forward_hit,
-                backward_hit,
-            );
         });
     }
 
@@ -2901,6 +2887,12 @@ struct OpenFromKeySnapshot {
 }
 
 #[derive(Debug, Clone)]
+struct XarbOpenBlockerRow {
+    symbol: String,
+    reason: String,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct ArbCloseGatePassed {
     pub side: Side,
     pub key: ThresholdKey,
@@ -2989,16 +2981,6 @@ pub(crate) struct ArbHedgeOffsetDecision {
     pub ready: bool,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct SpreadReferenceStats {
-    pub min_spread: f64,
-    pub max_spread: f64,
-    pub last_spread: f64,
-    pub forward_hit_count: u64,
-    pub backward_hit_count: u64,
-    pub seen: bool,
-}
-
 pub(crate) struct ArbDecisionState {
     pub venues: VenuePair,
     pub open_factor_value_hub: Option<FactorValueHub>,
@@ -3032,7 +3014,6 @@ pub(crate) struct ArbDecisionState {
     pub last_tlen_threshold_reload_ts_us: i64,
     pub last_cancel_trigger_ts_us: i64,
     pub intercept_counts: HashMap<String, u64>,
-    pub spread_reference_stats: HashMap<String, SpreadReferenceStats>,
     pub last_intercept_log: Instant,
 }
 
@@ -3071,43 +3052,7 @@ impl ArbDecisionState {
             last_tlen_threshold_reload_ts_us: 0,
             last_cancel_trigger_ts_us: 0,
             intercept_counts: HashMap::new(),
-            spread_reference_stats: HashMap::new(),
             last_intercept_log: Instant::now(),
-        }
-    }
-
-    pub fn record_spread_reference_sample(
-        &mut self,
-        symbol: &str,
-        spread_rate: Option<f64>,
-        forward_hit: bool,
-        backward_hit: bool,
-    ) {
-        const WATCHED_SYMBOLS: [&str; 3] = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
-        if !WATCHED_SYMBOLS.contains(&symbol) {
-            return;
-        }
-        let Some(spread_rate) = spread_rate.filter(|v| v.is_finite()) else {
-            return;
-        };
-        let entry = self
-            .spread_reference_stats
-            .entry(symbol.to_string())
-            .or_default();
-        if entry.seen {
-            entry.min_spread = entry.min_spread.min(spread_rate);
-            entry.max_spread = entry.max_spread.max(spread_rate);
-        } else {
-            entry.min_spread = spread_rate;
-            entry.max_spread = spread_rate;
-            entry.seen = true;
-        }
-        entry.last_spread = spread_rate;
-        if forward_hit {
-            entry.forward_hit_count += 1;
-        }
-        if backward_hit {
-            entry.backward_hit_count += 1;
         }
     }
 
@@ -3815,61 +3760,152 @@ impl ArbDecisionState {
         }
         log::info!("{rule}");
 
-        let spread_factor = super::spread_factor::SpreadFactor::instance();
-        for symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"] {
-            let Some(stats) = self.spread_reference_stats.get(symbol).copied() else {
-                continue;
-            };
-            if !stats.seen {
-                continue;
-            }
-            let fwd = spread_factor.get_spread_check_detail(
-                self.venues.0,
-                symbol,
-                self.venues.1,
-                symbol,
-                ArbDirection::Forward,
-                OperationType::Open,
-            );
-            let bwd = spread_factor.get_spread_check_detail(
-                self.venues.0,
-                symbol,
-                self.venues.1,
-                symbol,
-                ArbDirection::Backward,
-                OperationType::Open,
-            );
-            let fmt_open = |detail: Option<(f64, f64, CompareOp, SpreadType)>| -> String {
-                match detail {
-                    Some((value, threshold, compare_op, spread_type)) => format!(
-                        "{:.6}/{:.6} {} {}",
-                        value,
-                        threshold,
-                        match compare_op {
-                            CompareOp::GreaterThan => ">",
-                            CompareOp::LessThan => "<",
-                        },
-                        spread_type.as_str()
-                    ),
-                    None => "-".to_string(),
-                }
-            };
-            log::info!(
-                "{source}: ref symbol={} spread[min={:.6}, max={:.6}, last={:.6}] hits[fwd={}, bwd={}] fwd_open={} bwd_open={}",
-                symbol,
-                stats.min_spread,
-                stats.max_spread,
-                stats.last_spread,
-                stats.forward_hit_count,
-                stats.backward_hit_count,
-                fmt_open(fwd),
-                fmt_open(bwd)
-            );
-        }
+        self.log_xarb_open_blocker_table(source);
 
         self.intercept_counts.clear();
-        self.spread_reference_stats.clear();
         self.last_intercept_log = Instant::now();
+    }
+
+    fn build_xarb_open_blocker_reason(
+        &mut self,
+        symbol: &str,
+        side: Side,
+    ) -> Option<String> {
+        let hedge_symbol = symbol;
+        let open_venue = self.venues.0;
+        let hedge_venue = self.venues.1;
+        let open_filter_lookup =
+            lookup_realtime_open_filter_value(symbol, hedge_symbol, open_venue, hedge_venue);
+        let missing_filter_reason = if open_venue.is_futures() && hedge_venue.is_futures() {
+            "miss_spread_fr"
+        } else {
+            "miss_premium_rate"
+        };
+
+        if self.enable_funding_open_filter {
+            let Some(open_filter_thresholds) = self.lookup_funding_open_thresholds(symbol) else {
+                return Some(missing_filter_reason.to_string());
+            };
+            let Some((open_filter_value_ready, open_filter_source)) = open_filter_lookup else {
+                return Some(missing_filter_reason.to_string());
+            };
+            let open_filter_threshold = select_open_filter_threshold(side, open_filter_thresholds);
+            let open_filter_hit = match side {
+                Side::Buy => open_filter_value_ready > open_filter_threshold,
+                Side::Sell => open_filter_value_ready < open_filter_threshold,
+            };
+            if !open_filter_hit {
+                return Some(open_filter_source.to_string());
+            }
+        }
+
+        let environment_signal = self.evaluate_environment_signal(symbol, hedge_symbol, hedge_venue, get_timestamp_us());
+        if self.enable_environment_model && !environment_signal.allow_open {
+            return Some("env_block".to_string());
+        }
+
+        let open_volatility_factor = match self.lookup_open_factor_value(symbol, open_venue) {
+            lookup if lookup.ready == Some(true) => {
+                let Some(value) = lookup.target_factor_value.filter(|v| v.is_finite()) else {
+                    return Some("vol".to_string());
+                };
+                value
+            }
+            _ => return Some("vol".to_string()),
+        };
+
+        if self.enable_volatility_limit {
+            let Some(open_volatility_threshold) = self.lookup_open_volatility_threshold(symbol) else {
+                return Some("miss_vol".to_string());
+            };
+            if open_volatility_factor > open_volatility_threshold {
+                return Some("vol".to_string());
+            }
+        }
+
+        let key = Self::build_threshold_key(symbol, hedge_symbol, open_venue, hedge_venue);
+        if self.is_open_cooldown_hit(&key, get_timestamp_us()) {
+            return Some("cooldown".to_string());
+        }
+
+        None
+    }
+
+    fn build_xarb_open_blocker_rows(&mut self) -> Vec<XarbOpenBlockerRow> {
+        let symbol_list = super::symbol_list::SymbolList::instance();
+        let mut symbols = symbol_list.get_online_symbols();
+        symbols.sort();
+
+        let mut rows = Vec::new();
+        for symbol in symbols {
+            let in_fwd = symbol_list.is_in_fwd_trade_list(&symbol);
+            let in_bwd = symbol_list.is_in_bwd_trade_list(&symbol);
+
+            let fwd_reason = if in_fwd {
+                self.build_xarb_open_blocker_reason(&symbol, Side::Buy)
+            } else {
+                None
+            };
+            let bwd_reason = if in_bwd {
+                self.build_xarb_open_blocker_reason(&symbol, Side::Sell)
+            } else {
+                None
+            };
+
+            let reason = match (fwd_reason, bwd_reason) {
+                (None, None) => continue,
+                (Some(reason), None) => format!("fwd:{reason}"),
+                (None, Some(reason)) => format!("bwd:{reason}"),
+                (Some(left), Some(right)) if left == right => left,
+                (Some(left), Some(right)) => format!("fwd:{left}|bwd:{right}"),
+            };
+
+            rows.push(XarbOpenBlockerRow { symbol, reason });
+        }
+        rows
+    }
+
+    fn log_xarb_open_blocker_table(&mut self, source: &str) {
+        let rows = self.build_xarb_open_blocker_rows();
+        if rows.is_empty() {
+            return;
+        }
+
+        let symbol_width = rows
+            .iter()
+            .map(|row| row.symbol.len())
+            .max()
+            .unwrap_or(6)
+            .max("symbol".len());
+        let reason_width = rows
+            .iter()
+            .map(|row| row.reason.len())
+            .max()
+            .unwrap_or(6)
+            .max("reason".len());
+
+        let fmt_row = |symbol: &str, reason: &str| -> String {
+            format!(
+                "{:<symbol_width$}  {:<reason_width$}",
+                symbol,
+                reason,
+                symbol_width = symbol_width,
+                reason_width = reason_width
+            )
+        };
+
+        let header = fmt_row("symbol", "reason");
+        let rule = "=".repeat(header.len());
+        let mid = "-".repeat(header.len());
+
+        log::info!("{source}: xarb open blocker table (last 30s)");
+        log::info!("{rule}");
+        log::info!("{header}");
+        log::info!("{mid}");
+        for row in rows {
+            log::info!("{}", fmt_row(&row.symbol, &row.reason));
+        }
+        log::info!("{rule}");
     }
 
     pub fn record_environment_intercept_summary(

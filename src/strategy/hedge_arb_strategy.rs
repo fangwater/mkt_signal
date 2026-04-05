@@ -7,7 +7,7 @@ use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager,
 use crate::pre_trade::signal_throttle::register_signal_throttle;
 use crate::pre_trade::{PersistChannel, SignalChannel, TradeEngHub};
 use crate::signal::arb_signal::ArbBackwardQueryMsg;
-use crate::signal::cancel_signal::ArbCancelCtx;
+use crate::signal::cancel_signal::{ArbCancelCtx, ArbCancelReason};
 use crate::signal::common::{
     align_price_floor, ExecutionType, OrderStatus, SignalBytes, TimeInForce, TradingVenue,
 };
@@ -71,6 +71,8 @@ pub struct HedgeArbStrategy {
     pub hedge_retry_after_ts: Option<i64>, //对冲报单失败后的冷却截止时间
     pub hedge_retry_reason: Option<&'static str>, //对冲报单失败的重试原因
     pub last_cancel_trigger_ts: Option<i64>,
+    pub last_open_cancel_reason: Option<&'static str>,
+    pub last_inactive_reason: Option<String>,
     pending_order_queries: HashMap<i64, PendingOrderQueryReason>,
     order_query_watchdog: Option<QueryWatchdog>,
     cancel_query_watchdog: Option<QueryWatchdog>,
@@ -101,6 +103,15 @@ struct QueryWatchdog {
 }
 
 impl HedgeArbStrategy {
+    fn mark_inactive(&mut self, reason: impl Into<String>) {
+        self.alive_flag = false;
+        self.last_inactive_reason = Some(reason.into());
+    }
+
+    pub fn inactive_reason(&self) -> Option<&str> {
+        self.last_inactive_reason.as_deref()
+    }
+
     pub fn open_side(&self) -> Side {
         if self.hedge_side == Side::Buy {
             Side::Sell
@@ -158,6 +169,8 @@ impl HedgeArbStrategy {
             hedge_retry_after_ts: None,
             hedge_retry_reason: None,
             last_cancel_trigger_ts: None,
+            last_open_cancel_reason: None,
+            last_inactive_reason: None,
             pending_order_queries: HashMap::new(),
             order_query_watchdog: None,
             cancel_query_watchdog: None,
@@ -311,6 +324,7 @@ impl HedgeArbStrategy {
 
     fn handle_arb_open_signal(&mut self, ctx: ArbOpenCtx) {
         // 开仓open leg，打开头寸，根据信号创建开仓leg, 进行风控判断，失败就直接把策略标记为不活跃，等待定时器清理
+        self.last_inactive_reason = None;
 
         let force_close = self.is_force_close_mode();
         let aligned_price = ctx.price_value();
@@ -325,7 +339,7 @@ impl HedgeArbStrategy {
                 order_type,
                 aligned_price
             );
-            self.alive_flag = false;
+            self.mark_inactive("invalid_price");
             return;
         }
         if force_close {
@@ -352,7 +366,7 @@ impl HedgeArbStrategy {
             self.log_force_close_skip("单品种敞口", &ctx);
         } else if let Err(e) = MonitorChannel::instance().check_symbol_exposure(&self.open_symbol) {
             error!("HedgeArbStrategy: strategy_id={} symbol={} 单品种敞口风控检查失败: {}，标记策略为不活跃", self.strategy_id, self.open_symbol, e);
-            self.alive_flag = false;
+            self.mark_inactive(format!("symbol_exposure:{e}"));
             return;
         }
 
@@ -364,7 +378,7 @@ impl HedgeArbStrategy {
                 "HedgeArbStrategy: strategy_id={} 总敞口风控检查失败: {}，标记策略为不活跃",
                 self.strategy_id, e
             );
-            self.alive_flag = false;
+            self.mark_inactive(format!("total_exposure:{e}"));
             return;
         }
 
@@ -374,7 +388,7 @@ impl HedgeArbStrategy {
             if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&self.open_symbol)
             {
                 error!("HedgeArbStrategy: strategy_id={} symbol={} 限价挂单数量风控检查失败: {}，标记策略为不活跃", self.strategy_id, self.open_symbol, e);
-                self.alive_flag = false;
+                self.mark_inactive(format!("pending_limit:{e}"));
                 return;
             }
         }
@@ -441,7 +455,7 @@ impl HedgeArbStrategy {
                 "HedgeArbStrategy: strategy_id={} 开仓信号量价无效 qty={:.8} price={:.8}，标记策略为不活跃",
                 self.strategy_id, aligned_qty, aligned_price
             );
-            self.alive_flag = false;
+            self.mark_inactive("invalid_qty_or_price");
             return;
         }
 
@@ -476,7 +490,7 @@ impl HedgeArbStrategy {
                 "HedgeArbStrategy: strategy_id={} 初始化数量乘数失败: {}",
                 self.strategy_id, err
             );
-            self.alive_flag = false;
+            self.mark_inactive(format!("qty_multiplier:{err}"));
             return;
         }
 
@@ -511,7 +525,10 @@ impl HedgeArbStrategy {
                         available_balance
                     );
                 }
-                self.alive_flag = false;
+                self.mark_inactive(format!(
+                    "balance_insufficient:{} required={:.8} available={:.8}",
+                    check_asset, required_amount, available_balance
+                ));
                 return;
             }
         }
@@ -531,7 +548,7 @@ impl HedgeArbStrategy {
                         "HedgeArbStrategy: strategy_id={} 杠杆风控检查失败: {}，标记策略为不活跃",
                         self.strategy_id, e
                     );
-                    self.alive_flag = false;
+                    self.mark_inactive(format!("leverage:{e}"));
                     return;
                 }
             }
@@ -547,7 +564,7 @@ impl HedgeArbStrategy {
                 "HedgeArbStrategy: strategy_id={} 仓位限制检查失败: {}，标记策略为不活跃",
                 self.strategy_id, e
             );
-            self.alive_flag = false;
+            self.mark_inactive(format!("position_limit:{e}"));
             return;
         }
 
@@ -921,7 +938,11 @@ impl HedgeArbStrategy {
                             order_type_str,
                             e
                         );
-                        self.alive_flag = false;
+                        if order_type_str == "开仓" {
+                            self.mark_inactive(format!("send_open_order:{e}"));
+                        } else {
+                            self.alive_flag = false;
+                        }
                         return Err(format!("推送{}订单失败: {}", order_type_str, e));
                     }
                     self.schedule_order_query_watchdog(client_order_id);
@@ -935,7 +956,11 @@ impl HedgeArbStrategy {
                         order_type_str,
                         e
                     );
-                    self.alive_flag = false;
+                    if order_type_str == "开仓" {
+                        self.mark_inactive(format!("open_order_bytes:{e}"));
+                    } else {
+                        self.alive_flag = false;
+                    }
                     Err(format!("获取{}订单请求字节失败: {}", order_type_str, e))
                 }
             }
@@ -944,7 +969,11 @@ impl HedgeArbStrategy {
                 "HedgeArbStrategy: strategy_id={} symbol={} 未找到创建的{}订单 client_order_id={}",
                 self.strategy_id, symbol, order_type_str, client_order_id
             );
-            self.alive_flag = false;
+            if order_type_str == "开仓" {
+                self.mark_inactive(format!("missing_open_order:{client_order_id}"));
+            } else {
+                self.alive_flag = false;
+            }
             Err(format!("未找到创建的{}订单", order_type_str))
         }
     }
@@ -959,6 +988,10 @@ impl HedgeArbStrategy {
     // 如果已经完全成交，则不需要cancel，跳过cancel流程即可。
     // 只有非中止状态，挂单中或者部分成交，才需要发送cancel。
     fn handle_arb_cancel_signal(&mut self, ctx: ArbCancelCtx) -> Result<(), String> {
+        self.last_open_cancel_reason = Some(match ctx.get_reason() {
+            ArbCancelReason::Spread => "spread_cancel",
+            ArbCancelReason::Tlen => "tlen_cancel",
+        });
         if self.last_cancel_trigger_ts == Some(ctx.trigger_ts) {
             debug!(
                 "HedgeArbStrategy: strategy_id={} 跳过重复 ArbCancel trigger_ts={} order_id={}",
@@ -986,10 +1019,6 @@ impl HedgeArbStrategy {
         if let Some(order) = order {
             // 先检查订单状态，如果已经是终结状态，则跳过cancel流程
             if order.status.is_terminal() {
-                info!(
-                    "HedgeArbStrategy: strategy_id={} 开仓订单已处于终结状态 {:?}，跳过cancel流程 order_id={}",
-                    self.strategy_id, order.status, self.open_order_id
-                );
                 return Ok(());
             }
 
@@ -1105,6 +1134,7 @@ impl HedgeArbStrategy {
                     "HedgeArbStrategy: strategy_id={} 开仓订单超时，直接撤单 order_id={}",
                     self.strategy_id, self.open_order_id
                 );
+                self.last_open_cancel_reason = Some("timeout");
 
                 // 获取开仓订单并直接发送撤单请求
                 let order = MonitorChannel::instance()
@@ -2186,11 +2216,13 @@ impl HedgeArbStrategy {
                 OrderStatus::Canceled => {
                     order.status = OrderExecutionStatus::Cancelled;
                     order.set_end_time(order_update.event_time());
+                    let cancel_reason = self.last_open_cancel_reason.unwrap_or("unknown");
                     info!(
-                        "🚫 订单已撤销: strategy_id={} client_order_id={} exchange_order_id={} symbol={} filled={:.4}/{:.4}",
-                        self.strategy_id, client_order_id, order_update.order_id(),
-                        order.symbol, order.cumulative_filled_quantity, order.quantity
+                        "🚫 订单已撤销: strategy_id={} client_order_id={} symbol={} reason={} filled={:.4}/{:.4}",
+                        self.strategy_id, client_order_id,
+                        order.symbol, cancel_reason, order.cumulative_filled_quantity, order.quantity
                     );
+                    self.last_open_cancel_reason = None;
                 }
                 OrderStatus::Expired => {
                     order.status = OrderExecutionStatus::Rejected;
