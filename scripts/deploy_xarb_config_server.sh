@@ -93,6 +93,10 @@ exchange_rank() {
 default_port_for_pair() {
   local open_ex="$1"
   local hedge_ex="$2"
+  if [[ "$open_ex" == "binance" && "$hedge_ex" == "binance" ]]; then
+    echo "18151"
+    return
+  fi
   local open_rank hedge_rank
   open_rank="$(exchange_rank "$open_ex")"
   hedge_rank="$(exchange_rank "$hedge_ex")"
