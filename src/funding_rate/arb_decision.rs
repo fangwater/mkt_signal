@@ -33,11 +33,14 @@ use super::arb_open_filter::{
     select_open_return_threshold_by_hedge_side,
 };
 use super::common::Quote;
-use super::common::{ReturnScoreThresholdsResolved, ThresholdKey, VenuePair};
+use super::common::{
+    ArbDirection, CompareOp, OperationType, ReturnScoreThresholdsResolved, ThresholdKey, VenuePair,
+};
 use super::factor_value_hub::{
     EnvironmentSignalResult, FactorValueHub, FactorValueLookupResult, ModelOutputScoreLookupResult,
 };
 use super::funding_rate_factor::FundingRateFactor;
+use super::spread_factor::SpreadType;
 use super::mkt_channel::MktChannel;
 use super::rate_fetcher::RateFetcher;
 use super::xarb_funding_threshold_loader::XarbFundingThresholdsResolved;
@@ -1151,6 +1154,38 @@ fn drive_spread_arb_decision(
     let symbol_list = super::symbol_list::SymbolList::instance();
     let open_symbol_key = normalize_arb_symbol_key(open_symbol);
     let hedge_symbol_key = normalize_arb_symbol_key(hedge_symbol);
+    if symbol_list.is_in_fwd_trade_list(open_symbol_key.as_str())
+        || symbol_list.is_in_bwd_trade_list(open_symbol_key.as_str())
+    {
+        let _ = ArbDecision::with_state_mut(|arb| {
+            let forward_hit = spread_factor.satisfy_forward_open(
+                open_venue,
+                open_symbol_key.as_str(),
+                hedge_venue,
+                hedge_symbol_key.as_str(),
+            );
+            let backward_hit = spread_factor.satisfy_backward_open(
+                open_venue,
+                open_symbol_key.as_str(),
+                hedge_venue,
+                hedge_symbol_key.as_str(),
+            );
+            arb.record_intercept_summary("spread_seen");
+            arb.record_spread_reference_sample(
+                open_symbol_key.as_str(),
+                spread_factor.get_spread_rate(
+                    open_venue,
+                    open_symbol_key.as_str(),
+                    hedge_venue,
+                    hedge_symbol_key.as_str(),
+                ),
+                forward_hit,
+                backward_hit,
+            );
+        });
+    }
+
+    let mut emitted_signal: Option<SignalType> = None;
 
     let forward_cancel = spread_factor.satisfy_forward_cancel(
         open_venue,
@@ -1164,31 +1199,94 @@ fn drive_spread_arb_decision(
         hedge_venue,
         hedge_symbol_key.as_str(),
     );
-    if let Some(cancel_gate) = ArbDecision::with_state_mut(|arb| {
-        arb.evaluate_cancel_gate(
-            forward_cancel,
-            backward_cancel,
-            open_symbol_key.as_str(),
-            hedge_symbol_key.as_str(),
-            open_venue,
-            hedge_venue,
-        )
-    })
-    .flatten()
-    {
+    if forward_cancel {
+        let Some(cancel_gate) = ArbDecision::with_state_mut(|arb| {
+            arb.evaluate_cancel_gate(
+                true,
+                false,
+                open_symbol_key.as_str(),
+                hedge_symbol_key.as_str(),
+                open_venue,
+                hedge_venue,
+            )
+        })
+        .flatten() else {
+            return Ok(emitted_signal);
+        };
+        let cancel_cooldown_hit = ArbDecision::with_state_mut(|arb| {
+            arb.is_spread_cancel_cooldown_hit(&cancel_gate.key, Side::Buy, now)
+        })
+        .unwrap_or(false);
+        if cancel_cooldown_hit {
+            let _ = ArbDecision::with_state_mut(|arb| {
+                arb.record_intercept_summary("spread_cancel_cooldown");
+            });
+        } else {
+        let _ = ArbDecision::with_state_mut(|arb| {
+            arb.record_intercept_summary("spread_cancel");
+        });
         if let Err(err) = emit_spread_arb_spread_cancel(
             decision,
             open_symbol_key.as_str(),
             hedge_symbol_key.as_str(),
             open_venue,
             hedge_venue,
+            Side::Buy,
         ) {
             return Err(err);
         }
+        let cancel_key = cancel_gate.key.clone();
         let _ = ArbDecision::with_state_mut(|arb| {
             arb.mark_signal_triggered(&SignalType::ArbCancel, cancel_gate.key, now);
+            arb.mark_spread_cancel_triggered(cancel_key, Side::Buy, now);
         });
-        return Ok(Some(SignalType::ArbCancel));
+        emitted_signal = Some(SignalType::ArbCancel);
+        }
+    }
+
+    if backward_cancel {
+        let Some(cancel_gate) = ArbDecision::with_state_mut(|arb| {
+            arb.evaluate_cancel_gate(
+                false,
+                true,
+                open_symbol_key.as_str(),
+                hedge_symbol_key.as_str(),
+                open_venue,
+                hedge_venue,
+            )
+        })
+        .flatten() else {
+            return Ok(emitted_signal);
+        };
+        let cancel_cooldown_hit = ArbDecision::with_state_mut(|arb| {
+            arb.is_spread_cancel_cooldown_hit(&cancel_gate.key, Side::Sell, now)
+        })
+        .unwrap_or(false);
+        if cancel_cooldown_hit {
+            let _ = ArbDecision::with_state_mut(|arb| {
+                arb.record_intercept_summary("spread_cancel_cooldown");
+            });
+        } else {
+        let _ = ArbDecision::with_state_mut(|arb| {
+            arb.record_intercept_summary("spread_cancel");
+        });
+        if let Err(err) = emit_spread_arb_spread_cancel(
+            decision,
+            open_symbol_key.as_str(),
+            hedge_symbol_key.as_str(),
+            open_venue,
+            hedge_venue,
+            Side::Sell,
+        ) {
+            return Err(err);
+        }
+        let cancel_key = cancel_gate.key.clone();
+        let _ = ArbDecision::with_state_mut(|arb| {
+            arb.mark_signal_triggered(&SignalType::ArbCancel, cancel_gate.key, now);
+            arb.mark_spread_cancel_triggered(cancel_key, Side::Sell, now);
+        });
+        emitted_signal = Some(SignalType::ArbCancel);
+        }
     }
 
     let in_dump = symbol_list.is_in_dump_list(open_symbol_key.as_str());
@@ -1204,8 +1302,11 @@ fn drive_spread_arb_decision(
             )
         })
         .flatten() else {
-            return Ok(None);
+            return Ok(emitted_signal);
         };
+        let _ = ArbDecision::with_state_mut(|arb| {
+            arb.record_intercept_summary("spread_close");
+        });
         emit_spread_arb_close_signals(
             decision,
             open_symbol_key.as_str(),
@@ -1234,7 +1335,7 @@ fn drive_spread_arb_decision(
         )
     })
     .flatten() else {
-        return Ok(None);
+        return Ok(emitted_signal);
     };
 
     emit_spread_arb_open_signals(
@@ -1876,6 +1977,7 @@ fn emit_funding_precise_tlen_cancel(
         now: now_us,
         from_key: &from_key,
         reason: crate::signal::cancel_signal::ArbCancelReason::Tlen,
+        side: Side::Buy,
         strategy_id,
     })
 }
@@ -1945,6 +2047,7 @@ fn emit_spread_arb_precise_tlen_cancel(
         now: now_us,
         from_key: &from_key,
         reason: crate::signal::cancel_signal::ArbCancelReason::Tlen,
+        side: Side::Buy,
         strategy_id,
     })
 }
@@ -1955,6 +2058,7 @@ fn emit_spread_arb_spread_cancel(
     hedge_symbol: &str,
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
+    side: Side,
 ) -> Result<()> {
     let (open_quote, hedge_quote) =
         match ArbDecision::load_valid_quotes(open_symbol, hedge_symbol, open_venue, hedge_venue) {
@@ -2009,6 +2113,7 @@ fn emit_spread_arb_spread_cancel(
         now: batch_ts,
         from_key: &from_key,
         reason: crate::signal::cancel_signal::ArbCancelReason::Spread,
+        side,
         strategy_id: 0,
     })
 }
@@ -2737,6 +2842,7 @@ fn emit_funding_spread_cancel(
         now: batch_ts,
         from_key: &from_key,
         reason: crate::signal::cancel_signal::ArbCancelReason::Spread,
+        side: Side::Buy,
         strategy_id: 0,
     })
 }
@@ -2846,6 +2952,7 @@ pub(crate) struct ArbSharedBootstrap {
     pub enable_tlen_cancel: bool,
     pub tlen_cancel_freq_ms: u64,
     pub signal_cooldown_us: i64,
+    pub spread_cancel_cooldown_us: i64,
     pub last_open_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
     pub last_close_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
 }
@@ -2882,6 +2989,16 @@ pub(crate) struct ArbHedgeOffsetDecision {
     pub ready: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct SpreadReferenceStats {
+    pub min_spread: f64,
+    pub max_spread: f64,
+    pub last_spread: f64,
+    pub forward_hit_count: u64,
+    pub backward_hit_count: u64,
+    pub seen: bool,
+}
+
 pub(crate) struct ArbDecisionState {
     pub venues: VenuePair,
     pub open_factor_value_hub: Option<FactorValueHub>,
@@ -2908,11 +3025,14 @@ pub(crate) struct ArbDecisionState {
     pub open_volatility_thresholds: HashMap<String, f64>,
     pub tlen_thresholds: HashMap<String, f64>,
     pub signal_cooldown_us: i64,
+    pub spread_cancel_cooldown_us: i64,
     pub last_open_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
     pub last_close_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
+    pub last_spread_cancel_ts: Rc<RefCell<HashMap<(ThresholdKey, u8), i64>>>,
     pub last_tlen_threshold_reload_ts_us: i64,
     pub last_cancel_trigger_ts_us: i64,
     pub intercept_counts: HashMap<String, u64>,
+    pub spread_reference_stats: HashMap<String, SpreadReferenceStats>,
     pub last_intercept_log: Instant,
 }
 
@@ -2944,12 +3064,50 @@ impl ArbDecisionState {
             open_volatility_thresholds: HashMap::new(),
             tlen_thresholds: HashMap::new(),
             signal_cooldown_us: 5_000_000,
+            spread_cancel_cooldown_us: 0,
             last_open_ts: Rc::new(RefCell::new(HashMap::new())),
             last_close_ts: Rc::new(RefCell::new(HashMap::new())),
+            last_spread_cancel_ts: Rc::new(RefCell::new(HashMap::new())),
             last_tlen_threshold_reload_ts_us: 0,
             last_cancel_trigger_ts_us: 0,
             intercept_counts: HashMap::new(),
+            spread_reference_stats: HashMap::new(),
             last_intercept_log: Instant::now(),
+        }
+    }
+
+    pub fn record_spread_reference_sample(
+        &mut self,
+        symbol: &str,
+        spread_rate: Option<f64>,
+        forward_hit: bool,
+        backward_hit: bool,
+    ) {
+        const WATCHED_SYMBOLS: [&str; 3] = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
+        if !WATCHED_SYMBOLS.contains(&symbol) {
+            return;
+        }
+        let Some(spread_rate) = spread_rate.filter(|v| v.is_finite()) else {
+            return;
+        };
+        let entry = self
+            .spread_reference_stats
+            .entry(symbol.to_string())
+            .or_default();
+        if entry.seen {
+            entry.min_spread = entry.min_spread.min(spread_rate);
+            entry.max_spread = entry.max_spread.max(spread_rate);
+        } else {
+            entry.min_spread = spread_rate;
+            entry.max_spread = spread_rate;
+            entry.seen = true;
+        }
+        entry.last_spread = spread_rate;
+        if forward_hit {
+            entry.forward_hit_count += 1;
+        }
+        if backward_hit {
+            entry.backward_hit_count += 1;
         }
     }
 
@@ -3084,6 +3242,7 @@ impl ArbDecisionState {
         self.enable_tlen_cancel = bootstrap.enable_tlen_cancel;
         self.tlen_cancel_freq_ms = bootstrap.tlen_cancel_freq_ms;
         self.signal_cooldown_us = bootstrap.signal_cooldown_us;
+        self.spread_cancel_cooldown_us = bootstrap.spread_cancel_cooldown_us;
         self.last_open_ts = bootstrap.last_open_ts;
         self.last_close_ts = bootstrap.last_close_ts;
     }
@@ -3100,6 +3259,7 @@ impl ArbDecisionState {
             enable_tlen_cancel: false,
             tlen_cancel_freq_ms: 3_000,
             signal_cooldown_us: 5_000_000,
+            spread_cancel_cooldown_us: 0,
             last_open_ts: Rc::new(RefCell::new(HashMap::new())),
             last_close_ts: Rc::new(RefCell::new(HashMap::new())),
         }
@@ -3234,10 +3394,19 @@ impl ArbDecisionState {
             hedge_venue,
             in_dump,
         );
+        if side.is_none()
+            && !in_dump
+            && (symbol_list.is_in_fwd_trade_list(open_symbol_key)
+                || symbol_list.is_in_bwd_trade_list(open_symbol_key))
+        {
+            self.record_intercept_summary("spread_block");
+        }
         let side = side?;
+        self.record_intercept_summary("spread_hit");
         let key =
             Self::build_threshold_key(open_symbol_key, hedge_symbol_key, open_venue, hedge_venue);
         if self.is_open_cooldown_hit(&key, now) {
+            self.record_intercept_summary("cooldown");
             return None;
         }
         let gate = self.evaluate_open_gate(
@@ -3250,7 +3419,8 @@ impl ArbDecisionState {
             now,
             forward_open,
             backward_open,
-        )?;
+        );
+        let gate = gate?;
         Some(ArbOpenControlPassed { side, key, gate })
     }
 
@@ -3379,6 +3549,16 @@ impl ArbDecisionState {
         is_cooldown_hit(&self.last_close_ts, key, now, self.signal_cooldown_us)
     }
 
+    pub fn is_spread_cancel_cooldown_hit(&self, key: &ThresholdKey, side: Side, now: i64) -> bool {
+        if self.spread_cancel_cooldown_us <= 0 {
+            return false;
+        }
+        self.last_spread_cancel_ts
+            .borrow()
+            .get(&(key.clone(), side.to_u8()))
+            .is_some_and(|&last_ts| now - last_ts < self.spread_cancel_cooldown_us)
+    }
+
     pub fn build_threshold_key(
         open_symbol_key: &str,
         hedge_symbol_key: &str,
@@ -3394,6 +3574,12 @@ impl ArbDecisionState {
 
     pub fn mark_close_triggered(&self, key: ThresholdKey, now: i64) {
         update_last_ts(&self.last_close_ts, key, now);
+    }
+
+    pub fn mark_spread_cancel_triggered(&self, key: ThresholdKey, side: Side, now: i64) {
+        self.last_spread_cancel_ts
+            .borrow_mut()
+            .insert((key, side.to_u8()), now);
     }
 
     pub fn is_signal_cooldown_hit(
@@ -3569,7 +3755,6 @@ impl ArbDecisionState {
         let mut rows: Vec<(String, u64)> = self
             .intercept_counts
             .iter()
-            .filter(|(reason, _)| reason.as_str() != "cooldown")
             .map(|(reason, count)| (reason.clone(), *count))
             .collect();
         if rows.is_empty() {
@@ -3577,7 +3762,22 @@ impl ArbDecisionState {
             self.last_intercept_log = Instant::now();
             return;
         }
-        rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        rows.sort_by(|a, b| {
+            let priority = |reason: &str| match reason {
+                "spread_seen" => 0u8,
+                "spread_cancel" => 1u8,
+                "spread_cancel_cooldown" => 2u8,
+                "spread_close" => 3u8,
+                "spread_block" => 4u8,
+                "spread_hit" => 5u8,
+                "cooldown" => 6u8,
+                _ => 7u8,
+            };
+            priority(&a.0)
+                .cmp(&priority(&b.0))
+                .then_with(|| b.1.cmp(&a.1))
+                .then_with(|| a.0.cmp(&b.0))
+        });
 
         let reason_width = rows
             .iter()
@@ -3606,7 +3806,7 @@ impl ArbDecisionState {
         let rule = "=".repeat(header.len());
         let mid = "-".repeat(header.len());
 
-        log::info!("{source}: xarb blocked-open summary (last {}s)", INTERCEPT_LOG_INTERVAL_SECS);
+        log::info!("{source}: xarb open summary (last {}s)", INTERCEPT_LOG_INTERVAL_SECS);
         log::info!("{rule}");
         log::info!("{header}");
         log::info!("{mid}");
@@ -3615,7 +3815,60 @@ impl ArbDecisionState {
         }
         log::info!("{rule}");
 
+        let spread_factor = super::spread_factor::SpreadFactor::instance();
+        for symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"] {
+            let Some(stats) = self.spread_reference_stats.get(symbol).copied() else {
+                continue;
+            };
+            if !stats.seen {
+                continue;
+            }
+            let fwd = spread_factor.get_spread_check_detail(
+                self.venues.0,
+                symbol,
+                self.venues.1,
+                symbol,
+                ArbDirection::Forward,
+                OperationType::Open,
+            );
+            let bwd = spread_factor.get_spread_check_detail(
+                self.venues.0,
+                symbol,
+                self.venues.1,
+                symbol,
+                ArbDirection::Backward,
+                OperationType::Open,
+            );
+            let fmt_open = |detail: Option<(f64, f64, CompareOp, SpreadType)>| -> String {
+                match detail {
+                    Some((value, threshold, compare_op, spread_type)) => format!(
+                        "{:.6}/{:.6} {} {}",
+                        value,
+                        threshold,
+                        match compare_op {
+                            CompareOp::GreaterThan => ">",
+                            CompareOp::LessThan => "<",
+                        },
+                        spread_type.as_str()
+                    ),
+                    None => "-".to_string(),
+                }
+            };
+            log::info!(
+                "{source}: ref symbol={} spread[min={:.6}, max={:.6}, last={:.6}] hits[fwd={}, bwd={}] fwd_open={} bwd_open={}",
+                symbol,
+                stats.min_spread,
+                stats.max_spread,
+                stats.last_spread,
+                stats.forward_hit_count,
+                stats.backward_hit_count,
+                fmt_open(fwd),
+                fmt_open(bwd)
+            );
+        }
+
         self.intercept_counts.clear();
+        self.spread_reference_stats.clear();
         self.last_intercept_log = Instant::now();
     }
 

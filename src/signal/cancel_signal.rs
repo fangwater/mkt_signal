@@ -47,10 +47,13 @@ pub struct ArbCancelCtx {
     /// From key bytes
     pub from_key: Vec<u8>,
 
-    /// Cancel reason. Defaults to spread for legacy payloads.
+    /// Cancel reason.
     pub reason: u8,
 
-    /// Optional precise strategy target; 0 means broadcast-by-symbol legacy behavior.
+    /// Cancel direction for spread arb.
+    pub side: u8,
+
+    /// Optional precise strategy target; 0 means broadcast-by-symbol routing.
     pub strategy_id: i32,
 }
 
@@ -155,6 +158,7 @@ impl ArbCancelCtx {
             from_key_len: 0,
             from_key: Vec::new(),
             reason: ArbCancelReason::Spread.to_u8(),
+            side: Side::Buy.to_u8(),
             strategy_id: 0,
         }
     }
@@ -191,6 +195,14 @@ impl ArbCancelCtx {
 
     pub fn get_reason(&self) -> ArbCancelReason {
         ArbCancelReason::from_u8(self.reason).unwrap_or(ArbCancelReason::Spread)
+    }
+
+    pub fn set_side(&mut self, side: Side) {
+        self.side = side.to_u8();
+    }
+
+    pub fn get_side(&self) -> Side {
+        Side::from_u8(self.side).expect("ArbCancelCtx side must be valid")
     }
 
     pub fn set_target_strategy(&mut self, strategy_id: i32) {
@@ -267,6 +279,7 @@ impl SignalBytes for ArbCancelCtx {
         buf.put_u32_le(from_key_len);
         buf.put_slice(&self.from_key);
         buf.put_u8(self.reason);
+        buf.put_u8(self.side);
         buf.put_i32_le(self.strategy_id);
 
         buf.freeze()
@@ -296,11 +309,15 @@ impl SignalBytes for ArbCancelCtx {
             ));
         }
         let from_key = bytes.copy_to_bytes(from_key_len).to_vec();
-        let (reason, strategy_id) = match bytes.remaining() {
-            0 => (ArbCancelReason::Spread.to_u8(), 0),
-            n if n >= 1 + 4 => (bytes.get_u8(), bytes.get_i32_le()),
-            _ => return Err("Unexpected trailing bytes for ArbCancelCtx".to_string()),
-        };
+        if bytes.remaining() != 1 + 1 + 4 {
+            return Err("Unexpected trailing bytes for ArbCancelCtx".to_string());
+        }
+        let reason = bytes.get_u8();
+        let side = bytes.get_u8();
+        if Side::from_u8(side).is_none() {
+            return Err(format!("Invalid ArbCancelCtx side: {}", side));
+        }
+        let strategy_id = bytes.get_i32_le();
         if bytes.remaining() != 0 {
             return Err("Unexpected trailing bytes for ArbCancelCtx".to_string());
         }
@@ -314,6 +331,7 @@ impl SignalBytes for ArbCancelCtx {
             from_key_len: from_key_len as u32,
             from_key,
             reason,
+            side,
             strategy_id,
         })
     }
@@ -401,12 +419,14 @@ mod tests {
         ctx.set_hedging_symbol("BTCUSDT");
         ctx.trigger_ts = 789;
         ctx.set_from_key(b"fk".to_vec());
+        ctx.set_side(Side::Sell);
 
         let parsed = ArbCancelCtx::from_bytes(ctx.to_bytes()).expect("roundtrip should succeed");
         assert_eq!(parsed.get_opening_symbol(), "BTCUSDT");
         assert_eq!(parsed.get_hedging_symbol(), "BTCUSDT");
         assert_eq!(parsed.trigger_ts, 789);
         assert_eq!(parsed.from_key, b"fk");
+        assert_eq!(parsed.get_side(), Side::Sell);
     }
 
     #[test]

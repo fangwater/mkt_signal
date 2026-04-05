@@ -1,6 +1,7 @@
 use anyhow::Result;
 
 use crate::common::iceoryx_publisher::SignalPublisher;
+use crate::pre_trade::order_manager::Side;
 use crate::signal::cancel_signal::{ArbCancelCtx, ArbCancelReason};
 use crate::signal::common::SignalBytes;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
@@ -20,6 +21,7 @@ pub struct ArbCancelEmitInput<'a> {
     pub now: i64,
     pub from_key: &'a str,
     pub reason: ArbCancelReason,
+    pub side: Side,
     pub strategy_id: i32,
 }
 
@@ -34,6 +36,7 @@ pub fn build_precise_arb_cancel_ctx(input: ArbCancelEmitInput<'_>) -> ArbCancelC
         now: input.now,
         from_key: input.from_key,
         reason: input.reason,
+        side: input.side,
         strategy_id: input.strategy_id,
     })
 }

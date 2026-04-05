@@ -484,6 +484,11 @@ fn handle_trade_signal(signal: TradeSignal) {
         SignalType::ArbCancel => match ArbCancelCtx::from_bytes(signal.context.clone()) {
             Ok(cancel_ctx) => {
                 let symbol = cancel_ctx.get_opening_symbol().to_uppercase();
+                let cancel_side = cancel_ctx.get_side();
+                let cancel_reason = cancel_ctx.get_reason();
+                let require_direction_match =
+                    matches!(cancel_reason, crate::signal::cancel_signal::ArbCancelReason::Spread)
+                        && cancel_ctx.strategy_id <= 0;
                 let opening_venue = TradingVenue::from_u8(cancel_ctx.opening_leg.venue)
                     .unwrap_or(TradingVenue::BinanceMargin);
                 let hedging_venue = TradingVenue::from_u8(cancel_ctx.hedging_leg.venue)
@@ -519,6 +524,16 @@ fn handle_trade_signal(signal: TradeSignal) {
                     }
                     let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
                     if let Some(mut strategy) = strategy_opt {
+                        if require_direction_match {
+                            let direction_match = strategy
+                                .as_any()
+                                .downcast_ref::<HedgeArbStrategy>()
+                                .is_some_and(|arb| arb.open_side() == cancel_side);
+                            if !direction_match {
+                                strategy_mgr.borrow_mut().insert(strategy);
+                                return;
+                            }
+                        }
                         strategy.handle_signal(&signal);
                         if strategy.is_active() {
                             strategy_mgr.borrow_mut().insert(strategy);
@@ -546,6 +561,16 @@ fn handle_trade_signal(signal: TradeSignal) {
                     }
                     let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
                     if let Some(mut strategy) = strategy_opt {
+                        if require_direction_match {
+                            let direction_match = strategy
+                                .as_any()
+                                .downcast_ref::<HedgeArbStrategy>()
+                                .is_some_and(|arb| arb.open_side() == cancel_side);
+                            if !direction_match {
+                                strategy_mgr.borrow_mut().insert(strategy);
+                                continue;
+                            }
+                        }
                         strategy.handle_signal(&signal);
                         if strategy.is_active() {
                             strategy_mgr.borrow_mut().insert(strategy);

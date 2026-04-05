@@ -101,6 +101,14 @@ struct QueryWatchdog {
 }
 
 impl HedgeArbStrategy {
+    pub fn open_side(&self) -> Side {
+        if self.hedge_side == Side::Buy {
+            Side::Sell
+        } else {
+            Side::Buy
+        }
+    }
+
     fn extract_assets_from_symbol(symbol: &str) -> (String, String) {
         let symbol_upper = symbol.to_uppercase();
         const QUOTE_ASSETS: [&str; 7] = ["USDT", "USDC", "BUSD", "FDUSD", "BIDR", "TRY", "USD"];

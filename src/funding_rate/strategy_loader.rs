@@ -142,6 +142,10 @@ pub struct StrategyParams {
     #[serde(default = "default_tlen_cancel_freq_ms")]
     pub tlen_cancel_freq_ms: u64,
 
+    /// Spread cancel 信号限流（毫秒），仅作用于 xarb spread cancel
+    #[serde(default = "default_spread_cancel_cooldown_ms")]
+    pub spread_cancel_cooldown_ms: u64,
+
     /// MM hedge 是否允许 return score 调整 hedge offset（false=使用中性 score 计算）
     #[serde(default = "default_enable_return_score_adjust_hedge")]
     pub enable_return_score_adjust_hedge: bool,
@@ -237,6 +241,9 @@ fn default_enable_tlen_cancel() -> bool {
 fn default_tlen_cancel_freq_ms() -> u64 {
     3_000
 }
+fn default_spread_cancel_cooldown_ms() -> u64 {
+    100
+}
 fn default_enable_return_score_adjust_hedge() -> bool {
     true
 }
@@ -282,6 +289,7 @@ impl Default for StrategyParams {
             enable_open_cancel: default_enable_open_cancel(),
             enable_tlen_cancel: default_enable_tlen_cancel(),
             tlen_cancel_freq_ms: default_tlen_cancel_freq_ms(),
+            spread_cancel_cooldown_ms: default_spread_cancel_cooldown_ms(),
             enable_return_score_adjust_hedge: default_enable_return_score_adjust_hedge(),
             enable_environment_model: default_enable_environment_model(),
             enable_volatility_limit: default_enable_volatility_limit(),
@@ -294,7 +302,7 @@ impl Default for StrategyParams {
 
 impl StrategyParams {
     /// 从 Redis Hash 加载
-    pub(crate) async fn load_from_redis(
+    pub async fn load_from_redis(
         redis: &RedisSettings,
         namespace: &str,
         open_venue: TradingVenue,
@@ -515,6 +523,24 @@ impl StrategyParams {
             }
             None => default_tlen_cancel_freq_ms(),
         };
+        let spread_cancel_cooldown_ms = match hash_map.get("spread_cancel_cooldown_ms") {
+            Some(raw) => {
+                let parsed = raw.parse::<i64>().unwrap_or_else(|_| {
+                    panic!(
+                        "Redis hash '{}' spread_cancel_cooldown_ms 无法解析为整数: {}",
+                        redis_key, raw
+                    )
+                });
+                if parsed < 0 {
+                    panic!(
+                        "Redis hash '{}' spread_cancel_cooldown_ms 无效(需>=0): {}",
+                        redis_key, parsed
+                    );
+                }
+                parsed as u64
+            }
+            None => default_spread_cancel_cooldown_ms(),
+        };
         let enable_return_score_adjust_hedge = match hash_map
             .get("enable_return_score_adjust_hegde")
             .or_else(|| hash_map.get("enable_return_score_adjust_hedge"))
@@ -689,6 +715,7 @@ impl StrategyParams {
             enable_open_cancel,
             enable_tlen_cancel,
             tlen_cancel_freq_ms,
+            spread_cancel_cooldown_ms,
             enable_return_score_adjust_hedge,
             enable_environment_model,
             enable_volatility_limit,
@@ -782,6 +809,10 @@ impl StrategyParams {
                 .signal_cooldown
                 .saturating_mul(1_000_000)
                 .min(i64::MAX as u64) as i64;
+            arb.spread_cancel_cooldown_us = self
+                .spread_cancel_cooldown_ms
+                .saturating_mul(1_000)
+                .min(i64::MAX as u64) as i64;
 
             arb.max_hedge_price_pct_change = self.max_hedge_price_pct_change;
             arb.enable_environment_model = self.enable_environment_model;
@@ -839,7 +870,7 @@ impl StrategyParams {
         }
 
         info!(
-            "✅ 策略参数已更新: mode={}, amount={:.2}, arb_open_scale={:.4}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, order_interval_ms={}, open_orders_per_round={}, cooldown={}s, prediction_mode={}, enable_open_cancel={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, enable_return_score_adjust_hedge={}, enable_environment_model={}, enable_volatility_limit={}, open_volatility_limit={}, return_model_service={}, environment_model_service={}",
+            "✅ 策略参数已更新: mode={}, amount={:.2}, arb_open_scale={:.4}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, order_interval_ms={}, open_orders_per_round={}, cooldown={}s, prediction_mode={}, enable_open_cancel={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, spread_cancel_cooldown_ms={}, enable_return_score_adjust_hedge={}, enable_environment_model={}, enable_volatility_limit={}, open_volatility_limit={}, return_model_service={}, environment_model_service={}",
             self.mode,
             self.order_amount,
             self.open_scale,
@@ -852,6 +883,7 @@ impl StrategyParams {
             self.enable_open_cancel,
             self.enable_tlen_cancel,
             self.tlen_cancel_freq_ms,
+            self.spread_cancel_cooldown_ms,
             self.enable_return_score_adjust_hedge,
             self.enable_environment_model,
             self.enable_volatility_limit,

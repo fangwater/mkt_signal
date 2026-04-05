@@ -401,6 +401,8 @@ struct ManualSendRequest {
     opening_symbol: Option<String>,
     hedging_symbol: Option<String>,
     kind: ManualSignalKind,
+    /// Required for Cancel. Ignored for non-cancel kinds.
+    opening_side: Option<String>,
     /// Limit price offset (e.g. 0.0002). For Cancel it is ignored.
     offset: Option<f64>,
     /// Qty for open/close (required). For Cancel it is ignored.
@@ -471,6 +473,7 @@ struct ConfigResponse {
     backward_channel: String,
     symbol_namespace: String,
     symbol_key_suffix: String,
+    spread_cancel_cooldown_ms: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -868,6 +871,11 @@ fn build_and_publish_manual(
 
     match &signal_type {
         SignalType::ArbCancel => {
+            let cancel_side = req
+                .opening_side
+                .as_deref()
+                .and_then(Side::from_str)
+                .ok_or_else(|| anyhow::anyhow!("opening_side is required for cancel and must be buy or sell"))?;
             let open_quote = quotes
                 .read()
                 .get_valid(cfg.open, &opening_symbol)
@@ -893,6 +901,7 @@ fn build_and_publish_manual(
                 TradingLeg::new(cfg.hedge, hedge_quote.bid, hedge_quote.ask, hedge_quote.ts);
             ctx.set_hedging_symbol(&hedging_symbol);
             ctx.trigger_ts = now;
+            ctx.set_side(cancel_side);
 
             let signal = TradeSignal::create(signal_type.clone(), now, 0.0, ctx.to_bytes());
             publisher.publish(&signal.to_bytes())?;
@@ -902,7 +911,7 @@ fn build_and_publish_manual(
                 published_at_us: now,
                 kind,
                 signal_type: signal_type_str,
-                opening_side: None,
+                opening_side: Some(cancel_side.as_str_lower().to_string()),
                 hedging_side: None,
                 opening_symbol,
                 hedging_symbol,
@@ -1032,6 +1041,16 @@ async fn api_symbols() -> impl IntoResponse {
 }
 
 async fn api_config(State(st): State<AppState>) -> impl IntoResponse {
+    let spread_cancel_cooldown_ms =
+        mkt_signal::funding_rate::strategy_loader::StrategyParams::load_from_redis(
+            &get_redis_settings(),
+            &st.cfg.symbol_namespace,
+            st.cfg.open,
+            st.cfg.hedge,
+        )
+        .await
+        .ok()
+        .map(|params| params.spread_cancel_cooldown_ms);
     Json(ConfigResponse {
         open: st.cfg.open,
         hedge: st.cfg.hedge,
@@ -1039,6 +1058,7 @@ async fn api_config(State(st): State<AppState>) -> impl IntoResponse {
         backward_channel: st.cfg.backward_channel.clone(),
         symbol_namespace: st.cfg.symbol_namespace.clone(),
         symbol_key_suffix: st.cfg.symbol_key_suffix.clone(),
+        spread_cancel_cooldown_ms,
     })
 }
 
@@ -1248,7 +1268,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
       async function loadCfg() {
         const r = await fetch(api("config"));
         const j = await r.json();
-        $("cfg").textContent = `symbols=${j.symbol_namespace}_*:${j.symbol_key_suffix} open=${j.open} hedge=${j.hedge} channel=${j.signal_channel} backward=${j.backward_channel}`;
+        $("cfg").textContent = `symbols=${j.symbol_namespace}_*:${j.symbol_key_suffix} open=${j.open} hedge=${j.hedge} channel=${j.signal_channel} backward=${j.backward_channel} spread_cancel_cooldown_ms=${j.spread_cancel_cooldown_ms ?? "-"}`;
       }
 
       async function refreshStats() {
