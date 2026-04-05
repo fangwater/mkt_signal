@@ -4,16 +4,18 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub enum ArbCancelReason {
+pub enum CancelReason {
     Spread = 1,
     Tlen = 2,
+    ReturnScore = 3,
 }
 
-impl ArbCancelReason {
+impl CancelReason {
     pub fn from_u8(value: u8) -> Option<Self> {
         match value {
             1 => Some(Self::Spread),
             2 => Some(Self::Tlen),
+            3 => Some(Self::ReturnScore),
             _ => None,
         }
     }
@@ -21,7 +23,18 @@ impl ArbCancelReason {
     pub fn to_u8(self) -> u8 {
         self as u8
     }
+
+    pub fn as_log_reason(self) -> &'static str {
+        match self {
+            Self::Spread => "spread_cancel",
+            Self::Tlen => "tlen_cancel",
+            Self::ReturnScore => "return_score_cancel",
+        }
+    }
 }
+
+pub use CancelReason as ArbCancelReason;
+pub use CancelReason as MmCancelReason;
 
 /// Generic arbitrage cancel signal context
 #[derive(Debug, Clone)]
@@ -68,6 +81,9 @@ pub struct MmCancelCtx {
 
     /// Cancel side
     pub side: u8,
+
+    /// Cancel reason.
+    pub reason: u8,
 
     /// Trigger timestamp
     pub trigger_ts: i64,
@@ -222,6 +238,7 @@ impl MmCancelCtx {
             },
             opening_symbol: [0u8; 32],
             side: 0,
+            reason: MmCancelReason::ReturnScore.to_u8(),
             trigger_ts: 0,
             from_key_len: 0,
             from_key: Vec::new(),
@@ -250,6 +267,14 @@ impl MmCancelCtx {
         Side::from_u8(self.side).expect("MmCancelCtx side must be valid")
     }
 
+    pub fn set_reason(&mut self, reason: MmCancelReason) {
+        self.reason = reason.to_u8();
+    }
+
+    pub fn get_reason(&self) -> MmCancelReason {
+        MmCancelReason::from_u8(self.reason).unwrap_or(MmCancelReason::ReturnScore)
+    }
+
     /// Set from key bytes (updates length)
     pub fn set_from_key(&mut self, from_key: Vec<u8>) {
         self.from_key_len = from_key.len() as u32;
@@ -272,7 +297,8 @@ impl SignalBytes for ArbCancelCtx {
         // Hedging leg
         write_leg(&mut buf, &self.hedging_leg, &self.hedging_symbol);
 
-        // Trigger timestamp
+        // Cancel reason + trigger timestamp
+        buf.put_u8(self.reason);
         buf.put_i64_le(self.trigger_ts);
 
         let from_key_len = self.from_key.len() as u32;
@@ -344,8 +370,9 @@ impl SignalBytes for MmCancelCtx {
         // Opening leg
         write_leg(&mut buf, &self.opening_leg, &self.opening_symbol);
 
-        // Cancel side
+        // Cancel side + reason
         buf.put_u8(self.side);
+        buf.put_u8(self.reason);
 
         // Trigger timestamp
         buf.put_i64_le(self.trigger_ts);
@@ -363,15 +390,18 @@ impl SignalBytes for MmCancelCtx {
         // Opening leg
         let (opening_leg, opening_symbol) = read_leg(&mut bytes, true, "opening leg")?;
 
-        if bytes.remaining() < 1 + 8 + 4 {
-            return Err("Not enough bytes for cancel side / trigger timestamp".to_string());
+        if bytes.remaining() < 1 + 1 + 8 + 4 {
+            return Err("Not enough bytes for cancel side / reason / trigger timestamp".to_string());
         }
         let side = bytes.get_u8();
         if Side::from_u8(side).is_none() {
             return Err(format!("Invalid MmCancelCtx side: {}", side));
         }
+        let reason = bytes.get_u8();
+        if MmCancelReason::from_u8(reason).is_none() {
+            return Err(format!("Invalid MmCancelCtx reason: {}", reason));
+        }
 
-        // Trigger timestamp + from_key_len
         let trigger_ts = bytes.get_i64_le();
         let from_key_len = bytes.get_u32_le() as usize;
 
@@ -384,18 +414,17 @@ impl SignalBytes for MmCancelCtx {
         }
         let from_key = bytes.copy_to_bytes(from_key_len).to_vec();
 
-        let (strategy_id, client_order_id) = if bytes.remaining() == 0 {
-            (0, 0)
-        } else if bytes.remaining() == 12 {
-            (bytes.get_i32_le(), bytes.get_i64_le())
-        } else {
-            return Err("Unexpected trailing bytes for MmCancelCtx".to_string());
+        let (strategy_id, client_order_id) = match bytes.remaining() {
+            0 => (0, 0),
+            12 => (bytes.get_i32_le(), bytes.get_i64_le()),
+            _ => return Err("Unexpected trailing bytes for MmCancelCtx".to_string()),
         };
 
         Ok(MmCancelCtx {
             opening_leg,
             opening_symbol,
             side,
+            reason,
             trigger_ts,
             from_key_len: from_key_len as u32,
             from_key,
@@ -435,6 +464,7 @@ mod tests {
         ctx.opening_leg = TradingLeg::new(TradingVenue::BinanceMargin, 100.0, 100.1, 123);
         ctx.set_opening_symbol("BTCUSDT");
         ctx.set_side(Side::Buy);
+        ctx.set_reason(MmCancelReason::Tlen);
         ctx.trigger_ts = 789;
         ctx.set_from_key(b"fk".to_vec());
         ctx.set_target_strategy(42, 42001);
@@ -442,6 +472,7 @@ mod tests {
         let parsed = MmCancelCtx::from_bytes(ctx.to_bytes()).expect("roundtrip should succeed");
         assert_eq!(parsed.get_opening_symbol(), "BTCUSDT");
         assert_eq!(parsed.get_side(), Side::Buy);
+        assert_eq!(parsed.get_reason(), MmCancelReason::Tlen);
         assert_eq!(parsed.trigger_ts, 789);
         assert_eq!(parsed.from_key, b"fk");
         assert_eq!(parsed.strategy_id, 42);

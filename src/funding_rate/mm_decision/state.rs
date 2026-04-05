@@ -15,7 +15,7 @@ use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::depth_pub::query_client::DepthQueryClient;
 use crate::market_maker::open_quote_plan::MmOpenQuotePlan;
 use crate::pre_trade::order_manager::{OrderType, Side};
-use crate::signal::cancel_signal::MmCancelCtx;
+use crate::signal::cancel_signal::{MmCancelCtx, MmCancelReason};
 use crate::signal::common::{SignalBytes, TradingLeg, TradingVenue};
 use crate::signal::mm_signal::MmCancelTriggerCtx;
 use crate::signal::open_signal::MmOpenCtx;
@@ -426,6 +426,7 @@ impl MmDecisionState {
         );
         ctx.set_opening_symbol(&open_trade_symbol);
         ctx.set_side(side);
+        ctx.set_reason(MmCancelReason::ReturnScore);
         ctx.trigger_ts = now_us;
         ctx.set_from_key(from_key.as_bytes().to_vec());
 
@@ -452,6 +453,7 @@ impl MmDecisionState {
         );
         ctx.set_opening_symbol(&open_trade_symbol);
         ctx.set_side(Side::Buy);
+        ctx.set_reason(MmCancelReason::Tlen);
         ctx.trigger_ts = now_us;
         ctx.set_from_key(from_key.as_bytes().to_vec());
         ctx.set_target_strategy(strategy_id, 0);

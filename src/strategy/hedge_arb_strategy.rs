@@ -7,7 +7,7 @@ use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager,
 use crate::pre_trade::signal_throttle::register_signal_throttle;
 use crate::pre_trade::{PersistChannel, SignalChannel, TradeEngHub};
 use crate::signal::arb_signal::ArbBackwardQueryMsg;
-use crate::signal::cancel_signal::{ArbCancelCtx, ArbCancelReason};
+use crate::signal::cancel_signal::ArbCancelCtx;
 use crate::signal::common::{
     align_price_floor, ExecutionType, OrderStatus, SignalBytes, TimeInForce, TradingVenue,
 };
@@ -988,10 +988,7 @@ impl HedgeArbStrategy {
     // 如果已经完全成交，则不需要cancel，跳过cancel流程即可。
     // 只有非中止状态，挂单中或者部分成交，才需要发送cancel。
     fn handle_arb_cancel_signal(&mut self, ctx: ArbCancelCtx) -> Result<(), String> {
-        self.last_open_cancel_reason = Some(match ctx.get_reason() {
-            ArbCancelReason::Spread => "spread_cancel",
-            ArbCancelReason::Tlen => "tlen_cancel",
-        });
+        self.last_open_cancel_reason = Some(ctx.get_reason().as_log_reason());
         if self.last_cancel_trigger_ts == Some(ctx.trigger_ts) {
             debug!(
                 "HedgeArbStrategy: strategy_id={} 跳过重复 ArbCancel trigger_ts={} order_id={}",

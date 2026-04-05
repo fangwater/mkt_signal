@@ -66,6 +66,7 @@ pub struct MarketMakerOpenStrategy {
     order_query_watchdog: Option<QueryWatchdog>,
     cancel_query_watchdog: Option<QueryWatchdog>,
     last_cancel_trigger_ts: Option<i64>,
+    last_open_cancel_reason: Option<&'static str>,
 }
 
 impl MarketMakerOpenStrategy {
@@ -89,6 +90,7 @@ impl MarketMakerOpenStrategy {
             order_query_watchdog: None,
             cancel_query_watchdog: None,
             last_cancel_trigger_ts: None,
+            last_open_cancel_reason: None,
         }
     }
 
@@ -534,6 +536,7 @@ impl MarketMakerOpenStrategy {
             "MarketMakerOpenStrategy: strategy_id={} 开仓订单超时，直接撤单 order_id={}",
             self.strategy_id, self.open_order_id
         );
+        self.last_open_cancel_reason = Some("timeout");
 
         let order = MonitorChannel::instance()
             .order_manager()
@@ -550,8 +553,8 @@ impl MarketMakerOpenStrategy {
                         );
                     } else {
                         info!(
-                            "MarketMakerOpenStrategy: strategy_id={} 已发送开仓撤单请求 order_id={}",
-                            self.strategy_id, self.open_order_id
+                            "MarketMakerOpenStrategy: strategy_id={} exchange={} reason=timeout 已发送开仓撤单请求 order_id={}",
+                            self.strategy_id, exchange, self.open_order_id
                         );
                         self.reset_cancel_reconcile_state();
                         self.open_expire_ts = None;
@@ -663,15 +666,26 @@ impl MarketMakerOpenStrategy {
             match order.get_order_cancel_bytes() {
                 Ok(cancel_bytes) => {
                     let exchange = order.venue.trade_engine_exchange();
+                    let cancel_reason = ctx.get_reason().as_log_reason();
                     if let Err(e) = TradeEngHub::publish_order_request(exchange, &cancel_bytes) {
                         error!(
                             "MarketMakerOpenStrategy: strategy_id={} exchange={} 发送撤单请求失败 order_id={} trigger_ts={} from_key='{}' err={}",
                             self.strategy_id, exchange, self.open_order_id, ctx.trigger_ts, from_key_preview, e
                         );
                     } else {
+                        self.last_open_cancel_reason = Some(cancel_reason);
                         self.last_cancel_trigger_ts = Some(ctx.trigger_ts);
                         self.reset_cancel_reconcile_state();
                         self.schedule_cancel_query_watchdog(order.client_order_id);
+                        info!(
+                            "MarketMakerOpenStrategy: strategy_id={} exchange={} reason={} 已发送开仓撤单请求 order_id={} trigger_ts={} from_key='{}'",
+                            self.strategy_id,
+                            exchange,
+                            cancel_reason,
+                            self.open_order_id,
+                            ctx.trigger_ts,
+                            from_key_preview
+                        );
                     }
                 }
                 Err(e) => {
@@ -1362,18 +1376,22 @@ impl MarketMakerOpenStrategy {
                     order.side,
                     order.cumulative_filled_quantity,
                 ));
+                let cancel_reason = self.last_open_cancel_reason.unwrap_or("unknown");
                 info!(
-                    "🚫 MM订单已撤销: strategy_id={} client_order_id={} exchange_order_id={} symbol={} side={:?} price={:.6} qty={:.4} filled={:.4}/{:.4}",
+                    "🚫 MM订单已撤销: strategy_id={} client_order_id={} exchange_order_id={} exchange={} symbol={} reason={} side={:?} price={:.6} qty={:.4} filled={:.4}/{:.4}",
                     self.strategy_id,
                     client_order_id,
                     order_update.order_id(),
+                    order.venue.trade_engine_exchange(),
                     order.symbol,
+                    cancel_reason,
                     order.side,
                     order.price,
                     order.quantity,
                     order.cumulative_filled_quantity,
                     order.quantity
                 );
+                self.last_open_cancel_reason = None;
                 self.alive_flag = false;
             }
             OrderStatus::Filled => {
