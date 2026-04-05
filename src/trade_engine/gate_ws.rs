@@ -101,7 +101,7 @@ fn ensure_gate_text_prefix(req_param: &mut Value, client_order_id: i64) {
     }
 }
 
-pub fn build_api_payload(msg: &TradeRequestMsg) -> Result<String> {
+pub fn build_api_payload(msg: &TradeRequestMsg, transport_id: i64) -> Result<String> {
     let channel = match msg.req_type {
         TradeRequestType::GateUnifiedNewOrder => CHANNEL_SPOT_ORDER_PLACE,
         TradeRequestType::GateUnifiedCancelOrder => CHANNEL_SPOT_ORDER_CANCEL,
@@ -125,14 +125,14 @@ pub fn build_api_payload(msg: &TradeRequestMsg) -> Result<String> {
         "channel": channel,
         "event": EVENT_API,
         "payload": {
-            "req_id": msg.client_order_id.to_string(),
+            "req_id": transport_id.to_string(),
             "req_param": req_param,
         }
     });
     serde_json::to_string(&payload).with_context(|| "serialize gate ws payload")
 }
 
-pub fn build_query_payload(msg: &QueryRequestMsg) -> Result<String> {
+pub fn build_query_payload(msg: &QueryRequestMsg, transport_id: i64) -> Result<String> {
     let channel = match msg.req_type {
         QueryRequestType::GateUnifiedOrderQuery => CHANNEL_SPOT_ORDER_STATUS,
         QueryRequestType::GateFuturesOrderQuery => CHANNEL_FUTURES_ORDER_STATUS,
@@ -148,7 +148,7 @@ pub fn build_query_payload(msg: &QueryRequestMsg) -> Result<String> {
         "channel": channel,
         "event": EVENT_API,
         "payload": {
-            "req_id": msg.client_query_id.to_string(),
+            "req_id": transport_id.to_string(),
             "req_param": req_param,
         }
     });

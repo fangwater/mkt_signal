@@ -732,12 +732,12 @@ impl TradeWsClient {
         ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
         msg: &TradeRequestMsg,
     ) -> Result<()> {
-        let transport_id = self.next_transport_id(msg.client_order_id);
+        let transport_id = self.next_transport_id();
         let payload = self.build_payload(msg, transport_id)?;
         if self.exchange == Exchange::Gate {
             info!(
-                "trade ws client id={} exchange={} order payload: {}",
-                self.id, self.exchange, payload
+                "trade ws client id={} exchange={} sending order client_order_id={} transport_id={} payload: {}",
+                self.id, self.exchange, msg.client_order_id, transport_id, payload
             );
         } else if self.exchange == Exchange::Binance {
             info!(
@@ -761,12 +761,12 @@ impl TradeWsClient {
         ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
         msg: &QueryRequestMsg,
     ) -> Result<()> {
-        let transport_id = self.next_transport_id(msg.client_query_id);
+        let transport_id = self.next_transport_id();
         let payload = self.build_query_payload(msg, transport_id)?;
         if self.exchange == Exchange::Gate {
             info!(
-                "trade ws client id={} exchange={} query payload: {}",
-                self.id, self.exchange, payload
+                "trade ws client id={} exchange={} sending query client_query_id={} transport_id={} payload: {}",
+                self.id, self.exchange, msg.client_query_id, transport_id, payload
             );
         } else if self.exchange == Exchange::Binance {
             info!(
@@ -807,8 +807,8 @@ impl TradeWsClient {
 
     fn build_payload(&self, msg: &TradeRequestMsg, transport_id: i64) -> Result<String> {
         match self.exchange {
-            Exchange::Okex => self.build_okex_payload(msg),
-            Exchange::Gate => self.build_gate_payload(msg),
+            Exchange::Okex => self.build_okex_payload(msg, transport_id),
+            Exchange::Gate => self.build_gate_payload(msg, transport_id),
             Exchange::Binance => self.build_binance_payload(msg, transport_id),
             _ => {
                 let params_b64 = BASE64_STANDARD.encode(&msg.params);
@@ -826,7 +826,7 @@ impl TradeWsClient {
 
     fn build_query_payload(&self, msg: &QueryRequestMsg, transport_id: i64) -> Result<String> {
         match self.exchange {
-            Exchange::Gate => gate_ws::build_query_payload(msg),
+            Exchange::Gate => gate_ws::build_query_payload(msg, transport_id),
             Exchange::Binance => self.build_binance_query_payload(msg, transport_id),
             _ => Err(anyhow!(
                 "unsupported query ws payload for exchange {:?}",
@@ -835,7 +835,7 @@ impl TradeWsClient {
         }
     }
 
-    fn build_okex_payload(&self, msg: &TradeRequestMsg) -> Result<String> {
+    fn build_okex_payload(&self, msg: &TradeRequestMsg, transport_id: i64) -> Result<String> {
         use crate::trade_engine::okex::ToOkexWsJson;
         use crate::trade_engine::trade_request::TradeRequestHeader;
 
@@ -864,7 +864,7 @@ impl TradeWsClient {
             _ => None,
         };
 
-        let payload = json_val.ok_or_else(|| {
+        let mut payload = json_val.ok_or_else(|| {
             anyhow!(
                 "failed to build okex ws payload (req_type={:?}, client_order_id={})",
                 msg.req_type,
@@ -872,11 +872,15 @@ impl TradeWsClient {
             )
         })?;
 
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("id".to_string(), json!(transport_id.to_string()));
+        }
+
         serde_json::to_string(&payload).with_context(|| "serialize okex ws payload")
     }
 
-    fn build_gate_payload(&self, msg: &TradeRequestMsg) -> Result<String> {
-        gate_ws::build_api_payload(msg)
+    fn build_gate_payload(&self, msg: &TradeRequestMsg, transport_id: i64) -> Result<String> {
+        gate_ws::build_api_payload(msg, transport_id)
     }
 
     fn build_binance_payload(&self, msg: &TradeRequestMsg, transport_id: i64) -> Result<String> {
@@ -899,10 +903,7 @@ impl TradeWsClient {
         binance_ws::build_query_payload(msg, transport_id, creds)
     }
 
-    fn next_transport_id(&mut self, fallback_id: i64) -> i64 {
-        if self.exchange != Exchange::Binance {
-            return fallback_id;
-        }
+    fn next_transport_id(&mut self) -> i64 {
         let id = self.next_binance_transport_id;
         self.next_binance_transport_id = self.next_binance_transport_id.saturating_add(1);
         id
@@ -1104,20 +1105,25 @@ impl TradeWsClient {
                             );
                         }
 
-                        // 从 error 事件中提取 client_order_id，发送错误响应给策略
-                        let client_order_id = json_val
+                        // 从 error 事件中提取 transport_id，并回查业务 client_order_id
+                        let transport_id = json_val
                             .get("id")
                             .and_then(|v| v.as_str())
                             .and_then(|s| s.parse::<i64>().ok())
                             .unwrap_or(0);
 
-                        if client_order_id > 0 {
+                        if transport_id > 0 {
                             // 解析错误码
                             let error_code = code.parse::<i32>().unwrap_or(0);
+                            let (req_type, client_order_id) = self
+                                .inflight
+                                .remove(&transport_id)
+                                .map(|meta| (meta.req_type, meta.client_order_id))
+                                .unwrap_or((TradeRequestType::OkexNewUMOrder, transport_id));
 
                             // 发送错误响应
                             let outcome = TradeExecOutcome {
-                                req_type: TradeRequestType::OkexNewUMOrder, // 默认，实际类型无法确定
+                                req_type,
                                 exchange: self.exchange,
                                 client_order_id,
                                 status: 400, // Bad Request
@@ -1279,14 +1285,21 @@ impl TradeWsClient {
             return true;
         }
 
-        let client_order_id = Self::extract_gate_client_order_id(&json_val).unwrap_or(0);
+        let fallback_client_order_id = Self::extract_gate_client_order_id(&json_val).unwrap_or(0);
+        let transport_id = Self::extract_gate_request_id(&json_val).unwrap_or(0);
+        let inflight_meta = if transport_id > 0 {
+            self.inflight.remove(&transport_id)
+        } else {
+            None
+        };
+        let client_order_id = inflight_meta
+            .map(|meta| meta.client_order_id)
+            .unwrap_or(fallback_client_order_id);
         if client_order_id <= 0 {
             return false;
         }
 
-        let req_type = self
-            .inflight
-            .remove(&client_order_id)
+        let req_type = inflight_meta
             .map(|meta| meta.req_type)
             .unwrap_or(self.last_dispatched_type);
         let status = Self::extract_gate_status(&json_val);
