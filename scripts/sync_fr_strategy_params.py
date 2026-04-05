@@ -118,6 +118,9 @@ STRATEGY_PARAMS = {
     # tlen 撤单触发频率（毫秒）
     "tlen_cancel_freq_ms": "3000",
 
+    # spread cancel 冷却时间（毫秒）
+    "spread_cancel_cooldown_ms": "100",
+
     # 是否启用 environment 开仓限制
     "enable_environment_model": "true",
 
@@ -153,6 +156,7 @@ PARAM_COMMENTS: Dict[str, str] = {
     "hedge_aggressive_seq_threshold": "对冲激进阈值(request_seq>=该值时不偏移，但仍为maker限价单)",
     "enable_tlen_cancel": "是否启用基于 tlen 的 open 撤单链路（true=允许发 trigger/query/cancel）",
     "tlen_cancel_freq_ms": "tlen 撤单触发频率(ms)，需为正整数，默认 3000",
+    "spread_cancel_cooldown_ms": "spread cancel 冷却时间(ms)，需为非负整数，默认 100；0 表示不冷却",
     "enable_environment_model": "是否启用 env 开仓限制（false=继续读取 env / pnlu 并写入 from_key，但不阻拦开仓）",
     "enable_volatility_limit": "是否启用波动率限制下单",
     "open_volatility_limit": "波动率限制分位数（读取 rolling_metrics 的 open_vol_xx，默认 70）",
@@ -173,6 +177,7 @@ PARAM_PRINT_ORDER = [
     "hedge_aggressive_seq_threshold",
     "enable_tlen_cancel",
     "tlen_cancel_freq_ms",
+    "spread_cancel_cooldown_ms",
     "enable_environment_model",
     "enable_volatility_limit",
     "open_volatility_limit",

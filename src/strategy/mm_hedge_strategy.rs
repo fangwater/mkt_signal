@@ -29,7 +29,7 @@ use crate::trade_engine::query_parsers::compact_order::{
 };
 use crate::trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
 use crate::trade_engine::trade_request::TradeRequestType;
-use log::{debug, warn};
+use log::{debug, info, warn};
 use std::any::Any;
 use std::collections::{hash_map::Entry, HashMap, HashSet};
 
@@ -931,8 +931,8 @@ impl MarketMakerHedgeStrategy {
         let hedge_venue = monitor.hedge_venue();
         let risk_position_qty = monitor.get_position_qty(&self.symbol, hedge_venue);
         let risk_position_diff = self.net_qty - risk_position_qty;
-        debug!(
-            "MarketMakerHedgeStrategy: strategy_id={} submit hedge query symbol={} request_seq={} query_net_qty={:.8} risk_position_qty={:.8} diff_qty={:.8} hedge_venue={:?} period_buy_qty={:.8} period_sell_qty={:.8}",
+        info!(
+            "MarketMakerHedgeStrategy: strategy_id={} hedge net-vs-monitor symbol={} request_seq={} net_qty={:.8} monitor_qty={:.8} diff_qty={:.8} hedge_venue={:?} period_buy_qty={:.8} period_sell_qty={:.8}",
             self.strategy_id,
             self.symbol,
             request_seq,

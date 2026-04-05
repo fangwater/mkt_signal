@@ -341,7 +341,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         </div>
       </div>
       <div class="hint">
-        `enable_tlen_cancel` 控制基于 tlen 的 open 撤单 trigger/query/cancel 链路；`tlen_cancel_freq_ms` 控制触发频率(ms)。`open_volatility_limit` 的 rolling 挂靠按真实 venue 解析：会读取该 venue 所属交易所的 `margin-futures` rolling params，并按 venue 类型选择 `open_vol` 或 `hedge_vol`。
+        `enable_tlen_cancel` 控制基于 tlen 的 open 撤单 trigger/query/cancel 链路；`tlen_cancel_freq_ms` 控制 trigger 频率(ms)；`spread_cancel_cooldown_ms` 控制 spread cancel 的去抖冷却(ms，默认 100，可设 0 关闭)。`open_volatility_limit` 的 rolling 挂靠按真实 venue 解析：会读取该 venue 所属交易所的 `margin-futures` rolling params，并按 venue 类型选择 `open_vol` 或 `hedge_vol`。
       </div>
       <div id="strategy-table" class="kv-table"></div>
       <div id="strategy-vol-preview" class="status"></div>
@@ -1358,11 +1358,28 @@ def normalize_positive_int_text(raw: Any, field_name: str) -> str:
     return str(value)
 
 
+def normalize_nonnegative_int_text(raw: Any, field_name: str) -> str:
+    text = str(raw).strip()
+    if not text:
+        raise ValueError(f"{field_name} is required")
+    try:
+        value = int(text)
+    except Exception as exc:
+        raise ValueError(f"{field_name} must be a non-negative integer: {text}") from exc
+    if value < 0:
+        raise ValueError(f"{field_name} must be >= 0: {text}")
+    return str(value)
+
+
 def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, str]:
     normalized = dict(mapping)
     if "tlen_cancel_freq_ms" in normalized:
         normalized["tlen_cancel_freq_ms"] = normalize_positive_int_text(
             normalized["tlen_cancel_freq_ms"], "tlen_cancel_freq_ms"
+        )
+    if "spread_cancel_cooldown_ms" in normalized:
+        normalized["spread_cancel_cooldown_ms"] = normalize_nonnegative_int_text(
+            normalized["spread_cancel_cooldown_ms"], "spread_cancel_cooldown_ms"
         )
     return normalized
 
