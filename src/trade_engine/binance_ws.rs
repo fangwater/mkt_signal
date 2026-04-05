@@ -100,7 +100,11 @@ fn build_signed_params(raw: &[u8], creds: &ApiKey) -> Result<BTreeMap<String, St
     Ok(params)
 }
 
-pub fn build_order_payload(msg: &TradeRequestMsg, creds: &ApiKey) -> Result<String> {
+pub fn build_order_payload(
+    msg: &TradeRequestMsg,
+    transport_id: i64,
+    creds: &ApiKey,
+) -> Result<String> {
     let method = match msg.req_type {
         TradeRequestType::BinanceWsNewUMOrder | TradeRequestType::BinanceWsNewMarginOrder => {
             METHOD_ORDER_PLACE
@@ -118,14 +122,18 @@ pub fn build_order_payload(msg: &TradeRequestMsg, creds: &ApiKey) -> Result<Stri
 
     let params = build_signed_params(&msg.params, creds)?;
     let payload = json!({
-        "id": msg.client_order_id,
+        "id": transport_id,
         "method": method,
         "params": params,
     });
     serde_json::to_string(&payload).with_context(|| "serialize binance ws payload")
 }
 
-pub fn build_query_payload(msg: &QueryRequestMsg, creds: &ApiKey) -> Result<String> {
+pub fn build_query_payload(
+    msg: &QueryRequestMsg,
+    transport_id: i64,
+    creds: &ApiKey,
+) -> Result<String> {
     if msg.req_type != QueryRequestType::BinanceWsUMQuery
         && msg.req_type != QueryRequestType::BinanceWsMarginQuery
     {
@@ -137,7 +145,7 @@ pub fn build_query_payload(msg: &QueryRequestMsg, creds: &ApiKey) -> Result<Stri
 
     let params = build_signed_params(&msg.params, creds)?;
     let payload = json!({
-        "id": msg.client_query_id,
+        "id": transport_id,
         "method": METHOD_ORDER_STATUS,
         "params": params,
     });

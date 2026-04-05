@@ -121,6 +121,18 @@ pub enum WsCommand {
     Shutdown,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct TradeInflightMeta {
+    req_type: TradeRequestType,
+    client_order_id: i64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct QueryInflightMeta {
+    req_type: QueryRequestType,
+    client_query_id: i64,
+}
+
 pub struct TradeWsClient {
     id: usize,
     exchange: Exchange,
@@ -139,10 +151,11 @@ pub struct TradeWsClient {
     query_resp_tx: Option<mpsc::UnboundedSender<QueryExecOutcome>>,
     pending: VecDeque<TradeRequestMsg>,
     pending_query: VecDeque<QueryRequestMsg>,
-    inflight: HashMap<i64, TradeRequestType>,
-    query_inflight: HashMap<i64, QueryRequestType>,
+    inflight: HashMap<i64, TradeInflightMeta>,
+    query_inflight: HashMap<i64, QueryInflightMeta>,
     last_dispatched_type: TradeRequestType,
     last_dispatched_query_type: QueryRequestType,
+    next_binance_transport_id: i64,
     engine_shutdown: CancellationToken,
     shutdown: bool,
     should_reconnect: bool, // 标记是否需要重连（用于 notice 触发的重连）
@@ -257,6 +270,7 @@ impl TradeWsClient {
                 }
                 _ => QueryRequestType::GateUnifiedOrderQuery,
             },
+            next_binance_transport_id: ((id as i64) << 48) + 1,
             engine_shutdown,
             shutdown: false,
             should_reconnect: false,
@@ -698,7 +712,6 @@ impl TradeWsClient {
                 self.pending.push_front(msg);
                 return Err(err);
             }
-            self.track_inflight(&msg);
             self.notify_sent(&msg);
         }
         while let Some(msg) = self.pending_query.pop_front() {
@@ -710,17 +723,17 @@ impl TradeWsClient {
                 self.pending_query.push_front(msg);
                 return Err(err);
             }
-            self.track_inflight_query(&msg);
         }
         Ok(())
     }
 
     async fn send_one(
-        &self,
+        &mut self,
         ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
         msg: &TradeRequestMsg,
     ) -> Result<()> {
-        let payload = self.build_payload(msg)?;
+        let transport_id = self.next_transport_id(msg.client_order_id);
+        let payload = self.build_payload(msg, transport_id)?;
         if self.exchange == Exchange::Gate {
             info!(
                 "trade ws client id={} exchange={} order payload: {}",
@@ -728,25 +741,28 @@ impl TradeWsClient {
             );
         } else if self.exchange == Exchange::Binance {
             info!(
-                "trade ws client id={} exchange={} sending {} req_type={:?} client_order_id={} payload_bytes={}",
+                "trade ws client id={} exchange={} sending {} req_type={:?} client_order_id={} transport_id={} payload_bytes={}",
                 self.id,
                 self.exchange,
                 Self::binance_trade_action(msg.req_type),
                 msg.req_type,
                 msg.client_order_id,
+                transport_id,
                 payload.len()
             );
         }
         ws.send(Message::Text(payload)).await?;
+        self.track_inflight(msg, transport_id);
         Ok(())
     }
 
     async fn send_one_query(
-        &self,
+        &mut self,
         ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
         msg: &QueryRequestMsg,
     ) -> Result<()> {
-        let payload = self.build_query_payload(msg)?;
+        let transport_id = self.next_transport_id(msg.client_query_id);
+        let payload = self.build_query_payload(msg, transport_id)?;
         if self.exchange == Exchange::Gate {
             info!(
                 "trade ws client id={} exchange={} query payload: {}",
@@ -754,16 +770,18 @@ impl TradeWsClient {
             );
         } else if self.exchange == Exchange::Binance {
             info!(
-                "trade ws client id={} exchange={} sending {} req_type={:?} client_query_id={} payload_bytes={}",
+                "trade ws client id={} exchange={} sending {} req_type={:?} client_query_id={} transport_id={} payload_bytes={}",
                 self.id,
                 self.exchange,
                 Self::binance_query_action(msg.req_type),
                 msg.req_type,
                 msg.client_query_id,
+                transport_id,
                 payload.len()
             );
         }
         ws.send(Message::Text(payload)).await?;
+        self.track_inflight_query(msg, transport_id);
         Ok(())
     }
 
@@ -787,11 +805,11 @@ impl TradeWsClient {
         }
     }
 
-    fn build_payload(&self, msg: &TradeRequestMsg) -> Result<String> {
+    fn build_payload(&self, msg: &TradeRequestMsg, transport_id: i64) -> Result<String> {
         match self.exchange {
             Exchange::Okex => self.build_okex_payload(msg),
             Exchange::Gate => self.build_gate_payload(msg),
-            Exchange::Binance => self.build_binance_payload(msg),
+            Exchange::Binance => self.build_binance_payload(msg, transport_id),
             _ => {
                 let params_b64 = BASE64_STANDARD.encode(&msg.params);
                 let payload = json!({
@@ -806,10 +824,10 @@ impl TradeWsClient {
         }
     }
 
-    fn build_query_payload(&self, msg: &QueryRequestMsg) -> Result<String> {
+    fn build_query_payload(&self, msg: &QueryRequestMsg, transport_id: i64) -> Result<String> {
         match self.exchange {
             Exchange::Gate => gate_ws::build_query_payload(msg),
-            Exchange::Binance => self.build_binance_query_payload(msg),
+            Exchange::Binance => self.build_binance_query_payload(msg, transport_id),
             _ => Err(anyhow!(
                 "unsupported query ws payload for exchange {:?}",
                 self.exchange
@@ -861,30 +879,54 @@ impl TradeWsClient {
         gate_ws::build_api_payload(msg)
     }
 
-    fn build_binance_payload(&self, msg: &TradeRequestMsg) -> Result<String> {
+    fn build_binance_payload(&self, msg: &TradeRequestMsg, transport_id: i64) -> Result<String> {
         let creds = self
             .binance_creds
             .as_ref()
             .ok_or_else(|| anyhow!("missing binance ws credentials"))?;
-        binance_ws::build_order_payload(msg, creds)
+        binance_ws::build_order_payload(msg, transport_id, creds)
     }
 
-    fn build_binance_query_payload(&self, msg: &QueryRequestMsg) -> Result<String> {
+    fn build_binance_query_payload(
+        &self,
+        msg: &QueryRequestMsg,
+        transport_id: i64,
+    ) -> Result<String> {
         let creds = self
             .binance_creds
             .as_ref()
             .ok_or_else(|| anyhow!("missing binance ws credentials"))?;
-        binance_ws::build_query_payload(msg, creds)
+        binance_ws::build_query_payload(msg, transport_id, creds)
     }
 
-    fn track_inflight(&mut self, msg: &TradeRequestMsg) {
-        self.inflight.insert(msg.client_order_id, msg.req_type);
+    fn next_transport_id(&mut self, fallback_id: i64) -> i64 {
+        if self.exchange != Exchange::Binance {
+            return fallback_id;
+        }
+        let id = self.next_binance_transport_id;
+        self.next_binance_transport_id = self.next_binance_transport_id.saturating_add(1);
+        id
+    }
+
+    fn track_inflight(&mut self, msg: &TradeRequestMsg, transport_id: i64) {
+        self.inflight.insert(
+            transport_id,
+            TradeInflightMeta {
+                req_type: msg.req_type,
+                client_order_id: msg.client_order_id,
+            },
+        );
         self.last_dispatched_type = msg.req_type;
     }
 
-    fn track_inflight_query(&mut self, msg: &QueryRequestMsg) {
-        self.query_inflight
-            .insert(msg.client_query_id, msg.req_type);
+    fn track_inflight_query(&mut self, msg: &QueryRequestMsg, transport_id: i64) {
+        self.query_inflight.insert(
+            transport_id,
+            QueryInflightMeta {
+                req_type: msg.req_type,
+                client_query_id: msg.client_query_id,
+            },
+        );
         self.last_dispatched_query_type = msg.req_type;
     }
 
@@ -1128,8 +1170,8 @@ impl TradeWsClient {
     fn extract_correlated(&mut self, payload: &str) -> (TradeRequestType, i64) {
         if let Ok(json_val) = serde_json::from_str::<Value>(payload) {
             if let Some(id) = Self::extract_client_order_id(&json_val) {
-                if let Some(req_type) = self.inflight.remove(&id) {
-                    return (req_type, id);
+                if let Some(meta) = self.inflight.remove(&id) {
+                    return (meta.req_type, meta.client_order_id);
                 }
                 return (self.last_dispatched_type, id);
             }
@@ -1245,6 +1287,7 @@ impl TradeWsClient {
         let req_type = self
             .inflight
             .remove(&client_order_id)
+            .map(|meta| meta.req_type)
             .unwrap_or(self.last_dispatched_type);
         let status = Self::extract_gate_status(&json_val);
         self.publish_gate_ws_response(client_order_id, req_type, status, payload.to_string());
@@ -1266,16 +1309,17 @@ impl TradeWsClient {
             return false;
         }
 
-        if let Some(req_type) = self.query_inflight.remove(&id) {
-            self.publish_binance_query_response(req_type, id, &resp);
+        if let Some(meta) = self.query_inflight.remove(&id) {
+            self.publish_binance_query_response(meta.req_type, meta.client_query_id, &resp);
             return true;
         }
 
-        let req_type = self
+        let (req_type, client_order_id) = self
             .inflight
             .remove(&id)
-            .unwrap_or(self.last_dispatched_type);
-        self.publish_binance_ws_response(id, req_type, &resp);
+            .map(|meta| (meta.req_type, meta.client_order_id))
+            .unwrap_or((self.last_dispatched_type, id));
+        self.publish_binance_ws_response(client_order_id, req_type, &resp);
         true
     }
 
@@ -1396,6 +1440,7 @@ impl TradeWsClient {
         let req_type = if client_query_id > 0 {
             self.query_inflight
                 .remove(&client_query_id)
+                .map(|meta| meta.req_type)
                 .unwrap_or(default_req_type)
         } else {
             default_req_type
