@@ -11,6 +11,8 @@ use crate::symbol_match::normalize_symbol_for_whitelist;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+type SpreadThresholdEntryKey = (ThresholdKey, ArbDirection, OperationType);
+
 /// 价差类型 (bidask、askbid或者基于mid price 计算的spread rate)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SpreadType {
@@ -59,10 +61,10 @@ pub struct SpreadFactor {
     /// spread_rate = (mid_price_spot - mid_price_swap) / mid_price_spot
     spread_rate: RefCell<HashMap<VenuePair, HashMap<SymbolPair, f64>>>,
 
-    /// 阈值表: (venue1, symbol1, venue2, symbol2) -> SpreadThresholdConfig
-    mm_thresholds: RefCell<HashMap<ThresholdKey, SpreadThresholdConfig>>,
+    /// 阈值表: ((venue1, symbol1, venue2, symbol2), 方向, 操作) -> SpreadThresholdConfig
+    mm_thresholds: RefCell<HashMap<SpreadThresholdEntryKey, SpreadThresholdConfig>>,
 
-    mt_thresholds: RefCell<HashMap<ThresholdKey, SpreadThresholdConfig>>,
+    mt_thresholds: RefCell<HashMap<SpreadThresholdEntryKey, SpreadThresholdConfig>>,
     /// 模式: MM 或 MT， mm采用mm的阈值，mt模式就用mt的阈值配置
     mode: RefCell<FactorMode>,
 }
@@ -290,6 +292,37 @@ impl SpreadFactor {
         normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures)
     }
 
+    #[inline]
+    fn threshold_pair_key(
+        venue1: TradingVenue,
+        symbol1: &str,
+        venue2: TradingVenue,
+        symbol2: &str,
+    ) -> ThresholdKey {
+        (
+            Self::map_venue(venue1),
+            Self::normalize_symbol_key(symbol1),
+            venue2,
+            Self::normalize_symbol_key(symbol2),
+        )
+    }
+
+    #[inline]
+    fn threshold_entry_key(
+        venue1: TradingVenue,
+        symbol1: &str,
+        venue2: TradingVenue,
+        symbol2: &str,
+        arb_direction: ArbDirection,
+        operation: OperationType,
+    ) -> SpreadThresholdEntryKey {
+        (
+            Self::threshold_pair_key(venue1, symbol1, venue2, symbol2),
+            arb_direction,
+            operation,
+        )
+    }
+
     // ===== 4 个 set 函数，简化，因为对价差而言只有正开、反开 =====
     // ===== 因此只需要正反开的开仓阈值和撤单阈值
 
@@ -311,10 +344,9 @@ impl SpreadFactor {
         };
 
         let key = (
-            store_venue1,
-            Self::normalize_symbol_key(symbol1),
-            venue2,
-            Self::normalize_symbol_key(symbol2),
+            (store_venue1, Self::normalize_symbol_key(symbol1), venue2, Self::normalize_symbol_key(symbol2)),
+            ArbDirection::Forward,
+            OperationType::Open,
         );
         let mt_config = SpreadThresholdConfig {
             compare_op: CompareOp::LessThan,
@@ -355,10 +387,9 @@ impl SpreadFactor {
         };
 
         let key = (
-            store_venue1,
-            Self::normalize_symbol_key(symbol1),
-            venue2,
-            Self::normalize_symbol_key(symbol2),
+            (store_venue1, Self::normalize_symbol_key(symbol1), venue2, Self::normalize_symbol_key(symbol2)),
+            ArbDirection::Forward,
+            OperationType::Cancel,
         );
         let mt_config = SpreadThresholdConfig {
             compare_op: CompareOp::GreaterThan,
@@ -400,10 +431,9 @@ impl SpreadFactor {
         };
 
         let key = (
-            store_venue1,
-            Self::normalize_symbol_key(symbol1),
-            venue2,
-            Self::normalize_symbol_key(symbol2),
+            (store_venue1, Self::normalize_symbol_key(symbol1), venue2, Self::normalize_symbol_key(symbol2)),
+            ArbDirection::Backward,
+            OperationType::Open,
         );
         let mt_config = SpreadThresholdConfig {
             compare_op: CompareOp::GreaterThan,
@@ -444,10 +474,9 @@ impl SpreadFactor {
         };
 
         let key = (
-            store_venue1,
-            Self::normalize_symbol_key(symbol1),
-            venue2,
-            Self::normalize_symbol_key(symbol2),
+            (store_venue1, Self::normalize_symbol_key(symbol1), venue2, Self::normalize_symbol_key(symbol2)),
+            ArbDirection::Backward,
+            OperationType::Cancel,
         );
         let mt_config = SpreadThresholdConfig {
             compare_op: CompareOp::LessThan,
@@ -489,10 +518,9 @@ impl SpreadFactor {
         };
 
         let key = (
-            query_venue1,
-            Self::normalize_symbol_key(symbol1),
-            venue2,
-            Self::normalize_symbol_key(symbol2),
+            (query_venue1, Self::normalize_symbol_key(symbol1), venue2, Self::normalize_symbol_key(symbol2)),
+            ArbDirection::Forward,
+            OperationType::Open,
         );
 
         // 根据当前模式选择对应的 config
@@ -503,20 +531,14 @@ impl SpreadFactor {
         };
 
         if let Some(config) = thresholds.get(&key) {
-            if config.arb_direction == ArbDirection::Forward
-                && config.operation == OperationType::Open
-            {
-                let value = match config.spread_type {
-                    SpreadType::BidAsk => self.get_bidask(venue1, symbol1, venue2, symbol2),
-                    SpreadType::AskBid => self.get_askbid(venue1, symbol1, venue2, symbol2),
-                    SpreadType::SpreadRate => {
-                        self.get_spread_rate(venue1, symbol1, venue2, symbol2)
-                    }
-                };
+            let value = match config.spread_type {
+                SpreadType::BidAsk => self.get_bidask(venue1, symbol1, venue2, symbol2),
+                SpreadType::AskBid => self.get_askbid(venue1, symbol1, venue2, symbol2),
+                SpreadType::SpreadRate => self.get_spread_rate(venue1, symbol1, venue2, symbol2),
+            };
 
-                if let Some(v) = value {
-                    return config.compare_op.check(v, config.threshold);
-                }
+            if let Some(v) = value {
+                return config.compare_op.check(v, config.threshold);
             }
         }
 
@@ -534,10 +556,9 @@ impl SpreadFactor {
     ) -> bool {
         let query_venue1 = Self::map_venue(venue1);
         let key = (
-            query_venue1,
-            Self::normalize_symbol_key(symbol1),
-            venue2,
-            Self::normalize_symbol_key(symbol2),
+            (query_venue1, Self::normalize_symbol_key(symbol1), venue2, Self::normalize_symbol_key(symbol2)),
+            ArbDirection::Forward,
+            OperationType::Cancel,
         );
 
         // 根据当前模式选择对应的 config
@@ -548,20 +569,14 @@ impl SpreadFactor {
         };
 
         if let Some(config) = thresholds.get(&key) {
-            if config.arb_direction == ArbDirection::Forward
-                && config.operation == OperationType::Cancel
-            {
-                let value = match config.spread_type {
-                    SpreadType::BidAsk => self.get_bidask(venue1, symbol1, venue2, symbol2),
-                    SpreadType::AskBid => self.get_askbid(venue1, symbol1, venue2, symbol2),
-                    SpreadType::SpreadRate => {
-                        self.get_spread_rate(venue1, symbol1, venue2, symbol2)
-                    }
-                };
+            let value = match config.spread_type {
+                SpreadType::BidAsk => self.get_bidask(venue1, symbol1, venue2, symbol2),
+                SpreadType::AskBid => self.get_askbid(venue1, symbol1, venue2, symbol2),
+                SpreadType::SpreadRate => self.get_spread_rate(venue1, symbol1, venue2, symbol2),
+            };
 
-                if let Some(v) = value {
-                    return config.compare_op.check(v, config.threshold);
-                }
+            if let Some(v) = value {
+                return config.compare_op.check(v, config.threshold);
             }
         }
 
@@ -591,10 +606,9 @@ impl SpreadFactor {
     ) -> bool {
         let query_venue1 = Self::map_venue(venue1);
         let key = (
-            query_venue1,
-            Self::normalize_symbol_key(symbol1),
-            venue2,
-            Self::normalize_symbol_key(symbol2),
+            (query_venue1, Self::normalize_symbol_key(symbol1), venue2, Self::normalize_symbol_key(symbol2)),
+            ArbDirection::Backward,
+            OperationType::Open,
         );
 
         // 根据当前模式选择对应的 config
@@ -605,20 +619,14 @@ impl SpreadFactor {
         };
 
         if let Some(config) = thresholds.get(&key) {
-            if config.arb_direction == ArbDirection::Backward
-                && config.operation == OperationType::Open
-            {
-                let value = match config.spread_type {
-                    SpreadType::BidAsk => self.get_bidask(venue1, symbol1, venue2, symbol2),
-                    SpreadType::AskBid => self.get_askbid(venue1, symbol1, venue2, symbol2),
-                    SpreadType::SpreadRate => {
-                        self.get_spread_rate(venue1, symbol1, venue2, symbol2)
-                    }
-                };
+            let value = match config.spread_type {
+                SpreadType::BidAsk => self.get_bidask(venue1, symbol1, venue2, symbol2),
+                SpreadType::AskBid => self.get_askbid(venue1, symbol1, venue2, symbol2),
+                SpreadType::SpreadRate => self.get_spread_rate(venue1, symbol1, venue2, symbol2),
+            };
 
-                if let Some(v) = value {
-                    return config.compare_op.check(v, config.threshold);
-                }
+            if let Some(v) = value {
+                return config.compare_op.check(v, config.threshold);
             }
         }
 
@@ -636,10 +644,9 @@ impl SpreadFactor {
     ) -> bool {
         let query_venue1 = Self::map_venue(venue1);
         let key = (
-            query_venue1,
-            Self::normalize_symbol_key(symbol1),
-            venue2,
-            Self::normalize_symbol_key(symbol2),
+            (query_venue1, Self::normalize_symbol_key(symbol1), venue2, Self::normalize_symbol_key(symbol2)),
+            ArbDirection::Backward,
+            OperationType::Cancel,
         );
 
         // 根据当前模式选择对应的 config
@@ -650,20 +657,14 @@ impl SpreadFactor {
         };
 
         if let Some(config) = thresholds.get(&key) {
-            if config.arb_direction == ArbDirection::Backward
-                && config.operation == OperationType::Cancel
-            {
-                let value = match config.spread_type {
-                    SpreadType::BidAsk => self.get_bidask(venue1, symbol1, venue2, symbol2),
-                    SpreadType::AskBid => self.get_askbid(venue1, symbol1, venue2, symbol2),
-                    SpreadType::SpreadRate => {
-                        self.get_spread_rate(venue1, symbol1, venue2, symbol2)
-                    }
-                };
+            let value = match config.spread_type {
+                SpreadType::BidAsk => self.get_bidask(venue1, symbol1, venue2, symbol2),
+                SpreadType::AskBid => self.get_askbid(venue1, symbol1, venue2, symbol2),
+                SpreadType::SpreadRate => self.get_spread_rate(venue1, symbol1, venue2, symbol2),
+            };
 
-                if let Some(v) = value {
-                    return config.compare_op.check(v, config.threshold);
-                }
+            if let Some(v) = value {
+                return config.compare_op.check(v, config.threshold);
             }
         }
 
@@ -699,11 +700,13 @@ impl SpreadFactor {
             _ => venue1,
         };
 
-        let key = (
+        let key = Self::threshold_entry_key(
             query_venue1,
-            Self::normalize_symbol_key(symbol1),
+            symbol1,
             venue2,
-            Self::normalize_symbol_key(symbol2),
+            symbol2,
+            arb_direction,
+            operation,
         );
 
         // 根据当前模式选择对应的 config
@@ -714,29 +717,25 @@ impl SpreadFactor {
         };
 
         if let Some(config) = thresholds.get(&key) {
-            if config.arb_direction == arb_direction && config.operation == operation {
-                let value = match config.spread_type {
-                    SpreadType::BidAsk => self.get_bidask(venue1, symbol1, venue2, symbol2),
-                    SpreadType::AskBid => self.get_askbid(venue1, symbol1, venue2, symbol2),
-                    SpreadType::SpreadRate => {
-                        self.get_spread_rate(venue1, symbol1, venue2, symbol2)
-                    }
-                };
+            let value = match config.spread_type {
+                SpreadType::BidAsk => self.get_bidask(venue1, symbol1, venue2, symbol2),
+                SpreadType::AskBid => self.get_askbid(venue1, symbol1, venue2, symbol2),
+                SpreadType::SpreadRate => self.get_spread_rate(venue1, symbol1, venue2, symbol2),
+            };
 
-                if let Some(v) = value {
-                    return Some((v, config.threshold, config.compare_op, config.spread_type));
-                } else {
-                    log::debug!(
-                        "SpreadFactor: 缺少 {:?} 价差数据 ({} {:?} -> {} {:?}), 方向={:?} 操作={:?}",
-                        config.spread_type,
-                        symbol1,
-                        venue1,
-                        symbol2,
-                        venue2,
-                        arb_direction,
-                        operation
-                    );
-                }
+            if let Some(v) = value {
+                return Some((v, config.threshold, config.compare_op, config.spread_type));
+            } else {
+                log::debug!(
+                    "SpreadFactor: 缺少 {:?} 价差数据 ({} {:?} -> {} {:?}), 方向={:?} 操作={:?}",
+                    config.spread_type,
+                    symbol1,
+                    venue1,
+                    symbol2,
+                    venue2,
+                    arb_direction,
+                    operation
+                );
             }
         } else {
             log::debug!(
@@ -845,5 +844,68 @@ impl SpreadFactor {
         } else {
             log::info!("  SpreadRate (mid price): 无数据");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forward_and_backward_open_thresholds_do_not_overwrite_each_other() {
+        let spread_factor = SpreadFactor::new();
+        spread_factor.set_mode(FactorMode::MM);
+
+        spread_factor.set_forward_open_threshold(
+            TradingVenue::BinanceMargin,
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            "BTCUSDT",
+            0.0010,
+            0.0,
+        );
+        spread_factor.set_backward_open_threshold(
+            TradingVenue::BinanceMargin,
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            "BTCUSDT",
+            0.0004,
+            0.0,
+        );
+
+        let _ = spread_factor.update(
+            TradingVenue::BinanceMargin,
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            "BTCUSDT",
+            100.0,
+            100.0,
+            99.95,
+            99.95,
+        );
+
+        let forward = spread_factor.get_spread_check_detail(
+            TradingVenue::BinanceMargin,
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            "BTCUSDT",
+            ArbDirection::Forward,
+            OperationType::Open,
+        );
+        let backward = spread_factor.get_spread_check_detail(
+            TradingVenue::BinanceMargin,
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            "BTCUSDT",
+            ArbDirection::Backward,
+            OperationType::Open,
+        );
+
+        assert!(forward.is_some());
+        assert!(backward.is_some());
+        let (_, forward_threshold, _, _) = forward.unwrap();
+        let (_, backward_threshold, _, _) = backward.unwrap();
+        assert!((forward_threshold - 0.0010).abs() < 1e-12);
+        assert!((backward_threshold - 0.0004).abs() < 1e-12);
     }
 }
