@@ -214,6 +214,8 @@ bash scripts/deploy_mm_viz_server.sh \
   --port 10231
 ```
 
+`deploy_mm_viz_server.sh` 现在会部署 MM 专用静态页 `docs/mm_pre_trade_dashboard.html`，并同步到目标目录的 `www/mm_pre_trade_dashboard.html`、`www/pre_trade_dashboard.html`、`www/index.html`。
+
 如需自动更新并应用 Nginx 映射，可在最后一个命令追加 `--apply-nginx`。
 
 ### 6.1 仅更新 trade_engine 后重启 pre_trade（你当前场景）

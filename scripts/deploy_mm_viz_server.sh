@@ -25,7 +25,8 @@ Notes:
       okex=10211, gate=10221, binance=10231, bybit=10241, bitget=10251
   - If env-suffix/env-name indicates "alpha", default port = base + 1
   - Generates config/viz.toml with pre_trade resample only.
-  - Copies docs/pre_trade_dashboard.html into www/ and index.html.
+  - Copies docs/mm_pre_trade_dashboard.html into www/mm_pre_trade_dashboard.html.
+  - Syncs the MM dashboard to www/pre_trade_dashboard.html and www/index.html for compatibility.
   - Default nginx prefix: /mm/<env-name>.
   - --runtime-only: only replace binary and scripts; do not rewrite viz config/www/nginx/env.sh.
 EOF
@@ -429,12 +430,13 @@ if [[ "$DO_SCRIPTS" -eq 1 ]]; then
     echo "[INFO] Writing viz config: $TARGET_DIR/config/viz.toml (namespace=$IPC_NAMESPACE)"
     emit_server_block "$BIND" "$PORT" "$WS_PATH" > "$TARGET_DIR/config/viz.toml"
 
-    if [[ -f "$ROOT_DIR/docs/pre_trade_dashboard.html" ]]; then
-      cp "$ROOT_DIR/docs/pre_trade_dashboard.html" "$TARGET_DIR/www/pre_trade_dashboard.html"
-      cp "$ROOT_DIR/docs/pre_trade_dashboard.html" "$TARGET_DIR/www/index.html"
-      echo "[INFO] Synced dashboard: $TARGET_DIR/www/pre_trade_dashboard.html"
+    if [[ -f "$ROOT_DIR/docs/mm_pre_trade_dashboard.html" ]]; then
+      cp "$ROOT_DIR/docs/mm_pre_trade_dashboard.html" "$TARGET_DIR/www/mm_pre_trade_dashboard.html"
+      cp "$ROOT_DIR/docs/mm_pre_trade_dashboard.html" "$TARGET_DIR/www/pre_trade_dashboard.html"
+      cp "$ROOT_DIR/docs/mm_pre_trade_dashboard.html" "$TARGET_DIR/www/index.html"
+      echo "[INFO] Synced MM dashboard: $TARGET_DIR/www/mm_pre_trade_dashboard.html"
     else
-      echo "[WARN] Missing dashboard: $ROOT_DIR/docs/pre_trade_dashboard.html"
+      echo "[WARN] Missing MM dashboard: $ROOT_DIR/docs/mm_pre_trade_dashboard.html"
     fi
   fi
 
