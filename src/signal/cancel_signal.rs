@@ -297,8 +297,7 @@ impl SignalBytes for ArbCancelCtx {
         // Hedging leg
         write_leg(&mut buf, &self.hedging_leg, &self.hedging_symbol);
 
-        // Cancel reason + trigger timestamp
-        buf.put_u8(self.reason);
+        // Trigger timestamp
         buf.put_i64_le(self.trigger_ts);
 
         let from_key_len = self.from_key.len() as u32;
@@ -325,6 +324,7 @@ impl SignalBytes for ArbCancelCtx {
                 "Not enough bytes for ArbCancelCtx trigger timestamp / from_key_len".to_string(),
             );
         }
+
         let trigger_ts = bytes.get_i64_le();
         let from_key_len = bytes.get_u32_le() as usize;
         if bytes.remaining() < from_key_len {
@@ -338,7 +338,11 @@ impl SignalBytes for ArbCancelCtx {
         if bytes.remaining() != 1 + 1 + 4 {
             return Err("Unexpected trailing bytes for ArbCancelCtx".to_string());
         }
+
         let reason = bytes.get_u8();
+        if ArbCancelReason::from_u8(reason).is_none() {
+            return Err(format!("Invalid ArbCancelCtx reason: {}", reason));
+        }
         let side = bytes.get_u8();
         if Side::from_u8(side).is_none() {
             return Err(format!("Invalid ArbCancelCtx side: {}", side));
@@ -450,14 +454,18 @@ mod tests {
         ctx.set_hedging_symbol("BTCUSDT");
         ctx.trigger_ts = 789;
         ctx.set_from_key(b"fk".to_vec());
+        ctx.set_reason(ArbCancelReason::Tlen);
         ctx.set_side(Side::Sell);
+        ctx.set_target_strategy(42);
 
         let parsed = ArbCancelCtx::from_bytes(ctx.to_bytes()).expect("roundtrip should succeed");
         assert_eq!(parsed.get_opening_symbol(), "BTCUSDT");
         assert_eq!(parsed.get_hedging_symbol(), "BTCUSDT");
         assert_eq!(parsed.trigger_ts, 789);
         assert_eq!(parsed.from_key, b"fk");
+        assert_eq!(parsed.get_reason(), ArbCancelReason::Tlen);
         assert_eq!(parsed.get_side(), Side::Sell);
+        assert_eq!(parsed.strategy_id, 42);
     }
 
     #[test]
