@@ -660,9 +660,14 @@ fn build_mm_hedge_ctx(
         .read()
         .get_valid(&symbol)
         .context("quote unavailable")?;
-    let (signal, volatility) =
-        resolve_mm_hedge_signal_inputs(factor_value_hub, &cfg.model_service, &symbol, cfg.venue)
-            .map_err(anyhow::Error::msg)?;
+    let (signal, volatility) = resolve_mm_hedge_signal_inputs(
+        factor_value_hub,
+        &cfg.model_service,
+        &symbol,
+        cfg.venue,
+        cfg.enable_return_score_adjust_hedge,
+    )
+    .map_err(anyhow::Error::msg)?;
 
     let table_guard = table.read();
     let input = MmHedgeBuildInput {

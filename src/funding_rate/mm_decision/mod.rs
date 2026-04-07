@@ -325,6 +325,7 @@ impl MmDecision {
             &model_service,
             &symbol,
             self.state.hedge_venue,
+            self.state.enable_return_score_adjust_hedge,
         ) {
             Ok(values) => values,
             Err(err) => {

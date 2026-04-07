@@ -55,17 +55,19 @@ pub fn resolve_mm_hedge_signal_inputs(
     model_service: &str,
     symbol: &str,
     venue: TradingVenue,
+    enable_return_score_adjust_hedge: bool,
 ) -> Result<(f64, f64), String> {
-    let score_lookup = factor_value_hub.lookup_model_output_score(model_service, symbol, venue);
-    let signal = score_lookup
-        .score
-        .filter(|v| v.is_finite())
-        .ok_or_else(|| {
-            format!(
-                "return_score unavailable service={} note={}",
-                score_lookup.service_name, score_lookup.note
-            )
-        })?;
+    let signal = if enable_return_score_adjust_hedge {
+        let score_lookup = factor_value_hub.lookup_model_output_score(model_service, symbol, venue);
+        resolve_mm_hedge_effective_signal(
+            enable_return_score_adjust_hedge,
+            score_lookup.score,
+            &score_lookup.service_name,
+            &score_lookup.note,
+        )?
+    } else {
+        0.0
+    };
     let factor_lookup = factor_value_hub.lookup_factor_value(symbol, venue);
     let volatility = factor_lookup
         .target_factor_value
@@ -79,30 +81,26 @@ pub fn resolve_mm_hedge_signal_inputs(
     Ok((signal, volatility))
 }
 
+fn resolve_mm_hedge_effective_signal(
+    enable_return_score_adjust_hedge: bool,
+    score: Option<f64>,
+    service_name: &str,
+    note: &str,
+) -> Result<f64, String> {
+    if !enable_return_score_adjust_hedge {
+        return Ok(0.0);
+    }
+    score.filter(|v| v.is_finite()).ok_or_else(|| {
+        format!(
+            "return_score unavailable service={} note={}",
+            service_name, note
+        )
+    })
+}
+
 fn build_mm_hedge_from_key(now_us: i64, signal: f64, volatility: f64) -> Vec<u8> {
     build_decision_from_key_base(now_us, Some(signal), None, Some(volatility), None, None)
         .into_bytes()
-}
-
-fn resolve_score_adjust_factor(
-    mapped_offset: f64,
-    neutral_offset: f64,
-    enable_return_score_adjust_hedge: bool,
-) -> Result<f64, String> {
-    if !enable_return_score_adjust_hedge {
-        return Ok(1.0);
-    }
-    if !(neutral_offset.is_finite() && neutral_offset > 0.0) {
-        return Err(format!("invalid neutral_offset={}", neutral_offset));
-    }
-    let factor = mapped_offset / neutral_offset;
-    if !(factor.is_finite() && factor > 0.0) {
-        return Err(format!(
-            "invalid score_adjust_factor mapped_offset={} neutral_offset={} factor={}",
-            mapped_offset, neutral_offset, factor
-        ));
-    }
-    Ok(factor)
 }
 
 fn normalize_signal(signal: f64, bound: f64) -> (f64, f64) {
@@ -205,20 +203,6 @@ pub fn build_mm_hedge_quote_plan(
         input.offset_low,
         input.offset_high_limit,
     )?;
-    let (neutral_offset, _, _, _) = map_offset_from_signal(
-        side,
-        0.0,
-        input.volatility,
-        input.hedge_vol_multiplier,
-        input.offset_low,
-        input.offset_high_limit,
-    )?;
-    let score_adjust_factor = resolve_score_adjust_factor(
-        mapped_offset,
-        neutral_offset,
-        input.enable_return_score_adjust_hedge,
-    )?;
-    let adjusted_offset = neutral_offset * score_adjust_factor;
     let inventory_scale_result = scale_offsets_by_inventory(HedgeOffsetScaleInput {
         net_qty_base: net_qty,
         hedge_bid0: input.quote.bid,
@@ -227,7 +211,7 @@ pub fn build_mm_hedge_quote_plan(
         final_offset_min: input.offset_low,
         final_offset_max: input.offset_high_limit,
     });
-    let final_offset = (adjusted_offset * inventory_scale_result.scale * input.hedge_offset_ratio)
+    let final_offset = (mapped_offset * inventory_scale_result.scale * input.hedge_offset_ratio)
         .clamp(
             input.offset_low.max(0.0),
             input.offset_high_limit.max(input.offset_low.max(0.0)),
@@ -258,7 +242,7 @@ pub fn build_mm_hedge_quote_plan(
     }
 
     debug!(
-        "MMHedge query->scale: symbol={} side={:?} net_qty_base={:.8} bid0={:.8} ask0={:.8} signal={:.8} enable_return_score_adjust_hedge={} clipped_signal={:.8} normalized_signal={:.8} volatility={:.8} hedge_vol_multiplier={:.8} bound={:.8} offset_low={:.8} offset_high_limit={:.8} neutral_offset={:.8} mapped_offset={:.8} score_adjust_factor={:.8} inv_notional={:.8} inventory_scale={:.8} hedge_offset_ratio={:.8} final_offset={:.8}",
+        "MMHedge query->scale: symbol={} side={:?} net_qty_base={:.8} bid0={:.8} ask0={:.8} signal={:.8} enable_return_score_adjust_hedge={} clipped_signal={:.8} normalized_signal={:.8} volatility={:.8} hedge_vol_multiplier={:.8} bound={:.8} offset_low={:.8} offset_high_limit={:.8} mapped_offset={:.8} inv_notional={:.8} inventory_scale={:.8} hedge_offset_ratio={:.8} final_offset={:.8}",
         symbol,
         side,
         net_qty,
@@ -273,16 +257,14 @@ pub fn build_mm_hedge_quote_plan(
         bound,
         input.offset_low,
         input.offset_high_limit,
-        neutral_offset,
         mapped_offset,
-        score_adjust_factor,
         inventory_scale_result.inv_notional,
         inventory_scale_result.scale,
         input.hedge_offset_ratio,
         final_offset,
     );
     info!(
-        "MMHedgeQuerySummary {{\"symbol\":\"{}\",\"side\":\"{}\",\"net_qty_base\":{:.8},\"hedge_bid0\":{:.8},\"hedge_ask0\":{:.8},\"signal\":{:.8},\"enable_return_score_adjust_hedge\":{},\"clipped_signal\":{:.8},\"normalized_signal\":{:.8},\"volatility\":{:.8},\"hedge_vol_multiplier\":{:.8},\"bound\":{:.8},\"offset_low\":{:.8},\"offset_high_limit\":{:.8},\"neutral_offset\":{:.8},\"mapped_offset\":{:.8},\"score_adjust_factor\":{:.8},\"symbol_exposure_u\":{:.8},\"inv_notional\":{:.8},\"inventory_scale\":{:.8},\"hedge_offset_ratio\":{:.8},\"final_offset\":{:.8}}}",
+        "MMHedgeQuerySummary {{\"symbol\":\"{}\",\"side\":\"{}\",\"net_qty_base\":{:.8},\"hedge_bid0\":{:.8},\"hedge_ask0\":{:.8},\"signal\":{:.8},\"enable_return_score_adjust_hedge\":{},\"clipped_signal\":{:.8},\"normalized_signal\":{:.8},\"volatility\":{:.8},\"hedge_vol_multiplier\":{:.8},\"bound\":{:.8},\"offset_low\":{:.8},\"offset_high_limit\":{:.8},\"mapped_offset\":{:.8},\"symbol_exposure_u\":{:.8},\"inv_notional\":{:.8},\"inventory_scale\":{:.8},\"hedge_offset_ratio\":{:.8},\"final_offset\":{:.8}}}",
         symbol,
         side.as_str(),
         net_qty,
@@ -297,9 +279,7 @@ pub fn build_mm_hedge_quote_plan(
         bound,
         input.offset_low,
         input.offset_high_limit,
-        neutral_offset,
         mapped_offset,
-        score_adjust_factor,
         query.symbol_exposure_u,
         inventory_scale_result.inv_notional,
         inventory_scale_result.scale,
@@ -394,7 +374,7 @@ pub fn build_mm_hedge_ctx(
 
 #[cfg(test)]
 mod tests {
-    use super::{map_offset_from_signal, resolve_score_adjust_factor};
+    use super::{map_offset_from_signal, resolve_mm_hedge_effective_signal};
     use crate::market_maker::hedge_scale::{scale_offsets_by_inventory, HedgeOffsetScaleInput};
     use crate::pre_trade::order_manager::Side;
 
@@ -441,14 +421,15 @@ mod tests {
     }
 
     #[test]
-    fn disable_return_score_adjust_hedge_uses_identity_factor() {
+    fn disabled_return_score_adjust_skips_missing_score() {
         assert_eq!(
-            resolve_score_adjust_factor(0.002, 0.001, false).unwrap(),
-            1.0
+            resolve_mm_hedge_effective_signal(false, None, "model_output/test", "missing").unwrap(),
+            0.0
         );
-        assert_eq!(
-            resolve_score_adjust_factor(0.004, 0.002, true).unwrap(),
-            2.0
+        assert!(
+            resolve_mm_hedge_effective_signal(true, None, "model_output/test", "missing")
+                .unwrap_err()
+                .contains("return_score unavailable")
         );
     }
 }
