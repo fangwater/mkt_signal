@@ -47,14 +47,16 @@ fn main() -> Result<()> {
 #[derive(Parser, Debug)]
 #[command(
     name = "order_export",
-    about = "Export one UTC day of MM order parquet files from RocksDB"
+    about = "Export one UTC day of order parquet files from RocksDB"
 )]
 struct Args {
     /// Base directory that contains env folders like /home/ubuntu/binance_mm_alpha
+    /// or /home/ubuntu/binance_fr_trade01
     #[arg(long)]
     base_dir: Option<PathBuf>,
 
-    /// MM env name, for example binance_mm_alpha. If omitted, try to infer from cwd.
+    /// Env name, for example binance_mm_alpha or binance_fr_trade01.
+    /// If omitted, try to infer from cwd.
     #[arg(long)]
     env_name: Option<String>,
 
@@ -93,7 +95,7 @@ impl ResolvedArgs {
             resolve_env_name(args.env_name.or_else(|| {
                 env_string_multi(&["ORDER_EXPORT_ENV_NAME", "PERSIST_EXPORT_ENV_NAME"])
             }))?;
-        validate_binance_mm_env_name(&env_name)?;
+        validate_supported_env_name(&env_name)?;
 
         let date = args.date;
         let input_dir = resolve_path(
@@ -159,24 +161,35 @@ fn resolve_env_name(value: Option<String>) -> Result<String> {
     Ok(name.to_ascii_lowercase())
 }
 
-fn validate_binance_mm_env_name(env_name: &str) -> Result<()> {
-    let Some(suffix) = env_name.strip_prefix("binance_mm_") else {
-        return Err(anyhow!(
-            "env_name must match binance_mm_<suffix> (got: {})",
-            env_name
-        ));
-    };
-    if suffix.is_empty()
-        || !suffix
+fn is_valid_env_suffix(suffix: &str) -> bool {
+    !suffix.is_empty()
+        && suffix
             .chars()
             .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' || ch == '-')
-    {
-        return Err(anyhow!(
-            "env_name must match binance_mm_<suffix> (got: {})",
-            env_name
-        ));
+}
+
+fn validate_supported_env_name(env_name: &str) -> Result<()> {
+    if let Some(suffix) = env_name.strip_prefix("binance_mm_") {
+        if is_valid_env_suffix(suffix) {
+            return Ok(());
+        }
     }
-    Ok(())
+
+    if let Some((exchange, suffix)) = env_name.split_once("_fr_") {
+        if !exchange.is_empty()
+            && exchange
+                .chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
+            && is_valid_env_suffix(suffix)
+        {
+            return Ok(());
+        }
+    }
+
+    Err(anyhow!(
+        "env_name must match binance_mm_<suffix> or <exchange>_fr_<suffix> (got: {})",
+        env_name
+    ))
 }
 
 fn resolve_path(
@@ -214,16 +227,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn validate_binance_mm_env_name_accepts_expected_values() {
-        assert!(validate_binance_mm_env_name("binance_mm_alpha").is_ok());
-        assert!(validate_binance_mm_env_name("binance_mm_beta-1").is_ok());
+    fn validate_supported_env_name_accepts_binance_mm_values() {
+        assert!(validate_supported_env_name("binance_mm_alpha").is_ok());
+        assert!(validate_supported_env_name("binance_mm_beta-1").is_ok());
     }
 
     #[test]
-    fn validate_binance_mm_env_name_rejects_other_patterns() {
-        assert!(validate_binance_mm_env_name("binance_mm").is_err());
-        assert!(validate_binance_mm_env_name("okex_mm_alpha").is_err());
-        assert!(validate_binance_mm_env_name("binance_mm_ALPHA").is_err());
+    fn validate_supported_env_name_accepts_fr_values() {
+        assert!(validate_supported_env_name("binance_fr_trade01").is_ok());
+        assert!(validate_supported_env_name("okex_fr_hf01").is_ok());
+        assert!(validate_supported_env_name("gate_fr_trade02").is_ok());
+    }
+
+    #[test]
+    fn validate_supported_env_name_rejects_other_patterns() {
+        assert!(validate_supported_env_name("binance_mm").is_err());
+        assert!(validate_supported_env_name("okex_mm_alpha").is_err());
+        assert!(validate_supported_env_name("binance_mm_ALPHA").is_err());
+        assert!(validate_supported_env_name("binance_fr").is_err());
+        assert!(validate_supported_env_name("binance_fr_ALPHA").is_err());
     }
 
     #[test]
