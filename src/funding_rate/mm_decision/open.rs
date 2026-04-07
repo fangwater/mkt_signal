@@ -24,6 +24,24 @@ fn mm_open_blocked_by_environment(
     enable_environment_model && !environment_signal.allow_open
 }
 
+fn resolve_mm_open_return_score(
+    prediction_mode: bool,
+    score: Option<f64>,
+    service_name: &str,
+    note: &str,
+) -> Result<f64> {
+    if !prediction_mode {
+        return Ok(0.0);
+    }
+    score.filter(|v| v.is_finite()).ok_or_else(|| {
+        anyhow::anyhow!(
+            "return_score unavailable service={} note={}",
+            service_name,
+            note
+        )
+    })
+}
+
 impl MmOpenDecision {
     pub(crate) fn new() -> Self {
         Self {
@@ -109,35 +127,47 @@ impl MmOpenDecision {
             }
         }
 
-        let Some(service_name) = state.return_model_service.clone() else {
-            return Ok(MmOpenEvalResult::skipped(
-                &symbol_key,
-                "missing_return_model_service",
-                None,
-                Some(volatility),
-                None,
-            ));
+        let (return_score, thresholds) = if state.prediction_mode {
+            let Some(service_name) = state.return_model_service.clone() else {
+                return Ok(MmOpenEvalResult::skipped(
+                    &symbol_key,
+                    "missing_return_model_service",
+                    None,
+                    Some(volatility),
+                    None,
+                ));
+            };
+            let score_lookup = state.factor_value_hub.cached_model_output_score(
+                &service_name,
+                symbol,
+                state.hedge_venue,
+            );
+            let return_score = match resolve_mm_open_return_score(
+                state.prediction_mode,
+                score_lookup.score,
+                &service_name,
+                &score_lookup.note,
+            ) {
+                Ok(value) => value,
+                Err(_) => {
+                    return Ok(MmOpenEvalResult::skipped(
+                        &symbol_key,
+                        &format!("missing_return_score({})", score_lookup.note),
+                        None,
+                        Some(volatility),
+                        None,
+                    ))
+                }
+            };
+            let threshold_symbol = score_lookup.symbol_key.to_ascii_uppercase();
+            let thresholds = state
+                .return_score_thresholds
+                .get(&threshold_symbol)
+                .copied();
+            (return_score, thresholds)
+        } else {
+            (0.0, None)
         };
-        let score_lookup = state.factor_value_hub.cached_model_output_score(
-            &service_name,
-            symbol,
-            state.hedge_venue,
-        );
-        let Some(return_score) = score_lookup.score.filter(|v| v.is_finite()) else {
-            return Ok(MmOpenEvalResult::skipped(
-                &symbol_key,
-                &format!("missing_return_score({})", score_lookup.note),
-                None,
-                Some(volatility),
-                None,
-            ));
-        };
-
-        let threshold_symbol = score_lookup.symbol_key.to_ascii_uppercase();
-        let thresholds = state
-            .return_score_thresholds
-            .get(&threshold_symbol)
-            .copied();
         if state.prediction_mode && thresholds.is_none() {
             return Ok(MmOpenEvalResult::skipped(
                 &symbol_key,
@@ -495,7 +525,7 @@ fn log_interval_summary(state: &MmDecisionState, results: &[MmOpenEvalResult]) {
 
 #[cfg(test)]
 mod tests {
-    use super::mm_open_blocked_by_environment;
+    use super::{mm_open_blocked_by_environment, resolve_mm_open_return_score};
     use crate::funding_rate::factor_value_hub::{EnvironmentSignalResult, EnvironmentSignalSource};
 
     fn sample_environment_signal(allow_open: bool) -> EnvironmentSignalResult {
@@ -533,5 +563,28 @@ mod tests {
             false,
             &sample_environment_signal(false)
         ));
+    }
+
+    #[test]
+    fn prediction_mode_disabled_uses_zero_return_score() {
+        assert_eq!(
+            resolve_mm_open_return_score(false, None, "model_output/test", "missing").unwrap(),
+            0.0
+        );
+        assert_eq!(
+            resolve_mm_open_return_score(false, Some(0.42), "model_output/test", "present")
+                .unwrap(),
+            0.0
+        );
+    }
+
+    #[test]
+    fn prediction_mode_enabled_still_requires_return_score() {
+        assert!(
+            resolve_mm_open_return_score(true, None, "model_output/test", "missing")
+                .unwrap_err()
+                .to_string()
+                .contains("return_score unavailable")
+        );
     }
 }
