@@ -244,9 +244,8 @@ impl Dispatcher {
         match status {
             429 => {
                 warn!("429 Too Many Requests from IP {}. Cooling down.", ip);
-                self.ip_clients[ip_idx].cooldown_until = Some(
-                    Instant::now() + Duration::from_millis(LimitConstants::COOLDOWN_MS_429),
-                );
+                self.ip_clients[ip_idx].cooldown_until =
+                    Some(Instant::now() + Duration::from_millis(LimitConstants::COOLDOWN_MS_429));
                 if self.should_shutdown_on_rate_limit() {
                     warn!(
                         "trade_engine fuse tripped by Binance REST 429; shutting down request processing"

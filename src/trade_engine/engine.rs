@@ -29,8 +29,8 @@ use iceoryx2::service::ipc;
 use log::{debug, info, warn};
 use std::net::IpAddr;
 use std::rc::Rc;
-use std::{cell::RefCell, rc::Rc as StdRc};
 use std::time::Duration;
+use std::{cell::RefCell, rc::Rc as StdRc};
 use tokio_util::sync::CancellationToken;
 
 fn request_payload_len(payload: &[u8]) -> Option<usize> {

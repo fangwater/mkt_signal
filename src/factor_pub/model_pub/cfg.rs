@@ -50,7 +50,6 @@ impl ModelPubConfig {
         self.score_rolling.validate()?;
         Ok(())
     }
-
 }
 
 fn default_model_manager_request_timeout_ms() -> u64 {

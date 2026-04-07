@@ -31,6 +31,7 @@ use super::window_primitives::{
     rolling_sum_last_with_min_periods, rolling_sum_series, rolling_sum_series_opt,
     tail_skew_last_opt, F64SeriesView, OptF64SeriesView,
 };
+use crate::common::amount_threshold::is_online_amount_threshold;
 use crate::common::mkt_msg::{FactorValueMsg, FeatureMsg, FeatureStatus};
 use crate::common::msg_parser::parse_trade_flow_feature;
 use crate::common::rolling_welford::RollingWelfordCovariance;
@@ -1002,7 +1003,7 @@ impl FusionFactorPubApp {
         let allowed_symbols: Vec<String> = symbol_factor_plans.keys().cloned().collect();
         if allowed_symbols.is_empty() {
             anyhow::bail!(
-                "tlen_server returned no factor_plan symbols for venue={}",
+                "tlen_server returned no online amount_threshold symbols for venue={}",
                 venue_slug
             );
         }
@@ -1025,7 +1026,7 @@ impl FusionFactorPubApp {
             "FusionFactorPubApp created: venue={} mode={} symbol_source={} symbols={} sample={} trade_flow_channel=factor_pub/{}/{} rocksdb_path={} output_service={}",
             venue_slug,
             "fusion+rl",
-            "tlen_server.factor_plan",
+            "tlen_server.amount_thresholds+factor_plan",
             allowed_symbols.len(),
             format_symbol_sample(&allowed_symbols),
             venue_slug,
@@ -5875,6 +5876,17 @@ struct FactorPlanResp {
 }
 
 #[derive(Debug, Deserialize)]
+struct AmountThresholdResp {
+    thresholds: HashMap<String, AmountThresholdItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AmountThresholdItem {
+    medium_notional_threshold: f64,
+    large_notional_threshold: f64,
+}
+
+#[derive(Debug, Deserialize)]
 struct FactorPlanItem {
     #[serde(default)]
     factors: Vec<String>,
@@ -5915,6 +5927,72 @@ fn build_symbol_factor_plan(symbol: &str, factors: Vec<String>) -> SymbolFactorP
 }
 
 async fn load_symbol_factor_plans_from_tlen_server(
+    tlen: &TlenServerConfig,
+    venue: TradingVenue,
+    venue_slug: &str,
+) -> Result<HashMap<String, SymbolFactorPlan>> {
+    let online_symbols = load_online_symbols_from_tlen_server(tlen, venue, venue_slug).await?;
+    if online_symbols.is_empty() {
+        anyhow::bail!(
+            "tlen_server returned no online amount_threshold symbols for venue={}",
+            venue_slug
+        );
+    }
+
+    let raw_plans = load_raw_factor_plans_from_tlen_server(tlen, venue, venue_slug).await?;
+    let mut out = HashMap::with_capacity(online_symbols.len());
+    for symbol in online_symbols {
+        let plan = raw_plans
+            .get(&symbol)
+            .cloned()
+            .unwrap_or_else(|| build_symbol_factor_plan(&symbol, Vec::new()));
+        out.insert(symbol, plan);
+    }
+    Ok(out)
+}
+
+async fn load_online_symbols_from_tlen_server(
+    tlen: &TlenServerConfig,
+    venue: TradingVenue,
+    venue_slug: &str,
+) -> Result<HashSet<String>> {
+    let base_url = tlen.base_url.trim_end_matches('/');
+    let client = Client::builder()
+        .timeout(Duration::from_millis(tlen.request_timeout_ms))
+        .build()
+        .context("build reqwest client for tlen_server failed")?;
+
+    let url = format!("{}/api/thresholds", base_url);
+    let resp = client
+        .get(&url)
+        .query(&[("venue", venue_slug), ("config_type", "amount_thresholds")])
+        .send()
+        .await
+        .with_context(|| format!("GET {} failed", url))?
+        .error_for_status()
+        .with_context(|| format!("GET {} returned error status", url))?;
+
+    let payload: AmountThresholdResp = resp
+        .json()
+        .await
+        .with_context(|| format!("decode amount threshold response failed: {}", url))?;
+
+    let mut out = HashSet::with_capacity(payload.thresholds.len());
+    for (raw_symbol, item) in payload.thresholds {
+        let symbol = normalize_symbol_for_venue(&raw_symbol, venue);
+        if !symbol.is_empty()
+            && is_online_amount_threshold(
+                item.medium_notional_threshold,
+                item.large_notional_threshold,
+            )
+        {
+            out.insert(symbol);
+        }
+    }
+    Ok(out)
+}
+
+async fn load_raw_factor_plans_from_tlen_server(
     tlen: &TlenServerConfig,
     venue: TradingVenue,
     venue_slug: &str,

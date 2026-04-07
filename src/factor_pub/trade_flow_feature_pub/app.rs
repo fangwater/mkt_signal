@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use super::cfg::{PersistenceConfig, RuntimeConfig, TradeFlowFeaturePubConfig};
 use super::publisher::TradeFlowFeaturePublisher;
+use crate::common::amount_threshold::{is_online_amount_threshold, AmountThreshold};
 use crate::common::mkt_msg::MktMsgType;
 use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
@@ -125,12 +126,6 @@ impl DepthSubscriber {
             })),
         }
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct AmountThreshold {
-    medium_notional_threshold: f64,
-    large_notional_threshold: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -637,15 +632,10 @@ impl AmountThresholdRedisStore {
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| symbol.clone());
 
-                if !entry.medium_notional_threshold.is_finite()
-                    || !entry.large_notional_threshold.is_finite()
-                {
-                    continue;
-                }
-                if entry.medium_notional_threshold <= 0.0
-                    || entry.large_notional_threshold <= 0.0
-                    || entry.medium_notional_threshold > entry.large_notional_threshold
-                {
+                if !is_online_amount_threshold(
+                    entry.medium_notional_threshold,
+                    entry.large_notional_threshold,
+                ) {
                     continue;
                 }
 

@@ -24,8 +24,8 @@ use native_tls::TlsConnector;
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, SocketAddr};
-use std::{cell::RefCell, rc::Rc};
 use std::time::Duration;
+use std::{cell::RefCell, rc::Rc};
 use tokio::net::{lookup_host, TcpSocket, TcpStream};
 use tokio::sync::mpsc;
 use tokio::time;
@@ -400,7 +400,11 @@ impl TradeWsClient {
         {
             self.rate_limit_cooldown_until = None;
             let mut state = self.endpoint_state.borrow_mut();
-            if state.cooldown_until.map(|until| now >= until).unwrap_or(false) {
+            if state
+                .cooldown_until
+                .map(|until| now >= until)
+                .unwrap_or(false)
+            {
                 state.cooldown_until = None;
             }
         }
