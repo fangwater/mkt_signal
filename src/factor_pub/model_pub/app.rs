@@ -48,6 +48,7 @@ struct ModelPubStats {
     infer_count: u64,
     cold_start_suppressed: u64,
     reload_only: u64,
+    empty_feature_drop: u64,
 }
 
 struct SymbolNormState {
@@ -111,8 +112,8 @@ impl ModelPubApp {
         let config = ModelPubConfig::load(config_path)?;
         config.validate()?;
 
-        let input_service = config.input_service_name()?;
-        let output_service = config.output_service_name()?;
+        let input_service = config.input_service.trim().to_string();
+        let output_service = config.output_service.trim().to_string();
 
         let models_by_symbol = Self::load_models_from_model_manager(&config, &model_name).await?;
         if models_by_symbol.is_empty() {
@@ -316,9 +317,16 @@ impl ModelPubApp {
         match FeatureMsg::from_bytes(data) {
             Ok(feature) => {
                 let symbol_key = normalize_symbol_key(&feature.symbol);
+                let dim = feature.features.len();
+
+                // Empty feature vector means fusion_factor tracked the symbol but no factor plan
+                // was configured for it. Skip z-score/inference and let upstream RL-only flow stand.
+                if dim == 0 {
+                    self.stats.empty_feature_drop = self.stats.empty_feature_drop.saturating_add(1);
+                    return Ok(());
+                }
 
                 // --- z-score normalization ---
-                let dim = feature.features.len();
                 let window_size = self.window_size;
                 let norm_state = self
                     .norm_states
@@ -543,6 +551,9 @@ impl ModelPubApp {
         }
         if self.stats.reload_only > 0 {
             extra.push_str(&format!(" reload_only={}", self.stats.reload_only));
+        }
+        if self.stats.empty_feature_drop > 0 {
+            extra.push_str(&format!(" empty_drop={}", self.stats.empty_feature_drop));
         }
 
         info!(

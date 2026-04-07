@@ -225,6 +225,10 @@ def parse_factor_plan_value(raw_value: object) -> Dict[str, object]:
     return payload
 
 
+def default_factor_plan_value() -> Dict[str, object]:
+    return {"factors": []}
+
+
 def parse_thresholds_map(data: Dict[str, str], venue: str, config_type: str) -> Dict[str, object]:
     thresholds: Dict[str, object] = {}
     for raw_symbol in sorted(data.keys()):
@@ -295,9 +299,22 @@ class TlenConfigStore:
         self,
         venue: str,
         config_type: str,
+        symbol: Optional[str] = None,
     ) -> Dict[str, object]:
         key = redis_key(venue, config_type)
         thresholds = parse_thresholds_map(decode_hash(self._redis.hgetall(key)), venue, config_type)
+        if symbol:
+            normalized_symbol = normalize_symbol_for_venue(symbol, venue)
+            if config_type == "factor_plan":
+                thresholds = {
+                    normalized_symbol: thresholds.get(normalized_symbol, default_factor_plan_value())
+                }
+            else:
+                thresholds = (
+                    {normalized_symbol: thresholds[normalized_symbol]}
+                    if normalized_symbol in thresholds
+                    else {}
+                )
         return {
             "redis_key": key,
             "venue": venue,
@@ -670,7 +687,8 @@ class TlenConfigRequestHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/thresholds":
                 venue = self._venue_from_params(params)
                 config_type = self._config_type_from_params(params)
-                payload = self.store.fetch(venue, config_type)
+                symbol = self._symbol_from_params(params)
+                payload = self.store.fetch(venue, config_type, symbol=symbol)
                 self._write_json(payload)
                 return
         except Exception as exc:  # noqa: BLE001
@@ -733,6 +751,13 @@ class TlenConfigRequestHandler(BaseHTTPRequestHandler):
         if config_type is None:
             raise ValueError("unsupported config_type")
         return config_type
+
+    def _symbol_from_params(self, params: Dict[str, List[str]]) -> Optional[str]:
+        raw = (params.get("symbol") or [None])[0]
+        if raw is None:
+            return None
+        text = str(raw).strip()
+        return text or None
 
     def _write_html(self, html: str, status: int = 200) -> None:
         body = html.encode("utf-8")

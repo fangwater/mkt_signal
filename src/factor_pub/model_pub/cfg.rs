@@ -51,21 +51,6 @@ impl ModelPubConfig {
         Ok(())
     }
 
-    pub fn input_service_name(&self) -> Result<String> {
-        service_name(&self.input_service)
-    }
-
-    pub fn output_service_name(&self) -> Result<String> {
-        service_name(&self.output_service)
-    }
-}
-
-fn service_name(service: &str) -> Result<String> {
-    let rendered = service.trim();
-    if rendered.is_empty() {
-        anyhow::bail!("service name renders to empty value");
-    }
-    Ok(rendered.to_string())
 }
 
 fn default_model_manager_request_timeout_ms() -> u64 {
