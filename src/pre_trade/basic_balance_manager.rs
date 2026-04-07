@@ -127,8 +127,8 @@ impl BasicBalanceManager {
         };
 
         match self.exchange {
-            Exchange::Okex => b.balance,
-            Exchange::Binance | Exchange::Gate | Exchange::Hyperliquid => {
+            Exchange::Okex | Exchange::Gate => b.balance,
+            Exchange::Binance | Exchange::Hyperliquid => {
                 b.balance - b.borrowed - b.cumulative_interest
             }
             _ => unreachable!(),
@@ -139,5 +139,39 @@ impl BasicBalanceManager {
 impl NetPosition for BasicBalanceManager {
     fn net_position(&self, symbol: &str, _min_qty_table: Option<&MinQtyTable>) -> f64 {
         self.balance_position_of(symbol)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gate_balance_position_uses_equity_directly() {
+        let mut mgr = BasicBalanceManager::new(Exchange::Gate);
+        mgr.apply_balance(&BasicBalanceMsg::create(1, "USDT".to_string(), 100.0));
+        mgr.apply_balance(&BasicBalanceMsg::create(1, "BTC".to_string(), 5.0));
+        mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
+            1,
+            "BTC".to_string(),
+            2.0,
+            0.5,
+        ));
+
+        assert!((mgr.balance_position_of("BTC") - 5.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn binance_balance_position_keeps_netting_liability() {
+        let mut mgr = BasicBalanceManager::new(Exchange::Binance);
+        mgr.apply_balance(&BasicBalanceMsg::create(1, "BTC".to_string(), 5.0));
+        mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
+            1,
+            "BTC".to_string(),
+            2.0,
+            0.5,
+        ));
+
+        assert!((mgr.balance_position_of("BTC") - 2.5).abs() < 1e-12);
     }
 }

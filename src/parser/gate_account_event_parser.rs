@@ -18,7 +18,8 @@
 //!         "dts": {             // 资产详情 map
 //!             "BTC": {
 //!                 "tl": "0.00",           // total_liab (总借款)
-//!                 "b": "1086390.949548"   // balance (余额)
+//!                 "b": "1086390.949548",  // raw balance (原始余额)
+//!                 "e": "1086389.949548"   // equity (统一账户净资产数量)
 //!             }
 //!         }
 //!     }
@@ -167,8 +168,8 @@ impl GateAccountEventParser {
 
         // 遍历每个币种
         for (symbol, details) in dts {
-            // 解析余额 (b)
-            if let Some(balance_str) = details.get("b").and_then(|v| v.as_str()) {
+            // Gate unified 使用 equity(e) 作为净资产数量，避免重复扣减负债或重复叠加 UPL。
+            if let Some(balance_str) = details.get("e").and_then(|v| v.as_str()) {
                 if let Ok(balance) = balance_str.parse::<f64>() {
                     let msg = BasicBalanceMsg::create(timestamp, symbol.clone(), balance);
                     let payload = msg.to_bytes();
@@ -636,5 +637,62 @@ impl Parser for GateAccountEventParser {
                 0
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::basic_account_msg::{
+        split_basic_account_event, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
+        BasicBorrowInterestMsg,
+    };
+
+    #[test]
+    fn unified_asset_detail_uses_equity_field() {
+        let parser = GateAccountEventParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let payload = Bytes::from_static(
+            br#"{
+                "time": 1775532902,
+                "time_ms": 1775532902286,
+                "channel": "unified.asset_detail",
+                "event": "update",
+                "result": {
+                    "u": 46586604,
+                    "t": 1775532902,
+                    "dts": {
+                        "USDT": {
+                            "a": "-53.2047041",
+                            "f": "0.00",
+                            "e": "-1029.02217879",
+                            "tl": "3112.250826",
+                            "b": "-53.2047041"
+                        }
+                    }
+                }
+            }"#,
+        );
+
+        let count = parser.parse(payload, &tx);
+        assert_eq!(count, 2);
+
+        let wrapped_balance = rx.try_recv().expect("balance event");
+        let (event_type, scope, body) =
+            split_basic_account_event(&wrapped_balance).expect("wrapped balance");
+        assert_eq!(event_type, BasicAccountEventType::BalanceUpdate);
+        assert_eq!(scope, BasicAccountScope::GateUnified);
+        let balance = BasicBalanceMsg::from_bytes(body).expect("balance body");
+        assert_eq!(balance.symbol, "USDT");
+        assert!((balance.balance + 1029.02217879).abs() < 1e-9);
+
+        let wrapped_borrow = rx.try_recv().expect("borrow event");
+        let (event_type, scope, body) =
+            split_basic_account_event(&wrapped_borrow).expect("wrapped borrow");
+        assert_eq!(event_type, BasicAccountEventType::BorrowInterest);
+        assert_eq!(scope, BasicAccountScope::GateUnified);
+        let borrow = BasicBorrowInterestMsg::from_bytes(body).expect("borrow body");
+        assert_eq!(borrow.symbol, "USDT");
+        assert!((borrow.borrowed - 3112.250826).abs() < 1e-12);
     }
 }

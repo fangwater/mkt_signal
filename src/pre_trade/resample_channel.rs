@@ -247,7 +247,11 @@ fn compute_leg_risk_entry(
             std::slice::from_ref(&(um_ref, min_qty_ref)),
             price_snapshot,
         );
-        um_unrealized_usd += um_ref.total_unrealized_pnl_usdt();
+        let upl = um_ref.total_unrealized_pnl_usdt();
+        um_unrealized_usd += upl;
+        if exchange != Exchange::Gate {
+            total_equity += upl;
+        }
     }
 
     if include_usdt_scope {
@@ -258,7 +262,6 @@ fn compute_leg_risk_entry(
         }
     }
 
-    total_equity += um_unrealized_usd;
     let spot_equity_usd = total_equity - um_unrealized_usd;
     let leverage = if total_equity.abs() <= f64::EPSILON {
         0.0

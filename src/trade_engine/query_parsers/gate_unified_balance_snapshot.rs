@@ -91,34 +91,14 @@ fn find_time_ms(row: &Value) -> Option<i64> {
     None
 }
 
-fn find_balance(row: &Value) -> Option<f64> {
-    let keys = [
-        "total",
-        "equity",
-        "eq",
-        "balance",
-        "available_balance",
-        "available",
-        "avail",
-    ];
+fn find_equity(row: &Value) -> Option<f64> {
+    let keys = ["equity", "eq"];
     for key in keys {
         if let Some(v) = row.get(key).and_then(parse_f64_value) {
             return Some(v);
         }
     }
-    let available = row
-        .get("available")
-        .and_then(parse_f64_value)
-        .or_else(|| row.get("avail").and_then(parse_f64_value));
-    let locked = row
-        .get("locked")
-        .and_then(parse_f64_value)
-        .or_else(|| row.get("frozen").and_then(parse_f64_value))
-        .or_else(|| row.get("freeze").and_then(parse_f64_value));
-    match (available, locked) {
-        (Some(a), Some(l)) => Some(a + l),
-        _ => None,
-    }
+    None
 }
 
 fn find_f64(row: &Value, keys: &[&str]) -> Option<f64> {
@@ -138,7 +118,7 @@ pub fn parse_gate_unified_balance_snapshot(json: &str) -> Option<Vec<Bytes>> {
     if let Some(rows) = extract_rows(&value) {
         for row in rows {
             let symbol = find_str(row, &["currency", "ccy", "asset", "symbol", "coin"])?;
-            let balance = find_balance(row)?;
+            let balance = find_equity(row)?;
             let ts = find_time_ms(row).unwrap_or(now_ts);
             out.push(BasicBalanceMsg::create(ts, symbol.to_ascii_uppercase(), balance).to_bytes());
         }
@@ -150,21 +130,7 @@ pub fn parse_gate_unified_balance_snapshot(json: &str) -> Option<Vec<Bytes>> {
 
     if let Some(balances) = extract_balance_map(&value) {
         for (symbol, details) in balances {
-            let available = find_f64(details, &["available"]).unwrap_or(0.0);
-            let freeze = find_f64(details, &["freeze", "frozen"]).unwrap_or(0.0);
-            let total_freeze = find_f64(details, &["total_freeze"]).unwrap_or(0.0);
-            let spot_in_use = find_f64(details, &["spot_in_use"]).unwrap_or(0.0);
-            let equity = find_f64(details, &["equity"]);
-
-            let mut balance = available + freeze + spot_in_use;
-            if total_freeze > freeze {
-                balance += total_freeze - freeze;
-            }
-            if balance == 0.0 {
-                if let Some(eq) = equity {
-                    balance = eq;
-                }
-            }
+            let balance = find_f64(details, &["equity"]).unwrap_or(0.0);
 
             let ts = now_ts;
             out.push(BasicBalanceMsg::create(ts, symbol.to_ascii_uppercase(), balance).to_bytes());
@@ -199,7 +165,7 @@ mod tests {
     fn parses_gate_balance_array() {
         let json = r#"[{
             "currency": "USDT",
-            "total": "100.5",
+            "equity": "100.5",
             "update_time": 1716796364
         }]"#;
         let msgs = parse_gate_unified_balance_snapshot(json).expect("parse ok");
@@ -215,7 +181,7 @@ mod tests {
         let json = r#"{
             "data": [{
                 "asset": "BTC",
-                "balance": 0.25,
+                "equity": 0.25,
                 "update_time_ms": 1716796364000
             }]
         }"#;
@@ -278,7 +244,7 @@ mod tests {
             }
         }
 
-        assert_eq!(eth_balance, Some(1.111));
+        assert_eq!(eth_balance, Some(1016.1));
         assert_eq!(eth_borrowed, Some(0.075));
     }
 }
