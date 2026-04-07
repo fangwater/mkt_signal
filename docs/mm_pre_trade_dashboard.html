@@ -374,6 +374,8 @@
                 <th>asset</th>
                 <th>open_qty</th>
                 <th>open_usdt</th>
+                <th>hedge net qty</th>
+                <th>hedge time</th>
                 <th>net_qty</th>
                 <th>net_usdt</th>
               </tr>
@@ -482,6 +484,20 @@
         function fmt(x, formatter) {
           if (!isFiniteNumber(x)) return "--";
           return formatter.format(x);
+        }
+
+        function fmtUtc8(tsMs) {
+          if (!Number.isFinite(tsMs)) return "--";
+          return new Intl.DateTimeFormat("zh-CN", {
+            timeZone: "Asia/Shanghai",
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: false,
+          }).format(new Date(tsMs));
         }
 
         function classify(x) {
@@ -619,6 +635,8 @@
               <td>${r.asset || "-"}</td>
               <td class="${classify(r.open_qty)}">${fmt(r.open_qty, fmtQty)}</td>
               <td class="${classify(r.open_usdt)}">${fmt(r.open_usdt, fmtUsd)}</td>
+              <td class="${classify(r.hedge_net_qty)}">${fmt(r.hedge_net_qty, fmtQty)}</td>
+              <td>${fmtUtc8(r.hedge_time_ms)}</td>
               <td class="${classify(r.net_qty)}">${fmt(r.net_qty, fmtQty)}</td>
               <td class="${classify(r.net_usdt)}">${fmt(r.net_usdt, fmtUsd)}</td>
             `;
@@ -831,6 +849,8 @@
                   asset: "BTC",
                   open_qty: 0.42,
                   open_usdt: 29400,
+                  hedge_net_qty: 0.37,
+                  hedge_time_ms: now - 8_000,
                   net_qty: 0.42,
                   net_usdt: 29400,
                   is_total: false,
@@ -839,6 +859,8 @@
                   asset: "ETH",
                   open_qty: -8.5,
                   open_usdt: -32300,
+                  hedge_net_qty: -8.25,
+                  hedge_time_ms: now - 22_000,
                   net_qty: -8.5,
                   net_usdt: -32300,
                   is_total: false,
@@ -847,6 +869,8 @@
                   asset: "TOTAL",
                   open_qty: null,
                   open_usdt: null,
+                  hedge_net_qty: null,
+                  hedge_time_ms: null,
                   net_qty: null,
                   net_usdt: -2900,
                   is_total: true,

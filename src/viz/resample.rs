@@ -59,6 +59,8 @@ pub struct PreTradeExposureRow {
     pub open_usdt: Option<f64>,
     pub hedge_qty: Option<f64>,
     pub hedge_usdt: Option<f64>,
+    pub hedge_net_qty: Option<f64>,
+    pub hedge_time_ms: Option<i64>,
     pub net_qty: Option<f64>,
     pub net_usdt: Option<f64>,
     pub is_total: bool,

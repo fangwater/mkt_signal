@@ -18,7 +18,7 @@ use crate::viz::resample::{
 use anyhow::Result;
 use log::{debug, info, trace, warn};
 use std::cell::OnceCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -523,6 +523,11 @@ impl ResampleChannel {
         if let Some(publisher) = self.exposure_pub.as_ref() {
             let mut rows: Vec<PreTradeExposureRow> = Vec::new();
             let mut exposure_sum_usdt = 0.0_f64;
+            let hedge_snapshots = mon.strategy_mgr().borrow().mm_hedge_snapshots();
+            let hedge_snapshot_by_symbol: HashMap<String, (f64, Option<i64>)> = hedge_snapshots
+                .into_iter()
+                .map(|snap| (snap.symbol, (snap.net_qty, snap.hedge_ts_ms)))
+                .collect();
 
             let mut exposure_items: Vec<(String, f64, f64)> = exposures
                 .iter()
@@ -549,6 +554,10 @@ impl ResampleChannel {
 
                 let open_usdt = open_qty * mark;
                 let hedge_usdt = hedge_qty * mark;
+                let (hedge_net_qty, hedge_time_ms) = hedge_snapshot_by_symbol
+                    .get(&symbol)
+                    .map(|(net_qty, hedge_ts_ms)| (Some(*net_qty), *hedge_ts_ms))
+                    .unwrap_or((None, None));
                 let net_qty = open_qty + hedge_qty;
                 let net_usdt = open_usdt + hedge_usdt;
                 exposure_sum_usdt += net_usdt;
@@ -559,6 +568,8 @@ impl ResampleChannel {
                     open_usdt: Some(open_usdt),
                     hedge_qty: Some(hedge_qty),
                     hedge_usdt: Some(hedge_usdt),
+                    hedge_net_qty,
+                    hedge_time_ms,
                     net_qty: Some(net_qty),
                     net_usdt: Some(net_usdt),
                     is_total: false,
@@ -572,6 +583,8 @@ impl ResampleChannel {
                     open_usdt: None,
                     hedge_qty: None,
                     hedge_usdt: None,
+                    hedge_net_qty: None,
+                    hedge_time_ms: None,
                     net_qty: None,
                     net_usdt: Some(exposure_sum_usdt),
                     is_total: true,

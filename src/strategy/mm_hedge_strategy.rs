@@ -45,6 +45,7 @@ pub struct MmHedgeSnapshot {
     pub net_qty: f64,
     pub buy_qty: f64,
     pub sell_qty: f64,
+    pub hedge_ts_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +72,7 @@ pub struct MarketMakerHedgeStrategy {
     period_buy_qty: f64,
     period_sell_qty: f64,
     signal_ts: i64,
+    last_hedge_ts_ms: Option<i64>,
     hedge_from_key: Vec<u8>,
     order_seq: u32,
     hedge_plan: Vec<HedgePlanOrder>,
@@ -104,6 +106,7 @@ impl MarketMakerHedgeStrategy {
             period_buy_qty: 0.0,
             period_sell_qty: 0.0,
             signal_ts: 0,
+            last_hedge_ts_ms: None,
             hedge_from_key: Vec::new(),
             order_seq: 0,
             hedge_plan: Vec::new(),
@@ -441,6 +444,7 @@ impl MarketMakerHedgeStrategy {
             net_qty: self.net_qty,
             buy_qty: self.period_buy_qty,
             sell_qty: self.period_sell_qty,
+            hedge_ts_ms: self.last_hedge_ts_ms,
         }
     }
 
@@ -912,6 +916,8 @@ impl MarketMakerHedgeStrategy {
 
     fn send_hedge_query(&mut self) {
         // 定时发送对冲查询（携带 symbol + 当期买/卖成交 + 累计净头寸）
+        let hedge_ts_ms = (get_timestamp_us() / 1000) as i64;
+        self.last_hedge_ts_ms = Some(hedge_ts_ms);
         let risk_loader = PreTradeParamsLoader::instance();
         let symbol_exposure_u =
             risk_loader.max_pos_u().max(0.0) * risk_loader.max_symbol_exposure_ratio().max(0.0);
