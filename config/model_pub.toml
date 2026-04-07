@@ -1,9 +1,9 @@
 model_manager_base_url = "http://127.0.0.1:6300"
 model_manager_request_timeout_ms = 120000
 
-# {model_name} is substituted from CLI argument at runtime.
-input_service = "fusion_factor/{model_name}"
-output_service = "model_output/{model_name}"
+# 直接填写完整 service 名称，不做 {model_name} 替换。
+input_service = "fusion_factor/binance-futures"
+output_service = "model_output/binance-futures-mm-xgb-test"
 
 # Z-score normalization (rolling Welford)
 window_size = 17280       # 24h / 5s

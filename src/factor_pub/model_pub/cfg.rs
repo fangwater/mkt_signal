@@ -9,9 +9,7 @@ pub struct ModelPubConfig {
     pub model_manager_base_url: String,
     #[serde(default = "default_model_manager_request_timeout_ms")]
     pub model_manager_request_timeout_ms: u64,
-    #[serde(default = "default_input_service")]
     pub input_service: String,
-    #[serde(default = "default_output_service")]
     pub output_service: String,
     #[serde(default = "default_window_size")]
     pub window_size: usize,
@@ -43,12 +41,6 @@ impl ModelPubConfig {
         if self.output_service.trim().is_empty() {
             anyhow::bail!("output_service must not be empty");
         }
-        if !self.input_service.contains("{model_name}") {
-            anyhow::bail!("input_service must contain {{model_name}}");
-        }
-        if !self.output_service.contains("{model_name}") {
-            anyhow::bail!("output_service must contain {{model_name}}");
-        }
         if self.window_size == 0 {
             anyhow::bail!("window_size must be > 0");
         }
@@ -59,37 +51,25 @@ impl ModelPubConfig {
         Ok(())
     }
 
-    pub fn render_input_service(&self, model_name: &str) -> Result<String> {
-        render_service(&self.input_service, model_name)
+    pub fn input_service_name(&self) -> Result<String> {
+        service_name(&self.input_service)
     }
 
-    pub fn render_output_service(&self, model_name: &str) -> Result<String> {
-        render_service(&self.output_service, model_name)
+    pub fn output_service_name(&self) -> Result<String> {
+        service_name(&self.output_service)
     }
 }
 
-fn render_service(template: &str, model_name: &str) -> Result<String> {
-    let trimmed = model_name.trim();
-    if trimmed.is_empty() {
-        anyhow::bail!("model_name must not be empty");
-    }
-    let rendered = template.replace("{model_name}", trimmed);
-    if rendered.trim().is_empty() {
+fn service_name(service: &str) -> Result<String> {
+    let rendered = service.trim();
+    if rendered.is_empty() {
         anyhow::bail!("service name renders to empty value");
     }
-    Ok(rendered)
+    Ok(rendered.to_string())
 }
 
 fn default_model_manager_request_timeout_ms() -> u64 {
     120_000
-}
-
-fn default_input_service() -> String {
-    "fusion_factor/{model_name}".to_string()
-}
-
-fn default_output_service() -> String {
-    "model_output/{model_name}".to_string()
 }
 
 fn default_window_size() -> usize {

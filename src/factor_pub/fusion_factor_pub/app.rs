@@ -11,15 +11,15 @@ use iceoryx2::service::ipc;
 use log::{info, warn};
 use reqwest::Client;
 use rocksdb::{ColumnFamilyDescriptor, IteratorMode, Options, DB};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::Index;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use super::cfg::{
-    ClipRange as FusionClipRange, FusionFactorPubConfig, ModelManagerConfig,
-    RlFactorConfig as FusionRlFactorConfig, TlenServerConfig,
+    ClipRange as FusionClipRange, FusionFactorPubConfig, RlFactorConfig as FusionRlFactorConfig,
+    TlenServerConfig,
 };
 use super::factor_enum::FusionFactorId;
 use super::publisher::FusionFactorPublisher;
@@ -671,12 +671,12 @@ impl SymbolCalcState {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct SymbolFactorPlan {
     ordered_factors: Vec<FactorBinding>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactorBinding {
     pub name: String,
     pub factor_id: Option<FusionFactorId>,
@@ -949,7 +949,6 @@ pub struct FusionFactorPubApp {
     trade_flow_feature_rocksdb_path: String,
     trade_flow_subscriber: Subscriber<ipc::Service, [u8; TRADE_FLOW_MAX_BYTES], ()>,
     tlen_server: Option<TlenServerConfig>,
-    model_manager: Option<ModelManagerConfig>,
     publisher: Option<FusionFactorPublisher>,
     rl_config: RlReturnVolatilityRuntimeConfig,
     rl_publisher: RlFactorPublisher,
@@ -991,64 +990,48 @@ impl FusionFactorPubApp {
         let venue_slug = venue.data_pub_slug().to_string();
         let trade_flow_feature_rocksdb_path = resolve_trade_flow_feature_rocksdb_path(&venue_slug)?;
         let tlen_server = cfg.tlen_server.clone();
-        let model_manager = cfg.model_manager.clone();
-        let allowed_symbols = load_symbols_from_tlen_server(&cfg.tlen_server, venue, &venue_slug)
-            .await
-            .with_context(|| {
-                format!("load symbols from tlen_server failed: venue={}", venue_slug)
-            })?;
+        let symbol_factor_plans =
+            load_symbol_factor_plans_from_tlen_server(&cfg.tlen_server, venue, &venue_slug)
+                .await
+                .with_context(|| {
+                    format!(
+                        "load factor plans from tlen_server failed: venue={}",
+                        venue_slug
+                    )
+                })?;
+        let allowed_symbols: Vec<String> = symbol_factor_plans.keys().cloned().collect();
         if allowed_symbols.is_empty() {
-            anyhow::bail!("tlen_server returned no symbols for venue={}", venue_slug);
+            anyhow::bail!(
+                "tlen_server returned no factor_plan symbols for venue={}",
+                venue_slug
+            );
         }
 
         let trade_flow_subscriber =
             Self::create_trade_flow_subscriber(&venue_slug, cfg.trade_flow_channel())?;
         let rl_config = RlReturnVolatilityRuntimeConfig::from_fusion_config(&cfg.rl_factor)?;
         let rl_publisher = RlFactorPublisher::new(&venue_slug)?;
-        let (publisher, symbol_factor_plans, output_service_path, mode_label) =
-            if let Some(model_manager) = &model_manager {
-                let symbol_factor_plans = load_symbol_factor_plans(model_manager, &allowed_symbols)
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "load symbol factor plans failed: model={} symbols={}",
-                            model_manager.model_name,
-                            allowed_symbols.len()
-                        )
-                    })?;
-                let output_service_path = cfg
-                    .output_service_path()
-                    .context("missing output_service_path for configured model_manager")?;
-                let publisher_node_name = format!("fusion_pub_{}", venue_slug.replace('-', "_"));
-                let publisher =
-                    FusionFactorPublisher::new(&publisher_node_name, &output_service_path)
-                        .with_context(|| {
-                            format!(
-                                "create fusion factor publisher failed: service_path={}",
-                                output_service_path
-                            )
-                        })?;
-                (
-                    Some(publisher),
-                    Some(symbol_factor_plans),
-                    Some(output_service_path),
-                    "fusion+rl",
+        let output_service_path = cfg.output_service_path(&venue_slug);
+        let publisher_node_name = format!("fusion_pub_{}", venue_slug.replace('-', "_"));
+        let publisher = FusionFactorPublisher::new(&publisher_node_name, &output_service_path)
+            .with_context(|| {
+                format!(
+                    "create fusion factor publisher failed: service_path={}",
+                    output_service_path
                 )
-            } else {
-                (None, None, None, "rl_only")
-            };
+            })?;
 
         info!(
             "FusionFactorPubApp created: venue={} mode={} symbol_source={} symbols={} sample={} trade_flow_channel=factor_pub/{}/{} rocksdb_path={} output_service={}",
             venue_slug,
-            mode_label,
-            "tlen_server.amount_thresholds",
+            "fusion+rl",
+            "tlen_server.factor_plan",
             allowed_symbols.len(),
             format_symbol_sample(&allowed_symbols),
             venue_slug,
             cfg.trade_flow_channel(),
             trade_flow_feature_rocksdb_path,
-            output_service_path.as_deref().unwrap_or("-"),
+            output_service_path,
         );
         info!(
             "FusionFactorPubApp[{}] rl config: factor={} source={} pct_change_period={} rolling_window={} scale_factor={} clip={:?}",
@@ -1067,13 +1050,12 @@ impl FusionFactorPubApp {
             trade_flow_feature_rocksdb_path,
             trade_flow_subscriber,
             tlen_server: Some(tlen_server.clone()),
-            model_manager,
-            publisher,
+            publisher: Some(publisher),
             rl_config,
             rl_publisher,
             allowed_symbols: allowed_symbols.into_iter().collect(),
             symbol_all_ready_seen: HashSet::new(),
-            symbol_factor_plans,
+            symbol_factor_plans: Some(symbol_factor_plans),
             symbol_states: HashMap::new(),
             symbol_rolling_stats: HashMap::new(),
             depth_attached_count: 0,
@@ -1162,30 +1144,40 @@ impl FusionFactorPubApp {
         let Some(tlen_server) = self.tlen_server.clone() else {
             return;
         };
-        match load_symbols_from_tlen_server(&tlen_server, self.venue, &self.venue_slug).await {
-            Ok(symbols) => {
-                if let Err(err) = self.apply_allowed_symbols_update(symbols).await {
+        match load_symbol_factor_plans_from_tlen_server(&tlen_server, self.venue, &self.venue_slug)
+            .await
+        {
+            Ok(plans) => {
+                if let Err(err) = self.apply_allowed_symbol_plan_update(plans).await {
                     self.warn_symbol_reload_throttled(&format!(
-                        "fusion symbol reload apply failed: venue={} err={:#}",
+                        "fusion factor_plan reload apply failed: venue={} err={:#}",
                         self.venue_slug, err
                     ));
                 }
             }
             Err(err) => {
                 self.warn_symbol_reload_throttled(&format!(
-                    "fusion symbol reload failed: venue={} err={:#}",
+                    "fusion factor_plan reload failed: venue={} err={:#}",
                     self.venue_slug, err
                 ));
             }
         }
     }
 
-    async fn apply_allowed_symbols_update(&mut self, symbols: Vec<String>) -> Result<()> {
-        let new_allowed: HashSet<String> = symbols.into_iter().collect();
+    async fn apply_allowed_symbol_plan_update(
+        &mut self,
+        plans: HashMap<String, SymbolFactorPlan>,
+    ) -> Result<()> {
+        let new_allowed: HashSet<String> = plans.keys().cloned().collect();
         if new_allowed.is_empty() {
-            anyhow::bail!("symbol reload produced empty set");
+            anyhow::bail!("factor_plan reload produced empty set");
         }
-        if new_allowed == self.allowed_symbols {
+        let plan_changed = self
+            .symbol_factor_plans
+            .as_ref()
+            .map(|current| current != &plans)
+            .unwrap_or(true);
+        if new_allowed == self.allowed_symbols && !plan_changed {
             return Ok(());
         }
 
@@ -1194,20 +1186,6 @@ impl FusionFactorPubApp {
             .difference(&new_allowed)
             .cloned()
             .collect();
-        if let Some(model_manager) = self.model_manager.clone() {
-            let mut sorted_symbols: Vec<String> = new_allowed.iter().cloned().collect();
-            sorted_symbols.sort_unstable();
-            let plans = load_symbol_factor_plans(&model_manager, &sorted_symbols)
-                .await
-                .with_context(|| {
-                    format!(
-                        "reload symbol factor plans failed: model={} symbols={}",
-                        model_manager.model_name,
-                        sorted_symbols.len()
-                    )
-                })?;
-            self.symbol_factor_plans = Some(plans);
-        }
 
         self.allowed_symbols = new_allowed;
         self.symbol_states
@@ -1216,17 +1194,16 @@ impl FusionFactorPubApp {
             .retain(|symbol, _| self.allowed_symbols.contains(symbol));
         self.symbol_all_ready_seen
             .retain(|symbol| self.allowed_symbols.contains(symbol));
-        if let Some(plans) = self.symbol_factor_plans.as_mut() {
-            plans.retain(|symbol, _| self.allowed_symbols.contains(symbol));
-        }
+        self.symbol_factor_plans = Some(plans);
 
         info!(
-            "FusionFactorPubApp[{}] symbols reloaded: online_symbols={} sample={} retired_symbols={} retired_sample={}",
+            "FusionFactorPubApp[{}] factor plans reloaded: online_symbols={} sample={} retired_symbols={} retired_sample={} plan_changed={}",
             self.venue_slug,
             self.allowed_symbols.len(),
             format_symbol_sample_set(&self.allowed_symbols),
             retired.len(),
             format_symbol_sample_set(&retired),
+            plan_changed,
         );
         Ok(())
     }
@@ -5893,36 +5870,55 @@ impl FusionFactorPubApp {
 }
 
 #[derive(Debug, Deserialize)]
-struct SymbolDetailResp {
+struct FactorPlanResp {
+    thresholds: HashMap<String, FactorPlanItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FactorPlanItem {
+    #[serde(default)]
     factors: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct AmountThresholdResp {
-    thresholds: HashMap<String, AmountThresholdItem>,
+fn build_symbol_factor_plan(symbol: &str, factors: Vec<String>) -> SymbolFactorPlan {
+    let mut ordered_factors = Vec::with_capacity(factors.len());
+    for name in factors {
+        let factor_id = FusionFactorId::from_name(&name);
+        let extra_factor_id = ExtraFactorId::from_name(&name);
+        if factor_id.is_none() && extra_factor_id.is_none() {
+            warn!(
+                "factor-plan contains unmapped factor name: symbol={} factor={}",
+                symbol, name
+            );
+        }
+        ordered_factors.push(FactorBinding {
+            name,
+            factor_id,
+            extra_factor_id,
+        });
+    }
+
+    let unknown_names: Vec<&str> = ordered_factors
+        .iter()
+        .filter(|f| f.factor_id.is_none() && f.extra_factor_id.is_none())
+        .map(|f| f.name.as_str())
+        .collect();
+    if !unknown_names.is_empty() {
+        warn!(
+            "factor-plan: symbol={} unknown_factors=[{}]",
+            symbol,
+            unknown_names.join(",")
+        );
+    }
+
+    SymbolFactorPlan { ordered_factors }
 }
 
-#[derive(Debug, Deserialize)]
-struct AmountThresholdItem {
-    medium_notional_threshold: f64,
-    large_notional_threshold: f64,
-}
-
-#[derive(Debug, Deserialize)]
-struct LoginResp {
-    token: String,
-}
-
-#[derive(Debug, Serialize)]
-struct LoginReq<'a> {
-    password: &'a str,
-}
-
-async fn load_symbols_from_tlen_server(
+async fn load_symbol_factor_plans_from_tlen_server(
     tlen: &TlenServerConfig,
     venue: TradingVenue,
     venue_slug: &str,
-) -> Result<Vec<String>> {
+) -> Result<HashMap<String, SymbolFactorPlan>> {
     let base_url = tlen.base_url.trim_end_matches('/');
     let client = Client::builder()
         .timeout(Duration::from_millis(tlen.request_timeout_ms))
@@ -5932,153 +5928,29 @@ async fn load_symbols_from_tlen_server(
     let url = format!("{}/api/thresholds", base_url);
     let resp = client
         .get(&url)
-        .query(&[("venue", venue_slug), ("config_type", "amount_thresholds")])
+        .query(&[("venue", venue_slug), ("config_type", "factor_plan")])
         .send()
         .await
         .with_context(|| format!("GET {} failed", url))?
         .error_for_status()
         .with_context(|| format!("GET {} returned error status", url))?;
 
-    let payload: AmountThresholdResp = resp
+    let payload: FactorPlanResp = resp
         .json()
         .await
-        .with_context(|| format!("decode amount thresholds failed: {}", url))?;
+        .with_context(|| format!("decode factor plan response failed: {}", url))?;
 
-    let mut symbols = Vec::with_capacity(payload.thresholds.len());
-    for (raw_symbol, threshold) in payload.thresholds {
-        if !threshold.medium_notional_threshold.is_finite()
-            || !threshold.large_notional_threshold.is_finite()
-            || threshold.medium_notional_threshold <= 0.0
-            || threshold.large_notional_threshold <= 0.0
-            || threshold.medium_notional_threshold > threshold.large_notional_threshold
-        {
-            continue;
-        }
+    let mut out = HashMap::with_capacity(payload.thresholds.len());
+    for (raw_symbol, item) in payload.thresholds {
         let symbol = normalize_symbol_for_venue(&raw_symbol, venue);
         if !symbol.is_empty() {
-            symbols.push(symbol);
-        }
-    }
-    symbols.sort_unstable();
-    symbols.dedup();
-    Ok(symbols)
-}
-
-async fn load_symbol_factor_plans(
-    mm: &ModelManagerConfig,
-    symbols: &[String],
-) -> Result<HashMap<String, SymbolFactorPlan>> {
-    let base_url = mm.base_url.trim_end_matches('/');
-    let client = Client::builder()
-        .timeout(Duration::from_millis(mm.request_timeout_ms))
-        .build()
-        .context("build reqwest client failed")?;
-
-    let token = authenticate_model_manager(&client, mm, base_url).await?;
-
-    let mut out = HashMap::with_capacity(symbols.len());
-    for symbol in symbols {
-        let url = format!(
-            "{}/api/models/{}/symbols/{}",
-            base_url,
-            urlencoding::encode(mm.model_name.as_str()),
-            urlencoding::encode(symbol)
-        );
-
-        let mut req = client.get(&url);
-        if let Some(token) = token.as_deref() {
-            req = req.bearer_auth(token);
-        }
-
-        let resp = req
-            .send()
-            .await
-            .with_context(|| format!("GET {} failed", url))?
-            .error_for_status()
-            .with_context(|| format!("GET {} returned error status", url))?;
-
-        let detail: SymbolDetailResp = resp
-            .json()
-            .await
-            .with_context(|| format!("decode symbol detail failed: {}", url))?;
-
-        let mut ordered_factors = Vec::with_capacity(detail.factors.len());
-        for name in detail.factors {
-            let factor_id = FusionFactorId::from_name(&name);
-            let extra_factor_id = ExtraFactorId::from_name(&name);
-            if factor_id.is_none() && extra_factor_id.is_none() {
-                warn!(
-                    "model_manager factor name is not mapped yet: symbol={} factor={}",
-                    symbol, name
-                );
-            }
-            ordered_factors.push(FactorBinding {
-                name,
-                factor_id,
-                extra_factor_id,
-            });
-        }
-
-        let unknown_names: Vec<&str> = ordered_factors
-            .iter()
-            .filter(|f| f.factor_id.is_none() && f.extra_factor_id.is_none())
-            .map(|f| f.name.as_str())
-            .collect();
-        if !unknown_names.is_empty() {
-            warn!(
-                "factor-plan: symbol={} unknown_factors=[{}]",
-                symbol,
-                unknown_names.join(",")
+            out.insert(
+                symbol.clone(),
+                build_symbol_factor_plan(&symbol, item.factors),
             );
         }
-
-        out.insert(symbol.clone(), SymbolFactorPlan { ordered_factors });
     }
-
     Ok(out)
-}
-
-async fn authenticate_model_manager(
-    client: &Client,
-    mm: &ModelManagerConfig,
-    base_url: &str,
-) -> Result<Option<String>> {
-    if let Some(token) = mm
-        .bearer_token
-        .as_ref()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-    {
-        return Ok(Some(token));
-    }
-
-    let Some(password) = mm
-        .password
-        .as_ref()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-    else {
-        return Ok(None);
-    };
-
-    let login_url = format!("{}/api/auth/login", base_url);
-    let resp = client
-        .post(&login_url)
-        .json(&LoginReq {
-            password: password.as_str(),
-        })
-        .send()
-        .await
-        .with_context(|| format!("POST {} failed", login_url))?
-        .error_for_status()
-        .with_context(|| format!("POST {} returned error status", login_url))?;
-
-    let payload: LoginResp = resp
-        .json()
-        .await
-        .with_context(|| format!("decode login response failed: {}", login_url))?;
-
-    Ok(Some(payload.token))
 }
 
 fn compute_mid_price_minus_bid_vwap(depth: &DepthDerived) -> Option<f64> {

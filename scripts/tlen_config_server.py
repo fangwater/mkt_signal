@@ -8,11 +8,13 @@
   - 当前支持：
       - tlen_threshold
       - amount_thresholds
+      - factor_plan
   - 配置按 venue 维度存取。
 
 Redis key 约定：
   - TLEN: <venue_prefix>:tlen_threshold
   - Amount thresholds: <venue>:amount-thresholds
+  - Factor plan: <venue>:factor-plan
 
 示例：
   python scripts/tlen_config_server.py
@@ -37,6 +39,7 @@ DEFAULT_CONFIG_TYPE = "tlen"
 SUPPORTED_CONFIG_TYPES = [
     "tlen",
     "amount_thresholds",
+    "factor_plan",
 ]
 SUPPORTED_VENUES = [
     "binance-margin",
@@ -137,6 +140,8 @@ def normalize_config_type(value: object) -> Optional[str]:
         return "tlen"
     if raw in ("amount", "amount_threshold", "amount_thresholds"):
         return "amount_thresholds"
+    if raw in ("factor_plan", "factor_plans", "plan", "plans"):
+        return "factor_plan"
     return None
 
 
@@ -149,6 +154,8 @@ def redis_key(venue: str, config_type: str) -> str:
         return f"{venue_prefix(venue_norm)}:tlen_threshold"
     if normalized_type == "amount_thresholds":
         return f"{venue_norm}:amount-thresholds"
+    if normalized_type == "factor_plan":
+        return f"{venue_norm}:factor-plan"
     raise ValueError(f"unsupported config_type: {config_type}")
 
 
@@ -189,6 +196,35 @@ def parse_amount_threshold_value(raw_value: object) -> Dict[str, float]:
     }
 
 
+def parse_factor_plan_value(raw_value: object) -> Dict[str, object]:
+    if isinstance(raw_value, str):
+        try:
+            payload = json.loads(raw_value)
+        except Exception as exc:
+            raise ValueError(f"invalid factor plan json: {raw_value!r}") from exc
+    elif isinstance(raw_value, dict):
+        payload = dict(raw_value)
+    else:
+        raise ValueError(f"invalid factor plan payload: {raw_value!r}")
+
+    if not isinstance(payload, dict):
+        raise ValueError("factor plan payload must be an object")
+
+    factors_raw = payload.get("factors", [])
+    if factors_raw is None:
+        factors_raw = []
+    if not isinstance(factors_raw, list):
+        raise ValueError("factor plan field 'factors' must be an array")
+
+    factors: List[str] = []
+    for item in factors_raw:
+        factor = str(item).strip()
+        if factor:
+            factors.append(factor)
+    payload["factors"] = factors
+    return payload
+
+
 def parse_thresholds_map(data: Dict[str, str], venue: str, config_type: str) -> Dict[str, object]:
     thresholds: Dict[str, object] = {}
     for raw_symbol in sorted(data.keys()):
@@ -199,6 +235,9 @@ def parse_thresholds_map(data: Dict[str, str], venue: str, config_type: str) -> 
             continue
         if config_type == "amount_thresholds":
             thresholds[symbol] = parse_amount_threshold_value(raw_value)
+            continue
+        if config_type == "factor_plan":
+            thresholds[symbol] = parse_factor_plan_value(raw_value)
             continue
         raise ValueError(f"unsupported config_type: {config_type}")
     return thresholds
@@ -217,6 +256,10 @@ def coerce_thresholds(payload: dict, venue: str, config_type: str) -> Dict[str, 
             continue
         if config_type == "amount_thresholds":
             value = parse_amount_threshold_value(raw_value)
+            encoded[symbol] = json.dumps(value, ensure_ascii=False, sort_keys=True)
+            continue
+        if config_type == "factor_plan":
+            value = parse_factor_plan_value(raw_value)
             encoded[symbol] = json.dumps(value, ensure_ascii=False, sort_keys=True)
             continue
         raise ValueError(f"unsupported config_type: {config_type}")
@@ -415,7 +458,7 @@ def page_html(config: ServerConfig) -> str:
   <div class="wrap">
     <div class="card">
       <h1>{SERVICE_NAME}</h1>
-      <div class="muted">共享阈值管理服务。当前支持 <code>tlen_threshold</code> 与 <code>amount_thresholds</code>。</div>
+      <div class="muted">共享配置管理服务。当前支持 <code>tlen_threshold</code>、<code>amount_thresholds</code> 与 <code>factor_plan</code>。</div>
     </div>
 
     <div class="card">
@@ -444,8 +487,11 @@ def page_html(config: ServerConfig) -> str:
       <div class="muted">批量 JSON：
         <code>{{"BTCUSDT": 123.45}}</code>
         或
-        <code>{{"BTCUSDT": {{"medium_notional_threshold": 10000, "large_notional_threshold": 50000}}}}</code>。
+        <code>{{"BTCUSDT": {{"medium_notional_threshold": 10000, "large_notional_threshold": 50000}}}}</code>
+        或
+        <code>{{"BTCUSDT": {{"factors": ["factor_001", "avg_price"]}}}}</code>。
         OKEX 建议直接填目标 venue 格式，例如 <code>BTC-USDT</code> 或 <code>BTC-USDT-SWAP</code>。
+        <code>factor_plan</code> 会自动兼容缺省 <code>factors</code>，即写成 <code>{{"BTCUSDT": {{}}}}</code> 也会保存为 <code>{{"factors": []}}</code>。
       </div>
       <textarea id="bulkJson" spellcheck="false"></textarea>
     </div>

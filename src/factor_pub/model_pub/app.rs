@@ -111,8 +111,8 @@ impl ModelPubApp {
         let config = ModelPubConfig::load(config_path)?;
         config.validate()?;
 
-        let input_service = config.render_input_service(&model_name)?;
-        let output_service = config.render_output_service(&model_name)?;
+        let input_service = config.input_service_name()?;
+        let output_service = config.output_service_name()?;
 
         let models_by_symbol = Self::load_models_from_model_manager(&config, &model_name).await?;
         if models_by_symbol.is_empty() {

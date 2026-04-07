@@ -8,8 +8,6 @@ use std::fs;
 pub struct FusionFactorPubConfig {
     pub tlen_server: TlenServerConfig,
     #[serde(default)]
-    pub model_manager: Option<ModelManagerConfig>,
-    #[serde(default)]
     pub rl_factor: RlFactorConfig,
 }
 
@@ -20,18 +18,6 @@ pub struct TlenServerConfig {
     pub request_timeout_ms: u64,
     #[serde(default = "default_symbol_reload_secs")]
     pub symbol_reload_secs: u64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct ModelManagerConfig {
-    pub base_url: String,
-    pub model_name: String,
-    #[serde(default)]
-    pub password: Option<String>,
-    #[serde(default)]
-    pub bearer_token: Option<String>,
-    #[serde(default = "default_request_timeout_ms")]
-    pub request_timeout_ms: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -66,37 +52,13 @@ impl Default for RlFactorConfig {
 impl FusionFactorPubConfig {
     pub fn load(path: &str) -> Result<Self> {
         let content = fs::read_to_string(path)?;
-        let mut cfg: FusionFactorPubConfig = toml::from_str(&content)?;
-        cfg.normalize_model_manager();
+        let cfg: FusionFactorPubConfig = toml::from_str(&content)?;
         cfg.validate()?;
         Ok(cfg)
     }
 
-    fn normalize_model_manager(&mut self) {
-        if self
-            .model_manager
-            .as_ref()
-            .map(|mm| mm.model_name.trim().is_empty())
-            .unwrap_or(false)
-        {
-            self.model_manager = None;
-        }
-    }
-
     pub fn validate(&self) -> Result<()> {
         self.tlen_server.validate()?;
-
-        if let Some(model_manager) = &self.model_manager {
-            if model_manager.base_url.trim().is_empty() {
-                anyhow::bail!("model_manager.base_url must not be empty");
-            }
-            if model_manager.model_name.trim().is_empty() {
-                anyhow::bail!("model_manager.model_name must not be empty");
-            }
-            if model_manager.request_timeout_ms == 0 {
-                anyhow::bail!("model_manager.request_timeout_ms must be > 0");
-            }
-        }
         self.rl_factor.validate()?;
         Ok(())
     }
@@ -106,11 +68,9 @@ impl FusionFactorPubConfig {
         "trade_flow_feature"
     }
 
-    /// 自动生成 output service path: fusion_factor/{model_name}
-    pub fn output_service_path(&self) -> Option<String> {
-        self.model_manager
-            .as_ref()
-            .map(|mm| format!("fusion_factor/{}", mm.model_name))
+    /// 固定 output service path: fusion_factor/{venue_slug}
+    pub fn output_service_path(&self, venue_slug: &str) -> String {
+        format!("fusion_factor/{}", venue_slug)
     }
 }
 
@@ -165,50 +125,22 @@ mod tests {
     }
 
     #[test]
-    fn empty_model_name_switches_to_rl_only() {
+    fn output_service_path_follows_venue_slug() {
         let path = write_temp_config(
             r#"
 [tlen_server]
 base_url = "http://127.0.0.1:6322"
-
-[model_manager]
-base_url = "http://127.0.0.1:6300"
-model_name = "   "
-"#,
-        );
-
-        let cfg = FusionFactorPubConfig::load(path.to_str().unwrap()).unwrap();
-        assert!(cfg.model_manager.is_none());
-        assert!(cfg.output_service_path().is_none());
-
-        let _ = fs::remove_file(path);
-    }
-
-    #[test]
-    fn non_empty_model_name_keeps_model_manager() {
-        let path = write_temp_config(
-            r#"
-[tlen_server]
-base_url = "http://127.0.0.1:6322"
-
-[model_manager]
-base_url = "http://127.0.0.1:6300"
-model_name = "binance-futures-mm-xgb-test"
 "#,
         );
 
         let cfg = FusionFactorPubConfig::load(path.to_str().unwrap()).unwrap();
         assert_eq!(
-            cfg.output_service_path().as_deref(),
-            Some("fusion_factor/binance-futures-mm-xgb-test")
+            cfg.output_service_path("binance-futures"),
+            "fusion_factor/binance-futures"
         );
 
         let _ = fs::remove_file(path);
     }
-}
-
-fn default_request_timeout_ms() -> u64 {
-    5_000
 }
 
 fn default_rl_pct_change_period() -> usize {
@@ -221,6 +153,10 @@ fn default_rl_rolling_window() -> usize {
 
 fn default_rl_scale_factor() -> f64 {
     1.0
+}
+
+fn default_request_timeout_ms() -> u64 {
+    5_000
 }
 
 fn default_symbol_reload_secs() -> u64 {
