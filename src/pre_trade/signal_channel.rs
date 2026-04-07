@@ -490,9 +490,10 @@ fn handle_trade_signal(signal: TradeSignal) {
                 let symbol = cancel_ctx.get_opening_symbol().to_uppercase();
                 let cancel_side = cancel_ctx.get_side();
                 let cancel_reason = cancel_ctx.get_reason();
-                let require_direction_match =
-                    matches!(cancel_reason, crate::signal::cancel_signal::ArbCancelReason::Spread)
-                        && cancel_ctx.strategy_id <= 0;
+                let require_direction_match = matches!(
+                    cancel_reason,
+                    crate::signal::cancel_signal::ArbCancelReason::Spread
+                ) && cancel_ctx.strategy_id <= 0;
                 let opening_venue = TradingVenue::from_u8(cancel_ctx.opening_leg.venue)
                     .unwrap_or(TradingVenue::BinanceMargin);
                 let hedging_venue = TradingVenue::from_u8(cancel_ctx.hedging_leg.venue)

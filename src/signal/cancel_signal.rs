@@ -391,7 +391,9 @@ impl SignalBytes for MmCancelCtx {
         let (opening_leg, opening_symbol) = read_leg(&mut bytes, true, "opening leg")?;
 
         if bytes.remaining() < 1 + 1 + 8 + 4 {
-            return Err("Not enough bytes for cancel side / reason / trigger timestamp".to_string());
+            return Err(
+                "Not enough bytes for cancel side / reason / trigger timestamp".to_string(),
+            );
         }
         let side = bytes.get_u8();
         if Side::from_u8(side).is_none() {

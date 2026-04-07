@@ -257,9 +257,7 @@ impl FactorValueHub {
             .max_publishers(1)
             .max_subscribers(10)
             .open()
-            .with_context(|| {
-                format!("failed to open factor subscriber service={service_name}")
-            })?;
+            .with_context(|| format!("failed to open factor subscriber service={service_name}"))?;
 
         info!(
             "FactorValueHub: subscribed factor stream service={}",

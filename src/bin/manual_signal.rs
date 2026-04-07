@@ -875,7 +875,9 @@ fn build_and_publish_manual(
                 .opening_side
                 .as_deref()
                 .and_then(Side::from_str)
-                .ok_or_else(|| anyhow::anyhow!("opening_side is required for cancel and must be buy or sell"))?;
+                .ok_or_else(|| {
+                    anyhow::anyhow!("opening_side is required for cancel and must be buy or sell")
+                })?;
             let open_quote = quotes
                 .read()
                 .get_valid(cfg.open, &opening_symbol)

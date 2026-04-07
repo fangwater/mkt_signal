@@ -28,10 +28,7 @@ pub fn build_spread_decision_from_key_base(
     );
     append_key_value_fields(
         base,
-        &[(
-            "spread_fr",
-            format_from_key_optional_value(spread_fr, 6),
-        )],
+        &[("spread_fr", format_from_key_optional_value(spread_fr, 6))],
     )
 }
 pub fn build_funding_decision_from_key_base(

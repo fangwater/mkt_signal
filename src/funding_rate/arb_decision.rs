@@ -1208,25 +1208,25 @@ fn drive_spread_arb_decision(
                 arb.record_intercept_summary("spread_cancel_cooldown");
             });
         } else {
-        let _ = ArbDecision::with_state_mut(|arb| {
-            arb.record_intercept_summary("spread_cancel");
-        });
-        if let Err(err) = emit_spread_arb_spread_cancel(
-            decision,
-            open_symbol_key.as_str(),
-            hedge_symbol_key.as_str(),
-            open_venue,
-            hedge_venue,
-            Side::Buy,
-        ) {
-            return Err(err);
-        }
-        let cancel_key = cancel_gate.key.clone();
-        let _ = ArbDecision::with_state_mut(|arb| {
-            arb.mark_signal_triggered(&SignalType::ArbCancel, cancel_gate.key, now);
-            arb.mark_spread_cancel_triggered(cancel_key, Side::Buy, now);
-        });
-        emitted_signal = Some(SignalType::ArbCancel);
+            let _ = ArbDecision::with_state_mut(|arb| {
+                arb.record_intercept_summary("spread_cancel");
+            });
+            if let Err(err) = emit_spread_arb_spread_cancel(
+                decision,
+                open_symbol_key.as_str(),
+                hedge_symbol_key.as_str(),
+                open_venue,
+                hedge_venue,
+                Side::Buy,
+            ) {
+                return Err(err);
+            }
+            let cancel_key = cancel_gate.key.clone();
+            let _ = ArbDecision::with_state_mut(|arb| {
+                arb.mark_signal_triggered(&SignalType::ArbCancel, cancel_gate.key, now);
+                arb.mark_spread_cancel_triggered(cancel_key, Side::Buy, now);
+            });
+            emitted_signal = Some(SignalType::ArbCancel);
         }
     }
 
@@ -1253,25 +1253,25 @@ fn drive_spread_arb_decision(
                 arb.record_intercept_summary("spread_cancel_cooldown");
             });
         } else {
-        let _ = ArbDecision::with_state_mut(|arb| {
-            arb.record_intercept_summary("spread_cancel");
-        });
-        if let Err(err) = emit_spread_arb_spread_cancel(
-            decision,
-            open_symbol_key.as_str(),
-            hedge_symbol_key.as_str(),
-            open_venue,
-            hedge_venue,
-            Side::Sell,
-        ) {
-            return Err(err);
-        }
-        let cancel_key = cancel_gate.key.clone();
-        let _ = ArbDecision::with_state_mut(|arb| {
-            arb.mark_signal_triggered(&SignalType::ArbCancel, cancel_gate.key, now);
-            arb.mark_spread_cancel_triggered(cancel_key, Side::Sell, now);
-        });
-        emitted_signal = Some(SignalType::ArbCancel);
+            let _ = ArbDecision::with_state_mut(|arb| {
+                arb.record_intercept_summary("spread_cancel");
+            });
+            if let Err(err) = emit_spread_arb_spread_cancel(
+                decision,
+                open_symbol_key.as_str(),
+                hedge_symbol_key.as_str(),
+                open_venue,
+                hedge_venue,
+                Side::Sell,
+            ) {
+                return Err(err);
+            }
+            let cancel_key = cancel_gate.key.clone();
+            let _ = ArbDecision::with_state_mut(|arb| {
+                arb.mark_signal_triggered(&SignalType::ArbCancel, cancel_gate.key, now);
+                arb.mark_spread_cancel_triggered(cancel_key, Side::Sell, now);
+            });
+            emitted_signal = Some(SignalType::ArbCancel);
         }
     }
 
@@ -1400,17 +1400,16 @@ fn drive_shared_arb_hedge_query(
     let aggressive = hedge_inputs.aggressive;
     let default_offset = hedge_inputs.default_offset;
     let stop_loss = hedge_inputs.stop_loss;
-    let (premium_rate, spread_fr) =
-        match super::arb_open_filter::lookup_realtime_open_filter_value(
-            &open_symbol,
-            &hedge_symbol,
-            open_venue,
-            hedge_venue,
-        ) {
-            Some((value, "premium_rate")) => (Some(value), None),
-            Some((value, "spread_fr")) => (None, Some(value)),
-            _ => (None, None),
-        };
+    let (premium_rate, spread_fr) = match super::arb_open_filter::lookup_realtime_open_filter_value(
+        &open_symbol,
+        &hedge_symbol,
+        open_venue,
+        hedge_venue,
+    ) {
+        Some((value, "premium_rate")) => (Some(value), None),
+        Some((value, "spread_fr")) => (None, Some(value)),
+        _ => (None, None),
+    };
 
     log::info!(
         "{source}: hedge stop-loss check strategy_id={} pct_change={:.6} threshold_pct={:.2} trigger={} valid={}",
@@ -2276,7 +2275,9 @@ fn emit_spread_arb_open_signals(
         };
         let tlen_gate = ArbDecision::with_state_mut(|arb| {
             if arb.enable_tlen_cancel {
-                arb.tlen_thresholds.get(&query_symbol.to_ascii_uppercase()).copied()
+                arb.tlen_thresholds
+                    .get(&query_symbol.to_ascii_uppercase())
+                    .copied()
             } else {
                 None
             }
@@ -2498,7 +2499,9 @@ fn emit_spread_arb_close_signals(
             &tick_indices,
         );
         for (ctx, level_tlen) in contexts.iter_mut().zip(tlens.into_iter()) {
-            ctx.set_from_key(super::common::append_tlen_to_from_key(&from_key, level_tlen).into_bytes());
+            ctx.set_from_key(
+                super::common::append_tlen_to_from_key(&from_key, level_tlen).into_bytes(),
+            );
         }
     }
     let _ = super::arb_emit::emit_levels_as_signals(
@@ -2707,7 +2710,9 @@ fn emit_funding_open_close_signals(
         };
         let tlen_gate = ArbDecision::with_state_mut(|arb| {
             if arb.enable_tlen_cancel {
-                arb.tlen_thresholds.get(&query_symbol.to_ascii_uppercase()).copied()
+                arb.tlen_thresholds
+                    .get(&query_symbol.to_ascii_uppercase())
+                    .copied()
             } else {
                 None
             }
@@ -3751,7 +3756,10 @@ impl ArbDecisionState {
         let rule = "=".repeat(header.len());
         let mid = "-".repeat(header.len());
 
-        log::info!("{source}: xarb open summary (last {}s)", INTERCEPT_LOG_INTERVAL_SECS);
+        log::info!(
+            "{source}: xarb open summary (last {}s)",
+            INTERCEPT_LOG_INTERVAL_SECS
+        );
         log::info!("{rule}");
         log::info!("{header}");
         log::info!("{mid}");
@@ -3766,11 +3774,7 @@ impl ArbDecisionState {
         self.last_intercept_log = Instant::now();
     }
 
-    fn build_xarb_open_blocker_reason(
-        &mut self,
-        symbol: &str,
-        side: Side,
-    ) -> Option<String> {
+    fn build_xarb_open_blocker_reason(&mut self, symbol: &str, side: Side) -> Option<String> {
         let hedge_symbol = symbol;
         let open_venue = self.venues.0;
         let hedge_venue = self.venues.1;
@@ -3799,7 +3803,8 @@ impl ArbDecisionState {
             }
         }
 
-        let environment_signal = self.evaluate_environment_signal(symbol, hedge_symbol, hedge_venue, get_timestamp_us());
+        let environment_signal =
+            self.evaluate_environment_signal(symbol, hedge_symbol, hedge_venue, get_timestamp_us());
         if self.enable_environment_model && !environment_signal.allow_open {
             return Some("env_block".to_string());
         }
@@ -3815,7 +3820,8 @@ impl ArbDecisionState {
         };
 
         if self.enable_volatility_limit {
-            let Some(open_volatility_threshold) = self.lookup_open_volatility_threshold(symbol) else {
+            let Some(open_volatility_threshold) = self.lookup_open_volatility_threshold(symbol)
+            else {
                 return Some("miss_vol".to_string());
             };
             if open_volatility_factor > open_volatility_threshold {
@@ -3961,8 +3967,7 @@ impl ArbDecisionState {
                 self.record_intercept_summary(missing_filter_reason);
                 return None;
             };
-            let open_filter_threshold =
-                select_open_filter_threshold(side, open_filter_thresholds);
+            let open_filter_threshold = select_open_filter_threshold(side, open_filter_thresholds);
             let open_filter_hit = match side {
                 Side::Buy => open_filter_value_ready > open_filter_threshold,
                 Side::Sell => open_filter_value_ready < open_filter_threshold,

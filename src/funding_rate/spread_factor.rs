@@ -344,7 +344,12 @@ impl SpreadFactor {
         };
 
         let key = (
-            (store_venue1, Self::normalize_symbol_key(symbol1), venue2, Self::normalize_symbol_key(symbol2)),
+            (
+                store_venue1,
+                Self::normalize_symbol_key(symbol1),
+                venue2,
+                Self::normalize_symbol_key(symbol2),
+            ),
             ArbDirection::Forward,
             OperationType::Open,
         );
@@ -387,7 +392,12 @@ impl SpreadFactor {
         };
 
         let key = (
-            (store_venue1, Self::normalize_symbol_key(symbol1), venue2, Self::normalize_symbol_key(symbol2)),
+            (
+                store_venue1,
+                Self::normalize_symbol_key(symbol1),
+                venue2,
+                Self::normalize_symbol_key(symbol2),
+            ),
             ArbDirection::Forward,
             OperationType::Cancel,
         );
@@ -431,7 +441,12 @@ impl SpreadFactor {
         };
 
         let key = (
-            (store_venue1, Self::normalize_symbol_key(symbol1), venue2, Self::normalize_symbol_key(symbol2)),
+            (
+                store_venue1,
+                Self::normalize_symbol_key(symbol1),
+                venue2,
+                Self::normalize_symbol_key(symbol2),
+            ),
             ArbDirection::Backward,
             OperationType::Open,
         );
@@ -474,7 +489,12 @@ impl SpreadFactor {
         };
 
         let key = (
-            (store_venue1, Self::normalize_symbol_key(symbol1), venue2, Self::normalize_symbol_key(symbol2)),
+            (
+                store_venue1,
+                Self::normalize_symbol_key(symbol1),
+                venue2,
+                Self::normalize_symbol_key(symbol2),
+            ),
             ArbDirection::Backward,
             OperationType::Cancel,
         );
@@ -518,7 +538,12 @@ impl SpreadFactor {
         };
 
         let key = (
-            (query_venue1, Self::normalize_symbol_key(symbol1), venue2, Self::normalize_symbol_key(symbol2)),
+            (
+                query_venue1,
+                Self::normalize_symbol_key(symbol1),
+                venue2,
+                Self::normalize_symbol_key(symbol2),
+            ),
             ArbDirection::Forward,
             OperationType::Open,
         );
@@ -556,7 +581,12 @@ impl SpreadFactor {
     ) -> bool {
         let query_venue1 = Self::map_venue(venue1);
         let key = (
-            (query_venue1, Self::normalize_symbol_key(symbol1), venue2, Self::normalize_symbol_key(symbol2)),
+            (
+                query_venue1,
+                Self::normalize_symbol_key(symbol1),
+                venue2,
+                Self::normalize_symbol_key(symbol2),
+            ),
             ArbDirection::Forward,
             OperationType::Cancel,
         );
@@ -606,7 +636,12 @@ impl SpreadFactor {
     ) -> bool {
         let query_venue1 = Self::map_venue(venue1);
         let key = (
-            (query_venue1, Self::normalize_symbol_key(symbol1), venue2, Self::normalize_symbol_key(symbol2)),
+            (
+                query_venue1,
+                Self::normalize_symbol_key(symbol1),
+                venue2,
+                Self::normalize_symbol_key(symbol2),
+            ),
             ArbDirection::Backward,
             OperationType::Open,
         );
@@ -644,7 +679,12 @@ impl SpreadFactor {
     ) -> bool {
         let query_venue1 = Self::map_venue(venue1);
         let key = (
-            (query_venue1, Self::normalize_symbol_key(symbol1), venue2, Self::normalize_symbol_key(symbol2)),
+            (
+                query_venue1,
+                Self::normalize_symbol_key(symbol1),
+                venue2,
+                Self::normalize_symbol_key(symbol2),
+            ),
             ArbDirection::Backward,
             OperationType::Cancel,
         );

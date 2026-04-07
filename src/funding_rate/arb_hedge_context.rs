@@ -12,11 +12,11 @@ use anyhow::Result;
 use log::warn;
 
 use super::arb_qty_align::min_qty_symbol_key;
+use super::common::Quote;
 use super::common::{
     append_key_value_fields, append_tlen_to_from_key, build_decision_from_key_base,
     format_tlen_value,
 };
-use super::common::Quote;
 
 pub struct ArbHedgeContextCommonInput<'a> {
     pub open_symbol: &'a str,

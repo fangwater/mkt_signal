@@ -28,9 +28,8 @@ use super::rolling_threshold_sync::{
     format_quantile_field_ref, merge_rolling_payloads, normalize_xarb_symbol,
     parse_plain_mapping_config, parse_xarb_mapping_config, parse_xarb_rolling_payloads,
     resolve_symbol_quantile_thresholds, resolve_symbol_single_quantile_thresholds,
-    resolve_symbol_single_thresholds,
-    resolve_xarb_funding_thresholds, sync_xarb_spread_thresholds_to_redis,
-    xarb_funding_mapping_key, xarb_spread_mapping_key,
+    resolve_symbol_single_thresholds, resolve_xarb_funding_thresholds,
+    sync_xarb_spread_thresholds_to_redis, xarb_funding_mapping_key, xarb_spread_mapping_key,
 };
 use super::strategy_loader::StrategyParams;
 use super::symbol_list::SymbolList;
@@ -1074,7 +1073,10 @@ async fn reload_fr_dynamic_thresholds_from_rolling(
 
     let mut client = RedisClient::connect(redis.clone()).await?;
     let spread_config = parse_plain_mapping_config(
-        client.hgetall_map(&spread_config_key).await.unwrap_or_default(),
+        client
+            .hgetall_map(&spread_config_key)
+            .await
+            .unwrap_or_default(),
         default_fr_spread_mapping(),
     );
     let funding_config = parse_xarb_mapping_config(
