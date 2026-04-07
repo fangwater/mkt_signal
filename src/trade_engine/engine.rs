@@ -21,7 +21,7 @@ use crate::trade_engine::query_type_mapping::QueryTypeMapping;
 use crate::trade_engine::trade_request::{TradeRequestMsg, TradeRequestType};
 use crate::trade_engine::trade_response_handle::{spawn_response_handle, TradeExecOutcome};
 use crate::trade_engine::trade_type_mapping::TradeTypeMapping;
-use crate::trade_engine::ws_client::{TradeWsClient, WsCommand};
+use crate::trade_engine::ws_client::{TradeWsClient, WsCommand, WsEndpointHandle};
 use anyhow::{anyhow, Result};
 use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
 use iceoryx2::prelude::*;
@@ -29,6 +29,7 @@ use iceoryx2::service::ipc;
 use log::{debug, info, warn};
 use std::net::IpAddr;
 use std::rc::Rc;
+use std::{cell::RefCell, rc::Rc as StdRc};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -201,12 +202,8 @@ impl TradeEngine {
         }
         let mut worker_handles: Vec<(&'static str, tokio::task::JoinHandle<()>)> = Vec::new();
 
-        let mut gate_futures_ws_endpoints: Option<
-            Vec<tokio::sync::mpsc::UnboundedSender<WsCommand>>,
-        > = None;
-        let mut binance_spot_ws_endpoints: Option<
-            Vec<tokio::sync::mpsc::UnboundedSender<WsCommand>>,
-        > = None;
+        let mut gate_futures_ws_endpoints: Option<Vec<WsEndpointHandle>> = None;
+        let mut binance_spot_ws_endpoints: Option<Vec<WsEndpointHandle>> = None;
 
         let ws_endpoints = if exchange == Exchange::Okex {
             let mut local_ips = self.local_ips.clone();
@@ -240,6 +237,7 @@ impl TradeEngine {
             let mut endpoints = Vec::with_capacity(urls.len());
             for (idx, (ip, url)) in local_ips.into_iter().zip(urls.into_iter()).enumerate() {
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                let state = StdRc::new(RefCell::new(Default::default()));
                 let client = TradeWsClient::new(
                     idx,
                     exchange,
@@ -255,6 +253,8 @@ impl TradeEngine {
                     rx,
                     resp_tx.clone(),
                     shutdown.clone(),
+                    state.clone(),
+                    false,
                 );
                 info!(
                     "spawning ws client id={} ip={} max_inflight={}",
@@ -266,7 +266,7 @@ impl TradeEngine {
                     client.run().await;
                 });
                 worker_handles.push(("ws_client", handle));
-                endpoints.push(tx);
+                endpoints.push(WsEndpointHandle::new(tx, state));
             }
             Some(endpoints)
         } else if exchange == Exchange::Gate {
@@ -285,6 +285,7 @@ impl TradeEngine {
 
             for (idx, ip) in local_ips.into_iter().enumerate() {
                 let (spot_tx, spot_rx) = tokio::sync::mpsc::unbounded_channel();
+                let spot_state = StdRc::new(RefCell::new(Default::default()));
                 let spot_client = TradeWsClient::new(
                     idx,
                     exchange,
@@ -300,6 +301,8 @@ impl TradeEngine {
                     spot_rx,
                     resp_tx.clone(),
                     shutdown.clone(),
+                    spot_state.clone(),
+                    false,
                 );
                 info!(
                     "spawning gate spot ws client id={} ip={} max_inflight={}",
@@ -311,9 +314,10 @@ impl TradeEngine {
                     spot_client.run().await;
                 });
                 worker_handles.push(("gate_spot_ws_client", handle));
-                spot_endpoints.push(spot_tx);
+                spot_endpoints.push(WsEndpointHandle::new(spot_tx, spot_state));
 
                 let (fut_tx, fut_rx) = tokio::sync::mpsc::unbounded_channel();
+                let fut_state = StdRc::new(RefCell::new(Default::default()));
                 let fut_client = TradeWsClient::new(
                     idx,
                     exchange,
@@ -329,6 +333,8 @@ impl TradeEngine {
                     fut_rx,
                     resp_tx.clone(),
                     shutdown.clone(),
+                    fut_state.clone(),
+                    false,
                 );
                 info!(
                     "spawning gate futures ws client id={} ip={} max_inflight={}",
@@ -340,7 +346,7 @@ impl TradeEngine {
                     fut_client.run().await;
                 });
                 worker_handles.push(("gate_futures_ws_client", handle));
-                futures_endpoints.push(fut_tx);
+                futures_endpoints.push(WsEndpointHandle::new(fut_tx, fut_state));
             }
 
             gate_futures_ws_endpoints = Some(futures_endpoints);
@@ -357,10 +363,12 @@ impl TradeEngine {
             let max_inflight = WsConstants::MAX_INFLIGHT;
             let binance_creds = self.accounts.get(0).cloned();
 
+            let shutdown_on_rate_limit = local_ips.len() <= 1;
             let mut um_endpoints = Vec::with_capacity(local_ips.len());
             let mut spot_endpoints = Vec::with_capacity(local_ips.len());
             for (idx, ip) in local_ips.into_iter().enumerate() {
                 let (um_tx, um_rx) = tokio::sync::mpsc::unbounded_channel();
+                let um_state = StdRc::new(RefCell::new(Default::default()));
                 let um_client = TradeWsClient::new(
                     idx,
                     exchange,
@@ -376,6 +384,8 @@ impl TradeEngine {
                     um_rx,
                     resp_tx.clone(),
                     shutdown.clone(),
+                    um_state.clone(),
+                    shutdown_on_rate_limit,
                 );
                 info!(
                     "spawning binance um ws client id={} ip={} max_inflight={}",
@@ -387,9 +397,10 @@ impl TradeEngine {
                     um_client.run().await;
                 });
                 worker_handles.push(("binance_um_ws_client", handle));
-                um_endpoints.push(um_tx);
+                um_endpoints.push(WsEndpointHandle::new(um_tx, um_state));
 
                 let (spot_tx, spot_rx) = tokio::sync::mpsc::unbounded_channel();
+                let spot_state = StdRc::new(RefCell::new(Default::default()));
                 let spot_client = TradeWsClient::new(
                     idx,
                     exchange,
@@ -405,6 +416,8 @@ impl TradeEngine {
                     spot_rx,
                     resp_tx.clone(),
                     shutdown.clone(),
+                    spot_state.clone(),
+                    shutdown_on_rate_limit,
                 );
                 info!(
                     "spawning binance spot ws client id={} ip={} max_inflight={}",
@@ -416,7 +429,7 @@ impl TradeEngine {
                     spot_client.run().await;
                 });
                 worker_handles.push(("binance_spot_ws_client", handle));
-                spot_endpoints.push(spot_tx);
+                spot_endpoints.push(WsEndpointHandle::new(spot_tx, spot_state));
             }
             binance_spot_ws_endpoints = Some(spot_endpoints);
             Some(um_endpoints)

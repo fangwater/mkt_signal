@@ -235,6 +235,51 @@ impl Dispatcher {
         best.map(|(i, _)| i)
     }
 
+    fn should_shutdown_on_rate_limit(&self) -> bool {
+        self.ip_clients.len() <= 1
+    }
+
+    fn handle_limit_status(&mut self, ip_idx: usize, status: u16) {
+        let ip = self.ip_clients[ip_idx].ip;
+        match status {
+            429 => {
+                warn!("429 Too Many Requests from IP {}. Cooling down.", ip);
+                self.ip_clients[ip_idx].cooldown_until = Some(
+                    Instant::now() + Duration::from_millis(LimitConstants::COOLDOWN_MS_429),
+                );
+                if self.should_shutdown_on_rate_limit() {
+                    warn!(
+                        "trade_engine fuse tripped by Binance REST 429; shutting down request processing"
+                    );
+                    self.shutdown.cancel();
+                } else {
+                    warn!(
+                        "trade_engine REST 429 on IP {} in multi-ip mode; cooling down endpoint without global shutdown",
+                        ip
+                    );
+                }
+            }
+            418 => {
+                warn!("418 Banned for IP {}. Backing off.", ip);
+                self.ip_clients[ip_idx].banned_until = Some(
+                    Instant::now() + Duration::from_millis(LimitConstants::BAN_BACKOFF_MS_418),
+                );
+                if self.should_shutdown_on_rate_limit() {
+                    warn!(
+                        "trade_engine fuse tripped by Binance REST 418; shutting down request processing"
+                    );
+                    self.shutdown.cancel();
+                } else {
+                    warn!(
+                        "trade_engine REST 418 on IP {} in multi-ip mode; backing off endpoint without global shutdown",
+                        ip
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn maybe_log_rest_hot_stats(&mut self) {
         let now = Instant::now();
         if now.duration_since(self.rest_hot_window_started_at) < REST_HOT_LOG_INTERVAL {
@@ -497,26 +542,7 @@ impl Dispatcher {
                     text.len()
                 );
 
-                if status.as_u16() == 429 {
-                    warn!("429 Too Many Requests from IP {}. Cooling down.", ip);
-                    self.ip_clients[ip_idx].cooldown_until = Some(
-                        Instant::now() + Duration::from_millis(LimitConstants::COOLDOWN_MS_429),
-                    );
-                    warn!(
-                        "trade_engine fuse tripped by Binance REST 429; shutting down request processing"
-                    );
-                    self.shutdown.cancel();
-                }
-                if status.as_u16() == 418 {
-                    warn!("418 Banned for IP {}. Backing off.", ip);
-                    self.ip_clients[ip_idx].banned_until = Some(
-                        Instant::now() + Duration::from_millis(LimitConstants::BAN_BACKOFF_MS_418),
-                    );
-                    warn!(
-                        "trade_engine fuse tripped by Binance REST 418; shutting down request processing"
-                    );
-                    self.shutdown.cancel();
-                }
+                self.handle_limit_status(ip_idx, status.as_u16());
                 // Build uniform response regardless of success or error
                 Ok(DispatchResponse {
                     status: status.as_u16(),
@@ -653,6 +679,22 @@ mod tests {
         .expect("dispatcher")
     }
 
+    fn test_dispatcher_multi_ip() -> Dispatcher {
+        Dispatcher::new(
+            &[
+                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
+            ],
+            &[ApiKey {
+                name: "default".to_string(),
+                key: "key".to_string(),
+                secret: "secret".to_string(),
+            }],
+            CancellationToken::new(),
+        )
+        .expect("dispatcher")
+    }
+
     #[test]
     fn refresh_limit_windows_resets_stale_state() {
         let mut dispatcher = test_dispatcher();
@@ -719,6 +761,27 @@ mod tests {
             200,
             r#"{"code":-2010,"msg":"Duplicate order sent."}"#
         ));
+    }
+
+    #[test]
+    fn single_ip_429_triggers_shutdown() {
+        let mut dispatcher = test_dispatcher();
+
+        dispatcher.handle_limit_status(0, 429);
+
+        assert!(dispatcher.shutdown.is_cancelled());
+        assert!(dispatcher.ip_clients[0].cooldown_until.is_some());
+    }
+
+    #[test]
+    fn multi_ip_429_only_cools_down_current_ip() {
+        let mut dispatcher = test_dispatcher_multi_ip();
+
+        dispatcher.handle_limit_status(0, 429);
+
+        assert!(!dispatcher.shutdown.is_cancelled());
+        assert!(dispatcher.ip_clients[0].cooldown_until.is_some());
+        assert!(dispatcher.ip_clients[1].cooldown_until.is_none());
     }
 }
 

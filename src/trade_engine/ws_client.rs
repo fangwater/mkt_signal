@@ -2,7 +2,7 @@ use crate::common::exchange::Exchange;
 use crate::portfolio_margin::gate_auth::GateCredentials;
 use crate::portfolio_margin::okex_auth::OkexCredentials;
 use crate::trade_engine::binance_ws;
-use crate::trade_engine::config::ApiKey;
+use crate::trade_engine::config::{ApiKey, LimitConstants};
 use crate::trade_engine::gate_ws;
 use crate::trade_engine::okex::{OkexCancelOrderRequest, OkexNewOrderRequest, OkexWsOrderResponse};
 use crate::trade_engine::query_parsers::binance_um_order::parse_binance_um_order_query_json;
@@ -24,6 +24,7 @@ use native_tls::TlsConnector;
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, SocketAddr};
+use std::{cell::RefCell, rc::Rc};
 use std::time::Duration;
 use tokio::net::{lookup_host, TcpSocket, TcpStream};
 use tokio::sync::mpsc;
@@ -121,6 +122,45 @@ pub enum WsCommand {
     Shutdown,
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct WsEndpointState {
+    cooldown_until: Option<std::time::Instant>,
+}
+
+#[derive(Clone, Debug)]
+pub struct WsEndpointHandle {
+    tx: mpsc::UnboundedSender<WsCommand>,
+    state: Rc<RefCell<WsEndpointState>>,
+}
+
+impl WsEndpointHandle {
+    pub(crate) fn new(
+        tx: mpsc::UnboundedSender<WsCommand>,
+        state: Rc<RefCell<WsEndpointState>>,
+    ) -> Self {
+        Self { tx, state }
+    }
+
+    pub(crate) fn send(&self, cmd: WsCommand) -> Result<(), ()> {
+        if !self.is_available() {
+            return Err(());
+        }
+        self.tx.send(cmd).map_err(|_| ())
+    }
+
+    pub(crate) fn is_available(&self) -> bool {
+        let now = std::time::Instant::now();
+        let mut state = self.state.borrow_mut();
+        if let Some(until) = state.cooldown_until {
+            if now < until {
+                return false;
+            }
+            state.cooldown_until = None;
+        }
+        true
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct TradeInflightMeta {
     req_type: TradeRequestType,
@@ -157,6 +197,9 @@ pub struct TradeWsClient {
     last_dispatched_query_type: QueryRequestType,
     next_binance_transport_id: i64,
     engine_shutdown: CancellationToken,
+    endpoint_state: Rc<RefCell<WsEndpointState>>,
+    shutdown_on_rate_limit: bool,
+    rate_limit_cooldown_until: Option<std::time::Instant>,
     shutdown: bool,
     should_reconnect: bool, // 标记是否需要重连（用于 notice 触发的重连）
     last_okex_login_ts: Option<String>,
@@ -165,7 +208,7 @@ pub struct TradeWsClient {
 
 impl TradeWsClient {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(crate) fn new(
         id: usize,
         exchange: Exchange,
         local_ip: IpAddr,
@@ -180,6 +223,8 @@ impl TradeWsClient {
         cmd_rx: mpsc::UnboundedReceiver<WsCommand>,
         resp_tx: mpsc::UnboundedSender<TradeExecOutcome>,
         engine_shutdown: CancellationToken,
+        endpoint_state: Rc<RefCell<WsEndpointState>>,
+        shutdown_on_rate_limit: bool,
     ) -> Self {
         let (login_payload, okex_creds, gate_creds) = match exchange {
             Exchange::Okex => {
@@ -272,6 +317,9 @@ impl TradeWsClient {
             },
             next_binance_transport_id: ((id as i64) << 48) + 1,
             engine_shutdown,
+            endpoint_state,
+            shutdown_on_rate_limit,
+            rate_limit_cooldown_until: None,
             shutdown: false,
             should_reconnect: false,
             last_okex_login_ts: None,
@@ -310,21 +358,111 @@ impl TradeWsClient {
         if !Self::binance_rate_limit_payload(status, error_code, text) {
             return;
         }
+        if self.shutdown_on_rate_limit {
+            warn!(
+                "trade ws client id={} exchange=binance tripping trade_engine shutdown due to rate limit at {} status={:?} code={:?} detail={}",
+                self.id,
+                context,
+                status,
+                error_code,
+                text
+            );
+            self.engine_shutdown.cancel();
+            self.shutdown = true;
+            return;
+        }
+
+        let cooldown_ms = if matches!(status, Some(418)) {
+            LimitConstants::BAN_BACKOFF_MS_418
+        } else {
+            LimitConstants::COOLDOWN_MS_429
+        };
+        let until = std::time::Instant::now() + Duration::from_millis(cooldown_ms);
+        self.rate_limit_cooldown_until = Some(until);
+        self.endpoint_state.borrow_mut().cooldown_until = Some(until);
         warn!(
-            "trade ws client id={} exchange=binance tripping trade_engine shutdown due to rate limit at {} status={:?} code={:?} detail={}",
+            "trade ws client id={} exchange=binance entering endpoint cooldown due to rate limit at {} status={:?} code={:?} cooldown_ms={} detail={}",
             self.id,
             context,
             status,
             error_code,
+            cooldown_ms,
             text
         );
-        self.engine_shutdown.cancel();
-        self.shutdown = true;
+    }
+
+    fn clear_rate_limit_cooldown_if_elapsed(&mut self) {
+        let now = std::time::Instant::now();
+        if self
+            .rate_limit_cooldown_until
+            .map(|until| now >= until)
+            .unwrap_or(false)
+        {
+            self.rate_limit_cooldown_until = None;
+            let mut state = self.endpoint_state.borrow_mut();
+            if state.cooldown_until.map(|until| now >= until).unwrap_or(false) {
+                state.cooldown_until = None;
+            }
+        }
+    }
+
+    fn in_rate_limit_cooldown(&mut self) -> bool {
+        self.clear_rate_limit_cooldown_if_elapsed();
+        self.rate_limit_cooldown_until
+            .map(|until| std::time::Instant::now() < until)
+            .unwrap_or(false)
     }
 
     pub async fn run(mut self) {
         let mut backoff_ms = 500u64;
         while !self.shutdown {
+            if let Some(until) = self.rate_limit_cooldown_until {
+                let now = std::time::Instant::now();
+                if now < until {
+                    let sleep_until = tokio::time::Instant::from_std(until);
+                    tokio::select! {
+                        biased;
+                        _ = self.engine_shutdown.cancelled() => {
+                            info!("trade ws client id={} observed trade_engine shutdown during rate-limit cooldown", self.id);
+                            self.shutdown = true;
+                        }
+                        cmd = self.cmd_rx.recv() => {
+                            match cmd {
+                                Some(WsCommand::Send(msg)) => {
+                                    debug!(
+                                        "trade ws client id={} queued order during rate-limit cooldown client_order_id={}",
+                                        self.id, msg.client_order_id
+                                    );
+                                    self.pending.push_back(msg);
+                                }
+                                Some(WsCommand::SendQuery(msg)) => {
+                                    debug!(
+                                        "trade ws client id={} queued query during rate-limit cooldown client_query_id={}",
+                                        self.id, msg.client_query_id
+                                    );
+                                    self.pending_query.push_back(msg);
+                                }
+                                Some(WsCommand::Shutdown) | None => {
+                                    info!("trade ws client id={} shutdown requested during rate-limit cooldown", self.id);
+                                    self.shutdown = true;
+                                }
+                            }
+                        }
+                        _ = time::sleep_until(sleep_until) => {
+                            self.clear_rate_limit_cooldown_if_elapsed();
+                        }
+                    }
+                    if self.shutdown {
+                        break;
+                    }
+                    if self.in_rate_limit_cooldown() {
+                        continue;
+                    }
+                } else {
+                    self.clear_rate_limit_cooldown_if_elapsed();
+                }
+            }
+
             let local_ip = self.local_ip;
             let url = self.url.clone();
             let connect_timeout_ms = self.connect_timeout_ms;
@@ -475,6 +613,9 @@ impl TradeWsClient {
             }
             if self.shutdown {
                 break;
+            }
+            if self.in_rate_limit_cooldown() {
+                continue;
             }
             tokio::select! {
                 biased;
@@ -990,9 +1131,19 @@ impl TradeWsClient {
         match msg {
             Message::Text(text) => {
                 self.process_incoming_payload(&text);
+                if self.exchange == Exchange::Binance && self.in_rate_limit_cooldown() {
+                    let _ = ws.close(None).await;
+                    return Err(anyhow!("binance ws endpoint cooling down after rate limit"));
+                }
             }
             Message::Binary(bin) => match std::str::from_utf8(&bin) {
-                Ok(text) => self.process_incoming_payload(text),
+                Ok(text) => {
+                    self.process_incoming_payload(text);
+                    if self.exchange == Exchange::Binance && self.in_rate_limit_cooldown() {
+                        let _ = ws.close(None).await;
+                        return Err(anyhow!("binance ws endpoint cooling down after rate limit"));
+                    }
+                }
                 Err(_) => {
                     let encoded = BASE64_STANDARD.encode(&bin);
                     self.publish_generic_response(0, self.last_dispatched_type, encoded, true);
