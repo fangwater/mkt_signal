@@ -362,14 +362,20 @@ impl BinanceBasicAccountEventParser {
             if asset.is_empty() {
                 continue;
             }
-            // Use free balance ("f") only; locked ("l") is ignored by design.
+            // outboundAccountPosition carries both free and locked balances.
+            // Use total balance here so equity semantics stay aligned with snapshot parsing.
             let free_balance = balance
                 .get("f")
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<f64>().ok())
                 .unwrap_or(0.0);
+            let locked_balance = balance
+                .get("l")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
 
-            let msg = BasicBalanceMsg::create(event_time, asset, free_balance);
+            let msg = BasicBalanceMsg::create(event_time, asset, free_balance + locked_balance);
             let payload = msg.to_bytes();
             let event = BasicAccountEventMsg::create(msg.msg_type, self.account_scope, payload);
             if tx.send(event.to_bytes()).is_err() {
