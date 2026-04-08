@@ -2,7 +2,9 @@ use crate::common::tick_math::QuantizedValue;
 use crate::common::time_util::get_timestamp_us;
 use crate::common::trade_error_code::describe_trade_error_code;
 use crate::pre_trade::monitor_channel::MonitorChannel;
+use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
+use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::{PersistChannel, QueryEngHub, TradeEngHub};
 use crate::signal::cancel_signal::MmCancelCtx;
 use crate::signal::common::{ExecutionType, OrderStatus, SignalBytes, TimeInForce, TradingVenue};
@@ -427,6 +429,21 @@ impl MarketMakerOpenStrategy {
             }
         }
 
+        let rate_params = PreTradeParamsLoader::instance();
+        if let Err(e) = OrderRateLimiter::check_limit(
+            OrderRateBucket::MmOpen,
+            rate_params.order_rate_limit_per_min(),
+            rate_params.order_rate_limit_10s(),
+            get_timestamp_us(),
+        ) {
+            info!(
+                "MarketMakerOpenStrategy: strategy_id={} symbol={} 开仓下单频率风控触发: {}，标记策略为不活跃",
+                self.strategy_id, symbol, e
+            );
+            self.alive_flag = false;
+            return;
+        }
+
         // 4、信号已完成量价对齐，直接使用
         let order_qty = qty;
         let order_price = signal_price;
@@ -757,6 +774,15 @@ impl MarketMakerOpenStrategy {
         let exchange = order.venue.trade_engine_exchange();
         match order.get_order_request_bytes() {
             Ok(req_bin) => {
+                let stats = OrderRateLimiter::record(
+                    OrderRateBucket::MmOpen,
+                    client_order_id,
+                    get_timestamp_us(),
+                );
+                info!(
+                    "MarketMakerOpenStrategy: strategy_id={} MM open order action recorded client_order_id={} count_10s={} count_1m={}",
+                    self.strategy_id, client_order_id, stats.count_10s, stats.count_1m
+                );
                 if let Err(e) = TradeEngHub::publish_order_request(exchange, &req_bin) {
                     self.alive_flag = false;
                     return Err(format!(

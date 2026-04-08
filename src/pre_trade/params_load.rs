@@ -19,6 +19,10 @@ struct PreTradeParamsData {
     max_total_exposure_ratio: f64,
     max_leverage: f64,
     max_pending_limit_orders: i32,
+    order_rate_limit_per_min: i32,
+    order_rate_limit_10s: i32,
+    hedge_order_rate_limit_per_min: i32,
+    hedge_order_rate_limit_10s: i32,
 }
 
 impl Default for PreTradeParamsData {
@@ -29,6 +33,10 @@ impl Default for PreTradeParamsData {
             max_total_exposure_ratio: 1.0,
             max_leverage: 3.0,
             max_pending_limit_orders: 3,
+            order_rate_limit_per_min: 0,
+            order_rate_limit_10s: 0,
+            hedge_order_rate_limit_per_min: 0,
+            hedge_order_rate_limit_10s: 0,
         }
     }
 }
@@ -96,13 +104,33 @@ impl PreTradeParamsLoader {
                 data.max_pending_limit_orders = v.max(0) as i32;
             }
 
+            if let Some(v) = parse_i64("order_rate_limit_per_min") {
+                data.order_rate_limit_per_min = v.max(0) as i32;
+            }
+
+            if let Some(v) = parse_i64("order_rate_limit_10s") {
+                data.order_rate_limit_10s = v.max(0) as i32;
+            }
+
+            if let Some(v) = parse_i64("hedge_order_rate_limit_per_min") {
+                data.hedge_order_rate_limit_per_min = v.max(0) as i32;
+            }
+
+            if let Some(v) = parse_i64("hedge_order_rate_limit_10s") {
+                data.hedge_order_rate_limit_10s = v.max(0) as i32;
+            }
+
             debug!(
-                "风控参数已加载: max_pos_u={:.2} sym_ratio={:.4} total_ratio={:.4} max_leverage={:.2} max_pending={}",
+                "风控参数已加载: max_pos_u={:.2} sym_ratio={:.4} total_ratio={:.4} max_leverage={:.2} max_pending={} open_rate_1m={} open_rate_10s={} hedge_rate_1m={} hedge_rate_10s={}",
                 data.max_pos_u,
                 data.max_symbol_exposure_ratio,
                 data.max_total_exposure_ratio,
                 data.max_leverage,
-                data.max_pending_limit_orders
+                data.max_pending_limit_orders,
+                data.order_rate_limit_per_min,
+                data.order_rate_limit_10s,
+                data.hedge_order_rate_limit_per_min,
+                data.hedge_order_rate_limit_10s
             );
         });
 
@@ -156,6 +184,22 @@ impl PreTradeParamsLoader {
             "{:<40} {:>18}",
             "max_pending_limit_orders", data.max_pending_limit_orders
         );
+        println!(
+            "{:<40} {:>18}",
+            "order_rate_limit_per_min", data.order_rate_limit_per_min
+        );
+        println!(
+            "{:<40} {:>18}",
+            "order_rate_limit_10s", data.order_rate_limit_10s
+        );
+        println!(
+            "{:<40} {:>18}",
+            "hedge_order_rate_limit_per_min", data.hedge_order_rate_limit_per_min
+        );
+        println!(
+            "{:<40} {:>18}",
+            "hedge_order_rate_limit_10s", data.hedge_order_rate_limit_10s
+        );
         println!("{}", separator);
     }
 
@@ -184,6 +228,26 @@ impl PreTradeParamsLoader {
         PARAMS_DATA.with(|data| data.borrow().max_pending_limit_orders)
     }
 
+    /// 获取 order_rate_limit_per_min
+    pub fn order_rate_limit_per_min(&self) -> i32 {
+        PARAMS_DATA.with(|data| data.borrow().order_rate_limit_per_min)
+    }
+
+    /// 获取 order_rate_limit_10s
+    pub fn order_rate_limit_10s(&self) -> i32 {
+        PARAMS_DATA.with(|data| data.borrow().order_rate_limit_10s)
+    }
+
+    /// 获取 hedge_order_rate_limit_per_min
+    pub fn hedge_order_rate_limit_per_min(&self) -> i32 {
+        PARAMS_DATA.with(|data| data.borrow().hedge_order_rate_limit_per_min)
+    }
+
+    /// 获取 hedge_order_rate_limit_10s
+    pub fn hedge_order_rate_limit_10s(&self) -> i32 {
+        PARAMS_DATA.with(|data| data.borrow().hedge_order_rate_limit_10s)
+    }
+
     /// 获取所有参数的快照（用于比较是否变化）
     pub fn snapshot(&self) -> PreTradeParamsSnapshot {
         PARAMS_DATA.with(|data| {
@@ -194,6 +258,10 @@ impl PreTradeParamsLoader {
                 max_total_exposure_ratio: data.max_total_exposure_ratio,
                 max_leverage: data.max_leverage,
                 max_pending_limit_orders: data.max_pending_limit_orders,
+                order_rate_limit_per_min: data.order_rate_limit_per_min,
+                order_rate_limit_10s: data.order_rate_limit_10s,
+                hedge_order_rate_limit_per_min: data.hedge_order_rate_limit_per_min,
+                hedge_order_rate_limit_10s: data.hedge_order_rate_limit_10s,
             }
         })
     }
@@ -207,6 +275,10 @@ pub struct PreTradeParamsSnapshot {
     pub max_total_exposure_ratio: f64,
     pub max_leverage: f64,
     pub max_pending_limit_orders: i32,
+    pub order_rate_limit_per_min: i32,
+    pub order_rate_limit_10s: i32,
+    pub hedge_order_rate_limit_per_min: i32,
+    pub hedge_order_rate_limit_10s: i32,
 }
 
 #[cfg(test)]
@@ -221,6 +293,10 @@ mod tests {
         assert_eq!(loader.max_total_exposure_ratio(), 1.0);
         assert_eq!(loader.max_leverage(), 3.0);
         assert_eq!(loader.max_pending_limit_orders(), 3);
+        assert_eq!(loader.order_rate_limit_per_min(), 0);
+        assert_eq!(loader.order_rate_limit_10s(), 0);
+        assert_eq!(loader.hedge_order_rate_limit_per_min(), 0);
+        assert_eq!(loader.hedge_order_rate_limit_10s(), 0);
     }
 
     #[test]
@@ -229,5 +305,9 @@ mod tests {
         let snapshot = loader.snapshot();
         assert_eq!(snapshot.max_pos_u, 1000.0);
         assert_eq!(snapshot.max_leverage, 3.0);
+        assert_eq!(snapshot.order_rate_limit_per_min, 0);
+        assert_eq!(snapshot.order_rate_limit_10s, 0);
+        assert_eq!(snapshot.hedge_order_rate_limit_per_min, 0);
+        assert_eq!(snapshot.hedge_order_rate_limit_10s, 0);
     }
 }

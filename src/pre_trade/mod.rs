@@ -7,6 +7,7 @@ mod channel;
 pub mod event;
 pub mod monitor_channel;
 pub mod net_position;
+pub mod open_order_rate_limiter;
 pub mod order_manager;
 pub mod params_load;
 pub mod persist_channel;

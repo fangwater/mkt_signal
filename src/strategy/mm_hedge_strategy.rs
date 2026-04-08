@@ -5,6 +5,7 @@ use crate::market_maker::hedge_split::{
 };
 use crate::market_maker::order_align::{contract_qty_multiplier, min_qty_symbol_key};
 use crate::pre_trade::monitor_channel::MonitorChannel;
+use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::signal_channel::SignalChannel;
@@ -1446,8 +1447,72 @@ impl MarketMakerHedgeStrategy {
 
     fn send_hedge_orders(&mut self, venue: TradingVenue, symbol: &str) {
         let plans = self.hedge_plan.clone();
+        let rate_params = PreTradeParamsLoader::instance();
+        let mut borrowed_open_count_10s = 0usize;
+        let mut borrowed_open_count_1m = 0usize;
         for plan in plans {
-            let submit_ts = get_timestamp_us();
+            let now_us = get_timestamp_us();
+            let hedge_stats = OrderRateLimiter::stats(OrderRateBucket::MmHedge, now_us);
+            let open_stats = OrderRateLimiter::stats(OrderRateBucket::MmOpen, now_us);
+            let hedge_limit_per_min = rate_params.hedge_order_rate_limit_per_min();
+            let hedge_limit_10s = rate_params.hedge_order_rate_limit_10s();
+            let open_limit_per_min = rate_params.order_rate_limit_per_min();
+            let open_limit_10s = rate_params.order_rate_limit_10s();
+
+            let hedge_hit_10s =
+                hedge_limit_10s > 0 && hedge_stats.count_10s >= hedge_limit_10s as usize;
+            let hedge_hit_1m =
+                hedge_limit_per_min > 0 && hedge_stats.count_1m >= hedge_limit_per_min as usize;
+
+            if hedge_hit_10s || hedge_hit_1m {
+                let open_can_cover_10s = !hedge_hit_10s
+                    || (open_limit_10s > 0
+                        && open_stats.count_10s + borrowed_open_count_10s
+                            < open_limit_10s as usize);
+                let open_can_cover_1m = !hedge_hit_1m
+                    || (open_limit_per_min > 0
+                        && open_stats.count_1m + borrowed_open_count_1m
+                            < open_limit_per_min as usize);
+
+                if open_can_cover_10s && open_can_cover_1m {
+                    borrowed_open_count_10s += 1;
+                    borrowed_open_count_1m += 1;
+                    info!(
+                        "MarketMakerHedgeStrategy: strategy_id={} symbol={} hedge rate limit hit, temporarily borrow open quota in current batch: hedge_count_10s={} hedge_limit_10s={} hedge_count_1m={} hedge_limit_1m={} open_count_10s={} open_limit_10s={} open_count_1m={} open_limit_1m={} borrowed_open_10s={} borrowed_open_1m={}",
+                        self.strategy_id,
+                        symbol,
+                        hedge_stats.count_10s,
+                        hedge_limit_10s,
+                        hedge_stats.count_1m,
+                        hedge_limit_per_min,
+                        open_stats.count_10s,
+                        open_limit_10s,
+                        open_stats.count_1m,
+                        open_limit_per_min,
+                        borrowed_open_count_10s,
+                        borrowed_open_count_1m
+                    );
+                } else {
+                    info!(
+                        "MarketMakerHedgeStrategy: strategy_id={} symbol={} hedge 下单频率风控触发，且 open 剩余额度不足: hedge_count_10s={} hedge_limit_10s={} hedge_count_1m={} hedge_limit_1m={} open_count_10s={} open_limit_10s={} open_count_1m={} open_limit_1m={} borrowed_open_10s={} borrowed_open_1m={}",
+                        self.strategy_id,
+                        symbol,
+                        hedge_stats.count_10s,
+                        hedge_limit_10s,
+                        hedge_stats.count_1m,
+                        hedge_limit_per_min,
+                        open_stats.count_10s,
+                        open_limit_10s,
+                        open_stats.count_1m,
+                        open_limit_per_min,
+                        borrowed_open_count_10s,
+                        borrowed_open_count_1m
+                    );
+                    break;
+                }
+            }
+
+            let submit_ts = now_us;
             MonitorChannel::instance()
                 .order_manager()
                 .borrow_mut()
@@ -1480,6 +1545,15 @@ impl MarketMakerHedgeStrategy {
             let exchange = order.venue.trade_engine_exchange();
             match order.get_order_request_bytes() {
                 Ok(req_bin) => {
+                    let stats = OrderRateLimiter::record(
+                        OrderRateBucket::MmHedge,
+                        plan.client_order_id,
+                        get_timestamp_us(),
+                    );
+                    info!(
+                        "MarketMakerHedgeStrategy: strategy_id={} MM hedge order action recorded client_order_id={} count_10s={} count_1m={}",
+                        self.strategy_id, plan.client_order_id, stats.count_10s, stats.count_1m
+                    );
                     if let Err(e) = TradeEngHub::publish_order_request(exchange, &req_bin) {
                         warn!(
                             "MarketMakerHedgeStrategy: strategy_id={} send hedge order failed: exchange={} client_order_id={} err={}",

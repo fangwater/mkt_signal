@@ -1,5 +1,6 @@
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
+use crate::pre_trade::open_order_rate_limiter::OrderRateLimiter;
 use crate::pre_trade::resample_channel::ResampleChannel;
 use crate::pre_trade::signal_throttle::log_active_signal_throttles;
 use anyhow::Result;
@@ -27,10 +28,13 @@ impl PreTrade {
                 .unwrap_or(60);
         let throttle_log_interval = std::time::Duration::from_secs(throttle_log_interval_secs);
         let mut next_throttle_log = std::time::Instant::now() + throttle_log_interval;
+        let order_rate_cleanup_interval = std::time::Duration::from_secs(10);
+        let mut next_order_rate_cleanup = std::time::Instant::now() + order_rate_cleanup_interval;
         info!(
             "pre_trade signal throttle log started (interval={}s)",
             throttle_log_interval_secs
         );
+        info!("pre_trade MM open order rate cleanup started (interval=10s window=60s)");
 
         // 周期检查频率设为 20ms，提高 MM trigger 响应及时性，同时保持较低调度开销
         let mut ticker = tokio::time::interval(Duration::from_millis(20));
@@ -60,6 +64,11 @@ impl PreTrade {
                     while instant_now >= next_throttle_log {
                         log_active_signal_throttles(50);
                         next_throttle_log += throttle_log_interval;
+                    }
+
+                    while instant_now >= next_order_rate_cleanup {
+                        OrderRateLimiter::cleanup_expired(now);
+                        next_order_rate_cleanup += order_rate_cleanup_interval;
                     }
                 }
                 else => break,

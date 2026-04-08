@@ -86,6 +86,10 @@ PARAM_COMMENTS: Dict[str, str] = {
     "max_total_exposure_ratio": "总敞口比例",
     "max_leverage": "最大杠杆倍数",
     "max_pending_limit_orders": "最大挂单数",
+    "order_rate_limit_per_min": "Open order rate limit/Min（开仓侧独立额度，0=关闭）",
+    "order_rate_limit_10s": "Open order rate limit 10s（开仓侧独立额度，0=关闭）",
+    "hedge_order_rate_limit_per_min": "Hedge order rate limit/Min（对冲侧独立额度，0=关闭）",
+    "hedge_order_rate_limit_10s": "Hedge order rate limit 10s（对冲侧独立额度，0=关闭）",
 }
 
 PARAM_ORDER = [
@@ -94,6 +98,10 @@ PARAM_ORDER = [
     "max_total_exposure_ratio",
     "max_leverage",
     "max_pending_limit_orders",
+    "order_rate_limit_per_min",
+    "order_rate_limit_10s",
+    "hedge_order_rate_limit_per_min",
+    "hedge_order_rate_limit_10s",
 ]
 
 
