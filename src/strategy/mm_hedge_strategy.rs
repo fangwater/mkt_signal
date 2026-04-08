@@ -1456,8 +1456,8 @@ impl MarketMakerHedgeStrategy {
             let open_stats = OrderRateLimiter::stats(OrderRateBucket::MmOpen, now_us);
             let hedge_limit_per_min = rate_params.hedge_order_rate_limit_per_min();
             let hedge_limit_10s = rate_params.hedge_order_rate_limit_10s();
-            let open_limit_per_min = rate_params.order_rate_limit_per_min();
-            let open_limit_10s = rate_params.order_rate_limit_10s();
+            let open_limit_per_min = rate_params.open_order_rate_limit_per_min();
+            let open_limit_10s = rate_params.open_order_rate_limit_10s();
 
             let hedge_hit_10s =
                 hedge_limit_10s > 0 && hedge_stats.count_10s >= hedge_limit_10s as usize;

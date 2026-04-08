@@ -432,8 +432,8 @@ impl MarketMakerOpenStrategy {
         let rate_params = PreTradeParamsLoader::instance();
         if let Err(e) = OrderRateLimiter::check_limit(
             OrderRateBucket::MmOpen,
-            rate_params.order_rate_limit_per_min(),
-            rate_params.order_rate_limit_10s(),
+            rate_params.open_order_rate_limit_per_min(),
+            rate_params.open_order_rate_limit_10s(),
             get_timestamp_us(),
         ) {
             info!(

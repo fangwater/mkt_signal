@@ -377,7 +377,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       <div class="hint">
         MM 风控 key 格式为 `<env_name>:<open_venue>:<hedge_venue>:pre_trade_risk_params`；
         当前 MM 默认 `open_venue=hedge_venue=venue`，所以中间的 venue 会重复一次。
-        `order_rate_limit_per_min` / `order_rate_limit_10s` 是开仓侧独立额度；
+        `open_order_rate_limit_per_min` / `open_order_rate_limit_10s` 是开仓侧独立额度；
         `hedge_order_rate_limit_per_min` / `hedge_order_rate_limit_10s` 是对冲侧独立额度；若对冲额度触发上限，会在当前这一轮 hedge 批次里临时借用 open 剩余额度，下一轮恢复正常。`0` 表示关闭。
       </div>
       <div class="kv-table" id="risk-table"></div>
