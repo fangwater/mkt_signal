@@ -153,6 +153,8 @@ SCRIPTS_TO_SYNC=(
   "mm_process_name.sh"
   "sync_mm_strategy_params.py"
   "print_mm_strategy_params.py"
+  "sync_mm_amount_u.py"
+  "print_mm_amount_u.py"
   "sync_mm_symbol_list.py"
   "print_mm_symbol_list.py"
   "print_mm_return_score_thresholds.py"

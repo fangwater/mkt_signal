@@ -217,7 +217,7 @@ impl MmOpenDecision {
             state.open_venue,
             symbol,
             open_quote,
-            state.order_amount_u,
+            state.resolve_order_amount_u(symbol),
             state.open_orders_per_round,
             state.open_order_ttl_us,
             volatility,

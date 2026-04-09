@@ -53,6 +53,7 @@ pub(crate) struct MmDecisionState {
     pub(crate) open_sell_vol_scale: [f64; 2],
     pub(crate) hedge_orders_per_round: u32,
     pub(crate) order_amount_u: f64,
+    pub(crate) order_amount_u_overrides: HashMap<String, f64>,
     pub(crate) open_order_ttl_us: i64,
     pub(crate) next_query_delay_ms: u64,
     pub(crate) hedge_vol_multiplier: f64,
@@ -77,6 +78,19 @@ pub(crate) struct MmDecisionState {
     pub(crate) factor_value_hub: FactorValueHub,
     pub(crate) last_tlen_threshold_reload_ts_us: i64,
     pub(crate) last_cancel_trigger_ts_us: i64,
+}
+
+fn resolve_mm_order_amount_u(
+    default_order_amount_u: f64,
+    overrides: &HashMap<String, f64>,
+    open_venue: TradingVenue,
+    symbol: &str,
+) -> f64 {
+    let symbol_key = normalize_symbol_for_venue(symbol, open_venue);
+    overrides
+        .get(&symbol_key)
+        .copied()
+        .unwrap_or(default_order_amount_u)
 }
 
 impl MmDecisionState {
@@ -117,6 +131,7 @@ impl MmDecisionState {
             open_sell_vol_scale: [0.0, 1.0],
             hedge_orders_per_round: 8,
             order_amount_u: 100.0,
+            order_amount_u_overrides: HashMap::new(),
             open_order_ttl_us: 120_000_000,
             next_query_delay_ms: 30_000,
             hedge_vol_multiplier: 2.0,
@@ -258,6 +273,23 @@ impl MmDecisionState {
             "MmDecision: order_amount_u updated value={:.6}",
             self.order_amount_u
         );
+    }
+
+    pub(crate) fn update_order_amount_overrides(&mut self, overrides: HashMap<String, f64>) {
+        self.order_amount_u_overrides = overrides;
+        debug!(
+            "MmDecision: order_amount_u_overrides updated symbols={}",
+            self.order_amount_u_overrides.len()
+        );
+    }
+
+    pub(crate) fn resolve_order_amount_u(&self, symbol: &str) -> f64 {
+        resolve_mm_order_amount_u(
+            self.order_amount_u,
+            &self.order_amount_u_overrides,
+            self.open_venue,
+            symbol,
+        )
     }
 
     pub(crate) fn update_open_order_timeout(&mut self, open_order_timeout_secs: u64) {
@@ -650,5 +682,26 @@ impl MmDecisionState {
             tlen_filtered_levels,
             publish_failures,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_mm_order_amount_u_uses_symbol_override() {
+        let overrides = HashMap::from([(String::from("BTCUSDT"), 150.0)]);
+        let amount_u =
+            resolve_mm_order_amount_u(100.0, &overrides, TradingVenue::BinanceMargin, "btc-usdt");
+        assert_eq!(amount_u, 150.0);
+    }
+
+    #[test]
+    fn test_resolve_mm_order_amount_u_falls_back_to_default() {
+        let overrides = HashMap::from([(String::from("ETHUSDT"), 80.0)]);
+        let amount_u =
+            resolve_mm_order_amount_u(100.0, &overrides, TradingVenue::BinanceMargin, "btc-usdt");
+        assert_eq!(amount_u, 100.0);
     }
 }

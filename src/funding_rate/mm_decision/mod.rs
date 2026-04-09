@@ -212,6 +212,13 @@ impl MmDecision {
         self.state.update_order_amount(order_amount);
     }
 
+    pub fn update_order_amount_overrides(
+        &mut self,
+        overrides: std::collections::HashMap<String, f64>,
+    ) {
+        self.state.update_order_amount_overrides(overrides);
+    }
+
     pub fn update_open_order_timeout(&mut self, open_order_timeout_secs: u64) {
         self.state
             .update_open_order_timeout(open_order_timeout_secs);
@@ -344,7 +351,7 @@ impl MmDecision {
             signal,
             hedge_vol_multiplier: self.state.hedge_vol_multiplier,
             hedge_offset_ratio: self.state.hedge_offset_ratio,
-            order_amount_u: self.state.order_amount_u,
+            order_amount_u: self.state.resolve_order_amount_u(&symbol),
             hedge_orders_per_round: self.state.hedge_orders_per_round,
             offset_low: self.state.hedge_price_offset_limit_lower,
             offset_high_limit: self.state.hedge_price_offset_limit_upper,

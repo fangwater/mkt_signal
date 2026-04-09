@@ -7,8 +7,10 @@
 use anyhow::Result;
 use log::{info, warn};
 use serde::Deserialize;
+use std::collections::HashMap;
 
 use crate::common::redis_client::{RedisClient, RedisSettings};
+use crate::common::symbol_util::normalize_symbol_for_venue;
 
 use super::arb_decision::ArbDecision;
 use super::common::FactorMode;
@@ -61,6 +63,59 @@ pub fn mm_strategy_params_key_for_env(env_name: Option<&str>, hedge_venue: Tradi
     format!("{env_name}:{base_key}")
 }
 
+pub fn mm_amount_u_override_key_for_env(
+    env_name: Option<&str>,
+    hedge_venue: TradingVenue,
+) -> String {
+    let env_name = normalize_mm_env_name(env_name);
+    format!("{env_name}:{}:mm:amount_u", hedge_venue.data_pub_slug())
+}
+
+fn parse_mm_amount_u_overrides(
+    raw: &str,
+    open_venue: TradingVenue,
+    redis_key: &str,
+) -> HashMap<String, f64> {
+    let parsed: HashMap<String, f64> = serde_json::from_str(raw).unwrap_or_else(|err| {
+        panic!(
+            "Redis string '{}' 不是合法 JSON(symbol->amount_u): {} ({})",
+            redis_key, raw, err
+        )
+    });
+
+    let mut normalized = HashMap::new();
+    for (symbol, amount_u) in parsed {
+        let symbol_trimmed = symbol.trim();
+        if symbol_trimmed.is_empty() {
+            panic!("Redis string '{}' 包含空 symbol", redis_key);
+        }
+        if !(amount_u.is_finite() && amount_u > 0.0) {
+            panic!(
+                "Redis string '{}' symbol={} amount_u 非法: {}",
+                redis_key, symbol_trimmed, amount_u
+            );
+        }
+        let normalized_input = symbol_trimmed
+            .chars()
+            .filter_map(|ch| match ch {
+                'a'..='z' | 'A'..='Z' | '0'..='9' => Some(ch.to_ascii_uppercase()),
+                '-' | '_' | '/' | ' ' => Some('-'),
+                _ => None,
+            })
+            .collect::<String>()
+            .split('-')
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("-");
+        if normalized_input.is_empty() {
+            panic!("Redis string '{}' 包含空 symbol", redis_key);
+        }
+        let symbol_key = normalize_symbol_for_venue(&normalized_input, open_venue);
+        normalized.insert(symbol_key, amount_u);
+    }
+    normalized
+}
+
 fn strategy_params_key(
     namespace: &str,
     open_venue: TradingVenue,
@@ -104,6 +159,10 @@ pub struct StrategyParams {
     /// 单笔下单量（USDT）
     #[serde(default = "default_order_amount")]
     pub order_amount: f32,
+
+    /// MM 按 symbol 覆盖的下单量（USDT）
+    #[serde(default)]
+    pub mm_amount_u_overrides: HashMap<String, f64>,
 
     /// arb 开仓 plan 的波动边界缩放系数
     #[serde(default = "default_open_scale")]
@@ -309,6 +368,7 @@ impl Default for StrategyParams {
         Self {
             mode: default_mode(),
             order_amount: default_order_amount(),
+            mm_amount_u_overrides: HashMap::new(),
             open_scale: default_open_scale(),
             open_buy_vol_scale: default_open_buy_vol_scale(),
             open_sell_vol_scale: default_open_sell_vol_scale(),
@@ -351,7 +411,16 @@ impl StrategyParams {
     ) -> Result<Self> {
         let mut client = RedisClient::connect(redis.clone()).await?;
         let ns = normalize_namespace(namespace);
-        let redis_key = strategy_params_key(&ns, open_venue, hedge_venue);
+        let mm_env_name = if ns == "mm" {
+            Some(infer_mm_env_name_from_runtime())
+        } else {
+            None
+        };
+        let redis_key = if ns == "mm" {
+            mm_strategy_params_key_for_env(mm_env_name.as_deref(), hedge_venue)
+        } else {
+            strategy_params_key(&ns, open_venue, hedge_venue)
+        };
         let hash_map = client.hgetall_map(&redis_key).await?;
         if hash_map.is_empty() {
             panic!("Redis hash '{}' 为空或不存在，无法加载策略参数", redis_key);
@@ -375,6 +444,30 @@ impl StrategyParams {
                 panic!("Redis hash '{}' 缺少 {}", redis_key, order_amount_field)
             }
             None => default_order_amount(),
+        };
+        let mm_amount_u_overrides = if ns == "mm" {
+            let override_key =
+                mm_amount_u_override_key_for_env(mm_env_name.as_deref(), hedge_venue);
+            match client.get_string(&override_key).await? {
+                Some(raw) => {
+                    let parsed = parse_mm_amount_u_overrides(&raw, open_venue, &override_key);
+                    info!(
+                        "MM amount_u overrides loaded key='{}' symbols={}",
+                        override_key,
+                        parsed.len()
+                    );
+                    parsed
+                }
+                None => {
+                    info!(
+                        "MM amount_u override missing; use default_order_amount from key='{}'",
+                        redis_key
+                    );
+                    HashMap::new()
+                }
+            }
+        } else {
+            HashMap::new()
         };
         let open_scale = hash_map
             .get("open_scale")
@@ -744,6 +837,7 @@ impl StrategyParams {
         Ok(Self {
             mode,
             order_amount,
+            mm_amount_u_overrides,
             open_scale,
             open_buy_vol_scale,
             open_sell_vol_scale,
@@ -884,6 +978,7 @@ impl StrategyParams {
                     "open_sell_vol_scale",
                 );
                 _decision.update_order_amount(self.order_amount);
+                _decision.update_order_amount_overrides(self.mm_amount_u_overrides.clone());
                 _decision.update_order_interval_ms(self.order_interval_ms);
                 _decision.update_open_orders_per_round(self.open_orders_per_round);
                 _decision.update_open_vol_scale_ranges(open_buy_vol_scale, open_sell_vol_scale);
@@ -1016,6 +1111,44 @@ mod tests {
     fn test_mm_order_amount_field_name_is_default_order_amount() {
         assert_eq!(order_amount_field_name("mm"), "default_order_amount");
         assert_eq!(order_amount_field_name("fr"), "order_amount");
+    }
+
+    #[test]
+    fn test_mm_amount_u_override_key_includes_env_and_venue() {
+        let key =
+            mm_amount_u_override_key_for_env(Some("binance_mm_beta"), TradingVenue::BinanceFutures);
+        assert_eq!(key, "binance_mm_beta:binance-futures:mm:amount_u");
+    }
+
+    #[test]
+    fn test_parse_mm_amount_u_overrides_normalizes_symbols() {
+        let overrides = parse_mm_amount_u_overrides(
+            r#"{"btc-usdt":150,"ETH_USDT":80}"#,
+            TradingVenue::BinanceMargin,
+            "binance_mm_beta:binance-futures:mm:amount_u",
+        );
+        assert_eq!(overrides.get("BTCUSDT"), Some(&150.0));
+        assert_eq!(overrides.get("ETHUSDT"), Some(&80.0));
+    }
+
+    #[test]
+    #[should_panic(expected = "amount_u 非法")]
+    fn test_parse_mm_amount_u_overrides_rejects_invalid_amount() {
+        let _ = parse_mm_amount_u_overrides(
+            r#"{"BTCUSDT":0}"#,
+            TradingVenue::BinanceMargin,
+            "binance_mm_beta:binance-futures:mm:amount_u",
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "包含空 symbol")]
+    fn test_parse_mm_amount_u_overrides_rejects_empty_symbol() {
+        let _ = parse_mm_amount_u_overrides(
+            r#"{"   ":100}"#,
+            TradingVenue::BinanceMargin,
+            "binance_mm_beta:binance-futures:mm:amount_u",
+        );
     }
 
     #[test]

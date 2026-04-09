@@ -278,6 +278,8 @@ FILES=(
   "scripts/print_mm_risk_params.py"
   "scripts/sync_mm_strategy_params.py"
   "scripts/print_mm_strategy_params.py"
+  "scripts/sync_mm_amount_u.py"
+  "scripts/print_mm_amount_u.py"
   "scripts/sync_mm_symbol_list.py"
   "scripts/print_mm_symbol_list.py"
   "scripts/print_mm_return_score_thresholds.py"
