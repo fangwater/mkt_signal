@@ -130,7 +130,6 @@ impl HedgeArbStrategy {
                 return (base.to_string(), quote.to_string());
             }
         }
-
         (symbol_upper, "USDT".to_string())
     }
 
@@ -680,7 +679,7 @@ impl HedgeArbStrategy {
 
     // 收到对冲信号，按照需求进行maker对冲，或者直接taker对冲
     fn handle_arb_hedge_signal(&mut self, ctx: ArbHedgeCtx) -> Result<(), String> {
-        // 1. 确定对冲数量
+        // 1. 确定对冲数量 
         let target_qty = ctx.hedge_qty_value();
         if target_qty <= 0.0 {
             warn!(
