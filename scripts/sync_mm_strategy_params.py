@@ -5,7 +5,7 @@
 同步 MM 策略参数到 Redis 并打印。
 
 写入 Redis Hash:
-  mm_strategy_params_{venue}
+  <env_name>:mm_strategy_params_{venue}
 
 说明:
   - venue 形如 binance-futures / okex-futures。
@@ -53,11 +53,20 @@ def infer_exchange_from_cwd() -> Optional[str]:
     return infer_exchange_from_name(Path.cwd().name)
 
 
+def infer_env_name_from_cwd() -> Optional[str]:
+    name = Path.cwd().name.strip().lower()
+    return name or None
+
+
 def resolve_venue() -> Optional[str]:
     ex = infer_exchange_from_cwd()
     if ex:
         return f"{ex}-futures"
     return None
+
+
+def make_strategy_key(env_name: str, venue: str) -> str:
+    return f"{env_name}:mm_strategy_params_{venue}"
 
 
 def parse_args() -> argparse.Namespace:
@@ -67,7 +76,7 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-# Hash key: mm_strategy_params_{venue}
+# Hash key: <env_name>:mm_strategy_params_{venue}
 STRATEGY_PARAMS = {
     "order_amount": "100.0",
     "order_interval_ms": "5000",
@@ -228,11 +237,16 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+    env_name = infer_env_name_from_cwd()
+    if not env_name:
+        print("❌ 无法从当前目录推断 env_name", file=sys.stderr)
+        return 1
 
-    key = f"mm_strategy_params_{venue}"
+    key = make_strategy_key(env_name, venue)
     rds = redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
 
     print(f"🔄 同步 mm 策略参数: {key}")
+    print(f"📁 env_name: {env_name}")
     print("📍 Redis: 127.0.0.1:6379/0")
 
     sync_strategy_params(rds, key)

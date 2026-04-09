@@ -31,6 +31,36 @@ fn normalize_namespace(namespace: &str) -> String {
     }
 }
 
+fn normalize_mm_env_name(env_name: Option<&str>) -> String {
+    let normalized = env_name
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty());
+    normalized.expect("MM strategy params require env_name; set ENV_NAME or run under an env dir")
+}
+
+fn infer_mm_env_name_from_runtime() -> String {
+    if let Ok(env_name) = std::env::var("ENV_NAME") {
+        let trimmed = env_name.trim();
+        if !trimmed.is_empty() {
+            return normalize_mm_env_name(Some(trimmed));
+        }
+    }
+
+    let cwd = std::env::current_dir()
+        .expect("MM strategy params require env_name; set ENV_NAME or run under an env dir");
+    let leaf = cwd
+        .file_name()
+        .expect("MM strategy params require env_name; set ENV_NAME or run under an env dir")
+        .to_string_lossy();
+    normalize_mm_env_name(Some(leaf.as_ref()))
+}
+
+pub fn mm_strategy_params_key_for_env(env_name: Option<&str>, hedge_venue: TradingVenue) -> String {
+    let base_key = format!("mm_strategy_params_{}", hedge_venue.data_pub_slug());
+    let env_name = normalize_mm_env_name(env_name);
+    format!("{env_name}:{base_key}")
+}
+
 fn strategy_params_key(
     namespace: &str,
     open_venue: TradingVenue,
@@ -38,7 +68,10 @@ fn strategy_params_key(
 ) -> String {
     let ns = normalize_namespace(namespace);
     if ns == "mm" {
-        return format!("mm_strategy_params_{}", hedge_venue.data_pub_slug());
+        return mm_strategy_params_key_for_env(
+            Some(infer_mm_env_name_from_runtime().as_str()),
+            hedge_venue,
+        );
     }
     let prefix = if ns == "fr" {
         "fr_strategy_params".to_string()
@@ -953,5 +986,18 @@ mod tests {
     fn test_open_volatility_limit_default_is_70() {
         let params = StrategyParams::default();
         assert!((params.open_volatility_limit - 70.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_mm_strategy_params_key_includes_env_name() {
+        let key =
+            mm_strategy_params_key_for_env(Some("binance_mm_beta"), TradingVenue::BinanceFutures);
+        assert_eq!(key, "binance_mm_beta:mm_strategy_params_binance-futures");
+    }
+
+    #[test]
+    #[should_panic(expected = "MM strategy params require env_name")]
+    fn test_mm_strategy_params_key_without_env_name_panics() {
+        let _ = mm_strategy_params_key_for_env(None, TradingVenue::BinanceFutures);
     }
 }

@@ -5,7 +5,7 @@
 打印 MM 策略参数（从 Redis 读取）。
 
 读取 Redis Hash:
-  mm_strategy_params_{venue}
+  <env_name>:mm_strategy_params_{venue}
 
 venue 必须由当前目录强制推断（例如 binance_mm_beta -> binance-futures）。
 
@@ -51,11 +51,20 @@ def infer_exchange_from_cwd() -> Optional[str]:
     return infer_exchange_from_name(Path.cwd().name)
 
 
+def infer_env_name_from_cwd() -> Optional[str]:
+    name = Path.cwd().name.strip().lower()
+    return name or None
+
+
 def resolve_venue() -> Optional[str]:
     ex = infer_exchange_from_cwd()
     if ex:
         return f"{ex}-futures"
     return None
+
+
+def make_strategy_key(env_name: str, venue: str) -> str:
+    return f"{env_name}:mm_strategy_params_{venue}"
 
 
 def parse_args() -> argparse.Namespace:
@@ -164,11 +173,16 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+    env_name = infer_env_name_from_cwd()
+    if not env_name:
+        print("❌ 无法从当前目录推断 env_name", file=sys.stderr)
+        return 1
 
-    key = f"mm_strategy_params_{venue}"
+    key = make_strategy_key(env_name, venue)
     rds = redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
 
     print(f"🔎 读取 mm 策略参数: {key}")
+    print(f"📁 env_name: {env_name}")
     print("📍 Redis: 127.0.0.1:6379/0")
 
     print_params(rds, key)
