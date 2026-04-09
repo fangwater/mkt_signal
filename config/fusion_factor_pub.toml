@@ -1,6 +1,6 @@
 # Fusion factor 发布配置
 
-# 从 tlen_config_server 的 factor_plan 拉 symbol + ordered factors。
+# 从 tlen_config_server 拉 symbol + ordered factors + venue 级 zscore。
 # output service 固定为 fusion_factor/{venue}，例如 venue=binance-futures ->
 # fusion_factor/binance-futures
 [tlen_server]

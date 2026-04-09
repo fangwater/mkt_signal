@@ -1,14 +1,11 @@
 model_manager_base_url = "http://127.0.0.1:6300"
 model_manager_request_timeout_ms = 120000
+tlen_server_base_url = "http://127.0.0.1:6322"
+tlen_server_request_timeout_ms = 5000
 
 # 直接填写完整 service 名称，不做 {model_name} 替换。
 input_service = "fusion_factor/binance-futures"
 output_service = "model_output/binance-futures-mm-xgb-test"
-
-# Z-score normalization (rolling Welford)
-window_size = 17280       # 24h / 5s
-min_samples = 1000        # cold-start: suppress publishing until this many samples per symbol
-zscore_cap = 3.0          # clip to [-k*std, k*std] before z-score
 
 [score_rolling]
 params_hash_key_template = "model_score_rolling_params_{model_name}"

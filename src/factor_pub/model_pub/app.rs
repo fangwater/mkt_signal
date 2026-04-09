@@ -13,14 +13,15 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use super::cfg::ModelPubConfig;
+use super::factor_pool::{
+    build_extract_indices, build_factor_indices, build_factor_position_map,
+    load_venue_factor_names_from_tlen_server, parse_venue_slug_from_input_service,
+};
 use super::model::OnnxModel;
 use super::publisher::ModelPublisher;
 use super::score_rolling::InlineScoreRolling;
 use crate::common::mkt_msg::{FeatureMsg, FeatureStatus, ModelMsg, MODEL_STATUS_OK};
-use crate::common::rolling_welford::RollingWelford;
-use crate::factor_pub::fusion_factor_pub::app::ExtraFactorId;
 use crate::factor_pub::fusion_factor_pub::publisher::FUSION_FACTOR_PAYLOAD_MAX_BYTES;
-use crate::factor_pub::fusion_factor_pub::FusionFactorId;
 
 const INPUT_MAX_BYTES: usize = FUSION_FACTOR_PAYLOAD_MAX_BYTES;
 const IDLE_SLEEP_MICROS: u64 = 200;
@@ -37,8 +38,6 @@ struct ModelPubStats {
     publish_fail: u64,
     infer_latency_sum_us: u64,
     infer_latency_max_us: u64,
-    zscore_latency_sum_us: u64,
-    zscore_latency_max_us: u64,
     predict_latency_sum_us: u64,
     predict_latency_max_us: u64,
     marshal_latency_sum_us: u64,
@@ -46,20 +45,15 @@ struct ModelPubStats {
     onnx_predict_latency_sum_us: u64,
     onnx_predict_latency_max_us: u64,
     infer_count: u64,
-    cold_start_suppressed: u64,
     reload_only: u64,
     empty_feature_drop: u64,
-}
-
-struct SymbolNormState {
-    welford_vec: Vec<RollingWelford>,
-    sample_count: u64,
 }
 
 struct SymbolModelRuntime {
     feature_dim: usize,
     model: OnnxModel,
     factor_indices: Vec<u16>,
+    extract_indices: Vec<usize>,
 }
 
 struct SymbolModelLoaded {
@@ -95,11 +89,8 @@ pub struct ModelPubApp {
     input_service: String,
     subscriber: Subscriber<ipc::Service, [u8; INPUT_MAX_BYTES], ()>,
     publisher: ModelPublisher,
+    input_feature_dim: usize,
     models_by_symbol: HashMap<String, SymbolModelRuntime>,
-    norm_states: HashMap<String, SymbolNormState>,
-    window_size: usize,
-    min_samples: u64,
-    zscore_cap: f64,
     stats: ModelPubStats,
     last_log_stats: Instant,
     score_rolling: InlineScoreRolling,
@@ -114,8 +105,27 @@ impl ModelPubApp {
 
         let input_service = config.input_service.trim().to_string();
         let output_service = config.output_service.trim().to_string();
+        let venue_slug = parse_venue_slug_from_input_service(&input_service)?;
+        let venue_factor_names = load_venue_factor_names_from_tlen_server(&config, &venue_slug)
+            .await
+            .with_context(|| {
+                format!(
+                    "load venue factor plan from tlen_server failed: venue={}",
+                    venue_slug
+                )
+            })?;
+        let venue_factor_positions =
+            build_factor_position_map(&venue_factor_names).with_context(|| {
+                format!(
+                    "build venue factor position map failed: venue={} factors={}",
+                    venue_slug,
+                    venue_factor_names.len()
+                )
+            })?;
 
-        let models_by_symbol = Self::load_models_from_model_manager(&config, &model_name).await?;
+        let models_by_symbol =
+            Self::load_models_from_model_manager(&config, &model_name, &venue_factor_positions)
+                .await?;
         if models_by_symbol.is_empty() {
             anyhow::bail!(
                 "startup model list is empty: model_name={} base_url={}",
@@ -163,14 +173,12 @@ impl ModelPubApp {
         let score_rolling = InlineScoreRolling::new(&model_name, &config.score_rolling).await?;
 
         info!(
-            "ModelPubApp started: model_name={} input={} output={} symbols={} window_size={} min_samples={} zscore_cap={} post_process=score_rolling",
-            model_name,
+            "ModelPubApp started: input={} output={} symbols={} venue={} pool_dim={}",
             input_service,
             output_service,
             models_by_symbol.len(),
-            config.window_size,
-            config.min_samples,
-            config.zscore_cap,
+            venue_slug,
+            venue_factor_names.len(),
         );
 
         Ok(Self {
@@ -178,11 +186,8 @@ impl ModelPubApp {
             input_service,
             subscriber,
             publisher,
+            input_feature_dim: venue_factor_names.len(),
             models_by_symbol,
-            norm_states: HashMap::new(),
-            window_size: config.window_size,
-            min_samples: config.min_samples,
-            zscore_cap: config.zscore_cap,
             stats: ModelPubStats::default(),
             last_log_stats: Instant::now(),
             score_rolling,
@@ -192,6 +197,7 @@ impl ModelPubApp {
     async fn load_models_from_model_manager(
         config: &ModelPubConfig,
         model_name: &str,
+        venue_factor_positions: &HashMap<String, usize>,
     ) -> Result<HashMap<String, SymbolModelRuntime>> {
         let base_url = config.model_manager_base_url.trim_end_matches('/');
         let client = Client::builder()
@@ -228,18 +234,23 @@ impl ModelPubApp {
             model_name, fetch_parallel, total
         );
 
-        let task_stream =
-            stream::iter(
-                symbols.into_iter().map(|symbol| {
-                    let client = client.clone();
-                    let base_url = base_url.to_string();
-                    let model_name = model_name.to_string();
-                    async move {
-                        load_single_symbol_model(&client, &base_url, &model_name, &symbol).await
-                    }
-                }),
-            )
-            .buffer_unordered(fetch_parallel);
+        let task_stream = stream::iter(symbols.into_iter().map(|symbol| {
+            let client = client.clone();
+            let base_url = base_url.to_string();
+            let model_name = model_name.to_string();
+            let venue_factor_positions = venue_factor_positions.clone();
+            async move {
+                load_single_symbol_model(
+                    &client,
+                    &base_url,
+                    &model_name,
+                    &symbol,
+                    &venue_factor_positions,
+                )
+                .await
+            }
+        }))
+        .buffer_unordered(fetch_parallel);
 
         let mut models = HashMap::with_capacity(total);
         let mut completed = 0usize;
@@ -317,57 +328,22 @@ impl ModelPubApp {
         match FeatureMsg::from_bytes(data) {
             Ok(feature) => {
                 let symbol_key = normalize_symbol_key(&feature.symbol);
-                let dim = feature.features.len();
+                let normalized = feature.features;
+                let dim = normalized.len();
 
                 // Empty feature vector means fusion_factor tracked the symbol but no factor plan
-                // was configured for it. Skip z-score/inference and let upstream RL-only flow stand.
+                // was configured for it. Skip inference and let upstream RL-only flow stand.
                 if dim == 0 {
                     self.stats.empty_feature_drop = self.stats.empty_feature_drop.saturating_add(1);
                     return Ok(());
                 }
 
-                // --- z-score normalization ---
-                let window_size = self.window_size;
-                let norm_state = self
-                    .norm_states
-                    .entry(symbol_key.clone())
-                    .or_insert_with(|| SymbolNormState {
-                        welford_vec: (0..dim).map(|_| RollingWelford::new(window_size)).collect(),
-                        sample_count: 0,
-                    });
-
-                // Always push into Welford (heartbeat), even during cold start
-                if norm_state.welford_vec.len() != dim {
-                    // dimension changed, reset
-                    norm_state.welford_vec =
-                        (0..dim).map(|_| RollingWelford::new(window_size)).collect();
-                    norm_state.sample_count = 0;
-                }
-                for (i, &val) in feature.features.iter().enumerate() {
-                    norm_state.welford_vec[i].push(val);
-                }
-                norm_state.sample_count += 1;
-
-                // Cold-start gating: suppress publishing until min_samples reached
-                if norm_state.sample_count < self.min_samples {
-                    self.stats.cold_start_suppressed += 1;
-                    return Ok(());
-                }
-
-                // Reload: only update rolling z-score, skip inference
+                // Reload payloads come from fusion_factor bootstrap. They are already normalized,
+                // but model inference should still wait for live data.
                 if feature.status == FeatureStatus::Reload as u8 {
                     self.stats.reload_only += 1;
                     return Ok(());
                 }
-
-                // Compute z-scores
-                let zscore_start = Instant::now();
-                let normalized: Vec<f64> = norm_state
-                    .welford_vec
-                    .iter()
-                    .map(|w| w.zscore_capped(self.zscore_cap).unwrap_or(0.0))
-                    .collect();
-                let zscore_us = zscore_start.elapsed().as_micros() as u64;
 
                 // --- inference ---
                 let Some(runtime) = self.models_by_symbol.get(&symbol_key) else {
@@ -379,17 +355,29 @@ impl ModelPubApp {
                     );
                 };
 
-                if normalized.len() != runtime.feature_dim {
+                if dim != self.input_feature_dim {
                     panic!(
-                        "feature dim mismatch: model_name={} symbol={} expected={} got={}",
-                        self.model_name,
-                        feature.symbol,
-                        runtime.feature_dim,
-                        normalized.len()
+                        "venue feature dim mismatch: model_name={} symbol={} expected={} got={}",
+                        self.model_name, feature.symbol, self.input_feature_dim, dim
                     );
                 }
 
-                let f32_features: Vec<f32> = normalized.iter().map(|&v| v as f32).collect();
+                let extracted: Vec<f64> = runtime
+                    .extract_indices
+                    .iter()
+                    .map(|&idx| normalized[idx])
+                    .collect();
+                if extracted.len() != runtime.feature_dim {
+                    panic!(
+                        "extracted feature dim mismatch: model_name={} symbol={} expected={} got={}",
+                        self.model_name,
+                        feature.symbol,
+                        runtime.feature_dim,
+                        extracted.len()
+                    );
+                }
+
+                let f32_features: Vec<f32> = extracted.iter().map(|&v| v as f32).collect();
                 let factor_indices = runtime.factor_indices.clone();
                 let predict_start = Instant::now();
                 let result = runtime.model.predict_one_timed(&f32_features);
@@ -397,15 +385,11 @@ impl ModelPubApp {
 
                 match result {
                     Ok(output) => {
-                        let elapsed_us = zscore_us + predict_us;
+                        let elapsed_us = predict_us;
                         self.stats.infer_count += 1;
                         self.stats.infer_latency_sum_us += elapsed_us;
                         if elapsed_us > self.stats.infer_latency_max_us {
                             self.stats.infer_latency_max_us = elapsed_us;
-                        }
-                        self.stats.zscore_latency_sum_us += zscore_us;
-                        if zscore_us > self.stats.zscore_latency_max_us {
-                            self.stats.zscore_latency_max_us = zscore_us;
                         }
                         self.stats.predict_latency_sum_us += predict_us;
                         if predict_us > self.stats.predict_latency_max_us {
@@ -424,11 +408,9 @@ impl ModelPubApp {
                             log_btc_heartbeat(
                                 &self.model_name,
                                 &feature.symbol,
-                                &feature.features,
-                                &normalized,
+                                &extracted,
                                 output.score,
                                 elapsed_us,
-                                zscore_us,
                                 predict_us,
                                 output.marshal_us,
                                 output.onnx_predict_us,
@@ -512,11 +494,6 @@ impl ModelPubApp {
         } else {
             0
         };
-        let avg_zscore_us = if self.stats.infer_count > 0 {
-            self.stats.zscore_latency_sum_us / self.stats.infer_count
-        } else {
-            0
-        };
         let avg_predict_us = if self.stats.infer_count > 0 {
             self.stats.predict_latency_sum_us / self.stats.infer_count
         } else {
@@ -532,22 +509,9 @@ impl ModelPubApp {
         } else {
             0
         };
-        let norm_symbols = self.norm_states.len();
-        let warmed_symbols = self
-            .norm_states
-            .values()
-            .filter(|s| s.sample_count >= self.min_samples)
-            .count();
-
         let mut extra = String::new();
         if self.stats.publish_fail > 0 {
             extra.push_str(&format!(" pub_fail={}", self.stats.publish_fail));
-        }
-        if self.stats.cold_start_suppressed > 0 {
-            extra.push_str(&format!(
-                " cold_suppressed={}",
-                self.stats.cold_start_suppressed
-            ));
         }
         if self.stats.reload_only > 0 {
             extra.push_str(&format!(" reload_only={}", self.stats.reload_only));
@@ -557,23 +521,19 @@ impl ModelPubApp {
         }
 
         info!(
-            "ModelPubApp[{}] recv={} pub={} infer={} lat(avg/max): total={}us/{}us zscore={}us/{}us predict={}us/{}us marshal={}us/{}us onnx_predict={}us/{}us warmed={}/{}{}",
+            "ModelPubApp[{}] recv={} pub={} infer={} lat(avg/max): total={}us/{}us predict={}us/{}us marshal={}us/{}us onnx_predict={}us/{}us{}",
             self.model_name,
             self.stats.recv_total,
             self.stats.publish_ok,
             self.stats.infer_count,
             avg_latency_us,
             self.stats.infer_latency_max_us,
-            avg_zscore_us,
-            self.stats.zscore_latency_max_us,
             avg_predict_us,
             self.stats.predict_latency_max_us,
             avg_marshal_us,
             self.stats.marshal_latency_max_us,
             avg_onnx_predict_us,
             self.stats.onnx_predict_latency_max_us,
-            warmed_symbols,
-            norm_symbols,
             extra,
         );
 
@@ -584,34 +544,28 @@ impl ModelPubApp {
 fn log_btc_heartbeat(
     model_name: &str,
     symbol: &str,
-    raw_features: &[f64],
-    zscore_features: &[f64],
+    normalized_features: &[f64],
     score: f64,
     infer_latency_us: u64,
-    zscore_latency_us: u64,
     predict_latency_us: u64,
     marshal_latency_us: u64,
     onnx_predict_latency_us: u64,
 ) {
-    let raw_str: Vec<String> = raw_features.iter().map(|v| format!("{:.6}", v)).collect();
-    let zscore_str: Vec<String> = zscore_features
+    let normalized_str: Vec<String> = normalized_features
         .iter()
         .map(|v| format!("{:.4}", v))
         .collect();
     let total_ms = infer_latency_us as f64 / 1000.0;
-    let zscore_ms = zscore_latency_us as f64 / 1000.0;
     let predict_ms = predict_latency_us as f64 / 1000.0;
     let marshal_ms = marshal_latency_us as f64 / 1000.0;
     let onnx_predict_ms = onnx_predict_latency_us as f64 / 1000.0;
     info!(
-        "ModelPubApp[{}] {} heartbeat: raw=[{}] zscore=[{}] score={:.6} lat: total={:.2}ms zscore={:.2}ms predict={:.2}ms marshal={:.2}ms onnx_predict={:.2}ms",
+        "ModelPubApp[{}] {} heartbeat: features=[{}] score={:.6} lat: total={:.2}ms predict={:.2}ms marshal={:.2}ms onnx_predict={:.2}ms",
         model_name,
         symbol,
-        raw_str.join(", "),
-        zscore_str.join(", "),
+        normalized_str.join(", "),
         score,
         total_ms,
-        zscore_ms,
         predict_ms,
         marshal_ms,
         onnx_predict_ms,
@@ -734,6 +688,7 @@ async fn load_single_symbol_model(
     base_url: &str,
     model_name: &str,
     symbol: &str,
+    venue_factor_positions: &HashMap<String, usize>,
 ) -> Result<SymbolModelLoaded> {
     let payload = fetch_symbol_model_onnx(client, base_url, model_name, symbol)
         .await
@@ -772,19 +727,28 @@ async fn load_single_symbol_model(
         )
     })?;
 
-    let factor_indices = fetch_symbol_factor_indices(base_url, model_name, symbol)
+    let factor_names = fetch_symbol_factor_names(base_url, model_name, symbol)
         .await
         .with_context(|| {
             format!(
-                "fetch symbol factor indices failed: model_name={} symbol={}",
+                "fetch symbol factor names failed: model_name={} symbol={}",
                 model_name, symbol
             )
         })?;
+    let factor_indices = build_factor_indices(model_name, symbol, &factor_names);
+    let extract_indices =
+        build_extract_indices(model_name, symbol, &factor_names, venue_factor_positions);
 
     if factor_indices.len() != feature_dim {
         anyhow::bail!(
             "factor indices count mismatch with feature_dim: model_name={} symbol={} indices={} feature_dim={}",
             model_name, symbol, factor_indices.len(), feature_dim
+        );
+    }
+    if extract_indices.len() != feature_dim {
+        anyhow::bail!(
+            "extract indices count mismatch with feature_dim: model_name={} symbol={} indices={} feature_dim={}",
+            model_name, symbol, extract_indices.len(), feature_dim
         );
     }
 
@@ -795,27 +759,16 @@ async fn load_single_symbol_model(
             feature_dim,
             model,
             factor_indices,
+            extract_indices,
         },
     })
 }
 
-/// Map a factor name to its u16 index.
-/// FusionFactorId: 0..631, ExtraFactorId: 1000..1005.
-fn factor_name_to_index(name: &str) -> Option<u16> {
-    if let Some(fid) = FusionFactorId::from_name(name) {
-        return Some(fid.as_index());
-    }
-    if let Some(eid) = ExtraFactorId::from_name(name) {
-        return Some(eid.as_index());
-    }
-    None
-}
-
-async fn fetch_symbol_factor_indices(
+async fn fetch_symbol_factor_names(
     base_url: &str,
     model_name: &str,
     symbol: &str,
-) -> Result<Vec<u16>> {
+) -> Result<Vec<String>> {
     // Use a dedicated short-timeout client — symbol detail is a fast JSON lookup.
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
@@ -842,21 +795,7 @@ async fn fetch_symbol_factor_indices(
         .await
         .with_context(|| format!("decode symbol detail failed: {}", url))?;
 
-    let mut indices = Vec::with_capacity(detail.factors.len());
-    for name in &detail.factors {
-        match factor_name_to_index(name) {
-            Some(idx) => indices.push(idx),
-            None => {
-                warn!(
-                    "unknown factor name in model plan, using u16::MAX: model_name={} symbol={} factor={}",
-                    model_name, symbol, name
-                );
-                indices.push(u16::MAX);
-            }
-        }
-    }
-
-    Ok(indices)
+    Ok(detail.factors)
 }
 
 fn build_model_url(base_url: &str, path_or_url: &str) -> String {

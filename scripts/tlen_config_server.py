@@ -9,12 +9,14 @@
       - tlen_threshold
       - amount_thresholds
       - factor_plan
+      - zscore
   - 配置按 venue 维度存取。
 
 Redis key 约定：
   - TLEN: <venue_prefix>:tlen_threshold
   - Amount thresholds: <venue>:amount-thresholds
   - Factor plan: <venue>:factor-plan
+  - Zscore config: <venue>:zscore
 
 示例：
   python scripts/tlen_config_server.py
@@ -40,6 +42,7 @@ SUPPORTED_CONFIG_TYPES = [
     "tlen",
     "amount_thresholds",
     "factor_plan",
+    "zscore",
 ]
 SUPPORTED_VENUES = [
     "binance-margin",
@@ -48,6 +51,7 @@ SUPPORTED_VENUES = [
     "okex-futures",
 ]
 QUOTE_ASSETS = ("USDT", "USDC", "BUSD", "FDUSD", "USD")
+SHARED_CONFIG_FIELD = "__shared__"
 
 
 def try_import_redis():
@@ -142,6 +146,8 @@ def normalize_config_type(value: object) -> Optional[str]:
         return "amount_thresholds"
     if raw in ("factor_plan", "factor_plans", "plan", "plans"):
         return "factor_plan"
+    if raw in ("zscore", "zscores", "z_score", "rolling_zscore"):
+        return "zscore"
     return None
 
 
@@ -156,6 +162,8 @@ def redis_key(venue: str, config_type: str) -> str:
         return f"{venue_norm}:amount-thresholds"
     if normalized_type == "factor_plan":
         return f"{venue_norm}:factor-plan"
+    if normalized_type == "zscore":
+        return f"{venue_norm}:zscore"
     raise ValueError(f"unsupported config_type: {config_type}")
 
 
@@ -225,6 +233,47 @@ def parse_factor_plan_value(raw_value: object) -> Dict[str, object]:
     return payload
 
 
+def parse_zscore_value(raw_value: object) -> Dict[str, object]:
+    if isinstance(raw_value, str):
+        try:
+            payload = json.loads(raw_value)
+        except Exception as exc:
+            raise ValueError(f"invalid zscore json: {raw_value!r}") from exc
+    elif isinstance(raw_value, dict):
+        payload = dict(raw_value)
+    else:
+        raise ValueError(f"invalid zscore payload: {raw_value!r}")
+
+    if not isinstance(payload, dict):
+        raise ValueError("zscore payload must be an object")
+
+    try:
+        window_size = int(payload.get("window_size"))
+    except Exception as exc:
+        raise ValueError("zscore.window_size must be an integer") from exc
+    try:
+        min_samples = int(payload.get("min_samples"))
+    except Exception as exc:
+        raise ValueError("zscore.min_samples must be an integer") from exc
+    try:
+        zscore_cap = float(payload.get("zscore_cap"))
+    except Exception as exc:
+        raise ValueError("zscore.zscore_cap must be numeric") from exc
+
+    if window_size <= 0:
+        raise ValueError("zscore.window_size must be > 0")
+    if min_samples <= 0:
+        raise ValueError("zscore.min_samples must be > 0")
+    if not math.isfinite(zscore_cap) or zscore_cap <= 0.0:
+        raise ValueError("zscore.zscore_cap must be finite and > 0")
+
+    return {
+        "window_size": window_size,
+        "min_samples": min_samples,
+        "zscore_cap": zscore_cap,
+    }
+
+
 def default_factor_plan_value() -> Dict[str, object]:
     return {"factors": []}
 
@@ -232,16 +281,28 @@ def default_factor_plan_value() -> Dict[str, object]:
 def parse_thresholds_map(data: Dict[str, str], venue: str, config_type: str) -> Dict[str, object]:
     thresholds: Dict[str, object] = {}
     for raw_symbol in sorted(data.keys()):
-        symbol = normalize_symbol_for_venue(raw_symbol, venue)
         raw_value = data[raw_symbol]
         if config_type == "tlen":
+            symbol = normalize_symbol_for_venue(raw_symbol, venue)
             thresholds[symbol] = parse_threshold_value(raw_value)
             continue
         if config_type == "amount_thresholds":
+            symbol = normalize_symbol_for_venue(raw_symbol, venue)
             thresholds[symbol] = parse_amount_threshold_value(raw_value)
             continue
         if config_type == "factor_plan":
-            thresholds[symbol] = parse_factor_plan_value(raw_value)
+            if raw_symbol == SHARED_CONFIG_FIELD:
+                if thresholds:
+                    raise ValueError("factor_plan shared config must contain exactly one entry")
+                thresholds[SHARED_CONFIG_FIELD] = parse_factor_plan_value(raw_value)
+            else:
+                symbol = normalize_symbol_for_venue(raw_symbol, venue)
+                thresholds[symbol] = parse_factor_plan_value(raw_value)
+            continue
+        if config_type == "zscore":
+            if thresholds:
+                raise ValueError("zscore config must contain exactly one shared entry")
+            thresholds[SHARED_CONFIG_FIELD] = parse_zscore_value(raw_value)
             continue
         raise ValueError(f"unsupported config_type: {config_type}")
     return thresholds
@@ -251,20 +312,30 @@ def coerce_thresholds(payload: dict, venue: str, config_type: str) -> Dict[str, 
     thresholds_raw = payload.get("thresholds", payload)
     if not isinstance(thresholds_raw, dict):
         raise ValueError("payload must be an object or contain object field 'thresholds'")
+    if config_type in ("factor_plan", "zscore") and len(thresholds_raw) != 1:
+        raise ValueError(f"{config_type} payload must contain exactly one shared entry")
 
     encoded: Dict[str, str] = {}
     for raw_symbol, raw_value in thresholds_raw.items():
-        symbol = normalize_symbol_for_venue(str(raw_symbol), venue)
         if config_type == "tlen":
+            symbol = normalize_symbol_for_venue(str(raw_symbol), venue)
             encoded[symbol] = f"{parse_threshold_value(raw_value):.8f}"
             continue
         if config_type == "amount_thresholds":
+            symbol = normalize_symbol_for_venue(str(raw_symbol), venue)
             value = parse_amount_threshold_value(raw_value)
             encoded[symbol] = json.dumps(value, ensure_ascii=False, sort_keys=True)
             continue
         if config_type == "factor_plan":
             value = parse_factor_plan_value(raw_value)
-            encoded[symbol] = json.dumps(value, ensure_ascii=False, sort_keys=True)
+            symbol_key = str(raw_symbol).strip()
+            if symbol_key != SHARED_CONFIG_FIELD:
+                symbol_key = normalize_symbol_for_venue(symbol_key, venue)
+            encoded[symbol_key] = json.dumps(value, ensure_ascii=False, sort_keys=True)
+            continue
+        if config_type == "zscore":
+            value = parse_zscore_value(raw_value)
+            encoded[SHARED_CONFIG_FIELD] = json.dumps(value, ensure_ascii=False, sort_keys=True)
             continue
         raise ValueError(f"unsupported config_type: {config_type}")
     return encoded
@@ -304,12 +375,24 @@ class TlenConfigStore:
         key = redis_key(venue, config_type)
         thresholds = parse_thresholds_map(decode_hash(self._redis.hgetall(key)), venue, config_type)
         if symbol:
-            normalized_symbol = normalize_symbol_for_venue(symbol, venue)
             if config_type == "factor_plan":
-                thresholds = {
-                    normalized_symbol: thresholds.get(normalized_symbol, default_factor_plan_value())
-                }
+                if SHARED_CONFIG_FIELD in thresholds:
+                    thresholds = {SHARED_CONFIG_FIELD: thresholds[SHARED_CONFIG_FIELD]}
+                else:
+                    normalized_symbol = normalize_symbol_for_venue(symbol, venue)
+                    thresholds = {
+                        normalized_symbol: thresholds.get(
+                            normalized_symbol, default_factor_plan_value()
+                        )
+                    }
+            elif config_type == "zscore":
+                thresholds = (
+                    {SHARED_CONFIG_FIELD: thresholds[SHARED_CONFIG_FIELD]}
+                    if SHARED_CONFIG_FIELD in thresholds
+                    else {}
+                )
             else:
+                normalized_symbol = normalize_symbol_for_venue(symbol, venue)
                 thresholds = (
                     {normalized_symbol: thresholds[normalized_symbol]}
                     if normalized_symbol in thresholds
@@ -475,7 +558,7 @@ def page_html(config: ServerConfig) -> str:
   <div class="wrap">
     <div class="card">
       <h1>{SERVICE_NAME}</h1>
-      <div class="muted">共享配置管理服务。当前支持 <code>tlen_threshold</code>、<code>amount_thresholds</code> 与 <code>factor_plan</code>。</div>
+      <div class="muted">共享配置管理服务。当前支持 <code>tlen_threshold</code>、<code>amount_thresholds</code>、<code>factor_plan</code> 与 <code>zscore</code>。</div>
     </div>
 
     <div class="card">
@@ -507,6 +590,8 @@ def page_html(config: ServerConfig) -> str:
         <code>{{"BTCUSDT": {{"medium_notional_threshold": 10000, "large_notional_threshold": 50000}}}}</code>
         或
         <code>{{"BTCUSDT": {{"factors": ["factor_001", "avg_price"]}}}}</code>。
+        venue 级 <code>zscore</code> 建议写成
+        <code>{{"__shared__": {{"window_size": 17280, "min_samples": 1000, "zscore_cap": 3.0}}}}</code>。
         OKEX 建议直接填目标 venue 格式，例如 <code>BTC-USDT</code> 或 <code>BTC-USDT-SWAP</code>。
         <code>factor_plan</code> 会自动兼容缺省 <code>factors</code>，即写成 <code>{{"BTCUSDT": {{}}}}</code> 也会保存为 <code>{{"factors": []}}</code>。
       </div>

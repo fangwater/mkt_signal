@@ -4,6 +4,9 @@
 //! 当前先落地 factor_118，后续在同一框架上扩展全部因子。
 
 use anyhow::{bail, Context, Result};
+use factor_engine::baseline as baseline_engine;
+use factor_engine::math::pct_change_last;
+use factor_engine::view::{SplitSlice, SymbolSeries};
 use iceoryx2::port::publisher::Publisher;
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
@@ -13,7 +16,6 @@ use reqwest::Client;
 use rocksdb::{ColumnFamilyDescriptor, IteratorMode, Options, DB};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::ops::Index;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -22,14 +24,21 @@ use super::cfg::{
     TlenServerConfig,
 };
 use super::factor_enum::FusionFactorId;
+pub(crate) use super::plan::{
+    load_venue_factor_plan_from_tlen_server, ExtraFactorId, FactorBinding, SymbolFactorPlan,
+};
 use super::publisher::FusionFactorPublisher;
 use super::window_primitives::{
     rolling_corr_last, rolling_kurt_last, rolling_mean_at_from_series, rolling_mean_last,
     rolling_mean_last_opt_from_series, rolling_mean_last_with_min_periods, rolling_mean_series,
-    rolling_mean_series_opt, rolling_rank_last, rolling_skew_last, rolling_sum_at_from_series,
-    rolling_sum_at_opt_from_series, rolling_sum_last_from_series, rolling_sum_last_opt_from_series,
-    rolling_sum_last_with_min_periods, rolling_sum_series, rolling_sum_series_opt,
-    tail_skew_last_opt, F64SeriesView, OptF64SeriesView,
+    rolling_mean_series_opt, rolling_rank_last, rolling_skew_last, rolling_std_last,
+    rolling_sum_at_from_series, rolling_sum_at_opt_from_series, rolling_sum_last_from_series,
+    rolling_sum_last_opt_from_series, rolling_sum_last_with_min_periods, rolling_sum_series,
+    rolling_sum_series_opt, tail_skew_last_opt, F64SeriesView, OptF64SeriesView,
+};
+use super::zscore::{
+    load_zscore_config_from_tlen_server, normalize_feature_values, SymbolNormState,
+    ZscoreRuntimeConfig,
 };
 use crate::common::amount_threshold::is_online_amount_threshold;
 use crate::common::mkt_msg::{FactorValueMsg, FeatureMsg, FeatureStatus};
@@ -69,6 +78,7 @@ const FIELD_LOW: usize = 2;
 const FIELD_CLOSE: usize = 3;
 const FIELD_VOLUME: usize = 4;
 const FIELD_AMOUNT: usize = 5;
+const FIELD_COUNT: usize = 7;
 const FIELD_BUY_COUNT: usize = 8;
 const FIELD_SELL_COUNT: usize = 9;
 const FIELD_BUY_AMOUNT: usize = 10;
@@ -419,6 +429,8 @@ pub struct SymbolCalcState {
     pub close: VecDeque<f64>,
     pub volume: VecDeque<f64>,
     pub amount: VecDeque<f64>,
+    pub count: VecDeque<f64>,
+    pub trade_time: VecDeque<f64>,
     pub buy_count: VecDeque<f64>,
     pub sell_count: VecDeque<f64>,
     pub buy_amount: VecDeque<f64>,
@@ -450,25 +462,34 @@ pub struct SymbolCalcState {
     pub top10_ask_mean: VecDeque<f64>,
     pub bid9v: VecDeque<f64>,
     pub ask9v: VecDeque<f64>,
+    pub bid9p: VecDeque<f64>,
+    pub combined_level9_volume: VecDeque<f64>,
     pub mean_bid_vol20: VecDeque<f64>,
+    pub mean_bid_price5: VecDeque<f64>,
     pub mean_bid_price20: VecDeque<f64>,
     pub avg_ask_price5: VecDeque<f64>,
+    pub mean_ask_price15: VecDeque<f64>,
     pub ask_pv15_mean: VecDeque<f64>,
     pub bid_pv15_mean: VecDeque<f64>,
     pub factor_031_ratio: VecDeque<f64>,
     pub factor_119_mid_minus_ask_vwap5: VecDeque<f64>,
     pub total_volume20_sum: VecDeque<f64>,
+    pub median_all_price40: VecDeque<f64>,
     pub factor_152_prev_price_diff10: Option<[f64; 10]>,
     pub factor_152_pct_mean: VecDeque<Option<f64>>,
     pub ask_vwap20: VecDeque<f64>,
     pub ask_vwap_diff_5_20: VecDeque<f64>,
     pub ask_mean_volume_20: VecDeque<f64>,
     pub ask0v: VecDeque<f64>,
+    pub factor_113_bid_price_pct_hmean: VecDeque<Option<f64>>,
+    pub factor_114_ask_price_pct_mean: VecDeque<Option<f64>>,
     pub factor_128_ask_price_sum: VecDeque<f64>,
     pub factor_128_diff_sum: VecDeque<Option<f64>>,
     pub factor_128_skew: VecDeque<Option<f64>>,
     pub factor_160_prev_ratios: Option<[f64; 10]>,
     pub factor_160_pct_change_mean: VecDeque<Option<f64>>,
+    pub bid_price_level_hist10: [VecDeque<f64>; 10],
+    pub ask_price_level_hist10: [VecDeque<f64>; 10],
     pub corr_close_volume_14_last: Option<f64>,
     pub corr_open_volume_300_last: Option<f64>,
     pub corr_mid_midvol_300_last: Option<f64>,
@@ -509,6 +530,8 @@ impl SymbolCalcState {
         push_with_limit(&mut self.close, msg.values[FIELD_CLOSE]);
         push_with_limit(&mut self.volume, msg.values[FIELD_VOLUME]);
         push_with_limit(&mut self.amount, msg.values[FIELD_AMOUNT]);
+        push_with_limit(&mut self.count, msg.values[FIELD_COUNT]);
+        push_with_limit(&mut self.trade_time, msg.ts as f64);
         push_with_limit(&mut self.buy_count, msg.values[FIELD_BUY_COUNT]);
         push_with_limit(&mut self.sell_count, msg.values[FIELD_SELL_COUNT]);
         push_with_limit(&mut self.buy_amount, msg.values[FIELD_BUY_AMOUNT]);
@@ -563,9 +586,16 @@ impl SymbolCalcState {
         push_with_limit(&mut self.top10_ask_mean, top10_ask / 10.0);
         push_with_limit(&mut self.bid9v, depth.bid_amount(9));
         push_with_limit(&mut self.ask9v, depth.ask_amount(9));
+        push_with_limit(&mut self.bid9p, depth.bid_price(9));
+        push_with_limit(
+            &mut self.combined_level9_volume,
+            depth.bid_amount(9) + depth.ask_amount(9),
+        );
         push_with_limit(&mut self.mean_bid_vol20, depth.mean_bid_amount(20));
+        push_with_limit(&mut self.mean_bid_price5, depth.mean_bid_price(5));
         push_with_limit(&mut self.mean_bid_price20, depth.mean_bid_price(20));
         push_with_limit(&mut self.avg_ask_price5, depth.mean_ask_price(5));
+        push_with_limit(&mut self.mean_ask_price15, depth.mean_ask_price(15));
         push_with_limit(&mut self.ask_pv15_mean, depth_mean_pxv(&depth.asks, 15));
         push_with_limit(&mut self.bid_pv15_mean, depth_mean_pxv(&depth.bids, 15));
         let ratio_031 = {
@@ -577,6 +607,17 @@ impl SymbolCalcState {
             }
         };
         push_with_limit(&mut self.factor_031_ratio, ratio_031);
+        push_with_limit(
+            &mut self.median_all_price40,
+            median_from_iter(
+                depth
+                    .bids
+                    .iter()
+                    .map(|level| level.price)
+                    .chain(depth.asks.iter().map(|level| level.price)),
+            )
+            .unwrap_or(f64::NAN),
+        );
 
         let ask_vwap5 = depth.ask_vwap(5);
         let ask_vwap20 = depth.ask_vwap(20);
@@ -598,6 +639,63 @@ impl SymbolCalcState {
         push_with_limit(&mut self.ask_mean_volume_20, ask_mean20);
 
         push_with_limit(&mut self.ask0v, ask0v);
+
+        for i in 0..10 {
+            push_with_limit(&mut self.bid_price_level_hist10[i], depth.bid_price(i));
+            push_with_limit(&mut self.ask_price_level_hist10[i], depth.ask_price(i));
+        }
+
+        let bid_pct_hmean = {
+            let mut pct = Vec::with_capacity(10);
+            for hist in &self.bid_price_level_hist10 {
+                if hist.len() <= 30 {
+                    pct.clear();
+                    break;
+                }
+                let prev = hist[hist.len() - 31];
+                let curr = hist[hist.len() - 1];
+                if !prev.is_finite() || !curr.is_finite() || prev.abs() <= 1e-12 {
+                    pct.clear();
+                    break;
+                }
+                let value = (curr - prev) / prev;
+                if !value.is_finite() || value.abs() <= 1e-12 {
+                    pct.clear();
+                    break;
+                }
+                pct.push(value);
+            }
+            weighted_harmonic_with_index_weights(&pct)
+        };
+        push_opt_with_limit(&mut self.factor_113_bid_price_pct_hmean, bid_pct_hmean);
+
+        let ask_pct_mean = {
+            let mut pct = Vec::with_capacity(10);
+            for hist in &self.ask_price_level_hist10 {
+                if hist.len() <= 30 {
+                    pct.clear();
+                    break;
+                }
+                let prev = hist[hist.len() - 31];
+                let curr = hist[hist.len() - 1];
+                if !prev.is_finite() || !curr.is_finite() || prev.abs() <= 1e-12 {
+                    pct.clear();
+                    break;
+                }
+                let value = (curr - prev) / prev;
+                if !value.is_finite() {
+                    pct.clear();
+                    break;
+                }
+                pct.push(value);
+            }
+            if pct.len() == 10 {
+                Some(pct.iter().sum::<f64>() / pct.len() as f64)
+            } else {
+                None
+            }
+        };
+        push_opt_with_limit(&mut self.factor_114_ask_price_pct_mean, ask_pct_mean);
 
         let ask_price_sum20 = depth.sum_ask_price(20);
         let prev_sum = self.factor_128_ask_price_sum.back().copied();
@@ -672,18 +770,6 @@ impl SymbolCalcState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SymbolFactorPlan {
-    ordered_factors: Vec<FactorBinding>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FactorBinding {
-    pub name: String,
-    pub factor_id: Option<FusionFactorId>,
-    pub extra_factor_id: Option<ExtraFactorId>,
-}
-
 #[derive(Default)]
 struct OrderedEvalStats {
     factor_plan_count: u64,
@@ -717,6 +803,7 @@ struct BootstrapSymbolReplayResult {
     all_ready_seen: bool,
     state: SymbolCalcState,
     rolling_stats: SymbolRollingStats,
+    norm_state: SymbolNormState,
     bootstrap_published: u64,
 }
 
@@ -740,130 +827,6 @@ impl ReplayEvalSummary {
     }
 }
 
-pub struct SymbolSeries<'a> {
-    pub open: SplitSlice<'a, f64>,
-    pub high: SplitSlice<'a, f64>,
-    pub low: SplitSlice<'a, f64>,
-    pub close: SplitSlice<'a, f64>,
-    pub volume: SplitSlice<'a, f64>,
-    pub amount: SplitSlice<'a, f64>,
-    pub buy_count: SplitSlice<'a, f64>,
-    pub sell_count: SplitSlice<'a, f64>,
-    pub buy_amount: SplitSlice<'a, f64>,
-    pub sell_amount: SplitSlice<'a, f64>,
-    pub buy_volume: SplitSlice<'a, f64>,
-    pub sell_volume: SplitSlice<'a, f64>,
-    pub large_order: SplitSlice<'a, f64>,
-    pub large_buy: SplitSlice<'a, f64>,
-    pub large_sell: SplitSlice<'a, f64>,
-    pub small_order: SplitSlice<'a, f64>,
-    pub small_buy: SplitSlice<'a, f64>,
-    pub small_sell: SplitSlice<'a, f64>,
-    pub vwap: SplitSlice<'a, f64>,
-    pub buy_vwap: SplitSlice<'a, f64>,
-    pub sell_vwap: SplitSlice<'a, f64>,
-    pub net_buy_large: SplitSlice<'a, f64>,
-    pub net_buy_small: SplitSlice<'a, f64>,
-    pub net_buy_amount: SplitSlice<'a, f64>,
-    pub bid0v: SplitSlice<'a, f64>,
-    pub mid_price: SplitSlice<'a, f64>,
-    pub spread: SplitSlice<'a, f64>,
-    pub relative_spread: SplitSlice<'a, f64>,
-    pub bid_vwap20: SplitSlice<'a, f64>,
-    pub total_bid20: SplitSlice<'a, f64>,
-    pub total_ask20: SplitSlice<'a, f64>,
-    pub top10_bid_volume: SplitSlice<'a, f64>,
-    pub top10_ask_volume: SplitSlice<'a, f64>,
-    pub top10_bid_mean: SplitSlice<'a, f64>,
-    pub top10_ask_mean: SplitSlice<'a, f64>,
-    pub bid9v: SplitSlice<'a, f64>,
-    pub ask9v: SplitSlice<'a, f64>,
-    pub mean_bid_vol20: SplitSlice<'a, f64>,
-    pub mean_bid_price20: SplitSlice<'a, f64>,
-    pub avg_ask_price5: SplitSlice<'a, f64>,
-    pub ask_pv15_mean: SplitSlice<'a, f64>,
-    pub bid_pv15_mean: SplitSlice<'a, f64>,
-    pub factor_031_ratio: SplitSlice<'a, f64>,
-    pub factor_119_mid_minus_ask_vwap5: SplitSlice<'a, f64>,
-    pub total_volume20_sum: SplitSlice<'a, f64>,
-    pub factor_152_pct_mean: SplitSlice<'a, Option<f64>>,
-    pub ask_vwap_diff_5_20: SplitSlice<'a, f64>,
-    pub ask_mean_volume_20: SplitSlice<'a, f64>,
-    pub ask0v: SplitSlice<'a, f64>,
-    pub ask_vwap20: SplitSlice<'a, f64>,
-    pub factor_128_skew: SplitSlice<'a, Option<f64>>,
-    pub factor_160_pct_change_mean: SplitSlice<'a, Option<f64>>,
-    pub corr_close_volume_14_last: Option<f64>,
-    pub corr_open_volume_300_last: Option<f64>,
-    pub corr_mid_midvol_300_last: Option<f64>,
-}
-
-#[derive(Clone, Copy)]
-pub struct SplitSlice<'a, T> {
-    first: &'a [T],
-    second: &'a [T],
-}
-
-impl<'a, T> SplitSlice<'a, T> {
-    pub fn from_parts(parts: (&'a [T], &'a [T])) -> Self {
-        Self {
-            first: parts.0,
-            second: parts.1,
-        }
-    }
-
-    pub fn len(&self) -> usize {
-        self.first.len() + self.second.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    pub fn get(&self, idx: usize) -> Option<&'a T> {
-        if idx < self.first.len() {
-            return self.first.get(idx);
-        }
-        self.second.get(idx.saturating_sub(self.first.len()))
-    }
-
-    pub fn last(&self) -> Option<&'a T> {
-        self.second.last().or_else(|| self.first.last())
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = &'a T> {
-        self.first.iter().chain(self.second.iter())
-    }
-
-    pub fn range_iter(&self, start: usize, end: usize) -> impl Iterator<Item = &'a T> {
-        let len = self.len();
-        let start = start.min(len);
-        let end = end.min(len);
-        if start >= end {
-            return self.first[0..0].iter().chain(self.second[0..0].iter());
-        }
-
-        let left_len = self.first.len();
-        let left_start = start.min(left_len);
-        let left_end = end.min(left_len);
-        let right_start = start.saturating_sub(left_len).min(self.second.len());
-        let right_end = end.saturating_sub(left_len).min(self.second.len());
-
-        self.first[left_start..left_end]
-            .iter()
-            .chain(self.second[right_start..right_end].iter())
-    }
-}
-
-impl<T> Index<usize> for SplitSlice<'_, T> {
-    type Output = T;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        self.get(index)
-            .unwrap_or_else(|| panic!("split-slice index out of bounds: {}", index))
-    }
-}
-
 impl F64SeriesView for SplitSlice<'_, f64> {
     fn len(&self) -> usize {
         SplitSlice::len(self)
@@ -884,66 +847,6 @@ impl OptF64SeriesView for SplitSlice<'_, Option<f64>> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExtraFactorId {
-    AvgPrice,
-    BuyAvgPrice,
-    SellAvgPrice,
-    SmallBuy,
-    SmallSell,
-    NetBuyLarge,
-}
-
-impl ExtraFactorId {
-    pub fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "avg_price" => Some(Self::AvgPrice),
-            "buy_avg_price" => Some(Self::BuyAvgPrice),
-            "sell_avg_price" => Some(Self::SellAvgPrice),
-            "small_buy" => Some(Self::SmallBuy),
-            "small_sell" => Some(Self::SmallSell),
-            "net_buy_large" => Some(Self::NetBuyLarge),
-            _ => None,
-        }
-    }
-
-    pub const fn as_index(self) -> u16 {
-        const EXTRA_FACTOR_BASE: u16 = 1000;
-        match self {
-            Self::AvgPrice => EXTRA_FACTOR_BASE,
-            Self::BuyAvgPrice => EXTRA_FACTOR_BASE + 1,
-            Self::SellAvgPrice => EXTRA_FACTOR_BASE + 2,
-            Self::SmallBuy => EXTRA_FACTOR_BASE + 3,
-            Self::SmallSell => EXTRA_FACTOR_BASE + 4,
-            Self::NetBuyLarge => EXTRA_FACTOR_BASE + 5,
-        }
-    }
-
-    pub fn from_index(index: u16) -> Option<Self> {
-        const EXTRA_FACTOR_BASE: u16 = 1000;
-        match index {
-            x if x == EXTRA_FACTOR_BASE => Some(Self::AvgPrice),
-            x if x == EXTRA_FACTOR_BASE + 1 => Some(Self::BuyAvgPrice),
-            x if x == EXTRA_FACTOR_BASE + 2 => Some(Self::SellAvgPrice),
-            x if x == EXTRA_FACTOR_BASE + 3 => Some(Self::SmallBuy),
-            x if x == EXTRA_FACTOR_BASE + 4 => Some(Self::SmallSell),
-            x if x == EXTRA_FACTOR_BASE + 5 => Some(Self::NetBuyLarge),
-            _ => None,
-        }
-    }
-
-    pub fn index_to_name(index: u16) -> Option<&'static str> {
-        Self::from_index(index).map(|id| match id {
-            Self::AvgPrice => "avg_price",
-            Self::BuyAvgPrice => "buy_avg_price",
-            Self::SellAvgPrice => "sell_avg_price",
-            Self::SmallBuy => "small_buy",
-            Self::SmallSell => "small_sell",
-            Self::NetBuyLarge => "net_buy_large",
-        })
-    }
-}
-
 pub struct FusionFactorPubApp {
     venue_slug: String,
     venue: TradingVenue,
@@ -951,13 +854,15 @@ pub struct FusionFactorPubApp {
     trade_flow_subscriber: Subscriber<ipc::Service, [u8; TRADE_FLOW_MAX_BYTES], ()>,
     tlen_server: Option<TlenServerConfig>,
     publisher: Option<FusionFactorPublisher>,
+    zscore_config: ZscoreRuntimeConfig,
     rl_config: RlReturnVolatilityRuntimeConfig,
     rl_publisher: RlFactorPublisher,
     allowed_symbols: HashSet<String>,
     symbol_all_ready_seen: HashSet<String>,
-    symbol_factor_plans: Option<HashMap<String, SymbolFactorPlan>>,
+    venue_factor_plan: Option<SymbolFactorPlan>,
     symbol_states: HashMap<String, SymbolCalcState>,
     symbol_rolling_stats: HashMap<String, SymbolRollingStats>,
+    symbol_norm_states: HashMap<String, SymbolNormState>,
     depth_attached_count: u64,
     trade_flow_raw_count: u64,
     trade_flow_count: u64,
@@ -991,16 +896,34 @@ impl FusionFactorPubApp {
         let venue_slug = venue.data_pub_slug().to_string();
         let trade_flow_feature_rocksdb_path = resolve_trade_flow_feature_rocksdb_path(&venue_slug)?;
         let tlen_server = cfg.tlen_server.clone();
-        let symbol_factor_plans =
-            load_symbol_factor_plans_from_tlen_server(&cfg.tlen_server, venue, &venue_slug)
+        let zscore_config = load_zscore_config_from_tlen_server(&cfg.tlen_server, &venue_slug)
+            .await
+            .with_context(|| {
+                format!(
+                    "load zscore config from tlen_server failed: venue={}",
+                    venue_slug
+                )
+            })?;
+        let venue_factor_plan =
+            load_venue_factor_plan_from_tlen_server(&cfg.tlen_server, &venue_slug)
                 .await
                 .with_context(|| {
                     format!(
-                        "load factor plans from tlen_server failed: venue={}",
+                        "load venue factor plan from tlen_server failed: venue={}",
                         venue_slug
                     )
                 })?;
-        let allowed_symbols: Vec<String> = symbol_factor_plans.keys().cloned().collect();
+        let allowed_symbols: Vec<String> =
+            load_online_symbols_from_tlen_server(&cfg.tlen_server, venue, &venue_slug)
+                .await
+                .with_context(|| {
+                    format!(
+                        "load online symbols from tlen_server failed: venue={}",
+                        venue_slug
+                    )
+                })?
+                .into_iter()
+                .collect();
         if allowed_symbols.is_empty() {
             anyhow::bail!(
                 "tlen_server returned no online amount_threshold symbols for venue={}",
@@ -1026,13 +949,25 @@ impl FusionFactorPubApp {
             "FusionFactorPubApp created: venue={} mode={} symbol_source={} symbols={} sample={} trade_flow_channel=factor_pub/{}/{} rocksdb_path={} output_service={}",
             venue_slug,
             "fusion+rl",
-            "tlen_server.amount_thresholds+factor_plan",
+            "tlen_server.amount_thresholds+factor_plan[__shared__]",
             allowed_symbols.len(),
             format_symbol_sample(&allowed_symbols),
             venue_slug,
             cfg.trade_flow_channel(),
             trade_flow_feature_rocksdb_path,
             output_service_path,
+        );
+        info!(
+            "FusionFactorPubApp[{}] venue factor plan loaded: factors={}",
+            venue_slug,
+            venue_factor_plan.ordered_factors.len(),
+        );
+        info!(
+            "FusionFactorPubApp[{}] zscore config: source=tlen_server.zscore window_size={} min_samples={} zscore_cap={}",
+            venue_slug,
+            zscore_config.window_size,
+            zscore_config.min_samples,
+            zscore_config.zscore_cap,
         );
         info!(
             "FusionFactorPubApp[{}] rl config: factor={} source={} pct_change_period={} rolling_window={} scale_factor={} clip={:?}",
@@ -1052,13 +987,15 @@ impl FusionFactorPubApp {
             trade_flow_subscriber,
             tlen_server: Some(tlen_server.clone()),
             publisher: Some(publisher),
+            zscore_config,
             rl_config,
             rl_publisher,
             allowed_symbols: allowed_symbols.into_iter().collect(),
             symbol_all_ready_seen: HashSet::new(),
-            symbol_factor_plans: Some(symbol_factor_plans),
+            venue_factor_plan: Some(venue_factor_plan),
             symbol_states: HashMap::new(),
             symbol_rolling_stats: HashMap::new(),
+            symbol_norm_states: HashMap::new(),
             depth_attached_count: 0,
             trade_flow_raw_count: 0,
             trade_flow_count: 0,
@@ -1145,40 +1082,64 @@ impl FusionFactorPubApp {
         let Some(tlen_server) = self.tlen_server.clone() else {
             return;
         };
-        match load_symbol_factor_plans_from_tlen_server(&tlen_server, self.venue, &self.venue_slug)
-            .await
+        match load_zscore_config_from_tlen_server(&tlen_server, &self.venue_slug).await {
+            Ok(zscore_config) => {
+                self.apply_zscore_config_update(zscore_config);
+            }
+            Err(err) => {
+                self.warn_symbol_reload_throttled(&format!(
+                    "fusion zscore config reload failed: venue={} err={:#}",
+                    self.venue_slug, err
+                ));
+            }
+        }
+        match load_online_symbols_from_tlen_server(&tlen_server, self.venue, &self.venue_slug).await
         {
-            Ok(plans) => {
-                if let Err(err) = self.apply_allowed_symbol_plan_update(plans).await {
+            Ok(symbols) => {
+                if let Err(err) = self.apply_allowed_symbol_update(symbols).await {
                     self.warn_symbol_reload_throttled(&format!(
-                        "fusion factor_plan reload apply failed: venue={} err={:#}",
+                        "fusion online symbol reload apply failed: venue={} err={:#}",
                         self.venue_slug, err
                     ));
                 }
             }
             Err(err) => {
                 self.warn_symbol_reload_throttled(&format!(
-                    "fusion factor_plan reload failed: venue={} err={:#}",
+                    "fusion online symbol reload failed: venue={} err={:#}",
                     self.venue_slug, err
                 ));
             }
         }
     }
 
-    async fn apply_allowed_symbol_plan_update(
-        &mut self,
-        plans: HashMap<String, SymbolFactorPlan>,
-    ) -> Result<()> {
-        let new_allowed: HashSet<String> = plans.keys().cloned().collect();
-        if new_allowed.is_empty() {
-            anyhow::bail!("factor_plan reload produced empty set");
+    fn apply_zscore_config_update(&mut self, new_config: ZscoreRuntimeConfig) {
+        if self.zscore_config == new_config {
+            return;
         }
-        let plan_changed = self
-            .symbol_factor_plans
-            .as_ref()
-            .map(|current| current != &plans)
-            .unwrap_or(true);
-        if new_allowed == self.allowed_symbols && !plan_changed {
+
+        let old_config = self.zscore_config.clone();
+        let cleared_symbols = self.symbol_norm_states.len();
+        self.zscore_config = new_config.clone();
+        self.symbol_norm_states.clear();
+
+        info!(
+            "FusionFactorPubApp[{}] zscore config reloaded: old={{window_size:{} min_samples:{} zscore_cap:{}}} new={{window_size:{} min_samples:{} zscore_cap:{}}} cleared_norm_symbols={}",
+            self.venue_slug,
+            old_config.window_size,
+            old_config.min_samples,
+            old_config.zscore_cap,
+            new_config.window_size,
+            new_config.min_samples,
+            new_config.zscore_cap,
+            cleared_symbols,
+        );
+    }
+
+    async fn apply_allowed_symbol_update(&mut self, new_allowed: HashSet<String>) -> Result<()> {
+        if new_allowed.is_empty() {
+            anyhow::bail!("online symbol reload produced empty set");
+        }
+        if new_allowed == self.allowed_symbols {
             return Ok(());
         }
 
@@ -1193,18 +1154,18 @@ impl FusionFactorPubApp {
             .retain(|symbol, _| self.allowed_symbols.contains(symbol));
         self.symbol_rolling_stats
             .retain(|symbol, _| self.allowed_symbols.contains(symbol));
+        self.symbol_norm_states
+            .retain(|symbol, _| self.allowed_symbols.contains(symbol));
         self.symbol_all_ready_seen
             .retain(|symbol| self.allowed_symbols.contains(symbol));
-        self.symbol_factor_plans = Some(plans);
 
         info!(
-            "FusionFactorPubApp[{}] factor plans reloaded: online_symbols={} sample={} retired_symbols={} retired_sample={} plan_changed={}",
+            "FusionFactorPubApp[{}] online symbols reloaded: online_symbols={} sample={} retired_symbols={} retired_sample={}",
             self.venue_slug,
             self.allowed_symbols.len(),
             format_symbol_sample_set(&self.allowed_symbols),
             retired.len(),
             format_symbol_sample_set(&retired),
-            plan_changed,
         );
         Ok(())
     }
@@ -1506,7 +1467,8 @@ impl FusionFactorPubApp {
             symbol_records.len(),
         );
         let venue_slug = self.venue_slug.clone();
-        let symbol_factor_plans = self.symbol_factor_plans.clone();
+        let venue_factor_plan = self.venue_factor_plan.clone();
+        let zscore_config = self.zscore_config.clone();
         let mut publisher = self.publisher.take();
 
         let mut total_loaded = 0usize;
@@ -1520,8 +1482,9 @@ impl FusionFactorPubApp {
         for sr in symbol_records_vec {
             let symbol_result = Self::replay_symbol_records(
                 &venue_slug,
-                symbol_factor_plans.as_ref(),
+                venue_factor_plan.as_ref(),
                 sr,
+                &zscore_config,
                 publisher.as_mut(),
             );
             let BootstrapSymbolReplayResult {
@@ -1532,6 +1495,7 @@ impl FusionFactorPubApp {
                 all_ready_seen,
                 state,
                 rolling_stats,
+                norm_state,
                 bootstrap_published,
             } = symbol_result;
             total_loaded = total_loaded.saturating_add(loaded);
@@ -1545,6 +1509,7 @@ impl FusionFactorPubApp {
             self.symbol_states.insert(symbol.clone(), state);
             self.symbol_rolling_stats
                 .insert(symbol.clone(), rolling_stats);
+            self.symbol_norm_states.insert(symbol.clone(), norm_state);
             info!(
                 "FusionFactorPubApp[{}] rocksdb bootstrap symbol done: symbol={} loaded={} calculated={} reload={} published={} total_loaded={}",
                 self.venue_slug,
@@ -1573,8 +1538,9 @@ impl FusionFactorPubApp {
 
     fn replay_symbol_records(
         venue_slug: &str,
-        symbol_factor_plans: Option<&HashMap<String, SymbolFactorPlan>>,
+        venue_factor_plan: Option<&SymbolFactorPlan>,
         symbol_records: BootstrapSymbolRecords,
+        zscore_config: &ZscoreRuntimeConfig,
         mut publisher: Option<&mut FusionFactorPublisher>,
     ) -> BootstrapSymbolReplayResult {
         let BootstrapSymbolRecords {
@@ -1593,7 +1559,8 @@ impl FusionFactorPubApp {
         let mut interval_warming_up = 0u64;
         let mut interval_other_status = 0u64;
         let mut rolling_stats = SymbolRollingStats::default();
-        let plan = symbol_factor_plans.and_then(|plans| plans.get(&symbol));
+        let mut norm_state = SymbolNormState::new(zscore_config.window_size, 0);
+        let plan = venue_factor_plan;
         let needs_factor_118 = plan
             .map(|plan| {
                 plan.ordered_factors
@@ -1634,13 +1601,20 @@ impl FusionFactorPubApp {
                     );
                     if eval_result.status == 0 {
                         all_ready_seen = true;
-                        if let Some(publisher) = publisher.as_deref_mut() {
+                        let normalized = normalize_feature_values(
+                            &mut norm_state,
+                            &eval_result.factor_values,
+                            zscore_config,
+                        );
+                        if let (Some(normalized), Some(publisher)) =
+                            (normalized, publisher.as_deref_mut())
+                        {
                             let ts_ms = msg.ts / 1000;
                             let feature_msg = FeatureMsg::create(
                                 symbol.clone(),
                                 ts_ms,
                                 FeatureStatus::Reload as u8,
-                                eval_result.factor_values.clone(),
+                                normalized,
                             );
                             if let Ok(bytes) = feature_msg.to_bytes() {
                                 publisher.publish(&bytes);
@@ -1708,6 +1682,7 @@ impl FusionFactorPubApp {
             all_ready_seen,
             state,
             rolling_stats,
+            norm_state,
             bootstrap_published,
         }
     }
@@ -1912,7 +1887,7 @@ impl FusionFactorPubApp {
             }
         }
 
-        if self.symbol_factor_plans.is_none() {
+        if self.venue_factor_plan.is_none() {
             return Some(ReplayEvalSummary::missing_plan());
         }
 
@@ -1979,10 +1954,20 @@ impl FusionFactorPubApp {
 
         self.log_factor_summary(&symbol, eval_elapsed_us, &eval_result);
 
+        let normalized = {
+            let norm_state = self
+                .symbol_norm_states
+                .entry(symbol.clone())
+                .or_insert_with(|| SymbolNormState::new(self.zscore_config.window_size, 0));
+            normalize_feature_values(norm_state, &eval_result.factor_values, &self.zscore_config)
+        };
+        let Some(normalized) = normalized else {
+            return Some(replay_summary);
+        };
+
         // Publish FeatureMsg via iceoryx2
         let ts_ms = msg.ts / 1000; // ts is in microseconds, convert to ms
-        let feature_msg =
-            FeatureMsg::create(symbol, ts_ms, eval_result.status, eval_result.factor_values);
+        let feature_msg = FeatureMsg::create(symbol, ts_ms, eval_result.status, normalized);
         match feature_msg.to_bytes() {
             Ok(bytes) => {
                 if self
@@ -2023,9 +2008,8 @@ impl FusionFactorPubApp {
         depth: Option<&DepthDerived>,
     ) -> Option<OrderedEvalResult> {
         let needs_factor_118 = {
-            let symbol_factor_plans = self.symbol_factor_plans.as_ref()?;
-            symbol_factor_plans
-                .get(symbol)?
+            let venue_factor_plan = self.venue_factor_plan.as_ref()?;
+            venue_factor_plan
                 .ordered_factors
                 .iter()
                 .any(|factor| factor.factor_id == Some(FusionFactorId::Factor118))
@@ -2039,8 +2023,7 @@ impl FusionFactorPubApp {
             let state = self.symbol_states.get_mut(symbol)?;
             Self::build_symbol_series_from_state(state)
         };
-        let symbol_factor_plans = self.symbol_factor_plans.as_ref()?;
-        let plan = symbol_factor_plans.get(symbol)?;
+        let plan = self.venue_factor_plan.as_ref()?;
         Some(Self::evaluate_ordered_factors_with_plan(
             plan,
             factor_118_result,
@@ -2190,6 +2173,8 @@ impl FusionFactorPubApp {
             close: SplitSlice::from_parts(state.close.as_slices()),
             volume: SplitSlice::from_parts(state.volume.as_slices()),
             amount: SplitSlice::from_parts(state.amount.as_slices()),
+            count: SplitSlice::from_parts(state.count.as_slices()),
+            trade_time: SplitSlice::from_parts(state.trade_time.as_slices()),
             buy_count: SplitSlice::from_parts(state.buy_count.as_slices()),
             sell_count: SplitSlice::from_parts(state.sell_count.as_slices()),
             buy_amount: SplitSlice::from_parts(state.buy_amount.as_slices()),
@@ -2221,9 +2206,15 @@ impl FusionFactorPubApp {
             top10_ask_mean: SplitSlice::from_parts(state.top10_ask_mean.as_slices()),
             bid9v: SplitSlice::from_parts(state.bid9v.as_slices()),
             ask9v: SplitSlice::from_parts(state.ask9v.as_slices()),
+            bid9p: SplitSlice::from_parts(state.bid9p.as_slices()),
+            combined_level9_volume: SplitSlice::from_parts(
+                state.combined_level9_volume.as_slices(),
+            ),
             mean_bid_vol20: SplitSlice::from_parts(state.mean_bid_vol20.as_slices()),
+            mean_bid_price5: SplitSlice::from_parts(state.mean_bid_price5.as_slices()),
             mean_bid_price20: SplitSlice::from_parts(state.mean_bid_price20.as_slices()),
             avg_ask_price5: SplitSlice::from_parts(state.avg_ask_price5.as_slices()),
+            mean_ask_price15: SplitSlice::from_parts(state.mean_ask_price15.as_slices()),
             ask_pv15_mean: SplitSlice::from_parts(state.ask_pv15_mean.as_slices()),
             bid_pv15_mean: SplitSlice::from_parts(state.bid_pv15_mean.as_slices()),
             factor_031_ratio: SplitSlice::from_parts(state.factor_031_ratio.as_slices()),
@@ -2231,11 +2222,18 @@ impl FusionFactorPubApp {
                 state.factor_119_mid_minus_ask_vwap5.as_slices(),
             ),
             total_volume20_sum: SplitSlice::from_parts(state.total_volume20_sum.as_slices()),
+            median_all_price40: SplitSlice::from_parts(state.median_all_price40.as_slices()),
             factor_152_pct_mean: SplitSlice::from_parts(state.factor_152_pct_mean.as_slices()),
             ask_vwap_diff_5_20: SplitSlice::from_parts(state.ask_vwap_diff_5_20.as_slices()),
             ask_mean_volume_20: SplitSlice::from_parts(state.ask_mean_volume_20.as_slices()),
             ask0v: SplitSlice::from_parts(state.ask0v.as_slices()),
             ask_vwap20: SplitSlice::from_parts(state.ask_vwap20.as_slices()),
+            factor_113_bid_price_pct_hmean: SplitSlice::from_parts(
+                state.factor_113_bid_price_pct_hmean.as_slices(),
+            ),
+            factor_114_ask_price_pct_mean: SplitSlice::from_parts(
+                state.factor_114_ask_price_pct_mean.as_slices(),
+            ),
             factor_128_skew: SplitSlice::from_parts(state.factor_128_skew.as_slices()),
             factor_160_pct_change_mean: SplitSlice::from_parts(
                 state.factor_160_pct_change_mean.as_slices(),
@@ -2246,12 +2244,18 @@ impl FusionFactorPubApp {
         }
     }
 
-    pub fn compute_supported_factor(
+    pub(crate) fn compute_supported_factor(
         binding: &FactorBinding,
         factor_118_result: Option<(f64, bool, usize)>,
         depth: Option<&DepthDerived>,
         series: Option<&SymbolSeries<'_>>,
     ) -> Option<(f64, bool, &'static str)> {
+        if baseline_engine::is_supported_baseline(&binding.name) {
+            return Some(Self::wrap_factor_value(
+                series.and_then(|s| baseline_engine::compute_baseline(&binding.name, s)),
+            ));
+        }
+
         match binding.factor_id {
             Some(FusionFactorId::Factor118) => {
                 let out = match factor_118_result {
@@ -2528,6 +2532,11 @@ impl FusionFactorPubApp {
                     series.and_then(Self::compute_factor_001),
                 ));
             }
+            Some(FusionFactorId::Factor002) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_002),
+                ));
+            }
             Some(FusionFactorId::Factor003) => {
                 return Some(Self::wrap_factor_value(
                     depth.and_then(Self::compute_factor_003),
@@ -2543,6 +2552,11 @@ impl FusionFactorPubApp {
                     depth.and_then(Self::compute_factor_006),
                 ));
             }
+            Some(FusionFactorId::Factor008) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_008),
+                ));
+            }
             Some(FusionFactorId::Factor009) => {
                 return Some(Self::wrap_factor_value(
                     depth.and_then(Self::compute_factor_009),
@@ -2556,6 +2570,11 @@ impl FusionFactorPubApp {
             Some(FusionFactorId::Factor011) => {
                 return Some(Self::wrap_factor_value(
                     series.and_then(Self::compute_factor_011),
+                ));
+            }
+            Some(FusionFactorId::Factor012) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_012),
                 ));
             }
             Some(FusionFactorId::Factor014) => {
@@ -2583,6 +2602,11 @@ impl FusionFactorPubApp {
                     series.and_then(Self::compute_factor_019),
                 ));
             }
+            Some(FusionFactorId::Factor020) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_020),
+                ));
+            }
             Some(FusionFactorId::Factor021) => {
                 return Some(Self::wrap_factor_value(
                     series.and_then(Self::compute_factor_021),
@@ -2608,9 +2632,19 @@ impl FusionFactorPubApp {
                     depth.and_then(Self::compute_factor_025),
                 ));
             }
+            Some(FusionFactorId::Factor026) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_026),
+                ));
+            }
             Some(FusionFactorId::Factor027) => {
                 return Some(Self::wrap_factor_value(
                     depth.and_then(Self::compute_factor_027),
+                ));
+            }
+            Some(FusionFactorId::Factor028) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_028),
                 ));
             }
             Some(FusionFactorId::Factor029) => {
@@ -2643,6 +2677,11 @@ impl FusionFactorPubApp {
                     depth.and_then(Self::compute_factor_035),
                 ));
             }
+            Some(FusionFactorId::Factor036) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_036),
+                ));
+            }
             Some(FusionFactorId::Factor037) => {
                 return Some(Self::wrap_factor_value(
                     depth.and_then(Self::compute_factor_037),
@@ -2653,9 +2692,24 @@ impl FusionFactorPubApp {
                     depth.and_then(Self::compute_factor_038),
                 ));
             }
+            Some(FusionFactorId::Factor040) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_040),
+                ));
+            }
             Some(FusionFactorId::Factor041) => {
                 return Some(Self::wrap_factor_value(
                     depth.and_then(Self::compute_factor_041),
+                ));
+            }
+            Some(FusionFactorId::Factor042) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_042),
+                ));
+            }
+            Some(FusionFactorId::Factor043) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_043),
                 ));
             }
             Some(FusionFactorId::Factor045) => {
@@ -2678,6 +2732,11 @@ impl FusionFactorPubApp {
                     series.and_then(Self::compute_factor_048),
                 ));
             }
+            Some(FusionFactorId::Factor049) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_049),
+                ));
+            }
             Some(FusionFactorId::Factor051) => {
                 return Some(Self::wrap_factor_value(
                     series.and_then(Self::compute_factor_051),
@@ -2686,6 +2745,11 @@ impl FusionFactorPubApp {
             Some(FusionFactorId::Factor052) => {
                 return Some(Self::wrap_factor_value(
                     series.and_then(Self::compute_factor_052),
+                ));
+            }
+            Some(FusionFactorId::Factor053) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_053),
                 ));
             }
             Some(FusionFactorId::Factor054) => {
@@ -2708,6 +2772,16 @@ impl FusionFactorPubApp {
                     series.and_then(Self::compute_factor_057),
                 ));
             }
+            Some(FusionFactorId::Factor058) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_058),
+                ));
+            }
+            Some(FusionFactorId::Factor059) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_059),
+                ));
+            }
             Some(FusionFactorId::Factor060) => {
                 return Some(Self::wrap_factor_value(
                     series.and_then(Self::compute_factor_060),
@@ -2718,9 +2792,19 @@ impl FusionFactorPubApp {
                     series.and_then(Self::compute_factor_061),
                 ));
             }
+            Some(FusionFactorId::Factor062) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_062),
+                ));
+            }
             Some(FusionFactorId::Factor063) => {
                 return Some(Self::wrap_factor_value(
                     depth.and_then(Self::compute_factor_063),
+                ));
+            }
+            Some(FusionFactorId::Factor064) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_064),
                 ));
             }
             Some(FusionFactorId::Factor065) => {
@@ -2731,6 +2815,31 @@ impl FusionFactorPubApp {
             Some(FusionFactorId::Factor066) => {
                 return Some(Self::wrap_factor_value(
                     depth.and_then(Self::compute_factor_066),
+                ));
+            }
+            Some(FusionFactorId::Factor067) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_067),
+                ));
+            }
+            Some(FusionFactorId::Factor068) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_068),
+                ));
+            }
+            Some(FusionFactorId::Factor069) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_069),
+                ));
+            }
+            Some(FusionFactorId::Factor070) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_070),
+                ));
+            }
+            Some(FusionFactorId::Factor073) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_073),
                 ));
             }
             Some(FusionFactorId::Factor074) => {
@@ -2753,6 +2862,21 @@ impl FusionFactorPubApp {
                     depth.and_then(Self::compute_factor_077),
                 ));
             }
+            Some(FusionFactorId::Factor079) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_079),
+                ));
+            }
+            Some(FusionFactorId::Factor080) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_080),
+                ));
+            }
+            Some(FusionFactorId::Factor085) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_085),
+                ));
+            }
             Some(FusionFactorId::Factor086) => {
                 return Some(Self::wrap_factor_value(
                     depth.and_then(Self::compute_factor_086),
@@ -2773,9 +2897,24 @@ impl FusionFactorPubApp {
                     depth.and_then(Self::compute_factor_089),
                 ));
             }
+            Some(FusionFactorId::Factor091) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_091),
+                ));
+            }
+            Some(FusionFactorId::Factor093) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_093),
+                ));
+            }
             Some(FusionFactorId::Factor094) => {
                 return Some(Self::wrap_factor_value(
                     series.and_then(Self::compute_factor_094),
+                ));
+            }
+            Some(FusionFactorId::Factor095) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_095),
                 ));
             }
             Some(FusionFactorId::Factor096) => {
@@ -2793,6 +2932,11 @@ impl FusionFactorPubApp {
                     depth.and_then(Self::compute_factor_102),
                 ));
             }
+            Some(FusionFactorId::Factor103) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_103),
+                ));
+            }
             Some(FusionFactorId::Factor107) => {
                 return Some(Self::wrap_factor_value(
                     depth.and_then(Self::compute_factor_107),
@@ -2808,6 +2952,26 @@ impl FusionFactorPubApp {
                     depth.and_then(Self::compute_factor_110),
                 ));
             }
+            Some(FusionFactorId::Factor111) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_111),
+                ));
+            }
+            Some(FusionFactorId::Factor113) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_113),
+                ));
+            }
+            Some(FusionFactorId::Factor114) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_114),
+                ));
+            }
+            Some(FusionFactorId::Factor115) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_115),
+                ));
+            }
             Some(FusionFactorId::Factor116) => {
                 return Some(Self::wrap_factor_value(
                     series.and_then(Self::compute_factor_116),
@@ -2818,9 +2982,19 @@ impl FusionFactorPubApp {
                     series.and_then(Self::compute_factor_119),
                 ));
             }
+            Some(FusionFactorId::Factor120) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_120),
+                ));
+            }
             Some(FusionFactorId::Factor121) => {
                 return Some(Self::wrap_factor_value(
                     depth.and_then(Self::compute_factor_121),
+                ));
+            }
+            Some(FusionFactorId::Factor122) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_122),
                 ));
             }
             Some(FusionFactorId::Factor123) => {
@@ -2833,6 +3007,11 @@ impl FusionFactorPubApp {
                     depth.and_then(Self::compute_factor_124),
                 ));
             }
+            Some(FusionFactorId::Factor125) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_125),
+                ));
+            }
             Some(FusionFactorId::Factor126) => {
                 return Some(Self::wrap_factor_value(
                     depth.and_then(Self::compute_factor_126),
@@ -2841,6 +3020,16 @@ impl FusionFactorPubApp {
             Some(FusionFactorId::Factor128) => {
                 return Some(Self::wrap_factor_value(
                     series.and_then(Self::compute_factor_128),
+                ));
+            }
+            Some(FusionFactorId::Factor129) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_129),
+                ));
+            }
+            Some(FusionFactorId::Factor130) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_130),
                 ));
             }
             Some(FusionFactorId::Factor133) => {
@@ -2876,6 +3065,11 @@ impl FusionFactorPubApp {
             Some(FusionFactorId::Factor156) => {
                 return Some(Self::wrap_factor_value(
                     depth.and_then(Self::compute_factor_156),
+                ));
+            }
+            Some(FusionFactorId::Factor159) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_159),
                 ));
             }
             Some(FusionFactorId::Factor160) => {
@@ -2916,181 +3110,6 @@ impl FusionFactorPubApp {
             Some(FusionFactorId::Factor164) => {
                 return Some(Self::wrap_factor_value(
                     series.and_then(Self::compute_factor_164),
-                ));
-            }
-            Some(FusionFactorId::Baseline018) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_018),
-                ));
-            }
-            Some(FusionFactorId::Baseline004) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_004),
-                ));
-            }
-            Some(FusionFactorId::Baseline007) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_007),
-                ));
-            }
-            Some(FusionFactorId::Baseline008) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_008),
-                ));
-            }
-            Some(FusionFactorId::Baseline016) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_016),
-                ));
-            }
-            Some(FusionFactorId::Baseline028) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_028),
-                ));
-            }
-            Some(FusionFactorId::Baseline034) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_034),
-                ));
-            }
-            Some(FusionFactorId::Baseline040) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_040),
-                ));
-            }
-            Some(FusionFactorId::Baseline045) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_045),
-                ));
-            }
-            Some(FusionFactorId::Baseline046) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_046),
-                ));
-            }
-            Some(FusionFactorId::Baseline047) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_047),
-                ));
-            }
-            Some(FusionFactorId::Baseline073) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_073),
-                ));
-            }
-            Some(FusionFactorId::Baseline076) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_076),
-                ));
-            }
-            Some(FusionFactorId::Baseline079) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_079),
-                ));
-            }
-            Some(FusionFactorId::Baseline080) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_080),
-                ));
-            }
-            Some(FusionFactorId::Baseline082) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_082),
-                ));
-            }
-            Some(FusionFactorId::Baseline135) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_135),
-                ));
-            }
-            Some(FusionFactorId::Baseline100) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_100),
-                ));
-            }
-            Some(FusionFactorId::Baseline113) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_113),
-                ));
-            }
-            Some(FusionFactorId::Baseline116) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_116),
-                ));
-            }
-            Some(FusionFactorId::Baseline117) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_117),
-                ));
-            }
-            Some(FusionFactorId::Baseline120) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_120),
-                ));
-            }
-            Some(FusionFactorId::Baseline134) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_134),
-                ));
-            }
-            Some(FusionFactorId::Baseline137) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_137),
-                ));
-            }
-            Some(FusionFactorId::Baseline140) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_140),
-                ));
-            }
-            Some(FusionFactorId::Baseline141) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_141),
-                ));
-            }
-            Some(FusionFactorId::Baseline163) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_163),
-                ));
-            }
-            Some(FusionFactorId::Baseline164) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_164),
-                ));
-            }
-            Some(FusionFactorId::Baseline172) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_172),
-                ));
-            }
-            Some(FusionFactorId::Baseline177) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_177),
-                ));
-            }
-            Some(FusionFactorId::Baseline178) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_178),
-                ));
-            }
-            Some(FusionFactorId::Baseline189) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_189),
-                ));
-            }
-            Some(FusionFactorId::Baseline191) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_191),
-                ));
-            }
-            Some(FusionFactorId::Baseline193) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_193),
-                ));
-            }
-            Some(FusionFactorId::Baseline196) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_baseline_196),
                 ));
             }
             Some(_) | None => {}
@@ -3291,6 +3310,15 @@ impl FusionFactorPubApp {
         finite_opt(Some(value))
     }
 
+    fn compute_factor_002(depth: &DepthDerived) -> Option<f64> {
+        let bid = depth.sum_bid_amount(20);
+        let ask = depth.sum_ask_amount(20);
+        if bid.abs() <= 1e-12 {
+            return Some(0.0);
+        }
+        finite_opt(Some(ask / bid))
+    }
+
     fn compute_factor_003(depth: &DepthDerived) -> Option<f64> {
         let bid = depth_sum_price(&depth.bids, 15);
         let ask = depth_sum_price(&depth.asks, 15);
@@ -3299,6 +3327,20 @@ impl FusionFactorPubApp {
             return Some(0.0);
         }
         finite_opt(Some((bid - ask) / den))
+    }
+
+    fn compute_factor_004(series: &SymbolSeries<'_>, depth: Option<&DepthDerived>) -> Option<f64> {
+        let depth = depth?;
+        let buy_vwap = *series.buy_vwap.last()?;
+        let (bid0p, _) = depth_best_bid(depth);
+        let (ask0p, _) = depth_best_ask(depth);
+        let mid = (bid0p + ask0p) / 2.0;
+        let value = mid - buy_vwap;
+        if value.is_finite() {
+            Some(value)
+        } else {
+            Some(0.0)
+        }
     }
 
     fn compute_factor_006(depth: &DepthDerived) -> Option<f64> {
@@ -3315,6 +3357,30 @@ impl FusionFactorPubApp {
         finite_opt(Some((bid_strength - ask_strength) / den))
     }
 
+    fn compute_factor_008(depth: &DepthDerived) -> Option<f64> {
+        let diffs: Vec<f64> = (0..10)
+            .map(|i| {
+                depth_level_price(&depth.bids, i) * depth_level_amount(&depth.bids, i)
+                    - depth_level_price(&depth.asks, i) * depth_level_amount(&depth.asks, i)
+            })
+            .collect();
+        std_pop(&diffs)
+    }
+
+    fn compute_factor_009(depth: &DepthDerived) -> Option<f64> {
+        let (bid0p, _) = depth_best_bid(depth);
+        let (ask0p, _) = depth_best_ask(depth);
+        if bid0p <= 0.0 || ask0p <= 0.0 {
+            return Some(0.0);
+        }
+        let value = ask0p.ln() - bid0p.ln();
+        if value.is_finite() {
+            Some(value)
+        } else {
+            Some(0.0)
+        }
+    }
+
     fn compute_factor_010(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.bid_vwap20.len();
         if n < 2 {
@@ -3329,6 +3395,16 @@ impl FusionFactorPubApp {
             return None;
         }
         finite_opt(Some(series.ask_vwap20[n - 1] - series.ask_vwap20[n - 2]))
+    }
+
+    fn compute_factor_012(depth: &DepthDerived) -> Option<f64> {
+        let bid = depth.bid_pxv_prefix[20];
+        let ask = depth.ask_pxv_prefix[20];
+        let den = bid + ask;
+        if den.abs() <= 1e-12 {
+            return Some(0.0);
+        }
+        finite_opt(Some((bid - ask) / den))
     }
 
     fn compute_factor_014(depth: &DepthDerived) -> Option<f64> {
@@ -3366,6 +3442,16 @@ impl FusionFactorPubApp {
         std_pop(&norm)
     }
 
+    fn compute_factor_018(depth: &DepthDerived) -> Option<f64> {
+        let asks: Vec<f64> = (0..20)
+            .map(|i| depth_level_amount(&depth.asks, i))
+            .collect();
+        let mean = asks.iter().sum::<f64>() / asks.len() as f64;
+        let denom = mean + 1e-6;
+        let norm: Vec<f64> = asks.into_iter().map(|v| v / denom).collect();
+        std_pop(&norm)
+    }
+
     fn compute_factor_019(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.bid_vwap20.len();
         if n < 2 {
@@ -3382,6 +3468,22 @@ impl FusionFactorPubApp {
         finite_opt(Some(curr - prev))
     }
 
+    fn compute_factor_020(series: &SymbolSeries<'_>) -> Option<f64> {
+        let n = series.ask_vwap20.len();
+        if n < 2 {
+            return None;
+        }
+        let curr = rolling_mean_at_from_series(&series.ask_vwap20, n, 5, 1)
+            .ok()
+            .flatten()
+            .and_then(|v| finite_opt(Some(v)))?;
+        let prev = rolling_mean_at_from_series(&series.ask_vwap20, n - 1, 5, 1)
+            .ok()
+            .flatten()
+            .and_then(|v| finite_opt(Some(v)))?;
+        finite_opt(Some(curr - prev))
+    }
+
     fn compute_factor_021(series: &SymbolSeries<'_>) -> Option<f64> {
         let bid_std = sample_std_last(&series.total_bid20, 10, 1)?;
         let ask_std = sample_std_last(&series.total_ask20, 10, 1)?;
@@ -3389,6 +3491,47 @@ impl FusionFactorPubApp {
             return Some(0.0);
         }
         finite_opt(Some(bid_std / ask_std))
+    }
+
+    fn compute_factor_022(series: &SymbolSeries<'_>) -> Option<f64> {
+        let n = series.relative_spread.len();
+        if n < 2 {
+            return None;
+        }
+        let value = series.relative_spread[n - 1] - series.relative_spread[n - 2];
+        if value.is_finite() {
+            Some(value)
+        } else {
+            Some(0.0)
+        }
+    }
+
+    fn compute_factor_023(series: &SymbolSeries<'_>) -> Option<f64> {
+        let values = &series.top10_bid_volume;
+        let last = *values.last()?;
+        let ma = rolling_mean_last_with_min_periods(values, 5, 1)
+            .ok()
+            .flatten()?;
+        let value = last - ma;
+        if value.is_finite() {
+            Some(value)
+        } else {
+            Some(0.0)
+        }
+    }
+
+    fn compute_factor_024(series: &SymbolSeries<'_>) -> Option<f64> {
+        let values = &series.top10_ask_volume;
+        let last = *values.last()?;
+        let ma = rolling_mean_last_with_min_periods(values, 5, 1)
+            .ok()
+            .flatten()?;
+        let value = last - ma;
+        if value.is_finite() {
+            Some(value)
+        } else {
+            Some(0.0)
+        }
     }
 
     fn compute_factor_025(depth: &DepthDerived) -> Option<f64> {
@@ -3403,11 +3546,34 @@ impl FusionFactorPubApp {
         finite_opt(Some(top3 / bottom17))
     }
 
+    fn compute_factor_026(depth: &DepthDerived) -> Option<f64> {
+        let top3 = depth.sum_ask_amount(3);
+        let bottom17 = depth.sum_ask_amount(20) - top3;
+        if bottom17.abs() <= 1e-12 {
+            return Some(0.0);
+        }
+        finite_opt(Some(top3 / bottom17))
+    }
+
     fn compute_factor_027(depth: &DepthDerived) -> Option<f64> {
         let bids: Vec<f64> = (0..20)
             .map(|i| depth_level_amount(&depth.bids, i))
             .collect();
         rolling_skew_last(&bids, 20, false).ok().flatten()
+    }
+
+    fn compute_factor_028(depth: &DepthDerived) -> Option<f64> {
+        let asks: Vec<f64> = (0..20)
+            .map(|i| depth_level_amount(&depth.asks, i))
+            .collect();
+        rolling_skew_last(&asks, 20, false).ok().flatten()
+    }
+
+    fn compute_factor_029(depth: &DepthDerived) -> Option<f64> {
+        let bids: Vec<f64> = (0..20)
+            .map(|i| depth_level_amount(&depth.bids, i))
+            .collect();
+        rolling_kurt_last(&bids, 20, true, false).ok().flatten()
     }
 
     fn compute_factor_030(depth: &DepthDerived) -> Option<f64> {
@@ -3419,6 +3585,12 @@ impl FusionFactorPubApp {
 
     fn compute_factor_031(series: &SymbolSeries<'_>) -> Option<f64> {
         rolling_rank_last(&series.factor_031_ratio, 500)
+            .ok()
+            .flatten()
+    }
+
+    fn compute_factor_032(series: &SymbolSeries<'_>) -> Option<f64> {
+        rolling_mean_last(&series.ask_vwap_diff_5_20, 300)
             .ok()
             .flatten()
     }
@@ -3443,10 +3615,40 @@ impl FusionFactorPubApp {
         finite_opt(Some(bid / ask))
     }
 
+    fn compute_factor_036(series: &SymbolSeries<'_>) -> Option<f64> {
+        let last = *series.mean_ask_price15.last()?;
+        let mean = rolling_mean_last(&series.mean_ask_price15, 300)
+            .ok()
+            .flatten()?;
+        let std = sample_std_last(&series.mean_ask_price15, 300, 300)?;
+        if std.abs() <= 1e-12 {
+            return Some(0.0);
+        }
+        finite_opt(Some((last - mean) / std))
+    }
+
     fn compute_factor_037(depth: &DepthDerived) -> Option<f64> {
         let bid5 = depth_vwap(&depth.bids, 5)?;
         let bid15 = depth_vwap(&depth.bids, 15)?;
         finite_opt(Some(bid5 - bid15))
+    }
+
+    fn compute_factor_038(depth: &DepthDerived) -> Option<f64> {
+        let vwap5 = depth_vwap(&depth.asks, 5)?;
+        let vwap15 = depth_vwap(&depth.asks, 15)?;
+        let value = vwap5 - vwap15;
+        if value.is_finite() {
+            Some(value)
+        } else {
+            Some(0.0)
+        }
+    }
+
+    fn compute_factor_040(depth: &DepthDerived) -> Option<f64> {
+        let bids: Vec<f64> = (0..10)
+            .map(|i| depth_level_amount(&depth.bids, i))
+            .collect();
+        std_pop(&bids)
     }
 
     fn compute_factor_041(depth: &DepthDerived) -> Option<f64> {
@@ -3454,6 +3656,25 @@ impl FusionFactorPubApp {
             .map(|i| depth_level_amount(&depth.asks, i))
             .collect();
         std_pop(&asks)
+    }
+
+    fn compute_factor_042(depth: &DepthDerived) -> Option<f64> {
+        let bid = depth.sum_bid_amount(5);
+        let ask = depth.sum_ask_amount(5);
+        if ask.abs() <= 1e-12 {
+            return Some(0.0);
+        }
+        finite_opt(Some(bid / ask))
+    }
+
+    fn compute_factor_043(depth: &DepthDerived) -> Option<f64> {
+        let (_, bid0v) = depth.best_bid();
+        let (_, ask0v) = depth.best_ask();
+        let total = depth.sum_bid_amount(20) + depth.sum_ask_amount(20);
+        if total.abs() <= 1e-12 {
+            return Some(0.0);
+        }
+        finite_opt(Some((bid0v + ask0v) / total))
     }
 
     fn compute_factor_045(series: &SymbolSeries<'_>) -> Option<f64> {
@@ -3478,6 +3699,10 @@ impl FusionFactorPubApp {
         rolling_skew_last(&series.bid_pv15_mean, 60, false)
             .ok()
             .flatten()
+    }
+
+    fn compute_factor_049(series: &SymbolSeries<'_>) -> Option<f64> {
+        rolling_std_last(&series.mean_bid_price5, 30).ok().flatten()
     }
 
     fn compute_factor_051(series: &SymbolSeries<'_>) -> Option<f64> {
@@ -3508,6 +3733,16 @@ impl FusionFactorPubApp {
             return Some(0.0);
         }
         finite_opt(Some(ma30 / ma300))
+    }
+
+    fn compute_factor_053(depth: &DepthDerived) -> Option<f64> {
+        let (_, bid0v) = depth.best_bid();
+        let (_, ask0v) = depth.best_ask();
+        let top5 = depth.sum_bid_amount(5) + depth.sum_ask_amount(5);
+        if top5.abs() <= 1e-12 {
+            return Some(0.0);
+        }
+        finite_opt(Some((bid0v + ask0v) / top5))
     }
 
     fn compute_factor_054(depth: &DepthDerived) -> Option<f64> {
@@ -3546,13 +3781,69 @@ impl FusionFactorPubApp {
         finite_opt(series.total_volume20_sum.last().copied())
     }
 
+    fn compute_factor_058(depth: &DepthDerived) -> Option<f64> {
+        finite_opt(Some(depth.sum_bid_amount(5)))
+    }
+
+    fn compute_factor_059(depth: &DepthDerived) -> Option<f64> {
+        let ask = depth.sum_ask_amount(5);
+        let total = ask + depth.sum_bid_amount(5);
+        if total.abs() <= 1e-12 {
+            return Some(0.0);
+        }
+        finite_opt(Some(ask / total))
+    }
+
     fn compute_factor_060(series: &SymbolSeries<'_>) -> Option<f64> {
         pct_change_last(&series.mean_bid_vol20, 10)
+    }
+
+    fn compute_factor_061(series: &SymbolSeries<'_>) -> Option<f64> {
+        let n = series.ask_mean_volume_20.len();
+        if n <= 10 {
+            return None;
+        }
+        let curr = series.ask_mean_volume_20[n - 1];
+        let prev = series.ask_mean_volume_20[n - 11];
+        if prev.abs() <= 1e-12 {
+            return Some(0.0);
+        }
+        let value = (curr - prev) / prev;
+        if value.is_finite() {
+            Some(value)
+        } else {
+            Some(0.0)
+        }
+    }
+
+    fn compute_factor_062(depth: &DepthDerived) -> Option<f64> {
+        let mut weighted_sum = 0.0;
+        let mut weight_sum = 0.0;
+        for i in 0..5 {
+            let weight = depth_level_amount(&depth.bids, i) + depth_level_amount(&depth.asks, i);
+            let spread = depth_level_price(&depth.asks, i) - depth_level_price(&depth.bids, i);
+            if weight.is_finite() && spread.is_finite() {
+                weighted_sum += spread * weight;
+                weight_sum += weight;
+            }
+        }
+        if weight_sum.abs() <= 1e-12 {
+            return Some(0.0);
+        }
+        finite_opt(Some(weighted_sum / weight_sum))
     }
 
     fn compute_factor_063(depth: &DepthDerived) -> Option<f64> {
         let v = (0..10)
             .map(|i| depth_level_amount(&depth.bids, i))
+            .filter(|x| x.is_finite())
+            .fold(f64::NEG_INFINITY, f64::max);
+        finite_opt(Some(v))
+    }
+
+    fn compute_factor_064(depth: &DepthDerived) -> Option<f64> {
+        let v = (0..10)
+            .map(|i| depth_level_amount(&depth.asks, i))
             .filter(|x| x.is_finite())
             .fold(f64::NEG_INFINITY, f64::max);
         finite_opt(Some(v))
@@ -3574,6 +3865,40 @@ impl FusionFactorPubApp {
         finite_opt(Some(v))
     }
 
+    fn compute_factor_067(depth: &DepthDerived) -> Option<f64> {
+        finite_opt(Some(depth.sum_bid_amount(10) - depth.sum_ask_amount(10)))
+    }
+
+    fn compute_factor_068(depth: &DepthDerived) -> Option<f64> {
+        let bid = depth.sum_bid_amount(10);
+        let ask = depth.sum_ask_amount(10);
+        if ask.abs() <= 1e-12 {
+            return Some(0.0);
+        }
+        finite_opt(Some(bid / ask))
+    }
+
+    fn compute_factor_069(depth: &DepthDerived) -> Option<f64> {
+        let value = (0..5)
+            .map(|i| depth_level_amount(&depth.bids, i).sqrt())
+            .filter(|v| v.is_finite())
+            .sum::<f64>();
+        finite_opt(Some(value))
+    }
+
+    fn compute_factor_070(depth: &DepthDerived) -> Option<f64> {
+        let value = (0..5)
+            .map(|i| depth_level_amount(&depth.asks, i).sqrt())
+            .filter(|v| v.is_finite())
+            .sum::<f64>();
+        finite_opt(Some(value))
+    }
+
+    fn compute_factor_073(depth: &DepthDerived) -> Option<f64> {
+        let bids: Vec<f64> = (0..5).map(|i| depth_level_amount(&depth.bids, i)).collect();
+        std_pop(&bids)
+    }
+
     fn compute_factor_074(depth: &DepthDerived) -> Option<f64> {
         let asks: Vec<f64> = (0..5).map(|i| depth_level_amount(&depth.asks, i)).collect();
         std_pop(&asks)
@@ -3589,6 +3914,21 @@ impl FusionFactorPubApp {
         finite_opt(Some(std / mean))
     }
 
+    fn compute_factor_076(depth: &DepthDerived) -> Option<f64> {
+        let asks: Vec<f64> = (0..5).map(|i| depth_level_amount(&depth.asks, i)).collect();
+        let mean = asks.iter().sum::<f64>() / asks.len() as f64;
+        if mean.abs() <= 1e-12 {
+            return Some(0.0);
+        }
+        let std = std_pop(&asks)?;
+        let value = std / mean;
+        if value.is_finite() {
+            Some(value)
+        } else {
+            Some(0.0)
+        }
+    }
+
     fn compute_factor_077(depth: &DepthDerived) -> Option<f64> {
         let bids: Vec<f64> = (0..10)
             .map(|i| depth_level_amount(&depth.bids, i))
@@ -3597,6 +3937,29 @@ impl FusionFactorPubApp {
             .map(|i| depth_level_amount(&depth.asks, i))
             .collect();
         rolling_corr_last(&bids, &asks, 10, 1).ok().flatten()
+    }
+
+    fn compute_factor_079(depth: &DepthDerived) -> Option<f64> {
+        let ask = depth.sum_ask_amount(20);
+        let total = ask + depth.sum_bid_amount(20);
+        if total.abs() <= 1e-12 {
+            return Some(0.0);
+        }
+        finite_opt(Some(ask / total))
+    }
+
+    fn compute_factor_080(series: &SymbolSeries<'_>) -> Option<f64> {
+        sample_std_last(&series.combined_level9_volume, 3, 3)
+    }
+
+    fn compute_factor_085(depth: &DepthDerived) -> Option<f64> {
+        let bids: Vec<f64> = (0..10)
+            .map(|i| depth_level_amount(&depth.bids, i))
+            .collect();
+        let asks: Vec<f64> = (0..10)
+            .map(|i| depth_level_amount(&depth.asks, i))
+            .collect();
+        sample_cov(&bids, &asks)
     }
 
     fn compute_factor_086(depth: &DepthDerived) -> Option<f64> {
@@ -3630,8 +3993,45 @@ impl FusionFactorPubApp {
         finite_opt(Some(std * std))
     }
 
+    fn compute_factor_091(depth: &DepthDerived) -> Option<f64> {
+        let bids: Vec<f64> = (0..10)
+            .map(|i| depth_level_amount(&depth.bids, i))
+            .collect();
+        let asks: Vec<f64> = (0..10)
+            .map(|i| depth_level_amount(&depth.asks, i))
+            .collect();
+        let bid_std = std_pop(&bids)?;
+        let ask_std = std_pop(&asks)?;
+        if ask_std.abs() <= 1e-12 {
+            return Some(0.0);
+        }
+        finite_opt(Some(bid_std / ask_std))
+    }
+
+    fn compute_factor_093(series: &SymbolSeries<'_>) -> Option<f64> {
+        tail_quantile_last(&series.avg_ask_price5, 360, 0.5)
+    }
+
     fn compute_factor_094(series: &SymbolSeries<'_>) -> Option<f64> {
         tail_quantile_last(&series.avg_ask_price5, 100, 0.1)
+    }
+
+    fn compute_factor_095(depth: &DepthDerived) -> Option<f64> {
+        median_from_iter((0..20).map(|i| depth_level_amount(&depth.bids, i)))
+    }
+
+    fn compute_factor_096(depth: &DepthDerived) -> Option<f64> {
+        let mut asks: Vec<f64> = (0..20)
+            .map(|i| depth_level_amount(&depth.asks, i))
+            .collect();
+        asks.sort_by(|a, b| a.total_cmp(b));
+        let mid = asks.len() / 2;
+        let value = (asks[mid - 1] + asks[mid]) / 2.0;
+        if value.is_finite() {
+            Some(value)
+        } else {
+            Some(0.0)
+        }
     }
 
     fn compute_factor_097(depth: &DepthDerived) -> Option<f64> {
@@ -3665,6 +4065,13 @@ impl FusionFactorPubApp {
             return Some(0.0);
         }
         finite_opt(Some(10.0 / den))
+    }
+
+    fn compute_factor_103(depth: &DepthDerived) -> Option<f64> {
+        let asks: Vec<f64> = (0..10)
+            .map(|i| depth_level_amount(&depth.asks, i))
+            .collect();
+        harmonic_mean(&asks)
     }
 
     fn compute_factor_107(depth: &DepthDerived) -> Option<f64> {
@@ -3717,6 +4124,55 @@ impl FusionFactorPubApp {
         }
     }
 
+    fn compute_factor_111(series: &SymbolSeries<'_>) -> Option<f64> {
+        let std = sample_std_last(&series.bid9p, 3, 3)?;
+        finite_opt(Some(std * std))
+    }
+
+    fn compute_factor_113(series: &SymbolSeries<'_>) -> Option<f64> {
+        last_opt(&series.factor_113_bid_price_pct_hmean)
+    }
+
+    fn compute_factor_114(series: &SymbolSeries<'_>) -> Option<f64> {
+        let n = series.factor_114_ask_price_pct_mean.len();
+        if n < 2 {
+            return None;
+        }
+        let curr =
+            rolling_sum_at_opt_from_series(&series.factor_114_ask_price_pct_mean, n, 600, 600)
+                .ok()
+                .flatten()
+                .and_then(|v| finite_opt(Some(v)))?;
+        let prev =
+            rolling_sum_at_opt_from_series(&series.factor_114_ask_price_pct_mean, n - 1, 600, 600)
+                .ok()
+                .flatten()
+                .and_then(|v| finite_opt(Some(v)))?;
+        finite_opt(Some(curr - prev))
+    }
+
+    fn compute_factor_115(series: &SymbolSeries<'_>) -> Option<f64> {
+        let n = series.bid_vwap20.len().min(series.ask_vwap20.len());
+        if n < 2 {
+            return None;
+        }
+        let mut pct = Vec::with_capacity(n);
+        pct.push(None);
+        for i in 1..n {
+            let prev = series.bid_vwap20[i - 1] - series.ask_vwap20[i - 1];
+            let curr = series.bid_vwap20[i] - series.ask_vwap20[i];
+            if !prev.is_finite() || !curr.is_finite() || prev.abs() <= 1e-12 {
+                pct.push(None);
+                continue;
+            }
+            pct.push(finite_opt(Some((curr - prev) / prev)));
+        }
+        rolling_mean_last_opt_from_series(&pct, 60, 60)
+            .ok()
+            .flatten()
+            .and_then(|v| finite_opt(Some(v)))
+    }
+
     fn compute_factor_116(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.mean_bid_price20.len();
         if n < 50 {
@@ -3745,6 +4201,10 @@ impl FusionFactorPubApp {
         finite_opt(Some(last / ma))
     }
 
+    fn compute_factor_120(depth: &DepthDerived) -> Option<f64> {
+        median_from_iter((0..10).map(|i| depth_level_amount(&depth.bids, i)))
+    }
+
     fn compute_factor_121(depth: &DepthDerived) -> Option<f64> {
         let mut asks: Vec<f64> = (0..10)
             .map(|i| depth_level_amount(&depth.asks, i))
@@ -3752,6 +4212,15 @@ impl FusionFactorPubApp {
         asks.sort_by(|a, b| a.total_cmp(b));
         let mid = asks.len() / 2;
         finite_opt(Some((asks[mid - 1] + asks[mid]) / 2.0))
+    }
+
+    fn compute_factor_122(depth: &DepthDerived) -> Option<f64> {
+        let top3 = depth.sum_ask_amount(3);
+        let total15 = depth.sum_ask_amount(15);
+        if total15.abs() <= 1e-12 {
+            return Some(0.0);
+        }
+        finite_opt(Some(top3 / total15))
     }
 
     fn compute_factor_123(depth: &DepthDerived) -> Option<f64> {
@@ -3780,6 +4249,25 @@ impl FusionFactorPubApp {
         finite_opt(Some(bid_var / ask_var))
     }
 
+    fn compute_factor_125(series: &SymbolSeries<'_>) -> Option<f64> {
+        let n = series.median_all_price40.len();
+        if n < 21 {
+            return None;
+        }
+        let last = series.median_all_price40[n - 1];
+        let prev15 = series.median_all_price40[n - 16];
+        if !last.is_finite() || !prev15.is_finite() || prev15.abs() <= 1e-12 {
+            return Some(0.0);
+        }
+        let pct15 = (last - prev15) / prev15;
+        let period = if pct15 < 0.0 { 5 } else { 20 };
+        let prev = series.median_all_price40[n - 1 - period];
+        if !prev.is_finite() || prev.abs() <= 1e-12 {
+            return Some(0.0);
+        }
+        finite_opt(Some((last - prev) / prev))
+    }
+
     fn compute_factor_126(depth: &DepthDerived) -> Option<f64> {
         let mut vals = Vec::with_capacity(10);
         for i in 0..10 {
@@ -3791,6 +4279,27 @@ impl FusionFactorPubApp {
         }
         let std = std_pop(&vals)?;
         finite_opt(Some(std / mean))
+    }
+
+    fn compute_factor_128(series: &SymbolSeries<'_>) -> Option<f64> {
+        rolling_mean_last_opt_from_series(&series.factor_128_skew, 300, 50)
+            .ok()
+            .flatten()
+            .and_then(|v| finite_opt(Some(v)))
+    }
+
+    fn compute_factor_129(depth: &DepthDerived) -> Option<f64> {
+        let bids: Vec<f64> = (0..10)
+            .map(|i| depth_level_amount(&depth.bids, i))
+            .collect();
+        weighted_harmonic_with_index_weights(&bids)
+    }
+
+    fn compute_factor_130(depth: &DepthDerived) -> Option<f64> {
+        let asks: Vec<f64> = (0..10)
+            .map(|i| depth_level_amount(&depth.asks, i))
+            .collect();
+        weighted_harmonic_with_index_weights(&asks)
     }
 
     fn compute_factor_133(series: &SymbolSeries<'_>) -> Option<f64> {
@@ -3870,188 +4379,6 @@ impl FusionFactorPubApp {
         last_opt(&series.factor_152_pct_mean)
     }
 
-    fn compute_factor_164(series: &SymbolSeries<'_>) -> Option<f64> {
-        let n = series.bid0v.len();
-        if n < 2 {
-            return None;
-        }
-        finite_opt(Some(series.bid0v[n - 1] - series.bid0v[n - 2]))
-    }
-
-    fn compute_factor_168(series: &SymbolSeries<'_>) -> Option<f64> {
-        let spread = *series.spread.last()?;
-        let mid = *series.mid_price.last()?;
-        if mid.abs() <= 1e-12 {
-            return Some(0.0);
-        }
-        finite_opt(Some(spread / mid))
-    }
-
-    fn compute_factor_170(series: &SymbolSeries<'_>) -> Option<f64> {
-        pct_change_last(&series.mid_price, 120)
-    }
-
-    fn compute_factor_175(series: &SymbolSeries<'_>) -> Option<f64> {
-        sample_std_last(&series.spread, 5, 1)
-    }
-
-    fn compute_factor_004(series: &SymbolSeries<'_>, depth: Option<&DepthDerived>) -> Option<f64> {
-        let depth = depth?;
-        let buy_vwap = *series.buy_vwap.last()?;
-        let (bid0p, _) = depth_best_bid(depth);
-        let (ask0p, _) = depth_best_ask(depth);
-        let mid = (bid0p + ask0p) / 2.0;
-        let value = mid - buy_vwap;
-        if value.is_finite() {
-            Some(value)
-        } else {
-            Some(0.0)
-        }
-    }
-
-    fn compute_factor_009(depth: &DepthDerived) -> Option<f64> {
-        let (bid0p, _) = depth_best_bid(depth);
-        let (ask0p, _) = depth_best_ask(depth);
-        if bid0p <= 0.0 || ask0p <= 0.0 {
-            return Some(0.0);
-        }
-        let value = ask0p.ln() - bid0p.ln();
-        if value.is_finite() {
-            Some(value)
-        } else {
-            Some(0.0)
-        }
-    }
-
-    fn compute_factor_018(depth: &DepthDerived) -> Option<f64> {
-        let asks: Vec<f64> = (0..20)
-            .map(|i| depth_level_amount(&depth.asks, i))
-            .collect();
-        let mean = asks.iter().sum::<f64>() / asks.len() as f64;
-        let denom = mean + 1e-6;
-        let norm: Vec<f64> = asks.into_iter().map(|v| v / denom).collect();
-        std_pop(&norm)
-    }
-
-    fn compute_factor_022(series: &SymbolSeries<'_>) -> Option<f64> {
-        let n = series.relative_spread.len();
-        if n < 2 {
-            return None;
-        }
-        let value = series.relative_spread[n - 1] - series.relative_spread[n - 2];
-        if value.is_finite() {
-            Some(value)
-        } else {
-            Some(0.0)
-        }
-    }
-
-    fn compute_factor_023(series: &SymbolSeries<'_>) -> Option<f64> {
-        let values = &series.top10_bid_volume;
-        let last = *values.last()?;
-        let ma = rolling_mean_last_with_min_periods(values, 5, 1)
-            .ok()
-            .flatten()?;
-        let value = last - ma;
-        if value.is_finite() {
-            Some(value)
-        } else {
-            Some(0.0)
-        }
-    }
-
-    fn compute_factor_024(series: &SymbolSeries<'_>) -> Option<f64> {
-        let values = &series.top10_ask_volume;
-        let last = *values.last()?;
-        let ma = rolling_mean_last_with_min_periods(values, 5, 1)
-            .ok()
-            .flatten()?;
-        let value = last - ma;
-        if value.is_finite() {
-            Some(value)
-        } else {
-            Some(0.0)
-        }
-    }
-
-    fn compute_factor_029(depth: &DepthDerived) -> Option<f64> {
-        let bids: Vec<f64> = (0..20)
-            .map(|i| depth_level_amount(&depth.bids, i))
-            .collect();
-        rolling_kurt_last(&bids, 20, true, false).ok().flatten()
-    }
-
-    fn compute_factor_032(series: &SymbolSeries<'_>) -> Option<f64> {
-        rolling_mean_last(&series.ask_vwap_diff_5_20, 300)
-            .ok()
-            .flatten()
-    }
-
-    fn compute_factor_038(depth: &DepthDerived) -> Option<f64> {
-        let vwap5 = depth_vwap(&depth.asks, 5)?;
-        let vwap15 = depth_vwap(&depth.asks, 15)?;
-        let value = vwap5 - vwap15;
-        if value.is_finite() {
-            Some(value)
-        } else {
-            Some(0.0)
-        }
-    }
-
-    fn compute_factor_061(series: &SymbolSeries<'_>) -> Option<f64> {
-        let n = series.ask_mean_volume_20.len();
-        if n <= 10 {
-            return None;
-        }
-        let curr = series.ask_mean_volume_20[n - 1];
-        let prev = series.ask_mean_volume_20[n - 11];
-        if prev.abs() <= 1e-12 {
-            return Some(0.0);
-        }
-        let value = (curr - prev) / prev;
-        if value.is_finite() {
-            Some(value)
-        } else {
-            Some(0.0)
-        }
-    }
-
-    fn compute_factor_076(depth: &DepthDerived) -> Option<f64> {
-        let asks: Vec<f64> = (0..5).map(|i| depth_level_amount(&depth.asks, i)).collect();
-        let mean = asks.iter().sum::<f64>() / asks.len() as f64;
-        if mean.abs() <= 1e-12 {
-            return Some(0.0);
-        }
-        let std = std_pop(&asks)?;
-        let value = std / mean;
-        if value.is_finite() {
-            Some(value)
-        } else {
-            Some(0.0)
-        }
-    }
-
-    fn compute_factor_096(depth: &DepthDerived) -> Option<f64> {
-        let mut asks: Vec<f64> = (0..20)
-            .map(|i| depth_level_amount(&depth.asks, i))
-            .collect();
-        asks.sort_by(|a, b| a.total_cmp(b));
-        let mid = asks.len() / 2;
-        let value = (asks[mid - 1] + asks[mid]) / 2.0;
-        if value.is_finite() {
-            Some(value)
-        } else {
-            Some(0.0)
-        }
-    }
-
-    fn compute_factor_128(series: &SymbolSeries<'_>) -> Option<f64> {
-        rolling_mean_last_opt_from_series(&series.factor_128_skew, 300, 50)
-            .ok()
-            .flatten()
-            .and_then(|v| finite_opt(Some(v)))
-    }
-
     fn compute_factor_156(depth: &DepthDerived) -> Option<f64> {
         let bid_prices: Vec<f64> = (0..10).map(|i| depth_level_price(&depth.bids, i)).collect();
         let ask_prices: Vec<f64> = (0..10).map(|i| depth_level_price(&depth.asks, i)).collect();
@@ -4065,8 +4392,22 @@ impl FusionFactorPubApp {
         }
     }
 
+    fn compute_factor_159(depth: &DepthDerived) -> Option<f64> {
+        let bid = depth.mean_bid_price(10);
+        let ask = depth.mean_ask_price(10);
+        finite_opt(Some(bid - ask))
+    }
+
     fn compute_factor_160(series: &SymbolSeries<'_>) -> Option<f64> {
         last_opt(&series.factor_160_pct_change_mean)
+    }
+
+    fn compute_factor_164(series: &SymbolSeries<'_>) -> Option<f64> {
+        let n = series.bid0v.len();
+        if n < 2 {
+            return None;
+        }
+        finite_opt(Some(series.bid0v[n - 1] - series.bid0v[n - 2]))
     }
 
     fn compute_factor_165(series: &SymbolSeries<'_>) -> Option<f64> {
@@ -4097,6 +4438,23 @@ impl FusionFactorPubApp {
         }
     }
 
+    fn compute_factor_168(series: &SymbolSeries<'_>) -> Option<f64> {
+        let spread = *series.spread.last()?;
+        let mid = *series.mid_price.last()?;
+        if mid.abs() <= 1e-12 {
+            return Some(0.0);
+        }
+        finite_opt(Some(spread / mid))
+    }
+
+    fn compute_factor_170(series: &SymbolSeries<'_>) -> Option<f64> {
+        pct_change_last(&series.mid_price, 120)
+    }
+
+    fn compute_factor_175(series: &SymbolSeries<'_>) -> Option<f64> {
+        sample_std_last(&series.spread, 5, 1)
+    }
+
     fn compute_factor_176(depth: &DepthDerived) -> Option<f64> {
         let (_, bid0v) = depth_best_bid(depth);
         let (_, ask0v) = depth_best_ask(depth);
@@ -4104,754 +4462,6 @@ impl FusionFactorPubApp {
             return Some(0.0);
         }
         let value = bid0v / ask0v;
-        if value.is_finite() {
-            Some(value)
-        } else {
-            Some(0.0)
-        }
-    }
-
-    fn compute_baseline_018(series: &SymbolSeries<'_>) -> Option<f64> {
-        let n = series.buy_volume.len().min(series.sell_volume.len());
-        if n <= 60 {
-            return None;
-        }
-        let mut ratio = Vec::with_capacity(n);
-        for i in 0..n {
-            let buy = series.buy_volume[i];
-            let sell = series.sell_volume[i];
-            ratio.push(buy / sell);
-        }
-        let curr = *ratio.last()?;
-        let prev = ratio[n - 1 - 60];
-        if !curr.is_finite() || !prev.is_finite() {
-            return Some(0.0);
-        }
-        let value = (curr - prev) / prev;
-        if value.is_finite() {
-            Some(value)
-        } else {
-            Some(0.0)
-        }
-    }
-
-    fn compute_baseline_034(series: &SymbolSeries<'_>) -> Option<f64> {
-        let n = series.close.len();
-        if n == 0 {
-            return None;
-        }
-        let fast = rolling_mean_series(&series.close, 12, 12).ok()?;
-        let slow = rolling_mean_series(&series.close, 26, 26).ok()?;
-        let macd: Vec<Option<f64>> = (0..n)
-            .map(|i| match (fast[i], slow[i]) {
-                (Some(f), Some(s)) => finite_opt(Some(f - s)),
-                _ => Some(0.0),
-            })
-            .collect();
-        let signal = rolling_mean_series_opt(&macd, 9, 9).ok()?;
-        let smmao: Vec<Option<f64>> = macd
-            .iter()
-            .zip(signal.iter())
-            .map(|(m, s)| {
-                let m = finite_opt(*m)?;
-                let s = finite_opt(*s)?;
-                finite_opt(Some(m - 2.0 * s))
-            })
-            .collect();
-        last_opt(&smmao)
-    }
-
-    fn compute_baseline_045(series: &SymbolSeries<'_>) -> Option<f64> {
-        let n = series.buy_amount.len().min(series.sell_amount.len());
-        let window = 90;
-        if n < window {
-            return None;
-        }
-        let tail: Vec<f64> = (n - window..n)
-            .map(|i| series.buy_amount[i] - series.sell_amount[i])
-            .collect();
-        linear_regression_intercept(&tail)
-    }
-
-    fn compute_baseline_047(series: &SymbolSeries<'_>) -> Option<f64> {
-        let n = series.small_buy.len().min(series.small_sell.len());
-        if n < 300 {
-            return None;
-        }
-        let diff: Vec<f64> = (0..n)
-            .map(|i| series.small_buy[i] - series.small_sell[i])
-            .collect();
-        rolling_mean_last(&diff, 300).ok().flatten()
-    }
-
-    fn compute_baseline_080(series: &SymbolSeries<'_>) -> Option<f64> {
-        let n = series.high.len().min(series.low.len());
-        let window = 10usize;
-        if n < window {
-            return None;
-        }
-        let start = n - window;
-        let mut sum_high = 0.0;
-        let mut sum_low = 0.0;
-        for i in start..n {
-            let h = series.high[i];
-            let l = series.low[i];
-            if !h.is_finite() || !l.is_finite() {
-                return Some(0.0);
-            }
-            sum_high += h;
-            sum_low += l;
-        }
-
-        let mean_high = sum_high / window as f64;
-        let mean_low = sum_low / window as f64;
-        let mut cov: f64 = 0.0;
-        let mut var_low: f64 = 0.0;
-        for i in start..n {
-            let dh = series.high[i] - mean_high;
-            let dl = series.low[i] - mean_low;
-            cov += dh * dl;
-            var_low += dl * dl;
-        }
-        if var_low.abs() <= 1e-12 {
-            return Some(0.0);
-        }
-        let beta = cov / var_low;
-        if beta.is_finite() {
-            Some(beta)
-        } else {
-            Some(0.0)
-        }
-    }
-
-    fn compute_baseline_082(series: &SymbolSeries<'_>) -> Option<f64> {
-        let n = series
-            .close
-            .len()
-            .min(series.low.len())
-            .min(series.buy_amount.len())
-            .min(series.sell_amount.len());
-        if n == 0 {
-            return None;
-        }
-        let den = series.sell_amount[n - 1] - series.buy_amount[n - 1];
-        if den.abs() <= 1e-12 {
-            return Some(0.0);
-        }
-        let value = (series.close[n - 1] - series.low[n - 1]) / den;
-        if value.is_finite() {
-            Some(value)
-        } else {
-            Some(0.0)
-        }
-    }
-
-    fn compute_baseline_135(series: &SymbolSeries<'_>) -> Option<f64> {
-        let n = series
-            .high
-            .len()
-            .min(series.low.len())
-            .min(series.open.len())
-            .min(series.close.len());
-        if n == 0 {
-            return None;
-        }
-        let high = series.high[n - 1];
-        let low = series.low[n - 1];
-        let open = series.open[n - 1];
-        let close = series.close[n - 1];
-        let range = high - low;
-        let is_hangingman =
-            (range > 3.0 * (open - close).abs()) && ((close - high).abs() / (0.0001 + range) > 0.6);
-        Some(if is_hangingman { 1.0 } else { 0.0 })
-    }
-
-    fn compute_baseline_193(series: &SymbolSeries<'_>) -> Option<f64> {
-        let n = series.buy_amount.len().min(series.sell_amount.len());
-        if n == 0 {
-            return None;
-        }
-        let sell = series.sell_amount[n - 1];
-        let value = series.buy_amount[n - 1] / sell;
-        if value.is_finite() {
-            Some(value)
-        } else {
-            Some(0.0)
-        }
-    }
-
-    fn compute_baseline_004(series: &SymbolSeries<'_>) -> Option<f64> {
-        let s1 = rolling_mean_series(&series.close, 30, 30).ok()?;
-        let s2 = rolling_mean_series_opt(&s1, 30, 30).ok()?;
-        let s3 = rolling_mean_series_opt(&s2, 30, 30).ok()?;
-        let s4 = rolling_mean_series_opt(&s3, 30, 30).ok()?;
-        let s5 = rolling_mean_series_opt(&s4, 30, 30).ok()?;
-        let s6 = rolling_mean_series_opt(&s5, 30, 30).ok()?;
-        let v1 = last_opt(&s1)?;
-        let v2 = last_opt(&s2)?;
-        let v3 = last_opt(&s3)?;
-        let v4 = last_opt(&s4)?;
-        let v5 = last_opt(&s5)?;
-        let v6 = last_opt(&s6)?;
-        finite_opt(Some(
-            v1 - 2.0 * v2 + 3.0 * v3 - 4.0 * v4 + 5.0 * v5 - 6.0 * v6,
-        ))
-    }
-
-    fn compute_baseline_007(series: &SymbolSeries<'_>) -> Option<f64> {
-        let n = series.net_buy_amount.len();
-        if n < 9 {
-            return None;
-        }
-        let start = n - 9;
-        let mut macd_tail = Vec::with_capacity(9);
-        for end in start + 1..=n {
-            let fast = rolling_mean_at_from_series(&series.net_buy_amount, end, 12, 12)
-                .ok()
-                .flatten();
-            let slow = rolling_mean_at_from_series(&series.net_buy_amount, end, 26, 26)
-                .ok()
-                .flatten();
-            let macd = match (fast, slow) {
-                (Some(f), Some(s)) => finite_opt(Some(f - s)),
-                _ => Some(0.0),
-            };
-            macd_tail.push(macd);
-        }
-        rolling_mean_last_opt_from_series(&macd_tail, 9, 9)
-            .ok()
-            .flatten()
-            .and_then(|v| finite_opt(Some(v)))
-    }
-
-    fn compute_baseline_008(series: &SymbolSeries<'_>) -> Option<f64> {
-        let fast = rolling_mean_series(&series.large_buy, 12, 12).ok()?;
-        let slow = rolling_mean_series(&series.large_buy, 26, 26).ok()?;
-        let macd: Vec<Option<f64>> = (0..series.large_buy.len())
-            .map(|i| match (fast[i], slow[i]) {
-                (Some(f), Some(s)) => finite_opt(Some(f - s)),
-                _ => Some(0.0),
-            })
-            .collect();
-        let signal = rolling_mean_series_opt(&macd, 9, 9).ok()?;
-        let hist: Vec<Option<f64>> = macd
-            .iter()
-            .zip(signal.iter())
-            .map(|(m, s)| {
-                let m = finite_opt(*m)?;
-                let s = finite_opt(*s)?;
-                finite_opt(Some(m - s))
-            })
-            .collect();
-        last_opt(&hist)
-    }
-
-    fn compute_baseline_016(series: &SymbolSeries<'_>) -> Option<f64> {
-        let n = series
-            .high
-            .len()
-            .min(series.low.len())
-            .min(series.close.len());
-        if n < 14 {
-            return None;
-        }
-        let mut plus_dm = vec![0.0; n];
-        let mut minus_dm = vec![0.0; n];
-        let mut tr = vec![f64::NAN; n];
-        for i in 1..n {
-            let hd = series.high[i] - series.high[i - 1];
-            let ld = series.low[i] - series.low[i - 1];
-            plus_dm[i] = if hd > ld { hd } else { 0.0 };
-            minus_dm[i] = if ld > hd { ld } else { 0.0 };
-            tr[i] = (series.high[i] - series.low[i])
-                .max(series.high[i] - series.close[i - 1])
-                .max(series.low[i] - series.close[i - 1]);
-        }
-        let plus_ma = rolling_mean_series(&plus_dm, 14, 14).ok()?;
-        let minus_ma = rolling_mean_series(&minus_dm, 14, 14).ok()?;
-        let tr_ma = rolling_mean_series_opt(
-            &tr.iter()
-                .map(|v| if v.is_finite() { Some(*v) } else { None })
-                .collect::<Vec<_>>(),
-            14,
-            14,
-        )
-        .ok()?;
-        let dx: Vec<Option<f64>> = (0..n)
-            .map(|i| {
-                let p = finite_opt(plus_ma[i])?;
-                let m = finite_opt(minus_ma[i])?;
-                let t = finite_opt(tr_ma[i])?;
-                if t.abs() <= 1e-12 {
-                    return Some(0.0);
-                }
-                let plus_di = 100.0 * p / t;
-                let minus_di = 100.0 * m / t;
-                let den = plus_di + minus_di;
-                if den.abs() <= 1e-12 {
-                    return Some(0.0);
-                }
-                finite_opt(Some((plus_di - minus_di).abs() / den * 100.0))
-            })
-            .collect();
-        rolling_mean_last_opt_from_series(&dx, 14, 14)
-            .ok()
-            .flatten()
-            .and_then(|v| finite_opt(Some(v)))
-    }
-
-    fn compute_baseline_028(series: &SymbolSeries<'_>) -> Option<f64> {
-        let n = series.close.len();
-        if n <= 30 {
-            return None;
-        }
-        let change = series.close[n - 1] - series.close[n - 1 - 30];
-        let mut abs_diff = Vec::with_capacity(n);
-        abs_diff.push(f64::NAN);
-        for i in 1..n {
-            abs_diff.push((series.close[i] - series.close[i - 1]).abs());
-        }
-        let volatility = tail_quantile_last(&abs_diff, 30, 0.3)?;
-        if volatility.abs() <= 1e-12 {
-            return Some(0.0);
-        }
-        finite_opt(Some(change / volatility))
-    }
-
-    fn compute_baseline_040(series: &SymbolSeries<'_>) -> Option<f64> {
-        let n = series.close.len().min(series.volume.len());
-        if n < 360 {
-            return None;
-        }
-        let mut x = Vec::with_capacity(n);
-        x.push(0.0);
-        for i in 1..n {
-            let prev = series.close[i - 1];
-            let delta = series.close[i] - series.close[i - 1];
-            let pct = if prev.abs() > 1e-12 {
-                delta / prev
-            } else {
-                0.0
-            };
-            x.push(pct * series.volume[i]);
-        }
-        rolling_sum_last_with_min_periods(&x, 360, 360)
-            .ok()
-            .flatten()
-    }
-
-    fn compute_baseline_046(series: &SymbolSeries<'_>) -> Option<f64> {
-        let n = series.large_buy.len().min(series.large_sell.len());
-        if n < 30 {
-            return None;
-        }
-        let tail: Vec<f64> = (n - 30..n)
-            .map(|i| series.large_buy[i] - series.large_sell[i])
-            .collect();
-        linear_regression_predict_last(&tail)
-    }
-
-    fn compute_baseline_073(series: &SymbolSeries<'_>) -> Option<f64> {
-        let std = sample_std_last(&series.close, 5, 5)?;
-        finite_opt(Some(std * std))
-    }
-
-    fn compute_baseline_076(series: &SymbolSeries<'_>) -> Option<f64> {
-        let n = series
-            .high
-            .len()
-            .min(series.low.len())
-            .min(series.close.len());
-        if n < 14 {
-            return None;
-        }
-        let mut tr = Vec::with_capacity(n);
-        for i in 0..n {
-            let prev_close = if i == 0 {
-                series.close[n - 1]
-            } else {
-                series.close[i - 1]
-            };
-            let mut v = (series.high[i] - series.low[i]).max(0.0);
-            v = v.max((series.high[i] - prev_close).abs());
-            v = v.max((series.low[i] - prev_close).abs());
-            tr.push(v);
-        }
-        let atr = rolling_mean_last(&tr, 14).ok().flatten()?;
-        let close = series.close[n - 1];
-        if close.abs() <= 1e-12 {
-            return Some(0.0);
-        }
-        finite_opt(Some((atr / close) * 100.0))
-    }
-
-    fn compute_baseline_079(series: &SymbolSeries<'_>) -> Option<f64> {
-        if series.close.len().min(series.volume.len()) < 14 {
-            return None;
-        }
-        finite_opt(series.corr_close_volume_14_last).or_else(|| {
-            rolling_corr_last(&series.close, &series.volume, 14, 1)
-                .ok()
-                .flatten()
-        })
-    }
-
-    fn compute_baseline_100(series: &SymbolSeries<'_>) -> Option<f64> {
-        rolling_mean_last(&series.close, 180).ok().flatten()
-    }
-
-    fn compute_baseline_113(series: &SymbolSeries<'_>) -> Option<f64> {
-        let n = series.high.len().min(series.low.len());
-        if n < 90 {
-            return None;
-        }
-        let mid_log: Vec<f64> = (0..n)
-            .map(|i| ((series.high[i] + series.low[i]) / 2.0).ln())
-            .collect();
-        tail_quantile_last(&mid_log, 90, 0.2)
-    }
-
-    fn compute_baseline_116(series: &SymbolSeries<'_>) -> Option<f64> {
-        let n = series
-            .high
-            .len()
-            .min(series.low.len())
-            .min(series.close.len())
-            .min(series.volume.len());
-        if n < 14 {
-            return None;
-        }
-        let mut tp = Vec::with_capacity(n);
-        for i in 0..n {
-            tp.push((series.high[i] + series.low[i] + series.close[i]) / 3.0);
-        }
-        let mut pos = vec![0.0; n];
-        let mut neg = vec![0.0; n];
-        for i in 1..n {
-            let dt = tp[i] - tp[i - 1];
-            pos[i] = dt.max(0.0) * series.volume[i];
-            neg[i] = (-dt).max(0.0) * series.volume[i];
-        }
-        let pos_sum = rolling_sum_last_with_min_periods(&pos, 14, 14)
-            .ok()
-            .flatten()?;
-        let neg_sum = rolling_sum_last_with_min_periods(&neg, 14, 14)
-            .ok()
-            .flatten()?;
-        finite_opt(Some(pos_sum - neg_sum))
-    }
-
-    fn compute_baseline_117(series: &SymbolSeries<'_>) -> Option<f64> {
-        let n = series.close.len();
-        if n < 26 {
-            return None;
-        }
-        let mut pos = vec![0.0; n];
-        let mut neg = vec![0.0; n];
-        for i in 1..n {
-            let d = series.close[i] - series.close[i - 1];
-            if d > 0.0 {
-                pos[i] = d;
-            } else if d < 0.0 {
-                neg[i] = -d;
-            }
-        }
-        let pos_avg = rolling_mean_last(&pos, 12).ok().flatten()?;
-        let neg_avg = rolling_mean_last(&neg, 26).ok().flatten()?;
-        if neg_avg.abs() <= 1e-12 {
-            return Some(0.0);
-        }
-        finite_opt(Some(pos_avg / neg_avg))
-    }
-
-    fn compute_baseline_120(series: &SymbolSeries<'_>) -> Option<f64> {
-        let n = series
-            .high
-            .len()
-            .min(series.low.len())
-            .min(series.close.len());
-        if n < 350 {
-            return None;
-        }
-        let mut wcl = Vec::with_capacity(n);
-        for i in 0..n {
-            wcl.push((series.high[i] + series.low[i] + 2.0 * series.close[i]) / 4.0);
-        }
-        let mut pct = vec![f64::NAN; n];
-        for i in 50..n {
-            let prev = wcl[i - 50];
-            if prev.abs() > 1e-12 {
-                pct[i] = (wcl[i] - prev) / prev;
-            }
-        }
-        let tail: Vec<f64> = pct[n - 300..n].to_vec();
-        if tail.iter().filter(|v| v.is_finite()).count() < 300 {
-            return None;
-        }
-        let mean = tail.iter().sum::<f64>() / 300.0;
-        finite_opt(Some(mean))
-    }
-
-    fn compute_baseline_134(series: &SymbolSeries<'_>) -> Option<f64> {
-        let n = series
-            .high
-            .len()
-            .min(series.low.len())
-            .min(series.open.len())
-            .min(series.close.len());
-        if n == 0 {
-            return None;
-        }
-        let h = series.high[n - 1];
-        let l = series.low[n - 1];
-        let o = series.open[n - 1];
-        let c = series.close[n - 1];
-        let range = h - l;
-        let is_hammer = (range > 3.0 * (o - c))
-            && ((c - l) / (0.001 + range) > 0.6)
-            && ((o - l) / (0.001 + range) > 0.6);
-        Some(if is_hammer { 1.0 } else { 0.0 })
-    }
-
-    fn compute_baseline_137(series: &SymbolSeries<'_>) -> Option<f64> {
-        let n = series
-            .close
-            .len()
-            .min(series.open.len())
-            .min(series.volume.len());
-        if n == 0 {
-            return None;
-        }
-        let den = series.volume[n - 1];
-        if den.abs() <= 1e-12 {
-            return Some(0.0);
-        }
-        finite_opt(Some((series.close[n - 1] - series.open[n - 1]) / den))
-    }
-
-    fn compute_baseline_140(series: &SymbolSeries<'_>) -> Option<f64> {
-        let n = series.low.len().min(series.close.len());
-        if n < 60 {
-            return None;
-        }
-        let mut low_min = f64::INFINITY;
-        for i in n - 60..n {
-            low_min = f64::min(low_min, series.low[i]);
-        }
-        finite_opt(Some(low_min - series.close[n - 1]))
-    }
-
-    fn compute_baseline_141(series: &SymbolSeries<'_>) -> Option<f64> {
-        let n = series.high.len().min(series.close.len());
-        if n < 60 {
-            return None;
-        }
-        let mut high_max = f64::NEG_INFINITY;
-        for i in n - 60..n {
-            high_max = f64::max(high_max, series.high[i]);
-        }
-        finite_opt(Some(high_max - series.close[n - 1]))
-    }
-
-    fn compute_baseline_163(series: &SymbolSeries<'_>) -> Option<f64> {
-        let n = series.close.len();
-        if n < 30 {
-            return None;
-        }
-        let mut min_close = f64::INFINITY;
-        for i in n - 30..n {
-            min_close = f64::min(min_close, series.close[i]);
-        }
-        let den = series.close[n - 1];
-        if den.abs() <= 1e-12 {
-            return Some(0.0);
-        }
-        finite_opt(Some((min_close - den) / den))
-    }
-
-    fn compute_baseline_164(series: &SymbolSeries<'_>) -> Option<f64> {
-        let n = series.close.len();
-        if n < 30 {
-            return None;
-        }
-        let mut max_close = f64::NEG_INFINITY;
-        for i in n - 30..n {
-            max_close = f64::max(max_close, series.close[i]);
-        }
-        let den = series.close[n - 1];
-        if den.abs() <= 1e-12 {
-            return Some(0.0);
-        }
-        finite_opt(Some((max_close - den) / den))
-    }
-
-    fn compute_baseline_172(series: &SymbolSeries<'_>) -> Option<f64> {
-        // Same ADX-style approximation as baseline_172 python formula.
-        let n = series
-            .high
-            .len()
-            .min(series.low.len())
-            .min(series.close.len());
-        if n < 14 {
-            return None;
-        }
-        let mut plus_dm = vec![0.0; n];
-        let mut minus_dm = vec![0.0; n];
-        let mut tr = vec![f64::NAN; n];
-        for i in 1..n {
-            plus_dm[i] = (series.high[i] - series.high[i - 1]).max(0.0);
-            minus_dm[i] = (series.low[i - 1] - series.low[i]).max(0.0);
-            tr[i] = (series.high[i] - series.low[i])
-                .max((series.high[i] - series.close[i - 1]).abs())
-                .max((series.low[i] - series.close[i - 1]).abs());
-        }
-        let plus_ma = rolling_mean_series(&plus_dm, 14, 14).ok()?;
-        let minus_ma = rolling_mean_series(&minus_dm, 14, 14).ok()?;
-        let tr_ma = rolling_mean_series_opt(
-            &tr.iter()
-                .map(|v| if v.is_finite() { Some(*v) } else { None })
-                .collect::<Vec<_>>(),
-            14,
-            14,
-        )
-        .ok()?;
-        let dx: Vec<Option<f64>> = (0..n)
-            .map(|i| {
-                let p = finite_opt(plus_ma[i])?;
-                let m = finite_opt(minus_ma[i])?;
-                let t = finite_opt(tr_ma[i])?;
-                if t.abs() <= 1e-12 {
-                    return Some(0.0);
-                }
-                let plus_di = 100.0 * p / t;
-                let minus_di = 100.0 * m / t;
-                let den = plus_di + minus_di;
-                if den.abs() <= 1e-12 {
-                    return Some(0.0);
-                }
-                finite_opt(Some((plus_di - minus_di).abs() / den * 100.0))
-            })
-            .collect();
-        rolling_mean_last_opt_from_series(&dx, 14, 14)
-            .ok()
-            .flatten()
-            .and_then(|v| finite_opt(Some(v)))
-    }
-
-    fn compute_baseline_177(series: &SymbolSeries<'_>) -> Option<f64> {
-        let n = series
-            .high
-            .len()
-            .min(series.low.len())
-            .min(series.close.len());
-        if n < 125 {
-            return None;
-        }
-        let hl: Vec<f64> = (0..n).map(|i| series.high[i] + series.low[i]).collect();
-        let mut diff5 = vec![f64::NAN; n];
-        for i in 5..n {
-            diff5[i] = hl[i] - hl[i - 5];
-        }
-        let tail: Vec<f64> = diff5[n - 120..n].to_vec();
-        if tail.iter().filter(|v| v.is_finite()).count() < 120 {
-            return None;
-        }
-        let den = tail.iter().sum::<f64>() / 120.0;
-        if den.abs() <= 1e-12 {
-            return Some(0.0);
-        }
-        finite_opt(Some((series.high[n - 1] - series.close[n - 1]) / den))
-    }
-
-    fn compute_baseline_178(series: &SymbolSeries<'_>) -> Option<f64> {
-        let n = series
-            .high
-            .len()
-            .min(series.low.len())
-            .min(series.close.len());
-        if n < 33 {
-            return None;
-        }
-        let hl: Vec<f64> = (0..n).map(|i| series.high[i] + series.low[i]).collect();
-        let mut diff3 = vec![f64::NAN; n];
-        for i in 3..n {
-            diff3[i] = hl[i] - hl[i - 3];
-        }
-        let tail: Vec<f64> = diff3[n - 30..n].to_vec();
-        if tail.iter().filter(|v| v.is_finite()).count() < 30 {
-            return None;
-        }
-        let den = tail.iter().sum::<f64>() / 30.0;
-        if den.abs() <= 1e-12 {
-            return Some(0.0);
-        }
-        finite_opt(Some((series.close[n - 1] - series.low[n - 1]) / den))
-    }
-
-    fn compute_baseline_189(series: &SymbolSeries<'_>) -> Option<f64> {
-        let short = rolling_mean_series(&series.close, 20, 20).ok()?;
-        let long = rolling_mean_series(&series.close, 90, 90).ok()?;
-        let x: Vec<f64> = (0..series.close.len())
-            .map(|i| match (short[i], long[i]) {
-                (Some(s), Some(l)) => s - l,
-                _ => f64::NAN,
-            })
-            .collect();
-        let y: Vec<f64> = long.iter().map(|v| v.unwrap_or(f64::NAN)).collect();
-        corr_last_with_min_periods(&x, &y, 100, 30)
-    }
-
-    fn compute_baseline_191(series: &SymbolSeries<'_>) -> Option<f64> {
-        let n = series
-            .high
-            .len()
-            .min(series.low.len())
-            .min(series.close.len());
-        if n < 16 {
-            return None;
-        }
-        let mut fastk = vec![f64::NAN; n];
-        for i in 13..n {
-            let mut low_min = f64::INFINITY;
-            let mut high_max = f64::NEG_INFINITY;
-            for j in i + 1 - 14..i + 1 {
-                low_min = f64::min(low_min, series.low[j]);
-                high_max = f64::max(high_max, series.high[j]);
-            }
-            let den = high_max - low_min;
-            if den.abs() > 1e-12 {
-                fastk[i] = 100.0 * (series.close[i] - low_min) / den;
-            }
-        }
-        let slowk = rolling_mean_series_opt(
-            &fastk
-                .iter()
-                .map(|v| if v.is_finite() { Some(*v) } else { None })
-                .collect::<Vec<_>>(),
-            3,
-            3,
-        )
-        .ok()?;
-        let slowd = rolling_mean_series_opt(&slowk, 3, 3).ok()?;
-        let k = last_opt(&slowk)?;
-        let d = last_opt(&slowd)?;
-        finite_opt(Some(k - d))
-    }
-
-    fn compute_baseline_196(series: &SymbolSeries<'_>) -> Option<f64> {
-        let periods = 10usize;
-        if series.large_buy.len() <= periods {
-            return None;
-        }
-        let curr = *series.large_buy.last()?;
-        let prev = series.large_buy[series.large_buy.len() - 1 - periods];
-        if !curr.is_finite() || !prev.is_finite() {
-            return Some(0.0);
-        }
-        if prev.abs() <= 1e-12 {
-            return Some(0.0);
-        }
-        let value = (curr - prev) / prev;
         if value.is_finite() {
             Some(value)
         } else {
@@ -5871,11 +5481,6 @@ impl FusionFactorPubApp {
 }
 
 #[derive(Debug, Deserialize)]
-struct FactorPlanResp {
-    thresholds: HashMap<String, FactorPlanItem>,
-}
-
-#[derive(Debug, Deserialize)]
 struct AmountThresholdResp {
     thresholds: HashMap<String, AmountThresholdItem>,
 }
@@ -5884,71 +5489,6 @@ struct AmountThresholdResp {
 struct AmountThresholdItem {
     medium_notional_threshold: f64,
     large_notional_threshold: f64,
-}
-
-#[derive(Debug, Deserialize)]
-struct FactorPlanItem {
-    #[serde(default)]
-    factors: Vec<String>,
-}
-
-fn build_symbol_factor_plan(symbol: &str, factors: Vec<String>) -> SymbolFactorPlan {
-    let mut ordered_factors = Vec::with_capacity(factors.len());
-    for name in factors {
-        let factor_id = FusionFactorId::from_name(&name);
-        let extra_factor_id = ExtraFactorId::from_name(&name);
-        if factor_id.is_none() && extra_factor_id.is_none() {
-            warn!(
-                "factor-plan contains unmapped factor name: symbol={} factor={}",
-                symbol, name
-            );
-        }
-        ordered_factors.push(FactorBinding {
-            name,
-            factor_id,
-            extra_factor_id,
-        });
-    }
-
-    let unknown_names: Vec<&str> = ordered_factors
-        .iter()
-        .filter(|f| f.factor_id.is_none() && f.extra_factor_id.is_none())
-        .map(|f| f.name.as_str())
-        .collect();
-    if !unknown_names.is_empty() {
-        warn!(
-            "factor-plan: symbol={} unknown_factors=[{}]",
-            symbol,
-            unknown_names.join(",")
-        );
-    }
-
-    SymbolFactorPlan { ordered_factors }
-}
-
-async fn load_symbol_factor_plans_from_tlen_server(
-    tlen: &TlenServerConfig,
-    venue: TradingVenue,
-    venue_slug: &str,
-) -> Result<HashMap<String, SymbolFactorPlan>> {
-    let online_symbols = load_online_symbols_from_tlen_server(tlen, venue, venue_slug).await?;
-    if online_symbols.is_empty() {
-        anyhow::bail!(
-            "tlen_server returned no online amount_threshold symbols for venue={}",
-            venue_slug
-        );
-    }
-
-    let raw_plans = load_raw_factor_plans_from_tlen_server(tlen, venue, venue_slug).await?;
-    let mut out = HashMap::with_capacity(online_symbols.len());
-    for symbol in online_symbols {
-        let plan = raw_plans
-            .get(&symbol)
-            .cloned()
-            .unwrap_or_else(|| build_symbol_factor_plan(&symbol, Vec::new()));
-        out.insert(symbol, plan);
-    }
-    Ok(out)
 }
 
 async fn load_online_symbols_from_tlen_server(
@@ -5987,45 +5527,6 @@ async fn load_online_symbols_from_tlen_server(
             )
         {
             out.insert(symbol);
-        }
-    }
-    Ok(out)
-}
-
-async fn load_raw_factor_plans_from_tlen_server(
-    tlen: &TlenServerConfig,
-    venue: TradingVenue,
-    venue_slug: &str,
-) -> Result<HashMap<String, SymbolFactorPlan>> {
-    let base_url = tlen.base_url.trim_end_matches('/');
-    let client = Client::builder()
-        .timeout(Duration::from_millis(tlen.request_timeout_ms))
-        .build()
-        .context("build reqwest client for tlen_server failed")?;
-
-    let url = format!("{}/api/thresholds", base_url);
-    let resp = client
-        .get(&url)
-        .query(&[("venue", venue_slug), ("config_type", "factor_plan")])
-        .send()
-        .await
-        .with_context(|| format!("GET {} failed", url))?
-        .error_for_status()
-        .with_context(|| format!("GET {} returned error status", url))?;
-
-    let payload: FactorPlanResp = resp
-        .json()
-        .await
-        .with_context(|| format!("decode factor plan response failed: {}", url))?;
-
-    let mut out = HashMap::with_capacity(payload.thresholds.len());
-    for (raw_symbol, item) in payload.thresholds {
-        let symbol = normalize_symbol_for_venue(&raw_symbol, venue);
-        if !symbol.is_empty() {
-            out.insert(
-                symbol.clone(),
-                build_symbol_factor_plan(&symbol, item.factors),
-            );
         }
     }
     Ok(out)
@@ -6391,86 +5892,6 @@ fn corr_inputs_degenerate(xs: &[f64], ys: &[f64]) -> bool {
     var_x.abs() <= 1e-12 || var_y.abs() <= 1e-12
 }
 
-fn linear_regression_predict_last(values: &[f64]) -> Option<f64> {
-    if values.is_empty() {
-        return None;
-    }
-    let n = values.len() as f64;
-    let mut sum_x = 0.0;
-    let mut sum_y = 0.0;
-    let mut sum_xx = 0.0;
-    let mut sum_xy = 0.0;
-    for (i, y) in values.iter().enumerate() {
-        if !y.is_finite() {
-            return Some(0.0);
-        }
-        let x = i as f64;
-        sum_x += x;
-        sum_y += *y;
-        sum_xx += x * x;
-        sum_xy += x * *y;
-    }
-    let denom = n * sum_xx - sum_x * sum_x;
-    if denom.abs() <= 1e-12 {
-        return Some(0.0);
-    }
-    let slope = (n * sum_xy - sum_x * sum_y) / denom;
-    let intercept = (sum_y - slope * sum_x) / n;
-    let pred = slope * (n - 1.0) + intercept;
-    finite_opt(Some(pred))
-}
-
-fn pct_change_last(values: &(impl F64SeriesView + ?Sized), periods: usize) -> Option<f64> {
-    if periods == 0 || values.len() <= periods {
-        return None;
-    }
-    let curr = values.value_at(values.len() - 1);
-    let prev = values.value_at(values.len() - 1 - periods);
-    if !curr.is_finite() || !prev.is_finite() || prev.abs() <= 1e-12 {
-        return Some(0.0);
-    }
-    let value = (curr - prev) / prev;
-    if value.is_finite() {
-        Some(value)
-    } else {
-        None
-    }
-}
-
-fn linear_regression_intercept(values: &[f64]) -> Option<f64> {
-    if values.is_empty() {
-        return None;
-    }
-    let n = values.len() as f64;
-    let mut sum_x = 0.0;
-    let mut sum_y = 0.0;
-    let mut sum_xx = 0.0;
-    let mut sum_xy = 0.0;
-
-    for (i, y) in values.iter().enumerate() {
-        if !y.is_finite() {
-            return Some(0.0);
-        }
-        let x = i as f64;
-        sum_x += x;
-        sum_y += *y;
-        sum_xx += x * x;
-        sum_xy += x * *y;
-    }
-
-    let denom = n * sum_xx - sum_x * sum_x;
-    if denom.abs() <= 1e-12 {
-        return Some(0.0);
-    }
-    let slope = (n * sum_xy - sum_x * sum_y) / denom;
-    let intercept = (sum_y - slope * sum_x) / n;
-    if intercept.is_finite() {
-        Some(intercept)
-    } else {
-        None
-    }
-}
-
 fn std_pop(values: &[f64]) -> Option<f64> {
     if values.is_empty() {
         return None;
@@ -6499,6 +5920,82 @@ fn std_pop(values: &[f64]) -> Option<f64> {
         Some(value)
     } else {
         Some(0.0)
+    }
+}
+
+fn sample_cov(xs: &[f64], ys: &[f64]) -> Option<f64> {
+    let n = xs.len().min(ys.len());
+    if n < 2 {
+        return None;
+    }
+    let mut pairs = Vec::with_capacity(n);
+    for i in 0..n {
+        let x = xs[i];
+        let y = ys[i];
+        if x.is_finite() && y.is_finite() {
+            pairs.push((x, y));
+        }
+    }
+    if pairs.len() < 2 {
+        return Some(0.0);
+    }
+    let mean_x = pairs.iter().map(|(x, _)| *x).sum::<f64>() / pairs.len() as f64;
+    let mean_y = pairs.iter().map(|(_, y)| *y).sum::<f64>() / pairs.len() as f64;
+    let cov_sum = pairs
+        .iter()
+        .map(|(x, y)| (x - mean_x) * (y - mean_y))
+        .sum::<f64>();
+    finite_opt(Some(cov_sum / (pairs.len() - 1) as f64)).or(Some(0.0))
+}
+
+fn harmonic_mean(values: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut denom = 0.0;
+    for value in values {
+        if !value.is_finite() || *value <= 0.0 {
+            return Some(0.0);
+        }
+        denom += 1.0 / *value;
+    }
+    if denom.abs() <= 1e-12 {
+        return Some(0.0);
+    }
+    finite_opt(Some(values.len() as f64 / denom))
+}
+
+fn weighted_harmonic_with_index_weights(values: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut denom = 0.0;
+    for (idx, value) in values.iter().enumerate() {
+        if !value.is_finite() || *value <= 0.0 {
+            return Some(0.0);
+        }
+        denom += (idx + 1) as f64 / *value;
+    }
+    if denom.abs() <= 1e-12 {
+        return Some(0.0);
+    }
+    finite_opt(Some(values.len() as f64 / denom))
+}
+
+fn median_from_iter<I>(iter: I) -> Option<f64>
+where
+    I: IntoIterator<Item = f64>,
+{
+    let mut values: Vec<f64> = iter.into_iter().filter(|v| v.is_finite()).collect();
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_by(|a, b| a.total_cmp(b));
+    let mid = values.len() / 2;
+    if values.len() % 2 == 0 {
+        finite_opt(Some((values[mid - 1] + values[mid]) / 2.0))
+    } else {
+        finite_opt(Some(values[mid]))
     }
 }
 
@@ -6674,4 +6171,204 @@ fn parse_embedded_depth(msg: &TradeFlowFeatureMsg) -> Option<DepthSnapshot> {
     }
 
     Some(DepthSnapshot { bids, asks })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_depth() -> DepthDerived {
+        let bids = std::array::from_fn(|i| DepthLevel {
+            price: 100.0 - i as f64 * 0.1,
+            amount: 10.0 + i as f64,
+        });
+        let asks = std::array::from_fn(|i| DepthLevel {
+            price: 100.1 + i as f64 * 0.1,
+            amount: 11.0 + i as f64,
+        });
+        DepthDerived::from_snapshot(&DepthSnapshot { bids, asks })
+    }
+
+    #[test]
+    fn normalize_feature_values_waits_for_min_samples() {
+        let cfg = ZscoreRuntimeConfig {
+            window_size: 8,
+            min_samples: 3,
+            zscore_cap: 3.0,
+        };
+        let mut state = SymbolNormState::new(cfg.window_size, 0);
+
+        assert!(normalize_feature_values(&mut state, &[1.0, 10.0], &cfg).is_none());
+        assert!(normalize_feature_values(&mut state, &[2.0, 20.0], &cfg).is_none());
+
+        let normalized = normalize_feature_values(&mut state, &[3.0, 30.0], &cfg).unwrap();
+        assert_eq!(normalized.len(), 2);
+        assert!(normalized.iter().all(|value| value.is_finite()));
+        assert!(normalized[0] > 0.0);
+        assert!(normalized[1] > 0.0);
+    }
+
+    #[test]
+    fn normalize_feature_values_resets_on_dim_change() {
+        let cfg = ZscoreRuntimeConfig {
+            window_size: 8,
+            min_samples: 2,
+            zscore_cap: 3.0,
+        };
+        let mut state = SymbolNormState::new(cfg.window_size, 0);
+
+        assert!(normalize_feature_values(&mut state, &[1.0, 2.0], &cfg).is_none());
+        assert!(normalize_feature_values(&mut state, &[3.0], &cfg).is_none());
+
+        let normalized = normalize_feature_values(&mut state, &[5.0], &cfg).unwrap();
+        assert_eq!(normalized.len(), 1);
+        assert!(normalized[0].is_finite());
+        assert_eq!(state.sample_count, 2);
+        assert_eq!(state.welford_vec.len(), 1);
+    }
+
+    #[test]
+    fn newly_added_reference_factors_are_wired() {
+        let expected = [
+            FusionFactorId::Factor002,
+            FusionFactorId::Factor008,
+            FusionFactorId::Factor012,
+            FusionFactorId::Factor020,
+            FusionFactorId::Factor026,
+            FusionFactorId::Factor028,
+            FusionFactorId::Factor036,
+            FusionFactorId::Factor040,
+            FusionFactorId::Factor042,
+            FusionFactorId::Factor043,
+            FusionFactorId::Factor049,
+            FusionFactorId::Factor053,
+            FusionFactorId::Factor058,
+            FusionFactorId::Factor059,
+            FusionFactorId::Factor062,
+            FusionFactorId::Factor064,
+            FusionFactorId::Factor067,
+            FusionFactorId::Factor068,
+            FusionFactorId::Factor069,
+            FusionFactorId::Factor070,
+            FusionFactorId::Factor073,
+            FusionFactorId::Factor079,
+            FusionFactorId::Factor080,
+            FusionFactorId::Factor085,
+            FusionFactorId::Factor091,
+            FusionFactorId::Factor093,
+            FusionFactorId::Factor095,
+            FusionFactorId::Factor103,
+            FusionFactorId::Factor111,
+            FusionFactorId::Factor113,
+            FusionFactorId::Factor114,
+            FusionFactorId::Factor115,
+            FusionFactorId::Factor120,
+            FusionFactorId::Factor122,
+            FusionFactorId::Factor125,
+            FusionFactorId::Factor129,
+            FusionFactorId::Factor130,
+            FusionFactorId::Factor159,
+        ];
+
+        let mut state = SymbolCalcState::default();
+        let series = FusionFactorPubApp::build_symbol_series_from_state(&mut state);
+        let depth = dummy_depth();
+
+        for factor_id in expected {
+            let binding = FactorBinding {
+                name: factor_id.as_name().to_string(),
+                factor_id: Some(factor_id),
+                extra_factor_id: None,
+            };
+            assert!(
+                FusionFactorPubApp::compute_supported_factor(
+                    &binding,
+                    None,
+                    Some(&depth),
+                    Some(&series),
+                )
+                .is_some(),
+                "missing support for {}",
+                factor_id.as_name()
+            );
+        }
+    }
+
+    #[test]
+    fn requested_baselines_are_wired_except_blocked_inputs() {
+        const REQUESTED: &str = "
+            baseline_001, baseline_002, baseline_003, baseline_004, baseline_005,
+            baseline_006, baseline_007, baseline_008, baseline_009, baseline_010,
+            baseline_011, baseline_012, baseline_013, baseline_014, baseline_015,
+            baseline_016, baseline_017, baseline_018, baseline_019, baseline_020,
+            baseline_021, baseline_022, baseline_024, baseline_025,
+            baseline_026, baseline_027, baseline_028, baseline_029,
+            baseline_031, baseline_032, baseline_034, baseline_035,
+            baseline_036, baseline_038, baseline_039, baseline_040,
+            baseline_042, baseline_043, baseline_045,
+            baseline_046, baseline_047, baseline_048, baseline_049,
+            baseline_051, baseline_052, baseline_053, baseline_054, baseline_055,
+            baseline_057, baseline_058, baseline_059, baseline_060,
+            baseline_061, baseline_062, baseline_063, baseline_065,
+            baseline_066, baseline_067, baseline_068, baseline_069, baseline_070,
+            baseline_071, baseline_072, baseline_073, baseline_074, baseline_075,
+            baseline_076, baseline_077, baseline_078, baseline_079, baseline_080,
+            baseline_081, baseline_082, baseline_083, baseline_085,
+            baseline_086, baseline_087, baseline_088, baseline_090,
+            baseline_091, baseline_092, baseline_093, baseline_094, baseline_095,
+            baseline_096, baseline_098, baseline_099, baseline_100,
+            baseline_101, baseline_102, baseline_103, baseline_104, baseline_105,
+            baseline_107, baseline_109, baseline_110,
+            baseline_111, baseline_112, baseline_113, baseline_114, baseline_115,
+            baseline_116, baseline_117, baseline_118, baseline_119, baseline_120,
+            baseline_121, baseline_122, baseline_123, baseline_124, baseline_125,
+            baseline_126, baseline_127, baseline_128, baseline_129,
+            baseline_131, baseline_132, baseline_133, baseline_134, baseline_135,
+            baseline_136, baseline_137, baseline_138, baseline_139, baseline_140,
+            baseline_141, baseline_143, baseline_145,
+            baseline_146, baseline_148, baseline_149,
+            baseline_151, baseline_152, baseline_153, baseline_154, baseline_155,
+            baseline_156, baseline_157, baseline_158, baseline_159, baseline_160,
+            baseline_161, baseline_162, baseline_163, baseline_164,
+            baseline_166, baseline_167, baseline_168, baseline_169, baseline_170,
+            baseline_171, baseline_172, baseline_173, baseline_174, baseline_175,
+            baseline_177, baseline_178, baseline_179, baseline_180,
+            baseline_181, baseline_182, baseline_184, baseline_185,
+            baseline_187, baseline_188, baseline_189, baseline_190,
+            baseline_191, baseline_192, baseline_193, baseline_194, baseline_195,
+            baseline_196, baseline_198, baseline_199, baseline_200
+        ";
+        const BLOCKED: &[&str] = &[
+            "baseline_048",
+            "baseline_075",
+            "baseline_078",
+            "baseline_094",
+            "baseline_095",
+            "baseline_102",
+            "baseline_155",
+        ];
+
+        let mut state = SymbolCalcState::default();
+        let series = FusionFactorPubApp::build_symbol_series_from_state(&mut state);
+
+        for name in REQUESTED
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            let binding = FactorBinding {
+                name: name.to_string(),
+                factor_id: FusionFactorId::from_name(name),
+                extra_factor_id: None,
+            };
+            let supported =
+                FusionFactorPubApp::compute_supported_factor(&binding, None, None, Some(&series))
+                    .is_some();
+            if BLOCKED.contains(&name) {
+                assert!(!supported, "blocked baseline unexpectedly wired: {name}");
+            } else {
+                assert!(supported, "missing baseline wiring: {name}");
+            }
+        }
+    }
 }
