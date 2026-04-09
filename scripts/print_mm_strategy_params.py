@@ -75,7 +75,7 @@ def parse_args() -> argparse.Namespace:
 
 
 PARAM_COMMENTS: Dict[str, str] = {
-    "order_amount": "单笔下单量(USDT)",
+    "default_order_amount": "默认单量(USDT，可被配置覆盖)",
     "order_interval_ms": "报单触发间隔(ms)",
     "open_orders_per_round": "MM open 每轮报单数量",
     "open_buy_vol_scale": "MM open 买侧波动率放缩区间，格式为长度为2的 JSON 数组，例如 [0.1,2.0]",
@@ -100,7 +100,7 @@ PARAM_COMMENTS: Dict[str, str] = {
 }
 
 PARAM_PRINT_ORDER = [
-    "order_amount",
+    "default_order_amount",
     "order_interval_ms",
     "open_orders_per_round",
     "open_buy_vol_scale",

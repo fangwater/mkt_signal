@@ -86,6 +86,14 @@ fn strategy_params_key(
     )
 }
 
+fn order_amount_field_name(namespace: &str) -> &'static str {
+    if normalize_namespace(namespace) == "mm" {
+        "default_order_amount"
+    } else {
+        "order_amount"
+    }
+}
+
 /// 策略参数结构（从 Redis Hash 反序列化）
 #[derive(Debug, Clone, Deserialize)]
 pub struct StrategyParams {
@@ -355,10 +363,19 @@ impl StrategyParams {
             .map(|s| s.to_string())
             .unwrap_or_else(default_mode);
 
-        let order_amount = hash_map
-            .get("order_amount")
-            .and_then(|s| s.parse::<f32>().ok())
-            .unwrap_or_else(default_order_amount);
+        let order_amount_field = order_amount_field_name(&ns);
+        let order_amount = match hash_map.get(order_amount_field) {
+            Some(raw) => raw.parse::<f32>().unwrap_or_else(|_| {
+                panic!(
+                    "Redis hash '{}' {} 无法解析为数字: {}",
+                    redis_key, order_amount_field, raw
+                )
+            }),
+            None if ns == "mm" => {
+                panic!("Redis hash '{}' 缺少 {}", redis_key, order_amount_field)
+            }
+            None => default_order_amount(),
+        };
         let open_scale = hash_map
             .get("open_scale")
             .and_then(|s| s.parse::<f64>().ok())
@@ -993,6 +1010,12 @@ mod tests {
         let key =
             mm_strategy_params_key_for_env(Some("binance_mm_beta"), TradingVenue::BinanceFutures);
         assert_eq!(key, "binance_mm_beta:mm_strategy_params_binance-futures");
+    }
+
+    #[test]
+    fn test_mm_order_amount_field_name_is_default_order_amount() {
+        assert_eq!(order_amount_field_name("mm"), "default_order_amount");
+        assert_eq!(order_amount_field_name("fr"), "order_amount");
     }
 
     #[test]
