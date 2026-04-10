@@ -1035,8 +1035,11 @@ impl MarketMakerHedgeStrategy {
         let hedge_ts_ms = (get_timestamp_us() / 1000) as i64;
         self.last_hedge_ts_ms = Some(hedge_ts_ms);
         let risk_loader = PreTradeParamsLoader::instance();
-        let symbol_exposure_u =
-            risk_loader.max_pos_u().max(0.0) * risk_loader.max_symbol_exposure_ratio().max(0.0);
+        let open_venue = MonitorChannel::instance().open_venue();
+        let symbol_exposure_u = risk_loader
+            .max_pos_u_for_symbol(open_venue, &self.symbol)
+            .max(0.0)
+            * risk_loader.max_symbol_exposure_ratio().max(0.0);
         let request_seq = self
             .pending_hedge_request_seq
             .unwrap_or_else(|| self.next_hedge_request_seq());

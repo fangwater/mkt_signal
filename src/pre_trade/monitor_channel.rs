@@ -1408,7 +1408,7 @@ impl MonitorChannel {
             if limit <= 0.0 {
                 return Ok(());
             }
-            let max_pos_u = loader.max_pos_u();
+            let max_pos_u = loader.max_pos_u_for_symbol(inner.open_venue, symbol);
             if max_pos_u <= f64::EPSILON {
                 return Err("max_pos_u 配置无效，无法校验敞口比例".to_string());
             }
@@ -1516,7 +1516,8 @@ impl MonitorChannel {
         price_hint: f64,
     ) -> Result<(), String> {
         Self::with_inner(|inner| {
-            let max_pos_u = PreTradeParamsLoader::instance().max_pos_u();
+            let max_pos_u =
+                PreTradeParamsLoader::instance().max_pos_u_for_symbol(inner.open_venue, symbol);
             if !(max_pos_u > 0.0) {
                 panic!("max_pos_u not set!!");
             }

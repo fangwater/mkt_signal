@@ -7,6 +7,7 @@ MM 配置服务器（mm_config_server）
 - symbol list
 - strategy params
 - amount_u overrides
+- max_pos_u overrides
 - pre-trade risk params
 - return-model-score thresholds
 """
@@ -32,6 +33,10 @@ DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT"]
 AMOUNT_U_EXAMPLE = {
     "BTCUSDT": 150.0,
     "ETHUSDT": 80.0,
+}
+MAX_POS_U_EXAMPLE = {
+    "BTCUSDT": 200000.0,
+    "ETHUSDT": 120000.0,
 }
 RETURN_THRESHOLD_EXAMPLE = {
     "BTCUSDT": {
@@ -333,6 +338,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       <span class="badge mono" id="symbol-key">-</span>
       <span class="badge mono" id="strategy-key">-</span>
       <span class="badge mono" id="amount-u-key">-</span>
+      <span class="badge mono" id="max-pos-u-key">-</span>
       <span class="badge mono" id="risk-key">-</span>
       <span class="badge mono" id="model-params-key">-</span>
       <span class="badge mono" id="mapping-key">-</span>
@@ -388,6 +394,25 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       <pre id="amount-u-example" class="mono"></pre>
       <textarea id="amount-u-text" class="mono" spellcheck="false"></textarea>
       <div id="amount-u-status" class="status"></div>
+    </section>
+
+    <section class="panel">
+      <div class="section-header">
+        <h2>MM Max Pos U Overrides</h2>
+        <div class="actions">
+          <button id="load-max-pos-u" class="secondary">读取</button>
+          <button id="reset-max-pos-u" class="ghost">示例</button>
+          <button id="save-max-pos-u">保存</button>
+        </div>
+      </div>
+      <div class="hint">
+        JSON 结构为 `{"SYMBOL": max_pos_u}`。保存时会写入 Redis String
+        `<env_name>:<venue>:mm:max_pos_u`，用于按 symbol 覆盖 risk params 里的默认 `max_pos_u`。
+      </div>
+      <div class="hint">示例：</div>
+      <pre id="max-pos-u-example" class="mono"></pre>
+      <textarea id="max-pos-u-text" class="mono" spellcheck="false"></textarea>
+      <div id="max-pos-u-status" class="status"></div>
     </section>
 
     <section class="panel">
@@ -605,6 +630,8 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       document.getElementById('strategy-key').textContent = `mm_strategy_params_${state.venue}`;
       document.getElementById('amount-u-key').textContent =
         `${state.envName}:${state.venue}:mm:amount_u`;
+      document.getElementById('max-pos-u-key').textContent =
+        `${state.envName}:${state.venue}:mm:max_pos_u`;
       document.getElementById('risk-key').textContent =
         `${state.envName}:${state.venue}:${state.venue}:pre_trade_risk_params`;
       document.getElementById('mapping-key').textContent =
@@ -1001,6 +1028,56 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       setStatus('amount-u-status', '已填入示例，尚未写入 Redis', 'warn');
     }
 
+    async function loadMaxPosU() {
+      setStatus('max-pos-u-status', '读取中...');
+      try {
+        const data = await fetchJson(`${apiUrl('max-pos-u')}?exchange=${encodeURIComponent(state.exchange)}`);
+        document.getElementById('max-pos-u-text').value =
+          JSON.stringify(data.values || {}, null, 2);
+        setStatus(
+          'max-pos-u-status',
+          `已读取 ${data.count || 0} 个 symbol ${data.key}`,
+          'ok'
+        );
+      } catch (err) {
+        setStatus('max-pos-u-status', `读取失败: ${formatError(err)}`, 'err');
+        throw err;
+      }
+    }
+
+    async function saveMaxPosU() {
+      setStatus('max-pos-u-status', '保存中...');
+      let values;
+      try {
+        values = JSON.parse(document.getElementById('max-pos-u-text').value || '{}');
+      } catch (err) {
+        setStatus('max-pos-u-status', `JSON 解析失败: ${err.message}`, 'err');
+        return;
+      }
+      try {
+        const data = await fetchJson(apiUrl('max-pos-u'), {
+          method: 'POST',
+          body: JSON.stringify({exchange: state.exchange, values}),
+        });
+        document.getElementById('max-pos-u-text').value =
+          JSON.stringify(data.values || {}, null, 2);
+        setStatus(
+          'max-pos-u-status',
+          `已保存 ${data.count || 0} 个 symbol ${data.key}`,
+          'ok'
+        );
+      } catch (err) {
+        setStatus('max-pos-u-status', `保存失败: ${formatError(err)}`, 'err');
+        throw err;
+      }
+    }
+
+    function resetMaxPosU() {
+      document.getElementById('max-pos-u-text').value =
+        JSON.stringify(BOOTSTRAP.max_pos_u_example || {}, null, 2);
+      setStatus('max-pos-u-status', '已填入示例，尚未写入 Redis', 'warn');
+    }
+
     async function loadRisk() {
       setStatus('risk-status', '读取中...');
       try {
@@ -1126,6 +1203,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         loadSymbols(),
         loadStrategy(),
         loadAmountU(),
+        loadMaxPosU(),
         loadRisk(),
         loadReturnMapping(),
         loadThresholds(),
@@ -1203,6 +1281,9 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     document.getElementById('load-amount-u').addEventListener('click', () => loadAmountU());
     document.getElementById('save-amount-u').addEventListener('click', () => saveAmountU());
     document.getElementById('reset-amount-u').addEventListener('click', () => resetAmountU());
+    document.getElementById('load-max-pos-u').addEventListener('click', () => loadMaxPosU());
+    document.getElementById('save-max-pos-u').addEventListener('click', () => saveMaxPosU());
+    document.getElementById('reset-max-pos-u').addEventListener('click', () => resetMaxPosU());
     document.getElementById('load-risk').addEventListener('click', () => loadRisk());
     document.getElementById('save-risk').addEventListener('click', () => saveRisk());
     document.getElementById('reset-risk').addEventListener('click', () => resetRisk());
@@ -1221,6 +1302,8 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     initModelNameInput();
     document.getElementById('amount-u-example').textContent =
       JSON.stringify(BOOTSTRAP.amount_u_example || {}, null, 2);
+    document.getElementById('max-pos-u-example').textContent =
+      JSON.stringify(BOOTSTRAP.max_pos_u_example || {}, null, 2);
     renderThresholdMapping();
     loadAll().catch((err) => {
       console.error(err);
@@ -1305,6 +1388,10 @@ def make_strategy_key(venue: str) -> str:
 
 def make_amount_u_key(env_name: str, venue: str) -> str:
     return f"{env_name}:{venue}:mm:amount_u"
+
+
+def make_max_pos_u_key(env_name: str, venue: str) -> str:
+    return f"{env_name}:{venue}:mm:max_pos_u"
 
 
 def make_risk_key(env_name: str, venue: str) -> str:
@@ -1420,6 +1507,30 @@ def normalize_amount_u_mapping(values: Any) -> Dict[str, float]:
 
 
 def dumps_amount_u_mapping(values: Dict[str, float]) -> str:
+    ordered = {symbol: float(f"{values[symbol]:.12g}") for symbol in sorted(values.keys())}
+    return json.dumps(ordered, ensure_ascii=False, separators=(",", ":"))
+
+
+def normalize_max_pos_u_mapping(values: Any) -> Dict[str, float]:
+    if values is None:
+        return {}
+    if not isinstance(values, dict):
+        raise ValueError("max_pos_u values must be an object")
+
+    normalized: Dict[str, float] = {}
+    for raw_symbol, raw_value in values.items():
+        symbol = normalize_amount_u_symbol(raw_symbol)
+        try:
+            max_pos_u = float(raw_value)
+        except Exception as exc:
+            raise ValueError(f"invalid max_pos_u for {symbol}: {raw_value}") from exc
+        if not (max_pos_u > 0.0):
+            raise ValueError(f"max_pos_u must be > 0 for {symbol}: {raw_value}")
+        normalized[symbol] = max_pos_u
+    return dict(sorted(normalized.items()))
+
+
+def dumps_max_pos_u_mapping(values: Dict[str, float]) -> str:
     ordered = {symbol: float(f"{values[symbol]:.12g}") for symbol in sorted(values.keys())}
     return json.dumps(ordered, ensure_ascii=False, separators=(",", ":"))
 
@@ -1687,10 +1798,12 @@ def build_bootstrap(default_exchange: str, env_name: str) -> Dict[str, Any]:
         "return_threshold_mapping": RETURN_THRESHOLD_MAPPING,
         "return_threshold_example": RETURN_THRESHOLD_EXAMPLE,
         "amount_u_example": AMOUNT_U_EXAMPLE,
+        "max_pos_u_example": MAX_POS_U_EXAMPLE,
         "keys": {
             "symbol": make_symbol_key(venue),
             "strategy": make_strategy_key(venue),
             "amount_u": make_amount_u_key(env_name, venue),
+            "max_pos_u": make_max_pos_u_key(env_name, venue),
             "risk": make_risk_key(env_name, venue),
             "return_mapping": make_return_mapping_key(venue),
             "return_threshold": make_return_threshold_key(venue),
@@ -1856,6 +1969,35 @@ class MMConfigStore:
         key = make_amount_u_key(self._config.env_name, venue)
         normalized = normalize_amount_u_mapping(values)
         payload = dumps_amount_u_mapping(normalized)
+        self.redis().set(key, payload)
+        return {
+            "key": key,
+            "values": normalized,
+            "count": len(normalized),
+        }
+
+    def read_max_pos_u(self, venue: str) -> Dict[str, Any]:
+        key = make_max_pos_u_key(self._config.env_name, venue)
+        raw = self.redis().get(key)
+        if raw is None:
+            values: Dict[str, float] = {}
+        else:
+            text = raw.decode("utf-8", "ignore") if isinstance(raw, bytes) else str(raw)
+            try:
+                decoded = json.loads(text)
+            except Exception as exc:
+                raise ValueError(f"invalid JSON in {key}: {exc}") from exc
+            values = normalize_max_pos_u_mapping(decoded)
+        return {
+            "key": key,
+            "values": values,
+            "count": len(values),
+        }
+
+    def write_max_pos_u(self, venue: str, values: Any) -> Dict[str, Any]:
+        key = make_max_pos_u_key(self._config.env_name, venue)
+        normalized = normalize_max_pos_u_mapping(values)
+        payload = dumps_max_pos_u_mapping(normalized)
         self.redis().set(key, payload)
         return {
             "key": key,
@@ -2268,6 +2410,13 @@ def build_handler(config: AppConfig):
                     )
                     return
 
+                if parsed.path == "/api/max-pos-u":
+                    self._send_json(
+                        200,
+                        {"ok": True, "exchange": exchange, "venue": venue, **store.read_max_pos_u(venue)},
+                    )
+                    return
+
                 if parsed.path == "/api/open-volatility-preview":
                     percentile = first_query_value(query, "percentile")
                     self._send_json(
@@ -2353,6 +2502,11 @@ def build_handler(config: AppConfig):
 
                 if parsed.path == "/api/amount-u":
                     result = store.write_amount_u(venue, payload.get("values"))
+                    self._send_json(200, {"ok": True, "exchange": exchange, "venue": venue, **result})
+                    return
+
+                if parsed.path == "/api/max-pos-u":
+                    result = store.write_max_pos_u(venue, payload.get("values"))
                     self._send_json(200, {"ok": True, "exchange": exchange, "venue": venue, **result})
                     return
 

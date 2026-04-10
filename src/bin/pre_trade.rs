@@ -197,7 +197,7 @@ async fn main() -> Result<()> {
 
             let loader = PreTradeParamsLoader::instance();
             loader
-                .load_from_redis(&redis_settings)
+                .load_from_redis(&redis_settings, dir_prefix.as_deref(), open_venue)
                 .await
                 .unwrap_or_else(|err| {
                     panic!(
@@ -213,7 +213,11 @@ async fn main() -> Result<()> {
             loader.print_params_table();
 
             // 启动后台刷新任务（60s 间隔）
-            PreTradeParamsLoader::start_background_refresh(redis_settings);
+            PreTradeParamsLoader::start_background_refresh(
+                redis_settings,
+                dir_prefix.clone(),
+                open_venue,
+            );
             info!("Background refresh task started (interval: 60s)");
 
             info!(

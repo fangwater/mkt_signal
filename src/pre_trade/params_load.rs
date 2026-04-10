@@ -1,9 +1,12 @@
 use anyhow::Result;
 use log::{debug, info, warn};
+use std::collections::HashMap;
 use std::cell::RefCell;
 use std::time::Duration;
 
 use crate::common::redis_client::{RedisClient, RedisSettings};
+use crate::common::symbol_util::normalize_symbol_for_venue;
+use crate::signal::common::TradingVenue;
 
 /// Redis Key 配置
 const REDIS_KEY_RISK_PARAMS: &str = "pre_trade_risk_params";
@@ -15,6 +18,7 @@ const REFRESH_INTERVAL_SECS: u64 = 60;
 #[derive(Debug, Clone)]
 struct PreTradeParamsData {
     max_pos_u: f64,
+    max_pos_u_overrides: HashMap<String, f64>,
     max_symbol_exposure_ratio: f64,
     max_total_exposure_ratio: f64,
     max_leverage: f64,
@@ -29,6 +33,7 @@ impl Default for PreTradeParamsData {
     fn default() -> Self {
         Self {
             max_pos_u: 1000.0,
+            max_pos_u_overrides: HashMap::new(),
             max_symbol_exposure_ratio: 0.8,
             max_total_exposure_ratio: 1.0,
             max_leverage: 3.0,
@@ -48,6 +53,61 @@ thread_local! {
     static PARAMS_DATA: RefCell<PreTradeParamsData> = RefCell::new(PreTradeParamsData::default());
 }
 
+fn risk_params_full_key(redis: &RedisSettings) -> String {
+    match redis.prefix.as_deref() {
+        Some(prefix) if !prefix.is_empty() => format!("{prefix}{REDIS_KEY_RISK_PARAMS}"),
+        _ => REDIS_KEY_RISK_PARAMS.to_string(),
+    }
+}
+
+fn mm_max_pos_u_override_key(env_name: Option<&str>, open_venue: TradingVenue) -> Option<String> {
+    let env_name = env_name.map(str::trim).filter(|s| !s.is_empty())?;
+    Some(format!("{env_name}:{}:mm:max_pos_u", open_venue.data_pub_slug()))
+}
+
+fn parse_mm_max_pos_u_overrides(
+    raw: &str,
+    open_venue: TradingVenue,
+    redis_key: &str,
+) -> HashMap<String, f64> {
+    let parsed: HashMap<String, f64> = serde_json::from_str(raw).unwrap_or_else(|err| {
+        panic!(
+            "Redis string '{}' 不是合法 JSON(symbol->max_pos_u): {} ({})",
+            redis_key, raw, err
+        )
+    });
+
+    let mut normalized = HashMap::new();
+    for (symbol, max_pos_u) in parsed {
+        let symbol_trimmed = symbol.trim();
+        if symbol_trimmed.is_empty() {
+            panic!("Redis string '{}' 包含空 symbol", redis_key);
+        }
+        if !(max_pos_u.is_finite() && max_pos_u > 0.0) {
+            panic!(
+                "Redis string '{}' symbol={} max_pos_u 非法: {}",
+                redis_key, symbol_trimmed, max_pos_u
+            );
+        }
+        let symbol_key = normalize_symbol_for_venue(symbol_trimmed, open_venue);
+        normalized.insert(symbol_key, max_pos_u);
+    }
+    normalized
+}
+
+fn resolve_max_pos_u_for_symbol(
+    default_max_pos_u: f64,
+    overrides: &HashMap<String, f64>,
+    open_venue: TradingVenue,
+    symbol: &str,
+) -> f64 {
+    let symbol_key = normalize_symbol_for_venue(symbol, open_venue);
+    overrides
+        .get(&symbol_key)
+        .copied()
+        .unwrap_or(default_max_pos_u)
+}
+
 impl PreTradeParamsLoader {
     /// 获取全局单例实例
     pub fn instance() -> Self {
@@ -55,22 +115,49 @@ impl PreTradeParamsLoader {
     }
 
     /// 从 Redis 加载参数并更新单例
-    pub async fn load_from_redis(&self, redis: &RedisSettings) -> Result<()> {
-        let mut client = RedisClient::connect(redis.clone()).await?;
-        let hash_map = client.hgetall_map(REDIS_KEY_RISK_PARAMS).await?;
+    pub async fn load_from_redis(
+        &self,
+        redis: &RedisSettings,
+        env_name: Option<&str>,
+        open_venue: TradingVenue,
+    ) -> Result<()> {
+        let risk_key = risk_params_full_key(redis);
+        let mut raw_settings = redis.clone();
+        raw_settings.prefix = None;
+        let mut client = RedisClient::connect(raw_settings).await?;
+        let hash_map = client.hgetall_map(&risk_key).await?;
         if hash_map.is_empty() {
             anyhow::bail!(
                 "risk params hash not found or empty: key='{}' (prefix={:?})",
-                REDIS_KEY_RISK_PARAMS,
+                risk_key,
                 redis.prefix.as_deref()
             );
         }
 
         debug!(
             "risk params loaded from redis key='{}' (prefix={:?})",
-            REDIS_KEY_RISK_PARAMS,
+            risk_key,
             redis.prefix.as_deref()
         );
+
+        let max_pos_u_overrides = if let Some(override_key) =
+            mm_max_pos_u_override_key(env_name, open_venue)
+        {
+            match client.get_string(&override_key).await? {
+                Some(raw) => {
+                    let parsed = parse_mm_max_pos_u_overrides(&raw, open_venue, &override_key);
+                    debug!(
+                        "max_pos_u overrides loaded key='{}' symbols={}",
+                        override_key,
+                        parsed.len()
+                    );
+                    parsed
+                }
+                None => HashMap::new(),
+            }
+        } else {
+            HashMap::new()
+        };
 
         let parse_f64 =
             |k: &str| -> Option<f64> { hash_map.get(k).and_then(|v| v.parse::<f64>().ok()) };
@@ -83,6 +170,7 @@ impl PreTradeParamsLoader {
             if let Some(v) = parse_f64("max_pos_u") {
                 data.max_pos_u = v;
             }
+            data.max_pos_u_overrides = max_pos_u_overrides.clone();
 
             if let Some(v) = parse_f64("max_symbol_exposure_ratio") {
                 data.max_symbol_exposure_ratio = v;
@@ -121,8 +209,9 @@ impl PreTradeParamsLoader {
             }
 
             debug!(
-                "风控参数已加载: max_pos_u={:.2} sym_ratio={:.4} total_ratio={:.4} max_leverage={:.2} max_pending={} open_rate_1m={} open_rate_10s={} hedge_rate_1m={} hedge_rate_10s={}",
+                "风控参数已加载: max_pos_u={:.2} overrides={} sym_ratio={:.4} total_ratio={:.4} max_leverage={:.2} max_pending={} open_rate_1m={} open_rate_10s={} hedge_rate_1m={} hedge_rate_10s={}",
                 data.max_pos_u,
+                data.max_pos_u_overrides.len(),
                 data.max_symbol_exposure_ratio,
                 data.max_total_exposure_ratio,
                 data.max_leverage,
@@ -138,7 +227,11 @@ impl PreTradeParamsLoader {
     }
 
     /// 启动后台刷新任务（固定 60 秒间隔）
-    pub fn start_background_refresh(redis: RedisSettings) {
+    pub fn start_background_refresh(
+        redis: RedisSettings,
+        env_name: Option<String>,
+        open_venue: TradingVenue,
+    ) {
         tokio::task::spawn_local(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(REFRESH_INTERVAL_SECS));
             let loader = PreTradeParamsLoader::instance();
@@ -146,7 +239,10 @@ impl PreTradeParamsLoader {
             loop {
                 interval.tick().await;
 
-                match loader.load_from_redis(&redis).await {
+                match loader
+                    .load_from_redis(&redis, env_name.as_deref(), open_venue)
+                    .await
+                {
                     Ok(_) => {
                         debug!("风控参数后台刷新成功");
                     }
@@ -206,6 +302,18 @@ impl PreTradeParamsLoader {
     /// 获取 max_pos_u
     pub fn max_pos_u(&self) -> f64 {
         PARAMS_DATA.with(|data| data.borrow().max_pos_u)
+    }
+
+    pub fn max_pos_u_for_symbol(&self, open_venue: TradingVenue, symbol: &str) -> f64 {
+        PARAMS_DATA.with(|data| {
+            let data = data.borrow();
+            resolve_max_pos_u_for_symbol(
+                data.max_pos_u,
+                &data.max_pos_u_overrides,
+                open_venue,
+                symbol,
+            )
+        })
     }
 
     /// 获取 max_symbol_exposure_ratio
@@ -309,5 +417,41 @@ mod tests {
         assert_eq!(snapshot.open_order_rate_limit_10s, 0);
         assert_eq!(snapshot.hedge_order_rate_limit_per_min, 0);
         assert_eq!(snapshot.hedge_order_rate_limit_10s, 0);
+    }
+
+    #[test]
+    fn test_resolve_max_pos_u_for_symbol_uses_override() {
+        let mut overrides = HashMap::new();
+        overrides.insert("BTCUSDT".to_string(), 2500.0);
+        let val = resolve_max_pos_u_for_symbol(
+            1000.0,
+            &overrides,
+            TradingVenue::BinanceFutures,
+            "btc-usdt",
+        );
+        assert_eq!(val, 2500.0);
+    }
+
+    #[test]
+    fn test_resolve_max_pos_u_for_symbol_falls_back_to_default() {
+        let overrides = HashMap::new();
+        let val = resolve_max_pos_u_for_symbol(
+            1000.0,
+            &overrides,
+            TradingVenue::BinanceFutures,
+            "btc-usdt",
+        );
+        assert_eq!(val, 1000.0);
+    }
+
+    #[test]
+    fn test_parse_mm_max_pos_u_overrides_normalizes_symbols() {
+        let overrides = parse_mm_max_pos_u_overrides(
+            r#"{"btc-usdt":2500,"ETH_USDT":1200}"#,
+            TradingVenue::BinanceFutures,
+            "binance_mm_alpha:binance-futures:mm:max_pos_u",
+        );
+        assert_eq!(overrides.get("BTCUSDT"), Some(&2500.0));
+        assert_eq!(overrides.get("ETHUSDT"), Some(&1200.0));
     }
 }
