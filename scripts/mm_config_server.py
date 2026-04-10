@@ -6,6 +6,7 @@ MM 配置服务器（mm_config_server）
 提供页面/接口用于查看和编辑 MM 相关配置：
 - symbol list
 - strategy params
+- amount_u overrides
 - pre-trade risk params
 - return-model-score thresholds
 """
@@ -28,6 +29,10 @@ VENUE_PREFIX_PATTERN = re.compile(
     r"^([a-z0-9]+-(?:margin|futures|spot|swap|perpetual|perp))(?:$|[-_.])"
 )
 DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT"]
+AMOUNT_U_EXAMPLE = {
+    "BTCUSDT": 150.0,
+    "ETHUSDT": 80.0,
+}
 RETURN_THRESHOLD_EXAMPLE = {
     "BTCUSDT": {
         "forward_open": "0.002",
@@ -327,6 +332,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     <div class="meta">
       <span class="badge mono" id="symbol-key">-</span>
       <span class="badge mono" id="strategy-key">-</span>
+      <span class="badge mono" id="amount-u-key">-</span>
       <span class="badge mono" id="risk-key">-</span>
       <span class="badge mono" id="model-params-key">-</span>
       <span class="badge mono" id="mapping-key">-</span>
@@ -363,6 +369,25 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       <div class="kv-table" id="strategy-table"></div>
       <div id="strategy-vol-preview" class="status"></div>
       <div id="strategy-status" class="status"></div>
+    </section>
+
+    <section class="panel">
+      <div class="section-header">
+        <h2>MM Amount U Overrides</h2>
+        <div class="actions">
+          <button id="load-amount-u" class="secondary">读取</button>
+          <button id="reset-amount-u" class="ghost">示例</button>
+          <button id="save-amount-u">保存</button>
+        </div>
+      </div>
+      <div class="hint">
+        JSON 结构为 `{"SYMBOL": amount_u}`。保存时会写入 Redis String
+        `<env_name>:<venue>:mm:amount_u`，用于覆盖 strategy params 里的 `default_order_amount`。
+      </div>
+      <div class="hint">示例：</div>
+      <pre id="amount-u-example" class="mono"></pre>
+      <textarea id="amount-u-text" class="mono" spellcheck="false"></textarea>
+      <div id="amount-u-status" class="status"></div>
     </section>
 
     <section class="panel">
@@ -578,6 +603,8 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       document.getElementById('model-name').value = state.modelName;
       document.getElementById('symbol-key').textContent = `mm_trade_symbols:${state.venue}`;
       document.getElementById('strategy-key').textContent = `mm_strategy_params_${state.venue}`;
+      document.getElementById('amount-u-key').textContent =
+        `${state.envName}:${state.venue}:mm:amount_u`;
       document.getElementById('risk-key').textContent =
         `${state.envName}:${state.venue}:${state.venue}:pre_trade_risk_params`;
       document.getElementById('mapping-key').textContent =
@@ -924,6 +951,56 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       setStatus('strategy-status', '已恢复默认值，尚未写入 Redis', 'warn');
     }
 
+    async function loadAmountU() {
+      setStatus('amount-u-status', '读取中...');
+      try {
+        const data = await fetchJson(`${apiUrl('amount-u')}?exchange=${encodeURIComponent(state.exchange)}`);
+        document.getElementById('amount-u-text').value =
+          JSON.stringify(data.values || {}, null, 2);
+        setStatus(
+          'amount-u-status',
+          `已读取 ${data.count || 0} 个 symbol ${data.key}`,
+          'ok'
+        );
+      } catch (err) {
+        setStatus('amount-u-status', `读取失败: ${formatError(err)}`, 'err');
+        throw err;
+      }
+    }
+
+    async function saveAmountU() {
+      setStatus('amount-u-status', '保存中...');
+      let values;
+      try {
+        values = JSON.parse(document.getElementById('amount-u-text').value || '{}');
+      } catch (err) {
+        setStatus('amount-u-status', `JSON 解析失败: ${err.message}`, 'err');
+        return;
+      }
+      try {
+        const data = await fetchJson(apiUrl('amount-u'), {
+          method: 'POST',
+          body: JSON.stringify({exchange: state.exchange, values}),
+        });
+        document.getElementById('amount-u-text').value =
+          JSON.stringify(data.values || {}, null, 2);
+        setStatus(
+          'amount-u-status',
+          `已保存 ${data.count || 0} 个 symbol ${data.key}`,
+          'ok'
+        );
+      } catch (err) {
+        setStatus('amount-u-status', `保存失败: ${formatError(err)}`, 'err');
+        throw err;
+      }
+    }
+
+    function resetAmountU() {
+      document.getElementById('amount-u-text').value =
+        JSON.stringify(BOOTSTRAP.amount_u_example || {}, null, 2);
+      setStatus('amount-u-status', '已填入示例，尚未写入 Redis', 'warn');
+    }
+
     async function loadRisk() {
       setStatus('risk-status', '读取中...');
       try {
@@ -1045,7 +1122,14 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
 
     async function loadAll() {
       updateDerivedKeys();
-      const tasks = [loadSymbols(), loadStrategy(), loadRisk(), loadReturnMapping(), loadThresholds()];
+      const tasks = [
+        loadSymbols(),
+        loadStrategy(),
+        loadAmountU(),
+        loadRisk(),
+        loadReturnMapping(),
+        loadThresholds(),
+      ];
       if (currentModelName()) {
         tasks.push(loadModelScoreParams());
       } else {
@@ -1116,6 +1200,9 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     document.getElementById('load-strategy').addEventListener('click', () => loadStrategy());
     document.getElementById('save-strategy').addEventListener('click', () => saveStrategy());
     document.getElementById('reset-strategy').addEventListener('click', () => resetStrategy());
+    document.getElementById('load-amount-u').addEventListener('click', () => loadAmountU());
+    document.getElementById('save-amount-u').addEventListener('click', () => saveAmountU());
+    document.getElementById('reset-amount-u').addEventListener('click', () => resetAmountU());
     document.getElementById('load-risk').addEventListener('click', () => loadRisk());
     document.getElementById('save-risk').addEventListener('click', () => saveRisk());
     document.getElementById('reset-risk').addEventListener('click', () => resetRisk());
@@ -1132,6 +1219,8 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
 
     initExchangeSelector();
     initModelNameInput();
+    document.getElementById('amount-u-example').textContent =
+      JSON.stringify(BOOTSTRAP.amount_u_example || {}, null, 2);
     renderThresholdMapping();
     loadAll().catch((err) => {
       console.error(err);
@@ -1212,6 +1301,10 @@ def make_symbol_key(venue: str) -> str:
 
 def make_strategy_key(venue: str) -> str:
     return f"mm_strategy_params_{venue}"
+
+
+def make_amount_u_key(env_name: str, venue: str) -> str:
+    return f"{env_name}:{venue}:mm:amount_u"
 
 
 def make_risk_key(env_name: str, venue: str) -> str:
@@ -1298,6 +1391,37 @@ def parse_symbols(text_or_list: Any) -> List[str]:
         seen.add(symbol)
         symbols.append(symbol)
     return symbols
+
+
+def normalize_amount_u_symbol(raw: Any) -> str:
+    symbol = re.sub(r"[^A-Za-z0-9]", "", str(raw or "").strip()).upper()
+    if not symbol:
+        raise ValueError(f"invalid symbol: {raw!r}")
+    return symbol
+
+
+def normalize_amount_u_mapping(values: Any) -> Dict[str, float]:
+    if values is None:
+        return {}
+    if not isinstance(values, dict):
+        raise ValueError("amount_u values must be an object")
+
+    normalized: Dict[str, float] = {}
+    for raw_symbol, raw_value in values.items():
+        symbol = normalize_amount_u_symbol(raw_symbol)
+        try:
+            amount_u = float(raw_value)
+        except Exception as exc:
+            raise ValueError(f"invalid amount_u for {symbol}: {raw_value}") from exc
+        if not (amount_u > 0.0):
+            raise ValueError(f"amount_u must be > 0 for {symbol}: {raw_value}")
+        normalized[symbol] = amount_u
+    return dict(sorted(normalized.items()))
+
+
+def dumps_amount_u_mapping(values: Dict[str, float]) -> str:
+    ordered = {symbol: float(f"{values[symbol]:.12g}") for symbol in sorted(values.keys())}
+    return json.dumps(ordered, ensure_ascii=False, separators=(",", ":"))
 
 
 def sanitize_string_mapping(values: Any) -> Dict[str, str]:
@@ -1562,9 +1686,11 @@ def build_bootstrap(default_exchange: str, env_name: str) -> Dict[str, Any]:
         },
         "return_threshold_mapping": RETURN_THRESHOLD_MAPPING,
         "return_threshold_example": RETURN_THRESHOLD_EXAMPLE,
+        "amount_u_example": AMOUNT_U_EXAMPLE,
         "keys": {
             "symbol": make_symbol_key(venue),
             "strategy": make_strategy_key(venue),
+            "amount_u": make_amount_u_key(env_name, venue),
             "risk": make_risk_key(env_name, venue),
             "return_mapping": make_return_mapping_key(venue),
             "return_threshold": make_return_threshold_key(venue),
@@ -1707,6 +1833,35 @@ class MMConfigStore:
             STRATEGY_PARAM_ORDER,
         )
         return self._replace_hash(key, mapping)
+
+    def read_amount_u(self, venue: str) -> Dict[str, Any]:
+        key = make_amount_u_key(self._config.env_name, venue)
+        raw = self.redis().get(key)
+        if raw is None:
+            values: Dict[str, float] = {}
+        else:
+            text = raw.decode("utf-8", "ignore") if isinstance(raw, bytes) else str(raw)
+            try:
+                decoded = json.loads(text)
+            except Exception as exc:
+                raise ValueError(f"invalid JSON in {key}: {exc}") from exc
+            values = normalize_amount_u_mapping(decoded)
+        return {
+            "key": key,
+            "values": values,
+            "count": len(values),
+        }
+
+    def write_amount_u(self, venue: str, values: Any) -> Dict[str, Any]:
+        key = make_amount_u_key(self._config.env_name, venue)
+        normalized = normalize_amount_u_mapping(values)
+        payload = dumps_amount_u_mapping(normalized)
+        self.redis().set(key, payload)
+        return {
+            "key": key,
+            "values": normalized,
+            "count": len(normalized),
+        }
 
     def preview_open_volatility_source(self, venue: str, percentile_raw: Any) -> Dict[str, Any]:
         percentile_value, percentile_text = normalize_percentile_text(percentile_raw)
@@ -2106,6 +2261,13 @@ def build_handler(config: AppConfig):
                     )
                     return
 
+                if parsed.path == "/api/amount-u":
+                    self._send_json(
+                        200,
+                        {"ok": True, "exchange": exchange, "venue": venue, **store.read_amount_u(venue)},
+                    )
+                    return
+
                 if parsed.path == "/api/open-volatility-preview":
                     percentile = first_query_value(query, "percentile")
                     self._send_json(
@@ -2186,6 +2348,11 @@ def build_handler(config: AppConfig):
 
                 if parsed.path == "/api/strategy-params":
                     result = store.write_strategy_params(venue, payload.get("values"))
+                    self._send_json(200, {"ok": True, "exchange": exchange, "venue": venue, **result})
+                    return
+
+                if parsed.path == "/api/amount-u":
+                    result = store.write_amount_u(venue, payload.get("values"))
                     self._send_json(200, {"ok": True, "exchange": exchange, "venue": venue, **result})
                     return
 
