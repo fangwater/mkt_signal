@@ -18,6 +18,7 @@ use crate::strategy::cancel_reconcile_backoff::{
     cancel_reconcile_attempts_exhausted, cancel_reconcile_query_delay_us,
 };
 use crate::strategy::manager::{ForceCloseControl, Strategy};
+use crate::strategy::net_qty_queue::NetQtyQueue;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::query_engine_response::QueryEngineResponse;
 use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
@@ -70,6 +71,7 @@ pub struct MarketMakerHedgeStrategy {
     strategy_id: i32,
     symbol: String,
     net_qty: f64,
+    net_qty_queue: NetQtyQueue,
     period_buy_qty: f64,
     period_sell_qty: f64,
     signal_ts: i64,
@@ -104,6 +106,7 @@ impl MarketMakerHedgeStrategy {
             strategy_id,
             symbol,
             net_qty: 0.0,
+            net_qty_queue: NetQtyQueue::new(),
             period_buy_qty: 0.0,
             period_sell_qty: 0.0,
             signal_ts: 0,
@@ -432,9 +435,39 @@ impl MarketMakerHedgeStrategy {
         true
     }
 
+    fn apply_net_qty_fill(&mut self, fill_ts: i64, signed_qty: f64, price: f64, source: &str) {
+        if signed_qty.abs() <= 1e-12 {
+            return;
+        }
+        let before = self.net_qty;
+        let result = self.net_qty_queue.apply_fill(fill_ts, signed_qty, price);
+        self.net_qty = result.net_qty;
+        debug!(
+            "MMHedgeNetQueue: strategy_id={} symbol={} source={} fill_ts={} signed_qty={:.8} price={:.8} matched_qty={:.8} appended_qty={:.8} net_before={:.8} net_after={:.8} lots={}",
+            self.strategy_id,
+            self.symbol,
+            source,
+            fill_ts,
+            signed_qty,
+            price,
+            result.matched_qty,
+            result.appended_qty,
+            before,
+            self.net_qty,
+            self.net_qty_queue.len()
+        );
+    }
+
     /// 累加成交（使用 base qty 口径）
-    pub fn record_fill(&mut self, signed_qty: f64, buy_qty: f64, sell_qty: f64) {
-        self.net_qty += signed_qty;
+    pub fn record_fill(
+        &mut self,
+        fill_ts: i64,
+        signed_qty: f64,
+        buy_qty: f64,
+        sell_qty: f64,
+        price: f64,
+    ) {
+        self.apply_net_qty_fill(fill_ts, signed_qty, price, "external_fill");
         self.period_buy_qty += buy_qty;
         self.period_sell_qty += sell_qty;
     }
@@ -1882,6 +1915,12 @@ impl MarketMakerHedgeStrategy {
         if status.is_finished() {
             let was_tracked = self.hedge_order_ids.contains(&client_order_id);
             let filled_qty = order_update.cumulative_filled_quantity();
+            let order_price = MonitorChannel::instance()
+                .order_manager()
+                .borrow()
+                .get(client_order_id)
+                .map(|order| order.price)
+                .unwrap_or(0.0);
             if was_tracked && filled_qty > 0.0 {
                 let base_qty = MonitorChannel::instance().qty_to_base(
                     order_update.trading_venue(),
@@ -1893,24 +1932,11 @@ impl MarketMakerHedgeStrategy {
                         Side::Buy => base_qty,
                         Side::Sell => -base_qty,
                     };
-                    let before = self.net_qty;
-                    self.net_qty += signed_qty;
-                    let action = match status {
-                        OrderStatus::Canceled => "撤销",
-                        OrderStatus::Filled => "完全成交",
-                        _ => "更新",
-                    };
-                    debug!(
-                        "✅ MMHedge订单{}: strategy_id={} client_order_id={} symbol={} side={:?} filled={:.8} base_filled={:.8} net_before={:.8} net_after={:.8}",
-                        action,
-                        self.strategy_id,
-                        client_order_id,
-                        order_update.symbol(),
-                        order_update.side(),
-                        filled_qty,
-                        base_qty,
-                        before,
-                        self.net_qty
+                    self.apply_net_qty_fill(
+                        order_update.event_time(),
+                        signed_qty,
+                        order_price,
+                        "hedge_fill",
                     );
                 }
             }
@@ -1999,6 +2025,9 @@ impl MarketMakerHedgeStrategy {
             return false;
         }
 
+        let order_snapshot = order_manager
+            .get(client_order_id)
+            .map(|order| (order.venue, order.symbol.clone(), order.side, order.price));
         if let Some(order) = order_manager.get(client_order_id) {
             self.publish_uniform_trade_order(trade, &order, prev_cumulative_filled_qty, status);
         }
@@ -2009,8 +2038,11 @@ impl MarketMakerHedgeStrategy {
         if status != OrderStatus::Filled {
             return true;
         }
-
         let was_tracked = self.hedge_order_ids.contains(&client_order_id);
+        let order_price = order_snapshot
+            .as_ref()
+            .map(|(_, _, _, price)| *price)
+            .unwrap_or_else(|| trade.price());
         if was_tracked && cumulative_qty > 0.0 {
             let base_qty = MonitorChannel::instance().qty_to_base(
                 trade.trading_venue(),
@@ -2022,19 +2054,7 @@ impl MarketMakerHedgeStrategy {
                     Side::Buy => base_qty,
                     Side::Sell => -base_qty,
                 };
-                let before = self.net_qty;
-                self.net_qty += signed_qty;
-                debug!(
-                    "✅ MMHedge订单完全成交: strategy_id={} client_order_id={} symbol={} side={:?} filled={:.8} base_filled={:.8} net_before={:.8} net_after={:.8}",
-                    self.strategy_id,
-                    client_order_id,
-                    trade.symbol(),
-                    trade.side(),
-                    cumulative_qty,
-                    base_qty,
-                    before,
-                    self.net_qty
-                );
+                self.apply_net_qty_fill(event_time, signed_qty, order_price, "hedge_fill");
             }
         }
         self.retire_hedge_order(client_order_id, "trade_update_filled");

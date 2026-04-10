@@ -502,12 +502,17 @@ impl StrategyManager {
         let open_venue = MonitorChannel::instance().open_venue();
         let net_qty = MonitorChannel::instance().get_position_qty(&symbol_upper, open_venue);
         if net_qty.abs() > 1e-12 {
+            let seed_price = MonitorChannel::instance()
+                .price_table()
+                .borrow()
+                .mark_price(&symbol_upper)
+                .unwrap_or(0.0);
             let buy_qty = if net_qty > 0.0 { net_qty } else { 0.0 };
             let sell_qty = if net_qty < 0.0 { -net_qty } else { 0.0 };
-            strategy.record_fill(net_qty, buy_qty, sell_qty);
+            strategy.record_fill(get_timestamp_us(), net_qty, buy_qty, sell_qty, seed_price);
             info!(
-                "MMHedge init: symbol={} venue={:?} net={:.8} buy={:.8} sell={:.8} (seed from position)",
-                symbol_upper, open_venue, net_qty, buy_qty, sell_qty
+                "MMHedge init: symbol={} venue={:?} net={:.8} buy={:.8} sell={:.8} seed_price={:.8} (seed from position)",
+                symbol_upper, open_venue, net_qty, buy_qty, sell_qty, seed_price
             );
         } else {
             info!(
@@ -526,6 +531,8 @@ impl StrategyManager {
         signed_qty: f64,
         buy_qty: f64,
         sell_qty: f64,
+        fill_ts: i64,
+        price: f64,
     ) -> bool {
         let symbol_upper = symbol.to_ascii_uppercase();
         let Some(id) = self.find_mm_hedge_id(&symbol_upper) else {
@@ -540,7 +547,7 @@ impl StrategyManager {
         else {
             return false;
         };
-        mm_hedge.record_fill(signed_qty, buy_qty, sell_qty);
+        mm_hedge.record_fill(fill_ts, signed_qty, buy_qty, sell_qty, price);
         true
     }
 

@@ -726,6 +726,8 @@ impl MarketMakerOpenStrategy {
         symbol: &str,
         side: Side,
         cumulative_qty: f64,
+        fill_ts: i64,
+        price: f64,
     ) {
         if self.recorded_to_hedge {
             return;
@@ -749,6 +751,8 @@ impl MarketMakerOpenStrategy {
             signed_qty,
             buy_qty,
             sell_qty,
+            fill_ts,
+            price,
         );
         if !updated {
             warn!(
@@ -1364,7 +1368,6 @@ impl MarketMakerOpenStrategy {
 
         let prev_cumulative_filled_qty = current_order.cumulative_filled_quantity;
 
-        let mut record_fill: Option<(TradingVenue, String, Side, f64)> = None;
         let updated = order_manager.update(client_order_id, |order| match order_update.status() {
             OrderStatus::New => {
                 if !self.alive_flag {
@@ -1396,12 +1399,6 @@ impl MarketMakerOpenStrategy {
                 order.set_exchange_order_id(order_update.order_id());
                 order.cumulative_filled_quantity = order_update.cumulative_filled_quantity();
                 order.set_end_time(order_update.event_time());
-                record_fill = Some((
-                    order.venue,
-                    order.symbol.clone(),
-                    order.side,
-                    order.cumulative_filled_quantity,
-                ));
                 let cancel_reason = self.last_open_cancel_reason.unwrap_or("unknown");
                 info!(
                     "🚫 MM订单已撤销: strategy_id={} client_order_id={} exchange_order_id={} exchange={} symbol={} reason={} side={:?} price={:.6} qty={:.4} filled={:.4}/{:.4}",
@@ -1426,12 +1423,6 @@ impl MarketMakerOpenStrategy {
                 order.cumulative_filled_quantity = order_update.cumulative_filled_quantity();
                 order.set_filled_time(order_update.event_time());
                 order.set_end_time(order_update.event_time());
-                record_fill = Some((
-                    order.venue,
-                    order.symbol.clone(),
-                    order.side,
-                    order.cumulative_filled_quantity,
-                ));
                 debug!(
                     "✅ MM订单已完全成交: strategy_id={} client_order_id={} exchange_order_id={} symbol={}",
                     self.strategy_id,
@@ -1479,8 +1470,28 @@ impl MarketMakerOpenStrategy {
             return false;
         }
 
-        if let Some((venue, symbol, side, qty)) = record_fill {
-            self.record_mm_hedge_qty(venue, &symbol, side, qty);
+        let mut record_fill: Option<(TradingVenue, String, Side, f64, f64)> = None;
+        if matches!(
+            order_update.status(),
+            OrderStatus::Canceled | OrderStatus::Filled
+        ) {
+            record_fill = MonitorChannel::instance()
+                .order_manager()
+                .borrow()
+                .get(client_order_id)
+                .map(|order| {
+                    (
+                        order.venue,
+                        order.symbol.clone(),
+                        order.side,
+                        order.cumulative_filled_quantity,
+                        order.price,
+                    )
+                });
+        }
+
+        if let Some((venue, symbol, side, qty, price)) = record_fill {
+            self.record_mm_hedge_qty(venue, &symbol, side, qty, order_update.event_time(), price);
         }
 
         if order_update.status() == OrderStatus::New {
@@ -1747,12 +1758,19 @@ impl MarketMakerOpenStrategy {
             return false;
         }
 
+        let order_snapshot = order_manager
+            .get(client_order_id)
+            .map(|order| (order.venue, order.symbol.clone(), order.side, order.price));
         if let Some(order) = order_manager.get(client_order_id) {
             self.publish_uniform_trade_order(trade, &order, prev_cumulative_filled_qty, status);
         }
         drop(order_manager);
 
         if status == OrderStatus::Filled {
+            let order_price = order_snapshot
+                .as_ref()
+                .map(|(_, _, _, price)| *price)
+                .unwrap_or_else(|| trade.price());
             debug!(
                 "✅ MM订单成交完成: strategy_id={} client_order_id={} symbol={} price={:.6} cumulative={:.4}",
                 self.strategy_id,
@@ -1766,6 +1784,8 @@ impl MarketMakerOpenStrategy {
                 trade.symbol(),
                 trade.side(),
                 cumulative_qty,
+                event_time,
+                order_price,
             );
             self.alive_flag = false;
         }
