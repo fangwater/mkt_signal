@@ -955,6 +955,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca81e6b4777c89fd810c25a4be2b1bd93ea034fbe58e6a75216a34c6b82c539b"
 
 [[package]]
+name = "factor_engine"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
 name = "fallible-streaming-iterator"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2111,6 +2118,7 @@ dependencies = [
  "crossbeam-channel",
  "dashmap",
  "env_logger",
+ "factor_engine",
  "flate2",
  "futures",
  "futures-util",

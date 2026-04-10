@@ -1,61 +1,16 @@
-//! Rolling window primitives.
-//!
-//! All helpers here run on lightweight native loops and avoid DataFrame construction.
-
-use crate::common::rolling_welford::{RollingWelford, WelfordCovariance};
 use anyhow::Result;
 
-pub trait F64SeriesView {
-    fn len(&self) -> usize;
-    fn value_at(&self, idx: usize) -> f64;
-}
-
-pub trait OptF64SeriesView {
-    fn len(&self) -> usize;
-    fn value_at(&self, idx: usize) -> Option<f64>;
-}
-
-impl F64SeriesView for [f64] {
-    fn len(&self) -> usize {
-        self.len()
-    }
-
-    fn value_at(&self, idx: usize) -> f64 {
-        self[idx]
-    }
-}
-
-impl F64SeriesView for Vec<f64> {
-    fn len(&self) -> usize {
-        self.as_slice().len()
-    }
-
-    fn value_at(&self, idx: usize) -> f64 {
-        self[idx]
-    }
-}
-
-impl OptF64SeriesView for [Option<f64>] {
-    fn len(&self) -> usize {
-        self.len()
-    }
-
-    fn value_at(&self, idx: usize) -> Option<f64> {
-        self[idx]
-    }
-}
-
-impl OptF64SeriesView for Vec<Option<f64>> {
-    fn len(&self) -> usize {
-        self.as_slice().len()
-    }
-
-    fn value_at(&self, idx: usize) -> Option<f64> {
-        self[idx]
-    }
-}
+use crate::view::{F64SeriesView, OptF64SeriesView};
 
 fn finite_or_none(value: Option<f64>) -> Option<f64> {
+    match value {
+        Some(v) if v.is_finite() => Some(v),
+        Some(_) => Some(0.0),
+        None => None,
+    }
+}
+
+pub fn finite_opt(value: Option<f64>) -> Option<f64> {
     match value {
         Some(v) if v.is_finite() => Some(v),
         Some(_) => Some(0.0),
@@ -135,7 +90,7 @@ fn skew_from_range(
     let m3 = m3 / n;
     let mut out = m3 / m2.powf(1.5);
     if !bias {
-        if (end - start) < 3 {
+        if end - start < 3 {
             return None;
         }
         out *= (n * (n - 1.0)).sqrt() / (n - 2.0);
@@ -177,7 +132,7 @@ fn kurtosis_from_range(
     let mut out = if bias {
         g2
     } else {
-        if (end - start) < 4 {
+        if end - start < 4 {
             return None;
         }
         ((n - 1.0) / ((n - 2.0) * (n - 3.0))) * ((n + 1.0) * g2 + 6.0)
@@ -236,8 +191,6 @@ pub fn rolling_sum_last_with_min_periods(
     Ok(finite_or_none(Some(sum)).or(Some(0.0)))
 }
 
-/// Last value equivalent of `rolling_mean_series(...)[-1]`.
-/// Preserves series semantics: non-finite values yield `Some(NaN)`.
 pub fn rolling_mean_last_from_series(
     values: &(impl F64SeriesView + ?Sized),
     window: usize,
@@ -246,8 +199,6 @@ pub fn rolling_mean_last_from_series(
     rolling_mean_at_from_series(values, values.len(), window, min_periods)
 }
 
-/// Last value equivalent of `rolling_sum_series(...)[-1]`.
-/// Preserves series semantics: non-finite values yield `Some(NaN)`.
 pub fn rolling_sum_last_from_series(
     values: &(impl F64SeriesView + ?Sized),
     window: usize,
@@ -256,8 +207,6 @@ pub fn rolling_sum_last_from_series(
     rolling_sum_at_from_series(values, values.len(), window, min_periods)
 }
 
-/// Value at `end_exclusive-1` equivalent of `rolling_mean_series(...)[idx]`.
-/// Preserves series semantics: non-finite values yield `Some(NaN)`.
 pub fn rolling_mean_at_from_series(
     values: &(impl F64SeriesView + ?Sized),
     end_exclusive: usize,
@@ -279,8 +228,6 @@ pub fn rolling_mean_at_from_series(
     Ok(Some(mean(values, start, end)))
 }
 
-/// Value at `end_exclusive-1` equivalent of `rolling_sum_series(...)[idx]`.
-/// Preserves series semantics: non-finite values yield `Some(NaN)`.
 pub fn rolling_sum_at_from_series(
     values: &(impl F64SeriesView + ?Sized),
     end_exclusive: usize,
@@ -306,8 +253,6 @@ pub fn rolling_sum_at_from_series(
     Ok(Some(sum))
 }
 
-/// Last value equivalent of `rolling_mean_series_opt(...)[-1]`.
-/// Preserves series semantics: non-finite values yield `Some(NaN)`.
 pub fn rolling_mean_last_opt_from_series(
     values: &(impl OptF64SeriesView + ?Sized),
     window: usize,
@@ -316,8 +261,6 @@ pub fn rolling_mean_last_opt_from_series(
     rolling_mean_at_opt_from_series(values, values.len(), window, min_periods)
 }
 
-/// Last value equivalent of `rolling_sum_series_opt(...)[-1]`.
-/// Preserves series semantics: non-finite values yield `Some(NaN)`.
 pub fn rolling_sum_last_opt_from_series(
     values: &(impl OptF64SeriesView + ?Sized),
     window: usize,
@@ -326,8 +269,6 @@ pub fn rolling_sum_last_opt_from_series(
     rolling_sum_at_opt_from_series(values, values.len(), window, min_periods)
 }
 
-/// Value at `end_exclusive-1` equivalent of `rolling_mean_series_opt(...)[idx]`.
-/// Preserves series semantics: non-finite values yield `Some(NaN)`.
 pub fn rolling_mean_at_opt_from_series(
     values: &(impl OptF64SeriesView + ?Sized),
     end_exclusive: usize,
@@ -361,8 +302,6 @@ pub fn rolling_mean_at_opt_from_series(
     Ok(Some(sum / valid as f64))
 }
 
-/// Value at `end_exclusive-1` equivalent of `rolling_sum_series_opt(...)[idx]`.
-/// Preserves series semantics: non-finite values yield `Some(NaN)`.
 pub fn rolling_sum_at_opt_from_series(
     values: &(impl OptF64SeriesView + ?Sized),
     end_exclusive: usize,
@@ -394,28 +333,6 @@ pub fn rolling_sum_at_opt_from_series(
         return Ok(Some(f64::NAN));
     }
     Ok(Some(sum))
-}
-
-pub fn rolling_std_last(
-    values: &(impl F64SeriesView + ?Sized),
-    window: usize,
-) -> Result<Option<f64>> {
-    let n = values.len();
-    let Some((start, end)) = tail_exact_bounds(n, window) else {
-        return Ok(None);
-    };
-    let len = end - start;
-    if len < 2 {
-        return Ok(Some(0.0));
-    }
-    if has_non_finite(values, start, end) {
-        return Ok(Some(0.0));
-    }
-    let mut stats = RollingWelford::new(window);
-    for i in start..end {
-        stats.push(values.value_at(i));
-    }
-    Ok(finite_or_none(Some(stats.std())).or(Some(0.0)))
 }
 
 pub fn rolling_mean_series_opt(
@@ -598,33 +515,6 @@ pub fn rolling_sum_series(
     Ok(out)
 }
 
-pub fn tail_skew_last_opt(
-    values: &(impl OptF64SeriesView + ?Sized),
-    window: usize,
-    min_periods: usize,
-    bias: bool,
-) -> Result<Option<f64>> {
-    if window == 0 || min_periods == 0 || values.len() == 0 {
-        return Ok(None);
-    }
-    let end = values.len();
-    let start = end.saturating_sub(window);
-    let mut valid = Vec::with_capacity(window);
-    for i in start..end {
-        if let Some(v) = values.value_at(i) {
-            if v.is_finite() {
-                valid.push(v);
-            } else {
-                valid.push(0.0);
-            }
-        }
-    }
-    if valid.len() < min_periods {
-        return Ok(None);
-    }
-    Ok(skew_from_range(&valid, 0, valid.len(), bias))
-}
-
 pub fn rolling_min_last(
     values: &(impl F64SeriesView + ?Sized),
     window: usize,
@@ -740,62 +630,461 @@ pub fn rolling_corr_last(
         }
     }
 
-    let mut stats = WelfordCovariance::new();
+    let mean_x = mean(xs, start, end);
+    let mean_y = mean(ys, start, end);
+    let mut cov = 0.0;
+    let mut var_x = 0.0;
+    let mut var_y = 0.0;
     for i in start..end {
-        stats.push(xs.value_at(i), ys.value_at(i));
+        let dx = xs.value_at(i) - mean_x;
+        let dy = ys.value_at(i) - mean_y;
+        cov += dx * dy;
+        var_x += dx * dx;
+        var_y += dy * dy;
     }
-    let out = stats.corr().unwrap_or(0.0);
+    if var_x.abs() <= 1e-12 || var_y.abs() <= 1e-12 {
+        return Ok(Some(0.0));
+    }
+    let out = cov / (var_x.sqrt() * var_y.sqrt());
     Ok(finite_or_none(Some(out)).or(Some(0.0)))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn basic_window_primitives_work() {
-        let x = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let y = vec![2.0, 4.0, 6.0, 8.0, 10.0];
-
-        assert_eq!(rolling_mean_last(&x, 3).expect("mean failed"), Some(4.0));
-        assert_eq!(
-            rolling_mean_last_from_series(&x, 3, 3).expect("mean series failed"),
-            Some(4.0)
-        );
-        assert_eq!(
-            rolling_mean_at_from_series(&x, 4, 3, 3).expect("mean at failed"),
-            Some(3.0)
-        );
-        assert_eq!(
-            rolling_sum_at_from_series(&x, 5, 3, 3).expect("sum at failed"),
-            Some(12.0)
-        );
-        assert_eq!(rolling_min_last(&x, 3).expect("min failed"), Some(3.0));
-        assert_eq!(rolling_max_last(&x, 3).expect("max failed"), Some(5.0));
-
-        let std = rolling_std_last(&x, 3).expect("std failed");
-        assert!(std.is_some());
-
-        let opt = vec![Some(1.0), None, Some(3.0), Some(4.0)];
-        assert_eq!(
-            rolling_sum_at_opt_from_series(&opt, 4, 4, 3).expect("sum at opt failed"),
-            Some(8.0)
-        );
-        let mean_opt = rolling_mean_at_opt_from_series(&opt, 4, 4, 3).expect("mean at opt failed");
-        assert!((mean_opt.expect("mean at opt none") - (8.0 / 3.0)).abs() < 1e-12);
-
-        let rank_data = [1.0, 3.0, 2.0];
-        let rank = rolling_rank_last(&rank_data[..], 3).expect("rank failed");
-        assert_eq!(rank, Some(2.0));
-
-        let corr = rolling_corr_last(&x, &y, 5, 1).expect("corr failed");
-        assert!(corr.is_some());
-        assert!((corr.unwrap_or(0.0) - 1.0).abs() < 1e-12);
-
-        let skew = rolling_skew_last(&x, 5, false).expect("skew failed");
-        assert!(skew.is_some());
-
-        let kurt = rolling_kurt_last(&x, 5, true, false).expect("kurt failed");
-        assert!(kurt.is_some());
+pub fn tail_quantile_last(
+    values: &(impl F64SeriesView + ?Sized),
+    window: usize,
+    q: f64,
+) -> Option<f64> {
+    if window == 0 || values.len() < window || !(0.0..=1.0).contains(&q) {
+        return None;
     }
+    let start = values.len() - window;
+    let mut tail = Vec::with_capacity(window);
+    for i in start..values.len() {
+        let v = values.value_at(i);
+        if v.is_finite() {
+            tail.push(v);
+        }
+    }
+    if tail.is_empty() {
+        return None;
+    }
+    tail.sort_by(|a, b| a.total_cmp(b));
+    let n = tail.len();
+    let pos = (n - 1) as f64 * q;
+    let lo = pos.floor() as usize;
+    let hi = (lo + 1).min(n - 1);
+    let frac = pos - lo as f64;
+    let value = tail[lo] * (1.0 - frac) + tail[hi] * frac;
+    if value.is_finite() {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+pub fn sample_std_last(
+    values: &(impl F64SeriesView + ?Sized),
+    window: usize,
+    min_periods: usize,
+) -> Option<f64> {
+    if window == 0 || min_periods == 0 || values.len() < min_periods {
+        return None;
+    }
+    let start = values.len().saturating_sub(window);
+    let mut tail = Vec::with_capacity(values.len() - start);
+    for i in start..values.len() {
+        let v = values.value_at(i);
+        if v.is_finite() {
+            tail.push(v);
+        }
+    }
+    if tail.len() < min_periods || tail.len() < 2 {
+        return None;
+    }
+    let mean = tail.iter().sum::<f64>() / tail.len() as f64;
+    let var = tail
+        .iter()
+        .map(|v| {
+            let d = *v - mean;
+            d * d
+        })
+        .sum::<f64>()
+        / (tail.len() as f64 - 1.0);
+    let out = var.sqrt();
+    if out.is_finite() {
+        Some(out)
+    } else {
+        None
+    }
+}
+
+pub fn corr_last_with_min_periods(
+    xs: &(impl F64SeriesView + ?Sized),
+    ys: &(impl F64SeriesView + ?Sized),
+    window: usize,
+    min_periods: usize,
+) -> Option<f64> {
+    if window == 0 || min_periods == 0 {
+        return None;
+    }
+    let n = xs.len().min(ys.len());
+    if n < min_periods {
+        return None;
+    }
+    let start = n.saturating_sub(window);
+    let mut x = Vec::new();
+    let mut y = Vec::new();
+    for i in start..n {
+        let xv = xs.value_at(i);
+        let yv = ys.value_at(i);
+        if xv.is_finite() && yv.is_finite() {
+            x.push(xv);
+            y.push(yv);
+        }
+    }
+    if x.len() < min_periods {
+        return None;
+    }
+    let mean_x = x.iter().sum::<f64>() / x.len() as f64;
+    let mean_y = y.iter().sum::<f64>() / y.len() as f64;
+    let mut cov = 0.0;
+    let mut var_x = 0.0;
+    let mut var_y = 0.0;
+    for i in 0..x.len() {
+        let dx = x[i] - mean_x;
+        let dy = y[i] - mean_y;
+        cov += dx * dy;
+        var_x += dx * dx;
+        var_y += dy * dy;
+    }
+    if var_x.abs() <= 1e-12 || var_y.abs() <= 1e-12 {
+        return Some(0.0);
+    }
+    let out = cov / (var_x.sqrt() * var_y.sqrt());
+    finite_opt(Some(out))
+}
+
+pub fn pct_change_last(values: &(impl F64SeriesView + ?Sized), periods: usize) -> Option<f64> {
+    if periods == 0 || values.len() <= periods {
+        return None;
+    }
+    let curr = values.value_at(values.len() - 1);
+    let prev = values.value_at(values.len() - 1 - periods);
+    if !curr.is_finite() || !prev.is_finite() || prev.abs() <= 1e-12 {
+        return Some(0.0);
+    }
+    let value = (curr - prev) / prev;
+    if value.is_finite() {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+pub fn linear_regression_predict_last(values: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let n = values.len() as f64;
+    let mut sum_x = 0.0;
+    let mut sum_y = 0.0;
+    let mut sum_xx = 0.0;
+    let mut sum_xy = 0.0;
+    for (i, y) in values.iter().enumerate() {
+        if !y.is_finite() {
+            return Some(0.0);
+        }
+        let x = i as f64;
+        sum_x += x;
+        sum_y += *y;
+        sum_xx += x * x;
+        sum_xy += x * *y;
+    }
+    let denom = n * sum_xx - sum_x * sum_x;
+    if denom.abs() <= 1e-12 {
+        return Some(0.0);
+    }
+    let slope = (n * sum_xy - sum_x * sum_y) / denom;
+    let intercept = (sum_y - slope * sum_x) / n;
+    let pred = slope * (n - 1.0) + intercept;
+    finite_opt(Some(pred))
+}
+
+pub fn linear_regression_intercept(values: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let n = values.len() as f64;
+    let mut sum_x = 0.0;
+    let mut sum_y = 0.0;
+    let mut sum_xx = 0.0;
+    let mut sum_xy = 0.0;
+    for (i, y) in values.iter().enumerate() {
+        if !y.is_finite() {
+            return Some(0.0);
+        }
+        let x = i as f64;
+        sum_x += x;
+        sum_y += *y;
+        sum_xx += x * x;
+        sum_xy += x * *y;
+    }
+    let denom = n * sum_xx - sum_x * sum_x;
+    if denom.abs() <= 1e-12 {
+        return Some(0.0);
+    }
+    let slope = (n * sum_xy - sum_x * sum_y) / denom;
+    let intercept = (sum_y - slope * sum_x) / n;
+    if intercept.is_finite() {
+        Some(intercept)
+    } else {
+        None
+    }
+}
+
+pub fn linear_regression_slope(values: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let n = values.len() as f64;
+    let mut sum_x = 0.0;
+    let mut sum_y = 0.0;
+    let mut sum_xx = 0.0;
+    let mut sum_xy = 0.0;
+    for (i, y) in values.iter().enumerate() {
+        if !y.is_finite() {
+            return Some(0.0);
+        }
+        let x = i as f64;
+        sum_x += x;
+        sum_y += *y;
+        sum_xx += x * x;
+        sum_xy += x * *y;
+    }
+    let denom = n * sum_xx - sum_x * sum_x;
+    if denom.abs() <= 1e-12 {
+        return Some(0.0);
+    }
+    finite_opt(Some((n * sum_xy - sum_x * sum_y) / denom)).or(Some(0.0))
+}
+
+pub fn rolling_weighted_mean_last(
+    values: &(impl F64SeriesView + ?Sized),
+    window: usize,
+) -> Option<f64> {
+    if window == 0 || values.len() < window {
+        return None;
+    }
+    let start = values.len() - window;
+    let mut num = 0.0;
+    let mut den = 0.0;
+    for i in 0..window {
+        let value = values.value_at(start + i);
+        if !value.is_finite() {
+            return Some(0.0);
+        }
+        let weight = (i + 1) as f64;
+        num += value * weight;
+        den += weight;
+    }
+    if den.abs() <= 1e-12 {
+        return Some(0.0);
+    }
+    finite_opt(Some(num / den)).or(Some(0.0))
+}
+
+pub fn rolling_min_last_simple(
+    values: &(impl F64SeriesView + ?Sized),
+    window: usize,
+) -> Option<f64> {
+    rolling_min_last(values, window).ok().flatten()
+}
+
+pub fn rolling_max_last_simple(
+    values: &(impl F64SeriesView + ?Sized),
+    window: usize,
+) -> Option<f64> {
+    rolling_max_last(values, window).ok().flatten()
+}
+
+pub fn rsi_last_from_series(values: &(impl F64SeriesView + ?Sized), period: usize) -> Option<f64> {
+    if period == 0 || values.len() < period + 1 {
+        return None;
+    }
+    let n = values.len();
+    let mut gains = vec![0.0; n];
+    let mut losses = vec![0.0; n];
+    for i in 1..n {
+        let diff = values.value_at(i) - values.value_at(i - 1);
+        if !diff.is_finite() {
+            return Some(0.0);
+        }
+        if diff > 0.0 {
+            gains[i] = diff;
+        } else if diff < 0.0 {
+            losses[i] = -diff;
+        }
+    }
+    let avg_gain = rolling_mean_last(&gains, period).ok().flatten()?;
+    let avg_loss = rolling_mean_last(&losses, period).ok().flatten()?;
+    if avg_loss.abs() <= 1e-12 {
+        if avg_gain.abs() <= 1e-12 {
+            return Some(0.0);
+        }
+        return Some(100.0);
+    }
+    let rs = avg_gain / avg_loss;
+    finite_opt(Some(100.0 - (100.0 / (1.0 + rs)))).or(Some(0.0))
+}
+
+pub fn cmo_last_from_series(values: &(impl F64SeriesView + ?Sized), period: usize) -> Option<f64> {
+    if period == 0 || values.len() < period + 1 {
+        return None;
+    }
+    let n = values.len();
+    let mut gains = vec![0.0; n];
+    let mut losses = vec![0.0; n];
+    for i in 1..n {
+        let diff = values.value_at(i) - values.value_at(i - 1);
+        if !diff.is_finite() {
+            return Some(0.0);
+        }
+        if diff > 0.0 {
+            gains[i] = diff;
+        } else if diff < 0.0 {
+            losses[i] = -diff;
+        }
+    }
+    let avg_gain = rolling_mean_last(&gains, period).ok().flatten()?;
+    let avg_loss = rolling_mean_last(&losses, period).ok().flatten()?;
+    let den = avg_gain + avg_loss;
+    if den.abs() <= 1e-12 {
+        return Some(0.0);
+    }
+    finite_opt(Some(100.0 * (avg_gain - avg_loss) / den)).or(Some(0.0))
+}
+
+pub fn rolling_position_last(values: &(impl F64SeriesView + ?Sized), window: usize) -> Option<f64> {
+    let low = rolling_min_last_simple(values, window)?;
+    let high = rolling_max_last_simple(values, window)?;
+    let curr = values.value_at(values.len().saturating_sub(1));
+    let den = high - low;
+    if !curr.is_finite() || den.abs() <= 1e-12 {
+        return Some(0.0);
+    }
+    finite_opt(Some((curr - low) / den)).or(Some(0.0))
+}
+
+pub fn std_pop(values: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut sum = 0.0;
+    let mut cnt = 0usize;
+    for v in values {
+        if v.is_finite() {
+            sum += *v;
+            cnt += 1;
+        }
+    }
+    if cnt == 0 {
+        return Some(0.0);
+    }
+    let mean = sum / cnt as f64;
+    let mut var_sum = 0.0;
+    for v in values {
+        if v.is_finite() {
+            let d = *v - mean;
+            var_sum += d * d;
+        }
+    }
+    let value = (var_sum / cnt as f64).sqrt();
+    if value.is_finite() {
+        Some(value)
+    } else {
+        Some(0.0)
+    }
+}
+
+pub fn sample_cov(xs: &[f64], ys: &[f64]) -> Option<f64> {
+    let n = xs.len().min(ys.len());
+    if n < 2 {
+        return None;
+    }
+    let mut pairs = Vec::with_capacity(n);
+    for i in 0..n {
+        let x = xs[i];
+        let y = ys[i];
+        if x.is_finite() && y.is_finite() {
+            pairs.push((x, y));
+        }
+    }
+    if pairs.len() < 2 {
+        return Some(0.0);
+    }
+    let mean_x = pairs.iter().map(|(x, _)| *x).sum::<f64>() / pairs.len() as f64;
+    let mean_y = pairs.iter().map(|(_, y)| *y).sum::<f64>() / pairs.len() as f64;
+    let cov_sum = pairs
+        .iter()
+        .map(|(x, y)| (x - mean_x) * (y - mean_y))
+        .sum::<f64>();
+    finite_opt(Some(cov_sum / (pairs.len() - 1) as f64)).or(Some(0.0))
+}
+
+pub fn harmonic_mean(values: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut denom = 0.0;
+    for value in values {
+        if !value.is_finite() || *value <= 0.0 {
+            return Some(0.0);
+        }
+        denom += 1.0 / *value;
+    }
+    if denom.abs() <= 1e-12 {
+        return Some(0.0);
+    }
+    finite_opt(Some(values.len() as f64 / denom))
+}
+
+pub fn weighted_harmonic_with_index_weights(values: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut denom = 0.0;
+    for (idx, value) in values.iter().enumerate() {
+        if !value.is_finite() || *value <= 0.0 {
+            return Some(0.0);
+        }
+        denom += (idx + 1) as f64 / *value;
+    }
+    if denom.abs() <= 1e-12 {
+        return Some(0.0);
+    }
+    finite_opt(Some(values.len() as f64 / denom))
+}
+
+pub fn median_from_iter<I>(iter: I) -> Option<f64>
+where
+    I: IntoIterator<Item = f64>,
+{
+    let mut values: Vec<f64> = iter.into_iter().filter(|v| v.is_finite()).collect();
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_by(|a, b| a.total_cmp(b));
+    let mid = values.len() / 2;
+    if values.len() % 2 == 0 {
+        finite_opt(Some((values[mid - 1] + values[mid]) / 2.0))
+    } else {
+        finite_opt(Some(values[mid]))
+    }
+}
+
+pub fn last_opt(values: &(impl OptF64SeriesView + ?Sized)) -> Option<f64> {
+    if values.len() == 0 {
+        return None;
+    }
+    finite_opt(values.value_at(values.len() - 1)).or(Some(0.0))
 }

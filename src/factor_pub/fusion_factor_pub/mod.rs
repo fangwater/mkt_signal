@@ -1,6 +1,8 @@
 pub mod app;
 pub mod cfg;
 pub mod factor_enum;
+pub mod opv_factors;
+pub mod plain_factors;
 pub mod plan;
 pub mod publisher;
 pub mod window_primitives;

@@ -3,7 +3,8 @@
 //! Feeds synthetic data through the real factor computation pipeline
 //! and collects final factor values for cross-validation with Python.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::OnceLock;
 
 use anyhow::Result;
 
@@ -20,6 +21,22 @@ pub struct ScenarioResult {
     pub name: String,
     pub kline_factors: HashMap<String, f64>,
     pub fusion_factors: HashMap<String, f64>,
+}
+
+fn validation_allowlist() -> &'static HashSet<&'static str> {
+    static ALLOWLIST: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    ALLOWLIST.get_or_init(|| {
+        include_str!("../../../scripts/factor_validation_allowlist.txt")
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .filter(|name| {
+                name.starts_with("factor_")
+                    || name.starts_with("baseline_")
+                    || name.starts_with("factor_trades_")
+                    || name.starts_with("TD_")
+                    || name.starts_with("TP_VPI_")
+            })
+            .collect()
+    })
 }
 
 /// Run all factors for a single scenario.
@@ -68,7 +85,9 @@ fn run_kline_factors(scenario: &ScenarioData) -> Result<HashMap<String, f64>> {
 
 /// Feed all bars into SymbolCalcState (simulating bootstrap), then compute all fusion factors.
 fn run_fusion_factors(scenario: &ScenarioData) -> Result<HashMap<String, f64>> {
+    let allowlist = validation_allowlist();
     let mut state = SymbolCalcState::default();
+    let mut factor_118_result = None;
 
     // Feed all bars sequentially (simulating real bootstrap)
     for (msg, depth) in scenario
@@ -79,6 +98,8 @@ fn run_fusion_factors(scenario: &ScenarioData) -> Result<HashMap<String, f64>> {
         state.push_trade_flow(msg);
         let depth_derived = DepthDerived::from_snapshot(depth);
         state.push_depth_metrics_derived(&depth_derived);
+        factor_118_result =
+            FusionFactorPubApp::compute_factor_118_with_state(&mut state, &depth_derived);
     }
 
     let series = FusionFactorPubApp::build_symbol_series_from_state(&mut state);
@@ -91,15 +112,24 @@ fn run_fusion_factors(scenario: &ScenarioData) -> Result<HashMap<String, f64>> {
     let mut results = HashMap::new();
 
     for &factor_id in FusionFactorId::ALL.iter() {
+        if !allowlist.contains(factor_id.as_name()) {
+            continue;
+        }
         let binding = FactorBinding {
             name: factor_id.as_name().to_string(),
             factor_id: Some(factor_id),
             extra_factor_id: None,
         };
 
+        let factor_118_input = if factor_id == FusionFactorId::Factor118 {
+            factor_118_result
+        } else {
+            None
+        };
+
         let result = FusionFactorPubApp::compute_supported_factor(
             &binding,
-            None, // factor_118_result: skip factor_118 (requires special state)
+            factor_118_input,
             last_depth.as_ref(),
             Some(&series),
         );
@@ -122,6 +152,9 @@ fn run_fusion_factors(scenario: &ScenarioData) -> Result<HashMap<String, f64>> {
         "net_buy_large",
     ];
     for name in &extra_names {
+        if !allowlist.contains(name) {
+            continue;
+        }
         if let Some(extra_id) = ExtraFactorId::from_name(name) {
             let binding = FactorBinding {
                 name: name.to_string(),

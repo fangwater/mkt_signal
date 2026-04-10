@@ -18,8 +18,7 @@ usage() {
       config_server = 18131
       viz_server = 10231
       trade_signal = deploy only, no dedicated HTTP port
-      manual_mm_signal = 6366
-    alpha 环境分别使用 18132 / 10232 / 6367。
+    alpha 环境分别使用 18132 / 10232。
   - --bin: 仅替换二进制（不改脚本/配置/nginx/env.sh）。
   - --runtime-only: 仅替换二进制和脚本（不改配置/nginx/env.sh）。
 EOF
@@ -84,12 +83,10 @@ case "$ENV_SUFFIX" in
   beta)
     CONFIG_PORT="18131"
     VIZ_PORT="10231"
-    MANUAL_SIGNAL_PORT="6366"
     ;;
   alpha)
     CONFIG_PORT="18132"
     VIZ_PORT="10232"
-    MANUAL_SIGNAL_PORT="6367"
     ;;
   *)
     echo "[ERROR] binance MM 仅支持 suffix: alpha|beta（收到: ${ENV_SUFFIX}）" >&2
@@ -101,7 +98,7 @@ ENV_NAME="binance_mm_${ENV_SUFFIX}"
 
 echo "[INFO] Binance MM deploy-only"
 echo "[INFO] env_name=${ENV_NAME}"
-echo "[INFO] config_port=${CONFIG_PORT}, viz_port=${VIZ_PORT}, manual_signal_port=${MANUAL_SIGNAL_PORT}"
+echo "[INFO] config_port=${CONFIG_PORT}, viz_port=${VIZ_PORT}"
 echo "[INFO] 不会执行 start 命令"
 if [[ "$BIN_MODE" == "1" ]]; then
   echo "[INFO] mode=bin (仅替换二进制)"
@@ -174,12 +171,6 @@ if [[ "$BIN_MODE" == "1" ]]; then
     --exchange binance \
     --env-suffix "$ENV_SUFFIX" \
     --bin-only
-
-  run_deploy bash scripts/deploy_mm_manual_signal.sh \
-    --exchange binance \
-    --env-suffix "$ENV_SUFFIX" \
-    --port "$MANUAL_SIGNAL_PORT" \
-    --bin-only
 elif [[ "$RUNTIME_ONLY" == "1" ]]; then
   run_deploy bash scripts/deploy_mm_config_server.sh \
     --env-name "$ENV_NAME" \
@@ -212,12 +203,6 @@ elif [[ "$RUNTIME_ONLY" == "1" ]]; then
   run_deploy bash scripts/deploy_mm_pre_trade.sh \
     --exchange binance \
     --env-suffix "$ENV_SUFFIX"
-
-  run_deploy bash scripts/deploy_mm_manual_signal.sh \
-    --exchange binance \
-    --env-suffix "$ENV_SUFFIX" \
-    --port "$MANUAL_SIGNAL_PORT" \
-    --runtime-only
 else
   run_deploy bash scripts/deploy_mm_config_server.sh \
     --env-name "$ENV_NAME" \
@@ -250,11 +235,6 @@ else
   run_deploy bash scripts/deploy_mm_pre_trade.sh \
     --exchange binance \
     --env-suffix "$ENV_SUFFIX"
-
-  run_deploy bash scripts/deploy_mm_manual_signal.sh \
-    --exchange binance \
-    --env-suffix "$ENV_SUFFIX" \
-    --port "$MANUAL_SIGNAL_PORT"
 fi
 
 echo "[INFO] Binance MM 部署完成（仅 deploy，不含 start）"

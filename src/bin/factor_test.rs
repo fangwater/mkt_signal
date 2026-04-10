@@ -91,6 +91,14 @@ fn build_input_json(
     for (idx, name) in TRADE_FLOW_FEATURE_FIELD_NAMES.iter().enumerate() {
         input.insert(name.to_string(), json!(field_arrays[idx]));
     }
+    input.insert(
+        "trade_time".to_string(),
+        json!(scenario
+            .trade_flow_msgs
+            .iter()
+            .map(|msg| msg.ts as f64)
+            .collect::<Vec<_>>()),
+    );
 
     // Depth snapshots
     let mut depth_bids: Vec<Vec<[f64; 2]>> = Vec::with_capacity(num_bars);

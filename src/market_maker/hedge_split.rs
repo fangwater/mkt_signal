@@ -78,6 +78,7 @@ pub fn split_hedge_orders_round_robin(
 
     let mut hand_count: Vec<u64> = vec![0; levels.len()];
     let mut remaining_qty_base = net_qty_base.abs();
+    let mut last_assigned_idx: Option<usize> = None;
 
     loop {
         let can_take_any = hand_base_qty
@@ -94,7 +95,17 @@ pub fn split_hedge_orders_round_robin(
             if remaining_qty_base + 1e-12 >= *q_base {
                 hand_count[idx] = hand_count[idx].saturating_add(1);
                 remaining_qty_base -= *q_base;
+                last_assigned_idx = Some(idx);
             }
+        }
+    }
+
+    let mut tail_qty_base: Vec<f64> = vec![0.0; levels.len()];
+    if remaining_qty_base > 1e-12 {
+        let tail_idx = last_assigned_idx.or_else(|| hand_base_qty.iter().position(|q| *q > 0.0));
+        if let Some(idx) = tail_idx {
+            tail_qty_base[idx] = remaining_qty_base;
+            remaining_qty_base = 0.0;
         }
     }
 
@@ -104,8 +115,9 @@ pub fn split_hedge_orders_round_robin(
     let mut total_usdt = 0.0;
     for (idx, level) in levels.iter().enumerate() {
         let n = hand_count[idx] as f64;
-        let order_qty_venue = level.qty_venue_one_hand * n;
-        let order_qty_base = hand_base_qty[idx] * n;
+        let tail_base = tail_qty_base[idx];
+        let order_qty_venue = level.qty_venue_one_hand * n + tail_base / multiplier;
+        let order_qty_base = hand_base_qty[idx] * n + tail_base;
         level_stats.push(HedgeSplitLevelStat {
             level_index: idx,
             price: level.price,
@@ -115,9 +127,6 @@ pub fn split_hedge_orders_round_robin(
             order_qty_venue,
             order_qty_base,
         });
-        if n <= 0.0 {
-            continue;
-        }
         let qty = order_qty_venue;
         if qty <= 0.0 {
             continue;
@@ -138,5 +147,50 @@ pub fn split_hedge_orders_round_robin(
         remaining_qty_base,
         total_qty_base,
         total_usdt,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_split_hedge_orders_round_robin_sub_hand_sends_partial_order() {
+        let levels = vec![HedgeLevel {
+            price: 100.0,
+            qty_venue_one_hand: 1.0,
+        }];
+
+        let result = split_hedge_orders_round_robin(Some(Side::Buy), 0.6, &levels, 1.0);
+
+        assert_eq!(result.orders.len(), 1);
+        assert_eq!(result.orders[0].level_index, 0);
+        assert!((result.orders[0].qty - 0.6).abs() < 1e-12);
+        assert!((result.total_qty_base - 0.6).abs() < 1e-12);
+        assert!(result.remaining_qty_base.abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_split_hedge_orders_round_robin_puts_remainder_on_last_round_order() {
+        let levels = vec![
+            HedgeLevel {
+                price: 100.0,
+                qty_venue_one_hand: 1.0,
+            },
+            HedgeLevel {
+                price: 101.0,
+                qty_venue_one_hand: 1.0,
+            },
+        ];
+
+        let result = split_hedge_orders_round_robin(Some(Side::Sell), 2.5, &levels, 1.0);
+
+        assert_eq!(result.orders.len(), 2);
+        assert_eq!(result.orders[0].level_index, 0);
+        assert!((result.orders[0].qty - 1.0).abs() < 1e-12);
+        assert_eq!(result.orders[1].level_index, 1);
+        assert!((result.orders[1].qty - 1.5).abs() < 1e-12);
+        assert!((result.total_qty_base - 2.5).abs() < 1e-12);
+        assert!(result.remaining_qty_base.abs() < 1e-12);
     }
 }
