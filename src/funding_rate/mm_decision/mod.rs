@@ -401,27 +401,30 @@ impl MmDecision {
             let hedge_mid = Bbo::new(quote.bid, quote.ask, quote.ts)
                 .get_mid_price()
                 .unwrap_or(0.0);
+            let pct_change_pct = pct_change * 100.0;
+            let threshold_pct = threshold_ratio * 100.0;
             info!(
-                "MmDecision: MMHedge mode decision symbol={} request_seq={} mode={} hedge_mid={:.8} weighted_inventory_price={:.8} pct_change={:.6} threshold_pct={:.6} bid={:.8} ask={:.8}",
+                "MmDecision: MMHedge mode decision symbol={} request_seq={} hedge_mid={:.8} weighted_inventory_price={:.8} bid={:.8} ask={:.8} compare={:.6}% {} {:.6}% -> {}",
                 symbol,
                 query.request_seq,
-                if ctx.use_taker { "taker" } else { "maker" },
                 hedge_mid,
                 query.weighted_inventory_price,
-                pct_change * 100.0,
-                self.state.max_hedge_price_pct_change,
                 quote.bid,
-                quote.ask
+                quote.ask,
+                pct_change_pct,
+                if ctx.use_taker { ">" } else { "<=" },
+                threshold_pct,
+                if ctx.use_taker { "taker" } else { "maker" }
             );
         } else {
             info!(
-                "MmDecision: MMHedge mode decision symbol={} request_seq={} mode=maker hedge_mid=0 weighted_inventory_price={:.8} pct_change=0 threshold_pct={:.6} bid={:.8} ask={:.8} note=weighted_inventory_price_or_mid_invalid",
+                "MmDecision: MMHedge mode decision symbol={} request_seq={} hedge_mid=0 weighted_inventory_price={:.8} bid={:.8} ask={:.8} compare=0.000000% <= {:.6}% -> maker note=weighted_inventory_price_or_mid_invalid",
                 symbol,
                 query.request_seq,
                 query.weighted_inventory_price,
-                self.state.max_hedge_price_pct_change,
                 quote.bid,
-                quote.ask
+                quote.ask,
+                self.state.max_hedge_price_pct_change
             );
         }
         let hedge_symbol = ctx.get_opening_symbol();

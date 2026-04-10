@@ -48,6 +48,7 @@ pub struct MmHedgeSnapshot {
     pub buy_qty: f64,
     pub sell_qty: f64,
     pub hedge_ts_ms: Option<i64>,
+    pub hedge_is_taker: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +78,7 @@ pub struct MarketMakerHedgeStrategy {
     period_sell_qty: f64,
     signal_ts: i64,
     last_hedge_ts_ms: Option<i64>,
+    last_hedge_is_taker: Option<bool>,
     hedge_from_key: Vec<u8>,
     order_seq: u32,
     hedge_plan: Vec<HedgePlanOrder>,
@@ -112,6 +114,7 @@ impl MarketMakerHedgeStrategy {
             period_sell_qty: 0.0,
             signal_ts: 0,
             last_hedge_ts_ms: None,
+            last_hedge_is_taker: None,
             hedge_from_key: Vec::new(),
             order_seq: 0,
             hedge_plan: Vec::new(),
@@ -480,6 +483,7 @@ impl MarketMakerHedgeStrategy {
             buy_qty: self.period_buy_qty,
             sell_qty: self.period_sell_qty,
             hedge_ts_ms: self.last_hedge_ts_ms,
+            hedge_is_taker: self.last_hedge_is_taker,
         }
     }
 
@@ -712,6 +716,7 @@ impl MarketMakerHedgeStrategy {
         self.hedge_plan.clear();
         self.hedge_order_meta.clear();
         let reply_is_taker = ctx.use_taker;
+        self.last_hedge_is_taker = Some(reply_is_taker);
         if reply_is_taker {
             if self.order_seq >= u32::MAX {
                 self.order_seq = 1;
