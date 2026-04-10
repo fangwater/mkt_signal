@@ -278,6 +278,29 @@ def default_factor_plan_value() -> Dict[str, object]:
     return {"factors": []}
 
 
+def normalize_factor_plan_thresholds(
+    venue: str,
+    amount_thresholds: Dict[str, object],
+    factor_plans: Dict[str, object],
+) -> Dict[str, object]:
+    normalized: Dict[str, object] = {}
+    allowed_symbols = set(amount_thresholds.keys())
+    extra_symbols = sorted(symbol for symbol in factor_plans.keys() if symbol not in allowed_symbols)
+    if extra_symbols:
+        raise ValueError(
+            "factor_plan contains symbols missing from amount_thresholds: "
+            + ",".join(extra_symbols)
+        )
+
+    for symbol in sorted(allowed_symbols):
+        value = factor_plans.get(symbol)
+        if value is None:
+            normalized[symbol] = default_factor_plan_value()
+            continue
+        normalized[symbol] = value
+    return normalized
+
+
 def parse_thresholds_map(data: Dict[str, str], venue: str, config_type: str) -> Dict[str, object]:
     thresholds: Dict[str, object] = {}
     for raw_symbol in sorted(data.keys()):
@@ -291,13 +314,8 @@ def parse_thresholds_map(data: Dict[str, str], venue: str, config_type: str) -> 
             thresholds[symbol] = parse_amount_threshold_value(raw_value)
             continue
         if config_type == "factor_plan":
-            if raw_symbol == SHARED_CONFIG_FIELD:
-                if thresholds:
-                    raise ValueError("factor_plan shared config must contain exactly one entry")
-                thresholds[SHARED_CONFIG_FIELD] = parse_factor_plan_value(raw_value)
-            else:
-                symbol = normalize_symbol_for_venue(raw_symbol, venue)
-                thresholds[symbol] = parse_factor_plan_value(raw_value)
+            symbol = normalize_symbol_for_venue(raw_symbol, venue)
+            thresholds[symbol] = parse_factor_plan_value(raw_value)
             continue
         if config_type == "zscore":
             if thresholds:
@@ -312,7 +330,7 @@ def coerce_thresholds(payload: dict, venue: str, config_type: str) -> Dict[str, 
     thresholds_raw = payload.get("thresholds", payload)
     if not isinstance(thresholds_raw, dict):
         raise ValueError("payload must be an object or contain object field 'thresholds'")
-    if config_type in ("factor_plan", "zscore") and len(thresholds_raw) != 1:
+    if config_type == "zscore" and len(thresholds_raw) != 1:
         raise ValueError(f"{config_type} payload must contain exactly one shared entry")
 
     encoded: Dict[str, str] = {}
@@ -328,9 +346,7 @@ def coerce_thresholds(payload: dict, venue: str, config_type: str) -> Dict[str, 
             continue
         if config_type == "factor_plan":
             value = parse_factor_plan_value(raw_value)
-            symbol_key = str(raw_symbol).strip()
-            if symbol_key != SHARED_CONFIG_FIELD:
-                symbol_key = normalize_symbol_for_venue(symbol_key, venue)
+            symbol_key = normalize_symbol_for_venue(str(raw_symbol), venue)
             encoded[symbol_key] = json.dumps(value, ensure_ascii=False, sort_keys=True)
             continue
         if config_type == "zscore":
@@ -373,18 +389,15 @@ class TlenConfigStore:
         symbol: Optional[str] = None,
     ) -> Dict[str, object]:
         key = redis_key(venue, config_type)
-        thresholds = parse_thresholds_map(decode_hash(self._redis.hgetall(key)), venue, config_type)
+        thresholds = self._fetch_parsed(venue, config_type)
         if symbol:
             if config_type == "factor_plan":
-                if SHARED_CONFIG_FIELD in thresholds:
-                    thresholds = {SHARED_CONFIG_FIELD: thresholds[SHARED_CONFIG_FIELD]}
-                else:
-                    normalized_symbol = normalize_symbol_for_venue(symbol, venue)
-                    thresholds = {
-                        normalized_symbol: thresholds.get(
-                            normalized_symbol, default_factor_plan_value()
-                        )
-                    }
+                normalized_symbol = normalize_symbol_for_venue(symbol, venue)
+                thresholds = {
+                    normalized_symbol: thresholds.get(
+                        normalized_symbol, default_factor_plan_value()
+                    )
+                }
             elif config_type == "zscore":
                 thresholds = (
                     {SHARED_CONFIG_FIELD: thresholds[SHARED_CONFIG_FIELD]}
@@ -406,19 +419,42 @@ class TlenConfigStore:
             "thresholds": thresholds,
         }
 
+    def _fetch_parsed(self, venue: str, config_type: str) -> Dict[str, object]:
+        key = redis_key(venue, config_type)
+        thresholds = parse_thresholds_map(decode_hash(self._redis.hgetall(key)), venue, config_type)
+        if config_type == "factor_plan":
+            amount_thresholds = parse_thresholds_map(
+                decode_hash(self._redis.hgetall(redis_key(venue, "amount_thresholds"))),
+                venue,
+                "amount_thresholds",
+            )
+            thresholds = normalize_factor_plan_thresholds(venue, amount_thresholds, thresholds)
+        return thresholds
+
     def replace(
         self,
         venue: str,
         config_type: str,
         thresholds: Dict[str, str],
     ) -> Dict[str, object]:
+        if config_type == "factor_plan":
+            parsed_factor_plans = parse_thresholds_map(thresholds, venue, "factor_plan")
+            amount_thresholds = self._fetch_parsed(venue, "amount_thresholds")
+            normalized_factor_plans = normalize_factor_plan_thresholds(
+                venue,
+                amount_thresholds,
+                parsed_factor_plans,
+            )
+            thresholds = {
+                symbol: json.dumps(value, ensure_ascii=False, sort_keys=True)
+                for symbol, value in normalized_factor_plans.items()
+            }
         key = redis_key(venue, config_type)
         self._redis.delete(key)
         self._redis.delete(f"{key}:meta")
         if thresholds:
             self._redis.hset(key, mapping=thresholds)
         return self.fetch(venue, config_type)
-
 
 def page_html(config: ServerConfig) -> str:
     venue_options = json.dumps(SUPPORTED_VENUES, ensure_ascii=False)
@@ -593,7 +629,7 @@ def page_html(config: ServerConfig) -> str:
         venue 级 <code>zscore</code> 建议写成
         <code>{{"__shared__": {{"window_size": 17280, "min_samples": 1000, "zscore_cap": 3.0}}}}</code>。
         OKEX 建议直接填目标 venue 格式，例如 <code>BTC-USDT</code> 或 <code>BTC-USDT-SWAP</code>。
-        <code>factor_plan</code> 会自动兼容缺省 <code>factors</code>，即写成 <code>{{"BTCUSDT": {{}}}}</code> 也会保存为 <code>{{"factors": []}}</code>。
+        <code>factor_plan</code> 是 symbol 级统一大 JSON；未配置 symbol 可省略，写成 <code>{{"BTCUSDT": {{}}}}</code> 也会保存为 <code>{{"factors": []}}</code>。
       </div>
       <textarea id="bulkJson" spellcheck="false"></textarea>
     </div>
@@ -935,6 +971,48 @@ def main() -> int:
     finally:
         httpd.server_close()
     return 0
+
+
+def _test_amount_threshold() -> Dict[str, float]:
+    return {
+        "medium_notional_threshold": 1.0,
+        "large_notional_threshold": 2.0,
+    }
+
+
+def _test_factor_plan(*factors: str) -> Dict[str, object]:
+    return {"factors": list(factors)}
+
+
+def _run_tests() -> None:
+    amount_thresholds = {
+        "BTCUSDT": _test_amount_threshold(),
+        "ETHUSDT": _test_amount_threshold(),
+    }
+
+    normalized = normalize_factor_plan_thresholds(
+        "binance-futures",
+        amount_thresholds,
+        {"BTCUSDT": _test_factor_plan("factor_001")},
+    )
+    assert normalized == {
+        "BTCUSDT": {"factors": ["factor_001"]},
+        "ETHUSDT": {"factors": []},
+    }
+
+    try:
+        normalize_factor_plan_thresholds(
+            "binance-futures",
+            {"BTCUSDT": _test_amount_threshold()},
+            {
+                "BTCUSDT": _test_factor_plan("factor_001"),
+                "ETHUSDT": _test_factor_plan("factor_002"),
+            },
+        )
+    except ValueError as exc:
+        assert "missing from amount_thresholds" in str(exc)
+    else:
+        raise AssertionError("expected extra factor_plan symbols to fail")
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use super::cfg::ModelPubConfig;
 use super::factor_pool::{
     build_extract_indices, build_factor_indices, build_factor_position_map,
-    load_venue_factor_names_from_tlen_server, parse_venue_slug_from_input_service,
+    load_symbol_factor_names_from_tlen_server, parse_venue_slug_from_input_service,
 };
 use super::model::OnnxModel;
 use super::publisher::ModelPublisher;
@@ -50,6 +50,7 @@ struct ModelPubStats {
 }
 
 struct SymbolModelRuntime {
+    input_feature_dim: usize,
     feature_dim: usize,
     model: OnnxModel,
     factor_indices: Vec<u16>,
@@ -89,7 +90,6 @@ pub struct ModelPubApp {
     input_service: String,
     subscriber: Subscriber<ipc::Service, [u8; INPUT_MAX_BYTES], ()>,
     publisher: ModelPublisher,
-    input_feature_dim: usize,
     models_by_symbol: HashMap<String, SymbolModelRuntime>,
     stats: ModelPubStats,
     last_log_stats: Instant,
@@ -106,26 +106,17 @@ impl ModelPubApp {
         let input_service = config.input_service.trim().to_string();
         let output_service = config.output_service.trim().to_string();
         let venue_slug = parse_venue_slug_from_input_service(&input_service)?;
-        let venue_factor_names = load_venue_factor_names_from_tlen_server(&config, &venue_slug)
+        let symbol_factor_names = load_symbol_factor_names_from_tlen_server(&config, &venue_slug)
             .await
             .with_context(|| {
                 format!(
-                    "load venue factor plan from tlen_server failed: venue={}",
+                    "load symbol factor plans from tlen_server failed: venue={}",
                     venue_slug
-                )
-            })?;
-        let venue_factor_positions =
-            build_factor_position_map(&venue_factor_names).with_context(|| {
-                format!(
-                    "build venue factor position map failed: venue={} factors={}",
-                    venue_slug,
-                    venue_factor_names.len()
                 )
             })?;
 
         let models_by_symbol =
-            Self::load_models_from_model_manager(&config, &model_name, &venue_factor_positions)
-                .await?;
+            Self::load_models_from_model_manager(&config, &model_name, &symbol_factor_names).await?;
         if models_by_symbol.is_empty() {
             anyhow::bail!(
                 "startup model list is empty: model_name={} base_url={}",
@@ -173,12 +164,12 @@ impl ModelPubApp {
         let score_rolling = InlineScoreRolling::new(&model_name, &config.score_rolling).await?;
 
         info!(
-            "ModelPubApp started: input={} output={} symbols={} venue={} pool_dim={}",
+            "ModelPubApp started: input={} output={} symbols={} venue={} symbol_factor_plans={}",
             input_service,
             output_service,
             models_by_symbol.len(),
             venue_slug,
-            venue_factor_names.len(),
+            symbol_factor_names.len(),
         );
 
         Ok(Self {
@@ -186,7 +177,6 @@ impl ModelPubApp {
             input_service,
             subscriber,
             publisher,
-            input_feature_dim: venue_factor_names.len(),
             models_by_symbol,
             stats: ModelPubStats::default(),
             last_log_stats: Instant::now(),
@@ -197,7 +187,7 @@ impl ModelPubApp {
     async fn load_models_from_model_manager(
         config: &ModelPubConfig,
         model_name: &str,
-        venue_factor_positions: &HashMap<String, usize>,
+        symbol_factor_names: &HashMap<String, Vec<String>>,
     ) -> Result<HashMap<String, SymbolModelRuntime>> {
         let base_url = config.model_manager_base_url.trim_end_matches('/');
         let client = Client::builder()
@@ -238,14 +228,14 @@ impl ModelPubApp {
             let client = client.clone();
             let base_url = base_url.to_string();
             let model_name = model_name.to_string();
-            let venue_factor_positions = venue_factor_positions.clone();
+            let symbol_factor_names = symbol_factor_names.clone();
             async move {
                 load_single_symbol_model(
                     &client,
                     &base_url,
                     &model_name,
                     &symbol,
-                    &venue_factor_positions,
+                    &symbol_factor_names,
                 )
                 .await
             }
@@ -330,10 +320,18 @@ impl ModelPubApp {
                 let symbol_key = normalize_symbol_key(&feature.symbol);
                 let normalized = feature.features;
                 let dim = normalized.len();
+                let runtime = self.models_by_symbol.get(&symbol_key);
 
                 // Empty feature vector means fusion_factor tracked the symbol but no factor plan
                 // was configured for it. Skip inference and let upstream RL-only flow stand.
                 if dim == 0 {
+                    if runtime.is_some() {
+                        panic!(
+                            "empty feature vector for loaded model symbol: model_name={} symbol={}",
+                            self.model_name,
+                            feature.symbol
+                        );
+                    }
                     self.stats.empty_feature_drop = self.stats.empty_feature_drop.saturating_add(1);
                     return Ok(());
                 }
@@ -341,12 +339,15 @@ impl ModelPubApp {
                 // Reload payloads come from fusion_factor bootstrap. They are already normalized,
                 // but model inference should still wait for live data.
                 if feature.status == FeatureStatus::Reload as u8 {
+                    if let Some(runtime) = runtime {
+                        Self::validate_feature_dim(&self.model_name, &feature.symbol, dim, runtime);
+                    }
                     self.stats.reload_only += 1;
                     return Ok(());
                 }
 
                 // --- inference ---
-                let Some(runtime) = self.models_by_symbol.get(&symbol_key) else {
+                let Some(runtime) = runtime else {
                     panic!(
                         "model symbol not loaded: model_name={} symbol={} loaded_symbol_count={}",
                         self.model_name,
@@ -355,12 +356,7 @@ impl ModelPubApp {
                     );
                 };
 
-                if dim != self.input_feature_dim {
-                    panic!(
-                        "venue feature dim mismatch: model_name={} symbol={} expected={} got={}",
-                        self.model_name, feature.symbol, self.input_feature_dim, dim
-                    );
-                }
+                Self::validate_feature_dim(&self.model_name, &feature.symbol, dim, runtime);
 
                 let extracted: Vec<f64> = runtime
                     .extract_indices
@@ -539,6 +535,20 @@ impl ModelPubApp {
 
         self.stats = ModelPubStats::default();
     }
+
+    fn validate_feature_dim(
+        model_name: &str,
+        symbol: &str,
+        dim: usize,
+        runtime: &SymbolModelRuntime,
+    ) {
+        if dim != runtime.input_feature_dim {
+            panic!(
+                "symbol feature dim mismatch: model_name={} symbol={} expected={} got={}",
+                model_name, symbol, runtime.input_feature_dim, dim
+            );
+        }
+    }
 }
 
 fn log_btc_heartbeat(
@@ -688,7 +698,7 @@ async fn load_single_symbol_model(
     base_url: &str,
     model_name: &str,
     symbol: &str,
-    venue_factor_positions: &HashMap<String, usize>,
+    symbol_factor_names: &HashMap<String, Vec<String>>,
 ) -> Result<SymbolModelLoaded> {
     let payload = fetch_symbol_model_onnx(client, base_url, model_name, symbol)
         .await
@@ -735,9 +745,25 @@ async fn load_single_symbol_model(
                 model_name, symbol
             )
         })?;
+    let symbol_plan = symbol_factor_names.get(symbol).ok_or_else(|| {
+        anyhow::anyhow!(
+            "missing symbol factor plan from tlen_server: model_name={} symbol={}",
+            model_name,
+            symbol
+        )
+    })?;
+    let symbol_factor_positions =
+        build_factor_position_map(symbol, symbol_plan).with_context(|| {
+            format!(
+                "build symbol factor position map failed: model_name={} symbol={} factors={}",
+                model_name,
+                symbol,
+                symbol_plan.len()
+            )
+        })?;
     let factor_indices = build_factor_indices(model_name, symbol, &factor_names);
     let extract_indices =
-        build_extract_indices(model_name, symbol, &factor_names, venue_factor_positions);
+        build_extract_indices(model_name, symbol, &factor_names, &symbol_factor_positions);
 
     if factor_indices.len() != feature_dim {
         anyhow::bail!(
@@ -756,6 +782,7 @@ async fn load_single_symbol_model(
         symbol: symbol.to_string(),
         model_onnx_bytes,
         runtime: SymbolModelRuntime {
+            input_feature_dim: symbol_plan.len(),
             feature_dim,
             model,
             factor_indices,

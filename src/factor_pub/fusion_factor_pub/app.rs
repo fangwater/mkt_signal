@@ -25,9 +25,10 @@ use super::cfg::{
 };
 use super::factor_enum::FusionFactorId;
 pub(crate) use super::plan::{
-    load_venue_factor_plan_from_tlen_server, ExtraFactorId, FactorBinding, SymbolFactorPlan,
+    load_symbol_factor_plans_from_tlen_server, ExtraFactorId, FactorBinding, SymbolFactorPlan,
 };
 use super::publisher::FusionFactorPublisher;
+use super::publisher::FUSION_FACTOR_PAYLOAD_MAX_BYTES;
 use super::window_primitives::{
     rolling_corr_last, rolling_kurt_last, rolling_mean_at_from_series, rolling_mean_last,
     rolling_mean_last_opt_from_series, rolling_mean_last_with_min_periods, rolling_mean_series,
@@ -891,10 +892,6 @@ impl ReplayEvalSummary {
         };
         Self { status }
     }
-
-    fn missing_plan() -> Self {
-        Self { status: u8::MAX }
-    }
 }
 
 impl F64SeriesView for SplitSlice<'_, f64> {
@@ -929,7 +926,7 @@ pub struct FusionFactorPubApp {
     rl_publisher: RlFactorPublisher,
     allowed_symbols: HashSet<String>,
     symbol_all_ready_seen: HashSet<String>,
-    venue_factor_plan: Option<SymbolFactorPlan>,
+    symbol_factor_plans: HashMap<String, SymbolFactorPlan>,
     symbol_states: HashMap<String, SymbolCalcState>,
     symbol_rolling_stats: HashMap<String, SymbolRollingStats>,
     symbol_norm_states: HashMap<String, SymbolNormState>,
@@ -974,15 +971,16 @@ impl FusionFactorPubApp {
                     venue_slug
                 )
             })?;
-        let venue_factor_plan =
-            load_venue_factor_plan_from_tlen_server(&cfg.tlen_server, &venue_slug)
+        let symbol_factor_plans =
+            load_symbol_factor_plans_from_tlen_server(&cfg.tlen_server, &venue_slug)
                 .await
                 .with_context(|| {
                     format!(
-                        "load venue factor plan from tlen_server failed: venue={}",
+                        "load symbol factor plans from tlen_server failed: venue={}",
                         venue_slug
                     )
                 })?;
+        validate_symbol_factor_plan_payload_limits(&symbol_factor_plans)?;
         let allowed_symbols: Vec<String> =
             load_online_symbols_from_tlen_server(&cfg.tlen_server, venue, &venue_slug)
                 .await
@@ -1019,7 +1017,7 @@ impl FusionFactorPubApp {
             "FusionFactorPubApp created: venue={} mode={} symbol_source={} symbols={} sample={} trade_flow_channel=factor_pub/{}/{} rocksdb_path={} output_service={}",
             venue_slug,
             "fusion+rl",
-            "tlen_server.amount_thresholds+factor_plan[__shared__]",
+            "tlen_server.amount_thresholds+factor_plan[symbol]",
             allowed_symbols.len(),
             format_symbol_sample(&allowed_symbols),
             venue_slug,
@@ -1028,9 +1026,9 @@ impl FusionFactorPubApp {
             output_service_path,
         );
         info!(
-            "FusionFactorPubApp[{}] venue factor plan loaded: factors={}",
+            "FusionFactorPubApp[{}] symbol factor plans loaded: symbols={}",
             venue_slug,
-            venue_factor_plan.ordered_factors.len(),
+            symbol_factor_plans.len(),
         );
         info!(
             "FusionFactorPubApp[{}] zscore config: source=tlen_server.zscore window_size={} min_samples={} zscore_cap={}",
@@ -1062,7 +1060,7 @@ impl FusionFactorPubApp {
             rl_publisher,
             allowed_symbols: allowed_symbols.into_iter().collect(),
             symbol_all_ready_seen: HashSet::new(),
-            venue_factor_plan: Some(venue_factor_plan),
+            symbol_factor_plans,
             symbol_states: HashMap::new(),
             symbol_rolling_stats: HashMap::new(),
             symbol_norm_states: HashMap::new(),
@@ -1537,7 +1535,7 @@ impl FusionFactorPubApp {
             symbol_records.len(),
         );
         let venue_slug = self.venue_slug.clone();
-        let venue_factor_plan = self.venue_factor_plan.clone();
+        let symbol_factor_plans = self.symbol_factor_plans.clone();
         let zscore_config = self.zscore_config.clone();
         let mut publisher = self.publisher.take();
 
@@ -1552,7 +1550,7 @@ impl FusionFactorPubApp {
         for sr in symbol_records_vec {
             let symbol_result = Self::replay_symbol_records(
                 &venue_slug,
-                venue_factor_plan.as_ref(),
+                symbol_factor_plans.get(&sr.symbol),
                 sr,
                 &zscore_config,
                 publisher.as_mut(),
@@ -1608,7 +1606,7 @@ impl FusionFactorPubApp {
 
     fn replay_symbol_records(
         venue_slug: &str,
-        venue_factor_plan: Option<&SymbolFactorPlan>,
+        symbol_factor_plan: Option<&SymbolFactorPlan>,
         symbol_records: BootstrapSymbolRecords,
         zscore_config: &ZscoreRuntimeConfig,
         mut publisher: Option<&mut FusionFactorPublisher>,
@@ -1630,7 +1628,7 @@ impl FusionFactorPubApp {
         let mut interval_other_status = 0u64;
         let mut rolling_stats = SymbolRollingStats::default();
         let mut norm_state = SymbolNormState::new(zscore_config.window_size, 0);
-        let plan = venue_factor_plan;
+        let plan = symbol_factor_plan;
         let needs_factor_118 = plan
             .map(|plan| {
                 plan.ordered_factors
@@ -1708,7 +1706,7 @@ impl FusionFactorPubApp {
                     }
                     ReplayEvalSummary::from_eval(&eval_result, true)
                 }
-                None => ReplayEvalSummary::missing_plan(),
+                None => ReplayEvalSummary { status: u8::MAX },
             };
             loaded = loaded.saturating_add(1);
             interval_loaded = interval_loaded.saturating_add(1);
@@ -1957,19 +1955,15 @@ impl FusionFactorPubApp {
             }
         }
 
-        if self.venue_factor_plan.is_none() {
-            return Some(ReplayEvalSummary::missing_plan());
-        }
-
         let eval_started = Instant::now();
         let Some(eval_result) = self.evaluate_ordered_factors(&symbol, depth_opt) else {
             if emit_output {
                 warn!(
-                    "fusion-trigger: venue={} symbol={} trade_ts={} reason=missing_factor_plan",
+                    "fusion-trigger: venue={} symbol={} trade_ts={} reason=missing_symbol_factor_plan",
                     self.venue_slug, symbol, msg.ts
                 );
             }
-            return Some(ReplayEvalSummary::missing_plan());
+            return None;
         };
 
         if eval_result.status == 0 {
@@ -2078,8 +2072,8 @@ impl FusionFactorPubApp {
         depth: Option<&DepthDerived>,
     ) -> Option<OrderedEvalResult> {
         let needs_factor_118 = {
-            let venue_factor_plan = self.venue_factor_plan.as_ref()?;
-            venue_factor_plan
+            let symbol_factor_plan = self.symbol_factor_plans.get(symbol)?;
+            symbol_factor_plan
                 .ordered_factors
                 .iter()
                 .any(|factor| factor.factor_id == Some(FusionFactorId::Factor118))
@@ -2093,7 +2087,7 @@ impl FusionFactorPubApp {
             let state = self.symbol_states.get_mut(symbol)?;
             Self::build_symbol_series_from_state(state)
         };
-        let plan = self.venue_factor_plan.as_ref()?;
+        let plan = self.symbol_factor_plans.get(symbol)?;
         Some(Self::evaluate_ordered_factors_with_plan(
             plan,
             factor_118_result,
@@ -6220,6 +6214,28 @@ impl FusionFactorPubApp {
             _ => Some((0.0, false, samples)),
         }
     }
+}
+
+fn max_feature_msg_bytes(symbol: &str, feature_dim: usize) -> usize {
+    4 + 4 + symbol.len() + 8 + 1 + 2 + feature_dim * 8
+}
+
+fn validate_symbol_factor_plan_payload_limits(
+    symbol_factor_plans: &HashMap<String, SymbolFactorPlan>,
+) -> Result<()> {
+    for (symbol, plan) in symbol_factor_plans {
+        let bytes = max_feature_msg_bytes(symbol, plan.ordered_factors.len());
+        if bytes > FUSION_FACTOR_PAYLOAD_MAX_BYTES {
+            bail!(
+                "symbol factor plan exceeds fusion IPC payload limit: symbol={} factors={} bytes={} limit={}",
+                symbol,
+                plan.ordered_factors.len(),
+                bytes,
+                FUSION_FACTOR_PAYLOAD_MAX_BYTES
+            );
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]

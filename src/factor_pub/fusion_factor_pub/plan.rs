@@ -110,10 +110,32 @@ fn build_factor_plan(scope: &str, factors: Vec<String>) -> SymbolFactorPlan {
     SymbolFactorPlan { ordered_factors }
 }
 
-pub(crate) async fn load_venue_factor_plan_from_tlen_server(
+fn decode_symbol_factor_plans(
+    payload: FactorPlanResp,
+) -> Result<HashMap<String, SymbolFactorPlan>> {
+    let mut plans = HashMap::with_capacity(payload.thresholds.len());
+    for (symbol, item) in payload.thresholds {
+        let key = symbol.trim();
+        if key.is_empty() || key == TLEN_SHARED_CONFIG_FIELD {
+            continue;
+        }
+        if item.factors.is_empty() {
+            continue;
+        }
+        let normalized_symbol = key.to_uppercase();
+        let plan = build_factor_plan(&normalized_symbol, item.factors);
+        if plan.ordered_factors.is_empty() {
+            continue;
+        }
+        plans.insert(normalized_symbol, plan);
+    }
+    Ok(plans)
+}
+
+pub(crate) async fn load_symbol_factor_plans_from_tlen_server(
     tlen: &TlenServerConfig,
     venue_slug: &str,
-) -> Result<SymbolFactorPlan> {
+) -> Result<HashMap<String, SymbolFactorPlan>> {
     let base_url = tlen.base_url.trim_end_matches('/');
     let client = Client::builder()
         .timeout(Duration::from_millis(tlen.request_timeout_ms))
@@ -134,15 +156,48 @@ pub(crate) async fn load_venue_factor_plan_from_tlen_server(
         .json()
         .await
         .with_context(|| format!("decode factor plan response failed: {}", url))?;
+    decode_symbol_factor_plans(payload).with_context(|| {
+        format!(
+            "decode symbol factor plans from tlen_server failed: venue={}",
+            venue_slug
+        )
+    })
+}
 
-    let shared = payload
-        .thresholds
-        .get(TLEN_SHARED_CONFIG_FIELD)
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("tlen_server returned no shared factor plan"))?;
-    let plan = build_factor_plan(venue_slug, shared.factors);
-    if plan.ordered_factors.is_empty() {
-        anyhow::bail!("shared factor plan must not be empty: venue={}", venue_slug);
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn factor_item(factors: &[&str]) -> FactorPlanItem {
+        FactorPlanItem {
+            factors: factors.iter().map(|name| (*name).to_string()).collect(),
+        }
     }
-    Ok(plan)
+
+    #[test]
+    fn decode_symbol_factor_plans_ignores_shared_and_empty_entries() {
+        let payload = FactorPlanResp {
+            thresholds: HashMap::from([
+                (
+                    "__shared__".to_string(),
+                    factor_item(&["factor_001", "avg_price"]),
+                ),
+                ("BTCUSDT".to_string(), factor_item(&["factor_001", "avg_price"])),
+                ("ETHUSDT".to_string(), factor_item(&[])),
+            ]),
+        };
+
+        let plans = decode_symbol_factor_plans(payload).expect("decode symbol plans");
+
+        assert_eq!(plans.len(), 1);
+        let btc = plans.get("BTCUSDT").expect("btc plan");
+        let factor_names: Vec<&str> = btc
+            .ordered_factors
+            .iter()
+            .map(|binding| binding.name.as_str())
+            .collect();
+        assert_eq!(factor_names, vec!["factor_001", "avg_price"]);
+        assert!(!plans.contains_key("__shared__"));
+        assert!(!plans.contains_key("ETHUSDT"));
+    }
 }

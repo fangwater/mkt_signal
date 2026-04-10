@@ -32,10 +32,10 @@ pub(crate) fn parse_venue_slug_from_input_service(input_service: &str) -> Result
     Ok(venue_slug.to_string())
 }
 
-pub(crate) async fn load_venue_factor_names_from_tlen_server(
+pub(crate) async fn load_symbol_factor_names_from_tlen_server(
     config: &ModelPubConfig,
     venue_slug: &str,
-) -> Result<Vec<String>> {
+) -> Result<HashMap<String, Vec<String>>> {
     let client = Client::builder()
         .timeout(Duration::from_millis(config.tlen_server_request_timeout_ms))
         .build()
@@ -56,32 +56,18 @@ pub(crate) async fn load_venue_factor_names_from_tlen_server(
     let payload: VenueFactorPlanResp = resp
         .json()
         .await
-        .with_context(|| format!("decode venue factor plan failed: {}", url))?;
-    let item = payload
-        .thresholds
-        .get(TLEN_SHARED_CONFIG_FIELD)
-        .ok_or_else(|| anyhow::anyhow!("tlen_server returned no shared factor plan"))?;
-    if item.factors.is_empty() {
-        anyhow::bail!("shared factor plan must not be empty: venue={}", venue_slug);
-    }
-    Ok(item.factors.clone())
-}
-
-pub(crate) fn build_factor_position_map(factor_names: &[String]) -> Result<HashMap<String, usize>> {
-    let mut positions = HashMap::with_capacity(factor_names.len());
-    for (idx, name) in factor_names.iter().enumerate() {
-        let key = name.trim();
-        if key.is_empty() {
-            anyhow::bail!(
-                "venue factor plan contains empty factor name at index {}",
-                idx
-            );
+        .with_context(|| format!("decode symbol factor plans failed: {}", url))?;
+    let mut plans = HashMap::with_capacity(payload.thresholds.len());
+    for (symbol, item) in payload.thresholds {
+        let key = symbol.trim();
+        if key.is_empty() || key == TLEN_SHARED_CONFIG_FIELD || item.factors.is_empty() {
+            continue;
         }
-        if positions.insert(key.to_string(), idx).is_some() {
-            anyhow::bail!("duplicate factor in venue factor plan: {}", key);
-        }
+        let normalized_symbol = key.to_uppercase();
+        validate_factor_names(&normalized_symbol, &item.factors)?;
+        plans.insert(normalized_symbol, item.factors);
     }
-    Ok(positions)
+    Ok(plans)
 }
 
 fn factor_name_to_index(name: &str) -> Option<u16> {
@@ -114,21 +100,62 @@ pub(crate) fn build_factor_indices(
     indices
 }
 
+pub(crate) fn build_factor_position_map(
+    symbol: &str,
+    factor_names: &[String],
+) -> Result<HashMap<String, usize>> {
+    let mut positions = HashMap::with_capacity(factor_names.len());
+    for (idx, name) in factor_names.iter().enumerate() {
+        let key = name.trim();
+        if key.is_empty() {
+            anyhow::bail!(
+                "symbol factor plan contains empty factor name: symbol={} index={}",
+                symbol,
+                idx
+            );
+        }
+        if positions.insert(key.to_string(), idx).is_some() {
+            anyhow::bail!("duplicate factor in symbol factor plan: symbol={} factor={}", symbol, key);
+        }
+    }
+    Ok(positions)
+}
+
 pub(crate) fn build_extract_indices(
     model_name: &str,
     symbol: &str,
     factor_names: &[String],
-    venue_factor_positions: &HashMap<String, usize>,
+    symbol_factor_positions: &HashMap<String, usize>,
 ) -> Vec<usize> {
     let mut extract_indices = Vec::with_capacity(factor_names.len());
     for name in factor_names {
-        let Some(position) = venue_factor_positions.get(name).copied() else {
+        let Some(position) = symbol_factor_positions.get(name).copied() else {
             panic!(
-                "model factor missing from venue factor plan: model_name={} symbol={} factor={}",
+                "model factor missing from symbol factor plan: model_name={} symbol={} factor={}",
                 model_name, symbol, name
             );
         };
         extract_indices.push(position);
     }
     extract_indices
+}
+
+fn validate_factor_names(symbol: &str, factor_names: &[String]) -> Result<()> {
+    let _ = build_factor_position_map(symbol, factor_names)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_factor_position_map_rejects_duplicates() {
+        let err = build_factor_position_map(
+            "BTCUSDT",
+            &["factor_001".to_string(), "factor_001".to_string()],
+        )
+        .expect_err("duplicate factor should fail");
+        assert!(err.to_string().contains("duplicate factor"));
+    }
 }
