@@ -12,20 +12,19 @@ usage() {
                                        [--nginx-prefix /mm/<env-name>/config]
                                        [--nginx-port 4191]
                                        [--nginx-mapping-file $HOME/nginx_locations.txt]
-                                       [--apply-nginx]
                                        [--scripts-only]
 
 说明:
   - 部署 mm_config_server 到 $HOME/<env-name>/（或 --target）。
   - exchange 可省略，会从 --env-name 推断（如 binance_mm_beta -> binance）。
   - 默认端口按交易所分配（okex=18111 gate=18121 binance=18131 bybit=18141 bitget=18151）。
-  - 可选写入 nginx mapping（/mm/<env-name>/config）。
+  - 默认会写入并应用 nginx mapping（/mm/<env-name>/config）。
   - env-name/目标目录名必须匹配 <exchange>_mm_<suffix>（例如 binance_mm_beta）。
-  - --scripts-only: 仅同步脚本，不改 config/mm_config_server.env 和 nginx。
+  - --scripts-only: 仅同步脚本，不改 config/mm_config_server.env，也不改 nginx。
 
 示例:
   scripts/deploy_mm_config_server.sh --env-name binance_mm_beta
-  scripts/deploy_mm_config_server.sh --env-name okex_mm_alpha --apply-nginx
+  scripts/deploy_mm_config_server.sh --env-name okex_mm_alpha
 EOF
 }
 
@@ -44,7 +43,6 @@ PORT=""
 NGINX_PREFIX=""
 NGINX_PORT="4191"
 NGINX_MAPPING_FILE=""
-APPLY_NGINX="0"
 SCRIPTS_ONLY="0"
 
 normalize_exchange() {
@@ -198,10 +196,6 @@ while [[ $# -gt 0 ]]; do
       NGINX_MAPPING_FILE="${2:-}"
       shift 2
       ;;
-    --apply-nginx)
-      APPLY_NGINX="1"
-      shift
-      ;;
     --scripts-only)
       SCRIPTS_ONLY="1"
       shift
@@ -249,11 +243,6 @@ if [[ -n "$TARGET_DIR" ]]; then
   fi
 fi
 require_mm_env_name "$EXCHANGE" "$ENV_NAME"
-
-if [[ "$SCRIPTS_ONLY" == "1" && "$APPLY_NGINX" == "1" ]]; then
-  echo "[ERROR] --scripts-only 与 --apply-nginx 互斥" >&2
-  exit 1
-fi
 
 if [[ -z "$PORT" ]]; then
   PORT="$(default_port_for_exchange "$EXCHANGE")"
@@ -307,13 +296,11 @@ ENV_NAME=${ENV_NAME}
 EOF2
 
   upsert_main_nginx_mapping
-  if [[ "${APPLY_NGINX}" == "1" ]]; then
-    echo "[INFO] Applying nginx config (PORT=${NGINX_PORT}, MAPPING_FILE=${NGINX_MAPPING_FILE})"
-    (
-      cd "$ROOT_DIR"
-      PORT="$NGINX_PORT" MAPPING_FILE="$NGINX_MAPPING_FILE" ./scripts/setup_nginx_4191.sh
-    )
-  fi
+  echo "[INFO] Applying nginx config (PORT=${NGINX_PORT}, MAPPING_FILE=${NGINX_MAPPING_FILE})"
+  (
+    cd "$ROOT_DIR"
+    PORT="$NGINX_PORT" MAPPING_FILE="$NGINX_MAPPING_FILE" ./scripts/setup_nginx_4191.sh
+  )
 fi
 
 echo "[INFO] 已部署 mm_config_server 脚本到 $DEST_SCRIPT_DIR"
