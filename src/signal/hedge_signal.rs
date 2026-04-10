@@ -803,9 +803,6 @@ impl MmHedgeSignalQueryMsg {
         let symbol_exposure_u = bytes.get_f64_le();
         let weighted_inventory_price = bytes.get_f64_le();
         let request_seq = bytes.get_u64_le();
-        if bytes.remaining() != 0 {
-            return Err("Unexpected non-zero trailing bytes for MmHedgeSignalQueryMsg".to_string());
-        }
         Ok(Self {
             symbol,
             period_buy_qty,
@@ -1073,14 +1070,16 @@ mod tests {
     }
 
     #[test]
-    fn mm_hedge_query_from_bytes_rejects_trailing_bytes() {
+    fn mm_hedge_query_from_bytes_ignores_trailing_bytes() {
         let msg = MmHedgeSignalQueryMsg::new("SOLUSDT", 1.0, 0.5, 0.5, 1000.0, 101.5, 7);
         let mut raw = msg.to_bytes().to_vec();
-        raw.extend_from_slice(&[0u8]);
+        raw.extend_from_slice(&[1u8, 2u8, 3u8]);
 
-        let parsed = MmHedgeSignalQueryMsg::from_bytes(bytes::Bytes::from(raw));
-        assert!(parsed.is_err());
-        assert!(parsed.err().unwrap().contains("Unexpected"));
+        let parsed = MmHedgeSignalQueryMsg::from_bytes(bytes::Bytes::from(raw)).unwrap();
+        assert_eq!(parsed.get_symbol(), "SOLUSDT");
+        assert!((parsed.period_buy_qty - 1.0).abs() < 1e-12);
+        assert!((parsed.weighted_inventory_price - 101.5).abs() < 1e-12);
+        assert_eq!(parsed.request_seq, 7);
     }
 
     #[test]
