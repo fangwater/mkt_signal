@@ -16,6 +16,7 @@ use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
 use crate::common::ipc_service_name::build_service_name;
 use crate::common::redis_client::RedisSettings;
 use crate::common::time_util::get_timestamp_us;
+use crate::common::bbo::Bbo;
 use crate::market_maker::hedge_quote_plan::{
     build_mm_hedge_ctx as build_mm_hedge_ctx_core, resolve_mm_hedge_signal_inputs,
     MmHedgeBuildInput,
@@ -49,6 +50,24 @@ pub struct MmDecision {
 }
 
 impl MmDecision {
+    fn should_use_mm_hedge_taker(
+        weighted_inventory_price: f64,
+        bid: f64,
+        ask: f64,
+        threshold_pct: f64,
+    ) -> Option<(f64, f64)> {
+        if !(weighted_inventory_price.is_finite() && weighted_inventory_price > 0.0) {
+            return None;
+        }
+        let hedge_mid = Bbo::new(bid, ask, 0).get_mid_price().unwrap_or(0.0);
+        if !(hedge_mid.is_finite() && hedge_mid > 0.0) {
+            return None;
+        }
+        let pct_change = (hedge_mid - weighted_inventory_price).abs() / weighted_inventory_price;
+        let threshold_ratio = threshold_pct / 100.0;
+        Some((pct_change, threshold_ratio))
+    }
+
     pub fn is_initialized() -> bool {
         MM_DECISION.with(|cell| cell.get().is_some())
     }
@@ -194,6 +213,7 @@ impl MmDecision {
         hedge_offset_ratio: f64,
         hedge_price_offset_limit_lower: f64,
         hedge_price_offset_limit_upper: f64,
+        max_hedge_price_pct_change: f64,
         next_query_delay_ms: u64,
         enable_return_score_adjust_hedge: bool,
     ) {
@@ -203,6 +223,7 @@ impl MmDecision {
             hedge_offset_ratio,
             hedge_price_offset_limit_lower,
             hedge_price_offset_limit_upper,
+            max_hedge_price_pct_change,
             next_query_delay_ms,
             enable_return_score_adjust_hedge,
         );
@@ -370,6 +391,39 @@ impl MmDecision {
         };
         let mut ctx = ctx;
         ctx.request_seq = query.request_seq;
+        if let Some((pct_change, threshold_ratio)) = Self::should_use_mm_hedge_taker(
+            query.weighted_inventory_price,
+            quote.bid,
+            quote.ask,
+            self.state.max_hedge_price_pct_change,
+        ) {
+            ctx.use_taker = pct_change > threshold_ratio;
+            let hedge_mid = Bbo::new(quote.bid, quote.ask, quote.ts)
+                .get_mid_price()
+                .unwrap_or(0.0);
+            info!(
+                "MmDecision: MMHedge mode decision symbol={} request_seq={} mode={} hedge_mid={:.8} weighted_inventory_price={:.8} pct_change={:.6} threshold_pct={:.6} bid={:.8} ask={:.8}",
+                symbol,
+                query.request_seq,
+                if ctx.use_taker { "taker" } else { "maker" },
+                hedge_mid,
+                query.weighted_inventory_price,
+                pct_change * 100.0,
+                self.state.max_hedge_price_pct_change,
+                quote.bid,
+                quote.ask
+            );
+        } else {
+            info!(
+                "MmDecision: MMHedge mode decision symbol={} request_seq={} mode=maker hedge_mid=0 weighted_inventory_price={:.8} pct_change=0 threshold_pct={:.6} bid={:.8} ask={:.8} note=weighted_inventory_price_or_mid_invalid",
+                symbol,
+                query.request_seq,
+                query.weighted_inventory_price,
+                self.state.max_hedge_price_pct_change,
+                quote.bid,
+                quote.ask
+            );
+        }
         let hedge_symbol = ctx.get_opening_symbol();
         let tick_indices: Vec<i64> = ctx.price_qv_list.iter().map(|qv| qv.get_count()).collect();
         if tick_indices.is_empty() {
@@ -664,5 +718,25 @@ impl MmDecision {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MmDecision;
+
+    #[test]
+    fn mm_hedge_taker_switch_uses_weighted_inventory_price() {
+        let decision = MmDecision::should_use_mm_hedge_taker(100.0, 109.0, 111.0, 5.0)
+            .expect("valid decision inputs");
+        let (pct_change, threshold_ratio) = decision;
+        assert!((pct_change - 0.10).abs() < 1e-12);
+        assert!((threshold_ratio - 0.05).abs() < 1e-12);
+        assert!(pct_change > threshold_ratio);
+    }
+
+    #[test]
+    fn mm_hedge_taker_switch_returns_none_for_invalid_inventory_price() {
+        assert!(MmDecision::should_use_mm_hedge_taker(0.0, 99.0, 101.0, 5.0).is_none());
     }
 }

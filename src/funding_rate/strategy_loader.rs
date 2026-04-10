@@ -990,6 +990,7 @@ impl StrategyParams {
                     self.hedge_offset_ratio,
                     self.hedge_price_offset_limit_lower,
                     self.hedge_price_offset_limit_upper,
+                    self.max_hedge_price_pct_change,
                     self.next_query_delay_ms,
                     self.enable_return_score_adjust_hedge,
                 );

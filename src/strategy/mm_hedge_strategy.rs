@@ -55,6 +55,7 @@ pub struct HedgePlanOrder {
     pub client_order_id: i64,
     pub level_index: usize,
     pub side: Side,
+    pub order_type: OrderType,
     pub price: f64,
     pub qty: f64,
     pub from_key: Vec<u8>,
@@ -482,6 +483,40 @@ impl MarketMakerHedgeStrategy {
         }
     }
 
+    fn weighted_inventory_price(&self) -> f64 {
+        self.net_qty_queue.weighted_avg_price().unwrap_or(0.0)
+    }
+
+    fn resolve_fill_price_from_order_update(
+        &self,
+        client_order_id: i64,
+        order_update: &dyn OrderUpdate,
+    ) -> f64 {
+        let order_price = MonitorChannel::instance()
+            .order_manager()
+            .borrow()
+            .get(client_order_id)
+            .map(|order| order.price)
+            .unwrap_or(0.0);
+        if order_update.price() > 0.0 {
+            order_update.price()
+        } else {
+            order_price
+        }
+    }
+
+    fn resolve_fill_price_from_trade_update(
+        &self,
+        order_snapshot_price: Option<f64>,
+        trade: &dyn TradeUpdate,
+    ) -> f64 {
+        if trade.price() > 0.0 {
+            trade.price()
+        } else {
+            order_snapshot_price.unwrap_or(0.0)
+        }
+    }
+
     fn mark_price(&self) -> Option<f64> {
         MonitorChannel::instance()
             .price_table()
@@ -676,13 +711,8 @@ impl MarketMakerHedgeStrategy {
 
         self.hedge_plan.clear();
         self.hedge_order_meta.clear();
-        for HedgeSplitOrder {
-            level_index,
-            side,
-            price,
-            qty,
-        } in split.orders
-        {
+        let reply_is_taker = ctx.use_taker;
+        if reply_is_taker {
             if self.order_seq >= u32::MAX {
                 self.order_seq = 1;
             } else {
@@ -692,38 +722,89 @@ impl MarketMakerHedgeStrategy {
                 }
             }
             let client_order_id = Self::compose_order_id(self.strategy_id, self.order_seq);
-            let tlen = ctx.tlen_values.get(level_index).copied().unwrap_or(0.0);
-            let order_from_key = self.build_order_from_key(&ctx.from_key, tlen);
-            let price_offset = ctx.price_offsets.get(level_index).copied().unwrap_or(0.0);
+            let total_qty = split.orders.iter().map(|order| order.qty).sum::<f64>();
+            let side = split.orders.first().map(|order| order.side).unwrap_or_else(|| {
+                if net_qty >= 0.0 {
+                    Side::Sell
+                } else {
+                    Side::Buy
+                }
+            });
             self.hedge_order_meta.insert(
                 client_order_id,
                 HedgeOrderMeta {
-                    from_key: order_from_key.clone(),
-                    price_offset,
+                    from_key: ctx.from_key.clone(),
+                    price_offset: 0.0,
                 },
             );
             self.hedge_plan.push(HedgePlanOrder {
                 client_order_id,
+                level_index: 0,
+                side,
+                order_type: OrderType::Market,
+                price: self.weighted_inventory_price(),
+                qty: total_qty,
+                from_key: ctx.from_key.clone(),
+            });
+        } else {
+            for HedgeSplitOrder {
                 level_index,
                 side,
                 price,
                 qty,
-                from_key: order_from_key,
-            });
+            } in split.orders
+            {
+                if self.order_seq >= u32::MAX {
+                    self.order_seq = 1;
+                } else {
+                    self.order_seq += 1;
+                    if self.order_seq == 0 {
+                        self.order_seq = 1;
+                    }
+                }
+                let client_order_id = Self::compose_order_id(self.strategy_id, self.order_seq);
+                let tlen = ctx.tlen_values.get(level_index).copied().unwrap_or(0.0);
+                let order_from_key = self.build_order_from_key(&ctx.from_key, tlen);
+                let price_offset = ctx.price_offsets.get(level_index).copied().unwrap_or(0.0);
+                self.hedge_order_meta.insert(
+                    client_order_id,
+                    HedgeOrderMeta {
+                        from_key: order_from_key.clone(),
+                        price_offset,
+                    },
+                );
+                self.hedge_plan.push(HedgePlanOrder {
+                    client_order_id,
+                    level_index,
+                    side,
+                    order_type: OrderType::Limit,
+                    price,
+                    qty,
+                    from_key: order_from_key,
+                });
+            }
         }
 
         let mut table = String::new();
-        table.push_str("+----------------------+--------------+--------------+--------------+\n");
-        table.push_str("| client_order_id      | price        | qty          | usdt         |\n");
-        table.push_str("+----------------------+--------------+--------------+--------------+\n");
+        table.push_str("+----------------------+----------+--------------+--------------+--------------+\n");
+        table.push_str("| client_order_id      | type     | price        | qty          | usdt         |\n");
+        table.push_str("+----------------------+----------+--------------+--------------+--------------+\n");
         for row in &self.hedge_plan {
             let usdt = row.price * row.qty;
             table.push_str(&format!(
-                "| {:>20} | {:>12.6} | {:>12.6} | {:>12.6} |\n",
-                row.client_order_id, row.price, row.qty, usdt
+                "| {:>20} | {:>8} | {:>12.6} | {:>12.6} | {:>12.6} |\n",
+                row.client_order_id,
+                if row.order_type == OrderType::Market {
+                    "MARKET"
+                } else {
+                    "LIMIT"
+                },
+                row.price,
+                row.qty,
+                usdt
             ));
         }
-        table.push_str("+----------------------+--------------+--------------+--------------+");
+        table.push_str("+----------------------+----------+--------------+--------------+--------------+");
 
         let hedge_side_str = match hedge_side {
             Some(Side::Buy) => "BUY",
@@ -731,9 +812,10 @@ impl MarketMakerHedgeStrategy {
             None => "FLAT",
         };
         debug!(
-            "MMHedge split: symbol={} side={} net_qty={:.8} total_qty={:.8} total_usdt={:.8} remain_qty={:.8}\n{}",
+            "MMHedge split: symbol={} side={} mode={} net_qty={:.8} total_qty={:.8} total_usdt={:.8} remain_qty={:.8}\n{}",
             ctx.get_opening_symbol(),
             hedge_side_str,
+            if ctx.use_taker { "taker" } else { "maker" },
             net_qty,
             total_qty,
             total_usdt,
@@ -965,6 +1047,7 @@ impl MarketMakerHedgeStrategy {
             self.period_sell_qty,
             self.net_qty,
             symbol_exposure_u,
+            self.weighted_inventory_price(),
             request_seq,
         );
         let monitor = MonitorChannel::instance();
@@ -972,11 +1055,12 @@ impl MarketMakerHedgeStrategy {
         let risk_position_qty = monitor.get_position_qty(&self.symbol, hedge_venue);
         let risk_position_diff = self.net_qty - risk_position_qty;
         info!(
-            "MarketMakerHedgeStrategy: strategy_id={} hedge net-vs-monitor symbol={} request_seq={} net_qty={:.8} monitor_qty={:.8} diff_qty={:.8} hedge_venue={:?} period_buy_qty={:.8} period_sell_qty={:.8}",
+            "MarketMakerHedgeStrategy: strategy_id={} hedge net-vs-monitor symbol={} request_seq={} net_qty={:.8} weighted_inventory_price={:.8} monitor_qty={:.8} diff_qty={:.8} hedge_venue={:?} period_buy_qty={:.8} period_sell_qty={:.8}",
             self.strategy_id,
             self.symbol,
             request_seq,
             self.net_qty,
+            self.weighted_inventory_price(),
             risk_position_qty,
             risk_position_diff,
             hedge_venue,
@@ -1552,7 +1636,7 @@ impl MarketMakerHedgeStrategy {
                 .create_order(
                     venue,
                     plan.client_order_id,
-                    OrderType::Limit,
+                    plan.order_type,
                     symbol.to_string(),
                     plan.side,
                     plan.qty,
@@ -1915,12 +1999,7 @@ impl MarketMakerHedgeStrategy {
         if status.is_finished() {
             let was_tracked = self.hedge_order_ids.contains(&client_order_id);
             let filled_qty = order_update.cumulative_filled_quantity();
-            let order_price = MonitorChannel::instance()
-                .order_manager()
-                .borrow()
-                .get(client_order_id)
-                .map(|order| order.price)
-                .unwrap_or(0.0);
+            let fill_price = self.resolve_fill_price_from_order_update(client_order_id, order_update);
             if was_tracked && filled_qty > 0.0 {
                 let base_qty = MonitorChannel::instance().qty_to_base(
                     order_update.trading_venue(),
@@ -1935,7 +2014,7 @@ impl MarketMakerHedgeStrategy {
                     self.apply_net_qty_fill(
                         order_update.event_time(),
                         signed_qty,
-                        order_price,
+                        fill_price,
                         "hedge_fill",
                     );
                 }
@@ -2002,11 +2081,15 @@ impl MarketMakerHedgeStrategy {
         let cumulative_qty = trade.cumulative_filled_quantity();
         let trade_time = trade.trade_time();
         let event_time = trade.event_time();
+        let reported_trade_price = trade.price();
 
         let updated = order_manager.update(client_order_id, |order| {
             order.cumulative_filled_quantity = cumulative_qty;
             order.set_filled_time(trade_time);
             order.set_exchange_order_id(trade.order_id());
+            if reported_trade_price > 0.0 {
+                order.price = reported_trade_price;
+            }
             order.status = if status == OrderStatus::Filled {
                 OrderExecutionStatus::Filled
             } else {
@@ -2039,10 +2122,10 @@ impl MarketMakerHedgeStrategy {
             return true;
         }
         let was_tracked = self.hedge_order_ids.contains(&client_order_id);
-        let order_price = order_snapshot
-            .as_ref()
-            .map(|(_, _, _, price)| *price)
-            .unwrap_or_else(|| trade.price());
+        let fill_price = self.resolve_fill_price_from_trade_update(
+            order_snapshot.as_ref().map(|(_, _, _, price)| *price),
+            trade,
+        );
         if was_tracked && cumulative_qty > 0.0 {
             let base_qty = MonitorChannel::instance().qty_to_base(
                 trade.trading_venue(),
@@ -2054,7 +2137,7 @@ impl MarketMakerHedgeStrategy {
                     Side::Buy => base_qty,
                     Side::Sell => -base_qty,
                 };
-                self.apply_net_qty_fill(event_time, signed_qty, order_price, "hedge_fill");
+                self.apply_net_qty_fill(event_time, signed_qty, fill_price, "hedge_fill");
             }
         }
         self.retire_hedge_order(client_order_id, "trade_update_filled");

@@ -95,6 +95,9 @@ pub struct MmHedgeCtx {
     /// can accept the first valid reply and drop later duplicates.
     pub request_seq: u64,
 
+    /// Whether downstream should place a taker/market hedge order.
+    pub use_taker: bool,
+
     /// From key length
     pub from_key_len: u32,
 
@@ -327,6 +330,7 @@ impl MmHedgeCtx {
             signal_ts: 0,
             next_query_ts: 0,
             request_seq: 0,
+            use_taker: false,
             from_key_len: 0,
             from_key: Vec::new(),
         }
@@ -353,6 +357,10 @@ impl MmHedgeCtx {
     pub fn set_from_key(&mut self, from_key: Vec<u8>) {
         self.from_key_len = from_key.len() as u32;
         self.from_key = from_key;
+    }
+
+    pub fn is_taker(&self) -> bool {
+        self.use_taker
     }
 }
 
@@ -549,9 +557,8 @@ impl SignalBytes for MmHedgeCtx {
         buf.put_u32_le(from_key_len);
         buf.put_slice(&self.from_key);
 
-        // Optional tail field. Appending keeps new readers compatible with
-        // previously persisted old-format payloads.
         buf.put_u64_le(self.request_seq);
+        buf.put_u8(if self.use_taker { 1 } else { 0 });
 
         buf.freeze()
     }
@@ -686,13 +693,13 @@ impl SignalBytes for MmHedgeCtx {
         }
         let from_key = bytes.copy_to_bytes(from_key_len).to_vec();
 
-        let request_seq = if bytes.remaining() >= 8 {
-            bytes.get_u64_le()
-        } else {
-            0
-        };
+        if bytes.remaining() < 8 + 1 {
+            return Err("Not enough bytes for MmHedgeCtx tail".to_string());
+        }
+        let request_seq = bytes.get_u64_le();
+        let use_taker = bytes.get_u8() != 0;
 
-        if bytes.remaining() != 0 && bytes.iter().any(|&b| b != 0) {
+        if bytes.remaining() != 0 {
             return Err("Unexpected trailing bytes for MmHedgeCtx".to_string());
         }
 
@@ -711,6 +718,7 @@ impl SignalBytes for MmHedgeCtx {
             signal_ts,
             next_query_ts,
             request_seq,
+            use_taker,
             from_key_len: from_key_len as u32,
             from_key,
         })
@@ -730,6 +738,10 @@ pub struct MmHedgeSignalQueryMsg {
     pub net_qty: f64,
     /// 单币敞口预算（USDT），来源 pre_trade_risk_params: max_pos_u * max_symbol_exposure_ratio
     pub symbol_exposure_u: f64,
+
+    /// Remaining inventory weighted average price recorded by pre-trade.
+    pub weighted_inventory_price: f64,
+
     /// Pre-trade owned hedge request sequence. A watchdog resend must keep
     /// the same sequence so the first valid reply can be accepted exactly once.
     pub request_seq: u64,
@@ -742,6 +754,7 @@ impl MmHedgeSignalQueryMsg {
         period_sell_qty: f64,
         net_qty: f64,
         symbol_exposure_u: f64,
+        weighted_inventory_price: f64,
         request_seq: u64,
     ) -> Self {
         let mut symbol_bytes = [0u8; 32];
@@ -754,6 +767,7 @@ impl MmHedgeSignalQueryMsg {
             period_sell_qty,
             net_qty,
             symbol_exposure_u,
+            weighted_inventory_price,
             request_seq,
         }
     }
@@ -770,25 +784,26 @@ impl MmHedgeSignalQueryMsg {
         buf.put_f64_le(self.period_sell_qty);
         buf.put_f64_le(self.net_qty);
         buf.put_f64_le(self.symbol_exposure_u);
+        buf.put_f64_le(self.weighted_inventory_price);
         buf.put_u64_le(self.request_seq);
         buf.freeze()
     }
 
     pub fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
         let symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
-        if bytes.remaining() < 32 {
-            return Err("insufficient bytes for buy/sell/net qty/symbol_exposure_u".to_string());
+        if bytes.remaining() < 8 * 5 {
+            return Err(
+                "insufficient bytes for buy/sell/net qty/symbol_exposure_u/weighted_inventory_price/request_seq"
+                    .to_string(),
+            );
         }
         let period_buy_qty = bytes.get_f64_le();
         let period_sell_qty = bytes.get_f64_le();
         let net_qty = bytes.get_f64_le();
         let symbol_exposure_u = bytes.get_f64_le();
-        let request_seq = if bytes.remaining() >= 8 {
-            bytes.get_u64_le()
-        } else {
-            0
-        };
-        if bytes.remaining() != 0 && bytes.iter().any(|&b| b != 0) {
+        let weighted_inventory_price = bytes.get_f64_le();
+        let request_seq = bytes.get_u64_le();
+        if bytes.remaining() != 0 {
             return Err("Unexpected non-zero trailing bytes for MmHedgeSignalQueryMsg".to_string());
         }
         Ok(Self {
@@ -797,6 +812,7 @@ impl MmHedgeSignalQueryMsg {
             period_sell_qty,
             net_qty,
             symbol_exposure_u,
+            weighted_inventory_price,
             request_seq,
         })
     }
@@ -1047,31 +1063,24 @@ mod tests {
     use crate::signal::common::{SignalBytes, TradingLeg, TradingVenue};
 
     #[test]
-    fn mm_hedge_query_from_bytes_accepts_zero_padding() {
-        let msg = MmHedgeSignalQueryMsg::new("SOLUSDT", 1.0, 0.5, 0.5, 1000.0, 7);
-        let mut raw = msg.to_bytes().to_vec();
-        raw.extend_from_slice(&[0u8; 16]);
-
-        let parsed = MmHedgeSignalQueryMsg::from_bytes(bytes::Bytes::from(raw));
-        assert!(parsed.is_ok());
-        let parsed = parsed.unwrap();
+    fn mm_hedge_query_roundtrip() {
+        let msg = MmHedgeSignalQueryMsg::new("SOLUSDT", 1.0, 0.5, 0.5, 1000.0, 101.5, 7);
+        let parsed = MmHedgeSignalQueryMsg::from_bytes(msg.to_bytes()).unwrap();
         assert_eq!(parsed.get_symbol(), "SOLUSDT");
         assert!((parsed.period_buy_qty - 1.0).abs() < 1e-12);
+        assert!((parsed.weighted_inventory_price - 101.5).abs() < 1e-12);
         assert_eq!(parsed.request_seq, 7);
     }
 
     #[test]
-    fn mm_hedge_query_from_bytes_rejects_non_zero_trailing_bytes() {
-        let msg = MmHedgeSignalQueryMsg::new("SOLUSDT", 1.0, 0.5, 0.5, 1000.0, 7);
+    fn mm_hedge_query_from_bytes_rejects_trailing_bytes() {
+        let msg = MmHedgeSignalQueryMsg::new("SOLUSDT", 1.0, 0.5, 0.5, 1000.0, 101.5, 7);
         let mut raw = msg.to_bytes().to_vec();
-        raw.extend_from_slice(&[0u8, 0u8, 1u8]);
+        raw.extend_from_slice(&[0u8]);
 
         let parsed = MmHedgeSignalQueryMsg::from_bytes(bytes::Bytes::from(raw));
         assert!(parsed.is_err());
-        assert!(parsed
-            .err()
-            .unwrap()
-            .contains("Unexpected non-zero trailing bytes"));
+        assert!(parsed.err().unwrap().contains("Unexpected"));
     }
 
     #[test]
@@ -1088,6 +1097,7 @@ mod tests {
         ctx.signal_ts = 111;
         ctx.next_query_ts = 222;
         ctx.request_seq = 9;
+        ctx.use_taker = true;
         ctx.set_from_key(b"fk".to_vec());
 
         let parsed = MmHedgeCtx::from_bytes(ctx.to_bytes()).unwrap();
@@ -1099,6 +1109,7 @@ mod tests {
         assert_eq!(parsed.signal_ts, 111);
         assert_eq!(parsed.next_query_ts, 222);
         assert_eq!(parsed.request_seq, 9);
+        assert!(parsed.use_taker);
         assert_eq!(parsed.from_key, b"fk");
     }
 }

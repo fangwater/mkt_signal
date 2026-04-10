@@ -256,13 +256,14 @@ mod tests {
     #[test]
     fn mm_backward_query_wraps_hedge_query() {
         let msg = MmBackwardQueryMsg::Hedge(MmHedgeSignalQueryMsg::new(
-            "BTCUSDT", 1.0, 2.0, 3.0, 100.0, 7,
+            "BTCUSDT", 1.0, 2.0, 3.0, 100.0, 101.25, 7,
         ));
         let parsed = MmBackwardQueryMsg::from_bytes(msg.to_bytes()).expect("roundtrip");
         match parsed {
             MmBackwardQueryMsg::Hedge(inner) => {
                 assert_eq!(inner.get_symbol(), "BTCUSDT");
                 assert_eq!(inner.request_seq, 7);
+                assert!((inner.weighted_inventory_price - 101.25).abs() < 1e-12);
             }
             _ => panic!("expected hedge query"),
         }
