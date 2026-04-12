@@ -1,0 +1,92 @@
+# Standalone public bridge config (JP side).
+#
+# Responsibilities:
+# - Local Binance futures market-data fan-out:
+#     dat_pbs/binance-futures/* -> bridge/binance-futures/*
+# - JP -> HK public forwarding over one shared ZMQ port:
+#     bridge/binance-futures/{ask_bid_spread,derivatives}
+#     factor_pub/binance-futures/rl_return_volatility
+#     model_output/binance-futures-mm-xgb-test
+#
+# Notes:
+# - This config is intentionally public/global only; it does not use IPC_NAMESPACE.
+# - The cross-host route ids must exactly match the HK config.
+# - Update the HK public bridge IP below if the deployment host changes.
+
+routes:
+  # --------------------------------
+  # Local Binance futures market fan-out
+  # --------------------------------
+  - id: public_local_binance_futures_ask_bid
+    from:
+      type: ipc
+      endpoint: "dat_pbs/binance-futures/ask_bid_spread"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/binance-futures/ask_bid_spread"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 100
+      subscriber_max_buffer_size: 8192
+
+  - id: public_local_binance_futures_derivatives
+    from:
+      type: ipc
+      endpoint: "dat_pbs/binance-futures/derivatives"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/binance-futures/derivatives"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 50
+      subscriber_max_buffer_size: 8192
+
+  # ------------------------------------
+  # JP -> HK public forwarding
+  # ------------------------------------
+  #
+  # All public streams share the same ZMQ port.
+  # The route id is used as the ZMQ header and must match the HK config.
+  - id: public_binance_futures_ask_bid
+    from:
+      type: ipc
+      endpoint: "bridge/binance-futures/ask_bid_spread"
+      size: 128
+    to:
+      type: zmq
+      endpoint: "tcp://47.238.128.48:6360"
+      size: 128
+
+  - id: public_binance_futures_derivatives
+    from:
+      type: ipc
+      endpoint: "bridge/binance-futures/derivatives"
+      size: 128
+    to:
+      type: zmq
+      endpoint: "tcp://47.238.128.48:6360"
+      size: 128
+
+  - id: public_binance_futures_rl_return_volatility
+    from:
+      type: ipc
+      endpoint: "factor_pub/binance-futures/rl_return_volatility"
+      size: 256
+    to:
+      type: zmq
+      endpoint: "tcp://47.238.128.48:6360"
+      size: 256
+
+  # - id: public_binance_futures_mm_xgb_test_model_output
+  #   from:
+  #     type: ipc
+  #     endpoint: "model_output/binance-futures-mm-xgb-test"
+  #     size: 2048
+  #   to:
+  #     type: zmq
+  #     endpoint: "tcp://47.238.128.48:6360"
+  #     size: 2048

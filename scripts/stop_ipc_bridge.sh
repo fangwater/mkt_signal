@@ -10,7 +10,7 @@ Usage:
   stop_ipc_bridge.sh [--cfg <path>]
 
 Behavior:
-  - Run inside a bridge deploy directory, e.g. ~/bridge_jp
+  - Run inside a bridge deploy directory, e.g. ~/bridge_jp_public or ~/bridge_hk_public
   - Default process name: bridge_<env>
   - Default config path: ./config/ipc_bridge.yaml
   - Deletes the pmdaemon process and force-cleans leaked bridge processes
@@ -31,7 +31,7 @@ infer_env_from_dir() {
 
 ENV_TAG=""
 if ! ENV_TAG="$(infer_env_from_dir "$dir_lc")"; then
-  echo "[ERROR] not a bridge env dir: ${dir_name} (expect bridge_jp / bridge_hk)" >&2
+  echo "[ERROR] not a bridge env dir: ${dir_name} (expect bridge_<tag>, e.g. bridge_jp_public)" >&2
   exit 1
 fi
 

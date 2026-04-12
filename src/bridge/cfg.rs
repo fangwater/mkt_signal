@@ -153,6 +153,7 @@ fn validate_route_direction(route: &RouteConfig) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn parses_and_validates_local_ipc_cfg() {
@@ -269,5 +270,45 @@ routes:
 
         let cfg: BridgeConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn loads_public_bridge_configs() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let jp = BridgeConfig::load_from_file(root.join("config/ipc_bridge_public_jp.yaml"))
+            .expect("load public jp bridge config");
+        let hk = BridgeConfig::load_from_file(root.join("config/ipc_bridge_public_hk.yaml"))
+            .expect("load public hk bridge config");
+
+        assert!(!jp.routes.is_empty());
+        assert!(!hk.routes.is_empty());
+    }
+
+    #[test]
+    fn public_cross_host_route_ids_match_between_jp_and_hk() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let jp = BridgeConfig::load_from_file(root.join("config/ipc_bridge_public_jp.yaml"))
+            .expect("load public jp bridge config");
+        let hk = BridgeConfig::load_from_file(root.join("config/ipc_bridge_public_hk.yaml"))
+            .expect("load public hk bridge config");
+
+        let jp_outgoing: HashSet<String> = jp
+            .routes
+            .iter()
+            .filter(|r| {
+                r.from.kind == EndpointType::Ipc && r.to.kind == EndpointType::Zmq
+            })
+            .map(|r| r.id.clone())
+            .collect();
+        let hk_incoming: HashSet<String> = hk
+            .routes
+            .iter()
+            .filter(|r| {
+                r.from.kind == EndpointType::Zmq && r.to.kind == EndpointType::Ipc
+            })
+            .map(|r| r.id.clone())
+            .collect();
+
+        assert_eq!(jp_outgoing, hk_incoming);
     }
 }
