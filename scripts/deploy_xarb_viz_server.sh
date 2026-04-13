@@ -7,13 +7,6 @@ BIN_PATH=""
 
 # shellcheck source=scripts/deploy_xarb_lib.sh
 source "$ROOT_DIR/scripts/deploy_xarb_lib.sh"
-xarb_preparse_remote_args "$@"
-set -- "${XARB_FORWARD_ARGS[@]}"
-if [[ -n "${XARB_REMOTE_HOST}" ]]; then
-  xarb_remote_maybe_sync_repo "$ROOT_DIR"
-  xarb_remote_exec "scripts/$(basename "${BASH_SOURCE[0]}")" "$@"
-  exit $?
-fi
 
 usage() {
   cat <<'EOF'
@@ -28,7 +21,6 @@ usage() {
                                        [--apply-nginx]
                                        [--resample-suffix <suffix>] [--instance-label <label>]
                                        [--jobs <n>] [--cargo-target-dir <path>]
-      scripts/deploy_xarb_viz_server.sh --remote-host awsjp [--remote-repo <path>] [--remote-sync] [...]
 
 说明:
   - 构建并部署 viz_server 到 xarb 环境目录 $HOME/<open>-<hedge>-<env_suffix>/（默认 env_suffix=xarb-trade，可通过 --env-suffix / --env-name 指定）。
@@ -49,14 +41,6 @@ usage() {
   source ./env.sh  # 可选，但推荐
   ./xarb_scripts/start_xarb_viz_server.sh
   ./xarb_scripts/stop_xarb_viz_server.sh
-
-远程模式（可选）:
-  --remote-host <ssh_host>        在远端编译并部署（避免本机编译）
-  --remote-repo <path>            远端仓库目录（默认 $HOME/crypto_mkt/mkt_signal）
-  --remote-sync                   先 rsync 本地仓库到远端（默认关闭）
-  --remote-cargo-target-dir <p>   远端 cargo target 目录（默认 $HOME/.cache/mkt_signal/cargo_target_xarb）
-  --remote-nice <n>               远端执行优先级（默认 10）
-  --remote-ionice/--remote-no-ionice  远端使用 ionice 降低 IO 优先级（默认开启）
 EOF
 }
 
@@ -82,9 +66,6 @@ NGINX_PREFIX=""
 NGINX_PORT="4191"
 NGINX_MAPPING_FILE=""
 APPLY_NGINX="0"
-if [[ -n "${XARB_REMOTE_RUN:-}" ]]; then
-  BUILD_JOBS="1"
-fi
 
 normalize_env_name() {
   echo "$1" | tr 'A-Z' 'a-z'

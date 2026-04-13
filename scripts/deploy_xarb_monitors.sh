@@ -5,21 +5,14 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # shellcheck source=scripts/deploy_xarb_lib.sh
 source "$ROOT_DIR/scripts/deploy_xarb_lib.sh"
-xarb_preparse_remote_args "$@"
-set -- "${XARB_FORWARD_ARGS[@]}"
-if [[ -n "${XARB_REMOTE_HOST}" ]]; then
-  xarb_remote_maybe_sync_repo "$ROOT_DIR"
-  xarb_remote_exec "scripts/$(basename "${BASH_SOURCE[0]}")" "$@"
-  exit $?
-fi
 
 usage() {
   cat <<'EOF'
 用法: scripts/deploy_xarb_monitors.sh --open-venue <okex-futures> --hedge-venue <binance-futures> [--env-suffix xarb-trade] [--env-name okex-binance-xarb-trade] [--jobs <n>] [--cargo-target-dir <path>]
-      scripts/deploy_xarb_monitors.sh --remote-host awsjp [--remote-repo <path>] [--remote-sync] [...]
 
 说明:
-  - 构建并部署 xarb 所需的两侧账户 monitor（二进制为 okex_account_monitor / binance_account_monitor）。
+  - 构建并部署 xarb 所需的账户 monitor（二进制为 okex_account_monitor / binance_account_monitor）。
+  - 若 env-name 以 `_open` / `_hedge` 结尾，则只部署对应一侧。
   - 输出到 $HOME/<open>-<hedge>-<env_suffix>/（默认 env_suffix=xarb-trade，可通过 --env-suffix / --env-name 指定）：
       account_monitor_okex
       account_monitor_binance
@@ -28,15 +21,7 @@ usage() {
 
 示例:
   scripts/deploy_xarb_monitors.sh --open-venue okex-futures --hedge-venue binance-futures
-  scripts/deploy_xarb_monitors.sh --env-name okex-binance-xarb-trade --open-venue okex-futures --hedge-venue binance-futures
-
-远程模式（可选）:
-  --remote-host <ssh_host>        在远端编译并部署（避免本机编译）
-  --remote-repo <path>            远端仓库目录（默认 $HOME/crypto_mkt/mkt_signal）
-  --remote-sync                   先 rsync 本地仓库到远端（默认关闭）
-  --remote-cargo-target-dir <p>   远端 cargo target 目录（默认 $HOME/.cache/mkt_signal/cargo_target_xarb）
-  --remote-nice <n>               远端执行优先级（默认 10）
-  --remote-ionice/--remote-no-ionice  远端使用 ionice 降低 IO 优先级（默认开启）
+  scripts/deploy_xarb_monitors.sh --env-name okex-binance-xarb-trade01_hedge
 EOF
 }
 
@@ -51,9 +36,34 @@ OPEN_VENUE=""
 HEDGE_VENUE=""
 CARGO_TARGET_DIR_OVERRIDE=""
 BUILD_JOBS=""
-if [[ -n "${XARB_REMOTE_RUN:-}" ]]; then
-  BUILD_JOBS="1"
-fi
+DEPLOY_SIDE=""
+
+infer_pair_and_side_from_name() {
+  local name="${1,,}"
+  local open_ex=""
+  local hedge_ex=""
+  local side=""
+
+  if [[ "$name" =~ ^([a-z0-9]+)[-_]([a-z0-9]+)[-_]xarb([_-].*)?[-_](open|hedge)$ ]]; then
+    open_ex="${BASH_REMATCH[1]}"
+    hedge_ex="${BASH_REMATCH[2]}"
+    side="${BASH_REMATCH[4]}"
+  elif [[ "$name" =~ ^([a-z0-9]+)[-_]([a-z0-9]+)[-_]xarb([_-].*)?$ ]]; then
+    open_ex="${BASH_REMATCH[1]}"
+    hedge_ex="${BASH_REMATCH[2]}"
+  fi
+
+  if [[ "$open_ex" == "okx" ]]; then
+    open_ex="okex"
+  fi
+  if [[ "$hedge_ex" == "okx" ]]; then
+    hedge_ex="okex"
+  fi
+
+  if [[ -n "$open_ex" && -n "$hedge_ex" ]]; then
+    echo "${open_ex},${hedge_ex},${side}"
+  fi
+}
 
 normalize_venue() {
   echo "${1,,}"
@@ -116,8 +126,23 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -n "$ENV_NAME" && ( -z "$OPEN_VENUE" || -z "$HEDGE_VENUE" || -z "$DEPLOY_SIDE" ) ]]; then
+  if inferred="$(infer_pair_and_side_from_name "$ENV_NAME")" && [[ -n "$inferred" ]]; then
+    if [[ -z "$OPEN_VENUE" ]]; then
+      OPEN_VENUE="${inferred%%,*}-futures"
+    fi
+    rest="${inferred#*,}"
+    if [[ -z "$HEDGE_VENUE" ]]; then
+      HEDGE_VENUE="${rest%%,*}-futures"
+    fi
+    if [[ -z "$DEPLOY_SIDE" ]]; then
+      DEPLOY_SIDE="${inferred##*,}"
+    fi
+  fi
+fi
+
 if [[ -z "$OPEN_VENUE" || -z "$HEDGE_VENUE" ]]; then
-  echo "[ERROR] 需要 --open-venue 与 --hedge-venue"
+  echo "[ERROR] 需要 --open-venue 与 --hedge-venue，或使用 --env-name <open>-<hedge>-xarb-<suffix>[_open|_hedge]"
   usage
   exit 1
 fi
@@ -173,12 +198,27 @@ deploy_one() {
   fi
 }
 
-deploy_one "$OPEN_EXCHANGE"
-if [[ "$HEDGE_EXCHANGE" != "$OPEN_EXCHANGE" ]]; then
-  deploy_one "$HEDGE_EXCHANGE"
-fi
+case "$DEPLOY_SIDE" in
+  open)
+    echo "[INFO] side=open，仅部署 open 侧 monitor: $OPEN_EXCHANGE"
+    deploy_one "$OPEN_EXCHANGE"
+    ;;
+  hedge)
+    echo "[INFO] side=hedge，仅部署 hedge 侧 monitor: $HEDGE_EXCHANGE"
+    deploy_one "$HEDGE_EXCHANGE"
+    ;;
+  "")
+    deploy_one "$OPEN_EXCHANGE"
+    if [[ "$HEDGE_EXCHANGE" != "$OPEN_EXCHANGE" ]]; then
+      deploy_one "$HEDGE_EXCHANGE"
+    fi
+    ;;
+  *)
+    echo "[ERROR] 非法 side 后缀: $DEPLOY_SIDE（仅支持 _open / _hedge）"
+    exit 1
+    ;;
+esac
 
-# 同步 xarb monitor start/stop 脚本
 SCRIPTS_TO_SYNC=(
   "xarb_scripts/start_xarb_monitors.sh"
   "xarb_scripts/stop_xarb_monitors.sh"

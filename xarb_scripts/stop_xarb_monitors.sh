@@ -52,11 +52,24 @@ normalize_exchange() {
 
 infer_env_tag_from_dir() {
   local name="${1,,}"
+  if [[ "$name" =~ ^[a-z0-9]+[-_][a-z0-9]+[-_]xarb[-_]([a-z0-9][a-z0-9_-]*)[-_](open|hedge)$ ]]; then
+    echo "${BASH_REMATCH[1]//-/_}"
+    return
+  fi
   if [[ "$name" =~ ^[a-z0-9]+[-_][a-z0-9]+[-_]xarb[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
     echo "${BASH_REMATCH[1]//-/_}"
     return
   fi
   echo "xarb"
+}
+
+infer_side_from_dir() {
+  local name="${1,,}"
+  if [[ "$name" =~ ^[a-z0-9]+[-_][a-z0-9]+[-_]xarb[-_][a-z0-9][a-z0-9_-]*[-_](open|hedge)$ ]]; then
+    echo "${BASH_REMATCH[1]}"
+    return
+  fi
+  echo ""
 }
 
 dir_name="$(basename "${BASE_DIR}")"
@@ -75,6 +88,7 @@ if [[ -z "$OPEN_EXCHANGE" || -z "$HEDGE_EXCHANGE" ]]; then
 fi
 
 ENV_TAG="$(infer_env_tag_from_dir "$dir_name")"
+SIDE_TAG="$(infer_side_from_dir "$dir_name")"
 
 KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 
@@ -177,8 +191,14 @@ case "$MODE" in
     stop_one "hedge" "$HEDGE_EXCHANGE"
     ;;
   all)
-    stop_one "open" "$OPEN_EXCHANGE"
-    if [[ "$HEDGE_EXCHANGE" != "$OPEN_EXCHANGE" ]]; then
+    if [[ "$SIDE_TAG" == "hedge" ]]; then
+      stop_one "hedge" "$HEDGE_EXCHANGE"
+    elif [[ "$SIDE_TAG" == "open" ]]; then
+      stop_one "open" "$OPEN_EXCHANGE"
+    else
+      stop_one "open" "$OPEN_EXCHANGE"
+    fi
+    if [[ -z "$SIDE_TAG" && "$HEDGE_EXCHANGE" != "$OPEN_EXCHANGE" ]]; then
       stop_one "hedge" "$HEDGE_EXCHANGE"
     fi
     ;;

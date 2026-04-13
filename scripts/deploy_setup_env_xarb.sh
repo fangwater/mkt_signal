@@ -1,17 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Optional remote mode (runs on remote host via ssh)
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=scripts/deploy_xarb_lib.sh
-source "$ROOT_DIR/scripts/deploy_xarb_lib.sh"
-xarb_preparse_remote_args "$@"
-set -- "${XARB_FORWARD_ARGS[@]}"
-if [[ -n "${XARB_REMOTE_HOST}" ]]; then
-  xarb_remote_maybe_sync_repo "$ROOT_DIR"
-  xarb_remote_exec "scripts/$(basename "${BASH_SOURCE[0]}")" "$@"
-  exit $?
-fi
 
 # 生成 xarb 环境变量脚本
 #
@@ -30,18 +20,10 @@ fi
 usage() {
   cat <<'EOF'
 用法: scripts/deploy_setup_env_xarb.sh --open-venue <okex-futures> --hedge-venue <binance-futures> [--env-suffix xarb-trade] [--env-name okex-binance-xarb-trade] [--namespace <ns>]
-      scripts/deploy_setup_env_xarb.sh --remote-host awsjp [--remote-repo <path>] [--remote-sync] [...]
 
 示例:
   scripts/deploy_setup_env_xarb.sh --open-venue okex-futures --hedge-venue binance-futures
   scripts/deploy_setup_env_xarb.sh --env-name okex-binance-xarb-trade --open-venue okex-futures --hedge-venue binance-futures
-
-远程模式（可选）:
-  --remote-host <ssh_host>        在远端执行该脚本（用于远端生成 env.sh）
-  --remote-repo <path>            远端仓库目录（默认 $HOME/crypto_mkt/mkt_signal）
-  --remote-sync                   先 rsync 本地仓库到远端（默认关闭）
-  --remote-nice <n>               远端执行优先级（默认 10）
-  --remote-ionice/--remote-no-ionice  远端使用 ionice 降低 IO 优先级（默认开启）
 EOF
 }
 
@@ -55,6 +37,37 @@ ENV_NAME=""
 NAMESPACE=""
 OPEN_VENUE=""
 HEDGE_VENUE=""
+ENV_SUFFIX_EXPLICIT="0"
+
+infer_pair_and_meta_from_env_name() {
+  local name="${1,,}"
+  local open_ex=""
+  local hedge_ex=""
+  local instance_tag=""
+  local site=""
+
+  if [[ "$name" =~ ^([a-z0-9]+)[-_]([a-z0-9]+)[-_]xarb[-_]([a-z0-9][a-z0-9_-]*)[-_](open|hedge)$ ]]; then
+    open_ex="${BASH_REMATCH[1]}"
+    hedge_ex="${BASH_REMATCH[2]}"
+    instance_tag="${BASH_REMATCH[3]}"
+    site="${BASH_REMATCH[4]}"
+  elif [[ "$name" =~ ^([a-z0-9]+)[-_]([a-z0-9]+)[-_]xarb[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+    open_ex="${BASH_REMATCH[1]}"
+    hedge_ex="${BASH_REMATCH[2]}"
+    instance_tag="${BASH_REMATCH[3]}"
+  fi
+
+  if [[ "$open_ex" == "okx" ]]; then
+    open_ex="okex"
+  fi
+  if [[ "$hedge_ex" == "okx" ]]; then
+    hedge_ex="okex"
+  fi
+
+  if [[ -n "$open_ex" && -n "$hedge_ex" && -n "$instance_tag" ]]; then
+    echo "${open_ex},${hedge_ex},${instance_tag},${site}"
+  fi
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -65,6 +78,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --env-suffix)
       ENV_SUFFIX="${2:-xarb-trade}"
+      ENV_SUFFIX_EXPLICIT="1"
       shift 2
       ;;
     --env-name)
@@ -90,6 +104,24 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+XARB_SIDE=""
+if [[ -n "$ENV_NAME" ]]; then
+  if inferred="$(infer_pair_and_meta_from_env_name "$ENV_NAME")" && [[ -n "$inferred" ]]; then
+    if [[ -z "$OPEN_VENUE" ]]; then
+      OPEN_VENUE="${inferred%%,*}-futures"
+    fi
+    rest="${inferred#*,}"
+    if [[ -z "$HEDGE_VENUE" ]]; then
+      HEDGE_VENUE="${rest%%,*}-futures"
+    fi
+    rest="${rest#*,}"
+    if [[ "$ENV_SUFFIX_EXPLICIT" != "1" ]]; then
+      ENV_SUFFIX="xarb-${rest%%,*}"
+    fi
+    XARB_SIDE="${inferred##*,}"
+  fi
+fi
 
 normalize_venue() {
   echo "${1,,}"
@@ -184,6 +216,8 @@ export OPEN_VENUE='$OPEN_VENUE'
 export HEDGE_VENUE='$HEDGE_VENUE'
 
 $(emit_all_creds_blocks "$OPEN_EXCHANGE" "$HEDGE_EXCHANGE")
+
+export XARB_SIDE='${XARB_SIDE}'
 
 # RUST_LOG 配置
 export RUST_LOG="\${RUST_LOG:-info,funding_rate_signal=info,mkt_signal=info,hyper=warn,hyper_util=warn,h2=warn,reqwest=warn}"

@@ -62,7 +62,7 @@ infer_pair_from_dir() {
   local name="${1,,}"
   local open_ex=""
   local hedge_ex=""
-  if [[ "$name" =~ ^([a-z0-9]+)[-_]([a-z0-9]+)[-_]xarb([_-].*)?$ ]]; then
+  if [[ "$name" =~ ^([a-z0-9]+)[-_]([a-z0-9]+)[-_]xarb([_-].*)?([_-](open|hedge))?$ ]]; then
     open_ex="${BASH_REMATCH[1]}"
     hedge_ex="${BASH_REMATCH[2]}"
   fi
@@ -73,11 +73,24 @@ infer_pair_from_dir() {
 
 infer_env_tag_from_dir() {
   local name="${1,,}"
+  if [[ "$name" =~ ^[a-z0-9]+[-_][a-z0-9]+[-_]xarb[-_]([a-z0-9][a-z0-9_-]*)[-_](open|hedge)$ ]]; then
+    echo "${BASH_REMATCH[1]//-/_}"
+    return
+  fi
   if [[ "$name" =~ ^[a-z0-9]+[-_][a-z0-9]+[-_]xarb[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
     echo "${BASH_REMATCH[1]//-/_}"
     return
   fi
   echo "xarb"
+}
+
+infer_side_from_dir() {
+  local name="${1,,}"
+  if [[ "$name" =~ ^[a-z0-9]+[-_][a-z0-9]+[-_]xarb[-_][a-z0-9][a-z0-9_-]*[-_](open|hedge)$ ]]; then
+    echo "${BASH_REMATCH[1]}"
+    return
+  fi
+  echo ""
 }
 
 OPEN_EXCHANGE=""
@@ -106,6 +119,7 @@ if [[ -z "$OPEN_EXCHANGE" || -z "$HEDGE_EXCHANGE" ]]; then
 fi
 
 ENV_TAG="$(infer_env_tag_from_dir "$(basename "$BASE_DIR")")"
+SIDE_TAG="${XARB_SIDE:-$(infer_side_from_dir "$(basename "$BASE_DIR")")}"
 
 if [[ -z "${IPC_NAMESPACE:-}" ]]; then
   echo "[ERROR] IPC_NAMESPACE 未设置（请 source env.sh）"
@@ -221,16 +235,32 @@ JSON
   "${PMDAEMON[@]}" --config "$cfg_file" start --name "$proc_name"
 }
 
-start_one "open" "$OPEN_EXCHANGE"
-if [[ "$HEDGE_EXCHANGE" != "$OPEN_EXCHANGE" ]]; then
+if [[ "$SIDE_TAG" == "hedge" ]]; then
+  start_one "hedge" "$HEDGE_EXCHANGE"
+elif [[ "$SIDE_TAG" == "open" ]]; then
+  start_one "open" "$OPEN_EXCHANGE"
+else
+  start_one "open" "$OPEN_EXCHANGE"
+fi
+if [[ -z "$SIDE_TAG" && "$HEDGE_EXCHANGE" != "$OPEN_EXCHANGE" ]]; then
   sleep 0.5
   start_one "hedge" "$HEDGE_EXCHANGE"
 fi
 
 echo "[INFO] Started:"
-echo "  - $(proc_name_for_side open)"
-if [[ "$HEDGE_EXCHANGE" != "$OPEN_EXCHANGE" ]]; then
+if [[ "$SIDE_TAG" == "hedge" ]]; then
+  echo "  - $(proc_name_for_side hedge)"
+elif [[ "$SIDE_TAG" == "open" ]]; then
+  echo "  - $(proc_name_for_side open)"
+else
+  echo "  - $(proc_name_for_side open)"
+fi
+if [[ -z "$SIDE_TAG" && "$HEDGE_EXCHANGE" != "$OPEN_EXCHANGE" ]]; then
   echo "  - $(proc_name_for_side hedge)"
 fi
-echo "[INFO] Logs: ${PMDAEMON[*]} logs $(proc_name_for_side open) --follow"
+if [[ "$SIDE_TAG" == "hedge" ]]; then
+  echo "[INFO] Logs: ${PMDAEMON[*]} logs $(proc_name_for_side hedge) --follow"
+else
+  echo "[INFO] Logs: ${PMDAEMON[*]} logs $(proc_name_for_side open) --follow"
+fi
 echo "[INFO] Status: ${PMDAEMON[*]} list"

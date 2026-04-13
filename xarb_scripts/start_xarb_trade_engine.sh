@@ -90,8 +90,15 @@ if [[ "$HEDGE_EXCHANGE" == "okx" ]]; then
 fi
 
 ENV_TAG="xarb"
-if [[ "$dir_lc" =~ ^[a-z0-9]+[-_][a-z0-9]+[-_]xarb[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+if [[ "$dir_lc" =~ ^[a-z0-9]+[-_][a-z0-9]+[-_]xarb[-_]([a-z0-9][a-z0-9_-]*)[-_](open|hedge)$ ]]; then
   ENV_TAG="${BASH_REMATCH[1]//-/_}"
+elif [[ "$dir_lc" =~ ^[a-z0-9]+[-_][a-z0-9]+[-_]xarb[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+  ENV_TAG="${BASH_REMATCH[1]//-/_}"
+fi
+
+SIDE_TAG="${XARB_SIDE:-}"
+if [[ -z "$SIDE_TAG" && "$dir_lc" =~ ^[a-z0-9]+[-_][a-z0-9]+[-_]xarb[-_][a-z0-9][a-z0-9_-]*[-_](open|hedge)$ ]]; then
+  SIDE_TAG="${BASH_REMATCH[1]}"
 fi
 
 case "$OPEN_EXCHANGE" in
@@ -187,16 +194,32 @@ JSON
   "${PMDAEMON[@]}" --config "$cfg_file" start --name "$proc_name"
 }
 
-start_one "open" "$OPEN_EXCHANGE"
-if [[ "$HEDGE_EXCHANGE" != "$OPEN_EXCHANGE" ]]; then
+if [[ "$SIDE_TAG" == "hedge" ]]; then
+  start_one "hedge" "$HEDGE_EXCHANGE"
+elif [[ "$SIDE_TAG" == "open" ]]; then
+  start_one "open" "$OPEN_EXCHANGE"
+else
+  start_one "open" "$OPEN_EXCHANGE"
+fi
+if [[ -z "$SIDE_TAG" && "$HEDGE_EXCHANGE" != "$OPEN_EXCHANGE" ]]; then
   sleep 0.5
   start_one "hedge" "$HEDGE_EXCHANGE"
 fi
 
 echo "[INFO] Started:"
-echo "  - $(proc_name_for_side open)"
-if [[ "$HEDGE_EXCHANGE" != "$OPEN_EXCHANGE" ]]; then
+if [[ "$SIDE_TAG" == "hedge" ]]; then
+  echo "  - $(proc_name_for_side hedge)"
+elif [[ "$SIDE_TAG" == "open" ]]; then
+  echo "  - $(proc_name_for_side open)"
+else
+  echo "  - $(proc_name_for_side open)"
+fi
+if [[ -z "$SIDE_TAG" && "$HEDGE_EXCHANGE" != "$OPEN_EXCHANGE" ]]; then
   echo "  - $(proc_name_for_side hedge)"
 fi
-echo "[INFO] Logs: ${PMDAEMON[*]} logs $(proc_name_for_side open) --follow"
+if [[ "$SIDE_TAG" == "hedge" ]]; then
+  echo "[INFO] Logs: ${PMDAEMON[*]} logs $(proc_name_for_side hedge) --follow"
+else
+  echo "[INFO] Logs: ${PMDAEMON[*]} logs $(proc_name_for_side open) --follow"
+fi
 echo "[INFO] Status: ${PMDAEMON[*]} list"

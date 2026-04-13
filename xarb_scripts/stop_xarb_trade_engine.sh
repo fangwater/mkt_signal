@@ -60,8 +60,15 @@ if [[ "$HEDGE_EXCHANGE" == "okx" ]]; then
 fi
 
 ENV_TAG="xarb"
-if [[ "$dir_lc" =~ ^[a-z0-9]+[-_][a-z0-9]+[-_]xarb[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+if [[ "$dir_lc" =~ ^[a-z0-9]+[-_][a-z0-9]+[-_]xarb[-_]([a-z0-9][a-z0-9_-]*)[-_](open|hedge)$ ]]; then
   ENV_TAG="${BASH_REMATCH[1]//-/_}"
+elif [[ "$dir_lc" =~ ^[a-z0-9]+[-_][a-z0-9]+[-_]xarb[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+  ENV_TAG="${BASH_REMATCH[1]//-/_}"
+fi
+
+SIDE_TAG=""
+if [[ "$dir_lc" =~ ^[a-z0-9]+[-_][a-z0-9]+[-_]xarb[-_][a-z0-9][a-z0-9_-]*[-_](open|hedge)$ ]]; then
+  SIDE_TAG="${BASH_REMATCH[1]}"
 fi
 
 if [[ -z "$OPEN_EXCHANGE" || -z "$HEDGE_EXCHANGE" ]]; then
@@ -171,8 +178,14 @@ case "$MODE" in
     stop_one "hedge" "$HEDGE_EXCHANGE"
     ;;
   all)
-    stop_one "open" "$OPEN_EXCHANGE"
-    if [[ "$HEDGE_EXCHANGE" != "$OPEN_EXCHANGE" ]]; then
+    if [[ "$SIDE_TAG" == "hedge" ]]; then
+      stop_one "hedge" "$HEDGE_EXCHANGE"
+    elif [[ "$SIDE_TAG" == "open" ]]; then
+      stop_one "open" "$OPEN_EXCHANGE"
+    else
+      stop_one "open" "$OPEN_EXCHANGE"
+    fi
+    if [[ -z "$SIDE_TAG" && "$HEDGE_EXCHANGE" != "$OPEN_EXCHANGE" ]]; then
       stop_one "hedge" "$HEDGE_EXCHANGE"
     fi
     ;;

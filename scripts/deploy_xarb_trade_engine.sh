@@ -7,18 +7,10 @@ BIN_PATH=""
 
 # shellcheck source=scripts/deploy_xarb_lib.sh
 source "$ROOT_DIR/scripts/deploy_xarb_lib.sh"
-xarb_preparse_remote_args "$@"
-set -- "${XARB_FORWARD_ARGS[@]}"
-if [[ -n "${XARB_REMOTE_HOST}" ]]; then
-  xarb_remote_maybe_sync_repo "$ROOT_DIR"
-  xarb_remote_exec "scripts/$(basename "${BASH_SOURCE[0]}")" "$@"
-  exit $?
-fi
 
 usage() {
   cat <<'EOF'
 用法: scripts/deploy_xarb_trade_engine.sh [--open-venue <okex-futures>] [--hedge-venue <binance-futures>] [--env-suffix xarb-trade] [--env-name okex-binance-xarb-trade] [--jobs <n>] [--cargo-target-dir <path>]
-      scripts/deploy_xarb_trade_engine.sh --remote-host awsjp [--remote-repo <path>] [--remote-sync] [...]
 
 说明:
   - 构建 trade_engine 并拷贝到 $HOME/<open>-<hedge>-<env_suffix>/ 目录（默认 env_suffix=xarb-trade）。
@@ -37,14 +29,6 @@ usage() {
 示例:
   scripts/deploy_xarb_trade_engine.sh --open-venue okex-futures --hedge-venue binance-futures
   scripts/deploy_xarb_trade_engine.sh --env-name okex-binance-xarb-trade
-
-远程模式（可选）:
-  --remote-host <ssh_host>        在远端编译并部署（避免本机编译）
-  --remote-repo <path>            远端仓库目录（默认 $HOME/crypto_mkt/mkt_signal）
-  --remote-sync                   先 rsync 本地仓库到远端（默认关闭）
-  --remote-cargo-target-dir <p>   远端 cargo target 目录（默认 $HOME/.cache/mkt_signal/cargo_target_xarb）
-  --remote-nice <n>               远端执行优先级（默认 10）
-  --remote-ionice/--remote-no-ionice  远端使用 ionice 降低 IO 优先级（默认开启）
 EOF
 }
 
@@ -59,9 +43,6 @@ OPEN_VENUE=""
 HEDGE_VENUE=""
 CARGO_TARGET_DIR_OVERRIDE=""
 BUILD_JOBS=""
-if [[ -n "${XARB_REMOTE_RUN:-}" ]]; then
-  BUILD_JOBS="1"
-fi
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
