@@ -145,17 +145,6 @@ json_cfg="$(json_escape "$CFG_PATH")"
 json_rust_log="$(json_escape "$RUST_LOG_VAL")"
 json_ipc_ns="$(json_escape "$IPC_NS_VAL")"
 
-if [[ -z "$IPC_NS_VAL" ]]; then
-  # Global services `dat_pbs/*` and `bridge/*` do not require IPC_NAMESPACE.
-  # Business channels like `order_reqs/*` and `order_resps/*` are namespaced and will panic
-  # inside ipc_bridge if IPC_NAMESPACE is not set.
-  if rg -q "endpoint:\\s*\"(order_reqs/|order_resps/|signal_pubs/|persist_pubs/|account_pubs/|viz_pubs/)\"" "$CFG_PATH" 2>/dev/null; then
-    echo "[ERROR] IPC_NAMESPACE is required by this bridge config, but is not set." >&2
-    echo "[HINT] place an env file at: $ENV_FILE (e.g. copy xarb env.sh) and re-run." >&2
-    exit 1
-  fi
-fi
-
 cat >"$cfg_file" <<JSON
 {
   "apps": [

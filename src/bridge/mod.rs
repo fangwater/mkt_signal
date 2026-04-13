@@ -6,17 +6,38 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{info, warn};
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::bridge::cfg::{BridgeConfig, EndpointType, RouteConfig};
 use crate::bridge::iceoryx::{PublisherEnum, SubscriberEnum};
-use crate::common::ipc_service_name::build_service_name;
 
 /// Bridge app that forwards Iceoryx2 IPC messages across network with ZMQ.
 pub struct BridgeApp {
     cfg: BridgeConfig,
+}
+
+#[derive(Clone)]
+struct RouteCounter {
+    route_id: Arc<str>,
+    direction: &'static str,
+    forwarded: Arc<AtomicU64>,
+}
+
+impl RouteCounter {
+    fn new(route_id: String, direction: &'static str) -> Self {
+        Self {
+            route_id: Arc::<str>::from(route_id),
+            direction,
+            forwarded: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    fn inc(&self) {
+        self.forwarded.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 impl BridgeApp {
@@ -57,15 +78,24 @@ impl BridgeApp {
         } else {
             None
         };
+        let mut route_counters: Vec<RouteCounter> = Vec::new();
 
         let mut publishers: HashMap<String, PublisherEnum> = HashMap::new();
         for r in &incoming_routes {
-            let svc = build_service_name(&r.to.endpoint);
+            let svc = bridge_service_name(&r.to.endpoint);
             let pub_enum = PublisherEnum::new(&node, &svc, r.to.size, &r.to)?;
             publishers.insert(r.id.clone(), pub_enum);
+            route_counters.push(RouteCounter::new(r.id.clone(), "zmq->ipc"));
         }
 
         if !incoming_routes.is_empty() {
+            let incoming_counter_map: Arc<HashMap<String, RouteCounter>> = Arc::new(
+                route_counters
+                    .iter()
+                    .filter(|counter| counter.direction == "zmq->ipc")
+                    .map(|counter| (counter.route_id.to_string(), counter.clone()))
+                    .collect(),
+            );
             let (incoming_tx, mut incoming_rx) = mpsc::unbounded_channel::<(String, Vec<u8>)>();
             let bind_addrs: HashSet<String> = incoming_routes
                 .iter()
@@ -119,6 +149,8 @@ impl BridgeApp {
                         Some(pub_) => {
                             if let Err(e) = pub_.publish(&payload) {
                                 warn!("publish iceoryx failed (route='{}'): {e}", route_id);
+                            } else if let Some(counter) = incoming_counter_map.get(&route_id) {
+                                counter.inc();
                             }
                         }
                         None => {
@@ -136,8 +168,10 @@ impl BridgeApp {
         for r in outgoing_routes {
             let remote_addr = r.to.endpoint.trim().to_string();
             let route_id = r.id.clone();
-            let from_service = build_service_name(&r.from.endpoint);
+            let from_service = bridge_service_name(&r.from.endpoint);
             let subscriber = SubscriberEnum::new(&node, &from_service, r.from.size, &r.from)?;
+            let route_counter = RouteCounter::new(route_id.clone(), "ipc->zmq");
+            route_counters.push(route_counter.clone());
             let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
             {
@@ -177,6 +211,7 @@ impl BridgeApp {
                             if tx.send(bytes.to_vec()).is_err() {
                                 break;
                             }
+                            route_counter.inc();
                         }
                         Ok(None) => tokio::task::yield_now().await,
                         Err(e) => {
@@ -193,10 +228,12 @@ impl BridgeApp {
 
         for r in local_routes {
             let route_id = r.id.clone();
-            let from_service = build_service_name(&r.from.endpoint);
-            let to_service = build_service_name(&r.to.endpoint);
+            let from_service = bridge_service_name(&r.from.endpoint);
+            let to_service = bridge_service_name(&r.to.endpoint);
             let subscriber = SubscriberEnum::new(&node, &from_service, r.from.size, &r.from)?;
             let publisher = PublisherEnum::new(&node, &to_service, r.to.size, &r.to)?;
+            let route_counter = RouteCounter::new(route_id.clone(), "ipc->ipc");
+            route_counters.push(route_counter.clone());
 
             tokio::task::spawn_local(async move {
                 info!(
@@ -212,6 +249,8 @@ impl BridgeApp {
                                     route_id, from_service, to_service
                                 );
                                 tokio::time::sleep(Duration::from_millis(200)).await;
+                            } else {
+                                route_counter.inc();
                             }
                         }
                         Ok(None) => tokio::task::yield_now().await,
@@ -227,8 +266,29 @@ impl BridgeApp {
             });
         }
 
+        if !route_counters.is_empty() {
+            tokio::task::spawn_local(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(30));
+                interval.tick().await;
+                loop {
+                    interval.tick().await;
+                    for counter in &route_counters {
+                        let delta = counter.forwarded.swap(0, Ordering::Relaxed);
+                        info!(
+                            "route '{}' {} count_30s={}",
+                            counter.route_id, counter.direction, delta
+                        );
+                    }
+                }
+            });
+        }
+
         tokio::signal::ctrl_c().await?;
         info!("ipc_bridge shutdown");
         Ok(())
     }
+}
+
+fn bridge_service_name(endpoint: &str) -> String {
+    endpoint.trim().to_string()
 }
