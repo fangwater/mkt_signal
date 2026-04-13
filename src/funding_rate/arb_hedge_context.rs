@@ -293,6 +293,13 @@ pub fn append_single_tlen_to_hedge_from_key(
     }
 }
 
+fn should_zero_hedge_tlen_for_cross_exchange(
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+) -> bool {
+    open_venue.trade_engine_exchange() != hedge_venue.trade_engine_exchange()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn build_spread_arb_hedge_from_key(
     source: &str,
@@ -306,6 +313,7 @@ pub fn build_spread_arb_hedge_from_key(
     spread_rate: f64,
     premium_rate: Option<f64>,
     spread_fr: Option<f64>,
+    open_venue: TradingVenue,
     hedge_venue: TradingVenue,
     hedge_symbol: &str,
     hedge_price: f64,
@@ -324,6 +332,9 @@ pub fn build_spread_arb_hedge_from_key(
         premium_rate,
         spread_fr,
     );
+    if should_zero_hedge_tlen_for_cross_exchange(open_venue, hedge_venue) {
+        return append_tlen_to_from_key(&base, 0.0).into_bytes();
+    }
     append_single_tlen_to_hedge_from_key(
         source,
         base,
@@ -333,4 +344,34 @@ pub fn build_spread_arb_hedge_from_key(
         table,
         depth_query_client,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_zero_hedge_tlen_for_cross_exchange;
+    use crate::signal::common::TradingVenue;
+
+    #[test]
+    fn cross_exchange_hedge_tlen_is_forced_to_zero() {
+        assert!(should_zero_hedge_tlen_for_cross_exchange(
+            TradingVenue::OkexFutures,
+            TradingVenue::BinanceFutures,
+        ));
+        assert!(should_zero_hedge_tlen_for_cross_exchange(
+            TradingVenue::BinanceMargin,
+            TradingVenue::OkexFutures,
+        ));
+    }
+
+    #[test]
+    fn same_exchange_hedge_tlen_keeps_query_path() {
+        assert!(!should_zero_hedge_tlen_for_cross_exchange(
+            TradingVenue::BinanceMargin,
+            TradingVenue::BinanceFutures,
+        ));
+        assert!(!should_zero_hedge_tlen_for_cross_exchange(
+            TradingVenue::OkexMargin,
+            TradingVenue::OkexFutures,
+        ));
+    }
 }
