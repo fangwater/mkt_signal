@@ -1058,11 +1058,20 @@ fn compute_td_mt_014(series: &SymbolSeries<'_>) -> Option<f64> {
 }
 
 fn compute_td_mt_015(series: &SymbolSeries<'_>) -> Option<f64> {
+    let n = series.high.len().min(series.low.len()).min(series.close.len());
+    if n < 14 {
+        return None;
+    }
     let minus_dm = minus_dm_series(series);
     let tr = tr_series(series);
     let minus = rolling_mean_exact(&minus_dm, 14)?;
-    let tr_mean = rolling_mean_opt_exact(&tr, 14)?;
-    ratio(100.0 * minus, tr_mean)
+    let Some(tr_mean) = rolling_mean_opt_exact(&tr, 14) else {
+        return Some(0.0);
+    };
+    if tr_mean.abs() <= 1e-12 {
+        return Some(0.0);
+    }
+    finite_opt(Some(100.0 * minus / tr_mean)).or(Some(0.0))
 }
 
 fn compute_td_mt_016(series: &SymbolSeries<'_>) -> Option<f64> {

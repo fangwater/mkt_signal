@@ -21,7 +21,7 @@ use mkt_signal::common::basic_account_msg::{
     split_basic_account_event, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
     BasicUmUnrealizedMsg, GateBasicOrderMsg,
 };
-use mkt_signal::common::mkt_cfg::{home_mkt_cfg_path, load_local_ips_from_path};
+use mkt_signal::common::mkt_cfg::load_local_ips_preferring_trade_engine;
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::default_parser::Parser;
 use mkt_signal::parser::gate_account_event_parser::GateAccountEventParser;
@@ -79,15 +79,14 @@ async fn main() -> Result<()> {
     let futures_ws_url = GatePrivateWsUrls::FUTURES_USDT.to_string();
 
     // IP 设置（从 /home/<user>/mkt_pub/config/mkt_cfg.yaml 读取）
-    let cfg_path = home_mkt_cfg_path()?;
-    let (primary_ip, secondary_ip) = load_local_ips_from_path(&cfg_path).await?;
+    let ((primary_ip, secondary_ip), ip_source) = load_local_ips_preferring_trade_engine().await?;
     let session_max = None; // Gate.io 没有明确的会话时长限制
     info!(
-        "Primary IP='{}', Secondary IP='{}', session_max={:?} (mkt_cfg: {})",
+        "Primary IP='{}', Secondary IP='{}', session_max={:?} (local_ip_source: {})",
         primary_ip,
         secondary_ip,
         session_max,
-        cfg_path.display()
+        ip_source
     );
 
     // 统一账户频道 (unified.asset_detail)

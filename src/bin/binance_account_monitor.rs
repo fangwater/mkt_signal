@@ -8,7 +8,7 @@ use mkt_signal::common::basic_account_msg::{
     BasicUmUnrealizedMsg, BinanceBasicOrderMsg,
 };
 use mkt_signal::common::binance_account_mode::{init_binance_account_mode, BinanceAccountMode};
-use mkt_signal::common::mkt_cfg::{home_mkt_cfg_path, load_local_ips_from_path};
+use mkt_signal::common::mkt_cfg::load_local_ips_preferring_trade_engine;
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::binance_basic_account_event_parser::BinanceBasicAccountEventParser;
 use mkt_signal::parser::default_parser::Parser;
@@ -297,15 +297,14 @@ async fn main() -> Result<()> {
 
     // IP and session settings
     const BINANCE_SESSION_MAX_SECS: u64 = 2 * 3600;
-    let cfg_path = home_mkt_cfg_path()?;
-    let (primary_ip, secondary_ip) = load_local_ips_from_path(&cfg_path).await?;
+    let ((primary_ip, secondary_ip), ip_source) = load_local_ips_preferring_trade_engine().await?;
     let session_max = Some(Duration::from_secs(BINANCE_SESSION_MAX_SECS));
     info!(
-        "Primary IP='{}', Secondary IP='{}', session_max={:?} (mkt_cfg: {})",
+        "Primary IP='{}', Secondary IP='{}', session_max={:?} (local_ip_source: {})",
         primary_ip,
         secondary_ip,
         session_max,
-        cfg_path.display()
+        ip_source
     );
 
     // Start listenKey services

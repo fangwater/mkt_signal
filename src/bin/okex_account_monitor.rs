@@ -22,7 +22,7 @@ use mkt_signal::common::basic_account_msg::{
     split_basic_account_event, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
     BasicPositionMsg, BasicUmUnrealizedMsg, OkexOrderMsg,
 };
-use mkt_signal::common::mkt_cfg::{home_mkt_cfg_path, load_local_ips_from_path};
+use mkt_signal::common::mkt_cfg::load_local_ips_preferring_trade_engine;
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::default_parser::Parser;
 use mkt_signal::parser::okex_account_event_parser::OkexAccountEventParser;
@@ -84,15 +84,14 @@ async fn main() -> Result<()> {
     let ws_url = OKEX_PM_WS.to_string();
 
     // IP 和会话设置
-    let cfg_path = home_mkt_cfg_path()?;
-    let (primary_ip, secondary_ip) = load_local_ips_from_path(&cfg_path).await?;
+    let ((primary_ip, secondary_ip), ip_source) = load_local_ips_preferring_trade_engine().await?;
     let session_max = None;
     info!(
-        "Primary IP='{}', Secondary IP='{}', session_max={:?} (mkt_cfg: {})",
+        "Primary IP='{}', Secondary IP='{}', session_max={:?} (local_ip_source: {})",
         primary_ip,
         secondary_ip,
         session_max,
-        cfg_path.display()
+        ip_source
     );
 
     // 构建订阅消息 - 同时订阅 SPOT/SWAP 订单和持仓

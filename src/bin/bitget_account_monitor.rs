@@ -15,7 +15,7 @@ use mkt_signal::common::basic_account_msg::{
     BasicPositionMsg, BasicUmUnrealizedMsg,
 };
 use mkt_signal::common::bitget_account_msg::BitgetBasicOrderMsg;
-use mkt_signal::common::mkt_cfg::{home_mkt_cfg_path, load_local_ips_from_path};
+use mkt_signal::common::mkt_cfg::load_local_ips_preferring_trade_engine;
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::bitget_account_event_parser::BitgetAccountEventParser;
 use mkt_signal::parser::default_parser::Parser;
@@ -72,15 +72,14 @@ async fn main() -> Result<()> {
 
     let ws_url = BitgetPrivateWsUrls::PRIVATE.to_string();
 
-    let cfg_path = home_mkt_cfg_path()?;
-    let (primary_ip, secondary_ip) = load_local_ips_from_path(&cfg_path).await?;
+    let ((primary_ip, secondary_ip), ip_source) = load_local_ips_preferring_trade_engine().await?;
     let session_max = None;
     info!(
-        "Primary IP='{}', Secondary IP='{}', session_max={:?} (mkt_cfg: {})",
+        "Primary IP='{}', Secondary IP='{}', session_max={:?} (local_ip_source: {})",
         primary_ip,
         secondary_ip,
         session_max,
-        cfg_path.display()
+        ip_source
     );
 
     let mut subscribe_messages = vec![

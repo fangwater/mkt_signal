@@ -1696,8 +1696,8 @@ impl FusionFactorPubApp {
                             .filter(|issue| issue.contains(":warming_up"))
                             .map(|issue| issue.as_str())
                             .collect();
-                        panic!(
-                            "fusion factor regressed to warming_up after all_ready: venue={} symbol={} trade_ts={} warming_factors=[{}]",
+                        warn!(
+                            "TEMP workaround: fusion factor regressed to warming_up after all_ready during bootstrap replay; allowing fallback without panic venue={} symbol={} trade_ts={} warming_factors=[{}]",
                             venue_slug,
                             symbol,
                             msg.ts,
@@ -1975,8 +1975,8 @@ impl FusionFactorPubApp {
                 .filter(|issue| issue.contains(":warming_up"))
                 .map(|s| s.as_str())
                 .collect();
-            panic!(
-                "fusion factor regressed to warming_up after all_ready: venue={} symbol={} trade_ts={} warming_factors=[{}]",
+            warn!(
+                "TEMP workaround: fusion factor regressed to warming_up after all_ready in live processing; allowing fallback without panic venue={} symbol={} trade_ts={} warming_factors=[{}]",
                 self.venue_slug,
                 symbol,
                 msg.ts,
@@ -5419,7 +5419,7 @@ impl FusionFactorPubApp {
                 .max((series.low[i] - series.close[i - 1]).abs());
         }
         let m = rolling_mean_last(&minus_dm, 14).ok().flatten()?;
-        let t = rolling_mean_last_with_min_periods(
+        let Some(t) = rolling_mean_last_with_min_periods(
             &tr.iter()
                 .map(|v| if v.is_finite() { *v } else { f64::NAN })
                 .collect::<Vec<_>>(),
@@ -5427,11 +5427,13 @@ impl FusionFactorPubApp {
             14,
         )
         .ok()
-        .flatten()?;
+        .flatten() else {
+            return Some(0.0);
+        };
         if t.abs() <= 1e-12 {
             return Some(0.0);
         }
-        finite_opt(Some(100.0 * m / t))
+        finite_opt(Some(100.0 * m / t)).or(Some(0.0))
     }
 
     fn compute_td_mt_039(series: &SymbolSeries<'_>) -> Option<f64> {

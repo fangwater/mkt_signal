@@ -53,6 +53,26 @@ pub async fn load_local_ips_from_path(path: &Path) -> Result<(String, String)> {
     Ok((primary, secondary))
 }
 
+pub async fn load_local_ips_preferring_trade_engine() -> Result<((String, String), String)> {
+    if let Some(path) = find_trade_engine_local_cfg_path()? {
+        let local_ips = load_trade_engine_local_ips_from_toml_path(&path).await?;
+        if local_ips.len() < 2 {
+            return Err(anyhow!(
+                "trade_engine config {} must provide at least 2 local IPs for account monitors",
+                path.display()
+            ));
+        }
+        return Ok((
+            (local_ips[0].clone(), local_ips[1].clone()),
+            path.display().to_string(),
+        ));
+    }
+
+    let cfg_path = home_mkt_cfg_path()?;
+    let ips = load_local_ips_from_path(&cfg_path).await?;
+    Ok((ips, format!("{} (fallback mkt_cfg.yaml)", cfg_path.display())))
+}
+
 pub fn find_trade_engine_local_cfg_path() -> Result<Option<PathBuf>> {
     let cwd = std::env::current_dir().context("resolve current dir for trade_engine config")?;
     let candidates = [cwd.join("trade_engine.toml"), cwd.join("trade engine.toml")];
