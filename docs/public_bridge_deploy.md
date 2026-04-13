@@ -7,6 +7,7 @@
 - HK: 本地 OKEX 行情 fan-out 到 `bridge/okex-*/*`
 - JP: 本地 Binance futures 行情 fan-out 到 `bridge/binance-futures/*`
 - JP -> HK:
+  - `bridge/binance-futures/incremental`
   - `bridge/binance-futures/ask_bid_spread`
   - `bridge/binance-futures/derivatives`
   - `factor_pub/binance-futures/rl_return_volatility`
@@ -56,7 +57,7 @@ cd ~/bridge_hk_public
 
 ## Scope
 
-这套 public bridge 当前只覆盖两类 JP -> HK 公共流量：
+这套 public bridge 当前覆盖三类 JP -> HK 公共流量：
 
 1. `binance-futures` 行情
 2. `binance-futures` 的 `rl_return_volatility`

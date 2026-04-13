@@ -4,7 +4,7 @@
 # - Local Binance futures market-data fan-out:
 #     dat_pbs/binance-futures/* -> bridge/binance-futures/*
 # - JP -> HK public forwarding over one shared ZMQ port:
-#     bridge/binance-futures/{ask_bid_spread,derivatives}
+#     bridge/binance-futures/{incremental,ask_bid_spread,derivatives}
 #     factor_pub/binance-futures/rl_return_volatility
 #     model_output/binance-futures-mm-xgb-test
 #
@@ -17,6 +17,20 @@ routes:
   # --------------------------------
   # Local Binance futures market fan-out
   # --------------------------------
+  - id: public_local_binance_futures_incremental
+    from:
+      type: ipc
+      endpoint: "dat_pbs/binance-futures/incremental"
+      size: 2048
+    to:
+      type: ipc
+      endpoint: "bridge/binance-futures/incremental"
+      size: 2048
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 100
+      subscriber_max_buffer_size: 8192
+
   - id: public_local_binance_futures_ask_bid
     from:
       type: ipc
@@ -51,6 +65,16 @@ routes:
   #
   # All public streams share the same ZMQ port.
   # The route id is used as the ZMQ header and must match the HK config.
+  - id: public_binance_futures_incremental
+    from:
+      type: ipc
+      endpoint: "bridge/binance-futures/incremental"
+      size: 2048
+    to:
+      type: zmq
+      endpoint: "tcp://47.238.128.48:6360"
+      size: 2048
+
   - id: public_binance_futures_ask_bid
     from:
       type: ipc

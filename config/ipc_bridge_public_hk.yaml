@@ -4,7 +4,7 @@
 # - Local OKEX market-data fan-out:
 #     dat_pbs/okex-*/... -> bridge/okex-*/...
 # - Ingest JP public streams over one shared ZMQ port:
-#     bridge/binance-futures/{ask_bid_spread,derivatives}
+#     bridge/binance-futures/{incremental,ask_bid_spread,derivatives}
 #     factor_pub/binance-futures/rl_return_volatility
 #     model_output/binance-futures-mm-xgb-test
 #
@@ -77,6 +77,20 @@ routes:
   # ----------------------------------------
   #
   # Multiple routes share one ZMQ bind address; route id disambiguates them.
+  - id: public_binance_futures_incremental
+    from:
+      type: zmq
+      endpoint: "tcp://0.0.0.0:6360"
+      size: 2048
+    to:
+      type: ipc
+      endpoint: "bridge/binance-futures/incremental"
+      size: 2048
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 100
+      subscriber_max_buffer_size: 8192
+
   - id: public_binance_futures_ask_bid
     from:
       type: zmq
