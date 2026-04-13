@@ -70,6 +70,10 @@ routes:
       type: ipc
       endpoint: "bridge/binance-futures/incremental"
       size: 2048
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 100
+      subscriber_max_buffer_size: 8192
     to:
       type: zmq
       endpoint: "tcp://47.238.128.48:6360"
@@ -80,6 +84,10 @@ routes:
       type: ipc
       endpoint: "bridge/binance-futures/ask_bid_spread"
       size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 100
+      subscriber_max_buffer_size: 8192
     to:
       type: zmq
       endpoint: "tcp://47.238.128.48:6360"
@@ -90,6 +98,10 @@ routes:
       type: ipc
       endpoint: "bridge/binance-futures/derivatives"
       size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 50
+      subscriber_max_buffer_size: 8192
     to:
       type: zmq
       endpoint: "tcp://47.238.128.48:6360"
