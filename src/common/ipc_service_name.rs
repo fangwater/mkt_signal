@@ -5,6 +5,7 @@ use std::env;
 /// # 规则
 /// - `dat_pbs/*` 保持不变（公用市场数据）
 /// - `bridge/*` 保持不变（公用桥接市场数据）
+/// - `factor_pub/*` 保持不变（公用因子流）
 /// - 其他路径（如 `signal_pubs/*`, `viz_pubs/*`, `persist_pubs/*`, `account_pubs/*`）添加命名空间前缀
 ///
 /// # 环境变量
@@ -21,6 +22,10 @@ use std::env;
 /// // bridge 行情（公用）：
 /// build_service_name("bridge/binance-futures/derivatives")
 /// // => "bridge/binance-futures/derivatives"
+///
+/// // 因子流（公用）：
+/// build_service_name("factor_pub/binance-futures/rl_return_volatility")
+/// // => "factor_pub/binance-futures/rl_return_volatility"
 ///
 /// // 信号通道（隔离）：
 /// build_service_name("signal_pubs/pre_trade")
@@ -42,8 +47,11 @@ use std::env;
 /// # Panics
 /// - 如果环境变量 `IPC_NAMESPACE` 未设置，将 panic
 pub fn build_service_name(base_name: &str) -> String {
-    // dat_pbs / bridge 保持不变（公用）
-    if base_name.starts_with("dat_pbs/") || base_name.starts_with("bridge/") {
+    // dat_pbs / bridge / factor_pub 保持不变（公用）
+    if base_name.starts_with("dat_pbs/")
+        || base_name.starts_with("bridge/")
+        || base_name.starts_with("factor_pub/")
+    {
         return base_name.to_string();
     }
 

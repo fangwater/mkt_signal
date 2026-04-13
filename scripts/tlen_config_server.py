@@ -52,6 +52,9 @@ SUPPORTED_VENUES = [
 ]
 QUOTE_ASSETS = ("USDT", "USDC", "BUSD", "FDUSD", "USD")
 SHARED_CONFIG_FIELD = "__shared__"
+DEFAULT_ZSCORE_WINDOW_SIZE = 17280
+DEFAULT_ZSCORE_MIN_SAMPLES = 1000
+DEFAULT_ZSCORE_CAP = 3.0
 
 
 def try_import_redis():
@@ -274,6 +277,14 @@ def parse_zscore_value(raw_value: object) -> Dict[str, object]:
     }
 
 
+def default_zscore_value() -> Dict[str, object]:
+    return {
+        "window_size": DEFAULT_ZSCORE_WINDOW_SIZE,
+        "min_samples": DEFAULT_ZSCORE_MIN_SAMPLES,
+        "zscore_cap": DEFAULT_ZSCORE_CAP,
+    }
+
+
 def default_factor_plan_value() -> Dict[str, object]:
     return {"factors": []}
 
@@ -429,6 +440,11 @@ class TlenConfigStore:
                 "amount_thresholds",
             )
             thresholds = normalize_factor_plan_thresholds(venue, amount_thresholds, thresholds)
+        elif config_type == "zscore" and not thresholds:
+            default_value = default_zscore_value()
+            encoded = json.dumps(default_value, ensure_ascii=False, sort_keys=True)
+            self._redis.hset(key, mapping={SHARED_CONFIG_FIELD: encoded})
+            thresholds = {SHARED_CONFIG_FIELD: default_value}
         return thresholds
 
     def replace(
@@ -1013,6 +1029,13 @@ def _run_tests() -> None:
         assert "missing from amount_thresholds" in str(exc)
     else:
         raise AssertionError("expected extra factor_plan symbols to fail")
+
+    assert default_zscore_value() == {
+        "window_size": 17280,
+        "min_samples": 1000,
+        "zscore_cap": 3.0,
+    }
+    assert parse_zscore_value(default_zscore_value()) == default_zscore_value()
 
 
 if __name__ == "__main__":
