@@ -7,9 +7,9 @@
 - HK: 本地 OKEX 行情 fan-out 到 `bridge/okex-*/*`
 - JP: 本地 Binance futures 行情 fan-out 到 `bridge/binance-futures/*`
 - JP -> HK:
-  - `bridge/binance-futures/incremental`
   - `bridge/binance-futures/ask_bid_spread`
   - `bridge/binance-futures/derivatives`
+  - `bridge/binance-futures/incremental`（当前已在 config 中注释）
   - `factor_pub/binance-futures/rl_return_volatility`
   - `model_output/binance-futures-mm-xgb-test`（当前已在 config 中注释，暂不转发）
 
