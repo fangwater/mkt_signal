@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use bytes::Bytes;
 use hmac::{Hmac, Mac};
 use log::{debug, error, info, warn};
@@ -27,6 +27,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
+use std::net::IpAddr;
 use std::time::Duration;
 use tokio::signal;
 use tokio::sync::{broadcast, watch};
@@ -128,6 +129,22 @@ async fn signed_get_binance(
     Ok(body)
 }
 
+fn build_binance_rest_client(local_ip: Option<&str>, timeout: Duration) -> Result<Client> {
+    let builder = Client::builder().timeout(timeout);
+    let builder = match local_ip.map(str::trim).filter(|ip| !ip.is_empty()) {
+        Some(ip) if ip != "0.0.0.0" => {
+            let parsed: IpAddr = ip
+                .parse()
+                .with_context(|| format!("invalid Binance REST local_ip: {}", ip))?;
+            builder.local_address(parsed)
+        }
+        _ => builder,
+    };
+    builder
+        .build()
+        .context("build Binance REST client failed")
+}
+
 fn wrap_basic_payload(account_scope: BasicAccountScope, payload: Bytes) -> Option<Bytes> {
     let event_type = get_basic_event_type(&payload);
     if matches!(event_type, BasicAccountEventType::Error) {
@@ -139,10 +156,15 @@ fn wrap_basic_payload(account_scope: BasicAccountScope, payload: Bytes) -> Optio
 async fn bootstrap_standard_snapshots(
     api_key: &str,
     api_secret: &str,
+    local_ip: Option<&str>,
     evt_tx: &tokio::sync::mpsc::UnboundedSender<Bytes>,
 ) -> Result<()> {
-    let client = Client::builder().timeout(Duration::from_secs(10)).build()?;
+    let client = build_binance_rest_client(local_ip, Duration::from_secs(10))?;
     let mut emitted = 0usize;
+    info!(
+        "bootstrap standard snapshots via local_ip={}",
+        local_ip.unwrap_or("system-default")
+    );
 
     let um_balance_body = signed_get_binance(
         &client,
@@ -249,7 +271,8 @@ async fn main() -> Result<()> {
                 parse_balances_from_account_update: true,
                 account_scope: BasicAccountScope::BinanceStdUm,
                 stream_kind: UserStreamKind::ListenKeyUrl,
-                listen_key_rx: None,
+                primary_listen_key_rx: None,
+                secondary_listen_key_rx: None,
             },
             UserStreamConfig {
                 stream_label: "spot-ws-api",
@@ -262,7 +285,8 @@ async fn main() -> Result<()> {
                     api_key: api_key.clone(),
                     api_secret: api_secret.clone(),
                 },
-                listen_key_rx: None,
+                primary_listen_key_rx: None,
+                secondary_listen_key_rx: None,
             },
         ]
     } else {
@@ -274,7 +298,8 @@ async fn main() -> Result<()> {
             parse_balances_from_account_update: false,
             account_scope: BasicAccountScope::BinanceUnified,
             stream_kind: UserStreamKind::ListenKeyUrl,
-            listen_key_rx: None,
+            primary_listen_key_rx: None,
+            secondary_listen_key_rx: None,
         }]
     };
 
@@ -310,14 +335,25 @@ async fn main() -> Result<()> {
     // Start listenKey services
     for cfg in stream_cfgs.iter_mut() {
         if matches!(cfg.stream_kind, UserStreamKind::ListenKeyUrl) {
-            let listen_key_rx = BinanceListenKeyService::new(
+            let primary_listen_key_rx = BinanceListenKeyService::new(
                 cfg.rest_base.clone(),
                 api_key.clone(),
                 cfg.listen_key_path.clone(),
+                Some(primary_ip.clone()),
             )
+            ?
             .start(shutdown_rx.clone())
             .await?;
-            cfg.listen_key_rx = Some(listen_key_rx);
+            let secondary_listen_key_rx = BinanceListenKeyService::new(
+                cfg.rest_base.clone(),
+                api_key.clone(),
+                cfg.listen_key_path.clone(),
+                Some(secondary_ip.clone()),
+            )?
+            .start(shutdown_rx.clone())
+            .await?;
+            cfg.primary_listen_key_rx = Some(primary_listen_key_rx);
+            cfg.secondary_listen_key_rx = Some(secondary_listen_key_rx);
         }
     }
 
@@ -325,7 +361,8 @@ async fn main() -> Result<()> {
     let (evt_tx, mut evt_rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
 
     if binance_is_standard {
-        match bootstrap_standard_snapshots(&api_key, &api_secret, &evt_tx).await {
+        match bootstrap_standard_snapshots(&api_key, &api_secret, Some(&primary_ip), &evt_tx).await
+        {
             Ok(()) => info!("bootstrap standard snapshots completed"),
             Err(err) => warn!("bootstrap standard snapshots failed: {err:#}"),
         }
@@ -343,7 +380,7 @@ async fn main() -> Result<()> {
             primary_name,
             cfg.ws_base.clone(),
             primary_ip.clone(),
-            cfg.listen_key_rx.clone(),
+            cfg.primary_listen_key_rx.clone(),
             shutdown_rx.clone(),
             evt_tx.clone(),
             session_max,
@@ -357,7 +394,7 @@ async fn main() -> Result<()> {
             secondary_name,
             cfg.ws_base,
             secondary_ip.clone(),
-            cfg.listen_key_rx,
+            cfg.secondary_listen_key_rx,
             shutdown_rx.clone(),
             evt_tx.clone(),
             session_max,
@@ -445,7 +482,8 @@ struct UserStreamConfig {
     parse_balances_from_account_update: bool,
     account_scope: BasicAccountScope,
     stream_kind: UserStreamKind,
-    listen_key_rx: Option<watch::Receiver<String>>,
+    primary_listen_key_rx: Option<watch::Receiver<String>>,
+    secondary_listen_key_rx: Option<watch::Receiver<String>>,
 }
 
 fn spawn_user_stream_path(

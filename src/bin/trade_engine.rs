@@ -150,7 +150,24 @@ fn sign_binance_query(params: &BTreeMap<String, String>, api_secret: &str) -> Re
     Ok(format!("{}&signature={}", query, sig))
 }
 
-async fn fetch_binance_fee_burn(api_key: &str, api_secret: &str, base_url: &str) -> Result<bool> {
+fn build_binance_fee_burn_client(local_ip: Option<IpAddr>) -> Result<reqwest::Client> {
+    let builder = reqwest::Client::builder();
+    let builder = if let Some(ip) = local_ip {
+        builder.local_address(ip)
+    } else {
+        builder
+    };
+    builder
+        .build()
+        .context("build feeBurn reqwest client failed")
+}
+
+async fn fetch_binance_fee_burn(
+    api_key: &str,
+    api_secret: &str,
+    base_url: &str,
+    local_ip: Option<IpAddr>,
+) -> Result<bool> {
     let mut params: BTreeMap<String, String> = BTreeMap::new();
     params.insert(
         "timestamp".to_string(),
@@ -162,7 +179,14 @@ async fn fetch_binance_fee_burn(api_key: &str, api_secret: &str, base_url: &str)
     );
     let query = sign_binance_query(&params, api_secret)?;
     let full_url = format!("{}/fapi/v1/feeBurn?{}", base_url, query);
-    let client = reqwest::Client::new();
+    let client = build_binance_fee_burn_client(local_ip)?;
+    info!(
+        "feeBurn check request local_ip={} url={}",
+        local_ip
+            .map(|ip| ip.to_string())
+            .unwrap_or_else(|| "system-default".to_string()),
+        full_url
+    );
     let resp = client
         .get(&full_url)
         .header("X-MBX-APIKEY", api_key)
@@ -195,7 +219,12 @@ async fn fetch_binance_fee_burn(api_key: &str, api_secret: &str, base_url: &str)
     Ok(fee_burn)
 }
 
-async fn enable_binance_fee_burn(api_key: &str, api_secret: &str, base_url: &str) -> Result<()> {
+async fn enable_binance_fee_burn(
+    api_key: &str,
+    api_secret: &str,
+    base_url: &str,
+    local_ip: Option<IpAddr>,
+) -> Result<()> {
     let mut params: BTreeMap<String, String> = BTreeMap::new();
     params.insert("feeBurn".to_string(), "true".to_string());
     params.insert(
@@ -208,7 +237,14 @@ async fn enable_binance_fee_burn(api_key: &str, api_secret: &str, base_url: &str
     );
     let query = sign_binance_query(&params, api_secret)?;
     let full_url = format!("{}/fapi/v1/feeBurn?{}", base_url, query);
-    let client = reqwest::Client::new();
+    let client = build_binance_fee_burn_client(local_ip)?;
+    info!(
+        "feeBurn enable request local_ip={} url={}",
+        local_ip
+            .map(|ip| ip.to_string())
+            .unwrap_or_else(|| "system-default".to_string()),
+        full_url
+    );
     let resp = client
         .post(&full_url)
         .header("X-MBX-APIKEY", api_key)
@@ -233,14 +269,19 @@ async fn enable_binance_fee_burn(api_key: &str, api_secret: &str, base_url: &str
     Ok(())
 }
 
-async fn check_binance_fee_burn(api_key: &str, api_secret: &str, base_url: &str) -> Result<()> {
-    let fee_burn = fetch_binance_fee_burn(api_key, api_secret, base_url).await?;
+async fn check_binance_fee_burn(
+    api_key: &str,
+    api_secret: &str,
+    base_url: &str,
+    local_ip: Option<IpAddr>,
+) -> Result<()> {
+    let fee_burn = fetch_binance_fee_burn(api_key, api_secret, base_url, local_ip).await?;
     if fee_burn {
         return Ok(());
     }
     info!("feeBurn=false detected; attempting to enable...");
-    enable_binance_fee_burn(api_key, api_secret, base_url).await?;
-    let fee_burn_after = fetch_binance_fee_burn(api_key, api_secret, base_url).await?;
+    enable_binance_fee_burn(api_key, api_secret, base_url, local_ip).await?;
+    let fee_burn_after = fetch_binance_fee_burn(api_key, api_secret, base_url, local_ip).await?;
     if !fee_burn_after {
         return Err(anyhow::anyhow!("feeBurn still false after enable attempt"));
     }
@@ -338,11 +379,22 @@ async fn main() -> Result<()> {
                 .ok()
                 .filter(|v| !v.trim().is_empty())
                 .unwrap_or_else(|| "https://fapi.binance.com".to_string());
+            let fee_burn_local_ip = local_ips.first().copied();
             info!(
-                "checking binance feeBurn (STANDARD mode) base_url={}",
-                base_url
+                "checking binance feeBurn (STANDARD mode) base_url={} local_ip={}",
+                base_url,
+                fee_burn_local_ip
+                    .map(|ip| ip.to_string())
+                    .unwrap_or_else(|| "system-default".to_string())
             );
-            if let Err(err) = check_binance_fee_burn(&api_key, &api_secret, &base_url).await {
+            if let Err(err) = check_binance_fee_burn(
+                &api_key,
+                &api_secret,
+                &base_url,
+                fee_burn_local_ip,
+            )
+            .await
+            {
                 panic!("binance feeBurn check failed: {err}");
             }
             info!("binance feeBurn enabled");

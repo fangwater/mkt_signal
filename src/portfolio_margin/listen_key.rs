@@ -8,10 +8,11 @@
 //!
 //! 使用方式：调用 `start(shutdown_rx)` 获取一个 `watch::Receiver<String>`，
 //! 初次会发出创建到的 listenKey，后续重建也会更新。
-use anyhow::Result;
+use anyhow::{Context, Result};
 use log::{debug, error, info, warn};
 use reqwest::Client;
 use serde::Deserialize;
+use std::net::IpAddr;
 use tokio::time::{self, Duration};
 use tokio::{select, sync::watch};
 
@@ -22,6 +23,7 @@ pub struct BinanceListenKeyService {
     rest_base: String,
     listen_key_path: String,
     api_key: String,
+    local_ip: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -36,20 +38,26 @@ impl BinanceListenKeyService {
         rest_base: impl Into<String>,
         api_key: impl Into<String>,
         listen_key_path: impl Into<String>,
-    ) -> Self {
-        let client = Client::new();
-        Self {
+        local_ip: Option<String>,
+    ) -> Result<Self> {
+        let client = build_client(local_ip.as_deref())?;
+        Ok(Self {
             client,
             rest_base: rest_base.into(),
             listen_key_path: listen_key_path.into(),
             api_key: api_key.into(),
-        }
+            local_ip,
+        })
     }
 
     /// 通过 REST 创建 listenKey
     async fn create_listen_key(&self) -> Result<String> {
         let url = format!("{}{}", self.rest_base, self.listen_key_path);
-        debug!("[listenKey] Creating on {}", self.rest_base);
+        debug!(
+            "[listenKey] Creating on {} (local_ip={})",
+            self.rest_base,
+            self.local_ip.as_deref().unwrap_or("system-default")
+        );
         let resp = self
             .client
             .post(url)
@@ -76,7 +84,10 @@ impl BinanceListenKeyService {
             "{}{}?listenKey={}",
             self.rest_base, self.listen_key_path, key
         );
-        debug!("[listenKey] Keepalive sent");
+        debug!(
+            "[listenKey] Keepalive sent (local_ip={})",
+            self.local_ip.as_deref().unwrap_or("system-default")
+        );
         let resp = self
             .client
             .put(url)
@@ -103,7 +114,10 @@ impl BinanceListenKeyService {
             "{}{}?listenKey={}",
             self.rest_base, self.listen_key_path, key
         );
-        debug!("[listenKey] Deleting before shutdown");
+        debug!(
+            "[listenKey] Deleting before shutdown (local_ip={})",
+            self.local_ip.as_deref().unwrap_or("system-default")
+        );
         let resp = self
             .client
             .delete(url)
@@ -179,4 +193,20 @@ impl BinanceListenKeyService {
 
         Ok(rx)
     }
+}
+
+fn build_client(local_ip: Option<&str>) -> Result<Client> {
+    let builder = Client::builder();
+    let builder = match local_ip.map(str::trim).filter(|ip| !ip.is_empty()) {
+        Some(ip) if ip != "0.0.0.0" => {
+            let parsed: IpAddr = ip
+                .parse()
+                .with_context(|| format!("invalid listenKey local_ip: {}", ip))?;
+            builder.local_address(parsed)
+        }
+        _ => builder,
+    };
+    builder
+        .build()
+        .context("build reqwest client for BinanceListenKeyService failed")
 }
