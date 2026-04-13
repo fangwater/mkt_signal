@@ -29,6 +29,35 @@ pub enum ExtraFactorId {
     SmallBuy,
     SmallSell,
     NetBuyLarge,
+    Open,
+    High,
+    Low,
+    Close,
+    Volume,
+    Amount,
+    AvgAmount,
+    Count,
+    BuyCount,
+    SellCount,
+    BuyAmount,
+    SellAmount,
+    BuyVolume,
+    SellVolume,
+    LargeOrder,
+    MediumOrder,
+    SmallOrder,
+    LargeBuy,
+    LargeSell,
+    MediumBuy,
+    MediumSell,
+    Vwap,
+    BuyVwap,
+    SellVwap,
+    NetBuyAmount,
+    NetBuyVolume,
+    NetBuyPct,
+    NetBuyMedium,
+    NetBuySmall,
 }
 
 impl ExtraFactorId {
@@ -40,6 +69,35 @@ impl ExtraFactorId {
             "small_buy" => Some(Self::SmallBuy),
             "small_sell" => Some(Self::SmallSell),
             "net_buy_large" => Some(Self::NetBuyLarge),
+            "open" => Some(Self::Open),
+            "high" => Some(Self::High),
+            "low" => Some(Self::Low),
+            "close" => Some(Self::Close),
+            "volume" => Some(Self::Volume),
+            "amount" => Some(Self::Amount),
+            "avg_amount" => Some(Self::AvgAmount),
+            "count" => Some(Self::Count),
+            "buy_count" => Some(Self::BuyCount),
+            "sell_count" => Some(Self::SellCount),
+            "buy_amount" => Some(Self::BuyAmount),
+            "sell_amount" => Some(Self::SellAmount),
+            "buy_volume" => Some(Self::BuyVolume),
+            "sell_volume" => Some(Self::SellVolume),
+            "large_order" => Some(Self::LargeOrder),
+            "medium_order" => Some(Self::MediumOrder),
+            "small_order" => Some(Self::SmallOrder),
+            "large_buy" => Some(Self::LargeBuy),
+            "large_sell" => Some(Self::LargeSell),
+            "medium_buy" => Some(Self::MediumBuy),
+            "medium_sell" => Some(Self::MediumSell),
+            "vwap" => Some(Self::Vwap),
+            "buy_vwap" => Some(Self::BuyVwap),
+            "sell_vwap" => Some(Self::SellVwap),
+            "net_buy_amount" => Some(Self::NetBuyAmount),
+            "net_buy_volume" => Some(Self::NetBuyVolume),
+            "net_buy_pct" => Some(Self::NetBuyPct),
+            "net_buy_medium" => Some(Self::NetBuyMedium),
+            "net_buy_small" => Some(Self::NetBuySmall),
             _ => None,
         }
     }
@@ -53,6 +111,35 @@ impl ExtraFactorId {
             Self::SmallBuy => EXTRA_FACTOR_BASE + 3,
             Self::SmallSell => EXTRA_FACTOR_BASE + 4,
             Self::NetBuyLarge => EXTRA_FACTOR_BASE + 5,
+            Self::Open => EXTRA_FACTOR_BASE + 6,
+            Self::High => EXTRA_FACTOR_BASE + 7,
+            Self::Low => EXTRA_FACTOR_BASE + 8,
+            Self::Close => EXTRA_FACTOR_BASE + 9,
+            Self::Volume => EXTRA_FACTOR_BASE + 10,
+            Self::Amount => EXTRA_FACTOR_BASE + 11,
+            Self::AvgAmount => EXTRA_FACTOR_BASE + 12,
+            Self::Count => EXTRA_FACTOR_BASE + 13,
+            Self::BuyCount => EXTRA_FACTOR_BASE + 14,
+            Self::SellCount => EXTRA_FACTOR_BASE + 15,
+            Self::BuyAmount => EXTRA_FACTOR_BASE + 16,
+            Self::SellAmount => EXTRA_FACTOR_BASE + 17,
+            Self::BuyVolume => EXTRA_FACTOR_BASE + 18,
+            Self::SellVolume => EXTRA_FACTOR_BASE + 19,
+            Self::LargeOrder => EXTRA_FACTOR_BASE + 20,
+            Self::MediumOrder => EXTRA_FACTOR_BASE + 21,
+            Self::SmallOrder => EXTRA_FACTOR_BASE + 22,
+            Self::LargeBuy => EXTRA_FACTOR_BASE + 23,
+            Self::LargeSell => EXTRA_FACTOR_BASE + 24,
+            Self::MediumBuy => EXTRA_FACTOR_BASE + 25,
+            Self::MediumSell => EXTRA_FACTOR_BASE + 26,
+            Self::Vwap => EXTRA_FACTOR_BASE + 27,
+            Self::BuyVwap => EXTRA_FACTOR_BASE + 28,
+            Self::SellVwap => EXTRA_FACTOR_BASE + 29,
+            Self::NetBuyAmount => EXTRA_FACTOR_BASE + 30,
+            Self::NetBuyVolume => EXTRA_FACTOR_BASE + 31,
+            Self::NetBuyPct => EXTRA_FACTOR_BASE + 32,
+            Self::NetBuyMedium => EXTRA_FACTOR_BASE + 33,
+            Self::NetBuySmall => EXTRA_FACTOR_BASE + 34,
         }
     }
 
@@ -65,6 +152,35 @@ impl ExtraFactorId {
             x if x == EXTRA_FACTOR_BASE + 3 => Some(Self::SmallBuy),
             x if x == EXTRA_FACTOR_BASE + 4 => Some(Self::SmallSell),
             x if x == EXTRA_FACTOR_BASE + 5 => Some(Self::NetBuyLarge),
+            x if x == EXTRA_FACTOR_BASE + 6 => Some(Self::Open),
+            x if x == EXTRA_FACTOR_BASE + 7 => Some(Self::High),
+            x if x == EXTRA_FACTOR_BASE + 8 => Some(Self::Low),
+            x if x == EXTRA_FACTOR_BASE + 9 => Some(Self::Close),
+            x if x == EXTRA_FACTOR_BASE + 10 => Some(Self::Volume),
+            x if x == EXTRA_FACTOR_BASE + 11 => Some(Self::Amount),
+            x if x == EXTRA_FACTOR_BASE + 12 => Some(Self::AvgAmount),
+            x if x == EXTRA_FACTOR_BASE + 13 => Some(Self::Count),
+            x if x == EXTRA_FACTOR_BASE + 14 => Some(Self::BuyCount),
+            x if x == EXTRA_FACTOR_BASE + 15 => Some(Self::SellCount),
+            x if x == EXTRA_FACTOR_BASE + 16 => Some(Self::BuyAmount),
+            x if x == EXTRA_FACTOR_BASE + 17 => Some(Self::SellAmount),
+            x if x == EXTRA_FACTOR_BASE + 18 => Some(Self::BuyVolume),
+            x if x == EXTRA_FACTOR_BASE + 19 => Some(Self::SellVolume),
+            x if x == EXTRA_FACTOR_BASE + 20 => Some(Self::LargeOrder),
+            x if x == EXTRA_FACTOR_BASE + 21 => Some(Self::MediumOrder),
+            x if x == EXTRA_FACTOR_BASE + 22 => Some(Self::SmallOrder),
+            x if x == EXTRA_FACTOR_BASE + 23 => Some(Self::LargeBuy),
+            x if x == EXTRA_FACTOR_BASE + 24 => Some(Self::LargeSell),
+            x if x == EXTRA_FACTOR_BASE + 25 => Some(Self::MediumBuy),
+            x if x == EXTRA_FACTOR_BASE + 26 => Some(Self::MediumSell),
+            x if x == EXTRA_FACTOR_BASE + 27 => Some(Self::Vwap),
+            x if x == EXTRA_FACTOR_BASE + 28 => Some(Self::BuyVwap),
+            x if x == EXTRA_FACTOR_BASE + 29 => Some(Self::SellVwap),
+            x if x == EXTRA_FACTOR_BASE + 30 => Some(Self::NetBuyAmount),
+            x if x == EXTRA_FACTOR_BASE + 31 => Some(Self::NetBuyVolume),
+            x if x == EXTRA_FACTOR_BASE + 32 => Some(Self::NetBuyPct),
+            x if x == EXTRA_FACTOR_BASE + 33 => Some(Self::NetBuyMedium),
+            x if x == EXTRA_FACTOR_BASE + 34 => Some(Self::NetBuySmall),
             _ => None,
         }
     }
@@ -77,6 +193,35 @@ impl ExtraFactorId {
             Self::SmallBuy => "small_buy",
             Self::SmallSell => "small_sell",
             Self::NetBuyLarge => "net_buy_large",
+            Self::Open => "open",
+            Self::High => "high",
+            Self::Low => "low",
+            Self::Close => "close",
+            Self::Volume => "volume",
+            Self::Amount => "amount",
+            Self::AvgAmount => "avg_amount",
+            Self::Count => "count",
+            Self::BuyCount => "buy_count",
+            Self::SellCount => "sell_count",
+            Self::BuyAmount => "buy_amount",
+            Self::SellAmount => "sell_amount",
+            Self::BuyVolume => "buy_volume",
+            Self::SellVolume => "sell_volume",
+            Self::LargeOrder => "large_order",
+            Self::MediumOrder => "medium_order",
+            Self::SmallOrder => "small_order",
+            Self::LargeBuy => "large_buy",
+            Self::LargeSell => "large_sell",
+            Self::MediumBuy => "medium_buy",
+            Self::MediumSell => "medium_sell",
+            Self::Vwap => "vwap",
+            Self::BuyVwap => "buy_vwap",
+            Self::SellVwap => "sell_vwap",
+            Self::NetBuyAmount => "net_buy_amount",
+            Self::NetBuyVolume => "net_buy_volume",
+            Self::NetBuyPct => "net_buy_pct",
+            Self::NetBuyMedium => "net_buy_medium",
+            Self::NetBuySmall => "net_buy_small",
         })
     }
 }
@@ -167,6 +312,7 @@ pub(crate) async fn load_symbol_factor_plans_from_tlen_server(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::trade_flow_feature_msg::TRADE_FLOW_FEATURE_FIELD_NAMES;
 
     fn factor_item(factors: &[&str]) -> FactorPlanItem {
         FactorPlanItem {
@@ -199,5 +345,16 @@ mod tests {
         assert_eq!(factor_names, vec!["factor_001", "avg_price"]);
         assert!(!plans.contains_key("__shared__"));
         assert!(!plans.contains_key("ETHUSDT"));
+    }
+
+    #[test]
+    fn all_trade_flow_feature_fields_have_extra_factor_ids() {
+        for name in TRADE_FLOW_FEATURE_FIELD_NAMES {
+            assert!(
+                ExtraFactorId::from_name(name).is_some(),
+                "missing ExtraFactorId mapping for {}",
+                name
+            );
+        }
     }
 }
