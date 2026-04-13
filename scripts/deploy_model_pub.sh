@@ -16,7 +16,7 @@ Behavior:
   - toml 中的 {model_name} 会被替换为实际 model_name
 
 Examples:
-  bash scripts/deploy_model_pub.sh --target binance-futures-mm-xgb-test
+  bash scripts/deploy_model_pub.sh --target binance_futures_direction_model
   bash scripts/deploy_model_pub.sh
 USAGE
 }
@@ -46,7 +46,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$MODEL_NAME" ]]; then
-  MODEL_NAME="binance-futures-mm-xgb-test"
+  MODEL_NAME="binance_futures_direction_model"
   echo "[INFO] 未指定 --target，使用默认 model_name: $MODEL_NAME"
 fi
 

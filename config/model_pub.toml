@@ -5,7 +5,7 @@ tlen_server_request_timeout_ms = 5000
 
 # 直接填写完整 service 名称，不做 {model_name} 替换。
 input_service = "fusion_factor/binance-futures"
-output_service = "model_output/binance-futures-mm-xgb-test"
+output_service = "model_output/binance_futures_direction_model"
 
 [score_rolling]
 params_hash_key_template = "model_score_rolling_params_{model_name}"

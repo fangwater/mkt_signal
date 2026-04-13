@@ -7,7 +7,7 @@
 #     bridge/binance-futures/{ask_bid_spread,derivatives}
 #     bridge/binance-futures/incremental (currently commented out)
 #     factor_pub/binance-futures/rl_return_volatility
-#     model_output/binance-futures-mm-xgb-test
+#     model_output/binance_futures_direction_model
 #
 # Notes:
 # - This config is intentionally public/global only; it does not use IPC_NAMESPACE.
@@ -118,10 +118,10 @@ routes:
       endpoint: "tcp://47.238.128.48:6360"
       size: 256
 
-  # - id: public_binance_futures_mm_xgb_test_model_output
+  # - id: public_binance_futures_direction_model_output
   #   from:
   #     type: ipc
-  #     endpoint: "model_output/binance-futures-mm-xgb-test"
+  #     endpoint: "model_output/binance_futures_direction_model"
   #     size: 2048
   #   to:
   #     type: zmq

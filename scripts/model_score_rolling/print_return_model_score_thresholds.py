@@ -42,13 +42,15 @@ def infer_model_name_from_cwd() -> Optional[str]:
 
 def infer_venue_from_model_name(model_name: str) -> str:
     lower = model_name.strip().lower()
+    if lower == "binance_futures_direction_model":
+        return "binance-futures"
     matched = VENUE_PREFIX_PATTERN.match(lower)
     if matched:
         return matched.group(1)
 
     raise SystemExit(
         "cannot infer venue from model_name prefix; expected prefix like "
-        "'binance-futures-...' or 'okex-margin-...'"
+        "'binance-futures-...' or special model name 'binance_futures_direction_model'"
     )
 
 

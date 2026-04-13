@@ -10,13 +10,13 @@ Usage:
   stop_model_pub.sh
 
 Behavior:
-  - 必须在 model_pub 部署目录下执行（例如 ~/model_pub/binance-futures-mm-xgb-test）
+  - 必须在 model_pub 部署目录下执行（例如 ~/model_pub/binance_futures_direction_model）
   - model_name 由当前目录名自动推断
   - 停止 pmdaemon 进程名: model_pub_<model_name>
   - 可用 PMDAEMON_BIN 覆盖二进制名（默认 pmdaemon）
 
 Examples:
-  cd ~/model_pub/binance-futures-mm-xgb-test
+  cd ~/model_pub/binance_futures_direction_model
   ./scripts/stop_model_pub.sh
 USAGE
 }

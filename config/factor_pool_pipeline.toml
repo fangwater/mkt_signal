@@ -2,7 +2,7 @@
 # model_manager base URL
 base_url = "http://54.64.147.69:6300"
 # If empty, the script will auto-discover a single model for symbol.
-model_name = "binance-futures-mm-xgb-test"
+model_name = "binance_futures_direction_model"
 symbol = "BTCUSDT"
 group_key = ""
 timeout_sec = 15.0

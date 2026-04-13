@@ -25,7 +25,7 @@ pip install numpy xgboost onnxruntime
 ```bash
 python3 onnx_xgb_precision_demo/compare_onnx_xgb.py \
   --base-url http://54.64.147.69:6300 \
-  --model-name binance-futures-mm-xgb-test \
+  --model-name binance_futures_direction_model \
   --symbol SOLUSDT \
   --n-samples 200000 \
   --seed 7 \

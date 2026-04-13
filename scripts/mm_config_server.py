@@ -325,7 +325,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       </div>
       <div class="field grow">
         <label for="model-name">Model Name</label>
-        <input id="model-name" list="recent-model-names" placeholder="binance-futures-mm-xgb-test" />
+        <input id="model-name" list="recent-model-names" placeholder="binance_futures_direction_model" />
         <datalist id="recent-model-names"></datalist>
       </div>
       <div class="field grow">
@@ -1360,11 +1360,14 @@ def infer_env_name_from_cwd() -> str:
 
 
 def infer_venue_from_model_name(model_name: str) -> str:
-    matched = VENUE_PREFIX_PATTERN.match((model_name or "").strip().lower())
+    normalized = (model_name or "").strip().lower()
+    if normalized == "binance_futures_direction_model":
+        return "binance-futures"
+    matched = VENUE_PREFIX_PATTERN.match(normalized)
     if not matched:
         raise ValueError(
             "cannot infer venue from model_name prefix; expected prefix like "
-            "'binance-futures-...' or 'okex-futures-...'"
+            "'binance-futures-...' or special model name 'binance_futures_direction_model'"
         )
     return matched.group(1)
 

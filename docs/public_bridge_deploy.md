@@ -11,7 +11,7 @@
   - `bridge/binance-futures/derivatives`
   - `bridge/binance-futures/incremental`（当前已在 config 中注释）
   - `factor_pub/binance-futures/rl_return_volatility`
-  - `model_output/binance-futures-mm-xgb-test`（当前已在 config 中注释，暂不转发）
+  - `model_output/binance_futures_direction_model`（当前已在 config 中注释，暂不转发）
 
 实例级业务 IPC 例如 `order_reqs/*`、`query_reqs/*`、`account_pubs/*` 不在这里，后续继续归到 private bridge。
 
@@ -25,7 +25,7 @@
 - 公共 ZMQ 端口: `6360`
 - HK 公网地址: `47.238.128.48`
 - `model_output` 预留的 public route:
-  - `model_output/binance-futures-mm-xgb-test`（当前注释）
+  - `model_output/binance_futures_direction_model`（当前注释）
 - `fusion factor vol` 目前桥接的是兼容单因子流:
   - `factor_pub/binance-futures/rl_return_volatility`
 
@@ -61,7 +61,7 @@ cd ~/bridge_hk_public
 
 1. `binance-futures` 行情
 2. `binance-futures` 的 `rl_return_volatility`
-3. `binance-futures-mm-xgb-test` model output（当前注释）
+3. `binance_futures_direction_model` model output（当前注释）
 
 private bridge 后续再单独拆：
 

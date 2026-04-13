@@ -770,6 +770,9 @@ mod tests {
     use super::FactorValueHub;
     use crate::signal::common::TradingVenue;
 
+    const TEST_MODEL_OUTPUT_NAME: &str = "binance_futures_direction_model";
+    const TEST_MODEL_OUTPUT_SERVICE: &str = "model_output/binance_futures_direction_model";
+
     #[test]
     fn builds_profile_from_open_and_hedge_venues() {
         let profile = FactorValueHub::build_pnlu_profile(
@@ -795,14 +798,12 @@ mod tests {
     #[test]
     fn normalizes_bare_model_output_service_name() {
         assert_eq!(
-            FactorValueHub::normalize_model_output_service_name("binance-futures-mm-xgb-test"),
-            Some("model_output/binance-futures-mm-xgb-test".to_string())
+            FactorValueHub::normalize_model_output_service_name(TEST_MODEL_OUTPUT_NAME),
+            Some(TEST_MODEL_OUTPUT_SERVICE.to_string())
         );
         assert_eq!(
-            FactorValueHub::normalize_model_output_service_name(
-                "model_output/binance-futures-mm-xgb-test"
-            ),
-            Some("model_output/binance-futures-mm-xgb-test".to_string())
+            FactorValueHub::normalize_model_output_service_name(TEST_MODEL_OUTPUT_SERVICE),
+            Some(TEST_MODEL_OUTPUT_SERVICE.to_string())
         );
     }
 

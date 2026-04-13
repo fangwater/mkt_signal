@@ -20,7 +20,7 @@ Behavior:
       hk -> config/ipc_bridge_public_hk.yaml
   - Public bridge carries only global streams:
       - bridge/<venue> market data
-      - model_output/binance-futures-mm-xgb-test
+      - model_output/binance_futures_direction_model
     It does not require IPC_NAMESPACE.
 
 Examples:
