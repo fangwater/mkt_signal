@@ -111,6 +111,32 @@ if [[ ( "$BIN_MODE" == "1" || "$RUNTIME_ONLY" == "1" ) && ! -d "$HOME/$ENV_NAME"
   exit 1
 fi
 
+TARGET_DIR="$HOME/$ENV_NAME"
+
+write_env_template_if_missing() {
+  local target_dir="$1"
+  local env_name="$2"
+  local env_file="${target_dir}/env.sh"
+  if [[ -f "$env_file" ]]; then
+    echo "[INFO] env template exists, keep as-is: $env_file"
+    return 0
+  fi
+
+  cat >"$env_file" <<EOF
+#!/usr/bin/env bash
+
+export IPC_NAMESPACE="${env_name}"
+
+export OKX_API_KEY=""
+export OKX_API_SECRET=""
+export OKX_PASSPHRASE=""
+
+export RUST_LOG="info"
+EOF
+  chmod 600 "$env_file"
+  echo "[INFO] wrote env template: $env_file"
+}
+
 run_deploy() {
   local cmd=("$@")
   echo "[RUN] ${cmd[*]}"
@@ -208,7 +234,7 @@ else
     --env-name "$ENV_NAME" \
     --exchange okex \
     --port "$CONFIG_PORT" \
-    --apply-nginx
+    --skip-nginx-apply
 
   run_deploy bash scripts/deploy_mm_account_monitor.sh \
     --exchange okex \
@@ -225,8 +251,7 @@ else
   run_deploy bash scripts/deploy_mm_viz_server.sh \
     --exchange okex \
     --env-suffix "$ENV_SUFFIX" \
-    --port "$VIZ_PORT" \
-    --apply-nginx
+    --port "$VIZ_PORT"
 
   run_deploy bash scripts/deploy_mm_persist_manager.sh \
     --exchange okex \
@@ -237,4 +262,14 @@ else
     --env-suffix "$ENV_SUFFIX"
 fi
 
+if [[ "$BIN_MODE" != "1" && "$RUNTIME_ONLY" != "1" ]]; then
+  write_env_template_if_missing "$TARGET_DIR" "$ENV_NAME"
+fi
+
 echo "[INFO] OKEX MM 部署完成（仅 deploy，不含 start）"
+if [[ "$BIN_MODE" != "1" && "$RUNTIME_ONLY" != "1" ]]; then
+  echo "[INFO] nginx mapping 已写入，但未自动 apply"
+  echo "[INFO] To apply nginx (port 4191):"
+  echo "       cd ${ROOT_DIR} && PORT=4191 MAPPING_FILE=\$HOME/nginx_locations.txt ./scripts/setup_nginx_4191.sh"
+  echo "[INFO] env template: ${TARGET_DIR}/env.sh"
+fi

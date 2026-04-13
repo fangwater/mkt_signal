@@ -13,12 +13,14 @@ usage() {
                                        [--nginx-port 4191]
                                        [--nginx-mapping-file $HOME/nginx_locations.txt]
                                        [--scripts-only]
+                                       [--skip-nginx-apply]
 
 说明:
   - 部署 mm_config_server 到 $HOME/<env-name>/（或 --target）。
   - exchange 可省略，会从 --env-name 推断（如 binance_mm_beta -> binance）。
   - 默认端口按交易所分配（okex=18111 gate=18121 binance=18131 bybit=18141 bitget=18151）。
   - 默认会写入并应用 nginx mapping（/mm/<env-name>/config）。
+  - --skip-nginx-apply: 仍写入 nginx mapping，但不执行 setup_nginx_4191.sh。
   - env-name/目标目录名必须匹配 <exchange>_mm_<suffix>（例如 binance_mm_beta）。
   - --scripts-only: 仅同步脚本，不改 config/mm_config_server.env，也不改 nginx。
 
@@ -44,6 +46,7 @@ NGINX_PREFIX=""
 NGINX_PORT="4191"
 NGINX_MAPPING_FILE=""
 SCRIPTS_ONLY="0"
+SKIP_NGINX_APPLY="0"
 
 normalize_exchange() {
   local ex="${1,,}"
@@ -200,6 +203,10 @@ while [[ $# -gt 0 ]]; do
       SCRIPTS_ONLY="1"
       shift
       ;;
+    --skip-nginx-apply)
+      SKIP_NGINX_APPLY="1"
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -296,11 +303,17 @@ ENV_NAME=${ENV_NAME}
 EOF2
 
   upsert_main_nginx_mapping
-  echo "[INFO] Applying nginx config (PORT=${NGINX_PORT}, MAPPING_FILE=${NGINX_MAPPING_FILE})"
-  (
-    cd "$ROOT_DIR"
-    PORT="$NGINX_PORT" MAPPING_FILE="$NGINX_MAPPING_FILE" ./scripts/setup_nginx_4191.sh
-  )
+  if [[ "$SKIP_NGINX_APPLY" == "1" ]]; then
+    echo "[INFO] nginx mapping updated but not applied"
+    echo "[INFO] To apply nginx (port ${NGINX_PORT}):"
+    echo "       cd $ROOT_DIR && PORT=${NGINX_PORT} MAPPING_FILE=${NGINX_MAPPING_FILE:-$HOME/nginx_locations.txt} ./scripts/setup_nginx_4191.sh"
+  else
+    echo "[INFO] Applying nginx config (PORT=${NGINX_PORT}, MAPPING_FILE=${NGINX_MAPPING_FILE})"
+    (
+      cd "$ROOT_DIR"
+      PORT="$NGINX_PORT" MAPPING_FILE="$NGINX_MAPPING_FILE" ./scripts/setup_nginx_4191.sh
+    )
+  fi
 fi
 
 echo "[INFO] 已部署 mm_config_server 脚本到 $DEST_SCRIPT_DIR"
