@@ -348,7 +348,17 @@ impl ModelPubApp {
                 // but model inference should still wait for live data.
                 if feature.status == FeatureStatus::Reload as u8 {
                     if let Some(runtime) = runtime {
-                        Self::validate_feature_dim(&self.model_name, &feature.symbol, dim, runtime);
+                        if dim != runtime.input_feature_dim {
+                            warn!(
+                                "reload feature dim mismatch, emit zero score: model_name={} symbol={} expected={} got={}",
+                                self.model_name,
+                                feature.symbol,
+                                runtime.input_feature_dim,
+                                dim
+                            );
+                            self.emit_zero_result_for_missing_model(&feature.symbol, feature.ts_ms)
+                                .await?;
+                        }
                     }
                     self.stats.reload_only += 1;
                     return Ok(());
@@ -367,7 +377,18 @@ impl ModelPubApp {
                     return Ok(());
                 };
 
-                Self::validate_feature_dim(&self.model_name, &feature.symbol, dim, runtime);
+                if dim != runtime.input_feature_dim {
+                    warn!(
+                        "symbol feature dim mismatch, emit zero score: model_name={} symbol={} expected={} got={}",
+                        self.model_name,
+                        feature.symbol,
+                        runtime.input_feature_dim,
+                        dim
+                    );
+                    self.emit_zero_result_for_missing_model(&feature.symbol, feature.ts_ms)
+                        .await?;
+                    return Ok(());
+                }
 
                 let extracted: Vec<f64> = runtime
                     .extract_indices
@@ -375,13 +396,16 @@ impl ModelPubApp {
                     .map(|&idx| normalized[idx])
                     .collect();
                 if extracted.len() != runtime.feature_dim {
-                    panic!(
-                        "extracted feature dim mismatch: model_name={} symbol={} expected={} got={}",
+                    warn!(
+                        "extracted feature dim mismatch, emit zero score: model_name={} symbol={} expected={} got={}",
                         self.model_name,
                         feature.symbol,
                         runtime.feature_dim,
                         extracted.len()
                     );
+                    self.emit_zero_result_for_missing_model(&feature.symbol, feature.ts_ms)
+                        .await?;
+                    return Ok(());
                 }
 
                 let f32_features: Vec<f32> = extracted.iter().map(|&v| v as f32).collect();
@@ -554,20 +578,6 @@ impl ModelPubApp {
         );
 
         self.stats = ModelPubStats::default();
-    }
-
-    fn validate_feature_dim(
-        model_name: &str,
-        symbol: &str,
-        dim: usize,
-        runtime: &SymbolModelRuntime,
-    ) {
-        if dim != runtime.input_feature_dim {
-            panic!(
-                "symbol feature dim mismatch: model_name={} symbol={} expected={} got={}",
-                model_name, symbol, runtime.input_feature_dim, dim
-            );
-        }
     }
 }
 
