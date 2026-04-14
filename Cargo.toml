@@ -211,4 +211,4 @@ features = ["fmt", "lazy", "parquet", "polars-io", "rolling_window", "rank", "mo
 debug = 0
 strip = "symbols"
 lto = "thin"
-codegen-units = 1
+codegen-units = 4

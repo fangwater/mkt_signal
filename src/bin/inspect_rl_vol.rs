@@ -28,7 +28,9 @@ const EPSILON: f64 = 1e-12;
 
 #[derive(Parser, Debug)]
 #[command(name = "inspect_rl_vol")]
-#[command(about = "Inspect rl_return_volatility IPC and recompute raw volatility from trade_flow_feature")]
+#[command(
+    about = "Inspect rl_return_volatility IPC and recompute raw volatility from trade_flow_feature"
+)]
 struct Args {
     /// Symbol to inspect, e.g. BTCUSDT
     #[arg(long)]
@@ -227,6 +229,7 @@ fn main() -> Result<()> {
         default_redis_settings(),
         "inspect".to_string(),
         30 * 60,
+        10_000,
     )?;
     let trade_flow_subscriber = create_trade_flow_subscriber(&node, hedge_venue_slug)?;
 

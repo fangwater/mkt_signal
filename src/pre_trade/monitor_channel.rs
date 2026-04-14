@@ -35,7 +35,8 @@ const DERIVATIVES_PAYLOAD: usize = 128;
 const DERIVATIVES_HISTORY_SIZE: usize = 50;
 const DERIVATIVES_MAX_SUBSCRIBERS: usize = 10;
 const DERIVATIVES_SUBSCRIBER_MAX_BUFFER: usize = 8192;
-const DEFAULT_DERIVATIVES_SERVICE: &str = "bridge/binance-futures/derivatives";
+const BINANCE_DERIVATIVES_SERVICE: &str = "bridge/binance-futures/derivatives";
+const OKEX_DERIVATIVES_SERVICE: &str = "bridge/okex-futures/derivatives";
 const DEFAULT_NODE_PRE_TRADE_DERIVATIVES: &str = "pre_trade_derivatives";
 
 // ==================== Helper Functions ====================
@@ -326,6 +327,35 @@ impl MonitorChannel {
         Self::with_inner(|inner| inner.hedge_venue)
     }
 
+    pub fn mark_price_exchange(&self) -> Exchange {
+        Self::with_inner(|inner| {
+            Self::mark_price_exchange_for_venues(inner.open_venue, inner.hedge_venue)
+        })
+    }
+
+    fn mark_price_exchange_for_venues(
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
+    ) -> Exchange {
+        let open_exchange = exchange_from_venue(open_venue);
+        let hedge_exchange = exchange_from_venue(hedge_venue);
+        if open_exchange == Exchange::Okex && hedge_exchange == Exchange::Okex {
+            Exchange::Okex
+        } else {
+            Exchange::Binance
+        }
+    }
+
+    fn derivatives_service_for_mark_price_source(
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
+    ) -> &'static str {
+        match Self::mark_price_exchange_for_venues(open_venue, hedge_venue) {
+            Exchange::Okex => OKEX_DERIVATIVES_SERVICE,
+            _ => BINANCE_DERIVATIVES_SERVICE,
+        }
+    }
+
     pub fn usdt_mgr(&self, scope: BasicAccountScope) -> Option<Rc<RefCell<UsdtBalanceManager>>> {
         Self::with_inner(|inner| inner.usdt_mgrs.get(&scope).cloned())
     }
@@ -541,7 +571,7 @@ impl MonitorChannel {
             unreachable!()
         };
 
-        // 创建价格表（使用 Binance premiumIndex 初始化为空即可）
+        // 创建价格表（价格由 derivatives stream 持续更新）
         let price_table = Rc::new(RefCell::new(PriceTable::new()));
 
         // 加载交易对 LOT_SIZE/PRICE_FILTER（按 venue 区分），用于数量/价格对齐
@@ -580,10 +610,12 @@ impl MonitorChannel {
 
         // 启动衍生品价格监听任务（mark_price, index_price）
         //
-        // 约定：pre_trade 始终使用 Binance Futures 的衍生品指标（mark/index price）作为基准。
-        // 统一从 bridge 订阅，避免继续占用 dat_pbs 的 subscriber 配额。
+        // 约定：默认使用 Binance Futures 的衍生品指标；当 open/hedge 两腿都属于 OKX 时，
+        // 切换到 OKX Futures 的 mark/index price。统一从 bridge 订阅，避免继续占用
+        // dat_pbs 的 subscriber 配额。
         let node_name = DEFAULT_NODE_PRE_TRADE_DERIVATIVES.to_string();
-        let service_name = DEFAULT_DERIVATIVES_SERVICE.to_string();
+        let service_name =
+            Self::derivatives_service_for_mark_price_source(open_venue, hedge_venue).to_string();
         Self::spawn_derivatives_listener(price_table.clone(), node_name, service_name);
 
         // 创建内部实例并保存到 thread-local
@@ -733,7 +765,10 @@ impl MonitorChannel {
             collect_leg_entries(&inner.hedge_leg)
         };
 
-        let price_mapper = create_symbol_mapper(Exchange::Binance);
+        let price_mapper = create_symbol_mapper(Self::mark_price_exchange_for_venues(
+            inner.open_venue,
+            inner.hedge_venue,
+        ));
         let mark_price_usdt = |asset: &str| -> f64 {
             if asset.eq_ignore_ascii_case("USDT") {
                 1.0
@@ -1428,7 +1463,10 @@ impl MonitorChannel {
                 .map(|(open, hedge)| open + hedge)
                 .unwrap_or(0.0);
 
-            let price_mapper = create_symbol_mapper(Exchange::Binance);
+            let price_mapper = create_symbol_mapper(Self::mark_price_exchange_for_venues(
+                inner.open_venue,
+                inner.hedge_venue,
+            ));
             let mark = if base_asset.eq_ignore_ascii_case("USDT") {
                 1.0
             } else {
@@ -1537,7 +1575,10 @@ impl MonitorChannel {
                 .unwrap_or(0.0);
 
             let base_upper = base_asset.to_uppercase();
-            let price_mapper = create_symbol_mapper(Exchange::Binance);
+            let price_mapper = create_symbol_mapper(Self::mark_price_exchange_for_venues(
+                inner.open_venue,
+                inner.hedge_venue,
+            ));
             let mark_symbol = price_mapper.asset_to_price_symbol(&base_upper);
             let price_from_table = {
                 let table = inner.price_table.borrow();
@@ -2254,5 +2295,41 @@ mod tests {
         assert!(MonitorChannel::instance()
             .ensure_max_pos_u("FILUSDT", -5.0, 100.0)
             .is_ok());
+    }
+
+    #[test]
+    fn mark_price_source_uses_okex_when_both_venues_are_okex() {
+        assert_eq!(
+            MonitorChannel::mark_price_exchange_for_venues(
+                TradingVenue::OkexMargin,
+                TradingVenue::OkexFutures,
+            ),
+            Exchange::Okex
+        );
+        assert_eq!(
+            MonitorChannel::derivatives_service_for_mark_price_source(
+                TradingVenue::OkexMargin,
+                TradingVenue::OkexFutures,
+            ),
+            OKEX_DERIVATIVES_SERVICE
+        );
+    }
+
+    #[test]
+    fn mark_price_source_falls_back_to_binance_when_not_both_okex() {
+        assert_eq!(
+            MonitorChannel::mark_price_exchange_for_venues(
+                TradingVenue::OkexFutures,
+                TradingVenue::BinanceFutures,
+            ),
+            Exchange::Binance
+        );
+        assert_eq!(
+            MonitorChannel::derivatives_service_for_mark_price_source(
+                TradingVenue::OkexFutures,
+                TradingVenue::BinanceFutures,
+            ),
+            BINANCE_DERIVATIVES_SERVICE
+        );
     }
 }

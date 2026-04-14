@@ -459,7 +459,7 @@ impl ResampleChannel {
         let ts_ms = (get_timestamp_us() / 1000) as i64;
         let (exposures, _total_equity, total_abs_exposure, _total_position, _um_unrealized_usd) =
             mon.basic_state_snapshot();
-        let price_mapper = create_symbol_mapper(Exchange::Binance);
+        let price_mapper = create_symbol_mapper(mon.mark_price_exchange());
 
         let mut rows = Vec::new();
         for (asset, &(open_qty, hedge_qty)) in &exposures {
@@ -515,7 +515,7 @@ impl ResampleChannel {
         let mon = MonitorChannel::instance();
         let price_snapshot = mon.price_table().borrow().snapshot();
         let ts_ms = (get_timestamp_us() / 1000) as i64;
-        let exposure_price_mapper = create_symbol_mapper(Exchange::Binance);
+        let exposure_price_mapper = create_symbol_mapper(mon.mark_price_exchange());
 
         let (exposures, total_equity, total_abs_exposure, total_position, um_unrealized_usd) =
             mon.basic_state_snapshot();
@@ -571,18 +571,31 @@ impl ResampleChannel {
 
                 let open_usdt = open_qty * mark;
                 let hedge_usdt = hedge_qty * mark;
-                let (hedge_net_qty, hedge_time_ms, hedge_is_taker, hedge_signal, hedge_final_offset) =
-                    hedge_snapshot_by_symbol
+                let (
+                    hedge_net_qty,
+                    hedge_time_ms,
+                    hedge_is_taker,
+                    hedge_signal,
+                    hedge_final_offset,
+                ) = hedge_snapshot_by_symbol
                     .get(&symbol)
-                    .map(|(net_qty, hedge_ts_ms, hedge_is_taker, hedge_signal, hedge_final_offset)| {
-                        (
-                            Some(*net_qty),
-                            *hedge_ts_ms,
-                            *hedge_is_taker,
-                            *hedge_signal,
-                            *hedge_final_offset,
-                        )
-                    })
+                    .map(
+                        |(
+                            net_qty,
+                            hedge_ts_ms,
+                            hedge_is_taker,
+                            hedge_signal,
+                            hedge_final_offset,
+                        )| {
+                            (
+                                Some(*net_qty),
+                                *hedge_ts_ms,
+                                *hedge_is_taker,
+                                *hedge_signal,
+                                *hedge_final_offset,
+                            )
+                        },
+                    )
                     .unwrap_or((None, None, None, None, None));
                 let net_qty = open_qty + hedge_qty;
                 let net_usdt = open_usdt + hedge_usdt;

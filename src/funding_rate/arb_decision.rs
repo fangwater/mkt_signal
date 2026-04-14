@@ -15,6 +15,7 @@ use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
 use crate::common::ipc_service_name::build_service_name;
 use crate::common::redis_client::RedisSettings;
 use crate::common::time_util::get_timestamp_us;
+use crate::funding_rate::config_loader::OPEN_VOL_THRESHOLD_MAX_AGE_MS;
 use crate::funding_rate::FundingRatePeriod;
 use crate::pre_trade::order_manager::Side;
 use crate::signal::arb_signal::{ArbBackwardQueryMsg, ArbCancelCandidateQueryMsg};
@@ -46,6 +47,7 @@ pub const DEFAULT_ARBITRAGE_SIGNAL_CHANNEL: &str = "trade_signal";
 pub const DEFAULT_ARBITRAGE_BACKWARD_CHANNEL: &str = "trade_query";
 pub const DEFAULT_PNLU_KEY_SUFFIX: &str = "_pnlu_factor_thresholds";
 pub const DEFAULT_ENV_MODEL_TRUE_THRESHOLD: f64 = 0.0;
+const TARGET_FACTOR_MAX_AGE_MS: i64 = 10_000;
 const FUNDING_ARB_SHELL_NAME: &str = "ArbDecision(FundingArb)";
 const SPREAD_ARB_SHELL_NAME: &str = "ArbDecision(SpreadArb)";
 
@@ -258,6 +260,7 @@ pub fn create_arb_runtime_components(
         pnlu_settings.clone(),
         pnlu_key_suffix.clone(),
         30 * 60,
+        TARGET_FACTOR_MAX_AGE_MS,
     )?;
     let hedge_factor_value_hub = FactorValueHub::new(
         &node,
@@ -268,6 +271,7 @@ pub fn create_arb_runtime_components(
         pnlu_settings,
         pnlu_key_suffix,
         30 * 60,
+        TARGET_FACTOR_MAX_AGE_MS,
     )?;
     Ok((
         node,
@@ -411,6 +415,7 @@ fn build_spread_arb_shell(venues: VenuePair) -> Result<SpreadArbShell> {
         arb.return_score_thresholds = HashMap::new();
         arb.funding_open_thresholds = HashMap::new();
         arb.open_volatility_thresholds = HashMap::new();
+        arb.open_volatility_threshold_update_tp_ms = HashMap::new();
     });
     Ok(state)
 }
@@ -3012,6 +3017,7 @@ pub(crate) struct ArbDecisionState {
     pub return_score_thresholds: HashMap<String, ReturnScoreThresholdsResolved>,
     pub funding_open_thresholds: HashMap<String, XarbFundingThresholdsResolved>,
     pub open_volatility_thresholds: HashMap<String, f64>,
+    pub open_volatility_threshold_update_tp_ms: HashMap<String, Option<i64>>,
     pub tlen_thresholds: HashMap<String, f64>,
     pub signal_cooldown_us: i64,
     pub spread_cancel_cooldown_us: i64,
@@ -3050,6 +3056,7 @@ impl ArbDecisionState {
             return_score_thresholds: HashMap::new(),
             funding_open_thresholds: HashMap::new(),
             open_volatility_thresholds: HashMap::new(),
+            open_volatility_threshold_update_tp_ms: HashMap::new(),
             tlen_thresholds: HashMap::new(),
             signal_cooldown_us: 5_000_000,
             spread_cancel_cooldown_us: 0,
@@ -3626,10 +3633,50 @@ impl ArbDecisionState {
             .copied()
     }
 
-    pub fn lookup_open_volatility_threshold(&self, symbol_key: &str) -> Option<f64> {
-        self.open_volatility_thresholds
-            .get(&symbol_key.to_ascii_uppercase())
+    pub fn update_open_volatility_thresholds(
+        &mut self,
+        thresholds: HashMap<String, f64>,
+        update_tp_ms: HashMap<String, Option<i64>>,
+    ) {
+        self.open_volatility_thresholds = thresholds;
+        self.open_volatility_threshold_update_tp_ms = update_tp_ms;
+    }
+
+    pub fn lookup_open_volatility_threshold_checked(
+        &self,
+        symbol_key: &str,
+        now_ms: i64,
+    ) -> std::result::Result<f64, String> {
+        let symbol_key = symbol_key.to_ascii_uppercase();
+        let Some(threshold) = self.open_volatility_thresholds.get(&symbol_key).copied() else {
+            return Err("missing_open_volatility_threshold".to_string());
+        };
+        match self
+            .open_volatility_threshold_update_tp_ms
+            .get(&symbol_key)
             .copied()
+            .flatten()
+        {
+            Some(update_tp) if update_tp > now_ms => Err(format!(
+                "open_vol_threshold_future_tp(update_tp={} now_ms={})",
+                update_tp, now_ms
+            )),
+            Some(update_tp) if update_tp <= 0 => {
+                Err("open_vol_threshold_missing_update_tp".to_string())
+            }
+            Some(update_tp) => {
+                let age_ms = now_ms - update_tp;
+                if age_ms > OPEN_VOL_THRESHOLD_MAX_AGE_MS {
+                    Err(format!(
+                        "open_vol_threshold_timeout(age_ms={} max_age_ms={})",
+                        age_ms, OPEN_VOL_THRESHOLD_MAX_AGE_MS
+                    ))
+                } else {
+                    Ok(threshold)
+                }
+            }
+            None => Err("open_vol_threshold_missing_update_tp".to_string()),
+        }
     }
 
     fn snapshot_open_from_key_fields(
@@ -3822,10 +3869,12 @@ impl ArbDecisionState {
         };
 
         if self.enable_volatility_limit {
-            let Some(open_volatility_threshold) = self.lookup_open_volatility_threshold(symbol)
-            else {
-                return Some("miss_vol".to_string());
-            };
+            let open_volatility_threshold =
+                match self.lookup_open_volatility_threshold_checked(symbol, get_timestamp_us() / 1000)
+                {
+                    Ok(value) => value,
+                    Err(reason) => return Some(reason),
+                };
             if open_volatility_factor > open_volatility_threshold {
                 return Some("vol".to_string());
             }
@@ -4021,11 +4070,14 @@ impl ArbDecisionState {
             };
 
         if self.enable_volatility_limit {
-            let Some(open_volatility_threshold) =
-                self.lookup_open_volatility_threshold(open_symbol_key)
-            else {
-                self.record_intercept_summary("miss_vol");
-                return None;
+            let open_volatility_threshold = match self
+                .lookup_open_volatility_threshold_checked(open_symbol_key, now / 1000)
+            {
+                Ok(value) => value,
+                Err(reason) => {
+                    self.record_intercept_summary(reason.clone());
+                    return None;
+                }
             };
             if open_volatility_factor > open_volatility_threshold {
                 self.record_intercept_summary("vol");

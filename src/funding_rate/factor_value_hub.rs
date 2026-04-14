@@ -2,16 +2,17 @@ use anyhow::{Context, Result};
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{info, warn};
+use log::{error, info, warn};
 use redis::Commands;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fmt;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::common::mkt_msg::{FactorValueMsg, ModelMsg, MODEL_STATUS_OK};
 use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
+use crate::common::time_util::get_timestamp_us;
 use crate::factor_pub::factor_index::factor_name_to_index;
 use crate::factor_pub::model_pub::publisher::MODEL_PAYLOAD_MAX_BYTES;
 use crate::signal::common::TradingVenue;
@@ -23,6 +24,7 @@ const MODEL_OUTPUT_SUBSCRIBER_BUFFER_SIZE: usize = 256;
 const MODEL_OUTPUT_POLL_MAX_PER_CHANNEL: usize = 256;
 const MODEL_OUTPUT_STATS_LOG_INTERVAL_SECS: u64 = 60;
 const DEFAULT_PNLU_MAX_AGE_SECS: i64 = 30 * 60;
+const FACTOR_VALUE_ISSUE_LOG_INTERVAL_SECS: u64 = 10;
 
 #[derive(Debug, Clone)]
 pub struct FactorValueLookupResult {
@@ -118,6 +120,11 @@ struct FactorValueSnapshot {
     factor_index: u16,
 }
 
+struct FactorIssueLogState {
+    note: String,
+    last_log_at: Instant,
+}
+
 struct ModelOutputSubscriberEntry {
     service_name: String,
     subscriber: Subscriber<ipc::Service, [u8; MODEL_PAYLOAD_MAX_BYTES], ()>,
@@ -178,8 +185,11 @@ pub struct FactorValueHub {
     pnlu_profile: String,
     target_factor_index: u16,
     target_factor_key_prefix: String,
+    factor_value_service_name: String,
+    factor_value_max_age_ms: i64,
     factor_value_sub: Subscriber<ipc::Service, [u8; FACTOR_VALUE_PAYLOAD_MAX_BYTES], ()>,
     factor_value_cache: HashMap<(u16, String), FactorValueSnapshot>,
+    factor_issue_log_state: HashMap<String, FactorIssueLogState>,
     model_output_subscribers: Vec<ModelOutputSubscriberEntry>,
     model_output_services: Vec<String>,
     model_output_latest_scores: HashMap<(String, String), f64>,
@@ -201,6 +211,7 @@ impl FactorValueHub {
         pnlu_settings: RedisSettings,
         pnlu_key_suffix: String,
         pnlu_max_age_secs: i64,
+        factor_value_max_age_ms: i64,
     ) -> Result<Self> {
         let factor_value_sub =
             Self::create_factor_value_subscriber(node, hedge_venue, target_factor_name)?;
@@ -214,14 +225,22 @@ impl FactorValueHub {
             DEFAULT_PNLU_MAX_AGE_SECS
         };
         let pnlu_profile = Self::build_pnlu_profile(open_venue, hedge_venue);
+        let factor_value_service_name = format!(
+            "factor_pub/{}/{}",
+            hedge_venue.data_pub_slug(),
+            target_factor_name
+        );
 
         Ok(Self {
             hedge_venue,
             pnlu_profile,
             target_factor_index,
             target_factor_key_prefix: target_factor_key_prefix.to_string(),
+            factor_value_service_name,
+            factor_value_max_age_ms,
             factor_value_sub,
             factor_value_cache: HashMap::new(),
+            factor_issue_log_state: HashMap::new(),
             model_output_subscribers: Vec::new(),
             model_output_services: Vec::new(),
             model_output_latest_scores: HashMap::new(),
@@ -277,6 +296,67 @@ impl FactorValueHub {
             .buffer_size(requested_buffer)
             .create()
             .context("failed to create factor subscriber")
+    }
+
+    fn validate_factor_snapshot(
+        snapshot: &FactorValueSnapshot,
+        now_ms: i64,
+        max_age_ms: i64,
+    ) -> std::result::Result<(), String> {
+        if max_age_ms <= 0 {
+            return Ok(());
+        }
+        if snapshot.timestamp_ms <= 0 {
+            return Err(format!(
+                "invalid_ipc_timestamp(ts_ms={})",
+                snapshot.timestamp_ms
+            ));
+        }
+        if snapshot.timestamp_ms > now_ms {
+            return Err(format!(
+                "future_ipc_timestamp(ts_ms={} now_ms={})",
+                snapshot.timestamp_ms, now_ms
+            ));
+        }
+        let age_ms = now_ms - snapshot.timestamp_ms;
+        if age_ms > max_age_ms {
+            return Err(format!(
+                "factor_ipc_timeout(age_ms={} max_age_ms={})",
+                age_ms, max_age_ms
+            ));
+        }
+        Ok(())
+    }
+
+    fn log_factor_issue(&mut self, symbol_key: &str, note: &str, ts_ms: Option<i64>) {
+        let now = Instant::now();
+        let should_log = match self.factor_issue_log_state.get(symbol_key) {
+            Some(state) => {
+                state.note != note
+                    || now.duration_since(state.last_log_at)
+                        >= Duration::from_secs(FACTOR_VALUE_ISSUE_LOG_INTERVAL_SECS)
+            }
+            None => true,
+        };
+        if !should_log {
+            return;
+        }
+
+        error!(
+            "FactorValueHub: factor snapshot unavailable service={} symbol={} note={} ts_ms={:?} max_age_ms={}",
+            self.factor_value_service_name,
+            symbol_key,
+            note,
+            ts_ms,
+            self.factor_value_max_age_ms,
+        );
+        self.factor_issue_log_state.insert(
+            symbol_key.to_string(),
+            FactorIssueLogState {
+                note: note.to_string(),
+                last_log_at: now,
+            },
+        );
     }
 
     fn create_model_output_subscriber(
@@ -364,7 +444,10 @@ impl FactorValueHub {
                 }
                 Ok(None) => break,
                 Err(err) => {
-                    warn!("FactorValueHub: factor subscriber receive error: {}", err);
+                    error!(
+                        "FactorValueHub: factor subscriber receive error service={} err={}",
+                        self.factor_value_service_name, err
+                    );
                     break;
                 }
             }
@@ -461,16 +544,36 @@ impl FactorValueHub {
         );
 
         if let Some(snapshot) = self.factor_value_cache.get(&cache_key) {
-            FactorValueLookupResult {
-                key,
-                symbol_key,
-                ready: Some(snapshot.ready),
-                target_factor_value: Some(snapshot.value),
-                ts_ms: Some(snapshot.timestamp_ms),
-                factor_index: Some(snapshot.factor_index),
-                note: "ok".to_string(),
+            let snapshot = *snapshot;
+            let now_ms = get_timestamp_us() / 1000;
+            match Self::validate_factor_snapshot(&snapshot, now_ms, self.factor_value_max_age_ms) {
+                Ok(()) => {
+                    self.factor_issue_log_state.remove(&symbol_key);
+                    FactorValueLookupResult {
+                        key,
+                        symbol_key,
+                        ready: Some(snapshot.ready),
+                        target_factor_value: Some(snapshot.value),
+                        ts_ms: Some(snapshot.timestamp_ms),
+                        factor_index: Some(snapshot.factor_index),
+                        note: "ok".to_string(),
+                    }
+                }
+                Err(note) => {
+                    self.log_factor_issue(&symbol_key, &note, Some(snapshot.timestamp_ms));
+                    FactorValueLookupResult {
+                        key,
+                        symbol_key,
+                        ready: Some(false),
+                        target_factor_value: None,
+                        ts_ms: Some(snapshot.timestamp_ms),
+                        factor_index: Some(snapshot.factor_index),
+                        note,
+                    }
+                }
             }
         } else {
+            self.log_factor_issue(&symbol_key, "missing_ipc_snapshot", None);
             FactorValueLookupResult {
                 key,
                 symbol_key,
@@ -777,7 +880,7 @@ impl FactorValueHub {
 
 #[cfg(test)]
 mod tests {
-    use super::FactorValueHub;
+    use super::{FactorValueHub, FactorValueSnapshot};
     use crate::signal::common::TradingVenue;
 
     const TEST_MODEL_OUTPUT_NAME: &str = "binance_futures_direction_model";
@@ -826,6 +929,34 @@ mod tests {
         assert_eq!(
             FactorValueHub::normalize_model_output_service_name("-"),
             None
+        );
+    }
+
+    #[test]
+    fn factor_snapshot_is_fresh_within_max_age() {
+        let snapshot = FactorValueSnapshot {
+            value: 1.0,
+            ready: true,
+            timestamp_ms: 9_500,
+            factor_index: 0,
+        };
+        assert_eq!(
+            FactorValueHub::validate_factor_snapshot(&snapshot, 10_000, 10_000),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn factor_snapshot_is_rejected_when_stale() {
+        let snapshot = FactorValueSnapshot {
+            value: 1.0,
+            ready: true,
+            timestamp_ms: 9_000,
+            factor_index: 0,
+        };
+        assert_eq!(
+            FactorValueHub::validate_factor_snapshot(&snapshot, 20_000, 10_000),
+            Err("factor_ipc_timeout(age_ms=11000 max_age_ms=10000)".to_string())
         );
     }
 }

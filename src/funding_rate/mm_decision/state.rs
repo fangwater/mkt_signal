@@ -13,6 +13,7 @@ use crate::common::iceoryx_publisher::SignalPublisher;
 use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::depth_pub::query_client::DepthQueryClient;
+use crate::funding_rate::config_loader::OPEN_VOL_THRESHOLD_MAX_AGE_MS;
 use crate::market_maker::open_quote_plan::MmOpenQuotePlan;
 use crate::pre_trade::order_manager::{OrderType, Side};
 use crate::signal::cancel_signal::{MmCancelCtx, MmCancelReason};
@@ -29,6 +30,7 @@ pub(crate) const DEFAULT_PNLU_KEY_SUFFIX: &str = "_pnlu_factor_thresholds";
 pub(crate) const PNLU_MAX_AGE_SECS: i64 = 30 * 60;
 pub(crate) const TARGET_FACTOR_NAME: &str = "rl_return_volatility";
 pub(crate) const TARGET_FACTOR_KEY_PREFIX: &str = TARGET_FACTOR_NAME;
+pub(crate) const TARGET_FACTOR_MAX_AGE_MS: i64 = 10_000;
 pub(crate) const ENV_MODEL_TRUE_THRESHOLD_DEFAULT: f64 = 0.0;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -74,6 +76,7 @@ pub(crate) struct MmDecisionState {
     pub(crate) environment_model_true_threshold: f64,
     pub(crate) return_score_thresholds: HashMap<String, ReturnScoreThresholdsResolved>,
     pub(crate) open_volatility_thresholds: HashMap<String, f64>,
+    pub(crate) open_volatility_threshold_update_tp_ms: HashMap<String, Option<i64>>,
     pub(crate) tlen_thresholds: HashMap<String, f64>,
     pub(crate) open_min_qty_table: VenueMinQtyTable,
     pub(crate) factor_value_hub: FactorValueHub,
@@ -119,6 +122,7 @@ impl MmDecisionState {
             pnlu_settings,
             DEFAULT_PNLU_KEY_SUFFIX.to_string(),
             PNLU_MAX_AGE_SECS,
+            TARGET_FACTOR_MAX_AGE_MS,
         )?;
 
         Ok(Self {
@@ -153,6 +157,7 @@ impl MmDecisionState {
             environment_model_true_threshold: ENV_MODEL_TRUE_THRESHOLD_DEFAULT,
             return_score_thresholds: HashMap::new(),
             open_volatility_thresholds: HashMap::new(),
+            open_volatility_threshold_update_tp_ms: HashMap::new(),
             tlen_thresholds: HashMap::new(),
             open_min_qty_table: VenueMinQtyTable::new(open_venue),
             factor_value_hub,
@@ -427,12 +432,55 @@ impl MmDecisionState {
         );
     }
 
-    pub(crate) fn update_open_volatility_thresholds(&mut self, thresholds: HashMap<String, f64>) {
+    pub(crate) fn update_open_volatility_thresholds(
+        &mut self,
+        thresholds: HashMap<String, f64>,
+        update_tp_ms: HashMap<String, Option<i64>>,
+    ) {
         self.open_volatility_thresholds = thresholds;
+        self.open_volatility_threshold_update_tp_ms = update_tp_ms;
         debug!(
-            "MmDecision: open volatility thresholds updated symbols={}",
+            "MmDecision: open volatility thresholds updated symbols={} timestamps={}",
             self.open_volatility_thresholds.len(),
+            self.open_volatility_threshold_update_tp_ms.len(),
         );
+    }
+
+    pub(crate) fn lookup_open_volatility_threshold(
+        &self,
+        symbol_key: &str,
+        now_ms: i64,
+    ) -> std::result::Result<f64, String> {
+        let symbol_key = symbol_key.to_ascii_uppercase();
+        let Some(threshold) = self.open_volatility_thresholds.get(&symbol_key).copied() else {
+            return Err("missing_open_volatility_threshold".to_string());
+        };
+        match self
+            .open_volatility_threshold_update_tp_ms
+            .get(&symbol_key)
+            .copied()
+            .flatten()
+        {
+            Some(update_tp) if update_tp > now_ms => Err(format!(
+                "open_vol_threshold_future_tp(update_tp={} now_ms={})",
+                update_tp, now_ms
+            )),
+            Some(update_tp) if update_tp <= 0 => {
+                Err("open_vol_threshold_missing_update_tp".to_string())
+            }
+            Some(update_tp) => {
+                let age_ms = now_ms - update_tp;
+                if age_ms > OPEN_VOL_THRESHOLD_MAX_AGE_MS {
+                    Err(format!(
+                        "open_vol_threshold_timeout(age_ms={} max_age_ms={})",
+                        age_ms, OPEN_VOL_THRESHOLD_MAX_AGE_MS
+                    ))
+                } else {
+                    Ok(threshold)
+                }
+            }
+            None => Err("open_vol_threshold_missing_update_tp".to_string()),
+        }
     }
 
     pub(crate) fn evaluate_environment_signal(

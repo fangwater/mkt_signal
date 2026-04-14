@@ -19,9 +19,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use super::cfg::{
-    FusionFactorPubConfig, RlFactorConfig as FusionRlFactorConfig, TlenServerConfig,
-};
+use super::cfg::{FusionFactorPubConfig, RlFactorConfig as FusionRlFactorConfig, TlenServerConfig};
 use super::factor_enum::FusionFactorId;
 pub(crate) use super::plan::{
     load_symbol_factor_plans_from_tlen_server, ExtraFactorId, FactorBinding, SymbolFactorPlan,

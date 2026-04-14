@@ -100,19 +100,19 @@ impl MmOpenDecision {
             ));
         };
         if state.enable_volatility_limit {
-            let Some(open_volatility_threshold) = state
-                .open_volatility_thresholds
-                .get(&symbol_key.to_ascii_uppercase())
-                .copied()
-            else {
-                return Ok(MmOpenEvalResult::skipped(
-                    &symbol_key,
-                    "missing_open_volatility_threshold",
-                    None,
-                    Some(volatility),
-                    None,
-                ));
-            };
+            let open_volatility_threshold =
+                match state.lookup_open_volatility_threshold(&symbol_key, now_us / 1000) {
+                    Ok(value) => value,
+                    Err(reason) => {
+                        return Ok(MmOpenEvalResult::skipped(
+                            &symbol_key,
+                            &reason,
+                            None,
+                            Some(volatility),
+                            None,
+                        ))
+                    }
+                };
             if volatility > open_volatility_threshold {
                 return Ok(MmOpenEvalResult::skipped(
                     &symbol_key,
