@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use bytes::Bytes;
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
@@ -180,7 +180,13 @@ impl MultiChannelSubscriber {
                     .publish_subscribe::<[u8; 256]>()
                     .max_publishers(1)
                     .max_subscribers(10)
-                    .open_or_create()?;
+                    .open()
+                    .with_context(|| {
+                        format!(
+                            "failed to open rl_return_volatility service={} hint=fusion_factor_pub must start first",
+                            service_name
+                        )
+                    })?;
                 let subscriber = service.subscriber_builder().create()?;
                 SubscriberEnum::Size256(subscriber)
             }

@@ -115,7 +115,11 @@ pub(crate) fn build_factor_position_map(
             );
         }
         if positions.insert(key.to_string(), idx).is_some() {
-            anyhow::bail!("duplicate factor in symbol factor plan: symbol={} factor={}", symbol, key);
+            anyhow::bail!(
+                "duplicate factor in symbol factor plan: symbol={} factor={}",
+                symbol,
+                key
+            );
         }
     }
     Ok(positions)

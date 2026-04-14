@@ -88,10 +88,7 @@ async fn main() -> Result<()> {
     let session_max = None;
     info!(
         "Primary IP='{}', Secondary IP='{}', session_max={:?} (local_ip_source: {})",
-        primary_ip,
-        secondary_ip,
-        session_max,
-        ip_source
+        primary_ip, secondary_ip, session_max, ip_source
     );
 
     // 构建订阅消息 - 同时订阅 SPOT/SWAP 订单和持仓

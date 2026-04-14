@@ -140,9 +140,7 @@ fn build_binance_rest_client(local_ip: Option<&str>, timeout: Duration) -> Resul
         }
         _ => builder,
     };
-    builder
-        .build()
-        .context("build Binance REST client failed")
+    builder.build().context("build Binance REST client failed")
 }
 
 fn wrap_basic_payload(account_scope: BasicAccountScope, payload: Bytes) -> Option<Bytes> {
@@ -326,10 +324,7 @@ async fn main() -> Result<()> {
     let session_max = Some(Duration::from_secs(BINANCE_SESSION_MAX_SECS));
     info!(
         "Primary IP='{}', Secondary IP='{}', session_max={:?} (local_ip_source: {})",
-        primary_ip,
-        secondary_ip,
-        session_max,
-        ip_source
+        primary_ip, secondary_ip, session_max, ip_source
     );
 
     // Start listenKey services
@@ -340,8 +335,7 @@ async fn main() -> Result<()> {
                 api_key.clone(),
                 cfg.listen_key_path.clone(),
                 Some(primary_ip.clone()),
-            )
-            ?
+            )?
             .start(shutdown_rx.clone())
             .await?;
             let secondary_listen_key_rx = BinanceListenKeyService::new(

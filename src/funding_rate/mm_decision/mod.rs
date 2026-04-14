@@ -11,12 +11,12 @@ use super::arb_decision::DEFAULT_ARBITRAGE_BACKWARD_CHANNEL;
 use super::common::ReturnScoreThresholdsResolved;
 use super::mkt_channel::MktChannel;
 use super::tlen_threshold_loader;
+use crate::common::bbo::Bbo;
 use crate::common::iceoryx_publisher::SIGNAL_PAYLOAD;
 use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
 use crate::common::ipc_service_name::build_service_name;
 use crate::common::redis_client::RedisSettings;
 use crate::common::time_util::get_timestamp_us;
-use crate::common::bbo::Bbo;
 use crate::market_maker::hedge_quote_plan::{
     build_mm_hedge_ctx as build_mm_hedge_ctx_core, resolve_mm_hedge_signal_inputs,
     MmHedgeBuildInput,

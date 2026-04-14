@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use iceoryx2::port::publisher::Publisher;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
@@ -24,7 +24,13 @@ impl FusionFactorPublisher {
             .max_subscribers(10)
             .subscriber_max_buffer_size(8192)
             .history_size(128)
-            .open_or_create()?;
+            .create()
+            .with_context(|| {
+                format!(
+                    "create fusion factor service failed: service={} hint=producer must own service creation",
+                    service_path
+                )
+            })?;
 
         let publisher = service.publisher_builder().create()?;
         Ok(Self {

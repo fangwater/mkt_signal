@@ -1,7 +1,7 @@
 use anyhow::Result;
 use log::{debug, info, warn};
-use std::collections::HashMap;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::common::redis_client::{RedisClient, RedisSettings};
@@ -62,7 +62,10 @@ fn risk_params_full_key(redis: &RedisSettings) -> String {
 
 fn mm_max_pos_u_override_key(env_name: Option<&str>, open_venue: TradingVenue) -> Option<String> {
     let env_name = env_name.map(str::trim).filter(|s| !s.is_empty())?;
-    Some(format!("{env_name}:{}:mm:max_pos_u", open_venue.data_pub_slug()))
+    Some(format!(
+        "{env_name}:{}:mm:max_pos_u",
+        open_venue.data_pub_slug()
+    ))
 }
 
 fn parse_mm_max_pos_u_overrides(
@@ -140,24 +143,23 @@ impl PreTradeParamsLoader {
             redis.prefix.as_deref()
         );
 
-        let max_pos_u_overrides = if let Some(override_key) =
-            mm_max_pos_u_override_key(env_name, open_venue)
-        {
-            match client.get_string(&override_key).await? {
-                Some(raw) => {
-                    let parsed = parse_mm_max_pos_u_overrides(&raw, open_venue, &override_key);
-                    debug!(
-                        "max_pos_u overrides loaded key='{}' symbols={}",
-                        override_key,
-                        parsed.len()
-                    );
-                    parsed
+        let max_pos_u_overrides =
+            if let Some(override_key) = mm_max_pos_u_override_key(env_name, open_venue) {
+                match client.get_string(&override_key).await? {
+                    Some(raw) => {
+                        let parsed = parse_mm_max_pos_u_overrides(&raw, open_venue, &override_key);
+                        debug!(
+                            "max_pos_u overrides loaded key='{}' symbols={}",
+                            override_key,
+                            parsed.len()
+                        );
+                        parsed
+                    }
+                    None => HashMap::new(),
                 }
-                None => HashMap::new(),
-            }
-        } else {
-            HashMap::new()
-        };
+            } else {
+                HashMap::new()
+            };
 
         let parse_f64 =
             |k: &str| -> Option<f64> { hash_map.get(k).and_then(|v| v.parse::<f64>().ok()) };

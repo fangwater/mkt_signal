@@ -1058,7 +1058,11 @@ fn compute_td_mt_014(series: &SymbolSeries<'_>) -> Option<f64> {
 }
 
 fn compute_td_mt_015(series: &SymbolSeries<'_>) -> Option<f64> {
-    let n = series.high.len().min(series.low.len()).min(series.close.len());
+    let n = series
+        .high
+        .len()
+        .min(series.low.len())
+        .min(series.close.len());
     if n < 14 {
         return None;
     }

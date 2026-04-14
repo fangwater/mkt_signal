@@ -70,7 +70,10 @@ pub async fn load_local_ips_preferring_trade_engine() -> Result<((String, String
 
     let cfg_path = home_mkt_cfg_path()?;
     let ips = load_local_ips_from_path(&cfg_path).await?;
-    Ok((ips, format!("{} (fallback mkt_cfg.yaml)", cfg_path.display())))
+    Ok((
+        ips,
+        format!("{} (fallback mkt_cfg.yaml)", cfg_path.display()),
+    ))
 }
 
 pub fn find_trade_engine_local_cfg_path() -> Result<Option<PathBuf>> {

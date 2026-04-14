@@ -116,7 +116,8 @@ impl ModelPubApp {
             })?;
 
         let models_by_symbol =
-            Self::load_models_from_model_manager(&config, &model_name, &symbol_factor_names).await?;
+            Self::load_models_from_model_manager(&config, &model_name, &symbol_factor_names)
+                .await?;
         if models_by_symbol.is_empty() {
             anyhow::bail!(
                 "startup model list is empty: model_name={} base_url={}",
@@ -277,7 +278,13 @@ impl ModelPubApp {
             .max_subscribers(10)
             .subscriber_max_buffer_size(8192)
             .history_size(128)
-            .open_or_create()?;
+            .open()
+            .with_context(|| {
+                format!(
+                    "open feature channel failed: service_path={} hint=fusion_factor_pub must start first",
+                    service_path
+                )
+            })?;
 
         let subscriber = service.subscriber_builder().buffer_size(8192).create()?;
         info!("Subscribed to feature channel: {}", service_path);
@@ -328,8 +335,7 @@ impl ModelPubApp {
                     if runtime.is_some() {
                         panic!(
                             "empty feature vector for loaded model symbol: model_name={} symbol={}",
-                            self.model_name,
-                            feature.symbol
+                            self.model_name, feature.symbol
                         );
                     }
                     self.stats.empty_feature_drop = self.stats.empty_feature_drop.saturating_add(1);

@@ -76,10 +76,7 @@ async fn main() -> Result<()> {
     let session_max = None;
     info!(
         "Primary IP='{}', Secondary IP='{}', session_max={:?} (local_ip_source: {})",
-        primary_ip,
-        secondary_ip,
-        session_max,
-        ip_source
+        primary_ip, secondary_ip, session_max, ip_source
     );
 
     let mut subscribe_messages = vec![

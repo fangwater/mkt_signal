@@ -328,7 +328,10 @@ mod tests {
                     "__shared__".to_string(),
                     factor_item(&["factor_001", "avg_price"]),
                 ),
-                ("BTCUSDT".to_string(), factor_item(&["factor_001", "avg_price"])),
+                (
+                    "BTCUSDT".to_string(),
+                    factor_item(&["factor_001", "avg_price"]),
+                ),
                 ("ETHUSDT".to_string(), factor_item(&[])),
             ]),
         };

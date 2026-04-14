@@ -751,13 +751,17 @@ impl MarketMakerHedgeStrategy {
             }
             let client_order_id = Self::compose_order_id(self.strategy_id, self.order_seq);
             let total_qty = split.orders.iter().map(|order| order.qty).sum::<f64>();
-            let side = split.orders.first().map(|order| order.side).unwrap_or_else(|| {
-                if net_qty >= 0.0 {
-                    Side::Sell
-                } else {
-                    Side::Buy
-                }
-            });
+            let side = split
+                .orders
+                .first()
+                .map(|order| order.side)
+                .unwrap_or_else(|| {
+                    if net_qty >= 0.0 {
+                        Side::Sell
+                    } else {
+                        Side::Buy
+                    }
+                });
             self.hedge_order_meta.insert(
                 client_order_id,
                 HedgeOrderMeta {
@@ -814,9 +818,15 @@ impl MarketMakerHedgeStrategy {
         }
 
         let mut table = String::new();
-        table.push_str("+----------------------+----------+--------------+--------------+--------------+\n");
-        table.push_str("| client_order_id      | type     | price        | qty          | usdt         |\n");
-        table.push_str("+----------------------+----------+--------------+--------------+--------------+\n");
+        table.push_str(
+            "+----------------------+----------+--------------+--------------+--------------+\n",
+        );
+        table.push_str(
+            "| client_order_id      | type     | price        | qty          | usdt         |\n",
+        );
+        table.push_str(
+            "+----------------------+----------+--------------+--------------+--------------+\n",
+        );
         for row in &self.hedge_plan {
             let usdt = row.price * row.qty;
             table.push_str(&format!(
@@ -832,7 +842,9 @@ impl MarketMakerHedgeStrategy {
                 usdt
             ));
         }
-        table.push_str("+----------------------+----------+--------------+--------------+--------------+");
+        table.push_str(
+            "+----------------------+----------+--------------+--------------+--------------+",
+        );
 
         let hedge_side_str = match hedge_side {
             Some(Side::Buy) => "BUY",
@@ -2030,7 +2042,8 @@ impl MarketMakerHedgeStrategy {
         if status.is_finished() {
             let was_tracked = self.hedge_order_ids.contains(&client_order_id);
             let filled_qty = order_update.cumulative_filled_quantity();
-            let fill_price = self.resolve_fill_price_from_order_update(client_order_id, order_update);
+            let fill_price =
+                self.resolve_fill_price_from_order_update(client_order_id, order_update);
             if was_tracked && filled_qty > 0.0 {
                 let base_qty = MonitorChannel::instance().qty_to_base(
                     order_update.trading_venue(),

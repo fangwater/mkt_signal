@@ -11,7 +11,7 @@ use iceoryx2::port::publisher::Publisher;
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{info, warn};
+use log::{debug, info, warn};
 use reqwest::Client;
 use rocksdb::{ColumnFamilyDescriptor, IteratorMode, Options, DB};
 use serde::Deserialize;
@@ -68,6 +68,9 @@ const FACTOR_118_VWAP_LEVELS: usize = 5;
 const RL_FACTOR_NAME: &str = "rl_return_volatility";
 const RL_FACTOR_PAYLOAD_MAX_BYTES: usize = 256;
 const RL_FACTOR_WARN_INTERVAL_SECS: u64 = 5;
+const RL_FACTOR_HISTORY_SIZE: usize = 128;
+const RL_FACTOR_SUBSCRIBER_MAX_BUFFER_SIZE: usize = 8192;
+const RL_FACTOR_MAX_SUBSCRIBERS: usize = 10;
 const SYMBOL_RELOAD_WARN_INTERVAL_SECS: u64 = 60;
 const ROLLING_CORR_CLOSE_VOLUME_14_WINDOW: usize = 14;
 const ROLLING_CORR_OPEN_VOLUME_300_WINDOW: usize = 300;
@@ -161,12 +164,27 @@ impl RlFactorPublisher {
         let service = node
             .service_builder(&ServiceName::new(&service_path)?)
             .publish_subscribe::<[u8; RL_FACTOR_PAYLOAD_MAX_BYTES]>()
-            .open_or_create()?;
+            .max_publishers(1)
+            .max_subscribers(RL_FACTOR_MAX_SUBSCRIBERS)
+            .subscriber_max_buffer_size(RL_FACTOR_SUBSCRIBER_MAX_BUFFER_SIZE)
+            .history_size(RL_FACTOR_HISTORY_SIZE)
+            .create()
+            .with_context(|| {
+                format!(
+                    "create rl factor service failed: service={} hint=producer must own service creation",
+                    service_path
+                )
+            })?;
+        let actual_subscriber_buffer_size = service.static_config().subscriber_max_buffer_size();
+        let actual_history_size = service.static_config().history_size();
         let publisher = service.publisher_builder().create()?;
 
         info!(
-            "RlFactorPublisher created: service={} factor_index={}",
-            service_path, factor_index
+            "RlFactorPublisher created: service={} factor_index={} history_size={} subscriber_max_buffer_size={}",
+            service_path,
+            factor_index,
+            actual_history_size,
+            actual_subscriber_buffer_size,
         );
 
         Ok(Self {
@@ -1950,7 +1968,7 @@ impl FusionFactorPubApp {
         let eval_started = Instant::now();
         let Some(eval_result) = self.evaluate_ordered_factors(&symbol, depth_opt) else {
             if emit_output {
-                warn!(
+                debug!(
                     "fusion-trigger: venue={} symbol={} trade_ts={} reason=missing_symbol_factor_plan",
                     self.venue_slug, symbol, msg.ts
                 );

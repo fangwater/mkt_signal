@@ -295,17 +295,13 @@ routes:
         let jp_outgoing: HashSet<String> = jp
             .routes
             .iter()
-            .filter(|r| {
-                r.from.kind == EndpointType::Ipc && r.to.kind == EndpointType::Zmq
-            })
+            .filter(|r| r.from.kind == EndpointType::Ipc && r.to.kind == EndpointType::Zmq)
             .map(|r| r.id.clone())
             .collect();
         let hk_incoming: HashSet<String> = hk
             .routes
             .iter()
-            .filter(|r| {
-                r.from.kind == EndpointType::Zmq && r.to.kind == EndpointType::Ipc
-            })
+            .filter(|r| r.from.kind == EndpointType::Zmq && r.to.kind == EndpointType::Ipc)
             .map(|r| r.id.clone())
             .collect();
 

@@ -59,15 +59,13 @@ impl NetQtyQueue {
 
     pub fn weighted_avg_price(&self) -> Option<f64> {
         let (total_notional, total_qty) =
-            self.lots
-                .values()
-                .fold((0.0, 0.0), |(notional, qty), lot| {
-                    if lot.qty <= NET_QTY_EPS {
-                        (notional, qty)
-                    } else {
-                        (notional + lot.price * lot.qty, qty + lot.qty)
-                    }
-                });
+            self.lots.values().fold((0.0, 0.0), |(notional, qty), lot| {
+                if lot.qty <= NET_QTY_EPS {
+                    (notional, qty)
+                } else {
+                    (notional + lot.price * lot.qty, qty + lot.qty)
+                }
+            });
         if total_qty > NET_QTY_EPS {
             Some(total_notional / total_qty)
         } else {

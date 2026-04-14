@@ -83,10 +83,7 @@ async fn main() -> Result<()> {
     let session_max = None; // Gate.io 没有明确的会话时长限制
     info!(
         "Primary IP='{}', Secondary IP='{}', session_max={:?} (local_ip_source: {})",
-        primary_ip,
-        secondary_ip,
-        session_max,
-        ip_source
+        primary_ip, secondary_ip, session_max, ip_source
     );
 
     // 统一账户频道 (unified.asset_detail)
