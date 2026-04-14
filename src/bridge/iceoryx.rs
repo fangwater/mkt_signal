@@ -58,7 +58,7 @@ impl SubscriberEnum {
         };
 
         info!(
-            "Iceoryx subscriber created: service='{}' size={}",
+            "Iceoryx subscriber opened: service='{}' size={}",
             service_name, size
         );
         Ok(sub)
@@ -166,9 +166,12 @@ fn create_subscriber<const SIZE: usize>(
         builder = builder.subscriber_max_buffer_size(value);
     }
 
-    let service = builder
-        .open_or_create()
-        .with_context(|| format!("failed to open_or_create service {}", service_name))?;
+    let service = builder.open().with_context(|| {
+        format!(
+            "failed to open existing service {} (publisher may not be ready yet)",
+            service_name
+        )
+    })?;
     service
         .subscriber_builder()
         .create()
@@ -196,9 +199,12 @@ fn create_publisher<const SIZE: usize>(
         builder = builder.subscriber_max_buffer_size(value);
     }
 
-    let service = builder
-        .open_or_create()
-        .with_context(|| format!("failed to open_or_create service {}", service_name))?;
+    let service = builder.create().with_context(|| {
+        format!(
+            "failed to create new service {} (stale or duplicate service may already exist)",
+            service_name
+        )
+    })?;
     service
         .publisher_builder()
         .create()

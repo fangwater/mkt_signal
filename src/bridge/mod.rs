@@ -169,7 +169,7 @@ impl BridgeApp {
             let remote_addr = r.to.endpoint.trim().to_string();
             let route_id = r.id.clone();
             let from_service = bridge_service_name(&r.from.endpoint);
-            let subscriber = SubscriberEnum::new(&node, &from_service, r.from.size, &r.from)?;
+            let route_from = r.from.clone();
             let route_counter = RouteCounter::new(route_id.clone(), "ipc->zmq");
             route_counters.push(route_counter.clone());
             let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
@@ -205,8 +205,49 @@ impl BridgeApp {
                     "route '{}' ipc->zmq started: from='{}' size={} -> to='{}' size={}",
                     route_id, from_service, r.from.size, remote_addr, r.to.size
                 );
+                let route_node =
+                    match create_route_node("ipc_to_zmq_src", &route_id, std::process::id()) {
+                        Ok(node) => node,
+                        Err(e) => {
+                            warn!(
+                                "route '{}' failed to create subscriber node for '{}': {e:#}",
+                                route_id, from_service
+                            );
+                            return;
+                        }
+                    };
+                let mut subscriber: Option<SubscriberEnum> = None;
                 loop {
-                    match subscriber.receive_msg() {
+                    if subscriber.is_none() {
+                        match SubscriberEnum::new(
+                            &route_node,
+                            &from_service,
+                            route_from.size,
+                            &route_from,
+                        ) {
+                            Ok(sub) => {
+                                info!(
+                                    "route '{}' connected iceoryx source '{}'",
+                                    route_id, from_service
+                                );
+                                subscriber = Some(sub);
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "route '{}' waiting for iceoryx source '{}': {e:#}",
+                                    route_id, from_service
+                                );
+                                tokio::time::sleep(Duration::from_millis(500)).await;
+                                continue;
+                            }
+                        }
+                    }
+
+                    match subscriber
+                        .as_ref()
+                        .expect("subscriber must exist after successful open")
+                        .receive_msg()
+                    {
                         Ok(Some(bytes)) => {
                             if tx.send(bytes.to_vec()).is_err() {
                                 break;
@@ -216,9 +257,10 @@ impl BridgeApp {
                         Ok(None) => tokio::task::yield_now().await,
                         Err(e) => {
                             warn!(
-                                "iceoryx receive error (route='{}' service='{}'): {e}",
+                                "iceoryx receive error (route='{}' service='{}'), reconnecting: {e}",
                                 route_id, from_service
                             );
+                            subscriber = None;
                             tokio::time::sleep(Duration::from_millis(200)).await;
                         }
                     }
@@ -230,7 +272,7 @@ impl BridgeApp {
             let route_id = r.id.clone();
             let from_service = bridge_service_name(&r.from.endpoint);
             let to_service = bridge_service_name(&r.to.endpoint);
-            let subscriber = SubscriberEnum::new(&node, &from_service, r.from.size, &r.from)?;
+            let route_from = r.from.clone();
             let publisher = PublisherEnum::new(&node, &to_service, r.to.size, &r.to)?;
             let route_counter = RouteCounter::new(route_id.clone(), "ipc->ipc");
             route_counters.push(route_counter.clone());
@@ -240,8 +282,49 @@ impl BridgeApp {
                     "route '{}' ipc->ipc started: from='{}' size={} -> to='{}' size={}",
                     route_id, from_service, r.from.size, to_service, r.to.size
                 );
+                let route_node =
+                    match create_route_node("ipc_to_ipc_src", &route_id, std::process::id()) {
+                        Ok(node) => node,
+                        Err(e) => {
+                            warn!(
+                                "route '{}' failed to create subscriber node for '{}': {e:#}",
+                                route_id, from_service
+                            );
+                            return;
+                        }
+                    };
+                let mut subscriber: Option<SubscriberEnum> = None;
                 loop {
-                    match subscriber.receive_msg() {
+                    if subscriber.is_none() {
+                        match SubscriberEnum::new(
+                            &route_node,
+                            &from_service,
+                            route_from.size,
+                            &route_from,
+                        ) {
+                            Ok(sub) => {
+                                info!(
+                                    "route '{}' connected local iceoryx source '{}'",
+                                    route_id, from_service
+                                );
+                                subscriber = Some(sub);
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "route '{}' waiting for local iceoryx source '{}': {e:#}",
+                                    route_id, from_service
+                                );
+                                tokio::time::sleep(Duration::from_millis(500)).await;
+                                continue;
+                            }
+                        }
+                    }
+
+                    match subscriber
+                        .as_ref()
+                        .expect("subscriber must exist after successful open")
+                        .receive_msg()
+                    {
                         Ok(Some(bytes)) => {
                             if let Err(e) = publisher.publish(&bytes) {
                                 warn!(
@@ -256,9 +339,10 @@ impl BridgeApp {
                         Ok(None) => tokio::task::yield_now().await,
                         Err(e) => {
                             warn!(
-                                "local bridge receive error (route='{}' service='{}'): {e}",
+                                "local bridge receive error (route='{}' service='{}'), reconnecting: {e}",
                                 route_id, from_service
                             );
+                            subscriber = None;
                             tokio::time::sleep(Duration::from_millis(200)).await;
                         }
                     }
@@ -291,4 +375,21 @@ impl BridgeApp {
 
 fn bridge_service_name(endpoint: &str) -> String {
     endpoint.trim().to_string()
+}
+
+fn create_route_node(prefix: &str, route_id: &str, pid: u32) -> Result<Node<ipc::Service>> {
+    let route_tag: String = route_id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let node_name = format!("{}_{}_{}", prefix, pid, route_tag);
+    Ok(NodeBuilder::new()
+        .name(&NodeName::new(&node_name)?)
+        .create::<ipc::Service>()?)
 }
