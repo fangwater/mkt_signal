@@ -387,13 +387,8 @@ async fn main() -> Result<()> {
                     .map(|ip| ip.to_string())
                     .unwrap_or_else(|| "system-default".to_string())
             );
-            if let Err(err) = check_binance_fee_burn(
-                &api_key,
-                &api_secret,
-                &base_url,
-                fee_burn_local_ip,
-            )
-            .await
+            if let Err(err) =
+                check_binance_fee_burn(&api_key, &api_secret, &base_url, fee_burn_local_ip).await
             {
                 panic!("binance feeBurn check failed: {err}");
             }

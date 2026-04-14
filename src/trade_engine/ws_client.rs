@@ -21,8 +21,9 @@ use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use log::{debug, info, warn};
 use native_tls::TlsConnector;
+use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 use std::{cell::RefCell, rc::Rc};
@@ -173,6 +174,21 @@ struct QueryInflightMeta {
     client_query_id: i64,
 }
 
+#[derive(Debug, Deserialize)]
+struct OkexInstrumentsResponse {
+    code: String,
+    msg: String,
+    data: Vec<OkexInstrumentEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OkexInstrumentEntry {
+    #[serde(rename = "instId")]
+    inst_id: String,
+    #[serde(rename = "instIdCode")]
+    inst_id_code: Value,
+}
+
 pub struct TradeWsClient {
     id: usize,
     exchange: Exchange,
@@ -185,6 +201,9 @@ pub struct TradeWsClient {
     binance_creds: Option<ApiKey>,
     okex_creds: Option<OkexCredentials>,
     gate_creds: Option<GateCredentials>,
+    okex_http_client: Option<reqwest::Client>,
+    okex_inst_id_code_cache: HashMap<String, i64>,
+    okex_loaded_inst_types: HashSet<&'static str>,
     gate_ws_kind: Option<gate_ws::GateWsKind>,
     cmd_rx: mpsc::UnboundedReceiver<WsCommand>,
     resp_tx: mpsc::UnboundedSender<TradeExecOutcome>,
@@ -279,6 +298,9 @@ impl TradeWsClient {
             binance_creds,
             okex_creds,
             gate_creds,
+            okex_http_client: (exchange == Exchange::Okex).then(reqwest::Client::new),
+            okex_inst_id_code_cache: HashMap::new(),
+            okex_loaded_inst_types: HashSet::new(),
             gate_ws_kind,
             cmd_rx,
             resp_tx,
@@ -878,7 +900,7 @@ impl TradeWsClient {
         msg: &TradeRequestMsg,
     ) -> Result<()> {
         let transport_id = self.next_transport_id();
-        let payload = self.build_payload(msg, transport_id)?;
+        let payload = self.build_payload(msg, transport_id).await?;
         if self.exchange == Exchange::Gate {
             info!(
                 "trade ws client id={} exchange={} sending order client_order_id={} transport_id={} payload: {}",
@@ -950,9 +972,9 @@ impl TradeWsClient {
         }
     }
 
-    fn build_payload(&self, msg: &TradeRequestMsg, transport_id: i64) -> Result<String> {
+    async fn build_payload(&mut self, msg: &TradeRequestMsg, transport_id: i64) -> Result<String> {
         match self.exchange {
-            Exchange::Okex => self.build_okex_payload(msg, transport_id),
+            Exchange::Okex => self.build_okex_payload(msg, transport_id).await,
             Exchange::Gate => self.build_gate_payload(msg, transport_id),
             Exchange::Binance => self.build_binance_payload(msg, transport_id),
             _ => {
@@ -980,7 +1002,11 @@ impl TradeWsClient {
         }
     }
 
-    fn build_okex_payload(&self, msg: &TradeRequestMsg, transport_id: i64) -> Result<String> {
+    async fn build_okex_payload(
+        &mut self,
+        msg: &TradeRequestMsg,
+        transport_id: i64,
+    ) -> Result<String> {
         use crate::trade_engine::okex::ToOkexWsJson;
         use crate::trade_engine::trade_request::TradeRequestHeader;
 
@@ -991,20 +1017,21 @@ impl TradeWsClient {
             client_order_id: msg.client_order_id,
         };
 
+        let inst_id_code = self.resolve_okex_inst_id_code_for_trade_msg(msg).await?;
         let json_val = match msg.req_type {
             TradeRequestType::OkexNewMarginOrder | TradeRequestType::OkexNewUMOrder => {
                 OkexNewOrderRequest {
                     header,
                     params: msg.params.clone(),
                 }
-                .to_ws_json()
+                .to_ws_json(inst_id_code)
             }
             TradeRequestType::OkexCancelMarginOrder | TradeRequestType::OkexCancelUMOrder => {
                 OkexCancelOrderRequest {
                     header,
                     params: msg.params.clone(),
                 }
-                .to_ws_json()
+                .to_ws_json(inst_id_code)
             }
             _ => None,
         };
@@ -1022,6 +1049,166 @@ impl TradeWsClient {
         }
 
         serde_json::to_string(&payload).with_context(|| "serialize okex ws payload")
+    }
+
+    async fn resolve_okex_inst_id_code_for_trade_msg(
+        &mut self,
+        msg: &TradeRequestMsg,
+    ) -> Result<i64> {
+        use crate::trade_engine::trade_request::TradeRequestHeader;
+
+        let header = TradeRequestHeader {
+            msg_type: msg.req_type as u32,
+            params_length: msg.params.len() as u32,
+            create_time: msg.create_time,
+            client_order_id: msg.client_order_id,
+        };
+        let inst_type = Self::okex_inst_type_for_req(msg.req_type)?;
+        let inst_id = match msg.req_type {
+            TradeRequestType::OkexNewMarginOrder | TradeRequestType::OkexNewUMOrder => {
+                OkexNewOrderRequest {
+                    header,
+                    params: msg.params.clone(),
+                }
+                .params_struct()
+                .map(|params| params.symbol)
+                .ok_or_else(|| anyhow!("decode okex new order params failed"))?
+            }
+            TradeRequestType::OkexCancelMarginOrder | TradeRequestType::OkexCancelUMOrder => {
+                OkexCancelOrderRequest {
+                    header,
+                    params: msg.params.clone(),
+                }
+                .params_struct()
+                .map(|params| params.inst_id)
+                .ok_or_else(|| anyhow!("decode okex cancel order params failed"))?
+            }
+            _ => {
+                return Err(anyhow!(
+                    "unsupported okex trade request for instIdCode resolution: {:?}",
+                    msg.req_type
+                ));
+            }
+        };
+
+        self.resolve_okex_inst_id_code(inst_type, &inst_id).await
+    }
+
+    fn okex_inst_type_for_req(req_type: TradeRequestType) -> Result<&'static str> {
+        match req_type {
+            TradeRequestType::OkexNewMarginOrder | TradeRequestType::OkexCancelMarginOrder => {
+                Ok("MARGIN")
+            }
+            TradeRequestType::OkexNewUMOrder | TradeRequestType::OkexCancelUMOrder => Ok("SWAP"),
+            _ => Err(anyhow!(
+                "unsupported okex request type for instIdCode resolution: {:?}",
+                req_type
+            )),
+        }
+    }
+
+    fn okex_inst_cache_key(inst_type: &str, inst_id: &str) -> String {
+        format!("{inst_type}:{inst_id}")
+    }
+
+    async fn resolve_okex_inst_id_code(
+        &mut self,
+        inst_type: &'static str,
+        inst_id: &str,
+    ) -> Result<i64> {
+        let cache_key = Self::okex_inst_cache_key(inst_type, inst_id);
+        if let Some(code) = self.okex_inst_id_code_cache.get(&cache_key).copied() {
+            return Ok(code);
+        }
+
+        self.refresh_okex_inst_id_code_cache(inst_type).await?;
+        self.okex_inst_id_code_cache
+            .get(&cache_key)
+            .copied()
+            .ok_or_else(|| {
+                anyhow!(
+                    "okex instIdCode not found after refresh: instType={} instId={}",
+                    inst_type,
+                    inst_id
+                )
+            })
+    }
+
+    async fn refresh_okex_inst_id_code_cache(&mut self, inst_type: &'static str) -> Result<()> {
+        if self.okex_loaded_inst_types.contains(inst_type) {
+            return Ok(());
+        }
+
+        let client = self
+            .okex_http_client
+            .get_or_insert_with(reqwest::Client::new);
+        let url = format!(
+            "https://www.okx.com/api/v5/public/instruments?instType={}",
+            inst_type
+        );
+        let resp = client
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("fetch okex instruments failed: instType={inst_type}"))?;
+        let status = resp.status();
+        let body = resp
+            .text()
+            .await
+            .with_context(|| format!("read okex instruments body failed: instType={inst_type}"))?;
+        if !status.is_success() {
+            return Err(anyhow!(
+                "fetch okex instruments failed: instType={} status={} body={}",
+                inst_type,
+                status.as_u16(),
+                truncate_for_log(&body, 256)
+            ));
+        }
+
+        let response: OkexInstrumentsResponse = serde_json::from_str(&body)
+            .with_context(|| format!("parse okex instruments failed: instType={inst_type}"))?;
+        if response.code != "0" {
+            return Err(anyhow!(
+                "okex instruments api error: instType={} code={} msg={}",
+                inst_type,
+                response.code,
+                response.msg
+            ));
+        }
+
+        let mut loaded = 0usize;
+        for inst in response.data {
+            let Some(inst_id_code) = Self::parse_okex_inst_id_code_value(&inst.inst_id_code) else {
+                continue;
+            };
+            let cache_key = Self::okex_inst_cache_key(inst_type, &inst.inst_id);
+            self.okex_inst_id_code_cache.insert(cache_key, inst_id_code);
+            loaded += 1;
+        }
+
+        if loaded == 0 {
+            return Err(anyhow!(
+                "okex instruments response did not include any instIdCode values: instType={}",
+                inst_type
+            ));
+        }
+
+        self.okex_loaded_inst_types.insert(inst_type);
+        info!(
+            "trade ws client id={} loaded okex instIdCode cache: instType={} entries={}",
+            self.id, inst_type, loaded
+        );
+        Ok(())
+    }
+
+    fn parse_okex_inst_id_code_value(value: &Value) -> Option<i64> {
+        if let Some(n) = value.as_i64() {
+            return Some(n);
+        }
+        if let Some(n) = value.as_u64() {
+            return i64::try_from(n).ok();
+        }
+        value.as_str()?.parse::<i64>().ok()
     }
 
     fn build_gate_payload(&self, msg: &TradeRequestMsg, transport_id: i64) -> Result<String> {

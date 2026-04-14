@@ -37,7 +37,7 @@ pub fn parse_binance_margin_account_snapshot_std(json: &str) -> Option<Vec<Bytes
         if row.asset.is_empty() {
             continue;
         }
-        
+
         let free = parse_f64(&row.free);
         let locked = parse_f64(&row.locked);
         let borrowed = parse_f64(&row.borrowed);

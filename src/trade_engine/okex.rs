@@ -179,7 +179,7 @@ pub struct OkexCancelOrderRequest {
 }
 
 pub trait ToOkexWsJson {
-    fn to_ws_json(&self) -> Option<Value>;
+    fn to_ws_json(&self, inst_id_code: i64) -> Option<Value>;
 }
 
 impl OkexNewOrderRequest {
@@ -369,7 +369,7 @@ impl OkexCancelOrderRequest {
 }
 
 impl ToOkexWsJson for OkexNewOrderRequest {
-    fn to_ws_json(&self) -> Option<Value> {
+    fn to_ws_json(&self, inst_id_code: i64) -> Option<Value> {
         let req_type = TradeRequestType::try_from(self.header.msg_type).ok()?;
         let params = self.params_struct()?;
 
@@ -389,7 +389,7 @@ impl ToOkexWsJson for OkexNewOrderRequest {
         let args_obj = if params.order_type == OkexOrderType::Market {
             // 市价买单默认用 quote 计价，这里强制 tgtCcy=base_ccy 让 sz 表示基础币数量
             let mut obj = json!({
-                "instId": params.symbol,
+                "instIdCode": inst_id_code,
                 "side": params.side.as_str_lower(),
                 "ordType": ord_type_str,
                 "sz": qty,
@@ -409,7 +409,7 @@ impl ToOkexWsJson for OkexNewOrderRequest {
             obj
         } else {
             let mut obj = json!({
-                "instId": params.symbol,
+                "instIdCode": inst_id_code,
                 "side": params.side.as_str_lower(),
                 "ordType": ord_type_str,
                 "sz": qty,
@@ -433,7 +433,7 @@ impl ToOkexWsJson for OkexNewOrderRequest {
 }
 
 impl ToOkexWsJson for OkexCancelOrderRequest {
-    fn to_ws_json(&self) -> Option<Value> {
+    fn to_ws_json(&self, inst_id_code: i64) -> Option<Value> {
         let req_type = TradeRequestType::try_from(self.header.msg_type).ok()?;
         if req_type != TradeRequestType::OkexCancelMarginOrder
             && req_type != TradeRequestType::OkexCancelUMOrder
@@ -442,7 +442,7 @@ impl ToOkexWsJson for OkexCancelOrderRequest {
         }
         let params = self.params_struct()?;
         let mut obj = json!({
-            "instId": params.inst_id,
+            "instIdCode": inst_id_code,
         });
         if params.ord_id != 0 {
             if let Some(map) = obj.as_object_mut() {
@@ -646,4 +646,46 @@ fn parse_i32_field(v: Option<&Value>) -> i32 {
         }
     })
     .unwrap_or(-1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn okex_new_order_ws_payload_uses_inst_id_code_only() {
+        let params = OkexNewOrderParams {
+            side: Side::Buy,
+            order_type: OkexOrderType::Limit,
+            reduce_only: false,
+            quantity: 1.25,
+            price: 123.45,
+            symbol: "BTC-USDT-SWAP".to_string(),
+            client_order_id: 42,
+        };
+        let req = OkexNewOrderRequest::create_um(1, 42, params).unwrap();
+        let payload = req.to_ws_json(123456).unwrap();
+        let arg = payload["args"].as_array().unwrap().first().unwrap();
+
+        assert_eq!(arg["instIdCode"], json!(123456));
+        assert!(arg.get("instId").is_none());
+        assert_eq!(arg["clOrdId"], json!("42"));
+    }
+
+    #[test]
+    fn okex_cancel_order_ws_payload_uses_inst_id_code_only() {
+        let params = OkexCancelOrderParams {
+            ord_id: 88,
+            cl_ord_id: 42,
+            inst_id: "BTC-USDT-SWAP".to_string(),
+        };
+        let req = OkexCancelOrderRequest::create_um(1, 99, params).unwrap();
+        let payload = req.to_ws_json(654321).unwrap();
+        let arg = payload["args"].as_array().unwrap().first().unwrap();
+
+        assert_eq!(arg["instIdCode"], json!(654321));
+        assert!(arg.get("instId").is_none());
+        assert_eq!(arg["ordId"], json!("88"));
+        assert_eq!(arg["clOrdId"], json!("42"));
+    }
 }

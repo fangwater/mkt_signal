@@ -68,6 +68,10 @@ mod tests {
             Some("Request failed")
         );
         assert_eq!(
+            describe_trade_error_code(Exchange::Okex, 50014),
+            Some("Required parameter is empty")
+        );
+        assert_eq!(
             describe_trade_error_code(Exchange::Okex, 51006),
             Some("Price outside limit")
         );

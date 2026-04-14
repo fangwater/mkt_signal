@@ -3,7 +3,7 @@
 //! 与 Binance 不同，OKX 私有频道需要：
 //! 1. 连接后发送 login 消息进行鉴权
 //! 2. 登录成功后订阅所需频道
-//! 3. 通过应用层 ping 保持连接 (每 25 秒)
+//! 3. 通过 WebSocket ping/pong frame 保持连接 (每 25 秒)
 
 use crate::connection::connection::{
     MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector,
@@ -71,11 +71,6 @@ impl OkexUserDataConnection {
             }
         }
         None
-    }
-
-    /// 检查是否为 pong 响应
-    fn is_pong_response(text: &str) -> bool {
-        text == "pong"
     }
 
     /// 检查是否为错误消息
@@ -148,14 +143,14 @@ impl MktConnectionRunner for OkexUserDataConnection {
                         ws_stream.close(None).await?;
                         break;
                     } else {
-                        // 发送 ping
-                        if let Err(e) = ws_stream.send(Message::Text("ping".to_string())).await {
+                        // 发送 WebSocket ping frame
+                        if let Err(e) = ws_stream.send(Message::Ping(b"ping".to_vec())).await {
                             error!("OKX: Failed to send ping: {:?}", e);
                             break;
                         }
                         waiting_pong = true;
                         ping_timer = Instant::now() + Duration::from_secs(25);
-                        debug!("OKX: Sent ping");
+                        debug!("OKX: Sent ping frame");
                     }
                 }
 
@@ -165,14 +160,6 @@ impl MktConnectionRunner for OkexUserDataConnection {
                         Ok(Some(msg)) => {
                             match msg {
                                 Message::Text(text) => {
-                                    // 检查 pong
-                                    if Self::is_pong_response(&text) {
-                                        waiting_pong = false;
-                                        ping_timer = Instant::now() + Duration::from_secs(25);
-                                        debug!("OKX: Received pong");
-                                        continue;
-                                    }
-
                                     // 检查错误
                                     if let Some(err_msg) = Self::is_error_message(&text) {
                                         error!("OKX: Received error: {}", err_msg);
@@ -227,9 +214,11 @@ impl MktConnectionRunner for OkexUserDataConnection {
                                             }
                                         }
                                         ConnectionState::Running => {
-                                            // 正常运行，重置 ping 定时器
+                                            // 正常运行，重置 ping 定时器；若正在等待 pong，则继续等待 frame 级 pong。
                                             if !waiting_pong {
                                                 ping_timer = Instant::now() + Duration::from_secs(25);
+                                            } else {
+                                                debug!("OKX: received business text while waiting for pong frame");
                                             }
 
                                             // 广播消息
@@ -246,6 +235,15 @@ impl MktConnectionRunner for OkexUserDataConnection {
                                     if let Err(e) = ws_stream.send(Message::Pong(payload)).await {
                                         error!("OKX: Failed to send pong: {:?}", e);
                                         break;
+                                    }
+                                }
+                                Message::Pong(payload) => {
+                                    if waiting_pong {
+                                        waiting_pong = false;
+                                        ping_timer = Instant::now() + Duration::from_secs(25);
+                                        debug!("OKX: Received pong frame: {:?}", payload);
+                                    } else {
+                                        debug!("OKX: Received unsolicited pong frame: {:?}", payload);
                                     }
                                 }
                                 Message::Close(frame) => {
