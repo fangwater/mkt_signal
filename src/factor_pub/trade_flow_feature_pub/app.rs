@@ -601,15 +601,8 @@ impl AmountThresholdRedisStore {
         let redis_key = amount_threshold_hash_key(venue_slug);
         let full_key = with_prefix(prefix, &redis_key);
 
-        self.ensure_connected()?;
-        let Some(conn) = self.conn.as_mut() else {
-            anyhow::bail!("redis connection unavailable");
-        };
-
         let mut out = HashMap::new();
-        let hash_map: HashMap<String, String> = conn
-            .hgetall(full_key.clone())
-            .with_context(|| format!("redis HGETALL failed for key={}", full_key))?;
+        let hash_map = self.load_threshold_hash_map(&full_key)?;
 
         for (raw_symbol, raw_json) in hash_map {
             let symbol = normalize_symbol_for_venue(raw_symbol.trim(), venue);
@@ -652,6 +645,34 @@ impl AmountThresholdRedisStore {
         Ok(out)
     }
 
+    fn load_threshold_hash_map(&mut self, full_key: &str) -> Result<HashMap<String, String>> {
+        for attempt in 0..2 {
+            self.ensure_connected()?;
+            let result: redis::RedisResult<HashMap<String, String>> = {
+                let conn = self
+                    .conn
+                    .as_mut()
+                    .ok_or_else(|| anyhow::anyhow!("redis connection unavailable"))?;
+                conn.hgetall(full_key)
+            };
+
+            match result {
+                Ok(hash_map) => return Ok(hash_map),
+                Err(err) => {
+                    let should_retry = attempt == 0 && should_retry_redis_command(&err);
+                    self.conn = None;
+                    if should_retry {
+                        continue;
+                    }
+                    return Err(err)
+                        .with_context(|| format!("redis HGETALL failed for key={}", full_key));
+                }
+            }
+        }
+
+        unreachable!("redis HGETALL retry loop must return on success or failure");
+    }
+
     fn ensure_connected(&mut self) -> Result<()> {
         if self.conn.is_some() {
             return Ok(());
@@ -667,6 +688,10 @@ impl AmountThresholdRedisStore {
             self.last_warn = Instant::now();
         }
     }
+}
+
+fn should_retry_redis_command(err: &redis::RedisError) -> bool {
+    matches!(err.kind(), redis::ErrorKind::IoError)
 }
 
 #[derive(Debug, Clone)]
@@ -1638,6 +1663,23 @@ fn fixed_redis_settings() -> RedisSettings {
         username: None,
         password: None,
         prefix: None,
+    }
+}
+
+#[cfg(test)]
+mod threshold_reload_tests {
+    use super::should_retry_redis_command;
+
+    #[test]
+    fn retry_io_error() {
+        let err = redis::RedisError::from((redis::ErrorKind::IoError, "broken pipe"));
+        assert!(should_retry_redis_command(&err));
+    }
+
+    #[test]
+    fn do_not_retry_type_error() {
+        let err = redis::RedisError::from((redis::ErrorKind::TypeError, "wrong type"));
+        assert!(!should_retry_redis_command(&err));
     }
 }
 

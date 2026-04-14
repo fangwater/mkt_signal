@@ -11,6 +11,7 @@ usage() {
 
 说明:
   - 默认 source $HOME/<env-name>/env.sh，再调用 scripts/flatten_binance_std_um.py
+  - 本地 source IP 优先读取 <env-dir>/trade_engine.toml 的 local_ips[0]，否则回退到 $HOME/dat_pbs/config/mkt_cfg.yaml
   - 默认 dry-run，仅打印当前 UM 持仓平仓计划；加 --execute 后才真实下市价平仓单
   - 其余参数会透传给 Python 脚本
 EOF
@@ -90,10 +91,11 @@ source "$ENV_FILE"
 
 echo "[INFO] env_dir=$ENV_DIR"
 echo "[INFO] account_mode=${BINANCE_ACCOUNT_MODE:-<unset>}"
+echo "[INFO] local_ip_cfg=${ENV_DIR}/trade_engine.toml"
 
 if [[ "${BINANCE_ACCOUNT_MODE:-}" != "STANDARD" ]]; then
   echo "[ERROR] 该脚本仅用于 Binance STANDARD 账户模式，当前 BINANCE_ACCOUNT_MODE=${BINANCE_ACCOUNT_MODE:-<unset>}" >&2
   exit 1
 fi
 
-exec "$PYTHON_BIN" "$SCRIPT_DIR/flatten_binance_std_um.py" "${PASS_ARGS[@]}"
+exec "$PYTHON_BIN" "$SCRIPT_DIR/flatten_binance_std_um.py" --env-dir "$ENV_DIR" "${PASS_ARGS[@]}"

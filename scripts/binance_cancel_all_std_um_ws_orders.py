@@ -26,6 +26,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Optional
 
+from binance_local_ip import create_ws_connection, resolve_local_address, urlopen_with_local_address
+
 
 DEFAULT_REST_BASE_URL = os.environ.get("BINANCE_FAPI_URL") or "https://fapi.binance.com"
 DEFAULT_WS_URL = os.environ.get("BINANCE_FAPI_WS_URL") or "wss://ws-fapi.binance.com/ws-fapi/v1"
@@ -87,6 +89,21 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Actually cancel orders; default is dry-run",
     )
+    parser.add_argument(
+        "--local-address",
+        default=None,
+        help="Explicit source IP for REST/WS; default auto-detects from trade_engine.toml / mkt_cfg.yaml",
+    )
+    parser.add_argument(
+        "--trade-engine-config",
+        default=None,
+        help="Explicit trade_engine.toml path; overrides auto-discovery",
+    )
+    parser.add_argument(
+        "--env-dir",
+        default=None,
+        help="MM env dir; resolves <env-dir>/trade_engine.toml before cwd fallback",
+    )
     return parser.parse_args()
 
 
@@ -139,6 +156,7 @@ def signed_rest_request(
     api_secret: str,
     method: str,
     timeout: int,
+    local_address: Optional[str],
 ) -> tuple[int, str, dict[str, str]]:
     query_params = dict(params)
     query_params.setdefault("timestamp", str(now_ms()))
@@ -147,7 +165,7 @@ def signed_rest_request(
     url = f"{base_url.rstrip('/')}{path}?{query}&signature={signature}"
     req = urllib.request.Request(url, method=method, headers={"X-MBX-APIKEY": api_key})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urlopen_with_local_address(req, timeout=timeout, local_address=local_address) as resp:
             status = resp.getcode()
             body = resp.read().decode("utf-8", errors="replace")
             headers = dict(resp.headers.items())
@@ -212,6 +230,7 @@ def query_open_orders(
     recv_window: int,
     timeout: int,
     requested_symbols: list[str],
+    local_address: Optional[str],
 ) -> list[OpenOrder]:
     all_orders: list[OpenOrder] = []
     query_symbols = requested_symbols or [""]
@@ -228,6 +247,7 @@ def query_open_orders(
             api_secret=api_secret,
             method="GET",
             timeout=timeout,
+            local_address=local_address,
         )
         orders = parse_open_orders(body)
         scope = symbol or "ALL"
@@ -343,6 +363,7 @@ def execute_cancels(
     api_key: str,
     api_secret: str,
     recv_window: int,
+    local_address: Optional[str],
 ) -> int:
     websocket = try_import_ws()
     if websocket is None:
@@ -350,9 +371,11 @@ def execute_cancels(
         return 1
 
     try:
-        ws = websocket.create_connection(
-            ws_url,
+        ws = create_ws_connection(
+            websocket,
+            ws_url=ws_url,
             timeout=timeout,
+            local_address=local_address,
             sslopt={"cert_reqs": ssl.CERT_REQUIRED},
         )
     except Exception as exc:
@@ -385,6 +408,12 @@ def main() -> None:
     args = parse_args()
     api_key, api_secret = load_credentials()
     symbols = normalize_symbols(args.symbol)
+    local_address, local_address_source = resolve_local_address(
+        explicit_local_address=args.local_address,
+        trade_engine_config=args.trade_engine_config,
+        env_dir=args.env_dir,
+    )
+    print(f"[config] local_address={local_address or 'system-default'} source={local_address_source}")
 
     orders = query_open_orders(
         base_url=args.base_url,
@@ -393,6 +422,7 @@ def main() -> None:
         recv_window=args.recv_window,
         timeout=args.timeout,
         requested_symbols=symbols,
+        local_address=local_address,
     )
 
     if not orders:
@@ -411,6 +441,7 @@ def main() -> None:
             api_key=api_key,
             api_secret=api_secret,
             recv_window=args.recv_window,
+            local_address=local_address,
         )
     )
 

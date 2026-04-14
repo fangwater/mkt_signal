@@ -13,9 +13,12 @@ import json
 import os
 import sys
 import time
+from typing import Optional
 import urllib.error
 import urllib.parse
 import urllib.request
+
+from binance_local_ip import urlopen_with_local_address
 
 
 def parse_args() -> argparse.Namespace:
@@ -102,6 +105,7 @@ def request_papi(
     api_secret: str,
     method: str = "POST",
     timeout: int = 10,
+    local_address: Optional[str] = None,
 ):
     q = dict(params)
     q.setdefault("recvWindow", "5000")
@@ -112,7 +116,7 @@ def request_papi(
     url = f"{base_url}{path}?{query}&signature={signature}"
     req = urllib.request.Request(url, method=method, headers={"X-MBX-APIKEY": api_key})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urlopen_with_local_address(req, timeout=timeout, local_address=local_address) as resp:
             status = resp.getcode()
             body = resp.read().decode("utf-8", errors="replace")
             headers = dict(resp.headers.items())

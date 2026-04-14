@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, List, Optional
 
+from binance_local_ip import resolve_local_address
 from sell_margin_spot import request_papi
 
 DEFAULT_BASE_URL = os.environ.get("BINANCE_FAPI_URL") or "https://fapi.binance.com"
@@ -75,6 +76,21 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="实际提交订单；默认仅打印计划",
     )
+    parser.add_argument(
+        "--local-address",
+        default=None,
+        help="显式指定本地 source IP；默认按 trade_engine.toml / mkt_cfg.yaml 自动解析",
+    )
+    parser.add_argument(
+        "--trade-engine-config",
+        default=None,
+        help="显式指定 trade_engine.toml 路径；优先于自动发现",
+    )
+    parser.add_argument(
+        "--env-dir",
+        default=None,
+        help="MM 环境目录；会优先读取该目录下的 trade_engine.toml",
+    )
     return parser.parse_args()
 
 
@@ -113,6 +129,7 @@ def fetch_positions(
     api_key: str,
     api_secret: str,
     recv_window: int,
+    local_address: Optional[str],
 ) -> List[UmPosition]:
     params: Dict[str, Any] = {"recvWindow": str(recv_window)}
     status, body, _headers = request_papi(
@@ -122,6 +139,7 @@ def fetch_positions(
         api_key,
         api_secret,
         method="GET",
+        local_address=local_address,
     )
     if status != 200:
         raise SystemExit(f"获取 UM 账户失败 status={status} body={body}")
@@ -183,6 +201,7 @@ def submit_order(
     recv_window: int,
     position: UmPosition,
     reduce_only_mode: str,
+    local_address: Optional[str],
 ) -> int:
     params: Dict[str, Any] = {
         "symbol": position.symbol,
@@ -203,6 +222,7 @@ def submit_order(
         api_key,
         api_secret,
         method="POST",
+        local_address=local_address,
     )
     weight = headers.get("x-mbx-used-weight-1m") or headers.get("x-mbx-used-weight")
     order_count = headers.get("x-mbx-order-count-1m") or headers.get("x-mbx-order-count")
@@ -224,12 +244,24 @@ def main() -> None:
     min_qty = parse_decimal(args.min_qty, field="min_qty")
     symbol_filter = parse_symbol_filter(args.symbols)
     base_url = args.base_url.rstrip("/")
+    local_address, local_address_source = resolve_local_address(
+        explicit_local_address=args.local_address,
+        trade_engine_config=args.trade_engine_config,
+        env_dir=args.env_dir,
+    )
 
-    positions = fetch_positions(base_url, api_key, api_secret, args.recv_window)
+    positions = fetch_positions(
+        base_url,
+        api_key,
+        api_secret,
+        args.recv_window,
+        local_address,
+    )
     positions = filter_positions(positions, symbol_filter, min_qty)
 
     if symbol_filter:
         print(f"symbols filter: {', '.join(sorted(symbol_filter))}")
+    print(f"local_address={local_address or 'system-default'} source={local_address_source}")
     if not positions:
         print("未找到需要平仓的持仓")
         return
@@ -258,6 +290,7 @@ def main() -> None:
             recv_window=args.recv_window,
             position=pos,
             reduce_only_mode=args.reduce_only_mode,
+            local_address=local_address,
         )
         if not (200 <= status < 300):
             failures += 1

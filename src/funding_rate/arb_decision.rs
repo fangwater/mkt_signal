@@ -3869,12 +3869,12 @@ impl ArbDecisionState {
         };
 
         if self.enable_volatility_limit {
-            let open_volatility_threshold =
-                match self.lookup_open_volatility_threshold_checked(symbol, get_timestamp_us() / 1000)
-                {
-                    Ok(value) => value,
-                    Err(reason) => return Some(reason),
-                };
+            let open_volatility_threshold = match self
+                .lookup_open_volatility_threshold_checked(symbol, get_timestamp_us() / 1000)
+            {
+                Ok(value) => value,
+                Err(reason) => return Some(reason),
+            };
             if open_volatility_factor > open_volatility_threshold {
                 return Some("vol".to_string());
             }
@@ -4070,15 +4070,14 @@ impl ArbDecisionState {
             };
 
         if self.enable_volatility_limit {
-            let open_volatility_threshold = match self
-                .lookup_open_volatility_threshold_checked(open_symbol_key, now / 1000)
-            {
-                Ok(value) => value,
-                Err(reason) => {
-                    self.record_intercept_summary(reason.clone());
-                    return None;
-                }
-            };
+            let open_volatility_threshold =
+                match self.lookup_open_volatility_threshold_checked(open_symbol_key, now / 1000) {
+                    Ok(value) => value,
+                    Err(reason) => {
+                        self.record_intercept_summary(reason.clone());
+                        return None;
+                    }
+                };
             if open_volatility_factor > open_volatility_threshold {
                 self.record_intercept_summary("vol");
                 return None;
