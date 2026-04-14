@@ -4077,7 +4077,7 @@ impl FusionFactorPubApp {
         let d1 = series.bid_vwap20[n - 1] - series.bid_vwap20[n - 2];
         let d0 = series.bid_vwap20[n - 2] - series.bid_vwap20[n - 3];
         if !d1.is_finite() || !d0.is_finite() || d0.abs() <= 1e-12 {
-            return Some(0.0);
+            return Some(f64::NAN);
         }
         let value = (d1 - d0) / d0;
         finite_opt(Some(value))
@@ -4261,7 +4261,7 @@ impl FusionFactorPubApp {
         let bid_std = sample_std_last(&series.total_bid20, 10, 1)?;
         let ask_std = sample_std_last(&series.total_ask20, 10, 1)?;
         if ask_std.abs() <= 1e-12 {
-            return Some(0.0);
+            return Some(f64::NAN);
         }
         finite_opt(Some(bid_std / ask_std))
     }
@@ -4503,7 +4503,7 @@ impl FusionFactorPubApp {
         let ma30 = rolling_mean_last(&neg_diff, 30).ok().flatten()?;
         let ma300 = rolling_mean_last(&neg_diff, 300).ok().flatten()?;
         if ma300.abs() <= 1e-12 {
-            return Some(0.0);
+            return Some(f64::NAN);
         }
         finite_opt(Some(ma30 / ma300))
     }
@@ -4709,7 +4709,7 @@ impl FusionFactorPubApp {
         let asks: Vec<f64> = (0..10)
             .map(|i| depth_level_amount(&depth.asks, i))
             .collect();
-        rolling_corr_last(&bids, &asks, 10, 1).ok().flatten()
+        strict_corr_last_slices(&bids, &asks, 10)
     }
 
     fn compute_factor_079(depth: &DepthDerived) -> Option<f64> {
@@ -4852,14 +4852,7 @@ impl FusionFactorPubApp {
         let vols: Vec<f64> = (0..10)
             .map(|i| depth_level_amount(&depth.bids, i))
             .collect();
-        Some(depth_corr_or_panic(
-            "factor_107",
-            "bids",
-            depth,
-            &prices,
-            &vols,
-            rolling_corr_last(&prices, &vols, 10, 1),
-        ))
+        strict_corr_last_slices(&prices, &vols, 10)
     }
 
     fn compute_factor_108(depth: &DepthDerived) -> Option<f64> {
@@ -4867,14 +4860,7 @@ impl FusionFactorPubApp {
         let vols: Vec<f64> = (0..10)
             .map(|i| depth_level_amount(&depth.asks, i))
             .collect();
-        Some(depth_corr_or_panic(
-            "factor_108",
-            "asks",
-            depth,
-            &prices,
-            &vols,
-            rolling_corr_last(&prices, &vols, 10, 1),
-        ))
+        strict_corr_last_slices(&prices, &vols, 10)
     }
 
     fn compute_factor_110(depth: &DepthDerived) -> Option<f64> {
@@ -5017,7 +5003,7 @@ impl FusionFactorPubApp {
         let bid_var = bid_var * bid_var;
         let ask_var = ask_var * ask_var;
         if ask_var.abs() <= 1e-12 {
-            return Some(0.0);
+            return Some(f64::NAN);
         }
         finite_opt(Some(bid_var / ask_var))
     }
@@ -5094,15 +5080,11 @@ impl FusionFactorPubApp {
         if n < 300 {
             return None;
         }
-        if let Some(cached) = finite_opt(series.corr_mid_midvol_300_last) {
-            return Some(cached);
-        }
+        let mid_price: Vec<f64> = (0..n).map(|i| series.mid_price[i]).collect();
         let mid_vol: Vec<f64> = (0..n)
             .map(|i| (series.bid0v[i] + series.ask0v[i]) / 2.0)
             .collect();
-        rolling_corr_last(&series.mid_price, &mid_vol, 300, 1)
-            .ok()
-            .flatten()
+        strict_corr_last_slices(&mid_price, &mid_vol, 300)
     }
 
     fn compute_factor_139(depth: &DepthDerived) -> Option<f64> {
@@ -6619,74 +6601,40 @@ fn corr_last_with_min_periods(
     finite_opt(Some(out))
 }
 
-fn depth_corr_or_panic(
-    factor_name: &str,
-    side: &str,
-    depth: &DepthDerived,
-    prices: &[f64],
-    vols: &[f64],
-    corr_result: Result<Option<f64>>,
-) -> f64 {
-    match corr_result {
-        Ok(Some(v)) if v.is_finite() => v,
-        Ok(Some(v)) => {
-            if corr_inputs_degenerate(prices, vols) {
-                return 0.0;
-            }
-            panic!(
-                "{} correlation non-finite: side={} corr={} prices={:?} vols={:?} depth={:?}",
-                factor_name, side, v, prices, vols, depth
-            );
-        }
-        Ok(None) => {
-            if corr_inputs_degenerate(prices, vols) {
-                return 0.0;
-            }
-            panic!(
-                "{} correlation unavailable: side={} reason=none prices={:?} vols={:?} depth={:?}",
-                factor_name, side, prices, vols, depth
-            );
-        }
-        Err(err) => {
-            panic!(
-                "{} correlation failed: side={} err={} prices={:?} vols={:?} depth={:?}",
-                factor_name, side, err, prices, vols, depth
-            );
-        }
-    }
-}
-
-fn corr_inputs_degenerate(xs: &[f64], ys: &[f64]) -> bool {
+fn strict_corr_last_slices(xs: &[f64], ys: &[f64], window: usize) -> Option<f64> {
     let n = xs.len().min(ys.len());
-    if n < 2 {
-        return false;
+    if window == 0 || n < window {
+        return None;
     }
 
-    let mut x = Vec::with_capacity(n);
-    let mut y = Vec::with_capacity(n);
-    for i in 0..n {
+    let start = n - window;
+    let mut x = Vec::with_capacity(window);
+    let mut y = Vec::with_capacity(window);
+    for i in start..n {
         let xv = xs[i];
         let yv = ys[i];
-        if xv.is_finite() && yv.is_finite() {
-            x.push(xv);
-            y.push(yv);
+        if !xv.is_finite() || !yv.is_finite() {
+            return Some(f64::NAN);
         }
+        x.push(xv);
+        y.push(yv);
     }
-    if x.len() < 2 {
-        return false;
-    }
-
     let mean_x = x.iter().sum::<f64>() / x.len() as f64;
     let mean_y = y.iter().sum::<f64>() / y.len() as f64;
+    let mut cov = 0.0;
     let mut var_x = 0.0;
     let mut var_y = 0.0;
     for i in 0..x.len() {
         let dx = x[i] - mean_x;
         let dy = y[i] - mean_y;
+        cov += dx * dy;
         var_x += dx * dx;
         var_y += dy * dy;
     }
-    var_x.abs() <= 1e-12 || var_y.abs() <= 1e-12
+    if var_x.abs() <= 1e-12 || var_y.abs() <= 1e-12 {
+        return Some(f64::NAN);
+    }
+    finite_opt(Some(cov / (var_x.sqrt() * var_y.sqrt()))).or(Some(f64::NAN))
 }
 
 fn std_pop(values: &[f64]) -> Option<f64> {
@@ -7040,6 +6988,18 @@ mod tests {
         DepthDerived::from_snapshot(&DepthSnapshot { bids, asks })
     }
 
+    fn flat_depth() -> DepthDerived {
+        let bids = std::array::from_fn(|i| DepthLevel {
+            price: 100.0 - i as f64 * 0.1,
+            amount: 10.0,
+        });
+        let asks = std::array::from_fn(|i| DepthLevel {
+            price: 100.1 + i as f64 * 0.1,
+            amount: 10.0,
+        });
+        DepthDerived::from_snapshot(&DepthSnapshot { bids, asks })
+    }
+
     #[test]
     fn normalize_feature_values_waits_for_min_samples() {
         let cfg = ZscoreRuntimeConfig {
@@ -7074,8 +7034,73 @@ mod tests {
         let normalized = normalize_feature_values(&mut state, &[5.0], &cfg).unwrap();
         assert_eq!(normalized.len(), 1);
         assert!(normalized[0].is_finite());
-        assert_eq!(state.sample_count, 2);
         assert_eq!(state.welford_vec.len(), 1);
+        assert_eq!(state.valid_sample_counts, vec![2]);
+        assert_eq!(state.last_valid_values, vec![Some(5.0)]);
+    }
+
+    #[test]
+    fn normalize_feature_values_skips_nan_and_reuses_last_valid() {
+        let cfg = ZscoreRuntimeConfig {
+            window_size: 8,
+            min_samples: 2,
+            zscore_cap: 3.0,
+        };
+        let mut state = SymbolNormState::new(cfg.window_size, 0);
+
+        assert!(normalize_feature_values(&mut state, &[1.0, 10.0], &cfg).is_none());
+
+        let normalized = normalize_feature_values(&mut state, &[2.0, 20.0], &cfg).unwrap();
+        let second_before = normalized[1];
+
+        let normalized = normalize_feature_values(&mut state, &[3.0, f64::NAN], &cfg).unwrap();
+        assert_eq!(state.valid_sample_counts, vec![3, 2]);
+        assert_eq!(state.welford_vec[0].len(), 3);
+        assert_eq!(state.welford_vec[1].len(), 2);
+        assert_eq!(state.last_valid_values, vec![Some(3.0), Some(20.0)]);
+        assert!((normalized[1] - second_before).abs() < 1e-12);
+        assert!(normalized.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn python_aligned_factor_nan_paths_return_nan_instead_of_zero() {
+        let mut state = SymbolCalcState::default();
+        let depth = flat_depth();
+
+        state.bid_vwap20.extend([100.0, 100.0, 100.0]);
+        state.total_bid20.extend([10.0; 10]);
+        state.total_ask20.extend([10.0; 10]);
+        state.avg_ask_price5.extend([100.0; 300]);
+        state.bid0v.extend([10.0; 300]);
+        state.ask0v.extend([10.0; 300]);
+        state.mid_price.extend([100.0; 300]);
+
+        let series = FusionFactorPubApp::build_symbol_series_from_state(&mut state);
+
+        assert!(FusionFactorPubApp::compute_factor_001(&series)
+            .unwrap()
+            .is_nan());
+        assert!(FusionFactorPubApp::compute_factor_021(&series)
+            .unwrap()
+            .is_nan());
+        assert!(FusionFactorPubApp::compute_factor_052(&series)
+            .unwrap()
+            .is_nan());
+        assert!(FusionFactorPubApp::compute_factor_077(&depth)
+            .unwrap()
+            .is_nan());
+        assert!(FusionFactorPubApp::compute_factor_107(&depth)
+            .unwrap()
+            .is_nan());
+        assert!(FusionFactorPubApp::compute_factor_108(&depth)
+            .unwrap()
+            .is_nan());
+        assert!(FusionFactorPubApp::compute_factor_124(&depth)
+            .unwrap()
+            .is_nan());
+        assert!(FusionFactorPubApp::compute_factor_134(&series)
+            .unwrap()
+            .is_nan());
     }
 
     #[test]

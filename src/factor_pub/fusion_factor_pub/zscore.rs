@@ -33,7 +33,8 @@ impl ZscoreRuntimeConfig {
 
 pub(crate) struct SymbolNormState {
     pub(crate) welford_vec: Vec<RollingWelford>,
-    pub(crate) sample_count: u64,
+    pub(crate) valid_sample_counts: Vec<u64>,
+    pub(crate) last_valid_values: Vec<Option<f64>>,
 }
 
 impl SymbolNormState {
@@ -42,7 +43,8 @@ impl SymbolNormState {
             welford_vec: (0..feature_dim)
                 .map(|_| RollingWelford::new(window_size))
                 .collect(),
-            sample_count: 0,
+            valid_sample_counts: vec![0; feature_dim],
+            last_valid_values: vec![None; feature_dim],
         }
     }
 }
@@ -56,16 +58,28 @@ pub(crate) fn normalize_feature_values(
         *norm_state = SymbolNormState::new(cfg.window_size, feature_values.len());
     }
 
-    for (welford, value) in norm_state
+    let mut all_ready = true;
+    for (((welford, valid_count), last_valid_value), value) in norm_state
         .welford_vec
         .iter_mut()
+        .zip(norm_state.valid_sample_counts.iter_mut())
+        .zip(norm_state.last_valid_values.iter_mut())
         .zip(feature_values.iter().copied())
     {
-        welford.push(value);
-    }
-    norm_state.sample_count = norm_state.sample_count.saturating_add(1);
+        if value.is_finite() {
+            welford.push(value);
+            *valid_count = valid_count.saturating_add(1);
+            *last_valid_value = Some(value);
+        } else if last_valid_value.is_none() {
+            all_ready = false;
+        }
 
-    if norm_state.sample_count < cfg.min_samples {
+        if *valid_count < cfg.min_samples {
+            all_ready = false;
+        }
+    }
+
+    if !all_ready {
         return None;
     }
 
