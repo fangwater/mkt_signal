@@ -339,6 +339,8 @@ impl ModelPubApp {
                         );
                     }
                     self.stats.empty_feature_drop = self.stats.empty_feature_drop.saturating_add(1);
+                    self.emit_zero_result_for_missing_model(&feature.symbol, feature.ts_ms)
+                        .await?;
                     return Ok(());
                 }
 
@@ -354,12 +356,15 @@ impl ModelPubApp {
 
                 // --- inference ---
                 let Some(runtime) = runtime else {
-                    panic!(
-                        "model symbol not loaded: model_name={} symbol={} loaded_symbol_count={}",
+                    warn!(
+                        "model symbol not loaded, emit zero score: model_name={} symbol={} loaded_symbol_count={}",
                         self.model_name,
                         feature.symbol,
                         self.models_by_symbol.len()
                     );
+                    self.emit_zero_result_for_missing_model(&feature.symbol, feature.ts_ms)
+                        .await?;
+                    return Ok(());
                 };
 
                 Self::validate_feature_dim(&self.model_name, &feature.symbol, dim, runtime);
@@ -445,6 +450,15 @@ impl ModelPubApp {
             }
         }
         Ok(())
+    }
+
+    async fn emit_zero_result_for_missing_model(
+        &mut self,
+        symbol: &str,
+        ts_in_ms: i64,
+    ) -> Result<()> {
+        self.emit_result(symbol, ts_in_ms, 0.0, MODEL_STATUS_OK, &[], &[])
+            .await
     }
 
     async fn emit_result(
