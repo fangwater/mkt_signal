@@ -28,14 +28,6 @@ pub struct RlFactorConfig {
     pub rolling_window: usize,
     #[serde(default = "default_rl_scale_factor")]
     pub scale_factor: f64,
-    #[serde(default)]
-    pub clip: Option<ClipRange>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct ClipRange {
-    pub min: f64,
-    pub max: f64,
 }
 
 impl Default for RlFactorConfig {
@@ -44,7 +36,6 @@ impl Default for RlFactorConfig {
             pct_change_period: default_rl_pct_change_period(),
             rolling_window: default_rl_rolling_window(),
             scale_factor: default_rl_scale_factor(),
-            clip: None,
         }
     }
 }
@@ -84,21 +75,6 @@ impl RlFactorConfig {
         }
         if !self.scale_factor.is_finite() || self.scale_factor <= 0.0 {
             anyhow::bail!("rl_factor.scale_factor must be finite and > 0");
-        }
-        if let Some(clip) = &self.clip {
-            clip.validate("rl_factor.clip")?;
-        }
-        Ok(())
-    }
-}
-
-impl ClipRange {
-    fn validate(&self, name: &str) -> Result<()> {
-        if !self.min.is_finite() || !self.max.is_finite() {
-            anyhow::bail!("{} min/max must be finite", name);
-        }
-        if self.min >= self.max {
-            anyhow::bail!("{} min must be < max", name);
         }
         Ok(())
     }

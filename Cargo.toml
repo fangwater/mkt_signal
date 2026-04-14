@@ -140,6 +140,10 @@ path = "src/bin/demo_bridge_sub.rs"
 name = "iceoryx_dead_nodes_cleanup"
 path = "src/bin/iceoryx_dead_nodes_cleanup.rs"
 
+[[bin]]
+name = "inspect_rl_vol"
+path = "src/bin/inspect_rl_vol.rs"
+
 [dependencies]
 factor_engine = { path = "crates/factor_engine" }
 local-ip-address = "0.6"

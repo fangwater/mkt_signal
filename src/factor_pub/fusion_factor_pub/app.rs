@@ -20,8 +20,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use super::cfg::{
-    ClipRange as FusionClipRange, FusionFactorPubConfig, RlFactorConfig as FusionRlFactorConfig,
-    TlenServerConfig,
+    FusionFactorPubConfig, RlFactorConfig as FusionRlFactorConfig, TlenServerConfig,
 };
 use super::factor_enum::FusionFactorId;
 pub(crate) use super::plan::{
@@ -112,7 +111,6 @@ struct RlReturnVolatilityRuntimeConfig {
     pct_change_period: usize,
     rolling_window: usize,
     scale_factor: f64,
-    clip: Option<FusionClipRange>,
 }
 
 impl RlReturnVolatilityRuntimeConfig {
@@ -132,16 +130,11 @@ impl RlReturnVolatilityRuntimeConfig {
             pct_change_period: cfg.pct_change_period,
             rolling_window: cfg.rolling_window,
             scale_factor: cfg.scale_factor,
-            clip: cfg.clip.clone(),
         })
     }
 
-    fn apply_scale_and_clip(&self, raw: f64) -> f64 {
-        let mut value = raw * self.scale_factor;
-        if let Some(clip) = &self.clip {
-            value = value.clamp(clip.min, clip.max);
-        }
-        value
+    fn apply_scale(&self, raw: f64) -> f64 {
+        raw * self.scale_factor
     }
 }
 
@@ -1038,14 +1031,13 @@ impl FusionFactorPubApp {
             zscore_config.zscore_cap,
         );
         info!(
-            "FusionFactorPubApp[{}] rl config: factor={} source={} pct_change_period={} rolling_window={} scale_factor={} clip={:?}",
+            "FusionFactorPubApp[{}] rl config: factor={} source={} pct_change_period={} rolling_window={} scale_factor={}",
             venue_slug,
             RL_FACTOR_NAME,
             "fusion_factor_pub.toml[rl_factor]",
             rl_config.pct_change_period,
             rl_config.rolling_window,
-            rl_config.scale_factor,
-            rl_config.clip
+            rl_config.scale_factor
         );
 
         Ok(Self {
@@ -1843,7 +1835,7 @@ impl FusionFactorPubApp {
             self.rl_config.rolling_window,
         ) {
             Ok(Some(raw)) => {
-                let scaled = self.rl_config.apply_scale_and_clip(raw);
+                let scaled = self.rl_config.apply_scale(raw);
                 if scaled.is_finite() {
                     (scaled, true)
                 } else {

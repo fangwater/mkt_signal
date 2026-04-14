@@ -49,6 +49,8 @@ pub struct MmHedgeSnapshot {
     pub sell_qty: f64,
     pub hedge_ts_ms: Option<i64>,
     pub hedge_is_taker: Option<bool>,
+    pub signal: Option<f64>,
+    pub final_offset: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -79,6 +81,8 @@ pub struct MarketMakerHedgeStrategy {
     signal_ts: i64,
     last_hedge_ts_ms: Option<i64>,
     last_hedge_is_taker: Option<bool>,
+    last_signal: Option<f64>,
+    last_final_offset: Option<f64>,
     hedge_from_key: Vec<u8>,
     order_seq: u32,
     hedge_plan: Vec<HedgePlanOrder>,
@@ -115,6 +119,8 @@ impl MarketMakerHedgeStrategy {
             signal_ts: 0,
             last_hedge_ts_ms: None,
             last_hedge_is_taker: None,
+            last_signal: None,
+            last_final_offset: None,
             hedge_from_key: Vec::new(),
             order_seq: 0,
             hedge_plan: Vec::new(),
@@ -484,7 +490,17 @@ impl MarketMakerHedgeStrategy {
             sell_qty: self.period_sell_qty,
             hedge_ts_ms: self.last_hedge_ts_ms,
             hedge_is_taker: self.last_hedge_is_taker,
+            signal: self.last_signal,
+            final_offset: self.last_final_offset,
         }
+    }
+
+    fn parse_return_score_from_from_key(from_key: &[u8]) -> Option<f64> {
+        let text = std::str::from_utf8(from_key).ok()?;
+        text.split(':').find_map(|part| {
+            let (_, value_text) = part.split_once("ret_score=")?;
+            value_text.parse::<f64>().ok()
+        })
     }
 
     fn weighted_inventory_price(&self) -> f64 {
@@ -586,6 +602,13 @@ impl MarketMakerHedgeStrategy {
         self.pending_hedge_request_seq = None;
         self.signal_ts = ctx.signal_ts;
         self.hedge_from_key = ctx.from_key.clone();
+        self.last_signal = Self::parse_return_score_from_from_key(&ctx.from_key);
+        self.last_final_offset = ctx
+            .price_offsets
+            .iter()
+            .copied()
+            .filter(|v| v.is_finite())
+            .reduce(f64::max);
         self.next_query_ts_us = ctx.next_query_ts;
         self.pending_query = false;
         self.query_watchdog_due_ts = 0;

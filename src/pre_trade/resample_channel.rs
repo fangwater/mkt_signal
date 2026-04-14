@@ -527,9 +527,23 @@ impl ResampleChannel {
             let mut rows: Vec<PreTradeExposureRow> = Vec::new();
             let mut exposure_sum_usdt = 0.0_f64;
             let hedge_snapshots = mon.strategy_mgr().borrow().mm_hedge_snapshots();
-            let hedge_snapshot_by_symbol: HashMap<String, (f64, Option<i64>, Option<bool>)> = hedge_snapshots
+            let hedge_snapshot_by_symbol: HashMap<
+                String,
+                (f64, Option<i64>, Option<bool>, Option<f64>, Option<f64>),
+            > = hedge_snapshots
                 .into_iter()
-                .map(|snap| (snap.symbol, (snap.net_qty, snap.hedge_ts_ms, snap.hedge_is_taker)))
+                .map(|snap| {
+                    (
+                        snap.symbol,
+                        (
+                            snap.net_qty,
+                            snap.hedge_ts_ms,
+                            snap.hedge_is_taker,
+                            snap.signal,
+                            snap.final_offset,
+                        ),
+                    )
+                })
                 .collect();
 
             let mut exposure_items: Vec<(String, f64, f64)> = exposures
@@ -557,12 +571,19 @@ impl ResampleChannel {
 
                 let open_usdt = open_qty * mark;
                 let hedge_usdt = hedge_qty * mark;
-                let (hedge_net_qty, hedge_time_ms, hedge_is_taker) = hedge_snapshot_by_symbol
+                let (hedge_net_qty, hedge_time_ms, hedge_is_taker, hedge_signal, hedge_final_offset) =
+                    hedge_snapshot_by_symbol
                     .get(&symbol)
-                    .map(|(net_qty, hedge_ts_ms, hedge_is_taker)| {
-                        (Some(*net_qty), *hedge_ts_ms, *hedge_is_taker)
+                    .map(|(net_qty, hedge_ts_ms, hedge_is_taker, hedge_signal, hedge_final_offset)| {
+                        (
+                            Some(*net_qty),
+                            *hedge_ts_ms,
+                            *hedge_is_taker,
+                            *hedge_signal,
+                            *hedge_final_offset,
+                        )
                     })
-                    .unwrap_or((None, None, None));
+                    .unwrap_or((None, None, None, None, None));
                 let net_qty = open_qty + hedge_qty;
                 let net_usdt = open_usdt + hedge_usdt;
                 exposure_sum_usdt += net_usdt;
@@ -576,6 +597,8 @@ impl ResampleChannel {
                     hedge_net_qty,
                     hedge_time_ms,
                     hedge_is_taker,
+                    hedge_signal,
+                    hedge_final_offset,
                     net_qty: Some(net_qty),
                     net_usdt: Some(net_usdt),
                     is_total: false,
@@ -592,6 +615,8 @@ impl ResampleChannel {
                     hedge_net_qty: None,
                     hedge_time_ms: None,
                     hedge_is_taker: None,
+                    hedge_signal: None,
+                    hedge_final_offset: None,
                     net_qty: None,
                     net_usdt: Some(exposure_sum_usdt),
                     is_total: true,
