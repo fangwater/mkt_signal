@@ -447,7 +447,11 @@
           minimumFractionDigits: 3,
           maximumFractionDigits: 3,
         });
-        const fmtRatio = new Intl.NumberFormat("en-US", {
+        const fmtSignal = new Intl.NumberFormat("en-US", {
+          minimumFractionDigits: 8,
+          maximumFractionDigits: 8,
+        });
+        const fmtOffset = new Intl.NumberFormat("en-US", {
           minimumFractionDigits: 4,
           maximumFractionDigits: 4,
         });
@@ -640,10 +644,10 @@
                   : "maker"
                 : "-";
             const hedgeSignal = isFiniteNumber(r && r.hedge_signal)
-              ? fmt(r.hedge_signal, fmtRatio)
+              ? fmt(r.hedge_signal, fmtSignal)
               : "0";
             const hedgeFinalOffset = isFiniteNumber(r && r.hedge_final_offset)
-              ? fmt(r.hedge_final_offset, fmtRatio)
+              ? fmt(r.hedge_final_offset, fmtOffset)
               : "0";
             const hedgeInfo = `${fmtUtc8(r && r.hedge_time_ms)} | ${hedgeMode} | ${hedgeSignal} | ${hedgeFinalOffset}`;
             const tr = document.createElement("tr");
