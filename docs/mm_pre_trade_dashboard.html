@@ -447,6 +447,10 @@
           minimumFractionDigits: 3,
           maximumFractionDigits: 3,
         });
+        const fmtRatio = new Intl.NumberFormat("en-US", {
+          minimumFractionDigits: 4,
+          maximumFractionDigits: 4,
+        });
 
         function setStatus(cls, text) {
           el.wsIndicator.className = `indicator ${cls}`;
