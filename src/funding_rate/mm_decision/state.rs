@@ -62,6 +62,8 @@ pub(crate) struct MmDecisionState {
     pub(crate) hedge_offset_ratio: f64,
     pub(crate) hedge_price_offset_limit_upper: f64,
     pub(crate) hedge_price_offset_limit_lower: f64,
+    pub(crate) hedge_window_scale_low: f64,
+    pub(crate) hedge_window_scale_high: f64,
     pub(crate) max_hedge_price_pct_change: f64,
     pub(crate) enable_return_score_adjust_hedge: bool,
     pub(crate) enable_open_cancel: bool,
@@ -143,6 +145,8 @@ impl MmDecisionState {
             hedge_offset_ratio: 1.3,
             hedge_price_offset_limit_upper: 0.005,
             hedge_price_offset_limit_lower: 0.0003,
+            hedge_window_scale_low: 0.8,
+            hedge_window_scale_high: 1.3,
             max_hedge_price_pct_change: 5.0,
             enable_return_score_adjust_hedge: true,
             enable_open_cancel: false,
@@ -225,6 +229,8 @@ impl MmDecisionState {
         hedge_offset_ratio: f64,
         hedge_price_offset_limit_lower: f64,
         hedge_price_offset_limit_upper: f64,
+        hedge_window_scale_low: f64,
+        hedge_window_scale_high: f64,
         max_hedge_price_pct_change: f64,
         next_query_delay_ms: u64,
         enable_return_score_adjust_hedge: bool,
@@ -249,6 +255,15 @@ impl MmDecisionState {
         {
             panic!("MmDecision: hedge price offset limits must be finite");
         }
+        if !hedge_window_scale_low.is_finite() || !hedge_window_scale_high.is_finite() {
+            panic!("MmDecision: hedge_window_scale values must be finite");
+        }
+        if hedge_window_scale_low <= 0.0 || hedge_window_scale_high < hedge_window_scale_low {
+            panic!(
+                "MmDecision: hedge_window_scale must satisfy 0<low<=high, got low={} high={}",
+                hedge_window_scale_low, hedge_window_scale_high
+            );
+        }
         if !(max_hedge_price_pct_change.is_finite() && max_hedge_price_pct_change > 0.0) {
             panic!(
                 "MmDecision: max_hedge_price_pct_change must be finite and > 0, got {}",
@@ -260,16 +275,20 @@ impl MmDecisionState {
         self.hedge_offset_ratio = hedge_offset_ratio;
         self.hedge_price_offset_limit_lower = hedge_price_offset_limit_lower;
         self.hedge_price_offset_limit_upper = hedge_price_offset_limit_upper;
+        self.hedge_window_scale_low = hedge_window_scale_low;
+        self.hedge_window_scale_high = hedge_window_scale_high;
         self.max_hedge_price_pct_change = max_hedge_price_pct_change;
         self.next_query_delay_ms = next_query_delay_ms;
         self.enable_return_score_adjust_hedge = enable_return_score_adjust_hedge;
         debug!(
-            "MmDecision: hedge params updated levels={} vol_multiplier={:.6} offset_ratio={:.6} low={:.6} high={:.6} max_pct_change={:.6} next_query_delay_ms={} enable_return_score_adjust_hedge={}",
+            "MmDecision: hedge params updated levels={} vol_multiplier={:.6} offset_ratio={:.6} low={:.6} high={:.6} hedge_window_scale_low={:.6} hedge_window_scale_high={:.6} max_pct_change={:.6} next_query_delay_ms={} enable_return_score_adjust_hedge={}",
             self.hedge_orders_per_round,
             self.hedge_vol_multiplier,
             self.hedge_offset_ratio,
             self.hedge_price_offset_limit_lower,
             self.hedge_price_offset_limit_upper,
+            self.hedge_window_scale_low,
+            self.hedge_window_scale_high,
             self.max_hedge_price_pct_change,
             self.next_query_delay_ms,
             self.enable_return_score_adjust_hedge
