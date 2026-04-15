@@ -136,6 +136,26 @@ impl SlidingQuantileWindow {
         qs.iter().map(|&q| self.quantile_linear(q)).collect()
     }
 
+    pub fn percentile_rank_f64(&self, value: f64) -> Option<f64> {
+        let key = quantize_value(value)?;
+        self.percentile_rank_key(key)
+    }
+
+    pub fn percentile_rank_if_pushed_f64(&self, value: f64) -> Option<f64> {
+        let key = quantize_value(value)?;
+        let n = self.sample_size();
+        let next_n = n.saturating_add(1);
+        let less = count_lt(&self.root, key);
+        let less_or_equal = count_le(&self.root, key);
+        let equal = less_or_equal.saturating_sub(less).saturating_add(1);
+        Some((less as f64 + (equal as f64 * 0.5)) / next_n as f64)
+    }
+
+    pub fn percentile_rank_last(&self) -> Option<f64> {
+        let key = *self.active.back()?;
+        self.percentile_rank_key(key)
+    }
+
     fn rebuild_active_tree(&mut self) {
         self.active.clear();
         self.root = None;
@@ -146,6 +166,18 @@ impl SlidingQuantileWindow {
             self.active.push_back(key);
             insert_link(&mut self.root, key, next_priority(&mut self.rng_state));
         }
+    }
+
+    fn percentile_rank_key(&self, key: i64) -> Option<f64> {
+        let n = self.sample_size();
+        if n == 0 {
+            return None;
+        }
+
+        let less = count_lt(&self.root, key);
+        let less_or_equal = count_le(&self.root, key);
+        let equal = less_or_equal.saturating_sub(less);
+        Some((less as f64 + (equal as f64 * 0.5)) / n as f64)
     }
 }
 
@@ -305,6 +337,30 @@ fn kth_key(link: &Link, rank: usize) -> Option<i64> {
     }
 }
 
+fn count_lt(link: &Link, key: i64) -> usize {
+    let Some(node) = link.as_ref() else {
+        return 0;
+    };
+
+    if key <= node.key {
+        count_lt(&node.left, key)
+    } else {
+        link_size(&node.left) + node.count + count_lt(&node.right, key)
+    }
+}
+
+fn count_le(link: &Link, key: i64) -> usize {
+    let Some(node) = link.as_ref() else {
+        return 0;
+    };
+
+    if key < node.key {
+        count_le(&node.left, key)
+    } else {
+        link_size(&node.left) + node.count + count_le(&node.right, key)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::SlidingQuantileWindow;
@@ -344,5 +400,16 @@ mod tests {
 
         assert_eq!(window.sample_size(), 4);
         assert_eq!(window.quantile_linear(0.5), Some(1.234567));
+    }
+
+    #[test]
+    fn percentile_rank_uses_midpoint_rank() {
+        let mut window = SlidingQuantileWindow::new(5, 5);
+        for value in [1.0, 2.0, 2.0, 4.0] {
+            assert!(window.push_f64(value));
+        }
+
+        assert_eq!(window.percentile_rank_f64(2.0), Some(0.5));
+        assert_eq!(window.percentile_rank_last(), Some(0.875));
     }
 }

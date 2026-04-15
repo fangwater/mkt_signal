@@ -71,6 +71,7 @@ impl MmCancelDecision {
         state: &mut MmDecisionState,
         symbol: &str,
         return_score_value: f64,
+        return_qtl: Option<f64>,
         now_us: i64,
     ) -> Result<Option<SignalType>> {
         let threshold_symbol =
@@ -112,7 +113,7 @@ impl MmCancelDecision {
             } else {
                 let from_key = build_mm_cancel_from_key(
                     now_us,
-                    Some(return_score_value),
+                    return_qtl,
                     Some(thresholds.forward_cancel),
                     volatility,
                     &environment_signal,
@@ -135,7 +136,7 @@ impl MmCancelDecision {
             } else {
                 let from_key = build_mm_cancel_from_key(
                     now_us,
-                    Some(return_score_value),
+                    return_qtl,
                     Some(thresholds.backward_cancel),
                     volatility,
                     &environment_signal,
@@ -202,7 +203,9 @@ impl MmCancelDecision {
             let Some(symbol) = online_set.get(&symbol_key) else {
                 continue;
             };
-            if let Err(err) = self.emit_for_symbol(state, symbol, event.score, now_us) {
+            if let Err(err) =
+                self.emit_for_symbol(state, symbol, event.score, event.score_quantile, now_us)
+            {
                 warn!(
                     "MmDecision: MMCancel evaluate failed symbol={} err={:#}",
                     symbol_key, err

@@ -127,7 +127,7 @@ impl MmOpenDecision {
             }
         }
 
-        let (return_score, thresholds) = if state.prediction_mode {
+        let (return_score, thresholds, return_qtl) = if state.prediction_mode {
             let Some(service_name) = state.return_model_service.clone() else {
                 return Ok(MmOpenEvalResult::skipped(
                     &symbol_key,
@@ -142,6 +142,7 @@ impl MmOpenDecision {
                 symbol,
                 state.hedge_venue,
             );
+            let return_qtl = score_lookup.score_quantile.filter(|v| v.is_finite());
             let return_score = match resolve_mm_open_return_score(
                 state.prediction_mode,
                 score_lookup.score,
@@ -164,9 +165,9 @@ impl MmOpenDecision {
                 .return_score_thresholds
                 .get(&threshold_symbol)
                 .copied();
-            (return_score, thresholds)
+            (return_score, thresholds, return_qtl)
         } else {
-            (0.0, None)
+            (0.0, None, None)
         };
         if state.prediction_mode && thresholds.is_none() {
             return Ok(MmOpenEvalResult::skipped(
@@ -207,7 +208,7 @@ impl MmOpenDecision {
         }
         let from_key = build_from_key(
             now_us,
-            Some(return_score),
+            return_qtl,
             open_return_threshold,
             Some(volatility),
             &environment_signal,
@@ -536,6 +537,7 @@ mod tests {
             service_name: None,
             symbol_key: "DOGEUSDT".to_string(),
             score: Some(0.00216925),
+            score_quantile: None,
             threshold: Some(0.00234964),
             note: "pnlu_fallback:test".to_string(),
         }

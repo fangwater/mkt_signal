@@ -292,13 +292,13 @@ pub fn compute_spread_rate(open_quote: &Quote, hedge_quote: &Quote) -> f64 {
 
 pub fn build_decision_from_key_base(
     now_us: i64,
-    return_score: Option<f64>,
+    return_qtl: Option<f64>,
     return_threshold: Option<f64>,
     volatility: Option<f64>,
     env_score: Option<f64>,
     env_threshold: Option<f64>,
 ) -> String {
-    let return_score_text = return_score
+    let return_qtl_text = return_qtl
         .filter(|v| v.is_finite())
         .map(|v| format!("{v:.8}"))
         .unwrap_or_else(|| "0".to_string());
@@ -319,7 +319,7 @@ pub fn build_decision_from_key_base(
         .map(|v| format!("{v:.8}"))
         .unwrap_or_else(|| "0".to_string());
     format!(
-        "{now_us}:ret_score={return_score_text}:ret_thr={return_threshold_text}:vol={volatility_text}:env_score={env_score_text}:env_thr={env_threshold_text}"
+        "{now_us}:ret_qtl={return_qtl_text}:ret_thr={return_threshold_text}:vol={volatility_text}:env_score={env_score_text}:env_thr={env_threshold_text}"
     )
 }
 
@@ -343,7 +343,7 @@ pub fn append_key_value_fields(base: String, fields: &[(&str, String)]) -> Strin
 
 pub fn build_open_from_key_base(
     now_us: i64,
-    return_score: Option<f64>,
+    return_qtl: Option<f64>,
     return_threshold: Option<f64>,
     volatility: Option<f64>,
     open_scale: Option<f64>,
@@ -354,7 +354,7 @@ pub fn build_open_from_key_base(
     append_key_value_fields(
         build_decision_from_key_base(
             now_us,
-            return_score,
+            return_qtl,
             return_threshold,
             volatility,
             env_score,

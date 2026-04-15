@@ -539,7 +539,7 @@ impl ResampleChannel {
                             snap.net_qty,
                             snap.hedge_ts_ms,
                             snap.hedge_is_taker,
-                            snap.signal,
+                            snap.ret_qtl,
                             snap.final_offset,
                         ),
                     )
@@ -575,7 +575,7 @@ impl ResampleChannel {
                     hedge_net_qty,
                     hedge_time_ms,
                     hedge_is_taker,
-                    hedge_signal,
+                    hedge_ret_qtl,
                     hedge_final_offset,
                 ) = hedge_snapshot_by_symbol
                     .get(&symbol)
@@ -584,14 +584,14 @@ impl ResampleChannel {
                             net_qty,
                             hedge_ts_ms,
                             hedge_is_taker,
-                            hedge_signal,
+                            hedge_ret_qtl,
                             hedge_final_offset,
                         )| {
                             (
                                 Some(*net_qty),
                                 *hedge_ts_ms,
                                 *hedge_is_taker,
-                                *hedge_signal,
+                                *hedge_ret_qtl,
                                 *hedge_final_offset,
                             )
                         },
@@ -610,7 +610,7 @@ impl ResampleChannel {
                     hedge_net_qty,
                     hedge_time_ms,
                     hedge_is_taker,
-                    hedge_signal,
+                    hedge_ret_qtl,
                     hedge_final_offset,
                     net_qty: Some(net_qty),
                     net_usdt: Some(net_usdt),
@@ -628,7 +628,7 @@ impl ResampleChannel {
                     hedge_net_qty: None,
                     hedge_time_ms: None,
                     hedge_is_taker: None,
-                    hedge_signal: None,
+                    hedge_ret_qtl: None,
                     hedge_final_offset: None,
                     net_qty: None,
                     net_usdt: Some(exposure_sum_usdt),

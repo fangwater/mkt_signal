@@ -148,6 +148,14 @@ path = "src/bin/inspect_rl_vol.rs"
 name = "inspect_iceoryx_service"
 path = "src/bin/inspect_iceoryx_service.rs"
 
+[[bin]]
+name = "inspect_model_output"
+path = "src/bin/inspect_model_output.rs"
+
+[[bin]]
+name = "inspect_model_input"
+path = "src/bin/inspect_model_input.rs"
+
 [dependencies]
 factor_engine = { path = "crates/factor_engine" }
 local-ip-address = "0.6"

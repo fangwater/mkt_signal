@@ -495,12 +495,14 @@ impl ModelPubApp {
         factor_values: &[f32],
     ) -> Result<()> {
         let ts_out_ms = now_millis();
+        let score_quantile = self.score_rolling.preview_score_quantile(symbol, score);
         let msg = ModelMsg::create(
             symbol.to_string(),
             ts_in_ms,
             ts_out_ms,
             0,
             score,
+            score_quantile,
             status,
             factor_indices.to_vec(),
             factor_values.to_vec(),

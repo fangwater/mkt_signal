@@ -179,6 +179,7 @@ struct ScoreThresholdPayload {
     ts: i64,
     target_ts: i64,
     factor: Option<f64>,
+    score_quantile: Option<f64>,
     quantiles: Vec<f32>,
     thresholds: Vec<f64>,
     ready: bool,
@@ -192,6 +193,7 @@ struct ScoreThresholdPayload {
 struct SymbolScoreState {
     window: SlidingQuantileWindow,
     latest_score: Option<f64>,
+    latest_score_quantile: Option<f64>,
     latest_ts_out_ms: Option<i64>,
 }
 
@@ -200,14 +202,21 @@ impl SymbolScoreState {
         Self {
             window: SlidingQuantileWindow::new(capacity.max(1), rolling_window.max(1)),
             latest_score: None,
+            latest_score_quantile: None,
             latest_ts_out_ms: None,
         }
     }
 
-    fn push(&mut self, score: f64, ts_out_ms: i64) {
-        let _ = self.window.push_f64(score);
+    fn push(&mut self, score: f64, ts_out_ms: i64) -> Option<f64> {
+        let score_quantile = if self.window.push_f64(score) {
+            self.window.percentile_rank_last()
+        } else {
+            None
+        };
         self.latest_score = Some(score);
+        self.latest_score_quantile = score_quantile;
         self.latest_ts_out_ms = (ts_out_ms > 0).then_some(ts_out_ms);
+        score_quantile
     }
 }
 
@@ -279,14 +288,14 @@ impl InlineScoreRolling {
         symbol: &str,
         score: f64,
         ts_out_ms: i64,
-    ) -> Result<()> {
+    ) -> Result<Option<f64>> {
         if !score.is_finite() {
-            return Ok(());
+            return Ok(None);
         }
 
         let symbol = normalize_symbol(symbol);
         if symbol.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
 
         let capacity = self.runtime_cfg.max_length;
@@ -302,10 +311,36 @@ impl InlineScoreRolling {
             state.window.reconfigure(capacity, rolling_window);
         }
 
-        state.push(score, ts_out_ms);
+        let score_quantile = state.push(score, ts_out_ms);
         self.maybe_reload_and_flush().await;
 
-        Ok(())
+        Ok(score_quantile)
+    }
+
+    pub fn preview_score_quantile(&mut self, symbol: &str, score: f64) -> Option<f64> {
+        if !score.is_finite() {
+            return None;
+        }
+
+        let symbol = normalize_symbol(symbol);
+        if symbol.is_empty() {
+            return None;
+        }
+
+        let capacity = self.runtime_cfg.max_length;
+        let rolling_window = self.runtime_cfg.rolling_window;
+        let state = self
+            .states
+            .entry(symbol)
+            .or_insert_with(|| SymbolScoreState::new(capacity, rolling_window));
+
+        if state.window.history_capacity() != capacity
+            || state.window.active_window() != rolling_window
+        {
+            state.window.reconfigure(capacity, rolling_window);
+        }
+
+        state.window.percentile_rank_if_pushed_f64(score)
     }
 
     async fn maybe_reload_and_flush(&mut self) {
@@ -391,6 +426,7 @@ impl InlineScoreRolling {
                 ts: now,
                 target_ts: state.latest_ts_out_ms.unwrap_or(now),
                 factor: state.latest_score,
+                score_quantile: state.latest_score_quantile,
                 quantiles: self.runtime_cfg.quantiles.clone(),
                 thresholds,
                 ready,

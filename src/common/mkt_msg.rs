@@ -134,6 +134,7 @@ pub struct ModelMsg {
     pub ts_out_ms: i64,
     pub seq_no: u64,
     pub score: f64,
+    pub score_quantile: Option<f64>,
     pub status: u8,
     pub feature_dim: u16,
     pub factor_indices: Vec<u16>,
@@ -1227,6 +1228,7 @@ impl ModelMsg {
         ts_out_ms: i64,
         seq_no: u64,
         score: f64,
+        score_quantile: Option<f64>,
         status: u8,
         factor_indices: Vec<u16>,
         factor_values: Vec<f32>,
@@ -1246,6 +1248,7 @@ impl ModelMsg {
             ts_out_ms,
             seq_no,
             score,
+            score_quantile,
             status,
             feature_dim,
             factor_indices,
@@ -1264,7 +1267,7 @@ impl ModelMsg {
 
         let dim = self.feature_dim as usize;
         let total_size =
-            4 + 4 + self.symbol_length as usize + 8 + 8 + 8 + 8 + 1 + 7 + 2 + dim * 2 + dim * 4;
+            4 + 4 + self.symbol_length as usize + 8 + 8 + 8 + 8 + 1 + 7 + 2 + dim * 2 + dim * 4 + 8;
         let mut buf = BytesMut::with_capacity(total_size);
         buf.put_u32_le(self.msg_type);
         buf.put_u32_le(self.symbol_length);
@@ -1283,6 +1286,7 @@ impl ModelMsg {
         for &val in &self.factor_values {
             buf.put_f32_le(val);
         }
+        buf.put_f64_le(self.score_quantile.unwrap_or(f64::NAN));
         Ok(buf.freeze())
     }
 
@@ -1320,10 +1324,10 @@ impl ModelMsg {
         cursor.advance(7);
 
         let feature_dim = cursor.get_u16_le() as usize;
-        let needed = feature_dim * 2 + feature_dim * 4;
+        let needed = feature_dim * 2 + feature_dim * 4 + 8;
         if cursor.remaining() < needed {
             bail!(
-                "ModelMsg truncated in feature payload: remaining={} need={} dim={}",
+                "ModelMsg truncated in feature/quantile payload: remaining={} need={} dim={}",
                 cursor.remaining(),
                 needed,
                 feature_dim
@@ -1339,6 +1343,9 @@ impl ModelMsg {
             factor_values.push(cursor.get_f32_le());
         }
 
+        let raw = cursor.get_f64_le();
+        let score_quantile = (raw.is_finite() && (0.0..=1.0).contains(&raw)).then_some(raw);
+
         Ok(Self {
             msg_type,
             symbol_length: symbol.len() as u32,
@@ -1347,11 +1354,40 @@ impl ModelMsg {
             ts_out_ms,
             seq_no,
             score,
+            score_quantile,
             status,
             feature_dim: feature_dim as u16,
             factor_indices,
             factor_values,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ModelMsg, MODEL_MSG_TYPE, MODEL_STATUS_OK};
+    use bytes::{BufMut, BytesMut};
+
+    #[test]
+    fn model_msg_roundtrip_preserves_score_quantile() {
+        let msg = ModelMsg::create(
+            "BTCUSDT".to_string(),
+            100,
+            200,
+            3,
+            0.42,
+            Some(0.91),
+            MODEL_STATUS_OK,
+            vec![1, 7],
+            vec![0.5, -0.25],
+        );
+
+        let decoded = ModelMsg::from_bytes(msg.to_bytes().unwrap().as_ref()).unwrap();
+        assert_eq!(decoded.symbol, "BTCUSDT");
+        assert_eq!(decoded.score, 0.42);
+        assert_eq!(decoded.score_quantile, Some(0.91));
+        assert_eq!(decoded.factor_indices, vec![1, 7]);
+        assert_eq!(decoded.factor_values, vec![0.5, -0.25]);
     }
 }
 

@@ -353,7 +353,7 @@ impl MmDecision {
             warn!("MmDecision: MMHedge return_model_service unavailable");
             return;
         };
-        let (signal, volatility) = match resolve_mm_hedge_signal_inputs(
+        let (signal, signal_qtl, volatility) = match resolve_mm_hedge_signal_inputs(
             &mut self.state.factor_value_hub,
             &model_service,
             &symbol,
@@ -375,6 +375,7 @@ impl MmDecision {
             quote,
             volatility,
             signal,
+            signal_qtl,
             hedge_vol_multiplier: self.state.hedge_vol_multiplier,
             hedge_offset_ratio: self.state.hedge_offset_ratio,
             order_amount_u: self.state.resolve_order_amount_u(&symbol),
@@ -562,21 +563,17 @@ impl MmDecision {
                         threshold
                     ));
                 }
-                let return_score =
-                    self.state
-                        .return_model_service
-                        .clone()
-                        .and_then(|service_name| {
-                            self.state
-                                .factor_value_hub
-                                .lookup_model_output_score(
-                                    &service_name,
-                                    &symbol,
-                                    self.state.hedge_venue,
-                                )
-                                .score
-                                .filter(|value| value.is_finite())
-                        });
+                let return_lookup = self.state.return_model_service.clone().map(|service_name| {
+                    self.state.factor_value_hub.lookup_model_output_score(
+                        &service_name,
+                        &symbol,
+                        self.state.hedge_venue,
+                    )
+                });
+                let return_qtl = return_lookup
+                    .as_ref()
+                    .and_then(|lookup| lookup.score_quantile)
+                    .filter(|value| value.is_finite());
                 let volatility = self
                     .state
                     .factor_value_hub
@@ -589,7 +586,7 @@ impl MmDecision {
                         .evaluate_environment_signal(&symbol_key, &symbol, now_us);
                 let from_key = build_mm_cancel_from_key(
                     now_us,
-                    return_score,
+                    return_qtl,
                     None,
                     volatility,
                     &environment_signal,

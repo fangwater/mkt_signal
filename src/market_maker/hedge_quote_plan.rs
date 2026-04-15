@@ -18,6 +18,7 @@ pub struct MmHedgeBuildInput<'a> {
     pub quote: Quote,
     pub volatility: f64,
     pub signal: f64,
+    pub signal_qtl: Option<f64>,
     pub enable_return_score_adjust_hedge: bool,
     pub hedge_vol_multiplier: f64,
     pub hedge_offset_ratio: f64,
@@ -37,6 +38,7 @@ pub struct MmHedgeQuotePlan {
     pub next_query_ts: i64,
     pub side: Side,
     pub signal: f64,
+    pub signal_qtl: Option<f64>,
     pub effective_signal: f64,
     pub clipped_signal: f64,
     pub normalized_signal: f64,
@@ -57,9 +59,9 @@ pub fn resolve_mm_hedge_signal_inputs(
     symbol: &str,
     venue: TradingVenue,
     enable_return_score_adjust_hedge: bool,
-) -> Result<(f64, f64), String> {
+) -> Result<(f64, Option<f64>, f64), String> {
+    let score_lookup = factor_value_hub.lookup_model_output_score(model_service, symbol, venue);
     let signal = if enable_return_score_adjust_hedge {
-        let score_lookup = factor_value_hub.lookup_model_output_score(model_service, symbol, venue);
         resolve_mm_hedge_effective_signal(
             enable_return_score_adjust_hedge,
             score_lookup.score,
@@ -69,6 +71,7 @@ pub fn resolve_mm_hedge_signal_inputs(
     } else {
         0.0
     };
+    let signal_qtl = score_lookup.score_quantile.filter(|v| v.is_finite());
     let factor_lookup = factor_value_hub.lookup_factor_value(symbol, venue);
     let volatility = factor_lookup
         .target_factor_value
@@ -79,7 +82,7 @@ pub fn resolve_mm_hedge_signal_inputs(
                 factor_lookup.key, factor_lookup.note
             )
         })?;
-    Ok((signal, volatility))
+    Ok((signal, signal_qtl, volatility))
 }
 
 fn resolve_mm_hedge_effective_signal(
@@ -99,8 +102,8 @@ fn resolve_mm_hedge_effective_signal(
     })
 }
 
-fn build_mm_hedge_from_key(now_us: i64, signal: f64, volatility: f64) -> Vec<u8> {
-    build_decision_from_key_base(now_us, Some(signal), None, Some(volatility), None, None)
+fn build_mm_hedge_from_key(now_us: i64, signal_qtl: Option<f64>, volatility: f64) -> Vec<u8> {
+    build_decision_from_key_base(now_us, signal_qtl, None, Some(volatility), None, None)
         .into_bytes()
 }
 
@@ -296,6 +299,7 @@ pub fn build_mm_hedge_quote_plan(
         next_query_ts: now_us + (input.next_query_delay_ms as i64) * 1000,
         side,
         signal: input.signal,
+        signal_qtl: input.signal_qtl,
         effective_signal: input.signal,
         clipped_signal,
         normalized_signal,
@@ -367,7 +371,7 @@ pub fn build_mm_hedge_ctx(
     ctx.next_query_ts = plan.next_query_ts;
     ctx.set_from_key(build_mm_hedge_from_key(
         plan.now_us,
-        plan.signal,
+        plan.signal_qtl,
         plan.volatility,
     ));
     Ok(ctx)

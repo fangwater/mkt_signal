@@ -451,6 +451,10 @@
           minimumFractionDigits: 8,
           maximumFractionDigits: 8,
         });
+        const fmtQtl = new Intl.NumberFormat("en-US", {
+          minimumFractionDigits: 3,
+          maximumFractionDigits: 3,
+        });
         const fmtOffset = new Intl.NumberFormat("en-US", {
           minimumFractionDigits: 4,
           maximumFractionDigits: 4,
@@ -643,13 +647,13 @@
                   ? "taker"
                   : "maker"
                 : "-";
-            const hedgeSignal = isFiniteNumber(r && r.hedge_signal)
-              ? fmt(r.hedge_signal, fmtSignal)
+            const hedgeRetQtl = isFiniteNumber(r && r.hedge_ret_qtl)
+              ? fmt(r.hedge_ret_qtl, fmtQtl)
               : "0";
             const hedgeFinalOffset = isFiniteNumber(r && r.hedge_final_offset)
               ? fmt(r.hedge_final_offset, fmtOffset)
               : "0";
-            const hedgeInfo = `${fmtUtc8(r && r.hedge_time_ms)} | ${hedgeMode} | ${hedgeSignal} | ${hedgeFinalOffset}`;
+            const hedgeInfo = `${fmtUtc8(r && r.hedge_time_ms)} | ${hedgeMode} | ${hedgeRetQtl} | ${hedgeFinalOffset}`;
             const tr = document.createElement("tr");
             if (r.is_total) tr.classList.add("total-row");
             tr.innerHTML = `
@@ -873,7 +877,7 @@
                   hedge_net_qty: 0.37,
                   hedge_time_ms: now - 8_000,
                   hedge_is_taker: false,
-                  hedge_signal: 0.18,
+                  hedge_ret_qtl: 0.18,
                   hedge_final_offset: 0.0012,
                   net_qty: 0.42,
                   net_usdt: 29400,
@@ -886,7 +890,7 @@
                   hedge_net_qty: -8.25,
                   hedge_time_ms: now - 22_000,
                   hedge_is_taker: true,
-                  hedge_signal: 0,
+                  hedge_ret_qtl: 0,
                   hedge_final_offset: 0.0035,
                   net_qty: -8.5,
                   net_usdt: -32300,
@@ -899,7 +903,7 @@
                   hedge_net_qty: null,
                   hedge_time_ms: null,
                   hedge_is_taker: null,
-                  hedge_signal: null,
+                  hedge_ret_qtl: null,
                   hedge_final_offset: null,
                   net_qty: null,
                   net_usdt: -2900,
