@@ -650,10 +650,13 @@
             const hedgeRetQtl = isFiniteNumber(r && r.hedge_ret_qtl)
               ? fmt(r.hedge_ret_qtl, fmtQtl)
               : "0";
-            const hedgeFinalOffset = isFiniteNumber(r && r.hedge_final_offset)
-              ? fmt(r.hedge_final_offset, fmtOffset)
+            const hedgeOffsetLow = isFiniteNumber(r && r.hedge_offset_low)
+              ? fmt(r.hedge_offset_low, fmtOffset)
               : "0";
-            const hedgeInfo = `${fmtUtc8(r && r.hedge_time_ms)} | ${hedgeMode} | ${hedgeRetQtl} | ${hedgeFinalOffset}`;
+            const hedgeOffsetHigh = isFiniteNumber(r && r.hedge_offset_high)
+              ? fmt(r.hedge_offset_high, fmtOffset)
+              : "0";
+            const hedgeInfo = `${fmtUtc8(r && r.hedge_time_ms)} | ${hedgeMode} | ${hedgeRetQtl} | ${hedgeOffsetLow}/${hedgeOffsetHigh}`;
             const tr = document.createElement("tr");
             if (r.is_total) tr.classList.add("total-row");
             tr.innerHTML = `
@@ -878,7 +881,8 @@
                   hedge_time_ms: now - 8_000,
                   hedge_is_taker: false,
                   hedge_ret_qtl: 0.18,
-                  hedge_final_offset: 0.0012,
+                  hedge_offset_low: 0.0009,
+                  hedge_offset_high: 0.0012,
                   net_qty: 0.42,
                   net_usdt: 29400,
                   is_total: false,
@@ -891,7 +895,8 @@
                   hedge_time_ms: now - 22_000,
                   hedge_is_taker: true,
                   hedge_ret_qtl: 0,
-                  hedge_final_offset: 0.0035,
+                  hedge_offset_low: 0.0027,
+                  hedge_offset_high: 0.0035,
                   net_qty: -8.5,
                   net_usdt: -32300,
                   is_total: false,
@@ -904,7 +909,8 @@
                   hedge_time_ms: null,
                   hedge_is_taker: null,
                   hedge_ret_qtl: null,
-                  hedge_final_offset: null,
+                  hedge_offset_low: null,
+                  hedge_offset_high: null,
                   net_qty: null,
                   net_usdt: -2900,
                   is_total: true,

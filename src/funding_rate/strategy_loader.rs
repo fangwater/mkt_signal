@@ -201,6 +201,12 @@ pub struct StrategyParams {
     #[serde(default = "default_hedge_price_offset_limit_lower")]
     pub hedge_price_offset_limit_lower: f64,
 
+    #[serde(default = "default_hedge_window_scale_low")]
+    pub hedge_window_scale_low: f64,
+
+    #[serde(default = "default_hedge_window_scale_high")]
+    pub hedge_window_scale_high: f64,
+
     /// 对冲订单超时（秒）
     #[serde(default = "default_hedge_timeout")]
     pub hedge_timeout: u64,
@@ -309,6 +315,12 @@ fn default_hedge_price_offset_limit_upper() -> f64 {
 fn default_hedge_price_offset_limit_lower() -> f64 {
     0.0003
 }
+fn default_hedge_window_scale_low() -> f64 {
+    0.8
+}
+fn default_hedge_window_scale_high() -> f64 {
+    1.3
+}
 fn default_hedge_timeout() -> u64 {
     30
 }
@@ -376,6 +388,8 @@ impl Default for StrategyParams {
             hedge_offset_ratio: default_hedge_offset_ratio(),
             hedge_price_offset_limit_upper: default_hedge_price_offset_limit_upper(),
             hedge_price_offset_limit_lower: default_hedge_price_offset_limit_lower(),
+            hedge_window_scale_low: default_hedge_window_scale_low(),
+            hedge_window_scale_high: default_hedge_window_scale_high(),
             hedge_timeout: default_hedge_timeout(),
             hedge_price_offset: default_hedge_price_offset(),
             hedge_aggressive_seq_threshold: default_hedge_aggressive_seq_threshold(),
@@ -559,6 +573,16 @@ impl StrategyParams {
             .and_then(|s| s.parse::<f64>().ok())
             .filter(|v| v.is_finite())
             .unwrap_or_else(default_hedge_price_offset_limit_lower);
+        let hedge_window_scale_low = hash_map
+            .get("hedge_window_scale_low")
+            .and_then(|s| s.parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .unwrap_or_else(default_hedge_window_scale_low);
+        let hedge_window_scale_high = hash_map
+            .get("hedge_window_scale_high")
+            .and_then(|s| s.parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v >= hedge_window_scale_low)
+            .unwrap_or_else(|| default_hedge_window_scale_high().max(hedge_window_scale_low));
 
         let hedge_timeout = hash_map
             .get("hedge_timeout")
@@ -845,6 +869,8 @@ impl StrategyParams {
             hedge_offset_ratio,
             hedge_price_offset_limit_upper,
             hedge_price_offset_limit_lower,
+            hedge_window_scale_low,
+            hedge_window_scale_high,
             hedge_timeout,
             hedge_price_offset,
             hedge_aggressive_seq_threshold,
@@ -985,6 +1011,8 @@ impl StrategyParams {
                     self.hedge_offset_ratio,
                     self.hedge_price_offset_limit_lower,
                     self.hedge_price_offset_limit_upper,
+                    self.hedge_window_scale_low,
+                    self.hedge_window_scale_high,
                     self.max_hedge_price_pct_change,
                     self.next_query_delay_ms,
                     self.enable_return_score_adjust_hedge,
@@ -1011,12 +1039,14 @@ impl StrategyParams {
         }
 
         info!(
-            "✅ 策略参数已更新: mode={}, amount={:.2}, arb_open_scale={:.4}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, order_interval_ms={}, open_orders_per_round={}, cooldown={}s, prediction_mode={}, enable_open_cancel={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, spread_cancel_cooldown_ms={}, enable_return_score_adjust_hedge={}, enable_environment_model={}, enable_volatility_limit={}, open_volatility_limit={}, return_model_service={}, environment_model_service={}",
+            "✅ 策略参数已更新: mode={}, amount={:.2}, arb_open_scale={:.4}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, hedge_window_scale_low={:.4}, hedge_window_scale_high={:.4}, order_interval_ms={}, open_orders_per_round={}, cooldown={}s, prediction_mode={}, enable_open_cancel={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, spread_cancel_cooldown_ms={}, enable_return_score_adjust_hedge={}, enable_environment_model={}, enable_volatility_limit={}, open_volatility_limit={}, return_model_service={}, environment_model_service={}",
             self.mode,
             self.order_amount,
             self.open_scale,
             self.open_buy_vol_scale,
             self.open_sell_vol_scale,
+            self.hedge_window_scale_low,
+            self.hedge_window_scale_high,
             self.order_interval_ms,
             self.open_orders_per_round,
             self.signal_cooldown,

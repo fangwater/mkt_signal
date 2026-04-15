@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-const SCALE: f64 = 1_000_000.0;
+const DEFAULT_SCALE: f64 = 1_000_000.0;
 const RNG_GAMMA: u64 = 0x9e3779b97f4a7c15;
 const RNG_SEED: u64 = 0x243f6a8885a308d3;
 
@@ -35,6 +35,7 @@ impl Node {
 pub struct SlidingQuantileWindow {
     history_capacity: usize,
     active_window: usize,
+    scale: f64,
     history: VecDeque<i64>,
     active: VecDeque<i64>,
     root: Link,
@@ -43,11 +44,16 @@ pub struct SlidingQuantileWindow {
 
 impl SlidingQuantileWindow {
     pub fn new(history_capacity: usize, active_window: usize) -> Self {
+        Self::new_with_scale(history_capacity, active_window, DEFAULT_SCALE)
+    }
+
+    pub fn new_with_scale(history_capacity: usize, active_window: usize, scale: f64) -> Self {
         let history_capacity = history_capacity.max(1);
         let active_window = active_window.min(history_capacity).max(1);
         Self {
             history_capacity,
             active_window,
+            scale: normalize_scale(scale),
             history: VecDeque::with_capacity(history_capacity),
             active: VecDeque::with_capacity(active_window),
             root: None,
@@ -68,11 +74,11 @@ impl SlidingQuantileWindow {
     }
 
     pub fn last(&self) -> Option<f64> {
-        self.active.back().map(|&key| dequantize_key(key))
+        self.active.back().map(|&key| self.dequantize_key(key))
     }
 
     pub fn push_f64(&mut self, value: f64) -> bool {
-        let Some(key) = quantize_value(value) else {
+        let Some(key) = self.quantize_value(value) else {
             return false;
         };
 
@@ -113,7 +119,11 @@ impl SlidingQuantileWindow {
             return None;
         }
         if n == 1 {
-            return self.active.front().copied().map(dequantize_key);
+            return self
+                .active
+                .front()
+                .copied()
+                .map(|key| self.dequantize_key(key));
         }
 
         let rank = (q as f64) * ((n - 1) as f64);
@@ -123,12 +133,12 @@ impl SlidingQuantileWindow {
 
         let lower = kth_key(&self.root, lower_idx)?;
         if lower_idx == upper_idx {
-            return Some(dequantize_key(lower));
+            return Some(self.dequantize_key(lower));
         }
 
         let upper = kth_key(&self.root, upper_idx)?;
-        let lower_f = dequantize_key(lower);
-        let upper_f = dequantize_key(upper);
+        let lower_f = self.dequantize_key(lower);
+        let upper_f = self.dequantize_key(upper);
         Some(lower_f + (upper_f - lower_f) * frac)
     }
 
@@ -137,12 +147,12 @@ impl SlidingQuantileWindow {
     }
 
     pub fn percentile_rank_f64(&self, value: f64) -> Option<f64> {
-        let key = quantize_value(value)?;
+        let key = self.quantize_value(value)?;
         self.percentile_rank_key(key)
     }
 
     pub fn percentile_rank_if_pushed_f64(&self, value: f64) -> Option<f64> {
-        let key = quantize_value(value)?;
+        let key = self.quantize_value(value)?;
         let n = self.sample_size();
         let next_n = n.saturating_add(1);
         let less = count_lt(&self.root, key);
@@ -179,21 +189,37 @@ impl SlidingQuantileWindow {
         let equal = less_or_equal.saturating_sub(less);
         Some((less as f64 + (equal as f64 * 0.5)) / n as f64)
     }
+
+    fn quantize_value(&self, value: f64) -> Option<i64> {
+        quantize_value(value, self.scale)
+    }
+
+    fn dequantize_key(&self, key: i64) -> f64 {
+        dequantize_key(key, self.scale)
+    }
 }
 
-fn quantize_value(value: f64) -> Option<i64> {
+fn normalize_scale(scale: f64) -> f64 {
+    if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        DEFAULT_SCALE
+    }
+}
+
+fn quantize_value(value: f64, scale: f64) -> Option<i64> {
     if !value.is_finite() {
         return None;
     }
-    let scaled = (value * SCALE).round();
+    let scaled = (value * scale).round();
     if scaled < i64::MIN as f64 || scaled > i64::MAX as f64 {
         return None;
     }
     Some(scaled as i64)
 }
 
-fn dequantize_key(key: i64) -> f64 {
-    key as f64 / SCALE
+fn dequantize_key(key: i64, scale: f64) -> f64 {
+    key as f64 / scale
 }
 
 fn next_priority(state: &mut u64) -> u64 {

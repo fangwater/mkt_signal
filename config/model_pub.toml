@@ -12,6 +12,6 @@ params_hash_key_template = "model_score_rolling_params_{model_name}"
 output_hash_key_template = "model_score_rolling_thresholds_{model_name}"
 reload_param_sec = 60
 max_length = 150000
-rolling_window = 17800
+rolling_window = 89000
 min_periods = 100
 quantiles = [0.9, 0.8, 0.2, 0.1]

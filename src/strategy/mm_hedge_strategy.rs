@@ -53,7 +53,8 @@ pub struct MmHedgeSnapshot {
     pub hedge_ts_ms: Option<i64>,
     pub hedge_is_taker: Option<bool>,
     pub ret_qtl: Option<f64>,
-    pub final_offset: Option<f64>,
+    pub offset_low: Option<f64>,
+    pub offset_high: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -85,7 +86,8 @@ pub struct MarketMakerHedgeStrategy {
     last_hedge_ts_ms: Option<i64>,
     last_hedge_is_taker: Option<bool>,
     last_ret_qtl: Option<f64>,
-    last_final_offset: Option<f64>,
+    last_offset_low: Option<f64>,
+    last_offset_high: Option<f64>,
     hedge_from_key: Vec<u8>,
     order_seq: u32,
     hedge_plan: Vec<HedgePlanOrder>,
@@ -146,7 +148,8 @@ impl MarketMakerHedgeStrategy {
             last_hedge_ts_ms: None,
             last_hedge_is_taker: None,
             last_ret_qtl: None,
-            last_final_offset: None,
+            last_offset_low: None,
+            last_offset_high: None,
             hedge_from_key: Vec::new(),
             order_seq: 0,
             hedge_plan: Vec::new(),
@@ -517,7 +520,8 @@ impl MarketMakerHedgeStrategy {
             hedge_ts_ms: self.last_hedge_ts_ms,
             hedge_is_taker: self.last_hedge_is_taker,
             ret_qtl: self.last_ret_qtl,
-            final_offset: self.last_final_offset,
+            offset_low: self.last_offset_low,
+            offset_high: self.last_offset_high,
         }
     }
 
@@ -629,7 +633,13 @@ impl MarketMakerHedgeStrategy {
         self.signal_ts = ctx.signal_ts;
         self.hedge_from_key = ctx.from_key.clone();
         self.last_ret_qtl = Self::parse_return_qtl_from_from_key(&ctx.from_key);
-        self.last_final_offset = ctx
+        self.last_offset_low = ctx
+            .price_offsets
+            .iter()
+            .copied()
+            .filter(|v| v.is_finite())
+            .reduce(f64::min);
+        self.last_offset_high = ctx
             .price_offsets
             .iter()
             .copied()

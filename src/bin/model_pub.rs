@@ -6,6 +6,7 @@ use anyhow::Result;
 use clap::Parser;
 use log::info;
 use std::env;
+use std::path::PathBuf;
 
 use mkt_signal::factor_pub::model_pub::app::ModelPubApp;
 
@@ -19,6 +20,9 @@ const DEFAULT_CONFIG_PATH: &str = "config/model_pub.toml";
 struct Args {
     /// Model name registered in model_manager
     model_name: String,
+    /// Optional directory containing warming samples like btcusdt-ylabel.txt
+    #[arg(long)]
+    warming_dir: Option<PathBuf>,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -28,11 +32,21 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
     info!(
-        "Starting model_pub: model_name={} config={} backend=ort",
-        args.model_name, DEFAULT_CONFIG_PATH
+        "Starting model_pub: model_name={} config={} backend=ort warming_dir={}",
+        args.model_name,
+        DEFAULT_CONFIG_PATH,
+        args.warming_dir
+            .as_ref()
+            .map(|dir| dir.display().to_string())
+            .unwrap_or_else(|| "-".to_string())
     );
 
-    let mut app = ModelPubApp::new(DEFAULT_CONFIG_PATH, &args.model_name).await?;
+    let mut app = ModelPubApp::new(
+        DEFAULT_CONFIG_PATH,
+        &args.model_name,
+        args.warming_dir.as_deref(),
+    )
+    .await?;
     app.run().await
 }
 

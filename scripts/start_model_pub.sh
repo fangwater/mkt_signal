@@ -12,6 +12,7 @@ Usage:
 Behavior:
   - 必须在 model_pub 部署目录下执行（例如 ~/model_pub/binance_futures_direction_model）
   - model_name 由当前目录名自动推断
+  - 默认 warming 目录: ./history_ylabel（必须已存在）
   - 使用 pmdaemon 启动进程名: model_pub_<model_name>
   - 可用 PMDAEMON_BIN 覆盖二进制名（默认 pmdaemon）
 
@@ -72,6 +73,12 @@ if [[ ! -f "${BASE_DIR}/config/model_pub.toml" ]]; then
   exit 1
 fi
 
+WARMING_DIR="${BASE_DIR}/history_ylabel"
+if [[ ! -d "$WARMING_DIR" ]]; then
+  echo "[ERROR] warming dir not found: ${WARMING_DIR}" >&2
+  exit 1
+fi
+
 ONNX_LIB_CANDIDATES=(
   "${BASE_DIR}/third_party/onnxruntime/linux-x86_64/lib"
   "${HOME}/crypto_mkt/mkt_signal/third_party/onnxruntime/linux-x86_64/lib"
@@ -103,6 +110,7 @@ json_name="$(json_escape "$name")"
 json_bin="$(json_escape "$BIN_PATH")"
 json_base="$(json_escape "$BASE_DIR")"
 json_model="$(json_escape "$MODEL_NAME")"
+json_warming_dir="$(json_escape "$WARMING_DIR")"
 json_rust_log="$(json_escape "$rust_log")"
 json_ld_library_path="$(json_escape "${ONNX_LIB_DIR}:${BASE_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}")"
 
@@ -112,7 +120,7 @@ cat >"$cfg_file" <<JSON
     {
       "name": "${json_name}",
       "script": "${json_bin}",
-      "args": ["${json_model}"],
+      "args": ["${json_model}", "--warming-dir", "${json_warming_dir}"],
       "cwd": "${json_base}",
       "env": {
         "RUST_LOG": "${json_rust_log}",
@@ -131,5 +139,6 @@ echo ""
 echo "[INFO] Started: ${name}"
 echo "Model: ${MODEL_NAME}"
 echo "Config: ${BASE_DIR}/config/model_pub.toml"
+echo "Warming dir: ${WARMING_DIR}"
 echo "Logs: ${PMDAEMON[*]} logs ${name} --follow"
 echo "Status: ${PMDAEMON[*]} list"
