@@ -30,6 +30,7 @@ const MODEL_FETCH_CONCURRENCY: usize = 1;
 const MODEL_ONNX_PATH_TEMPLATE: &str = "/api/models/{model_name}/model_onnx/{symbol}";
 const MODEL_ONNX_FEATURE_DIM_HEADER: &str = "x-model-feature-dim";
 const MODEL_ONNX_CACHE_DIR: &str = "/tmp/mkt_signal_model_pub_onnx";
+const NEUTRAL_SCORE_QUANTILE: f64 = 0.5;
 
 #[derive(Default)]
 struct ModelPubStats {
@@ -497,8 +498,17 @@ impl ModelPubApp {
         symbol: &str,
         ts_in_ms: i64,
     ) -> Result<()> {
-        self.emit_result(symbol, ts_in_ms, 0.0, MODEL_STATUS_OK, &[], &[])
-            .await
+        self.publish_result(
+            symbol,
+            ts_in_ms,
+            0.0,
+            Some(NEUTRAL_SCORE_QUANTILE),
+            MODEL_STATUS_OK,
+            &[],
+            &[],
+            false,
+        )
+        .await
     }
 
     async fn emit_result(
@@ -510,8 +520,32 @@ impl ModelPubApp {
         factor_indices: &[u16],
         factor_values: &[f32],
     ) -> Result<()> {
-        let ts_out_ms = now_millis();
         let score_quantile = self.score_rolling.preview_score_quantile(symbol, score);
+        self.publish_result(
+            symbol,
+            ts_in_ms,
+            score,
+            score_quantile,
+            status,
+            factor_indices,
+            factor_values,
+            true,
+        )
+        .await
+    }
+
+    async fn publish_result(
+        &mut self,
+        symbol: &str,
+        ts_in_ms: i64,
+        score: f64,
+        score_quantile: Option<f64>,
+        status: u8,
+        factor_indices: &[u16],
+        factor_values: &[f32],
+        update_score_rolling: bool,
+    ) -> Result<()> {
+        let ts_out_ms = now_millis();
         let msg = ModelMsg::create(
             symbol.to_string(),
             ts_in_ms,
@@ -537,9 +571,11 @@ impl ModelPubApp {
 
         if self.publisher.publish(bytes.as_ref()) {
             self.stats.publish_ok = self.stats.publish_ok.saturating_add(1);
-            self.score_rolling
-                .post_process_score(symbol, score, ts_out_ms)
-                .await?;
+            if update_score_rolling {
+                self.score_rolling
+                    .post_process_score(symbol, score, ts_out_ms)
+                    .await?;
+            }
         } else {
             self.stats.publish_fail = self.stats.publish_fail.saturating_add(1);
         }
