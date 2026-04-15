@@ -15,7 +15,9 @@ const DEFAULT_POLL_MS: u64 = 20;
 
 #[derive(Parser, Debug)]
 #[command(name = "inspect_model_input")]
-#[command(about = "Subscribe to a fusion_factor Iceoryx service and print decoded FeatureMsg values")]
+#[command(
+    about = "Subscribe to a fusion_factor Iceoryx service and print decoded FeatureMsg values"
+)]
 struct Args {
     /// Iceoryx service name, e.g. fusion_factor/binance-futures
     #[arg(long, default_value = "fusion_factor/binance-futures")]
