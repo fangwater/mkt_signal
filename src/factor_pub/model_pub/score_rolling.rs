@@ -2,10 +2,16 @@ use anyhow::{Context, Result};
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::common::redis_client::{RedisClient, RedisSettings};
 use crate::common::sliding_quantile::SlidingQuantileWindow;
+
+const MODEL_PUB_SCORE_QUANTILE_SCALE: f64 = 100_000_000.0;
+const DEFAULT_ROLLING_WINDOW: usize = 17_800 * 5;
+const WARMING_SAMPLE_MULTIPLIER: usize = 500;
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct ScoreRollingConfig {
@@ -200,7 +206,11 @@ struct SymbolScoreState {
 impl SymbolScoreState {
     fn new(capacity: usize, rolling_window: usize) -> Self {
         Self {
-            window: SlidingQuantileWindow::new(capacity.max(1), rolling_window.max(1)),
+            window: SlidingQuantileWindow::new_with_scale(
+                capacity.max(1),
+                rolling_window.max(1),
+                MODEL_PUB_SCORE_QUANTILE_SCALE,
+            ),
             latest_score: None,
             latest_score_quantile: None,
             latest_ts_out_ms: None,
@@ -281,6 +291,105 @@ impl InlineScoreRolling {
             known_fields: HashSet::new(),
             last_reload: Instant::now(),
         })
+    }
+
+    pub async fn warm_from_dir(&mut self, warming_dir: &Path) -> Result<()> {
+        if !warming_dir.is_dir() {
+            anyhow::bail!(
+                "warming_dir must be an existing directory: {}",
+                warming_dir.display()
+            );
+        }
+
+        let mut warmed_symbols = 0usize;
+        let mut warmed_samples = 0usize;
+        let mut skipped_files = 0usize;
+
+        for entry in fs::read_dir(warming_dir)
+            .with_context(|| format!("read warming dir failed: {}", warming_dir.display()))?
+        {
+            let entry = entry.with_context(|| {
+                format!(
+                    "iterate warming dir entry failed: {}",
+                    warming_dir.display()
+                )
+            })?;
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+
+            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                skipped_files = skipped_files.saturating_add(1);
+                continue;
+            };
+            let Some(symbol) = parse_warming_symbol(file_name) else {
+                skipped_files = skipped_files.saturating_add(1);
+                continue;
+            };
+
+            let content = fs::read_to_string(&path)
+                .with_context(|| format!("read warming file failed: {}", path.display()))?;
+            let samples = parse_warming_scores(&content);
+            if samples.is_empty() {
+                warn!(
+                    "score_rolling warming file has no valid samples: model={} file={}",
+                    self.model_name,
+                    path.display()
+                );
+                continue;
+            }
+
+            let capacity = self.runtime_cfg.max_length;
+            let rolling_window = self.runtime_cfg.rolling_window;
+            let state = self
+                .states
+                .entry(symbol.clone())
+                .or_insert_with(|| SymbolScoreState::new(capacity, rolling_window));
+
+            if state.window.history_capacity() != capacity
+                || state.window.active_window() != rolling_window
+            {
+                state.window.reconfigure(capacity, rolling_window);
+            }
+
+            let mut pushed = 0usize;
+            for &score in &samples {
+                for _ in 0..WARMING_SAMPLE_MULTIPLIER {
+                    if state.window.push_f64(score) {
+                        pushed = pushed.saturating_add(1);
+                    }
+                }
+            }
+            if pushed == 0 {
+                warn!(
+                    "score_rolling warming produced no pushed samples: model={} symbol={} file={}",
+                    self.model_name,
+                    symbol,
+                    path.display()
+                );
+                continue;
+            }
+
+            state.latest_score = samples.last().copied();
+            state.latest_score_quantile = state.window.percentile_rank_last();
+            state.latest_ts_out_ms = None;
+            warmed_symbols = warmed_symbols.saturating_add(1);
+            warmed_samples = warmed_samples.saturating_add(pushed);
+        }
+
+        info!(
+            "inline score_rolling warming loaded: model={} dir={} warmed_symbols={} warmed_samples={} skipped_files={} multiplier={}",
+            self.model_name,
+            warming_dir.display(),
+            warmed_symbols,
+            warmed_samples,
+            skipped_files,
+            WARMING_SAMPLE_MULTIPLIER
+        );
+
+        self.flush_all_thresholds().await?;
+        Ok(())
     }
 
     pub async fn post_process_score(
@@ -502,7 +611,7 @@ fn default_max_length() -> usize {
 }
 
 fn default_rolling_window() -> usize {
-    17_800
+    DEFAULT_ROLLING_WINDOW
 }
 
 fn default_min_periods() -> usize {
@@ -582,9 +691,34 @@ fn now_ms() -> i64 {
     }
 }
 
+fn parse_warming_symbol(file_name: &str) -> Option<String> {
+    let symbol = file_name.strip_suffix("-ylabel.txt")?;
+    let normalized = normalize_symbol(symbol);
+    (!normalized.is_empty()).then_some(normalized)
+}
+
+fn parse_warming_scores(content: &str) -> Vec<f64> {
+    content
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                return None;
+            }
+            trimmed
+                .split(|c: char| c == ',' || c.is_ascii_whitespace())
+                .find(|part| !part.is_empty())
+                .and_then(|part| part.parse::<f64>().ok())
+                .filter(|value| value.is_finite())
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ScoreRollingConfig, ScoreRollingRuntimeConfig};
+    use super::{
+        parse_warming_scores, parse_warming_symbol, ScoreRollingConfig, ScoreRollingRuntimeConfig,
+    };
     use std::collections::HashMap;
 
     #[test]
@@ -633,5 +767,26 @@ mod tests {
         assert_eq!(runtime.rolling_window, 50);
         assert_eq!(runtime.min_periods, 50);
         assert_eq!(runtime.quantiles, vec![0.2, 0.8]);
+    }
+
+    #[test]
+    fn warming_symbol_is_parsed_from_ylabel_filename() {
+        assert_eq!(
+            parse_warming_symbol("btcusdt-ylabel.txt").as_deref(),
+            Some("BTCUSDT")
+        );
+        assert_eq!(parse_warming_symbol("btcusdt.txt"), None);
+    }
+
+    #[test]
+    fn warming_scores_parse_first_numeric_token_per_line() {
+        let content = "\
+1.25
+2.5,extra
+  3.75   tail
+# comment
+bad
+";
+        assert_eq!(parse_warming_scores(content), vec![1.25, 2.5, 3.75]);
     }
 }

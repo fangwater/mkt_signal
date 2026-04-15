@@ -97,7 +97,11 @@ pub struct ModelPubApp {
 }
 
 impl ModelPubApp {
-    pub async fn new(config_path: &str, model_name: &str) -> Result<Self> {
+    pub async fn new(
+        config_path: &str,
+        model_name: &str,
+        warming_dir: Option<&Path>,
+    ) -> Result<Self> {
         let model_name = normalize_model_name(model_name)?;
 
         let config = ModelPubConfig::load(config_path)?;
@@ -162,15 +166,27 @@ impl ModelPubApp {
         let subscriber = Self::create_subscriber(&model_name, &input_service)?;
         let publisher_node = format!("model_pub_{}_out", sanitize_node_suffix(&model_name));
         let publisher = ModelPublisher::new(&publisher_node, &output_service)?;
-        let score_rolling = InlineScoreRolling::new(&model_name, &config.score_rolling).await?;
+        let mut score_rolling = InlineScoreRolling::new(&model_name, &config.score_rolling).await?;
+        if let Some(dir) = warming_dir {
+            score_rolling.warm_from_dir(dir).await.with_context(|| {
+                format!(
+                    "warm score_rolling from dir failed: model={} dir={}",
+                    model_name,
+                    dir.display()
+                )
+            })?;
+        }
 
         info!(
-            "ModelPubApp started: input={} output={} symbols={} venue={} symbol_factor_plans={}",
+            "ModelPubApp started: input={} output={} symbols={} venue={} symbol_factor_plans={} warming_dir={}",
             input_service,
             output_service,
             models_by_symbol.len(),
             venue_slug,
             symbol_factor_names.len(),
+            warming_dir
+                .map(|dir| dir.display().to_string())
+                .unwrap_or_else(|| "-".to_string()),
         );
 
         Ok(Self {

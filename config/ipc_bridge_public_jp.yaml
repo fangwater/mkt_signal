@@ -20,14 +20,14 @@ routes:
   # --------------------------------
   # - id: public_local_binance_futures_incremental
   #   from:
-  #     type: ipc
-  #     endpoint: "dat_pbs/binance-futures/incremental"
-  #     size: 2048
-  #   to:
-  #     type: ipc
+  #     type: ipc 
+  #     endpoint: "dat_pbs/binance-futures/incremental" 
+  #     size: 2048 
+  #   to: 
+  #     type: ipc 
   #     endpoint: "bridge/binance-futures/incremental"
-  #     size: 2048
-  #     max_publishers: 1
+  #     size: 2048 
+  #     max_publishers: 1 
   #     max_subscribers: 64
   #     history_size: 100
   #     subscriber_max_buffer_size: 8192
@@ -36,14 +36,14 @@ routes:
     from:
       type: ipc
       endpoint: "dat_pbs/binance-futures/ask_bid_spread"
-      size: 128
+      size: 128 
     to:
       type: ipc
       endpoint: "bridge/binance-futures/ask_bid_spread"
-      size: 128
-      max_publishers: 1
-      max_subscribers: 64
-      history_size: 100
+      size: 128 
+      max_publishers: 1 
+      max_subscribers: 64 
+      history_size: 100 
       subscriber_max_buffer_size: 8192
 
   - id: public_local_binance_futures_derivatives
