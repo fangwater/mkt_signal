@@ -61,6 +61,12 @@ def parse_args() -> argparse.Namespace:
         help="仅处理指定 symbol，逗号或空格分隔，例如 BTCUSDT,ETHUSDT",
     )
     parser.add_argument(
+        "--symbol",
+        action="append",
+        default=[],
+        help="追加单个 symbol，可重复传入，例如 --symbol BTCUSDT --symbol ETHUSDT",
+    )
+    parser.add_argument(
         "--min-qty",
         default="0",
         help="小于该数量的仓位跳过",
@@ -110,11 +116,44 @@ def parse_decimal(value: Any, *, field: str) -> Decimal:
         raise SystemExit(f"无法解析 {field}: {value!r}") from exc
 
 
-def parse_symbol_filter(raw: Optional[str]) -> Optional[set[str]]:
-    if not raw:
+def canonical_symbol_from_any(raw: str) -> str:
+    s = (raw or "").strip().upper()
+    if not s:
+        return ""
+    if "@" in s:
+        s = s.split("@", 1)[0].strip()
+
+    m = re.match(r"^([A-Z0-9]+)-USDT-(SWAP)$", s)
+    if m:
+        return f"{m.group(1)}USDT"
+
+    m = re.match(r"^([A-Z0-9]+)-USDT$", s)
+    if m:
+        return f"{m.group(1)}USDT"
+
+    s = re.sub(r"[^A-Z0-9]+", "", s)
+    return s
+
+
+def normalize_binance_um_symbol(raw: str) -> str:
+    symbol = canonical_symbol_from_any(raw)
+    if not symbol:
+        raise SystemExit("symbol 不能为空")
+    if not symbol.endswith("USDT") or len(symbol) <= 4:
+        raise SystemExit(
+            f"Binance UM 仅支持 USDT 币对（例如 BTCUSDT / BTC-USDT / BTC-USDT-SWAP），实际: {raw}"
+        )
+    return symbol
+
+
+def parse_symbol_filter(symbols_arg: Optional[str], symbols_list: Iterable[str]) -> Optional[set[str]]:
+    values: List[str] = []
+    if symbols_arg:
+        values.extend(item.strip() for item in re.split(r"[,\s]+", symbols_arg) if item.strip())
+    values.extend(item.strip() for item in symbols_list if item and item.strip())
+    if not values:
         return None
-    items = [item.strip().upper() for item in re.split(r"[,\s]+", raw) if item.strip()]
-    return set(items) if items else None
+    return {normalize_binance_um_symbol(item) for item in values}
 
 
 def format_decimal(value: Decimal) -> str:
@@ -242,7 +281,7 @@ def main() -> None:
     args = parse_args()
     api_key, api_secret = load_credentials()
     min_qty = parse_decimal(args.min_qty, field="min_qty")
-    symbol_filter = parse_symbol_filter(args.symbols)
+    symbol_filter = parse_symbol_filter(args.symbols, args.symbol)
     base_url = args.base_url.rstrip("/")
     local_address, local_address_source = resolve_local_address(
         explicit_local_address=args.local_address,

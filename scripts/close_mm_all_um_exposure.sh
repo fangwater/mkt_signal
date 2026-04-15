@@ -6,14 +6,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 usage() {
   cat <<'EOF'
 用法:
+  scripts/close_mm_all_um_exposure.sh --env-name binance_mm_alpha [--execute] [--symbol BTCUSDT]
   scripts/close_mm_all_um_exposure.sh --env-name binance_mm_alpha [--execute] [--symbols BTCUSDT,ETHUSDT]
   scripts/close_mm_all_um_exposure.sh binance_mm_alpha --execute
+  scripts/close_mm_all_um_exposure.sh --env-name okex_mm_alpha [--execute] [--symbol BTCUSDT]
   scripts/close_mm_all_um_exposure.sh --env-name okex_mm_alpha [--execute] [--symbols BTCUSDT,ETHUSDT]
 
 说明:
   - 默认 source $HOME/<env-name>/env.sh，再按 env-name 自动调用 Binance/OKX 的平仓脚本
   - 本地 source IP 优先读取 <env-dir>/trade_engine.toml 的 local_ips[0]，否则回退到 $HOME/dat_pbs/config/mkt_cfg.yaml
   - 默认 dry-run，仅打印当前持仓平仓计划；加 --execute 后才真实下市价平仓单
+  - 支持 --symbol 重复传入，也支持 --symbols 逗号/空格分隔
+  - symbol 会按交易所规范化：
+      Binance: BTCUSDT / BTC-USDT / BTC-USDT-SWAP -> BTCUSDT
+      OKX:     BTCUSDT / BTC-USDT / BTC-USDT-SWAP -> BTC-USDT-SWAP
   - 其余参数会透传给 Python 脚本
 EOF
 }
