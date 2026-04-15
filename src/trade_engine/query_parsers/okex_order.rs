@@ -4,10 +4,28 @@ use serde::Deserialize;
 
 use super::binance_um_order::BinanceUmOrderQueryResp;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OkexOrderQueryParseErrorKind {
+    OrderNotFound,
+    Other,
+}
+
+#[derive(Debug, Clone)]
+pub enum OkexOrderQueryParseResult {
+    Success(BinanceUmOrderQueryResp),
+    Error {
+        kind: OkexOrderQueryParseErrorKind,
+        code: String,
+        msg: String,
+    },
+}
+
 #[derive(Debug, Deserialize)]
 struct OkexOrderQueryOuter {
     #[serde(default)]
     code: String,
+    #[serde(default)]
+    msg: String,
     #[serde(default)]
     data: Vec<OkexOrderQueryItem>,
 }
@@ -64,12 +82,37 @@ fn response_price_for_state(state: &str, fill_px: f64, px: f64) -> f64 {
     }
 }
 
-pub fn parse_okex_order_query_json(json: &str) -> Option<BinanceUmOrderQueryResp> {
-    let outer: OkexOrderQueryOuter = serde_json::from_str(json).ok()?;
+pub fn parse_okex_order_query_json(json: &str) -> OkexOrderQueryParseResult {
+    let outer: OkexOrderQueryOuter = match serde_json::from_str(json) {
+        Ok(v) => v,
+        Err(_) => {
+            return OkexOrderQueryParseResult::Error {
+                kind: OkexOrderQueryParseErrorKind::Other,
+                code: String::new(),
+                msg: String::new(),
+            };
+        }
+    };
     if outer.code != "0" {
-        return None;
+        let kind =
+            if outer.code == "51603" || outer.msg.eq_ignore_ascii_case("Order does not exist") {
+                OkexOrderQueryParseErrorKind::OrderNotFound
+            } else {
+                OkexOrderQueryParseErrorKind::Other
+            };
+        return OkexOrderQueryParseResult::Error {
+            kind,
+            code: outer.code,
+            msg: outer.msg,
+        };
     }
-    let first = outer.data.first()?;
+    let Some(first) = outer.data.first() else {
+        return OkexOrderQueryParseResult::Error {
+            kind: OkexOrderQueryParseErrorKind::Other,
+            code: outer.code,
+            msg: outer.msg,
+        };
+    };
     let fill_px = parse_f64_str(first.fill_px.as_str());
     let px = parse_f64_str(first.px.as_str());
     let response_price = response_price_for_state(first.state.as_str(), fill_px, px);
@@ -77,7 +120,7 @@ pub fn parse_okex_order_query_json(json: &str) -> Option<BinanceUmOrderQueryResp
     // - spot/margin: accFillSz 为 base qty
     // - futures(swap): accFillSz 为 contracts
     // 这里保持交易所原始口径；策略层再通过 qty_to_base(...) 统一转换为 base qty。
-    Some(BinanceUmOrderQueryResp {
+    OkexOrderQueryParseResult::Success(BinanceUmOrderQueryResp {
         executed_qty: parse_f64_str(first.acc_fill_sz.as_str()),
         order_id: parse_i64_str(first.ord_id.as_str()),
         status_u8: status_to_u8(first.state.as_str()),
@@ -85,4 +128,39 @@ pub fn parse_okex_order_query_json(json: &str) -> Option<BinanceUmOrderQueryResp
         time_in_force_u8: tif_to_u8(first.ord_type.as_str()),
         response_price,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        parse_okex_order_query_json, OkexOrderQueryParseErrorKind, OkexOrderQueryParseResult,
+    };
+
+    #[test]
+    fn parse_okex_order_query_success() {
+        let json = r#"{"code":"0","msg":"","data":[{"accFillSz":"12.44","fillPx":"0","px":"0.09560074","ordId":"123456","ordType":"post_only","state":"live","uTime":"1776211388000"}]}"#;
+        let parsed = parse_okex_order_query_json(json);
+        match parsed {
+            OkexOrderQueryParseResult::Success(resp) => {
+                assert_eq!(resp.order_id, 123456);
+                assert_eq!(resp.executed_qty, 12.44);
+                assert_eq!(resp.response_price, 0.09560074);
+            }
+            other => panic!("unexpected parse result: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_okex_order_query_not_found() {
+        let json = r#"{"code":"51603","msg":"Order does not exist","data":[]}"#;
+        let parsed = parse_okex_order_query_json(json);
+        match parsed {
+            OkexOrderQueryParseResult::Error { kind, code, msg } => {
+                assert_eq!(kind, OkexOrderQueryParseErrorKind::OrderNotFound);
+                assert_eq!(code, "51603");
+                assert_eq!(msg, "Order does not exist");
+            }
+            other => panic!("unexpected parse result: {:?}", other),
+        }
+    }
 }

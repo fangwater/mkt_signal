@@ -4,16 +4,20 @@ use crate::common::iceoryx_publisher::{QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD};
 use crate::common::ipc_service_name::build_service_name;
 use crate::trade_engine::config::{ApiKey, WsConstants};
 use crate::trade_engine::dispatcher::Dispatcher;
+use crate::trade_engine::okex_query_rate_limiter::OkexQueryRateLimiter;
 use crate::trade_engine::query_parsers::binance_margin_order::parse_binance_margin_order_query_json;
 use crate::trade_engine::query_parsers::binance_pm_balance_snapshot::parse_binance_pm_balance_snapshot;
 use crate::trade_engine::query_parsers::binance_spot_account_snapshot_std::parse_binance_spot_account_snapshot_std;
 use crate::trade_engine::query_parsers::binance_um_account_snapshot::parse_binance_um_account_snapshot;
 use crate::trade_engine::query_parsers::binance_um_balance_snapshot_std::parse_binance_um_balance_snapshot_std;
 use crate::trade_engine::query_parsers::binance_um_order::parse_binance_um_order_query_json;
+use crate::trade_engine::query_parsers::compact_order::ORDER_QUERY_NOT_FOUND_MARKER;
 use crate::trade_engine::query_parsers::gate_positions_snapshot::parse_gate_positions_snapshot_with_meta;
 use crate::trade_engine::query_parsers::gate_unified_balance_snapshot::parse_gate_unified_balance_snapshot;
 use crate::trade_engine::query_parsers::okex_account_balance_snapshot::parse_okex_account_balance_snapshot;
-use crate::trade_engine::query_parsers::okex_order::parse_okex_order_query_json;
+use crate::trade_engine::query_parsers::okex_order::{
+    parse_okex_order_query_json, OkexOrderQueryParseErrorKind, OkexOrderQueryParseResult,
+};
 use crate::trade_engine::query_parsers::okex_positions_snapshot::parse_okex_positions_snapshot;
 use crate::trade_engine::query_request::{QueryRequestMsg, QueryRequestType};
 use crate::trade_engine::query_response_handle::{spawn_query_response_handle, QueryExecOutcome};
@@ -661,8 +665,9 @@ impl TradeEngine {
                 let mut binance_query_rr = 0usize;
                 let mut gate_query_rr = 0usize;
                 let mut gate_futures_query_rr = 0usize;
+                let mut okex_query_rate_limiter = OkexQueryRateLimiter::default();
 
-                loop {
+                'query_router: loop {
                     let Some(msg) = ({
                         tokio::select! {
                             biased;
@@ -1021,6 +1026,37 @@ impl TradeEngine {
                                 format!("{}?{}", endpoint, qs)
                             };
 
+                            while let Some(block) = okex_query_rate_limiter
+                                .should_block(msg.req_type, std::time::Instant::now())
+                            {
+                                warn!(
+                                    "okex query rate limited: req_type={:?} client_query_id={} wait_ms={} queued_in_window={} limit={} window_ms={}",
+                                    msg.req_type,
+                                    msg.client_query_id,
+                                    block.wait_for.as_millis(),
+                                    block.queued_in_window,
+                                    block.max_requests,
+                                    block.window.as_millis()
+                                );
+                                tokio::select! {
+                                    biased;
+                                    _ = shutdown_for_query_router.cancelled() => break 'query_router,
+                                    _ = tokio::time::sleep(block.wait_for) => {}
+                                }
+                            }
+                            if let Some(snapshot) = okex_query_rate_limiter
+                                .record(msg.req_type, std::time::Instant::now())
+                            {
+                                debug!(
+                                    "okex query rate recorded: req_type={:?} client_query_id={} count_in_window={} limit={} window_ms={}",
+                                    msg.req_type,
+                                    msg.client_query_id,
+                                    snapshot.queued_in_window,
+                                    snapshot.max_requests,
+                                    snapshot.window.as_millis()
+                                );
+                            }
+
                             match crate::trade_engine::okex_query::okex_rest_get(
                                 &okex_http,
                                 creds,
@@ -1034,39 +1070,35 @@ impl TradeEngine {
                                             | crate::trade_engine::query_request::QueryRequestType::OkexUMQuery
                                             if status == 200 =>
                                         {
-                                            if let Some(v) = parse_okex_order_query_json(&body) {
-                                                v.to_bytes()
-                                            } else {
-                                                const QUERY_RESP_HEADER_LEN: usize = 4 + 8;
-                                                let max_body_len = QUERY_RESP_PAYLOAD
-                                                    .saturating_sub(QUERY_RESP_HEADER_LEN);
-                                                let (okx_code, okx_msg) =
-                                                    match serde_json::from_str::<
-                                                        serde_json::Value,
-                                                    >(&body)
-                                                    {
-                                                        Ok(v) => (
-                                                            v.get("code")
-                                                                .and_then(|x| x.as_str())
-                                                                .unwrap_or_default()
-                                                                .to_string(),
-                                                            v.get("msg")
-                                                                .and_then(|x| x.as_str())
-                                                                .unwrap_or_default()
-                                                                .to_string(),
-                                                        ),
-                                                        Err(_) => (String::new(), String::new()),
-                                                    };
-                                                warn!(
-                                                    "okex order query parse failed: client_query_id={} http_status={} okx_code={} okx_msg={} body_len={} max_body_len={}",
-                                                    msg.client_query_id,
-                                                    status,
-                                                    okx_code,
-                                                    okx_msg,
-                                                    body.len(),
-                                                    max_body_len
-                                                );
-                                                bytes::Bytes::from_static(b"E")
+                                            match parse_okex_order_query_json(&body) {
+                                                OkexOrderQueryParseResult::Success(v) => {
+                                                    v.to_bytes()
+                                                }
+                                                OkexOrderQueryParseResult::Error {
+                                                    kind: OkexOrderQueryParseErrorKind::OrderNotFound,
+                                                    ..
+                                                } => bytes::Bytes::from_static(
+                                                    ORDER_QUERY_NOT_FOUND_MARKER,
+                                                ),
+                                                OkexOrderQueryParseResult::Error {
+                                                    kind: OkexOrderQueryParseErrorKind::Other,
+                                                    code: okx_code,
+                                                    msg: okx_msg,
+                                                } => {
+                                                    const QUERY_RESP_HEADER_LEN: usize = 4 + 8;
+                                                    let max_body_len = QUERY_RESP_PAYLOAD
+                                                        .saturating_sub(QUERY_RESP_HEADER_LEN);
+                                                    warn!(
+                                                        "okex order query parse failed: client_query_id={} http_status={} okx_code={} okx_msg={} body_len={} max_body_len={}",
+                                                        msg.client_query_id,
+                                                        status,
+                                                        okx_code,
+                                                        okx_msg,
+                                                        body.len(),
+                                                        max_body_len
+                                                    );
+                                                    bytes::Bytes::from_static(b"E")
+                                                }
                                             }
                                         }
                                         crate::trade_engine::query_request::QueryRequestType::OkexAccountBalanceSnapshot

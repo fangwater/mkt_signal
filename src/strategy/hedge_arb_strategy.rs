@@ -3459,13 +3459,13 @@ impl Strategy for HedgeArbStrategy {
                 (Leg::Open, PendingOrderQueryReason::OrderWatchdog) => {
                     self.retry_open_leg_order_query_after_cooldown(
                         client_order_id,
-                        "not found (-2013)",
+                        "not found marker",
                     );
                     return;
                 }
                 (Leg::Hedge, PendingOrderQueryReason::OrderWatchdog) => {
                     warn!(
-                        "HedgeArbStrategy: strategy_id={} hedge_leg order query not found (-2013, treat as open_failed): client_order_id={}",
+                        "HedgeArbStrategy: strategy_id={} hedge_leg order query not found marker (treat as open_failed): client_order_id={}",
                         self.strategy_id, client_order_id
                     );
                     self.cleanup_failed_hedge_order(client_order_id);
@@ -3498,12 +3498,15 @@ impl Strategy for HedgeArbStrategy {
         if actual_len == 1 && body[0] == b'E' {
             match (leg, reason) {
                 (Leg::Open, PendingOrderQueryReason::OrderWatchdog) => {
-                    self.retry_open_leg_order_query_after_cooldown(client_order_id, "failed (E)");
+                    self.retry_open_leg_order_query_after_cooldown(
+                        client_order_id,
+                        "error marker (E)",
+                    );
                     return;
                 }
                 (Leg::Hedge, PendingOrderQueryReason::OrderWatchdog) => {
                     warn!(
-                        "HedgeArbStrategy: strategy_id={} hedge_leg order query failed (E, treat as open_failed): client_order_id={}",
+                        "HedgeArbStrategy: strategy_id={} hedge_leg order query error marker (E, treat as open_failed): client_order_id={}",
                         self.strategy_id, client_order_id
                     );
                     self.cleanup_failed_hedge_order(client_order_id);

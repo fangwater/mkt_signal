@@ -280,10 +280,25 @@ impl MarketMakerOpenStrategy {
         }
     }
 
+    fn terminalize_open_order_before_cleanup(&mut self, client_order_id: i64) {
+        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
+            return;
+        };
+        let event_time = get_timestamp_us();
+        let _ = order_mgr.borrow_mut().update(client_order_id, |order| {
+            if order.status.is_terminal() {
+                return;
+            }
+            order.status = OrderExecutionStatus::Rejected;
+            order.set_end_time(event_time);
+        });
+    }
+
     fn handle_open_failed_cleanup(&mut self, client_order_id: i64) {
         self.pending_order_query = None;
         self.clear_query_watchdogs(client_order_id);
         self.reset_cancel_reconcile_state();
+        self.terminalize_open_order_before_cleanup(client_order_id);
         self.cleanup_strategy_orders();
         self.alive_flag = false;
     }
@@ -2086,10 +2101,7 @@ impl Strategy for MarketMakerOpenStrategy {
         if is_order_query_not_found_marker(&body[..actual_len]) {
             match reason {
                 PendingOrderQueryReason::OrderWatchdog => {
-                    self.retry_open_order_query_after_cooldown(
-                        client_order_id,
-                        "not found (-2013)",
-                    );
+                    self.retry_open_order_query_after_cooldown(client_order_id, "not found marker");
                 }
                 PendingOrderQueryReason::CancelWatchdog => {
                     let _ = self.schedule_next_cancel_reconcile_query(
@@ -2110,7 +2122,7 @@ impl Strategy for MarketMakerOpenStrategy {
         if actual_len == 1 && body[0] == b'E' {
             match reason {
                 PendingOrderQueryReason::OrderWatchdog => {
-                    self.retry_open_order_query_after_cooldown(client_order_id, "failed (E)");
+                    self.retry_open_order_query_after_cooldown(client_order_id, "error marker (E)");
                 }
                 PendingOrderQueryReason::CancelWatchdog => {
                     let _ = self.schedule_next_cancel_reconcile_query(

@@ -11,7 +11,9 @@ use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager,
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::signal_channel::SignalChannel;
 use crate::pre_trade::{PersistChannel, QueryEngHub, TradeEngHub};
-use crate::signal::common::{ExecutionType, OrderStatus, SignalBytes, TimeInForce, TradingVenue};
+use crate::signal::common::{
+    align_price_floor, ExecutionType, OrderStatus, SignalBytes, TimeInForce, TradingVenue,
+};
 use crate::signal::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
 use crate::signal::mm_signal::MmBackwardQueryMsg;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
@@ -108,6 +110,29 @@ enum PendingOrderQueryReason {
 }
 
 impl MarketMakerHedgeStrategy {
+    fn align_final_hedge_qty(raw_qty: f64, step: f64, min_qty: f64) -> (f64, f64) {
+        if !raw_qty.is_finite() || raw_qty <= 0.0 {
+            return (0.0, 0.0);
+        }
+
+        let mut aligned_qty = if step.is_finite() && step > 0.0 {
+            align_price_floor(raw_qty, step)
+        } else {
+            raw_qty
+        };
+
+        if min_qty.is_finite() && min_qty > 0.0 && aligned_qty + 1e-12 < min_qty {
+            aligned_qty = 0.0;
+        }
+
+        let dropped_qty = if raw_qty > aligned_qty {
+            raw_qty - aligned_qty
+        } else {
+            0.0
+        };
+        (aligned_qty, dropped_qty)
+    }
+
     pub fn new(strategy_id: i32, symbol: String) -> Self {
         let now = get_timestamp_us();
         Self {
@@ -1609,9 +1634,49 @@ impl MarketMakerHedgeStrategy {
     fn send_hedge_orders(&mut self, venue: TradingVenue, symbol: &str) {
         let plans = self.hedge_plan.clone();
         let rate_params = PreTradeParamsLoader::instance();
+        let symbol_key = min_qty_symbol_key(venue, symbol);
+        let (qty_step, min_qty) = MonitorChannel::instance()
+            .try_venue_min_qty_table(venue)
+            .map(|table| {
+                (
+                    table.step_size(&symbol_key).unwrap_or(0.0),
+                    table.min_qty(&symbol_key).unwrap_or(0.0),
+                )
+            })
+            .unwrap_or((0.0, 0.0));
         let mut borrowed_open_count_10s = 0usize;
         let mut borrowed_open_count_1m = 0usize;
         for plan in plans {
+            let (aligned_qty, dropped_qty) =
+                Self::align_final_hedge_qty(plan.qty, qty_step, min_qty);
+            if aligned_qty <= 0.0 {
+                warn!(
+                    "MarketMakerHedgeStrategy: strategy_id={} skip hedge order after final qty align client_order_id={} venue={:?} symbol={} raw_qty={:.8} qty_step={:.8} min_qty={:.8} dropped_qty={:.8}",
+                    self.strategy_id,
+                    plan.client_order_id,
+                    venue,
+                    symbol,
+                    plan.qty,
+                    qty_step,
+                    min_qty,
+                    dropped_qty
+                );
+                continue;
+            }
+            if dropped_qty > 1e-12 {
+                info!(
+                    "MarketMakerHedgeStrategy: strategy_id={} final hedge qty aligned client_order_id={} venue={:?} symbol={} raw_qty={:.8} aligned_qty={:.8} qty_step={:.8} dropped_qty={:.8}",
+                    self.strategy_id,
+                    plan.client_order_id,
+                    venue,
+                    symbol,
+                    plan.qty,
+                    aligned_qty,
+                    qty_step,
+                    dropped_qty
+                );
+            }
+
             let now_us = get_timestamp_us();
             let hedge_stats = OrderRateLimiter::stats(OrderRateBucket::MmHedge, now_us);
             let open_stats = OrderRateLimiter::stats(OrderRateBucket::MmOpen, now_us);
@@ -1683,7 +1748,7 @@ impl MarketMakerHedgeStrategy {
                     plan.order_type,
                     symbol.to_string(),
                     plan.side,
-                    plan.qty,
+                    aligned_qty,
                     plan.price,
                     false,
                     1.0,
@@ -1729,7 +1794,7 @@ impl MarketMakerHedgeStrategy {
                             plan.level_index,
                             plan.side,
                             plan.price,
-                            plan.qty,
+                            aligned_qty,
                             String::from_utf8_lossy(&plan.from_key)
                         );
                         self.log_hedge_order_state("open_sent", plan.client_order_id);
@@ -2272,6 +2337,23 @@ mod tests {
     }
 
     #[test]
+    fn final_hedge_qty_align_drops_sub_step_tail() {
+        let (aligned, dropped) =
+            MarketMakerHedgeStrategy::align_final_hedge_qty(1.20000005, 0.1, 0.1);
+        assert!((aligned - 1.2).abs() < 1e-12);
+        assert!(dropped > 0.0);
+        assert!(dropped < 1e-6);
+    }
+
+    #[test]
+    fn final_hedge_qty_align_skips_below_min_qty() {
+        let (aligned, dropped) =
+            MarketMakerHedgeStrategy::align_final_hedge_qty(0.09999999, 0.1, 0.1);
+        assert_eq!(aligned, 0.0);
+        assert!(dropped > 0.0);
+    }
+
+    #[test]
     fn upgrade_existing_order_query_reason_updates_pending_and_watchdog() {
         let mut strategy = MarketMakerHedgeStrategy::new(1, "ETHUSDT".to_string());
         let client_order_id = 42_i64;
@@ -2514,21 +2596,21 @@ impl Strategy for MarketMakerHedgeStrategy {
 
         if is_order_query_not_found_marker(&body[..actual_len]) {
             warn!(
-                "MMHedgeReconcile: strategy_id={} query_response order_not_found (-2013) reason={:?} {}",
+                "MMHedgeReconcile: strategy_id={} query_response order_not_found_marker reason={:?} {}",
                 self.strategy_id,
                 reason,
                 self.hedge_order_trace_snapshot(client_order_id)
             );
             self.mark_hedge_order_terminal_on_query_failure(
                 client_order_id,
-                "query order not found (-2013)",
+                "query order not found marker",
             );
             return;
         }
 
         if actual_len == 1 && body[0] == b'E' {
             warn!(
-                "MMHedgeReconcile: strategy_id={} query_response exchange_not_found reason={:?} {}",
+                "MMHedgeReconcile: strategy_id={} query_response error_marker(E) reason={:?} {}",
                 self.strategy_id,
                 reason,
                 self.hedge_order_trace_snapshot(client_order_id)

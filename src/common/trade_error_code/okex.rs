@@ -3,6 +3,7 @@ pub fn describe_trade_error_code(code: i32) -> Option<&'static str> {
     match code {
         60013 => Some("Invalid args"),
         1 => Some("Request failed"),
+        50011 => Some("Rate limit exceeded"),
         50014 => Some("Required parameter is empty"),
         51000 => Some("Parameter error"),
         51006 => Some("Price outside limit"),

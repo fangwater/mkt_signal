@@ -6,6 +6,7 @@ pub mod gate_query;
 pub mod gate_ws;
 pub mod okex;
 pub mod okex_query;
+pub mod okex_query_rate_limiter;
 pub mod order_event;
 pub mod query_parsers;
 pub mod query_request;
