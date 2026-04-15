@@ -529,7 +529,14 @@ impl ResampleChannel {
             let hedge_snapshots = mon.strategy_mgr().borrow().mm_hedge_snapshots();
             let hedge_snapshot_by_symbol: HashMap<
                 String,
-                (f64, Option<i64>, Option<bool>, Option<f64>, Option<f64>),
+                (
+                    f64,
+                    Option<i64>,
+                    Option<bool>,
+                    Option<f64>,
+                    Option<f64>,
+                    Option<f64>,
+                ),
             > = hedge_snapshots
                 .into_iter()
                 .map(|snap| {
@@ -540,7 +547,8 @@ impl ResampleChannel {
                             snap.hedge_ts_ms,
                             snap.hedge_is_taker,
                             snap.ret_qtl,
-                            snap.final_offset,
+                            snap.offset_low,
+                            snap.offset_high,
                         ),
                     )
                 })
@@ -576,7 +584,8 @@ impl ResampleChannel {
                     hedge_time_ms,
                     hedge_is_taker,
                     hedge_ret_qtl,
-                    hedge_final_offset,
+                    hedge_offset_low,
+                    hedge_offset_high,
                 ) = hedge_snapshot_by_symbol
                     .get(&symbol)
                     .map(
@@ -585,18 +594,20 @@ impl ResampleChannel {
                             hedge_ts_ms,
                             hedge_is_taker,
                             hedge_ret_qtl,
-                            hedge_final_offset,
+                            hedge_offset_low,
+                            hedge_offset_high,
                         )| {
                             (
                                 Some(*net_qty),
                                 *hedge_ts_ms,
                                 *hedge_is_taker,
                                 *hedge_ret_qtl,
-                                *hedge_final_offset,
+                                *hedge_offset_low,
+                                *hedge_offset_high,
                             )
                         },
                     )
-                    .unwrap_or((None, None, None, None, None));
+                    .unwrap_or((None, None, None, None, None, None));
                 let net_qty = open_qty + hedge_qty;
                 let net_usdt = open_usdt + hedge_usdt;
                 exposure_sum_usdt += net_usdt;
@@ -611,7 +622,8 @@ impl ResampleChannel {
                     hedge_time_ms,
                     hedge_is_taker,
                     hedge_ret_qtl,
-                    hedge_final_offset,
+                    hedge_offset_low,
+                    hedge_offset_high,
                     net_qty: Some(net_qty),
                     net_usdt: Some(net_usdt),
                     is_total: false,
@@ -629,7 +641,8 @@ impl ResampleChannel {
                     hedge_time_ms: None,
                     hedge_is_taker: None,
                     hedge_ret_qtl: None,
-                    hedge_final_offset: None,
+                    hedge_offset_low: None,
+                    hedge_offset_high: None,
                     net_qty: None,
                     net_usdt: Some(exposure_sum_usdt),
                     is_total: true,
