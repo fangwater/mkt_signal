@@ -133,16 +133,16 @@ routes:
       max_subscribers: 10
       history_size: 128
 
-  # - id: public_binance_futures_direction_model_output
-  #   from:
-  #     type: zmq
-  #     endpoint: "tcp://0.0.0.0:6360"
-  #     size: 2048
-  #   to:
-  #     type: ipc
-  #     endpoint: "model_output/binance_futures_direction_model"
-  #     size: 2048
-  #     max_publishers: 1
-  #     max_subscribers: 10
-  #     history_size: 128
-  #     subscriber_max_buffer_size: 256
+  - id: public_binance_futures_direction_model_output
+    from:
+      type: zmq
+      endpoint: "tcp://0.0.0.0:6360"
+      size: 2048
+    to:
+      type: ipc
+      endpoint: "model_output/binance_futures_direction_model"
+      size: 2048
+      max_publishers: 1
+      max_subscribers: 10
+      history_size: 128
+      subscriber_max_buffer_size: 256
