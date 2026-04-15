@@ -71,7 +71,10 @@ pub fn resolve_mm_hedge_signal_inputs(
     } else {
         0.0
     };
-    let signal_qtl = score_lookup.score_quantile.filter(|v| v.is_finite());
+    let signal_qtl = resolve_mm_hedge_signal_quantile(
+        enable_return_score_adjust_hedge,
+        score_lookup.score_quantile,
+    );
     let factor_lookup = factor_value_hub.lookup_factor_value(symbol, venue);
     let volatility = factor_lookup
         .target_factor_value
@@ -100,6 +103,16 @@ fn resolve_mm_hedge_effective_signal(
             service_name, note
         )
     })
+}
+
+fn resolve_mm_hedge_signal_quantile(
+    enable_return_score_adjust_hedge: bool,
+    score_quantile: Option<f64>,
+) -> Option<f64> {
+    if !enable_return_score_adjust_hedge {
+        return Some(0.5);
+    }
+    score_quantile.filter(|v| v.is_finite())
 }
 
 fn build_mm_hedge_from_key(now_us: i64, signal_qtl: Option<f64>, volatility: f64) -> Vec<u8> {
@@ -566,7 +579,7 @@ pub fn build_mm_hedge_ctx(
 mod tests {
     use super::{
         build_quantile_offset_plan, map_offset_from_signal_legacy,
-        resolve_mm_hedge_effective_signal,
+        resolve_mm_hedge_effective_signal, resolve_mm_hedge_signal_quantile,
     };
     use crate::market_maker::hedge_scale::{scale_offsets_by_inventory, HedgeOffsetScaleInput};
     use crate::pre_trade::order_manager::Side;
@@ -587,6 +600,24 @@ mod tests {
         let (offset_hi, _, _, _) =
             map_offset_from_signal_legacy(Side::Buy, 1.0, 0.01, 2.0, 0.001, 0.03).unwrap();
         assert!(offset_hi < offset_lo);
+    }
+
+    #[test]
+    fn disabled_return_score_adjust_hedge_uses_neutral_quantile() {
+        assert_eq!(
+            resolve_mm_hedge_signal_quantile(false, Some(0.91)),
+            Some(0.5)
+        );
+        assert_eq!(resolve_mm_hedge_signal_quantile(false, None), Some(0.5));
+    }
+
+    #[test]
+    fn enabled_return_score_adjust_hedge_preserves_quantile() {
+        assert_eq!(
+            resolve_mm_hedge_signal_quantile(true, Some(0.91)),
+            Some(0.91)
+        );
+        assert_eq!(resolve_mm_hedge_signal_quantile(true, None), None);
     }
 
     #[test]
