@@ -201,7 +201,7 @@ pub fn build_and_fill_arb_maker_hedge(input: ArbMakerHedgeBuildInput<'_>) -> Opt
 
 pub fn build_spread_arb_hedge_from_key_base(
     now: i64,
-    return_score: Option<f64>,
+    return_qtl: Option<f64>,
     return_threshold: Option<f64>,
     environment_score: f64,
     environment_threshold: Option<f64>,
@@ -213,7 +213,7 @@ pub fn build_spread_arb_hedge_from_key_base(
 ) -> String {
     let base = build_decision_from_key_base(
         now,
-        return_score,
+        return_qtl,
         return_threshold,
         hedge_volatility_factor,
         Some(environment_score),
@@ -304,7 +304,7 @@ fn should_zero_hedge_tlen_for_cross_exchange(
 pub fn build_spread_arb_hedge_from_key(
     source: &str,
     now: i64,
-    return_score: Option<f64>,
+    return_qtl: Option<f64>,
     return_threshold: Option<f64>,
     environment_score: f64,
     environment_threshold: Option<f64>,
@@ -322,7 +322,7 @@ pub fn build_spread_arb_hedge_from_key(
 ) -> Vec<u8> {
     let base = build_spread_arb_hedge_from_key_base(
         now,
-        return_score,
+        return_qtl,
         return_threshold,
         environment_score,
         environment_threshold,

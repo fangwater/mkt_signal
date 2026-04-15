@@ -92,6 +92,7 @@ pub struct EnvironmentSignalResult {
     pub service_name: Option<String>,
     pub symbol_key: String,
     pub score: Option<f64>,
+    pub score_quantile: Option<f64>,
     pub threshold: Option<f64>,
     pub note: String,
 }
@@ -102,6 +103,7 @@ pub struct ModelOutputScoreLookupResult {
     pub symbol_key: String,
     pub subscribed: bool,
     pub score: Option<f64>,
+    pub score_quantile: Option<f64>,
     pub note: String,
 }
 
@@ -110,6 +112,7 @@ pub struct ModelOutputUpdateEvent {
     pub service_name: String,
     pub symbol_key: String,
     pub score: f64,
+    pub score_quantile: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -118,6 +121,12 @@ struct FactorValueSnapshot {
     ready: bool,
     timestamp_ms: i64,
     factor_index: u16,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ModelOutputSnapshot {
+    score: f64,
+    score_quantile: Option<f64>,
 }
 
 struct FactorIssueLogState {
@@ -192,7 +201,7 @@ pub struct FactorValueHub {
     factor_issue_log_state: HashMap<String, FactorIssueLogState>,
     model_output_subscribers: Vec<ModelOutputSubscriberEntry>,
     model_output_services: Vec<String>,
-    model_output_latest_scores: HashMap<(String, String), f64>,
+    model_output_latest_scores: HashMap<(String, String), ModelOutputSnapshot>,
     model_output_msg_count: u64,
     model_output_parse_err_count: u64,
     model_output_last_log: Instant,
@@ -494,8 +503,15 @@ impl FactorValueHub {
                             service_name: entry.service_name.clone(),
                             symbol_key: cache_key.1.clone(),
                             score: msg.score,
+                            score_quantile: msg.score_quantile,
                         };
-                        self.model_output_latest_scores.insert(cache_key, msg.score);
+                        self.model_output_latest_scores.insert(
+                            cache_key,
+                            ModelOutputSnapshot {
+                                score: msg.score,
+                                score_quantile: msg.score_quantile,
+                            },
+                        );
                         self.model_output_msg_count = self.model_output_msg_count.saturating_add(1);
                         events.push(event);
                     }
@@ -743,15 +759,16 @@ impl FactorValueHub {
             let symbol_key = normalize_symbol_for_venue(hedge_symbol, hedge_venue);
             let cache_key = (service_name.clone(), symbol_key.clone());
             match self.model_output_latest_scores.get(&cache_key).copied() {
-                Some(score) if score.is_finite() => {
-                    let allow_open = score >= model_true_threshold;
+                Some(snapshot) if snapshot.score.is_finite() => {
+                    let allow_open = snapshot.score >= model_true_threshold;
                     EnvironmentSignalResult {
                         source: EnvironmentSignalSource::ModelOutput,
                         allow_open,
                         class_label: if allow_open { 1 } else { 0 },
                         service_name: Some(service_name),
                         symbol_key,
-                        score: Some(score),
+                        score: Some(snapshot.score),
+                        score_quantile: snapshot.score_quantile,
                         threshold: Some(model_true_threshold),
                         note: if allow_open {
                             "model_score_ge_threshold".to_string()
@@ -767,6 +784,7 @@ impl FactorValueHub {
                     service_name: Some(service_name),
                     symbol_key,
                     score: None,
+                    score_quantile: None,
                     threshold: Some(model_true_threshold),
                     note: "invalid_model_score".to_string(),
                 },
@@ -777,6 +795,7 @@ impl FactorValueHub {
                     service_name: Some(service_name),
                     symbol_key,
                     score: None,
+                    score_quantile: None,
                     threshold: Some(model_true_threshold),
                     note: "missing_model_score".to_string(),
                 },
@@ -791,6 +810,7 @@ impl FactorValueHub {
                 service_name: None,
                 symbol_key: pnlu_symbol_key.to_string(),
                 score: pnlu_check.factor,
+                score_quantile: None,
                 threshold: pnlu_check.threshold,
                 note: format!("pnlu_fallback:{}", pnlu_check.reason),
             }
@@ -819,6 +839,7 @@ impl FactorValueHub {
                 symbol_key: normalize_symbol_for_venue(hedge_symbol, hedge_venue),
                 subscribed: false,
                 score: None,
+                score_quantile: None,
                 note: "service_disabled".to_string(),
             };
         };
@@ -834,17 +855,19 @@ impl FactorValueHub {
                 symbol_key,
                 subscribed: false,
                 score: None,
+                score_quantile: None,
                 note: "service_not_subscribed".to_string(),
             };
         }
 
         let cache_key = (service_name.clone(), symbol_key.clone());
         match self.model_output_latest_scores.get(&cache_key).copied() {
-            Some(score) if score.is_finite() => ModelOutputScoreLookupResult {
+            Some(snapshot) if snapshot.score.is_finite() => ModelOutputScoreLookupResult {
                 service_name,
                 symbol_key,
                 subscribed: true,
-                score: Some(score),
+                score: Some(snapshot.score),
+                score_quantile: snapshot.score_quantile,
                 note: "ok".to_string(),
             },
             Some(_) => ModelOutputScoreLookupResult {
@@ -852,6 +875,7 @@ impl FactorValueHub {
                 symbol_key,
                 subscribed: true,
                 score: None,
+                score_quantile: None,
                 note: "invalid_model_score".to_string(),
             },
             None => ModelOutputScoreLookupResult {
@@ -859,6 +883,7 @@ impl FactorValueHub {
                 symbol_key,
                 subscribed: true,
                 score: None,
+                score_quantile: None,
                 note: "missing_model_score".to_string(),
             },
         }

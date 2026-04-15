@@ -49,7 +49,7 @@ pub struct MmHedgeSnapshot {
     pub sell_qty: f64,
     pub hedge_ts_ms: Option<i64>,
     pub hedge_is_taker: Option<bool>,
-    pub signal: Option<f64>,
+    pub ret_qtl: Option<f64>,
     pub final_offset: Option<f64>,
 }
 
@@ -81,7 +81,7 @@ pub struct MarketMakerHedgeStrategy {
     signal_ts: i64,
     last_hedge_ts_ms: Option<i64>,
     last_hedge_is_taker: Option<bool>,
-    last_signal: Option<f64>,
+    last_ret_qtl: Option<f64>,
     last_final_offset: Option<f64>,
     hedge_from_key: Vec<u8>,
     order_seq: u32,
@@ -119,7 +119,7 @@ impl MarketMakerHedgeStrategy {
             signal_ts: 0,
             last_hedge_ts_ms: None,
             last_hedge_is_taker: None,
-            last_signal: None,
+            last_ret_qtl: None,
             last_final_offset: None,
             hedge_from_key: Vec::new(),
             order_seq: 0,
@@ -490,15 +490,15 @@ impl MarketMakerHedgeStrategy {
             sell_qty: self.period_sell_qty,
             hedge_ts_ms: self.last_hedge_ts_ms,
             hedge_is_taker: self.last_hedge_is_taker,
-            signal: self.last_signal,
+            ret_qtl: self.last_ret_qtl,
             final_offset: self.last_final_offset,
         }
     }
 
-    fn parse_return_score_from_from_key(from_key: &[u8]) -> Option<f64> {
+    fn parse_return_qtl_from_from_key(from_key: &[u8]) -> Option<f64> {
         let text = std::str::from_utf8(from_key).ok()?;
         text.split(':').find_map(|part| {
-            let (_, value_text) = part.split_once("ret_score=")?;
+            let (_, value_text) = part.split_once("ret_qtl=")?;
             value_text.parse::<f64>().ok()
         })
     }
@@ -602,7 +602,7 @@ impl MarketMakerHedgeStrategy {
         self.pending_hedge_request_seq = None;
         self.signal_ts = ctx.signal_ts;
         self.hedge_from_key = ctx.from_key.clone();
-        self.last_signal = Self::parse_return_score_from_from_key(&ctx.from_key);
+        self.last_ret_qtl = Self::parse_return_qtl_from_from_key(&ctx.from_key);
         self.last_final_offset = ctx
             .price_offsets
             .iter()

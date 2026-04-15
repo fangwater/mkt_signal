@@ -93,10 +93,13 @@ fn main() -> Result<()> {
                     }
                     received += 1;
                     println!(
-                        "[MODEL] #{} symbol={} score={:.8} status={} feature_dim={} ts_in_ms={} ts_out_ms={}",
+                        "[MODEL] #{} symbol={} score={:.8} score_quantile={} status={} feature_dim={} ts_in_ms={} ts_out_ms={}",
                         received,
                         msg.symbol,
                         msg.score,
+                        msg.score_quantile
+                            .map(|v| format!("{v:.6}"))
+                            .unwrap_or_else(|| "NA".to_string()),
                         msg.status,
                         msg.feature_dim,
                         msg.ts_in_ms,

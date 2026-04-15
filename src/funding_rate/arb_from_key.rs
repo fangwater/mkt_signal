@@ -7,7 +7,7 @@ use super::common::{
 
 pub fn build_spread_decision_from_key_base(
     now: i64,
-    return_score: Option<f64>,
+    return_qtl: Option<f64>,
     return_threshold: Option<f64>,
     volatility: Option<f64>,
     open_scale: Option<f64>,
@@ -18,7 +18,7 @@ pub fn build_spread_decision_from_key_base(
 ) -> String {
     let base = build_open_from_key_base(
         now,
-        return_score,
+        return_qtl,
         return_threshold,
         volatility,
         open_scale,
@@ -33,7 +33,7 @@ pub fn build_spread_decision_from_key_base(
 }
 pub fn build_funding_decision_from_key_base(
     now: i64,
-    return_score: Option<f64>,
+    return_qtl: Option<f64>,
     return_threshold: Option<f64>,
     volatility: Option<f64>,
     open_scale: Option<f64>,
@@ -47,7 +47,7 @@ pub fn build_funding_decision_from_key_base(
     let _ = (futures_symbol, futures_venue);
     let base = build_open_from_key_base(
         now,
-        return_score,
+        return_qtl,
         return_threshold,
         volatility,
         open_scale,
@@ -92,7 +92,7 @@ pub fn build_funding_decision_from_key_with_gate(
     futures_symbol: &str,
     futures_venue: TradingVenue,
     spread_rate: f64,
-    return_score: Option<f64>,
+    return_qtl: Option<f64>,
     return_threshold: Option<f64>,
     volatility: Option<f64>,
     env_score: Option<f64>,
@@ -102,7 +102,7 @@ pub fn build_funding_decision_from_key_with_gate(
 ) -> Vec<u8> {
     let base = build_funding_decision_from_key_base(
         now,
-        return_score,
+        return_qtl,
         return_threshold,
         volatility,
         open_scale,
@@ -118,7 +118,7 @@ pub fn build_funding_decision_from_key_with_gate(
 
 pub fn build_spread_arb_cancel_from_key(
     now: i64,
-    return_score: Option<f64>,
+    return_qtl: Option<f64>,
     return_threshold: Option<f64>,
     environment_score: f64,
     environment_threshold: Option<f64>,
@@ -129,7 +129,7 @@ pub fn build_spread_arb_cancel_from_key(
 ) -> String {
     build_spread_decision_from_key_base(
         now,
-        return_score,
+        return_qtl,
         return_threshold,
         volatility,
         open_scale,
@@ -142,7 +142,7 @@ pub fn build_spread_arb_cancel_from_key(
 
 pub fn build_spread_arb_tlen_cancel_from_key(
     now: i64,
-    return_score: Option<f64>,
+    return_qtl: Option<f64>,
     return_threshold: Option<f64>,
     environment_score: f64,
     environment_threshold: Option<f64>,
@@ -155,7 +155,7 @@ pub fn build_spread_arb_tlen_cancel_from_key(
 ) -> String {
     let from_key = build_spread_arb_cancel_from_key(
         now,
-        return_score,
+        return_qtl,
         return_threshold,
         environment_score,
         environment_threshold,
@@ -169,7 +169,7 @@ pub fn build_spread_arb_tlen_cancel_from_key(
 
 pub fn build_funding_tlen_cancel_from_key(
     now: i64,
-    return_score: Option<f64>,
+    return_qtl: Option<f64>,
     return_threshold: Option<f64>,
     volatility: Option<f64>,
     open_scale: Option<f64>,
@@ -183,7 +183,7 @@ pub fn build_funding_tlen_cancel_from_key(
     append_tlen_suffix(
         build_funding_decision_from_key_base(
             now,
-            return_score,
+            return_qtl,
             return_threshold,
             volatility,
             open_scale,

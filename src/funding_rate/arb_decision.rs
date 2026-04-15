@@ -1336,7 +1336,7 @@ fn drive_spread_arb_decision(
         open_venue,
         hedge_venue,
         open_control.side,
-        open_control.gate.return_score,
+        open_control.gate.return_qtl,
         open_control.gate.return_threshold,
         open_control.gate.open_filter_value,
         open_control.gate.environment_score,
@@ -1399,7 +1399,7 @@ fn drive_shared_arb_hedge_query(
     .expect("ArbDecisionState should be initialized");
     let environment_signal = hedge_inputs.environment_signal;
     let environment_score = hedge_inputs.environment_score;
-    let return_score = hedge_inputs.return_score;
+    let return_qtl = hedge_inputs.return_qtl;
     let return_threshold = hedge_inputs.return_threshold;
     let target_factor_lookup = hedge_inputs.target_factor_lookup;
     let aggressive = hedge_inputs.aggressive;
@@ -1451,7 +1451,7 @@ fn drive_shared_arb_hedge_query(
         let from_key = super::arb_hedge_context::build_spread_arb_hedge_from_key(
             source,
             now,
-            return_score,
+            return_qtl,
             return_threshold,
             environment_score,
             environment_signal.threshold,
@@ -1613,7 +1613,7 @@ fn drive_shared_arb_hedge_query(
     let from_key = super::arb_hedge_context::build_spread_arb_hedge_from_key(
         source,
         now,
-        return_score,
+        return_qtl,
         return_threshold,
         environment_score,
         environment_signal.threshold,
@@ -1947,7 +1947,7 @@ fn emit_funding_precise_tlen_cancel(
     .map(|(value, _)| value);
     let from_key = super::arb_from_key::build_funding_tlen_cancel_from_key(
         now_us,
-        snapshot.return_score,
+        snapshot.return_qtl,
         snapshot.return_threshold,
         snapshot.volatility,
         snapshot.open_scale,
@@ -1991,9 +1991,9 @@ fn emit_spread_arb_precise_tlen_cancel(
             None => return Ok(()),
         };
     let spread_rate = super::common::compute_spread_rate(&open_quote, &hedge_quote);
-    let return_score = ArbDecision::with_state_mut(|arb| {
+    let return_qtl = ArbDecision::with_state_mut(|arb| {
         arb.lookup_return_model_score_lookup(hedge_symbol, hedge_venue)
-            .and_then(|lookup| lookup.score)
+            .and_then(|lookup| lookup.score_quantile)
             .filter(|v| v.is_finite())
     })
     .flatten();
@@ -2011,7 +2011,7 @@ fn emit_spread_arb_precise_tlen_cancel(
     .flatten();
     let from_key = super::arb_from_key::build_spread_arb_tlen_cancel_from_key(
         now_us,
-        return_score,
+        return_qtl,
         None,
         environment_score,
         environment_signal.threshold,
@@ -2059,9 +2059,9 @@ fn emit_spread_arb_spread_cancel(
         };
     let batch_ts = get_timestamp_us();
     let spread_rate = super::common::compute_spread_rate(&open_quote, &hedge_quote);
-    let return_score = ArbDecision::with_state_mut(|arb| {
+    let return_qtl = ArbDecision::with_state_mut(|arb| {
         arb.lookup_return_model_score_lookup(hedge_symbol, hedge_venue)
-            .and_then(|lookup| lookup.score)
+            .and_then(|lookup| lookup.score_quantile)
             .filter(|v| v.is_finite())
     })
     .flatten();
@@ -2079,7 +2079,7 @@ fn emit_spread_arb_spread_cancel(
     .flatten();
     let from_key = super::arb_from_key::build_spread_arb_cancel_from_key(
         batch_ts,
-        return_score,
+        return_qtl,
         None,
         environment_score,
         environment_signal.threshold,
@@ -2162,7 +2162,7 @@ fn emit_spread_arb_open_signals(
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
     side: Side,
-    return_score: Option<f64>,
+    return_qtl: Option<f64>,
     return_threshold: Option<f64>,
     open_filter_value: Option<f64>,
     environment_score: f64,
@@ -2189,7 +2189,7 @@ fn emit_spread_arb_open_signals(
     let scaled_volatility = (open_volatility_factor * open_scale).max(0.0);
     let base_from_key = super::common::build_open_from_key_base(
         batch_ts,
-        return_score,
+        return_qtl,
         return_threshold,
         Some(open_volatility_factor),
         Some(open_scale),
@@ -2403,7 +2403,7 @@ fn emit_spread_arb_close_signals(
     let from_key = super::common::append_dump_suffix(super::common::append_key_value_fields(
         super::common::build_open_from_key_base(
             batch_ts,
-            snapshot.return_score,
+            snapshot.return_qtl,
             snapshot.return_threshold,
             snapshot.volatility,
             snapshot.open_scale,
@@ -2576,7 +2576,7 @@ fn emit_funding_open_close_signals(
             futures_symbol,
             futures_venue,
             spread_rate,
-            gate.and_then(|v| v.return_score),
+            gate.and_then(|v| v.return_qtl),
             gate.and_then(|v| v.return_threshold),
             gate.map(|v| v.open_volatility_factor),
             gate.map(|v| v.environment_score),
@@ -2609,7 +2609,7 @@ fn emit_funding_open_close_signals(
         super::common::append_dump_suffix(
             super::arb_from_key::build_funding_decision_from_key_base(
                 batch_ts,
-                snapshot.return_score,
+                snapshot.return_qtl,
                 snapshot.return_threshold,
                 snapshot.volatility,
                 snapshot.open_scale,
@@ -2818,7 +2818,7 @@ fn emit_funding_spread_cancel(
     .map(|(value, _)| value);
     let from_key = super::arb_from_key::build_funding_decision_from_key_base(
         batch_ts,
-        snapshot.return_score,
+        snapshot.return_qtl,
         snapshot.return_threshold,
         snapshot.volatility,
         snapshot.open_scale,
@@ -2873,7 +2873,7 @@ struct ArbSignalTableEntry {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ArbOpenGatePassed {
-    pub return_score: Option<f64>,
+    pub return_qtl: Option<f64>,
     pub return_threshold: Option<f64>,
     pub open_filter_value: Option<f64>,
     pub environment_score: f64,
@@ -2890,7 +2890,7 @@ pub(crate) struct ArbOpenControlPassed {
 
 #[derive(Debug, Clone, Default)]
 struct OpenFromKeySnapshot {
-    return_score: Option<f64>,
+    return_qtl: Option<f64>,
     return_threshold: Option<f64>,
     volatility: Option<f64>,
     env_score: Option<f64>,
@@ -2965,7 +2965,7 @@ pub(crate) struct ArbSharedBootstrap {
 pub(crate) struct ArbXarbHedgeInputs {
     pub environment_signal: EnvironmentSignalResult,
     pub environment_score: f64,
-    pub return_score: Option<f64>,
+    pub return_qtl: Option<f64>,
     pub return_threshold: Option<f64>,
     pub target_factor_lookup: FactorValueLookupResult,
     pub aggressive: bool,
@@ -2977,7 +2977,7 @@ pub(crate) struct ArbXarbHedgeInputs {
 pub(crate) struct ArbSharedHedgeInputs {
     pub environment_signal: EnvironmentSignalResult,
     pub environment_score: f64,
-    pub return_score: Option<f64>,
+    pub return_qtl: Option<f64>,
     pub return_threshold: Option<f64>,
     pub target_factor_lookup: FactorValueLookupResult,
     pub aggressive: bool,
@@ -3237,9 +3237,9 @@ impl ArbDecisionState {
         let environment_signal =
             self.evaluate_environment_signal(open_symbol_key, hedge_symbol, hedge_venue, now);
         let return_lookup = self.lookup_return_model_score_lookup(hedge_symbol, hedge_venue);
-        let return_score = return_lookup
+        let return_qtl = return_lookup
             .as_ref()
-            .and_then(|lookup| lookup.score)
+            .and_then(|lookup| lookup.score_quantile)
             .filter(|v| v.is_finite());
         let return_threshold = return_lookup.as_ref().and_then(|lookup| {
             self.lookup_return_score_thresholds(&lookup.symbol_key)
@@ -3256,7 +3256,7 @@ impl ArbDecisionState {
         ArbXarbHedgeInputs {
             environment_signal,
             environment_score,
-            return_score,
+            return_qtl,
             return_threshold,
             target_factor_lookup,
             aggressive,
@@ -3287,7 +3287,7 @@ impl ArbDecisionState {
         ArbSharedHedgeInputs {
             environment_signal: xarb.environment_signal,
             environment_score: xarb.environment_score,
-            return_score: xarb.return_score,
+            return_qtl: xarb.return_qtl,
             return_threshold: xarb.return_threshold,
             target_factor_lookup: xarb.target_factor_lookup,
             aggressive: xarb.aggressive,
@@ -3689,9 +3689,9 @@ impl ArbDecisionState {
         now_us: i64,
     ) -> OpenFromKeySnapshot {
         let return_lookup = self.lookup_return_model_score_lookup(hedge_symbol, hedge_venue);
-        let return_score = return_lookup
+        let return_qtl = return_lookup
             .as_ref()
-            .and_then(|lookup| lookup.score)
+            .and_then(|lookup| lookup.score_quantile)
             .filter(|v| v.is_finite());
         let return_threshold = return_lookup.as_ref().and_then(|lookup| {
             self.lookup_return_score_thresholds(&lookup.symbol_key)
@@ -3709,7 +3709,7 @@ impl ArbDecisionState {
             .filter(|v| v.is_finite());
 
         OpenFromKeySnapshot {
-            return_score,
+            return_qtl,
             return_threshold,
             volatility,
             env_score,
@@ -4030,9 +4030,9 @@ impl ArbDecisionState {
         }
 
         let return_lookup = self.lookup_return_model_score_lookup(hedge_symbol, hedge_venue);
-        let return_score = return_lookup
+        let return_qtl = return_lookup
             .as_ref()
-            .and_then(|lookup| lookup.score)
+            .and_then(|lookup| lookup.score_quantile)
             .filter(|v| v.is_finite());
         let return_threshold = return_lookup.as_ref().and_then(|lookup| {
             self.lookup_return_score_thresholds(&lookup.symbol_key)
@@ -4085,7 +4085,7 @@ impl ArbDecisionState {
         }
 
         Some(ArbOpenGatePassed {
-            return_score,
+            return_qtl,
             return_threshold,
             open_filter_value,
             environment_score,
