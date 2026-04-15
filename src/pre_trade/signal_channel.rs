@@ -1,5 +1,6 @@
 use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
 use crate::common::ipc_service_name::build_service_name;
+use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{OrderType, Side};
 use crate::pre_trade::signal_throttle::check_signal_throttle;
@@ -251,18 +252,18 @@ fn handle_trade_signal(signal: TradeSignal) {
 
     match signal.signal_type {
         SignalType::ArbOpen => match ArbOpenCtx::from_bytes(signal.context.clone()) {
-            Ok(open_ctx) => {
-                let symbol = open_ctx.get_opening_symbol().to_uppercase();
+            Ok(mut open_ctx) => {
+                let symbol = normalize_symbol_for_internal(&open_ctx.get_opening_symbol());
                 if symbol.is_empty() {
                     warn!("ArbOpen: empty symbol");
                     return;
                 }
-                let hedging_symbol = open_ctx.get_hedging_symbol();
+                let hedging_symbol = normalize_symbol_for_internal(&open_ctx.get_hedging_symbol());
                 let Some(side) = open_ctx.get_side() else {
                     warn!("ArbOpen: invalid side {}", open_ctx.side);
                     return;
                 };
-                let from_key = String::from_utf8_lossy(&open_ctx.from_key);
+                let from_key = String::from_utf8_lossy(&open_ctx.from_key).to_string();
                 if let Some(hit) = check_signal_throttle(&symbol, side) {
                     debug!(
                         "ArbOpen: throttled by pre_trade block, symbol={} side={} remain_us={} last_code={} until_us={}, skip strategy construction",
@@ -298,9 +299,17 @@ fn handle_trade_signal(signal: TradeSignal) {
                     warn!("ArbOpen: {} 限价挂单数量超限: {}", symbol, e);
                     return;
                 }
+                open_ctx.set_opening_symbol(&symbol);
+                open_ctx.set_hedging_symbol(&hedging_symbol);
+                let normalized_signal = TradeSignal::create(
+                    SignalType::ArbOpen,
+                    signal.generation_time,
+                    signal.handle_time,
+                    open_ctx.to_bytes(),
+                );
                 let strategy_id = StrategyManager::generate_strategy_id();
                 let mut strategy = HedgeArbStrategy::new(strategy_id, symbol.clone());
-                strategy.handle_signal(&signal);
+                strategy.handle_signal(&normalized_signal);
                 if strategy.is_active() {
                     let hedge_mode = if open_ctx.hedge_timeout_us > 0 {
                         "MM"
@@ -339,8 +348,12 @@ fn handle_trade_signal(signal: TradeSignal) {
         SignalType::ArbClose => {
             match ArbOpenCtx::from_bytes(signal.context.clone()) {
                 Ok(mut close_ctx) => {
-                    let opening_symbol = close_ctx.get_opening_symbol();
-                    let hedging_symbol = close_ctx.get_hedging_symbol();
+                    let opening_symbol =
+                        normalize_symbol_for_internal(&close_ctx.get_opening_symbol());
+                    let hedging_symbol =
+                        normalize_symbol_for_internal(&close_ctx.get_hedging_symbol());
+                    close_ctx.set_opening_symbol(&opening_symbol);
+                    close_ctx.set_hedging_symbol(&hedging_symbol);
 
                     // 获取平仓方向
                     let Some(close_side) = Side::from_u8(close_ctx.side) else {
@@ -486,8 +499,10 @@ fn handle_trade_signal(signal: TradeSignal) {
         }
 
         SignalType::ArbCancel => match ArbCancelCtx::from_bytes(signal.context.clone()) {
-            Ok(cancel_ctx) => {
-                let symbol = cancel_ctx.get_opening_symbol().to_uppercase();
+            Ok(mut cancel_ctx) => {
+                let symbol = normalize_symbol_for_internal(&cancel_ctx.get_opening_symbol());
+                let hedging_symbol =
+                    normalize_symbol_for_internal(&cancel_ctx.get_hedging_symbol());
                 let cancel_side = cancel_ctx.get_side();
                 let cancel_reason = cancel_ctx.get_reason();
                 let require_direction_match = matches!(
@@ -513,6 +528,14 @@ fn handle_trade_signal(signal: TradeSignal) {
                     return;
                 }
 
+                cancel_ctx.set_opening_symbol(&symbol);
+                cancel_ctx.set_hedging_symbol(&hedging_symbol);
+                let normalized_signal = TradeSignal::create(
+                    SignalType::ArbCancel,
+                    signal.generation_time,
+                    signal.handle_time,
+                    cancel_ctx.to_bytes(),
+                );
                 let strategy_mgr = MonitorChannel::instance().strategy_mgr();
 
                 if cancel_ctx.strategy_id > 0 {
@@ -539,7 +562,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                                 return;
                             }
                         }
-                        strategy.handle_signal(&signal);
+                        strategy.handle_signal(&normalized_signal);
                         if strategy.is_active() {
                             strategy_mgr.borrow_mut().insert(strategy);
                         }
@@ -576,7 +599,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                                 continue;
                             }
                         }
-                        strategy.handle_signal(&signal);
+                        strategy.handle_signal(&normalized_signal);
                         if strategy.is_active() {
                             strategy_mgr.borrow_mut().insert(strategy);
                         }
@@ -709,14 +732,15 @@ fn handle_trade_signal(signal: TradeSignal) {
             }
         }
         SignalType::ArbHedge => match ArbHedgeCtx::from_bytes(signal.context.clone()) {
-            Ok(hedge_ctx) => {
+            Ok(mut hedge_ctx) => {
                 let strategy_id = hedge_ctx.strategy_id;
-                let hedging_symbol = hedge_ctx.get_hedging_symbol();
+                let opening_symbol = normalize_symbol_for_internal(&hedge_ctx.get_opening_symbol());
+                let hedging_symbol = normalize_symbol_for_internal(&hedge_ctx.get_hedging_symbol());
                 let hedging_venue = TradingVenue::from_u8(hedge_ctx.hedging_leg.venue)
                     .unwrap_or(TradingVenue::BinanceFutures);
                 let hedge_side = hedge_ctx.get_side();
                 let hedge_price = hedge_ctx.get_hedge_price();
-                let from_key = String::from_utf8_lossy(&hedge_ctx.from_key);
+                let from_key = String::from_utf8_lossy(&hedge_ctx.from_key).to_string();
 
                 let configured_hedge_venue = MonitorChannel::instance().hedge_venue();
                 if hedging_venue != configured_hedge_venue {
@@ -727,6 +751,14 @@ fn handle_trade_signal(signal: TradeSignal) {
                     return;
                 }
 
+                hedge_ctx.set_opening_symbol(&opening_symbol);
+                hedge_ctx.set_hedging_symbol(&hedging_symbol);
+                let normalized_signal = TradeSignal::create(
+                    SignalType::ArbHedge,
+                    signal.generation_time,
+                    signal.handle_time,
+                    hedge_ctx.to_bytes(),
+                );
                 debug!(
                     "🔔 收到 ArbHedge 信号: strategy_id={} hedging={} {:?} | side={:?} qty={:.4} price={:.6} is_maker={} spread_rate={:.6} from_key='{}'",
                     strategy_id,
@@ -749,7 +781,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                 let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
                 if let Some(mut strategy) = strategy_opt {
                     debug!("ArbHedge: 处理策略 id={}", strategy_id);
-                    strategy.handle_signal(&signal);
+                    strategy.handle_signal(&normalized_signal);
                     if strategy.is_active() {
                         strategy_mgr.borrow_mut().insert(strategy);
                     } else {
@@ -765,11 +797,11 @@ fn handle_trade_signal(signal: TradeSignal) {
                 debug!("MMOpen ignored: pre_trade is not in MM mode");
                 return;
             }
-            let Ok(open_ctx) = MmOpenCtx::from_bytes(signal.context.clone()) else {
+            let Ok(mut open_ctx) = MmOpenCtx::from_bytes(signal.context.clone()) else {
                 warn!("failed to decode MMOpen context");
                 return;
             };
-            let symbol = open_ctx.get_opening_symbol().to_uppercase();
+            let symbol = normalize_symbol_for_internal(&open_ctx.get_opening_symbol());
             if symbol.is_empty() {
                 warn!("MMOpen: empty symbol");
                 return;
@@ -790,12 +822,19 @@ fn handle_trade_signal(signal: TradeSignal) {
                 return;
             }
 
+            open_ctx.set_opening_symbol(&symbol);
+            let normalized_signal = TradeSignal::create(
+                SignalType::MMOpen,
+                signal.generation_time,
+                signal.handle_time,
+                open_ctx.to_bytes(),
+            );
             let strategy_mgr = MonitorChannel::instance().strategy_mgr();
             let _ = strategy_mgr.borrow_mut().ensure_mm_hedge_strategy(&symbol);
 
             let strategy_id = StrategyManager::generate_strategy_id();
             let mut strategy = MarketMakerOpenStrategy::new(strategy_id);
-            strategy.handle_signal(&signal);
+            strategy.handle_signal(&normalized_signal);
             if strategy.is_active() {
                 debug!("MMOpen: strategy activated id={}", strategy_id);
                 strategy_mgr.borrow_mut().insert(Box::new(strategy));
@@ -910,12 +949,12 @@ fn handle_trade_signal(signal: TradeSignal) {
             Err(err) => warn!("failed to decode MMCancelTrigger context: {err}"),
         },
         SignalType::MMCancel => match MmCancelCtx::from_bytes(signal.context.clone()) {
-            Ok(cancel_ctx) => {
+            Ok(mut cancel_ctx) => {
                 if !is_mm_mode {
                     debug!("MMCancel ignored: pre_trade is not in MM mode");
                     return;
                 }
-                let symbol = cancel_ctx.get_opening_symbol().to_uppercase();
+                let symbol = normalize_symbol_for_internal(&cancel_ctx.get_opening_symbol());
                 let opening_venue = TradingVenue::from_u8(cancel_ctx.opening_leg.venue)
                     .unwrap_or(TradingVenue::BinanceMargin);
 
@@ -928,6 +967,13 @@ fn handle_trade_signal(signal: TradeSignal) {
                     return;
                 }
 
+                cancel_ctx.set_opening_symbol(&symbol);
+                let normalized_signal = TradeSignal::create(
+                    SignalType::MMCancel,
+                    signal.generation_time,
+                    signal.handle_time,
+                    cancel_ctx.to_bytes(),
+                );
                 let strategy_mgr = MonitorChannel::instance().strategy_mgr();
                 if cancel_ctx.strategy_id > 0 {
                     let strategy_id = cancel_ctx.strategy_id;
@@ -943,7 +989,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                     }
                     let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
                     if let Some(mut strategy) = strategy_opt {
-                        strategy.handle_signal(&signal);
+                        strategy.handle_signal(&normalized_signal);
                         if strategy.is_active() {
                             strategy_mgr.borrow_mut().insert(strategy);
                         }
@@ -969,7 +1015,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                     }
                     let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
                     if let Some(mut strategy) = strategy_opt {
-                        strategy.handle_signal(&signal);
+                        strategy.handle_signal(&normalized_signal);
                         if strategy.is_active() {
                             strategy_mgr.borrow_mut().insert(strategy);
                         }
@@ -980,16 +1026,23 @@ fn handle_trade_signal(signal: TradeSignal) {
             Err(err) => warn!("failed to decode MMCancel context: {err}"),
         },
         SignalType::MMHedge => match MmHedgeCtx::from_bytes(signal.context.clone()) {
-            Ok(hedge_ctx) => {
+            Ok(mut hedge_ctx) => {
                 if !is_mm_mode {
                     debug!("MMHedge ignored: pre_trade is not in MM mode");
                     return;
                 }
-                let symbol = hedge_ctx.get_opening_symbol().to_uppercase();
+                let symbol = normalize_symbol_for_internal(&hedge_ctx.get_opening_symbol());
                 if symbol.is_empty() {
                     warn!("MMHedge: empty symbol");
                     return;
                 }
+                hedge_ctx.set_opening_symbol(&symbol);
+                let normalized_signal = TradeSignal::create(
+                    SignalType::MMHedge,
+                    signal.generation_time,
+                    signal.handle_time,
+                    hedge_ctx.to_bytes(),
+                );
                 let strategy_mgr = MonitorChannel::instance().strategy_mgr();
                 let strategy_id = strategy_mgr.borrow_mut().ensure_mm_hedge_strategy(&symbol);
                 info!(
@@ -1002,7 +1055,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                 );
                 let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
                 if let Some(mut strategy) = strategy_opt {
-                    strategy.handle_signal(&signal);
+                    strategy.handle_signal(&normalized_signal);
                     if strategy.is_active() {
                         strategy_mgr.borrow_mut().insert(strategy);
                     } else {

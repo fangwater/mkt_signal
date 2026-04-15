@@ -1,3 +1,4 @@
+use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::common::time_util::get_timestamp_us;
 use crate::funding_rate::mm_decision::from_key::append_mm_hedge_tlen_to_from_key;
 use crate::market_maker::hedge_split::{
@@ -644,7 +645,7 @@ impl MarketMakerHedgeStrategy {
             None
         };
 
-        let symbol = ctx.get_opening_symbol().to_uppercase();
+        let symbol = normalize_symbol_for_internal(&ctx.get_opening_symbol());
         let venue = MonitorChannel::instance().open_venue();
         let symbol_key = min_qty_symbol_key(venue, &symbol);
         let qty_multiplier = MonitorChannel::instance()

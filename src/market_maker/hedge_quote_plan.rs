@@ -1,3 +1,4 @@
+use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::common::time_util::get_timestamp_us;
 use crate::funding_rate::common::{build_decision_from_key_base, Quote};
 use crate::funding_rate::factor_value_hub::FactorValueHub;
@@ -163,7 +164,7 @@ pub fn build_mm_hedge_quote_plan(
     query: &MmHedgeSignalQueryMsg,
 ) -> Result<MmHedgeQuotePlan, String> {
     let now_us = get_timestamp_us();
-    let symbol = input.symbol.to_uppercase();
+    let symbol = normalize_symbol_for_internal(input.symbol);
     if symbol.is_empty() {
         return Err("empty symbol".to_string());
     }

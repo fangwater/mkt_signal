@@ -1,3 +1,4 @@
+use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::funding_rate::common::Quote;
 use crate::market_maker::quote_plan_levels::{
     build_quote_plan_levels, QuotePlanLevel, QuotePlanLevelSpec,
@@ -223,7 +224,7 @@ pub fn build_mm_open_quote_plan(
     };
 
     Ok(MmOpenQuotePlan {
-        symbol: symbol.to_uppercase(),
+        symbol: normalize_symbol_for_internal(symbol),
         quote,
         now_us,
         exp_time_us,

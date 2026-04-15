@@ -11,6 +11,7 @@ use crate::trade_engine::trade_request::{
     GateFuturesNewOrderRequest, GateUnifiedCancelOrderRequest, GateUnifiedNewOrderRequest,
 };
 use crate::{
+    common::symbol_util::normalize_symbol_for_internal,
     common::time_util::get_timestamp_us,
     signal::common::{OrderStatus, TradingVenue},
 };
@@ -623,6 +624,7 @@ impl OrderManager {
             );
             1.0
         };
+        let symbol = normalize_symbol_for_internal(&symbol);
         let mut order = Order::new(
             venue,
             id,
@@ -641,17 +643,18 @@ impl OrderManager {
     }
 
     pub fn get_symbol_pending_limit_order_count(&self, symbol: &String) -> i32 {
+        let symbol = normalize_symbol_for_internal(symbol);
         let actual = self
             .orders
             .values()
             .filter(|order| {
                 order.order_type.is_limit()
                     && !order.status.is_terminal()
-                    && order.symbol.eq_ignore_ascii_case(symbol)
+                    && order.symbol.eq_ignore_ascii_case(&symbol)
             })
             .count() as i32;
 
-        if let Some(stored) = self.pending_limit_order_count.get(symbol) {
+        if let Some(stored) = self.pending_limit_order_count.get(&symbol) {
             if *stored != actual {
                 debug!(
                     "OrderManager: symbol={} pending_limit_count inconsistent cached={} actual={} (using actual)",
@@ -774,18 +777,17 @@ impl OrderManager {
     }
 
     fn increment_pending_limit_count(&mut self, symbol: &str) {
-        let entry = self
-            .pending_limit_order_count
-            .entry(symbol.to_string())
-            .or_insert(0);
+        let symbol = normalize_symbol_for_internal(symbol);
+        let entry = self.pending_limit_order_count.entry(symbol).or_insert(0);
         *entry += 1;
     }
 
     fn decrement_pending_limit_count(&mut self, symbol: &str) {
+        let symbol = normalize_symbol_for_internal(symbol);
         let mut should_remove = false;
         let mut remaining = None;
 
-        if let Some(entry) = self.pending_limit_order_count.get_mut(symbol) {
+        if let Some(entry) = self.pending_limit_order_count.get_mut(&symbol) {
             if *entry > 1 {
                 *entry -= 1;
                 remaining = Some(*entry);
@@ -797,7 +799,7 @@ impl OrderManager {
         }
 
         if should_remove {
-            self.pending_limit_order_count.remove(symbol);
+            self.pending_limit_order_count.remove(&symbol);
         }
 
         info!(

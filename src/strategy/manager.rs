@@ -1,3 +1,4 @@
+use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::common::tick_math::QuantizedValue;
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
@@ -93,7 +94,7 @@ pub struct MmOpenPriceMapKey {
 impl MmOpenPriceMapKey {
     pub fn new(symbol: impl Into<String>, price_qv: QuantizedValue) -> Self {
         Self {
-            symbol: symbol.into().to_ascii_uppercase(),
+            symbol: normalize_symbol_for_internal(&symbol.into()),
             price_qv: price_qv.into(),
         }
     }
@@ -168,7 +169,8 @@ impl StrategyManager {
         }
     }
 
-    fn register_mm_open_price_entry(&mut self, strategy_id: i32, entry: MmOpenPriceMapEntry) {
+    fn register_mm_open_price_entry(&mut self, strategy_id: i32, mut entry: MmOpenPriceMapEntry) {
+        entry.symbol = normalize_symbol_for_internal(&entry.symbol);
         self.mm_open_price_index
             .entry(entry.symbol.clone())
             .or_default()
@@ -199,7 +201,8 @@ impl StrategyManager {
         }
     }
 
-    fn register_arb_open_price_entry(&mut self, strategy_id: i32, entry: ArbOpenPriceMapEntry) {
+    fn register_arb_open_price_entry(&mut self, strategy_id: i32, mut entry: ArbOpenPriceMapEntry) {
+        entry.symbol = normalize_symbol_for_internal(&entry.symbol);
         self.arb_open_price_index
             .entry(entry.symbol.clone())
             .or_default()
@@ -248,13 +251,13 @@ impl StrategyManager {
     /// 插入策略，如果已有同 id 策略则返回旧值
     pub fn insert(&mut self, strategy: Box<dyn Strategy>) -> Option<Box<dyn Strategy>> {
         let id = strategy.get_id();
-        let new_symbol = strategy.symbol().map(|s| s.to_ascii_uppercase());
+        let new_symbol = strategy.symbol().map(normalize_symbol_for_internal);
         let mm_open_entry = strategy.mm_open_price_map_entry();
         let arb_open_entry = strategy.arb_open_price_map_entry();
         if let Some(old_symbol) = self
             .strategies
             .get(&id)
-            .and_then(|existing| existing.symbol().map(|s| s.to_ascii_uppercase()))
+            .and_then(|existing| existing.symbol().map(normalize_symbol_for_internal))
         {
             if let Some(set) = self.symbol_index.get_mut(&old_symbol) {
                 set.remove(&id);
@@ -307,7 +310,7 @@ impl StrategyManager {
             self.known_ids.remove(&strategy_id);
             if let Some(symbol) = removed
                 .as_ref()
-                .and_then(|strategy| strategy.symbol().map(|s| s.to_ascii_uppercase()))
+                .and_then(|strategy| strategy.symbol().map(normalize_symbol_for_internal))
             {
                 if let Some(set) = self.symbol_index.get_mut(&symbol) {
                     set.remove(&strategy_id);
@@ -333,7 +336,7 @@ impl StrategyManager {
         self.unregister_arb_open_price_entry(strategy_id);
         if let Some(symbol) = removed
             .as_ref()
-            .and_then(|strategy| strategy.symbol().map(|s| s.to_ascii_uppercase()))
+            .and_then(|strategy| strategy.symbol().map(normalize_symbol_for_internal))
         {
             if let Some(set) = self.symbol_index.get_mut(&symbol) {
                 set.remove(&strategy_id);
@@ -350,14 +353,16 @@ impl StrategyManager {
         self.strategies.keys()
     }
 
-    /// 查询指定 symbol 的所有活跃策略 id（symbol 需传入大写）
+    /// 查询指定 symbol 的所有活跃策略 id。
     pub fn ids_for_symbol(&self, symbol: &str) -> Option<&BTreeSet<i32>> {
-        self.symbol_index.get(symbol)
+        let symbol = normalize_symbol_for_internal(symbol);
+        self.symbol_index.get(&symbol)
     }
 
-    /// 指定 symbol 是否存在活跃策略（symbol 需传入大写）
+    /// 指定 symbol 是否存在活跃策略。
     pub fn has_symbol(&self, symbol: &str) -> bool {
-        self.symbol_index.contains_key(symbol)
+        let symbol = normalize_symbol_for_internal(symbol);
+        self.symbol_index.contains_key(&symbol)
     }
 
     pub fn mm_open_strategy_ids_by_price_qv(
@@ -365,7 +370,7 @@ impl StrategyManager {
         symbol: &str,
         price_qv: QuantizedValue,
     ) -> Vec<i32> {
-        let symbol = symbol.to_ascii_uppercase();
+        let symbol = normalize_symbol_for_internal(symbol);
         let price_qv = QuantizedValueKey::from(price_qv);
         self.mm_open_price_index
             .get(&symbol)
@@ -380,7 +385,7 @@ impl StrategyManager {
         price_qv: QuantizedValue,
         side: Side,
     ) -> Vec<i32> {
-        let symbol = symbol.to_ascii_uppercase();
+        let symbol = normalize_symbol_for_internal(symbol);
         let price_qv = QuantizedValueKey::from(price_qv);
         let Some(strategy_ids) = self
             .mm_open_price_index
@@ -435,7 +440,7 @@ impl StrategyManager {
         symbol: &str,
         price_qv: QuantizedValue,
     ) -> Vec<i32> {
-        let symbol = symbol.to_ascii_uppercase();
+        let symbol = normalize_symbol_for_internal(symbol);
         let price_qv = QuantizedValueKey::from(price_qv);
         self.arb_open_price_index
             .get(&symbol)
@@ -477,7 +482,7 @@ impl StrategyManager {
 
     /// 查询指定 symbol 的 MM 对冲策略 id（symbol 不区分大小写）
     pub fn find_mm_hedge_id(&self, symbol: &str) -> Option<i32> {
-        let symbol_upper = symbol.to_ascii_uppercase();
+        let symbol_upper = normalize_symbol_for_internal(symbol);
         let Some(ids) = self.symbol_index.get(&symbol_upper) else {
             return None;
         };
@@ -493,7 +498,7 @@ impl StrategyManager {
 
     /// 确保指定 symbol 存在 MM 对冲策略（symbol 不区分大小写）
     pub fn ensure_mm_hedge_strategy(&mut self, symbol: &str) -> i32 {
-        let symbol_upper = symbol.to_ascii_uppercase();
+        let symbol_upper = normalize_symbol_for_internal(symbol);
         if let Some(id) = self.find_mm_hedge_id(&symbol_upper) {
             return id;
         }
@@ -534,7 +539,7 @@ impl StrategyManager {
         fill_ts: i64,
         price: f64,
     ) -> bool {
-        let symbol_upper = symbol.to_ascii_uppercase();
+        let symbol_upper = normalize_symbol_for_internal(symbol);
         let Some(id) = self.find_mm_hedge_id(&symbol_upper) else {
             return false;
         };
@@ -772,6 +777,28 @@ mod tests {
             }
         );
         assert_eq!(snapshot[0].1, vec![31]);
+    }
+
+    #[test]
+    fn mm_open_price_map_normalizes_symbol_variants() {
+        let mut manager = StrategyManager::new();
+        let qv = QuantizedValue::from_parts(1, -3, 789);
+        manager.insert(Box::new(DummyMmOpenStrategy {
+            id: 41,
+            symbol: "SOL-USDT-SWAP".to_string(),
+            side: Side::Buy,
+            client_order_id: 401,
+            price_qv: qv,
+        }));
+
+        assert_eq!(
+            manager.mm_open_strategy_ids_by_price_qv("SOLUSDT", qv),
+            vec![41]
+        );
+        assert_eq!(
+            manager.mm_open_strategy_ids_by_price_qv("SOL-USDT-SWAP", qv),
+            vec![41]
+        );
     }
 
     #[test]

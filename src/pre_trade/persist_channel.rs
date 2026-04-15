@@ -5,6 +5,7 @@ use std::cell::OnceCell;
 use crate::common::iceoryx_publisher::{
     OrderUpdatePublisher, TradeUpdatePublisher, UniformOrderPublisher,
 };
+use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::common::time_util::get_timestamp_us;
 use crate::persist_manager::unified_order::UnifiedOrderRecord;
 use crate::pre_trade::monitor_channel::MonitorChannel;
@@ -235,14 +236,12 @@ impl PersistChannel {
 // ==================== 序列化辅助函数 ====================
 
 fn normalize_symbol_for_venue(venue: TradingVenue, symbol: &str) -> String {
-    let upper = symbol.to_uppercase();
+    let upper = normalize_symbol_for_internal(symbol);
     match venue {
-        TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
-            upper.replace("-SWAP", "").replace('-', "")
-        }
-        TradingVenue::GateMargin | TradingVenue::GateFutures => {
-            upper.replace('_', "").replace('-', "")
-        }
+        TradingVenue::OkexMargin
+        | TradingVenue::OkexFutures
+        | TradingVenue::GateMargin
+        | TradingVenue::GateFutures => upper,
         _ => upper,
     }
 }

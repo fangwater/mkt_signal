@@ -1,3 +1,4 @@
+use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::common::tick_math::QuantizedValue;
 use crate::common::time_util::get_timestamp_us;
 use crate::common::trade_error_code::describe_trade_error_code;
@@ -120,6 +121,45 @@ impl MarketMakerOpenStrategy {
             out.push(ch);
         }
         out
+    }
+
+    fn format_order_update_debug(update: &dyn OrderUpdate) -> String {
+        format!(
+            "kind=order_update event_time={} venue={:?} symbol={} client_order_id={} order_id={} side={:?} order_type={:?} tif={:?} price={:.8} qty={:.8} cum_qty={:.8} status={:?} exec_type={:?} raw_status={} raw_exec_type={} client_order_id_str={}",
+            update.event_time(),
+            update.trading_venue(),
+            update.symbol(),
+            update.client_order_id(),
+            update.order_id(),
+            update.side(),
+            update.order_type(),
+            update.time_in_force(),
+            update.price(),
+            update.quantity(),
+            update.cumulative_filled_quantity(),
+            update.status(),
+            update.execution_type(),
+            update.raw_status(),
+            update.raw_execution_type(),
+            update.client_order_id_str().unwrap_or("-")
+        )
+    }
+
+    fn format_trade_update_debug(trade: &dyn TradeUpdate) -> String {
+        format!(
+            "kind=trade_update event_time={} trade_time={} venue={:?} symbol={} client_order_id={} order_id={} side={:?} price={:.8} cum_qty={:.8} is_maker={} order_status={:?}",
+            trade.event_time(),
+            trade.trade_time(),
+            trade.trading_venue(),
+            trade.symbol(),
+            trade.client_order_id(),
+            trade.order_id(),
+            trade.side(),
+            trade.price(),
+            trade.cumulative_filled_quantity(),
+            trade.is_maker(),
+            trade.order_status()
+        )
     }
 
     fn reset_cancel_reconcile_state(&mut self) {
@@ -313,7 +353,7 @@ impl MarketMakerOpenStrategy {
     }
 
     fn handle_mm_open_signal(&mut self, ctx: MmOpenCtx) {
-        let symbol = ctx.get_opening_symbol().to_uppercase();
+        let symbol = normalize_symbol_for_internal(&ctx.get_opening_symbol());
         if symbol.is_empty() {
             warn!(
                 "MarketMakerOpenStrategy: strategy_id={} empty symbol",
@@ -728,11 +768,11 @@ impl MarketMakerOpenStrategy {
         cumulative_qty: f64,
         fill_ts: i64,
         price: f64,
+        update_detail: &str,
     ) {
         if self.recorded_to_hedge {
             return;
         }
-        self.recorded_to_hedge = true;
         if cumulative_qty <= 0.0 {
             return;
         }
@@ -740,6 +780,7 @@ impl MarketMakerOpenStrategy {
         if base_qty <= 0.0 {
             return;
         }
+        let symbol_internal = normalize_symbol_for_internal(symbol);
         let (signed_qty, buy_qty, sell_qty) = match side {
             Side::Buy => (base_qty, base_qty, 0.0),
             Side::Sell => (-base_qty, 0.0, base_qty),
@@ -747,17 +788,49 @@ impl MarketMakerOpenStrategy {
 
         let strategy_mgr = MonitorChannel::instance().strategy_mgr();
         let updated = strategy_mgr.borrow_mut().record_mm_hedge_fill(
-            &symbol.to_ascii_uppercase(),
+            &symbol_internal,
             signed_qty,
             buy_qty,
             sell_qty,
             fill_ts,
             price,
         );
-        if !updated {
+        if updated {
+            self.recorded_to_hedge = true;
+        } else {
+            let hedge_symbols = {
+                let snapshots = strategy_mgr.borrow().mm_hedge_snapshots();
+                let preview: Vec<String> = snapshots
+                    .into_iter()
+                    .take(8)
+                    .map(|snap| {
+                        format!(
+                            "{}(net={:.8},buy={:.8},sell={:.8})",
+                            snap.symbol, snap.net_qty, snap.buy_qty, snap.sell_qty
+                        )
+                    })
+                    .collect();
+                if preview.is_empty() {
+                    "-".to_string()
+                } else {
+                    preview.join(",")
+                }
+            };
             warn!(
-                "MarketMakerOpenStrategy: strategy_id={} record mm hedge failed symbol={} qty={:.8}",
-                self.strategy_id, symbol, base_qty
+                "MarketMakerOpenStrategy: strategy_id={} record mm hedge failed venue={:?} raw_symbol={} internal_symbol={} side={:?} cumulative_qty={:.8} base_qty={:.8} fill_ts={} price={:.8} open_order_id={} recorded_to_hedge={} update={} mm_hedge_snapshots={}",
+                self.strategy_id,
+                venue,
+                symbol,
+                symbol_internal,
+                side,
+                cumulative_qty,
+                base_qty,
+                fill_ts,
+                price,
+                self.open_order_id,
+                self.recorded_to_hedge,
+                update_detail,
+                hedge_symbols
             );
         }
     }
@@ -1470,11 +1543,12 @@ impl MarketMakerOpenStrategy {
             return false;
         }
 
-        let mut record_fill: Option<(TradingVenue, String, Side, f64, f64)> = None;
+        let mut record_fill: Option<(TradingVenue, String, Side, f64, f64, String)> = None;
         if matches!(
             order_update.status(),
             OrderStatus::Canceled | OrderStatus::Filled
         ) {
+            let update_detail = Self::format_order_update_debug(order_update);
             record_fill = MonitorChannel::instance()
                 .order_manager()
                 .borrow()
@@ -1486,12 +1560,24 @@ impl MarketMakerOpenStrategy {
                         order.side,
                         order.cumulative_filled_quantity,
                         order.price,
+                        format!(
+                            "{} local_order_symbol={} local_order_qty={:.8} local_order_status={:?}",
+                            update_detail, order.symbol, order.quantity, order.status
+                        ),
                     )
                 });
         }
 
-        if let Some((venue, symbol, side, qty, price)) = record_fill {
-            self.record_mm_hedge_qty(venue, &symbol, side, qty, order_update.event_time(), price);
+        if let Some((venue, symbol, side, qty, price, update_detail)) = record_fill {
+            self.record_mm_hedge_qty(
+                venue,
+                &symbol,
+                side,
+                qty,
+                order_update.event_time(),
+                price,
+                &update_detail,
+            );
         }
 
         if order_update.status() == OrderStatus::New {
@@ -1758,9 +1844,21 @@ impl MarketMakerOpenStrategy {
             return false;
         }
 
-        let order_snapshot = order_manager
-            .get(client_order_id)
-            .map(|order| (order.venue, order.symbol.clone(), order.side, order.price));
+        let order_snapshot = order_manager.get(client_order_id).map(|order| {
+            (
+                order.venue,
+                order.symbol.clone(),
+                order.side,
+                order.price,
+                format!(
+                    "{} local_order_symbol={} local_order_qty={:.8} local_order_status={:?}",
+                    Self::format_trade_update_debug(trade),
+                    order.symbol,
+                    order.quantity,
+                    order.status
+                ),
+            )
+        });
         if let Some(order) = order_manager.get(client_order_id) {
             self.publish_uniform_trade_order(trade, &order, prev_cumulative_filled_qty, status);
         }
@@ -1769,8 +1867,14 @@ impl MarketMakerOpenStrategy {
         if status == OrderStatus::Filled {
             let order_price = order_snapshot
                 .as_ref()
-                .map(|(_, _, _, price)| *price)
+                .map(|(_, _, _, price, _)| *price)
                 .unwrap_or_else(|| trade.price());
+            let (record_venue, record_symbol, record_side, record_detail) = order_snapshot
+                .as_ref()
+                .map(|(venue, symbol, side, _, detail)| {
+                    (*venue, symbol.as_str(), *side, detail.as_str())
+                })
+                .unwrap_or_else(|| (trade.trading_venue(), trade.symbol(), trade.side(), "-"));
             debug!(
                 "✅ MM订单成交完成: strategy_id={} client_order_id={} symbol={} price={:.6} cumulative={:.4}",
                 self.strategy_id,
@@ -1780,12 +1884,13 @@ impl MarketMakerOpenStrategy {
                 cumulative_qty
             );
             self.record_mm_hedge_qty(
-                trade.trading_venue(),
-                trade.symbol(),
-                trade.side(),
+                record_venue,
+                record_symbol,
+                record_side,
                 cumulative_qty,
                 event_time,
                 order_price,
+                record_detail,
             );
             self.alive_flag = false;
         }

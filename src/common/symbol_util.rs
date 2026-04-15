@@ -24,6 +24,26 @@ pub fn extract_assets_from_symbol(symbol: &str) -> (String, String) {
     (symbol_upper, "USDT".to_string())
 }
 
+/// 规范化为 pre_trade 内部统一使用的 symbol key。
+///
+/// 规则：
+/// - 全部转大写
+/// - 去掉常见分隔符 `-` / `_` / `/`
+/// - 若尾部带有 `SWAP` 后缀则去掉，统一为现货风格的 `BASEQUOTE`
+///
+/// # 例子
+/// - `BTCUSDT` -> `BTCUSDT`
+/// - `BTC-USDT` -> `BTCUSDT`
+/// - `BTC-USDT-SWAP` -> `BTCUSDT`
+/// - `BTC_USDT` -> `BTCUSDT`
+pub fn normalize_symbol_for_internal(symbol: &str) -> String {
+    let mut out = symbol.trim().to_uppercase().replace(['-', '_', '/'], "");
+    if out.ends_with("SWAP") {
+        out.truncate(out.len().saturating_sub("SWAP".len()));
+    }
+    out
+}
+
 /// 根据 venue 修正符号格式
 ///
 /// 不同交易所的交易对格式不同，此函数根据目标 venue 自动转换符号格式
@@ -55,41 +75,18 @@ pub fn extract_assets_from_symbol(symbol: &str) -> (String, String) {
 /// - OKEx 永续合约账户只能交易 SWAP 合约 (如 APT-USDT-SWAP)
 /// - 信号生成时符号格式错误会导致下单失败 (OKEx 错误码 60012: Illegal request)
 pub fn normalize_symbol_for_venue(symbol: &str, venue: TradingVenue) -> String {
-    let symbol_upper = symbol.to_uppercase();
+    let symbol_upper = normalize_symbol_for_internal(symbol);
 
     match venue {
         TradingVenue::OkexMargin => {
-            // 现货杠杆：去掉 -SWAP，确保格式为 BASE-QUOTE
-            if symbol_upper.ends_with("-SWAP") {
-                symbol_upper.replace("-SWAP", "")
-            } else if symbol_upper.contains('-') {
-                symbol_upper
-            } else {
-                // 如果是 APTUSDT 格式，转换为 APT-USDT
-                let (base, quote) = extract_assets_from_symbol(&symbol_upper);
-                format!("{}-{}", base, quote)
-            }
+            let (base, quote) = extract_assets_from_symbol(&symbol_upper);
+            format!("{}-{}", base, quote)
         }
         TradingVenue::OkexFutures => {
-            // 永续合约：确保有 -SWAP 后缀
-            if symbol_upper.ends_with("-SWAP") {
-                symbol_upper
-            } else if symbol_upper.contains('-') {
-                format!("{}-SWAP", symbol_upper)
-            } else {
-                // 如果是 APTUSDT 格式，转换为 APT-USDT-SWAP
-                let (base, quote) = extract_assets_from_symbol(&symbol_upper);
-                format!("{}-{}-SWAP", base, quote)
-            }
+            let (base, quote) = extract_assets_from_symbol(&symbol_upper);
+            format!("{}-{}-SWAP", base, quote)
         }
-        TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => {
-            // Binance: 使用 APTUSDT 格式（不带分隔符）
-            if symbol_upper.contains('-') {
-                symbol_upper.replace("-", "").replace("SWAP", "")
-            } else {
-                symbol_upper
-            }
-        }
+        TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => symbol_upper,
         _ => {
             // 其他交易所：保持原样
             symbol_upper
@@ -132,6 +129,15 @@ mod tests {
             normalize_symbol_for_venue("APTUSDT", TradingVenue::OkexMargin),
             "APT-USDT"
         );
+    }
+
+    #[test]
+    fn test_normalize_symbol_for_internal() {
+        assert_eq!(normalize_symbol_for_internal("APTUSDT"), "APTUSDT");
+        assert_eq!(normalize_symbol_for_internal("APT-USDT"), "APTUSDT");
+        assert_eq!(normalize_symbol_for_internal("APT_USDT"), "APTUSDT");
+        assert_eq!(normalize_symbol_for_internal("APT-USDT-SWAP"), "APTUSDT");
+        assert_eq!(normalize_symbol_for_internal("apt/usdt/swap"), "APTUSDT");
     }
 
     #[test]

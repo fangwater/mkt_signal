@@ -16,6 +16,7 @@ use crate::common::bitget_account_msg::BitgetBasicOrderMsg;
 use crate::common::exchange::Exchange;
 use crate::common::ipc_service_name::build_service_name;
 use crate::common::min_qty_table::MinQtyTable;
+use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::portfolio_margin::pm_forwarder::{
     PM_HISTORY_SIZE, PM_MAX_SUBSCRIBERS, PM_SUBSCRIBER_MAX_BUFFER_SIZE,
 };
@@ -1946,17 +1947,154 @@ impl MonitorChannel {
 // ==================== Helper Functions ====================
 
 /// 通用订单/成交回报分发：适用于实现了 OrderUpdate + TradeUpdate 的消息
+struct NormalizedUpdate<'a, T> {
+    inner: &'a T,
+    symbol: String,
+}
+
+impl<'a, T> NormalizedUpdate<'a, T>
+where
+    T: OrderUpdate + TradeUpdate,
+{
+    fn new(inner: &'a T) -> Self {
+        Self {
+            inner,
+            symbol: normalize_symbol_for_internal(OrderUpdate::symbol(inner)),
+        }
+    }
+}
+
+impl<T> OrderUpdate for NormalizedUpdate<'_, T>
+where
+    T: OrderUpdate + TradeUpdate,
+{
+    fn event_time(&self) -> i64 {
+        OrderUpdate::event_time(self.inner)
+    }
+
+    fn symbol(&self) -> &str {
+        &self.symbol
+    }
+
+    fn order_id(&self) -> i64 {
+        OrderUpdate::order_id(self.inner)
+    }
+
+    fn client_order_id(&self) -> i64 {
+        OrderUpdate::client_order_id(self.inner)
+    }
+
+    fn side(&self) -> crate::pre_trade::order_manager::Side {
+        OrderUpdate::side(self.inner)
+    }
+
+    fn order_type(&self) -> crate::pre_trade::order_manager::OrderType {
+        OrderUpdate::order_type(self.inner)
+    }
+
+    fn time_in_force(&self) -> crate::signal::common::TimeInForce {
+        OrderUpdate::time_in_force(self.inner)
+    }
+
+    fn price(&self) -> f64 {
+        OrderUpdate::price(self.inner)
+    }
+
+    fn quantity(&self) -> f64 {
+        OrderUpdate::quantity(self.inner)
+    }
+
+    fn cumulative_filled_quantity(&self) -> f64 {
+        OrderUpdate::cumulative_filled_quantity(self.inner)
+    }
+
+    fn status(&self) -> OrderStatus {
+        OrderUpdate::status(self.inner)
+    }
+
+    fn raw_status(&self) -> &str {
+        OrderUpdate::raw_status(self.inner)
+    }
+
+    fn execution_type(&self) -> ExecutionType {
+        OrderUpdate::execution_type(self.inner)
+    }
+
+    fn raw_execution_type(&self) -> &str {
+        OrderUpdate::raw_execution_type(self.inner)
+    }
+
+    fn trading_venue(&self) -> TradingVenue {
+        OrderUpdate::trading_venue(self.inner)
+    }
+
+    fn client_order_id_str(&self) -> Option<&str> {
+        OrderUpdate::client_order_id_str(self.inner)
+    }
+}
+
+impl<T> TradeUpdate for NormalizedUpdate<'_, T>
+where
+    T: OrderUpdate + TradeUpdate,
+{
+    fn event_time(&self) -> i64 {
+        TradeUpdate::event_time(self.inner)
+    }
+
+    fn trade_time(&self) -> i64 {
+        TradeUpdate::trade_time(self.inner)
+    }
+
+    fn symbol(&self) -> &str {
+        &self.symbol
+    }
+
+    fn order_id(&self) -> i64 {
+        TradeUpdate::order_id(self.inner)
+    }
+
+    fn client_order_id(&self) -> i64 {
+        TradeUpdate::client_order_id(self.inner)
+    }
+
+    fn side(&self) -> crate::pre_trade::order_manager::Side {
+        TradeUpdate::side(self.inner)
+    }
+
+    fn price(&self) -> f64 {
+        TradeUpdate::price(self.inner)
+    }
+
+    fn is_maker(&self) -> bool {
+        TradeUpdate::is_maker(self.inner)
+    }
+
+    fn trading_venue(&self) -> TradingVenue {
+        TradeUpdate::trading_venue(self.inner)
+    }
+
+    fn cumulative_filled_quantity(&self) -> f64 {
+        TradeUpdate::cumulative_filled_quantity(self.inner)
+    }
+
+    fn order_status(&self) -> Option<OrderStatus> {
+        TradeUpdate::order_status(self.inner)
+    }
+}
+
 fn dispatch_order_update_generic<T>(
     strategy_mgr: &Rc<RefCell<crate::strategy::StrategyManager>>,
     update: &T,
 ) where
     T: OrderUpdate + TradeUpdate,
 {
-    if update.execution_type() == ExecutionType::Trade {
+    let normalized_update = NormalizedUpdate::new(update);
+
+    if normalized_update.execution_type() == ExecutionType::Trade {
         MonitorChannel::instance().bump_trade_update_seq();
     }
 
-    let order_id = OrderUpdate::client_order_id(update);
+    let order_id = OrderUpdate::client_order_id(&normalized_update);
     let strategy_ids: Vec<i32> = strategy_mgr.borrow().iter_ids().cloned().collect();
     let mut matched = false;
 
@@ -1969,30 +2107,30 @@ fn dispatch_order_update_generic<T>(
         if let Some(mut strategy) = strategy_opt {
             if strategy.is_strategy_order(order_id) {
                 matched = true;
-                match update.execution_type() {
+                match normalized_update.execution_type() {
                     ExecutionType::New | ExecutionType::Canceled => {
-                        strategy.apply_order_update(update);
+                        strategy.apply_order_update(&normalized_update);
                     }
                     ExecutionType::Trade => {
-                        strategy.apply_trade_update(update);
+                        strategy.apply_trade_update(&normalized_update);
                     }
                     ExecutionType::Expired | ExecutionType::Rejected => {
                         warn!(
                             "Unexpected execution type: {:?}, sym={} cli_id={} ord_id={}",
-                            update.execution_type(),
-                            OrderUpdate::symbol(update),
-                            OrderUpdate::client_order_id(update),
-                            OrderUpdate::order_id(update)
+                            normalized_update.execution_type(),
+                            OrderUpdate::symbol(&normalized_update),
+                            OrderUpdate::client_order_id(&normalized_update),
+                            OrderUpdate::order_id(&normalized_update)
                         );
-                        strategy.apply_order_update(update);
+                        strategy.apply_order_update(&normalized_update);
                     }
                     _ => {
                         log::error!(
                             "Unhandled execution type: {:?}, sym={} cli_id={} ord_id={}",
-                            update.execution_type(),
-                            OrderUpdate::symbol(update),
-                            OrderUpdate::client_order_id(update),
-                            OrderUpdate::order_id(update)
+                            normalized_update.execution_type(),
+                            OrderUpdate::symbol(&normalized_update),
+                            OrderUpdate::client_order_id(&normalized_update),
+                            OrderUpdate::order_id(&normalized_update)
                         );
                     }
                 }
@@ -2004,21 +2142,21 @@ fn dispatch_order_update_generic<T>(
     }
 
     if !matched {
-        try_send_unmatched_mm_cancel(update);
+        try_send_unmatched_mm_cancel(&normalized_update);
         PersistChannel::with(|ch| {
-            if update.execution_type() == ExecutionType::Trade {
-                ch.publish_trade_update_unmatched(update);
+            if normalized_update.execution_type() == ExecutionType::Trade {
+                ch.publish_trade_update_unmatched(&normalized_update);
             } else {
-                ch.publish_order_update_unmatched(update);
+                ch.publish_order_update_unmatched(&normalized_update);
             }
         });
         debug!(
             "order update unmatched: sym={} cli_id={} ord_id={} x={:?} X={:?}",
-            OrderUpdate::symbol(update),
-            OrderUpdate::client_order_id(update),
-            OrderUpdate::order_id(update),
-            update.execution_type(),
-            update.status()
+            OrderUpdate::symbol(&normalized_update),
+            OrderUpdate::client_order_id(&normalized_update),
+            OrderUpdate::order_id(&normalized_update),
+            normalized_update.execution_type(),
+            normalized_update.status()
         );
     }
 }
