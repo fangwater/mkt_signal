@@ -720,6 +720,8 @@ impl MmDecisionState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::funding_rate::inline_volatility::observe_inline_volatility;
+    use crate::symbol_match::normalize_symbol_for_whitelist;
 
     #[test]
     fn test_resolve_mm_order_amount_u_uses_symbol_override() {
@@ -735,5 +737,23 @@ mod tests {
         let amount_u =
             resolve_mm_order_amount_u(100.0, &overrides, TradingVenue::BinanceMargin, "btc-usdt");
         assert_eq!(amount_u, 100.0);
+    }
+
+    #[test]
+    fn snapshot_open_volatility_uses_same_key_as_factor_lookup_sampling() {
+        let venue_key = normalize_symbol_for_venue("BTCUSDT", TradingVenue::OkexFutures);
+        for i in 0..10 {
+            let _ = observe_inline_volatility(&venue_key, i as f64, 70.0, i as i64);
+        }
+
+        let snapshot = snapshot_inline_volatility(&venue_key, 10.0, 70.0);
+        assert_eq!(snapshot.sample_count, 10);
+        assert!(snapshot.threshold.is_some());
+
+        let whitelist_key = normalize_symbol_for_whitelist("BTCUSDT", TradingVenue::OkexFutures);
+        let mismatch_snapshot = snapshot_inline_volatility(&whitelist_key, 10.0, 70.0);
+        assert_eq!(whitelist_key, "BTCUSDT");
+        assert_eq!(mismatch_snapshot.sample_count, 0);
+        assert!(mismatch_snapshot.threshold.is_none());
     }
 }
