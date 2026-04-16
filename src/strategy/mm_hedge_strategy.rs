@@ -694,6 +694,9 @@ impl MarketMakerHedgeStrategy {
             .filter_map(|(price_qv, amount_qv)| {
                 let price = price_qv.get_val();
                 let qty_venue = amount_qv.get_val();
+                let (qty_tick_i64, qty_tick_exp) = amount_qv.get_tick_parts();
+                let qty_venue_tick =
+                    (qty_tick_i64 as f64) * 10f64.powi(qty_tick_exp);
                 if price <= 0.0 || qty_venue <= 0.0 {
                     return None;
                 }
@@ -703,6 +706,7 @@ impl MarketMakerHedgeStrategy {
                 Some(HedgeLevel {
                     price,
                     qty_venue_one_hand: qty_venue,
+                    qty_venue_tick,
                 })
             })
             .collect();

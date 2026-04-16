@@ -4,6 +4,7 @@ use crate::pre_trade::order_manager::Side;
 pub struct HedgeLevel {
     pub price: f64,
     pub qty_venue_one_hand: f64,
+    pub qty_venue_tick: f64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -116,8 +117,18 @@ pub fn split_hedge_orders_round_robin(
     for (idx, level) in levels.iter().enumerate() {
         let n = hand_count[idx] as f64;
         let tail_base = tail_qty_base[idx];
-        let order_qty_venue = level.qty_venue_one_hand * n + tail_base / multiplier;
-        let order_qty_base = hand_base_qty[idx] * n + tail_base;
+        let tail_qty_venue_raw = tail_base / multiplier;
+        let tail_qty_venue = if level.qty_venue_tick.is_finite() && level.qty_venue_tick > 0.0 {
+            (tail_qty_venue_raw / level.qty_venue_tick + 1e-12).floor() * level.qty_venue_tick
+        } else {
+            tail_qty_venue_raw
+        };
+        let tail_qty_base_aligned = tail_qty_venue * multiplier;
+        let dropped_tail_base = (tail_base - tail_qty_base_aligned).max(0.0);
+        remaining_qty_base += dropped_tail_base;
+
+        let order_qty_venue = level.qty_venue_one_hand * n + tail_qty_venue;
+        let order_qty_base = hand_base_qty[idx] * n + tail_qty_base_aligned;
         level_stats.push(HedgeSplitLevelStat {
             level_index: idx,
             price: level.price,
@@ -159,6 +170,7 @@ mod tests {
         let levels = vec![HedgeLevel {
             price: 100.0,
             qty_venue_one_hand: 1.0,
+            qty_venue_tick: 0.1,
         }];
 
         let result = split_hedge_orders_round_robin(Some(Side::Buy), 0.6, &levels, 1.0);
@@ -176,10 +188,12 @@ mod tests {
             HedgeLevel {
                 price: 100.0,
                 qty_venue_one_hand: 1.0,
+                qty_venue_tick: 0.1,
             },
             HedgeLevel {
                 price: 101.0,
                 qty_venue_one_hand: 1.0,
+                qty_venue_tick: 0.1,
             },
         ];
 
@@ -192,5 +206,23 @@ mod tests {
         assert!((result.orders[1].qty - 1.5).abs() < 1e-12);
         assert!((result.total_qty_base - 2.5).abs() < 1e-12);
         assert!(result.remaining_qty_base.abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_split_hedge_orders_round_robin_drops_sub_tick_tail_and_keeps_remainder() {
+        let levels = vec![HedgeLevel {
+            price: 100.0,
+            qty_venue_one_hand: 7.0,
+            qty_venue_tick: 1.0,
+        }];
+
+        // contract multiplier = 0.1 base/contract, so 0.27 base tail = 2.7 contracts.
+        // tail should be floor-aligned to 2 contracts, with 0.07 base left for next round.
+        let result = split_hedge_orders_round_robin(Some(Side::Sell), 0.27, &levels, 0.1);
+
+        assert_eq!(result.orders.len(), 1);
+        assert!((result.orders[0].qty - 2.0).abs() < 1e-12);
+        assert!((result.total_qty_base - 0.2).abs() < 1e-12);
+        assert!((result.remaining_qty_base - 0.07).abs() < 1e-12);
     }
 }
