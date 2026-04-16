@@ -33,7 +33,6 @@ use crate::trade_engine::query_parsers::compact_order::{
     is_order_query_not_found_marker, CompactOrderQueryResp, COMPACT_ORDER_QUERY_RESP_LEN,
 };
 use crate::trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
-use crate::trade_engine::trade_request::TradeRequestType;
 use log::{debug, info, warn};
 use std::any::Any;
 use std::collections::{hash_map::Entry, HashMap, HashSet};
@@ -2492,26 +2491,16 @@ impl Strategy for MarketMakerHedgeStrategy {
             return;
         }
 
-        let req_type_enum = match TradeRequestType::try_from(response.req_type()) {
-            Ok(t) => t,
-            Err(_) => return,
-        };
-        if !matches!(
-            req_type_enum,
-            TradeRequestType::BinanceWsNewUMOrder
-                | TradeRequestType::BinanceWsCancelUMOrder
-                | TradeRequestType::BinanceWsNewMarginOrder
-                | TradeRequestType::BinanceWsCancelMarginOrder
-        ) {
+        let client_order_id = response.client_order_id();
+        if !self.hedge_order_ids.contains(&client_order_id) {
             return;
         }
 
         let req_type = response.req_type();
         match response.request_kind() {
             TradeRequestKind::Open => {
-                let client_order_id = response.client_order_id();
                 warn!(
-                    "MarketMakerHedgeStrategy: strategy_id={} ws open failed: req_type={} status={} code={} client_order_id={}",
+                    "MarketMakerHedgeStrategy: strategy_id={} trade open failed: req_type={} status={} code={} client_order_id={}",
                     self.strategy_id,
                     req_type,
                     response.status(),
@@ -2521,10 +2510,9 @@ impl Strategy for MarketMakerHedgeStrategy {
                 self.retire_hedge_order(client_order_id, "open_failed");
             }
             TradeRequestKind::Cancel => {
-                let client_order_id = response.client_order_id();
                 let cancel_not_cancellable = response.is_cancel_not_cancellable();
                 warn!(
-                    "MarketMakerHedgeStrategy: strategy_id={} ws cancel failed: req_type={} status={} code={} client_order_id={} is_cancel_not_cancellable={} {}",
+                    "MarketMakerHedgeStrategy: strategy_id={} trade cancel failed: req_type={} status={} code={} client_order_id={} is_cancel_not_cancellable={} {}",
                     self.strategy_id,
                     req_type,
                     response.status(),
@@ -2540,7 +2528,7 @@ impl Strategy for MarketMakerHedgeStrategy {
                 };
                 self.schedule_next_cancel_reconcile_query(client_order_id, reason);
                 debug!(
-                    "MMHedgeReconcile: strategy_id={} ws_cancel_failed_followup req_type={} reason={:?} sent_query={} pending_now={} watchdog_now={} {}",
+                    "MMHedgeReconcile: strategy_id={} trade_cancel_failed_followup req_type={} reason={:?} sent_query={} pending_now={} watchdog_now={} {}",
                     self.strategy_id,
                     req_type,
                     reason,

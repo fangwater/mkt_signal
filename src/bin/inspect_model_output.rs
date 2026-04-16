@@ -3,7 +3,7 @@ use clap::Parser;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use mkt_signal::common::mkt_msg::ModelMsg;
-use mkt_signal::factor_pub::model_pub::publisher::MODEL_PAYLOAD_MAX_BYTES;
+use mkt_signal::common::model_ipc::MODEL_PAYLOAD_MAX_BYTES;
 use std::thread;
 use std::time::{Duration, Instant};
 
