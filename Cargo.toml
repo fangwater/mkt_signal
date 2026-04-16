@@ -115,10 +115,12 @@ path = "src/bin/pairmm_resample.rs"
 [[bin]]
 name = "model_pub"
 path = "src/bin/model_pub.rs"
+required-features = ["model-ort"]
 
 [[bin]]
 name = "onnx_csv_predict"
 path = "src/bin/onnx_csv_predict.rs"
+required-features = ["model-ort"]
 
 [[bin]]
 name = "fusion_factor_pub"
@@ -205,13 +207,14 @@ parking_lot = "0.12"
 crossbeam-channel = "0.5"
 libc = "0.2"
 zmq = "0.10"
-ort = { version = "2.0.0-rc.11", default-features = false, features = ["std", "ndarray"] }
+mkt_model_runtime = { path = "crates/mkt_model_runtime", optional = true }
 indexmap = "2"
 rayon = "1.10"
 arc-swap = "1.7"
 
 [features]
 default = []
+model-ort = ["dep:mkt_model_runtime"]
 
 [dependencies.polars]
 version = "0.43.1"

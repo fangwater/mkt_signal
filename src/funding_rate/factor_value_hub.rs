@@ -10,11 +10,11 @@ use std::fmt;
 use std::time::{Duration, Instant};
 
 use crate::common::mkt_msg::{FactorValueMsg, ModelMsg, MODEL_STATUS_OK};
+use crate::common::model_ipc::MODEL_PAYLOAD_MAX_BYTES;
 use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::time_util::get_timestamp_us;
 use crate::factor_pub::factor_index::factor_name_to_index;
-use crate::factor_pub::model_pub::publisher::MODEL_PAYLOAD_MAX_BYTES;
 use crate::signal::common::TradingVenue;
 
 const FACTOR_VALUE_PAYLOAD_MAX_BYTES: usize = 256;

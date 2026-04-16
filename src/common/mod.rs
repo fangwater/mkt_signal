@@ -10,6 +10,7 @@ pub mod ipc_service_name;
 pub mod min_qty_table;
 pub mod mkt_cfg;
 pub mod mkt_msg;
+pub mod model_ipc;
 pub mod msg_parser;
 pub mod redis_client;
 pub mod rolling_welford;
