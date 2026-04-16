@@ -4,17 +4,24 @@ use anyhow::{bail, Result};
 use iceoryx2::port::publisher::Publisher;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{info, warn};
+use log::{error, info, warn};
+use std::collections::HashMap;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const TRADE_FLOW_FEATURE_MAX_BYTES: usize = 1024;
 const SUBSCRIBER_MAX_BUFFER_SIZE: usize = 8192;
 const HISTORY_SIZE: usize = 128;
+const PUBLISH_GAP_ERROR_THRESHOLD: Duration = Duration::from_secs(6);
+const EXCEED_SUMMARY_LOG_INTERVAL: Duration = Duration::from_secs(60);
 
 pub struct TradeFlowFeaturePublisher {
     venue_slug: String,
     publisher: Publisher<ipc::Service, [u8; TRADE_FLOW_FEATURE_MAX_BYTES], ()>,
     published: u64,
     dropped: u64,
+    last_publish_at_by_symbol: HashMap<String, Instant>,
+    exceeded_events_in_window: HashMap<String, Vec<u128>>,
+    last_exceed_summary_log_at: Instant,
 }
 
 impl TradeFlowFeaturePublisher {
@@ -59,6 +66,9 @@ impl TradeFlowFeaturePublisher {
             publisher,
             published: 0,
             dropped: 0,
+            last_publish_at_by_symbol: HashMap::new(),
+            exceeded_events_in_window: HashMap::new(),
+            last_exceed_summary_log_at: Instant::now(),
         })
     }
 
@@ -81,6 +91,24 @@ impl TradeFlowFeaturePublisher {
             Ok(sample) => {
                 let sample = sample.write_payload(buffer);
                 if sample.send().is_ok() {
+                    let now = Instant::now();
+                    self.maybe_log_exceed_summary(now);
+
+                    if let Some(gap) = self.record_publish_gap(symbol, now) {
+                        let exceed_at_ms = current_unix_time_ms();
+                        self.exceeded_events_in_window
+                            .entry(symbol.to_string())
+                            .or_default()
+                            .push(exceed_at_ms);
+                        error!(
+                            "TradeFlowFeature publish gap exceeded: venue={} symbol={} gap_ms={} threshold_ms={} exceed_at_ms={}",
+                            self.venue_slug,
+                            symbol,
+                            gap.as_millis(),
+                            PUBLISH_GAP_ERROR_THRESHOLD.as_millis(),
+                            exceed_at_ms
+                        );
+                    }
                     self.published += 1;
                     return true;
                 }
@@ -99,5 +127,81 @@ impl TradeFlowFeaturePublisher {
         );
         self.published = 0;
         self.dropped = 0;
+    }
+
+    fn record_publish_gap(&mut self, symbol: &str, now: Instant) -> Option<Duration> {
+        let gap = self
+            .last_publish_at_by_symbol
+            .insert(symbol.to_string(), now)
+            .map(|last| now.saturating_duration_since(last));
+
+        match gap {
+            Some(gap) if gap > PUBLISH_GAP_ERROR_THRESHOLD => Some(gap),
+            _ => None,
+        }
+    }
+
+    fn maybe_log_exceed_summary(&mut self, now: Instant) {
+        if now.duration_since(self.last_exceed_summary_log_at) < EXCEED_SUMMARY_LOG_INTERVAL {
+            return;
+        }
+
+        let mut exceeded_symbol_details: Vec<String> = self
+            .exceeded_events_in_window
+            .iter()
+            .map(|(symbol, timestamps)| {
+                let joined = timestamps
+                    .iter()
+                    .map(|ts| ts.to_string())
+                    .collect::<Vec<_>>()
+                    .join("|");
+                format!("{symbol}:{joined}")
+            })
+            .collect();
+        exceeded_symbol_details.sort();
+
+        info!(
+            "TradeFlowFeature publish gap summary: venue={} window_secs={} exceeded_symbol_count={} exceeded_symbol_times=[{}] summary_at_ms={}",
+            self.venue_slug,
+            EXCEED_SUMMARY_LOG_INTERVAL.as_secs(),
+            self.exceeded_events_in_window.len(),
+            exceeded_symbol_details.join(","),
+            current_unix_time_ms()
+        );
+        self.exceeded_events_in_window.clear();
+        self.last_exceed_summary_log_at = now;
+    }
+}
+
+fn current_unix_time_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn publish_gap_equal_to_threshold_is_not_reported() {
+        let prev = Instant::now();
+        let now = prev + PUBLISH_GAP_ERROR_THRESHOLD;
+        let gap = now.saturating_duration_since(prev);
+        assert!(gap <= PUBLISH_GAP_ERROR_THRESHOLD);
+    }
+
+    #[test]
+    fn publish_gap_above_threshold_is_reported() {
+        let prev = Instant::now();
+        let now = prev + PUBLISH_GAP_ERROR_THRESHOLD + Duration::from_millis(1);
+        let gap = now.saturating_duration_since(prev);
+        assert!(gap > PUBLISH_GAP_ERROR_THRESHOLD);
+    }
+
+    #[test]
+    fn current_unix_time_ms_is_non_zero() {
+        assert!(current_unix_time_ms() > 0);
     }
 }
