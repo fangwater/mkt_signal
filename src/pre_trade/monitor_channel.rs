@@ -159,7 +159,7 @@ pub fn hash64(parts: &[u64]) -> u64 {
 
 use crate::common::binance_account_mode::BinanceAccountMode;
 use crate::common::msg_parser::{get_msg_type, parse_index_price, parse_mark_price, MktMsgType};
-use crate::pre_trade::order_manager::OrderManager;
+use crate::pre_trade::order_manager::{OrderManager, Side};
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::signal::common::{align_price_ceil, align_price_floor};
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
@@ -233,6 +233,9 @@ struct MonitorChannelInner {
     hedge_residual_map: Rc<RefCell<HashMap<(String, TradingVenue), f64>>>,
     /// Monotonic counter incremented when a TradeUpdate is received.
     trade_update_seq: u64,
+    /// 临时兜底：记录 unmatched 纯数字 client_id trade 已处理到的累计成交量，
+    /// 用于在 partial -> filled 多次推送时只按增量补一次 net。
+    unmatched_trade_cum_fills: HashMap<(TradingVenue, String, i64), f64>,
 }
 
 struct BasicState {
@@ -632,6 +635,7 @@ impl MonitorChannel {
             order_manager: Rc::new(RefCell::new(OrderManager::new(binance_account_mode))),
             hedge_residual_map: Rc::new(RefCell::new(HashMap::new())),
             trade_update_seq: 0,
+            unmatched_trade_cum_fills: HashMap::new(),
         };
 
         MONITOR_CHANNEL.with(|mc| {
@@ -2142,6 +2146,7 @@ fn dispatch_order_update_generic<T>(
     }
 
     if !matched {
+        record_unmatched_numeric_trade_to_mm_hedge(&normalized_update);
         try_send_unmatched_mm_cancel(&normalized_update);
         PersistChannel::with(|ch| {
             if normalized_update.execution_type() == ExecutionType::Trade {
@@ -2159,6 +2164,108 @@ fn dispatch_order_update_generic<T>(
             normalized_update.status()
         );
     }
+}
+
+fn has_pure_numeric_client_id<T>(update: &T) -> bool
+where
+    T: OrderUpdate + TradeUpdate,
+{
+    if let Some(text) = OrderUpdate::client_order_id_str(update) {
+        return !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
+    }
+    OrderUpdate::client_order_id(update) > 0
+}
+
+fn record_unmatched_numeric_trade_to_mm_hedge<T>(update: &T)
+where
+    T: OrderUpdate + TradeUpdate,
+{
+    // Temporary workaround:
+    // Late trade/cancel updates can arrive after the originating MMOpen strategy has already
+    // been removed from StrategyManager. In that case the update falls into the unmatched path
+    // and the monitor position moves while the internal MM hedge net_qty remains stale.
+    //
+    // As a stop-gap, for pure numeric client ids we directly account unmatched trade deltas into
+    // the per-symbol MM hedge net. The long-term fix should reconcile these events back to the
+    // original strategy/order instead of relying on unmatched accounting.
+    if update.execution_type() != ExecutionType::Trade {
+        return;
+    }
+    if !has_pure_numeric_client_id(update) {
+        return;
+    }
+
+    let monitor = MonitorChannel::instance();
+    if monitor.open_venue() != monitor.hedge_venue() {
+        return;
+    }
+
+    let venue = TradeUpdate::trading_venue(update);
+    let symbol = OrderUpdate::symbol(update).to_ascii_uppercase();
+    let client_order_id = OrderUpdate::client_order_id(update);
+    let cumulative_qty = TradeUpdate::cumulative_filled_quantity(update);
+    if client_order_id <= 0 || cumulative_qty <= 0.0 {
+        return;
+    }
+
+    let delta_qty = MonitorChannel::with_inner_mut(|inner| {
+        let key = (venue, symbol.clone(), client_order_id);
+        let prev = inner
+            .unmatched_trade_cum_fills
+            .get(&key)
+            .copied()
+            .unwrap_or(0.0);
+        if cumulative_qty <= prev + 1e-12 {
+            return 0.0;
+        }
+        inner.unmatched_trade_cum_fills.insert(key, cumulative_qty);
+        cumulative_qty - prev
+    });
+    if delta_qty <= 0.0 {
+        return;
+    }
+
+    let base_qty = monitor.qty_to_base(venue, &symbol, delta_qty);
+    if base_qty <= 0.0 {
+        return;
+    }
+
+    let (signed_qty, buy_qty, sell_qty) = match TradeUpdate::side(update) {
+        Side::Buy => (base_qty, base_qty, 0.0),
+        Side::Sell => (-base_qty, 0.0, base_qty),
+    };
+
+    let fill_ts = TradeUpdate::event_time(update);
+    let fill_price = if TradeUpdate::price(update) > 0.0 {
+        TradeUpdate::price(update)
+    } else {
+        monitor
+            .price_table()
+            .borrow()
+            .mark_price(&symbol)
+            .unwrap_or(0.0)
+    };
+
+    let strategy_mgr = monitor.strategy_mgr();
+    let mut mgr = strategy_mgr.borrow_mut();
+    if !mgr.record_mm_hedge_fill(&symbol, signed_qty, buy_qty, sell_qty, fill_ts, fill_price) {
+        let _ = mgr.ensure_mm_hedge_strategy_unseeded(&symbol);
+        let _ =
+            mgr.record_mm_hedge_fill(&symbol, signed_qty, buy_qty, sell_qty, fill_ts, fill_price);
+    }
+
+    info!(
+        "temporary unmatched numeric trade fallback: sym={} venue={:?} cli_id={} side={:?} delta_cum={:.8} base_delta={:.8} px={:.8} order_id={} order_status={:?}",
+        symbol,
+        venue,
+        client_order_id,
+        TradeUpdate::side(update),
+        delta_qty,
+        base_qty,
+        fill_price,
+        TradeUpdate::order_id(update),
+        update.order_status()
+    );
 }
 
 fn try_send_unmatched_mm_cancel<T>(update: &T)
@@ -2283,6 +2390,7 @@ mod tests {
             )))),
             hedge_residual_map: Rc::new(RefCell::new(HashMap::new())),
             trade_update_seq: 0,
+            unmatched_trade_cum_fills: HashMap::new(),
         };
 
         MONITOR_CHANNEL.with(|mc| {
@@ -2330,6 +2438,7 @@ mod tests {
             )))),
             hedge_residual_map: Rc::new(RefCell::new(HashMap::new())),
             trade_update_seq: 0,
+            unmatched_trade_cum_fills: HashMap::new(),
         };
 
         MONITOR_CHANNEL.with(|mc| {
@@ -2377,6 +2486,7 @@ mod tests {
             )))),
             hedge_residual_map: Rc::new(RefCell::new(HashMap::new())),
             trade_update_seq: 0,
+            unmatched_trade_cum_fills: HashMap::new(),
         };
 
         MONITOR_CHANNEL.with(|mc| {
@@ -2423,6 +2533,7 @@ mod tests {
             )))),
             hedge_residual_map: Rc::new(RefCell::new(HashMap::new())),
             trade_update_seq: 0,
+            unmatched_trade_cum_fills: HashMap::new(),
         };
 
         MONITOR_CHANNEL.with(|mc| {
