@@ -102,6 +102,25 @@ impl InlineVolatilityWindow {
             .floor() as usize;
         self.sorted_samples.get(idx).copied()
     }
+
+    fn snapshot(&self, current: f64, percentile: f64) -> InlineVolatilitySnapshot {
+        let normalized_percentile = percentile.clamp(0.0, 100.0);
+        let sample_count = self.arrival_order.len();
+        let threshold = if sample_count >= INLINE_VOLATILITY_MIN_SAMPLES {
+            self.threshold_at_percentile(normalized_percentile)
+        } else {
+            None
+        };
+
+        InlineVolatilitySnapshot {
+            current,
+            threshold,
+            sample_count,
+            percentile: normalized_percentile,
+            last_recompute_tp_ms: (self.last_update_tp_ms > 0).then_some(self.last_update_tp_ms),
+            recomputed: false,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -122,6 +141,25 @@ impl InlineVolatilityStore {
             .or_default()
             .observe(current, percentile, now_ms)
     }
+
+    fn snapshot(
+        &self,
+        symbol_key: &str,
+        current: f64,
+        percentile: f64,
+    ) -> InlineVolatilitySnapshot {
+        self.windows
+            .get(&symbol_key.to_ascii_uppercase())
+            .map(|window| window.snapshot(current, percentile))
+            .unwrap_or(InlineVolatilitySnapshot {
+                current,
+                threshold: None,
+                sample_count: 0,
+                percentile: percentile.clamp(0.0, 100.0),
+                last_recompute_tp_ms: None,
+                recomputed: false,
+            })
+    }
 }
 
 thread_local! {
@@ -140,6 +178,14 @@ pub(crate) fn observe_inline_volatility(
             .borrow_mut()
             .observe(symbol_key, current, percentile, now_ms)
     })
+}
+
+pub(crate) fn snapshot_inline_volatility(
+    symbol_key: &str,
+    current: f64,
+    percentile: f64,
+) -> InlineVolatilitySnapshot {
+    INLINE_VOLATILITY_STORE.with(|store| store.borrow().snapshot(symbol_key, current, percentile))
 }
 
 #[cfg(test)]

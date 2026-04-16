@@ -9,7 +9,7 @@ use super::super::common::{
     apply_open_tlen_gate_and_build_from_keys, ReturnScoreThresholdsResolved,
 };
 use super::super::factor_value_hub::{EnvironmentSignalResult, FactorValueHub};
-use super::super::inline_volatility::{observe_inline_volatility, InlineVolatilitySnapshot};
+use super::super::inline_volatility::{snapshot_inline_volatility, InlineVolatilitySnapshot};
 use crate::common::iceoryx_publisher::SignalPublisher;
 use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
@@ -447,26 +447,13 @@ impl MmDecisionState {
         );
     }
 
-    pub(crate) fn observe_open_volatility(
-        &mut self,
+    pub(crate) fn snapshot_open_volatility(
+        &self,
         symbol_key: &str,
-        now_ms: i64,
         volatility: f64,
     ) -> InlineVolatilitySnapshot {
         let symbol_key = symbol_key.to_ascii_uppercase();
-        let snapshot =
-            observe_inline_volatility(&symbol_key, volatility, self.open_volatility_limit, now_ms);
-        if snapshot.recomputed {
-            debug!(
-                "MmDecision: inline open volatility threshold recomputed symbol={} threshold={:.8} samples={} percentile={:.2} last_recompute_tp_ms={}",
-                symbol_key,
-                snapshot.threshold.unwrap_or(f64::NAN),
-                snapshot.sample_count,
-                snapshot.percentile,
-                snapshot.last_recompute_tp_ms.unwrap_or_default()
-            );
-        }
-        snapshot
+        snapshot_inline_volatility(&symbol_key, volatility, self.open_volatility_limit)
     }
 
     pub(crate) fn evaluate_environment_signal(

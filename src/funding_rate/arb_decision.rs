@@ -39,7 +39,7 @@ use super::factor_value_hub::{
 };
 use super::funding_rate_factor::FundingRateFactor;
 use super::inline_volatility::{
-    observe_inline_volatility, InlineVolatilitySnapshot, INLINE_VOLATILITY_MIN_SAMPLES,
+    snapshot_inline_volatility, InlineVolatilitySnapshot, INLINE_VOLATILITY_MIN_SAMPLES,
 };
 use super::mkt_channel::MktChannel;
 use super::rate_fetcher::RateFetcher;
@@ -3088,6 +3088,16 @@ impl ArbDecisionState {
         }
     }
 
+    pub fn poll_factor_value_updates(&mut self) {
+        let percentile = Some(self.open_volatility_limit);
+        if let Some(hub) = self.open_factor_value_hub.as_mut() {
+            let _ = hub.poll_factor_value_updates_with_inline_sampling(percentile);
+        }
+        if let Some(hub) = self.hedge_factor_value_hub.as_mut() {
+            let _ = hub.poll_factor_value_updates_with_inline_sampling(percentile);
+        }
+    }
+
     pub fn evaluate_close_side(
         spread_factor: &super::spread_factor::SpreadFactor,
         open_symbol_key: &str,
@@ -3649,9 +3659,8 @@ impl ArbDecisionState {
         &self,
         symbol_key: &str,
         current: f64,
-        now_ms: i64,
     ) -> InlineVolatilitySnapshot {
-        observe_inline_volatility(symbol_key, current, self.open_volatility_limit, now_ms)
+        snapshot_inline_volatility(symbol_key, current, self.open_volatility_limit)
     }
 
     fn snapshot_open_from_key_fields(
@@ -3844,8 +3853,7 @@ impl ArbDecisionState {
         };
 
         if self.enable_volatility_limit {
-            let snapshot =
-                self.observe_open_volatility(symbol, open_volatility_factor, get_timestamp_us() / 1000);
+            let snapshot = self.observe_open_volatility(symbol, open_volatility_factor);
             let Some(open_volatility_threshold) = snapshot.threshold else {
                 return Some(format!(
                     "vol_warming_up(samples={} min_samples={} percentile={:.2})",
@@ -4078,8 +4086,7 @@ impl ArbDecisionState {
             };
 
         if self.enable_volatility_limit {
-            let snapshot =
-                self.observe_open_volatility(open_symbol_key, open_volatility_factor, now / 1000);
+            let snapshot = self.observe_open_volatility(open_symbol_key, open_volatility_factor);
             let Some(open_volatility_threshold) = snapshot.threshold else {
                 self.record_intercept_summary(format!(
                     "vol_warming_up(samples={} min_samples={} percentile={:.2})",
@@ -4235,6 +4242,7 @@ impl ArbDecision {
         let Some(mode) = Self::mode() else {
             return;
         };
+        let _ = Self::with_state_mut(|arb| arb.poll_factor_value_updates());
         match Self::backend_for_mode(mode) {
             ArbBackend::Funding => {
                 with_thread_local_shell_mut(

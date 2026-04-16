@@ -324,6 +324,22 @@ impl MmDecision {
     }
 
     pub fn process_return_score_updates(&mut self) {
+        for (symbol_key, snapshot) in self
+            .state
+            .factor_value_hub
+            .poll_factor_value_updates_with_inline_sampling(Some(self.state.open_volatility_limit))
+        {
+            if snapshot.recomputed {
+                debug!(
+                    "MmDecision: inline open volatility threshold recomputed symbol={} threshold={:.8} samples={} percentile={:.2} last_recompute_tp_ms={}",
+                    symbol_key,
+                    snapshot.threshold.unwrap_or(f64::NAN),
+                    snapshot.sample_count,
+                    snapshot.percentile,
+                    snapshot.last_recompute_tp_ms.unwrap_or_default()
+                );
+            }
+        }
         self.cancel_decision
             .process_return_score_updates(&mut self.state);
     }
