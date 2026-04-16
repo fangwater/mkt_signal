@@ -100,7 +100,7 @@ impl MmOpenDecision {
                 None,
             ));
         };
-        let open_volatility_snapshot = state.observe_open_volatility(&symbol_key, now_us / 1000, volatility);
+        let open_volatility_snapshot = state.snapshot_open_volatility(&symbol_key, volatility);
         if state.enable_volatility_limit {
             let Some(open_volatility_threshold) = open_volatility_snapshot.threshold else {
                 return Ok(MmOpenEvalResult::skipped(

@@ -15,6 +15,7 @@ use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::time_util::get_timestamp_us;
 use crate::factor_pub::factor_index::factor_name_to_index;
+use crate::funding_rate::inline_volatility::{observe_inline_volatility, InlineVolatilitySnapshot};
 use crate::signal::common::TradingVenue;
 
 const FACTOR_VALUE_PAYLOAD_MAX_BYTES: usize = 256;
@@ -612,6 +613,84 @@ impl FactorValueHub {
                 note: "missing_ipc_snapshot".to_string(),
             }
         }
+    }
+
+    pub(crate) fn poll_factor_value_updates_with_inline_sampling(
+        &mut self,
+        percentile: Option<f64>,
+    ) -> Vec<(String, InlineVolatilitySnapshot)> {
+        let mut sampled = Vec::new();
+        let Some(percentile) = percentile.filter(|v| v.is_finite()) else {
+            self.poll_factor_value_updates();
+            return sampled;
+        };
+
+        loop {
+            match self.factor_value_sub.receive() {
+                Ok(Some(sample)) => {
+                    let payload = sample.payload();
+                    if payload.iter().all(|&b| b == 0) {
+                        continue;
+                    }
+                    let msg = match FactorValueMsg::from_bytes(payload) {
+                        Ok(msg) => msg,
+                        Err(err) => {
+                            warn!("FactorValueHub: parse factor payload failed: {}", err);
+                            continue;
+                        }
+                    };
+
+                    let symbol_key = normalize_symbol_for_venue(&msg.symbol, self.hedge_venue);
+                    for (factor_index, value, ready) in msg.factors() {
+                        let cache_key = (factor_index, symbol_key.clone());
+                        let snapshot = FactorValueSnapshot {
+                            value,
+                            ready,
+                            timestamp_ms: msg.timestamp_ms,
+                            factor_index,
+                        };
+                        let should_update = self
+                            .factor_value_cache
+                            .get(&cache_key)
+                            .map(|prev| snapshot.timestamp_ms >= prev.timestamp_ms)
+                            .unwrap_or(true);
+                        if should_update {
+                            self.factor_value_cache.insert(cache_key.clone(), snapshot);
+                            if ready && value.is_finite() {
+                                let should_update_last_valid = self
+                                    .last_valid_factor_value_cache
+                                    .get(&cache_key)
+                                    .map(|prev| snapshot.timestamp_ms >= prev.timestamp_ms)
+                                    .unwrap_or(true);
+                                if should_update_last_valid {
+                                    self.last_valid_factor_value_cache.insert(cache_key, snapshot);
+                                }
+                            }
+                        }
+
+                        if factor_index == self.target_factor_index && ready && value.is_finite() {
+                            let inline_snapshot = observe_inline_volatility(
+                                &symbol_key,
+                                value,
+                                percentile,
+                                msg.timestamp_ms,
+                            );
+                            sampled.push((symbol_key.clone(), inline_snapshot));
+                        }
+                    }
+                }
+                Ok(None) => break,
+                Err(err) => {
+                    error!(
+                        "FactorValueHub: factor subscriber receive error service={} err={}",
+                        self.factor_value_service_name, err
+                    );
+                    break;
+                }
+            }
+        }
+
+        sampled
     }
 
     pub fn lookup_factor_value_with_last_valid_fallback(
