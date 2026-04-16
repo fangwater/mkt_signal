@@ -529,27 +529,6 @@ impl StrategyManager {
         strategy_id
     }
 
-    /// 临时兜底：为 unmatched trade 直接创建一个零初始仓位的 MM hedge strategy。
-    ///
-    /// 注意：
-    /// - 这里刻意不从当前 monitor 仓位做 seed，避免在“monitor 已经包含该笔成交”的情况下
-    ///   再次把整仓位灌进 net，导致双记。
-    /// - 正式方案应当把晚到的 trade/cancel 正确回补到原 open strategy，而不是长期依赖这个入口。
-    pub fn ensure_mm_hedge_strategy_unseeded(&mut self, symbol: &str) -> i32 {
-        let symbol_upper = normalize_symbol_for_internal(symbol);
-        if let Some(id) = self.find_mm_hedge_id(&symbol_upper) {
-            return id;
-        }
-        let strategy_id = StrategyManager::generate_strategy_id();
-        let strategy = MarketMakerHedgeStrategy::new(strategy_id, symbol_upper.clone());
-        info!(
-            "MMHedge temporary init: symbol={} net=0.0 (unseeded unmatched-trade fallback)",
-            symbol_upper
-        );
-        self.insert(Box::new(strategy));
-        strategy_id
-    }
-
     /// 记录 MM 开仓成交，累加到对应 symbol 的对冲策略
     pub fn record_mm_hedge_fill(
         &mut self,
