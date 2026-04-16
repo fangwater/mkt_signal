@@ -37,7 +37,6 @@ use super::symbol_list::SymbolList;
 const DEFAULT_NAMESPACE: &str = "fr";
 const RETURN_SCORE_REDIS_REFRESH_SECS: u64 = 180;
 const OPEN_VOL_THRESHOLD_REDIS_REFRESH_SECS: u64 = 180;
-pub(crate) const OPEN_VOL_THRESHOLD_MAX_AGE_MS: i64 = 5 * 60 * 1000;
 const VOL_FACTOR_RESAMPLE_INTERVAL_MS: i64 = 5_000;
 const VOL_FACTOR_ROLLING_WINDOW: i64 = 720;
 const VOL_FACTOR_MIN_PERIODS: i64 = 1;
@@ -54,31 +53,6 @@ thread_local! {
         RefCell::new(HashMap::new());
     static OPEN_VOL_THRESHOLD_CACHE: RefCell<HashMap<String, RedisHashCacheEntry>> =
         RefCell::new(HashMap::new());
-}
-
-fn parse_rolling_update_tp_ms(payload: &JsonValue) -> Option<i64> {
-    let value = payload.get("update_tp")?;
-    if let Some(ts) = value.as_i64() {
-        return Some(ts);
-    }
-    if let Some(ts) = value.as_u64() {
-        return i64::try_from(ts).ok();
-    }
-    value.as_str()?.trim().parse::<i64>().ok()
-}
-
-fn resolve_symbol_update_tp_ms(
-    rolling_payloads: &HashMap<String, JsonValue>,
-) -> HashMap<String, Option<i64>> {
-    rolling_payloads
-        .iter()
-        .map(|(symbol, payload)| {
-            (
-                symbol.to_ascii_uppercase(),
-                parse_rolling_update_tp_ms(payload),
-            )
-        })
-        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -793,20 +767,13 @@ async fn reload_open_volatility_thresholds(
     let mut rolling_payloads = parse_xarb_rolling_payloads(rolling_map, &active_symbols);
     alias_single_side_payloads(&mut rolling_payloads, open_venue, "open");
     let field_ref = format_quantile_field_ref("open_vol", params.open_volatility_limit);
-    let (thresholds, missing_refs) =
+    let (_thresholds, missing_refs) =
         resolve_symbol_single_quantile_thresholds(&rolling_payloads, &field_ref);
-    let update_tp_ms = resolve_symbol_update_tp_ms(&rolling_payloads);
 
     let updated = if ns == "mm" {
-        MmDecision::try_with_mut(|decision| {
-            decision.update_open_volatility_thresholds(thresholds.clone(), update_tp_ms.clone());
-        })
-        .is_some()
+        MmDecision::is_initialized()
     } else {
-        ArbDecision::with_state_mut(|arb| {
-            arb.update_open_volatility_thresholds(thresholds.clone(), update_tp_ms.clone());
-        })
-        .is_some()
+        ArbDecision::with_state_mut(|_| {}).is_some()
     };
 
     if !updated {
@@ -825,7 +792,7 @@ async fn reload_open_volatility_thresholds(
         field_ref,
         active_symbols.len(),
         rolling_payloads.len(),
-        thresholds.len(),
+        active_symbols.len().saturating_sub(missing_refs),
         missing_refs,
         params.enable_volatility_limit
     );
@@ -1001,13 +968,10 @@ async fn reload_xarb_thresholds_from_rolling(
                 format_quantile_field_ref("open_vol", params.open_volatility_limit);
             let (thresholds, missing_refs) =
                 resolve_symbol_single_quantile_thresholds(&rolling_payloads, &open_vol_field_ref);
-            let update_tp_ms = resolve_symbol_update_tp_ms(&rolling_payloads);
             open_vol_loaded_symbols = thresholds.len();
             open_vol_missing_refs = missing_refs;
 
-            let updated = ArbDecision::with_state_mut(|arb| {
-                arb.update_open_volatility_thresholds(thresholds, update_tp_ms);
-            });
+            let updated = ArbDecision::with_state_mut(|_| {});
             if updated.is_none() {
                 warn!(
                     "xarb open volatility thresholds 已生成，但 ArbDecision 尚未初始化 (open={} hedge={})",
@@ -1184,8 +1148,6 @@ async fn reload_fr_dynamic_thresholds_from_rolling(
     let open_vol_field_ref = format_quantile_field_ref("open_vol", params.open_volatility_limit);
     let (open_vol_thresholds, open_vol_missing_refs) =
         resolve_symbol_single_thresholds(&rolling_payloads, &open_vol_field_ref);
-    let open_vol_threshold_update_tp_ms = resolve_symbol_update_tp_ms(&rolling_payloads);
-
     let spread_applied = apply_xarb_spread_thresholds(&resolved_spread, open_venue, hedge_venue);
     let funding_thresholds = resolve_xarb_funding_thresholds(&resolved_funding);
     let funding_symbols = funding_thresholds.len();
@@ -1193,7 +1155,6 @@ async fn reload_fr_dynamic_thresholds_from_rolling(
 
     let updated = ArbDecision::with_state_mut(|arb| {
         arb.funding_open_thresholds = funding_thresholds;
-        arb.update_open_volatility_thresholds(open_vol_thresholds, open_vol_threshold_update_tp_ms);
     });
     if updated.is_none() {
         warn!(

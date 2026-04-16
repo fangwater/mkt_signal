@@ -198,6 +198,7 @@ pub struct FactorValueHub {
     factor_value_max_age_ms: i64,
     factor_value_sub: Subscriber<ipc::Service, [u8; FACTOR_VALUE_PAYLOAD_MAX_BYTES], ()>,
     factor_value_cache: HashMap<(u16, String), FactorValueSnapshot>,
+    last_valid_factor_value_cache: HashMap<(u16, String), FactorValueSnapshot>,
     factor_issue_log_state: HashMap<String, FactorIssueLogState>,
     model_output_subscribers: Vec<ModelOutputSubscriberEntry>,
     model_output_services: Vec<String>,
@@ -249,6 +250,7 @@ impl FactorValueHub {
             factor_value_max_age_ms,
             factor_value_sub,
             factor_value_cache: HashMap::new(),
+            last_valid_factor_value_cache: HashMap::new(),
             factor_issue_log_state: HashMap::new(),
             model_output_subscribers: Vec::new(),
             model_output_services: Vec::new(),
@@ -447,7 +449,17 @@ impl FactorValueHub {
                             .map(|prev| snapshot.timestamp_ms >= prev.timestamp_ms)
                             .unwrap_or(true);
                         if should_update {
-                            self.factor_value_cache.insert(cache_key, snapshot);
+                            self.factor_value_cache.insert(cache_key.clone(), snapshot);
+                            if ready && value.is_finite() {
+                                let should_update_last_valid = self
+                                    .last_valid_factor_value_cache
+                                    .get(&cache_key)
+                                    .map(|prev| snapshot.timestamp_ms >= prev.timestamp_ms)
+                                    .unwrap_or(true);
+                                if should_update_last_valid {
+                                    self.last_valid_factor_value_cache.insert(cache_key, snapshot);
+                                }
+                            }
                         }
                     }
                 }
@@ -600,6 +612,32 @@ impl FactorValueHub {
                 note: "missing_ipc_snapshot".to_string(),
             }
         }
+    }
+
+    pub fn lookup_factor_value_with_last_valid_fallback(
+        &mut self,
+        hedge_symbol: &str,
+        hedge_venue: TradingVenue,
+    ) -> FactorValueLookupResult {
+        let strict = self.lookup_factor_value(hedge_symbol, hedge_venue);
+        if strict.target_factor_value.is_some() {
+            return strict;
+        }
+
+        let cache_key = (self.target_factor_index, strict.symbol_key.clone());
+        if let Some(snapshot) = self.last_valid_factor_value_cache.get(&cache_key).copied() {
+            return FactorValueLookupResult {
+                key: strict.key,
+                symbol_key: strict.symbol_key,
+                ready: Some(snapshot.ready),
+                target_factor_value: Some(snapshot.value),
+                ts_ms: Some(snapshot.timestamp_ms),
+                factor_index: Some(snapshot.factor_index),
+                note: format!("fallback_last_valid({})", strict.note),
+            };
+        }
+
+        strict
     }
 
     pub fn update_model_output_services(

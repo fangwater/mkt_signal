@@ -15,7 +15,6 @@ use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
 use crate::common::ipc_service_name::build_service_name;
 use crate::common::redis_client::RedisSettings;
 use crate::common::time_util::get_timestamp_us;
-use crate::funding_rate::config_loader::OPEN_VOL_THRESHOLD_MAX_AGE_MS;
 use crate::funding_rate::FundingRatePeriod;
 use crate::pre_trade::order_manager::Side;
 use crate::signal::arb_signal::{ArbBackwardQueryMsg, ArbCancelCandidateQueryMsg};
@@ -39,6 +38,9 @@ use super::factor_value_hub::{
     EnvironmentSignalResult, FactorValueHub, FactorValueLookupResult, ModelOutputScoreLookupResult,
 };
 use super::funding_rate_factor::FundingRateFactor;
+use super::inline_volatility::{
+    observe_inline_volatility, InlineVolatilitySnapshot, INLINE_VOLATILITY_MIN_SAMPLES,
+};
 use super::mkt_channel::MktChannel;
 use super::rate_fetcher::RateFetcher;
 use super::xarb_funding_threshold_loader::XarbFundingThresholdsResolved;
@@ -47,7 +49,7 @@ pub const DEFAULT_ARBITRAGE_SIGNAL_CHANNEL: &str = "trade_signal";
 pub const DEFAULT_ARBITRAGE_BACKWARD_CHANNEL: &str = "trade_query";
 pub const DEFAULT_PNLU_KEY_SUFFIX: &str = "_pnlu_factor_thresholds";
 pub const DEFAULT_ENV_MODEL_TRUE_THRESHOLD: f64 = 0.0;
-const TARGET_FACTOR_MAX_AGE_MS: i64 = 10_000;
+const TARGET_FACTOR_MAX_AGE_MS: i64 = 30_000;
 const FUNDING_ARB_SHELL_NAME: &str = "ArbDecision(FundingArb)";
 const SPREAD_ARB_SHELL_NAME: &str = "ArbDecision(SpreadArb)";
 
@@ -414,8 +416,6 @@ fn build_spread_arb_shell(venues: VenuePair) -> Result<SpreadArbShell> {
         arb.environment_model_true_threshold = DEFAULT_ENV_MODEL_TRUE_THRESHOLD;
         arb.return_score_thresholds = HashMap::new();
         arb.funding_open_thresholds = HashMap::new();
-        arb.open_volatility_thresholds = HashMap::new();
-        arb.open_volatility_threshold_update_tp_ms = HashMap::new();
     });
     Ok(state)
 }
@@ -2901,7 +2901,23 @@ struct OpenFromKeySnapshot {
 #[derive(Debug, Clone)]
 struct XarbOpenBlockerRow {
     symbol: String,
+    vol_tr: Option<f64>,
     reason: String,
+}
+
+fn extract_threshold_from_reason(reason: &str) -> Option<f64> {
+    let key = "threshold=";
+    let start = reason.find(key)? + key.len();
+    let rest = &reason[start..];
+    let end = rest.find([',', ')']).unwrap_or(rest.len());
+    rest[..end].trim().parse::<f64>().ok()
+}
+
+fn format_opt_opt_f64(value: Option<f64>) -> String {
+    match value {
+        Some(v) if v.is_finite() => format!("{v:.6}"),
+        _ => "-".to_string(),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -3016,8 +3032,6 @@ pub(crate) struct ArbDecisionState {
     pub environment_model_true_threshold: f64,
     pub return_score_thresholds: HashMap<String, ReturnScoreThresholdsResolved>,
     pub funding_open_thresholds: HashMap<String, XarbFundingThresholdsResolved>,
-    pub open_volatility_thresholds: HashMap<String, f64>,
-    pub open_volatility_threshold_update_tp_ms: HashMap<String, Option<i64>>,
     pub tlen_thresholds: HashMap<String, f64>,
     pub signal_cooldown_us: i64,
     pub spread_cancel_cooldown_us: i64,
@@ -3055,8 +3069,6 @@ impl ArbDecisionState {
             environment_model_true_threshold: 0.0,
             return_score_thresholds: HashMap::new(),
             funding_open_thresholds: HashMap::new(),
-            open_volatility_thresholds: HashMap::new(),
-            open_volatility_threshold_update_tp_ms: HashMap::new(),
             tlen_thresholds: HashMap::new(),
             signal_cooldown_us: 5_000_000,
             spread_cancel_cooldown_us: 0,
@@ -3596,7 +3608,7 @@ impl ArbDecisionState {
         self.hedge_factor_value_hub
             .as_mut()
             .expect("ArbDecisionState.hedge_factor_value_hub must be initialized")
-            .lookup_factor_value(hedge_symbol, hedge_venue)
+            .lookup_factor_value_with_last_valid_fallback(hedge_symbol, hedge_venue)
     }
 
     pub fn lookup_return_model_score_lookup(
@@ -3633,50 +3645,13 @@ impl ArbDecisionState {
             .copied()
     }
 
-    pub fn update_open_volatility_thresholds(
-        &mut self,
-        thresholds: HashMap<String, f64>,
-        update_tp_ms: HashMap<String, Option<i64>>,
-    ) {
-        self.open_volatility_thresholds = thresholds;
-        self.open_volatility_threshold_update_tp_ms = update_tp_ms;
-    }
-
-    pub fn lookup_open_volatility_threshold_checked(
+    pub fn observe_open_volatility(
         &self,
         symbol_key: &str,
+        current: f64,
         now_ms: i64,
-    ) -> std::result::Result<f64, String> {
-        let symbol_key = symbol_key.to_ascii_uppercase();
-        let Some(threshold) = self.open_volatility_thresholds.get(&symbol_key).copied() else {
-            return Err("missing_open_volatility_threshold".to_string());
-        };
-        match self
-            .open_volatility_threshold_update_tp_ms
-            .get(&symbol_key)
-            .copied()
-            .flatten()
-        {
-            Some(update_tp) if update_tp > now_ms => Err(format!(
-                "open_vol_threshold_future_tp(update_tp={} now_ms={})",
-                update_tp, now_ms
-            )),
-            Some(update_tp) if update_tp <= 0 => {
-                Err("open_vol_threshold_missing_update_tp".to_string())
-            }
-            Some(update_tp) => {
-                let age_ms = now_ms - update_tp;
-                if age_ms > OPEN_VOL_THRESHOLD_MAX_AGE_MS {
-                    Err(format!(
-                        "open_vol_threshold_timeout(age_ms={} max_age_ms={})",
-                        age_ms, OPEN_VOL_THRESHOLD_MAX_AGE_MS
-                    ))
-                } else {
-                    Ok(threshold)
-                }
-            }
-            None => Err("open_vol_threshold_missing_update_tp".to_string()),
-        }
+    ) -> InlineVolatilitySnapshot {
+        observe_inline_volatility(symbol_key, current, self.open_volatility_limit, now_ms)
     }
 
     fn snapshot_open_from_key_fields(
@@ -3869,14 +3844,32 @@ impl ArbDecisionState {
         };
 
         if self.enable_volatility_limit {
-            let open_volatility_threshold = match self
-                .lookup_open_volatility_threshold_checked(symbol, get_timestamp_us() / 1000)
-            {
-                Ok(value) => value,
-                Err(reason) => return Some(reason),
+            let snapshot =
+                self.observe_open_volatility(symbol, open_volatility_factor, get_timestamp_us() / 1000);
+            let Some(open_volatility_threshold) = snapshot.threshold else {
+                return Some(format!(
+                    "vol_warming_up(samples={} min_samples={} percentile={:.2})",
+                    snapshot.sample_count, INLINE_VOLATILITY_MIN_SAMPLES, snapshot.percentile
+                ));
             };
             if open_volatility_factor > open_volatility_threshold {
-                return Some("vol".to_string());
+                log::warn!(
+                    "ArbDecision: open blocked by inline volatility threshold symbol={} current={:.8} threshold={:.8} samples={} percentile={:.2} last_recompute_tp_ms={:?}",
+                    symbol,
+                    snapshot.current,
+                    open_volatility_threshold,
+                    snapshot.sample_count,
+                    snapshot.percentile,
+                    snapshot.last_recompute_tp_ms
+                );
+                return Some(format!(
+                    "vol(current={:.8}>threshold={:.8},samples={},percentile={:.2},last_recompute_tp_ms={})",
+                    snapshot.current,
+                    open_volatility_threshold,
+                    snapshot.sample_count,
+                    snapshot.percentile,
+                    snapshot.last_recompute_tp_ms.unwrap_or_default()
+                ));
             }
         }
 
@@ -3917,7 +3910,11 @@ impl ArbDecisionState {
                 (Some(left), Some(right)) => format!("fwd:{left}|bwd:{right}"),
             };
 
-            rows.push(XarbOpenBlockerRow { symbol, reason });
+            rows.push(XarbOpenBlockerRow {
+                symbol,
+                vol_tr: extract_threshold_from_reason(&reason),
+                reason,
+            });
         }
         rows
     }
@@ -3940,18 +3937,26 @@ impl ArbDecisionState {
             .max()
             .unwrap_or(6)
             .max("reason".len());
+        let vol_tr_width = rows
+            .iter()
+            .map(|row| format_opt_opt_f64(row.vol_tr).len())
+            .max()
+            .unwrap_or(6)
+            .max("vol_tr".len());
 
-        let fmt_row = |symbol: &str, reason: &str| -> String {
+        let fmt_row = |symbol: &str, vol_tr: &str, reason: &str| -> String {
             format!(
-                "{:<symbol_width$}  {:<reason_width$}",
+                "{:<symbol_width$}  {:<vol_tr_width$}  {:<reason_width$}",
                 symbol,
+                vol_tr,
                 reason,
                 symbol_width = symbol_width,
+                vol_tr_width = vol_tr_width,
                 reason_width = reason_width
             )
         };
 
-        let header = fmt_row("symbol", "reason");
+        let header = fmt_row("symbol", "vol_tr", "reason");
         let rule = "=".repeat(header.len());
         let mid = "-".repeat(header.len());
 
@@ -3960,7 +3965,10 @@ impl ArbDecisionState {
         log::info!("{header}");
         log::info!("{mid}");
         for row in rows {
-            log::info!("{}", fmt_row(&row.symbol, &row.reason));
+            log::info!(
+                "{}",
+                fmt_row(&row.symbol, &format_opt_opt_f64(row.vol_tr), &row.reason)
+            );
         }
         log::info!("{rule}");
     }
@@ -4070,16 +4078,33 @@ impl ArbDecisionState {
             };
 
         if self.enable_volatility_limit {
-            let open_volatility_threshold =
-                match self.lookup_open_volatility_threshold_checked(open_symbol_key, now / 1000) {
-                    Ok(value) => value,
-                    Err(reason) => {
-                        self.record_intercept_summary(reason.clone());
-                        return None;
-                    }
-                };
+            let snapshot =
+                self.observe_open_volatility(open_symbol_key, open_volatility_factor, now / 1000);
+            let Some(open_volatility_threshold) = snapshot.threshold else {
+                self.record_intercept_summary(format!(
+                    "vol_warming_up(samples={} min_samples={} percentile={:.2})",
+                    snapshot.sample_count, INLINE_VOLATILITY_MIN_SAMPLES, snapshot.percentile
+                ));
+                return None;
+            };
             if open_volatility_factor > open_volatility_threshold {
-                self.record_intercept_summary("vol");
+                log::warn!(
+                    "ArbDecision: open gate blocked by inline volatility threshold symbol={} current={:.8} threshold={:.8} samples={} percentile={:.2} last_recompute_tp_ms={:?}",
+                    open_symbol_key,
+                    snapshot.current,
+                    open_volatility_threshold,
+                    snapshot.sample_count,
+                    snapshot.percentile,
+                    snapshot.last_recompute_tp_ms
+                );
+                self.record_intercept_summary(format!(
+                    "vol(current={:.8}>threshold={:.8},samples={},percentile={:.2},last_recompute_tp_ms={})",
+                    snapshot.current,
+                    open_volatility_threshold,
+                    snapshot.sample_count,
+                    snapshot.percentile,
+                    snapshot.last_recompute_tp_ms.unwrap_or_default()
+                ));
                 return None;
             }
         }
