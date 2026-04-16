@@ -243,26 +243,28 @@ fn is_valid_env_suffix(suffix: &str) -> bool {
             .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' || ch == '-')
 }
 
+fn is_valid_exchange_name(exchange: &str) -> bool {
+    !exchange.is_empty()
+        && exchange
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
+}
+
 fn validate_supported_env_name(env_name: &str) -> Result<()> {
-    if let Some(suffix) = env_name.strip_prefix("binance_mm_") {
-        if is_valid_env_suffix(suffix) {
+    if let Some((exchange, suffix)) = env_name.split_once("_mm_") {
+        if is_valid_exchange_name(exchange) && is_valid_env_suffix(suffix) {
             return Ok(());
         }
     }
 
     if let Some((exchange, suffix)) = env_name.split_once("_fr_") {
-        if !exchange.is_empty()
-            && exchange
-                .chars()
-                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
-            && is_valid_env_suffix(suffix)
-        {
+        if is_valid_exchange_name(exchange) && is_valid_env_suffix(suffix) {
             return Ok(());
         }
     }
 
     Err(anyhow!(
-        "env_name must match binance_mm_<suffix> or <exchange>_fr_<suffix> (got: {})",
+        "env_name must match <exchange>_mm_<suffix> or <exchange>_fr_<suffix> (got: {})",
         env_name
     ))
 }
@@ -332,9 +334,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn validate_supported_env_name_accepts_binance_mm_values() {
+    fn validate_supported_env_name_accepts_mm_values() {
         assert!(validate_supported_env_name("binance_mm_alpha").is_ok());
         assert!(validate_supported_env_name("binance_mm_beta-1").is_ok());
+        assert!(validate_supported_env_name("okex_mm_alpha").is_ok());
+        assert!(validate_supported_env_name("gate_mm_trade02").is_ok());
+        assert!(validate_supported_env_name("bybit_mm_hf01").is_ok());
     }
 
     #[test]
@@ -347,7 +352,8 @@ mod tests {
     #[test]
     fn validate_supported_env_name_rejects_other_patterns() {
         assert!(validate_supported_env_name("binance_mm").is_err());
-        assert!(validate_supported_env_name("okex_mm_alpha").is_err());
+        assert!(validate_supported_env_name("okex_mm_").is_err());
+        assert!(validate_supported_env_name("_mm_alpha").is_err());
         assert!(validate_supported_env_name("binance_mm_ALPHA").is_err());
         assert!(validate_supported_env_name("binance_fr").is_err());
         assert!(validate_supported_env_name("binance_fr_ALPHA").is_err());
