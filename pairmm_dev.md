@@ -5,4 +5,4 @@ bash scripts/close_mm_all_um_ws_orders.sh --env-name binance_mm_alpha --execute
 bash scripts/close_mm_all_um_exposure.sh --env-name binance_mm_alpha --execute
 
 bash scripts/close_mm_all_um_ws_orders.sh --env-name okex_mm_alpha --execute
-bash scripts/close_mm_all_um_exposure.sh --env-name okex_mm_alpha --execute --symbol bnbusdt
+bash scripts/close_mm_all_um_exposure.sh --env-name okex_mm_alpha --execute 
