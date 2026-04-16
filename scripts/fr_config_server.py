@@ -41,6 +41,12 @@ ROLLING_METRICS_SCRIPT_DIR = os.path.join(
 if os.path.isdir(ROLLING_METRICS_SCRIPT_DIR):
     sys.path.insert(0, ROLLING_METRICS_SCRIPT_DIR)
 
+XARB_SCRIPT_DIR = os.path.normpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "xarb_scripts")
+)
+if os.path.isdir(XARB_SCRIPT_DIR):
+    sys.path.insert(0, XARB_SCRIPT_DIR)
+
 
 def infer_dir_prefix_from_cwd() -> Optional[str]:
     name = os.path.basename(os.getcwd()).strip().lower()
@@ -1491,8 +1497,12 @@ def spread_mapping_key(open_venue: str, hedge_venue: str) -> str:
     return f"fr_spread_threshold_mapping_{open_venue}_{hedge_venue}"
 
 
-def funding_mapping_key(open_venue: str, hedge_venue: str) -> str:
+def legacy_funding_mapping_key(open_venue: str, hedge_venue: str) -> str:
     return f"fr_funding_threshold_mapping_{open_venue}_{hedge_venue}"
+
+
+def funding_mapping_key(open_venue: str, hedge_venue: str) -> str:
+    return f"xarb_funding_thresholds_config_{open_venue}_{hedge_venue}"
 
 
 def normalize_threshold_mapping(values: Dict[str, Any]) -> Dict[str, str]:
@@ -1510,6 +1520,13 @@ def normalize_spread_mapping(values: Dict[str, Any]) -> Dict[str, str]:
     return normalize_threshold_mapping(values)
 
 
+def normalize_optional_text(raw: Any) -> Optional[str]:
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    return text or None
+
+
 def read_spread_mapping(rds, open_venue: str, hedge_venue: str) -> Dict[str, str]:
     key = spread_mapping_key(open_venue, hedge_venue)
     values = read_hash(rds, key)
@@ -1518,12 +1535,80 @@ def read_spread_mapping(rds, open_venue: str, hedge_venue: str) -> Dict[str, str
     return normalize_spread_mapping(SPREAD_THRESHOLD_MAPPING)
 
 
-def read_funding_mapping(rds, open_venue: str, hedge_venue: str) -> Dict[str, str]:
+def read_funding_mapping_config(
+    rds,
+    open_venue: str,
+    hedge_venue: str,
+) -> Dict[str, Any]:
     key = funding_mapping_key(open_venue, hedge_venue)
-    values = read_hash(rds, key)
-    if values:
-        return normalize_threshold_mapping(values)
-    return normalize_threshold_mapping(default_dynamic_funding_mapping(open_venue, hedge_venue))
+    legacy_key = legacy_funding_mapping_key(open_venue, hedge_venue)
+    default_values = normalize_threshold_mapping(
+        default_dynamic_funding_mapping(open_venue, hedge_venue)
+    )
+
+    raw = rds.get(key)
+    if raw:
+        text = decode_redis_value(raw).strip()
+        if text:
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, dict):
+                values = normalize_threshold_mapping(parsed.get("mapping") or {})
+                if not values:
+                    values = default_values
+                enabled = parsed.get("enabled")
+                if not isinstance(enabled, bool):
+                    enabled = True
+                return {
+                    "key": key,
+                    "legacy_key": legacy_key,
+                    "enabled": enabled,
+                    "rolling_key": normalize_optional_text(parsed.get("rolling_key")),
+                    "values": values,
+                    "source": "runtime_json",
+                }
+
+    legacy_values = read_hash(rds, legacy_key)
+    if legacy_values:
+        return {
+            "key": key,
+            "legacy_key": legacy_key,
+            "enabled": True,
+            "rolling_key": None,
+            "values": normalize_threshold_mapping(legacy_values),
+            "source": "legacy_hash",
+        }
+
+    return {
+        "key": key,
+        "legacy_key": legacy_key,
+        "enabled": True,
+        "rolling_key": None,
+        "values": default_values,
+        "source": "default",
+    }
+
+
+def read_funding_mapping(rds, open_venue: str, hedge_venue: str) -> Dict[str, str]:
+    return dict(read_funding_mapping_config(rds, open_venue, hedge_venue).get("values") or {})
+
+
+def encode_funding_mapping_config(
+    mapping: Dict[str, str],
+    *,
+    enabled: bool = True,
+    rolling_key: Optional[str] = None,
+) -> str:
+    payload: Dict[str, Any] = {
+        "enabled": bool(enabled),
+        "mapping": normalize_threshold_mapping(mapping),
+    }
+    rolling_key = normalize_optional_text(rolling_key)
+    if rolling_key:
+        payload["rolling_key"] = rolling_key
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
 def generate_threshold_fields(
@@ -1607,14 +1692,16 @@ def sync_funding_thresholds(
     dump_keys = [f"fr_dump_symbols:{key_suffix}"]
     fwd_keys = [f"fr_fwd_trade_symbols:{key_suffix}"]
     bwd_keys = [f"fr_bwd_trade_symbols:{key_suffix}"]
-    rolling_key = f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}"
+    stored_cfg = read_funding_mapping_config(rds, open_venue, hedge_venue)
+    rolling_key = (
+        normalize_optional_text(stored_cfg.get("rolling_key"))
+        or f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}"
+    )
     write_key = f"fr_funding_thresholds_{open_venue}_{hedge_venue}"
 
     mapping = normalize_threshold_mapping(mapping or {})
     if not mapping:
-        mapping = normalize_threshold_mapping(
-            default_dynamic_funding_mapping(open_venue, hedge_venue)
-        )
+        mapping = dict(stored_cfg.get("values") or {})
     if not mapping:
         raise RuntimeError("funding mapping is empty")
 
@@ -1651,6 +1738,7 @@ def sync_funding_thresholds(
         "write_key": write_key,
         "rolling_key": rolling_key,
         "mapping_key": funding_mapping_key(open_venue, hedge_venue),
+        "mapping_source": stored_cfg.get("source"),
     }
 
 
@@ -1868,11 +1956,22 @@ class RequestHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send_error(400, str(exc))
                 return
-            key = funding_mapping_key(open_venue, hedge_venue)
-            values = read_funding_mapping(
+            cfg = read_funding_mapping_config(
                 self.server.context.redis_client, open_venue, hedge_venue
             )
-            self._send_json(200, {"key": key, "count": len(values), "values": values})
+            values = dict(cfg.get("values") or {})
+            self._send_json(
+                200,
+                {
+                    "key": cfg.get("key") or funding_mapping_key(open_venue, hedge_venue),
+                    "legacy_key": cfg.get("legacy_key"),
+                    "count": len(values),
+                    "values": values,
+                    "rolling_key": cfg.get("rolling_key"),
+                    "enabled": cfg.get("enabled"),
+                    "source": cfg.get("source"),
+                },
+            )
             return
 
         if parsed.path == "/api/rolling-params":
@@ -2106,9 +2205,33 @@ class RequestHandler(BaseHTTPRequestHandler):
             if not mapping:
                 self._send_error(400, "mapping is empty")
                 return
+            current_cfg = read_funding_mapping_config(
+                self.server.context.redis_client, open_v, hedge_v
+            )
+            rolling_key = normalize_optional_text(
+                payload.get("rolling_key", current_cfg.get("rolling_key"))
+            )
+            enabled = payload.get("enabled", current_cfg.get("enabled", True))
+            if not isinstance(enabled, bool):
+                enabled = str(enabled).strip().lower() in {"1", "true", "yes", "on"}
             key = funding_mapping_key(open_v, hedge_v)
-            written = write_hash(self.server.context.redis_client, key, mapping)
-            self._send_json(200, {"key": key, "count": written})
+            config_text = encode_funding_mapping_config(
+                mapping,
+                enabled=enabled,
+                rolling_key=rolling_key,
+            )
+            self.server.context.redis_client.set(key, config_text)
+            self._send_json(
+                200,
+                {
+                    "key": key,
+                    "count": len(mapping),
+                    "values": mapping,
+                    "rolling_key": rolling_key,
+                    "enabled": enabled,
+                    "source": "runtime_json",
+                },
+            )
             return
 
         if parsed.path == "/api/rolling-params":
