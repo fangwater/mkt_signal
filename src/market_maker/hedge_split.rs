@@ -1,5 +1,7 @@
 use crate::pre_trade::order_manager::Side;
 
+const MIN_TAIL_NOTIONAL_USDT: f64 = 25.0;
+
 #[derive(Debug, Clone, Copy)]
 pub struct HedgeLevel {
     pub price: f64,
@@ -118,12 +120,17 @@ pub fn split_hedge_orders_round_robin(
         let n = hand_count[idx] as f64;
         let tail_base = tail_qty_base[idx];
         let tail_qty_venue_raw = tail_base / multiplier;
-        let tail_qty_venue = if level.qty_venue_tick.is_finite() && level.qty_venue_tick > 0.0 {
+        let mut tail_qty_venue = if level.qty_venue_tick.is_finite() && level.qty_venue_tick > 0.0 {
             (tail_qty_venue_raw / level.qty_venue_tick + 1e-12).floor() * level.qty_venue_tick
         } else {
             tail_qty_venue_raw
         };
-        let tail_qty_base_aligned = tail_qty_venue * multiplier;
+        let mut tail_qty_base_aligned = tail_qty_venue * multiplier;
+        let tail_notional = tail_qty_base_aligned * level.price;
+        if tail_qty_base_aligned > 1e-12 && tail_notional + 1e-12 < MIN_TAIL_NOTIONAL_USDT {
+            tail_qty_venue = 0.0;
+            tail_qty_base_aligned = 0.0;
+        }
         let dropped_tail_base = (tail_base - tail_qty_base_aligned).max(0.0);
         remaining_qty_base += dropped_tail_base;
 
@@ -224,5 +231,31 @@ mod tests {
         assert!((result.orders[0].qty - 2.0).abs() < 1e-12);
         assert!((result.total_qty_base - 0.2).abs() < 1e-12);
         assert!((result.remaining_qty_base - 0.07).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_split_hedge_orders_round_robin_keeps_small_tail_under_25u() {
+        let levels = vec![
+            HedgeLevel {
+                price: 100.0,
+                qty_venue_one_hand: 1.0,
+                qty_venue_tick: 0.1,
+            },
+            HedgeLevel {
+                price: 100.0,
+                qty_venue_one_hand: 1.0,
+                qty_venue_tick: 0.1,
+            },
+        ];
+
+        let result = split_hedge_orders_round_robin(Some(Side::Sell), 2.2, &levels, 1.0);
+
+        assert_eq!(result.orders.len(), 2);
+        assert_eq!(result.orders[0].level_index, 0);
+        assert!((result.orders[0].qty - 1.0).abs() < 1e-12);
+        assert_eq!(result.orders[1].level_index, 1);
+        assert!((result.orders[1].qty - 1.0).abs() < 1e-12);
+        assert!((result.total_qty_base - 2.0).abs() < 1e-12);
+        assert!((result.remaining_qty_base - 0.2).abs() < 1e-12);
     }
 }
