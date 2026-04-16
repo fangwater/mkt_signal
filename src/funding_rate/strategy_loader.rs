@@ -255,11 +255,11 @@ pub struct StrategyParams {
     #[serde(default = "default_enable_environment_model")]
     pub enable_environment_model: bool,
 
-    /// 是否启用波动率限制下单（预留开关，当前先只做配置透传）
+    /// 是否启用波动率限制下单
     #[serde(default = "default_enable_volatility_limit")]
     pub enable_volatility_limit: bool,
 
-    /// 波动率限制分位数（读取 rolling_metrics 的 open_vol_xx）
+    /// 波动率限制分位数（由下游波动率阈值逻辑使用）
     #[serde(default = "default_open_volatility_limit")]
     pub open_volatility_limit: f64,
 

@@ -22,8 +22,6 @@ pub const FACTOR_ASKBID: &str = "askbid";
 pub const FACTOR_SPREAD: &str = "spread";
 pub const FACTOR_OPEN_PREMIUM_RATE: &str = "open_premium_rate";
 pub const FACTOR_HEDGE_PREMIUM_RATE: &str = "hedge_premium_rate";
-pub const FACTOR_OPEN_VOL: &str = "open_vol";
-pub const FACTOR_HEDGE_VOL: &str = "hedge_vol";
 pub const FACTOR_SPREAD_FR: &str = "spread_fr";
 
 #[derive(Debug, Clone)]

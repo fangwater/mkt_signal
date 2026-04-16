@@ -143,7 +143,7 @@ PARAM_COMMENTS: Dict[str, str] = {
     "enable_return_score_adjust_hegde": "是否启用 return score 调整 MM hedge offset（false=使用中性 score 计算 hedge offset）",
     "enable_environment_model": "是否启用 env 开仓限制（false=继续读取 env / pnlu 并写入 from_key，但不阻拦开仓）",
     "enable_volatility_limit": "是否启用波动率限制下单",
-    "open_volatility_limit": "波动率限制分位数（读取 rolling_metrics 的 open_vol_xx，默认 70）",
+    "open_volatility_limit": "波动率限制分位数（trade signal / MM 决策侧内联波动率阈值采样使用，默认 70）",
     "hedge_aggressive_seq_threshold": "对冲激进阈值(request_seq>=该值时不偏移，但仍为maker限价单)",
     "prediction_mode": "方向预测模式（true=按 return score 仅报单边，false=按当前机制双边同时报单）",
     "enable_open_cancel": "是否启用旧的 MM open 撤单判断（基于 return score 的 MMCancel）",
