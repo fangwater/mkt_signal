@@ -169,7 +169,6 @@ use bytes::Bytes;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::thread::AccessError;
 
 // Thread-local 单例存储
 thread_local! {
@@ -262,15 +261,16 @@ impl MonitorChannel {
         })
     }
 
-    fn try_with_inner<F, R>(f: F) -> Result<R, AccessError>
+    fn try_with_inner<F, R>(f: F) -> Option<R>
     where
         F: FnOnce(&MonitorChannelInner) -> R,
     {
         MONITOR_CHANNEL.try_with(|mc| {
             let mc_ref = mc.borrow();
-            let inner = mc_ref.as_ref().expect("MonitorChannel not initialized");
-            f(inner)
+            mc_ref.as_ref().map(f)
         })
+        .ok()
+        .flatten()
     }
 
     fn with_inner_mut<F, R>(f: F) -> R
@@ -294,6 +294,34 @@ impl MonitorChannel {
         Self::with_inner(|inner| inner.trade_update_seq)
     }
 
+    fn is_mm_mode(&self) -> bool {
+        Self::with_inner(|inner| inner.open_venue == inner.hedge_venue)
+    }
+
+    fn ensure_mm_hedge_strategy_for_position_symbol(&self, symbol: &str) {
+        if !self.is_mm_mode() {
+            return;
+        }
+
+        let open_venue = self.open_venue();
+        let symbol = normalize_symbol_for_internal(symbol);
+        if symbol.is_empty() {
+            return;
+        }
+
+        let net_qty = self.get_position_qty(&symbol, open_venue);
+        if net_qty.abs() <= 1e-12 {
+            return;
+        }
+
+        let strategy_mgr = self.strategy_mgr();
+        let strategy_id = strategy_mgr.borrow_mut().ensure_mm_hedge_strategy(&symbol);
+        debug!(
+            "auto ensured MM hedge strategy from position update: symbol={} venue={:?} net_qty={:.8} strategy_id={}",
+            symbol, open_venue, net_qty, strategy_id
+        );
+    }
+
     /// 获取指定交易场所的最小下单量表
     pub fn venue_min_qty_table(&self, venue: TradingVenue) -> Option<Rc<VenueMinQtyTable>> {
         Self::with_inner(|inner| inner.venue_min_qty_tables.get(&venue).cloned())
@@ -301,9 +329,7 @@ impl MonitorChannel {
 
     /// 尝试获取指定交易场所的最小下单量表（若 MonitorChannel 未初始化则返回 None）
     pub fn try_venue_min_qty_table(&self, venue: TradingVenue) -> Option<Rc<VenueMinQtyTable>> {
-        Self::try_with_inner(|inner| inner.venue_min_qty_tables.get(&venue).cloned())
-            .ok()
-            .flatten()
+        Self::try_with_inner(|inner| inner.venue_min_qty_tables.get(&venue).cloned()).flatten()
     }
 
     /// 获取 order_manager 的引用
@@ -312,7 +338,7 @@ impl MonitorChannel {
     }
 
     pub fn try_order_manager() -> Option<Rc<RefCell<OrderManager>>> {
-        Self::try_with_inner(|inner| inner.order_manager.clone()).ok()
+        Self::try_with_inner(|inner| inner.order_manager.clone())
     }
 
     /// 获取 price_table 的引用
@@ -426,7 +452,7 @@ impl MonitorChannel {
     }
 
     pub fn try_strategy_mgr() -> Option<Rc<RefCell<crate::strategy::StrategyManager>>> {
-        Self::try_with_inner(|inner| inner.strategy_mgr.clone()).ok()
+        Self::try_with_inner(|inner| inner.strategy_mgr.clone())
     }
 
     /// 获取开仓腿的基础余额管理器（margin/spot）
@@ -1298,6 +1324,10 @@ impl MonitorChannel {
                                             if let LegMgr::Futures { um, .. } = &open_leg {
                                                 um.borrow_mut().apply_position(&msg);
                                             }
+                                            MonitorChannel::instance()
+                                                .ensure_mm_hedge_strategy_for_position_symbol(
+                                                    &msg.inst_id,
+                                                );
                                         }
                                         if scope_matches_venue(
                                             account_scope,
@@ -2433,6 +2463,99 @@ mod tests {
         assert!(MonitorChannel::instance()
             .ensure_max_pos_u("FILUSDT", -5.0, 100.0)
             .is_ok());
+    }
+
+    #[test]
+    fn auto_ensures_mm_hedge_strategy_for_existing_mm_position() {
+        let mut um_mgr = BasicUmManager::new(Exchange::Binance);
+        let pos_msg = BasicPositionMsg::create(0, "BTCUSDT".to_string(), 'L', 2.5);
+        um_mgr.apply_position(&pos_msg);
+
+        let open_leg = LegMgr::Futures {
+            exchange: Exchange::Binance,
+            um: Rc::new(RefCell::new(um_mgr)),
+            min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Binance))),
+        };
+        let hedge_leg = LegMgr::Futures {
+            exchange: Exchange::Binance,
+            um: Rc::new(RefCell::new(BasicUmManager::new(Exchange::Binance))),
+            min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Binance))),
+        };
+
+        let mut price_table = PriceTable::new();
+        price_table.update_mark_price("BTCUSDT", 100_000.0, 0);
+
+        let strategy_mgr = Rc::new(RefCell::new(StrategyManager::new()));
+        let inner = MonitorChannelInner {
+            open_venue: TradingVenue::BinanceFutures,
+            hedge_venue: TradingVenue::BinanceFutures,
+            open_leg,
+            hedge_leg,
+            usdt_mgrs: HashMap::new(),
+            price_table: Rc::new(RefCell::new(price_table)),
+            venue_min_qty_tables: HashMap::new(),
+            strategy_mgr: strategy_mgr.clone(),
+            order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
+                BinanceAccountMode::Unified,
+            )))),
+            hedge_residual_map: Rc::new(RefCell::new(HashMap::new())),
+            trade_update_seq: 0,
+        };
+
+        MONITOR_CHANNEL.with(|mc| {
+            *mc.borrow_mut() = Some(inner);
+        });
+
+        MonitorChannel::instance().ensure_mm_hedge_strategy_for_position_symbol("BTCUSDT");
+
+        let snapshots = strategy_mgr.borrow().mm_hedge_snapshots();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].symbol, "BTCUSDT");
+        assert!((snapshots[0].net_qty - 2.5).abs() < 1e-12);
+        assert!((snapshots[0].buy_qty - 2.5).abs() < 1e-12);
+        assert!(snapshots[0].sell_qty.abs() < 1e-12);
+    }
+
+    #[test]
+    fn does_not_auto_ensure_mm_hedge_strategy_outside_mm_mode() {
+        let mut um_mgr = BasicUmManager::new(Exchange::Binance);
+        let pos_msg = BasicPositionMsg::create(0, "BTCUSDT".to_string(), 'L', 2.5);
+        um_mgr.apply_position(&pos_msg);
+
+        let open_leg = LegMgr::Futures {
+            exchange: Exchange::Binance,
+            um: Rc::new(RefCell::new(um_mgr)),
+            min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Binance))),
+        };
+        let hedge_leg = LegMgr::Margin {
+            exchange: Exchange::Binance,
+            bal: Rc::new(RefCell::new(BasicBalanceManager::new(Exchange::Binance))),
+        };
+
+        let strategy_mgr = Rc::new(RefCell::new(StrategyManager::new()));
+        let inner = MonitorChannelInner {
+            open_venue: TradingVenue::BinanceFutures,
+            hedge_venue: TradingVenue::BinanceMargin,
+            open_leg,
+            hedge_leg,
+            usdt_mgrs: HashMap::new(),
+            price_table: Rc::new(RefCell::new(PriceTable::new())),
+            venue_min_qty_tables: HashMap::new(),
+            strategy_mgr: strategy_mgr.clone(),
+            order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
+                BinanceAccountMode::Unified,
+            )))),
+            hedge_residual_map: Rc::new(RefCell::new(HashMap::new())),
+            trade_update_seq: 0,
+        };
+
+        MONITOR_CHANNEL.with(|mc| {
+            *mc.borrow_mut() = Some(inner);
+        });
+
+        MonitorChannel::instance().ensure_mm_hedge_strategy_for_position_symbol("BTCUSDT");
+
+        assert!(strategy_mgr.borrow().mm_hedge_snapshots().is_empty());
     }
 
     #[test]

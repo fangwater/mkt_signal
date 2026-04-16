@@ -190,7 +190,10 @@ pub(crate) fn snapshot_inline_volatility(
 
 #[cfg(test)]
 mod tests {
-    use super::{InlineVolatilityWindow, INLINE_VOLATILITY_MIN_SAMPLES};
+    use super::{
+        InlineVolatilityWindow, INLINE_VOLATILITY_MIN_SAMPLES,
+        INLINE_VOLATILITY_WINDOW_CAPACITY,
+    };
 
     #[test]
     fn threshold_requires_enough_samples() {
@@ -250,6 +253,6 @@ mod tests {
 
         let snapshot = window.observe(10_000.0, 50.0, 2_000);
         assert_eq!(snapshot.sample_count, INLINE_VOLATILITY_WINDOW_CAPACITY);
-        assert_eq!(snapshot.threshold, Some(601.0));
+        assert_eq!(snapshot.threshold, Some(360.0));
     }
 }

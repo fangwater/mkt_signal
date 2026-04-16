@@ -1365,8 +1365,7 @@ impl ModelMsg {
 
 #[cfg(test)]
 mod tests {
-    use super::{ModelMsg, MODEL_MSG_TYPE, MODEL_STATUS_OK};
-    use bytes::{BufMut, BytesMut};
+    use super::{ModelMsg, MODEL_STATUS_OK};
 
     #[test]
     fn model_msg_roundtrip_preserves_score_quantile() {

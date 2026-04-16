@@ -224,13 +224,13 @@ mod tests {
         }];
 
         // contract multiplier = 0.1 base/contract, so 0.27 base tail = 2.7 contracts.
-        // tail should be floor-aligned to 2 contracts, with 0.07 base left for next round.
+        // tail is floor-aligned to 2 contracts, but 0.2 * 100 = 20 USDT is below the 25 USDT
+        // minimum tail notional threshold, so the whole tail is dropped and kept as remainder.
         let result = split_hedge_orders_round_robin(Some(Side::Sell), 0.27, &levels, 0.1);
 
-        assert_eq!(result.orders.len(), 1);
-        assert!((result.orders[0].qty - 2.0).abs() < 1e-12);
-        assert!((result.total_qty_base - 0.2).abs() < 1e-12);
-        assert!((result.remaining_qty_base - 0.07).abs() < 1e-12);
+        assert_eq!(result.orders.len(), 0);
+        assert!(result.total_qty_base.abs() < 1e-12);
+        assert!((result.remaining_qty_base - 0.27).abs() < 1e-12);
     }
 
     #[test]
