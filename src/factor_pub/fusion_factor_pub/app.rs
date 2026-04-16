@@ -166,19 +166,35 @@ impl RlFactorPublisher {
             .max_subscribers(RL_FACTOR_MAX_SUBSCRIBERS)
             .subscriber_max_buffer_size(RL_FACTOR_SUBSCRIBER_MAX_BUFFER_SIZE)
             .history_size(RL_FACTOR_HISTORY_SIZE)
-            .create()
+            .open_or_create()
             .with_context(|| {
                 format!(
-                    "create rl factor service failed: service={} hint=producer must own service creation",
+                    "open_or_create rl factor service failed: service={}",
                     service_path
                 )
             })?;
         let actual_subscriber_buffer_size = service.static_config().subscriber_max_buffer_size();
         let actual_history_size = service.static_config().history_size();
+        if actual_subscriber_buffer_size < RL_FACTOR_SUBSCRIBER_MAX_BUFFER_SIZE {
+            bail!(
+                "rl factor service has stale subscriber_max_buffer_size: service={} expected_min={} actual={} hint=stop producer/consumers, cleanup stale iceoryx service, then restart producer first",
+                service_path,
+                RL_FACTOR_SUBSCRIBER_MAX_BUFFER_SIZE,
+                actual_subscriber_buffer_size
+            );
+        }
+        if actual_history_size < RL_FACTOR_HISTORY_SIZE {
+            bail!(
+                "rl factor service has stale history_size: service={} expected_min={} actual={} hint=stop producer/consumers, cleanup stale iceoryx service, then restart producer first",
+                service_path,
+                RL_FACTOR_HISTORY_SIZE,
+                actual_history_size
+            );
+        }
         let publisher = service.publisher_builder().create()?;
 
         info!(
-            "RlFactorPublisher created: service={} factor_index={} history_size={} subscriber_max_buffer_size={}",
+            "RlFactorPublisher ready: service={} factor_index={} history_size={} subscriber_max_buffer_size={}",
             service_path,
             factor_index,
             actual_history_size,
