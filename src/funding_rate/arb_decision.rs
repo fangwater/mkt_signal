@@ -49,7 +49,7 @@ pub const DEFAULT_ARBITRAGE_SIGNAL_CHANNEL: &str = "trade_signal";
 pub const DEFAULT_ARBITRAGE_BACKWARD_CHANNEL: &str = "trade_query";
 pub const DEFAULT_PNLU_KEY_SUFFIX: &str = "_pnlu_factor_thresholds";
 pub const DEFAULT_ENV_MODEL_TRUE_THRESHOLD: f64 = 0.0;
-const TARGET_FACTOR_MAX_AGE_MS: i64 = 10_000;
+const TARGET_FACTOR_MAX_AGE_MS: i64 = 30_000;
 const FUNDING_ARB_SHELL_NAME: &str = "ArbDecision(FundingArb)";
 const SPREAD_ARB_SHELL_NAME: &str = "ArbDecision(SpreadArb)";
 

@@ -30,7 +30,7 @@ pub(crate) const DEFAULT_PNLU_KEY_SUFFIX: &str = "_pnlu_factor_thresholds";
 pub(crate) const PNLU_MAX_AGE_SECS: i64 = 30 * 60;
 pub(crate) const TARGET_FACTOR_NAME: &str = "rl_return_volatility";
 pub(crate) const TARGET_FACTOR_KEY_PREFIX: &str = TARGET_FACTOR_NAME;
-pub(crate) const TARGET_FACTOR_MAX_AGE_MS: i64 = 10_000;
+pub(crate) const TARGET_FACTOR_MAX_AGE_MS: i64 = 30_000;
 pub(crate) const ENV_MODEL_TRUE_THRESHOLD_DEFAULT: f64 = 0.0;
 
 #[derive(Debug, Clone, Copy, Default)]

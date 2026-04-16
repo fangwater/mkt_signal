@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 
-pub(crate) const INLINE_VOLATILITY_WINDOW_CAPACITY: usize = 1_200;
+pub(crate) const INLINE_VOLATILITY_WINDOW_CAPACITY: usize = 720;
 pub(crate) const INLINE_VOLATILITY_MIN_SAMPLES: usize = 10;
 
 #[derive(Debug, Clone, Copy)]
