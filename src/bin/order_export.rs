@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
-use chrono::{Datelike, Duration, NaiveDate, TimeZone, Utc};
+use chrono::{
+    DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, SecondsFormat, TimeZone, Utc,
+};
 use clap::Parser;
 use log::info;
 use mkt_signal::persist_manager::{self, exporter, RocksDbStore};
@@ -16,9 +18,9 @@ fn main() -> Result<()> {
     let resolved = ResolvedArgs::from_args(args)?;
 
     info!(
-        "export env_name={} date={} input_dir={} output_dir={}",
+        "export env_name={} window={} input_dir={} output_dir={}",
         resolved.env_name,
-        resolved.date.format("%Y-%m-%d"),
+        resolved.window_label,
         resolved.input_dir.display(),
         resolved.output_dir.display()
     );
@@ -31,15 +33,16 @@ fn main() -> Result<()> {
         &tuning,
     )?;
 
-    let (start_us, end_us) = utc_day_bounds_us(resolved.date)?;
-    exporter::export_window_to_dir(&store, &resolved.output_dir, start_us, end_us)?;
+    exporter::export_window_to_dir(
+        &store,
+        &resolved.output_dir,
+        resolved.start_us,
+        resolved.end_us,
+    )?;
 
     info!(
-        "export finished env_name={} date={} window={}..{}",
-        resolved.env_name,
-        resolved.date.format("%Y-%m-%d"),
-        start_us,
-        end_us
+        "export finished env_name={} window={} bounds={}..{}",
+        resolved.env_name, resolved.window_label, resolved.start_us, resolved.end_us
     );
     Ok(())
 }
@@ -47,7 +50,7 @@ fn main() -> Result<()> {
 #[derive(Parser, Debug)]
 #[command(
     name = "order_export",
-    about = "Export one UTC day of order parquet files from RocksDB"
+    about = "Export UTC day or time-range order parquet files from RocksDB"
 )]
 struct Args {
     /// Base directory that contains env folders like /home/ubuntu/binance_mm_alpha
@@ -61,8 +64,16 @@ struct Args {
     env_name: Option<String>,
 
     /// UTC date to export, in YYYY-MM-DD format.
-    #[arg(long, required = true, value_parser = parse_utc_date)]
-    date: NaiveDate,
+    #[arg(long, value_parser = parse_utc_date, conflicts_with_all = ["start", "end"])]
+    date: Option<NaiveDate>,
+
+    /// UTC start timestamp to export, for example 2026-03-25T01:02:03Z.
+    #[arg(long, value_parser = parse_utc_datetime, requires = "end", conflicts_with = "date")]
+    start: Option<DateTime<Utc>>,
+
+    /// UTC end timestamp to export, inclusive, for example 2026-03-25T02:03:04Z.
+    #[arg(long, value_parser = parse_utc_datetime, requires = "start", conflicts_with = "date")]
+    end: Option<DateTime<Utc>>,
 
     /// Override RocksDB directory. Relative paths resolve under base_dir.
     #[arg(long)]
@@ -76,9 +87,19 @@ struct Args {
 #[derive(Debug)]
 struct ResolvedArgs {
     env_name: String,
-    date: NaiveDate,
+    window_label: String,
+    start_us: u64,
+    end_us: u64,
     input_dir: PathBuf,
     output_dir: PathBuf,
+}
+
+#[derive(Debug)]
+struct ExportWindow {
+    label: String,
+    start_us: u64,
+    end_us: u64,
+    output_dir_name: String,
 }
 
 impl ResolvedArgs {
@@ -97,7 +118,7 @@ impl ResolvedArgs {
             }))?;
         validate_supported_env_name(&env_name)?;
 
-        let date = args.date;
+        let window = ExportWindow::from_cli_inputs(args.date, args.start, args.end)?;
         let input_dir = resolve_path(
             &base_dir,
             args.input_dir.or_else(|| {
@@ -112,7 +133,7 @@ impl ResolvedArgs {
             Some(path) => resolve_path(&base_dir, Some(path), PathBuf::new()),
             None => std::env::current_dir().context("failed to resolve current directory")?,
         };
-        let output_dir = output_root.join(date.format("%Y%m%d").to_string());
+        let output_dir = output_root.join(&window.output_dir_name);
 
         if !input_dir.exists() {
             return Err(anyhow!("input_dir does not exist: {}", input_dir.display()));
@@ -120,9 +141,63 @@ impl ResolvedArgs {
 
         Ok(Self {
             env_name,
-            date,
+            window_label: window.label,
+            start_us: window.start_us,
+            end_us: window.end_us,
             input_dir,
             output_dir,
+        })
+    }
+}
+
+impl ExportWindow {
+    fn from_cli_inputs(
+        date: Option<NaiveDate>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
+    ) -> Result<Self> {
+        match (date, start, end) {
+            (Some(date), None, None) => Self::for_date(date),
+            (None, Some(start), Some(end)) => Self::for_explicit_range(start, end),
+            (None, None, None) => Err(anyhow!("either --date or --start/--end is required")),
+            _ => Err(anyhow!("use either --date or both --start and --end")),
+        }
+    }
+
+    fn for_date(date: NaiveDate) -> Result<Self> {
+        let (start_us, end_us) = utc_day_bounds_us(date)?;
+        Ok(Self {
+            label: date.format("%Y-%m-%d").to_string(),
+            start_us,
+            end_us,
+            output_dir_name: date.format("%Y%m%d").to_string(),
+        })
+    }
+
+    fn for_explicit_range(start: DateTime<Utc>, end: DateTime<Utc>) -> Result<Self> {
+        let start_us = timestamp_to_micros(start, "start")?;
+        let end_us = timestamp_to_micros(end, "end")?;
+        if end_us < start_us {
+            return Err(anyhow!(
+                "--end must be greater than or equal to --start (got {} < {})",
+                format_utc_datetime(end),
+                format_utc_datetime(start)
+            ));
+        }
+
+        Ok(Self {
+            label: format!(
+                "{}..{}",
+                format_utc_datetime(start),
+                format_utc_datetime(end)
+            ),
+            start_us,
+            end_us,
+            output_dir_name: format!(
+                "{}__{}",
+                format_output_dir_component(start),
+                format_output_dir_component(end)
+            ),
         })
     }
 }
@@ -209,6 +284,23 @@ fn parse_utc_date(input: &str) -> Result<NaiveDate, String> {
         .map_err(|err| format!("invalid UTC date '{}': {}", input, err))
 }
 
+fn parse_utc_datetime(input: &str) -> Result<DateTime<Utc>, String> {
+    if let Ok(parsed) = DateTime::parse_from_rfc3339(input) {
+        return Ok(parsed.with_timezone(&Utc));
+    }
+
+    for fmt in ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%d %H:%M:%S%.f"] {
+        if let Ok(parsed) = NaiveDateTime::parse_from_str(input, fmt) {
+            return Ok(Utc.from_utc_datetime(&parsed));
+        }
+    }
+
+    Err(format!(
+        "invalid UTC timestamp '{}': expected RFC3339 like 2026-03-25T01:02:03Z",
+        input
+    ))
+}
+
 fn utc_day_bounds_us(date: NaiveDate) -> Result<(u64, u64)> {
     let start = Utc
         .with_ymd_and_hms(date.year(), date.month(), date.day(), 0, 0, 0)
@@ -220,6 +312,19 @@ fn utc_day_bounds_us(date: NaiveDate) -> Result<(u64, u64)> {
     let end_us = u64::try_from(end.timestamp_micros())
         .map_err(|_| anyhow!("negative end timestamp for {}", date))?;
     Ok((start_us, end_us))
+}
+
+fn timestamp_to_micros(ts: DateTime<Utc>, field: &str) -> Result<u64> {
+    u64::try_from(ts.timestamp_micros())
+        .map_err(|_| anyhow!("negative {} timestamp {}", field, format_utc_datetime(ts)))
+}
+
+fn format_utc_datetime(ts: DateTime<Utc>) -> String {
+    ts.to_rfc3339_opts(SecondsFormat::Micros, true)
+}
+
+fn format_output_dir_component(ts: DateTime<Utc>) -> String {
+    format_utc_datetime(ts).replace('-', "").replace(':', "")
 }
 
 #[cfg(test)]
@@ -254,5 +359,64 @@ mod tests {
             utc_day_bounds_us(NaiveDate::from_ymd_opt(2026, 3, 25).unwrap()).unwrap();
         assert_eq!(start_us, 1_774_396_800_000_000);
         assert_eq!(end_us, 1_774_483_199_999_999);
+    }
+
+    #[test]
+    fn export_window_accepts_date_mode() {
+        let window = ExportWindow::from_cli_inputs(
+            Some(NaiveDate::from_ymd_opt(2026, 3, 25).unwrap()),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(window.label, "2026-03-25");
+        assert_eq!(window.start_us, 1_774_396_800_000_000);
+        assert_eq!(window.end_us, 1_774_483_199_999_999);
+        assert_eq!(window.output_dir_name, "20260325");
+    }
+
+    #[test]
+    fn export_window_accepts_explicit_time_range() {
+        let start = parse_utc_datetime("2026-03-25T01:02:03Z").unwrap();
+        let end = parse_utc_datetime("2026-03-25T02:03:04.123456Z").unwrap();
+        let window = ExportWindow::from_cli_inputs(None, Some(start), Some(end)).unwrap();
+
+        assert_eq!(
+            window.label,
+            "2026-03-25T01:02:03.000000Z..2026-03-25T02:03:04.123456Z"
+        );
+        assert_eq!(window.start_us, 1_774_400_523_000_000);
+        assert_eq!(window.end_us, 1_774_404_184_123_456);
+        assert_eq!(
+            window.output_dir_name,
+            "20260325T010203.000000Z__20260325T020304.123456Z"
+        );
+    }
+
+    #[test]
+    fn export_window_rejects_missing_mode() {
+        let err = ExportWindow::from_cli_inputs(None, None, None).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("either --date or --start/--end is required"));
+    }
+
+    #[test]
+    fn export_window_rejects_reverse_range() {
+        let start = parse_utc_datetime("2026-03-25T02:03:04Z").unwrap();
+        let end = parse_utc_datetime("2026-03-25T01:02:03Z").unwrap();
+        let err = ExportWindow::from_cli_inputs(None, Some(start), Some(end)).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("--end must be greater than or equal to --start"));
+    }
+
+    #[test]
+    fn parse_utc_datetime_accepts_naive_utc_input() {
+        let parsed = parse_utc_datetime("2026-03-25 01:02:03.123456").unwrap();
+        assert_eq!(
+            parsed.to_rfc3339_opts(SecondsFormat::Micros, true),
+            "2026-03-25T01:02:03.123456Z"
+        );
     }
 }
