@@ -3,6 +3,7 @@ use log::{info, warn};
 use std::collections::HashMap;
 
 use super::super::factor_value_hub::EnvironmentSignalResult;
+use super::super::inline_volatility::INLINE_VOLATILITY_MIN_SAMPLES;
 use super::super::mkt_channel::MktChannel;
 use super::super::symbol_list::SymbolList;
 use super::from_key::{build_from_key, select_prediction_side};
@@ -99,26 +100,41 @@ impl MmOpenDecision {
                 None,
             ));
         };
+        let open_volatility_snapshot = state.observe_open_volatility(&symbol_key, now_us / 1000, volatility);
         if state.enable_volatility_limit {
-            let open_volatility_threshold =
-                match state.lookup_open_volatility_threshold(&symbol_key, now_us / 1000) {
-                    Ok(value) => value,
-                    Err(reason) => {
-                        return Ok(MmOpenEvalResult::skipped(
-                            &symbol_key,
-                            &reason,
-                            None,
-                            Some(volatility),
-                            None,
-                        ))
-                    }
-                };
-            if volatility > open_volatility_threshold {
+            let Some(open_volatility_threshold) = open_volatility_snapshot.threshold else {
                 return Ok(MmOpenEvalResult::skipped(
                     &symbol_key,
                     &format!(
-                        "volatility_limited(value={:.8}>threshold={:.8})",
-                        volatility, open_volatility_threshold
+                        "volatility_threshold_warming_up(samples={} min_samples={} percentile={:.2})",
+                        open_volatility_snapshot.sample_count,
+                        INLINE_VOLATILITY_MIN_SAMPLES,
+                        open_volatility_snapshot.percentile
+                    ),
+                    None,
+                    Some(volatility),
+                    None,
+                ));
+            };
+            if volatility > open_volatility_threshold {
+                warn!(
+                    "MmDecision: MMOpen blocked by inline volatility threshold symbol={} current={:.8} threshold={:.8} samples={} percentile={:.2} last_recompute_tp_ms={:?}",
+                    symbol_key,
+                    open_volatility_snapshot.current,
+                    open_volatility_threshold,
+                    open_volatility_snapshot.sample_count,
+                    open_volatility_snapshot.percentile,
+                    open_volatility_snapshot.last_recompute_tp_ms
+                );
+                return Ok(MmOpenEvalResult::skipped(
+                    &symbol_key,
+                    &format!(
+                        "volatility_limited(current={:.8}>threshold={:.8},samples={},percentile={:.2},last_recompute_tp_ms={})",
+                        open_volatility_snapshot.current,
+                        open_volatility_threshold,
+                        open_volatility_snapshot.sample_count,
+                        open_volatility_snapshot.percentile,
+                        open_volatility_snapshot.last_recompute_tp_ms.unwrap_or_default()
                     ),
                     None,
                     Some(volatility),
@@ -318,6 +334,7 @@ struct MmOpenEvalResult {
     reason: String,
     return_score: Option<f64>,
     volatility: Option<f64>,
+    vol_tr: Option<f64>,
     env_note: String,
     env_score: Option<f64>,
     env_threshold: Option<f64>,
@@ -339,6 +356,7 @@ impl MmOpenEvalResult {
             reason: reason.to_string(),
             return_score,
             volatility,
+            vol_tr: extract_vol_tr(reason),
             env_note,
             env_score,
             env_threshold,
@@ -361,12 +379,21 @@ impl MmOpenEvalResult {
             reason: reason.to_string(),
             return_score,
             volatility,
+            vol_tr: extract_vol_tr(reason),
             env_note,
             env_score,
             env_threshold,
             signal_type: Some(signal_type),
         }
     }
+}
+
+fn extract_vol_tr(reason: &str) -> Option<f64> {
+    let key = "threshold=";
+    let start = reason.find(key)? + key.len();
+    let rest = &reason[start..];
+    let end = rest.find([',', ')']).unwrap_or(rest.len());
+    rest[..end].trim().parse::<f64>().ok()
 }
 
 fn env_fields(env: Option<&EnvironmentSignalResult>) -> (String, Option<f64>, Option<f64>) {
@@ -453,8 +480,8 @@ fn build_rule(widths: &[usize], left: char, mid: char, right: char) -> String {
 }
 
 fn format_mm_open_eval_table(results: &[MmOpenEvalResult]) -> String {
-    let widths = [14usize, 6, 10, 10, 34, 44];
-    let headers = ["symbol", "result", "ret", "vol", "env", "reason"];
+    let widths = [14usize, 6, 10, 10, 10, 34, 44];
+    let headers = ["symbol", "result", "ret", "vol", "vol_tr", "env", "reason"];
     let mut lines = Vec::new();
     lines.push(build_rule(&widths, '┌', '┬', '┐'));
     let header_cells: Vec<String> = headers
@@ -463,13 +490,14 @@ fn format_mm_open_eval_table(results: &[MmOpenEvalResult]) -> String {
         .map(|(header, width)| pad_cell(header, *width))
         .collect();
     lines.push(format!(
-        "│ {} │ {} │ {} │ {} │ {} │ {} │",
+        "│ {} │ {} │ {} │ {} │ {} │ {} │ {} │",
         header_cells[0],
         header_cells[1],
         header_cells[2],
         header_cells[3],
         header_cells[4],
         header_cells[5],
+        header_cells[6],
     ));
     lines.push(build_rule(&widths, '├', '┼', '┤'));
     for item in results {
@@ -478,13 +506,14 @@ fn format_mm_open_eval_table(results: &[MmOpenEvalResult]) -> String {
             _ => item.result,
         };
         lines.push(format!(
-            "│ {} │ {} │ {} │ {} │ {} │ {} │",
+            "│ {} │ {} │ {} │ {} │ {} │ {} │ {} │",
             pad_cell(&item.symbol, widths[0]),
             pad_cell(signal_hint, widths[1]),
             pad_cell(&format_opt_f64(item.return_score), widths[2]),
             pad_cell(&format_opt_f64(item.volatility), widths[3]),
-            pad_cell(&format_env_cell(item), widths[4]),
-            pad_cell(&item.reason, widths[5]),
+            pad_cell(&format_opt_f64(item.vol_tr), widths[4]),
+            pad_cell(&format_env_cell(item), widths[5]),
+            pad_cell(&item.reason, widths[6]),
         ));
     }
     lines.push(build_rule(&widths, '└', '┴', '┘'));

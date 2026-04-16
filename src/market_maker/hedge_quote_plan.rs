@@ -76,7 +76,7 @@ pub fn resolve_mm_hedge_signal_inputs(
         enable_return_score_adjust_hedge,
         score_lookup.score_quantile,
     );
-    let factor_lookup = factor_value_hub.lookup_factor_value(symbol, venue);
+    let factor_lookup = factor_value_hub.lookup_factor_value_with_last_valid_fallback(symbol, venue);
     let volatility = factor_lookup
         .target_factor_value
         .filter(|v| v.is_finite())

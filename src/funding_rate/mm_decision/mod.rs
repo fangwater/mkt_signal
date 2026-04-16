@@ -319,15 +319,6 @@ impl MmDecision {
         self.state.update_return_score_thresholds(thresholds);
     }
 
-    pub fn update_open_volatility_thresholds(
-        &mut self,
-        thresholds: HashMap<String, f64>,
-        update_tp_ms: HashMap<String, Option<i64>>,
-    ) {
-        self.state
-            .update_open_volatility_thresholds(thresholds, update_tp_ms);
-    }
-
     pub fn process_open_interval(&mut self) {
         self.open_decision.process_interval(&mut self.state);
     }
