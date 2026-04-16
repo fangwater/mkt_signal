@@ -458,7 +458,8 @@ impl FactorValueHub {
                                     .map(|prev| snapshot.timestamp_ms >= prev.timestamp_ms)
                                     .unwrap_or(true);
                                 if should_update_last_valid {
-                                    self.last_valid_factor_value_cache.insert(cache_key, snapshot);
+                                    self.last_valid_factor_value_cache
+                                        .insert(cache_key, snapshot);
                                 }
                             }
                         }
@@ -663,7 +664,8 @@ impl FactorValueHub {
                                     .map(|prev| snapshot.timestamp_ms >= prev.timestamp_ms)
                                     .unwrap_or(true);
                                 if should_update_last_valid {
-                                    self.last_valid_factor_value_cache.insert(cache_key, snapshot);
+                                    self.last_valid_factor_value_cache
+                                        .insert(cache_key, snapshot);
                                 }
                             }
                         }
