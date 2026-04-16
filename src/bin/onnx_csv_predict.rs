@@ -6,7 +6,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use log::info;
-use mkt_signal::factor_pub::model_pub::model::OnnxModel;
+use mkt_model_runtime::OnnxModel;
 use serde::Deserialize;
 use std::env;
 use std::fs::{self, File};

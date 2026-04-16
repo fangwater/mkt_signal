@@ -2102,6 +2102,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mkt_model_runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ort",
+]
+
+[[package]]
 name = "mkt_signal"
 version = "0.1.0"
 dependencies = [
@@ -2130,9 +2138,9 @@ dependencies = [
  "libc",
  "local-ip-address",
  "log",
+ "mkt_model_runtime",
  "native-tls",
  "once_cell",
- "ort",
  "parking_lot",
  "polars",
  "polars-time",

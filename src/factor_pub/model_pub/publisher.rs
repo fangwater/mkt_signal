@@ -3,7 +3,8 @@ use iceoryx2::port::publisher::Publisher;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 
-pub const MODEL_PAYLOAD_MAX_BYTES: usize = 2048;
+use crate::common::model_ipc::MODEL_PAYLOAD_MAX_BYTES;
+
 const MODEL_OUTPUT_SUBSCRIBER_MAX_BUFFER_SIZE: usize = 256;
 
 pub struct ModelPublisher {
