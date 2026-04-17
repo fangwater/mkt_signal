@@ -1132,7 +1132,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="PNLU status web server")
     parser.add_argument("--redis-url", default=os.environ.get("REDIS_URL", ""))
     parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=8127)
+    parser.add_argument("--port", type=int, default=6327)
     parser.add_argument("--redis-host", default="127.0.0.1")
     parser.add_argument("--redis-port", type=int, default=6379)
     parser.add_argument("--redis-db", type=int, default=0)
