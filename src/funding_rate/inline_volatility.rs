@@ -191,8 +191,7 @@ pub(crate) fn snapshot_inline_volatility(
 #[cfg(test)]
 mod tests {
     use super::{
-        InlineVolatilityWindow, INLINE_VOLATILITY_MIN_SAMPLES,
-        INLINE_VOLATILITY_WINDOW_CAPACITY,
+        InlineVolatilityWindow, INLINE_VOLATILITY_MIN_SAMPLES, INLINE_VOLATILITY_WINDOW_CAPACITY,
     };
 
     #[test]

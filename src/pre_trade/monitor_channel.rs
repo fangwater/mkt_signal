@@ -265,12 +265,13 @@ impl MonitorChannel {
     where
         F: FnOnce(&MonitorChannelInner) -> R,
     {
-        MONITOR_CHANNEL.try_with(|mc| {
-            let mc_ref = mc.borrow();
-            mc_ref.as_ref().map(f)
-        })
-        .ok()
-        .flatten()
+        MONITOR_CHANNEL
+            .try_with(|mc| {
+                let mc_ref = mc.borrow();
+                mc_ref.as_ref().map(f)
+            })
+            .ok()
+            .flatten()
     }
 
     fn with_inner_mut<F, R>(f: F) -> R
