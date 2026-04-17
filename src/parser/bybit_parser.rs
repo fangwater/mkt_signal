@@ -391,82 +391,135 @@ impl BybitTradeParser {
         // Extract trade data from Bybit trade message
         // Bybit trade message format: data is an array with trade objects
         if let Some(data_array) = json_value.get("data").and_then(|v| v.as_array()) {
-            if let Some(trade_data) = data_array.first() {
-                if let (
-                    Some(symbol),
-                    Some(side_str),
-                    Some(price_str),
-                    Some(volume_str),
-                    Some(timestamp),
-                    Some(id_str),
-                ) = (
-                    trade_data.get("s").and_then(|v| v.as_str()), // 交易对
-                    trade_data.get("S").and_then(|v| v.as_str()), // 买卖方向
-                    trade_data.get("p").and_then(|v| v.as_str()), // 成交价格
-                    trade_data.get("v").and_then(|v| v.as_str()), // 成交数量
-                    trade_data.get("T").and_then(|v| v.as_i64()), // 成交时间
-                    trade_data.get("i").and_then(|v| v.as_str()), // 交易ID
-                ) {
-                    // Parse price and volume
-                    if let (Ok(price), Ok(amount)) =
-                        (price_str.parse::<f64>(), volume_str.parse::<f64>())
-                    {
-                        // Filter out zero values
-                        if price <= 0.0 || amount <= 0.0 {
-                            return 0;
-                        }
+            let mut parsed_count = 0;
 
-                        // Convert Bybit side to char
-                        let side = match side_str {
-                            "Sell" => 'S',
-                            "Buy" => 'B',
-                            _ => {
-                                eprintln!("Unknown side: {}", side_str);
-                                return 0;
-                            }
-                        };
-
-                        // Parse ID - could be UUID or numeric
-                        let trade_id = if is_uuid_fast(id_str) {
-                            match uuid_to_int64_mixed(id_str) {
-                                Ok(id) => id,
-                                Err(e) => {
-                                    eprintln!("Failed to parse UUID {}: {}", id_str, e);
-                                    return 0;
-                                }
-                            }
-                        } else if is_numeric(id_str) {
-                            match id_str.parse::<i64>() {
-                                Ok(id) => id,
-                                Err(e) => {
-                                    eprintln!("Failed to parse numeric ID {}: {}", id_str, e);
-                                    return 0;
-                                }
-                            }
-                        } else {
-                            eprintln!("Unknown ID format: {}", id_str);
-                            return 0;
-                        };
-
-                        // Create trade message
-                        let trade_msg = TradeMsg::create(
-                            symbol.to_string(),
-                            trade_id,
-                            timestamp,
-                            side,
-                            price,
-                            amount,
-                        );
-
-                        // Send trade message
-                        if tx.send(trade_msg.to_bytes()).is_ok() {
-                            return 1;
-                        }
-                    }
-                }
+            for trade_data in data_array {
+                parsed_count += self.parse_trade_item(trade_data, tx);
             }
+
+            return parsed_count;
         }
         0
+    }
+
+    fn parse_trade_item(
+        &self,
+        trade_data: &serde_json::Value,
+        tx: &mpsc::UnboundedSender<Bytes>,
+    ) -> usize {
+        if let (
+            Some(symbol),
+            Some(side_str),
+            Some(price_str),
+            Some(volume_str),
+            Some(timestamp),
+            Some(id_str),
+        ) = (
+            trade_data.get("s").and_then(|v| v.as_str()), // 交易对
+            trade_data.get("S").and_then(|v| v.as_str()), // 买卖方向
+            trade_data.get("p").and_then(|v| v.as_str()), // 成交价格
+            trade_data.get("v").and_then(|v| v.as_str()), // 成交数量
+            trade_data.get("T").and_then(|v| v.as_i64()), // 成交时间
+            trade_data.get("i").and_then(|v| v.as_str()), // 交易ID
+        ) {
+            let (Ok(price), Ok(amount)) = (price_str.parse::<f64>(), volume_str.parse::<f64>())
+            else {
+                return 0;
+            };
+
+            // Filter out zero values
+            if price <= 0.0 || amount <= 0.0 {
+                return 0;
+            }
+
+            let side = match side_str {
+                "Sell" => 'S',
+                "Buy" => 'B',
+                _ => {
+                    eprintln!("Unknown side: {}", side_str);
+                    return 0;
+                }
+            };
+
+            let trade_id = if is_uuid_fast(id_str) {
+                match uuid_to_int64_mixed(id_str) {
+                    Ok(id) => id,
+                    Err(e) => {
+                        eprintln!("Failed to parse UUID {}: {}", id_str, e);
+                        return 0;
+                    }
+                }
+            } else if is_numeric(id_str) {
+                match id_str.parse::<i64>() {
+                    Ok(id) => id,
+                    Err(e) => {
+                        eprintln!("Failed to parse numeric ID {}: {}", id_str, e);
+                        return 0;
+                    }
+                }
+            } else {
+                eprintln!("Unknown ID format: {}", id_str);
+                return 0;
+            };
+
+            let trade_msg =
+                TradeMsg::create(symbol.to_string(), trade_id, timestamp, side, price, amount);
+
+            if tx.send(trade_msg.to_bytes()).is_ok() {
+                return 1;
+            }
+        }
+
+        0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bybit_trade_parser_emits_all_trade_items() {
+        let parser = BybitTradeParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let msg = Bytes::from(
+            r#"{
+                "topic":"publicTrade.BTCUSDT",
+                "type":"snapshot",
+                "ts":1672304486868,
+                "data":[
+                    {
+                        "T":1672304486865,
+                        "s":"BTCUSDT",
+                        "S":"Buy",
+                        "v":"0.001",
+                        "p":"16578.50",
+                        "L":"PlusTick",
+                        "i":"20f43950-d8dd-5b31-9112-a178eb6023af",
+                        "BT":false,
+                        "seq":1783284617
+                    },
+                    {
+                        "T":1672304486866,
+                        "s":"BTCUSDT",
+                        "S":"Sell",
+                        "v":"0.002",
+                        "p":"16578.00",
+                        "L":"MinusTick",
+                        "i":"120",
+                        "BT":false,
+                        "seq":1783284618
+                    }
+                ]
+            }"#,
+        );
+
+        let parsed = parser.parse(msg, &tx);
+
+        assert_eq!(parsed, 2);
+        assert!(rx.try_recv().is_ok());
+        assert!(rx.try_recv().is_ok());
+        assert!(rx.try_recv().is_err());
     }
 }
 

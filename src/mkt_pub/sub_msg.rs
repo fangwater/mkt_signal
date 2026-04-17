@@ -8,6 +8,8 @@ use std::collections::HashSet;
 const BINANCE_SPOT_WS_URL: &str = "wss://stream.binance.com:9443/ws";
 const BINANCE_FUTURES_PUBLIC_WS_URL: &str = "wss://fstream.binance.com/public/ws";
 const BINANCE_FUTURES_MARKET_WS_URL: &str = "wss://fstream.binance.com/market/ws";
+const BYBIT_SPOT_PUBLIC_WS_URL: &str = "wss://stream.bybit.com/v5/public/spot";
+const BYBIT_LINEAR_PUBLIC_WS_URL: &str = "wss://stream.bybit.com/v5/public/linear";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinanceFuturesWsRoute {
@@ -340,8 +342,19 @@ pub struct BybitPerpsSubscribeMsgs {
 }
 
 impl BybitPerpsSubscribeMsgs {
-    pub const WS_URL: &'static str = "wss://stream.bybit.com/v5/public/linear";
+    pub const WS_URL: &'static str = BYBIT_LINEAR_PUBLIC_WS_URL;
     pub async fn new(cfg: &Config) -> Self {
+        if cfg.venue != TradingVenue::BybitFutures {
+            warn!(
+                "bybit derivatives metrics are only supported on bybit-futures; current venue={} will skip derivatives subscriptions",
+                cfg.venue.data_pub_slug()
+            );
+            return Self {
+                ticker_stream_msgs: Vec::new(),
+                liquidation_orders_msgs: Vec::new(),
+            };
+        }
+
         let symbols: Vec<String> = cfg.get_symbols().await.unwrap();
         let batch_size = cfg.get_batch_size();
         let mut ticker_stream_msgs = Vec::new();
@@ -636,6 +649,13 @@ impl SubscribeMsgs {
 }
 
 impl SubscribeMsgs {
+    fn get_bybit_public_ws_url_with_venue(venue: TradingVenue) -> &'static str {
+        match venue {
+            TradingVenue::BybitMargin => BYBIT_SPOT_PUBLIC_WS_URL,
+            _ => BYBIT_LINEAR_PUBLIC_WS_URL,
+        }
+    }
+
     pub fn get_binance_ws_url_with_route(
         venue: TradingVenue,
         route: BinanceFuturesWsRoute,
@@ -674,7 +694,7 @@ impl SubscribeMsgs {
             //OKEXu本位期货合约和现货
             Exchange::Okex => "wss://ws.okx.com:8443/ws/v5/public",
             //Bybitu本位期货合约和现货
-            Exchange::Bybit => "wss://stream.bybit.com/v5/public/linear",
+            Exchange::Bybit => Self::get_bybit_public_ws_url_with_venue(venue),
             //Gate.io: 现货与合约分不同 endpoint
             Exchange::Gate => match venue {
                 TradingVenue::GateMargin => "wss://api.gateio.ws/ws/v4/",
@@ -702,7 +722,7 @@ impl SubscribeMsgs {
             //OKEXu本位期货合约和现货
             Exchange::Okex => "wss://ws.okx.com:8443/ws/v5/business",
             //Bybitu本位期货合约和现货
-            Exchange::Bybit => "wss://stream.bybit.com/v5/public/linear",
+            Exchange::Bybit => Self::get_bybit_public_ws_url_with_venue(venue),
             //Gate.io: 现货与合约分不同 endpoint
             Exchange::Gate => match venue {
                 TradingVenue::GateMargin => "wss://api.gateio.ws/ws/v4/",
@@ -739,7 +759,7 @@ impl SubscribeMsgs {
             Exchange::Bybit => {
                 serde_json::json!({
                     "op": "subscribe",
-                    "args": ["orderbook.rpi.BTCUSDT"]
+                    "args": ["orderbook.1.BTCUSDT"]
                 })
             }
             Exchange::Bitget => {
@@ -1001,5 +1021,56 @@ mod tests {
             ),
             BINANCE_SPOT_WS_URL
         );
+    }
+
+    #[test]
+    fn bybit_margin_uses_spot_public_ws_urls() {
+        assert_eq!(
+            SubscribeMsgs::get_exchange_mkt_data_url_with_venue(
+                &Exchange::Bybit,
+                TradingVenue::BybitMargin,
+            ),
+            BYBIT_SPOT_PUBLIC_WS_URL
+        );
+        assert_eq!(
+            SubscribeMsgs::get_exchange_kline_data_url_with_venue(
+                &Exchange::Bybit,
+                TradingVenue::BybitMargin,
+            ),
+            BYBIT_SPOT_PUBLIC_WS_URL
+        );
+    }
+
+    #[test]
+    fn bybit_futures_uses_linear_public_ws_urls() {
+        assert_eq!(
+            SubscribeMsgs::get_exchange_mkt_data_url_with_venue(
+                &Exchange::Bybit,
+                TradingVenue::BybitFutures,
+            ),
+            BYBIT_LINEAR_PUBLIC_WS_URL
+        );
+        assert_eq!(
+            SubscribeMsgs::get_exchange_kline_data_url_with_venue(
+                &Exchange::Bybit,
+                TradingVenue::BybitFutures,
+            ),
+            BYBIT_LINEAR_PUBLIC_WS_URL
+        );
+    }
+
+    #[test]
+    fn bybit_signal_uses_standard_orderbook_topic() {
+        let msg = SubscribeMsgs::get_signal_subscribe_message(
+            &Exchange::Bybit,
+            TradingVenue::BybitFutures,
+        );
+        let args = msg
+            .get("args")
+            .and_then(|value| value.as_array())
+            .expect("bybit signal args should be an array");
+
+        assert_eq!(args.len(), 1);
+        assert_eq!(args[0].as_str(), Some("orderbook.1.BTCUSDT"));
     }
 }

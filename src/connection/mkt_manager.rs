@@ -240,7 +240,11 @@ impl MktManager {
                     }
                 },
                 Exchange::Bybit => {
-                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
+                    let url = SubscribeMsgs::get_exchange_mkt_data_url_with_venue(
+                        &exchange,
+                        self.cfg.venue,
+                    )
+                    .to_string();
                     let parser = BybitIncParser::with_max_levels(max_levels);
                     self.spawn_connection_with_mpsc(
                         exchange,
@@ -404,7 +408,11 @@ impl MktManager {
                     }
                 },
                 Exchange::Bybit => {
-                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
+                    let url = SubscribeMsgs::get_exchange_mkt_data_url_with_venue(
+                        &exchange,
+                        self.cfg.venue,
+                    )
+                    .to_string();
                     let parser = BybitTradeParser::new();
                     self.spawn_connection_with_mpsc(
                         exchange,
@@ -611,7 +619,11 @@ impl MktManager {
                     }
                 },
                 Exchange::Bybit => {
-                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
+                    let url = SubscribeMsgs::get_exchange_mkt_data_url_with_venue(
+                        &exchange,
+                        self.cfg.venue,
+                    )
+                    .to_string();
                     let parser = BybitAskBidSpreadParser::new();
                     self.spawn_connection_with_mpsc(
                         exchange,
@@ -839,6 +851,14 @@ impl MktManager {
         &mut self,
         msgs: &crate::sub_msg::BybitPerpsSubscribeMsgs,
     ) {
+        if self.cfg.venue != TradingVenue::BybitFutures {
+            info!(
+                "Skipping Bybit derivatives connections for unsupported venue={}",
+                self.cfg.venue.data_pub_slug()
+            );
+            return;
+        }
+
         let exchange = self.cfg.get_exchange();
         let url = crate::sub_msg::BybitPerpsSubscribeMsgs::WS_URL.to_string();
         let tx = self.derivatives_tx.clone();
