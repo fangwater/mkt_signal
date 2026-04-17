@@ -689,7 +689,7 @@ impl MmDecisionState {
         }
 
         if !emitted_details.is_empty() {
-            log::info!(
+            log::debug!(
                 "MmDecision: MMOpenPlan symbol={} bid={:.8} ask={:.8} mid={:.8} volatility={:.8} price_tick={:.8} qty_tick={:.8} sent={} buy={} sell={} details=[{}]",
                 plan.symbol,
                 plan.quote.bid,

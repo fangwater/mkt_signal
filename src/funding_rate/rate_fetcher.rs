@@ -1097,7 +1097,7 @@ impl RateFetcher {
         }
 
         if success + fail > 0 {
-            info!("OKEx 借贷利率: 成功 {}, 失败 {}", success, fail);
+            debug!("OKEx 借贷利率: 成功 {}, 失败 {}", success, fail);
         }
         Ok(())
     }

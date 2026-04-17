@@ -9,7 +9,7 @@ use crate::pre_trade::order_manager::Side;
 use crate::signal::common::TradingVenue;
 use crate::signal::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
-use log::{debug, info};
+use log::debug;
 
 pub struct MmHedgeBuildInput<'a> {
     pub venue: TradingVenue,
@@ -464,7 +464,7 @@ pub fn build_mm_hedge_quote_plan(
         input.hedge_offset_ratio,
         offset_plan.final_offset,
     );
-    info!(
+    debug!(
         "MMHedgeQuerySummary {{\"symbol\":\"{}\",\"side\":\"{}\",\"net_qty_base\":{:.8},\"hedge_bid0\":{:.8},\"hedge_ask0\":{:.8},\"signal\":{:.8},\"signal_qtl\":{},\"enable_return_score_adjust_hedge\":{},\"clipped_signal\":{:.8},\"normalized_signal\":{:.8},\"volatility\":{:.8},\"hedge_vol_multiplier\":{:.8},\"bound\":{:.8},\"offset_low\":{:.8},\"offset_high_limit\":{:.8},\"hedge_window_scale_low\":{:.8},\"hedge_window_scale_high\":{:.8},\"mapped_offset\":{:.8},\"adjusted_offset\":{:.8},\"symbol_exposure_u\":{:.8},\"exposure_offset_factor\":{:.8},\"hedge_offset_ratio\":{:.8},\"final_offset\":{:.8}}}",
         symbol,
         side.as_str(),
