@@ -6,8 +6,8 @@ use crate::parser::binance_parser::{
     BinanceKlineParser, BinanceSignalParser, BinanceTradeParser,
 };
 use crate::parser::bitget_parser::{
-    BitgetAskBidSpreadParser, BitgetDerivativesMetricsParser, BitgetIncParser, BitgetSignalParser,
-    BitgetTradeParser,
+    BitgetAskBidSpreadParser, BitgetDerivativesMetricsParser, BitgetIncParser, BitgetKlineParser,
+    BitgetSignalParser, BitgetTradeParser,
 };
 use crate::parser::bybit_parser::{
     BybitAskBidSpreadParser, BybitDerivativesMetricsParser, BybitIncParser, BybitKlineParser,
@@ -531,6 +531,18 @@ impl MktManager {
                     )
                     .await;
                 }
+                Exchange::Bitget => {
+                    let parser = BitgetKlineParser::new();
+                    self.spawn_connection_with_mpsc(
+                        exchange,
+                        url.clone(),
+                        subscribe_msg,
+                        format!("kline batch {}", i),
+                        parser,
+                        tx,
+                    )
+                    .await;
+                }
                 Exchange::Okex => {
                     let parser = OkexKlineParser::new();
                     self.spawn_connection_with_mpsc(
@@ -567,9 +579,6 @@ impl MktManager {
                         tx,
                     )
                     .await;
-                }
-                _ => {
-                    error!("Unsupported exchange for kline parser: {}", exchange);
                 }
             }
         }
@@ -898,6 +907,14 @@ impl MktManager {
         &mut self,
         msgs: &crate::sub_msg::BitgetPerpsSubscribeMsgs,
     ) {
+        if self.cfg.venue != TradingVenue::BitgetFutures {
+            info!(
+                "Skipping Bitget derivatives connections for unsupported venue={}",
+                self.cfg.venue.data_pub_slug()
+            );
+            return;
+        }
+
         let exchange = self.cfg.get_exchange();
         let url = crate::sub_msg::BitgetPerpsSubscribeMsgs::WS_URL.to_string();
         let tx = self.derivatives_tx.clone();

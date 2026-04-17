@@ -41,6 +41,10 @@ fn gate_channel_prefix_for_venue(venue: TradingVenue) -> &'static str {
     }
 }
 
+fn bitget_derivatives_supported_for_venue(venue: TradingVenue) -> bool {
+    venue == TradingVenue::BitgetFutures
+}
+
 fn hyperliquid_coin_from_internal(symbol: &str) -> String {
     let normalized = symbol.trim().to_uppercase().replace(['/', '-', '_'], "");
     normalized
@@ -389,6 +393,16 @@ impl BitgetPerpsSubscribeMsgs {
     pub const MAX_CHANNELS_PER_CONNECTION: usize = 50;
 
     pub async fn new(cfg: &Config) -> Self {
+        if !bitget_derivatives_supported_for_venue(cfg.venue) {
+            warn!(
+                "bitget derivatives metrics are only supported on bitget-futures; current venue={} will skip derivatives subscriptions",
+                cfg.venue.data_pub_slug()
+            );
+            return Self {
+                ticker_stream_msgs: Vec::new(),
+            };
+        }
+
         let symbols: Vec<String> = cfg.get_symbols().await.unwrap();
         // 使用 Bitget 特定的 batch size，不超过50
         let batch_size = cfg.get_batch_size().min(Self::MAX_CHANNELS_PER_CONNECTION);
@@ -397,10 +411,7 @@ impl BitgetPerpsSubscribeMsgs {
 
         for chunk in symbols.chunks(batch_size) {
             ticker_stream_msgs.push(construct_subscribe_message(
-                &exchange,
-                TradingVenue::BitgetFutures,
-                chunk,
-                "ticker",
+                &exchange, cfg.venue, chunk, "ticker",
             ));
         }
 
@@ -768,7 +779,7 @@ impl SubscribeMsgs {
                     "op": "subscribe",
                     "args": [serde_json::json!({
                         "instType": inst_type,
-                        "channel": "ticker",
+                        "channel": "books1",
                         "instId": "BTCUSDT"
                     })]
                 })
@@ -1072,5 +1083,44 @@ mod tests {
 
         assert_eq!(args.len(), 1);
         assert_eq!(args[0].as_str(), Some("orderbook.1.BTCUSDT"));
+    }
+
+    #[test]
+    fn bitget_signal_uses_books1_topic() {
+        let msg = SubscribeMsgs::get_signal_subscribe_message(
+            &Exchange::Bitget,
+            TradingVenue::BitgetFutures,
+        );
+        let args = msg
+            .get("args")
+            .and_then(|value| value.as_array())
+            .expect("bitget signal args should be an array");
+
+        assert_eq!(args.len(), 1);
+        let arg = args[0]
+            .as_object()
+            .expect("bitget signal arg should be an object");
+        assert_eq!(
+            arg.get("instType").and_then(|value| value.as_str()),
+            Some("USDT-FUTURES")
+        );
+        assert_eq!(
+            arg.get("channel").and_then(|value| value.as_str()),
+            Some("books1")
+        );
+        assert_eq!(
+            arg.get("instId").and_then(|value| value.as_str()),
+            Some("BTCUSDT")
+        );
+    }
+
+    #[test]
+    fn bitget_derivatives_are_futures_only() {
+        assert!(bitget_derivatives_supported_for_venue(
+            TradingVenue::BitgetFutures
+        ));
+        assert!(!bitget_derivatives_supported_for_venue(
+            TradingVenue::BitgetMargin
+        ));
     }
 }
