@@ -22,6 +22,14 @@ pub struct SymbolQuerySnapshot {
 
 impl SymbolQuerySnapshot {
     pub fn from_orderbook(orderbook: &OrderBook, price_tick: Option<f64>) -> Self {
+        Self::from_orderbook_with_amount_scale(orderbook, price_tick, 1.0)
+    }
+
+    pub fn from_orderbook_with_amount_scale(
+        orderbook: &OrderBook,
+        price_tick: Option<f64>,
+        amount_scale: f64,
+    ) -> Self {
         let book_valid = orderbook.is_valid();
         let mut top5_ready = false;
         let mut top5_bids = Vec::new();
@@ -31,8 +39,8 @@ impl SymbolQuerySnapshot {
             if let Some(tick) = price_tick {
                 let (bids, asks) = orderbook.get_depth_keys(5);
                 if let (Some(bid_levels), Some(ask_levels)) = (
-                    depth_levels_to_tick_indices(&bids, tick),
-                    depth_levels_to_tick_indices(&asks, tick),
+                    depth_levels_to_tick_indices(&bids, tick, amount_scale),
+                    depth_levels_to_tick_indices(&asks, tick, amount_scale),
                 ) {
                     top5_bids = bid_levels;
                     top5_asks = ask_levels;
@@ -41,8 +49,8 @@ impl SymbolQuerySnapshot {
             }
         }
 
-        let bid_amounts = orderbook.bid_levels_keys().into_iter().collect();
-        let ask_amounts = orderbook.ask_levels_keys().into_iter().collect();
+        let bid_amounts = scale_price_key_amounts(orderbook.bid_levels_keys(), amount_scale);
+        let ask_amounts = scale_price_key_amounts(orderbook.ask_levels_keys(), amount_scale);
 
         Self {
             timestamp: orderbook.timestamp,
@@ -123,14 +131,25 @@ impl DepthQuerySource for QuerySnapshotStore {
     }
 }
 
-fn depth_levels_to_tick_indices(levels: &[(i64, f64)], tick: f64) -> Option<Vec<(i64, f64)>> {
+fn depth_levels_to_tick_indices(
+    levels: &[(i64, f64)],
+    tick: f64,
+    amount_scale: f64,
+) -> Option<Vec<(i64, f64)>> {
     let mut out = Vec::with_capacity(levels.len());
     for (price_key, amount) in levels {
         let price = key_to_price(*price_key);
         let tick_index = price_to_tick_index(price, tick)?;
-        out.push((tick_index, *amount));
+        out.push((tick_index, amount * amount_scale));
     }
     Some(out)
+}
+
+fn scale_price_key_amounts(levels: Vec<(i64, f64)>, amount_scale: f64) -> HashMap<i64, f64> {
+    levels
+        .into_iter()
+        .map(|(price_key, amount)| (price_key, amount * amount_scale))
+        .collect()
 }
 
 #[cfg(test)]
@@ -169,5 +188,23 @@ mod tests {
         let loaded = store.load("btcusdt").expect("snapshot should exist");
         assert_eq!(loaded.timestamp, 1);
         assert_eq!(loaded.amount_at_price_key(10_000_000_000), Some(1.0));
+    }
+
+    #[test]
+    fn snapshot_scales_amounts_for_output_qty() {
+        let mut orderbook = OrderBook::new();
+        orderbook.apply_update(
+            &[(100.0, 2.0), (99.5, 3.0)],
+            &[(100.5, 4.0), (101.0, 5.0)],
+            1,
+            1234,
+        );
+
+        let snapshot =
+            SymbolQuerySnapshot::from_orderbook_with_amount_scale(&orderbook, Some(0.5), 0.1);
+
+        assert_eq!(snapshot.top5_bids[0], (200, 0.2));
+        assert_eq!(snapshot.top5_asks[0], (201, 0.4));
+        assert_eq!(snapshot.amount_at_price_key(10_000_000_000), Some(0.2));
     }
 }

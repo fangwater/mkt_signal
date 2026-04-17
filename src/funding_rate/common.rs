@@ -14,8 +14,6 @@ use crate::signal::common::TradingVenue;
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
 use log::warn;
 
-use super::arb_qty_align::{contract_qty_multiplier, min_qty_symbol_key, venue_qty_is_contracts};
-
 pub fn format_tlen_value(value: f64) -> String {
     if value.is_finite() {
         format!("{value:.8}")
@@ -66,27 +64,14 @@ pub fn query_batch_tlens_or_zero(
 }
 
 pub fn normalize_tlen_for_compare(
-    source: &str,
-    table: &VenueMinQtyTable,
-    venue: TradingVenue,
-    symbol: &str,
+    _source: &str,
+    _table: &VenueMinQtyTable,
+    _venue: TradingVenue,
+    _symbol: &str,
     level_tlen: f64,
 ) -> f64 {
-    if !level_tlen.is_finite() || level_tlen <= 0.0 || !venue_qty_is_contracts(venue) {
-        return level_tlen;
-    }
-
-    let symbol_key = min_qty_symbol_key(venue, symbol);
-    match contract_qty_multiplier(table, venue, &symbol_key) {
-        Some(multiplier) if multiplier.is_finite() && multiplier > 0.0 => level_tlen / multiplier,
-        _ => {
-            warn!(
-                "{source}: missing contract multiplier for tlen compare venue={:?} symbol={} symbol_key={}, fallback_to_base_qty tlen={:.8}",
-                venue, symbol, symbol_key, level_tlen
-            );
-            level_tlen
-        }
-    }
+    // depth_pub now emits depth/tlen in base-asset qty directly.
+    level_tlen
 }
 
 pub fn normalize_tlens_for_compare(
@@ -701,14 +686,14 @@ mod tests {
     }
 
     #[test]
-    fn normalize_tlen_for_okex_futures_uses_contract_multiplier() {
+    fn normalize_tlen_for_okex_futures_keeps_base_qty() {
         let mut table = VenueMinQtyTable::new(TradingVenue::OkexFutures);
         table.set_contract_multiplier_for_test("ETHUSDT", 0.1);
 
         let normalized =
             normalize_tlen_for_compare("test", &table, TradingVenue::OkexFutures, "ETHUSDT", 2.5);
 
-        assert!((normalized - 25.0).abs() < 1e-12);
+        assert!((normalized - 2.5).abs() < 1e-12);
     }
 
     #[test]
@@ -735,8 +720,8 @@ mod tests {
         );
 
         assert_eq!(normalized.len(), 3);
-        assert!((normalized[0] - 1.0).abs() < 1e-12);
-        assert!((normalized[1] - 2.5).abs() < 1e-12);
-        assert!((normalized[2] - 3.0).abs() < 1e-12);
+        assert!((normalized[0] - 0.1).abs() < 1e-12);
+        assert!((normalized[1] - 0.25).abs() < 1e-12);
+        assert!((normalized[2] - 0.3).abs() < 1e-12);
     }
 }

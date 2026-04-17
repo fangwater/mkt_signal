@@ -486,7 +486,8 @@ impl DepthPubApp {
             if !is_btc {
                 continue;
             }
-            let (bids, asks) = state.orderbook.get_depth(25);
+            let amount_scale = self.depth_amount_scale(symbol);
+            let (bids, asks) = scaled_depth_levels(&state.orderbook, 25, amount_scale);
             info!(
                 "DepthPubApp[{}] BTC depth25 {} bids={:?} asks={:?}",
                 self.venue_slug, symbol, bids, asks
@@ -497,6 +498,7 @@ impl DepthPubApp {
     /// 推送深度快照
     fn push_depth(&mut self, symbol: &str) {
         let price_tick = self.lookup_price_tick(symbol);
+        let amount_scale = self.depth_amount_scale(symbol);
         let mut snapshot_to_publish = None;
         let mut depth25_msg = None;
         let mut depth50_msg = None;
@@ -531,9 +533,10 @@ impl DepthPubApp {
             }
 
             if state.query_snapshot_dirty {
-                snapshot_to_publish = Some(SymbolQuerySnapshot::from_orderbook(
+                snapshot_to_publish = Some(SymbolQuerySnapshot::from_orderbook_with_amount_scale(
                     &state.orderbook,
                     price_tick,
+                    amount_scale,
                 ));
                 state.query_snapshot_dirty = false;
             }
@@ -543,14 +546,14 @@ impl DepthPubApp {
 
                 if self.config.depth_levels.enable_depth25 {
                     attempted_channels = attempted_channels.saturating_add(1);
-                    let (bids, asks) = state.orderbook.get_depth(25);
+                    let (bids, asks) = scaled_depth_levels(&state.orderbook, 25, amount_scale);
                     depth25_msg =
                         Some(DepthMsg::depth25(symbol.to_string(), timestamp, bids, asks));
                 }
 
                 if self.config.depth_levels.enable_depth50 {
                     attempted_channels = attempted_channels.saturating_add(1);
-                    let (bids, asks) = state.orderbook.get_depth(50);
+                    let (bids, asks) = scaled_depth_levels(&state.orderbook, 50, amount_scale);
                     depth50_msg =
                         Some(DepthMsg::depth50(symbol.to_string(), timestamp, bids, asks));
                 }
@@ -634,6 +637,18 @@ impl DepthPubApp {
         self.min_qty_table.price_tick(&table_symbol_key)
     }
 
+    fn depth_amount_scale(&self, symbol: &str) -> f64 {
+        if !self.venue.is_futures() || matches!(self.venue, TradingVenue::BinanceFutures) {
+            return 1.0;
+        }
+
+        let table_symbol_key = self.symbol_key_for_table(symbol);
+        self.min_qty_table
+            .contract_multiplier_opt(&table_symbol_key)
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .unwrap_or(1.0)
+    }
+
     /// 打印统计
     fn log_stats(&mut self) {
         info!(
@@ -647,4 +662,25 @@ impl DepthPubApp {
         self.update_count = 0;
         self.push_count = 0;
     }
+}
+
+fn scale_depth_amounts(levels: &mut [(f64, f64)], amount_scale: f64) {
+    for (_, amount) in levels.iter_mut() {
+        *amount *= amount_scale;
+    }
+}
+
+fn scaled_depth_levels(
+    orderbook: &OrderBook,
+    levels: usize,
+    amount_scale: f64,
+) -> (Vec<(f64, f64)>, Vec<(f64, f64)>) {
+    let (mut bids, mut asks) = orderbook.get_depth(levels);
+    if (amount_scale - 1.0).abs() <= f64::EPSILON {
+        return (bids, asks);
+    }
+
+    scale_depth_amounts(&mut bids, amount_scale);
+    scale_depth_amounts(&mut asks, amount_scale);
+    (bids, asks)
 }
