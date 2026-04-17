@@ -440,15 +440,6 @@ fn format_opt_f64(value: Option<f64>) -> String {
     }
 }
 
-fn format_env_cell(item: &MmOpenEvalResult) -> String {
-    if item.env_note == "-" {
-        return "-".to_string();
-    }
-    let score = format_opt_f64(item.env_score);
-    let threshold = format_opt_f64(item.env_threshold);
-    format!("{} ({}/{})", item.env_note, score, threshold)
-}
-
 fn truncate_cell(value: &str, max_chars: usize) -> String {
     let mut chars = value.chars();
     let truncated: String = chars.by_ref().take(max_chars).collect();
@@ -481,8 +472,10 @@ fn build_rule(widths: &[usize], left: char, mid: char, right: char) -> String {
 }
 
 fn format_mm_open_eval_table(results: &[MmOpenEvalResult]) -> String {
-    let widths = [14usize, 6, 10, 10, 10, 34, 44];
-    let headers = ["symbol", "result", "ret", "vol", "vol_tr", "env", "reason"];
+    let widths = [14usize, 6, 10, 10, 10, 12, 12, 26, 36];
+    let headers = [
+        "symbol", "result", "ret", "vol", "vol_tr", "pnlu", "pnlu_thr", "env_note", "reason",
+    ];
     let mut lines = Vec::new();
     lines.push(build_rule(&widths, '┌', '┬', '┐'));
     let header_cells: Vec<String> = headers
@@ -491,7 +484,7 @@ fn format_mm_open_eval_table(results: &[MmOpenEvalResult]) -> String {
         .map(|(header, width)| pad_cell(header, *width))
         .collect();
     lines.push(format!(
-        "│ {} │ {} │ {} │ {} │ {} │ {} │ {} │",
+        "│ {} │ {} │ {} │ {} │ {} │ {} │ {} │ {} │ {} │",
         header_cells[0],
         header_cells[1],
         header_cells[2],
@@ -499,6 +492,8 @@ fn format_mm_open_eval_table(results: &[MmOpenEvalResult]) -> String {
         header_cells[4],
         header_cells[5],
         header_cells[6],
+        header_cells[7],
+        header_cells[8],
     ));
     lines.push(build_rule(&widths, '├', '┼', '┤'));
     for item in results {
@@ -507,14 +502,16 @@ fn format_mm_open_eval_table(results: &[MmOpenEvalResult]) -> String {
             _ => item.result,
         };
         lines.push(format!(
-            "│ {} │ {} │ {} │ {} │ {} │ {} │ {} │",
+            "│ {} │ {} │ {} │ {} │ {} │ {} │ {} │ {} │ {} │",
             pad_cell(&item.symbol, widths[0]),
             pad_cell(signal_hint, widths[1]),
             pad_cell(&format_opt_f64(item.return_score), widths[2]),
             pad_cell(&format_opt_f64(item.volatility), widths[3]),
             pad_cell(&format_opt_f64(item.vol_tr), widths[4]),
-            pad_cell(&format_env_cell(item), widths[5]),
-            pad_cell(&item.reason, widths[6]),
+            pad_cell(&format_opt_f64(item.env_score), widths[5]),
+            pad_cell(&format_opt_f64(item.env_threshold), widths[6]),
+            pad_cell(&item.env_note, widths[7]),
+            pad_cell(&item.reason, widths[8]),
         ));
     }
     lines.push(build_rule(&widths, '└', '┴', '┘'));
