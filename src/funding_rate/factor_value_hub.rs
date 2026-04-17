@@ -57,6 +57,7 @@ pub struct PnluCheckResult {
     pub ts: Option<i64>,
     pub target_ts: Option<i64>,
     pub age_secs: Option<i64>,
+    pub target_age_secs: Option<i64>,
     pub ready: Option<bool>,
     pub quantiles: Vec<f64>,
     pub thresholds: Vec<f64>,
@@ -72,6 +73,7 @@ impl PnluCheckResult {
             ts: None,
             target_ts: None,
             age_secs: None,
+            target_age_secs: None,
             ready: None,
             quantiles: Vec::new(),
             thresholds: Vec::new(),
@@ -825,25 +827,52 @@ impl FactorValueHub {
             Some(_) => return PnluCheckResult::fail("ts_in_future"),
             None => None,
         };
-        let fresh = match age_secs {
+        let target_ts_us = target_ts.and_then(Self::normalize_pnlu_ts_us);
+        let target_age_secs = match target_ts_us {
+            Some(target_ts_us) if target_ts_us <= now_us => Some((now_us - target_ts_us) / 1_000_000),
+            Some(_) => return PnluCheckResult::fail("target_ts_in_future"),
+            None => None,
+        };
+
+        let ts_fresh = match age_secs {
             Some(age) => age <= self.pnlu_max_age_secs,
             None => false,
         };
-        let missing_factor_or_threshold = factor.is_none() || threshold.is_none();
+        let target_ts_fresh = match target_age_secs {
+            Some(age) => age <= self.pnlu_max_age_secs,
+            None => false,
+        };
         let factor_ok = match (factor, threshold) {
             (Some(f), Some(t)) => f > t,
             _ => false,
         };
 
-        let ok = fresh && !missing_factor_or_threshold && factor_ok;
+        let ok = ts_fresh
+            && target_ts_fresh
+            && ready == Some(true)
+            && factor.is_some()
+            && threshold.is_some()
+            && factor_ok;
         let reason = if ok {
             "ok".to_string()
         } else if ts_us.is_none() {
             "missing_ts".to_string()
-        } else if !fresh {
-            "stale_ts".to_string()
-        } else if missing_factor_or_threshold {
-            "missing_factor_or_threshold".to_string()
+        } else if !ts_fresh {
+            "ts_timeout".to_string()
+        } else if target_ts_us.is_none() {
+            "missing_target_ts".to_string()
+        } else if !target_ts_fresh {
+            "target_ts_timeout".to_string()
+        } else if ready != Some(true) {
+            match ready {
+                Some(false) => "ready_false".to_string(),
+                None => "missing_ready".to_string(),
+                Some(true) => unreachable!("ready=true should have been handled by ok branch"),
+            }
+        } else if factor.is_none() {
+            "missing_factor".to_string()
+        } else if threshold.is_none() {
+            "missing_threshold".to_string()
         } else {
             "factor_not_gt_threshold".to_string()
         };
@@ -856,6 +885,7 @@ impl FactorValueHub {
             ts,
             target_ts,
             age_secs,
+            target_age_secs,
             ready,
             quantiles,
             thresholds,

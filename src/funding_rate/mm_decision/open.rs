@@ -472,7 +472,7 @@ fn build_rule(widths: &[usize], left: char, mid: char, right: char) -> String {
 }
 
 fn format_mm_open_eval_table(results: &[MmOpenEvalResult]) -> String {
-    let widths = [14usize, 6, 10, 10, 10, 12, 12, 26, 36];
+    let widths = [14usize, 6, 10, 10, 10, 12, 12, 28, 44];
     let headers = [
         "symbol", "result", "ret", "vol", "vol_tr", "pnlu", "pnlu_thr", "env_note", "reason",
     ];
