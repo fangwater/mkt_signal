@@ -6,3 +6,7 @@ bash scripts/close_mm_all_um_exposure.sh --env-name binance_mm_alpha --execute
 
 bash scripts/close_mm_all_um_ws_orders.sh --env-name okex_mm_alpha --execute
 bash scripts/close_mm_all_um_exposure.sh --env-name okex_mm_alpha --execute 
+
+bash scripts/deploy_mm_pre_trade.sh --exchange okex --env-suffix alpha --bin-only
+bash scripts/deploy_mm_signal.sh --exchange okex --env-name okex_mm_alpha --bin-only
+bash scripts/deploy_mm_signal.sh --exchange binance --env-name binance_mm_alpha --bin-only
