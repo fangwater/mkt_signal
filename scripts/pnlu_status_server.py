@@ -33,6 +33,8 @@ PNLU_KEY_SUFFIX = "_pnlu_factor_thresholds"
 DEFAULT_POLL_SECS = 30
 DEFAULT_SCAN_COUNT = 1000
 DEFAULT_SCAN_LIMIT = 500
+PNLU_MAX_AGE_SECS = 30 * 60
+PNLU_RUNTIME_THRESHOLD_INDEX = 1
 
 INDEX_HTML_TEMPLATE = """<!doctype html>
 <html lang="en">
@@ -408,7 +410,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     <section class="panel">
       <div class="section-head">
         <h2>Live Status</h2>
-        <div class="small">State is derived from the JSON payload field <code>ready</code>. Missing keys are shown separately.</div>
+        <div class="small">State follows the Rust <code>check_pnlu_factor</code> gating rule, not only the raw <code>ready</code> field. Missing keys are shown separately.</div>
       </div>
       <div class="legend">
         <div class="legend-chip"><span class="dot missing"></span>missing</div>
@@ -625,16 +627,24 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
           </div>
           <div class="card-grid">
             <div class="mini">
-              <span>ready field</span>
-              <strong>${valueOrDash(item.ready)}</strong>
+              <span>runtime ok</span>
+              <strong>${valueOrDash(item.runtime_ok)}</strong>
             </div>
             <div class="mini">
-              <span>note</span>
-              <strong>${valueOrDash(item.note)}</strong>
+              <span>runtime reason</span>
+              <strong>${valueOrDash(item.runtime_reason)}</strong>
+            </div>
+            <div class="mini">
+              <span>ready(raw)</span>
+              <strong>${valueOrDash(item.ready)}</strong>
             </div>
             <div class="mini">
               <span>factor</span>
               <strong>${valueOrDash(item.factor)}</strong>
+            </div>
+            <div class="mini">
+              <span>threshold[idx=1]</span>
+              <strong>${valueOrDash(item.threshold)}</strong>
             </div>
             <div class="mini">
               <span>threshold pairs</span>
@@ -647,6 +657,14 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
             <div class="mini">
               <span>age_sec</span>
               <strong>${valueOrDash(item.age_sec)}</strong>
+            </div>
+            <div class="mini">
+              <span>target_ts</span>
+              <strong>${valueOrDash(item.target_ts)}</strong>
+            </div>
+            <div class="mini">
+              <span>target_age_sec</span>
+              <strong>${valueOrDash(item.target_age_sec)}</strong>
             </div>
           </div>
           <div class="card-key">key: <code>${item.key}</code></div>
@@ -876,6 +894,108 @@ def normalize_pnlu_ts_us(ts: Any) -> Optional[int]:
     return ts * 1_000_000
 
 
+def coerce_number(value: Any) -> Optional[float]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def select_runtime_threshold(payload: Dict[str, Any]) -> Optional[float]:
+    thresholds = payload.get("thresholds")
+    if not isinstance(thresholds, list):
+        return None
+    if len(thresholds) <= PNLU_RUNTIME_THRESHOLD_INDEX:
+        return None
+    return coerce_number(thresholds[PNLU_RUNTIME_THRESHOLD_INDEX])
+
+
+def evaluate_runtime_pnlu_check(payload: Dict[str, Any]) -> Dict[str, Any]:
+    now_us = int(time.time() * 1_000_000)
+    ts = payload.get("ts")
+    target_ts = payload.get("target_ts")
+    ready = payload.get("ready")
+    factor = coerce_number(payload.get("factor"))
+    threshold = select_runtime_threshold(payload)
+
+    ts_us = normalize_pnlu_ts_us(ts)
+    if ts_us is not None and ts_us > now_us:
+        return {
+            "ok": False,
+            "reason": "ts_in_future",
+            "factor": factor,
+            "threshold": threshold,
+            "ts": ts,
+            "target_ts": target_ts,
+            "age_sec": None,
+            "target_age_sec": None,
+        }
+
+    target_ts_us = normalize_pnlu_ts_us(target_ts)
+    if target_ts_us is not None and target_ts_us > now_us:
+        return {
+            "ok": False,
+            "reason": "target_ts_in_future",
+            "factor": factor,
+            "threshold": threshold,
+            "ts": ts,
+            "target_ts": target_ts,
+            "age_sec": None,
+            "target_age_sec": None,
+        }
+
+    age_sec = None
+    if ts_us is not None:
+        age_sec = (now_us - ts_us) // 1_000_000
+
+    target_age_sec = None
+    if target_ts_us is not None:
+        target_age_sec = (now_us - target_ts_us) // 1_000_000
+
+    ts_fresh = age_sec is not None and age_sec <= PNLU_MAX_AGE_SECS
+    target_ts_fresh = target_age_sec is not None and target_age_sec <= PNLU_MAX_AGE_SECS
+    factor_ok = factor is not None and threshold is not None and factor > threshold
+    ok = (
+        ts_fresh
+        and target_ts_fresh
+        and ready is True
+        and factor is not None
+        and threshold is not None
+        and factor_ok
+    )
+
+    if ok:
+        reason = "ok"
+    elif ts_us is None:
+        reason = "missing_ts"
+    elif not ts_fresh:
+        reason = "ts_timeout"
+    elif target_ts_us is None:
+        reason = "missing_target_ts"
+    elif not target_ts_fresh:
+        reason = "target_ts_timeout"
+    elif ready is not True:
+        reason = "ready_false" if ready is False else "missing_ready"
+    elif factor is None:
+        reason = "missing_factor"
+    elif threshold is None:
+        reason = "missing_threshold"
+    else:
+        reason = "factor_not_gt_threshold"
+
+    return {
+        "ok": ok,
+        "reason": reason,
+        "factor": factor,
+        "threshold": threshold,
+        "ts": ts,
+        "target_ts": target_ts,
+        "age_sec": age_sec,
+        "target_age_sec": target_age_sec,
+    }
+
+
 def build_threshold_pairs(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     quantiles = payload.get("quantiles")
     thresholds = payload.get("thresholds")
@@ -1065,21 +1185,13 @@ class RequestHandler(BaseHTTPRequestHandler):
                 "age_sec": None,
             }
 
-        ready = payload.get("ready")
         quantiles = payload.get("quantiles")
         thresholds = payload.get("thresholds")
         threshold_pairs = build_threshold_pairs(payload)
-        threshold = threshold_pairs[0]["threshold"] if threshold_pairs else None
-        ts = payload.get("ts")
-        ts_us = normalize_pnlu_ts_us(ts)
-        age_sec = None
-        if ts_us is not None:
-            now_us = int(time.time() * 1_000_000)
-            if ts_us <= now_us:
-                age_sec = (now_us - ts_us) // 1_000_000
-
-        status = "ready" if ready is True else "not_ready"
-        note = "ready_true" if ready is True else "ready_false_or_missing"
+        runtime = evaluate_runtime_pnlu_check(payload)
+        ready = payload.get("ready")
+        status = "ready" if runtime["ok"] else "not_ready"
+        note = runtime["reason"]
 
         return {
             "symbol": symbol,
@@ -1088,13 +1200,17 @@ class RequestHandler(BaseHTTPRequestHandler):
             "status": status,
             "ready": ready,
             "note": note,
-            "factor": payload.get("factor"),
-            "threshold": threshold,
+            "runtime_ok": runtime["ok"],
+            "runtime_reason": runtime["reason"],
+            "factor": runtime["factor"],
+            "threshold": runtime["threshold"],
             "threshold_pairs": threshold_pairs,
             "quantiles": quantiles if isinstance(quantiles, list) else [],
             "thresholds": thresholds if isinstance(thresholds, list) else [],
-            "ts": ts,
-            "age_sec": age_sec,
+            "ts": runtime["ts"],
+            "target_ts": runtime["target_ts"],
+            "age_sec": runtime["age_sec"],
+            "target_age_sec": runtime["target_age_sec"],
         }
 
     def _resolve_venues(self, params: Dict[str, List[str]]) -> tuple[str, str]:

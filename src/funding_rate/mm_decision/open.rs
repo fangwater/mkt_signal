@@ -526,16 +526,15 @@ fn log_interval_summary(state: &MmDecisionState, results: &[MmOpenEvalResult]) {
     let evaluated = results.len();
     let emitted = results.iter().filter(|item| item.result == "emit").count();
     let skipped = evaluated.saturating_sub(emitted);
-    let emitted_orders = results.iter().filter(|item| item.result == "emit").count();
     info!(
-        "MmDecision: MMOpen interval summary interval_ms={} prediction_mode={} evaluated={} emitted_symbols={} skipped_symbols={} emitted_orders={} thresholds_required={}",
+        "MmDecision: MMOpen interval summary interval_ms={} prediction_mode={} evaluated={} emitted_symbols={} skipped_symbols={} return_thresholds_required={} environment_gate_enabled={}",
         state.order_interval_ms,
         state.prediction_mode,
         evaluated,
         emitted,
         skipped,
-        emitted_orders,
-        state.prediction_mode
+        state.prediction_mode,
+        state.enable_environment_model
     );
 
     let max_rows = 16usize;
