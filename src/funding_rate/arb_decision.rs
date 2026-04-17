@@ -32,6 +32,7 @@ use super::arb_open_filter::{
     lookup_realtime_open_filter_value, select_open_filter_threshold, select_open_return_threshold,
     select_open_return_threshold_by_hedge_side,
 };
+use super::common::normalize_tlens_for_compare;
 use super::common::Quote;
 use super::common::{ReturnScoreThresholdsResolved, ThresholdKey, VenuePair};
 use super::factor_value_hub::{
@@ -1703,7 +1704,13 @@ fn drive_funding_cancel_candidate_query(
             .open_depth_query_client
             .query_batch_tick_indices(&open_symbol, &tick_indices)
         {
-            Ok(values) => values,
+            Ok(values) => normalize_tlens_for_compare(
+                FUNDING_ARB_SHELL_NAME,
+                &decision.runtime.open_min_qty_table,
+                venues.0,
+                &open_symbol,
+                values,
+            ),
             Err(err) => {
                 log::warn!(
                     "{FUNDING_ARB_SHELL_NAME}: ArbCancel tlen batch query failed symbol={} levels={} err={:#}",
@@ -1825,7 +1832,13 @@ fn drive_spread_arb_cancel_candidate_query(
             .open_depth_query_client
             .query_batch_tick_indices(&open_symbol, &tick_indices)
         {
-            Ok(values) => values,
+            Ok(values) => normalize_tlens_for_compare(
+                SPREAD_ARB_SHELL_NAME,
+                &decision.runtime.open_min_qty_table,
+                venues.0,
+                &open_symbol,
+                values,
+            ),
             Err(err) => {
                 log::warn!(
                     "{SPREAD_ARB_SHELL_NAME}: ArbCancel tlen batch query failed symbol={} levels={} err={:#}",
@@ -2293,6 +2306,12 @@ fn emit_spread_arb_open_signals(
         let (from_keys, filtered_levels) = super::common::apply_open_tlen_gate_and_build_from_keys(
             SPREAD_ARB_SHELL_NAME,
             open_depth_query_client,
+            if open_venue == decision.runtime.venues.0 {
+                &decision.runtime.open_min_qty_table
+            } else {
+                &decision.runtime.hedge_min_qty_table
+            },
+            open_venue,
             &query_symbol,
             &tick_indices,
             &from_key,
@@ -2729,6 +2748,12 @@ fn emit_funding_open_close_signals(
         let (from_keys, filtered_levels) = super::common::apply_open_tlen_gate_and_build_from_keys(
             FUNDING_ARB_SHELL_NAME,
             open_depth_query_client,
+            if spot_venue == decision.runtime.venues.0 {
+                &decision.runtime.open_min_qty_table
+            } else {
+                &decision.runtime.hedge_min_qty_table
+            },
+            spot_venue,
             &query_symbol,
             &tick_indices,
             from_key_str,

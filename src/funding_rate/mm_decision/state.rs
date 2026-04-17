@@ -627,6 +627,8 @@ impl MmDecisionState {
             let (from_keys, filtered_levels) = apply_open_tlen_gate_and_build_from_keys(
                 "MmDecision: MMOpen",
                 &self.depth_query_client,
+                &self.open_min_qty_table,
+                self.open_venue,
                 &plan.symbol,
                 &tick_indices,
                 from_key,

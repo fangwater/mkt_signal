@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use super::arb_decision::DEFAULT_ARBITRAGE_BACKWARD_CHANNEL;
-use super::common::ReturnScoreThresholdsResolved;
+use super::common::{normalize_tlens_for_compare, ReturnScoreThresholdsResolved};
 use super::mkt_channel::MktChannel;
 use super::tlen_threshold_loader;
 use crate::common::bbo::Bbo;
@@ -520,7 +520,13 @@ impl MmDecision {
                 .depth_query_client
                 .query_batch_tick_indices(&symbol, &tick_indices)
             {
-                Ok(values) => values,
+                Ok(values) => normalize_tlens_for_compare(
+                    "MmDecision: MMCancel",
+                    &self.state.open_min_qty_table,
+                    self.state.open_venue,
+                    &symbol,
+                    values,
+                ),
                 Err(err) => {
                     warn!(
                         "MmDecision: MMCancel tlen batch query failed symbol={} levels={} err={:#}",
