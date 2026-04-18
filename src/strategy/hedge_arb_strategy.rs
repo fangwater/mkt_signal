@@ -28,6 +28,12 @@ use crate::trade_engine::query_parsers::compact_order::{
 use crate::trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
 use log::{debug, error, info, warn};
 use std::any::Any;
+
+fn qv_decimal_or_fallback(value: f64) -> String {
+    QuantizedValue::from_decimal(value)
+        .map(|qv| qv.decimal_string())
+        .unwrap_or_else(|| format!("{value:.8}"))
+}
 use std::collections::{HashMap, HashSet};
 
 // 下单后若迟迟收不到 account monitor 的推送（New/Filled 等），用一次 query 回补。
@@ -584,9 +590,11 @@ impl HedgeArbStrategy {
                 ts,
             );
         info!(
-            "📤 开仓订单已创建: strategy_id={} order_id={} client_order_id={} symbol={} {:?} side={:?} qty={:.4} price={:.6}",
+            "📤 开仓订单已创建: strategy_id={} order_id={} client_order_id={} symbol={} {:?} side={:?} qty={} price={}",
             self.strategy_id, order_id, client_order_id, symbol, venue,
-            Side::from_u8(ctx.side).unwrap(), aligned_qty, aligned_price
+            Side::from_u8(ctx.side).unwrap(),
+            qv_decimal_or_fallback(aligned_qty),
+            qv_decimal_or_fallback(aligned_price)
         );
 
         // 9、推送开仓订单到交易引擎
@@ -891,13 +899,13 @@ impl HedgeArbStrategy {
         }
 
         debug!(
-            "HedgeArbStrategy: strategy_id={} 对冲订单创建成功 order_id={} symbol={} side={:?} qty={:.8} price={:.8} type={:?}",
+            "HedgeArbStrategy: strategy_id={} 对冲订单创建成功 order_id={} symbol={} side={:?} qty={} price={} type={:?}",
             self.strategy_id,
             hedge_order_id,
             hedge_symbol,
             hedge_side,
-            aligned_qty,
-            aligned_price,
+            qv_decimal_or_fallback(aligned_qty),
+            qv_decimal_or_fallback(aligned_price),
             order_type
         );
 
@@ -2083,22 +2091,22 @@ impl HedgeArbStrategy {
             // 开仓成交，更新累计开仓量, 打印成交量
             self.cumulative_open_qty = cumulative_base_qty;
             info!(
-                "💰 开仓成交: strategy_id={} order_id={} symbol={} price={:.6} cumulative={:.4} | 已对冲={:.4}",
+                "💰 开仓成交: strategy_id={} order_id={} symbol={} price={} cumulative={} | 已对冲={}",
                 self.strategy_id, client_order_id, self.open_symbol,
-                trade.price(),
-                self.cumulative_open_qty,
-                self.cumulative_hedged_qty
+                qv_decimal_or_fallback(trade.price()),
+                qv_decimal_or_fallback(self.cumulative_open_qty),
+                qv_decimal_or_fallback(self.cumulative_hedged_qty)
             );
             self.process_open_leg_trade(trade);
         } else if self.hedge_order_ids.contains(&client_order_id) {
             // 对冲侧成交，增加累计对冲量
             self.cumulative_hedged_qty = cumulative_base_qty;
             debug!(
-                "🛡️ 对冲成交: strategy_id={} order_id={} symbol={} price={:.6} | 开仓量={:.4} 已对冲={:.4}",
+                "🛡️ 对冲成交: strategy_id={} order_id={} symbol={} price={} | 开仓量={} 已对冲={}",
                 self.strategy_id, client_order_id, self.hedge_symbol,
-                trade.price(),
-                self.cumulative_open_qty,
-                self.cumulative_hedged_qty
+                qv_decimal_or_fallback(trade.price()),
+                qv_decimal_or_fallback(self.cumulative_open_qty),
+                qv_decimal_or_fallback(self.cumulative_hedged_qty)
             );
             self.process_hedge_leg_trade(trade);
         } else {
@@ -2204,9 +2212,12 @@ impl HedgeArbStrategy {
                     order.status = OrderExecutionStatus::Create;
                     order.set_create_time(order_update.event_time());
                     info!(
-                        "✅ 订单已挂单: strategy_id={} client_order_id={} exchange_order_id={} symbol={} side={:?} price={:.6} qty={:.4}",
+                        "✅ 订单已挂单: strategy_id={} client_order_id={} exchange_order_id={} symbol={} side={:?} price={} qty={}",
                         self.strategy_id, client_order_id, order_update.order_id(),
-                        order.symbol, order.side, order.price, order.quantity
+                        order.symbol,
+                        order.side,
+                        qv_decimal_or_fallback(order.price),
+                        qv_decimal_or_fallback(order.quantity)
                     );
                 }
                 OrderStatus::Canceled => {
@@ -2214,9 +2225,12 @@ impl HedgeArbStrategy {
                     order.set_end_time(order_update.event_time());
                     let cancel_reason = self.last_open_cancel_reason.unwrap_or("unknown");
                     info!(
-                        "🚫 订单已撤销: strategy_id={} client_order_id={} symbol={} reason={} filled={:.4}/{:.4}",
+                        "🚫 订单已撤销: strategy_id={} client_order_id={} symbol={} reason={} filled={}/{}",
                         self.strategy_id, client_order_id,
-                        order.symbol, cancel_reason, order.cumulative_filled_quantity, order.quantity
+                        order.symbol,
+                        cancel_reason,
+                        qv_decimal_or_fallback(order.cumulative_filled_quantity),
+                        qv_decimal_or_fallback(order.quantity)
                     );
                     self.last_open_cancel_reason = None;
                 }

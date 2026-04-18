@@ -32,6 +32,12 @@ const ORDER_QUERY_RETRY_DELAY_US: i64 = 900_000;
 const MAX_CANCEL_RECANCEL_ATTEMPTS: u8 = 1;
 const MM_OPEN_CANCEL_RECONCILE_QUERY_DELAYS_US: [i64; 4] = [300_000, 600_000, 1_200_000, 2_400_000];
 
+fn qv_decimal_or_fallback(value: f64) -> String {
+    QuantizedValue::from_decimal(value)
+        .map(|qv| qv.decimal_string())
+        .unwrap_or_else(|| format!("{value:.8}"))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PendingOrderQueryReason {
     OrderWatchdog,
@@ -583,14 +589,14 @@ impl MarketMakerOpenStrategy {
             );
 
         info!(
-            "📤 MM开仓订单已创建: strategy_id={} client_order_id={} symbol={} {:?} side={:?} qty={:.4} price={:.6} from_key_len={}",
+            "📤 MM开仓订单已创建: strategy_id={} client_order_id={} symbol={} {:?} side={:?} qty={} price={} from_key_len={}",
             self.strategy_id,
             client_order_id,
             symbol,
             venue,
             side,
-            order_qty,
-            order_price,
+            qv_decimal_or_fallback(order_qty),
+            qv_decimal_or_fallback(order_price),
             ctx.from_key_len
         );
 

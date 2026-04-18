@@ -1,4 +1,5 @@
 use crate::common::symbol_util::normalize_symbol_for_internal;
+use crate::common::tick_math::QuantizedValue;
 use crate::common::time_util::get_timestamp_us;
 use crate::funding_rate::mm_decision::from_key::append_mm_hedge_tlen_to_from_key;
 use crate::market_maker::hedge_split::{
@@ -42,6 +43,12 @@ const HEDGE_QUERY_WATCHDOG_US: i64 = 30_000;
 const ORDER_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
 const CANCEL_RESEND_THROTTLE_US: i64 = 500_000;
 const NET_EXPOSURE_EPS_USDT: f64 = 5.0;
+
+fn qv_decimal_or_fallback(value: f64) -> String {
+    QuantizedValue::from_decimal(value)
+        .map(|qv| qv.decimal_string())
+        .unwrap_or_else(|| format!("{value:.8}"))
+}
 
 #[derive(Debug, Clone)]
 pub struct MmHedgeSnapshot {
@@ -1799,14 +1806,14 @@ impl MarketMakerHedgeStrategy {
                         );
                     } else {
                         debug!(
-                            "MarketMakerHedgeStrategy: strategy_id={} hedge order sent: exchange={} client_order_id={} level_index={} side={:?} price={:.8} qty={:.8} from_key='{}'",
+                            "MarketMakerHedgeStrategy: strategy_id={} hedge order sent: exchange={} client_order_id={} level_index={} side={:?} price={} qty={} from_key='{}'",
                             self.strategy_id,
                             exchange,
                             plan.client_order_id,
                             plan.level_index,
                             plan.side,
-                            plan.price,
-                            aligned_qty,
+                            qv_decimal_or_fallback(plan.price),
+                            qv_decimal_or_fallback(aligned_qty),
                             String::from_utf8_lossy(&plan.from_key)
                         );
                         self.log_hedge_order_state("open_sent", plan.client_order_id);
@@ -2028,14 +2035,14 @@ impl MarketMakerHedgeStrategy {
                 order.set_exchange_order_id(order_update.order_id());
                 order.set_create_time(order_update.event_time());
                 debug!(
-                    "✅ MMHedge订单已挂单: strategy_id={} client_order_id={} exchange_order_id={} symbol={} side={:?} price={:.6} qty={:.4}",
+                    "✅ MMHedge订单已挂单: strategy_id={} client_order_id={} exchange_order_id={} symbol={} side={:?} price={} qty={}",
                     self.strategy_id,
                     client_order_id,
                     order_update.order_id(),
                     order.symbol,
                     order.side,
-                    order.price,
-                    order.quantity
+                    qv_decimal_or_fallback(order.price),
+                    qv_decimal_or_fallback(order.quantity)
                 );
             }
             OrderStatus::Canceled => {

@@ -3,6 +3,7 @@ use std::convert::TryFrom;
 use bytes::{BufMut, Bytes, BytesMut};
 use serde_json::{json, Value};
 
+use crate::common::tick_math::QuantizedValue;
 use crate::pre_trade::order_manager::Side;
 
 use super::trade_request::{TradeRequestHeader, TradeRequestType};
@@ -56,21 +57,24 @@ impl OkexOrderType {
     }
 }
 
-/// 紧凑的 okex 下单参数：side | order_type | reduce_only | qty | price | client_order_id | symbol_len | symbol_bytes
+/// 紧凑的 okex 下单参数：
+/// side | order_type | reduce_only
+/// | qty_tick_i64 | qty_tick_exp | qty_count
+/// | price_tick_i64 | price_tick_exp | price_count
+/// | client_order_id | symbol_len | symbol_bytes
 #[derive(Debug, Clone)]
 pub struct OkexNewOrderParams {
     pub side: Side,
     pub order_type: OkexOrderType,
     pub reduce_only: bool,
-    pub quantity: f64,
-    pub price: f64,
+    pub quantity_qv: QuantizedValue,
+    pub price_qv: QuantizedValue,
     pub symbol: String,
     pub client_order_id: i64,
 }
 
 impl OkexNewOrderParams {
-    // side | order_type | reduce_only | qty | price | client_order_id | symbol_len | symbol_bytes
-    const MIN_BIN_LEN: usize = 1 + 1 + 1 + 8 + 8 + 8 + 1;
+    const MIN_BIN_LEN: usize = 1 + 1 + 1 + 8 + 4 + 8 + 8 + 4 + 8 + 8 + 1;
 
     pub fn to_bytes(&self) -> Option<Bytes> {
         let symbol_bytes = self.symbol.as_bytes();
@@ -78,12 +82,19 @@ impl OkexNewOrderParams {
             return None;
         }
 
+        let (qty_tick_i64, qty_tick_exp) = self.quantity_qv.get_tick_parts();
+        let (price_tick_i64, price_tick_exp) = self.price_qv.get_tick_parts();
+
         let mut buf = BytesMut::with_capacity(Self::MIN_BIN_LEN + symbol_bytes.len());
         buf.put_u8(self.side.to_u8());
         buf.put_u8(self.order_type as u8);
         buf.put_u8(self.reduce_only as u8);
-        buf.put_f64_le(self.quantity);
-        buf.put_f64_le(self.price);
+        buf.put_i64_le(qty_tick_i64);
+        buf.put_i32_le(qty_tick_exp);
+        buf.put_i64_le(self.quantity_qv.get_count());
+        buf.put_i64_le(price_tick_i64);
+        buf.put_i32_le(price_tick_exp);
+        buf.put_i64_le(self.price_qv.get_count());
         buf.put_i64_le(self.client_order_id);
         buf.put_u8(symbol_bytes.len() as u8);
         buf.put_slice(symbol_bytes);
@@ -98,23 +109,27 @@ impl OkexNewOrderParams {
         let side = Side::from_u8(raw[0])?;
         let order_type = OkexOrderType::try_from(raw[1]).ok()?;
         let reduce_only = raw[2] != 0;
-        let quantity = f64::from_le_bytes(raw[3..11].try_into().ok()?);
-        let price = f64::from_le_bytes(raw[11..19].try_into().ok()?);
-        let client_order_id = i64::from_le_bytes(raw[19..27].try_into().ok()?);
-        let symbol_len = raw[27] as usize;
+        let qty_tick_i64 = i64::from_le_bytes(raw[3..11].try_into().ok()?);
+        let qty_tick_exp = i32::from_le_bytes(raw[11..15].try_into().ok()?);
+        let qty_count = i64::from_le_bytes(raw[15..23].try_into().ok()?);
+        let price_tick_i64 = i64::from_le_bytes(raw[23..31].try_into().ok()?);
+        let price_tick_exp = i32::from_le_bytes(raw[31..35].try_into().ok()?);
+        let price_count = i64::from_le_bytes(raw[35..43].try_into().ok()?);
+        let client_order_id = i64::from_le_bytes(raw[43..51].try_into().ok()?);
+        let symbol_len = raw[51] as usize;
 
         if raw.len() < Self::MIN_BIN_LEN + symbol_len {
             return None;
         }
 
-        let symbol = std::str::from_utf8(&raw[28..28 + symbol_len]).ok()?;
+        let symbol = std::str::from_utf8(&raw[52..52 + symbol_len]).ok()?;
 
         Some(Self {
             side,
             order_type,
             reduce_only,
-            quantity,
-            price,
+            quantity_qv: QuantizedValue::from_parts(qty_tick_i64, qty_tick_exp, qty_count),
+            price_qv: QuantizedValue::from_parts(price_tick_i64, price_tick_exp, price_count),
             symbol: symbol.to_string(),
             client_order_id,
         })
@@ -382,8 +397,8 @@ impl ToOkexWsJson for OkexNewOrderRequest {
             _ => return None,
         };
 
-        let qty = format_decimal(params.quantity);
-        let price = format_decimal(params.price);
+        let qty = params.quantity_qv.decimal_string();
+        let price = params.price_qv.decimal_string();
         let cl_id = params.client_order_id.to_string();
         let ord_type_str = params.order_type.as_str();
         let args_obj = if params.order_type == OkexOrderType::Market {
@@ -465,23 +480,6 @@ impl ToOkexWsJson for OkexCancelOrderRequest {
             "id": self.header.client_order_id.to_string(),
             "args": [obj]
         }))
-    }
-}
-
-fn format_decimal(value: f64) -> String {
-    let mut s = format!("{:.15}", value);
-    if let Some(dot_pos) = s.find('.') {
-        while s.len() > dot_pos + 1 && s.ends_with('0') {
-            s.pop();
-        }
-        if s.ends_with('.') {
-            s.pop();
-        }
-    }
-    if s.is_empty() {
-        "0".to_string()
-    } else {
-        s
     }
 }
 
@@ -658,8 +656,8 @@ mod tests {
             side: Side::Buy,
             order_type: OkexOrderType::Limit,
             reduce_only: false,
-            quantity: 1.25,
-            price: 123.45,
+            quantity_qv: QuantizedValue::from_decimal(1.25).unwrap(),
+            price_qv: QuantizedValue::from_decimal(123.45).unwrap(),
             symbol: "BTC-USDT-SWAP".to_string(),
             client_order_id: 42,
         };
@@ -670,6 +668,8 @@ mod tests {
         assert_eq!(arg["instIdCode"], json!(123456));
         assert!(arg.get("instId").is_none());
         assert_eq!(arg["clOrdId"], json!("42"));
+        assert_eq!(arg["sz"], json!("1.25"));
+        assert_eq!(arg["px"], json!("123.45"));
     }
 
     #[test]

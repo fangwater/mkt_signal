@@ -11,6 +11,7 @@ use crate::trade_engine::trade_request::{
     GateFuturesNewOrderRequest, GateUnifiedCancelOrderRequest, GateUnifiedNewOrderRequest,
 };
 use crate::{
+    common::tick_math::QuantizedValue,
     common::symbol_util::normalize_symbol_for_internal,
     common::time_util::get_timestamp_us,
     signal::common::{OrderStatus, TradingVenue},
@@ -19,20 +20,9 @@ use bytes::Bytes;
 use log::{debug, info, warn};
 use std::collections::HashMap;
 fn format_decimal(value: f64) -> String {
-    let mut s = format!("{:.8}", value);
-    if let Some(dot_pos) = s.find('.') {
-        while s.len() > dot_pos + 1 && s.ends_with('0') {
-            s.pop();
-        }
-        if s.ends_with('.') {
-            s.pop();
-        }
-    }
-    if s.is_empty() {
-        "0".to_string()
-    } else {
-        s
-    }
+    QuantizedValue::from_decimal(value)
+        .map(|qv| qv.decimal_string())
+        .unwrap_or_else(|| "0".to_string())
 }
 
 fn format_quantity(quantity: f64) -> String {
@@ -41,6 +31,18 @@ fn format_quantity(quantity: f64) -> String {
 
 fn format_price(price: f64) -> String {
     format_decimal(price)
+}
+
+fn format_order_quantity(quantity: f64) -> String {
+    QuantizedValue::from_decimal(quantity)
+        .map(|qv| qv.decimal_string())
+        .unwrap_or_else(|| format_quantity(quantity))
+}
+
+fn format_order_price(price: f64) -> String {
+    QuantizedValue::from_decimal(price)
+        .map(|qv| qv.decimal_string())
+        .unwrap_or_else(|| format_price(price))
 }
 
 fn binance_ws_um_new_order_resp_type() -> &'static str {
@@ -719,8 +721,8 @@ impl OrderManager {
         warn!("交易对:       {}", order.symbol);
         warn!("订单类型:     {:?}", order.order_type);
         warn!("方向:         {:?}", order.side);
-        warn!("价格:         {:.8}", order.price);
-        warn!("数量:         {:.8}", order.quantity);
+        warn!("价格:         {}", format_order_price(order.price));
+        warn!("数量:         {}", format_order_quantity(order.quantity));
         warn!("数量乘数:     {:.8}", order.qty_multiplier);
         warn!("只减仓:       {}", order.reduce_only);
         warn!("成交量:       {:.8}", order.cumulative_filled_quantity);
@@ -1087,9 +1089,12 @@ impl Order {
                     let borrow_amount = required_amount - available_balance;
                     if !(use_binance_ws_margin && self.side == Side::Sell) {
                         warn!(
-                            "💰 余额不足将借币: 资产={} 需要={:.8} 可用={:.8} 需借={:.8} symbol={} side={:?} qty={:.4} price={:.6}",
+                            "💰 余额不足将借币: 资产={} 需要={:.8} 可用={:.8} 需借={:.8} symbol={} side={:?} qty={} price={}",
                             check_asset, required_amount, available_balance, borrow_amount,
-                            self.symbol, self.side, self.quantity, self.price
+                            self.symbol,
+                            self.side,
+                            format_order_quantity(self.quantity),
+                            format_order_price(self.price)
                         );
                     }
                     if !use_binance_ws_margin {
@@ -1189,12 +1194,29 @@ impl Order {
                 let create_ts = get_timestamp_us();
                 let inst_id = okex_inst_id_from_symbol(&self.symbol, self.venue)?;
                 let okex_order_type = okex_order_type_from_order_type(self.order_type)?;
+                let quantity_qv = QuantizedValue::from_decimal(self.quantity)
+                    .ok_or_else(|| {
+                        format!(
+                            "failed to quantize okex quantity: qty={:.12} symbol={} client_order_id={}",
+                            self.quantity, self.symbol, self.client_order_id
+                        )
+                    })?;
+                let price_qv = if self.order_type.is_limit() {
+                    QuantizedValue::from_decimal(self.price).ok_or_else(|| {
+                        format!(
+                            "failed to quantize okex price: price={:.12} symbol={} client_order_id={}",
+                            self.price, self.symbol, self.client_order_id
+                        )
+                    })?
+                } else {
+                    QuantizedValue::zero()
+                };
 
                 let params = OkexNewOrderParams {
                     side: self.side,
                     order_type: okex_order_type,
-                    quantity: self.quantity,
-                    price: self.price,
+                    quantity_qv,
+                    price_qv,
                     symbol: inst_id,
                     reduce_only: self.reduce_only,
                     client_order_id: self.client_order_id,

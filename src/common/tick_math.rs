@@ -24,6 +24,15 @@ impl QuantizedValue {
         }
     }
 
+    pub fn from_decimal(value: f64) -> Option<Self> {
+        let (value_i64, value_exp) = integerize_decimal(value)?;
+        Some(Self {
+            tick_i64: value_i64,
+            tick_exp: value_exp,
+            count: 1,
+        })
+    }
+
     pub fn encode_floor(value: f64, preferred_tick: f64) -> Option<Self> {
         encode_quantized_floor(value, preferred_tick)
     }
@@ -42,6 +51,39 @@ impl QuantizedValue {
 
     pub fn set_count_floor_from_val(&mut self, value: f64) {
         self.count = count_from_value_floor(value, self.tick_i64, self.tick_exp);
+    }
+
+    pub fn decimal_string(&self) -> String {
+        if self.count == 0 || self.tick_i64 == 0 {
+            return "0".to_string();
+        }
+
+        let sign = if (self.count < 0) ^ (self.tick_i64 < 0) {
+            "-"
+        } else {
+            ""
+        };
+        let abs_count = (self.count as i128).abs();
+        let abs_tick = (self.tick_i64 as i128).abs();
+        let scaled = abs_count * abs_tick;
+
+        if self.tick_exp >= 0 {
+            let mut out = scaled.to_string();
+            for _ in 0..self.tick_exp {
+                out.push('0');
+            }
+            return format!("{sign}{out}");
+        }
+
+        let scale = (-self.tick_exp) as usize;
+        let digits = scaled.to_string();
+        if digits.len() <= scale {
+            let zeros = "0".repeat(scale - digits.len());
+            return format!("{sign}0.{zeros}{digits}");
+        }
+
+        let split = digits.len() - scale;
+        format!("{sign}{}.{}", &digits[..split], &digits[split..])
     }
 }
 
