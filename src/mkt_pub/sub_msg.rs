@@ -10,6 +10,8 @@ const BINANCE_FUTURES_PUBLIC_WS_URL: &str = "wss://fstream.binance.com/public/ws
 const BINANCE_FUTURES_MARKET_WS_URL: &str = "wss://fstream.binance.com/market/ws";
 const BYBIT_SPOT_PUBLIC_WS_URL: &str = "wss://stream.bybit.com/v5/public/spot";
 const BYBIT_LINEAR_PUBLIC_WS_URL: &str = "wss://stream.bybit.com/v5/public/linear";
+const BYBIT_SPOT_SBE_WS_URL: &str = "wss://stream.bybit.com/v5/public-sbe/spot";
+const BYBIT_LINEAR_SBE_WS_URL: &str = "wss://stream.bybit.com/v5/public-sbe/linear";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinanceFuturesWsRoute {
@@ -601,7 +603,8 @@ impl SubscribeMsgs {
                 _ => Some("depth@100ms".to_string()),
             },
             Exchange::Okex => Some("books".to_string()),
-            Exchange::Bybit => Some("orderbook.500".to_string()),
+            // Bybit V5 public spot/linear docs currently expose orderbook depths such as 1/50/200/1000.
+            Exchange::Bybit => Some("orderbook.1000".to_string()),
             Exchange::Bitget => Some("books".to_string()),
             Exchange::Gate => Some("order_book_update".to_string()),
             Exchange::Hyperliquid => Some("l2Book".to_string()),
@@ -648,7 +651,13 @@ impl SubscribeMsgs {
                 _ => "bookTicker".to_string(),
             },
             Exchange::Okex => "bbo-tbt".to_string(),
-            Exchange::Bybit => "orderbook.1".to_string(),
+            Exchange::Bybit => {
+                if Self::bybit_ask_bid_uses_sbe() {
+                    "ob.rpi.1.sbe".to_string()
+                } else {
+                    "orderbook.1".to_string()
+                }
+            }
             Exchange::Bitget => "books1".to_string(),
             Exchange::Gate => match venue {
                 TradingVenue::GateMargin => "tickers".to_string(),
@@ -660,10 +669,53 @@ impl SubscribeMsgs {
 }
 
 impl SubscribeMsgs {
+    fn env_ws_override(name: &str) -> Option<String> {
+        std::env::var(name)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    }
+
+    fn env_flag(name: &str) -> bool {
+        std::env::var(name)
+            .ok()
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false)
+    }
+
+    fn bybit_ask_bid_uses_sbe() -> bool {
+        Self::env_flag("BYBIT_USE_SBE_BBO")
+            || Self::env_ws_override("BYBIT_SBE_WS_URL").is_some()
+            || Self::env_ws_override("BYBIT_SPOT_SBE_WS_URL").is_some()
+            || Self::env_ws_override("BYBIT_LINEAR_SBE_WS_URL").is_some()
+    }
+
     fn get_bybit_public_ws_url_with_venue(venue: TradingVenue) -> &'static str {
         match venue {
             TradingVenue::BybitMargin => BYBIT_SPOT_PUBLIC_WS_URL,
             _ => BYBIT_LINEAR_PUBLIC_WS_URL,
+        }
+    }
+
+    pub fn get_bybit_ask_bid_spread_url_with_venue(venue: TradingVenue) -> String {
+        if !Self::bybit_ask_bid_uses_sbe() {
+            return Self::get_bybit_public_ws_url_with_venue(venue).to_string();
+        }
+
+        if let Some(url) = Self::env_ws_override("BYBIT_SBE_WS_URL") {
+            return url;
+        }
+
+        match venue {
+            TradingVenue::BybitMargin => Self::env_ws_override("BYBIT_SPOT_SBE_WS_URL")
+                .unwrap_or_else(|| BYBIT_SPOT_SBE_WS_URL.to_string()),
+            _ => Self::env_ws_override("BYBIT_LINEAR_SBE_WS_URL")
+                .unwrap_or_else(|| BYBIT_LINEAR_SBE_WS_URL.to_string()),
         }
     }
 
@@ -1083,6 +1135,48 @@ mod tests {
 
         assert_eq!(args.len(), 1);
         assert_eq!(args[0].as_str(), Some("orderbook.1.BTCUSDT"));
+    }
+
+    #[test]
+    fn bybit_ask_bid_uses_legacy_topic_by_default() {
+        assert_eq!(
+            SubscribeMsgs::get_ask_bid_spread_channel(&Exchange::Bybit, TradingVenue::BybitFutures),
+            "orderbook.1"
+        );
+
+        let msg = construct_subscribe_message(
+            &Exchange::Bybit,
+            TradingVenue::BybitFutures,
+            &["BTCUSDT".to_string()],
+            "orderbook.1",
+        );
+        let args = msg
+            .get("args")
+            .and_then(|value| value.as_array())
+            .expect("bybit ask/bid args should be an array");
+
+        assert_eq!(args.len(), 1);
+        assert_eq!(args[0].as_str(), Some("orderbook.1.BTCUSDT"));
+    }
+
+    #[test]
+    fn bybit_ask_bid_uses_public_ws_urls_by_default() {
+        assert_eq!(
+            SubscribeMsgs::get_bybit_ask_bid_spread_url_with_venue(TradingVenue::BybitMargin),
+            BYBIT_SPOT_PUBLIC_WS_URL
+        );
+        assert_eq!(
+            SubscribeMsgs::get_bybit_ask_bid_spread_url_with_venue(TradingVenue::BybitFutures),
+            BYBIT_LINEAR_PUBLIC_WS_URL
+        );
+    }
+
+    #[test]
+    fn bybit_incremental_uses_supported_depth_topic() {
+        assert_eq!(
+            SubscribeMsgs::get_inc_channel(&Exchange::Bybit, TradingVenue::BybitFutures),
+            Some("orderbook.1000".to_string())
+        );
     }
 
     #[test]

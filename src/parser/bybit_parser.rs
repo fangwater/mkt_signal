@@ -86,14 +86,14 @@ impl Parser for BybitKlineParser {
                                         Some(low_str),
                                         Some(close_str),
                                         Some(volume_str),
-                                        Some(timestamp),
+                                        Some(start_time),
                                     ) = (
                                         kline_data.get("open").and_then(|v| v.as_str()),
                                         kline_data.get("high").and_then(|v| v.as_str()),
                                         kline_data.get("low").and_then(|v| v.as_str()),
                                         kline_data.get("close").and_then(|v| v.as_str()),
                                         kline_data.get("volume").and_then(|v| v.as_str()),
-                                        kline_data.get("timestamp").and_then(|v| v.as_i64()),
+                                        kline_data.get("start").and_then(|v| v.as_i64()),
                                     ) {
                                         // 解析价格和成交量数据
                                         if let (
@@ -109,9 +109,6 @@ impl Parser for BybitKlineParser {
                                             close_str.parse::<f64>(),
                                             volume_str.parse::<f64>(),
                                         ) {
-                                            // 将真实时间转换为opentime
-                                            let closed_timestamp = (timestamp / 60000 - 1) * 60000;
-
                                             // 创建K线消息
                                             let kline_msg = KlineMsg::create(
                                                 symbol.to_string(),
@@ -120,7 +117,7 @@ impl Parser for BybitKlineParser {
                                                 low,
                                                 close,
                                                 volume,
-                                                closed_timestamp,
+                                                start_time,
                                             );
 
                                             // 发送K线消息
@@ -521,6 +518,101 @@ mod tests {
         assert!(rx.try_recv().is_ok());
         assert!(rx.try_recv().is_err());
     }
+
+    #[test]
+    fn bybit_kline_parser_uses_start_time_as_timestamp() {
+        let parser = BybitKlineParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let msg = Bytes::from(
+            r#"{
+                "topic":"kline.1.BTCUSDT",
+                "ts":1672324988888,
+                "data":[
+                    {
+                        "start":1672324800000,
+                        "end":1672324859999,
+                        "interval":"1",
+                        "open":"16500.00",
+                        "close":"16510.00",
+                        "high":"16520.00",
+                        "low":"16490.00",
+                        "volume":"12.34",
+                        "turnover":"203456.78",
+                        "confirm":true,
+                        "timestamp":1672324859123
+                    }
+                ]
+            }"#,
+        );
+
+        assert_eq!(parser.parse(msg, &tx), 1);
+
+        let kline = rx.try_recv().expect("kline message should be emitted");
+        assert_eq!(read_kline_timestamp(&kline), 1672324800000);
+        assert!(rx.try_recv().is_err());
+    }
+
+    fn read_kline_timestamp(bytes: &[u8]) -> i64 {
+        let symbol_length = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
+        let offset = 8 + symbol_length + 5 * 8;
+        i64::from_le_bytes(
+            bytes[offset..offset + 8]
+                .try_into()
+                .expect("timestamp bytes"),
+        )
+    }
+
+    #[test]
+    fn bybit_ask_bid_parser_accepts_legacy_orderbook_one_json() {
+        let parser = BybitAskBidSpreadParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let msg = Bytes::from(
+            r#"{
+                "topic":"orderbook.1.BTCUSDT",
+                "type":"snapshot",
+                "ts":1757497309814,
+                "data":{
+                    "s":"BTCUSDT",
+                    "b":[["112233.4","8.1"]],
+                    "a":[["112233.5","6.2"]],
+                    "t":1757497309814
+                }
+            }"#,
+        );
+
+        assert_eq!(parser.parse(msg, &tx), 1);
+
+        let spread = rx.try_recv().expect("spread message should be emitted");
+        assert_eq!(AskBidSpreadMsg::get_symbol(&spread), "BTCUSDT");
+        assert_eq!(AskBidSpreadMsg::get_timestamp(&spread), 1757497309814);
+        assert_eq!(AskBidSpreadMsg::get_bid_price(&spread), 112233.4);
+        assert_eq!(AskBidSpreadMsg::get_bid_amount(&spread), 8.1);
+        assert_eq!(AskBidSpreadMsg::get_ask_price(&spread), 112233.5);
+        assert_eq!(AskBidSpreadMsg::get_ask_amount(&spread), 6.2);
+    }
+
+    #[test]
+    fn bybit_ask_bid_parser_accepts_sbe_bbo_binary() {
+        let parser = BybitAskBidSpreadParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let msg = Bytes::from(vec![
+            98, 0, 32, 78, 1, 0, 0, 0, 198, 28, 26, 229, 152, 1, 0, 0, 111, 0, 0, 0, 0, 0, 0, 0,
+            154, 28, 26, 229, 152, 1, 0, 0, 112, 0, 0, 0, 0, 0, 0, 0, 169, 63, 55, 67, 0, 0, 0, 0,
+            16, 39, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 168, 63, 55,
+            67, 0, 0, 0, 0, 32, 78, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 254, 255, 7, 66, 84, 67, 85, 83, 68, 84,
+        ]);
+
+        assert_eq!(parser.parse(msg, &tx), 1);
+
+        let spread = rx.try_recv().expect("spread message should be emitted");
+        assert_eq!(AskBidSpreadMsg::get_symbol(&spread), "BTCUSDT");
+        assert_eq!(AskBidSpreadMsg::get_timestamp(&spread), 1_756_190_350_534);
+        assert!((AskBidSpreadMsg::get_bid_price(&spread) - 11_276_942.48).abs() < 1e-9);
+        assert!((AskBidSpreadMsg::get_bid_amount(&spread) - 2_000.0).abs() < 1e-9);
+        assert!((AskBidSpreadMsg::get_ask_price(&spread) - 11_276_942.49).abs() < 1e-9);
+        assert!((AskBidSpreadMsg::get_ask_amount(&spread) - 1_000.0).abs() < 1e-9);
+    }
 }
 
 #[derive(Clone)]
@@ -530,29 +622,22 @@ impl BybitAskBidSpreadParser {
     pub fn new() -> Self {
         Self
     }
-}
 
-impl Parser for BybitAskBidSpreadParser {
-    fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
-        // Parse Bybit orderbook.1 message (same format as orderbook.500/200)
-        if let Ok(json_str) = std::str::from_utf8(&msg) {
+    fn parse_legacy_json(&self, msg: &[u8], tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if let Ok(json_str) = std::str::from_utf8(msg) {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
-                // Check if this is an orderbook.1 topic
                 if let Some(topic) = json_value.get("topic").and_then(|v| v.as_str()) {
                     if topic.starts_with("orderbook.1.") {
-                        // Extract symbol from topic (format: "orderbook.1.BTCUSDT")
                         let parts: Vec<&str> = topic.split('.').collect();
                         if parts.len() >= 3 {
                             let symbol = parts[2];
 
-                            // Parse data
                             if let Some(data) = json_value.get("data").and_then(|v| v.as_object()) {
                                 if let (Some(bids_array), Some(asks_array), Some(timestamp)) = (
                                     data.get("b").and_then(|v| v.as_array()),
                                     data.get("a").and_then(|v| v.as_array()),
                                     data.get("t").and_then(|v| v.as_i64()),
                                 ) {
-                                    // Parse best bid and ask (first element)
                                     if let (Some(bid_item), Some(ask_item)) =
                                         (bids_array.first(), asks_array.first())
                                     {
@@ -571,7 +656,6 @@ impl Parser for BybitAskBidSpreadParser {
                                                     ask_array[0].as_str(),
                                                     ask_array[1].as_str(),
                                                 ) {
-                                                    // Parse prices and amounts
                                                     if let (
                                                         Ok(bid_price),
                                                         Ok(bid_amount),
@@ -583,7 +667,6 @@ impl Parser for BybitAskBidSpreadParser {
                                                         ask_price_str.parse::<f64>(),
                                                         ask_amount_str.parse::<f64>(),
                                                     ) {
-                                                        // Filter out zero values
                                                         if bid_price <= 0.0
                                                             || bid_amount <= 0.0
                                                             || ask_price <= 0.0
@@ -592,7 +675,6 @@ impl Parser for BybitAskBidSpreadParser {
                                                             return 0;
                                                         }
 
-                                                        // Create spread message
                                                         let spread_msg = AskBidSpreadMsg::create(
                                                             symbol.to_string(),
                                                             timestamp,
@@ -602,7 +684,6 @@ impl Parser for BybitAskBidSpreadParser {
                                                             ask_amount,
                                                         );
 
-                                                        // Send message
                                                         if tx.send(spread_msg.to_bytes()).is_ok() {
                                                             return 1;
                                                         }
@@ -619,6 +700,171 @@ impl Parser for BybitAskBidSpreadParser {
             }
         }
         0
+    }
+
+    fn parse_sbe(&self, msg: &[u8], tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        let header = match read_sbe_header(msg) {
+            Some(header) => header,
+            None => return 0,
+        };
+        if header.template_id != 20000 {
+            return 0;
+        }
+
+        let base = header.body_offset;
+        if msg.len() < base + header.block_length {
+            return 0;
+        }
+
+        let parsed = if header.block_length == 82 {
+            Some((
+                read_i64_le(msg, base),
+                read_i64_le(msg, base + 32),
+                read_i64_le(msg, base + 40),
+                read_i64_le(msg, base + 56),
+                read_i64_le(msg, base + 64),
+                read_i8(msg, base + 80),
+                read_i8(msg, base + 81),
+                base + header.block_length,
+            ))
+        } else if header.block_length >= 98 {
+            Some((
+                read_i64_le(msg, base),
+                read_i64_le(msg, base + 32),
+                read_i64_le(msg, base + 40),
+                read_i64_le(msg, base + 64),
+                read_i64_le(msg, base + 72),
+                read_i8(msg, base + 96),
+                read_i8(msg, base + 97),
+                base + header.block_length,
+            ))
+        } else {
+            None
+        };
+
+        let Some((
+            Some(raw_timestamp),
+            Some(ask_price_raw),
+            Some(ask_amount_raw),
+            Some(bid_price_raw),
+            Some(bid_amount_raw),
+            Some(price_exponent),
+            Some(size_exponent),
+            symbol_offset,
+        )) = parsed
+        else {
+            return 0;
+        };
+
+        let Some((symbol, _)) = read_var_string8(msg, symbol_offset) else {
+            return 0;
+        };
+
+        let timestamp = normalize_bybit_sbe_timestamp(raw_timestamp);
+        let ask_price = scale_mantissa(ask_price_raw, price_exponent);
+        let ask_amount = scale_mantissa(ask_amount_raw, size_exponent);
+        let bid_price = scale_mantissa(bid_price_raw, price_exponent);
+        let bid_amount = scale_mantissa(bid_amount_raw, size_exponent);
+
+        if bid_price <= 0.0 || bid_amount <= 0.0 || ask_price <= 0.0 || ask_amount <= 0.0 {
+            return 0;
+        }
+
+        let spread_msg = AskBidSpreadMsg::create(
+            symbol.to_uppercase(),
+            timestamp,
+            bid_price,
+            bid_amount,
+            ask_price,
+            ask_amount,
+        );
+
+        if tx.send(spread_msg.to_bytes()).is_ok() {
+            return 1;
+        }
+        0
+    }
+}
+
+impl Parser for BybitAskBidSpreadParser {
+    fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if msg.is_empty() {
+            return 0;
+        }
+        if msg[0] == b'{' || msg[0] == b'[' {
+            return self.parse_legacy_json(&msg, tx);
+        }
+        self.parse_sbe(&msg, tx)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SbeHeader {
+    block_length: usize,
+    template_id: u16,
+    body_offset: usize,
+}
+
+fn read_sbe_header(msg: &[u8]) -> Option<SbeHeader> {
+    if msg.len() < 8 {
+        return None;
+    }
+    let block_length = read_u16_le(msg, 0)? as usize;
+    let template_id = read_u16_le(msg, 2)?;
+    Some(SbeHeader {
+        block_length,
+        template_id,
+        body_offset: 8,
+    })
+}
+
+fn read_u16_le(msg: &[u8], offset: usize) -> Option<u16> {
+    if msg.len() < offset + 2 {
+        return None;
+    }
+    Some(u16::from_le_bytes([msg[offset], msg[offset + 1]]))
+}
+
+fn read_i64_le(msg: &[u8], offset: usize) -> Option<i64> {
+    if msg.len() < offset + 8 {
+        return None;
+    }
+    Some(i64::from_le_bytes([
+        msg[offset],
+        msg[offset + 1],
+        msg[offset + 2],
+        msg[offset + 3],
+        msg[offset + 4],
+        msg[offset + 5],
+        msg[offset + 6],
+        msg[offset + 7],
+    ]))
+}
+
+fn read_i8(msg: &[u8], offset: usize) -> Option<i8> {
+    msg.get(offset).map(|value| *value as i8)
+}
+
+fn read_var_string8(msg: &[u8], offset: usize) -> Option<(String, usize)> {
+    let len = msg.get(offset).copied()? as usize;
+    let start = offset + 1;
+    if msg.len() < start + len {
+        return None;
+    }
+    let value = std::str::from_utf8(&msg[start..start + len]).ok()?;
+    Some((value.to_string(), start + len))
+}
+
+fn scale_mantissa(mantissa: i64, exponent: i8) -> f64 {
+    let factor = 10_f64.powi(exponent as i32);
+    (mantissa as f64) * factor
+}
+
+fn normalize_bybit_sbe_timestamp(timestamp: i64) -> i64 {
+    if timestamp.abs() >= 1_000_000_000_000_000 {
+        timestamp / 1000
+    } else {
+        timestamp
     }
 }
 

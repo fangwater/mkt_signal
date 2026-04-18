@@ -628,15 +628,12 @@ impl MktManager {
                     }
                 },
                 Exchange::Bybit => {
-                    let url = SubscribeMsgs::get_exchange_mkt_data_url_with_venue(
-                        &exchange,
-                        self.cfg.venue,
-                    )
-                    .to_string();
+                    let url =
+                        SubscribeMsgs::get_bybit_ask_bid_spread_url_with_venue(self.cfg.venue);
                     let parser = BybitAskBidSpreadParser::new();
                     self.spawn_connection_with_mpsc(
                         exchange,
-                        url.clone(),
+                        url,
                         subscribe_msg,
                         format!("ask_bid_spread batch {}", i),
                         parser,
