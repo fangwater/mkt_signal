@@ -28,6 +28,9 @@ use uuid::Uuid;
 // }
 
 // To avoid network or program issues, we recommend that you send the ping heartbeat packet every 20 seconds to maintain the WebSocket connection.
+const BYBIT_PING_INTERVAL: Duration = Duration::from_secs(20);
+const BYBIT_PONG_TIMEOUT: Duration = Duration::from_secs(10);
+
 pub struct BybitConnection {
     base_connection: MktConnection,
 }
@@ -41,10 +44,44 @@ impl BybitConnection {
 }
 
 fn is_bybit_pong_msg(msg: &serde_json::Value) -> bool {
-    // 同时检查操作类型和返回消息内容
-    msg.get("op").map(|v| v == "ping").unwrap_or(false)
-        && msg.get("ret_msg").map(|v| v == "pong").unwrap_or(false)
-        && msg.get("success").is_some()
+    let op = msg.get("op").and_then(|v| v.as_str());
+    let ret_msg = msg.get("ret_msg").and_then(|v| v.as_str());
+
+    matches!(op, Some("pong")) || (matches!(op, Some("ping")) && matches!(ret_msg, Some("pong")))
+}
+
+fn is_bybit_control_msg(msg: &serde_json::Value) -> bool {
+    if msg.get("topic").is_some() {
+        return false;
+    }
+
+    msg.get("success").is_some()
+        || msg.get("ret_msg").is_some()
+        || msg.get("retCode").is_some()
+        || msg.get("op").is_some()
+}
+
+fn log_bybit_control_msg(msg: &serde_json::Value) {
+    let op = msg.get("op").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let success = msg.get("success").and_then(|v| v.as_bool());
+    let ret_msg = msg.get("ret_msg").and_then(|v| v.as_str()).unwrap_or("");
+    let ret_code = msg
+        .get("retCode")
+        .or_else(|| msg.get("code"))
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "null".to_string());
+
+    match success {
+        Some(true) => info!(
+            "Bybit control message ok: op={} ret_code={} ret_msg={} payload={}",
+            op, ret_code, ret_msg, msg
+        ),
+        Some(false) => warn!(
+            "Bybit control message failed: op={} ret_code={} ret_msg={} payload={}",
+            op, ret_code, ret_msg, msg
+        ),
+        None => debug!("Bybit control message: op={} payload={}", op, msg),
+    }
 }
 
 #[async_trait]
@@ -54,10 +91,9 @@ impl MktConnectionRunner for BybitConnection {
         //需要考虑的事件是
         //1、心跳发送计时，间隔20s，发送一次心跳
         //2、心跳发送后，等待pong消息，如果20s内没有收到pong消息，则重启websocket
-        //注意bybit文档并未给出这个超时时间，因此设置为20s，和发送频率保持一致
-        // 把问题转化为，必须稳定的收到pong 否则断开
-        let mut ping_timer: Instant = Instant::now() + Duration::from_secs(20); // 心跳计时，初始值20s，倒计时结束发ping消息
-        let mut reset_timer: Instant = ping_timer + Duration::from_secs(5); // 倒计时，初始值40s，倒计时结束重启websocket
+        //注意bybit文档建议20s发一次ping，这里将pong等待窗口放宽到10s，降低瞬时抖动导致的误重连
+        let mut ping_timer: Instant = Instant::now() + BYBIT_PING_INTERVAL;
+        let mut reset_timer: Instant = ping_timer + BYBIT_PONG_TIMEOUT;
         let mut waiting_pong = false;
         loop {
             let mut ws_stream = self
@@ -93,12 +129,16 @@ impl MktConnectionRunner for BybitConnection {
                         break;
                     }
                     waiting_pong = true;
-                    // 重置心跳计时
-                    ping_timer = Instant::now() + Duration::from_secs(20);
-                    log::info!("Sent ping message with req_id: {:?}, reset ping timer to {:?}", req_id, ping_timer);
+                    reset_timer = Instant::now() + BYBIT_PONG_TIMEOUT;
+                    ping_timer = Instant::now() + BYBIT_PING_INTERVAL;
+                    log::info!("Sent ping message with req_id: {:?}, reset ping timer to {:?}, pong deadline {:?}", req_id, ping_timer, reset_timer);
                 }
                 // ====处理超时====
                 _ = time::sleep_until(reset_timer) => {
+                    if !waiting_pong {
+                        reset_timer = ping_timer + BYBIT_PONG_TIMEOUT;
+                        continue;
+                    }
                     // 到期没有收到pong消息，则重启websocket
                     log::error!("Bybit: Ping timeout detected. reset connecting...");
                     ws_stream.close(None).await?; // 发送 CLOSE 帧
@@ -122,25 +162,29 @@ impl MktConnectionRunner for BybitConnection {
                                     warn!("Unexpected pong message: {:?}", payload);
                                 }
                                 Message::Text(text) => {
-                                    if waiting_pong {
-                                        // 只有在等待pong消息时，需要parser text，检查是否是pong消息
-                                        let msg: serde_json::Value = serde_json::from_slice(&text.as_bytes()).unwrap();
-                                        if is_bybit_pong_msg(&msg) {
+                                    if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text) {
+                                        if waiting_pong && is_bybit_pong_msg(&msg) {
                                             log::info!("Received pong message: {:?}", msg);
-                                            waiting_pong = false;
-                                            let req_id = msg["req_id"].as_str().unwrap();
-                                            reset_timer = ping_timer + Duration::from_secs(5);
-                                            log::info!("Received pong message with req_id: {:?}, reset reset timer to {:?}", req_id, reset_timer);
-                                            //检查pong消息是否是suceess，如果不是，则断开连接
-                                            if !msg["success"].as_bool().unwrap() {
+                                            if matches!(msg.get("success").and_then(|v| v.as_bool()), Some(false)) {
                                                 error!("Bybit: Pong message is not success: {:?}", msg);
                                                 break;
                                             }
+                                            waiting_pong = false;
+                                            let req_id = msg.get("req_id").and_then(|v| v.as_str()).unwrap_or("unknown");
+                                            reset_timer = ping_timer + BYBIT_PONG_TIMEOUT;
+                                            log::info!("Received pong message with req_id: {:?}, reset timer to {:?}", req_id, reset_timer);
                                             continue;
                                         }
+
+                                        if is_bybit_control_msg(&msg) {
+                                            log_bybit_control_msg(&msg);
+                                            continue;
+                                        }
+                                    } else if waiting_pong {
+                                        warn!("Failed to parse Bybit text message while waiting for pong: {}", text);
                                     }
-                                    // 1、非等待pong消息，直接广播
-                                    // 2、等待pong消息时，如果is_bybit_pong_msg为false，不会走到continue，而是走到这里，直接广播
+
+                                    // 只将真正的 topic/data 消息继续广播，控制面文本已在上方截获
                                     let bytes = Bytes::from(text.into_bytes());
                                     if let Err(e) = self.base_connection.tx.send(bytes.clone()) {
                                         //利用shutdown关闭
@@ -173,6 +217,58 @@ impl MktConnectionRunner for BybitConnection {
             }
         }
         return Ok(());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_bybit_control_msg, is_bybit_pong_msg};
+    use serde_json::json;
+
+    #[test]
+    fn bybit_pong_recognizes_current_public_format() {
+        let msg = json!({
+            "success": true,
+            "ret_msg": "pong",
+            "conn_id": "test",
+            "op": "ping"
+        });
+
+        assert!(is_bybit_pong_msg(&msg));
+    }
+
+    #[test]
+    fn bybit_pong_recognizes_op_pong_format() {
+        let msg = json!({
+            "op": "pong",
+            "args": ["1675418560633"],
+            "conn_id": "test"
+        });
+
+        assert!(is_bybit_pong_msg(&msg));
+    }
+
+    #[test]
+    fn bybit_subscribe_ack_is_control_message() {
+        let msg = json!({
+            "success": true,
+            "ret_msg": "subscribe",
+            "op": "subscribe",
+            "conn_id": "test"
+        });
+
+        assert!(is_bybit_control_msg(&msg));
+    }
+
+    #[test]
+    fn bybit_topic_payload_is_not_control_message() {
+        let msg = json!({
+            "topic": "publicTrade.BTCUSDT",
+            "type": "snapshot",
+            "data": []
+        });
+
+        assert!(!is_bybit_control_msg(&msg));
     }
 }
 
