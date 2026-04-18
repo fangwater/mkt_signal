@@ -46,9 +46,11 @@ impl UsdtBalanceManager {
         }
         self.state.borrowed = msg.borrowed;
         match self.exchange {
-            Exchange::Okex | Exchange::Binance | Exchange::Gate | Exchange::Hyperliquid => {
-                self.state.cumulative_interest = msg.interest
-            }
+            Exchange::Okex
+            | Exchange::Binance
+            | Exchange::Gate
+            | Exchange::Hyperliquid
+            | Exchange::Bybit => self.state.cumulative_interest = msg.interest,
             _ => {}
         }
         self.state.last_timestamp = self.state.last_timestamp.max(msg.timestamp);
@@ -58,7 +60,7 @@ impl UsdtBalanceManager {
     pub fn net_usdt_position(&self) -> f64 {
         match self.exchange {
             Exchange::Okex | Exchange::Gate => self.state.balance,
-            Exchange::Binance | Exchange::Hyperliquid => {
+            Exchange::Binance | Exchange::Hyperliquid | Exchange::Bybit => {
                 self.state.balance - self.state.borrowed - self.state.cumulative_interest
             }
             _ => self.state.balance,

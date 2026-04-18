@@ -13,6 +13,7 @@ use crate::common::basic_account_msg::{
     GateBasicOrderMsg, OkexOrderMsg,
 };
 use crate::common::bitget_account_msg::BitgetBasicOrderMsg;
+use crate::common::bybit_account_msg::BybitBasicOrderMsg;
 use crate::common::exchange::Exchange;
 use crate::common::ipc_service_name::build_service_name;
 use crate::common::min_qty_table::MinQtyTable;
@@ -49,6 +50,7 @@ fn is_margin_venue(venue: TradingVenue) -> bool {
             | TradingVenue::OkexMargin
             | TradingVenue::GateMargin
             | TradingVenue::BitgetMargin
+            | TradingVenue::BybitMargin
     )
 }
 
@@ -59,6 +61,7 @@ fn is_futures_venue(venue: TradingVenue) -> bool {
             | TradingVenue::OkexFutures
             | TradingVenue::GateFutures
             | TradingVenue::BitgetFutures
+            | TradingVenue::BybitFutures
     )
 }
 
@@ -68,6 +71,7 @@ fn exchange_from_venue(venue: TradingVenue) -> Exchange {
         TradingVenue::OkexMargin | TradingVenue::OkexFutures => Exchange::Okex,
         TradingVenue::GateMargin | TradingVenue::GateFutures => Exchange::Gate,
         TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => Exchange::Bitget,
+        TradingVenue::BybitMargin | TradingVenue::BybitFutures => Exchange::Bybit,
         _ => panic!("unsupported venue for pre_trade: {:?}", venue),
     }
 }
@@ -96,6 +100,7 @@ fn scope_for_venue(
         TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => {
             BasicAccountScope::BitgetUnified
         }
+        TradingVenue::BybitMargin | TradingVenue::BybitFutures => BasicAccountScope::BybitUnified,
         _ => BasicAccountScope::Unknown,
     }
 }
@@ -1381,6 +1386,11 @@ impl MonitorChannel {
                                     }
                                     Exchange::Bitget => {
                                         if let Ok(msg) = BitgetBasicOrderMsg::from_bytes(data) {
+                                            dispatch_order_update_generic(&strategy_mgr, &msg);
+                                        }
+                                    }
+                                    Exchange::Bybit => {
+                                        if let Ok(msg) = BybitBasicOrderMsg::from_bytes(data) {
                                             dispatch_order_update_generic(&strategy_mgr, &msg);
                                         }
                                     }

@@ -63,6 +63,9 @@ impl OkexAccountEventParser {
         }
 
         // position
+        // 当前仅从 balance_and_position.posData 提取仓位方向/数量/更新时间。
+        // 未实现将 OKX 的 UPL 从该 WS 事件映射为 BasicUmUnrealizedMsg；
+        // 这部分由启动后和周期性的 positions snapshot 回补。
         if let Some(arr) = json_value
             .get("data")
             .and_then(|d| d.get(0))
@@ -234,6 +237,9 @@ impl Parser for OkexAccountEventParser {
             "balance_and_position" => self.parse_balance_and_position(&json_value, tx),
             "orders" => self.parse_orders(&json_value, tx),
             "positions" | "account" => {
+                // 当前设计不消费这两个 OKX 频道：
+                // - positions: 未单独订阅，避免与 balance_and_position 的仓位数量语义重叠
+                // - account: 余额/权益初始化与补偿由 snapshot 负责
                 debug!("OKX: ignored channel={} payload={}", channel, json_str);
                 0
             }

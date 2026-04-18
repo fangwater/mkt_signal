@@ -33,6 +33,10 @@ name = "bitget_account_monitor"
 path = "src/bin/bitget_account_monitor.rs"
 
 [[bin]]
+name = "bybit_account_monitor"
+path = "src/bin/bybit_account_monitor.rs"
+
+[[bin]]
 name = "trade_engine"
 path = "src/bin/trade_engine.rs"
 

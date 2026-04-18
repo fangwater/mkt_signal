@@ -6,6 +6,8 @@
 //! - `okex_auth`: OKEx WebSocket 鉴权模块
 //! - `okex_user_stream`: OKEx 用户数据 WebSocket 连接
 //! - `okex_rest`: OKEx REST 辅助工具（签名、账户拉取等）
+//! - `bybit_auth`: Bybit WebSocket 鉴权模块
+//! - `bybit_user_stream`: Bybit 用户数据 WebSocket 连接
 //! - `gate_auth`: Gate.io WebSocket 鉴权模块
 //! - `gate_user_stream`: Gate.io 用户数据 WebSocket 连接
 //! - `pm_forwarder`: 将原始账户数据转发到 Iceoryx 的 `account_pubs/<exchange>/pm`
@@ -16,6 +18,8 @@ pub mod binance_spot_ws_api_user_stream;
 pub mod binance_user_stream;
 pub mod bitget_auth;
 pub mod bitget_user_stream;
+pub mod bybit_auth;
+pub mod bybit_user_stream;
 pub mod gate_auth;
 pub mod gate_user_stream;
 pub mod listen_key;

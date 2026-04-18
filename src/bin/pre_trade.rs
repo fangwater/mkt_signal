@@ -386,6 +386,8 @@ async fn main() -> Result<()> {
                     // 目的：
                     // - futures-only 场景也需要 balance（特别是 USDT）用于风控/可用资金判断
                     // - margin-only 场景也需要 position（部分交易所/模式下持仓会通过不同通道补齐）
+                    // - 对 OKX，实时仓位数量来自 account stream 的 balance_and_position；
+                    //   positions snapshot 主要承担初始化/校准，以及补齐 UPL
                     let need_binance = open_venue.trade_engine_exchange() == "binance"
                         || hedge_venue.trade_engine_exchange() == "binance";
                     let need_okex = open_venue.trade_engine_exchange() == "okex"

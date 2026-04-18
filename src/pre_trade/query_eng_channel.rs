@@ -272,6 +272,7 @@ impl QueryEngChannel {
                                         Exchange::Okex => BasicAccountScope::OkexUnified,
                                         Exchange::Gate => BasicAccountScope::GateUnified,
                                         Exchange::Bitget => BasicAccountScope::BitgetUnified,
+                                        Exchange::Bybit => BasicAccountScope::BybitUnified,
                                         _ => BasicAccountScope::Unknown,
                                     },
                                 };
@@ -300,6 +301,9 @@ impl QueryEngChannel {
                                         TradingVenue::BitgetMargin
                                         | TradingVenue::BitgetFutures => {
                                             scope == BasicAccountScope::BitgetUnified
+                                        }
+                                        TradingVenue::BybitMargin | TradingVenue::BybitFutures => {
+                                            scope == BasicAccountScope::BybitUnified
                                         }
                                         _ => false,
                                     };

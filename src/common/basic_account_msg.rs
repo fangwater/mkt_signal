@@ -36,6 +36,7 @@ pub enum BasicAccountScope {
     OkexUnified = 10,
     GateUnified = 11,
     BitgetUnified = 12,
+    BybitUnified = 13,
 }
 
 impl BasicAccountScope {
@@ -47,6 +48,7 @@ impl BasicAccountScope {
             10 => Self::OkexUnified,
             11 => Self::GateUnified,
             12 => Self::BitgetUnified,
+            13 => Self::BybitUnified,
             _ => Self::Unknown,
         }
     }
@@ -60,6 +62,7 @@ impl BasicAccountScope {
             Self::OkexUnified => "okex_unified",
             Self::GateUnified => "gate_unified",
             Self::BitgetUnified => "bitget_unified",
+            Self::BybitUnified => "bybit_unified",
         }
     }
 }
