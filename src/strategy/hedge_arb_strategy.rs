@@ -2103,7 +2103,9 @@ impl HedgeArbStrategy {
             self.cumulative_hedged_qty = cumulative_base_qty;
             debug!(
                 "🛡️ 对冲成交: strategy_id={} order_id={} symbol={} price={} | 开仓量={} 已对冲={}",
-                self.strategy_id, client_order_id, self.hedge_symbol,
+                self.strategy_id,
+                client_order_id,
+                self.hedge_symbol,
                 qv_decimal_or_fallback(trade.price()),
                 qv_decimal_or_fallback(self.cumulative_open_qty),
                 qv_decimal_or_fallback(self.cumulative_hedged_qty)

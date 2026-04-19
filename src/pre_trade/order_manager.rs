@@ -11,8 +11,8 @@ use crate::trade_engine::trade_request::{
     GateFuturesNewOrderRequest, GateUnifiedCancelOrderRequest, GateUnifiedNewOrderRequest,
 };
 use crate::{
-    common::tick_math::QuantizedValue,
     common::symbol_util::normalize_symbol_for_internal,
+    common::tick_math::QuantizedValue,
     common::time_util::get_timestamp_us,
     signal::common::{OrderStatus, TradingVenue},
 };
@@ -1194,13 +1194,12 @@ impl Order {
                 let create_ts = get_timestamp_us();
                 let inst_id = okex_inst_id_from_symbol(&self.symbol, self.venue)?;
                 let okex_order_type = okex_order_type_from_order_type(self.order_type)?;
-                let quantity_qv = QuantizedValue::from_decimal(self.quantity)
-                    .ok_or_else(|| {
-                        format!(
-                            "failed to quantize okex quantity: qty={:.12} symbol={} client_order_id={}",
-                            self.quantity, self.symbol, self.client_order_id
-                        )
-                    })?;
+                let quantity_qv = QuantizedValue::from_decimal(self.quantity).ok_or_else(|| {
+                    format!(
+                        "failed to quantize okex quantity: qty={:.12} symbol={} client_order_id={}",
+                        self.quantity, self.symbol, self.client_order_id
+                    )
+                })?;
                 let price_qv = if self.order_type.is_limit() {
                     QuantizedValue::from_decimal(self.price).ok_or_else(|| {
                         format!(

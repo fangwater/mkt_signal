@@ -829,7 +829,9 @@ impl FactorValueHub {
         };
         let target_ts_us = target_ts.and_then(Self::normalize_pnlu_ts_us);
         let target_age_secs = match target_ts_us {
-            Some(target_ts_us) if target_ts_us <= now_us => Some((now_us - target_ts_us) / 1_000_000),
+            Some(target_ts_us) if target_ts_us <= now_us => {
+                Some((now_us - target_ts_us) / 1_000_000)
+            }
             Some(_) => return PnluCheckResult::fail("target_ts_in_future"),
             None => None,
         };
