@@ -8,11 +8,44 @@ use crate::common::bitget_account_msg::BitgetBasicOrderMsg;
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use log::{debug, warn};
+use serde::Deserialize;
 use serde_json::{Map, Value};
 use tokio::sync::mpsc;
 
 #[derive(Clone)]
 pub struct BitgetAccountEventParser;
+
+#[derive(Debug, Deserialize)]
+struct BitgetAccountChannelRow {
+    #[serde(default, rename = "uTime")]
+    u_time: String,
+    #[serde(default, rename = "updatedTime")]
+    updated_time: String,
+    #[serde(default)]
+    ts: String,
+    #[serde(default)]
+    coin: Vec<BitgetAccountChannelCoin>,
+    #[serde(default, rename = "marginCoin")]
+    margin_coin: String,
+    #[serde(default)]
+    balance: String,
+    #[serde(default)]
+    borrow: String,
+    #[serde(default)]
+    debts: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BitgetAccountChannelCoin {
+    #[serde(default)]
+    coin: String,
+    #[serde(default)]
+    balance: String,
+    #[serde(default)]
+    borrow: String,
+    #[serde(default)]
+    debts: String,
+}
 
 impl BitgetAccountEventParser {
     pub fn new() -> Self {
@@ -31,20 +64,28 @@ impl BitgetAccountEventParser {
             .unwrap_or(0);
 
         for account in collect_data_objects(json_value) {
-            let timestamp = parse_i64_str_or_num(account.get("uTime"))
-                .or_else(|| parse_i64_str_or_num(account.get("updatedTime")))
-                .or_else(|| parse_i64_str_or_num(account.get("ts")))
+            let Ok(account_row) =
+                serde_json::from_value::<BitgetAccountChannelRow>(Value::Object(account.clone()))
+            else {
+                continue;
+            };
+            let timestamp = parse_i64_str(&account_row.u_time)
+                .or_else(|| parse_i64_str(&account_row.updated_time))
+                .or_else(|| parse_i64_str(&account_row.ts))
                 .unwrap_or(top_timestamp);
 
-            if let Some(coins) = account.get("coin").and_then(|v| v.as_array()) {
-                for coin_item in coins {
-                    let Some(coin_obj) = coin_item.as_object() else {
-                        continue;
-                    };
-                    count += self.emit_account_coin(coin_obj, timestamp, tx);
+            if !account_row.coin.is_empty() {
+                for coin_item in &account_row.coin {
+                    count += self.emit_account_coin(coin_item, timestamp, tx);
                 }
-            } else {
-                count += self.emit_account_coin(account, timestamp, tx);
+            } else if !account_row.margin_coin.is_empty() {
+                let coin_item = BitgetAccountChannelCoin {
+                    coin: account_row.margin_coin,
+                    balance: account_row.balance,
+                    borrow: account_row.borrow,
+                    debts: account_row.debts,
+                };
+                count += self.emit_account_coin(&coin_item, timestamp, tx);
             }
         }
 
@@ -53,26 +94,18 @@ impl BitgetAccountEventParser {
 
     fn emit_account_coin(
         &self,
-        coin_obj: &Map<String, Value>,
+        coin_obj: &BitgetAccountChannelCoin,
         timestamp: i64,
         tx: &mpsc::UnboundedSender<Bytes>,
     ) -> usize {
-        let coin = coin_obj
-            .get("coin")
-            .or_else(|| coin_obj.get("marginCoin"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        let coin = coin_obj.coin.clone();
         if coin.is_empty() {
             return 0;
         }
 
         let mut sent = 0;
 
-        let balance = parse_f64_str_or_num(coin_obj.get("available"))
-            .or_else(|| parse_f64_str_or_num(coin_obj.get("equity")))
-            .or_else(|| parse_f64_str_or_num(coin_obj.get("balance")))
-            .unwrap_or(0.0);
+        let balance = parse_f64_str(&coin_obj.balance).unwrap_or(0.0);
         let balance_msg = BasicBalanceMsg::create(timestamp, coin.clone(), balance);
         let payload = balance_msg.to_bytes();
         let event = BasicAccountEventMsg::create(
@@ -84,12 +117,9 @@ impl BitgetAccountEventParser {
             sent += 1;
         }
 
-        let borrowed = parse_f64_str_or_num(coin_obj.get("borrowAmount"))
-            .or_else(|| parse_f64_str_or_num(coin_obj.get("liability")))
-            .unwrap_or(0.0);
-        let interest = parse_f64_str_or_num(coin_obj.get("interest"))
-            .or_else(|| parse_f64_str_or_num(coin_obj.get("accruedInterest")))
-            .unwrap_or(0.0);
+        let borrowed = parse_f64_str(&coin_obj.borrow).unwrap_or(0.0);
+        let debts = parse_f64_str(&coin_obj.debts).unwrap_or(0.0);
+        let interest = (debts - borrowed).max(0.0);
         if borrowed > 0.0 || interest > 0.0 {
             let interest_msg = BasicBorrowInterestMsg::create(timestamp, coin, borrowed, interest);
             let payload = interest_msg.to_bytes();
@@ -428,4 +458,20 @@ fn parse_i64_str_or_num(v: Option<&Value>) -> Option<i64> {
             None
         }
     })
+}
+
+fn parse_f64_str(v: &str) -> Option<f64> {
+    let s = v.trim();
+    if s.is_empty() {
+        return None;
+    }
+    s.parse::<f64>().ok()
+}
+
+fn parse_i64_str(v: &str) -> Option<i64> {
+    let s = v.trim();
+    if s.is_empty() {
+        return None;
+    }
+    s.parse::<i64>().ok()
 }

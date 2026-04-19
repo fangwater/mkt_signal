@@ -19,9 +19,9 @@ use log::{info, warn};
 use crate::common::ipc_service_name::build_service_name;
 
 pub const PM_MAX_BYTES: usize = 16384;
-pub const PM_HISTORY_SIZE: usize = 2048;
+pub const PM_HISTORY_SIZE: usize = 4096;
 pub const PM_MAX_SUBSCRIBERS: usize = 4;
-pub const PM_SUBSCRIBER_MAX_BUFFER_SIZE: usize = 1024;
+pub const PM_SUBSCRIBER_MAX_BUFFER_SIZE: usize = 4096;
 
 /// PM 转发器，内部持有 Iceoryx publisher
 pub struct PmForwarder {

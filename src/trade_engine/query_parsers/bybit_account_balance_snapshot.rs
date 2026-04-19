@@ -28,8 +28,6 @@ struct BybitWalletBalanceCoin {
     coin: String,
     #[serde(default, rename = "walletBalance")]
     wallet_balance: String,
-    #[serde(default)]
-    equity: String,
     #[serde(default, rename = "borrowAmount")]
     borrow_amount: String,
     #[serde(default, rename = "spotBorrow")]
@@ -63,9 +61,7 @@ pub fn parse_bybit_account_balance_snapshot(json: &str) -> Option<Vec<Bytes>> {
             continue;
         }
 
-        let balance = parse_f64(&coin.wallet_balance)
-            .or_else(|| parse_f64(&coin.equity))
-            .unwrap_or(0.0);
+        let balance = parse_f64(&coin.wallet_balance).unwrap_or(0.0);
         out.push(BasicBalanceMsg::create(ts, symbol.clone(), balance).to_bytes());
 
         let borrowed = parse_f64(&coin.borrow_amount)
@@ -84,7 +80,9 @@ pub fn parse_bybit_account_balance_snapshot(json: &str) -> Option<Vec<Bytes>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::basic_account_msg::{BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg};
+    use crate::common::basic_account_msg::{
+        BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
+    };
 
     #[test]
     fn parses_bybit_wallet_balance_snapshot() {
@@ -98,8 +96,14 @@ mod tests {
         let msgs = parse_bybit_account_balance_snapshot(json).expect("parse ok");
         assert_eq!(msgs.len(), 3);
         let bal = BasicBalanceMsg::from_bytes(&msgs[0]).expect("bal ok");
-        assert_eq!(bal.msg_type as u32, BasicAccountEventType::BalanceUpdate as u32);
+        assert_eq!(
+            bal.msg_type as u32,
+            BasicAccountEventType::BalanceUpdate as u32
+        );
         let borrow = BasicBorrowInterestMsg::from_bytes(&msgs[1]).expect("borrow ok");
-        assert_eq!(borrow.msg_type as u32, BasicAccountEventType::BorrowInterest as u32);
+        assert_eq!(
+            borrow.msg_type as u32,
+            BasicAccountEventType::BorrowInterest as u32
+        );
     }
 }

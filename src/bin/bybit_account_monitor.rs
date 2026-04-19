@@ -11,8 +11,8 @@ use anyhow::Result;
 use bytes::Bytes;
 use log::{debug, error, info, warn};
 use mkt_signal::common::basic_account_msg::{
-    split_basic_account_event, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
-    BasicPositionMsg, BasicUmUnrealizedMsg,
+    split_basic_account_event, BasicAccountEventMsg, BasicAccountEventType, BasicAccountScope,
+    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
 };
 use mkt_signal::common::bybit_account_msg::BybitBasicOrderMsg;
 use mkt_signal::common::mkt_cfg::load_local_ips_preferring_trade_engine;
@@ -26,6 +26,8 @@ use mkt_signal::portfolio_margin::bybit_auth::{
 };
 use mkt_signal::portfolio_margin::bybit_user_stream::BybitUserDataConnection;
 use mkt_signal::portfolio_margin::pm_forwarder::PmForwarder;
+use mkt_signal::trade_engine::bybit_query::bybit_rest_get;
+use mkt_signal::trade_engine::query_parsers::bybit_account_balance_snapshot::parse_bybit_account_balance_snapshot;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
@@ -91,6 +93,12 @@ async fn main() -> Result<()> {
     let mut forwarder = PmForwarder::new("bybit")?;
     let mut deduper = AccountEventDeduper::new(8192);
     let mut stats = tokio::time::interval(Duration::from_secs(30));
+    let mut balance_poll = spawn_bybit_balance_poll(
+        credentials.clone(),
+        primary_ip.clone(),
+        evt_tx.clone(),
+        shutdown_rx.clone(),
+    );
 
     let mut primary = spawn_bybit_stream_path(
         "primary",
@@ -125,6 +133,20 @@ async fn main() -> Result<()> {
             }
             _ = stats.tick() => {
                 forwarder.log_stats();
+            }
+            res = &mut balance_poll => {
+                match res {
+                    Ok(()) => warn!("balance poll task exited; restarting"),
+                    Err(e) => warn!("balance poll task join error: {}; restarting", e),
+                }
+                if !*shutdown_rx.borrow() {
+                    balance_poll = spawn_bybit_balance_poll(
+                        credentials.clone(),
+                        primary_ip.clone(),
+                        evt_tx.clone(),
+                        shutdown_rx.clone(),
+                    );
+                }
             }
             res = &mut primary => {
                 match res {
@@ -176,6 +198,88 @@ fn setup_signals(shutdown_tx: watch::Sender<bool>) {
             let _ = shutdown_tx.send(true);
         }
     });
+}
+
+fn build_bybit_rest_client(local_ip: Option<&str>, timeout: Duration) -> Result<reqwest::Client> {
+    let builder = reqwest::Client::builder().timeout(timeout);
+    let builder = match local_ip.map(str::trim).filter(|ip| !ip.is_empty()) {
+        Some(ip) if ip != "0.0.0.0" => {
+            let parsed: std::net::IpAddr = ip
+                .parse()
+                .map_err(|e| anyhow::anyhow!("invalid Bybit REST local_ip {}: {}", ip, e))?;
+            builder.local_address(parsed)
+        }
+        _ => builder,
+    };
+    builder
+        .build()
+        .map_err(|e| anyhow::anyhow!("build Bybit REST client failed: {}", e))
+}
+
+fn wrap_basic_payload(account_scope: BasicAccountScope, payload: Bytes) -> Option<Bytes> {
+    let event_type = mkt_signal::common::basic_account_msg::get_basic_event_type(&payload);
+    if matches!(event_type, BasicAccountEventType::Error) {
+        return None;
+    }
+    Some(BasicAccountEventMsg::create(event_type, account_scope, payload).to_bytes())
+}
+
+fn spawn_bybit_balance_poll(
+    credentials: BybitCredentials,
+    local_ip: String,
+    evt_tx: tokio::sync::mpsc::UnboundedSender<Bytes>,
+    mut shutdown_rx: watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let client = match build_bybit_rest_client(Some(&local_ip), Duration::from_secs(10)) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("build Bybit REST client failed: {:?}", e);
+                return;
+            }
+        };
+        let mut ticker = tokio::time::interval(Duration::from_secs(30));
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.changed() => break,
+                _ = ticker.tick() => {
+                    if *shutdown_rx.borrow() {
+                        break;
+                    }
+                    match bybit_rest_get(
+                        &client,
+                        &credentials,
+                        "/v5/account/wallet-balance",
+                        "accountType=UNIFIED",
+                    ).await {
+                        Ok((status, body)) if status == 200 => {
+                            if let Some(msgs) = parse_bybit_account_balance_snapshot(&body) {
+                                for payload in msgs {
+                                    if let Some(wrapped) =
+                                        wrap_basic_payload(BasicAccountScope::BybitUnified, payload)
+                                    {
+                                        if let Err(e) = evt_tx.send(wrapped) {
+                                            warn!("failed to send Bybit REST balance msg: {}", e);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Ok((status, body)) => {
+                            warn!(
+                                "Bybit balance poll returned non-200: status={} body={}",
+                                status, body
+                            );
+                        }
+                        Err(e) => {
+                            warn!("Bybit balance poll failed: {:?}", e);
+                        }
+                    }
+                }
+            }
+        }
+        info!("Bybit balance poller exiting");
+    })
 }
 
 fn spawn_bybit_stream_path(

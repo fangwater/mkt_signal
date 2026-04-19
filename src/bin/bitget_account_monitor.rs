@@ -11,8 +11,8 @@ use anyhow::Result;
 use bytes::Bytes;
 use log::{debug, error, info, warn};
 use mkt_signal::common::basic_account_msg::{
-    split_basic_account_event, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
-    BasicPositionMsg, BasicUmUnrealizedMsg,
+    split_basic_account_event, BasicAccountEventMsg, BasicAccountEventType, BasicAccountScope,
+    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
 };
 use mkt_signal::common::bitget_account_msg::BitgetBasicOrderMsg;
 use mkt_signal::common::mkt_cfg::load_local_ips_preferring_trade_engine;
@@ -25,12 +25,36 @@ use mkt_signal::portfolio_margin::bitget_auth::{
 };
 use mkt_signal::portfolio_margin::bitget_user_stream::BitgetUserDataConnection;
 use mkt_signal::portfolio_margin::pm_forwarder::PmForwarder;
+use serde::Deserialize;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::BTreeMap;
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
+use std::net::IpAddr;
 use std::time::Duration;
 use tokio::signal;
 use tokio::sync::{broadcast, watch};
+use url::form_urlencoded;
+
+#[derive(Debug, Deserialize)]
+struct BitgetAccountAssetsResponse {
+    #[serde(default)]
+    code: String,
+    #[serde(default)]
+    data: Vec<BitgetAccountAssetRow>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BitgetAccountAssetRow {
+    #[serde(default)]
+    coin: String,
+    #[serde(default)]
+    balance: String,
+    #[serde(default)]
+    borrow: String,
+    #[serde(default)]
+    debts: String,
+}
 
 fn credential_edges(value: &str) -> (String, String, usize) {
     let trimmed = value.trim();
@@ -90,6 +114,12 @@ async fn main() -> Result<()> {
     let mut forwarder = PmForwarder::new("bitget")?;
     let mut deduper = AccountEventDeduper::new(8192);
     let mut stats = tokio::time::interval(Duration::from_secs(30));
+    let mut balance_poll = spawn_bitget_balance_poll(
+        credentials.clone(),
+        primary_ip.clone(),
+        evt_tx.clone(),
+        shutdown_rx.clone(),
+    );
 
     let mut primary = spawn_bitget_stream_path(
         "primary",
@@ -124,6 +154,20 @@ async fn main() -> Result<()> {
             }
             _ = stats.tick() => {
                 forwarder.log_stats();
+            }
+            res = &mut balance_poll => {
+                match res {
+                    Ok(()) => warn!("balance poll task exited; restarting"),
+                    Err(e) => warn!("balance poll task join error: {}; restarting", e),
+                }
+                if !*shutdown_rx.borrow() {
+                    balance_poll = spawn_bitget_balance_poll(
+                        credentials.clone(),
+                        primary_ip.clone(),
+                        evt_tx.clone(),
+                        shutdown_rx.clone(),
+                    );
+                }
             }
             res = &mut primary => {
                 match res {
@@ -175,6 +219,160 @@ fn setup_signals(shutdown_tx: watch::Sender<bool>) {
             let _ = shutdown_tx.send(true);
         }
     });
+}
+
+fn build_bitget_rest_client(local_ip: Option<&str>, timeout: Duration) -> Result<reqwest::Client> {
+    let builder = reqwest::Client::builder().timeout(timeout);
+    let builder = match local_ip.map(str::trim).filter(|ip| !ip.is_empty()) {
+        Some(ip) if ip != "0.0.0.0" => {
+            let parsed: IpAddr = ip
+                .parse()
+                .map_err(|e| anyhow::anyhow!("invalid Bitget REST local_ip {}: {}", ip, e))?;
+            builder.local_address(parsed)
+        }
+        _ => builder,
+    };
+    builder
+        .build()
+        .map_err(|e| anyhow::anyhow!("build Bitget REST client failed: {}", e))
+}
+
+fn wrap_basic_payload(account_scope: BasicAccountScope, payload: Bytes) -> Option<Bytes> {
+    let event_type = mkt_signal::common::basic_account_msg::get_basic_event_type(&payload);
+    if matches!(event_type, BasicAccountEventType::Error) {
+        return None;
+    }
+    Some(BasicAccountEventMsg::create(event_type, account_scope, payload).to_bytes())
+}
+
+fn sign_bitget_rest_request(
+    credentials: &BitgetCredentials,
+    timestamp_ms: i64,
+    method: &str,
+    request_path: &str,
+) -> String {
+    use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    type HmacSha256 = Hmac<Sha256>;
+    let payload = format!("{}{}{}", timestamp_ms, method.to_uppercase(), request_path);
+    let mut mac = HmacSha256::new_from_slice(credentials.secret_key.as_bytes())
+        .expect("HMAC can take any size");
+    mac.update(payload.as_bytes());
+    BASE64.encode(mac.finalize().into_bytes())
+}
+
+async fn bitget_rest_get_account_assets(
+    client: &reqwest::Client,
+    credentials: &BitgetCredentials,
+) -> Result<String> {
+    let timestamp_ms = chrono::Utc::now().timestamp_millis();
+    let query = {
+        let mut params = BTreeMap::new();
+        params.insert("assetType".to_string(), "hold_only".to_string());
+        let mut serializer = form_urlencoded::Serializer::new(String::new());
+        for (k, v) in &params {
+            serializer.append_pair(k, v);
+        }
+        serializer.finish()
+    };
+    let path = format!("/api/v3/account/assets?{}", query);
+    let sign = sign_bitget_rest_request(credentials, timestamp_ms, "GET", &path);
+    let url = format!("https://api.bitget.com{}", path);
+
+    let resp = client
+        .get(url)
+        .header("ACCESS-KEY", &credentials.api_key)
+        .header("ACCESS-SIGN", sign)
+        .header("ACCESS-TIMESTAMP", timestamp_ms.to_string())
+        .header("ACCESS-PASSPHRASE", &credentials.passphrase)
+        .header("locale", "zh-CN")
+        .send()
+        .await?;
+    let status = resp.status();
+    let body = resp.text().await?;
+    if !status.is_success() {
+        anyhow::bail!(
+            "bitget account assets GET failed: status={} body={}",
+            status.as_u16(),
+            body
+        );
+    }
+    Ok(body)
+}
+
+fn parse_bitget_account_assets_snapshot(json: &str) -> Option<Vec<Bytes>> {
+    let resp: BitgetAccountAssetsResponse = serde_json::from_str(json).ok()?;
+    if resp.code != "00000" && resp.code != "0" {
+        return None;
+    }
+    let ts = chrono::Utc::now().timestamp_millis();
+    let mut out = Vec::new();
+    for row in resp.data {
+        let coin = row.coin.to_ascii_uppercase();
+        if coin.is_empty() {
+            continue;
+        }
+
+        let balance = row.balance.trim().parse::<f64>().unwrap_or(0.0);
+        out.push(BasicBalanceMsg::create(ts, coin.clone(), balance).to_bytes());
+
+        let borrowed = row.borrow.trim().parse::<f64>().unwrap_or(0.0);
+        let debts = row.debts.trim().parse::<f64>().unwrap_or(0.0);
+        let interest = (debts - borrowed).max(0.0);
+        if borrowed > 0.0 || interest > 0.0 {
+            out.push(BasicBorrowInterestMsg::create(ts, coin, borrowed, interest).to_bytes());
+        }
+    }
+    Some(out)
+}
+
+fn spawn_bitget_balance_poll(
+    credentials: BitgetCredentials,
+    local_ip: String,
+    evt_tx: tokio::sync::mpsc::UnboundedSender<Bytes>,
+    mut shutdown_rx: watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let client = match build_bitget_rest_client(Some(&local_ip), Duration::from_secs(10)) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("build Bitget REST client failed: {:?}", e);
+                return;
+            }
+        };
+        let mut ticker = tokio::time::interval(Duration::from_secs(30));
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.changed() => break,
+                _ = ticker.tick() => {
+                    if *shutdown_rx.borrow() {
+                        break;
+                    }
+                    match bitget_rest_get_account_assets(&client, &credentials).await {
+                        Ok(body) => {
+                            if let Some(msgs) = parse_bitget_account_assets_snapshot(&body) {
+                                for payload in msgs {
+                                    if let Some(wrapped) =
+                                        wrap_basic_payload(BasicAccountScope::BitgetUnified, payload)
+                                    {
+                                        if let Err(e) = evt_tx.send(wrapped) {
+                                            warn!("failed to send Bitget REST balance msg: {}", e);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Bitget balance poll failed: {:?}", e);
+                        }
+                    }
+                }
+            }
+        }
+        info!("Bitget balance poller exiting");
+    })
 }
 
 fn spawn_bitget_stream_path(

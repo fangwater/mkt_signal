@@ -8,11 +8,36 @@ use crate::common::bybit_account_msg::BybitBasicOrderMsg;
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use log::{debug, warn};
+use serde::Deserialize;
 use serde_json::{Map, Value};
 use tokio::sync::mpsc;
 
 #[derive(Clone)]
 pub struct BybitAccountEventParser;
+
+#[derive(Debug, Deserialize)]
+struct BybitWalletChannelRow {
+    #[serde(default, rename = "updatedTime")]
+    updated_time: String,
+    #[serde(default)]
+    coin: Vec<BybitWalletChannelCoin>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BybitWalletChannelCoin {
+    #[serde(default)]
+    coin: String,
+    #[serde(default, rename = "walletBalance")]
+    wallet_balance: String,
+    #[serde(default, rename = "borrowAmount")]
+    borrow_amount: String,
+    #[serde(default, rename = "spotBorrow")]
+    spot_borrow: String,
+    #[serde(default, rename = "accruedInterest")]
+    accrued_interest: String,
+    #[serde(default, rename = "borrowInterest")]
+    borrow_interest: String,
+}
 
 impl BybitAccountEventParser {
     pub fn new() -> Self {
@@ -26,31 +51,21 @@ impl BybitAccountEventParser {
             .unwrap_or(0);
 
         for wallet in collect_data_objects(json_value) {
-            let timestamp =
-                parse_i64_str_or_num(wallet.get("updatedTime")).unwrap_or(top_timestamp);
-            let Some(coins) = wallet.get("coin").and_then(|v| v.as_array()) else {
+            let Ok(wallet_row) =
+                serde_json::from_value::<BybitWalletChannelRow>(Value::Object(wallet.clone()))
+            else {
                 continue;
             };
+            let timestamp = parse_i64_str_or_num(Some(&Value::String(wallet_row.updated_time)))
+                .unwrap_or(top_timestamp);
 
-            for coin_item in coins {
-                let Some(coin_obj) = coin_item.as_object() else {
-                    continue;
-                };
-
-                let coin = coin_obj
-                    .get("coin")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
+            for coin_item in wallet_row.coin {
+                let coin = coin_item.coin;
                 if coin.is_empty() {
                     continue;
                 }
 
-                // 对 pre_trade 语义，walletBalance 更适合作为现货/保证金币种余额；
-                // UPL 由 position 通道单独回补，避免重复记入权益。
-                let balance = parse_f64_str_or_num(coin_obj.get("walletBalance"))
-                    .or_else(|| parse_f64_str_or_num(coin_obj.get("equity")))
-                    .unwrap_or(0.0);
+                let balance = parse_f64_str(&coin_item.wallet_balance).unwrap_or(0.0);
                 let balance_msg = BasicBalanceMsg::create(timestamp, coin.clone(), balance);
                 let balance_event = BasicAccountEventMsg::create(
                     BasicAccountEventType::BalanceUpdate,
@@ -61,11 +76,11 @@ impl BybitAccountEventParser {
                     count += 1;
                 }
 
-                let borrowed = parse_f64_str_or_num(coin_obj.get("borrowAmount"))
-                    .or_else(|| parse_f64_str_or_num(coin_obj.get("spotBorrow")))
+                let borrowed = parse_f64_str(&coin_item.borrow_amount)
+                    .or_else(|| parse_f64_str(&coin_item.spot_borrow))
                     .unwrap_or(0.0);
-                let interest = parse_f64_str_or_num(coin_obj.get("accruedInterest"))
-                    .or_else(|| parse_f64_str_or_num(coin_obj.get("borrowInterest")))
+                let interest = parse_f64_str(&coin_item.accrued_interest)
+                    .or_else(|| parse_f64_str(&coin_item.borrow_interest))
                     .unwrap_or(0.0);
                 if borrowed > 0.0 || interest > 0.0 {
                     let interest_msg =
@@ -674,6 +689,14 @@ fn parse_f64_str_or_num(v: Option<&Value>) -> Option<f64> {
             None
         }
     })
+}
+
+fn parse_f64_str(v: &str) -> Option<f64> {
+    let s = v.trim();
+    if s.is_empty() {
+        return None;
+    }
+    s.parse::<f64>().ok()
 }
 
 fn parse_i64_str_or_num(v: Option<&Value>) -> Option<i64> {
