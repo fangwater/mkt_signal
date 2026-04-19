@@ -28,6 +28,7 @@ use mkt_signal::portfolio_margin::bybit_user_stream::BybitUserDataConnection;
 use mkt_signal::portfolio_margin::pm_forwarder::PmForwarder;
 use mkt_signal::trade_engine::bybit_query::bybit_rest_get;
 use mkt_signal::trade_engine::query_parsers::bybit_account_balance_snapshot::parse_bybit_account_balance_snapshot;
+use mkt_signal::trade_engine::query_parsers::bybit_positions_snapshot::parse_bybit_positions_snapshot;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
@@ -99,6 +100,12 @@ async fn main() -> Result<()> {
         evt_tx.clone(),
         shutdown_rx.clone(),
     );
+    let mut position_poll = spawn_bybit_position_poll(
+        credentials.clone(),
+        primary_ip.clone(),
+        evt_tx.clone(),
+        shutdown_rx.clone(),
+    );
 
     let mut primary = spawn_bybit_stream_path(
         "primary",
@@ -141,6 +148,20 @@ async fn main() -> Result<()> {
                 }
                 if !*shutdown_rx.borrow() {
                     balance_poll = spawn_bybit_balance_poll(
+                        credentials.clone(),
+                        primary_ip.clone(),
+                        evt_tx.clone(),
+                        shutdown_rx.clone(),
+                    );
+                }
+            }
+            res = &mut position_poll => {
+                match res {
+                    Ok(()) => warn!("position poll task exited; restarting"),
+                    Err(e) => warn!("position poll task join error: {}; restarting", e),
+                }
+                if !*shutdown_rx.borrow() {
+                    position_poll = spawn_bybit_position_poll(
                         credentials.clone(),
                         primary_ip.clone(),
                         evt_tx.clone(),
@@ -279,6 +300,64 @@ fn spawn_bybit_balance_poll(
             }
         }
         info!("Bybit balance poller exiting");
+    })
+}
+
+fn spawn_bybit_position_poll(
+    credentials: BybitCredentials,
+    local_ip: String,
+    evt_tx: tokio::sync::mpsc::UnboundedSender<Bytes>,
+    mut shutdown_rx: watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let client = match build_bybit_rest_client(Some(&local_ip), Duration::from_secs(10)) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("build Bybit REST client failed: {:?}", e);
+                return;
+            }
+        };
+        let mut ticker = tokio::time::interval(Duration::from_secs(30));
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.changed() => break,
+                _ = ticker.tick() => {
+                    if *shutdown_rx.borrow() {
+                        break;
+                    }
+                    match bybit_rest_get(
+                        &client,
+                        &credentials,
+                        "/v5/position/list",
+                        "category=linear&settleCoin=USDT",
+                    ).await {
+                        Ok((status, body)) if status == 200 => {
+                            if let Some(msgs) = parse_bybit_positions_snapshot(&body) {
+                                for payload in msgs {
+                                    if let Some(wrapped) =
+                                        wrap_basic_payload(BasicAccountScope::BybitUnified, payload)
+                                    {
+                                        if let Err(e) = evt_tx.send(wrapped) {
+                                            warn!("failed to send Bybit REST position msg: {}", e);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Ok((status, body)) => {
+                            warn!(
+                                "Bybit position poll returned non-200: status={} body={}",
+                                status, body
+                            );
+                        }
+                        Err(e) => {
+                            warn!("Bybit position poll failed: {:?}", e);
+                        }
+                    }
+                }
+            }
+        }
+        info!("Bybit position poller exiting");
     })
 }
 
