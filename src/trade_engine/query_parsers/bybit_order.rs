@@ -70,7 +70,9 @@ fn status_to_u8(state: &str) -> u8 {
         }
         "filled" => OrderExecutionStatus::Filled.to_u8(),
         "cancelled" | "canceled" | "deactivated" => OrderExecutionStatus::Cancelled.to_u8(),
-        "rejected" | "expired" | "partiallyfilledcanceled" => OrderExecutionStatus::Rejected.to_u8(),
+        "rejected" | "expired" | "partiallyfilledcanceled" => {
+            OrderExecutionStatus::Rejected.to_u8()
+        }
         _ => OrderExecutionStatus::Create.to_u8(),
     }
 }
@@ -137,7 +139,9 @@ pub fn parse_bybit_order_query_json(json: &str) -> BybitOrderQueryParseResult {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_bybit_order_query_json, BybitOrderQueryParseErrorKind, BybitOrderQueryParseResult};
+    use super::{
+        parse_bybit_order_query_json, BybitOrderQueryParseErrorKind, BybitOrderQueryParseResult,
+    };
 
     #[test]
     fn parse_bybit_order_query_success() {

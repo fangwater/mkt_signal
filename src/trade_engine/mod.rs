@@ -1,5 +1,5 @@
-pub mod bybit;
 pub mod binance_ws;
+pub mod bybit;
 pub mod bybit_query;
 pub mod config;
 pub mod dispatcher;

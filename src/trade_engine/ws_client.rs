@@ -1465,7 +1465,10 @@ impl TradeWsClient {
                     if success {
                         info!("trade ws client id={} Bybit auth successful", self.id);
                     } else {
-                        warn!("trade ws client id={} Bybit auth failed: {}", self.id, payload);
+                        warn!(
+                            "trade ws client id={} Bybit auth failed: {}",
+                            self.id, payload
+                        );
                     }
                     return;
                 }
@@ -1628,7 +1631,9 @@ impl TradeWsClient {
                 } else {
                     None
                 };
-                let req_type = meta.map(|m| m.req_type).unwrap_or(self.last_dispatched_type);
+                let req_type = meta
+                    .map(|m| m.req_type)
+                    .unwrap_or(self.last_dispatched_type);
                 let client_order_id = resp
                     .client_order_id()
                     .or_else(|| meta.map(|m| m.client_order_id))

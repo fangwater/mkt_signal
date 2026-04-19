@@ -353,7 +353,10 @@ impl ToBybitWsJson for BybitNewOrderRequest {
             }
 
             if req_type == TradeRequestType::BybitNewMarginOrder {
-                map.insert("isLeverage".to_string(), json!(if params.is_leverage { 1 } else { 0 }));
+                map.insert(
+                    "isLeverage".to_string(),
+                    json!(if params.is_leverage { 1 } else { 0 }),
+                );
                 map.insert("orderFilter".to_string(), json!("Order"));
             } else {
                 map.insert("reduceOnly".to_string(), json!(params.reduce_only));

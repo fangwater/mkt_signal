@@ -85,7 +85,9 @@ pub fn parse_bybit_positions_snapshot(json: &str) -> Option<Vec<Bytes>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::basic_account_msg::{BasicAccountEventType, BasicPositionMsg, BasicUmUnrealizedMsg};
+    use crate::common::basic_account_msg::{
+        BasicAccountEventType, BasicPositionMsg, BasicUmUnrealizedMsg,
+    };
 
     #[test]
     fn parses_bybit_positions_snapshot() {
@@ -96,8 +98,14 @@ mod tests {
         let msgs = parse_bybit_positions_snapshot(json).expect("parse ok");
         assert_eq!(msgs.len(), 2);
         let pos = BasicPositionMsg::from_bytes(&msgs[0]).expect("pos ok");
-        assert_eq!(pos.msg_type as u32, BasicAccountEventType::PositionUpdate as u32);
+        assert_eq!(
+            pos.msg_type as u32,
+            BasicAccountEventType::PositionUpdate as u32
+        );
         let pnl = BasicUmUnrealizedMsg::from_bytes(&msgs[1]).expect("pnl ok");
-        assert_eq!(pnl.msg_type as u32, BasicAccountEventType::UnrealizedPnlUpdate as u32);
+        assert_eq!(
+            pnl.msg_type as u32,
+            BasicAccountEventType::UnrealizedPnlUpdate as u32
+        );
     }
 }
