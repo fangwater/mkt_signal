@@ -20,7 +20,7 @@ pub struct TradeFlowFeaturePublisher {
     published: u64,
     dropped: u64,
     last_publish_at_by_symbol: HashMap<String, Instant>,
-    exceeded_events_in_window: HashMap<String, Vec<u128>>,
+    exceeded_events_in_window: HashMap<String, Vec<u64>>,
     last_exceed_summary_log_at: Instant,
 }
 
@@ -84,22 +84,25 @@ impl TradeFlowFeaturePublisher {
             return false;
         }
 
-        let mut buffer = [0u8; TRADE_FLOW_FEATURE_MAX_BYTES];
-        buffer[..data.len()].copy_from_slice(data);
-
         match self.publisher.loan_uninit() {
-            Ok(sample) => {
-                let sample = sample.write_payload(buffer);
+            Ok(mut sample) => {
+                sample
+                    .payload_mut()
+                    .write([0u8; TRADE_FLOW_FEATURE_MAX_BYTES]);
+                let mut sample = unsafe { sample.assume_init() };
+                sample.payload_mut()[..data.len()].copy_from_slice(data);
                 if sample.send().is_ok() {
                     let now = Instant::now();
                     self.maybe_log_exceed_summary(now);
 
                     if let Some(gap) = self.record_publish_gap(symbol, now) {
                         let exceed_at_ms = current_unix_time_ms();
-                        self.exceeded_events_in_window
-                            .entry(symbol.to_string())
-                            .or_default()
-                            .push(exceed_at_ms);
+                        if let Some(events) = self.exceeded_events_in_window.get_mut(symbol) {
+                            events.push(exceed_at_ms);
+                        } else {
+                            self.exceeded_events_in_window
+                                .insert(symbol.to_string(), vec![exceed_at_ms]);
+                        }
                         error!(
                             "TradeFlowFeature publish gap exceeded: venue={} symbol={} gap_ms={} threshold_ms={} exceed_at_ms={}",
                             self.venue_slug,
@@ -130,10 +133,15 @@ impl TradeFlowFeaturePublisher {
     }
 
     fn record_publish_gap(&mut self, symbol: &str, now: Instant) -> Option<Duration> {
-        let gap = self
-            .last_publish_at_by_symbol
-            .insert(symbol.to_string(), now)
-            .map(|last| now.saturating_duration_since(last));
+        let gap = if let Some(last) = self.last_publish_at_by_symbol.get_mut(symbol) {
+            let gap = now.saturating_duration_since(*last);
+            *last = now;
+            Some(gap)
+        } else {
+            self.last_publish_at_by_symbol
+                .insert(symbol.to_string(), now);
+            None
+        };
 
         match gap {
             Some(gap) if gap > PUBLISH_GAP_ERROR_THRESHOLD => Some(gap),
@@ -173,11 +181,12 @@ impl TradeFlowFeaturePublisher {
     }
 }
 
-fn current_unix_time_ms() -> u128 {
-    SystemTime::now()
+fn current_unix_time_ms() -> u64 {
+    let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis()
+        .as_millis();
+    millis.min(u64::MAX as u128) as u64
 }
 
 #[cfg(test)]

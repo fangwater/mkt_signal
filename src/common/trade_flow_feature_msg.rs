@@ -70,6 +70,16 @@ impl TradeFlowFeatureMsg {
         })
     }
 
+    pub fn encode_from_slices(
+        symbol: &str,
+        venue: u8,
+        ts: i64,
+        head: &[f64],
+        tail: &[f64],
+    ) -> Result<Bytes> {
+        encode_value_slices_to_bytes(symbol, venue, ts, &[head, tail])
+    }
+
     pub fn to_bytes(&self) -> Result<Bytes> {
         if self.msg_type != TRADE_FLOW_FEATURE_MSG_TYPE {
             bail!(
@@ -78,17 +88,7 @@ impl TradeFlowFeatureMsg {
                 TRADE_FLOW_FEATURE_MSG_TYPE
             );
         }
-        let total_size = 4 + 4 + self.symbol_length as usize + 1 + 8 + (self.values.len() * 8);
-        let mut buf = BytesMut::with_capacity(total_size);
-        buf.put_u32_le(self.msg_type);
-        buf.put_u32_le(self.symbol_length);
-        buf.put(self.symbol.as_bytes());
-        buf.put_u8(self.venue);
-        buf.put_i64_le(self.ts);
-        for value in &self.values {
-            buf.put_f64_le(*value);
-        }
-        Ok(buf.freeze())
+        encode_value_slices_to_bytes(&self.symbol, self.venue, self.ts, &[self.values.as_slice()])
     }
 
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
@@ -206,6 +206,42 @@ impl TradeFlowFeatureMsg {
     }
 }
 
+fn encode_value_slices_to_bytes(
+    symbol: &str,
+    venue: u8,
+    ts: i64,
+    value_slices: &[&[f64]],
+) -> Result<Bytes> {
+    let value_count = value_slices.iter().try_fold(0usize, |acc, values| {
+        acc.checked_add(values.len())
+            .ok_or_else(|| anyhow::anyhow!("TradeFlowFeatureMsg value count overflow"))
+    })?;
+    if value_count < TRADE_FLOW_FEATURE_DIM {
+        bail!(
+            "TradeFlowFeatureMsg expects at least {} values, got {}",
+            TRADE_FLOW_FEATURE_DIM,
+            value_count
+        );
+    }
+
+    let value_bytes = value_count
+        .checked_mul(8)
+        .ok_or_else(|| anyhow::anyhow!("TradeFlowFeatureMsg byte size overflow"))?;
+    let total_size = 4 + 4 + symbol.len() + 1 + 8 + value_bytes;
+    let mut buf = BytesMut::with_capacity(total_size);
+    buf.put_u32_le(TRADE_FLOW_FEATURE_MSG_TYPE);
+    buf.put_u32_le(symbol.len() as u32);
+    buf.put(symbol.as_bytes());
+    buf.put_u8(venue);
+    buf.put_i64_le(ts);
+    for values in value_slices {
+        for value in *values {
+            buf.put_f64_le(*value);
+        }
+    }
+    Ok(buf.freeze())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,5 +325,24 @@ mod tests {
             err.to_string().contains("invalid value bytes"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn encode_from_slices_roundtrips_without_materializing_values_vec() {
+        let head: Vec<f64> = (0..TRADE_FLOW_FEATURE_DIM)
+            .map(|i| i as f64 * 0.25 + 1.0)
+            .collect();
+        let tail: Vec<f64> = (0..80).map(|i| 100.0 + i as f64).collect();
+
+        let bytes = TradeFlowFeatureMsg::encode_from_slices("BTCUSDT", 2, 42, &head, &tail)
+            .expect("encode");
+        let parsed = TradeFlowFeatureMsg::from_bytes(bytes.as_ref()).expect("parse");
+
+        assert_eq!(parsed.symbol, "BTCUSDT");
+        assert_eq!(parsed.venue, 2);
+        assert_eq!(parsed.ts, 42);
+        assert_eq!(parsed.values.len(), TRADE_FLOW_FEATURE_DIM + 80);
+        assert_eq!(&parsed.values[..TRADE_FLOW_FEATURE_DIM], head.as_slice());
+        assert_eq!(&parsed.values[TRADE_FLOW_FEATURE_DIM..], tail.as_slice());
     }
 }

@@ -29,7 +29,6 @@ use crate::signal::common::TradingVenue;
 
 const TRADE_MAX_BYTES: usize = 128;
 const IDLE_SLEEP_MICROS: u64 = 200;
-const TIMER_CHECK_INTERVAL_MICROS: u64 = 500;
 const AMOUNT_THRESHOLD_REDIS_KEY_SUFFIX: &str = "amount-thresholds";
 const REDIS_WARN_INTERVAL_SECS: u64 = 60;
 const ROCKSDB_WARN_INTERVAL_SECS: u64 = 60;
@@ -98,16 +97,11 @@ impl DepthChannel {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct DepthLevel {
-    price: f64,
-    amount: f64,
-}
-
 #[derive(Debug, Clone)]
 struct DepthSnapshot {
-    bids: Vec<DepthLevel>,
-    asks: Vec<DepthLevel>,
+    best_bid_price: f64,
+    best_ask_price: f64,
+    appended_values: [f64; APPENDED_DEPTH_DIM],
 }
 
 enum DepthSubscriber {
@@ -210,56 +204,56 @@ impl TradeBar {
         Self::new(start_ms)
     }
 
-    fn update(&mut self, trade: &TradeTick, threshold: AmountThreshold) {
-        let notional = trade.price * trade.amount;
+    fn update(&mut self, side: TradeSide, price: f64, amount: f64, threshold: AmountThreshold) {
+        let notional = price * amount;
         if !notional.is_finite() || notional <= 0.0 {
             return;
         }
 
         if !self.has_trade {
             self.has_trade = true;
-            self.open = trade.price;
-            self.high = trade.price;
-            self.low = trade.price;
-            self.close = trade.price;
+            self.open = price;
+            self.high = price;
+            self.low = price;
+            self.close = price;
         } else {
-            self.high = self.high.max(trade.price);
-            self.low = self.low.min(trade.price);
-            self.close = trade.price;
+            self.high = self.high.max(price);
+            self.low = self.low.min(price);
+            self.close = price;
         }
 
-        self.volume += trade.amount;
+        self.volume += amount;
         self.amount += notional;
         self.count += 1;
 
-        match trade.side {
+        match side {
             TradeSide::Buy => {
                 self.buy_count += 1;
                 self.buy_amount += notional;
-                self.buy_volume += trade.amount;
+                self.buy_volume += amount;
             }
             TradeSide::Sell => {
                 self.sell_count += 1;
                 self.sell_amount += notional;
-                self.sell_volume += trade.amount;
+                self.sell_volume += amount;
             }
         }
 
         if notional >= threshold.large_notional_threshold {
             self.large_order += notional;
-            match trade.side {
+            match side {
                 TradeSide::Buy => self.large_buy += notional,
                 TradeSide::Sell => self.large_sell += notional,
             }
         } else if notional >= threshold.medium_notional_threshold {
             self.medium_order += notional;
-            match trade.side {
+            match side {
                 TradeSide::Buy => self.medium_buy += notional,
                 TradeSide::Sell => self.medium_sell += notional,
             }
         } else {
             self.small_order += notional;
-            match trade.side {
+            match side {
                 TradeSide::Buy => self.small_buy += notional,
                 TradeSide::Sell => self.small_sell += notional,
             }
@@ -393,12 +387,15 @@ impl SymbolState {
 
     fn apply_trade(
         &mut self,
-        trade: &TradeTick,
+        trade_timestamp_ms: i64,
+        trade_side: TradeSide,
+        trade_price: f64,
+        trade_amount: f64,
         runtime: &RuntimeConfig,
         threshold: AmountThreshold,
     ) -> bool {
         let mut late_trade = false;
-        let trade_bar_start_ms = align_to_period(trade.timestamp_ms, runtime.bar_ms);
+        let trade_bar_start_ms = align_to_period(trade_timestamp_ms, runtime.bar_ms);
 
         match self.bar.as_mut() {
             None => {
@@ -409,19 +406,19 @@ impl SymbolState {
                 }
                 self.fill_empty_until(trade_bar_start_ms, runtime.bar_ms);
                 let mut bar = TradeBar::new(trade_bar_start_ms);
-                bar.update(trade, threshold);
+                bar.update(trade_side, trade_price, trade_amount, threshold);
                 self.bar = Some(bar);
             }
             Some(bar) => {
                 if trade_bar_start_ms == bar.start_ms {
-                    bar.update(trade, threshold);
+                    bar.update(trade_side, trade_price, trade_amount, threshold);
                 } else if trade_bar_start_ms > bar.start_ms {
                     if let Some(closed_bar) = self.bar.take().map(|b| self.finalize_bar(b)) {
                         self.closed_bars.push(closed_bar);
                     }
                     self.fill_empty_until(trade_bar_start_ms, runtime.bar_ms);
                     let mut next_bar = TradeBar::new(trade_bar_start_ms);
-                    next_bar.update(trade, threshold);
+                    next_bar.update(trade_side, trade_price, trade_amount, threshold);
                     self.bar = Some(next_bar);
                 } else {
                     late_trade = true;
@@ -495,11 +492,25 @@ impl SymbolState {
     fn take_closed_bars(&mut self) -> Vec<TradeBar> {
         std::mem::take(&mut self.closed_bars)
     }
+
+    fn next_due_close_ms(&self, period_ms: i64) -> Option<i64> {
+        if period_ms <= 0 {
+            return None;
+        }
+
+        self.bar
+            .as_ref()
+            .map(|bar| bar.start_ms.saturating_add(period_ms))
+            .or_else(|| {
+                self.last_bar_start_ms
+                    .map(|start_ms| start_ms.saturating_add(period_ms).saturating_add(period_ms))
+            })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct TradeDedupKey {
-    symbol: String,
+    symbol_id: u32,
     trade_id: i64,
 }
 
@@ -520,7 +531,7 @@ impl TradeDedupLru {
         }
     }
 
-    fn is_duplicate_and_track(&mut self, symbol: &str, trade_id: i64, ts_ms: i64) -> bool {
+    fn is_duplicate_and_track(&mut self, symbol_id: u32, trade_id: i64, ts_ms: i64) -> bool {
         if trade_id == 0 {
             return false;
         }
@@ -532,7 +543,7 @@ impl TradeDedupLru {
         self.evict_expired();
 
         let key = TradeDedupKey {
-            symbol: symbol.to_string(),
+            symbol_id,
             trade_id,
         };
 
@@ -937,6 +948,8 @@ pub struct TradeFlowFeaturePubApp {
     latest_depth_by_symbol: HashMap<String, DepthSnapshot>,
     thresholds: HashMap<String, AmountThreshold>,
     online_symbols: HashSet<String>,
+    symbol_ids: HashMap<String, u32>,
+    next_symbol_id: u32,
     threshold_store: AmountThresholdRedisStore,
     persistence: PersistenceRuntime,
     rocksdb_store: Option<TradeFlowFeatureRocksDbStore>,
@@ -962,8 +975,7 @@ pub struct TradeFlowFeaturePubApp {
     last_cleanup: Instant,
     last_retired_symbols: usize,
     trade_dedup_lru: TradeDedupLru,
-    timer_check_interval: Duration,
-    last_timer_check: Instant,
+    next_due_close_ms: Option<i64>,
 }
 
 impl TradeFlowFeaturePubApp {
@@ -1000,6 +1012,8 @@ impl TradeFlowFeaturePubApp {
             latest_depth_by_symbol: HashMap::new(),
             thresholds: HashMap::new(),
             online_symbols: HashSet::new(),
+            symbol_ids: HashMap::new(),
+            next_symbol_id: 1,
             threshold_store,
             persistence,
             rocksdb_store: None,
@@ -1027,8 +1041,7 @@ impl TradeFlowFeaturePubApp {
             last_cleanup: Instant::now(),
             last_retired_symbols: 0,
             trade_dedup_lru: TradeDedupLru::new(TRADE_DEDUP_WINDOW_MS),
-            timer_check_interval: Duration::from_micros(TIMER_CHECK_INTERVAL_MICROS),
-            last_timer_check: Instant::now(),
+            next_due_close_ms: None,
         };
         app.ensure_persistence_ready(true);
         app.reload_thresholds(true);
@@ -1138,41 +1151,59 @@ impl TradeFlowFeaturePubApp {
     }
 
     fn handle_trade(&mut self, trade: TradeTick) {
-        if !self.online_symbols.contains(&trade.symbol) {
+        let TradeTick {
+            symbol,
+            trade_id,
+            timestamp_ms,
+            side,
+            price,
+            amount,
+        } = trade;
+
+        let Some(threshold) = self.thresholds.get(symbol.as_str()).copied() else {
             self.trade_filtered_offline_count = self.trade_filtered_offline_count.saturating_add(1);
             return;
-        }
-        let Some(threshold) = self.thresholds.get(&trade.symbol).copied() else {
+        };
+        let Some(symbol_id) = self.symbol_ids.get(symbol.as_str()).copied() else {
             self.trade_threshold_miss_count = self.trade_threshold_miss_count.saturating_add(1);
             return;
         };
 
-        if self.trade_dedup_lru.is_duplicate_and_track(
-            &trade.symbol,
-            trade.trade_id,
-            trade.timestamp_ms,
-        ) {
+        if self
+            .trade_dedup_lru
+            .is_duplicate_and_track(symbol_id, trade_id, timestamp_ms)
+        {
             self.trade_dedup_drop_count = self.trade_dedup_drop_count.saturating_add(1);
             return;
         }
-        let state = self
-            .symbols
-            .entry(trade.symbol.clone())
-            .or_insert_with(SymbolState::new);
-        let late_trade = state.apply_trade(&trade, &self.config.runtime, threshold);
-        if late_trade {
-            self.trade_late_count = self.trade_late_count.saturating_add(1);
-        }
+        let next_due_close_ms = {
+            let state = self.symbols.entry(symbol).or_insert_with(SymbolState::new);
+            let late_trade = state.apply_trade(
+                timestamp_ms,
+                side,
+                price,
+                amount,
+                &self.config.runtime,
+                threshold,
+            );
+            if late_trade {
+                self.trade_late_count = self.trade_late_count.saturating_add(1);
+            }
+            state.next_due_close_ms(self.config.runtime.bar_ms)
+        };
+        self.record_next_due_close_ms(next_due_close_ms);
     }
 
     fn maybe_close_due_bars(&mut self) -> Result<()> {
         self.log_publish_outcome_10s();
-        if self.last_timer_check.elapsed() < self.timer_check_interval {
+        let Some(next_due_close_ms) = self.next_due_close_ms else {
+            return Ok(());
+        };
+        let now_ms = now_millis();
+        if now_ms < next_due_close_ms {
             return Ok(());
         }
-
-        self.last_timer_check = Instant::now();
-        self.close_due_bars(now_millis())
+        self.close_due_bars(now_ms)
     }
 
     fn close_due_bars(&mut self, now_ms: i64) -> Result<()> {
@@ -1188,6 +1219,7 @@ impl TradeFlowFeaturePubApp {
         for (symbol, bars) in to_publish {
             self.process_closed_bars(&symbol, bars)?;
         }
+        self.recompute_next_due_close_ms();
         Ok(())
     }
 
@@ -1197,38 +1229,53 @@ impl TradeFlowFeaturePubApp {
                 self.publish_fail_invalid_count = self.publish_fail_invalid_count.saturating_add(1);
                 continue;
             }
-            let symbol_norm = normalize_symbol_for_venue(symbol, self.venue);
-            let mut feature_values =
-                Vec::with_capacity(TRADE_FLOW_FEATURE_DIM + APPENDED_DEPTH_DIM);
-            feature_values.extend_from_slice(&bar.to_feature_values());
-            let Some(depth_values) = self.appended_depth_values(&symbol_norm) else {
+            let feature_values = bar.to_feature_values();
+            let Some(depth_values) = self.appended_depth_values(symbol) else {
                 self.publish_fail_missing_depth_count =
                     self.publish_fail_missing_depth_count.saturating_add(1);
-                self.warn_missing_depth_throttled(&symbol_norm, bar.start_ms);
+                self.warn_missing_depth_throttled(symbol, bar.start_ms);
                 continue;
             };
-            feature_values.extend_from_slice(&depth_values);
-            let msg = TradeFlowFeatureMsg::from_indexed_values(
-                symbol_norm.clone(),
+            let payload = TradeFlowFeatureMsg::encode_from_slices(
+                symbol,
                 self.venue_u8,
                 bar.start_ms,
                 &feature_values,
+                depth_values,
             )?;
-            let payload = msg.to_bytes()?;
 
-            self.maybe_persist_feature_payload(&symbol_norm, bar.start_ms, payload.as_ref());
+            self.maybe_persist_feature_payload(symbol, bar.start_ms, payload.as_ref());
 
-            if !self.publisher.publish(payload.as_ref(), &symbol_norm) {
+            if !self.publisher.publish(payload.as_ref(), symbol) {
                 self.publish_fail_send_count = self.publish_fail_send_count.saturating_add(1);
                 warn!(
                     "failed to publish trade_flow_feature: venue={} symbol={} ts={}",
-                    self.venue_slug, symbol_norm, bar.start_ms
+                    self.venue_slug, symbol, bar.start_ms
                 );
             } else {
                 self.publish_success_count = self.publish_success_count.saturating_add(1);
             }
         }
         Ok(())
+    }
+
+    fn record_next_due_close_ms(&mut self, next_due_close_ms: Option<i64>) {
+        let Some(next_due_close_ms) = next_due_close_ms else {
+            return;
+        };
+        self.next_due_close_ms = Some(
+            self.next_due_close_ms
+                .map_or(next_due_close_ms, |current| current.min(next_due_close_ms)),
+        );
+    }
+
+    fn recompute_next_due_close_ms(&mut self) {
+        let period_ms = self.config.runtime.bar_ms;
+        self.next_due_close_ms = self
+            .symbols
+            .values()
+            .filter_map(|state| state.next_due_close_ms(period_ms))
+            .min();
     }
 
     fn log_publish_outcome_10s(&mut self) {
@@ -1273,31 +1320,12 @@ impl TradeFlowFeaturePubApp {
         self.publish_fail_send_count = 0;
     }
 
-    fn appended_depth_values(&self, symbol: &str) -> Option<[f64; APPENDED_DEPTH_DIM]> {
+    fn appended_depth_values(&self, symbol: &str) -> Option<&[f64; APPENDED_DEPTH_DIM]> {
         let depth = self.latest_depth_by_symbol.get(symbol)?;
-        if depth.bids.first().map(|level| level.price).unwrap_or(0.0) <= 0.0
-            || depth.asks.first().map(|level| level.price).unwrap_or(0.0) <= 0.0
-        {
+        if depth.best_bid_price <= 0.0 || depth.best_ask_price <= 0.0 {
             return None;
         }
-
-        let mut out = [0.0f64; APPENDED_DEPTH_DIM];
-
-        let mut offset = 0usize;
-        for level in depth.bids.iter().take(MAX_DEPTH_LEVELS_CACHE) {
-            out[offset] = level.price;
-            out[offset + 1] = level.amount;
-            offset += 2;
-        }
-
-        offset = MAX_DEPTH_LEVELS_CACHE * 2;
-        for level in depth.asks.iter().take(MAX_DEPTH_LEVELS_CACHE) {
-            out[offset] = level.price;
-            out[offset + 1] = level.amount;
-            offset += 2;
-        }
-
-        Some(out)
+        Some(&depth.appended_values)
     }
 
     fn maybe_reload_runtime(&mut self) {
@@ -1553,10 +1581,12 @@ impl TradeFlowFeaturePubApp {
                 self.last_retired_symbols = retired_symbols.len();
                 self.thresholds = new_map;
                 self.online_symbols = symbols;
+                self.rebuild_symbol_ids();
                 self.symbols
                     .retain(|symbol, _| self.online_symbols.contains(symbol));
                 self.latest_depth_by_symbol
                     .retain(|symbol, _| self.online_symbols.contains(symbol));
+                self.recompute_next_due_close_ms();
 
                 info!(
                     "trade_flow_feature symbols {}loaded: venue={} online_symbols={} retired_symbols={}",
@@ -1596,6 +1626,22 @@ impl TradeFlowFeaturePubApp {
             );
             self.last_missing_depth_warn = Instant::now();
             self.missing_depth_drop_count = 0;
+        }
+    }
+
+    fn rebuild_symbol_ids(&mut self) {
+        self.symbol_ids
+            .retain(|symbol, _| self.online_symbols.contains(symbol));
+
+        let mut ordered_symbols: Vec<&String> = self.online_symbols.iter().collect();
+        ordered_symbols.sort_unstable();
+        for symbol in ordered_symbols {
+            if self.symbol_ids.contains_key(symbol.as_str()) {
+                continue;
+            }
+            let symbol_id = self.next_symbol_id;
+            self.next_symbol_id = self.next_symbol_id.saturating_add(1).max(1);
+            self.symbol_ids.insert(symbol.clone(), symbol_id);
         }
     }
 }
@@ -1683,6 +1729,110 @@ mod threshold_reload_tests {
     }
 }
 
+#[cfg(test)]
+mod symbol_state_tests {
+    use super::{RuntimeConfig, SymbolState, TradeDedupLru, TradeSide, TRADE_DEDUP_WINDOW_MS};
+    use crate::common::amount_threshold::AmountThreshold;
+
+    #[test]
+    fn next_due_close_advances_after_bar_is_closed() {
+        let mut state = SymbolState::new();
+        let runtime = RuntimeConfig {
+            bar_ms: 5_000,
+            threshold_reload_secs: 180,
+        };
+        let threshold = AmountThreshold {
+            medium_notional_threshold: 10.0,
+            large_notional_threshold: 20.0,
+        };
+        assert!(!state.apply_trade(5_100, TradeSide::Buy, 100.0, 1.0, &runtime, threshold));
+        assert_eq!(state.next_due_close_ms(runtime.bar_ms), Some(10_000));
+
+        state.close_due_bars(10_000, runtime.bar_ms);
+
+        assert_eq!(state.take_closed_bars().len(), 1);
+        assert_eq!(state.next_due_close_ms(runtime.bar_ms), Some(15_000));
+    }
+
+    #[test]
+    fn trade_dedup_uses_symbol_id_without_cross_symbol_collision() {
+        let mut dedup = TradeDedupLru::new(TRADE_DEDUP_WINDOW_MS);
+
+        assert!(!dedup.is_duplicate_and_track(1, 42, 1_000));
+        assert!(dedup.is_duplicate_and_track(1, 42, 1_001));
+        assert!(!dedup.is_duplicate_and_track(2, 42, 1_001));
+    }
+}
+
+#[cfg(test)]
+mod parser_tests {
+    use super::{parse_depth_snapshot, DepthChannel, APPENDED_DEPTH_DIM, MAX_DEPTH_LEVELS_CACHE};
+    use crate::depth_pub::depth_msg::DepthMsg;
+    use crate::signal::common::TradingVenue;
+
+    #[test]
+    fn parse_depth_snapshot_flattens_top_20_levels_into_fixed_array() {
+        let bids: Vec<(f64, f64)> = (0..25)
+            .map(|i| (100.0 - i as f64, 10.0 + i as f64))
+            .collect();
+        let asks: Vec<(f64, f64)> = (0..25)
+            .map(|i| (101.0 + i as f64, 20.0 + i as f64))
+            .collect();
+        let payload = DepthMsg::depth25("BTCUSDT".to_string(), 123, bids, asks).to_bytes();
+
+        let (symbol, snapshot) = parse_depth_snapshot(
+            payload.as_ref(),
+            DepthChannel::Depth25,
+            TradingVenue::BinanceFutures,
+        )
+        .expect("parse depth25");
+
+        assert_eq!(symbol, "BTCUSDT");
+        assert_eq!(snapshot.best_bid_price, 100.0);
+        assert_eq!(snapshot.best_ask_price, 101.0);
+        assert_eq!(snapshot.appended_values.len(), APPENDED_DEPTH_DIM);
+        assert_eq!(snapshot.appended_values[0], 100.0);
+        assert_eq!(snapshot.appended_values[1], 10.0);
+        assert_eq!(snapshot.appended_values[2], 99.0);
+        assert_eq!(snapshot.appended_values[3], 11.0);
+
+        let ask_offset = MAX_DEPTH_LEVELS_CACHE * 2;
+        assert_eq!(snapshot.appended_values[ask_offset], 101.0);
+        assert_eq!(snapshot.appended_values[ask_offset + 1], 20.0);
+        assert_eq!(snapshot.appended_values[ask_offset + 2], 102.0);
+        assert_eq!(snapshot.appended_values[ask_offset + 3], 21.0);
+
+        let last_bid_offset = (MAX_DEPTH_LEVELS_CACHE - 1) * 2;
+        assert_eq!(snapshot.appended_values[last_bid_offset], 81.0);
+        assert_eq!(snapshot.appended_values[last_bid_offset + 1], 29.0);
+
+        let last_ask_offset = ask_offset + (MAX_DEPTH_LEVELS_CACHE - 1) * 2;
+        assert_eq!(snapshot.appended_values[last_ask_offset], 120.0);
+        assert_eq!(snapshot.appended_values[last_ask_offset + 1], 39.0);
+    }
+
+    #[test]
+    fn parse_depth_snapshot_keeps_zero_best_prices_for_later_validation() {
+        let payload = DepthMsg::depth25(
+            "BTCUSDT".to_string(),
+            123,
+            vec![(0.0, 1.0)],
+            vec![(101.0, 2.0)],
+        )
+        .to_bytes();
+
+        let (_, snapshot) = parse_depth_snapshot(
+            payload.as_ref(),
+            DepthChannel::Depth25,
+            TradingVenue::BinanceFutures,
+        )
+        .expect("parse depth25");
+
+        assert_eq!(snapshot.best_bid_price, 0.0);
+        assert_eq!(snapshot.best_ask_price, 101.0);
+    }
+}
+
 fn cf_name_for_symbol(venue_slug: &str, symbol: &str) -> String {
     format!(
         "{}:{}:{}",
@@ -1718,10 +1868,8 @@ fn parse_trade(data: &[u8], venue: TradingVenue) -> Option<TradeTick> {
         return None;
     }
 
-    let symbol_raw = std::str::from_utf8(&data[8..8 + symbol_len])
-        .ok()?
-        .to_string();
-    let symbol = normalize_symbol_for_venue(&symbol_raw, venue);
+    let symbol_raw = std::str::from_utf8(&data[8..8 + symbol_len]).ok()?;
+    let symbol = normalize_symbol_for_venue(symbol_raw, venue);
     let mut offset = 8 + symbol_len;
 
     let trade_id = i64::from_le_bytes([
@@ -1823,8 +1971,9 @@ fn parse_depth_snapshot(
         return None;
     }
 
-    let mut bids = Vec::with_capacity(MAX_DEPTH_LEVELS_CACHE);
-    let mut asks = Vec::with_capacity(MAX_DEPTH_LEVELS_CACHE);
+    let mut appended_values = [0.0f64; APPENDED_DEPTH_DIM];
+    let mut best_bid_price = 0.0f64;
+    let mut best_ask_price = 0.0f64;
 
     let mut offset = 8 + symbol_len + 8;
     for idx in 0..levels {
@@ -1832,7 +1981,12 @@ fn parse_depth_snapshot(
         let amount = read_f64_at(data, offset + 8)?;
         offset += 16;
         if idx < MAX_DEPTH_LEVELS_CACHE {
-            bids.push(DepthLevel { price, amount });
+            let base = idx * 2;
+            appended_values[base] = price;
+            appended_values[base + 1] = amount;
+            if idx == 0 {
+                best_bid_price = price;
+            }
         }
     }
 
@@ -1841,11 +1995,23 @@ fn parse_depth_snapshot(
         let amount = read_f64_at(data, offset + 8)?;
         offset += 16;
         if idx < MAX_DEPTH_LEVELS_CACHE {
-            asks.push(DepthLevel { price, amount });
+            let base = MAX_DEPTH_LEVELS_CACHE * 2 + idx * 2;
+            appended_values[base] = price;
+            appended_values[base + 1] = amount;
+            if idx == 0 {
+                best_ask_price = price;
+            }
         }
     }
 
-    Some((symbol, DepthSnapshot { bids, asks }))
+    Some((
+        symbol,
+        DepthSnapshot {
+            best_bid_price,
+            best_ask_price,
+            appended_values,
+        },
+    ))
 }
 
 fn read_f64_at(data: &[u8], offset: usize) -> Option<f64> {

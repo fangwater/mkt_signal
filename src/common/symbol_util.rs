@@ -10,18 +10,9 @@ use crate::signal::common::TradingVenue;
 /// - "BTCUSDT" -> ("BTC", "USDT")
 /// - "ETHUSDC" -> ("ETH", "USDC")
 pub fn extract_assets_from_symbol(symbol: &str) -> (String, String) {
-    let symbol_upper = symbol.to_uppercase();
-    const QUOTE_ASSETS: [&str; 7] = ["USDT", "USDC", "BUSD", "FDUSD", "BIDR", "TRY", "USD"];
-
-    for quote in QUOTE_ASSETS {
-        if symbol_upper.ends_with(quote) && symbol_upper.len() > quote.len() {
-            let base = &symbol_upper[..symbol_upper.len() - quote.len()];
-            return (base.to_string(), quote.to_string());
-        }
-    }
-
-    // 如果没有匹配到已知的 quote asset，默认返回整个符号作为 base，USDT 作为 quote
-    (symbol_upper, "USDT".to_string())
+    let symbol_upper = normalize_symbol_for_internal(symbol);
+    let (base, quote) = extract_assets_from_internal_symbol(&symbol_upper);
+    (base.to_string(), quote.to_string())
 }
 
 /// 规范化为 pre_trade 内部统一使用的 symbol key。
@@ -37,7 +28,15 @@ pub fn extract_assets_from_symbol(symbol: &str) -> (String, String) {
 /// - `BTC-USDT-SWAP` -> `BTCUSDT`
 /// - `BTC_USDT` -> `BTCUSDT`
 pub fn normalize_symbol_for_internal(symbol: &str) -> String {
-    let mut out = symbol.trim().to_uppercase().replace(['-', '_', '/'], "");
+    let mut out = String::with_capacity(symbol.len());
+    for ch in symbol.trim().chars() {
+        if matches!(ch, '-' | '_' | '/') {
+            continue;
+        }
+        for upper in ch.to_uppercase() {
+            out.push(upper);
+        }
+    }
     if out.ends_with("SWAP") {
         out.truncate(out.len().saturating_sub("SWAP".len()));
     }
@@ -79,11 +78,11 @@ pub fn normalize_symbol_for_venue(symbol: &str, venue: TradingVenue) -> String {
 
     match venue {
         TradingVenue::OkexMargin => {
-            let (base, quote) = extract_assets_from_symbol(&symbol_upper);
+            let (base, quote) = extract_assets_from_internal_symbol(&symbol_upper);
             format!("{}-{}", base, quote)
         }
         TradingVenue::OkexFutures => {
-            let (base, quote) = extract_assets_from_symbol(&symbol_upper);
+            let (base, quote) = extract_assets_from_internal_symbol(&symbol_upper);
             format!("{}-{}-SWAP", base, quote)
         }
         TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => symbol_upper,
@@ -92,6 +91,19 @@ pub fn normalize_symbol_for_venue(symbol: &str, venue: TradingVenue) -> String {
             symbol_upper
         }
     }
+}
+
+fn extract_assets_from_internal_symbol(symbol_upper: &str) -> (&str, &str) {
+    const QUOTE_ASSETS: [&str; 7] = ["USDT", "USDC", "BUSD", "FDUSD", "BIDR", "TRY", "USD"];
+
+    for quote in QUOTE_ASSETS {
+        if symbol_upper.ends_with(quote) && symbol_upper.len() > quote.len() {
+            let base = &symbol_upper[..symbol_upper.len() - quote.len()];
+            return (base, quote);
+        }
+    }
+
+    (symbol_upper, "USDT")
 }
 
 #[cfg(test)]
@@ -110,6 +122,10 @@ mod tests {
         );
         assert_eq!(
             extract_assets_from_symbol("aptusdt"),
+            ("APT".to_string(), "USDT".to_string())
+        );
+        assert_eq!(
+            extract_assets_from_symbol("apt-usdt-swap"),
             ("APT".to_string(), "USDT".to_string())
         );
     }
