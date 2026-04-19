@@ -29,6 +29,10 @@ pub enum TradeRequestType {
     GateUnifiedCancelOrder = 5202,              // Gate 统一账户撤单请求
     GateFuturesNewOrder = 5203,                 // Gate U 本位合约下单请求
     GateFuturesCancelOrder = 5204,              // Gate U 本位合约撤单请求
+    BybitNewMarginOrder = 5301,                 // Bybit 统一账户现货杠杆下单请求
+    BybitNewUMOrder = 5302,                     // Bybit 统一账户 U 本位下单请求
+    BybitCancelMarginOrder = 5303,              // Bybit 统一账户现货杠杆撤单请求
+    BybitCancelUMOrder = 5304,                  // Bybit 统一账户 U 本位撤单请求
 }
 
 // 交易请求的公共头部
@@ -76,6 +80,10 @@ impl TryFrom<u32> for TradeRequestType {
             5202 => Ok(TradeRequestType::GateUnifiedCancelOrder),
             5203 => Ok(TradeRequestType::GateFuturesNewOrder),
             5204 => Ok(TradeRequestType::GateFuturesCancelOrder),
+            5301 => Ok(TradeRequestType::BybitNewMarginOrder),
+            5302 => Ok(TradeRequestType::BybitNewUMOrder),
+            5303 => Ok(TradeRequestType::BybitCancelMarginOrder),
+            5304 => Ok(TradeRequestType::BybitCancelUMOrder),
             _ => Err(()),
         }
     }

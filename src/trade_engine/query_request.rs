@@ -23,6 +23,10 @@ pub enum QueryRequestType {
     GateFuturesOrderQuery = 8002,
     GateUnifiedBalanceSnapshot = 8101,
     GateUnifiedPositionsSnapshot = 8102,
+    BybitMarginQuery = 9001,
+    BybitUMQuery = 9002,
+    BybitAccountBalanceSnapshot = 9101,
+    BybitPositionsSnapshot = 9102,
 }
 
 #[repr(C, align(8))]
@@ -63,6 +67,10 @@ impl TryFrom<u32> for QueryRequestType {
             8002 => Ok(QueryRequestType::GateFuturesOrderQuery),
             8101 => Ok(QueryRequestType::GateUnifiedBalanceSnapshot),
             8102 => Ok(QueryRequestType::GateUnifiedPositionsSnapshot),
+            9001 => Ok(QueryRequestType::BybitMarginQuery),
+            9002 => Ok(QueryRequestType::BybitUMQuery),
+            9101 => Ok(QueryRequestType::BybitAccountBalanceSnapshot),
+            9102 => Ok(QueryRequestType::BybitPositionsSnapshot),
             _ => Err(()),
         }
     }

@@ -159,6 +159,8 @@ fn is_cancel_request(req_type: TradeRequestType) -> bool {
             | TradeRequestType::OkexCancelUMOrder
             | TradeRequestType::GateUnifiedCancelOrder
             | TradeRequestType::GateFuturesCancelOrder
+            | TradeRequestType::BybitCancelMarginOrder
+            | TradeRequestType::BybitCancelUMOrder
     )
 }
 
@@ -166,6 +168,10 @@ fn is_cancel_not_cancellable(exchange: Exchange, error_code: i32) -> bool {
     match exchange {
         Exchange::Binance => error_code == -2011,
         Exchange::Okex => matches!(error_code, 51400 | 51410 | 51416),
+        Exchange::Bybit => matches!(
+            error_code,
+            110001 | 110008 | 110010 | 170139 | 170142 | 170143 | 170145 | 170190 | 170191
+        ),
         _ => false,
     }
 }

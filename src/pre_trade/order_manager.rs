@@ -1,3 +1,6 @@
+use crate::trade_engine::bybit::{
+    BybitCancelOrderParams, BybitCancelOrderRequest, BybitNewOrderParams, BybitNewOrderRequest,
+};
 use crate::trade_engine::okex::{
     OkexCancelOrderParams, OkexCancelOrderRequest, OkexNewOrderParams, OkexNewOrderRequest,
     OkexOrderType,
@@ -92,6 +95,10 @@ pub(crate) fn okex_inst_id_from_symbol(
         TradingVenue::OkexFutures => Ok(format!("{base}-{quote}-SWAP")),
         _ => Err(format!("venue {:?} not okex", venue)),
     }
+}
+
+fn bybit_symbol_from_symbol(symbol: &str) -> String {
+    normalize_symbol_for_internal(symbol)
 }
 
 pub fn gate_currency_pair_from_symbol(symbol: &str) -> String {
@@ -1028,6 +1035,24 @@ impl Order {
                     GateFuturesCancelOrderRequest::create(now, self.client_order_id, params);
                 Ok(request.to_bytes())
             }
+            TradingVenue::BybitMargin | TradingVenue::BybitFutures => {
+                let symbol = bybit_symbol_from_symbol(&self.symbol);
+                let params = BybitCancelOrderParams {
+                    symbol,
+                    order_link_id: self.client_order_id,
+                };
+                let request = match self.venue {
+                    TradingVenue::BybitMargin => {
+                        BybitCancelOrderRequest::create_margin(now, self.client_order_id, params)
+                    }
+                    TradingVenue::BybitFutures => {
+                        BybitCancelOrderRequest::create_um(now, self.client_order_id, params)
+                    }
+                    _ => None,
+                }
+                .ok_or_else(|| "failed to build bybit cancel request".to_string())?;
+                Ok(request.to_bytes())
+            }
             _ => Err(format!("Unsupported trading venue: {:?}", self.venue)),
         }
     }
@@ -1304,6 +1329,46 @@ impl Order {
                 let params = Bytes::from(Value::Object(req_param).to_string());
                 let request =
                     GateFuturesNewOrderRequest::create(create_ts, self.client_order_id, params);
+                Ok(request.to_bytes())
+            }
+            TradingVenue::BybitMargin | TradingVenue::BybitFutures => {
+                let create_ts = get_timestamp_us();
+                let symbol = bybit_symbol_from_symbol(&self.symbol);
+                let quantity_qv = QuantizedValue::from_decimal(self.quantity).ok_or_else(|| {
+                    format!(
+                        "failed to quantize bybit quantity: qty={:.12} symbol={} client_order_id={}",
+                        self.quantity, self.symbol, self.client_order_id
+                    )
+                })?;
+                let price_qv = if self.order_type.is_limit() {
+                    QuantizedValue::from_decimal(self.price).ok_or_else(|| {
+                        format!(
+                            "failed to quantize bybit price: price={:.12} symbol={} client_order_id={}",
+                            self.price, self.symbol, self.client_order_id
+                        )
+                    })?
+                } else {
+                    QuantizedValue::zero()
+                };
+                let params = BybitNewOrderParams {
+                    side: self.side,
+                    order_type: self.order_type,
+                    reduce_only: self.reduce_only,
+                    is_leverage: matches!(self.venue, TradingVenue::BybitMargin),
+                    quantity_qv,
+                    price_qv,
+                    symbol,
+                };
+                let request = match self.venue {
+                    TradingVenue::BybitMargin => {
+                        BybitNewOrderRequest::create_margin(create_ts, self.client_order_id, params)
+                    }
+                    TradingVenue::BybitFutures => {
+                        BybitNewOrderRequest::create_um(create_ts, self.client_order_id, params)
+                    }
+                    _ => None,
+                }
+                .ok_or_else(|| "failed to build bybit new order request".to_string())?;
                 Ok(request.to_bytes())
             }
             //之后在这支持别的类型下单，根据资产类型决定下单的request，统一序列化为bytes

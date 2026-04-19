@@ -47,6 +47,9 @@ impl WsConstants {
     /// Gate USDT 合约交易 WebSocket URL
     pub const GATE_FUTURES_WS_URL: &'static str = "wss://fx-ws.gateio.ws/v4/ws/usdt";
 
+    /// Bybit V5 Trade WebSocket URL
+    pub const BYBIT_TRADE_WS_URL: &'static str = "wss://stream.bybit.com/v5/trade";
+
     /// Binance UM WebSocket API URL
     pub const BINANCE_UM_WS_URL: &'static str = "wss://ws-fapi.binance.com/ws-fapi/v1";
 

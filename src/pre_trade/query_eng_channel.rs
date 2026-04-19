@@ -257,6 +257,10 @@ impl QueryEngChannel {
                                     | Some(QueryRequestType::OkexUMQuery) => {
                                         BasicAccountScope::OkexUnified
                                     }
+                                    Some(QueryRequestType::BybitMarginQuery)
+                                    | Some(QueryRequestType::BybitUMQuery) => {
+                                        BasicAccountScope::BybitUnified
+                                    }
                                     Some(QueryRequestType::GateUnifiedOrderQuery)
                                     | Some(QueryRequestType::GateFuturesOrderQuery) => {
                                         BasicAccountScope::GateUnified
@@ -510,6 +514,8 @@ impl QueryEngChannel {
                                         | QueryRequestType::BinanceWsMarginQuery
                                         | QueryRequestType::OkexMarginQuery
                                         | QueryRequestType::OkexUMQuery
+                                        | QueryRequestType::BybitMarginQuery
+                                        | QueryRequestType::BybitUMQuery
                                         | QueryRequestType::GateUnifiedOrderQuery
                                         | QueryRequestType::GateFuturesOrderQuery
                                 ) {

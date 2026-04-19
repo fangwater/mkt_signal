@@ -1015,6 +1015,8 @@ impl MarketMakerOpenStrategy {
             }
             TradingVenue::OkexMargin => QueryRequestType::OkexMarginQuery,
             TradingVenue::OkexFutures => QueryRequestType::OkexUMQuery,
+            TradingVenue::BybitMargin => QueryRequestType::BybitMarginQuery,
+            TradingVenue::BybitFutures => QueryRequestType::BybitUMQuery,
             TradingVenue::GateMargin => QueryRequestType::GateUnifiedOrderQuery,
             TradingVenue::GateFutures => QueryRequestType::GateFuturesOrderQuery,
             _ => return Err(format!("unsupported venue for query: {:?}", order.venue)),
@@ -1042,6 +1044,16 @@ impl MarketMakerOpenStrategy {
                     bytes::Bytes::from(format!("instId={}&clOrdId={}", inst_id, client_query_id))
                 }
             }
+            TradingVenue::BybitMargin => bytes::Bytes::from(format!(
+                "category=spot&symbol={}&orderLinkId={}",
+                crate::common::symbol_util::normalize_symbol_for_internal(&order.symbol),
+                client_query_id
+            )),
+            TradingVenue::BybitFutures => bytes::Bytes::from(format!(
+                "category=linear&symbol={}&orderLinkId={}",
+                crate::common::symbol_util::normalize_symbol_for_internal(&order.symbol),
+                client_query_id
+            )),
             TradingVenue::GateMargin => {
                 let currency_pair =
                     crate::pre_trade::order_manager::gate_currency_pair_from_symbol(&order.symbol);

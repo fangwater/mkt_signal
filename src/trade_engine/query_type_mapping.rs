@@ -35,6 +35,16 @@ impl QueryTypeMapping {
         )
     }
 
+    pub fn is_bybit_rest(request_type: QueryRequestType) -> bool {
+        matches!(
+            request_type,
+            QueryRequestType::BybitMarginQuery
+                | QueryRequestType::BybitUMQuery
+                | QueryRequestType::BybitAccountBalanceSnapshot
+                | QueryRequestType::BybitPositionsSnapshot
+        )
+    }
+
     pub fn get_endpoint(request_type: QueryRequestType) -> &'static str {
         match request_type {
             QueryRequestType::BinanceMarginQuery => "/papi/v1/margin/order",
@@ -57,6 +67,11 @@ impl QueryTypeMapping {
             QueryRequestType::GateUnifiedOrderQuery | QueryRequestType::GateFuturesOrderQuery => {
                 unreachable!("Gate order queries run via websocket; REST mapping not used")
             }
+            QueryRequestType::BybitMarginQuery | QueryRequestType::BybitUMQuery => {
+                "/v5/order/realtime"
+            }
+            QueryRequestType::BybitAccountBalanceSnapshot => "/v5/account/wallet-balance",
+            QueryRequestType::BybitPositionsSnapshot => "/v5/position/list",
         }
     }
 
@@ -74,7 +89,11 @@ impl QueryTypeMapping {
             | QueryRequestType::OkexAccountBalanceSnapshot
             | QueryRequestType::OkexPositionsSnapshot
             | QueryRequestType::GateUnifiedBalanceSnapshot
-            | QueryRequestType::GateUnifiedPositionsSnapshot => "GET",
+            | QueryRequestType::GateUnifiedPositionsSnapshot
+            | QueryRequestType::BybitMarginQuery
+            | QueryRequestType::BybitUMQuery
+            | QueryRequestType::BybitAccountBalanceSnapshot
+            | QueryRequestType::BybitPositionsSnapshot => "GET",
             QueryRequestType::BinanceWsUMQuery | QueryRequestType::BinanceWsMarginQuery => {
                 unreachable!("Binance ws queries run via websocket; REST mapping not used")
             }
@@ -101,6 +120,10 @@ impl QueryTypeMapping {
             QueryRequestType::OkexPositionsSnapshot => 1,
             QueryRequestType::GateUnifiedBalanceSnapshot => 1,
             QueryRequestType::GateUnifiedPositionsSnapshot => 1,
+            QueryRequestType::BybitMarginQuery => 1,
+            QueryRequestType::BybitUMQuery => 1,
+            QueryRequestType::BybitAccountBalanceSnapshot => 1,
+            QueryRequestType::BybitPositionsSnapshot => 1,
             QueryRequestType::GateUnifiedOrderQuery | QueryRequestType::GateFuturesOrderQuery => {
                 unreachable!("Gate order queries run via websocket; REST mapping not used")
             }

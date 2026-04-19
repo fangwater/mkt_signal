@@ -1057,9 +1057,20 @@ impl MonitorChannel {
                 TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => {
                     Err("尚未实现 Bitget 的订单对齐".to_string())
                 }
-                TradingVenue::BybitMargin | TradingVenue::BybitFutures => {
-                    Err("尚未实现 Bybit 的订单对齐".to_string())
-                }
+                TradingVenue::BybitMargin => Self::align_order_with_table(
+                    &symbol_key,
+                    raw_qty,
+                    raw_price,
+                    table.as_ref(),
+                    false,
+                ),
+                TradingVenue::BybitFutures => Self::align_order_with_table(
+                    &symbol_key,
+                    raw_qty,
+                    raw_price,
+                    table.as_ref(),
+                    true,
+                ),
                 TradingVenue::GateMargin => Self::align_order_with_table(
                     &symbol_key,
                     raw_qty,

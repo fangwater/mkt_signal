@@ -33,7 +33,11 @@ impl TradeTypeMapping {
             TradeRequestType::GateUnifiedNewOrder
             | TradeRequestType::GateUnifiedCancelOrder
             | TradeRequestType::GateFuturesNewOrder
-            | TradeRequestType::GateFuturesCancelOrder => true,
+            | TradeRequestType::GateFuturesCancelOrder
+            | TradeRequestType::BybitNewMarginOrder
+            | TradeRequestType::BybitNewUMOrder
+            | TradeRequestType::BybitCancelMarginOrder
+            | TradeRequestType::BybitCancelUMOrder => true,
         }
     }
 
@@ -71,6 +75,12 @@ impl TradeTypeMapping {
             | TradeRequestType::GateFuturesCancelOrder => {
                 unreachable!("Gate requests run via websocket; REST mapping not used")
             }
+            TradeRequestType::BybitNewMarginOrder
+            | TradeRequestType::BybitNewUMOrder
+            | TradeRequestType::BybitCancelMarginOrder
+            | TradeRequestType::BybitCancelUMOrder => {
+                unreachable!("Bybit requests run via websocket; REST mapping not used")
+            }
         }
     }
 
@@ -105,6 +115,12 @@ impl TradeTypeMapping {
             | TradeRequestType::GateFuturesNewOrder
             | TradeRequestType::GateFuturesCancelOrder => {
                 unreachable!("Gate requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::BybitNewMarginOrder
+            | TradeRequestType::BybitNewUMOrder
+            | TradeRequestType::BybitCancelMarginOrder
+            | TradeRequestType::BybitCancelUMOrder => {
+                unreachable!("Bybit requests run via websocket; REST mapping not used")
             }
         }
     }
@@ -141,6 +157,12 @@ impl TradeTypeMapping {
             | TradeRequestType::GateFuturesCancelOrder => {
                 unreachable!("Gate requests run via websocket; REST mapping not used")
             }
+            TradeRequestType::BybitNewMarginOrder
+            | TradeRequestType::BybitNewUMOrder
+            | TradeRequestType::BybitCancelMarginOrder
+            | TradeRequestType::BybitCancelUMOrder => {
+                unreachable!("Bybit requests run via websocket; REST mapping not used")
+            }
         }
     }
 
@@ -176,6 +198,12 @@ impl TradeTypeMapping {
             | TradeRequestType::GateFuturesCancelOrder => {
                 unreachable!("Gate requests run via websocket; REST mapping not used")
             }
+            TradeRequestType::BybitNewMarginOrder
+            | TradeRequestType::BybitNewUMOrder
+            | TradeRequestType::BybitCancelMarginOrder
+            | TradeRequestType::BybitCancelUMOrder => {
+                unreachable!("Bybit requests run via websocket; REST mapping not used")
+            }
         }
     }
 
@@ -210,6 +238,12 @@ impl TradeTypeMapping {
             | TradeRequestType::GateFuturesNewOrder
             | TradeRequestType::GateFuturesCancelOrder => {
                 unreachable!("Gate requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::BybitNewMarginOrder
+            | TradeRequestType::BybitNewUMOrder
+            | TradeRequestType::BybitCancelMarginOrder
+            | TradeRequestType::BybitCancelUMOrder => {
+                unreachable!("Bybit requests run via websocket; REST mapping not used")
             }
         }
     }

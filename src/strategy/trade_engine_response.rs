@@ -60,7 +60,9 @@ pub trait TradeEngineResponse {
                 | TradeRequestType::OkexNewMarginOrder
                 | TradeRequestType::OkexNewUMOrder
                 | TradeRequestType::GateUnifiedNewOrder
-                | TradeRequestType::GateFuturesNewOrder,
+                | TradeRequestType::GateFuturesNewOrder
+                | TradeRequestType::BybitNewMarginOrder
+                | TradeRequestType::BybitNewUMOrder,
             ) => TradeRequestKind::Open,
             Ok(
                 TradeRequestType::BinanceCancelUMOrder
@@ -71,7 +73,9 @@ pub trait TradeEngineResponse {
                 | TradeRequestType::OkexCancelMarginOrder
                 | TradeRequestType::OkexCancelUMOrder
                 | TradeRequestType::GateUnifiedCancelOrder
-                | TradeRequestType::GateFuturesCancelOrder,
+                | TradeRequestType::GateFuturesCancelOrder
+                | TradeRequestType::BybitCancelMarginOrder
+                | TradeRequestType::BybitCancelUMOrder,
             ) => TradeRequestKind::Cancel,
             _ => TradeRequestKind::Other,
         }
@@ -98,14 +102,18 @@ pub trait TradeEngineResponse {
         match self.exchange_enum() {
             Some(Exchange::Binance) => self.error_code() == -5022,
             Some(Exchange::Okex) => self.error_code() == 51511,
+            Some(Exchange::Bybit) => matches!(self.error_code(), 170217 | 170218),
             _ => false,
         }
     }
 
     /// OKX: price is outside the allowed price-limit range (e.g. sCode=51006/51137).
     fn is_price_limit_rejected(&self) -> bool {
-        matches!(self.exchange_enum(), Some(Exchange::Okex))
-            && matches!(self.error_code(), 51006 | 51137)
+        match self.exchange_enum() {
+            Some(Exchange::Okex) => matches!(self.error_code(), 51006 | 51137),
+            Some(Exchange::Bybit) => matches!(self.error_code(), 110003 | 170132 | 170193),
+            _ => false,
+        }
     }
 
     /// OKX: insufficient margin / loanable assets.
@@ -115,6 +123,10 @@ pub trait TradeEngineResponse {
                 matches!(self.error_code(), -2018 | -2019 | 51006 | 51061 | 51169)
             }
             Some(Exchange::Okex) => matches!(self.error_code(), 51008 | 51061),
+            Some(Exchange::Bybit) => matches!(
+                self.error_code(),
+                110004 | 110006 | 110007 | 110012 | 110014 | 110044 | 110045 | 170131
+            ),
             _ => false,
         }
     }
@@ -127,6 +139,10 @@ pub trait TradeEngineResponse {
         match self.exchange_enum() {
             Some(Exchange::Binance) => self.error_code() == -2011,
             Some(Exchange::Okex) => matches!(self.error_code(), 51400 | 51410 | 51412 | 51416),
+            Some(Exchange::Bybit) => matches!(
+                self.error_code(),
+                110001 | 110008 | 110010 | 170139 | 170142 | 170143 | 170145 | 170190 | 170191
+            ),
             _ => false,
         }
     }
@@ -144,6 +160,10 @@ pub trait TradeEngineResponse {
         match self.exchange_enum() {
             Some(Exchange::Binance) => self.error_code() == -2011,
             Some(Exchange::Okex) => matches!(self.error_code(), 51400 | 51410 | 51416),
+            Some(Exchange::Bybit) => matches!(
+                self.error_code(),
+                110001 | 110008 | 110010 | 170139 | 170142 | 170143 | 170145 | 170190 | 170191
+            ),
             _ => false,
         }
     }

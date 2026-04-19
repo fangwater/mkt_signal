@@ -1,7 +1,11 @@
 use crate::common::exchange::Exchange;
+use crate::portfolio_margin::bybit_auth::BybitCredentials;
 use crate::portfolio_margin::gate_auth::GateCredentials;
 use crate::portfolio_margin::okex_auth::OkexCredentials;
 use crate::trade_engine::binance_ws;
+use crate::trade_engine::bybit::{
+    BybitCancelOrderRequest, BybitNewOrderRequest, BybitWsOrderResponse, ToBybitWsJson,
+};
 use crate::trade_engine::config::{ApiKey, LimitConstants};
 use crate::trade_engine::gate_ws;
 use crate::trade_engine::okex::{OkexCancelOrderRequest, OkexNewOrderRequest, OkexWsOrderResponse};
@@ -49,6 +53,16 @@ fn extract_okex_login_timestamp(payload: &str) -> Option<String> {
         .get("timestamp")?
         .as_str()
         .map(|s| s.to_string())
+}
+
+fn is_bybit_pong_response(payload: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<Value>(payload) else {
+        return false;
+    };
+    matches!(
+        v.get("op").and_then(|x| x.as_str()),
+        Some("pong") | Some("ping")
+    ) || matches!(v.get("ret_msg").and_then(|x| x.as_str()), Some("pong"))
 }
 
 fn truncate_for_log(text: &str, max_chars: usize) -> String {
@@ -199,6 +213,7 @@ pub struct TradeWsClient {
     max_inflight: usize,
     login_payload: Option<String>,
     binance_creds: Option<ApiKey>,
+    bybit_creds: Option<BybitCredentials>,
     okex_creds: Option<OkexCredentials>,
     gate_creds: Option<GateCredentials>,
     okex_http_client: Option<reqwest::Client>,
@@ -221,6 +236,8 @@ pub struct TradeWsClient {
     rate_limit_cooldown_until: Option<std::time::Instant>,
     shutdown: bool,
     should_reconnect: bool, // 标记是否需要重连（用于 notice 触发的重连）
+    bybit_waiting_auth: bool,
+    bybit_waiting_pong: bool,
     last_okex_login_ts: Option<String>,
     last_gate_login_req_id: Option<String>,
 }
@@ -245,7 +262,20 @@ impl TradeWsClient {
         endpoint_state: Rc<RefCell<WsEndpointState>>,
         shutdown_on_rate_limit: bool,
     ) -> Self {
-        let (login_payload, okex_creds, gate_creds) = match exchange {
+        let (login_payload, bybit_creds, okex_creds, gate_creds) = match exchange {
+            Exchange::Bybit => {
+                let creds = BybitCredentials::from_env().unwrap_or_else(|e| {
+                    panic!(
+                        "Bybit requires environment variables BYBIT_API_KEY, BYBIT_API_SECRET: {}",
+                        e
+                    )
+                });
+                info!(
+                    "Bybit credentials loaded from environment for ws client id={}",
+                    id
+                );
+                (None, Some(creds), None, None)
+            }
             Exchange::Okex => {
                 // OKX login must use a fresh timestamp (signed) on each connect/reconnect.
                 let creds = OkexCredentials::from_env().unwrap_or_else(|e| {
@@ -258,7 +288,7 @@ impl TradeWsClient {
                     "OKEx credentials loaded from environment for ws client id={}",
                     id
                 );
-                (None, Some(creds), None)
+                (None, None, Some(creds), None)
             }
             Exchange::Gate => {
                 let creds = GateCredentials::from_env().unwrap_or_else(|e| {
@@ -271,9 +301,9 @@ impl TradeWsClient {
                     "Gate credentials loaded from environment for ws client id={}",
                     id
                 );
-                (None, None, Some(creds))
+                (None, None, None, Some(creds))
             }
-            _ => (login_payload, None, None),
+            _ => (login_payload, None, None, None),
         };
 
         if exchange == Exchange::Binance && binance_creds.is_none() {
@@ -296,6 +326,7 @@ impl TradeWsClient {
             max_inflight,
             login_payload,
             binance_creds,
+            bybit_creds,
             okex_creds,
             gate_creds,
             okex_http_client: (exchange == Exchange::Okex).then(reqwest::Client::new),
@@ -310,6 +341,7 @@ impl TradeWsClient {
             inflight: HashMap::new(),
             query_inflight: HashMap::new(),
             last_dispatched_type: match exchange {
+                Exchange::Bybit => TradeRequestType::BybitNewUMOrder,
                 Exchange::Okex => TradeRequestType::OkexNewUMOrder,
                 Exchange::Gate => gate_ws_kind
                     .unwrap_or(gate_ws::GateWsKind::SpotUnified)
@@ -324,6 +356,7 @@ impl TradeWsClient {
                 _ => TradeRequestType::BinanceNewUMOrder,
             },
             last_dispatched_query_type: match exchange {
+                Exchange::Bybit => QueryRequestType::BybitUMQuery,
                 Exchange::Gate => match gate_ws_kind.unwrap_or(gate_ws::GateWsKind::SpotUnified) {
                     gate_ws::GateWsKind::SpotUnified => QueryRequestType::GateUnifiedOrderQuery,
                     gate_ws::GateWsKind::FuturesUsdt => QueryRequestType::GateFuturesOrderQuery,
@@ -344,6 +377,8 @@ impl TradeWsClient {
             rate_limit_cooldown_until: None,
             shutdown: false,
             should_reconnect: false,
+            bybit_waiting_auth: false,
+            bybit_waiting_pong: false,
             last_okex_login_ts: None,
             last_gate_login_req_id: None,
         }
@@ -532,7 +567,11 @@ impl TradeWsClient {
                                 self.id, self.url, self.local_ip
                             );
 
-                            let login_payload = if self.exchange == Exchange::Okex {
+                            let login_payload = if self.exchange == Exchange::Bybit {
+                                self.bybit_creds
+                                    .as_ref()
+                                    .map(|c| c.build_auth_message().to_string())
+                            } else if self.exchange == Exchange::Okex {
                                 self.okex_creds
                                     .as_ref()
                                     .map(|c| c.build_login_message().to_string())
@@ -557,6 +596,9 @@ impl TradeWsClient {
 
                             if let Some(payload) = login_payload {
                                 self.last_okex_login_ts = extract_okex_login_timestamp(&payload);
+                                if self.exchange == Exchange::Bybit {
+                                    self.bybit_waiting_auth = true;
+                                }
                                 let now_s = std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .map(|d| d.as_secs())
@@ -581,6 +623,16 @@ impl TradeWsClient {
                                             self.exchange,
                                             payload.len(),
                                             self.last_gate_login_req_id.as_deref(),
+                                            now_s,
+                                            now_ms
+                                        );
+                                    }
+                                    Exchange::Bybit => {
+                                        info!(
+                                            "trade ws client id={} exchange={} sending auth payload ({} bytes) local_unix_s={} local_unix_ms={}",
+                                            self.id,
+                                            self.exchange,
+                                            payload.len(),
                                             now_s,
                                             now_ms
                                         );
@@ -974,6 +1026,7 @@ impl TradeWsClient {
 
     async fn build_payload(&mut self, msg: &TradeRequestMsg, transport_id: i64) -> Result<String> {
         match self.exchange {
+            Exchange::Bybit => self.build_bybit_payload(msg, transport_id),
             Exchange::Okex => self.build_okex_payload(msg, transport_id).await,
             Exchange::Gate => self.build_gate_payload(msg, transport_id),
             Exchange::Binance => self.build_binance_payload(msg, transport_id),
@@ -1000,6 +1053,46 @@ impl TradeWsClient {
                 self.exchange
             )),
         }
+    }
+
+    fn build_bybit_payload(&self, msg: &TradeRequestMsg, transport_id: i64) -> Result<String> {
+        use crate::trade_engine::trade_request::TradeRequestHeader;
+
+        let header = TradeRequestHeader {
+            msg_type: msg.req_type as u32,
+            params_length: msg.params.len() as u32,
+            create_time: msg.create_time,
+            client_order_id: msg.client_order_id,
+        };
+        let req_id = transport_id.to_string();
+        let timestamp_ms = chrono::Utc::now().timestamp_millis();
+
+        let payload = match msg.req_type {
+            TradeRequestType::BybitNewMarginOrder | TradeRequestType::BybitNewUMOrder => {
+                BybitNewOrderRequest {
+                    header,
+                    params: msg.params.clone(),
+                }
+                .to_ws_json(&req_id, timestamp_ms)
+            }
+            TradeRequestType::BybitCancelMarginOrder | TradeRequestType::BybitCancelUMOrder => {
+                BybitCancelOrderRequest {
+                    header,
+                    params: msg.params.clone(),
+                }
+                .to_ws_json(&req_id, timestamp_ms)
+            }
+            _ => None,
+        }
+        .ok_or_else(|| {
+            anyhow!(
+                "failed to build bybit ws payload (req_type={:?}, client_order_id={})",
+                msg.req_type,
+                msg.client_order_id
+            )
+        })?;
+
+        serde_json::to_string(&payload).with_context(|| "serialize bybit ws payload")
     }
 
     async fn build_okex_payload(
@@ -1356,6 +1449,29 @@ impl TradeWsClient {
     }
 
     fn process_incoming_payload(&mut self, payload: &str) {
+        if self.exchange == Exchange::Bybit {
+            if is_bybit_pong_response(payload) {
+                self.bybit_waiting_pong = false;
+                return;
+            }
+
+            if let Ok(json_val) = serde_json::from_str::<Value>(payload) {
+                if json_val.get("op").and_then(|v| v.as_str()) == Some("auth") {
+                    let success = json_val
+                        .get("success")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    self.bybit_waiting_auth = false;
+                    if success {
+                        info!("trade ws client id={} Bybit auth successful", self.id);
+                    } else {
+                        warn!("trade ws client id={} Bybit auth failed: {}", self.id, payload);
+                    }
+                    return;
+                }
+            }
+        }
+
         // 处理 OKEx 的 notice 消息（服务升级通知等）
         if self.exchange == Exchange::Okex {
             if let Ok(json_val) = serde_json::from_str::<Value>(payload) {
@@ -1504,6 +1620,24 @@ impl TradeWsClient {
             return;
         }
 
+        if self.exchange == Exchange::Bybit {
+            if let Some(resp) = BybitWsOrderResponse::from_json_str(payload) {
+                let transport_id = resp.transport_id().unwrap_or(0);
+                let meta = if transport_id > 0 {
+                    self.inflight.remove(&transport_id)
+                } else {
+                    None
+                };
+                let req_type = meta.map(|m| m.req_type).unwrap_or(self.last_dispatched_type);
+                let client_order_id = resp
+                    .client_order_id()
+                    .or_else(|| meta.map(|m| m.client_order_id))
+                    .unwrap_or(0);
+                self.publish_bybit_ws_response(client_order_id, req_type, &resp);
+                return;
+            }
+        }
+
         let (req_type, client_order_id) = self.extract_correlated(payload);
         if self.exchange == Exchange::Okex {
             if let Some(resp) = OkexWsOrderResponse::from_json_str(payload) {
@@ -1513,6 +1647,40 @@ impl TradeWsClient {
             }
         }
         self.publish_generic_response(client_order_id, req_type, payload.to_string(), false);
+    }
+
+    fn publish_bybit_ws_response(
+        &self,
+        client_order_id: i64,
+        req_type: TradeRequestType,
+        resp: &BybitWsOrderResponse,
+    ) {
+        let body_payload = json!({
+            "transport": "ws",
+            "exchange": "bybit",
+            "code": resp.ret_code,
+            "msg": resp.ret_msg,
+            "data": [{
+                "orderId": resp.order_id,
+                "orderLinkId": resp.order_link_id,
+            }],
+            "endpointId": self.id,
+            "localIp": self.local_ip.to_string(),
+        })
+        .to_string();
+
+        let _ = self.resp_tx.send(TradeExecOutcome {
+            req_type,
+            client_order_id,
+            status: 206,
+            body: body_payload,
+            exchange: self.exchange,
+            order_id: resp.order_id_i64(),
+            order_status_u8: 0,
+            order_update_time: 0,
+            executed_qty: 0.0,
+            response_price: 0.0,
+        });
     }
 
     fn extract_correlated(&mut self, payload: &str) -> (TradeRequestType, i64) {
@@ -2077,7 +2245,19 @@ impl TradeWsClient {
         ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
     ) -> Result<()> {
         debug!("trade ws client id={} sending ping", self.id);
-        ws.send(Message::Ping(Vec::new())).await?;
+        if self.exchange == Exchange::Bybit {
+            self.bybit_waiting_pong = true;
+            ws.send(Message::Text(
+                json!({
+                    "req_id": format!("ping-{}-{}", self.id, chrono::Utc::now().timestamp_millis()),
+                    "op": "ping"
+                })
+                .to_string(),
+            ))
+            .await?;
+        } else {
+            ws.send(Message::Ping(Vec::new())).await?;
+        }
         Ok(())
     }
 }

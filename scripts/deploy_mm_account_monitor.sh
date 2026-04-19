@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/deploy_mm_account_monitor.sh --exchange <okex|binance|gate|bitget> --env-suffix <suffix>
+  scripts/deploy_mm_account_monitor.sh --exchange <okex|binance|gate|bybit|bitget> --env-suffix <suffix>
                                       [--env-name <exchange>_mm_<suffix>] [--scripts-only|--bin-only]
 
 Notes:
@@ -92,7 +92,7 @@ fi
 
 EXCHANGE="$(echo "$EXCHANGE" | tr 'A-Z' 'a-z')"
 case "$EXCHANGE" in
-  okex|binance|gate|bitget)
+  okex|binance|gate|bybit|bitget)
     ;;
   *)
     echo "[ERROR] unsupported exchange: $EXCHANGE" >&2
@@ -125,6 +125,7 @@ case "$EXCHANGE" in
   okex) BIN_NAME="okex_account_monitor" ;;
   binance) BIN_NAME="binance_account_monitor" ;;
   gate) BIN_NAME="gate_account_monitor" ;;
+  bybit) BIN_NAME="bybit_account_monitor" ;;
   bitget) BIN_NAME="bitget_account_monitor" ;;
 esac
 

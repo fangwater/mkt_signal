@@ -11,6 +11,11 @@ use crate::trade_engine::query_parsers::binance_spot_account_snapshot_std::parse
 use crate::trade_engine::query_parsers::binance_um_account_snapshot::parse_binance_um_account_snapshot;
 use crate::trade_engine::query_parsers::binance_um_balance_snapshot_std::parse_binance_um_balance_snapshot_std;
 use crate::trade_engine::query_parsers::binance_um_order::parse_binance_um_order_query_json;
+use crate::trade_engine::query_parsers::bybit_account_balance_snapshot::parse_bybit_account_balance_snapshot;
+use crate::trade_engine::query_parsers::bybit_order::{
+    parse_bybit_order_query_json, BybitOrderQueryParseErrorKind, BybitOrderQueryParseResult,
+};
+use crate::trade_engine::query_parsers::bybit_positions_snapshot::parse_bybit_positions_snapshot;
 use crate::trade_engine::query_parsers::compact_order::ORDER_QUERY_NOT_FOUND_MARKER;
 use crate::trade_engine::query_parsers::gate_positions_snapshot::parse_gate_positions_snapshot_with_meta;
 use crate::trade_engine::query_parsers::gate_unified_balance_snapshot::parse_gate_unified_balance_snapshot;
@@ -209,7 +214,53 @@ impl TradeEngine {
         let mut gate_futures_ws_endpoints: Option<Vec<WsEndpointHandle>> = None;
         let mut binance_spot_ws_endpoints: Option<Vec<WsEndpointHandle>> = None;
 
-        let ws_endpoints = if exchange == Exchange::Okex {
+        let ws_endpoints = if exchange == Exchange::Bybit {
+            let mut local_ips = self.local_ips.clone();
+            if local_ips.is_empty() {
+                warn!("bybit ws local_ips empty; using default binding 0.0.0.0");
+                local_ips.push("0.0.0.0".parse()?);
+            }
+
+            let connect_timeout_ms = WsConstants::CONNECT_TIMEOUT_MS;
+            let ping_interval_ms = WsConstants::PING_INTERVAL_MS;
+            let max_inflight = WsConstants::MAX_INFLIGHT;
+
+            let mut endpoints = Vec::with_capacity(local_ips.len());
+            for (idx, ip) in local_ips.into_iter().enumerate() {
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                let state = StdRc::new(RefCell::new(Default::default()));
+                let client = TradeWsClient::new(
+                    idx,
+                    exchange,
+                    ip,
+                    WsConstants::BYBIT_TRADE_WS_URL.to_string(),
+                    connect_timeout_ms,
+                    ping_interval_ms,
+                    max_inflight,
+                    None,
+                    None,
+                    None,
+                    None,
+                    rx,
+                    resp_tx.clone(),
+                    shutdown.clone(),
+                    state.clone(),
+                    false,
+                );
+                info!(
+                    "spawning bybit ws client id={} ip={} max_inflight={}",
+                    idx,
+                    client.local_ip(),
+                    max_inflight
+                );
+                let handle = tokio::task::spawn_local(async move {
+                    client.run().await;
+                });
+                worker_handles.push(("bybit_ws_client", handle));
+                endpoints.push(WsEndpointHandle::new(tx, state));
+            }
+            Some(endpoints)
+        } else if exchange == Exchange::Okex {
             let mut local_ips = self.local_ips.clone();
             if local_ips.is_empty() {
                 warn!("okex ws local_ips empty; using default binding 0.0.0.0");
@@ -659,6 +710,9 @@ impl TradeEngine {
                 let okex_http = reqwest::Client::new();
                 let okex_creds =
                     crate::portfolio_margin::okex_auth::OkexCredentials::from_env().ok();
+                let bybit_http = reqwest::Client::new();
+                let bybit_creds =
+                    crate::portfolio_margin::bybit_auth::BybitCredentials::from_env().ok();
                 let gate_http = reqwest::Client::new();
                 let gate_creds =
                     crate::portfolio_margin::gate_auth::GateCredentials::from_env().ok();
@@ -1373,6 +1427,135 @@ impl TradeEngine {
                                         }
                                         _ => bytes::Bytes::from(body),
                                     };
+                                    let _ = query_resp_tx.send(QueryExecOutcome {
+                                        req_type: msg.req_type,
+                                        client_query_id: msg.client_query_id,
+                                        status: status as u16,
+                                        body: body_bytes,
+                                        exchange: exchange_copy,
+                                        ip_used_weight_1m: None,
+                                        query_count_1m: None,
+                                    });
+                                }
+                                Err(e) => {
+                                    let _ = query_resp_tx.send(QueryExecOutcome {
+                                        req_type: msg.req_type,
+                                        client_query_id: msg.client_query_id,
+                                        status: 0,
+                                        body: bytes::Bytes::from(e.to_string()),
+                                        exchange: exchange_copy,
+                                        ip_used_weight_1m: None,
+                                        query_count_1m: None,
+                                    });
+                                }
+                            }
+                        }
+                        Exchange::Bybit => {
+                            if !QueryTypeMapping::is_bybit_rest(msg.req_type) {
+                                let _ = query_resp_tx.send(QueryExecOutcome {
+                                    req_type: msg.req_type,
+                                    client_query_id: msg.client_query_id,
+                                    status: 400,
+                                    body: bytes::Bytes::from_static(
+                                        b"unsupported query type for bybit engine",
+                                    ),
+                                    exchange: exchange_copy,
+                                    ip_used_weight_1m: None,
+                                    query_count_1m: None,
+                                });
+                                continue;
+                            }
+                            let Some(creds) = &bybit_creds else {
+                                let _ = query_resp_tx.send(QueryExecOutcome {
+                                    req_type: msg.req_type,
+                                    client_query_id: msg.client_query_id,
+                                    status: 401,
+                                    body: bytes::Bytes::from_static(
+                                        b"missing Bybit credentials in env",
+                                    ),
+                                    exchange: exchange_copy,
+                                    ip_used_weight_1m: None,
+                                    query_count_1m: None,
+                                });
+                                continue;
+                            };
+
+                            let endpoint = QueryTypeMapping::get_endpoint(msg.req_type);
+                            let qs = std::str::from_utf8(&msg.params).unwrap_or("");
+
+                            match crate::trade_engine::bybit_query::bybit_rest_get(
+                                &bybit_http,
+                                creds,
+                                endpoint,
+                                qs,
+                            )
+                            .await
+                            {
+                                Ok((status, body)) => {
+                                    let body_bytes = match msg.req_type {
+                                        crate::trade_engine::query_request::QueryRequestType::BybitMarginQuery
+                                        | crate::trade_engine::query_request::QueryRequestType::BybitUMQuery
+                                            if status == 200 =>
+                                        {
+                                            match parse_bybit_order_query_json(&body) {
+                                                BybitOrderQueryParseResult::Success(v) => v.to_bytes(),
+                                                BybitOrderQueryParseResult::Error {
+                                                    kind: BybitOrderQueryParseErrorKind::OrderNotFound,
+                                                    ..
+                                                } => bytes::Bytes::from_static(ORDER_QUERY_NOT_FOUND_MARKER),
+                                                BybitOrderQueryParseResult::Error { .. } => {
+                                                    bytes::Bytes::from_static(b"E")
+                                                }
+                                            }
+                                        }
+                                        crate::trade_engine::query_request::QueryRequestType::BybitAccountBalanceSnapshot
+                                            if status == 200 =>
+                                        {
+                                            if let Some(msgs) =
+                                                parse_bybit_account_balance_snapshot(&body)
+                                            {
+                                                if !msgs.is_empty() {
+                                                    for payload in msgs {
+                                                        let _ = query_resp_tx.send(QueryExecOutcome {
+                                                            req_type: msg.req_type,
+                                                            client_query_id: msg.client_query_id,
+                                                            status: status as u16,
+                                                            body: payload,
+                                                            exchange: exchange_copy,
+                                                            ip_used_weight_1m: None,
+                                                            query_count_1m: None,
+                                                        });
+                                                    }
+                                                    continue;
+                                                }
+                                            }
+                                            bytes::Bytes::new()
+                                        }
+                                        crate::trade_engine::query_request::QueryRequestType::BybitPositionsSnapshot
+                                            if status == 200 =>
+                                        {
+                                            if let Some(msgs) = parse_bybit_positions_snapshot(&body)
+                                            {
+                                                if !msgs.is_empty() {
+                                                    for payload in msgs {
+                                                        let _ = query_resp_tx.send(QueryExecOutcome {
+                                                            req_type: msg.req_type,
+                                                            client_query_id: msg.client_query_id,
+                                                            status: status as u16,
+                                                            body: payload,
+                                                            exchange: exchange_copy,
+                                                            ip_used_weight_1m: None,
+                                                            query_count_1m: None,
+                                                        });
+                                                    }
+                                                    continue;
+                                                }
+                                            }
+                                            bytes::Bytes::new()
+                                        }
+                                        _ => bytes::Bytes::from(body),
+                                    };
+
                                     let _ = query_resp_tx.send(QueryExecOutcome {
                                         req_type: msg.req_type,
                                         client_query_id: msg.client_query_id,
