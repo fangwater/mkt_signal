@@ -64,6 +64,8 @@ const APPENDED_DEPTH_VALUES: usize = MAX_DEPTH_LEVELS_CACHE * 4;
 const FACTOR_118_WINDOW: usize = 120;
 const FACTOR_118_VWAP_LEVELS: usize = 5;
 const RL_FACTOR_NAME: &str = "rl_return_volatility";
+const RL_DEBUG_SYMBOLS: [&str; 3] = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
+const RL_DEBUG_NOT_READY_LOG_INTERVAL_MS: i64 = 60_000;
 const RL_FACTOR_PAYLOAD_MAX_BYTES: usize = 256;
 const RL_FACTOR_WARN_INTERVAL_SECS: u64 = 5;
 const RL_FACTOR_HISTORY_SIZE: usize = 128;
@@ -977,6 +979,8 @@ pub struct FusionFactorPubApp {
     publish_failed_count: u64,
     rl_published_count: u64,
     rl_publish_failed_count: u64,
+    rl_debug_ready_state: HashMap<String, bool>,
+    rl_debug_last_log_ms: HashMap<String, i64>,
     last_symbol_reload: Instant,
     symbol_reload_interval: Option<Duration>,
     last_symbol_reload_warn: Instant,
@@ -1113,6 +1117,8 @@ impl FusionFactorPubApp {
             publish_failed_count: 0,
             rl_published_count: 0,
             rl_publish_failed_count: 0,
+            rl_debug_ready_state: HashMap::new(),
+            rl_debug_last_log_ms: HashMap::new(),
             last_symbol_reload: Instant::now(),
             symbol_reload_interval: Some(Duration::from_secs(tlen_server.symbol_reload_secs)),
             last_symbol_reload_warn: Instant::now()
@@ -1674,7 +1680,14 @@ impl FusionFactorPubApp {
 
         let record_len = records.len();
         for i in 0..record_len {
-            let corrected = Self::validate_and_fix_trade_flow(venue_slug, &symbol, &mut records[i]);
+            let corrected =
+                match Self::validate_and_fix_trade_flow(venue_slug, &symbol, &mut records[i]) {
+                    Ok(corrected) => corrected,
+                    Err(err) => {
+                        warn!("{err}");
+                        continue;
+                    }
+                };
             let _ = corrected;
             let msg = &records[i];
             let depth_derived = parse_embedded_depth(msg)
@@ -1794,7 +1807,7 @@ impl FusionFactorPubApp {
         venue_slug: &str,
         symbol: &str,
         msg: &mut TradeFlowFeatureMsg,
-    ) -> bool {
+    ) -> Result<bool, String> {
         const PRICE_FIELDS: &[(usize, &str)] = &[
             (FIELD_OPEN, "open"),
             (FIELD_HIGH, "high"),
@@ -1807,10 +1820,10 @@ impl FusionFactorPubApp {
         for &(idx, name) in PRICE_FIELDS {
             let v = msg.values[idx];
             if v == 0.0 || !v.is_finite() {
-                panic!(
-                    "fusion input price is zero or non-finite: venue={} symbol={} ts={} field={} value={}",
-                    venue_slug, symbol, msg.ts, name, v
-                );
+                return Err(format!(
+                    "fusion input dropped: venue={} symbol={} ts={} field={} value={} featuremsg={:?}",
+                    venue_slug, symbol, msg.ts, name, v, msg
+                ));
             }
         }
 
@@ -1834,7 +1847,7 @@ impl FusionFactorPubApp {
                 corrected = true;
             }
         }
-        corrected
+        Ok(corrected)
     }
 
     fn update_symbol_rolling_stats(
@@ -1896,6 +1909,40 @@ impl FusionFactorPubApp {
             }
         };
 
+        if RL_DEBUG_SYMBOLS.contains(&symbol) {
+            let required = self.rl_config.pct_change_period + self.rl_config.rolling_window;
+            let close_len = state.close.len();
+            let prev_ready = self.rl_debug_ready_state.get(symbol).copied();
+            let last_log_ms = self.rl_debug_last_log_ms.get(symbol).copied().unwrap_or(0);
+            let ready_changed = prev_ready != Some(ready);
+            let periodic_not_ready = !ready
+                && (last_log_ms <= 0
+                    || timestamp_ms.saturating_sub(last_log_ms)
+                        >= RL_DEBUG_NOT_READY_LOG_INTERVAL_MS);
+            if ready_changed || periodic_not_ready {
+                let log_line = format!(
+                    "rl_return_volatility trace: venue={} symbol={} ts_ms={} ready={} value={:.10} close_len={} required={} pct_change_period={} rolling_window={}",
+                    self.venue_slug,
+                    symbol,
+                    timestamp_ms,
+                    ready,
+                    value,
+                    close_len,
+                    required,
+                    self.rl_config.pct_change_period,
+                    self.rl_config.rolling_window
+                );
+                if ready {
+                    info!("{log_line}");
+                } else {
+                    warn!("{log_line}");
+                }
+                self.rl_debug_last_log_ms
+                    .insert(symbol.to_string(), timestamp_ms);
+            }
+            self.rl_debug_ready_state.insert(symbol.to_string(), ready);
+        }
+
         if self
             .rl_publisher
             .publish(symbol, value, timestamp_ms, ready)
@@ -1920,7 +1967,21 @@ impl FusionFactorPubApp {
         mut msg: crate::common::trade_flow_feature_msg::TradeFlowFeatureMsg,
         emit_output: bool,
     ) -> Option<ReplayEvalSummary> {
-        let corrected = Self::validate_and_fix_trade_flow(&self.venue_slug, &symbol, &mut msg);
+        let corrected = match Self::validate_and_fix_trade_flow(&self.venue_slug, &symbol, &mut msg)
+        {
+            Ok(corrected) => corrected,
+            Err(err) => {
+                warn!("{err}");
+                return None;
+            }
+        };
+
+        if corrected {
+            warn!(
+                "fusion input corrected zero volume/amount: venue={} symbol={} ts={} featuremsg={:?}",
+                self.venue_slug, symbol, msg.ts, msg
+            );
+        }
 
         if corrected && symbol == "BTCUSDT" {
             if let Some(state) = self.symbol_states.get(&symbol) {
@@ -1946,12 +2007,12 @@ impl FusionFactorPubApp {
                     "ts_offset=-1 N/A".to_string()
                 };
                 warn!(
-                    "zero volume/amount context: symbol={} current_ts={} current volume={} amount={} buy_amount={} sell_amount={} buy_volume={} sell_volume={} | {} | {}",
+                    "zero volume/amount context: symbol={} current_ts={} current volume={} amount={} buy_amount={} sell_amount={} buy_volume={} sell_volume={} | {} | {} | featuremsg={:?}",
                     symbol, msg.ts,
                     msg.values[FIELD_VOLUME], msg.values[FIELD_AMOUNT],
                     msg.values[FIELD_BUY_AMOUNT], msg.values[FIELD_SELL_AMOUNT],
                     msg.values[FIELD_BUY_VOLUME], msg.values[FIELD_SELL_VOLUME],
-                    prev2, prev1,
+                    prev2, prev1, msg
                 );
             }
         }
