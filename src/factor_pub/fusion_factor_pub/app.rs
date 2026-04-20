@@ -942,6 +942,7 @@ impl OptF64SeriesView for SplitSlice<'_, Option<f64>> {
 pub struct FusionFactorPubApp {
     venue_slug: String,
     venue: TradingVenue,
+    bootstrap_enabled: bool,
     trade_flow_feature_rocksdb_path: String,
     trade_flow_subscriber: Subscriber<ipc::Service, [u8; TRADE_FLOW_MAX_BYTES], ()>,
     tlen_server: Option<TlenServerConfig>,
@@ -986,6 +987,7 @@ impl FusionFactorPubApp {
     pub async fn new(config_path: &str, venue: TradingVenue) -> Result<Self> {
         let cfg = FusionFactorPubConfig::load(config_path)?;
         let venue_slug = venue.data_pub_slug().to_string();
+        let bootstrap_enabled = cfg.bootstrap.enabled;
         let trade_flow_feature_rocksdb_path = resolve_trade_flow_feature_rocksdb_path(&venue_slug)?;
         let tlen_server = cfg.tlen_server.clone();
         let zscore_config = load_zscore_config_from_tlen_server(&cfg.tlen_server, &venue_slug)
@@ -1039,7 +1041,7 @@ impl FusionFactorPubApp {
             })?;
 
         info!(
-            "FusionFactorPubApp created: venue={} mode={} symbol_source={} symbols={} sample={} trade_flow_channel=factor_pub/{}/{} rocksdb_path={} output_service={}",
+            "FusionFactorPubApp created: venue={} mode={} symbol_source={} symbols={} sample={} trade_flow_channel=factor_pub/{}/{} bootstrap_enabled={} rocksdb_path={} output_service={}",
             venue_slug,
             "fusion+rl",
             "tlen_server.amount_thresholds+factor_plan[symbol]",
@@ -1047,6 +1049,7 @@ impl FusionFactorPubApp {
             format_symbol_sample(&allowed_symbols),
             venue_slug,
             cfg.trade_flow_channel(),
+            bootstrap_enabled,
             trade_flow_feature_rocksdb_path,
             output_service_path,
         );
@@ -1075,6 +1078,7 @@ impl FusionFactorPubApp {
         Ok(Self {
             venue_slug,
             venue,
+            bootstrap_enabled,
             trade_flow_feature_rocksdb_path,
             trade_flow_subscriber,
             tlen_server: Some(tlen_server.clone()),
@@ -1272,7 +1276,14 @@ impl FusionFactorPubApp {
     }
 
     pub async fn run(&mut self) -> Result<()> {
-        self.bootstrap_from_rocksdb()?;
+        if self.bootstrap_enabled {
+            self.bootstrap_from_rocksdb()?;
+        } else {
+            info!(
+                "FusionFactorPubApp[{}] rocksdb bootstrap disabled: path={}",
+                self.venue_slug, self.trade_flow_feature_rocksdb_path
+            );
+        }
 
         // Drain stale IPC messages buffered before this process started.
         let mut drained = 0u64;

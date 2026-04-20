@@ -8,6 +8,9 @@ base_url = "http://127.0.0.1:6322"
 request_timeout_ms = 5000
 symbol_reload_secs = 180
 
+[bootstrap]
+enabled = false
+
 [rl_factor]
 # 保留历史单因子输出: factor_pub/{venue}/rl_return_volatility
 pct_change_period = 12

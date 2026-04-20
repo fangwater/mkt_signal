@@ -47,6 +47,12 @@ SUPPORTED_CONFIG_TYPES = [
 SUPPORTED_VENUES = [
     "binance-margin",
     "binance-futures",
+    "bybit-margin",
+    "bybit-futures",
+    "bitget-margin",
+    "bitget-futures",
+    "gate-margin",
+    "gate-futures",
     "okex-margin",
     "okex-futures",
 ]
@@ -127,7 +133,7 @@ def normalize_symbol_for_venue(symbol: str, venue: str) -> str:
         base, quote = split_assets(text)
         return f"{base}-{quote}-SWAP"
 
-    # Binance margin/futures use compact symbols.
+    # Binance/Bybit/Bitget/Gate margin/futures use compact symbols.
     return text.replace("-", "").replace("SWAP", "")
 
 
@@ -1001,6 +1007,13 @@ def _test_factor_plan(*factors: str) -> Dict[str, object]:
 
 
 def _run_tests() -> None:
+    assert normalize_venue("bybit_futures") == "bybit-futures"
+    assert normalize_venue("bitget-margin") == "bitget-margin"
+    assert normalize_venue("gate-futures") == "gate-futures"
+    assert normalize_symbol_for_venue("BTC-USDT-SWAP", "bybit-futures") == "BTCUSDT"
+    assert normalize_symbol_for_venue("ETH-USDT-SWAP", "bitget-margin") == "ETHUSDT"
+    assert normalize_symbol_for_venue("SOL-USDT-SWAP", "gate-futures") == "SOLUSDT"
+
     amount_thresholds = {
         "BTCUSDT": _test_amount_threshold(),
         "ETHUSDT": _test_amount_threshold(),

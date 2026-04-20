@@ -8,6 +8,8 @@ use std::fs;
 pub struct FusionFactorPubConfig {
     pub tlen_server: TlenServerConfig,
     #[serde(default)]
+    pub bootstrap: BootstrapConfig,
+    #[serde(default)]
     pub rl_factor: RlFactorConfig,
 }
 
@@ -30,12 +32,26 @@ pub struct RlFactorConfig {
     pub scale_factor: f64,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct BootstrapConfig {
+    #[serde(default = "default_bootstrap_enabled")]
+    pub enabled: bool,
+}
+
 impl Default for RlFactorConfig {
     fn default() -> Self {
         Self {
             pct_change_period: default_rl_pct_change_period(),
             rolling_window: default_rl_rolling_window(),
             scale_factor: default_rl_scale_factor(),
+        }
+    }
+}
+
+impl Default for BootstrapConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_bootstrap_enabled(),
         }
     }
 }
@@ -114,6 +130,7 @@ base_url = "http://127.0.0.1:6322"
             cfg.output_service_path("binance-futures"),
             "fusion_factor/binance-futures"
         );
+        assert!(!cfg.bootstrap.enabled);
 
         let _ = fs::remove_file(path);
     }
@@ -129,6 +146,10 @@ fn default_rl_rolling_window() -> usize {
 
 fn default_rl_scale_factor() -> f64 {
     1.0
+}
+
+fn default_bootstrap_enabled() -> bool {
+    false
 }
 
 fn default_request_timeout_ms() -> u64 {
