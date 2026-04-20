@@ -6,6 +6,7 @@
 use crate::common::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
     BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg, BinanceBasicOrderMsg,
+    BinanceTradeLiteMsg,
 };
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
@@ -319,6 +320,80 @@ impl BinanceBasicAccountEventParser {
         1
     }
 
+    fn parse_trade_lite(&self, json: &Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        let event_time = json.get("E").and_then(|v| v.as_i64()).unwrap_or(0);
+        let trade_time = json.get("T").and_then(|v| v.as_i64()).unwrap_or(0);
+        let order_id = json.get("i").and_then(|v| v.as_i64()).unwrap_or(0);
+        let trade_id = json.get("t").and_then(|v| v.as_i64()).unwrap_or(0).max(0);
+
+        let symbol = json
+            .get("s")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let client_order_id_raw = json.get("c").and_then(|v| v.as_str()).unwrap_or("");
+        let client_order_id = client_order_id_raw.parse::<i64>().unwrap_or(0);
+
+        if symbol.is_empty() || order_id == 0 || client_order_id == 0 {
+            warn!(
+                "parser: skip tradeLite with missing fields sym={} ord_id={} c={}",
+                symbol, order_id, client_order_id_raw
+            );
+            return 0;
+        }
+
+        let side = Side::from_str(json.get("S").and_then(|v| v.as_str()).unwrap_or(""))
+            .unwrap_or(Side::Buy)
+            .to_u8();
+        let is_maker = json.get("m").and_then(|v| v.as_bool()).unwrap_or(false);
+        let last_executed_price = json
+            .get("L")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        let last_executed_quantity = json
+            .get("l")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
+
+        let bytes = BinanceTradeLiteMsg::create(
+            BinanceBasicOrderMsg::VENUE_UM,
+            event_time,
+            trade_time,
+            symbol,
+            order_id,
+            client_order_id,
+            trade_id,
+            side,
+            is_maker,
+            last_executed_price,
+            last_executed_quantity,
+        )
+        .to_bytes();
+
+        debug!(
+            "parser: tradeLite parsed sym={} c={} ord_id={} trade_id={} side={} last_qty={} last_px={}",
+            json.get("s").and_then(|v| v.as_str()).unwrap_or(""),
+            client_order_id,
+            order_id,
+            trade_id,
+            json.get("S").and_then(|v| v.as_str()).unwrap_or(""),
+            json.get("l").and_then(|v| v.as_str()).unwrap_or(""),
+            json.get("L").and_then(|v| v.as_str()).unwrap_or("")
+        );
+
+        let event = BasicAccountEventMsg::create(
+            BasicAccountEventType::TradeUpdateLite,
+            self.account_scope,
+            bytes,
+        );
+        if tx.send(event.to_bytes()).is_err() {
+            return 0;
+        }
+        1
+    }
+
     fn parse_liability_change(&self, json: &Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
         let event_time = json.get("E").and_then(|v| v.as_i64()).unwrap_or(0);
         let asset = json
@@ -515,6 +590,7 @@ impl Parser for BinanceBasicAccountEventParser {
         match event_type {
             "executionReport" => self.parse_execution_report(event_json, tx),
             "ORDER_TRADE_UPDATE" => self.parse_order_trade_update(event_json, tx),
+            "TRADE_LITE" => self.parse_trade_lite(event_json, tx),
             "ACCOUNT_UPDATE" => self.parse_account_update(event_json, tx),
             "liabilityChange" => self.parse_liability_change(event_json, tx),
             "outboundAccountPosition" => self.parse_outbound_account_position(event_json, tx),
@@ -527,7 +603,8 @@ impl Parser for BinanceBasicAccountEventParser {
 mod tests {
     use super::*;
     use crate::common::basic_account_msg::{
-        split_basic_account_event, BasicAccountScope, BasicPositionMsg, BasicUmUnrealizedMsg,
+        split_basic_account_event, BasicAccountEventType, BasicAccountScope, BasicPositionMsg,
+        BasicUmUnrealizedMsg, BinanceTradeLiteMsg,
     };
     use tokio::sync::mpsc;
 
@@ -567,5 +644,45 @@ mod tests {
         let pnl = BasicUmUnrealizedMsg::from_bytes(pnl_payload).expect("pnl payload");
         assert_eq!(pnl.inst_id, "BTCUSDT");
         assert!((pnl.unrealized_pnl - 12.34).abs() < 1e-9);
+    }
+
+    #[test]
+    fn trade_lite_emits_trade_update_lite_event() {
+        let parser = BinanceBasicAccountEventParser::new(true, BasicAccountScope::BinanceStdUm);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let json = Bytes::from(
+            r#"{
+                "e":"TRADE_LITE",
+                "E":1700000000000,
+                "T":1700000000123,
+                "s":"BTCUSDT",
+                "q":"0.010",
+                "p":"0",
+                "m":false,
+                "c":"123456",
+                "S":"BUY",
+                "L":"64000.5",
+                "l":"0.002",
+                "t":556677,
+                "i":998877
+            }"#,
+        );
+
+        let emitted = parser.parse(json, &tx);
+        assert_eq!(emitted, 1);
+
+        let wrapped = rx.try_recv().expect("trade lite event");
+        let (event_type, scope, payload) =
+            split_basic_account_event(&wrapped).expect("wrapped trade lite");
+        assert_eq!(event_type, BasicAccountEventType::TradeUpdateLite);
+        assert_eq!(scope, BasicAccountScope::BinanceStdUm);
+
+        let msg = BinanceTradeLiteMsg::from_bytes(payload).expect("trade lite payload");
+        assert_eq!(msg.symbol, "BTCUSDT");
+        assert_eq!(msg.client_order_id, 123456);
+        assert_eq!(msg.order_id, 998877);
+        assert_eq!(msg.trade_id, 556677);
+        assert!((msg.last_executed_price - 64000.5).abs() < 1e-9);
+        assert!((msg.last_executed_quantity - 0.002).abs() < 1e-9);
     }
 }

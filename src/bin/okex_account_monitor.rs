@@ -469,6 +469,7 @@ impl AccountEventDeduper {
                     .ok()
                     .map(|msg| self.key_okex_unrealized_pnl(&msg))
             }
+            BasicAccountEventType::TradeUpdateLite => return true,
             BasicAccountEventType::Error => return true,
         };
 

@@ -1407,6 +1407,7 @@ impl MonitorChannel {
                                     }
                                     _ => {}
                                 },
+                                BasicAccountEventType::TradeUpdateLite => {}
                                 BasicAccountEventType::Error => {}
                             }
                         }

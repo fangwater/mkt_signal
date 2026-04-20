@@ -5,7 +5,7 @@ use log::{debug, error, info, warn};
 use mkt_signal::common::basic_account_msg::{
     get_basic_event_type, split_basic_account_event, BasicAccountEventMsg, BasicAccountEventType,
     BasicAccountScope, BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg,
-    BasicUmUnrealizedMsg, BinanceBasicOrderMsg,
+    BasicUmUnrealizedMsg, BinanceBasicOrderMsg, BinanceTradeLiteMsg,
 };
 use mkt_signal::common::binance_account_mode::{init_binance_account_mode, BinanceAccountMode};
 use mkt_signal::common::mkt_cfg::load_local_ips_preferring_trade_engine;
@@ -649,6 +649,22 @@ fn log_parsed_event(msg: &Bytes) {
                 );
             }
         }
+        BasicAccountEventType::TradeUpdateLite => {
+            if let Ok(m) = BinanceTradeLiteMsg::from_bytes(&payload) {
+                info!(
+                    "Binance TradeUpdateLite: scope={} venue=um sym={} side={:?} cli_id={} ord_id={} trade_id={} last_px={} last_qty={} maker={}",
+                    account_scope.as_str(),
+                    m.symbol,
+                    Side::from_u8(m.side).unwrap_or(Side::Buy),
+                    m.client_order_id,
+                    m.order_id,
+                    m.trade_id,
+                    m.last_executed_price,
+                    m.last_executed_quantity,
+                    m.is_maker != 0
+                );
+            }
+        }
         BasicAccountEventType::BalanceUpdate => {
             if let Ok(m) = BasicBalanceMsg::from_bytes(&payload) {
                 info!(
@@ -738,6 +754,9 @@ impl AccountEventDeduper {
                     .ok()
                     .map(|m| self.key_unrealized_pnl(&m))
             }
+            BasicAccountEventType::TradeUpdateLite => BinanceTradeLiteMsg::from_bytes(&payload)
+                .ok()
+                .map(|m| self.key_binance_trade_lite(&m)),
             BasicAccountEventType::OrderUpdate => BinanceBasicOrderMsg::from_bytes(&payload)
                 .ok()
                 .map(|m| self.key_binance_basic_order(&m)),
@@ -827,6 +846,18 @@ impl AccountEventDeduper {
             msg.event_time as u64,
             msg.order_status as u64,
             msg.cumulative_filled_quantity.to_bits(),
+        ])
+    }
+
+    fn key_binance_trade_lite(&self, msg: &BinanceTradeLiteMsg) -> u64 {
+        self.hash64(&[
+            BasicAccountEventType::TradeUpdateLite as u32 as u64,
+            msg.order_id as u64,
+            msg.client_order_id as u64,
+            msg.trade_id as u64,
+            msg.event_time as u64,
+            msg.last_executed_price.to_bits(),
+            msg.last_executed_quantity.to_bits(),
         ])
     }
 }

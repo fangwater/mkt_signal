@@ -1,10 +1,11 @@
-//! 为 Binance basic 订单消息实现统一的 OrderUpdate / TradeUpdate 接口
+//! 为 Binance basic 订单消息实现统一的 OrderUpdate / TradeUpdate / TradeUpdateLite 接口
 
-use crate::common::basic_account_msg::BinanceBasicOrderMsg;
+use crate::common::basic_account_msg::{BinanceBasicOrderMsg, BinanceTradeLiteMsg};
 use crate::pre_trade::order_manager::{OrderType, Side};
 use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
+use crate::strategy::trade_update_lite::TradeUpdateLite;
 
 fn map_execution_type(code: u8) -> ExecutionType {
     ExecutionType::from_u8(code).unwrap_or(ExecutionType::New)
@@ -118,5 +119,51 @@ impl TradeUpdate for BinanceBasicOrderMsg {
 
     fn order_status(&self) -> Option<OrderStatus> {
         Some(map_order_status(self.order_status))
+    }
+}
+
+impl TradeUpdateLite for BinanceTradeLiteMsg {
+    fn event_time(&self) -> i64 {
+        self.event_time.saturating_mul(1_000)
+    }
+
+    fn trade_time(&self) -> i64 {
+        self.trade_time.saturating_mul(1_000)
+    }
+
+    fn symbol(&self) -> &str {
+        &self.symbol
+    }
+
+    fn order_id(&self) -> i64 {
+        self.order_id
+    }
+
+    fn client_order_id(&self) -> i64 {
+        self.client_order_id
+    }
+
+    fn trade_id(&self) -> i64 {
+        self.trade_id
+    }
+
+    fn side(&self) -> Side {
+        Side::from_u8(self.side).unwrap_or(Side::Buy)
+    }
+
+    fn price(&self) -> f64 {
+        self.last_executed_price
+    }
+
+    fn last_filled_quantity(&self) -> f64 {
+        self.last_executed_quantity
+    }
+
+    fn is_maker(&self) -> bool {
+        self.is_maker != 0
+    }
+
+    fn trading_venue(&self) -> TradingVenue {
+        map_trading_venue(self.venue)
     }
 }

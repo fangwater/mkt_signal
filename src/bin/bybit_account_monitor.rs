@@ -559,6 +559,7 @@ impl AccountEventDeduper {
             BasicAccountEventType::BorrowInterest => BasicBorrowInterestMsg::from_bytes(&payload)
                 .ok()
                 .map(|msg| self.key_borrow_interest(&msg)),
+            BasicAccountEventType::TradeUpdateLite => return true,
             BasicAccountEventType::Error => return true,
         };
 

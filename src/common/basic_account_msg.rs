@@ -17,6 +17,8 @@ pub enum BasicAccountEventType {
     BorrowInterest = 4004,
     /// 合约未实现盈亏更新
     UnrealizedPnlUpdate = 4005,
+    /// Binance USD-M futures TRADE_LITE 成交更新
+    TradeUpdateLite = 4006,
     /// 错误
     Error = 4999,
 }
@@ -37,6 +39,138 @@ pub enum BasicAccountScope {
     GateUnified = 11,
     BitgetUnified = 12,
     BybitUnified = 13,
+}
+
+/// Binance USD-M futures TRADE_LITE 消息。
+///
+/// 该事件只携带增量成交信息，不包含 cumulative filled quantity，因此不复用
+/// `BinanceBasicOrderMsg` / `TradeUpdate` 语义。
+#[derive(Debug, Clone)]
+pub struct BinanceTradeLiteMsg {
+    pub msg_type: BasicAccountEventType,
+    /// 目前仅 Binance UM 使用，保留 venue 便于下游统一做 venue 判定。
+    pub venue: u8,
+    pub event_time: i64,
+    pub trade_time: i64,
+    pub symbol_length: u32,
+    pub symbol: String,
+    pub order_id: i64,
+    pub client_order_id: i64,
+    pub trade_id: i64,
+    /// Side::to_u8()
+    pub side: u8,
+    pub is_maker: u8,
+    pub last_executed_price: f64,
+    pub last_executed_quantity: f64,
+}
+
+impl BinanceTradeLiteMsg {
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        venue: u8,
+        event_time: i64,
+        trade_time: i64,
+        symbol: String,
+        order_id: i64,
+        client_order_id: i64,
+        trade_id: i64,
+        side: u8,
+        is_maker: bool,
+        last_executed_price: f64,
+        last_executed_quantity: f64,
+    ) -> Self {
+        Self {
+            msg_type: BasicAccountEventType::TradeUpdateLite,
+            venue,
+            event_time,
+            trade_time,
+            symbol_length: symbol.len() as u32,
+            symbol,
+            order_id,
+            client_order_id,
+            trade_id,
+            side,
+            is_maker: if is_maker { 1 } else { 0 },
+            last_executed_price,
+            last_executed_quantity,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size =
+            4 + 1 + 8 + 8 + 4 + self.symbol_length as usize + 8 + 8 + 8 + 1 + 1 + 8 + 8;
+
+        let mut buf = BytesMut::with_capacity(total_size);
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_u8(self.venue);
+        buf.put_i64_le(self.event_time);
+        buf.put_i64_le(self.trade_time);
+
+        buf.put_u32_le(self.symbol_length);
+        buf.put(self.symbol.as_bytes());
+
+        buf.put_i64_le(self.order_id);
+        buf.put_i64_le(self.client_order_id);
+
+        buf.put_i64_le(self.trade_id);
+        buf.put_u8(self.side);
+        buf.put_u8(self.is_maker);
+        buf.put_f64_le(self.last_executed_price);
+        buf.put_f64_le(self.last_executed_quantity);
+        buf.freeze()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        const MIN_FIXED_SIZE: usize = 4 + 1 + 8 + 8 + 4 + 8 + 8 + 8 + 1 + 1 + 8 + 8;
+        if data.len() < MIN_FIXED_SIZE {
+            anyhow::bail!("BinanceTradeLiteMsg too short: {}", data.len());
+        }
+
+        let mut cursor = Bytes::copy_from_slice(data);
+        let msg_type = cursor.get_u32_le();
+        if msg_type != BasicAccountEventType::TradeUpdateLite as u32 {
+            anyhow::bail!("invalid BinanceTradeLiteMsg type: {}", msg_type);
+        }
+
+        let venue = cursor.get_u8();
+        let event_time = cursor.get_i64_le();
+        let trade_time = cursor.get_i64_le();
+
+        let symbol_length = cursor.get_u32_le();
+        if cursor.remaining() < symbol_length as usize {
+            anyhow::bail!("BinanceTradeLiteMsg truncated before symbol");
+        }
+        let symbol = String::from_utf8(cursor.copy_to_bytes(symbol_length as usize).to_vec())?;
+
+        if cursor.remaining() < 8 + 8 + 1 + 1 + 8 + 8 {
+            anyhow::bail!("BinanceTradeLiteMsg truncated before client_order_id");
+        }
+
+        let order_id = cursor.get_i64_le();
+        let client_order_id = cursor.get_i64_le();
+
+        let trade_id = cursor.get_i64_le();
+        let side = cursor.get_u8();
+        let is_maker = cursor.get_u8();
+        let last_executed_price = cursor.get_f64_le();
+        let last_executed_quantity = cursor.get_f64_le();
+
+        Ok(Self {
+            msg_type: BasicAccountEventType::TradeUpdateLite,
+            venue,
+            event_time,
+            trade_time,
+            symbol_length,
+            symbol,
+            order_id,
+            client_order_id,
+            trade_id,
+            side,
+            is_maker,
+            last_executed_price,
+            last_executed_quantity,
+        })
+    }
 }
 
 impl BasicAccountScope {
@@ -1256,6 +1390,7 @@ pub fn get_basic_event_type(data: &[u8]) -> BasicAccountEventType {
         4003 => BasicAccountEventType::PositionUpdate,
         4004 => BasicAccountEventType::BorrowInterest,
         4005 => BasicAccountEventType::UnrealizedPnlUpdate,
+        4006 => BasicAccountEventType::TradeUpdateLite,
         _ => BasicAccountEventType::Error,
     }
 }
