@@ -32,6 +32,8 @@ pub struct BitgetUserDataConnection {
     restart_count: u32,
 }
 
+const BITGET_PRIVATE_PING_INTERVAL: Duration = Duration::from_secs(25);
+
 impl BitgetUserDataConnection {
     pub fn new(
         connection: MktConnection,
@@ -83,7 +85,7 @@ impl BitgetUserDataConnection {
 impl MktConnectionRunner for BitgetUserDataConnection {
     async fn run_connection(&mut self) -> anyhow::Result<()> {
         let mut state = ConnectionState::LoggingIn;
-        let mut ping_timer = Instant::now() + Duration::from_secs(25);
+        let mut ping_timer = Instant::now() + BITGET_PRIVATE_PING_INTERVAL;
         let mut waiting_pong = false;
         let connected_at = Instant::now();
         let mut pending_subscriptions = self.subscribe_messages.len();
@@ -107,7 +109,7 @@ impl MktConnectionRunner for BitgetUserDataConnection {
                 }
                 _ = time::sleep_until(ping_timer) => {
                     if state != ConnectionState::Running {
-                        ping_timer = Instant::now() + Duration::from_secs(25);
+                        ping_timer = Instant::now() + BITGET_PRIVATE_PING_INTERVAL;
                         continue;
                     }
 
@@ -122,7 +124,7 @@ impl MktConnectionRunner for BitgetUserDataConnection {
                         break;
                     }
                     waiting_pong = true;
-                    ping_timer = Instant::now() + Duration::from_secs(25);
+                    ping_timer = Instant::now() + BITGET_PRIVATE_PING_INTERVAL;
                 }
                 msg = ws_stream.try_next() => {
                     match msg {
@@ -131,7 +133,7 @@ impl MktConnectionRunner for BitgetUserDataConnection {
                                 Message::Text(text) => {
                                     if Self::is_pong_response(&text) {
                                         waiting_pong = false;
-                                        ping_timer = Instant::now() + Duration::from_secs(25);
+                                        debug!("Bitget: received pong");
                                         continue;
                                     }
 
@@ -159,7 +161,7 @@ impl MktConnectionRunner for BitgetUserDataConnection {
                                                     pending_subscriptions = pending_subscriptions.saturating_sub(1);
                                                     if pending_subscriptions == 0 {
                                                         state = ConnectionState::Running;
-                                                        ping_timer = Instant::now() + Duration::from_secs(25);
+                                                        ping_timer = Instant::now() + BITGET_PRIVATE_PING_INTERVAL;
                                                         info!("Bitget: all subscriptions complete");
                                                     }
                                                 } else {
@@ -168,10 +170,6 @@ impl MktConnectionRunner for BitgetUserDataConnection {
                                             }
                                         }
                                         ConnectionState::Running => {
-                                            if !waiting_pong {
-                                                ping_timer = Instant::now() + Duration::from_secs(25);
-                                            }
-
                                             let bytes = Bytes::from(text.into_bytes());
                                             if let Err(e) = self.base_connection.tx.send(bytes) {
                                                 error!("Bitget: failed to broadcast message: {}", e);

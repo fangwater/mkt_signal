@@ -150,6 +150,7 @@ SCRIPTS_TO_SYNC=(
   "print_fr_risk_params.py"
   "start_fr_pre_trade.sh"
   "stop_fr_pre_trade.sh"
+  "process_match_lib.sh"
 )
 if [[ "$DO_SCRIPTS" -eq 1 ]]; then
   mkdir -p "$TARGET_DIR/scripts"

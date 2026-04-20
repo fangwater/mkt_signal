@@ -404,6 +404,7 @@ if [[ "$DO_SCRIPTS" -eq 1 ]]; then
   EXTRA_FILES=(
     "scripts/start_fr_viz_server.sh"
     "scripts/stop_fr_viz_server.sh"
+    "scripts/process_match_lib.sh"
     "scripts/setup_nginx_4191.sh"
   )
   for file in "${EXTRA_FILES[@]}"; do

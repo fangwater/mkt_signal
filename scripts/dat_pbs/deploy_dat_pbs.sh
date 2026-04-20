@@ -155,6 +155,9 @@ SCRIPTS_TO_DEPLOY=(
   "stop_dat_pbs.sh"
   "setup_pmdaemon_logrotate.sh"
 )
+HELPER_SCRIPTS_TO_DEPLOY=(
+  "$ROOT_DIR/scripts/process_match_lib.sh"
+)
 
 for venue in "${VENUES[@]}"; do
   TARGET_DIR="${TARGET_ROOT%/}/${venue}"
@@ -170,6 +173,12 @@ for venue in "${VENUES[@]}"; do
     if [[ -f "$SCRIPT_DIR_SRC/$script" ]]; then
       rsync -a "$SCRIPT_DIR_SRC/$script" "$TARGET_DIR/scripts/"
       chmod +x "$TARGET_DIR/scripts/$script"
+    fi
+  done
+  for helper in "${HELPER_SCRIPTS_TO_DEPLOY[@]}"; do
+    if [[ -f "$helper" ]]; then
+      rsync -a "$helper" "$TARGET_DIR/scripts/"
+      chmod +x "$TARGET_DIR/scripts/$(basename "$helper")"
     fi
   done
 done

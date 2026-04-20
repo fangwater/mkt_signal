@@ -104,6 +104,7 @@ SCRIPT_DIR_SRC="$ROOT_DIR/scripts"
 SCRIPTS_TO_SYNC=(
   "start_fusion_factor_pub.sh"
   "stop_fusion_factor_pub.sh"
+  "process_match_lib.sh"
 )
 
 for venue in "${VENUES[@]}"; do

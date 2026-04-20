@@ -28,6 +28,8 @@ pub struct BitgetConnection {
     restart_count: u32,
 }
 
+const BITGET_PING_INTERVAL: Duration = Duration::from_secs(25);
+
 impl BitgetConnection {
     pub fn new(connection: MktConnection) -> Self {
         Self {
@@ -40,12 +42,8 @@ impl BitgetConnection {
 #[async_trait]
 impl MktConnectionRunner for BitgetConnection {
     async fn run_connection(&mut self) -> anyhow::Result<()> {
-        // 心跳机制类似 OKEx：
-        // - 初始设置25s倒计时（略小于30s以确保安全）
-        // - 收到消息后重置倒计时
-        // - 倒计时结束发送 "ping"，等待 "pong"
-        // - 如果在下一个25s内没收到 "pong"，重启连接
-        let mut reset_timer: Instant = Instant::now() + Duration::from_secs(25);
+        // Bitget 要求客户端持续发送字符串 "ping" 保活，不能因为行情持续流入就停止心跳。
+        let mut next_ping_at: Instant = Instant::now() + BITGET_PING_INTERVAL;
         let mut waiting_pong: bool = false;
 
         loop {
@@ -68,7 +66,7 @@ impl MktConnectionRunner for BitgetConnection {
                     }
                 }
                 // ==== 处理超时 ====
-                _ = time::sleep_until(reset_timer) => {
+                _ = time::sleep_until(next_ping_at) => {
                     if waiting_pong {
                         // 等待 pong 超时，重启连接
                         warn!("Bitget: Ping timeout detected. Reconnecting...");
@@ -80,10 +78,9 @@ impl MktConnectionRunner for BitgetConnection {
                             error!("Bitget: Failed to send ping message: {:?}", e);
                             break;
                         }
-                        // 设置倒计时为25s
-                        reset_timer = Instant::now() + Duration::from_secs(25);
+                        next_ping_at = Instant::now() + BITGET_PING_INTERVAL;
                         waiting_pong = true;
-                        debug!("Bitget: Sent ping, reset timer to {:?}", reset_timer);
+                        debug!("Bitget: Sent ping, next heartbeat check at {:?}", next_ping_at);
                     }
                 }
                 // ==== 处理 WebSocket 消息 ====
@@ -107,13 +104,8 @@ impl MktConnectionRunner for BitgetConnection {
                                     // 检查是否是 pong 响应
                                     if text == "pong" {
                                         waiting_pong = false;
-                                        reset_timer = Instant::now() + Duration::from_secs(25);
-                                        debug!("Bitget: Received pong, reset timer to {:?}", reset_timer);
+                                        debug!("Bitget: Received pong");
                                     } else {
-                                        // 正常消息，如果不在等待 pong 状态则重置计时器
-                                        if !waiting_pong {
-                                            reset_timer = Instant::now() + Duration::from_secs(25);
-                                        }
                                         // 广播消息
                                         let bytes = Bytes::from(text.into_bytes());
                                         if let Err(e) = self.base_connection.tx.send(bytes) {

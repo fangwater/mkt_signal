@@ -134,7 +134,7 @@ fi
 # 同步启动/停止脚本
 if [[ "$DO_SCRIPTS" -eq 1 ]]; then
   SCRIPT_DIR_SRC="$ROOT_DIR/scripts"
-  SCRIPTS_TO_SYNC=("start_trade_engine.sh" "stop_trade_engine.sh")
+  SCRIPTS_TO_SYNC=("start_trade_engine.sh" "stop_trade_engine.sh" "process_match_lib.sh")
   mkdir -p "$TARGET_DIR/scripts"
   for script in "${SCRIPTS_TO_SYNC[@]}"; do
     if [[ -f "$SCRIPT_DIR_SRC/$script" ]]; then
