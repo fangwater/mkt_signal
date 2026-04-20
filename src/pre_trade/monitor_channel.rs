@@ -12,6 +12,7 @@ use crate::common::basic_account_msg::{
     BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg, BinanceBasicOrderMsg,
     GateBasicOrderMsg, OkexOrderMsg,
 };
+use crate::common::time_util::get_timestamp_us;
 use crate::common::bitget_account_msg::BitgetBasicOrderMsg;
 use crate::common::bybit_account_msg::BybitBasicOrderMsg;
 use crate::common::exchange::Exchange;
@@ -31,7 +32,9 @@ use crate::pre_trade::symbol_mapper::create_symbol_mapper;
 use crate::pre_trade::symbol_util::extract_base_asset;
 use crate::pre_trade::usdt_balance_manager::{UsdtBalanceManager, UsdtBalanceSnapshot};
 use crate::pre_trade::{PersistChannel, TradeEngHub};
-use crate::signal::common::{ExecutionType, OrderStatus, TradingVenue};
+use crate::signal::cancel_signal::{MmCancelCtx, MmCancelReason};
+use crate::signal::common::{ExecutionType, OrderStatus, SignalBytes, TradingLeg, TradingVenue};
+use crate::signal::trade_signal::{SignalType, TradeSignal};
 
 const ACCOUNT_PAYLOAD: usize = 16_384;
 const DERIVATIVES_PAYLOAD: usize = 128;
@@ -334,6 +337,119 @@ impl MonitorChannel {
 
     pub fn hedge_venue(&self) -> TradingVenue {
         Self::with_inner(|inner| inner.hedge_venue)
+    }
+
+    fn cancel_mm_open_strategies_for_symbol_side(
+        &self,
+        symbol: &str,
+        side: Side,
+        trigger_ts: i64,
+        reason: MmCancelReason,
+    ) -> usize {
+        let normalized_symbol = normalize_symbol_for_internal(symbol);
+        if normalized_symbol.is_empty() {
+            return 0;
+        }
+
+        let strategy_mgr = self.strategy_mgr();
+        let candidate_ids: Vec<i32> = {
+            let mgr = strategy_mgr.borrow();
+            mgr.ids_for_symbol(&normalized_symbol)
+                .map(|set| set.iter().copied().collect())
+                .unwrap_or_default()
+        };
+        if candidate_ids.is_empty() {
+            return 0;
+        }
+
+        let open_venue = self.open_venue();
+        let mut cancelled = 0usize;
+        for strategy_id in candidate_ids {
+            let mut strategy = {
+                let mut mgr = strategy_mgr.borrow_mut();
+                let Some(entry) = mgr.mm_open_price_map_entry(strategy_id).cloned() else {
+                    continue;
+                };
+                if entry.side != side {
+                    continue;
+                }
+                match mgr.take(strategy_id) {
+                    Some(strategy) => strategy,
+                    None => continue,
+                }
+            };
+
+            let mut cancel_ctx = MmCancelCtx::new();
+            cancel_ctx.opening_leg = TradingLeg {
+                venue: open_venue.to_u8(),
+                bid0: 0.0,
+                ask0: 0.0,
+                ts: trigger_ts,
+            };
+            cancel_ctx.set_opening_symbol(&normalized_symbol);
+            cancel_ctx.set_side(side);
+            cancel_ctx.set_reason(reason);
+            cancel_ctx.trigger_ts = trigger_ts;
+            cancel_ctx.set_from_key(b"mm_position_risk".to_vec());
+            if let Some(entry) = strategy_mgr.borrow().mm_open_price_map_entry(strategy_id) {
+                cancel_ctx.set_target_strategy(strategy_id, entry.client_order_id);
+            } else {
+                cancel_ctx.set_target_strategy(strategy_id, 0);
+            }
+
+            let signal = TradeSignal::create(
+                SignalType::MMCancel,
+                trigger_ts,
+                trigger_ts as f64,
+                cancel_ctx.to_bytes(),
+            );
+            strategy.handle_signal(&signal);
+            if strategy.is_active() {
+                strategy_mgr.borrow_mut().insert(strategy);
+            }
+            cancelled += 1;
+        }
+
+        cancelled
+    }
+
+    fn handle_mm_position_risk_after_update(&self, symbol: &str) {
+        let normalized_symbol = normalize_symbol_for_internal(symbol);
+        if normalized_symbol.is_empty() {
+            return;
+        }
+        if self.open_venue() != self.hedge_venue() {
+            return;
+        }
+        if self.check_symbol_exposure(&normalized_symbol).is_ok() {
+            return;
+        }
+
+        let venue = self.open_venue();
+        let net_qty = self.get_position_qty(&normalized_symbol, venue);
+        let Some(cancel_side) = (if net_qty > 0.0 {
+            Some(Side::Buy)
+        } else if net_qty < 0.0 {
+            Some(Side::Sell)
+        } else {
+            None
+        }) else {
+            return;
+        };
+
+        let trigger_ts = get_timestamp_us();
+        let cancelled = self.cancel_mm_open_strategies_for_symbol_side(
+            &normalized_symbol,
+            cancel_side,
+            trigger_ts,
+            MmCancelReason::PositionRisk,
+        );
+        if cancelled > 0 {
+            warn!(
+                "MM position risk cancel triggered: symbol={} venue={:?} net_qty={:.8} cancel_side={:?} cancelled_strategies={} trigger_ts={}",
+                normalized_symbol, venue, net_qty, cancel_side, cancelled, trigger_ts
+            );
+        }
     }
 
     pub fn mark_price_exchange(&self) -> Exchange {
@@ -1341,6 +1457,13 @@ impl MonitorChannel {
                                                 um.borrow_mut().apply_position(&msg);
                                             }
                                         }
+                                        if open_venue == hedge_venue {
+                                            let symbol = normalize_symbol_for_internal(&msg.inst_id);
+                                            if !symbol.is_empty() {
+                                                MonitorChannel::instance()
+                                                    .handle_mm_position_risk_after_update(&symbol);
+                                            }
+                                        }
                                     }
                                 }
                                 BasicAccountEventType::UnrealizedPnlUpdate => {
@@ -2313,12 +2436,106 @@ mod tests {
     use super::*;
     use crate::common::basic_account_msg::BasicPositionMsg;
     use crate::common::min_qty_table::MinQtyTable;
+    use crate::common::tick_math::QuantizedValue;
     use crate::pre_trade::price_table::PriceTable;
     use crate::pre_trade::usdt_balance_manager::UsdtBalanceManager;
-    use crate::strategy::StrategyManager;
+    use crate::signal::cancel_signal::MmCancelCtx;
+    use crate::signal::common::SignalBytes;
+    use crate::signal::trade_signal::{SignalType, TradeSignal};
+    use crate::strategy::manager::MmOpenPriceMapEntry;
+    use crate::strategy::{ForceCloseControl, Strategy, StrategyManager};
+    use std::any::Any;
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::rc::Rc;
+
+    struct TestMmOpenStrategy {
+        id: i32,
+        symbol: String,
+        side: Side,
+        client_order_id: i64,
+        cancel_trigger_count: usize,
+        last_trigger_ts: i64,
+        active: bool,
+    }
+
+    impl TestMmOpenStrategy {
+        fn new(id: i32, symbol: &str, side: Side, client_order_id: i64) -> Self {
+            Self {
+                id,
+                symbol: normalize_symbol_for_internal(symbol),
+                side,
+                client_order_id,
+                cancel_trigger_count: 0,
+                last_trigger_ts: 0,
+                active: true,
+            }
+        }
+    }
+
+    impl ForceCloseControl for TestMmOpenStrategy {
+        fn set_force_close_mode(&mut self, _enabled: bool) {}
+
+        fn is_force_close_mode(&self) -> bool {
+            false
+        }
+    }
+
+    impl Strategy for TestMmOpenStrategy {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn Any {
+            self
+        }
+
+        fn get_id(&self) -> i32 {
+            self.id
+        }
+
+        fn is_strategy_order(&self, order_id: i64) -> bool {
+            order_id == self.client_order_id
+        }
+
+        fn handle_signal(&mut self, signal: &TradeSignal) {
+            if signal.signal_type.clone() as u32 != SignalType::MMCancel as u32 {
+                return;
+            }
+            let ctx = MmCancelCtx::from_bytes(signal.context.clone()).expect("mm cancel ctx");
+            self.cancel_trigger_count += 1;
+            self.last_trigger_ts = ctx.trigger_ts;
+        }
+
+        fn apply_order_update(&mut self, _update: &dyn crate::strategy::order_update::OrderUpdate) {}
+
+        fn apply_trade_update(&mut self, _trade: &dyn crate::strategy::trade_update::TradeUpdate) {}
+
+        fn apply_trade_engine_response(
+            &mut self,
+            _response: &dyn crate::strategy::trade_engine_response::TradeEngineResponse,
+        ) {
+        }
+
+        fn handle_period_clock(&mut self, _current_tp: i64) {}
+
+        fn is_active(&self) -> bool {
+            self.active
+        }
+
+        fn symbol(&self) -> Option<&str> {
+            Some(&self.symbol)
+        }
+
+        fn mm_open_price_map_entry(&self) -> Option<MmOpenPriceMapEntry> {
+            Some(MmOpenPriceMapEntry {
+                symbol: self.symbol.clone(),
+                side: self.side,
+                client_order_id: self.client_order_id,
+                price_qv: QuantizedValue::from_parts(1, 0, 1).into(),
+            })
+        }
+    }
 
     #[test]
     fn okex_futures_qty_to_base_uses_contract_multiplier() {
@@ -2509,6 +2726,95 @@ mod tests {
         assert!(MonitorChannel::instance()
             .ensure_max_pos_u("FILUSDT", -5.0, 100.0)
             .is_ok());
+    }
+
+    #[test]
+    fn mm_position_risk_cancel_targets_open_strategies_by_side() {
+        let mut um_mgr = BasicUmManager::new(Exchange::Binance);
+        um_mgr.apply_position(&BasicPositionMsg::create(0, "FILUSDT".to_string(), 'L', 20.0));
+
+        let open_leg = LegMgr::Futures {
+            exchange: Exchange::Binance,
+            um: Rc::new(RefCell::new(um_mgr)),
+            min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Binance))),
+        };
+        let hedge_leg = LegMgr::Futures {
+            exchange: Exchange::Binance,
+            um: Rc::new(RefCell::new(BasicUmManager::new(Exchange::Binance))),
+            min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Binance))),
+        };
+
+        let mut price_table = PriceTable::new();
+        price_table.update_mark_price("FILUSDT", 100.0, 0);
+
+        let strategy_mgr = Rc::new(RefCell::new(StrategyManager::new()));
+        strategy_mgr.borrow_mut().insert(Box::new(TestMmOpenStrategy::new(
+            101,
+            "FILUSDT",
+            Side::Buy,
+            101_0001,
+        )));
+        strategy_mgr.borrow_mut().insert(Box::new(TestMmOpenStrategy::new(
+            102,
+            "FILUSDT",
+            Side::Sell,
+            102_0001,
+        )));
+        strategy_mgr.borrow_mut().insert(Box::new(TestMmOpenStrategy::new(
+            103,
+            "BTCUSDT",
+            Side::Buy,
+            103_0001,
+        )));
+
+        let inner = MonitorChannelInner {
+            open_venue: TradingVenue::BinanceFutures,
+            hedge_venue: TradingVenue::BinanceFutures,
+            open_leg,
+            hedge_leg,
+            usdt_mgrs: HashMap::new(),
+            price_table: Rc::new(RefCell::new(price_table)),
+            venue_min_qty_tables: HashMap::new(),
+            strategy_mgr: strategy_mgr.clone(),
+            order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
+                BinanceAccountMode::Unified,
+            )))),
+            hedge_residual_map: Rc::new(RefCell::new(HashMap::new())),
+            trade_update_seq: 0,
+        };
+
+        MONITOR_CHANNEL.with(|mc| {
+            *mc.borrow_mut() = Some(inner);
+        });
+
+        MonitorChannel::instance().handle_mm_position_risk_after_update("FILUSDT");
+
+        let mut mgr = strategy_mgr.borrow_mut();
+        let buy = mgr
+            .take(101)
+            .expect("buy strategy")
+            .as_any()
+            .downcast_ref::<TestMmOpenStrategy>()
+            .expect("buy strategy type")
+            .cancel_trigger_count;
+        let sell = mgr
+            .take(102)
+            .expect("sell strategy")
+            .as_any()
+            .downcast_ref::<TestMmOpenStrategy>()
+            .expect("sell strategy type")
+            .cancel_trigger_count;
+        let other = mgr
+            .take(103)
+            .expect("other strategy")
+            .as_any()
+            .downcast_ref::<TestMmOpenStrategy>()
+            .expect("other strategy type")
+            .cancel_trigger_count;
+
+        assert_eq!(buy, 1);
+        assert_eq!(sell, 0);
+        assert_eq!(other, 0);
     }
 
     #[test]

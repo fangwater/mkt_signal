@@ -8,6 +8,7 @@ pub enum CancelReason {
     Spread = 1,
     Tlen = 2,
     ReturnScore = 3,
+    PositionRisk = 4,
 }
 
 impl CancelReason {
@@ -16,6 +17,7 @@ impl CancelReason {
             1 => Some(Self::Spread),
             2 => Some(Self::Tlen),
             3 => Some(Self::ReturnScore),
+            4 => Some(Self::PositionRisk),
             _ => None,
         }
     }
@@ -29,6 +31,7 @@ impl CancelReason {
             Self::Spread => "spread_cancel",
             Self::Tlen => "tlen_cancel",
             Self::ReturnScore => "return_score_cancel",
+            Self::PositionRisk => "position_risk_cancel",
         }
     }
 }
