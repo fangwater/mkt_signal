@@ -53,7 +53,7 @@ fi
 TARGET_DIR="$HOME/model_pub/${MODEL_NAME}"
 
 echo "[INFO] 构建 $BIN_NAME (release)"
-cargo build --release --bin "$BIN_NAME"
+cargo build --release --bin "$BIN_NAME" --features model-ort
 
 echo "[INFO] 部署 $BIN_NAME 到 $TARGET_DIR (model_name=$MODEL_NAME)"
 mkdir -p "$TARGET_DIR"

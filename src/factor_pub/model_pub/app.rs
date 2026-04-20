@@ -295,10 +295,10 @@ impl ModelPubApp {
             .max_subscribers(10)
             .subscriber_max_buffer_size(8192)
             .history_size(128)
-            .open()
+            .open_or_create()
             .with_context(|| {
                 format!(
-                    "open feature channel failed: service_path={} hint=fusion_factor_pub must start first",
+                    "open_or_create feature channel failed: service_path={}",
                     service_path
                 )
             })?;
