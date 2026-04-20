@@ -1317,6 +1317,8 @@ impl MarketMakerHedgeStrategy {
             TradingVenue::OkexFutures => QueryRequestType::OkexUMQuery,
             TradingVenue::BybitMargin => QueryRequestType::BybitMarginQuery,
             TradingVenue::BybitFutures => QueryRequestType::BybitUMQuery,
+            TradingVenue::BitgetMargin => QueryRequestType::BitgetMarginQuery,
+            TradingVenue::BitgetFutures => QueryRequestType::BitgetUMQuery,
             TradingVenue::GateMargin => QueryRequestType::GateUnifiedOrderQuery,
             TradingVenue::GateFutures => QueryRequestType::GateFuturesOrderQuery,
             _ => return Err(format!("unsupported venue for query: {:?}", order.venue)),
@@ -1351,6 +1353,16 @@ impl MarketMakerHedgeStrategy {
             )),
             TradingVenue::BybitFutures => bytes::Bytes::from(format!(
                 "category=linear&symbol={}&orderLinkId={}",
+                crate::common::symbol_util::normalize_symbol_for_internal(&order.symbol),
+                client_query_id
+            )),
+            TradingVenue::BitgetMargin => bytes::Bytes::from(format!(
+                "category=spot&symbol={}&clientOid={}",
+                crate::common::symbol_util::normalize_symbol_for_internal(&order.symbol),
+                client_query_id
+            )),
+            TradingVenue::BitgetFutures => bytes::Bytes::from(format!(
+                "category=usdt-futures&symbol={}&clientOid={}",
                 crate::common::symbol_util::normalize_symbol_for_internal(&order.symbol),
                 client_query_id
             )),

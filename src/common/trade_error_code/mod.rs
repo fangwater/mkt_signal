@@ -1,6 +1,7 @@
 use crate::common::exchange::Exchange;
 
 pub mod binance;
+pub mod bitget;
 pub mod bybit;
 pub mod okex;
 
@@ -13,6 +14,7 @@ pub mod okex;
 pub fn describe_trade_error_code(exchange: Exchange, code: i32) -> Option<&'static str> {
     match exchange {
         Exchange::Binance => binance::describe_trade_error_code(code),
+        Exchange::Bitget => bitget::describe_trade_error_code(code),
         Exchange::Bybit => bybit::describe_trade_error_code(code),
         Exchange::Okex => okex::describe_trade_error_code(code),
         _ => None,
@@ -66,9 +68,70 @@ mod tests {
             Some("Invalid args")
         );
         assert_eq!(
+            describe_trade_error_code(Exchange::Bitget, 0),
+            Some("Success")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Bitget, 40015),
+            Some("System error, retry later")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Bitget, 40715),
+            Some("Order size exceeds max open size")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Bitget, 40800),
+            Some("Insufficient margin amount")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Bitget, 40931),
+            Some("Duplicated clientOid")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Bitget, 43001),
+            Some("Order does not exist")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Bitget, 43012),
+            Some("Account balance insufficient")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Bitget, 45031),
+            Some("Order already terminal")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Bitget, 50060),
+            Some("Duplicated clientOid")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Bitget, 22006),
+            Some("Order price above risk-control max buy price")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Bitget, 22007),
+            Some("Order price below risk-control min sell price")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Bitget, 22010),
+            Some("IP whitelist required")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Bitget, 22034),
+            Some("Below minimum order quantity")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Bitget, 22038),
+            Some("Quantity step mismatch")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Bitget, 70228),
+            Some("Too many requests")
+        );
+        assert_eq!(
             describe_trade_error_code(Exchange::Bybit, 0),
             Some("Success")
         );
+        assert_eq!(describe_trade_error_code(Exchange::Bitget, 999), None);
         assert_eq!(
             describe_trade_error_code(Exchange::Bybit, 10403),
             Some("WS rate limit exceeded for IP")

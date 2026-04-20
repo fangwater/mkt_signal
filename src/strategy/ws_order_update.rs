@@ -37,7 +37,9 @@ impl WsOrderUpdate {
                 | TradeRequestType::OkexNewMarginOrder
                 | TradeRequestType::OkexNewUMOrder
                 | TradeRequestType::GateUnifiedNewOrder
-                | TradeRequestType::GateFuturesNewOrder)
+                | TradeRequestType::GateFuturesNewOrder
+                | TradeRequestType::BitgetNewMarginOrder
+                | TradeRequestType::BitgetNewUMOrder)
         )
     }
 
@@ -84,7 +86,9 @@ impl WsOrderUpdate {
             | TradingVenue::OkexMargin
             | TradingVenue::OkexFutures
             | TradingVenue::GateMargin
-            | TradingVenue::GateFutures => TimeInForce::GTX,
+            | TradingVenue::GateFutures
+            | TradingVenue::BitgetMargin
+            | TradingVenue::BitgetFutures => TimeInForce::GTX,
             _ => TimeInForce::GTC,
         }
     }

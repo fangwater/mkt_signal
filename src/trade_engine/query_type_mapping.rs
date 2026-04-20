@@ -45,6 +45,13 @@ impl QueryTypeMapping {
         )
     }
 
+    pub fn is_bitget_rest(request_type: QueryRequestType) -> bool {
+        matches!(
+            request_type,
+            QueryRequestType::BitgetMarginQuery | QueryRequestType::BitgetUMQuery
+        )
+    }
+
     pub fn get_endpoint(request_type: QueryRequestType) -> &'static str {
         match request_type {
             QueryRequestType::BinanceMarginQuery => "/papi/v1/margin/order",
@@ -72,6 +79,9 @@ impl QueryTypeMapping {
             }
             QueryRequestType::BybitAccountBalanceSnapshot => "/v5/account/wallet-balance",
             QueryRequestType::BybitPositionsSnapshot => "/v5/position/list",
+            QueryRequestType::BitgetMarginQuery | QueryRequestType::BitgetUMQuery => {
+                "/api/v3/trade/order-info"
+            }
         }
     }
 
@@ -93,7 +103,9 @@ impl QueryTypeMapping {
             | QueryRequestType::BybitMarginQuery
             | QueryRequestType::BybitUMQuery
             | QueryRequestType::BybitAccountBalanceSnapshot
-            | QueryRequestType::BybitPositionsSnapshot => "GET",
+            | QueryRequestType::BybitPositionsSnapshot
+            | QueryRequestType::BitgetMarginQuery
+            | QueryRequestType::BitgetUMQuery => "GET",
             QueryRequestType::BinanceWsUMQuery | QueryRequestType::BinanceWsMarginQuery => {
                 unreachable!("Binance ws queries run via websocket; REST mapping not used")
             }
@@ -124,6 +136,7 @@ impl QueryTypeMapping {
             QueryRequestType::BybitUMQuery => 1,
             QueryRequestType::BybitAccountBalanceSnapshot => 1,
             QueryRequestType::BybitPositionsSnapshot => 1,
+            QueryRequestType::BitgetMarginQuery | QueryRequestType::BitgetUMQuery => 1,
             QueryRequestType::GateUnifiedOrderQuery | QueryRequestType::GateFuturesOrderQuery => {
                 unreachable!("Gate order queries run via websocket; REST mapping not used")
             }

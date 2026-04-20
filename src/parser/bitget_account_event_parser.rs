@@ -266,8 +266,19 @@ impl BitgetAccountEventParser {
                 .or_else(|| order_obj.get("status"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("live");
+            let status_lower = status.to_ascii_lowercase();
             let execution_type = BitgetBasicOrderMsg::status_to_execution_type(status);
             let order_status = BitgetBasicOrderMsg::status_to_order_status(status);
+
+            let is_trade_like = matches!(
+                status_lower.as_str(),
+                "filled" | "full-fill" | "partially_filled" | "partially-filled" | "partial-fill"
+            );
+            let is_maker_order = order_type == 1;
+            if is_trade_like && !is_maker_order {
+                // Taker fills should rely on fill channel supplementation.
+                continue;
+            }
 
             let is_maker = order_obj
                 .get("tradeScope")
@@ -353,6 +364,110 @@ impl BitgetAccountEventParser {
 
         count
     }
+
+    fn parse_fill_channel(&self, json_value: &Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        let mut count = 0;
+        let top_timestamp = parse_i64_str_or_num(json_value.get("ts")).unwrap_or(0);
+
+        for fill_obj in collect_data_objects(json_value) {
+            let symbol = fill_obj
+                .get("symbol")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if symbol.is_empty() {
+                continue;
+            }
+
+            let order_id = parse_i64_str_or_num(fill_obj.get("orderId")).unwrap_or(0);
+            let client_order_id = parse_i64_str_or_num(fill_obj.get("clientOid")).unwrap_or(0);
+            if client_order_id <= 0 {
+                continue;
+            }
+
+            let event_time = parse_i64_str_or_num(fill_obj.get("execTime"))
+                .or_else(|| parse_i64_str_or_num(fill_obj.get("updatedTime")))
+                .unwrap_or(top_timestamp);
+
+            let side = BitgetBasicOrderMsg::side_to_u8(
+                fill_obj.get("side").and_then(|v| v.as_str()).unwrap_or(""),
+            );
+            let order_type = BitgetBasicOrderMsg::order_type_to_u8(
+                fill_obj
+                    .get("orderType")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(""),
+            );
+            let time_in_force = if order_type == 1 { 3 } else { 1 };
+
+            let quantity = parse_f64_str_or_num(fill_obj.get("execQty"))
+                .unwrap_or(0.0);
+            let cumulative_filled_quantity = parse_f64_str_or_num(fill_obj.get("execQty"))
+                .unwrap_or(0.0);
+            if cumulative_filled_quantity <= 0.0 {
+                continue;
+            }
+
+            let last_executed_price = parse_f64_str_or_num(fill_obj.get("execPrice"))
+                .unwrap_or(0.0);
+
+            let order_status = 3;
+
+            let is_maker = fill_obj
+                .get("tradeScope")
+                .and_then(|v| v.as_str())
+                .map(|s| {
+                    let lower = s.to_ascii_lowercase();
+                    if lower == "maker" || lower == "m" {
+                        1
+                    } else {
+                        0
+                    }
+                })
+                .unwrap_or(0);
+
+            let commission_asset = fill_obj
+                .get("feeDetail")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|v| v.get("feeCoin"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let venue = detect_order_venue(fill_obj);
+            let msg = BitgetBasicOrderMsg::create(
+                venue,
+                event_time,
+                symbol,
+                order_id,
+                client_order_id,
+                side,
+                order_type,
+                time_in_force,
+                5,
+                order_status,
+                is_maker,
+                last_executed_price,
+                quantity,
+                cumulative_filled_quantity,
+                last_executed_price,
+                commission_asset,
+            );
+
+            let payload = msg.to_bytes();
+            let event = BasicAccountEventMsg::create(
+                BasicAccountEventType::OrderUpdate,
+                BasicAccountScope::BitgetUnified,
+                payload,
+            );
+            if tx.send(event.to_bytes()).is_ok() {
+                count += 1;
+            }
+        }
+
+        count
+    }
 }
 
 impl Parser for BitgetAccountEventParser {
@@ -392,6 +507,7 @@ impl Parser for BitgetAccountEventParser {
             "account" => self.parse_account_channel(&json_value, tx),
             "position" | "positions" => self.parse_positions_channel(&json_value, tx),
             "order" | "orders" => self.parse_orders_channel(&json_value, tx),
+            "fill" | "fills" => self.parse_fill_channel(&json_value, tx),
             _ => {
                 if !route.is_empty() {
                     debug!("Bitget: ignored route={} payload={}", route, json_str);

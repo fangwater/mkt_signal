@@ -8,6 +8,7 @@ use crate::trade_engine::okex::{
 use crate::trade_engine::trade_request::BinanceNewMarginOrderRequest;
 use crate::trade_engine::trade_request::BinanceNewUMOrderRequest;
 use crate::trade_engine::trade_request::{
+    BitgetMarginNewOrderRequest, BitgetUmNewOrderRequest,
     BinanceCancelMarginOrderRequest, BinanceCancelUMOrderRequest,
     BinanceWsCancelMarginOrderRequest, BinanceWsCancelUMOrderRequest,
     BinanceWsNewMarginOrderRequest, BinanceWsNewUMOrderRequest, GateFuturesCancelOrderRequest,
@@ -1369,6 +1370,53 @@ impl Order {
                     _ => None,
                 }
                 .ok_or_else(|| "failed to build bybit new order request".to_string())?;
+                Ok(request.to_bytes())
+            }
+            TradingVenue::BitgetMargin => {
+                let create_ts = get_timestamp_us();
+                let mut req_param = serde_json::Map::new();
+                req_param.insert("category".to_string(), json!("spot"));
+                req_param.insert("symbol".to_string(), json!(self.symbol.to_ascii_uppercase()));
+                req_param.insert("side".to_string(), json!(self.side.as_str()));
+                req_param.insert(
+                    "orderType".to_string(),
+                    json!(if self.order_type.is_limit() { "limit" } else { "market" }),
+                );
+                req_param.insert("force".to_string(), json!("post_only"));
+                req_param.insert("price".to_string(), json!(format_price(self.price)));
+                req_param.insert("size".to_string(), json!(format_quantity(self.quantity)));
+                req_param.insert(
+                    "clientOid".to_string(),
+                    json!(self.client_order_id.to_string()),
+                );
+                let params = Bytes::from(Value::Object(req_param).to_string());
+                let request =
+                    BitgetMarginNewOrderRequest::create(create_ts, self.client_order_id, params);
+                Ok(request.to_bytes())
+            }
+            TradingVenue::BitgetFutures => {
+                let create_ts = get_timestamp_us();
+                let mut req_param = serde_json::Map::new();
+                req_param.insert("category".to_string(), json!("usdt-futures"));
+                req_param.insert("symbol".to_string(), json!(self.symbol.to_ascii_uppercase()));
+                req_param.insert("side".to_string(), json!(self.side.as_str()));
+                req_param.insert(
+                    "orderType".to_string(),
+                    json!(if self.order_type.is_limit() { "limit" } else { "market" }),
+                );
+                req_param.insert("force".to_string(), json!("post_only"));
+                req_param.insert("price".to_string(), json!(format_price(self.price)));
+                req_param.insert("size".to_string(), json!(format_quantity(self.quantity)));
+                req_param.insert(
+                    "clientOid".to_string(),
+                    json!(self.client_order_id.to_string()),
+                );
+                if self.reduce_only {
+                    req_param.insert("reduceOnly".to_string(), json!("YES"));
+                }
+                let params = Bytes::from(Value::Object(req_param).to_string());
+                let request =
+                    BitgetUmNewOrderRequest::create(create_ts, self.client_order_id, params);
                 Ok(request.to_bytes())
             }
             //之后在这支持别的类型下单，根据资产类型决定下单的request，统一序列化为bytes

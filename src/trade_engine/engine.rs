@@ -4,6 +4,7 @@ use crate::common::iceoryx_publisher::{QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD};
 use crate::common::ipc_service_name::build_service_name;
 use crate::trade_engine::config::{ApiKey, WsConstants};
 use crate::trade_engine::dispatcher::Dispatcher;
+use crate::trade_engine::bitget_query_rate_limiter::BitgetQueryRateLimiter;
 use crate::trade_engine::okex_query_rate_limiter::OkexQueryRateLimiter;
 use crate::trade_engine::query_parsers::binance_margin_order::parse_binance_margin_order_query_json;
 use crate::trade_engine::query_parsers::binance_pm_balance_snapshot::parse_binance_pm_balance_snapshot;
@@ -11,6 +12,9 @@ use crate::trade_engine::query_parsers::binance_spot_account_snapshot_std::parse
 use crate::trade_engine::query_parsers::binance_um_account_snapshot::parse_binance_um_account_snapshot;
 use crate::trade_engine::query_parsers::binance_um_balance_snapshot_std::parse_binance_um_balance_snapshot_std;
 use crate::trade_engine::query_parsers::binance_um_order::parse_binance_um_order_query_json;
+use crate::trade_engine::query_parsers::bitget_order::{
+    parse_bitget_order_query_json, BitgetOrderQueryParseErrorKind, BitgetOrderQueryParseResult,
+};
 use crate::trade_engine::query_parsers::bybit_account_balance_snapshot::parse_bybit_account_balance_snapshot;
 use crate::trade_engine::query_parsers::bybit_order::{
     parse_bybit_order_query_json, BybitOrderQueryParseErrorKind, BybitOrderQueryParseResult,
@@ -214,7 +218,53 @@ impl TradeEngine {
         let mut gate_futures_ws_endpoints: Option<Vec<WsEndpointHandle>> = None;
         let mut binance_spot_ws_endpoints: Option<Vec<WsEndpointHandle>> = None;
 
-        let ws_endpoints = if exchange == Exchange::Bybit {
+        let ws_endpoints = if exchange == Exchange::Bitget {
+            let mut local_ips = self.local_ips.clone();
+            if local_ips.is_empty() {
+                warn!("bitget ws local_ips empty; using default binding 0.0.0.0");
+                local_ips.push("0.0.0.0".parse()?);
+            }
+
+            let connect_timeout_ms = WsConstants::CONNECT_TIMEOUT_MS;
+            let ping_interval_ms = WsConstants::PING_INTERVAL_MS;
+            let max_inflight = WsConstants::MAX_INFLIGHT;
+
+            let mut endpoints = Vec::with_capacity(local_ips.len());
+            for (idx, ip) in local_ips.into_iter().enumerate() {
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                let state = StdRc::new(RefCell::new(Default::default()));
+                let client = TradeWsClient::new(
+                    idx,
+                    exchange,
+                    ip,
+                    WsConstants::BITGET_TRADE_WS_URL.to_string(),
+                    connect_timeout_ms,
+                    ping_interval_ms,
+                    max_inflight,
+                    None,
+                    None,
+                    None,
+                    None,
+                    rx,
+                    resp_tx.clone(),
+                    shutdown.clone(),
+                    state.clone(),
+                    false,
+                );
+                info!(
+                    "spawning bitget ws client id={} ip={} max_inflight={}",
+                    idx,
+                    client.local_ip(),
+                    max_inflight
+                );
+                let handle = tokio::task::spawn_local(async move {
+                    client.run().await;
+                });
+                worker_handles.push(("bitget_ws_client", handle));
+                endpoints.push(WsEndpointHandle::new(tx, state));
+            }
+            Some(endpoints)
+        } else if exchange == Exchange::Bybit {
             let mut local_ips = self.local_ips.clone();
             if local_ips.is_empty() {
                 warn!("bybit ws local_ips empty; using default binding 0.0.0.0");
@@ -713,6 +763,9 @@ impl TradeEngine {
                 let bybit_http = reqwest::Client::new();
                 let bybit_creds =
                     crate::portfolio_margin::bybit_auth::BybitCredentials::from_env().ok();
+                let bitget_http = reqwest::Client::new();
+                let bitget_creds =
+                    crate::portfolio_margin::bitget_auth::BitgetCredentials::from_env().ok();
                 let gate_http = reqwest::Client::new();
                 let gate_creds =
                     crate::portfolio_margin::gate_auth::GateCredentials::from_env().ok();
@@ -720,6 +773,7 @@ impl TradeEngine {
                 let mut gate_query_rr = 0usize;
                 let mut gate_futures_query_rr = 0usize;
                 let mut okex_query_rate_limiter = OkexQueryRateLimiter::default();
+                let mut bitget_query_rate_limiter = BitgetQueryRateLimiter::default();
 
                 'query_router: loop {
                     let Some(msg) = ({
@@ -1552,6 +1606,106 @@ impl TradeEngine {
                                                 }
                                             }
                                             bytes::Bytes::new()
+                                        }
+                                        _ => bytes::Bytes::from(body),
+                                    };
+
+                                    let _ = query_resp_tx.send(QueryExecOutcome {
+                                        req_type: msg.req_type,
+                                        client_query_id: msg.client_query_id,
+                                        status: status as u16,
+                                        body: body_bytes,
+                                        exchange: exchange_copy,
+                                        ip_used_weight_1m: None,
+                                        query_count_1m: None,
+                                    });
+                                }
+                                Err(e) => {
+                                    let _ = query_resp_tx.send(QueryExecOutcome {
+                                        req_type: msg.req_type,
+                                        client_query_id: msg.client_query_id,
+                                        status: 0,
+                                        body: bytes::Bytes::from(e.to_string()),
+                                        exchange: exchange_copy,
+                                        ip_used_weight_1m: None,
+                                        query_count_1m: None,
+                                    });
+                                }
+                            }
+                        }
+                        Exchange::Bitget => {
+                            if !QueryTypeMapping::is_bitget_rest(msg.req_type) {
+                                let _ = query_resp_tx.send(QueryExecOutcome {
+                                    req_type: msg.req_type,
+                                    client_query_id: msg.client_query_id,
+                                    status: 400,
+                                    body: bytes::Bytes::from_static(
+                                        b"unsupported query type for bitget engine",
+                                    ),
+                                    exchange: exchange_copy,
+                                    ip_used_weight_1m: None,
+                                    query_count_1m: None,
+                                });
+                                continue;
+                            }
+                            let Some(creds) = &bitget_creds else {
+                                let _ = query_resp_tx.send(QueryExecOutcome {
+                                    req_type: msg.req_type,
+                                    client_query_id: msg.client_query_id,
+                                    status: 401,
+                                    body: bytes::Bytes::from_static(
+                                        b"missing Bitget credentials in env",
+                                    ),
+                                    exchange: exchange_copy,
+                                    ip_used_weight_1m: None,
+                                    query_count_1m: None,
+                                });
+                                continue;
+                            };
+
+                            let now = std::time::Instant::now();
+                            if let Some(block) =
+                                bitget_query_rate_limiter.should_block(msg.req_type, now)
+                            {
+                                warn!(
+                                    "bitget query rate-limited: req_type={:?} client_query_id={} queued_in_window={} max_requests={} window_ms={} wait_ms={}",
+                                    msg.req_type,
+                                    msg.client_query_id,
+                                    block.queued_in_window,
+                                    block.max_requests,
+                                    block.window.as_millis(),
+                                    block.wait_for.as_millis()
+                                );
+                                tokio::time::sleep(block.wait_for).await;
+                            }
+                            let _ = bitget_query_rate_limiter.record(msg.req_type, std::time::Instant::now());
+
+                            let endpoint = QueryTypeMapping::get_endpoint(msg.req_type);
+                            let qs = std::str::from_utf8(&msg.params).unwrap_or("");
+                            match crate::trade_engine::bitget_query::bitget_rest_get(
+                                &bitget_http,
+                                creds,
+                                endpoint,
+                                qs,
+                            )
+                            .await
+                            {
+                                Ok((status, body)) => {
+                                    let body_bytes = match msg.req_type {
+                                        crate::trade_engine::query_request::QueryRequestType::BitgetMarginQuery
+                                        | crate::trade_engine::query_request::QueryRequestType::BitgetUMQuery
+                                            if status == 200 =>
+                                        {
+                                            match parse_bitget_order_query_json(&body) {
+                                                BitgetOrderQueryParseResult::Success(v) => v.to_bytes(),
+                                                BitgetOrderQueryParseResult::Error {
+                                                    kind: BitgetOrderQueryParseErrorKind::OrderNotFound,
+                                                    ..
+                                                } => bytes::Bytes::from_static(ORDER_QUERY_NOT_FOUND_MARKER),
+                                                BitgetOrderQueryParseResult::Error { .. } => {
+                                                    bytes::Bytes::from_static(b"E")
+                                                }
+                                            }
                                         }
                                         _ => bytes::Bytes::from(body),
                                     };

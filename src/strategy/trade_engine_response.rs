@@ -62,7 +62,9 @@ pub trait TradeEngineResponse {
                 | TradeRequestType::GateUnifiedNewOrder
                 | TradeRequestType::GateFuturesNewOrder
                 | TradeRequestType::BybitNewMarginOrder
-                | TradeRequestType::BybitNewUMOrder,
+                | TradeRequestType::BybitNewUMOrder
+                | TradeRequestType::BitgetNewMarginOrder
+                | TradeRequestType::BitgetNewUMOrder,
             ) => TradeRequestKind::Open,
             Ok(
                 TradeRequestType::BinanceCancelUMOrder
@@ -103,6 +105,7 @@ pub trait TradeEngineResponse {
             Some(Exchange::Binance) => self.error_code() == -5022,
             Some(Exchange::Okex) => self.error_code() == 51511,
             Some(Exchange::Bybit) => matches!(self.error_code(), 170217 | 170218),
+            Some(Exchange::Bitget) => false,
             _ => false,
         }
     }
@@ -112,6 +115,10 @@ pub trait TradeEngineResponse {
         match self.exchange_enum() {
             Some(Exchange::Okex) => matches!(self.error_code(), 51006 | 51137),
             Some(Exchange::Bybit) => matches!(self.error_code(), 110003 | 170132 | 170193),
+            Some(Exchange::Bitget) => matches!(
+                self.error_code(),
+                40815 | 40816 | 22006 | 22007 | 22008 | 22009 | 22046 | 22047
+            ),
             _ => false,
         }
     }
@@ -127,6 +134,9 @@ pub trait TradeEngineResponse {
                 self.error_code(),
                 110004 | 110006 | 110007 | 110012 | 110014 | 110044 | 110045 | 170131
             ),
+            Some(Exchange::Bitget) => {
+                matches!(self.error_code(), 40798 | 40800 | 43012 | 45002 | 45003)
+            }
             _ => false,
         }
     }
@@ -143,6 +153,9 @@ pub trait TradeEngineResponse {
                 self.error_code(),
                 110001 | 110008 | 110010 | 170139 | 170142 | 170143 | 170145 | 170190 | 170191
             ),
+            Some(Exchange::Bitget) => {
+                matches!(self.error_code(), 22001 | 43001 | 43004 | 45031 | 45055 | 45057)
+            }
             _ => false,
         }
     }
@@ -164,6 +177,9 @@ pub trait TradeEngineResponse {
                 self.error_code(),
                 110001 | 110008 | 110010 | 170139 | 170142 | 170143 | 170145 | 170190 | 170191
             ),
+            Some(Exchange::Bitget) => {
+                matches!(self.error_code(), 22001 | 43001 | 43004 | 45031 | 45055 | 45057)
+            }
             _ => false,
         }
     }

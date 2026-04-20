@@ -50,6 +50,9 @@ impl WsConstants {
     /// Bybit V5 Trade WebSocket URL
     pub const BYBIT_TRADE_WS_URL: &'static str = "wss://stream.bybit.com/v5/trade";
 
+    /// Bitget UTA Trade WebSocket URL
+    pub const BITGET_TRADE_WS_URL: &'static str = "wss://ws.bitget.com/v3/ws/private";
+
     /// Binance UM WebSocket API URL
     pub const BINANCE_UM_WS_URL: &'static str = "wss://ws-fapi.binance.com/ws-fapi/v1";
 
