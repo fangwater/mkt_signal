@@ -62,7 +62,7 @@ KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 
 find_running_pids() {
   local venue_arg="--venue ${venue}"
-  safe_find_running_pids "fusion_factor_pub" "$BASE_DIR" "$venue_arg"
+  safe_find_running_pids "$name" "$BASE_DIR" "$venue_arg"
 }
 
 echo "[INFO] Stopping ${name}"

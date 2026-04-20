@@ -64,7 +64,8 @@ const APPENDED_DEPTH_VALUES: usize = MAX_DEPTH_LEVELS_CACHE * 4;
 const FACTOR_118_WINDOW: usize = 120;
 const FACTOR_118_VWAP_LEVELS: usize = 5;
 const RL_FACTOR_NAME: &str = "rl_return_volatility";
-const RL_DEBUG_SYMBOLS: [&str; 3] = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
+const RL_DEBUG_SYMBOLS: [&str; 2] = ["BTCUSDT", "ETHUSDT"];
+const TRADE_FLOW_DEBUG_SYMBOLS: [&str; 2] = ["BTCUSDT", "ETHUSDT"];
 const RL_DEBUG_NOT_READY_LOG_INTERVAL_MS: i64 = 60_000;
 const RL_FACTOR_PAYLOAD_MAX_BYTES: usize = 256;
 const RL_FACTOR_WARN_INTERVAL_SECS: u64 = 5;
@@ -1976,14 +1977,14 @@ impl FusionFactorPubApp {
             }
         };
 
-        if corrected {
+        if corrected && TRADE_FLOW_DEBUG_SYMBOLS.contains(&symbol.as_str()) {
             warn!(
                 "fusion input corrected zero volume/amount: venue={} symbol={} ts={} featuremsg={:?}",
                 self.venue_slug, symbol, msg.ts, msg
             );
         }
 
-        if corrected && symbol == "BTCUSDT" {
+        if corrected && TRADE_FLOW_DEBUG_SYMBOLS.contains(&symbol.as_str()) {
             if let Some(state) = self.symbol_states.get(&symbol) {
                 let n = state.volume.len();
                 let prev2 = if n >= 2 {

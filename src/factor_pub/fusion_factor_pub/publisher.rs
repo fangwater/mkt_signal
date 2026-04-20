@@ -24,10 +24,10 @@ impl FusionFactorPublisher {
             .max_subscribers(10)
             .subscriber_max_buffer_size(8192)
             .history_size(128)
-            .create()
+            .open_or_create()
             .with_context(|| {
                 format!(
-                    "create fusion factor service failed: service={} hint=producer must own service creation",
+                    "open_or_create fusion factor service failed: service={}",
                     service_path
                 )
             })?;
