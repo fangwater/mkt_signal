@@ -9,7 +9,7 @@ request_timeout_ms = 5000
 symbol_reload_secs = 180
 
 [bootstrap]
-enabled = false
+enabled = true
 
 [rl_factor]
 # 保留历史单因子输出: factor_pub/{venue}/rl_return_volatility

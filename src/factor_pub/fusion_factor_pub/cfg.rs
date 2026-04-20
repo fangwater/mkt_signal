@@ -149,7 +149,7 @@ fn default_rl_scale_factor() -> f64 {
 }
 
 fn default_bootstrap_enabled() -> bool {
-    false
+    true
 }
 
 fn default_request_timeout_ms() -> u64 {

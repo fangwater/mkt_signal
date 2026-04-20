@@ -1745,7 +1745,7 @@ impl FusionFactorPubApp {
                             .filter(|issue| issue.contains(":warming_up"))
                             .map(|issue| issue.as_str())
                             .collect();
-                        warn!(
+                        debug!(
                             "TEMP workaround: fusion factor regressed to warming_up after all_ready during bootstrap replay; allowing fallback without panic venue={} symbol={} trade_ts={} warming_factors=[{}]",
                             venue_slug,
                             symbol,
@@ -2072,7 +2072,7 @@ impl FusionFactorPubApp {
                 .filter(|issue| issue.contains(":warming_up"))
                 .map(|s| s.as_str())
                 .collect();
-            warn!(
+            debug!(
                 "TEMP workaround: fusion factor regressed to warming_up after all_ready in live processing; allowing fallback without panic venue={} symbol={} trade_ts={} warming_factors=[{}]",
                 self.venue_slug,
                 symbol,

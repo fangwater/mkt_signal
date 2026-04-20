@@ -125,5 +125,5 @@ fn default_persistence_rocksdb_path() -> String {
 }
 
 fn default_persistence_retention_hours() -> u64 {
-    0
+    48
 }
