@@ -101,6 +101,7 @@ SCRIPT_DIR_SRC="$ROOT_DIR/scripts"
 SCRIPTS_TO_DEPLOY=(
   "start_trade_flow_feature_pub.sh"
   "stop_trade_flow_feature_pub.sh"
+  "process_match_lib.sh"
   "print_trade_flow_thresholds.py"
 )
 

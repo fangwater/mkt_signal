@@ -147,6 +147,7 @@ fi
 SCRIPTS_TO_SYNC=(
   "start_fr_persist_manager.sh"
   "stop_fr_persist_manager.sh"
+  "process_match_lib.sh"
 )
 
 if [[ "$DO_SCRIPTS" -eq 1 ]]; then

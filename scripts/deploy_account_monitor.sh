@@ -150,7 +150,7 @@ fi
 
 # 同步启动/停止脚本到 scripts/
 SCRIPT_DIR_SRC="$ROOT_DIR/scripts"
-SCRIPTS_TO_SYNC=("start_account_monitor.sh" "stop_account_monitor.sh")
+SCRIPTS_TO_SYNC=("start_account_monitor.sh" "stop_account_monitor.sh" "process_match_lib.sh")
 if [[ "$DO_SCRIPTS" -eq 1 ]]; then
   mkdir -p "$TARGET_DIR/scripts"
   for script in "${SCRIPTS_TO_SYNC[@]}"; do

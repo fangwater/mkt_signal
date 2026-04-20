@@ -4,7 +4,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 VENUE_DIR_REGEX='^[a-z0-9]+-(futures|margin)$'
-PROCESS_MATCH_LIB="${SCRIPT_DIR}/../process_match_lib.sh"
+PROCESS_MATCH_LIB_CANDIDATES=(
+  "${SCRIPT_DIR}/process_match_lib.sh"
+  "${SCRIPT_DIR}/../process_match_lib.sh"
+)
 
 usage() {
   cat <<'USAGE'
@@ -37,9 +40,64 @@ if [[ $# -gt 0 ]]; then
   esac
 fi
 
-if [[ -f "$PROCESS_MATCH_LIB" ]]; then
-  # shellcheck disable=SC1090
-  source "$PROCESS_MATCH_LIB"
+for process_match_lib in "${PROCESS_MATCH_LIB_CANDIDATES[@]}"; do
+  if [[ -f "$process_match_lib" ]]; then
+    # shellcheck disable=SC1090
+    source "$process_match_lib"
+    break
+  fi
+done
+
+if ! declare -F safe_find_running_pids >/dev/null 2>&1; then
+  safe_find_running_pids() {
+    local target_comm="${1:-}"
+    shift || true
+
+    if [[ -z "$target_comm" ]]; then
+      return 0
+    fi
+
+    local pids=()
+    while IFS=$'\t' read -r pid comm args; do
+      if [[ -z "$pid" || -z "$comm" ]]; then
+        continue
+      fi
+      if [[ "$pid" == "$$" || "$pid" == "$PPID" ]]; then
+        continue
+      fi
+      if [[ "$comm" != "$target_comm" ]]; then
+        continue
+      fi
+
+      local matched=true
+      local needle
+      for needle in "$@"; do
+        if [[ -n "$needle" && "$args" != *"$needle"* ]]; then
+          matched=false
+          break
+        fi
+      done
+
+      if [[ "$matched" == true ]]; then
+        pids+=("$pid")
+      fi
+    done < <(
+      ps -eo pid=,comm=,args= | awk '
+        {
+          pid = $1;
+          comm = $2;
+          $1 = "";
+          $2 = "";
+          sub(/^  */, "", $0);
+          print pid "\t" comm "\t" $0;
+        }
+      '
+    )
+
+    if [[ ${#pids[@]} -gt 0 ]]; then
+      printf '%s\n' "${pids[@]}"
+    fi
+  }
 fi
 
 short_exchange() {

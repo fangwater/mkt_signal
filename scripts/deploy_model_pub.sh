@@ -61,7 +61,7 @@ cp "$BIN_PATH" "$TARGET_DIR/$BIN_NAME"
 chmod +x "$TARGET_DIR/$BIN_NAME"
 
 mkdir -p "$TARGET_DIR/scripts"
-for script in start_model_pub.sh stop_model_pub.sh; do
+for script in start_model_pub.sh stop_model_pub.sh process_match_lib.sh; do
   if [[ -f "$ROOT_DIR/scripts/$script" ]]; then
     rsync -a "$ROOT_DIR/scripts/$script" "$TARGET_DIR/scripts/"
     chmod +x "$TARGET_DIR/scripts/$script"

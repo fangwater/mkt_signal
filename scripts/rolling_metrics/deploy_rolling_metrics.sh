@@ -97,6 +97,7 @@ mkdir -p "$TARGET_DIR"
 mkdir -p "$TARGET_DIR/scripts"
 
 SYNC_FILES=(
+  "scripts/process_match_lib.sh"
   "scripts/rolling_metrics/deploy_rolling_metrics.sh"
   "scripts/rolling_metrics/start_rolling_metrics.sh"
   "scripts/rolling_metrics/stop_rolling_metrics.sh"

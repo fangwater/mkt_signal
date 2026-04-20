@@ -154,6 +154,7 @@ SCRIPT_DIR_SRC="$ROOT_DIR/scripts"
 SCRIPTS_TO_DEPLOY=(
   "start_depth_pub.sh"
   "stop_depth_pub.sh"
+  "process_match_lib.sh"
 )
 
 for venue in "${VENUES[@]}"; do

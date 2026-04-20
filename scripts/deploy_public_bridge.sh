@@ -126,7 +126,7 @@ fi
 
 if [[ "$DO_SCRIPTS" -eq 1 ]]; then
   mkdir -p "$TARGET_DIR/scripts"
-  for script in start_ipc_bridge.sh stop_ipc_bridge.sh deploy_public_bridge.sh; do
+  for script in start_ipc_bridge.sh stop_ipc_bridge.sh deploy_public_bridge.sh process_match_lib.sh; do
     rsync -a "$ROOT_DIR/scripts/$script" "$TARGET_DIR/scripts/"
     chmod +x "$TARGET_DIR/scripts/$script"
   done
