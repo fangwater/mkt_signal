@@ -3,6 +3,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PROCESS_MATCH_LIB="${SCRIPT_DIR}/process_match_lib.sh"
+
+if [[ -f "$PROCESS_MATCH_LIB" ]]; then
+  # shellcheck disable=SC1090
+  source "$PROCESS_MATCH_LIB"
+fi
 
 PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
 PMDAEMON=("$PMDAEMON_BIN")
@@ -106,25 +112,7 @@ KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 
 find_running_pids() {
   local exchange_arg="--exchange ${EXCHANGE}"
-  local pids=()
-  while IFS= read -r pid; do
-    if [[ -n "$pid" && "$pid" != "$$" && "$pid" != "$PPID" ]]; then
-      pids+=("$pid")
-    fi
-  done < <(
-    ps -eo pid=,args= | awk -v exchange_arg="$exchange_arg" -v base_dir="$BASE_DIR" '
-      index($0, "trade_engine") > 0 &&
-      index($0, exchange_arg) > 0 &&
-      index($0, base_dir) > 0 &&
-      index($0, "awk -v ") == 0 {
-        print $1
-      }
-    '
-  )
-
-  if [[ ${#pids[@]} -gt 0 ]]; then
-    printf '%s\n' "${pids[@]}"
-  fi
+  safe_find_running_pids "trade_engine" "$BASE_DIR" "$exchange_arg"
 }
 
 echo "[INFO] Stopping ${PROC_NAME}"

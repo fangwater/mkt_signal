@@ -3,6 +3,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PROCESS_MATCH_LIB="${SCRIPT_DIR}/process_match_lib.sh"
+
+if [[ -f "$PROCESS_MATCH_LIB" ]]; then
+  # shellcheck disable=SC1090
+  source "$PROCESS_MATCH_LIB"
+fi
 
 PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
 PMDAEMON=("$PMDAEMON_BIN")
@@ -87,38 +93,18 @@ if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1;
 fi
 
 find_running_pids() {
-  local pids=()
-  while IFS= read -r pid; do
-    if [[ -n "$pid" && "$pid" != "$$" && "$pid" != "$PPID" ]]; then
-      pids+=("$pid")
-    fi
-  done < <(
-    ps -eo pid=,args= | awk -v base_dir="$BASE_DIR" '
-      index($0, "viz_server") > 0 &&
-      index($0, base_dir) > 0 &&
-      index($0, "awk -v base_dir=") == 0 &&
-      index($0, "stop_fr_viz_server.sh") == 0 {
-        print $1
-      }
-    '
-  )
-
-  if [[ ${#pids[@]} -gt 0 ]]; then
-    printf '%s\n' "${pids[@]}"
-  fi
+  safe_find_running_pids "viz_server" "$BASE_DIR"
 }
 
 cleanup_leaked() {
-  local pattern="${BASE_DIR}.*viz_server"
-
   mapfile -t leaked_pids < <(find_running_pids || true)
   if [[ ${#leaked_pids[@]} -eq 0 ]]; then
     return 0
   fi
 
   echo "[WARN] Found leaked viz_server process after pmdaemon delete: pids=${leaked_pids[*]}"
-  echo "[INFO] Sending SIGTERM via pkill: pattern=${pattern}"
-  pkill -TERM -f "$pattern" >/dev/null 2>&1 || true
+  echo "[INFO] Sending SIGTERM to leaked process(es)"
+  kill "${leaked_pids[@]}" >/dev/null 2>&1 || true
 
   local deadline=$((SECONDS + KILL_WAIT_SECS))
   while [[ $SECONDS -lt $deadline ]]; do
@@ -130,8 +116,8 @@ cleanup_leaked() {
   done
 
   if [[ ${#leaked_pids[@]} -gt 0 ]]; then
-    echo "[WARN] SIGTERM timeout, sending SIGKILL via pkill: pids=${leaked_pids[*]}"
-    pkill -KILL -f "$pattern" >/dev/null 2>&1 || true
+    echo "[WARN] SIGTERM timeout, sending SIGKILL: pids=${leaked_pids[*]}"
+    kill -9 "${leaked_pids[@]}" >/dev/null 2>&1 || true
     sleep 1
     mapfile -t leaked_pids < <(find_running_pids || true)
   fi

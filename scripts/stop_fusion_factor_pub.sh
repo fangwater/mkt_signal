@@ -4,6 +4,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 VENUE_DIR_REGEX='^[a-z0-9]+-(futures|margin|spot|swap|perp|perpetual)$'
+PROCESS_MATCH_LIB="${SCRIPT_DIR}/process_match_lib.sh"
+
+if [[ -f "$PROCESS_MATCH_LIB" ]]; then
+  # shellcheck disable=SC1090
+  source "$PROCESS_MATCH_LIB"
+fi
 
 usage() {
   cat <<'USAGE'
@@ -56,26 +62,7 @@ KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 
 find_running_pids() {
   local venue_arg="--venue ${venue}"
-  local pids=()
-  while IFS= read -r pid; do
-    if [[ -n "$pid" && "$pid" != "$$" && "$pid" != "$PPID" ]]; then
-      pids+=("$pid")
-    fi
-  done < <(
-    ps -eo pid=,args= | awk -v venue_arg="$venue_arg" -v base_dir="$BASE_DIR" '
-      index($0, "fusion_factor_pub") > 0 &&
-      index($0, venue_arg) > 0 &&
-      index($0, base_dir) > 0 &&
-      index($0, "awk -v venue_arg") == 0 &&
-      index($0, "stop_fusion_factor_pub.sh") == 0 {
-        print $1
-      }
-    '
-  )
-
-  if [[ ${#pids[@]} -gt 0 ]]; then
-    printf '%s\n' "${pids[@]}"
-  fi
+  safe_find_running_pids "fusion_factor_pub" "$BASE_DIR" "$venue_arg"
 }
 
 echo "[INFO] Stopping ${name}"

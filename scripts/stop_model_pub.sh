@@ -3,6 +3,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PROCESS_MATCH_LIB="${SCRIPT_DIR}/process_match_lib.sh"
+
+if [[ -f "$PROCESS_MATCH_LIB" ]]; then
+  # shellcheck disable=SC1090
+  source "$PROCESS_MATCH_LIB"
+fi
 
 usage() {
   cat <<'USAGE'
@@ -54,24 +60,7 @@ name="model_pub_${MODEL_NAME}"
 KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 
 find_running_pids() {
-  local pids=()
-  while IFS= read -r pid; do
-    if [[ -n "$pid" && "$pid" != "$$" && "$pid" != "$PPID" ]]; then
-      pids+=("$pid")
-    fi
-  done < <(
-    ps -eo pid=,args= | awk -v model="$MODEL_NAME" '
-      index($0, "model_pub") > 0 &&
-      index($0, model) > 0 &&
-      index($0, "awk -v model") == 0 &&
-      index($0, "stop_model_pub.sh") == 0 {
-        print $1
-      }
-    '
-  )
-  if [[ ${#pids[@]} -gt 0 ]]; then
-    printf '%s\n' "${pids[@]}"
-  fi
+  safe_find_running_pids "model_pub" "$MODEL_NAME"
 }
 
 echo "[INFO] Stopping ${name}"

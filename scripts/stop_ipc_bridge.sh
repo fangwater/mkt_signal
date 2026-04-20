@@ -3,6 +3,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PROCESS_MATCH_LIB="${SCRIPT_DIR}/process_match_lib.sh"
+
+if [[ -f "$PROCESS_MATCH_LIB" ]]; then
+  # shellcheck disable=SC1090
+  source "$PROCESS_MATCH_LIB"
+fi
 
 usage() {
   cat <<'USAGE'
@@ -76,27 +82,7 @@ LEGACY_PROC_NAME="ipc_bridge_${dir_lc}"
 KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 
 find_running_pids() {
-  local pids=()
-  while IFS= read -r pid; do
-    if [[ -n "$pid" && "$pid" != "$$" && "$pid" != "$PPID" ]]; then
-      pids+=("$pid")
-    fi
-  done < <(
-    ps -eo pid=,args= | awk -v cfg_arg="--cfg ${CFG_PATH}" -v base_dir="$BASE_DIR" '
-      index($0, "ipc_bridge") > 0 &&
-      index($0, cfg_arg) > 0 &&
-      index($0, base_dir) > 0 &&
-      index($0, "awk -v ") == 0 &&
-      index($0, "start_ipc_bridge.sh") == 0 &&
-      index($0, "stop_ipc_bridge.sh") == 0 {
-        print $1
-      }
-    '
-  )
-
-  if [[ ${#pids[@]} -gt 0 ]]; then
-    printf '%s\n' "${pids[@]}"
-  fi
+  safe_find_running_pids "ipc_bridge" "$BASE_DIR" "--cfg ${CFG_PATH}"
 }
 
 echo "[INFO] Stopping ${PROC_NAME}"

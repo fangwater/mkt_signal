@@ -3,6 +3,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+PROCESS_MATCH_LIB="${SCRIPT_DIR}/../process_match_lib.sh"
+
+if [[ -f "$PROCESS_MATCH_LIB" ]]; then
+  # shellcheck disable=SC1090
+  source "$PROCESS_MATCH_LIB"
+fi
 
 usage() {
   cat <<'USAGE'
@@ -133,26 +139,7 @@ KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 find_running_pids() {
   local open_arg="--open-venue ${OPEN_VENUE}"
   local hedge_arg="--hedge-venue ${HEDGE_VENUE}"
-  local pids=()
-  while IFS= read -r pid; do
-    if [[ -n "$pid" && "$pid" != "$$" && "$pid" != "$PPID" ]]; then
-      pids+=("$pid")
-    fi
-  done < <(
-    ps -eo pid=,args= | awk -v open_arg="$open_arg" -v hedge_arg="$hedge_arg" -v base_dir="$BASE_DIR" '
-      index($0, "rolling_metrics") > 0 &&
-      index($0, open_arg) > 0 &&
-      index($0, hedge_arg) > 0 &&
-      index($0, base_dir) > 0 &&
-      index($0, "awk -v ") == 0 {
-        print $1
-      }
-    '
-  )
-
-  if [[ ${#pids[@]} -gt 0 ]]; then
-    printf '%s\n' "${pids[@]}"
-  fi
+  safe_find_running_pids "rolling_metrics" "$BASE_DIR" "$open_arg" "$hedge_arg"
 }
 
 echo "[INFO] Stopping ${PROC_NAME}"

@@ -4,10 +4,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 MM_NAME_LIB="${SCRIPT_DIR}/../scripts/mm_process_name.sh"
+PROCESS_MATCH_LIB="${SCRIPT_DIR}/../scripts/process_match_lib.sh"
 
 if [[ -f "$MM_NAME_LIB" ]]; then
   # shellcheck disable=SC1090
   source "$MM_NAME_LIB"
+fi
+if [[ -f "$PROCESS_MATCH_LIB" ]]; then
+  # shellcheck disable=SC1090
+  source "$PROCESS_MATCH_LIB"
 fi
 
 PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
@@ -31,22 +36,7 @@ LEGACY_PROC_NAME="mm_trade_engine_${DIR_TAG}"
 KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 
 find_running_pids() {
-  local pids=()
-  while IFS= read -r pid; do
-    if [[ -n "$pid" ]]; then
-      pids+=("$pid")
-    fi
-  done < <(
-    ps -eo pid=,args= | awk -v base_dir="$BASE_DIR" '
-      index($0, "trade_engine") > 0 && index($0, base_dir) > 0 {
-        print $1
-      }
-    '
-  )
-
-  if [[ ${#pids[@]} -gt 0 ]]; then
-    printf '%s\n' "${pids[@]}"
-  fi
+  safe_find_running_pids "trade_engine" "$BASE_DIR"
 }
 
 echo "[INFO] Stopping ${PROC_NAME}"

@@ -5,10 +5,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 MM_NAME_LIB="${SCRIPT_DIR}/../scripts/mm_process_name.sh"
+PROCESS_MATCH_LIB="${SCRIPT_DIR}/../scripts/process_match_lib.sh"
 
 if [[ -f "$MM_NAME_LIB" ]]; then
   # shellcheck disable=SC1090
   source "$MM_NAME_LIB"
+fi
+if [[ -f "$PROCESS_MATCH_LIB" ]]; then
+  # shellcheck disable=SC1090
+  source "$PROCESS_MATCH_LIB"
 fi
 
 DIR_NAME="${BASE_DIR##*/}"
@@ -32,25 +37,7 @@ if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1;
 fi
 
 find_running_pids() {
-  local pids=()
-  while IFS= read -r pid; do
-    if [[ -n "$pid" && "$pid" != "$$" && "$pid" != "$PPID" ]]; then
-      pids+=("$pid")
-    fi
-  done < <(
-    ps -eo pid=,args= | awk -v base_dir="$BASE_DIR" '
-      index($0, "persist_manager") > 0 &&
-      index($0, base_dir) > 0 &&
-      index($0, "awk -v base_dir") == 0 &&
-      index($0, "stop_mm_persist_manager.sh") == 0 {
-        print $1
-      }
-    '
-  )
-
-  if [[ ${#pids[@]} -gt 0 ]]; then
-    printf '%s\n' "${pids[@]}"
-  fi
+  safe_find_running_pids "persist_manager" "$BASE_DIR"
 }
 
 cleanup_leaked() {
