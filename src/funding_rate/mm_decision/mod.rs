@@ -698,7 +698,7 @@ impl MmDecision {
     }
 
     fn tlen_threshold_reload_due(&self, now_us: i64) -> bool {
-        const RELOAD_INTERVAL_US: i64 = 30 * 60 * 1_000_000;
+        const RELOAD_INTERVAL_US: i64 = 30 * 1_000_000;
         self.state.last_tlen_threshold_reload_ts_us == 0
             || now_us.saturating_sub(self.state.last_tlen_threshold_reload_ts_us)
                 >= RELOAD_INTERVAL_US
