@@ -665,10 +665,8 @@ impl BybitAskBidSpreadParser {
                                     .get("t")
                                     .and_then(|v| v.as_i64())
                                     .or_else(|| json_value.get("ts").and_then(|v| v.as_i64()));
-                                let symbol = data
-                                    .get("s")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or(symbol);
+                                let symbol =
+                                    data.get("s").and_then(|v| v.as_str()).unwrap_or(symbol);
 
                                 if let (Some(bids_array), Some(asks_array), Some(timestamp)) = (
                                     data.get("b").and_then(|v| v.as_array()),

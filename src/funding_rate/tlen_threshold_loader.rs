@@ -1,8 +1,8 @@
 use anyhow::Result;
 use std::collections::HashMap;
 
-use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::common::redis_client::{RedisClient, RedisSettings};
+use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::signal::common::TradingVenue;
 
 fn venue_key_part(venue: TradingVenue) -> String {
