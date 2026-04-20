@@ -592,6 +592,34 @@ mod tests {
     }
 
     #[test]
+    fn bybit_ask_bid_parser_accepts_top_level_ts_without_data_t() {
+        let parser = BybitAskBidSpreadParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let msg = Bytes::from(
+            r#"{
+                "topic":"orderbook.1.BTCUSDT",
+                "type":"snapshot",
+                "ts":1757497309814,
+                "data":{
+                    "s":"BTCUSDT",
+                    "b":[["112233.4","8.1"]],
+                    "a":[["112233.5","6.2"]]
+                }
+            }"#,
+        );
+
+        assert_eq!(parser.parse(msg, &tx), 1);
+
+        let spread = rx.try_recv().expect("spread message should be emitted");
+        assert_eq!(AskBidSpreadMsg::get_symbol(&spread), "BTCUSDT");
+        assert_eq!(AskBidSpreadMsg::get_timestamp(&spread), 1757497309814);
+        assert_eq!(AskBidSpreadMsg::get_bid_price(&spread), 112233.4);
+        assert_eq!(AskBidSpreadMsg::get_bid_amount(&spread), 8.1);
+        assert_eq!(AskBidSpreadMsg::get_ask_price(&spread), 112233.5);
+        assert_eq!(AskBidSpreadMsg::get_ask_amount(&spread), 6.2);
+    }
+
+    #[test]
     fn bybit_ask_bid_parser_accepts_sbe_bbo_binary() {
         let parser = BybitAskBidSpreadParser::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -633,10 +661,19 @@ impl BybitAskBidSpreadParser {
                             let symbol = parts[2];
 
                             if let Some(data) = json_value.get("data").and_then(|v| v.as_object()) {
+                                let timestamp = data
+                                    .get("t")
+                                    .and_then(|v| v.as_i64())
+                                    .or_else(|| json_value.get("ts").and_then(|v| v.as_i64()));
+                                let symbol = data
+                                    .get("s")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or(symbol);
+
                                 if let (Some(bids_array), Some(asks_array), Some(timestamp)) = (
                                     data.get("b").and_then(|v| v.as_array()),
                                     data.get("a").and_then(|v| v.as_array()),
-                                    data.get("t").and_then(|v| v.as_i64()),
+                                    timestamp,
                                 ) {
                                     if let (Some(bid_item), Some(ask_item)) =
                                         (bids_array.first(), asks_array.first())
