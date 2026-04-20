@@ -35,7 +35,7 @@ use crate::signal::common::{ExecutionType, OrderStatus, TradingVenue};
 const ACCOUNT_PAYLOAD: usize = 16_384;
 const DERIVATIVES_PAYLOAD: usize = 128;
 const DERIVATIVES_HISTORY_SIZE: usize = 50;
-const DERIVATIVES_MAX_SUBSCRIBERS: usize = 10;
+const DERIVATIVES_MAX_SUBSCRIBERS: usize = 64;
 const DERIVATIVES_SUBSCRIBER_MAX_BUFFER: usize = 8192;
 const BINANCE_DERIVATIVES_SERVICE: &str = "bridge/binance-futures/derivatives";
 const OKEX_DERIVATIVES_SERVICE: &str = "bridge/okex-futures/derivatives";
@@ -1866,24 +1866,43 @@ impl MonitorChannel {
                     .name(&NodeName::new(&node_name)?)
                     .create::<ipc::Service>()?;
 
-                let service = node
-                    .service_builder(&ServiceName::new(&service_name)?)
-                    .publish_subscribe::<[u8; DERIVATIVES_PAYLOAD]>()
-                    .max_publishers(1)
-                    .max_subscribers(DERIVATIVES_MAX_SUBSCRIBERS)
-                    .history_size(DERIVATIVES_HISTORY_SIZE)
-                    .subscriber_max_buffer_size(DERIVATIVES_SUBSCRIBER_MAX_BUFFER)
-                    .open_or_create()?;
-                let subscriber: Subscriber<ipc::Service, [u8; DERIVATIVES_PAYLOAD], ()> =
-                    service.subscriber_builder().create()?;
-
-                info!(
-                    "derivatives price stream subscribed: node={} service={}",
-                    node_name, service_name
-                );
+                let mut subscriber: Option<Subscriber<ipc::Service, [u8; DERIVATIVES_PAYLOAD], ()>> =
+                    None;
 
                 loop {
-                    match subscriber.receive() {
+                    if subscriber.is_none() {
+                        let service = match node
+                            .service_builder(&ServiceName::new(&service_name)?)
+                            .publish_subscribe::<[u8; DERIVATIVES_PAYLOAD]>()
+                            .max_publishers(1)
+                            .max_subscribers(DERIVATIVES_MAX_SUBSCRIBERS)
+                            .history_size(DERIVATIVES_HISTORY_SIZE)
+                            .subscriber_max_buffer_size(DERIVATIVES_SUBSCRIBER_MAX_BUFFER)
+                            .open()
+                        {
+                            Ok(service) => service,
+                            Err(err) => {
+                                warn!(
+                                    "waiting for derivatives service: node={} service={} err={:?}",
+                                    node_name, service_name, err
+                                );
+                                tokio::time::sleep(Duration::from_millis(500)).await;
+                                continue;
+                            }
+                        };
+                        let created_subscriber = service.subscriber_builder().create()?;
+                        info!(
+                            "derivatives price stream subscribed: node={} service={}",
+                            node_name, service_name
+                        );
+                        subscriber = Some(created_subscriber);
+                    }
+
+                    match subscriber
+                        .as_ref()
+                        .expect("subscriber must exist after successful service open")
+                        .receive()
+                    {
                         Ok(Some(sample)) => {
                             let payload = Bytes::copy_from_slice(sample.payload());
                             if payload.is_empty() {
@@ -1966,7 +1985,11 @@ impl MonitorChannel {
                             tokio::task::yield_now().await;
                         }
                         Err(err) => {
-                            warn!("derivatives stream receive error: {err}");
+                            warn!(
+                                "derivatives stream receive error, reconnecting: node={} service={} err={}",
+                                node_name, service_name, err
+                            );
+                            subscriber = None;
                             tokio::time::sleep(Duration::from_millis(200)).await;
                         }
                     }
