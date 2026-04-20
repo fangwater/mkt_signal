@@ -338,7 +338,10 @@ impl IceOryxForwarder {
                         if let Ok(symbol_str) = std::str::from_utf8(symbol_bytes) {
                             let symbol = symbol_str.trim_end_matches('\0');
                             if symbol.to_lowercase() == "btcusdt" {
-                                info!("[IceOryx] BTCUSDT Kline sent successfully, total kline count: {}", self.kline_count);
+                                debug!(
+                                    "[IceOryx] BTCUSDT Kline sent successfully, total kline count: {}",
+                                    self.kline_count
+                                );
                             }
                         }
                     }

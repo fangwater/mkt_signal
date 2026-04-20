@@ -271,7 +271,7 @@ impl BinanceDerivativesMetricsParser {
 
                         let s_lower = symbol.to_lowercase();
                         if matches!(s_lower.as_str(), "btcusdt" | "ethusdt" | "bnbusdt") {
-                            log::info!(
+                            log::debug!(
                                 "binance funding msg: symbol={} mark={} index={} funding={} next={} event={}",
                                 symbol,
                                 mark_price,
@@ -306,7 +306,7 @@ impl BinanceDerivativesMetricsParser {
                         if tx.send(funding_rate_msg.to_bytes()).is_ok() {
                             parsed_count += 1;
                             if matches!(s_lower.as_str(), "btcusdt" | "ethusdt" | "bnbusdt") {
-                                log::info!(
+                                log::debug!(
                                     "mkt pub funding_rate_msg: symbol={} funding={} next={} event={}",
                                     symbol,
                                     funding_rate,
