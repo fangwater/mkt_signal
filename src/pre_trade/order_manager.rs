@@ -622,6 +622,35 @@ impl OrderManager {
         qty_multiplier: f64,
         sumbit_ts_local: i64,
     ) -> i64 {
+        self.create_order_with_pending_limit_flag(
+            venue,
+            id,
+            order_type,
+            symbol,
+            side,
+            quantity,
+            price,
+            reduce_only,
+            qty_multiplier,
+            sumbit_ts_local,
+            true,
+        )
+    }
+
+    pub fn create_order_with_pending_limit_flag(
+        &mut self,
+        venue: TradingVenue,
+        id: i64,
+        order_type: OrderType,
+        symbol: String,
+        side: Side,
+        quantity: f64,
+        price: f64,
+        reduce_only: bool,
+        qty_multiplier: f64,
+        sumbit_ts_local: i64,
+        count_pending_limit: bool,
+    ) -> i64 {
         let qty_multiplier = if qty_multiplier.is_finite() && qty_multiplier > 0.0 {
             qty_multiplier
         } else {
@@ -646,6 +675,7 @@ impl OrderManager {
             reduce_only,
             qty_multiplier,
             self.binance_account_mode,
+            count_pending_limit,
         );
         order.set_submit_time(sumbit_ts_local);
         self.insert(order);
@@ -659,6 +689,7 @@ impl OrderManager {
             .values()
             .filter(|order| {
                 order.order_type.is_limit()
+                    && order.count_pending_limit
                     && !order.status.is_terminal()
                     && order.symbol.eq_ignore_ascii_case(&symbol)
             })
@@ -678,10 +709,25 @@ impl OrderManager {
         actual
     }
 
+    pub fn get_symbol_pending_limit_order_count_by_side(&self, symbol: &str, side: Side) -> i32 {
+        let symbol = normalize_symbol_for_internal(symbol);
+        self.orders
+            .values()
+            .filter(|order| {
+                order.order_type.is_limit()
+                    && order.count_pending_limit
+                    && !order.status.is_terminal()
+                    && order.side == side
+                    && order.symbol.eq_ignore_ascii_case(&symbol)
+            })
+            .count() as i32
+    }
+
     /// 添加订单
     pub fn insert(&mut self, order: Order) {
         let is_limit = order.order_type.is_limit();
-        let symbol = if is_limit {
+        let count_pending_limit = order.count_pending_limit;
+        let symbol = if is_limit && count_pending_limit {
             Some(order.symbol.clone())
         } else {
             None
@@ -695,7 +741,7 @@ impl OrderManager {
         }
 
         if let Some(prev_order) = prev {
-            if prev_order.order_type.is_limit() {
+            if prev_order.order_type.is_limit() && prev_order.count_pending_limit {
                 self.decrement_pending_limit_count(&prev_order.symbol);
             }
         }
@@ -762,7 +808,7 @@ impl OrderManager {
 
         if let Some(ref order) = removed {
             // 如果是限价单，减少计数
-            if order.order_type.is_limit() {
+            if order.order_type.is_limit() && order.count_pending_limit {
                 self.decrement_pending_limit_count(&order.symbol);
             }
         }
@@ -854,6 +900,7 @@ pub struct Order {
     pub exchange_order_id: Option<i64>,  // 交易所返回的 orderId
     pub status: OrderExecutionStatus,    // 订单执行状态
     pub timestamp: OrderTimeStamp,
+    pub count_pending_limit: bool, // 是否计入 pending-limit 风控统计
     binance_account_mode: Option<BinanceAccountMode>,
 }
 
@@ -875,6 +922,7 @@ impl Order {
         reduce_only: bool,
         qty_multiplier: f64,
         binance_account_mode: Option<BinanceAccountMode>,
+        count_pending_limit: bool,
     ) -> Self {
         Order {
             venue,
@@ -890,6 +938,7 @@ impl Order {
             cumulative_filled_quantity: 0.0,
             exchange_order_id: None,
             timestamp: OrderTimeStamp::new(),
+            count_pending_limit,
             binance_account_mode,
         }
     }

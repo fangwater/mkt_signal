@@ -334,6 +334,7 @@ impl HedgeArbStrategy {
         let force_close = self.is_force_close_mode();
         let aligned_price = ctx.price_value();
         let aligned_qty = ctx.amount_value();
+        let side = Side::from_u8(ctx.side).unwrap_or(Side::Buy);
 
         if aligned_price <= 0.0 {
             let order_type = OrderType::from_u8(ctx.order_type);
@@ -352,7 +353,6 @@ impl HedgeArbStrategy {
             let hedging_symbol = ctx.get_hedging_symbol();
             let opening_venue = Self::describe_venue(ctx.opening_leg.venue);
             let hedging_venue = Self::describe_venue(ctx.hedging_leg.venue);
-            let side = Side::from_u8(ctx.side).unwrap_or(Side::Buy);
             info!(
                 "HedgeArbStrategy: strategy_id={} force_close_mode=true, 将跳过所有风控 | opening={} {} hedging={} {} side={:?} amount={:.4} price={:.6}",
                 self.strategy_id,
@@ -390,7 +390,8 @@ impl HedgeArbStrategy {
         // 4、检查限价挂单数量限制（如果是限价单）
         let order_type = OrderType::from_u8(ctx.order_type);
         if order_type == Some(OrderType::Limit) {
-            if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&self.open_symbol)
+            if let Err(e) =
+                MonitorChannel::instance().check_pending_limit_order(&self.open_symbol, side)
             {
                 error!("HedgeArbStrategy: strategy_id={} symbol={} 限价挂单数量风控检查失败: {}，标记策略为不活跃", self.strategy_id, self.open_symbol, e);
                 self.mark_inactive(format!("pending_limit:{e}"));

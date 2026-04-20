@@ -295,7 +295,8 @@ fn handle_trade_signal(signal: TradeSignal) {
                 }
 
                 // 检查限价挂单数量限制
-                if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&symbol) {
+                if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&symbol, side)
+                {
                     warn!("ArbOpen: {} 限价挂单数量超限: {}", symbol, e);
                     return;
                 }
@@ -806,13 +807,15 @@ fn handle_trade_signal(signal: TradeSignal) {
                 warn!("MMOpen: empty symbol");
                 return;
             }
-            if open_ctx.get_side().is_none() {
+            let Some(side) = open_ctx.get_side() else {
                 warn!("MMOpen: invalid side {}", open_ctx.side);
                 return;
-            }
+            };
             if let Some(order_type) = OrderType::from_u8(open_ctx.order_type) {
                 if order_type.is_limit() {
-                    if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&symbol) {
+                    if let Err(e) =
+                        MonitorChannel::instance().check_pending_limit_order(&symbol, side)
+                    {
                         warn!("MMOpen: {} 限价挂单数量超限: {}", symbol, e);
                         return;
                     }

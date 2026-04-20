@@ -25,6 +25,7 @@ use crate::pre_trade::basic_balance_manager::BasicBalanceManager;
 use crate::pre_trade::basic_exposure_manager::{BasicExposureEntry, BasicExposureManager};
 use crate::pre_trade::basic_um_manager::BasicUmManager;
 use crate::pre_trade::net_position::NetPosition;
+use crate::pre_trade::order_manager::Side;
 use crate::pre_trade::price_table::PriceTable;
 use crate::pre_trade::symbol_mapper::create_symbol_mapper;
 use crate::pre_trade::symbol_util::extract_base_asset;
@@ -1448,25 +1449,40 @@ impl MonitorChannel {
     // ==================== 风控方法（从 RiskChecker 迁移） ====================
 
     /// 检查当前 symbol 的限价挂单数量
-    pub fn check_pending_limit_order(&self, symbol: &str) -> Result<(), String> {
+    pub fn check_pending_limit_order(&self, symbol: &str, side: Side) -> Result<(), String> {
         Self::with_inner(|inner| {
-            let max_pending_limit_orders =
-                PreTradeParamsLoader::instance().max_pending_limit_orders();
-            if max_pending_limit_orders <= 0 {
-                return Ok(());
-            }
+            let params = PreTradeParamsLoader::instance();
+            let max_pending_limit_orders = params.max_pending_limit_orders();
+            let side_limit = match side {
+                Side::Buy => params.max_pending_limit_buy_orders(),
+                Side::Sell => params.max_pending_limit_sell_orders(),
+            };
 
             let symbol_upper = symbol.to_uppercase();
-            let count = inner
-                .order_manager
-                .borrow()
-                .get_symbol_pending_limit_order_count(&symbol_upper);
+            let order_manager = inner.order_manager.borrow();
 
-            if count >= max_pending_limit_orders {
-                return Err(format!(
-                    "symbol={} 当前限价挂单数={}，达到上限 {}",
-                    symbol, count, max_pending_limit_orders
-                ));
+            if max_pending_limit_orders > 0 {
+                let count = order_manager.get_symbol_pending_limit_order_count(&symbol_upper);
+                if count >= max_pending_limit_orders {
+                    return Err(format!(
+                        "symbol={} 当前限价挂单数={}，达到总上限 {}",
+                        symbol, count, max_pending_limit_orders
+                    ));
+                }
+            }
+
+            if side_limit > 0 {
+                let side_count =
+                    order_manager.get_symbol_pending_limit_order_count_by_side(&symbol_upper, side);
+                if side_count >= side_limit {
+                    return Err(format!(
+                        "symbol={} side={} 当前限价挂单数={}，达到方向上限 {}",
+                        symbol,
+                        side.as_str(),
+                        side_count,
+                        side_limit
+                    ));
+                }
             }
 
             Ok(())

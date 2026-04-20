@@ -492,7 +492,7 @@ impl MarketMakerOpenStrategy {
 
         // 3、检查限价挂单数量限制（如果是限价单）
         if order_type == OrderType::Limit {
-            if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&symbol) {
+            if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&symbol, side) {
                 error!(
                     "MarketMakerOpenStrategy: strategy_id={} symbol={} 限价挂单数量风控检查失败: {}，标记策略为不活跃",
                     self.strategy_id, symbol, e

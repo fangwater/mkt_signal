@@ -1785,7 +1785,7 @@ impl MarketMakerHedgeStrategy {
             MonitorChannel::instance()
                 .order_manager()
                 .borrow_mut()
-                .create_order(
+                .create_order_with_pending_limit_flag(
                     venue,
                     plan.client_order_id,
                     plan.order_type,
@@ -1796,6 +1796,7 @@ impl MarketMakerHedgeStrategy {
                     false,
                     1.0,
                     submit_ts,
+                    false,
                 );
             self.hedge_order_ids.insert(plan.client_order_id);
             self.log_hedge_order_state("order_created_local", plan.client_order_id);
