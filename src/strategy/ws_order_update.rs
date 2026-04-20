@@ -29,7 +29,15 @@ impl WsOrderUpdate {
             Ok(TradeRequestType::BinanceWsNewUMOrder
                 | TradeRequestType::BinanceWsCancelUMOrder
                 | TradeRequestType::BinanceWsNewMarginOrder
-                | TradeRequestType::BinanceWsCancelMarginOrder)
+                | TradeRequestType::BinanceWsCancelMarginOrder
+                | TradeRequestType::BybitNewMarginOrder
+                | TradeRequestType::BybitNewUMOrder
+                | TradeRequestType::BybitCancelMarginOrder
+                | TradeRequestType::BybitCancelUMOrder
+                | TradeRequestType::OkexNewMarginOrder
+                | TradeRequestType::OkexNewUMOrder
+                | TradeRequestType::GateUnifiedNewOrder
+                | TradeRequestType::GateFuturesNewOrder)
         )
     }
 
@@ -70,7 +78,13 @@ impl WsOrderUpdate {
             return TimeInForce::GTC;
         }
         match venue {
-            TradingVenue::BinanceFutures => TimeInForce::GTX,
+            TradingVenue::BinanceFutures
+            | TradingVenue::BybitMargin
+            | TradingVenue::BybitFutures
+            | TradingVenue::OkexMargin
+            | TradingVenue::OkexFutures
+            | TradingVenue::GateMargin
+            | TradingVenue::GateFutures => TimeInForce::GTX,
             _ => TimeInForce::GTC,
         }
     }

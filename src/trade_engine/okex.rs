@@ -585,6 +585,31 @@ impl OkexWsOrderResponse {
             .or_else(|| if self.id != 0 { Some(self.id) } else { None })
     }
 
+    pub fn order_id(&self) -> i64 {
+        self.data.as_ref().map(|d| d.ord_id).unwrap_or(0)
+    }
+
+    pub fn order_update_time_ms(&self) -> i64 {
+        self.data.as_ref().map(|d| d.ts_ms).unwrap_or(0)
+    }
+
+    pub fn order_status_u8(&self) -> u8 {
+        if self.code != 0 {
+            return 0;
+        }
+        let Some(data) = self.data.as_ref() else {
+            return 0;
+        };
+        if data.status_code != 0 {
+            return 0;
+        }
+        if self.op.eq_ignore_ascii_case("order") {
+            1
+        } else {
+            0
+        }
+    }
+
     /// 将 OKX WS 返回压缩为紧凑的二进制形式，字符串长度使用 u16 储存
     pub fn to_bytes(&self) -> Bytes {
         fn put_str(buf: &mut BytesMut, s: &str) {

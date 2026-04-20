@@ -4,11 +4,14 @@ use crate::portfolio_margin::gate_auth::GateCredentials;
 use crate::portfolio_margin::okex_auth::OkexCredentials;
 use crate::trade_engine::binance_ws;
 use crate::trade_engine::bybit::{
-    BybitCancelOrderRequest, BybitNewOrderRequest, BybitWsOrderResponse, ToBybitWsJson,
+    BybitCancelOrderRequest, BybitNewOrderParams, BybitNewOrderRequest, BybitWsOrderResponse,
+    ToBybitWsJson,
 };
 use crate::trade_engine::config::{ApiKey, LimitConstants};
 use crate::trade_engine::gate_ws;
-use crate::trade_engine::okex::{OkexCancelOrderRequest, OkexNewOrderRequest, OkexWsOrderResponse};
+use crate::trade_engine::okex::{
+    OkexCancelOrderRequest, OkexNewOrderParams, OkexNewOrderRequest, OkexWsOrderResponse,
+};
 use crate::trade_engine::query_parsers::binance_um_order::parse_binance_um_order_query_json;
 use crate::trade_engine::query_parsers::compact_order::ORDER_QUERY_NOT_FOUND_MARKER;
 use crate::trade_engine::query_parsers::gate_order_status::{
@@ -180,6 +183,7 @@ impl WsEndpointHandle {
 struct TradeInflightMeta {
     req_type: TradeRequestType,
     client_order_id: i64,
+    ws_open_update_enabled: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1335,14 +1339,86 @@ impl TradeWsClient {
     }
 
     fn track_inflight(&mut self, msg: &TradeRequestMsg, transport_id: i64) {
+        let ws_open_update_enabled = self.ws_open_update_enabled_for_request(msg);
         self.inflight.insert(
             transport_id,
             TradeInflightMeta {
                 req_type: msg.req_type,
                 client_order_id: msg.client_order_id,
+                ws_open_update_enabled,
             },
         );
         self.last_dispatched_type = msg.req_type;
+    }
+
+    fn is_supported_ws_open_update_req_type(req_type: TradeRequestType) -> bool {
+        matches!(
+            req_type,
+            TradeRequestType::BinanceWsNewUMOrder
+                | TradeRequestType::BinanceWsNewMarginOrder
+                | TradeRequestType::BybitNewMarginOrder
+                | TradeRequestType::BybitNewUMOrder
+                | TradeRequestType::OkexNewMarginOrder
+                | TradeRequestType::OkexNewUMOrder
+                | TradeRequestType::GateUnifiedNewOrder
+                | TradeRequestType::GateFuturesNewOrder
+        )
+    }
+
+    fn ws_open_update_enabled_for_request(&self, msg: &TradeRequestMsg) -> bool {
+        match msg.req_type {
+            TradeRequestType::BinanceWsNewUMOrder => std::str::from_utf8(&msg.params)
+                .ok()
+                .map(|raw| raw.contains("timeInForce=GTX"))
+                .unwrap_or(false),
+            TradeRequestType::BinanceWsNewMarginOrder => std::str::from_utf8(&msg.params)
+                .ok()
+                .map(|raw| raw.contains("price=") && !raw.contains("timeInForce="))
+                .unwrap_or(false),
+            TradeRequestType::BybitNewMarginOrder | TradeRequestType::BybitNewUMOrder => {
+                BybitNewOrderParams::from_bytes(&msg.params)
+                    .map(|params| params.order_type.is_limit() && params.price_qv.get_count() > 0)
+                    .unwrap_or(false)
+            }
+            TradeRequestType::OkexNewMarginOrder | TradeRequestType::OkexNewUMOrder => {
+                OkexNewOrderParams::from_bytes(&msg.params)
+                    .map(|params| {
+                        matches!(
+                            params.order_type,
+                            crate::trade_engine::okex::OkexOrderType::PostOnly
+                                | crate::trade_engine::okex::OkexOrderType::MmpAndPostOnly
+                        )
+                    })
+                    .unwrap_or(false)
+            }
+            TradeRequestType::GateUnifiedNewOrder | TradeRequestType::GateFuturesNewOrder => {
+                serde_json::from_slice::<Value>(&msg.params)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("time_in_force")
+                            .or_else(|| v.get("tif"))
+                            .and_then(|x| x.as_str())
+                            .map(|s| s.to_string())
+                    })
+                    .map(|tif| tif.eq_ignore_ascii_case("poc"))
+                    .unwrap_or(false)
+            }
+            _ => false,
+        }
+    }
+
+    fn should_publish_ws_open_update(
+        req_type: TradeRequestType,
+        status: u16,
+        ws_open_update_enabled: bool,
+    ) -> bool {
+        if !Self::is_supported_ws_open_update_req_type(req_type) {
+            return true;
+        }
+        if !(200..300).contains(&(status as u32)) {
+            return true;
+        }
+        ws_open_update_enabled
     }
 
     fn track_inflight_query(&mut self, msg: &QueryRequestMsg, transport_id: i64) {
@@ -1576,11 +1652,17 @@ impl TradeWsClient {
                         if transport_id > 0 {
                             // 解析错误码
                             let error_code = code.parse::<i32>().unwrap_or(0);
-                            let (req_type, client_order_id) = self
+                            let (req_type, client_order_id, _) = self
                                 .inflight
                                 .remove(&transport_id)
-                                .map(|meta| (meta.req_type, meta.client_order_id))
-                                .unwrap_or((TradeRequestType::OkexNewUMOrder, transport_id));
+                                .map(|meta| {
+                                    (
+                                        meta.req_type,
+                                        meta.client_order_id,
+                                        meta.ws_open_update_enabled,
+                                    )
+                                })
+                                .unwrap_or((TradeRequestType::OkexNewUMOrder, transport_id, false));
 
                             // 发送错误响应
                             let outcome = TradeExecOutcome {
@@ -1638,19 +1720,48 @@ impl TradeWsClient {
                     .client_order_id()
                     .or_else(|| meta.map(|m| m.client_order_id))
                     .unwrap_or(0);
-                self.publish_bybit_ws_response(client_order_id, req_type, &resp);
+                let ws_open_update_enabled =
+                    meta.map(|m| m.ws_open_update_enabled).unwrap_or(false);
+                self.publish_bybit_ws_response(
+                    client_order_id,
+                    req_type,
+                    ws_open_update_enabled,
+                    &resp,
+                );
                 return;
             }
         }
 
-        let (req_type, client_order_id) = self.extract_correlated(payload);
         if self.exchange == Exchange::Okex {
             if let Some(resp) = OkexWsOrderResponse::from_json_str(payload) {
+                let (req_type, client_order_id, ws_open_update_enabled) = if resp.id > 0 {
+                    self.inflight
+                        .remove(&resp.id)
+                        .map(|meta| {
+                            (
+                                meta.req_type,
+                                meta.client_order_id,
+                                meta.ws_open_update_enabled,
+                            )
+                        })
+                        .unwrap_or((
+                            self.last_dispatched_type,
+                            resp.client_order_id().unwrap_or(resp.id),
+                            false,
+                        ))
+                } else {
+                    (
+                        self.last_dispatched_type,
+                        resp.client_order_id().unwrap_or(0),
+                        false,
+                    )
+                };
                 let coid = resp.client_order_id().unwrap_or(client_order_id);
-                self.publish_okex_ws_response(coid, req_type, &resp);
+                self.publish_okex_ws_response(coid, req_type, ws_open_update_enabled, &resp);
                 return;
             }
         }
+        let (req_type, client_order_id) = self.extract_correlated(payload);
         self.publish_generic_response(client_order_id, req_type, payload.to_string(), false);
     }
 
@@ -1658,8 +1769,17 @@ impl TradeWsClient {
         &self,
         client_order_id: i64,
         req_type: TradeRequestType,
+        ws_open_update_enabled: bool,
         resp: &BybitWsOrderResponse,
     ) {
+        let status = if resp.ret_code == 0 && resp.ret_msg == "OK" {
+            206
+        } else {
+            400
+        };
+        if !Self::should_publish_ws_open_update(req_type, status, ws_open_update_enabled) {
+            return;
+        }
         let body_payload = json!({
             "transport": "ws",
             "exchange": "bybit",
@@ -1677,12 +1797,12 @@ impl TradeWsClient {
         let _ = self.resp_tx.send(TradeExecOutcome {
             req_type,
             client_order_id,
-            status: 206,
+            status,
             body: body_payload,
             exchange: self.exchange,
             order_id: resp.order_id_i64(),
-            order_status_u8: 0,
-            order_update_time: 0,
+            order_status_u8: resp.order_status_u8(),
+            order_update_time: resp.time_now_ms,
             executed_qty: 0.0,
             response_price: 0.0,
         });
@@ -1800,25 +1920,11 @@ impl TradeWsClient {
             return true;
         }
 
-        let fallback_client_order_id = Self::extract_gate_client_order_id(&json_val).unwrap_or(0);
+        // Gate WS trade responses are intentionally ignored; order state relies on account stream.
         let transport_id = Self::extract_gate_request_id(&json_val).unwrap_or(0);
-        let inflight_meta = if transport_id > 0 {
-            self.inflight.remove(&transport_id)
-        } else {
-            None
-        };
-        let client_order_id = inflight_meta
-            .map(|meta| meta.client_order_id)
-            .unwrap_or(fallback_client_order_id);
-        if client_order_id <= 0 {
-            return false;
+        if transport_id > 0 {
+            let _ = self.inflight.remove(&transport_id);
         }
-
-        let req_type = inflight_meta
-            .map(|meta| meta.req_type)
-            .unwrap_or(self.last_dispatched_type);
-        let status = Self::extract_gate_status(&json_val);
-        self.publish_gate_ws_response(client_order_id, req_type, status, payload.to_string());
         true
     }
 
@@ -1842,12 +1948,18 @@ impl TradeWsClient {
             return true;
         }
 
-        let (req_type, client_order_id) = self
+        let (req_type, client_order_id, ws_open_update_enabled) = self
             .inflight
             .remove(&id)
-            .map(|meta| (meta.req_type, meta.client_order_id))
-            .unwrap_or((self.last_dispatched_type, id));
-        self.publish_binance_ws_response(client_order_id, req_type, &resp);
+            .map(|meta| {
+                (
+                    meta.req_type,
+                    meta.client_order_id,
+                    meta.ws_open_update_enabled,
+                )
+            })
+            .unwrap_or((self.last_dispatched_type, id, false));
+        self.publish_binance_ws_response(client_order_id, req_type, ws_open_update_enabled, &resp);
         true
     }
 
@@ -1863,9 +1975,13 @@ impl TradeWsClient {
         &self,
         client_order_id: i64,
         req_type: TradeRequestType,
+        ws_open_update_enabled: bool,
         resp: &binance_ws::BinanceWsResponse,
     ) {
         let status = Self::binance_status(resp);
+        if !Self::should_publish_ws_open_update(req_type, status, ws_open_update_enabled) {
+            return;
+        }
         let (order_id, order_status_u8, order_update_time, executed_qty, response_price) =
             binance_ws::extract_order_info(resp);
         info!(
@@ -1995,53 +2111,6 @@ impl TradeWsClient {
         true
     }
 
-    fn extract_gate_client_order_id(val: &Value) -> Option<i64> {
-        fn parse_i64_value(v: &Value) -> Option<i64> {
-            if let Some(n) = v.as_i64() {
-                return Some(n);
-            }
-            if let Some(n) = v.as_u64() {
-                return Some(n as i64);
-            }
-            if let Some(s) = v.as_str() {
-                let s = s.trim();
-                if let Ok(parsed) = s.parse::<i64>() {
-                    return Some(parsed);
-                }
-                if let Some(rest) = s.strip_prefix("t-") {
-                    if let Ok(parsed) = rest.parse::<i64>() {
-                        return Some(parsed);
-                    }
-                }
-            }
-            None
-        }
-
-        if let Some(id) = val.get("request_id").and_then(parse_i64_value) {
-            return Some(id);
-        }
-
-        if let Some(text) = val.pointer("/data/result/text") {
-            if let Some(id) = parse_i64_value(text) {
-                return Some(id);
-            }
-        }
-
-        if let Some(text) = val.pointer("/data/result/req_param/text") {
-            if let Some(id) = parse_i64_value(text) {
-                return Some(id);
-            }
-        }
-
-        if let Some(order_id) = val.pointer("/data/result/req_param/order_id") {
-            if let Some(id) = parse_i64_value(order_id) {
-                return Some(id);
-            }
-        }
-
-        None
-    }
-
     fn extract_gate_request_id(val: &Value) -> Option<i64> {
         fn parse_i64_value(v: &Value) -> Option<i64> {
             if let Some(n) = v.as_i64() {
@@ -2156,35 +2225,6 @@ impl TradeWsClient {
         });
     }
 
-    fn publish_gate_ws_response(
-        &self,
-        client_order_id: i64,
-        req_type: TradeRequestType,
-        status: u16,
-        body: String,
-    ) {
-        let body_payload = json!({
-            "transport": "ws",
-            "encoding": "text",
-            "payload": body,
-            "endpointId": self.id,
-            "localIp": self.local_ip.to_string(),
-        })
-        .to_string();
-        let _ = self.resp_tx.send(TradeExecOutcome {
-            req_type,
-            client_order_id,
-            status,
-            body: body_payload,
-            exchange: self.exchange,
-            order_id: 0,
-            order_status_u8: 0,
-            order_update_time: 0,
-            executed_qty: 0.0,
-            response_price: 0.0,
-        });
-    }
-
     fn publish_query_response(
         &self,
         req_type: QueryRequestType,
@@ -2214,8 +2254,23 @@ impl TradeWsClient {
         &self,
         client_order_id: i64,
         req_type: TradeRequestType,
+        ws_open_update_enabled: bool,
         resp: &OkexWsOrderResponse,
     ) {
+        let status = if resp.code == 0
+            && resp
+                .data
+                .as_ref()
+                .map(|d| d.status_code == 0)
+                .unwrap_or(true)
+        {
+            206
+        } else {
+            400
+        };
+        if !Self::should_publish_ws_open_update(req_type, status, ws_open_update_enabled) {
+            return;
+        }
         // Keep the body compact (no raw JSON), but keep a parseable structure for error extraction.
         let body_payload = json!({
             "transport": "ws",
@@ -2234,12 +2289,12 @@ impl TradeWsClient {
         let _ = self.resp_tx.send(TradeExecOutcome {
             req_type,
             client_order_id,
-            status: 206,
+            status,
             body: body_payload,
             exchange: self.exchange,
-            order_id: 0,
-            order_status_u8: 0,
-            order_update_time: 0,
+            order_id: resp.order_id(),
+            order_status_u8: resp.order_status_u8(),
+            order_update_time: resp.order_update_time_ms(),
             executed_qty: 0.0,
             response_price: 0.0,
         });

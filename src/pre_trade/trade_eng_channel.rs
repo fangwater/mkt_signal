@@ -495,7 +495,13 @@ fn infer_time_in_force(venue: TradingVenue, order_type: OrderType) -> TimeInForc
         return TimeInForce::GTC;
     }
     match venue {
-        TradingVenue::BinanceFutures => TimeInForce::GTX,
+        TradingVenue::BinanceFutures
+        | TradingVenue::BybitMargin
+        | TradingVenue::BybitFutures
+        | TradingVenue::OkexMargin
+        | TradingVenue::OkexFutures
+        | TradingVenue::GateMargin
+        | TradingVenue::GateFutures => TimeInForce::GTX,
         _ => TimeInForce::GTC,
     }
 }

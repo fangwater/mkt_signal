@@ -1,6 +1,7 @@
 use crate::common::exchange::Exchange;
 
 pub mod binance;
+pub mod bybit;
 pub mod okex;
 
 /// Map common trade/rest/ws error codes to a short, stable description.
@@ -12,6 +13,7 @@ pub mod okex;
 pub fn describe_trade_error_code(exchange: Exchange, code: i32) -> Option<&'static str> {
     match exchange {
         Exchange::Binance => binance::describe_trade_error_code(code),
+        Exchange::Bybit => bybit::describe_trade_error_code(code),
         Exchange::Okex => okex::describe_trade_error_code(code),
         _ => None,
     }
@@ -64,6 +66,34 @@ mod tests {
             Some("Invalid args")
         );
         assert_eq!(
+            describe_trade_error_code(Exchange::Bybit, 0),
+            Some("Success")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Bybit, 10403),
+            Some("WS rate limit exceeded for IP")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Bybit, 10404),
+            Some("Unsupported op or category")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Bybit, 10429),
+            Some("System-level frequency protection triggered")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Bybit, 20006),
+            Some("Duplicated reqId")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Bybit, 10016),
+            Some("Internal error or service restarting")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Bybit, 10019),
+            Some("WS trade service restarting; new requests rejected")
+        );
+        assert_eq!(
             describe_trade_error_code(Exchange::Okex, 1),
             Some("Request failed")
         );
@@ -111,6 +141,7 @@ mod tests {
             describe_trade_error_code(Exchange::Okex, 51511),
             Some("Post Only rejected")
         );
+        assert_eq!(describe_trade_error_code(Exchange::Bybit, 999), None);
         assert_eq!(describe_trade_error_code(Exchange::Okex, 999), None);
     }
 }

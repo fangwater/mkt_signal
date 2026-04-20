@@ -412,6 +412,7 @@ pub struct BybitWsOrderResponse {
     pub op: String,
     pub order_id: String,
     pub order_link_id: String,
+    pub time_now_ms: i64,
 }
 
 impl BybitWsOrderResponse {
@@ -438,6 +439,25 @@ impl BybitWsOrderResponse {
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
+        if order_link_id.is_empty() {
+            return None;
+        }
+        let time_now_ms = obj
+            .get("header")
+            .and_then(|v| v.as_object())
+            .and_then(|header| header.get("Timenow"))
+            .and_then(|v| {
+                if let Some(n) = v.as_i64() {
+                    Some(n)
+                } else if let Some(n) = v.as_u64() {
+                    i64::try_from(n).ok()
+                } else if let Some(s) = v.as_str() {
+                    s.parse::<i64>().ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
 
         Some(Self {
             req_id: obj
@@ -454,6 +474,7 @@ impl BybitWsOrderResponse {
             op,
             order_id,
             order_link_id,
+            time_now_ms,
         })
     }
 
@@ -467,6 +488,17 @@ impl BybitWsOrderResponse {
 
     pub fn order_id_i64(&self) -> i64 {
         BybitBasicOrderMsg::stable_i64_from_str(&self.order_id)
+    }
+
+    pub fn order_status_u8(&self) -> u8 {
+        if self.ret_code != 0 || self.ret_msg != "OK" {
+            return 0;
+        }
+        match self.op.as_str() {
+            "order.create" => 1,
+            "order.cancel" => 4,
+            _ => 0,
+        }
     }
 }
 
@@ -582,11 +614,19 @@ mod tests {
 
     #[test]
     fn parses_bybit_ws_order_response() {
-        let payload = r#"{"reqId":"123","retCode":0,"retMsg":"OK","op":"order.create","data":{"orderId":"abcdef","orderLinkId":"42"}}"#;
+        let payload = r#"{"reqId":"123","retCode":0,"retMsg":"OK","op":"order.create","data":{"orderId":"abcdef","orderLinkId":"42"},"header":{"Timenow":"1711001595209"}}"#;
         let resp = BybitWsOrderResponse::from_json_str(payload).unwrap();
         assert_eq!(resp.transport_id(), Some(123));
         assert_eq!(resp.client_order_id(), Some(42));
         assert_eq!(resp.ret_code, 0);
+        assert_eq!(resp.time_now_ms, 1_711_001_595_209);
+        assert_eq!(resp.order_status_u8(), 1);
         assert!(resp.order_id_i64() > 0);
+    }
+
+    #[test]
+    fn rejects_bybit_ws_order_response_without_order_link_id() {
+        let payload = r#"{"reqId":"123","retCode":0,"retMsg":"OK","op":"order.create","data":{"orderId":"abcdef","orderLinkId":""},"header":{"Timenow":"1711001595209"}}"#;
+        assert!(BybitWsOrderResponse::from_json_str(payload).is_none());
     }
 }
