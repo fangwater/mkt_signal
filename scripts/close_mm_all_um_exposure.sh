@@ -11,15 +11,21 @@ usage() {
   scripts/close_mm_all_um_exposure.sh binance_mm_alpha --execute
   scripts/close_mm_all_um_exposure.sh --env-name okex_mm_alpha [--execute] [--symbol BTCUSDT]
   scripts/close_mm_all_um_exposure.sh --env-name okex_mm_alpha [--execute] [--symbols BTCUSDT,ETHUSDT]
+  scripts/close_mm_all_um_exposure.sh --env-name bybit_mm_alpha [--execute] [--symbol BTCUSDT]
+  scripts/close_mm_all_um_exposure.sh --env-name bitget_mm_alpha [--execute] [--symbol BTCUSDT]
+  scripts/close_mm_all_um_exposure.sh --env-name gate_mm_alpha [--execute] [--symbol BTCUSDT]
 
 说明:
-  - 默认 source $HOME/<env-name>/env.sh，再按 env-name 自动调用 Binance/OKX 的平仓脚本
+  - 默认 source $HOME/<env-name>/env.sh，再按 env-name 自动调用 Binance/OKX/Bybit/Bitget/Gate 的平仓脚本
   - 本地 source IP 优先读取 <env-dir>/trade_engine.toml 的 local_ips[0]，否则回退到 $HOME/dat_pbs/config/mkt_cfg.yaml
   - 默认 dry-run，仅打印当前持仓平仓计划；加 --execute 后才真实下市价平仓单
   - 支持 --symbol 重复传入，也支持 --symbols 逗号/空格分隔
   - symbol 会按交易所规范化：
       Binance: BTCUSDT / BTC-USDT / BTC-USDT-SWAP -> BTCUSDT
       OKX:     BTCUSDT / BTC-USDT / BTC-USDT-SWAP -> BTC-USDT-SWAP
+      Bybit:   BTCUSDT / BTC-USDT / BTC-USDT-SWAP -> BTCUSDT
+      Bitget:  BTCUSDT / BTC-USDT / BTC-USDT-SWAP -> BTCUSDT
+      Gate:    BTCUSDT / BTC-USDT / BTC-USDT-SWAP -> BTC_USDT
   - 其余参数会透传给 Python 脚本
 EOF
 }
@@ -72,13 +78,13 @@ done
 
 if [[ -z "$ENV_NAME" ]]; then
   cwd_name="$(basename "$(pwd)")"
-  if [[ "$cwd_name" =~ ^(binance|okex)_mm_[a-z0-9][a-z0-9_-]*$ ]]; then
+  if [[ "$cwd_name" =~ ^(binance|okex|bybit|bitget|gate)_mm_[a-z0-9][a-z0-9_-]*$ ]]; then
     ENV_NAME="$cwd_name"
   fi
 fi
 
 if [[ -z "$ENV_NAME" && -z "$ENV_DIR" ]]; then
-  echo "[ERROR] 需要提供 --env-name（例如 binance_mm_alpha / okex_mm_alpha）或 --env-dir" >&2
+  echo "[ERROR] 需要提供 --env-name（例如 binance_mm_alpha / okex_mm_alpha / bybit_mm_alpha / bitget_mm_alpha / gate_mm_alpha）或 --env-dir" >&2
   usage >&2
   exit 1
 fi
@@ -109,6 +115,18 @@ detect_exchange() {
       echo "binance"
       return 0
       ;;
+    bybit_mm_*|*bybit*)
+      echo "bybit"
+      return 0
+      ;;
+    bitget_mm_*|*bitget*)
+      echo "bitget"
+      return 0
+      ;;
+    gate_mm_*|*gate*)
+      echo "gate"
+      return 0
+      ;;
   esac
   if [[ -n "${OKX_API_KEY:-}" || -n "${OKX_PASSPHRASE:-}" ]]; then
     echo "okex"
@@ -116,6 +134,18 @@ detect_exchange() {
   fi
   if [[ -n "${BINANCE_API_KEY:-}" || -n "${BINANCE_ACCOUNT_MODE:-}" ]]; then
     echo "binance"
+    return 0
+  fi
+  if [[ -n "${BYBIT_API_KEY:-}" || -n "${BYBIT_API_SECRET:-}" ]]; then
+    echo "bybit"
+    return 0
+  fi
+  if [[ -n "${BITGET_API_KEY:-}" || -n "${BITGET_API_PASSPHRASE:-}" ]]; then
+    echo "bitget"
+    return 0
+  fi
+  if [[ -n "${GATE_API_KEY:-}" || -n "${GATE_API_SECRET:-}" ]]; then
+    echo "gate"
     return 0
   fi
   return 1
@@ -140,9 +170,21 @@ if [[ "$EXCHANGE" == "binance" ]]; then
   exec "$PYTHON_BIN" "$SCRIPT_DIR/flatten_binance_std_um.py" --env-dir "$ENV_DIR" "${PASS_ARGS[@]}"
 fi
 
-if [[ "$EXCHANGE" != "okex" ]]; then
-  echo "[ERROR] 不支持的交易所: $EXCHANGE" >&2
-  exit 1
-fi
-
-exec "$PYTHON_BIN" "$SCRIPT_DIR/flatten_okx_swap_exposure.py" "${PASS_ARGS[@]}"
+case "$EXCHANGE" in
+  okex)
+    exec "$PYTHON_BIN" "$SCRIPT_DIR/flatten_okx_swap_exposure.py" "${PASS_ARGS[@]}"
+    ;;
+  bybit)
+    exec "$PYTHON_BIN" "$SCRIPT_DIR/flatten_bybit_um_exposure.py" "${PASS_ARGS[@]}"
+    ;;
+  bitget)
+    exec "$PYTHON_BIN" "$SCRIPT_DIR/flatten_bitget_um_exposure.py" "${PASS_ARGS[@]}"
+    ;;
+  gate)
+    exec "$PYTHON_BIN" "$SCRIPT_DIR/flatten_gate_um_exposure.py" "${PASS_ARGS[@]}"
+    ;;
+  *)
+    echo "[ERROR] 不支持的交易所: $EXCHANGE" >&2
+    exit 1
+    ;;
+esac
