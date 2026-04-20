@@ -2233,6 +2233,10 @@ impl FusionFactorPubApp {
         eval_cost_us: u128,
         eval_result: &OrderedEvalResult,
     ) {
+        if eval_cost_us < 1_000 {
+            return;
+        }
+
         let s = &eval_result.stats;
         let good = s.factor_ready_count.saturating_sub(s.factor_nan_fill_count);
         let bad = s.factor_warming_up_count
