@@ -90,6 +90,8 @@ RISK_PARAMS = {
     "max_total_exposure_ratio": "0.01",  # 总敞口比例（0.0-1.0）
     "max_leverage": "1.75",  # 最大杠杆倍数（>0）
     "max_pending_limit_orders": "10",  # 最大挂单数（>=0）
+    "max_pending_limit_buy_orders": "0",  # 买侧最大挂单数（>=0, 0=关闭）
+    "max_pending_limit_sell_orders": "0",  # 卖侧最大挂单数（>=0, 0=关闭）
     "open_order_rate_limit_per_min": "0",  # 开仓侧每分钟下单次数限制（0=关闭）
     "open_order_rate_limit_10s": "0",  # 开仓侧10秒下单次数限制（0=关闭）
     "hedge_order_rate_limit_per_min": "0",  # 对冲侧每分钟下单次数限制（0=关闭）
@@ -103,6 +105,8 @@ PARAM_COMMENTS: Dict[str, str] = {
     "max_total_exposure_ratio": "总敞口比例",
     "max_leverage": "最大杠杆倍数",
     "max_pending_limit_orders": "最大挂单数",
+    "max_pending_limit_buy_orders": "买侧最大挂单数（只限制 open，0=关闭）",
+    "max_pending_limit_sell_orders": "卖侧最大挂单数（只限制 open，0=关闭）",
     "open_order_rate_limit_per_min": "Open order rate limit/Min（开仓侧独立额度，0=关闭）",
     "open_order_rate_limit_10s": "Open order rate limit 10s（开仓侧独立额度，0=关闭）",
     "hedge_order_rate_limit_per_min": "Hedge order rate limit/Min（对冲侧独立额度，0=关闭）",
