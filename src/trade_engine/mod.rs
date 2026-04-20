@@ -1,6 +1,6 @@
 pub mod binance_ws;
-pub mod bitget_query_rate_limiter;
 pub mod bitget_query;
+pub mod bitget_query_rate_limiter;
 pub mod bitget_ws;
 pub mod bybit;
 pub mod bybit_query;

@@ -154,7 +154,10 @@ pub trait TradeEngineResponse {
                 110001 | 110008 | 110010 | 170139 | 170142 | 170143 | 170145 | 170190 | 170191
             ),
             Some(Exchange::Bitget) => {
-                matches!(self.error_code(), 22001 | 43001 | 43004 | 45031 | 45055 | 45057)
+                matches!(
+                    self.error_code(),
+                    22001 | 43001 | 43004 | 45031 | 45055 | 45057
+                )
             }
             _ => false,
         }
@@ -178,7 +181,10 @@ pub trait TradeEngineResponse {
                 110001 | 110008 | 110010 | 170139 | 170142 | 170143 | 170145 | 170190 | 170191
             ),
             Some(Exchange::Bitget) => {
-                matches!(self.error_code(), 22001 | 43001 | 43004 | 45031 | 45055 | 45057)
+                matches!(
+                    self.error_code(),
+                    22001 | 43001 | 43004 | 45031 | 45055 | 45057
+                )
             }
             _ => false,
         }

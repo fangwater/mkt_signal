@@ -8,11 +8,11 @@ use crate::trade_engine::okex::{
 use crate::trade_engine::trade_request::BinanceNewMarginOrderRequest;
 use crate::trade_engine::trade_request::BinanceNewUMOrderRequest;
 use crate::trade_engine::trade_request::{
-    BitgetMarginNewOrderRequest, BitgetUmNewOrderRequest,
     BinanceCancelMarginOrderRequest, BinanceCancelUMOrderRequest,
     BinanceWsCancelMarginOrderRequest, BinanceWsCancelUMOrderRequest,
-    BinanceWsNewMarginOrderRequest, BinanceWsNewUMOrderRequest, GateFuturesCancelOrderRequest,
-    GateFuturesNewOrderRequest, GateUnifiedCancelOrderRequest, GateUnifiedNewOrderRequest,
+    BinanceWsNewMarginOrderRequest, BinanceWsNewUMOrderRequest, BitgetMarginNewOrderRequest,
+    BitgetUmNewOrderRequest, GateFuturesCancelOrderRequest, GateFuturesNewOrderRequest,
+    GateUnifiedCancelOrderRequest, GateUnifiedNewOrderRequest,
 };
 use crate::{
     common::symbol_util::normalize_symbol_for_internal,
@@ -1376,11 +1376,18 @@ impl Order {
                 let create_ts = get_timestamp_us();
                 let mut req_param = serde_json::Map::new();
                 req_param.insert("category".to_string(), json!("spot"));
-                req_param.insert("symbol".to_string(), json!(self.symbol.to_ascii_uppercase()));
+                req_param.insert(
+                    "symbol".to_string(),
+                    json!(self.symbol.to_ascii_uppercase()),
+                );
                 req_param.insert("side".to_string(), json!(self.side.as_str()));
                 req_param.insert(
                     "orderType".to_string(),
-                    json!(if self.order_type.is_limit() { "limit" } else { "market" }),
+                    json!(if self.order_type.is_limit() {
+                        "limit"
+                    } else {
+                        "market"
+                    }),
                 );
                 req_param.insert("force".to_string(), json!("post_only"));
                 req_param.insert("price".to_string(), json!(format_price(self.price)));
@@ -1398,11 +1405,18 @@ impl Order {
                 let create_ts = get_timestamp_us();
                 let mut req_param = serde_json::Map::new();
                 req_param.insert("category".to_string(), json!("usdt-futures"));
-                req_param.insert("symbol".to_string(), json!(self.symbol.to_ascii_uppercase()));
+                req_param.insert(
+                    "symbol".to_string(),
+                    json!(self.symbol.to_ascii_uppercase()),
+                );
                 req_param.insert("side".to_string(), json!(self.side.as_str()));
                 req_param.insert(
                     "orderType".to_string(),
-                    json!(if self.order_type.is_limit() { "limit" } else { "market" }),
+                    json!(if self.order_type.is_limit() {
+                        "limit"
+                    } else {
+                        "market"
+                    }),
                 );
                 req_param.insert("force".to_string(), json!("post_only"));
                 req_param.insert("price".to_string(), json!(format_price(self.price)));

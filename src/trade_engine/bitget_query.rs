@@ -16,7 +16,12 @@ fn build_bitget_sign(
     path_with_query: &str,
     secret: &str,
 ) -> String {
-    let payload = format!("{}{}{}", timestamp_ms, method.to_uppercase(), path_with_query);
+    let payload = format!(
+        "{}{}{}",
+        timestamp_ms,
+        method.to_uppercase(),
+        path_with_query
+    );
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC can take any size");
     mac.update(payload.as_bytes());
     BASE64.encode(mac.finalize().into_bytes())

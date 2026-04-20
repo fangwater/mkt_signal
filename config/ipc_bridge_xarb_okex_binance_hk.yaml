@@ -1,7 +1,9 @@
 # XARB OKEX(open) - Binance(hedge) bridge config (HK side)
 #
 # Purpose:
-# - Local OKEX market-data fan-out: dat_pbs/okex-* -> bridge/okex-*
+# - Local OKEX/Bybit market-data fan-out:
+#   - dat_pbs/okex-* -> bridge/okex-*
+#   - dat_pbs/bybit-* -> bridge/bybit-*
 # - Remote Binance market-data ingest from JP via ZMQ: ZMQ -> bridge/binance-futures/*
 # - Remote Binance business channels to JP engine/account_monitor over ZMQ
 #   - order_reqs/binance <-> order_resps/binance
@@ -17,7 +19,7 @@
 
 routes:
   # -----------------------------
-  # Local OKEX market-data fan-out
+  # Local OKEX/Bybit market-data fan-out
   # -----------------------------
   - id: bridge_okex_margin_ask_bid
     from:
@@ -69,6 +71,62 @@ routes:
     to:
       type: ipc
       endpoint: "bridge/okex-futures/derivatives"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 50
+      subscriber_max_buffer_size: 8192
+
+  - id: bridge_bybit_margin_ask_bid
+    from:
+      type: ipc
+      endpoint: "dat_pbs/bybit-margin/ask_bid_spread"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/bybit-margin/ask_bid_spread"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 100
+      subscriber_max_buffer_size: 8192
+
+  - id: bridge_bybit_margin_derivatives
+    from:
+      type: ipc
+      endpoint: "dat_pbs/bybit-margin/derivatives"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/bybit-margin/derivatives"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 50
+      subscriber_max_buffer_size: 8192
+
+  - id: bridge_bybit_futures_ask_bid
+    from:
+      type: ipc
+      endpoint: "dat_pbs/bybit-futures/ask_bid_spread"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/bybit-futures/ask_bid_spread"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 100
+      subscriber_max_buffer_size: 8192
+
+  - id: bridge_bybit_futures_derivatives
+    from:
+      type: ipc
+      endpoint: "dat_pbs/bybit-futures/derivatives"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/bybit-futures/derivatives"
       size: 128
       max_publishers: 1
       max_subscribers: 64

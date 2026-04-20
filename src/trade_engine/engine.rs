@@ -2,9 +2,9 @@ use crate::common::binance_account_mode::{binance_account_mode, BinanceAccountMo
 use crate::common::exchange::Exchange;
 use crate::common::iceoryx_publisher::{QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD};
 use crate::common::ipc_service_name::build_service_name;
+use crate::trade_engine::bitget_query_rate_limiter::BitgetQueryRateLimiter;
 use crate::trade_engine::config::{ApiKey, WsConstants};
 use crate::trade_engine::dispatcher::Dispatcher;
-use crate::trade_engine::bitget_query_rate_limiter::BitgetQueryRateLimiter;
 use crate::trade_engine::okex_query_rate_limiter::OkexQueryRateLimiter;
 use crate::trade_engine::query_parsers::binance_margin_order::parse_binance_margin_order_query_json;
 use crate::trade_engine::query_parsers::binance_pm_balance_snapshot::parse_binance_pm_balance_snapshot;
@@ -40,6 +40,7 @@ use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info, warn};
+use serde_json::Value;
 use std::net::IpAddr;
 use std::rc::Rc;
 use std::time::Duration;
@@ -57,6 +58,49 @@ fn request_payload_len(payload: &[u8]) -> Option<usize> {
         return None;
     }
     Some(total)
+}
+
+fn summarize_bybit_response(body: &str) -> String {
+    let Ok(v) = serde_json::from_str::<Value>(body) else {
+        return format!("non_json body_len={}", body.len());
+    };
+
+    let ret_code = v
+        .get("retCode")
+        .and_then(|x| x.as_i64())
+        .map(|x| x.to_string())
+        .unwrap_or_else(|| "NA".to_string());
+    let ret_msg = v
+        .get("retMsg")
+        .and_then(|x| x.as_str())
+        .unwrap_or("<missing>");
+
+    let list_len = v
+        .get("result")
+        .and_then(|r| r.get("list"))
+        .and_then(|x| x.as_array())
+        .map(|x| x.len().to_string())
+        .unwrap_or_else(|| "NA".to_string());
+
+    format!(
+        "retCode={} retMsg={} result.list.len={} body_len={}",
+        ret_code,
+        ret_msg,
+        list_len,
+        body.len()
+    )
+}
+
+fn truncate_for_log(text: &str, max_chars: usize) -> String {
+    let mut truncated = String::new();
+    for (idx, ch) in text.chars().enumerate() {
+        if idx >= max_chars {
+            truncated.push_str("...");
+            break;
+        }
+        truncated.push(ch);
+    }
+    truncated
 }
 
 async fn join_or_abort(name: &str, mut handle: tokio::task::JoinHandle<()>) {
@@ -1536,6 +1580,22 @@ impl TradeEngine {
 
                             let endpoint = QueryTypeMapping::get_endpoint(msg.req_type);
                             let qs = std::str::from_utf8(&msg.params).unwrap_or("");
+                            let is_bybit_snapshot = matches!(
+                                msg.req_type,
+                                crate::trade_engine::query_request::QueryRequestType::BybitAccountBalanceSnapshot
+                                    | crate::trade_engine::query_request::QueryRequestType::BybitPositionsSnapshot
+                            );
+                            if is_bybit_snapshot {
+                                info!(
+                                    "trade_engine bybit query start req_type={:?} client_query_id={} endpoint={} qs={}",
+                                    msg.req_type, msg.client_query_id, endpoint, qs
+                                );
+                            } else {
+                                debug!(
+                                    "trade_engine bybit query start req_type={:?} client_query_id={} endpoint={} qs={}",
+                                    msg.req_type, msg.client_query_id, endpoint, qs
+                                );
+                            }
 
                             match crate::trade_engine::bybit_query::bybit_rest_get(
                                 &bybit_http,
@@ -1546,6 +1606,24 @@ impl TradeEngine {
                             .await
                             {
                                 Ok((status, body)) => {
+                                    let bybit_summary = summarize_bybit_response(&body);
+                                    if is_bybit_snapshot {
+                                        info!(
+                                            "trade_engine bybit query response req_type={:?} client_query_id={} status={} {}",
+                                            msg.req_type,
+                                            msg.client_query_id,
+                                            status,
+                                            bybit_summary
+                                        );
+                                    } else {
+                                        debug!(
+                                            "trade_engine bybit query response req_type={:?} client_query_id={} status={} {}",
+                                            msg.req_type,
+                                            msg.client_query_id,
+                                            status,
+                                            bybit_summary
+                                        );
+                                    }
                                     let body_bytes = match msg.req_type {
                                         crate::trade_engine::query_request::QueryRequestType::BybitMarginQuery
                                         | crate::trade_engine::query_request::QueryRequestType::BybitUMQuery
@@ -1569,6 +1647,12 @@ impl TradeEngine {
                                                 parse_bybit_account_balance_snapshot(&body)
                                             {
                                                 if !msgs.is_empty() {
+                                                    info!(
+                                                        "trade_engine bybit balance snapshot parsed req_type={:?} client_query_id={} msgs={}",
+                                                        msg.req_type,
+                                                        msg.client_query_id,
+                                                        msgs.len()
+                                                    );
                                                     for payload in msgs {
                                                         let _ = query_resp_tx.send(QueryExecOutcome {
                                                             req_type: msg.req_type,
@@ -1583,6 +1667,14 @@ impl TradeEngine {
                                                     continue;
                                                 }
                                             }
+                                            warn!(
+                                                "trade_engine bybit balance snapshot parse produced no basic msgs req_type={:?} client_query_id={} status={} {} body={}",
+                                                msg.req_type,
+                                                msg.client_query_id,
+                                                status,
+                                                bybit_summary,
+                                                truncate_for_log(&body, 512)
+                                            );
                                             bytes::Bytes::new()
                                         }
                                         crate::trade_engine::query_request::QueryRequestType::BybitPositionsSnapshot
@@ -1591,6 +1683,12 @@ impl TradeEngine {
                                             if let Some(msgs) = parse_bybit_positions_snapshot(&body)
                                             {
                                                 if !msgs.is_empty() {
+                                                    info!(
+                                                        "trade_engine bybit positions snapshot parsed req_type={:?} client_query_id={} msgs={}",
+                                                        msg.req_type,
+                                                        msg.client_query_id,
+                                                        msgs.len()
+                                                    );
                                                     for payload in msgs {
                                                         let _ = query_resp_tx.send(QueryExecOutcome {
                                                             req_type: msg.req_type,
@@ -1605,6 +1703,14 @@ impl TradeEngine {
                                                     continue;
                                                 }
                                             }
+                                            warn!(
+                                                "trade_engine bybit positions snapshot parse produced no basic msgs req_type={:?} client_query_id={} status={} {} body={}",
+                                                msg.req_type,
+                                                msg.client_query_id,
+                                                status,
+                                                bybit_summary,
+                                                truncate_for_log(&body, 512)
+                                            );
                                             bytes::Bytes::new()
                                         }
                                         _ => bytes::Bytes::from(body),
@@ -1621,6 +1727,14 @@ impl TradeEngine {
                                     });
                                 }
                                 Err(e) => {
+                                    warn!(
+                                        "trade_engine bybit query failed req_type={:?} client_query_id={} endpoint={} qs={} err={:#}",
+                                        msg.req_type,
+                                        msg.client_query_id,
+                                        endpoint,
+                                        qs,
+                                        e
+                                    );
                                     let _ = query_resp_tx.send(QueryExecOutcome {
                                         req_type: msg.req_type,
                                         client_query_id: msg.client_query_id,
@@ -1678,7 +1792,8 @@ impl TradeEngine {
                                 );
                                 tokio::time::sleep(block.wait_for).await;
                             }
-                            let _ = bitget_query_rate_limiter.record(msg.req_type, std::time::Instant::now());
+                            let _ = bitget_query_rate_limiter
+                                .record(msg.req_type, std::time::Instant::now());
 
                             let endpoint = QueryTypeMapping::get_endpoint(msg.req_type);
                             let qs = std::str::from_utf8(&msg.params).unwrap_or("");

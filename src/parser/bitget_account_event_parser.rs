@@ -400,16 +400,15 @@ impl BitgetAccountEventParser {
             );
             let time_in_force = if order_type == 1 { 3 } else { 1 };
 
-            let quantity = parse_f64_str_or_num(fill_obj.get("execQty"))
-                .unwrap_or(0.0);
-            let cumulative_filled_quantity = parse_f64_str_or_num(fill_obj.get("execQty"))
-                .unwrap_or(0.0);
+            let quantity = parse_f64_str_or_num(fill_obj.get("execQty")).unwrap_or(0.0);
+            let cumulative_filled_quantity =
+                parse_f64_str_or_num(fill_obj.get("execQty")).unwrap_or(0.0);
             if cumulative_filled_quantity <= 0.0 {
                 continue;
             }
 
-            let last_executed_price = parse_f64_str_or_num(fill_obj.get("execPrice"))
-                .unwrap_or(0.0);
+            let last_executed_price =
+                parse_f64_str_or_num(fill_obj.get("execPrice")).unwrap_or(0.0);
 
             let order_status = 3;
 

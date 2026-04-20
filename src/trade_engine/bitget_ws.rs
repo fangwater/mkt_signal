@@ -5,7 +5,8 @@ use crate::portfolio_margin::bitget_auth::BitgetCredentials;
 use crate::trade_engine::trade_request::{TradeRequestMsg, TradeRequestType};
 
 pub fn build_login_payload(creds: &BitgetCredentials) -> Result<String> {
-    serde_json::to_string(&creds.build_login_message()).with_context(|| "serialize bitget login payload")
+    serde_json::to_string(&creds.build_login_message())
+        .with_context(|| "serialize bitget login payload")
 }
 
 pub fn build_order_payload(msg: &TradeRequestMsg, transport_id: i64) -> Result<String> {
@@ -58,10 +59,7 @@ impl BitgetWsOrderResponse {
         }
         let args = obj.get("args")?.as_array()?;
         let first = args.first()?.as_object()?;
-        let create_time_ms = first
-            .get("cTime")
-            .and_then(parse_i64_value)
-            .unwrap_or(0);
+        let create_time_ms = first.get("cTime").and_then(parse_i64_value).unwrap_or(0);
         Some(Self {
             event,
             id: obj.get("id").and_then(parse_i64_value).unwrap_or(0),

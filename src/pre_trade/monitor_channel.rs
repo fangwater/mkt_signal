@@ -39,6 +39,9 @@ const DERIVATIVES_MAX_SUBSCRIBERS: usize = 10;
 const DERIVATIVES_SUBSCRIBER_MAX_BUFFER: usize = 8192;
 const BINANCE_DERIVATIVES_SERVICE: &str = "bridge/binance-futures/derivatives";
 const OKEX_DERIVATIVES_SERVICE: &str = "bridge/okex-futures/derivatives";
+const BYBIT_DERIVATIVES_SERVICE: &str = "bridge/bybit-futures/derivatives";
+const BITGET_DERIVATIVES_SERVICE: &str = "bridge/bitget-futures/derivatives";
+const GATE_DERIVATIVES_SERVICE: &str = "bridge/gate-futures/derivatives";
 const DEFAULT_NODE_PRE_TRADE_DERIVATIVES: &str = "pre_trade_derivatives";
 
 // ==================== Helper Functions ====================
@@ -344,11 +347,17 @@ impl MonitorChannel {
     ) -> Exchange {
         let open_exchange = exchange_from_venue(open_venue);
         let hedge_exchange = exchange_from_venue(hedge_venue);
-        if open_exchange == Exchange::Okex && hedge_exchange == Exchange::Okex {
-            Exchange::Okex
-        } else {
-            Exchange::Binance
+        if open_exchange == hedge_exchange {
+            return open_exchange;
         }
+
+        for preferred in [Exchange::Okex, Exchange::Bybit, Exchange::Binance] {
+            if open_exchange == preferred || hedge_exchange == preferred {
+                return preferred;
+            }
+        }
+
+        Exchange::Binance
     }
 
     fn derivatives_service_for_mark_price_source(
@@ -357,6 +366,9 @@ impl MonitorChannel {
     ) -> &'static str {
         match Self::mark_price_exchange_for_venues(open_venue, hedge_venue) {
             Exchange::Okex => OKEX_DERIVATIVES_SERVICE,
+            Exchange::Bybit => BYBIT_DERIVATIVES_SERVICE,
+            Exchange::Bitget => BITGET_DERIVATIVES_SERVICE,
+            Exchange::Gate => GATE_DERIVATIVES_SERVICE,
             _ => BINANCE_DERIVATIVES_SERVICE,
         }
     }
@@ -494,7 +506,7 @@ impl MonitorChannel {
         hedge_venue: TradingVenue,
         binance_account_mode: Option<BinanceAccountMode>,
     ) -> Result<()> {
-        // 仅支持 Binance / OKX
+        // 仅支持当前已接入 pre_trade 的交易所
         for v in [open_venue, hedge_venue] {
             if !matches!(
                 v,
@@ -502,6 +514,10 @@ impl MonitorChannel {
                     | TradingVenue::BinanceFutures
                     | TradingVenue::OkexMargin
                     | TradingVenue::OkexFutures
+                    | TradingVenue::BybitMargin
+                    | TradingVenue::BybitFutures
+                    | TradingVenue::BitgetMargin
+                    | TradingVenue::BitgetFutures
                     | TradingVenue::GateMargin
                     | TradingVenue::GateFutures
             ) {
@@ -2489,6 +2505,60 @@ mod tests {
                 TradingVenue::BinanceFutures,
             ),
             BINANCE_DERIVATIVES_SERVICE
+        );
+    }
+
+    #[test]
+    fn mark_price_source_uses_bybit_when_both_venues_are_bybit() {
+        assert_eq!(
+            MonitorChannel::mark_price_exchange_for_venues(
+                TradingVenue::BybitMargin,
+                TradingVenue::BybitFutures,
+            ),
+            Exchange::Bybit
+        );
+        assert_eq!(
+            MonitorChannel::derivatives_service_for_mark_price_source(
+                TradingVenue::BybitMargin,
+                TradingVenue::BybitFutures,
+            ),
+            BYBIT_DERIVATIVES_SERVICE
+        );
+    }
+
+    #[test]
+    fn mark_price_source_uses_gate_when_both_venues_are_gate() {
+        assert_eq!(
+            MonitorChannel::mark_price_exchange_for_venues(
+                TradingVenue::GateMargin,
+                TradingVenue::GateFutures,
+            ),
+            Exchange::Gate
+        );
+        assert_eq!(
+            MonitorChannel::derivatives_service_for_mark_price_source(
+                TradingVenue::GateMargin,
+                TradingVenue::GateFutures,
+            ),
+            GATE_DERIVATIVES_SERVICE
+        );
+    }
+
+    #[test]
+    fn mark_price_source_uses_bitget_when_both_venues_are_bitget() {
+        assert_eq!(
+            MonitorChannel::mark_price_exchange_for_venues(
+                TradingVenue::BitgetMargin,
+                TradingVenue::BitgetFutures,
+            ),
+            Exchange::Bitget
+        );
+        assert_eq!(
+            MonitorChannel::derivatives_service_for_mark_price_source(
+                TradingVenue::BitgetMargin,
+                TradingVenue::BitgetFutures,
+            ),
+            BITGET_DERIVATIVES_SERVICE
         );
     }
 }

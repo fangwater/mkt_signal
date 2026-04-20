@@ -1,7 +1,7 @@
 # HK bridge fan-out config.
 #
-# This bridge republishes selected OKEX market-data channels into global
-# bridge/<venue>/... services.
+# This bridge republishes selected OKEX/Bybit market-data channels into
+# global bridge/<venue>/... services.
 
 routes:
   - id: bridge_okex_margin_ask_bid
@@ -54,6 +54,62 @@ routes:
     to:
       type: ipc
       endpoint: "bridge/okex-futures/derivatives"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 50
+      subscriber_max_buffer_size: 8192
+
+  - id: bridge_bybit_margin_ask_bid
+    from:
+      type: ipc
+      endpoint: "dat_pbs/bybit-margin/ask_bid_spread"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/bybit-margin/ask_bid_spread"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 100
+      subscriber_max_buffer_size: 8192
+
+  - id: bridge_bybit_margin_derivatives
+    from:
+      type: ipc
+      endpoint: "dat_pbs/bybit-margin/derivatives"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/bybit-margin/derivatives"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 50
+      subscriber_max_buffer_size: 8192
+
+  - id: bridge_bybit_futures_ask_bid
+    from:
+      type: ipc
+      endpoint: "dat_pbs/bybit-futures/ask_bid_spread"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/bybit-futures/ask_bid_spread"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 100
+      subscriber_max_buffer_size: 8192
+
+  - id: bridge_bybit_futures_derivatives
+    from:
+      type: ipc
+      endpoint: "dat_pbs/bybit-futures/derivatives"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/bybit-futures/derivatives"
       size: 128
       max_publishers: 1
       max_subscribers: 64

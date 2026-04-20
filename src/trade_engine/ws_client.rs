@@ -70,6 +70,23 @@ fn is_bybit_pong_response(payload: &str) -> bool {
     ) || matches!(v.get("ret_msg").and_then(|x| x.as_str()), Some("pong"))
 }
 
+fn parse_bybit_auth_response(payload: &str) -> Option<bool> {
+    let Ok(v) = serde_json::from_str::<Value>(payload) else {
+        return None;
+    };
+    if v.get("op").and_then(|x| x.as_str()) != Some("auth") {
+        return None;
+    }
+
+    if let Some(success) = v.get("success").and_then(|x| x.as_bool()) {
+        return Some(success);
+    }
+
+    v.get("retCode")
+        .and_then(|x| x.as_i64())
+        .map(|code| code == 0)
+}
+
 fn truncate_for_log(text: &str, max_chars: usize) -> String {
     let mut truncated = String::new();
     for (idx, ch) in text.chars().enumerate() {
@@ -1569,7 +1586,10 @@ impl TradeWsClient {
                     if code == "0" {
                         info!("trade ws client id={} Bitget login successful", self.id);
                     } else {
-                        warn!("trade ws client id={} Bitget login failed: {}", self.id, payload);
+                        warn!(
+                            "trade ws client id={} Bitget login failed: {}",
+                            self.id, payload
+                        );
                     }
                     return;
                 }
@@ -1582,23 +1602,20 @@ impl TradeWsClient {
                 return;
             }
 
-            if let Ok(json_val) = serde_json::from_str::<Value>(payload) {
-                if json_val.get("op").and_then(|v| v.as_str()) == Some("auth") {
-                    let success = json_val
-                        .get("success")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                    self.bybit_waiting_auth = false;
-                    if success {
-                        info!("trade ws client id={} Bybit auth successful", self.id);
-                    } else {
-                        warn!(
-                            "trade ws client id={} Bybit auth failed: {}",
-                            self.id, payload
-                        );
-                    }
-                    return;
+            if let Some(success) = parse_bybit_auth_response(payload) {
+                self.bybit_waiting_auth = false;
+                if success {
+                    info!(
+                        "trade ws client id={} Bybit auth successful: {}",
+                        self.id, payload
+                    );
+                } else {
+                    warn!(
+                        "trade ws client id={} Bybit auth failed: {}",
+                        self.id, payload
+                    );
                 }
+                return;
             }
         }
 
