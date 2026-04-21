@@ -392,6 +392,7 @@ fn spawn_bybit_stream_path(
             }
 
             let mut runner = BybitUserDataConnection::new(
+                format!("[{}][ip={}]", name, local_ip),
                 conn,
                 credentials.clone(),
                 subscribe_messages.clone(),

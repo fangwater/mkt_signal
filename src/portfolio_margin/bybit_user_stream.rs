@@ -26,6 +26,7 @@ enum ConnectionState {
 }
 
 pub struct BybitUserDataConnection {
+    log_prefix: String,
     base_connection: MktConnection,
     credentials: BybitCredentials,
     subscribe_messages: Vec<serde_json::Value>,
@@ -35,12 +36,14 @@ pub struct BybitUserDataConnection {
 
 impl BybitUserDataConnection {
     pub fn new(
+        log_prefix: impl Into<String>,
         connection: MktConnection,
         credentials: BybitCredentials,
         subscribe_messages: Vec<serde_json::Value>,
         session_max: Option<Duration>,
     ) -> Self {
         Self {
+            log_prefix: log_prefix.into(),
             base_connection: connection,
             credentials,
             subscribe_messages,
@@ -78,9 +81,11 @@ impl BybitUserDataConnection {
             Ok(v) => v,
             Err(_) => return false,
         };
-        (json.get("op").and_then(|v| v.as_str()) == Some("pong")
-            || json.get("ret_msg").and_then(|v| v.as_str()) == Some("pong"))
-            && json.get("success").is_some()
+        if json.get("op").and_then(|v| v.as_str()) == Some("pong") {
+            return true;
+        }
+        json.get("op").and_then(|v| v.as_str()) == Some("ping")
+            && json.get("ret_msg").and_then(|v| v.as_str()) == Some("pong")
     }
 }
 
@@ -124,7 +129,7 @@ impl MktConnectionRunner for BybitUserDataConnection {
                     }
 
                     if waiting_pong {
-                        warn!("Bybit: ping timeout detected, reconnecting...");
+                        warn!("{} Bybit: ping timeout detected, reconnecting...", self.log_prefix);
                         ws_stream.close(None).await?;
                         break;
                     }
@@ -134,7 +139,7 @@ impl MktConnectionRunner for BybitUserDataConnection {
                         "op": "ping"
                     });
                     if let Err(e) = ws_stream.send(Message::Text(ping_msg.to_string())).await {
-                        error!("Bybit: failed to send ping: {:?}", e);
+                        error!("{} Bybit: failed to send ping: {:?}", self.log_prefix, e);
                         break;
                     }
                     waiting_pong = true;
@@ -155,16 +160,16 @@ impl MktConnectionRunner for BybitUserDataConnection {
                                         ConnectionState::Authenticating => {
                                             if let Some(success) = Self::is_auth_response(&text) {
                                                 if success {
-                                                    info!("Bybit: auth successful");
+                                                    info!("{} Bybit: auth successful", self.log_prefix);
                                                     for sub_msg in &self.subscribe_messages {
                                                         if let Err(e) = ws_stream.send(Message::Text(sub_msg.to_string())).await {
-                                                            error!("Bybit: failed to send subscribe message: {:?}", e);
+                                                            error!("{} Bybit: failed to send subscribe message: {:?}", self.log_prefix, e);
                                                             break;
                                                         }
                                                     }
                                                     state = ConnectionState::Subscribing;
                                                 } else {
-                                                    error!("Bybit: auth failed: {}", text);
+                                                    error!("{} Bybit: auth failed: {}", self.log_prefix, text);
                                                     break;
                                                 }
                                             }
@@ -176,10 +181,10 @@ impl MktConnectionRunner for BybitUserDataConnection {
                                                     if pending_subscriptions == 0 {
                                                         state = ConnectionState::Running;
                                                         ping_timer = Instant::now() + Duration::from_secs(20);
-                                                        info!("Bybit: all subscriptions complete");
+                                                        info!("{} Bybit: all subscriptions complete", self.log_prefix);
                                                     }
                                                 } else {
-                                                    warn!("Bybit: subscribe failed: {}", text);
+                                                    warn!("{} Bybit: subscribe failed: {}", self.log_prefix, text);
                                                 }
                                                 continue;
                                             }
@@ -187,7 +192,7 @@ impl MktConnectionRunner for BybitUserDataConnection {
                                             // Bybit 可能在订阅确认前就开始推送数据。
                                             let bytes = Bytes::from(text.into_bytes());
                                             if let Err(e) = self.base_connection.tx.send(bytes) {
-                                                error!("Bybit: failed to broadcast message: {}", e);
+                                                error!("{} Bybit: failed to broadcast message: {}", self.log_prefix, e);
                                                 break;
                                             }
                                         }
@@ -198,21 +203,21 @@ impl MktConnectionRunner for BybitUserDataConnection {
 
                                             let bytes = Bytes::from(text.into_bytes());
                                             if let Err(e) = self.base_connection.tx.send(bytes) {
-                                                error!("Bybit: failed to broadcast message: {}", e);
+                                                error!("{} Bybit: failed to broadcast message: {}", self.log_prefix, e);
                                                 break;
                                             }
                                         }
                                     }
                                 }
                                 Message::Ping(payload) => {
-                                    debug!("Bybit: received protocol ping");
+                                    debug!("{} Bybit: received protocol ping", self.log_prefix);
                                     if let Err(e) = ws_stream.send(Message::Pong(payload)).await {
-                                        error!("Bybit: failed to send protocol pong: {:?}", e);
+                                        error!("{} Bybit: failed to send protocol pong: {:?}", self.log_prefix, e);
                                         break;
                                     }
                                 }
                                 Message::Close(frame) => {
-                                    warn!("Bybit: received close frame: {:?}", frame);
+                                    warn!("{} Bybit: received close frame: {:?}", self.log_prefix, frame);
                                     break;
                                 }
                                 _ => {}
@@ -220,11 +225,11 @@ impl MktConnectionRunner for BybitUserDataConnection {
                         }
                         Err(e) => {
                             self.restart_count += 1;
-                            error!("Bybit: websocket error (restart count={}): {:?}", self.restart_count, e);
+                            error!("{} Bybit: websocket error (restart count={}): {:?}", self.log_prefix, self.restart_count, e);
                             break;
                         }
                         Ok(None) => {
-                            warn!("Bybit: websocket closed by server");
+                            warn!("{} Bybit: websocket closed by server", self.log_prefix);
                             break;
                         }
                     }
@@ -240,7 +245,7 @@ impl MktConnectionRunner for BybitUserDataConnection {
 impl MktConnectionHandler for BybitUserDataConnection {
     async fn start_ws(&mut self) -> anyhow::Result<()> {
         loop {
-            info!("Bybit: connecting to {}", &self.base_connection.url);
+            info!("{} Bybit: connecting to {}", self.log_prefix, &self.base_connection.url);
 
             let connect_result = if let Some(ref local_ip) = self.base_connection.local_ip {
                 WsConnector::connect_with_local_ip_raw(&self.base_connection.url, local_ip).await
@@ -264,10 +269,10 @@ impl MktConnectionHandler for BybitUserDataConnection {
                             .await;
 
                         if let Err(e) = ws_stream.send(Message::Text(auth_msg.to_string())).await {
-                            error!("Bybit: failed to send auth message: {:?}", e);
+                            error!("{} Bybit: failed to send auth message: {:?}", self.log_prefix, e);
                             continue;
                         }
-                        info!("Bybit: auth message sent");
+                        info!("{} Bybit: auth message sent", self.log_prefix);
                     }
 
                     self.run_connection().await?;
@@ -277,16 +282,34 @@ impl MktConnectionHandler for BybitUserDataConnection {
                     }
 
                     info!(
-                        "Bybit: connection closed, reconnecting... (restart count={})",
+                        "{} Bybit: connection closed, reconnecting... (restart count={})",
+                        self.log_prefix,
                         self.restart_count
                     );
                     time::sleep(Duration::from_secs(2)).await;
                 }
                 Err(e) => {
-                    error!("Bybit: failed to connect: {:?}", e);
+                    error!("{} Bybit: failed to connect: {:?}", self.log_prefix, e);
                     time::sleep(Duration::from_secs(5)).await;
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BybitUserDataConnection;
+
+    #[test]
+    fn recognizes_private_pong_shape() {
+        let msg = r#"{"req_id":"test","op":"pong","args":["1675418560633"],"conn_id":"abc"}"#;
+        assert!(BybitUserDataConnection::is_pong_response(msg));
+    }
+
+    #[test]
+    fn recognizes_public_ping_pong_shape() {
+        let msg = r#"{"success":true,"ret_msg":"pong","conn_id":"abc","req_id":"","op":"ping"}"#;
+        assert!(BybitUserDataConnection::is_pong_response(msg));
     }
 }

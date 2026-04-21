@@ -83,7 +83,20 @@ fi
 KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 
 find_running_pids() {
-  safe_find_running_pids "${EXCHANGE}_account_monitor" "$BASE_DIR"
+  local comm
+  local -a matched=()
+  local -a all_pids=()
+
+  for comm in "account_monitor" "${EXCHANGE}_account_monitor"; do
+    mapfile -t matched < <(safe_find_running_pids "$comm" "$BASE_DIR" || true)
+    if [[ ${#matched[@]} -gt 0 ]]; then
+      all_pids+=("${matched[@]}")
+    fi
+  done
+
+  if [[ ${#all_pids[@]} -gt 0 ]]; then
+    printf '%s\n' "${all_pids[@]}" | awk '!seen[$0]++'
+  fi
 }
 
 echo "[INFO] 停止 ${PROC_NAME}"
