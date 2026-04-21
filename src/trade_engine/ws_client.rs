@@ -87,6 +87,10 @@ fn parse_bybit_auth_response(payload: &str) -> Option<bool> {
         .map(|code| code == 0)
 }
 
+fn is_bitget_pong_response(payload: &str) -> bool {
+    payload.trim().eq_ignore_ascii_case("pong")
+}
+
 fn bitget_ws_code_is_success(v: Option<&Value>) -> bool {
     match v {
         Some(Value::String(s)) => s == "0" || s == "00000",
@@ -294,6 +298,7 @@ pub struct TradeWsClient {
     rate_limit_cooldown_until: Option<std::time::Instant>,
     shutdown: bool,
     should_reconnect: bool, // 标记是否需要重连（用于 notice 触发的重连）
+    bitget_waiting_pong: bool,
     bybit_waiting_auth: bool,
     bybit_waiting_pong: bool,
     last_okex_login_ts: Option<String>,
@@ -418,6 +423,7 @@ impl TradeWsClient {
             rate_limit_cooldown_until: None,
             shutdown: false,
             should_reconnect: false,
+            bitget_waiting_pong: false,
             bybit_waiting_auth: false,
             bybit_waiting_pong: false,
             last_okex_login_ts: None,
@@ -640,6 +646,9 @@ impl TradeWsClient {
                             };
 
                             if let Some(payload) = login_payload {
+                                if self.exchange == Exchange::Bitget {
+                                    self.bitget_waiting_pong = false;
+                                }
                                 self.last_okex_login_ts = extract_okex_login_timestamp(&payload);
                                 if self.exchange == Exchange::Bybit {
                                     self.bybit_waiting_auth = true;
@@ -832,6 +841,14 @@ impl TradeWsClient {
                     }
                 }
                 _ = ping_interval.tick() => {
+                    if self.exchange == Exchange::Bitget && self.bitget_waiting_pong {
+                        warn!(
+                            "trade ws client id={} Bitget ping timeout, reconnecting",
+                            self.id
+                        );
+                        let _ = ws.close(None).await;
+                        return Err(anyhow!("bitget ping timeout"));
+                    }
                     self.send_ping(ws).await?;
                 }
             }
@@ -1631,6 +1648,11 @@ impl TradeWsClient {
 
     fn process_incoming_payload(&mut self, payload: &str) {
         if self.exchange == Exchange::Bitget {
+            if is_bitget_pong_response(payload) {
+                self.bitget_waiting_pong = false;
+                debug!("trade ws client id={} Bitget received pong", self.id);
+                return;
+            }
             if let Some(resp) = bitget_ws::BitgetWsOrderResponse::from_json_str(payload) {
                 let Some(meta) = self.take_trade_inflight(Some(resp.id), resp.client_order_id())
                 else {
@@ -2659,7 +2681,10 @@ impl TradeWsClient {
         ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
     ) -> Result<()> {
         debug!("trade ws client id={} sending ping", self.id);
-        if self.exchange == Exchange::Bybit {
+        if self.exchange == Exchange::Bitget {
+            self.bitget_waiting_pong = true;
+            ws.send(Message::Text("ping".to_string())).await?;
+        } else if self.exchange == Exchange::Bybit {
             self.bybit_waiting_pong = true;
             ws.send(Message::Text(
                 json!({
@@ -2678,7 +2703,7 @@ impl TradeWsClient {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_bitget_control_event;
+    use super::{is_bitget_pong_response, parse_bitget_control_event};
 
     #[test]
     fn parses_bitget_login_failure_control_event() {
@@ -2694,5 +2719,12 @@ mod tests {
     fn ignores_bitget_trade_event_in_control_parser() {
         let payload = r#"{"event":"trade","topic":"place-order","code":"0","msg":"success"}"#;
         assert!(parse_bitget_control_event(payload).is_none());
+    }
+
+    #[test]
+    fn recognizes_bitget_text_pong() {
+        assert!(is_bitget_pong_response("pong"));
+        assert!(is_bitget_pong_response(" pong "));
+        assert!(!is_bitget_pong_response(r#"{"event":"pong"}"#));
     }
 }
