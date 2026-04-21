@@ -58,11 +58,11 @@ impl BitgetCredentials {
 
     /// 生成登录消息 JSON
     pub fn build_login_message(&self) -> serde_json::Value {
-        // Bitget WS 登录常用秒级时间戳
+        // Bitget v3 private WS login uses millisecond timestamps.
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_secs()
+            .as_millis()
             .to_string();
 
         let sign = self.sign(&timestamp);
