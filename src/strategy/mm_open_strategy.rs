@@ -454,20 +454,11 @@ impl MarketMakerOpenStrategy {
             return;
         }
 
-        // 目前只支持 Binance / OKX / Gate 的 margin + futures，其它 venue 直接 panic
-        match venue {
-            TradingVenue::BinanceFutures
-            | TradingVenue::BinanceMargin
-            | TradingVenue::OkexFutures
-            | TradingVenue::OkexMargin
-            | TradingVenue::GateFutures
-            | TradingVenue::GateMargin => {}
-            _ => {
-                panic!(
-                    "MarketMakerOpenStrategy: strategy_id={} 不支持的交易场所 {:?}，仅支持 Binance/OKX/Gate 的 futures 或 margin",
-                    self.strategy_id, venue
-                );
-            }
+        if !venue.supports_pre_trade_stack() {
+            panic!(
+                "MarketMakerOpenStrategy: strategy_id={} 不支持的交易场所 {:?}，仅支持 Binance/OKX/Bybit/Bitget/Gate 的 futures 或 margin",
+                self.strategy_id, venue
+            );
         }
 
         // 1、检查symbol敞口

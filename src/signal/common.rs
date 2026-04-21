@@ -606,6 +606,23 @@ impl TradingVenue {
                 | TradingVenue::HyperliquidMargin
         )
     }
+
+    /// 是否已接入当前 pre_trade / trade_engine 策略链路
+    pub fn supports_pre_trade_stack(&self) -> bool {
+        matches!(
+            self,
+            TradingVenue::BinanceMargin
+                | TradingVenue::BinanceFutures
+                | TradingVenue::OkexMargin
+                | TradingVenue::OkexFutures
+                | TradingVenue::BybitMargin
+                | TradingVenue::BybitFutures
+                | TradingVenue::BitgetMargin
+                | TradingVenue::BitgetFutures
+                | TradingVenue::GateMargin
+                | TradingVenue::GateFutures
+        )
+    }
 }
 
 /// 实现 TryFrom trait，用于类型安全的转换
@@ -703,5 +720,41 @@ pub mod bytes_helper {
             return Err("Not enough bytes for f64".to_string());
         }
         Ok(bytes.get_f64_le())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TradingVenue;
+
+    #[test]
+    fn trading_venue_supports_pre_trade_stack_for_binance_okx_bybit_bitget_gate_only() {
+        for venue in [
+            TradingVenue::BinanceMargin,
+            TradingVenue::BinanceFutures,
+            TradingVenue::OkexMargin,
+            TradingVenue::OkexFutures,
+            TradingVenue::BybitMargin,
+            TradingVenue::BybitFutures,
+            TradingVenue::BitgetMargin,
+            TradingVenue::BitgetFutures,
+            TradingVenue::GateMargin,
+            TradingVenue::GateFutures,
+        ] {
+            assert!(
+                venue.supports_pre_trade_stack(),
+                "{venue:?} should be supported"
+            );
+        }
+
+        for venue in [
+            TradingVenue::HyperliquidMargin,
+            TradingVenue::HyperliquidFutures,
+        ] {
+            assert!(
+                !venue.supports_pre_trade_stack(),
+                "{venue:?} should remain unsupported"
+            );
+        }
     }
 }

@@ -1585,12 +1585,7 @@ impl TradeEngine {
                                 crate::trade_engine::query_request::QueryRequestType::BybitAccountBalanceSnapshot
                                     | crate::trade_engine::query_request::QueryRequestType::BybitPositionsSnapshot
                             );
-                            if is_bybit_snapshot {
-                                info!(
-                                    "trade_engine bybit query start req_type={:?} client_query_id={} endpoint={} qs={}",
-                                    msg.req_type, msg.client_query_id, endpoint, qs
-                                );
-                            } else {
+                            if !is_bybit_snapshot {
                                 debug!(
                                     "trade_engine bybit query start req_type={:?} client_query_id={} endpoint={} qs={}",
                                     msg.req_type, msg.client_query_id, endpoint, qs
@@ -1607,15 +1602,7 @@ impl TradeEngine {
                             {
                                 Ok((status, body)) => {
                                     let bybit_summary = summarize_bybit_response(&body);
-                                    if is_bybit_snapshot {
-                                        info!(
-                                            "trade_engine bybit query response req_type={:?} client_query_id={} status={} {}",
-                                            msg.req_type,
-                                            msg.client_query_id,
-                                            status,
-                                            bybit_summary
-                                        );
-                                    } else {
+                                    if !is_bybit_snapshot {
                                         debug!(
                                             "trade_engine bybit query response req_type={:?} client_query_id={} status={} {}",
                                             msg.req_type,
@@ -1647,12 +1634,6 @@ impl TradeEngine {
                                                 parse_bybit_account_balance_snapshot(&body)
                                             {
                                                 if !msgs.is_empty() {
-                                                    info!(
-                                                        "trade_engine bybit balance snapshot parsed req_type={:?} client_query_id={} msgs={}",
-                                                        msg.req_type,
-                                                        msg.client_query_id,
-                                                        msgs.len()
-                                                    );
                                                     for payload in msgs {
                                                         let _ = query_resp_tx.send(QueryExecOutcome {
                                                             req_type: msg.req_type,
@@ -1683,12 +1664,6 @@ impl TradeEngine {
                                             if let Some(msgs) = parse_bybit_positions_snapshot(&body)
                                             {
                                                 if !msgs.is_empty() {
-                                                    info!(
-                                                        "trade_engine bybit positions snapshot parsed req_type={:?} client_query_id={} msgs={}",
-                                                        msg.req_type,
-                                                        msg.client_query_id,
-                                                        msgs.len()
-                                                    );
                                                     for payload in msgs {
                                                         let _ = query_resp_tx.send(QueryExecOutcome {
                                                             req_type: msg.req_type,

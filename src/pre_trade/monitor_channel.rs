@@ -12,13 +12,13 @@ use crate::common::basic_account_msg::{
     BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg, BinanceBasicOrderMsg,
     GateBasicOrderMsg, OkexOrderMsg,
 };
-use crate::common::time_util::get_timestamp_us;
 use crate::common::bitget_account_msg::BitgetBasicOrderMsg;
 use crate::common::bybit_account_msg::BybitBasicOrderMsg;
 use crate::common::exchange::Exchange;
 use crate::common::ipc_service_name::build_service_name;
 use crate::common::min_qty_table::MinQtyTable;
 use crate::common::symbol_util::normalize_symbol_for_internal;
+use crate::common::time_util::get_timestamp_us;
 use crate::portfolio_margin::pm_forwarder::{
     PM_HISTORY_SIZE, PM_MAX_SUBSCRIBERS, PM_SUBSCRIBER_MAX_BUFFER_SIZE,
 };
@@ -2507,7 +2507,8 @@ mod tests {
             self.last_trigger_ts = ctx.trigger_ts;
         }
 
-        fn apply_order_update(&mut self, _update: &dyn crate::strategy::order_update::OrderUpdate) {}
+        fn apply_order_update(&mut self, _update: &dyn crate::strategy::order_update::OrderUpdate) {
+        }
 
         fn apply_trade_update(&mut self, _trade: &dyn crate::strategy::trade_update::TradeUpdate) {}
 
@@ -2731,7 +2732,12 @@ mod tests {
     #[test]
     fn mm_position_risk_cancel_targets_open_strategies_by_side() {
         let mut um_mgr = BasicUmManager::new(Exchange::Binance);
-        um_mgr.apply_position(&BasicPositionMsg::create(0, "FILUSDT".to_string(), 'L', 20.0));
+        um_mgr.apply_position(&BasicPositionMsg::create(
+            0,
+            "FILUSDT".to_string(),
+            'L',
+            20.0,
+        ));
 
         let open_leg = LegMgr::Futures {
             exchange: Exchange::Binance,
@@ -2748,24 +2754,30 @@ mod tests {
         price_table.update_mark_price("FILUSDT", 100.0, 0);
 
         let strategy_mgr = Rc::new(RefCell::new(StrategyManager::new()));
-        strategy_mgr.borrow_mut().insert(Box::new(TestMmOpenStrategy::new(
-            101,
-            "FILUSDT",
-            Side::Buy,
-            101_0001,
-        )));
-        strategy_mgr.borrow_mut().insert(Box::new(TestMmOpenStrategy::new(
-            102,
-            "FILUSDT",
-            Side::Sell,
-            102_0001,
-        )));
-        strategy_mgr.borrow_mut().insert(Box::new(TestMmOpenStrategy::new(
-            103,
-            "BTCUSDT",
-            Side::Buy,
-            103_0001,
-        )));
+        strategy_mgr
+            .borrow_mut()
+            .insert(Box::new(TestMmOpenStrategy::new(
+                101,
+                "FILUSDT",
+                Side::Buy,
+                101_0001,
+            )));
+        strategy_mgr
+            .borrow_mut()
+            .insert(Box::new(TestMmOpenStrategy::new(
+                102,
+                "FILUSDT",
+                Side::Sell,
+                102_0001,
+            )));
+        strategy_mgr
+            .borrow_mut()
+            .insert(Box::new(TestMmOpenStrategy::new(
+                103,
+                "BTCUSDT",
+                Side::Buy,
+                103_0001,
+            )));
 
         let inner = MonitorChannelInner {
             open_venue: TradingVenue::BinanceFutures,
