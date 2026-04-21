@@ -31,16 +31,33 @@ fn side_char(raw: &str) -> char {
 
 pub fn parse_bitget_positions_snapshot(json: &str) -> Option<Vec<Bytes>> {
     let value: Value = serde_json::from_str(json).ok()?;
-    let code = value.get("code").and_then(|v| v.as_str()).unwrap_or_default();
+    let code = value
+        .get("code")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
     if code != "00000" && code != "0" {
         return None;
     }
 
-    let rows = value
+    let rows = if let Some(rows) = value
         .get("data")
         .and_then(|v| v.get("list"))
         .and_then(|v| v.as_array())
-        .or_else(|| value.get("data").and_then(|v| v.as_array()))?;
+    {
+        rows
+    } else if value
+        .get("data")
+        .and_then(|v| v.get("list"))
+        .is_some_and(Value::is_null)
+    {
+        return Some(Vec::new());
+    } else if let Some(rows) = value.get("data").and_then(|v| v.as_array()) {
+        rows
+    } else if value.get("data").is_some_and(Value::is_null) {
+        return Some(Vec::new());
+    } else {
+        return None;
+    };
 
     let now_ts = chrono::Utc::now().timestamp_millis();
     let mut out = Vec::new();
@@ -138,6 +155,13 @@ mod tests {
     #[test]
     fn parses_empty_bitget_positions_snapshot() {
         let json = r#"{"code":"00000","data":{"list":[]}}"#;
+        let msgs = parse_bitget_positions_snapshot(json).expect("parse ok");
+        assert!(msgs.is_empty());
+    }
+
+    #[test]
+    fn parses_null_list_bitget_positions_snapshot_as_empty() {
+        let json = r#"{"code":"00000","data":{"list":null}}"#;
         let msgs = parse_bitget_positions_snapshot(json).expect("parse ok");
         assert!(msgs.is_empty());
     }

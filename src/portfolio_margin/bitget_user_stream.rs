@@ -34,6 +34,13 @@ pub struct BitgetUserDataConnection {
 
 const BITGET_PRIVATE_PING_INTERVAL: Duration = Duration::from_secs(25);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubscribeResponse {
+    Ack,
+    Success,
+    Failure,
+}
+
 impl BitgetUserDataConnection {
     pub fn new(
         connection: MktConnection,
@@ -67,10 +74,16 @@ impl BitgetUserDataConnection {
         None
     }
 
-    fn is_subscribe_response(text: &str) -> Option<bool> {
+    fn parse_subscribe_response(text: &str) -> Option<SubscribeResponse> {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(text) {
             if json.get("event").and_then(|v| v.as_str()) == Some("subscribe") {
-                return Some(Self::ws_code_is_success(json.get("code")));
+                return Some(match json.get("code") {
+                    Some(code) if Self::ws_code_is_success(Some(code)) => {
+                        SubscribeResponse::Success
+                    }
+                    Some(_) => SubscribeResponse::Failure,
+                    None => SubscribeResponse::Ack,
+                });
             }
         }
         None
@@ -156,16 +169,19 @@ impl MktConnectionRunner for BitgetUserDataConnection {
                                             }
                                         }
                                         ConnectionState::Subscribing => {
-                                            if let Some(success) = Self::is_subscribe_response(&text) {
-                                                if success {
-                                                    pending_subscriptions = pending_subscriptions.saturating_sub(1);
-                                                    if pending_subscriptions == 0 {
-                                                        state = ConnectionState::Running;
-                                                        ping_timer = Instant::now() + BITGET_PRIVATE_PING_INTERVAL;
-                                                        info!("Bitget: all subscriptions complete");
+                                            if let Some(resp) = Self::parse_subscribe_response(&text) {
+                                                match resp {
+                                                    SubscribeResponse::Ack | SubscribeResponse::Success => {
+                                                        pending_subscriptions = pending_subscriptions.saturating_sub(1);
+                                                        if pending_subscriptions == 0 {
+                                                            state = ConnectionState::Running;
+                                                            ping_timer = Instant::now() + BITGET_PRIVATE_PING_INTERVAL;
+                                                            info!("Bitget: all subscriptions complete");
+                                                        }
                                                     }
-                                                } else {
-                                                    warn!("Bitget: subscribe failed: {}", text);
+                                                    SubscribeResponse::Failure => {
+                                                        warn!("Bitget: subscribe failed: {}", text);
+                                                    }
                                                 }
                                             }
                                         }
@@ -214,6 +230,30 @@ impl MktConnectionRunner for BitgetUserDataConnection {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BitgetUserDataConnection, SubscribeResponse};
+
+    #[test]
+    fn treats_subscribe_ack_without_code_as_non_failure() {
+        let payload = r#"{"event":"subscribe","arg":{"instType":"UTA","topic":"account"}}"#;
+        assert_eq!(
+            BitgetUserDataConnection::parse_subscribe_response(payload),
+            Some(SubscribeResponse::Ack)
+        );
+    }
+
+    #[test]
+    fn treats_subscribe_response_with_error_code_as_failure() {
+        let payload =
+            r#"{"event":"subscribe","code":"30001","msg":"invalid topic","arg":{"topic":"order"}}"#;
+        assert_eq!(
+            BitgetUserDataConnection::parse_subscribe_response(payload),
+            Some(SubscribeResponse::Failure)
+        );
     }
 }
 

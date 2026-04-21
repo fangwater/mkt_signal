@@ -115,7 +115,12 @@ fn parse_bitget_control_event(payload: &str) -> Option<(String, String, String, 
         .unwrap_or_default()
         .trim()
         .to_string();
-    Some((event.to_string(), code, msg, bitget_ws_code_is_success(v.get("code"))))
+    Some((
+        event.to_string(),
+        code,
+        msg,
+        bitget_ws_code_is_success(v.get("code")),
+    ))
 }
 
 fn truncate_for_log(text: &str, max_chars: usize) -> String {
@@ -267,6 +272,7 @@ pub struct TradeWsClient {
     max_inflight: usize,
     login_payload: Option<String>,
     binance_creds: Option<ApiKey>,
+    bitget_creds: Option<BitgetCredentials>,
     bybit_creds: Option<BybitCredentials>,
     okex_creds: Option<OkexCredentials>,
     gate_creds: Option<GateCredentials>,
@@ -314,7 +320,7 @@ impl TradeWsClient {
         endpoint_state: Rc<RefCell<WsEndpointState>>,
         shutdown_on_rate_limit: bool,
     ) -> Self {
-        let (login_payload, bybit_creds, okex_creds, gate_creds) = match exchange {
+        let (login_payload, bitget_creds, bybit_creds, okex_creds, gate_creds) = match exchange {
             Exchange::Bitget => {
                 let creds = BitgetCredentials::from_env().unwrap_or_else(|e| {
                     panic!(
@@ -328,7 +334,7 @@ impl TradeWsClient {
                 );
                 let login_payload = bitget_ws::build_login_payload(&creds)
                     .unwrap_or_else(|e| panic!("build Bitget login payload failed: {}", e));
-                (Some(login_payload), None, None, None)
+                (Some(login_payload), Some(creds), None, None, None)
             }
             Exchange::Bybit => {
                 let creds = BybitCredentials::from_env().unwrap_or_else(|e| {
@@ -341,7 +347,7 @@ impl TradeWsClient {
                     "Bybit credentials loaded from environment for ws client id={}",
                     id
                 );
-                (None, Some(creds), None, None)
+                (None, None, Some(creds), None, None)
             }
             Exchange::Okex => {
                 // OKX login must use a fresh timestamp (signed) on each connect/reconnect.
@@ -355,7 +361,7 @@ impl TradeWsClient {
                     "OKEx credentials loaded from environment for ws client id={}",
                     id
                 );
-                (None, None, Some(creds), None)
+                (None, None, None, Some(creds), None)
             }
             Exchange::Gate => {
                 let creds = GateCredentials::from_env().unwrap_or_else(|e| {
@@ -368,9 +374,9 @@ impl TradeWsClient {
                     "Gate credentials loaded from environment for ws client id={}",
                     id
                 );
-                (None, None, None, Some(creds))
+                (None, None, None, None, Some(creds))
             }
-            _ => (login_payload, None, None, None),
+            _ => (login_payload, None, None, None, None),
         };
 
         if exchange == Exchange::Binance && binance_creds.is_none() {
@@ -390,6 +396,7 @@ impl TradeWsClient {
             max_inflight,
             login_payload,
             binance_creds,
+            bitget_creds,
             bybit_creds,
             okex_creds,
             gate_creds,
@@ -601,7 +608,11 @@ impl TradeWsClient {
                                 self.id, self.url, self.local_ip
                             );
 
-                            let login_payload = if self.exchange == Exchange::Bybit {
+                            let login_payload = if self.exchange == Exchange::Bitget {
+                                self.bitget_creds
+                                    .as_ref()
+                                    .and_then(|c| bitget_ws::build_login_payload(c).ok())
+                            } else if self.exchange == Exchange::Bybit {
                                 self.bybit_creds
                                     .as_ref()
                                     .map(|c| c.build_auth_message().to_string())
@@ -1475,7 +1486,10 @@ impl TradeWsClient {
         );
     }
 
-    fn take_trade_inflight_by_transport_id(&mut self, transport_id: i64) -> Option<TradeInflightMeta> {
+    fn take_trade_inflight_by_transport_id(
+        &mut self,
+        transport_id: i64,
+    ) -> Option<TradeInflightMeta> {
         if transport_id <= 0 {
             return None;
         }
@@ -1489,12 +1503,9 @@ impl TradeWsClient {
         if client_order_id <= 0 {
             return None;
         }
-        let transport_id = self
-            .inflight
-            .iter()
-            .find_map(|(transport_id, meta)| {
-                (meta.client_order_id == client_order_id).then_some(*transport_id)
-            })?;
+        let transport_id = self.inflight.iter().find_map(|(transport_id, meta)| {
+            (meta.client_order_id == client_order_id).then_some(*transport_id)
+        })?;
         self.inflight.remove(&transport_id)
     }
 
@@ -1506,9 +1517,8 @@ impl TradeWsClient {
         transport_id
             .and_then(|id| self.take_trade_inflight_by_transport_id(id))
             .or_else(|| {
-                client_order_id.and_then(|client_id| {
-                    self.take_trade_inflight_by_client_order_id(client_id)
-                })
+                client_order_id
+                    .and_then(|client_id| self.take_trade_inflight_by_client_order_id(client_id))
             })
     }
 
@@ -1906,11 +1916,7 @@ impl TradeWsClient {
         ws_open_update_enabled: bool,
         resp: &BybitWsOrderResponse,
     ) {
-        let status = if resp.ret_code == 0 {
-            206
-        } else {
-            400
-        };
+        let status = if resp.ret_code == 0 { 206 } else { 400 };
         if !Self::should_publish_ws_open_update(req_type, status, ws_open_update_enabled) {
             return;
         }
@@ -2105,7 +2111,8 @@ impl TradeWsClient {
             self.warn_uncorrelated_trade_payload(payload);
             return true;
         };
-        let client_order_id = Self::extract_gate_client_order_id(&json_val).unwrap_or(meta.client_order_id);
+        let client_order_id =
+            Self::extract_gate_client_order_id(&json_val).unwrap_or(meta.client_order_id);
         self.publish_gate_ws_response(
             client_order_id,
             meta.req_type,
@@ -2298,13 +2305,11 @@ impl TradeWsClient {
     }
 
     fn extract_gate_ack(val: &Value) -> Option<bool> {
-        val.get("ack")
-            .and_then(|v| v.as_bool())
-            .or_else(|| {
-                val.get("payload")
-                    .and_then(|v| v.get("ack"))
-                    .and_then(|v| v.as_bool())
-            })
+        val.get("ack").and_then(|v| v.as_bool()).or_else(|| {
+            val.get("payload")
+                .and_then(|v| v.get("ack"))
+                .and_then(|v| v.as_bool())
+        })
     }
 
     fn extract_gate_request_id(val: &Value) -> Option<i64> {
@@ -2380,7 +2385,10 @@ impl TradeWsClient {
 
         val.pointer("/data/result/text")
             .and_then(parse_i64_value)
-            .or_else(|| val.pointer("/payload/data/result/text").and_then(parse_i64_value))
+            .or_else(|| {
+                val.pointer("/payload/data/result/text")
+                    .and_then(parse_i64_value)
+            })
     }
 
     fn extract_gate_status(val: &Value) -> u16 {
@@ -2430,9 +2438,18 @@ impl TradeWsClient {
 
         val.pointer("/data/result/id")
             .and_then(parse_i64_value)
-            .or_else(|| val.pointer("/data/result/order_id").and_then(parse_i64_value))
-            .or_else(|| val.pointer("/payload/data/result/id").and_then(parse_i64_value))
-            .or_else(|| val.pointer("/payload/data/result/order_id").and_then(parse_i64_value))
+            .or_else(|| {
+                val.pointer("/data/result/order_id")
+                    .and_then(parse_i64_value)
+            })
+            .or_else(|| {
+                val.pointer("/payload/data/result/id")
+                    .and_then(parse_i64_value)
+            })
+            .or_else(|| {
+                val.pointer("/payload/data/result/order_id")
+                    .and_then(parse_i64_value)
+            })
             .unwrap_or(0)
     }
 
@@ -2471,8 +2488,14 @@ impl TradeWsClient {
 
         val.pointer("/data/result/update_time")
             .and_then(parse_i64_ms)
-            .or_else(|| val.pointer("/data/result/update_time_ms").and_then(parse_i64_ms))
-            .or_else(|| val.pointer("/data/result/create_time").and_then(parse_i64_ms))
+            .or_else(|| {
+                val.pointer("/data/result/update_time_ms")
+                    .and_then(parse_i64_ms)
+            })
+            .or_else(|| {
+                val.pointer("/data/result/create_time")
+                    .and_then(parse_i64_ms)
+            })
             .or_else(|| val.pointer("/header/response_time").and_then(parse_i64_ms))
             .unwrap_or(0)
     }
