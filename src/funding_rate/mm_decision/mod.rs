@@ -49,6 +49,20 @@ pub struct MmDecision {
     _node: Node<ipc::Service>,
 }
 
+fn compute_next_open_deadline_us(now_us: i64, interval_ms: u64) -> i64 {
+    let now_ms = now_us.max(0).div_euclid(1_000);
+    let interval_ms = i64::try_from(interval_ms).unwrap_or(i64::MAX);
+    let remainder = now_ms.rem_euclid(interval_ms);
+    let delay_ms = if remainder == 0 {
+        interval_ms
+    } else {
+        interval_ms - remainder
+    };
+    now_ms
+        .saturating_add(delay_ms)
+        .saturating_mul(1_000)
+}
+
 impl MmDecision {
     fn should_use_mm_hedge_taker(
         weighted_inventory_price: f64,
@@ -190,6 +204,10 @@ impl MmDecision {
 
     pub fn update_order_interval_ms(&mut self, interval_ms: u64) {
         self.state.update_order_interval_ms(interval_ms);
+    }
+
+    pub fn next_open_deadline_us(&self, now_us: i64) -> i64 {
+        compute_next_open_deadline_us(now_us, self.state.order_interval_ms)
     }
 
     pub fn update_open_orders_per_round(&mut self, open_orders_per_round: u32) {
@@ -747,7 +765,7 @@ impl MmDecision {
 
 #[cfg(test)]
 mod tests {
-    use super::MmDecision;
+    use super::{compute_next_open_deadline_us, MmDecision};
 
     #[test]
     fn mm_hedge_taker_switch_uses_weighted_inventory_price() {
@@ -762,5 +780,17 @@ mod tests {
     #[test]
     fn mm_hedge_taker_switch_returns_none_for_invalid_inventory_price() {
         assert!(MmDecision::should_use_mm_hedge_taker(0.0, 99.0, 101.0, 5.0).is_none());
+    }
+
+    #[test]
+    fn next_open_deadline_aligns_to_minute_boundary() {
+        assert_eq!(compute_next_open_deadline_us(59_999_000, 60_000), 60_000_000);
+        assert_eq!(compute_next_open_deadline_us(60_000_000, 60_000), 120_000_000);
+    }
+
+    #[test]
+    fn next_open_deadline_aligns_to_ten_second_boundary() {
+        assert_eq!(compute_next_open_deadline_us(9_999_000, 10_000), 10_000_000);
+        assert_eq!(compute_next_open_deadline_us(10_000_000, 10_000), 20_000_000);
     }
 }

@@ -54,6 +54,20 @@ pub struct MmHedgeQuotePlan {
     pub levels: Vec<QuotePlanLevel>,
 }
 
+fn next_aligned_query_ts_us(now_us: i64, interval_ms: u64) -> i64 {
+    let now_ms = now_us.max(0).div_euclid(1_000);
+    let interval_ms = i64::try_from(interval_ms).unwrap_or(i64::MAX);
+    let remainder = now_ms.rem_euclid(interval_ms);
+    let delay_ms = if remainder == 0 {
+        interval_ms
+    } else {
+        interval_ms - remainder
+    };
+    now_ms
+        .saturating_add(delay_ms)
+        .saturating_mul(1_000)
+}
+
 pub fn resolve_mm_hedge_signal_inputs(
     factor_value_hub: &mut FactorValueHub,
     model_service: &str,
@@ -496,7 +510,7 @@ pub fn build_mm_hedge_quote_plan(
         symbol,
         quote: input.quote,
         now_us,
-        next_query_ts: now_us + (input.next_query_delay_ms as i64) * 1000,
+        next_query_ts: next_aligned_query_ts_us(now_us, input.next_query_delay_ms),
         side,
         signal: input.signal,
         signal_qtl: input.signal_qtl,
@@ -580,7 +594,7 @@ pub fn build_mm_hedge_ctx(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_quantile_offset_plan, map_offset_from_signal_legacy,
+        build_quantile_offset_plan, map_offset_from_signal_legacy, next_aligned_query_ts_us,
         resolve_mm_hedge_effective_signal, resolve_mm_hedge_signal_quantile,
     };
     use crate::market_maker::hedge_scale::{scale_offsets_by_inventory, HedgeOffsetScaleInput};
@@ -620,6 +634,19 @@ mod tests {
             Some(0.91)
         );
         assert_eq!(resolve_mm_hedge_signal_quantile(true, None), None);
+    }
+
+    #[test]
+    fn next_query_ts_aligns_to_half_minute_boundary() {
+        assert_eq!(next_aligned_query_ts_us(29_999_000, 30_000), 30_000_000);
+        assert_eq!(next_aligned_query_ts_us(30_000_000, 30_000), 60_000_000);
+        assert_eq!(next_aligned_query_ts_us(30_001_000, 30_000), 60_000_000);
+    }
+
+    #[test]
+    fn next_query_ts_aligns_to_minute_boundary() {
+        assert_eq!(next_aligned_query_ts_us(59_999_000, 60_000), 60_000_000);
+        assert_eq!(next_aligned_query_ts_us(60_000_000, 60_000), 120_000_000);
     }
 
     #[test]

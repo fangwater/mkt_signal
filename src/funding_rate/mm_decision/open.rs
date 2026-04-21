@@ -1,6 +1,5 @@
 use anyhow::Result;
 use log::{info, warn};
-use std::collections::HashMap;
 
 use super::super::factor_value_hub::EnvironmentSignalResult;
 use super::super::inline_volatility::INLINE_VOLATILITY_MIN_SAMPLES;
@@ -15,7 +14,7 @@ use crate::signal::trade_signal::SignalType;
 use crate::symbol_match::normalize_symbol_for_whitelist;
 
 pub(crate) struct MmOpenDecision {
-    last_eval_ts_us: HashMap<String, i64>,
+    _private: (),
 }
 
 fn mm_open_blocked_by_environment(
@@ -45,24 +44,7 @@ fn resolve_mm_open_return_score(
 
 impl MmOpenDecision {
     pub(crate) fn new() -> Self {
-        Self {
-            last_eval_ts_us: HashMap::new(),
-        }
-    }
-
-    fn should_run_for_symbol(
-        &self,
-        state: &MmDecisionState,
-        symbol_key: &str,
-        now_us: i64,
-    ) -> bool {
-        let interval_us = (state.order_interval_ms as i64).saturating_mul(1_000);
-        let last_ts = self.last_eval_ts_us.get(symbol_key).copied().unwrap_or(0);
-        last_ts == 0 || now_us.saturating_sub(last_ts) >= interval_us
-    }
-
-    fn mark_evaluated(&mut self, symbol_key: &str, now_us: i64) {
-        self.last_eval_ts_us.insert(symbol_key.to_string(), now_us);
+        Self { _private: () }
     }
 
     fn emit_for_symbol(
@@ -301,14 +283,10 @@ impl MmOpenDecision {
         let now_us = get_timestamp_us();
         let mut results = Vec::new();
         for symbol in SymbolList::instance().get_online_symbols() {
-            let symbol_key = normalize_symbol_for_whitelist(&symbol, TradingVenue::OkexFutures);
-            if !self.should_run_for_symbol(state, &symbol_key, now_us) {
-                continue;
-            }
-            self.mark_evaluated(&symbol_key, now_us);
             match self.emit_for_symbol(state, &symbol, now_us) {
                 Ok(result) => results.push(result),
                 Err(err) => {
+                    let symbol_key = normalize_symbol_for_whitelist(&symbol, TradingVenue::OkexFutures);
                     warn!(
                         "MmDecision: MMOpen evaluate failed symbol={} err={:#}",
                         symbol_key, err

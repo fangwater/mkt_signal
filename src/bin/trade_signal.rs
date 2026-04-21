@@ -7,9 +7,10 @@ use clap::Parser;
 use log::{debug, info};
 #[cfg(unix)]
 use tokio::signal::unix::{signal as unix_signal, SignalKind};
-use tokio::time::{self, Duration};
+use tokio::time::{self, Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
+use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::common::exchange::Exchange;
 use mkt_signal::common::iceoryx_publisher::configure_signal_publish_dry_run;
 use mkt_signal::common::redis_client::RedisSettings;
@@ -203,13 +204,21 @@ fn env_flag(name: &str) -> bool {
     }
 }
 
+fn next_mm_open_deadline() -> Instant {
+    let now_us = get_timestamp_us();
+    let deadline_us = MmDecision::with(|decision| decision.next_open_deadline_us(now_us));
+    let delay_us = deadline_us.saturating_sub(now_us).max(1) as u64;
+    Instant::now() + Duration::from_micros(delay_us)
+}
+
 fn spawn_mm_open_worker(token: CancellationToken) {
     tokio::task::spawn_local(async move {
-        let mut interval = time::interval(Duration::from_millis(200));
         loop {
+            let sleep = time::sleep_until(next_mm_open_deadline());
+            tokio::pin!(sleep);
             tokio::select! {
                 _ = token.cancelled() => break,
-                _ = interval.tick() => {
+                _ = &mut sleep => {
                     MmDecision::with_mut(|decision| decision.process_open_interval());
                 }
             }

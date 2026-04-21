@@ -32,6 +32,8 @@ pub(crate) const TARGET_FACTOR_NAME: &str = "rl_return_volatility";
 pub(crate) const TARGET_FACTOR_KEY_PREFIX: &str = TARGET_FACTOR_NAME;
 pub(crate) const TARGET_FACTOR_MAX_AGE_MS: i64 = 30_000;
 pub(crate) const ENV_MODEL_TRUE_THRESHOLD_DEFAULT: f64 = 0.0;
+pub(crate) const MM_OPEN_INTERVAL_ALIGN_MS: u64 = 100;
+pub(crate) const CLOCK_ALIGN_BASE_MS: u64 = 60_000;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct MmOpenPublishStats {
@@ -95,6 +97,12 @@ fn resolve_mm_order_amount_u(
         .get(&symbol_key)
         .copied()
         .unwrap_or(default_order_amount_u)
+}
+
+fn is_supported_clock_aligned_interval_ms(interval_ms: u64) -> bool {
+    interval_ms > 0
+        && interval_ms % MM_OPEN_INTERVAL_ALIGN_MS == 0
+        && (CLOCK_ALIGN_BASE_MS % interval_ms == 0 || interval_ms % CLOCK_ALIGN_BASE_MS == 0)
 }
 
 impl MmDecisionState {
@@ -169,6 +177,14 @@ impl MmDecisionState {
     pub(crate) fn update_order_interval_ms(&mut self, interval_ms: u64) {
         if interval_ms == 0 {
             panic!("MmDecision: order_interval_ms must be > 0");
+        }
+        if !is_supported_clock_aligned_interval_ms(interval_ms) {
+            panic!(
+                "MmDecision: order_interval_ms must be a multiple of {}ms and either divide {}ms or be a multiple of it, got {}",
+                MM_OPEN_INTERVAL_ALIGN_MS,
+                CLOCK_ALIGN_BASE_MS,
+                interval_ms
+            );
         }
         self.order_interval_ms = interval_ms;
         debug!(
@@ -264,6 +280,17 @@ impl MmDecisionState {
             panic!(
                 "MmDecision: max_hedge_price_pct_change must be finite and > 0, got {}",
                 max_hedge_price_pct_change
+            );
+        }
+        if next_query_delay_ms == 0 {
+            panic!("MmDecision: next_query_delay_ms must be > 0");
+        }
+        if !is_supported_clock_aligned_interval_ms(next_query_delay_ms) {
+            panic!(
+                "MmDecision: next_query_delay_ms must be a multiple of {}ms and either divide {}ms or be a multiple of it, got {}",
+                MM_OPEN_INTERVAL_ALIGN_MS,
+                CLOCK_ALIGN_BASE_MS,
+                next_query_delay_ms
             );
         }
         self.hedge_orders_per_round = hedge_orders_per_round;
@@ -757,5 +784,28 @@ mod tests {
         assert_eq!(whitelist_key, "BTCUSDT");
         assert_eq!(mismatch_snapshot.sample_count, 0);
         assert!(mismatch_snapshot.threshold.is_none());
+    }
+
+    #[test]
+    fn supported_clock_aligned_intervals_cover_divisors_and_multiples_of_minute() {
+        for interval in [100, 500, 1_000, 10_000, 12_000, 15_000, 20_000, 30_000, 60_000, 120_000]
+        {
+            assert!(
+                is_supported_clock_aligned_interval_ms(interval),
+                "interval should be supported: {}",
+                interval
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_clock_aligned_intervals_reject_non_100ms_and_non_minute_aligned_values() {
+        for interval in [0, 50, 250, 7_000, 11_000, 45_000, 90_000] {
+            assert!(
+                !is_supported_clock_aligned_interval_ms(interval),
+                "interval should be rejected: {}",
+                interval
+            );
+        }
     }
 }
