@@ -10,9 +10,10 @@ use crate::trade_engine::trade_request::BinanceNewUMOrderRequest;
 use crate::trade_engine::trade_request::{
     BinanceCancelMarginOrderRequest, BinanceCancelUMOrderRequest,
     BinanceWsCancelMarginOrderRequest, BinanceWsCancelUMOrderRequest,
-    BinanceWsNewMarginOrderRequest, BinanceWsNewUMOrderRequest, BitgetMarginNewOrderRequest,
-    BitgetUmNewOrderRequest, GateFuturesCancelOrderRequest, GateFuturesNewOrderRequest,
-    GateUnifiedCancelOrderRequest, GateUnifiedNewOrderRequest,
+    BinanceWsNewMarginOrderRequest, BinanceWsNewUMOrderRequest, BitgetMarginCancelOrderRequest,
+    BitgetMarginNewOrderRequest, BitgetUmCancelOrderRequest, BitgetUmNewOrderRequest,
+    GateFuturesCancelOrderRequest, GateFuturesNewOrderRequest, GateUnifiedCancelOrderRequest,
+    GateUnifiedNewOrderRequest,
 };
 use crate::{
     common::symbol_util::normalize_symbol_for_internal,
@@ -1112,6 +1113,33 @@ impl Order {
                 }
                 .ok_or_else(|| "failed to build bybit cancel request".to_string())?;
                 Ok(request.to_bytes())
+            }
+            TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => {
+                let mut req_param = serde_json::Map::new();
+                if let Some(order_id) = self.exchange_order_id.filter(|&id| id > 0) {
+                    req_param.insert("orderId".to_string(), json!(order_id.to_string()));
+                }
+                req_param.insert(
+                    "clientOid".to_string(),
+                    json!(self.client_order_id.to_string()),
+                );
+                let params = Bytes::from(Value::Object(req_param).to_string());
+                match self.venue {
+                    TradingVenue::BitgetMargin => {
+                        let request = BitgetMarginCancelOrderRequest::create(
+                            now,
+                            self.client_order_id,
+                            params,
+                        );
+                        Ok(request.to_bytes())
+                    }
+                    TradingVenue::BitgetFutures => {
+                        let request =
+                            BitgetUmCancelOrderRequest::create(now, self.client_order_id, params);
+                        Ok(request.to_bytes())
+                    }
+                    _ => unreachable!(),
+                }
             }
             _ => Err(format!("Unsupported trading venue: {:?}", self.venue)),
         }

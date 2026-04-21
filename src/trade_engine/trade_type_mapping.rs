@@ -39,7 +39,9 @@ impl TradeTypeMapping {
             | TradeRequestType::BybitCancelMarginOrder
             | TradeRequestType::BybitCancelUMOrder
             | TradeRequestType::BitgetNewMarginOrder
-            | TradeRequestType::BitgetNewUMOrder => true,
+            | TradeRequestType::BitgetNewUMOrder
+            | TradeRequestType::BitgetCancelMarginOrder
+            | TradeRequestType::BitgetCancelUMOrder => true,
         }
     }
 
@@ -83,7 +85,10 @@ impl TradeTypeMapping {
             | TradeRequestType::BybitCancelUMOrder => {
                 unreachable!("Bybit requests run via websocket; REST mapping not used")
             }
-            TradeRequestType::BitgetNewMarginOrder | TradeRequestType::BitgetNewUMOrder => {
+            TradeRequestType::BitgetNewMarginOrder
+            | TradeRequestType::BitgetNewUMOrder
+            | TradeRequestType::BitgetCancelMarginOrder
+            | TradeRequestType::BitgetCancelUMOrder => {
                 unreachable!("Bitget requests run via websocket; REST mapping not used")
             }
         }
@@ -127,7 +132,10 @@ impl TradeTypeMapping {
             | TradeRequestType::BybitCancelUMOrder => {
                 unreachable!("Bybit requests run via websocket; REST mapping not used")
             }
-            TradeRequestType::BitgetNewMarginOrder | TradeRequestType::BitgetNewUMOrder => {
+            TradeRequestType::BitgetNewMarginOrder
+            | TradeRequestType::BitgetNewUMOrder
+            | TradeRequestType::BitgetCancelMarginOrder
+            | TradeRequestType::BitgetCancelUMOrder => {
                 unreachable!("Bitget requests run via websocket; REST mapping not used")
             }
         }
@@ -171,7 +179,10 @@ impl TradeTypeMapping {
             | TradeRequestType::BybitCancelUMOrder => {
                 unreachable!("Bybit requests run via websocket; REST mapping not used")
             }
-            TradeRequestType::BitgetNewMarginOrder | TradeRequestType::BitgetNewUMOrder => {
+            TradeRequestType::BitgetNewMarginOrder
+            | TradeRequestType::BitgetNewUMOrder
+            | TradeRequestType::BitgetCancelMarginOrder
+            | TradeRequestType::BitgetCancelUMOrder => {
                 unreachable!("Bitget requests run via websocket; REST mapping not used")
             }
         }
@@ -215,7 +226,10 @@ impl TradeTypeMapping {
             | TradeRequestType::BybitCancelUMOrder => {
                 unreachable!("Bybit requests run via websocket; REST mapping not used")
             }
-            TradeRequestType::BitgetNewMarginOrder | TradeRequestType::BitgetNewUMOrder => {
+            TradeRequestType::BitgetNewMarginOrder
+            | TradeRequestType::BitgetNewUMOrder
+            | TradeRequestType::BitgetCancelMarginOrder
+            | TradeRequestType::BitgetCancelUMOrder => {
                 unreachable!("Bitget requests run via websocket; REST mapping not used")
             }
         }
@@ -259,7 +273,10 @@ impl TradeTypeMapping {
             | TradeRequestType::BybitCancelUMOrder => {
                 unreachable!("Bybit requests run via websocket; REST mapping not used")
             }
-            TradeRequestType::BitgetNewMarginOrder | TradeRequestType::BitgetNewUMOrder => {
+            TradeRequestType::BitgetNewMarginOrder
+            | TradeRequestType::BitgetNewUMOrder
+            | TradeRequestType::BitgetCancelMarginOrder
+            | TradeRequestType::BitgetCancelUMOrder => {
                 unreachable!("Bitget requests run via websocket; REST mapping not used")
             }
         }

@@ -2618,16 +2618,13 @@ impl HedgeArbStrategy {
                 crate::common::symbol_util::normalize_symbol_for_internal(&order.symbol),
                 client_query_id
             )),
-            TradingVenue::BitgetMargin => bytes::Bytes::from(format!(
-                "category=spot&symbol={}&clientOid={}",
-                crate::common::symbol_util::normalize_symbol_for_internal(&order.symbol),
-                client_query_id
-            )),
-            TradingVenue::BitgetFutures => bytes::Bytes::from(format!(
-                "category=usdt-futures&symbol={}&clientOid={}",
-                crate::common::symbol_util::normalize_symbol_for_internal(&order.symbol),
-                client_query_id
-            )),
+            TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => {
+                if let Some(order_id) = exchange_order_id {
+                    bytes::Bytes::from(format!("orderId={}", order_id))
+                } else {
+                    bytes::Bytes::from(format!("clientOid={}", client_query_id))
+                }
+            }
             TradingVenue::GateMargin => {
                 let currency_pair =
                     crate::pre_trade::order_manager::gate_currency_pair_from_symbol(&order.symbol);

@@ -1,8 +1,12 @@
 # Standalone public bridge config (JP side).
 #
 # Responsibilities:
-# - Local Binance futures market-data fan-out:
+# - Local market-data fan-out:
 #     dat_pbs/binance-futures/* -> bridge/binance-futures/*
+#     dat_pbs/gate-margin/* -> bridge/gate-margin/*
+#     dat_pbs/gate-futures/* -> bridge/gate-futures/*
+#     dat_pbs/bitget-margin/* -> bridge/bitget-margin/*
+#     dat_pbs/bitget-futures/* -> bridge/bitget-futures/*
 # - JP -> HK public forwarding over one shared ZMQ port:
 #     bridge/binance-futures/{ask_bid_spread,derivatives}
 #     bridge/binance-futures/incremental (currently commented out)
@@ -54,6 +58,118 @@ routes:
     to:
       type: ipc
       endpoint: "bridge/binance-futures/derivatives"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 50
+      subscriber_max_buffer_size: 8192
+
+  - id: public_local_gate_margin_ask_bid
+    from:
+      type: ipc
+      endpoint: "dat_pbs/gate-margin/ask_bid_spread"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/gate-margin/ask_bid_spread"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 100
+      subscriber_max_buffer_size: 8192
+
+  - id: public_local_gate_margin_derivatives
+    from:
+      type: ipc
+      endpoint: "dat_pbs/gate-margin/derivatives"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/gate-margin/derivatives"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 50
+      subscriber_max_buffer_size: 8192
+
+  - id: public_local_gate_futures_ask_bid
+    from:
+      type: ipc
+      endpoint: "dat_pbs/gate-futures/ask_bid_spread"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/gate-futures/ask_bid_spread"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 100
+      subscriber_max_buffer_size: 8192
+
+  - id: public_local_gate_futures_derivatives
+    from:
+      type: ipc
+      endpoint: "dat_pbs/gate-futures/derivatives"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/gate-futures/derivatives"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 50
+      subscriber_max_buffer_size: 8192
+
+  - id: public_local_bitget_margin_ask_bid
+    from:
+      type: ipc
+      endpoint: "dat_pbs/bitget-margin/ask_bid_spread"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/bitget-margin/ask_bid_spread"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 100
+      subscriber_max_buffer_size: 8192
+
+  - id: public_local_bitget_margin_derivatives
+    from:
+      type: ipc
+      endpoint: "dat_pbs/bitget-margin/derivatives"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/bitget-margin/derivatives"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 50
+      subscriber_max_buffer_size: 8192
+
+  - id: public_local_bitget_futures_ask_bid
+    from:
+      type: ipc
+      endpoint: "dat_pbs/bitget-futures/ask_bid_spread"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/bitget-futures/ask_bid_spread"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 100
+      subscriber_max_buffer_size: 8192
+
+  - id: public_local_bitget_futures_derivatives
+    from:
+      type: ipc
+      endpoint: "dat_pbs/bitget-futures/derivatives"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/bitget-futures/derivatives"
       size: 128
       max_publishers: 1
       max_subscribers: 64

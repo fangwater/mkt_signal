@@ -77,7 +77,9 @@ pub trait TradeEngineResponse {
                 | TradeRequestType::GateUnifiedCancelOrder
                 | TradeRequestType::GateFuturesCancelOrder
                 | TradeRequestType::BybitCancelMarginOrder
-                | TradeRequestType::BybitCancelUMOrder,
+                | TradeRequestType::BybitCancelUMOrder
+                | TradeRequestType::BitgetCancelMarginOrder
+                | TradeRequestType::BitgetCancelUMOrder,
             ) => TradeRequestKind::Cancel,
             _ => TradeRequestKind::Other,
         }

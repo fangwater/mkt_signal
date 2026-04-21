@@ -35,6 +35,8 @@ pub enum TradeRequestType {
     BybitCancelUMOrder = 5304,                  // Bybit 统一账户 U 本位撤单请求
     BitgetNewMarginOrder = 5401,                // Bitget 统一账户现货下单请求
     BitgetNewUMOrder = 5402,                    // Bitget 统一账户 U 本位下单请求
+    BitgetCancelMarginOrder = 5403,             // Bitget 统一账户现货撤单请求
+    BitgetCancelUMOrder = 5404,                 // Bitget 统一账户 U 本位撤单请求
 }
 
 // 交易请求的公共头部
@@ -88,6 +90,8 @@ impl TryFrom<u32> for TradeRequestType {
             5304 => Ok(TradeRequestType::BybitCancelUMOrder),
             5401 => Ok(TradeRequestType::BitgetNewMarginOrder),
             5402 => Ok(TradeRequestType::BitgetNewUMOrder),
+            5403 => Ok(TradeRequestType::BitgetCancelMarginOrder),
+            5404 => Ok(TradeRequestType::BitgetCancelUMOrder),
             _ => Err(()),
         }
     }
@@ -813,6 +817,66 @@ impl BitgetUmNewOrderRequest {
     pub fn create(create_time: i64, client_order_id: i64, params: Bytes) -> Self {
         let header = TradeRequestHeader {
             msg_type: TradeRequestType::BitgetNewUMOrder as u32,
+            params_length: params.len() as u32,
+            create_time,
+            client_order_id,
+        };
+        Self { header, params }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 4 + 8 + 8 + self.params.len();
+        let mut buf = BytesMut::with_capacity(total_size);
+        buf.put_u32_le(self.header.msg_type);
+        buf.put_u32_le(self.header.params_length);
+        buf.put_i64_le(self.header.create_time);
+        buf.put_i64_le(self.header.client_order_id);
+        buf.put(self.params.clone());
+        buf.freeze()
+    }
+}
+
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct BitgetMarginCancelOrderRequest {
+    pub header: TradeRequestHeader,
+    pub params: Bytes,
+}
+
+impl BitgetMarginCancelOrderRequest {
+    pub fn create(create_time: i64, client_order_id: i64, params: Bytes) -> Self {
+        let header = TradeRequestHeader {
+            msg_type: TradeRequestType::BitgetCancelMarginOrder as u32,
+            params_length: params.len() as u32,
+            create_time,
+            client_order_id,
+        };
+        Self { header, params }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 4 + 8 + 8 + self.params.len();
+        let mut buf = BytesMut::with_capacity(total_size);
+        buf.put_u32_le(self.header.msg_type);
+        buf.put_u32_le(self.header.params_length);
+        buf.put_i64_le(self.header.create_time);
+        buf.put_i64_le(self.header.client_order_id);
+        buf.put(self.params.clone());
+        buf.freeze()
+    }
+}
+
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct BitgetUmCancelOrderRequest {
+    pub header: TradeRequestHeader,
+    pub params: Bytes,
+}
+
+impl BitgetUmCancelOrderRequest {
+    pub fn create(create_time: i64, client_order_id: i64, params: Bytes) -> Self {
+        let header = TradeRequestHeader {
+            msg_type: TradeRequestType::BitgetCancelUMOrder as u32,
             params_length: params.len() as u32,
             create_time,
             client_order_id,
