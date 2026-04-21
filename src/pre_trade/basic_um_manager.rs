@@ -126,6 +126,11 @@ impl BasicUmManager {
         self.positions.values().cloned().collect()
     }
 
+    /// 清空当前维护的全部 UM 持仓状态。
+    pub fn clear(&mut self) {
+        self.positions.clear();
+    }
+
     /// 汇总合约未实现盈亏（USDT 计价）。
     pub fn total_unrealized_pnl_usdt(&self) -> f64 {
         self.positions.values().map(|p| p.unrealized_pnl_usdt).sum()
@@ -236,6 +241,17 @@ mod tests {
     fn zero_position_without_existing_entry_is_ignored() {
         let mut mgr = BasicUmManager::new(Exchange::Bybit);
         mgr.apply_position(&BasicPositionMsg::create(1, "ETHUSDT".to_string(), 'S', 0.0));
+        assert!(mgr.snapshot().is_empty());
+    }
+
+    #[test]
+    fn clear_removes_all_positions() {
+        let mut mgr = BasicUmManager::new(Exchange::Bybit);
+        mgr.apply_position(&BasicPositionMsg::create(1, "BTCUSDT".to_string(), 'L', 1.0));
+        mgr.apply_position(&BasicPositionMsg::create(2, "ETHUSDT".to_string(), 'S', 2.0));
+
+        mgr.clear();
+
         assert!(mgr.snapshot().is_empty());
     }
 }

@@ -1678,7 +1678,7 @@ impl TradeEngine {
                                                     continue;
                                                 }
                                             }
-                                            warn!(
+                                            debug!(
                                                 "trade_engine bybit positions snapshot parse produced no basic msgs req_type={:?} client_query_id={} status={} {} body={}",
                                                 msg.req_type,
                                                 msg.client_query_id,

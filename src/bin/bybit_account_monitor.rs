@@ -519,7 +519,7 @@ fn log_parsed_event(msg: &Bytes) {
         }
         BasicAccountEventType::BalanceUpdate => {
             if let Ok(m) = BasicBalanceMsg::from_bytes(&payload) {
-                info!(
+                debug!(
                     "Bybit BalanceUpdate: scope={} ts={} symbol={} balance={}",
                     account_scope.as_str(),
                     m.timestamp,

@@ -235,6 +235,34 @@ impl QueryEngChannel {
                                         .unwrap_or(exchange_enum);
                                 let binance_is_standard =
                                     mc.order_manager().borrow().binance_is_standard();
+                                if matches!(req_type, Some(QueryRequestType::BybitPositionsSnapshot))
+                                    && resp.body_bytes().is_empty()
+                                {
+                                    let mut cleared = false;
+                                    if matches!(open_venue, TradingVenue::BybitFutures)
+                                        && exchange_enum == open_exchange
+                                    {
+                                        if let Some((um, _)) = mc.open_um_mgr() {
+                                            um.borrow_mut().clear();
+                                            cleared = true;
+                                        }
+                                    }
+                                    if matches!(hedge_venue, TradingVenue::BybitFutures)
+                                        && exchange_enum == hedge_exchange
+                                    {
+                                        if let Some((um, _)) = mc.hedge_um_mgr() {
+                                            um.borrow_mut().clear();
+                                            cleared = true;
+                                        }
+                                    }
+                                    if cleared {
+                                        info!(
+                                            "Bybit positions snapshot returned empty list; cleared pre_trade UM state (exchange={})",
+                                            exchange
+                                        );
+                                    }
+                                    continue;
+                                }
                                 let account_scope = match req_type {
                                     Some(QueryRequestType::BinanceWsMarginQuery) => {
                                         BasicAccountScope::BinanceStdSpot

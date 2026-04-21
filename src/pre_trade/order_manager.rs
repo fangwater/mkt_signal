@@ -261,6 +261,8 @@ pub enum TradeUpdateSkipReason {
     StaleOrDuplicatePartial,
 }
 
+const TRADE_UPDATE_QTY_EPS: f64 = 1e-9;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum OrderType {
@@ -559,40 +561,38 @@ impl OrderManager {
         order: &Order,
         incoming_status: OrderStatus,
         incoming_cum_qty: f64,
-        incoming_update_ts: i64,
+        _incoming_update_ts: i64,
         log_owner: &str,
         strategy_id: i32,
     ) -> Option<TradeUpdateSkipReason> {
+        let prev_cum = order.cumulative_filled_quantity;
+
         if incoming_status == OrderStatus::Filled && order.status == OrderExecutionStatus::Filled {
             debug!(
-                "{}: strategy_id={} skip duplicate filled trade update: client_order_id={} cum={:.8} event_time={}",
+                "{}: strategy_id={} skip duplicate filled trade update: client_order_id={} prev_cum={:.8} incoming_cum={:.8}",
                 log_owner,
                 strategy_id,
                 order.client_order_id,
-                incoming_cum_qty,
-                incoming_update_ts
+                prev_cum,
+                incoming_cum_qty
             );
             return Some(TradeUpdateSkipReason::DuplicateFilled);
         }
 
-        if incoming_status == OrderStatus::PartiallyFilled {
-            let prev_cum = order.cumulative_filled_quantity;
-            let prev_ts = order.timestamp.filled_t;
-            if incoming_cum_qty < prev_cum - 1e-12
-                || (incoming_cum_qty - prev_cum).abs() <= 1e-12 && incoming_update_ts <= prev_ts
-            {
-                debug!(
-                    "{}: strategy_id={} skip stale/duplicate partial trade update: client_order_id={} prev_cum={:.8} incoming_cum={:.8} prev_ts={} incoming_ts={}",
-                    log_owner,
-                    strategy_id,
-                    order.client_order_id,
-                    prev_cum,
-                    incoming_cum_qty,
-                    prev_ts,
-                    incoming_update_ts
-                );
-                return Some(TradeUpdateSkipReason::StaleOrDuplicatePartial);
-            }
+        if incoming_cum_qty < prev_cum - TRADE_UPDATE_QTY_EPS
+            || (incoming_cum_qty - prev_cum).abs() <= TRADE_UPDATE_QTY_EPS
+        {
+            debug!(
+                "{}: strategy_id={} skip stale/duplicate trade update by cumulative qty: client_order_id={} prev_cum={:.8} incoming_cum={:.8} local_status={:?} incoming_status={:?}",
+                log_owner,
+                strategy_id,
+                order.client_order_id,
+                prev_cum,
+                incoming_cum_qty,
+                order.status,
+                incoming_status
+            );
+            return Some(TradeUpdateSkipReason::StaleOrDuplicatePartial);
         }
 
         None
@@ -602,7 +602,7 @@ impl OrderManager {
         prev_cumulative_filled_qty: f64,
         incoming_cum_qty: f64,
     ) -> Option<f64> {
-        if incoming_cum_qty >= prev_cumulative_filled_qty {
+        if incoming_cum_qty + TRADE_UPDATE_QTY_EPS >= prev_cumulative_filled_qty {
             Some(incoming_cum_qty - prev_cumulative_filled_qty)
         } else {
             None
@@ -1485,5 +1485,45 @@ impl Order {
             //之后在这支持别的类型下单，根据资产类型决定下单的request，统一序列化为bytes
             _ => Err(format!("Unsupported trading venue: {:?}", self.venue)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        Order, OrderExecutionStatus, OrderManager, OrderStatus, OrderType, Side,
+        TradeUpdateSkipReason,
+    };
+    use crate::signal::common::TradingVenue;
+
+    #[test]
+    fn duplicate_partial_trade_is_skipped_by_cumulative_qty_even_with_newer_ts() {
+        let mut order = Order::new(
+            TradingVenue::BybitFutures,
+            42,
+            OrderType::Limit,
+            "ETHUSDT".to_string(),
+            Side::Buy,
+            0.04,
+            2300.0,
+            false,
+            1.0,
+            None,
+            true,
+        );
+        order.status = OrderExecutionStatus::Create;
+        order.cumulative_filled_quantity = 0.04;
+        order.timestamp.filled_t = 1_000;
+
+        let skip = OrderManager::should_skip_idempotent_trade_update(
+            &order,
+            OrderStatus::PartiallyFilled,
+            0.04,
+            9_999,
+            "test",
+            1,
+        );
+
+        assert_eq!(skip, Some(TradeUpdateSkipReason::StaleOrDuplicatePartial));
     }
 }

@@ -2233,6 +2233,7 @@ impl MarketMakerHedgeStrategy {
         }
 
         let cumulative_qty = trade.cumulative_filled_quantity();
+        let delta_qty = (cumulative_qty - prev_cumulative_filled_qty).max(0.0);
         let trade_time = trade.trade_time();
         let event_time = trade.event_time();
         let reported_trade_price = trade.price();
@@ -2280,11 +2281,11 @@ impl MarketMakerHedgeStrategy {
             order_snapshot.as_ref().map(|(_, _, _, price)| *price),
             trade,
         );
-        if was_tracked && cumulative_qty > 0.0 {
+        if was_tracked && delta_qty > 0.0 {
             let base_qty = MonitorChannel::instance().qty_to_base(
                 trade.trading_venue(),
                 trade.symbol(),
-                cumulative_qty,
+                delta_qty,
             );
             if base_qty > 0.0 {
                 let signed_qty = match trade.side() {
