@@ -12,10 +12,10 @@ use std::collections::BTreeMap;
     about = "Inspect an iceoryx publish-subscribe service and print node/publisher/subscriber owners"
 )]
 struct Args {
-    /// Fully qualified service path, for example factor_pub/binance-margin/rl_return_volatility
+    /// Fully qualified service path, for example factor_pub/binance-margin/rl_vol
     service: String,
 
-    /// Payload size in bytes. rl_return_volatility uses 256.
+    /// Payload size in bytes. rl_vol uses 256.
     #[arg(long, default_value_t = 256)]
     payload_size: usize,
 }

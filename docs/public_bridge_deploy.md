@@ -10,7 +10,7 @@
   - `bridge/binance-futures/ask_bid_spread`
   - `bridge/binance-futures/derivatives`
   - `bridge/binance-futures/incremental`（当前已在 config 中注释）
-  - `factor_pub/binance-futures/rl_return_volatility`
+  - `factor_pub/binance-futures/rl_vol`
   - `model_output/binance_futures_direction_model`（当前已在 config 中注释，暂不转发）
 
 实例级业务 IPC 例如 `order_reqs/*`、`query_reqs/*`、`account_pubs/*` 不在这里，后续继续归到 private bridge。
@@ -27,7 +27,7 @@
 - `model_output` 预留的 public route:
   - `model_output/binance_futures_direction_model`（当前注释）
 - `fusion factor vol` 目前桥接的是兼容单因子流:
-  - `factor_pub/binance-futures/rl_return_volatility`
+  - `factor_pub/binance-futures/rl_vol`
 
 ## Route Contract
 
