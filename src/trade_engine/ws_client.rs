@@ -87,6 +87,37 @@ fn parse_bybit_auth_response(payload: &str) -> Option<bool> {
         .map(|code| code == 0)
 }
 
+fn bitget_ws_code_is_success(v: Option<&Value>) -> bool {
+    match v {
+        Some(Value::String(s)) => s == "0" || s == "00000",
+        Some(Value::Number(n)) => n.as_i64() == Some(0),
+        _ => false,
+    }
+}
+
+fn parse_bitget_control_event(payload: &str) -> Option<(String, String, String, bool)> {
+    let Ok(v) = serde_json::from_str::<Value>(payload) else {
+        return None;
+    };
+    let event = v.get("event")?.as_str()?.trim();
+    if event.eq_ignore_ascii_case("trade") {
+        return None;
+    }
+    let code = match v.get("code") {
+        Some(Value::String(s)) => s.trim().to_string(),
+        Some(Value::Number(n)) => n.to_string(),
+        _ => String::new(),
+    };
+    let msg = v
+        .get("msg")
+        .and_then(|x| x.as_str())
+        .or_else(|| v.get("message").and_then(|x| x.as_str()))
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    Some((event.to_string(), code, msg, bitget_ws_code_is_success(v.get("code"))))
+}
+
 fn truncate_for_log(text: &str, max_chars: usize) -> String {
     let mut truncated = String::new();
     for (idx, ch) in text.chars().enumerate() {
@@ -250,8 +281,6 @@ pub struct TradeWsClient {
     pending_query: VecDeque<QueryRequestMsg>,
     inflight: HashMap<i64, TradeInflightMeta>,
     query_inflight: HashMap<i64, QueryInflightMeta>,
-    last_dispatched_type: TradeRequestType,
-    last_dispatched_query_type: QueryRequestType,
     next_binance_transport_id: i64,
     engine_shutdown: CancellationToken,
     endpoint_state: Rc<RefCell<WsEndpointState>>,
@@ -351,9 +380,6 @@ impl TradeWsClient {
             );
         }
 
-        let is_binance_spot_ws =
-            exchange == Exchange::Binance && url.contains("ws-api.binance.com");
-
         Self {
             id,
             exchange,
@@ -378,38 +404,6 @@ impl TradeWsClient {
             pending_query: VecDeque::new(),
             inflight: HashMap::new(),
             query_inflight: HashMap::new(),
-            last_dispatched_type: match exchange {
-                Exchange::Bitget => TradeRequestType::BitgetNewUMOrder,
-                Exchange::Bybit => TradeRequestType::BybitNewUMOrder,
-                Exchange::Okex => TradeRequestType::OkexNewUMOrder,
-                Exchange::Gate => gate_ws_kind
-                    .unwrap_or(gate_ws::GateWsKind::SpotUnified)
-                    .default_request_type(),
-                Exchange::Binance => {
-                    if is_binance_spot_ws {
-                        TradeRequestType::BinanceWsNewMarginOrder
-                    } else {
-                        TradeRequestType::BinanceWsNewUMOrder
-                    }
-                }
-                _ => TradeRequestType::BinanceNewUMOrder,
-            },
-            last_dispatched_query_type: match exchange {
-                Exchange::Bybit => QueryRequestType::BybitUMQuery,
-                Exchange::Gate => match gate_ws_kind.unwrap_or(gate_ws::GateWsKind::SpotUnified) {
-                    gate_ws::GateWsKind::SpotUnified => QueryRequestType::GateUnifiedOrderQuery,
-                    gate_ws::GateWsKind::FuturesUsdt => QueryRequestType::GateFuturesOrderQuery,
-                },
-                Exchange::Bitget => QueryRequestType::GateUnifiedOrderQuery,
-                Exchange::Binance => {
-                    if is_binance_spot_ws {
-                        QueryRequestType::BinanceWsMarginQuery
-                    } else {
-                        QueryRequestType::BinanceWsUMQuery
-                    }
-                }
-                _ => QueryRequestType::GateUnifiedOrderQuery,
-            },
             next_binance_transport_id: ((id as i64) << 48) + 1,
             engine_shutdown,
             endpoint_state,
@@ -1389,7 +1383,6 @@ impl TradeWsClient {
                 ws_open_update_enabled,
             },
         );
-        self.last_dispatched_type = msg.req_type;
     }
 
     fn is_supported_ws_open_update_req_type(req_type: TradeRequestType) -> bool {
@@ -1480,7 +1473,59 @@ impl TradeWsClient {
                 client_query_id: msg.client_query_id,
             },
         );
-        self.last_dispatched_query_type = msg.req_type;
+    }
+
+    fn take_trade_inflight_by_transport_id(&mut self, transport_id: i64) -> Option<TradeInflightMeta> {
+        if transport_id <= 0 {
+            return None;
+        }
+        self.inflight.remove(&transport_id)
+    }
+
+    fn take_trade_inflight_by_client_order_id(
+        &mut self,
+        client_order_id: i64,
+    ) -> Option<TradeInflightMeta> {
+        if client_order_id <= 0 {
+            return None;
+        }
+        let transport_id = self
+            .inflight
+            .iter()
+            .find_map(|(transport_id, meta)| {
+                (meta.client_order_id == client_order_id).then_some(*transport_id)
+            })?;
+        self.inflight.remove(&transport_id)
+    }
+
+    fn take_trade_inflight(
+        &mut self,
+        transport_id: Option<i64>,
+        client_order_id: Option<i64>,
+    ) -> Option<TradeInflightMeta> {
+        transport_id
+            .and_then(|id| self.take_trade_inflight_by_transport_id(id))
+            .or_else(|| {
+                client_order_id.and_then(|client_id| {
+                    self.take_trade_inflight_by_client_order_id(client_id)
+                })
+            })
+    }
+
+    fn warn_uncorrelated_trade_payload(&self, payload: &str) {
+        warn!(
+            "trade ws client id={} exchange={:?} dropping uncorrelated payload: {}",
+            self.id,
+            self.exchange,
+            truncate_for_log(&payload.replace(['\r', '\n'], " "), 512)
+        );
+    }
+
+    fn warn_uncorrelated_binary_payload(&self, len: usize) {
+        warn!(
+            "trade ws client id={} exchange={:?} dropping uncorrelated non-utf8 payload: {} bytes",
+            self.id, self.exchange, len
+        );
     }
 
     fn notify_sent(&self, msg: &TradeRequestMsg) {
@@ -1556,8 +1601,7 @@ impl TradeWsClient {
                     }
                 }
                 Err(_) => {
-                    let encoded = BASE64_STANDARD.encode(&bin);
-                    self.publish_generic_response(0, self.last_dispatched_type, encoded, true);
+                    self.warn_uncorrelated_binary_payload(bin.len());
                 }
             },
             Message::Ping(data) => {
@@ -1577,22 +1621,56 @@ impl TradeWsClient {
 
     fn process_incoming_payload(&mut self, payload: &str) {
         if self.exchange == Exchange::Bitget {
-            if let Ok(json_val) = serde_json::from_str::<Value>(payload) {
-                if json_val.get("event").and_then(|v| v.as_str()) == Some("login") {
-                    let code = json_val
-                        .get("code")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default();
-                    if code == "0" {
-                        info!("trade ws client id={} Bitget login successful", self.id);
-                    } else {
-                        warn!(
-                            "trade ws client id={} Bitget login failed: {}",
-                            self.id, payload
+            if let Some(resp) = bitget_ws::BitgetWsOrderResponse::from_json_str(payload) {
+                let Some(meta) = self.take_trade_inflight(Some(resp.id), resp.client_order_id())
+                else {
+                    self.warn_uncorrelated_trade_payload(payload);
+                    return;
+                };
+                let client_order_id = resp.client_order_id().unwrap_or(meta.client_order_id);
+                if resp.is_cancel() {
+                    // Bitget cancel-order success lacks sufficient order-state detail; rely on
+                    // account stream for terminal state reconciliation and only keep error payloads.
+                    if !resp.is_success() {
+                        self.publish_bitget_ws_response(
+                            client_order_id,
+                            meta.req_type,
+                            meta.ws_open_update_enabled,
+                            &resp,
                         );
                     }
                     return;
                 }
+                self.publish_bitget_ws_response(
+                    client_order_id,
+                    meta.req_type,
+                    meta.ws_open_update_enabled,
+                    &resp,
+                );
+                return;
+            }
+            if let Some((event, code, msg, success)) = parse_bitget_control_event(payload) {
+                if event.eq_ignore_ascii_case("login") {
+                    if success {
+                        info!("trade ws client id={} Bitget login successful", self.id);
+                    } else {
+                        warn!(
+                            "trade ws client id={} Bitget login failed: event={} code={} msg={} payload={}",
+                            self.id, event, code, msg, payload
+                        );
+                    }
+                } else if !success && (!code.is_empty() || !msg.is_empty()) {
+                    warn!(
+                        "trade ws client id={} Bitget control event failed: event={} code={} msg={} payload={}",
+                        self.id, event, code, msg, payload
+                    );
+                } else {
+                    debug!(
+                        "trade ws client id={} Bitget control event: {}",
+                        self.id, payload
+                    );
+                }
+                return;
             }
         }
 
@@ -1720,23 +1798,17 @@ impl TradeWsClient {
                         if transport_id > 0 {
                             // 解析错误码
                             let error_code = code.parse::<i32>().unwrap_or(0);
-                            let (req_type, client_order_id, _) = self
-                                .inflight
-                                .remove(&transport_id)
-                                .map(|meta| {
-                                    (
-                                        meta.req_type,
-                                        meta.client_order_id,
-                                        meta.ws_open_update_enabled,
-                                    )
-                                })
-                                .unwrap_or((TradeRequestType::OkexNewUMOrder, transport_id, false));
+                            let Some(meta) = self.take_trade_inflight_by_transport_id(transport_id)
+                            else {
+                                self.warn_uncorrelated_trade_payload(payload);
+                                return;
+                            };
 
                             // 发送错误响应
                             let outcome = TradeExecOutcome {
-                                req_type,
+                                req_type: meta.req_type,
                                 exchange: self.exchange,
-                                client_order_id,
+                                client_order_id: meta.client_order_id,
                                 status: 400, // Bad Request
                                 body: msg.to_string(),
                                 order_id: 0,
@@ -1749,7 +1821,7 @@ impl TradeWsClient {
                             let _ = self.resp_tx.send(outcome);
                             info!(
                                 "trade ws client id={} sent error response to strategy: client_order_id={} error_code={}",
-                                self.id, client_order_id, error_code
+                                self.id, meta.client_order_id, error_code
                             );
                         }
 
@@ -1775,26 +1847,18 @@ impl TradeWsClient {
 
         if self.exchange == Exchange::Bybit {
             if let Some(resp) = BybitWsOrderResponse::from_json_str(payload) {
-                let transport_id = resp.transport_id().unwrap_or(0);
-                let meta = if transport_id > 0 {
-                    self.inflight.remove(&transport_id)
-                } else {
-                    None
+                let Some(meta) =
+                    self.take_trade_inflight(resp.transport_id(), resp.client_order_id())
+                else {
+                    self.warn_uncorrelated_trade_payload(payload);
+                    return;
                 };
-                let req_type = meta
-                    .map(|m| m.req_type)
-                    .unwrap_or(self.last_dispatched_type);
-                let client_order_id = resp
-                    .client_order_id()
-                    .or_else(|| meta.map(|m| m.client_order_id))
-                    .unwrap_or(0);
-                let ws_open_update_enabled =
-                    meta.map(|m| m.ws_open_update_enabled).unwrap_or(false);
+                let client_order_id = resp.client_order_id().unwrap_or(meta.client_order_id);
                 if resp.order_link_id.is_empty() {
                     warn!(
                         "trade ws client id={} bybit response missing orderLinkId: req_type={:?} req_id={} client_order_id={} ret_code={} ret_msg={}",
                         self.id,
-                        req_type,
+                        meta.req_type,
                         resp.req_id,
                         client_order_id,
                         resp.ret_code,
@@ -1803,47 +1867,8 @@ impl TradeWsClient {
                 }
                 self.publish_bybit_ws_response(
                     client_order_id,
-                    req_type,
-                    ws_open_update_enabled,
-                    &resp,
-                );
-                return;
-            }
-        }
-
-        if self.exchange == Exchange::Bitget {
-            if let Some(resp) = bitget_ws::BitgetWsOrderResponse::from_json_str(payload) {
-                let meta = if resp.id > 0 {
-                    self.inflight.remove(&resp.id)
-                } else {
-                    None
-                };
-                let req_type = meta
-                    .map(|m| m.req_type)
-                    .unwrap_or(self.last_dispatched_type);
-                let client_order_id = resp
-                    .client_order_id()
-                    .or_else(|| meta.map(|m| m.client_order_id))
-                    .unwrap_or(0);
-                let ws_open_update_enabled =
-                    meta.map(|m| m.ws_open_update_enabled).unwrap_or(false);
-                if resp.is_cancel() {
-                    // Bitget cancel-order success lacks sufficient order-state detail; rely on
-                    // account stream for terminal state reconciliation and only keep error payloads.
-                    if !resp.is_success() {
-                        self.publish_bitget_ws_response(
-                            client_order_id,
-                            req_type,
-                            ws_open_update_enabled,
-                            &resp,
-                        );
-                    }
-                    return;
-                }
-                self.publish_bitget_ws_response(
-                    client_order_id,
-                    req_type,
-                    ws_open_update_enabled,
+                    meta.req_type,
+                    meta.ws_open_update_enabled,
                     &resp,
                 );
                 return;
@@ -1852,35 +1877,26 @@ impl TradeWsClient {
 
         if self.exchange == Exchange::Okex {
             if let Some(resp) = OkexWsOrderResponse::from_json_str(payload) {
-                let (req_type, client_order_id, ws_open_update_enabled) = if resp.id > 0 {
-                    self.inflight
-                        .remove(&resp.id)
-                        .map(|meta| {
-                            (
-                                meta.req_type,
-                                meta.client_order_id,
-                                meta.ws_open_update_enabled,
-                            )
-                        })
-                        .unwrap_or((
-                            self.last_dispatched_type,
-                            resp.client_order_id().unwrap_or(resp.id),
-                            false,
-                        ))
-                } else {
-                    (
-                        self.last_dispatched_type,
-                        resp.client_order_id().unwrap_or(0),
-                        false,
-                    )
+                let Some(meta) = self.take_trade_inflight(Some(resp.id), resp.client_order_id())
+                else {
+                    self.warn_uncorrelated_trade_payload(payload);
+                    return;
                 };
-                let coid = resp.client_order_id().unwrap_or(client_order_id);
-                self.publish_okex_ws_response(coid, req_type, ws_open_update_enabled, &resp);
+                let client_order_id = resp.client_order_id().unwrap_or(meta.client_order_id);
+                self.publish_okex_ws_response(
+                    client_order_id,
+                    meta.req_type,
+                    meta.ws_open_update_enabled,
+                    &resp,
+                );
                 return;
             }
         }
-        let (req_type, client_order_id) = self.extract_correlated(payload);
-        self.publish_generic_response(client_order_id, req_type, payload.to_string(), false);
+        if let Some((req_type, client_order_id)) = self.extract_correlated(payload) {
+            self.publish_generic_response(client_order_id, req_type, payload.to_string(), false);
+        } else {
+            self.warn_uncorrelated_trade_payload(payload);
+        }
     }
 
     fn publish_bybit_ws_response(
@@ -1968,16 +1984,18 @@ impl TradeWsClient {
         });
     }
 
-    fn extract_correlated(&mut self, payload: &str) -> (TradeRequestType, i64) {
+    fn extract_correlated(&mut self, payload: &str) -> Option<(TradeRequestType, i64)> {
         if let Ok(json_val) = serde_json::from_str::<Value>(payload) {
             if let Some(id) = Self::extract_client_order_id(&json_val) {
-                if let Some(meta) = self.inflight.remove(&id) {
-                    return (meta.req_type, meta.client_order_id);
+                if let Some(meta) = self.take_trade_inflight_by_transport_id(id) {
+                    return Some((meta.req_type, meta.client_order_id));
                 }
-                return (self.last_dispatched_type, id);
+                if let Some(meta) = self.take_trade_inflight_by_client_order_id(id) {
+                    return Some((meta.req_type, meta.client_order_id));
+                }
             }
         }
-        (self.last_dispatched_type, 0)
+        None
     }
 
     fn extract_client_order_id(val: &Value) -> Option<i64> {
@@ -2076,15 +2094,25 @@ impl TradeWsClient {
             return false;
         }
 
-        if json_val.get("ack").and_then(|v| v.as_bool()) == Some(true) {
+        if Self::extract_gate_ack(&json_val) == Some(true) {
             return true;
         }
 
-        // Gate WS trade responses are intentionally ignored; order state relies on account stream.
-        let transport_id = Self::extract_gate_request_id(&json_val).unwrap_or(0);
-        if transport_id > 0 {
-            let _ = self.inflight.remove(&transport_id);
-        }
+        let Some(meta) = self.take_trade_inflight(
+            Self::extract_gate_request_id(&json_val),
+            Self::extract_gate_client_order_id(&json_val),
+        ) else {
+            self.warn_uncorrelated_trade_payload(payload);
+            return true;
+        };
+        let client_order_id = Self::extract_gate_client_order_id(&json_val).unwrap_or(meta.client_order_id);
+        self.publish_gate_ws_response(
+            client_order_id,
+            meta.req_type,
+            meta.ws_open_update_enabled,
+            &json_val,
+            channel,
+        );
         true
     }
 
@@ -2108,18 +2136,16 @@ impl TradeWsClient {
             return true;
         }
 
-        let (req_type, client_order_id, ws_open_update_enabled) = self
-            .inflight
-            .remove(&id)
-            .map(|meta| {
-                (
-                    meta.req_type,
-                    meta.client_order_id,
-                    meta.ws_open_update_enabled,
-                )
-            })
-            .unwrap_or((self.last_dispatched_type, id, false));
-        self.publish_binance_ws_response(client_order_id, req_type, ws_open_update_enabled, &resp);
+        let Some(meta) = self.take_trade_inflight_by_transport_id(id) else {
+            self.warn_uncorrelated_trade_payload(payload);
+            return true;
+        };
+        self.publish_binance_ws_response(
+            meta.client_order_id,
+            meta.req_type,
+            meta.ws_open_update_enabled,
+            &resp,
+        );
         true
     }
 
@@ -2230,7 +2256,7 @@ impl TradeWsClient {
     }
 
     fn handle_gate_order_status(&mut self, json_val: &Value, payload: &str, channel: &str) -> bool {
-        if json_val.get("ack").and_then(|v| v.as_bool()) == Some(true) {
+        if Self::extract_gate_ack(json_val) == Some(true) {
             return true;
         }
 
@@ -2271,6 +2297,16 @@ impl TradeWsClient {
         true
     }
 
+    fn extract_gate_ack(val: &Value) -> Option<bool> {
+        val.get("ack")
+            .and_then(|v| v.as_bool())
+            .or_else(|| {
+                val.get("payload")
+                    .and_then(|v| v.get("ack"))
+                    .and_then(|v| v.as_bool())
+            })
+    }
+
     fn extract_gate_request_id(val: &Value) -> Option<i64> {
         fn parse_i64_value(v: &Value) -> Option<i64> {
             if let Some(n) = v.as_i64() {
@@ -2293,6 +2329,12 @@ impl TradeWsClient {
             None
         }
 
+        if let Some(id) = val.pointer("/payload/request_id").and_then(parse_i64_value) {
+            return Some(id);
+        }
+        if let Some(id) = val.pointer("/payload/req_id").and_then(parse_i64_value) {
+            return Some(id);
+        }
         if let Some(id) = val.get("request_id").and_then(parse_i64_value) {
             return Some(id);
         }
@@ -2312,6 +2354,33 @@ impl TradeWsClient {
             return Some(order_id);
         }
         None
+    }
+
+    fn extract_gate_client_order_id(val: &Value) -> Option<i64> {
+        fn parse_i64_value(v: &Value) -> Option<i64> {
+            if let Some(n) = v.as_i64() {
+                return Some(n);
+            }
+            if let Some(n) = v.as_u64() {
+                return Some(n as i64);
+            }
+            if let Some(s) = v.as_str() {
+                let s = s.trim();
+                if let Ok(parsed) = s.parse::<i64>() {
+                    return Some(parsed);
+                }
+                if let Some(rest) = s.strip_prefix("t-") {
+                    if let Ok(parsed) = rest.parse::<i64>() {
+                        return Some(parsed);
+                    }
+                }
+            }
+            None
+        }
+
+        val.pointer("/data/result/text")
+            .and_then(parse_i64_value)
+            .or_else(|| val.pointer("/payload/data/result/text").and_then(parse_i64_value))
     }
 
     fn extract_gate_status(val: &Value) -> u16 {
@@ -2343,6 +2412,108 @@ impl TradeWsClient {
         } else {
             status
         }
+    }
+
+    fn extract_gate_order_id(val: &Value) -> i64 {
+        fn parse_i64_value(v: &Value) -> Option<i64> {
+            if let Some(n) = v.as_i64() {
+                return Some(n);
+            }
+            if let Some(n) = v.as_u64() {
+                return Some(n as i64);
+            }
+            if let Some(s) = v.as_str() {
+                return s.trim().parse::<i64>().ok();
+            }
+            None
+        }
+
+        val.pointer("/data/result/id")
+            .and_then(parse_i64_value)
+            .or_else(|| val.pointer("/data/result/order_id").and_then(parse_i64_value))
+            .or_else(|| val.pointer("/payload/data/result/id").and_then(parse_i64_value))
+            .or_else(|| val.pointer("/payload/data/result/order_id").and_then(parse_i64_value))
+            .unwrap_or(0)
+    }
+
+    fn extract_gate_order_update_time_ms(val: &Value) -> i64 {
+        fn parse_i64_ms(v: &Value) -> Option<i64> {
+            if let Some(n) = v.as_i64() {
+                if n >= 1_000_000_000_000 {
+                    return Some(n);
+                }
+                return Some(n.saturating_mul(1_000));
+            }
+            if let Some(n) = v.as_u64() {
+                let n = n as i64;
+                if n >= 1_000_000_000_000 {
+                    return Some(n);
+                }
+                return Some(n.saturating_mul(1_000));
+            }
+            if let Some(s) = v.as_str() {
+                let s = s.trim();
+                if let Ok(parsed_i64) = s.parse::<i64>() {
+                    if parsed_i64 >= 1_000_000_000_000 {
+                        return Some(parsed_i64);
+                    }
+                    return Some(parsed_i64.saturating_mul(1_000));
+                }
+                if let Ok(parsed_f64) = s.parse::<f64>() {
+                    if parsed_f64 >= 1_000_000_000_000.0 {
+                        return Some(parsed_f64 as i64);
+                    }
+                    return Some((parsed_f64 * 1_000.0).round() as i64);
+                }
+            }
+            None
+        }
+
+        val.pointer("/data/result/update_time")
+            .and_then(parse_i64_ms)
+            .or_else(|| val.pointer("/data/result/update_time_ms").and_then(parse_i64_ms))
+            .or_else(|| val.pointer("/data/result/create_time").and_then(parse_i64_ms))
+            .or_else(|| val.pointer("/header/response_time").and_then(parse_i64_ms))
+            .unwrap_or(0)
+    }
+
+    fn publish_gate_ws_response(
+        &self,
+        client_order_id: i64,
+        req_type: TradeRequestType,
+        ws_open_update_enabled: bool,
+        resp: &Value,
+        channel: &str,
+    ) {
+        let status = Self::extract_gate_status(resp);
+        if !Self::should_publish_ws_open_update(req_type, status, ws_open_update_enabled) {
+            return;
+        }
+        let order_id = Self::extract_gate_order_id(resp);
+        let order_update_time = Self::extract_gate_order_update_time_ms(resp);
+        let order_status_u8 = if req_type == TradeRequestType::GateUnifiedNewOrder
+            || req_type == TradeRequestType::GateFuturesNewOrder
+        {
+            1
+        } else {
+            0
+        };
+        info!(
+            "trade ws client id={} exchange=gate recv {} response req_type={:?} client_order_id={} status={} order_id={}",
+            self.id, channel, req_type, client_order_id, status, order_id
+        );
+        let _ = self.resp_tx.send(TradeExecOutcome {
+            req_type,
+            client_order_id,
+            status,
+            body: resp.to_string(),
+            exchange: self.exchange,
+            order_id,
+            order_status_u8,
+            order_update_time,
+            executed_qty: 0.0,
+            response_price: 0.0,
+        });
     }
 
     fn publish_generic_response(
@@ -2479,5 +2650,26 @@ impl TradeWsClient {
             ws.send(Message::Ping(Vec::new())).await?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_bitget_control_event;
+
+    #[test]
+    fn parses_bitget_login_failure_control_event() {
+        let payload = r#"{"event":"login","code":"30005","msg":"Login failure"}"#;
+        let parsed = parse_bitget_control_event(payload).expect("control event");
+        assert_eq!(parsed.0, "login");
+        assert_eq!(parsed.1, "30005");
+        assert_eq!(parsed.2, "Login failure");
+        assert!(!parsed.3);
+    }
+
+    #[test]
+    fn ignores_bitget_trade_event_in_control_parser() {
+        let payload = r#"{"event":"trade","topic":"place-order","code":"0","msg":"success"}"#;
+        assert!(parse_bitget_control_event(payload).is_none());
     }
 }

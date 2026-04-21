@@ -219,6 +219,7 @@ impl QueryEngChannel {
                             if matches!(
                                 resp.req_type(),
                                 6101 | 6102 | 6103 | 6104 | 6105 | 7101 | 7102 | 8101 | 8102
+                                    | 9203 | 9204
                             ) {
                                 let body = resp.body_bytes().as_ref();
                                 let event_type = get_basic_event_type(body);
@@ -258,6 +259,62 @@ impl QueryEngChannel {
                                     if cleared {
                                         info!(
                                             "Bybit positions snapshot returned empty list; cleared pre_trade UM state (exchange={})",
+                                            exchange
+                                        );
+                                    }
+                                    continue;
+                                }
+                                if matches!(req_type, Some(QueryRequestType::GateUnifiedPositionsSnapshot))
+                                    && resp.body_bytes().is_empty()
+                                {
+                                    let mut cleared = false;
+                                    if matches!(open_venue, TradingVenue::GateFutures)
+                                        && exchange_enum == open_exchange
+                                    {
+                                        if let Some((um, _)) = mc.open_um_mgr() {
+                                            um.borrow_mut().clear();
+                                            cleared = true;
+                                        }
+                                    }
+                                    if matches!(hedge_venue, TradingVenue::GateFutures)
+                                        && exchange_enum == hedge_exchange
+                                    {
+                                        if let Some((um, _)) = mc.hedge_um_mgr() {
+                                            um.borrow_mut().clear();
+                                            cleared = true;
+                                        }
+                                    }
+                                    if cleared {
+                                        info!(
+                                            "Gate positions snapshot returned empty list; cleared pre_trade UM state (exchange={})",
+                                            exchange
+                                        );
+                                    }
+                                    continue;
+                                }
+                                if matches!(req_type, Some(QueryRequestType::BitgetPositionsSnapshot))
+                                    && resp.body_bytes().is_empty()
+                                {
+                                    let mut cleared = false;
+                                    if matches!(open_venue, TradingVenue::BitgetFutures)
+                                        && exchange_enum == open_exchange
+                                    {
+                                        if let Some((um, _)) = mc.open_um_mgr() {
+                                            um.borrow_mut().clear();
+                                            cleared = true;
+                                        }
+                                    }
+                                    if matches!(hedge_venue, TradingVenue::BitgetFutures)
+                                        && exchange_enum == hedge_exchange
+                                    {
+                                        if let Some((um, _)) = mc.hedge_um_mgr() {
+                                            um.borrow_mut().clear();
+                                            cleared = true;
+                                        }
+                                    }
+                                    if cleared {
+                                        info!(
+                                            "Bitget positions snapshot returned empty list; cleared pre_trade UM state (exchange={})",
                                             exchange
                                         );
                                     }

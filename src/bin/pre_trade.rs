@@ -396,6 +396,8 @@ async fn main() -> Result<()> {
                         || hedge_venue.trade_engine_exchange() == "gate";
                     let need_bybit = open_venue.trade_engine_exchange() == "bybit"
                         || hedge_venue.trade_engine_exchange() == "bybit";
+                    let need_bitget = open_venue.trade_engine_exchange() == "bitget"
+                        || hedge_venue.trade_engine_exchange() == "bitget";
 
                     let need_binance_balance = need_binance;
                     let need_binance_um = need_binance;
@@ -405,6 +407,8 @@ async fn main() -> Result<()> {
                     let need_gate_positions = need_gate;
                     let need_bybit_balance = need_bybit;
                     let need_bybit_positions = need_bybit;
+                    let need_bitget_balance = need_bitget;
+                    let need_bitget_positions = need_bitget;
 
                     if !need_binance_balance
                         && !need_binance_um
@@ -414,6 +418,8 @@ async fn main() -> Result<()> {
                         && !need_gate_positions
                         && !need_bybit_balance
                         && !need_bybit_positions
+                        && !need_bitget_balance
+                        && !need_bitget_positions
                     {
                         info!(
                             "snapshot query skipped: venues are {:?}/{:?}; relying on account stream",
@@ -551,6 +557,28 @@ async fn main() -> Result<()> {
                             );
                             let _ = QueryEngHub::publish_query_request("bybit", &req.to_bytes());
                             info!("snapshot query sent: bybit linear positions snapshot");
+                        }
+                        if need_bitget_balance {
+                            let now = get_timestamp_us();
+                            let req = GenericQueryRequest::create(
+                                QueryRequestType::BitgetAccountBalanceSnapshot,
+                                now,
+                                now,
+                                Bytes::new(),
+                            );
+                            let _ = QueryEngHub::publish_query_request("bitget", &req.to_bytes());
+                            info!("snapshot query sent: bitget unified account balance snapshot");
+                        }
+                        if need_bitget_positions {
+                            let now = get_timestamp_us();
+                            let req = GenericQueryRequest::create(
+                                QueryRequestType::BitgetPositionsSnapshot,
+                                now,
+                                now,
+                                Bytes::from_static(b"category=USDT-FUTURES"),
+                            );
+                            let _ = QueryEngHub::publish_query_request("bitget", &req.to_bytes());
+                            info!("snapshot query sent: bitget UTA current positions snapshot");
                         }
                     };
 

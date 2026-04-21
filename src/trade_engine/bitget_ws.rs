@@ -53,22 +53,49 @@ impl BitgetWsOrderResponse {
         let val: Value = serde_json::from_str(payload).ok()?;
         let obj = val.as_object()?;
         let event = obj.get("event")?.as_str()?.to_string();
-        let topic = obj.get("topic")?.as_str()?.to_string();
-        if event != "trade" || (topic != "place-order" && topic != "cancel-order") {
+        let topic = obj
+            .get("topic")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let is_trade_event = event.eq_ignore_ascii_case("trade");
+        let is_error_event = event.eq_ignore_ascii_case("error");
+        if !is_trade_event && !is_error_event {
             return None;
         }
-        let args = obj.get("args")?.as_array()?;
-        let first = args.first()?.as_object()?;
-        let create_time_ms = first.get("cTime").and_then(parse_i64_value).unwrap_or(0);
+        if !topic.is_empty() && topic != "place-order" && topic != "cancel-order" {
+            return None;
+        }
+        let first = obj
+            .get("args")
+            .and_then(|v| v.as_array())
+            .and_then(|args| args.first())
+            .and_then(|v| v.as_object());
+        let create_time_ms = first
+            .and_then(|first| first.get("cTime"))
+            .and_then(parse_i64_value)
+            .unwrap_or(0);
         Some(Self {
             event,
             id: obj.get("id").and_then(parse_i64_value).unwrap_or(0),
-            category: obj.get("category")?.as_str()?.to_string(),
+            category: obj
+                .get("category")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
             topic,
             code: obj.get("code")?.as_str()?.to_string(),
             msg: obj.get("msg")?.as_str()?.to_string(),
-            order_id: first.get("orderId")?.as_str()?.to_string(),
-            client_oid: first.get("clientOid")?.as_str()?.to_string(),
+            order_id: first
+                .and_then(|first| first.get("orderId"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            client_oid: first
+                .and_then(|first| first.get("clientOid"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
             create_time_ms,
         })
     }
@@ -101,4 +128,45 @@ fn parse_i64_value(v: &Value) -> Option<i64> {
         return s.trim().parse::<i64>().ok();
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BitgetWsOrderResponse;
+
+    #[test]
+    fn parses_bitget_trade_order_response() {
+        let payload = r#"{
+            "event":"trade",
+            "id":"1750034396082",
+            "category":"spot",
+            "topic":"place-order",
+            "args":[{"symbol":"BTCUSDT","orderId":"123","clientOid":"456","cTime":"1750034397008"}],
+            "code":"0",
+            "msg":"success"
+        }"#;
+        let resp = BitgetWsOrderResponse::from_json_str(payload).expect("bitget resp");
+        assert_eq!(resp.event, "trade");
+        assert_eq!(resp.id, 1750034396082);
+        assert_eq!(resp.order_id, "123");
+        assert_eq!(resp.client_oid, "456");
+        assert!(resp.is_success());
+    }
+
+    #[test]
+    fn parses_bitget_error_event_as_order_failure() {
+        let payload = r#"{
+            "event":"error",
+            "id":"1750034396082",
+            "topic":"place-order",
+            "code":"30005",
+            "msg":"open failed"
+        }"#;
+        let resp = BitgetWsOrderResponse::from_json_str(payload).expect("bitget error");
+        assert_eq!(resp.event, "error");
+        assert_eq!(resp.id, 1750034396082);
+        assert_eq!(resp.code, "30005");
+        assert_eq!(resp.msg, "open failed");
+        assert!(!resp.is_success());
+    }
 }

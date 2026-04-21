@@ -12,9 +12,11 @@ use crate::trade_engine::query_parsers::binance_spot_account_snapshot_std::parse
 use crate::trade_engine::query_parsers::binance_um_account_snapshot::parse_binance_um_account_snapshot;
 use crate::trade_engine::query_parsers::binance_um_balance_snapshot_std::parse_binance_um_balance_snapshot_std;
 use crate::trade_engine::query_parsers::binance_um_order::parse_binance_um_order_query_json;
+use crate::trade_engine::query_parsers::bitget_account_balance_snapshot::parse_bitget_account_balance_snapshot;
 use crate::trade_engine::query_parsers::bitget_order::{
     parse_bitget_order_query_json, BitgetOrderQueryParseErrorKind, BitgetOrderQueryParseResult,
 };
+use crate::trade_engine::query_parsers::bitget_positions_snapshot::parse_bitget_positions_snapshot;
 use crate::trade_engine::query_parsers::bybit_account_balance_snapshot::parse_bybit_account_balance_snapshot;
 use crate::trade_engine::query_parsers::bybit_order::{
     parse_bybit_order_query_json, BybitOrderQueryParseErrorKind, BybitOrderQueryParseResult,
@@ -1778,7 +1780,7 @@ impl TradeEngine {
                                 endpoint,
                                 qs,
                             )
-                            .await
+                                .await
                             {
                                 Ok((status, body)) => {
                                     let body_bytes = match msg.req_type {
@@ -1795,6 +1797,61 @@ impl TradeEngine {
                                                 BitgetOrderQueryParseResult::Error { .. } => {
                                                     bytes::Bytes::from_static(b"E")
                                                 }
+                                            }
+                                        }
+                                        crate::trade_engine::query_request::QueryRequestType::BitgetAccountBalanceSnapshot
+                                            if status == 200 =>
+                                        {
+                                            if let Some(msgs) =
+                                                parse_bitget_account_balance_snapshot(&body)
+                                            {
+                                                if !msgs.is_empty() {
+                                                    for payload in msgs {
+                                                        let _ = query_resp_tx.send(QueryExecOutcome {
+                                                            req_type: msg.req_type,
+                                                            client_query_id: msg.client_query_id,
+                                                            status: status as u16,
+                                                            body: payload,
+                                                            exchange: exchange_copy,
+                                                            ip_used_weight_1m: None,
+                                                            query_count_1m: None,
+                                                        });
+                                                    }
+                                                    continue;
+                                                }
+                                            }
+                                            warn!(
+                                                "bitget account balance snapshot parse produced no basic msgs; body={}",
+                                                truncate_for_log(&body, 512)
+                                            );
+                                            bytes::Bytes::new()
+                                        }
+                                        crate::trade_engine::query_request::QueryRequestType::BitgetPositionsSnapshot
+                                            if status == 200 =>
+                                        {
+                                            if let Some(msgs) = parse_bitget_positions_snapshot(&body)
+                                            {
+                                                if !msgs.is_empty() {
+                                                    for payload in msgs {
+                                                        let _ = query_resp_tx.send(QueryExecOutcome {
+                                                            req_type: msg.req_type,
+                                                            client_query_id: msg.client_query_id,
+                                                            status: status as u16,
+                                                            body: payload,
+                                                            exchange: exchange_copy,
+                                                            ip_used_weight_1m: None,
+                                                            query_count_1m: None,
+                                                        });
+                                                    }
+                                                    continue;
+                                                }
+                                                bytes::Bytes::new()
+                                            } else {
+                                                warn!(
+                                                    "bitget positions snapshot parse failed; body={}",
+                                                    truncate_for_log(&body, 512)
+                                                );
+                                                bytes::Bytes::new()
                                             }
                                         }
                                         _ => bytes::Bytes::from(body),

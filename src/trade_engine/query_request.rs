@@ -29,6 +29,8 @@ pub enum QueryRequestType {
     BybitPositionsSnapshot = 9102,
     BitgetMarginQuery = 9201,
     BitgetUMQuery = 9202,
+    BitgetAccountBalanceSnapshot = 9203,
+    BitgetPositionsSnapshot = 9204,
 }
 
 #[repr(C, align(8))]
@@ -75,6 +77,8 @@ impl TryFrom<u32> for QueryRequestType {
             9102 => Ok(QueryRequestType::BybitPositionsSnapshot),
             9201 => Ok(QueryRequestType::BitgetMarginQuery),
             9202 => Ok(QueryRequestType::BitgetUMQuery),
+            9203 => Ok(QueryRequestType::BitgetAccountBalanceSnapshot),
+            9204 => Ok(QueryRequestType::BitgetPositionsSnapshot),
             _ => Err(()),
         }
     }

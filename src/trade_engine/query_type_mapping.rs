@@ -48,7 +48,10 @@ impl QueryTypeMapping {
     pub fn is_bitget_rest(request_type: QueryRequestType) -> bool {
         matches!(
             request_type,
-            QueryRequestType::BitgetMarginQuery | QueryRequestType::BitgetUMQuery
+            QueryRequestType::BitgetMarginQuery
+                | QueryRequestType::BitgetUMQuery
+                | QueryRequestType::BitgetAccountBalanceSnapshot
+                | QueryRequestType::BitgetPositionsSnapshot
         )
     }
 
@@ -82,6 +85,8 @@ impl QueryTypeMapping {
             QueryRequestType::BitgetMarginQuery | QueryRequestType::BitgetUMQuery => {
                 "/api/v3/trade/order-info"
             }
+            QueryRequestType::BitgetAccountBalanceSnapshot => "/api/v3/account/assets",
+            QueryRequestType::BitgetPositionsSnapshot => "/api/v3/position/current-position",
         }
     }
 
@@ -105,7 +110,9 @@ impl QueryTypeMapping {
             | QueryRequestType::BybitAccountBalanceSnapshot
             | QueryRequestType::BybitPositionsSnapshot
             | QueryRequestType::BitgetMarginQuery
-            | QueryRequestType::BitgetUMQuery => "GET",
+            | QueryRequestType::BitgetUMQuery
+            | QueryRequestType::BitgetAccountBalanceSnapshot
+            | QueryRequestType::BitgetPositionsSnapshot => "GET",
             QueryRequestType::BinanceWsUMQuery | QueryRequestType::BinanceWsMarginQuery => {
                 unreachable!("Binance ws queries run via websocket; REST mapping not used")
             }
@@ -136,7 +143,10 @@ impl QueryTypeMapping {
             QueryRequestType::BybitUMQuery => 1,
             QueryRequestType::BybitAccountBalanceSnapshot => 1,
             QueryRequestType::BybitPositionsSnapshot => 1,
-            QueryRequestType::BitgetMarginQuery | QueryRequestType::BitgetUMQuery => 1,
+            QueryRequestType::BitgetMarginQuery
+            | QueryRequestType::BitgetUMQuery
+            | QueryRequestType::BitgetAccountBalanceSnapshot
+            | QueryRequestType::BitgetPositionsSnapshot => 1,
             QueryRequestType::GateUnifiedOrderQuery | QueryRequestType::GateFuturesOrderQuery => {
                 unreachable!("Gate order queries run via websocket; REST mapping not used")
             }

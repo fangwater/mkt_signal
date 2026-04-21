@@ -25,36 +25,14 @@ use mkt_signal::portfolio_margin::bitget_auth::{
 };
 use mkt_signal::portfolio_margin::bitget_user_stream::BitgetUserDataConnection;
 use mkt_signal::portfolio_margin::pm_forwarder::PmForwarder;
-use serde::Deserialize;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::BTreeMap;
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::net::IpAddr;
 use std::time::Duration;
+use mkt_signal::trade_engine::query_parsers::bitget_account_balance_snapshot::parse_bitget_account_balance_snapshot;
 use tokio::signal;
 use tokio::sync::{broadcast, watch};
-use url::form_urlencoded;
-
-#[derive(Debug, Deserialize)]
-struct BitgetAccountAssetsResponse {
-    #[serde(default)]
-    code: String,
-    #[serde(default)]
-    data: Vec<BitgetAccountAssetRow>,
-}
-
-#[derive(Debug, Deserialize)]
-struct BitgetAccountAssetRow {
-    #[serde(default)]
-    coin: String,
-    #[serde(default)]
-    balance: String,
-    #[serde(default)]
-    borrow: String,
-    #[serde(default)]
-    debts: String,
-}
 
 fn credential_edges(value: &str) -> (String, String, usize) {
     let trimmed = value.trim();
@@ -268,16 +246,7 @@ async fn bitget_rest_get_account_assets(
     credentials: &BitgetCredentials,
 ) -> Result<String> {
     let timestamp_ms = chrono::Utc::now().timestamp_millis();
-    let query = {
-        let mut params = BTreeMap::new();
-        params.insert("assetType".to_string(), "hold_only".to_string());
-        let mut serializer = form_urlencoded::Serializer::new(String::new());
-        for (k, v) in &params {
-            serializer.append_pair(k, v);
-        }
-        serializer.finish()
-    };
-    let path = format!("/api/v3/account/assets?{}", query);
+    let path = "/api/v3/account/assets";
     let sign = sign_bitget_rest_request(credentials, timestamp_ms, "GET", &path);
     let url = format!("https://api.bitget.com{}", path);
 
@@ -303,29 +272,7 @@ async fn bitget_rest_get_account_assets(
 }
 
 fn parse_bitget_account_assets_snapshot(json: &str) -> Option<Vec<Bytes>> {
-    let resp: BitgetAccountAssetsResponse = serde_json::from_str(json).ok()?;
-    if resp.code != "00000" && resp.code != "0" {
-        return None;
-    }
-    let ts = chrono::Utc::now().timestamp_millis();
-    let mut out = Vec::new();
-    for row in resp.data {
-        let coin = row.coin.to_ascii_uppercase();
-        if coin.is_empty() {
-            continue;
-        }
-
-        let balance = row.balance.trim().parse::<f64>().unwrap_or(0.0);
-        out.push(BasicBalanceMsg::create(ts, coin.clone(), balance).to_bytes());
-
-        let borrowed = row.borrow.trim().parse::<f64>().unwrap_or(0.0);
-        let debts = row.debts.trim().parse::<f64>().unwrap_or(0.0);
-        let interest = (debts - borrowed).max(0.0);
-        if borrowed > 0.0 || interest > 0.0 {
-            out.push(BasicBorrowInterestMsg::create(ts, coin, borrowed, interest).to_bytes());
-        }
-    }
-    Some(out)
+    parse_bitget_account_balance_snapshot(json)
 }
 
 fn spawn_bitget_balance_poll(
