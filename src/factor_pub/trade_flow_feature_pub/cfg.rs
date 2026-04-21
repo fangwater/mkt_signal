@@ -11,6 +11,8 @@ pub struct TradeFlowFeaturePubConfig {
     #[serde(default)]
     pub runtime: RuntimeConfig,
     #[serde(default)]
+    pub rl_factor: RlFactorConfig,
+    #[serde(default)]
     pub persistence: PersistenceConfig,
 }
 
@@ -41,6 +43,26 @@ impl Default for RuntimeConfig {
         Self {
             bar_ms: default_bar_ms(),
             threshold_reload_secs: default_threshold_reload_secs(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct RlFactorConfig {
+    #[serde(default = "default_rl_pct_change_period")]
+    pub pct_change_period: usize,
+    #[serde(default = "default_rl_rolling_window")]
+    pub rolling_window: usize,
+    #[serde(default = "default_rl_scale_factor")]
+    pub scale_factor: f64,
+}
+
+impl Default for RlFactorConfig {
+    fn default() -> Self {
+        Self {
+            pct_change_period: default_rl_pct_change_period(),
+            rolling_window: default_rl_rolling_window(),
+            scale_factor: default_rl_scale_factor(),
         }
     }
 }
@@ -101,6 +123,7 @@ impl TradeFlowFeaturePubConfig {
         if self.runtime.threshold_reload_secs == 0 {
             anyhow::bail!("runtime.threshold_reload_secs must be > 0");
         }
+        self.rl_factor.validate()?;
         if self.persistence.rocksdb_path.trim().is_empty() {
             anyhow::bail!("persistence.rocksdb_path must not be empty");
         }
@@ -120,10 +143,37 @@ fn default_threshold_reload_secs() -> u64 {
     180
 }
 
+fn default_rl_pct_change_period() -> usize {
+    12
+}
+
+fn default_rl_rolling_window() -> usize {
+    30
+}
+
+fn default_rl_scale_factor() -> f64 {
+    1.0
+}
+
 fn default_persistence_rocksdb_path() -> String {
     "data/trade_flow_feature_pub_rocksdb".to_string()
 }
 
 fn default_persistence_retention_hours() -> u64 {
     48
+}
+
+impl RlFactorConfig {
+    fn validate(&self) -> Result<()> {
+        if self.pct_change_period == 0 {
+            anyhow::bail!("rl_factor.pct_change_period must be > 0");
+        }
+        if self.rolling_window == 0 {
+            anyhow::bail!("rl_factor.rolling_window must be > 0");
+        }
+        if !self.scale_factor.is_finite() || self.scale_factor <= 0.0 {
+            anyhow::bail!("rl_factor.scale_factor must be finite and > 0");
+        }
+        Ok(())
+    }
 }

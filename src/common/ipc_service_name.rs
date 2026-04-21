@@ -24,8 +24,8 @@ use std::env;
 /// // => "bridge/binance-futures/derivatives"
 ///
 /// // 因子流（公用）：
-/// build_service_name("factor_pub/binance-futures/rl_return_volatility")
-/// // => "factor_pub/binance-futures/rl_return_volatility"
+/// build_service_name("factor_pub/binance-futures/rl_vol")
+/// // => "factor_pub/binance-futures/rl_vol"
 ///
 /// // 信号通道（隔离）：
 /// build_service_name("signal_pubs/pre_trade")

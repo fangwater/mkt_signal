@@ -12,8 +12,7 @@ use crate::factor_pub::fusion_factor_pub::app::{
     DepthDerived, ExtraFactorId, FactorBinding, FusionFactorPubApp, SymbolCalcState,
 };
 use crate::factor_pub::fusion_factor_pub::FusionFactorId;
-use crate::factor_pub::kline_factor_pub::app as kline_app;
-use crate::factor_pub::kline_factor_pub::cfg::{FactorDefinition, FactorKind};
+use crate::factor_pub::kline_factors;
 
 use super::synthetic::ScenarioData;
 
@@ -21,6 +20,46 @@ pub struct ScenarioResult {
     pub name: String,
     pub kline_factors: HashMap<String, f64>,
     pub fusion_factors: HashMap<String, f64>,
+}
+
+#[derive(Debug, Clone)]
+struct SimpleFactorDefinition {
+    name: String,
+    kind: SimpleFactorKind,
+}
+
+#[derive(Debug, Clone)]
+enum SimpleFactorKind {
+    RlReturnVolatility {
+        pct_change_period: usize,
+        rolling_window: usize,
+    },
+    HfVolStd {
+        window: usize,
+    },
+    HfHighlowRange {
+        window: usize,
+    },
+    HfSpreadReturn {
+        return_period: usize,
+        ma_window: usize,
+    },
+    HfCountMean {
+        window: usize,
+    },
+    HfVolAbsPctByVol {
+        window: usize,
+    },
+    HfVolumeMean {
+        window: usize,
+    },
+    HfPriceVolumeCorr {
+        window: usize,
+    },
+    HfVolVolumeCombined {
+        vol_window: usize,
+        volu_window: usize,
+    },
 }
 
 fn validation_allowlist() -> &'static HashSet<&'static str> {
@@ -71,8 +110,7 @@ fn run_kline_factors(scenario: &ScenarioData) -> Result<HashMap<String, f64>> {
     let mut results = HashMap::new();
 
     for def in &factor_defs {
-        let value =
-            kline_app::compute_factor_value(def, &closes, &highs, &lows, &volumes, &counts)?;
+        let value = compute_simple_factor_value(def, &closes, &highs, &lows, &volumes, &counts)?;
         let v = match value {
             Some(v) if v.is_finite() => v,
             _ => f64::NAN,
@@ -178,80 +216,93 @@ fn run_fusion_factors(scenario: &ScenarioData) -> Result<HashMap<String, f64>> {
     Ok(results)
 }
 
-/// Default kline factor definitions covering all 9 FactorKind variants.
-fn default_kline_factor_defs() -> Vec<FactorDefinition> {
+/// Default simple factor definitions covering all 9 legacy kline factor variants.
+fn default_kline_factor_defs() -> Vec<SimpleFactorDefinition> {
     vec![
-        FactorDefinition {
+        SimpleFactorDefinition {
             name: "rl_return_volatility".to_string(),
-            enabled: true,
-            kind: FactorKind::RlReturnVolatility {
+            kind: SimpleFactorKind::RlReturnVolatility {
                 pct_change_period: 1,
                 rolling_window: 60,
             },
-            scale_factor: 1.0,
-            clip: None,
         },
-        FactorDefinition {
+        SimpleFactorDefinition {
             name: "hf_vol_std".to_string(),
-            enabled: true,
-            kind: FactorKind::HfVolStd { window: 60 },
-            scale_factor: 1.0,
-            clip: None,
+            kind: SimpleFactorKind::HfVolStd { window: 60 },
         },
-        FactorDefinition {
+        SimpleFactorDefinition {
             name: "hf_highlow_range".to_string(),
-            enabled: true,
-            kind: FactorKind::HfHighlowRange { window: 60 },
-            scale_factor: 1.0,
-            clip: None,
+            kind: SimpleFactorKind::HfHighlowRange { window: 60 },
         },
-        FactorDefinition {
+        SimpleFactorDefinition {
             name: "hf_spread_return".to_string(),
-            enabled: true,
-            kind: FactorKind::HfSpreadReturn {
+            kind: SimpleFactorKind::HfSpreadReturn {
                 return_period: 1,
                 ma_window: 60,
             },
-            scale_factor: 1.0,
-            clip: None,
         },
-        FactorDefinition {
+        SimpleFactorDefinition {
             name: "hf_count_mean".to_string(),
-            enabled: true,
-            kind: FactorKind::HfCountMean { window: 60 },
-            scale_factor: 1.0,
-            clip: None,
+            kind: SimpleFactorKind::HfCountMean { window: 60 },
         },
-        FactorDefinition {
+        SimpleFactorDefinition {
             name: "hf_vol_abs_pct_by_vol".to_string(),
-            enabled: true,
-            kind: FactorKind::HfVolAbsPctByVol { window: 60 },
-            scale_factor: 1.0,
-            clip: None,
+            kind: SimpleFactorKind::HfVolAbsPctByVol { window: 60 },
         },
-        FactorDefinition {
+        SimpleFactorDefinition {
             name: "hf_volume_mean".to_string(),
-            enabled: true,
-            kind: FactorKind::HfVolumeMean { window: 60 },
-            scale_factor: 1.0,
-            clip: None,
+            kind: SimpleFactorKind::HfVolumeMean { window: 60 },
         },
-        FactorDefinition {
+        SimpleFactorDefinition {
             name: "hf_price_volume_corr".to_string(),
-            enabled: true,
-            kind: FactorKind::HfPriceVolumeCorr { window: 60 },
-            scale_factor: 1.0,
-            clip: None,
+            kind: SimpleFactorKind::HfPriceVolumeCorr { window: 60 },
         },
-        FactorDefinition {
+        SimpleFactorDefinition {
             name: "hf_vol_volume_combined".to_string(),
-            enabled: true,
-            kind: FactorKind::HfVolVolumeCombined {
+            kind: SimpleFactorKind::HfVolVolumeCombined {
                 vol_window: 60,
                 volu_window: 60,
             },
-            scale_factor: 1.0,
-            clip: None,
         },
     ]
+}
+
+fn compute_simple_factor_value(
+    factor: &SimpleFactorDefinition,
+    closes: &VecDeque<f64>,
+    highs: &VecDeque<f64>,
+    lows: &VecDeque<f64>,
+    volumes: &VecDeque<f64>,
+    counts: &VecDeque<f64>,
+) -> Result<Option<f64>> {
+    match factor.kind {
+        SimpleFactorKind::RlReturnVolatility {
+            pct_change_period,
+            rolling_window,
+        } => kline_factors::compute_rl_return_volatility(closes, pct_change_period, rolling_window),
+        SimpleFactorKind::HfVolStd { window } => kline_factors::compute_hf_vol_std(closes, window),
+        SimpleFactorKind::HfHighlowRange { window } => {
+            kline_factors::compute_hf_highlow_range(highs, lows, window)
+        }
+        SimpleFactorKind::HfSpreadReturn {
+            return_period,
+            ma_window,
+        } => kline_factors::compute_hf_spread_return(closes, return_period, ma_window),
+        SimpleFactorKind::HfCountMean { window } => {
+            kline_factors::compute_hf_count_mean(counts, window)
+        }
+        SimpleFactorKind::HfVolAbsPctByVol { window } => {
+            kline_factors::compute_hf_vol_abs_pct_by_vol(closes, volumes, window)
+        }
+        SimpleFactorKind::HfVolumeMean { window } => {
+            kline_factors::compute_hf_volume_mean(volumes, window)
+        }
+        SimpleFactorKind::HfPriceVolumeCorr { window } => {
+            kline_factors::compute_hf_price_volume_corr(closes, volumes, window)
+        }
+        SimpleFactorKind::HfVolVolumeCombined {
+            vol_window,
+            volu_window,
+        } => kline_factors::compute_hf_vol_volume_combined(closes, volumes, vol_window, volu_window),
+    }
 }

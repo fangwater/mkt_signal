@@ -6,8 +6,9 @@ use iceoryx2::service::ipc;
 use mkt_signal::common::redis_client::RedisSettings;
 use mkt_signal::common::symbol_util::normalize_symbol_for_venue;
 use mkt_signal::common::trade_flow_feature_msg::TradeFlowFeatureMsg;
-use mkt_signal::factor_pub::fusion_factor_pub::cfg::FusionFactorPubConfig;
-use mkt_signal::factor_pub::kline_factor_pub::app::compute_rl_return_volatility;
+use mkt_signal::factor_pub::factor_index::factor_name_to_channel;
+use mkt_signal::factor_pub::rl_vol::compute_rl_return_volatility;
+use mkt_signal::factor_pub::trade_flow_feature_pub::cfg::TradeFlowFeaturePubConfig;
 use mkt_signal::funding_rate::factor_value_hub::FactorValueHub;
 use mkt_signal::signal::common::TradingVenue;
 use std::collections::VecDeque;
@@ -44,8 +45,8 @@ struct Args {
     #[arg(long, value_enum)]
     open_venue: Option<TradingVenue>,
 
-    /// Fusion factor config path for rl_factor scale/clip settings
-    #[arg(long, default_value = "config/fusion_factor_pub.toml")]
+    /// Trade flow feature config path for rl_factor settings
+    #[arg(long, default_value = "config/trade_flow_feature_pub.yaml")]
     config: String,
 
     /// Exit after the first snapshot is observed for the symbol
@@ -213,7 +214,7 @@ fn main() -> Result<()> {
     let hedge_venue_slug = args.hedge_venue.data_pub_slug();
     let target_symbol = normalize_symbol_for_venue(&args.symbol, args.hedge_venue);
     let poll_interval = Duration::from_millis(args.poll_interval_ms.max(1));
-    let cfg = FusionFactorPubConfig::load(&args.config)?;
+    let cfg = TradeFlowFeaturePubConfig::load(&args.config)?;
     let required_count = cfg.rl_factor.pct_change_period + cfg.rl_factor.rolling_window;
 
     let node = NodeBuilder::new()
@@ -236,7 +237,7 @@ fn main() -> Result<()> {
     println!(
         "subscribed factor_service=factor_pub/{}/{} trade_flow_service=factor_pub/{}/{} symbol={} symbol_key={} open_venue={} hedge_venue={} once={} config={} rl_pct_change_period={} rl_rolling_window={} rl_scale_factor={}",
         hedge_venue_slug,
-        TARGET_FACTOR_NAME,
+        factor_name_to_channel(TARGET_FACTOR_NAME),
         hedge_venue_slug,
         TRADE_FLOW_CHANNEL,
         args.symbol,

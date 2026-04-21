@@ -1,5 +1,3 @@
-//! Kline Factor Publisher 模块
+//! Kline factor 定义与计算模块
 
-pub mod app;
 pub mod cfg;
-pub mod publisher;

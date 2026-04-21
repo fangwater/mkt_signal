@@ -6,7 +6,7 @@
 # - JP -> HK public forwarding over one shared ZMQ port:
 #     bridge/binance-futures/{ask_bid_spread,derivatives}
 #     bridge/binance-futures/incremental (currently commented out)
-#     factor_pub/binance-futures/rl_return_volatility
+#     factor_pub/binance-futures/rl_vol
 #     model_output/binance_futures_direction_model
 #
 # Notes:
@@ -111,7 +111,7 @@ routes:
   - id: public_binance_futures_rl_return_volatility
     from:
       type: ipc
-      endpoint: "factor_pub/binance-futures/rl_return_volatility"
+      endpoint: "factor_pub/binance-futures/rl_vol"
       size: 256
     to:
       type: zmq

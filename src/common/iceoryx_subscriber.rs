@@ -26,7 +26,7 @@ impl ChannelType {
             ChannelType::Kline => "kline",
             ChannelType::Derivatives => "derivatives",
             ChannelType::AskBidSpread => "ask_bid_spread",
-            ChannelType::RlReturnVolatility => "rl_return_volatility",
+            ChannelType::RlReturnVolatility => "rl_vol",
             ChannelType::Signal => "signal",
         }
     }
@@ -183,7 +183,7 @@ impl MultiChannelSubscriber {
                     .open()
                     .with_context(|| {
                         format!(
-                            "failed to open rl_return_volatility service={} hint=fusion_factor_pub must start first",
+                            "failed to open rl_vol service={} hint=trade_flow_feature_pub must start first",
                             service_name
                         )
                     })?;

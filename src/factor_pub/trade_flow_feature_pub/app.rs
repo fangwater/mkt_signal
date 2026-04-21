@@ -17,14 +17,15 @@ use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use super::cfg::{PersistenceConfig, RuntimeConfig, TradeFlowFeaturePubConfig};
-use super::publisher::TradeFlowFeaturePublisher;
+use super::cfg::{PersistenceConfig, RlFactorConfig, RuntimeConfig, TradeFlowFeaturePubConfig};
+use super::publisher::{RlFactorPublisher, TradeFlowFeaturePublisher};
 use crate::common::amount_threshold::{is_online_amount_threshold, AmountThreshold};
 use crate::common::mkt_msg::MktMsgType;
 use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::trade_flow_feature_msg::{TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_DIM};
 use crate::depth_pub::depth_msg::{DepthMsgType, DEPTH25_MAX_BYTES, DEPTH50_MAX_BYTES};
+use crate::factor_pub::rl_vol::compute_rl_return_volatility;
 use crate::signal::common::TradingVenue;
 
 const TRADE_MAX_BYTES: usize = 128;
@@ -43,6 +44,55 @@ const FIXED_REDIS_DB: i64 = 0;
 const TRADE_DEDUP_WINDOW_MS: i64 = 10_000;
 const MAX_DEPTH_LEVELS_CACHE: usize = 20;
 const APPENDED_DEPTH_DIM: usize = MAX_DEPTH_LEVELS_CACHE * 4;
+const MAX_SYMBOL_HISTORY: usize = 4096;
+
+#[derive(Debug, Clone)]
+struct RlReturnVolatilityRuntimeConfig {
+    pct_change_period: usize,
+    rolling_window: usize,
+    scale_factor: f64,
+}
+
+impl RlReturnVolatilityRuntimeConfig {
+    fn from_config(cfg: &RlFactorConfig) -> Result<Self> {
+        let required = cfg.pct_change_period + cfg.rolling_window;
+        if required > MAX_SYMBOL_HISTORY {
+            anyhow::bail!(
+                "rl required history {} exceeds MAX_SYMBOL_HISTORY {}",
+                required,
+                MAX_SYMBOL_HISTORY
+            );
+        }
+
+        Ok(Self {
+            pct_change_period: cfg.pct_change_period,
+            rolling_window: cfg.rolling_window,
+            scale_factor: cfg.scale_factor,
+        })
+    }
+
+    fn apply_scale(&self, raw: f64) -> f64 {
+        raw * self.scale_factor
+    }
+
+    fn compute_scaled_value(&self, closes: &VecDeque<f64>) -> Result<Option<f64>> {
+        let Some(raw) = compute_rl_return_volatility(
+            closes,
+            self.pct_change_period,
+            self.rolling_window,
+        )?
+        else {
+            return Ok(None);
+        };
+
+        let scaled = self.apply_scale(raw);
+        if scaled.is_finite() {
+            Ok(Some(scaled))
+        } else {
+            Ok(None)
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 enum TradeSide {
@@ -370,6 +420,7 @@ struct SymbolState {
     last_buy_vwap: Option<f64>,
     last_sell_vwap: Option<f64>,
     closed_bars: Vec<TradeBar>,
+    published_closes: VecDeque<f64>,
 }
 
 impl SymbolState {
@@ -382,6 +433,7 @@ impl SymbolState {
             last_buy_vwap: None,
             last_sell_vwap: None,
             closed_bars: Vec::new(),
+            published_closes: VecDeque::new(),
         }
     }
 
@@ -491,6 +543,21 @@ impl SymbolState {
 
     fn take_closed_bars(&mut self) -> Vec<TradeBar> {
         std::mem::take(&mut self.closed_bars)
+    }
+
+    fn record_published_close(&mut self, close: f64) {
+        if !(close.is_finite() && close > 0.0) {
+            return;
+        }
+
+        self.published_closes.push_back(close);
+        if self.published_closes.len() > MAX_SYMBOL_HISTORY {
+            self.published_closes.pop_front();
+        }
+    }
+
+    fn published_closes(&self) -> &VecDeque<f64> {
+        &self.published_closes
     }
 
     fn next_due_close_ms(&self, period_ms: i64) -> Option<i64> {
@@ -944,6 +1011,8 @@ pub struct TradeFlowFeaturePubApp {
     trade_subscriber: Subscriber<ipc::Service, [u8; TRADE_MAX_BYTES], ()>,
     depth_subscriber: DepthSubscriber,
     publisher: TradeFlowFeaturePublisher,
+    rl_config: RlReturnVolatilityRuntimeConfig,
+    rl_publisher: RlFactorPublisher,
     symbols: HashMap<String, SymbolState>,
     latest_depth_by_symbol: HashMap<String, DepthSnapshot>,
     thresholds: HashMap<String, AmountThreshold>,
@@ -968,6 +1037,8 @@ pub struct TradeFlowFeaturePubApp {
     publish_fail_invalid_count: u64,
     publish_fail_missing_depth_count: u64,
     publish_fail_send_count: u64,
+    rl_publish_success_count: u64,
+    rl_publish_fail_count: u64,
     last_publish_outcome_log: Instant,
     last_threshold_reload: Instant,
     threshold_reload_interval: Duration,
@@ -987,10 +1058,12 @@ impl TradeFlowFeaturePubApp {
     ) -> Result<Self> {
         let config = TradeFlowFeaturePubConfig::load(config_path)?;
         let depth_channel = DepthChannel::from_cfg(config.data_source.depth_channel.as_str())?;
+        let rl_config = RlReturnVolatilityRuntimeConfig::from_config(&config.rl_factor)?;
 
         let trade_subscriber = Self::create_trade_subscriber(venue_slug)?;
         let depth_subscriber = Self::create_depth_subscriber(venue_slug, depth_channel)?;
         let publisher = TradeFlowFeaturePublisher::new(venue_slug)?;
+        let rl_publisher = RlFactorPublisher::new(venue_slug)?;
         let threshold_store = AmountThresholdRedisStore::new(fixed_redis_settings())?;
         let threshold_reload_interval = Duration::from_secs(config.runtime.threshold_reload_secs);
         let cleanup_interval = Duration::from_secs(PERSISTENCE_CLEANUP_INTERVAL_SECS);
@@ -1008,6 +1081,8 @@ impl TradeFlowFeaturePubApp {
             trade_subscriber,
             depth_subscriber,
             publisher,
+            rl_config,
+            rl_publisher,
             symbols: HashMap::new(),
             latest_depth_by_symbol: HashMap::new(),
             thresholds: HashMap::new(),
@@ -1033,6 +1108,8 @@ impl TradeFlowFeaturePubApp {
             publish_fail_invalid_count: 0,
             publish_fail_missing_depth_count: 0,
             publish_fail_send_count: 0,
+            rl_publish_success_count: 0,
+            rl_publish_fail_count: 0,
             last_publish_outcome_log: Instant::now(),
             last_threshold_reload: Instant::now() - threshold_reload_interval,
             threshold_reload_interval,
@@ -1104,12 +1181,15 @@ impl TradeFlowFeaturePubApp {
 
     pub fn run(&mut self) -> Result<()> {
         info!(
-            "TradeFlowFeaturePubApp[{}] started: trade_channel={} depth_channel={} bar_ms={} threshold_reload_secs={} redis={}:{} db={} persist_path={} persist_hours={} persist_symbols={}",
+            "TradeFlowFeaturePubApp[{}] started: trade_channel={} depth_channel={} bar_ms={} threshold_reload_secs={} rl_pct_change_period={} rl_rolling_window={} rl_scale_factor={} redis={}:{} db={} persist_path={} persist_hours={} persist_symbols={}",
             self.venue_slug,
             FIXED_TRADE_CHANNEL,
             self.depth_channel.as_str(),
             self.config.runtime.bar_ms,
             self.config.runtime.threshold_reload_secs,
+            self.rl_config.pct_change_period,
+            self.rl_config.rolling_window,
+            self.rl_config.scale_factor,
             self.threshold_store.settings.host,
             self.threshold_store.settings.port,
             self.threshold_store.settings.db,
@@ -1254,9 +1334,47 @@ impl TradeFlowFeaturePubApp {
                 );
             } else {
                 self.publish_success_count = self.publish_success_count.saturating_add(1);
+                self.publish_rl_return_volatility(symbol, bar.start_ms, bar.close);
             }
         }
         Ok(())
+    }
+
+    fn publish_rl_return_volatility(&mut self, symbol: &str, timestamp_ms: i64, close: f64) {
+        let scaled_value = {
+            let Some(state) = self.symbols.get_mut(symbol) else {
+                self.rl_publish_fail_count = self.rl_publish_fail_count.saturating_add(1);
+                warn!(
+                    "rl publish skipped: missing symbol state, venue={} symbol={}",
+                    self.venue_slug, symbol
+                );
+                return;
+            };
+            state.record_published_close(close);
+            self.rl_config.compute_scaled_value(state.published_closes())
+        };
+
+        let (value, ready) = match scaled_value {
+            Ok(Some(value)) => (value, true),
+            Ok(None) => (0.0, false),
+            Err(err) => {
+                self.rl_publish_fail_count = self.rl_publish_fail_count.saturating_add(1);
+                warn!(
+                    "rl compute failed: venue={} symbol={} err={}",
+                    self.venue_slug, symbol, err
+                );
+                return;
+            }
+        };
+
+        if self
+            .rl_publisher
+            .publish(symbol, value, timestamp_ms, ready)
+        {
+            self.rl_publish_success_count = self.rl_publish_success_count.saturating_add(1);
+        } else {
+            self.rl_publish_fail_count = self.rl_publish_fail_count.saturating_add(1);
+        }
     }
 
     fn record_next_due_close_ms(&mut self, next_due_close_ms: Option<i64>) {
@@ -1290,7 +1408,7 @@ impl TradeFlowFeaturePubApp {
             .saturating_add(self.publish_fail_missing_depth_count)
             .saturating_add(self.publish_fail_send_count);
         info!(
-            "TradeFlowFeaturePubApp[{}] publish_outcome_10s: raw_trade_in={} trade_parse_ok={} trade_parse_fail={} trade_filtered_offline={} trade_threshold_miss={} trade_dedup_drop={} trade_late={} success={} fail_total={} fail_invalid={} fail_missing_depth={} fail_send={}",
+            "TradeFlowFeaturePubApp[{}] publish_outcome_10s: raw_trade_in={} trade_parse_ok={} trade_parse_fail={} trade_filtered_offline={} trade_threshold_miss={} trade_dedup_drop={} trade_late={} success={} fail_total={} fail_invalid={} fail_missing_depth={} fail_send={} rl_success={} rl_fail={} rl_pub_total={} rl_pub_dropped={}",
             self.venue_slug,
             self.recv_trade_raw_count,
             self.recv_trade_parse_ok_count,
@@ -1303,7 +1421,11 @@ impl TradeFlowFeaturePubApp {
             fail_total,
             self.publish_fail_invalid_count,
             self.publish_fail_missing_depth_count,
-            self.publish_fail_send_count
+            self.publish_fail_send_count,
+            self.rl_publish_success_count,
+            self.rl_publish_fail_count,
+            self.rl_publisher.published_count(),
+            self.rl_publisher.dropped_count(),
         );
 
         self.last_publish_outcome_log = Instant::now();
@@ -1318,6 +1440,8 @@ impl TradeFlowFeaturePubApp {
         self.publish_fail_invalid_count = 0;
         self.publish_fail_missing_depth_count = 0;
         self.publish_fail_send_count = 0;
+        self.rl_publish_success_count = 0;
+        self.rl_publish_fail_count = 0;
     }
 
     fn appended_depth_values(&self, symbol: &str) -> Option<&[f64; APPENDED_DEPTH_DIM]> {
@@ -1362,6 +1486,24 @@ impl TradeFlowFeaturePubApp {
                 "trade_flow_feature threshold reload interval updated: {}s",
                 self.config.runtime.threshold_reload_secs
             );
+        }
+
+        if loaded.rl_factor != self.config.rl_factor {
+            match RlReturnVolatilityRuntimeConfig::from_config(&loaded.rl_factor) {
+                Ok(runtime) => {
+                    self.config.rl_factor = loaded.rl_factor.clone();
+                    self.rl_config = runtime;
+                    info!(
+                        "trade_flow_feature rl config updated: pct_change_period={} rolling_window={} scale_factor={}",
+                        self.rl_config.pct_change_period,
+                        self.rl_config.rolling_window,
+                        self.rl_config.scale_factor
+                    );
+                }
+                Err(err) => {
+                    warn!("trade_flow_feature rl config change ignored: {}", err);
+                }
+            }
         }
 
         if loaded.data_source.depth_channel != self.config.data_source.depth_channel {

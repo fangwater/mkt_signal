@@ -10,6 +10,11 @@ trade_flow_feature_pub:
     # 3分钟热更新一次 amount 阈值
     threshold_reload_secs: 180
 
+  rl_factor:
+    pct_change_period: 12
+    rolling_window: 30
+    scale_factor: 1.3
+
   persistence:
     # RocksDB 数据目录（相对路径基于运行目录）
     rocksdb_path: "data/trade_flow_feature_pub_rocksdb"

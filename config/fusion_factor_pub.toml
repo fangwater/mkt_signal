@@ -11,8 +11,9 @@ symbol_reload_secs = 180
 [bootstrap]
 enabled = true
 
+# rl_return_volatility 已迁移到 trade_flow_feature_pub.yaml[rl_factor]。
+# 这里保留默认字段兼容旧工具/旧配置，fusion_factor_pub 本身不再发布该单因子。
 [rl_factor]
-# 保留历史单因子输出: factor_pub/{venue}/rl_return_volatility
 pct_change_period = 12
 rolling_window = 30
 scale_factor = 1.3

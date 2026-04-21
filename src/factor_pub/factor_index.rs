@@ -26,3 +26,10 @@ pub fn factor_name_to_index(name: &str) -> Option<u16> {
         _ => None,
     }
 }
+
+pub fn factor_name_to_channel(name: &str) -> &str {
+    match name {
+        "rl_return_volatility" => "rl_vol",
+        _ => name,
+    }
+}
