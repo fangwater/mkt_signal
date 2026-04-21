@@ -197,6 +197,7 @@ pub struct FactorValueHub {
     pnlu_profile: String,
     target_factor_index: u16,
     target_factor_key_prefix: String,
+    inline_volatility_percentile: Option<f64>,
     factor_value_service_name: String,
     factor_value_max_age_ms: i64,
     factor_value_sub: Subscriber<ipc::Service, [u8; FACTOR_VALUE_PAYLOAD_MAX_BYTES], ()>,
@@ -221,6 +222,7 @@ impl FactorValueHub {
         hedge_venue: TradingVenue,
         target_factor_name: &str,
         target_factor_key_prefix: &str,
+        inline_volatility_percentile: Option<f64>,
         pnlu_settings: RedisSettings,
         pnlu_key_suffix: String,
         pnlu_max_age_secs: i64,
@@ -249,6 +251,9 @@ impl FactorValueHub {
             pnlu_profile,
             target_factor_index,
             target_factor_key_prefix: target_factor_key_prefix.to_string(),
+            inline_volatility_percentile: inline_volatility_percentile
+                .filter(|v| v.is_finite())
+                .map(|v| v.clamp(0.0, 100.0)),
             factor_value_service_name,
             factor_value_max_age_ms,
             factor_value_sub,
@@ -265,6 +270,12 @@ impl FactorValueHub {
             pnlu_key_suffix,
             pnlu_max_age_secs,
         })
+    }
+
+    pub fn set_inline_volatility_percentile(&mut self, percentile: Option<f64>) {
+        self.inline_volatility_percentile = percentile
+            .filter(|v| v.is_finite())
+            .map(|v| v.clamp(0.0, 100.0));
     }
 
     fn build_pnlu_profile(open_venue: TradingVenue, hedge_venue: TradingVenue) -> String {
@@ -467,6 +478,21 @@ impl FactorValueHub {
                                     self.last_valid_factor_value_cache
                                         .insert(cache_key, snapshot);
                                 }
+                            }
+                        }
+
+                        if factor_index == self.target_factor_index
+                            && ready
+                            && value.is_finite()
+                            && should_update
+                        {
+                            if let Some(percentile) = self.inline_volatility_percentile {
+                                let _ = observe_inline_volatility(
+                                    &symbol_key,
+                                    value,
+                                    percentile,
+                                    msg.timestamp_ms,
+                                );
                             }
                         }
                     }

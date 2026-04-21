@@ -88,6 +88,11 @@ fn normalize_bitget_trade_arg(
 
     match req_type {
         TradeRequestType::BitgetNewMarginOrder | TradeRequestType::BitgetNewUMOrder => {
+            if let Some(side) = obj.get_mut("side") {
+                if let Some(raw) = side.as_str() {
+                    *side = json!(raw.to_ascii_lowercase());
+                }
+            }
             // Bitget WS trade API expects qty/timeInForce. Upstream still emits size/force.
             if !obj.contains_key("qty") {
                 if let Some(size) = obj.remove("size") {
@@ -272,6 +277,7 @@ mod tests {
         let val: Value = serde_json::from_str(&payload).expect("json");
         assert_eq!(val["category"], json!("usdt-futures"));
         assert_eq!(val["topic"], json!("place-order"));
+        assert_eq!(val["args"][0]["side"], json!("buy"));
         assert_eq!(val["args"][0]["qty"], json!("0.01"));
         assert_eq!(val["args"][0]["timeInForce"], json!("post_only"));
         assert!(val["args"][0].get("category").is_none());
@@ -292,7 +298,23 @@ mod tests {
         let payload = build_order_payload(&msg, 999).expect("payload");
         let val: Value = serde_json::from_str(&payload).expect("json");
         assert_eq!(val["category"], json!("usdt-futures"));
+        assert_eq!(val["args"][0]["side"], json!("buy"));
         assert!(val["args"][0].get("category").is_none());
+    }
+
+    #[test]
+    fn normalizes_bitget_side_to_lowercase() {
+        let msg = TradeRequestMsg {
+            req_type: TradeRequestType::BitgetNewUMOrder,
+            create_time: 0,
+            client_order_id: 123,
+            params: Bytes::from(
+                r#"{"symbol":"BTCUSDT","side":"SELL","orderType":"limit","force":"post_only","size":"0.01","price":"100000","clientOid":"123"}"#,
+            ),
+        };
+        let payload = build_order_payload(&msg, 999).expect("payload");
+        let val: Value = serde_json::from_str(&payload).expect("json");
+        assert_eq!(val["args"][0]["side"], json!("sell"));
     }
 
     #[test]

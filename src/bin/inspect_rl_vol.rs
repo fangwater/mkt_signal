@@ -227,6 +227,7 @@ fn main() -> Result<()> {
         args.hedge_venue,
         TARGET_FACTOR_NAME,
         TARGET_FACTOR_NAME,
+        None,
         default_redis_settings(),
         "inspect".to_string(),
         30 * 60,

@@ -127,6 +127,7 @@ impl MmDecisionState {
             hedge_venue,
             TARGET_FACTOR_NAME,
             TARGET_FACTOR_KEY_PREFIX,
+            Some(70.0),
             pnlu_settings,
             DEFAULT_PNLU_KEY_SUFFIX.to_string(),
             PNLU_MAX_AGE_SECS,
@@ -410,6 +411,8 @@ impl MmDecisionState {
             );
         }
         self.open_volatility_limit = percentile;
+        self.factor_value_hub
+            .set_inline_volatility_percentile(Some(percentile));
         debug!(
             "MmDecision: open_volatility_limit updated percentile={}",
             self.open_volatility_limit
@@ -788,8 +791,9 @@ mod tests {
 
     #[test]
     fn supported_clock_aligned_intervals_cover_divisors_and_multiples_of_minute() {
-        for interval in [100, 500, 1_000, 10_000, 12_000, 15_000, 20_000, 30_000, 60_000, 120_000]
-        {
+        for interval in [
+            100, 500, 1_000, 10_000, 12_000, 15_000, 20_000, 30_000, 60_000, 120_000,
+        ] {
             assert!(
                 is_supported_clock_aligned_interval_ms(interval),
                 "interval should be supported: {}",

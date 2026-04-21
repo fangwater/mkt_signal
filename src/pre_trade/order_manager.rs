@@ -1470,7 +1470,7 @@ impl Order {
                     "symbol".to_string(),
                     json!(self.symbol.to_ascii_uppercase()),
                 );
-                req_param.insert("side".to_string(), json!(self.side.as_str()));
+                req_param.insert("side".to_string(), json!(self.side.as_str_lower()));
                 req_param.insert(
                     "orderType".to_string(),
                     json!(if self.order_type.is_limit() {
@@ -1499,7 +1499,7 @@ impl Order {
                     "symbol".to_string(),
                     json!(self.symbol.to_ascii_uppercase()),
                 );
-                req_param.insert("side".to_string(), json!(self.side.as_str()));
+                req_param.insert("side".to_string(), json!(self.side.as_str_lower()));
                 req_param.insert(
                     "orderType".to_string(),
                     json!(if self.order_type.is_limit() {

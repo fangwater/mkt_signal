@@ -624,6 +624,18 @@ async fn reload_open_volatility_thresholds(
         return Ok(());
     }
 
+    // MM open-volatility gating has moved to inline sampling in MmDecision and no longer
+    // depends on rolling_metrics Redis hashes. Skip the legacy rolling bootstrap path to avoid
+    // noisy warnings about missing rolling_metrics_params_* keys.
+    if ns == "mm" {
+        debug!(
+            "skip legacy open volatility rolling bootstrap for mm namespace (open={} hedge={})",
+            open_venue.data_pub_slug(),
+            hedge_venue.data_pub_slug()
+        );
+        return Ok(());
+    }
+
     let params =
         match StrategyParams::load_from_redis(redis, namespace, open_venue, hedge_venue).await {
             Ok(params) => params,
