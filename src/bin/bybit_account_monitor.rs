@@ -245,6 +245,18 @@ fn wrap_basic_payload(account_scope: BasicAccountScope, payload: Bytes) -> Optio
     Some(BasicAccountEventMsg::create(event_type, account_scope, payload).to_bytes())
 }
 
+fn send_wrapped_payload(
+    evt_tx: &tokio::sync::mpsc::UnboundedSender<Bytes>,
+    payload: Bytes,
+    context: &str,
+) {
+    if let Some(wrapped) = wrap_basic_payload(BasicAccountScope::BybitUnified, payload) {
+        if let Err(e) = evt_tx.send(wrapped) {
+            warn!("failed to send {}: {}", context, e);
+        }
+    }
+}
+
 fn spawn_bybit_balance_poll(
     credentials: BybitCredentials,
     local_ip: String,
@@ -276,13 +288,11 @@ fn spawn_bybit_balance_poll(
                         Ok((status, body)) if status == 200 => {
                             if let Some(msgs) = parse_bybit_account_balance_snapshot(&body) {
                                 for payload in msgs {
-                                    if let Some(wrapped) =
-                                        wrap_basic_payload(BasicAccountScope::BybitUnified, payload)
-                                    {
-                                        if let Err(e) = evt_tx.send(wrapped) {
-                                            warn!("failed to send Bybit REST balance msg: {}", e);
-                                        }
-                                    }
+                                    send_wrapped_payload(
+                                        &evt_tx,
+                                        payload,
+                                        "Bybit REST balance msg",
+                                    );
                                 }
                             }
                         }
@@ -318,6 +328,7 @@ fn spawn_bybit_position_poll(
             }
         };
         let mut ticker = tokio::time::interval(Duration::from_secs(30));
+        let mut previous_positions: HashSet<(String, char)> = HashSet::new();
         loop {
             tokio::select! {
                 _ = shutdown_rx.changed() => break,
@@ -333,15 +344,50 @@ fn spawn_bybit_position_poll(
                     ).await {
                         Ok((status, body)) if status == 200 => {
                             if let Some(msgs) = parse_bybit_positions_snapshot(&body) {
+                                let mut current_positions: HashSet<(String, char)> = HashSet::new();
                                 for payload in msgs {
-                                    if let Some(wrapped) =
-                                        wrap_basic_payload(BasicAccountScope::BybitUnified, payload)
-                                    {
-                                        if let Err(e) = evt_tx.send(wrapped) {
-                                            warn!("failed to send Bybit REST position msg: {}", e);
+                                    let event_type =
+                                        mkt_signal::common::basic_account_msg::get_basic_event_type(&payload);
+                                    if matches!(event_type, BasicAccountEventType::PositionUpdate) {
+                                        if let Ok(msg) = BasicPositionMsg::from_bytes(&payload) {
+                                            current_positions.insert((
+                                                msg.inst_id().to_string(),
+                                                msg.position_side(),
+                                            ));
                                         }
                                     }
+                                    send_wrapped_payload(
+                                        &evt_tx,
+                                        payload,
+                                        "Bybit REST position msg",
+                                    );
                                 }
+
+                                let mut stale_positions: Vec<(String, char)> = previous_positions
+                                    .difference(&current_positions)
+                                    .cloned()
+                                    .collect();
+                                stale_positions.sort();
+                                for (inst_id, side) in stale_positions {
+                                    let ts = chrono::Utc::now().timestamp_millis();
+                                    info!(
+                                        "Bybit REST position snapshot missing previously-seen position; emitting zero cleanup: inst_id={} side={}",
+                                        inst_id, side
+                                    );
+                                    send_wrapped_payload(
+                                        &evt_tx,
+                                        BasicPositionMsg::create(ts, inst_id.clone(), side, 0.0)
+                                            .to_bytes(),
+                                        "Bybit REST zero position cleanup",
+                                    );
+                                    send_wrapped_payload(
+                                        &evt_tx,
+                                        BasicUmUnrealizedMsg::create(ts, inst_id, side, 0.0)
+                                            .to_bytes(),
+                                        "Bybit REST zero pnl cleanup",
+                                    );
+                                }
+                                previous_positions = current_positions;
                             }
                         }
                         Ok((status, body)) => {

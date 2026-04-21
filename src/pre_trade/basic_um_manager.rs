@@ -39,6 +39,22 @@ impl BasicUmManager {
         let side = msg.position_side();
         let key = format!("{}|{}", inst, side);
 
+        if msg.position_amount == 0.0 {
+            let mut should_remove = false;
+            if let Some(entry) = self.positions.get_mut(&key) {
+                entry.timestamp = msg.timestamp();
+                if entry.unrealized_pnl_usdt == 0.0 {
+                    should_remove = true;
+                } else {
+                    entry.amount = 0.0;
+                }
+            }
+            if should_remove {
+                self.positions.remove(&key);
+            }
+            return;
+        }
+
         let entry = self
             .positions
             .entry(key)
@@ -63,6 +79,22 @@ impl BasicUmManager {
         let inst = msg.inst_id.clone();
         let side = msg.position_side;
         let key = format!("{}|{}", inst, side);
+
+        if msg.unrealized_pnl == 0.0 {
+            let mut should_remove = false;
+            if let Some(entry) = self.positions.get_mut(&key) {
+                entry.timestamp = msg.timestamp;
+                if entry.amount == 0.0 {
+                    should_remove = true;
+                } else {
+                    entry.unrealized_pnl_usdt = 0.0;
+                }
+            }
+            if should_remove {
+                self.positions.remove(&key);
+            }
+            return;
+        }
 
         let entry = self
             .positions
@@ -166,5 +198,44 @@ impl NetPosition for BasicUmManager {
 
         // 返回标的资产数量 = 净张数 × 合约乘数
         (net_contracts as f64) * ct_mult
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BasicUmManager;
+    use crate::common::{
+        basic_account_msg::{BasicPositionMsg, BasicUmUnrealizedMsg},
+        exchange::Exchange,
+    };
+
+    #[test]
+    fn removes_entry_after_zero_position_and_zero_pnl() {
+        let mut mgr = BasicUmManager::new(Exchange::Bybit);
+        mgr.apply_position(&BasicPositionMsg::create(1, "BTCUSDT".to_string(), 'L', 1.5));
+        mgr.apply_unrealized_pnl(&BasicUmUnrealizedMsg::create(
+            2,
+            "BTCUSDT".to_string(),
+            'L',
+            12.0,
+        ));
+
+        mgr.apply_position(&BasicPositionMsg::create(3, "BTCUSDT".to_string(), 'L', 0.0));
+        assert!(mgr.get("BTCUSDT", 'L').is_some());
+
+        mgr.apply_unrealized_pnl(&BasicUmUnrealizedMsg::create(
+            4,
+            "BTCUSDT".to_string(),
+            'L',
+            0.0,
+        ));
+        assert!(mgr.get("BTCUSDT", 'L').is_none());
+    }
+
+    #[test]
+    fn zero_position_without_existing_entry_is_ignored() {
+        let mut mgr = BasicUmManager::new(Exchange::Bybit);
+        mgr.apply_position(&BasicPositionMsg::create(1, "ETHUSDT".to_string(), 'S', 0.0));
+        assert!(mgr.snapshot().is_empty());
     }
 }
