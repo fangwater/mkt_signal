@@ -1790,6 +1790,17 @@ impl TradeWsClient {
                     .unwrap_or(0);
                 let ws_open_update_enabled =
                     meta.map(|m| m.ws_open_update_enabled).unwrap_or(false);
+                if resp.order_link_id.is_empty() {
+                    warn!(
+                        "trade ws client id={} bybit response missing orderLinkId: req_type={:?} req_id={} client_order_id={} ret_code={} ret_msg={}",
+                        self.id,
+                        req_type,
+                        resp.req_id,
+                        client_order_id,
+                        resp.ret_code,
+                        resp.ret_msg
+                    );
+                }
                 self.publish_bybit_ws_response(
                     client_order_id,
                     req_type,
@@ -1879,7 +1890,7 @@ impl TradeWsClient {
         ws_open_update_enabled: bool,
         resp: &BybitWsOrderResponse,
     ) {
-        let status = if resp.ret_code == 0 && resp.ret_msg == "OK" {
+        let status = if resp.ret_code == 0 {
             206
         } else {
             400

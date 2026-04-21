@@ -439,9 +439,6 @@ impl BybitWsOrderResponse {
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
-        if order_link_id.is_empty() {
-            return None;
-        }
         let time_now_ms = obj
             .get("header")
             .and_then(|v| v.as_object())
@@ -491,7 +488,7 @@ impl BybitWsOrderResponse {
     }
 
     pub fn order_status_u8(&self) -> u8 {
-        if self.ret_code != 0 || self.ret_msg != "OK" {
+        if self.ret_code != 0 {
             return 0;
         }
         match self.op.as_str() {
@@ -625,8 +622,23 @@ mod tests {
     }
 
     #[test]
-    fn rejects_bybit_ws_order_response_without_order_link_id() {
+    fn parses_bybit_ws_order_response_without_order_link_id() {
         let payload = r#"{"reqId":"123","retCode":0,"retMsg":"OK","op":"order.create","data":{"orderId":"abcdef","orderLinkId":""},"header":{"Timenow":"1711001595209"}}"#;
-        assert!(BybitWsOrderResponse::from_json_str(payload).is_none());
+        let resp = BybitWsOrderResponse::from_json_str(payload).unwrap();
+        assert_eq!(resp.transport_id(), Some(123));
+        assert_eq!(resp.client_order_id(), None);
+        assert_eq!(resp.ret_code, 0);
+        assert_eq!(resp.order_status_u8(), 1);
+    }
+
+    #[test]
+    fn parses_failed_bybit_ws_order_response_without_order_link_id() {
+        let payload = r#"{"reqId":"123","retCode":170217,"retMsg":"Only reduceOnly order is allowed","op":"order.create","data":{"orderId":"","orderLinkId":""},"header":{"Timenow":"1711001595209"}}"#;
+        let resp = BybitWsOrderResponse::from_json_str(payload).unwrap();
+        assert_eq!(resp.transport_id(), Some(123));
+        assert_eq!(resp.client_order_id(), None);
+        assert_eq!(resp.ret_code, 170217);
+        assert_eq!(resp.ret_msg, "Only reduceOnly order is allowed");
+        assert_eq!(resp.order_status_u8(), 0);
     }
 }
