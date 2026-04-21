@@ -18,7 +18,8 @@ use anyhow::Result;
 use bytes::Bytes;
 use log::{error, info, warn};
 use mkt_signal::common::basic_account_msg::{
-    split_basic_account_event, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
+    get_basic_event_type, split_basic_account_event, BasicAccountEventMsg, BasicAccountEventType,
+    BasicAccountScope, BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg,
     BasicUmUnrealizedMsg, GateBasicOrderMsg,
 };
 use mkt_signal::common::mkt_cfg::load_local_ips_preferring_trade_engine;
@@ -26,8 +27,14 @@ use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::default_parser::Parser;
 use mkt_signal::parser::gate_account_event_parser::GateAccountEventParser;
 use mkt_signal::portfolio_margin::gate_auth::{GateCredentials, GatePrivateWsUrls};
+use mkt_signal::portfolio_margin::gate_rest::fetch_borrow_interest;
 use mkt_signal::portfolio_margin::gate_user_stream::{GateUserDataConnection, SubscribeChannel};
 use mkt_signal::portfolio_margin::pm_forwarder::PmForwarder;
+use mkt_signal::trade_engine::gate_query::gate_rest_get;
+use mkt_signal::trade_engine::query_parsers::gate_positions_snapshot::{
+    parse_gate_positions_snapshot_with_meta, GatePositionsSnapshotParse,
+};
+use reqwest::Client;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
@@ -99,10 +106,16 @@ async fn main() -> Result<()> {
     }];
 
     // 合约频道 (futures.orders)
-    let futures_channels = vec![SubscribeChannel {
-        channel: "futures.orders".to_string(),
-        payload: vec!["!all".to_string()],
-    }];
+    let futures_channels = vec![
+        SubscribeChannel {
+            channel: "futures.orders".to_string(),
+            payload: vec!["!all".to_string()],
+        },
+        SubscribeChannel {
+            channel: "futures.positions".to_string(),
+            payload: vec!["!all".to_string()],
+        },
+    ];
 
     // 创建事件收集通道
     let (evt_tx, mut evt_rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
@@ -111,6 +124,10 @@ async fn main() -> Result<()> {
     let mut forwarder = PmForwarder::new("gate")?;
     let mut deduper = AccountEventDeduper::new(8192);
     let mut stats = tokio::time::interval(Duration::from_secs(30));
+    let mut interest_poll =
+        spawn_gate_borrow_interest_poll(credentials.clone(), evt_tx.clone(), shutdown_rx.clone());
+    let mut positions_poll =
+        spawn_gate_positions_poll(credentials.clone(), evt_tx.clone(), shutdown_rx.clone());
 
     // 启动统一账户主备双路连接 (unified.asset_detail)
     let mut unified_primary = spawn_gate_stream_path(
@@ -193,6 +210,32 @@ async fn main() -> Result<()> {
             }
             _ = stats.tick() => {
                 forwarder.log_stats();
+            }
+            res = &mut interest_poll => {
+                match res {
+                    Ok(()) => warn!("gate interest poll task exited; restarting"),
+                    Err(e) => warn!("gate interest poll task join error: {}; restarting", e),
+                }
+                if !*shutdown_rx.borrow() {
+                    interest_poll = spawn_gate_borrow_interest_poll(
+                        credentials.clone(),
+                        evt_tx.clone(),
+                        shutdown_rx.clone(),
+                    );
+                }
+            }
+            res = &mut positions_poll => {
+                match res {
+                    Ok(()) => warn!("gate positions poll task exited; restarting"),
+                    Err(e) => warn!("gate positions poll task join error: {}; restarting", e),
+                }
+                if !*shutdown_rx.borrow() {
+                    positions_poll = spawn_gate_positions_poll(
+                        credentials.clone(),
+                        evt_tx.clone(),
+                        shutdown_rx.clone(),
+                    );
+                }
             }
             // 统一账户连接重启
             res = &mut unified_primary => {
@@ -319,6 +362,165 @@ fn setup_signals(shutdown_tx: watch::Sender<bool>) {
             let _ = shutdown_tx.send(true);
         }
     });
+}
+
+fn spawn_gate_borrow_interest_poll(
+    credentials: GateCredentials,
+    evt_tx: tokio::sync::mpsc::UnboundedSender<Bytes>,
+    mut shutdown_rx: watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let client = Client::new();
+        let mut ticker = tokio::time::interval(Duration::from_secs(30));
+        let mut previous_symbols: HashSet<String> = HashSet::new();
+
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.changed() => break,
+                _ = ticker.tick() => {
+                    if *shutdown_rx.borrow() {
+                        break;
+                    }
+
+                    match fetch_borrow_interest(&client, &credentials).await {
+                        Ok(msgs) => {
+                            let mut current_symbols: HashSet<String> = HashSet::new();
+                            for msg in msgs {
+                                current_symbols.insert(msg.symbol.clone());
+                                let payload = msg.to_bytes();
+                                let event = BasicAccountEventMsg::create(
+                                    BasicAccountEventType::BorrowInterest,
+                                    BasicAccountScope::GateUnified,
+                                    payload,
+                                );
+                                if let Err(err) = evt_tx.send(event.to_bytes()) {
+                                    warn!("failed to send gate borrow interest msg: {}", err);
+                                }
+                            }
+
+                            let now_ms = chrono::Utc::now().timestamp_millis();
+                            for symbol in previous_symbols.difference(&current_symbols) {
+                                let clear_msg = BasicBorrowInterestMsg::create(
+                                    now_ms,
+                                    symbol.clone(),
+                                    0.0,
+                                    0.0,
+                                );
+                                let event = BasicAccountEventMsg::create(
+                                    BasicAccountEventType::BorrowInterest,
+                                    BasicAccountScope::GateUnified,
+                                    clear_msg.to_bytes(),
+                                );
+                                if let Err(err) = evt_tx.send(event.to_bytes()) {
+                                    warn!("failed to send cleared gate borrow interest msg: {}", err);
+                                }
+                            }
+
+                            previous_symbols = current_symbols;
+                        }
+                        Err(err) => {
+                            warn!("fetch gate borrow interest failed: {:?}", err);
+                        }
+                    }
+                }
+            }
+        }
+        info!("gate borrow interest poller exiting");
+    })
+}
+
+fn spawn_gate_positions_poll(
+    credentials: GateCredentials,
+    evt_tx: tokio::sync::mpsc::UnboundedSender<Bytes>,
+    mut shutdown_rx: watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let client = Client::new();
+        let mut ticker = tokio::time::interval(Duration::from_secs(30));
+        let mut previous_positions: HashSet<(String, char)> = HashSet::new();
+
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.changed() => break,
+                _ = ticker.tick() => {
+                    if *shutdown_rx.borrow() {
+                        break;
+                    }
+
+                    match gate_rest_get(&client, &credentials, "/api/v4/futures/usdt/positions", "").await {
+                        Ok((200, body)) => {
+                            match parse_gate_positions_snapshot_with_meta(&body) {
+                                Some(parsed) => {
+                                    let mut current_positions: HashSet<(String, char)> = HashSet::new();
+                                    forward_gate_position_snapshot(
+                                        &parsed,
+                                        &evt_tx,
+                                        &mut current_positions,
+                                    );
+
+                                    let now_ms = chrono::Utc::now().timestamp_millis();
+                                    for (inst_id, side) in previous_positions.difference(&current_positions) {
+                                        let zero_position = BasicPositionMsg::create(
+                                            now_ms,
+                                            inst_id.clone(),
+                                            *side,
+                                            0.0,
+                                        );
+                                        let zero_position_event = BasicAccountEventMsg::create(
+                                            BasicAccountEventType::PositionUpdate,
+                                            BasicAccountScope::GateUnified,
+                                            zero_position.to_bytes(),
+                                        );
+                                        let _ = evt_tx.send(zero_position_event.to_bytes());
+
+                                        let zero_pnl = BasicUmUnrealizedMsg::create(
+                                            now_ms,
+                                            inst_id.clone(),
+                                            *side,
+                                            0.0,
+                                        );
+                                        let zero_pnl_event = BasicAccountEventMsg::create(
+                                            BasicAccountEventType::UnrealizedPnlUpdate,
+                                            BasicAccountScope::GateUnified,
+                                            zero_pnl.to_bytes(),
+                                        );
+                                        let _ = evt_tx.send(zero_pnl_event.to_bytes());
+                                    }
+
+                                    previous_positions = current_positions;
+                                }
+                                None => warn!("gate positions poll parse failed; body_len={}", body.len()),
+                            }
+                        }
+                        Ok((status, body)) => {
+                            warn!("gate positions poll http {} body={}", status, body);
+                        }
+                        Err(err) => {
+                            warn!("gate positions poll failed: {:?}", err);
+                        }
+                    }
+                }
+            }
+        }
+        info!("gate positions poller exiting");
+    })
+}
+
+fn forward_gate_position_snapshot(
+    parsed: &GatePositionsSnapshotParse,
+    evt_tx: &tokio::sync::mpsc::UnboundedSender<Bytes>,
+    current_positions: &mut HashSet<(String, char)>,
+) {
+    for payload in parsed.msgs.iter().cloned() {
+        let event_type = get_basic_event_type(&payload);
+        if event_type == BasicAccountEventType::PositionUpdate {
+            if let Ok(msg) = BasicPositionMsg::from_bytes(&payload) {
+                current_positions.insert((msg.inst_id.clone(), msg.position_side));
+            }
+        }
+        let wrapped = BasicAccountEventMsg::create(event_type, BasicAccountScope::GateUnified, payload);
+        let _ = evt_tx.send(wrapped.to_bytes());
+    }
 }
 
 fn spawn_gate_stream_path(
@@ -450,6 +652,18 @@ fn log_parsed_event(msg: &Bytes) {
                 );
             }
         }
+        BasicAccountEventType::PositionUpdate => {
+            if let Ok(m) = BasicPositionMsg::from_bytes(&payload) {
+                info!(
+                    "Gate PositionUpdate: scope={} ts={} inst={} side={} pos={}",
+                    account_scope.as_str(),
+                    m.timestamp,
+                    m.inst_id,
+                    m.position_side,
+                    m.position_amount
+                );
+            }
+        }
         BasicAccountEventType::OrderUpdate => {
             if let Ok(m) = GateBasicOrderMsg::from_bytes(&payload) {
                 info!(
@@ -514,6 +728,9 @@ impl AccountEventDeduper {
             BasicAccountEventType::BorrowInterest => BasicBorrowInterestMsg::from_bytes(&payload)
                 .ok()
                 .map(|msg| self.key_borrow_interest(&msg)),
+            BasicAccountEventType::PositionUpdate => BasicPositionMsg::from_bytes(&payload)
+                .ok()
+                .map(|msg| self.key_position(&msg)),
             BasicAccountEventType::OrderUpdate => GateBasicOrderMsg::from_bytes(&payload)
                 .ok()
                 .map(|msg| self.key_order(&msg)),
@@ -591,6 +808,16 @@ impl AccountEventDeduper {
             msg.event_time as u64,
             msg.order_status as u64,
             msg.cumulative_filled_quantity.to_bits(),
+        ])
+    }
+
+    fn key_position(&self, msg: &BasicPositionMsg) -> u64 {
+        self.hash64(&[
+            BasicAccountEventType::PositionUpdate as u32 as u64,
+            msg.timestamp as u64,
+            self.hash_str64(&msg.inst_id),
+            msg.position_side as u8 as u64,
+            msg.position_amount.to_bits() as u64,
         ])
     }
 

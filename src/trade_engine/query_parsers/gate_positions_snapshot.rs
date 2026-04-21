@@ -208,8 +208,10 @@ pub fn parse_gate_positions_snapshot_with_meta(json: &str) -> Option<GatePositio
 
         if size != 0.0 {
             rows_with_nonzero_size += 1;
-            out.push(BasicPositionMsg::create(ts, inst_id.clone(), side_char, amount).to_bytes());
         }
+        // Emit a position row even when the size is zero so downstream consumers can clear
+        // stale local position state after a close.
+        out.push(BasicPositionMsg::create(ts, inst_id.clone(), side_char, amount).to_bytes());
 
         if let Some(pnl) = find_unrealized_pnl(row) {
             rows_with_pnl += 1;

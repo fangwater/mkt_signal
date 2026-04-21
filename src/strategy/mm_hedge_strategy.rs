@@ -1369,28 +1369,30 @@ impl MarketMakerHedgeStrategy {
             TradingVenue::GateMargin => {
                 let currency_pair =
                     crate::pre_trade::order_manager::gate_currency_pair_from_symbol(&order.symbol);
-                let Some(order_id) = exchange_order_id else {
-                    return Err(format!(
-                        "gate order query requires exchange_order_id: client_order_id={} venue={:?}",
-                        client_query_id, order.venue
-                    ));
-                };
+                let order_id = exchange_order_id
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| {
+                        crate::pre_trade::order_manager::gate_text_from_client_order_id(
+                            client_query_id,
+                        )
+                    });
                 let req_param = serde_json::json!({
-                    "order_id": order_id.to_string(),
+                    "order_id": order_id,
                     "currency_pair": currency_pair,
                     "account": "cross_margin",
                 });
                 bytes::Bytes::from(req_param.to_string())
             }
             TradingVenue::GateFutures => {
-                let Some(order_id) = exchange_order_id else {
-                    return Err(format!(
-                        "gate order query requires exchange_order_id: client_order_id={} venue={:?}",
-                        client_query_id, order.venue
-                    ));
-                };
+                let order_id = exchange_order_id
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| {
+                        crate::pre_trade::order_manager::gate_text_from_client_order_id(
+                            client_query_id,
+                        )
+                    });
                 let req_param = serde_json::json!({
-                    "order_id": order_id.to_string(),
+                    "order_id": order_id,
                 });
                 bytes::Bytes::from(req_param.to_string())
             }

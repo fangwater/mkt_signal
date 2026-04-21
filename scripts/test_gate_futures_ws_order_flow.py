@@ -194,6 +194,17 @@ def extract_order_id(msg: Dict[str, Any]) -> Optional[int]:
                     return int(value)
                 except Exception:
                     pass
+    data = msg.get("data")
+    if isinstance(data, dict):
+        result = data.get("result")
+        if isinstance(result, dict):
+            for key in ("id", "order_id"):
+                value = result.get(key)
+                if value is not None:
+                    try:
+                        return int(value)
+                    except Exception:
+                        pass
     return None
 
 
@@ -370,7 +381,7 @@ class TradeWsClient:
 
     def build_place(self) -> Dict[str, Any]:
         req_param = {
-            "text": str(self.state.client_order_id),
+            "text": f"t-{self.state.client_order_id}",
             "contract": self.state.contract,
             "account": "unified",
             "size": self.state.size if self.state.side.lower() == "buy" else format_size(-float(self.state.size)),
@@ -445,12 +456,19 @@ class TradeWsClient:
             print(f"[trade] <<< raw={raw_msg}")
             return
 
-        channel = msg.get("channel")
+        header = msg.get("header") if isinstance(msg.get("header"), dict) else {}
+        channel = msg.get("channel") or header.get("channel")
         payload = msg.get("payload")
         ack = payload.get("ack") if isinstance(payload, dict) else None
         print(f"[trade] <<< channel={channel} ack={ack} raw={compact_json(msg)}")
 
-        if channel == "futures.login" and isinstance(payload, dict) and payload.get("response_time") is not None:
+        login_ok = False
+        if channel == "futures.login":
+            if isinstance(payload, dict) and payload.get("response_time") is not None:
+                login_ok = True
+            elif isinstance(header, dict) and header.get("response_time") is not None:
+                login_ok = True
+        if login_ok:
             req = self.build_place()
             self.state.place_sent_at = time.time()
             print(f"[trade] >>> {compact_json(req)}")

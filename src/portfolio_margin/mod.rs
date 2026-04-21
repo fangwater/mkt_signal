@@ -10,6 +10,7 @@
 //! - `bybit_user_stream`: Bybit 用户数据 WebSocket 连接
 //! - `gate_auth`: Gate.io WebSocket 鉴权模块
 //! - `gate_user_stream`: Gate.io 用户数据 WebSocket 连接
+//! - `gate_rest`: Gate REST 辅助工具（借贷/利息拉取等）
 //! - `pm_forwarder`: 将原始账户数据转发到 Iceoryx 的 `account_pubs/<exchange>/pm`
 //!
 //! 说明：统一账户的用户数据流通过 URL 携带 listenKey 鉴权，不需要发送订阅报文；
@@ -21,6 +22,7 @@ pub mod bitget_user_stream;
 pub mod bybit_auth;
 pub mod bybit_user_stream;
 pub mod gate_auth;
+pub mod gate_rest;
 pub mod gate_user_stream;
 pub mod listen_key;
 pub mod okex_auth;

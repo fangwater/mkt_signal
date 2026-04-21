@@ -103,7 +103,7 @@
 
 use crate::common::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
-    BasicBorrowInterestMsg, GateBasicOrderMsg,
+    BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg, GateBasicOrderMsg,
 };
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
@@ -506,6 +506,111 @@ impl GateAccountEventParser {
 
         count
     }
+
+    fn parse_futures_positions(
+        &self,
+        json_value: &serde_json::Value,
+        tx: &mpsc::UnboundedSender<Bytes>,
+    ) -> usize {
+        let mut count = 0;
+        let Some(result) = json_value.get("result").and_then(|v| v.as_array()) else {
+            return 0;
+        };
+
+        for row in result {
+            let inst_id = row
+                .get("contract")
+                .or_else(|| row.get("symbol"))
+                .or_else(|| row.get("inst_id"))
+                .or_else(|| row.get("instId"))
+                .or_else(|| row.get("currency_pair"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_ascii_uppercase();
+            if inst_id.is_empty() {
+                continue;
+            }
+
+            let timestamp = parse_i64_ms_field(row.get("update_time_ms"))
+                .or_else(|| parse_i64_ms_field(row.get("updateTimeMs")))
+                .or_else(|| parse_i64_ms_field(row.get("update_time")))
+                .or_else(|| parse_i64_ms_field(row.get("updateTime")))
+                .or_else(|| parse_i64_ms_field(row.get("time_ms")))
+                .or_else(|| parse_i64_ms_field(row.get("time")))
+                .unwrap_or(0);
+
+            let size = parse_f64_str_or_num(
+                row.get("size")
+                    .or_else(|| row.get("position"))
+                    .or_else(|| row.get("pos"))
+                    .or_else(|| row.get("qty"))
+                    .or_else(|| row.get("amount"))
+                    .or_else(|| row.get("position_size"))
+                    .or_else(|| row.get("positionSize")),
+            )
+            .unwrap_or(0.0);
+
+            let side_text = row
+                .get("side")
+                .or_else(|| row.get("position_side"))
+                .or_else(|| row.get("pos_side"))
+                .or_else(|| row.get("direction"))
+                .or_else(|| row.get("posSide"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let position_side = match side_text.trim().to_ascii_lowercase().as_str() {
+                "buy" | "long" => 'L',
+                "sell" | "short" => 'S',
+                "net" | "both" => 'N',
+                _ => {
+                    if size > 0.0 {
+                        'L'
+                    } else if size < 0.0 {
+                        'S'
+                    } else {
+                        'N'
+                    }
+                }
+            };
+            let position_amount = match position_side {
+                'N' => size,
+                _ => size.abs(),
+            } as f32;
+
+            let position_msg =
+                BasicPositionMsg::create(timestamp, inst_id.clone(), position_side, position_amount);
+            let position_event = BasicAccountEventMsg::create(
+                BasicAccountEventType::PositionUpdate,
+                BasicAccountScope::GateUnified,
+                position_msg.to_bytes(),
+            );
+            if tx.send(position_event.to_bytes()).is_ok() {
+                count += 1;
+            }
+
+            if let Some(pnl) = parse_f64_str_or_num(
+                row.get("unrealised_pnl")
+                    .or_else(|| row.get("unrealized_pnl"))
+                    .or_else(|| row.get("unrealisedPnl"))
+                    .or_else(|| row.get("unrealizedPnl"))
+                    .or_else(|| row.get("upl")),
+            ) {
+                let pnl_msg =
+                    BasicUmUnrealizedMsg::create(timestamp, inst_id, position_side, pnl);
+                let pnl_event = BasicAccountEventMsg::create(
+                    BasicAccountEventType::UnrealizedPnlUpdate,
+                    BasicAccountScope::GateUnified,
+                    pnl_msg.to_bytes(),
+                );
+                if tx.send(pnl_event.to_bytes()).is_ok() {
+                    count += 1;
+                }
+            }
+        }
+
+        count
+    }
 }
 
 fn parse_f64_str_or_num(v: Option<&Value>) -> Option<f64> {
@@ -624,6 +729,14 @@ impl Parser for GateAccountEventParser {
                     0
                 }
             }
+            "futures.positions" => {
+                if event == "update" {
+                    self.parse_futures_positions(&json_value, tx)
+                } else {
+                    debug!("Gate: futures.positions event={} (ignored)", event);
+                    0
+                }
+            }
             "unified.pong" | "spot.pong" | "futures.pong" => {
                 // pong 响应，忽略
                 0
@@ -645,7 +758,7 @@ mod tests {
     use super::*;
     use crate::common::basic_account_msg::{
         split_basic_account_event, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
-        BasicBorrowInterestMsg,
+        BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
     };
 
     #[test]
@@ -694,5 +807,48 @@ mod tests {
         let borrow = BasicBorrowInterestMsg::from_bytes(body).expect("borrow body");
         assert_eq!(borrow.symbol, "USDT");
         assert!((borrow.borrowed - 3112.250826).abs() < 1e-12);
+    }
+
+    #[test]
+    fn futures_positions_emits_position_and_upl() {
+        let parser = GateAccountEventParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let payload = Bytes::from_static(
+            br#"{
+                "time": 1716796362,
+                "time_ms": 1716796362915,
+                "channel": "futures.positions",
+                "event": "update",
+                "result": [{
+                    "contract": "BTC_USDT",
+                    "size": "-2",
+                    "unrealised_pnl": "-0.25",
+                    "update_time": 1716796362915
+                }]
+            }"#,
+        );
+
+        let count = parser.parse(payload, &tx);
+        assert_eq!(count, 2);
+
+        let wrapped_position = rx.try_recv().expect("position event");
+        let (event_type, scope, body) =
+            split_basic_account_event(&wrapped_position).expect("wrapped position");
+        assert_eq!(event_type, BasicAccountEventType::PositionUpdate);
+        assert_eq!(scope, BasicAccountScope::GateUnified);
+        let position = BasicPositionMsg::from_bytes(body).expect("position body");
+        assert_eq!(position.inst_id, "BTC_USDT");
+        assert_eq!(position.position_side, 'S');
+        assert!((position.position_amount - 2.0).abs() < 1e-6);
+
+        let wrapped_pnl = rx.try_recv().expect("upl event");
+        let (event_type, scope, body) =
+            split_basic_account_event(&wrapped_pnl).expect("wrapped pnl");
+        assert_eq!(event_type, BasicAccountEventType::UnrealizedPnlUpdate);
+        assert_eq!(scope, BasicAccountScope::GateUnified);
+        let pnl = BasicUmUnrealizedMsg::from_bytes(body).expect("pnl body");
+        assert_eq!(pnl.inst_id, "BTC_USDT");
+        assert_eq!(pnl.position_side, 'S');
+        assert!((pnl.unrealized_pnl + 0.25).abs() < 1e-12);
     }
 }

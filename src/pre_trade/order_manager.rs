@@ -117,6 +117,10 @@ pub fn gate_currency_pair_from_symbol(symbol: &str) -> String {
     format!("{base}_{quote}")
 }
 
+pub fn gate_text_from_client_order_id(client_order_id: i64) -> String {
+    format!("t-{client_order_id}")
+}
+
 fn okex_order_type_from_order_type(order_type: OrderType) -> Result<OkexOrderType, String> {
     match order_type {
         OrderType::Market => Ok(OkexOrderType::Market),
@@ -1062,9 +1066,12 @@ impl Order {
             }
             TradingVenue::GateMargin => {
                 let currency_pair = gate_currency_pair_from_symbol(&self.symbol);
-                let order_id = self.exchange_order_id.unwrap_or(self.client_order_id);
+                let order_id = self
+                    .exchange_order_id
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| gate_text_from_client_order_id(self.client_order_id));
                 let req_param = json!({
-                    "order_id": order_id.to_string(),
+                    "order_id": order_id,
                     "currency_pair": currency_pair,
                     "account": "unified",
                 });
@@ -1075,9 +1082,12 @@ impl Order {
             }
             TradingVenue::GateFutures => {
                 let contract = gate_currency_pair_from_symbol(&self.symbol);
-                let order_id = self.exchange_order_id.unwrap_or(self.client_order_id);
+                let order_id = self
+                    .exchange_order_id
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| gate_text_from_client_order_id(self.client_order_id));
                 let req_param = json!({
-                    "order_id": order_id.to_string(),
+                    "order_id": order_id,
                     "contract": contract,
                 });
                 let params = Bytes::from(req_param.to_string());
@@ -1374,6 +1384,9 @@ impl Order {
                 }
                 if let Some(tif) = time_in_force {
                     req_param.insert("tif".to_string(), json!(tif));
+                }
+                if self.reduce_only {
+                    req_param.insert("reduce_only".to_string(), json!(true));
                 }
 
                 let params = Bytes::from(Value::Object(req_param).to_string());
