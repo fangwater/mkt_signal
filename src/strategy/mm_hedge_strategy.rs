@@ -45,11 +45,20 @@ const CANCEL_RESEND_THROTTLE_US: i64 = 500_000;
 const NET_EXPOSURE_EPS_USDT: f64 = 5.0;
 const RETIRED_HEDGE_FILL_GRACE_US: i64 = 120_000_000;
 const RETIRED_HEDGE_QUERY_DELAYS_US: [i64; 4] = [10_000_000, 20_000_000, 30_000_000, 60_000_000];
+const CUMULATIVE_FILL_ROLLBACK_EPS: f64 = 1e-9;
 
 fn qv_decimal_or_fallback(value: f64) -> String {
     QuantizedValue::from_decimal(value)
         .map(|qv| qv.decimal_string())
         .unwrap_or_else(|| format!("{value:.8}"))
+}
+
+fn monotonic_cumulative_fill(prev_cum: f64, incoming_cum: f64) -> f64 {
+    if incoming_cum + CUMULATIVE_FILL_ROLLBACK_EPS < prev_cum {
+        prev_cum
+    } else {
+        incoming_cum
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -136,6 +145,29 @@ enum PendingOrderQueryReason {
 }
 
 impl MarketMakerHedgeStrategy {
+    fn protected_order_update_cumulative_fill(
+        &self,
+        order: &Order,
+        incoming_cum: f64,
+        status: OrderStatus,
+    ) -> f64 {
+        let effective_cum =
+            monotonic_cumulative_fill(order.cumulative_filled_quantity, incoming_cum);
+        if effective_cum > incoming_cum + CUMULATIVE_FILL_ROLLBACK_EPS {
+            warn!(
+                "MarketMakerHedgeStrategy: strategy_id={} protected cumulative fill rollback: client_order_id={} symbol={} status={:?} prev={:.8} incoming={:.8} effective={:.8}",
+                self.strategy_id,
+                order.client_order_id,
+                order.symbol,
+                status,
+                order.cumulative_filled_quantity,
+                incoming_cum,
+                effective_cum
+            );
+        }
+        effective_cum
+    }
+
     fn retired_hedge_query_max_attempts() -> u8 {
         RETIRED_HEDGE_QUERY_DELAYS_US.len() as u8
     }
@@ -2215,7 +2247,7 @@ impl MarketMakerHedgeStrategy {
         prev_cumulative_filled_qty: f64,
     ) {
         let (signal_ts, from_key, price_offset) = self.uniform_hedge_fields(order.client_order_id);
-        let incoming_cum = order_update.cumulative_filled_quantity();
+        let incoming_cum = order.cumulative_filled_quantity;
         let amount_update = self.compute_uniform_amount_update(
             order,
             incoming_cum,
@@ -2243,7 +2275,7 @@ impl MarketMakerHedgeStrategy {
         prev_cumulative_filled_qty: f64,
     ) {
         let (signal_ts, from_key, price_offset) = self.uniform_hedge_fields(order.client_order_id);
-        let incoming_cum = order_update.cumulative_filled_quantity();
+        let incoming_cum = order.cumulative_filled_quantity;
         let amount_update = self.compute_uniform_amount_update(
             order,
             incoming_cum,
@@ -2306,7 +2338,7 @@ impl MarketMakerHedgeStrategy {
             return;
         }
         let (signal_ts, from_key, price_offset) = self.uniform_hedge_fields(order.client_order_id);
-        let incoming_cum = order_update.cumulative_filled_quantity();
+        let incoming_cum = order.cumulative_filled_quantity;
         let amount_update = self.compute_uniform_amount_update(
             order,
             incoming_cum,
@@ -2380,6 +2412,11 @@ impl MarketMakerHedgeStrategy {
         }
 
         let prev_cumulative_filled_qty = current_order.cumulative_filled_quantity;
+        let effective_cumulative_filled_qty = self.protected_order_update_cumulative_fill(
+            &current_order,
+            order_update.cumulative_filled_quantity(),
+            status,
+        );
 
         let updated = order_manager.update(client_order_id, |order| match status {
             OrderStatus::New => {
@@ -2400,26 +2437,26 @@ impl MarketMakerHedgeStrategy {
             OrderStatus::Canceled => {
                 order.status = OrderExecutionStatus::Cancelled;
                 order.set_exchange_order_id(order_update.order_id());
-                order.cumulative_filled_quantity = order_update.cumulative_filled_quantity();
+                order.cumulative_filled_quantity = effective_cumulative_filled_qty;
                 order.set_end_time(order_update.event_time());
             }
             OrderStatus::Filled => {
                 order.status = OrderExecutionStatus::Filled;
                 order.set_exchange_order_id(order_update.order_id());
-                order.cumulative_filled_quantity = order_update.cumulative_filled_quantity();
+                order.cumulative_filled_quantity = effective_cumulative_filled_qty;
                 order.set_filled_time(order_update.event_time());
                 order.set_end_time(order_update.event_time());
             }
             OrderStatus::Expired | OrderStatus::ExpiredInMatch => {
                 order.status = OrderExecutionStatus::Rejected;
                 order.set_exchange_order_id(order_update.order_id());
-                order.cumulative_filled_quantity = order_update.cumulative_filled_quantity();
+                order.cumulative_filled_quantity = effective_cumulative_filled_qty;
                 order.set_end_time(order_update.event_time());
             }
             OrderStatus::PartiallyFilled => {
                 order.status = OrderExecutionStatus::Create;
                 order.set_exchange_order_id(order_update.order_id());
-                order.cumulative_filled_quantity = order_update.cumulative_filled_quantity();
+                order.cumulative_filled_quantity = effective_cumulative_filled_qty;
                 order.set_filled_time(order_update.event_time());
             }
         });
@@ -2478,7 +2515,12 @@ impl MarketMakerHedgeStrategy {
 
         if status.is_finished() {
             let was_tracked = self.hedge_order_ids.contains(&client_order_id);
-            let filled_qty = order_update.cumulative_filled_quantity();
+            let filled_qty = MonitorChannel::instance()
+                .order_manager()
+                .borrow()
+                .get(client_order_id)
+                .map(|order| order.cumulative_filled_quantity)
+                .unwrap_or(effective_cumulative_filled_qty);
             let fill_price =
                 self.resolve_fill_price_from_order_update(client_order_id, order_update);
             let filled_base_qty = MonitorChannel::instance().qty_to_base(
@@ -2681,8 +2723,8 @@ impl MarketMakerHedgeStrategy {
 #[cfg(test)]
 mod tests {
     use super::{
-        HedgeOrderMeta, MarketMakerHedgeStrategy, PendingOrderQueryReason, RetiredHedgeFillMeta,
-        NET_EXPOSURE_EPS_USDT,
+        monotonic_cumulative_fill, HedgeOrderMeta, MarketMakerHedgeStrategy,
+        PendingOrderQueryReason, RetiredHedgeFillMeta, NET_EXPOSURE_EPS_USDT,
     };
     use crate::common::time_util::get_timestamp_us;
     use crate::pre_trade::order_manager::Side;
@@ -2750,6 +2792,16 @@ mod tests {
             ),
             PendingOrderQueryReason::RetiredTombstone
         );
+    }
+
+    #[test]
+    fn monotonic_cumulative_fill_keeps_local_value_on_rollback() {
+        assert!((monotonic_cumulative_fill(4.2, 0.0) - 4.2).abs() < 1e-12);
+    }
+
+    #[test]
+    fn monotonic_cumulative_fill_accepts_forward_progress() {
+        assert!((monotonic_cumulative_fill(4.2, 5.6) - 5.6).abs() < 1e-12);
     }
 
     #[test]

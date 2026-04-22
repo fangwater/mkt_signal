@@ -31,11 +31,20 @@ const ORDER_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
 const ORDER_QUERY_RETRY_DELAY_US: i64 = 900_000;
 const MAX_CANCEL_RECANCEL_ATTEMPTS: u8 = 1;
 const MM_OPEN_CANCEL_RECONCILE_QUERY_DELAYS_US: [i64; 4] = [300_000, 600_000, 1_200_000, 2_400_000];
+const CUMULATIVE_FILL_ROLLBACK_EPS: f64 = 1e-9;
 
 fn qv_decimal_or_fallback(value: f64) -> String {
     QuantizedValue::from_decimal(value)
         .map(|qv| qv.decimal_string())
         .unwrap_or_else(|| format!("{value:.8}"))
+}
+
+fn monotonic_cumulative_fill(prev_cum: f64, incoming_cum: f64) -> f64 {
+    if incoming_cum + CUMULATIVE_FILL_ROLLBACK_EPS < prev_cum {
+        prev_cum
+    } else {
+        incoming_cum
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +85,29 @@ pub struct MarketMakerOpenStrategy {
 }
 
 impl MarketMakerOpenStrategy {
+    fn protected_order_update_cumulative_fill(
+        &self,
+        order: &Order,
+        incoming_cum: f64,
+        status: OrderStatus,
+    ) -> f64 {
+        let effective_cum =
+            monotonic_cumulative_fill(order.cumulative_filled_quantity, incoming_cum);
+        if effective_cum > incoming_cum + CUMULATIVE_FILL_ROLLBACK_EPS {
+            warn!(
+                "MarketMakerOpenStrategy: strategy_id={} protected cumulative fill rollback: client_order_id={} symbol={} status={:?} prev={:.8} incoming={:.8} effective={:.8}",
+                self.strategy_id,
+                order.client_order_id,
+                order.symbol,
+                status,
+                order.cumulative_filled_quantity,
+                incoming_cum,
+                effective_cum
+            );
+        }
+        effective_cum
+    }
+
     fn cancel_reconcile_query_max_attempts() -> u8 {
         MM_OPEN_CANCEL_RECONCILE_QUERY_DELAYS_US.len() as u8
     }
@@ -1487,6 +1519,11 @@ impl MarketMakerOpenStrategy {
         }
 
         let prev_cumulative_filled_qty = current_order.cumulative_filled_quantity;
+        let effective_cumulative_filled_qty = self.protected_order_update_cumulative_fill(
+            &current_order,
+            order_update.cumulative_filled_quantity(),
+            order_update.status(),
+        );
 
         let updated = order_manager.update(client_order_id, |order| match order_update.status() {
             OrderStatus::New => {
@@ -1517,7 +1554,7 @@ impl MarketMakerOpenStrategy {
             OrderStatus::Canceled => {
                 order.status = OrderExecutionStatus::Cancelled;
                 order.set_exchange_order_id(order_update.order_id());
-                order.cumulative_filled_quantity = order_update.cumulative_filled_quantity();
+                order.cumulative_filled_quantity = effective_cumulative_filled_qty;
                 order.set_end_time(order_update.event_time());
                 let cancel_reason = self.last_open_cancel_reason.unwrap_or("unknown");
                 info!(
@@ -1540,7 +1577,7 @@ impl MarketMakerOpenStrategy {
             OrderStatus::Filled => {
                 order.status = OrderExecutionStatus::Filled;
                 order.set_exchange_order_id(order_update.order_id());
-                order.cumulative_filled_quantity = order_update.cumulative_filled_quantity();
+                order.cumulative_filled_quantity = effective_cumulative_filled_qty;
                 order.set_filled_time(order_update.event_time());
                 order.set_end_time(order_update.event_time());
                 debug!(
@@ -1555,7 +1592,7 @@ impl MarketMakerOpenStrategy {
             OrderStatus::Expired | OrderStatus::ExpiredInMatch => {
                 order.status = OrderExecutionStatus::Rejected;
                 order.set_exchange_order_id(order_update.order_id());
-                order.cumulative_filled_quantity = order_update.cumulative_filled_quantity();
+                order.cumulative_filled_quantity = effective_cumulative_filled_qty;
                 order.set_end_time(order_update.event_time());
                 warn!(
                     "⏰ MM订单已过期: strategy_id={} client_order_id={} exchange_order_id={} symbol={}",
@@ -1569,7 +1606,7 @@ impl MarketMakerOpenStrategy {
             OrderStatus::PartiallyFilled => {
                 order.status = OrderExecutionStatus::Create;
                 order.set_exchange_order_id(order_update.order_id());
-                order.cumulative_filled_quantity = order_update.cumulative_filled_quantity();
+                order.cumulative_filled_quantity = effective_cumulative_filled_qty;
                 order.set_filled_time(order_update.event_time());
                 debug!(
                     "MM订单部分成交: strategy_id={} client_order_id={} exchange_order_id={} symbol={}",
@@ -1716,7 +1753,7 @@ impl MarketMakerOpenStrategy {
     ) {
         let (signal_ts, from_key, price_offset) = self.uniform_open_fields();
 
-        let incoming_cum = order_update.cumulative_filled_quantity();
+        let incoming_cum = order.cumulative_filled_quantity;
         let amount_update = self.compute_uniform_amount_update(
             order,
             incoming_cum,
@@ -1744,7 +1781,7 @@ impl MarketMakerOpenStrategy {
         prev_cumulative_filled_qty: f64,
     ) {
         let (signal_ts, from_key, price_offset) = self.uniform_open_fields();
-        let incoming_cum = order_update.cumulative_filled_quantity();
+        let incoming_cum = order.cumulative_filled_quantity;
         let amount_update = self.compute_uniform_amount_update(
             order,
             incoming_cum,
@@ -1808,7 +1845,7 @@ impl MarketMakerOpenStrategy {
             return;
         }
         let (signal_ts, from_key, price_offset) = self.uniform_open_fields();
-        let incoming_cum = order_update.cumulative_filled_quantity();
+        let incoming_cum = order.cumulative_filled_quantity;
         let amount_update = self.compute_uniform_amount_update(
             order,
             incoming_cum,
@@ -2205,7 +2242,9 @@ impl Strategy for MarketMakerOpenStrategy {
 
 #[cfg(test)]
 mod tests {
-    use super::{MarketMakerOpenStrategy, PendingOrderQueryReason, QueryWatchdog};
+    use super::{
+        monotonic_cumulative_fill, MarketMakerOpenStrategy, PendingOrderQueryReason, QueryWatchdog,
+    };
 
     #[test]
     fn handle_open_failed_cleanup_clears_local_strategy_state() {
@@ -2263,6 +2302,16 @@ mod tests {
         );
         assert!(!MarketMakerOpenStrategy::cancel_reconcile_attempts_exhausted(3));
         assert!(MarketMakerOpenStrategy::cancel_reconcile_attempts_exhausted(4));
+    }
+
+    #[test]
+    fn monotonic_cumulative_fill_keeps_local_value_on_rollback() {
+        assert!((monotonic_cumulative_fill(4.2, 0.0) - 4.2).abs() < 1e-12);
+    }
+
+    #[test]
+    fn monotonic_cumulative_fill_accepts_forward_progress() {
+        assert!((monotonic_cumulative_fill(4.2, 5.6) - 5.6).abs() < 1e-12);
     }
 }
 
