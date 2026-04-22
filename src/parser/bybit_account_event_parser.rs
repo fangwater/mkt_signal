@@ -1,4 +1,4 @@
-//! Bybit V5 私有账户事件解析器（wallet / position / order / execution）
+//! Bybit V5 私有账户事件解析器（wallet / position / order）
 
 use crate::common::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
@@ -185,7 +185,7 @@ impl BybitAccountEventParser {
             // order topic is intentionally narrowed to the subset we want to mirror into the
             // unified pipeline:
             // - NEW / REJECTED / CANCELLED / PARTIALLY_FILLED_CANCELED => OrderUpdate
-            // - maker-only PARTIALLY_FILLED / FILLED => TradeUpdate supplement
+            // - PARTIALLY_FILLED / FILLED => TradeUpdate supplement
             // - other Bybit-only transitional states are logged and ignored
             match classify_bybit_order_status(order_status_text) {
                 BybitOrderChannelKind::OrderUpdate => {
@@ -223,35 +223,6 @@ impl BybitAccountEventParser {
                         order_status_text, raw_json
                     );
                 }
-            }
-        }
-
-        count
-    }
-
-    fn parse_execution_channel(
-        &self,
-        json_value: &Value,
-        tx: &mpsc::UnboundedSender<Bytes>,
-    ) -> usize {
-        let mut count = 0;
-        let top_timestamp = parse_i64_str_or_num(json_value.get("creationTime"))
-            .or_else(|| parse_i64_str_or_num(json_value.get("ts")))
-            .unwrap_or(0);
-        let raw_json = json_value.to_string();
-
-        for exec_obj in collect_data_objects(json_value) {
-            let Some(msg) = self.parse_execution_trade_only(exec_obj, top_timestamp, &raw_json)
-            else {
-                continue;
-            };
-            let event = BasicAccountEventMsg::create(
-                BasicAccountEventType::OrderUpdate,
-                BasicAccountScope::BybitUnified,
-                msg.to_bytes(),
-            );
-            if tx.send(event.to_bytes()).is_ok() {
-                count += 1;
             }
         }
 
@@ -388,18 +359,12 @@ impl BybitAccountEventParser {
             return None;
         }
 
-        // For order-topic trade supplementation we only trust positive order price, which in this
-        // pipeline is used as the maker discriminator. Taker or ambiguous fills fall back to the
-        // execution topic instead of emitting an incomplete TradeUpdate here.
         let order_price = parse_f64_str_or_num(obj.get("price"))
             .or_else(|| parse_f64_str_or_num(obj.get("orderPrice")));
-        let Some(price) = order_price.filter(|p| *p > 0.0) else {
-            warn!(
-                "Bybit: order trade supplement skipped due to missing/non-positive price, payload={}",
-                raw_json
-            );
-            return None;
-        };
+        let avg_price = parse_f64_str_or_num(obj.get("avgPrice"));
+        let price = avg_price
+            .or(order_price.filter(|p| *p > 0.0))
+            .unwrap_or(0.0);
 
         let symbol = obj.get("symbol")?.as_str()?.to_string();
         let order_id_str = obj
@@ -446,96 +411,11 @@ impl BybitAccountEventParser {
         let timestamp = parse_i64_str_or_num(obj.get("updatedTime"))
             .or_else(|| parse_i64_str_or_num(obj.get("creationTime")))
             .unwrap_or(top_timestamp);
-
-        Some(BybitBasicOrderMsg::create(
-            detect_order_venue(obj),
-            timestamp,
-            symbol,
-            order_id,
-            order_id_str,
-            client_order_id,
-            client_order_id_str,
-            side,
-            order_type,
-            time_in_force,
-            5,
-            order_status,
-            1,
-            price,
-            quantity,
-            cumulative_filled_quantity,
-            price,
-            String::new(),
-            raw_status.to_string(),
-            "Trade".to_string(),
-        ))
-    }
-
-    fn parse_execution_trade_only(
-        &self,
-        obj: &Map<String, Value>,
-        top_timestamp: i64,
-        raw_json: &str,
-    ) -> Option<BybitBasicOrderMsg> {
-        let symbol = obj.get("symbol")?.as_str()?.to_string();
-        let order_id_str = obj
-            .get("orderId")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let client_order_id_str = obj
-            .get("orderLinkId")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        let order_id = BybitBasicOrderMsg::stable_i64_from_str(&order_id_str);
-        let client_order_id = parse_required_client_order_id(&client_order_id_str, raw_json)?;
-        let order_status = derive_execution_order_status(obj)?;
-
-        let side =
-            BybitBasicOrderMsg::side_to_u8(obj.get("side").and_then(|v| v.as_str()).unwrap_or(""));
-        let order_type = BybitBasicOrderMsg::order_type_to_u8(
-            obj.get("orderType").and_then(|v| v.as_str()).unwrap_or(""),
-        );
-        let time_in_force = BybitBasicOrderMsg::time_in_force_to_u8(
-            obj.get("timeInForce")
-                .and_then(|v| v.as_str())
-                .unwrap_or("gtc"),
-        );
-        let exec_price = parse_f64_str_or_num(obj.get("execPrice"))
-            .or_else(|| parse_f64_str_or_num(obj.get("avgPrice")))
-            .unwrap_or(0.0);
-        let quantity = parse_f64_str_or_num(obj.get("orderQty"))
-            .or_else(|| parse_f64_str_or_num(obj.get("qty")))
-            .unwrap_or(0.0);
-        let leaves_qty = parse_f64_str_or_num(obj.get("leavesQty"))?;
-        let cumulative_filled_quantity = (quantity - leaves_qty).max(0.0);
         let is_maker = obj
             .get("isMaker")
             .and_then(|v| v.as_bool())
             .map(|v| if v { 1 } else { 0 })
             .unwrap_or(0);
-        let commission_asset = obj
-            .get("feeCurrency")
-            .or_else(|| obj.get("cumExecFeeAsset"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let timestamp = parse_i64_str_or_num(obj.get("execTime"))
-            .or_else(|| parse_i64_str_or_num(obj.get("updatedTime")))
-            .or_else(|| parse_i64_str_or_num(obj.get("creationTime")))
-            .unwrap_or(top_timestamp);
-        let raw_execution_type = obj
-            .get("execType")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Trade")
-            .to_string();
-        let raw_status = if order_status == 3 {
-            "Filled".to_string()
-        } else {
-            "PartiallyFilled".to_string()
-        };
 
         Some(BybitBasicOrderMsg::create(
             detect_order_venue(obj),
@@ -551,13 +431,13 @@ impl BybitAccountEventParser {
             5,
             order_status,
             is_maker,
-            exec_price,
+            price,
             quantity,
             cumulative_filled_quantity,
-            exec_price,
-            commission_asset,
-            raw_status,
-            raw_execution_type,
+            price,
+            String::new(),
+            raw_status.to_string(),
+            "Trade".to_string(),
         ))
     }
 }
@@ -595,7 +475,7 @@ impl Parser for BybitAccountEventParser {
             "wallet" => self.parse_wallet_channel(&json_value, tx),
             "position" => self.parse_position_channel(&json_value, tx),
             "order" => self.parse_order_channel(&json_value, tx),
-            "execution" => self.parse_execution_channel(&json_value, tx),
+            "execution" => 0,
             _ => {
                 if !route.is_empty() {
                     debug!("Bybit: ignored route={} payload={}", route, json_str);
@@ -646,7 +526,7 @@ fn classify_bybit_order_status(status: &str) -> BybitOrderChannelKind {
         "new" | "rejected" | "cancelled" | "canceled" | "partiallyfilledcanceled" => {
             BybitOrderChannelKind::OrderUpdate
         }
-        // These are only used to supplement maker fills from order topic.
+        // These are used to supplement trade fills from order topic.
         "partiallyfilled" | "partially_filled" | "partialfill" | "partial-fill" | "filled" => {
             BybitOrderChannelKind::TradeUpdate
         }
@@ -668,11 +548,6 @@ fn order_channel_order_status(status: &str) -> u8 {
         "rejected" => 5,
         _ => 1,
     }
-}
-
-fn derive_execution_order_status(obj: &Map<String, Value>) -> Option<u8> {
-    let leaves_qty = parse_f64_str_or_num(obj.get("leavesQty"))?;
-    Some(if leaves_qty <= 0.0 { 3 } else { 2 })
 }
 
 fn parse_f64_str_or_num(v: Option<&Value>) -> Option<f64> {
@@ -737,6 +612,8 @@ fn parse_required_client_order_id(value: &str, raw_json: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::basic_account_msg::split_basic_account_event;
+    use crate::strategy::trade_update::TradeUpdate;
 
     #[test]
     fn parses_wallet_position_order_and_execution() {
@@ -757,11 +634,6 @@ mod tests {
             br#"{"id":"3","topic":"order","creationTime":1710000000200,"data":[{"category":"linear","symbol":"BTCUSDT","orderId":"abcdef","orderLinkId":"12345","side":"Buy","orderType":"Limit","timeInForce":"GTC","orderStatus":"PartiallyFilled","price":"100000","qty":"0.5","cumExecQty":"0.1","avgPrice":"99999.5","updatedTime":"1710000000002"}]}"#,
         );
         assert_eq!(parser.parse(order, &tx), 1);
-
-        let execution = Bytes::from_static(
-            br#"{"id":"4","topic":"execution","creationTime":1710000000300,"data":[{"category":"linear","symbol":"BTCUSDT","orderId":"abcdef","orderLinkId":"12345","side":"Buy","orderType":"Limit","execType":"Trade","isMaker":true,"execPrice":"99998","execQty":"0.1","orderQty":"0.5","leavesQty":"0.3","execTime":"1710000000003","feeCurrency":"USDT"}]}"#,
-        );
-        assert_eq!(parser.parse(execution, &tx), 1);
 
         let mut seen_balance = 0;
         let mut seen_borrow = 0;
@@ -806,11 +678,7 @@ mod tests {
                     assert_eq!(order.client_order_id, 12345);
                     if order.execution_type == 5 {
                         seen_trade += 1;
-                        if !order.commission_asset.is_empty() {
-                            assert!((order.price - 99998.0).abs() < 1e-9);
-                        } else {
-                            assert!((order.price - 100000.0).abs() < 1e-9);
-                        }
+                        assert!((order.price - 100000.0).abs() < 1e-9);
                     } else {
                         seen_order += 1;
                     }
@@ -824,7 +692,7 @@ mod tests {
         assert_eq!(seen_position, 1);
         assert_eq!(seen_pnl, 1);
         assert_eq!(seen_order, 0);
-        assert_eq!(seen_trade, 2);
+        assert_eq!(seen_trade, 1);
     }
 
     #[test]
@@ -841,7 +709,7 @@ mod tests {
     }
 
     #[test]
-    fn drops_execution_when_leaves_qty_is_missing() {
+    fn execution_topic_is_ignored() {
         let parser = BybitAccountEventParser::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
 
@@ -918,5 +786,54 @@ mod tests {
         assert_eq!(order.order_status, 4);
         assert_eq!(order.raw_status, "PartiallyFilledCanceled");
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn order_topic_keeps_taker_trade_update_using_avg_price() {
+        let parser = BybitAccountEventParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        let order = Bytes::from_static(
+            br#"{
+                "id":"5923240c6880ab-c59f-420b-9adb-3639adc9dd90",
+                "topic":"order",
+                "creationTime":1672364262474,
+                "data":[
+                    {
+                        "symbol":"ETHUSDT",
+                        "orderId":"5cf98598-39a7-459e-97bf-76ca765ee020",
+                        "side":"Sell",
+                        "orderType":"Market",
+                        "price":"72.5",
+                        "qty":"1",
+                        "timeInForce":"IOC",
+                        "orderStatus":"Filled",
+                        "orderLinkId":"123456",
+                        "cumExecQty":"1",
+                        "cumExecValue":"75",
+                        "avgPrice":"75",
+                        "createdTime":"1672364262444",
+                        "updatedTime":"1672364262457",
+                        "category":"linear",
+                        "isMaker":false
+                    }
+                ]
+            }"#,
+        );
+
+        assert_eq!(parser.parse(order, &tx), 1);
+        let wrapped = rx.try_recv().expect("order trade supplement");
+        let (_, _, payload) = split_basic_account_event(&wrapped).expect("wrapped event");
+        let msg = BybitBasicOrderMsg::from_bytes(payload).expect("bybit order payload");
+
+        assert_eq!(
+            msg.order_type,
+            BybitBasicOrderMsg::order_type_to_u8("Market")
+        );
+        assert_eq!(msg.execution_type, 5);
+        assert_eq!(msg.order_status, 3);
+        assert_eq!(msg.is_maker, 0);
+        assert!((msg.cumulative_filled_quantity - 1.0).abs() < 1e-12);
+        assert!((TradeUpdate::price(&msg) - 75.0).abs() < 1e-12);
     }
 }

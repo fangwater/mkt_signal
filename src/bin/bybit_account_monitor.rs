@@ -3,7 +3,7 @@
 //! 功能：
 //! - 连接 Bybit 私有 WebSocket 频道
 //! - 使用 API Key/Secret 进行 auth 鉴权
-//! - 订阅 wallet / position / order / execution 频道
+//! - 订阅 wallet / position / order 频道
 //! - 解析账户事件并通过 Iceoryx 转发
 //! - 支持主备双路连接
 
@@ -20,9 +20,8 @@ use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::bybit_account_event_parser::BybitAccountEventParser;
 use mkt_signal::parser::default_parser::Parser;
 use mkt_signal::portfolio_margin::bybit_auth::{
-    build_execution_subscribe_message, build_order_subscribe_message,
-    build_position_subscribe_message, build_wallet_subscribe_message, BybitCredentials,
-    BybitPrivateWsUrls,
+    build_order_subscribe_message, build_position_subscribe_message,
+    build_wallet_subscribe_message, BybitCredentials, BybitPrivateWsUrls,
 };
 use mkt_signal::portfolio_margin::bybit_user_stream::BybitUserDataConnection;
 use mkt_signal::portfolio_margin::pm_forwarder::PmForwarder;
@@ -86,7 +85,6 @@ async fn main() -> Result<()> {
         build_wallet_subscribe_message(),
         build_position_subscribe_message(),
         build_order_subscribe_message(),
-        build_execution_subscribe_message(),
     ];
 
     let (evt_tx, mut evt_rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
