@@ -3,8 +3,7 @@ use crate::signal::common::TradingVenue;
 
 /// 轻量成交更新 trait。
 ///
-/// 目前用于 Binance USD-M futures `TRADE_LITE` 事件。该事件只提供本次成交增量，
-/// 不提供累计成交量，因此和 `TradeUpdate` 分离。
+/// 用于只提供本次成交增量、而不提供累计成交量的事件，因此和 `TradeUpdate` 分离。
 pub trait TradeUpdateLite {
     /// 获取事件时间 (微秒时间戳)
     fn event_time(&self) -> i64;

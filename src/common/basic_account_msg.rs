@@ -17,7 +17,7 @@ pub enum BasicAccountEventType {
     BorrowInterest = 4004,
     /// 合约未实现盈亏更新
     UnrealizedPnlUpdate = 4005,
-    /// Binance USD-M futures TRADE_LITE 成交更新
+    /// 轻量成交更新（最初用于 Binance TRADE_LITE，也可复用于其他仅提供增量成交的频道）
     TradeUpdateLite = 4006,
     /// 错误
     Error = 4999,
@@ -41,14 +41,16 @@ pub enum BasicAccountScope {
     BybitUnified = 13,
 }
 
-/// Binance USD-M futures TRADE_LITE 消息。
+/// 轻量成交更新消息。
 ///
-/// 该事件只携带增量成交信息，不包含 cumulative filled quantity，因此不复用
+/// 该事件只携带单笔增量成交信息，不包含 cumulative filled quantity，因此不复用
 /// `BinanceBasicOrderMsg` / `TradeUpdate` 语义。
+///
+/// 结构名保留历史命名；目前也可用于其他交易所的 trade-lite / fill 增量语义。
 #[derive(Debug, Clone)]
 pub struct BinanceTradeLiteMsg {
     pub msg_type: BasicAccountEventType,
-    /// 目前仅 Binance UM 使用，保留 venue 便于下游统一做 venue 判定。
+    /// 保留 venue 便于下游统一做 venue 判定。
     pub venue: u8,
     pub event_time: i64,
     pub trade_time: i64,
