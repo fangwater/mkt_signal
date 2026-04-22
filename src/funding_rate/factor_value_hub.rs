@@ -6,6 +6,7 @@ use log::{error, info, warn};
 use redis::Commands;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::fmt;
 use std::time::{Duration, Instant};
 
@@ -14,8 +15,11 @@ use crate::common::model_ipc::MODEL_PAYLOAD_MAX_BYTES;
 use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::time_util::get_timestamp_us;
+use crate::common::trade_flow_feature_msg::TradeFlowFeatureMsg;
 use crate::factor_pub::factor_index::{factor_name_to_channel, factor_name_to_index};
-use crate::funding_rate::inline_volatility::{observe_inline_volatility, InlineVolatilitySnapshot};
+use crate::funding_rate::inline_volatility::{
+    observe_inline_tradecount, observe_inline_volatility, InlineVolatilitySnapshot,
+};
 use crate::signal::common::TradingVenue;
 
 const FACTOR_VALUE_PAYLOAD_MAX_BYTES: usize = 256;
@@ -26,6 +30,11 @@ const MODEL_OUTPUT_POLL_MAX_PER_CHANNEL: usize = 256;
 const MODEL_OUTPUT_STATS_LOG_INTERVAL_SECS: u64 = 60;
 const DEFAULT_PNLU_MAX_AGE_SECS: i64 = 30 * 60;
 const FACTOR_VALUE_ISSUE_LOG_INTERVAL_SECS: u64 = 10;
+const TRADE_FLOW_FEATURE_PAYLOAD_MAX_BYTES: usize = 2048;
+const TRADE_FLOW_FEATURE_SUBSCRIBER_BUFFER_SIZE: usize = 1024;
+const TRADE_FLOW_FEATURE_COUNT_INDEX: usize = 7;
+const TRADECOUNT_ROLLING_MEAN_WINDOW: usize = 30;
+const TRADECOUNT_ROLLING_MEAN_MIN_PERIODS: usize = 25;
 
 #[derive(Debug, Clone)]
 pub struct FactorValueLookupResult {
@@ -201,8 +210,11 @@ pub struct FactorValueHub {
     factor_value_service_name: String,
     factor_value_max_age_ms: i64,
     factor_value_sub: Subscriber<ipc::Service, [u8; FACTOR_VALUE_PAYLOAD_MAX_BYTES], ()>,
+    trade_flow_feature_sub: Subscriber<ipc::Service, [u8; TRADE_FLOW_FEATURE_PAYLOAD_MAX_BYTES], ()>,
     factor_value_cache: HashMap<(u16, String), FactorValueSnapshot>,
     last_valid_factor_value_cache: HashMap<(u16, String), FactorValueSnapshot>,
+    tradecount_windows: HashMap<String, VecDeque<f64>>,
+    latest_tradecount_means: HashMap<String, f64>,
     factor_issue_log_state: HashMap<String, FactorIssueLogState>,
     model_output_subscribers: Vec<ModelOutputSubscriberEntry>,
     model_output_services: Vec<String>,
@@ -234,6 +246,7 @@ impl FactorValueHub {
             anyhow::anyhow!("missing factor index mapping for {target_factor_name}")
         })?;
         let pnlu_redis = PnluRedis::new(pnlu_settings)?;
+        let trade_flow_feature_sub = Self::create_trade_flow_feature_subscriber(node, hedge_venue)?;
         let pnlu_max_age_secs = if pnlu_max_age_secs > 0 {
             pnlu_max_age_secs
         } else {
@@ -257,8 +270,11 @@ impl FactorValueHub {
             factor_value_service_name,
             factor_value_max_age_ms,
             factor_value_sub,
+            trade_flow_feature_sub,
             factor_value_cache: HashMap::new(),
             last_valid_factor_value_cache: HashMap::new(),
+            tradecount_windows: HashMap::new(),
+            latest_tradecount_means: HashMap::new(),
             factor_issue_log_state: HashMap::new(),
             model_output_subscribers: Vec::new(),
             model_output_services: Vec::new(),
@@ -325,6 +341,29 @@ impl FactorValueHub {
             .buffer_size(requested_buffer)
             .create()
             .context("failed to create factor subscriber")
+    }
+
+    fn create_trade_flow_feature_subscriber(
+        node: &Node<ipc::Service>,
+        venue: TradingVenue,
+    ) -> Result<Subscriber<ipc::Service, [u8; TRADE_FLOW_FEATURE_PAYLOAD_MAX_BYTES], ()>> {
+        let service_name = format!("factor_pub/{}/trade_flow_feature", venue.data_pub_slug());
+        let service = node
+            .service_builder(&ServiceName::new(&service_name)?)
+            .publish_subscribe::<[u8; TRADE_FLOW_FEATURE_PAYLOAD_MAX_BYTES]>()
+            .max_publishers(1)
+            .max_subscribers(10)
+            .history_size(256)
+            .subscriber_max_buffer_size(TRADE_FLOW_FEATURE_SUBSCRIBER_BUFFER_SIZE)
+            .open()
+            .with_context(|| {
+                format!("failed to open trade_flow_feature subscriber service={service_name}")
+            })?;
+        service
+            .subscriber_builder()
+            .buffer_size(TRADE_FLOW_FEATURE_SUBSCRIBER_BUFFER_SIZE)
+            .create()
+            .context("failed to create trade_flow_feature subscriber")
     }
 
     fn validate_factor_snapshot(
@@ -725,6 +764,85 @@ impl FactorValueHub {
         }
 
         sampled
+    }
+
+    pub(crate) fn poll_trade_flow_tradecount_updates(
+        &mut self,
+        percentile: Option<f64>,
+    ) -> Vec<(String, InlineVolatilitySnapshot)> {
+        let mut sampled = Vec::new();
+        let Some(percentile) = percentile.filter(|v| v.is_finite()) else {
+            return sampled;
+        };
+
+        loop {
+            match self.trade_flow_feature_sub.receive() {
+                Ok(Some(sample)) => {
+                    let payload = sample.payload();
+                    if payload.iter().all(|&b| b == 0) {
+                        continue;
+                    }
+                    let msg = match TradeFlowFeatureMsg::from_bytes(payload) {
+                        Ok(msg) => msg,
+                        Err(err) => {
+                            warn!(
+                                "FactorValueHub: parse trade_flow_feature payload failed: {}",
+                                err
+                            );
+                            continue;
+                        }
+                    };
+                    let Some(tradecount) = msg
+                        .values
+                        .get(TRADE_FLOW_FEATURE_COUNT_INDEX)
+                        .copied()
+                        .filter(|v| v.is_finite())
+                    else {
+                        continue;
+                    };
+                    let symbol_key = normalize_symbol_for_venue(&msg.symbol, self.hedge_venue);
+                    let window = self
+                        .tradecount_windows
+                        .entry(symbol_key.clone())
+                        .or_insert_with(|| VecDeque::with_capacity(TRADECOUNT_ROLLING_MEAN_WINDOW));
+                    if window.len() == TRADECOUNT_ROLLING_MEAN_WINDOW {
+                        let _ = window.pop_front();
+                    }
+                    window.push_back(tradecount);
+                    if window.len() < TRADECOUNT_ROLLING_MEAN_MIN_PERIODS {
+                        continue;
+                    }
+                    let mean = window.iter().sum::<f64>() / window.len() as f64;
+                    self.latest_tradecount_means.insert(symbol_key.clone(), mean);
+                    let snapshot =
+                        observe_inline_tradecount(&symbol_key, mean, percentile, msg.ts);
+                    sampled.push((symbol_key, snapshot));
+                }
+                Ok(None) => break,
+                Err(err) => {
+                    error!(
+                        "FactorValueHub: trade_flow_feature subscriber receive error venue={} err={}",
+                        self.hedge_venue.data_pub_slug(),
+                        err
+                    );
+                    break;
+                }
+            }
+        }
+
+        sampled
+    }
+
+    pub(crate) fn latest_tradecount_mean(
+        &self,
+        hedge_symbol: &str,
+        hedge_venue: TradingVenue,
+    ) -> Option<f64> {
+        let symbol_key = normalize_symbol_for_venue(hedge_symbol, hedge_venue);
+        self.latest_tradecount_means
+            .get(&symbol_key)
+            .copied()
+            .filter(|v| v.is_finite())
     }
 
     pub fn lookup_factor_value_with_last_valid_fallback(

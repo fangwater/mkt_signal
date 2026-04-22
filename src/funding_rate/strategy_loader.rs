@@ -263,6 +263,14 @@ pub struct StrategyParams {
     #[serde(default = "default_open_volatility_limit")]
     pub open_volatility_limit: f64,
 
+    /// 是否启用 tradecount 限制下单（仅 MM）
+    #[serde(default = "default_enable_tradecount_limit")]
+    pub enable_tradecount_limit: bool,
+
+    /// tradecount 限制分位数（MM 决策侧内联 rolling tradecount 阈值采样使用）
+    #[serde(default = "default_open_tradecount_limit")]
+    pub open_tradecount_limit: f64,
+
     /// 收益率模型输出通道（"-" 表示禁用）
     #[serde(default = "default_return_model_service")]
     pub return_model_service: String,
@@ -363,6 +371,12 @@ fn default_enable_volatility_limit() -> bool {
 fn default_open_volatility_limit() -> f64 {
     70.0
 }
+fn default_enable_tradecount_limit() -> bool {
+    false
+}
+fn default_open_tradecount_limit() -> f64 {
+    70.0
+}
 fn default_return_model_service() -> String {
     "return_model".to_string()
 }
@@ -404,6 +418,8 @@ impl Default for StrategyParams {
             enable_environment_model: default_enable_environment_model(),
             enable_volatility_limit: default_enable_volatility_limit(),
             open_volatility_limit: default_open_volatility_limit(),
+            enable_tradecount_limit: default_enable_tradecount_limit(),
+            open_tradecount_limit: default_open_tradecount_limit(),
             return_model_service: default_return_model_service(),
             environment_model_service: default_environment_model_service(),
         }
@@ -750,6 +766,24 @@ impl StrategyParams {
             .and_then(|s| s.parse::<f64>().ok())
             .filter(|v| v.is_finite() && *v >= 0.0 && *v <= 100.0)
             .unwrap_or_else(default_open_volatility_limit);
+        let enable_tradecount_limit = match hash_map.get("enable_tradecount_limit") {
+            Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" | "on" => true,
+                "false" | "0" | "no" | "off" | "" => false,
+                _ => {
+                    panic!(
+                        "Redis hash '{}' enable_tradecount_limit 非法（仅支持 true/false）: {}",
+                        redis_key, raw
+                    )
+                }
+            },
+            None => default_enable_tradecount_limit(),
+        };
+        let open_tradecount_limit = hash_map
+            .get("open_tradecount_limit")
+            .and_then(|s| s.parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v >= 0.0 && *v <= 100.0)
+            .unwrap_or_else(default_open_tradecount_limit);
 
         let strict_return_model_required = ns == "mm";
         let strict_env_model_dash_only = false;
@@ -885,6 +919,8 @@ impl StrategyParams {
             enable_environment_model,
             enable_volatility_limit,
             open_volatility_limit,
+            enable_tradecount_limit,
+            open_tradecount_limit,
             return_model_service,
             environment_model_service,
         })
@@ -1023,6 +1059,8 @@ impl StrategyParams {
                 _decision.update_enable_environment_model(self.enable_environment_model);
                 _decision.update_enable_volatility_limit(self.enable_volatility_limit);
                 _decision.update_open_volatility_limit(self.open_volatility_limit);
+                _decision.update_enable_tradecount_limit(self.enable_tradecount_limit);
+                _decision.update_open_tradecount_limit(self.open_tradecount_limit);
                 _decision.update_model_service_roles(
                     self.return_model_service.clone(),
                     self.environment_model_service.clone(),
@@ -1039,7 +1077,7 @@ impl StrategyParams {
         }
 
         info!(
-            "✅ 策略参数已更新: mode={}, amount={:.2}, arb_open_scale={:.4}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, hedge_window_scale_low={:.4}, hedge_window_scale_high={:.4}, order_interval_ms={}, open_orders_per_round={}, cooldown={}s, prediction_mode={}, enable_open_cancel={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, spread_cancel_cooldown_ms={}, enable_return_score_adjust_hedge={}, enable_environment_model={}, enable_volatility_limit={}, open_volatility_limit={}, return_model_service={}, environment_model_service={}",
+            "✅ 策略参数已更新: mode={}, amount={:.2}, arb_open_scale={:.4}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, hedge_window_scale_low={:.4}, hedge_window_scale_high={:.4}, order_interval_ms={}, open_orders_per_round={}, cooldown={}s, prediction_mode={}, enable_open_cancel={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, spread_cancel_cooldown_ms={}, enable_return_score_adjust_hedge={}, enable_environment_model={}, enable_volatility_limit={}, open_volatility_limit={}, enable_tradecount_limit={}, open_tradecount_limit={}, return_model_service={}, environment_model_service={}",
             self.mode,
             self.order_amount,
             self.open_scale,
@@ -1059,6 +1097,8 @@ impl StrategyParams {
             self.enable_environment_model,
             self.enable_volatility_limit,
             self.open_volatility_limit,
+            self.enable_tradecount_limit,
+            self.open_tradecount_limit,
             self.return_model_service,
             self.environment_model_service
         );
@@ -1124,6 +1164,18 @@ mod tests {
     fn test_open_volatility_limit_default_is_70() {
         let params = StrategyParams::default();
         assert!((params.open_volatility_limit - 70.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_enable_tradecount_limit_default_is_false() {
+        let params = StrategyParams::default();
+        assert!(!params.enable_tradecount_limit);
+    }
+
+    #[test]
+    fn test_open_tradecount_limit_default_is_70() {
+        let params = StrategyParams::default();
+        assert!((params.open_tradecount_limit - 70.0).abs() < 1e-12);
     }
 
     #[test]

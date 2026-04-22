@@ -289,6 +289,14 @@ impl MmDecision {
         self.state.update_open_volatility_limit(percentile);
     }
 
+    pub fn update_enable_tradecount_limit(&mut self, enabled: bool) {
+        self.state.update_enable_tradecount_limit(enabled);
+    }
+
+    pub fn update_open_tradecount_limit(&mut self, percentile: f64) {
+        self.state.update_open_tradecount_limit(percentile);
+    }
+
     pub fn update_tlen_cancel_freq_ms(&mut self, tlen_cancel_freq_ms: u64) {
         self.state.update_tlen_cancel_freq_ms(tlen_cancel_freq_ms);
     }
@@ -348,6 +356,22 @@ impl MmDecision {
             if snapshot.recomputed {
                 debug!(
                     "MmDecision: inline open volatility threshold recomputed symbol={} threshold={:.8} samples={} percentile={:.2} last_recompute_tp_ms={}",
+                    symbol_key,
+                    snapshot.threshold.unwrap_or(f64::NAN),
+                    snapshot.sample_count,
+                    snapshot.percentile,
+                    snapshot.last_recompute_tp_ms.unwrap_or_default()
+                );
+            }
+        }
+        for (symbol_key, snapshot) in self
+            .state
+            .factor_value_hub
+            .poll_trade_flow_tradecount_updates(Some(self.state.open_tradecount_limit))
+        {
+            if snapshot.recomputed {
+                debug!(
+                    "MmDecision: inline open tradecount threshold recomputed symbol={} threshold={:.8} samples={} percentile={:.2} last_recompute_tp_ms={}",
                     symbol_key,
                     snapshot.threshold.unwrap_or(f64::NAN),
                     snapshot.sample_count,

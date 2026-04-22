@@ -9,7 +9,9 @@ use super::super::common::{
     apply_open_tlen_gate_and_build_from_keys, ReturnScoreThresholdsResolved,
 };
 use super::super::factor_value_hub::{EnvironmentSignalResult, FactorValueHub};
-use super::super::inline_volatility::{snapshot_inline_volatility, InlineVolatilitySnapshot};
+use super::super::inline_volatility::{
+    snapshot_inline_tradecount, snapshot_inline_volatility, InlineVolatilitySnapshot,
+};
 use crate::common::iceoryx_publisher::SignalPublisher;
 use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
@@ -75,6 +77,8 @@ pub(crate) struct MmDecisionState {
     pub(crate) enable_environment_model: bool,
     pub(crate) enable_volatility_limit: bool,
     pub(crate) open_volatility_limit: f64,
+    pub(crate) enable_tradecount_limit: bool,
+    pub(crate) open_tradecount_limit: f64,
     pub(crate) return_model_service: Option<String>,
     pub(crate) environment_model_service: Option<String>,
     pub(crate) environment_model_true_threshold: f64,
@@ -163,6 +167,8 @@ impl MmDecisionState {
             enable_environment_model: true,
             enable_volatility_limit: true,
             open_volatility_limit: 70.0,
+            enable_tradecount_limit: false,
+            open_tradecount_limit: 70.0,
             return_model_service: None,
             environment_model_service: None,
             environment_model_true_threshold: ENV_MODEL_TRUE_THRESHOLD_DEFAULT,
@@ -419,6 +425,28 @@ impl MmDecisionState {
         );
     }
 
+    pub(crate) fn update_enable_tradecount_limit(&mut self, enabled: bool) {
+        self.enable_tradecount_limit = enabled;
+        debug!(
+            "MmDecision: enable_tradecount_limit updated enabled={}",
+            self.enable_tradecount_limit
+        );
+    }
+
+    pub(crate) fn update_open_tradecount_limit(&mut self, percentile: f64) {
+        if !(percentile.is_finite() && percentile >= 0.0 && percentile <= 100.0) {
+            panic!(
+                "MmDecision: open_tradecount_limit must be finite and within [0,100], got {}",
+                percentile
+            );
+        }
+        self.open_tradecount_limit = percentile;
+        debug!(
+            "MmDecision: open_tradecount_limit updated percentile={}",
+            self.open_tradecount_limit
+        );
+    }
+
     pub(crate) fn update_tlen_cancel_freq_ms(&mut self, tlen_cancel_freq_ms: u64) {
         if tlen_cancel_freq_ms == 0 {
             panic!("MmDecision: tlen_cancel_freq_ms must be > 0");
@@ -484,6 +512,15 @@ impl MmDecisionState {
     ) -> InlineVolatilitySnapshot {
         let symbol_key = symbol_key.to_ascii_uppercase();
         snapshot_inline_volatility(&symbol_key, volatility, self.open_volatility_limit)
+    }
+
+    pub(crate) fn snapshot_open_tradecount(
+        &self,
+        symbol_key: &str,
+        tradecount: f64,
+    ) -> InlineVolatilitySnapshot {
+        let symbol_key = symbol_key.to_ascii_uppercase();
+        snapshot_inline_tradecount(&symbol_key, tradecount, self.open_tradecount_limit)
     }
 
     pub(crate) fn evaluate_environment_signal(

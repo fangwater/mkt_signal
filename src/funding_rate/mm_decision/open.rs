@@ -118,6 +118,7 @@ impl MmOpenDecision {
                     None,
                     None,
                     None,
+                    None,
                 ))
             }
         };
@@ -132,6 +133,7 @@ impl MmOpenDecision {
             return Ok(MmOpenEvalResult::skipped(
                 &symbol_key,
                 &format!("missing_volatility({})", volatility_lookup.note),
+                None,
                 None,
                 None,
                 None,
@@ -151,6 +153,7 @@ impl MmOpenDecision {
                     ),
                     None,
                     Some(volatility),
+                    None,
                     None,
                 ));
             };
@@ -177,6 +180,60 @@ impl MmOpenDecision {
                     None,
                     Some(volatility),
                     None,
+                    None,
+                ));
+            }
+        }
+
+        let tradecount = state
+            .factor_value_hub
+            .latest_tradecount_mean(symbol, state.hedge_venue);
+        if state.enable_tradecount_limit {
+            let tradecount_snapshot = state.snapshot_open_tradecount(
+                &symbol_key,
+                tradecount.unwrap_or_default(),
+            );
+            let Some(tradecount_threshold) = tradecount_snapshot.threshold else {
+                return Ok(MmOpenEvalResult::skipped(
+                    &symbol_key,
+                    &format!(
+                        "tradecount_threshold_warming_up(samples={} min_samples={} percentile={:.2})",
+                        tradecount_snapshot.sample_count,
+                        INLINE_VOLATILITY_MIN_SAMPLES,
+                        tradecount_snapshot.percentile
+                    ),
+                    None,
+                    Some(volatility),
+                    None,
+                    tradecount,
+                ));
+            };
+            if let Some(current_tradecount) = tradecount.filter(|v| v.is_finite()) {
+                if current_tradecount <= tradecount_threshold {
+                    return Ok(MmOpenEvalResult::skipped(
+                        &symbol_key,
+                        &format!(
+                            "tradecount_blocked(current={:.8}<=threshold={:.8},samples={},percentile={:.2},last_recompute_tp_ms={})",
+                            current_tradecount,
+                            tradecount_threshold,
+                            tradecount_snapshot.sample_count,
+                            tradecount_snapshot.percentile,
+                            tradecount_snapshot.last_recompute_tp_ms.unwrap_or_default()
+                        ),
+                        None,
+                        Some(volatility),
+                        None,
+                        Some(current_tradecount),
+                    ));
+                }
+            } else {
+                return Ok(MmOpenEvalResult::skipped(
+                    &symbol_key,
+                    "missing_tradecount_ipc_snapshot",
+                    None,
+                    Some(volatility),
+                    None,
+                    tradecount,
                 ));
             }
         }
@@ -189,6 +246,7 @@ impl MmOpenDecision {
                     None,
                     Some(volatility),
                     None,
+                    tradecount,
                 ));
             };
             let score_lookup = state.factor_value_hub.cached_model_output_score(
@@ -229,6 +287,7 @@ impl MmOpenDecision {
                         None,
                         Some(volatility),
                         None,
+                        tradecount,
                     ))
                 }
             };
@@ -248,6 +307,7 @@ impl MmOpenDecision {
                 Some(return_score),
                 Some(volatility),
                 None,
+                tradecount,
             ));
         }
 
@@ -265,6 +325,7 @@ impl MmOpenDecision {
                 Some(return_score),
                 Some(volatility),
                 None,
+                tradecount,
             ));
         }
 
@@ -276,6 +337,7 @@ impl MmOpenDecision {
                 Some(return_score),
                 Some(volatility),
                 Some(environment_signal),
+                tradecount,
             ));
         }
         let from_key = build_from_key(
@@ -311,6 +373,7 @@ impl MmOpenDecision {
                     Some(return_score),
                     Some(volatility),
                     Some(environment_signal),
+                    tradecount,
                 ));
             }
         };
@@ -339,6 +402,7 @@ impl MmOpenDecision {
                 Some(return_score),
                 Some(volatility),
                 Some(environment_signal),
+                tradecount,
                 SignalType::MMOpen,
             ))
         } else {
@@ -348,6 +412,7 @@ impl MmOpenDecision {
                 Some(return_score),
                 Some(volatility),
                 Some(environment_signal),
+                tradecount,
             ))
         }
     }
@@ -371,6 +436,7 @@ impl MmOpenDecision {
                         None,
                         None,
                         None,
+                        None,
                     ));
                 }
             }
@@ -387,6 +453,7 @@ struct MmOpenEvalResult {
     reason: String,
     return_score: Option<f64>,
     volatility: Option<f64>,
+    tradecount: Option<f64>,
     vol_tr: Option<f64>,
     env_note: String,
     env_score: Option<f64>,
@@ -401,6 +468,7 @@ impl MmOpenEvalResult {
         return_score: Option<f64>,
         volatility: Option<f64>,
         env: Option<EnvironmentSignalResult>,
+        tradecount: Option<f64>,
     ) -> Self {
         let (env_note, env_score, env_threshold) = env_fields(env.as_ref());
         Self {
@@ -409,6 +477,7 @@ impl MmOpenEvalResult {
             reason: reason.to_string(),
             return_score,
             volatility,
+            tradecount,
             vol_tr: extract_vol_tr(reason),
             env_note,
             env_score,
@@ -423,6 +492,7 @@ impl MmOpenEvalResult {
         return_score: Option<f64>,
         volatility: Option<f64>,
         env: Option<EnvironmentSignalResult>,
+        tradecount: Option<f64>,
         signal_type: SignalType,
     ) -> Self {
         let (env_note, env_score, env_threshold) = env_fields(env.as_ref());
@@ -432,6 +502,7 @@ impl MmOpenEvalResult {
             reason: reason.to_string(),
             return_score,
             volatility,
+            tradecount,
             vol_tr: extract_vol_tr(reason),
             env_note,
             env_score,
@@ -524,9 +595,9 @@ fn build_rule(widths: &[usize], left: char, mid: char, right: char) -> String {
 }
 
 fn format_mm_open_eval_table(results: &[MmOpenEvalResult]) -> String {
-    let widths = [14usize, 6, 10, 10, 10, 12, 12, 28, 44];
+    let widths = [14usize, 6, 10, 10, 12, 10, 12, 12, 28, 44];
     let headers = [
-        "symbol", "result", "ret", "vol", "vol_tr", "pnlu", "pnlu_thr", "env_note", "reason",
+        "symbol", "result", "ret", "vol", "tradecnt", "vol_tr", "pnlu", "pnlu_thr", "env_note", "reason",
     ];
     let mut lines = Vec::new();
     lines.push(build_rule(&widths, '┌', '┬', '┐'));
@@ -536,7 +607,7 @@ fn format_mm_open_eval_table(results: &[MmOpenEvalResult]) -> String {
         .map(|(header, width)| pad_cell(header, *width))
         .collect();
     lines.push(format!(
-        "│ {} │ {} │ {} │ {} │ {} │ {} │ {} │ {} │ {} │",
+        "│ {} │ {} │ {} │ {} │ {} │ {} │ {} │ {} │ {} │ {} │",
         header_cells[0],
         header_cells[1],
         header_cells[2],
@@ -546,6 +617,7 @@ fn format_mm_open_eval_table(results: &[MmOpenEvalResult]) -> String {
         header_cells[6],
         header_cells[7],
         header_cells[8],
+        header_cells[9],
     ));
     lines.push(build_rule(&widths, '├', '┼', '┤'));
     for item in results {
@@ -554,16 +626,17 @@ fn format_mm_open_eval_table(results: &[MmOpenEvalResult]) -> String {
             _ => item.result,
         };
         lines.push(format!(
-            "│ {} │ {} │ {} │ {} │ {} │ {} │ {} │ {} │ {} │",
+            "│ {} │ {} │ {} │ {} │ {} │ {} │ {} │ {} │ {} │ {} │",
             pad_cell(&item.symbol, widths[0]),
             pad_cell(signal_hint, widths[1]),
             pad_cell(&format_opt_f64(item.return_score), widths[2]),
             pad_cell(&format_opt_f64(item.volatility), widths[3]),
-            pad_cell(&format_opt_f64(item.vol_tr), widths[4]),
-            pad_cell(&format_opt_f64(item.env_score), widths[5]),
-            pad_cell(&format_opt_f64(item.env_threshold), widths[6]),
-            pad_cell(&item.env_note, widths[7]),
-            pad_cell(&item.reason, widths[8]),
+            pad_cell(&format_opt_f64(item.tradecount), widths[4]),
+            pad_cell(&format_opt_f64(item.vol_tr), widths[5]),
+            pad_cell(&format_opt_f64(item.env_score), widths[6]),
+            pad_cell(&format_opt_f64(item.env_threshold), widths[7]),
+            pad_cell(&item.env_note, widths[8]),
+            pad_cell(&item.reason, widths[9]),
         ));
     }
     lines.push(build_rule(&widths, '└', '┴', '┘'));

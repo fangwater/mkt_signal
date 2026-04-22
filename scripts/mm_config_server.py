@@ -370,7 +370,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         </div>
       </div>
       <div class="hint">
-        `enable_open_cancel` 只控制旧的 return-score MMCancel；`enable_tlen_cancel` 单独控制基于 tlen 的 trigger/query/cancel 链路；`tlen_cancel_freq_ms` 控制 MMCancelTrigger 的发送频率；`enable_return_score_adjust_hegde=false` 时，MM hedge offset 不再被 return score 调整；`enable_environment_model=false` 时 env/pnlu 仍会写入 from_key，但不阻拦开仓；`enable_volatility_limit` 控制是否启用波动率限制下单；`open_volatility_limit` 控制 trade signal / MM 决策侧内联波动率阈值采样使用的分位数；前端布尔项使用下拉框编辑。
+        `enable_open_cancel` 只控制旧的 return-score MMCancel；`enable_tlen_cancel` 单独控制基于 tlen 的 trigger/query/cancel 链路；`tlen_cancel_freq_ms` 控制 MMCancelTrigger 的发送频率；`enable_return_score_adjust_hegde=false` 时，MM hedge offset 不再被 return score 调整；`enable_environment_model=false` 时 env/pnlu 仍会写入 from_key，但不阻拦开仓；`enable_volatility_limit` 控制是否启用波动率限制下单；`open_volatility_limit` 控制 trade signal / MM 决策侧内联波动率阈值采样使用的分位数；`enable_tradecount_limit` / `open_tradecount_limit` 与 vol 用法一致，但读取 trade_flow_feature 的 `count.rolling(30,min_periods=25).mean()` 做 gate，并且仅当 tradecount 大于阈值时允许 open；前端布尔项使用下拉框编辑。
       </div>
       <div class="kv-table" id="strategy-table"></div>
       <div id="strategy-status" class="status"></div>
@@ -671,7 +671,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         const rawValue = values && values[key] !== undefined ? values[key] : (defaults[key] ?? '');
         const useBooleanSelect =
           containerId === 'strategy-table' &&
-          ['prediction_mode', 'enable_open_cancel', 'enable_tlen_cancel', 'enable_return_score_adjust_hegde', 'enable_environment_model', 'enable_volatility_limit'].includes(key) &&
+          ['prediction_mode', 'enable_open_cancel', 'enable_tlen_cancel', 'enable_return_score_adjust_hegde', 'enable_environment_model', 'enable_volatility_limit', 'enable_tradecount_limit'].includes(key) &&
           isBooleanParamValue(rawValue);
         let field;
         if (useBooleanSelect) {
