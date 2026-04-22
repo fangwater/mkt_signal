@@ -263,11 +263,11 @@ pub struct StrategyParams {
     #[serde(default = "default_open_volatility_limit")]
     pub open_volatility_limit: f64,
 
-    /// 是否启用 tradecount 限制下单（仅 MM）
+    /// 是否启用 tradecount 限制下单（仅 MM；count.rolling(30,min_periods=25).mean() > threshold 才允许 open）
     #[serde(default = "default_enable_tradecount_limit")]
     pub enable_tradecount_limit: bool,
 
-    /// tradecount 限制分位数（MM 决策侧内联 rolling tradecount 阈值采样使用）
+    /// tradecount 限制分位数（MM 决策侧对 count.rolling(30,min_periods=25).mean() 做内联阈值采样）
     #[serde(default = "default_open_tradecount_limit")]
     pub open_tradecount_limit: f64,
 
