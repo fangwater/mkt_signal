@@ -43,6 +43,8 @@ const HEDGE_QUERY_WATCHDOG_US: i64 = 30_000;
 const ORDER_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
 const CANCEL_RESEND_THROTTLE_US: i64 = 500_000;
 const NET_EXPOSURE_EPS_USDT: f64 = 5.0;
+const RETIRED_HEDGE_FILL_GRACE_US: i64 = 120_000_000;
+const RETIRED_HEDGE_QUERY_DELAYS_US: [i64; 4] = [10_000_000, 20_000_000, 30_000_000, 60_000_000];
 
 fn qv_decimal_or_fallback(value: f64) -> String {
     QuantizedValue::from_decimal(value)
@@ -80,6 +82,20 @@ struct HedgeOrderMeta {
     price_offset: f64,
 }
 
+#[derive(Debug, Clone)]
+struct RetiredHedgeFillMeta {
+    venue: TradingVenue,
+    symbol: String,
+    side: Side,
+    exchange_order_id: Option<i64>,
+    qty_multiplier: f64,
+    last_known_price: f64,
+    retired_at_us: i64,
+    accounted_cumulative_qty: f64,
+    next_query_due_us: i64,
+    query_attempts: u8,
+}
+
 /// 做市对冲策略（每个 symbol 仅一个实例）
 pub struct MarketMakerHedgeStrategy {
     strategy_id: i32,
@@ -99,6 +115,7 @@ pub struct MarketMakerHedgeStrategy {
     hedge_plan: Vec<HedgePlanOrder>,
     hedge_order_meta: HashMap<i64, HedgeOrderMeta>,
     hedge_order_ids: HashSet<i64>,
+    retired_hedge_fills: HashMap<i64, RetiredHedgeFillMeta>,
     hedge_request_seq: u64,
     pending_hedge_request_seq: Option<u64>,
     alive_flag: bool,
@@ -115,9 +132,25 @@ enum PendingOrderQueryReason {
     OrderWatchdog,
     CancelFailed,
     CancelRejected,
+    RetiredTombstone,
 }
 
 impl MarketMakerHedgeStrategy {
+    fn retired_hedge_query_max_attempts() -> u8 {
+        RETIRED_HEDGE_QUERY_DELAYS_US.len() as u8
+    }
+
+    fn retired_hedge_query_delay_us(sent_attempts: u8) -> i64 {
+        RETIRED_HEDGE_QUERY_DELAYS_US
+            .get(sent_attempts as usize)
+            .copied()
+            .unwrap_or(*RETIRED_HEDGE_QUERY_DELAYS_US.last().unwrap())
+    }
+
+    fn retired_hedge_query_attempts_exhausted(sent_attempts: u8) -> bool {
+        sent_attempts >= Self::retired_hedge_query_max_attempts()
+    }
+
     fn align_final_hedge_qty(raw_qty: f64, step: f64, min_qty: f64) -> (f64, f64) {
         if !raw_qty.is_finite() || raw_qty <= 0.0 {
             return (0.0, 0.0);
@@ -161,6 +194,7 @@ impl MarketMakerHedgeStrategy {
             hedge_plan: Vec::new(),
             hedge_order_meta: HashMap::new(),
             hedge_order_ids: HashSet::new(),
+            retired_hedge_fills: HashMap::new(),
             hedge_request_seq: 0,
             pending_hedge_request_seq: None,
             alive_flag: true,
@@ -194,6 +228,7 @@ impl MarketMakerHedgeStrategy {
             PendingOrderQueryReason::OrderWatchdog => 0,
             PendingOrderQueryReason::CancelFailed => 1,
             PendingOrderQueryReason::CancelRejected => 2,
+            PendingOrderQueryReason::RetiredTombstone => 3,
         }
     }
 
@@ -367,15 +402,230 @@ impl MarketMakerHedgeStrategy {
         );
     }
 
-    fn retire_hedge_order(&mut self, client_order_id: i64, cause: &str) {
+    fn release_hedge_tracking(&mut self, client_order_id: i64, cause: &str, remove_local: bool) {
         self.log_hedge_order_release(cause, client_order_id);
         self.clear_order_query_state(client_order_id);
         self.hedge_order_ids.remove(&client_order_id);
         self.hedge_order_meta.remove(&client_order_id);
         self.cancel_reconcile_query_attempts
             .remove(&client_order_id);
+        if remove_local {
+            if let Some(order_mgr) = MonitorChannel::try_order_manager() {
+                let _ = order_mgr.borrow_mut().remove(client_order_id);
+            }
+        }
+    }
+
+    fn retire_hedge_order(&mut self, client_order_id: i64, cause: &str) {
+        self.release_hedge_tracking(client_order_id, cause, true);
+    }
+
+    fn retire_hedge_order_keep_local(&mut self, client_order_id: i64, cause: &str) {
+        self.release_hedge_tracking(client_order_id, cause, false);
+    }
+
+    fn drop_retired_hedge_fill(&mut self, client_order_id: i64, reason: &str) {
+        if let Some(meta) = self.retired_hedge_fills.remove(&client_order_id) {
+            info!(
+                "MarketMakerHedgeStrategy: strategy_id={} tombstone dropped client_order_id={} venue={:?} symbol={} side={:?} exchange_order_id={:?} reason={}",
+                self.strategy_id,
+                client_order_id,
+                meta.venue,
+                meta.symbol,
+                meta.side,
+                meta.exchange_order_id,
+                reason
+            );
+        }
         if let Some(order_mgr) = MonitorChannel::try_order_manager() {
             let _ = order_mgr.borrow_mut().remove(client_order_id);
+        }
+    }
+
+    fn remember_retired_hedge_fill(&mut self, client_order_id: i64) {
+        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
+            return;
+        };
+        let Some(order) = order_mgr.borrow().get(client_order_id) else {
+            return;
+        };
+        self.retired_hedge_fills.insert(
+            client_order_id,
+            RetiredHedgeFillMeta {
+                venue: order.venue,
+                symbol: order.symbol.clone(),
+                side: order.side,
+                exchange_order_id: order.exchange_order_id,
+                qty_multiplier: order.qty_multiplier,
+                last_known_price: order.price,
+                retired_at_us: get_timestamp_us(),
+                accounted_cumulative_qty: order.cumulative_filled_quantity.max(0.0),
+                next_query_due_us: get_timestamp_us()
+                    .saturating_add(Self::retired_hedge_query_delay_us(0)),
+                query_attempts: 0,
+            },
+        );
+        info!(
+            "MarketMakerHedgeStrategy: strategy_id={} tombstone hedge order client_order_id={} venue={:?} symbol={} side={:?} exchange_order_id={:?} next_query_in_s=10",
+            self.strategy_id,
+            client_order_id,
+            order.venue,
+            order.symbol,
+            order.side,
+            order.exchange_order_id
+        );
+    }
+
+    fn cleanup_expired_retired_hedge_fills(&mut self) {
+        if self.retired_hedge_fills.is_empty() {
+            return;
+        }
+        let now = get_timestamp_us();
+        let expired: Vec<i64> = self
+            .retired_hedge_fills
+            .iter()
+            .filter_map(|(client_order_id, meta)| {
+                if now.saturating_sub(meta.retired_at_us) > RETIRED_HEDGE_FILL_GRACE_US {
+                    Some(*client_order_id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for client_order_id in expired {
+            self.drop_retired_hedge_fill(client_order_id, "grace_expired");
+        }
+    }
+
+    fn try_apply_retired_hedge_terminal_fill(
+        &mut self,
+        client_order_id: i64,
+        exchange_order_id: i64,
+        venue: TradingVenue,
+        symbol: &str,
+        side: Side,
+        cumulative_qty: f64,
+        reported_price: f64,
+        fill_ts: i64,
+    ) -> bool {
+        self.cleanup_expired_retired_hedge_fills();
+
+        let Some(meta) = self.retired_hedge_fills.get_mut(&client_order_id) else {
+            return false;
+        };
+        if meta.venue != venue || meta.symbol != symbol || meta.side != side {
+            return false;
+        }
+        if let Some(expected_order_id) = meta.exchange_order_id {
+            if exchange_order_id > 0 && exchange_order_id != expected_order_id {
+                return false;
+            }
+        }
+        if !cumulative_qty.is_finite() || cumulative_qty <= meta.accounted_cumulative_qty + 1e-12 {
+            return false;
+        }
+
+        let delta_qty = cumulative_qty - meta.accounted_cumulative_qty;
+        meta.accounted_cumulative_qty = cumulative_qty;
+        let qty_multiplier = if meta.qty_multiplier.is_finite() && meta.qty_multiplier > 0.0 {
+            meta.qty_multiplier
+        } else {
+            1.0
+        };
+        let delta_base_qty = delta_qty * qty_multiplier;
+        let signed_qty = match side {
+            Side::Buy => delta_base_qty,
+            Side::Sell => -delta_base_qty,
+        };
+        let fill_price = if reported_price > 0.0 {
+            reported_price
+        } else {
+            meta.last_known_price
+        };
+        self.apply_net_qty_fill(fill_ts, signed_qty, fill_price, "retired_hedge_fill");
+        info!(
+            "MarketMakerHedgeStrategy: strategy_id={} tombstone late fill booked client_order_id={} exchange_order_id={} symbol={} side={:?} delta_qty={:.8} cumulative_qty={:.8}",
+            self.strategy_id,
+            client_order_id,
+            exchange_order_id,
+            symbol,
+            side,
+            delta_qty,
+            cumulative_qty
+        );
+        self.drop_retired_hedge_fill(client_order_id, "late_fill_booked");
+        true
+    }
+
+    fn handle_retired_hedge_fill_queries(&mut self) {
+        self.cleanup_expired_retired_hedge_fills();
+        if self.retired_hedge_fills.is_empty() {
+            return;
+        }
+
+        let now = get_timestamp_us();
+        let mut due: Vec<i64> = self
+            .retired_hedge_fills
+            .iter()
+            .filter_map(|(client_order_id, meta)| {
+                if now >= meta.next_query_due_us {
+                    Some(*client_order_id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        due.sort_unstable();
+
+        for client_order_id in due {
+            let Some(meta_snapshot) = self.retired_hedge_fills.get(&client_order_id).cloned()
+            else {
+                continue;
+            };
+            if Self::retired_hedge_query_attempts_exhausted(meta_snapshot.query_attempts) {
+                self.drop_retired_hedge_fill(client_order_id, "query_exhausted");
+                continue;
+            }
+
+            let reason = PendingOrderQueryReason::RetiredTombstone;
+            let sent = self.send_order_query(client_order_id, reason);
+            let Some(meta) = self.retired_hedge_fills.get_mut(&client_order_id) else {
+                continue;
+            };
+            meta.query_attempts = meta.query_attempts.saturating_add(1);
+            if !Self::retired_hedge_query_attempts_exhausted(meta.query_attempts) {
+                meta.next_query_due_us =
+                    now.saturating_add(Self::retired_hedge_query_delay_us(meta.query_attempts));
+            } else {
+                meta.next_query_due_us = 0;
+            }
+            info!(
+                "MarketMakerHedgeStrategy: strategy_id={} tombstone query retry client_order_id={} attempt={} sent={} venue={:?} symbol={} side={:?} exchange_order_id={:?} next_query_delay_s={}",
+                self.strategy_id,
+                client_order_id,
+                meta.query_attempts,
+                sent,
+                meta.venue,
+                meta.symbol,
+                meta.side,
+                meta.exchange_order_id,
+                if !Self::retired_hedge_query_attempts_exhausted(meta.query_attempts) {
+                    Self::retired_hedge_query_delay_us(meta.query_attempts) / 1_000_000
+                } else {
+                    0
+                }
+            );
+            if Self::retired_hedge_query_attempts_exhausted(meta.query_attempts) {
+                info!(
+                    "MarketMakerHedgeStrategy: strategy_id={} tombstone query reached final retry window client_order_id={} venue={:?} symbol={} side={:?} exchange_order_id={:?}",
+                    self.strategy_id,
+                    client_order_id,
+                    meta.venue,
+                    meta.symbol,
+                    meta.side,
+                    meta.exchange_order_id
+                );
+            }
         }
     }
 
@@ -1242,7 +1492,8 @@ impl MarketMakerHedgeStrategy {
             reason,
             self.hedge_order_trace_snapshot(client_order_id)
         );
-        self.retire_hedge_order(client_order_id, "query_failure_force_terminal");
+        self.remember_retired_hedge_fill(client_order_id);
+        self.retire_hedge_order_keep_local(client_order_id, "query_failure_force_terminal");
 
         warn!(
             "MarketMakerHedgeStrategy: strategy_id={} mark hedge order terminal: client_order_id={} reason={}",
@@ -1251,6 +1502,7 @@ impl MarketMakerHedgeStrategy {
     }
 
     fn handle_order_query_watchdogs(&mut self) {
+        self.cleanup_expired_retired_hedge_fills();
         if self.order_query_watchdogs.is_empty() {
             return;
         }
@@ -1443,6 +1695,9 @@ impl MarketMakerHedgeStrategy {
                 "MarketMakerHedgeStrategy: strategy_id={} send_order_query but local order missing: client_order_id={} reason={:?}",
                 self.strategy_id, client_order_id, reason
             );
+            if reason == PendingOrderQueryReason::RetiredTombstone {
+                self.drop_retired_hedge_fill(client_order_id, "tombstone_local_order_missing");
+            }
             return false;
         };
 
@@ -1694,6 +1949,41 @@ impl MarketMakerHedgeStrategy {
                 }
             }
         }
+    }
+
+    fn handle_retired_hedge_query_result(
+        &mut self,
+        client_order_id: i64,
+        parsed: Option<CompactOrderQueryResp>,
+    ) -> bool {
+        let Some(meta) = self.retired_hedge_fills.get(&client_order_id).cloned() else {
+            return false;
+        };
+        let Some(parsed) = parsed else {
+            return true;
+        };
+        let Some(status) = OrderExecutionStatus::from_u8(parsed.status_u8) else {
+            return true;
+        };
+        if status != OrderExecutionStatus::Filled {
+            return true;
+        }
+
+        let fill_price = if parsed.response_price > 0.0 {
+            parsed.response_price
+        } else {
+            meta.last_known_price
+        };
+        self.try_apply_retired_hedge_terminal_fill(
+            client_order_id,
+            parsed.order_id,
+            meta.venue,
+            &meta.symbol,
+            meta.side,
+            parsed.executed_qty,
+            fill_price,
+            parsed.update_time_ms.saturating_mul(1_000),
+        )
     }
 
     fn send_hedge_orders(&mut self, venue: TradingVenue, symbol: &str) {
@@ -2054,6 +2344,21 @@ impl MarketMakerHedgeStrategy {
         let mut order_manager = order_mgr.borrow_mut();
         let status = order_update.status();
         let Some(current_order) = order_manager.get(client_order_id) else {
+            drop(order_manager);
+            if status.is_finished()
+                && self.try_apply_retired_hedge_terminal_fill(
+                    client_order_id,
+                    order_update.order_id(),
+                    order_update.trading_venue(),
+                    order_update.symbol(),
+                    order_update.side(),
+                    order_update.cumulative_filled_quantity(),
+                    order_update.price(),
+                    order_update.event_time(),
+                )
+            {
+                return true;
+            }
             warn!(
                 "MarketMakerHedgeStrategy: strategy_id={} order update not found client_order_id={}",
                 self.strategy_id, client_order_id
@@ -2181,7 +2486,7 @@ impl MarketMakerHedgeStrategy {
                 order_update.symbol(),
                 filled_qty,
             );
-            self.apply_tracked_hedge_fill_cumulative(
+            let applied = self.apply_tracked_hedge_fill_cumulative(
                 client_order_id,
                 order_update.event_time(),
                 order_update.side(),
@@ -2189,6 +2494,18 @@ impl MarketMakerHedgeStrategy {
                 fill_price,
                 "hedge_fill",
             );
+            if !applied {
+                let _ = self.try_apply_retired_hedge_terminal_fill(
+                    client_order_id,
+                    order_update.order_id(),
+                    order_update.trading_venue(),
+                    order_update.symbol(),
+                    order_update.side(),
+                    filled_qty,
+                    fill_price,
+                    order_update.event_time(),
+                );
+            }
             self.retire_hedge_order(client_order_id, "order_update_finished");
             if was_tracked && filled_qty <= 0.0 && status == OrderStatus::Canceled {
                 debug!(
@@ -2227,6 +2544,21 @@ impl MarketMakerHedgeStrategy {
         let order_mgr = MonitorChannel::instance().order_manager();
         let mut order_manager = order_mgr.borrow_mut();
         let Some(current_order) = order_manager.get(client_order_id) else {
+            drop(order_manager);
+            if status == OrderStatus::Filled
+                && self.try_apply_retired_hedge_terminal_fill(
+                    client_order_id,
+                    trade.order_id(),
+                    trade.trading_venue(),
+                    trade.symbol(),
+                    trade.side(),
+                    trade.cumulative_filled_quantity(),
+                    trade.price(),
+                    trade.event_time(),
+                )
+            {
+                return true;
+            }
             warn!(
                 "MarketMakerHedgeStrategy: strategy_id={} trade update order missing client_order_id={}",
                 self.strategy_id, client_order_id
@@ -2300,7 +2632,7 @@ impl MarketMakerHedgeStrategy {
             trade.symbol(),
             cumulative_qty,
         );
-        self.apply_tracked_hedge_fill_cumulative(
+        let applied = self.apply_tracked_hedge_fill_cumulative(
             client_order_id,
             event_time,
             trade.side(),
@@ -2308,6 +2640,18 @@ impl MarketMakerHedgeStrategy {
             fill_price,
             "hedge_fill",
         );
+        if !applied {
+            let _ = self.try_apply_retired_hedge_terminal_fill(
+                client_order_id,
+                trade.order_id(),
+                trade.trading_venue(),
+                trade.symbol(),
+                trade.side(),
+                cumulative_qty,
+                fill_price,
+                event_time,
+            );
+        }
         self.retire_hedge_order(client_order_id, "trade_update_filled");
 
         true
@@ -2337,9 +2681,12 @@ impl MarketMakerHedgeStrategy {
 #[cfg(test)]
 mod tests {
     use super::{
-        HedgeOrderMeta, MarketMakerHedgeStrategy, PendingOrderQueryReason, NET_EXPOSURE_EPS_USDT,
+        HedgeOrderMeta, MarketMakerHedgeStrategy, PendingOrderQueryReason, RetiredHedgeFillMeta,
+        NET_EXPOSURE_EPS_USDT,
     };
+    use crate::common::time_util::get_timestamp_us;
     use crate::pre_trade::order_manager::Side;
+    use crate::signal::common::TradingVenue;
 
     #[test]
     fn zero_net_exposure_does_not_send_hedge_query() {
@@ -2368,6 +2715,9 @@ mod tests {
         assert!(!MarketMakerHedgeStrategy::is_cancel_reconcile_reason(
             PendingOrderQueryReason::OrderWatchdog
         ));
+        assert!(!MarketMakerHedgeStrategy::is_cancel_reconcile_reason(
+            PendingOrderQueryReason::RetiredTombstone
+        ));
     }
 
     #[test]
@@ -2393,6 +2743,43 @@ mod tests {
             ),
             PendingOrderQueryReason::CancelRejected
         );
+        assert_eq!(
+            MarketMakerHedgeStrategy::stronger_pending_query_reason(
+                PendingOrderQueryReason::CancelRejected,
+                PendingOrderQueryReason::RetiredTombstone,
+            ),
+            PendingOrderQueryReason::RetiredTombstone
+        );
+    }
+
+    #[test]
+    fn retired_tombstone_query_backoff_matches_requested_progression() {
+        assert_eq!(
+            MarketMakerHedgeStrategy::retired_hedge_query_max_attempts(),
+            4
+        );
+        assert_eq!(
+            MarketMakerHedgeStrategy::retired_hedge_query_delay_us(0),
+            10_000_000
+        );
+        assert_eq!(
+            MarketMakerHedgeStrategy::retired_hedge_query_delay_us(1),
+            20_000_000
+        );
+        assert_eq!(
+            MarketMakerHedgeStrategy::retired_hedge_query_delay_us(2),
+            30_000_000
+        );
+        assert_eq!(
+            MarketMakerHedgeStrategy::retired_hedge_query_delay_us(3),
+            60_000_000
+        );
+        assert_eq!(
+            MarketMakerHedgeStrategy::retired_hedge_query_delay_us(4),
+            60_000_000
+        );
+        assert!(!MarketMakerHedgeStrategy::retired_hedge_query_attempts_exhausted(3));
+        assert!(MarketMakerHedgeStrategy::retired_hedge_query_attempts_exhausted(4));
     }
 
     #[test]
@@ -2505,6 +2892,63 @@ mod tests {
         assert_eq!(strategy.net_qty_queue.net_qty(), -5.0);
         assert_eq!(strategy.net_qty_queue.len(), 1);
         assert_eq!(strategy.weighted_inventory_price(), 2500.0);
+
+        std::mem::forget(strategy);
+    }
+
+    #[test]
+    fn retired_hedge_terminal_fill_books_only_exact_matching_order_once() {
+        let mut strategy = MarketMakerHedgeStrategy::new(1, "RAVEUSDT".to_string());
+        let client_order_id = 42_i64;
+        strategy.retired_hedge_fills.insert(
+            client_order_id,
+            RetiredHedgeFillMeta {
+                venue: TradingVenue::BitgetFutures,
+                symbol: "RAVEUSDT".to_string(),
+                side: Side::Buy,
+                exchange_order_id: Some(12345),
+                qty_multiplier: 1.0,
+                last_known_price: 1.3670,
+                retired_at_us: get_timestamp_us(),
+                accounted_cumulative_qty: 0.0,
+                next_query_due_us: get_timestamp_us().saturating_add(10_000_000),
+                query_attempts: 0,
+            },
+        );
+
+        assert!(strategy.try_apply_retired_hedge_terminal_fill(
+            client_order_id,
+            12345,
+            TradingVenue::BitgetFutures,
+            "RAVEUSDT",
+            Side::Buy,
+            216.0,
+            1.38445,
+            200,
+        ));
+        assert_eq!(strategy.net_qty, 216.0);
+        assert!(!strategy.try_apply_retired_hedge_terminal_fill(
+            client_order_id,
+            12345,
+            TradingVenue::BitgetFutures,
+            "RAVEUSDT",
+            Side::Buy,
+            216.0,
+            1.38445,
+            201,
+        ));
+        assert_eq!(strategy.net_qty, 216.0);
+        assert!(!strategy.try_apply_retired_hedge_terminal_fill(
+            client_order_id,
+            99999,
+            TradingVenue::BitgetFutures,
+            "RAVEUSDT",
+            Side::Buy,
+            300.0,
+            1.40000,
+            202,
+        ));
+        assert_eq!(strategy.net_qty, 216.0);
 
         std::mem::forget(strategy);
     }
@@ -2630,6 +3074,54 @@ impl Strategy for MarketMakerHedgeStrategy {
             return;
         };
         self.order_query_watchdogs.remove(&client_order_id);
+        if reason == PendingOrderQueryReason::RetiredTombstone {
+            let body = response.body_bytes().as_ref();
+            let has_any_byte = body.iter().any(|&b| b != 0);
+            let actual_len = body
+                .iter()
+                .rposition(|&b| b != 0)
+                .map(|pos| pos + 1)
+                .unwrap_or(0);
+            if !has_any_byte {
+                info!(
+                    "MarketMakerHedgeStrategy: strategy_id={} tombstone query empty client_order_id={} req_type={}",
+                    self.strategy_id,
+                    client_order_id,
+                    response.req_type()
+                );
+                return;
+            }
+            if is_order_query_not_found_marker(&body[..actual_len]) {
+                info!(
+                    "MarketMakerHedgeStrategy: strategy_id={} tombstone query not_found client_order_id={} req_type={}",
+                    self.strategy_id,
+                    client_order_id,
+                    response.req_type()
+                );
+                return;
+            }
+            if actual_len == 1 && body[0] == b'E' {
+                info!(
+                    "MarketMakerHedgeStrategy: strategy_id={} tombstone query error_marker client_order_id={} req_type={}",
+                    self.strategy_id,
+                    client_order_id,
+                    response.req_type()
+                );
+                return;
+            }
+            let parsed = Self::parse_compact_order_query_resp(response.body_bytes());
+            if parsed.is_none() {
+                info!(
+                    "MarketMakerHedgeStrategy: strategy_id={} tombstone query decode_failed client_order_id={} req_type={}",
+                    self.strategy_id,
+                    client_order_id,
+                    response.req_type()
+                );
+                return;
+            }
+            let _ = self.handle_retired_hedge_query_result(client_order_id, parsed);
+            return;
+        }
         let is_cancel_reconcile = Self::is_cancel_reconcile_reason(reason);
 
         let body = response.body_bytes().as_ref();
@@ -2737,6 +3229,7 @@ impl Strategy for MarketMakerHedgeStrategy {
             self.handle_query_timer();
             self.handle_query_watchdog();
             self.handle_order_query_watchdogs();
+            self.handle_retired_hedge_fill_queries();
         }
     }
 
