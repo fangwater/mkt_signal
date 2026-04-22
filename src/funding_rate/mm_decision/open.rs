@@ -1,5 +1,8 @@
 use anyhow::Result;
 use log::{info, warn};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use super::super::factor_value_hub::EnvironmentSignalResult;
 use super::super::inline_volatility::INLINE_VOLATILITY_MIN_SAMPLES;
@@ -15,6 +18,12 @@ use crate::symbol_match::normalize_symbol_for_whitelist;
 
 const MM_NEUTRAL_RETURN_SCORE: f64 = 0.0;
 const MM_NEUTRAL_RETURN_QUANTILE: f64 = 0.5;
+const MISSING_RETURN_SCORE_LOG_INTERVAL_SECS: u64 = 30;
+
+thread_local! {
+    static MM_OPEN_MISSING_RETURN_SCORE_LAST_LOG_AT: RefCell<HashMap<String, Instant>> =
+        RefCell::new(HashMap::new());
+}
 
 pub(crate) struct MmOpenDecision {
     _private: (),
@@ -62,6 +71,30 @@ fn resolve_mm_open_return_quantile(
         return Some(MM_NEUTRAL_RETURN_QUANTILE);
     }
     score_quantile.filter(|v| v.is_finite())
+}
+
+fn should_fallback_to_neutral_return_score(score: Option<f64>, volatility: Option<f64>) -> bool {
+    volatility.filter(|v| v.is_finite()).is_some() && score.filter(|v| v.is_finite()).is_none()
+}
+
+fn should_log_missing_return_score(symbol: &str, service_name: &str, note: &str) -> bool {
+    let now = Instant::now();
+    let key = format!("{symbol}|{service_name}|{note}");
+    MM_OPEN_MISSING_RETURN_SCORE_LAST_LOG_AT.with(|last_log_at| {
+        let mut last_log_at = last_log_at.borrow_mut();
+        match last_log_at.get(&key) {
+            Some(last)
+                if now.duration_since(*last)
+                    < Duration::from_secs(MISSING_RETURN_SCORE_LOG_INTERVAL_SECS) =>
+            {
+                false
+            }
+            _ => {
+                last_log_at.insert(key, now);
+                true
+            }
+        }
+    })
 }
 
 impl MmOpenDecision {
@@ -163,6 +196,18 @@ impl MmOpenDecision {
                 symbol,
                 state.hedge_venue,
             );
+            if should_fallback_to_neutral_return_score(score_lookup.score, Some(volatility))
+                && should_log_missing_return_score(&symbol_key, &service_name, &score_lookup.note)
+            {
+                warn!(
+                    "MmDecision: MMOpen missing return_score, fallback to neutral symbol={} service={} note={} volatility={:.8} return_qtl={:.2}",
+                    symbol_key,
+                    service_name,
+                    score_lookup.note,
+                    volatility,
+                    MM_NEUTRAL_RETURN_QUANTILE
+                );
+            }
             let return_qtl = resolve_mm_open_return_quantile(
                 state.prediction_mode,
                 score_lookup.score,

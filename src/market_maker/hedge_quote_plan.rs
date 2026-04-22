@@ -9,10 +9,19 @@ use crate::pre_trade::order_manager::Side;
 use crate::signal::common::TradingVenue;
 use crate::signal::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
-use log::debug;
+use log::{debug, warn};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 const MM_NEUTRAL_SIGNAL: f64 = 0.0;
 const MM_NEUTRAL_SIGNAL_QUANTILE: f64 = 0.5;
+const MISSING_HEDGE_SCORE_LOG_INTERVAL_SECS: u64 = 30;
+
+thread_local! {
+    static MM_HEDGE_MISSING_SCORE_LAST_LOG_AT: RefCell<HashMap<String, Instant>> =
+        RefCell::new(HashMap::new());
+}
 
 pub struct MmHedgeBuildInput<'a> {
     pub venue: TradingVenue,
@@ -89,6 +98,19 @@ pub fn resolve_mm_hedge_signal_inputs(
             )
         })?;
     let signal = if enable_return_score_adjust_hedge {
+        if score_lookup.score.filter(|v| v.is_finite()).is_none()
+            && should_log_missing_hedge_score(symbol, &score_lookup.service_name, &score_lookup.note)
+        {
+            warn!(
+                "MmDecision: MMHedge missing return_score, fallback to neutral symbol={} venue={:?} service={} note={} volatility={:.8} signal_qtl={:.2}",
+                symbol,
+                venue,
+                score_lookup.service_name,
+                score_lookup.note,
+                volatility,
+                MM_NEUTRAL_SIGNAL_QUANTILE
+            );
+        }
         resolve_mm_hedge_effective_signal(
             enable_return_score_adjust_hedge,
             score_lookup.score,
@@ -106,6 +128,26 @@ pub fn resolve_mm_hedge_signal_inputs(
         Some(volatility),
     );
     Ok((signal, signal_qtl, volatility))
+}
+
+fn should_log_missing_hedge_score(symbol: &str, service_name: &str, note: &str) -> bool {
+    let now = Instant::now();
+    let key = format!("{symbol}|{service_name}|{note}");
+    MM_HEDGE_MISSING_SCORE_LAST_LOG_AT.with(|last_log_at| {
+        let mut last_log_at = last_log_at.borrow_mut();
+        match last_log_at.get(&key) {
+            Some(last)
+                if now.duration_since(*last)
+                    < Duration::from_secs(MISSING_HEDGE_SCORE_LOG_INTERVAL_SECS) =>
+            {
+                false
+            }
+            _ => {
+                last_log_at.insert(key, now);
+                true
+            }
+        }
+    })
 }
 
 fn resolve_mm_hedge_effective_signal(
