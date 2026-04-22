@@ -10,11 +10,11 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::common::mkt_msg::FactorValueMsg;
+use crate::common::trade_flow_feature_msg::{
+    TRADE_FLOW_FEATURE_HISTORY_SIZE, TRADE_FLOW_FEATURE_MAX_BYTES,
+};
 use crate::factor_pub::factor_index::{factor_name_to_channel, factor_name_to_index};
-
-pub const TRADE_FLOW_FEATURE_MAX_BYTES: usize = 1024;
 const SUBSCRIBER_MAX_BUFFER_SIZE: usize = 8192;
-const HISTORY_SIZE: usize = 128;
 const PUBLISH_GAP_ERROR_THRESHOLD: Duration = Duration::from_secs(6);
 const EXCEED_SUMMARY_LOG_INTERVAL: Duration = Duration::from_secs(60);
 const RL_FACTOR_NAME: &str = "rl_return_volatility";
@@ -179,7 +179,7 @@ impl TradeFlowFeaturePublisher {
             .publish_subscribe::<[u8; TRADE_FLOW_FEATURE_MAX_BYTES]>()
             .max_publishers(1)
             .max_subscribers(10)
-            .history_size(HISTORY_SIZE)
+            .history_size(TRADE_FLOW_FEATURE_HISTORY_SIZE)
             .subscriber_max_buffer_size(SUBSCRIBER_MAX_BUFFER_SIZE)
             .open_or_create()?;
 

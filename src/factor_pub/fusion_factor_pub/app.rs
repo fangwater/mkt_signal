@@ -43,15 +43,14 @@ use crate::common::msg_parser::parse_trade_flow_feature;
 use crate::common::rolling_welford::RollingWelfordCovariance;
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::trade_flow_feature_msg::{
-    TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_DIM, TRADE_FLOW_FEATURE_MSG_TYPE,
+    TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_DIM, TRADE_FLOW_FEATURE_HISTORY_SIZE,
+    TRADE_FLOW_FEATURE_MAX_BYTES, TRADE_FLOW_FEATURE_MSG_TYPE,
 };
 use crate::signal::common::TradingVenue;
 
-const TRADE_FLOW_MAX_BYTES: usize = 1024;
 const IDLE_SLEEP_MICROS: u64 = 200;
 const STATS_LOG_INTERVAL_SECS: u64 = 60;
 const TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE: usize = 8192;
-const TRADE_FLOW_SERVICE_HISTORY_SIZE: usize = 128;
 const TRADE_FLOW_MAX_SUBSCRIBERS: usize = 10;
 const TRADE_FLOW_FEATURE_CF_SUFFIX: &str = "trade_flow:feature";
 const ROCKSDB_BOOTSTRAP_LOG_EVERY: usize = 12 * 60 * 4;
@@ -771,7 +770,7 @@ pub struct FusionFactorPubApp {
     venue: TradingVenue,
     bootstrap_enabled: bool,
     trade_flow_feature_rocksdb_path: String,
-    trade_flow_subscriber: Subscriber<ipc::Service, [u8; TRADE_FLOW_MAX_BYTES], ()>,
+    trade_flow_subscriber: Subscriber<ipc::Service, [u8; TRADE_FLOW_FEATURE_MAX_BYTES], ()>,
     tlen_server: Option<TlenServerConfig>,
     publisher: Option<FusionFactorPublisher>,
     zscore_config: ZscoreRuntimeConfig,
@@ -932,7 +931,7 @@ impl FusionFactorPubApp {
     fn create_trade_flow_subscriber(
         venue: &str,
         channel: &str,
-    ) -> Result<Subscriber<ipc::Service, [u8; TRADE_FLOW_MAX_BYTES], ()>> {
+    ) -> Result<Subscriber<ipc::Service, [u8; TRADE_FLOW_FEATURE_MAX_BYTES], ()>> {
         let node_name = format!("fusion_sub_{}_trade_flow", venue.replace('-', "_"));
         let node = NodeBuilder::new()
             .name(&NodeName::new(&node_name)?)
@@ -941,11 +940,11 @@ impl FusionFactorPubApp {
         let service_name = format!("factor_pub/{}/{}", venue, channel);
         let service = node
             .service_builder(&ServiceName::new(&service_name)?)
-            .publish_subscribe::<[u8; TRADE_FLOW_MAX_BYTES]>()
+            .publish_subscribe::<[u8; TRADE_FLOW_FEATURE_MAX_BYTES]>()
             .max_publishers(1)
             .max_subscribers(TRADE_FLOW_MAX_SUBSCRIBERS)
             .subscriber_max_buffer_size(TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE)
-            .history_size(TRADE_FLOW_SERVICE_HISTORY_SIZE)
+            .history_size(TRADE_FLOW_FEATURE_HISTORY_SIZE)
             .open_or_create()?;
         let service_max_buffer = service.static_config().subscriber_max_buffer_size();
         let service_history = service.static_config().history_size();

@@ -5,6 +5,8 @@ use crate::common::mkt_msg::MktMsgType;
 
 pub const TRADE_FLOW_FEATURE_MSG_TYPE: u32 = MktMsgType::TradeFlowFeature as u32;
 pub const TRADE_FLOW_FEATURE_DIM: usize = 32;
+pub const TRADE_FLOW_FEATURE_MAX_BYTES: usize = 1024;
+pub const TRADE_FLOW_FEATURE_HISTORY_SIZE: usize = 128;
 
 pub const TRADE_FLOW_FEATURE_FIELD_NAMES: [&str; TRADE_FLOW_FEATURE_DIM] = [
     "open",
@@ -288,7 +290,7 @@ mod tests {
         let values: Vec<f64> = (0..(TRADE_FLOW_FEATURE_DIM + 80))
             .map(|i| i as f64 * 0.01 + 7.0)
             .collect();
-        // len=8, which triggers non-8-aligned tail when wrapped in fixed 1024-byte IPC payload.
+        // len=8, which triggers non-8-aligned tail when wrapped in fixed-size IPC payload.
         let original = TradeFlowFeatureMsg::from_indexed_values(
             "BTCUSDTM".to_string(),
             2,
@@ -298,7 +300,7 @@ mod tests {
         .expect("build message");
         let bytes = original.to_bytes().expect("serialize");
 
-        let mut fixed = [0u8; 1024];
+        let mut fixed = [0u8; TRADE_FLOW_FEATURE_MAX_BYTES];
         fixed[..bytes.len()].copy_from_slice(bytes.as_ref());
 
         let parsed = TradeFlowFeatureMsg::from_bytes(&fixed).expect("parse padded payload");

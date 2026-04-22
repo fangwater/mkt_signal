@@ -15,7 +15,9 @@ use crate::common::model_ipc::MODEL_PAYLOAD_MAX_BYTES;
 use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::time_util::get_timestamp_us;
-use crate::common::trade_flow_feature_msg::TradeFlowFeatureMsg;
+use crate::common::trade_flow_feature_msg::{
+    TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_HISTORY_SIZE, TRADE_FLOW_FEATURE_MAX_BYTES,
+};
 use crate::factor_pub::factor_index::{factor_name_to_channel, factor_name_to_index};
 use crate::funding_rate::inline_volatility::{
     observe_inline_tradecount, observe_inline_volatility, InlineVolatilitySnapshot,
@@ -30,7 +32,6 @@ const MODEL_OUTPUT_POLL_MAX_PER_CHANNEL: usize = 256;
 const MODEL_OUTPUT_STATS_LOG_INTERVAL_SECS: u64 = 60;
 const DEFAULT_PNLU_MAX_AGE_SECS: i64 = 30 * 60;
 const FACTOR_VALUE_ISSUE_LOG_INTERVAL_SECS: u64 = 10;
-const TRADE_FLOW_FEATURE_PAYLOAD_MAX_BYTES: usize = 2048;
 const TRADE_FLOW_FEATURE_SUBSCRIBER_BUFFER_SIZE: usize = 1024;
 const TRADE_FLOW_FEATURE_COUNT_INDEX: usize = 7;
 const TRADECOUNT_ROLLING_MEAN_WINDOW: usize = 30;
@@ -210,7 +211,7 @@ pub struct FactorValueHub {
     factor_value_service_name: String,
     factor_value_max_age_ms: i64,
     factor_value_sub: Subscriber<ipc::Service, [u8; FACTOR_VALUE_PAYLOAD_MAX_BYTES], ()>,
-    trade_flow_feature_sub: Subscriber<ipc::Service, [u8; TRADE_FLOW_FEATURE_PAYLOAD_MAX_BYTES], ()>,
+    trade_flow_feature_sub: Subscriber<ipc::Service, [u8; TRADE_FLOW_FEATURE_MAX_BYTES], ()>,
     factor_value_cache: HashMap<(u16, String), FactorValueSnapshot>,
     last_valid_factor_value_cache: HashMap<(u16, String), FactorValueSnapshot>,
     tradecount_windows: HashMap<String, VecDeque<f64>>,
@@ -346,14 +347,14 @@ impl FactorValueHub {
     fn create_trade_flow_feature_subscriber(
         node: &Node<ipc::Service>,
         venue: TradingVenue,
-    ) -> Result<Subscriber<ipc::Service, [u8; TRADE_FLOW_FEATURE_PAYLOAD_MAX_BYTES], ()>> {
+    ) -> Result<Subscriber<ipc::Service, [u8; TRADE_FLOW_FEATURE_MAX_BYTES], ()>> {
         let service_name = format!("factor_pub/{}/trade_flow_feature", venue.data_pub_slug());
         let service = node
             .service_builder(&ServiceName::new(&service_name)?)
-            .publish_subscribe::<[u8; TRADE_FLOW_FEATURE_PAYLOAD_MAX_BYTES]>()
+            .publish_subscribe::<[u8; TRADE_FLOW_FEATURE_MAX_BYTES]>()
             .max_publishers(1)
             .max_subscribers(10)
-            .history_size(256)
+            .history_size(TRADE_FLOW_FEATURE_HISTORY_SIZE)
             .subscriber_max_buffer_size(TRADE_FLOW_FEATURE_SUBSCRIBER_BUFFER_SIZE)
             .open()
             .with_context(|| {

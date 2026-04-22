@@ -209,11 +209,11 @@ impl MmOpenDecision {
                 ));
             };
             if let Some(current_tradecount) = tradecount.filter(|v| v.is_finite()) {
-                if current_tradecount <= tradecount_threshold {
+                if current_tradecount >= tradecount_threshold {
                     return Ok(MmOpenEvalResult::skipped(
                         &symbol_key,
                         &format!(
-                            "tradecount_blocked(current={:.8}<=threshold={:.8},samples={},percentile={:.2},last_recompute_tp_ms={})",
+                            "tradecount_blocked(current={:.8}>=threshold={:.8},samples={},percentile={:.2},last_recompute_tp_ms={})",
                             current_tradecount,
                             tradecount_threshold,
                             tradecount_snapshot.sample_count,

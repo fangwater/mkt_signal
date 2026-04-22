@@ -5,7 +5,9 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use mkt_signal::common::redis_client::RedisSettings;
 use mkt_signal::common::symbol_util::normalize_symbol_for_venue;
-use mkt_signal::common::trade_flow_feature_msg::TradeFlowFeatureMsg;
+use mkt_signal::common::trade_flow_feature_msg::{
+    TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_HISTORY_SIZE, TRADE_FLOW_FEATURE_MAX_BYTES,
+};
 use mkt_signal::factor_pub::factor_index::factor_name_to_channel;
 use mkt_signal::factor_pub::rl_vol::compute_rl_return_volatility;
 use mkt_signal::factor_pub::trade_flow_feature_pub::cfg::TradeFlowFeaturePubConfig;
@@ -18,9 +20,7 @@ use std::time::Duration;
 const PROCESS_NAME: &str = "inspect_rl_vol";
 const TARGET_FACTOR_NAME: &str = "rl_return_volatility";
 const TRADE_FLOW_CHANNEL: &str = "trade_flow_feature";
-const TRADE_FLOW_MAX_BYTES: usize = 1024;
 const TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE: usize = 8192;
-const TRADE_FLOW_SERVICE_HISTORY_SIZE: usize = 128;
 const TRADE_FLOW_MAX_SUBSCRIBERS: usize = 10;
 const FIELD_CLOSE: usize = 3;
 const MAX_CLOSE_HISTORY: usize = 4096;
@@ -121,22 +121,22 @@ fn infer_raw_from_published(value: f64, scale_factor: f64) -> String {
 fn create_trade_flow_subscriber(
     node: &Node<ipc::Service>,
     venue_slug: &str,
-) -> Result<Subscriber<ipc::Service, [u8; TRADE_FLOW_MAX_BYTES], ()>> {
+) -> Result<Subscriber<ipc::Service, [u8; TRADE_FLOW_FEATURE_MAX_BYTES], ()>> {
     let service_name = format!("factor_pub/{}/{}", venue_slug, TRADE_FLOW_CHANNEL);
     let service = node
         .service_builder(&ServiceName::new(&service_name)?)
-        .publish_subscribe::<[u8; TRADE_FLOW_MAX_BYTES]>()
+        .publish_subscribe::<[u8; TRADE_FLOW_FEATURE_MAX_BYTES]>()
         .max_publishers(1)
         .max_subscribers(TRADE_FLOW_MAX_SUBSCRIBERS)
         .subscriber_max_buffer_size(TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE)
-        .history_size(TRADE_FLOW_SERVICE_HISTORY_SIZE)
+        .history_size(TRADE_FLOW_FEATURE_HISTORY_SIZE)
         .open_or_create()?;
 
     Ok(service.subscriber_builder().create()?)
 }
 
 fn poll_raw_vol_state(
-    subscriber: &Subscriber<ipc::Service, [u8; TRADE_FLOW_MAX_BYTES], ()>,
+    subscriber: &Subscriber<ipc::Service, [u8; TRADE_FLOW_FEATURE_MAX_BYTES], ()>,
     hedge_venue: TradingVenue,
     target_symbol: &str,
     closes: &mut VecDeque<f64>,
