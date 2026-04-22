@@ -578,8 +578,12 @@ impl GateAccountEventParser {
                 _ => size.abs(),
             } as f32;
 
-            let position_msg =
-                BasicPositionMsg::create(timestamp, inst_id.clone(), position_side, position_amount);
+            let position_msg = BasicPositionMsg::create(
+                timestamp,
+                inst_id.clone(),
+                position_side,
+                position_amount,
+            );
             let position_event = BasicAccountEventMsg::create(
                 BasicAccountEventType::PositionUpdate,
                 BasicAccountScope::GateUnified,
@@ -596,8 +600,7 @@ impl GateAccountEventParser {
                     .or_else(|| row.get("unrealizedPnl"))
                     .or_else(|| row.get("upl")),
             ) {
-                let pnl_msg =
-                    BasicUmUnrealizedMsg::create(timestamp, inst_id, position_side, pnl);
+                let pnl_msg = BasicUmUnrealizedMsg::create(timestamp, inst_id, position_side, pnl);
                 let pnl_event = BasicAccountEventMsg::create(
                     BasicAccountEventType::UnrealizedPnlUpdate,
                     BasicAccountScope::GateUnified,

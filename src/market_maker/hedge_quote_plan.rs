@@ -99,7 +99,11 @@ pub fn resolve_mm_hedge_signal_inputs(
         })?;
     let signal = if enable_return_score_adjust_hedge {
         if score_lookup.score.filter(|v| v.is_finite()).is_none()
-            && should_log_missing_hedge_score(symbol, &score_lookup.service_name, &score_lookup.note)
+            && should_log_missing_hedge_score(
+                symbol,
+                &score_lookup.service_name,
+                &score_lookup.note,
+            )
         {
             warn!(
                 "MmDecision: MMHedge missing return_score, fallback to neutral symbol={} venue={:?} service={} note={} volatility={:.8} signal_qtl={:.2}",

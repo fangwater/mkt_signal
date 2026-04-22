@@ -10,10 +10,10 @@ use tokio::signal::unix::{signal as unix_signal, SignalKind};
 use tokio::time::{self, Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
-use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::common::exchange::Exchange;
 use mkt_signal::common::iceoryx_publisher::configure_signal_publish_dry_run;
 use mkt_signal::common::redis_client::RedisSettings;
+use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::signal::common::TradingVenue;
 
 // 使用模块化的 funding_rate

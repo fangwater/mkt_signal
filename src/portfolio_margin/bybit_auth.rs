@@ -93,6 +93,13 @@ pub fn build_execution_subscribe_message() -> serde_json::Value {
     })
 }
 
+pub fn build_fast_execution_subscribe_message() -> serde_json::Value {
+    serde_json::json!({
+        "op": "subscribe",
+        "args": ["execution.fast"]
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,5 +118,12 @@ mod tests {
         let msg = creds.build_auth_message();
         assert_eq!(msg["op"], "auth");
         assert_eq!(msg["args"].as_array().map(|v| v.len()), Some(3));
+    }
+
+    #[test]
+    fn fast_execution_subscribe_message_shape() {
+        let msg = build_fast_execution_subscribe_message();
+        assert_eq!(msg["op"], "subscribe");
+        assert_eq!(msg["args"][0], "execution.fast");
     }
 }

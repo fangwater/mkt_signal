@@ -25,12 +25,12 @@ use mkt_signal::portfolio_margin::bitget_auth::{
 };
 use mkt_signal::portfolio_margin::bitget_user_stream::BitgetUserDataConnection;
 use mkt_signal::portfolio_margin::pm_forwarder::PmForwarder;
+use mkt_signal::trade_engine::query_parsers::bitget_account_balance_snapshot::parse_bitget_account_balance_snapshot;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::net::IpAddr;
 use std::time::Duration;
-use mkt_signal::trade_engine::query_parsers::bitget_account_balance_snapshot::parse_bitget_account_balance_snapshot;
 use tokio::signal;
 use tokio::sync::{broadcast, watch};
 

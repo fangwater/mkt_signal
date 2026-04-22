@@ -179,7 +179,8 @@ pub async fn fetch_borrow_interest(
             continue;
         }
         let interest = parse_f64_value(row.get("interest")).unwrap_or(0.0).abs();
-        let ts = parse_i64_value(row.get("create_time")).unwrap_or_else(|| Utc::now().timestamp_millis());
+        let ts = parse_i64_value(row.get("create_time"))
+            .unwrap_or_else(|| Utc::now().timestamp_millis());
         match interest_by_symbol.get(&symbol) {
             Some((_, existing_ts)) if *existing_ts > ts => {}
             _ => {

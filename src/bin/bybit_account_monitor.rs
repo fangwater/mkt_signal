@@ -13,6 +13,7 @@ use log::{debug, error, info, warn};
 use mkt_signal::common::basic_account_msg::{
     split_basic_account_event, BasicAccountEventMsg, BasicAccountEventType, BasicAccountScope,
     BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
+    BinanceTradeLiteMsg,
 };
 use mkt_signal::common::bybit_account_msg::BybitBasicOrderMsg;
 use mkt_signal::common::mkt_cfg::load_local_ips_preferring_trade_engine;
@@ -20,7 +21,8 @@ use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::bybit_account_event_parser::BybitAccountEventParser;
 use mkt_signal::parser::default_parser::Parser;
 use mkt_signal::portfolio_margin::bybit_auth::{
-    build_order_subscribe_message, build_position_subscribe_message,
+    build_fast_execution_subscribe_message, build_order_subscribe_message,
+    build_position_subscribe_message,
     build_wallet_subscribe_message, BybitCredentials, BybitPrivateWsUrls,
 };
 use mkt_signal::portfolio_margin::bybit_user_stream::BybitUserDataConnection;
@@ -85,6 +87,7 @@ async fn main() -> Result<()> {
         build_wallet_subscribe_message(),
         build_position_subscribe_message(),
         build_order_subscribe_message(),
+        build_fast_execution_subscribe_message(),
     ];
 
     let (evt_tx, mut evt_rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
@@ -559,6 +562,25 @@ fn log_parsed_event(msg: &Bytes) {
                     m.symbol,
                     m.borrowed,
                     m.interest
+                );
+            }
+        }
+        BasicAccountEventType::TradeUpdateLite => {
+            if let Ok(m) = BinanceTradeLiteMsg::from_bytes(&payload) {
+                info!(
+                    "Bybit TradeUpdateLite: scope={} venue={} ts={} trade_ts={} symbol={} oid={} cloid={} trade_id={} side={} maker={} last_px={} last_qty={}",
+                    account_scope.as_str(),
+                    m.venue,
+                    m.event_time,
+                    m.trade_time,
+                    m.symbol,
+                    m.order_id,
+                    m.client_order_id,
+                    m.trade_id,
+                    m.side,
+                    m.is_maker,
+                    m.last_executed_price,
+                    m.last_executed_quantity
                 );
             }
         }

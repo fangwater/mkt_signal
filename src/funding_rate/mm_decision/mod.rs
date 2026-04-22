@@ -58,9 +58,7 @@ fn compute_next_open_deadline_us(now_us: i64, interval_ms: u64) -> i64 {
     } else {
         interval_ms - remainder
     };
-    now_ms
-        .saturating_add(delay_ms)
-        .saturating_mul(1_000)
+    now_ms.saturating_add(delay_ms).saturating_mul(1_000)
 }
 
 impl MmDecision {
@@ -784,13 +782,22 @@ mod tests {
 
     #[test]
     fn next_open_deadline_aligns_to_minute_boundary() {
-        assert_eq!(compute_next_open_deadline_us(59_999_000, 60_000), 60_000_000);
-        assert_eq!(compute_next_open_deadline_us(60_000_000, 60_000), 120_000_000);
+        assert_eq!(
+            compute_next_open_deadline_us(59_999_000, 60_000),
+            60_000_000
+        );
+        assert_eq!(
+            compute_next_open_deadline_us(60_000_000, 60_000),
+            120_000_000
+        );
     }
 
     #[test]
     fn next_open_deadline_aligns_to_ten_second_boundary() {
         assert_eq!(compute_next_open_deadline_us(9_999_000, 10_000), 10_000_000);
-        assert_eq!(compute_next_open_deadline_us(10_000_000, 10_000), 20_000_000);
+        assert_eq!(
+            compute_next_open_deadline_us(10_000_000, 10_000),
+            20_000_000
+        );
     }
 }

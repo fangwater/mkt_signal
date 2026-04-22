@@ -76,11 +76,8 @@ impl RlReturnVolatilityRuntimeConfig {
     }
 
     fn compute_scaled_value(&self, closes: &VecDeque<f64>) -> Result<Option<f64>> {
-        let Some(raw) = compute_rl_return_volatility(
-            closes,
-            self.pct_change_period,
-            self.rolling_window,
-        )?
+        let Some(raw) =
+            compute_rl_return_volatility(closes, self.pct_change_period, self.rolling_window)?
         else {
             return Ok(None);
         };
@@ -1351,7 +1348,8 @@ impl TradeFlowFeaturePubApp {
                 return;
             };
             state.record_published_close(close);
-            self.rl_config.compute_scaled_value(state.published_closes())
+            self.rl_config
+                .compute_scaled_value(state.published_closes())
         };
 
         let (value, ready) = match scaled_value {

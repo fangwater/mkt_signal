@@ -518,7 +518,8 @@ fn forward_gate_position_snapshot(
                 current_positions.insert((msg.inst_id.clone(), msg.position_side));
             }
         }
-        let wrapped = BasicAccountEventMsg::create(event_type, BasicAccountScope::GateUnified, payload);
+        let wrapped =
+            BasicAccountEventMsg::create(event_type, BasicAccountScope::GateUnified, payload);
         let _ = evt_tx.send(wrapped.to_bytes());
     }
 }

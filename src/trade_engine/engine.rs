@@ -1780,7 +1780,7 @@ impl TradeEngine {
                                 endpoint,
                                 qs,
                             )
-                                .await
+                            .await
                             {
                                 Ok((status, body)) => {
                                     let body_bytes = match msg.req_type {

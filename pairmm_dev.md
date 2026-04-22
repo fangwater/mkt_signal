@@ -22,3 +22,7 @@ bash scripts/deploy_mm_trade_engine.sh --exchange bybit --env-suffix alpha --bin
 
 bash scripts/close_mm_all_um_ws_orders.sh --env-name bybit_mm_alpha --execute
 bash scripts/close_mm_all_um_exposure.sh --env-name bybit_mm_alpha --execute 
+
+bash scripts/deploy_mm_signal.sh --exchange bitget --env-name bitget_mm_alpha --bin-only
+bash scripts/deploy_mm_pre_trade.sh --exchange bitget --env-suffix alpha --bin-only
+bash scripts/deploy_mm_trade_engine.sh --exchange bitget --env-suffix alpha --bin-only

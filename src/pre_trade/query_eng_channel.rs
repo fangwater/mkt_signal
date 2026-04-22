@@ -218,8 +218,16 @@ impl QueryEngChannel {
                             // Snapshot queries return basic account messages (no huge JSON body).
                             if matches!(
                                 resp.req_type(),
-                                6101 | 6102 | 6103 | 6104 | 6105 | 7101 | 7102 | 8101 | 8102
-                                    | 9203 | 9204
+                                6101 | 6102
+                                    | 6103
+                                    | 6104
+                                    | 6105
+                                    | 7101
+                                    | 7102
+                                    | 8101
+                                    | 8102
+                                    | 9203
+                                    | 9204
                             ) {
                                 let body = resp.body_bytes().as_ref();
                                 let event_type = get_basic_event_type(body);
@@ -236,8 +244,10 @@ impl QueryEngChannel {
                                         .unwrap_or(exchange_enum);
                                 let binance_is_standard =
                                     mc.order_manager().borrow().binance_is_standard();
-                                if matches!(req_type, Some(QueryRequestType::BybitPositionsSnapshot))
-                                    && resp.body_bytes().is_empty()
+                                if matches!(
+                                    req_type,
+                                    Some(QueryRequestType::BybitPositionsSnapshot)
+                                ) && resp.body_bytes().is_empty()
                                 {
                                     let mut cleared = false;
                                     if matches!(open_venue, TradingVenue::BybitFutures)
@@ -264,8 +274,10 @@ impl QueryEngChannel {
                                     }
                                     continue;
                                 }
-                                if matches!(req_type, Some(QueryRequestType::GateUnifiedPositionsSnapshot))
-                                    && resp.body_bytes().is_empty()
+                                if matches!(
+                                    req_type,
+                                    Some(QueryRequestType::GateUnifiedPositionsSnapshot)
+                                ) && resp.body_bytes().is_empty()
                                 {
                                     let mut cleared = false;
                                     if matches!(open_venue, TradingVenue::GateFutures)
@@ -292,8 +304,10 @@ impl QueryEngChannel {
                                     }
                                     continue;
                                 }
-                                if matches!(req_type, Some(QueryRequestType::BitgetPositionsSnapshot))
-                                    && resp.body_bytes().is_empty()
+                                if matches!(
+                                    req_type,
+                                    Some(QueryRequestType::BitgetPositionsSnapshot)
+                                ) && resp.body_bytes().is_empty()
                                 {
                                     let mut cleared = false;
                                     if matches!(open_venue, TradingVenue::BitgetFutures)

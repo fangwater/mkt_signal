@@ -303,6 +303,8 @@ fn compute_simple_factor_value(
         SimpleFactorKind::HfVolVolumeCombined {
             vol_window,
             volu_window,
-        } => kline_factors::compute_hf_vol_volume_combined(closes, volumes, vol_window, volu_window),
+        } => {
+            kline_factors::compute_hf_vol_volume_combined(closes, volumes, vol_window, volu_window)
+        }
     }
 }

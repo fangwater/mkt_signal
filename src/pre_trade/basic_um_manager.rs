@@ -217,7 +217,12 @@ mod tests {
     #[test]
     fn removes_entry_after_zero_position_and_zero_pnl() {
         let mut mgr = BasicUmManager::new(Exchange::Bybit);
-        mgr.apply_position(&BasicPositionMsg::create(1, "BTCUSDT".to_string(), 'L', 1.5));
+        mgr.apply_position(&BasicPositionMsg::create(
+            1,
+            "BTCUSDT".to_string(),
+            'L',
+            1.5,
+        ));
         mgr.apply_unrealized_pnl(&BasicUmUnrealizedMsg::create(
             2,
             "BTCUSDT".to_string(),
@@ -225,7 +230,12 @@ mod tests {
             12.0,
         ));
 
-        mgr.apply_position(&BasicPositionMsg::create(3, "BTCUSDT".to_string(), 'L', 0.0));
+        mgr.apply_position(&BasicPositionMsg::create(
+            3,
+            "BTCUSDT".to_string(),
+            'L',
+            0.0,
+        ));
         assert!(mgr.get("BTCUSDT", 'L').is_some());
 
         mgr.apply_unrealized_pnl(&BasicUmUnrealizedMsg::create(
@@ -240,15 +250,30 @@ mod tests {
     #[test]
     fn zero_position_without_existing_entry_is_ignored() {
         let mut mgr = BasicUmManager::new(Exchange::Bybit);
-        mgr.apply_position(&BasicPositionMsg::create(1, "ETHUSDT".to_string(), 'S', 0.0));
+        mgr.apply_position(&BasicPositionMsg::create(
+            1,
+            "ETHUSDT".to_string(),
+            'S',
+            0.0,
+        ));
         assert!(mgr.snapshot().is_empty());
     }
 
     #[test]
     fn clear_removes_all_positions() {
         let mut mgr = BasicUmManager::new(Exchange::Bybit);
-        mgr.apply_position(&BasicPositionMsg::create(1, "BTCUSDT".to_string(), 'L', 1.0));
-        mgr.apply_position(&BasicPositionMsg::create(2, "ETHUSDT".to_string(), 'S', 2.0));
+        mgr.apply_position(&BasicPositionMsg::create(
+            1,
+            "BTCUSDT".to_string(),
+            'L',
+            1.0,
+        ));
+        mgr.apply_position(&BasicPositionMsg::create(
+            2,
+            "ETHUSDT".to_string(),
+            'S',
+            2.0,
+        ));
 
         mgr.clear();
 

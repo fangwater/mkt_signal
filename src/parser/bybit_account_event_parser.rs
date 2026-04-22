@@ -2,7 +2,7 @@
 
 use crate::common::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
-    BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
+    BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg, BinanceTradeLiteMsg,
 };
 use crate::common::bybit_account_msg::BybitBasicOrderMsg;
 use crate::parser::default_parser::Parser;
@@ -440,6 +440,122 @@ impl BybitAccountEventParser {
             "Trade".to_string(),
         ))
     }
+
+    fn parse_execution_fast_channel(
+        &self,
+        json_value: &Value,
+        tx: &mpsc::UnboundedSender<Bytes>,
+    ) -> usize {
+        let mut count = 0;
+        let top_timestamp = parse_i64_str_or_num(json_value.get("creationTime"))
+            .or_else(|| parse_i64_str_or_num(json_value.get("ts")))
+            .unwrap_or(0);
+        let raw_json = json_value.to_string();
+
+        for fill_obj in collect_data_objects(json_value) {
+            let symbol = fill_obj
+                .get("symbol")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if symbol.is_empty() {
+                continue;
+            }
+
+            let exec_type = fill_obj
+                .get("execType")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !exec_type.eq_ignore_ascii_case("Trade") {
+                continue;
+            }
+
+            let order_id_raw = fill_obj
+                .get("orderId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let client_order_id_raw = fill_obj
+                .get("orderLinkId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let exec_id_raw = fill_obj
+                .get("execId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+
+            let Some(order_id) = parse_i64_str_or_num(fill_obj.get("orderId")) else {
+                warn!(
+                    "Bybit: skip execution.fast with non-i64 orderId symbol={} orderId='{}' payload={}",
+                    symbol, order_id_raw, raw_json
+                );
+                continue;
+            };
+            let Some(client_order_id) = parse_i64_str_or_num(fill_obj.get("orderLinkId")) else {
+                warn!(
+                    "Bybit: skip execution.fast with non-i64 orderLinkId symbol={} orderLinkId='{}' payload={}",
+                    symbol, client_order_id_raw, raw_json
+                );
+                continue;
+            };
+            let Some(trade_id) = parse_i64_str_or_num(fill_obj.get("execId")) else {
+                warn!(
+                    "Bybit: skip execution.fast with non-i64 execId symbol={} execId='{}' payload={}",
+                    symbol, exec_id_raw, raw_json
+                );
+                continue;
+            };
+
+            let event_time = parse_i64_str_or_num(fill_obj.get("execTime"))
+                .or_else(|| parse_i64_str_or_num(fill_obj.get("creationTime")))
+                .unwrap_or(top_timestamp);
+            let side = BybitBasicOrderMsg::side_to_u8(
+                fill_obj.get("side").and_then(|v| v.as_str()).unwrap_or(""),
+            );
+            let last_executed_price =
+                parse_f64_str_or_num(fill_obj.get("execPrice")).unwrap_or(0.0);
+            let last_executed_quantity =
+                parse_f64_str_or_num(fill_obj.get("execQty")).unwrap_or(0.0);
+            if last_executed_quantity <= 0.0 {
+                continue;
+            }
+
+            let is_maker = fill_obj
+                .get("isMaker")
+                .and_then(parse_boolish)
+                .unwrap_or(false);
+
+            let msg = BinanceTradeLiteMsg::create(
+                detect_order_venue(fill_obj),
+                event_time,
+                event_time,
+                symbol,
+                order_id,
+                client_order_id,
+                trade_id,
+                side,
+                is_maker,
+                last_executed_price,
+                last_executed_quantity,
+            );
+
+            let event = BasicAccountEventMsg::create(
+                BasicAccountEventType::TradeUpdateLite,
+                BasicAccountScope::BybitUnified,
+                msg.to_bytes(),
+            );
+            if tx.send(event.to_bytes()).is_ok() {
+                count += 1;
+            }
+        }
+
+        count
+    }
 }
 
 impl Parser for BybitAccountEventParser {
@@ -476,6 +592,7 @@ impl Parser for BybitAccountEventParser {
             "position" => self.parse_position_channel(&json_value, tx),
             "order" => self.parse_order_channel(&json_value, tx),
             "execution" => 0,
+            "execution.fast" => self.parse_execution_fast_channel(&json_value, tx),
             _ => {
                 if !route.is_empty() {
                     debug!("Bybit: ignored route={} payload={}", route, json_str);
@@ -609,6 +726,20 @@ fn parse_required_client_order_id(value: &str, raw_json: &str) -> Option<i64> {
     }
 }
 
+fn parse_boolish(value: &Value) -> Option<bool> {
+    if let Some(v) = value.as_bool() {
+        return Some(v);
+    }
+
+    value
+        .as_str()
+        .and_then(|s| match s.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "y" | "maker" | "m" => Some(true),
+            "false" | "0" | "no" | "n" | "taker" | "t" => Some(false),
+            _ => None,
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -715,6 +846,46 @@ mod tests {
 
         let execution = Bytes::from_static(
             br#"{"id":"4","topic":"execution","creationTime":1710000000300,"data":[{"category":"linear","symbol":"BTCUSDT","orderId":"1001","orderLinkId":"12345","side":"Buy","orderType":"Limit","execType":"Trade","isMaker":true,"execPrice":"99998","execQty":"0.1","orderQty":"0.5","execTime":"1710000000003","feeCurrency":"USDT"}]}"#,
+        );
+
+        assert_eq!(parser.parse(execution, &tx), 0);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn execution_fast_topic_emits_trade_update_lite() {
+        let parser = BybitAccountEventParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        let execution = Bytes::from_static(
+            br#"{"id":"4","topic":"execution.fast","creationTime":1710000000300,"data":[{"category":"linear","symbol":"BTCUSDT","orderId":"1001","orderLinkId":"12345","execId":"9001","side":"Buy","execType":"Trade","isMaker":true,"execPrice":"99998","execQty":"0.1","execTime":"1710000000003"}]}"#,
+        );
+
+        assert_eq!(parser.parse(execution, &tx), 1);
+        let wrapped = rx.try_recv().expect("trade lite event");
+        let (event_type, scope, payload) = split_basic_account_event(&wrapped).expect("wrapped");
+        assert_eq!(event_type, BasicAccountEventType::TradeUpdateLite);
+        assert_eq!(scope, BasicAccountScope::BybitUnified);
+
+        let msg = BinanceTradeLiteMsg::from_bytes(&payload).expect("trade lite payload");
+        assert_eq!(msg.symbol, "BTCUSDT");
+        assert_eq!(msg.order_id, 1001);
+        assert_eq!(msg.client_order_id, 12345);
+        assert_eq!(msg.trade_id, 9001);
+        assert_eq!(msg.side, 1);
+        assert_eq!(msg.is_maker, 1);
+        assert!((msg.last_executed_price - 99998.0).abs() < 1e-9);
+        assert!((msg.last_executed_quantity - 0.1).abs() < 1e-9);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn execution_fast_topic_drops_non_i64_ids() {
+        let parser = BybitAccountEventParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        let execution = Bytes::from_static(
+            br#"{"topic":"execution.fast","creationTime":1716800399338,"data":[{"category":"linear","symbol":"ICPUSDT","execId":"3510f361-0add-5c7b-a2e7-9679810944fc","execPrice":"12.015","execQty":"3000","orderId":"443d63fa-b4c3-4297-b7b1-23bca88b04dc","isMaker":false,"orderLinkId":"test-00001","side":"Sell","execTime":"1716800399334","seq":34771365464}]}"#,
         );
 
         assert_eq!(parser.parse(execution, &tx), 0);

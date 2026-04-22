@@ -62,9 +62,16 @@ mod tests {
     #[test]
     fn computes_sample_std_over_recent_returns() {
         let closes = VecDeque::from(vec![100.0, 102.0, 104.0, 103.0, 106.0]);
-        let value = compute_rl_return_volatility(&closes, 1, 4).unwrap().unwrap();
+        let value = compute_rl_return_volatility(&closes, 1, 4)
+            .unwrap()
+            .unwrap();
 
-        let returns = [0.02, 104.0 / 102.0 - 1.0, 103.0 / 104.0 - 1.0, 106.0 / 103.0 - 1.0];
+        let returns = [
+            0.02,
+            104.0 / 102.0 - 1.0,
+            103.0 / 104.0 - 1.0,
+            106.0 / 103.0 - 1.0,
+        ];
         let mean = returns.iter().sum::<f64>() / returns.len() as f64;
         let variance = returns
             .iter()

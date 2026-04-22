@@ -79,12 +79,10 @@ fn limit_for_req_type(req_type: QueryRequestType) -> Option<BitgetQueryLimit> {
         QueryRequestType::BitgetMarginQuery
         | QueryRequestType::BitgetUMQuery
         | QueryRequestType::BitgetAccountBalanceSnapshot
-        | QueryRequestType::BitgetPositionsSnapshot => {
-            Some(BitgetQueryLimit {
-                max_requests: BITGET_ORDER_QUERY_LIMIT_PER_WINDOW,
-                window: BITGET_QUERY_WINDOW,
-            })
-        }
+        | QueryRequestType::BitgetPositionsSnapshot => Some(BitgetQueryLimit {
+            max_requests: BITGET_ORDER_QUERY_LIMIT_PER_WINDOW,
+            window: BITGET_QUERY_WINDOW,
+        }),
         _ => None,
     }
 }

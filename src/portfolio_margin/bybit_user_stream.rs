@@ -245,7 +245,10 @@ impl MktConnectionRunner for BybitUserDataConnection {
 impl MktConnectionHandler for BybitUserDataConnection {
     async fn start_ws(&mut self) -> anyhow::Result<()> {
         loop {
-            info!("{} Bybit: connecting to {}", self.log_prefix, &self.base_connection.url);
+            info!(
+                "{} Bybit: connecting to {}",
+                self.log_prefix, &self.base_connection.url
+            );
 
             let connect_result = if let Some(ref local_ip) = self.base_connection.local_ip {
                 WsConnector::connect_with_local_ip_raw(&self.base_connection.url, local_ip).await
@@ -269,7 +272,10 @@ impl MktConnectionHandler for BybitUserDataConnection {
                             .await;
 
                         if let Err(e) = ws_stream.send(Message::Text(auth_msg.to_string())).await {
-                            error!("{} Bybit: failed to send auth message: {:?}", self.log_prefix, e);
+                            error!(
+                                "{} Bybit: failed to send auth message: {:?}",
+                                self.log_prefix, e
+                            );
                             continue;
                         }
                         info!("{} Bybit: auth message sent", self.log_prefix);
@@ -283,8 +289,7 @@ impl MktConnectionHandler for BybitUserDataConnection {
 
                     info!(
                         "{} Bybit: connection closed, reconnecting... (restart count={})",
-                        self.log_prefix,
-                        self.restart_count
+                        self.log_prefix, self.restart_count
                     );
                     time::sleep(Duration::from_secs(2)).await;
                 }
