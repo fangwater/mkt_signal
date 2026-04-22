@@ -22,8 +22,8 @@ use mkt_signal::parser::bybit_account_event_parser::BybitAccountEventParser;
 use mkt_signal::parser::default_parser::Parser;
 use mkt_signal::portfolio_margin::bybit_auth::{
     build_fast_execution_subscribe_message, build_order_subscribe_message,
-    build_position_subscribe_message,
-    build_wallet_subscribe_message, BybitCredentials, BybitPrivateWsUrls,
+    build_position_subscribe_message, build_wallet_subscribe_message, BybitCredentials,
+    BybitPrivateWsUrls,
 };
 use mkt_signal::portfolio_margin::bybit_user_stream::BybitUserDataConnection;
 use mkt_signal::portfolio_margin::pm_forwarder::PmForwarder;
