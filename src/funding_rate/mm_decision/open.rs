@@ -13,6 +13,9 @@ use crate::signal::common::TradingVenue;
 use crate::signal::trade_signal::SignalType;
 use crate::symbol_match::normalize_symbol_for_whitelist;
 
+const MM_NEUTRAL_RETURN_SCORE: f64 = 0.0;
+const MM_NEUTRAL_RETURN_QUANTILE: f64 = 0.5;
+
 pub(crate) struct MmOpenDecision {
     _private: (),
 }
@@ -27,11 +30,15 @@ fn mm_open_blocked_by_environment(
 fn resolve_mm_open_return_score(
     prediction_mode: bool,
     score: Option<f64>,
+    volatility: Option<f64>,
     service_name: &str,
     note: &str,
 ) -> Result<f64> {
     if !prediction_mode {
-        return Ok(0.0);
+        return Ok(MM_NEUTRAL_RETURN_SCORE);
+    }
+    if volatility.filter(|v| v.is_finite()).is_some() && score.filter(|v| v.is_finite()).is_none() {
+        return Ok(MM_NEUTRAL_RETURN_SCORE);
     }
     score.filter(|v| v.is_finite()).ok_or_else(|| {
         anyhow::anyhow!(
@@ -40,6 +47,21 @@ fn resolve_mm_open_return_score(
             note
         )
     })
+}
+
+fn resolve_mm_open_return_quantile(
+    prediction_mode: bool,
+    score: Option<f64>,
+    score_quantile: Option<f64>,
+    volatility: Option<f64>,
+) -> Option<f64> {
+    if !prediction_mode {
+        return None;
+    }
+    if volatility.filter(|v| v.is_finite()).is_some() && score.filter(|v| v.is_finite()).is_none() {
+        return Some(MM_NEUTRAL_RETURN_QUANTILE);
+    }
+    score_quantile.filter(|v| v.is_finite())
 }
 
 impl MmOpenDecision {
@@ -141,10 +163,16 @@ impl MmOpenDecision {
                 symbol,
                 state.hedge_venue,
             );
-            let return_qtl = score_lookup.score_quantile.filter(|v| v.is_finite());
+            let return_qtl = resolve_mm_open_return_quantile(
+                state.prediction_mode,
+                score_lookup.score,
+                score_lookup.score_quantile,
+                Some(volatility),
+            );
             let return_score = match resolve_mm_open_return_score(
                 state.prediction_mode,
                 score_lookup.score,
+                Some(volatility),
                 &service_name,
                 &score_lookup.note,
             ) {
@@ -286,7 +314,8 @@ impl MmOpenDecision {
             match self.emit_for_symbol(state, &symbol, now_us) {
                 Ok(result) => results.push(result),
                 Err(err) => {
-                    let symbol_key = normalize_symbol_for_whitelist(&symbol, TradingVenue::OkexFutures);
+                    let symbol_key =
+                        normalize_symbol_for_whitelist(&symbol, TradingVenue::OkexFutures);
                     warn!(
                         "MmDecision: MMOpen evaluate failed symbol={} err={:#}",
                         symbol_key, err
@@ -574,20 +603,30 @@ mod tests {
     #[test]
     fn prediction_mode_disabled_uses_zero_return_score() {
         assert_eq!(
-            resolve_mm_open_return_score(false, None, "model_output/test", "missing").unwrap(),
+            resolve_mm_open_return_score(false, None, None, "model_output/test", "missing")
+                .unwrap(),
             0.0
         );
         assert_eq!(
-            resolve_mm_open_return_score(false, Some(0.42), "model_output/test", "present")
+            resolve_mm_open_return_score(false, Some(0.42), None, "model_output/test", "present")
                 .unwrap(),
             0.0
         );
     }
 
     #[test]
-    fn prediction_mode_enabled_still_requires_return_score() {
+    fn prediction_mode_enabled_uses_neutral_return_score_when_volatility_available() {
+        assert_eq!(
+            resolve_mm_open_return_score(true, None, Some(0.12), "model_output/test", "missing")
+                .unwrap(),
+            0.0
+        );
+    }
+
+    #[test]
+    fn prediction_mode_enabled_without_volatility_still_requires_return_score() {
         assert!(
-            resolve_mm_open_return_score(true, None, "model_output/test", "missing")
+            resolve_mm_open_return_score(true, None, None, "model_output/test", "missing")
                 .unwrap_err()
                 .to_string()
                 .contains("return_score unavailable")

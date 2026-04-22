@@ -2,7 +2,7 @@
 
 use crate::common::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
-    BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
+    BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg, BinanceTradeLiteMsg,
 };
 use crate::common::bitget_account_msg::BitgetBasicOrderMsg;
 use crate::parser::default_parser::Parser;
@@ -266,19 +266,8 @@ impl BitgetAccountEventParser {
                 .or_else(|| order_obj.get("status"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("live");
-            let status_lower = status.to_ascii_lowercase();
             let execution_type = BitgetBasicOrderMsg::status_to_execution_type(status);
             let order_status = BitgetBasicOrderMsg::status_to_order_status(status);
-
-            let is_trade_like = matches!(
-                status_lower.as_str(),
-                "filled" | "full-fill" | "partially_filled" | "partially-filled" | "partial-fill"
-            );
-            let is_maker_order = order_type == 1;
-            if is_trade_like && !is_maker_order {
-                // Taker fills should rely on fill channel supplementation.
-                continue;
-            }
 
             let is_maker = order_obj
                 .get("tradeScope")
@@ -372,6 +361,7 @@ impl BitgetAccountEventParser {
         for fill_obj in collect_data_objects(json_value) {
             let symbol = fill_obj
                 .get("symbol")
+                .or_else(|| fill_obj.get("instId"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
@@ -379,38 +369,37 @@ impl BitgetAccountEventParser {
                 continue;
             }
 
-            let order_id = parse_i64_str_or_num(fill_obj.get("orderId")).unwrap_or(0);
-            let client_order_id = parse_i64_str_or_num(fill_obj.get("clientOid")).unwrap_or(0);
-            if client_order_id <= 0 {
+            let order_id = parse_i64_str_or_num(fill_obj.get("orderId"))
+                .or_else(|| parse_i64_str_or_num(fill_obj.get("ordId")))
+                .unwrap_or(0);
+            let client_order_id = parse_i64_str_or_num(fill_obj.get("clientOid"))
+                .or_else(|| parse_i64_str_or_num(fill_obj.get("clOrdId")))
+                .unwrap_or(0);
+            if order_id <= 0 || client_order_id <= 0 {
                 continue;
             }
 
             let event_time = parse_i64_str_or_num(fill_obj.get("execTime"))
                 .or_else(|| parse_i64_str_or_num(fill_obj.get("updatedTime")))
+                .or_else(|| parse_i64_str_or_num(fill_obj.get("fillTime")))
                 .unwrap_or(top_timestamp);
+            let trade_id = parse_i64_str_or_num(fill_obj.get("tradeId"))
+                .or_else(|| parse_i64_str_or_num(fill_obj.get("fillId")))
+                .or_else(|| parse_i64_str_or_num(fill_obj.get("execId")))
+                .unwrap_or(0)
+                .max(0);
 
             let side = BitgetBasicOrderMsg::side_to_u8(
                 fill_obj.get("side").and_then(|v| v.as_str()).unwrap_or(""),
             );
-            let order_type = BitgetBasicOrderMsg::order_type_to_u8(
-                fill_obj
-                    .get("orderType")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(""),
-            );
-            let time_in_force = if order_type == 1 { 3 } else { 1 };
-
-            let quantity = parse_f64_str_or_num(fill_obj.get("execQty")).unwrap_or(0.0);
-            let cumulative_filled_quantity =
+            let last_executed_quantity =
                 parse_f64_str_or_num(fill_obj.get("execQty")).unwrap_or(0.0);
-            if cumulative_filled_quantity <= 0.0 {
+            if last_executed_quantity <= 0.0 {
                 continue;
             }
 
             let last_executed_price =
                 parse_f64_str_or_num(fill_obj.get("execPrice")).unwrap_or(0.0);
-
-            let order_status = 3;
 
             let is_maker = fill_obj
                 .get("tradeScope")
@@ -425,38 +414,24 @@ impl BitgetAccountEventParser {
                 })
                 .unwrap_or(0);
 
-            let commission_asset = fill_obj
-                .get("feeDetail")
-                .and_then(|v| v.as_array())
-                .and_then(|arr| arr.first())
-                .and_then(|v| v.get("feeCoin"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-
             let venue = detect_order_venue(fill_obj);
-            let msg = BitgetBasicOrderMsg::create(
+            let msg = BinanceTradeLiteMsg::create(
                 venue,
+                event_time,
                 event_time,
                 symbol,
                 order_id,
                 client_order_id,
+                trade_id,
                 side,
-                order_type,
-                time_in_force,
-                5,
-                order_status,
-                is_maker,
+                is_maker != 0,
                 last_executed_price,
-                quantity,
-                cumulative_filled_quantity,
-                last_executed_price,
-                commission_asset,
+                last_executed_quantity,
             );
 
             let payload = msg.to_bytes();
             let event = BasicAccountEventMsg::create(
-                BasicAccountEventType::OrderUpdate,
+                BasicAccountEventType::TradeUpdateLite,
                 BasicAccountScope::BitgetUnified,
                 payload,
             );
@@ -589,4 +564,118 @@ fn parse_i64_str(v: &str) -> Option<i64> {
         return None;
     }
     s.parse::<i64>().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::basic_account_msg::split_basic_account_event;
+    use crate::common::bitget_account_msg::BitgetBasicOrderMsg;
+    use crate::strategy::trade_update::TradeUpdate;
+
+    #[test]
+    fn fill_channel_emits_trade_update_lite_event() {
+        let parser = BitgetAccountEventParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        let fill = Bytes::from_static(
+            br#"{
+                "arg":{"channel":"fill","instType":"USDT-FUTURES"},
+                "ts":"1710000000999",
+                "data":[
+                    {
+                        "category":"USDT-FUTURES",
+                        "symbol":"BTCUSDT",
+                        "orderId":"998877",
+                        "clientOid":"123456",
+                        "tradeId":"556677",
+                        "side":"buy",
+                        "orderType":"limit",
+                        "tradeScope":"maker",
+                        "execQty":"0.002",
+                        "execPrice":"64000.5",
+                        "execTime":"1710000000123",
+                        "feeDetail":[{"feeCoin":"USDT"}]
+                    }
+                ]
+            }"#,
+        );
+
+        let emitted = parser.parse(fill, &tx);
+        assert_eq!(emitted, 1);
+
+        let wrapped = rx.try_recv().expect("trade lite event");
+        let (event_type, scope, payload) =
+            split_basic_account_event(&wrapped).expect("wrapped trade lite");
+        assert_eq!(event_type, BasicAccountEventType::TradeUpdateLite);
+        assert_eq!(scope, BasicAccountScope::BitgetUnified);
+
+        let msg = BinanceTradeLiteMsg::from_bytes(payload).expect("trade lite payload");
+        assert_eq!(msg.venue, BitgetBasicOrderMsg::VENUE_FUTURES);
+        assert_eq!(msg.symbol, "BTCUSDT");
+        assert_eq!(msg.client_order_id, 123456);
+        assert_eq!(msg.order_id, 998877);
+        assert_eq!(msg.trade_id, 556677);
+        assert_eq!(msg.side, 1);
+        assert_eq!(msg.is_maker, 1);
+        assert!((msg.last_executed_price - 64000.5).abs() < 1e-9);
+        assert!((msg.last_executed_quantity - 0.002).abs() < 1e-9);
+    }
+
+    #[test]
+    fn order_channel_emits_trade_like_update_for_taker_market_fill_using_avg_price() {
+        let parser = BitgetAccountEventParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        let order = Bytes::from_static(
+            br#"{
+                "action":"snapshot",
+                "arg":{"instType":"UTA","topic":"order"},
+                "ts":1742367838124,
+                "data":[
+                    {
+                        "category":"usdt-futures",
+                        "symbol":"BTCUSDT",
+                        "orderId":"998877",
+                        "clientOid":"123456",
+                        "price":"",
+                        "qty":"0.001",
+                        "orderType":"market",
+                        "timeInForce":"gtc",
+                        "side":"buy",
+                        "cumExecQty":"0.001",
+                        "cumExecValue":"83.1315",
+                        "avgPrice":"83131.5",
+                        "orderStatus":"filled",
+                        "feeDetail":[{"feeCoin":"USDT","fee":"0.0332526"}],
+                        "createdTime":"1742367838101",
+                        "updatedTime":"1742367838115"
+                    }
+                ]
+            }"#,
+        );
+
+        let emitted = parser.parse(order, &tx);
+        assert_eq!(emitted, 1);
+
+        let wrapped = rx.try_recv().expect("order event");
+        let (event_type, scope, payload) =
+            split_basic_account_event(&wrapped).expect("wrapped order event");
+        assert_eq!(event_type, BasicAccountEventType::OrderUpdate);
+        assert_eq!(scope, BasicAccountScope::BitgetUnified);
+
+        let msg = BitgetBasicOrderMsg::from_bytes(payload).expect("bitget order payload");
+        assert_eq!(msg.venue, BitgetBasicOrderMsg::VENUE_FUTURES);
+        assert_eq!(msg.symbol, "BTCUSDT");
+        assert_eq!(msg.order_id, 998877);
+        assert_eq!(msg.client_order_id, 123456);
+        assert_eq!(msg.order_type, 3);
+        assert_eq!(msg.execution_type, 5);
+        assert_eq!(msg.order_status, 3);
+        assert_eq!(msg.is_maker, 0);
+        assert!((msg.cumulative_filled_quantity - 0.001).abs() < 1e-12);
+        assert!((msg.price - 83131.5).abs() < 1e-9);
+        assert!((msg.last_executed_price - 83131.5).abs() < 1e-9);
+        assert!((TradeUpdate::price(&msg) - 83131.5).abs() < 1e-9);
+    }
 }

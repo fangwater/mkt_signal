@@ -11,6 +11,9 @@ use crate::signal::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
 use log::debug;
 
+const MM_NEUTRAL_SIGNAL: f64 = 0.0;
+const MM_NEUTRAL_SIGNAL_QUANTILE: f64 = 0.5;
+
 pub struct MmHedgeBuildInput<'a> {
     pub venue: TradingVenue,
     pub symbol: &'a str,
@@ -63,9 +66,7 @@ fn next_aligned_query_ts_us(now_us: i64, interval_ms: u64) -> i64 {
     } else {
         interval_ms - remainder
     };
-    now_ms
-        .saturating_add(delay_ms)
-        .saturating_mul(1_000)
+    now_ms.saturating_add(delay_ms).saturating_mul(1_000)
 }
 
 pub fn resolve_mm_hedge_signal_inputs(
@@ -76,20 +77,6 @@ pub fn resolve_mm_hedge_signal_inputs(
     enable_return_score_adjust_hedge: bool,
 ) -> Result<(f64, Option<f64>, f64), String> {
     let score_lookup = factor_value_hub.lookup_model_output_score(model_service, symbol, venue);
-    let signal = if enable_return_score_adjust_hedge {
-        resolve_mm_hedge_effective_signal(
-            enable_return_score_adjust_hedge,
-            score_lookup.score,
-            &score_lookup.service_name,
-            &score_lookup.note,
-        )?
-    } else {
-        0.0
-    };
-    let signal_qtl = resolve_mm_hedge_signal_quantile(
-        enable_return_score_adjust_hedge,
-        score_lookup.score_quantile,
-    );
     let factor_lookup =
         factor_value_hub.lookup_factor_value_with_last_valid_fallback(symbol, venue);
     let volatility = factor_lookup
@@ -101,17 +88,38 @@ pub fn resolve_mm_hedge_signal_inputs(
                 factor_lookup.key, factor_lookup.note
             )
         })?;
+    let signal = if enable_return_score_adjust_hedge {
+        resolve_mm_hedge_effective_signal(
+            enable_return_score_adjust_hedge,
+            score_lookup.score,
+            Some(volatility),
+            &score_lookup.service_name,
+            &score_lookup.note,
+        )?
+    } else {
+        MM_NEUTRAL_SIGNAL
+    };
+    let signal_qtl = resolve_mm_hedge_signal_quantile(
+        enable_return_score_adjust_hedge,
+        score_lookup.score,
+        score_lookup.score_quantile,
+        Some(volatility),
+    );
     Ok((signal, signal_qtl, volatility))
 }
 
 fn resolve_mm_hedge_effective_signal(
     enable_return_score_adjust_hedge: bool,
     score: Option<f64>,
+    volatility: Option<f64>,
     service_name: &str,
     note: &str,
 ) -> Result<f64, String> {
     if !enable_return_score_adjust_hedge {
-        return Ok(0.0);
+        return Ok(MM_NEUTRAL_SIGNAL);
+    }
+    if volatility.filter(|v| v.is_finite()).is_some() && score.filter(|v| v.is_finite()).is_none() {
+        return Ok(MM_NEUTRAL_SIGNAL);
     }
     score.filter(|v| v.is_finite()).ok_or_else(|| {
         format!(
@@ -123,10 +131,15 @@ fn resolve_mm_hedge_effective_signal(
 
 fn resolve_mm_hedge_signal_quantile(
     enable_return_score_adjust_hedge: bool,
+    score: Option<f64>,
     score_quantile: Option<f64>,
+    volatility: Option<f64>,
 ) -> Option<f64> {
     if !enable_return_score_adjust_hedge {
-        return Some(0.5);
+        return Some(MM_NEUTRAL_SIGNAL_QUANTILE);
+    }
+    if volatility.filter(|v| v.is_finite()).is_some() && score.filter(|v| v.is_finite()).is_none() {
+        return Some(MM_NEUTRAL_SIGNAL_QUANTILE);
     }
     score_quantile.filter(|v| v.is_finite())
 }
@@ -621,19 +634,44 @@ mod tests {
     #[test]
     fn disabled_return_score_adjust_hedge_uses_neutral_quantile() {
         assert_eq!(
-            resolve_mm_hedge_signal_quantile(false, Some(0.91)),
+            resolve_mm_hedge_signal_quantile(false, Some(0.12), Some(0.91), Some(0.02)),
             Some(0.5)
         );
-        assert_eq!(resolve_mm_hedge_signal_quantile(false, None), Some(0.5));
+        assert_eq!(
+            resolve_mm_hedge_signal_quantile(false, None, None, Some(0.02)),
+            Some(0.5)
+        );
     }
 
     #[test]
     fn enabled_return_score_adjust_hedge_preserves_quantile() {
         assert_eq!(
-            resolve_mm_hedge_signal_quantile(true, Some(0.91)),
+            resolve_mm_hedge_signal_quantile(true, Some(0.12), Some(0.91), Some(0.02)),
             Some(0.91)
         );
-        assert_eq!(resolve_mm_hedge_signal_quantile(true, None), None);
+        assert_eq!(
+            resolve_mm_hedge_signal_quantile(true, Some(0.12), None, Some(0.02)),
+            None
+        );
+    }
+
+    #[test]
+    fn enabled_return_score_adjust_hedge_uses_neutral_when_score_missing_and_volatility_ready() {
+        assert_eq!(
+            resolve_mm_hedge_effective_signal(
+                true,
+                None,
+                Some(0.02),
+                "model_output/test",
+                "missing"
+            )
+            .unwrap(),
+            0.0
+        );
+        assert_eq!(
+            resolve_mm_hedge_signal_quantile(true, None, None, Some(0.02)),
+            Some(0.5)
+        );
     }
 
     #[test]
@@ -834,13 +872,18 @@ mod tests {
     #[test]
     fn disabled_return_score_adjust_skips_missing_score() {
         assert_eq!(
-            resolve_mm_hedge_effective_signal(false, None, "model_output/test", "missing").unwrap(),
+            resolve_mm_hedge_effective_signal(false, None, None, "model_output/test", "missing")
+                .unwrap(),
             0.0
         );
-        assert!(
-            resolve_mm_hedge_effective_signal(true, None, "model_output/test", "missing")
-                .unwrap_err()
-                .contains("return_score unavailable")
-        );
+        assert!(resolve_mm_hedge_effective_signal(
+            true,
+            None,
+            None,
+            "model_output/test",
+            "missing"
+        )
+        .unwrap_err()
+        .contains("return_score unavailable"));
     }
 }

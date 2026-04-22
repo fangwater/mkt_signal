@@ -503,6 +503,29 @@ impl MarketMakerHedgeStrategy {
         );
     }
 
+    fn apply_tracked_hedge_fill_cumulative(
+        &mut self,
+        client_order_id: i64,
+        fill_ts: i64,
+        side: Side,
+        cumulative_base_qty: f64,
+        price: f64,
+        source: &str,
+    ) -> bool {
+        if !self.hedge_order_ids.contains(&client_order_id) || cumulative_base_qty <= 0.0 {
+            return false;
+        }
+
+        // MM hedge keeps partial fills out of net_qty. Once the order is terminal, book the
+        // full cumulative fill; duplicate/stale trade updates were already filtered upstream.
+        let signed_qty = match side {
+            Side::Buy => cumulative_base_qty,
+            Side::Sell => -cumulative_base_qty,
+        };
+        self.apply_net_qty_fill(fill_ts, signed_qty, price, source);
+        true
+    }
+
     /// 累加成交（使用 base qty 口径）
     pub fn record_fill(
         &mut self,
@@ -2153,25 +2176,19 @@ impl MarketMakerHedgeStrategy {
             let filled_qty = order_update.cumulative_filled_quantity();
             let fill_price =
                 self.resolve_fill_price_from_order_update(client_order_id, order_update);
-            if was_tracked && filled_qty > 0.0 {
-                let base_qty = MonitorChannel::instance().qty_to_base(
-                    order_update.trading_venue(),
-                    order_update.symbol(),
-                    filled_qty,
-                );
-                if base_qty > 0.0 {
-                    let signed_qty = match order_update.side() {
-                        Side::Buy => base_qty,
-                        Side::Sell => -base_qty,
-                    };
-                    self.apply_net_qty_fill(
-                        order_update.event_time(),
-                        signed_qty,
-                        fill_price,
-                        "hedge_fill",
-                    );
-                }
-            }
+            let filled_base_qty = MonitorChannel::instance().qty_to_base(
+                order_update.trading_venue(),
+                order_update.symbol(),
+                filled_qty,
+            );
+            self.apply_tracked_hedge_fill_cumulative(
+                client_order_id,
+                order_update.event_time(),
+                order_update.side(),
+                filled_base_qty,
+                fill_price,
+                "hedge_fill",
+            );
             self.retire_hedge_order(client_order_id, "order_update_finished");
             if was_tracked && filled_qty <= 0.0 && status == OrderStatus::Canceled {
                 debug!(
@@ -2232,7 +2249,6 @@ impl MarketMakerHedgeStrategy {
         }
 
         let cumulative_qty = trade.cumulative_filled_quantity();
-        let delta_qty = (cumulative_qty - prev_cumulative_filled_qty).max(0.0);
         let trade_time = trade.trade_time();
         let event_time = trade.event_time();
         let reported_trade_price = trade.price();
@@ -2275,25 +2291,23 @@ impl MarketMakerHedgeStrategy {
         if status != OrderStatus::Filled {
             return true;
         }
-        let was_tracked = self.hedge_order_ids.contains(&client_order_id);
         let fill_price = self.resolve_fill_price_from_trade_update(
             order_snapshot.as_ref().map(|(_, _, _, price)| *price),
             trade,
         );
-        if was_tracked && delta_qty > 0.0 {
-            let base_qty = MonitorChannel::instance().qty_to_base(
-                trade.trading_venue(),
-                trade.symbol(),
-                delta_qty,
-            );
-            if base_qty > 0.0 {
-                let signed_qty = match trade.side() {
-                    Side::Buy => base_qty,
-                    Side::Sell => -base_qty,
-                };
-                self.apply_net_qty_fill(event_time, signed_qty, fill_price, "hedge_fill");
-            }
-        }
+        let cumulative_base_qty = MonitorChannel::instance().qty_to_base(
+            trade.trading_venue(),
+            trade.symbol(),
+            cumulative_qty,
+        );
+        self.apply_tracked_hedge_fill_cumulative(
+            client_order_id,
+            event_time,
+            trade.side(),
+            cumulative_base_qty,
+            fill_price,
+            "hedge_fill",
+        );
         self.retire_hedge_order(client_order_id, "trade_update_filled");
 
         true
@@ -2325,6 +2339,7 @@ mod tests {
     use super::{
         HedgeOrderMeta, MarketMakerHedgeStrategy, PendingOrderQueryReason, NET_EXPOSURE_EPS_USDT,
     };
+    use crate::pre_trade::order_manager::Side;
 
     #[test]
     fn zero_net_exposure_does_not_send_hedge_query() {
@@ -2466,6 +2481,30 @@ mod tests {
         assert!(!strategy
             .cancel_reconcile_query_attempts
             .contains_key(&client_order_id));
+
+        std::mem::forget(strategy);
+    }
+
+    #[test]
+    fn tracked_hedge_fill_books_full_cumulative_qty() {
+        let mut strategy = MarketMakerHedgeStrategy::new(1, "ETHUSDT".to_string());
+        let client_order_id = 42_i64;
+        strategy.hedge_order_ids.insert(client_order_id);
+
+        let applied = strategy.apply_tracked_hedge_fill_cumulative(
+            client_order_id,
+            123,
+            Side::Sell,
+            5.0,
+            2500.0,
+            "hedge_fill",
+        );
+
+        assert!(applied);
+        assert_eq!(strategy.net_qty, -5.0);
+        assert_eq!(strategy.net_qty_queue.net_qty(), -5.0);
+        assert_eq!(strategy.net_qty_queue.len(), 1);
+        assert_eq!(strategy.weighted_inventory_price(), 2500.0);
 
         std::mem::forget(strategy);
     }
