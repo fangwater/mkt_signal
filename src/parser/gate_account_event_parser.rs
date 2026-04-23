@@ -106,6 +106,7 @@ use crate::common::basic_account_msg::{
     BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg, BinanceTradeLiteMsg,
     GateBasicOrderMsg,
 };
+use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use log::{debug, warn};
@@ -751,8 +752,8 @@ impl GateAccountEventParser {
                 .or_else(|| row.get("currency_pair"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
-                .trim()
-                .to_ascii_uppercase();
+                .trim();
+            let inst_id = normalize_symbol_for_internal(inst_id);
             if inst_id.is_empty() {
                 warn!(
                     "Gate: futures.positions missing contract/symbol, dropping: {}",
@@ -1339,7 +1340,7 @@ mod tests {
         assert_eq!(event_type, BasicAccountEventType::PositionUpdate);
         assert_eq!(scope, BasicAccountScope::GateUnified);
         let position = BasicPositionMsg::from_bytes(body).expect("position body");
-        assert_eq!(position.inst_id, "BTC_USDT");
+        assert_eq!(position.inst_id, "BTCUSDT");
         assert_eq!(position.position_side, 'S');
         assert!((position.position_amount - 2.0).abs() < 1e-6);
 
@@ -1349,7 +1350,7 @@ mod tests {
         assert_eq!(event_type, BasicAccountEventType::UnrealizedPnlUpdate);
         assert_eq!(scope, BasicAccountScope::GateUnified);
         let pnl = BasicUmUnrealizedMsg::from_bytes(body).expect("pnl body");
-        assert_eq!(pnl.inst_id, "BTC_USDT");
+        assert_eq!(pnl.inst_id, "BTCUSDT");
         assert_eq!(pnl.position_side, 'S');
         assert!((pnl.unrealized_pnl + 0.25).abs() < 1e-12);
     }
