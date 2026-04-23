@@ -24,7 +24,6 @@ use mkt_signal::common::basic_account_msg::{
 };
 use mkt_signal::common::mkt_cfg::load_local_ips_preferring_trade_engine;
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
-use mkt_signal::parser::default_parser::Parser;
 use mkt_signal::parser::gate_account_event_parser::GateAccountEventParser;
 use mkt_signal::portfolio_margin::gate_auth::{GateCredentials, GatePrivateWsUrls};
 use mkt_signal::portfolio_margin::gate_rest::fetch_borrow_interest;
@@ -66,6 +65,10 @@ fn log_credential_preview(label: &str, value: &str) {
             label, len, first4, last4
         );
     }
+}
+
+fn should_log_gate_ws_text(msg: &str) -> bool {
+    !msg.contains(r#""channel":"unified.asset_detail""#)
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -576,7 +579,10 @@ fn spawn_gate_stream_path(
                             match msg {
                                 Ok(b) => {
                                     if let Ok(s) = std::str::from_utf8(&b) {
-                                        info!("[{}][ip={}] gate ws json: {}", name, local_ip_log, s);
+                                        let report = parser.parse_with_report(b.clone(), &evt_tx_clone);
+                                        if should_log_gate_ws_text(s) && !report.complete {
+                                            info!("[{}][ip={}] gate ws json: {}", name, local_ip_log, s);
+                                        }
                                     } else {
                                         info!(
                                             "[{}][ip={}] gate ws bin: {} bytes",
@@ -584,9 +590,8 @@ fn spawn_gate_stream_path(
                                             local_ip_log,
                                             b.len()
                                         );
+                                        let _ = parser.parse_with_report(b.clone(), &evt_tx_clone);
                                     }
-                                    // 解析并通过通道发送解析后的账户事件（二进制）
-                                    let _ = parser.parse(b, &evt_tx_clone);
                                 }
                                 Err(broadcast::error::RecvError::Closed) => break,
                                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
@@ -630,17 +635,7 @@ fn log_parsed_event(msg: &Bytes) {
     }
 
     match event_type {
-        BasicAccountEventType::BalanceUpdate => {
-            if let Ok(m) = BasicBalanceMsg::from_bytes(&payload) {
-                info!(
-                    "Gate BalanceUpdate: scope={} ts={} symbol={} balance={}",
-                    account_scope.as_str(),
-                    m.timestamp,
-                    m.symbol,
-                    m.balance
-                );
-            }
-        }
+        BasicAccountEventType::BalanceUpdate => {}
         BasicAccountEventType::BorrowInterest => {
             if let Ok(m) = BasicBorrowInterestMsg::from_bytes(&payload) {
                 info!(

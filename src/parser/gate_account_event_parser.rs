@@ -115,6 +115,28 @@ use tokio::sync::mpsc;
 #[derive(Clone)]
 pub struct GateAccountEventParser;
 
+#[derive(Debug, Clone, Copy)]
+pub struct GateParseReport {
+    pub emitted: usize,
+    pub complete: bool,
+}
+
+impl GateParseReport {
+    fn complete(emitted: usize) -> Self {
+        Self {
+            emitted,
+            complete: true,
+        }
+    }
+
+    fn incomplete(emitted: usize) -> Self {
+        Self {
+            emitted,
+            complete: false,
+        }
+    }
+}
+
 impl GateAccountEventParser {
     pub fn new() -> Self {
         Self
@@ -141,58 +163,68 @@ impl GateAccountEventParser {
         &self,
         json_value: &serde_json::Value,
         tx: &mpsc::UnboundedSender<Bytes>,
-    ) -> usize {
+    ) -> GateParseReport {
         let mut count = 0;
+        let mut incomplete = false;
 
         // 获取 result
         let Some(result) = json_value.get("result") else {
-            return 0;
+            warn!("Gate: unified.asset_detail missing result");
+            return GateParseReport::incomplete(0);
         };
 
-        // 获取时间戳 (秒 -> 毫秒)
-        let timestamp = result
-            .get("t")
-            .and_then(|v| v.as_i64())
-            .map(|t| t * 1000) // 转换为毫秒
-            .unwrap_or_else(|| {
-                // 备用: 使用外层的 time_ms
-                json_value
-                    .get("time_ms")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0)
-            });
+        let Some(refresh_time_s) = parse_i64_str_or_num(result.get("t")) else {
+            warn!("Gate: unified.asset_detail missing timestamp");
+            return GateParseReport::incomplete(0);
+        };
+        let timestamp = refresh_time_s.saturating_mul(1_000);
 
         // 获取资产详情 map
         let Some(dts) = result.get("dts").and_then(|v| v.as_object()) else {
-            return 0;
+            warn!("Gate: unified.asset_detail missing dts");
+            return GateParseReport::incomplete(0);
         };
+
+        if dts.is_empty() {
+            return GateParseReport::complete(0);
+        }
 
         // 遍历每个币种
         for (symbol, details) in dts {
+            let symbol = symbol.trim();
+            if symbol.is_empty() {
+                warn!("Gate: unified.asset_detail empty symbol");
+                incomplete = true;
+                continue;
+            }
+
             // Gate unified 使用 equity(e) 作为净资产数量，避免重复扣减负债或重复叠加 UPL。
-            if let Some(balance_str) = details.get("e").and_then(|v| v.as_str()) {
-                if let Ok(balance) = balance_str.parse::<f64>() {
-                    let msg = BasicBalanceMsg::create(timestamp, symbol.clone(), balance);
-                    let payload = msg.to_bytes();
-                    let event = BasicAccountEventMsg::create(
-                        BasicAccountEventType::BalanceUpdate,
-                        BasicAccountScope::GateUnified,
-                        payload,
-                    );
-                    if tx.send(event.to_bytes()).is_ok() {
-                        count += 1;
-                    }
-                }
+            let Some(balance) = parse_f64_str_or_num(details.get("e")) else {
+                warn!(
+                    "Gate: unified.asset_detail missing/invalid equity for symbol={}",
+                    symbol
+                );
+                incomplete = true;
+                continue;
+            };
+            let msg = BasicBalanceMsg::create(timestamp, symbol.to_string(), balance);
+            let payload = msg.to_bytes();
+            let event = BasicAccountEventMsg::create(
+                BasicAccountEventType::BalanceUpdate,
+                BasicAccountScope::GateUnified,
+                payload,
+            );
+            if tx.send(event.to_bytes()).is_ok() {
+                count += 1;
             }
 
             // 解析借款 (tl) -> BasicBorrowInterestMsg (interest 设为 0)
-            if let Some(total_liab_str) = details.get("tl").and_then(|v| v.as_str()) {
-                if let Ok(borrowed) = total_liab_str.parse::<f64>() {
-                    // 只有当借款金额 > 0 时才发送消息
-                    if borrowed > 0.0 {
+            if let Some(raw_total_liab) = details.get("tl") {
+                match parse_f64_str_or_num(Some(raw_total_liab)) {
+                    Some(borrowed) if borrowed > 0.0 => {
                         let msg = BasicBorrowInterestMsg::create(
                             timestamp,
-                            symbol.clone(),
+                            symbol.to_string(),
                             borrowed,
                             0.0, // Gate.io 不在此消息中提供利息，设为 0
                         );
@@ -206,11 +238,23 @@ impl GateAccountEventParser {
                             count += 1;
                         }
                     }
+                    Some(_) => {}
+                    None => {
+                        warn!(
+                            "Gate: unified.asset_detail invalid tl for symbol={}",
+                            symbol
+                        );
+                        incomplete = true;
+                    }
                 }
             }
         }
 
-        count
+        if incomplete {
+            GateParseReport::incomplete(count)
+        } else {
+            GateParseReport::complete(count)
+        }
     }
 
     /// 解析现货订单更新 (spot.orders_v2 / spot.orders)
@@ -218,13 +262,19 @@ impl GateAccountEventParser {
         &self,
         json_value: &serde_json::Value,
         tx: &mpsc::UnboundedSender<Bytes>,
-    ) -> usize {
+    ) -> GateParseReport {
         let mut count = 0;
+        let mut incomplete = false;
 
         // 获取 result 数组
         let Some(result) = json_value.get("result").and_then(|v| v.as_array()) else {
-            return 0;
+            warn!("Gate: spot.orders missing result array");
+            return GateParseReport::incomplete(0);
         };
+
+        if result.is_empty() {
+            return GateParseReport::complete(0);
+        }
 
         for order in result {
             // 解析 client_order_id (text 字段，必须是 i64)
@@ -233,90 +283,143 @@ impl GateAccountEventParser {
                 Some(id) => id,
                 None => {
                     warn!("Gate: spot.orders_v2 text is not i64, dropping: {}", order);
+                    incomplete = true;
                     continue;
                 }
             };
 
             // 解析其他字段（兼容 string/number）
-            let order_id: i64 = parse_i64_str_or_num(order.get("id")).unwrap_or(0);
+            let Some(order_id) = parse_i64_str_or_num(order.get("id")) else {
+                warn!("Gate: spot.orders_v2 missing/invalid id, dropping: {}", order);
+                incomplete = true;
+                continue;
+            };
 
             let symbol = order
                 .get("currency_pair")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
+                .trim()
                 .to_string();
+            if symbol.is_empty() {
+                warn!("Gate: spot.orders_v2 missing currency_pair, dropping: {}", order);
+                incomplete = true;
+                continue;
+            }
 
-            let side = GateBasicOrderMsg::side_to_u8(
-                order.get("side").and_then(|v| v.as_str()).unwrap_or(""),
-            );
+            let Some(side) = parse_gate_side(order.get("side").and_then(|v| v.as_str())) else {
+                warn!("Gate: spot.orders_v2 invalid side, dropping: {}", order);
+                incomplete = true;
+                continue;
+            };
 
-            let order_type = GateBasicOrderMsg::order_type_to_u8(
-                order.get("type").and_then(|v| v.as_str()).unwrap_or(""),
-            );
+            let Some(order_type) =
+                parse_gate_order_type(order.get("type").and_then(|v| v.as_str()))
+            else {
+                warn!("Gate: spot.orders_v2 invalid type, dropping: {}", order);
+                incomplete = true;
+                continue;
+            };
 
-            let time_in_force = GateBasicOrderMsg::time_in_force_to_u8(
-                order
-                    .get("time_in_force")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(""),
-            );
+            let Some(time_in_force) =
+                parse_gate_time_in_force(order.get("time_in_force").and_then(|v| v.as_str()))
+            else {
+                warn!(
+                    "Gate: spot.orders_v2 invalid time_in_force, dropping: {}",
+                    order
+                );
+                incomplete = true;
+                continue;
+            };
 
-            // spot: maker/taker 推断（按需求：poc 一定是 taker；否则使用 create/update ms 判断是否立即成交）
+            // spot: maker/taker 推断
+            // - post-only(poc) 一定是 maker
+            // - 其余：若 update_time_ms > create_time_ms，则认为经历过挂单生命周期，按 maker 处理
             let time_in_force_raw = order
                 .get("time_in_force")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_lowercase();
-            let create_time_ms: i64 = parse_i64_ms_field(order.get("create_time_ms"))
-                .or_else(|| parse_i64_ms_field(order.get("create_time")))
-                .unwrap_or(0);
-            let update_time_ms: i64 = parse_i64_ms_field(order.get("update_time_ms"))
-                .or_else(|| parse_i64_ms_field(order.get("update_time")))
-                .unwrap_or(0);
+            let create_time_ms = parse_timestamp_ms_or_seconds(order.get("create_time_ms"))
+                .or_else(|| parse_timestamp_ms_or_seconds(order.get("create_time")));
+            let update_time_ms = parse_timestamp_ms_or_seconds(order.get("update_time_ms"));
             let is_maker: u8 = if time_in_force_raw == "poc" {
-                0
-            } else if create_time_ms > 0 && update_time_ms > create_time_ms {
+                1
+            } else if matches!((create_time_ms, update_time_ms), (Some(create_ts), Some(update_ts)) if update_ts > create_ts)
+            {
                 1
             } else {
                 0
             };
 
-            let event = order.get("event").and_then(|v| v.as_str()).unwrap_or("");
-            let finish_as = order
-                .get("finish_as")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let (execution_type, order_status) =
-                GateBasicOrderMsg::event_to_execution_and_status(event, finish_as);
+            let Some(event) = order.get("event").and_then(|v| v.as_str()) else {
+                warn!("Gate: spot.orders_v2 missing event, dropping: {}", order);
+                incomplete = true;
+                continue;
+            };
+            let Some(finish_as) = order.get("finish_as").and_then(|v| v.as_str()) else {
+                warn!("Gate: spot.orders_v2 missing finish_as, dropping: {}", order);
+                incomplete = true;
+                continue;
+            };
+            let Some((execution_type, order_status)) = classify_gate_spot_event(event, finish_as)
+            else {
+                warn!(
+                    "Gate: spot.orders_v2 unsupported event/finish_as, dropping: {}",
+                    order
+                );
+                incomplete = true;
+                continue;
+            };
 
-            let price: f64 = order
-                .get("price")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0.0);
+            let Some(price) = parse_f64_str_or_num(order.get("price")) else {
+                warn!("Gate: spot.orders_v2 missing/invalid price, dropping: {}", order);
+                incomplete = true;
+                continue;
+            };
 
-            let quantity: f64 = order
-                .get("amount")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0.0);
+            let Some(quantity) = parse_f64_str_or_num(order.get("amount")) else {
+                warn!("Gate: spot.orders_v2 missing/invalid amount, dropping: {}", order);
+                incomplete = true;
+                continue;
+            };
+            if quantity <= 0.0 {
+                warn!("Gate: spot.orders_v2 non-positive amount, dropping: {}", order);
+                incomplete = true;
+                continue;
+            }
 
-            let cumulative_filled_quantity: f64 = order
-                .get("filled_amount")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0.0);
+            let Some(cumulative_filled_quantity) = parse_f64_str_or_num(order.get("filled_amount"))
+            else {
+                warn!(
+                    "Gate: spot.orders_v2 missing/invalid filled_amount, dropping: {}",
+                    order
+                );
+                incomplete = true;
+                continue;
+            };
 
             // spot: 根据状态语义选择成交价/委托价
             // - trade update（event=update 或 finish_as=filled）取 avg_deal_price
             // - 其余 order update 取 price
-            let fill_price: f64 = order
-                .get("avg_deal_price")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0.0);
+            let Some(fill_price) = parse_f64_str_or_num(order.get("avg_deal_price")) else {
+                warn!(
+                    "Gate: spot.orders_v2 missing/invalid avg_deal_price, dropping: {}",
+                    order
+                );
+                incomplete = true;
+                continue;
+            };
             let last_executed_price =
                 select_gate_price_by_update_kind(event, finish_as, fill_price, price);
+            if execution_type == 5 && last_executed_price <= 0.0 {
+                warn!(
+                    "Gate: spot.orders_v2 trade update missing fill price, dropping: {}",
+                    order
+                );
+                incomplete = true;
+                continue;
+            }
 
             let commission_asset = order
                 .get("fee_currency")
@@ -324,9 +427,12 @@ impl GateAccountEventParser {
                 .unwrap_or("")
                 .to_string();
 
-            let event_time: i64 = parse_i64_ms_field(order.get("update_time_ms"))
-                .or_else(|| parse_i64_ms_field(order.get("update_time")))
-                .unwrap_or(0);
+            let Some(event_time) = parse_timestamp_ms_or_seconds(order.get("update_time_ms"))
+            else {
+                warn!("Gate: spot.orders_v2 missing update_time, dropping: {}", order);
+                incomplete = true;
+                continue;
+            };
 
             // 创建消息
             let msg = GateBasicOrderMsg::create(
@@ -359,7 +465,11 @@ impl GateAccountEventParser {
             }
         }
 
-        count
+        if incomplete {
+            GateParseReport::incomplete(count)
+        } else {
+            GateParseReport::complete(count)
+        }
     }
 
     /// 解析合约订单更新 (futures.orders)
@@ -378,13 +488,19 @@ impl GateAccountEventParser {
         &self,
         json_value: &serde_json::Value,
         tx: &mpsc::UnboundedSender<Bytes>,
-    ) -> usize {
+    ) -> GateParseReport {
         let mut count = 0;
+        let mut incomplete = false;
 
         // 获取 result 数组
         let Some(result) = json_value.get("result").and_then(|v| v.as_array()) else {
-            return 0;
+            warn!("Gate: futures.orders missing result array");
+            return GateParseReport::incomplete(0);
         };
+
+        if result.is_empty() {
+            return GateParseReport::complete(0);
+        }
 
         for order in result {
             // 解析 client_order_id (text 字段，必须是 i64)
@@ -393,77 +509,121 @@ impl GateAccountEventParser {
                 Some(id) => id,
                 None => {
                     warn!("Gate: futures.orders text is not i64, dropping: {}", order);
+                    incomplete = true;
                     continue;
                 }
             };
 
             // 解析 order_id（兼容 string/number）
-            let order_id: i64 = parse_i64_str_or_num(order.get("id")).unwrap_or(0);
+            let Some(order_id) = parse_i64_str_or_num(order.get("id")) else {
+                warn!("Gate: futures.orders missing/invalid id, dropping: {}", order);
+                incomplete = true;
+                continue;
+            };
 
             // 解析 symbol (contract)
             let symbol = order
                 .get("contract")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
+                .trim()
                 .to_string();
+            if symbol.is_empty() {
+                warn!("Gate: futures.orders missing contract, dropping: {}", order);
+                incomplete = true;
+                continue;
+            }
 
             // 解析 side: futures 没有直接的 side 字段，需要根据 size(contracts) 正负判断
             // size > 0 为 buy (做多), size < 0 为 sell (做空)
-            let size_str = order.get("size").and_then(|v| v.as_str()).unwrap_or("0");
-            let size: i64 = size_str.parse().unwrap_or(0);
+            let Some(size) = parse_i64_str_or_num(order.get("size")) else {
+                warn!("Gate: futures.orders missing/invalid size, dropping: {}", order);
+                incomplete = true;
+                continue;
+            };
+            if size == 0 {
+                warn!("Gate: futures.orders zero size, dropping: {}", order);
+                incomplete = true;
+                continue;
+            }
             let side: u8 = if size >= 0 { 1 } else { 2 }; // 1=Buy, 2=Sell
             let quantity = size.abs() as f64; // contracts
 
             // 解析 left (剩余未成交 contracts)
-            let left_str = order.get("left").and_then(|v| v.as_str()).unwrap_or("0");
-            let left: i64 = left_str.parse().unwrap_or(0);
+            let Some(left) = parse_i64_str_or_num(order.get("left")) else {
+                warn!("Gate: futures.orders missing/invalid left, dropping: {}", order);
+                incomplete = true;
+                continue;
+            };
             let cumulative_filled_quantity = (size.abs() - left.abs()) as f64; // contracts
 
             // 解析 order_type: futures 默认是 limit
             // 可以通过 price 是否为 0 判断 market 单
-            let price: f64 = parse_f64_str_or_num(order.get("price")).unwrap_or(0.0);
+            let Some(price) = parse_f64_str_or_num(order.get("price")) else {
+                warn!("Gate: futures.orders missing/invalid price, dropping: {}", order);
+                incomplete = true;
+                continue;
+            };
             let order_type: u8 = if price == 0.0 { 3 } else { 1 }; // 3=Market, 1=Limit
 
             // futures: 根据状态语义选择成交价/委托价
             // - trade update（finish_as=_update 或 filled）取 fill_price
             // - 其余 order update 取 price
-            let fill_price: f64 = parse_f64_str_or_num(order.get("fill_price")).unwrap_or(0.0);
+            let Some(fill_price) = parse_f64_str_or_num(order.get("fill_price")) else {
+                warn!(
+                    "Gate: futures.orders missing/invalid fill_price, dropping: {}",
+                    order
+                );
+                incomplete = true;
+                continue;
+            };
 
-            // 解析 event_time (兼容 string/number；仅接受 ms)
-            let event_time: i64 = parse_i64_ms_field(order.get("update_time"))
-                .or_else(|| parse_i64_ms_field(order.get("update_time_ms")))
-                .unwrap_or(0);
+            // 解析 event_time (兼容 string/number；兼容秒/ms)
+            let Some(event_time) = parse_timestamp_ms_or_seconds(order.get("update_time"))
+            else {
+                warn!("Gate: futures.orders missing update_time, dropping: {}", order);
+                incomplete = true;
+                continue;
+            };
 
             // 解析 time_in_force
-            let time_in_force = GateBasicOrderMsg::time_in_force_to_u8(
-                order.get("tif").and_then(|v| v.as_str()).unwrap_or("gtc"),
-            );
+            let Some(time_in_force) =
+                parse_gate_time_in_force(order.get("tif").and_then(|v| v.as_str()))
+            else {
+                warn!("Gate: futures.orders invalid tif, dropping: {}", order);
+                incomplete = true;
+                continue;
+            };
 
-            // futures: maker/taker 推断（同 spot：优先使用 ms 版本的时间字段）
-            // - tif == "poc" => taker
-            // - 其余：若 update_time_ms > create_time_ms => maker（有挂单生命周期）
+            // futures: maker/taker 推断
+            // - post-only(poc) 一定是 maker
+            // - 其余：若 update_time_ms > create_time_ms，则认为经历过挂单生命周期，按 maker 处理
             let tif_raw = order
                 .get("tif")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_lowercase();
-            let create_time_ms: i64 = parse_i64_ms_field(order.get("create_time_ms"))
-                .or_else(|| parse_i64_ms_field(order.get("create_time")))
-                .unwrap_or(0);
+            let create_time_ms = parse_timestamp_ms_or_seconds(order.get("create_time_ms"))
+                .or_else(|| parse_timestamp_ms_or_seconds(order.get("create_time")));
             let is_maker: u8 = if tif_raw == "poc" {
-                0
-            } else if create_time_ms > 0 && event_time > create_time_ms {
+                1
+            } else if matches!(create_time_ms, Some(create_ts) if event_time > create_ts) {
                 1
             } else {
                 0
             };
 
             // 解析 status 和 finish_as
-            let status = order.get("status").and_then(|v| v.as_str()).unwrap_or("");
-            let finish_as = order
-                .get("finish_as")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let Some(status) = order.get("status").and_then(|v| v.as_str()) else {
+                warn!("Gate: futures.orders missing status, dropping: {}", order);
+                incomplete = true;
+                continue;
+            };
+            let Some(finish_as) = order.get("finish_as").and_then(|v| v.as_str()) else {
+                warn!("Gate: futures.orders missing finish_as, dropping: {}", order);
+                incomplete = true;
+                continue;
+            };
             let Some((execution_type, order_status)) =
                 classify_gate_futures_finish_as(status, finish_as)
             else {
@@ -471,11 +631,20 @@ impl GateAccountEventParser {
                     "Gate: futures.orders unknown status/finish_as, raw={}",
                     order
                 );
+                incomplete = true;
                 continue;
             };
 
             let last_executed_price =
                 select_gate_futures_price_by_finish_as(finish_as, fill_price, price);
+            if execution_type == 5 && last_executed_price <= 0.0 {
+                warn!(
+                    "Gate: futures.orders trade update missing fill price, dropping: {}",
+                    order
+                );
+                incomplete = true;
+                continue;
+            }
 
             // 手续费币种: futures 合约的手续费币种通常是 USDT
             // Gate 合约不在订单消息中提供手续费币种，这里留空
@@ -512,18 +681,28 @@ impl GateAccountEventParser {
             }
         }
 
-        count
+        if incomplete {
+            GateParseReport::incomplete(count)
+        } else {
+            GateParseReport::complete(count)
+        }
     }
 
     fn parse_futures_positions(
         &self,
         json_value: &serde_json::Value,
         tx: &mpsc::UnboundedSender<Bytes>,
-    ) -> usize {
+    ) -> GateParseReport {
         let mut count = 0;
+        let mut incomplete = false;
         let Some(result) = json_value.get("result").and_then(|v| v.as_array()) else {
-            return 0;
+            warn!("Gate: futures.positions missing result array");
+            return GateParseReport::incomplete(0);
         };
+
+        if result.is_empty() {
+            return GateParseReport::complete(0);
+        }
 
         for row in result {
             let inst_id = row
@@ -537,18 +716,22 @@ impl GateAccountEventParser {
                 .trim()
                 .to_ascii_uppercase();
             if inst_id.is_empty() {
+                warn!("Gate: futures.positions missing contract/symbol, dropping: {}", row);
+                incomplete = true;
                 continue;
             }
 
-            let timestamp = parse_i64_ms_field(row.get("update_time_ms"))
-                .or_else(|| parse_i64_ms_field(row.get("updateTimeMs")))
-                .or_else(|| parse_i64_ms_field(row.get("update_time")))
-                .or_else(|| parse_i64_ms_field(row.get("updateTime")))
-                .or_else(|| parse_i64_ms_field(row.get("time_ms")))
-                .or_else(|| parse_i64_ms_field(row.get("time")))
-                .unwrap_or(0);
+            let Some(timestamp) = parse_timestamp_ms_or_seconds(row.get("update_time_ms"))
+                .or_else(|| parse_timestamp_ms_or_seconds(row.get("updateTimeMs")))
+                .or_else(|| parse_timestamp_ms_or_seconds(row.get("update_time")))
+                .or_else(|| parse_timestamp_ms_or_seconds(row.get("updateTime")))
+            else {
+                warn!("Gate: futures.positions missing timestamp, dropping: {}", row);
+                incomplete = true;
+                continue;
+            };
 
-            let size = parse_f64_str_or_num(
+            let Some(size) = parse_f64_str_or_num(
                 row.get("size")
                     .or_else(|| row.get("position"))
                     .or_else(|| row.get("pos"))
@@ -557,7 +740,11 @@ impl GateAccountEventParser {
                     .or_else(|| row.get("position_size"))
                     .or_else(|| row.get("positionSize")),
             )
-            .unwrap_or(0.0);
+            else {
+                warn!("Gate: futures.positions missing/invalid size, dropping: {}", row);
+                incomplete = true;
+                continue;
+            };
 
             let side_text = row
                 .get("side")
@@ -620,13 +807,17 @@ impl GateAccountEventParser {
             }
         }
 
-        count
+        if incomplete {
+            GateParseReport::incomplete(count)
+        } else {
+            GateParseReport::complete(count)
+        }
     }
 
     /// 解析合约私有成交 (futures.usertrades)
     ///
     /// 字段映射：
-    /// - outer `time_ms` -> event_time（缺失时回退到 trade_time）
+    /// - outer `time_ms` -> event_time
     /// - `create_time_ms` / `create_time` -> trade_time
     /// - `contract` -> symbol
     /// - `order_id` -> order_id
@@ -640,14 +831,19 @@ impl GateAccountEventParser {
         &self,
         json_value: &serde_json::Value,
         tx: &mpsc::UnboundedSender<Bytes>,
-    ) -> usize {
+    ) -> GateParseReport {
         let mut count = 0;
+        let mut incomplete = false;
         let Some(result) = json_value.get("result").and_then(|v| v.as_array()) else {
-            return 0;
+            warn!("Gate: futures.usertrades missing result array");
+            return GateParseReport::incomplete(0);
         };
 
-        let outer_event_time = parse_timestamp_ms_or_seconds(json_value.get("time_ms"))
-            .or_else(|| parse_timestamp_ms_or_seconds(json_value.get("time")));
+        let outer_event_time = parse_timestamp_ms_or_seconds(json_value.get("time_ms"));
+
+        if result.is_empty() {
+            return GateParseReport::complete(0);
+        }
 
         for trade in result {
             let symbol = trade
@@ -657,12 +853,20 @@ impl GateAccountEventParser {
                 .trim()
                 .to_string();
             if symbol.is_empty() {
+                warn!("Gate: futures.usertrades missing contract, dropping: {}", trade);
+                incomplete = true;
                 continue;
             }
 
-            let raw_size = parse_f64_str_or_num(trade.get("size")).unwrap_or(0.0);
+            let Some(raw_size) = parse_f64_str_or_num(trade.get("size")) else {
+                warn!("Gate: futures.usertrades missing/invalid size, dropping: {}", trade);
+                incomplete = true;
+                continue;
+            };
             let last_executed_quantity = raw_size.abs();
             if last_executed_quantity <= 0.0 {
+                warn!("Gate: futures.usertrades zero size, dropping: {}", trade);
+                incomplete = true;
                 continue;
             }
 
@@ -674,24 +878,58 @@ impl GateAccountEventParser {
                         "Gate: futures.usertrades text is not i64/t-i64, dropping: {}",
                         trade
                     );
+                    incomplete = true;
                     continue;
                 }
             };
 
-            let trade_time = parse_timestamp_ms_or_seconds(trade.get("create_time_ms"))
+            let Some(trade_time) = parse_timestamp_ms_or_seconds(trade.get("create_time_ms"))
                 .or_else(|| parse_timestamp_ms_or_seconds(trade.get("create_time")))
-                .unwrap_or_else(|| outer_event_time.unwrap_or(0));
-            let event_time = outer_event_time.unwrap_or(trade_time);
+            else {
+                warn!(
+                    "Gate: futures.usertrades missing trade timestamp, dropping: {}",
+                    trade
+                );
+                incomplete = true;
+                continue;
+            };
+            let Some(event_time) = outer_event_time else {
+                warn!(
+                    "Gate: futures.usertrades missing outer event timestamp, dropping: {}",
+                    trade
+                );
+                incomplete = true;
+                continue;
+            };
 
             let side = if raw_size >= 0.0 { 1 } else { 2 };
-            let order_id = parse_i64_str_or_num(trade.get("order_id")).unwrap_or(0);
-            let trade_id = parse_i64_str_or_num(trade.get("id")).unwrap_or(0).max(0);
-            let last_executed_price = parse_f64_str_or_num(trade.get("price")).unwrap_or(0.0);
-            let is_maker = trade
-                .get("role")
-                .and_then(|v| v.as_str())
-                .map(|s| s.eq_ignore_ascii_case("maker"))
-                .unwrap_or(false);
+            let Some(order_id) = parse_i64_str_or_num(trade.get("order_id")) else {
+                warn!("Gate: futures.usertrades missing/invalid order_id, dropping: {}", trade);
+                incomplete = true;
+                continue;
+            };
+            let Some(trade_id) = parse_i64_str_or_num(trade.get("id")).map(|id| id.max(0)) else {
+                warn!("Gate: futures.usertrades missing/invalid id, dropping: {}", trade);
+                incomplete = true;
+                continue;
+            };
+            let Some(last_executed_price) = parse_f64_str_or_num(trade.get("price")) else {
+                warn!("Gate: futures.usertrades missing/invalid price, dropping: {}", trade);
+                incomplete = true;
+                continue;
+            };
+            if last_executed_price <= 0.0 {
+                warn!("Gate: futures.usertrades non-positive price, dropping: {}", trade);
+                incomplete = true;
+                continue;
+            }
+            let Some(is_maker) =
+                parse_gate_role(trade.get("role").and_then(|v| v.as_str()))
+            else {
+                warn!("Gate: futures.usertrades invalid role, dropping: {}", trade);
+                incomplete = true;
+                continue;
+            };
 
             let msg = BinanceTradeLiteMsg::create(
                 GateBasicOrderMsg::VENUE_FUTURES,
@@ -717,7 +955,83 @@ impl GateAccountEventParser {
             }
         }
 
-        count
+        if incomplete {
+            GateParseReport::incomplete(count)
+        } else {
+            GateParseReport::complete(count)
+        }
+    }
+
+    pub fn parse_with_report(
+        &self,
+        msg: Bytes,
+        tx: &mpsc::UnboundedSender<Bytes>,
+    ) -> GateParseReport {
+        let json_str = match std::str::from_utf8(&msg) {
+            Ok(s) => s,
+            Err(_) => return GateParseReport::incomplete(0),
+        };
+
+        let json_value: serde_json::Value = match serde_json::from_str(json_str) {
+            Ok(v) => v,
+            Err(_) => return GateParseReport::incomplete(0),
+        };
+
+        let channel = json_value
+            .get("channel")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let event = json_value
+            .get("event")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        match channel {
+            "unified.asset_detail" => {
+                if event == "update" {
+                    self.parse_unified_asset_detail(&json_value, tx)
+                } else {
+                    GateParseReport::incomplete(0)
+                }
+            }
+            "spot.orders_v2" | "spot.orders" => {
+                if event == "update" {
+                    self.parse_spot_orders_v2(&json_value, tx)
+                } else {
+                    GateParseReport::incomplete(0)
+                }
+            }
+            "futures.orders" => {
+                if event == "update" {
+                    self.parse_futures_orders(&json_value, tx)
+                } else {
+                    GateParseReport::incomplete(0)
+                }
+            }
+            "futures.usertrades" => {
+                if event == "update" {
+                    self.parse_futures_usertrades(&json_value, tx)
+                } else {
+                    GateParseReport::incomplete(0)
+                }
+            }
+            "futures.positions" => {
+                if event == "update" {
+                    self.parse_futures_positions(&json_value, tx)
+                } else {
+                    GateParseReport::incomplete(0)
+                }
+            }
+            "unified.pong" | "spot.pong" | "futures.pong" => GateParseReport::complete(0),
+            _ => {
+                if json_value.get("event").is_some() {
+                    debug!("Gate: unsupported event channel={} event={}", channel, event);
+                } else if !channel.is_empty() {
+                    warn!("Gate: Unknown channel: {}", channel);
+                }
+                GateParseReport::incomplete(0)
+            }
+        }
     }
 }
 
@@ -751,16 +1065,6 @@ fn parse_i64_str_or_num(v: Option<&Value>) -> Option<i64> {
     })
 }
 
-fn parse_i64_ms_field(v: Option<&Value>) -> Option<i64> {
-    let ts = parse_i64_str_or_num(v)?;
-    // 仅接受 ms 级时间戳（避免把秒级误当 ms 导致精度/语义错误）
-    if ts >= 1_000_000_000_000 {
-        Some(ts)
-    } else {
-        None
-    }
-}
-
 fn parse_timestamp_ms_or_seconds(v: Option<&Value>) -> Option<i64> {
     let ts = parse_i64_str_or_num(v)?;
     if ts >= 1_000_000_000_000 {
@@ -769,6 +1073,54 @@ fn parse_timestamp_ms_or_seconds(v: Option<&Value>) -> Option<i64> {
         Some(ts.saturating_mul(1_000))
     } else {
         None
+    }
+}
+
+fn parse_gate_side(raw: Option<&str>) -> Option<u8> {
+    match raw?.trim().to_ascii_lowercase().as_str() {
+        "buy" => Some(1),
+        "sell" => Some(2),
+        _ => None,
+    }
+}
+
+fn parse_gate_order_type(raw: Option<&str>) -> Option<u8> {
+    match raw?.trim().to_ascii_lowercase().as_str() {
+        "limit" => Some(1),
+        "market" => Some(3),
+        _ => None,
+    }
+}
+
+fn parse_gate_time_in_force(raw: Option<&str>) -> Option<u8> {
+    match raw?.trim().to_ascii_lowercase().as_str() {
+        "gtc" => Some(0),
+        "ioc" => Some(1),
+        "fok" => Some(2),
+        "poc" => Some(3),
+        _ => None,
+    }
+}
+
+fn parse_gate_role(raw: Option<&str>) -> Option<bool> {
+    match raw?.trim().to_ascii_lowercase().as_str() {
+        "maker" => Some(true),
+        "taker" => Some(false),
+        _ => None,
+    }
+}
+
+fn classify_gate_spot_event(event: &str, finish_as: &str) -> Option<(u8, u8)> {
+    let event = event.trim().to_ascii_lowercase();
+    let finish_as = finish_as.trim();
+    if finish_as.is_empty() {
+        return None;
+    }
+    match event.as_str() {
+        "put" | "update" | "finish" => {
+            Some(GateBasicOrderMsg::event_to_execution_and_status(&event, finish_as))
+        }
+        _ => None,
     }
 }
 
@@ -841,82 +1193,7 @@ fn select_gate_futures_price_by_finish_as(
 
 impl Parser for GateAccountEventParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
-        let json_str = match std::str::from_utf8(&msg) {
-            Ok(s) => s,
-            Err(_) => return 0,
-        };
-
-        let json_value: serde_json::Value = match serde_json::from_str(json_str) {
-            Ok(v) => v,
-            Err(_) => return 0,
-        };
-
-        // 获取频道
-        let channel = json_value
-            .get("channel")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        // 获取事件类型
-        let event = json_value
-            .get("event")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        match channel {
-            "unified.asset_detail" => {
-                if event == "update" {
-                    self.parse_unified_asset_detail(&json_value, tx)
-                } else {
-                    debug!("Gate: unified.asset_detail event={} (ignored)", event);
-                    0
-                }
-            }
-            "spot.orders_v2" | "spot.orders" => {
-                if event == "update" {
-                    self.parse_spot_orders_v2(&json_value, tx)
-                } else {
-                    debug!("Gate: spot.orders event={} (ignored)", event);
-                    0
-                }
-            }
-            "futures.orders" => {
-                if event == "update" {
-                    self.parse_futures_orders(&json_value, tx)
-                } else {
-                    debug!("Gate: futures.orders event={} (ignored)", event);
-                    0
-                }
-            }
-            "futures.usertrades" => {
-                if event == "update" {
-                    self.parse_futures_usertrades(&json_value, tx)
-                } else {
-                    debug!("Gate: futures.usertrades event={} (ignored)", event);
-                    0
-                }
-            }
-            "futures.positions" => {
-                if event == "update" {
-                    self.parse_futures_positions(&json_value, tx)
-                } else {
-                    debug!("Gate: futures.positions event={} (ignored)", event);
-                    0
-                }
-            }
-            "unified.pong" | "spot.pong" | "futures.pong" => {
-                // pong 响应，忽略
-                0
-            }
-            _ => {
-                if json_value.get("event").is_some() {
-                    debug!("Gate: event message: {}", json_str);
-                } else if !channel.is_empty() {
-                    warn!("Gate: Unknown channel: {}", channel);
-                }
-                0
-            }
-        }
+        self.parse_with_report(msg, tx).emitted
     }
 }
 
@@ -1118,6 +1395,136 @@ mod tests {
 
         let count = parser.parse(payload, &tx);
         assert_eq!(count, 0);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn gate_futures_orders_accept_numeric_size_and_left() {
+        let parser = GateAccountEventParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let payload = Bytes::from_static(
+            br#"{
+                "time":1776921360,
+                "time_ms":1776921360551,
+                "channel":"futures.orders",
+                "event":"update",
+                "result":[{
+                    "create_time":1776921350,
+                    "create_time_ms":1776921350009,
+                    "fill_price":85.91,
+                    "finish_as":"filled",
+                    "id":168322043570393737,
+                    "left":0,
+                    "price":85.91,
+                    "size":1,
+                    "status":"finished",
+                    "text":"t-162578788624891905",
+                    "tif":"poc",
+                    "contract":"SOL_USDT",
+                    "update_time":1776921360550,
+                    "role":"maker"
+                }]
+            }"#,
+        );
+
+        let count = parser.parse(payload, &tx);
+        assert_eq!(count, 1);
+
+        let wrapped = rx.try_recv().expect("order event");
+        let (event_type, scope, body) =
+            split_basic_account_event(&wrapped).expect("wrapped order");
+        assert_eq!(event_type, BasicAccountEventType::OrderUpdate);
+        assert_eq!(scope, BasicAccountScope::GateUnified);
+
+        let msg = GateBasicOrderMsg::from_bytes(body).expect("gate order body");
+        assert_eq!(msg.symbol, "SOL_USDT");
+        assert_eq!(msg.execution_type, 5);
+        assert_eq!(msg.order_status, 3);
+        assert_eq!(msg.quantity, 1.0);
+        assert_eq!(msg.cumulative_filled_quantity, 1.0);
+        assert_eq!(msg.is_maker, 1);
+        assert_eq!(msg.event_time, 1_776_921_360_550);
+        assert!((msg.last_executed_price - 85.91).abs() < 1e-12);
+    }
+
+    #[test]
+    fn gate_spot_orders_accept_numeric_fields_and_post_only_is_maker() {
+        let parser = GateAccountEventParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let payload = Bytes::from_static(
+            br#"{
+                "channel":"spot.orders_v2",
+                "event":"update",
+                "time":1776921360,
+                "time_ms":1776921360551,
+                "result":[{
+                    "id":399123456,
+                    "text":"t-123456789",
+                    "currency_pair":"SOL_USDT",
+                    "type":"limit",
+                    "side":"buy",
+                    "amount":1.25,
+                    "price":85.91,
+                    "time_in_force":"poc",
+                    "filled_amount":1.25,
+                    "avg_deal_price":85.91,
+                    "fee_currency":"USDT",
+                    "create_time":1776921350,
+                    "update_time":1776921360,
+                    "event":"update",
+                    "finish_as":"filled"
+                }]
+            }"#,
+        );
+
+        let count = parser.parse(payload, &tx);
+        assert_eq!(count, 1);
+
+        let wrapped = rx.try_recv().expect("order event");
+        let (event_type, scope, body) =
+            split_basic_account_event(&wrapped).expect("wrapped order");
+        assert_eq!(event_type, BasicAccountEventType::OrderUpdate);
+        assert_eq!(scope, BasicAccountScope::GateUnified);
+
+        let msg = GateBasicOrderMsg::from_bytes(body).expect("gate order body");
+        assert_eq!(msg.symbol, "SOL_USDT");
+        assert_eq!(msg.execution_type, 5);
+        assert_eq!(msg.order_status, 2);
+        assert_eq!(msg.is_maker, 1);
+        assert_eq!(msg.event_time, 1_776_921_360_000);
+        assert!((msg.price - 85.91).abs() < 1e-12);
+        assert!((msg.quantity - 1.25).abs() < 1e-12);
+        assert!((msg.cumulative_filled_quantity - 1.25).abs() < 1e-12);
+        assert!((msg.last_executed_price - 85.91).abs() < 1e-12);
+    }
+
+    #[test]
+    fn gate_futures_orders_missing_update_time_is_incomplete() {
+        let parser = GateAccountEventParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let payload = Bytes::from_static(
+            br#"{
+                "channel":"futures.orders",
+                "event":"update",
+                "result":[{
+                    "contract":"BTC_USDT",
+                    "id":4872460,
+                    "text":"123456789",
+                    "size":"1",
+                    "left":"0",
+                    "price":"40000.4",
+                    "fill_price":"40000.4",
+                    "tif":"gtc",
+                    "status":"finished",
+                    "finish_as":"filled",
+                    "create_time":1628736847
+                }]
+            }"#,
+        );
+
+        let report = parser.parse_with_report(payload, &tx);
+        assert_eq!(report.emitted, 0);
+        assert!(!report.complete);
         assert!(rx.try_recv().is_err());
     }
 
