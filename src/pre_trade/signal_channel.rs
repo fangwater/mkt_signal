@@ -1,6 +1,7 @@
 use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
 use crate::common::ipc_service_name::build_service_name;
 use crate::common::symbol_util::normalize_symbol_for_internal;
+use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{OrderType, Side};
 use crate::pre_trade::signal_throttle::check_signal_throttle;
@@ -37,6 +38,10 @@ pub const DEFAULT_SIGNAL_CHANNEL: &str = "trade_signal";
 
 /// 默认反向信号频道名称
 pub const DEFAULT_BACKWARD_CHANNEL: &str = "trade_query";
+
+fn should_drop_startup_buffered_signal(signal: &TradeSignal, listener_start_us: i64) -> bool {
+    signal.generation_time > 0 && signal.generation_time < listener_start_us
+}
 
 /// 信号频道 - 负责信号进程和 pre-trade 之间的双向通讯
 ///
@@ -164,6 +169,7 @@ impl SignalChannel {
 
     /// 监听器的核心逻辑
     async fn run_listener(channel_name: &str) -> Result<()> {
+        let listener_start_us = get_timestamp_us();
         let node_name = Self::signal_node_name(channel_name);
         let service_path = build_service_name(&format!("signal_pubs/{}", channel_name));
 
@@ -212,6 +218,8 @@ impl SignalChannel {
             );
         }
 
+        let mut dropped_startup_buffered = 0usize;
+
         loop {
             match subscriber.receive() {
                 Ok(Some(sample)) => {
@@ -221,6 +229,31 @@ impl SignalChannel {
                     }
                     match TradeSignal::from_bytes(&payload) {
                         Ok(signal) => {
+                            if should_drop_startup_buffered_signal(&signal, listener_start_us) {
+                                dropped_startup_buffered += 1;
+                                if dropped_startup_buffered <= 5
+                                    || dropped_startup_buffered % 100 == 0
+                                {
+                                    info!(
+                                        "signal channel {} dropped startup-buffered signal count={} type={:?} generation_time={} listener_start_us={}",
+                                        channel_name,
+                                        dropped_startup_buffered,
+                                        signal.signal_type,
+                                        signal.generation_time,
+                                        listener_start_us
+                                    );
+                                }
+                                continue;
+                            }
+                            if dropped_startup_buffered > 0 {
+                                info!(
+                                    "signal channel {} finished dropping startup-buffered signals count={} first_live_generation_time={}",
+                                    channel_name,
+                                    dropped_startup_buffered,
+                                    signal.generation_time
+                                );
+                                dropped_startup_buffered = 0;
+                            }
                             handle_trade_signal(signal);
                         }
                         Err(err) => warn!(
@@ -241,6 +274,29 @@ impl SignalChannel {
     /// 生成信号节点名称
     fn signal_node_name(channel: &str) -> String {
         format!("pre_trade_signal_{}", channel)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_drop_startup_buffered_signal;
+    use crate::signal::trade_signal::{SignalType, TradeSignal};
+    use bytes::Bytes;
+
+    #[test]
+    fn startup_filter_drops_older_signals() {
+        let signal = TradeSignal::create(SignalType::MMOpen, 999, 0.0, Bytes::new());
+        assert!(should_drop_startup_buffered_signal(&signal, 1_000));
+    }
+
+    #[test]
+    fn startup_filter_keeps_signals_from_current_generation_onward() {
+        let fresh = TradeSignal::create(SignalType::MMOpen, 1_000, 0.0, Bytes::new());
+        let newer = TradeSignal::create(SignalType::MMOpen, 1_001, 0.0, Bytes::new());
+        let missing_ts = TradeSignal::create(SignalType::MMOpen, 0, 0.0, Bytes::new());
+        assert!(!should_drop_startup_buffered_signal(&fresh, 1_000));
+        assert!(!should_drop_startup_buffered_signal(&newer, 1_000));
+        assert!(!should_drop_startup_buffered_signal(&missing_ts, 1_000));
     }
 }
 
