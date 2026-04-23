@@ -1236,7 +1236,7 @@ impl MarketMakerHedgeStrategy {
         let net_exposure_usdt = mark_price
             .map(|price| Self::net_exposure_usdt_with_mark_price(self.net_qty, price))
             .unwrap_or(0.0);
-        debug!(
+        info!(
             "MMHedgeTrace: strategy_id={} query_timer fired symbol={} now={} next_query_ts_us={} net_qty_base={:.8} mark_price={:?} net_exposure_usdt={:.8} pending_query={} tracked_orders={}",
             self.strategy_id,
             self.symbol,
@@ -1254,7 +1254,7 @@ impl MarketMakerHedgeStrategy {
         }
 
         if !self.should_send_hedge_query() {
-            debug!(
+            info!(
                 "MMHedgeTrace: strategy_id={} query_timer skip_hedge_query threshold_usdt={} mark_price={:?} net_qty_base={:.8} net_exposure_usdt={:?}",
                 self.strategy_id,
                 NET_EXPOSURE_EPS_USDT,
@@ -1464,7 +1464,7 @@ impl MarketMakerHedgeStrategy {
         let send_result = SignalChannel::with(|ch| ch.publish_backward(&payload));
         match send_result {
             Ok(true) => {
-                debug!(
+                info!(
                     "MarketMakerHedgeStrategy: strategy_id={} send hedge query ok symbol={} request_seq={}",
                     self.strategy_id, self.symbol, request_seq
                 );

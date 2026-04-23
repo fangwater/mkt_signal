@@ -16,7 +16,7 @@
 
 use anyhow::Result;
 use bytes::Bytes;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use mkt_signal::common::basic_account_msg::{
     get_basic_event_type, split_basic_account_event, BasicAccountEventMsg, BasicAccountEventType,
     BasicAccountScope, BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg,
@@ -650,7 +650,7 @@ fn log_parsed_event(msg: &Bytes) {
         }
         BasicAccountEventType::PositionUpdate => {
             if let Ok(m) = BasicPositionMsg::from_bytes(&payload) {
-                info!(
+                debug!(
                     "Gate PositionUpdate: scope={} ts={} inst={} side={} pos={}",
                     account_scope.as_str(),
                     m.timestamp,
@@ -679,7 +679,7 @@ fn log_parsed_event(msg: &Bytes) {
         }
         BasicAccountEventType::UnrealizedPnlUpdate => {
             if let Ok(m) = BasicUmUnrealizedMsg::from_bytes(&payload) {
-                info!(
+                debug!(
                     "Gate UnrealizedPnl: scope={} ts={} inst={} side={} pnl={}",
                     account_scope.as_str(),
                     m.timestamp,

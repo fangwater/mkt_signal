@@ -390,6 +390,18 @@ impl MmDecision {
             warn!("MmDecision: MMHedge query missing symbol");
             return;
         }
+        info!(
+            "MmDecision: MMHedge query received symbol={} request_seq={} net_qty={:.8} symbol_exposure_u={:.8} weighted_inventory_price={:.8} period_buy_qty={:.8} period_sell_qty={:.8} hedge_venue={:?} next_query_delay_ms={}",
+            symbol,
+            query.request_seq,
+            query.net_qty,
+            query.symbol_exposure_u,
+            query.weighted_inventory_price,
+            query.period_buy_qty,
+            query.period_sell_qty,
+            self.state.hedge_venue,
+            self.state.next_query_delay_ms
+        );
         let quote = match MktChannel::instance().get_quote(&symbol, self.state.hedge_venue) {
             Some(quote) => quote,
             None => {

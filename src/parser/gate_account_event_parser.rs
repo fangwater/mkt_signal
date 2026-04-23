@@ -721,12 +721,9 @@ impl GateAccountEventParser {
                 continue;
             }
 
-            let Some(timestamp) = parse_timestamp_ms_or_seconds(row.get("update_time_ms"))
-                .or_else(|| parse_timestamp_ms_or_seconds(row.get("updateTimeMs")))
-                .or_else(|| parse_timestamp_ms_or_seconds(row.get("update_time")))
-                .or_else(|| parse_timestamp_ms_or_seconds(row.get("updateTime")))
+            let Some(timestamp) = parse_timestamp_ms_or_seconds(row.get("time_ms"))
             else {
-                warn!("Gate: futures.positions missing timestamp, dropping: {}", row);
+                warn!("Gate: futures.positions missing time_ms, dropping: {}", row);
                 incomplete = true;
                 continue;
             };
@@ -1267,7 +1264,7 @@ mod tests {
                     "contract": "BTC_USDT",
                     "size": "-2",
                     "unrealised_pnl": "-0.25",
-                    "update_time": 1716796362915
+                    "time_ms": 1716796362915
                 }]
             }"#,
         );
@@ -1294,6 +1291,29 @@ mod tests {
         assert_eq!(pnl.inst_id, "BTC_USDT");
         assert_eq!(pnl.position_side, 'S');
         assert!((pnl.unrealized_pnl + 0.25).abs() < 1e-12);
+    }
+
+    #[test]
+    fn futures_positions_missing_time_ms_is_incomplete() {
+        let parser = GateAccountEventParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let payload = Bytes::from_static(
+            br#"{
+                "channel": "futures.positions",
+                "event": "update",
+                "result": [{
+                    "contract": "BTC_USDT",
+                    "size": "-2",
+                    "unrealised_pnl": "-0.25",
+                    "time": 1716796362
+                }]
+            }"#,
+        );
+
+        let report = parser.parse_with_report(payload, &tx);
+        assert_eq!(report.emitted, 0);
+        assert!(!report.complete);
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
