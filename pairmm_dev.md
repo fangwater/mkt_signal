@@ -35,3 +35,14 @@ bash scripts/close_mm_all_um_exposure.sh --env-name binance_mm_alpha --execute -
 bash scripts/deploy_mm_signal.sh --exchange bitget --env-name bitget_mm_alpha --bin-only
 bash scripts/deploy_mm_pre_trade.sh --exchange bitget --env-suffix alpha --bin-only
 bash scripts/deploy_mm_trade_engine.sh --exchange bitget --env-suffix alpha --bin-only
+
+
+
+
+
+bash scripts/deploy_mm_signal.sh --exchange gate --env-name gate_mm_alpha --bin-only
+bash scripts/deploy_mm_pre_trade.sh --exchange gate --env-suffix alpha --bin-only
+bash scripts/deploy_mm_trade_engine.sh --exchange gate --env-suffix alpha --bin-only
+bash scripts/deploy_mm_account_monitor.sh --env-suffix gate_mm_alpha --exchange gate
+
+bash scripts/close_mm_all_um_exposure.sh --env-name gate_mm_alpha --execute

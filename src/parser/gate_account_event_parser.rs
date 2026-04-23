@@ -290,7 +290,10 @@ impl GateAccountEventParser {
 
             // 解析其他字段（兼容 string/number）
             let Some(order_id) = parse_i64_str_or_num(order.get("id")) else {
-                warn!("Gate: spot.orders_v2 missing/invalid id, dropping: {}", order);
+                warn!(
+                    "Gate: spot.orders_v2 missing/invalid id, dropping: {}",
+                    order
+                );
                 incomplete = true;
                 continue;
             };
@@ -302,7 +305,10 @@ impl GateAccountEventParser {
                 .trim()
                 .to_string();
             if symbol.is_empty() {
-                warn!("Gate: spot.orders_v2 missing currency_pair, dropping: {}", order);
+                warn!(
+                    "Gate: spot.orders_v2 missing currency_pair, dropping: {}",
+                    order
+                );
                 incomplete = true;
                 continue;
             }
@@ -358,7 +364,10 @@ impl GateAccountEventParser {
                 continue;
             };
             let Some(finish_as) = order.get("finish_as").and_then(|v| v.as_str()) else {
-                warn!("Gate: spot.orders_v2 missing finish_as, dropping: {}", order);
+                warn!(
+                    "Gate: spot.orders_v2 missing finish_as, dropping: {}",
+                    order
+                );
                 incomplete = true;
                 continue;
             };
@@ -373,18 +382,27 @@ impl GateAccountEventParser {
             };
 
             let Some(price) = parse_f64_str_or_num(order.get("price")) else {
-                warn!("Gate: spot.orders_v2 missing/invalid price, dropping: {}", order);
+                warn!(
+                    "Gate: spot.orders_v2 missing/invalid price, dropping: {}",
+                    order
+                );
                 incomplete = true;
                 continue;
             };
 
             let Some(quantity) = parse_f64_str_or_num(order.get("amount")) else {
-                warn!("Gate: spot.orders_v2 missing/invalid amount, dropping: {}", order);
+                warn!(
+                    "Gate: spot.orders_v2 missing/invalid amount, dropping: {}",
+                    order
+                );
                 incomplete = true;
                 continue;
             };
             if quantity <= 0.0 {
-                warn!("Gate: spot.orders_v2 non-positive amount, dropping: {}", order);
+                warn!(
+                    "Gate: spot.orders_v2 non-positive amount, dropping: {}",
+                    order
+                );
                 incomplete = true;
                 continue;
             }
@@ -429,7 +447,10 @@ impl GateAccountEventParser {
 
             let Some(event_time) = parse_timestamp_ms_or_seconds(order.get("update_time_ms"))
             else {
-                warn!("Gate: spot.orders_v2 missing update_time, dropping: {}", order);
+                warn!(
+                    "Gate: spot.orders_v2 missing update_time, dropping: {}",
+                    order
+                );
                 incomplete = true;
                 continue;
             };
@@ -516,7 +537,10 @@ impl GateAccountEventParser {
 
             // 解析 order_id（兼容 string/number）
             let Some(order_id) = parse_i64_str_or_num(order.get("id")) else {
-                warn!("Gate: futures.orders missing/invalid id, dropping: {}", order);
+                warn!(
+                    "Gate: futures.orders missing/invalid id, dropping: {}",
+                    order
+                );
                 incomplete = true;
                 continue;
             };
@@ -537,7 +561,10 @@ impl GateAccountEventParser {
             // 解析 side: futures 没有直接的 side 字段，需要根据 size(contracts) 正负判断
             // size > 0 为 buy (做多), size < 0 为 sell (做空)
             let Some(size) = parse_i64_str_or_num(order.get("size")) else {
-                warn!("Gate: futures.orders missing/invalid size, dropping: {}", order);
+                warn!(
+                    "Gate: futures.orders missing/invalid size, dropping: {}",
+                    order
+                );
                 incomplete = true;
                 continue;
             };
@@ -551,7 +578,10 @@ impl GateAccountEventParser {
 
             // 解析 left (剩余未成交 contracts)
             let Some(left) = parse_i64_str_or_num(order.get("left")) else {
-                warn!("Gate: futures.orders missing/invalid left, dropping: {}", order);
+                warn!(
+                    "Gate: futures.orders missing/invalid left, dropping: {}",
+                    order
+                );
                 incomplete = true;
                 continue;
             };
@@ -560,7 +590,10 @@ impl GateAccountEventParser {
             // 解析 order_type: futures 默认是 limit
             // 可以通过 price 是否为 0 判断 market 单
             let Some(price) = parse_f64_str_or_num(order.get("price")) else {
-                warn!("Gate: futures.orders missing/invalid price, dropping: {}", order);
+                warn!(
+                    "Gate: futures.orders missing/invalid price, dropping: {}",
+                    order
+                );
                 incomplete = true;
                 continue;
             };
@@ -579,9 +612,11 @@ impl GateAccountEventParser {
             };
 
             // 解析 event_time (兼容 string/number；兼容秒/ms)
-            let Some(event_time) = parse_timestamp_ms_or_seconds(order.get("update_time"))
-            else {
-                warn!("Gate: futures.orders missing update_time, dropping: {}", order);
+            let Some(event_time) = parse_timestamp_ms_or_seconds(order.get("update_time")) else {
+                warn!(
+                    "Gate: futures.orders missing update_time, dropping: {}",
+                    order
+                );
                 incomplete = true;
                 continue;
             };
@@ -620,7 +655,10 @@ impl GateAccountEventParser {
                 continue;
             };
             let Some(finish_as) = order.get("finish_as").and_then(|v| v.as_str()) else {
-                warn!("Gate: futures.orders missing finish_as, dropping: {}", order);
+                warn!(
+                    "Gate: futures.orders missing finish_as, dropping: {}",
+                    order
+                );
                 incomplete = true;
                 continue;
             };
@@ -716,13 +754,15 @@ impl GateAccountEventParser {
                 .trim()
                 .to_ascii_uppercase();
             if inst_id.is_empty() {
-                warn!("Gate: futures.positions missing contract/symbol, dropping: {}", row);
+                warn!(
+                    "Gate: futures.positions missing contract/symbol, dropping: {}",
+                    row
+                );
                 incomplete = true;
                 continue;
             }
 
-            let Some(timestamp) = parse_timestamp_ms_or_seconds(row.get("time_ms"))
-            else {
+            let Some(timestamp) = parse_timestamp_ms_or_seconds(row.get("time_ms")) else {
                 warn!("Gate: futures.positions missing time_ms, dropping: {}", row);
                 incomplete = true;
                 continue;
@@ -736,9 +776,11 @@ impl GateAccountEventParser {
                     .or_else(|| row.get("amount"))
                     .or_else(|| row.get("position_size"))
                     .or_else(|| row.get("positionSize")),
-            )
-            else {
-                warn!("Gate: futures.positions missing/invalid size, dropping: {}", row);
+            ) else {
+                warn!(
+                    "Gate: futures.positions missing/invalid size, dropping: {}",
+                    row
+                );
                 incomplete = true;
                 continue;
             };
@@ -850,13 +892,19 @@ impl GateAccountEventParser {
                 .trim()
                 .to_string();
             if symbol.is_empty() {
-                warn!("Gate: futures.usertrades missing contract, dropping: {}", trade);
+                warn!(
+                    "Gate: futures.usertrades missing contract, dropping: {}",
+                    trade
+                );
                 incomplete = true;
                 continue;
             }
 
             let Some(raw_size) = parse_f64_str_or_num(trade.get("size")) else {
-                warn!("Gate: futures.usertrades missing/invalid size, dropping: {}", trade);
+                warn!(
+                    "Gate: futures.usertrades missing/invalid size, dropping: {}",
+                    trade
+                );
                 incomplete = true;
                 continue;
             };
@@ -901,28 +949,38 @@ impl GateAccountEventParser {
 
             let side = if raw_size >= 0.0 { 1 } else { 2 };
             let Some(order_id) = parse_i64_str_or_num(trade.get("order_id")) else {
-                warn!("Gate: futures.usertrades missing/invalid order_id, dropping: {}", trade);
+                warn!(
+                    "Gate: futures.usertrades missing/invalid order_id, dropping: {}",
+                    trade
+                );
                 incomplete = true;
                 continue;
             };
             let Some(trade_id) = parse_i64_str_or_num(trade.get("id")).map(|id| id.max(0)) else {
-                warn!("Gate: futures.usertrades missing/invalid id, dropping: {}", trade);
+                warn!(
+                    "Gate: futures.usertrades missing/invalid id, dropping: {}",
+                    trade
+                );
                 incomplete = true;
                 continue;
             };
             let Some(last_executed_price) = parse_f64_str_or_num(trade.get("price")) else {
-                warn!("Gate: futures.usertrades missing/invalid price, dropping: {}", trade);
+                warn!(
+                    "Gate: futures.usertrades missing/invalid price, dropping: {}",
+                    trade
+                );
                 incomplete = true;
                 continue;
             };
             if last_executed_price <= 0.0 {
-                warn!("Gate: futures.usertrades non-positive price, dropping: {}", trade);
+                warn!(
+                    "Gate: futures.usertrades non-positive price, dropping: {}",
+                    trade
+                );
                 incomplete = true;
                 continue;
             }
-            let Some(is_maker) =
-                parse_gate_role(trade.get("role").and_then(|v| v.as_str()))
-            else {
+            let Some(is_maker) = parse_gate_role(trade.get("role").and_then(|v| v.as_str())) else {
                 warn!("Gate: futures.usertrades invalid role, dropping: {}", trade);
                 incomplete = true;
                 continue;
@@ -1022,7 +1080,10 @@ impl GateAccountEventParser {
             "unified.pong" | "spot.pong" | "futures.pong" => GateParseReport::complete(0),
             _ => {
                 if json_value.get("event").is_some() {
-                    debug!("Gate: unsupported event channel={} event={}", channel, event);
+                    debug!(
+                        "Gate: unsupported event channel={} event={}",
+                        channel, event
+                    );
                 } else if !channel.is_empty() {
                     warn!("Gate: Unknown channel: {}", channel);
                 }
@@ -1114,9 +1175,9 @@ fn classify_gate_spot_event(event: &str, finish_as: &str) -> Option<(u8, u8)> {
         return None;
     }
     match event.as_str() {
-        "put" | "update" | "finish" => {
-            Some(GateBasicOrderMsg::event_to_execution_and_status(&event, finish_as))
-        }
+        "put" | "update" | "finish" => Some(GateBasicOrderMsg::event_to_execution_and_status(
+            &event, finish_as,
+        )),
         _ => None,
     }
 }
@@ -1451,8 +1512,7 @@ mod tests {
         assert_eq!(count, 1);
 
         let wrapped = rx.try_recv().expect("order event");
-        let (event_type, scope, body) =
-            split_basic_account_event(&wrapped).expect("wrapped order");
+        let (event_type, scope, body) = split_basic_account_event(&wrapped).expect("wrapped order");
         assert_eq!(event_type, BasicAccountEventType::OrderUpdate);
         assert_eq!(scope, BasicAccountScope::GateUnified);
 
@@ -1501,8 +1561,7 @@ mod tests {
         assert_eq!(count, 1);
 
         let wrapped = rx.try_recv().expect("order event");
-        let (event_type, scope, body) =
-            split_basic_account_event(&wrapped).expect("wrapped order");
+        let (event_type, scope, body) = split_basic_account_event(&wrapped).expect("wrapped order");
         assert_eq!(event_type, BasicAccountEventType::OrderUpdate);
         assert_eq!(scope, BasicAccountScope::GateUnified);
 
