@@ -1,3 +1,4 @@
+use crate::common::exchange::Exchange;
 use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::common::tick_math::QuantizedValue;
 use crate::common::time_util::get_timestamp_us;
@@ -11,6 +12,8 @@ use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimite
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::signal_channel::SignalChannel;
+use crate::pre_trade::symbol_mapper::create_symbol_mapper;
+use crate::pre_trade::symbol_util::extract_base_asset;
 use crate::pre_trade::{PersistChannel, QueryEngHub, TradeEngHub};
 use crate::signal::common::{
     align_price_floor, ExecutionType, OrderStatus, SignalBytes, TimeInForce, TradingVenue,
@@ -59,6 +62,12 @@ fn monotonic_cumulative_fill(prev_cum: f64, incoming_cum: f64) -> f64 {
     } else {
         incoming_cum
     }
+}
+
+fn mark_price_lookup_symbol(symbol: &str, exchange: Exchange) -> String {
+    extract_base_asset(symbol)
+        .map(|base_asset| create_symbol_mapper(exchange).asset_to_price_symbol(&base_asset))
+        .unwrap_or_else(|| symbol.to_uppercase())
 }
 
 #[derive(Debug, Clone)]
@@ -879,10 +888,9 @@ impl MarketMakerHedgeStrategy {
     }
 
     fn mark_price(&self) -> Option<f64> {
-        MonitorChannel::instance()
-            .price_table()
-            .borrow()
-            .mark_price(&self.symbol)
+        let monitor = MonitorChannel::instance();
+        let price_symbol = mark_price_lookup_symbol(&self.symbol, monitor.mark_price_exchange());
+        monitor.price_table().borrow().mark_price(&price_symbol)
     }
 
     fn net_exposure_usdt_with_mark_price(net_qty: f64, mark_price: f64) -> f64 {
@@ -2723,9 +2731,11 @@ impl MarketMakerHedgeStrategy {
 #[cfg(test)]
 mod tests {
     use super::{
-        monotonic_cumulative_fill, HedgeOrderMeta, MarketMakerHedgeStrategy,
-        PendingOrderQueryReason, RetiredHedgeFillMeta, NET_EXPOSURE_EPS_USDT,
+        mark_price_lookup_symbol, monotonic_cumulative_fill, HedgeOrderMeta,
+        MarketMakerHedgeStrategy, PendingOrderQueryReason, RetiredHedgeFillMeta,
+        NET_EXPOSURE_EPS_USDT,
     };
+    use crate::common::exchange::Exchange;
     use crate::common::time_util::get_timestamp_us;
     use crate::pre_trade::order_manager::Side;
     use crate::signal::common::TradingVenue;
@@ -2744,6 +2754,30 @@ mod tests {
         let above = MarketMakerHedgeStrategy::net_exposure_usdt_with_mark_price(0.2, 100.0);
         assert!(below < NET_EXPOSURE_EPS_USDT);
         assert!(above > NET_EXPOSURE_EPS_USDT);
+    }
+
+    #[test]
+    fn mark_price_lookup_symbol_uses_gate_contract_style() {
+        assert_eq!(
+            mark_price_lookup_symbol("SOLUSDT", Exchange::Gate),
+            "SOL_USDT"
+        );
+        assert_eq!(
+            mark_price_lookup_symbol("SOL_USDT", Exchange::Gate),
+            "SOL_USDT"
+        );
+    }
+
+    #[test]
+    fn mark_price_lookup_symbol_keeps_internal_style_for_binance_like_exchanges() {
+        assert_eq!(
+            mark_price_lookup_symbol("SOLUSDT", Exchange::Binance),
+            "SOLUSDT"
+        );
+        assert_eq!(
+            mark_price_lookup_symbol("SOL_USDT", Exchange::Binance),
+            "SOLUSDT"
+        );
     }
 
     #[test]
