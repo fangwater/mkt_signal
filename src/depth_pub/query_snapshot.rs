@@ -4,6 +4,8 @@ use dashmap::DashMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::common::symbol_util::normalize_symbol_for_internal;
+
 use super::orderbook::{key_to_price, OrderBook};
 use super::query_logic::DepthQuerySource;
 use super::query_msg::price_to_tick_index;
@@ -91,12 +93,20 @@ impl QuerySnapshotStore {
 
     pub fn publish(&self, symbol: &str, snapshot: SymbolQuerySnapshot) {
         let snapshot = Arc::new(snapshot);
-        match self.snapshots.entry(symbol.to_string()) {
-            Entry::Occupied(entry) => {
-                entry.get().store(snapshot);
-            }
-            Entry::Vacant(entry) => {
-                entry.insert(Arc::new(ArcSwap::new(snapshot)));
+        let mut keys = vec![symbol.to_string()];
+        let normalized = normalize_symbol_for_internal(symbol);
+        if !normalized.is_empty() && normalized != symbol {
+            keys.push(normalized);
+        }
+
+        for key in keys {
+            match self.snapshots.entry(key) {
+                Entry::Occupied(entry) => {
+                    entry.get().store(Arc::clone(&snapshot));
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert(Arc::new(ArcSwap::new(Arc::clone(&snapshot))));
+                }
             }
         }
     }
@@ -186,6 +196,21 @@ mod tests {
         );
 
         let loaded = store.load("btcusdt").expect("snapshot should exist");
+        assert_eq!(loaded.timestamp, 1);
+        assert_eq!(loaded.amount_at_price_key(10_000_000_000), Some(1.0));
+    }
+
+    #[test]
+    fn store_load_supports_normalized_alias_for_gate_style_symbol() {
+        let store = QuerySnapshotStore::new("gate-futures");
+        let mut orderbook = OrderBook::new();
+        orderbook.apply_update(&[(100.0, 1.0)], &[(101.0, 2.0)], 1, 1);
+        store.publish(
+            "BTC_USDT",
+            SymbolQuerySnapshot::from_orderbook(&orderbook, Some(1.0)),
+        );
+
+        let loaded = store.load("BTCUSDT").expect("normalized alias should exist");
         assert_eq!(loaded.timestamp, 1);
         assert_eq!(loaded.amount_at_price_key(10_000_000_000), Some(1.0));
     }

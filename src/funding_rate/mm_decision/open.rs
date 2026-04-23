@@ -527,16 +527,23 @@ fn env_fields(env: Option<&EnvironmentSignalResult>) -> (String, Option<f64>, Op
 
 fn publish_failure_reason(stats: &MmOpenPublishStats) -> String {
     if stats.prepared_levels == 0 {
-        if stats.tlen_filtered_levels > 0 {
+        if stats.zero_quantized_levels > 0 && stats.tlen_filtered_levels > 0 {
             format!(
-                "all_levels_filtered_by_tlen_or_quantization(zero_quantized={} tlen_filtered={})",
+                "all_levels_filtered(mixed_reasons zero_quantized={} tlen_filtered={})",
                 stats.zero_quantized_levels, stats.tlen_filtered_levels
             )
-        } else {
+        } else if stats.tlen_filtered_levels > 0 {
             format!(
-                "all_levels_filtered_zero_qty_or_price(zero_quantized={})",
+                "all_levels_filtered_by_tlen_gate(tlen_filtered={})",
+                stats.tlen_filtered_levels
+            )
+        } else if stats.zero_quantized_levels > 0 {
+            format!(
+                "all_levels_filtered_by_quantization(zero_quantized={})",
                 stats.zero_quantized_levels
             )
+        } else {
+            "all_levels_filtered(prepared=0 zero_quantized=0 tlen_filtered=0)".to_string()
         }
     } else if stats.publish_failures >= stats.prepared_levels {
         format!(
@@ -676,8 +683,11 @@ fn log_interval_summary(state: &MmDecisionState, results: &[MmOpenEvalResult]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{mm_open_blocked_by_environment, resolve_mm_open_return_score};
+    use super::{
+        mm_open_blocked_by_environment, publish_failure_reason, resolve_mm_open_return_score,
+    };
     use crate::funding_rate::factor_value_hub::{EnvironmentSignalResult, EnvironmentSignalSource};
+    use crate::funding_rate::mm_decision::state::MmOpenPublishStats;
 
     fn sample_environment_signal(allow_open: bool) -> EnvironmentSignalResult {
         EnvironmentSignalResult {
@@ -747,6 +757,48 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("return_score unavailable")
+        );
+    }
+
+    #[test]
+    fn publish_failure_reason_distinguishes_tlen_only_filtering() {
+        let stats = MmOpenPublishStats {
+            prepared_levels: 0,
+            zero_quantized_levels: 0,
+            tlen_filtered_levels: 4,
+            ..Default::default()
+        };
+        assert_eq!(
+            publish_failure_reason(&stats),
+            "all_levels_filtered_by_tlen_gate(tlen_filtered=4)"
+        );
+    }
+
+    #[test]
+    fn publish_failure_reason_distinguishes_quantization_only_filtering() {
+        let stats = MmOpenPublishStats {
+            prepared_levels: 0,
+            zero_quantized_levels: 3,
+            tlen_filtered_levels: 0,
+            ..Default::default()
+        };
+        assert_eq!(
+            publish_failure_reason(&stats),
+            "all_levels_filtered_by_quantization(zero_quantized=3)"
+        );
+    }
+
+    #[test]
+    fn publish_failure_reason_distinguishes_mixed_filtering() {
+        let stats = MmOpenPublishStats {
+            prepared_levels: 0,
+            zero_quantized_levels: 2,
+            tlen_filtered_levels: 5,
+            ..Default::default()
+        };
+        assert_eq!(
+            publish_failure_reason(&stats),
+            "all_levels_filtered(mixed_reasons zero_quantized=2 tlen_filtered=5)"
         );
     }
 }
