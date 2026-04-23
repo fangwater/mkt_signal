@@ -1,12 +1,13 @@
-use crate::common::symbol_util::normalize_symbol_for_internal;
+use crate::common::symbol_util::{normalize_symbol_for_internal, normalize_symbol_for_venue};
 use crate::common::time_util::get_timestamp_us;
 use crate::funding_rate::common::{build_decision_from_key_base, Quote};
 use crate::funding_rate::factor_value_hub::FactorValueHub;
+use crate::market_maker::order_align::{contract_qty_multiplier, min_qty_symbol_key};
 use crate::market_maker::quote_plan_levels::{
     build_quote_plan_levels, QuotePlanLevel, QuotePlanLevelSpec,
 };
 use crate::pre_trade::order_manager::Side;
-use crate::signal::common::TradingVenue;
+use crate::signal::common::{align_price_floor, TradingVenue};
 use crate::signal::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
 use log::{debug, warn};
@@ -287,6 +288,36 @@ fn build_scaled_split_offsets(
         .collect()
 }
 
+fn one_hand_qty_below_min(
+    venue: TradingVenue,
+    symbol_key: &str,
+    order_amount_u: f64,
+    price: f64,
+    table: &VenueMinQtyTable,
+) -> bool {
+    if !(order_amount_u.is_finite() && order_amount_u > 0.0 && price.is_finite() && price > 0.0) {
+        return false;
+    }
+    let min_qty = table.min_qty(symbol_key).unwrap_or(0.0);
+    if !(min_qty.is_finite() && min_qty > 0.0) {
+        return false;
+    }
+    let multiplier = contract_qty_multiplier(table, venue, symbol_key).unwrap_or(1.0);
+    if !(multiplier.is_finite() && multiplier > 0.0) {
+        return false;
+    }
+
+    let raw_qty_venue = (order_amount_u / price) / multiplier;
+    let step = table.step_size(symbol_key).unwrap_or(0.0);
+    let aligned_qty_venue = if step.is_finite() && step > 0.0 {
+        align_price_floor(raw_qty_venue, step)
+    } else {
+        raw_qty_venue
+    };
+
+    aligned_qty_venue + 1e-12 < min_qty
+}
+
 fn build_quantile_offset_plan(
     side: Side,
     signal: f64,
@@ -505,11 +536,48 @@ pub fn build_mm_hedge_quote_plan(
             base_price,
         })
         .collect();
-    let (price_tick, qty_tick, levels) =
-        build_quote_plan_levels(input.venue, &symbol, input.order_amount_u, &specs, table)?;
-    if levels.is_empty() {
-        return Err("empty levels after alignment".to_string());
-    }
+    let trade_symbol = normalize_symbol_for_venue(&symbol, input.venue);
+    let symbol_key = min_qty_symbol_key(input.venue, &trade_symbol);
+    let one_hand_below_min = one_hand_qty_below_min(
+        input.venue,
+        &symbol_key,
+        input.order_amount_u,
+        base_price,
+        table,
+    );
+    let (price_tick, qty_tick, levels) = if one_hand_below_min {
+        warn!(
+            "MMHedge: skip hedge levels because one-hand qty is below min_qty symbol={} venue={:?} order_amount_u={:.8} base_price={:.8} net_qty_base={:.8}",
+            symbol,
+            input.venue,
+            input.order_amount_u,
+            base_price,
+            net_qty
+        );
+        (
+            table.price_tick(&symbol_key).unwrap_or(0.0),
+            table.step_size(&symbol_key).unwrap_or(0.0),
+            Vec::new(),
+        )
+    } else {
+        match build_quote_plan_levels(input.venue, &symbol, input.order_amount_u, &specs, table) {
+            Ok(result) => result,
+            Err(err) if err.contains("aligned qty invalid") => {
+                warn!(
+                    "MMHedge: skip hedge levels because one-hand qty cannot be aligned symbol={} venue={:?} order_amount_u={:.8} net_qty_base={:.8} err={}",
+                    symbol,
+                    input.venue,
+                    input.order_amount_u,
+                    net_qty,
+                    err
+                );
+                let price_tick = table.price_tick(&symbol_key).unwrap_or(0.0);
+                let qty_tick = table.step_size(&symbol_key).unwrap_or(0.0);
+                (price_tick, qty_tick, Vec::new())
+            }
+            Err(err) => return Err(err),
+        }
+    };
 
     debug!(
         "MMHedge query->scale: symbol={} side={:?} net_qty_base={:.8} bid0={:.8} ask0={:.8} signal={:.8} signal_qtl={} enable_return_score_adjust_hedge={} clipped_signal={:.8} normalized_signal={:.8} volatility={:.8} hedge_vol_multiplier={:.8} bound={:.8} offset_low={:.8} offset_high_limit={:.8} hedge_window_scale_low={:.8} hedge_window_scale_high={:.8} mapped_offset={:.8} adjusted_offset={:.8} symbol_exposure_u={:.8} exposure_offset_factor={:.8} hedge_offset_ratio={:.8} final_offset={:.8}",
@@ -624,22 +692,26 @@ pub fn build_mm_hedge_ctx(
     }
     if ctx.price_qv_list.is_empty() || ctx.amount_qv_list.is_empty() || ctx.price_offsets.is_empty()
     {
-        return Err("empty price/amount list after alignment".to_string());
+        warn!(
+            "MMHedge ctx has no aligned levels: symbol={} venue={:?} order_amount_u={:.8}",
+            plan.symbol, plan.venue, plan.order_amount_u
+        );
+    } else {
+        debug!(
+            "MMHedge ctx levels: symbol={} levels={} price_values={:?} amount_values={:?} offsets={:?}",
+            plan.symbol,
+            ctx.price_qv_list.len(),
+            ctx.price_qv_list
+                .iter()
+                .map(crate::common::tick_math::QuantizedValue::get_val)
+                .collect::<Vec<_>>(),
+            ctx.amount_qv_list
+                .iter()
+                .map(crate::common::tick_math::QuantizedValue::get_val)
+                .collect::<Vec<_>>(),
+            ctx.price_offsets,
+        );
     }
-    debug!(
-        "MMHedge ctx levels: symbol={} levels={} price_values={:?} amount_values={:?} offsets={:?}",
-        plan.symbol,
-        ctx.price_qv_list.len(),
-        ctx.price_qv_list
-            .iter()
-            .map(crate::common::tick_math::QuantizedValue::get_val)
-            .collect::<Vec<_>>(),
-        ctx.amount_qv_list
-            .iter()
-            .map(crate::common::tick_math::QuantizedValue::get_val)
-            .collect::<Vec<_>>(),
-        ctx.price_offsets,
-    );
     ctx.signal_ts = plan.now_us;
     ctx.next_query_ts = plan.next_query_ts;
     ctx.set_from_key(build_mm_hedge_from_key(
@@ -653,11 +725,17 @@ pub fn build_mm_hedge_ctx(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_quantile_offset_plan, map_offset_from_signal_legacy, next_aligned_query_ts_us,
-        resolve_mm_hedge_effective_signal, resolve_mm_hedge_signal_quantile,
+        build_mm_hedge_ctx, build_quantile_offset_plan, map_offset_from_signal_legacy,
+        next_aligned_query_ts_us, resolve_mm_hedge_effective_signal,
+        resolve_mm_hedge_signal_quantile, MmHedgeBuildInput,
     };
+    use crate::common::min_qty_table::MinQtyEntry;
+    use crate::funding_rate::common::Quote;
     use crate::market_maker::hedge_scale::{scale_offsets_by_inventory, HedgeOffsetScaleInput};
     use crate::pre_trade::order_manager::Side;
+    use crate::signal::common::TradingVenue;
+    use crate::signal::hedge_signal::MmHedgeSignalQueryMsg;
+    use crate::signal::venue_min_qty_table::VenueMinQtyTable;
 
     #[test]
     fn legacy_short_signal_increases_offset_monotonically() {
@@ -731,6 +809,52 @@ mod tests {
     fn next_query_ts_aligns_to_minute_boundary() {
         assert_eq!(next_aligned_query_ts_us(59_999_000, 60_000), 60_000_000);
         assert_eq!(next_aligned_query_ts_us(60_000_000, 60_000), 120_000_000);
+    }
+
+    #[test]
+    fn build_mm_hedge_ctx_keeps_empty_levels_when_one_hand_qty_cannot_align() {
+        let mut table = VenueMinQtyTable::new(TradingVenue::GateFutures);
+        table.set_entry_for_test(MinQtyEntry {
+            symbol: "SOLUSDT".to_string(),
+            base_asset: "SOL".to_string(),
+            quote_asset: "USDT".to_string(),
+            min_qty: 200.0,
+            step_size: 1.0,
+            price_tick: Some(0.01),
+            min_notional: None,
+        });
+        table.set_contract_multiplier_for_test("SOLUSDT", 0.01);
+
+        let input = MmHedgeBuildInput {
+            venue: TradingVenue::GateFutures,
+            symbol: "SOLUSDT",
+            quote: Quote {
+                bid: 85.56,
+                ask: 85.58,
+                ts: 1,
+            },
+            volatility: 0.01,
+            signal: 0.0,
+            signal_qtl: Some(0.5),
+            enable_return_score_adjust_hedge: true,
+            hedge_vol_multiplier: 2.0,
+            hedge_offset_ratio: 1.3,
+            order_amount_u: 100.0,
+            hedge_orders_per_round: 8,
+            offset_low: 0.0003,
+            offset_high_limit: 0.005,
+            hedge_window_scale_low: 0.8,
+            hedge_window_scale_high: 1.3,
+            next_query_delay_ms: 60_000,
+        };
+        let query = MmHedgeSignalQueryMsg::new("SOLUSDT", 1.0, 0.0, 1.0, 250.0, 85.57, 2);
+
+        let ctx = build_mm_hedge_ctx(input, &table, &query).unwrap();
+
+        assert!(ctx.price_qv_list.is_empty());
+        assert!(ctx.amount_qv_list.is_empty());
+        assert!(ctx.price_offsets.is_empty());
+        assert!(ctx.next_query_ts > 0);
     }
 
     #[test]

@@ -176,6 +176,10 @@ impl VenueMinQtyTable {
 
 #[cfg(test)]
 impl VenueMinQtyTable {
+    pub fn set_entry_for_test(&mut self, entry: MinQtyEntry) {
+        self.filters.insert(entry.symbol.to_uppercase(), entry);
+    }
+
     pub fn set_contract_multiplier_for_test(&mut self, symbol: &str, multiplier: f64) {
         self.contract_multipliers
             .insert(symbol.to_uppercase(), multiplier);

@@ -508,7 +508,7 @@ impl FactorValueHub {
                             .unwrap_or(true);
                         if should_update {
                             self.factor_value_cache.insert(cache_key.clone(), snapshot);
-                            if ready && value.is_finite() {
+                            if ready && value.is_finite() && value > 0.0 {
                                 let should_update_last_valid = self
                                     .last_valid_factor_value_cache
                                     .get(&cache_key)
@@ -729,7 +729,7 @@ impl FactorValueHub {
                             .unwrap_or(true);
                         if should_update {
                             self.factor_value_cache.insert(cache_key.clone(), snapshot);
-                            if ready && value.is_finite() {
+                            if ready && value.is_finite() && value > 0.0 {
                                 let should_update_last_valid = self
                                     .last_valid_factor_value_cache
                                     .get(&cache_key)
@@ -852,7 +852,11 @@ impl FactorValueHub {
         hedge_venue: TradingVenue,
     ) -> FactorValueLookupResult {
         let strict = self.lookup_factor_value(hedge_symbol, hedge_venue);
-        if strict.target_factor_value.is_some() {
+        if strict
+            .target_factor_value
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .is_some()
+        {
             return strict;
         }
 
