@@ -1244,7 +1244,7 @@ impl MarketMakerHedgeStrategy {
         let net_exposure_usdt = mark_price
             .map(|price| Self::net_exposure_usdt_with_mark_price(self.net_qty, price))
             .unwrap_or(0.0);
-        info!(
+        debug!(
             "MMHedgeTrace: strategy_id={} query_timer fired symbol={} now={} next_query_ts_us={} net_qty_base={:.8} mark_price={:?} net_exposure_usdt={:.8} pending_query={} tracked_orders={}",
             self.strategy_id,
             self.symbol,
@@ -1262,7 +1262,7 @@ impl MarketMakerHedgeStrategy {
         }
 
         if !self.should_send_hedge_query() {
-            info!(
+            debug!(
                 "MMHedgeTrace: strategy_id={} query_timer skip_hedge_query threshold_usdt={} mark_price={:?} net_qty_base={:.8} net_exposure_usdt={:?}",
                 self.strategy_id,
                 NET_EXPOSURE_EPS_USDT,
@@ -1455,7 +1455,7 @@ impl MarketMakerHedgeStrategy {
         let hedge_venue = monitor.hedge_venue();
         let risk_position_qty = monitor.get_position_qty(&self.symbol, hedge_venue);
         let risk_position_diff = self.net_qty - risk_position_qty;
-        info!(
+        debug!(
             "MarketMakerHedgeStrategy: strategy_id={} hedge net-vs-monitor symbol={} request_seq={} net_qty={:.8} weighted_inventory_price={:.8} monitor_qty={:.8} diff_qty={:.8} hedge_venue={:?} period_buy_qty={:.8} period_sell_qty={:.8}",
             self.strategy_id,
             self.symbol,
@@ -1472,7 +1472,7 @@ impl MarketMakerHedgeStrategy {
         let send_result = SignalChannel::with(|ch| ch.publish_backward(&payload));
         match send_result {
             Ok(true) => {
-                info!(
+                debug!(
                     "MarketMakerHedgeStrategy: strategy_id={} send hedge query ok symbol={} request_seq={}",
                     self.strategy_id, self.symbol, request_seq
                 );
@@ -2059,7 +2059,7 @@ impl MarketMakerHedgeStrategy {
                 continue;
             }
             if dropped_qty > 1e-12 {
-                info!(
+                debug!(
                     "MarketMakerHedgeStrategy: strategy_id={} final hedge qty aligned client_order_id={} venue={:?} symbol={} raw_qty={:.8} aligned_qty={:.8} qty_step={:.8} dropped_qty={:.8}",
                     self.strategy_id,
                     plan.client_order_id,
@@ -2098,7 +2098,7 @@ impl MarketMakerHedgeStrategy {
                 if open_can_cover_10s && open_can_cover_1m {
                     borrowed_open_count_10s += 1;
                     borrowed_open_count_1m += 1;
-                    info!(
+                    debug!(
                         "MarketMakerHedgeStrategy: strategy_id={} symbol={} hedge rate limit hit, temporarily borrow open quota in current batch: hedge_count_10s={} hedge_limit_10s={} hedge_count_1m={} hedge_limit_1m={} open_count_10s={} open_limit_10s={} open_count_1m={} open_limit_1m={} borrowed_open_10s={} borrowed_open_1m={}",
                         self.strategy_id,
                         symbol,
@@ -2114,7 +2114,7 @@ impl MarketMakerHedgeStrategy {
                         borrowed_open_count_1m
                     );
                 } else {
-                    info!(
+                    warn!(
                         "MarketMakerHedgeStrategy: strategy_id={} symbol={} hedge 下单频率风控触发，且 open 剩余额度不足: hedge_count_10s={} hedge_limit_10s={} hedge_count_1m={} hedge_limit_1m={} open_count_10s={} open_limit_10s={} open_count_1m={} open_limit_1m={} borrowed_open_10s={} borrowed_open_1m={}",
                         self.strategy_id,
                         symbol,
@@ -2172,7 +2172,7 @@ impl MarketMakerHedgeStrategy {
                         plan.client_order_id,
                         get_timestamp_us(),
                     );
-                    info!(
+                    debug!(
                         "MarketMakerHedgeStrategy: strategy_id={} MM hedge order action recorded client_order_id={} count_10s={} count_1m={}",
                         self.strategy_id, plan.client_order_id, stats.count_10s, stats.count_1m
                     );

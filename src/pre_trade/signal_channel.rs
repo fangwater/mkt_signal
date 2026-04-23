@@ -872,7 +872,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                     if let Err(e) =
                         MonitorChannel::instance().check_pending_limit_order(&symbol, side)
                     {
-                        warn!("MMOpen: {} 限价挂单数量超限: {}", symbol, e);
+                        info!("MMOpen: {} 限价挂单数量超限: {}", symbol, e);
                         return;
                     }
                 }
@@ -898,7 +898,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                 debug!("MMOpen: strategy activated id={}", strategy_id);
                 strategy_mgr.borrow_mut().insert(Box::new(strategy));
             } else {
-                warn!("⚠️ MMOpen: strategy_id={} 未激活", strategy_id);
+                info!("MMOpen: strategy_id={} 未激活", strategy_id);
             }
         }
         SignalType::MMCancelTrigger => match MmCancelTriggerCtx::from_bytes(signal.context.clone())
@@ -1019,7 +1019,7 @@ fn handle_trade_signal(signal: TradeSignal) {
 
                 let configured_open_venue = MonitorChannel::instance().open_venue();
                 if opening_venue != configured_open_venue {
-                    warn!(
+                    info!(
                         "MMCancel: signal venue mismatch, configured_open={:?} but got {:?}, ignore",
                         configured_open_venue, opening_venue
                     );

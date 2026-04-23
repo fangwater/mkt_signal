@@ -584,6 +584,7 @@ impl OrderManager {
         strategy_id: i32,
     ) -> Option<TradeUpdateSkipReason> {
         let prev_cum = order.cumulative_filled_quantity;
+        let same_cum_qty = (incoming_cum_qty - prev_cum).abs() <= TRADE_UPDATE_QTY_EPS;
 
         if incoming_status == OrderStatus::Filled && order.status == OrderExecutionStatus::Filled {
             debug!(
@@ -597,9 +598,26 @@ impl OrderManager {
             return Some(TradeUpdateSkipReason::DuplicateFilled);
         }
 
-        if incoming_cum_qty < prev_cum - TRADE_UPDATE_QTY_EPS
-            || (incoming_cum_qty - prev_cum).abs() <= TRADE_UPDATE_QTY_EPS
+        // Gate futures may emit a terminal FILLED update after a PARTIALLY_FILLED
+        // update without increasing cumulative fill quantity. Allow that status
+        // promotion so the local order can move to a terminal state.
+        if incoming_status == OrderStatus::Filled
+            && order.status != OrderExecutionStatus::Filled
+            && same_cum_qty
         {
+            debug!(
+                "{}: strategy_id={} accept terminal filled trade update with unchanged cumulative qty: client_order_id={} prev_cum={:.8} incoming_cum={:.8} local_status={:?}",
+                log_owner,
+                strategy_id,
+                order.client_order_id,
+                prev_cum,
+                incoming_cum_qty,
+                order.status
+            );
+            return None;
+        }
+
+        if incoming_cum_qty < prev_cum - TRADE_UPDATE_QTY_EPS || same_cum_qty {
             debug!(
                 "{}: strategy_id={} skip stale/duplicate trade update by cumulative qty: client_order_id={} prev_cum={:.8} incoming_cum={:.8} local_status={:?} incoming_status={:?}",
                 log_owner,
@@ -1587,6 +1605,37 @@ mod tests {
         );
 
         assert_eq!(skip, Some(TradeUpdateSkipReason::StaleOrDuplicatePartial));
+    }
+
+    #[test]
+    fn terminal_filled_with_same_cumulative_qty_is_not_skipped() {
+        let mut order = Order::new(
+            TradingVenue::GateFutures,
+            42,
+            OrderType::Limit,
+            "SOLUSDT".to_string(),
+            Side::Sell,
+            1.0,
+            86.05,
+            false,
+            1.0,
+            None,
+            true,
+        );
+        order.status = OrderExecutionStatus::Create;
+        order.cumulative_filled_quantity = 1.0;
+        order.timestamp.filled_t = 1_000;
+
+        let skip = OrderManager::should_skip_idempotent_trade_update(
+            &order,
+            OrderStatus::Filled,
+            1.0,
+            9_999,
+            "test",
+            1,
+        );
+
+        assert_eq!(skip, None);
     }
 
     #[test]
