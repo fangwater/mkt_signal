@@ -667,8 +667,14 @@ fn log_parsed_event(msg: &Bytes) {
         }
         BasicAccountEventType::OrderUpdate => {
             if let Ok(m) = GateBasicOrderMsg::from_bytes(&payload) {
+                let label = if m.execution_type == 5 {
+                    "Gate TradeUpdate"
+                } else {
+                    "Gate OrderUpdate"
+                };
                 info!(
-                    "Gate OrderUpdate: scope={} venue={} ts={} symbol={} oid={} cloid={} side={} type={} exec={} status={} maker={} px={} qty={} filled={} fill_px={}",
+                    "{}: scope={} venue={} ts={} symbol={} oid={} cloid={} side={} type={} exec={} status={} maker={} px={} qty={} filled={} fill_px={}",
+                    label,
                     account_scope.as_str(),
                     m.venue, m.event_time, m.symbol, m.order_id, m.client_order_id,
                     m.side, m.order_type, m.execution_type, m.order_status,

@@ -103,7 +103,8 @@
 
 use crate::common::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
-    BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg, GateBasicOrderMsg,
+    BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg, BinanceTradeLiteMsg,
+    GateBasicOrderMsg,
 };
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
@@ -463,11 +464,18 @@ impl GateAccountEventParser {
                 .get("finish_as")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let (execution_type, order_status) =
-                GateBasicOrderMsg::event_to_execution_and_status(status, finish_as);
+            let Some((execution_type, order_status)) =
+                classify_gate_futures_finish_as(status, finish_as)
+            else {
+                warn!(
+                    "Gate: futures.orders unknown status/finish_as, raw={}",
+                    order
+                );
+                continue;
+            };
 
             let last_executed_price =
-                select_gate_price_by_update_kind(status, finish_as, fill_price, price);
+                select_gate_futures_price_by_finish_as(finish_as, fill_price, price);
 
             // 手续费币种: futures 合约的手续费币种通常是 USDT
             // Gate 合约不在订单消息中提供手续费币种，这里留空
@@ -614,6 +622,103 @@ impl GateAccountEventParser {
 
         count
     }
+
+    /// 解析合约私有成交 (futures.usertrades)
+    ///
+    /// 字段映射：
+    /// - outer `time_ms` -> event_time（缺失时回退到 trade_time）
+    /// - `create_time_ms` / `create_time` -> trade_time
+    /// - `contract` -> symbol
+    /// - `order_id` -> order_id
+    /// - `text` -> client_order_id（必须可解析为 i64 或 `t-<i64>`，否则丢弃）
+    /// - `id` -> trade_id
+    /// - `size` 绝对值 -> last_executed_quantity（contracts）
+    /// - `size` 正负 -> side
+    /// - `role` -> is_maker
+    /// - `price` -> last_executed_price
+    fn parse_futures_usertrades(
+        &self,
+        json_value: &serde_json::Value,
+        tx: &mpsc::UnboundedSender<Bytes>,
+    ) -> usize {
+        let mut count = 0;
+        let Some(result) = json_value.get("result").and_then(|v| v.as_array()) else {
+            return 0;
+        };
+
+        let outer_event_time = parse_timestamp_ms_or_seconds(json_value.get("time_ms"))
+            .or_else(|| parse_timestamp_ms_or_seconds(json_value.get("time")));
+
+        for trade in result {
+            let symbol = trade
+                .get("contract")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if symbol.is_empty() {
+                continue;
+            }
+
+            let raw_size = parse_f64_str_or_num(trade.get("size")).unwrap_or(0.0);
+            let last_executed_quantity = raw_size.abs();
+            if last_executed_quantity <= 0.0 {
+                continue;
+            }
+
+            let text = trade.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            let client_order_id = match Self::parse_gate_client_order_id(text) {
+                Some(id) => id,
+                None => {
+                    warn!(
+                        "Gate: futures.usertrades text is not i64/t-i64, dropping: {}",
+                        trade
+                    );
+                    continue;
+                }
+            };
+
+            let trade_time = parse_timestamp_ms_or_seconds(trade.get("create_time_ms"))
+                .or_else(|| parse_timestamp_ms_or_seconds(trade.get("create_time")))
+                .unwrap_or_else(|| outer_event_time.unwrap_or(0));
+            let event_time = outer_event_time.unwrap_or(trade_time);
+
+            let side = if raw_size >= 0.0 { 1 } else { 2 };
+            let order_id = parse_i64_str_or_num(trade.get("order_id")).unwrap_or(0);
+            let trade_id = parse_i64_str_or_num(trade.get("id")).unwrap_or(0).max(0);
+            let last_executed_price = parse_f64_str_or_num(trade.get("price")).unwrap_or(0.0);
+            let is_maker = trade
+                .get("role")
+                .and_then(|v| v.as_str())
+                .map(|s| s.eq_ignore_ascii_case("maker"))
+                .unwrap_or(false);
+
+            let msg = BinanceTradeLiteMsg::create(
+                GateBasicOrderMsg::VENUE_FUTURES,
+                event_time,
+                trade_time,
+                symbol,
+                order_id,
+                client_order_id,
+                trade_id,
+                side,
+                is_maker,
+                last_executed_price,
+                last_executed_quantity,
+            );
+
+            let event = BasicAccountEventMsg::create(
+                BasicAccountEventType::TradeUpdateLite,
+                BasicAccountScope::GateUnified,
+                msg.to_bytes(),
+            );
+            if tx.send(event.to_bytes()).is_ok() {
+                count += 1;
+            }
+        }
+
+        count
+    }
 }
 
 fn parse_f64_str_or_num(v: Option<&Value>) -> Option<f64> {
@@ -656,6 +761,17 @@ fn parse_i64_ms_field(v: Option<&Value>) -> Option<i64> {
     }
 }
 
+fn parse_timestamp_ms_or_seconds(v: Option<&Value>) -> Option<i64> {
+    let ts = parse_i64_str_or_num(v)?;
+    if ts >= 1_000_000_000_000 {
+        Some(ts)
+    } else if ts >= 1_000_000_000 {
+        Some(ts.saturating_mul(1_000))
+    } else {
+        None
+    }
+}
+
 fn select_gate_price_by_update_kind(
     event_or_status: &str,
     finish_as: &str,
@@ -674,6 +790,46 @@ fn select_gate_price_by_update_kind(
         fill_price
     } else {
         order_price
+    };
+
+    if selected.is_finite() && selected > 0.0 {
+        selected
+    } else {
+        0.0
+    }
+}
+
+fn classify_gate_futures_finish_as(status: &str, finish_as: &str) -> Option<(u8, u8)> {
+    let status = status.trim().to_ascii_lowercase();
+    let finish_as = finish_as.trim().to_ascii_lowercase();
+
+    match (status.as_str(), finish_as.as_str()) {
+        ("open", "_new") => Some((1, 1)),
+        ("open", "_update") => Some((5, 2)),
+        ("finished", "filled") => Some((5, 3)),
+        ("finished", "ioc") => Some((5, 3)),
+        ("finished", "cancelled") | ("finished", "canceled") => Some((2, 4)),
+        ("finished", "liquidated") => Some((2, 4)),
+        ("finished", "auto_deleveraging") => Some((2, 4)),
+        ("finished", "reduce_only") => Some((2, 4)),
+        ("finished", "position_close") => Some((2, 4)),
+        ("finished", "stp") => Some((7, 4)),
+        ("finished", "reduce_out") => Some((2, 4)),
+        _ => None,
+    }
+}
+
+fn select_gate_futures_price_by_finish_as(
+    finish_as: &str,
+    fill_price: f64,
+    order_price: f64,
+) -> f64 {
+    let finish_as = finish_as.trim().to_ascii_lowercase();
+    let selected = match finish_as.as_str() {
+        "_update" | "filled" | "ioc" => fill_price,
+        "_new" | "cancelled" | "canceled" | "liquidated" | "auto_deleveraging" | "reduce_only"
+        | "position_close" | "stp" | "reduce_out" => order_price,
+        _ => 0.0,
     };
 
     if selected.is_finite() && selected > 0.0 {
@@ -732,6 +888,14 @@ impl Parser for GateAccountEventParser {
                     0
                 }
             }
+            "futures.usertrades" => {
+                if event == "update" {
+                    self.parse_futures_usertrades(&json_value, tx)
+                } else {
+                    debug!("Gate: futures.usertrades event={} (ignored)", event);
+                    0
+                }
+            }
             "futures.positions" => {
                 if event == "update" {
                     self.parse_futures_positions(&json_value, tx)
@@ -761,7 +925,7 @@ mod tests {
     use super::*;
     use crate::common::basic_account_msg::{
         split_basic_account_event, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
-        BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
+        BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg, GateBasicOrderMsg,
     };
 
     #[test]
@@ -853,5 +1017,107 @@ mod tests {
         assert_eq!(pnl.inst_id, "BTC_USDT");
         assert_eq!(pnl.position_side, 'S');
         assert!((pnl.unrealized_pnl + 0.25).abs() < 1e-12);
+    }
+
+    #[test]
+    fn gate_futures_finish_as_classification_is_strict() {
+        let parser = GateAccountEventParser::new();
+
+        let mk_payload = |finish_as: &str, status: &str| {
+            Bytes::from(
+                format!(
+                    r#"{{
+                        "channel":"futures.orders",
+                        "event":"update",
+                        "time":1541505434,
+                        "time_ms":1541505434123,
+                        "result":[{{
+                            "contract":"BTC_USDT",
+                            "create_time":1628736847,
+                            "create_time_ms":1628736847325,
+                            "fill_price":40000.4,
+                            "finish_as":"{finish_as}",
+                            "finish_time":1628736848,
+                            "finish_time_ms":1628736848321,
+                            "iceberg":"0",
+                            "id":4872460,
+                            "is_close":false,
+                            "is_liq":false,
+                            "is_reduce_only":false,
+                            "left":"0",
+                            "mkfr":-0.00025,
+                            "price":40000.4,
+                            "refr":0,
+                            "refu":0,
+                            "size":"1",
+                            "status":"{status}",
+                            "text":"123456789",
+                            "tif":"gtc",
+                            "tkfr":0.0005,
+                            "user":"110xxxxx",
+                            "update_id":1,
+                            "update_time":1541505434123
+                        }}]
+                    }}"#
+                )
+                .into_bytes(),
+            )
+        };
+
+        let cases = [
+            ("_new", "open", 1_u8, 1_u8),
+            ("_update", "open", 5_u8, 2_u8),
+            ("filled", "finished", 5_u8, 3_u8),
+            ("ioc", "finished", 5_u8, 3_u8),
+            ("cancelled", "finished", 2_u8, 4_u8),
+        ];
+
+        for (finish_as, status, exec, ord_status) in cases {
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let count = parser.parse(mk_payload(finish_as, status), &tx);
+            assert_eq!(count, 1, "finish_as={finish_as}");
+
+            let wrapped = rx.try_recv().expect("order event");
+            let (event_type, scope, body) =
+                split_basic_account_event(&wrapped).expect("wrapped order");
+            assert_eq!(event_type, BasicAccountEventType::OrderUpdate);
+            assert_eq!(scope, BasicAccountScope::GateUnified);
+            let msg = GateBasicOrderMsg::from_bytes(body).expect("gate order body");
+            assert_eq!(msg.execution_type, exec, "finish_as={finish_as}");
+            assert_eq!(msg.order_status, ord_status, "finish_as={finish_as}");
+        }
+    }
+
+    #[test]
+    fn gate_futures_unknown_finish_as_is_dropped() {
+        let parser = GateAccountEventParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let payload = Bytes::from_static(
+            br#"{
+                "channel":"futures.orders",
+                "event":"update",
+                "time":1541505434,
+                "time_ms":1541505434123,
+                "result":[{
+                    "contract":"BTC_USDT",
+                    "create_time":1628736847,
+                    "create_time_ms":1628736847325,
+                    "fill_price":40000.4,
+                    "finish_as":"mystery_state",
+                    "id":4872460,
+                    "left":"0",
+                    "price":40000.4,
+                    "size":"1",
+                    "status":"finished",
+                    "text":"123456789",
+                    "tif":"gtc",
+                    "update_time":1541505434123
+                }]
+            }"#,
+        );
+
+        let count = parser.parse(payload, &tx);
+        assert_eq!(count, 0);
+        assert!(rx.try_recv().is_err());
     }
 }
