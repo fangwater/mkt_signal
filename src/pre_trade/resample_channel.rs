@@ -1,6 +1,7 @@
 use crate::common::exchange::Exchange;
 use crate::common::iceoryx_publisher::{ResamplePublisher, RESAMPLE_PAYLOAD};
 use crate::common::min_qty_table::MinQtyTable;
+use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::basic_balance_manager::BasicBalanceManager;
 use crate::pre_trade::basic_exposure_manager::BasicExposureManager;
@@ -189,6 +190,10 @@ fn sum_borrow_interest_usd(
         interest_usd += entry.interest * mark;
     }
     (borrowed_usd, interest_usd)
+}
+
+fn hedge_snapshot_symbol_key(symbol: &str) -> String {
+    normalize_symbol_for_internal(symbol)
 }
 
 fn compute_leg_risk_entry(
@@ -541,7 +546,7 @@ impl ResampleChannel {
                 .into_iter()
                 .map(|snap| {
                     (
-                        snap.symbol,
+                        hedge_snapshot_symbol_key(&snap.symbol),
                         (
                             snap.net_qty,
                             snap.hedge_ts_ms,
@@ -579,6 +584,7 @@ impl ResampleChannel {
 
                 let open_usdt = open_qty * mark;
                 let hedge_usdt = hedge_qty * mark;
+                let hedge_snapshot_key = hedge_snapshot_symbol_key(&symbol);
                 let (
                     hedge_net_qty,
                     hedge_time_ms,
@@ -587,7 +593,7 @@ impl ResampleChannel {
                     hedge_offset_low,
                     hedge_offset_high,
                 ) = hedge_snapshot_by_symbol
-                    .get(&symbol)
+                    .get(&hedge_snapshot_key)
                     .map(
                         |(
                             net_qty,
@@ -720,5 +726,17 @@ impl ResampleChannel {
         }
         publisher.publish(&buf)?;
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hedge_snapshot_symbol_key;
+
+    #[test]
+    fn hedge_snapshot_symbol_key_normalizes_internal_and_price_symbols() {
+        assert_eq!(hedge_snapshot_symbol_key("SOLUSDT"), "SOLUSDT");
+        assert_eq!(hedge_snapshot_symbol_key("SOL_USDT"), "SOLUSDT");
+        assert_eq!(hedge_snapshot_symbol_key("SOL-USDT-SWAP"), "SOLUSDT");
     }
 }
