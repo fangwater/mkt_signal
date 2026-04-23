@@ -3,6 +3,7 @@ use crate::common::exchange::Exchange;
 pub mod binance;
 pub mod bitget;
 pub mod bybit;
+pub mod gate;
 pub mod okex;
 
 /// Map common trade/rest/ws error codes to a short, stable description.
@@ -16,6 +17,7 @@ pub fn describe_trade_error_code(exchange: Exchange, code: i32) -> Option<&'stat
         Exchange::Binance => binance::describe_trade_error_code(code),
         Exchange::Bitget => bitget::describe_trade_error_code(code),
         Exchange::Bybit => bybit::describe_trade_error_code(code),
+        Exchange::Gate => gate::describe_trade_error_code(code),
         Exchange::Okex => okex::describe_trade_error_code(code),
         _ => None,
     }
@@ -130,6 +132,14 @@ mod tests {
         assert_eq!(
             describe_trade_error_code(Exchange::Bybit, 0),
             Some("Success")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Gate, 0),
+            Some("Success")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Gate, gate::ORDER_NOT_FOUND),
+            Some("Order not found")
         );
         assert_eq!(describe_trade_error_code(Exchange::Bitget, 999), None);
         assert_eq!(

@@ -113,7 +113,7 @@ impl SymbolMapper for GateSymbolMapper {
         if upper == "USDT" {
             "USDT".to_string()
         } else {
-            format!("{}USDT", upper)
+            format!("{}_USDT", upper)
         }
     }
 }
@@ -125,5 +125,18 @@ pub fn create_symbol_mapper(exchange: Exchange) -> Box<dyn SymbolMapper> {
         Exchange::Binance | Exchange::Bybit | Exchange::Bitget => Box::new(BinanceSymbolMapper),
         Exchange::Gate => Box::new(GateSymbolMapper),
         Exchange::Hyperliquid => Box::new(BinanceSymbolMapper),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GateSymbolMapper, SymbolMapper};
+
+    #[test]
+    fn gate_price_symbol_uses_contract_style() {
+        let mapper = GateSymbolMapper;
+        assert_eq!(mapper.asset_to_price_symbol("BTC"), "BTC_USDT");
+        assert_eq!(mapper.asset_to_price_symbol("sol"), "SOL_USDT");
+        assert_eq!(mapper.asset_to_price_symbol("USDT"), "USDT");
     }
 }

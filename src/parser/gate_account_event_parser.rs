@@ -1120,4 +1120,82 @@ mod tests {
         assert_eq!(count, 0);
         assert!(rx.try_recv().is_err());
     }
+
+    #[test]
+    fn futures_usertrades_emits_trade_lite_for_t_prefixed_client_order_id() {
+        let parser = GateAccountEventParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let payload = Bytes::from_static(
+            br#"{
+                "time": 1543205083,
+                "time_ms": 1543205083123,
+                "channel": "futures.usertrades",
+                "event": "update",
+                "result": [{
+                    "id": "3335259",
+                    "create_time": 1628736848,
+                    "create_time_ms": 1628736848321,
+                    "contract": "BTC_USD",
+                    "order_id": "4872460",
+                    "size": "-2",
+                    "price": "40000.4",
+                    "role": "maker",
+                    "text": "t-123456",
+                    "fee": 0.0009290592,
+                    "point_fee": 0
+                }]
+            }"#,
+        );
+
+        let count = parser.parse(payload, &tx);
+        assert_eq!(count, 1);
+
+        let wrapped_trade = rx.try_recv().expect("trade-lite event");
+        let (event_type, scope, body) =
+            split_basic_account_event(&wrapped_trade).expect("wrapped trade-lite");
+        assert_eq!(event_type, BasicAccountEventType::TradeUpdateLite);
+        assert_eq!(scope, BasicAccountScope::GateUnified);
+
+        let trade = BinanceTradeLiteMsg::from_bytes(body).expect("trade-lite body");
+        assert_eq!(trade.venue, GateBasicOrderMsg::VENUE_FUTURES);
+        assert_eq!(trade.event_time, 1_543_205_083_123);
+        assert_eq!(trade.trade_time, 1_628_736_848_321);
+        assert_eq!(trade.symbol, "BTC_USD");
+        assert_eq!(trade.order_id, 4_872_460);
+        assert_eq!(trade.client_order_id, 123_456);
+        assert_eq!(trade.trade_id, 3_335_259);
+        assert_eq!(trade.side, 2);
+        assert_eq!(trade.is_maker, 1);
+        assert!((trade.last_executed_price - 40_000.4).abs() < 1e-9);
+        assert!((trade.last_executed_quantity - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn futures_usertrades_drops_non_numeric_client_order_id() {
+        let parser = GateAccountEventParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let payload = Bytes::from_static(
+            br#"{
+                "time": 1543205083,
+                "time_ms": 1543205083123,
+                "channel": "futures.usertrades",
+                "event": "update",
+                "result": [{
+                    "id": "3335259",
+                    "create_time": 1628736848,
+                    "create_time_ms": 1628736848321,
+                    "contract": "BTC_USD",
+                    "order_id": "4872460",
+                    "size": "1",
+                    "price": "40000.4",
+                    "role": "maker",
+                    "text": "api"
+                }]
+            }"#,
+        );
+
+        let count = parser.parse(payload, &tx);
+        assert_eq!(count, 0);
+        assert!(rx.try_recv().is_err());
+    }
 }

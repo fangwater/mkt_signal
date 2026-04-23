@@ -189,10 +189,8 @@ impl MmOpenDecision {
             .factor_value_hub
             .latest_tradecount_mean(symbol, state.hedge_venue);
         if state.enable_tradecount_limit {
-            let tradecount_snapshot = state.snapshot_open_tradecount(
-                &symbol_key,
-                tradecount.unwrap_or_default(),
-            );
+            let tradecount_snapshot =
+                state.snapshot_open_tradecount(&symbol_key, tradecount.unwrap_or_default());
             let Some(tradecount_threshold) = tradecount_snapshot.threshold else {
                 return Ok(MmOpenEvalResult::skipped(
                     &symbol_key,
@@ -597,7 +595,8 @@ fn build_rule(widths: &[usize], left: char, mid: char, right: char) -> String {
 fn format_mm_open_eval_table(results: &[MmOpenEvalResult]) -> String {
     let widths = [14usize, 6, 10, 10, 12, 10, 12, 12, 28, 44];
     let headers = [
-        "symbol", "result", "ret", "vol", "tradecnt", "vol_tr", "pnlu", "pnlu_thr", "env_note", "reason",
+        "symbol", "result", "ret", "vol", "tradecnt", "vol_tr", "pnlu", "pnlu_thr", "env_note",
+        "reason",
     ];
     let mut lines = Vec::new();
     lines.push(build_rule(&widths, '┌', '┬', '┐'));

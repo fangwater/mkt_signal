@@ -34,6 +34,19 @@ fn format_quantity(quantity: f64) -> String {
     format_decimal(quantity)
 }
 
+fn format_signed_quantity(quantity: f64) -> String {
+    if quantity < 0.0 {
+        let abs = format_decimal(-quantity);
+        if abs == "0" {
+            abs
+        } else {
+            format!("-{abs}")
+        }
+    } else {
+        format_decimal(quantity)
+    }
+}
+
 fn format_price(price: f64) -> String {
     format_decimal(price)
 }
@@ -1403,7 +1416,10 @@ impl Order {
                 req_param.insert("text".to_string(), json!(self.client_order_id.to_string()));
                 req_param.insert("contract".to_string(), json!(contract));
                 req_param.insert("account".to_string(), json!("unified"));
-                req_param.insert("size".to_string(), json!(format_quantity(signed_size)));
+                req_param.insert(
+                    "size".to_string(),
+                    json!(format_signed_quantity(signed_size)),
+                );
 
                 if self.order_type.is_limit() {
                     req_param.insert("price".to_string(), json!(format_price(self.price)));
@@ -1536,6 +1552,11 @@ mod tests {
         TradeUpdateSkipReason,
     };
     use crate::signal::common::TradingVenue;
+    use serde_json::Value;
+
+    fn extract_request_json(bytes: &[u8]) -> Value {
+        serde_json::from_slice(&bytes[24..]).expect("gate request params should be valid json")
+    }
 
     #[test]
     fn duplicate_partial_trade_is_skipped_by_cumulative_qty_even_with_newer_ts() {
@@ -1566,5 +1587,39 @@ mod tests {
         );
 
         assert_eq!(skip, Some(TradeUpdateSkipReason::StaleOrDuplicatePartial));
+    }
+
+    #[test]
+    fn gate_futures_sell_order_serializes_negative_size() {
+        let order = Order::new(
+            TradingVenue::GateFutures,
+            42,
+            OrderType::Limit,
+            "SOLUSDT".to_string(),
+            Side::Sell,
+            3.0,
+            88.56,
+            true,
+            1.0,
+            None,
+            true,
+        );
+
+        let bytes = order
+            .get_order_request_bytes()
+            .expect("gate futures request should build");
+        let payload = extract_request_json(bytes.as_ref());
+
+        assert_eq!(
+            payload.get("contract").and_then(Value::as_str),
+            Some("SOL_USDT")
+        );
+        assert_eq!(payload.get("size").and_then(Value::as_str), Some("-3"));
+        assert_eq!(payload.get("price").and_then(Value::as_str), Some("88.56"));
+        assert_eq!(payload.get("tif").and_then(Value::as_str), Some("poc"));
+        assert_eq!(
+            payload.get("reduce_only").and_then(Value::as_bool),
+            Some(true)
+        );
     }
 }

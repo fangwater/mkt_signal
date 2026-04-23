@@ -814,9 +814,9 @@ impl FactorValueHub {
                         continue;
                     }
                     let mean = window.iter().sum::<f64>() / window.len() as f64;
-                    self.latest_tradecount_means.insert(symbol_key.clone(), mean);
-                    let snapshot =
-                        observe_inline_tradecount(&symbol_key, mean, percentile, msg.ts);
+                    self.latest_tradecount_means
+                        .insert(symbol_key.clone(), mean);
+                    let snapshot = observe_inline_tradecount(&symbol_key, mean, percentile, msg.ts);
                     sampled.push((symbol_key, snapshot));
                 }
                 Ok(None) => break,

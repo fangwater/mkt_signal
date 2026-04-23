@@ -1,4 +1,5 @@
 use crate::common::exchange::Exchange;
+use crate::common::trade_error_code::gate;
 use crate::trade_engine::trade_request::TradeRequestType;
 use bytes::{BufMut, BytesMut};
 use iceoryx2::port::publisher::Publisher;
@@ -147,6 +148,22 @@ fn parse_error_code_and_msg(body: &str) -> (i32, Option<String>) {
     (0, None)
 }
 
+fn normalize_trade_error(
+    exchange: Exchange,
+    code: i32,
+    msg: Option<String>,
+) -> (i32, Option<String>) {
+    if exchange == Exchange::Gate && code == 0 {
+        if let Some(m) = msg.as_deref() {
+            if m.eq_ignore_ascii_case("ORDER_NOT_FOUND") {
+                return (gate::ORDER_NOT_FOUND, msg);
+            }
+        }
+    }
+
+    (code, msg)
+}
+
 fn is_cancel_request(req_type: TradeRequestType) -> bool {
     matches!(
         req_type,
@@ -170,6 +187,7 @@ fn is_cancel_not_cancellable(exchange: Exchange, error_code: i32) -> bool {
     match exchange {
         Exchange::Binance => error_code == -2011,
         Exchange::Okex => matches!(error_code, 51400 | 51410 | 51416),
+        Exchange::Gate => error_code == gate::ORDER_NOT_FOUND,
         Exchange::Bybit => matches!(
             error_code,
             110001 | 110008 | 110010 | 170139 | 170142 | 170143 | 170145 | 170190 | 170191
@@ -203,6 +221,15 @@ mod tests {
         let (code, msg) = parse_error_code_and_msg(body);
         assert_eq!(code, -5022);
         assert_eq!(msg.as_deref(), Some("Post Only order would be filled"));
+    }
+
+    #[test]
+    fn normalizes_gate_order_not_found_from_message() {
+        let body = r#"{"header":{"status":400},"data":{"errs":{"label":"ORDER_NOT_FOUND","message":"ORDER_NOT_FOUND"}}}"#;
+        let (code, msg) = parse_error_code_and_msg(body);
+        let (code, msg) = normalize_trade_error(Exchange::Gate, code, msg);
+        assert_eq!(code, gate::ORDER_NOT_FOUND);
+        assert_eq!(msg.as_deref(), Some("ORDER_NOT_FOUND"));
     }
 
     fn sample_outcome(req_type: TradeRequestType, exchange: Exchange) -> TradeExecOutcome {
@@ -243,6 +270,7 @@ pub fn spawn_response_handle(
     tokio::task::spawn_local(async move {
         while let Some(out) = resp_rx.recv().await {
             let (error_code, msg) = parse_error_code_and_msg(&out.body);
+            let (error_code, msg) = normalize_trade_error(out.exchange, error_code, msg);
             let is_2xx = (200..300).contains(&(out.status as u32));
             if !is_2xx || error_code != 0 {
                 let downgrade = should_downgrade_trade_resp_error(&out, error_code);

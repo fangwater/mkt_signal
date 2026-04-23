@@ -30,3 +30,8 @@ bash scripts/deploy_mm_trade_engine.sh --exchange bitget --env-suffix alpha --bi
 bash scripts/close_mm_all_um_ws_orders.sh --env-name bitget_mm_alpha --execute
 bash scripts/close_mm_all_um_exposure.sh --env-name bitget_mm_alpha --execute 
 bash scripts/close_mm_all_um_exposure.sh --env-name binance_mm_alpha --execute --symbol raveusdt
+
+
+bash scripts/deploy_mm_signal.sh --exchange bitget --env-name bitget_mm_alpha --bin-only
+bash scripts/deploy_mm_pre_trade.sh --exchange bitget --env-suffix alpha --bin-only
+bash scripts/deploy_mm_trade_engine.sh --exchange bitget --env-suffix alpha --bin-only

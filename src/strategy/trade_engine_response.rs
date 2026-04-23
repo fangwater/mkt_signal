@@ -1,5 +1,6 @@
 /// TradeEngineResponse trait 提供 trade engine 返回结果的通用访问接口
 use crate::common::exchange::Exchange;
+use crate::common::trade_error_code::gate;
 use crate::trade_engine::trade_request::TradeRequestType;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,6 +152,7 @@ pub trait TradeEngineResponse {
         match self.exchange_enum() {
             Some(Exchange::Binance) => self.error_code() == -2011,
             Some(Exchange::Okex) => matches!(self.error_code(), 51400 | 51410 | 51412 | 51416),
+            Some(Exchange::Gate) => self.error_code() == gate::ORDER_NOT_FOUND,
             Some(Exchange::Bybit) => matches!(
                 self.error_code(),
                 110001 | 110008 | 110010 | 170139 | 170142 | 170143 | 170145 | 170190 | 170191
@@ -178,6 +180,7 @@ pub trait TradeEngineResponse {
         match self.exchange_enum() {
             Some(Exchange::Binance) => self.error_code() == -2011,
             Some(Exchange::Okex) => matches!(self.error_code(), 51400 | 51410 | 51416),
+            Some(Exchange::Gate) => self.error_code() == gate::ORDER_NOT_FOUND,
             Some(Exchange::Bybit) => matches!(
                 self.error_code(),
                 110001 | 110008 | 110010 | 170139 | 170142 | 170143 | 170145 | 170190 | 170191
@@ -257,6 +260,14 @@ mod tests {
     fn detects_okx_cancel_not_supported_triggered() {
         let okx_ex = crate::common::exchange::Exchange::Okex as u32;
         let resp = TradeEngineResponseMessage::new(200, 1, okx_ex, 123, 51416);
+        assert!(resp.is_cancel_rejected());
+        assert!(resp.is_cancel_not_cancellable());
+    }
+
+    #[test]
+    fn detects_gate_order_not_found_cancel() {
+        let gate_ex = crate::common::exchange::Exchange::Gate as u32;
+        let resp = TradeEngineResponseMessage::new(400, 1, gate_ex, 123, gate::ORDER_NOT_FOUND);
         assert!(resp.is_cancel_rejected());
         assert!(resp.is_cancel_not_cancellable());
     }
