@@ -5,6 +5,7 @@ use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::Side;
 use crate::signal::trade_signal::TradeSignal;
 use crate::strategy::mm_hedge_strategy::{MarketMakerHedgeStrategy, MmHedgeSnapshot};
+use crate::strategy::mm_orphan_order_strategy::MmOrphanOrderStrategy;
 use crate::strategy::query_engine_response::QueryEngineResponse;
 use crate::strategy::{
     order_update::OrderUpdate, trade_engine_response::TradeEngineResponse,
@@ -152,6 +153,7 @@ pub struct StrategyManager {
     mm_open_strategy_index: HashMap<i32, MmOpenPriceMapEntry>,
     arb_open_price_index: HashMap<String, HashMap<QuantizedValueKey, BTreeSet<i32>>>,
     arb_open_strategy_index: HashMap<i32, ArbOpenPriceMapEntry>,
+    mm_orphan_strategies_by_symbol: HashMap<String, MmOrphanOrderStrategy>,
 }
 
 impl StrategyManager {
@@ -166,6 +168,7 @@ impl StrategyManager {
             mm_open_strategy_index: HashMap::new(),
             arb_open_price_index: HashMap::new(),
             arb_open_strategy_index: HashMap::new(),
+            mm_orphan_strategies_by_symbol: HashMap::new(),
         }
     }
 
@@ -529,6 +532,55 @@ impl StrategyManager {
         strategy_id
     }
 
+    /// 确保指定 symbol 的 MM orphan 策略存在。orphan 策略不进入普通 strategy id 表。
+    pub fn ensure_mm_orphan_strategy(&mut self, symbol: &str) -> &mut MmOrphanOrderStrategy {
+        let symbol = normalize_symbol_for_internal(symbol);
+        self.mm_orphan_strategies_by_symbol
+            .entry(symbol.clone())
+            .or_insert_with(|| MmOrphanOrderStrategy::new(symbol))
+    }
+
+    pub fn apply_mm_orphan_order_update(&mut self, update: &dyn OrderUpdate) -> bool {
+        if !MmOrphanOrderStrategy::should_adopt_order_update(update) {
+            return false;
+        }
+        let strategy = self.ensure_mm_orphan_strategy(update.symbol());
+        strategy.apply_order_update(update);
+        true
+    }
+
+    pub fn apply_mm_orphan_trade_update(&mut self, trade: &dyn TradeUpdate) -> bool {
+        if !MmOrphanOrderStrategy::should_adopt_trade_update(trade) {
+            return false;
+        }
+        let strategy = self.ensure_mm_orphan_strategy(trade.symbol());
+        strategy.apply_trade_update(trade);
+        true
+    }
+
+    fn adopt_mm_orphan_handoffs(&mut self, handoffs: Vec<(i64, String)>) {
+        for (client_order_id, reason) in handoffs {
+            let adopted = self.adopt_mm_orphan_order_id(client_order_id, &reason);
+            info!(
+                "MM orphan handoff: client_order_id={} reason={} adopted={}",
+                client_order_id, reason, adopted
+            );
+        }
+    }
+
+    pub fn adopt_mm_orphan_order_id(&mut self, client_order_id: i64, reason: &str) -> bool {
+        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
+            return false;
+        };
+        let Some(order) = order_mgr.borrow().get(client_order_id) else {
+            return false;
+        };
+        let symbol = order.symbol.clone();
+        drop(order);
+        let strategy = self.ensure_mm_orphan_strategy(&symbol);
+        strategy.adopt_order_id(client_order_id, reason)
+    }
+
     /// 记录 MM 开仓成交，累加到对应 symbol 的对冲策略
     pub fn record_mm_hedge_fill(
         &mut self,
@@ -577,11 +629,20 @@ impl StrategyManager {
             };
 
             let mut remove = true;
+            let mut mm_orphan_handoffs = Vec::new();
             if let Some(strategy) = self.strategies.get_mut(&strategy_id) {
                 inspected += 1;
                 strategy.handle_period_clock(current_tp);
+                if let Some(mm_hedge) = strategy
+                    .as_any_mut()
+                    .downcast_mut::<MarketMakerHedgeStrategy>()
+                {
+                    mm_orphan_handoffs = mm_hedge.drain_pending_mm_orphan_handoffs();
+                }
                 remove = !strategy.is_active();
             }
+
+            self.adopt_mm_orphan_handoffs(mm_orphan_handoffs);
 
             if remove {
                 let _ = self.remove(strategy_id);
@@ -597,9 +658,17 @@ impl StrategyManager {
         strategy_id: i32,
         response: &dyn QueryEngineResponse,
     ) {
+        let mut mm_orphan_handoffs = Vec::new();
         if let Some(strategy) = self.strategies.get_mut(&strategy_id) {
             strategy.apply_query_engine_response(response);
+            if let Some(mm_hedge) = strategy
+                .as_any_mut()
+                .downcast_mut::<MarketMakerHedgeStrategy>()
+            {
+                mm_orphan_handoffs = mm_hedge.drain_pending_mm_orphan_handoffs();
+            }
         }
+        self.adopt_mm_orphan_handoffs(mm_orphan_handoffs);
     }
 
     /// 基于当前时间戳生成策略 ID

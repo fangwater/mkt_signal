@@ -7,6 +7,7 @@ pub mod hedge_arb_strategy;
 pub mod manager;
 pub mod mm_hedge_strategy;
 pub mod mm_open_strategy;
+pub mod mm_orphan_order_strategy;
 pub mod net_qty_queue;
 pub mod okex_basic_impl;
 pub mod order_update;

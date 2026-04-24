@@ -31,7 +31,7 @@ use crate::pre_trade::price_table::PriceTable;
 use crate::pre_trade::symbol_mapper::create_symbol_mapper;
 use crate::pre_trade::symbol_util::extract_base_asset;
 use crate::pre_trade::usdt_balance_manager::{UsdtBalanceManager, UsdtBalanceSnapshot};
-use crate::pre_trade::{PersistChannel, TradeEngHub};
+use crate::pre_trade::PersistChannel;
 use crate::signal::cancel_signal::{MmCancelCtx, MmCancelReason};
 use crate::signal::common::{ExecutionType, OrderStatus, SignalBytes, TradingLeg, TradingVenue};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
@@ -2341,93 +2341,34 @@ fn dispatch_order_update_generic<T>(
     }
 
     if !matched {
-        try_send_unmatched_mm_cancel(&normalized_update);
-        PersistChannel::with(|ch| {
-            if normalized_update.execution_type() == ExecutionType::Trade {
-                ch.publish_trade_update_unmatched(&normalized_update);
-            } else {
-                ch.publish_order_update_unmatched(&normalized_update);
-            }
-        });
+        let adopted_by_mm_orphan = if normalized_update.execution_type() == ExecutionType::Trade {
+            strategy_mgr
+                .borrow_mut()
+                .apply_mm_orphan_trade_update(&normalized_update)
+        } else {
+            strategy_mgr
+                .borrow_mut()
+                .apply_mm_orphan_order_update(&normalized_update)
+        };
+
+        if !adopted_by_mm_orphan {
+            PersistChannel::with(|ch| {
+                if normalized_update.execution_type() == ExecutionType::Trade {
+                    ch.publish_trade_update_unmatched(&normalized_update);
+                } else {
+                    ch.publish_order_update_unmatched(&normalized_update);
+                }
+            });
+        }
         debug!(
-            "order update unmatched: sym={} cli_id={} ord_id={} x={:?} X={:?}",
+            "order update unmatched: sym={} cli_id={} ord_id={} x={:?} X={:?} mm_orphan_adopted={}",
             OrderUpdate::symbol(&normalized_update),
             OrderUpdate::client_order_id(&normalized_update),
             OrderUpdate::order_id(&normalized_update),
             normalized_update.execution_type(),
-            normalized_update.status()
+            normalized_update.status(),
+            adopted_by_mm_orphan
         );
-    }
-}
-
-fn try_send_unmatched_mm_cancel<T>(update: &T)
-where
-    T: OrderUpdate + TradeUpdate,
-{
-    if update.execution_type() == ExecutionType::Trade {
-        return;
-    }
-
-    if !matches!(
-        update.status(),
-        OrderStatus::New | OrderStatus::PartiallyFilled
-    ) {
-        return;
-    }
-
-    let monitor = MonitorChannel::instance();
-    if monitor.open_venue() != monitor.hedge_venue() {
-        return;
-    }
-
-    let client_order_id = OrderUpdate::client_order_id(update);
-    if client_order_id <= 0 {
-        return;
-    }
-
-    let venue = OrderUpdate::trading_venue(update);
-    if !matches!(
-        venue,
-        TradingVenue::BinanceMargin | TradingVenue::BinanceFutures
-    ) {
-        return;
-    }
-
-    let symbol = OrderUpdate::symbol(update).to_ascii_uppercase();
-    let cancel_bytes = {
-        let order_mgr = monitor.order_manager();
-        let mgr = order_mgr.borrow();
-        match mgr.build_unmatched_cancel_bytes(venue, &symbol, client_order_id) {
-            Ok(bytes) => bytes,
-            Err(err) => {
-                warn!(
-                    "MM unmatched fallback: failed to build cancel request cli_id={} sym={} venue={:?}: {}",
-                    client_order_id, symbol, venue, err
-                );
-                return;
-            }
-        }
-    };
-
-    let exchange = venue.trade_engine_exchange();
-    match TradeEngHub::publish_order_request(exchange, &cancel_bytes) {
-        Ok(()) => warn!(
-            "MM unmatched fallback: sent cancel for unmatched order update cli_id={} ord_id={} sym={} venue={:?} x={:?} X={:?}",
-            client_order_id,
-            OrderUpdate::order_id(update),
-            symbol,
-            venue,
-            update.execution_type(),
-            update.status()
-        ),
-        Err(err) => warn!(
-            "MM unmatched fallback: failed to send cancel cli_id={} ord_id={} sym={} venue={:?}: {:#}",
-            client_order_id,
-            OrderUpdate::order_id(update),
-            symbol,
-            venue,
-            err
-        ),
     }
 }
 
