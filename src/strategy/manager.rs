@@ -5,6 +5,7 @@ use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::Side;
 use crate::signal::common::ExecutionType;
 use crate::signal::trade_signal::TradeSignal;
+use crate::strategy::arb_orphan_strategy::{ArbOrphanSnapshot, ArbOrphanStrategy};
 use crate::strategy::mm_hedge_strategy::{MarketMakerHedgeStrategy, MmHedgeSnapshot};
 use crate::strategy::mm_open_strategy::MarketMakerOpenStrategy;
 use crate::strategy::mm_orphan_order_strategy::MmOrphanOrderStrategy;
@@ -564,6 +565,32 @@ impl StrategyManager {
         None
     }
 
+    pub fn find_arb_orphan_id(&self, symbol: &str) -> Option<i32> {
+        let symbol = normalize_symbol_for_internal(symbol);
+        let ids = self.symbol_index.get(&symbol)?;
+        for id in ids {
+            if let Some(strategy) = self.strategies.get(id) {
+                if strategy.as_any().is::<ArbOrphanStrategy>() {
+                    return Some(*id);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn ensure_arb_orphan_strategy(&mut self, symbol: &str) -> i32 {
+        let symbol = normalize_symbol_for_internal(symbol);
+        if let Some(strategy_id) = self.find_arb_orphan_id(&symbol) {
+            return strategy_id;
+        }
+        let strategy_id = StrategyManager::generate_strategy_id();
+        self.insert(Box::new(ArbOrphanStrategy::new(
+            strategy_id,
+            symbol.clone(),
+        )));
+        strategy_id
+    }
+
     pub fn ensure_mm_orphan_strategy(&mut self, symbol: &str) -> i32 {
         let symbol = normalize_symbol_for_internal(symbol);
         if let Some(strategy_id) = self.find_mm_orphan_id(&symbol) {
@@ -614,6 +641,40 @@ impl StrategyManager {
             return false;
         }
         let Some(strategy_id) = self.find_mm_orphan_id(trade.symbol()) else {
+            return false;
+        };
+        let Some(strategy) = self.strategies.get_mut(&strategy_id) else {
+            return false;
+        };
+        if !strategy.is_strategy_order(trade.client_order_id()) {
+            return false;
+        }
+        strategy.apply_trade_update(trade);
+        true
+    }
+
+    pub fn apply_arb_orphan_order_update(&mut self, update: &dyn OrderUpdate) -> bool {
+        if update.client_order_id() <= 0 {
+            return false;
+        }
+        let Some(strategy_id) = self.find_arb_orphan_id(update.symbol()) else {
+            return false;
+        };
+        let Some(strategy) = self.strategies.get_mut(&strategy_id) else {
+            return false;
+        };
+        if !strategy.is_strategy_order(update.client_order_id()) {
+            return false;
+        }
+        strategy.apply_order_update(update);
+        true
+    }
+
+    pub fn apply_arb_orphan_trade_update(&mut self, trade: &dyn TradeUpdate) -> bool {
+        if trade.client_order_id() <= 0 {
+            return false;
+        }
+        let Some(strategy_id) = self.find_arb_orphan_id(trade.symbol()) else {
             return false;
         };
         let Some(strategy) = self.strategies.get_mut(&strategy_id) else {
@@ -689,6 +750,16 @@ impl StrategyManager {
         for strategy in self.strategies.values() {
             if let Some(mm_hedge) = strategy.as_any().downcast_ref::<MarketMakerHedgeStrategy>() {
                 snapshots.push(mm_hedge.snapshot());
+            }
+        }
+        snapshots
+    }
+
+    pub fn arb_orphan_snapshots(&self) -> Vec<ArbOrphanSnapshot> {
+        let mut snapshots = Vec::new();
+        for strategy in self.strategies.values() {
+            if let Some(arb_orphan) = strategy.as_any().downcast_ref::<ArbOrphanStrategy>() {
+                snapshots.push(arb_orphan.snapshot());
             }
         }
         snapshots
