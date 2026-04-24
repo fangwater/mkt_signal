@@ -132,6 +132,9 @@ pub trait Strategy: ForceCloseControl {
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate);
     fn apply_trade_engine_response(&mut self, _response: &dyn TradeEngineResponse);
     fn apply_query_engine_response(&mut self, _response: &dyn QueryEngineResponse) {}
+    fn adopt_order_id(&mut self, _client_order_id: i64, _reason: &str) -> bool {
+        false
+    }
     fn handle_period_clock(&mut self, current_tp: i64);
     fn is_active(&self) -> bool;
     fn symbol(&self) -> Option<&str>;
@@ -153,7 +156,6 @@ pub struct StrategyManager {
     mm_open_strategy_index: HashMap<i32, MmOpenPriceMapEntry>,
     arb_open_price_index: HashMap<String, HashMap<QuantizedValueKey, BTreeSet<i32>>>,
     arb_open_strategy_index: HashMap<i32, ArbOpenPriceMapEntry>,
-    mm_orphan_strategies_by_symbol: HashMap<String, MmOrphanOrderStrategy>,
 }
 
 impl StrategyManager {
@@ -168,7 +170,6 @@ impl StrategyManager {
             mm_open_strategy_index: HashMap::new(),
             arb_open_price_index: HashMap::new(),
             arb_open_strategy_index: HashMap::new(),
-            mm_orphan_strategies_by_symbol: HashMap::new(),
         }
     }
 
@@ -532,19 +533,40 @@ impl StrategyManager {
         strategy_id
     }
 
-    /// 确保指定 symbol 的 MM orphan 策略存在。orphan 策略不进入普通 strategy id 表。
-    pub fn ensure_mm_orphan_strategy(&mut self, symbol: &str) -> &mut MmOrphanOrderStrategy {
+    pub fn find_mm_orphan_id(&self, symbol: &str) -> Option<i32> {
         let symbol = normalize_symbol_for_internal(symbol);
-        self.mm_orphan_strategies_by_symbol
-            .entry(symbol.clone())
-            .or_insert_with(|| MmOrphanOrderStrategy::new(symbol))
+        let ids = self.symbol_index.get(&symbol)?;
+        for id in ids {
+            if let Some(strategy) = self.strategies.get(id) {
+                if strategy.as_any().is::<MmOrphanOrderStrategy>() {
+                    return Some(*id);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn ensure_mm_orphan_strategy(&mut self, symbol: &str) -> i32 {
+        let symbol = normalize_symbol_for_internal(symbol);
+        if let Some(strategy_id) = self.find_mm_orphan_id(&symbol) {
+            return strategy_id;
+        }
+        let strategy_id = StrategyManager::generate_strategy_id();
+        self.insert(Box::new(MmOrphanOrderStrategy::new(
+            strategy_id,
+            symbol.clone(),
+        )));
+        strategy_id
     }
 
     pub fn apply_mm_orphan_order_update(&mut self, update: &dyn OrderUpdate) -> bool {
         if !MmOrphanOrderStrategy::should_adopt_order_update(update) {
             return false;
         }
-        let strategy = self.ensure_mm_orphan_strategy(update.symbol());
+        let strategy_id = self.ensure_mm_orphan_strategy(update.symbol());
+        let Some(strategy) = self.strategies.get_mut(&strategy_id) else {
+            return false;
+        };
         strategy.apply_order_update(update);
         true
     }
@@ -553,7 +575,10 @@ impl StrategyManager {
         if !MmOrphanOrderStrategy::should_adopt_trade_update(trade) {
             return false;
         }
-        let strategy = self.ensure_mm_orphan_strategy(trade.symbol());
+        let strategy_id = self.ensure_mm_orphan_strategy(trade.symbol());
+        let Some(strategy) = self.strategies.get_mut(&strategy_id) else {
+            return false;
+        };
         strategy.apply_trade_update(trade);
         true
     }
@@ -577,7 +602,10 @@ impl StrategyManager {
         };
         let symbol = order.symbol.clone();
         drop(order);
-        let strategy = self.ensure_mm_orphan_strategy(&symbol);
+        let strategy_id = self.ensure_mm_orphan_strategy(&symbol);
+        let Some(strategy) = self.strategies.get_mut(&strategy_id) else {
+            return false;
+        };
         strategy.adopt_order_id(client_order_id, reason)
     }
 

@@ -12,20 +12,18 @@ use log::{debug, info, warn};
 use std::any::Any;
 use std::collections::HashSet;
 
-pub const MM_ORPHAN_STRATEGY_ID: i32 = 0x0fff_ffff;
-pub const MM_ORPHAN_STRATEGY_LABEL: &str = "fff";
-
 pub struct MmOrphanOrderStrategy {
+    strategy_id: i32,
     symbol: String,
     order_ids: HashSet<i64>,
     active: bool,
 }
 
 impl MmOrphanOrderStrategy {
-    pub fn new(symbol: impl Into<String>) -> Self {
-        let symbol = normalize_symbol_for_internal(&symbol.into());
+    pub fn new(strategy_id: i32, symbol: impl Into<String>) -> Self {
         Self {
-            symbol,
+            strategy_id,
+            symbol: normalize_symbol_for_internal(&symbol.into()),
             order_ids: HashSet::new(),
             active: true,
         }
@@ -33,10 +31,6 @@ impl MmOrphanOrderStrategy {
 
     pub fn len(&self) -> usize {
         self.order_ids.len()
-    }
-
-    pub fn symbol(&self) -> &str {
-        &self.symbol
     }
 
     pub fn should_adopt_order_update(update: &dyn OrderUpdate) -> bool {
@@ -54,7 +48,7 @@ impl MmOrphanOrderStrategy {
             && trade.client_order_id() > 0
     }
 
-    pub fn adopt_order_id(&mut self, client_order_id: i64, reason: &str) -> bool {
+    fn adopt_order_id_inner(&mut self, client_order_id: i64, reason: &str) -> bool {
         if client_order_id <= 0 {
             return false;
         }
@@ -63,25 +57,21 @@ impl MmOrphanOrderStrategy {
         };
         let Some(order) = order_mgr.borrow().get(client_order_id) else {
             warn!(
-                "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} adopt missing local order client_order_id={} symbol={} reason={}",
-                MM_ORPHAN_STRATEGY_LABEL,
-                client_order_id,
-                self.symbol,
-                reason
+                "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} adopt missing local order client_order_id={} reason={}",
+                self.strategy_id, client_order_id, reason
             );
             return false;
         };
-        if !self.matches_symbol(&order.symbol) {
+        let symbol = normalize_symbol_for_internal(&order.symbol);
+        let venue = order.venue;
+        if symbol != self.symbol {
             return false;
         }
+        drop(order);
         self.remember_order(client_order_id);
         info!(
             "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} adopted order_id symbol={} client_order_id={} venue={:?} reason={}",
-            MM_ORPHAN_STRATEGY_LABEL,
-            self.symbol,
-            client_order_id,
-            order.venue,
-            reason
+            self.strategy_id, symbol, client_order_id, venue, reason
         );
         true
     }
@@ -90,18 +80,11 @@ impl MmOrphanOrderStrategy {
         let removed = self.order_ids.remove(&client_order_id);
         if removed {
             info!(
-                "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} forgot order_id symbol={} client_order_id={} reason={}",
-                MM_ORPHAN_STRATEGY_LABEL,
-                self.symbol,
-                client_order_id,
-                reason
+                "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} forgot order_id client_order_id={} reason={}",
+                self.strategy_id, client_order_id, reason
             );
         }
         removed
-    }
-
-    fn matches_symbol(&self, symbol: &str) -> bool {
-        self.symbol == normalize_symbol_for_internal(symbol)
     }
 
     fn remember_order(&mut self, client_order_id: i64) {
@@ -126,7 +109,7 @@ impl MmOrphanOrderStrategy {
         ) {
             debug!(
                 "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} skip cancel unsupported venue={:?} symbol={} client_order_id={}",
-                MM_ORPHAN_STRATEGY_LABEL,
+                self.strategy_id,
                 venue,
                 update.symbol(),
                 update.client_order_id()
@@ -144,7 +127,7 @@ impl MmOrphanOrderStrategy {
                 Err(err) => {
                     warn!(
                         "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} failed to build cancel client_order_id={} symbol={} venue={:?}: {}",
-                        MM_ORPHAN_STRATEGY_LABEL,
+                        self.strategy_id,
                         client_order_id,
                         symbol,
                         venue,
@@ -160,7 +143,7 @@ impl MmOrphanOrderStrategy {
             Ok(()) => {
                 warn!(
                     "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} sent cancel client_order_id={} order_id={} symbol={} venue={:?} x={:?} X={:?}",
-                    MM_ORPHAN_STRATEGY_LABEL,
+                    self.strategy_id,
                     client_order_id,
                     update.order_id(),
                     symbol,
@@ -171,7 +154,7 @@ impl MmOrphanOrderStrategy {
             }
             Err(err) => warn!(
                 "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} failed to send cancel client_order_id={} order_id={} symbol={} venue={:?}: {:#}",
-                MM_ORPHAN_STRATEGY_LABEL,
+                self.strategy_id,
                 client_order_id,
                 update.order_id(),
                 symbol,
@@ -208,7 +191,7 @@ impl Strategy for MmOrphanOrderStrategy {
     }
 
     fn get_id(&self) -> i32 {
-        MM_ORPHAN_STRATEGY_ID
+        self.strategy_id
     }
 
     fn is_strategy_order(&self, order_id: i64) -> bool {
@@ -218,7 +201,9 @@ impl Strategy for MmOrphanOrderStrategy {
     fn handle_signal(&mut self, _signal: &TradeSignal) {}
 
     fn apply_order_update(&mut self, update: &dyn OrderUpdate) {
-        if !Self::should_adopt_order_update(update) || !self.matches_symbol(update.symbol()) {
+        if !Self::should_adopt_order_update(update)
+            || normalize_symbol_for_internal(update.symbol()) != self.symbol
+        {
             return;
         }
         self.remember_order(update.client_order_id());
@@ -226,8 +211,8 @@ impl Strategy for MmOrphanOrderStrategy {
         Self::persist_order_update(update);
         info!(
             "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} adopted order_update symbol={} client_order_id={} order_id={} venue={:?} x={:?} X={:?}",
-            MM_ORPHAN_STRATEGY_LABEL,
-            self.symbol,
+            self.strategy_id,
+            update.symbol(),
             update.client_order_id(),
             update.order_id(),
             update.trading_venue(),
@@ -237,15 +222,17 @@ impl Strategy for MmOrphanOrderStrategy {
     }
 
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
-        if !Self::should_adopt_trade_update(trade) || !self.matches_symbol(trade.symbol()) {
+        if !Self::should_adopt_trade_update(trade)
+            || normalize_symbol_for_internal(trade.symbol()) != self.symbol
+        {
             return;
         }
         self.remember_order(trade.client_order_id());
         Self::persist_trade_update(trade);
         info!(
             "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} adopted trade_update symbol={} client_order_id={} order_id={} venue={:?} cumulative_qty={:.8} status={:?}",
-            MM_ORPHAN_STRATEGY_LABEL,
-            self.symbol,
+            self.strategy_id,
+            trade.symbol(),
             trade.client_order_id(),
             trade.order_id(),
             trade.trading_venue(),
@@ -257,6 +244,10 @@ impl Strategy for MmOrphanOrderStrategy {
     fn apply_trade_engine_response(&mut self, _response: &dyn TradeEngineResponse) {}
 
     fn apply_query_engine_response(&mut self, _response: &dyn QueryEngineResponse) {}
+
+    fn adopt_order_id(&mut self, client_order_id: i64, reason: &str) -> bool {
+        self.adopt_order_id_inner(client_order_id, reason)
+    }
 
     fn handle_period_clock(&mut self, _current_tp: i64) {}
 
