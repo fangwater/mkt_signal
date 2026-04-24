@@ -25,6 +25,8 @@ use crate::strategy::manager::{
     ForceCloseControl, MmOrphanHandoff, MmOrphanSourceKind, Strategy,
 };
 use crate::strategy::net_qty_queue::NetQtyQueue;
+use crate::strategy::order_query_builder::build_order_query_request;
+use crate::strategy::order_query_parser::parse_compact_order_query_resp as parse_compact_order_query_resp_common;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::query_engine_response::QueryEngineResponse;
 use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
@@ -33,9 +35,8 @@ use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::uniform_order_helper::{publish_uniform_order_event, UniformOrderEventKind};
 use crate::strategy::ws_order_update::WsOrderUpdate;
 use crate::trade_engine::query_parsers::compact_order::{
-    is_order_query_not_found_marker, CompactOrderQueryResp, COMPACT_ORDER_QUERY_RESP_LEN,
+    is_order_query_not_found_marker, CompactOrderQueryResp,
 };
-use crate::trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
 use log::{debug, warn};
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
@@ -498,6 +499,10 @@ impl MarketMakerHedgeStrategy {
         self.apply_net_qty_fill(fill_ts, signed_qty, price, "external_fill");
         self.period_buy_qty += buy_qty;
         self.period_sell_qty += sell_qty;
+    }
+
+    pub fn record_net_fill_only(&mut self, fill_ts: i64, signed_qty: f64, price: f64) {
+        self.apply_net_qty_fill(fill_ts, signed_qty, price, "orphan_terminal_fill");
     }
 
     pub fn snapshot(&self) -> MmHedgeSnapshot {
@@ -1267,125 +1272,6 @@ impl MarketMakerHedgeStrategy {
         }
     }
 
-    fn build_order_query_request(
-        &self,
-        order: &crate::pre_trade::order_manager::Order,
-        client_query_id: i64,
-    ) -> Result<(String, bytes::Bytes), String> {
-        let exchange = order.venue.trade_engine_exchange().to_string();
-        let exchange_order_id = order.exchange_order_id.filter(|&id| id > 0);
-
-        let req_type = match order.venue {
-            TradingVenue::BinanceMargin => {
-                if MonitorChannel::instance()
-                    .order_manager()
-                    .borrow()
-                    .binance_is_standard()
-                {
-                    QueryRequestType::BinanceWsMarginQuery
-                } else {
-                    QueryRequestType::BinanceMarginQuery
-                }
-            }
-            TradingVenue::BinanceFutures => {
-                if MonitorChannel::instance()
-                    .order_manager()
-                    .borrow()
-                    .binance_is_standard()
-                {
-                    QueryRequestType::BinanceWsUMQuery
-                } else {
-                    QueryRequestType::BinanceUMQuery
-                }
-            }
-            TradingVenue::OkexMargin => QueryRequestType::OkexMarginQuery,
-            TradingVenue::OkexFutures => QueryRequestType::OkexUMQuery,
-            TradingVenue::BybitMargin => QueryRequestType::BybitMarginQuery,
-            TradingVenue::BybitFutures => QueryRequestType::BybitUMQuery,
-            TradingVenue::BitgetMargin => QueryRequestType::BitgetMarginQuery,
-            TradingVenue::BitgetFutures => QueryRequestType::BitgetUMQuery,
-            TradingVenue::GateMargin => QueryRequestType::GateUnifiedOrderQuery,
-            TradingVenue::GateFutures => QueryRequestType::GateFuturesOrderQuery,
-            _ => return Err(format!("unsupported venue for query: {:?}", order.venue)),
-        };
-
-        let params = match order.venue {
-            TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => {
-                if let Some(order_id) = exchange_order_id {
-                    bytes::Bytes::from(format!("symbol={}&orderId={}", order.symbol, order_id))
-                } else {
-                    bytes::Bytes::from(format!(
-                        "symbol={}&origClientOrderId={}",
-                        order.symbol, client_query_id
-                    ))
-                }
-            }
-            TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
-                let inst_id = crate::pre_trade::order_manager::okex_inst_id_from_symbol(
-                    &order.symbol,
-                    order.venue,
-                )?;
-                if let Some(order_id) = exchange_order_id {
-                    bytes::Bytes::from(format!("instId={}&ordId={}", inst_id, order_id))
-                } else {
-                    bytes::Bytes::from(format!("instId={}&clOrdId={}", inst_id, client_query_id))
-                }
-            }
-            TradingVenue::BybitMargin => bytes::Bytes::from(format!(
-                "category=spot&symbol={}&orderLinkId={}",
-                crate::common::symbol_util::normalize_symbol_for_internal(&order.symbol),
-                client_query_id
-            )),
-            TradingVenue::BybitFutures => bytes::Bytes::from(format!(
-                "category=linear&symbol={}&orderLinkId={}",
-                crate::common::symbol_util::normalize_symbol_for_internal(&order.symbol),
-                client_query_id
-            )),
-            TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => {
-                if let Some(order_id) = exchange_order_id {
-                    bytes::Bytes::from(format!("orderId={}", order_id))
-                } else {
-                    bytes::Bytes::from(format!("clientOid={}", client_query_id))
-                }
-            }
-            TradingVenue::GateMargin => {
-                let currency_pair =
-                    crate::pre_trade::order_manager::gate_currency_pair_from_symbol(&order.symbol);
-                let order_id = exchange_order_id
-                    .map(|id| id.to_string())
-                    .unwrap_or_else(|| {
-                        crate::pre_trade::order_manager::gate_text_from_client_order_id(
-                            client_query_id,
-                        )
-                    });
-                let req_param = serde_json::json!({
-                    "order_id": order_id,
-                    "currency_pair": currency_pair,
-                    "account": "cross_margin",
-                });
-                bytes::Bytes::from(req_param.to_string())
-            }
-            TradingVenue::GateFutures => {
-                let order_id = exchange_order_id
-                    .map(|id| id.to_string())
-                    .unwrap_or_else(|| {
-                        crate::pre_trade::order_manager::gate_text_from_client_order_id(
-                            client_query_id,
-                        )
-                    });
-                let req_param = serde_json::json!({
-                    "order_id": order_id,
-                });
-                bytes::Bytes::from(req_param.to_string())
-            }
-            _ => bytes::Bytes::new(),
-        };
-
-        let now = get_timestamp_us();
-        let req = GenericQueryRequest::create(req_type, now, client_query_id, params);
-        Ok((exchange, req.to_bytes()))
-    }
-
     fn send_order_query(&mut self, client_order_id: i64, reason: PendingOrderQueryReason) -> bool {
         if let Some(existing) = self.pending_order_queries.get(&client_order_id).copied() {
             let upgraded = matches!(
@@ -1428,7 +1314,7 @@ impl MarketMakerHedgeStrategy {
 
         let query_by_exchange_order_id = order.exchange_order_id.is_some_and(|id| id > 0);
 
-        match self.build_order_query_request(&order, client_order_id) {
+        match build_order_query_request(&order, client_order_id, client_order_id) {
             Ok((exchange, req_bytes)) => {
                 if let Err(err) = QueryEngHub::publish_query_request(exchange.as_str(), &req_bytes)
                 {
@@ -1462,13 +1348,7 @@ impl MarketMakerHedgeStrategy {
     }
 
     fn parse_compact_order_query_resp(body: &bytes::Bytes) -> Option<CompactOrderQueryResp> {
-        if body.len() < COMPACT_ORDER_QUERY_RESP_LEN {
-            return None;
-        }
-        let parsed = CompactOrderQueryResp::from_bytes_prefix(body.as_ref()).ok()?;
-        if !parsed.executed_qty.is_finite() || parsed.executed_qty < 0.0 {
-            return None;
-        }
+        let parsed = parse_compact_order_query_resp_common(body)?;
         if parsed.order_id <= 0 {
             return None;
         }
@@ -1478,20 +1358,8 @@ impl MarketMakerHedgeStrategy {
         if TimeInForce::from_u8(parsed.time_in_force_u8).is_none() {
             return None;
         }
-        if !parsed.response_price.is_finite() || parsed.response_price < 0.0 {
-            return None;
-        }
         if parsed.update_time_ms < 0 {
             return None;
-        }
-        if parsed.update_time_ms != 0 {
-            let now_ms = get_timestamp_us().saturating_div(1_000);
-            if parsed.update_time_ms < 1_300_000_000_000 {
-                return None;
-            }
-            if parsed.update_time_ms > now_ms.saturating_add(86_400_000) {
-                return None;
-            }
         }
         Some(parsed)
     }

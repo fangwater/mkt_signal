@@ -20,9 +20,8 @@ use crate::pre_trade::order_manager::OrderExecutionStatus;
 use crate::pre_trade::PersistChannel;
 use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 use crate::strategy::query_engine_response::{QueryEngineResponse, QueryEngineResponseMessage};
+use crate::strategy::order_query_parser::parse_compact_order_query_resp;
 use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
-use crate::trade_engine::query_parsers::compact_order::CompactOrderQueryResp;
-use crate::trade_engine::query_parsers::compact_order::COMPACT_ORDER_QUERY_RESP_LEN;
 use crate::trade_engine::query_request::QueryRequestType;
 
 thread_local! {
@@ -759,31 +758,4 @@ fn persist_unmatched_query_response(strategy_id: i32, resp: &QueryEngineResponse
             ch.publish_order_update_unmatched(&update);
         }
     });
-}
-
-fn parse_compact_order_query_resp(body: &bytes::Bytes) -> Option<CompactOrderQueryResp> {
-    if body.len() < COMPACT_ORDER_QUERY_RESP_LEN {
-        return None;
-    }
-    let parsed = CompactOrderQueryResp::from_bytes_prefix(body.as_ref()).ok()?;
-
-    if parsed.order_id < 0 || parsed.executed_qty < 0.0 {
-        return None;
-    }
-    if !parsed.response_price.is_finite() || parsed.response_price < 0.0 {
-        return None;
-    }
-    if parsed.status_u8 == 0 {
-        return None;
-    }
-    if parsed.update_time_ms != 0 {
-        let now_ms = crate::common::time_util::get_timestamp_us().saturating_div(1_000);
-        if parsed.update_time_ms < 1_300_000_000_000 {
-            return None;
-        }
-        if parsed.update_time_ms > now_ms.saturating_add(86_400_000) {
-            return None;
-        }
-    }
-    Some(parsed)
 }

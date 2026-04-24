@@ -594,10 +594,15 @@ impl StrategyManager {
         if !Self::is_mm_orphan_order_update_candidate(update) {
             return false;
         }
-        let strategy_id = self.ensure_mm_orphan_strategy(update.symbol());
+        let Some(strategy_id) = self.find_mm_orphan_id(update.symbol()) else {
+            return false;
+        };
         let Some(strategy) = self.strategies.get_mut(&strategy_id) else {
             return false;
         };
+        if !strategy.is_strategy_order(update.client_order_id()) {
+            return false;
+        }
         strategy.apply_order_update(update);
         true
     }
@@ -606,10 +611,15 @@ impl StrategyManager {
         if !Self::is_mm_orphan_trade_update_candidate(trade) {
             return false;
         }
-        let strategy_id = self.ensure_mm_orphan_strategy(trade.symbol());
+        let Some(strategy_id) = self.find_mm_orphan_id(trade.symbol()) else {
+            return false;
+        };
         let Some(strategy) = self.strategies.get_mut(&strategy_id) else {
             return false;
         };
+        if !strategy.is_strategy_order(trade.client_order_id()) {
+            return false;
+        }
         strategy.apply_trade_update(trade);
         true
     }
