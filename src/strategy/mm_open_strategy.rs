@@ -22,7 +22,11 @@ use crate::strategy::query_engine_response::QueryEngineResponse;
 use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
 use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKind};
 use crate::strategy::trade_update::TradeUpdate;
-use crate::strategy::uniform_order_helper::{publish_uniform_order_event, UniformOrderEventKind};
+use crate::strategy::uniform_mm_publish::{
+    publish_mm_uniform_new_order, publish_mm_uniform_terminal_order,
+    publish_mm_uniform_trade_order, publish_mm_uniform_trade_order_from_order_update,
+    MmUniformPublishCtx,
+};
 use crate::strategy::ws_order_update::WsOrderUpdate;
 use crate::trade_engine::query_parsers::compact_order::{
     is_order_query_not_found_marker, CompactOrderQueryResp,
@@ -272,6 +276,7 @@ impl MarketMakerOpenStrategy {
                 client_order_id,
                 source_strategy_id: self.strategy_id,
                 source_kind: MmOrphanSourceKind::Open,
+                uniform_ctx: self.uniform_open_publish_ctx(),
                 reason: reason.to_string(),
             });
         self.release_open_order_keep_local(client_order_id, reason);
@@ -1432,38 +1437,12 @@ impl MarketMakerOpenStrategy {
         true
     }
 
-    fn compute_uniform_amount_update(
-        &self,
-        order: &Order,
-        incoming_cum: f64,
-        prev_cumulative_filled_qty: f64,
-        status: OrderStatus,
-    ) -> f64 {
-        match OrderManager::compute_uniform_amount_update_from_cumulative(
-            prev_cumulative_filled_qty,
-            incoming_cum,
-        ) {
-            Some(delta) => delta,
-            None => {
-                warn!(
-                    "MarketMakerOpenStrategy: strategy_id={} uniform {:?} amount_update rollback detected: client_order_id={} prev={:.8} incoming={:.8}",
-                    self.strategy_id,
-                    status,
-                    order.client_order_id,
-                    prev_cumulative_filled_qty,
-                    incoming_cum
-                );
-                0.0
-            }
+    fn uniform_open_publish_ctx(&self) -> MmUniformPublishCtx {
+        MmUniformPublishCtx {
+            signal_ts: self.signal_ts,
+            from_key: format!("open|{}", self.open_from_key).into_bytes(),
+            price_offset: self.open_price_offset,
         }
-    }
-
-    fn uniform_open_fields(&self) -> (i64, Vec<u8>, f64) {
-        (
-            self.signal_ts,
-            format!("open|{}", self.open_from_key).into_bytes(),
-            self.open_price_offset,
-        )
     }
 
     fn publish_uniform_new_order(
@@ -1472,26 +1451,14 @@ impl MarketMakerOpenStrategy {
         order: &Order,
         prev_cumulative_filled_qty: f64,
     ) {
-        let (signal_ts, from_key, price_offset) = self.uniform_open_fields();
-
-        let incoming_cum = order.cumulative_filled_quantity;
-        let amount_update = self.compute_uniform_amount_update(
+        let ctx = self.uniform_open_publish_ctx();
+        publish_mm_uniform_new_order(
+            order_update,
             order,
-            incoming_cum,
             prev_cumulative_filled_qty,
-            order_update.status(),
-        );
-
-        publish_uniform_order_event(
-            order,
-            UniformOrderEventKind::New,
-            order_update.event_time(),
-            order_update.status(),
-            signal_ts,
-            from_key,
-            None,
-            price_offset,
-            amount_update,
+            &ctx,
+            "MarketMakerOpenStrategy",
+            self.strategy_id,
         );
     }
 
@@ -1501,25 +1468,14 @@ impl MarketMakerOpenStrategy {
         order: &Order,
         prev_cumulative_filled_qty: f64,
     ) {
-        let (signal_ts, from_key, price_offset) = self.uniform_open_fields();
-        let incoming_cum = order.cumulative_filled_quantity;
-        let amount_update = self.compute_uniform_amount_update(
+        let ctx = self.uniform_open_publish_ctx();
+        publish_mm_uniform_terminal_order(
+            order_update,
             order,
-            incoming_cum,
             prev_cumulative_filled_qty,
-            order_update.status(),
-        );
-
-        publish_uniform_order_event(
-            order,
-            UniformOrderEventKind::Terminal,
-            order_update.event_time(),
-            order_update.status(),
-            signal_ts,
-            from_key,
-            None,
-            price_offset,
-            amount_update,
+            &ctx,
+            "MarketMakerOpenStrategy",
+            self.strategy_id,
         );
     }
 
@@ -1530,28 +1486,15 @@ impl MarketMakerOpenStrategy {
         prev_cumulative_filled_qty: f64,
         status: OrderStatus,
     ) {
-        if !matches!(status, OrderStatus::PartiallyFilled | OrderStatus::Filled) {
-            return;
-        }
-        let (signal_ts, from_key, price_offset) = self.uniform_open_fields();
-        let incoming_cum = trade.cumulative_filled_quantity();
-        let amount_update = self.compute_uniform_amount_update(
+        let ctx = self.uniform_open_publish_ctx();
+        publish_mm_uniform_trade_order(
+            trade,
             order,
-            incoming_cum,
             prev_cumulative_filled_qty,
             status,
-        );
-
-        publish_uniform_order_event(
-            order,
-            UniformOrderEventKind::Trade,
-            trade.event_time(),
-            status,
-            signal_ts,
-            from_key,
-            Some(trade.price()),
-            price_offset,
-            amount_update,
+            &ctx,
+            "MarketMakerOpenStrategy",
+            self.strategy_id,
         );
     }
 
@@ -1561,29 +1504,14 @@ impl MarketMakerOpenStrategy {
         order: &Order,
         prev_cumulative_filled_qty: f64,
     ) {
-        let status = order_update.status();
-        if !matches!(status, OrderStatus::PartiallyFilled | OrderStatus::Filled) {
-            return;
-        }
-        let (signal_ts, from_key, price_offset) = self.uniform_open_fields();
-        let incoming_cum = order.cumulative_filled_quantity;
-        let amount_update = self.compute_uniform_amount_update(
+        let ctx = self.uniform_open_publish_ctx();
+        publish_mm_uniform_trade_order_from_order_update(
+            order_update,
             order,
-            incoming_cum,
             prev_cumulative_filled_qty,
-            status,
-        );
-
-        publish_uniform_order_event(
-            order,
-            UniformOrderEventKind::Trade,
-            order_update.event_time(),
-            status,
-            signal_ts,
-            from_key,
-            None,
-            price_offset,
-            amount_update,
+            &ctx,
+            "MarketMakerOpenStrategy",
+            self.strategy_id,
         );
     }
 

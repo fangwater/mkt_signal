@@ -19,5 +19,6 @@ pub mod trade_engine_response;
 pub mod trade_update;
 pub mod trade_update_lite;
 pub mod uniform_order_helper;
+pub mod uniform_mm_publish;
 pub mod ws_order_update;
 pub use manager::{ForceCloseControl, Strategy, StrategyManager};

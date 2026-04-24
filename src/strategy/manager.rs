@@ -9,6 +9,7 @@ use crate::strategy::mm_hedge_strategy::{MarketMakerHedgeStrategy, MmHedgeSnapsh
 use crate::strategy::mm_open_strategy::MarketMakerOpenStrategy;
 use crate::strategy::mm_orphan_order_strategy::MmOrphanOrderStrategy;
 use crate::strategy::query_engine_response::QueryEngineResponse;
+use crate::strategy::uniform_mm_publish::MmUniformPublishCtx;
 use crate::strategy::{
     order_update::OrderUpdate, trade_engine_response::TradeEngineResponse,
     trade_update::TradeUpdate,
@@ -159,6 +160,7 @@ pub struct MmOrphanHandoff {
     pub client_order_id: i64,
     pub source_strategy_id: i32,
     pub source_kind: MmOrphanSourceKind,
+    pub uniform_ctx: MmUniformPublishCtx,
     pub reason: String,
 }
 

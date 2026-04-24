@@ -210,7 +210,9 @@ mod tests {
             SymbolQuerySnapshot::from_orderbook(&orderbook, Some(1.0)),
         );
 
-        let loaded = store.load("BTCUSDT").expect("normalized alias should exist");
+        let loaded = store
+            .load("BTCUSDT")
+            .expect("normalized alias should exist");
         assert_eq!(loaded.timestamp, 1);
         assert_eq!(loaded.amount_at_price_key(10_000_000_000), Some(1.0));
     }

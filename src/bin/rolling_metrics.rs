@@ -1040,8 +1040,14 @@ fn spawn_ringbuffer_monitor(series_map: Arc<SeriesMap>, period: Duration) {
             for entry in series_map.iter() {
                 let key = entry.key().clone();
                 let series = entry.value().clone();
-                let bidask_len = series.ring(FACTOR_BIDASK).map(|ring| ring.len()).unwrap_or(0);
-                let askbid_len = series.ring(FACTOR_ASKBID).map(|ring| ring.len()).unwrap_or(0);
+                let bidask_len = series
+                    .ring(FACTOR_BIDASK)
+                    .map(|ring| ring.len())
+                    .unwrap_or(0);
+                let askbid_len = series
+                    .ring(FACTOR_ASKBID)
+                    .map(|ring| ring.len())
+                    .unwrap_or(0);
                 total_bidask += bidask_len;
                 total_askbid += askbid_len;
                 entries.push((key, bidask_len, askbid_len));

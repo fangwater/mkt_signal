@@ -2,7 +2,7 @@ use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::OrderExecutionStatus;
-use crate::pre_trade::{PersistChannel, QueryEngHub, TradeEngHub};
+use crate::pre_trade::{QueryEngHub, TradeEngHub};
 use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 use crate::signal::trade_signal::TradeSignal;
 use crate::strategy::manager::{
@@ -15,6 +15,11 @@ use crate::strategy::query_engine_response::QueryEngineResponse;
 use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
 use crate::strategy::trade_engine_response::TradeEngineResponse;
 use crate::strategy::trade_update::TradeUpdate;
+use crate::strategy::uniform_mm_publish::{
+    publish_mm_uniform_new_order, publish_mm_uniform_terminal_order,
+    publish_mm_uniform_trade_order, publish_mm_uniform_trade_order_from_order_update,
+    MmUniformPublishCtx,
+};
 use crate::trade_engine::query_parsers::compact_order::{
     is_order_query_not_found_marker, CompactOrderQueryResp,
 };
@@ -25,10 +30,11 @@ use std::collections::{HashMap, HashSet};
 const MM_ORPHAN_QUERY_BASE_TICKS: u32 = 25;
 const MM_ORPHAN_QUERY_MAX_TICKS: u32 = 3_200;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MmOrphanOrderOwner {
     pub source_strategy_id: i32,
     pub source_kind: MmOrphanSourceKind,
+    pub uniform_ctx: MmUniformPublishCtx,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,6 +129,7 @@ impl MmOrphanOrderStrategy {
             MmOrphanOrderOwner {
                 source_strategy_id: handoff.source_strategy_id,
                 source_kind: handoff.source_kind,
+                uniform_ctx: handoff.uniform_ctx.clone(),
             },
         );
         info!(
@@ -159,7 +166,7 @@ impl MmOrphanOrderStrategy {
     }
 
     pub fn order_owner(&self, client_order_id: i64) -> Option<MmOrphanOrderOwner> {
-        self.order_owners.get(&client_order_id).copied()
+        self.order_owners.get(&client_order_id).cloned()
     }
 
     fn finalize_terminal_order(&mut self, client_order_id: i64, event_time: i64, reason: &str) {
@@ -397,14 +404,6 @@ impl MmOrphanOrderStrategy {
             <Self as Strategy>::apply_order_update(self, &update);
         }
     }
-
-    fn persist_order_update(update: &dyn OrderUpdate) {
-        PersistChannel::with(|ch| ch.publish_order_update_unmatched(update));
-    }
-
-    fn persist_trade_update(trade: &dyn TradeUpdate) {
-        PersistChannel::with(|ch| ch.publish_trade_update_unmatched(trade));
-    }
 }
 
 impl ForceCloseControl for MmOrphanOrderStrategy {
@@ -440,6 +439,18 @@ impl Strategy for MmOrphanOrderStrategy {
         }
         let client_order_id = update.client_order_id();
         self.track_order_id(client_order_id);
+        let uniform_ctx = self
+            .order_owners
+            .get(&client_order_id)
+            .map(|owner| owner.uniform_ctx.clone());
+        let prev_cumulative_filled_qty = MonitorChannel::try_order_manager()
+            .and_then(|order_mgr| {
+                order_mgr
+                    .borrow()
+                    .get(client_order_id)
+                    .map(|order| order.cumulative_filled_quantity)
+            })
+            .unwrap_or(0.0);
         if let Some(order_mgr) = MonitorChannel::try_order_manager() {
             let incoming_cum = update.cumulative_filled_quantity();
             let incoming_order_id = update.order_id();
@@ -473,7 +484,49 @@ impl Strategy for MmOrphanOrderStrategy {
                 }
             });
         }
-        Self::persist_order_update(update);
+        if let Some(ctx) = uniform_ctx.as_ref() {
+            let updated_order = MonitorChannel::try_order_manager().and_then(|order_mgr| {
+                order_mgr.borrow().get(client_order_id)
+            });
+            if let Some(order) = updated_order {
+                if update.status() == OrderStatus::New {
+                    publish_mm_uniform_new_order(
+                        update,
+                        &order,
+                        prev_cumulative_filled_qty,
+                        ctx,
+                        "MmOrphanOrderStrategy",
+                        self.strategy_id,
+                    );
+                }
+                if matches!(
+                    update.status(),
+                    OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::ExpiredInMatch
+                ) {
+                    publish_mm_uniform_terminal_order(
+                        update,
+                        &order,
+                        prev_cumulative_filled_qty,
+                        ctx,
+                        "MmOrphanOrderStrategy",
+                        self.strategy_id,
+                    );
+                }
+                if matches!(
+                    update.status(),
+                    OrderStatus::PartiallyFilled | OrderStatus::Filled
+                ) {
+                    publish_mm_uniform_trade_order_from_order_update(
+                        update,
+                        &order,
+                        prev_cumulative_filled_qty,
+                        ctx,
+                        "MmOrphanOrderStrategy",
+                        self.strategy_id,
+                    );
+                }
+            }
+        }
         if matches!(
             update.status(),
             OrderStatus::Canceled | OrderStatus::Filled | OrderStatus::Expired | OrderStatus::ExpiredInMatch
@@ -500,6 +553,18 @@ impl Strategy for MmOrphanOrderStrategy {
         }
         let client_order_id = trade.client_order_id();
         self.track_order_id(client_order_id);
+        let uniform_ctx = self
+            .order_owners
+            .get(&client_order_id)
+            .map(|owner| owner.uniform_ctx.clone());
+        let prev_cumulative_filled_qty = MonitorChannel::try_order_manager()
+            .and_then(|order_mgr| {
+                order_mgr
+                    .borrow()
+                    .get(client_order_id)
+                    .map(|order| order.cumulative_filled_quantity)
+            })
+            .unwrap_or(0.0);
         if let Some(order_mgr) = MonitorChannel::try_order_manager() {
             let cumulative_qty = trade.cumulative_filled_quantity();
             let trade_time = trade.trade_time();
@@ -540,7 +605,22 @@ impl Strategy for MmOrphanOrderStrategy {
                 }
             });
         }
-        Self::persist_trade_update(trade);
+        if let (Some(ctx), Some(status)) = (uniform_ctx.as_ref(), trade.order_status()) {
+            let updated_order = MonitorChannel::try_order_manager().and_then(|order_mgr| {
+                order_mgr.borrow().get(client_order_id)
+            });
+            if let Some(order) = updated_order {
+                publish_mm_uniform_trade_order(
+                    trade,
+                    &order,
+                    prev_cumulative_filled_qty,
+                    status,
+                    ctx,
+                    "MmOrphanOrderStrategy",
+                    self.strategy_id,
+                );
+            }
+        }
         if trade.order_status().is_some_and(|status| {
             matches!(
                 status,

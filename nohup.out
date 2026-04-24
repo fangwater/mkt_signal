@@ -1,0 +1,5 @@
+1、binance的订单缺，是否是update漏了，就看是不是binance漏单
+2、bitget看是不是漏单的问题
+3、depth要不要降低到100ms的推送甚至更低，降低系统负载（tlen的准确性会牺牲）
+4、核心绑定，当前机器是否有numa
+5、dps的buffer要拉大。主要是逐笔成交的trade buffer，要从8192网上拉高，然后batch处理，优化tradeflow
