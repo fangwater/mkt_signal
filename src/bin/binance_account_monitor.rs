@@ -13,7 +13,9 @@ use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::binance_basic_account_event_parser::BinanceBasicAccountEventParser;
 use mkt_signal::parser::default_parser::Parser;
 use mkt_signal::portfolio_margin::binance_spot_ws_api_user_stream::BinanceSpotWsApiUserDataConnection;
-use mkt_signal::portfolio_margin::binance_user_stream::BinanceUserDataConnection;
+use mkt_signal::portfolio_margin::binance_user_stream::{
+    BinanceUserDataConnection, SessionRestartPolicy,
+};
 use mkt_signal::portfolio_margin::listen_key::BinanceListenKeyService;
 use mkt_signal::portfolio_margin::pm_forwarder::PmForwarder;
 use mkt_signal::pre_trade::order_manager::Side;
@@ -319,12 +321,10 @@ async fn main() -> Result<()> {
     }
 
     // IP and session settings
-    const BINANCE_SESSION_MAX_SECS: u64 = 2 * 3600;
     let ((primary_ip, secondary_ip), ip_source) = load_local_ips_preferring_trade_engine().await?;
-    let session_max = Some(Duration::from_secs(BINANCE_SESSION_MAX_SECS));
     info!(
-        "Primary IP='{}', Secondary IP='{}', session_max={:?} (local_ip_source: {})",
-        primary_ip, secondary_ip, session_max, ip_source
+        "Primary IP='{}', Secondary IP='{}', session_restart=primary_odd_2h_boundary_secondary_even_2h_boundary (local_ip_source: {})",
+        primary_ip, secondary_ip, ip_source
     );
 
     // Start listenKey services
@@ -377,7 +377,7 @@ async fn main() -> Result<()> {
             cfg.primary_listen_key_rx.clone(),
             shutdown_rx.clone(),
             evt_tx.clone(),
-            session_max,
+            Some(SessionRestartPolicy::OddTwoHourBoundary),
             cfg.parse_balances_from_account_update,
             cfg.account_scope,
             cfg.stream_kind.clone(),
@@ -391,7 +391,7 @@ async fn main() -> Result<()> {
             cfg.secondary_listen_key_rx,
             shutdown_rx.clone(),
             evt_tx.clone(),
-            session_max,
+            Some(SessionRestartPolicy::EvenTwoHourBoundary),
             cfg.parse_balances_from_account_update,
             cfg.account_scope,
             cfg.stream_kind,
@@ -487,7 +487,7 @@ fn spawn_user_stream_path(
     mut listen_key_rx: Option<watch::Receiver<String>>,
     shutdown_rx: watch::Receiver<bool>,
     evt_tx: tokio::sync::mpsc::UnboundedSender<Bytes>,
-    session_max: Option<Duration>,
+    restart_policy: Option<SessionRestartPolicy>,
     parse_balances_from_account_update: bool,
     account_scope: BasicAccountScope,
     stream_kind: UserStreamKind,
@@ -533,7 +533,7 @@ fn spawn_user_stream_path(
             }
             let mut runner: Box<dyn MktConnectionHandler> = match &stream_kind {
                 UserStreamKind::ListenKeyUrl => {
-                    Box::new(BinanceUserDataConnection::new(conn, session_max))
+                    Box::new(BinanceUserDataConnection::new(conn, restart_policy))
                 }
                 UserStreamKind::SpotWsApiSignature {
                     api_key,
