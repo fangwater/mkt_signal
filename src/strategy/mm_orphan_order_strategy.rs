@@ -3,19 +3,28 @@ use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::{PersistChannel, TradeEngHub};
 use crate::signal::common::{ExecutionType, OrderStatus, TradingVenue};
 use crate::signal::trade_signal::TradeSignal;
-use crate::strategy::manager::{ForceCloseControl, Strategy};
+use crate::strategy::manager::{
+    ForceCloseControl, MmOrphanHandoff, MmOrphanSourceKind, Strategy,
+};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::query_engine_response::QueryEngineResponse;
 use crate::strategy::trade_engine_response::TradeEngineResponse;
 use crate::strategy::trade_update::TradeUpdate;
 use log::{debug, info, warn};
 use std::any::Any;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MmOrphanOrderOwner {
+    pub source_strategy_id: i32,
+    pub source_kind: MmOrphanSourceKind,
+}
 
 pub struct MmOrphanOrderStrategy {
     strategy_id: i32,
     symbol: String,
     order_ids: HashSet<i64>,
+    order_owners: HashMap<i64, MmOrphanOrderOwner>,
     active: bool,
 }
 
@@ -25,6 +34,7 @@ impl MmOrphanOrderStrategy {
             strategy_id,
             symbol: normalize_symbol_for_internal(&symbol.into()),
             order_ids: HashSet::new(),
+            order_owners: HashMap::new(),
             active: true,
         }
     }
@@ -33,17 +43,17 @@ impl MmOrphanOrderStrategy {
         self.order_ids.len()
     }
 
-    fn adopt_order_id_inner(&mut self, client_order_id: i64, reason: &str) -> bool {
-        if client_order_id <= 0 {
+    fn adopt_order_id_inner(&mut self, handoff: &MmOrphanHandoff) -> bool {
+        if handoff.client_order_id <= 0 {
             return false;
         }
         let Some(order_mgr) = MonitorChannel::try_order_manager() else {
             return false;
         };
-        let Some(order) = order_mgr.borrow().get(client_order_id) else {
+        let Some(order) = order_mgr.borrow().get(handoff.client_order_id) else {
             warn!(
                 "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} adopt missing local order client_order_id={} reason={}",
-                self.strategy_id, client_order_id, reason
+                self.strategy_id, handoff.client_order_id, handoff.reason
             );
             return false;
         };
@@ -53,10 +63,23 @@ impl MmOrphanOrderStrategy {
             return false;
         }
         drop(order);
-        self.remember_order(client_order_id);
+        self.track_order_id(handoff.client_order_id);
+        self.order_owners.insert(
+            handoff.client_order_id,
+            MmOrphanOrderOwner {
+                source_strategy_id: handoff.source_strategy_id,
+                source_kind: handoff.source_kind,
+            },
+        );
         info!(
-            "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} adopted order_id symbol={} client_order_id={} venue={:?} reason={}",
-            self.strategy_id, symbol, client_order_id, venue, reason
+            "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} adopted order_id symbol={} client_order_id={} venue={:?} source_strategy_id={} source_kind={:?} reason={}",
+            self.strategy_id,
+            symbol,
+            handoff.client_order_id,
+            venue,
+            handoff.source_strategy_id,
+            handoff.source_kind,
+            handoff.reason
         );
         true
     }
@@ -64,6 +87,7 @@ impl MmOrphanOrderStrategy {
     pub fn forget_order_id(&mut self, client_order_id: i64, reason: &str) -> bool {
         let removed = self.order_ids.remove(&client_order_id);
         if removed {
+            self.order_owners.remove(&client_order_id);
             info!(
                 "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} forgot order_id client_order_id={} reason={}",
                 self.strategy_id, client_order_id, reason
@@ -72,8 +96,12 @@ impl MmOrphanOrderStrategy {
         removed
     }
 
-    fn remember_order(&mut self, client_order_id: i64) {
+    fn track_order_id(&mut self, client_order_id: i64) {
         self.order_ids.insert(client_order_id);
+    }
+
+    pub fn order_owner(&self, client_order_id: i64) -> Option<MmOrphanOrderOwner> {
+        self.order_owners.get(&client_order_id).copied()
     }
 
     fn request_cancel_if_needed(&mut self, update: &dyn OrderUpdate) {
@@ -189,7 +217,7 @@ impl Strategy for MmOrphanOrderStrategy {
         if normalize_symbol_for_internal(update.symbol()) != self.symbol {
             return;
         }
-        self.remember_order(update.client_order_id());
+        self.track_order_id(update.client_order_id());
         self.request_cancel_if_needed(update);
         Self::persist_order_update(update);
         info!(
@@ -208,7 +236,7 @@ impl Strategy for MmOrphanOrderStrategy {
         if normalize_symbol_for_internal(trade.symbol()) != self.symbol {
             return;
         }
-        self.remember_order(trade.client_order_id());
+        self.track_order_id(trade.client_order_id());
         Self::persist_trade_update(trade);
         info!(
             "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} adopted trade_update symbol={} client_order_id={} order_id={} venue={:?} cumulative_qty={:.8} status={:?}",
@@ -226,8 +254,8 @@ impl Strategy for MmOrphanOrderStrategy {
 
     fn apply_query_engine_response(&mut self, _response: &dyn QueryEngineResponse) {}
 
-    fn adopt_order_id(&mut self, client_order_id: i64, reason: &str) -> bool {
-        self.adopt_order_id_inner(client_order_id, reason)
+    fn adopt_order_id(&mut self, handoff: &MmOrphanHandoff) -> bool {
+        self.adopt_order_id_inner(handoff)
     }
 
     fn handle_period_clock(&mut self, _current_tp: i64) {}

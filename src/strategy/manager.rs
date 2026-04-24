@@ -6,6 +6,7 @@ use crate::pre_trade::order_manager::Side;
 use crate::signal::common::ExecutionType;
 use crate::signal::trade_signal::TradeSignal;
 use crate::strategy::mm_hedge_strategy::{MarketMakerHedgeStrategy, MmHedgeSnapshot};
+use crate::strategy::mm_open_strategy::MarketMakerOpenStrategy;
 use crate::strategy::mm_orphan_order_strategy::MmOrphanOrderStrategy;
 use crate::strategy::query_engine_response::QueryEngineResponse;
 use crate::strategy::{
@@ -133,7 +134,7 @@ pub trait Strategy: ForceCloseControl {
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate);
     fn apply_trade_engine_response(&mut self, _response: &dyn TradeEngineResponse);
     fn apply_query_engine_response(&mut self, _response: &dyn QueryEngineResponse) {}
-    fn adopt_order_id(&mut self, _client_order_id: i64, _reason: &str) -> bool {
+    fn adopt_order_id(&mut self, _handoff: &MmOrphanHandoff) -> bool {
         false
     }
     fn handle_period_clock(&mut self, current_tp: i64);
@@ -145,6 +146,20 @@ pub trait Strategy: ForceCloseControl {
     fn arb_open_price_map_entry(&self) -> Option<ArbOpenPriceMapEntry> {
         None
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MmOrphanSourceKind {
+    Open,
+    Hedge,
+}
+
+#[derive(Debug, Clone)]
+pub struct MmOrphanHandoff {
+    pub client_order_id: i64,
+    pub source_strategy_id: i32,
+    pub source_kind: MmOrphanSourceKind,
+    pub reason: String,
 }
 
 /// Strategy id -> Strategy 映射的简单管理器
@@ -599,21 +614,25 @@ impl StrategyManager {
         true
     }
 
-    fn adopt_mm_orphan_handoffs(&mut self, handoffs: Vec<(i64, String)>) {
-        for (client_order_id, reason) in handoffs {
-            let adopted = self.adopt_mm_orphan_order_id(client_order_id, &reason);
+    fn adopt_mm_orphan_handoffs(&mut self, handoffs: Vec<MmOrphanHandoff>) {
+        for handoff in handoffs {
+            let adopted = self.adopt_mm_orphan_order_id(&handoff);
             info!(
-                "MM orphan handoff: client_order_id={} reason={} adopted={}",
-                client_order_id, reason, adopted
+                "MM orphan handoff: client_order_id={} source_strategy_id={} source_kind={:?} reason={} adopted={}",
+                handoff.client_order_id,
+                handoff.source_strategy_id,
+                handoff.source_kind,
+                handoff.reason,
+                adopted
             );
         }
     }
 
-    pub fn adopt_mm_orphan_order_id(&mut self, client_order_id: i64, reason: &str) -> bool {
+    pub fn adopt_mm_orphan_order_id(&mut self, handoff: &MmOrphanHandoff) -> bool {
         let Some(order_mgr) = MonitorChannel::try_order_manager() else {
             return false;
         };
-        let Some(order) = order_mgr.borrow().get(client_order_id) else {
+        let Some(order) = order_mgr.borrow().get(handoff.client_order_id) else {
             return false;
         };
         let symbol = order.symbol.clone();
@@ -622,7 +641,7 @@ impl StrategyManager {
         let Some(strategy) = self.strategies.get_mut(&strategy_id) else {
             return false;
         };
-        strategy.adopt_order_id(client_order_id, reason)
+        strategy.adopt_order_id(handoff)
     }
 
     /// 记录 MM 开仓成交，累加到对应 symbol 的对冲策略
@@ -681,7 +700,13 @@ impl StrategyManager {
                     .as_any_mut()
                     .downcast_mut::<MarketMakerHedgeStrategy>()
                 {
-                    mm_orphan_handoffs = mm_hedge.drain_pending_mm_orphan_handoffs();
+                    mm_orphan_handoffs.extend(mm_hedge.drain_pending_mm_orphan_handoffs());
+                }
+                if let Some(mm_open) = strategy
+                    .as_any_mut()
+                    .downcast_mut::<MarketMakerOpenStrategy>()
+                {
+                    mm_orphan_handoffs.extend(mm_open.drain_pending_mm_orphan_handoffs());
                 }
                 remove = !strategy.is_active();
             }
@@ -709,7 +734,13 @@ impl StrategyManager {
                 .as_any_mut()
                 .downcast_mut::<MarketMakerHedgeStrategy>()
             {
-                mm_orphan_handoffs = mm_hedge.drain_pending_mm_orphan_handoffs();
+                mm_orphan_handoffs.extend(mm_hedge.drain_pending_mm_orphan_handoffs());
+            }
+            if let Some(mm_open) = strategy
+                .as_any_mut()
+                .downcast_mut::<MarketMakerOpenStrategy>()
+            {
+                mm_orphan_handoffs.extend(mm_open.drain_pending_mm_orphan_handoffs());
             }
         }
         self.adopt_mm_orphan_handoffs(mm_orphan_handoffs);
