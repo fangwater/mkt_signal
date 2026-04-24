@@ -34,13 +34,9 @@ pub fn log_prefix() -> &'static str {
 pub type SeriesMap = DashMap<String, Arc<SymbolSeries>>;
 
 pub struct SymbolSeries {
-    pub bidask: Arc<RingBuffer>,
-    pub askbid: Arc<RingBuffer>,
-    pub spread: Arc<RingBuffer>,
+    capacity: AtomicUsize,
+    rings: RwLock<HashMap<String, Arc<RingBuffer>>>,
     spread_rate: AtomicU64,
-    pub open_premium_rate: Arc<RingBuffer>,
-    pub hedge_premium_rate: Arc<RingBuffer>,
-    pub spread_fr: Arc<RingBuffer>,
     open_premium_rate_latest: AtomicU64,
     hedge_premium_rate_latest: AtomicU64,
     spread_fr_latest: AtomicU64,
@@ -49,17 +45,40 @@ pub struct SymbolSeries {
 impl SymbolSeries {
     pub fn new(capacity: usize) -> Self {
         Self {
-            bidask: Arc::new(RingBuffer::new(capacity)),
-            askbid: Arc::new(RingBuffer::new(capacity)),
-            spread: Arc::new(RingBuffer::new(capacity)),
+            capacity: AtomicUsize::new(capacity.max(1)),
+            rings: RwLock::new(HashMap::new()),
             spread_rate: AtomicU64::new(f64::NAN.to_bits()),
-            open_premium_rate: Arc::new(RingBuffer::new(capacity)),
-            hedge_premium_rate: Arc::new(RingBuffer::new(capacity)),
-            spread_fr: Arc::new(RingBuffer::new(capacity)),
             open_premium_rate_latest: AtomicU64::new(f64::NAN.to_bits()),
             hedge_premium_rate_latest: AtomicU64::new(f64::NAN.to_bits()),
             spread_fr_latest: AtomicU64::new(f64::NAN.to_bits()),
         }
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity.load(Ordering::SeqCst)
+    }
+
+    pub fn ensure_capacity(&self, capacity: usize) {
+        let capacity = capacity.max(1);
+        if self.capacity() == capacity {
+            return;
+        }
+
+        let mut rings = self.rings.write();
+        if self.capacity() == capacity {
+            return;
+        }
+        for ring in rings.values_mut() {
+            *ring = Arc::new(RingBuffer::new(capacity));
+        }
+        self.capacity.store(capacity, Ordering::SeqCst);
+        self.reset_latest_values();
+    }
+
+    pub fn retain_factors(&self, active_factors: &HashSet<String>) {
+        self.rings
+            .write()
+            .retain(|factor_name, _| active_factors.contains(factor_name));
     }
 
     pub fn set_spread_rate(&self, spread_rate: Option<f64>) {
@@ -94,20 +113,30 @@ impl SymbolSeries {
         load_option_f64(&self.spread_fr_latest)
     }
 
-    pub fn ring(&self, factor: &str) -> Option<&Arc<RingBuffer>> {
-        match factor {
-            crate::rolling_metrics::config::FACTOR_BIDASK => Some(&self.bidask),
-            crate::rolling_metrics::config::FACTOR_ASKBID => Some(&self.askbid),
-            crate::rolling_metrics::config::FACTOR_SPREAD => Some(&self.spread),
-            crate::rolling_metrics::config::FACTOR_OPEN_PREMIUM_RATE => {
-                Some(&self.open_premium_rate)
-            }
-            crate::rolling_metrics::config::FACTOR_HEDGE_PREMIUM_RATE => {
-                Some(&self.hedge_premium_rate)
-            }
-            crate::rolling_metrics::config::FACTOR_SPREAD_FR => Some(&self.spread_fr),
-            _ => None,
+    pub fn ring(&self, factor: &str) -> Option<Arc<RingBuffer>> {
+        self.rings.read().get(factor).cloned()
+    }
+
+    pub fn ensure_ring(&self, factor: &str) -> Arc<RingBuffer> {
+        if let Some(ring) = self.ring(factor) {
+            return ring;
         }
+
+        let mut rings = self.rings.write();
+        rings
+            .entry(factor.to_string())
+            .or_insert_with(|| Arc::new(RingBuffer::new(self.capacity())))
+            .clone()
+    }
+
+    fn reset_latest_values(&self) {
+        self.spread_rate.store(f64::NAN.to_bits(), Ordering::SeqCst);
+        self.open_premium_rate_latest
+            .store(f64::NAN.to_bits(), Ordering::SeqCst);
+        self.hedge_premium_rate_latest
+            .store(f64::NAN.to_bits(), Ordering::SeqCst);
+        self.spread_fr_latest
+            .store(f64::NAN.to_bits(), Ordering::SeqCst);
     }
 }
 
@@ -115,12 +144,22 @@ pub fn new_series_map() -> SeriesMap {
     DashMap::new()
 }
 
-pub fn ensure_series_capacity(series_map: &SeriesMap, new_capacity: usize) {
-    for mut entry in series_map.iter_mut() {
-        if entry.value().bidask.capacity() != new_capacity {
-            *entry.value_mut() = Arc::new(SymbolSeries::new(new_capacity));
-        }
+pub fn ensure_series_capacity(
+    series_map: &SeriesMap,
+    new_capacity: usize,
+    active_factors: &HashSet<String>,
+) {
+    for entry in series_map.iter() {
+        entry.value().ensure_capacity(new_capacity);
+        entry.value().retain_factors(active_factors);
     }
+}
+
+fn active_factor_names(config: &RollingConfig) -> HashSet<String> {
+    config
+        .factors_iter()
+        .map(|(factor_name, _)| factor_name.to_string())
+        .collect()
 }
 
 #[derive(Debug)]
@@ -163,8 +202,9 @@ pub fn spawn_compute_thread(
         loop {
             let cfg_snapshot = { config.read().clone() };
             let desired_capacity = cfg_snapshot.max_length;
+            let active_factors = active_factor_names(&cfg_snapshot);
             series_capacity.store(desired_capacity, Ordering::SeqCst);
-            ensure_series_capacity(&series_map, desired_capacity);
+            ensure_series_capacity(&series_map, desired_capacity, &active_factors);
 
             if cfg_snapshot.refresh_sec != last_refresh_sec {
                 info!(
@@ -321,8 +361,8 @@ fn build_entries(
     let parts: Vec<&str> = symbol_pair.split("::").collect();
     let base_symbol = parts.last().copied().unwrap_or(symbol_pair);
 
-    let latest_bidask = series.bidask.last();
-    let latest_askbid = series.askbid.last();
+    let latest_bidask = series.ring(FACTOR_BIDASK).and_then(|ring| ring.last());
+    let latest_askbid = series.ring(FACTOR_ASKBID).and_then(|ring| ring.last());
     let spread_rate = series.spread_rate();
     let latest_open_premium_rate = series.open_premium_rate_latest();
     let latest_hedge_premium_rate = series.hedge_premium_rate_latest();
@@ -677,8 +717,16 @@ fn factor_ready_counts(series: &SymbolSeries, config: &RollingConfig) -> (usize,
     for (factor_name, _) in config.factors_iter() {
         total += 1;
         let is_ready = match factor_name {
-            FACTOR_BIDASK => series.bidask.last().and_then(to_option_f64).is_some(),
-            FACTOR_ASKBID => series.askbid.last().and_then(to_option_f64).is_some(),
+            FACTOR_BIDASK => series
+                .ring(FACTOR_BIDASK)
+                .and_then(|ring| ring.last())
+                .and_then(to_option_f64)
+                .is_some(),
+            FACTOR_ASKBID => series
+                .ring(FACTOR_ASKBID)
+                .and_then(|ring| ring.last())
+                .and_then(to_option_f64)
+                .is_some(),
             FACTOR_SPREAD => series.spread_rate().is_some(),
             FACTOR_OPEN_PREMIUM_RATE => series.open_premium_rate_latest().is_some(),
             FACTOR_HEDGE_PREMIUM_RATE => series.hedge_premium_rate_latest().is_some(),

@@ -467,7 +467,11 @@ async fn config_reload_loop(
                     change_detail = describe_config_changes(&prev, &new_cfg);
                 }
                 series_capacity.store(new_cfg.max_length, Ordering::SeqCst);
-                ensure_series_capacity(&series_map, new_cfg.max_length);
+                let active_factors = new_cfg
+                    .factors_iter()
+                    .map(|(factor_name, _)| factor_name.to_string())
+                    .collect::<HashSet<_>>();
+                ensure_series_capacity(&series_map, new_cfg.max_length, &active_factors);
                 if let Some(detail) = change_detail {
                     info!("{}: config updated -> {}", log_prefix(), detail);
                 }
@@ -594,9 +598,7 @@ async fn run_reader_loop(
             let key = format!("{}::{}", prefix, symbol);
             let series = get_or_insert_series(&*series_map, &key, capacity_snapshot);
             for (factor_name, factor_cfg) in cfg_snapshot.factors_iter() {
-                let Some(ring) = series.ring(factor_name) else {
-                    continue;
-                };
+                let ring = series.ensure_ring(factor_name);
                 let entry = state
                     .factor_states
                     .entry(factor_name.to_string())
@@ -986,9 +988,7 @@ fn record_factor_samples<F>(
             continue;
         };
 
-        let Some(ring) = series.ring(factor_name) else {
-            continue;
-        };
+        let ring = series.ensure_ring(factor_name);
 
         let state = quotes
             .factor_states
@@ -1006,18 +1006,15 @@ fn record_factor_samples<F>(
 fn get_or_insert_series(series_map: &SeriesMap, key: &str, capacity: usize) -> Arc<SymbolSeries> {
     if let Some(existing) = series_map.get(key) {
         let series = existing.clone();
-        if series.bidask.capacity() == capacity {
-            return series;
-        }
+        series.ensure_capacity(capacity);
+        return series;
     }
 
     match series_map.entry(key.to_string()) {
-        Entry::Occupied(mut occ) => {
-            let value = occ.get_mut();
-            if value.bidask.capacity() != capacity {
-                *value = Arc::new(SymbolSeries::new(capacity));
-            }
-            value.clone()
+        Entry::Occupied(occ) => {
+            let value = occ.get().clone();
+            value.ensure_capacity(capacity);
+            value
         }
         Entry::Vacant(vac) => vac.insert(Arc::new(SymbolSeries::new(capacity))).clone(),
     }
@@ -1043,8 +1040,8 @@ fn spawn_ringbuffer_monitor(series_map: Arc<SeriesMap>, period: Duration) {
             for entry in series_map.iter() {
                 let key = entry.key().clone();
                 let series = entry.value().clone();
-                let bidask_len = series.bidask.len();
-                let askbid_len = series.askbid.len();
+                let bidask_len = series.ring(FACTOR_BIDASK).map(|ring| ring.len()).unwrap_or(0);
+                let askbid_len = series.ring(FACTOR_ASKBID).map(|ring| ring.len()).unwrap_or(0);
                 total_bidask += bidask_len;
                 total_askbid += askbid_len;
                 entries.push((key, bidask_len, askbid_len));
