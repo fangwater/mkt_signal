@@ -146,7 +146,7 @@ pub trait Strategy: ForceCloseControl {
 /// Strategy id -> Strategy 映射的简单管理器
 pub struct StrategyManager {
     strategies: HashMap<i32, Box<dyn Strategy>>,
-    order: VecDeque<i32>,
+    strategy_queue: VecDeque<i32>,
     known_ids: HashSet<i32>,
     symbol_index: HashMap<String, BTreeSet<i32>>,
     mm_open_price_index: HashMap<String, HashMap<QuantizedValueKey, BTreeSet<i32>>>,
@@ -161,7 +161,7 @@ impl StrategyManager {
     pub fn new() -> Self {
         Self {
             strategies: HashMap::new(),
-            order: VecDeque::new(),
+            strategy_queue: VecDeque::new(),
             known_ids: HashSet::new(),
             symbol_index: HashMap::new(),
             mm_open_price_index: HashMap::new(),
@@ -283,7 +283,7 @@ impl StrategyManager {
             self.symbol_index.entry(symbol).or_default().insert(id);
         }
         if old.is_none() {
-            self.order.push_back(id);
+            self.strategy_queue.push_back(id);
         }
         if !is_known {
             self.known_ids.insert(id);
@@ -305,7 +305,7 @@ impl StrategyManager {
 
     /// 移除策略
     pub fn remove(&mut self, strategy_id: i32) -> Option<Box<dyn Strategy>> {
-        self.order.retain(|id| *id != strategy_id);
+        self.strategy_queue.retain(|id| *id != strategy_id);
         let removed = self.strategies.remove(&strategy_id);
         if removed.is_some() {
             self.unregister_mm_open_price_entry(strategy_id);
@@ -333,7 +333,7 @@ impl StrategyManager {
 
     /// 取出指定策略，调用方处理后可重新插入
     pub fn take(&mut self, strategy_id: i32) -> Option<Box<dyn Strategy>> {
-        self.order.retain(|id| *id != strategy_id);
+        self.strategy_queue.retain(|id| *id != strategy_id);
         let removed = self.strategies.remove(&strategy_id);
         self.unregister_mm_open_price_entry(strategy_id);
         self.unregister_arb_open_price_entry(strategy_id);
@@ -621,10 +621,10 @@ impl StrategyManager {
 
     /// 触发全部策略的周期检查，返回本次检查到的策略数量
     pub fn handle_period_clock(&mut self, current_tp: i64) -> usize {
-        let iterations = self.order.len();
+        let iterations = self.strategy_queue.len();
         let mut inspected: usize = 0usize;
         for _ in 0..iterations {
-            let Some(strategy_id) = self.order.pop_front() else {
+            let Some(strategy_id) = self.strategy_queue.pop_front() else {
                 break;
             };
 
@@ -647,7 +647,7 @@ impl StrategyManager {
             if remove {
                 let _ = self.remove(strategy_id);
             } else {
-                self.order.push_back(strategy_id);
+                self.strategy_queue.push_back(strategy_id);
             }
         }
         inspected
