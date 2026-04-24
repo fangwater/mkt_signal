@@ -620,16 +620,16 @@ impl QueryEngChannel {
                                     let client_order_id = resp.client_query_id();
                                     let strategy_id = (client_order_id >> 32) as i32;
                                     let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-                                    let strategy_opt = {
+                                    let matched = {
                                         let mut mgr = strategy_mgr.borrow_mut();
-                                        mgr.take(strategy_id)
-                                    };
-                                    if let Some(mut strategy) = strategy_opt {
-                                        strategy.apply_query_engine_response(&resp);
-                                        if strategy.is_active() {
-                                            strategy_mgr.borrow_mut().insert(strategy);
+                                        if mgr.contains(strategy_id) {
+                                            mgr.apply_query_engine_response(strategy_id, &resp);
+                                            true
+                                        } else {
+                                            false
                                         }
-                                    } else {
+                                    };
+                                    if !matched {
                                         persist_unmatched_query_response(strategy_id, &resp);
                                     }
                                 }
