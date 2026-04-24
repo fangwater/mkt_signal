@@ -3,6 +3,7 @@ use crate::common::tick_math::QuantizedValue;
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::Side;
+use crate::signal::common::ExecutionType;
 use crate::signal::trade_signal::TradeSignal;
 use crate::strategy::mm_hedge_strategy::{MarketMakerHedgeStrategy, MmHedgeSnapshot};
 use crate::strategy::mm_orphan_order_strategy::MmOrphanOrderStrategy;
@@ -559,8 +560,23 @@ impl StrategyManager {
         strategy_id
     }
 
+    fn is_mm_orphan_order_update_candidate(update: &dyn OrderUpdate) -> bool {
+        let monitor = MonitorChannel::instance();
+        let venue = update.trading_venue();
+        (venue == monitor.open_venue() || venue == monitor.hedge_venue())
+            && update.client_order_id() > 0
+            && !matches!(update.execution_type(), ExecutionType::Trade)
+    }
+
+    fn is_mm_orphan_trade_update_candidate(trade: &dyn TradeUpdate) -> bool {
+        let monitor = MonitorChannel::instance();
+        let venue = trade.trading_venue();
+        (venue == monitor.open_venue() || venue == monitor.hedge_venue())
+            && trade.client_order_id() > 0
+    }
+
     pub fn apply_mm_orphan_order_update(&mut self, update: &dyn OrderUpdate) -> bool {
-        if !MmOrphanOrderStrategy::should_adopt_order_update(update) {
+        if !Self::is_mm_orphan_order_update_candidate(update) {
             return false;
         }
         let strategy_id = self.ensure_mm_orphan_strategy(update.symbol());
@@ -572,7 +588,7 @@ impl StrategyManager {
     }
 
     pub fn apply_mm_orphan_trade_update(&mut self, trade: &dyn TradeUpdate) -> bool {
-        if !MmOrphanOrderStrategy::should_adopt_trade_update(trade) {
+        if !Self::is_mm_orphan_trade_update_candidate(trade) {
             return false;
         }
         let strategy_id = self.ensure_mm_orphan_strategy(trade.symbol());
@@ -719,6 +735,7 @@ mod tests {
     };
     use crate::common::tick_math::QuantizedValue;
     use crate::pre_trade::order_manager::Side;
+    use crate::signal::common::ExecutionType;
     use crate::signal::trade_signal::TradeSignal;
     use crate::strategy::query_engine_response::QueryEngineResponse;
     use crate::strategy::trade_engine_response::TradeEngineResponse;

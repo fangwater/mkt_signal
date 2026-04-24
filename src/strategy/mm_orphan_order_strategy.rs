@@ -33,21 +33,6 @@ impl MmOrphanOrderStrategy {
         self.order_ids.len()
     }
 
-    pub fn should_adopt_order_update(update: &dyn OrderUpdate) -> bool {
-        let monitor = MonitorChannel::instance();
-        let venue = update.trading_venue();
-        (venue == monitor.open_venue() || venue == monitor.hedge_venue())
-            && update.client_order_id() > 0
-            && !matches!(update.execution_type(), ExecutionType::Trade)
-    }
-
-    pub fn should_adopt_trade_update(trade: &dyn TradeUpdate) -> bool {
-        let monitor = MonitorChannel::instance();
-        let venue = trade.trading_venue();
-        (venue == monitor.open_venue() || venue == monitor.hedge_venue())
-            && trade.client_order_id() > 0
-    }
-
     fn adopt_order_id_inner(&mut self, client_order_id: i64, reason: &str) -> bool {
         if client_order_id <= 0 {
             return false;
@@ -201,9 +186,7 @@ impl Strategy for MmOrphanOrderStrategy {
     fn handle_signal(&mut self, _signal: &TradeSignal) {}
 
     fn apply_order_update(&mut self, update: &dyn OrderUpdate) {
-        if !Self::should_adopt_order_update(update)
-            || normalize_symbol_for_internal(update.symbol()) != self.symbol
-        {
+        if normalize_symbol_for_internal(update.symbol()) != self.symbol {
             return;
         }
         self.remember_order(update.client_order_id());
@@ -222,9 +205,7 @@ impl Strategy for MmOrphanOrderStrategy {
     }
 
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
-        if !Self::should_adopt_trade_update(trade)
-            || normalize_symbol_for_internal(trade.symbol()) != self.symbol
-        {
+        if normalize_symbol_for_internal(trade.symbol()) != self.symbol {
             return;
         }
         self.remember_order(trade.client_order_id());
