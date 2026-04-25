@@ -66,7 +66,10 @@ pub fn build_order_query_request(
             if let Some(order_id) = exchange_order_id {
                 bytes::Bytes::from(format!("instId={}&ordId={}", inst_id, order_id))
             } else {
-                bytes::Bytes::from(format!("instId={}&clOrdId={}", inst_id, lookup_client_order_id))
+                bytes::Bytes::from(format!(
+                    "instId={}&clOrdId={}",
+                    inst_id, lookup_client_order_id
+                ))
             }
         }
         TradingVenue::BybitMargin => bytes::Bytes::from(format!(
@@ -89,11 +92,13 @@ pub fn build_order_query_request(
         TradingVenue::GateMargin => {
             let currency_pair =
                 crate::pre_trade::order_manager::gate_currency_pair_from_symbol(&order.symbol);
-            let order_id = exchange_order_id.map(|id| id.to_string()).unwrap_or_else(|| {
-                crate::pre_trade::order_manager::gate_text_from_client_order_id(
-                    lookup_client_order_id,
-                )
-            });
+            let order_id = exchange_order_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| {
+                    crate::pre_trade::order_manager::gate_text_from_client_order_id(
+                        lookup_client_order_id,
+                    )
+                });
             let req_param = serde_json::json!({
                 "order_id": order_id,
                 "currency_pair": currency_pair,
@@ -102,11 +107,13 @@ pub fn build_order_query_request(
             bytes::Bytes::from(req_param.to_string())
         }
         TradingVenue::GateFutures => {
-            let order_id = exchange_order_id.map(|id| id.to_string()).unwrap_or_else(|| {
-                crate::pre_trade::order_manager::gate_text_from_client_order_id(
-                    lookup_client_order_id,
-                )
-            });
+            let order_id = exchange_order_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| {
+                    crate::pre_trade::order_manager::gate_text_from_client_order_id(
+                        lookup_client_order_id,
+                    )
+                });
             let req_param = serde_json::json!({
                 "order_id": order_id,
             });

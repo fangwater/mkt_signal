@@ -367,6 +367,13 @@ fn handle_trade_signal(signal: TradeSignal) {
                 let strategy_id = StrategyManager::generate_strategy_id();
                 let mut strategy = HedgeArbStrategy::new(strategy_id, symbol.clone());
                 strategy.handle_signal(&normalized_signal);
+                let arb_orphan_residuals = strategy.drain_pending_arb_orphan_residuals();
+                if !arb_orphan_residuals.is_empty() {
+                    MonitorChannel::instance()
+                        .strategy_mgr()
+                        .borrow_mut()
+                        .adopt_arb_orphan_residuals(arb_orphan_residuals);
+                }
                 if strategy.is_active() {
                     let hedge_mode = if open_ctx.hedge_timeout_us > 0 {
                         "MM"
@@ -531,6 +538,13 @@ fn handle_trade_signal(signal: TradeSignal) {
                     strategy.set_force_close_mode(true);
 
                     strategy.handle_signal(&converted_signal);
+                    let arb_orphan_residuals = strategy.drain_pending_arb_orphan_residuals();
+                    if !arb_orphan_residuals.is_empty() {
+                        MonitorChannel::instance()
+                            .strategy_mgr()
+                            .borrow_mut()
+                            .adopt_arb_orphan_residuals(arb_orphan_residuals);
+                    }
 
                     if strategy.is_active() {
                         let hedge_mode = if close_ctx.hedge_timeout_us > 0 {
@@ -620,10 +634,15 @@ fn handle_trade_signal(signal: TradeSignal) {
                             }
                         }
                         strategy.handle_signal(&normalized_signal);
-                        let arb_orphan_handoffs =
-                            strategy.drain_pending_arb_orphan_handoffs();
+                        let arb_orphan_handoffs = strategy.drain_pending_arb_orphan_handoffs();
+                        let arb_orphan_residuals = strategy.drain_pending_arb_orphan_residuals();
                         if strategy.is_active() {
                             strategy_mgr.borrow_mut().insert(strategy);
+                        }
+                        if !arb_orphan_residuals.is_empty() {
+                            strategy_mgr
+                                .borrow_mut()
+                                .adopt_arb_orphan_residuals(arb_orphan_residuals);
                         }
                         for handoff in arb_orphan_handoffs {
                             let adopted = strategy_mgr
@@ -673,10 +692,15 @@ fn handle_trade_signal(signal: TradeSignal) {
                             }
                         }
                         strategy.handle_signal(&normalized_signal);
-                        let arb_orphan_handoffs =
-                            strategy.drain_pending_arb_orphan_handoffs();
+                        let arb_orphan_handoffs = strategy.drain_pending_arb_orphan_handoffs();
+                        let arb_orphan_residuals = strategy.drain_pending_arb_orphan_residuals();
                         if strategy.is_active() {
                             strategy_mgr.borrow_mut().insert(strategy);
+                        }
+                        if !arb_orphan_residuals.is_empty() {
+                            strategy_mgr
+                                .borrow_mut()
+                                .adopt_arb_orphan_residuals(arb_orphan_residuals);
                         }
                         for handoff in arb_orphan_handoffs {
                             let adopted = strategy_mgr
@@ -871,10 +895,16 @@ fn handle_trade_signal(signal: TradeSignal) {
                 if let Some(mut strategy) = strategy_opt {
                     debug!("ArbHedge: 处理策略 id={}", strategy_id);
                     strategy.handle_signal(&normalized_signal);
+                    let arb_orphan_residuals = strategy.drain_pending_arb_orphan_residuals();
                     if strategy.is_active() {
                         strategy_mgr.borrow_mut().insert(strategy);
                     } else {
                         debug!("ArbHedge: 策略 id={} 已不活跃，不再放回", strategy_id);
+                    }
+                    if !arb_orphan_residuals.is_empty() {
+                        strategy_mgr
+                            .borrow_mut()
+                            .adopt_arb_orphan_residuals(arb_orphan_residuals);
                     }
                 }
                 drop(strategy_mgr);

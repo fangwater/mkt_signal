@@ -14,7 +14,8 @@ use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::arb_orphan_strategy::ArbOrphanLeg;
 use crate::strategy::manager::{
-    ArbOpenPriceMapEntry, ArbOrphanHandoff, ArbOrphanUniformCtx, ForceCloseControl, Strategy,
+    ArbOpenPriceMapEntry, ArbOrphanHandoff, ArbOrphanResidualHandoff, ArbOrphanUniformCtx,
+    ForceCloseControl, Strategy,
 };
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::query_engine_response::QueryEngineResponse;
@@ -42,46 +43,42 @@ const CANCEL_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
 const HEDGE_RESIDUAL_EPS: f64 = 1e-12;
 
 pub struct HedgeArbStrategy {
-    pub strategy_id: i32,                         //策略id
-    pub open_symbol: String,                      //开仓侧symbol
-    pub open_venue: TradingVenue,                 //开仓侧交易场所
-    pub open_order_id: i64,                       //开仓单唯一，报多单对应多个Strategy
-    pub hedge_order_ids: Vec<i64>,                //对冲单会产生一个or多个，因为部分成交
-    pub open_expire_ts: Option<i64>,              //开仓单挂单截止时间（绝对时间戳）
-    pub hedge_timeout_us: Option<i64>, //对冲单允许的存活时间（微秒），>0 表示 MM，None 表示 MT
-    pub hedge_expire_ts: Option<i64>,  //当前对冲挂单的截止时间（绝对时间戳）
-    pub order_seq: u32,                //订单号计数器
-    pub cumulative_hedged_qty: f64,    //累计对冲数量
-    pub cumulative_open_qty: f64,      //累计开仓数量
-    pub open_qty_multiplier: f64,      //开仓侧数量乘数（venue qty -> base qty）
-    pub hedge_qty_multiplier: f64,     //对冲侧数量乘数（venue qty -> base qty）
+    pub strategy_id: i32,                  //策略id
+    pub open_symbol: String,               //开仓侧symbol
+    pub open_venue: TradingVenue,          //开仓侧交易场所
+    pub open_order_id: i64,                //开仓单唯一，报多单对应多个Strategy
+    pub hedge_order_ids: Vec<i64>,         //对冲单会产生一个or多个，因为部分成交
+    pub open_expire_ts: Option<i64>,       //开仓单挂单截止时间（绝对时间戳）
+    pub hedge_timeout_us: Option<i64>,     //对冲单允许的存活时间（微秒），>0 表示 MM，None 表示 MT
+    pub hedge_expire_ts: Option<i64>,      //当前对冲挂单的截止时间（绝对时间戳）
+    pub order_seq: u32,                    //订单号计数器
+    pub cumulative_hedged_qty: f64,        //累计对冲数量
+    pub cumulative_open_qty: f64,          //累计开仓数量
+    pub open_qty_multiplier: f64,          //开仓侧数量乘数（venue qty -> base qty）
+    pub hedge_qty_multiplier: f64,         //对冲侧数量乘数（venue qty -> base qty）
     pub open_filled_hedge_triggered: bool, //开仓成交已触发对冲（防止query重复触发）
-    pub alive_flag: bool,              //策略是否存活
-    pub hedge_symbol: String,          //对冲侧symbol
-    pub hedge_venue: TradingVenue,     //对冲侧交易场所
-    pub hedge_side: Side,              //对冲侧方向
-    pub hedge_request_seq: u32,        //累计对冲请求次数
-    pub open_signal_ts: i64,           //开仓信号时间戳（微秒）
-    pub hedge_signal_ts: i64,          //对冲信号时间戳（微秒）
-    pub open_price_qv: QuantizedValue, //开仓信号 price_qv
-    pub open_price_offset: f64,        //开仓信号 price_offset
-    pub hedge_price_offset: f64,       //对冲信号 price_offset
-    pub open_from_key: String,         //开仓来源标记
-    pub hedge_from_key: String,        //对冲来源标记
-    pub open_bbo: DualBbo,             //开仓时双腿盘口
-    pub hedge_bbo: DualBbo,            //对冲时刻双腿盘口
-    pub force_close_mode: bool,        //是否强平模式
-    pub hedge_retry_after_ts: Option<i64>, //对冲报单失败后的冷却截止时间
-    pub hedge_retry_reason: Option<&'static str>, //对冲报单失败的重试原因
+    pub alive_flag: bool,                  //策略是否存活
+    pub hedge_symbol: String,              //对冲侧symbol
+    pub hedge_venue: TradingVenue,         //对冲侧交易场所
+    pub hedge_side: Side,                  //对冲侧方向
+    pub hedge_request_seq: u32,            //累计对冲请求次数
+    pub open_signal_ts: i64,               //开仓信号时间戳（微秒）
+    pub hedge_signal_ts: i64,              //对冲信号时间戳（微秒）
+    pub open_price_qv: QuantizedValue,     //开仓信号 price_qv
+    pub open_price_offset: f64,            //开仓信号 price_offset
+    pub hedge_price_offset: f64,           //对冲信号 price_offset
+    pub open_from_key: String,             //开仓来源标记
+    pub hedge_from_key: String,            //对冲来源标记
+    pub open_bbo: DualBbo,                 //开仓时双腿盘口
+    pub force_close_mode: bool,            //是否强平模式
     pub last_cancel_trigger_ts: Option<i64>,
     pub last_open_cancel_reason: Option<&'static str>,
     pub last_inactive_reason: Option<String>,
     order_query_watchdog: Option<QueryWatchdog>,
     cancel_query_watchdog: Option<QueryWatchdog>,
-    processed_cancel_updates: HashSet<i64>,
-    suppress_cleanup_detail_orders: HashSet<i64>,
     keep_local_on_drop_order_ids: HashSet<i64>,
     pending_arb_orphan_handoffs: Vec<ArbOrphanHandoff>,
+    pending_arb_orphan_residuals: Vec<ArbOrphanResidualHandoff>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -180,6 +177,41 @@ impl HedgeArbStrategy {
         );
     }
 
+    fn signed_residual_qty_for_hedge_side(side: Side, base_qty: f64) -> f64 {
+        match side {
+            // Sell hedge 处理正 open exposure。
+            Side::Sell => base_qty,
+            // Buy hedge 处理负 open exposure。
+            Side::Buy => -base_qty,
+        }
+    }
+
+    fn queue_arb_orphan_residual(&mut self, side: Side, base_qty: f64, reason: impl Into<String>) {
+        if base_qty <= HEDGE_RESIDUAL_EPS || self.hedge_symbol.is_empty() {
+            return;
+        }
+        let reason = reason.into();
+        let signed_base_qty = Self::signed_residual_qty_for_hedge_side(side, base_qty);
+        self.pending_arb_orphan_residuals
+            .push(ArbOrphanResidualHandoff {
+                symbol: self.hedge_symbol.clone(),
+                venue: self.hedge_venue,
+                signed_base_qty,
+                source_strategy_id: self.strategy_id,
+                reason: reason.clone(),
+            });
+        info!(
+            "HedgeArbStrategy: strategy_id={} queue arb orphan residual symbol={} venue={:?} side={:?} base_qty={:.8} signed_base_qty={:.8} reason={}",
+            self.strategy_id,
+            self.hedge_symbol,
+            self.hedge_venue,
+            side,
+            base_qty,
+            signed_base_qty,
+            reason
+        );
+    }
+
     fn handoff_open_order_to_arb_orphan(
         &mut self,
         cancel_intent: bool,
@@ -251,19 +283,15 @@ impl HedgeArbStrategy {
             open_from_key: String::new(),
             hedge_from_key: String::new(),
             open_bbo: DualBbo::default(),
-            hedge_bbo: DualBbo::default(),
             force_close_mode: false,
-            hedge_retry_after_ts: None,
-            hedge_retry_reason: None,
             last_cancel_trigger_ts: None,
             last_open_cancel_reason: None,
             last_inactive_reason: None,
             order_query_watchdog: None,
             cancel_query_watchdog: None,
-            processed_cancel_updates: HashSet::new(),
-            suppress_cleanup_detail_orders: HashSet::new(),
             keep_local_on_drop_order_ids: HashSet::new(),
             pending_arb_orphan_handoffs: Vec::new(),
+            pending_arb_orphan_residuals: Vec::new(),
         };
         strategy
     }
@@ -355,11 +383,7 @@ impl HedgeArbStrategy {
         side: Side,
     ) {
         let added = if qty > HEDGE_RESIDUAL_EPS {
-            MonitorChannel::instance().inc_hedge_residual(
-                self.hedge_symbol.clone(),
-                self.hedge_venue,
-                qty,
-            );
+            self.queue_arb_orphan_residual(side, qty, reason);
             qty
         } else {
             0.0
@@ -504,8 +528,6 @@ impl HedgeArbStrategy {
             None
         };
         self.hedge_expire_ts = None;
-        self.hedge_retry_after_ts = None;
-        self.hedge_retry_reason = None;
 
         // 保存对冲侧信息
         self.hedge_symbol = ctx.get_hedging_symbol();
@@ -533,7 +555,6 @@ impl HedgeArbStrategy {
             ctx.hedging_leg.ask0,
             ctx.hedging_leg.ts,
         );
-        self.hedge_bbo = self.open_bbo;
 
         // 7、使用信号层已对齐的量价（fr/xarb 侧完成对齐）
         let symbol = ctx.get_opening_symbol();
@@ -814,16 +835,6 @@ impl HedgeArbStrategy {
         let hedge_symbol = ctx.get_hedging_symbol();
         let hedge_venue = TradingVenue::from_u8(ctx.hedging_leg.venue)
             .ok_or_else(|| format!("无效的对冲交易场所: {}", ctx.hedging_leg.venue))?;
-        self.hedge_bbo.hedge = Bbo::new(
-            ctx.hedging_leg.bid0,
-            ctx.hedging_leg.ask0,
-            ctx.hedging_leg.ts,
-        );
-        self.hedge_bbo.open = Bbo::new(
-            ctx.opening_leg.bid0,
-            ctx.opening_leg.ask0,
-            ctx.opening_leg.ts,
-        );
         let hedge_side = ctx
             .get_side()
             .ok_or_else(|| format!("无效的对冲方向: {}", ctx.hedge_side))?;
@@ -1079,7 +1090,10 @@ impl HedgeArbStrategy {
             .order_manager()
             .borrow()
             .get(self.open_order_id);
-        if order.as_ref().is_some_and(|order| order.status.is_terminal()) {
+        if order
+            .as_ref()
+            .is_some_and(|order| order.status.is_terminal())
+        {
             return Ok(());
         }
         if order.is_none() {
@@ -1318,8 +1332,6 @@ impl HedgeArbStrategy {
             ask0: 0.0,
             ts: 0,
         };
-        self.hedge_bbo.hedge = Bbo::default();
-        self.hedge_bbo.open = Bbo::default();
 
         // 5. 设置市场数据时间戳
         hedge_ctx.market_ts = get_timestamp_us();
@@ -1485,40 +1497,6 @@ impl HedgeArbStrategy {
         }
     }
 
-    fn handle_hedge_retry_cooldown(&mut self) {
-        let Some(due_ts) = self.hedge_retry_after_ts else {
-            return;
-        };
-        let now = get_timestamp_us();
-        if now < due_ts {
-            return;
-        }
-
-        self.hedge_retry_after_ts = None;
-        let reason = self.hedge_retry_reason.take().unwrap_or("cooldown");
-        let base_pending_qty = self.cumulative_open_qty - self.cumulative_hedged_qty;
-        if base_pending_qty <= 1e-8 {
-            debug!(
-                "HedgeArbStrategy: strategy_id={} hedge retry skipped after cooldown (no pending qty) reason={}",
-                self.strategy_id, reason
-            );
-            return;
-        }
-
-        let (sent, hedged_qty, _) = self.try_hedge_with_residual(base_pending_qty);
-        if sent {
-            debug!(
-                "HedgeArbStrategy: strategy_id={} hedge retry after cooldown sent qty={:.8} reason={}",
-                self.strategy_id, hedged_qty, reason
-            );
-        } else {
-            warn!(
-                "HedgeArbStrategy: strategy_id={} hedge retry after cooldown skipped/failed pending_qty={:.8} reason={}",
-                self.strategy_id, base_pending_qty, reason
-            );
-        }
-    }
-
     /// 以限价单对冲（需要先向上游模型查询挂单价格）
     ///
     /// # Arguments
@@ -1596,60 +1574,51 @@ impl HedgeArbStrategy {
         Ok(())
     }
 
-    /// 尝试对冲（含残值处理）
+    /// 尝试对冲。
     ///
     /// # Arguments
-    /// * `base_qty` - 基础待对冲量（不含残值）
+    /// * `base_qty` - 当前策略待对冲量，base 口径
     ///
     /// # Returns
-    /// (是否成功发起对冲, 实际对冲量, 从残值表取出的数量)
-    /// - 成功发起对冲时：(true, 对冲数量, 从残值表增加的数量)
-    /// - 不满足要求时：(false, 0.0, 累加到残值表的数量)
+    /// (是否成功发起对冲, 实际对冲量, 转交给 arb orphan 的 residual 数量)
     fn try_hedge_with_residual(&mut self, base_qty: f64) -> (bool, f64, f64) {
-        // 1. 计算总待对冲量（基础量 + 残值表中的残余量）
-        let mut total_pending_qty = base_qty;
-        let residual_qty =
-            MonitorChannel::instance().clear_hedge_residual(&self.hedge_symbol, self.hedge_venue);
-        total_pending_qty += residual_qty;
-
         debug!(
-            "HedgeArbStrategy: strategy_id={} 待对冲量: 基础={:.8} 残余={:.8} 总计={:.8}",
-            self.strategy_id, base_qty, residual_qty, total_pending_qty
+            "HedgeArbStrategy: strategy_id={} 待对冲量: 基础={:.8}",
+            self.strategy_id, base_qty
         );
 
         // 2. 检查是否满足最小交易要求
         let mut min_req_reason: Option<String> = None;
-        let can_hedge =
-            match Self::base_to_venue_qty(total_pending_qty, self.hedge_qty_multiplier, "hedge")
-                .and_then(|hedge_check_qty| {
-                    MonitorChannel::instance().check_min_trading_requirements(
-                        self.hedge_venue,
-                        &self.hedge_symbol,
-                        hedge_check_qty,
-                        None,
-                    )
-                }) {
-                Ok(_) => true,
-                Err(e) => {
-                    min_req_reason = Some(e);
-                    false
-                }
-            };
+        let can_hedge = match Self::base_to_venue_qty(base_qty, self.hedge_qty_multiplier, "hedge")
+            .and_then(|hedge_check_qty| {
+                MonitorChannel::instance().check_min_trading_requirements(
+                    self.hedge_venue,
+                    &self.hedge_symbol,
+                    hedge_check_qty,
+                    None,
+                )
+            }) {
+            Ok(_) => true,
+            Err(e) => {
+                min_req_reason = Some(e);
+                false
+            }
+        };
 
         if !can_hedge {
-            // 不满足最小交易要求，累加到残值表
-            if total_pending_qty > 1e-12 {
-                MonitorChannel::instance().inc_hedge_residual(
-                    self.hedge_symbol.clone(),
-                    self.hedge_venue,
-                    total_pending_qty,
-                );
+            // 不满足最小交易要求，交给 arb orphan 的 QV residual 累积。
+            if base_qty > 1e-12 {
                 let reason = min_req_reason.as_deref().unwrap_or("unknown");
-                info!(
-                    "HedgeArbStrategy: strategy_id={} 待对冲量={:.8} 不满足最小交易要求，累加到残余量表 reason={}",
-                    self.strategy_id, total_pending_qty, reason
+                self.queue_arb_orphan_residual(
+                    self.hedge_side,
+                    base_qty,
+                    format!("hedge min requirement failed: {}", reason),
                 );
-                return (false, 0.0, total_pending_qty);
+                info!(
+                    "HedgeArbStrategy: strategy_id={} 待对冲量={:.8} 不满足最小交易要求，转交 arb orphan residual reason={}",
+                    self.strategy_id, base_qty, reason
+                );
+                return (false, 0.0, base_qty);
             }
             return (false, 0.0, 0.0);
         }
@@ -1657,7 +1626,7 @@ impl HedgeArbStrategy {
         // 3. 满足要求，发起对冲
         debug!(
             "HedgeArbStrategy: strategy_id={} 待对冲量={:.8} 满足最小交易要求，准备对冲",
-            self.strategy_id, total_pending_qty
+            self.strategy_id, base_qty
         );
 
         let hedge_result: Result<(), String> = if self.hedge_timeout_us.is_some() {
@@ -1666,14 +1635,14 @@ impl HedgeArbStrategy {
                 "HedgeArbStrategy: strategy_id={} MM模式，使用限价单对冲",
                 self.strategy_id
             );
-            self.hedge_as_limit_order(self.hedge_side, total_pending_qty)
+            self.hedge_as_limit_order(self.hedge_side, base_qty)
         } else {
             // MT 模式：使用市价单对冲
             debug!(
                 "HedgeArbStrategy: strategy_id={} MT模式，使用市价单对冲",
                 self.strategy_id
             );
-            self.hedge_as_market_order(self.hedge_side, total_pending_qty)
+            self.hedge_as_market_order(self.hedge_side, base_qty)
         };
 
         match hedge_result {
@@ -1681,23 +1650,23 @@ impl HedgeArbStrategy {
                 // 对冲成功
                 debug!(
                     "HedgeArbStrategy: strategy_id={} 对冲信号已发送，数量={:.8}",
-                    self.strategy_id, total_pending_qty
+                    self.strategy_id, base_qty
                 );
-                (true, total_pending_qty, residual_qty)
+                (true, base_qty, 0.0)
             }
             Err(e) => {
                 error!(
                     "HedgeArbStrategy: strategy_id={} 对冲失败: {}",
                     self.strategy_id, e
                 );
-                // 对冲失败，将数量累加回残值表
-                if total_pending_qty > 1e-12 {
-                    MonitorChannel::instance().inc_hedge_residual(
-                        self.hedge_symbol.clone(),
-                        self.hedge_venue,
-                        total_pending_qty,
+                // 对冲失败，将数量交给 arb orphan residual。
+                if base_qty > 1e-12 {
+                    self.queue_arb_orphan_residual(
+                        self.hedge_side,
+                        base_qty,
+                        "hedge submit failed",
                     );
-                    (false, 0.0, total_pending_qty)
+                    (false, 0.0, base_qty)
                 } else {
                     (false, 0.0, 0.0)
                 }
@@ -1707,8 +1676,6 @@ impl HedgeArbStrategy {
 
     fn process_open_leg_cancel(&mut self, cancel_update: &dyn OrderUpdate) {
         self.open_expire_ts = None;
-        self.processed_cancel_updates
-            .insert(cancel_update.client_order_id());
         // 1. 确认 open-order 的订单状态，修改为 cancel。更新交易所 end 时间和本地 end 时间等数据
         let order_id = cancel_update.client_order_id();
         let event_time = cancel_update.event_time();
@@ -1758,8 +1725,6 @@ impl HedgeArbStrategy {
 
     fn process_hedge_leg_cancel(&mut self, cancel_update: &dyn OrderUpdate) {
         self.hedge_expire_ts = None;
-        self.processed_cancel_updates
-            .insert(cancel_update.client_order_id());
         // 只有 MM 模式才会出现对冲侧的 cancel（因为 MT 模式是市价单，立即成交）
         if self.hedge_timeout_us.is_none() {
             error!(
@@ -1897,20 +1862,15 @@ impl HedgeArbStrategy {
             // 计算剩余未对冲量
             let remaining_qty = self.cumulative_open_qty - self.cumulative_hedged_qty;
 
-            // 获取残值
-            let residual_qty =
-                MonitorChannel::instance().get_hedge_residual(&self.hedge_symbol, self.hedge_venue);
-            let total_remaining = remaining_qty + residual_qty;
-
             debug!(
-                "HedgeArbStrategy: strategy_id={} MT模式对冲成交后检查: 剩余={:.8} 残值={:.8} 总计={:.8}",
-                self.strategy_id, remaining_qty, residual_qty, total_remaining
+                "HedgeArbStrategy: strategy_id={} MT模式对冲成交后检查: 剩余={:.8}",
+                self.strategy_id, remaining_qty
             );
 
             // 检查剩余量是否满足最小交易要求
-            if total_remaining > 1e-12 {
+            if remaining_qty > 1e-12 {
                 let can_hedge =
-                    Self::base_to_venue_qty(total_remaining, self.hedge_qty_multiplier, "hedge")
+                    Self::base_to_venue_qty(remaining_qty, self.hedge_qty_multiplier, "hedge")
                         .and_then(|hedge_check_qty| {
                             MonitorChannel::instance().check_min_trading_requirements(
                                 self.hedge_venue,
@@ -1926,7 +1886,7 @@ impl HedgeArbStrategy {
                     if !self.has_pending_hedge_order() {
                         debug!(
                             "HedgeArbStrategy: strategy_id={} MT模式，剩余量={:.8} 不足以对冲，关闭策略",
-                            self.strategy_id, total_remaining
+                            self.strategy_id, remaining_qty
                         );
                         self.alive_flag = false;
                     }
@@ -2262,12 +2222,6 @@ impl HedgeArbStrategy {
         }
 
         if order_update.status() == OrderStatus::Canceled {
-            if self
-                .processed_cancel_updates
-                .contains(&order_update.client_order_id())
-            {
-                return false;
-            }
             if order_update.client_order_id() == self.open_order_id {
                 self.process_open_leg_cancel(order_update);
             }
@@ -2307,23 +2261,17 @@ impl HedgeArbStrategy {
 
         // 检查并清理开仓订单
         if self.open_order_id != 0 {
-            if self.keep_local_on_drop_order_ids.contains(&self.open_order_id) {
+            if self
+                .keep_local_on_drop_order_ids
+                .contains(&self.open_order_id)
+            {
                 debug!(
                     "HedgeArbStrategy: strategy_id={} keep open order local after arb orphan handoff client_order_id={}",
                     self.strategy_id, self.open_order_id
                 );
             } else if let Some(order) = mgr.get(self.open_order_id) {
                 if !order.status.is_terminal() {
-                    if !self
-                        .suppress_cleanup_detail_orders
-                        .contains(&order.client_order_id)
-                    {
-                        mgr.log_order_details(
-                            &order,
-                            "开仓订单未达到终结状态被清理",
-                            self.strategy_id,
-                        );
-                    }
+                    mgr.log_order_details(&order, "开仓订单未达到终结状态被清理", self.strategy_id);
                 }
                 let _ = mgr.remove(self.open_order_id);
             }
@@ -2340,20 +2288,25 @@ impl HedgeArbStrategy {
             }
             if let Some(order) = mgr.get(*id) {
                 if !order.status.is_terminal() {
-                    if !self
-                        .suppress_cleanup_detail_orders
-                        .contains(&order.client_order_id)
-                    {
-                        mgr.log_order_details(
-                            &order,
-                            "对冲订单未达到终结状态被清理",
-                            self.strategy_id,
-                        );
-                    }
+                    mgr.log_order_details(&order, "对冲订单未达到终结状态被清理", self.strategy_id);
                 }
             }
             let _ = mgr.remove(*id);
         }
+    }
+
+    fn terminalize_open_order_before_cleanup(&mut self, client_order_id: i64) {
+        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
+            return;
+        };
+        let event_time = get_timestamp_us();
+        let _ = order_mgr.borrow_mut().update(client_order_id, |order| {
+            if order.status.is_terminal() {
+                return;
+            }
+            order.status = OrderExecutionStatus::Rejected;
+            order.set_end_time(event_time);
+        });
     }
 
     fn classify_leg(&self, client_order_id: i64) -> Option<Leg> {
@@ -2429,9 +2382,6 @@ impl HedgeArbStrategy {
             response.error_code(),
         );
 
-        if response.error_code() == 51169 {
-            self.suppress_cleanup_detail_orders.insert(client_order_id);
-        }
         warn!(
             "HedgeArbStrategy: strategy_id={} open_leg open_failed: req_type={} status={} code={}({}) client_order_id={}",
             self.strategy_id,
@@ -2444,7 +2394,9 @@ impl HedgeArbStrategy {
         // open leg失败，无论是什么原因，都选择直接关闭
         // 1、即便是因为穿价，也不需要再报一笔
         // 2、todo，借币失败可以设计一个cooldown，因为之后短期应该都无法借贷，因此整个订单应该都无法操作
-        // 3、开仓失败也不需要更新订单状态，实际没有产生订单，无意义
+        // 3、开仓失败本地标记为拒绝，避免 cleanup 将预提交的本地订单误报为未终结
+        self.clear_query_watchdogs(client_order_id);
+        self.terminalize_open_order_before_cleanup(client_order_id);
         self.alive_flag = false;
     }
 
@@ -2505,40 +2457,6 @@ impl HedgeArbStrategy {
         self.hedge_expire_ts = None;
     }
 
-    fn try_resend_hedge_after_open_failed(&mut self, base_pending_qty: f64, reason: &'static str) {
-        if base_pending_qty <= 1e-8 {
-            self.hedge_retry_after_ts = None;
-            self.hedge_retry_reason = None;
-            return;
-        }
-
-        if let Some(cooldown_us) = self.hedge_timeout_us {
-            let now = get_timestamp_us();
-            let due_ts = now.saturating_add(cooldown_us);
-            let cooldown_ms = cooldown_us.saturating_div(1_000);
-            self.hedge_retry_after_ts = Some(due_ts);
-            self.hedge_retry_reason = Some(reason);
-            debug!(
-                "HedgeArbStrategy: strategy_id={} hedge open_failed, cooldown={}ms retry_at={} reason={} pending_qty={:.8}",
-                self.strategy_id, cooldown_ms, due_ts, reason, base_pending_qty
-            );
-            return;
-        }
-
-        let (sent, hedged_qty, _) = self.try_hedge_with_residual(base_pending_qty);
-        if sent {
-            debug!(
-                "HedgeArbStrategy: strategy_id={} hedge re-send after {} open_failed, qty={:.8}",
-                self.strategy_id, reason, hedged_qty
-            );
-        } else {
-            warn!(
-                "HedgeArbStrategy: strategy_id={} hedge re-send skipped/failed after {} open_failed, pending_qty={:.8}",
-                self.strategy_id, reason, base_pending_qty
-            );
-        }
-    }
-
     fn handle_hedge_leg_open_failed(
         &mut self,
         response: &dyn TradeEngineResponse,
@@ -2580,7 +2498,7 @@ impl HedgeArbStrategy {
         }
 
         //对重新报单失败的原因进行分类
-        //1、post only rejected是正常的，因为盘口出现穿价是正常情况，再次报单即可
+        //1、post only rejected是正常的，因为盘口出现穿价是正常情况，立即再次报单即可
         let is_post_only_rejected = response.is_post_only_rejected();
         let is_price_limit_rejected = response.is_price_limit_rejected();
         let is_order_placement_failed = response.is_order_placement_failed();
@@ -2598,11 +2516,9 @@ impl HedgeArbStrategy {
             "other"
         };
 
-        // 对冲侧报单失败：无论原因，都要继续对冲（不关闭策略），并让上游 cooldown/限频机制接管。
         if reason == "other" {
-            // 仅对非post only拒单的情况打印error日志，之后检索error日志，判断为什么会对冲失
             debug!(
-                "HedgeArbStrategy: strategy_id={} hedge_leg open_failed(retry): req_type={} status={} code={}({}) client_order_id={}",
+                "HedgeArbStrategy: strategy_id={} hedge_leg open_failed(other): req_type={} status={} code={}({}) client_order_id={}",
                 self.strategy_id,
                 response.req_type(),
                 response.status(),
@@ -2622,10 +2538,40 @@ impl HedgeArbStrategy {
                 client_order_id
             );
         }
-        //既然要撤单再报单，旧的不要了，没有作用了
+
         self.cleanup_failed_hedge_order(client_order_id);
         let base_pending_qty = self.cumulative_open_qty - self.cumulative_hedged_qty;
-        self.try_resend_hedge_after_open_failed(base_pending_qty, reason);
+        if is_post_only_rejected {
+            let (sent, hedged_qty, _) = self.try_hedge_with_residual(base_pending_qty);
+            if sent {
+                debug!(
+                    "HedgeArbStrategy: strategy_id={} hedge immediate re-send after post_only open_failed, qty={:.8}",
+                    self.strategy_id, hedged_qty
+                );
+            } else {
+                warn!(
+                    "HedgeArbStrategy: strategy_id={} hedge immediate re-send skipped/failed after post_only open_failed, pending_qty={:.8}",
+                    self.strategy_id, base_pending_qty
+                );
+            }
+            return;
+        }
+
+        self.push_hedge_residual_with_print(
+            reason,
+            &format!(
+                "req_type={} status={} code={}({}) client_order_id={} pending_qty={:.8}",
+                response.req_type(),
+                response.status(),
+                response.error_code(),
+                code_desc,
+                client_order_id,
+                base_pending_qty
+            ),
+            base_pending_qty,
+            0.0,
+            self.hedge_side,
+        );
     }
 
     // 撤单失败后将对冲单移交 arb orphan，由 orphan 统一 query/cancel 收敛。
@@ -2825,13 +2771,16 @@ impl Strategy for HedgeArbStrategy {
         std::mem::take(&mut self.pending_arb_orphan_handoffs)
     }
 
+    fn drain_pending_arb_orphan_residuals(&mut self) -> Vec<ArbOrphanResidualHandoff> {
+        std::mem::take(&mut self.pending_arb_orphan_residuals)
+    }
+
     fn handle_period_clock(&mut self, _current_tp: i64) {
         // 周期性检查开仓和对冲订单的超时情况
         if self.is_active() {
             self.handle_open_leg_timeout();
             self.handle_hedge_leg_timeout();
             self.handle_query_watchdogs();
-            self.handle_hedge_retry_cooldown();
         }
     }
 

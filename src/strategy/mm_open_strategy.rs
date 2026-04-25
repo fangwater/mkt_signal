@@ -12,9 +12,7 @@ use crate::signal::common::{ExecutionType, OrderStatus, SignalBytes, TimeInForce
 use crate::signal::open_signal::MmOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::manager::MmOpenPriceMapEntry;
-use crate::strategy::manager::{
-    ForceCloseControl, MmOrphanHandoff, MmOrphanSourceKind, Strategy,
-};
+use crate::strategy::manager::{ForceCloseControl, MmOrphanHandoff, MmOrphanSourceKind, Strategy};
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::order_query_parser::parse_compact_order_query_resp as parse_compact_order_query_resp_common;
 use crate::strategy::order_update::OrderUpdate;
@@ -271,14 +269,13 @@ impl MarketMakerOpenStrategy {
             "MarketMakerOpenStrategy: strategy_id={} orphan_handoff_start client_order_id={} reason={}",
             self.strategy_id, client_order_id, reason
         );
-        self.pending_mm_orphan_handoffs
-            .push(MmOrphanHandoff {
-                client_order_id,
-                source_strategy_id: self.strategy_id,
-                source_kind: MmOrphanSourceKind::Open,
-                uniform_ctx: self.uniform_open_publish_ctx(),
-                reason: reason.to_string(),
-            });
+        self.pending_mm_orphan_handoffs.push(MmOrphanHandoff {
+            client_order_id,
+            source_strategy_id: self.strategy_id,
+            source_kind: MmOrphanSourceKind::Open,
+            uniform_ctx: self.uniform_open_publish_ctx(),
+            reason: reason.to_string(),
+        });
         self.release_open_order_keep_local(client_order_id, reason);
         self.alive_flag = false;
     }

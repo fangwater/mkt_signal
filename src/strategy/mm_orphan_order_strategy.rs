@@ -5,9 +5,7 @@ use crate::pre_trade::order_manager::OrderExecutionStatus;
 use crate::pre_trade::{QueryEngHub, TradeEngHub};
 use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 use crate::signal::trade_signal::TradeSignal;
-use crate::strategy::manager::{
-    ForceCloseControl, MmOrphanHandoff, MmOrphanSourceKind, Strategy,
-};
+use crate::strategy::manager::{ForceCloseControl, MmOrphanHandoff, MmOrphanSourceKind, Strategy};
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::order_query_parser::parse_compact_order_query_resp;
 use crate::strategy::order_update::OrderUpdate;
@@ -190,7 +188,8 @@ impl MmOrphanOrderStrategy {
 
         if let Some((venue, symbol, side, cumulative_qty, price)) = snapshot {
             if cumulative_qty > 0.0 {
-                let base_qty = MonitorChannel::instance().qty_to_base(venue, &symbol, cumulative_qty);
+                let base_qty =
+                    MonitorChannel::instance().qty_to_base(venue, &symbol, cumulative_qty);
                 if base_qty > 0.0 {
                     let (signed_qty, buy_qty, sell_qty) = match side {
                         crate::pre_trade::order_manager::Side::Buy => (base_qty, base_qty, 0.0),
@@ -485,9 +484,8 @@ impl Strategy for MmOrphanOrderStrategy {
             });
         }
         if let Some(ctx) = uniform_ctx.as_ref() {
-            let updated_order = MonitorChannel::try_order_manager().and_then(|order_mgr| {
-                order_mgr.borrow().get(client_order_id)
-            });
+            let updated_order = MonitorChannel::try_order_manager()
+                .and_then(|order_mgr| order_mgr.borrow().get(client_order_id));
             if let Some(order) = updated_order {
                 if update.status() == OrderStatus::New {
                     publish_mm_uniform_new_order(
@@ -529,9 +527,16 @@ impl Strategy for MmOrphanOrderStrategy {
         }
         if matches!(
             update.status(),
-            OrderStatus::Canceled | OrderStatus::Filled | OrderStatus::Expired | OrderStatus::ExpiredInMatch
+            OrderStatus::Canceled
+                | OrderStatus::Filled
+                | OrderStatus::Expired
+                | OrderStatus::ExpiredInMatch
         ) {
-            self.finalize_terminal_order(client_order_id, update.event_time(), "terminal order update");
+            self.finalize_terminal_order(
+                client_order_id,
+                update.event_time(),
+                "terminal order update",
+            );
         } else {
             self.request_cancel_if_needed(update);
         }
@@ -606,9 +611,8 @@ impl Strategy for MmOrphanOrderStrategy {
             });
         }
         if let (Some(ctx), Some(status)) = (uniform_ctx.as_ref(), trade.order_status()) {
-            let updated_order = MonitorChannel::try_order_manager().and_then(|order_mgr| {
-                order_mgr.borrow().get(client_order_id)
-            });
+            let updated_order = MonitorChannel::try_order_manager()
+                .and_then(|order_mgr| order_mgr.borrow().get(client_order_id));
             if let Some(order) = updated_order {
                 publish_mm_uniform_trade_order(
                     trade,
@@ -630,7 +634,11 @@ impl Strategy for MmOrphanOrderStrategy {
                     | OrderStatus::ExpiredInMatch
             )
         }) {
-            self.finalize_terminal_order(client_order_id, trade.event_time(), "terminal trade update");
+            self.finalize_terminal_order(
+                client_order_id,
+                trade.event_time(),
+                "terminal trade update",
+            );
         }
         info!(
             "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} adopted trade_update symbol={} client_order_id={} order_id={} venue={:?} cumulative_qty={:.8} status={:?}",

@@ -21,9 +21,7 @@ use crate::signal::common::{
 use crate::signal::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
 use crate::signal::mm_signal::MmBackwardQueryMsg;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
-use crate::strategy::manager::{
-    ForceCloseControl, MmOrphanHandoff, MmOrphanSourceKind, Strategy,
-};
+use crate::strategy::manager::{ForceCloseControl, MmOrphanHandoff, MmOrphanSourceKind, Strategy};
 use crate::strategy::net_qty_queue::NetQtyQueue;
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::order_query_parser::parse_compact_order_query_resp as parse_compact_order_query_resp_common;
@@ -1215,14 +1213,13 @@ impl MarketMakerHedgeStrategy {
             self.hedge_order_trace_snapshot(client_order_id)
         );
 
-        self.pending_mm_orphan_handoffs
-            .push(MmOrphanHandoff {
-                client_order_id,
-                source_strategy_id: self.strategy_id,
-                source_kind: MmOrphanSourceKind::Hedge,
-                uniform_ctx: self.uniform_hedge_publish_ctx(client_order_id),
-                reason: reason.to_string(),
-            });
+        self.pending_mm_orphan_handoffs.push(MmOrphanHandoff {
+            client_order_id,
+            source_strategy_id: self.strategy_id,
+            source_kind: MmOrphanSourceKind::Hedge,
+            uniform_ctx: self.uniform_hedge_publish_ctx(client_order_id),
+            reason: reason.to_string(),
+        });
         self.release_hedge_order_keep_local(client_order_id, "mm_orphan_handoff");
 
         warn!(
@@ -1253,7 +1250,11 @@ impl MarketMakerHedgeStrategy {
         let order_mgr = MonitorChannel::instance().order_manager();
         for (client_order_id, reason) in due_entries {
             self.order_query_watchdogs.remove(&client_order_id);
-            if self.pending_order_queries.remove(&client_order_id).is_some() {
+            if self
+                .pending_order_queries
+                .remove(&client_order_id)
+                .is_some()
+            {
                 self.handoff_hedge_order_to_mm_orphan(client_order_id, "query response timeout");
                 continue;
             }
@@ -1281,19 +1282,21 @@ impl MarketMakerHedgeStrategy {
         if let Some(existing) = self.pending_order_queries.get(&client_order_id).copied() {
             let upgraded = matches!(
                 (existing, reason),
-                (PendingOrderQueryReason::OrderWatchdog, PendingOrderQueryReason::CancelFailed)
-                    | (
-                        PendingOrderQueryReason::OrderWatchdog,
-                        PendingOrderQueryReason::CancelRejected
-                    )
-                    | (
-                        PendingOrderQueryReason::CancelFailed,
-                        PendingOrderQueryReason::CancelRejected
-                    )
+                (
+                    PendingOrderQueryReason::OrderWatchdog,
+                    PendingOrderQueryReason::CancelFailed
+                ) | (
+                    PendingOrderQueryReason::OrderWatchdog,
+                    PendingOrderQueryReason::CancelRejected
+                ) | (
+                    PendingOrderQueryReason::CancelFailed,
+                    PendingOrderQueryReason::CancelRejected
+                )
             );
             if upgraded {
                 self.pending_order_queries.insert(client_order_id, reason);
-                if let Some((due_ts, _)) = self.order_query_watchdogs.get(&client_order_id).copied() {
+                if let Some((due_ts, _)) = self.order_query_watchdogs.get(&client_order_id).copied()
+                {
                     self.order_query_watchdogs
                         .insert(client_order_id, (due_ts, reason));
                 }
@@ -2421,11 +2424,8 @@ impl Strategy for MarketMakerHedgeStrategy {
             self.hedge_order_trace_snapshot(client_order_id)
         );
         if !has_any_byte {
-            let marker = Self::query_failure_marker(
-                reason,
-                "query empty",
-                "cancel_reconcile query empty",
-            );
+            let marker =
+                Self::query_failure_marker(reason, "query empty", "cancel_reconcile query empty");
             self.handoff_hedge_order_to_mm_orphan(client_order_id, marker);
             return;
         }

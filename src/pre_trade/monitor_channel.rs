@@ -240,8 +240,6 @@ struct MonitorChannelInner {
     strategy_mgr: Rc<RefCell<crate::strategy::StrategyManager>>,
     /// 订单管理器，所有订单维护在其中，完全成交或者撤单会被移除
     order_manager: Rc<RefCell<OrderManager>>,
-    /// 对冲残余量哈希表，key=(symbol, venue)，value=残余量
-    hedge_residual_map: Rc<RefCell<HashMap<(String, TradingVenue), f64>>>,
     /// Monotonic counter incremented when a TradeUpdate is received.
     trade_update_seq: u64,
 }
@@ -767,7 +765,6 @@ impl MonitorChannel {
             venue_min_qty_tables,
             strategy_mgr,
             order_manager: Rc::new(RefCell::new(OrderManager::new(binance_account_mode))),
-            hedge_residual_map: Rc::new(RefCell::new(HashMap::new())),
             trade_update_seq: 0,
         };
 
@@ -1876,81 +1873,6 @@ impl MonitorChannel {
         })
     }
 
-    // ==================== 对冲残余量管理方法 ====================
-
-    /// 增加对冲残余量
-    pub fn inc_hedge_residual(&self, symbol: String, venue: TradingVenue, delta: f64) {
-        Self::with_inner(|inner| {
-            if delta <= 1e-12 {
-                return;
-            }
-            let mut map = inner.hedge_residual_map.borrow_mut();
-            let key = (symbol.to_uppercase(), venue);
-            let current = map.get(&key).copied().unwrap_or(0.0);
-            let new_value = current + delta;
-            map.insert(key.clone(), new_value);
-            debug!(
-                "对冲残余量增加: symbol={} venue={:?} delta={:.8} 当前值={:.8} -> {:.8}",
-                key.0, venue, delta, current, new_value
-            );
-        })
-    }
-
-    /// 减少对冲残余量
-    pub fn dec_hedge_residual(&self, symbol: String, venue: TradingVenue, delta: f64) -> f64 {
-        Self::with_inner(|inner| {
-            if delta <= 1e-12 {
-                return 0.0;
-            }
-            let mut map = inner.hedge_residual_map.borrow_mut();
-            let key = (symbol.to_uppercase(), venue);
-            let current = map.get(&key).copied().unwrap_or(0.0);
-            let actual_dec = delta.min(current);
-            let new_value = (current - actual_dec).max(0.0);
-
-            if new_value <= 1e-12 {
-                map.remove(&key);
-                debug!(
-                    "对冲残余量清零: symbol={} venue={:?} 原值={:.8} 减少={:.8}",
-                    key.0, venue, current, actual_dec
-                );
-            } else {
-                map.insert(key.clone(), new_value);
-                debug!(
-                    "对冲残余量减少: symbol={} venue={:?} delta={:.8} 当前值={:.8} -> {:.8}",
-                    key.0, venue, actual_dec, current, new_value
-                );
-            }
-
-            actual_dec
-        })
-    }
-
-    /// 查询对冲残余量
-    pub fn get_hedge_residual(&self, symbol: &str, venue: TradingVenue) -> f64 {
-        Self::with_inner(|inner| {
-            let map = inner.hedge_residual_map.borrow();
-            let key = (symbol.to_uppercase(), venue);
-            map.get(&key).copied().unwrap_or(0.0)
-        })
-    }
-
-    /// 清除指定 symbol 和 venue 的对冲残余量
-    pub fn clear_hedge_residual(&self, symbol: &str, venue: TradingVenue) -> f64 {
-        Self::with_inner(|inner| {
-            let mut map = inner.hedge_residual_map.borrow_mut();
-            let key = (symbol.to_uppercase(), venue);
-            let removed = map.remove(&key).unwrap_or(0.0);
-            if removed > 1e-12 {
-                debug!(
-                    "对冲残余量清除: symbol={} venue={:?} 清除量={:.8}",
-                    key.0, venue, removed
-                );
-            }
-            removed
-        })
-    }
-
     /// 获取指定交易对和交易场所的持仓数量（带符号）
     /// 返回持仓数量，正数表示多头，负数表示空头
     pub fn get_position_qty(&self, symbol: &str, venue: TradingVenue) -> f64 {
@@ -2296,6 +2218,7 @@ fn dispatch_order_update_generic<T>(
     let order_id = OrderUpdate::client_order_id(&normalized_update);
     let strategy_ids: Vec<i32> = strategy_mgr.borrow().iter_ids().cloned().collect();
     let mut matched = false;
+    let mut arb_orphan_residuals = Vec::new();
 
     for strategy_id in strategy_ids {
         let strategy_opt = {
@@ -2333,11 +2256,18 @@ fn dispatch_order_update_generic<T>(
                         );
                     }
                 }
+                arb_orphan_residuals.extend(strategy.drain_pending_arb_orphan_residuals());
             }
             if strategy.is_active() {
                 strategy_mgr.borrow_mut().insert(strategy);
             }
         }
+    }
+
+    if !arb_orphan_residuals.is_empty() {
+        strategy_mgr
+            .borrow_mut()
+            .adopt_arb_orphan_residuals(arb_orphan_residuals);
     }
 
     if !matched {
@@ -2516,7 +2446,6 @@ mod tests {
             order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
                 BinanceAccountMode::Unified,
             )))),
-            hedge_residual_map: Rc::new(RefCell::new(HashMap::new())),
             trade_update_seq: 0,
         };
 
@@ -2563,7 +2492,6 @@ mod tests {
             order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
                 BinanceAccountMode::Unified,
             )))),
-            hedge_residual_map: Rc::new(RefCell::new(HashMap::new())),
             trade_update_seq: 0,
         };
 
@@ -2610,7 +2538,6 @@ mod tests {
             order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
                 BinanceAccountMode::Unified,
             )))),
-            hedge_residual_map: Rc::new(RefCell::new(HashMap::new())),
             trade_update_seq: 0,
         };
 
@@ -2656,7 +2583,6 @@ mod tests {
             order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
                 BinanceAccountMode::Unified,
             )))),
-            hedge_residual_map: Rc::new(RefCell::new(HashMap::new())),
             trade_update_seq: 0,
         };
 
@@ -2732,7 +2658,6 @@ mod tests {
             order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
                 BinanceAccountMode::Unified,
             )))),
-            hedge_residual_map: Rc::new(RefCell::new(HashMap::new())),
             trade_update_seq: 0,
         };
 
