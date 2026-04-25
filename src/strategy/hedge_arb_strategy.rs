@@ -8,9 +8,7 @@ use crate::pre_trade::signal_throttle::register_signal_throttle;
 use crate::pre_trade::{PersistChannel, SignalChannel, TradeEngHub};
 use crate::signal::arb_signal::ArbBackwardQueryMsg;
 use crate::signal::cancel_signal::ArbCancelCtx;
-use crate::signal::common::{
-    align_price_floor, ExecutionType, OrderStatus, SignalBytes, TimeInForce, TradingVenue,
-};
+use crate::signal::common::{align_price_floor, OrderStatus, SignalBytes, TradingVenue};
 use crate::signal::hedge_signal::ArbHedgeCtx;
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
@@ -20,7 +18,6 @@ use crate::strategy::manager::{
 };
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::query_engine_response::QueryEngineResponse;
-use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
 use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKind};
 use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::uniform_arb_publish::{
@@ -28,10 +25,6 @@ use crate::strategy::uniform_arb_publish::{
     publish_arb_uniform_trade_order, ArbUniformPublishCtx,
 };
 use crate::strategy::ws_order_update::WsOrderUpdate;
-use crate::trade_engine::query_parsers::compact_order::{
-    is_order_query_not_found_marker, CompactOrderQueryResp, COMPACT_ORDER_QUERY_RESP_LEN,
-};
-use crate::trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
 use log::{debug, error, info, warn};
 use std::any::Any;
 
@@ -40,10 +33,10 @@ fn qv_decimal_or_fallback(value: f64) -> String {
         .map(|qv| qv.decimal_string())
         .unwrap_or_else(|| format!("{value:.8}"))
 }
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 // 下单后若迟迟收不到 account monitor 的推送（New/Filled 等），触发兜底。
-// Open leg 直接移交 arb orphan；hedge leg 仍保留原查询回补。
+// Open/hedge leg 进入不确定状态后都移交 arb orphan 统一 query/cancel 收敛。
 const ORDER_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
 const CANCEL_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
 const HEDGE_RESIDUAL_EPS: f64 = 1e-12;
@@ -83,7 +76,6 @@ pub struct HedgeArbStrategy {
     pub last_cancel_trigger_ts: Option<i64>,
     pub last_open_cancel_reason: Option<&'static str>,
     pub last_inactive_reason: Option<String>,
-    pending_order_queries: HashMap<i64, PendingOrderQueryReason>,
     order_query_watchdog: Option<QueryWatchdog>,
     cancel_query_watchdog: Option<QueryWatchdog>,
     processed_cancel_updates: HashSet<i64>,
@@ -100,8 +92,6 @@ enum Leg {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PendingOrderQueryReason {
-    HedgeLegCancelFailed,
-    CancelRejected,
     OrderWatchdog,
     CancelWatchdog,
 }
@@ -205,6 +195,33 @@ impl HedgeArbStrategy {
         );
     }
 
+    fn handoff_hedge_order_to_arb_orphan(
+        &mut self,
+        client_order_id: i64,
+        cancel_intent: bool,
+        max_query_attempts: Option<u8>,
+        reason: impl Into<String>,
+    ) {
+        let reason = reason.into();
+        if self.open_order_id > 0 {
+            self.queue_arb_orphan_handoff(
+                self.open_order_id,
+                ArbOrphanLeg::Open,
+                false,
+                None,
+                format!("paired_hedge_orphan:{}", reason),
+            );
+        }
+        self.queue_arb_orphan_handoff(
+            client_order_id,
+            ArbOrphanLeg::Hedge,
+            cancel_intent,
+            max_query_attempts,
+            reason,
+        );
+        self.alive_flag = false;
+    }
+
     pub fn new(id: i32, symbol: String) -> Self {
         let strategy = Self {
             strategy_id: id,
@@ -241,7 +258,6 @@ impl HedgeArbStrategy {
             last_cancel_trigger_ts: None,
             last_open_cancel_reason: None,
             last_inactive_reason: None,
-            pending_order_queries: HashMap::new(),
             order_query_watchdog: None,
             cancel_query_watchdog: None,
             processed_cancel_updates: HashSet::new(),
@@ -1345,22 +1361,11 @@ impl HedgeArbStrategy {
     }
 
     fn schedule_cancel_query_watchdog(&mut self, client_order_id: i64) {
-        self.schedule_cancel_query_watchdog_with_reason(
-            client_order_id,
-            PendingOrderQueryReason::CancelWatchdog,
-        );
-    }
-
-    fn schedule_cancel_query_watchdog_with_reason(
-        &mut self,
-        client_order_id: i64,
-        reason: PendingOrderQueryReason,
-    ) {
         let due = get_timestamp_us().saturating_add(CANCEL_QUERY_WATCHDOG_DELAY_US);
         self.cancel_query_watchdog = Some(QueryWatchdog {
             client_order_id,
             due_ts_us: due,
-            reason,
+            reason: PendingOrderQueryReason::CancelWatchdog,
         });
         if self
             .order_query_watchdog
@@ -1385,54 +1390,6 @@ impl HedgeArbStrategy {
         }
     }
 
-    fn send_order_query(&mut self, client_order_id: i64, reason: PendingOrderQueryReason) {
-        if let Some(existing) = self.pending_order_queries.get_mut(&client_order_id) {
-            // Upgrade in-flight query semantics: if we already learned cancel is non-actionable,
-            // ensure the eventual query response won't trigger re-cancel logic.
-            if reason == PendingOrderQueryReason::CancelRejected
-                && *existing != PendingOrderQueryReason::CancelRejected
-            {
-                *existing = PendingOrderQueryReason::CancelRejected;
-            }
-            return;
-        }
-
-        let order_mgr = MonitorChannel::instance().order_manager();
-        let Some(order) = order_mgr.borrow().get(client_order_id) else {
-            warn!(
-                "HedgeArbStrategy: strategy_id={} send_order_query but local order missing: client_order_id={} reason={:?}",
-                self.strategy_id, client_order_id, reason
-            );
-            return;
-        };
-
-        match self.build_order_query_request(&order, client_order_id) {
-            Ok((exchange, req_bytes)) => {
-                if let Err(err) = crate::pre_trade::QueryEngHub::publish_query_request(
-                    exchange.as_str(),
-                    &req_bytes,
-                ) {
-                    warn!(
-                        "HedgeArbStrategy: strategy_id={} publish order query failed: exchange={} client_order_id={} reason={:?} err={:#}",
-                        self.strategy_id, exchange, client_order_id, reason, err
-                    );
-                    return;
-                }
-                self.pending_order_queries.insert(client_order_id, reason);
-                debug!(
-                    "HedgeArbStrategy: strategy_id={} order query sent: exchange={} client_order_id={} reason={:?}",
-                    self.strategy_id, exchange, client_order_id, reason
-                );
-            }
-            Err(err) => {
-                warn!(
-                    "HedgeArbStrategy: strategy_id={} build order query failed: client_order_id={} reason={:?} err={}",
-                    self.strategy_id, client_order_id, reason, err
-                );
-            }
-        }
-    }
-
     fn handle_query_watchdogs(&mut self) {
         let now = get_timestamp_us();
 
@@ -1445,14 +1402,8 @@ impl HedgeArbStrategy {
                     let leg = self.classify_leg(w.client_order_id);
                     let scheduled_at = w.due_ts_us.saturating_sub(CANCEL_QUERY_WATCHDOG_DELAY_US);
                     let waited_ms = now.saturating_sub(scheduled_at).saturating_div(1_000);
-                    let hint = if w.reason == PendingOrderQueryReason::CancelRejected {
-                        "CancelRejectedWatchdog触发"
-                    } else {
-                        "CancelWatchdog触发"
-                    };
                     debug!(
-                        "{}: strategy_id={} client_order_id={} leg={:?} symbol={} status={:?} exch_ord_id={:?} 等待{}ms仍未收到撤单/终态回报，发送order query回补 reason={:?}",
-                        hint,
+                        "CancelWatchdog触发: strategy_id={} client_order_id={} leg={:?} symbol={} status={:?} exch_ord_id={:?} 等待{}ms仍未收到撤单/终态回报，移交 arb orphan reason={:?}",
                         self.strategy_id,
                         w.client_order_id,
                         leg,
@@ -1471,7 +1422,13 @@ impl HedgeArbStrategy {
                         );
                         self.alive_flag = false;
                     } else {
-                        self.send_order_query(w.client_order_id, w.reason);
+                        drop(order_opt);
+                        self.handoff_hedge_order_to_arb_orphan(
+                            w.client_order_id,
+                            true,
+                            None,
+                            format!("hedge_cancel_watchdog:{:?}", w.reason),
+                        );
                     }
                 }
             }
@@ -1515,7 +1472,13 @@ impl HedgeArbStrategy {
                         );
                         self.alive_flag = false;
                     } else {
-                        self.send_order_query(w.client_order_id, w.reason);
+                        drop(order_opt);
+                        self.handoff_hedge_order_to_arb_orphan(
+                            w.client_order_id,
+                            true,
+                            Some(2),
+                            "hedge_order_watchdog_no_response",
+                        );
                     }
                 }
             }
@@ -2448,388 +2411,6 @@ impl HedgeArbStrategy {
         false
     }
 
-    fn build_order_query_request(
-        &self,
-        order: &crate::pre_trade::order_manager::Order,
-        client_query_id: i64,
-    ) -> Result<(String, bytes::Bytes), String> {
-        let exchange = order.venue.trade_engine_exchange().to_string();
-        let exchange_order_id = order.exchange_order_id.filter(|&id| id > 0);
-
-        let req_type = match order.venue {
-            TradingVenue::BinanceMargin => {
-                if MonitorChannel::instance()
-                    .order_manager()
-                    .borrow()
-                    .binance_is_standard()
-                {
-                    QueryRequestType::BinanceWsMarginQuery
-                } else {
-                    QueryRequestType::BinanceMarginQuery
-                }
-            }
-            TradingVenue::BinanceFutures => {
-                if MonitorChannel::instance()
-                    .order_manager()
-                    .borrow()
-                    .binance_is_standard()
-                {
-                    QueryRequestType::BinanceWsUMQuery
-                } else {
-                    QueryRequestType::BinanceUMQuery
-                }
-            }
-            TradingVenue::OkexMargin => QueryRequestType::OkexMarginQuery,
-            TradingVenue::OkexFutures => QueryRequestType::OkexUMQuery,
-            TradingVenue::BybitMargin => QueryRequestType::BybitMarginQuery,
-            TradingVenue::BybitFutures => QueryRequestType::BybitUMQuery,
-            TradingVenue::BitgetMargin => QueryRequestType::BitgetMarginQuery,
-            TradingVenue::BitgetFutures => QueryRequestType::BitgetUMQuery,
-            TradingVenue::GateMargin => QueryRequestType::GateUnifiedOrderQuery,
-            TradingVenue::GateFutures => QueryRequestType::GateFuturesOrderQuery,
-            _ => return Err(format!("unsupported venue for query: {:?}", order.venue)),
-        };
-
-        let params = match order.venue {
-            TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => {
-                if let Some(order_id) = exchange_order_id {
-                    bytes::Bytes::from(format!("symbol={}&orderId={}", order.symbol, order_id))
-                } else {
-                    bytes::Bytes::from(format!(
-                        "symbol={}&origClientOrderId={}",
-                        order.symbol, client_query_id
-                    ))
-                }
-            }
-            TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
-                let inst_id = crate::pre_trade::order_manager::okex_inst_id_from_symbol(
-                    &order.symbol,
-                    order.venue,
-                )?;
-                if let Some(order_id) = exchange_order_id {
-                    bytes::Bytes::from(format!("instId={}&ordId={}", inst_id, order_id))
-                } else {
-                    bytes::Bytes::from(format!("instId={}&clOrdId={}", inst_id, client_query_id))
-                }
-            }
-            TradingVenue::BybitMargin => bytes::Bytes::from(format!(
-                "category=spot&symbol={}&orderLinkId={}",
-                crate::common::symbol_util::normalize_symbol_for_internal(&order.symbol),
-                client_query_id
-            )),
-            TradingVenue::BybitFutures => bytes::Bytes::from(format!(
-                "category=linear&symbol={}&orderLinkId={}",
-                crate::common::symbol_util::normalize_symbol_for_internal(&order.symbol),
-                client_query_id
-            )),
-            TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => {
-                if let Some(order_id) = exchange_order_id {
-                    bytes::Bytes::from(format!("orderId={}", order_id))
-                } else {
-                    bytes::Bytes::from(format!("clientOid={}", client_query_id))
-                }
-            }
-            TradingVenue::GateMargin => {
-                let currency_pair =
-                    crate::pre_trade::order_manager::gate_currency_pair_from_symbol(&order.symbol);
-                let order_id = exchange_order_id
-                    .map(|id| id.to_string())
-                    .unwrap_or_else(|| {
-                        crate::pre_trade::order_manager::gate_text_from_client_order_id(
-                            client_query_id,
-                        )
-                    });
-                let req_param = serde_json::json!({
-                    "order_id": order_id,
-                    "currency_pair": currency_pair,
-                    "account": "cross_margin",
-                });
-                bytes::Bytes::from(req_param.to_string())
-            }
-            TradingVenue::GateFutures => {
-                let order_id = exchange_order_id
-                    .map(|id| id.to_string())
-                    .unwrap_or_else(|| {
-                        crate::pre_trade::order_manager::gate_text_from_client_order_id(
-                            client_query_id,
-                        )
-                    });
-                let req_param = serde_json::json!({
-                    "order_id": order_id,
-                });
-                bytes::Bytes::from(req_param.to_string())
-            }
-            _ => bytes::Bytes::new(),
-        };
-
-        let now = get_timestamp_us();
-        let req = GenericQueryRequest::create(req_type, now, client_query_id, params);
-        Ok((exchange, req.to_bytes()))
-    }
-
-    fn send_order_query_for_cancel_failed(
-        &mut self,
-        client_order_id: i64,
-        reason: PendingOrderQueryReason,
-    ) {
-        if matches!(
-            reason,
-            PendingOrderQueryReason::HedgeLegCancelFailed | PendingOrderQueryReason::CancelRejected
-        ) {
-            warn!(
-                "HedgeArbStrategy: strategy_id={} cancel_failed, will query order status: client_order_id={} reason={:?}",
-                self.strategy_id, client_order_id, reason
-            );
-        }
-        self.send_order_query(client_order_id, reason);
-    }
-
-    fn parse_compact_order_query_resp(body: &bytes::Bytes) -> Option<CompactOrderQueryResp> {
-        if body.len() < COMPACT_ORDER_QUERY_RESP_LEN {
-            return None;
-        }
-        let parsed = CompactOrderQueryResp::from_bytes_prefix(body.as_ref()).ok()?;
-        if !parsed.executed_qty.is_finite() || parsed.executed_qty < 0.0 {
-            return None;
-        }
-        if parsed.order_id <= 0 {
-            return None;
-        }
-        if crate::pre_trade::order_manager::OrderExecutionStatus::from_u8(parsed.status_u8)
-            .is_none()
-        {
-            return None;
-        }
-        if TimeInForce::from_u8(parsed.time_in_force_u8).is_none() {
-            return None;
-        }
-        if !parsed.response_price.is_finite() || parsed.response_price < 0.0 {
-            return None;
-        }
-        if parsed.update_time_ms < 0 {
-            return None;
-        }
-        if parsed.update_time_ms != 0 {
-            let now_ms = get_timestamp_us().saturating_div(1_000);
-            if parsed.update_time_ms < 1_300_000_000_000 {
-                return None;
-            }
-            if parsed.update_time_ms > now_ms.saturating_add(86_400_000) {
-                return None;
-            }
-        }
-        Some(parsed)
-    }
-
-    //通过 order query 的结果，补充traade/order update，来推进strategy逻辑
-    fn apply_parsed_order_query_updates(
-        &mut self,
-        order: &crate::pre_trade::order_manager::Order,
-        parsed: CompactOrderQueryResp,
-        reason: PendingOrderQueryReason,
-    ) {
-        // query里包含update time，用作event time
-        let event_time_us = parsed.update_time_ms.saturating_mul(1_000);
-        let order_id = parsed.order_id;
-        let tif = TimeInForce::from_u8(parsed.time_in_force_u8).unwrap_or(TimeInForce::GTC);
-
-        // query结果里包含的executed qty，用作trade update
-        // executed_qty 是累计成交量；只在发生增量时才补发，避免 watchdog 查询反复打印/重复推进。
-        if parsed.executed_qty > order.cumulative_filled_quantity + 1e-12 {
-            let status = if parsed.status_u8 == OrderExecutionStatus::Filled.to_u8() {
-                Some(OrderStatus::Filled)
-            } else {
-                Some(OrderStatus::PartiallyFilled)
-            };
-            let trade = OrderQueryTradeUpdate::new(
-                order,
-                order_id,
-                event_time_us,
-                parsed.executed_qty,
-                Some(parsed.response_price),
-                status,
-                tif,
-            );
-            <Self as Strategy>::apply_trade_update(self, &trade);
-        }
-
-        let status_u8 = parsed.status_u8;
-        if status_u8 == OrderExecutionStatus::Create.to_u8() {
-            // 仅在本地还没进入 Create（或未记录 exchange_order_id）时补发 New，避免每次 watchdog 都重复“已挂单”日志。
-            let already_live = order.status == OrderExecutionStatus::Create
-                && order.exchange_order_id.is_some_and(|id| id == order_id);
-            if !already_live {
-                let upd = OrderQueryOrderUpdate::new(
-                    order,
-                    order_id,
-                    event_time_us,
-                    OrderStatus::New,
-                    ExecutionType::New,
-                    parsed.executed_qty,
-                    tif,
-                );
-                <Self as Strategy>::apply_order_update(self, &upd);
-            }
-        } else if status_u8 == OrderExecutionStatus::Cancelled.to_u8() {
-            let already_processed = self
-                .processed_cancel_updates
-                .contains(&order.client_order_id);
-            if order.status != OrderExecutionStatus::Cancelled || !already_processed {
-                let upd = OrderQueryOrderUpdate::new(
-                    order,
-                    order_id,
-                    event_time_us,
-                    OrderStatus::Canceled,
-                    ExecutionType::Canceled,
-                    parsed.executed_qty,
-                    tif,
-                );
-                <Self as Strategy>::apply_order_update(self, &upd);
-            }
-        } else if status_u8 == OrderExecutionStatus::Rejected.to_u8() {
-            error!(
-                "HedgeArbStrategy: strategy_id={} query_resp rejected: client_order_id={} order_id={} exec_qty={:.8} reason={:?}",
-                self.strategy_id,
-                order.client_order_id,
-                order_id,
-                parsed.executed_qty,
-                reason
-            );
-        }
-
-        info!(
-            "HedgeArbStrategy: strategy_id={} query回补{}: leg={:?} client_order_id={} order_id={} exec_qty={:.8} status_u8={} reason={:?}",
-            self.strategy_id,
-            match reason {
-                PendingOrderQueryReason::OrderWatchdog => "（下单回报缺失触发watchdog）",
-                PendingOrderQueryReason::CancelWatchdog => "（撤单回报缺失触发watchdog）",
-                PendingOrderQueryReason::HedgeLegCancelFailed => "（对冲撤单失败后回补）",
-                PendingOrderQueryReason::CancelRejected => "（撤单被拒绝/不可撤销后回补）",
-            },
-            self.classify_leg(order.client_order_id),
-            order.client_order_id,
-            order_id,
-            parsed.executed_qty,
-            parsed.status_u8,
-            reason
-        );
-    }
-
-    //通过 order query 的结果，补充traade/order update，来推进strategy逻辑
-    fn handle_hedge_leg_query_result(
-        &mut self,
-        _response: &dyn QueryEngineResponse,
-        client_order_id: i64,
-        reason: PendingOrderQueryReason,
-        parsed: Option<CompactOrderQueryResp>,
-    ) {
-        let order_mgr = MonitorChannel::instance().order_manager();
-        let Some(order) = order_mgr.borrow().get(client_order_id) else {
-            warn!(
-                "HedgeArbStrategy: strategy_id={} hedge_leg query_resp but order missing: client_order_id={} reason={:?}",
-                self.strategy_id, client_order_id, reason
-            );
-            self.alive_flag = false;
-            return;
-        };
-
-        let Some(parsed) = parsed else {
-            match reason {
-                PendingOrderQueryReason::OrderWatchdog => {
-                    self.schedule_order_query_watchdog(client_order_id);
-                }
-                PendingOrderQueryReason::CancelWatchdog
-                | PendingOrderQueryReason::HedgeLegCancelFailed => {
-                    self.schedule_cancel_query_watchdog(client_order_id);
-                }
-                PendingOrderQueryReason::CancelRejected => {
-                    self.schedule_cancel_query_watchdog_with_reason(
-                        client_order_id,
-                        PendingOrderQueryReason::CancelRejected,
-                    );
-                }
-            }
-            return;
-        };
-
-        let Some(st) = OrderExecutionStatus::from_u8(parsed.status_u8) else {
-            warn!(
-                "HedgeArbStrategy: strategy_id={} hedge_leg query invalid status_u8={} (close): client_order_id={} reason={:?}",
-                self.strategy_id, parsed.status_u8, client_order_id, reason
-            );
-            self.alive_flag = false;
-            return;
-        };
-
-        match st {
-            OrderExecutionStatus::Filled | OrderExecutionStatus::Cancelled => {
-                self.apply_parsed_order_query_updates(&order, parsed, reason);
-            }
-            OrderExecutionStatus::Create => {
-                match reason {
-                    PendingOrderQueryReason::OrderWatchdog => {
-                        self.apply_parsed_order_query_updates(&order, parsed, reason);
-                    }
-                    PendingOrderQueryReason::CancelRejected => {
-                        self.apply_parsed_order_query_updates(&order, parsed, reason);
-                        self.schedule_cancel_query_watchdog_with_reason(
-                            client_order_id,
-                            PendingOrderQueryReason::CancelRejected,
-                        );
-                    }
-                    PendingOrderQueryReason::CancelWatchdog
-                    | PendingOrderQueryReason::HedgeLegCancelFailed => {
-                        self.apply_parsed_order_query_updates(&order, parsed, reason);
-                        // 订单仍处于可撤销状态：重发撤单请求
-                        let exchange = order.venue.trade_engine_exchange();
-                        match order.get_order_cancel_bytes() {
-                            Ok(cancel_bytes) => {
-                                if let Err(e) =
-                                    TradeEngHub::publish_order_request(exchange, &cancel_bytes)
-                                {
-                                    warn!(
-                                        "HedgeArbStrategy: strategy_id={} hedge_leg re-cancel publish failed: exchange={} client_order_id={} err={}",
-                                        self.strategy_id, exchange, client_order_id, e
-                                    );
-                                } else {
-                                    info!(
-                                        "HedgeArbStrategy: strategy_id={} hedge_leg re-cancel sent: exchange={} client_order_id={} reason={:?}",
-                                        self.strategy_id, exchange, client_order_id, reason
-                                    );
-                                    self.schedule_cancel_query_watchdog(client_order_id);
-                                }
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "HedgeArbStrategy: strategy_id={} hedge_leg get cancel bytes failed: client_order_id={} err={}",
-                                    self.strategy_id, client_order_id, e
-                                );
-                                self.schedule_cancel_query_watchdog(client_order_id);
-                            }
-                        }
-                    }
-                }
-            }
-            OrderExecutionStatus::Rejected => {
-                // 如果 query 返回 rejected，说明订单本身可能未挂上（等价对冲侧 open_failed），清理后重试对冲。
-                warn!(
-                    "HedgeArbStrategy: strategy_id={} hedge_leg query shows rejected (treat as open_failed): client_order_id={} reason={:?}",
-                    self.strategy_id, client_order_id, reason
-                );
-                self.cleanup_failed_hedge_order(client_order_id);
-                let base_pending_qty = self.cumulative_open_qty - self.cumulative_hedged_qty;
-                self.try_resend_hedge_after_open_failed(base_pending_qty, "rejected");
-            }
-            OrderExecutionStatus::Commit => {
-                warn!(
-                    "HedgeArbStrategy: strategy_id={} hedge_leg query shows commit(unexpected, close): client_order_id={} reason={:?}",
-                    self.strategy_id, client_order_id, reason
-                );
-                self.alive_flag = false;
-            }
-        }
-    }
-
     fn handle_open_leg_open_failed(
         &mut self,
         response: &dyn TradeEngineResponse,
@@ -3047,7 +2628,7 @@ impl HedgeArbStrategy {
         self.try_resend_hedge_after_open_failed(base_pending_qty, reason);
     }
 
-    // 撤单失败的处理逻辑：通过rest api查询订单状态，补发order/trade update
+    // 撤单失败后将对冲单移交 arb orphan，由 orphan 统一 query/cancel 收敛。
     fn handle_hedge_leg_cancel_failed(
         &mut self,
         response: &dyn TradeEngineResponse,
@@ -3063,23 +2644,20 @@ impl HedgeArbStrategy {
             code_desc,
             client_order_id
         );
-        if response.is_cancel_not_cancellable() {
-            // Cancel 已被交易所拒绝/不可撤销：只做 query 回补，不再重发 cancel。
-            self.clear_query_watchdogs(client_order_id);
-            self.send_order_query_for_cancel_failed(
-                client_order_id,
-                PendingOrderQueryReason::CancelRejected,
-            );
-            self.schedule_cancel_query_watchdog_with_reason(
-                client_order_id,
-                PendingOrderQueryReason::CancelRejected,
-            );
-        } else {
-            self.send_order_query_for_cancel_failed(
-                client_order_id,
-                PendingOrderQueryReason::HedgeLegCancelFailed,
-            );
-        }
+        self.clear_query_watchdogs(client_order_id);
+        self.handoff_hedge_order_to_arb_orphan(
+            client_order_id,
+            true,
+            None,
+            format!(
+                "hedge_cancel_failed req_type={} status={} code={}({}) not_cancellable={}",
+                response.req_type(),
+                response.status(),
+                response.error_code(),
+                code_desc,
+                response.is_cancel_not_cancellable()
+            ),
+        );
     }
 
     fn handle_hedge_leg_other_failed(
@@ -3241,101 +2819,7 @@ impl Strategy for HedgeArbStrategy {
         }
     }
 
-    fn apply_query_engine_response(&mut self, response: &dyn QueryEngineResponse) {
-        let client_order_id = response.client_query_id();
-        let Some(reason) = self.pending_order_queries.remove(&client_order_id) else {
-            return;
-        };
-
-        if !self.hedge_order_ids.contains(&client_order_id) {
-            return;
-        }
-
-        let body = response.body_bytes().as_ref();
-        let has_any_byte = body.iter().any(|&b| b != 0);
-        if !has_any_byte {
-            return;
-        }
-
-        let actual_len = body
-            .iter()
-            .rposition(|&b| b != 0)
-            .map(|pos| pos + 1)
-            .unwrap_or(0);
-        if is_order_query_not_found_marker(&body[..actual_len]) {
-            match reason {
-                PendingOrderQueryReason::OrderWatchdog => {
-                    warn!(
-                        "HedgeArbStrategy: strategy_id={} hedge_leg order query not found marker (treat as open_failed): client_order_id={}",
-                        self.strategy_id, client_order_id
-                    );
-                    self.cleanup_failed_hedge_order(client_order_id);
-                    let base_pending_qty = self.cumulative_open_qty - self.cumulative_hedged_qty;
-                    self.try_resend_hedge_after_open_failed(base_pending_qty, "query_not_found");
-                    return;
-                }
-                PendingOrderQueryReason::CancelWatchdog
-                | PendingOrderQueryReason::HedgeLegCancelFailed => {
-                    self.schedule_cancel_query_watchdog(client_order_id);
-                    return;
-                }
-                PendingOrderQueryReason::CancelRejected => {
-                    self.schedule_cancel_query_watchdog_with_reason(
-                        client_order_id,
-                        PendingOrderQueryReason::CancelRejected,
-                    );
-                    return;
-                }
-            }
-        }
-
-        if actual_len == 1 && body[0] == b'E' {
-            match reason {
-                PendingOrderQueryReason::OrderWatchdog => {
-                    warn!(
-                        "HedgeArbStrategy: strategy_id={} hedge_leg order query error marker (E, treat as open_failed): client_order_id={}",
-                        self.strategy_id, client_order_id
-                    );
-                    self.cleanup_failed_hedge_order(client_order_id);
-                    let base_pending_qty = self.cumulative_open_qty - self.cumulative_hedged_qty;
-                    self.try_resend_hedge_after_open_failed(base_pending_qty, "query_failed");
-                    return;
-                }
-                PendingOrderQueryReason::CancelWatchdog
-                | PendingOrderQueryReason::HedgeLegCancelFailed => {
-                    self.schedule_cancel_query_watchdog(client_order_id);
-                    return;
-                }
-                PendingOrderQueryReason::CancelRejected => {
-                    self.schedule_cancel_query_watchdog_with_reason(
-                        client_order_id,
-                        PendingOrderQueryReason::CancelRejected,
-                    );
-                    return;
-                }
-            }
-        }
-
-        let body_bytes = response.body_bytes();
-        let parsed = Self::parse_compact_order_query_resp(body_bytes);
-        if parsed.is_none() {
-            let text = if actual_len > 0 {
-                String::from_utf8_lossy(&body[..actual_len]).to_string()
-            } else {
-                String::new()
-            };
-            warn!(
-                "HedgeArbStrategy: strategy_id={} query_resp decode failed: client_order_id={} req_type={} reason={:?} body='{}'",
-                self.strategy_id,
-                client_order_id,
-                response.req_type(),
-                reason,
-                text
-                );
-        }
-
-        self.handle_hedge_leg_query_result(response, client_order_id, reason, parsed);
-    }
+    fn apply_query_engine_response(&mut self, _response: &dyn QueryEngineResponse) {}
 
     fn drain_pending_arb_orphan_handoffs(&mut self) -> Vec<ArbOrphanHandoff> {
         std::mem::take(&mut self.pending_arb_orphan_handoffs)
