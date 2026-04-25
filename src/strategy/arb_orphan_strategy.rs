@@ -5,7 +5,9 @@ use crate::pre_trade::order_manager::{OrderExecutionStatus, Side};
 use crate::pre_trade::{QueryEngHub, TradeEngHub};
 use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce};
 use crate::signal::trade_signal::TradeSignal;
-use crate::strategy::manager::{ArbOrphanHandoff, ForceCloseControl, Strategy};
+use crate::strategy::manager::{
+    ArbOrphanHandoff, ArbOrphanUniformCtx, ForceCloseControl, Strategy,
+};
 use crate::strategy::net_qty_queue::NetQtyQueue;
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::order_query_parser::parse_compact_order_query_resp;
@@ -14,6 +16,10 @@ use crate::strategy::query_engine_response::QueryEngineResponse;
 use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
 use crate::strategy::trade_engine_response::TradeEngineResponse;
 use crate::strategy::trade_update::TradeUpdate;
+use crate::strategy::uniform_arb_publish::{
+    publish_arb_uniform_new_order, publish_arb_uniform_terminal_order,
+    publish_arb_uniform_trade_order,
+};
 use crate::trade_engine::query_parsers::compact_order::{
     is_order_query_not_found_marker, CompactOrderQueryResp,
 };
@@ -52,6 +58,7 @@ pub struct ArbOrphanStrategy {
     query_states: HashMap<i64, ArbOrphanQueryState>,
     pending_query_targets: HashMap<i64, i64>,
     max_query_attempts: HashMap<i64, u8>,
+    uniform_contexts: HashMap<i64, ArbOrphanUniformCtx>,
     query_seq: u32,
     net_qty_queue: NetQtyQueue,
     net_qty: f64,
@@ -78,6 +85,7 @@ impl ArbOrphanStrategy {
             query_states: HashMap::new(),
             pending_query_targets: HashMap::new(),
             max_query_attempts: HashMap::new(),
+            uniform_contexts: HashMap::new(),
             query_seq: 0,
             net_qty_queue: NetQtyQueue::new(),
             net_qty: 0.0,
@@ -144,6 +152,11 @@ impl ArbOrphanStrategy {
             self.max_query_attempts
                 .insert(handoff.client_order_id, max_attempts);
         }
+        if handoff.leg == ArbOrphanLeg::Open {
+            if let Some(ctx) = handoff.uniform_ctx.clone() {
+                self.uniform_contexts.insert(handoff.client_order_id, ctx);
+            }
+        }
         info!(
             "ArbOrphanStrategy: strategy_role=arb_orphan strategy_id={} adopted order symbol={} client_order_id={} venue={:?} status={:?} leg={:?} cancel_intent={} source_strategy_id={} reason={}",
             self.strategy_id,
@@ -206,6 +219,7 @@ impl ArbOrphanStrategy {
             self.cancel_intents.remove(&client_order_id);
             self.query_states.remove(&client_order_id);
             self.max_query_attempts.remove(&client_order_id);
+            self.uniform_contexts.remove(&client_order_id);
             self.pending_query_targets
                 .retain(|_, tracked_order_id| *tracked_order_id != client_order_id);
             info!(
@@ -608,7 +622,45 @@ impl Strategy for ArbOrphanStrategy {
         if !self.is_strategy_order(client_order_id) {
             return;
         }
+        let uniform_ctx = self.uniform_contexts.get(&client_order_id).cloned();
+        let prev_cumulative_filled_qty = MonitorChannel::try_order_manager()
+            .and_then(|order_mgr| {
+                order_mgr
+                    .borrow()
+                    .get(client_order_id)
+                    .map(|order| order.cumulative_filled_quantity)
+            })
+            .unwrap_or(0.0);
         self.update_order_from_order_update(update);
+        if let Some(ctx) = uniform_ctx.as_ref() {
+            let updated_order = MonitorChannel::try_order_manager()
+                .and_then(|order_mgr| order_mgr.borrow().get(client_order_id));
+            if let Some(order) = updated_order {
+                if update.status() == OrderStatus::New {
+                    publish_arb_uniform_new_order(
+                        update,
+                        &order,
+                        prev_cumulative_filled_qty,
+                        ctx,
+                        "ArbOrphanStrategy: strategy_role=arb_orphan",
+                        self.strategy_id,
+                    );
+                }
+                if matches!(
+                    update.status(),
+                    OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::ExpiredInMatch
+                ) {
+                    publish_arb_uniform_terminal_order(
+                        update,
+                        &order,
+                        prev_cumulative_filled_qty,
+                        ctx,
+                        "ArbOrphanStrategy: strategy_role=arb_orphan",
+                        self.strategy_id,
+                    );
+                }
+            }
+        }
         if matches!(
             update.status(),
             OrderStatus::Canceled
@@ -634,7 +686,31 @@ impl Strategy for ArbOrphanStrategy {
         if !self.is_strategy_order(client_order_id) {
             return;
         }
+        let uniform_ctx = self.uniform_contexts.get(&client_order_id).cloned();
+        let prev_cumulative_filled_qty = MonitorChannel::try_order_manager()
+            .and_then(|order_mgr| {
+                order_mgr
+                    .borrow()
+                    .get(client_order_id)
+                    .map(|order| order.cumulative_filled_quantity)
+            })
+            .unwrap_or(0.0);
         self.update_order_from_trade_update(trade);
+        if let (Some(ctx), Some(status)) = (uniform_ctx.as_ref(), trade.order_status()) {
+            let updated_order = MonitorChannel::try_order_manager()
+                .and_then(|order_mgr| order_mgr.borrow().get(client_order_id));
+            if let Some(order) = updated_order {
+                publish_arb_uniform_trade_order(
+                    trade,
+                    &order,
+                    prev_cumulative_filled_qty,
+                    status,
+                    ctx,
+                    "ArbOrphanStrategy: strategy_role=arb_orphan",
+                    self.strategy_id,
+                );
+            }
+        }
         if trade.order_status().is_some_and(|status| {
             matches!(
                 status,

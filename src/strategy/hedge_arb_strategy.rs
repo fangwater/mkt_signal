@@ -16,14 +16,17 @@ use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::arb_orphan_strategy::ArbOrphanLeg;
 use crate::strategy::manager::{
-    ArbOpenPriceMapEntry, ArbOrphanHandoff, ForceCloseControl, Strategy,
+    ArbOpenPriceMapEntry, ArbOrphanHandoff, ArbOrphanUniformCtx, ForceCloseControl, Strategy,
 };
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::query_engine_response::QueryEngineResponse;
 use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
 use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKind};
 use crate::strategy::trade_update::TradeUpdate;
-use crate::strategy::uniform_order_helper::{publish_uniform_order_event, UniformOrderEventKind};
+use crate::strategy::uniform_arb_publish::{
+    publish_arb_uniform_new_order, publish_arb_uniform_terminal_order,
+    publish_arb_uniform_trade_order, ArbUniformPublishCtx,
+};
 use crate::strategy::ws_order_update::WsOrderUpdate;
 use crate::trade_engine::query_parsers::compact_order::{
     is_order_query_not_found_marker, CompactOrderQueryResp, COMPACT_ORDER_QUERY_RESP_LEN,
@@ -158,6 +161,14 @@ impl HedgeArbStrategy {
             return;
         }
         let reason = reason.into();
+        let uniform_ctx = match leg {
+            ArbOrphanLeg::Open => Some(ArbOrphanUniformCtx {
+                signal_ts: self.open_signal_ts,
+                from_key: format!("open|{}", self.open_from_key).into_bytes(),
+                price_offset: self.open_price_offset,
+            }),
+            ArbOrphanLeg::Hedge => None,
+        };
         self.keep_local_on_drop_order_ids.insert(client_order_id);
         self.pending_arb_orphan_handoffs.push(ArbOrphanHandoff {
             client_order_id,
@@ -165,6 +176,7 @@ impl HedgeArbStrategy {
             leg,
             cancel_intent,
             max_query_attempts,
+            uniform_ctx,
             reason: reason.clone(),
         });
         info!(
@@ -2051,7 +2063,17 @@ impl HedgeArbStrategy {
                 return false;
             }
             if let Some(order) = order_manager.get(client_order_id) {
-                self.publish_uniform_trade_order(trade, &order, prev_cumulative_filled_qty, status);
+                if let Some(ctx) = self.uniform_publish_ctx(&order) {
+                    publish_arb_uniform_trade_order(
+                        trade,
+                        &order,
+                        prev_cumulative_filled_qty,
+                        status,
+                        &ctx,
+                        "HedgeArbStrategy",
+                        self.strategy_id,
+                    );
+                }
             }
         }
 
@@ -2090,41 +2112,6 @@ impl HedgeArbStrategy {
         }
 
         true
-    }
-
-    fn publish_uniform_trade_order(
-        &self,
-        trade: &dyn TradeUpdate,
-        order: &Order,
-        prev_cumulative_filled_qty: f64,
-        status: OrderStatus,
-    ) {
-        if !matches!(status, OrderStatus::PartiallyFilled | OrderStatus::Filled) {
-            return;
-        }
-        let Some((signal_ts, from_key_bytes, price_offset)) = self.uniform_leg_fields(order) else {
-            return;
-        };
-
-        let incoming_cum = trade.cumulative_filled_quantity();
-        let amount_update = self.compute_uniform_amount_update(
-            order,
-            incoming_cum,
-            prev_cumulative_filled_qty,
-            status,
-        );
-
-        publish_uniform_order_event(
-            order,
-            UniformOrderEventKind::Trade,
-            trade.event_time(),
-            status,
-            signal_ts,
-            from_key_bytes,
-            Some(trade.price()),
-            price_offset,
-            amount_update,
-        );
     }
 
     fn apply_order_update(&mut self, order_update: &dyn OrderUpdate) -> bool {
@@ -2276,7 +2263,16 @@ impl HedgeArbStrategy {
                 .borrow()
                 .get(client_order_id)
             {
-                self.publish_uniform_new_order(order_update, &order, prev_cumulative_filled_qty);
+                if let Some(ctx) = self.uniform_publish_ctx(&order) {
+                    publish_arb_uniform_new_order(
+                        order_update,
+                        &order,
+                        prev_cumulative_filled_qty,
+                        &ctx,
+                        "HedgeArbStrategy",
+                        self.strategy_id,
+                    );
+                }
             }
         }
 
@@ -2289,11 +2285,16 @@ impl HedgeArbStrategy {
                 .borrow()
                 .get(client_order_id)
             {
-                self.publish_uniform_terminal_order(
-                    order_update,
-                    &order,
-                    prev_cumulative_filled_qty,
-                );
+                if let Some(ctx) = self.uniform_publish_ctx(&order) {
+                    publish_arb_uniform_terminal_order(
+                        order_update,
+                        &order,
+                        prev_cumulative_filled_qty,
+                        &ctx,
+                        "HedgeArbStrategy",
+                        self.strategy_id,
+                    );
+                }
             }
         }
 
@@ -2319,108 +2320,20 @@ impl HedgeArbStrategy {
         true
     }
 
-    fn uniform_leg_fields(&self, order: &Order) -> Option<(i64, Vec<u8>, f64)> {
+    fn uniform_publish_ctx(&self, order: &Order) -> Option<ArbUniformPublishCtx> {
         let leg = self.classify_leg(order.client_order_id)?;
         match leg {
-            Leg::Open => Some((
-                self.open_signal_ts,
-                format!("open|{}", self.open_from_key).into_bytes(),
-                self.open_price_offset,
-            )),
-            Leg::Hedge => Some((
-                self.hedge_signal_ts,
-                format!("hedge|{}", self.hedge_from_key).into_bytes(),
-                self.hedge_price_offset,
-            )),
+            Leg::Open => Some(ArbUniformPublishCtx {
+                signal_ts: self.open_signal_ts,
+                from_key: format!("open|{}", self.open_from_key).into_bytes(),
+                price_offset: self.open_price_offset,
+            }),
+            Leg::Hedge => Some(ArbUniformPublishCtx {
+                signal_ts: self.hedge_signal_ts,
+                from_key: format!("hedge|{}", self.hedge_from_key).into_bytes(),
+                price_offset: self.hedge_price_offset,
+            }),
         }
-    }
-
-    fn compute_uniform_amount_update(
-        &self,
-        order: &Order,
-        incoming_cum: f64,
-        prev_cumulative_filled_qty: f64,
-        status: OrderStatus,
-    ) -> f64 {
-        match OrderManager::compute_uniform_amount_update_from_cumulative(
-            prev_cumulative_filled_qty,
-            incoming_cum,
-        ) {
-            Some(delta) => delta,
-            None => {
-                warn!(
-                    "HedgeArbStrategy: strategy_id={} uniform {:?} amount_update rollback detected: client_order_id={} prev={:.8} incoming={:.8}",
-                    self.strategy_id,
-                    status,
-                    order.client_order_id,
-                    prev_cumulative_filled_qty,
-                    incoming_cum
-                );
-                0.0
-            }
-        }
-    }
-
-    fn publish_uniform_new_order(
-        &self,
-        order_update: &dyn OrderUpdate,
-        order: &Order,
-        prev_cumulative_filled_qty: f64,
-    ) {
-        let Some((signal_ts, from_key_bytes, price_offset)) = self.uniform_leg_fields(order) else {
-            return;
-        };
-
-        let incoming_cum = order_update.cumulative_filled_quantity();
-        let amount_update = self.compute_uniform_amount_update(
-            order,
-            incoming_cum,
-            prev_cumulative_filled_qty,
-            order_update.status(),
-        );
-
-        publish_uniform_order_event(
-            order,
-            UniformOrderEventKind::New,
-            order_update.event_time(),
-            order_update.status(),
-            signal_ts,
-            from_key_bytes,
-            None,
-            price_offset,
-            amount_update,
-        );
-    }
-
-    fn publish_uniform_terminal_order(
-        &self,
-        order_update: &dyn OrderUpdate,
-        order: &Order,
-        prev_cumulative_filled_qty: f64,
-    ) {
-        let Some((signal_ts, from_key_bytes, price_offset)) = self.uniform_leg_fields(order) else {
-            return;
-        };
-
-        let incoming_cum = order_update.cumulative_filled_quantity();
-        let amount_update = self.compute_uniform_amount_update(
-            order,
-            incoming_cum,
-            prev_cumulative_filled_qty,
-            order_update.status(),
-        );
-
-        publish_uniform_order_event(
-            order,
-            UniformOrderEventKind::Terminal,
-            order_update.event_time(),
-            order_update.status(),
-            signal_ts,
-            from_key_bytes,
-            None,
-            price_offset,
-            amount_update,
-        );
     }
 
     fn cleanup_strategy_orders(&mut self) {

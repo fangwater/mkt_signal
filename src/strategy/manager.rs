@@ -10,6 +10,7 @@ use crate::strategy::mm_hedge_strategy::{MarketMakerHedgeStrategy, MmHedgeSnapsh
 use crate::strategy::mm_open_strategy::MarketMakerOpenStrategy;
 use crate::strategy::mm_orphan_order_strategy::MmOrphanOrderStrategy;
 use crate::strategy::query_engine_response::QueryEngineResponse;
+use crate::strategy::uniform_arb_publish::ArbUniformPublishCtx;
 use crate::strategy::uniform_mm_publish::MmUniformPublishCtx;
 use crate::strategy::{
     order_update::OrderUpdate, trade_engine_response::TradeEngineResponse,
@@ -175,8 +176,11 @@ pub struct ArbOrphanHandoff {
     pub leg: ArbOrphanLeg,
     pub cancel_intent: bool,
     pub max_query_attempts: Option<u8>,
+    pub uniform_ctx: Option<ArbOrphanUniformCtx>,
     pub reason: String,
 }
+
+pub type ArbOrphanUniformCtx = ArbUniformPublishCtx;
 
 /// Strategy id -> Strategy 映射的简单管理器
 pub struct StrategyManager {

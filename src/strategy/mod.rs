@@ -19,6 +19,7 @@ pub mod query_order_updates;
 pub mod trade_engine_response;
 pub mod trade_update;
 pub mod trade_update_lite;
+pub mod uniform_arb_publish;
 pub mod uniform_mm_publish;
 pub mod uniform_order_helper;
 pub mod ws_order_update;
