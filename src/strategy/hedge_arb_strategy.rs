@@ -14,7 +14,10 @@ use crate::signal::common::{
 use crate::signal::hedge_signal::ArbHedgeCtx;
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
-use crate::strategy::manager::{ArbOpenPriceMapEntry, ForceCloseControl, Strategy};
+use crate::strategy::arb_orphan_strategy::ArbOrphanLeg;
+use crate::strategy::manager::{
+    ArbOpenPriceMapEntry, ArbOrphanHandoff, ForceCloseControl, Strategy,
+};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::query_engine_response::QueryEngineResponse;
 use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
@@ -36,10 +39,9 @@ fn qv_decimal_or_fallback(value: f64) -> String {
 }
 use std::collections::{HashMap, HashSet};
 
-// 下单后若迟迟收不到 account monitor 的推送（New/Filled 等），用一次 query 回补。
-// 仅用于“发出请求但没收到回报”的兜底，不做持续轮询，避免 maker 长时间挂单时产生额外负担。
+// 下单后若迟迟收不到 account monitor 的推送（New/Filled 等），触发兜底。
+// Open leg 直接移交 arb orphan；hedge leg 仍保留原查询回补。
 const ORDER_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
-const ORDER_QUERY_RETRY_DELAY_US: i64 = 900_000;
 const CANCEL_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
 const HEDGE_RESIDUAL_EPS: f64 = 1e-12;
 
@@ -58,7 +60,6 @@ pub struct HedgeArbStrategy {
     pub open_qty_multiplier: f64,      //开仓侧数量乘数（venue qty -> base qty）
     pub hedge_qty_multiplier: f64,     //对冲侧数量乘数（venue qty -> base qty）
     pub open_filled_hedge_triggered: bool, //开仓成交已触发对冲（防止query重复触发）
-    pub open_order_query_retried: bool, //开仓单 query not found/E 后是否已做过一次延迟重试
     pub alive_flag: bool,              //策略是否存活
     pub hedge_symbol: String,          //对冲侧symbol
     pub hedge_venue: TradingVenue,     //对冲侧交易场所
@@ -84,6 +85,8 @@ pub struct HedgeArbStrategy {
     cancel_query_watchdog: Option<QueryWatchdog>,
     processed_cancel_updates: HashSet<i64>,
     suppress_cleanup_detail_orders: HashSet<i64>,
+    keep_local_on_drop_order_ids: HashSet<i64>,
+    pending_arb_orphan_handoffs: Vec<ArbOrphanHandoff>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,7 +97,6 @@ enum Leg {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PendingOrderQueryReason {
-    OpenLegCancelFailed,
     HedgeLegCancelFailed,
     CancelRejected,
     OrderWatchdog,
@@ -139,6 +141,58 @@ impl HedgeArbStrategy {
         (symbol_upper, "USDT".to_string())
     }
 
+    fn queue_arb_orphan_handoff(
+        &mut self,
+        client_order_id: i64,
+        leg: ArbOrphanLeg,
+        cancel_intent: bool,
+        max_query_attempts: Option<u8>,
+        reason: impl Into<String>,
+    ) {
+        if client_order_id <= 0
+            || self
+                .pending_arb_orphan_handoffs
+                .iter()
+                .any(|handoff| handoff.client_order_id == client_order_id)
+        {
+            return;
+        }
+        let reason = reason.into();
+        self.keep_local_on_drop_order_ids.insert(client_order_id);
+        self.pending_arb_orphan_handoffs.push(ArbOrphanHandoff {
+            client_order_id,
+            source_strategy_id: self.strategy_id,
+            leg,
+            cancel_intent,
+            max_query_attempts,
+            reason: reason.clone(),
+        });
+        info!(
+            "HedgeArbStrategy: strategy_id={} handoff order to arb orphan client_order_id={} leg={:?} cancel_intent={} max_query_attempts={:?} reason={}",
+            self.strategy_id,
+            client_order_id,
+            leg,
+            cancel_intent,
+            max_query_attempts,
+            reason
+        );
+    }
+
+    fn handoff_open_order_to_arb_orphan(
+        &mut self,
+        cancel_intent: bool,
+        max_query_attempts: Option<u8>,
+        reason: impl Into<String>,
+    ) {
+        self.queue_arb_orphan_handoff(
+            self.open_order_id,
+            ArbOrphanLeg::Open,
+            cancel_intent,
+            max_query_attempts,
+            reason,
+        );
+    }
+
     pub fn new(id: i32, symbol: String) -> Self {
         let strategy = Self {
             strategy_id: id,
@@ -155,7 +209,6 @@ impl HedgeArbStrategy {
             open_qty_multiplier: 1.0,
             hedge_qty_multiplier: 1.0,
             open_filled_hedge_triggered: false,
-            open_order_query_retried: false,
             alive_flag: true,
             hedge_symbol: String::new(),
             hedge_venue: TradingVenue::BinanceMargin, // 默认值，将在开仓时更新
@@ -181,6 +234,8 @@ impl HedgeArbStrategy {
             cancel_query_watchdog: None,
             processed_cancel_updates: HashSet::new(),
             suppress_cleanup_detail_orders: HashSet::new(),
+            keep_local_on_drop_order_ids: HashSet::new(),
+            pending_arb_orphan_handoffs: Vec::new(),
         };
         strategy
     }
@@ -406,7 +461,6 @@ impl HedgeArbStrategy {
 
         // 6、根据资产类型创建开仓订单，并保存对冲侧信息
         self.open_order_id = order_id;
-        self.open_order_query_retried = false;
         self.cumulative_open_qty = 0.0;
         self.alive_flag = true;
         let ts = get_timestamp_us();
@@ -993,65 +1047,27 @@ impl HedgeArbStrategy {
             );
             return Ok(());
         }
-        if self.pending_order_queries.contains_key(&self.open_order_id)
-            || self
-                .cancel_query_watchdog
-                .is_some_and(|w| w.client_order_id == self.open_order_id)
-        {
-            debug!(
-                "HedgeArbStrategy: strategy_id={} 跳过 ArbCancel，因为撤单回补已在进行 order_id={} trigger_ts={}",
-                self.strategy_id, self.open_order_id, ctx.trigger_ts
-            );
-            self.last_cancel_trigger_ts = Some(ctx.trigger_ts);
-            return Ok(());
-        }
-        // 从 order manager 获取开仓订单
         let order = MonitorChannel::instance()
             .order_manager()
             .borrow()
             .get(self.open_order_id);
-        if let Some(order) = order {
-            // 先检查订单状态，如果已经是终结状态，则跳过cancel流程
-            if order.status.is_terminal() {
-                return Ok(());
-            }
-
-            // 只有非终结状态（挂单中、部分成交等），才发送cancel请求
-            debug!(
-                "HedgeArbStrategy: strategy_id={} 开仓订单状态 {:?}，准备发送cancel请求 order_id={}",
-                self.strategy_id, order.status, self.open_order_id
-            );
-
-            // 使用 order 的 get_order_cancel_bytes 方法获取撤单请求
-            match order.get_order_cancel_bytes() {
-                Ok(cancel_bytes) => {
-                    let exchange = order.venue.trade_engine_exchange();
-                    if let Err(e) = TradeEngHub::publish_order_request(exchange, &cancel_bytes) {
-                        error!(
-                            "HedgeArbStrategy: strategy_id={} exchange={} 发送撤单请求失败: {}",
-                            self.strategy_id, exchange, e
-                        );
-                        return Err(format!("发送撤单请求失败: {}", e));
-                    }
-                    self.last_cancel_trigger_ts = Some(ctx.trigger_ts);
-                    self.schedule_cancel_query_watchdog(order.client_order_id);
-                }
-                Err(e) => {
-                    error!(
-                        "HedgeArbStrategy: strategy_id={} 获取撤单请求字节失败: {}",
-                        self.strategy_id, e
-                    );
-                    return Err(format!("获取撤单请求字节失败: {}", e));
-                }
-            }
-        } else {
+        if order.as_ref().is_some_and(|order| order.status.is_terminal()) {
+            return Ok(());
+        }
+        if order.is_none() {
             warn!(
                 "HedgeArbStrategy: strategy_id={} 未找到要撤销的订单 order_id={}",
                 self.strategy_id, self.open_order_id
             );
             return Err(format!("未找到要撤销的订单"));
         }
-
+        self.last_cancel_trigger_ts = Some(ctx.trigger_ts);
+        self.handoff_open_order_to_arb_orphan(
+            true,
+            None,
+            format!("arb_cancel:{}", ctx.get_reason().as_log_reason()),
+        );
+        self.alive_flag = false;
         Ok(())
     }
 
@@ -1125,45 +1141,13 @@ impl HedgeArbStrategy {
             let now = get_timestamp_us();
             if now >= expire_ts && self.alive_flag && self.open_order_id != 0 {
                 info!(
-                    "HedgeArbStrategy: strategy_id={} 开仓订单超时，直接撤单 order_id={}",
+                    "HedgeArbStrategy: strategy_id={} 开仓订单超时，移交 arb orphan 撤单收敛 order_id={}",
                     self.strategy_id, self.open_order_id
                 );
                 self.last_open_cancel_reason = Some("timeout");
-
-                // 获取开仓订单并直接发送撤单请求
-                let order = MonitorChannel::instance()
-                    .order_manager()
-                    .borrow()
-                    .get(self.open_order_id);
-                if let Some(order) = order {
-                    match order.get_order_cancel_bytes() {
-                        Ok(cancel_bytes) => {
-                            let exchange = order.venue.trade_engine_exchange();
-                            if let Err(e) =
-                                TradeEngHub::publish_order_request(exchange, &cancel_bytes)
-                            {
-                                info!(
-                                    "HedgeArbStrategy: strategy_id={} exchange={} 发送开仓撤单请求失败: {}",
-                                    self.strategy_id, exchange, e
-                                );
-                            } else {
-                                info!(
-                                    "HedgeArbStrategy: strategy_id={} 已发送开仓撤单请求 order_id={}",
-                                    self.strategy_id, self.open_order_id
-                                );
-                                self.schedule_cancel_query_watchdog(order.client_order_id);
-                                // 清除超时时间，避免重复发送撤单
-                                self.open_expire_ts = None;
-                            }
-                        }
-                        Err(e) => {
-                            error!(
-                                "HedgeArbStrategy: strategy_id={} 获取开仓撤单请求字节失败: {}",
-                                self.strategy_id, e
-                            );
-                        }
-                    }
-                }
+                self.open_expire_ts = None;
+                self.handoff_open_order_to_arb_orphan(true, None, "open_timeout");
+                self.alive_flag = false;
             }
         }
     }
@@ -1348,31 +1332,6 @@ impl HedgeArbStrategy {
         });
     }
 
-    fn retry_open_leg_order_query_after_cooldown(
-        &mut self,
-        client_order_id: i64,
-        marker: &'static str,
-    ) {
-        if self.open_order_query_retried {
-            warn!(
-                "HedgeArbStrategy: strategy_id={} open_leg order query {} after retry, close: client_order_id={}",
-                self.strategy_id, marker, client_order_id
-            );
-            self.alive_flag = false;
-            return;
-        }
-
-        self.open_order_query_retried = true;
-        warn!(
-            "HedgeArbStrategy: strategy_id={} open_leg order query {} on first attempt, retry after {}ms: client_order_id={}",
-            self.strategy_id,
-            marker,
-            ORDER_QUERY_RETRY_DELAY_US / 1_000,
-            client_order_id
-        );
-        self.schedule_order_query_watchdog_with_delay(client_order_id, ORDER_QUERY_RETRY_DELAY_US);
-    }
-
     fn schedule_cancel_query_watchdog(&mut self, client_order_id: i64) {
         self.schedule_cancel_query_watchdog_with_reason(
             client_order_id,
@@ -1491,7 +1450,17 @@ impl HedgeArbStrategy {
                         waited_ms,
                         w.reason
                     );
-                    self.send_order_query(w.client_order_id, w.reason);
+                    if leg == Some(Leg::Open) {
+                        drop(order_opt);
+                        self.handoff_open_order_to_arb_orphan(
+                            true,
+                            None,
+                            format!("open_cancel_watchdog:{:?}", w.reason),
+                        );
+                        self.alive_flag = false;
+                    } else {
+                        self.send_order_query(w.client_order_id, w.reason);
+                    }
                 }
             }
         }
@@ -1514,7 +1483,7 @@ impl HedgeArbStrategy {
                         ""
                     };
                     debug!(
-                        "OrderWatchdog触发{}: strategy_id={} client_order_id={} leg={:?} symbol={} status={:?} exch_ord_id={:?} 等待{}ms仍未收到回报，发送order query回补 (since_submit={}ms)",
+                        "OrderWatchdog触发{}: strategy_id={} client_order_id={} leg={:?} symbol={} status={:?} exch_ord_id={:?} 等待{}ms仍未收到回报 (since_submit={}ms)",
                         hint,
                         self.strategy_id,
                         w.client_order_id,
@@ -1525,7 +1494,17 @@ impl HedgeArbStrategy {
                         waited_ms,
                         since_submit_ms
                     );
-                    self.send_order_query(w.client_order_id, w.reason);
+                    if leg == Some(Leg::Open) {
+                        drop(order_opt);
+                        self.handoff_open_order_to_arb_orphan(
+                            true,
+                            Some(2),
+                            "open_order_watchdog_no_response",
+                        );
+                        self.alive_flag = false;
+                    } else {
+                        self.send_order_query(w.client_order_id, w.reason);
+                    }
                 }
             }
         }
@@ -2452,7 +2431,12 @@ impl HedgeArbStrategy {
 
         // 检查并清理开仓订单
         if self.open_order_id != 0 {
-            if let Some(order) = mgr.get(self.open_order_id) {
+            if self.keep_local_on_drop_order_ids.contains(&self.open_order_id) {
+                debug!(
+                    "HedgeArbStrategy: strategy_id={} keep open order local after arb orphan handoff client_order_id={}",
+                    self.strategy_id, self.open_order_id
+                );
+            } else if let Some(order) = mgr.get(self.open_order_id) {
                 if !order.status.is_terminal() {
                     if !self
                         .suppress_cleanup_detail_orders
@@ -2465,12 +2449,19 @@ impl HedgeArbStrategy {
                         );
                     }
                 }
+                let _ = mgr.remove(self.open_order_id);
             }
-            let _ = mgr.remove(self.open_order_id);
         }
 
         // 检查并清理对冲订单
         for id in &self.hedge_order_ids {
+            if self.keep_local_on_drop_order_ids.contains(id) {
+                debug!(
+                    "HedgeArbStrategy: strategy_id={} keep hedge order local after arb orphan handoff client_order_id={}",
+                    self.strategy_id, id
+                );
+                continue;
+            }
             if let Some(order) = mgr.get(*id) {
                 if !order.status.is_terminal() {
                     if !self
@@ -2670,9 +2661,7 @@ impl HedgeArbStrategy {
     ) {
         if matches!(
             reason,
-            PendingOrderQueryReason::OpenLegCancelFailed
-                | PendingOrderQueryReason::HedgeLegCancelFailed
-                | PendingOrderQueryReason::CancelRejected
+            PendingOrderQueryReason::HedgeLegCancelFailed | PendingOrderQueryReason::CancelRejected
         ) {
             warn!(
                 "HedgeArbStrategy: strategy_id={} cancel_failed, will query order status: client_order_id={} reason={:?}",
@@ -2801,7 +2790,6 @@ impl HedgeArbStrategy {
             match reason {
                 PendingOrderQueryReason::OrderWatchdog => "（下单回报缺失触发watchdog）",
                 PendingOrderQueryReason::CancelWatchdog => "（撤单回报缺失触发watchdog）",
-                PendingOrderQueryReason::OpenLegCancelFailed => "（开仓撤单失败后回补）",
                 PendingOrderQueryReason::HedgeLegCancelFailed => "（对冲撤单失败后回补）",
                 PendingOrderQueryReason::CancelRejected => "（撤单被拒绝/不可撤销后回补）",
             },
@@ -2812,128 +2800,6 @@ impl HedgeArbStrategy {
             parsed.status_u8,
             reason
         );
-    }
-
-    fn handle_open_leg_query_result(
-        &mut self,
-        _response: &dyn QueryEngineResponse,
-        client_order_id: i64,
-        reason: PendingOrderQueryReason,
-        parsed: Option<CompactOrderQueryResp>,
-    ) {
-        // 先拿到本地订单（用于构造撤单请求、以及补发 order/trade update）。
-        let order_mgr = MonitorChannel::instance().order_manager();
-        let Some(order) = order_mgr.borrow().get(client_order_id) else {
-            warn!(
-                "HedgeArbStrategy: strategy_id={} open_leg query_resp but order missing: client_order_id={} reason={:?}",
-                self.strategy_id, client_order_id, reason
-            );
-            //如果本地订单拿不到，说明也是开仓就失败了，不处理后续逻辑
-            self.alive_flag = false;
-            return;
-        };
-
-        let Some(parsed) = parsed else {
-            // query 失败：继续由 watchdog 驱动重试
-            match reason {
-                PendingOrderQueryReason::OrderWatchdog => {
-                    self.schedule_order_query_watchdog(client_order_id);
-                }
-                PendingOrderQueryReason::CancelWatchdog
-                | PendingOrderQueryReason::OpenLegCancelFailed
-                | PendingOrderQueryReason::HedgeLegCancelFailed => {
-                    self.schedule_cancel_query_watchdog(client_order_id);
-                }
-                PendingOrderQueryReason::CancelRejected => {
-                    self.schedule_cancel_query_watchdog_with_reason(
-                        client_order_id,
-                        PendingOrderQueryReason::CancelRejected,
-                    );
-                }
-            }
-            return;
-        };
-
-        // 2、查询订单有状态，有match匹配状态，分情况处理
-        let Some(st) = OrderExecutionStatus::from_u8(parsed.status_u8) else {
-            warn!(
-                "HedgeArbStrategy: strategy_id={} open_leg query invalid status_u8={} (close): client_order_id={} reason={:?}",
-                self.strategy_id, parsed.status_u8, client_order_id, reason
-            );
-            self.alive_flag = false;
-            return;
-        };
-
-        match st {
-            // (a)状态是filled，说明订单已经完全成交，补充成交信息，然后触发对冲。
-            OrderExecutionStatus::Filled => {
-                self.apply_parsed_order_query_updates(&order, parsed, reason);
-            }
-            // (b)状态是canceled，说明订单已经撤销成功，补充撤销信息，然后触发对冲。
-            OrderExecutionStatus::Cancelled => {
-                self.apply_parsed_order_query_updates(&order, parsed, reason);
-            }
-            // (c)状态是partially_filled等，可以撤销的状态，说明rest api出错，重新发起撤单请求。
-            OrderExecutionStatus::Create => match reason {
-                PendingOrderQueryReason::OrderWatchdog => {
-                    self.apply_parsed_order_query_updates(&order, parsed, reason);
-                }
-                PendingOrderQueryReason::CancelRejected => {
-                    self.apply_parsed_order_query_updates(&order, parsed, reason);
-                    self.schedule_cancel_query_watchdog_with_reason(
-                        client_order_id,
-                        PendingOrderQueryReason::CancelRejected,
-                    );
-                }
-                PendingOrderQueryReason::CancelWatchdog
-                | PendingOrderQueryReason::OpenLegCancelFailed
-                | PendingOrderQueryReason::HedgeLegCancelFailed => {
-                    self.apply_parsed_order_query_updates(&order, parsed, reason);
-                    let exchange = order.venue.trade_engine_exchange();
-                    match order.get_order_cancel_bytes() {
-                        Ok(cancel_bytes) => {
-                            if let Err(e) =
-                                TradeEngHub::publish_order_request(exchange, &cancel_bytes)
-                            {
-                                warn!(
-                                        "HedgeArbStrategy: strategy_id={} open_leg re-cancel publish failed: exchange={} client_order_id={} err={}",
-                                        self.strategy_id, exchange, client_order_id, e
-                                    );
-                            } else {
-                                info!(
-                                        "HedgeArbStrategy: strategy_id={} open_leg re-cancel sent: exchange={} client_order_id={} reason={:?}",
-                                        self.strategy_id, exchange, client_order_id, reason
-                                    );
-                                self.schedule_cancel_query_watchdog(client_order_id);
-                            }
-                        }
-                        Err(e) => {
-                            warn!(
-                                    "HedgeArbStrategy: strategy_id={} open_leg get cancel bytes failed: client_order_id={} err={}",
-                                    self.strategy_id, client_order_id, e
-                                );
-                            self.schedule_cancel_query_watchdog(client_order_id);
-                        }
-                    }
-                }
-            },
-            OrderExecutionStatus::Rejected => {
-                // 如果 query 返回 rejected，说明订单本身已被拒绝（不是撤单缺回报），无法再推进后续流程，直接关闭策略。
-                error!(
-                    "HedgeArbStrategy: strategy_id={} open_leg query shows rejected (close): client_order_id={} reason={:?}",
-                    self.strategy_id, client_order_id, reason
-                );
-                self.alive_flag = false;
-            }
-            OrderExecutionStatus::Commit => {
-                // Commit 是本地状态，query 不应该返回该状态；视为异常。
-                error!(
-                    "HedgeArbStrategy: strategy_id={} open_leg query shows commit(unexpected, close): client_order_id={} reason={:?}",
-                    self.strategy_id, client_order_id, reason
-                );
-                self.alive_flag = false;
-            }
-        }
     }
 
     //通过 order query 的结果，补充traade/order update，来推进strategy逻辑
@@ -2960,7 +2826,6 @@ impl HedgeArbStrategy {
                     self.schedule_order_query_watchdog(client_order_id);
                 }
                 PendingOrderQueryReason::CancelWatchdog
-                | PendingOrderQueryReason::OpenLegCancelFailed
                 | PendingOrderQueryReason::HedgeLegCancelFailed => {
                     self.schedule_cancel_query_watchdog(client_order_id);
                 }
@@ -3000,7 +2865,6 @@ impl HedgeArbStrategy {
                         );
                     }
                     PendingOrderQueryReason::CancelWatchdog
-                    | PendingOrderQueryReason::OpenLegCancelFailed
                     | PendingOrderQueryReason::HedgeLegCancelFailed => {
                         self.apply_parsed_order_query_updates(&order, parsed, reason);
                         // 订单仍处于可撤销状态：重发撤单请求
@@ -3105,23 +2969,22 @@ impl HedgeArbStrategy {
             code_desc,
             client_order_id
         );
-        if response.is_cancel_not_cancellable() {
-            // Cancel 已被交易所拒绝/不可撤销：只做 query 回补，不再重发 cancel。
-            self.clear_query_watchdogs(client_order_id);
-            self.send_order_query_for_cancel_failed(
-                client_order_id,
-                PendingOrderQueryReason::CancelRejected,
-            );
-            self.schedule_cancel_query_watchdog_with_reason(
-                client_order_id,
-                PendingOrderQueryReason::CancelRejected,
-            );
-        } else {
-            self.send_order_query_for_cancel_failed(
-                client_order_id,
-                PendingOrderQueryReason::OpenLegCancelFailed,
-            );
-        }
+        self.clear_query_watchdogs(client_order_id);
+        self.queue_arb_orphan_handoff(
+            client_order_id,
+            ArbOrphanLeg::Open,
+            true,
+            None,
+            format!(
+                "open_cancel_failed req_type={} status={} code={}({}) not_cancellable={}",
+                response.req_type(),
+                response.status(),
+                response.error_code(),
+                code_desc,
+                response.is_cancel_not_cancellable()
+            ),
+        );
+        self.alive_flag = false;
     }
 
     fn handle_open_leg_other_failed(
@@ -3468,9 +3331,9 @@ impl Strategy for HedgeArbStrategy {
             return;
         };
 
-        let Some(leg) = self.classify_leg(client_order_id) else {
+        if !self.hedge_order_ids.contains(&client_order_id) {
             return;
-        };
+        }
 
         let body = response.body_bytes().as_ref();
         let has_any_byte = body.iter().any(|&b| b != 0);
@@ -3484,15 +3347,8 @@ impl Strategy for HedgeArbStrategy {
             .map(|pos| pos + 1)
             .unwrap_or(0);
         if is_order_query_not_found_marker(&body[..actual_len]) {
-            match (leg, reason) {
-                (Leg::Open, PendingOrderQueryReason::OrderWatchdog) => {
-                    self.retry_open_leg_order_query_after_cooldown(
-                        client_order_id,
-                        "not found marker",
-                    );
-                    return;
-                }
-                (Leg::Hedge, PendingOrderQueryReason::OrderWatchdog) => {
+            match reason {
+                PendingOrderQueryReason::OrderWatchdog => {
                     warn!(
                         "HedgeArbStrategy: strategy_id={} hedge_leg order query not found marker (treat as open_failed): client_order_id={}",
                         self.strategy_id, client_order_id
@@ -3502,19 +3358,12 @@ impl Strategy for HedgeArbStrategy {
                     self.try_resend_hedge_after_open_failed(base_pending_qty, "query_not_found");
                     return;
                 }
-                (Leg::Open, PendingOrderQueryReason::CancelWatchdog)
-                | (Leg::Open, PendingOrderQueryReason::OpenLegCancelFailed)
-                | (Leg::Open, PendingOrderQueryReason::HedgeLegCancelFailed) => {
+                PendingOrderQueryReason::CancelWatchdog
+                | PendingOrderQueryReason::HedgeLegCancelFailed => {
                     self.schedule_cancel_query_watchdog(client_order_id);
                     return;
                 }
-                (Leg::Hedge, PendingOrderQueryReason::CancelWatchdog)
-                | (Leg::Hedge, PendingOrderQueryReason::OpenLegCancelFailed)
-                | (Leg::Hedge, PendingOrderQueryReason::HedgeLegCancelFailed) => {
-                    self.schedule_cancel_query_watchdog(client_order_id);
-                    return;
-                }
-                (_, PendingOrderQueryReason::CancelRejected) => {
+                PendingOrderQueryReason::CancelRejected => {
                     self.schedule_cancel_query_watchdog_with_reason(
                         client_order_id,
                         PendingOrderQueryReason::CancelRejected,
@@ -3525,15 +3374,8 @@ impl Strategy for HedgeArbStrategy {
         }
 
         if actual_len == 1 && body[0] == b'E' {
-            match (leg, reason) {
-                (Leg::Open, PendingOrderQueryReason::OrderWatchdog) => {
-                    self.retry_open_leg_order_query_after_cooldown(
-                        client_order_id,
-                        "error marker (E)",
-                    );
-                    return;
-                }
-                (Leg::Hedge, PendingOrderQueryReason::OrderWatchdog) => {
+            match reason {
+                PendingOrderQueryReason::OrderWatchdog => {
                     warn!(
                         "HedgeArbStrategy: strategy_id={} hedge_leg order query error marker (E, treat as open_failed): client_order_id={}",
                         self.strategy_id, client_order_id
@@ -3543,19 +3385,12 @@ impl Strategy for HedgeArbStrategy {
                     self.try_resend_hedge_after_open_failed(base_pending_qty, "query_failed");
                     return;
                 }
-                (Leg::Open, PendingOrderQueryReason::CancelWatchdog)
-                | (Leg::Open, PendingOrderQueryReason::OpenLegCancelFailed)
-                | (Leg::Open, PendingOrderQueryReason::HedgeLegCancelFailed) => {
+                PendingOrderQueryReason::CancelWatchdog
+                | PendingOrderQueryReason::HedgeLegCancelFailed => {
                     self.schedule_cancel_query_watchdog(client_order_id);
                     return;
                 }
-                (Leg::Hedge, PendingOrderQueryReason::CancelWatchdog)
-                | (Leg::Hedge, PendingOrderQueryReason::OpenLegCancelFailed)
-                | (Leg::Hedge, PendingOrderQueryReason::HedgeLegCancelFailed) => {
-                    self.schedule_cancel_query_watchdog(client_order_id);
-                    return;
-                }
-                (_, PendingOrderQueryReason::CancelRejected) => {
+                PendingOrderQueryReason::CancelRejected => {
                     self.schedule_cancel_query_watchdog_with_reason(
                         client_order_id,
                         PendingOrderQueryReason::CancelRejected,
@@ -3583,14 +3418,11 @@ impl Strategy for HedgeArbStrategy {
                 );
         }
 
-        match leg {
-            Leg::Open => {
-                self.handle_open_leg_query_result(response, client_order_id, reason, parsed)
-            }
-            Leg::Hedge => {
-                self.handle_hedge_leg_query_result(response, client_order_id, reason, parsed)
-            }
-        }
+        self.handle_hedge_leg_query_result(response, client_order_id, reason, parsed);
+    }
+
+    fn drain_pending_arb_orphan_handoffs(&mut self) -> Vec<ArbOrphanHandoff> {
+        std::mem::take(&mut self.pending_arb_orphan_handoffs)
     }
 
     fn handle_period_clock(&mut self, _current_tp: i64) {

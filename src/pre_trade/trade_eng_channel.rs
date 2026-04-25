@@ -342,6 +342,7 @@ fn dispatch_trade_engine_response(response: &TradeEngineResponseMessage) {
     let order_id = response.client_order_id();
     let strategy_ids: Vec<i32> = strategy_mgr.borrow().iter_ids().cloned().collect();
     let mut matched = false;
+    let mut arb_orphan_handoffs = Vec::new();
 
     for strategy_id in strategy_ids {
         let strategy_opt = {
@@ -353,10 +354,27 @@ fn dispatch_trade_engine_response(response: &TradeEngineResponseMessage) {
             if strategy.is_strategy_order(order_id) {
                 matched = true;
                 strategy.apply_trade_engine_response(response);
+                arb_orphan_handoffs.extend(strategy.drain_pending_arb_orphan_handoffs());
             }
             if strategy.is_active() {
                 strategy_mgr.borrow_mut().insert(strategy);
             }
+        }
+    }
+
+    if !arb_orphan_handoffs.is_empty() {
+        let mut mgr = strategy_mgr.borrow_mut();
+        for handoff in arb_orphan_handoffs {
+            let adopted = mgr.adopt_arb_orphan_order_id(&handoff);
+            info!(
+                "tradeEngineResponse arb orphan handoff: client_order_id={} source_strategy_id={} leg={:?} cancel_intent={} reason={} adopted={}",
+                handoff.client_order_id,
+                handoff.source_strategy_id,
+                handoff.leg,
+                handoff.cancel_intent,
+                handoff.reason,
+                adopted
+            );
         }
     }
 

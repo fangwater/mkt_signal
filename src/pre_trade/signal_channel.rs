@@ -620,8 +620,24 @@ fn handle_trade_signal(signal: TradeSignal) {
                             }
                         }
                         strategy.handle_signal(&normalized_signal);
+                        let arb_orphan_handoffs =
+                            strategy.drain_pending_arb_orphan_handoffs();
                         if strategy.is_active() {
                             strategy_mgr.borrow_mut().insert(strategy);
+                        }
+                        for handoff in arb_orphan_handoffs {
+                            let adopted = strategy_mgr
+                                .borrow_mut()
+                                .adopt_arb_orphan_order_id(&handoff);
+                            debug!(
+                                "ArbCancel arb orphan handoff: client_order_id={} source_strategy_id={} leg={:?} cancel_intent={} reason={} adopted={}",
+                                handoff.client_order_id,
+                                handoff.source_strategy_id,
+                                handoff.leg,
+                                handoff.cancel_intent,
+                                handoff.reason,
+                                adopted
+                            );
                         }
                     }
                     return;
@@ -657,8 +673,24 @@ fn handle_trade_signal(signal: TradeSignal) {
                             }
                         }
                         strategy.handle_signal(&normalized_signal);
+                        let arb_orphan_handoffs =
+                            strategy.drain_pending_arb_orphan_handoffs();
                         if strategy.is_active() {
                             strategy_mgr.borrow_mut().insert(strategy);
+                        }
+                        for handoff in arb_orphan_handoffs {
+                            let adopted = strategy_mgr
+                                .borrow_mut()
+                                .adopt_arb_orphan_order_id(&handoff);
+                            debug!(
+                                "ArbCancel arb orphan handoff: client_order_id={} source_strategy_id={} leg={:?} cancel_intent={} reason={} adopted={}",
+                                handoff.client_order_id,
+                                handoff.source_strategy_id,
+                                handoff.leg,
+                                handoff.cancel_intent,
+                                handoff.reason,
+                                adopted
+                            );
                         }
                     }
                 }
