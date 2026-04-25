@@ -14,6 +14,9 @@ use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::OrderType;
 use crate::pre_trade::PersistChannel;
 use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
+use crate::strategy::arb_orphan_handoff_bus::{
+    drain_arb_orphan_handoffs, drain_arb_orphan_residuals,
+};
 use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
 use crate::strategy::trade_engine_response::{
     TradeEngineResponse, TradeEngineResponseMessage, TradeRequestKind,
@@ -355,8 +358,8 @@ fn dispatch_trade_engine_response(response: &TradeEngineResponseMessage) {
             if strategy.is_strategy_order(order_id) {
                 matched = true;
                 strategy.apply_trade_engine_response(response);
-                arb_orphan_handoffs.extend(strategy.drain_pending_arb_orphan_handoffs());
-                arb_orphan_residuals.extend(strategy.drain_pending_arb_orphan_residuals());
+                arb_orphan_handoffs.extend(drain_arb_orphan_handoffs());
+                arb_orphan_residuals.extend(drain_arb_orphan_residuals());
             }
             if strategy.is_active() {
                 strategy_mgr.borrow_mut().insert(strategy);

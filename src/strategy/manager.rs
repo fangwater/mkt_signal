@@ -5,6 +5,9 @@ use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::Side;
 use crate::signal::common::{ExecutionType, TradingVenue};
 use crate::signal::trade_signal::TradeSignal;
+use crate::strategy::arb_orphan_handoff_bus::{
+    drain_arb_orphan_handoffs, drain_arb_orphan_residuals,
+};
 use crate::strategy::arb_orphan_strategy::{ArbOrphanLeg, ArbOrphanSnapshot, ArbOrphanStrategy};
 use crate::strategy::mm_hedge_strategy::{MarketMakerHedgeStrategy, MmHedgeSnapshot};
 use crate::strategy::mm_open_strategy::MarketMakerOpenStrategy;
@@ -139,12 +142,6 @@ pub trait Strategy: ForceCloseControl {
     fn apply_query_engine_response(&mut self, _response: &dyn QueryEngineResponse) {}
     fn adopt_order_id(&mut self, _handoff: &MmOrphanHandoff) -> bool {
         false
-    }
-    fn drain_pending_arb_orphan_handoffs(&mut self) -> Vec<ArbOrphanHandoff> {
-        Vec::new()
-    }
-    fn drain_pending_arb_orphan_residuals(&mut self) -> Vec<ArbOrphanResidualHandoff> {
-        Vec::new()
     }
     fn handle_period_clock(&mut self, current_tp: i64);
     fn is_active(&self) -> bool;
@@ -874,8 +871,8 @@ impl StrategyManager {
             if let Some(strategy) = self.strategies.get_mut(&strategy_id) {
                 inspected += 1;
                 strategy.handle_period_clock(current_tp);
-                arb_orphan_handoffs.extend(strategy.drain_pending_arb_orphan_handoffs());
-                arb_orphan_residuals.extend(strategy.drain_pending_arb_orphan_residuals());
+                arb_orphan_handoffs.extend(drain_arb_orphan_handoffs());
+                arb_orphan_residuals.extend(drain_arb_orphan_residuals());
                 if let Some(mm_hedge) = strategy
                     .as_any_mut()
                     .downcast_mut::<MarketMakerHedgeStrategy>()
@@ -914,8 +911,8 @@ impl StrategyManager {
         let mut arb_orphan_residuals = Vec::new();
         if let Some(strategy) = self.strategies.get_mut(&strategy_id) {
             strategy.apply_query_engine_response(response);
-            arb_orphan_handoffs.extend(strategy.drain_pending_arb_orphan_handoffs());
-            arb_orphan_residuals.extend(strategy.drain_pending_arb_orphan_residuals());
+            arb_orphan_handoffs.extend(drain_arb_orphan_handoffs());
+            arb_orphan_residuals.extend(drain_arb_orphan_residuals());
             if let Some(mm_hedge) = strategy
                 .as_any_mut()
                 .downcast_mut::<MarketMakerHedgeStrategy>()

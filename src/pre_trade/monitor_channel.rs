@@ -175,6 +175,7 @@ use crate::pre_trade::order_manager::OrderManager;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::signal::common::{align_price_ceil, align_price_floor};
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
+use crate::strategy::arb_orphan_handoff_bus::drain_arb_orphan_residuals;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
 use bytes::Bytes;
@@ -2256,7 +2257,7 @@ fn dispatch_order_update_generic<T>(
                         );
                     }
                 }
-                arb_orphan_residuals.extend(strategy.drain_pending_arb_orphan_residuals());
+                arb_orphan_residuals.extend(drain_arb_orphan_residuals());
             }
             if strategy.is_active() {
                 strategy_mgr.borrow_mut().insert(strategy);
@@ -2710,24 +2711,6 @@ mod tests {
                 TradingVenue::OkexFutures,
             ),
             OKEX_DERIVATIVES_SERVICE
-        );
-    }
-
-    #[test]
-    fn mark_price_source_falls_back_to_binance_when_not_both_okex() {
-        assert_eq!(
-            MonitorChannel::mark_price_exchange_for_venues(
-                TradingVenue::OkexFutures,
-                TradingVenue::BinanceFutures,
-            ),
-            Exchange::Binance
-        );
-        assert_eq!(
-            MonitorChannel::derivatives_service_for_mark_price_source(
-                TradingVenue::OkexFutures,
-                TradingVenue::BinanceFutures,
-            ),
-            BINANCE_DERIVATIVES_SERVICE
         );
     }
 

@@ -1,4 +1,5 @@
 use crate::common::bbo::{Bbo, DualBbo};
+use crate::common::symbol_util::extract_assets_from_symbol;
 use crate::common::tick_math::QuantizedValue;
 use crate::common::time_util::get_timestamp_us;
 use crate::common::trade_error_code::describe_trade_error_code;
@@ -12,6 +13,11 @@ use crate::signal::common::{align_price_floor, OrderStatus, SignalBytes, Trading
 use crate::signal::hedge_signal::ArbHedgeCtx;
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
+use crate::strategy::arb_orphan_handoff_bus::{
+    queue_arb_orphan_handoff as queue_global_arb_orphan_handoff,
+    queue_arb_orphan_residual as queue_global_arb_orphan_residual,
+    take_keep_local_on_drop_order_id,
+};
 use crate::strategy::arb_orphan_strategy::ArbOrphanLeg;
 use crate::strategy::manager::{
     ArbOpenPriceMapEntry, ArbOrphanHandoff, ArbOrphanResidualHandoff, ArbOrphanUniformCtx,
@@ -34,7 +40,6 @@ fn qv_decimal_or_fallback(value: f64) -> String {
         .map(|qv| qv.decimal_string())
         .unwrap_or_else(|| format!("{value:.8}"))
 }
-use std::collections::HashSet;
 
 // 下单后若迟迟收不到 account monitor 的推送（New/Filled 等），触发兜底。
 // Open/hedge leg 进入不确定状态后都移交 arb orphan 统一 query/cancel 收敛。
@@ -47,7 +52,7 @@ pub struct HedgeArbStrategy {
     pub open_symbol: String,               //开仓侧symbol
     pub open_venue: TradingVenue,          //开仓侧交易场所
     pub open_order_id: i64,                //开仓单唯一，报多单对应多个Strategy
-    pub hedge_order_ids: Vec<i64>,         //对冲单会产生一个or多个，因为部分成交
+    pub hedge_order_id: Option<i64>,       //当前对冲单；策略任意时刻只跟踪一个对冲单
     pub open_expire_ts: Option<i64>,       //开仓单挂单截止时间（绝对时间戳）
     pub hedge_timeout_us: Option<i64>,     //对冲单允许的存活时间（微秒），>0 表示 MM，None 表示 MT
     pub hedge_expire_ts: Option<i64>,      //当前对冲挂单的截止时间（绝对时间戳）
@@ -76,9 +81,6 @@ pub struct HedgeArbStrategy {
     pub last_inactive_reason: Option<String>,
     order_query_watchdog: Option<QueryWatchdog>,
     cancel_query_watchdog: Option<QueryWatchdog>,
-    keep_local_on_drop_order_ids: HashSet<i64>,
-    pending_arb_orphan_handoffs: Vec<ArbOrphanHandoff>,
-    pending_arb_orphan_residuals: Vec<ArbOrphanResidualHandoff>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,19 +120,6 @@ impl HedgeArbStrategy {
         }
     }
 
-    fn extract_assets_from_symbol(symbol: &str) -> (String, String) {
-        let symbol_upper = symbol.to_uppercase();
-        const QUOTE_ASSETS: [&str; 7] = ["USDT", "USDC", "BUSD", "FDUSD", "BIDR", "TRY", "USD"];
-
-        for quote in QUOTE_ASSETS {
-            if symbol_upper.ends_with(quote) && symbol_upper.len() > quote.len() {
-                let base = &symbol_upper[..symbol_upper.len() - quote.len()];
-                return (base.to_string(), quote.to_string());
-            }
-        }
-        (symbol_upper, "USDT".to_string())
-    }
-
     fn queue_arb_orphan_handoff(
         &mut self,
         client_order_id: i64,
@@ -139,12 +128,7 @@ impl HedgeArbStrategy {
         max_query_attempts: Option<u8>,
         reason: impl Into<String>,
     ) {
-        if client_order_id <= 0
-            || self
-                .pending_arb_orphan_handoffs
-                .iter()
-                .any(|handoff| handoff.client_order_id == client_order_id)
-        {
+        if client_order_id <= 0 {
             return;
         }
         let reason = reason.into();
@@ -156,8 +140,7 @@ impl HedgeArbStrategy {
             }),
             ArbOrphanLeg::Hedge => None,
         };
-        self.keep_local_on_drop_order_ids.insert(client_order_id);
-        self.pending_arb_orphan_handoffs.push(ArbOrphanHandoff {
+        let queued = queue_global_arb_orphan_handoff(ArbOrphanHandoff {
             client_order_id,
             source_strategy_id: self.strategy_id,
             leg,
@@ -166,6 +149,9 @@ impl HedgeArbStrategy {
             uniform_ctx,
             reason: reason.clone(),
         });
+        if !queued {
+            return;
+        }
         info!(
             "HedgeArbStrategy: strategy_id={} handoff order to arb orphan client_order_id={} leg={:?} cancel_intent={} max_query_attempts={:?} reason={}",
             self.strategy_id,
@@ -177,29 +163,24 @@ impl HedgeArbStrategy {
         );
     }
 
-    fn signed_residual_qty_for_hedge_side(side: Side, base_qty: f64) -> f64 {
-        match side {
-            // Sell hedge 处理正 open exposure。
-            Side::Sell => base_qty,
-            // Buy hedge 处理负 open exposure。
-            Side::Buy => -base_qty,
-        }
-    }
-
     fn queue_arb_orphan_residual(&mut self, side: Side, base_qty: f64, reason: impl Into<String>) {
         if base_qty <= HEDGE_RESIDUAL_EPS || self.hedge_symbol.is_empty() {
             return;
         }
         let reason = reason.into();
-        let signed_base_qty = Self::signed_residual_qty_for_hedge_side(side, base_qty);
-        self.pending_arb_orphan_residuals
-            .push(ArbOrphanResidualHandoff {
-                symbol: self.hedge_symbol.clone(),
-                venue: self.hedge_venue,
-                signed_base_qty,
-                source_strategy_id: self.strategy_id,
-                reason: reason.clone(),
-            });
+        let signed_base_qty = match side {
+            // 卖出对冲说明开仓侧是正 base exposure，残值按正数累计。
+            Side::Sell => base_qty,
+            // 买入对冲说明开仓侧是负 base exposure，残值按负数累计。
+            Side::Buy => -base_qty,
+        };
+        queue_global_arb_orphan_residual(ArbOrphanResidualHandoff {
+            symbol: self.hedge_symbol.clone(),
+            venue: self.hedge_venue,
+            signed_base_qty,
+            source_strategy_id: self.strategy_id,
+            reason: reason.clone(),
+        });
         info!(
             "HedgeArbStrategy: strategy_id={} queue arb orphan residual symbol={} venue={:?} side={:?} base_qty={:.8} signed_base_qty={:.8} reason={}",
             self.strategy_id,
@@ -260,7 +241,7 @@ impl HedgeArbStrategy {
             open_symbol: symbol,
             open_venue: TradingVenue::BinanceMargin, // 默认值，将在开仓时更新
             open_order_id: 0,
-            hedge_order_ids: Vec::new(),
+            hedge_order_id: None,
             open_expire_ts: None,
             hedge_timeout_us: None,
             hedge_expire_ts: None,
@@ -289,9 +270,6 @@ impl HedgeArbStrategy {
             last_inactive_reason: None,
             order_query_watchdog: None,
             cancel_query_watchdog: None,
-            keep_local_on_drop_order_ids: HashSet::new(),
-            pending_arb_orphan_handoffs: Vec::new(),
-            pending_arb_orphan_residuals: Vec::new(),
         };
         strategy
     }
@@ -604,7 +582,7 @@ impl HedgeArbStrategy {
                 .borrow()
                 .binance_is_standard()
         {
-            let (base_asset, quote_asset) = Self::extract_assets_from_symbol(&symbol);
+            let (base_asset, quote_asset) = extract_assets_from_symbol(&symbol);
             let (check_asset, required_amount) = match open_side {
                 Side::Buy => (quote_asset, aligned_qty * aligned_price),
                 Side::Sell => (base_asset, aligned_qty),
@@ -954,8 +932,8 @@ impl HedgeArbStrategy {
             hedge_client_order_id,
             self.strategy_id
         );
-        // 7. 将对冲订单ID添加到策略的对冲订单列表
-        self.hedge_order_ids.push(hedge_order_id);
+        // 7. 记录当前对冲订单ID
+        self.hedge_order_id = Some(hedge_order_id);
         // 对冲量只有实质成交才会更新，挂单不更新
 
         // 8. 推送对冲订单到交易引擎
@@ -1201,15 +1179,14 @@ impl HedgeArbStrategy {
             let now = get_timestamp_us();
             if now >= expire_ts {
                 debug!(
-                    "HedgeArbStrategy: strategy_id={} 对冲订单超时，直接撤单 expire_ts={} now={} hedge_orders_len={}",
+                    "HedgeArbStrategy: strategy_id={} 对冲订单超时，直接撤单 expire_ts={} now={} hedge_order_id={:?}",
                     self.strategy_id,
                     expire_ts,
                     now,
-                    self.hedge_order_ids.len()
+                    self.hedge_order_id
                 );
 
-                // 只撤最后一个对冲订单（任意时刻只有一个有效对冲单）
-                if let Some(&hedge_order_id) = self.hedge_order_ids.last() {
+                if let Some(hedge_order_id) = self.hedge_order_id {
                     let order = MonitorChannel::instance()
                         .order_manager()
                         .borrow()
@@ -1274,18 +1251,22 @@ impl HedgeArbStrategy {
         }
     }
 
-    // 当前策略只允许一个活跃对冲单，检查最后一个对冲单是否未终结
+    // 当前策略只允许一个活跃对冲单。
     fn has_pending_hedge_order(&self) -> bool {
-        if let Some(&last_hedge_id) = self.hedge_order_ids.last() {
+        if let Some(hedge_order_id) = self.hedge_order_id {
             let order = MonitorChannel::instance()
                 .order_manager()
                 .borrow()
-                .get(last_hedge_id);
+                .get(hedge_order_id);
             if let Some(order) = order {
                 return !order.status.is_terminal();
             }
         }
         false
+    }
+
+    fn is_hedge_order(&self, client_order_id: i64) -> bool {
+        self.hedge_order_id == Some(client_order_id)
     }
 
     /// 以市价单对冲
@@ -2012,7 +1993,7 @@ impl HedgeArbStrategy {
                 qv_decimal_or_fallback(self.cumulative_hedged_qty)
             );
             self.process_open_leg_trade(trade);
-        } else if self.hedge_order_ids.contains(&client_order_id) {
+        } else if self.is_hedge_order(client_order_id) {
             // 对冲侧成交，增加累计对冲量
             self.cumulative_hedged_qty = cumulative_base_qty;
             debug!(
@@ -2174,7 +2155,7 @@ impl HedgeArbStrategy {
             if incoming_cum_base_qty > self.cumulative_open_qty + 1e-12 {
                 self.cumulative_open_qty = incoming_cum_base_qty;
             }
-        } else if self.hedge_order_ids.contains(&client_order_id)
+        } else if self.is_hedge_order(client_order_id)
             && incoming_cum_base_qty > self.cumulative_hedged_qty + 1e-12
         {
             self.cumulative_hedged_qty = incoming_cum_base_qty;
@@ -2226,9 +2207,7 @@ impl HedgeArbStrategy {
                 self.process_open_leg_cancel(order_update);
             }
             if self.hedge_timeout_us.is_some()
-                && self
-                    .hedge_order_ids
-                    .contains(&order_update.client_order_id())
+                && self.is_hedge_order(order_update.client_order_id())
             {
                 self.process_hedge_leg_cancel(order_update);
             }
@@ -2261,10 +2240,7 @@ impl HedgeArbStrategy {
 
         // 检查并清理开仓订单
         if self.open_order_id != 0 {
-            if self
-                .keep_local_on_drop_order_ids
-                .contains(&self.open_order_id)
-            {
+            if take_keep_local_on_drop_order_id(self.open_order_id) {
                 debug!(
                     "HedgeArbStrategy: strategy_id={} keep open order local after arb orphan handoff client_order_id={}",
                     self.strategy_id, self.open_order_id
@@ -2277,21 +2253,21 @@ impl HedgeArbStrategy {
             }
         }
 
-        // 检查并清理对冲订单
-        for id in &self.hedge_order_ids {
-            if self.keep_local_on_drop_order_ids.contains(id) {
+        // 检查并清理当前对冲订单
+        if let Some(id) = self.hedge_order_id {
+            if take_keep_local_on_drop_order_id(id) {
                 debug!(
                     "HedgeArbStrategy: strategy_id={} keep hedge order local after arb orphan handoff client_order_id={}",
                     self.strategy_id, id
                 );
-                continue;
+                return;
             }
-            if let Some(order) = mgr.get(*id) {
+            if let Some(order) = mgr.get(id) {
                 if !order.status.is_terminal() {
                     mgr.log_order_details(&order, "对冲订单未达到终结状态被清理", self.strategy_id);
                 }
             }
-            let _ = mgr.remove(*id);
+            let _ = mgr.remove(id);
         }
     }
 
@@ -2312,7 +2288,7 @@ impl HedgeArbStrategy {
     fn classify_leg(&self, client_order_id: i64) -> Option<Leg> {
         if client_order_id == self.open_order_id {
             Some(Leg::Open)
-        } else if self.hedge_order_ids.contains(&client_order_id) {
+        } else if self.is_hedge_order(client_order_id) {
             Some(Leg::Hedge)
         } else {
             None
@@ -2453,7 +2429,9 @@ impl HedgeArbStrategy {
     fn cleanup_failed_hedge_order(&mut self, client_order_id: i64) {
         let order_mgr = MonitorChannel::instance().order_manager();
         let _ = order_mgr.borrow_mut().remove(client_order_id);
-        self.hedge_order_ids.retain(|&id| id != client_order_id);
+        if self.hedge_order_id == Some(client_order_id) {
+            self.hedge_order_id = None;
+        }
         self.hedge_expire_ts = None;
     }
 
@@ -2766,14 +2744,6 @@ impl Strategy for HedgeArbStrategy {
     }
 
     fn apply_query_engine_response(&mut self, _response: &dyn QueryEngineResponse) {}
-
-    fn drain_pending_arb_orphan_handoffs(&mut self) -> Vec<ArbOrphanHandoff> {
-        std::mem::take(&mut self.pending_arb_orphan_handoffs)
-    }
-
-    fn drain_pending_arb_orphan_residuals(&mut self) -> Vec<ArbOrphanResidualHandoff> {
-        std::mem::take(&mut self.pending_arb_orphan_residuals)
-    }
 
     fn handle_period_clock(&mut self, _current_tp: i64) {
         // 周期性检查开仓和对冲订单的超时情况

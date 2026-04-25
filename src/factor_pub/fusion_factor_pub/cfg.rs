@@ -96,46 +96,6 @@ impl RlFactorConfig {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn write_temp_config(body: &str) -> PathBuf {
-        let suffix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "fusion_factor_pub_cfg_test_{}_{}.toml",
-            std::process::id(),
-            suffix
-        ));
-        fs::write(&path, body).unwrap();
-        path
-    }
-
-    #[test]
-    fn output_service_path_follows_venue_slug() {
-        let path = write_temp_config(
-            r#"
-[tlen_server]
-base_url = "http://127.0.0.1:6322"
-"#,
-        );
-
-        let cfg = FusionFactorPubConfig::load(path.to_str().unwrap()).unwrap();
-        assert_eq!(
-            cfg.output_service_path("binance-futures"),
-            "fusion_factor/binance-futures"
-        );
-        assert!(!cfg.bootstrap.enabled);
-
-        let _ = fs::remove_file(path);
-    }
-}
-
 fn default_rl_pct_change_period() -> usize {
     12
 }

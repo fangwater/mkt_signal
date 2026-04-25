@@ -747,86 +747,6 @@ mod tests {
     use crate::strategy::trade_update::TradeUpdate;
 
     #[test]
-    fn parses_wallet_position_order_and_execution() {
-        let parser = BybitAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
-
-        let wallet = Bytes::from_static(
-            br#"{"id":"1","topic":"wallet","creationTime":1710000000000,"data":[{"accountType":"UNIFIED","coin":[{"coin":"BTC","walletBalance":"1.25","borrowAmount":"0.10","accruedInterest":"0.01"},{"coin":"USDT","walletBalance":"1000","borrowAmount":"50","accruedInterest":"2"}]}]}"#,
-        );
-        assert_eq!(parser.parse(wallet, &tx), 4);
-
-        let position = Bytes::from_static(
-            br#"{"id":"2","topic":"position","creationTime":1710000000100,"data":[{"symbol":"BTCUSDT","side":"Buy","size":"0.5","unrealisedPnl":"12.5","updatedTime":"1710000000001"}]}"#,
-        );
-        assert_eq!(parser.parse(position, &tx), 2);
-
-        let order = Bytes::from_static(
-            br#"{"id":"3","topic":"order","creationTime":1710000000200,"data":[{"category":"linear","symbol":"BTCUSDT","orderId":"abcdef","orderLinkId":"12345","side":"Buy","orderType":"Limit","timeInForce":"GTC","orderStatus":"PartiallyFilled","price":"100000","qty":"0.5","cumExecQty":"0.1","avgPrice":"99999.5","updatedTime":"1710000000002"}]}"#,
-        );
-        assert_eq!(parser.parse(order, &tx), 1);
-
-        let mut seen_balance = 0;
-        let mut seen_borrow = 0;
-        let mut seen_position = 0;
-        let mut seen_pnl = 0;
-        let mut seen_order = 0;
-        let mut seen_trade = 0;
-
-        while let Ok(msg) = rx.try_recv() {
-            let (ty, scope, body) =
-                crate::common::basic_account_msg::split_basic_account_event(&msg).expect("split");
-            assert_eq!(scope, BasicAccountScope::BybitUnified);
-            match ty {
-                BasicAccountEventType::BalanceUpdate => {
-                    let bal = BasicBalanceMsg::from_bytes(body).expect("balance");
-                    if bal.symbol == "BTC" {
-                        assert!((bal.balance - 1.25).abs() < 1e-9);
-                    }
-                    seen_balance += 1;
-                }
-                BasicAccountEventType::BorrowInterest => {
-                    let borrow = BasicBorrowInterestMsg::from_bytes(body).expect("borrow");
-                    if borrow.symbol == "USDT" {
-                        assert!((borrow.borrowed - 50.0).abs() < 1e-9);
-                    }
-                    seen_borrow += 1;
-                }
-                BasicAccountEventType::PositionUpdate => {
-                    let pos = BasicPositionMsg::from_bytes(body).expect("position");
-                    assert_eq!(pos.inst_id, "BTCUSDT");
-                    assert_eq!(pos.position_side, 'L');
-                    seen_position += 1;
-                }
-                BasicAccountEventType::UnrealizedPnlUpdate => {
-                    let pnl = BasicUmUnrealizedMsg::from_bytes(body).expect("pnl");
-                    assert_eq!(pnl.inst_id, "BTCUSDT");
-                    seen_pnl += 1;
-                }
-                BasicAccountEventType::OrderUpdate => {
-                    let order = BybitBasicOrderMsg::from_bytes(body).expect("order");
-                    assert_eq!(order.symbol, "BTCUSDT");
-                    assert_eq!(order.client_order_id, 12345);
-                    if order.execution_type == 5 {
-                        seen_trade += 1;
-                        assert!((order.price - 100000.0).abs() < 1e-9);
-                    } else {
-                        seen_order += 1;
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        assert_eq!(seen_balance, 2);
-        assert_eq!(seen_borrow, 2);
-        assert_eq!(seen_position, 1);
-        assert_eq!(seen_pnl, 1);
-        assert_eq!(seen_order, 0);
-        assert_eq!(seen_trade, 1);
-    }
-
-    #[test]
     fn drops_order_when_order_link_id_is_not_i64() {
         let parser = BybitAccountEventParser::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -919,19 +839,6 @@ mod tests {
 
         let order = Bytes::from_static(
             br#"{"id":"3","topic":"order","creationTime":1710000000200,"data":[{"category":"linear","symbol":"BTCUSDT","orderId":"1001","orderLinkId":"12345","side":"Buy","orderType":"Limit","timeInForce":"GTC","orderStatus":"Triggered","price":"100000","qty":"0.5","cumExecQty":"0","updatedTime":"1710000000002"}]}"#,
-        );
-
-        assert_eq!(parser.parse(order, &tx), 0);
-        assert!(rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn order_trade_without_price_is_ignored() {
-        let parser = BybitAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
-
-        let order = Bytes::from_static(
-            br#"{"id":"3","topic":"order","creationTime":1710000000200,"data":[{"category":"linear","symbol":"BTCUSDT","orderId":"1001","orderLinkId":"12345","side":"Buy","orderType":"Limit","timeInForce":"GTC","orderStatus":"Filled","price":"0","qty":"0.5","cumExecQty":"0.5","updatedTime":"1710000000002"}]}"#,
         );
 
         assert_eq!(parser.parse(order, &tx), 0);

@@ -16,6 +16,9 @@ use crate::signal::mm_signal::{
 };
 use crate::signal::open_signal::{ArbOpenCtx, MmOpenCtx};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
+use crate::strategy::arb_orphan_handoff_bus::{
+    drain_arb_orphan_handoffs, drain_arb_orphan_residuals,
+};
 use crate::strategy::hedge_arb_strategy::HedgeArbStrategy;
 use crate::strategy::mm_open_strategy::MarketMakerOpenStrategy;
 use crate::strategy::{ForceCloseControl, Strategy, StrategyManager};
@@ -367,7 +370,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                 let strategy_id = StrategyManager::generate_strategy_id();
                 let mut strategy = HedgeArbStrategy::new(strategy_id, symbol.clone());
                 strategy.handle_signal(&normalized_signal);
-                let arb_orphan_residuals = strategy.drain_pending_arb_orphan_residuals();
+                let arb_orphan_residuals = drain_arb_orphan_residuals();
                 if !arb_orphan_residuals.is_empty() {
                     MonitorChannel::instance()
                         .strategy_mgr()
@@ -538,7 +541,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                     strategy.set_force_close_mode(true);
 
                     strategy.handle_signal(&converted_signal);
-                    let arb_orphan_residuals = strategy.drain_pending_arb_orphan_residuals();
+                    let arb_orphan_residuals = drain_arb_orphan_residuals();
                     if !arb_orphan_residuals.is_empty() {
                         MonitorChannel::instance()
                             .strategy_mgr()
@@ -634,8 +637,8 @@ fn handle_trade_signal(signal: TradeSignal) {
                             }
                         }
                         strategy.handle_signal(&normalized_signal);
-                        let arb_orphan_handoffs = strategy.drain_pending_arb_orphan_handoffs();
-                        let arb_orphan_residuals = strategy.drain_pending_arb_orphan_residuals();
+                        let arb_orphan_handoffs = drain_arb_orphan_handoffs();
+                        let arb_orphan_residuals = drain_arb_orphan_residuals();
                         if strategy.is_active() {
                             strategy_mgr.borrow_mut().insert(strategy);
                         }
@@ -692,8 +695,8 @@ fn handle_trade_signal(signal: TradeSignal) {
                             }
                         }
                         strategy.handle_signal(&normalized_signal);
-                        let arb_orphan_handoffs = strategy.drain_pending_arb_orphan_handoffs();
-                        let arb_orphan_residuals = strategy.drain_pending_arb_orphan_residuals();
+                        let arb_orphan_handoffs = drain_arb_orphan_handoffs();
+                        let arb_orphan_residuals = drain_arb_orphan_residuals();
                         if strategy.is_active() {
                             strategy_mgr.borrow_mut().insert(strategy);
                         }
@@ -895,7 +898,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                 if let Some(mut strategy) = strategy_opt {
                     debug!("ArbHedge: 处理策略 id={}", strategy_id);
                     strategy.handle_signal(&normalized_signal);
-                    let arb_orphan_residuals = strategy.drain_pending_arb_orphan_residuals();
+                    let arb_orphan_residuals = drain_arb_orphan_residuals();
                     if strategy.is_active() {
                         strategy_mgr.borrow_mut().insert(strategy);
                     } else {

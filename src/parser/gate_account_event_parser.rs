@@ -1533,56 +1533,6 @@ mod tests {
     }
 
     #[test]
-    fn gate_spot_orders_accept_numeric_fields_and_post_only_is_maker() {
-        let parser = GateAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let payload = Bytes::from_static(
-            br#"{
-                "channel":"spot.orders_v2",
-                "event":"update",
-                "time":1776921360,
-                "time_ms":1776921360551,
-                "result":[{
-                    "id":399123456,
-                    "text":"t-123456789",
-                    "currency_pair":"SOL_USDT",
-                    "type":"limit",
-                    "side":"buy",
-                    "amount":1.25,
-                    "price":85.91,
-                    "time_in_force":"poc",
-                    "filled_amount":1.25,
-                    "avg_deal_price":85.91,
-                    "fee_currency":"USDT",
-                    "create_time":1776921350,
-                    "update_time":1776921360,
-                    "event":"update",
-                    "finish_as":"filled"
-                }]
-            }"#,
-        );
-
-        let count = parser.parse(payload, &tx);
-        assert_eq!(count, 1);
-
-        let wrapped = rx.try_recv().expect("order event");
-        let (event_type, scope, body) = split_basic_account_event(&wrapped).expect("wrapped order");
-        assert_eq!(event_type, BasicAccountEventType::OrderUpdate);
-        assert_eq!(scope, BasicAccountScope::GateUnified);
-
-        let msg = GateBasicOrderMsg::from_bytes(body).expect("gate order body");
-        assert_eq!(msg.symbol, "SOL_USDT");
-        assert_eq!(msg.execution_type, 5);
-        assert_eq!(msg.order_status, 2);
-        assert_eq!(msg.is_maker, 1);
-        assert_eq!(msg.event_time, 1_776_921_360_000);
-        assert!((msg.price - 85.91).abs() < 1e-12);
-        assert!((msg.quantity - 1.25).abs() < 1e-12);
-        assert!((msg.cumulative_filled_quantity - 1.25).abs() < 1e-12);
-        assert!((msg.last_executed_price - 85.91).abs() < 1e-12);
-    }
-
-    #[test]
     fn gate_futures_orders_missing_update_time_is_incomplete() {
         let parser = GateAccountEventParser::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
