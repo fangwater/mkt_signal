@@ -94,6 +94,14 @@ mod tests {
             Some("Order does not exist")
         );
         assert_eq!(
+            describe_trade_error_code(Exchange::Bitget, 43002),
+            Some("Order placement failed")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Bitget, 43003),
+            Some("Order placement failed")
+        );
+        assert_eq!(
             describe_trade_error_code(Exchange::Bitget, 43012),
             Some("Account balance insufficient")
         );
@@ -140,6 +148,10 @@ mod tests {
         assert_eq!(
             describe_trade_error_code(Exchange::Gate, gate::ORDER_NOT_FOUND),
             Some("Order not found")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Gate, gate::ORDER_POC),
+            Some("Post Only rejected")
         );
         assert_eq!(describe_trade_error_code(Exchange::Bitget, 999), None);
         assert_eq!(

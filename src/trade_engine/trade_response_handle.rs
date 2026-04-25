@@ -91,7 +91,7 @@ fn extract_msg(v: &Value) -> Option<String> {
     if let Some(s) = v
         .get("data")
         .and_then(|d| d.get("errs"))
-        .and_then(|e| e.get("message"))
+        .and_then(|e| e.get("label"))
         .and_then(|m| m.as_str())
     {
         if !s.is_empty() {
@@ -101,7 +101,7 @@ fn extract_msg(v: &Value) -> Option<String> {
     if let Some(s) = v
         .get("data")
         .and_then(|d| d.get("errs"))
-        .and_then(|e| e.get("label"))
+        .and_then(|e| e.get("message"))
         .and_then(|m| m.as_str())
     {
         if !s.is_empty() {
@@ -114,6 +114,11 @@ fn extract_msg(v: &Value) -> Option<String> {
         }
     }
     if let Some(s) = v.get("message").and_then(|m| m.as_str()) {
+        if !s.is_empty() {
+            return Some(s.to_string());
+        }
+    }
+    if let Some(s) = v.get("label").and_then(|m| m.as_str()) {
         if !s.is_empty() {
             return Some(s.to_string());
         }
@@ -157,6 +162,9 @@ fn normalize_trade_error(
         if let Some(m) = msg.as_deref() {
             if m.eq_ignore_ascii_case("ORDER_NOT_FOUND") {
                 return (gate::ORDER_NOT_FOUND, msg);
+            }
+            if m.eq_ignore_ascii_case("ORDER_POC") {
+                return (gate::ORDER_POC, msg);
             }
         }
     }
@@ -230,6 +238,15 @@ mod tests {
         let (code, msg) = normalize_trade_error(Exchange::Gate, code, msg);
         assert_eq!(code, gate::ORDER_NOT_FOUND);
         assert_eq!(msg.as_deref(), Some("ORDER_NOT_FOUND"));
+    }
+
+    #[test]
+    fn normalizes_gate_order_poc_from_label() {
+        let body = r#"{"header":{"status":400},"data":{"errs":{"label":"ORDER_POC","message":"poc order would be filled immediately"}}}"#;
+        let (code, msg) = parse_error_code_and_msg(body);
+        let (code, msg) = normalize_trade_error(Exchange::Gate, code, msg);
+        assert_eq!(code, gate::ORDER_POC);
+        assert_eq!(msg.as_deref(), Some("ORDER_POC"));
     }
 
     fn sample_outcome(req_type: TradeRequestType, exchange: Exchange) -> TradeExecOutcome {

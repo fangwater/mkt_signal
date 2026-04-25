@@ -1226,6 +1226,9 @@ fn classify_gate_futures_finish_as(status: &str, finish_as: &str) -> Option<(u8,
         ("finished", "position_close") => Some((2, 4)),
         ("finished", "stp") => Some((7, 4)),
         ("finished", "reduce_out") => Some((2, 4)),
+        // Gate POC/PostOnly 条件不满足时会以 finished+poc 推送，等价于未成交撤单；
+        // hedge arb 依赖这个 Canceled order update 触发撤单后重报。
+        ("finished", "poc") => Some((2, 4)),
         _ => None,
     }
 }
@@ -1239,7 +1242,7 @@ fn select_gate_futures_price_by_finish_as(
     let selected = match finish_as.as_str() {
         "_update" | "filled" | "ioc" => fill_price,
         "_new" | "cancelled" | "canceled" | "liquidated" | "auto_deleveraging" | "reduce_only"
-        | "position_close" | "stp" | "reduce_out" => order_price,
+        | "position_close" | "stp" | "reduce_out" | "poc" => order_price,
         _ => 0.0,
     };
 
@@ -1429,6 +1432,7 @@ mod tests {
             ("filled", "finished", 5_u8, 3_u8),
             ("ioc", "finished", 5_u8, 3_u8),
             ("cancelled", "finished", 2_u8, 4_u8),
+            ("poc", "finished", 2_u8, 4_u8),
         ];
 
         for (finish_as, status, exec, ord_status) in cases {

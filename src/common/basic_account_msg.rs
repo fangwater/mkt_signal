@@ -857,6 +857,7 @@ impl GateBasicOrderMsg {
     /// - _new：新建 (futures 特有)
     /// - _update：成交或部分成交 (futures 特有)
     /// - reduce_out: 只减仓被排除的不容易成交的挂单
+    /// - poc: POC/PostOnly 条件不满足，未挂上即取消
     pub fn event_to_execution_and_status(event: &str, finish_as: &str) -> (u8, u8) {
         let event_lower = event.to_lowercase();
         let finish_as_lower = finish_as.to_lowercase();
@@ -888,6 +889,7 @@ impl GateBasicOrderMsg {
                     "reduce_only" => (2, 4),            // 减仓设置取消
                     "position_close" => (2, 4),         // 平仓取消
                     "reduce_out" => (2, 4),             // 只减仓排除
+                    "poc" => (2, 4),                    // POC/PostOnly 条件不满足
                     "stp" => (7, 4),                    // TradePrevention, Canceled
 
                     // IOC/ADL 特殊完成

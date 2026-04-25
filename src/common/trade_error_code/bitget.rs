@@ -13,6 +13,8 @@ pub fn describe_trade_error_code(code: i32) -> Option<&'static str> {
         40911 => Some("Request timestamp expired"),
         40931 => Some("Duplicated clientOid"),
         43001 => Some("Order does not exist"),
+        43002 => Some("Order placement failed"),
+        43003 => Some("Order placement failed"),
         43004 => Some("No cancellable order"),
         43012 => Some("Account balance insufficient"),
         43118 => Some("Duplicated clientOrderId"),

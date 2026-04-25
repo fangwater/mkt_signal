@@ -3089,12 +3089,15 @@ impl HedgeArbStrategy {
         //1、post only rejected是正常的，因为盘口出现穿价是正常情况，再次报单即可
         let is_post_only_rejected = response.is_post_only_rejected();
         let is_price_limit_rejected = response.is_price_limit_rejected();
+        let is_order_placement_failed = response.is_order_placement_failed();
         let is_insufficient_margin = response.is_insufficient_margin();
 
         let reason = if is_post_only_rejected {
             "post_only"
         } else if is_price_limit_rejected {
             "price_limit"
+        } else if is_order_placement_failed {
+            "order_placement_failed"
         } else if is_insufficient_margin {
             "insufficient_margin"
         } else {

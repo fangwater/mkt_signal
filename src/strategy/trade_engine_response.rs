@@ -103,10 +103,17 @@ pub trait TradeEngineResponse {
     /// Notes:
     /// - Binance GTX: -5022
     /// - OKX post-only sCode: 51511
+    /// - Bybit 170217/170218 是 LIMIT-MAKER/PostOnly 类下单拒绝；如果交易所已接受后
+    ///   再异步取消，会走订单更新里的 Cancelled/rejectReason 路径。
+    /// - Gate 直接拒单时可能只返回 label=ORDER_POC；如果订单已进入订单流，则
+    ///   finish_as=poc 会被解析成 Canceled，走撤单后重报路径。
+    /// - Bitget post_only 穿价通常会先挂单成功再被交易所取消，应该看订单更新里的
+    ///   cancelReason=post_only_fill_cancel；这里不额外按下单失败 code 识别。
     fn is_post_only_rejected(&self) -> bool {
         match self.exchange_enum() {
             Some(Exchange::Binance) => self.error_code() == -5022,
             Some(Exchange::Okex) => self.error_code() == 51511,
+            Some(Exchange::Gate) => self.error_code() == gate::ORDER_POC,
             Some(Exchange::Bybit) => matches!(self.error_code(), 170217 | 170218),
             Some(Exchange::Bitget) => false,
             _ => false,
@@ -122,6 +129,16 @@ pub trait TradeEngineResponse {
                 self.error_code(),
                 40815 | 40816 | 22006 | 22007 | 22008 | 22009 | 22046 | 22047
             ),
+            _ => false,
+        }
+    }
+
+    /// Bitget generic order-placement failure. This is an open-fail bucket, not a cancel result.
+    fn is_order_placement_failed(&self) -> bool {
+        match self.exchange_enum() {
+            Some(Exchange::Bitget) => {
+                self.is_open_request() && matches!(self.error_code(), 43002 | 43003)
+            }
             _ => false,
         }
     }
@@ -310,6 +327,84 @@ mod tests {
         );
         assert!(okx_cancel.is_cancel_request());
         assert!(!okx_cancel.is_open_rejected());
+    }
+
+    #[test]
+    fn detects_bitget_order_placement_failed_as_open_fail() {
+        let bitget_ex = crate::common::exchange::Exchange::Bitget as u32;
+        for code in [43002, 43003] {
+            let resp = TradeEngineResponseMessage::new(
+                400,
+                TradeRequestType::BitgetNewUMOrder as u32,
+                bitget_ex,
+                123,
+                code,
+            );
+            assert!(resp.is_open_request());
+            assert!(resp.is_open_rejected());
+            assert!(resp.is_order_placement_failed());
+
+            let cancel_resp = TradeEngineResponseMessage::new(
+                400,
+                TradeRequestType::BitgetCancelUMOrder as u32,
+                bitget_ex,
+                123,
+                code,
+            );
+            assert!(cancel_resp.is_cancel_request());
+            assert!(!cancel_resp.is_order_placement_failed());
+        }
+    }
+
+    #[test]
+    fn detects_bybit_post_only_rejected_by_venue_and_code() {
+        let bybit_ex = crate::common::exchange::Exchange::Bybit as u32;
+        for code in [170217, 170218] {
+            let resp = TradeEngineResponseMessage::new(
+                400,
+                TradeRequestType::BybitNewUMOrder as u32,
+                bybit_ex,
+                123,
+                code,
+            );
+            assert!(resp.is_open_request());
+            assert!(resp.is_open_rejected());
+            assert!(resp.is_post_only_rejected());
+            assert!(resp.is_aggressive_price_rejected());
+        }
+
+        let same_code_on_bitget = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::BitgetNewUMOrder as u32,
+            crate::common::exchange::Exchange::Bitget as u32,
+            123,
+            170217,
+        );
+        assert!(!same_code_on_bitget.is_post_only_rejected());
+    }
+
+    #[test]
+    fn detects_gate_post_only_rejected_by_venue_and_synthetic_code() {
+        let resp = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::GateFuturesNewOrder as u32,
+            crate::common::exchange::Exchange::Gate as u32,
+            123,
+            gate::ORDER_POC,
+        );
+        assert!(resp.is_open_request());
+        assert!(resp.is_open_rejected());
+        assert!(resp.is_post_only_rejected());
+        assert!(resp.is_aggressive_price_rejected());
+
+        let same_code_on_bitget = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::BitgetNewUMOrder as u32,
+            crate::common::exchange::Exchange::Bitget as u32,
+            123,
+            gate::ORDER_POC,
+        );
+        assert!(!same_code_on_bitget.is_post_only_rejected());
     }
 }
 
