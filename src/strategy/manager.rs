@@ -3,15 +3,10 @@ use crate::common::tick_math::QuantizedValue;
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::Side;
-use crate::signal::common::{ExecutionType, TradingVenue};
+use crate::signal::common::TradingVenue;
 use crate::signal::trade_signal::TradeSignal;
-use crate::strategy::arb_orphan_handoff_bus::{
-    drain_arb_orphan_handoffs, drain_arb_orphan_residuals,
-};
-use crate::strategy::arb_orphan_strategy::{ArbOrphanLeg, ArbOrphanSnapshot, ArbOrphanStrategy};
+use crate::strategy::arb_orphan_strategy::ArbOrphanLeg;
 use crate::strategy::mm_hedge_strategy::{MarketMakerHedgeStrategy, MmHedgeSnapshot};
-use crate::strategy::mm_open_strategy::MarketMakerOpenStrategy;
-use crate::strategy::mm_orphan_order_strategy::MmOrphanOrderStrategy;
 use crate::strategy::query_engine_response::QueryEngineResponse;
 use crate::strategy::uniform_arb_publish::ArbUniformPublishCtx;
 use crate::strategy::uniform_mm_publish::MmUniformPublishCtx;
@@ -143,6 +138,12 @@ pub trait Strategy: ForceCloseControl {
     fn adopt_order_id(&mut self, _handoff: &MmOrphanHandoff) -> bool {
         false
     }
+    fn adopt_arb_orphan_order_id(&mut self, _handoff: &ArbOrphanHandoff) -> bool {
+        false
+    }
+    fn adopt_arb_orphan_residual(&mut self, _residual: &ArbOrphanResidualHandoff) -> bool {
+        false
+    }
     fn handle_period_clock(&mut self, current_tp: i64);
     fn is_active(&self) -> bool;
     fn symbol(&self) -> Option<&str>;
@@ -174,10 +175,7 @@ pub struct ArbOrphanHandoff {
     pub client_order_id: i64,
     pub source_strategy_id: i32,
     pub leg: ArbOrphanLeg,
-    pub cancel_intent: bool,
-    pub max_query_attempts: Option<u8>,
     pub uniform_ctx: Option<ArbOrphanUniformCtx>,
-    pub reason: String,
 }
 
 pub type ArbOrphanUniformCtx = ArbUniformPublishCtx;
@@ -188,7 +186,6 @@ pub struct ArbOrphanResidualHandoff {
     pub venue: TradingVenue,
     pub signed_base_qty: f64,
     pub source_strategy_id: i32,
-    pub reason: String,
 }
 
 /// Strategy id -> Strategy 映射的简单管理器
@@ -578,235 +575,6 @@ impl StrategyManager {
         strategy_id
     }
 
-    pub fn find_mm_orphan_id(&self, symbol: &str) -> Option<i32> {
-        let symbol = normalize_symbol_for_internal(symbol);
-        let ids = self.symbol_index.get(&symbol)?;
-        for id in ids {
-            if let Some(strategy) = self.strategies.get(id) {
-                if strategy.as_any().is::<MmOrphanOrderStrategy>() {
-                    return Some(*id);
-                }
-            }
-        }
-        None
-    }
-
-    pub fn find_arb_orphan_id(&self, symbol: &str) -> Option<i32> {
-        let symbol = normalize_symbol_for_internal(symbol);
-        let ids = self.symbol_index.get(&symbol)?;
-        for id in ids {
-            if let Some(strategy) = self.strategies.get(id) {
-                if strategy.as_any().is::<ArbOrphanStrategy>() {
-                    return Some(*id);
-                }
-            }
-        }
-        None
-    }
-
-    pub fn ensure_arb_orphan_strategy(&mut self, symbol: &str) -> i32 {
-        let symbol = normalize_symbol_for_internal(symbol);
-        if let Some(strategy_id) = self.find_arb_orphan_id(&symbol) {
-            return strategy_id;
-        }
-        let strategy_id = StrategyManager::generate_strategy_id();
-        self.insert(Box::new(ArbOrphanStrategy::new(
-            strategy_id,
-            symbol.clone(),
-        )));
-        strategy_id
-    }
-
-    pub fn ensure_mm_orphan_strategy(&mut self, symbol: &str) -> i32 {
-        let symbol = normalize_symbol_for_internal(symbol);
-        if let Some(strategy_id) = self.find_mm_orphan_id(&symbol) {
-            return strategy_id;
-        }
-        let strategy_id = StrategyManager::generate_strategy_id();
-        self.insert(Box::new(MmOrphanOrderStrategy::new(
-            strategy_id,
-            symbol.clone(),
-        )));
-        strategy_id
-    }
-
-    fn is_mm_orphan_order_update_candidate(update: &dyn OrderUpdate) -> bool {
-        let monitor = MonitorChannel::instance();
-        let venue = update.trading_venue();
-        (venue == monitor.open_venue() || venue == monitor.hedge_venue())
-            && update.client_order_id() > 0
-            && !matches!(update.execution_type(), ExecutionType::Trade)
-    }
-
-    fn is_mm_orphan_trade_update_candidate(trade: &dyn TradeUpdate) -> bool {
-        let monitor = MonitorChannel::instance();
-        let venue = trade.trading_venue();
-        (venue == monitor.open_venue() || venue == monitor.hedge_venue())
-            && trade.client_order_id() > 0
-    }
-
-    pub fn apply_mm_orphan_order_update(&mut self, update: &dyn OrderUpdate) -> bool {
-        if !Self::is_mm_orphan_order_update_candidate(update) {
-            return false;
-        }
-        let Some(strategy_id) = self.find_mm_orphan_id(update.symbol()) else {
-            return false;
-        };
-        let Some(strategy) = self.strategies.get_mut(&strategy_id) else {
-            return false;
-        };
-        if !strategy.is_strategy_order(update.client_order_id()) {
-            return false;
-        }
-        strategy.apply_order_update(update);
-        true
-    }
-
-    pub fn apply_mm_orphan_trade_update(&mut self, trade: &dyn TradeUpdate) -> bool {
-        if !Self::is_mm_orphan_trade_update_candidate(trade) {
-            return false;
-        }
-        let Some(strategy_id) = self.find_mm_orphan_id(trade.symbol()) else {
-            return false;
-        };
-        let Some(strategy) = self.strategies.get_mut(&strategy_id) else {
-            return false;
-        };
-        if !strategy.is_strategy_order(trade.client_order_id()) {
-            return false;
-        }
-        strategy.apply_trade_update(trade);
-        true
-    }
-
-    pub fn apply_arb_orphan_order_update(&mut self, update: &dyn OrderUpdate) -> bool {
-        if update.client_order_id() <= 0 {
-            return false;
-        }
-        let Some(strategy_id) = self.find_arb_orphan_id(update.symbol()) else {
-            return false;
-        };
-        let Some(strategy) = self.strategies.get_mut(&strategy_id) else {
-            return false;
-        };
-        if !strategy.is_strategy_order(update.client_order_id()) {
-            return false;
-        }
-        strategy.apply_order_update(update);
-        true
-    }
-
-    pub fn apply_arb_orphan_trade_update(&mut self, trade: &dyn TradeUpdate) -> bool {
-        if trade.client_order_id() <= 0 {
-            return false;
-        }
-        let Some(strategy_id) = self.find_arb_orphan_id(trade.symbol()) else {
-            return false;
-        };
-        let Some(strategy) = self.strategies.get_mut(&strategy_id) else {
-            return false;
-        };
-        if !strategy.is_strategy_order(trade.client_order_id()) {
-            return false;
-        }
-        strategy.apply_trade_update(trade);
-        true
-    }
-
-    fn adopt_mm_orphan_handoffs(&mut self, handoffs: Vec<MmOrphanHandoff>) {
-        for handoff in handoffs {
-            let adopted = self.adopt_mm_orphan_order_id(&handoff);
-            info!(
-                "MM orphan handoff: client_order_id={} source_strategy_id={} source_kind={:?} reason={} adopted={}",
-                handoff.client_order_id,
-                handoff.source_strategy_id,
-                handoff.source_kind,
-                handoff.reason,
-                adopted
-            );
-        }
-    }
-
-    fn adopt_arb_orphan_handoffs(&mut self, handoffs: Vec<ArbOrphanHandoff>) {
-        for handoff in handoffs {
-            let adopted = self.adopt_arb_orphan_order_id(&handoff);
-            info!(
-                "ARB orphan handoff: client_order_id={} source_strategy_id={} leg={:?} cancel_intent={} reason={} adopted={}",
-                handoff.client_order_id,
-                handoff.source_strategy_id,
-                handoff.leg,
-                handoff.cancel_intent,
-                handoff.reason,
-                adopted
-            );
-        }
-    }
-
-    pub fn adopt_arb_orphan_residuals(&mut self, residuals: Vec<ArbOrphanResidualHandoff>) {
-        for residual in residuals {
-            if residual.signed_base_qty.abs() <= 1e-12 {
-                continue;
-            }
-            let strategy_id = self.ensure_arb_orphan_strategy(&residual.symbol);
-            let Some(strategy) = self.strategies.get_mut(&strategy_id) else {
-                continue;
-            };
-            let Some(arb_orphan) = strategy.as_any_mut().downcast_mut::<ArbOrphanStrategy>() else {
-                continue;
-            };
-            arb_orphan.add_hedge_residual_base_qty(
-                residual.venue,
-                &residual.symbol,
-                residual.signed_base_qty,
-                &residual.reason,
-            );
-            info!(
-                "ARB orphan residual handoff: symbol={} venue={:?} signed_base_qty={:.8} source_strategy_id={} reason={} adopted_strategy_id={}",
-                residual.symbol,
-                residual.venue,
-                residual.signed_base_qty,
-                residual.source_strategy_id,
-                residual.reason,
-                strategy_id
-            );
-        }
-    }
-
-    pub fn adopt_arb_orphan_order_id(&mut self, handoff: &ArbOrphanHandoff) -> bool {
-        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
-            return false;
-        };
-        let Some(order) = order_mgr.borrow().get(handoff.client_order_id) else {
-            return false;
-        };
-        let symbol = order.symbol.clone();
-        drop(order);
-        let strategy_id = self.ensure_arb_orphan_strategy(&symbol);
-        let Some(strategy) = self.strategies.get_mut(&strategy_id) else {
-            return false;
-        };
-        let Some(arb_orphan) = strategy.as_any_mut().downcast_mut::<ArbOrphanStrategy>() else {
-            return false;
-        };
-        arb_orphan.adopt_order_id(handoff)
-    }
-
-    pub fn adopt_mm_orphan_order_id(&mut self, handoff: &MmOrphanHandoff) -> bool {
-        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
-            return false;
-        };
-        let Some(order) = order_mgr.borrow().get(handoff.client_order_id) else {
-            return false;
-        };
-        let symbol = order.symbol.clone();
-        drop(order);
-        let strategy_id = self.ensure_mm_orphan_strategy(&symbol);
-        let Some(strategy) = self.strategies.get_mut(&strategy_id) else {
-            return false;
-        };
-        strategy.adopt_order_id(handoff)
-    }
-
     /// 记录 MM 开仓成交，累加到对应 symbol 的对冲策略
     pub fn record_mm_hedge_fill(
         &mut self,
@@ -845,16 +613,6 @@ impl StrategyManager {
         snapshots
     }
 
-    pub fn arb_orphan_snapshots(&self) -> Vec<ArbOrphanSnapshot> {
-        let mut snapshots = Vec::new();
-        for strategy in self.strategies.values() {
-            if let Some(arb_orphan) = strategy.as_any().downcast_ref::<ArbOrphanStrategy>() {
-                snapshots.push(arb_orphan.snapshot());
-            }
-        }
-        snapshots
-    }
-
     /// 触发全部策略的周期检查，返回本次检查到的策略数量
     pub fn handle_period_clock(&mut self, current_tp: i64) -> usize {
         let iterations = self.strategy_queue.len();
@@ -865,32 +623,11 @@ impl StrategyManager {
             };
 
             let mut remove = true;
-            let mut mm_orphan_handoffs = Vec::new();
-            let mut arb_orphan_handoffs = Vec::new();
-            let mut arb_orphan_residuals = Vec::new();
             if let Some(strategy) = self.strategies.get_mut(&strategy_id) {
                 inspected += 1;
                 strategy.handle_period_clock(current_tp);
-                arb_orphan_handoffs.extend(drain_arb_orphan_handoffs());
-                arb_orphan_residuals.extend(drain_arb_orphan_residuals());
-                if let Some(mm_hedge) = strategy
-                    .as_any_mut()
-                    .downcast_mut::<MarketMakerHedgeStrategy>()
-                {
-                    mm_orphan_handoffs.extend(mm_hedge.drain_pending_mm_orphan_handoffs());
-                }
-                if let Some(mm_open) = strategy
-                    .as_any_mut()
-                    .downcast_mut::<MarketMakerOpenStrategy>()
-                {
-                    mm_orphan_handoffs.extend(mm_open.drain_pending_mm_orphan_handoffs());
-                }
                 remove = !strategy.is_active();
             }
-
-            self.adopt_mm_orphan_handoffs(mm_orphan_handoffs);
-            self.adopt_arb_orphan_handoffs(arb_orphan_handoffs);
-            self.adopt_arb_orphan_residuals(arb_orphan_residuals);
 
             if remove {
                 let _ = self.remove(strategy_id);
@@ -906,29 +643,9 @@ impl StrategyManager {
         strategy_id: i32,
         response: &dyn QueryEngineResponse,
     ) {
-        let mut mm_orphan_handoffs = Vec::new();
-        let mut arb_orphan_handoffs = Vec::new();
-        let mut arb_orphan_residuals = Vec::new();
         if let Some(strategy) = self.strategies.get_mut(&strategy_id) {
             strategy.apply_query_engine_response(response);
-            arb_orphan_handoffs.extend(drain_arb_orphan_handoffs());
-            arb_orphan_residuals.extend(drain_arb_orphan_residuals());
-            if let Some(mm_hedge) = strategy
-                .as_any_mut()
-                .downcast_mut::<MarketMakerHedgeStrategy>()
-            {
-                mm_orphan_handoffs.extend(mm_hedge.drain_pending_mm_orphan_handoffs());
-            }
-            if let Some(mm_open) = strategy
-                .as_any_mut()
-                .downcast_mut::<MarketMakerOpenStrategy>()
-            {
-                mm_orphan_handoffs.extend(mm_open.drain_pending_mm_orphan_handoffs());
-            }
         }
-        self.adopt_mm_orphan_handoffs(mm_orphan_handoffs);
-        self.adopt_arb_orphan_handoffs(arb_orphan_handoffs);
-        self.adopt_arb_orphan_residuals(arb_orphan_residuals);
     }
 
     /// 基于当前时间戳生成策略 ID
@@ -951,7 +668,6 @@ mod tests {
     };
     use crate::common::tick_math::QuantizedValue;
     use crate::pre_trade::order_manager::Side;
-    use crate::signal::common::ExecutionType;
     use crate::signal::trade_signal::TradeSignal;
     use crate::strategy::query_engine_response::QueryEngineResponse;
     use crate::strategy::trade_engine_response::TradeEngineResponse;

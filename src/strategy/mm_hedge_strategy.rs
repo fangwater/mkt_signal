@@ -119,7 +119,6 @@ pub struct MarketMakerHedgeStrategy {
     hedge_plan: Vec<HedgePlanOrder>,
     hedge_order_meta: HashMap<i64, HedgeOrderMeta>,
     hedge_order_ids: HashSet<i64>,
-    pending_mm_orphan_handoffs: Vec<MmOrphanHandoff>,
     hedge_request_seq: u64,
     pending_hedge_request_seq: Option<u64>,
     alive_flag: bool,
@@ -204,7 +203,6 @@ impl MarketMakerHedgeStrategy {
             hedge_plan: Vec::new(),
             hedge_order_meta: HashMap::new(),
             hedge_order_ids: HashSet::new(),
-            pending_mm_orphan_handoffs: Vec::new(),
             hedge_request_seq: 0,
             pending_hedge_request_seq: None,
             alive_flag: true,
@@ -1205,7 +1203,7 @@ impl MarketMakerHedgeStrategy {
         }
     }
 
-    fn handoff_hedge_order_to_mm_orphan(&mut self, client_order_id: i64, reason: &str) {
+    fn handoff_hedge_order_to_mm_orphan(&mut self, client_order_id: i64, reason: &str) -> bool {
         warn!(
             "MMHedgeReconcile: strategy_id={} orphan_handoff_start reason={} {}",
             self.strategy_id,
@@ -1213,23 +1211,35 @@ impl MarketMakerHedgeStrategy {
             self.hedge_order_trace_snapshot(client_order_id)
         );
 
-        self.pending_mm_orphan_handoffs.push(MmOrphanHandoff {
+        let handoff = MmOrphanHandoff {
             client_order_id,
             source_strategy_id: self.strategy_id,
             source_kind: MmOrphanSourceKind::Hedge,
             uniform_ctx: self.uniform_hedge_publish_ctx(client_order_id),
             reason: reason.to_string(),
-        });
+        };
+        let Some(orphan_mgr) = MonitorChannel::try_orphan_strategy_mgr() else {
+            warn!(
+                "MarketMakerHedgeStrategy: strategy_id={} orphan manager unavailable client_order_id={} reason={}",
+                self.strategy_id, client_order_id, reason
+            );
+            return false;
+        };
+        let adopted = orphan_mgr.borrow_mut().adopt_mm_orphan_order_id(&handoff);
+        if !adopted {
+            warn!(
+                "MarketMakerHedgeStrategy: strategy_id={} mm orphan handoff rejected client_order_id={} reason={}",
+                self.strategy_id, client_order_id, reason
+            );
+            return false;
+        }
         self.release_hedge_order_keep_local(client_order_id, "mm_orphan_handoff");
 
         warn!(
-            "MarketMakerHedgeStrategy: strategy_id={} handoff hedge order to mm orphan queued: client_order_id={} reason={}",
+            "MarketMakerHedgeStrategy: strategy_id={} handoff hedge order to mm orphan adopted: client_order_id={} reason={}",
             self.strategy_id, client_order_id, reason
         );
-    }
-
-    pub fn drain_pending_mm_orphan_handoffs(&mut self) -> Vec<MmOrphanHandoff> {
-        std::mem::take(&mut self.pending_mm_orphan_handoffs)
+        true
     }
 
     fn handle_order_query_watchdogs(&mut self) {

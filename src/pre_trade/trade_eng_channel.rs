@@ -14,9 +14,6 @@ use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::OrderType;
 use crate::pre_trade::PersistChannel;
 use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
-use crate::strategy::arb_orphan_handoff_bus::{
-    drain_arb_orphan_handoffs, drain_arb_orphan_residuals,
-};
 use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
 use crate::strategy::trade_engine_response::{
     TradeEngineResponse, TradeEngineResponseMessage, TradeRequestKind,
@@ -345,8 +342,6 @@ fn dispatch_trade_engine_response(response: &TradeEngineResponseMessage) {
     let order_id = response.client_order_id();
     let strategy_ids: Vec<i32> = strategy_mgr.borrow().iter_ids().cloned().collect();
     let mut matched = false;
-    let mut arb_orphan_handoffs = Vec::new();
-    let mut arb_orphan_residuals = Vec::new();
 
     for strategy_id in strategy_ids {
         let strategy_opt = {
@@ -358,35 +353,11 @@ fn dispatch_trade_engine_response(response: &TradeEngineResponseMessage) {
             if strategy.is_strategy_order(order_id) {
                 matched = true;
                 strategy.apply_trade_engine_response(response);
-                arb_orphan_handoffs.extend(drain_arb_orphan_handoffs());
-                arb_orphan_residuals.extend(drain_arb_orphan_residuals());
             }
             if strategy.is_active() {
                 strategy_mgr.borrow_mut().insert(strategy);
             }
         }
-    }
-
-    if !arb_orphan_handoffs.is_empty() {
-        let mut mgr = strategy_mgr.borrow_mut();
-        for handoff in arb_orphan_handoffs {
-            let adopted = mgr.adopt_arb_orphan_order_id(&handoff);
-            info!(
-                "tradeEngineResponse arb orphan handoff: client_order_id={} source_strategy_id={} leg={:?} cancel_intent={} reason={} adopted={}",
-                handoff.client_order_id,
-                handoff.source_strategy_id,
-                handoff.leg,
-                handoff.cancel_intent,
-                handoff.reason,
-                adopted
-            );
-        }
-    }
-
-    if !arb_orphan_residuals.is_empty() {
-        strategy_mgr
-            .borrow_mut()
-            .adopt_arb_orphan_residuals(arb_orphan_residuals);
     }
 
     if !matched {

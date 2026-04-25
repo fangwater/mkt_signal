@@ -13,15 +13,9 @@ use crate::signal::common::{align_price_floor, OrderStatus, SignalBytes, Trading
 use crate::signal::hedge_signal::ArbHedgeCtx;
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
-use crate::strategy::arb_orphan_handoff_bus::{
-    queue_arb_orphan_handoff as queue_global_arb_orphan_handoff,
-    queue_arb_orphan_residual as queue_global_arb_orphan_residual,
-    take_keep_local_on_drop_order_id,
-};
 use crate::strategy::arb_orphan_strategy::ArbOrphanLeg;
 use crate::strategy::manager::{
-    ArbOpenPriceMapEntry, ArbOrphanHandoff, ArbOrphanResidualHandoff, ArbOrphanUniformCtx,
-    ForceCloseControl, Strategy,
+    ArbOpenPriceMapEntry, ArbOrphanHandoff, ArbOrphanResidualHandoff, ForceCloseControl, Strategy,
 };
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::query_engine_response::QueryEngineResponse;
@@ -102,132 +96,138 @@ struct QueryWatchdog {
 }
 
 impl HedgeArbStrategy {
-    fn mark_inactive(&mut self) {
-        self.alive_flag = false;
-    }
-
-    pub fn open_side(&self) -> Side {
-        if self.hedge_side == Side::Buy {
-            Side::Sell
-        } else {
-            Side::Buy
-        }
-    }
-
-    fn queue_arb_orphan_handoff(
-        &mut self,
-        client_order_id: i64,
-        leg: ArbOrphanLeg,
-        cancel_intent: bool,
-        max_query_attempts: Option<u8>,
-        reason: impl Into<String>,
-    ) {
-        // Strategy 层负责补齐来源、leg、uniform publish 上下文；全局 bus 只负责暂存和移交保护。
-        if client_order_id <= 0 {
-            return;
-        }
-        let reason = reason.into();
-        let uniform_ctx = match leg {
-            ArbOrphanLeg::Open => Some(ArbOrphanUniformCtx {
+    fn uniform_publish_ctx_for_leg(&self, leg: Leg) -> ArbUniformPublishCtx {
+        match leg {
+            Leg::Open => ArbUniformPublishCtx {
                 signal_ts: self.open_signal_ts,
-                from_key: format!("open|{}", self.open_from_key).into_bytes(),
+                from_key: self.open_from_key.clone().into_bytes(),
                 price_offset: self.open_price_offset,
-            }),
-            ArbOrphanLeg::Hedge => None,
-        };
-        let queued = queue_global_arb_orphan_handoff(ArbOrphanHandoff {
+            },
+            Leg::Hedge => ArbUniformPublishCtx {
+                signal_ts: self.hedge_signal_ts,
+                from_key: self.hedge_from_key.clone().into_bytes(),
+                price_offset: self.hedge_price_offset,
+            },
+        }
+    }
+
+    // 将订单移交给 arb orphan 策略，后续 cancel/query 收敛完全由 orphan 自行决定。
+    fn handoff_order_to_arb_orphan(&mut self, client_order_id: i64, leg: ArbOrphanLeg) -> bool {
+        // 订单ID无效时不进行移交
+        if client_order_id <= 0 {
+            return false;
+        }
+        let uniform_ctx = Some(match leg {
+            ArbOrphanLeg::Open => self.uniform_publish_ctx_for_leg(Leg::Open),
+            ArbOrphanLeg::Hedge => self.uniform_publish_ctx_for_leg(Leg::Hedge),
+        });
+        let handoff = ArbOrphanHandoff {
             client_order_id,
             source_strategy_id: self.strategy_id,
             leg,
-            cancel_intent,
-            max_query_attempts,
             uniform_ctx,
-            reason: reason.clone(),
-        });
-        if !queued {
-            return;
+        };
+        let Some(orphan_mgr) = MonitorChannel::try_orphan_strategy_mgr() else {
+            warn!(
+                "HedgeArbStrategy: strategy_id={} arb orphan manager unavailable client_order_id={} leg={:?}",
+                self.strategy_id, client_order_id, leg
+            );
+            return false;
+        };
+        let adopted = orphan_mgr.borrow_mut().adopt_arb_orphan_order_id(&handoff);
+        if !adopted {
+            warn!(
+                "HedgeArbStrategy: strategy_id={} arb orphan handoff rejected client_order_id={} leg={:?}",
+                self.strategy_id, client_order_id, leg
+            );
+            return false;
+        }
+        match leg {
+            ArbOrphanLeg::Open if self.open_order_id == client_order_id => {
+                self.clear_query_watchdogs(client_order_id);
+                self.open_order_id = 0;
+            }
+            ArbOrphanLeg::Hedge if self.hedge_order_id == Some(client_order_id) => {
+                self.clear_query_watchdogs(client_order_id);
+                self.hedge_order_id = None;
+            }
+            _ => {}
         }
         info!(
-            "HedgeArbStrategy: strategy_id={} handoff order to arb orphan client_order_id={} leg={:?} cancel_intent={} max_query_attempts={:?} reason={}",
+            "HedgeArbStrategy: strategy_id={} handoff order to arb orphan adopted client_order_id={} leg={:?}",
             self.strategy_id,
             client_order_id,
-            leg,
-            cancel_intent,
-            max_query_attempts,
-            reason
+            leg
         );
+        true
     }
 
-    fn queue_arb_orphan_residual(&mut self, side: Side, base_qty: f64, reason: impl Into<String>) {
+    fn handoff_arb_orphan_residual(&mut self, side: Side, base_qty: f64) -> bool {
         if base_qty <= HEDGE_RESIDUAL_EPS || self.hedge_symbol.is_empty() {
-            return;
+            return false;
         }
-        let reason = reason.into();
         let signed_base_qty = match side {
             // 卖出对冲说明开仓侧是正 base exposure，残值按正数累计。
             Side::Sell => base_qty,
             // 买入对冲说明开仓侧是负 base exposure，残值按负数累计。
             Side::Buy => -base_qty,
         };
-        queue_global_arb_orphan_residual(ArbOrphanResidualHandoff {
+        let residual = ArbOrphanResidualHandoff {
             symbol: self.hedge_symbol.clone(),
             venue: self.hedge_venue,
             signed_base_qty,
             source_strategy_id: self.strategy_id,
-            reason: reason.clone(),
-        });
+        };
+        let Some(orphan_mgr) = MonitorChannel::try_orphan_strategy_mgr() else {
+            warn!(
+                "HedgeArbStrategy: strategy_id={} arb orphan manager unavailable for residual symbol={}",
+                self.strategy_id, self.hedge_symbol
+            );
+            return false;
+        };
+        let adopted = orphan_mgr.borrow_mut().adopt_arb_orphan_residual(&residual);
+        if !adopted {
+            warn!(
+                "HedgeArbStrategy: strategy_id={} arb orphan residual rejected symbol={}",
+                self.strategy_id, self.hedge_symbol
+            );
+            return false;
+        }
         info!(
-            "HedgeArbStrategy: strategy_id={} queue arb orphan residual symbol={} venue={:?} side={:?} base_qty={:.8} signed_base_qty={:.8} reason={}",
+            "HedgeArbStrategy: strategy_id={} handoff arb orphan residual symbol={} venue={:?} side={:?} base_qty={:.8} signed_base_qty={:.8}",
             self.strategy_id,
             self.hedge_symbol,
             self.hedge_venue,
             side,
             base_qty,
-            signed_base_qty,
-            reason
+            signed_base_qty
         );
+        true
     }
 
-    fn handoff_open_order_to_arb_orphan(
-        &mut self,
-        cancel_intent: bool,
-        max_query_attempts: Option<u8>,
-        reason: impl Into<String>,
-    ) {
-        self.queue_arb_orphan_handoff(
-            self.open_order_id,
-            ArbOrphanLeg::Open,
-            cancel_intent,
-            max_query_attempts,
-            reason,
-        );
-    }
-
-    fn handoff_hedge_order_to_arb_orphan(
-        &mut self,
-        client_order_id: i64,
-        cancel_intent: bool,
-        max_query_attempts: Option<u8>,
-        reason: impl Into<String>,
-    ) {
-        let reason = reason.into();
-        if self.open_order_id > 0 {
-            self.queue_arb_orphan_handoff(
-                self.open_order_id,
-                ArbOrphanLeg::Open,
-                false,
-                None,
-                format!("paired_hedge_orphan:{}", reason),
-            );
+    fn handoff_open_order_to_arb_orphan(&mut self) -> bool {
+        let adopted = self.handoff_order_to_arb_orphan(self.open_order_id, ArbOrphanLeg::Open);
+        if adopted {
+            self.alive_flag = false;
         }
-        self.queue_arb_orphan_handoff(
-            client_order_id,
-            ArbOrphanLeg::Hedge,
-            cancel_intent,
-            max_query_attempts,
-            reason,
-        );
-        self.alive_flag = false;
+        adopted
+    }
+
+    fn handoff_hedge_order_to_arb_orphan(&mut self, client_order_id: i64) -> bool {
+        if self.open_order_id > 0 {
+            info!(
+                "HedgeArbStrategy: strategy_id={} paired open order handoff before hedge orphan handoff open_client_order_id={} hedge_client_order_id={}",
+                self.strategy_id,
+                self.open_order_id,
+                client_order_id
+            );
+            let _ = self.handoff_order_to_arb_orphan(self.open_order_id, ArbOrphanLeg::Open);
+        }
+        let adopted = self.handoff_order_to_arb_orphan(client_order_id, ArbOrphanLeg::Hedge);
+        if adopted {
+            self.alive_flag = false;
+        }
+        adopted
     }
 
     pub fn new(id: i32, symbol: String) -> Self {
@@ -309,7 +309,16 @@ impl HedgeArbStrategy {
         side: Side,
     ) {
         let added = if qty > HEDGE_RESIDUAL_EPS {
-            self.queue_arb_orphan_residual(side, qty, reason);
+            info!(
+                "HedgeArbStrategy: strategy_id={} handoff arb orphan residual due to hedge reject reason={} hedge_symbol={} side={:?} qty={:.8} price={:.8}",
+                self.strategy_id,
+                reason,
+                self.hedge_symbol,
+                side,
+                qty,
+                price
+            );
+            let _ = self.handoff_arb_orphan_residual(side, qty);
             qty
         } else {
             0.0
@@ -376,7 +385,7 @@ impl HedgeArbStrategy {
                 order_type,
                 aligned_price
             );
-            self.mark_inactive();
+            self.alive_flag = false;
             return;
         }
         if force_close {
@@ -402,7 +411,7 @@ impl HedgeArbStrategy {
             self.log_force_close_skip("单品种敞口", &ctx);
         } else if let Err(e) = MonitorChannel::instance().check_symbol_exposure(&self.open_symbol) {
             error!("HedgeArbStrategy: strategy_id={} symbol={} 单品种敞口风控检查失败: {}，标记策略为不活跃", self.strategy_id, self.open_symbol, e);
-            self.mark_inactive();
+            self.alive_flag = false;
             return;
         }
 
@@ -414,7 +423,7 @@ impl HedgeArbStrategy {
                 "HedgeArbStrategy: strategy_id={} 总敞口风控检查失败: {}，标记策略为不活跃",
                 self.strategy_id, e
             );
-            self.mark_inactive();
+            self.alive_flag = false;
             return;
         }
 
@@ -425,7 +434,7 @@ impl HedgeArbStrategy {
                 MonitorChannel::instance().check_pending_limit_order(&self.open_symbol, side)
             {
                 error!("HedgeArbStrategy: strategy_id={} symbol={} 限价挂单数量风控检查失败: {}，标记策略为不活跃", self.strategy_id, self.open_symbol, e);
-                self.mark_inactive();
+                self.alive_flag = false;
                 return;
             }
         }
@@ -488,7 +497,7 @@ impl HedgeArbStrategy {
                 "HedgeArbStrategy: strategy_id={} 开仓信号量价无效 qty={:.8} price={:.8}，标记策略为不活跃",
                 self.strategy_id, aligned_qty, aligned_price
             );
-            self.mark_inactive();
+            self.alive_flag = false;
             return;
         }
 
@@ -512,7 +521,7 @@ impl HedgeArbStrategy {
                 "HedgeArbStrategy: strategy_id={} 初始化数量乘数失败: {}",
                 self.strategy_id, err
             );
-            self.mark_inactive();
+            self.alive_flag = false;
             return;
         }
 
@@ -547,7 +556,7 @@ impl HedgeArbStrategy {
                         available_balance
                     );
                 }
-                self.mark_inactive();
+                self.alive_flag = false;
                 return;
             }
         }
@@ -567,7 +576,7 @@ impl HedgeArbStrategy {
                         "HedgeArbStrategy: strategy_id={} 杠杆风控检查失败: {}，标记策略为不活跃",
                         self.strategy_id, e
                     );
-                    self.mark_inactive();
+                    self.alive_flag = false;
                     return;
                 }
             }
@@ -583,7 +592,7 @@ impl HedgeArbStrategy {
                 "HedgeArbStrategy: strategy_id={} 仓位限制检查失败: {}，标记策略为不活跃",
                 self.strategy_id, e
             );
-            self.mark_inactive();
+            self.alive_flag = false;
             return;
         }
 
@@ -941,11 +950,7 @@ impl HedgeArbStrategy {
                             order_type_str,
                             e
                         );
-                        if order_type_str == "开仓" {
-                            self.mark_inactive();
-                        } else {
-                            self.alive_flag = false;
-                        }
+                        self.alive_flag = false;
                         return Err(format!("推送{}订单失败: {}", order_type_str, e));
                     }
                     self.schedule_order_query_watchdog(client_order_id);
@@ -959,11 +964,7 @@ impl HedgeArbStrategy {
                         order_type_str,
                         e
                     );
-                    if order_type_str == "开仓" {
-                        self.mark_inactive();
-                    } else {
-                        self.alive_flag = false;
-                    }
+                    self.alive_flag = false;
                     Err(format!("获取{}订单请求字节失败: {}", order_type_str, e))
                 }
             }
@@ -972,11 +973,7 @@ impl HedgeArbStrategy {
                 "HedgeArbStrategy: strategy_id={} symbol={} 未找到创建的{}订单 client_order_id={}",
                 self.strategy_id, symbol, order_type_str, client_order_id
             );
-            if order_type_str == "开仓" {
-                self.mark_inactive();
-            } else {
-                self.alive_flag = false;
-            }
+            self.alive_flag = false;
             Err(format!("未找到创建的{}订单", order_type_str))
         }
     }
@@ -1017,12 +1014,13 @@ impl HedgeArbStrategy {
             return Err(format!("未找到要撤销的订单"));
         }
         self.last_cancel_trigger_ts = Some(ctx.trigger_ts);
-        self.handoff_open_order_to_arb_orphan(
-            true,
-            None,
-            format!("arb_cancel:{}", ctx.get_reason().as_log_reason()),
+        info!(
+            "HedgeArbStrategy: strategy_id={} handoff open order to arb orphan after ArbCancel order_id={} cancel_reason={}",
+            self.strategy_id,
+            self.open_order_id,
+            ctx.get_reason().as_log_reason()
         );
-        self.alive_flag = false;
+        let _ = self.handoff_open_order_to_arb_orphan();
         Ok(())
     }
 
@@ -1101,8 +1099,7 @@ impl HedgeArbStrategy {
                 );
                 self.last_open_cancel_reason = Some("timeout");
                 self.open_expire_ts = None;
-                self.handoff_open_order_to_arb_orphan(true, None, "open_timeout");
-                self.alive_flag = false;
+                let _ = self.handoff_open_order_to_arb_orphan();
             }
         }
     }
@@ -1343,20 +1340,22 @@ impl HedgeArbStrategy {
                     );
                     if leg == Some(Leg::Open) {
                         drop(order_opt);
-                        self.handoff_open_order_to_arb_orphan(
-                            true,
-                            None,
-                            format!("open_cancel_watchdog:{:?}", w.reason),
+                        info!(
+                            "HedgeArbStrategy: strategy_id={} handoff open order to arb orphan after cancel watchdog order_id={} watchdog_reason={:?}",
+                            self.strategy_id,
+                            w.client_order_id,
+                            w.reason
                         );
-                        self.alive_flag = false;
+                        let _ = self.handoff_open_order_to_arb_orphan();
                     } else {
                         drop(order_opt);
-                        self.handoff_hedge_order_to_arb_orphan(
+                        info!(
+                            "HedgeArbStrategy: strategy_id={} handoff hedge order to arb orphan after cancel watchdog order_id={} watchdog_reason={:?}",
+                            self.strategy_id,
                             w.client_order_id,
-                            true,
-                            None,
-                            format!("hedge_cancel_watchdog:{:?}", w.reason),
+                            w.reason
                         );
+                        let _ = self.handoff_hedge_order_to_arb_orphan(w.client_order_id);
                     }
                 }
             }
@@ -1393,20 +1392,20 @@ impl HedgeArbStrategy {
                     );
                     if leg == Some(Leg::Open) {
                         drop(order_opt);
-                        self.handoff_open_order_to_arb_orphan(
-                            true,
-                            Some(2),
-                            "open_order_watchdog_no_response",
+                        info!(
+                            "HedgeArbStrategy: strategy_id={} handoff open order to arb orphan after order watchdog no response order_id={}",
+                            self.strategy_id,
+                            w.client_order_id
                         );
-                        self.alive_flag = false;
+                        let _ = self.handoff_open_order_to_arb_orphan();
                     } else {
                         drop(order_opt);
-                        self.handoff_hedge_order_to_arb_orphan(
-                            w.client_order_id,
-                            true,
-                            Some(2),
-                            "hedge_order_watchdog_no_response",
+                        info!(
+                            "HedgeArbStrategy: strategy_id={} handoff hedge order to arb orphan after order watchdog no response order_id={}",
+                            self.strategy_id,
+                            w.client_order_id
                         );
+                        let _ = self.handoff_hedge_order_to_arb_orphan(w.client_order_id);
                     }
                 }
             }
@@ -1525,11 +1524,14 @@ impl HedgeArbStrategy {
             // 不满足最小交易要求，交给 arb orphan 的 QV residual 累积。
             if base_qty > 1e-12 {
                 let reason = min_req_reason.as_deref().unwrap_or("unknown");
-                self.queue_arb_orphan_residual(
-                    self.hedge_side,
+                info!(
+                    "HedgeArbStrategy: strategy_id={} handoff arb orphan residual because hedge min requirement failed hedge_symbol={} qty={:.8} reason={}",
+                    self.strategy_id,
+                    self.hedge_symbol,
                     base_qty,
-                    format!("hedge min requirement failed: {}", reason),
+                    reason
                 );
+                let _ = self.handoff_arb_orphan_residual(self.hedge_side, base_qty);
                 info!(
                     "HedgeArbStrategy: strategy_id={} 待对冲量={:.8} 不满足最小交易要求，转交 arb orphan residual reason={}",
                     self.strategy_id, base_qty, reason
@@ -1577,11 +1579,13 @@ impl HedgeArbStrategy {
                 );
                 // 对冲失败，将数量交给 arb orphan residual。
                 if base_qty > 1e-12 {
-                    self.queue_arb_orphan_residual(
-                        self.hedge_side,
-                        base_qty,
-                        "hedge submit failed",
+                    warn!(
+                        "HedgeArbStrategy: strategy_id={} handoff arb orphan residual because hedge submit failed hedge_symbol={} qty={:.8}",
+                        self.strategy_id,
+                        self.hedge_symbol,
+                        base_qty
                     );
+                    let _ = self.handoff_arb_orphan_residual(self.hedge_side, base_qty);
                     (false, 0.0, base_qty)
                 } else {
                     (false, 0.0, 0.0)
@@ -2153,18 +2157,7 @@ impl HedgeArbStrategy {
 
     fn uniform_publish_ctx(&self, order: &Order) -> Option<ArbUniformPublishCtx> {
         let leg = self.classify_leg(order.client_order_id)?;
-        match leg {
-            Leg::Open => Some(ArbUniformPublishCtx {
-                signal_ts: self.open_signal_ts,
-                from_key: format!("open|{}", self.open_from_key).into_bytes(),
-                price_offset: self.open_price_offset,
-            }),
-            Leg::Hedge => Some(ArbUniformPublishCtx {
-                signal_ts: self.hedge_signal_ts,
-                from_key: format!("hedge|{}", self.hedge_from_key).into_bytes(),
-                price_offset: self.hedge_price_offset,
-            }),
-        }
+        Some(self.uniform_publish_ctx_for_leg(leg))
     }
 
     fn cleanup_strategy_orders(&mut self) {
@@ -2175,12 +2168,7 @@ impl HedgeArbStrategy {
 
         // 检查并清理开仓订单
         if self.open_order_id != 0 {
-            if take_keep_local_on_drop_order_id(self.open_order_id) {
-                debug!(
-                    "HedgeArbStrategy: strategy_id={} keep open order local after arb orphan handoff client_order_id={}",
-                    self.strategy_id, self.open_order_id
-                );
-            } else if let Some(order) = mgr.get(self.open_order_id) {
+            if let Some(order) = mgr.get(self.open_order_id) {
                 if !order.status.is_terminal() {
                     mgr.log_order_details(&order, "开仓订单未达到终结状态被清理", self.strategy_id);
                 }
@@ -2190,13 +2178,6 @@ impl HedgeArbStrategy {
 
         // 检查并清理当前对冲订单
         if let Some(id) = self.hedge_order_id {
-            if take_keep_local_on_drop_order_id(id) {
-                debug!(
-                    "HedgeArbStrategy: strategy_id={} keep hedge order local after arb orphan handoff client_order_id={}",
-                    self.strategy_id, id
-                );
-                return;
-            }
             if let Some(order) = mgr.get(id) {
                 if !order.status.is_terminal() {
                     mgr.log_order_details(&order, "对冲订单未达到终结状态被清理", self.strategy_id);
@@ -2327,21 +2308,17 @@ impl HedgeArbStrategy {
             client_order_id
         );
         self.clear_query_watchdogs(client_order_id);
-        self.queue_arb_orphan_handoff(
+        warn!(
+            "HedgeArbStrategy: strategy_id={} handoff open order to arb orphan after cancel failed client_order_id={} req_type={} status={} code={}({}) not_cancellable={}",
+            self.strategy_id,
             client_order_id,
-            ArbOrphanLeg::Open,
-            true,
-            None,
-            format!(
-                "open_cancel_failed req_type={} status={} code={}({}) not_cancellable={}",
-                response.req_type(),
-                response.status(),
-                response.error_code(),
-                code_desc,
-                response.is_cancel_not_cancellable()
-            ),
+            response.req_type(),
+            response.status(),
+            response.error_code(),
+            code_desc,
+            response.is_cancel_not_cancellable()
         );
-        self.alive_flag = false;
+        let _ = self.handoff_open_order_to_arb_orphan();
     }
 
     fn handle_open_leg_other_failed(
@@ -2504,19 +2481,17 @@ impl HedgeArbStrategy {
             client_order_id
         );
         self.clear_query_watchdogs(client_order_id);
-        self.handoff_hedge_order_to_arb_orphan(
+        warn!(
+            "HedgeArbStrategy: strategy_id={} handoff hedge order to arb orphan after cancel failed client_order_id={} req_type={} status={} code={}({}) not_cancellable={}",
+            self.strategy_id,
             client_order_id,
-            true,
-            None,
-            format!(
-                "hedge_cancel_failed req_type={} status={} code={}({}) not_cancellable={}",
-                response.req_type(),
-                response.status(),
-                response.error_code(),
-                code_desc,
-                response.is_cancel_not_cancellable()
-            ),
+            response.req_type(),
+            response.status(),
+            response.error_code(),
+            code_desc,
+            response.is_cancel_not_cancellable()
         );
+        let _ = self.handoff_hedge_order_to_arb_orphan(client_order_id);
     }
 
     fn handle_hedge_leg_other_failed(

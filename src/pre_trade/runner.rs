@@ -48,6 +48,7 @@ impl PreTrade {
                 _ = ticker.tick() => {
                     let now = get_timestamp_us();
                     MonitorChannel::instance().strategy_mgr().borrow_mut().handle_period_clock(now);
+                    MonitorChannel::instance().orphan_strategy_mgr().borrow_mut().handle_period_clock(now);
                     let instant_now = std::time::Instant::now();
 
                     // 发布重采样数据

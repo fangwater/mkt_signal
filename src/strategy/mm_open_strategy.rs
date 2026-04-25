@@ -132,7 +132,6 @@ pub struct MarketMakerOpenStrategy {
     alive_flag: bool,
     recorded_to_hedge: bool,
     pending_order_query: Option<PendingOrderQueryReason>,
-    pending_mm_orphan_handoffs: Vec<MmOrphanHandoff>,
     order_query_watchdog: Option<QueryWatchdog>,
     cancel_query_watchdog: Option<QueryWatchdog>,
     last_cancel_trigger_ts: Option<i64>,
@@ -177,7 +176,6 @@ impl MarketMakerOpenStrategy {
             alive_flag: true,
             recorded_to_hedge: false,
             pending_order_query: None,
-            pending_mm_orphan_handoffs: Vec::new(),
             order_query_watchdog: None,
             cancel_query_watchdog: None,
             last_cancel_trigger_ts: None,
@@ -260,28 +258,40 @@ impl MarketMakerOpenStrategy {
         );
     }
 
-    fn handoff_open_order_to_mm_orphan(&mut self, client_order_id: i64, reason: &str) {
+    fn handoff_open_order_to_mm_orphan(&mut self, client_order_id: i64, reason: &str) -> bool {
         if client_order_id <= 0 {
             self.alive_flag = false;
-            return;
+            return false;
         }
         warn!(
             "MarketMakerOpenStrategy: strategy_id={} orphan_handoff_start client_order_id={} reason={}",
             self.strategy_id, client_order_id, reason
         );
-        self.pending_mm_orphan_handoffs.push(MmOrphanHandoff {
+        let handoff = MmOrphanHandoff {
             client_order_id,
             source_strategy_id: self.strategy_id,
             source_kind: MmOrphanSourceKind::Open,
             uniform_ctx: self.uniform_open_publish_ctx(),
             reason: reason.to_string(),
-        });
+        };
+        let Some(orphan_mgr) = MonitorChannel::try_orphan_strategy_mgr() else {
+            warn!(
+                "MarketMakerOpenStrategy: strategy_id={} orphan manager unavailable client_order_id={} reason={}",
+                self.strategy_id, client_order_id, reason
+            );
+            return false;
+        };
+        let adopted = orphan_mgr.borrow_mut().adopt_mm_orphan_order_id(&handoff);
+        if !adopted {
+            warn!(
+                "MarketMakerOpenStrategy: strategy_id={} mm orphan handoff rejected client_order_id={} reason={}",
+                self.strategy_id, client_order_id, reason
+            );
+            return false;
+        }
         self.release_open_order_keep_local(client_order_id, reason);
         self.alive_flag = false;
-    }
-
-    pub fn drain_pending_mm_orphan_handoffs(&mut self) -> Vec<MmOrphanHandoff> {
-        std::mem::take(&mut self.pending_mm_orphan_handoffs)
+        true
     }
 
     fn cleanup_strategy_orders(&mut self) {

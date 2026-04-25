@@ -175,9 +175,9 @@ use crate::pre_trade::order_manager::OrderManager;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::signal::common::{align_price_ceil, align_price_floor};
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
-use crate::strategy::arb_orphan_handoff_bus::drain_arb_orphan_residuals;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
+use crate::strategy::OrphanStrategyManager;
 use bytes::Bytes;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -239,6 +239,8 @@ struct MonitorChannelInner {
     venue_min_qty_tables: HashMap<TradingVenue, Rc<VenueMinQtyTable>>,
     /// 策略管理器
     strategy_mgr: Rc<RefCell<crate::strategy::StrategyManager>>,
+    /// orphan 策略管理器（统一承载 mm orphan / arb orphan）
+    orphan_strategy_mgr: Rc<RefCell<OrphanStrategyManager>>,
     /// 订单管理器，所有订单维护在其中，完全成交或者撤单会被移除
     order_manager: Rc<RefCell<OrderManager>>,
     /// Monotonic counter incremented when a TradeUpdate is received.
@@ -570,6 +572,14 @@ impl MonitorChannel {
         Self::try_with_inner(|inner| inner.strategy_mgr.clone())
     }
 
+    pub fn orphan_strategy_mgr(&self) -> Rc<RefCell<OrphanStrategyManager>> {
+        Self::with_inner(|inner| inner.orphan_strategy_mgr.clone())
+    }
+
+    pub fn try_orphan_strategy_mgr() -> Option<Rc<RefCell<OrphanStrategyManager>>> {
+        Self::try_with_inner(|inner| inner.orphan_strategy_mgr.clone())
+    }
+
     /// 获取开仓腿的基础余额管理器（margin/spot）
     pub fn open_balance_mgr(&self) -> Option<Rc<RefCell<BasicBalanceManager>>> {
         Self::with_inner(|inner| inner.open_leg.as_balance_mgr())
@@ -774,6 +784,7 @@ impl MonitorChannel {
             price_table,
             venue_min_qty_tables,
             strategy_mgr,
+            orphan_strategy_mgr: Rc::new(RefCell::new(OrphanStrategyManager::new())),
             order_manager: Rc::new(RefCell::new(OrderManager::new(binance_account_mode))),
             trade_update_seq: 0,
         };
@@ -2205,7 +2216,6 @@ fn dispatch_order_update_generic<T>(
     let order_id = OrderUpdate::client_order_id(&normalized_update);
     let strategy_ids: Vec<i32> = strategy_mgr.borrow().iter_ids().cloned().collect();
     let mut matched = false;
-    let mut arb_orphan_residuals = Vec::new();
 
     for strategy_id in strategy_ids {
         let strategy_opt = {
@@ -2243,7 +2253,6 @@ fn dispatch_order_update_generic<T>(
                         );
                     }
                 }
-                arb_orphan_residuals.extend(drain_arb_orphan_residuals());
             }
             if strategy.is_active() {
                 strategy_mgr.borrow_mut().insert(strategy);
@@ -2251,24 +2260,19 @@ fn dispatch_order_update_generic<T>(
         }
     }
 
-    if !arb_orphan_residuals.is_empty() {
-        strategy_mgr
-            .borrow_mut()
-            .adopt_arb_orphan_residuals(arb_orphan_residuals);
-    }
-
     if !matched {
-        let adopted_by_mm_orphan = if normalized_update.execution_type() == ExecutionType::Trade {
-            strategy_mgr
+        let orphan_strategy_mgr = MonitorChannel::instance().orphan_strategy_mgr();
+        let adopted_by_orphan = if normalized_update.execution_type() == ExecutionType::Trade {
+            orphan_strategy_mgr
                 .borrow_mut()
-                .apply_mm_orphan_trade_update(&normalized_update)
+                .apply_trade_update(&normalized_update)
         } else {
-            strategy_mgr
+            orphan_strategy_mgr
                 .borrow_mut()
-                .apply_mm_orphan_order_update(&normalized_update)
+                .apply_order_update(&normalized_update)
         };
 
-        if !adopted_by_mm_orphan {
+        if !adopted_by_orphan {
             PersistChannel::with(|ch| {
                 if normalized_update.execution_type() == ExecutionType::Trade {
                     ch.publish_trade_update_unmatched(&normalized_update);
@@ -2278,13 +2282,13 @@ fn dispatch_order_update_generic<T>(
             });
         }
         debug!(
-            "order update unmatched: sym={} cli_id={} ord_id={} x={:?} X={:?} mm_orphan_adopted={}",
+            "order update unmatched: sym={} cli_id={} ord_id={} x={:?} X={:?} orphan_adopted={}",
             OrderUpdate::symbol(&normalized_update),
             OrderUpdate::client_order_id(&normalized_update),
             OrderUpdate::order_id(&normalized_update),
             normalized_update.execution_type(),
             normalized_update.status(),
-            adopted_by_mm_orphan
+            adopted_by_orphan
         );
     }
 }
@@ -2430,6 +2434,7 @@ mod tests {
             price_table: Rc::new(RefCell::new(PriceTable::new())),
             venue_min_qty_tables,
             strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
+            orphan_strategy_mgr: Rc::new(RefCell::new(OrphanStrategyManager::new())),
             order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
                 BinanceAccountMode::Unified,
             )))),
@@ -2476,6 +2481,7 @@ mod tests {
             price_table: Rc::new(RefCell::new(price_table)),
             venue_min_qty_tables,
             strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
+            orphan_strategy_mgr: Rc::new(RefCell::new(OrphanStrategyManager::new())),
             order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
                 BinanceAccountMode::Unified,
             )))),
@@ -2522,6 +2528,7 @@ mod tests {
             price_table: Rc::new(RefCell::new(price_table)),
             venue_min_qty_tables,
             strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
+            orphan_strategy_mgr: Rc::new(RefCell::new(OrphanStrategyManager::new())),
             order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
                 BinanceAccountMode::Unified,
             )))),
@@ -2567,6 +2574,7 @@ mod tests {
             price_table: Rc::new(RefCell::new(price_table)),
             venue_min_qty_tables: HashMap::new(),
             strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
+            orphan_strategy_mgr: Rc::new(RefCell::new(OrphanStrategyManager::new())),
             order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
                 BinanceAccountMode::Unified,
             )))),
@@ -2642,6 +2650,7 @@ mod tests {
             price_table: Rc::new(RefCell::new(price_table)),
             venue_min_qty_tables: HashMap::new(),
             strategy_mgr: strategy_mgr.clone(),
+            orphan_strategy_mgr: Rc::new(RefCell::new(OrphanStrategyManager::new())),
             order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
                 BinanceAccountMode::Unified,
             )))),

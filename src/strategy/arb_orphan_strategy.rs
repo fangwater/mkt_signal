@@ -8,7 +8,7 @@ use crate::signal::common::TradingVenue;
 use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce};
 use crate::signal::trade_signal::TradeSignal;
 use crate::strategy::manager::{
-    ArbOrphanHandoff, ArbOrphanUniformCtx, ForceCloseControl, Strategy,
+    ArbOrphanHandoff, ArbOrphanResidualHandoff, ArbOrphanUniformCtx, ForceCloseControl, Strategy,
 };
 use crate::strategy::net_qty_queue::NetQtyQueue;
 use crate::strategy::order_query_builder::build_order_query_request;
@@ -32,6 +32,7 @@ use std::collections::HashMap;
 const ARB_ORPHAN_EPS: f64 = 1e-12;
 const ARB_ORPHAN_QUERY_BASE_TICKS: u32 = 25;
 const ARB_ORPHAN_QUERY_MAX_TICKS: u32 = 3_200;
+const ARB_ORPHAN_COMMIT_QUERY_MAX_ATTEMPTS: u8 = 2;
 const ARB_ORPHAN_DEFAULT_HEDGE_RESIDUAL_LOWER_USDT: f64 = 0.0;
 const ARB_ORPHAN_DEFAULT_HEDGE_RESIDUAL_UPPER_USDT: f64 = f64::INFINITY;
 
@@ -57,10 +58,8 @@ pub struct ArbOrphanStrategy {
     symbol: String,
     active: bool,
     order_legs: HashMap<i64, ArbOrphanLeg>,
-    cancel_intents: HashMap<i64, bool>,
     query_states: HashMap<i64, ArbOrphanQueryState>,
     pending_query_targets: HashMap<i64, i64>,
-    max_query_attempts: HashMap<i64, u8>,
     uniform_contexts: HashMap<i64, ArbOrphanUniformCtx>,
     query_seq: u32,
     net_qty_queue: NetQtyQueue,
@@ -95,10 +94,8 @@ impl ArbOrphanStrategy {
             symbol: normalize_symbol_for_internal(&symbol.into()),
             active: true,
             order_legs: HashMap::new(),
-            cancel_intents: HashMap::new(),
             query_states: HashMap::new(),
             pending_query_targets: HashMap::new(),
-            max_query_attempts: HashMap::new(),
             uniform_contexts: HashMap::new(),
             query_seq: 0,
             net_qty_queue: NetQtyQueue::new(),
@@ -123,6 +120,17 @@ impl ArbOrphanStrategy {
         ARB_ORPHAN_QUERY_BASE_TICKS
             .saturating_mul(multiplier)
             .min(ARB_ORPHAN_QUERY_MAX_TICKS)
+    }
+
+    fn should_cancel_order(status: OrderExecutionStatus) -> bool {
+        !status.is_terminal() && status != OrderExecutionStatus::Commit
+    }
+
+    fn query_max_attempts_for_status(status: OrderExecutionStatus) -> Option<u8> {
+        match status {
+            OrderExecutionStatus::Commit => Some(ARB_ORPHAN_COMMIT_QUERY_MAX_ATTEMPTS),
+            _ => None,
+        }
     }
 
     fn ensure_query_state(&mut self, client_order_id: i64) {
@@ -158,29 +166,19 @@ impl ArbOrphanStrategy {
         drop(order);
 
         self.order_legs.insert(handoff.client_order_id, handoff.leg);
-        self.cancel_intents
-            .insert(handoff.client_order_id, handoff.cancel_intent);
         self.ensure_query_state(handoff.client_order_id);
-        if let Some(max_attempts) = handoff.max_query_attempts {
-            self.max_query_attempts
-                .insert(handoff.client_order_id, max_attempts);
-        }
-        if handoff.leg == ArbOrphanLeg::Open {
-            if let Some(ctx) = handoff.uniform_ctx.clone() {
-                self.uniform_contexts.insert(handoff.client_order_id, ctx);
-            }
+        if let Some(ctx) = handoff.uniform_ctx.clone() {
+            self.uniform_contexts.insert(handoff.client_order_id, ctx);
         }
         info!(
-            "ArbOrphanStrategy: strategy_role=arb_orphan strategy_id={} adopted order symbol={} client_order_id={} venue={:?} status={:?} leg={:?} cancel_intent={} source_strategy_id={} reason={}",
+            "ArbOrphanStrategy: strategy_role=arb_orphan strategy_id={} adopted order symbol={} client_order_id={} venue={:?} status={:?} leg={:?} source_strategy_id={}",
             self.strategy_id,
             symbol,
             handoff.client_order_id,
             venue,
             status,
             handoff.leg,
-            handoff.cancel_intent,
-            handoff.source_strategy_id,
-            handoff.reason
+            handoff.source_strategy_id
         );
         true
     }
@@ -506,9 +504,7 @@ impl ArbOrphanStrategy {
     fn forget_order_id(&mut self, client_order_id: i64, reason: &str) -> bool {
         let removed = self.order_legs.remove(&client_order_id).is_some();
         if removed {
-            self.cancel_intents.remove(&client_order_id);
             self.query_states.remove(&client_order_id);
-            self.max_query_attempts.remove(&client_order_id);
             self.uniform_contexts.remove(&client_order_id);
             self.pending_query_targets
                 .retain(|_, tracked_order_id| *tracked_order_id != client_order_id);
@@ -709,21 +705,13 @@ impl ArbOrphanStrategy {
     }
 
     fn request_cancel_for_order(&mut self, client_order_id: i64, reason: &str) -> bool {
-        if !self
-            .cancel_intents
-            .get(&client_order_id)
-            .copied()
-            .unwrap_or(false)
-        {
-            return false;
-        }
         let Some(order_mgr) = MonitorChannel::try_order_manager() else {
             return false;
         };
         let Some(order) = order_mgr.borrow().get(client_order_id) else {
             return false;
         };
-        if order.status.is_terminal() || order.status == OrderExecutionStatus::Commit {
+        if !Self::should_cancel_order(order.status) {
             return false;
         }
         let exchange = order.venue.trade_engine_exchange();
@@ -877,19 +865,29 @@ impl ArbOrphanStrategy {
     }
 
     fn handle_query_not_found_or_error(&mut self, client_order_id: i64, marker: &str) {
-        if let Some(max_attempts) = self.max_query_attempts.get(&client_order_id).copied() {
-            let attempts = self
-                .query_states
-                .get(&client_order_id)
-                .map(|state| state.query_count)
-                .unwrap_or(0);
-            if attempts >= max_attempts {
-                warn!(
-                    "ArbOrphanStrategy: strategy_role=arb_orphan strategy_id={} query {} reached max attempts {}, drop unconfirmed order client_order_id={}",
-                    self.strategy_id, marker, max_attempts, client_order_id
-                );
-                self.drop_unconfirmed_order(client_order_id, "unconfirmed query max attempts");
-            }
+        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
+            return;
+        };
+        let Some(order) = order_mgr.borrow().get(client_order_id) else {
+            self.forget_order_id(client_order_id, "query marker missing local order");
+            return;
+        };
+        let status = order.status;
+        drop(order);
+        let Some(max_attempts) = Self::query_max_attempts_for_status(status) else {
+            return;
+        };
+        let attempts = self
+            .query_states
+            .get(&client_order_id)
+            .map(|state| state.query_count)
+            .unwrap_or(0);
+        if attempts >= max_attempts {
+            warn!(
+                "ArbOrphanStrategy: strategy_role=arb_orphan strategy_id={} query {} reached max attempts {} for status={:?}, drop unconfirmed order client_order_id={}",
+                self.strategy_id, marker, max_attempts, status, client_order_id
+            );
+            self.drop_unconfirmed_order(client_order_id, "unconfirmed query max attempts");
         }
     }
 }
@@ -920,6 +918,31 @@ impl Strategy for ArbOrphanStrategy {
     }
 
     fn handle_signal(&mut self, _signal: &TradeSignal) {}
+
+    fn adopt_arb_orphan_order_id(&mut self, handoff: &ArbOrphanHandoff) -> bool {
+        self.adopt_order_id(handoff)
+    }
+
+    fn adopt_arb_orphan_residual(&mut self, residual: &ArbOrphanResidualHandoff) -> bool {
+        if residual.signed_base_qty.abs() <= ARB_ORPHAN_EPS {
+            return false;
+        }
+        self.add_hedge_residual_base_qty(
+            residual.venue,
+            &residual.symbol,
+            residual.signed_base_qty,
+            "handoff",
+        );
+        info!(
+            "ARB orphan residual handoff: symbol={} venue={:?} signed_base_qty={:.8} source_strategy_id={} adopted_strategy_id={}",
+            residual.symbol,
+            residual.venue,
+            residual.signed_base_qty,
+            residual.source_strategy_id,
+            self.strategy_id
+        );
+        true
+    }
 
     fn apply_order_update(&mut self, update: &dyn OrderUpdate) {
         if normalize_symbol_for_internal(update.symbol()) != self.symbol {
@@ -1101,7 +1124,7 @@ impl Strategy for ArbOrphanStrategy {
                 );
                 continue;
             }
-            let should_cancel = order.status != OrderExecutionStatus::Commit;
+            let should_cancel = Self::should_cancel_order(order.status);
             drop(order);
             if should_cancel {
                 self.request_cancel_for_order(client_order_id, "period clock");
@@ -1127,5 +1150,40 @@ impl Strategy for ArbOrphanStrategy {
 
     fn symbol(&self) -> Option<&str> {
         Some(&self.symbol)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ArbOrphanStrategy;
+    use crate::pre_trade::order_manager::OrderExecutionStatus;
+
+    #[test]
+    fn query_attempt_limit_depends_on_commit_status() {
+        assert_eq!(
+            ArbOrphanStrategy::query_max_attempts_for_status(OrderExecutionStatus::Commit),
+            Some(2)
+        );
+        assert_eq!(
+            ArbOrphanStrategy::query_max_attempts_for_status(OrderExecutionStatus::Create),
+            None
+        );
+        assert_eq!(
+            ArbOrphanStrategy::query_max_attempts_for_status(OrderExecutionStatus::Rejected),
+            None
+        );
+    }
+
+    #[test]
+    fn cancel_policy_is_owned_by_orphan_from_local_status() {
+        assert!(!ArbOrphanStrategy::should_cancel_order(
+            OrderExecutionStatus::Commit
+        ));
+        assert!(ArbOrphanStrategy::should_cancel_order(
+            OrderExecutionStatus::Create
+        ));
+        assert!(!ArbOrphanStrategy::should_cancel_order(
+            OrderExecutionStatus::Cancelled
+        ));
     }
 }
