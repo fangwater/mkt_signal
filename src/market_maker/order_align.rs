@@ -1,16 +1,9 @@
+use crate::common::symbol_util;
 use crate::signal::common::{align_price_ceil, align_price_floor, TradingVenue};
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
 
 pub fn min_qty_symbol_key(venue: TradingVenue, symbol: &str) -> String {
-    match venue {
-        TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
-            symbol.to_uppercase().replace("-SWAP", "").replace('-', "")
-        }
-        TradingVenue::GateMargin | TradingVenue::GateFutures => {
-            symbol.to_uppercase().replace('_', "").replace('-', "")
-        }
-        _ => symbol.to_uppercase(),
-    }
+    symbol_util::min_qty_symbol_key(venue, symbol)
 }
 
 pub fn is_futures_venue(venue: TradingVenue) -> bool {

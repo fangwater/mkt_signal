@@ -54,6 +54,12 @@ impl TradingVenue {
             TradingVenue::HyperliquidFutures => "hyperliquid-futures",
         }
     }
+
+    pub fn describe_u8(value: u8) -> String {
+        Self::from_u8(value)
+            .map(|venue| format!("{:?}", venue))
+            .unwrap_or_else(|| format!("Unknown({})", value))
+    }
 }
 
 /// 订单有效期类型枚举

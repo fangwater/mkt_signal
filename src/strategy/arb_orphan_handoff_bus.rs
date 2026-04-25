@@ -15,6 +15,7 @@ thread_local! {
 }
 
 pub fn queue_arb_orphan_handoff(handoff: ArbOrphanHandoff) -> bool {
+    // Bus 层只做跨策略暂存、重复 handoff 过滤，以及 Drop 清理时保留本地订单。
     if handoff.client_order_id <= 0 {
         return false;
     }

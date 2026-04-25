@@ -1,5 +1,5 @@
 use crate::common::bbo::{Bbo, DualBbo};
-use crate::common::symbol_util::extract_assets_from_symbol;
+use crate::common::symbol_util::{extract_assets_from_symbol, min_qty_symbol_key};
 use crate::common::tick_math::QuantizedValue;
 use crate::common::time_util::get_timestamp_us;
 use crate::common::trade_error_code::describe_trade_error_code;
@@ -78,7 +78,6 @@ pub struct HedgeArbStrategy {
     pub force_close_mode: bool,            //是否强平模式
     pub last_cancel_trigger_ts: Option<i64>,
     pub last_open_cancel_reason: Option<&'static str>,
-    pub last_inactive_reason: Option<String>,
     order_query_watchdog: Option<QueryWatchdog>,
     cancel_query_watchdog: Option<QueryWatchdog>,
 }
@@ -103,13 +102,8 @@ struct QueryWatchdog {
 }
 
 impl HedgeArbStrategy {
-    fn mark_inactive(&mut self, reason: impl Into<String>) {
+    fn mark_inactive(&mut self) {
         self.alive_flag = false;
-        self.last_inactive_reason = Some(reason.into());
-    }
-
-    pub fn inactive_reason(&self) -> Option<&str> {
-        self.last_inactive_reason.as_deref()
     }
 
     pub fn open_side(&self) -> Side {
@@ -128,6 +122,7 @@ impl HedgeArbStrategy {
         max_query_attempts: Option<u8>,
         reason: impl Into<String>,
     ) {
+        // Strategy 层负责补齐来源、leg、uniform publish 上下文；全局 bus 只负责暂存和移交保护。
         if client_order_id <= 0 {
             return;
         }
@@ -267,64 +262,17 @@ impl HedgeArbStrategy {
             force_close_mode: false,
             last_cancel_trigger_ts: None,
             last_open_cancel_reason: None,
-            last_inactive_reason: None,
             order_query_watchdog: None,
             cancel_query_watchdog: None,
         };
         strategy
     }
 
-    fn describe_venue(venue: u8) -> String {
-        TradingVenue::from_u8(venue)
-            .map(|v| format!("{:?}", v))
-            .unwrap_or_else(|| format!("Unknown({})", venue))
-    }
-
-    fn qty_symbol_key(venue: TradingVenue, symbol: &str) -> String {
-        match venue {
-            TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
-                symbol.to_uppercase().replace("-SWAP", "").replace('-', "")
-            }
-            TradingVenue::GateMargin | TradingVenue::GateFutures => {
-                symbol.to_uppercase().replace('_', "").replace('-', "")
-            }
-            _ => symbol.to_uppercase(),
-        }
-    }
-
-    fn resolve_qty_multiplier(venue: TradingVenue, symbol: &str) -> Result<f64, String> {
-        match venue {
-            TradingVenue::BinanceFutures => Ok(1.0),
-            TradingVenue::OkexFutures | TradingVenue::GateFutures => {
-                let symbol_key = Self::qty_symbol_key(venue, symbol);
-                let Some(table) = MonitorChannel::instance().venue_min_qty_table(venue) else {
-                    return Err(format!(
-                        "未初始化 {:?} 的最小下单量表，无法获取乘数 symbol={}",
-                        venue, symbol_key
-                    ));
-                };
-                let Some(multiplier) = table.contract_multiplier_opt(&symbol_key) else {
-                    return Err(format!(
-                        "symbol={} 缺少 {:?} 合约乘数，无法转换 qty 口径",
-                        symbol_key, venue
-                    ));
-                };
-                if multiplier <= 0.0 {
-                    return Err(format!(
-                        "symbol={} {:?} contract multiplier invalid: {}",
-                        symbol_key, venue, multiplier
-                    ));
-                }
-                Ok(multiplier)
-            }
-            _ => Ok(1.0),
-        }
-    }
-
     fn refresh_qty_multipliers(&mut self, open_symbol: &str) -> Result<(), String> {
-        self.open_qty_multiplier = Self::resolve_qty_multiplier(self.open_venue, open_symbol)?;
-        self.hedge_qty_multiplier =
-            Self::resolve_qty_multiplier(self.hedge_venue, &self.hedge_symbol)?;
+        self.open_qty_multiplier =
+            MonitorChannel::instance().qty_multiplier_for_venue(self.open_venue, open_symbol)?;
+        self.hedge_qty_multiplier = MonitorChannel::instance()
+            .qty_multiplier_for_venue(self.hedge_venue, &self.hedge_symbol)?;
         Ok(())
     }
 
@@ -385,8 +333,8 @@ impl HedgeArbStrategy {
     fn log_force_close_skip(&self, check_name: &str, ctx: &ArbOpenCtx) {
         let opening_symbol = ctx.get_opening_symbol();
         let hedging_symbol = ctx.get_hedging_symbol();
-        let opening_venue = Self::describe_venue(ctx.opening_leg.venue);
-        let hedging_venue = Self::describe_venue(ctx.hedging_leg.venue);
+        let opening_venue = TradingVenue::describe_u8(ctx.opening_leg.venue);
+        let hedging_venue = TradingVenue::describe_u8(ctx.hedging_leg.venue);
         let side = Side::from_u8(ctx.side).unwrap_or(Side::Buy);
         info!(
             "HedgeArbStrategy: strategy_id={} force_close_mode=true, skip {} 风控 | opening={} {} hedging={} {} side={:?} amount={:.4} price={:.6}",
@@ -414,8 +362,6 @@ impl HedgeArbStrategy {
 
     fn handle_arb_open_signal(&mut self, ctx: ArbOpenCtx) {
         // 开仓open leg，打开头寸，根据信号创建开仓leg, 进行风控判断，失败就直接把策略标记为不活跃，等待定时器清理
-        self.last_inactive_reason = None;
-
         let force_close = self.is_force_close_mode();
         let aligned_price = ctx.price_value();
         let aligned_qty = ctx.amount_value();
@@ -430,14 +376,14 @@ impl HedgeArbStrategy {
                 order_type,
                 aligned_price
             );
-            self.mark_inactive("invalid_price");
+            self.mark_inactive();
             return;
         }
         if force_close {
             let opening_symbol = ctx.get_opening_symbol();
             let hedging_symbol = ctx.get_hedging_symbol();
-            let opening_venue = Self::describe_venue(ctx.opening_leg.venue);
-            let hedging_venue = Self::describe_venue(ctx.hedging_leg.venue);
+            let opening_venue = TradingVenue::describe_u8(ctx.opening_leg.venue);
+            let hedging_venue = TradingVenue::describe_u8(ctx.hedging_leg.venue);
             info!(
                 "HedgeArbStrategy: strategy_id={} force_close_mode=true, 将跳过所有风控 | opening={} {} hedging={} {} side={:?} amount={:.4} price={:.6}",
                 self.strategy_id,
@@ -456,7 +402,7 @@ impl HedgeArbStrategy {
             self.log_force_close_skip("单品种敞口", &ctx);
         } else if let Err(e) = MonitorChannel::instance().check_symbol_exposure(&self.open_symbol) {
             error!("HedgeArbStrategy: strategy_id={} symbol={} 单品种敞口风控检查失败: {}，标记策略为不活跃", self.strategy_id, self.open_symbol, e);
-            self.mark_inactive(format!("symbol_exposure:{e}"));
+            self.mark_inactive();
             return;
         }
 
@@ -468,7 +414,7 @@ impl HedgeArbStrategy {
                 "HedgeArbStrategy: strategy_id={} 总敞口风控检查失败: {}，标记策略为不活跃",
                 self.strategy_id, e
             );
-            self.mark_inactive(format!("total_exposure:{e}"));
+            self.mark_inactive();
             return;
         }
 
@@ -479,7 +425,7 @@ impl HedgeArbStrategy {
                 MonitorChannel::instance().check_pending_limit_order(&self.open_symbol, side)
             {
                 error!("HedgeArbStrategy: strategy_id={} symbol={} 限价挂单数量风控检查失败: {}，标记策略为不活跃", self.strategy_id, self.open_symbol, e);
-                self.mark_inactive(format!("pending_limit:{e}"));
+                self.mark_inactive();
                 return;
             }
         }
@@ -542,7 +488,7 @@ impl HedgeArbStrategy {
                 "HedgeArbStrategy: strategy_id={} 开仓信号量价无效 qty={:.8} price={:.8}，标记策略为不活跃",
                 self.strategy_id, aligned_qty, aligned_price
             );
-            self.mark_inactive("invalid_qty_or_price");
+            self.mark_inactive();
             return;
         }
 
@@ -566,7 +512,7 @@ impl HedgeArbStrategy {
                 "HedgeArbStrategy: strategy_id={} 初始化数量乘数失败: {}",
                 self.strategy_id, err
             );
-            self.mark_inactive(format!("qty_multiplier:{err}"));
+            self.mark_inactive();
             return;
         }
 
@@ -601,10 +547,7 @@ impl HedgeArbStrategy {
                         available_balance
                     );
                 }
-                self.mark_inactive(format!(
-                    "balance_insufficient:{} required={:.8} available={:.8}",
-                    check_asset, required_amount, available_balance
-                ));
+                self.mark_inactive();
                 return;
             }
         }
@@ -624,7 +567,7 @@ impl HedgeArbStrategy {
                         "HedgeArbStrategy: strategy_id={} 杠杆风控检查失败: {}，标记策略为不活跃",
                         self.strategy_id, e
                     );
-                    self.mark_inactive(format!("leverage:{e}"));
+                    self.mark_inactive();
                     return;
                 }
             }
@@ -640,7 +583,7 @@ impl HedgeArbStrategy {
                 "HedgeArbStrategy: strategy_id={} 仓位限制检查失败: {}，标记策略为不活跃",
                 self.strategy_id, e
             );
-            self.mark_inactive(format!("position_limit:{e}"));
+            self.mark_inactive();
             return;
         }
 
@@ -695,15 +638,7 @@ impl HedgeArbStrategy {
             ));
         }
 
-        let symbol_key = match venue {
-            TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
-                symbol.to_uppercase().replace("-SWAP", "").replace('-', "")
-            }
-            TradingVenue::GateMargin | TradingVenue::GateFutures => {
-                symbol.to_uppercase().replace('_', "").replace('-', "")
-            }
-            _ => symbol.to_uppercase(),
-        };
+        let symbol_key = min_qty_symbol_key(venue, symbol);
 
         let Some(table) = MonitorChannel::instance().venue_min_qty_table(venue) else {
             return Err(format!(
@@ -1007,7 +942,7 @@ impl HedgeArbStrategy {
                             e
                         );
                         if order_type_str == "开仓" {
-                            self.mark_inactive(format!("send_open_order:{e}"));
+                            self.mark_inactive();
                         } else {
                             self.alive_flag = false;
                         }
@@ -1025,7 +960,7 @@ impl HedgeArbStrategy {
                         e
                     );
                     if order_type_str == "开仓" {
-                        self.mark_inactive(format!("open_order_bytes:{e}"));
+                        self.mark_inactive();
                     } else {
                         self.alive_flag = false;
                     }
@@ -1038,7 +973,7 @@ impl HedgeArbStrategy {
                 self.strategy_id, symbol, order_type_str, client_order_id
             );
             if order_type_str == "开仓" {
-                self.mark_inactive(format!("missing_open_order:{client_order_id}"));
+                self.mark_inactive();
             } else {
                 self.alive_flag = false;
             }

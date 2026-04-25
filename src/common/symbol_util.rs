@@ -93,6 +93,19 @@ pub fn normalize_symbol_for_venue(symbol: &str, venue: TradingVenue) -> String {
     }
 }
 
+/// 生成 min-qty/filter 表使用的 symbol key。
+pub fn min_qty_symbol_key(venue: TradingVenue, symbol: &str) -> String {
+    match venue {
+        TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
+            symbol.to_uppercase().replace("-SWAP", "").replace('-', "")
+        }
+        TradingVenue::GateMargin | TradingVenue::GateFutures => {
+            symbol.to_uppercase().replace('_', "").replace('-', "")
+        }
+        _ => symbol.to_uppercase(),
+    }
+}
+
 fn extract_assets_from_internal_symbol(symbol_upper: &str) -> (&str, &str) {
     const QUOTE_ASSETS: [&str; 7] = ["USDT", "USDC", "BUSD", "FDUSD", "BIDR", "TRY", "USD"];
 
@@ -154,6 +167,22 @@ mod tests {
         assert_eq!(normalize_symbol_for_internal("APT_USDT"), "APTUSDT");
         assert_eq!(normalize_symbol_for_internal("APT-USDT-SWAP"), "APTUSDT");
         assert_eq!(normalize_symbol_for_internal("apt/usdt/swap"), "APTUSDT");
+    }
+
+    #[test]
+    fn test_min_qty_symbol_key() {
+        assert_eq!(
+            min_qty_symbol_key(TradingVenue::OkexFutures, "APT-USDT-SWAP"),
+            "APTUSDT"
+        );
+        assert_eq!(
+            min_qty_symbol_key(TradingVenue::GateFutures, "APT_USDT"),
+            "APTUSDT"
+        );
+        assert_eq!(
+            min_qty_symbol_key(TradingVenue::BinanceFutures, "APTUSDT"),
+            "APTUSDT"
+        );
     }
 
     #[test]

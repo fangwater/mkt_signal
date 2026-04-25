@@ -17,7 +17,7 @@ use crate::common::bybit_account_msg::BybitBasicOrderMsg;
 use crate::common::exchange::Exchange;
 use crate::common::ipc_service_name::build_service_name;
 use crate::common::min_qty_table::MinQtyTable;
-use crate::common::symbol_util::normalize_symbol_for_internal;
+use crate::common::symbol_util::{min_qty_symbol_key, normalize_symbol_for_internal};
 use crate::common::time_util::get_timestamp_us;
 use crate::portfolio_margin::pm_forwarder::{
     PM_HISTORY_SIZE, PM_MAX_SUBSCRIBERS, PM_SUBSCRIBER_MAX_BUFFER_SIZE,
@@ -314,6 +314,15 @@ impl MonitorChannel {
     /// 尝试获取指定交易场所的最小下单量表（若 MonitorChannel 未初始化则返回 None）
     pub fn try_venue_min_qty_table(&self, venue: TradingVenue) -> Option<Rc<VenueMinQtyTable>> {
         Self::try_with_inner(|inner| inner.venue_min_qty_tables.get(&venue).cloned()).flatten()
+    }
+
+    /// 获取 venue qty -> base qty 的乘数。需要合约乘数的交易所缺失配置时返回错误。
+    pub fn qty_multiplier_for_venue(
+        &self,
+        venue: TradingVenue,
+        symbol: &str,
+    ) -> Result<f64, String> {
+        Self::with_inner(|inner| Self::qty_multiplier_for_venue_inner(inner, venue, symbol))
     }
 
     /// 获取 order_manager 的引用
@@ -786,15 +795,7 @@ impl MonitorChannel {
         match venue {
             TradingVenue::BinanceFutures => qty,
             TradingVenue::OkexFutures | TradingVenue::GateFutures => {
-                let symbol_key = match venue {
-                    TradingVenue::OkexFutures => {
-                        symbol.to_uppercase().replace("-SWAP", "").replace('-', "")
-                    }
-                    TradingVenue::GateFutures => {
-                        symbol.to_uppercase().replace('_', "").replace('-', "")
-                    }
-                    _ => symbol.to_uppercase(),
-                };
+                let symbol_key = min_qty_symbol_key(venue, symbol);
                 let mult = inner
                     .venue_min_qty_tables
                     .get(&venue)
@@ -818,36 +819,43 @@ impl MonitorChannel {
         match venue {
             TradingVenue::BinanceFutures => Ok(qty),
             TradingVenue::OkexFutures | TradingVenue::GateFutures => {
-                let symbol_key = match venue {
-                    TradingVenue::OkexFutures => {
-                        symbol.to_uppercase().replace("-SWAP", "").replace('-', "")
-                    }
-                    TradingVenue::GateFutures => {
-                        symbol.to_uppercase().replace('_', "").replace('-', "")
-                    }
-                    _ => symbol.to_uppercase(),
-                };
-                let Some(table) = inner.venue_min_qty_tables.get(&venue) else {
-                    return Err(format!(
-                        "未初始化 {:?} 的交易对过滤器，无法转换数量 symbol={}",
-                        venue, symbol_key
-                    ));
-                };
-                let Some(mult) = table.contract_multiplier_opt(&symbol_key) else {
-                    return Err(format!(
-                        "symbol={} 缺少 {:?} 合约乘数，无法进行风控口径计算（请刷新 filters/multipliers）",
-                        symbol_key, venue
-                    ));
-                };
-                if !(mult > 0.0) {
-                    return Err(format!(
-                        "symbol={} {:?} contract multiplier invalid: {}",
-                        symbol_key, venue, mult
-                    ));
-                }
+                let mult = Self::qty_multiplier_for_venue_inner(inner, venue, symbol)?;
                 Ok(qty * mult)
             }
             _ => Ok(qty),
+        }
+    }
+
+    fn qty_multiplier_for_venue_inner(
+        inner: &MonitorChannelInner,
+        venue: TradingVenue,
+        symbol: &str,
+    ) -> Result<f64, String> {
+        match venue {
+            TradingVenue::BinanceFutures => Ok(1.0),
+            TradingVenue::OkexFutures | TradingVenue::GateFutures => {
+                let symbol_key = min_qty_symbol_key(venue, symbol);
+                let Some(table) = inner.venue_min_qty_tables.get(&venue) else {
+                    return Err(format!(
+                        "未初始化 {:?} 的最小下单量表，无法获取乘数 symbol={}",
+                        venue, symbol_key
+                    ));
+                };
+                let Some(multiplier) = table.contract_multiplier_opt(&symbol_key) else {
+                    return Err(format!(
+                        "symbol={} 缺少 {:?} 合约乘数，无法转换 qty 口径",
+                        symbol_key, venue
+                    ));
+                };
+                if multiplier <= 0.0 {
+                    return Err(format!(
+                        "symbol={} {:?} contract multiplier invalid: {}",
+                        symbol_key, venue, multiplier
+                    ));
+                }
+                Ok(multiplier)
+            }
+            _ => Ok(1.0),
         }
     }
 
@@ -1112,15 +1120,7 @@ impl MonitorChannel {
         raw_price: f64,
     ) -> Result<(f64, f64), String> {
         Self::with_inner(|inner| {
-            let symbol_key = match venue {
-                TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
-                    symbol.to_uppercase().replace("-SWAP", "").replace('-', "")
-                }
-                TradingVenue::GateMargin | TradingVenue::GateFutures => {
-                    symbol.to_uppercase().replace('_', "").replace('-', "")
-                }
-                _ => symbol.to_uppercase(),
-            };
+            let symbol_key = min_qty_symbol_key(venue, symbol);
 
             let Some(table) = inner.venue_min_qty_tables.get(&venue) else {
                 return Err(format!(
@@ -1226,15 +1226,7 @@ impl MonitorChannel {
         price_hint: Option<f64>,
     ) -> Result<(), String> {
         Self::with_inner(|inner| {
-            let symbol_key = match venue {
-                TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
-                    symbol.to_uppercase().replace("-SWAP", "").replace('-', "")
-                }
-                TradingVenue::GateMargin | TradingVenue::GateFutures => {
-                    symbol.to_uppercase().replace('_', "").replace('-', "")
-                }
-                _ => symbol.to_uppercase(),
-            };
+            let symbol_key = min_qty_symbol_key(venue, symbol);
 
             let Some(table) = inner.venue_min_qty_tables.get(&venue) else {
                 return Err(format!(
@@ -1785,13 +1777,7 @@ impl MonitorChannel {
                     ("contracts(mult=1)", Some(symbol_upper.clone()), Some(1.0))
                 }
                 TradingVenue::OkexFutures | TradingVenue::GateFutures => {
-                    let symbol_key = match open_venue {
-                        TradingVenue::OkexFutures => {
-                            symbol_upper.replace("-SWAP", "").replace('-', "")
-                        }
-                        TradingVenue::GateFutures => symbol_upper.replace('_', "").replace('-', ""),
-                        _ => symbol_upper.clone(),
-                    };
+                    let symbol_key = min_qty_symbol_key(open_venue, &symbol_upper);
                     let mult = inner
                         .venue_min_qty_tables
                         .get(&open_venue)

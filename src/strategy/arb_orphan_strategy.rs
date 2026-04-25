@@ -49,20 +49,7 @@ pub struct ArbOrphanSnapshot {
     pub hedge_residual_lower_usdt: f64,
     pub hedge_residual_upper_usdt: f64,
     pub weighted_inventory_price: f64,
-    pub open_buy_qty: f64,
-    pub open_sell_qty: f64,
-    pub hedge_buy_qty: f64,
-    pub hedge_sell_qty: f64,
     pub tracked_orders: usize,
-}
-
-#[derive(Debug, Clone)]
-pub struct ArbOrphanHedgeResidualTake {
-    pub signed_base_qty: QuantizedValue,
-    pub hedge_side: Side,
-    pub mark_price: f64,
-    pub residual_before: QuantizedValue,
-    pub residual_after: QuantizedValue,
 }
 
 pub struct ArbOrphanStrategy {
@@ -78,10 +65,6 @@ pub struct ArbOrphanStrategy {
     query_seq: u32,
     net_qty_queue: NetQtyQueue,
     net_qty: f64,
-    open_buy_qty: f64,
-    open_sell_qty: f64,
-    hedge_buy_qty: f64,
-    hedge_sell_qty: f64,
     /// hedge 残差累计量，base 口径，带方向。
     ///
     /// 语义：已经确认产生 open exposure，但当前尚未成功形成 hedge 订单处理的待对冲数量。
@@ -120,10 +103,6 @@ impl ArbOrphanStrategy {
             query_seq: 0,
             net_qty_queue: NetQtyQueue::new(),
             net_qty: 0.0,
-            open_buy_qty: 0.0,
-            open_sell_qty: 0.0,
-            hedge_buy_qty: 0.0,
-            hedge_sell_qty: 0.0,
             hedge_residual_qty: QuantizedValue::zero(),
             hedge_residual_lower_usdt: ARB_ORPHAN_DEFAULT_HEDGE_RESIDUAL_LOWER_USDT,
             hedge_residual_upper_usdt: ARB_ORPHAN_DEFAULT_HEDGE_RESIDUAL_UPPER_USDT,
@@ -234,10 +213,6 @@ impl ArbOrphanStrategy {
             hedge_residual_lower_usdt: self.hedge_residual_lower_usdt,
             hedge_residual_upper_usdt: self.hedge_residual_upper_usdt,
             weighted_inventory_price: self.weighted_inventory_price(),
-            open_buy_qty: self.open_buy_qty,
-            open_sell_qty: self.open_sell_qty,
-            hedge_buy_qty: self.hedge_buy_qty,
-            hedge_sell_qty: self.hedge_sell_qty,
             tracked_orders: self.order_legs.len(),
         }
     }
@@ -376,14 +351,6 @@ impl ArbOrphanStrategy {
             Side::Sell => Self::qv_with_sign(unfilled_base_qty_qv, 1),
             // Buy hedge 未成交，说明还有负 exposure 等待对冲。
             Side::Buy => Self::qv_with_sign(unfilled_base_qty_qv, -1),
-        }
-    }
-
-    fn hedge_side_for_residual(signed_qty: QuantizedValue) -> Side {
-        if Self::qv_sign(signed_qty) >= 0 {
-            Side::Sell
-        } else {
-            Side::Buy
         }
     }
 
@@ -536,103 +503,6 @@ impl ArbOrphanStrategy {
         Some(taken)
     }
 
-    /// 按 USDT 下限/上限从 residual 中取出下一笔 hedge 数量。
-    ///
-    /// - lower_usdt 控制是否触发 hedge；
-    /// - upper_usdt 控制单笔最多取多少；
-    /// - 实际扣减量用 hedge venue 的 base step 构造 QuantizedValue 后再从 residual 扣除。
-    pub fn try_take_hedge_residual_by_usdt(
-        &mut self,
-        hedge_venue: TradingVenue,
-        hedge_symbol: &str,
-        reason: &str,
-    ) -> Option<ArbOrphanHedgeResidualTake> {
-        let residual_before = self.hedge_residual_qty;
-        let residual_abs = residual_before.get_val().abs();
-        if residual_abs <= ARB_ORPHAN_EPS {
-            return None;
-        }
-
-        let mark_price = MonitorChannel::instance()
-            .price_table()
-            .borrow()
-            .mark_price(&self.symbol)
-            .or_else(|| {
-                MonitorChannel::instance()
-                    .price_table()
-                    .borrow()
-                    .mark_price(hedge_symbol)
-            })
-            .unwrap_or(0.0);
-        if mark_price <= 0.0 {
-            warn!(
-                "ArbOrphanHedgeResidual: strategy_id={} symbol={} take skipped, missing mark price hedge_symbol={} reason={}",
-                self.strategy_id, self.symbol, hedge_symbol, reason
-            );
-            return None;
-        }
-
-        let residual_usdt = residual_abs * mark_price;
-        if residual_usdt + ARB_ORPHAN_EPS < self.hedge_residual_lower_usdt {
-            debug!(
-                "ArbOrphanHedgeResidual: strategy_id={} symbol={} take skipped residual={} residual_usdt={:.8} lower_usdt={:.8} reason={}",
-                self.strategy_id,
-                self.symbol,
-                residual_before.decimal_string(),
-                residual_usdt,
-                self.hedge_residual_lower_usdt,
-                reason
-            );
-            return None;
-        }
-
-        let upper_base_qty = if self.hedge_residual_upper_usdt.is_finite() {
-            self.hedge_residual_upper_usdt / mark_price
-        } else {
-            residual_abs
-        };
-        let target_base_qty = residual_abs.min(upper_base_qty);
-        let base_step = Self::base_qty_step(hedge_venue, hedge_symbol);
-        let base_qty_qv = QuantizedValue::encode_floor(target_base_qty, base_step)
-            .or_else(|| QuantizedValue::from_decimal(target_base_qty))?;
-        let base_qty = base_qty_qv.get_val();
-        if base_qty <= ARB_ORPHAN_EPS || base_qty > target_base_qty + ARB_ORPHAN_EPS {
-            return None;
-        }
-
-        let sign = Self::qv_sign(residual_before);
-        let signed_base_qty = Self::qv_with_sign(base_qty_qv, sign)?;
-        let residual_after = Self::qv_sub_exact(residual_before, signed_base_qty)?;
-        self.hedge_residual_qty = if Self::qv_is_zero(residual_after) {
-            QuantizedValue::zero()
-        } else {
-            residual_after
-        };
-
-        let residual_after = self.hedge_residual_qty;
-        let hedge_side = Self::hedge_side_for_residual(signed_base_qty);
-        info!(
-            "ArbOrphanHedgeResidual: strategy_id={} symbol={} take_by_usdt signed_qty={} side={:?} mark_price={:.8} residual_before={} residual_after={} lower_usdt={:.8} upper_usdt={:.8} reason={}",
-            self.strategy_id,
-            self.symbol,
-            signed_base_qty.decimal_string(),
-            hedge_side,
-            mark_price,
-            residual_before.decimal_string(),
-            residual_after.decimal_string(),
-            self.hedge_residual_lower_usdt,
-            self.hedge_residual_upper_usdt,
-            reason
-        );
-        Some(ArbOrphanHedgeResidualTake {
-            signed_base_qty,
-            hedge_side,
-            mark_price,
-            residual_before,
-            residual_after,
-        })
-    }
-
     fn forget_order_id(&mut self, client_order_id: i64, reason: &str) -> bool {
         let removed = self.order_legs.remove(&client_order_id).is_some();
         if removed {
@@ -691,12 +561,6 @@ impl ArbOrphanStrategy {
     ) {
         if base_qty <= ARB_ORPHAN_EPS {
             return;
-        }
-        match (leg, side) {
-            (ArbOrphanLeg::Open, Side::Buy) => self.open_buy_qty += base_qty,
-            (ArbOrphanLeg::Open, Side::Sell) => self.open_sell_qty += base_qty,
-            (ArbOrphanLeg::Hedge, Side::Buy) => self.hedge_buy_qty += base_qty,
-            (ArbOrphanLeg::Hedge, Side::Sell) => self.hedge_sell_qty += base_qty,
         }
         let signed_qty = Self::signed_base_qty(side, base_qty);
         self.apply_net_qty_fill(fill_ts, signed_qty, price, leg);
