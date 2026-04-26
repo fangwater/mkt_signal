@@ -394,6 +394,12 @@ impl StrategyManager {
         removed
     }
 
+    /// 按当前调度队列顺序取出下一个策略，调用方处理后可重新插入。
+    pub fn take_next_queued(&mut self) -> Option<Box<dyn Strategy>> {
+        let strategy_id = self.strategy_queue.pop_front()?;
+        self.take(strategy_id)
+    }
+
     /// 遍历所有策略 id
     pub fn iter_ids(&self) -> impl Iterator<Item = &i32> {
         self.strategies.keys()

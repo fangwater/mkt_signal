@@ -6,6 +6,7 @@ use iceoryx2::service::ipc;
 use log::{debug, info, warn};
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::time::Duration;
 
 use crate::common::basic_account_msg::{
@@ -22,6 +23,7 @@ use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenu
 use crate::strategy::order_query_parser::parse_compact_order_query_resp;
 use crate::strategy::query_engine_response::{QueryEngineResponse, QueryEngineResponseMessage};
 use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
+use crate::strategy::{OrphanStrategyManager, StrategyManager};
 use crate::trade_engine::query_request::QueryRequestType;
 
 thread_local! {
@@ -29,6 +31,54 @@ thread_local! {
 }
 
 const QUERY_ENG_SUBSCRIBER_MAX_BUFFER_SIZE: usize = 256;
+
+fn dispatch_query_response_to_strategy_manager(
+    strategy_mgr: &Rc<RefCell<StrategyManager>>,
+    strategy_id: i32,
+    response: &dyn QueryEngineResponse,
+) -> bool {
+    let strategy_opt = {
+        let mut mgr = strategy_mgr.borrow_mut();
+        if mgr.contains(strategy_id) {
+            mgr.take(strategy_id)
+        } else {
+            None
+        }
+    };
+    if let Some(mut strategy) = strategy_opt {
+        strategy.apply_query_engine_response(response);
+        if strategy.is_active() {
+            strategy_mgr.borrow_mut().insert(strategy);
+        }
+        true
+    } else {
+        false
+    }
+}
+
+fn dispatch_query_response_to_orphan_manager(
+    orphan_strategy_mgr: &Rc<RefCell<OrphanStrategyManager>>,
+    strategy_id: i32,
+    response: &dyn QueryEngineResponse,
+) -> bool {
+    let strategy_opt = {
+        let mut mgr = orphan_strategy_mgr.borrow_mut();
+        if mgr.contains(strategy_id) {
+            mgr.take(strategy_id)
+        } else {
+            None
+        }
+    };
+    if let Some(mut strategy) = strategy_opt {
+        strategy.apply_query_engine_response(response);
+        if strategy.is_active() {
+            orphan_strategy_mgr.borrow_mut().insert(strategy);
+        }
+        true
+    } else {
+        false
+    }
+}
 
 pub struct QueryEngHub {
     channels: RefCell<HashMap<String, QueryEngChannel>>,
@@ -622,21 +672,19 @@ impl QueryEngChannel {
                                     let strategy_mgr = MonitorChannel::instance().strategy_mgr();
                                     let orphan_strategy_mgr =
                                         MonitorChannel::instance().orphan_strategy_mgr();
-                                    let matched = {
-                                        let mut mgr = strategy_mgr.borrow_mut();
-                                        if mgr.contains(strategy_id) {
-                                            mgr.apply_query_engine_response(strategy_id, &resp);
-                                            true
-                                        } else {
-                                            false
-                                        }
-                                    };
+                                    let matched = dispatch_query_response_to_strategy_manager(
+                                        &strategy_mgr,
+                                        strategy_id,
+                                        &resp,
+                                    );
                                     let matched = if matched {
                                         true
                                     } else {
-                                        orphan_strategy_mgr
-                                            .borrow_mut()
-                                            .apply_query_engine_response(strategy_id, &resp)
+                                        dispatch_query_response_to_orphan_manager(
+                                            &orphan_strategy_mgr,
+                                            strategy_id,
+                                            &resp,
+                                        )
                                     };
                                     if !matched {
                                         persist_unmatched_query_response(strategy_id, &resp);
@@ -666,6 +714,178 @@ impl QueryEngChannel {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        dispatch_query_response_to_orphan_manager, dispatch_query_response_to_strategy_manager,
+    };
+    use crate::signal::trade_signal::TradeSignal;
+    use crate::strategy::query_engine_response::{QueryEngineResponse, QueryEngineResponseMessage};
+    use crate::strategy::trade_engine_response::TradeEngineResponse;
+    use crate::strategy::{order_update::OrderUpdate, trade_update::TradeUpdate};
+    use crate::strategy::{ForceCloseControl, OrphanStrategyManager, Strategy, StrategyManager};
+    use bytes::Bytes;
+    use std::any::Any;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    struct ReentrantQueryStrategy {
+        id: i32,
+        manager: Rc<RefCell<StrategyManager>>,
+        hits: Rc<Cell<u32>>,
+        active: bool,
+    }
+
+    impl ForceCloseControl for ReentrantQueryStrategy {
+        fn set_force_close_mode(&mut self, _enabled: bool) {}
+
+        fn is_force_close_mode(&self) -> bool {
+            false
+        }
+    }
+
+    impl Strategy for ReentrantQueryStrategy {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn Any {
+            self
+        }
+
+        fn get_id(&self) -> i32 {
+            self.id
+        }
+
+        fn is_strategy_order(&self, _order_id: i64) -> bool {
+            false
+        }
+
+        fn handle_signal(&mut self, _signal: &TradeSignal) {}
+
+        fn apply_order_update(&mut self, _update: &dyn OrderUpdate) {}
+
+        fn apply_trade_update(&mut self, _trade: &dyn TradeUpdate) {}
+
+        fn apply_trade_engine_response(&mut self, _response: &dyn TradeEngineResponse) {}
+
+        fn apply_query_engine_response(&mut self, _response: &dyn QueryEngineResponse) {
+            self.hits.set(self.hits.get() + 1);
+            let _ = self.manager.borrow_mut().contains(self.id);
+            self.active = false;
+        }
+
+        fn handle_period_clock(&mut self, _current_tp: i64) {}
+
+        fn is_active(&self) -> bool {
+            self.active
+        }
+
+        fn symbol(&self) -> Option<&str> {
+            Some("BTCUSDT")
+        }
+    }
+
+    struct ReentrantOrphanQueryStrategy {
+        id: i32,
+        manager: Rc<RefCell<OrphanStrategyManager>>,
+        hits: Rc<Cell<u32>>,
+        active: bool,
+    }
+
+    impl ForceCloseControl for ReentrantOrphanQueryStrategy {
+        fn set_force_close_mode(&mut self, _enabled: bool) {}
+
+        fn is_force_close_mode(&self) -> bool {
+            false
+        }
+    }
+
+    impl Strategy for ReentrantOrphanQueryStrategy {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn Any {
+            self
+        }
+
+        fn get_id(&self) -> i32 {
+            self.id
+        }
+
+        fn is_strategy_order(&self, _order_id: i64) -> bool {
+            false
+        }
+
+        fn handle_signal(&mut self, _signal: &TradeSignal) {}
+
+        fn apply_order_update(&mut self, _update: &dyn OrderUpdate) {}
+
+        fn apply_trade_update(&mut self, _trade: &dyn TradeUpdate) {}
+
+        fn apply_trade_engine_response(&mut self, _response: &dyn TradeEngineResponse) {}
+
+        fn apply_query_engine_response(&mut self, _response: &dyn QueryEngineResponse) {
+            self.hits.set(self.hits.get() + 1);
+            let _ = self.manager.borrow_mut().contains(self.id);
+            self.active = false;
+        }
+
+        fn handle_period_clock(&mut self, _current_tp: i64) {}
+
+        fn is_active(&self) -> bool {
+            self.active
+        }
+
+        fn symbol(&self) -> Option<&str> {
+            Some("BTCUSDT")
+        }
+    }
+
+    #[test]
+    fn query_dispatch_releases_strategy_manager_borrow_before_callback() {
+        let manager = Rc::new(RefCell::new(StrategyManager::new()));
+        let hits = Rc::new(Cell::new(0));
+        manager
+            .borrow_mut()
+            .insert(Box::new(ReentrantQueryStrategy {
+                id: 301,
+                manager: manager.clone(),
+                hits: hits.clone(),
+                active: true,
+            }));
+        let response = QueryEngineResponseMessage::new(0, 301_i64 << 32, Bytes::new());
+
+        let matched = dispatch_query_response_to_strategy_manager(&manager, 301, &response);
+
+        assert!(matched);
+        assert_eq!(hits.get(), 1);
+        assert!(!manager.borrow().contains(301));
+    }
+
+    #[test]
+    fn query_dispatch_releases_orphan_manager_borrow_before_callback() {
+        let manager = Rc::new(RefCell::new(OrphanStrategyManager::new()));
+        let hits = Rc::new(Cell::new(0));
+        manager
+            .borrow_mut()
+            .insert(Box::new(ReentrantOrphanQueryStrategy {
+                id: 302,
+                manager: manager.clone(),
+                hits: hits.clone(),
+                active: true,
+            }));
+        let response = QueryEngineResponseMessage::new(0, 302_i64 << 32, Bytes::new());
+
+        let matched = dispatch_query_response_to_orphan_manager(&manager, 302, &response);
+
+        assert!(matched);
+        assert_eq!(hits.get(), 1);
+        assert!(!manager.borrow().contains(302));
     }
 }
 

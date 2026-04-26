@@ -2118,9 +2118,7 @@ mod tests {
         MarketMakerHedgeStrategy, PendingOrderQueryReason, NET_EXPOSURE_EPS_USDT,
     };
     use crate::common::exchange::Exchange;
-    use crate::common::time_util::get_timestamp_us;
     use crate::pre_trade::order_manager::Side;
-    use crate::signal::common::TradingVenue;
 
     #[test]
     fn zero_net_exposure_does_not_send_hedge_query() {
@@ -2185,7 +2183,6 @@ mod tests {
         assert!((monotonic_cumulative_fill(4.2, 5.6) - 5.6).abs() < 1e-12);
     }
 
-    #[test]
     #[test]
     fn final_hedge_qty_align_drops_sub_step_tail() {
         let (aligned, dropped) =

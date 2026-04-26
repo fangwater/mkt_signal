@@ -38,7 +38,7 @@ impl OrphanStrategyManager {
         self.strategies.is_empty()
     }
 
-    fn insert(&mut self, strategy: Box<dyn Strategy>) -> Option<Box<dyn Strategy>> {
+    pub(crate) fn insert(&mut self, strategy: Box<dyn Strategy>) -> Option<Box<dyn Strategy>> {
         let id = strategy.get_id();
         let new_symbol = strategy.symbol().map(normalize_symbol_for_internal);
         if let Some(old_symbol) = self
@@ -90,6 +90,28 @@ impl OrphanStrategyManager {
             );
         }
         removed
+    }
+
+    pub(crate) fn take(&mut self, strategy_id: i32) -> Option<Box<dyn Strategy>> {
+        self.strategy_queue.retain(|id| *id != strategy_id);
+        let removed = self.strategies.remove(&strategy_id);
+        if let Some(symbol) = removed
+            .as_ref()
+            .and_then(|strategy| strategy.symbol().map(normalize_symbol_for_internal))
+        {
+            if let Some(set) = self.symbol_index.get_mut(&symbol) {
+                set.remove(&strategy_id);
+                if set.is_empty() {
+                    self.symbol_index.remove(&symbol);
+                }
+            }
+        }
+        removed
+    }
+
+    pub(crate) fn take_next_queued(&mut self) -> Option<Box<dyn Strategy>> {
+        let strategy_id = self.strategy_queue.pop_front()?;
+        self.take(strategy_id)
     }
 
     fn find_strategy_id_by<T: 'static>(&self, symbol: &str) -> Option<i32> {
