@@ -1,5 +1,4 @@
 use crate::common::bbo::{Bbo, DualBbo};
-use crate::common::symbol_util::extract_assets_from_symbol;
 use crate::common::tick_math::QuantizedValue;
 use crate::common::time_util::get_timestamp_us;
 use crate::common::trade_error_code::{
@@ -15,10 +14,10 @@ use crate::signal::common::{OrderStatus, SignalBytes, TradingVenue};
 use crate::signal::hedge_signal::ArbHedgeCtx;
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
+use crate::strategy::arb_check::OpenCheckContext;
 use crate::strategy::arb_helper::{
     align_taker_qty, arb_cancel_log_reason, base_to_venue_qty, create_and_send_order,
-    log_force_close_skip, log_force_close_start, opposite_side, panic_invalid_maker_hedge_price,
-    parse_arb_open_signal_params, refresh_qty_multipliers, signed_qty_for_open_side,
+    panic_invalid_maker_hedge_price, parse_arb_open_signal_params,
 };
 use crate::strategy::arb_orphan_strategy::ArbOrphanLeg;
 use crate::strategy::manager::{
@@ -269,146 +268,25 @@ impl HedgeArbStrategy {
     fn handle_arb_open_signal(&mut self, ctx: ArbOpenCtx) {
         // 开仓open leg，打开头寸，根据信号创建开仓leg, 进行风控判断，失败就直接把策略标记为不活跃，等待定时器清理
         let force_close = self.is_force_close_mode();
+        // 解析开仓信号参数；参数无效时直接标记策略不活跃。
         let Some(params) = parse_arb_open_signal_params(self.strategy_id, &ctx) else {
             self.alive_flag = false;
             return;
         };
-        let aligned_price = params.aligned_price;
-        let aligned_qty = params.aligned_qty;
-        let symbol = params.symbol;
-        let hedge_symbol = params.hedge_symbol;
-        let order_type = params.order_type;
-        let open_side = params.open_side;
-        let venue = params.venue;
-        let hedge_venue = params.hedge_venue;
-
-        if force_close {
-            log_force_close_start(
-                self.strategy_id,
-                open_side,
-                aligned_qty,
-                aligned_price,
-                &ctx,
-            );
-        }
-
-        // 1、检查symbol的敞口，失败打印error
-        if force_close {
-            log_force_close_skip(self.strategy_id, "单品种敞口", &ctx);
-        } else if let Err(e) = MonitorChannel::instance().check_symbol_exposure(&self.open_symbol) {
-            error!("HedgeArbStrategy: strategy_id={} symbol={} 单品种敞口风控检查失败: {}，标记策略为不活跃", self.strategy_id, self.open_symbol, e);
+        // 统一执行开仓前检查；检查链会顺带产出下单和状态保存需要的派生量。
+        let Some(open_check) = OpenCheckContext::from_open_params(
+            self.strategy_id,
+            &self.open_symbol,
+            force_close,
+            &ctx,
+            &params,
+        )
+        .run_all() else {
             self.alive_flag = false;
             return;
-        }
+        };
 
-        // 2、检查总敞口，失败打印error
-        if force_close {
-            log_force_close_skip(self.strategy_id, "总体敞口", &ctx);
-        } else if let Err(e) = MonitorChannel::instance().check_total_exposure() {
-            error!(
-                "HedgeArbStrategy: strategy_id={} 总敞口风控检查失败: {}，标记策略为不活跃",
-                self.strategy_id, e
-            );
-            self.alive_flag = false;
-            return;
-        }
-
-        // 3、检查限价挂单数量限制（如果是限价单）
-        if order_type == OrderType::Limit {
-            if let Err(e) =
-                MonitorChannel::instance().check_pending_limit_order(&self.open_symbol, open_side)
-            {
-                error!("HedgeArbStrategy: strategy_id={} symbol={} 限价挂单数量风控检查失败: {}，标记策略为不活跃", self.strategy_id, self.open_symbol, e);
-                self.alive_flag = false;
-                return;
-            }
-        }
-
-        let (open_qty_multiplier, hedge_qty_multiplier) =
-            match refresh_qty_multipliers(venue, &symbol, hedge_venue, &hedge_symbol) {
-                Ok((open_qty_multiplier, hedge_qty_multiplier)) => {
-                    (open_qty_multiplier, hedge_qty_multiplier)
-                }
-                Err(err) => {
-                    error!(
-                        "HedgeArbStrategy: strategy_id={} 初始化数量乘数失败: {}",
-                        self.strategy_id, err
-                    );
-                    self.alive_flag = false;
-                    return;
-                }
-            };
-
-        let hedge_side = opposite_side(open_side);
-        let signed_qty = signed_qty_for_open_side(open_side, aligned_qty);
-
-        if !force_close
-            && venue == TradingVenue::BinanceMargin
-            && MonitorChannel::instance()
-                .order_manager()
-                .borrow()
-                .binance_is_standard()
-        {
-            let (base_asset, quote_asset) = extract_assets_from_symbol(&symbol);
-            let (check_asset, required_amount) = match open_side {
-                Side::Buy => (quote_asset, aligned_qty * aligned_price),
-                Side::Sell => (base_asset, aligned_qty),
-            };
-            let available_balance =
-                MonitorChannel::instance().balance_position_for_venue(venue, &check_asset);
-            if available_balance + 1e-12 < required_amount {
-                if open_side != Side::Sell {
-                    error!(
-                        "HedgeArbStrategy: strategy_id={} BinanceMargin STANDARD 余额不足，拒绝开仓并标记策略不活跃 symbol={} side={:?} asset={} required={:.8} available={:.8}",
-                        self.strategy_id,
-                        symbol,
-                        open_side,
-                        check_asset,
-                        required_amount,
-                        available_balance
-                    );
-                }
-                self.alive_flag = false;
-                return;
-            }
-        }
-
-        // 4、检查杠杆：若绝对持仓不增加，则可跳过
-        if force_close {
-            log_force_close_skip(self.strategy_id, "杠杆", &ctx);
-        } else {
-            let add_base_qty = signed_qty * open_qty_multiplier;
-            let current_base_qty = MonitorChannel::instance().get_position_qty(&symbol, venue);
-            let projected_base_qty = current_base_qty + add_base_qty;
-            let reduce_eps = 1e-12_f64;
-
-            if projected_base_qty.abs() > current_base_qty.abs() + reduce_eps {
-                if let Err(e) = MonitorChannel::instance().check_leverage() {
-                    error!(
-                        "HedgeArbStrategy: strategy_id={} 杠杆风控检查失败: {}，标记策略为不活跃",
-                        self.strategy_id, e
-                    );
-                    self.alive_flag = false;
-                    return;
-                }
-            }
-        }
-
-        // 5、考虑修正量，判断下单后是否会大于max u
-        if force_close {
-            log_force_close_skip(self.strategy_id, "持仓上限 (max_pos_u)", &ctx);
-        } else if let Err(e) =
-            MonitorChannel::instance().ensure_max_pos_u(&symbol, signed_qty, aligned_price)
-        {
-            error!(
-                "HedgeArbStrategy: strategy_id={} 仓位限制检查失败: {}，标记策略为不活跃",
-                self.strategy_id, e
-            );
-            self.alive_flag = false;
-            return;
-        }
-
-        // 6、通过全部风控检查，生成订单ID并保存策略状态
+        // 通过全部开仓前检查后，生成订单ID并保存策略状态。
         self.order_seq += 1;
         let order_id = Self::compose_order_id(self.strategy_id, self.order_seq);
         self.open_order_id = order_id;
@@ -418,12 +296,12 @@ impl HedgeArbStrategy {
         // Hedge timeout 为 0 表示 MT 模式，>0 为 MM 模式，保存原始 TTL，实际挂单后再换算绝对时间
         self.hedge_timeout_us = (ctx.hedge_timeout_us > 0).then_some(ctx.hedge_timeout_us);
         self.hedge_expire_ts = None;
-        self.open_venue = venue;
-        self.hedge_symbol = hedge_symbol;
-        self.hedge_venue = hedge_venue;
-        self.hedge_side = hedge_side;
-        self.open_qty_multiplier = open_qty_multiplier;
-        self.hedge_qty_multiplier = hedge_qty_multiplier;
+        self.open_venue = params.venue;
+        self.hedge_symbol = params.hedge_symbol.clone();
+        self.hedge_venue = params.hedge_venue;
+        self.hedge_side = open_check.hedge_side;
+        self.open_qty_multiplier = open_check.open_qty_multiplier;
+        self.hedge_qty_multiplier = open_check.hedge_qty_multiplier;
         self.open_signal_ts = ctx.create_ts;
         self.open_price_qv = ctx.price_qv;
         self.open_price_offset = ctx.price_offset;
@@ -439,32 +317,33 @@ impl HedgeArbStrategy {
             ctx.hedging_leg.ts,
         );
 
-        // 7、用修正量价，开仓订单记录到order manager
+        // 用修正后的量价在 order manager 中创建开仓订单。
         let ts = get_timestamp_us();
         let client_order_id = MonitorChannel::instance()
             .order_manager()
             .borrow_mut()
             .create_order(
-                venue,
+                params.venue,
                 order_id,
-                order_type,
-                symbol.clone(),
-                open_side,
-                aligned_qty,
-                aligned_price,
+                params.order_type,
+                params.symbol.clone(),
+                params.open_side,
+                params.aligned_qty,
+                params.aligned_price,
                 force_close,
-                open_qty_multiplier,
+                open_check.open_qty_multiplier,
                 ts,
             );
         info!(
             "📤 开仓订单已创建: strategy_id={} order_id={} client_order_id={} symbol={} {:?} side={:?} qty={} price={}",
-            self.strategy_id, order_id, client_order_id, symbol, venue, open_side,
-            qv_decimal_or_fallback(aligned_qty),
-            qv_decimal_or_fallback(aligned_price)
+            self.strategy_id, order_id, client_order_id, params.symbol, params.venue, params.open_side,
+            qv_decimal_or_fallback(params.aligned_qty),
+            qv_decimal_or_fallback(params.aligned_price)
         );
 
-        // 9、推送开仓订单到交易引擎
-        if let Err(e) = create_and_send_order(self.strategy_id, client_order_id, "开仓", &symbol)
+        // 推送开仓订单到交易引擎。
+        if let Err(e) =
+            create_and_send_order(self.strategy_id, client_order_id, "开仓", &params.symbol)
         {
             self.alive_flag = false;
             error!(

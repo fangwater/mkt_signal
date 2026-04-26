@@ -168,30 +168,6 @@ pub fn parse_arb_open_signal_params(
     })
 }
 
-pub fn log_force_close_start(
-    strategy_id: i32,
-    side: Side,
-    aligned_qty: f64,
-    aligned_price: f64,
-    ctx: &ArbOpenCtx,
-) {
-    let opening_symbol = ctx.get_opening_symbol();
-    let hedging_symbol = ctx.get_hedging_symbol();
-    let opening_venue = TradingVenue::describe_u8(ctx.opening_leg.venue);
-    let hedging_venue = TradingVenue::describe_u8(ctx.hedging_leg.venue);
-    info!(
-        "HedgeArbStrategy: strategy_id={} force_close_mode=true, 将跳过所有风控 | opening={} {} hedging={} {} side={:?} amount={:.4} price={:.6}",
-        strategy_id,
-        opening_symbol,
-        opening_venue,
-        hedging_symbol,
-        hedging_venue,
-        side,
-        aligned_qty,
-        aligned_price
-    );
-}
-
 pub fn log_force_close_skip(strategy_id: i32, check_name: &str, ctx: &ArbOpenCtx) {
     let opening_symbol = ctx.get_opening_symbol();
     let hedging_symbol = ctx.get_hedging_symbol();

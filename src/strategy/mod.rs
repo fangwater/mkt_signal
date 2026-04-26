@@ -1,3 +1,4 @@
+pub mod arb_check;
 pub mod arb_helper;
 pub mod arb_orphan_strategy;
 pub mod binance_basic_impl;
