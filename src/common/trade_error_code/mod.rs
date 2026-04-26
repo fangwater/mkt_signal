@@ -23,6 +23,14 @@ pub fn describe_trade_error_code(exchange: Exchange, code: i32) -> Option<&'stat
     }
 }
 
+/// New-order errors where repeating the same request is not expected to help.
+pub fn describe_non_retryable_order_error(exchange: Exchange, code: i32) -> Option<&'static str> {
+    match exchange {
+        Exchange::Binance => binance::describe_non_retryable_order_error(code),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -52,6 +60,10 @@ mod tests {
         assert_eq!(
             describe_trade_error_code(Exchange::Binance, -4061),
             Some("Position side not match")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Binance, -4004),
+            Some("Quantity less than minimum quantity")
         );
         assert_eq!(
             describe_trade_error_code(Exchange::Binance, -5022),
@@ -228,5 +240,21 @@ mod tests {
         );
         assert_eq!(describe_trade_error_code(Exchange::Bybit, 999), None);
         assert_eq!(describe_trade_error_code(Exchange::Okex, 999), None);
+    }
+
+    #[test]
+    fn maps_non_retryable_order_errors() {
+        assert_eq!(
+            describe_non_retryable_order_error(Exchange::Binance, -4004),
+            Some("QTY_LESS_THAN_MIN_QTY/数量小于最小值")
+        );
+        assert_eq!(
+            describe_non_retryable_order_error(Exchange::Binance, 51169),
+            Some("PLEDGED_COLLATERAL_LIMIT_REACHED/抵押上限已达")
+        );
+        assert_eq!(
+            describe_non_retryable_order_error(Exchange::Okex, -4004),
+            None
+        );
     }
 }
