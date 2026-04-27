@@ -377,6 +377,10 @@ impl MmOpenDecision {
         };
 
         let publish_stats = state.publish_mm_open_plan(now_us, &plan, &from_key, prediction_side);
+        info!(
+            "{}",
+            publish_stats.breakdown_line(&symbol_key, prediction_side)
+        );
 
         if publish_stats.sent > 0 {
             let side_text = match prediction_side {
