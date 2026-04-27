@@ -29,8 +29,8 @@ use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::uniform_mm_publish::{
     publish_mm_uniform_new_order, publish_mm_uniform_terminal_order,
     publish_mm_uniform_trade_order, publish_mm_uniform_trade_order_from_order_update,
-    MmUniformPublishCtx,
 };
+use crate::strategy::uniform_order_helper::UniformPublishCtx;
 use crate::strategy::ws_order_update::WsOrderUpdate;
 use log::{debug, warn};
 use std::any::Any;
@@ -1490,8 +1490,8 @@ impl MarketMakerHedgeStrategy {
         }
     }
 
-    fn uniform_hedge_publish_ctx(&self, client_order_id: i64) -> MmUniformPublishCtx {
-        MmUniformPublishCtx {
+    fn uniform_hedge_publish_ctx(&self, client_order_id: i64) -> UniformPublishCtx {
+        UniformPublishCtx {
             signal_ts: self.signal_ts,
             from_key: format!(
                 "hedge|{}",
