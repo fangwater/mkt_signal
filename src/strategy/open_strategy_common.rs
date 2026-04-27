@@ -4,6 +4,7 @@ use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{OrderExecutionStatus, Side};
 use crate::pre_trade::QueryEngHub;
 use crate::signal::common::TradingVenue;
+use crate::strategy::manager::OpenPriceMapEntry;
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::order_reconcile::ORDER_QUERY_WATCHDOG_DELAY_US;
 use crate::strategy::uniform_order_helper::UniformPublishCtx;
@@ -99,6 +100,30 @@ pub trait OpenStrategyCommon {
 
     fn strategy_id(&self) -> i32 {
         self.open_state().strategy_id
+    }
+
+    fn open_strategy_symbol(&self) -> Option<&str> {
+        let symbol = self.open_state().open_symbol.as_str();
+        if symbol.is_empty() {
+            None
+        } else {
+            Some(symbol)
+        }
+    }
+
+    fn open_strategy_is_active(&self) -> bool {
+        self.open_state().alive
+    }
+
+    fn open_price_map_entry(&self) -> Option<OpenPriceMapEntry> {
+        let open_state = self.open_state();
+        Some(OpenPriceMapEntry {
+            symbol: open_state.open_symbol.clone(),
+            side: open_state.order.open_side?,
+            client_order_id: open_state.order.open_order_id,
+            price_qv: open_state.price_qv.into(),
+        })
+        .filter(|entry| !entry.symbol.is_empty() && entry.client_order_id != 0)
     }
 
     fn open_order_non_terminal_cleanup_reason(&self) -> &'static str {

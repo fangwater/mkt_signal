@@ -2304,7 +2304,7 @@ mod tests {
     use crate::signal::cancel_signal::MmCancelCtx;
     use crate::signal::common::SignalBytes;
     use crate::signal::trade_signal::{SignalType, TradeSignal};
-    use crate::strategy::manager::MmOpenPriceMapEntry;
+    use crate::strategy::manager::OpenPriceMapEntry;
     use crate::strategy::{ForceCloseControl, Strategy, StrategyManager};
     use std::any::Any;
     use std::cell::RefCell;
@@ -2384,8 +2384,8 @@ mod tests {
             Some(&self.symbol)
         }
 
-        fn mm_open_price_map_entry(&self) -> Option<MmOpenPriceMapEntry> {
-            Some(MmOpenPriceMapEntry {
+        fn mm_open_price_map_entry(&self) -> Option<OpenPriceMapEntry> {
+            Some(OpenPriceMapEntry {
                 symbol: self.symbol.clone(),
                 side: self.side,
                 client_order_id: self.client_order_id,

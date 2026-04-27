@@ -89,12 +89,12 @@ impl QuantizedValueKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct MmOpenPriceMapKey {
+pub struct OpenPriceMapKey {
     pub symbol: String,
     pub price_qv: QuantizedValueKey,
 }
 
-impl MmOpenPriceMapKey {
+impl OpenPriceMapKey {
     pub fn new(symbol: impl Into<String>, price_qv: QuantizedValue) -> Self {
         Self {
             symbol: normalize_symbol_for_internal(&symbol.into()),
@@ -104,16 +104,9 @@ impl MmOpenPriceMapKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MmOpenPriceMapEntry {
+pub struct OpenPriceMapEntry {
     pub symbol: String,
     pub side: Side,
-    pub client_order_id: i64,
-    pub price_qv: QuantizedValueKey,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ArbOpenPriceMapEntry {
-    pub symbol: String,
     pub client_order_id: i64,
     pub price_qv: QuantizedValueKey,
 }
@@ -148,10 +141,10 @@ pub trait Strategy: ForceCloseControl {
     fn handle_period_clock(&mut self, current_tp: i64);
     fn is_active(&self) -> bool;
     fn symbol(&self) -> Option<&str>;
-    fn mm_open_price_map_entry(&self) -> Option<MmOpenPriceMapEntry> {
+    fn mm_open_price_map_entry(&self) -> Option<OpenPriceMapEntry> {
         None
     }
-    fn arb_open_price_map_entry(&self) -> Option<ArbOpenPriceMapEntry> {
+    fn arb_open_price_map_entry(&self) -> Option<OpenPriceMapEntry> {
         None
     }
 }
@@ -263,9 +256,9 @@ pub struct StrategyManager {
     known_ids: HashSet<i32>,
     symbol_index: HashMap<String, BTreeSet<i32>>,
     mm_open_price_index: HashMap<String, HashMap<QuantizedValueKey, BTreeSet<i32>>>,
-    mm_open_strategy_index: HashMap<i32, MmOpenPriceMapEntry>,
+    mm_open_strategy_index: HashMap<i32, OpenPriceMapEntry>,
     arb_open_price_index: HashMap<String, HashMap<QuantizedValueKey, BTreeSet<i32>>>,
-    arb_open_strategy_index: HashMap<i32, ArbOpenPriceMapEntry>,
+    arb_open_strategy_index: HashMap<i32, OpenPriceMapEntry>,
 }
 
 impl StrategyManager {
@@ -283,68 +276,146 @@ impl StrategyManager {
         }
     }
 
-    fn register_mm_open_price_entry(&mut self, strategy_id: i32, mut entry: MmOpenPriceMapEntry) {
+    fn register_open_price_entry(
+        price_index: &mut HashMap<String, HashMap<QuantizedValueKey, BTreeSet<i32>>>,
+        strategy_index: &mut HashMap<i32, OpenPriceMapEntry>,
+        strategy_id: i32,
+        mut entry: OpenPriceMapEntry,
+    ) {
         entry.symbol = normalize_symbol_for_internal(&entry.symbol);
-        self.mm_open_price_index
+        price_index
             .entry(entry.symbol.clone())
             .or_default()
             .entry(entry.price_qv)
             .or_default()
             .insert(strategy_id);
-        self.mm_open_strategy_index.insert(strategy_id, entry);
+        strategy_index.insert(strategy_id, entry);
+    }
+
+    fn unregister_open_price_entry(
+        price_index: &mut HashMap<String, HashMap<QuantizedValueKey, BTreeSet<i32>>>,
+        strategy_index: &mut HashMap<i32, OpenPriceMapEntry>,
+        strategy_id: i32,
+    ) {
+        let Some(entry) = strategy_index.remove(&strategy_id) else {
+            return;
+        };
+        let mut should_remove_symbol = false;
+        if let Some(price_map) = price_index.get_mut(&entry.symbol) {
+            let mut should_remove_price = false;
+            if let Some(strategy_ids) = price_map.get_mut(&entry.price_qv) {
+                strategy_ids.remove(&strategy_id);
+                should_remove_price = strategy_ids.is_empty();
+            }
+            if should_remove_price {
+                price_map.remove(&entry.price_qv);
+            }
+            should_remove_symbol = price_map.is_empty();
+        }
+        if should_remove_symbol {
+            price_index.remove(&entry.symbol);
+        }
+    }
+
+    fn register_mm_open_price_entry(&mut self, strategy_id: i32, entry: OpenPriceMapEntry) {
+        Self::register_open_price_entry(
+            &mut self.mm_open_price_index,
+            &mut self.mm_open_strategy_index,
+            strategy_id,
+            entry,
+        );
     }
 
     fn unregister_mm_open_price_entry(&mut self, strategy_id: i32) {
-        let Some(entry) = self.mm_open_strategy_index.remove(&strategy_id) else {
-            return;
-        };
-        let mut should_remove_symbol = false;
-        if let Some(price_map) = self.mm_open_price_index.get_mut(&entry.symbol) {
-            let mut should_remove_price = false;
-            if let Some(strategy_ids) = price_map.get_mut(&entry.price_qv) {
-                strategy_ids.remove(&strategy_id);
-                should_remove_price = strategy_ids.is_empty();
-            }
-            if should_remove_price {
-                price_map.remove(&entry.price_qv);
-            }
-            should_remove_symbol = price_map.is_empty();
-        }
-        if should_remove_symbol {
-            self.mm_open_price_index.remove(&entry.symbol);
-        }
+        Self::unregister_open_price_entry(
+            &mut self.mm_open_price_index,
+            &mut self.mm_open_strategy_index,
+            strategy_id,
+        );
     }
 
-    fn register_arb_open_price_entry(&mut self, strategy_id: i32, mut entry: ArbOpenPriceMapEntry) {
-        entry.symbol = normalize_symbol_for_internal(&entry.symbol);
-        self.arb_open_price_index
-            .entry(entry.symbol.clone())
-            .or_default()
-            .entry(entry.price_qv)
-            .or_default()
-            .insert(strategy_id);
-        self.arb_open_strategy_index.insert(strategy_id, entry);
+    fn register_arb_open_price_entry(&mut self, strategy_id: i32, entry: OpenPriceMapEntry) {
+        Self::register_open_price_entry(
+            &mut self.arb_open_price_index,
+            &mut self.arb_open_strategy_index,
+            strategy_id,
+            entry,
+        );
     }
 
     fn unregister_arb_open_price_entry(&mut self, strategy_id: i32) {
-        let Some(entry) = self.arb_open_strategy_index.remove(&strategy_id) else {
-            return;
+        Self::unregister_open_price_entry(
+            &mut self.arb_open_price_index,
+            &mut self.arb_open_strategy_index,
+            strategy_id,
+        );
+    }
+
+    fn open_strategy_ids_by_price_qv(
+        price_index: &HashMap<String, HashMap<QuantizedValueKey, BTreeSet<i32>>>,
+        symbol: &str,
+        price_qv: QuantizedValue,
+    ) -> Vec<i32> {
+        let symbol = normalize_symbol_for_internal(symbol);
+        let price_qv = QuantizedValueKey::from(price_qv);
+        price_index
+            .get(&symbol)
+            .and_then(|price_map| price_map.get(&price_qv))
+            .map(|strategy_ids| strategy_ids.iter().copied().collect::<Vec<_>>())
+            .unwrap_or_default()
+    }
+
+    fn open_strategy_ids_by_price_qv_and_side(
+        price_index: &HashMap<String, HashMap<QuantizedValueKey, BTreeSet<i32>>>,
+        strategy_index: &HashMap<i32, OpenPriceMapEntry>,
+        symbol: &str,
+        price_qv: QuantizedValue,
+        side: Side,
+    ) -> Vec<i32> {
+        let symbol = normalize_symbol_for_internal(symbol);
+        let price_qv = QuantizedValueKey::from(price_qv);
+        let Some(strategy_ids) = price_index
+            .get(&symbol)
+            .and_then(|price_map| price_map.get(&price_qv))
+        else {
+            return Vec::new();
         };
-        let mut should_remove_symbol = false;
-        if let Some(price_map) = self.arb_open_price_index.get_mut(&entry.symbol) {
-            let mut should_remove_price = false;
-            if let Some(strategy_ids) = price_map.get_mut(&entry.price_qv) {
-                strategy_ids.remove(&strategy_id);
-                should_remove_price = strategy_ids.is_empty();
-            }
-            if should_remove_price {
-                price_map.remove(&entry.price_qv);
-            }
-            should_remove_symbol = price_map.is_empty();
-        }
-        if should_remove_symbol {
-            self.arb_open_price_index.remove(&entry.symbol);
-        }
+        strategy_ids
+            .iter()
+            .copied()
+            .filter(|strategy_id| {
+                strategy_index
+                    .get(strategy_id)
+                    .is_some_and(|entry| entry.side == side)
+            })
+            .collect()
+    }
+
+    fn open_price_map_snapshot(
+        price_index: &HashMap<String, HashMap<QuantizedValueKey, BTreeSet<i32>>>,
+    ) -> Vec<(OpenPriceMapKey, Vec<i32>)> {
+        let mut rows: Vec<(OpenPriceMapKey, Vec<i32>)> = price_index
+            .iter()
+            .flat_map(|(symbol, price_map)| {
+                price_map.iter().map(move |(price_qv, strategy_ids)| {
+                    (
+                        OpenPriceMapKey {
+                            symbol: symbol.clone(),
+                            price_qv: *price_qv,
+                        },
+                        strategy_ids.iter().copied().collect::<Vec<_>>(),
+                    )
+                })
+            })
+            .collect();
+        rows.sort_by(|(lhs, _), (rhs, _)| {
+            lhs.symbol
+                .cmp(&rhs.symbol)
+                .then(lhs.price_qv.count.cmp(&rhs.price_qv.count))
+                .then(lhs.price_qv.tick_i64.cmp(&rhs.price_qv.tick_i64))
+                .then(lhs.price_qv.tick_exp.cmp(&rhs.price_qv.tick_exp))
+        });
+        rows
     }
 
     /// 当前维护的策略数量
@@ -490,13 +561,7 @@ impl StrategyManager {
         symbol: &str,
         price_qv: QuantizedValue,
     ) -> Vec<i32> {
-        let symbol = normalize_symbol_for_internal(symbol);
-        let price_qv = QuantizedValueKey::from(price_qv);
-        self.mm_open_price_index
-            .get(&symbol)
-            .and_then(|price_map| price_map.get(&price_qv))
-            .map(|strategy_ids| strategy_ids.iter().copied().collect::<Vec<_>>())
-            .unwrap_or_default()
+        Self::open_strategy_ids_by_price_qv(&self.mm_open_price_index, symbol, price_qv)
     }
 
     pub fn mm_open_strategy_ids_by_price_qv_and_side(
@@ -505,53 +570,20 @@ impl StrategyManager {
         price_qv: QuantizedValue,
         side: Side,
     ) -> Vec<i32> {
-        let symbol = normalize_symbol_for_internal(symbol);
-        let price_qv = QuantizedValueKey::from(price_qv);
-        let Some(strategy_ids) = self
-            .mm_open_price_index
-            .get(&symbol)
-            .and_then(|price_map| price_map.get(&price_qv))
-        else {
-            return Vec::new();
-        };
-        strategy_ids
-            .iter()
-            .copied()
-            .filter(|strategy_id| {
-                self.mm_open_strategy_index
-                    .get(strategy_id)
-                    .is_some_and(|entry| entry.side == side)
-            })
-            .collect()
+        Self::open_strategy_ids_by_price_qv_and_side(
+            &self.mm_open_price_index,
+            &self.mm_open_strategy_index,
+            symbol,
+            price_qv,
+            side,
+        )
     }
 
-    pub fn mm_open_price_map_snapshot(&self) -> Vec<(MmOpenPriceMapKey, Vec<i32>)> {
-        let mut rows: Vec<(MmOpenPriceMapKey, Vec<i32>)> = self
-            .mm_open_price_index
-            .iter()
-            .flat_map(|(symbol, price_map)| {
-                price_map.iter().map(move |(price_qv, strategy_ids)| {
-                    (
-                        MmOpenPriceMapKey {
-                            symbol: symbol.clone(),
-                            price_qv: *price_qv,
-                        },
-                        strategy_ids.iter().copied().collect::<Vec<_>>(),
-                    )
-                })
-            })
-            .collect();
-        rows.sort_by(|(lhs, _), (rhs, _)| {
-            lhs.symbol
-                .cmp(&rhs.symbol)
-                .then(lhs.price_qv.count.cmp(&rhs.price_qv.count))
-                .then(lhs.price_qv.tick_i64.cmp(&rhs.price_qv.tick_i64))
-                .then(lhs.price_qv.tick_exp.cmp(&rhs.price_qv.tick_exp))
-        });
-        rows
+    pub fn mm_open_price_map_snapshot(&self) -> Vec<(OpenPriceMapKey, Vec<i32>)> {
+        Self::open_price_map_snapshot(&self.mm_open_price_index)
     }
 
-    pub fn mm_open_price_map_entry(&self, strategy_id: i32) -> Option<&MmOpenPriceMapEntry> {
+    pub fn mm_open_price_map_entry(&self, strategy_id: i32) -> Option<&OpenPriceMapEntry> {
         self.mm_open_strategy_index.get(&strategy_id)
     }
 
@@ -560,39 +592,30 @@ impl StrategyManager {
         symbol: &str,
         price_qv: QuantizedValue,
     ) -> Vec<i32> {
-        let symbol = normalize_symbol_for_internal(symbol);
-        let price_qv = QuantizedValueKey::from(price_qv);
-        self.arb_open_price_index
-            .get(&symbol)
-            .and_then(|price_map| price_map.get(&price_qv))
-            .map(|strategy_ids| strategy_ids.iter().copied().collect::<Vec<_>>())
-            .unwrap_or_default()
+        Self::open_strategy_ids_by_price_qv(&self.arb_open_price_index, symbol, price_qv)
     }
 
-    pub fn arb_open_price_map_snapshot(&self) -> Vec<(MmOpenPriceMapKey, Vec<i32>)> {
-        let mut rows: Vec<(MmOpenPriceMapKey, Vec<i32>)> = self
-            .arb_open_price_index
-            .iter()
-            .flat_map(|(symbol, price_map)| {
-                price_map.iter().map(move |(price_qv, strategy_ids)| {
-                    (
-                        MmOpenPriceMapKey {
-                            symbol: symbol.clone(),
-                            price_qv: *price_qv,
-                        },
-                        strategy_ids.iter().copied().collect::<Vec<_>>(),
-                    )
-                })
-            })
-            .collect();
-        rows.sort_by(|(lhs, _), (rhs, _)| {
-            lhs.symbol
-                .cmp(&rhs.symbol)
-                .then(lhs.price_qv.count.cmp(&rhs.price_qv.count))
-                .then(lhs.price_qv.tick_i64.cmp(&rhs.price_qv.tick_i64))
-                .then(lhs.price_qv.tick_exp.cmp(&rhs.price_qv.tick_exp))
-        });
-        rows
+    pub fn arb_open_strategy_ids_by_price_qv_and_side(
+        &self,
+        symbol: &str,
+        price_qv: QuantizedValue,
+        side: Side,
+    ) -> Vec<i32> {
+        Self::open_strategy_ids_by_price_qv_and_side(
+            &self.arb_open_price_index,
+            &self.arb_open_strategy_index,
+            symbol,
+            price_qv,
+            side,
+        )
+    }
+
+    pub fn arb_open_price_map_snapshot(&self) -> Vec<(OpenPriceMapKey, Vec<i32>)> {
+        Self::open_price_map_snapshot(&self.arb_open_price_index)
+    }
+
+    pub fn arb_open_price_map_entry(&self, strategy_id: i32) -> Option<&OpenPriceMapEntry> {
+        self.arb_open_strategy_index.get(&strategy_id)
     }
 
     /// 获取只读引用（用于快照）
@@ -815,7 +838,7 @@ impl StrategyManager {
 #[cfg(test)]
 mod tests {
     use super::{
-        next_strategy_id_state, ForceCloseControl, MmOpenPriceMapEntry, MmOpenPriceMapKey,
+        next_strategy_id_state, ForceCloseControl, OpenPriceMapEntry, OpenPriceMapKey,
         QuantizedValueKey, Strategy, StrategyManager, STRATEGY_ID_MASK,
     };
     use crate::common::tick_math::QuantizedValue;
@@ -824,7 +847,7 @@ mod tests {
     use crate::strategy::{order_update::OrderUpdate, trade_update::TradeUpdate};
     use std::any::Any;
 
-    struct DummyMmOpenStrategy {
+    struct DummyOpenStrategy {
         id: i32,
         symbol: String,
         side: Side,
@@ -832,7 +855,7 @@ mod tests {
         price_qv: QuantizedValue,
     }
 
-    impl ForceCloseControl for DummyMmOpenStrategy {
+    impl ForceCloseControl for DummyOpenStrategy {
         fn set_force_close_mode(&mut self, _enabled: bool) {}
 
         fn is_force_close_mode(&self) -> bool {
@@ -840,7 +863,7 @@ mod tests {
         }
     }
 
-    impl Strategy for DummyMmOpenStrategy {
+    impl Strategy for DummyOpenStrategy {
         fn as_any(&self) -> &dyn Any {
             self
         }
@@ -873,8 +896,17 @@ mod tests {
             Some(&self.symbol)
         }
 
-        fn mm_open_price_map_entry(&self) -> Option<MmOpenPriceMapEntry> {
-            Some(MmOpenPriceMapEntry {
+        fn mm_open_price_map_entry(&self) -> Option<OpenPriceMapEntry> {
+            Some(OpenPriceMapEntry {
+                symbol: self.symbol.clone(),
+                side: self.side,
+                client_order_id: self.client_order_id,
+                price_qv: self.price_qv.into(),
+            })
+        }
+
+        fn arb_open_price_map_entry(&self) -> Option<OpenPriceMapEntry> {
+            Some(OpenPriceMapEntry {
                 symbol: self.symbol.clone(),
                 side: self.side,
                 client_order_id: self.client_order_id,
@@ -888,14 +920,14 @@ mod tests {
         let mut manager = StrategyManager::new();
         let qv = QuantizedValue::from_parts(1, -1, 1234);
 
-        manager.insert(Box::new(DummyMmOpenStrategy {
+        manager.insert(Box::new(DummyOpenStrategy {
             id: 11,
             symbol: "BTCUSDT".to_string(),
             side: Side::Buy,
             client_order_id: 101,
             price_qv: qv,
         }));
-        manager.insert(Box::new(DummyMmOpenStrategy {
+        manager.insert(Box::new(DummyOpenStrategy {
             id: 12,
             symbol: "BTCUSDT".to_string(),
             side: Side::Sell,
@@ -915,6 +947,18 @@ mod tests {
             manager.mm_open_strategy_ids_by_price_qv_and_side("BTCUSDT", qv, Side::Sell),
             vec![12]
         );
+        assert_eq!(
+            manager.arb_open_strategy_ids_by_price_qv("btcusdt", qv),
+            vec![11, 12]
+        );
+        assert_eq!(
+            manager.arb_open_strategy_ids_by_price_qv_and_side("BTCUSDT", qv, Side::Buy),
+            vec![11]
+        );
+        assert_eq!(
+            manager.arb_open_strategy_ids_by_price_qv_and_side("BTCUSDT", qv, Side::Sell),
+            vec![12]
+        );
     }
 
     #[test]
@@ -923,7 +967,7 @@ mod tests {
         let qv = QuantizedValue::from_parts(5, -2, 777);
         let strategy_id = 21;
 
-        manager.insert(Box::new(DummyMmOpenStrategy {
+        manager.insert(Box::new(DummyOpenStrategy {
             id: strategy_id,
             symbol: "ETHUSDT".to_string(),
             side: Side::Buy,
@@ -951,7 +995,7 @@ mod tests {
     fn mm_open_price_map_snapshot_contains_key_and_ids() {
         let mut manager = StrategyManager::new();
         let qv = QuantizedValue::from_parts(1, -3, 456);
-        manager.insert(Box::new(DummyMmOpenStrategy {
+        manager.insert(Box::new(DummyOpenStrategy {
             id: 31,
             symbol: "TRXUSDT".to_string(),
             side: Side::Buy,
@@ -963,7 +1007,7 @@ mod tests {
         assert_eq!(snapshot.len(), 1);
         assert_eq!(
             snapshot[0].0,
-            MmOpenPriceMapKey {
+            OpenPriceMapKey {
                 symbol: "TRXUSDT".to_string(),
                 price_qv: QuantizedValueKey::from(qv),
             }
@@ -975,7 +1019,7 @@ mod tests {
     fn mm_open_price_map_normalizes_symbol_variants() {
         let mut manager = StrategyManager::new();
         let qv = QuantizedValue::from_parts(1, -3, 789);
-        manager.insert(Box::new(DummyMmOpenStrategy {
+        manager.insert(Box::new(DummyOpenStrategy {
             id: 41,
             symbol: "SOL-USDT-SWAP".to_string(),
             side: Side::Buy,

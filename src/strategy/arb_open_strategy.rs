@@ -11,7 +11,7 @@ use crate::signal::common::{OrderStatus, SignalBytes, TradingVenue};
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::manager::{
-    ArbOpenPriceMapEntry, ForceCloseControl, HedgeOrphanHandoff, Strategy,
+    ForceCloseControl, HedgeOrphanHandoff, OpenPriceMapEntry, Strategy,
 };
 use crate::strategy::open_strategy_common::{
     OpenStrategyCommon, OpenStrategyState, PendingOrderQueryReason,
@@ -1048,24 +1048,15 @@ impl Strategy for ArbOpenStrategy {
     }
 
     fn get_id(&self) -> i32 {
-        self.open_state.strategy_id
+        self.strategy_id()
     }
 
     fn symbol(&self) -> Option<&str> {
-        if self.open_state.open_symbol.is_empty() {
-            None
-        } else {
-            Some(&self.open_state.open_symbol)
-        }
+        self.open_strategy_symbol()
     }
 
-    fn arb_open_price_map_entry(&self) -> Option<ArbOpenPriceMapEntry> {
-        Some(ArbOpenPriceMapEntry {
-            symbol: self.open_state.open_symbol.clone(),
-            client_order_id: self.open_state.order.open_order_id,
-            price_qv: self.open_state.price_qv.into(),
-        })
-        .filter(|entry| !entry.symbol.is_empty() && entry.client_order_id != 0)
+    fn arb_open_price_map_entry(&self) -> Option<OpenPriceMapEntry> {
+        self.open_price_map_entry()
     }
 
     fn is_strategy_order(&self, order_id: i64) -> bool {
@@ -1164,7 +1155,7 @@ impl Strategy for ArbOpenStrategy {
     }
 
     fn is_active(&self) -> bool {
-        self.open_state.alive
+        self.open_strategy_is_active()
     }
 }
 

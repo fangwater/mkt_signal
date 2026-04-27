@@ -21,7 +21,7 @@ use crate::strategy::arb_helper::{
 };
 use crate::strategy::arb_orphan_strategy::ArbOrphanLeg;
 use crate::strategy::manager::{
-    ArbOpenPriceMapEntry, ArbOrphanHandoff, ArbOrphanResidualHandoff, ForceCloseControl, Strategy,
+    ArbOrphanHandoff, ArbOrphanResidualHandoff, ForceCloseControl, OpenPriceMapEntry, Strategy,
 };
 use crate::strategy::order_reconcile::{qv_decimal_or_fallback, ORDER_QUERY_WATCHDOG_DELAY_US};
 use crate::strategy::order_update::OrderUpdate;
@@ -2146,7 +2146,7 @@ impl Strategy for HedgeArbStrategy {
         Some(&self.open_symbol)
     }
 
-    fn arb_open_price_map_entry(&self) -> Option<ArbOpenPriceMapEntry> {
+    fn arb_open_price_map_entry(&self) -> Option<OpenPriceMapEntry> {
         if self.open_symbol.is_empty() || self.open_order_id == 0 {
             return None;
         }
@@ -2158,8 +2158,14 @@ impl Strategy for HedgeArbStrategy {
         if !open_active {
             return None;
         }
-        Some(ArbOpenPriceMapEntry {
+        let open_side = if self.hedge_side == Side::Buy {
+            Side::Sell
+        } else {
+            Side::Buy
+        };
+        Some(OpenPriceMapEntry {
             symbol: self.open_symbol.clone(),
+            side: open_side,
             client_order_id: self.open_order_id,
             price_qv: self.open_price_qv.into(),
         })
