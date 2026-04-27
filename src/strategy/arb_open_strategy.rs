@@ -1,10 +1,9 @@
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::OrderRateBucket;
-use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, Side};
 use crate::pre_trade::PersistChannel;
 use crate::signal::cancel_signal::ArbCancelCtx;
-use crate::signal::common::{OrderStatus, SignalBytes, TradingVenue};
+use crate::signal::common::{SignalBytes, TradingVenue};
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::manager::{
@@ -16,14 +15,14 @@ use crate::strategy::open_strategy_common::{
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_engine_response::TradeEngineResponse;
 use crate::strategy::trade_update::TradeUpdate;
-use crate::strategy::uniform_order_helper::publish_uniform_trade_order;
 use log::{debug, warn};
 use std::any::Any;
 
 /// 单腿套利开仓策略：只负责 open leg 生命周期，不保存 hedge leg 或双腿盘口。
 pub struct ArbOpenStrategy {
     open_state: OpenStrategyState,
-    pub close_ts: Option<i64>,    //仓位希望持有的时间
+    pub close_ts: Option<i64>, //仓位希望持有的时间
+    // TODO: apply_trade_update_lite 会使用这些 open leg 观测字段。
     pub cumulative_open_qty: f64, //累计开仓数量
     pub open_qty_multiplier: f64, //开仓侧数量乘数（venue qty -> base qty）
 }
@@ -72,171 +71,12 @@ impl ArbOpenStrategy {
         });
     }
 
-    fn record_open_order_terminal(
-        &self,
-        side: Side,
-        base_qty: f64,
-        fill_ts: i64,
-        price: f64,
-        update_detail: &str,
-    ) {
-        if base_qty <= 1e-12 {
-            return;
-        }
-        let close_ts = self.close_ts.unwrap_or(0);
-        let signed_base_qty = match side {
-            Side::Buy => base_qty.abs(),
-            Side::Sell => -base_qty.abs(),
-        };
-        let updated = MonitorChannel::instance()
-            .strategy_mgr()
-            .borrow_mut()
-            .record_open_order_terminal(
-                &self.open_state.open_symbol,
-                signed_base_qty,
-                fill_ts,
-                price,
-                close_ts,
-            );
-        if !updated {
-            warn!(
-                "ArbOpenStrategy: strategy_id={} record open order terminal failed symbol={} side={:?} base_qty={:.8} fill_ts={} price={:.8} close_ts={} detail={}",
-                self.open_state.strategy_id,
-                self.open_state.open_symbol,
-                side,
-                base_qty,
-                fill_ts,
-                price,
-                close_ts,
-                update_detail
-            );
-        }
-    }
-
-    fn publish_uniform_trade_order(
-        &self,
-        trade: &dyn TradeUpdate,
-        order: &Order,
-        prev_cumulative_filled_qty: f64,
-        status: OrderStatus,
-    ) {
-        let ctx = self.uniform_open_publish_ctx();
-        publish_uniform_trade_order(
-            trade,
-            order,
-            prev_cumulative_filled_qty,
-            status,
-            &ctx,
-            "ArbOpenStrategy",
-            self.open_state.strategy_id,
-        );
-    }
-
     fn apply_order_update(&mut self, order_update: &dyn OrderUpdate) -> bool {
         self.apply_order_update_common(order_update)
     }
 
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) -> bool {
-        let client_order_id = trade.client_order_id();
-        self.clear_query_watchdogs(client_order_id);
-        if client_order_id != self.open_state.order.open_order_id {
-            debug!(
-                "ArbOpenStrategy: strategy_id={} ignore trade_update client_order_id={}",
-                self.open_state.strategy_id, client_order_id
-            );
-            return false;
-        }
-
-        let Some(status @ (OrderStatus::PartiallyFilled | OrderStatus::Filled)) =
-            trade.order_status()
-        else {
-            return false;
-        };
-
-        let order_mgr = MonitorChannel::instance().order_manager();
-        let mut order_manager = order_mgr.borrow_mut();
-        let Some(current_order) = order_manager.get(client_order_id) else {
-            warn!(
-                "ArbOpenStrategy: strategy_id={} trade update order missing client_order_id={}",
-                self.open_state.strategy_id, client_order_id
-            );
-            return false;
-        };
-        if OrderManager::should_skip_idempotent_trade_update(
-            &current_order,
-            status,
-            trade.cumulative_filled_quantity(),
-            trade.event_time(),
-            "ArbOpenStrategy",
-            self.open_state.strategy_id,
-        )
-        .is_some()
-        {
-            return false;
-        }
-
-        let prev_cumulative_filled_qty = current_order.cumulative_filled_quantity;
-        let prev_order_terminal = current_order.status.is_terminal();
-        let qty_multiplier = current_order.qty_multiplier;
-        let order_side = current_order.side;
-        let cumulative_qty = trade.cumulative_filled_quantity();
-        let trade_time = trade.trade_time();
-        let event_time = trade.event_time();
-        let updated = order_manager.update(client_order_id, |order| {
-            order.cumulative_filled_quantity = cumulative_qty;
-            order.set_filled_time(trade_time);
-            order.set_exchange_order_id(trade.order_id());
-            if status == OrderStatus::Filled {
-                order.status = OrderExecutionStatus::Filled;
-                order.set_end_time(event_time);
-            } else if !order.status.is_terminal() {
-                order.status = OrderExecutionStatus::Create;
-            }
-        });
-        if !updated {
-            warn!(
-                "ArbOpenStrategy: strategy_id={} trade update order missing client_order_id={}",
-                self.open_state.strategy_id, client_order_id
-            );
-            return false;
-        }
-        if let Some(order) = order_manager.get(client_order_id) {
-            self.publish_uniform_trade_order(trade, &order, prev_cumulative_filled_qty, status);
-        }
-        drop(order_manager);
-
-        let cumulative_base_qty = cumulative_qty * qty_multiplier;
-        if cumulative_base_qty > self.cumulative_open_qty + 1e-12 {
-            self.cumulative_open_qty = cumulative_base_qty;
-        }
-        if status == OrderStatus::Filled {
-            let terminal_base_qty = if prev_order_terminal {
-                (cumulative_qty - prev_cumulative_filled_qty) * qty_multiplier
-            } else {
-                cumulative_qty * qty_multiplier
-            };
-            self.record_open_order_terminal(
-                order_side,
-                terminal_base_qty,
-                event_time,
-                trade.price(),
-                &trade.debug_summary(),
-            );
-        }
-
-        if status == OrderStatus::Filled {
-            debug!(
-                "✅ ArbOpen订单成交完成: strategy_id={} client_order_id={} symbol={} cumulative_open_qty={:.8} detail={}",
-                self.open_state.strategy_id,
-                client_order_id,
-                trade.symbol(),
-                self.cumulative_open_qty,
-                trade.debug_summary()
-            );
-            self.open_state.alive = false;
-        }
-
-        true
+        self.apply_trade_update_common(trade)
     }
 
     fn handle_signal(&mut self, signal: &TradeSignal) {
