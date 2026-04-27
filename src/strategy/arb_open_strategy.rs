@@ -11,7 +11,7 @@ use crate::signal::common::{OrderStatus, SignalBytes, TradingVenue};
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::manager::{
-    ArbOpenPriceMapEntry, ForceCloseControl, HedgeOrphanHandoff, HedgeOrphanSourceKind, Strategy,
+    ArbOpenPriceMapEntry, ForceCloseControl, HedgeOrphanHandoff, Strategy,
 };
 use crate::strategy::open_strategy_common::{
     OpenStrategyCommon, OpenStrategyState, PendingOrderQueryReason,
@@ -48,16 +48,6 @@ impl ArbOpenStrategy {
         }
     }
 
-    fn release_open_order_keep_local(&mut self, client_order_id: i64, reason: &str) {
-        self.open_state.order.pending_order_query = None;
-        self.clear_query_watchdogs(client_order_id);
-        self.open_state.order.open_order_id = 0;
-        warn!(
-            "ArbOpenStrategy: strategy_id={} release open order keep local client_order_id={} reason={}",
-            self.open_state.strategy_id, client_order_id, reason
-        );
-    }
-
     fn handoff_open_order_to_hedge_orphan(&mut self, client_order_id: i64, reason: &str) -> bool {
         if client_order_id <= 0 {
             self.open_state.alive = false;
@@ -67,14 +57,13 @@ impl ArbOpenStrategy {
             "ArbOpenStrategy: strategy_id={} hedge_orphan_handoff_start client_order_id={} reason={}",
             self.open_state.strategy_id, client_order_id, reason
         );
-        let handoff = HedgeOrphanHandoff {
+        let handoff = HedgeOrphanHandoff::from_open(
             client_order_id,
-            source_strategy_id: self.open_state.strategy_id,
-            source_kind: HedgeOrphanSourceKind::Open,
-            uniform_ctx: self.uniform_open_publish_ctx(),
-            recorded_base_qty: self.cumulative_open_qty,
-            reason: reason.to_string(),
-        };
+            self.open_state.strategy_id,
+            self.uniform_open_publish_ctx(),
+            self.cumulative_open_qty,
+            reason,
+        );
         let Some(orphan_mgr) = MonitorChannel::try_orphan_strategy_mgr() else {
             warn!(
                 "ArbOpenStrategy: strategy_id={} orphan manager unavailable client_order_id={} reason={}",
@@ -95,25 +84,6 @@ impl ArbOpenStrategy {
         self.release_open_order_keep_local(client_order_id, reason);
         self.open_state.alive = false;
         true
-    }
-
-    fn cleanup_strategy_orders(&mut self) {
-        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
-            return;
-        };
-        let mut mgr = order_mgr.borrow_mut();
-        if self.open_state.order.open_order_id != 0 {
-            if let Some(order) = mgr.get(self.open_state.order.open_order_id) {
-                if !order.status.is_terminal() {
-                    mgr.log_order_details(
-                        &order,
-                        "ArbOpen开仓订单未达到终结状态被清理",
-                        self.open_state.strategy_id,
-                    );
-                }
-            }
-            let _ = mgr.remove(self.open_state.order.open_order_id);
-        }
     }
 
     fn terminalize_open_order_before_cleanup(&mut self, client_order_id: i64) {
@@ -762,6 +732,7 @@ impl ArbOpenStrategy {
         }
 
         let prev_cumulative_filled_qty = current_order.cumulative_filled_quantity;
+        let prev_order_terminal = current_order.status.is_terminal();
         let qty_multiplier = current_order.qty_multiplier;
         let order_side = current_order.side;
         let order_price = current_order.price;
@@ -848,12 +819,18 @@ impl ArbOpenStrategy {
         }
 
         let cumulative_base_qty = effective_cumulative_filled_qty * qty_multiplier;
-        let base_qty_delta =
-            (effective_cumulative_filled_qty - prev_cumulative_filled_qty) * qty_multiplier;
         if cumulative_base_qty > self.cumulative_open_qty + 1e-12 {
             self.cumulative_open_qty = cumulative_base_qty;
         }
-        if base_qty_delta > 1e-12 {
+        if matches!(
+            order_update.status(),
+            OrderStatus::Canceled | OrderStatus::Filled
+        ) {
+            let base_qty_delta = if prev_order_terminal {
+                (effective_cumulative_filled_qty - prev_cumulative_filled_qty) * qty_multiplier
+            } else {
+                effective_cumulative_filled_qty * qty_multiplier
+            };
             self.record_arb_open_fill_delta(
                 order_side,
                 base_qty_delta,
@@ -960,6 +937,7 @@ impl ArbOpenStrategy {
         }
 
         let prev_cumulative_filled_qty = current_order.cumulative_filled_quantity;
+        let prev_order_terminal = current_order.status.is_terminal();
         let qty_multiplier = current_order.qty_multiplier;
         let order_side = current_order.side;
         let cumulative_qty = trade.cumulative_filled_quantity();
@@ -989,11 +967,15 @@ impl ArbOpenStrategy {
         drop(order_manager);
 
         let cumulative_base_qty = cumulative_qty * qty_multiplier;
-        let base_qty_delta = (cumulative_qty - prev_cumulative_filled_qty) * qty_multiplier;
         if cumulative_base_qty > self.cumulative_open_qty + 1e-12 {
             self.cumulative_open_qty = cumulative_base_qty;
         }
-        if base_qty_delta > 1e-12 {
+        if status == OrderStatus::Filled {
+            let base_qty_delta = if prev_order_terminal {
+                (cumulative_qty - prev_cumulative_filled_qty) * qty_multiplier
+            } else {
+                cumulative_qty * qty_multiplier
+            };
             self.record_arb_open_fill_delta(
                 order_side,
                 base_qty_delta,
@@ -1058,6 +1040,10 @@ impl OpenStrategyCommon for ArbOpenStrategy {
 
     fn open_state_mut(&mut self) -> &mut OpenStrategyState {
         &mut self.open_state
+    }
+
+    fn open_order_non_terminal_cleanup_reason(&self) -> &'static str {
+        "ArbOpen开仓订单未达到终结状态被清理"
     }
 
     fn handoff_open_order_after_query_failure(

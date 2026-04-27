@@ -100,6 +100,10 @@ pub trait OpenStrategyCommon {
         self.open_state().strategy_id
     }
 
+    fn open_order_non_terminal_cleanup_reason(&self) -> &'static str {
+        "开仓订单未达到终结状态被清理"
+    }
+
     fn open_order_state(&self) -> &OpenOrderState {
         &self.open_state().order
     }
@@ -203,6 +207,39 @@ pub trait OpenStrategyCommon {
         {
             self.set_cancel_query_watchdog(None);
         }
+    }
+
+    fn release_open_order_keep_local(&mut self, client_order_id: i64, reason: &str) {
+        self.set_pending_order_query(None);
+        self.clear_query_watchdogs(client_order_id);
+        self.open_order_state_mut().open_order_id = 0;
+        warn!(
+            "{}: strategy_id={} release open order keep local client_order_id={} reason={}",
+            self.strategy_name(),
+            self.strategy_id(),
+            client_order_id,
+            reason
+        );
+    }
+
+    fn cleanup_strategy_orders(&mut self) {
+        let open_order_id = self.open_order_id();
+        if open_order_id == 0 {
+            return;
+        }
+
+        let strategy_id = self.strategy_id();
+        let non_terminal_reason = self.open_order_non_terminal_cleanup_reason();
+        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
+            return;
+        };
+        let mut mgr = order_mgr.borrow_mut();
+        if let Some(order) = mgr.get(open_order_id) {
+            if !order.status.is_terminal() {
+                mgr.log_order_details(&order, non_terminal_reason, strategy_id);
+            }
+        }
+        let _ = mgr.remove(open_order_id);
     }
 
     fn send_order_query(&mut self, client_order_id: i64, reason: PendingOrderQueryReason) -> bool {

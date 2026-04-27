@@ -172,6 +172,38 @@ pub struct MmOrphanHandoff {
     pub reason: String,
 }
 
+impl MmOrphanHandoff {
+    pub fn from_open(
+        client_order_id: i64,
+        source_strategy_id: i32,
+        uniform_ctx: MmUniformPublishCtx,
+        reason: &str,
+    ) -> Self {
+        Self {
+            client_order_id,
+            source_strategy_id,
+            source_kind: MmOrphanSourceKind::Open,
+            uniform_ctx,
+            reason: reason.to_string(),
+        }
+    }
+
+    pub fn from_hedge(
+        client_order_id: i64,
+        source_strategy_id: i32,
+        uniform_ctx: MmUniformPublishCtx,
+        reason: &str,
+    ) -> Self {
+        Self {
+            client_order_id,
+            source_strategy_id,
+            source_kind: MmOrphanSourceKind::Hedge,
+            uniform_ctx,
+            reason: reason.to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HedgeOrphanSourceKind {
     Open,
@@ -186,6 +218,25 @@ pub struct HedgeOrphanHandoff {
     pub uniform_ctx: ArbUniformPublishCtx,
     pub recorded_base_qty: f64,
     pub reason: String,
+}
+
+impl HedgeOrphanHandoff {
+    pub fn from_open(
+        client_order_id: i64,
+        source_strategy_id: i32,
+        uniform_ctx: ArbUniformPublishCtx,
+        recorded_base_qty: f64,
+        reason: &str,
+    ) -> Self {
+        Self {
+            client_order_id,
+            source_strategy_id,
+            source_kind: HedgeOrphanSourceKind::Open,
+            uniform_ctx,
+            recorded_base_qty,
+            reason: reason.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

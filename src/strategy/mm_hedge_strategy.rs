@@ -18,7 +18,7 @@ use crate::signal::common::{align_price_floor, OrderStatus, SignalBytes, Trading
 use crate::signal::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
 use crate::signal::mm_signal::MmBackwardQueryMsg;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
-use crate::strategy::manager::{ForceCloseControl, MmOrphanHandoff, MmOrphanSourceKind, Strategy};
+use crate::strategy::manager::{ForceCloseControl, MmOrphanHandoff, Strategy};
 use crate::strategy::net_qty_queue::NetQtyQueue;
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::order_reconcile::{qv_decimal_or_fallback, ORDER_QUERY_WATCHDOG_DELAY_US};
@@ -1153,13 +1153,12 @@ impl MarketMakerHedgeStrategy {
             self.hedge_order_trace_snapshot(client_order_id)
         );
 
-        let handoff = MmOrphanHandoff {
+        let handoff = MmOrphanHandoff::from_hedge(
             client_order_id,
-            source_strategy_id: self.strategy_id,
-            source_kind: MmOrphanSourceKind::Hedge,
-            uniform_ctx: self.uniform_hedge_publish_ctx(client_order_id),
-            reason: reason.to_string(),
-        };
+            self.strategy_id,
+            self.uniform_hedge_publish_ctx(client_order_id),
+            reason,
+        );
         let Some(orphan_mgr) = MonitorChannel::try_orphan_strategy_mgr() else {
             warn!(
                 "MarketMakerHedgeStrategy: strategy_id={} orphan manager unavailable client_order_id={} reason={}",

@@ -11,7 +11,7 @@ use crate::signal::common::{OrderStatus, SignalBytes, TradingVenue};
 use crate::signal::open_signal::MmOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::manager::MmOpenPriceMapEntry;
-use crate::strategy::manager::{ForceCloseControl, MmOrphanHandoff, MmOrphanSourceKind, Strategy};
+use crate::strategy::manager::{ForceCloseControl, MmOrphanHandoff, Strategy};
 use crate::strategy::open_strategy_common::{
     OpenStrategyCommon, OpenStrategyState, PendingOrderQueryReason,
 };
@@ -32,25 +32,13 @@ use std::any::Any;
 /// 做市开仓策略：仅处理开仓，不涉及对冲/强平/模式切换
 pub struct MarketMakerOpenStrategy {
     open_state: OpenStrategyState,
-    recorded_to_hedge: bool,
 }
 
 impl MarketMakerOpenStrategy {
     pub fn new(strategy_id: i32) -> Self {
         Self {
             open_state: OpenStrategyState::new(strategy_id),
-            recorded_to_hedge: false,
         }
-    }
-
-    fn release_open_order_keep_local(&mut self, client_order_id: i64, reason: &str) {
-        self.open_state.order.pending_order_query = None;
-        self.clear_query_watchdogs(client_order_id);
-        self.open_state.order.open_order_id = 0;
-        warn!(
-            "MarketMakerOpenStrategy: strategy_id={} release open order keep local client_order_id={} reason={}",
-            self.open_state.strategy_id, client_order_id, reason
-        );
     }
 
     fn handoff_open_order_to_mm_orphan(&mut self, client_order_id: i64, reason: &str) -> bool {
@@ -62,13 +50,12 @@ impl MarketMakerOpenStrategy {
             "MarketMakerOpenStrategy: strategy_id={} orphan_handoff_start client_order_id={} reason={}",
             self.open_state.strategy_id, client_order_id, reason
         );
-        let handoff = MmOrphanHandoff {
+        let handoff = MmOrphanHandoff::from_open(
             client_order_id,
-            source_strategy_id: self.open_state.strategy_id,
-            source_kind: MmOrphanSourceKind::Open,
-            uniform_ctx: self.uniform_open_publish_ctx(),
-            reason: reason.to_string(),
-        };
+            self.open_state.strategy_id,
+            self.uniform_open_publish_ctx(),
+            reason,
+        );
         let Some(orphan_mgr) = MonitorChannel::try_orphan_strategy_mgr() else {
             warn!(
                 "MarketMakerOpenStrategy: strategy_id={} orphan manager unavailable client_order_id={} reason={}",
@@ -87,26 +74,6 @@ impl MarketMakerOpenStrategy {
         self.release_open_order_keep_local(client_order_id, reason);
         self.open_state.alive = false;
         true
-    }
-
-    fn cleanup_strategy_orders(&mut self) {
-        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
-            return;
-        };
-        let mut mgr = order_mgr.borrow_mut();
-
-        if self.open_state.order.open_order_id != 0 {
-            if let Some(order) = mgr.get(self.open_state.order.open_order_id) {
-                if !order.status.is_terminal() {
-                    mgr.log_order_details(
-                        &order,
-                        "开仓订单未达到终结状态被清理",
-                        self.open_state.strategy_id,
-                    );
-                }
-            }
-            let _ = mgr.remove(self.open_state.order.open_order_id);
-        }
     }
 
     fn terminalize_open_order_before_cleanup(&mut self, client_order_id: i64) {
@@ -594,23 +561,20 @@ impl MarketMakerOpenStrategy {
         }
     }
 
-    fn record_mm_hedge_qty(
+    fn record_mm_hedge_qty_delta(
         &mut self,
         venue: TradingVenue,
         symbol: &str,
         side: Side,
-        cumulative_qty: f64,
+        qty_delta: f64,
         fill_ts: i64,
         price: f64,
         update_detail: &str,
     ) {
-        if self.recorded_to_hedge {
+        if qty_delta <= 1e-12 {
             return;
         }
-        if cumulative_qty <= 0.0 {
-            return;
-        }
-        let base_qty = MonitorChannel::instance().qty_to_base(venue, symbol, cumulative_qty);
+        let base_qty = MonitorChannel::instance().qty_to_base(venue, symbol, qty_delta);
         if base_qty <= 0.0 {
             return;
         }
@@ -629,9 +593,7 @@ impl MarketMakerOpenStrategy {
             fill_ts,
             price,
         );
-        if updated {
-            self.recorded_to_hedge = true;
-        } else {
+        if !updated {
             let hedge_symbols = {
                 let snapshots = strategy_mgr.borrow().mm_hedge_snapshots();
                 let preview: Vec<String> = snapshots
@@ -651,18 +613,17 @@ impl MarketMakerOpenStrategy {
                 }
             };
             warn!(
-                "MarketMakerOpenStrategy: strategy_id={} record mm hedge failed venue={:?} raw_symbol={} internal_symbol={} side={:?} cumulative_qty={:.8} base_qty={:.8} fill_ts={} price={:.8} open_order_id={} recorded_to_hedge={} update={} mm_hedge_snapshots={}",
+                "MarketMakerOpenStrategy: strategy_id={} record mm hedge failed venue={:?} raw_symbol={} internal_symbol={} side={:?} qty_delta={:.8} base_qty={:.8} fill_ts={} price={:.8} open_order_id={} update={} mm_hedge_snapshots={}",
                 self.open_state.strategy_id,
                 venue,
                 symbol,
                 symbol_internal,
                 side,
-                cumulative_qty,
+                qty_delta,
                 base_qty,
                 fill_ts,
                 price,
                 self.open_state.order.open_order_id,
-                self.recorded_to_hedge,
                 update_detail,
                 hedge_symbols
             );
@@ -746,6 +707,7 @@ impl MarketMakerOpenStrategy {
         }
 
         let prev_cumulative_filled_qty = current_order.cumulative_filled_quantity;
+        let prev_order_terminal = current_order.status.is_terminal();
         let incoming_cumulative_filled_qty = order_update.cumulative_filled_quantity();
         let protected_cumulative_fill =
             current_order.protected_cumulative_fill(incoming_cumulative_filled_qty);
@@ -870,6 +832,11 @@ impl MarketMakerOpenStrategy {
             order_update.status(),
             OrderStatus::Canceled | OrderStatus::Filled
         ) {
+            let qty_delta = if prev_order_terminal {
+                effective_cumulative_filled_qty - prev_cumulative_filled_qty
+            } else {
+                effective_cumulative_filled_qty
+            };
             let update_detail = order_update.debug_summary();
             record_fill = MonitorChannel::instance()
                 .order_manager()
@@ -880,7 +847,7 @@ impl MarketMakerOpenStrategy {
                         order.venue,
                         order.symbol.clone(),
                         order.side,
-                        order.cumulative_filled_quantity,
+                        qty_delta,
                         order.price,
                         format!(
                             "{} local_order_symbol={} local_order_qty={:.8} local_order_status={:?}",
@@ -891,7 +858,7 @@ impl MarketMakerOpenStrategy {
         }
 
         if let Some((venue, symbol, side, qty, price, update_detail)) = record_fill {
-            self.record_mm_hedge_qty(
+            self.record_mm_hedge_qty_delta(
                 venue,
                 &symbol,
                 side,
@@ -1054,6 +1021,7 @@ impl MarketMakerOpenStrategy {
             return false;
         };
         let prev_cumulative_filled_qty = current_order.cumulative_filled_quantity;
+        let prev_order_terminal = current_order.status.is_terminal();
         if OrderManager::should_skip_idempotent_trade_update(
             &current_order,
             status,
@@ -1110,6 +1078,11 @@ impl MarketMakerOpenStrategy {
         drop(order_manager);
 
         if status == OrderStatus::Filled {
+            let qty_delta = if prev_order_terminal {
+                cumulative_qty - prev_cumulative_filled_qty
+            } else {
+                cumulative_qty
+            };
             let order_price = order_snapshot
                 .as_ref()
                 .map(|(_, _, _, price, _)| *price)
@@ -1128,11 +1101,11 @@ impl MarketMakerOpenStrategy {
                 trade.price(),
                 cumulative_qty
             );
-            self.record_mm_hedge_qty(
+            self.record_mm_hedge_qty_delta(
                 record_venue,
                 record_symbol,
                 record_side,
-                cumulative_qty,
+                qty_delta,
                 event_time,
                 order_price,
                 record_detail,
