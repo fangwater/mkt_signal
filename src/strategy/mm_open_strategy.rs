@@ -1,10 +1,9 @@
 use crate::common::symbol_util::normalize_symbol_for_internal;
-use crate::common::time_util::get_timestamp_us;
 use crate::common::trade_error_code::describe_trade_error_code;
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
+use crate::pre_trade::open_order_rate_limiter::OrderRateBucket;
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, Side};
-use crate::pre_trade::{PersistChannel, TradeEngHub};
+use crate::pre_trade::PersistChannel;
 use crate::signal::cancel_signal::MmCancelCtx;
 use crate::signal::common::{OrderStatus, SignalBytes, TradingVenue};
 use crate::signal::open_signal::MmOpenCtx;
@@ -12,7 +11,8 @@ use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::manager::OpenPriceMapEntry;
 use crate::strategy::manager::{ForceCloseControl, OrphanStrategyRole, Strategy};
 use crate::strategy::open_strategy_common::{
-    OpenSignalInput, OpenStrategyCommon, OpenStrategyState, PendingOrderQueryReason,
+    OpenCancelInput, OpenSignalInput, OpenStrategyCommon, OpenStrategyState,
+    PendingOrderQueryReason,
 };
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKind};
@@ -22,7 +22,7 @@ use crate::strategy::uniform_order_helper::{
     publish_uniform_trade_order_from_order_update, UniformAmountSource,
 };
 use crate::strategy::ws_order_update::try_apply_ws_order_update_for_strategy;
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
 use std::any::Any;
 
 /// 做市开仓策略：仅处理开仓，不涉及对冲/强平/模式切换
@@ -58,187 +58,6 @@ impl MarketMakerOpenStrategy {
             price_offset: ctx.price_offset,
             close_ts: 0,
         });
-    }
-
-    fn handle_open_leg_timeout(&mut self) {
-        let Some(expire_ts) = self.open_state.order.open_expire_ts else {
-            return;
-        };
-        let now = get_timestamp_us();
-        if now < expire_ts || !self.open_state.alive || self.open_state.order.open_order_id == 0 {
-            return;
-        }
-
-        info!(
-            "MarketMakerOpenStrategy: strategy_id={} 开仓订单超时，直接撤单 order_id={}",
-            self.open_state.strategy_id, self.open_state.order.open_order_id
-        );
-        self.open_state.order.last_open_cancel_reason = Some("timeout");
-
-        let order = MonitorChannel::instance()
-            .order_manager()
-            .borrow()
-            .get(self.open_state.order.open_order_id);
-        if let Some(order) = order {
-            match order.get_order_cancel_bytes() {
-                Ok(cancel_bytes) => {
-                    let exchange = order.venue.trade_engine_exchange();
-                    if let Err(e) = TradeEngHub::publish_order_request(exchange, &cancel_bytes) {
-                        info!(
-                            "MarketMakerOpenStrategy: strategy_id={} exchange={} 发送开仓撤单请求失败: {}",
-                            self.open_state.strategy_id, exchange, e
-                        );
-                    } else {
-                        info!(
-                            "MarketMakerOpenStrategy: strategy_id={} exchange={} reason=timeout 已发送开仓撤单请求 order_id={}",
-                            self.open_state.strategy_id, exchange, self.open_state.order.open_order_id
-                        );
-                        self.open_state.order.open_expire_ts = None;
-                        self.schedule_cancel_query_watchdog(self.open_state.order.open_order_id);
-                    }
-                }
-                Err(e) => {
-                    error!(
-                        "MarketMakerOpenStrategy: strategy_id={} 获取开仓撤单请求字节失败: {}",
-                        self.open_state.strategy_id, e
-                    );
-                }
-            }
-        }
-    }
-
-    fn handle_mm_cancel_signal(&mut self, ctx: MmCancelCtx) {
-        let precise_target = ctx.strategy_id > 0;
-        let from_key_preview = Self::preview_text(&String::from_utf8_lossy(&ctx.from_key), 160);
-        if self.open_state.order.last_cancel_trigger_ts == Some(ctx.trigger_ts) {
-            debug!(
-                "MarketMakerOpenStrategy: strategy_id={} skip duplicate MMCancel trigger_ts={} open_order_id={} from_key='{}'",
-                self.open_state.strategy_id,
-                ctx.trigger_ts,
-                self.open_state.order.open_order_id,
-                from_key_preview
-            );
-            return;
-        }
-        if precise_target {
-            if ctx.strategy_id != self.open_state.strategy_id {
-                info!(
-                    "MarketMakerOpenStrategy: strategy_id={} ignore targeted MMCancel target_strategy_id={} trigger_ts={} from_key='{}'",
-                    self.open_state.strategy_id,
-                    ctx.strategy_id,
-                    ctx.trigger_ts,
-                    from_key_preview
-                );
-                return;
-            }
-        } else {
-            if ctx.client_order_id > 0 && ctx.client_order_id != self.open_state.order.open_order_id
-            {
-                info!(
-                    "MarketMakerOpenStrategy: strategy_id={} ignore MMCancel due to client_order_id mismatch signal_client_order_id={} open_order_id={} trigger_ts={} from_key='{}'",
-                    self.open_state.strategy_id,
-                    ctx.client_order_id,
-                    self.open_state.order.open_order_id,
-                    ctx.trigger_ts,
-                    from_key_preview
-                );
-                return;
-            }
-
-            let cancel_side = ctx.get_side();
-            if let Some(open_side) = self.open_state.order.open_side {
-                if open_side != cancel_side {
-                    info!(
-                        "MarketMakerOpenStrategy: strategy_id={} skip MMCancel due to side mismatch open_side={:?} cancel_side={:?} open_order_id={} trigger_ts={} from_key='{}'",
-                        self.open_state.strategy_id,
-                        open_side,
-                        cancel_side,
-                        self.open_state.order.open_order_id,
-                        ctx.trigger_ts,
-                        from_key_preview
-                    );
-                    return;
-                }
-            }
-        }
-
-        if self.open_state.order.pending_order_query.is_some()
-            || self
-                .open_state
-                .order
-                .cancel_query_watchdog
-                .is_some_and(|w| w.client_order_id == self.open_state.order.open_order_id)
-        {
-            debug!(
-                "MarketMakerOpenStrategy: strategy_id={} skip MMCancel because cancel reconcile already in flight open_order_id={} trigger_ts={} from_key='{}'",
-                self.open_state.strategy_id,
-                self.open_state.order.open_order_id,
-                ctx.trigger_ts,
-                from_key_preview
-            );
-            self.open_state.order.last_cancel_trigger_ts = Some(ctx.trigger_ts);
-            return;
-        }
-        if self.open_state.order.open_order_id == 0 {
-            info!(
-                "MarketMakerOpenStrategy: strategy_id={} skip MMCancel because open_order_id=0 trigger_ts={} from_key='{}'",
-                self.open_state.strategy_id,
-                ctx.trigger_ts,
-                from_key_preview
-            );
-            return;
-        }
-
-        let order = MonitorChannel::instance()
-            .order_manager()
-            .borrow()
-            .get(self.open_state.order.open_order_id);
-        if let Some(order) = order {
-            if order.status.is_terminal() {
-                info!(
-                    "MarketMakerOpenStrategy: strategy_id={} open order already terminal {:?}, skip cancel order_id={} trigger_ts={} from_key='{}'",
-                    self.open_state.strategy_id, order.status, self.open_state.order.open_order_id, ctx.trigger_ts, from_key_preview
-                );
-                return;
-            }
-
-            match order.get_order_cancel_bytes() {
-                Ok(cancel_bytes) => {
-                    let exchange = order.venue.trade_engine_exchange();
-                    let cancel_reason = ctx.get_reason().as_log_reason();
-                    if let Err(e) = TradeEngHub::publish_order_request(exchange, &cancel_bytes) {
-                        error!(
-                            "MarketMakerOpenStrategy: strategy_id={} exchange={} 发送撤单请求失败 order_id={} trigger_ts={} from_key='{}' err={}",
-                            self.open_state.strategy_id, exchange, self.open_state.order.open_order_id, ctx.trigger_ts, from_key_preview, e
-                        );
-                    } else {
-                        self.open_state.order.last_open_cancel_reason = Some(cancel_reason);
-                        self.open_state.order.last_cancel_trigger_ts = Some(ctx.trigger_ts);
-                        self.schedule_cancel_query_watchdog(order.client_order_id);
-                        info!(
-                            "MarketMakerOpenStrategy: strategy_id={} exchange={} reason={} 已发送开仓撤单请求 order_id={} trigger_ts={} from_key='{}'",
-                            self.open_state.strategy_id,
-                            exchange,
-                            cancel_reason,
-                            self.open_state.order.open_order_id,
-                            ctx.trigger_ts,
-                            from_key_preview
-                        );
-                    }
-                }
-                Err(e) => {
-                    error!(
-                        "MarketMakerOpenStrategy: strategy_id={} 获取撤单请求字节失败 order_id={} trigger_ts={} from_key='{}' err={}",
-                        self.open_state.strategy_id, self.open_state.order.open_order_id, ctx.trigger_ts, from_key_preview, e
-                    );
-                }
-            }
-        } else {
-            info!(
-                "MarketMakerOpenStrategy: strategy_id={} 未找到要撤销的订单 order_id={} trigger_ts={} from_key='{}'",
-                self.open_state.strategy_id, self.open_state.order.open_order_id, ctx.trigger_ts, from_key_preview
-            );
-        }
     }
 
     fn record_open_order_terminal(
@@ -306,48 +125,6 @@ impl MarketMakerOpenStrategy {
                 update_detail,
                 hedge_symbols
             );
-        }
-    }
-
-    fn create_and_send_order(&mut self, client_order_id: i64, symbol: &str) -> Result<(), String> {
-        let order = MonitorChannel::instance()
-            .order_manager()
-            .borrow()
-            .get(client_order_id);
-        let Some(order) = order else {
-            self.open_state.alive = false;
-            return Err(format!(
-                "order not found: client_order_id={}",
-                client_order_id
-            ));
-        };
-
-        let exchange = order.venue.trade_engine_exchange();
-        match order.get_order_request_bytes() {
-            Ok(req_bin) => {
-                let stats = OrderRateLimiter::record(
-                    OrderRateBucket::MmOpen,
-                    client_order_id,
-                    get_timestamp_us(),
-                );
-                info!(
-                    "MarketMakerOpenStrategy: strategy_id={} MM open order action recorded client_order_id={} count_10s={} count_1m={}",
-                    self.open_state.strategy_id, client_order_id, stats.count_10s, stats.count_1m
-                );
-                if let Err(e) = TradeEngHub::publish_order_request(exchange, &req_bin) {
-                    self.open_state.alive = false;
-                    return Err(format!(
-                        "publish order request failed: symbol={} exchange={} err={}",
-                        symbol, exchange, e
-                    ));
-                }
-                self.schedule_order_query_watchdog(client_order_id);
-                Ok(())
-            }
-            Err(e) => {
-                self.open_state.alive = false;
-                Err(format!("get order request bytes failed: {}", e))
-            }
         }
     }
 
@@ -802,7 +579,15 @@ impl MarketMakerOpenStrategy {
                 }
             },
             SignalType::MMCancel => match MmCancelCtx::from_bytes(signal.context.clone()) {
-                Ok(ctx) => self.handle_mm_cancel_signal(ctx),
+                Ok(ctx) => self.handle_open_cancel_signal_common(OpenCancelInput {
+                    signal_name: "MMCancel",
+                    target_strategy_id: ctx.strategy_id,
+                    target_client_order_id: ctx.client_order_id,
+                    cancel_side: ctx.get_side(),
+                    cancel_reason: ctx.get_reason().as_log_reason(),
+                    trigger_ts: ctx.trigger_ts,
+                    from_key: ctx.from_key,
+                }),
                 Err(err) => {
                     warn!(
                         "MarketMakerOpenStrategy: strategy_id={} decode MMCancel failed: {}",
@@ -837,6 +622,14 @@ impl OpenStrategyCommon for MarketMakerOpenStrategy {
         OrphanStrategyRole::Mm
     }
 
+    fn open_order_rate_bucket(&self) -> OrderRateBucket {
+        OrderRateBucket::MmOpen
+    }
+
+    fn open_order_action_log_name(&self) -> &'static str {
+        "MM open"
+    }
+
     fn open_order_qty_to_base(
         &self,
         venue: TradingVenue,
@@ -845,14 +638,6 @@ impl OpenStrategyCommon for MarketMakerOpenStrategy {
         _qty_multiplier: f64,
     ) -> Result<f64, String> {
         Ok(MonitorChannel::instance().qty_to_base(venue, symbol, signed_qty))
-    }
-
-    fn create_and_send_open_order(
-        &mut self,
-        client_order_id: i64,
-        symbol: &str,
-    ) -> Result<(), String> {
-        self.create_and_send_order(client_order_id, symbol)
     }
 
     fn handoff_open_order_after_query_failure(
@@ -992,7 +777,7 @@ impl Strategy for MarketMakerOpenStrategy {
     }
 
     fn handle_period_clock(&mut self, _current_tp: i64) {
-        self.handle_open_leg_timeout();
+        self.handle_open_leg_timeout_common();
         self.handle_query_watchdogs();
     }
 

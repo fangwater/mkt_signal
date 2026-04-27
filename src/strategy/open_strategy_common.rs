@@ -5,7 +5,7 @@ use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
 use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderType, Side};
 use crate::pre_trade::params_load::PreTradeParamsLoader;
-use crate::pre_trade::QueryEngHub;
+use crate::pre_trade::{QueryEngHub, TradeEngHub};
 use crate::signal::common::TradingVenue;
 use crate::strategy::manager::{OpenPriceMapEntry, OrphanHandoff, OrphanStrategyRole};
 use crate::strategy::order_query_builder::build_order_query_request;
@@ -99,6 +99,16 @@ pub struct OpenSignalInput {
     pub close_ts: i64,
 }
 
+pub struct OpenCancelInput {
+    pub signal_name: &'static str,
+    pub target_strategy_id: i32,
+    pub target_client_order_id: i64,
+    pub cancel_side: Side,
+    pub cancel_reason: &'static str,
+    pub trigger_ts: i64,
+    pub from_key: Vec<u8>,
+}
+
 impl OpenStrategyState {
     pub fn new(strategy_id: i32) -> Self {
         Self {
@@ -128,6 +138,10 @@ pub trait OpenStrategyCommon {
 
     fn orphan_strategy_role(&self) -> OrphanStrategyRole;
 
+    fn open_order_rate_bucket(&self) -> OrderRateBucket;
+
+    fn open_order_action_log_name(&self) -> &'static str;
+
     fn resolve_open_qty_multiplier(
         &self,
         _venue: TradingVenue,
@@ -153,11 +167,52 @@ pub trait OpenStrategyCommon {
     ) {
     }
 
-    fn create_and_send_open_order(
-        &mut self,
-        client_order_id: i64,
-        symbol: &str,
-    ) -> Result<(), String>;
+    fn send_open_order_common(&mut self, client_order_id: i64, symbol: &str) -> Result<(), String> {
+        let order = MonitorChannel::instance()
+            .order_manager()
+            .borrow()
+            .get(client_order_id);
+        let Some(order) = order else {
+            self.open_state_mut().alive = false;
+            return Err(format!(
+                "order not found: client_order_id={}",
+                client_order_id
+            ));
+        };
+
+        let exchange = order.venue.trade_engine_exchange();
+        match order.get_order_request_bytes() {
+            Ok(req_bin) => {
+                let stats = OrderRateLimiter::record(
+                    self.open_order_rate_bucket(),
+                    client_order_id,
+                    get_timestamp_us(),
+                );
+                info!(
+                    "{}: strategy_id={} {} order action recorded client_order_id={} count_10s={} count_1m={}",
+                    self.strategy_name(),
+                    self.strategy_id(),
+                    self.open_order_action_log_name(),
+                    client_order_id,
+                    stats.count_10s,
+                    stats.count_1m
+                );
+                if let Err(e) = TradeEngHub::publish_order_request(exchange, &req_bin) {
+                    self.open_state_mut().alive = false;
+                    return Err(format!(
+                        "publish order request failed: symbol={} exchange={} err={}",
+                        symbol, exchange, e
+                    ));
+                }
+                self.schedule_order_query_watchdog(client_order_id);
+                Ok(())
+            }
+            Err(e) => {
+                self.open_state_mut().alive = false;
+                Err(format!("get order request bytes failed: {}", e))
+            }
+        }
+    }
 
     fn strategy_id(&self) -> i32 {
         self.open_state().strategy_id
@@ -482,7 +537,7 @@ pub trait OpenStrategyCommon {
             input.from_key_len
         );
 
-        if let Err(err) = self.create_and_send_open_order(client_order_id, &symbol) {
+        if let Err(err) = self.send_open_order_common(client_order_id, &symbol) {
             error!(
                 "{}: strategy_id={} open order send failed: {}",
                 self.strategy_name(),
@@ -496,6 +551,231 @@ pub trait OpenStrategyCommon {
                 self.strategy_id(),
                 client_order_id
             );
+        }
+    }
+
+    fn handle_open_leg_timeout_common(&mut self) {
+        let Some(expire_ts) = self.open_order_state().open_expire_ts else {
+            return;
+        };
+        let client_order_id = self.open_order_id();
+        let now = get_timestamp_us();
+        if now < expire_ts || !self.open_strategy_is_active() || client_order_id == 0 {
+            return;
+        }
+
+        info!(
+            "{}: strategy_id={} 开仓订单超时，直接撤单 order_id={}",
+            self.strategy_name(),
+            self.strategy_id(),
+            client_order_id
+        );
+        self.open_order_state_mut().last_open_cancel_reason = Some("timeout");
+
+        let order = MonitorChannel::instance()
+            .order_manager()
+            .borrow()
+            .get(client_order_id);
+        if let Some(order) = order {
+            match order.get_order_cancel_bytes() {
+                Ok(cancel_bytes) => {
+                    let exchange = order.venue.trade_engine_exchange();
+                    if let Err(e) = TradeEngHub::publish_order_request(exchange, &cancel_bytes) {
+                        info!(
+                            "{}: strategy_id={} exchange={} 发送开仓撤单请求失败: {}",
+                            self.strategy_name(),
+                            self.strategy_id(),
+                            exchange,
+                            e
+                        );
+                    } else {
+                        info!(
+                            "{}: strategy_id={} exchange={} reason=timeout 已发送开仓撤单请求 order_id={}",
+                            self.strategy_name(),
+                            self.strategy_id(),
+                            exchange,
+                            client_order_id
+                        );
+                        self.open_order_state_mut().open_expire_ts = None;
+                        self.schedule_cancel_query_watchdog(client_order_id);
+                    }
+                }
+                Err(e) => {
+                    error!(
+                        "{}: strategy_id={} 获取开仓撤单请求字节失败: {}",
+                        self.strategy_name(),
+                        self.strategy_id(),
+                        e
+                    );
+                }
+            }
+        }
+    }
+
+    fn handle_open_cancel_signal_common(&mut self, input: OpenCancelInput) {
+        let precise_target = input.target_strategy_id > 0;
+        let from_key_preview = Self::preview_text(&String::from_utf8_lossy(&input.from_key), 160);
+        let open_order_id = self.open_order_id();
+
+        if self.open_order_state().last_cancel_trigger_ts == Some(input.trigger_ts) {
+            debug!(
+                "{}: strategy_id={} skip duplicate {} trigger_ts={} open_order_id={} from_key='{}'",
+                self.strategy_name(),
+                self.strategy_id(),
+                input.signal_name,
+                input.trigger_ts,
+                open_order_id,
+                from_key_preview
+            );
+            return;
+        }
+
+        if precise_target {
+            if input.target_strategy_id != self.strategy_id() {
+                info!(
+                    "{}: strategy_id={} ignore targeted {} target_strategy_id={} trigger_ts={} from_key='{}'",
+                    self.strategy_name(),
+                    self.strategy_id(),
+                    input.signal_name,
+                    input.target_strategy_id,
+                    input.trigger_ts,
+                    from_key_preview
+                );
+                return;
+            }
+        } else {
+            if input.target_client_order_id > 0 && input.target_client_order_id != open_order_id {
+                info!(
+                    "{}: strategy_id={} ignore {} due to client_order_id mismatch signal_client_order_id={} open_order_id={} trigger_ts={} from_key='{}'",
+                    self.strategy_name(),
+                    self.strategy_id(),
+                    input.signal_name,
+                    input.target_client_order_id,
+                    open_order_id,
+                    input.trigger_ts,
+                    from_key_preview
+                );
+                return;
+            }
+
+            if let Some(open_side) = self.open_side() {
+                if open_side != input.cancel_side {
+                    info!(
+                        "{}: strategy_id={} skip {} due to side mismatch open_side={:?} cancel_side={:?} open_order_id={} trigger_ts={} from_key='{}'",
+                        self.strategy_name(),
+                        self.strategy_id(),
+                        input.signal_name,
+                        open_side,
+                        input.cancel_side,
+                        open_order_id,
+                        input.trigger_ts,
+                        from_key_preview
+                    );
+                    return;
+                }
+            }
+        }
+
+        if self.pending_order_query().is_some()
+            || self
+                .cancel_query_watchdog()
+                .is_some_and(|w| w.client_order_id == open_order_id)
+        {
+            debug!(
+                "{}: strategy_id={} skip {} because cancel reconcile already in flight open_order_id={} trigger_ts={} from_key='{}'",
+                self.strategy_name(),
+                self.strategy_id(),
+                input.signal_name,
+                open_order_id,
+                input.trigger_ts,
+                from_key_preview
+            );
+            self.open_order_state_mut().last_cancel_trigger_ts = Some(input.trigger_ts);
+            return;
+        }
+
+        if open_order_id == 0 {
+            info!(
+                "{}: strategy_id={} skip {} because open_order_id=0 trigger_ts={} from_key='{}'",
+                self.strategy_name(),
+                self.strategy_id(),
+                input.signal_name,
+                input.trigger_ts,
+                from_key_preview
+            );
+            return;
+        }
+
+        let order = MonitorChannel::instance()
+            .order_manager()
+            .borrow()
+            .get(open_order_id);
+        let Some(order) = order else {
+            info!(
+                "{}: strategy_id={} 未找到要撤销的订单 order_id={} trigger_ts={} from_key='{}'",
+                self.strategy_name(),
+                self.strategy_id(),
+                open_order_id,
+                input.trigger_ts,
+                from_key_preview
+            );
+            return;
+        };
+
+        if order.status.is_terminal() {
+            info!(
+                "{}: strategy_id={} open order already terminal {:?}, skip cancel order_id={} trigger_ts={} from_key='{}'",
+                self.strategy_name(),
+                self.strategy_id(),
+                order.status,
+                open_order_id,
+                input.trigger_ts,
+                from_key_preview
+            );
+            return;
+        }
+
+        match order.get_order_cancel_bytes() {
+            Ok(cancel_bytes) => {
+                let exchange = order.venue.trade_engine_exchange();
+                if let Err(e) = TradeEngHub::publish_order_request(exchange, &cancel_bytes) {
+                    error!(
+                        "{}: strategy_id={} exchange={} 发送撤单请求失败 order_id={} trigger_ts={} from_key='{}' err={}",
+                        self.strategy_name(),
+                        self.strategy_id(),
+                        exchange,
+                        open_order_id,
+                        input.trigger_ts,
+                        from_key_preview,
+                        e
+                    );
+                } else {
+                    self.open_order_state_mut().last_open_cancel_reason = Some(input.cancel_reason);
+                    self.open_order_state_mut().last_cancel_trigger_ts = Some(input.trigger_ts);
+                    self.schedule_cancel_query_watchdog(order.client_order_id);
+                    info!(
+                        "{}: strategy_id={} exchange={} reason={} 已发送开仓撤单请求 order_id={} trigger_ts={} from_key='{}'",
+                        self.strategy_name(),
+                        self.strategy_id(),
+                        exchange,
+                        input.cancel_reason,
+                        open_order_id,
+                        input.trigger_ts,
+                        from_key_preview
+                    );
+                }
+            }
+            Err(e) => {
+                error!(
+                    "{}: strategy_id={} 获取撤单请求字节失败 order_id={} trigger_ts={} from_key='{}' err={}",
+                    self.strategy_name(),
+                    self.strategy_id(),
+                    open_order_id,
+                    input.trigger_ts,
+                    from_key_preview,
+                    e
+                );
+            }
         }
     }
 
