@@ -1,9 +1,12 @@
 use crate::common::time_util::get_timestamp_us;
+use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderType, Side};
 use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
+use crate::strategy::manager::Strategy;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_engine_response::TradeEngineResponse;
 use crate::trade_engine::trade_request::TradeRequestType;
+use log::{info, warn};
 
 #[derive(Debug, Clone)]
 pub struct WsOrderUpdate {
@@ -214,4 +217,53 @@ impl OrderUpdate for WsOrderUpdate {
     fn trading_venue(&self) -> TradingVenue {
         self.trading_venue
     }
+}
+
+pub fn try_apply_ws_order_update_for_strategy<S: Strategy + ?Sized>(
+    strategy: &mut S,
+    response: &dyn TradeEngineResponse,
+) -> bool {
+    if !WsOrderUpdate::supports_trade_response_req_type(response.req_type()) {
+        return false;
+    }
+
+    let client_order_id = response.client_order_id();
+    if !strategy.is_strategy_order(client_order_id) {
+        return false;
+    }
+    let order_mgr = MonitorChannel::instance().order_manager();
+    let Some(order_snapshot) = order_mgr.borrow().get(client_order_id) else {
+        warn!(
+            "{}: strategy_id={} ws order update missing local order: client_order_id={}",
+            ws_strategy_name::<S>(),
+            strategy.get_id(),
+            client_order_id
+        );
+        return false;
+    };
+
+    let Some(update) = WsOrderUpdate::from_trade_response(response, &order_snapshot) else {
+        return false;
+    };
+
+    if matches!(update.status(), OrderStatus::New | OrderStatus::Canceled) {
+        strategy.apply_order_update(&update);
+    } else {
+        info!(
+            "{}: strategy_id={} skip non-NEW/CANCELED ws response: venue={:?} client_order_id={} status={:?}",
+            ws_strategy_name::<S>(),
+            strategy.get_id(),
+            order_snapshot.venue,
+            client_order_id,
+            update.status()
+        );
+    }
+    true
+}
+
+fn ws_strategy_name<S: ?Sized>() -> &'static str {
+    std::any::type_name::<S>()
+        .rsplit("::")
+        .next()
+        .unwrap_or("Strategy")
 }

@@ -31,7 +31,7 @@ use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
     UniformAmountSource, UniformPublishCtx,
 };
-use crate::strategy::ws_order_update::WsOrderUpdate;
+use crate::strategy::ws_order_update::try_apply_ws_order_update_for_strategy;
 use log::{debug, error, info, warn};
 use std::any::Any;
 
@@ -1774,51 +1774,6 @@ impl HedgeArbStrategy {
         }
     }
 
-    fn try_apply_ws_order_update(&mut self, response: &dyn TradeEngineResponse) -> bool {
-        if !WsOrderUpdate::supports_trade_response_req_type(response.req_type()) {
-            return false;
-        }
-
-        let client_order_id = response.client_order_id();
-        if self.classify_leg(client_order_id).is_none() {
-            return false;
-        }
-
-        let order_mgr = MonitorChannel::instance().order_manager();
-        let Some(order_snapshot) = order_mgr.borrow().get(client_order_id) else {
-            warn!(
-                "HedgeArbStrategy: strategy_id={} ws order update missing local order: client_order_id={}",
-                self.strategy_id, client_order_id
-            );
-            return false;
-        };
-        let order_snapshot = order_snapshot.clone();
-
-        let Some(update) = WsOrderUpdate::from_trade_response(response, &order_snapshot) else {
-            return false;
-        };
-
-        if matches!(
-            order_snapshot.venue,
-            TradingVenue::BinanceMargin | TradingVenue::BinanceFutures
-        ) {
-            if matches!(update.status(), OrderStatus::New | OrderStatus::Canceled) {
-                <Self as Strategy>::apply_order_update(self, &update);
-            } else {
-                debug!(
-                    "HedgeArbStrategy: strategy_id={} skip non-NEW/CANCELED binance ws response: venue={:?} client_order_id={} status={:?}",
-                    self.strategy_id,
-                    order_snapshot.venue,
-                    client_order_id,
-                    update.status()
-                );
-            }
-            return true;
-        }
-
-        false
-    }
-
     fn handle_open_leg_open_failed(
         &mut self,
         response: &dyn TradeEngineResponse,
@@ -2198,7 +2153,7 @@ impl Strategy for HedgeArbStrategy {
     }
 
     fn apply_trade_engine_response(&mut self, response: &dyn TradeEngineResponse) {
-        if self.try_apply_ws_order_update(response) {
+        if try_apply_ws_order_update_for_strategy(self, response) {
             return;
         }
 

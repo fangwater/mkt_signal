@@ -25,14 +25,13 @@ use crate::strategy::net_qty_queue::NetQtyQueue;
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::order_reconcile::{qv_decimal_or_fallback, ORDER_QUERY_WATCHDOG_DELAY_US};
 use crate::strategy::order_update::OrderUpdate;
-use crate::strategy::query_order_updates::OrderQueryTradeUpdate;
 use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKind};
 use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
     publish_uniform_trade_order_from_order_update, UniformAmountSource, UniformPublishCtx,
 };
-use crate::strategy::ws_order_update::WsOrderUpdate;
+use crate::strategy::ws_order_update::try_apply_ws_order_update_for_strategy;
 use log::{debug, warn};
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
@@ -321,67 +320,6 @@ impl MarketMakerHedgeStrategy {
             .get(&client_order_id)
             .map(|meta| meta.price_offset)
             .unwrap_or(0.0)
-    }
-
-    fn try_apply_ws_order_update(&mut self, response: &dyn TradeEngineResponse) -> bool {
-        if !WsOrderUpdate::supports_trade_response_req_type(response.req_type()) {
-            return false;
-        }
-
-        let client_order_id = response.client_order_id();
-        let order_mgr = MonitorChannel::instance().order_manager();
-        let Some(order_snapshot) = order_mgr.borrow().get(client_order_id) else {
-            warn!(
-                "MarketMakerHedgeStrategy: strategy_id={} ws order update missing local order: client_order_id={}",
-                self.strategy_id, client_order_id
-            );
-            return false;
-        };
-        let order_snapshot = order_snapshot.clone();
-
-        let Some(update) = WsOrderUpdate::from_trade_response(response, &order_snapshot) else {
-            return false;
-        };
-
-        // Binance WS 下单响应在 FULL/RESULT 模式下可能直接返回 FILLED/PartiallyFilled
-        // （并携带 fills），不再稳定经过 NEW 阶段。
-        // 这里统一只接收 NEW/CANCELED，其他状态等待 account ws 的正常推送处理。
-        if matches!(
-            order_snapshot.venue,
-            TradingVenue::BinanceMargin | TradingVenue::BinanceFutures
-        ) {
-            if matches!(update.status(), OrderStatus::New | OrderStatus::Canceled) {
-                <Self as Strategy>::apply_order_update(self, &update);
-            } else {
-                debug!(
-                    "MarketMakerHedgeStrategy: strategy_id={} skip non-NEW/CANCELED binance ws response: venue={:?} client_order_id={} status={:?}",
-                    self.strategy_id,
-                    order_snapshot.venue,
-                    client_order_id,
-                    update.status()
-                );
-            }
-            return true;
-        }
-
-        if matches!(
-            update.status(),
-            OrderStatus::PartiallyFilled | OrderStatus::Filled
-        ) {
-            let trade = OrderQueryTradeUpdate::new(
-                &order_snapshot,
-                update.order_id(),
-                update.event_time(),
-                update.cumulative_filled_quantity(),
-                response.response_price(),
-                Some(update.status()),
-                update.time_in_force(),
-            );
-            <Self as Strategy>::apply_trade_update(self, &trade);
-        } else {
-            <Self as Strategy>::apply_order_update(self, &update);
-        }
-        true
     }
 
     fn apply_net_qty_fill(&mut self, fill_ts: i64, signed_qty: f64, price: f64, source: &str) {
@@ -2191,7 +2129,7 @@ impl Strategy for MarketMakerHedgeStrategy {
     }
 
     fn apply_trade_engine_response(&mut self, response: &dyn TradeEngineResponse) {
-        if self.try_apply_ws_order_update(response) {
+        if try_apply_ws_order_update_for_strategy(self, response) {
             return;
         }
         if response.is_request_success() {
