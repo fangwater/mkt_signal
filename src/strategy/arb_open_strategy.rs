@@ -49,7 +49,7 @@ impl ArbOpenStrategy {
             0
         };
 
-        self.handle_open_signal_common(OpenSignalInput {
+        let Some(init) = self.handle_open_signal_common(OpenSignalInput {
             signal_kind: "ArbOpen",
             order_log_name: "ArbOpen",
             order_rate_bucket: OrderRateBucket::ArbOpen,
@@ -68,7 +68,16 @@ impl ArbOpenStrategy {
             price_qv: ctx.price_qv,
             price_offset: ctx.price_offset,
             close_ts,
-        });
+        }) else {
+            return;
+        };
+        self.close_ts = if init.close_ts > 0 {
+            Some(init.close_ts)
+        } else {
+            None
+        };
+        self.cumulative_open_qty = 0.0;
+        self.open_qty_multiplier = init.qty_multiplier;
     }
 
     fn apply_order_update(&mut self, order_update: &dyn OrderUpdate) -> bool {
@@ -155,20 +164,6 @@ impl OpenStrategyCommon for ArbOpenStrategy {
         symbol: &str,
     ) -> Result<f64, String> {
         MonitorChannel::instance().qty_multiplier_for_venue(venue, symbol)
-    }
-
-    fn after_open_signal_state_initialized(
-        &mut self,
-        input: &OpenSignalInput,
-        qty_multiplier: f64,
-    ) {
-        self.close_ts = if input.close_ts > 0 {
-            Some(input.close_ts)
-        } else {
-            None
-        };
-        self.cumulative_open_qty = 0.0;
-        self.open_qty_multiplier = qty_multiplier;
     }
 
     fn handoff_open_order_after_query_failure(

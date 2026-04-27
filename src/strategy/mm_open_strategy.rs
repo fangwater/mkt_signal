@@ -29,7 +29,7 @@ impl MarketMakerOpenStrategy {
     }
 
     fn handle_mm_open_signal(&mut self, ctx: MmOpenCtx) {
-        self.handle_open_signal_common(OpenSignalInput {
+        let _ = self.handle_open_signal_common(OpenSignalInput {
             signal_kind: "MMOpen",
             order_log_name: "MM开仓",
             order_rate_bucket: OrderRateBucket::MmOpen,

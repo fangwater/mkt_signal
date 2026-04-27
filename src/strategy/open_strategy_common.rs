@@ -107,6 +107,12 @@ pub struct OpenSignalInput {
     pub close_ts: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OpenSignalInitResult {
+    pub qty_multiplier: f64,
+    pub close_ts: i64,
+}
+
 pub struct OpenCancelInput {
     pub signal_name: &'static str,
     pub target_strategy_id: i32,
@@ -150,29 +156,11 @@ pub trait OpenStrategyCommon {
 
     fn open_order_action_log_name(&self) -> &'static str;
 
-    fn resolve_open_qty_multiplier(
-        &self,
-        _venue: TradingVenue,
-        _symbol: &str,
-    ) -> Result<f64, String> {
-        Ok(1.0)
-    }
+    fn resolve_open_qty_multiplier(&self, venue: TradingVenue, symbol: &str)
+        -> Result<f64, String>;
 
-    fn open_order_qty_to_base(
-        &self,
-        _venue: TradingVenue,
-        _symbol: &str,
-        signed_qty: f64,
-        qty_multiplier: f64,
-    ) -> Result<f64, String> {
+    fn open_order_qty_to_base(&self, signed_qty: f64, qty_multiplier: f64) -> Result<f64, String> {
         Ok(signed_qty * qty_multiplier)
-    }
-
-    fn after_open_signal_state_initialized(
-        &mut self,
-        _input: &OpenSignalInput,
-        _qty_multiplier: f64,
-    ) {
     }
 
     fn open_terminal_close_ts(&self) -> i64 {
@@ -305,7 +293,10 @@ pub trait OpenStrategyCommon {
         }
     }
 
-    fn handle_open_signal_common(&mut self, input: OpenSignalInput) {
+    fn handle_open_signal_common(
+        &mut self,
+        input: OpenSignalInput,
+    ) -> Option<OpenSignalInitResult> {
         let symbol = normalize_symbol_for_internal(&input.opening_symbol);
         if symbol.is_empty() {
             warn!(
@@ -314,7 +305,7 @@ pub trait OpenStrategyCommon {
                 self.strategy_id()
             );
             self.open_state_mut().alive = false;
-            return;
+            return None;
         }
 
         let Some(venue) = TradingVenue::from_u8(input.venue_u8) else {
@@ -325,7 +316,7 @@ pub trait OpenStrategyCommon {
                 input.venue_u8
             );
             self.open_state_mut().alive = false;
-            return;
+            return None;
         };
         let Some(side) = Side::from_u8(input.side_u8) else {
             warn!(
@@ -335,7 +326,7 @@ pub trait OpenStrategyCommon {
                 input.side_u8
             );
             self.open_state_mut().alive = false;
-            return;
+            return None;
         };
         let Some(order_type) = OrderType::from_u8(input.order_type_u8) else {
             warn!(
@@ -345,7 +336,7 @@ pub trait OpenStrategyCommon {
                 input.order_type_u8
             );
             self.open_state_mut().alive = false;
-            return;
+            return None;
         };
 
         if input.qty <= 0.0 {
@@ -356,7 +347,7 @@ pub trait OpenStrategyCommon {
                 input.qty
             );
             self.open_state_mut().alive = false;
-            return;
+            return None;
         }
         if input.price <= 0.0 {
             warn!(
@@ -367,7 +358,7 @@ pub trait OpenStrategyCommon {
                 order_type
             );
             self.open_state_mut().alive = false;
-            return;
+            return None;
         }
         if input.price_count <= 0 || input.amount_count <= 0 {
             warn!(
@@ -379,7 +370,7 @@ pub trait OpenStrategyCommon {
                 input.amount_count
             );
             self.open_state_mut().alive = false;
-            return;
+            return None;
         }
         if !venue.supports_pre_trade_stack() {
             panic!(
@@ -399,7 +390,7 @@ pub trait OpenStrategyCommon {
                 e
             );
             self.open_state_mut().alive = false;
-            return;
+            return None;
         }
         if let Err(e) = MonitorChannel::instance().check_total_exposure() {
             error!(
@@ -409,7 +400,7 @@ pub trait OpenStrategyCommon {
                 e
             );
             self.open_state_mut().alive = false;
-            return;
+            return None;
         }
         if order_type == OrderType::Limit {
             if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&symbol, side) {
@@ -421,7 +412,7 @@ pub trait OpenStrategyCommon {
                     e
                 );
                 self.open_state_mut().alive = false;
-                return;
+                return None;
             }
         }
 
@@ -440,7 +431,7 @@ pub trait OpenStrategyCommon {
                 e
             );
             self.open_state_mut().alive = false;
-            return;
+            return None;
         }
 
         let qty_multiplier = match self.resolve_open_qty_multiplier(venue, &symbol) {
@@ -455,7 +446,7 @@ pub trait OpenStrategyCommon {
                     err
                 );
                 self.open_state_mut().alive = false;
-                return;
+                return None;
             }
         };
 
@@ -493,26 +484,25 @@ pub trait OpenStrategyCommon {
                     available_balance
                 );
                 self.open_state_mut().alive = false;
-                return;
+                return None;
             }
         }
 
-        let add_base_qty =
-            match self.open_order_qty_to_base(venue, &symbol, signed_qty, qty_multiplier) {
-                Ok(base_qty) => base_qty,
-                Err(err) => {
-                    error!(
-                        "{}: strategy_id={} 开仓数量转换 base qty 失败 symbol={} venue={:?}: {}",
-                        self.strategy_name(),
-                        self.strategy_id(),
-                        symbol,
-                        venue,
-                        err
-                    );
-                    self.open_state_mut().alive = false;
-                    return;
-                }
-            };
+        let add_base_qty = match self.open_order_qty_to_base(signed_qty, qty_multiplier) {
+            Ok(base_qty) => base_qty,
+            Err(err) => {
+                error!(
+                    "{}: strategy_id={} 开仓数量转换 base qty 失败 symbol={} venue={:?}: {}",
+                    self.strategy_name(),
+                    self.strategy_id(),
+                    symbol,
+                    venue,
+                    err
+                );
+                self.open_state_mut().alive = false;
+                return None;
+            }
+        };
         let current_base_qty = MonitorChannel::instance().get_position_qty(&symbol, venue);
         let projected_base_qty = current_base_qty + add_base_qty;
         if projected_base_qty.abs() > current_base_qty.abs() + 1e-12_f64 {
@@ -524,7 +514,7 @@ pub trait OpenStrategyCommon {
                     e
                 );
                 self.open_state_mut().alive = false;
-                return;
+                return None;
             }
         }
         if let Err(e) =
@@ -537,7 +527,7 @@ pub trait OpenStrategyCommon {
                 e
             );
             self.open_state_mut().alive = false;
-            return;
+            return None;
         }
 
         {
@@ -551,8 +541,6 @@ pub trait OpenStrategyCommon {
             state.price_qv = input.price_qv;
             state.price_offset = input.price_offset;
         }
-        self.after_open_signal_state_initialized(&input, qty_multiplier);
-
         let client_order_id = Self::compose_order_id(self.strategy_id());
         self.open_order_state_mut().open_order_id = client_order_id;
 
@@ -602,6 +590,10 @@ pub trait OpenStrategyCommon {
                 client_order_id
             );
         }
+        Some(OpenSignalInitResult {
+            qty_multiplier,
+            close_ts: input.close_ts,
+        })
     }
 
     fn handle_open_leg_timeout_common(&mut self) {
