@@ -2,15 +2,10 @@ use crate::pre_trade::order_manager::{Order, OrderManager};
 use crate::signal::common::OrderStatus;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
-use crate::strategy::uniform_order_helper::{publish_uniform_order_event, UniformOrderEventKind};
+use crate::strategy::uniform_order_helper::{
+    publish_uniform_order_event, UniformOrderEventKind, UniformPublishCtx,
+};
 use log::warn;
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct MmUniformPublishCtx {
-    pub signal_ts: i64,
-    pub from_key: Vec<u8>,
-    pub price_offset: f64,
-}
 
 fn compute_uniform_amount_update(
     order: &Order,
@@ -44,7 +39,7 @@ pub fn publish_mm_uniform_new_order(
     order_update: &dyn OrderUpdate,
     order: &Order,
     prev_cumulative_filled_qty: f64,
-    ctx: &MmUniformPublishCtx,
+    ctx: &UniformPublishCtx,
     strategy_label: &str,
     strategy_id: i32,
 ) {
@@ -74,7 +69,7 @@ pub fn publish_mm_uniform_terminal_order(
     order_update: &dyn OrderUpdate,
     order: &Order,
     prev_cumulative_filled_qty: f64,
-    ctx: &MmUniformPublishCtx,
+    ctx: &UniformPublishCtx,
     strategy_label: &str,
     strategy_id: i32,
 ) {
@@ -105,7 +100,7 @@ pub fn publish_mm_uniform_trade_order(
     order: &Order,
     prev_cumulative_filled_qty: f64,
     status: OrderStatus,
-    ctx: &MmUniformPublishCtx,
+    ctx: &UniformPublishCtx,
     strategy_label: &str,
     strategy_id: i32,
 ) {
@@ -139,7 +134,7 @@ pub fn publish_mm_uniform_trade_order_from_order_update(
     order_update: &dyn OrderUpdate,
     order: &Order,
     prev_cumulative_filled_qty: f64,
-    ctx: &MmUniformPublishCtx,
+    ctx: &UniformPublishCtx,
     strategy_label: &str,
     strategy_id: i32,
 ) {

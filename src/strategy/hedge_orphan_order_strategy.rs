@@ -14,8 +14,8 @@ use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::uniform_arb_publish::{
     publish_arb_uniform_new_order, publish_arb_uniform_terminal_order,
     publish_arb_uniform_trade_order, publish_arb_uniform_trade_order_from_order_update,
-    ArbUniformPublishCtx,
 };
+use crate::strategy::uniform_order_helper::UniformPublishCtx;
 use log::{info, warn};
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
@@ -27,7 +27,7 @@ const HEDGE_ORPHAN_QUERY_MAX_TICKS: u32 = 3_200;
 pub struct HedgeOrphanOrderOwner {
     pub source_strategy_id: i32,
     pub source_kind: HedgeOrphanSourceKind,
-    pub uniform_ctx: ArbUniformPublishCtx,
+    pub uniform_ctx: UniformPublishCtx,
     pub recorded_base_qty: f64,
 }
 

@@ -12,8 +12,8 @@ use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::uniform_mm_publish::{
     publish_mm_uniform_new_order, publish_mm_uniform_terminal_order,
     publish_mm_uniform_trade_order, publish_mm_uniform_trade_order_from_order_update,
-    MmUniformPublishCtx,
 };
+use crate::strategy::uniform_order_helper::UniformPublishCtx;
 use log::{debug, info, warn};
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
@@ -25,7 +25,7 @@ const MM_ORPHAN_QUERY_MAX_TICKS: u32 = 3_200;
 pub struct MmOrphanOrderOwner {
     pub source_strategy_id: i32,
     pub source_kind: MmOrphanSourceKind,
-    pub uniform_ctx: MmUniformPublishCtx,
+    pub uniform_ctx: UniformPublishCtx,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

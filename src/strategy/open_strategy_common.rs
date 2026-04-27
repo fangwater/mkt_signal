@@ -6,6 +6,7 @@ use crate::pre_trade::QueryEngHub;
 use crate::signal::common::TradingVenue;
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::order_reconcile::ORDER_QUERY_WATCHDOG_DELAY_US;
+use crate::strategy::uniform_order_helper::UniformPublishCtx;
 use log::{debug, info, warn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +103,15 @@ pub trait OpenStrategyCommon {
 
     fn open_order_non_terminal_cleanup_reason(&self) -> &'static str {
         "开仓订单未达到终结状态被清理"
+    }
+
+    fn uniform_open_publish_ctx(&self) -> UniformPublishCtx {
+        let open_state = self.open_state();
+        UniformPublishCtx {
+            signal_ts: open_state.signal_ts,
+            from_key: format!("open|{}", open_state.from_key).into_bytes(),
+            price_offset: open_state.price_offset,
+        }
     }
 
     fn open_order_state(&self) -> &OpenOrderState {

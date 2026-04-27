@@ -8,8 +8,7 @@ use crate::signal::trade_signal::TradeSignal;
 use crate::strategy::arb_hedge_strategy::{ArbHedgeSnapshot, ArbHedgeStrategy};
 use crate::strategy::arb_orphan_strategy::ArbOrphanLeg;
 use crate::strategy::mm_hedge_strategy::{MarketMakerHedgeStrategy, MmHedgeSnapshot};
-use crate::strategy::uniform_arb_publish::ArbUniformPublishCtx;
-use crate::strategy::uniform_mm_publish::MmUniformPublishCtx;
+use crate::strategy::uniform_order_helper::UniformPublishCtx;
 use crate::strategy::{
     order_update::OrderUpdate, trade_engine_response::TradeEngineResponse,
     trade_update::TradeUpdate,
@@ -168,7 +167,7 @@ pub struct MmOrphanHandoff {
     pub client_order_id: i64,
     pub source_strategy_id: i32,
     pub source_kind: MmOrphanSourceKind,
-    pub uniform_ctx: MmUniformPublishCtx,
+    pub uniform_ctx: UniformPublishCtx,
     pub reason: String,
 }
 
@@ -176,7 +175,7 @@ impl MmOrphanHandoff {
     pub fn from_open(
         client_order_id: i64,
         source_strategy_id: i32,
-        uniform_ctx: MmUniformPublishCtx,
+        uniform_ctx: UniformPublishCtx,
         reason: &str,
     ) -> Self {
         Self {
@@ -191,7 +190,7 @@ impl MmOrphanHandoff {
     pub fn from_hedge(
         client_order_id: i64,
         source_strategy_id: i32,
-        uniform_ctx: MmUniformPublishCtx,
+        uniform_ctx: UniformPublishCtx,
         reason: &str,
     ) -> Self {
         Self {
@@ -215,7 +214,7 @@ pub struct HedgeOrphanHandoff {
     pub client_order_id: i64,
     pub source_strategy_id: i32,
     pub source_kind: HedgeOrphanSourceKind,
-    pub uniform_ctx: ArbUniformPublishCtx,
+    pub uniform_ctx: UniformPublishCtx,
     pub recorded_base_qty: f64,
     pub reason: String,
 }
@@ -224,7 +223,7 @@ impl HedgeOrphanHandoff {
     pub fn from_open(
         client_order_id: i64,
         source_strategy_id: i32,
-        uniform_ctx: ArbUniformPublishCtx,
+        uniform_ctx: UniformPublishCtx,
         recorded_base_qty: f64,
         reason: &str,
     ) -> Self {
@@ -247,7 +246,7 @@ pub struct ArbOrphanHandoff {
     pub uniform_ctx: Option<ArbOrphanUniformCtx>,
 }
 
-pub type ArbOrphanUniformCtx = ArbUniformPublishCtx;
+pub type ArbOrphanUniformCtx = UniformPublishCtx;
 
 #[derive(Debug, Clone)]
 pub struct ArbOrphanResidualHandoff {

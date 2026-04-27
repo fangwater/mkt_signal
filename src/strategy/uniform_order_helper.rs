@@ -3,6 +3,13 @@ use crate::pre_trade::order_manager::Order;
 use crate::pre_trade::PersistChannel;
 use crate::signal::common::OrderStatus;
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct UniformPublishCtx {
+    pub signal_ts: i64,
+    pub from_key: Vec<u8>,
+    pub price_offset: f64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UniformOrderEventKind {
     New,

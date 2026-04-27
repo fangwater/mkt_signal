@@ -24,7 +24,6 @@ use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::uniform_arb_publish::{
     publish_arb_uniform_new_order, publish_arb_uniform_terminal_order,
     publish_arb_uniform_trade_order, publish_arb_uniform_trade_order_from_order_update,
-    ArbUniformPublishCtx,
 };
 use crate::strategy::ws_order_update::WsOrderUpdate;
 use log::{debug, error, info, warn};
@@ -595,14 +594,6 @@ impl ArbOpenStrategy {
                 close_ts,
                 update_detail
             );
-        }
-    }
-
-    fn uniform_open_publish_ctx(&self) -> ArbUniformPublishCtx {
-        ArbUniformPublishCtx {
-            signal_ts: self.open_state.signal_ts,
-            from_key: self.open_state.from_key.clone().into_bytes(),
-            price_offset: self.open_state.price_offset,
         }
     }
 

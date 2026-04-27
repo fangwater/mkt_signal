@@ -23,7 +23,6 @@ use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::uniform_mm_publish::{
     publish_mm_uniform_new_order, publish_mm_uniform_terminal_order,
     publish_mm_uniform_trade_order, publish_mm_uniform_trade_order_from_order_update,
-    MmUniformPublishCtx,
 };
 use crate::strategy::ws_order_update::WsOrderUpdate;
 use log::{debug, error, info, warn};
@@ -892,14 +891,6 @@ impl MarketMakerOpenStrategy {
         }
 
         true
-    }
-
-    fn uniform_open_publish_ctx(&self) -> MmUniformPublishCtx {
-        MmUniformPublishCtx {
-            signal_ts: self.open_state.signal_ts,
-            from_key: format!("open|{}", self.open_state.from_key).into_bytes(),
-            price_offset: self.open_state.price_offset,
-        }
     }
 
     fn publish_uniform_new_order(

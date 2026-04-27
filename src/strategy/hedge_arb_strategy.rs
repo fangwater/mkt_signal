@@ -29,8 +29,9 @@ use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKi
 use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::uniform_arb_publish::{
     publish_arb_uniform_new_order, publish_arb_uniform_terminal_order,
-    publish_arb_uniform_trade_order, ArbUniformPublishCtx,
+    publish_arb_uniform_trade_order,
 };
+use crate::strategy::uniform_order_helper::UniformPublishCtx;
 use crate::strategy::ws_order_update::WsOrderUpdate;
 use log::{debug, error, info, warn};
 use std::any::Any;
@@ -96,14 +97,14 @@ struct QueryWatchdog {
 impl HedgeArbStrategy {
     // 根据 leg 获取 uniform publish context，提供给 arb orphan
     // 保证后续可以补完from key
-    fn uniform_publish_ctx_for_leg(&self, leg: Leg) -> ArbUniformPublishCtx {
+    fn uniform_publish_ctx_for_leg(&self, leg: Leg) -> UniformPublishCtx {
         match leg {
-            Leg::Open => ArbUniformPublishCtx {
+            Leg::Open => UniformPublishCtx {
                 signal_ts: self.open_signal_ts,
                 from_key: self.open_from_key.clone().into_bytes(),
                 price_offset: self.open_price_offset,
             },
-            Leg::Hedge => ArbUniformPublishCtx {
+            Leg::Hedge => UniformPublishCtx {
                 signal_ts: self.hedge_signal_ts,
                 from_key: self.hedge_from_key.clone().into_bytes(),
                 price_offset: self.hedge_price_offset,
@@ -1716,7 +1717,7 @@ impl HedgeArbStrategy {
         true
     }
 
-    fn uniform_publish_ctx(&self, order: &Order) -> Option<ArbUniformPublishCtx> {
+    fn uniform_publish_ctx(&self, order: &Order) -> Option<UniformPublishCtx> {
         let leg = self.classify_leg(order.client_order_id)?;
         Some(self.uniform_publish_ctx_for_leg(leg))
     }
