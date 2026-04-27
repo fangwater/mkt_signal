@@ -57,6 +57,65 @@ fn infer_mm_env_name_from_runtime() -> String {
     normalize_mm_env_name(Some(leaf.as_ref()))
 }
 
+fn parse_bool_param(redis_key: &str, field: &str, raw: &str) -> bool {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => true,
+        "false" | "0" | "no" | "off" | "" => false,
+        _ => {
+            panic!(
+                "Redis hash '{}' {} 非法（仅支持 true/false）: {}",
+                redis_key, field, raw
+            )
+        }
+    }
+}
+
+fn parse_utc_hhmm_minute(raw: &str) -> Option<u16> {
+    let bytes = raw.as_bytes();
+    if bytes.len() != 5 || bytes[2] != b':' {
+        return None;
+    }
+    if !bytes[0].is_ascii_digit()
+        || !bytes[1].is_ascii_digit()
+        || !bytes[3].is_ascii_digit()
+        || !bytes[4].is_ascii_digit()
+    {
+        return None;
+    }
+    let hour = u16::from(bytes[0] - b'0') * 10 + u16::from(bytes[1] - b'0');
+    let minute = u16::from(bytes[3] - b'0') * 10 + u16::from(bytes[4] - b'0');
+    if hour >= 24 || minute >= 60 {
+        return None;
+    }
+    Some(hour * 60 + minute)
+}
+
+fn validate_open_block_utc_time_range(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let Some((begin_raw, end_raw)) = trimmed.split_once('-') else {
+        panic!(
+            "open_block_utc_time_range 必须使用 UTC HH:MM-HH:MM 格式，例如 23:00-01:00: {}",
+            raw
+        );
+    };
+    let Some(begin_minute) = parse_utc_hhmm_minute(begin_raw) else {
+        panic!(
+            "open_block_utc_time_range begin 非法，必须为 UTC HH:MM: {}",
+            begin_raw
+        );
+    };
+    let Some(end_minute) = parse_utc_hhmm_minute(end_raw) else {
+        panic!(
+            "open_block_utc_time_range end 非法，必须为 UTC HH:MM: {}",
+            end_raw
+        );
+    };
+    if begin_minute == end_minute {
+        panic!("open_block_utc_time_range begin/end 不能相同，避免全天/空窗口歧义: {raw}");
+    }
+    trimmed.to_string()
+}
+
 pub fn mm_strategy_params_key(hedge_venue: TradingVenue) -> String {
     format!("mm_strategy_params_{}", hedge_venue.data_pub_slug())
 }
@@ -271,6 +330,14 @@ pub struct StrategyParams {
     #[serde(default = "default_open_tradecount_limit")]
     pub open_tradecount_limit: f64,
 
+    /// 是否启用 UTC 日内时间段开仓阻断（仅 MM open）
+    #[serde(default = "default_enable_open_time_block")]
+    pub enable_open_time_block: bool,
+
+    /// UTC 日内开仓阻断窗口，格式 HH:MM-HH:MM，允许跨天但 begin/end 不能相同
+    #[serde(default = "default_open_block_utc_time_range")]
+    pub open_block_utc_time_range: String,
+
     /// 收益率模型输出通道（"-" 表示禁用）
     #[serde(default = "default_return_model_service")]
     pub return_model_service: String,
@@ -377,6 +444,12 @@ fn default_enable_tradecount_limit() -> bool {
 fn default_open_tradecount_limit() -> f64 {
     70.0
 }
+fn default_enable_open_time_block() -> bool {
+    false
+}
+fn default_open_block_utc_time_range() -> String {
+    "00:00-00:01".to_string()
+}
 fn default_return_model_service() -> String {
     "return_model".to_string()
 }
@@ -420,6 +493,8 @@ impl Default for StrategyParams {
             open_volatility_limit: default_open_volatility_limit(),
             enable_tradecount_limit: default_enable_tradecount_limit(),
             open_tradecount_limit: default_open_tradecount_limit(),
+            enable_open_time_block: default_enable_open_time_block(),
+            open_block_utc_time_range: default_open_block_utc_time_range(),
             return_model_service: default_return_model_service(),
             environment_model_service: default_environment_model_service(),
         }
@@ -784,6 +859,14 @@ impl StrategyParams {
             .and_then(|s| s.parse::<f64>().ok())
             .filter(|v| v.is_finite() && *v >= 0.0 && *v <= 100.0)
             .unwrap_or_else(default_open_tradecount_limit);
+        let enable_open_time_block = hash_map
+            .get("enable_open_time_block")
+            .map(|raw| parse_bool_param(&redis_key, "enable_open_time_block", raw))
+            .unwrap_or_else(default_enable_open_time_block);
+        let open_block_utc_time_range = hash_map
+            .get("open_block_utc_time_range")
+            .map(|raw| validate_open_block_utc_time_range(raw))
+            .unwrap_or_else(default_open_block_utc_time_range);
 
         let strict_return_model_required = ns == "mm";
         let strict_env_model_dash_only = false;
@@ -921,6 +1004,8 @@ impl StrategyParams {
             open_volatility_limit,
             enable_tradecount_limit,
             open_tradecount_limit,
+            enable_open_time_block,
+            open_block_utc_time_range,
             return_model_service,
             environment_model_service,
         })
@@ -1061,6 +1146,10 @@ impl StrategyParams {
                 _decision.update_open_volatility_limit(self.open_volatility_limit);
                 _decision.update_enable_tradecount_limit(self.enable_tradecount_limit);
                 _decision.update_open_tradecount_limit(self.open_tradecount_limit);
+                _decision.update_open_time_block(
+                    self.enable_open_time_block,
+                    &self.open_block_utc_time_range,
+                );
                 _decision.update_model_service_roles(
                     self.return_model_service.clone(),
                     self.environment_model_service.clone(),
@@ -1077,7 +1166,7 @@ impl StrategyParams {
         }
 
         info!(
-            "✅ 策略参数已更新: mode={}, amount={:.2}, arb_open_scale={:.4}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, hedge_window_scale_low={:.4}, hedge_window_scale_high={:.4}, order_interval_ms={}, open_orders_per_round={}, cooldown={}s, prediction_mode={}, enable_open_cancel={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, spread_cancel_cooldown_ms={}, enable_return_score_adjust_hedge={}, enable_environment_model={}, enable_volatility_limit={}, open_volatility_limit={}, enable_tradecount_limit={}, open_tradecount_limit={}, return_model_service={}, environment_model_service={}",
+            "✅ 策略参数已更新: mode={}, amount={:.2}, arb_open_scale={:.4}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, hedge_window_scale_low={:.4}, hedge_window_scale_high={:.4}, order_interval_ms={}, open_orders_per_round={}, cooldown={}s, prediction_mode={}, enable_open_cancel={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, spread_cancel_cooldown_ms={}, enable_return_score_adjust_hedge={}, enable_environment_model={}, enable_volatility_limit={}, open_volatility_limit={}, enable_tradecount_limit={}, open_tradecount_limit={}, enable_open_time_block={}, open_block_utc_time_range={}, return_model_service={}, environment_model_service={}",
             self.mode,
             self.order_amount,
             self.open_scale,
@@ -1099,6 +1188,8 @@ impl StrategyParams {
             self.open_volatility_limit,
             self.enable_tradecount_limit,
             self.open_tradecount_limit,
+            self.enable_open_time_block,
+            self.open_block_utc_time_range,
             self.return_model_service,
             self.environment_model_service
         );
@@ -1176,6 +1267,37 @@ mod tests {
     fn test_open_tradecount_limit_default_is_70() {
         let params = StrategyParams::default();
         assert!((params.open_tradecount_limit - 70.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_open_time_block_defaults_are_disabled_with_valid_range() {
+        let params = StrategyParams::default();
+        assert!(!params.enable_open_time_block);
+        assert_eq!(params.open_block_utc_time_range, "00:00-00:01");
+        assert_eq!(
+            validate_open_block_utc_time_range(&params.open_block_utc_time_range),
+            "00:00-00:01"
+        );
+    }
+
+    #[test]
+    fn test_open_time_block_validation_allows_cross_day() {
+        assert_eq!(
+            validate_open_block_utc_time_range("23:00-01:00"),
+            "23:00-01:00"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "begin/end 不能相同")]
+    fn test_open_time_block_validation_rejects_equal_times() {
+        let _ = validate_open_block_utc_time_range("12:00-12:00");
+    }
+
+    #[test]
+    #[should_panic(expected = "必须为 UTC HH:MM")]
+    fn test_open_time_block_validation_rejects_malformed_times() {
+        let _ = validate_open_block_utc_time_range("7:00-08:00");
     }
 
     #[test]

@@ -138,8 +138,6 @@ impl PreTrade {
 mod tests {
     use super::{drive_orphan_manager_period_clock_rc, drive_strategy_manager_period_clock_rc};
     use crate::signal::trade_signal::TradeSignal;
-    use crate::strategy::query_engine_response::QueryEngineResponse;
-    use crate::strategy::trade_engine_response::TradeEngineResponse;
     use crate::strategy::{order_update::OrderUpdate, trade_update::TradeUpdate};
     use crate::strategy::{ForceCloseControl, OrphanStrategyManager, Strategy, StrategyManager};
     use std::any::Any;
@@ -183,10 +181,6 @@ mod tests {
         fn apply_order_update(&mut self, _update: &dyn OrderUpdate) {}
 
         fn apply_trade_update(&mut self, _trade: &dyn TradeUpdate) {}
-
-        fn apply_trade_engine_response(&mut self, _response: &dyn TradeEngineResponse) {}
-
-        fn apply_query_engine_response(&mut self, _response: &dyn QueryEngineResponse) {}
 
         fn handle_period_clock(&mut self, _current_tp: i64) {
             self.tick_hits.set(self.tick_hits.get() + 1);
@@ -240,10 +234,6 @@ mod tests {
         fn apply_order_update(&mut self, _update: &dyn OrderUpdate) {}
 
         fn apply_trade_update(&mut self, _trade: &dyn TradeUpdate) {}
-
-        fn apply_trade_engine_response(&mut self, _response: &dyn TradeEngineResponse) {}
-
-        fn apply_query_engine_response(&mut self, _response: &dyn QueryEngineResponse) {}
 
         fn handle_period_clock(&mut self, _current_tp: i64) {
             self.tick_hits.set(self.tick_hits.get() + 1);

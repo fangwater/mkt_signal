@@ -3,6 +3,37 @@ use crate::pre_trade::order_manager::Side;
 use crate::signal::common::{bytes_helper, SignalBytes, TradingLeg};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
+const QV_BYTES_LEN: usize = 8 + 4 + 8;
+
+fn fixed_symbol_to_string(symbol: &[u8; 32]) -> String {
+    let end = symbol.iter().position(|&b| b == 0).unwrap_or(32);
+    String::from_utf8_lossy(&symbol[..end]).to_string()
+}
+
+fn set_fixed_symbol(dst: &mut [u8; 32], symbol: &str) {
+    *dst = [0u8; 32];
+    let bytes = symbol.as_bytes();
+    let len = bytes.len().min(32);
+    dst[..len].copy_from_slice(&bytes[..len]);
+}
+
+fn write_qv(buf: &mut BytesMut, qv: &QuantizedValue) {
+    let (tick_i64, tick_exp) = qv.get_tick_parts();
+    buf.put_i64_le(tick_i64);
+    buf.put_i32_le(tick_exp);
+    buf.put_i64_le(qv.get_count());
+}
+
+fn read_qv(bytes: &mut Bytes, field: &str) -> Result<QuantizedValue, String> {
+    if bytes.remaining() < QV_BYTES_LEN {
+        return Err(format!("Not enough bytes for {field}"));
+    }
+    let tick_i64 = bytes.get_i64_le();
+    let tick_exp = bytes.get_i32_le();
+    let count = bytes.get_i64_le();
+    Ok(QuantizedValue::from_parts(tick_i64, tick_exp, count))
+}
+
 /// Unified arbitrage hedge signal context (supports both maker and taker strategies)
 /// When exp_time > 0, it's treated as a maker order (limit order)
 /// When exp_time == 0, it's treated as a taker order (market order)
@@ -102,6 +133,55 @@ pub struct MmHedgeCtx {
     pub from_key_len: u32,
 
     /// From key bytes
+    pub from_key: Vec<u8>,
+}
+
+/// 新 arb hedge 单订单上下文。
+///
+/// 和 MM hedge query response 的语义接近，但这里只保留一个 hedge 单和一个 offset。
+/// 拿到 price/amount 的 QV 后，pre-trade 可以直接按该上下文发单。
+#[derive(Debug, Clone)]
+pub struct ArbHedgeOrderCtx {
+    /// Arb hedge strategy id.
+    pub strategy_id: i32,
+
+    /// Source arb open strategy id. Hedge 订单维护会用它映射到 client_order_id。
+    pub open_strategy_id: i32,
+
+    /// Client order id for the hedge order.
+    pub client_order_id: i64,
+
+    /// Hedge side (Buy/Sell), stored as u8.
+    pub hedge_side: u8,
+
+    /// Hedge market snapshot.
+    pub hedging_leg: TradingLeg,
+
+    /// Hedge symbol.
+    pub hedging_symbol: [u8; 32],
+
+    /// One hedge price encoded by QuantizedValue.
+    pub price_qv: QuantizedValue,
+
+    /// One hedge amount encoded by QuantizedValue.
+    pub amount_qv: QuantizedValue,
+
+    /// The queried offset used to produce `price_qv`.
+    pub price_offset: f64,
+
+    /// Signal timestamp (microseconds).
+    pub signal_ts: i64,
+
+    /// Hedge order expiration time (microseconds). 0 means taker/market order.
+    pub exp_time: i64,
+
+    /// Pre-trade owned request sequence.
+    pub request_seq: u64,
+
+    /// From key length.
+    pub from_key_len: u32,
+
+    /// From key bytes.
     pub from_key: Vec<u8>,
 }
 
@@ -361,6 +441,187 @@ impl MmHedgeCtx {
 
     pub fn is_taker(&self) -> bool {
         self.use_taker
+    }
+}
+
+impl ArbHedgeOrderCtx {
+    pub fn new() -> Self {
+        Self {
+            strategy_id: 0,
+            open_strategy_id: 0,
+            client_order_id: 0,
+            hedge_side: 0,
+            hedging_leg: TradingLeg {
+                venue: 0,
+                bid0: 0.0,
+                ask0: 0.0,
+                ts: 0,
+            },
+            hedging_symbol: [0u8; 32],
+            price_qv: QuantizedValue::zero(),
+            amount_qv: QuantizedValue::zero(),
+            price_offset: 0.0,
+            signal_ts: 0,
+            exp_time: 0,
+            request_seq: 0,
+            from_key_len: 0,
+            from_key: Vec::new(),
+        }
+    }
+
+    pub fn set_hedging_symbol(&mut self, symbol: &str) {
+        set_fixed_symbol(&mut self.hedging_symbol, symbol);
+    }
+
+    pub fn get_hedging_symbol(&self) -> String {
+        fixed_symbol_to_string(&self.hedging_symbol)
+    }
+
+    pub fn get_side(&self) -> Option<Side> {
+        Side::from_u8(self.hedge_side)
+    }
+
+    pub fn set_side(&mut self, side: Side) {
+        self.hedge_side = side.to_u8();
+    }
+
+    pub fn set_from_key(&mut self, from_key: Vec<u8>) {
+        self.from_key_len = from_key.len() as u32;
+        self.from_key = from_key;
+    }
+
+    pub fn set_price_with_tick_floor(&mut self, price: f64, preferred_tick: f64) -> bool {
+        let fallback = !(preferred_tick.is_finite() && preferred_tick > 0.0);
+        self.price_qv = QuantizedValue::encode_floor(price, preferred_tick)
+            .unwrap_or_else(QuantizedValue::zero);
+        fallback
+    }
+
+    pub fn set_amount_with_tick_floor(&mut self, amount: f64, preferred_tick: f64) -> bool {
+        let fallback = !(preferred_tick.is_finite() && preferred_tick > 0.0);
+        self.amount_qv = QuantizedValue::encode_floor(amount, preferred_tick)
+            .unwrap_or_else(QuantizedValue::zero);
+        fallback
+    }
+
+    pub fn price_value(&self) -> f64 {
+        self.price_qv.get_val()
+    }
+
+    pub fn amount_value(&self) -> f64 {
+        self.amount_qv.get_val()
+    }
+
+    pub fn price_count(&self) -> i64 {
+        self.price_qv.get_count()
+    }
+
+    pub fn amount_count(&self) -> i64 {
+        self.amount_qv.get_count()
+    }
+
+    pub fn is_maker(&self) -> bool {
+        self.exp_time > 0
+    }
+
+    pub fn is_taker(&self) -> bool {
+        self.exp_time == 0
+    }
+}
+
+impl SignalBytes for ArbHedgeOrderCtx {
+    fn to_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::new();
+
+        buf.put_i32_le(self.strategy_id);
+        buf.put_i32_le(self.open_strategy_id);
+        buf.put_i64_le(self.client_order_id);
+        buf.put_u8(self.hedge_side);
+
+        buf.put_u8(self.hedging_leg.venue);
+        buf.put_f64_le(self.hedging_leg.bid0);
+        buf.put_f64_le(self.hedging_leg.ask0);
+        buf.put_i64_le(self.hedging_leg.ts);
+        bytes_helper::write_fixed_bytes(&mut buf, &self.hedging_symbol);
+
+        write_qv(&mut buf, &self.price_qv);
+        write_qv(&mut buf, &self.amount_qv);
+        buf.put_f64_le(self.price_offset);
+        buf.put_i64_le(self.signal_ts);
+        buf.put_i64_le(self.exp_time);
+        buf.put_u64_le(self.request_seq);
+
+        let from_key_len = self.from_key.len() as u32;
+        buf.put_u32_le(from_key_len);
+        buf.put_slice(&self.from_key);
+
+        buf.freeze()
+    }
+
+    fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
+        if bytes.remaining() < 4 + 4 + 8 + 1 {
+            return Err("Not enough bytes for ArbHedgeOrderCtx basic fields".to_string());
+        }
+        let strategy_id = bytes.get_i32_le();
+        let open_strategy_id = bytes.get_i32_le();
+        let client_order_id = bytes.get_i64_le();
+        let hedge_side = bytes.get_u8();
+
+        if bytes.remaining() < 1 + 8 + 8 + 8 {
+            return Err("Not enough bytes for ArbHedgeOrderCtx hedging leg".to_string());
+        }
+        let hedging_venue = bytes.get_u8();
+        let hedging_bid0 = bytes.get_f64_le();
+        let hedging_ask0 = bytes.get_f64_le();
+        let hedging_ts = bytes.get_i64_le();
+        let hedging_symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
+
+        let price_qv = read_qv(&mut bytes, "ArbHedgeOrderCtx price_qv")?;
+        let amount_qv = read_qv(&mut bytes, "ArbHedgeOrderCtx amount_qv")?;
+
+        if bytes.remaining() < 8 + 8 + 8 + 8 + 4 {
+            return Err("Not enough bytes for ArbHedgeOrderCtx tail".to_string());
+        }
+        let price_offset = bytes.get_f64_le();
+        let signal_ts = bytes.get_i64_le();
+        let exp_time = bytes.get_i64_le();
+        let request_seq = bytes.get_u64_le();
+
+        let from_key_len = bytes.get_u32_le() as usize;
+        if bytes.remaining() < from_key_len {
+            return Err(format!(
+                "Not enough bytes for from_key: need {}, have {}",
+                from_key_len,
+                bytes.remaining()
+            ));
+        }
+        let from_key = bytes.copy_to_bytes(from_key_len).to_vec();
+
+        if bytes.remaining() != 0 {
+            return Err("Unexpected trailing bytes for ArbHedgeOrderCtx".to_string());
+        }
+
+        Ok(Self {
+            strategy_id,
+            open_strategy_id,
+            client_order_id,
+            hedge_side,
+            hedging_leg: TradingLeg {
+                venue: hedging_venue,
+                bid0: hedging_bid0,
+                ask0: hedging_ask0,
+                ts: hedging_ts,
+            },
+            hedging_symbol,
+            price_qv,
+            amount_qv,
+            price_offset,
+            signal_ts,
+            exp_time,
+            request_seq,
+            from_key_len: from_key.len() as u32,
+            from_key,
+        })
     }
 }
 
@@ -1055,8 +1316,9 @@ impl ArbHedgeSignalQueryMsg {
 
 #[cfg(test)]
 mod tests {
-    use super::{MmHedgeCtx, MmHedgeSignalQueryMsg};
+    use super::{ArbHedgeOrderCtx, MmHedgeCtx, MmHedgeSignalQueryMsg};
     use crate::common::tick_math::QuantizedValue;
+    use crate::pre_trade::order_manager::Side;
     use crate::signal::common::{SignalBytes, TradingLeg, TradingVenue};
 
     #[test]
@@ -1110,5 +1372,38 @@ mod tests {
         assert_eq!(parsed.request_seq, 9);
         assert!(parsed.use_taker);
         assert_eq!(parsed.from_key, b"fk");
+    }
+
+    #[test]
+    fn arb_hedge_order_ctx_roundtrip_single_order_single_offset() {
+        let mut ctx = ArbHedgeOrderCtx::new();
+        ctx.strategy_id = 11;
+        ctx.open_strategy_id = 7;
+        ctx.client_order_id = 123;
+        ctx.set_side(Side::Sell);
+        ctx.hedging_leg = TradingLeg::new(TradingVenue::BinanceFutures, 100.0, 100.1, 123456);
+        ctx.set_hedging_symbol("BTCUSDT");
+        ctx.price_qv = QuantizedValue::from_parts(1, -2, 10005);
+        ctx.amount_qv = QuantizedValue::from_parts(1, -3, 250);
+        ctx.price_offset = -0.001;
+        ctx.signal_ts = 999;
+        ctx.exp_time = 1111;
+        ctx.request_seq = 3;
+        ctx.set_from_key(b"arb-fk".to_vec());
+
+        let parsed = ArbHedgeOrderCtx::from_bytes(ctx.to_bytes()).unwrap();
+        assert_eq!(parsed.strategy_id, 11);
+        assert_eq!(parsed.open_strategy_id, 7);
+        assert_eq!(parsed.client_order_id, 123);
+        assert_eq!(parsed.get_side(), Some(Side::Sell));
+        assert_eq!(parsed.get_hedging_symbol(), "BTCUSDT");
+        assert!((parsed.price_value() - 100.05).abs() < 1e-12);
+        assert!((parsed.amount_value() - 0.25).abs() < 1e-12);
+        assert_eq!(parsed.price_offset, -0.001);
+        assert_eq!(parsed.signal_ts, 999);
+        assert_eq!(parsed.exp_time, 1111);
+        assert_eq!(parsed.request_seq, 3);
+        assert!(parsed.is_maker());
+        assert_eq!(parsed.from_key, b"arb-fk");
     }
 }

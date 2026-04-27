@@ -18,6 +18,7 @@ use crate::common::iceoryx_publisher::{QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD};
 use crate::common::ipc_service_name::build_service_name;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::OrderExecutionStatus;
+use crate::pre_trade::response_reconcile::apply_query_response_as_updates;
 use crate::pre_trade::PersistChannel;
 use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 use crate::strategy::order_query_parser::parse_compact_order_query_resp;
@@ -46,7 +47,7 @@ fn dispatch_query_response_to_strategy_manager(
         }
     };
     if let Some(mut strategy) = strategy_opt {
-        strategy.apply_query_engine_response(response);
+        let _ = apply_query_response_as_updates(strategy.as_mut(), response);
         if strategy.is_active() {
             strategy_mgr.borrow_mut().insert(strategy);
         }
@@ -70,7 +71,7 @@ fn dispatch_query_response_to_orphan_manager(
         }
     };
     if let Some(mut strategy) = strategy_opt {
-        strategy.apply_query_engine_response(response);
+        let _ = apply_query_response_as_updates(strategy.as_mut(), response);
         if strategy.is_active() {
             orphan_strategy_mgr.borrow_mut().insert(strategy);
         }
@@ -723,19 +724,16 @@ mod tests {
         dispatch_query_response_to_orphan_manager, dispatch_query_response_to_strategy_manager,
     };
     use crate::signal::trade_signal::TradeSignal;
-    use crate::strategy::query_engine_response::{QueryEngineResponse, QueryEngineResponseMessage};
-    use crate::strategy::trade_engine_response::TradeEngineResponse;
+    use crate::strategy::query_engine_response::QueryEngineResponseMessage;
     use crate::strategy::{order_update::OrderUpdate, trade_update::TradeUpdate};
     use crate::strategy::{ForceCloseControl, OrphanStrategyManager, Strategy, StrategyManager};
     use bytes::Bytes;
     use std::any::Any;
-    use std::cell::{Cell, RefCell};
+    use std::cell::RefCell;
     use std::rc::Rc;
 
     struct ReentrantQueryStrategy {
         id: i32,
-        manager: Rc<RefCell<StrategyManager>>,
-        hits: Rc<Cell<u32>>,
         active: bool,
     }
 
@@ -770,14 +768,6 @@ mod tests {
 
         fn apply_trade_update(&mut self, _trade: &dyn TradeUpdate) {}
 
-        fn apply_trade_engine_response(&mut self, _response: &dyn TradeEngineResponse) {}
-
-        fn apply_query_engine_response(&mut self, _response: &dyn QueryEngineResponse) {
-            self.hits.set(self.hits.get() + 1);
-            let _ = self.manager.borrow_mut().contains(self.id);
-            self.active = false;
-        }
-
         fn handle_period_clock(&mut self, _current_tp: i64) {}
 
         fn is_active(&self) -> bool {
@@ -791,8 +781,6 @@ mod tests {
 
     struct ReentrantOrphanQueryStrategy {
         id: i32,
-        manager: Rc<RefCell<OrphanStrategyManager>>,
-        hits: Rc<Cell<u32>>,
         active: bool,
     }
 
@@ -827,14 +815,6 @@ mod tests {
 
         fn apply_trade_update(&mut self, _trade: &dyn TradeUpdate) {}
 
-        fn apply_trade_engine_response(&mut self, _response: &dyn TradeEngineResponse) {}
-
-        fn apply_query_engine_response(&mut self, _response: &dyn QueryEngineResponse) {
-            self.hits.set(self.hits.get() + 1);
-            let _ = self.manager.borrow_mut().contains(self.id);
-            self.active = false;
-        }
-
         fn handle_period_clock(&mut self, _current_tp: i64) {}
 
         fn is_active(&self) -> bool {
@@ -849,13 +829,10 @@ mod tests {
     #[test]
     fn query_dispatch_releases_strategy_manager_borrow_before_callback() {
         let manager = Rc::new(RefCell::new(StrategyManager::new()));
-        let hits = Rc::new(Cell::new(0));
         manager
             .borrow_mut()
             .insert(Box::new(ReentrantQueryStrategy {
                 id: 301,
-                manager: manager.clone(),
-                hits: hits.clone(),
                 active: true,
             }));
         let response = QueryEngineResponseMessage::new(0, 301_i64 << 32, Bytes::new());
@@ -863,20 +840,16 @@ mod tests {
         let matched = dispatch_query_response_to_strategy_manager(&manager, 301, &response);
 
         assert!(matched);
-        assert_eq!(hits.get(), 1);
-        assert!(!manager.borrow().contains(301));
+        assert!(manager.borrow().contains(301));
     }
 
     #[test]
     fn query_dispatch_releases_orphan_manager_borrow_before_callback() {
         let manager = Rc::new(RefCell::new(OrphanStrategyManager::new()));
-        let hits = Rc::new(Cell::new(0));
         manager
             .borrow_mut()
             .insert(Box::new(ReentrantOrphanQueryStrategy {
                 id: 302,
-                manager: manager.clone(),
-                hits: hits.clone(),
                 active: true,
             }));
         let response = QueryEngineResponseMessage::new(0, 302_i64 << 32, Bytes::new());
@@ -884,8 +857,7 @@ mod tests {
         let matched = dispatch_query_response_to_orphan_manager(&manager, 302, &response);
 
         assert!(matched);
-        assert_eq!(hits.get(), 1);
-        assert!(!manager.borrow().contains(302));
+        assert!(manager.borrow().contains(302));
     }
 }
 

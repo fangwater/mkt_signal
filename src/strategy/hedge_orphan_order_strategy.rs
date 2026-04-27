@@ -3,47 +3,50 @@ use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::OrderExecutionStatus;
 use crate::pre_trade::{QueryEngHub, TradeEngHub};
-use crate::signal::common::{ExecutionType, OrderStatus, TradingVenue};
+use crate::signal::common::{ExecutionType, OrderStatus};
 use crate::signal::trade_signal::TradeSignal;
-use crate::strategy::manager::{ForceCloseControl, MmOrphanHandoff, MmOrphanSourceKind, Strategy};
+use crate::strategy::manager::{
+    ForceCloseControl, HedgeOrphanHandoff, HedgeOrphanSourceKind, Strategy,
+};
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
-use crate::strategy::uniform_mm_publish::{
-    publish_mm_uniform_new_order, publish_mm_uniform_terminal_order,
-    publish_mm_uniform_trade_order, publish_mm_uniform_trade_order_from_order_update,
-    MmUniformPublishCtx,
+use crate::strategy::uniform_arb_publish::{
+    publish_arb_uniform_new_order, publish_arb_uniform_terminal_order,
+    publish_arb_uniform_trade_order, publish_arb_uniform_trade_order_from_order_update,
+    ArbUniformPublishCtx,
 };
-use log::{debug, info, warn};
+use log::{info, warn};
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 
-const MM_ORPHAN_QUERY_BASE_TICKS: u32 = 25;
-const MM_ORPHAN_QUERY_MAX_TICKS: u32 = 3_200;
+const HEDGE_ORPHAN_QUERY_BASE_TICKS: u32 = 25;
+const HEDGE_ORPHAN_QUERY_MAX_TICKS: u32 = 3_200;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct MmOrphanOrderOwner {
+pub struct HedgeOrphanOrderOwner {
     pub source_strategy_id: i32,
-    pub source_kind: MmOrphanSourceKind,
-    pub uniform_ctx: MmUniformPublishCtx,
+    pub source_kind: HedgeOrphanSourceKind,
+    pub uniform_ctx: ArbUniformPublishCtx,
+    pub recorded_base_qty: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct MmOrphanQueryState {
+struct HedgeOrphanQueryState {
     query_count: u8,
     ticks_until_next_query: u32,
 }
 
-pub struct MmOrphanOrderStrategy {
+pub struct HedgeOrphanOrderStrategy {
     strategy_id: i32,
     symbol: String,
     order_ids: HashSet<i64>,
-    order_owners: HashMap<i64, MmOrphanOrderOwner>,
-    query_states: HashMap<i64, MmOrphanQueryState>,
+    order_owners: HashMap<i64, HedgeOrphanOrderOwner>,
+    query_states: HashMap<i64, HedgeOrphanQueryState>,
     active: bool,
 }
 
-impl MmOrphanOrderStrategy {
+impl HedgeOrphanOrderStrategy {
     pub fn new(strategy_id: i32, symbol: impl Into<String>) -> Self {
         Self {
             strategy_id,
@@ -55,14 +58,10 @@ impl MmOrphanOrderStrategy {
         }
     }
 
-    pub fn len(&self) -> usize {
-        self.order_ids.len()
-    }
-
-    fn initial_query_state() -> MmOrphanQueryState {
-        MmOrphanQueryState {
+    fn initial_query_state() -> HedgeOrphanQueryState {
+        HedgeOrphanQueryState {
             query_count: 0,
-            ticks_until_next_query: MM_ORPHAN_QUERY_BASE_TICKS,
+            ticks_until_next_query: HEDGE_ORPHAN_QUERY_BASE_TICKS,
         }
     }
 
@@ -70,9 +69,9 @@ impl MmOrphanOrderStrategy {
         let multiplier = 1_u32
             .checked_shl(query_count.min(31) as u32)
             .unwrap_or(u32::MAX);
-        MM_ORPHAN_QUERY_BASE_TICKS
+        HEDGE_ORPHAN_QUERY_BASE_TICKS
             .saturating_mul(multiplier)
-            .min(MM_ORPHAN_QUERY_MAX_TICKS)
+            .min(HEDGE_ORPHAN_QUERY_MAX_TICKS)
     }
 
     fn ensure_query_state(&mut self, client_order_id: i64) {
@@ -81,7 +80,12 @@ impl MmOrphanOrderStrategy {
             .or_insert_with(Self::initial_query_state);
     }
 
-    fn adopt_order_id_inner(&mut self, handoff: &MmOrphanHandoff) -> bool {
+    fn track_order_id(&mut self, client_order_id: i64) {
+        self.order_ids.insert(client_order_id);
+        self.ensure_query_state(client_order_id);
+    }
+
+    fn adopt_order_id_inner(&mut self, handoff: &HedgeOrphanHandoff) -> bool {
         if handoff.client_order_id <= 0 {
             return false;
         }
@@ -90,7 +94,7 @@ impl MmOrphanOrderStrategy {
         };
         let Some(order) = order_mgr.borrow().get(handoff.client_order_id) else {
             warn!(
-                "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} adopt missing local order client_order_id={} reason={}",
+                "HedgeOrphanOrderStrategy: strategy_role=hedge_orphan strategy_id={} adopt missing local order client_order_id={} reason={}",
                 self.strategy_id, handoff.client_order_id, handoff.reason
             );
             return false;
@@ -100,19 +104,19 @@ impl MmOrphanOrderStrategy {
         if symbol != self.symbol {
             return false;
         }
-        drop(order);
+
         self.track_order_id(handoff.client_order_id);
-        self.ensure_query_state(handoff.client_order_id);
         self.order_owners.insert(
             handoff.client_order_id,
-            MmOrphanOrderOwner {
+            HedgeOrphanOrderOwner {
                 source_strategy_id: handoff.source_strategy_id,
                 source_kind: handoff.source_kind,
                 uniform_ctx: handoff.uniform_ctx.clone(),
+                recorded_base_qty: handoff.recorded_base_qty.max(0.0),
             },
         );
         info!(
-            "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} adopted order_id symbol={} client_order_id={} venue={:?} source_strategy_id={} source_kind={:?} reason={}",
+            "HedgeOrphanOrderStrategy: strategy_role=hedge_orphan strategy_id={} adopted order_id symbol={} client_order_id={} venue={:?} source_strategy_id={} source_kind={:?} reason={}",
             self.strategy_id,
             symbol,
             handoff.client_order_id,
@@ -124,72 +128,70 @@ impl MmOrphanOrderStrategy {
         true
     }
 
-    pub fn forget_order_id(&mut self, client_order_id: i64, reason: &str) -> bool {
+    fn forget_order_id(&mut self, client_order_id: i64, reason: &str) -> bool {
         let removed = self.order_ids.remove(&client_order_id);
         if removed {
             self.order_owners.remove(&client_order_id);
             self.query_states.remove(&client_order_id);
             info!(
-                "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} forgot order_id client_order_id={} reason={}",
+                "HedgeOrphanOrderStrategy: strategy_role=hedge_orphan strategy_id={} forgot order_id client_order_id={} reason={}",
                 self.strategy_id, client_order_id, reason
             );
         }
         removed
     }
 
-    fn track_order_id(&mut self, client_order_id: i64) {
-        self.order_ids.insert(client_order_id);
-        self.ensure_query_state(client_order_id);
-    }
-
-    pub fn order_owner(&self, client_order_id: i64) -> Option<MmOrphanOrderOwner> {
-        self.order_owners.get(&client_order_id).cloned()
-    }
-
     fn finalize_terminal_order(&mut self, client_order_id: i64, event_time: i64, reason: &str) {
-        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
-            self.forget_order_id(client_order_id, reason);
-            return;
-        };
-
-        let snapshot = {
-            let mgr = order_mgr.borrow();
-            mgr.get(client_order_id).map(|order| {
-                (
-                    order.venue,
-                    order.symbol.clone(),
-                    order.side,
-                    order.cumulative_filled_quantity,
-                    order.price,
-                )
-            })
-        };
-
-        if let Some((venue, symbol, side, cumulative_qty, price)) = snapshot {
-            if cumulative_qty > 0.0 {
-                let base_qty =
-                    MonitorChannel::instance().qty_to_base(venue, &symbol, cumulative_qty);
-                if base_qty > 0.0 {
-                    let (signed_qty, buy_qty, sell_qty) = match side {
-                        crate::pre_trade::order_manager::Side::Buy => (base_qty, base_qty, 0.0),
-                        crate::pre_trade::order_manager::Side::Sell => (-base_qty, 0.0, base_qty),
-                    };
-                    let _ = MonitorChannel::instance()
-                        .strategy_mgr()
-                        .borrow_mut()
-                        .record_mm_hedge_fill(
-                            &normalize_symbol_for_internal(&symbol),
-                            signed_qty,
-                            buy_qty,
-                            sell_qty,
+        let owner = self.order_owners.get(&client_order_id).cloned();
+        if let (Some(order_mgr), Some(owner)) = (MonitorChannel::try_order_manager(), owner) {
+            let snapshot = {
+                let mgr = order_mgr.borrow();
+                mgr.get(client_order_id).map(|order| {
+                    (
+                        order.symbol.clone(),
+                        order.side,
+                        order.cumulative_filled_quantity * order.qty_multiplier,
+                        order.price,
+                    )
+                })
+            };
+            if let Some((symbol, side, cumulative_base_qty, price)) = snapshot {
+                let delta_base_qty = cumulative_base_qty - owner.recorded_base_qty;
+                if delta_base_qty > 1e-12 {
+                    let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+                    let mut strategy_mgr = strategy_mgr.borrow_mut();
+                    let recorded = match owner.source_kind {
+                        HedgeOrphanSourceKind::Open => strategy_mgr.record_arb_open_fill(
+                            &symbol,
+                            side,
+                            delta_base_qty,
                             event_time,
                             price,
+                            0,
+                        ),
+                        HedgeOrphanSourceKind::Hedge => strategy_mgr.record_arb_hedge_fill(
+                            &symbol,
+                            side,
+                            delta_base_qty,
+                            event_time,
+                            price,
+                        ),
+                    };
+                    if !recorded {
+                        warn!(
+                            "HedgeOrphanOrderStrategy: strategy_role=hedge_orphan strategy_id={} record arb hedge failed client_order_id={} symbol={} source_kind={:?} delta_base_qty={:.8} reason={}",
+                            self.strategy_id,
+                            client_order_id,
+                            symbol,
+                            owner.source_kind,
+                            delta_base_qty,
+                            reason
                         );
+                    }
                 }
             }
             let _ = order_mgr.borrow_mut().remove(client_order_id);
         }
-
         self.forget_order_id(client_order_id, reason);
     }
 
@@ -204,73 +206,57 @@ impl MmOrphanOrderStrategy {
             return;
         }
 
-        let venue = update.trading_venue();
-        if !matches!(
-            venue,
-            TradingVenue::BinanceMargin | TradingVenue::BinanceFutures
-        ) {
-            debug!(
-                "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} skip cancel unsupported venue={:?} symbol={} client_order_id={}",
-                self.strategy_id,
-                venue,
-                update.symbol(),
-                update.client_order_id()
-            );
+        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
             return;
-        }
-
-        let client_order_id = update.client_order_id();
-        let symbol = normalize_symbol_for_internal(update.symbol());
-        let cancel_bytes = {
-            let order_mgr = MonitorChannel::instance().order_manager();
-            let mgr = order_mgr.borrow();
-            match mgr.build_unmatched_cancel_bytes(venue, &symbol, client_order_id) {
-                Ok(bytes) => bytes,
-                Err(err) => {
-                    warn!(
-                        "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} failed to build cancel client_order_id={} symbol={} venue={:?}: {}",
-                        self.strategy_id,
-                        client_order_id,
-                        symbol,
-                        venue,
-                        err
-                    );
-                    return;
-                }
+        };
+        let Some(order) = order_mgr.borrow().get(update.client_order_id()) else {
+            return;
+        };
+        let exchange = order.venue.trade_engine_exchange();
+        let cancel_bytes = match order.get_order_cancel_bytes() {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                warn!(
+                    "HedgeOrphanOrderStrategy: strategy_role=hedge_orphan strategy_id={} failed to build cancel client_order_id={} symbol={} venue={:?}: {}",
+                    self.strategy_id,
+                    order.client_order_id,
+                    order.symbol,
+                    order.venue,
+                    err
+                );
+                return;
             }
         };
-
-        let exchange = venue.trade_engine_exchange();
         match TradeEngHub::publish_order_request(exchange, &cancel_bytes) {
-            Ok(()) => {
-                warn!(
-                    "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} sent cancel client_order_id={} order_id={} symbol={} venue={:?} x={:?} X={:?}",
-                    self.strategy_id,
-                    client_order_id,
-                    update.order_id(),
-                    symbol,
-                    venue,
-                    update.execution_type(),
-                    update.status()
-                );
-            }
-            Err(err) => warn!(
-                "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} failed to send cancel client_order_id={} order_id={} symbol={} venue={:?}: {:#}",
+            Ok(()) => warn!(
+                "HedgeOrphanOrderStrategy: strategy_role=hedge_orphan strategy_id={} sent cancel client_order_id={} order_id={} symbol={} venue={:?} x={:?} X={:?}",
                 self.strategy_id,
-                client_order_id,
+                update.client_order_id(),
                 update.order_id(),
-                symbol,
-                venue,
+                update.symbol(),
+                update.trading_venue(),
+                update.execution_type(),
+                update.status()
+            ),
+            Err(err) => warn!(
+                "HedgeOrphanOrderStrategy: strategy_role=hedge_orphan strategy_id={} failed to send cancel client_order_id={} order_id={} symbol={} venue={:?}: {:#}",
+                self.strategy_id,
+                update.client_order_id(),
+                update.order_id(),
+                update.symbol(),
+                update.trading_venue(),
                 err
             ),
         }
     }
 
     fn send_order_query(&mut self, client_order_id: i64) -> bool {
-        let order_mgr = MonitorChannel::instance().order_manager();
+        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
+            return false;
+        };
         let Some(order) = order_mgr.borrow().get(client_order_id) else {
             warn!(
-                "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} send_order_query but local order missing client_order_id={}",
+                "HedgeOrphanOrderStrategy: strategy_role=hedge_orphan strategy_id={} send_order_query but local order missing client_order_id={}",
                 self.strategy_id, client_order_id
             );
             return false;
@@ -281,20 +267,20 @@ impl MmOrphanOrderStrategy {
                 if let Err(err) = QueryEngHub::publish_query_request(exchange.as_str(), &req_bytes)
                 {
                     warn!(
-                        "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} publish query failed client_order_id={} request_query_id={} err={:#}",
+                        "HedgeOrphanOrderStrategy: strategy_role=hedge_orphan strategy_id={} publish query failed client_order_id={} request_query_id={} err={:#}",
                         self.strategy_id, client_order_id, request_query_id, err
                     );
                     return false;
                 }
                 info!(
-                    "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} query sent client_order_id={} request_query_id={}",
+                    "HedgeOrphanOrderStrategy: strategy_role=hedge_orphan strategy_id={} query sent client_order_id={} request_query_id={}",
                     self.strategy_id, client_order_id, request_query_id
                 );
                 true
             }
             Err(err) => {
                 warn!(
-                    "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} build query failed client_order_id={} err={}",
+                    "HedgeOrphanOrderStrategy: strategy_role=hedge_orphan strategy_id={} build query failed client_order_id={} err={}",
                     self.strategy_id, client_order_id, err
                 );
                 false
@@ -303,7 +289,7 @@ impl MmOrphanOrderStrategy {
     }
 }
 
-impl ForceCloseControl for MmOrphanOrderStrategy {
+impl ForceCloseControl for HedgeOrphanOrderStrategy {
     fn set_force_close_mode(&mut self, _enabled: bool) {}
 
     fn is_force_close_mode(&self) -> bool {
@@ -311,7 +297,7 @@ impl ForceCloseControl for MmOrphanOrderStrategy {
     }
 }
 
-impl Strategy for MmOrphanOrderStrategy {
+impl Strategy for HedgeOrphanOrderStrategy {
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -348,6 +334,7 @@ impl Strategy for MmOrphanOrderStrategy {
                     .map(|order| order.cumulative_filled_quantity)
             })
             .unwrap_or(0.0);
+
         if let Some(order_mgr) = MonitorChannel::try_order_manager() {
             let incoming_cum = update.cumulative_filled_quantity();
             let incoming_order_id = update.order_id();
@@ -381,17 +368,18 @@ impl Strategy for MmOrphanOrderStrategy {
                 }
             });
         }
+
         if let Some(ctx) = uniform_ctx.as_ref() {
             let updated_order = MonitorChannel::try_order_manager()
                 .and_then(|order_mgr| order_mgr.borrow().get(client_order_id));
             if let Some(order) = updated_order {
                 if update.status() == OrderStatus::New {
-                    publish_mm_uniform_new_order(
+                    publish_arb_uniform_new_order(
                         update,
                         &order,
                         prev_cumulative_filled_qty,
                         ctx,
-                        "MmOrphanOrderStrategy",
+                        "HedgeOrphanOrderStrategy",
                         self.strategy_id,
                     );
                 }
@@ -399,12 +387,12 @@ impl Strategy for MmOrphanOrderStrategy {
                     update.status(),
                     OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::ExpiredInMatch
                 ) {
-                    publish_mm_uniform_terminal_order(
+                    publish_arb_uniform_terminal_order(
                         update,
                         &order,
                         prev_cumulative_filled_qty,
                         ctx,
-                        "MmOrphanOrderStrategy",
+                        "HedgeOrphanOrderStrategy",
                         self.strategy_id,
                     );
                 }
@@ -412,17 +400,18 @@ impl Strategy for MmOrphanOrderStrategy {
                     update.status(),
                     OrderStatus::PartiallyFilled | OrderStatus::Filled
                 ) {
-                    publish_mm_uniform_trade_order_from_order_update(
+                    publish_arb_uniform_trade_order_from_order_update(
                         update,
                         &order,
                         prev_cumulative_filled_qty,
                         ctx,
-                        "MmOrphanOrderStrategy",
+                        "HedgeOrphanOrderStrategy",
                         self.strategy_id,
                     );
                 }
             }
         }
+
         if matches!(
             update.status(),
             OrderStatus::Canceled
@@ -439,12 +428,11 @@ impl Strategy for MmOrphanOrderStrategy {
             self.request_cancel_if_needed(update);
         }
         info!(
-            "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} adopted order_update symbol={} client_order_id={} order_id={} venue={:?} x={:?} X={:?}",
+            "HedgeOrphanOrderStrategy: strategy_role=hedge_orphan strategy_id={} adopted order_update symbol={} client_order_id={} order_id={} x={:?} X={:?}",
             self.strategy_id,
             update.symbol(),
             update.client_order_id(),
             update.order_id(),
-            update.trading_venue(),
             update.execution_type(),
             update.status()
         );
@@ -468,6 +456,7 @@ impl Strategy for MmOrphanOrderStrategy {
                     .map(|order| order.cumulative_filled_quantity)
             })
             .unwrap_or(0.0);
+
         if let Some(order_mgr) = MonitorChannel::try_order_manager() {
             let cumulative_qty = trade.cumulative_filled_quantity();
             let trade_time = trade.trade_time();
@@ -508,21 +497,23 @@ impl Strategy for MmOrphanOrderStrategy {
                 }
             });
         }
+
         if let (Some(ctx), Some(status)) = (uniform_ctx.as_ref(), trade.order_status()) {
             let updated_order = MonitorChannel::try_order_manager()
                 .and_then(|order_mgr| order_mgr.borrow().get(client_order_id));
             if let Some(order) = updated_order {
-                publish_mm_uniform_trade_order(
+                publish_arb_uniform_trade_order(
                     trade,
                     &order,
                     prev_cumulative_filled_qty,
                     status,
                     ctx,
-                    "MmOrphanOrderStrategy",
+                    "HedgeOrphanOrderStrategy",
                     self.strategy_id,
                 );
             }
         }
+
         if trade.order_status().is_some_and(|status| {
             matches!(
                 status,
@@ -539,18 +530,17 @@ impl Strategy for MmOrphanOrderStrategy {
             );
         }
         info!(
-            "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} adopted trade_update symbol={} client_order_id={} order_id={} venue={:?} cumulative_qty={:.8} status={:?}",
+            "HedgeOrphanOrderStrategy: strategy_role=hedge_orphan strategy_id={} adopted trade_update symbol={} client_order_id={} order_id={} cumulative_qty={:.8} status={:?}",
             self.strategy_id,
             trade.symbol(),
             trade.client_order_id(),
             trade.order_id(),
-            trade.trading_venue(),
             trade.cumulative_filled_quantity(),
             trade.order_status()
         );
     }
 
-    fn adopt_order_id(&mut self, handoff: &MmOrphanHandoff) -> bool {
+    fn adopt_hedge_orphan_order_id(&mut self, handoff: &HedgeOrphanHandoff) -> bool {
         self.adopt_order_id_inner(handoff)
     }
 
@@ -567,7 +557,6 @@ impl Strategy for MmOrphanOrderStrategy {
                 continue;
             };
             if order.status.is_terminal() {
-                drop(order);
                 self.finalize_terminal_order(
                     client_order_id,
                     get_timestamp_us(),
@@ -587,7 +576,6 @@ impl Strategy for MmOrphanOrderStrategy {
             let next_query_count = query_state.query_count.saturating_add(1);
             query_state.query_count = next_query_count;
             query_state.ticks_until_next_query = Self::next_query_ticks(next_query_count);
-            drop(order);
             let _ = self.send_order_query(client_order_id);
         }
     }

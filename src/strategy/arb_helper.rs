@@ -8,6 +8,9 @@ use crate::signal::hedge_signal::ArbHedgeCtx;
 use crate::signal::open_signal::ArbOpenCtx;
 use log::{error, info, warn};
 
+pub const ARB_HEDGE_TAIL_QTY_EPS: f64 = 1e-12;
+pub const ARB_HEDGE_TAIL_NOTIONAL_EPS: f64 = 1e-8;
+
 pub struct ArbOpenSignalParams {
     pub aligned_price: f64,
     pub aligned_qty: f64,
@@ -36,6 +39,46 @@ pub fn base_to_venue_qty(base_qty: f64, multiplier: f64, leg_name: &str) -> Resu
         return Err(format!("{} multiplier invalid: {}", leg_name, multiplier));
     }
     Ok(base_qty / multiplier)
+}
+
+pub fn base_notional(base_qty: f64, price: f64) -> Option<f64> {
+    if !price.is_finite() || price <= 0.0 || !base_qty.is_finite() {
+        return None;
+    }
+    Some(base_qty.abs() * price)
+}
+
+pub fn arb_hedge_tail_below_min_notional(base_qty: f64, price: f64, min_notional: f64) -> bool {
+    if base_qty.abs() <= ARB_HEDGE_TAIL_QTY_EPS {
+        return true;
+    }
+    if !min_notional.is_finite() || min_notional <= 0.0 {
+        return false;
+    }
+    base_notional(base_qty, price)
+        .map(|notional| notional + ARB_HEDGE_TAIL_NOTIONAL_EPS < min_notional)
+        .unwrap_or(false)
+}
+
+pub fn arb_hedge_tail_below_venue_min_notional(
+    venue: TradingVenue,
+    symbol: &str,
+    base_qty: f64,
+    price: f64,
+) -> Result<bool, String> {
+    let symbol_key = min_qty_symbol_key(venue, symbol);
+    let Some(table) = MonitorChannel::instance().venue_min_qty_table(venue) else {
+        return Err(format!(
+            "未初始化 {:?} 的最小下单量表，请检查启动参数",
+            venue
+        ));
+    };
+    let min_notional = table.min_notional(&symbol_key).unwrap_or(0.0);
+    Ok(arb_hedge_tail_below_min_notional(
+        base_qty,
+        price,
+        min_notional,
+    ))
 }
 
 pub fn align_taker_qty(venue: TradingVenue, symbol: &str, raw_qty: f64) -> Result<f64, String> {
@@ -250,5 +293,26 @@ pub fn create_and_send_order(
             strategy_id, symbol, order_type_str, client_order_id
         );
         Err(format!("未找到创建的{}订单", order_type_str))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{arb_hedge_tail_below_min_notional, base_notional};
+
+    #[test]
+    fn base_notional_uses_absolute_base_qty() {
+        assert_eq!(base_notional(-0.25, 100.0), Some(25.0));
+        assert_eq!(base_notional(0.25, 100.0), Some(25.0));
+        assert_eq!(base_notional(0.25, 0.0), None);
+    }
+
+    #[test]
+    fn arb_hedge_tail_finishes_when_remaining_notional_is_too_small() {
+        assert!(arb_hedge_tail_below_min_notional(0.05, 100.0, 10.0));
+        assert!(!arb_hedge_tail_below_min_notional(0.10, 100.0, 10.0));
+        assert!(!arb_hedge_tail_below_min_notional(0.20, 100.0, 10.0));
+        assert!(arb_hedge_tail_below_min_notional(0.0, 100.0, 10.0));
+        assert!(!arb_hedge_tail_below_min_notional(0.05, 100.0, 0.0));
     }
 }

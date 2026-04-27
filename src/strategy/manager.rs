@@ -5,9 +5,9 @@ use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::Side;
 use crate::signal::common::TradingVenue;
 use crate::signal::trade_signal::TradeSignal;
+use crate::strategy::arb_hedge_strategy::{ArbHedgeSnapshot, ArbHedgeStrategy};
 use crate::strategy::arb_orphan_strategy::ArbOrphanLeg;
 use crate::strategy::mm_hedge_strategy::{MarketMakerHedgeStrategy, MmHedgeSnapshot};
-use crate::strategy::query_engine_response::QueryEngineResponse;
 use crate::strategy::uniform_arb_publish::ArbUniformPublishCtx;
 use crate::strategy::uniform_mm_publish::MmUniformPublishCtx;
 use crate::strategy::{
@@ -133,12 +133,14 @@ pub trait Strategy: ForceCloseControl {
     fn handle_signal(&mut self, signal: &TradeSignal);
     fn apply_order_update(&mut self, update: &dyn OrderUpdate);
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate);
-    fn apply_trade_engine_response(&mut self, _response: &dyn TradeEngineResponse);
-    fn apply_query_engine_response(&mut self, _response: &dyn QueryEngineResponse) {}
+    fn apply_trade_engine_response(&mut self, _response: &dyn TradeEngineResponse) {}
     fn adopt_order_id(&mut self, _handoff: &MmOrphanHandoff) -> bool {
         false
     }
     fn adopt_arb_orphan_order_id(&mut self, _handoff: &ArbOrphanHandoff) -> bool {
+        false
+    }
+    fn adopt_hedge_orphan_order_id(&mut self, _handoff: &HedgeOrphanHandoff) -> bool {
         false
     }
     fn adopt_arb_orphan_residual(&mut self, _residual: &ArbOrphanResidualHandoff) -> bool {
@@ -167,6 +169,22 @@ pub struct MmOrphanHandoff {
     pub source_strategy_id: i32,
     pub source_kind: MmOrphanSourceKind,
     pub uniform_ctx: MmUniformPublishCtx,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HedgeOrphanSourceKind {
+    Open,
+    Hedge,
+}
+
+#[derive(Debug, Clone)]
+pub struct HedgeOrphanHandoff {
+    pub client_order_id: i64,
+    pub source_strategy_id: i32,
+    pub source_kind: HedgeOrphanSourceKind,
+    pub uniform_ctx: ArbUniformPublishCtx,
+    pub recorded_base_qty: f64,
     pub reason: String,
 }
 
@@ -619,6 +637,94 @@ impl StrategyManager {
         snapshots
     }
 
+    /// 查询指定 symbol 的 Arb 对冲状态策略 id（symbol 不区分大小写）
+    pub fn find_arb_hedge_id(&self, symbol: &str) -> Option<i32> {
+        let symbol_upper = normalize_symbol_for_internal(symbol);
+        let Some(ids) = self.symbol_index.get(&symbol_upper) else {
+            return None;
+        };
+        for id in ids {
+            if let Some(strategy) = self.strategies.get(id) {
+                if strategy.as_any().is::<ArbHedgeStrategy>() {
+                    return Some(*id);
+                }
+            }
+        }
+        None
+    }
+
+    /// 确保指定 symbol 存在 Arb 对冲状态策略（symbol 不区分大小写）
+    pub fn ensure_arb_hedge_strategy(&mut self, symbol: &str) -> i32 {
+        let symbol_upper = normalize_symbol_for_internal(symbol);
+        if let Some(id) = self.find_arb_hedge_id(&symbol_upper) {
+            return id;
+        }
+        let strategy_id = StrategyManager::generate_strategy_id();
+        let open_venue = MonitorChannel::instance().open_venue();
+        let hedge_venue = MonitorChannel::instance().hedge_venue();
+        let strategy =
+            ArbHedgeStrategy::new(strategy_id, symbol_upper.clone(), open_venue, hedge_venue);
+        self.insert(Box::new(strategy));
+        info!(
+            "ArbHedge init: symbol={} open_venue={:?} hedge_venue={:?}",
+            symbol_upper, open_venue, hedge_venue
+        );
+        strategy_id
+    }
+
+    pub fn record_arb_open_fill(
+        &mut self,
+        symbol: &str,
+        side: Side,
+        base_qty: f64,
+        fill_ts: i64,
+        price: f64,
+        close_ts: i64,
+    ) -> bool {
+        let symbol_upper = normalize_symbol_for_internal(symbol);
+        let id = self.ensure_arb_hedge_strategy(&symbol_upper);
+        let Some(strategy) = self.strategies.get_mut(&id) else {
+            return false;
+        };
+        let Some(arb_hedge) = strategy.as_any_mut().downcast_mut::<ArbHedgeStrategy>() else {
+            return false;
+        };
+        arb_hedge
+            .record_open_fill(fill_ts, side, base_qty, price, close_ts)
+            .is_some()
+    }
+
+    pub fn record_arb_hedge_fill(
+        &mut self,
+        symbol: &str,
+        side: Side,
+        base_qty: f64,
+        fill_ts: i64,
+        price: f64,
+    ) -> bool {
+        let symbol_upper = normalize_symbol_for_internal(symbol);
+        let id = self.ensure_arb_hedge_strategy(&symbol_upper);
+        let Some(strategy) = self.strategies.get_mut(&id) else {
+            return false;
+        };
+        let Some(arb_hedge) = strategy.as_any_mut().downcast_mut::<ArbHedgeStrategy>() else {
+            return false;
+        };
+        arb_hedge
+            .record_hedge_fill(fill_ts, side, base_qty, price)
+            .is_some()
+    }
+
+    pub fn arb_hedge_snapshots(&self, now_ts: i64) -> Vec<ArbHedgeSnapshot> {
+        let mut snapshots = Vec::new();
+        for strategy in self.strategies.values() {
+            if let Some(arb_hedge) = strategy.as_any().downcast_ref::<ArbHedgeStrategy>() {
+                snapshots.push(arb_hedge.snapshot(now_ts));
+            }
+        }
+        snapshots
+    }
+
     /// 触发全部策略的周期检查，返回本次检查到的策略数量
     pub fn handle_period_clock(&mut self, current_tp: i64) -> usize {
         let iterations = self.strategy_queue.len();
@@ -644,16 +750,6 @@ impl StrategyManager {
         inspected
     }
 
-    pub fn apply_query_engine_response(
-        &mut self,
-        strategy_id: i32,
-        response: &dyn QueryEngineResponse,
-    ) {
-        if let Some(strategy) = self.strategies.get_mut(&strategy_id) {
-            strategy.apply_query_engine_response(response);
-        }
-    }
-
     /// 基于当前时间戳生成策略 ID
     /// 首次调用线程会成为 owner 线程；之后仅允许该线程单调分配 strategy_id。
     pub fn generate_strategy_id() -> i32 {
@@ -675,8 +771,6 @@ mod tests {
     use crate::common::tick_math::QuantizedValue;
     use crate::pre_trade::order_manager::Side;
     use crate::signal::trade_signal::TradeSignal;
-    use crate::strategy::query_engine_response::QueryEngineResponse;
-    use crate::strategy::trade_engine_response::TradeEngineResponse;
     use crate::strategy::{order_update::OrderUpdate, trade_update::TradeUpdate};
     use std::any::Any;
 
@@ -718,10 +812,6 @@ mod tests {
         fn apply_order_update(&mut self, _update: &dyn OrderUpdate) {}
 
         fn apply_trade_update(&mut self, _trade: &dyn TradeUpdate) {}
-
-        fn apply_trade_engine_response(&mut self, _response: &dyn TradeEngineResponse) {}
-
-        fn apply_query_engine_response(&mut self, _response: &dyn QueryEngineResponse) {}
 
         fn handle_period_clock(&mut self, _current_tp: i64) {}
 

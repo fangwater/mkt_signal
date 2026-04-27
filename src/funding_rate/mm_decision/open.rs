@@ -417,6 +417,27 @@ impl MmOpenDecision {
 
     pub(crate) fn process_interval(&mut self, state: &mut MmDecisionState) {
         let now_us = get_timestamp_us();
+        if let Some(reason) = state.mm_open_time_block_reason(now_us) {
+            let results: Vec<MmOpenEvalResult> = SymbolList::instance()
+                .get_online_symbols()
+                .into_iter()
+                .map(|symbol| {
+                    let symbol_key =
+                        normalize_symbol_for_whitelist(&symbol, TradingVenue::OkexFutures);
+                    MmOpenEvalResult::skipped(&symbol_key, &reason, None, None, None, None)
+                })
+                .collect();
+            if results.is_empty() {
+                info!(
+                    "MmDecision: MMOpen blocked by {} (no online symbols)",
+                    reason
+                );
+            } else {
+                log_interval_summary(state, &results);
+            }
+            return;
+        }
+
         let mut results = Vec::new();
         for symbol in SymbolList::instance().get_online_symbols() {
             match self.emit_for_symbol(state, &symbol, now_us) {

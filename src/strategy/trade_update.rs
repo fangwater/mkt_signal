@@ -50,4 +50,21 @@ pub trait TradeUpdate {
 
     // 成交单状态，即对应的额order_status
     fn order_status(&self) -> Option<OrderStatus>;
+
+    fn debug_summary(&self) -> String {
+        format!(
+            "kind=trade_update event_time={} trade_time={} venue={:?} symbol={} client_order_id={} order_id={} side={:?} price={:.8} cum_qty={:.8} is_maker={} order_status={:?}",
+            self.event_time(),
+            self.trade_time(),
+            self.trading_venue(),
+            self.symbol(),
+            self.client_order_id(),
+            self.order_id(),
+            self.side(),
+            self.price(),
+            self.cumulative_filled_quantity(),
+            self.is_maker(),
+            self.order_status()
+        )
+    }
 }

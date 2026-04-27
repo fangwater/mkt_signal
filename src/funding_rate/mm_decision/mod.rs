@@ -297,6 +297,10 @@ impl MmDecision {
         self.state.update_open_tradecount_limit(percentile);
     }
 
+    pub fn update_open_time_block(&mut self, enabled: bool, range: &str) {
+        self.state.update_open_time_block(enabled, range);
+    }
+
     pub fn update_tlen_cancel_freq_ms(&mut self, tlen_cancel_freq_ms: u64) {
         self.state.update_tlen_cancel_freq_ms(tlen_cancel_freq_ms);
     }

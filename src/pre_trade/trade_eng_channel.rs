@@ -12,6 +12,7 @@ use crate::common::ipc_service_name::build_service_name;
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::OrderType;
+use crate::pre_trade::response_reconcile::apply_trade_response_as_update;
 use crate::pre_trade::PersistChannel;
 use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
@@ -352,7 +353,9 @@ fn dispatch_trade_engine_response(response: &TradeEngineResponseMessage) {
         if let Some(mut strategy) = strategy_opt {
             if strategy.is_strategy_order(order_id) {
                 matched = true;
-                strategy.apply_trade_engine_response(response);
+                if !apply_trade_response_as_update(strategy.as_mut(), response) {
+                    strategy.apply_trade_engine_response(response);
+                }
             }
             if strategy.is_active() {
                 strategy_mgr.borrow_mut().insert(strategy);

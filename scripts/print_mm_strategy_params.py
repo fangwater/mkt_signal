@@ -95,6 +95,8 @@ PARAM_COMMENTS: Dict[str, str] = {
     "open_volatility_limit": "波动率限制分位数（trade signal / MM 决策侧内联波动率阈值采样使用，默认 70）",
     "enable_tradecount_limit": "是否启用 tradecount 限制下单（仅 MM；tradecount rolling mean 大于阈值才允许开仓）",
     "open_tradecount_limit": "tradecount 限制分位数（trade signal / MM 决策侧对 count.rolling(30,min_periods=25).mean() 做内联阈值采样，默认 70）",
+    "enable_open_time_block": "是否启用 UTC 时间段开仓阻断（true=在 open_block_utc_time_range 内 trade signal 不发开仓单）",
+    "open_block_utc_time_range": "UTC 开仓阻断时间段，格式 HH:MM-HH:MM，允许跨天，开始/结束不能相同",
     "hedge_aggressive_seq_threshold": "对冲激进阈值(request_seq>=该值时不偏移，但仍为maker限价单)",
     "prediction_mode": "方向预测模式（true=按 return score 仅报单边，false=按当前机制双边同时报单）",
     "enable_open_cancel": "是否启用旧的 MM open 撤单判断（基于 return score 的 MMCancel）",
@@ -127,6 +129,8 @@ PARAM_PRINT_ORDER = [
     "open_volatility_limit",
     "enable_tradecount_limit",
     "open_tradecount_limit",
+    "enable_open_time_block",
+    "open_block_utc_time_range",
     "hedge_aggressive_seq_threshold",
     "prediction_mode",
     "enable_open_cancel",
@@ -137,6 +141,29 @@ PARAM_PRINT_ORDER = [
     "max_hedge_price_pct_change",
     "signal_cooldown",
 ]
+
+
+def validate_open_block_utc_time_range(raw: str) -> str:
+    text = (raw or "").strip()
+    matched = re.fullmatch(r"([01]\d|2[0-3]):([0-5]\d)-([01]\d|2[0-3]):([0-5]\d)", text)
+    if not matched:
+        raise ValueError(
+            "open_block_utc_time_range 必须使用 UTC HH:MM-HH:MM 格式，例如 15:55-23:59"
+        )
+
+    start_hour, start_min, end_hour, end_min = [int(part) for part in matched.groups()]
+    start_total = start_hour * 60 + start_min
+    end_total = end_hour * 60 + end_min
+    if end_total == start_total:
+        raise ValueError(
+            "open_block_utc_time_range 开始/结束时间不能相同，避免全天/空窗口歧义"
+        )
+    return text
+
+
+def validate_strategy_params(params: Dict[str, str]) -> None:
+    if "open_block_utc_time_range" in params:
+        validate_open_block_utc_time_range(params["open_block_utc_time_range"])
 
 
 def print_params(rds, key: str) -> None:
@@ -152,6 +179,11 @@ def print_params(rds, key: str) -> None:
         k = raw_k.decode("utf-8", "ignore") if isinstance(raw_k, bytes) else str(raw_k)
         v = raw_v.decode("utf-8", "ignore") if isinstance(raw_v, bytes) else str(raw_v)
         decoded[k] = v
+
+    try:
+        validate_strategy_params(decoded)
+    except ValueError as exc:
+        print(f"❌ 当前 Redis 参数校验失败: {exc}", file=sys.stderr)
 
     def print_one(k: str, v: str) -> None:
         comment = PARAM_COMMENTS.get(k, "")

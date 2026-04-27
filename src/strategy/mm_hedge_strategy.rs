@@ -1,6 +1,5 @@
 use crate::common::exchange::Exchange;
 use crate::common::symbol_util::normalize_symbol_for_internal;
-use crate::common::tick_math::QuantizedValue;
 use crate::common::time_util::get_timestamp_us;
 use crate::funding_rate::mm_decision::from_key::append_mm_hedge_tlen_to_from_key;
 use crate::market_maker::hedge_split::{
@@ -15,19 +14,16 @@ use crate::pre_trade::signal_channel::SignalChannel;
 use crate::pre_trade::symbol_mapper::create_symbol_mapper;
 use crate::pre_trade::symbol_util::extract_base_asset;
 use crate::pre_trade::{PersistChannel, QueryEngHub, TradeEngHub};
-use crate::signal::common::{
-    align_price_floor, ExecutionType, OrderStatus, SignalBytes, TimeInForce, TradingVenue,
-};
+use crate::signal::common::{align_price_floor, OrderStatus, SignalBytes, TradingVenue};
 use crate::signal::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
 use crate::signal::mm_signal::MmBackwardQueryMsg;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::manager::{ForceCloseControl, MmOrphanHandoff, MmOrphanSourceKind, Strategy};
 use crate::strategy::net_qty_queue::NetQtyQueue;
 use crate::strategy::order_query_builder::build_order_query_request;
-use crate::strategy::order_query_parser::parse_compact_order_query_resp as parse_compact_order_query_resp_common;
+use crate::strategy::order_reconcile::{qv_decimal_or_fallback, ORDER_QUERY_WATCHDOG_DELAY_US};
 use crate::strategy::order_update::OrderUpdate;
-use crate::strategy::query_engine_response::QueryEngineResponse;
-use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
+use crate::strategy::query_order_updates::OrderQueryTradeUpdate;
 use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKind};
 use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::uniform_mm_publish::{
@@ -36,33 +32,14 @@ use crate::strategy::uniform_mm_publish::{
     MmUniformPublishCtx,
 };
 use crate::strategy::ws_order_update::WsOrderUpdate;
-use crate::trade_engine::query_parsers::compact_order::{
-    is_order_query_not_found_marker, CompactOrderQueryResp,
-};
 use log::{debug, warn};
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 
 const HEDGE_QUERY_INTERVAL_US: i64 = 30_000_000;
 const HEDGE_QUERY_WATCHDOG_US: i64 = 30_000;
-const ORDER_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
 const CANCEL_RESEND_THROTTLE_US: i64 = 500_000;
 const NET_EXPOSURE_EPS_USDT: f64 = 5.0;
-const CUMULATIVE_FILL_ROLLBACK_EPS: f64 = 1e-9;
-
-fn qv_decimal_or_fallback(value: f64) -> String {
-    QuantizedValue::from_decimal(value)
-        .map(|qv| qv.decimal_string())
-        .unwrap_or_else(|| format!("{value:.8}"))
-}
-
-fn monotonic_cumulative_fill(prev_cum: f64, incoming_cum: f64) -> f64 {
-    if incoming_cum + CUMULATIVE_FILL_ROLLBACK_EPS < prev_cum {
-        prev_cum
-    } else {
-        incoming_cum
-    }
-}
 
 fn mark_price_lookup_symbol(symbol: &str, exchange: Exchange) -> String {
     extract_base_asset(symbol)
@@ -137,29 +114,6 @@ enum PendingOrderQueryReason {
 }
 
 impl MarketMakerHedgeStrategy {
-    fn protected_order_update_cumulative_fill(
-        &self,
-        order: &Order,
-        incoming_cum: f64,
-        status: OrderStatus,
-    ) -> f64 {
-        let effective_cum =
-            monotonic_cumulative_fill(order.cumulative_filled_quantity, incoming_cum);
-        if effective_cum > incoming_cum + CUMULATIVE_FILL_ROLLBACK_EPS {
-            warn!(
-                "MarketMakerHedgeStrategy: strategy_id={} protected cumulative fill rollback: client_order_id={} symbol={} status={:?} prev={:.8} incoming={:.8} effective={:.8}",
-                self.strategy_id,
-                order.client_order_id,
-                order.symbol,
-                status,
-                order.cumulative_filled_quantity,
-                incoming_cum,
-                effective_cum
-            );
-        }
-        effective_cum
-    }
-
     fn align_final_hedge_qty(raw_qty: f64, step: f64, min_qty: f64) -> (f64, f64) {
         if !raw_qty.is_finite() || raw_qty <= 0.0 {
             return (0.0, 0.0);
@@ -228,18 +182,6 @@ impl MarketMakerHedgeStrategy {
             reason,
             PendingOrderQueryReason::CancelFailed | PendingOrderQueryReason::CancelRejected
         )
-    }
-
-    fn query_failure_marker(
-        reason: PendingOrderQueryReason,
-        normal_marker: &'static str,
-        cancel_marker: &'static str,
-    ) -> &'static str {
-        if Self::is_cancel_reconcile_reason(reason) {
-            cancel_marker
-        } else {
-            normal_marker
-        }
     }
 
     fn is_cancel_reconciling(&self, client_order_id: i64) -> bool {
@@ -1365,177 +1307,6 @@ impl MarketMakerHedgeStrategy {
         }
     }
 
-    fn parse_compact_order_query_resp(body: &bytes::Bytes) -> Option<CompactOrderQueryResp> {
-        let parsed = parse_compact_order_query_resp_common(body)?;
-        if parsed.order_id <= 0 {
-            return None;
-        }
-        if OrderExecutionStatus::from_u8(parsed.status_u8).is_none() {
-            return None;
-        }
-        if TimeInForce::from_u8(parsed.time_in_force_u8).is_none() {
-            return None;
-        }
-        if parsed.update_time_ms < 0 {
-            return None;
-        }
-        Some(parsed)
-    }
-
-    fn apply_parsed_order_query_updates(
-        &mut self,
-        order: &crate::pre_trade::order_manager::Order,
-        parsed: CompactOrderQueryResp,
-        reason: PendingOrderQueryReason,
-    ) {
-        debug!(
-            "MMHedgeReconcile: strategy_id={} apply_query_result reason={:?} parsed_status_u8={} parsed_exec_qty={:.8} {}",
-            self.strategy_id,
-            reason,
-            parsed.status_u8,
-            parsed.executed_qty,
-            self.hedge_order_trace_snapshot(order.client_order_id)
-        );
-        let event_time_us = parsed.update_time_ms.saturating_mul(1_000);
-        let order_id = parsed.order_id;
-        let tif = TimeInForce::from_u8(parsed.time_in_force_u8).unwrap_or(TimeInForce::GTC);
-
-        if parsed.executed_qty > order.cumulative_filled_quantity + 1e-12 {
-            let status = if parsed.status_u8 == OrderExecutionStatus::Filled.to_u8() {
-                Some(OrderStatus::Filled)
-            } else {
-                Some(OrderStatus::PartiallyFilled)
-            };
-            let trade = OrderQueryTradeUpdate::new(
-                order,
-                order_id,
-                event_time_us,
-                parsed.executed_qty,
-                Some(parsed.response_price),
-                status,
-                tif,
-            );
-            <Self as Strategy>::apply_trade_update(self, &trade);
-        }
-
-        let status_u8 = parsed.status_u8;
-        if status_u8 == OrderExecutionStatus::Create.to_u8() {
-            let already_live = order.status == OrderExecutionStatus::Create
-                && order.exchange_order_id.is_some_and(|id| id == order_id);
-            if !already_live {
-                let upd = OrderQueryOrderUpdate::new(
-                    order,
-                    order_id,
-                    event_time_us,
-                    OrderStatus::New,
-                    ExecutionType::New,
-                    parsed.executed_qty,
-                    tif,
-                );
-                <Self as Strategy>::apply_order_update(self, &upd);
-            }
-        } else if status_u8 == OrderExecutionStatus::Cancelled.to_u8() {
-            let upd = OrderQueryOrderUpdate::new(
-                order,
-                order_id,
-                event_time_us,
-                OrderStatus::Canceled,
-                ExecutionType::Canceled,
-                parsed.executed_qty,
-                tif,
-            );
-            <Self as Strategy>::apply_order_update(self, &upd);
-        } else if status_u8 == OrderExecutionStatus::Rejected.to_u8() {
-            warn!(
-                "MarketMakerHedgeStrategy: strategy_id={} query_resp rejected: client_order_id={} order_id={} exec_qty={:.8} reason={:?}",
-                self.strategy_id,
-                order.client_order_id,
-                order_id,
-                parsed.executed_qty,
-                reason
-            );
-        }
-
-        debug!(
-            "MarketMakerHedgeStrategy: strategy_id={} query回补: client_order_id={} order_id={} exec_qty={:.8} status_u8={} reason={:?}",
-            self.strategy_id,
-            order.client_order_id,
-            order_id,
-            parsed.executed_qty,
-            parsed.status_u8,
-            reason
-        );
-    }
-
-    fn handle_query_result(
-        &mut self,
-        client_order_id: i64,
-        reason: PendingOrderQueryReason,
-        parsed: Option<CompactOrderQueryResp>,
-    ) {
-        let order_mgr = MonitorChannel::instance().order_manager();
-        let Some(order) = order_mgr.borrow().get(client_order_id) else {
-            warn!(
-                "MarketMakerHedgeStrategy: strategy_id={} query_resp but order missing: client_order_id={} reason={:?}",
-                self.strategy_id, client_order_id, reason
-            );
-            return;
-        };
-
-        let Some(parsed) = parsed else {
-            debug!(
-                "MMHedgeReconcile: strategy_id={} query_result parsed=None, handoff to orphan: reason={:?} {}",
-                self.strategy_id,
-                reason,
-                self.hedge_order_trace_snapshot(client_order_id)
-            );
-            self.handoff_hedge_order_to_mm_orphan(client_order_id, "query parsed none");
-            return;
-        };
-
-        let Some(st) = OrderExecutionStatus::from_u8(parsed.status_u8) else {
-            warn!(
-                "MarketMakerHedgeStrategy: strategy_id={} query invalid status_u8={} client_order_id={} reason={:?}",
-                self.strategy_id, parsed.status_u8, client_order_id, reason
-            );
-            return;
-        };
-
-        match st {
-            OrderExecutionStatus::Filled | OrderExecutionStatus::Cancelled => {
-                self.apply_parsed_order_query_updates(&order, parsed, reason);
-            }
-            OrderExecutionStatus::Create => {
-                self.apply_parsed_order_query_updates(&order, parsed, reason);
-                if Self::is_cancel_reconcile_reason(reason) {
-                    self.handoff_hedge_order_to_mm_orphan(
-                        client_order_id,
-                        "cancel_reconcile query still create",
-                    );
-                }
-            }
-            OrderExecutionStatus::Rejected => {
-                warn!(
-                    "MarketMakerHedgeStrategy: strategy_id={} query shows {:?} client_order_id={} reason={:?}",
-                    self.strategy_id, st, client_order_id, reason
-                );
-                self.release_hedge_order(client_order_id, "query_result_rejected");
-            }
-            OrderExecutionStatus::Commit => {
-                warn!(
-                    "MarketMakerHedgeStrategy: strategy_id={} query shows {:?} client_order_id={} reason={:?}",
-                    self.strategy_id, st, client_order_id, reason
-                );
-                if Self::is_cancel_reconcile_reason(reason) {
-                    self.handoff_hedge_order_to_mm_orphan(
-                        client_order_id,
-                        "cancel_reconcile query still commit",
-                    );
-                }
-            }
-        }
-    }
-
     fn send_hedge_orders(&mut self, venue: TradingVenue, symbol: &str) {
         let plans = self.hedge_plan.clone();
         let rate_params = PreTradeParamsLoader::instance();
@@ -1841,11 +1612,22 @@ impl MarketMakerHedgeStrategy {
         }
 
         let prev_cumulative_filled_qty = current_order.cumulative_filled_quantity;
-        let effective_cumulative_filled_qty = self.protected_order_update_cumulative_fill(
-            &current_order,
-            order_update.cumulative_filled_quantity(),
-            status,
-        );
+        let incoming_cumulative_filled_qty = order_update.cumulative_filled_quantity();
+        let protected_cumulative_fill =
+            current_order.protected_cumulative_fill(incoming_cumulative_filled_qty);
+        if protected_cumulative_fill.rollback_detected {
+            warn!(
+                "MarketMakerHedgeStrategy: strategy_id={} protected cumulative fill rollback: client_order_id={} symbol={} status={:?} prev={:.8} incoming={:.8} effective={:.8}",
+                self.strategy_id,
+                current_order.client_order_id,
+                current_order.symbol,
+                status,
+                current_order.cumulative_filled_quantity,
+                incoming_cumulative_filled_qty,
+                protected_cumulative_fill.effective_cum
+            );
+        }
+        let effective_cumulative_filled_qty = protected_cumulative_fill.effective_cum;
 
         let updated = order_manager.update(client_order_id, |order| match status {
             OrderStatus::New => {
@@ -2114,11 +1896,12 @@ impl MarketMakerHedgeStrategy {
 #[cfg(test)]
 mod tests {
     use super::{
-        mark_price_lookup_symbol, monotonic_cumulative_fill, HedgeOrderMeta,
-        MarketMakerHedgeStrategy, PendingOrderQueryReason, NET_EXPOSURE_EPS_USDT,
+        mark_price_lookup_symbol, HedgeOrderMeta, MarketMakerHedgeStrategy,
+        PendingOrderQueryReason, NET_EXPOSURE_EPS_USDT,
     };
     use crate::common::exchange::Exchange;
     use crate::pre_trade::order_manager::Side;
+    use crate::strategy::order_reconcile::monotonic_cumulative_fill;
 
     #[test]
     fn zero_net_exposure_does_not_send_hedge_query() {
@@ -2397,99 +2180,6 @@ impl Strategy for MarketMakerHedgeStrategy {
             }
             TradeRequestKind::Other => {}
         }
-    }
-
-    fn apply_query_engine_response(&mut self, response: &dyn QueryEngineResponse) {
-        let client_order_id = response.client_query_id();
-        let Some(reason) = self.pending_order_queries.remove(&client_order_id) else {
-            debug!(
-                "MMHedgeReconcile: strategy_id={} query_response_without_pending req_type={} client_order_id={} tracked={} body_len={}",
-                self.strategy_id,
-                response.req_type(),
-                client_order_id,
-                self.hedge_order_ids.contains(&client_order_id),
-                response.body_bytes().len()
-            );
-            return;
-        };
-        self.order_query_watchdogs.remove(&client_order_id);
-        let body = response.body_bytes().as_ref();
-        let has_any_byte = body.iter().any(|&b| b != 0);
-        let actual_len = body
-            .iter()
-            .rposition(|&b| b != 0)
-            .map(|pos| pos + 1)
-            .unwrap_or(0);
-        debug!(
-            "MMHedgeReconcile: strategy_id={} query_response req_type={} reason={:?} cancel_reconcile={} body_has_nonzero={} actual_len={} {}",
-            self.strategy_id,
-            response.req_type(),
-            reason,
-            Self::is_cancel_reconcile_reason(reason),
-            has_any_byte,
-            actual_len,
-            self.hedge_order_trace_snapshot(client_order_id)
-        );
-        if !has_any_byte {
-            let marker =
-                Self::query_failure_marker(reason, "query empty", "cancel_reconcile query empty");
-            self.handoff_hedge_order_to_mm_orphan(client_order_id, marker);
-            return;
-        }
-
-        if is_order_query_not_found_marker(&body[..actual_len]) {
-            warn!(
-                "MMHedgeReconcile: strategy_id={} query_response order_not_found_marker reason={:?} {}",
-                self.strategy_id,
-                reason,
-                self.hedge_order_trace_snapshot(client_order_id)
-            );
-            self.handoff_hedge_order_to_mm_orphan(client_order_id, "query order not found marker");
-            return;
-        }
-
-        if actual_len == 1 && body[0] == b'E' {
-            warn!(
-                "MMHedgeReconcile: strategy_id={} query_response error_marker(E) reason={:?} {}",
-                self.strategy_id,
-                reason,
-                self.hedge_order_trace_snapshot(client_order_id)
-            );
-            let marker = Self::query_failure_marker(
-                reason,
-                "query error marker",
-                "cancel_reconcile query not-found",
-            );
-            self.handoff_hedge_order_to_mm_orphan(client_order_id, marker);
-            return;
-        }
-
-        let body_bytes = response.body_bytes();
-        let parsed = Self::parse_compact_order_query_resp(body_bytes);
-        if parsed.is_none() {
-            let text = if actual_len > 0 {
-                String::from_utf8_lossy(&body[..actual_len]).to_string()
-            } else {
-                String::new()
-            };
-            warn!(
-                "MarketMakerHedgeStrategy: strategy_id={} query_resp decode failed: client_order_id={} req_type={} reason={:?} body='{}'",
-                self.strategy_id,
-                client_order_id,
-                response.req_type(),
-                reason,
-                text
-            );
-            let marker = Self::query_failure_marker(
-                reason,
-                "query decode_failed",
-                "cancel_reconcile query decode_failed",
-            );
-            self.handoff_hedge_order_to_mm_orphan(client_order_id, marker);
-            return;
-        }
-
-        self.handle_query_result(client_order_id, reason, parsed);
     }
 
     fn handle_period_clock(&mut self, _current_tp: i64) {

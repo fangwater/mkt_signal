@@ -36,6 +36,7 @@ pub(crate) const TARGET_FACTOR_MAX_AGE_MS: i64 = 30_000;
 pub(crate) const ENV_MODEL_TRUE_THRESHOLD_DEFAULT: f64 = 0.0;
 pub(crate) const MM_OPEN_INTERVAL_ALIGN_MS: u64 = 100;
 pub(crate) const CLOCK_ALIGN_BASE_MS: u64 = 60_000;
+const MINUTES_PER_UTC_DAY: u16 = 24 * 60;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct MmOpenPublishStats {
@@ -46,6 +47,76 @@ pub(crate) struct MmOpenPublishStats {
     pub(crate) zero_quantized_levels: usize,
     pub(crate) tlen_filtered_levels: usize,
     pub(crate) publish_failures: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MmOpenTimeBlock {
+    begin_minute: u16,
+    end_minute: u16,
+}
+
+impl MmOpenTimeBlock {
+    pub(crate) fn parse(raw: &str) -> std::result::Result<Self, String> {
+        let trimmed = raw.trim();
+        let (begin_raw, end_raw) = trimmed.split_once('-').ok_or_else(|| {
+            format!(
+                "open_block_utc_time_range must use UTC HH:MM-HH:MM format, got '{}'",
+                raw
+            )
+        })?;
+        let begin_minute = parse_utc_hhmm_minute(begin_raw).ok_or_else(|| {
+            format!(
+                "open_block_utc_time_range begin must be UTC HH:MM, got '{}'",
+                begin_raw
+            )
+        })?;
+        let end_minute = parse_utc_hhmm_minute(end_raw).ok_or_else(|| {
+            format!(
+                "open_block_utc_time_range end must be UTC HH:MM, got '{}'",
+                end_raw
+            )
+        })?;
+        if begin_minute == end_minute {
+            return Err(
+                "open_block_utc_time_range begin and end must differ to avoid ambiguity"
+                    .to_string(),
+            );
+        }
+        Ok(Self {
+            begin_minute,
+            end_minute,
+        })
+    }
+
+    fn contains_minute(self, minute: u16) -> bool {
+        debug_assert!(minute < MINUTES_PER_UTC_DAY);
+        if self.begin_minute < self.end_minute {
+            minute >= self.begin_minute && minute < self.end_minute
+        } else {
+            minute >= self.begin_minute || minute < self.end_minute
+        }
+    }
+
+    fn contains_timestamp_us(self, now_us: i64) -> bool {
+        self.contains_minute(utc_minute_of_day_from_us(now_us))
+    }
+
+    fn format(self) -> String {
+        format!(
+            "{}-{}",
+            format_utc_minute(self.begin_minute),
+            format_utc_minute(self.end_minute)
+        )
+    }
+}
+
+impl Default for MmOpenTimeBlock {
+    fn default() -> Self {
+        Self {
+            begin_minute: 0,
+            end_minute: 1,
+        }
+    }
 }
 
 pub(crate) struct MmDecisionState {
@@ -79,6 +150,8 @@ pub(crate) struct MmDecisionState {
     pub(crate) open_volatility_limit: f64,
     pub(crate) enable_tradecount_limit: bool,
     pub(crate) open_tradecount_limit: f64,
+    pub(crate) enable_open_time_block: bool,
+    pub(crate) open_time_block: MmOpenTimeBlock,
     pub(crate) return_model_service: Option<String>,
     pub(crate) environment_model_service: Option<String>,
     pub(crate) environment_model_true_threshold: f64,
@@ -107,6 +180,40 @@ fn is_supported_clock_aligned_interval_ms(interval_ms: u64) -> bool {
     interval_ms > 0
         && interval_ms % MM_OPEN_INTERVAL_ALIGN_MS == 0
         && (CLOCK_ALIGN_BASE_MS % interval_ms == 0 || interval_ms % CLOCK_ALIGN_BASE_MS == 0)
+}
+
+fn parse_utc_hhmm_minute(raw: &str) -> Option<u16> {
+    let bytes = raw.as_bytes();
+    if bytes.len() != 5 || bytes[2] != b':' {
+        return None;
+    }
+    if !bytes[0].is_ascii_digit()
+        || !bytes[1].is_ascii_digit()
+        || !bytes[3].is_ascii_digit()
+        || !bytes[4].is_ascii_digit()
+    {
+        return None;
+    }
+    let hour = u16::from(bytes[0] - b'0') * 10 + u16::from(bytes[1] - b'0');
+    let minute = u16::from(bytes[3] - b'0') * 10 + u16::from(bytes[4] - b'0');
+    if hour >= 24 || minute >= 60 {
+        return None;
+    }
+    Some(hour * 60 + minute)
+}
+
+fn utc_minute_of_day_from_us(now_us: i64) -> u16 {
+    let seconds = now_us.max(0).div_euclid(1_000_000);
+    let minutes = seconds
+        .div_euclid(60)
+        .rem_euclid(i64::from(MINUTES_PER_UTC_DAY));
+    minutes as u16
+}
+
+fn format_utc_minute(minute: u16) -> String {
+    let hour = minute / 60;
+    let minute = minute % 60;
+    format!("{hour:02}:{minute:02}")
 }
 
 impl MmDecisionState {
@@ -169,6 +276,8 @@ impl MmDecisionState {
             open_volatility_limit: 70.0,
             enable_tradecount_limit: false,
             open_tradecount_limit: 70.0,
+            enable_open_time_block: false,
+            open_time_block: MmOpenTimeBlock::default(),
             return_model_service: None,
             environment_model_service: None,
             environment_model_true_threshold: ENV_MODEL_TRUE_THRESHOLD_DEFAULT,
@@ -445,6 +554,34 @@ impl MmDecisionState {
             "MmDecision: open_tradecount_limit updated percentile={}",
             self.open_tradecount_limit
         );
+    }
+
+    pub(crate) fn update_open_time_block(&mut self, enabled: bool, range: &str) {
+        let parsed = MmOpenTimeBlock::parse(range).unwrap_or_else(|err| {
+            panic!(
+                "MmDecision: invalid open_block_utc_time_range '{}': {}",
+                range, err
+            )
+        });
+        self.enable_open_time_block = enabled;
+        self.open_time_block = parsed;
+        debug!(
+            "MmDecision: open time block updated enabled={} range={}",
+            self.enable_open_time_block,
+            self.open_time_block.format()
+        );
+    }
+
+    pub(crate) fn mm_open_time_block_reason(&self, now_us: i64) -> Option<String> {
+        if !self.enable_open_time_block || !self.open_time_block.contains_timestamp_us(now_us) {
+            return None;
+        }
+        let now_minute = utc_minute_of_day_from_us(now_us);
+        Some(format!(
+            "open_time_blocked_utc(now={},range={})",
+            format_utc_minute(now_minute),
+            self.open_time_block.format()
+        ))
     }
 
     pub(crate) fn update_tlen_cancel_freq_ms(&mut self, tlen_cancel_freq_ms: u64) {
@@ -848,5 +985,37 @@ mod tests {
                 interval
             );
         }
+    }
+
+    #[test]
+    fn mm_open_time_block_matches_same_day_window() {
+        let block = MmOpenTimeBlock::parse("15:55-23:59").unwrap();
+        assert!(!block.contains_minute(15 * 60 + 54));
+        assert!(block.contains_minute(15 * 60 + 55));
+        assert!(block.contains_minute(23 * 60 + 58));
+        assert!(!block.contains_minute(23 * 60 + 59));
+    }
+
+    #[test]
+    fn mm_open_time_block_matches_cross_day_window() {
+        let block = MmOpenTimeBlock::parse("23:00-01:00").unwrap();
+        assert!(!block.contains_minute(22 * 60 + 59));
+        assert!(block.contains_minute(23 * 60));
+        assert!(block.contains_minute(30));
+        assert!(!block.contains_minute(60));
+    }
+
+    #[test]
+    fn mm_open_time_block_rejects_equal_or_malformed_ranges() {
+        assert!(MmOpenTimeBlock::parse("00:00-00:00").is_err());
+        assert!(MmOpenTimeBlock::parse("7:00-08:00").is_err());
+        assert!(MmOpenTimeBlock::parse("24:00-01:00").is_err());
+    }
+
+    #[test]
+    fn utc_minute_of_day_uses_unix_utc_timestamp() {
+        assert_eq!(utc_minute_of_day_from_us(0), 0);
+        assert_eq!(utc_minute_of_day_from_us(3_600_000_000), 60);
+        assert_eq!(utc_minute_of_day_from_us(86_399_000_000), 23 * 60 + 59);
     }
 }

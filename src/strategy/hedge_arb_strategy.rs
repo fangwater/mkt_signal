@@ -23,8 +23,8 @@ use crate::strategy::arb_orphan_strategy::ArbOrphanLeg;
 use crate::strategy::manager::{
     ArbOpenPriceMapEntry, ArbOrphanHandoff, ArbOrphanResidualHandoff, ForceCloseControl, Strategy,
 };
+use crate::strategy::order_reconcile::{qv_decimal_or_fallback, ORDER_QUERY_WATCHDOG_DELAY_US};
 use crate::strategy::order_update::OrderUpdate;
-use crate::strategy::query_engine_response::QueryEngineResponse;
 use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKind};
 use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::uniform_arb_publish::{
@@ -35,15 +35,8 @@ use crate::strategy::ws_order_update::WsOrderUpdate;
 use log::{debug, error, info, warn};
 use std::any::Any;
 
-fn qv_decimal_or_fallback(value: f64) -> String {
-    QuantizedValue::from_decimal(value)
-        .map(|qv| qv.decimal_string())
-        .unwrap_or_else(|| format!("{value:.8}"))
-}
-
 // 下单后若迟迟收不到 account monitor 的推送（New/Filled 等），触发兜底。
 // Open/hedge leg 进入不确定状态后都移交 arb orphan 统一 query/cancel 收敛。
-const ORDER_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
 const CANCEL_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
 const HEDGE_RESIDUAL_EPS: f64 = 1e-12;
 
@@ -523,21 +516,19 @@ impl HedgeArbStrategy {
         Ok(())
     }
 
-    // cancel的本质就是构造取消，实际处理的是account monitor的撤销回报
-    // 修复bug cancel撤销开仓订单，但此时开仓单已经完全成交，所以不能强行cancel，需要先判断开仓单的状态
-    // 如果直接cancel，等于发送一个不存在client order id，然后报错
-    // 此时trade engine返回挂单错误，导致强行关闭了strategy，等价于报单失败的路径处理，强制关闭了整个对冲配对 strategy
-    // 但和报单失败不同，此时对冲单已经挂上。但整个策略已经完全关闭，后续定时器相当于无法监控到这个对冲单，导致没有继续重新挂单
-    // 细改
-    // cancel时，不能直接对开仓单cancel。要先区分开仓单当前是否处于terminal状态
-    // 如果已经完全成交，则不需要cancel，跳过cancel流程即可。
-    // 只有非中止状态，挂单中或者部分成交，才需要发送cancel。
     fn handle_arb_cancel_signal(&mut self, ctx: ArbCancelCtx) -> Result<(), String> {
         let cancel_reason = arb_cancel_log_reason(&ctx);
+        self.cancel_open_order(cancel_reason)
+    }
+
+    fn cancel_open_order(&mut self, cancel_reason: &'static str) -> Result<(), String> {
         let order = MonitorChannel::instance()
             .order_manager()
             .borrow()
             .get(self.open_order_id);
+
+        // 开仓单已终态时不再发送撤单，避免 trade engine 把无效 client order id
+        // 当作报单失败处理，从而错误关闭已经进入对冲阶段的策略。
         if order
             .as_ref()
             .is_some_and(|order| order.status.is_terminal())
@@ -556,6 +547,10 @@ impl HedgeArbStrategy {
             );
             return Err("未找到要撤销的订单".to_string());
         };
+
+        // 只有挂单中或部分成交的非终态开仓单才需要构造撤单请求；
+        // 实际撤销结果仍以 account monitor 后续回报为准。
+        let client_order_id = order.client_order_id;
         let exchange = order.venue.trade_engine_exchange();
         let cancel_bytes = order.get_order_cancel_bytes().map_err(|err| {
             format!(
@@ -566,9 +561,10 @@ impl HedgeArbStrategy {
 
         TradeEngHub::publish_order_request(exchange, &cancel_bytes)
             .map_err(|err| format!("发送开仓撤单请求失败: {err}"))?;
+        self.schedule_cancel_query_watchdog(client_order_id);
         self.last_open_cancel_reason = Some(cancel_reason);
         info!(
-            "HedgeArbStrategy: strategy_id={} sent open cancel after ArbCancel order_id={} exchange={} cancel_reason={}",
+            "HedgeArbStrategy: strategy_id={} sent open cancel order_id={} exchange={} cancel_reason={}",
             self.strategy_id, self.open_order_id, exchange, cancel_reason
         );
         Ok(())
@@ -637,20 +633,23 @@ impl HedgeArbStrategy {
         }
     }
 
-    // 处理开仓测，超过最长挂单时间
+    // 处理开仓侧超过最长挂单时间。timeout 是正常撤单场景，不直接移交 orphan；
+    // 若撤单后迟迟没有终态回报，再由 cancel watchdog 进入 orphan 收敛。
     fn handle_open_leg_timeout(&mut self) {
         // 检查是否设置了超时时间，并且已经超时
         if let Some(expire_ts) = self.open_expire_ts {
             let now = get_timestamp_us();
             if now >= expire_ts && self.alive_flag && self.open_order_id != 0 {
                 info!(
-                    "HedgeArbStrategy: strategy_id={} 开仓订单超时，移交 arb orphan 撤单收敛 order_id={}",
+                    "HedgeArbStrategy: strategy_id={} 开仓订单超时，发送正常撤单 order_id={}",
                     self.strategy_id, self.open_order_id
                 );
-                self.last_open_cancel_reason = Some("timeout");
                 self.open_expire_ts = None;
-                if self.handoff_order_to_arb_orphan(self.open_order_id, ArbOrphanLeg::Open) {
-                    self.alive_flag = false;
+                if let Err(err) = self.cancel_open_order("timeout") {
+                    warn!(
+                        "HedgeArbStrategy: strategy_id={} 开仓订单超时撤单失败 order_id={} err={}",
+                        self.strategy_id, self.open_order_id, err
+                    );
                 }
             }
         }
@@ -2230,8 +2229,6 @@ impl Strategy for HedgeArbStrategy {
             (None, _) => {}
         }
     }
-
-    fn apply_query_engine_response(&mut self, _response: &dyn QueryEngineResponse) {}
 
     fn handle_period_clock(&mut self, _current_tp: i64) {
         // 周期性检查开仓和对冲订单的超时情况

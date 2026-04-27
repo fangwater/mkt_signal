@@ -16,6 +16,7 @@ use crate::signal::mm_signal::{
 };
 use crate::signal::open_signal::{ArbOpenCtx, MmOpenCtx};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
+use crate::strategy::arb_open_strategy::ArbOpenStrategy;
 use crate::strategy::hedge_arb_strategy::HedgeArbStrategy;
 use crate::strategy::mm_open_strategy::MarketMakerOpenStrategy;
 use crate::strategy::{ForceCloseControl, Strategy, StrategyManager};
@@ -364,8 +365,10 @@ fn handle_trade_signal(signal: TradeSignal) {
                     signal.handle_time,
                     open_ctx.to_bytes(),
                 );
+                let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+                let _ = strategy_mgr.borrow_mut().ensure_arb_hedge_strategy(&symbol);
                 let strategy_id = StrategyManager::generate_strategy_id();
-                let mut strategy = HedgeArbStrategy::new(strategy_id, symbol.clone());
+                let mut strategy = ArbOpenStrategy::new(strategy_id);
                 strategy.handle_signal(&normalized_signal);
                 if strategy.is_active() {
                     let hedge_mode = if open_ctx.hedge_timeout_us > 0 {
@@ -385,13 +388,10 @@ fn handle_trade_signal(signal: TradeSignal) {
                         from_key
                     );
                     info!(
-                        "✅ ArbOpen: strategy_id={} {} 已创建并激活",
+                        "✅ ArbOpenStrategy: strategy_id={} {} 已创建并激活",
                         strategy_id, symbol
                     );
-                    MonitorChannel::instance()
-                        .strategy_mgr()
-                        .borrow_mut()
-                        .insert(Box::new(strategy));
+                    strategy_mgr.borrow_mut().insert(Box::new(strategy));
                 } else {
                     warn!("⚠️ ArbOpen: strategy_id={} {} 未激活", strategy_id, symbol);
                 }
@@ -614,7 +614,11 @@ fn handle_trade_signal(signal: TradeSignal) {
                             let direction_match = strategy
                                 .as_any()
                                 .downcast_ref::<HedgeArbStrategy>()
-                                .is_some_and(|arb| arb.hedge_side == cancel_hedge_side);
+                                .is_some_and(|arb| arb.hedge_side == cancel_hedge_side)
+                                || strategy
+                                    .as_any()
+                                    .downcast_ref::<ArbOpenStrategy>()
+                                    .is_some_and(|arb| arb.open_side() == Some(cancel_side));
                             if !direction_match {
                                 strategy_mgr.borrow_mut().insert(strategy);
                                 return;
@@ -651,7 +655,11 @@ fn handle_trade_signal(signal: TradeSignal) {
                             let direction_match = strategy
                                 .as_any()
                                 .downcast_ref::<HedgeArbStrategy>()
-                                .is_some_and(|arb| arb.hedge_side == cancel_hedge_side);
+                                .is_some_and(|arb| arb.hedge_side == cancel_hedge_side)
+                                || strategy
+                                    .as_any()
+                                    .downcast_ref::<ArbOpenStrategy>()
+                                    .is_some_and(|arb| arb.open_side() == Some(cancel_side));
                             if !direction_match {
                                 strategy_mgr.borrow_mut().insert(strategy);
                                 continue;

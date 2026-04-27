@@ -14,6 +14,7 @@ pub mod persist_channel;
 pub mod price_table;
 pub mod query_eng_channel;
 pub mod resample_channel;
+pub mod response_reconcile;
 mod runner;
 pub mod signal_channel;
 pub mod signal_throttle;

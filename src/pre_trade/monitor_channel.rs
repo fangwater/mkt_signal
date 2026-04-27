@@ -2374,12 +2374,6 @@ mod tests {
 
         fn apply_trade_update(&mut self, _trade: &dyn crate::strategy::trade_update::TradeUpdate) {}
 
-        fn apply_trade_engine_response(
-            &mut self,
-            _response: &dyn crate::strategy::trade_engine_response::TradeEngineResponse,
-        ) {
-        }
-
         fn handle_period_clock(&mut self, _current_tp: i64) {}
 
         fn is_active(&self) -> bool {

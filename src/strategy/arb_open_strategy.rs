@@ -7,22 +7,23 @@ use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimite
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::{PersistChannel, QueryEngHub, TradeEngHub};
-use crate::signal::cancel_signal::MmCancelCtx;
+use crate::signal::cancel_signal::ArbCancelCtx;
 use crate::signal::common::{OrderStatus, SignalBytes, TradingVenue};
-use crate::signal::open_signal::MmOpenCtx;
+use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
-use crate::strategy::manager::MmOpenPriceMapEntry;
-use crate::strategy::manager::{ForceCloseControl, MmOrphanHandoff, MmOrphanSourceKind, Strategy};
+use crate::strategy::manager::{
+    ArbOpenPriceMapEntry, ForceCloseControl, HedgeOrphanHandoff, HedgeOrphanSourceKind, Strategy,
+};
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::order_reconcile::{qv_decimal_or_fallback, ORDER_QUERY_WATCHDOG_DELAY_US};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::query_order_updates::OrderQueryTradeUpdate;
 use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKind};
 use crate::strategy::trade_update::TradeUpdate;
-use crate::strategy::uniform_mm_publish::{
-    publish_mm_uniform_new_order, publish_mm_uniform_terminal_order,
-    publish_mm_uniform_trade_order, publish_mm_uniform_trade_order_from_order_update,
-    MmUniformPublishCtx,
+use crate::strategy::uniform_arb_publish::{
+    publish_arb_uniform_new_order, publish_arb_uniform_terminal_order,
+    publish_arb_uniform_trade_order, publish_arb_uniform_trade_order_from_order_update,
+    ArbUniformPublishCtx,
 };
 use crate::strategy::ws_order_update::WsOrderUpdate;
 use log::{debug, error, info, warn};
@@ -64,19 +65,22 @@ struct QueryWatchdog {
     reason: PendingOrderQueryReason,
 }
 
-/// 做市开仓策略：仅处理开仓，不涉及对冲/强平/模式切换
-pub struct MarketMakerOpenStrategy {
+/// 单腿套利开仓策略：只负责 open leg 生命周期，不保存 hedge leg 或双腿盘口。
+pub struct ArbOpenStrategy {
     strategy_id: i32,
     open_symbol: String,
+    open_venue: TradingVenue,
     open_order_id: i64,
     open_expire_ts: Option<i64>,
     open_side: Option<Side>,
-    signal_ts: i64,
+    open_signal_ts: i64,
     open_from_key: String,
     open_price_qv: QuantizedValue,
     open_price_offset: f64,
+    pub close_ts: Option<i64>,    //仓位希望持有的时间
+    pub cumulative_open_qty: f64, //累计开仓数量
+    pub open_qty_multiplier: f64, //开仓侧数量乘数（venue qty -> base qty）
     alive_flag: bool,
-    recorded_to_hedge: bool,
     pending_order_query: Option<PendingOrderQueryReason>,
     order_query_watchdog: Option<QueryWatchdog>,
     cancel_query_watchdog: Option<QueryWatchdog>,
@@ -84,20 +88,23 @@ pub struct MarketMakerOpenStrategy {
     last_open_cancel_reason: Option<&'static str>,
 }
 
-impl MarketMakerOpenStrategy {
+impl ArbOpenStrategy {
     pub fn new(strategy_id: i32) -> Self {
         Self {
             strategy_id,
             open_symbol: String::new(),
+            open_venue: TradingVenue::BinanceMargin,
             open_order_id: 0,
             open_expire_ts: None,
             open_side: None,
-            signal_ts: 0,
+            open_signal_ts: 0,
             open_from_key: String::new(),
             open_price_qv: QuantizedValue::zero(),
             open_price_offset: 0.0,
+            close_ts: None,
+            cumulative_open_qty: 0.0,
+            open_qty_multiplier: 1.0,
             alive_flag: true,
-            recorded_to_hedge: false,
             pending_order_query: None,
             order_query_watchdog: None,
             cancel_query_watchdog: None,
@@ -106,12 +113,15 @@ impl MarketMakerOpenStrategy {
         }
     }
 
-    /// 组合订单ID：高32位为策略ID，低32位为序列号
+    pub fn open_side(&self) -> Option<Side> {
+        self.open_side
+    }
+
+    /// 组合订单ID：高32位为策略ID，低32位为序列号。
     fn compose_order_id(strategy_id: i32) -> i64 {
         ((strategy_id as i64) << 32) | 1
     }
 
-    /// 从订单ID中提取策略ID
     fn extract_strategy_id(order_id: i64) -> i32 {
         (order_id >> 32) as i32
     }
@@ -137,38 +147,41 @@ impl MarketMakerOpenStrategy {
         self.clear_query_watchdogs(client_order_id);
         self.open_order_id = 0;
         warn!(
-            "MarketMakerOpenStrategy: strategy_id={} release open order keep local client_order_id={} reason={}",
+            "ArbOpenStrategy: strategy_id={} release open order keep local client_order_id={} reason={}",
             self.strategy_id, client_order_id, reason
         );
     }
 
-    fn handoff_open_order_to_mm_orphan(&mut self, client_order_id: i64, reason: &str) -> bool {
+    fn handoff_open_order_to_hedge_orphan(&mut self, client_order_id: i64, reason: &str) -> bool {
         if client_order_id <= 0 {
             self.alive_flag = false;
             return false;
         }
         warn!(
-            "MarketMakerOpenStrategy: strategy_id={} orphan_handoff_start client_order_id={} reason={}",
+            "ArbOpenStrategy: strategy_id={} hedge_orphan_handoff_start client_order_id={} reason={}",
             self.strategy_id, client_order_id, reason
         );
-        let handoff = MmOrphanHandoff {
+        let handoff = HedgeOrphanHandoff {
             client_order_id,
             source_strategy_id: self.strategy_id,
-            source_kind: MmOrphanSourceKind::Open,
+            source_kind: HedgeOrphanSourceKind::Open,
             uniform_ctx: self.uniform_open_publish_ctx(),
+            recorded_base_qty: self.cumulative_open_qty,
             reason: reason.to_string(),
         };
         let Some(orphan_mgr) = MonitorChannel::try_orphan_strategy_mgr() else {
             warn!(
-                "MarketMakerOpenStrategy: strategy_id={} orphan manager unavailable client_order_id={} reason={}",
+                "ArbOpenStrategy: strategy_id={} orphan manager unavailable client_order_id={} reason={}",
                 self.strategy_id, client_order_id, reason
             );
             return false;
         };
-        let adopted = orphan_mgr.borrow_mut().adopt_mm_orphan_order_id(&handoff);
+        let adopted = orphan_mgr
+            .borrow_mut()
+            .adopt_hedge_orphan_order_id(&handoff);
         if !adopted {
             warn!(
-                "MarketMakerOpenStrategy: strategy_id={} mm orphan handoff rejected client_order_id={} reason={}",
+                "ArbOpenStrategy: strategy_id={} hedge orphan handoff rejected client_order_id={} reason={}",
                 self.strategy_id, client_order_id, reason
             );
             return false;
@@ -183,11 +196,14 @@ impl MarketMakerOpenStrategy {
             return;
         };
         let mut mgr = order_mgr.borrow_mut();
-
         if self.open_order_id != 0 {
             if let Some(order) = mgr.get(self.open_order_id) {
                 if !order.status.is_terminal() {
-                    mgr.log_order_details(&order, "开仓订单未达到终结状态被清理", self.strategy_id);
+                    mgr.log_order_details(
+                        &order,
+                        "ArbOpen开仓订单未达到终结状态被清理",
+                        self.strategy_id,
+                    );
                 }
             }
             let _ = mgr.remove(self.open_order_id);
@@ -228,20 +244,16 @@ impl MarketMakerOpenStrategy {
         let order_mgr = MonitorChannel::instance().order_manager();
         let Some(order_snapshot) = order_mgr.borrow().get(client_order_id) else {
             warn!(
-                "MarketMakerOpenStrategy: strategy_id={} ws order update missing local order: client_order_id={}",
+                "ArbOpenStrategy: strategy_id={} ws order update missing local order: client_order_id={}",
                 self.strategy_id, client_order_id
             );
             return false;
         };
-        let order_snapshot = order_snapshot.clone();
 
         let Some(update) = WsOrderUpdate::from_trade_response(response, &order_snapshot) else {
             return false;
         };
 
-        // Binance WS 下单响应在 FULL/RESULT 模式下可能直接返回 FILLED/PartiallyFilled
-        // （并携带 fills），不再稳定经过 NEW 阶段。
-        // 这里统一只接收 NEW/CANCELED，其他状态等待 account ws 的正常推送处理。
         if matches!(
             order_snapshot.venue,
             TradingVenue::BinanceMargin | TradingVenue::BinanceFutures
@@ -250,7 +262,7 @@ impl MarketMakerOpenStrategy {
                 <Self as Strategy>::apply_order_update(self, &update);
             } else {
                 debug!(
-                    "MarketMakerOpenStrategy: strategy_id={} skip non-NEW/CANCELED binance ws response: venue={:?} client_order_id={} status={:?}",
+                    "ArbOpenStrategy: strategy_id={} skip non-NEW/CANCELED binance ws response: venue={:?} client_order_id={} status={:?}",
                     self.strategy_id,
                     order_snapshot.venue,
                     client_order_id,
@@ -280,11 +292,11 @@ impl MarketMakerOpenStrategy {
         true
     }
 
-    fn handle_mm_open_signal(&mut self, ctx: MmOpenCtx) {
+    fn handle_arb_open_signal(&mut self, ctx: ArbOpenCtx) {
         let symbol = normalize_symbol_for_internal(&ctx.get_opening_symbol());
         if symbol.is_empty() {
             warn!(
-                "MarketMakerOpenStrategy: strategy_id={} empty symbol",
+                "ArbOpenStrategy: strategy_id={} empty symbol",
                 self.strategy_id
             );
             self.alive_flag = false;
@@ -293,25 +305,23 @@ impl MarketMakerOpenStrategy {
 
         let Some(venue) = TradingVenue::from_u8(ctx.opening_leg.venue) else {
             warn!(
-                "MarketMakerOpenStrategy: strategy_id={} invalid venue={}",
+                "ArbOpenStrategy: strategy_id={} invalid venue={}",
                 self.strategy_id, ctx.opening_leg.venue
             );
             self.alive_flag = false;
             return;
         };
-
         let Some(side) = Side::from_u8(ctx.side) else {
             warn!(
-                "MarketMakerOpenStrategy: strategy_id={} invalid side={}",
+                "ArbOpenStrategy: strategy_id={} invalid side={}",
                 self.strategy_id, ctx.side
             );
             self.alive_flag = false;
             return;
         };
-
         let Some(order_type) = OrderType::from_u8(ctx.order_type) else {
             warn!(
-                "MarketMakerOpenStrategy: strategy_id={} invalid order_type={}",
+                "ArbOpenStrategy: strategy_id={} invalid order_type={}",
                 self.strategy_id, ctx.order_type
             );
             self.alive_flag = false;
@@ -321,26 +331,24 @@ impl MarketMakerOpenStrategy {
         let qty = ctx.amount_value();
         if qty <= 0.0 {
             warn!(
-                "MarketMakerOpenStrategy: strategy_id={} invalid qty={}",
+                "ArbOpenStrategy: strategy_id={} invalid qty={}",
                 self.strategy_id, qty
             );
             self.alive_flag = false;
             return;
         }
-
         let signal_price = ctx.price_value();
         if signal_price <= 0.0 {
             warn!(
-                "MarketMakerOpenStrategy: strategy_id={} invalid price={} order_type={:?}",
+                "ArbOpenStrategy: strategy_id={} invalid price={} order_type={:?}",
                 self.strategy_id, signal_price, order_type
             );
             self.alive_flag = false;
             return;
         }
-
         if ctx.price_count() <= 0 || ctx.amount_count() <= 0 {
             warn!(
-                "MarketMakerOpenStrategy: strategy_id={} invalid MMOpen qv count price_count={} amount_count={}",
+                "ArbOpenStrategy: strategy_id={} invalid ArbOpen qv count price_count={} amount_count={}",
                 self.strategy_id,
                 ctx.price_count(),
                 ctx.amount_count()
@@ -348,39 +356,33 @@ impl MarketMakerOpenStrategy {
             self.alive_flag = false;
             return;
         }
-
         if !venue.supports_pre_trade_stack() {
             panic!(
-                "MarketMakerOpenStrategy: strategy_id={} 不支持的交易场所 {:?}，仅支持 Binance/OKX/Bybit/Bitget/Gate 的 futures 或 margin",
+                "ArbOpenStrategy: strategy_id={} 不支持的交易场所 {:?}，仅支持 Binance/OKX/Bybit/Bitget/Gate 的 futures 或 margin",
                 self.strategy_id, venue
             );
         }
 
-        // 1、检查symbol敞口
         if let Err(e) = MonitorChannel::instance().check_symbol_exposure(&symbol) {
             error!(
-                "MarketMakerOpenStrategy: strategy_id={} symbol={} 单品种敞口风控检查失败: {}，标记策略为不活跃",
+                "ArbOpenStrategy: strategy_id={} symbol={} 单品种敞口风控检查失败: {}，标记策略为不活跃",
                 self.strategy_id, symbol, e
             );
             self.alive_flag = false;
             return;
         }
-
-        // 2、检查总敞口
         if let Err(e) = MonitorChannel::instance().check_total_exposure() {
             error!(
-                "MarketMakerOpenStrategy: strategy_id={} 总敞口风控检查失败: {}，标记策略为不活跃",
+                "ArbOpenStrategy: strategy_id={} 总敞口风控检查失败: {}，标记策略为不活跃",
                 self.strategy_id, e
             );
             self.alive_flag = false;
             return;
         }
-
-        // 3、检查限价挂单数量限制（如果是限价单）
         if order_type == OrderType::Limit {
             if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&symbol, side) {
                 error!(
-                    "MarketMakerOpenStrategy: strategy_id={} symbol={} 限价挂单数量风控检查失败: {}，标记策略为不活跃",
+                    "ArbOpenStrategy: strategy_id={} symbol={} 限价挂单数量风控检查失败: {}，标记策略为不活跃",
                     self.strategy_id, symbol, e
                 );
                 self.alive_flag = false;
@@ -396,44 +398,51 @@ impl MarketMakerOpenStrategy {
             get_timestamp_us(),
         ) {
             info!(
-                "MarketMakerOpenStrategy: strategy_id={} symbol={} 开仓下单频率风控触发: {}，标记策略为不活跃",
+                "ArbOpenStrategy: strategy_id={} symbol={} 开仓下单频率风控触发: {}，标记策略为不活跃",
                 self.strategy_id, symbol, e
             );
             self.alive_flag = false;
             return;
         }
 
-        // 4、信号已完成量价对齐，直接使用
+        let qty_multiplier = match MonitorChannel::instance()
+            .qty_multiplier_for_venue(venue, &symbol)
+        {
+            Ok(multiplier) => multiplier,
+            Err(err) => {
+                error!(
+                    "ArbOpenStrategy: strategy_id={} 初始化开仓数量乘数失败 symbol={} venue={:?}: {}",
+                    self.strategy_id, symbol, venue, err
+                );
+                self.alive_flag = false;
+                return;
+            }
+        };
+
         let order_qty = qty;
         let order_price = signal_price;
         let signed_qty = match side {
             Side::Buy => order_qty.abs(),
             Side::Sell => -order_qty.abs(),
         };
-
-        // 5、检查杠杆：若绝对持仓不增加，则可跳过
-        let add_base_qty = MonitorChannel::instance().qty_to_base(venue, &symbol, signed_qty);
+        let add_base_qty = signed_qty * qty_multiplier;
         let current_base_qty = MonitorChannel::instance().get_position_qty(&symbol, venue);
         let projected_base_qty = current_base_qty + add_base_qty;
-        let reduce_eps = 1e-12_f64;
-
-        if projected_base_qty.abs() > current_base_qty.abs() + reduce_eps {
+        if projected_base_qty.abs() > current_base_qty.abs() + 1e-12_f64 {
             if let Err(e) = MonitorChannel::instance().check_leverage() {
                 error!(
-                    "MarketMakerOpenStrategy: strategy_id={} 杠杆风控检查失败: {}，标记策略为不活跃",
+                    "ArbOpenStrategy: strategy_id={} 杠杆风控检查失败: {}，标记策略为不活跃",
                     self.strategy_id, e
                 );
                 self.alive_flag = false;
                 return;
             }
         }
-
-        // 6、检查 max_pos_u
         if let Err(e) =
             MonitorChannel::instance().ensure_max_pos_u(&symbol, signed_qty, order_price)
         {
             error!(
-                "MarketMakerOpenStrategy: strategy_id={} 仓位限制检查失败: {}，标记策略为不活跃",
+                "ArbOpenStrategy: strategy_id={} 仓位限制检查失败: {}，标记策略为不活跃",
                 self.strategy_id, e
             );
             self.alive_flag = false;
@@ -441,16 +450,25 @@ impl MarketMakerOpenStrategy {
         }
 
         self.open_symbol = symbol.clone();
-        self.open_expire_ts = if ctx.exp_time > 0 {
-            Some(ctx.exp_time)
-        } else {
-            None
-        };
+        self.open_venue = venue;
+        self.open_expire_ts = (ctx.exp_time > 0).then_some(ctx.exp_time);
         self.open_side = Some(side);
-        self.signal_ts = ctx.create_ts;
+        self.open_signal_ts = ctx.create_ts;
         self.open_from_key = String::from_utf8_lossy(&ctx.from_key).to_string();
         self.open_price_qv = ctx.price_qv;
         self.open_price_offset = ctx.price_offset;
+        self.close_ts = if ctx.hedge_timeout_us > 0 {
+            let base_ts = if ctx.create_ts > 0 {
+                ctx.create_ts
+            } else {
+                get_timestamp_us()
+            };
+            Some(base_ts.saturating_add(ctx.hedge_timeout_us))
+        } else {
+            None
+        };
+        self.cumulative_open_qty = 0.0;
+        self.open_qty_multiplier = qty_multiplier;
 
         let client_order_id = Self::compose_order_id(self.strategy_id);
         self.open_order_id = client_order_id;
@@ -468,12 +486,12 @@ impl MarketMakerOpenStrategy {
                 order_qty,
                 order_price,
                 false,
-                1.0,
+                qty_multiplier,
                 submit_ts,
             );
 
         info!(
-            "📤 MM开仓订单已创建: strategy_id={} client_order_id={} symbol={} {:?} side={:?} qty={} price={} from_key_len={}",
+            "📤 ArbOpen订单已创建: strategy_id={} client_order_id={} symbol={} {:?} side={:?} qty={} price={} qty_multiplier={:.8} close_ts={:?} from_key_len={}",
             self.strategy_id,
             client_order_id,
             symbol,
@@ -481,17 +499,19 @@ impl MarketMakerOpenStrategy {
             side,
             qv_decimal_or_fallback(order_qty),
             qv_decimal_or_fallback(order_price),
+            qty_multiplier,
+            self.close_ts,
             ctx.from_key_len
         );
 
         if let Err(err) = self.create_and_send_order(client_order_id, &symbol) {
             error!(
-                "MarketMakerOpenStrategy: strategy_id={} open order send failed: {}",
+                "ArbOpenStrategy: strategy_id={} open order send failed: {}",
                 self.strategy_id, err
             );
         } else {
             info!(
-                "✅ MM开仓订单已发送: strategy_id={} client_order_id={}",
+                "✅ ArbOpen订单已发送: strategy_id={} client_order_id={}",
                 self.strategy_id, client_order_id
             );
         }
@@ -507,7 +527,7 @@ impl MarketMakerOpenStrategy {
         }
 
         info!(
-            "MarketMakerOpenStrategy: strategy_id={} 开仓订单超时，直接撤单 order_id={}",
+            "ArbOpenStrategy: strategy_id={} 开仓订单超时，直接撤单 order_id={}",
             self.strategy_id, self.open_order_id
         );
         self.last_open_cancel_reason = Some("timeout");
@@ -522,70 +542,49 @@ impl MarketMakerOpenStrategy {
                     let exchange = order.venue.trade_engine_exchange();
                     if let Err(e) = TradeEngHub::publish_order_request(exchange, &cancel_bytes) {
                         info!(
-                            "MarketMakerOpenStrategy: strategy_id={} exchange={} 发送开仓撤单请求失败: {}",
+                            "ArbOpenStrategy: strategy_id={} exchange={} 发送开仓撤单请求失败: {}",
                             self.strategy_id, exchange, e
                         );
                     } else {
                         info!(
-                            "MarketMakerOpenStrategy: strategy_id={} exchange={} reason=timeout 已发送开仓撤单请求 order_id={}",
+                            "ArbOpenStrategy: strategy_id={} exchange={} reason=timeout 已发送开仓撤单请求 order_id={}",
                             self.strategy_id, exchange, self.open_order_id
                         );
                         self.open_expire_ts = None;
                         self.schedule_cancel_query_watchdog(self.open_order_id);
                     }
                 }
-                Err(e) => {
-                    error!(
-                        "MarketMakerOpenStrategy: strategy_id={} 获取开仓撤单请求字节失败: {}",
-                        self.strategy_id, e
-                    );
-                }
+                Err(e) => error!(
+                    "ArbOpenStrategy: strategy_id={} 获取开仓撤单请求字节失败: {}",
+                    self.strategy_id, e
+                ),
             }
         }
     }
 
-    fn handle_mm_cancel_signal(&mut self, ctx: MmCancelCtx) {
+    fn handle_arb_cancel_signal(&mut self, ctx: ArbCancelCtx) {
         let precise_target = ctx.strategy_id > 0;
         let from_key_preview = Self::preview_text(&String::from_utf8_lossy(&ctx.from_key), 160);
         if self.last_cancel_trigger_ts == Some(ctx.trigger_ts) {
             debug!(
-                "MarketMakerOpenStrategy: strategy_id={} skip duplicate MMCancel trigger_ts={} open_order_id={} from_key='{}'",
-                self.strategy_id,
-                ctx.trigger_ts,
-                self.open_order_id,
-                from_key_preview
+                "ArbOpenStrategy: strategy_id={} skip duplicate ArbCancel trigger_ts={} open_order_id={} from_key='{}'",
+                self.strategy_id, ctx.trigger_ts, self.open_order_id, from_key_preview
             );
             return;
         }
-        if precise_target {
-            if ctx.strategy_id != self.strategy_id {
-                info!(
-                    "MarketMakerOpenStrategy: strategy_id={} ignore targeted MMCancel target_strategy_id={} trigger_ts={} from_key='{}'",
-                    self.strategy_id,
-                    ctx.strategy_id,
-                    ctx.trigger_ts,
-                    from_key_preview
-                );
-                return;
-            }
-        } else {
-            if ctx.client_order_id > 0 && ctx.client_order_id != self.open_order_id {
-                info!(
-                    "MarketMakerOpenStrategy: strategy_id={} ignore MMCancel due to client_order_id mismatch signal_client_order_id={} open_order_id={} trigger_ts={} from_key='{}'",
-                    self.strategy_id,
-                    ctx.client_order_id,
-                    self.open_order_id,
-                    ctx.trigger_ts,
-                    from_key_preview
-                );
-                return;
-            }
-
+        if precise_target && ctx.strategy_id != self.strategy_id {
+            info!(
+                "ArbOpenStrategy: strategy_id={} ignore targeted ArbCancel target_strategy_id={} trigger_ts={} from_key='{}'",
+                self.strategy_id, ctx.strategy_id, ctx.trigger_ts, from_key_preview
+            );
+            return;
+        }
+        if !precise_target {
             let cancel_side = ctx.get_side();
             if let Some(open_side) = self.open_side {
                 if open_side != cancel_side {
                     info!(
-                        "MarketMakerOpenStrategy: strategy_id={} skip MMCancel due to side mismatch open_side={:?} cancel_side={:?} open_order_id={} trigger_ts={} from_key='{}'",
+                        "ArbOpenStrategy: strategy_id={} skip ArbCancel due to side mismatch open_side={:?} cancel_side={:?} open_order_id={} trigger_ts={} from_key='{}'",
                         self.strategy_id,
                         open_side,
                         cancel_side,
@@ -604,21 +603,16 @@ impl MarketMakerOpenStrategy {
                 .is_some_and(|w| w.client_order_id == self.open_order_id)
         {
             debug!(
-                "MarketMakerOpenStrategy: strategy_id={} skip MMCancel because cancel reconcile already in flight open_order_id={} trigger_ts={} from_key='{}'",
-                self.strategy_id,
-                self.open_order_id,
-                ctx.trigger_ts,
-                from_key_preview
+                "ArbOpenStrategy: strategy_id={} skip ArbCancel because cancel reconcile already in flight open_order_id={} trigger_ts={} from_key='{}'",
+                self.strategy_id, self.open_order_id, ctx.trigger_ts, from_key_preview
             );
             self.last_cancel_trigger_ts = Some(ctx.trigger_ts);
             return;
         }
         if self.open_order_id == 0 {
             info!(
-                "MarketMakerOpenStrategy: strategy_id={} skip MMCancel because open_order_id=0 trigger_ts={} from_key='{}'",
-                self.strategy_id,
-                ctx.trigger_ts,
-                from_key_preview
+                "ArbOpenStrategy: strategy_id={} skip ArbCancel because open_order_id=0 trigger_ts={} from_key='{}'",
+                self.strategy_id, ctx.trigger_ts, from_key_preview
             );
             return;
         }
@@ -630,7 +624,7 @@ impl MarketMakerOpenStrategy {
         if let Some(order) = order {
             if order.status.is_terminal() {
                 info!(
-                    "MarketMakerOpenStrategy: strategy_id={} open order already terminal {:?}, skip cancel order_id={} trigger_ts={} from_key='{}'",
+                    "ArbOpenStrategy: strategy_id={} open order already terminal {:?}, skip cancel order_id={} trigger_ts={} from_key='{}'",
                     self.strategy_id, order.status, self.open_order_id, ctx.trigger_ts, from_key_preview
                 );
                 return;
@@ -642,7 +636,7 @@ impl MarketMakerOpenStrategy {
                     let cancel_reason = ctx.get_reason().as_log_reason();
                     if let Err(e) = TradeEngHub::publish_order_request(exchange, &cancel_bytes) {
                         error!(
-                            "MarketMakerOpenStrategy: strategy_id={} exchange={} 发送撤单请求失败 order_id={} trigger_ts={} from_key='{}' err={}",
+                            "ArbOpenStrategy: strategy_id={} exchange={} 发送撤单请求失败 order_id={} trigger_ts={} from_key='{}' err={}",
                             self.strategy_id, exchange, self.open_order_id, ctx.trigger_ts, from_key_preview, e
                         );
                     } else {
@@ -650,7 +644,7 @@ impl MarketMakerOpenStrategy {
                         self.last_cancel_trigger_ts = Some(ctx.trigger_ts);
                         self.schedule_cancel_query_watchdog(order.client_order_id);
                         info!(
-                            "MarketMakerOpenStrategy: strategy_id={} exchange={} reason={} 已发送开仓撤单请求 order_id={} trigger_ts={} from_key='{}'",
+                            "ArbOpenStrategy: strategy_id={} exchange={} reason={} 已发送开仓撤单请求 order_id={} trigger_ts={} from_key='{}'",
                             self.strategy_id,
                             exchange,
                             cancel_reason,
@@ -660,93 +654,11 @@ impl MarketMakerOpenStrategy {
                         );
                     }
                 }
-                Err(e) => {
-                    error!(
-                        "MarketMakerOpenStrategy: strategy_id={} 获取撤单请求字节失败 order_id={} trigger_ts={} from_key='{}' err={}",
-                        self.strategy_id, self.open_order_id, ctx.trigger_ts, from_key_preview, e
-                    );
-                }
+                Err(e) => error!(
+                    "ArbOpenStrategy: strategy_id={} 获取撤单请求字节失败 order_id={} trigger_ts={} from_key='{}' err={}",
+                    self.strategy_id, self.open_order_id, ctx.trigger_ts, from_key_preview, e
+                ),
             }
-        } else {
-            info!(
-                "MarketMakerOpenStrategy: strategy_id={} 未找到要撤销的订单 order_id={} trigger_ts={} from_key='{}'",
-                self.strategy_id, self.open_order_id, ctx.trigger_ts, from_key_preview
-            );
-        }
-    }
-
-    fn record_mm_hedge_qty(
-        &mut self,
-        venue: TradingVenue,
-        symbol: &str,
-        side: Side,
-        cumulative_qty: f64,
-        fill_ts: i64,
-        price: f64,
-        update_detail: &str,
-    ) {
-        if self.recorded_to_hedge {
-            return;
-        }
-        if cumulative_qty <= 0.0 {
-            return;
-        }
-        let base_qty = MonitorChannel::instance().qty_to_base(venue, symbol, cumulative_qty);
-        if base_qty <= 0.0 {
-            return;
-        }
-        let symbol_internal = normalize_symbol_for_internal(symbol);
-        let (signed_qty, buy_qty, sell_qty) = match side {
-            Side::Buy => (base_qty, base_qty, 0.0),
-            Side::Sell => (-base_qty, 0.0, base_qty),
-        };
-
-        let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-        let updated = strategy_mgr.borrow_mut().record_mm_hedge_fill(
-            &symbol_internal,
-            signed_qty,
-            buy_qty,
-            sell_qty,
-            fill_ts,
-            price,
-        );
-        if updated {
-            self.recorded_to_hedge = true;
-        } else {
-            let hedge_symbols = {
-                let snapshots = strategy_mgr.borrow().mm_hedge_snapshots();
-                let preview: Vec<String> = snapshots
-                    .into_iter()
-                    .take(8)
-                    .map(|snap| {
-                        format!(
-                            "{}(net={:.8},buy={:.8},sell={:.8})",
-                            snap.symbol, snap.net_qty, snap.buy_qty, snap.sell_qty
-                        )
-                    })
-                    .collect();
-                if preview.is_empty() {
-                    "-".to_string()
-                } else {
-                    preview.join(",")
-                }
-            };
-            warn!(
-                "MarketMakerOpenStrategy: strategy_id={} record mm hedge failed venue={:?} raw_symbol={} internal_symbol={} side={:?} cumulative_qty={:.8} base_qty={:.8} fill_ts={} price={:.8} open_order_id={} recorded_to_hedge={} update={} mm_hedge_snapshots={}",
-                self.strategy_id,
-                venue,
-                symbol,
-                symbol_internal,
-                side,
-                cumulative_qty,
-                base_qty,
-                fill_ts,
-                price,
-                self.open_order_id,
-                self.recorded_to_hedge,
-                update_detail,
-                hedge_symbols
-            );
         }
     }
 
@@ -772,7 +684,7 @@ impl MarketMakerOpenStrategy {
                     get_timestamp_us(),
                 );
                 info!(
-                    "MarketMakerOpenStrategy: strategy_id={} MM open order action recorded client_order_id={} count_10s={} count_1m={}",
+                    "ArbOpenStrategy: strategy_id={} arb open order action recorded client_order_id={} count_10s={} count_1m={}",
                     self.strategy_id, client_order_id, stats.count_10s, stats.count_1m
                 );
                 if let Err(e) = TradeEngHub::publish_order_request(exchange, &req_bin) {
@@ -792,32 +704,56 @@ impl MarketMakerOpenStrategy {
         }
     }
 
+    fn record_arb_open_fill_delta(
+        &self,
+        side: Side,
+        base_qty_delta: f64,
+        fill_ts: i64,
+        price: f64,
+        update_detail: &str,
+    ) {
+        if base_qty_delta <= 1e-12 {
+            return;
+        }
+        let close_ts = self.close_ts.unwrap_or(0);
+        let updated = MonitorChannel::instance()
+            .strategy_mgr()
+            .borrow_mut()
+            .record_arb_open_fill(
+                &self.open_symbol,
+                side,
+                base_qty_delta,
+                fill_ts,
+                price,
+                close_ts,
+            );
+        if !updated {
+            warn!(
+                "ArbOpenStrategy: strategy_id={} record arb hedge open fill failed symbol={} side={:?} base_qty_delta={:.8} fill_ts={} price={:.8} close_ts={} detail={}",
+                self.strategy_id,
+                self.open_symbol,
+                side,
+                base_qty_delta,
+                fill_ts,
+                price,
+                close_ts,
+                update_detail
+            );
+        }
+    }
+
     fn schedule_order_query_watchdog(&mut self, client_order_id: i64) {
-        let due = get_timestamp_us().saturating_add(ORDER_QUERY_WATCHDOG_DELAY_US);
         self.order_query_watchdog = Some(QueryWatchdog {
             client_order_id,
-            due_ts_us: due,
+            due_ts_us: get_timestamp_us().saturating_add(ORDER_QUERY_WATCHDOG_DELAY_US),
             reason: PendingOrderQueryReason::OrderWatchdog,
         });
     }
 
-    fn handoff_open_order_after_query_failure(
-        &mut self,
-        client_order_id: i64,
-        marker: &'static str,
-    ) {
-        warn!(
-            "MarketMakerOpenStrategy: strategy_id={} order query {} failed, handoff to mm orphan: client_order_id={}",
-            self.strategy_id, marker, client_order_id
-        );
-        self.handoff_open_order_to_mm_orphan(client_order_id, marker);
-    }
-
     fn schedule_cancel_query_watchdog(&mut self, client_order_id: i64) {
-        let due = get_timestamp_us().saturating_add(ORDER_QUERY_WATCHDOG_DELAY_US);
         self.cancel_query_watchdog = Some(QueryWatchdog {
             client_order_id,
-            due_ts_us: due,
+            due_ts_us: get_timestamp_us().saturating_add(ORDER_QUERY_WATCHDOG_DELAY_US),
             reason: PendingOrderQueryReason::CancelWatchdog,
         });
         if self
@@ -857,7 +793,7 @@ impl MarketMakerOpenStrategy {
         let order_mgr = MonitorChannel::instance().order_manager();
         let Some(order) = order_mgr.borrow().get(client_order_id) else {
             warn!(
-                "MarketMakerOpenStrategy: strategy_id={} send_order_query but local order missing: client_order_id={} reason={:?}",
+                "ArbOpenStrategy: strategy_id={} send_order_query but local order missing: client_order_id={} reason={:?}",
                 self.strategy_id, client_order_id, reason
             );
             return false;
@@ -868,21 +804,21 @@ impl MarketMakerOpenStrategy {
                 if let Err(err) = QueryEngHub::publish_query_request(exchange.as_str(), &req_bytes)
                 {
                     warn!(
-                        "MarketMakerOpenStrategy: strategy_id={} publish order query failed: exchange={} client_order_id={} reason={:?} err={:#}",
+                        "ArbOpenStrategy: strategy_id={} publish order query failed: exchange={} client_order_id={} reason={:?} err={:#}",
                         self.strategy_id, exchange, client_order_id, reason, err
                     );
                     return false;
                 }
                 self.pending_order_query = Some(reason);
                 debug!(
-                    "MarketMakerOpenStrategy: strategy_id={} order query sent: exchange={} client_order_id={} reason={:?}",
+                    "ArbOpenStrategy: strategy_id={} order query sent: exchange={} client_order_id={} reason={:?}",
                     self.strategy_id, exchange, client_order_id, reason
                 );
                 true
             }
             Err(err) => {
                 warn!(
-                    "MarketMakerOpenStrategy: strategy_id={} build order query failed: client_order_id={} reason={:?} err={}",
+                    "ArbOpenStrategy: strategy_id={} build order query failed: client_order_id={} reason={:?} err={}",
                     self.strategy_id, client_order_id, reason, err
                 );
                 false
@@ -890,9 +826,20 @@ impl MarketMakerOpenStrategy {
         }
     }
 
+    fn handoff_open_order_after_query_failure(
+        &mut self,
+        client_order_id: i64,
+        marker: &'static str,
+    ) {
+        warn!(
+            "ArbOpenStrategy: strategy_id={} order query {} failed, handoff to hedge orphan: client_order_id={}",
+            self.strategy_id, marker, client_order_id
+        );
+        self.handoff_open_order_to_hedge_orphan(client_order_id, marker);
+    }
+
     fn handle_query_watchdogs(&mut self) {
         let now = get_timestamp_us();
-
         if let Some(w) = self.cancel_query_watchdog {
             if now >= w.due_ts_us {
                 self.cancel_query_watchdog = None;
@@ -913,12 +860,10 @@ impl MarketMakerOpenStrategy {
                         w.reason
                     );
                     if !self.send_order_query(w.client_order_id, w.reason) {
-                        let trigger = w.reason.query_send_failed_trigger();
-                        warn!(
-                            "MarketMakerOpenStrategy: strategy_id={} stop cancel reconcile and handoff to mm orphan: trigger={} client_order_id={} reason={:?}",
-                            self.strategy_id, trigger, w.client_order_id, w.reason
+                        self.handoff_open_order_to_hedge_orphan(
+                            w.client_order_id,
+                            w.reason.query_send_failed_trigger(),
                         );
-                        self.handoff_open_order_to_mm_orphan(w.client_order_id, trigger);
                     }
                 }
             }
@@ -932,24 +877,14 @@ impl MarketMakerOpenStrategy {
                 if let Some(order) = order_opt.as_ref().filter(|o| !o.status.is_terminal()) {
                     let scheduled_at = w.due_ts_us.saturating_sub(ORDER_QUERY_WATCHDOG_DELAY_US);
                     let waited_ms = now.saturating_sub(scheduled_at).saturating_div(1_000);
-                    let since_submit_ms = now
-                        .saturating_sub(order.timestamp.submit_t)
-                        .saturating_div(1_000);
-                    let hint = if order.status == OrderExecutionStatus::Commit {
-                        "（下单后未收到New/成交推送）"
-                    } else {
-                        ""
-                    };
                     info!(
-                        "OrderWatchdog触发{}: strategy_id={} client_order_id={} symbol={} status={:?} exch_ord_id={:?} 等待{}ms仍未收到回报，发送order query回补 (since_submit={}ms)",
-                        hint,
+                        "OrderWatchdog触发: strategy_id={} client_order_id={} symbol={} status={:?} exch_ord_id={:?} 等待{}ms仍未收到回报，发送order query回补",
                         self.strategy_id,
                         w.client_order_id,
                         order.symbol,
                         order.status,
                         order.exchange_order_id,
-                        waited_ms,
-                        since_submit_ms
+                        waited_ms
                     );
                     if !self.send_order_query(w.client_order_id, w.reason) {
                         self.handoff_open_order_after_query_failure(
@@ -962,12 +897,90 @@ impl MarketMakerOpenStrategy {
         }
     }
 
+    fn uniform_open_publish_ctx(&self) -> ArbUniformPublishCtx {
+        ArbUniformPublishCtx {
+            signal_ts: self.open_signal_ts,
+            from_key: self.open_from_key.clone().into_bytes(),
+            price_offset: self.open_price_offset,
+        }
+    }
+
+    fn publish_uniform_new_order(
+        &self,
+        order_update: &dyn OrderUpdate,
+        order: &Order,
+        prev_cumulative_filled_qty: f64,
+    ) {
+        let ctx = self.uniform_open_publish_ctx();
+        publish_arb_uniform_new_order(
+            order_update,
+            order,
+            prev_cumulative_filled_qty,
+            &ctx,
+            "ArbOpenStrategy",
+            self.strategy_id,
+        );
+    }
+
+    fn publish_uniform_terminal_order(
+        &self,
+        order_update: &dyn OrderUpdate,
+        order: &Order,
+        prev_cumulative_filled_qty: f64,
+    ) {
+        let ctx = self.uniform_open_publish_ctx();
+        publish_arb_uniform_terminal_order(
+            order_update,
+            order,
+            prev_cumulative_filled_qty,
+            &ctx,
+            "ArbOpenStrategy",
+            self.strategy_id,
+        );
+    }
+
+    fn publish_uniform_trade_order(
+        &self,
+        trade: &dyn TradeUpdate,
+        order: &Order,
+        prev_cumulative_filled_qty: f64,
+        status: OrderStatus,
+    ) {
+        let ctx = self.uniform_open_publish_ctx();
+        publish_arb_uniform_trade_order(
+            trade,
+            order,
+            prev_cumulative_filled_qty,
+            status,
+            &ctx,
+            "ArbOpenStrategy",
+            self.strategy_id,
+        );
+    }
+
+    fn publish_uniform_trade_order_from_order_update(
+        &self,
+        order_update: &dyn OrderUpdate,
+        order: &Order,
+        prev_cumulative_filled_qty: f64,
+    ) {
+        let ctx = self.uniform_open_publish_ctx();
+        publish_arb_uniform_trade_order_from_order_update(
+            order_update,
+            order,
+            prev_cumulative_filled_qty,
+            &ctx,
+            "ArbOpenStrategy",
+            self.strategy_id,
+        );
+    }
+
     fn apply_order_update(&mut self, order_update: &dyn OrderUpdate) -> bool {
         let client_order_id = order_update.client_order_id();
         self.clear_query_watchdogs(client_order_id);
         if client_order_id != self.open_order_id {
             debug!(
-                "MarketMakerOpenStrategy: strategy_id={} ignore order_update client_order_id={}",
+                "ArbOpenStrategy: strategy_id={} ignore order_update client_order_id={}",
                 self.strategy_id, client_order_id
             );
             return false;
@@ -977,18 +990,17 @@ impl MarketMakerOpenStrategy {
         let mut order_manager = order_mgr.borrow_mut();
         let Some(current_order) = order_manager.get(client_order_id) else {
             warn!(
-                "MarketMakerOpenStrategy: strategy_id={} order update not found client_order_id={}",
+                "ArbOpenStrategy: strategy_id={} order update not found client_order_id={}",
                 self.strategy_id, client_order_id
             );
             return false;
         };
-
         if OrderManager::should_skip_idempotent_order_update(
             &current_order,
             order_update.status(),
             order_update.order_id(),
             order_update.cumulative_filled_quantity(),
-            "MarketMakerOpenStrategy",
+            "ArbOpenStrategy",
             self.strategy_id,
         )
         .is_some()
@@ -997,12 +1009,15 @@ impl MarketMakerOpenStrategy {
         }
 
         let prev_cumulative_filled_qty = current_order.cumulative_filled_quantity;
+        let qty_multiplier = current_order.qty_multiplier;
+        let order_side = current_order.side;
+        let order_price = current_order.price;
         let incoming_cumulative_filled_qty = order_update.cumulative_filled_quantity();
         let protected_cumulative_fill =
             current_order.protected_cumulative_fill(incoming_cumulative_filled_qty);
         if protected_cumulative_fill.rollback_detected {
             warn!(
-                "MarketMakerOpenStrategy: strategy_id={} protected cumulative fill rollback: client_order_id={} symbol={} status={:?} prev={:.8} incoming={:.8} effective={:.8}",
+                "ArbOpenStrategy: strategy_id={} protected cumulative fill rollback: client_order_id={} symbol={} status={:?} prev={:.8} incoming={:.8} effective={:.8}",
                 self.strategy_id,
                 current_order.client_order_id,
                 current_order.symbol,
@@ -1018,7 +1033,7 @@ impl MarketMakerOpenStrategy {
             OrderStatus::New => {
                 if !self.alive_flag {
                     warn!(
-                        "MarketMakerOpenStrategy: strategy_id={} revive on delayed open NEW: client_order_id={} exchange_order_id={} symbol={}",
+                        "ArbOpenStrategy: strategy_id={} revive on delayed open NEW: client_order_id={} exchange_order_id={} symbol={}",
                         self.strategy_id,
                         client_order_id,
                         order_update.order_id(),
@@ -1029,16 +1044,6 @@ impl MarketMakerOpenStrategy {
                 order.status = OrderExecutionStatus::Create;
                 order.set_exchange_order_id(order_update.order_id());
                 order.set_create_time(order_update.event_time());
-                debug!(
-                    "✅ MM订单已挂单: strategy_id={} client_order_id={} exchange_order_id={} symbol={} side={:?} price={:.6} qty={:.4}",
-                    self.strategy_id,
-                    client_order_id,
-                    order_update.order_id(),
-                    order.symbol,
-                    order.side,
-                    order.price,
-                    order.quantity
-                );
             }
             OrderStatus::Canceled => {
                 order.status = OrderExecutionStatus::Cancelled;
@@ -1047,18 +1052,13 @@ impl MarketMakerOpenStrategy {
                 order.set_end_time(order_update.event_time());
                 let cancel_reason = self.last_open_cancel_reason.unwrap_or("unknown");
                 info!(
-                    "🚫 MM订单已撤销: strategy_id={} client_order_id={} exchange_order_id={} exchange={} symbol={} reason={} side={:?} price={:.6} qty={:.4} filled={:.4}/{:.4}",
+                    "🚫 ArbOpen订单已撤销: strategy_id={} client_order_id={} symbol={} reason={} filled={}/{}",
                     self.strategy_id,
                     client_order_id,
-                    order_update.order_id(),
-                    order.venue.trade_engine_exchange(),
                     order.symbol,
                     cancel_reason,
-                    order.side,
-                    order.price,
-                    order.quantity,
-                    order.cumulative_filled_quantity,
-                    order.quantity
+                    qv_decimal_or_fallback(order.cumulative_filled_quantity),
+                    qv_decimal_or_fallback(order.quantity)
                 );
                 self.last_open_cancel_reason = None;
                 self.alive_flag = false;
@@ -1069,13 +1069,6 @@ impl MarketMakerOpenStrategy {
                 order.cumulative_filled_quantity = effective_cumulative_filled_qty;
                 order.set_filled_time(order_update.event_time());
                 order.set_end_time(order_update.event_time());
-                debug!(
-                    "✅ MM订单已完全成交: strategy_id={} client_order_id={} exchange_order_id={} symbol={}",
-                    self.strategy_id,
-                    client_order_id,
-                    order_update.order_id(),
-                    order.symbol
-                );
                 self.alive_flag = false;
             }
             OrderStatus::Expired | OrderStatus::ExpiredInMatch => {
@@ -1083,13 +1076,6 @@ impl MarketMakerOpenStrategy {
                 order.set_exchange_order_id(order_update.order_id());
                 order.cumulative_filled_quantity = effective_cumulative_filled_qty;
                 order.set_end_time(order_update.event_time());
-                warn!(
-                    "⏰ MM订单已过期: strategy_id={} client_order_id={} exchange_order_id={} symbol={}",
-                    self.strategy_id,
-                    client_order_id,
-                    order_update.order_id(),
-                    order.symbol
-                );
                 self.alive_flag = false;
             }
             OrderStatus::PartiallyFilled => {
@@ -1097,59 +1083,30 @@ impl MarketMakerOpenStrategy {
                 order.set_exchange_order_id(order_update.order_id());
                 order.cumulative_filled_quantity = effective_cumulative_filled_qty;
                 order.set_filled_time(order_update.event_time());
-                debug!(
-                    "MM订单部分成交: strategy_id={} client_order_id={} exchange_order_id={} symbol={}",
-                    self.strategy_id,
-                    client_order_id,
-                    order_update.order_id(),
-                    order.symbol
-                );
             }
         });
         drop(order_manager);
-
         if !updated {
             warn!(
-                "MarketMakerOpenStrategy: strategy_id={} order update not found client_order_id={}",
+                "ArbOpenStrategy: strategy_id={} order update not found client_order_id={}",
                 self.strategy_id, client_order_id
             );
             return false;
         }
 
-        let mut record_fill: Option<(TradingVenue, String, Side, f64, f64, String)> = None;
-        if matches!(
-            order_update.status(),
-            OrderStatus::Canceled | OrderStatus::Filled
-        ) {
-            let update_detail = order_update.debug_summary();
-            record_fill = MonitorChannel::instance()
-                .order_manager()
-                .borrow()
-                .get(client_order_id)
-                .map(|order| {
-                    (
-                        order.venue,
-                        order.symbol.clone(),
-                        order.side,
-                        order.cumulative_filled_quantity,
-                        order.price,
-                        format!(
-                            "{} local_order_symbol={} local_order_qty={:.8} local_order_status={:?}",
-                            update_detail, order.symbol, order.quantity, order.status
-                        ),
-                    )
-                });
+        let cumulative_base_qty = effective_cumulative_filled_qty * qty_multiplier;
+        let base_qty_delta =
+            (effective_cumulative_filled_qty - prev_cumulative_filled_qty) * qty_multiplier;
+        if cumulative_base_qty > self.cumulative_open_qty + 1e-12 {
+            self.cumulative_open_qty = cumulative_base_qty;
         }
-
-        if let Some((venue, symbol, side, qty, price, update_detail)) = record_fill {
-            self.record_mm_hedge_qty(
-                venue,
-                &symbol,
-                side,
-                qty,
+        if base_qty_delta > 1e-12 {
+            self.record_arb_open_fill_delta(
+                order_side,
+                base_qty_delta,
                 order_update.event_time(),
-                price,
-                &update_detail,
+                order_price,
+                &order_update.debug_summary(),
             );
         }
 
@@ -1162,7 +1119,6 @@ impl MarketMakerOpenStrategy {
                 self.publish_uniform_new_order(order_update, &order, prev_cumulative_filled_qty);
             }
         }
-
         if matches!(
             order_update.status(),
             OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::ExpiredInMatch
@@ -1179,7 +1135,6 @@ impl MarketMakerOpenStrategy {
                 );
             }
         }
-
         if matches!(
             order_update.status(),
             OrderStatus::PartiallyFilled | OrderStatus::Filled
@@ -1197,85 +1152,19 @@ impl MarketMakerOpenStrategy {
             }
         }
 
-        true
-    }
-
-    fn uniform_open_publish_ctx(&self) -> MmUniformPublishCtx {
-        MmUniformPublishCtx {
-            signal_ts: self.signal_ts,
-            from_key: format!("open|{}", self.open_from_key).into_bytes(),
-            price_offset: self.open_price_offset,
+        if matches!(
+            order_update.status(),
+            OrderStatus::Canceled | OrderStatus::Filled
+        ) {
+            debug!(
+                "ArbOpenStrategy: strategy_id={} terminal open update cumulative_open_qty={:.8} detail={}",
+                self.strategy_id,
+                self.cumulative_open_qty,
+                order_update.debug_summary()
+            );
         }
-    }
 
-    fn publish_uniform_new_order(
-        &self,
-        order_update: &dyn OrderUpdate,
-        order: &Order,
-        prev_cumulative_filled_qty: f64,
-    ) {
-        let ctx = self.uniform_open_publish_ctx();
-        publish_mm_uniform_new_order(
-            order_update,
-            order,
-            prev_cumulative_filled_qty,
-            &ctx,
-            "MarketMakerOpenStrategy",
-            self.strategy_id,
-        );
-    }
-
-    fn publish_uniform_terminal_order(
-        &self,
-        order_update: &dyn OrderUpdate,
-        order: &Order,
-        prev_cumulative_filled_qty: f64,
-    ) {
-        let ctx = self.uniform_open_publish_ctx();
-        publish_mm_uniform_terminal_order(
-            order_update,
-            order,
-            prev_cumulative_filled_qty,
-            &ctx,
-            "MarketMakerOpenStrategy",
-            self.strategy_id,
-        );
-    }
-
-    fn publish_uniform_trade_order(
-        &self,
-        trade: &dyn TradeUpdate,
-        order: &Order,
-        prev_cumulative_filled_qty: f64,
-        status: OrderStatus,
-    ) {
-        let ctx = self.uniform_open_publish_ctx();
-        publish_mm_uniform_trade_order(
-            trade,
-            order,
-            prev_cumulative_filled_qty,
-            status,
-            &ctx,
-            "MarketMakerOpenStrategy",
-            self.strategy_id,
-        );
-    }
-
-    fn publish_uniform_trade_order_from_order_update(
-        &self,
-        order_update: &dyn OrderUpdate,
-        order: &Order,
-        prev_cumulative_filled_qty: f64,
-    ) {
-        let ctx = self.uniform_open_publish_ctx();
-        publish_mm_uniform_trade_order_from_order_update(
-            order_update,
-            order,
-            prev_cumulative_filled_qty,
-            &ctx,
-            "MarketMakerOpenStrategy",
-            self.strategy_id,
-        );
+        true
     }
 
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) -> bool {
@@ -1283,7 +1172,7 @@ impl MarketMakerOpenStrategy {
         self.clear_query_watchdogs(client_order_id);
         if client_order_id != self.open_order_id {
             debug!(
-                "MarketMakerOpenStrategy: strategy_id={} ignore trade_update client_order_id={}",
+                "ArbOpenStrategy: strategy_id={} ignore trade_update client_order_id={}",
                 self.strategy_id, client_order_id
             );
             return false;
@@ -1299,18 +1188,17 @@ impl MarketMakerOpenStrategy {
         let mut order_manager = order_mgr.borrow_mut();
         let Some(current_order) = order_manager.get(client_order_id) else {
             warn!(
-                "MarketMakerOpenStrategy: strategy_id={} trade update order missing client_order_id={}",
+                "ArbOpenStrategy: strategy_id={} trade update order missing client_order_id={}",
                 self.strategy_id, client_order_id
             );
             return false;
         };
-        let prev_cumulative_filled_qty = current_order.cumulative_filled_quantity;
         if OrderManager::should_skip_idempotent_trade_update(
             &current_order,
             status,
             trade.cumulative_filled_quantity(),
             trade.event_time(),
-            "MarketMakerOpenStrategy",
+            "ArbOpenStrategy",
             self.strategy_id,
         )
         .is_some()
@@ -1318,6 +1206,9 @@ impl MarketMakerOpenStrategy {
             return false;
         }
 
+        let prev_cumulative_filled_qty = current_order.cumulative_filled_quantity;
+        let qty_multiplier = current_order.qty_multiplier;
+        let order_side = current_order.side;
         let cumulative_qty = trade.cumulative_filled_quantity();
         let trade_time = trade.trade_time();
         let event_time = trade.event_time();
@@ -1334,59 +1225,39 @@ impl MarketMakerOpenStrategy {
         });
         if !updated {
             warn!(
-                "MarketMakerOpenStrategy: strategy_id={} trade update order missing client_order_id={}",
+                "ArbOpenStrategy: strategy_id={} trade update order missing client_order_id={}",
                 self.strategy_id, client_order_id
             );
             return false;
         }
-
-        let order_snapshot = order_manager.get(client_order_id).map(|order| {
-            (
-                order.venue,
-                order.symbol.clone(),
-                order.side,
-                order.price,
-                format!(
-                    "{} local_order_symbol={} local_order_qty={:.8} local_order_status={:?}",
-                    trade.debug_summary(),
-                    order.symbol,
-                    order.quantity,
-                    order.status
-                ),
-            )
-        });
         if let Some(order) = order_manager.get(client_order_id) {
             self.publish_uniform_trade_order(trade, &order, prev_cumulative_filled_qty, status);
         }
         drop(order_manager);
 
+        let cumulative_base_qty = cumulative_qty * qty_multiplier;
+        let base_qty_delta = (cumulative_qty - prev_cumulative_filled_qty) * qty_multiplier;
+        if cumulative_base_qty > self.cumulative_open_qty + 1e-12 {
+            self.cumulative_open_qty = cumulative_base_qty;
+        }
+        if base_qty_delta > 1e-12 {
+            self.record_arb_open_fill_delta(
+                order_side,
+                base_qty_delta,
+                event_time,
+                trade.price(),
+                &trade.debug_summary(),
+            );
+        }
+
         if status == OrderStatus::Filled {
-            let order_price = order_snapshot
-                .as_ref()
-                .map(|(_, _, _, price, _)| *price)
-                .unwrap_or_else(|| trade.price());
-            let (record_venue, record_symbol, record_side, record_detail) = order_snapshot
-                .as_ref()
-                .map(|(venue, symbol, side, _, detail)| {
-                    (*venue, symbol.as_str(), *side, detail.as_str())
-                })
-                .unwrap_or_else(|| (trade.trading_venue(), trade.symbol(), trade.side(), "-"));
             debug!(
-                "✅ MM订单成交完成: strategy_id={} client_order_id={} symbol={} price={:.6} cumulative={:.4}",
+                "✅ ArbOpen订单成交完成: strategy_id={} client_order_id={} symbol={} cumulative_open_qty={:.8} detail={}",
                 self.strategy_id,
                 client_order_id,
                 trade.symbol(),
-                trade.price(),
-                cumulative_qty
-            );
-            self.record_mm_hedge_qty(
-                record_venue,
-                record_symbol,
-                record_side,
-                cumulative_qty,
-                event_time,
-                order_price,
-                record_detail,
+                self.cumulative_open_qty,
+                trade.debug_summary()
             );
             self.alive_flag = false;
         }
@@ -1396,28 +1267,26 @@ impl MarketMakerOpenStrategy {
 
     fn handle_signal(&mut self, signal: &TradeSignal) {
         match &signal.signal_type {
-            SignalType::MMOpen => match MmOpenCtx::from_bytes(signal.context.clone()) {
-                Ok(ctx) => self.handle_mm_open_signal(ctx),
+            SignalType::ArbOpen => match ArbOpenCtx::from_bytes(signal.context.clone()) {
+                Ok(ctx) => self.handle_arb_open_signal(ctx),
                 Err(err) => {
                     warn!(
-                        "MarketMakerOpenStrategy: strategy_id={} decode MMOpen failed: {}",
+                        "ArbOpenStrategy: strategy_id={} decode ArbOpen failed: {}",
                         self.strategy_id, err
                     );
                     self.alive_flag = false;
                 }
             },
-            SignalType::MMCancel => match MmCancelCtx::from_bytes(signal.context.clone()) {
-                Ok(ctx) => self.handle_mm_cancel_signal(ctx),
-                Err(err) => {
-                    warn!(
-                        "MarketMakerOpenStrategy: strategy_id={} decode MMCancel failed: {}",
-                        self.strategy_id, err
-                    );
-                }
+            SignalType::ArbCancel => match ArbCancelCtx::from_bytes(signal.context.clone()) {
+                Ok(ctx) => self.handle_arb_cancel_signal(ctx),
+                Err(err) => warn!(
+                    "ArbOpenStrategy: strategy_id={} decode ArbCancel failed: {}",
+                    self.strategy_id, err
+                ),
             },
             _ => {
                 debug!(
-                    "MarketMakerOpenStrategy: strategy_id={} ignore signal {:?}",
+                    "ArbOpenStrategy: strategy_id={} ignore signal {:?}",
                     self.strategy_id, signal.signal_type
                 );
             }
@@ -1425,7 +1294,7 @@ impl MarketMakerOpenStrategy {
     }
 }
 
-impl ForceCloseControl for MarketMakerOpenStrategy {
+impl ForceCloseControl for ArbOpenStrategy {
     fn set_force_close_mode(&mut self, _enabled: bool) {}
 
     fn is_force_close_mode(&self) -> bool {
@@ -1433,7 +1302,7 @@ impl ForceCloseControl for MarketMakerOpenStrategy {
     }
 }
 
-impl Strategy for MarketMakerOpenStrategy {
+impl Strategy for ArbOpenStrategy {
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -1454,10 +1323,9 @@ impl Strategy for MarketMakerOpenStrategy {
         }
     }
 
-    fn mm_open_price_map_entry(&self) -> Option<MmOpenPriceMapEntry> {
-        Some(MmOpenPriceMapEntry {
+    fn arb_open_price_map_entry(&self) -> Option<ArbOpenPriceMapEntry> {
+        Some(ArbOpenPriceMapEntry {
             symbol: self.open_symbol.clone(),
-            side: self.open_side?,
             client_order_id: self.open_order_id,
             price_qv: self.open_price_qv.into(),
         })
@@ -1469,18 +1337,18 @@ impl Strategy for MarketMakerOpenStrategy {
     }
 
     fn handle_signal(&mut self, signal: &TradeSignal) {
-        MarketMakerOpenStrategy::handle_signal(self, signal);
+        ArbOpenStrategy::handle_signal(self, signal);
     }
 
     fn apply_order_update(&mut self, update: &dyn OrderUpdate) {
-        let should_persist = MarketMakerOpenStrategy::apply_order_update(self, update);
+        let should_persist = ArbOpenStrategy::apply_order_update(self, update);
         if should_persist {
             PersistChannel::with(|ch| ch.publish_order_update(update));
         }
     }
 
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
-        let should_persist = MarketMakerOpenStrategy::apply_trade_update(self, trade);
+        let should_persist = ArbOpenStrategy::apply_trade_update(self, trade);
         if should_persist {
             PersistChannel::with(|ch| ch.publish_trade_update(trade));
         }
@@ -1490,7 +1358,6 @@ impl Strategy for MarketMakerOpenStrategy {
         if self.try_apply_ws_order_update(response) {
             return;
         }
-
         if response.is_request_success() {
             return;
         }
@@ -1499,7 +1366,6 @@ impl Strategy for MarketMakerOpenStrategy {
         if client_order_id != self.open_order_id {
             return;
         }
-
         let exchange = response.exchange_enum();
         let code_desc = exchange
             .and_then(|ex| describe_trade_error_code(ex, response.error_code()))
@@ -1508,7 +1374,7 @@ impl Strategy for MarketMakerOpenStrategy {
         match response.request_kind() {
             TradeRequestKind::Open => {
                 warn!(
-                    "MarketMakerOpenStrategy: strategy_id={} open_failed: req_type={} status={} code={}({}) client_order_id={}",
+                    "ArbOpenStrategy: strategy_id={} open_failed: req_type={} status={} code={}({}) client_order_id={}",
                     self.strategy_id,
                     response.req_type(),
                     response.status(),
@@ -1525,7 +1391,7 @@ impl Strategy for MarketMakerOpenStrategy {
                     PendingOrderQueryReason::CancelWatchdog
                 };
                 warn!(
-                    "MarketMakerOpenStrategy: strategy_id={} cancel_failed: req_type={} status={} code={}({}) client_order_id={} query_reason={:?}",
+                    "ArbOpenStrategy: strategy_id={} cancel_failed: req_type={} status={} code={}({}) client_order_id={} query_reason={:?}",
                     self.strategy_id,
                     response.req_type(),
                     response.status(),
@@ -1544,17 +1410,15 @@ impl Strategy for MarketMakerOpenStrategy {
                     self.handoff_open_order_after_query_failure(client_order_id, marker);
                 }
             }
-            TradeRequestKind::Other => {
-                warn!(
-                    "MarketMakerOpenStrategy: strategy_id={} other_failed(TODO): req_type={} status={} code={}({}) client_order_id={}",
-                    self.strategy_id,
-                    response.req_type(),
-                    response.status(),
-                    response.error_code(),
-                    code_desc,
-                    client_order_id
-                );
-            }
+            TradeRequestKind::Other => warn!(
+                "ArbOpenStrategy: strategy_id={} other_failed(TODO): req_type={} status={} code={}({}) client_order_id={}",
+                self.strategy_id,
+                response.req_type(),
+                response.status(),
+                response.error_code(),
+                code_desc,
+                client_order_id
+            ),
         }
     }
 
@@ -1568,14 +1432,20 @@ impl Strategy for MarketMakerOpenStrategy {
     }
 }
 
+impl Drop for ArbOpenStrategy {
+    fn drop(&mut self) {
+        self.cleanup_strategy_orders();
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{MarketMakerOpenStrategy, PendingOrderQueryReason, QueryWatchdog};
+    use super::{ArbOpenStrategy, PendingOrderQueryReason, QueryWatchdog};
     use crate::strategy::order_reconcile::monotonic_cumulative_fill;
 
     #[test]
     fn handle_open_failed_cleanup_clears_local_strategy_state() {
-        let mut strategy = MarketMakerOpenStrategy::new(7);
+        let mut strategy = ArbOpenStrategy::new(7);
         strategy.open_order_id = 7_i64 << 32 | 1;
         strategy.pending_order_query = Some(PendingOrderQueryReason::OrderWatchdog);
         strategy.order_query_watchdog = Some(QueryWatchdog {
@@ -1600,16 +1470,5 @@ mod tests {
     #[test]
     fn monotonic_cumulative_fill_keeps_local_value_on_rollback() {
         assert!((monotonic_cumulative_fill(4.2, 0.0) - 4.2).abs() < 1e-12);
-    }
-
-    #[test]
-    fn monotonic_cumulative_fill_accepts_forward_progress() {
-        assert!((monotonic_cumulative_fill(4.2, 5.6) - 5.6).abs() < 1e-12);
-    }
-}
-
-impl Drop for MarketMakerOpenStrategy {
-    fn drop(&mut self) {
-        self.cleanup_strategy_orders();
     }
 }

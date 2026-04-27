@@ -55,4 +55,26 @@ pub trait OrderUpdate {
     fn client_order_id_str(&self) -> Option<&str> {
         None
     }
+
+    fn debug_summary(&self) -> String {
+        format!(
+            "kind=order_update event_time={} venue={:?} symbol={} client_order_id={} order_id={} side={:?} order_type={:?} tif={:?} price={:.8} qty={:.8} cum_qty={:.8} status={:?} exec_type={:?} raw_status={} raw_exec_type={} client_order_id_str={}",
+            self.event_time(),
+            self.trading_venue(),
+            self.symbol(),
+            self.client_order_id(),
+            self.order_id(),
+            self.side(),
+            self.order_type(),
+            self.time_in_force(),
+            self.price(),
+            self.quantity(),
+            self.cumulative_filled_quantity(),
+            self.status(),
+            self.execution_type(),
+            self.raw_status(),
+            self.raw_execution_type(),
+            self.client_order_id_str().unwrap_or("-")
+        )
+    }
 }

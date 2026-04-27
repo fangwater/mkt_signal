@@ -134,3 +134,38 @@ pub fn publish_arb_uniform_trade_order(
         amount_update,
     );
 }
+
+pub fn publish_arb_uniform_trade_order_from_order_update(
+    order_update: &dyn OrderUpdate,
+    order: &Order,
+    prev_cumulative_filled_qty: f64,
+    ctx: &ArbUniformPublishCtx,
+    strategy_label: &str,
+    strategy_id: i32,
+) {
+    let status = order_update.status();
+    if !matches!(status, OrderStatus::PartiallyFilled | OrderStatus::Filled) {
+        return;
+    }
+
+    let amount_update = compute_uniform_amount_update(
+        order,
+        order.cumulative_filled_quantity,
+        prev_cumulative_filled_qty,
+        status,
+        strategy_label,
+        strategy_id,
+    );
+
+    publish_uniform_order_event(
+        order,
+        UniformOrderEventKind::Trade,
+        order_update.event_time(),
+        status,
+        ctx.signal_ts,
+        ctx.from_key.clone(),
+        None,
+        ctx.price_offset,
+        amount_update,
+    );
+}

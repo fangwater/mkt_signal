@@ -1,5 +1,64 @@
-1、binance的订单缺，是否是update漏了，就看是不是binance漏单
-2、bitget看是不是漏单的问题
-3、depth要不要降低到100ms的推送甚至更低，降低系统负载（tlen的准确性会牺牲）
-4、核心绑定，当前机器是否有numa
-5、dps的buffer要拉大。主要是逐笔成交的trade buffer，要从8192网上拉高，然后batch处理，优化tradeflow
+我现在考虑一个思路，保留hedge arb的思路不动，新建一组arb_hedge_strategy和arb_open_strategy,
+  来实现近似的效果。现在做第一阶段。帮我拆分arb open strategy。
+
+
+先实现arb hedge，基本参考mm hedge，但是整体的逻辑和功能需要有较大调整。
+1、同样的，arb的成交头寸每次计入。但注意这里实现有一个较大的区别。
+2、现在的mm hedge，成交计入的只有库存。并且是在每次完全成交或者hedge的时候计入库存。对么？
+这里有一个核心区别。第一，我不关注period成交，也就是期间成交。我不考虑所有期间的概念。其次，
+我对net的计算有区别，net对于我来说不是一个值，而是一个queue。现在我的net已经用了queue来实现了。
+但是我现在除了头寸以外，arb特别的还要记录一个时间，也就是说，给arb 
+
+输入头寸、方向、event时间（从更新状态中获取），还有一个close_ts 时间。对应之前的hedge timeout。
+也就是这个仓位我需要何时发起对冲。 现在要新增指标，就是"待对冲量"，这里有一个根本区别。也就是库存还是
+原来的，维护一个queue。但是待对冲量也要用queue。并且要增加一个时间的概念。queue的冲抵逻辑相同，
+但多了时间约束。头寸相当于特化的，close ts 都是0的queue。
+3、对于arb hedge，我只需要提供一个记录的impl，至于如何记录的逻辑不关注。每次拿到的net就是增量。
+并且每次拿到之后，会根据其他决定是否发起对冲。这部分逻辑hi之后再实现即可。
+
+对于orphan，和mm的区别就是，mm只关心头寸的管理。即net，最终收敛记录到net即可。因为net会处理对冲。
+这里其实本质上也没有区别。含义是一样的。
+具体来说还是利用open的接口，每次open和hegde单收敛以后，open单增加net，hedge单减少net。关键是对冲量
+的问题。也是一样，直接扣0。且为了简化实现，这样的特殊单子，close ts都是为0去处理。这样完全可以复用arb 
+open调用arb hedge的接口即可。
+
+到此为主应该除了arb hedge的对冲发单逻辑，基本都实现了。整体非常类似mm。只是记录的net是两个。并且不是维护
+一个净头寸，而是open venmue和hedge venue两个net。并且对齐到base qty的层级。
+
+ 
+先实现arb open，基本参考mm open和hedge arb的open leg功能实现。
+1、摒弃大部分冗余的参数和风控信号解析，整体实现偏向于MarketMakerOpenStrategy，比如类成员等。
+2、pub cumulative_open_qty: f64,          //累计开仓数量这个需要保留
+3、对冲相关的信息都可以丢掉，并且bbo的盘口也不再保留。
+4、 pub hedge_timeout_us: Option<i64>, 用一个新字段，close_ts代替。
+中文注释是，仓位希望持有的时间。
+
+其他基本和mm相同，还需要一个合约乘数，这个mm也有，主要是删除对冲侧信息。
+
+不要碰现在的两个，纯新增的帮我实现arb open。
+
+核心区别是这样的:
+1 订单丢弃逻辑按照目前的orphan来，现在我应该已经实现了一个arb的orpha。这个版本是针对旧的hedge的。
+2 新增一个，参考mm的orphan，叫hedge_orphan, 避免和原来冲突。并且不再记录库存之类的，整体功能参考mm orphan
+3 mm现在的逻辑是，当canceled或者ffilled，记录头寸到hedge中。对么？
+这里暂时注释即可。
+4 目前mm open应该不处理部分成交，对么？反正暂时都按照mm open的来。先打个底
+
+
+最后来讲解对冲的实现。net的记录没有区别，就是正常记录。区别在于hedge订单的维护。arb的hedge不是周期性de
+统一报撤，而是逐单的思路。相当于不需要拆，当然也要走trade signal来实现offset的确定。这里你暂时别管msg的
+query实现。先定义一个简单的arb的msg。仿照mm。但是区别在于一定只有一个单子和一个offset。拿到qv就可以下单
+
+我会详细讲解这个撤单再报单的逻辑。以及会告诉你新机制下的匹配逻辑。
+1、规则1，假设之前实现的trait是put_open_update(venue, 开仓stritegy id，amount update，update ts，close_ts)
+根据规则会判定是否会发对冲单。如果发了，要维护一个hashmap，id->clientorderid
+2、和目前的hedge单一样，如果报单failed，看原因。如果是穿价这样的cancel，或者ws rej，就再报单
+3、handle period要处理撤单，每个hedge单有自己的挂单时间限制
+4、撤单后，或者完全成交后，调用put_hedge_update轧差。表示对冲结束。注意这里有一个细节。
+就是net是根据trade更新，但是待对冲量报单就会被borrow，然后撤单或者对冲后再release。看具体成交了多少
+这里直接说一个原则。就是symbol + venue 目前会有一个最小名义金额。hedge需要实时算这个。
+因此每次hedge terminal，都会归还取走了，但是没有执行掉的对冲量。然后重新获一次。相当于再发起一次对冲。
+此时哈希表需要更新对应open stretgy的hed
+
+这个机制有一个bug，就是什么时候算对冲结束的问题。就是只要这一次能对冲的量，小于最小名义金额，就直接算对冲结束了。
+也就是对冲可能吃到别人的tail。或者轧差的tail。量可能掠夺或者略小于开仓的open量。此时从hashmap把open单移除掉

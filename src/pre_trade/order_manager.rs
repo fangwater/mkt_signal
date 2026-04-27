@@ -279,7 +279,14 @@ pub enum TradeUpdateSkipReason {
     StaleOrDuplicatePartial,
 }
 
-const TRADE_UPDATE_QTY_EPS: f64 = 1e-9;
+pub const CUMULATIVE_FILL_ROLLBACK_EPS: f64 = 1e-9;
+const TRADE_UPDATE_QTY_EPS: f64 = CUMULATIVE_FILL_ROLLBACK_EPS;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ProtectedCumulativeFill {
+    pub effective_cum: f64,
+    pub rollback_detected: bool,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
@@ -997,6 +1004,26 @@ impl Order {
         self.status = status;
     }
 
+    pub fn protected_cumulative_fill(&self, incoming_cum: f64) -> ProtectedCumulativeFill {
+        Self::protect_cumulative_fill_value(self.cumulative_filled_quantity, incoming_cum)
+    }
+
+    pub fn protect_cumulative_fill_value(
+        prev_cum: f64,
+        incoming_cum: f64,
+    ) -> ProtectedCumulativeFill {
+        let rollback_detected = incoming_cum + CUMULATIVE_FILL_ROLLBACK_EPS < prev_cum;
+        let effective_cum = if rollback_detected {
+            prev_cum
+        } else {
+            incoming_cum
+        };
+        ProtectedCumulativeFill {
+            effective_cum,
+            rollback_detected,
+        }
+    }
+
     /// 设置提交时间
     pub fn set_submit_time(&mut self, time: i64) {
         self.timestamp.submit_t = time;
@@ -1636,6 +1663,52 @@ mod tests {
         );
 
         assert_eq!(skip, None);
+    }
+
+    #[test]
+    fn order_protected_cumulative_fill_keeps_local_value_on_rollback() {
+        let mut order = Order::new(
+            TradingVenue::GateFutures,
+            42,
+            OrderType::Limit,
+            "SOLUSDT".to_string(),
+            Side::Sell,
+            1.0,
+            86.05,
+            false,
+            1.0,
+            None,
+            true,
+        );
+        order.cumulative_filled_quantity = 4.2;
+
+        let protected = order.protected_cumulative_fill(0.0);
+
+        assert!(protected.rollback_detected);
+        assert!((protected.effective_cum - 4.2).abs() < 1e-12);
+    }
+
+    #[test]
+    fn order_protected_cumulative_fill_accepts_forward_progress() {
+        let mut order = Order::new(
+            TradingVenue::GateFutures,
+            42,
+            OrderType::Limit,
+            "SOLUSDT".to_string(),
+            Side::Sell,
+            1.0,
+            86.05,
+            false,
+            1.0,
+            None,
+            true,
+        );
+        order.cumulative_filled_quantity = 4.2;
+
+        let protected = order.protected_cumulative_fill(5.6);
+
+        assert!(!protected.rollback_detected);
+        assert!((protected.effective_cum - 5.6).abs() < 1e-12);
     }
 
     #[test]

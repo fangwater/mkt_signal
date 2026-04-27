@@ -370,7 +370,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         </div>
       </div>
       <div class="hint">
-        `enable_open_cancel` 只控制旧的 return-score MMCancel；`enable_tlen_cancel` 单独控制基于 tlen 的 trigger/query/cancel 链路；`tlen_cancel_freq_ms` 控制 MMCancelTrigger 的发送频率；`enable_return_score_adjust_hegde=false` 时，MM hedge offset 不再被 return score 调整；`enable_environment_model=false` 时 env/pnlu 仍会写入 from_key，但不阻拦开仓；`enable_volatility_limit` 控制是否启用波动率限制下单；`open_volatility_limit` 控制 trade signal / MM 决策侧内联波动率阈值采样使用的分位数；`enable_tradecount_limit` / `open_tradecount_limit` 与 vol 用法一致，但读取 trade_flow_feature 的 `count.rolling(30,min_periods=25).mean()` 做 gate，并且仅当 tradecount 大于阈值时允许 open；前端布尔项使用下拉框编辑。
+        `enable_open_cancel` 只控制旧的 return-score MMCancel；`enable_tlen_cancel` 单独控制基于 tlen 的 trigger/query/cancel 链路；`tlen_cancel_freq_ms` 控制 MMCancelTrigger 的发送频率；`enable_return_score_adjust_hegde=false` 时，MM hedge offset 不再被 return score 调整；`enable_environment_model=false` 时 env/pnlu 仍会写入 from_key，但不阻拦开仓；`enable_volatility_limit` 控制是否启用波动率限制下单；`open_volatility_limit` 控制 trade signal / MM 决策侧内联波动率阈值采样使用的分位数；`enable_tradecount_limit` / `open_tradecount_limit` 与 vol 用法一致，但读取 trade_flow_feature 的 `count.rolling(30,min_periods=25).mean()` 做 gate，并且仅当 tradecount 大于阈值时允许 open；`enable_open_time_block` 启用后，在 UTC `open_block_utc_time_range` 内 trade signal 不发开仓单，时间格式必须为 `HH:MM-HH:MM`，允许跨天，但开始/结束不能相同；前端布尔项使用下拉框编辑。
       </div>
       <div class="kv-table" id="strategy-table"></div>
       <div id="strategy-status" class="status"></div>
@@ -562,6 +562,29 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       return ['true', 'false', '1', '0', 'yes', 'no', 'on', 'off', ''].includes(normalized);
     }
 
+    function validateOpenBlockUtcTimeRangeText(raw) {
+      const text = String(raw ?? '').trim();
+      const matched = text.match(/^([01]\\d|2[0-3]):([0-5]\\d)-([01]\\d|2[0-3]):([0-5]\\d)$/);
+      if (!matched) {
+        throw new Error('open_block_utc_time_range 必须使用 UTC HH:MM-HH:MM 格式，例如 15:55-23:59');
+      }
+      const start = Number(matched[1]) * 60 + Number(matched[2]);
+      const end = Number(matched[3]) * 60 + Number(matched[4]);
+      if (end === start) {
+        throw new Error('open_block_utc_time_range 开始/结束时间不能相同，避免全天/空窗口歧义');
+      }
+      return text;
+    }
+
+    function validateStrategyValues(values) {
+      if (Object.prototype.hasOwnProperty.call(values, 'open_block_utc_time_range')) {
+        values.open_block_utc_time_range = validateOpenBlockUtcTimeRangeText(
+          values.open_block_utc_time_range
+        );
+      }
+      return values;
+    }
+
     function currentModelName() {
       return (state.modelName || '').trim();
     }
@@ -671,7 +694,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         const rawValue = values && values[key] !== undefined ? values[key] : (defaults[key] ?? '');
         const useBooleanSelect =
           containerId === 'strategy-table' &&
-          ['prediction_mode', 'enable_open_cancel', 'enable_tlen_cancel', 'enable_return_score_adjust_hegde', 'enable_environment_model', 'enable_volatility_limit', 'enable_tradecount_limit'].includes(key) &&
+          ['prediction_mode', 'enable_open_cancel', 'enable_tlen_cancel', 'enable_return_score_adjust_hegde', 'enable_environment_model', 'enable_volatility_limit', 'enable_tradecount_limit', 'enable_open_time_block'].includes(key) &&
           isBooleanParamValue(rawValue);
         let field;
         if (useBooleanSelect) {
@@ -691,6 +714,18 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
           field = document.createElement('input');
           field.type = 'text';
           field.value = valueToInputText(rawValue);
+          if (containerId === 'strategy-table' && key === 'open_block_utc_time_range') {
+            field.placeholder = '15:55-23:59';
+            field.pattern = '([01]\\\\d|2[0-3]):[0-5]\\\\d-([01]\\\\d|2[0-3]):[0-5]\\\\d';
+            field.addEventListener('input', () => {
+              try {
+                validateOpenBlockUtcTimeRangeText(field.value);
+                setStatus('strategy-status', '', '');
+              } catch (err) {
+                setStatus('strategy-status', formatError(err), 'err');
+              }
+            });
+          }
         }
         field.dataset.key = key;
         inputWrap.appendChild(field);
@@ -894,7 +929,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     async function saveStrategy() {
       setStatus('strategy-status', '保存中...');
       try {
-        const values = collectParamRows('strategy-table');
+        const values = validateStrategyValues(collectParamRows('strategy-table'));
         const data = await fetchJson(apiUrl('strategy-params'), {
           method: 'POST',
           body: JSON.stringify({exchange: state.exchange, values}),
@@ -1506,11 +1541,36 @@ def normalize_positive_int_text(raw: Any, field_name: str) -> str:
     return str(value)
 
 
+def normalize_open_block_utc_time_range(raw: Any) -> str:
+    text = str(raw or "").strip()
+    matched = re.fullmatch(
+        r"([01]\d|2[0-3]):([0-5]\d)-([01]\d|2[0-3]):([0-5]\d)",
+        text,
+    )
+    if not matched:
+        raise ValueError(
+            "open_block_utc_time_range 必须使用 UTC HH:MM-HH:MM 格式，例如 15:55-23:59"
+        )
+
+    start_hour, start_min, end_hour, end_min = [int(part) for part in matched.groups()]
+    start_total = start_hour * 60 + start_min
+    end_total = end_hour * 60 + end_min
+    if end_total == start_total:
+        raise ValueError(
+            "open_block_utc_time_range 开始/结束时间不能相同，避免全天/空窗口歧义"
+        )
+    return text
+
+
 def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, str]:
     normalized = dict(mapping)
     if "tlen_cancel_freq_ms" in normalized:
         normalized["tlen_cancel_freq_ms"] = normalize_positive_int_text(
             normalized["tlen_cancel_freq_ms"], "tlen_cancel_freq_ms"
+        )
+    if "open_block_utc_time_range" in normalized:
+        normalized["open_block_utc_time_range"] = normalize_open_block_utc_time_range(
+            normalized["open_block_utc_time_range"]
         )
     return normalized
 

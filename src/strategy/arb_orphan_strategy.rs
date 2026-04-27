@@ -4,26 +4,18 @@ use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{OrderExecutionStatus, Side};
 use crate::pre_trade::{QueryEngHub, TradeEngHub};
-use crate::signal::common::TradingVenue;
-use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce};
+use crate::signal::common::{OrderStatus, TradingVenue};
 use crate::signal::trade_signal::TradeSignal;
 use crate::strategy::manager::{
     ArbOrphanHandoff, ArbOrphanResidualHandoff, ArbOrphanUniformCtx, ForceCloseControl, Strategy,
 };
 use crate::strategy::net_qty_queue::NetQtyQueue;
 use crate::strategy::order_query_builder::build_order_query_request;
-use crate::strategy::order_query_parser::parse_compact_order_query_resp;
 use crate::strategy::order_update::OrderUpdate;
-use crate::strategy::query_engine_response::QueryEngineResponse;
-use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
-use crate::strategy::trade_engine_response::TradeEngineResponse;
 use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::uniform_arb_publish::{
     publish_arb_uniform_new_order, publish_arb_uniform_terminal_order,
     publish_arb_uniform_trade_order,
-};
-use crate::trade_engine::query_parsers::compact_order::{
-    is_order_query_not_found_marker, CompactOrderQueryResp,
 };
 use log::{debug, info, warn};
 use std::any::Any;
@@ -32,7 +24,6 @@ use std::collections::HashMap;
 const ARB_ORPHAN_EPS: f64 = 1e-12;
 const ARB_ORPHAN_QUERY_BASE_TICKS: u32 = 25;
 const ARB_ORPHAN_QUERY_MAX_TICKS: u32 = 3_200;
-const ARB_ORPHAN_COMMIT_QUERY_MAX_ATTEMPTS: u8 = 2;
 const ARB_ORPHAN_DEFAULT_HEDGE_RESIDUAL_LOWER_USDT: f64 = 0.0;
 const ARB_ORPHAN_DEFAULT_HEDGE_RESIDUAL_UPPER_USDT: f64 = f64::INFINITY;
 
@@ -59,9 +50,7 @@ pub struct ArbOrphanStrategy {
     active: bool,
     order_legs: HashMap<i64, ArbOrphanLeg>,
     query_states: HashMap<i64, ArbOrphanQueryState>,
-    pending_query_targets: HashMap<i64, i64>,
     uniform_contexts: HashMap<i64, ArbOrphanUniformCtx>,
-    query_seq: u32,
     net_qty_queue: NetQtyQueue,
     net_qty: f64,
     /// hedge 残差累计量，base 口径，带方向。
@@ -95,9 +84,7 @@ impl ArbOrphanStrategy {
             active: true,
             order_legs: HashMap::new(),
             query_states: HashMap::new(),
-            pending_query_targets: HashMap::new(),
             uniform_contexts: HashMap::new(),
-            query_seq: 0,
             net_qty_queue: NetQtyQueue::new(),
             net_qty: 0.0,
             hedge_residual_qty: QuantizedValue::zero(),
@@ -126,25 +113,10 @@ impl ArbOrphanStrategy {
         !status.is_terminal() && status != OrderExecutionStatus::Commit
     }
 
-    fn query_max_attempts_for_status(status: OrderExecutionStatus) -> Option<u8> {
-        match status {
-            OrderExecutionStatus::Commit => Some(ARB_ORPHAN_COMMIT_QUERY_MAX_ATTEMPTS),
-            _ => None,
-        }
-    }
-
     fn ensure_query_state(&mut self, client_order_id: i64) {
         self.query_states
             .entry(client_order_id)
             .or_insert_with(Self::initial_query_state);
-    }
-
-    fn next_query_request_id(&mut self) -> i64 {
-        self.query_seq = self.query_seq.wrapping_add(1);
-        if self.query_seq == 0 {
-            self.query_seq = 1;
-        }
-        ((self.strategy_id as i64) << 32) | self.query_seq as i64
     }
 
     pub fn adopt_order_id(&mut self, handoff: &ArbOrphanHandoff) -> bool {
@@ -506,21 +478,12 @@ impl ArbOrphanStrategy {
         if removed {
             self.query_states.remove(&client_order_id);
             self.uniform_contexts.remove(&client_order_id);
-            self.pending_query_targets
-                .retain(|_, tracked_order_id| *tracked_order_id != client_order_id);
             info!(
                 "ArbOrphanStrategy: strategy_role=arb_orphan strategy_id={} forgot order client_order_id={} reason={}",
                 self.strategy_id, client_order_id, reason
             );
         }
         removed
-    }
-
-    fn drop_unconfirmed_order(&mut self, client_order_id: i64, reason: &str) {
-        if let Some(order_mgr) = MonitorChannel::try_order_manager() {
-            let _ = order_mgr.borrow_mut().remove(client_order_id);
-        }
-        self.forget_order_id(client_order_id, reason);
     }
 
     fn apply_net_qty_fill(&mut self, fill_ts: i64, signed_qty: f64, price: f64, leg: ArbOrphanLeg) {
@@ -751,7 +714,7 @@ impl ArbOrphanStrategy {
             self.forget_order_id(client_order_id, "query missing local order");
             return false;
         };
-        let request_query_id = self.next_query_request_id();
+        let request_query_id = client_order_id;
         match build_order_query_request(&order, request_query_id, client_order_id) {
             Ok((exchange, req_bytes)) => {
                 if let Err(err) = QueryEngHub::publish_query_request(exchange.as_str(), &req_bytes)
@@ -762,8 +725,6 @@ impl ArbOrphanStrategy {
                     );
                     return false;
                 }
-                self.pending_query_targets
-                    .insert(request_query_id, client_order_id);
                 info!(
                     "ArbOrphanStrategy: strategy_role=arb_orphan strategy_id={} query sent client_order_id={} request_query_id={}",
                     self.strategy_id, client_order_id, request_query_id
@@ -777,117 +738,6 @@ impl ArbOrphanStrategy {
                 );
                 false
             }
-        }
-    }
-
-    fn apply_parsed_order_query_updates(
-        &mut self,
-        order: &crate::pre_trade::order_manager::Order,
-        parsed: CompactOrderQueryResp,
-    ) {
-        let event_time_us = parsed.update_time_ms.saturating_mul(1_000);
-        let event_time_us = if event_time_us > 0 {
-            event_time_us
-        } else {
-            get_timestamp_us()
-        };
-        let order_id = if parsed.order_id > 0 {
-            parsed.order_id
-        } else {
-            order.exchange_order_id.unwrap_or(order.client_order_id)
-        };
-        let tif = TimeInForce::from_u8(parsed.time_in_force_u8).unwrap_or(TimeInForce::GTC);
-
-        if parsed.executed_qty > order.cumulative_filled_quantity + ARB_ORPHAN_EPS {
-            let trade_status = if parsed.status_u8 == OrderExecutionStatus::Filled.to_u8() {
-                Some(OrderStatus::Filled)
-            } else {
-                Some(OrderStatus::PartiallyFilled)
-            };
-            let trade = OrderQueryTradeUpdate::new(
-                order,
-                order_id,
-                event_time_us,
-                parsed.executed_qty,
-                Some(parsed.response_price),
-                trade_status,
-                tif,
-            );
-            <Self as Strategy>::apply_trade_update(self, &trade);
-        }
-
-        let status_u8 = parsed.status_u8;
-        if status_u8 == OrderExecutionStatus::Create.to_u8() {
-            let update = OrderQueryOrderUpdate::new(
-                order,
-                order_id,
-                event_time_us,
-                OrderStatus::New,
-                ExecutionType::New,
-                parsed.executed_qty,
-                tif,
-            );
-            <Self as Strategy>::apply_order_update(self, &update);
-        } else if status_u8 == OrderExecutionStatus::Cancelled.to_u8() {
-            let update = OrderQueryOrderUpdate::new(
-                order,
-                order_id,
-                event_time_us,
-                OrderStatus::Canceled,
-                ExecutionType::Canceled,
-                parsed.executed_qty,
-                tif,
-            );
-            <Self as Strategy>::apply_order_update(self, &update);
-        } else if status_u8 == OrderExecutionStatus::Filled.to_u8() {
-            let update = OrderQueryOrderUpdate::new(
-                order,
-                order_id,
-                event_time_us,
-                OrderStatus::Filled,
-                ExecutionType::Trade,
-                parsed.executed_qty,
-                tif,
-            );
-            <Self as Strategy>::apply_order_update(self, &update);
-        } else if status_u8 == OrderExecutionStatus::Rejected.to_u8() {
-            let update = OrderQueryOrderUpdate::new(
-                order,
-                order_id,
-                event_time_us,
-                OrderStatus::Expired,
-                ExecutionType::Rejected,
-                parsed.executed_qty,
-                tif,
-            );
-            <Self as Strategy>::apply_order_update(self, &update);
-        }
-    }
-
-    fn handle_query_not_found_or_error(&mut self, client_order_id: i64, marker: &str) {
-        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
-            return;
-        };
-        let Some(order) = order_mgr.borrow().get(client_order_id) else {
-            self.forget_order_id(client_order_id, "query marker missing local order");
-            return;
-        };
-        let status = order.status;
-        drop(order);
-        let Some(max_attempts) = Self::query_max_attempts_for_status(status) else {
-            return;
-        };
-        let attempts = self
-            .query_states
-            .get(&client_order_id)
-            .map(|state| state.query_count)
-            .unwrap_or(0);
-        if attempts >= max_attempts {
-            warn!(
-                "ArbOrphanStrategy: strategy_role=arb_orphan strategy_id={} query {} reached max attempts {} for status={:?}, drop unconfirmed order client_order_id={}",
-                self.strategy_id, marker, max_attempts, status, client_order_id
-            );
-            self.drop_unconfirmed_order(client_order_id, "unconfirmed query max attempts");
         }
     }
 }
@@ -1060,50 +910,6 @@ impl Strategy for ArbOrphanStrategy {
         }
     }
 
-    fn apply_trade_engine_response(&mut self, _response: &dyn TradeEngineResponse) {}
-
-    fn apply_query_engine_response(&mut self, response: &dyn QueryEngineResponse) {
-        let request_query_id = response.client_query_id();
-        let Some(client_order_id) = self.pending_query_targets.remove(&request_query_id) else {
-            return;
-        };
-
-        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
-            self.forget_order_id(client_order_id, "query response missing order manager");
-            return;
-        };
-        let Some(order) = order_mgr.borrow().get(client_order_id) else {
-            self.forget_order_id(client_order_id, "query response missing local order");
-            return;
-        };
-
-        let body = response.body_bytes().as_ref();
-        let has_any_byte = body.iter().any(|&b| b != 0);
-        if !has_any_byte {
-            return;
-        }
-
-        let actual_len = body
-            .iter()
-            .rposition(|&b| b != 0)
-            .map(|pos| pos + 1)
-            .unwrap_or(0);
-        if is_order_query_not_found_marker(&body[..actual_len]) {
-            drop(order);
-            self.handle_query_not_found_or_error(client_order_id, "not found marker");
-            return;
-        }
-        if actual_len == 1 && body[0] == b'E' {
-            drop(order);
-            self.handle_query_not_found_or_error(client_order_id, "error marker (E)");
-            return;
-        }
-
-        if let Some(parsed) = parse_compact_order_query_resp(response.body_bytes()) {
-            self.apply_parsed_order_query_updates(&order, parsed);
-        }
-    }
-
     fn handle_period_clock(&mut self, _current_tp: i64) {
         let tracked: Vec<i64> = self.order_legs.keys().copied().collect();
         let Some(order_mgr) = MonitorChannel::try_order_manager() else {
@@ -1157,22 +963,6 @@ impl Strategy for ArbOrphanStrategy {
 mod tests {
     use super::ArbOrphanStrategy;
     use crate::pre_trade::order_manager::OrderExecutionStatus;
-
-    #[test]
-    fn query_attempt_limit_depends_on_commit_status() {
-        assert_eq!(
-            ArbOrphanStrategy::query_max_attempts_for_status(OrderExecutionStatus::Commit),
-            Some(2)
-        );
-        assert_eq!(
-            ArbOrphanStrategy::query_max_attempts_for_status(OrderExecutionStatus::Create),
-            None
-        );
-        assert_eq!(
-            ArbOrphanStrategy::query_max_attempts_for_status(OrderExecutionStatus::Rejected),
-            None
-        );
-    }
 
     #[test]
     fn cancel_policy_is_owned_by_orphan_from_local_status() {

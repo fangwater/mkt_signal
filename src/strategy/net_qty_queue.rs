@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-const NET_QTY_EPS: f64 = 1e-12;
+pub const NET_QTY_EPS: f64 = 1e-12;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetQtyDirection {
@@ -17,6 +17,15 @@ pub struct NetQtyLot {
     pub price: f64,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct TimedNetQtyLot {
+    pub ts: i64,
+    pub close_ts: i64,
+    pub qv: f64,
+    pub qty: f64,
+    pub price: f64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NetQtyApplyResult {
     pub matched_qty: f64,
@@ -27,12 +36,60 @@ pub struct NetQtyApplyResult {
 
 #[derive(Debug, Default, Clone)]
 pub struct NetQtyQueue {
-    lots: BTreeMap<(i64, u64), NetQtyLot>,
+    inner: TimedNetQtyQueue,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct TimedNetQtyQueue {
+    lots: BTreeMap<(i64, i64, u64), TimedNetQtyLot>,
     next_seq: u64,
     net_qty: f64,
 }
 
 impl NetQtyQueue {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn net_qty(&self) -> f64 {
+        self.inner.net_qty()
+    }
+
+    pub fn direction(&self) -> NetQtyDirection {
+        self.inner.direction()
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    pub fn lots(&self) -> Vec<NetQtyLot> {
+        self.inner
+            .lots()
+            .into_iter()
+            .map(|lot| NetQtyLot {
+                ts: lot.ts,
+                qv: lot.qv,
+                qty: lot.qty,
+                price: lot.price,
+            })
+            .collect()
+    }
+
+    pub fn weighted_avg_price(&self) -> Option<f64> {
+        self.inner.weighted_avg_price()
+    }
+
+    pub fn apply_fill(&mut self, ts: i64, qv: f64, price: f64) -> NetQtyApplyResult {
+        self.inner.apply_fill(ts, ts, qv, price)
+    }
+}
+
+impl TimedNetQtyQueue {
     pub fn new() -> Self {
         Self::default()
     }
@@ -53,8 +110,30 @@ impl NetQtyQueue {
         self.lots.is_empty()
     }
 
-    pub fn lots(&self) -> Vec<NetQtyLot> {
+    pub fn lots(&self) -> Vec<TimedNetQtyLot> {
         self.lots.values().cloned().collect()
+    }
+
+    pub fn due_lots(&self, now_ts: i64) -> Vec<TimedNetQtyLot> {
+        self.lots
+            .values()
+            .filter(|lot| lot.close_ts <= 0 || lot.close_ts <= now_ts)
+            .cloned()
+            .collect()
+    }
+
+    pub fn due_qty(&self, now_ts: i64) -> f64 {
+        let due = self
+            .lots
+            .values()
+            .filter(|lot| lot.close_ts <= 0 || lot.close_ts <= now_ts)
+            .map(|lot| lot.qv)
+            .sum::<f64>();
+        if due.abs() <= NET_QTY_EPS {
+            0.0
+        } else {
+            due
+        }
     }
 
     pub fn weighted_avg_price(&self) -> Option<f64> {
@@ -73,7 +152,7 @@ impl NetQtyQueue {
         }
     }
 
-    pub fn apply_fill(&mut self, ts: i64, qv: f64, price: f64) -> NetQtyApplyResult {
+    pub fn apply_fill(&mut self, ts: i64, close_ts: i64, qv: f64, price: f64) -> NetQtyApplyResult {
         if qv.abs() <= NET_QTY_EPS {
             return NetQtyApplyResult {
                 matched_qty: 0.0,
@@ -119,7 +198,7 @@ impl NetQtyQueue {
 
         let appended_qty = if remaining_qty > NET_QTY_EPS {
             let appended_qv = signed_qty_for_direction(incoming_direction, remaining_qty);
-            self.insert_lot(ts, appended_qv, price);
+            self.insert_lot(ts, close_ts, appended_qv, price);
             remaining_qty
         } else {
             0.0
@@ -139,18 +218,26 @@ impl NetQtyQueue {
         }
     }
 
-    fn insert_lot(&mut self, ts: i64, qv: f64, price: f64) {
+    fn insert_lot(&mut self, ts: i64, close_ts: i64, qv: f64, price: f64) {
         let qty = qv.abs();
         if qty <= NET_QTY_EPS {
             return;
         }
         self.next_seq = self.next_seq.wrapping_add(1);
-        self.lots
-            .insert((ts, self.next_seq), NetQtyLot { ts, qv, qty, price });
+        self.lots.insert(
+            (close_ts, ts, self.next_seq),
+            TimedNetQtyLot {
+                ts,
+                close_ts,
+                qv,
+                qty,
+                price,
+            },
+        );
     }
 }
 
-fn direction_from_signed_qty(qv: f64) -> NetQtyDirection {
+pub fn direction_from_signed_qty(qv: f64) -> NetQtyDirection {
     if qv > NET_QTY_EPS {
         NetQtyDirection::Positive
     } else if qv < -NET_QTY_EPS {
@@ -160,7 +247,7 @@ fn direction_from_signed_qty(qv: f64) -> NetQtyDirection {
     }
 }
 
-fn signed_qty_for_direction(direction: NetQtyDirection, qty: f64) -> f64 {
+pub fn signed_qty_for_direction(direction: NetQtyDirection, qty: f64) -> f64 {
     match direction {
         NetQtyDirection::Positive => qty.abs(),
         NetQtyDirection::Negative => -qty.abs(),
@@ -170,7 +257,7 @@ fn signed_qty_for_direction(direction: NetQtyDirection, qty: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{NetQtyDirection, NetQtyQueue};
+    use super::{NetQtyDirection, NetQtyQueue, TimedNetQtyQueue};
 
     #[test]
     fn same_direction_lots_are_sorted_by_time() {
@@ -294,5 +381,31 @@ mod tests {
         queue.apply_fill(20, -1.0, 110.0);
 
         assert_eq!(queue.weighted_avg_price(), None);
+    }
+
+    #[test]
+    fn timed_queue_tracks_due_qty_by_close_ts() {
+        let mut queue = TimedNetQtyQueue::new();
+        queue.apply_fill(10, 100, 2.0, 100.0);
+        queue.apply_fill(20, 200, 3.0, 101.0);
+
+        assert_eq!(queue.due_qty(99), 0.0);
+        assert_eq!(queue.due_qty(100), 2.0);
+        assert_eq!(queue.due_qty(250), 5.0);
+    }
+
+    #[test]
+    fn timed_queue_offsets_oldest_close_ts_first() {
+        let mut queue = TimedNetQtyQueue::new();
+        queue.apply_fill(10, 200, 2.0, 100.0);
+        queue.apply_fill(20, 100, 3.0, 101.0);
+        let result = queue.apply_fill(30, 0, -4.0, 102.0);
+
+        assert_eq!(result.matched_qty, 4.0);
+        assert_eq!(queue.net_qty(), 1.0);
+        let lots = queue.lots();
+        assert_eq!(lots.len(), 1);
+        assert_eq!(lots[0].close_ts, 200);
+        assert_eq!(lots[0].qty, 1.0);
     }
 }
