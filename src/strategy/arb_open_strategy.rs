@@ -10,9 +10,7 @@ use crate::signal::cancel_signal::ArbCancelCtx;
 use crate::signal::common::{OrderStatus, SignalBytes, TradingVenue};
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
-use crate::strategy::manager::{
-    ForceCloseControl, HedgeOrphanHandoff, OpenPriceMapEntry, Strategy,
-};
+use crate::strategy::manager::{ForceCloseControl, OpenPriceMapEntry, OrphanHandoff, Strategy};
 use crate::strategy::open_strategy_common::{
     OpenStrategyCommon, OpenStrategyState, PendingOrderQueryReason,
 };
@@ -56,7 +54,7 @@ impl ArbOpenStrategy {
             "ArbOpenStrategy: strategy_id={} hedge_orphan_handoff_start client_order_id={} reason={}",
             self.open_state.strategy_id, client_order_id, reason
         );
-        let handoff = HedgeOrphanHandoff::from_open(
+        let handoff = OrphanHandoff::from_open(
             client_order_id,
             self.open_state.strategy_id,
             self.uniform_open_publish_ctx(),
@@ -559,36 +557,39 @@ impl ArbOpenStrategy {
         }
     }
 
-    fn record_arb_open_fill_delta(
+    fn record_open_order_terminal(
         &self,
         side: Side,
-        base_qty_delta: f64,
+        base_qty: f64,
         fill_ts: i64,
         price: f64,
         update_detail: &str,
     ) {
-        if base_qty_delta <= 1e-12 {
+        if base_qty <= 1e-12 {
             return;
         }
         let close_ts = self.close_ts.unwrap_or(0);
+        let signed_base_qty = match side {
+            Side::Buy => base_qty.abs(),
+            Side::Sell => -base_qty.abs(),
+        };
         let updated = MonitorChannel::instance()
             .strategy_mgr()
             .borrow_mut()
-            .record_arb_open_fill(
+            .record_open_order_terminal(
                 &self.open_state.open_symbol,
-                side,
-                base_qty_delta,
+                signed_base_qty,
                 fill_ts,
                 price,
                 close_ts,
             );
         if !updated {
             warn!(
-                "ArbOpenStrategy: strategy_id={} record arb hedge open fill failed symbol={} side={:?} base_qty_delta={:.8} fill_ts={} price={:.8} close_ts={} detail={}",
+                "ArbOpenStrategy: strategy_id={} record open order terminal failed symbol={} side={:?} base_qty={:.8} fill_ts={} price={:.8} close_ts={} detail={}",
                 self.open_state.strategy_id,
                 self.open_state.open_symbol,
                 side,
-                base_qty_delta,
+                base_qty,
                 fill_ts,
                 price,
                 close_ts,
@@ -797,14 +798,14 @@ impl ArbOpenStrategy {
             order_update.status(),
             OrderStatus::Canceled | OrderStatus::Filled
         ) {
-            let base_qty_delta = if prev_order_terminal {
+            let terminal_base_qty = if prev_order_terminal {
                 (effective_cumulative_filled_qty - prev_cumulative_filled_qty) * qty_multiplier
             } else {
                 effective_cumulative_filled_qty * qty_multiplier
             };
-            self.record_arb_open_fill_delta(
+            self.record_open_order_terminal(
                 order_side,
-                base_qty_delta,
+                terminal_base_qty,
                 order_update.event_time(),
                 order_price,
                 &order_update.debug_summary(),
@@ -942,14 +943,14 @@ impl ArbOpenStrategy {
             self.cumulative_open_qty = cumulative_base_qty;
         }
         if status == OrderStatus::Filled {
-            let base_qty_delta = if prev_order_terminal {
+            let terminal_base_qty = if prev_order_terminal {
                 (cumulative_qty - prev_cumulative_filled_qty) * qty_multiplier
             } else {
                 cumulative_qty * qty_multiplier
             };
-            self.record_arb_open_fill_delta(
+            self.record_open_order_terminal(
                 order_side,
-                base_qty_delta,
+                terminal_base_qty,
                 event_time,
                 trade.price(),
                 &trade.debug_summary(),

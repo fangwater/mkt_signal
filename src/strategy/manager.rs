@@ -126,13 +126,13 @@ pub trait Strategy: ForceCloseControl {
     fn apply_order_update(&mut self, update: &dyn OrderUpdate);
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate);
     fn apply_trade_engine_response(&mut self, _response: &dyn TradeEngineResponse) {}
-    fn adopt_order_id(&mut self, _handoff: &MmOrphanHandoff) -> bool {
+    fn adopt_order_id(&mut self, _handoff: &OrphanHandoff) -> bool {
         false
     }
     fn adopt_arb_orphan_order_id(&mut self, _handoff: &ArbOrphanHandoff) -> bool {
         false
     }
-    fn adopt_hedge_orphan_order_id(&mut self, _handoff: &HedgeOrphanHandoff) -> bool {
+    fn adopt_hedge_orphan_order_id(&mut self, _handoff: &OrphanHandoff) -> bool {
         false
     }
     fn adopt_arb_orphan_residual(&mut self, _residual: &ArbOrphanResidualHandoff) -> bool {
@@ -147,35 +147,61 @@ pub trait Strategy: ForceCloseControl {
     fn arb_open_price_map_entry(&self) -> Option<OpenPriceMapEntry> {
         None
     }
+    fn has_order_terminal_recorder(&self) -> bool {
+        false
+    }
+    fn order_terminal_recorder_mut(&mut self) -> Option<&mut dyn OrderTerminalRecorder> {
+        None
+    }
+}
+
+pub trait OrderTerminalRecorder {
+    fn record_open_order_terminal(
+        &mut self,
+        fill_ts: i64,
+        signed_base_qty: f64,
+        price: f64,
+        close_ts: i64,
+    ) -> bool;
+
+    fn record_hedge_order_terminal(
+        &mut self,
+        fill_ts: i64,
+        signed_base_qty: f64,
+        price: f64,
+    ) -> bool;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MmOrphanSourceKind {
+pub enum OrphanSourceKind {
     Open,
     Hedge,
 }
 
 #[derive(Debug, Clone)]
-pub struct MmOrphanHandoff {
+pub struct OrphanHandoff {
     pub client_order_id: i64,
     pub source_strategy_id: i32,
-    pub source_kind: MmOrphanSourceKind,
+    pub source_kind: OrphanSourceKind,
     pub uniform_ctx: UniformPublishCtx,
+    pub recorded_base_qty: f64,
     pub reason: String,
 }
 
-impl MmOrphanHandoff {
+impl OrphanHandoff {
     pub fn from_open(
         client_order_id: i64,
         source_strategy_id: i32,
         uniform_ctx: UniformPublishCtx,
+        recorded_base_qty: f64,
         reason: &str,
     ) -> Self {
         Self {
             client_order_id,
             source_strategy_id,
-            source_kind: MmOrphanSourceKind::Open,
+            source_kind: OrphanSourceKind::Open,
             uniform_ctx,
+            recorded_base_qty: recorded_base_qty.max(0.0),
             reason: reason.to_string(),
         }
     }
@@ -189,43 +215,9 @@ impl MmOrphanHandoff {
         Self {
             client_order_id,
             source_strategy_id,
-            source_kind: MmOrphanSourceKind::Hedge,
+            source_kind: OrphanSourceKind::Hedge,
             uniform_ctx,
-            reason: reason.to_string(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HedgeOrphanSourceKind {
-    Open,
-    Hedge,
-}
-
-#[derive(Debug, Clone)]
-pub struct HedgeOrphanHandoff {
-    pub client_order_id: i64,
-    pub source_strategy_id: i32,
-    pub source_kind: HedgeOrphanSourceKind,
-    pub uniform_ctx: UniformPublishCtx,
-    pub recorded_base_qty: f64,
-    pub reason: String,
-}
-
-impl HedgeOrphanHandoff {
-    pub fn from_open(
-        client_order_id: i64,
-        source_strategy_id: i32,
-        uniform_ctx: UniformPublishCtx,
-        recorded_base_qty: f64,
-        reason: &str,
-    ) -> Self {
-        Self {
-            client_order_id,
-            source_strategy_id,
-            source_kind: HedgeOrphanSourceKind::Open,
-            uniform_ctx,
-            recorded_base_qty,
+            recorded_base_qty: 0.0,
             reason: reason.to_string(),
         }
     }
@@ -672,33 +664,6 @@ impl StrategyManager {
         strategy_id
     }
 
-    /// 记录 MM 开仓成交，累加到对应 symbol 的对冲策略
-    pub fn record_mm_hedge_fill(
-        &mut self,
-        symbol: &str,
-        signed_qty: f64,
-        buy_qty: f64,
-        sell_qty: f64,
-        fill_ts: i64,
-        price: f64,
-    ) -> bool {
-        let symbol_upper = normalize_symbol_for_internal(symbol);
-        let Some(id) = self.find_mm_hedge_id(&symbol_upper) else {
-            return false;
-        };
-        let Some(strategy) = self.strategies.get_mut(&id) else {
-            return false;
-        };
-        let Some(mm_hedge) = strategy
-            .as_any_mut()
-            .downcast_mut::<MarketMakerHedgeStrategy>()
-        else {
-            return false;
-        };
-        mm_hedge.record_fill(fill_ts, signed_qty, buy_qty, sell_qty, price);
-        true
-    }
-
     /// 获取所有 MM 对冲策略的快照
     pub fn mm_hedge_snapshots(&self) -> Vec<MmHedgeSnapshot> {
         let mut snapshots = Vec::new();
@@ -745,53 +710,58 @@ impl StrategyManager {
         strategy_id
     }
 
-    pub fn record_arb_open_fill(
+    fn find_order_terminal_recorder_id(&self, symbol: &str) -> Option<i32> {
+        let symbol_upper = normalize_symbol_for_internal(symbol);
+        let ids = self.symbol_index.get(&symbol_upper)?;
+        for id in ids {
+            if self
+                .strategies
+                .get(id)
+                .is_some_and(|strategy| strategy.has_order_terminal_recorder())
+            {
+                return Some(*id);
+            }
+        }
+        None
+    }
+
+    pub fn record_open_order_terminal(
         &mut self,
         symbol: &str,
-        side: Side,
-        base_qty: f64,
+        signed_base_qty: f64,
         fill_ts: i64,
         price: f64,
         close_ts: i64,
     ) -> bool {
-        let symbol_upper = normalize_symbol_for_internal(symbol);
-        let id = self.ensure_arb_hedge_strategy(&symbol_upper);
+        let Some(id) = self.find_order_terminal_recorder_id(symbol) else {
+            return false;
+        };
         let Some(strategy) = self.strategies.get_mut(&id) else {
             return false;
         };
-        let Some(arb_hedge) = strategy.as_any_mut().downcast_mut::<ArbHedgeStrategy>() else {
+        let Some(recorder) = strategy.order_terminal_recorder_mut() else {
             return false;
         };
-        let qv = match side {
-            Side::Buy => base_qty.abs(),
-            Side::Sell => -base_qty.abs(),
-        };
-        arb_hedge
-            .record_open_fill(fill_ts, qv, price, close_ts)
-            .is_some()
+        recorder.record_open_order_terminal(fill_ts, signed_base_qty, price, close_ts)
     }
 
-    pub fn record_arb_hedge_fill(
+    pub fn record_hedge_order_terminal(
         &mut self,
         symbol: &str,
-        side: Side,
-        base_qty: f64,
+        signed_base_qty: f64,
         fill_ts: i64,
         price: f64,
     ) -> bool {
-        let symbol_upper = normalize_symbol_for_internal(symbol);
-        let id = self.ensure_arb_hedge_strategy(&symbol_upper);
+        let Some(id) = self.find_order_terminal_recorder_id(symbol) else {
+            return false;
+        };
         let Some(strategy) = self.strategies.get_mut(&id) else {
             return false;
         };
-        let Some(arb_hedge) = strategy.as_any_mut().downcast_mut::<ArbHedgeStrategy>() else {
+        let Some(recorder) = strategy.order_terminal_recorder_mut() else {
             return false;
         };
-        let qv = match side {
-            Side::Buy => base_qty.abs(),
-            Side::Sell => -base_qty.abs(),
-        };
-        arb_hedge.record_hedge_fill(fill_ts, qv, price).is_some()
+        recorder.record_hedge_order_terminal(fill_ts, signed_base_qty, price)
     }
 
     pub fn arb_hedge_snapshots(&self, now_ts: i64) -> Vec<ArbHedgeSnapshot> {

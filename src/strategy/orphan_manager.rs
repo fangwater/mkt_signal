@@ -3,8 +3,7 @@ use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::strategy::arb_orphan_strategy::{ArbOrphanSnapshot, ArbOrphanStrategy};
 use crate::strategy::hedge_orphan_order_strategy::HedgeOrphanOrderStrategy;
 use crate::strategy::manager::{
-    ArbOrphanHandoff, ArbOrphanResidualHandoff, HedgeOrphanHandoff, MmOrphanHandoff, Strategy,
-    StrategyManager,
+    ArbOrphanHandoff, ArbOrphanResidualHandoff, OrphanHandoff, Strategy, StrategyManager,
 };
 use crate::strategy::mm_orphan_order_strategy::MmOrphanOrderStrategy;
 use crate::strategy::order_update::OrderUpdate;
@@ -167,7 +166,7 @@ impl OrphanStrategyManager {
         strategy_id
     }
 
-    pub fn adopt_mm_orphan_order_id(&mut self, handoff: &MmOrphanHandoff) -> bool {
+    pub fn adopt_mm_orphan_order_id(&mut self, handoff: &OrphanHandoff) -> bool {
         let Some(order_mgr) = MonitorChannel::try_order_manager() else {
             return false;
         };
@@ -199,7 +198,7 @@ impl OrphanStrategyManager {
         strategy.adopt_arb_orphan_order_id(handoff)
     }
 
-    pub fn adopt_hedge_orphan_order_id(&mut self, handoff: &HedgeOrphanHandoff) -> bool {
+    pub fn adopt_hedge_orphan_order_id(&mut self, handoff: &OrphanHandoff) -> bool {
         let Some(order_mgr) = MonitorChannel::try_order_manager() else {
             return false;
         };

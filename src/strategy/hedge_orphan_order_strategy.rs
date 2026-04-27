@@ -5,9 +5,7 @@ use crate::pre_trade::order_manager::OrderExecutionStatus;
 use crate::pre_trade::{QueryEngHub, TradeEngHub};
 use crate::signal::common::{ExecutionType, OrderStatus};
 use crate::signal::trade_signal::TradeSignal;
-use crate::strategy::manager::{
-    ForceCloseControl, HedgeOrphanHandoff, HedgeOrphanSourceKind, Strategy,
-};
+use crate::strategy::manager::{ForceCloseControl, OrphanHandoff, OrphanSourceKind, Strategy};
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
@@ -25,7 +23,7 @@ const HEDGE_ORPHAN_QUERY_MAX_TICKS: u32 = 3_200;
 #[derive(Debug, Clone, PartialEq)]
 pub struct HedgeOrphanOrderOwner {
     pub source_strategy_id: i32,
-    pub source_kind: HedgeOrphanSourceKind,
+    pub source_kind: OrphanSourceKind,
     pub uniform_ctx: UniformPublishCtx,
     pub recorded_base_qty: f64,
 }
@@ -84,7 +82,7 @@ impl HedgeOrphanOrderStrategy {
         self.ensure_query_state(client_order_id);
     }
 
-    fn adopt_order_id_inner(&mut self, handoff: &HedgeOrphanHandoff) -> bool {
+    fn adopt_order_id_inner(&mut self, handoff: &OrphanHandoff) -> bool {
         if handoff.client_order_id <= 0 {
             return false;
         }
@@ -155,35 +153,37 @@ impl HedgeOrphanOrderStrategy {
                 })
             };
             if let Some((symbol, side, cumulative_base_qty, price)) = snapshot {
-                let delta_base_qty = cumulative_base_qty - owner.recorded_base_qty;
-                if delta_base_qty > 1e-12 {
+                let terminal_base_qty = cumulative_base_qty - owner.recorded_base_qty;
+                if terminal_base_qty > 1e-12 {
+                    let signed_base_qty = match side {
+                        crate::pre_trade::order_manager::Side::Buy => terminal_base_qty.abs(),
+                        crate::pre_trade::order_manager::Side::Sell => -terminal_base_qty.abs(),
+                    };
                     let strategy_mgr = MonitorChannel::instance().strategy_mgr();
                     let mut strategy_mgr = strategy_mgr.borrow_mut();
                     let recorded = match owner.source_kind {
-                        HedgeOrphanSourceKind::Open => strategy_mgr.record_arb_open_fill(
+                        OrphanSourceKind::Open => strategy_mgr.record_open_order_terminal(
                             &symbol,
-                            side,
-                            delta_base_qty,
+                            signed_base_qty,
                             event_time,
                             price,
                             0,
                         ),
-                        HedgeOrphanSourceKind::Hedge => strategy_mgr.record_arb_hedge_fill(
+                        OrphanSourceKind::Hedge => strategy_mgr.record_hedge_order_terminal(
                             &symbol,
-                            side,
-                            delta_base_qty,
+                            signed_base_qty,
                             event_time,
                             price,
                         ),
                     };
                     if !recorded {
                         warn!(
-                            "HedgeOrphanOrderStrategy: strategy_role=hedge_orphan strategy_id={} record arb hedge failed client_order_id={} symbol={} source_kind={:?} delta_base_qty={:.8} reason={}",
+                            "HedgeOrphanOrderStrategy: strategy_role=hedge_orphan strategy_id={} record order terminal failed client_order_id={} symbol={} source_kind={:?} terminal_base_qty={:.8} reason={}",
                             self.strategy_id,
                             client_order_id,
                             symbol,
                             owner.source_kind,
-                            delta_base_qty,
+                            terminal_base_qty,
                             reason
                         );
                     }
@@ -541,7 +541,7 @@ impl Strategy for HedgeOrphanOrderStrategy {
         );
     }
 
-    fn adopt_hedge_orphan_order_id(&mut self, handoff: &HedgeOrphanHandoff) -> bool {
+    fn adopt_hedge_orphan_order_id(&mut self, handoff: &OrphanHandoff) -> bool {
         self.adopt_order_id_inner(handoff)
     }
 

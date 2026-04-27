@@ -18,7 +18,7 @@ use crate::signal::common::{align_price_floor, OrderStatus, SignalBytes, Trading
 use crate::signal::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
 use crate::signal::mm_signal::MmBackwardQueryMsg;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
-use crate::strategy::manager::{ForceCloseControl, MmOrphanHandoff, Strategy};
+use crate::strategy::manager::{ForceCloseControl, OrderTerminalRecorder, OrphanHandoff, Strategy};
 use crate::strategy::net_qty_queue::NetQtyQueue;
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::order_reconcile::{qv_decimal_or_fallback, ORDER_QUERY_WATCHDOG_DELAY_US};
@@ -428,7 +428,40 @@ impl MarketMakerHedgeStrategy {
         true
     }
 
-    /// 累加成交（使用 base qty 口径）
+    /// 记录 MM 开仓订单 terminal 后的累计成交量（使用 base qty 口径）。
+    pub fn record_open_order_terminal(
+        &mut self,
+        fill_ts: i64,
+        signed_qty: f64,
+        price: f64,
+        _close_ts: i64,
+    ) -> bool {
+        if signed_qty.abs() <= 1e-12 {
+            return false;
+        }
+        let buy_qty = if signed_qty > 0.0 { signed_qty } else { 0.0 };
+        let sell_qty = if signed_qty < 0.0 { -signed_qty } else { 0.0 };
+        self.apply_net_qty_fill(fill_ts, signed_qty, price, "open_order_terminal");
+        self.period_buy_qty += buy_qty;
+        self.period_sell_qty += sell_qty;
+        true
+    }
+
+    /// 记录 MM 对冲订单 terminal 后的累计成交量（使用 base qty 口径）。
+    pub fn record_hedge_order_terminal(
+        &mut self,
+        fill_ts: i64,
+        signed_qty: f64,
+        price: f64,
+    ) -> bool {
+        if signed_qty.abs() <= 1e-12 {
+            return false;
+        }
+        self.apply_net_qty_fill(fill_ts, signed_qty, price, "hedge_order_terminal");
+        true
+    }
+
+    /// 累加外部成交/初始化净仓（使用 base qty 口径）
     pub fn record_fill(
         &mut self,
         fill_ts: i64,
@@ -1152,7 +1185,7 @@ impl MarketMakerHedgeStrategy {
             self.hedge_order_trace_snapshot(client_order_id)
         );
 
-        let handoff = MmOrphanHandoff::from_hedge(
+        let handoff = OrphanHandoff::from_hedge(
             client_order_id,
             self.strategy_id,
             self.uniform_hedge_publish_ctx(client_order_id),
@@ -2079,6 +2112,33 @@ impl ForceCloseControl for MarketMakerHedgeStrategy {
     }
 }
 
+impl OrderTerminalRecorder for MarketMakerHedgeStrategy {
+    fn record_open_order_terminal(
+        &mut self,
+        fill_ts: i64,
+        signed_base_qty: f64,
+        price: f64,
+        close_ts: i64,
+    ) -> bool {
+        MarketMakerHedgeStrategy::record_open_order_terminal(
+            self,
+            fill_ts,
+            signed_base_qty,
+            price,
+            close_ts,
+        )
+    }
+
+    fn record_hedge_order_terminal(
+        &mut self,
+        fill_ts: i64,
+        signed_base_qty: f64,
+        price: f64,
+    ) -> bool {
+        MarketMakerHedgeStrategy::record_hedge_order_terminal(self, fill_ts, signed_base_qty, price)
+    }
+}
+
 impl Strategy for MarketMakerHedgeStrategy {
     fn as_any(&self) -> &dyn Any {
         self
@@ -2094,6 +2154,14 @@ impl Strategy for MarketMakerHedgeStrategy {
 
     fn symbol(&self) -> Option<&str> {
         Some(&self.symbol)
+    }
+
+    fn has_order_terminal_recorder(&self) -> bool {
+        true
+    }
+
+    fn order_terminal_recorder_mut(&mut self) -> Option<&mut dyn OrderTerminalRecorder> {
+        Some(self)
     }
 
     fn is_strategy_order(&self, order_id: i64) -> bool {

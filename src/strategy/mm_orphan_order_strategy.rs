@@ -5,7 +5,7 @@ use crate::pre_trade::order_manager::OrderExecutionStatus;
 use crate::pre_trade::{QueryEngHub, TradeEngHub};
 use crate::signal::common::{ExecutionType, OrderStatus, TradingVenue};
 use crate::signal::trade_signal::TradeSignal;
-use crate::strategy::manager::{ForceCloseControl, MmOrphanHandoff, MmOrphanSourceKind, Strategy};
+use crate::strategy::manager::{ForceCloseControl, OrphanHandoff, OrphanSourceKind, Strategy};
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
@@ -23,7 +23,7 @@ const MM_ORPHAN_QUERY_MAX_TICKS: u32 = 3_200;
 #[derive(Debug, Clone, PartialEq)]
 pub struct MmOrphanOrderOwner {
     pub source_strategy_id: i32,
-    pub source_kind: MmOrphanSourceKind,
+    pub source_kind: OrphanSourceKind,
     pub uniform_ctx: UniformPublishCtx,
 }
 
@@ -80,7 +80,7 @@ impl MmOrphanOrderStrategy {
             .or_insert_with(Self::initial_query_state);
     }
 
-    fn adopt_order_id_inner(&mut self, handoff: &MmOrphanHandoff) -> bool {
+    fn adopt_order_id_inner(&mut self, handoff: &OrphanHandoff) -> bool {
         if handoff.client_order_id <= 0 {
             return false;
         }
@@ -164,26 +164,35 @@ impl MmOrphanOrderStrategy {
             })
         };
 
-        if let Some((venue, symbol, side, cumulative_qty, price)) = snapshot {
+        let owner = self.order_owners.get(&client_order_id).cloned();
+        if let (Some((venue, symbol, side, cumulative_qty, price)), Some(owner)) = (snapshot, owner)
+        {
             if cumulative_qty > 0.0 {
                 let base_qty =
                     MonitorChannel::instance().qty_to_base(venue, &symbol, cumulative_qty);
                 if base_qty > 0.0 {
-                    let (signed_qty, buy_qty, sell_qty) = match side {
-                        crate::pre_trade::order_manager::Side::Buy => (base_qty, base_qty, 0.0),
-                        crate::pre_trade::order_manager::Side::Sell => (-base_qty, 0.0, base_qty),
+                    let signed_base_qty = match side {
+                        crate::pre_trade::order_manager::Side::Buy => base_qty,
+                        crate::pre_trade::order_manager::Side::Sell => -base_qty,
                     };
-                    let _ = MonitorChannel::instance()
-                        .strategy_mgr()
-                        .borrow_mut()
-                        .record_mm_hedge_fill(
-                            &normalize_symbol_for_internal(&symbol),
-                            signed_qty,
-                            buy_qty,
-                            sell_qty,
+                    let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+                    let mut strategy_mgr = strategy_mgr.borrow_mut();
+                    let symbol = normalize_symbol_for_internal(&symbol);
+                    let _ = match owner.source_kind {
+                        OrphanSourceKind::Open => strategy_mgr.record_open_order_terminal(
+                            &symbol,
+                            signed_base_qty,
                             event_time,
                             price,
-                        );
+                            0,
+                        ),
+                        OrphanSourceKind::Hedge => strategy_mgr.record_hedge_order_terminal(
+                            &symbol,
+                            signed_base_qty,
+                            event_time,
+                            price,
+                        ),
+                    };
                 }
             }
             let _ = order_mgr.borrow_mut().remove(client_order_id);
@@ -551,7 +560,7 @@ impl Strategy for MmOrphanOrderStrategy {
         );
     }
 
-    fn adopt_order_id(&mut self, handoff: &MmOrphanHandoff) -> bool {
+    fn adopt_order_id(&mut self, handoff: &OrphanHandoff) -> bool {
         self.adopt_order_id_inner(handoff)
     }
 
