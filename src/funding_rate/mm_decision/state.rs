@@ -38,6 +38,16 @@ pub(crate) const MM_OPEN_INTERVAL_ALIGN_MS: u64 = 100;
 pub(crate) const CLOCK_ALIGN_BASE_MS: u64 = 60_000;
 
 #[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct MmOpenSideBreakdown {
+    pub(crate) planned: usize,
+    pub(crate) prediction_filtered: usize,
+    pub(crate) zero_quantized: usize,
+    pub(crate) tlen_filtered: usize,
+    pub(crate) publish_failed: usize,
+    pub(crate) sent: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct MmOpenPublishStats {
     pub(crate) sent: usize,
     pub(crate) sent_buy: usize,
@@ -46,6 +56,42 @@ pub(crate) struct MmOpenPublishStats {
     pub(crate) zero_quantized_levels: usize,
     pub(crate) tlen_filtered_levels: usize,
     pub(crate) publish_failures: usize,
+    pub(crate) buy: MmOpenSideBreakdown,
+    pub(crate) sell: MmOpenSideBreakdown,
+}
+
+impl MmOpenPublishStats {
+    pub(crate) fn breakdown_line(&self, symbol: &str, prediction_side: Option<Side>) -> String {
+        let prediction_side = prediction_side.map(|side| side.as_str()).unwrap_or("BOTH");
+        format!(
+            "MmDecision: MMOpen publish breakdown symbol={} prediction_side={} plan_buy={} plan_sell={} prediction_filtered_buy={} prediction_filtered_sell={} zero_quantized_buy={} zero_quantized_sell={} tlen_filtered_buy={} tlen_filtered_sell={} publish_failed_buy={} publish_failed_sell={} sent_buy={} sent_sell={}",
+            symbol,
+            prediction_side,
+            self.buy.planned,
+            self.sell.planned,
+            self.buy.prediction_filtered,
+            self.sell.prediction_filtered,
+            self.buy.zero_quantized,
+            self.sell.zero_quantized,
+            self.buy.tlen_filtered,
+            self.sell.tlen_filtered,
+            self.buy.publish_failed,
+            self.sell.publish_failed,
+            self.buy.sent,
+            self.sell.sent
+        )
+    }
+}
+
+fn side_breakdown_mut<'a>(
+    side: Side,
+    buy: &'a mut MmOpenSideBreakdown,
+    sell: &'a mut MmOpenSideBreakdown,
+) -> &'a mut MmOpenSideBreakdown {
+    match side {
+        Side::Buy => buy,
+        Side::Sell => sell,
+    }
 }
 
 pub(crate) struct MmDecisionState {
@@ -632,10 +678,14 @@ impl MmDecisionState {
         let mut publish_failures = 0usize;
         let mut emitted_details = Vec::new();
         let mut prepared = Vec::with_capacity(plan.levels.len());
+        let mut buy = MmOpenSideBreakdown::default();
+        let mut sell = MmOpenSideBreakdown::default();
 
         for level in &plan.levels {
+            side_breakdown_mut(level.side, &mut buy, &mut sell).planned += 1;
             if let Some(side) = prediction_side {
                 if level.side != side {
+                    side_breakdown_mut(level.side, &mut buy, &mut sell).prediction_filtered += 1;
                     continue;
                 }
             }
@@ -654,6 +704,7 @@ impl MmDecisionState {
             let _ = ctx.set_price_with_tick_floor(level.aligned_price, plan.price_tick);
             if ctx.amount_count() <= 0 || ctx.price_count() <= 0 {
                 zero_quantized_levels += 1;
+                side_breakdown_mut(level.side, &mut buy, &mut sell).zero_quantized += 1;
                 continue;
             }
             ctx.exp_time = plan.exp_time_us;
@@ -706,7 +757,10 @@ impl MmDecisionState {
                 .into_iter()
                 .zip(prepared.into_iter())
                 .filter_map(|(from_key_bytes, mut item)| {
-                    let from_key_bytes = from_key_bytes?;
+                    let Some(from_key_bytes) = from_key_bytes else {
+                        side_breakdown_mut(item.side, &mut buy, &mut sell).tlen_filtered += 1;
+                        return None;
+                    };
                     item.ctx.set_from_key(from_key_bytes);
                     Some(item)
                 })
@@ -717,6 +771,7 @@ impl MmDecisionState {
             let signal = TradeSignal::create(SignalType::MMOpen, now_us, 0.0, item.ctx.to_bytes());
             if let Err(err) = self.signal_pub.publish(&signal.to_bytes()) {
                 publish_failures += 1;
+                side_breakdown_mut(item.side, &mut buy, &mut sell).publish_failed += 1;
                 let from_key_str = String::from_utf8_lossy(&item.ctx.from_key);
                 log::warn!(
                     "MmDecision: publish MMOpen failed symbol={} idx={} side_idx={} side={} price={:.8} qty={:.8} tick_index={} price_ticks={} qty_ticks={} offset={:.8} from_key='{}' err={:?}",
@@ -752,8 +807,14 @@ impl MmDecisionState {
             ));
             sent += 1;
             match item.side {
-                Side::Buy => sent_buy += 1,
-                Side::Sell => sent_sell += 1,
+                Side::Buy => {
+                    sent_buy += 1;
+                    buy.sent += 1;
+                }
+                Side::Sell => {
+                    sent_sell += 1;
+                    sell.sent += 1;
+                }
             }
         }
 
@@ -782,6 +843,8 @@ impl MmDecisionState {
             zero_quantized_levels,
             tlen_filtered_levels,
             publish_failures,
+            buy,
+            sell,
         }
     }
 }
