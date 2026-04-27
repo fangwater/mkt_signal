@@ -335,6 +335,8 @@ impl HedgeArbStrategy {
         );
 
         // 推送开仓订单到交易引擎。
+        // 注意：HedgeArb open leg 不记录 OrderRateBucket::ArbOpen。ArbOpen bucket
+        // 只用于单腿 ArbOpenStrategy；这里是双腿 HedgeArb 生命周期的一部分，保持独立语义。
         if let Err(e) =
             create_and_send_order(self.strategy_id, client_order_id, "开仓", &params.symbol)
         {

@@ -14,12 +14,16 @@ pub struct OrderRateStats {
 #[derive(Default)]
 struct OrderRateState {
     open_orders: HashMap<i64, i64>,
+    arb_open_orders: HashMap<i64, i64>,
     hedge_orders: HashMap<i64, i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OrderRateBucket {
     MmOpen,
+    // Standalone ArbOpenStrategy open orders only. HedgeArb open leg is managed as
+    // a paired arb lifecycle and intentionally does not use this bucket.
+    ArbOpen,
     MmHedge,
 }
 
@@ -27,6 +31,7 @@ impl OrderRateBucket {
     fn as_str(self) -> &'static str {
         match self {
             Self::MmOpen => "mm_open",
+            Self::ArbOpen => "arb_open",
             Self::MmHedge => "mm_hedge",
         }
     }
@@ -89,7 +94,11 @@ impl OrderRateLimiter {
         ORDER_RATE_STATE.with(|state| {
             let mut state = state.borrow_mut();
             let mut removed_total = 0usize;
-            for bucket in [OrderRateBucket::MmOpen, OrderRateBucket::MmHedge] {
+            for bucket in [
+                OrderRateBucket::MmOpen,
+                OrderRateBucket::ArbOpen,
+                OrderRateBucket::MmHedge,
+            ] {
                 let bucket_map = Self::bucket_map_mut(&mut state, bucket);
                 let before = bucket_map.len();
                 bucket_map.retain(|_, submit_ts_us| {
@@ -128,6 +137,7 @@ impl OrderRateLimiter {
         ORDER_RATE_STATE.with(|state| {
             let mut state = state.borrow_mut();
             state.open_orders.clear();
+            state.arb_open_orders.clear();
             state.hedge_orders.clear();
         });
     }
@@ -135,6 +145,7 @@ impl OrderRateLimiter {
     fn bucket_map(state: &OrderRateState, bucket: OrderRateBucket) -> &HashMap<i64, i64> {
         match bucket {
             OrderRateBucket::MmOpen => &state.open_orders,
+            OrderRateBucket::ArbOpen => &state.arb_open_orders,
             OrderRateBucket::MmHedge => &state.hedge_orders,
         }
     }
@@ -145,6 +156,7 @@ impl OrderRateLimiter {
     ) -> &mut HashMap<i64, i64> {
         match bucket {
             OrderRateBucket::MmOpen => &mut state.open_orders,
+            OrderRateBucket::ArbOpen => &mut state.arb_open_orders,
             OrderRateBucket::MmHedge => &mut state.hedge_orders,
         }
     }
@@ -178,6 +190,22 @@ mod tests {
         let err =
             OrderRateLimiter::check_limit(OrderRateBucket::MmOpen, 10, 2, 60_000_000).unwrap_err();
         assert!(err.contains("近10秒"));
+
+        OrderRateLimiter::clear();
+    }
+
+    #[test]
+    fn arb_open_bucket_is_independent_from_mm_open() {
+        OrderRateLimiter::clear();
+        OrderRateLimiter::record(OrderRateBucket::MmOpen, 1, 51_000_000);
+        OrderRateLimiter::record(OrderRateBucket::ArbOpen, 2, 52_000_000);
+
+        let mm_stats =
+            OrderRateLimiter::check_limit(OrderRateBucket::MmOpen, 10, 10, 60_000_000).unwrap();
+        let arb_stats =
+            OrderRateLimiter::check_limit(OrderRateBucket::ArbOpen, 10, 10, 60_000_000).unwrap();
+        assert_eq!(mm_stats.count_10s, 1);
+        assert_eq!(arb_stats.count_10s, 1);
 
         OrderRateLimiter::clear();
     }

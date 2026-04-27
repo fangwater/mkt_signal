@@ -1,14 +1,19 @@
+use crate::common::symbol_util::{extract_assets_from_symbol, normalize_symbol_for_internal};
 use crate::common::tick_math::QuantizedValue;
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use crate::pre_trade::order_manager::{OrderExecutionStatus, Side};
+use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
+use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderType, Side};
+use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::QueryEngHub;
 use crate::signal::common::TradingVenue;
 use crate::strategy::manager::{OpenPriceMapEntry, OrphanHandoff, OrphanStrategyRole};
 use crate::strategy::order_query_builder::build_order_query_request;
-use crate::strategy::order_reconcile::ORDER_QUERY_WATCHDOG_DELAY_US;
+use crate::strategy::order_reconcile::{qv_decimal_or_fallback, ORDER_QUERY_WATCHDOG_DELAY_US};
 use crate::strategy::uniform_order_helper::UniformPublishCtx;
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
+
+const OPEN_BALANCE_EPS: f64 = 1e-12;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PendingOrderQueryReason {
@@ -71,6 +76,29 @@ pub struct OpenStrategyState {
     pub alive: bool,
 }
 
+pub struct OpenSignalInput {
+    pub signal_kind: &'static str,
+    pub order_log_name: &'static str,
+    pub order_rate_bucket: OrderRateBucket,
+    pub opening_symbol: String,
+    pub venue_u8: u8,
+    pub side_u8: u8,
+    pub order_type_u8: u8,
+    pub qty: f64,
+    pub price: f64,
+    pub price_count: i64,
+    pub amount_count: i64,
+    pub exp_time: i64,
+    pub create_ts: i64,
+    pub from_key_len: u32,
+    pub from_key: Vec<u8>,
+    pub price_qv: QuantizedValue,
+    pub price_offset: f64,
+    // 绝对 close_ts。0 表示不设置藏仓窗口；>0 表示这笔 ArbOpen 不追求立刻对冲，
+    // 而是先藏一段时间，到 close_ts 后才进入可对冲/可关闭的 due 数量。
+    pub close_ts: i64,
+}
+
 impl OpenStrategyState {
     pub fn new(strategy_id: i32) -> Self {
         Self {
@@ -99,6 +127,37 @@ pub trait OpenStrategyCommon {
     );
 
     fn orphan_strategy_role(&self) -> OrphanStrategyRole;
+
+    fn resolve_open_qty_multiplier(
+        &self,
+        _venue: TradingVenue,
+        _symbol: &str,
+    ) -> Result<f64, String> {
+        Ok(1.0)
+    }
+
+    fn open_order_qty_to_base(
+        &self,
+        _venue: TradingVenue,
+        _symbol: &str,
+        signed_qty: f64,
+        qty_multiplier: f64,
+    ) -> Result<f64, String> {
+        Ok(signed_qty * qty_multiplier)
+    }
+
+    fn after_open_signal_state_initialized(
+        &mut self,
+        _input: &OpenSignalInput,
+        _qty_multiplier: f64,
+    ) {
+    }
+
+    fn create_and_send_open_order(
+        &mut self,
+        client_order_id: i64,
+        symbol: &str,
+    ) -> Result<(), String>;
 
     fn strategy_id(&self) -> i32 {
         self.open_state().strategy_id
@@ -138,6 +197,305 @@ pub trait OpenStrategyCommon {
             signal_ts: open_state.signal_ts,
             from_key: format!("open|{}", open_state.from_key).into_bytes(),
             price_offset: open_state.price_offset,
+        }
+    }
+
+    fn handle_open_signal_common(&mut self, input: OpenSignalInput) {
+        let symbol = normalize_symbol_for_internal(&input.opening_symbol);
+        if symbol.is_empty() {
+            warn!(
+                "{}: strategy_id={} empty symbol",
+                self.strategy_name(),
+                self.strategy_id()
+            );
+            self.open_state_mut().alive = false;
+            return;
+        }
+
+        let Some(venue) = TradingVenue::from_u8(input.venue_u8) else {
+            warn!(
+                "{}: strategy_id={} invalid venue={}",
+                self.strategy_name(),
+                self.strategy_id(),
+                input.venue_u8
+            );
+            self.open_state_mut().alive = false;
+            return;
+        };
+        let Some(side) = Side::from_u8(input.side_u8) else {
+            warn!(
+                "{}: strategy_id={} invalid side={}",
+                self.strategy_name(),
+                self.strategy_id(),
+                input.side_u8
+            );
+            self.open_state_mut().alive = false;
+            return;
+        };
+        let Some(order_type) = OrderType::from_u8(input.order_type_u8) else {
+            warn!(
+                "{}: strategy_id={} invalid order_type={}",
+                self.strategy_name(),
+                self.strategy_id(),
+                input.order_type_u8
+            );
+            self.open_state_mut().alive = false;
+            return;
+        };
+
+        if input.qty <= 0.0 {
+            warn!(
+                "{}: strategy_id={} invalid qty={}",
+                self.strategy_name(),
+                self.strategy_id(),
+                input.qty
+            );
+            self.open_state_mut().alive = false;
+            return;
+        }
+        if input.price <= 0.0 {
+            warn!(
+                "{}: strategy_id={} invalid price={} order_type={:?}",
+                self.strategy_name(),
+                self.strategy_id(),
+                input.price,
+                order_type
+            );
+            self.open_state_mut().alive = false;
+            return;
+        }
+        if input.price_count <= 0 || input.amount_count <= 0 {
+            warn!(
+                "{}: strategy_id={} invalid {} qv count price_count={} amount_count={}",
+                self.strategy_name(),
+                self.strategy_id(),
+                input.signal_kind,
+                input.price_count,
+                input.amount_count
+            );
+            self.open_state_mut().alive = false;
+            return;
+        }
+        if !venue.supports_pre_trade_stack() {
+            panic!(
+                "{}: strategy_id={} 不支持的交易场所 {:?}，仅支持 Binance/OKX/Bybit/Bitget/Gate 的 futures 或 margin",
+                self.strategy_name(),
+                self.strategy_id(),
+                venue
+            );
+        }
+
+        if let Err(e) = MonitorChannel::instance().check_symbol_exposure(&symbol) {
+            error!(
+                "{}: strategy_id={} symbol={} 单品种敞口风控检查失败: {}，标记策略为不活跃",
+                self.strategy_name(),
+                self.strategy_id(),
+                symbol,
+                e
+            );
+            self.open_state_mut().alive = false;
+            return;
+        }
+        if let Err(e) = MonitorChannel::instance().check_total_exposure() {
+            error!(
+                "{}: strategy_id={} 总敞口风控检查失败: {}，标记策略为不活跃",
+                self.strategy_name(),
+                self.strategy_id(),
+                e
+            );
+            self.open_state_mut().alive = false;
+            return;
+        }
+        if order_type == OrderType::Limit {
+            if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&symbol, side) {
+                error!(
+                    "{}: strategy_id={} symbol={} 限价挂单数量风控检查失败: {}，标记策略为不活跃",
+                    self.strategy_name(),
+                    self.strategy_id(),
+                    symbol,
+                    e
+                );
+                self.open_state_mut().alive = false;
+                return;
+            }
+        }
+
+        let rate_params = PreTradeParamsLoader::instance();
+        if let Err(e) = OrderRateLimiter::check_limit(
+            input.order_rate_bucket,
+            rate_params.open_order_rate_limit_per_min(),
+            rate_params.open_order_rate_limit_10s(),
+            get_timestamp_us(),
+        ) {
+            info!(
+                "{}: strategy_id={} symbol={} 开仓下单频率风控触发: {}，标记策略为不活跃",
+                self.strategy_name(),
+                self.strategy_id(),
+                symbol,
+                e
+            );
+            self.open_state_mut().alive = false;
+            return;
+        }
+
+        let qty_multiplier = match self.resolve_open_qty_multiplier(venue, &symbol) {
+            Ok(multiplier) => multiplier,
+            Err(err) => {
+                error!(
+                    "{}: strategy_id={} 初始化开仓数量乘数失败 symbol={} venue={:?}: {}",
+                    self.strategy_name(),
+                    self.strategy_id(),
+                    symbol,
+                    venue,
+                    err
+                );
+                self.open_state_mut().alive = false;
+                return;
+            }
+        };
+
+        let order_qty = input.qty;
+        let order_price = input.price;
+        let signed_qty = match side {
+            Side::Buy => order_qty.abs(),
+            Side::Sell => -order_qty.abs(),
+        };
+
+        let binance_standard = venue == TradingVenue::BinanceMargin
+            && MonitorChannel::instance()
+                .order_manager()
+                .borrow()
+                .binance_is_standard();
+        if binance_standard {
+            // Binance margin 非统一账户不能在下单时自动借币；资产或仓位不足时，
+            // 反向开仓会被交易所拒绝，所以这里提前拦截。
+            let (base_asset, quote_asset) = extract_assets_from_symbol(&symbol);
+            let (check_asset, required_amount) = match side {
+                Side::Buy => (quote_asset, order_qty * order_price),
+                Side::Sell => (base_asset, order_qty),
+            };
+            let available_balance =
+                MonitorChannel::instance().balance_position_for_venue(venue, &check_asset);
+            if available_balance + OPEN_BALANCE_EPS < required_amount {
+                error!(
+                    "{}: strategy_id={} BinanceMargin STANDARD 余额不足，拒绝开仓并标记策略不活跃 symbol={} side={:?} asset={} required={:.8} available={:.8}",
+                    self.strategy_name(),
+                    self.strategy_id(),
+                    symbol,
+                    side,
+                    check_asset,
+                    required_amount,
+                    available_balance
+                );
+                self.open_state_mut().alive = false;
+                return;
+            }
+        }
+
+        let add_base_qty =
+            match self.open_order_qty_to_base(venue, &symbol, signed_qty, qty_multiplier) {
+                Ok(base_qty) => base_qty,
+                Err(err) => {
+                    error!(
+                        "{}: strategy_id={} 开仓数量转换 base qty 失败 symbol={} venue={:?}: {}",
+                        self.strategy_name(),
+                        self.strategy_id(),
+                        symbol,
+                        venue,
+                        err
+                    );
+                    self.open_state_mut().alive = false;
+                    return;
+                }
+            };
+        let current_base_qty = MonitorChannel::instance().get_position_qty(&symbol, venue);
+        let projected_base_qty = current_base_qty + add_base_qty;
+        if projected_base_qty.abs() > current_base_qty.abs() + 1e-12_f64 {
+            if let Err(e) = MonitorChannel::instance().check_leverage() {
+                error!(
+                    "{}: strategy_id={} 杠杆风控检查失败: {}，标记策略为不活跃",
+                    self.strategy_name(),
+                    self.strategy_id(),
+                    e
+                );
+                self.open_state_mut().alive = false;
+                return;
+            }
+        }
+        if let Err(e) =
+            MonitorChannel::instance().ensure_max_pos_u(&symbol, signed_qty, order_price)
+        {
+            error!(
+                "{}: strategy_id={} 仓位限制检查失败: {}，标记策略为不活跃",
+                self.strategy_name(),
+                self.strategy_id(),
+                e
+            );
+            self.open_state_mut().alive = false;
+            return;
+        }
+
+        {
+            let state = self.open_state_mut();
+            state.open_symbol = symbol.clone();
+            state.open_venue = Some(venue);
+            state.order.open_expire_ts = (input.exp_time > 0).then_some(input.exp_time);
+            state.order.open_side = Some(side);
+            state.signal_ts = input.create_ts;
+            state.from_key = String::from_utf8_lossy(&input.from_key).to_string();
+            state.price_qv = input.price_qv;
+            state.price_offset = input.price_offset;
+        }
+        self.after_open_signal_state_initialized(&input, qty_multiplier);
+
+        let client_order_id = Self::compose_order_id(self.strategy_id());
+        self.open_order_state_mut().open_order_id = client_order_id;
+
+        let submit_ts = get_timestamp_us();
+        MonitorChannel::instance()
+            .order_manager()
+            .borrow_mut()
+            .create_order(
+                venue,
+                client_order_id,
+                order_type,
+                symbol.clone(),
+                side,
+                order_qty,
+                order_price,
+                false,
+                qty_multiplier,
+                submit_ts,
+            );
+
+        info!(
+            "📤 {}订单已创建: strategy_id={} client_order_id={} symbol={} {:?} side={:?} qty={} price={} qty_multiplier={:.8} from_key_len={}",
+            input.order_log_name,
+            self.strategy_id(),
+            client_order_id,
+            symbol,
+            venue,
+            side,
+            qv_decimal_or_fallback(order_qty),
+            qv_decimal_or_fallback(order_price),
+            qty_multiplier,
+            input.from_key_len
+        );
+
+        if let Err(err) = self.create_and_send_open_order(client_order_id, &symbol) {
+            error!(
+                "{}: strategy_id={} open order send failed: {}",
+                self.strategy_name(),
+                self.strategy_id(),
+                err
+            );
+        } else {
+            info!(
+                "✅ {}订单已发送: strategy_id={} client_order_id={}",
+                input.order_log_name,
+                self.strategy_id(),
+                client_order_id
+            );
         }
     }
 

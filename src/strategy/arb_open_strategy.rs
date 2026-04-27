@@ -1,10 +1,8 @@
-use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::common::time_util::get_timestamp_us;
 use crate::common::trade_error_code::describe_trade_error_code;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
-use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
-use crate::pre_trade::params_load::PreTradeParamsLoader;
+use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, Side};
 use crate::pre_trade::{PersistChannel, TradeEngHub};
 use crate::signal::cancel_signal::ArbCancelCtx;
 use crate::signal::common::{OrderStatus, SignalBytes, TradingVenue};
@@ -14,7 +12,7 @@ use crate::strategy::manager::{
     ForceCloseControl, OpenPriceMapEntry, OrphanStrategyRole, Strategy,
 };
 use crate::strategy::open_strategy_common::{
-    OpenStrategyCommon, OpenStrategyState, PendingOrderQueryReason,
+    OpenSignalInput, OpenStrategyCommon, OpenStrategyState, PendingOrderQueryReason,
 };
 use crate::strategy::order_reconcile::qv_decimal_or_fallback;
 use crate::strategy::order_update::OrderUpdate;
@@ -47,228 +45,37 @@ impl ArbOpenStrategy {
     }
 
     fn handle_arb_open_signal(&mut self, ctx: ArbOpenCtx) {
-        let symbol = normalize_symbol_for_internal(&ctx.get_opening_symbol());
-        if symbol.is_empty() {
-            warn!(
-                "ArbOpenStrategy: strategy_id={} empty symbol",
-                self.open_state.strategy_id
-            );
-            self.open_state.alive = false;
-            return;
-        }
-
-        let Some(venue) = TradingVenue::from_u8(ctx.opening_leg.venue) else {
-            warn!(
-                "ArbOpenStrategy: strategy_id={} invalid venue={}",
-                self.open_state.strategy_id, ctx.opening_leg.venue
-            );
-            self.open_state.alive = false;
-            return;
-        };
-        let Some(side) = Side::from_u8(ctx.side) else {
-            warn!(
-                "ArbOpenStrategy: strategy_id={} invalid side={}",
-                self.open_state.strategy_id, ctx.side
-            );
-            self.open_state.alive = false;
-            return;
-        };
-        let Some(order_type) = OrderType::from_u8(ctx.order_type) else {
-            warn!(
-                "ArbOpenStrategy: strategy_id={} invalid order_type={}",
-                self.open_state.strategy_id, ctx.order_type
-            );
-            self.open_state.alive = false;
-            return;
-        };
-
-        let qty = ctx.amount_value();
-        if qty <= 0.0 {
-            warn!(
-                "ArbOpenStrategy: strategy_id={} invalid qty={}",
-                self.open_state.strategy_id, qty
-            );
-            self.open_state.alive = false;
-            return;
-        }
-        let signal_price = ctx.price_value();
-        if signal_price <= 0.0 {
-            warn!(
-                "ArbOpenStrategy: strategy_id={} invalid price={} order_type={:?}",
-                self.open_state.strategy_id, signal_price, order_type
-            );
-            self.open_state.alive = false;
-            return;
-        }
-        if ctx.price_count() <= 0 || ctx.amount_count() <= 0 {
-            warn!(
-                "ArbOpenStrategy: strategy_id={} invalid ArbOpen qv count price_count={} amount_count={}",
-                self.open_state.strategy_id,
-                ctx.price_count(),
-                ctx.amount_count()
-            );
-            self.open_state.alive = false;
-            return;
-        }
-        if !venue.supports_pre_trade_stack() {
-            panic!(
-                "ArbOpenStrategy: strategy_id={} 不支持的交易场所 {:?}，仅支持 Binance/OKX/Bybit/Bitget/Gate 的 futures 或 margin",
-                self.open_state.strategy_id, venue
-            );
-        }
-
-        if let Err(e) = MonitorChannel::instance().check_symbol_exposure(&symbol) {
-            error!(
-                "ArbOpenStrategy: strategy_id={} symbol={} 单品种敞口风控检查失败: {}，标记策略为不活跃",
-                self.open_state.strategy_id, symbol, e
-            );
-            self.open_state.alive = false;
-            return;
-        }
-        if let Err(e) = MonitorChannel::instance().check_total_exposure() {
-            error!(
-                "ArbOpenStrategy: strategy_id={} 总敞口风控检查失败: {}，标记策略为不活跃",
-                self.open_state.strategy_id, e
-            );
-            self.open_state.alive = false;
-            return;
-        }
-        if order_type == OrderType::Limit {
-            if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&symbol, side) {
-                error!(
-                    "ArbOpenStrategy: strategy_id={} symbol={} 限价挂单数量风控检查失败: {}，标记策略为不活跃",
-                    self.open_state.strategy_id, symbol, e
-                );
-                self.open_state.alive = false;
-                return;
-            }
-        }
-
-        let rate_params = PreTradeParamsLoader::instance();
-        if let Err(e) = OrderRateLimiter::check_limit(
-            OrderRateBucket::MmOpen,
-            rate_params.open_order_rate_limit_per_min(),
-            rate_params.open_order_rate_limit_10s(),
-            get_timestamp_us(),
-        ) {
-            info!(
-                "ArbOpenStrategy: strategy_id={} symbol={} 开仓下单频率风控触发: {}，标记策略为不活跃",
-                self.open_state.strategy_id, symbol, e
-            );
-            self.open_state.alive = false;
-            return;
-        }
-
-        let qty_multiplier = match MonitorChannel::instance()
-            .qty_multiplier_for_venue(venue, &symbol)
-        {
-            Ok(multiplier) => multiplier,
-            Err(err) => {
-                error!(
-                    "ArbOpenStrategy: strategy_id={} 初始化开仓数量乘数失败 symbol={} venue={:?}: {}",
-                    self.open_state.strategy_id, symbol, venue, err
-                );
-                self.open_state.alive = false;
-                return;
-            }
-        };
-
-        let order_qty = qty;
-        let order_price = signal_price;
-        let signed_qty = match side {
-            Side::Buy => order_qty.abs(),
-            Side::Sell => -order_qty.abs(),
-        };
-        let add_base_qty = signed_qty * qty_multiplier;
-        let current_base_qty = MonitorChannel::instance().get_position_qty(&symbol, venue);
-        let projected_base_qty = current_base_qty + add_base_qty;
-        if projected_base_qty.abs() > current_base_qty.abs() + 1e-12_f64 {
-            if let Err(e) = MonitorChannel::instance().check_leverage() {
-                error!(
-                    "ArbOpenStrategy: strategy_id={} 杠杆风控检查失败: {}，标记策略为不活跃",
-                    self.open_state.strategy_id, e
-                );
-                self.open_state.alive = false;
-                return;
-            }
-        }
-        if let Err(e) =
-            MonitorChannel::instance().ensure_max_pos_u(&symbol, signed_qty, order_price)
-        {
-            error!(
-                "ArbOpenStrategy: strategy_id={} 仓位限制检查失败: {}，标记策略为不活跃",
-                self.open_state.strategy_id, e
-            );
-            self.open_state.alive = false;
-            return;
-        }
-
-        self.open_state.open_symbol = symbol.clone();
-        self.open_state.open_venue = Some(venue);
-        self.open_state.order.open_expire_ts = (ctx.exp_time > 0).then_some(ctx.exp_time);
-        self.open_state.order.open_side = Some(side);
-        self.open_state.signal_ts = ctx.create_ts;
-        self.open_state.from_key = String::from_utf8_lossy(&ctx.from_key).to_string();
-        self.open_state.price_qv = ctx.price_qv;
-        self.open_state.price_offset = ctx.price_offset;
-        self.close_ts = if ctx.hedge_timeout_us > 0 {
+        let close_ts = if ctx.hedge_timeout_us > 0 {
             let base_ts = if ctx.create_ts > 0 {
                 ctx.create_ts
             } else {
                 get_timestamp_us()
             };
-            Some(base_ts.saturating_add(ctx.hedge_timeout_us))
+            base_ts.saturating_add(ctx.hedge_timeout_us)
         } else {
-            None
+            0
         };
-        self.cumulative_open_qty = 0.0;
-        self.open_qty_multiplier = qty_multiplier;
 
-        let client_order_id = Self::compose_order_id(self.open_state.strategy_id);
-        self.open_state.order.open_order_id = client_order_id;
-
-        let submit_ts = get_timestamp_us();
-        MonitorChannel::instance()
-            .order_manager()
-            .borrow_mut()
-            .create_order(
-                venue,
-                client_order_id,
-                order_type,
-                symbol.clone(),
-                side,
-                order_qty,
-                order_price,
-                false,
-                qty_multiplier,
-                submit_ts,
-            );
-
-        info!(
-            "📤 ArbOpen订单已创建: strategy_id={} client_order_id={} symbol={} {:?} side={:?} qty={} price={} qty_multiplier={:.8} close_ts={:?} from_key_len={}",
-            self.open_state.strategy_id,
-            client_order_id,
-            symbol,
-            venue,
-            side,
-            qv_decimal_or_fallback(order_qty),
-            qv_decimal_or_fallback(order_price),
-            qty_multiplier,
-            self.close_ts,
-            ctx.from_key_len
-        );
-
-        if let Err(err) = self.create_and_send_order(client_order_id, &symbol) {
-            error!(
-                "ArbOpenStrategy: strategy_id={} open order send failed: {}",
-                self.open_state.strategy_id, err
-            );
-        } else {
-            info!(
-                "✅ ArbOpen订单已发送: strategy_id={} client_order_id={}",
-                self.open_state.strategy_id, client_order_id
-            );
-        }
+        self.handle_open_signal_common(OpenSignalInput {
+            signal_kind: "ArbOpen",
+            order_log_name: "ArbOpen",
+            order_rate_bucket: OrderRateBucket::ArbOpen,
+            opening_symbol: ctx.get_opening_symbol(),
+            venue_u8: ctx.opening_leg.venue,
+            side_u8: ctx.side,
+            order_type_u8: ctx.order_type,
+            qty: ctx.amount_value(),
+            price: ctx.price_value(),
+            price_count: ctx.price_count(),
+            amount_count: ctx.amount_count(),
+            exp_time: ctx.exp_time,
+            create_ts: ctx.create_ts,
+            from_key_len: ctx.from_key_len,
+            from_key: ctx.from_key,
+            price_qv: ctx.price_qv,
+            price_offset: ctx.price_offset,
+            close_ts,
+        });
     }
 
     fn handle_open_leg_timeout(&mut self) {
@@ -435,7 +242,7 @@ impl ArbOpenStrategy {
         match order.get_order_request_bytes() {
             Ok(req_bin) => {
                 let stats = OrderRateLimiter::record(
-                    OrderRateBucket::MmOpen,
+                    OrderRateBucket::ArbOpen,
                     client_order_id,
                     get_timestamp_us(),
                 );
@@ -923,6 +730,36 @@ impl OpenStrategyCommon for ArbOpenStrategy {
 
     fn orphan_strategy_role(&self) -> OrphanStrategyRole {
         OrphanStrategyRole::Hedge
+    }
+
+    fn resolve_open_qty_multiplier(
+        &self,
+        venue: TradingVenue,
+        symbol: &str,
+    ) -> Result<f64, String> {
+        MonitorChannel::instance().qty_multiplier_for_venue(venue, symbol)
+    }
+
+    fn after_open_signal_state_initialized(
+        &mut self,
+        input: &OpenSignalInput,
+        qty_multiplier: f64,
+    ) {
+        self.close_ts = if input.close_ts > 0 {
+            Some(input.close_ts)
+        } else {
+            None
+        };
+        self.cumulative_open_qty = 0.0;
+        self.open_qty_multiplier = qty_multiplier;
+    }
+
+    fn create_and_send_open_order(
+        &mut self,
+        client_order_id: i64,
+        symbol: &str,
+    ) -> Result<(), String> {
+        self.create_and_send_order(client_order_id, symbol)
     }
 
     fn handoff_open_order_after_query_failure(
