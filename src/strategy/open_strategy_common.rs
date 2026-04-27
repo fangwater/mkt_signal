@@ -1,16 +1,19 @@
 use crate::common::symbol_util::{extract_assets_from_symbol, normalize_symbol_for_internal};
 use crate::common::tick_math::QuantizedValue;
 use crate::common::time_util::get_timestamp_us;
+use crate::common::trade_error_code::describe_trade_error_code;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
 use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderType, Side};
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::{QueryEngHub, TradeEngHub};
 use crate::signal::common::TradingVenue;
-use crate::strategy::manager::{OpenPriceMapEntry, OrphanHandoff, OrphanStrategyRole};
+use crate::strategy::manager::{OpenPriceMapEntry, OrphanHandoff, OrphanStrategyRole, Strategy};
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::order_reconcile::{qv_decimal_or_fallback, ORDER_QUERY_WATCHDOG_DELAY_US};
+use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKind};
 use crate::strategy::uniform_order_helper::UniformPublishCtx;
+use crate::strategy::ws_order_update::try_apply_ws_order_update_for_strategy;
 use log::{debug, error, info, warn};
 
 const OPEN_BALANCE_EPS: f64 = 1e-12;
@@ -774,6 +777,84 @@ pub trait OpenStrategyCommon {
                     input.trigger_ts,
                     from_key_preview,
                     e
+                );
+            }
+        }
+    }
+
+    fn apply_trade_engine_response_common(&mut self, response: &dyn TradeEngineResponse)
+    where
+        Self: Strategy + Sized,
+    {
+        if try_apply_ws_order_update_for_strategy(self, response) {
+            return;
+        }
+
+        if response.is_request_success() {
+            return;
+        }
+
+        let client_order_id = response.client_order_id();
+        if client_order_id != self.open_order_id() {
+            return;
+        }
+
+        let exchange = response.exchange_enum();
+        let code_desc = exchange
+            .and_then(|ex| describe_trade_error_code(ex, response.error_code()))
+            .unwrap_or("unknown");
+
+        match response.request_kind() {
+            TradeRequestKind::Open => {
+                warn!(
+                    "{}: strategy_id={} open_failed: req_type={} status={} code={}({}) client_order_id={}",
+                    self.strategy_name(),
+                    self.strategy_id(),
+                    response.req_type(),
+                    response.status(),
+                    response.error_code(),
+                    code_desc,
+                    client_order_id
+                );
+                self.handle_open_failed_cleanup(client_order_id);
+            }
+            TradeRequestKind::Cancel => {
+                let reason = if response.is_cancel_not_cancellable() {
+                    PendingOrderQueryReason::CancelRejected
+                } else {
+                    PendingOrderQueryReason::CancelWatchdog
+                };
+                warn!(
+                    "{}: strategy_id={} cancel_failed: req_type={} status={} code={}({}) client_order_id={} query_reason={:?}",
+                    self.strategy_name(),
+                    self.strategy_id(),
+                    response.req_type(),
+                    response.status(),
+                    response.error_code(),
+                    code_desc,
+                    client_order_id,
+                    reason
+                );
+                self.clear_query_watchdogs(client_order_id);
+                if !self.send_order_query(client_order_id, reason) {
+                    let marker = if response.is_cancel_not_cancellable() {
+                        "cancel rejected query send failed"
+                    } else {
+                        "cancel failed query send failed"
+                    };
+                    self.handoff_open_order_after_query_failure(client_order_id, marker);
+                }
+            }
+            TradeRequestKind::Other => {
+                warn!(
+                    "{}: strategy_id={} other_failed(TODO): req_type={} status={} code={}({}) client_order_id={}",
+                    self.strategy_name(),
+                    self.strategy_id(),
+                    response.req_type(),
+                    response.status(),
+                    response.error_code(),
+                    code_desc,
+                    client_order_id
                 );
             }
         }

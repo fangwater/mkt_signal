@@ -1,5 +1,4 @@
 use crate::common::symbol_util::normalize_symbol_for_internal;
-use crate::common::trade_error_code::describe_trade_error_code;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::OrderRateBucket;
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, Side};
@@ -12,16 +11,14 @@ use crate::strategy::manager::OpenPriceMapEntry;
 use crate::strategy::manager::{ForceCloseControl, OrphanStrategyRole, Strategy};
 use crate::strategy::open_strategy_common::{
     OpenCancelInput, OpenSignalInput, OpenStrategyCommon, OpenStrategyState,
-    PendingOrderQueryReason,
 };
 use crate::strategy::order_update::OrderUpdate;
-use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKind};
+use crate::strategy::trade_engine_response::TradeEngineResponse;
 use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
     publish_uniform_trade_order_from_order_update, UniformAmountSource,
 };
-use crate::strategy::ws_order_update::try_apply_ws_order_update_for_strategy;
 use log::{debug, info, warn};
 use std::any::Any;
 
@@ -705,75 +702,7 @@ impl Strategy for MarketMakerOpenStrategy {
     }
 
     fn apply_trade_engine_response(&mut self, response: &dyn TradeEngineResponse) {
-        if try_apply_ws_order_update_for_strategy(self, response) {
-            return;
-        }
-
-        if response.is_request_success() {
-            return;
-        }
-
-        let client_order_id = response.client_order_id();
-        if client_order_id != self.open_state.order.open_order_id {
-            return;
-        }
-
-        let exchange = response.exchange_enum();
-        let code_desc = exchange
-            .and_then(|ex| describe_trade_error_code(ex, response.error_code()))
-            .unwrap_or("unknown");
-
-        match response.request_kind() {
-            TradeRequestKind::Open => {
-                warn!(
-                    "MarketMakerOpenStrategy: strategy_id={} open_failed: req_type={} status={} code={}({}) client_order_id={}",
-                    self.open_state.strategy_id,
-                    response.req_type(),
-                    response.status(),
-                    response.error_code(),
-                    code_desc,
-                    client_order_id
-                );
-                self.handle_open_failed_cleanup(client_order_id);
-            }
-            TradeRequestKind::Cancel => {
-                let reason = if response.is_cancel_not_cancellable() {
-                    PendingOrderQueryReason::CancelRejected
-                } else {
-                    PendingOrderQueryReason::CancelWatchdog
-                };
-                warn!(
-                    "MarketMakerOpenStrategy: strategy_id={} cancel_failed: req_type={} status={} code={}({}) client_order_id={} query_reason={:?}",
-                    self.open_state.strategy_id,
-                    response.req_type(),
-                    response.status(),
-                    response.error_code(),
-                    code_desc,
-                    client_order_id,
-                    reason
-                );
-                self.clear_query_watchdogs(client_order_id);
-                if !self.send_order_query(client_order_id, reason) {
-                    let marker = if response.is_cancel_not_cancellable() {
-                        "cancel rejected query send failed"
-                    } else {
-                        "cancel failed query send failed"
-                    };
-                    self.handoff_open_order_after_query_failure(client_order_id, marker);
-                }
-            }
-            TradeRequestKind::Other => {
-                warn!(
-                    "MarketMakerOpenStrategy: strategy_id={} other_failed(TODO): req_type={} status={} code={}({}) client_order_id={}",
-                    self.open_state.strategy_id,
-                    response.req_type(),
-                    response.status(),
-                    response.error_code(),
-                    code_desc,
-                    client_order_id
-                );
-            }
-        }
+        self.apply_trade_engine_response_common(response);
     }
 
     fn handle_period_clock(&mut self, _current_tp: i64) {
