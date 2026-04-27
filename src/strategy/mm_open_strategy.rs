@@ -11,7 +11,7 @@ use crate::signal::common::{OrderStatus, SignalBytes, TradingVenue};
 use crate::signal::open_signal::MmOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::manager::OpenPriceMapEntry;
-use crate::strategy::manager::{ForceCloseControl, OrphanHandoff, Strategy};
+use crate::strategy::manager::{ForceCloseControl, OrphanStrategyRole, Strategy};
 use crate::strategy::open_strategy_common::{
     OpenStrategyCommon, OpenStrategyState, PendingOrderQueryReason,
 };
@@ -38,42 +38,6 @@ impl MarketMakerOpenStrategy {
         Self {
             open_state: OpenStrategyState::new(strategy_id),
         }
-    }
-
-    fn handoff_open_order_to_mm_orphan(&mut self, client_order_id: i64, reason: &str) -> bool {
-        if client_order_id <= 0 {
-            self.open_state.alive = false;
-            return false;
-        }
-        warn!(
-            "MarketMakerOpenStrategy: strategy_id={} orphan_handoff_start client_order_id={} reason={}",
-            self.open_state.strategy_id, client_order_id, reason
-        );
-        let handoff = OrphanHandoff::from_open(
-            client_order_id,
-            self.open_state.strategy_id,
-            self.uniform_open_publish_ctx(),
-            0.0,
-            reason,
-        );
-        let Some(orphan_mgr) = MonitorChannel::try_orphan_strategy_mgr() else {
-            warn!(
-                "MarketMakerOpenStrategy: strategy_id={} orphan manager unavailable client_order_id={} reason={}",
-                self.open_state.strategy_id, client_order_id, reason
-            );
-            return false;
-        };
-        let adopted = orphan_mgr.borrow_mut().adopt_mm_orphan_order_id(&handoff);
-        if !adopted {
-            warn!(
-                "MarketMakerOpenStrategy: strategy_id={} mm orphan handoff rejected client_order_id={} reason={}",
-                self.open_state.strategy_id, client_order_id, reason
-            );
-            return false;
-        }
-        self.release_open_order_keep_local(client_order_id, reason);
-        self.open_state.alive = false;
-        true
     }
 
     fn try_apply_ws_order_update(&mut self, response: &dyn TradeEngineResponse) -> bool {
@@ -1131,6 +1095,10 @@ impl OpenStrategyCommon for MarketMakerOpenStrategy {
         &mut self.open_state
     }
 
+    fn orphan_strategy_role(&self) -> OrphanStrategyRole {
+        OrphanStrategyRole::Mm
+    }
+
     fn handoff_open_order_after_query_failure(
         &mut self,
         client_order_id: i64,
@@ -1140,7 +1108,7 @@ impl OpenStrategyCommon for MarketMakerOpenStrategy {
             "MarketMakerOpenStrategy: strategy_id={} order query {} failed, handoff to mm orphan: client_order_id={}",
             self.open_state.strategy_id, marker, client_order_id
         );
-        self.handoff_open_order_to_mm_orphan(client_order_id, marker);
+        self.handoff_open_order_to_orphan(client_order_id, marker);
     }
 }
 

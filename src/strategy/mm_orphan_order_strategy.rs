@@ -80,7 +80,7 @@ impl MmOrphanOrderStrategy {
             .or_insert_with(Self::initial_query_state);
     }
 
-    fn adopt_order_id_inner(&mut self, handoff: &OrphanHandoff) -> bool {
+    pub(crate) fn adopt_orphan_order_id(&mut self, handoff: &OrphanHandoff) -> bool {
         if handoff.client_order_id <= 0 {
             return false;
         }
@@ -558,10 +558,6 @@ impl Strategy for MmOrphanOrderStrategy {
             trade.cumulative_filled_quantity(),
             trade.order_status()
         );
-    }
-
-    fn adopt_order_id(&mut self, handoff: &OrphanHandoff) -> bool {
-        self.adopt_order_id_inner(handoff)
     }
 
     fn handle_period_clock(&mut self, _current_tp: i64) {

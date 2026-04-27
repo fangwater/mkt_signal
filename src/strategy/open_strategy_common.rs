@@ -4,7 +4,7 @@ use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{OrderExecutionStatus, Side};
 use crate::pre_trade::QueryEngHub;
 use crate::signal::common::TradingVenue;
-use crate::strategy::manager::OpenPriceMapEntry;
+use crate::strategy::manager::{OpenPriceMapEntry, OrphanHandoff, OrphanStrategyRole};
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::order_reconcile::ORDER_QUERY_WATCHDOG_DELAY_US;
 use crate::strategy::uniform_order_helper::UniformPublishCtx;
@@ -98,6 +98,8 @@ pub trait OpenStrategyCommon {
         marker: &'static str,
     );
 
+    fn orphan_strategy_role(&self) -> OrphanStrategyRole;
+
     fn strategy_id(&self) -> i32 {
         self.open_state().strategy_id
     }
@@ -137,6 +139,56 @@ pub trait OpenStrategyCommon {
             from_key: format!("open|{}", open_state.from_key).into_bytes(),
             price_offset: open_state.price_offset,
         }
+    }
+
+    fn handoff_open_order_to_orphan(&mut self, client_order_id: i64, reason: &str) -> bool {
+        if client_order_id <= 0 {
+            self.open_state_mut().alive = false;
+            return false;
+        }
+        let role = self.orphan_strategy_role();
+        warn!(
+            "{}: strategy_id={} orphan_handoff_start role={} client_order_id={} reason={}",
+            self.strategy_name(),
+            self.strategy_id(),
+            role.as_str(),
+            client_order_id,
+            reason
+        );
+        let handoff = OrphanHandoff::from_open(
+            client_order_id,
+            self.strategy_id(),
+            self.uniform_open_publish_ctx(),
+            reason,
+        );
+        let Some(orphan_mgr) = MonitorChannel::try_orphan_strategy_mgr() else {
+            warn!(
+                "{}: strategy_id={} orphan manager unavailable role={} client_order_id={} reason={}",
+                self.strategy_name(),
+                self.strategy_id(),
+                role.as_str(),
+                client_order_id,
+                reason
+            );
+            return false;
+        };
+        let adopted = orphan_mgr
+            .borrow_mut()
+            .adopt_orphan_order_id(role, &handoff);
+        if !adopted {
+            warn!(
+                "{}: strategy_id={} orphan handoff rejected role={} client_order_id={} reason={}",
+                self.strategy_name(),
+                self.strategy_id(),
+                role.as_str(),
+                client_order_id,
+                reason
+            );
+            return false;
+        }
+        self.release_open_order_keep_local(client_order_id, reason);
+        self.open_state_mut().alive = false;
+        true
     }
 
     fn open_order_state(&self) -> &OpenOrderState {

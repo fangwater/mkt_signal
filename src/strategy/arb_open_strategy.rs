@@ -10,7 +10,9 @@ use crate::signal::cancel_signal::ArbCancelCtx;
 use crate::signal::common::{OrderStatus, SignalBytes, TradingVenue};
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
-use crate::strategy::manager::{ForceCloseControl, OpenPriceMapEntry, OrphanHandoff, Strategy};
+use crate::strategy::manager::{
+    ForceCloseControl, OpenPriceMapEntry, OrphanStrategyRole, Strategy,
+};
 use crate::strategy::open_strategy_common::{
     OpenStrategyCommon, OpenStrategyState, PendingOrderQueryReason,
 };
@@ -43,44 +45,6 @@ impl ArbOpenStrategy {
             cumulative_open_qty: 0.0,
             open_qty_multiplier: 1.0,
         }
-    }
-
-    fn handoff_open_order_to_hedge_orphan(&mut self, client_order_id: i64, reason: &str) -> bool {
-        if client_order_id <= 0 {
-            self.open_state.alive = false;
-            return false;
-        }
-        warn!(
-            "ArbOpenStrategy: strategy_id={} hedge_orphan_handoff_start client_order_id={} reason={}",
-            self.open_state.strategy_id, client_order_id, reason
-        );
-        let handoff = OrphanHandoff::from_open(
-            client_order_id,
-            self.open_state.strategy_id,
-            self.uniform_open_publish_ctx(),
-            self.cumulative_open_qty,
-            reason,
-        );
-        let Some(orphan_mgr) = MonitorChannel::try_orphan_strategy_mgr() else {
-            warn!(
-                "ArbOpenStrategy: strategy_id={} orphan manager unavailable client_order_id={} reason={}",
-                self.open_state.strategy_id, client_order_id, reason
-            );
-            return false;
-        };
-        let adopted = orphan_mgr
-            .borrow_mut()
-            .adopt_hedge_orphan_order_id(&handoff);
-        if !adopted {
-            warn!(
-                "ArbOpenStrategy: strategy_id={} hedge orphan handoff rejected client_order_id={} reason={}",
-                self.open_state.strategy_id, client_order_id, reason
-            );
-            return false;
-        }
-        self.release_open_order_keep_local(client_order_id, reason);
-        self.open_state.alive = false;
-        true
     }
 
     fn try_apply_ws_order_update(&mut self, response: &dyn TradeEngineResponse) -> bool {
@@ -1018,6 +982,10 @@ impl OpenStrategyCommon for ArbOpenStrategy {
         "ArbOpen开仓订单未达到终结状态被清理"
     }
 
+    fn orphan_strategy_role(&self) -> OrphanStrategyRole {
+        OrphanStrategyRole::Hedge
+    }
+
     fn handoff_open_order_after_query_failure(
         &mut self,
         client_order_id: i64,
@@ -1027,7 +995,7 @@ impl OpenStrategyCommon for ArbOpenStrategy {
             "ArbOpenStrategy: strategy_id={} order query {} failed, handoff to hedge orphan: client_order_id={}",
             self.open_state.strategy_id, marker, client_order_id
         );
-        self.handoff_open_order_to_hedge_orphan(client_order_id, marker);
+        self.handoff_open_order_to_orphan(client_order_id, marker);
     }
 }
 

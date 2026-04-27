@@ -18,7 +18,9 @@ use crate::signal::common::{align_price_floor, OrderStatus, SignalBytes, Trading
 use crate::signal::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
 use crate::signal::mm_signal::MmBackwardQueryMsg;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
-use crate::strategy::manager::{ForceCloseControl, OrderTerminalRecorder, OrphanHandoff, Strategy};
+use crate::strategy::manager::{
+    ForceCloseControl, OrderTerminalRecorder, OrphanHandoff, OrphanStrategyRole, Strategy,
+};
 use crate::strategy::net_qty_queue::NetQtyQueue;
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::order_reconcile::{qv_decimal_or_fallback, ORDER_QUERY_WATCHDOG_DELAY_US};
@@ -1198,7 +1200,9 @@ impl MarketMakerHedgeStrategy {
             );
             return false;
         };
-        let adopted = orphan_mgr.borrow_mut().adopt_mm_orphan_order_id(&handoff);
+        let adopted = orphan_mgr
+            .borrow_mut()
+            .adopt_orphan_order_id(OrphanStrategyRole::Mm, &handoff);
         if !adopted {
             warn!(
                 "MarketMakerHedgeStrategy: strategy_id={} mm orphan handoff rejected client_order_id={} reason={}",

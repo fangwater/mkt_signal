@@ -3,7 +3,8 @@ use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::strategy::arb_orphan_strategy::{ArbOrphanSnapshot, ArbOrphanStrategy};
 use crate::strategy::hedge_orphan_order_strategy::HedgeOrphanOrderStrategy;
 use crate::strategy::manager::{
-    ArbOrphanHandoff, ArbOrphanResidualHandoff, OrphanHandoff, Strategy, StrategyManager,
+    ArbOrphanHandoff, ArbOrphanResidualHandoff, OrphanHandoff, OrphanStrategyRole, Strategy,
+    StrategyManager,
 };
 use crate::strategy::mm_orphan_order_strategy::MmOrphanOrderStrategy;
 use crate::strategy::order_update::OrderUpdate;
@@ -166,7 +167,11 @@ impl OrphanStrategyManager {
         strategy_id
     }
 
-    pub fn adopt_mm_orphan_order_id(&mut self, handoff: &OrphanHandoff) -> bool {
+    pub fn adopt_orphan_order_id(
+        &mut self,
+        role: OrphanStrategyRole,
+        handoff: &OrphanHandoff,
+    ) -> bool {
         let Some(order_mgr) = MonitorChannel::try_order_manager() else {
             return false;
         };
@@ -175,11 +180,23 @@ impl OrphanStrategyManager {
         };
         let symbol = order.symbol.clone();
         drop(order);
-        let strategy_id = self.ensure_mm_orphan_strategy(&symbol);
+        let strategy_id = match role {
+            OrphanStrategyRole::Mm => self.ensure_mm_orphan_strategy(&symbol),
+            OrphanStrategyRole::Hedge => self.ensure_hedge_orphan_strategy(&symbol),
+        };
         let Some(strategy) = self.strategies.get_mut(&strategy_id) else {
             return false;
         };
-        strategy.adopt_order_id(handoff)
+        match role {
+            OrphanStrategyRole::Mm => strategy
+                .as_any_mut()
+                .downcast_mut::<MmOrphanOrderStrategy>()
+                .is_some_and(|strategy| strategy.adopt_orphan_order_id(handoff)),
+            OrphanStrategyRole::Hedge => strategy
+                .as_any_mut()
+                .downcast_mut::<HedgeOrphanOrderStrategy>()
+                .is_some_and(|strategy| strategy.adopt_orphan_order_id(handoff)),
+        }
     }
 
     pub fn adopt_arb_orphan_order_id(&mut self, handoff: &ArbOrphanHandoff) -> bool {
@@ -196,22 +213,6 @@ impl OrphanStrategyManager {
             return false;
         };
         strategy.adopt_arb_orphan_order_id(handoff)
-    }
-
-    pub fn adopt_hedge_orphan_order_id(&mut self, handoff: &OrphanHandoff) -> bool {
-        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
-            return false;
-        };
-        let Some(order) = order_mgr.borrow().get(handoff.client_order_id) else {
-            return false;
-        };
-        let symbol = order.symbol.clone();
-        drop(order);
-        let strategy_id = self.ensure_hedge_orphan_strategy(&symbol);
-        let Some(strategy) = self.strategies.get_mut(&strategy_id) else {
-            return false;
-        };
-        strategy.adopt_hedge_orphan_order_id(handoff)
     }
 
     pub fn adopt_arb_orphan_residual(&mut self, residual: &ArbOrphanResidualHandoff) -> bool {

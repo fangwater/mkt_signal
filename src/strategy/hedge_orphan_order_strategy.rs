@@ -25,7 +25,6 @@ pub struct HedgeOrphanOrderOwner {
     pub source_strategy_id: i32,
     pub source_kind: OrphanSourceKind,
     pub uniform_ctx: UniformPublishCtx,
-    pub recorded_base_qty: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,7 +81,7 @@ impl HedgeOrphanOrderStrategy {
         self.ensure_query_state(client_order_id);
     }
 
-    fn adopt_order_id_inner(&mut self, handoff: &OrphanHandoff) -> bool {
+    pub(crate) fn adopt_orphan_order_id(&mut self, handoff: &OrphanHandoff) -> bool {
         if handoff.client_order_id <= 0 {
             return false;
         }
@@ -109,7 +108,6 @@ impl HedgeOrphanOrderStrategy {
                 source_strategy_id: handoff.source_strategy_id,
                 source_kind: handoff.source_kind,
                 uniform_ctx: handoff.uniform_ctx.clone(),
-                recorded_base_qty: handoff.recorded_base_qty.max(0.0),
             },
         );
         info!(
@@ -153,11 +151,10 @@ impl HedgeOrphanOrderStrategy {
                 })
             };
             if let Some((symbol, side, cumulative_base_qty, price)) = snapshot {
-                let terminal_base_qty = cumulative_base_qty - owner.recorded_base_qty;
-                if terminal_base_qty > 1e-12 {
+                if cumulative_base_qty > 1e-12 {
                     let signed_base_qty = match side {
-                        crate::pre_trade::order_manager::Side::Buy => terminal_base_qty.abs(),
-                        crate::pre_trade::order_manager::Side::Sell => -terminal_base_qty.abs(),
+                        crate::pre_trade::order_manager::Side::Buy => cumulative_base_qty.abs(),
+                        crate::pre_trade::order_manager::Side::Sell => -cumulative_base_qty.abs(),
                     };
                     let strategy_mgr = MonitorChannel::instance().strategy_mgr();
                     let mut strategy_mgr = strategy_mgr.borrow_mut();
@@ -178,12 +175,12 @@ impl HedgeOrphanOrderStrategy {
                     };
                     if !recorded {
                         warn!(
-                            "HedgeOrphanOrderStrategy: strategy_role=hedge_orphan strategy_id={} record order terminal failed client_order_id={} symbol={} source_kind={:?} terminal_base_qty={:.8} reason={}",
+                            "HedgeOrphanOrderStrategy: strategy_role=hedge_orphan strategy_id={} record order terminal failed client_order_id={} symbol={} source_kind={:?} cumulative_base_qty={:.8} reason={}",
                             self.strategy_id,
                             client_order_id,
                             symbol,
                             owner.source_kind,
-                            terminal_base_qty,
+                            cumulative_base_qty,
                             reason
                         );
                     }
@@ -539,10 +536,6 @@ impl Strategy for HedgeOrphanOrderStrategy {
             trade.cumulative_filled_quantity(),
             trade.order_status()
         );
-    }
-
-    fn adopt_hedge_orphan_order_id(&mut self, handoff: &OrphanHandoff) -> bool {
-        self.adopt_order_id_inner(handoff)
     }
 
     fn handle_period_clock(&mut self, _current_tp: i64) {

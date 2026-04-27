@@ -126,13 +126,7 @@ pub trait Strategy: ForceCloseControl {
     fn apply_order_update(&mut self, update: &dyn OrderUpdate);
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate);
     fn apply_trade_engine_response(&mut self, _response: &dyn TradeEngineResponse) {}
-    fn adopt_order_id(&mut self, _handoff: &OrphanHandoff) -> bool {
-        false
-    }
     fn adopt_arb_orphan_order_id(&mut self, _handoff: &ArbOrphanHandoff) -> bool {
-        false
-    }
-    fn adopt_hedge_orphan_order_id(&mut self, _handoff: &OrphanHandoff) -> bool {
         false
     }
     fn adopt_arb_orphan_residual(&mut self, _residual: &ArbOrphanResidualHandoff) -> bool {
@@ -178,13 +172,27 @@ pub enum OrphanSourceKind {
     Hedge,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrphanStrategyRole {
+    Mm,
+    Hedge,
+}
+
+impl OrphanStrategyRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Mm => "mm_orphan",
+            Self::Hedge => "hedge_orphan",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct OrphanHandoff {
     pub client_order_id: i64,
     pub source_strategy_id: i32,
     pub source_kind: OrphanSourceKind,
     pub uniform_ctx: UniformPublishCtx,
-    pub recorded_base_qty: f64,
     pub reason: String,
 }
 
@@ -193,7 +201,6 @@ impl OrphanHandoff {
         client_order_id: i64,
         source_strategy_id: i32,
         uniform_ctx: UniformPublishCtx,
-        recorded_base_qty: f64,
         reason: &str,
     ) -> Self {
         Self {
@@ -201,7 +208,6 @@ impl OrphanHandoff {
             source_strategy_id,
             source_kind: OrphanSourceKind::Open,
             uniform_ctx,
-            recorded_base_qty: recorded_base_qty.max(0.0),
             reason: reason.to_string(),
         }
     }
@@ -217,7 +223,6 @@ impl OrphanHandoff {
             source_strategy_id,
             source_kind: OrphanSourceKind::Hedge,
             uniform_ctx,
-            recorded_base_qty: 0.0,
             reason: reason.to_string(),
         }
     }
