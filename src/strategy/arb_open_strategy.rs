@@ -1,12 +1,11 @@
 use crate::common::symbol_util::normalize_symbol_for_internal;
-use crate::common::tick_math::QuantizedValue;
 use crate::common::time_util::get_timestamp_us;
 use crate::common::trade_error_code::describe_trade_error_code;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
 use crate::pre_trade::params_load::PreTradeParamsLoader;
-use crate::pre_trade::{PersistChannel, QueryEngHub, TradeEngHub};
+use crate::pre_trade::{PersistChannel, TradeEngHub};
 use crate::signal::cancel_signal::ArbCancelCtx;
 use crate::signal::common::{OrderStatus, SignalBytes, TradingVenue};
 use crate::signal::open_signal::ArbOpenCtx;
@@ -14,8 +13,10 @@ use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::manager::{
     ArbOpenPriceMapEntry, ForceCloseControl, HedgeOrphanHandoff, HedgeOrphanSourceKind, Strategy,
 };
-use crate::strategy::order_query_builder::build_order_query_request;
-use crate::strategy::order_reconcile::{qv_decimal_or_fallback, ORDER_QUERY_WATCHDOG_DELAY_US};
+use crate::strategy::open_strategy_common::{
+    OpenStrategyCommon, OpenStrategyState, PendingOrderQueryReason,
+};
+use crate::strategy::order_reconcile::qv_decimal_or_fallback;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::query_order_updates::OrderQueryTradeUpdate;
 use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKind};
@@ -29,141 +30,46 @@ use crate::strategy::ws_order_update::WsOrderUpdate;
 use log::{debug, error, info, warn};
 use std::any::Any;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PendingOrderQueryReason {
-    OrderWatchdog,
-    CancelWatchdog,
-    CancelRejected,
-}
-
-impl PendingOrderQueryReason {
-    fn is_cancel_rejected(self) -> bool {
-        matches!(self, Self::CancelRejected)
-    }
-
-    fn watchdog_hint(self) -> &'static str {
-        if self.is_cancel_rejected() {
-            "CancelRejectedWatchdog触发"
-        } else {
-            "CancelWatchdog触发"
-        }
-    }
-
-    fn query_send_failed_trigger(self) -> &'static str {
-        if self.is_cancel_rejected() {
-            "cancel_rejected_query_send_failed"
-        } else {
-            "cancel_query_send_failed"
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct QueryWatchdog {
-    client_order_id: i64,
-    due_ts_us: i64,
-    reason: PendingOrderQueryReason,
-}
-
 /// 单腿套利开仓策略：只负责 open leg 生命周期，不保存 hedge leg 或双腿盘口。
 pub struct ArbOpenStrategy {
-    strategy_id: i32,
-    open_symbol: String,
-    open_venue: TradingVenue,
-    open_order_id: i64,
-    open_expire_ts: Option<i64>,
-    open_side: Option<Side>,
-    open_signal_ts: i64,
-    open_from_key: String,
-    open_price_qv: QuantizedValue,
-    open_price_offset: f64,
+    open_state: OpenStrategyState,
     pub close_ts: Option<i64>,    //仓位希望持有的时间
     pub cumulative_open_qty: f64, //累计开仓数量
     pub open_qty_multiplier: f64, //开仓侧数量乘数（venue qty -> base qty）
-    alive_flag: bool,
-    pending_order_query: Option<PendingOrderQueryReason>,
-    order_query_watchdog: Option<QueryWatchdog>,
-    cancel_query_watchdog: Option<QueryWatchdog>,
-    last_cancel_trigger_ts: Option<i64>,
-    last_open_cancel_reason: Option<&'static str>,
 }
 
 impl ArbOpenStrategy {
     pub fn new(strategy_id: i32) -> Self {
         Self {
-            strategy_id,
-            open_symbol: String::new(),
-            open_venue: TradingVenue::BinanceMargin,
-            open_order_id: 0,
-            open_expire_ts: None,
-            open_side: None,
-            open_signal_ts: 0,
-            open_from_key: String::new(),
-            open_price_qv: QuantizedValue::zero(),
-            open_price_offset: 0.0,
+            open_state: OpenStrategyState::new(strategy_id),
             close_ts: None,
             cumulative_open_qty: 0.0,
             open_qty_multiplier: 1.0,
-            alive_flag: true,
-            pending_order_query: None,
-            order_query_watchdog: None,
-            cancel_query_watchdog: None,
-            last_cancel_trigger_ts: None,
-            last_open_cancel_reason: None,
         }
-    }
-
-    pub fn open_side(&self) -> Option<Side> {
-        self.open_side
-    }
-
-    /// 组合订单ID：高32位为策略ID，低32位为序列号。
-    fn compose_order_id(strategy_id: i32) -> i64 {
-        ((strategy_id as i64) << 32) | 1
-    }
-
-    fn extract_strategy_id(order_id: i64) -> i32 {
-        (order_id >> 32) as i32
-    }
-
-    fn preview_text(raw: &str, max_chars: usize) -> String {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            return "-".to_string();
-        }
-        let mut out = String::new();
-        for (idx, ch) in trimmed.chars().enumerate() {
-            if idx >= max_chars {
-                out.push_str("...");
-                break;
-            }
-            out.push(ch);
-        }
-        out
     }
 
     fn release_open_order_keep_local(&mut self, client_order_id: i64, reason: &str) {
-        self.pending_order_query = None;
+        self.open_state.order.pending_order_query = None;
         self.clear_query_watchdogs(client_order_id);
-        self.open_order_id = 0;
+        self.open_state.order.open_order_id = 0;
         warn!(
             "ArbOpenStrategy: strategy_id={} release open order keep local client_order_id={} reason={}",
-            self.strategy_id, client_order_id, reason
+            self.open_state.strategy_id, client_order_id, reason
         );
     }
 
     fn handoff_open_order_to_hedge_orphan(&mut self, client_order_id: i64, reason: &str) -> bool {
         if client_order_id <= 0 {
-            self.alive_flag = false;
+            self.open_state.alive = false;
             return false;
         }
         warn!(
             "ArbOpenStrategy: strategy_id={} hedge_orphan_handoff_start client_order_id={} reason={}",
-            self.strategy_id, client_order_id, reason
+            self.open_state.strategy_id, client_order_id, reason
         );
         let handoff = HedgeOrphanHandoff {
             client_order_id,
-            source_strategy_id: self.strategy_id,
+            source_strategy_id: self.open_state.strategy_id,
             source_kind: HedgeOrphanSourceKind::Open,
             uniform_ctx: self.uniform_open_publish_ctx(),
             recorded_base_qty: self.cumulative_open_qty,
@@ -172,7 +78,7 @@ impl ArbOpenStrategy {
         let Some(orphan_mgr) = MonitorChannel::try_orphan_strategy_mgr() else {
             warn!(
                 "ArbOpenStrategy: strategy_id={} orphan manager unavailable client_order_id={} reason={}",
-                self.strategy_id, client_order_id, reason
+                self.open_state.strategy_id, client_order_id, reason
             );
             return false;
         };
@@ -182,12 +88,12 @@ impl ArbOpenStrategy {
         if !adopted {
             warn!(
                 "ArbOpenStrategy: strategy_id={} hedge orphan handoff rejected client_order_id={} reason={}",
-                self.strategy_id, client_order_id, reason
+                self.open_state.strategy_id, client_order_id, reason
             );
             return false;
         }
         self.release_open_order_keep_local(client_order_id, reason);
-        self.alive_flag = false;
+        self.open_state.alive = false;
         true
     }
 
@@ -196,17 +102,17 @@ impl ArbOpenStrategy {
             return;
         };
         let mut mgr = order_mgr.borrow_mut();
-        if self.open_order_id != 0 {
-            if let Some(order) = mgr.get(self.open_order_id) {
+        if self.open_state.order.open_order_id != 0 {
+            if let Some(order) = mgr.get(self.open_state.order.open_order_id) {
                 if !order.status.is_terminal() {
                     mgr.log_order_details(
                         &order,
                         "ArbOpen开仓订单未达到终结状态被清理",
-                        self.strategy_id,
+                        self.open_state.strategy_id,
                     );
                 }
             }
-            let _ = mgr.remove(self.open_order_id);
+            let _ = mgr.remove(self.open_state.order.open_order_id);
         }
     }
 
@@ -225,11 +131,11 @@ impl ArbOpenStrategy {
     }
 
     fn handle_open_failed_cleanup(&mut self, client_order_id: i64) {
-        self.pending_order_query = None;
+        self.open_state.order.pending_order_query = None;
         self.clear_query_watchdogs(client_order_id);
         self.terminalize_open_order_before_cleanup(client_order_id);
         self.cleanup_strategy_orders();
-        self.alive_flag = false;
+        self.open_state.alive = false;
     }
 
     fn try_apply_ws_order_update(&mut self, response: &dyn TradeEngineResponse) -> bool {
@@ -238,14 +144,14 @@ impl ArbOpenStrategy {
         }
 
         let client_order_id = response.client_order_id();
-        if client_order_id != self.open_order_id {
+        if client_order_id != self.open_state.order.open_order_id {
             return false;
         }
         let order_mgr = MonitorChannel::instance().order_manager();
         let Some(order_snapshot) = order_mgr.borrow().get(client_order_id) else {
             warn!(
                 "ArbOpenStrategy: strategy_id={} ws order update missing local order: client_order_id={}",
-                self.strategy_id, client_order_id
+                self.open_state.strategy_id, client_order_id
             );
             return false;
         };
@@ -263,7 +169,7 @@ impl ArbOpenStrategy {
             } else {
                 debug!(
                     "ArbOpenStrategy: strategy_id={} skip non-NEW/CANCELED binance ws response: venue={:?} client_order_id={} status={:?}",
-                    self.strategy_id,
+                    self.open_state.strategy_id,
                     order_snapshot.venue,
                     client_order_id,
                     update.status()
@@ -297,34 +203,34 @@ impl ArbOpenStrategy {
         if symbol.is_empty() {
             warn!(
                 "ArbOpenStrategy: strategy_id={} empty symbol",
-                self.strategy_id
+                self.open_state.strategy_id
             );
-            self.alive_flag = false;
+            self.open_state.alive = false;
             return;
         }
 
         let Some(venue) = TradingVenue::from_u8(ctx.opening_leg.venue) else {
             warn!(
                 "ArbOpenStrategy: strategy_id={} invalid venue={}",
-                self.strategy_id, ctx.opening_leg.venue
+                self.open_state.strategy_id, ctx.opening_leg.venue
             );
-            self.alive_flag = false;
+            self.open_state.alive = false;
             return;
         };
         let Some(side) = Side::from_u8(ctx.side) else {
             warn!(
                 "ArbOpenStrategy: strategy_id={} invalid side={}",
-                self.strategy_id, ctx.side
+                self.open_state.strategy_id, ctx.side
             );
-            self.alive_flag = false;
+            self.open_state.alive = false;
             return;
         };
         let Some(order_type) = OrderType::from_u8(ctx.order_type) else {
             warn!(
                 "ArbOpenStrategy: strategy_id={} invalid order_type={}",
-                self.strategy_id, ctx.order_type
+                self.open_state.strategy_id, ctx.order_type
             );
-            self.alive_flag = false;
+            self.open_state.alive = false;
             return;
         };
 
@@ -332,60 +238,60 @@ impl ArbOpenStrategy {
         if qty <= 0.0 {
             warn!(
                 "ArbOpenStrategy: strategy_id={} invalid qty={}",
-                self.strategy_id, qty
+                self.open_state.strategy_id, qty
             );
-            self.alive_flag = false;
+            self.open_state.alive = false;
             return;
         }
         let signal_price = ctx.price_value();
         if signal_price <= 0.0 {
             warn!(
                 "ArbOpenStrategy: strategy_id={} invalid price={} order_type={:?}",
-                self.strategy_id, signal_price, order_type
+                self.open_state.strategy_id, signal_price, order_type
             );
-            self.alive_flag = false;
+            self.open_state.alive = false;
             return;
         }
         if ctx.price_count() <= 0 || ctx.amount_count() <= 0 {
             warn!(
                 "ArbOpenStrategy: strategy_id={} invalid ArbOpen qv count price_count={} amount_count={}",
-                self.strategy_id,
+                self.open_state.strategy_id,
                 ctx.price_count(),
                 ctx.amount_count()
             );
-            self.alive_flag = false;
+            self.open_state.alive = false;
             return;
         }
         if !venue.supports_pre_trade_stack() {
             panic!(
                 "ArbOpenStrategy: strategy_id={} 不支持的交易场所 {:?}，仅支持 Binance/OKX/Bybit/Bitget/Gate 的 futures 或 margin",
-                self.strategy_id, venue
+                self.open_state.strategy_id, venue
             );
         }
 
         if let Err(e) = MonitorChannel::instance().check_symbol_exposure(&symbol) {
             error!(
                 "ArbOpenStrategy: strategy_id={} symbol={} 单品种敞口风控检查失败: {}，标记策略为不活跃",
-                self.strategy_id, symbol, e
+                self.open_state.strategy_id, symbol, e
             );
-            self.alive_flag = false;
+            self.open_state.alive = false;
             return;
         }
         if let Err(e) = MonitorChannel::instance().check_total_exposure() {
             error!(
                 "ArbOpenStrategy: strategy_id={} 总敞口风控检查失败: {}，标记策略为不活跃",
-                self.strategy_id, e
+                self.open_state.strategy_id, e
             );
-            self.alive_flag = false;
+            self.open_state.alive = false;
             return;
         }
         if order_type == OrderType::Limit {
             if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&symbol, side) {
                 error!(
                     "ArbOpenStrategy: strategy_id={} symbol={} 限价挂单数量风控检查失败: {}，标记策略为不活跃",
-                    self.strategy_id, symbol, e
+                    self.open_state.strategy_id, symbol, e
                 );
-                self.alive_flag = false;
+                self.open_state.alive = false;
                 return;
             }
         }
@@ -399,9 +305,9 @@ impl ArbOpenStrategy {
         ) {
             info!(
                 "ArbOpenStrategy: strategy_id={} symbol={} 开仓下单频率风控触发: {}，标记策略为不活跃",
-                self.strategy_id, symbol, e
+                self.open_state.strategy_id, symbol, e
             );
-            self.alive_flag = false;
+            self.open_state.alive = false;
             return;
         }
 
@@ -412,9 +318,9 @@ impl ArbOpenStrategy {
             Err(err) => {
                 error!(
                     "ArbOpenStrategy: strategy_id={} 初始化开仓数量乘数失败 symbol={} venue={:?}: {}",
-                    self.strategy_id, symbol, venue, err
+                    self.open_state.strategy_id, symbol, venue, err
                 );
-                self.alive_flag = false;
+                self.open_state.alive = false;
                 return;
             }
         };
@@ -432,9 +338,9 @@ impl ArbOpenStrategy {
             if let Err(e) = MonitorChannel::instance().check_leverage() {
                 error!(
                     "ArbOpenStrategy: strategy_id={} 杠杆风控检查失败: {}，标记策略为不活跃",
-                    self.strategy_id, e
+                    self.open_state.strategy_id, e
                 );
-                self.alive_flag = false;
+                self.open_state.alive = false;
                 return;
             }
         }
@@ -443,20 +349,20 @@ impl ArbOpenStrategy {
         {
             error!(
                 "ArbOpenStrategy: strategy_id={} 仓位限制检查失败: {}，标记策略为不活跃",
-                self.strategy_id, e
+                self.open_state.strategy_id, e
             );
-            self.alive_flag = false;
+            self.open_state.alive = false;
             return;
         }
 
-        self.open_symbol = symbol.clone();
-        self.open_venue = venue;
-        self.open_expire_ts = (ctx.exp_time > 0).then_some(ctx.exp_time);
-        self.open_side = Some(side);
-        self.open_signal_ts = ctx.create_ts;
-        self.open_from_key = String::from_utf8_lossy(&ctx.from_key).to_string();
-        self.open_price_qv = ctx.price_qv;
-        self.open_price_offset = ctx.price_offset;
+        self.open_state.open_symbol = symbol.clone();
+        self.open_state.open_venue = Some(venue);
+        self.open_state.order.open_expire_ts = (ctx.exp_time > 0).then_some(ctx.exp_time);
+        self.open_state.order.open_side = Some(side);
+        self.open_state.signal_ts = ctx.create_ts;
+        self.open_state.from_key = String::from_utf8_lossy(&ctx.from_key).to_string();
+        self.open_state.price_qv = ctx.price_qv;
+        self.open_state.price_offset = ctx.price_offset;
         self.close_ts = if ctx.hedge_timeout_us > 0 {
             let base_ts = if ctx.create_ts > 0 {
                 ctx.create_ts
@@ -470,8 +376,8 @@ impl ArbOpenStrategy {
         self.cumulative_open_qty = 0.0;
         self.open_qty_multiplier = qty_multiplier;
 
-        let client_order_id = Self::compose_order_id(self.strategy_id);
-        self.open_order_id = client_order_id;
+        let client_order_id = Self::compose_order_id(self.open_state.strategy_id);
+        self.open_state.order.open_order_id = client_order_id;
 
         let submit_ts = get_timestamp_us();
         MonitorChannel::instance()
@@ -492,7 +398,7 @@ impl ArbOpenStrategy {
 
         info!(
             "📤 ArbOpen订单已创建: strategy_id={} client_order_id={} symbol={} {:?} side={:?} qty={} price={} qty_multiplier={:.8} close_ts={:?} from_key_len={}",
-            self.strategy_id,
+            self.open_state.strategy_id,
             client_order_id,
             symbol,
             venue,
@@ -507,35 +413,35 @@ impl ArbOpenStrategy {
         if let Err(err) = self.create_and_send_order(client_order_id, &symbol) {
             error!(
                 "ArbOpenStrategy: strategy_id={} open order send failed: {}",
-                self.strategy_id, err
+                self.open_state.strategy_id, err
             );
         } else {
             info!(
                 "✅ ArbOpen订单已发送: strategy_id={} client_order_id={}",
-                self.strategy_id, client_order_id
+                self.open_state.strategy_id, client_order_id
             );
         }
     }
 
     fn handle_open_leg_timeout(&mut self) {
-        let Some(expire_ts) = self.open_expire_ts else {
+        let Some(expire_ts) = self.open_state.order.open_expire_ts else {
             return;
         };
         let now = get_timestamp_us();
-        if now < expire_ts || !self.alive_flag || self.open_order_id == 0 {
+        if now < expire_ts || !self.open_state.alive || self.open_state.order.open_order_id == 0 {
             return;
         }
 
         info!(
             "ArbOpenStrategy: strategy_id={} 开仓订单超时，直接撤单 order_id={}",
-            self.strategy_id, self.open_order_id
+            self.open_state.strategy_id, self.open_state.order.open_order_id
         );
-        self.last_open_cancel_reason = Some("timeout");
+        self.open_state.order.last_open_cancel_reason = Some("timeout");
 
         let order = MonitorChannel::instance()
             .order_manager()
             .borrow()
-            .get(self.open_order_id);
+            .get(self.open_state.order.open_order_id);
         if let Some(order) = order {
             match order.get_order_cancel_bytes() {
                 Ok(cancel_bytes) => {
@@ -543,20 +449,20 @@ impl ArbOpenStrategy {
                     if let Err(e) = TradeEngHub::publish_order_request(exchange, &cancel_bytes) {
                         info!(
                             "ArbOpenStrategy: strategy_id={} exchange={} 发送开仓撤单请求失败: {}",
-                            self.strategy_id, exchange, e
+                            self.open_state.strategy_id, exchange, e
                         );
                     } else {
                         info!(
                             "ArbOpenStrategy: strategy_id={} exchange={} reason=timeout 已发送开仓撤单请求 order_id={}",
-                            self.strategy_id, exchange, self.open_order_id
+                            self.open_state.strategy_id, exchange, self.open_state.order.open_order_id
                         );
-                        self.open_expire_ts = None;
-                        self.schedule_cancel_query_watchdog(self.open_order_id);
+                        self.open_state.order.open_expire_ts = None;
+                        self.schedule_cancel_query_watchdog(self.open_state.order.open_order_id);
                     }
                 }
                 Err(e) => error!(
                     "ArbOpenStrategy: strategy_id={} 获取开仓撤单请求字节失败: {}",
-                    self.strategy_id, e
+                    self.open_state.strategy_id, e
                 ),
             }
         }
@@ -565,30 +471,30 @@ impl ArbOpenStrategy {
     fn handle_arb_cancel_signal(&mut self, ctx: ArbCancelCtx) {
         let precise_target = ctx.strategy_id > 0;
         let from_key_preview = Self::preview_text(&String::from_utf8_lossy(&ctx.from_key), 160);
-        if self.last_cancel_trigger_ts == Some(ctx.trigger_ts) {
+        if self.open_state.order.last_cancel_trigger_ts == Some(ctx.trigger_ts) {
             debug!(
                 "ArbOpenStrategy: strategy_id={} skip duplicate ArbCancel trigger_ts={} open_order_id={} from_key='{}'",
-                self.strategy_id, ctx.trigger_ts, self.open_order_id, from_key_preview
+                self.open_state.strategy_id, ctx.trigger_ts, self.open_state.order.open_order_id, from_key_preview
             );
             return;
         }
-        if precise_target && ctx.strategy_id != self.strategy_id {
+        if precise_target && ctx.strategy_id != self.open_state.strategy_id {
             info!(
                 "ArbOpenStrategy: strategy_id={} ignore targeted ArbCancel target_strategy_id={} trigger_ts={} from_key='{}'",
-                self.strategy_id, ctx.strategy_id, ctx.trigger_ts, from_key_preview
+                self.open_state.strategy_id, ctx.strategy_id, ctx.trigger_ts, from_key_preview
             );
             return;
         }
         if !precise_target {
             let cancel_side = ctx.get_side();
-            if let Some(open_side) = self.open_side {
+            if let Some(open_side) = self.open_state.order.open_side {
                 if open_side != cancel_side {
                     info!(
                         "ArbOpenStrategy: strategy_id={} skip ArbCancel due to side mismatch open_side={:?} cancel_side={:?} open_order_id={} trigger_ts={} from_key='{}'",
-                        self.strategy_id,
+                        self.open_state.strategy_id,
                         open_side,
                         cancel_side,
-                        self.open_order_id,
+                        self.open_state.order.open_order_id,
                         ctx.trigger_ts,
                         from_key_preview
                     );
@@ -597,22 +503,24 @@ impl ArbOpenStrategy {
             }
         }
 
-        if self.pending_order_query.is_some()
+        if self.open_state.order.pending_order_query.is_some()
             || self
+                .open_state
+                .order
                 .cancel_query_watchdog
-                .is_some_and(|w| w.client_order_id == self.open_order_id)
+                .is_some_and(|w| w.client_order_id == self.open_state.order.open_order_id)
         {
             debug!(
                 "ArbOpenStrategy: strategy_id={} skip ArbCancel because cancel reconcile already in flight open_order_id={} trigger_ts={} from_key='{}'",
-                self.strategy_id, self.open_order_id, ctx.trigger_ts, from_key_preview
+                self.open_state.strategy_id, self.open_state.order.open_order_id, ctx.trigger_ts, from_key_preview
             );
-            self.last_cancel_trigger_ts = Some(ctx.trigger_ts);
+            self.open_state.order.last_cancel_trigger_ts = Some(ctx.trigger_ts);
             return;
         }
-        if self.open_order_id == 0 {
+        if self.open_state.order.open_order_id == 0 {
             info!(
                 "ArbOpenStrategy: strategy_id={} skip ArbCancel because open_order_id=0 trigger_ts={} from_key='{}'",
-                self.strategy_id, ctx.trigger_ts, from_key_preview
+                self.open_state.strategy_id, ctx.trigger_ts, from_key_preview
             );
             return;
         }
@@ -620,12 +528,12 @@ impl ArbOpenStrategy {
         let order = MonitorChannel::instance()
             .order_manager()
             .borrow()
-            .get(self.open_order_id);
+            .get(self.open_state.order.open_order_id);
         if let Some(order) = order {
             if order.status.is_terminal() {
                 info!(
                     "ArbOpenStrategy: strategy_id={} open order already terminal {:?}, skip cancel order_id={} trigger_ts={} from_key='{}'",
-                    self.strategy_id, order.status, self.open_order_id, ctx.trigger_ts, from_key_preview
+                    self.open_state.strategy_id, order.status, self.open_state.order.open_order_id, ctx.trigger_ts, from_key_preview
                 );
                 return;
             }
@@ -637,18 +545,18 @@ impl ArbOpenStrategy {
                     if let Err(e) = TradeEngHub::publish_order_request(exchange, &cancel_bytes) {
                         error!(
                             "ArbOpenStrategy: strategy_id={} exchange={} 发送撤单请求失败 order_id={} trigger_ts={} from_key='{}' err={}",
-                            self.strategy_id, exchange, self.open_order_id, ctx.trigger_ts, from_key_preview, e
+                            self.open_state.strategy_id, exchange, self.open_state.order.open_order_id, ctx.trigger_ts, from_key_preview, e
                         );
                     } else {
-                        self.last_open_cancel_reason = Some(cancel_reason);
-                        self.last_cancel_trigger_ts = Some(ctx.trigger_ts);
+                        self.open_state.order.last_open_cancel_reason = Some(cancel_reason);
+                        self.open_state.order.last_cancel_trigger_ts = Some(ctx.trigger_ts);
                         self.schedule_cancel_query_watchdog(order.client_order_id);
                         info!(
                             "ArbOpenStrategy: strategy_id={} exchange={} reason={} 已发送开仓撤单请求 order_id={} trigger_ts={} from_key='{}'",
-                            self.strategy_id,
+                            self.open_state.strategy_id,
                             exchange,
                             cancel_reason,
-                            self.open_order_id,
+                            self.open_state.order.open_order_id,
                             ctx.trigger_ts,
                             from_key_preview
                         );
@@ -656,7 +564,7 @@ impl ArbOpenStrategy {
                 }
                 Err(e) => error!(
                     "ArbOpenStrategy: strategy_id={} 获取撤单请求字节失败 order_id={} trigger_ts={} from_key='{}' err={}",
-                    self.strategy_id, self.open_order_id, ctx.trigger_ts, from_key_preview, e
+                    self.open_state.strategy_id, self.open_state.order.open_order_id, ctx.trigger_ts, from_key_preview, e
                 ),
             }
         }
@@ -668,7 +576,7 @@ impl ArbOpenStrategy {
             .borrow()
             .get(client_order_id);
         let Some(order) = order else {
-            self.alive_flag = false;
+            self.open_state.alive = false;
             return Err(format!(
                 "order not found: client_order_id={}",
                 client_order_id
@@ -685,10 +593,10 @@ impl ArbOpenStrategy {
                 );
                 info!(
                     "ArbOpenStrategy: strategy_id={} arb open order action recorded client_order_id={} count_10s={} count_1m={}",
-                    self.strategy_id, client_order_id, stats.count_10s, stats.count_1m
+                    self.open_state.strategy_id, client_order_id, stats.count_10s, stats.count_1m
                 );
                 if let Err(e) = TradeEngHub::publish_order_request(exchange, &req_bin) {
-                    self.alive_flag = false;
+                    self.open_state.alive = false;
                     return Err(format!(
                         "publish order request failed: symbol={} exchange={} err={}",
                         symbol, exchange, e
@@ -698,7 +606,7 @@ impl ArbOpenStrategy {
                 Ok(())
             }
             Err(e) => {
-                self.alive_flag = false;
+                self.open_state.alive = false;
                 Err(format!("get order request bytes failed: {}", e))
             }
         }
@@ -720,7 +628,7 @@ impl ArbOpenStrategy {
             .strategy_mgr()
             .borrow_mut()
             .record_arb_open_fill(
-                &self.open_symbol,
+                &self.open_state.open_symbol,
                 side,
                 base_qty_delta,
                 fill_ts,
@@ -730,8 +638,8 @@ impl ArbOpenStrategy {
         if !updated {
             warn!(
                 "ArbOpenStrategy: strategy_id={} record arb hedge open fill failed symbol={} side={:?} base_qty_delta={:.8} fill_ts={} price={:.8} close_ts={} detail={}",
-                self.strategy_id,
-                self.open_symbol,
+                self.open_state.strategy_id,
+                self.open_state.open_symbol,
                 side,
                 base_qty_delta,
                 fill_ts,
@@ -742,166 +650,11 @@ impl ArbOpenStrategy {
         }
     }
 
-    fn schedule_order_query_watchdog(&mut self, client_order_id: i64) {
-        self.order_query_watchdog = Some(QueryWatchdog {
-            client_order_id,
-            due_ts_us: get_timestamp_us().saturating_add(ORDER_QUERY_WATCHDOG_DELAY_US),
-            reason: PendingOrderQueryReason::OrderWatchdog,
-        });
-    }
-
-    fn schedule_cancel_query_watchdog(&mut self, client_order_id: i64) {
-        self.cancel_query_watchdog = Some(QueryWatchdog {
-            client_order_id,
-            due_ts_us: get_timestamp_us().saturating_add(ORDER_QUERY_WATCHDOG_DELAY_US),
-            reason: PendingOrderQueryReason::CancelWatchdog,
-        });
-        if self
-            .order_query_watchdog
-            .is_some_and(|w| w.client_order_id == client_order_id)
-        {
-            self.order_query_watchdog = None;
-        }
-    }
-
-    fn clear_query_watchdogs(&mut self, client_order_id: i64) {
-        if client_order_id == self.open_order_id {
-            self.pending_order_query = None;
-        }
-        if self
-            .order_query_watchdog
-            .is_some_and(|w| w.client_order_id == client_order_id)
-        {
-            self.order_query_watchdog = None;
-        }
-        if self
-            .cancel_query_watchdog
-            .is_some_and(|w| w.client_order_id == client_order_id)
-        {
-            self.cancel_query_watchdog = None;
-        }
-    }
-
-    fn send_order_query(&mut self, client_order_id: i64, reason: PendingOrderQueryReason) -> bool {
-        if let Some(existing) = self.pending_order_query {
-            if reason.is_cancel_rejected() && !existing.is_cancel_rejected() {
-                self.pending_order_query = Some(PendingOrderQueryReason::CancelRejected);
-            }
-            return true;
-        }
-
-        let order_mgr = MonitorChannel::instance().order_manager();
-        let Some(order) = order_mgr.borrow().get(client_order_id) else {
-            warn!(
-                "ArbOpenStrategy: strategy_id={} send_order_query but local order missing: client_order_id={} reason={:?}",
-                self.strategy_id, client_order_id, reason
-            );
-            return false;
-        };
-
-        match build_order_query_request(&order, client_order_id, client_order_id) {
-            Ok((exchange, req_bytes)) => {
-                if let Err(err) = QueryEngHub::publish_query_request(exchange.as_str(), &req_bytes)
-                {
-                    warn!(
-                        "ArbOpenStrategy: strategy_id={} publish order query failed: exchange={} client_order_id={} reason={:?} err={:#}",
-                        self.strategy_id, exchange, client_order_id, reason, err
-                    );
-                    return false;
-                }
-                self.pending_order_query = Some(reason);
-                debug!(
-                    "ArbOpenStrategy: strategy_id={} order query sent: exchange={} client_order_id={} reason={:?}",
-                    self.strategy_id, exchange, client_order_id, reason
-                );
-                true
-            }
-            Err(err) => {
-                warn!(
-                    "ArbOpenStrategy: strategy_id={} build order query failed: client_order_id={} reason={:?} err={}",
-                    self.strategy_id, client_order_id, reason, err
-                );
-                false
-            }
-        }
-    }
-
-    fn handoff_open_order_after_query_failure(
-        &mut self,
-        client_order_id: i64,
-        marker: &'static str,
-    ) {
-        warn!(
-            "ArbOpenStrategy: strategy_id={} order query {} failed, handoff to hedge orphan: client_order_id={}",
-            self.strategy_id, marker, client_order_id
-        );
-        self.handoff_open_order_to_hedge_orphan(client_order_id, marker);
-    }
-
-    fn handle_query_watchdogs(&mut self) {
-        let now = get_timestamp_us();
-        if let Some(w) = self.cancel_query_watchdog {
-            if now >= w.due_ts_us {
-                self.cancel_query_watchdog = None;
-                let order_mgr = MonitorChannel::instance().order_manager();
-                let order_opt = order_mgr.borrow().get(w.client_order_id);
-                if let Some(order) = order_opt.as_ref().filter(|o| !o.status.is_terminal()) {
-                    let scheduled_at = w.due_ts_us.saturating_sub(ORDER_QUERY_WATCHDOG_DELAY_US);
-                    let waited_ms = now.saturating_sub(scheduled_at).saturating_div(1_000);
-                    info!(
-                        "{}: strategy_id={} client_order_id={} symbol={} status={:?} exch_ord_id={:?} 等待{}ms仍未收到撤单/终态回报，发送order query回补 reason={:?}",
-                        w.reason.watchdog_hint(),
-                        self.strategy_id,
-                        w.client_order_id,
-                        order.symbol,
-                        order.status,
-                        order.exchange_order_id,
-                        waited_ms,
-                        w.reason
-                    );
-                    if !self.send_order_query(w.client_order_id, w.reason) {
-                        self.handoff_open_order_to_hedge_orphan(
-                            w.client_order_id,
-                            w.reason.query_send_failed_trigger(),
-                        );
-                    }
-                }
-            }
-        }
-
-        if let Some(w) = self.order_query_watchdog {
-            if now >= w.due_ts_us {
-                self.order_query_watchdog = None;
-                let order_mgr = MonitorChannel::instance().order_manager();
-                let order_opt = order_mgr.borrow().get(w.client_order_id);
-                if let Some(order) = order_opt.as_ref().filter(|o| !o.status.is_terminal()) {
-                    let scheduled_at = w.due_ts_us.saturating_sub(ORDER_QUERY_WATCHDOG_DELAY_US);
-                    let waited_ms = now.saturating_sub(scheduled_at).saturating_div(1_000);
-                    info!(
-                        "OrderWatchdog触发: strategy_id={} client_order_id={} symbol={} status={:?} exch_ord_id={:?} 等待{}ms仍未收到回报，发送order query回补",
-                        self.strategy_id,
-                        w.client_order_id,
-                        order.symbol,
-                        order.status,
-                        order.exchange_order_id,
-                        waited_ms
-                    );
-                    if !self.send_order_query(w.client_order_id, w.reason) {
-                        self.handoff_open_order_after_query_failure(
-                            w.client_order_id,
-                            "order query send failed",
-                        );
-                    }
-                }
-            }
-        }
-    }
-
     fn uniform_open_publish_ctx(&self) -> ArbUniformPublishCtx {
         ArbUniformPublishCtx {
-            signal_ts: self.open_signal_ts,
-            from_key: self.open_from_key.clone().into_bytes(),
-            price_offset: self.open_price_offset,
+            signal_ts: self.open_state.signal_ts,
+            from_key: self.open_state.from_key.clone().into_bytes(),
+            price_offset: self.open_state.price_offset,
         }
     }
 
@@ -918,7 +671,7 @@ impl ArbOpenStrategy {
             prev_cumulative_filled_qty,
             &ctx,
             "ArbOpenStrategy",
-            self.strategy_id,
+            self.open_state.strategy_id,
         );
     }
 
@@ -935,7 +688,7 @@ impl ArbOpenStrategy {
             prev_cumulative_filled_qty,
             &ctx,
             "ArbOpenStrategy",
-            self.strategy_id,
+            self.open_state.strategy_id,
         );
     }
 
@@ -954,7 +707,7 @@ impl ArbOpenStrategy {
             status,
             &ctx,
             "ArbOpenStrategy",
-            self.strategy_id,
+            self.open_state.strategy_id,
         );
     }
 
@@ -971,17 +724,17 @@ impl ArbOpenStrategy {
             prev_cumulative_filled_qty,
             &ctx,
             "ArbOpenStrategy",
-            self.strategy_id,
+            self.open_state.strategy_id,
         );
     }
 
     fn apply_order_update(&mut self, order_update: &dyn OrderUpdate) -> bool {
         let client_order_id = order_update.client_order_id();
         self.clear_query_watchdogs(client_order_id);
-        if client_order_id != self.open_order_id {
+        if client_order_id != self.open_state.order.open_order_id {
             debug!(
                 "ArbOpenStrategy: strategy_id={} ignore order_update client_order_id={}",
-                self.strategy_id, client_order_id
+                self.open_state.strategy_id, client_order_id
             );
             return false;
         }
@@ -991,7 +744,7 @@ impl ArbOpenStrategy {
         let Some(current_order) = order_manager.get(client_order_id) else {
             warn!(
                 "ArbOpenStrategy: strategy_id={} order update not found client_order_id={}",
-                self.strategy_id, client_order_id
+                self.open_state.strategy_id, client_order_id
             );
             return false;
         };
@@ -1001,7 +754,7 @@ impl ArbOpenStrategy {
             order_update.order_id(),
             order_update.cumulative_filled_quantity(),
             "ArbOpenStrategy",
-            self.strategy_id,
+            self.open_state.strategy_id,
         )
         .is_some()
         {
@@ -1018,7 +771,7 @@ impl ArbOpenStrategy {
         if protected_cumulative_fill.rollback_detected {
             warn!(
                 "ArbOpenStrategy: strategy_id={} protected cumulative fill rollback: client_order_id={} symbol={} status={:?} prev={:.8} incoming={:.8} effective={:.8}",
-                self.strategy_id,
+                self.open_state.strategy_id,
                 current_order.client_order_id,
                 current_order.symbol,
                 order_update.status(),
@@ -1031,15 +784,15 @@ impl ArbOpenStrategy {
 
         let updated = order_manager.update(client_order_id, |order| match order_update.status() {
             OrderStatus::New => {
-                if !self.alive_flag {
+                if !self.open_state.alive {
                     warn!(
                         "ArbOpenStrategy: strategy_id={} revive on delayed open NEW: client_order_id={} exchange_order_id={} symbol={}",
-                        self.strategy_id,
+                        self.open_state.strategy_id,
                         client_order_id,
                         order_update.order_id(),
                         order.symbol
                     );
-                    self.alive_flag = true;
+                    self.open_state.alive = true;
                 }
                 order.status = OrderExecutionStatus::Create;
                 order.set_exchange_order_id(order_update.order_id());
@@ -1050,18 +803,18 @@ impl ArbOpenStrategy {
                 order.set_exchange_order_id(order_update.order_id());
                 order.cumulative_filled_quantity = effective_cumulative_filled_qty;
                 order.set_end_time(order_update.event_time());
-                let cancel_reason = self.last_open_cancel_reason.unwrap_or("unknown");
+                let cancel_reason = self.open_state.order.last_open_cancel_reason.unwrap_or("unknown");
                 info!(
                     "🚫 ArbOpen订单已撤销: strategy_id={} client_order_id={} symbol={} reason={} filled={}/{}",
-                    self.strategy_id,
+                    self.open_state.strategy_id,
                     client_order_id,
                     order.symbol,
                     cancel_reason,
                     qv_decimal_or_fallback(order.cumulative_filled_quantity),
                     qv_decimal_or_fallback(order.quantity)
                 );
-                self.last_open_cancel_reason = None;
-                self.alive_flag = false;
+                self.open_state.order.last_open_cancel_reason = None;
+                self.open_state.alive = false;
             }
             OrderStatus::Filled => {
                 order.status = OrderExecutionStatus::Filled;
@@ -1069,14 +822,14 @@ impl ArbOpenStrategy {
                 order.cumulative_filled_quantity = effective_cumulative_filled_qty;
                 order.set_filled_time(order_update.event_time());
                 order.set_end_time(order_update.event_time());
-                self.alive_flag = false;
+                self.open_state.alive = false;
             }
             OrderStatus::Expired | OrderStatus::ExpiredInMatch => {
                 order.status = OrderExecutionStatus::Rejected;
                 order.set_exchange_order_id(order_update.order_id());
                 order.cumulative_filled_quantity = effective_cumulative_filled_qty;
                 order.set_end_time(order_update.event_time());
-                self.alive_flag = false;
+                self.open_state.alive = false;
             }
             OrderStatus::PartiallyFilled => {
                 order.status = OrderExecutionStatus::Create;
@@ -1089,7 +842,7 @@ impl ArbOpenStrategy {
         if !updated {
             warn!(
                 "ArbOpenStrategy: strategy_id={} order update not found client_order_id={}",
-                self.strategy_id, client_order_id
+                self.open_state.strategy_id, client_order_id
             );
             return false;
         }
@@ -1158,7 +911,7 @@ impl ArbOpenStrategy {
         ) {
             debug!(
                 "ArbOpenStrategy: strategy_id={} terminal open update cumulative_open_qty={:.8} detail={}",
-                self.strategy_id,
+                self.open_state.strategy_id,
                 self.cumulative_open_qty,
                 order_update.debug_summary()
             );
@@ -1170,10 +923,10 @@ impl ArbOpenStrategy {
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) -> bool {
         let client_order_id = trade.client_order_id();
         self.clear_query_watchdogs(client_order_id);
-        if client_order_id != self.open_order_id {
+        if client_order_id != self.open_state.order.open_order_id {
             debug!(
                 "ArbOpenStrategy: strategy_id={} ignore trade_update client_order_id={}",
-                self.strategy_id, client_order_id
+                self.open_state.strategy_id, client_order_id
             );
             return false;
         }
@@ -1189,7 +942,7 @@ impl ArbOpenStrategy {
         let Some(current_order) = order_manager.get(client_order_id) else {
             warn!(
                 "ArbOpenStrategy: strategy_id={} trade update order missing client_order_id={}",
-                self.strategy_id, client_order_id
+                self.open_state.strategy_id, client_order_id
             );
             return false;
         };
@@ -1199,7 +952,7 @@ impl ArbOpenStrategy {
             trade.cumulative_filled_quantity(),
             trade.event_time(),
             "ArbOpenStrategy",
-            self.strategy_id,
+            self.open_state.strategy_id,
         )
         .is_some()
         {
@@ -1226,7 +979,7 @@ impl ArbOpenStrategy {
         if !updated {
             warn!(
                 "ArbOpenStrategy: strategy_id={} trade update order missing client_order_id={}",
-                self.strategy_id, client_order_id
+                self.open_state.strategy_id, client_order_id
             );
             return false;
         }
@@ -1253,13 +1006,13 @@ impl ArbOpenStrategy {
         if status == OrderStatus::Filled {
             debug!(
                 "✅ ArbOpen订单成交完成: strategy_id={} client_order_id={} symbol={} cumulative_open_qty={:.8} detail={}",
-                self.strategy_id,
+                self.open_state.strategy_id,
                 client_order_id,
                 trade.symbol(),
                 self.cumulative_open_qty,
                 trade.debug_summary()
             );
-            self.alive_flag = false;
+            self.open_state.alive = false;
         }
 
         true
@@ -1272,25 +1025,51 @@ impl ArbOpenStrategy {
                 Err(err) => {
                     warn!(
                         "ArbOpenStrategy: strategy_id={} decode ArbOpen failed: {}",
-                        self.strategy_id, err
+                        self.open_state.strategy_id, err
                     );
-                    self.alive_flag = false;
+                    self.open_state.alive = false;
                 }
             },
             SignalType::ArbCancel => match ArbCancelCtx::from_bytes(signal.context.clone()) {
                 Ok(ctx) => self.handle_arb_cancel_signal(ctx),
                 Err(err) => warn!(
                     "ArbOpenStrategy: strategy_id={} decode ArbCancel failed: {}",
-                    self.strategy_id, err
+                    self.open_state.strategy_id, err
                 ),
             },
             _ => {
                 debug!(
                     "ArbOpenStrategy: strategy_id={} ignore signal {:?}",
-                    self.strategy_id, signal.signal_type
+                    self.open_state.strategy_id, signal.signal_type
                 );
             }
         }
+    }
+}
+
+impl OpenStrategyCommon for ArbOpenStrategy {
+    fn strategy_name(&self) -> &'static str {
+        "ArbOpenStrategy"
+    }
+
+    fn open_state(&self) -> &OpenStrategyState {
+        &self.open_state
+    }
+
+    fn open_state_mut(&mut self) -> &mut OpenStrategyState {
+        &mut self.open_state
+    }
+
+    fn handoff_open_order_after_query_failure(
+        &mut self,
+        client_order_id: i64,
+        marker: &'static str,
+    ) {
+        warn!(
+            "ArbOpenStrategy: strategy_id={} order query {} failed, handoff to hedge orphan: client_order_id={}",
+            self.open_state.strategy_id, marker, client_order_id
+        );
+        self.handoff_open_order_to_hedge_orphan(client_order_id, marker);
     }
 }
 
@@ -1312,28 +1091,28 @@ impl Strategy for ArbOpenStrategy {
     }
 
     fn get_id(&self) -> i32 {
-        self.strategy_id
+        self.open_state.strategy_id
     }
 
     fn symbol(&self) -> Option<&str> {
-        if self.open_symbol.is_empty() {
+        if self.open_state.open_symbol.is_empty() {
             None
         } else {
-            Some(&self.open_symbol)
+            Some(&self.open_state.open_symbol)
         }
     }
 
     fn arb_open_price_map_entry(&self) -> Option<ArbOpenPriceMapEntry> {
         Some(ArbOpenPriceMapEntry {
-            symbol: self.open_symbol.clone(),
-            client_order_id: self.open_order_id,
-            price_qv: self.open_price_qv.into(),
+            symbol: self.open_state.open_symbol.clone(),
+            client_order_id: self.open_state.order.open_order_id,
+            price_qv: self.open_state.price_qv.into(),
         })
         .filter(|entry| !entry.symbol.is_empty() && entry.client_order_id != 0)
     }
 
     fn is_strategy_order(&self, order_id: i64) -> bool {
-        Self::extract_strategy_id(order_id) == self.strategy_id
+        Self::extract_strategy_id(order_id) == self.open_state.strategy_id
     }
 
     fn handle_signal(&mut self, signal: &TradeSignal) {
@@ -1363,7 +1142,7 @@ impl Strategy for ArbOpenStrategy {
         }
 
         let client_order_id = response.client_order_id();
-        if client_order_id != self.open_order_id {
+        if client_order_id != self.open_state.order.open_order_id {
             return;
         }
         let exchange = response.exchange_enum();
@@ -1375,7 +1154,7 @@ impl Strategy for ArbOpenStrategy {
             TradeRequestKind::Open => {
                 warn!(
                     "ArbOpenStrategy: strategy_id={} open_failed: req_type={} status={} code={}({}) client_order_id={}",
-                    self.strategy_id,
+                    self.open_state.strategy_id,
                     response.req_type(),
                     response.status(),
                     response.error_code(),
@@ -1392,7 +1171,7 @@ impl Strategy for ArbOpenStrategy {
                 };
                 warn!(
                     "ArbOpenStrategy: strategy_id={} cancel_failed: req_type={} status={} code={}({}) client_order_id={} query_reason={:?}",
-                    self.strategy_id,
+                    self.open_state.strategy_id,
                     response.req_type(),
                     response.status(),
                     response.error_code(),
@@ -1412,7 +1191,7 @@ impl Strategy for ArbOpenStrategy {
             }
             TradeRequestKind::Other => warn!(
                 "ArbOpenStrategy: strategy_id={} other_failed(TODO): req_type={} status={} code={}({}) client_order_id={}",
-                self.strategy_id,
+                self.open_state.strategy_id,
                 response.req_type(),
                 response.status(),
                 response.error_code(),
@@ -1428,7 +1207,7 @@ impl Strategy for ArbOpenStrategy {
     }
 
     fn is_active(&self) -> bool {
-        self.alive_flag
+        self.open_state.alive
     }
 }
 
@@ -1440,31 +1219,33 @@ impl Drop for ArbOpenStrategy {
 
 #[cfg(test)]
 mod tests {
-    use super::{ArbOpenStrategy, PendingOrderQueryReason, QueryWatchdog};
+    use super::ArbOpenStrategy;
+    use crate::strategy::open_strategy_common::{PendingOrderQueryReason, QueryWatchdog};
     use crate::strategy::order_reconcile::monotonic_cumulative_fill;
 
     #[test]
     fn handle_open_failed_cleanup_clears_local_strategy_state() {
         let mut strategy = ArbOpenStrategy::new(7);
-        strategy.open_order_id = 7_i64 << 32 | 1;
-        strategy.pending_order_query = Some(PendingOrderQueryReason::OrderWatchdog);
-        strategy.order_query_watchdog = Some(QueryWatchdog {
-            client_order_id: strategy.open_order_id,
+        strategy.open_state.order.open_order_id = 7_i64 << 32 | 1;
+        strategy.open_state.order.pending_order_query =
+            Some(PendingOrderQueryReason::OrderWatchdog);
+        strategy.open_state.order.order_query_watchdog = Some(QueryWatchdog {
+            client_order_id: strategy.open_state.order.open_order_id,
             due_ts_us: 10,
             reason: PendingOrderQueryReason::OrderWatchdog,
         });
-        strategy.cancel_query_watchdog = Some(QueryWatchdog {
-            client_order_id: strategy.open_order_id,
+        strategy.open_state.order.cancel_query_watchdog = Some(QueryWatchdog {
+            client_order_id: strategy.open_state.order.open_order_id,
             due_ts_us: 20,
             reason: PendingOrderQueryReason::CancelRejected,
         });
 
-        strategy.handle_open_failed_cleanup(strategy.open_order_id);
+        strategy.handle_open_failed_cleanup(strategy.open_state.order.open_order_id);
 
-        assert!(!strategy.alive_flag);
-        assert!(strategy.pending_order_query.is_none());
-        assert!(strategy.order_query_watchdog.is_none());
-        assert!(strategy.cancel_query_watchdog.is_none());
+        assert!(!strategy.open_state.alive);
+        assert!(strategy.open_state.order.pending_order_query.is_none());
+        assert!(strategy.open_state.order.order_query_watchdog.is_none());
+        assert!(strategy.open_state.order.cancel_query_watchdog.is_none());
     }
 
     #[test]

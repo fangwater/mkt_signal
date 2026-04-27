@@ -15,6 +15,7 @@ pub mod mm_open_strategy;
 pub mod mm_orphan_order_strategy;
 pub mod net_qty_queue;
 pub mod okex_basic_impl;
+pub mod open_strategy_common;
 pub mod order_query_builder;
 pub mod order_query_parser;
 pub mod order_reconcile;

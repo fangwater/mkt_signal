@@ -19,6 +19,7 @@ use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::arb_open_strategy::ArbOpenStrategy;
 use crate::strategy::hedge_arb_strategy::HedgeArbStrategy;
 use crate::strategy::mm_open_strategy::MarketMakerOpenStrategy;
+use crate::strategy::open_strategy_common::OpenStrategyCommon;
 use crate::strategy::{ForceCloseControl, Strategy, StrategyManager};
 use anyhow::Result;
 use bytes::Bytes;
