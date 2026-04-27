@@ -157,7 +157,6 @@ SCRIPTS_TO_SYNC=(
   "print_mm_amount_u.py"
   "sync_mm_symbol_list.py"
   "print_mm_symbol_list.py"
-  "print_mm_return_score_thresholds.py"
 )
 if [[ "$DO_SCRIPTS" -eq 1 ]]; then
   mkdir -p "$TARGET_DIR/scripts"

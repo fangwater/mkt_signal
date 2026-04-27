@@ -1,14 +1,11 @@
 use anyhow::Result;
 use log::{info, warn};
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::time::{Duration, Instant};
 
 use super::super::factor_value_hub::EnvironmentSignalResult;
 use super::super::inline_volatility::INLINE_VOLATILITY_MIN_SAMPLES;
 use super::super::mkt_channel::MktChannel;
 use super::super::symbol_list::SymbolList;
-use super::from_key::{build_from_key, select_prediction_side};
+use super::from_key::build_from_key;
 use super::state::{MmDecisionState, MmOpenPublishStats};
 use crate::common::time_util::get_timestamp_us;
 use crate::market_maker::open_quote_plan::build_mm_open_quote_plan;
@@ -18,12 +15,6 @@ use crate::symbol_match::normalize_symbol_for_whitelist;
 
 const MM_NEUTRAL_RETURN_SCORE: f64 = 0.0;
 const MM_NEUTRAL_RETURN_QUANTILE: f64 = 0.5;
-const MISSING_RETURN_SCORE_LOG_INTERVAL_SECS: u64 = 30;
-
-thread_local! {
-    static MM_OPEN_MISSING_RETURN_SCORE_LAST_LOG_AT: RefCell<HashMap<String, Instant>> =
-        RefCell::new(HashMap::new());
-}
 
 pub(crate) struct MmOpenDecision {
     _private: (),
@@ -34,67 +25,6 @@ fn mm_open_blocked_by_environment(
     environment_signal: &EnvironmentSignalResult,
 ) -> bool {
     enable_environment_model && !environment_signal.allow_open
-}
-
-fn resolve_mm_open_return_score(
-    prediction_mode: bool,
-    score: Option<f64>,
-    volatility: Option<f64>,
-    service_name: &str,
-    note: &str,
-) -> Result<f64> {
-    if !prediction_mode {
-        return Ok(MM_NEUTRAL_RETURN_SCORE);
-    }
-    if volatility.filter(|v| v.is_finite()).is_some() && score.filter(|v| v.is_finite()).is_none() {
-        return Ok(MM_NEUTRAL_RETURN_SCORE);
-    }
-    score.filter(|v| v.is_finite()).ok_or_else(|| {
-        anyhow::anyhow!(
-            "return_score unavailable service={} note={}",
-            service_name,
-            note
-        )
-    })
-}
-
-fn resolve_mm_open_return_quantile(
-    prediction_mode: bool,
-    score: Option<f64>,
-    score_quantile: Option<f64>,
-    volatility: Option<f64>,
-) -> Option<f64> {
-    if !prediction_mode {
-        return None;
-    }
-    if volatility.filter(|v| v.is_finite()).is_some() && score.filter(|v| v.is_finite()).is_none() {
-        return Some(MM_NEUTRAL_RETURN_QUANTILE);
-    }
-    score_quantile.filter(|v| v.is_finite())
-}
-
-fn should_fallback_to_neutral_return_score(score: Option<f64>, volatility: Option<f64>) -> bool {
-    volatility.filter(|v| v.is_finite()).is_some() && score.filter(|v| v.is_finite()).is_none()
-}
-
-fn should_log_missing_return_score(symbol: &str, service_name: &str, note: &str) -> bool {
-    let now = Instant::now();
-    let key = format!("{symbol}|{service_name}|{note}");
-    MM_OPEN_MISSING_RETURN_SCORE_LAST_LOG_AT.with(|last_log_at| {
-        let mut last_log_at = last_log_at.borrow_mut();
-        match last_log_at.get(&key) {
-            Some(last)
-                if now.duration_since(*last)
-                    < Duration::from_secs(MISSING_RETURN_SCORE_LOG_INTERVAL_SECS) =>
-            {
-                false
-            }
-            _ => {
-                last_log_at.insert(key, now);
-                true
-            }
-        }
-    })
 }
 
 impl MmOpenDecision {
@@ -236,96 +166,10 @@ impl MmOpenDecision {
             }
         }
 
-        let (return_score, thresholds, return_qtl) = if state.prediction_mode {
-            let Some(service_name) = state.return_model_service.clone() else {
-                return Ok(MmOpenEvalResult::skipped(
-                    &symbol_key,
-                    "missing_return_model_service",
-                    None,
-                    Some(volatility),
-                    None,
-                    tradecount,
-                ));
-            };
-            let score_lookup = state.factor_value_hub.cached_model_output_score(
-                &service_name,
-                symbol,
-                state.hedge_venue,
-            );
-            if should_fallback_to_neutral_return_score(score_lookup.score, Some(volatility))
-                && should_log_missing_return_score(&symbol_key, &service_name, &score_lookup.note)
-            {
-                warn!(
-                    "MmDecision: MMOpen missing return_score, fallback to neutral symbol={} service={} note={} volatility={:.8} return_qtl={:.2}",
-                    symbol_key,
-                    service_name,
-                    score_lookup.note,
-                    volatility,
-                    MM_NEUTRAL_RETURN_QUANTILE
-                );
-            }
-            let return_qtl = resolve_mm_open_return_quantile(
-                state.prediction_mode,
-                score_lookup.score,
-                score_lookup.score_quantile,
-                Some(volatility),
-            );
-            let return_score = match resolve_mm_open_return_score(
-                state.prediction_mode,
-                score_lookup.score,
-                Some(volatility),
-                &service_name,
-                &score_lookup.note,
-            ) {
-                Ok(value) => value,
-                Err(_) => {
-                    return Ok(MmOpenEvalResult::skipped(
-                        &symbol_key,
-                        &format!("missing_return_score({})", score_lookup.note),
-                        None,
-                        Some(volatility),
-                        None,
-                        tradecount,
-                    ))
-                }
-            };
-            let threshold_symbol = score_lookup.symbol_key.to_ascii_uppercase();
-            let thresholds = state
-                .return_score_thresholds
-                .get(&threshold_symbol)
-                .copied();
-            (return_score, thresholds, return_qtl)
-        } else {
-            (0.0, None, None)
-        };
-        if state.prediction_mode && thresholds.is_none() {
-            return Ok(MmOpenEvalResult::skipped(
-                &symbol_key,
-                "missing_return_thresholds(prediction_mode=true)",
-                Some(return_score),
-                Some(volatility),
-                None,
-                tradecount,
-            ));
-        }
-
-        let (
-            prediction_side,
-            open_return_threshold,
-            _forward_open_hit,
-            _backward_open_hit,
-            prediction_ready,
-        ) = select_prediction_side(state.prediction_mode, Some(return_score), thresholds);
-        if state.prediction_mode && !prediction_ready {
-            return Ok(MmOpenEvalResult::skipped(
-                &symbol_key,
-                "prediction_not_ready(score_not_hit_open_threshold)",
-                Some(return_score),
-                Some(volatility),
-                None,
-                tradecount,
-            ));
-        }
+        let return_score = MM_NEUTRAL_RETURN_SCORE;
+        let return_qtl = Some(MM_NEUTRAL_RETURN_QUANTILE);
+        let open_return_threshold = None;
+        let prediction_side = None;
 
         let environment_signal = state.evaluate_environment_signal(&symbol_key, symbol, now_us);
         if mm_open_blocked_by_environment(state.enable_environment_model, &environment_signal) {
@@ -683,13 +527,11 @@ fn log_interval_summary(state: &MmDecisionState, results: &[MmOpenEvalResult]) {
     let emitted = results.iter().filter(|item| item.result == "emit").count();
     let skipped = evaluated.saturating_sub(emitted);
     info!(
-        "MmDecision: MMOpen interval summary interval_ms={} prediction_mode={} evaluated={} emitted_symbols={} skipped_symbols={} return_thresholds_required={} environment_gate_enabled={}",
+        "MmDecision: MMOpen interval summary interval_ms={} evaluated={} emitted_symbols={} skipped_symbols={} environment_gate_enabled={}",
         state.order_interval_ms,
-        state.prediction_mode,
         evaluated,
         emitted,
         skipped,
-        state.prediction_mode,
         state.enable_environment_model
     );
 
@@ -708,9 +550,7 @@ fn log_interval_summary(state: &MmDecisionState, results: &[MmOpenEvalResult]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        mm_open_blocked_by_environment, publish_failure_reason, resolve_mm_open_return_score,
-    };
+    use super::{mm_open_blocked_by_environment, publish_failure_reason};
     use crate::funding_rate::factor_value_hub::{EnvironmentSignalResult, EnvironmentSignalSource};
     use crate::funding_rate::mm_decision::state::MmOpenPublishStats;
 
@@ -750,39 +590,6 @@ mod tests {
             false,
             &sample_environment_signal(false)
         ));
-    }
-
-    #[test]
-    fn prediction_mode_disabled_uses_zero_return_score() {
-        assert_eq!(
-            resolve_mm_open_return_score(false, None, None, "model_output/test", "missing")
-                .unwrap(),
-            0.0
-        );
-        assert_eq!(
-            resolve_mm_open_return_score(false, Some(0.42), None, "model_output/test", "present")
-                .unwrap(),
-            0.0
-        );
-    }
-
-    #[test]
-    fn prediction_mode_enabled_uses_neutral_return_score_when_volatility_available() {
-        assert_eq!(
-            resolve_mm_open_return_score(true, None, Some(0.12), "model_output/test", "missing")
-                .unwrap(),
-            0.0
-        );
-    }
-
-    #[test]
-    fn prediction_mode_enabled_without_volatility_still_requires_return_score() {
-        assert!(
-            resolve_mm_open_return_score(true, None, None, "model_output/test", "missing")
-                .unwrap_err()
-                .to_string()
-                .contains("return_score unavailable")
-        );
     }
 
     #[test]

@@ -5,10 +5,9 @@
 //! - 数据结构：行情报价、资金费率数据
 //! - 辅助函数：浮点数比较、数字列表解析
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 
 use crate::common::exchange::Exchange;
-use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::depth_pub::query_client::DepthQueryClient;
 use crate::signal::common::TradingVenue;
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
@@ -419,108 +418,6 @@ pub fn append_tlen_suffix(base: String, tlen: f64, threshold: f64) -> String {
             ("tlen_thr", format!("{threshold:.8}")),
         ],
     )
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct ReturnScoreThresholdsResolved {
-    pub forward_open: f64,
-    pub forward_cancel: f64,
-    pub backward_open: f64,
-    pub backward_cancel: f64,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ReturnScoreThresholdLoadStats {
-    pub loaded_symbols: usize,
-    pub incomplete_symbols: usize,
-    pub ignored_fields: usize,
-    pub bad_value_fields: usize,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-struct ReturnScoreThresholdsPartial {
-    forward_open: Option<f64>,
-    forward_cancel: Option<f64>,
-    backward_open: Option<f64>,
-    backward_cancel: Option<f64>,
-}
-
-impl ReturnScoreThresholdsPartial {
-    fn to_resolved(self) -> Option<ReturnScoreThresholdsResolved> {
-        Some(ReturnScoreThresholdsResolved {
-            forward_open: self.forward_open?,
-            forward_cancel: self.forward_cancel?,
-            backward_open: self.backward_open?,
-            backward_cancel: self.backward_cancel?,
-        })
-    }
-}
-
-pub fn resolve_return_score_thresholds_from_redis_map(
-    hash_map: HashMap<String, String>,
-    venue: TradingVenue,
-) -> (
-    HashMap<String, ReturnScoreThresholdsResolved>,
-    ReturnScoreThresholdLoadStats,
-) {
-    const FORWARD_OPEN: &str = "forward_open";
-    const FORWARD_CANCEL: &str = "forward_cancel";
-    const BACKWARD_OPEN: &str = "backward_open";
-    const BACKWARD_CANCEL: &str = "backward_cancel";
-    const OPS: [&str; 4] = [FORWARD_OPEN, FORWARD_CANCEL, BACKWARD_OPEN, BACKWARD_CANCEL];
-
-    let mut grouped: HashMap<String, ReturnScoreThresholdsPartial> = HashMap::new();
-    let mut stats = ReturnScoreThresholdLoadStats::default();
-
-    for (field, raw_value) in hash_map {
-        let mut matched = false;
-        for op in OPS {
-            let suffix = format!("_{op}");
-            let Some(symbol_raw) = field.strip_suffix(&suffix) else {
-                continue;
-            };
-            matched = true;
-
-            let value = match raw_value.trim().parse::<f64>() {
-                Ok(v) if v.is_finite() => v,
-                _ => {
-                    stats.bad_value_fields += 1;
-                    break;
-                }
-            };
-
-            let symbol_key = normalize_symbol_for_venue(symbol_raw, venue).to_ascii_uppercase();
-            if symbol_key.is_empty() {
-                stats.ignored_fields += 1;
-                break;
-            }
-
-            let entry = grouped.entry(symbol_key).or_default();
-            match op {
-                FORWARD_OPEN => entry.forward_open = Some(value),
-                FORWARD_CANCEL => entry.forward_cancel = Some(value),
-                BACKWARD_OPEN => entry.backward_open = Some(value),
-                BACKWARD_CANCEL => entry.backward_cancel = Some(value),
-                _ => {}
-            }
-            break;
-        }
-        if !matched {
-            stats.ignored_fields += 1;
-        }
-    }
-
-    let mut resolved = HashMap::new();
-    for (symbol, partial) in grouped {
-        if let Some(full) = partial.to_resolved() {
-            resolved.insert(symbol, full);
-        } else {
-            stats.incomplete_symbols += 1;
-        }
-    }
-
-    stats.loaded_symbols = resolved.len();
-    (resolved, stats)
 }
 
 /// Funding Rate 数据（维护60条 + rolling sum/mean）

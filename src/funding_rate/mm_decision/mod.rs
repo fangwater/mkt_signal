@@ -4,11 +4,10 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info, warn};
 use std::cell::{OnceCell, RefCell};
-use std::collections::HashMap;
 use std::time::Duration;
 
 use super::arb_decision::DEFAULT_ARBITRAGE_BACKWARD_CHANNEL;
-use super::common::{normalize_tlens_for_compare, ReturnScoreThresholdsResolved};
+use super::common::normalize_tlens_for_compare;
 use super::mkt_channel::MktChannel;
 use super::tlen_threshold_loader;
 use crate::common::bbo::Bbo;
@@ -265,12 +264,17 @@ impl MmDecision {
             .update_open_order_timeout(open_order_timeout_secs);
     }
 
-    pub fn update_prediction_mode(&mut self, enabled: bool) {
-        self.state.update_prediction_mode(enabled);
-    }
-
-    pub fn update_enable_open_cancel(&mut self, enabled: bool) {
-        self.state.update_enable_open_cancel(enabled);
+    pub fn update_return_score_cancel_params(
+        &mut self,
+        enabled: bool,
+        buy_cancel_quantile: f64,
+        sell_cancel_quantile: f64,
+    ) {
+        self.state.update_return_score_cancel_params(
+            enabled,
+            buy_cancel_quantile,
+            sell_cancel_quantile,
+        );
     }
 
     pub fn update_enable_tlen_cancel(&mut self, enabled: bool) {
@@ -338,13 +342,6 @@ impl MmDecision {
             return_model_service,
             environment_model_service,
         );
-    }
-
-    pub fn update_return_score_thresholds(
-        &mut self,
-        thresholds: HashMap<String, ReturnScoreThresholdsResolved>,
-    ) {
-        self.state.update_return_score_thresholds(thresholds);
     }
 
     pub fn process_open_interval(&mut self) {

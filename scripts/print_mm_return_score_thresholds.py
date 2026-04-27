@@ -1,18 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
-打印 MM return-model-score 阈值（从 Redis 读取）。
-
-读取 Redis Hash:
-  return_model_score_thresholds_{venue}
-
-venue 由当前目录推断（如 binance_mm_beta -> binance-futures）。
-
-示例:
-  cd ~/binance_mm_beta
-  python scripts/print_mm_return_score_thresholds.py
-"""
+"""Deprecated: MM no longer reads return_model_score_thresholds_*."""
 
 from __future__ import annotations
 
@@ -120,51 +109,8 @@ def parse_field(field_key: str) -> Optional[Tuple[str, str]]:
 
 
 def main() -> int:
-    _args = parse_args()
-    redis = try_import_redis()
-    if redis is None:
-        print("❌ redis 包未安装，请使用 pip install redis", file=sys.stderr)
-        return 2
-
-    venue = resolve_venue()
-    if not venue:
-        print(
-            "❌ 无法从当前目录推断 venue。请在目录名包含 binance/okex/bybit/bitget/gate 前缀的 MM 目录运行（如 ~/binance_mm_beta）",
-            file=sys.stderr,
-        )
-        return 1
-
-    key = f"return_model_score_thresholds_{venue}"
-    rds = redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
-    threshold_raw = decode_map(rds.hgetall(key))
-
-    print("📍 Redis: 127.0.0.1:6379/0")
-    print(f"📍 Venue: {venue}")
-    print(f"📍 Threshold Key: {key}")
-
-    print("\nReturn Model Score Mapping:")
-    mapping_rows = [[op, DEFAULT_RETURN_MODEL_SCORE_MAPPING.get(op, "-")] for op in OPERATIONS]
-    print_table(["operation", "score_ref"], mapping_rows)
-
-    if not threshold_raw:
-        print("\n⚠️  threshold hash is empty")
-        return 0
-
-    by_symbol: Dict[str, Dict[str, str]] = {}
-    for field, value in threshold_raw.items():
-        parsed = parse_field(field)
-        if parsed is None:
-            continue
-        symbol, op = parsed
-        by_symbol.setdefault(symbol, {})[op] = value
-
-    print("\nThresholds By Symbol:")
-    print(f"symbols={len(by_symbol)} fields={len(threshold_raw)}")
-    for symbol in sorted(by_symbol.keys()):
-        print(f"\n[{symbol}]")
-        rows = [[op, by_symbol[symbol].get(op, "-")] for op in OPERATIONS]
-        print_table(["operation", "threshold"], rows)
-
+    _ = parse_args()
+    print("MM return_model_score_thresholds_* 已废弃；cancel 改用 strategy params 中的 return score quantile 配置。")
     return 0
 
 

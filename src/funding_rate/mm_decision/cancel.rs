@@ -71,23 +71,13 @@ impl MmCancelDecision {
         state: &mut MmDecisionState,
         symbol: &str,
         return_score_value: f64,
-        return_qtl: Option<f64>,
+        return_qtl: f64,
         now_us: i64,
     ) -> Result<Option<SignalType>> {
-        let threshold_symbol =
-            crate::common::symbol_util::normalize_symbol_for_venue(symbol, state.hedge_venue)
-                .to_ascii_uppercase();
-        let Some(thresholds) = state
-            .return_score_thresholds
-            .get(&threshold_symbol)
-            .copied()
-        else {
-            return Ok(None);
-        };
-
-        let forward_cancel_hit = return_score_value < thresholds.forward_cancel;
-        let backward_cancel_hit = return_score_value > thresholds.backward_cancel;
-        if !forward_cancel_hit && !backward_cancel_hit {
+        let return_qtl_pct = return_qtl * 100.0;
+        let sell_cancel_hit = return_qtl_pct > state.return_score_buy_cancel_quantile;
+        let buy_cancel_hit = return_qtl_pct < state.return_score_sell_cancel_quantile;
+        if !sell_cancel_hit && !buy_cancel_hit {
             return Ok(None);
         }
 
@@ -102,42 +92,19 @@ impl MmCancelDecision {
         let symbol_key = normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures);
         let environment_signal = state.evaluate_environment_signal(&symbol_key, symbol, now_us);
         let mut cancel_sent = false;
-        let mut forward_cancel_sent = false;
-        let mut backward_cancel_sent = false;
-        if forward_cancel_hit {
-            if self.cancel_throttled(symbol, Side::Buy, state, now_us) {
-                debug!(
-                    "MmDecision: skip buy MMCancel due to throttle symbol={} score={:.6}",
-                    symbol_key, return_score_value
-                );
-            } else {
-                let from_key = build_mm_cancel_from_key(
-                    now_us,
-                    return_qtl,
-                    Some(thresholds.forward_cancel),
-                    volatility,
-                    &environment_signal,
-                    None,
-                    None,
-                );
-                state.emit_mm_cancel_signal(symbol, Side::Buy, open_quote, now_us, &from_key)?;
-                self.mark_cancel_sent(symbol, Side::Buy, now_us);
-                cancel_sent = true;
-                forward_cancel_sent = true;
-            }
-        }
-
-        if backward_cancel_hit {
+        let mut buy_cancel_sent = false;
+        let mut sell_cancel_sent = false;
+        if sell_cancel_hit {
             if self.cancel_throttled(symbol, Side::Sell, state, now_us) {
                 debug!(
-                    "MmDecision: skip sell MMCancel due to throttle symbol={} score={:.6}",
-                    symbol_key, return_score_value
+                    "MmDecision: skip sell MMCancel due to throttle symbol={} score={:.6} qtl_pct={:.2}",
+                    symbol_key, return_score_value, return_qtl_pct
                 );
             } else {
                 let from_key = build_mm_cancel_from_key(
                     now_us,
-                    return_qtl,
-                    Some(thresholds.backward_cancel),
+                    Some(return_qtl),
+                    Some(state.return_score_buy_cancel_quantile),
                     volatility,
                     &environment_signal,
                     None,
@@ -146,20 +113,48 @@ impl MmCancelDecision {
                 state.emit_mm_cancel_signal(symbol, Side::Sell, open_quote, now_us, &from_key)?;
                 self.mark_cancel_sent(symbol, Side::Sell, now_us);
                 cancel_sent = true;
-                backward_cancel_sent = true;
+                sell_cancel_sent = true;
+            }
+        }
+
+        if buy_cancel_hit {
+            if self.cancel_throttled(symbol, Side::Buy, state, now_us) {
+                debug!(
+                    "MmDecision: skip buy MMCancel due to throttle symbol={} score={:.6} qtl_pct={:.2}",
+                    symbol_key, return_score_value, return_qtl_pct
+                );
+            } else {
+                let from_key = build_mm_cancel_from_key(
+                    now_us,
+                    Some(return_qtl),
+                    Some(state.return_score_sell_cancel_quantile),
+                    volatility,
+                    &environment_signal,
+                    None,
+                    None,
+                );
+                state.emit_mm_cancel_signal(symbol, Side::Buy, open_quote, now_us, &from_key)?;
+                self.mark_cancel_sent(symbol, Side::Buy, now_us);
+                cancel_sent = true;
+                buy_cancel_sent = true;
             }
         }
 
         if cancel_sent {
-            let side_text = match (forward_cancel_sent, backward_cancel_sent) {
+            let side_text = match (buy_cancel_sent, sell_cancel_sent) {
                 (true, true) => "both",
                 (true, false) => "buy",
                 (false, true) => "sell",
                 (false, false) => "-",
             };
             debug!(
-                "MmDecision: MMCancel symbol={} side={} score={:.6}",
-                symbol_key, side_text, return_score_value,
+                "MmDecision: MMCancel symbol={} side={} score={:.6} qtl_pct={:.2} buy_cancel_qtl={:.2} sell_cancel_qtl={:.2}",
+                symbol_key,
+                side_text,
+                return_score_value,
+                return_qtl_pct,
+                state.return_score_buy_cancel_quantile,
+                state.return_score_sell_cancel_quantile,
             );
             Ok(Some(SignalType::MMCancel))
         } else {
@@ -168,7 +163,7 @@ impl MmCancelDecision {
     }
 
     pub(crate) fn process_return_score_updates(&mut self, state: &mut MmDecisionState) {
-        if !state.enable_open_cancel {
+        if !state.enable_return_score_cancel {
             let _ = state.factor_value_hub.poll_model_output_updates();
             return;
         }
@@ -198,14 +193,15 @@ impl MmCancelDecision {
             if event.service_name != service_name || !event.score.is_finite() {
                 continue;
             }
+            let Some(return_qtl) = event.score_quantile.filter(|v| v.is_finite()) else {
+                continue;
+            };
             let symbol_key =
                 normalize_symbol_for_whitelist(&event.symbol_key, TradingVenue::OkexFutures);
             let Some(symbol) = online_set.get(&symbol_key) else {
                 continue;
             };
-            if let Err(err) =
-                self.emit_for_symbol(state, symbol, event.score, event.score_quantile, now_us)
-            {
+            if let Err(err) = self.emit_for_symbol(state, symbol, event.score, return_qtl, now_us) {
                 warn!(
                     "MmDecision: MMCancel evaluate failed symbol={} err={:#}",
                     symbol_key, err

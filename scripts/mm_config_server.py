@@ -9,7 +9,6 @@ MM 配置服务器（mm_config_server）
 - amount_u overrides
 - max_pos_u overrides
 - pre-trade risk params
-- return-model-score thresholds
 """
 
 from __future__ import annotations
@@ -37,14 +36,6 @@ AMOUNT_U_EXAMPLE = {
 MAX_POS_U_EXAMPLE = {
     "BTCUSDT": 200000.0,
     "ETHUSDT": 120000.0,
-}
-RETURN_THRESHOLD_EXAMPLE = {
-    "BTCUSDT": {
-        "forward_open": "0.002",
-        "forward_cancel": "0.0015",
-        "backward_open": "-0.002",
-        "backward_cancel": "-0.0015",
-    }
 }
 MODEL_SCORE_ROLLING_SCRIPT_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
@@ -83,25 +74,6 @@ except Exception:
     RISK_PARAM_ORDER = []
 
 try:
-    import print_mm_return_score_thresholds as mm_threshold_defaults
-
-    RETURN_THRESHOLD_OPERATIONS = list(mm_threshold_defaults.OPERATIONS)
-    RETURN_THRESHOLD_MAPPING = dict(mm_threshold_defaults.DEFAULT_RETURN_MODEL_SCORE_MAPPING)
-except Exception:
-    RETURN_THRESHOLD_OPERATIONS = [
-        "forward_open",
-        "forward_cancel",
-        "backward_open",
-        "backward_cancel",
-    ]
-    RETURN_THRESHOLD_MAPPING = {
-        "forward_open": "score_90",
-        "forward_cancel": "score_80",
-        "backward_open": "score_10",
-        "backward_cancel": "score_20",
-    }
-
-try:
     import sync_model_score_rolling_params as model_score_defaults
 
     DEFAULT_MODEL_SCORE_ROLLING_PARAMS = dict(model_score_defaults.DEFAULTS)
@@ -128,13 +100,6 @@ MODEL_SCORE_PARAM_ORDER = [
     "min_periods",
     "quantiles",
 ]
-RETURN_MAPPING_COMMENTS = {
-    "forward_open": "开正向单时使用的 score 百分位引用",
-    "forward_cancel": "撤正向单时使用的 score 百分位引用",
-    "backward_open": "开反向单时使用的 score 百分位引用",
-    "backward_cancel": "撤反向单时使用的 score 百分位引用",
-}
-
 INDEX_HTML_TEMPLATE = """<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -341,8 +306,6 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       <span class="badge mono" id="max-pos-u-key">-</span>
       <span class="badge mono" id="risk-key">-</span>
       <span class="badge mono" id="model-params-key">-</span>
-      <span class="badge mono" id="mapping-key">-</span>
-      <span class="badge mono" id="threshold-key">-</span>
     </div>
   </header>
 
@@ -370,7 +333,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         </div>
       </div>
       <div class="hint">
-        `enable_open_cancel` 只控制旧的 return-score MMCancel；`enable_tlen_cancel` 单独控制基于 tlen 的 trigger/query/cancel 链路；`tlen_cancel_freq_ms` 控制 MMCancelTrigger 的发送频率；`enable_return_score_adjust_hegde=false` 时，MM hedge offset 不再被 return score 调整；`enable_environment_model=false` 时 env/pnlu 仍会写入 from_key，但不阻拦开仓；`enable_volatility_limit` 控制是否启用波动率限制下单；`open_volatility_limit` 控制 trade signal / MM 决策侧内联波动率阈值采样使用的分位数；`enable_tradecount_limit` / `open_tradecount_limit` 与 vol 用法一致，但读取 trade_flow_feature 的 `count.rolling(30,min_periods=25).mean()` 做 gate，并且仅当 tradecount 大于阈值时允许 open；`enable_open_time_block` 启用后，在 UTC `open_block_utc_time_range` 内 trade signal 不发开仓单，时间格式必须为 `HH:MM-HH:MM`，允许跨天，但开始/结束不能相同；前端布尔项使用下拉框编辑。
+        `enable_return_score_cancel` 控制基于模型 score_quantile 的方向撤单；`return_score_buy_cancel_quantile` / `return_score_sell_cancel_quantile` 必须在 (0,99) 内，默认 90/10；`enable_tlen_cancel` 单独控制基于 tlen 的 trigger/query/cancel 链路；`tlen_cancel_freq_ms` 控制 MMCancelTrigger 的发送频率；`enable_return_score_adjust_hegde=false` 时，MM hedge offset 不再被 return score 调整；`enable_environment_model=false` 时 env/pnlu 仍会写入 from_key，但不阻拦开仓；`enable_volatility_limit` 控制是否启用波动率限制下单；`open_volatility_limit` 控制 trade signal / MM 决策侧内联波动率阈值采样使用的分位数；`enable_tradecount_limit` / `open_tradecount_limit` 与 vol 用法一致，但读取 trade_flow_feature 的 `count.rolling(30,min_periods=25).mean()` 做 gate，并且仅当 tradecount 大于阈值时允许 open；`enable_open_time_block` 启用后，在 UTC `open_block_utc_time_range` 内 trade signal 不发开仓单，时间格式必须为 `HH:MM-HH:MM`，允许跨天，但开始/结束不能相同；前端布尔项使用下拉框编辑。
       </div>
       <div class="kv-table" id="strategy-table"></div>
       <div id="strategy-status" class="status"></div>
@@ -452,42 +415,6 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       <div id="model-score-status" class="status"></div>
     </section>
 
-    <section class="panel">
-      <div class="section-header">
-        <h2>Return Score Mapping</h2>
-        <div class="actions">
-          <button id="load-return-mapping" class="secondary">读取</button>
-          <button id="reset-return-mapping" class="ghost">恢复默认</button>
-          <button id="save-return-mapping">保存</button>
-        </div>
-      </div>
-      <div class="hint">
-        配置 `业务动作 -> score_xx` 的映射，写入 Redis Hash `return_model_score_mapping_{venue}`。
-      </div>
-      <div class="kv-table" id="return-mapping-table"></div>
-      <div id="return-mapping-status" class="status"></div>
-    </section>
-
-    <section class="panel">
-      <div class="section-header">
-        <h2>Return Score Thresholds</h2>
-        <div class="actions">
-          <button id="load-thresholds" class="secondary">读取</button>
-          <button id="sync-thresholds" class="secondary">按模型同步</button>
-          <button id="reset-thresholds" class="ghost">示例</button>
-          <button id="save-thresholds">保存</button>
-        </div>
-      </div>
-      <div class="hint">
-        JSON 结构为 `{"SYMBOL": {"forward_open": "...", ...}}`。保存时会重写 Redis Hash
-        `return_model_score_thresholds_{venue}`，并清理旧字段。
-      </div>
-      <div class="hint">示例：</div>
-      <pre id="threshold-example" class="mono"></pre>
-      <div class="mapping-grid" id="threshold-mapping"></div>
-      <textarea id="thresholds-text" class="mono" spellcheck="false"></textarea>
-      <div id="thresholds-status" class="status"></div>
-    </section>
   </main>
 
   <script>
@@ -582,6 +509,16 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
           values.open_block_utc_time_range
         );
       }
+      ['return_score_buy_cancel_quantile', 'return_score_sell_cancel_quantile'].forEach((key) => {
+        if (!Object.prototype.hasOwnProperty.call(values, key)) {
+          return;
+        }
+        const value = Number(values[key]);
+        if (!Number.isFinite(value) || value <= 0 || value >= 99) {
+          throw new Error(`${key} 必须在 (0,99) 内`);
+        }
+        values[key] = String(value);
+      });
       return values;
     }
 
@@ -658,10 +595,6 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         `${state.envName}:${state.venue}:mm:max_pos_u`;
       document.getElementById('risk-key').textContent =
         `${state.envName}:${state.venue}:${state.venue}:pre_trade_risk_params`;
-      document.getElementById('mapping-key').textContent =
-        `return_model_score_mapping_${state.venue}`;
-      document.getElementById('threshold-key').textContent =
-        `return_model_score_thresholds_${state.venue}`;
       const modelName = currentModelName();
       document.getElementById('model-params-key').textContent =
         modelName ? `model_score_rolling_params_${modelName}` : '-';
@@ -694,7 +627,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         const rawValue = values && values[key] !== undefined ? values[key] : (defaults[key] ?? '');
         const useBooleanSelect =
           containerId === 'strategy-table' &&
-          ['prediction_mode', 'enable_open_cancel', 'enable_tlen_cancel', 'enable_return_score_adjust_hegde', 'enable_environment_model', 'enable_volatility_limit', 'enable_tradecount_limit', 'enable_open_time_block'].includes(key) &&
+          ['enable_return_score_cancel', 'enable_tlen_cancel', 'enable_return_score_adjust_hegde', 'enable_environment_model', 'enable_volatility_limit', 'enable_tradecount_limit', 'enable_open_time_block'].includes(key) &&
           isBooleanParamValue(rawValue);
         let field;
         if (useBooleanSelect) {
@@ -748,20 +681,6 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
           out[input.dataset.key] = input.value.trim();
         });
       return out;
-    }
-
-    function renderThresholdMapping(values = null) {
-      const container = document.getElementById('threshold-mapping');
-      container.innerHTML = '';
-      const mapping = values || BOOTSTRAP.return_threshold_mapping || {};
-      Object.entries(mapping).forEach(([operation, ref]) => {
-        const item = document.createElement('div');
-        item.className = 'mapping-item';
-        item.innerHTML = `<strong>${operation}</strong><span class="mono">${ref}</span>`;
-        container.appendChild(item);
-      });
-      document.getElementById('threshold-example').textContent =
-        JSON.stringify(BOOTSTRAP.return_threshold_example || {}, null, 2);
     }
 
     async function loadModelScoreParams() {
@@ -824,60 +743,6 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         {}
       );
       setStatus('model-score-status', '已恢复默认 rolling 参数，尚未写入 Redis', 'warn');
-    }
-
-    async function loadReturnMapping() {
-      setStatus('return-mapping-status', '读取中...');
-      try {
-        const data = await fetchJson(
-          `${apiUrl('return-score-mapping')}?exchange=${encodeURIComponent(state.exchange)}`
-        );
-        buildParamRows(
-          'return-mapping-table',
-          BOOTSTRAP.defaults.return_threshold_mapping || {},
-          BOOTSTRAP.comments.return_threshold_mapping || {},
-          BOOTSTRAP.order.return_threshold_operations || [],
-          data.values || {}
-        );
-        renderThresholdMapping(data.values || {});
-        const staleHint = data.stale_count ? `，隐藏旧字段 ${data.stale_count} 个` : '';
-        setStatus('return-mapping-status', `已读取 ${data.count || 0} 个映射 ${data.key}${staleHint}`, 'ok');
-      } catch (err) {
-        setStatus('return-mapping-status', `读取失败: ${formatError(err)}`, 'err');
-        throw err;
-      }
-    }
-
-    async function saveReturnMapping() {
-      setStatus('return-mapping-status', '保存中...');
-      try {
-        const values = collectParamRows('return-mapping-table');
-        const data = await fetchJson(apiUrl('return-score-mapping'), {
-          method: 'POST',
-          body: JSON.stringify({exchange: state.exchange, values}),
-        });
-        renderThresholdMapping(values);
-        setStatus(
-          'return-mapping-status',
-          `已保存 ${data.count} 个映射，清理旧字段 ${data.removed_count || 0}`,
-          'ok'
-        );
-      } catch (err) {
-        setStatus('return-mapping-status', `保存失败: ${formatError(err)}`, 'err');
-        throw err;
-      }
-    }
-
-    function resetReturnMapping() {
-      buildParamRows(
-        'return-mapping-table',
-        BOOTSTRAP.defaults.return_threshold_mapping || {},
-        BOOTSTRAP.comments.return_threshold_mapping || {},
-        BOOTSTRAP.order.return_threshold_operations || [],
-        {}
-      );
-      renderThresholdMapping(BOOTSTRAP.defaults.return_threshold_mapping || {});
-      setStatus('return-mapping-status', '已恢复默认映射，尚未写入 Redis', 'warn');
     }
 
     async function loadSymbols() {
@@ -1105,76 +970,6 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       setStatus('risk-status', '已恢复默认值，尚未写入 Redis', 'warn');
     }
 
-    async function loadThresholds() {
-      setStatus('thresholds-status', '读取中...');
-      try {
-        const data = await fetchJson(`${apiUrl('return-score-thresholds')}?exchange=${encodeURIComponent(state.exchange)}`);
-        document.getElementById('thresholds-text').value =
-          JSON.stringify(data.values || {}, null, 2);
-        setStatus(
-          'thresholds-status',
-          `已读取 ${data.symbol_count || 0} 个 symbol / ${data.field_count || 0} 个字段`,
-          'ok'
-        );
-      } catch (err) {
-        setStatus('thresholds-status', `读取失败: ${formatError(err)}`, 'err');
-        throw err;
-      }
-    }
-
-    async function saveThresholds() {
-      setStatus('thresholds-status', '保存中...');
-      let values;
-      try {
-        values = JSON.parse(document.getElementById('thresholds-text').value || '{}');
-      } catch (err) {
-        setStatus('thresholds-status', `JSON 解析失败: ${err.message}`, 'err');
-        return;
-      }
-      try {
-        const data = await fetchJson(apiUrl('return-score-thresholds'), {
-          method: 'POST',
-          body: JSON.stringify({exchange: state.exchange, values}),
-        });
-        setStatus(
-          'thresholds-status',
-          `已保存 ${data.symbol_count} 个 symbol / ${data.field_count} 个字段，清理旧字段 ${data.removed_count}`,
-          'ok'
-        );
-      } catch (err) {
-        setStatus('thresholds-status', `保存失败: ${formatError(err)}`, 'err');
-        throw err;
-      }
-    }
-
-    function resetThresholds() {
-      document.getElementById('thresholds-text').value =
-        JSON.stringify(BOOTSTRAP.return_threshold_example || {}, null, 2);
-      setStatus('thresholds-status', '已填入示例，尚未写入 Redis', 'warn');
-    }
-
-    async function syncThresholdsFromModel() {
-      const modelName = requireModelName('thresholds-status');
-      setStatus('thresholds-status', '同步中...');
-      try {
-        const mapping = collectParamRows('return-mapping-table');
-        const data = await fetchJson(apiUrl('return-score-thresholds/sync'), {
-          method: 'POST',
-          body: JSON.stringify({exchange: state.exchange, model_name: modelName, mapping}),
-        });
-        persistModelName(modelName);
-        await loadThresholds();
-        setStatus(
-          'thresholds-status',
-          `同步完成: ready=${data.ready_count} synced=${data.synced_symbols} fields=${data.field_count} removed=${data.removed_count}`,
-          'ok'
-        );
-      } catch (err) {
-        setStatus('thresholds-status', `同步失败: ${formatError(err)}`, 'err');
-        throw err;
-      }
-    }
-
     async function loadAll() {
       updateDerivedKeys();
       const tasks = [
@@ -1183,8 +978,6 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         loadAmountU(),
         loadMaxPosU(),
         loadRisk(),
-        loadReturnMapping(),
-        loadThresholds(),
       ];
       if (currentModelName()) {
         tasks.push(loadModelScoreParams());
@@ -1267,13 +1060,6 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     document.getElementById('load-model-score').addEventListener('click', () => loadModelScoreParams());
     document.getElementById('save-model-score').addEventListener('click', () => saveModelScoreParams());
     document.getElementById('reset-model-score').addEventListener('click', () => resetModelScoreParams());
-    document.getElementById('load-return-mapping').addEventListener('click', () => loadReturnMapping());
-    document.getElementById('save-return-mapping').addEventListener('click', () => saveReturnMapping());
-    document.getElementById('reset-return-mapping').addEventListener('click', () => resetReturnMapping());
-    document.getElementById('load-thresholds').addEventListener('click', () => loadThresholds());
-    document.getElementById('sync-thresholds').addEventListener('click', () => syncThresholdsFromModel());
-    document.getElementById('save-thresholds').addEventListener('click', () => saveThresholds());
-    document.getElementById('reset-thresholds').addEventListener('click', () => resetThresholds());
 
     initExchangeSelector();
     initModelNameInput();
@@ -1281,7 +1067,6 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       JSON.stringify(BOOTSTRAP.amount_u_example || {}, null, 2);
     document.getElementById('max-pos-u-example').textContent =
       JSON.stringify(BOOTSTRAP.max_pos_u_example || {}, null, 2);
-    renderThresholdMapping();
     loadAll().catch((err) => {
       console.error(err);
       setStatus('symbols-status', err.message || String(err), 'err');
@@ -1376,14 +1161,6 @@ def make_max_pos_u_key(env_name: str, venue: str) -> str:
 
 def make_risk_key(env_name: str, venue: str) -> str:
     return f"{env_name}:{venue}:{venue}:pre_trade_risk_params"
-
-
-def make_return_threshold_key(venue: str) -> str:
-    return f"return_model_score_thresholds_{venue}"
-
-
-def make_return_mapping_key(venue: str) -> str:
-    return f"return_model_score_mapping_{venue}"
 
 
 def make_model_score_params_key(model_name: str) -> str:
@@ -1568,21 +1345,17 @@ def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, st
         normalized["tlen_cancel_freq_ms"] = normalize_positive_int_text(
             normalized["tlen_cancel_freq_ms"], "tlen_cancel_freq_ms"
         )
+    for key in ("return_score_buy_cancel_quantile", "return_score_sell_cancel_quantile"):
+        if key in normalized:
+            value = float(str(normalized[key]).strip())
+            if not (0.0 < value < 99.0):
+                raise ValueError(f"{key} must be within (0,99): {value}")
+            normalized[key] = f"{value:g}"
     if "open_block_utc_time_range" in normalized:
         normalized["open_block_utc_time_range"] = normalize_open_block_utc_time_range(
             normalized["open_block_utc_time_range"]
         )
     return normalized
-
-
-def sanitize_return_mapping(values: Any) -> Dict[str, str]:
-    mapping = sanitize_string_mapping(values)
-    out: Dict[str, str] = {}
-    for operation in RETURN_THRESHOLD_OPERATIONS:
-        score_ref = mapping.get(operation)
-        if score_ref:
-            out[operation] = score_ref
-    return out
 
 
 def serialize_model_score_params(values: Any) -> Dict[str, str]:
@@ -1644,92 +1417,6 @@ def build_default_model_score_params(model_name: str) -> Dict[str, Any]:
     return defaults
 
 
-def normalize_quantile(q_raw: object) -> Optional[int]:
-    try:
-        q = float(q_raw)
-    except Exception:
-        return None
-
-    if q > 1.0:
-        q = q / 100.0
-    if q < 0.0 or q > 1.0:
-        return None
-    return int(round(q * 100.0))
-
-
-def build_score_points(payload: Dict[str, Any]) -> Optional[Tuple[str, Dict[str, float]]]:
-    quantiles = payload.get("quantiles")
-    thresholds = payload.get("thresholds")
-    ready = bool(payload.get("ready", False))
-
-    if not ready or not isinstance(quantiles, list) or not isinstance(thresholds, list):
-        return None
-    if len(quantiles) != len(thresholds) or not quantiles:
-        return None
-
-    symbol = str(payload.get("symbol", "")).strip().upper()
-    if not symbol:
-        return None
-
-    points: Dict[str, float] = {}
-    for q_raw, threshold_raw in zip(quantiles, thresholds):
-        percentile = normalize_quantile(q_raw)
-        if percentile is None:
-            continue
-        try:
-            threshold = float(threshold_raw)
-        except Exception:
-            continue
-        points[f"score_{percentile}"] = threshold
-
-    if not points:
-        return None
-    return symbol, points
-
-
-def format_threshold_value(value: float) -> str:
-    return f"{value:.12g}"
-
-
-def parse_return_threshold_fields(raw_fields: Dict[str, str]) -> Dict[str, Dict[str, str]]:
-    result: Dict[str, Dict[str, str]] = {}
-    for field, value in raw_fields.items():
-        matched = None
-        for operation in sorted(RETURN_THRESHOLD_OPERATIONS, key=len, reverse=True):
-            suffix = f"_{operation}"
-            if field.endswith(suffix):
-                symbol = field[: -len(suffix)].rstrip("_").upper()
-                if symbol:
-                    matched = (symbol, operation)
-                break
-        if not matched:
-            continue
-        symbol, operation = matched
-        result.setdefault(symbol, {})[operation] = value
-    return dict(sorted(result.items()))
-
-
-def flatten_return_threshold_values(values: Any) -> Dict[str, str]:
-    if not isinstance(values, dict):
-        raise ValueError("threshold values must be an object")
-
-    flat: Dict[str, str] = {}
-    for raw_symbol, raw_ops in values.items():
-        symbol = str(raw_symbol).strip().upper()
-        if not symbol:
-            continue
-        if not isinstance(raw_ops, dict):
-            raise ValueError(f"threshold row for {symbol} must be an object")
-        for operation in RETURN_THRESHOLD_OPERATIONS:
-            if operation not in raw_ops:
-                continue
-            value = raw_ops[operation]
-            if value is None or str(value).strip() == "":
-                continue
-            flat[f"{symbol}_{operation}"] = str(value).strip()
-    return flat
-
-
 def filter_mapping_by_schema(
     raw_values: Dict[str, str],
     defaults: Dict[str, Any],
@@ -1757,22 +1444,17 @@ def build_bootstrap(default_exchange: str, env_name: str) -> Dict[str, Any]:
             "strategy_params": DEFAULT_STRATEGY_PARAMS,
             "risk_params": DEFAULT_RISK_PARAMS,
             "model_score_rolling_params": DEFAULT_MODEL_SCORE_ROLLING_PARAMS,
-            "return_threshold_mapping": RETURN_THRESHOLD_MAPPING,
         },
         "comments": {
             "strategy_params": STRATEGY_PARAM_COMMENTS,
             "risk_params": RISK_PARAM_COMMENTS,
             "model_score_rolling_params": MODEL_SCORE_PARAM_COMMENTS,
-            "return_threshold_mapping": RETURN_MAPPING_COMMENTS,
         },
         "order": {
             "strategy_params": STRATEGY_PARAM_ORDER,
             "risk_params": RISK_PARAM_ORDER,
             "model_score_rolling_params": MODEL_SCORE_PARAM_ORDER,
-            "return_threshold_operations": RETURN_THRESHOLD_OPERATIONS,
         },
-        "return_threshold_mapping": RETURN_THRESHOLD_MAPPING,
-        "return_threshold_example": RETURN_THRESHOLD_EXAMPLE,
         "amount_u_example": AMOUNT_U_EXAMPLE,
         "max_pos_u_example": MAX_POS_U_EXAMPLE,
         "keys": {
@@ -1781,8 +1463,6 @@ def build_bootstrap(default_exchange: str, env_name: str) -> Dict[str, Any]:
             "amount_u": make_amount_u_key(env_name, venue),
             "max_pos_u": make_max_pos_u_key(env_name, venue),
             "risk": make_risk_key(env_name, venue),
-            "return_mapping": make_return_mapping_key(venue),
-            "return_threshold": make_return_threshold_key(venue),
         },
     }
 
@@ -2009,70 +1689,6 @@ class MMConfigStore:
         )
         return self._replace_hash(key, mapping)
 
-    def read_return_thresholds(self, venue: str) -> Dict[str, Any]:
-        key = make_return_threshold_key(venue)
-        raw = decode_hash(self.redis().hgetall(key))
-        values = parse_return_threshold_fields(raw)
-        return {
-            "key": key,
-            "values": values,
-            "field_count": len(raw),
-            "symbol_count": len(values),
-        }
-
-    def write_return_thresholds(self, venue: str, values: Any) -> Dict[str, Any]:
-        key = make_return_threshold_key(venue)
-        redis = self.redis()
-        new_fields = flatten_return_threshold_values(values)
-        existing = {
-            item.decode("utf-8", "ignore") if isinstance(item, bytes) else str(item)
-            for item in redis.hkeys(key)
-        }
-        stale_fields = sorted(existing - set(new_fields.keys()))
-
-        pipe = redis.pipeline()
-        if new_fields:
-            pipe.hset(key, mapping=new_fields)
-        if stale_fields:
-            pipe.hdel(key, *stale_fields)
-        pipe.execute()
-
-        symbol_count = len({field.rsplit("_", 1)[0] for field in new_fields.keys()})
-        return {
-            "key": key,
-            "field_count": len(new_fields),
-            "symbol_count": symbol_count,
-            "removed_count": len(stale_fields),
-            "removed_fields": stale_fields,
-        }
-
-    def read_return_mapping(self, venue: str) -> Dict[str, Any]:
-        key = make_return_mapping_key(venue)
-        raw = decode_hash(self.redis().hgetall(key))
-        filtered, stale_values = filter_mapping_by_schema(
-            raw,
-            RETURN_THRESHOLD_MAPPING,
-            RETURN_MAPPING_COMMENTS,
-            RETURN_THRESHOLD_OPERATIONS,
-        )
-        values = dict(RETURN_THRESHOLD_MAPPING)
-        values.update(filtered)
-        return {
-            "key": key,
-            "values": values,
-            "raw_count": len(raw),
-            "count": len(values),
-            "stale_count": len(stale_values),
-            "stale_values": stale_values,
-        }
-
-    def write_return_mapping(self, venue: str, values: Any) -> Dict[str, Any]:
-        key = make_return_mapping_key(venue)
-        mapping = sanitize_return_mapping(values)
-        if not mapping:
-            raise ValueError("return score mapping cannot be empty")
-        return self._replace_hash(key, mapping)
-
     def read_model_score_rolling_params(self, model_name: str) -> Dict[str, Any]:
         key = make_model_score_params_key(model_name)
         raw = decode_hash(self.redis().hgetall(key))
@@ -2114,96 +1730,6 @@ class MMConfigStore:
             }
         )
         return result
-
-    def sync_return_thresholds_from_model(
-        self,
-        venue: str,
-        model_name: str,
-        mapping_override: Optional[Any] = None,
-    ) -> Dict[str, Any]:
-        model_venue = infer_venue_from_model_name(model_name)
-        if model_venue != venue:
-            raise ValueError(
-                f"model_name venue mismatch: model={model_venue}, selected={venue}"
-            )
-
-        source_key = make_model_score_threshold_source_key(model_name)
-        target_key = make_return_threshold_key(venue)
-        if mapping_override is None:
-            mapping = self.read_return_mapping(venue)["values"]
-        else:
-            mapping = sanitize_return_mapping(mapping_override)
-        if not mapping:
-            raise ValueError("return score mapping cannot be empty")
-
-        redis = self.redis()
-        raw = decode_hash(redis.hgetall(source_key))
-        output_fields: Dict[str, str] = {}
-        total = 0
-        ready_symbols = 0
-        synced_symbols = 0
-
-        for field_symbol, text in raw.items():
-            total += 1
-            try:
-                payload = json.loads(text)
-            except Exception:
-                continue
-            if not isinstance(payload, dict):
-                continue
-
-            parsed = build_score_points(payload)
-            if parsed is None:
-                continue
-
-            ready_symbols += 1
-            payload_symbol, points = parsed
-            symbol = payload_symbol or field_symbol.upper()
-
-            symbol_fields: Dict[str, str] = {}
-            for operation in RETURN_THRESHOLD_OPERATIONS:
-                score_ref = mapping.get(operation)
-                if not score_ref:
-                    symbol_fields = {}
-                    break
-                value = points.get(score_ref)
-                if value is None:
-                    symbol_fields = {}
-                    break
-                symbol_fields[f"{symbol}_{operation}"] = format_threshold_value(value)
-
-            if not symbol_fields:
-                continue
-
-            output_fields.update(symbol_fields)
-            synced_symbols += 1
-
-        existing_fields = {
-            item.decode("utf-8", "ignore") if isinstance(item, bytes) else str(item)
-            for item in redis.hkeys(target_key)
-        }
-        stale_fields = sorted(existing_fields - set(output_fields.keys()))
-
-        pipe = redis.pipeline()
-        if output_fields:
-            pipe.hset(target_key, mapping=output_fields)
-        if stale_fields:
-            pipe.hdel(target_key, *stale_fields)
-        pipe.execute()
-
-        return {
-            "model_name": model_name,
-            "model_venue": model_venue,
-            "source_key": source_key,
-            "target_key": target_key,
-            "mapping": mapping,
-            "total_count": total,
-            "ready_count": ready_symbols,
-            "synced_symbols": synced_symbols,
-            "field_count": len(output_fields),
-            "removed_count": len(stale_fields),
-            "removed_fields": stale_fields,
-        }
 
 
 def build_index_html(config: AppConfig) -> bytes:
@@ -2307,31 +1833,6 @@ def build_handler(config: AppConfig):
                     )
                     return
 
-                if parsed.path == "/api/return-score-thresholds":
-                    self._send_json(
-                        200,
-                        {
-                            "ok": True,
-                            "exchange": exchange,
-                            "venue": venue,
-                            "mapping": RETURN_THRESHOLD_MAPPING,
-                            **store.read_return_thresholds(venue),
-                        },
-                    )
-                    return
-
-                if parsed.path == "/api/return-score-mapping":
-                    self._send_json(
-                        200,
-                        {
-                            "ok": True,
-                            "exchange": exchange,
-                            "venue": venue,
-                            **store.read_return_mapping(venue),
-                        },
-                    )
-                    return
-
                 if parsed.path == "/api/model-score-rolling-params":
                     model_name = resolve_model_name(query, None)
                     self._send_json(
@@ -2385,29 +1886,9 @@ def build_handler(config: AppConfig):
                     self._send_json(200, {"ok": True, "exchange": exchange, "venue": venue, **result})
                     return
 
-                if parsed.path == "/api/return-score-thresholds":
-                    result = store.write_return_thresholds(venue, payload.get("values"))
-                    self._send_json(200, {"ok": True, "exchange": exchange, "venue": venue, **result})
-                    return
-
-                if parsed.path == "/api/return-score-mapping":
-                    result = store.write_return_mapping(venue, payload.get("values"))
-                    self._send_json(200, {"ok": True, "exchange": exchange, "venue": venue, **result})
-                    return
-
                 if parsed.path == "/api/model-score-rolling-params":
                     model_name = resolve_model_name({}, payload)
                     result = store.write_model_score_rolling_params(model_name, payload.get("values"))
-                    self._send_json(200, {"ok": True, "exchange": exchange, "venue": venue, **result})
-                    return
-
-                if parsed.path == "/api/return-score-thresholds/sync":
-                    model_name = resolve_model_name({}, payload)
-                    result = store.sync_return_thresholds_from_model(
-                        venue,
-                        model_name,
-                        payload.get("mapping"),
-                    )
                     self._send_json(200, {"ok": True, "exchange": exchange, "venue": venue, **result})
                     return
 

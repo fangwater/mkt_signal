@@ -19,7 +19,6 @@ use crate::common::redis_client::{RedisClient, RedisSettings};
 use crate::signal::common::TradingVenue;
 
 use super::arb_decision::ArbDecision;
-use super::common::resolve_return_score_thresholds_from_redis_map;
 use super::fr_threshold_loader::load_from_redis as load_fr_thresholds;
 use super::mm_decision::MmDecision;
 use super::rolling_threshold_sync::{
@@ -35,7 +34,6 @@ use super::strategy_loader::StrategyParams;
 use super::symbol_list::SymbolList;
 
 const DEFAULT_NAMESPACE: &str = "fr";
-const RETURN_SCORE_REDIS_REFRESH_SECS: u64 = 180;
 const OPEN_VOL_THRESHOLD_REDIS_REFRESH_SECS: u64 = 180;
 const VOL_FACTOR_RESAMPLE_INTERVAL_MS: i64 = 5_000;
 const VOL_FACTOR_ROLLING_WINDOW: i64 = 720;
@@ -49,8 +47,6 @@ struct RedisHashCacheEntry {
 }
 
 thread_local! {
-    static MM_RETURN_SCORE_CACHE: RefCell<HashMap<String, RedisHashCacheEntry>> =
-        RefCell::new(HashMap::new());
     static OPEN_VOL_THRESHOLD_CACHE: RefCell<HashMap<String, RedisHashCacheEntry>> =
         RefCell::new(HashMap::new());
 }
@@ -353,9 +349,6 @@ async fn reload_all_configs(
     reload_dynamic_thresholds(redis, namespace, open_venue, hedge_venue).await?;
     reload_fr_thresholds(redis, namespace, open_venue, hedge_venue).await?;
 
-    // 5. 加载 return-model-score 阈值 -> MmDecision/ArbDecision（仅 ns=mm/xarb）
-    reload_return_score_thresholds(redis, namespace, hedge_venue).await?;
-
     info!("✅ 配置重载完成");
     Ok(())
 }
@@ -485,131 +478,6 @@ async fn reload_fr_thresholds(
             warn!("连接 Redis 加载资金费率阈值失败: {:?}", err);
         }
     }
-    Ok(())
-}
-
-/// 重载 return-model-score 阈值（仅 namespace=mm/xarb/fr）
-async fn reload_return_score_thresholds(
-    redis: &RedisSettings,
-    namespace: &str,
-    hedge_venue: TradingVenue,
-) -> Result<()> {
-    let ns = normalize_namespace(namespace);
-    if ns != "mm" && ns != "xarb" && ns != "fr" {
-        return Ok(());
-    }
-
-    let redis_key = return_model_score_thresholds_key(hedge_venue);
-    let refresh_interval = Duration::from_secs(RETURN_SCORE_REDIS_REFRESH_SECS);
-
-    let mut cached_fields: Option<HashMap<String, String>> = None;
-    let mut cache_fresh = false;
-    MM_RETURN_SCORE_CACHE.with(|cell| {
-        let cache = cell.borrow();
-        if let Some(entry) = cache.get(&redis_key) {
-            cached_fields = Some(entry.fields.clone());
-            cache_fresh = entry.fetched_at.elapsed() < refresh_interval;
-        }
-    });
-
-    let score_map = if cache_fresh {
-        debug!(
-            "return score 阈值命中缓存 (ns={} key={} refresh={}s)",
-            ns, redis_key, RETURN_SCORE_REDIS_REFRESH_SECS
-        );
-        cached_fields.unwrap_or_default()
-    } else {
-        match RedisClient::connect(redis.clone()).await {
-            Ok(mut client) => match client.hgetall_map(&redis_key).await {
-                Ok(map) => {
-                    MM_RETURN_SCORE_CACHE.with(|cell| {
-                        cell.borrow_mut().insert(
-                            redis_key.clone(),
-                            RedisHashCacheEntry {
-                                fields: map.clone(),
-                                fetched_at: Instant::now(),
-                            },
-                        );
-                    });
-                    info!(
-                        "return score 阈值从 Redis 刷新 (ns={} key={} fields={} interval={}s)",
-                        ns,
-                        redis_key,
-                        map.len(),
-                        RETURN_SCORE_REDIS_REFRESH_SECS
-                    );
-                    map
-                }
-                Err(err) => {
-                    if let Some(cache) = cached_fields {
-                        warn!(
-                            "读取 Redis Hash 失败: {} ({:?}), 使用缓存阈值 ns={} fields={}",
-                            redis_key,
-                            err,
-                            ns,
-                            cache.len()
-                        );
-                        cache
-                    } else {
-                        warn!(
-                            "读取 Redis Hash 失败: {} ({:?}), 且无可用缓存，跳过 return score 阈值加载 ns={}",
-                            redis_key, err, ns
-                        );
-                        return Ok(());
-                    }
-                }
-            },
-            Err(err) => {
-                if let Some(cache) = cached_fields {
-                    warn!(
-                        "连接 Redis 失败 ({:?}), 使用缓存阈值 ns={} key={} fields={}",
-                        err,
-                        ns,
-                        redis_key,
-                        cache.len()
-                    );
-                    cache
-                } else {
-                    warn!(
-                        "连接 Redis 加载 return score 阈值失败: {:?} (ns={} key={}, 无缓存)",
-                        err, ns, redis_key
-                    );
-                    return Ok(());
-                }
-            }
-        }
-    };
-
-    let loaded_fields = score_map.len();
-    let (thresholds, stats) =
-        resolve_return_score_thresholds_from_redis_map(score_map, hedge_venue);
-    let updated = match ns.as_str() {
-        "mm" => MmDecision::try_with_mut(|decision| {
-            decision.update_return_score_thresholds(thresholds);
-        }),
-        "xarb" | "fr" => ArbDecision::with_state_mut(|arb| {
-            arb.return_score_thresholds = thresholds;
-        }),
-        _ => None,
-    };
-    if updated.is_none() {
-        warn!(
-            "return score 阈值已读取，但对应 decision 尚未初始化 (ns={} key={})",
-            ns, redis_key
-        );
-        return Ok(());
-    }
-
-    info!(
-        "return score 阈值应用完成 (ns={} key={} fields={} symbols={} incomplete_symbols={} ignored_fields={} bad_value_fields={})",
-        ns,
-        redis_key,
-        loaded_fields,
-        stats.loaded_symbols,
-        stats.incomplete_symbols,
-        stats.ignored_fields,
-        stats.bad_value_fields
-    );
     Ok(())
 }
 
@@ -856,10 +724,6 @@ fn spread_thresholds_key(
         open_venue.data_pub_slug(),
         hedge_venue.data_pub_slug()
     )
-}
-
-fn return_model_score_thresholds_key(venue: TradingVenue) -> String {
-    format!("return_model_score_thresholds_{}", venue.data_pub_slug())
 }
 
 fn default_rolling_thresholds_key(open_venue: TradingVenue, hedge_venue: TradingVenue) -> String {

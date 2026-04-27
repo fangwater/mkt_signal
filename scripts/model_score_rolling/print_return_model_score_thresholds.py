@@ -119,6 +119,10 @@ def parse_field(field_key: str, operations: List[str]) -> Optional[Tuple[str, st
 
 
 def main() -> int:
+    _ = parse_args()
+    print("return_model_score_thresholds_* 已废弃；不再读取该 Redis Hash。")
+    print("MM cancel 直接使用 model_output.score_quantile 与 strategy params 中的 90/10 分位配置。")
+    return 0
     args = parse_args()
     redis = try_import_redis()
     if redis is None:

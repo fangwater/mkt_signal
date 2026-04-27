@@ -5,9 +5,7 @@ use log::debug;
 use std::collections::HashMap;
 
 use super::super::arb_decision::DEFAULT_ARBITRAGE_SIGNAL_CHANNEL;
-use super::super::common::{
-    apply_open_tlen_gate_and_build_from_keys, ReturnScoreThresholdsResolved,
-};
+use super::super::common::apply_open_tlen_gate_and_build_from_keys;
 use super::super::factor_value_hub::{EnvironmentSignalResult, FactorValueHub};
 use super::super::inline_volatility::{
     snapshot_inline_tradecount, snapshot_inline_volatility, InlineVolatilitySnapshot,
@@ -187,10 +185,11 @@ pub(crate) struct MmDecisionState {
     pub(crate) hedge_window_scale_high: f64,
     pub(crate) max_hedge_price_pct_change: f64,
     pub(crate) enable_return_score_adjust_hedge: bool,
-    pub(crate) enable_open_cancel: bool,
+    pub(crate) enable_return_score_cancel: bool,
+    pub(crate) return_score_buy_cancel_quantile: f64,
+    pub(crate) return_score_sell_cancel_quantile: f64,
     pub(crate) enable_tlen_cancel: bool,
     pub(crate) tlen_cancel_freq_ms: u64,
-    pub(crate) prediction_mode: bool,
     pub(crate) enable_environment_model: bool,
     pub(crate) enable_volatility_limit: bool,
     pub(crate) open_volatility_limit: f64,
@@ -201,7 +200,6 @@ pub(crate) struct MmDecisionState {
     pub(crate) return_model_service: Option<String>,
     pub(crate) environment_model_service: Option<String>,
     pub(crate) environment_model_true_threshold: f64,
-    pub(crate) return_score_thresholds: HashMap<String, ReturnScoreThresholdsResolved>,
     pub(crate) tlen_thresholds: HashMap<String, f64>,
     pub(crate) open_min_qty_table: VenueMinQtyTable,
     pub(crate) factor_value_hub: FactorValueHub,
@@ -313,10 +311,11 @@ impl MmDecisionState {
             hedge_window_scale_high: 1.3,
             max_hedge_price_pct_change: 5.0,
             enable_return_score_adjust_hedge: true,
-            enable_open_cancel: false,
+            enable_return_score_cancel: false,
+            return_score_buy_cancel_quantile: 90.0,
+            return_score_sell_cancel_quantile: 10.0,
             enable_tlen_cancel: false,
             tlen_cancel_freq_ms: 3_000,
-            prediction_mode: false,
             enable_environment_model: true,
             enable_volatility_limit: true,
             open_volatility_limit: 70.0,
@@ -327,7 +326,6 @@ impl MmDecisionState {
             return_model_service: None,
             environment_model_service: None,
             environment_model_true_threshold: ENV_MODEL_TRUE_THRESHOLD_DEFAULT,
-            return_score_thresholds: HashMap::new(),
             tlen_thresholds: HashMap::new(),
             open_min_qty_table: VenueMinQtyTable::new(open_venue),
             factor_value_hub,
@@ -524,19 +522,38 @@ impl MmDecisionState {
         );
     }
 
-    pub(crate) fn update_prediction_mode(&mut self, enabled: bool) {
-        self.prediction_mode = enabled;
+    pub(crate) fn update_return_score_cancel_params(
+        &mut self,
+        enabled: bool,
+        buy_cancel_quantile: f64,
+        sell_cancel_quantile: f64,
+    ) {
+        if !(buy_cancel_quantile.is_finite()
+            && buy_cancel_quantile > 0.0
+            && buy_cancel_quantile < 99.0)
+        {
+            panic!(
+                "MmDecision: return_score_buy_cancel_quantile must be finite and within (0,99), got {}",
+                buy_cancel_quantile
+            );
+        }
+        if !(sell_cancel_quantile.is_finite()
+            && sell_cancel_quantile > 0.0
+            && sell_cancel_quantile < 99.0)
+        {
+            panic!(
+                "MmDecision: return_score_sell_cancel_quantile must be finite and within (0,99), got {}",
+                sell_cancel_quantile
+            );
+        }
+        self.enable_return_score_cancel = enabled;
+        self.return_score_buy_cancel_quantile = buy_cancel_quantile;
+        self.return_score_sell_cancel_quantile = sell_cancel_quantile;
         debug!(
-            "MmDecision: prediction_mode updated enabled={}",
-            self.prediction_mode
-        );
-    }
-
-    pub(crate) fn update_enable_open_cancel(&mut self, enabled: bool) {
-        self.enable_open_cancel = enabled;
-        debug!(
-            "MmDecision: enable_open_cancel updated enabled={}",
-            self.enable_open_cancel
+            "MmDecision: return score cancel params updated enabled={} buy_cancel_qtl={:.2} sell_cancel_qtl={:.2}",
+            self.enable_return_score_cancel,
+            self.return_score_buy_cancel_quantile,
+            self.return_score_sell_cancel_quantile
         );
     }
 
@@ -674,17 +691,6 @@ impl MmDecisionState {
             self.return_model_service,
             self.environment_model_service,
             self.environment_model_true_threshold
-        );
-    }
-
-    pub(crate) fn update_return_score_thresholds(
-        &mut self,
-        thresholds: HashMap<String, ReturnScoreThresholdsResolved>,
-    ) {
-        self.return_score_thresholds = thresholds;
-        debug!(
-            "MmDecision: return score thresholds updated symbols={}",
-            self.return_score_thresholds.len(),
         );
     }
 

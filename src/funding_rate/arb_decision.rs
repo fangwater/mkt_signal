@@ -28,13 +28,10 @@ use super::arb_cooldown::is_cooldown_hit;
 use super::arb_cooldown::threshold_key;
 use super::arb_cooldown::update_last_ts;
 use super::arb_mode::ArbMode;
-use super::arb_open_filter::{
-    lookup_realtime_open_filter_value, select_open_filter_threshold, select_open_return_threshold,
-    select_open_return_threshold_by_hedge_side,
-};
+use super::arb_open_filter::{lookup_realtime_open_filter_value, select_open_filter_threshold};
 use super::common::normalize_tlens_for_compare;
 use super::common::Quote;
-use super::common::{ReturnScoreThresholdsResolved, ThresholdKey, VenuePair};
+use super::common::{ThresholdKey, VenuePair};
 use super::factor_value_hub::{
     EnvironmentSignalResult, FactorValueHub, FactorValueLookupResult, ModelOutputScoreLookupResult,
 };
@@ -417,7 +414,6 @@ fn build_spread_arb_shell(venues: VenuePair) -> Result<SpreadArbShell> {
         arb.return_model_service = None;
         arb.environment_model_service = None;
         arb.environment_model_true_threshold = DEFAULT_ENV_MODEL_TRUE_THRESHOLD;
-        arb.return_score_thresholds = HashMap::new();
         arb.funding_open_thresholds = HashMap::new();
     });
     Ok(state)
@@ -1393,7 +1389,6 @@ fn drive_shared_arb_hedge_query(
             open_symbol_key.as_str(),
             &hedge_symbol,
             hedge_venue,
-            side,
             now,
             &query,
             &hedge_quote,
@@ -1948,7 +1943,6 @@ fn emit_funding_precise_tlen_cancel(
             hedge_symbol,
             open_venue,
             hedge_venue,
-            Side::Buy,
             now_us,
         )
     })
@@ -2409,7 +2403,6 @@ fn emit_spread_arb_close_signals(
             hedge_symbol,
             open_venue,
             hedge_venue,
-            side,
             batch_ts,
         )
     })
@@ -2622,7 +2615,6 @@ fn emit_funding_open_close_signals(
                 futures_symbol,
                 spot_venue,
                 futures_venue,
-                side,
                 batch_ts,
             )
         })
@@ -2831,7 +2823,6 @@ fn emit_funding_spread_cancel(
             futures_symbol,
             spot_venue,
             futures_venue,
-            Side::Buy,
             batch_ts,
         )
     })
@@ -3057,7 +3048,6 @@ pub(crate) struct ArbDecisionState {
     pub return_model_service: Option<String>,
     pub environment_model_service: Option<String>,
     pub environment_model_true_threshold: f64,
-    pub return_score_thresholds: HashMap<String, ReturnScoreThresholdsResolved>,
     pub funding_open_thresholds: HashMap<String, XarbFundingThresholdsResolved>,
     pub tlen_thresholds: HashMap<String, f64>,
     pub signal_cooldown_us: i64,
@@ -3094,7 +3084,6 @@ impl ArbDecisionState {
             return_model_service: None,
             environment_model_service: None,
             environment_model_true_threshold: 0.0,
-            return_score_thresholds: HashMap::new(),
             funding_open_thresholds: HashMap::new(),
             tlen_thresholds: HashMap::new(),
             signal_cooldown_us: 5_000_000,
@@ -3278,7 +3267,6 @@ impl ArbDecisionState {
         open_symbol_key: &str,
         hedge_symbol: &str,
         hedge_venue: TradingVenue,
-        side: Side,
         now: i64,
         query: &ArbHedgeSignalQueryMsg,
         hedge_quote: &Quote,
@@ -3290,10 +3278,7 @@ impl ArbDecisionState {
             .as_ref()
             .and_then(|lookup| lookup.score_quantile)
             .filter(|v| v.is_finite());
-        let return_threshold = return_lookup.as_ref().and_then(|lookup| {
-            self.lookup_return_score_thresholds(&lookup.symbol_key)
-                .map(|thresholds| select_open_return_threshold_by_hedge_side(side, thresholds))
-        });
+        let return_threshold = None;
         let environment_score = environment_signal
             .score
             .unwrap_or(environment_signal.class_label as f64);
@@ -3319,7 +3304,6 @@ impl ArbDecisionState {
         open_symbol_key: &str,
         hedge_symbol: &str,
         hedge_venue: TradingVenue,
-        side: Side,
         now: i64,
         query: &ArbHedgeSignalQueryMsg,
         hedge_quote: &Quote,
@@ -3328,7 +3312,6 @@ impl ArbDecisionState {
             open_symbol_key,
             hedge_symbol,
             hedge_venue,
-            side,
             now,
             query,
             hedge_quote,
@@ -3664,15 +3647,6 @@ impl ArbDecisionState {
         )
     }
 
-    pub fn lookup_return_score_thresholds(
-        &self,
-        model_symbol_key: &str,
-    ) -> Option<ReturnScoreThresholdsResolved> {
-        self.return_score_thresholds
-            .get(&model_symbol_key.to_ascii_uppercase())
-            .copied()
-    }
-
     pub fn lookup_funding_open_thresholds(
         &self,
         symbol_key: &str,
@@ -3696,7 +3670,6 @@ impl ArbDecisionState {
         hedge_symbol: &str,
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
-        side: Side,
         now_us: i64,
     ) -> OpenFromKeySnapshot {
         let return_lookup = self.lookup_return_model_score_lookup(hedge_symbol, hedge_venue);
@@ -3704,10 +3677,7 @@ impl ArbDecisionState {
             .as_ref()
             .and_then(|lookup| lookup.score_quantile)
             .filter(|v| v.is_finite());
-        let return_threshold = return_lookup.as_ref().and_then(|lookup| {
-            self.lookup_return_score_thresholds(&lookup.symbol_key)
-                .map(|thresholds| select_open_return_threshold(side, thresholds))
-        });
+        let return_threshold = None;
         let environment_signal =
             self.evaluate_environment_signal(open_symbol_key, hedge_symbol, hedge_venue, now_us);
         let env_score = environment_signal
@@ -4077,10 +4047,7 @@ impl ArbDecisionState {
             .as_ref()
             .and_then(|lookup| lookup.score_quantile)
             .filter(|v| v.is_finite());
-        let return_threshold = return_lookup.as_ref().and_then(|lookup| {
-            self.lookup_return_score_thresholds(&lookup.symbol_key)
-                .map(|thresholds| select_open_return_threshold(side, thresholds))
-        });
+        let return_threshold = None;
 
         let environment_signal =
             self.evaluate_environment_signal(open_symbol_key, hedge_symbol, hedge_venue, now);

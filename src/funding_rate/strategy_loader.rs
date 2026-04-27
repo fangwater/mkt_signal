@@ -70,6 +70,22 @@ fn parse_bool_param(redis_key: &str, field: &str, raw: &str) -> bool {
     }
 }
 
+fn parse_percentile_exclusive(redis_key: &str, field: &str, raw: &str) -> f64 {
+    let value = raw.trim().parse::<f64>().unwrap_or_else(|_| {
+        panic!(
+            "Redis hash '{}' {} 无法解析为数字: {}",
+            redis_key, field, raw
+        )
+    });
+    if !(value.is_finite() && value > 0.0 && value < 99.0) {
+        panic!(
+            "Redis hash '{}' {} 无效(需在(0,99)内): {}",
+            redis_key, field, value
+        );
+    }
+    value
+}
+
 fn parse_utc_hhmm_minute(raw: &str) -> Option<u16> {
     let bytes = raw.as_bytes();
     if bytes.len() != 5 || bytes[2] != b':' {
@@ -286,13 +302,17 @@ pub struct StrategyParams {
     #[serde(default = "default_signal_cooldown")]
     pub signal_cooldown: u64,
 
-    /// MM 是否启用方向预测（true=按 return score 过滤单边，false=双边同时报价）
-    #[serde(default = "default_prediction_mode")]
-    pub prediction_mode: bool,
+    /// MM 是否启用基于 return score quantile 的方向撤单
+    #[serde(default = "default_enable_return_score_cancel")]
+    pub enable_return_score_cancel: bool,
 
-    /// MM 是否启用开仓撤单判断（false=跳过 MMCancel）
-    #[serde(default = "default_enable_open_cancel")]
-    pub enable_open_cancel: bool,
+    /// return score quantile 大于该百分位时，撤 sell 方向 open 单
+    #[serde(default = "default_return_score_buy_cancel_quantile")]
+    pub return_score_buy_cancel_quantile: f64,
+
+    /// return score quantile 小于该百分位时，撤 buy/long 方向 open 单
+    #[serde(default = "default_return_score_sell_cancel_quantile")]
+    pub return_score_sell_cancel_quantile: f64,
 
     /// MM 是否启用基于 tlen 的开仓撤单链路（trigger/query/cancel）
     #[serde(default = "default_enable_tlen_cancel")]
@@ -411,11 +431,14 @@ fn default_max_hedge_price_pct_change() -> f64 {
 fn default_signal_cooldown() -> u64 {
     5
 }
-fn default_prediction_mode() -> bool {
+fn default_enable_return_score_cancel() -> bool {
     false
 }
-fn default_enable_open_cancel() -> bool {
-    false
+fn default_return_score_buy_cancel_quantile() -> f64 {
+    90.0
+}
+fn default_return_score_sell_cancel_quantile() -> f64 {
+    10.0
 }
 fn default_enable_tlen_cancel() -> bool {
     false
@@ -482,8 +505,9 @@ impl Default for StrategyParams {
             hedge_aggressive_seq_threshold: default_hedge_aggressive_seq_threshold(),
             max_hedge_price_pct_change: default_max_hedge_price_pct_change(),
             signal_cooldown: default_signal_cooldown(),
-            prediction_mode: default_prediction_mode(),
-            enable_open_cancel: default_enable_open_cancel(),
+            enable_return_score_cancel: default_enable_return_score_cancel(),
+            return_score_buy_cancel_quantile: default_return_score_buy_cancel_quantile(),
+            return_score_sell_cancel_quantile: default_return_score_sell_cancel_quantile(),
             enable_tlen_cancel: default_enable_tlen_cancel(),
             tlen_cancel_freq_ms: default_tlen_cancel_freq_ms(),
             spread_cancel_cooldown_ms: default_spread_cancel_cooldown_ms(),
@@ -719,32 +743,22 @@ impl StrategyParams {
             .get("signal_cooldown")
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or_else(default_signal_cooldown);
-        let prediction_mode = match hash_map.get("prediction_mode") {
-            Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
-                "true" | "1" | "yes" | "on" => true,
-                "false" | "0" | "no" | "off" | "" => false,
-                _ => {
-                    panic!(
-                        "Redis hash '{}' prediction_mode 非法（仅支持 true/false）: {}",
-                        redis_key, raw
-                    )
-                }
-            },
-            None => default_prediction_mode(),
-        };
-        let enable_open_cancel = match hash_map.get("enable_open_cancel") {
-            Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
-                "true" | "1" | "yes" | "on" => true,
-                "false" | "0" | "no" | "off" | "" => false,
-                _ => {
-                    panic!(
-                        "Redis hash '{}' enable_open_cancel 非法（仅支持 true/false）: {}",
-                        redis_key, raw
-                    )
-                }
-            },
-            None => default_enable_open_cancel(),
-        };
+        let enable_return_score_cancel = hash_map
+            .get("enable_return_score_cancel")
+            .map(|raw| parse_bool_param(&redis_key, "enable_return_score_cancel", raw))
+            .unwrap_or_else(default_enable_return_score_cancel);
+        let return_score_buy_cancel_quantile = hash_map
+            .get("return_score_buy_cancel_quantile")
+            .map(|raw| {
+                parse_percentile_exclusive(&redis_key, "return_score_buy_cancel_quantile", raw)
+            })
+            .unwrap_or_else(default_return_score_buy_cancel_quantile);
+        let return_score_sell_cancel_quantile = hash_map
+            .get("return_score_sell_cancel_quantile")
+            .map(|raw| {
+                parse_percentile_exclusive(&redis_key, "return_score_sell_cancel_quantile", raw)
+            })
+            .unwrap_or_else(default_return_score_sell_cancel_quantile);
         let enable_tlen_cancel = match hash_map.get("enable_tlen_cancel") {
             Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
                 "true" | "1" | "yes" | "on" => true,
@@ -993,8 +1007,9 @@ impl StrategyParams {
             hedge_aggressive_seq_threshold,
             max_hedge_price_pct_change,
             signal_cooldown,
-            prediction_mode,
-            enable_open_cancel,
+            enable_return_score_cancel,
+            return_score_buy_cancel_quantile,
+            return_score_sell_cancel_quantile,
             enable_tlen_cancel,
             tlen_cancel_freq_ms,
             spread_cancel_cooldown_ms,
@@ -1139,8 +1154,11 @@ impl StrategyParams {
                     self.enable_return_score_adjust_hedge,
                 );
                 _decision.update_open_order_timeout(self.open_order_timeout);
-                _decision.update_prediction_mode(self.prediction_mode);
-                _decision.update_enable_open_cancel(self.enable_open_cancel);
+                _decision.update_return_score_cancel_params(
+                    self.enable_return_score_cancel,
+                    self.return_score_buy_cancel_quantile,
+                    self.return_score_sell_cancel_quantile,
+                );
                 _decision.update_enable_environment_model(self.enable_environment_model);
                 _decision.update_enable_volatility_limit(self.enable_volatility_limit);
                 _decision.update_open_volatility_limit(self.open_volatility_limit);
@@ -1166,7 +1184,7 @@ impl StrategyParams {
         }
 
         info!(
-            "✅ 策略参数已更新: mode={}, amount={:.2}, arb_open_scale={:.4}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, hedge_window_scale_low={:.4}, hedge_window_scale_high={:.4}, order_interval_ms={}, open_orders_per_round={}, cooldown={}s, prediction_mode={}, enable_open_cancel={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, spread_cancel_cooldown_ms={}, enable_return_score_adjust_hedge={}, enable_environment_model={}, enable_volatility_limit={}, open_volatility_limit={}, enable_tradecount_limit={}, open_tradecount_limit={}, enable_open_time_block={}, open_block_utc_time_range={}, return_model_service={}, environment_model_service={}",
+            "✅ 策略参数已更新: mode={}, amount={:.2}, arb_open_scale={:.4}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, hedge_window_scale_low={:.4}, hedge_window_scale_high={:.4}, order_interval_ms={}, open_orders_per_round={}, cooldown={}s, enable_return_score_cancel={}, return_score_buy_cancel_quantile={}, return_score_sell_cancel_quantile={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, spread_cancel_cooldown_ms={}, enable_return_score_adjust_hedge={}, enable_environment_model={}, enable_volatility_limit={}, open_volatility_limit={}, enable_tradecount_limit={}, open_tradecount_limit={}, enable_open_time_block={}, open_block_utc_time_range={}, return_model_service={}, environment_model_service={}",
             self.mode,
             self.order_amount,
             self.open_scale,
@@ -1177,8 +1195,9 @@ impl StrategyParams {
             self.order_interval_ms,
             self.open_orders_per_round,
             self.signal_cooldown,
-            self.prediction_mode,
-            self.enable_open_cancel,
+            self.enable_return_score_cancel,
+            self.return_score_buy_cancel_quantile,
+            self.return_score_sell_cancel_quantile,
             self.enable_tlen_cancel,
             self.tlen_cancel_freq_ms,
             self.spread_cancel_cooldown_ms,
@@ -1216,9 +1235,16 @@ mod tests {
     }
 
     #[test]
-    fn test_enable_open_cancel_default_is_false() {
+    fn test_enable_return_score_cancel_default_is_false() {
         let params = StrategyParams::default();
-        assert!(!params.enable_open_cancel);
+        assert!(!params.enable_return_score_cancel);
+    }
+
+    #[test]
+    fn test_return_score_cancel_quantile_defaults() {
+        let params = StrategyParams::default();
+        assert!((params.return_score_buy_cancel_quantile - 90.0).abs() < 1e-12);
+        assert!((params.return_score_sell_cancel_quantile - 10.0).abs() < 1e-12);
     }
 
     #[test]

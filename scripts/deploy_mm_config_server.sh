@@ -278,7 +278,6 @@ FILES=(
   "scripts/print_mm_amount_u.py"
   "scripts/sync_mm_symbol_list.py"
   "scripts/print_mm_symbol_list.py"
-  "scripts/print_mm_return_score_thresholds.py"
 )
 
 for file in "${FILES[@]}"; do
