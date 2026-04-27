@@ -76,28 +76,6 @@ impl MarketMakerOpenStrategy {
         true
     }
 
-    fn terminalize_open_order_before_cleanup(&mut self, client_order_id: i64) {
-        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
-            return;
-        };
-        let event_time = get_timestamp_us();
-        let _ = order_mgr.borrow_mut().update(client_order_id, |order| {
-            if order.status.is_terminal() {
-                return;
-            }
-            order.status = OrderExecutionStatus::Rejected;
-            order.set_end_time(event_time);
-        });
-    }
-
-    fn handle_open_failed_cleanup(&mut self, client_order_id: i64) {
-        self.open_state.order.pending_order_query = None;
-        self.clear_query_watchdogs(client_order_id);
-        self.terminalize_open_order_before_cleanup(client_order_id);
-        self.cleanup_strategy_orders();
-        self.open_state.alive = false;
-    }
-
     fn try_apply_ws_order_update(&mut self, response: &dyn TradeEngineResponse) -> bool {
         if !WsOrderUpdate::supports_trade_response_req_type(response.req_type()) {
             return false;
@@ -1319,7 +1297,9 @@ impl Strategy for MarketMakerOpenStrategy {
 #[cfg(test)]
 mod tests {
     use super::MarketMakerOpenStrategy;
-    use crate::strategy::open_strategy_common::{PendingOrderQueryReason, QueryWatchdog};
+    use crate::strategy::open_strategy_common::{
+        OpenStrategyCommon, PendingOrderQueryReason, QueryWatchdog,
+    };
     use crate::strategy::order_reconcile::monotonic_cumulative_fill;
 
     #[test]
