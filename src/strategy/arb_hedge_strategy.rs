@@ -11,13 +11,22 @@ use std::any::Any;
 
 const ARB_HEDGE_EPS: f64 = 1e-12;
 
+/// 单次成交记录写入后的队列变化结果。
+///
+/// open/hedge 两条腿各自维护净敞口，pending_hedge 单独记录尚未完成或尚未到期的对冲需求。
 #[derive(Debug, Clone)]
 pub struct ArbHedgeRecordResult {
+    /// 开仓腿净敞口队列的本次应用结果；仅开仓腿成交时存在。
     pub open_net: Option<NetQtyApplyResult>,
+    /// 对冲腿净敞口队列的本次应用结果；仅对冲腿成交时存在。
     pub hedge_net: Option<NetQtyApplyResult>,
+    /// 待对冲队列的本次应用结果，用于追踪剩余对冲需求。
     pub pending_hedge: NetQtyApplyResult,
 }
 
+/// Arb 对冲策略的只读状态快照。
+///
+/// 调用方可以通过它观察两条腿当前净敞口、待对冲数量，以及各队列中的批次明细。
 #[derive(Debug, Clone)]
 pub struct ArbHedgeSnapshot {
     pub symbol: String,
@@ -40,8 +49,11 @@ pub struct ArbHedgeStrategy {
     symbol: String,
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
+    /// 开仓腿累计净敞口。买入记正，卖出记负。
     open_net_queue: TimedNetQtyQueue,
+    /// 对冲腿累计净敞口。单独维护，便于核对真实对冲成交。
     hedge_net_queue: TimedNetQtyQueue,
+    /// 尚需由对冲腿覆盖的开仓成交队列，到期时间来自开仓记录的 close_ts。
     pending_hedge_queue: TimedNetQtyQueue,
     alive_flag: bool,
 }
@@ -96,6 +108,9 @@ impl ArbHedgeStrategy {
         self.pending_hedge_queue.due_qty(now_ts)
     }
 
+    /// 记录开仓腿成交。
+    ///
+    /// 成交会同时进入 open_net_queue 和 pending_hedge_queue；后者在 close_ts 到期后可被识别为应对冲数量。
     pub fn record_open_fill(
         &mut self,
         fill_ts: i64,
@@ -111,6 +126,9 @@ impl ArbHedgeStrategy {
         Some(self.record_open_signed_fill(fill_ts, signed_base_qty, price, close_ts))
     }
 
+    /// 记录对冲腿成交。
+    ///
+    /// 成交会进入 hedge_net_queue，并抵消 pending_hedge_queue 中方向相反的待对冲批次。
     pub fn record_hedge_fill(
         &mut self,
         fill_ts: i64,
@@ -135,6 +153,7 @@ impl ArbHedgeStrategy {
         let open_result = self
             .open_net_queue
             .apply_fill(fill_ts, 0, signed_base_qty, price);
+        // 开仓成交先形成待对冲需求，close_ts 决定这笔需求何时进入 due 数量。
         let pending_result =
             self.pending_hedge_queue
                 .apply_fill(fill_ts, close_ts, signed_base_qty, price);
@@ -165,6 +184,7 @@ impl ArbHedgeStrategy {
         let hedge_result = self
             .hedge_net_queue
             .apply_fill(fill_ts, 0, signed_base_qty, price);
+        // 对冲成交立即抵消待对冲队列；若方向相同，则会增加待处理的净需求。
         let pending_result =
             self.pending_hedge_queue
                 .apply_fill(fill_ts, 0, signed_base_qty, price);
@@ -186,6 +206,7 @@ impl ArbHedgeStrategy {
     }
 
     fn signed_qty(side: Side, base_qty: f64) -> f64 {
+        // 统一使用正负号表达方向，避免后续队列逻辑重复关心买卖枚举。
         match side {
             Side::Buy => base_qty.abs(),
             Side::Sell => -base_qty.abs(),
