@@ -4,15 +4,19 @@ use crate::common::time_util::get_timestamp_us;
 use crate::common::trade_error_code::describe_trade_error_code;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
-use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderType, Side};
+use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderManager, OrderType, Side};
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::{QueryEngHub, TradeEngHub};
-use crate::signal::common::TradingVenue;
+use crate::signal::common::{OrderStatus, TradingVenue};
 use crate::strategy::manager::{OpenPriceMapEntry, OrphanHandoff, OrphanStrategyRole, Strategy};
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::order_reconcile::{qv_decimal_or_fallback, ORDER_QUERY_WATCHDOG_DELAY_US};
+use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKind};
-use crate::strategy::uniform_order_helper::UniformPublishCtx;
+use crate::strategy::uniform_order_helper::{
+    publish_uniform_new_order, publish_uniform_terminal_order,
+    publish_uniform_trade_order_from_order_update, UniformPublishCtx,
+};
 use crate::strategy::ws_order_update::try_apply_ws_order_update_for_strategy;
 use log::{debug, error, info, warn};
 
@@ -168,6 +172,48 @@ pub trait OpenStrategyCommon {
         _input: &OpenSignalInput,
         _qty_multiplier: f64,
     ) {
+    }
+
+    fn open_terminal_close_ts(&self) -> i64 {
+        0
+    }
+
+    fn record_open_order_terminal_base_qty(
+        &mut self,
+        symbol: &str,
+        side: Side,
+        base_qty: f64,
+        fill_ts: i64,
+        price: f64,
+        update_detail: &str,
+    ) -> bool {
+        if base_qty <= 1e-12 {
+            return false;
+        }
+        let signed_base_qty = match side {
+            Side::Buy => base_qty.abs(),
+            Side::Sell => -base_qty.abs(),
+        };
+        let close_ts = self.open_terminal_close_ts();
+        let updated = MonitorChannel::instance()
+            .strategy_mgr()
+            .borrow_mut()
+            .record_open_order_terminal(symbol, signed_base_qty, fill_ts, price, close_ts);
+        if !updated {
+            warn!(
+                "{}: strategy_id={} record open order terminal failed symbol={} side={:?} base_qty={:.8} fill_ts={} price={:.8} close_ts={} detail={}",
+                self.strategy_name(),
+                self.strategy_id(),
+                symbol,
+                side,
+                base_qty,
+                fill_ts,
+                price,
+                close_ts,
+                update_detail
+            );
+        }
+        updated
     }
 
     fn send_open_order_common(&mut self, client_order_id: i64, symbol: &str) -> Result<(), String> {
@@ -858,6 +904,260 @@ pub trait OpenStrategyCommon {
                 );
             }
         }
+    }
+
+    fn apply_order_update_common(&mut self, order_update: &dyn OrderUpdate) -> bool {
+        let client_order_id = order_update.client_order_id();
+        self.clear_query_watchdogs(client_order_id);
+        if client_order_id != self.open_order_id() {
+            debug!(
+                "{}: strategy_id={} ignore order_update client_order_id={}",
+                self.strategy_name(),
+                self.strategy_id(),
+                client_order_id
+            );
+            return false;
+        }
+
+        let order_mgr = MonitorChannel::instance().order_manager();
+        let mut order_manager = order_mgr.borrow_mut();
+        let Some(current_order) = order_manager.get(client_order_id) else {
+            warn!(
+                "{}: strategy_id={} order update not found client_order_id={}",
+                self.strategy_name(),
+                self.strategy_id(),
+                client_order_id
+            );
+            return false;
+        };
+
+        if OrderManager::should_skip_idempotent_order_update(
+            &current_order,
+            order_update.status(),
+            order_update.order_id(),
+            order_update.cumulative_filled_quantity(),
+            self.strategy_name(),
+            self.strategy_id(),
+        )
+        .is_some()
+        {
+            return false;
+        }
+
+        let prev_cumulative_filled_qty = current_order.cumulative_filled_quantity;
+        let prev_order_terminal = current_order.status.is_terminal();
+        let incoming_cumulative_filled_qty = order_update.cumulative_filled_quantity();
+        let protected_cumulative_fill =
+            current_order.protected_cumulative_fill(incoming_cumulative_filled_qty);
+        if protected_cumulative_fill.rollback_detected {
+            warn!(
+                "{}: strategy_id={} protected cumulative fill rollback: client_order_id={} symbol={} status={:?} prev={:.8} incoming={:.8} effective={:.8}",
+                self.strategy_name(),
+                self.strategy_id(),
+                current_order.client_order_id,
+                current_order.symbol,
+                order_update.status(),
+                current_order.cumulative_filled_quantity,
+                incoming_cumulative_filled_qty,
+                protected_cumulative_fill.effective_cum
+            );
+        }
+        let effective_cumulative_filled_qty = protected_cumulative_fill.effective_cum;
+
+        let updated = order_manager.update(client_order_id, |order| match order_update.status() {
+            OrderStatus::New => {
+                if !self.open_state().alive {
+                    warn!(
+                        "{}: strategy_id={} revive on delayed open NEW: client_order_id={} exchange_order_id={} symbol={}",
+                        self.strategy_name(),
+                        self.strategy_id(),
+                        client_order_id,
+                        order_update.order_id(),
+                        order.symbol
+                    );
+                    self.open_state_mut().alive = true;
+                }
+                order.status = OrderExecutionStatus::Create;
+                order.set_exchange_order_id(order_update.order_id());
+                order.set_create_time(order_update.event_time());
+                debug!(
+                    "{}: strategy_id={} open order NEW client_order_id={} exchange_order_id={} symbol={} side={:?} price={} qty={}",
+                    self.strategy_name(),
+                    self.strategy_id(),
+                    client_order_id,
+                    order_update.order_id(),
+                    order.symbol,
+                    order.side,
+                    qv_decimal_or_fallback(order.price),
+                    qv_decimal_or_fallback(order.quantity)
+                );
+            }
+            OrderStatus::Canceled => {
+                order.status = OrderExecutionStatus::Cancelled;
+                order.set_exchange_order_id(order_update.order_id());
+                order.cumulative_filled_quantity = effective_cumulative_filled_qty;
+                order.set_end_time(order_update.event_time());
+                let cancel_reason = self
+                    .open_order_state()
+                    .last_open_cancel_reason
+                    .unwrap_or("unknown");
+                info!(
+                    "{}: strategy_id={} open order canceled client_order_id={} exchange_order_id={} exchange={} symbol={} reason={} side={:?} price={} filled={}/{}",
+                    self.strategy_name(),
+                    self.strategy_id(),
+                    client_order_id,
+                    order_update.order_id(),
+                    order.venue.trade_engine_exchange(),
+                    order.symbol,
+                    cancel_reason,
+                    order.side,
+                    qv_decimal_or_fallback(order.price),
+                    qv_decimal_or_fallback(order.cumulative_filled_quantity),
+                    qv_decimal_or_fallback(order.quantity)
+                );
+                self.open_order_state_mut().last_open_cancel_reason = None;
+                self.open_state_mut().alive = false;
+            }
+            OrderStatus::Filled => {
+                order.status = OrderExecutionStatus::Filled;
+                order.set_exchange_order_id(order_update.order_id());
+                order.cumulative_filled_quantity = effective_cumulative_filled_qty;
+                order.set_filled_time(order_update.event_time());
+                order.set_end_time(order_update.event_time());
+                debug!(
+                    "{}: strategy_id={} open order filled client_order_id={} exchange_order_id={} symbol={}",
+                    self.strategy_name(),
+                    self.strategy_id(),
+                    client_order_id,
+                    order_update.order_id(),
+                    order.symbol
+                );
+                self.open_state_mut().alive = false;
+            }
+            OrderStatus::Expired | OrderStatus::ExpiredInMatch => {
+                order.status = OrderExecutionStatus::Rejected;
+                order.set_exchange_order_id(order_update.order_id());
+                order.cumulative_filled_quantity = effective_cumulative_filled_qty;
+                order.set_end_time(order_update.event_time());
+                warn!(
+                    "{}: strategy_id={} open order expired client_order_id={} exchange_order_id={} symbol={} status={:?}",
+                    self.strategy_name(),
+                    self.strategy_id(),
+                    client_order_id,
+                    order_update.order_id(),
+                    order.symbol,
+                    order_update.status()
+                );
+                self.open_state_mut().alive = false;
+            }
+            OrderStatus::PartiallyFilled => {
+                order.status = OrderExecutionStatus::Create;
+                order.set_exchange_order_id(order_update.order_id());
+                order.cumulative_filled_quantity = effective_cumulative_filled_qty;
+                order.set_filled_time(order_update.event_time());
+                debug!(
+                    "{}: strategy_id={} open order partially filled client_order_id={} exchange_order_id={} symbol={}",
+                    self.strategy_name(),
+                    self.strategy_id(),
+                    client_order_id,
+                    order_update.order_id(),
+                    order.symbol
+                );
+            }
+        });
+
+        if !updated {
+            warn!(
+                "{}: strategy_id={} order update not found client_order_id={}",
+                self.strategy_name(),
+                self.strategy_id(),
+                client_order_id
+            );
+            return false;
+        }
+
+        let updated_order = order_manager.get(client_order_id);
+        drop(order_manager);
+
+        let Some(order) = updated_order else {
+            warn!(
+                "{}: strategy_id={} order update missing local order after update client_order_id={}",
+                self.strategy_name(),
+                self.strategy_id(),
+                client_order_id
+            );
+            return false;
+        };
+
+        if matches!(
+            order_update.status(),
+            OrderStatus::Canceled | OrderStatus::Filled
+        ) {
+            let terminal_venue_qty = if prev_order_terminal {
+                effective_cumulative_filled_qty - prev_cumulative_filled_qty
+            } else {
+                effective_cumulative_filled_qty
+            };
+            let terminal_base_qty = terminal_venue_qty * order.qty_multiplier;
+            let update_detail = format!(
+                "{} local_order_symbol={} local_order_qty={:.8} qty_multiplier={:.8} terminal_venue_qty={:.8} terminal_base_qty={:.8} local_order_status={:?}",
+                order_update.debug_summary(),
+                order.symbol,
+                order.quantity,
+                order.qty_multiplier,
+                terminal_venue_qty,
+                terminal_base_qty,
+                order.status
+            );
+            self.record_open_order_terminal_base_qty(
+                &order.symbol,
+                order.side,
+                terminal_base_qty,
+                order_update.event_time(),
+                order.price,
+                &update_detail,
+            );
+        }
+
+        let ctx = self.uniform_open_publish_ctx();
+        if order_update.status() == OrderStatus::New {
+            publish_uniform_new_order(
+                order_update,
+                &order,
+                prev_cumulative_filled_qty,
+                &ctx,
+                self.strategy_name(),
+                self.strategy_id(),
+            );
+        }
+        if matches!(
+            order_update.status(),
+            OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::ExpiredInMatch
+        ) {
+            publish_uniform_terminal_order(
+                order_update,
+                &order,
+                prev_cumulative_filled_qty,
+                &ctx,
+                self.strategy_name(),
+                self.strategy_id(),
+            );
+        }
+        if matches!(
+            order_update.status(),
+            OrderStatus::PartiallyFilled | OrderStatus::Filled
+        ) {
+            publish_uniform_trade_order_from_order_update(
+                order_update,
+                &order,
+                prev_cumulative_filled_qty,
+                &ctx,
+                self.strategy_name(),
+                self.strategy_id(),
+            );
+        }
+
+        true
     }
 
     fn handoff_open_order_to_orphan(&mut self, client_order_id: i64, reason: &str) -> bool {

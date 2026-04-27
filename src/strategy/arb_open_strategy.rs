@@ -13,15 +13,11 @@ use crate::strategy::manager::{
 use crate::strategy::open_strategy_common::{
     OpenCancelInput, OpenSignalInput, OpenStrategyCommon, OpenStrategyState,
 };
-use crate::strategy::order_reconcile::qv_decimal_or_fallback;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_engine_response::TradeEngineResponse;
 use crate::strategy::trade_update::TradeUpdate;
-use crate::strategy::uniform_order_helper::{
-    publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
-    publish_uniform_trade_order_from_order_update, UniformAmountSource,
-};
-use log::{debug, info, warn};
+use crate::strategy::uniform_order_helper::publish_uniform_trade_order;
+use log::{debug, warn};
 use std::any::Any;
 
 /// 单腿套利开仓策略：只负责 open leg 生命周期，不保存 hedge leg 或双腿盘口。
@@ -117,42 +113,6 @@ impl ArbOpenStrategy {
         }
     }
 
-    fn publish_uniform_new_order(
-        &self,
-        order_update: &dyn OrderUpdate,
-        order: &Order,
-        prev_cumulative_filled_qty: f64,
-    ) {
-        let ctx = self.uniform_open_publish_ctx();
-        publish_uniform_new_order(
-            order_update,
-            order,
-            prev_cumulative_filled_qty,
-            &ctx,
-            "ArbOpenStrategy",
-            self.open_state.strategy_id,
-            UniformAmountSource::OrderUpdate,
-        );
-    }
-
-    fn publish_uniform_terminal_order(
-        &self,
-        order_update: &dyn OrderUpdate,
-        order: &Order,
-        prev_cumulative_filled_qty: f64,
-    ) {
-        let ctx = self.uniform_open_publish_ctx();
-        publish_uniform_terminal_order(
-            order_update,
-            order,
-            prev_cumulative_filled_qty,
-            &ctx,
-            "ArbOpenStrategy",
-            self.open_state.strategy_id,
-            UniformAmountSource::OrderUpdate,
-        );
-    }
-
     fn publish_uniform_trade_order(
         &self,
         trade: &dyn TradeUpdate,
@@ -172,220 +132,8 @@ impl ArbOpenStrategy {
         );
     }
 
-    fn publish_uniform_trade_order_from_order_update(
-        &self,
-        order_update: &dyn OrderUpdate,
-        order: &Order,
-        prev_cumulative_filled_qty: f64,
-    ) {
-        let ctx = self.uniform_open_publish_ctx();
-        publish_uniform_trade_order_from_order_update(
-            order_update,
-            order,
-            prev_cumulative_filled_qty,
-            &ctx,
-            "ArbOpenStrategy",
-            self.open_state.strategy_id,
-        );
-    }
-
     fn apply_order_update(&mut self, order_update: &dyn OrderUpdate) -> bool {
-        let client_order_id = order_update.client_order_id();
-        self.clear_query_watchdogs(client_order_id);
-        if client_order_id != self.open_state.order.open_order_id {
-            debug!(
-                "ArbOpenStrategy: strategy_id={} ignore order_update client_order_id={}",
-                self.open_state.strategy_id, client_order_id
-            );
-            return false;
-        }
-
-        let order_mgr = MonitorChannel::instance().order_manager();
-        let mut order_manager = order_mgr.borrow_mut();
-        let Some(current_order) = order_manager.get(client_order_id) else {
-            warn!(
-                "ArbOpenStrategy: strategy_id={} order update not found client_order_id={}",
-                self.open_state.strategy_id, client_order_id
-            );
-            return false;
-        };
-        if OrderManager::should_skip_idempotent_order_update(
-            &current_order,
-            order_update.status(),
-            order_update.order_id(),
-            order_update.cumulative_filled_quantity(),
-            "ArbOpenStrategy",
-            self.open_state.strategy_id,
-        )
-        .is_some()
-        {
-            return false;
-        }
-
-        let prev_cumulative_filled_qty = current_order.cumulative_filled_quantity;
-        let prev_order_terminal = current_order.status.is_terminal();
-        let qty_multiplier = current_order.qty_multiplier;
-        let order_side = current_order.side;
-        let order_price = current_order.price;
-        let incoming_cumulative_filled_qty = order_update.cumulative_filled_quantity();
-        let protected_cumulative_fill =
-            current_order.protected_cumulative_fill(incoming_cumulative_filled_qty);
-        if protected_cumulative_fill.rollback_detected {
-            warn!(
-                "ArbOpenStrategy: strategy_id={} protected cumulative fill rollback: client_order_id={} symbol={} status={:?} prev={:.8} incoming={:.8} effective={:.8}",
-                self.open_state.strategy_id,
-                current_order.client_order_id,
-                current_order.symbol,
-                order_update.status(),
-                current_order.cumulative_filled_quantity,
-                incoming_cumulative_filled_qty,
-                protected_cumulative_fill.effective_cum
-            );
-        }
-        let effective_cumulative_filled_qty = protected_cumulative_fill.effective_cum;
-
-        let updated = order_manager.update(client_order_id, |order| match order_update.status() {
-            OrderStatus::New => {
-                if !self.open_state.alive {
-                    warn!(
-                        "ArbOpenStrategy: strategy_id={} revive on delayed open NEW: client_order_id={} exchange_order_id={} symbol={}",
-                        self.open_state.strategy_id,
-                        client_order_id,
-                        order_update.order_id(),
-                        order.symbol
-                    );
-                    self.open_state.alive = true;
-                }
-                order.status = OrderExecutionStatus::Create;
-                order.set_exchange_order_id(order_update.order_id());
-                order.set_create_time(order_update.event_time());
-            }
-            OrderStatus::Canceled => {
-                order.status = OrderExecutionStatus::Cancelled;
-                order.set_exchange_order_id(order_update.order_id());
-                order.cumulative_filled_quantity = effective_cumulative_filled_qty;
-                order.set_end_time(order_update.event_time());
-                let cancel_reason = self.open_state.order.last_open_cancel_reason.unwrap_or("unknown");
-                info!(
-                    "🚫 ArbOpen订单已撤销: strategy_id={} client_order_id={} symbol={} reason={} filled={}/{}",
-                    self.open_state.strategy_id,
-                    client_order_id,
-                    order.symbol,
-                    cancel_reason,
-                    qv_decimal_or_fallback(order.cumulative_filled_quantity),
-                    qv_decimal_or_fallback(order.quantity)
-                );
-                self.open_state.order.last_open_cancel_reason = None;
-                self.open_state.alive = false;
-            }
-            OrderStatus::Filled => {
-                order.status = OrderExecutionStatus::Filled;
-                order.set_exchange_order_id(order_update.order_id());
-                order.cumulative_filled_quantity = effective_cumulative_filled_qty;
-                order.set_filled_time(order_update.event_time());
-                order.set_end_time(order_update.event_time());
-                self.open_state.alive = false;
-            }
-            OrderStatus::Expired | OrderStatus::ExpiredInMatch => {
-                order.status = OrderExecutionStatus::Rejected;
-                order.set_exchange_order_id(order_update.order_id());
-                order.cumulative_filled_quantity = effective_cumulative_filled_qty;
-                order.set_end_time(order_update.event_time());
-                self.open_state.alive = false;
-            }
-            OrderStatus::PartiallyFilled => {
-                order.status = OrderExecutionStatus::Create;
-                order.set_exchange_order_id(order_update.order_id());
-                order.cumulative_filled_quantity = effective_cumulative_filled_qty;
-                order.set_filled_time(order_update.event_time());
-            }
-        });
-        drop(order_manager);
-        if !updated {
-            warn!(
-                "ArbOpenStrategy: strategy_id={} order update not found client_order_id={}",
-                self.open_state.strategy_id, client_order_id
-            );
-            return false;
-        }
-
-        let cumulative_base_qty = effective_cumulative_filled_qty * qty_multiplier;
-        if cumulative_base_qty > self.cumulative_open_qty + 1e-12 {
-            self.cumulative_open_qty = cumulative_base_qty;
-        }
-        if matches!(
-            order_update.status(),
-            OrderStatus::Canceled | OrderStatus::Filled
-        ) {
-            let terminal_base_qty = if prev_order_terminal {
-                (effective_cumulative_filled_qty - prev_cumulative_filled_qty) * qty_multiplier
-            } else {
-                effective_cumulative_filled_qty * qty_multiplier
-            };
-            self.record_open_order_terminal(
-                order_side,
-                terminal_base_qty,
-                order_update.event_time(),
-                order_price,
-                &order_update.debug_summary(),
-            );
-        }
-
-        if order_update.status() == OrderStatus::New {
-            if let Some(order) = MonitorChannel::instance()
-                .order_manager()
-                .borrow()
-                .get(client_order_id)
-            {
-                self.publish_uniform_new_order(order_update, &order, prev_cumulative_filled_qty);
-            }
-        }
-        if matches!(
-            order_update.status(),
-            OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::ExpiredInMatch
-        ) {
-            if let Some(order) = MonitorChannel::instance()
-                .order_manager()
-                .borrow()
-                .get(client_order_id)
-            {
-                self.publish_uniform_terminal_order(
-                    order_update,
-                    &order,
-                    prev_cumulative_filled_qty,
-                );
-            }
-        }
-        if matches!(
-            order_update.status(),
-            OrderStatus::PartiallyFilled | OrderStatus::Filled
-        ) {
-            if let Some(order) = MonitorChannel::instance()
-                .order_manager()
-                .borrow()
-                .get(client_order_id)
-            {
-                self.publish_uniform_trade_order_from_order_update(
-                    order_update,
-                    &order,
-                    prev_cumulative_filled_qty,
-                );
-            }
-        }
-
-        if matches!(
-            order_update.status(),
-            OrderStatus::Canceled | OrderStatus::Filled
-        ) {
-            debug!(
-                "ArbOpenStrategy: strategy_id={} terminal open update cumulative_open_qty={:.8} detail={}",
-                self.open_state.strategy_id,
-                self.cumulative_open_qty,
-                order_update.debug_summary()
-            );
-        }
-
-        true
+        self.apply_order_update_common(order_update)
     }
 
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) -> bool {
@@ -555,6 +303,10 @@ impl OpenStrategyCommon for ArbOpenStrategy {
 
     fn open_order_action_log_name(&self) -> &'static str {
         "arb open"
+    }
+
+    fn open_terminal_close_ts(&self) -> i64 {
+        self.close_ts.unwrap_or(0)
     }
 
     fn resolve_open_qty_multiplier(

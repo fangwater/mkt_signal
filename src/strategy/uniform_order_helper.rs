@@ -14,21 +14,6 @@ pub struct UniformPublishCtx {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UniformAmountSource {
-    OrderUpdate,
-    LocalOrder,
-}
-
-impl UniformAmountSource {
-    fn cumulative_filled_quantity(self, order_update: &dyn OrderUpdate, order: &Order) -> f64 {
-        match self {
-            Self::OrderUpdate => order_update.cumulative_filled_quantity(),
-            Self::LocalOrder => order.cumulative_filled_quantity,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UniformOrderEventKind {
     New,
     Terminal,
@@ -137,11 +122,10 @@ pub fn publish_uniform_new_order(
     ctx: &UniformPublishCtx,
     strategy_label: &str,
     strategy_id: i32,
-    amount_source: UniformAmountSource,
 ) {
     let amount_update = compute_uniform_amount_update(
         order,
-        amount_source.cumulative_filled_quantity(order_update, order),
+        order.cumulative_filled_quantity,
         prev_cumulative_filled_qty,
         order_update.status(),
         strategy_label,
@@ -168,11 +152,10 @@ pub fn publish_uniform_terminal_order(
     ctx: &UniformPublishCtx,
     strategy_label: &str,
     strategy_id: i32,
-    amount_source: UniformAmountSource,
 ) {
     let amount_update = compute_uniform_amount_update(
         order,
-        amount_source.cumulative_filled_quantity(order_update, order),
+        order.cumulative_filled_quantity,
         prev_cumulative_filled_qty,
         order_update.status(),
         strategy_label,

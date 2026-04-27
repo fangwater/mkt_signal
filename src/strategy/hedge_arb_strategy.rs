@@ -29,7 +29,7 @@ use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKi
 use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
-    UniformAmountSource, UniformPublishCtx,
+    UniformPublishCtx,
 };
 use crate::strategy::ws_order_update::try_apply_ws_order_update_for_strategy;
 use log::{debug, error, info, warn};
@@ -1677,7 +1677,6 @@ impl HedgeArbStrategy {
                         &ctx,
                         "HedgeArbStrategy",
                         self.strategy_id,
-                        UniformAmountSource::OrderUpdate,
                     );
                 }
             }
@@ -1700,7 +1699,6 @@ impl HedgeArbStrategy {
                         &ctx,
                         "HedgeArbStrategy",
                         self.strategy_id,
-                        UniformAmountSource::OrderUpdate,
                     );
                 }
             }

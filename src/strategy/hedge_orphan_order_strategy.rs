@@ -11,7 +11,7 @@ use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
-    publish_uniform_trade_order_from_order_update, UniformAmountSource, UniformPublishCtx,
+    publish_uniform_trade_order_from_order_update, UniformPublishCtx,
 };
 use log::{info, warn};
 use std::any::Any;
@@ -377,7 +377,6 @@ impl Strategy for HedgeOrphanOrderStrategy {
                         ctx,
                         "HedgeOrphanOrderStrategy",
                         self.strategy_id,
-                        UniformAmountSource::OrderUpdate,
                     );
                 }
                 if matches!(
@@ -391,7 +390,6 @@ impl Strategy for HedgeOrphanOrderStrategy {
                         ctx,
                         "HedgeOrphanOrderStrategy",
                         self.strategy_id,
-                        UniformAmountSource::OrderUpdate,
                     );
                 }
                 if matches!(

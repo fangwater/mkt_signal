@@ -29,7 +29,7 @@ use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKi
 use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
-    publish_uniform_trade_order_from_order_update, UniformAmountSource, UniformPublishCtx,
+    publish_uniform_trade_order_from_order_update, UniformPublishCtx,
 };
 use crate::strategy::ws_order_update::try_apply_ws_order_update_for_strategy;
 use log::{debug, warn};
@@ -1490,7 +1490,6 @@ impl MarketMakerHedgeStrategy {
             &ctx,
             "MarketMakerHedgeStrategy",
             self.strategy_id,
-            UniformAmountSource::LocalOrder,
         );
     }
 
@@ -1508,7 +1507,6 @@ impl MarketMakerHedgeStrategy {
             &ctx,
             "MarketMakerHedgeStrategy",
             self.strategy_id,
-            UniformAmountSource::LocalOrder,
         );
     }
 
