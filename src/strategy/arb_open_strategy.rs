@@ -21,9 +21,9 @@ use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::query_order_updates::OrderQueryTradeUpdate;
 use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKind};
 use crate::strategy::trade_update::TradeUpdate;
-use crate::strategy::uniform_arb_publish::{
-    publish_arb_uniform_new_order, publish_arb_uniform_terminal_order,
-    publish_arb_uniform_trade_order, publish_arb_uniform_trade_order_from_order_update,
+use crate::strategy::uniform_order_helper::{
+    publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
+    publish_uniform_trade_order_from_order_update, UniformAmountSource,
 };
 use crate::strategy::ws_order_update::WsOrderUpdate;
 use log::{debug, error, info, warn};
@@ -604,13 +604,14 @@ impl ArbOpenStrategy {
         prev_cumulative_filled_qty: f64,
     ) {
         let ctx = self.uniform_open_publish_ctx();
-        publish_arb_uniform_new_order(
+        publish_uniform_new_order(
             order_update,
             order,
             prev_cumulative_filled_qty,
             &ctx,
             "ArbOpenStrategy",
             self.open_state.strategy_id,
+            UniformAmountSource::OrderUpdate,
         );
     }
 
@@ -621,13 +622,14 @@ impl ArbOpenStrategy {
         prev_cumulative_filled_qty: f64,
     ) {
         let ctx = self.uniform_open_publish_ctx();
-        publish_arb_uniform_terminal_order(
+        publish_uniform_terminal_order(
             order_update,
             order,
             prev_cumulative_filled_qty,
             &ctx,
             "ArbOpenStrategy",
             self.open_state.strategy_id,
+            UniformAmountSource::OrderUpdate,
         );
     }
 
@@ -639,7 +641,7 @@ impl ArbOpenStrategy {
         status: OrderStatus,
     ) {
         let ctx = self.uniform_open_publish_ctx();
-        publish_arb_uniform_trade_order(
+        publish_uniform_trade_order(
             trade,
             order,
             prev_cumulative_filled_qty,
@@ -657,7 +659,7 @@ impl ArbOpenStrategy {
         prev_cumulative_filled_qty: f64,
     ) {
         let ctx = self.uniform_open_publish_ctx();
-        publish_arb_uniform_trade_order_from_order_update(
+        publish_uniform_trade_order_from_order_update(
             order_update,
             order,
             prev_cumulative_filled_qty,

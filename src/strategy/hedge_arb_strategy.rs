@@ -27,11 +27,10 @@ use crate::strategy::order_reconcile::{qv_decimal_or_fallback, ORDER_QUERY_WATCH
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKind};
 use crate::strategy::trade_update::TradeUpdate;
-use crate::strategy::uniform_arb_publish::{
-    publish_arb_uniform_new_order, publish_arb_uniform_terminal_order,
-    publish_arb_uniform_trade_order,
+use crate::strategy::uniform_order_helper::{
+    publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
+    UniformAmountSource, UniformPublishCtx,
 };
-use crate::strategy::uniform_order_helper::UniformPublishCtx;
 use crate::strategy::ws_order_update::WsOrderUpdate;
 use log::{debug, error, info, warn};
 use std::any::Any;
@@ -1469,7 +1468,7 @@ impl HedgeArbStrategy {
             }
             if let Some(order) = order_manager.get(client_order_id) {
                 if let Some(ctx) = self.uniform_publish_ctx(&order) {
-                    publish_arb_uniform_trade_order(
+                    publish_uniform_trade_order(
                         trade,
                         &order,
                         prev_cumulative_filled_qty,
@@ -1669,13 +1668,14 @@ impl HedgeArbStrategy {
                 .get(client_order_id)
             {
                 if let Some(ctx) = self.uniform_publish_ctx(&order) {
-                    publish_arb_uniform_new_order(
+                    publish_uniform_new_order(
                         order_update,
                         &order,
                         prev_cumulative_filled_qty,
                         &ctx,
                         "HedgeArbStrategy",
                         self.strategy_id,
+                        UniformAmountSource::OrderUpdate,
                     );
                 }
             }
@@ -1691,13 +1691,14 @@ impl HedgeArbStrategy {
                 .get(client_order_id)
             {
                 if let Some(ctx) = self.uniform_publish_ctx(&order) {
-                    publish_arb_uniform_terminal_order(
+                    publish_uniform_terminal_order(
                         order_update,
                         &order,
                         prev_cumulative_filled_qty,
                         &ctx,
                         "HedgeArbStrategy",
                         self.strategy_id,
+                        UniformAmountSource::OrderUpdate,
                     );
                 }
             }

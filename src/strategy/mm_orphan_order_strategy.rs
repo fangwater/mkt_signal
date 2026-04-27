@@ -9,11 +9,10 @@ use crate::strategy::manager::{ForceCloseControl, MmOrphanHandoff, MmOrphanSourc
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
-use crate::strategy::uniform_mm_publish::{
-    publish_mm_uniform_new_order, publish_mm_uniform_terminal_order,
-    publish_mm_uniform_trade_order, publish_mm_uniform_trade_order_from_order_update,
+use crate::strategy::uniform_order_helper::{
+    publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
+    publish_uniform_trade_order_from_order_update, UniformAmountSource, UniformPublishCtx,
 };
-use crate::strategy::uniform_order_helper::UniformPublishCtx;
 use log::{debug, info, warn};
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
@@ -386,33 +385,35 @@ impl Strategy for MmOrphanOrderStrategy {
                 .and_then(|order_mgr| order_mgr.borrow().get(client_order_id));
             if let Some(order) = updated_order {
                 if update.status() == OrderStatus::New {
-                    publish_mm_uniform_new_order(
+                    publish_uniform_new_order(
                         update,
                         &order,
                         prev_cumulative_filled_qty,
                         ctx,
                         "MmOrphanOrderStrategy",
                         self.strategy_id,
+                        UniformAmountSource::LocalOrder,
                     );
                 }
                 if matches!(
                     update.status(),
                     OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::ExpiredInMatch
                 ) {
-                    publish_mm_uniform_terminal_order(
+                    publish_uniform_terminal_order(
                         update,
                         &order,
                         prev_cumulative_filled_qty,
                         ctx,
                         "MmOrphanOrderStrategy",
                         self.strategy_id,
+                        UniformAmountSource::LocalOrder,
                     );
                 }
                 if matches!(
                     update.status(),
                     OrderStatus::PartiallyFilled | OrderStatus::Filled
                 ) {
-                    publish_mm_uniform_trade_order_from_order_update(
+                    publish_uniform_trade_order_from_order_update(
                         update,
                         &order,
                         prev_cumulative_filled_qty,
@@ -512,7 +513,7 @@ impl Strategy for MmOrphanOrderStrategy {
             let updated_order = MonitorChannel::try_order_manager()
                 .and_then(|order_mgr| order_mgr.borrow().get(client_order_id));
             if let Some(order) = updated_order {
-                publish_mm_uniform_trade_order(
+                publish_uniform_trade_order(
                     trade,
                     &order,
                     prev_cumulative_filled_qty,

@@ -20,9 +20,9 @@ use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::query_order_updates::OrderQueryTradeUpdate;
 use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKind};
 use crate::strategy::trade_update::TradeUpdate;
-use crate::strategy::uniform_mm_publish::{
-    publish_mm_uniform_new_order, publish_mm_uniform_terminal_order,
-    publish_mm_uniform_trade_order, publish_mm_uniform_trade_order_from_order_update,
+use crate::strategy::uniform_order_helper::{
+    publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
+    publish_uniform_trade_order_from_order_update, UniformAmountSource,
 };
 use crate::strategy::ws_order_update::WsOrderUpdate;
 use log::{debug, error, info, warn};
@@ -900,13 +900,14 @@ impl MarketMakerOpenStrategy {
         prev_cumulative_filled_qty: f64,
     ) {
         let ctx = self.uniform_open_publish_ctx();
-        publish_mm_uniform_new_order(
+        publish_uniform_new_order(
             order_update,
             order,
             prev_cumulative_filled_qty,
             &ctx,
             "MarketMakerOpenStrategy",
             self.open_state.strategy_id,
+            UniformAmountSource::LocalOrder,
         );
     }
 
@@ -917,13 +918,14 @@ impl MarketMakerOpenStrategy {
         prev_cumulative_filled_qty: f64,
     ) {
         let ctx = self.uniform_open_publish_ctx();
-        publish_mm_uniform_terminal_order(
+        publish_uniform_terminal_order(
             order_update,
             order,
             prev_cumulative_filled_qty,
             &ctx,
             "MarketMakerOpenStrategy",
             self.open_state.strategy_id,
+            UniformAmountSource::LocalOrder,
         );
     }
 
@@ -935,7 +937,7 @@ impl MarketMakerOpenStrategy {
         status: OrderStatus,
     ) {
         let ctx = self.uniform_open_publish_ctx();
-        publish_mm_uniform_trade_order(
+        publish_uniform_trade_order(
             trade,
             order,
             prev_cumulative_filled_qty,
@@ -953,7 +955,7 @@ impl MarketMakerOpenStrategy {
         prev_cumulative_filled_qty: f64,
     ) {
         let ctx = self.uniform_open_publish_ctx();
-        publish_mm_uniform_trade_order_from_order_update(
+        publish_uniform_trade_order_from_order_update(
             order_update,
             order,
             prev_cumulative_filled_qty,

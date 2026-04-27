@@ -13,9 +13,9 @@ use crate::strategy::net_qty_queue::NetQtyQueue;
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
-use crate::strategy::uniform_arb_publish::{
-    publish_arb_uniform_new_order, publish_arb_uniform_terminal_order,
-    publish_arb_uniform_trade_order,
+use crate::strategy::uniform_order_helper::{
+    publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
+    UniformAmountSource,
 };
 use log::{debug, info, warn};
 use std::any::Any;
@@ -817,26 +817,28 @@ impl Strategy for ArbOrphanStrategy {
                 .and_then(|order_mgr| order_mgr.borrow().get(client_order_id));
             if let Some(order) = updated_order {
                 if update.status() == OrderStatus::New {
-                    publish_arb_uniform_new_order(
+                    publish_uniform_new_order(
                         update,
                         &order,
                         prev_cumulative_filled_qty,
                         ctx,
                         "ArbOrphanStrategy: strategy_role=arb_orphan",
                         self.strategy_id,
+                        UniformAmountSource::OrderUpdate,
                     );
                 }
                 if matches!(
                     update.status(),
                     OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::ExpiredInMatch
                 ) {
-                    publish_arb_uniform_terminal_order(
+                    publish_uniform_terminal_order(
                         update,
                         &order,
                         prev_cumulative_filled_qty,
                         ctx,
                         "ArbOrphanStrategy: strategy_role=arb_orphan",
                         self.strategy_id,
+                        UniformAmountSource::OrderUpdate,
                     );
                 }
             }
@@ -880,7 +882,7 @@ impl Strategy for ArbOrphanStrategy {
             let updated_order = MonitorChannel::try_order_manager()
                 .and_then(|order_mgr| order_mgr.borrow().get(client_order_id));
             if let Some(order) = updated_order {
-                publish_arb_uniform_trade_order(
+                publish_uniform_trade_order(
                     trade,
                     &order,
                     prev_cumulative_filled_qty,
