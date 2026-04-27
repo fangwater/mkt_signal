@@ -762,8 +762,12 @@ impl StrategyManager {
         let Some(arb_hedge) = strategy.as_any_mut().downcast_mut::<ArbHedgeStrategy>() else {
             return false;
         };
+        let qv = match side {
+            Side::Buy => base_qty.abs(),
+            Side::Sell => -base_qty.abs(),
+        };
         arb_hedge
-            .record_open_fill(fill_ts, side, base_qty, price, close_ts)
+            .record_open_fill(fill_ts, qv, price, close_ts)
             .is_some()
     }
 
@@ -783,9 +787,11 @@ impl StrategyManager {
         let Some(arb_hedge) = strategy.as_any_mut().downcast_mut::<ArbHedgeStrategy>() else {
             return false;
         };
-        arb_hedge
-            .record_hedge_fill(fill_ts, side, base_qty, price)
-            .is_some()
+        let qv = match side {
+            Side::Buy => base_qty.abs(),
+            Side::Sell => -base_qty.abs(),
+        };
+        arb_hedge.record_hedge_fill(fill_ts, qv, price).is_some()
     }
 
     pub fn arb_hedge_snapshots(&self, now_ts: i64) -> Vec<ArbHedgeSnapshot> {

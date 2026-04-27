@@ -1,5 +1,4 @@
 use crate::common::symbol_util::normalize_symbol_for_internal;
-use crate::pre_trade::order_manager::Side;
 use crate::signal::common::TradingVenue;
 use crate::signal::trade_signal::TradeSignal;
 use crate::strategy::manager::{ForceCloseControl, Strategy};
@@ -114,16 +113,34 @@ impl ArbHedgeStrategy {
     pub fn record_open_fill(
         &mut self,
         fill_ts: i64,
-        side: Side,
-        base_qty: f64,
+        qv: f64,
         price: f64,
         close_ts: i64,
     ) -> Option<ArbHedgeRecordResult> {
-        if base_qty <= ARB_HEDGE_EPS {
+        if qv.abs() <= ARB_HEDGE_EPS {
             return None;
         }
-        let signed_base_qty = Self::signed_qty(side, base_qty);
-        Some(self.record_open_signed_fill(fill_ts, signed_base_qty, price, close_ts))
+        let open_result = self.open_net_queue.apply_fill(fill_ts, 0, qv, price);
+        // 开仓成交先形成待对冲需求，close_ts 决定这笔需求何时进入 due 数量。
+        let pending_result = self
+            .pending_hedge_queue
+            .apply_fill(fill_ts, close_ts, qv, price);
+        info!(
+            "ArbHedgeRecord: strategy_id={} symbol={} leg=open qv={:.8} price={:.8} fill_ts={} close_ts={} open_net={:.8} pending_hedge={:.8}",
+            self.strategy_id,
+            self.symbol,
+            qv,
+            price,
+            fill_ts,
+            close_ts,
+            self.open_net_queue.net_qty(),
+            self.pending_hedge_queue.net_qty()
+        );
+        Some(ArbHedgeRecordResult {
+            open_net: Some(open_result),
+            hedge_net: None,
+            pending_hedge: pending_result,
+        })
     }
 
     /// 记录对冲腿成交。
@@ -132,85 +149,30 @@ impl ArbHedgeStrategy {
     pub fn record_hedge_fill(
         &mut self,
         fill_ts: i64,
-        side: Side,
-        base_qty: f64,
+        qv: f64,
         price: f64,
     ) -> Option<ArbHedgeRecordResult> {
-        if base_qty <= ARB_HEDGE_EPS {
+        if qv.abs() <= ARB_HEDGE_EPS {
             return None;
         }
-        let signed_base_qty = Self::signed_qty(side, base_qty);
-        Some(self.record_hedge_signed_fill(fill_ts, signed_base_qty, price))
-    }
-
-    pub fn record_open_signed_fill(
-        &mut self,
-        fill_ts: i64,
-        signed_base_qty: f64,
-        price: f64,
-        close_ts: i64,
-    ) -> ArbHedgeRecordResult {
-        let open_result = self
-            .open_net_queue
-            .apply_fill(fill_ts, 0, signed_base_qty, price);
-        // 开仓成交先形成待对冲需求，close_ts 决定这笔需求何时进入 due 数量。
-        let pending_result =
-            self.pending_hedge_queue
-                .apply_fill(fill_ts, close_ts, signed_base_qty, price);
-        info!(
-            "ArbHedgeRecord: strategy_id={} symbol={} leg=open signed_base_qty={:.8} price={:.8} fill_ts={} close_ts={} open_net={:.8} pending_hedge={:.8}",
-            self.strategy_id,
-            self.symbol,
-            signed_base_qty,
-            price,
-            fill_ts,
-            close_ts,
-            self.open_net_queue.net_qty(),
-            self.pending_hedge_queue.net_qty()
-        );
-        ArbHedgeRecordResult {
-            open_net: Some(open_result),
-            hedge_net: None,
-            pending_hedge: pending_result,
-        }
-    }
-
-    pub fn record_hedge_signed_fill(
-        &mut self,
-        fill_ts: i64,
-        signed_base_qty: f64,
-        price: f64,
-    ) -> ArbHedgeRecordResult {
-        let hedge_result = self
-            .hedge_net_queue
-            .apply_fill(fill_ts, 0, signed_base_qty, price);
+        let hedge_result = self.hedge_net_queue.apply_fill(fill_ts, 0, qv, price);
         // 对冲成交立即抵消待对冲队列；若方向相同，则会增加待处理的净需求。
-        let pending_result =
-            self.pending_hedge_queue
-                .apply_fill(fill_ts, 0, signed_base_qty, price);
+        let pending_result = self.pending_hedge_queue.apply_fill(fill_ts, 0, qv, price);
         info!(
-            "ArbHedgeRecord: strategy_id={} symbol={} leg=hedge signed_base_qty={:.8} price={:.8} fill_ts={} hedge_net={:.8} pending_hedge={:.8}",
+            "ArbHedgeRecord: strategy_id={} symbol={} leg=hedge qv={:.8} price={:.8} fill_ts={} hedge_net={:.8} pending_hedge={:.8}",
             self.strategy_id,
             self.symbol,
-            signed_base_qty,
+            qv,
             price,
             fill_ts,
             self.hedge_net_queue.net_qty(),
             self.pending_hedge_queue.net_qty()
         );
-        ArbHedgeRecordResult {
+        Some(ArbHedgeRecordResult {
             open_net: None,
             hedge_net: Some(hedge_result),
             pending_hedge: pending_result,
-        }
-    }
-
-    fn signed_qty(side: Side, base_qty: f64) -> f64 {
-        // 统一使用正负号表达方向，避免后续队列逻辑重复关心买卖枚举。
-        match side {
-            Side::Buy => base_qty.abs(),
-            Side::Sell => -base_qty.abs(),
-        }
+        })
     }
 }
 
@@ -264,7 +226,6 @@ impl Strategy for ArbHedgeStrategy {
 #[cfg(test)]
 mod tests {
     use super::ArbHedgeStrategy;
-    use crate::pre_trade::order_manager::Side;
     use crate::signal::common::TradingVenue;
 
     #[test]
@@ -276,7 +237,7 @@ mod tests {
             TradingVenue::BinanceFutures,
         );
 
-        strategy.record_open_fill(10, Side::Buy, 2.0, 100.0, 1_000);
+        strategy.record_open_fill(10, 2.0, 100.0, 1_000);
 
         assert_eq!(strategy.open_net_qty(), 2.0);
         assert_eq!(strategy.hedge_net_qty(), 0.0);
@@ -294,8 +255,8 @@ mod tests {
             TradingVenue::BinanceFutures,
         );
 
-        strategy.record_open_fill(10, Side::Buy, 2.0, 100.0, 1_000);
-        strategy.record_hedge_fill(20, Side::Sell, 1.25, 101.0);
+        strategy.record_open_fill(10, 2.0, 100.0, 1_000);
+        strategy.record_hedge_fill(20, -1.25, 101.0);
 
         assert_eq!(strategy.open_net_qty(), 2.0);
         assert_eq!(strategy.hedge_net_qty(), -1.25);
