@@ -488,7 +488,7 @@ impl ArbHedgeStrategy {
         );
     }
 
-    fn apply_order_update_inner(&mut self, order_update: &dyn OrderUpdate) -> bool {
+    fn apply_order_update(&mut self, order_update: &dyn OrderUpdate) -> bool {
         let client_order_id = order_update.client_order_id();
         self.clear_order_query_state(client_order_id);
         let order_mgr = MonitorChannel::instance().order_manager();
@@ -583,7 +583,7 @@ impl ArbHedgeStrategy {
         true
     }
 
-    fn apply_trade_update_inner(&mut self, trade: &dyn TradeUpdate) -> bool {
+    fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) -> bool {
         let client_order_id = trade.client_order_id();
         self.clear_order_query_state(client_order_id);
         let Some(status) = trade.order_status() else {
@@ -784,14 +784,14 @@ impl Strategy for ArbHedgeStrategy {
     }
 
     fn apply_order_update(&mut self, update: &dyn OrderUpdate) {
-        let should_persist = self.apply_order_update_inner(update);
+        let should_persist = ArbHedgeStrategy::apply_order_update(self, update);
         if should_persist {
             PersistChannel::with(|ch| ch.publish_order_update(update));
         }
     }
 
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
-        let should_persist = self.apply_trade_update_inner(trade);
+        let should_persist = ArbHedgeStrategy::apply_trade_update(self, trade);
         if should_persist {
             PersistChannel::with(|ch| ch.publish_trade_update(trade));
         }
