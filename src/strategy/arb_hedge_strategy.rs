@@ -13,7 +13,6 @@ use crate::strategy::arb_helper::create_and_send_order;
 use crate::strategy::hedge_order_reconcile::{HedgeOrderReconcileCommon, HedgeOrderReconcileState};
 use crate::strategy::hedge_strategy_common::{
     mark_price_lookup_symbol, parse_return_qtl_from_from_key, CANCEL_RESEND_THROTTLE_US,
-    HEDGE_QUERY_INTERVAL_US,
 };
 use crate::strategy::manager::{
     OrderTerminalRecorder, OrphanHandoff, OrphanSourceKind, OrphanStrategyRole, Strategy,
@@ -33,6 +32,7 @@ use std::collections::{BTreeMap, HashMap};
 
 const ARB_HEDGE_QTY_EPS: f64 = 1e-12;
 const ARB_HEDGE_PENDING_QUERY_MIN_USDT: f64 = 25.0;
+const ARB_HEDGE_QUERY_INTERVAL_US: i64 = 1_000_000;
 
 /// Arb 对冲策略的只读状态快照。
 ///
@@ -261,7 +261,7 @@ impl ArbHedgeStrategy {
         let payload = ArbBackwardQueryMsg::HedgeState(query_msg).to_bytes();
         match SignalChannel::with(|ch| ch.publish_backward(&payload)) {
             Ok(true) => {
-                self.next_query_ts_us = now_ts.saturating_add(HEDGE_QUERY_INTERVAL_US);
+                self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
                 debug!(
                     "ArbHedgeStrategy: strategy_id={} symbol={} send hedge state query ok request_seq={} net_qty={:.8} due_hedge_qty={:.8} pending_hedge_qty={:.8} next_query_ts_us={}",
                     self.strategy_id,
@@ -328,7 +328,7 @@ impl ArbHedgeStrategy {
         }
         let Some(mark_price) = self.mark_price() else {
             if throttle_on_skip {
-                self.next_query_ts_us = now_ts.saturating_add(HEDGE_QUERY_INTERVAL_US);
+                self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
             }
             info!(
                 "ArbHedgeStrategy: strategy_id={} symbol={} skip {} hedge query because mark_price missing pending_hedge_qty={:.8} due_hedge_qty={:.8} threshold_usdt={:.8} next_query_ts_us={}",
@@ -346,7 +346,7 @@ impl ArbHedgeStrategy {
             Self::pending_hedge_usdt_with_mark_price(pending_hedge_qty, mark_price);
         if pending_hedge_usdt < ARB_HEDGE_PENDING_QUERY_MIN_USDT {
             if throttle_on_skip {
-                self.next_query_ts_us = now_ts.saturating_add(HEDGE_QUERY_INTERVAL_US);
+                self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
             }
             info!(
                 "ArbHedgeStrategy: strategy_id={} symbol={} skip {} hedge query because pending hedge below threshold pending_hedge_qty={:.8} due_hedge_qty={:.8} mark_price={:.8} pending_hedge_usdt={:.8} threshold_usdt={:.8} next_query_ts_us={}",
@@ -689,7 +689,7 @@ impl ArbHedgeStrategy {
             })
         });
         let Some((status, price, symbol, order)) = order_snapshot else {
-            let retry_ts = now_ts.saturating_add(HEDGE_QUERY_INTERVAL_US);
+            let retry_ts = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
             if let Some(meta) = self.hedge_order_meta.get(&client_order_id) {
                 warn!(
                     "ArbHedgeStrategy: strategy_id={} expired hedge order missing locally, keep borrowed pending and retry check client_order_id={} borrowed_qv={:.8} retry_ts={}",
@@ -1172,7 +1172,7 @@ impl Strategy for ArbHedgeStrategy {
 
 #[cfg(test)]
 mod tests {
-    use super::{ArbHedgeStrategy, HEDGE_QUERY_INTERVAL_US};
+    use super::{ArbHedgeStrategy, ARB_HEDGE_QUERY_INTERVAL_US};
     use crate::pre_trade::order_manager::Side;
     use crate::signal::common::TradingVenue;
     use crate::strategy::manager::{OrderTerminalRecorder, Strategy};
@@ -1234,7 +1234,7 @@ mod tests {
         assert_eq!(strategy.due_hedge_qty(2_000), 2.0);
         assert_eq!(
             strategy.next_query_ts_us,
-            2_000_i64.saturating_add(HEDGE_QUERY_INTERVAL_US)
+            2_000_i64.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US)
         );
     }
 
