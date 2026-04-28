@@ -3,9 +3,8 @@ use crate::common::tick_math::QuantizedValue;
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::Side;
-use crate::signal::common::TradingVenue;
 use crate::signal::trade_signal::TradeSignal;
-use crate::strategy::arb_hedge_strategy::{ArbHedgeSnapshot, ArbHedgeStrategy};
+use crate::strategy::arb_hedge_strategy::{ArbHedgeMode, ArbHedgeSnapshot, ArbHedgeStrategy};
 use crate::strategy::arb_orphan_strategy::ArbOrphanLeg;
 use crate::strategy::mm_hedge_strategy::{MarketMakerHedgeStrategy, MmHedgeSnapshot};
 use crate::strategy::uniform_order_helper::UniformPublishCtx;
@@ -123,9 +122,6 @@ pub trait Strategy {
     fn adopt_arb_orphan_order_id(&mut self, _handoff: &ArbOrphanHandoff) -> bool {
         false
     }
-    fn adopt_arb_orphan_residual(&mut self, _residual: &ArbOrphanResidualHandoff) -> bool {
-        false
-    }
     fn handle_period_clock(&mut self, current_tp: i64);
     fn is_active(&self) -> bool;
     fn symbol(&self) -> Option<&str>;
@@ -235,14 +231,6 @@ pub struct ArbOrphanHandoff {
 }
 
 pub type ArbOrphanUniformCtx = UniformPublishCtx;
-
-#[derive(Debug, Clone)]
-pub struct ArbOrphanResidualHandoff {
-    pub symbol: String,
-    pub venue: TradingVenue,
-    pub signed_base_qty: f64,
-    pub source_strategy_id: i32,
-}
 
 /// Strategy id -> Strategy 映射的简单管理器
 pub struct StrategyManager {
@@ -703,8 +691,13 @@ impl StrategyManager {
         let strategy_id = StrategyManager::generate_strategy_id();
         let open_venue = MonitorChannel::instance().open_venue();
         let hedge_venue = MonitorChannel::instance().hedge_venue();
-        let strategy =
-            ArbHedgeStrategy::new(strategy_id, symbol_upper.clone(), open_venue, hedge_venue);
+        let strategy = ArbHedgeStrategy::new(
+            strategy_id,
+            symbol_upper.clone(),
+            open_venue,
+            hedge_venue,
+            ArbHedgeMode::Trigger,
+        );
         self.insert(Box::new(strategy));
         info!(
             "ArbHedge init: symbol={} open_venue={:?} hedge_venue={:?}",

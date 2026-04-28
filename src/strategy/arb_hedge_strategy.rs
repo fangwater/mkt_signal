@@ -10,10 +10,14 @@ use crate::signal::common::{OrderStatus, SignalBytes, TradingVenue};
 use crate::signal::hedge_signal::{ArbHedgeStateCtx, ArbHedgeStateQueryMsg};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::arb_helper::create_and_send_order;
+use crate::strategy::arb_orphan_strategy::ArbOrphanLeg;
+use crate::strategy::hedge_order_reconcile::{HedgeOrderReconcileCommon, HedgeOrderReconcileState};
 use crate::strategy::hedge_strategy_common::HEDGE_QUERY_INTERVAL_US;
-use crate::strategy::manager::{OrderTerminalRecorder, Strategy};
+use crate::strategy::manager::{ArbOrphanHandoff, OrderTerminalRecorder, Strategy};
 use crate::strategy::net_qty_queue::{NetQtyQueue, TimedNetQtyQueue};
+use crate::strategy::order_reconcile::PendingOrderQueryReason;
 use crate::strategy::order_update::OrderUpdate;
+use crate::strategy::trade_engine_response::TradeEngineResponse;
 use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
@@ -64,6 +68,7 @@ pub struct ArbHedgeStrategy {
     next_query_ts_us: i64,
     order_seq: u32,
     hedge_order_meta: HashMap<i64, ArbHedgeOrderMeta>,
+    order_reconcile_state: HedgeOrderReconcileState,
     alive_flag: bool,
 }
 
@@ -78,21 +83,6 @@ struct ArbHedgeOrderMeta {
 
 impl ArbHedgeStrategy {
     pub fn new(
-        strategy_id: i32,
-        symbol: impl Into<String>,
-        open_venue: TradingVenue,
-        hedge_venue: TradingVenue,
-    ) -> Self {
-        Self::new_with_mode(
-            strategy_id,
-            symbol,
-            open_venue,
-            hedge_venue,
-            ArbHedgeMode::Trigger,
-        )
-    }
-
-    pub fn new_with_mode(
         strategy_id: i32,
         symbol: impl Into<String>,
         open_venue: TradingVenue,
@@ -115,6 +105,7 @@ impl ArbHedgeStrategy {
             next_query_ts_us: 0,
             order_seq: 0,
             hedge_order_meta: HashMap::new(),
+            order_reconcile_state: HedgeOrderReconcileState::default(),
             alive_flag: true,
         }
     }
@@ -391,6 +382,7 @@ impl ArbHedgeStrategy {
             price,
             ctx.request_seq
         );
+        self.schedule_order_query_watchdog(client_order_id, PendingOrderQueryReason::OrderWatchdog);
     }
 
     fn publish_uniform_new_order(
@@ -497,6 +489,7 @@ impl ArbHedgeStrategy {
 
     fn apply_order_update_inner(&mut self, order_update: &dyn OrderUpdate) -> bool {
         let client_order_id = order_update.client_order_id();
+        self.clear_order_query_state(client_order_id);
         let order_mgr = MonitorChannel::instance().order_manager();
         let mut order_manager = order_mgr.borrow_mut();
         let Some(current_order) = order_manager.get(client_order_id) else {
@@ -591,6 +584,7 @@ impl ArbHedgeStrategy {
 
     fn apply_trade_update_inner(&mut self, trade: &dyn TradeUpdate) -> bool {
         let client_order_id = trade.client_order_id();
+        self.clear_order_query_state(client_order_id);
         let Some(status) = trade.order_status() else {
             return false;
         };
@@ -645,6 +639,109 @@ impl ArbHedgeStrategy {
     }
 }
 
+impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
+    fn hedge_reconcile_strategy_name(&self) -> &'static str {
+        "ArbHedge"
+    }
+
+    fn hedge_reconcile_strategy_id(&self) -> i32 {
+        self.strategy_id
+    }
+
+    fn hedge_reconcile_state(&self) -> &HedgeOrderReconcileState {
+        &self.order_reconcile_state
+    }
+
+    fn hedge_reconcile_state_mut(&mut self) -> &mut HedgeOrderReconcileState {
+        &mut self.order_reconcile_state
+    }
+
+    fn is_hedge_order_tracked(&self, client_order_id: i64) -> bool {
+        self.hedge_order_meta.contains_key(&client_order_id)
+    }
+
+    fn handoff_hedge_order_after_query_failure(
+        &mut self,
+        client_order_id: i64,
+        reason: &str,
+    ) -> bool {
+        warn!(
+            "ArbHedgeReconcile: strategy_id={} orphan_handoff_start reason={} {}",
+            self.strategy_id,
+            reason,
+            self.hedge_order_trace_snapshot(client_order_id)
+        );
+        let handoff = ArbOrphanHandoff {
+            client_order_id,
+            source_strategy_id: self.strategy_id,
+            leg: ArbOrphanLeg::Hedge,
+            uniform_ctx: Some(self.uniform_hedge_publish_ctx(client_order_id)),
+        };
+        let Some(orphan_mgr) = MonitorChannel::try_orphan_strategy_mgr() else {
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} arb orphan manager unavailable client_order_id={} reason={}",
+                self.strategy_id, client_order_id, reason
+            );
+            return false;
+        };
+        let adopted = orphan_mgr.borrow_mut().adopt_arb_orphan_order_id(&handoff);
+        if !adopted {
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} arb orphan handoff rejected client_order_id={} reason={}",
+                self.strategy_id, client_order_id, reason
+            );
+            return false;
+        }
+        self.clear_order_query_state(client_order_id);
+        self.hedge_order_meta.remove(&client_order_id);
+        warn!(
+            "ArbHedgeStrategy: strategy_id={} handoff hedge order to arb orphan adopted: client_order_id={} reason={}",
+            self.strategy_id, client_order_id, reason
+        );
+        true
+    }
+
+    fn handle_hedge_open_failed(
+        &mut self,
+        response: &dyn TradeEngineResponse,
+        code_desc: &str,
+        client_order_id: i64,
+    ) {
+        let now_ts = get_timestamp_us();
+        let order_snapshot = MonitorChannel::instance()
+            .order_manager()
+            .borrow()
+            .get(client_order_id)
+            .map(|order| (order.price, order.symbol.clone()));
+        if let Some(meta) = self.hedge_order_meta.remove(&client_order_id) {
+            let release_price = order_snapshot
+                .as_ref()
+                .map(|(price, _)| *price)
+                .filter(|price| price.is_finite() && *price > 0.0)
+                .unwrap_or(0.0);
+            self.pending_hedge_queue
+                .release(now_ts, meta.borrowed_qv, release_price);
+        }
+        self.clear_order_query_state(client_order_id);
+        if let Some(order_mgr) = MonitorChannel::try_order_manager() {
+            let _ = order_mgr.borrow_mut().remove(client_order_id);
+        }
+        warn!(
+            "ArbHedgeStrategy: strategy_id={} hedge open failed: req_type={} status={} code={}({}) client_order_id={} symbol={}",
+            self.strategy_id,
+            response.req_type(),
+            response.status(),
+            response.error_code(),
+            code_desc,
+            client_order_id,
+            order_snapshot
+                .as_ref()
+                .map(|(_, symbol)| symbol.as_str())
+                .unwrap_or("")
+        );
+    }
+}
+
 impl Strategy for ArbHedgeStrategy {
     fn as_any(&self) -> &dyn Any {
         self
@@ -696,7 +793,14 @@ impl Strategy for ArbHedgeStrategy {
         }
     }
 
+    fn apply_trade_engine_response(&mut self, response: &dyn TradeEngineResponse) {
+        self.apply_hedge_trade_engine_response_common(response);
+    }
+
     fn handle_period_clock(&mut self, current_tp: i64) {
+        if self.is_active() {
+            self.handle_order_query_watchdogs();
+        }
         match self.hedge_mode {
             ArbHedgeMode::Trigger => return,
             ArbHedgeMode::Period => {}
@@ -747,6 +851,7 @@ mod tests {
             "BTCUSDT",
             TradingVenue::BinanceMargin,
             TradingVenue::BinanceFutures,
+            ArbHedgeMode::Trigger,
         );
 
         strategy.record_open_order_terminal(10, Side::Buy, 2.0, 2.0, 100.0, 1_000);
@@ -764,6 +869,7 @@ mod tests {
             "BTCUSDT",
             TradingVenue::BinanceMargin,
             TradingVenue::BinanceFutures,
+            ArbHedgeMode::Trigger,
         );
 
         strategy.record_open_order_terminal(10, Side::Buy, 2.0, 2.0, 100.0, 1_000);
@@ -783,6 +889,7 @@ mod tests {
             "BTCUSDT",
             TradingVenue::BinanceMargin,
             TradingVenue::BinanceFutures,
+            ArbHedgeMode::Trigger,
         );
 
         strategy.record_open_order_terminal(10, Side::Buy, 2.0, 2.0, 100.0, 1_000);
@@ -796,7 +903,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "ArbHedgeStrategy period hedge mode is not implemented")]
     fn period_mode_panics_until_implemented() {
-        let _strategy = ArbHedgeStrategy::new_with_mode(
+        let _strategy = ArbHedgeStrategy::new(
             1,
             "BTCUSDT",
             TradingVenue::BinanceMargin,

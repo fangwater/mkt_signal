@@ -20,9 +20,7 @@ use crate::strategy::arb_helper::{
     panic_invalid_maker_hedge_price, parse_arb_open_signal_params,
 };
 use crate::strategy::arb_orphan_strategy::ArbOrphanLeg;
-use crate::strategy::manager::{
-    ArbOrphanHandoff, ArbOrphanResidualHandoff, OpenPriceMapEntry, Strategy,
-};
+use crate::strategy::manager::{ArbOrphanHandoff, OpenPriceMapEntry, Strategy};
 use crate::strategy::order_reconcile::{
     qv_decimal_or_fallback, PendingOrderQueryReason, ORDER_QUERY_WATCHDOG_DELAY_US,
 };
@@ -162,49 +160,19 @@ impl HedgeArbStrategy {
         true
     }
 
-    // 将对冲残值移交给 arb orphan 策略，尝试让其找到后续的对冲机会进行消化，避免残值长期暴露在市场上
-    // hedge 侧失败/不足时才会执行，相当于当前策略放弃对冲，转而让 orphan 策略接手残值的对冲责任
-    fn handoff_arb_orphan_residual(&mut self, side: Side, base_qty: f64) -> bool {
+    fn handle_unmanaged_hedge_remainder(&mut self, side: Side, base_qty: f64) -> bool {
         if base_qty <= HEDGE_RESIDUAL_EPS || self.hedge_symbol.is_empty() {
             return false;
         }
-        let signed_base_qty = match side {
-            // 卖出对冲说明开仓侧是正 base exposure，残值按正数累计。
-            Side::Sell => base_qty,
-            // 买入对冲说明开仓侧是负 base exposure，残值按负数累计。
-            Side::Buy => -base_qty,
-        };
-        let residual = ArbOrphanResidualHandoff {
-            symbol: self.hedge_symbol.clone(),
-            venue: self.hedge_venue,
-            signed_base_qty,
-            source_strategy_id: self.strategy_id,
-        };
-        let Some(orphan_mgr) = MonitorChannel::try_orphan_strategy_mgr() else {
-            warn!(
-                "HedgeArbStrategy: strategy_id={} arb orphan manager unavailable for residual symbol={}",
-                self.strategy_id, self.hedge_symbol
-            );
-            return false;
-        };
-        let adopted = orphan_mgr.borrow_mut().adopt_arb_orphan_residual(&residual);
-        if !adopted {
-            warn!(
-                "HedgeArbStrategy: strategy_id={} arb orphan residual rejected symbol={}",
-                self.strategy_id, self.hedge_symbol
-            );
-            return false;
-        }
-        info!(
-            "HedgeArbStrategy: strategy_id={} handoff arb orphan residual symbol={} venue={:?} side={:?} base_qty={:.8} signed_base_qty={:.8}",
+        warn!(
+            "HedgeArbStrategy: strategy_id={} unmanaged hedge remainder symbol={} venue={:?} side={:?} base_qty={:.8}; orphan only accepts live orders",
             self.strategy_id,
             self.hedge_symbol,
             self.hedge_venue,
             side,
-            base_qty,
-            signed_base_qty
+            base_qty
         );
-        true
+        false
     }
 
     pub fn new(id: i32, symbol: String) -> Self {
@@ -1054,7 +1022,7 @@ impl HedgeArbStrategy {
     /// * `base_qty` - 当前策略待对冲量，base 口径
     ///
     /// # Returns
-    /// (是否成功发起对冲, 实际对冲量, 转交给 arb orphan 的 residual 数量)
+    /// (是否成功发起对冲, 实际对冲量, 未处理对冲余量)
     fn try_hedge_with_residual(&mut self, base_qty: f64) -> (bool, f64, f64) {
         debug!(
             "HedgeArbStrategy: strategy_id={} 待对冲量: 基础={:.8}",
@@ -1080,19 +1048,19 @@ impl HedgeArbStrategy {
         };
 
         if !can_hedge {
-            // 不满足最小交易要求，交给 arb orphan 的 QV residual 累积。
+            // 不满足最小交易要求，交给 当前策略无法继续处理。
             if base_qty > 1e-12 {
                 let reason = min_req_reason.as_deref().unwrap_or("unknown");
                 info!(
-                    "HedgeArbStrategy: strategy_id={} handoff arb orphan residual because hedge min requirement failed hedge_symbol={} qty={:.8} reason={}",
+                    "HedgeArbStrategy: strategy_id={} handoff unmanaged hedge remainder because hedge min requirement failed hedge_symbol={} qty={:.8} reason={}",
                     self.strategy_id,
                     self.hedge_symbol,
                     base_qty,
                     reason
                 );
-                let _ = self.handoff_arb_orphan_residual(self.hedge_side, base_qty);
+                let _ = self.handle_unmanaged_hedge_remainder(self.hedge_side, base_qty);
                 info!(
-                    "HedgeArbStrategy: strategy_id={} 待对冲量={:.8} 不满足最小交易要求，转交 arb orphan residual reason={}",
+                    "HedgeArbStrategy: strategy_id={} 待对冲量={:.8} 不满足最小交易要求，转交 unmanaged hedge remainder reason={}",
                     self.strategy_id, base_qty, reason
                 );
                 return (false, 0.0, base_qty);
@@ -1136,15 +1104,15 @@ impl HedgeArbStrategy {
                     "HedgeArbStrategy: strategy_id={} 对冲失败: {}",
                     self.strategy_id, e
                 );
-                // 对冲失败，将数量交给 arb orphan residual。
+                // 对冲失败，将数量交给 unmanaged hedge remainder。
                 if base_qty > 1e-12 {
                     warn!(
-                        "HedgeArbStrategy: strategy_id={} handoff arb orphan residual because hedge submit failed hedge_symbol={} qty={:.8}",
+                        "HedgeArbStrategy: strategy_id={} handoff unmanaged hedge remainder because hedge submit failed hedge_symbol={} qty={:.8}",
                         self.strategy_id,
                         self.hedge_symbol,
                         base_qty
                     );
-                    let _ = self.handoff_arb_orphan_residual(self.hedge_side, base_qty);
+                    let _ = self.handle_unmanaged_hedge_remainder(self.hedge_side, base_qty);
                     (false, 0.0, base_qty)
                 } else {
                     (false, 0.0, 0.0)
@@ -1885,7 +1853,7 @@ impl HedgeArbStrategy {
             );
             let residual_add = if pending_qty > HEDGE_RESIDUAL_EPS {
                 info!(
-                    "HedgeArbStrategy: strategy_id={} handoff arb orphan residual due to hedge reject reason={} hedge_symbol={} side={:?} qty={:.8} price={:.8}",
+                    "HedgeArbStrategy: strategy_id={} handoff unmanaged hedge remainder due to hedge reject reason={} hedge_symbol={} side={:?} qty={:.8} price={:.8}",
                     self.strategy_id,
                     reason,
                     self.hedge_symbol,
@@ -1893,7 +1861,7 @@ impl HedgeArbStrategy {
                     pending_qty,
                     order_price
                 );
-                let _ = self.handoff_arb_orphan_residual(order_side, pending_qty);
+                let _ = self.handle_unmanaged_hedge_remainder(order_side, pending_qty);
                 pending_qty
             } else {
                 0.0
@@ -1977,7 +1945,7 @@ impl HedgeArbStrategy {
 
         let residual_add = if base_pending_qty > HEDGE_RESIDUAL_EPS {
             info!(
-                "HedgeArbStrategy: strategy_id={} handoff arb orphan residual due to hedge reject reason={} hedge_symbol={} side={:?} qty={:.8} price={:.8}",
+                "HedgeArbStrategy: strategy_id={} handoff unmanaged hedge remainder due to hedge reject reason={} hedge_symbol={} side={:?} qty={:.8} price={:.8}",
                 self.strategy_id,
                 reason,
                 self.hedge_symbol,
@@ -1985,7 +1953,7 @@ impl HedgeArbStrategy {
                 base_pending_qty,
                 0.0
             );
-            let _ = self.handoff_arb_orphan_residual(self.hedge_side, base_pending_qty);
+            let _ = self.handle_unmanaged_hedge_remainder(self.hedge_side, base_pending_qty);
             base_pending_qty
         } else {
             0.0

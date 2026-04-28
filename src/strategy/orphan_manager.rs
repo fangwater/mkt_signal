@@ -3,8 +3,7 @@ use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::strategy::arb_orphan_strategy::{ArbOrphanSnapshot, ArbOrphanStrategy};
 use crate::strategy::hedge_orphan_order_strategy::HedgeOrphanOrderStrategy;
 use crate::strategy::manager::{
-    ArbOrphanHandoff, ArbOrphanResidualHandoff, OrphanHandoff, OrphanStrategyRole, Strategy,
-    StrategyManager,
+    ArbOrphanHandoff, OrphanHandoff, OrphanStrategyRole, Strategy, StrategyManager,
 };
 use crate::strategy::mm_orphan_order_strategy::MmOrphanOrderStrategy;
 use crate::strategy::order_update::OrderUpdate;
@@ -213,23 +212,6 @@ impl OrphanStrategyManager {
             return false;
         };
         strategy.adopt_arb_orphan_order_id(handoff)
-    }
-
-    pub fn adopt_arb_orphan_residual(&mut self, residual: &ArbOrphanResidualHandoff) -> bool {
-        if residual.signed_base_qty.abs() <= 1e-12 {
-            return false;
-        }
-        let strategy_id = self.ensure_arb_orphan_strategy(&residual.symbol);
-        let Some(strategy) = self.strategies.get_mut(&strategy_id) else {
-            return false;
-        };
-        strategy.adopt_arb_orphan_residual(residual)
-    }
-
-    pub fn adopt_arb_orphan_residuals(&mut self, residuals: Vec<ArbOrphanResidualHandoff>) {
-        for residual in residuals {
-            let _ = self.adopt_arb_orphan_residual(&residual);
-        }
     }
 
     pub fn apply_order_update(&mut self, update: &dyn OrderUpdate) -> bool {

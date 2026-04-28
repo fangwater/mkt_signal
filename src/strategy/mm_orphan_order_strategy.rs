@@ -2,43 +2,30 @@ use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::OrderExecutionStatus;
-use crate::pre_trade::{QueryEngHub, TradeEngHub};
+use crate::pre_trade::TradeEngHub;
 use crate::signal::common::{ExecutionType, OrderStatus, TradingVenue};
 use crate::signal::trade_signal::TradeSignal;
-use crate::strategy::manager::{OrphanHandoff, OrphanSourceKind, Strategy};
-use crate::strategy::order_query_builder::build_order_query_request;
+use crate::strategy::manager::{OrphanHandoff, Strategy};
 use crate::strategy::order_update::OrderUpdate;
+use crate::strategy::orphan_order_common::{OrphanOrderOwner, OrphanOrderTracker};
 use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
-    publish_uniform_trade_order_from_order_update, UniformPublishCtx,
+    publish_uniform_trade_order_from_order_update,
 };
 use log::{debug, info, warn};
 use std::any::Any;
-use std::collections::{HashMap, HashSet};
 
 const MM_ORPHAN_QUERY_BASE_TICKS: u32 = 25;
 const MM_ORPHAN_QUERY_MAX_TICKS: u32 = 3_200;
+const MM_ORPHAN_ROLE: &str = "MmOrphanOrderStrategy: strategy_role=mm_orphan";
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct MmOrphanOrderOwner {
-    pub source_strategy_id: i32,
-    pub source_kind: OrphanSourceKind,
-    pub uniform_ctx: UniformPublishCtx,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct MmOrphanQueryState {
-    query_count: u8,
-    ticks_until_next_query: u32,
-}
+pub type MmOrphanOrderOwner = OrphanOrderOwner;
 
 pub struct MmOrphanOrderStrategy {
     strategy_id: i32,
     symbol: String,
-    order_ids: HashSet<i64>,
-    order_owners: HashMap<i64, MmOrphanOrderOwner>,
-    query_states: HashMap<i64, MmOrphanQueryState>,
+    orders: OrphanOrderTracker,
     active: bool,
 }
 
@@ -47,37 +34,17 @@ impl MmOrphanOrderStrategy {
         Self {
             strategy_id,
             symbol: normalize_symbol_for_internal(&symbol.into()),
-            order_ids: HashSet::new(),
-            order_owners: HashMap::new(),
-            query_states: HashMap::new(),
+            orders: OrphanOrderTracker::new(
+                MM_ORPHAN_QUERY_BASE_TICKS,
+                MM_ORPHAN_QUERY_BASE_TICKS,
+                MM_ORPHAN_QUERY_MAX_TICKS,
+            ),
             active: true,
         }
     }
 
     pub fn len(&self) -> usize {
-        self.order_ids.len()
-    }
-
-    fn initial_query_state() -> MmOrphanQueryState {
-        MmOrphanQueryState {
-            query_count: 0,
-            ticks_until_next_query: MM_ORPHAN_QUERY_BASE_TICKS,
-        }
-    }
-
-    fn next_query_ticks(query_count: u8) -> u32 {
-        let multiplier = 1_u32
-            .checked_shl(query_count.min(31) as u32)
-            .unwrap_or(u32::MAX);
-        MM_ORPHAN_QUERY_BASE_TICKS
-            .saturating_mul(multiplier)
-            .min(MM_ORPHAN_QUERY_MAX_TICKS)
-    }
-
-    fn ensure_query_state(&mut self, client_order_id: i64) {
-        self.query_states
-            .entry(client_order_id)
-            .or_insert_with(Self::initial_query_state);
+        self.orders.len()
     }
 
     pub(crate) fn adopt_orphan_order_id(&mut self, handoff: &OrphanHandoff) -> bool {
@@ -100,14 +67,12 @@ impl MmOrphanOrderStrategy {
             return false;
         }
         drop(order);
-        self.track_order_id(handoff.client_order_id);
-        self.ensure_query_state(handoff.client_order_id);
-        self.order_owners.insert(
+        self.orders.adopt_order_owner(
             handoff.client_order_id,
-            MmOrphanOrderOwner {
+            OrphanOrderOwner {
                 source_strategy_id: handoff.source_strategy_id,
                 source_kind: handoff.source_kind,
-                uniform_ctx: handoff.uniform_ctx.clone(),
+                uniform_ctx: Some(handoff.uniform_ctx.clone()),
             },
         );
         info!(
@@ -124,86 +89,27 @@ impl MmOrphanOrderStrategy {
     }
 
     pub fn forget_order_id(&mut self, client_order_id: i64, reason: &str) -> bool {
-        let removed = self.order_ids.remove(&client_order_id);
-        if removed {
-            self.order_owners.remove(&client_order_id);
-            self.query_states.remove(&client_order_id);
-            info!(
-                "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} forgot order_id client_order_id={} reason={}",
-                self.strategy_id, client_order_id, reason
-            );
-        }
-        removed
+        self.orders
+            .forget_order_id(MM_ORPHAN_ROLE, self.strategy_id, client_order_id, reason)
     }
 
     fn track_order_id(&mut self, client_order_id: i64) {
-        self.order_ids.insert(client_order_id);
-        self.ensure_query_state(client_order_id);
+        self.orders.track_order_id(client_order_id);
     }
 
     pub fn order_owner(&self, client_order_id: i64) -> Option<MmOrphanOrderOwner> {
-        self.order_owners.get(&client_order_id).cloned()
+        self.orders.owner(client_order_id)
     }
 
     fn finalize_terminal_order(&mut self, client_order_id: i64, event_time: i64, reason: &str) {
-        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
-            self.forget_order_id(client_order_id, reason);
-            return;
-        };
-
-        let snapshot = {
-            let mgr = order_mgr.borrow();
-            mgr.get(client_order_id).map(|order| {
-                (
-                    order.venue,
-                    order.symbol.clone(),
-                    order.side,
-                    order.quantity,
-                    order.cumulative_filled_quantity,
-                    order.price,
-                )
-            })
-        };
-
-        let owner = self.order_owners.get(&client_order_id).cloned();
-        if let (Some((venue, symbol, side, order_qty, cumulative_qty, price)), Some(owner)) =
-            (snapshot, owner)
-        {
-            let order_base_qty = MonitorChannel::instance().qty_to_base(venue, &symbol, order_qty);
-            let cumulative_base_qty =
-                MonitorChannel::instance().qty_to_base(venue, &symbol, cumulative_qty);
-            let should_record = match owner.source_kind {
-                OrphanSourceKind::Open => cumulative_base_qty > 0.0,
-                OrphanSourceKind::Hedge => order_base_qty > 0.0 || cumulative_base_qty > 0.0,
-            };
-            if should_record {
-                let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-                let mut strategy_mgr = strategy_mgr.borrow_mut();
-                let symbol = normalize_symbol_for_internal(&symbol);
-                let _ = match owner.source_kind {
-                    OrphanSourceKind::Open => strategy_mgr.record_open_order_terminal(
-                        &symbol,
-                        side,
-                        order_base_qty,
-                        cumulative_base_qty,
-                        event_time,
-                        price,
-                        0,
-                    ),
-                    OrphanSourceKind::Hedge => strategy_mgr.record_hedge_order_terminal(
-                        &symbol,
-                        side,
-                        order_base_qty,
-                        cumulative_base_qty,
-                        event_time,
-                        price,
-                    ),
-                };
-            }
-            let _ = order_mgr.borrow_mut().remove(client_order_id);
-        }
-
-        self.forget_order_id(client_order_id, reason);
+        self.orders.finalize_terminal_order(
+            MM_ORPHAN_ROLE,
+            self.strategy_id,
+            client_order_id,
+            event_time,
+            reason,
+            0.0,
+        );
     }
 
     fn request_cancel_if_needed(&mut self, update: &dyn OrderUpdate) {
@@ -280,39 +186,8 @@ impl MmOrphanOrderStrategy {
     }
 
     fn send_order_query(&mut self, client_order_id: i64) -> bool {
-        let order_mgr = MonitorChannel::instance().order_manager();
-        let Some(order) = order_mgr.borrow().get(client_order_id) else {
-            warn!(
-                "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} send_order_query but local order missing client_order_id={}",
-                self.strategy_id, client_order_id
-            );
-            return false;
-        };
-        let request_query_id = client_order_id;
-        match build_order_query_request(&order, request_query_id, client_order_id) {
-            Ok((exchange, req_bytes)) => {
-                if let Err(err) = QueryEngHub::publish_query_request(exchange.as_str(), &req_bytes)
-                {
-                    warn!(
-                        "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} publish query failed client_order_id={} request_query_id={} err={:#}",
-                        self.strategy_id, client_order_id, request_query_id, err
-                    );
-                    return false;
-                }
-                info!(
-                    "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} query sent client_order_id={} request_query_id={}",
-                    self.strategy_id, client_order_id, request_query_id
-                );
-                true
-            }
-            Err(err) => {
-                warn!(
-                    "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} build query failed client_order_id={} err={}",
-                    self.strategy_id, client_order_id, err
-                );
-                false
-            }
-        }
+        self.orders
+            .send_order_query(MM_ORPHAN_ROLE, self.strategy_id, client_order_id, false)
     }
 }
 
@@ -330,7 +205,7 @@ impl Strategy for MmOrphanOrderStrategy {
     }
 
     fn is_strategy_order(&self, order_id: i64) -> bool {
-        self.order_ids.contains(&order_id)
+        self.orders.contains(order_id)
     }
 
     fn handle_signal(&mut self, _signal: &TradeSignal) {}
@@ -341,10 +216,7 @@ impl Strategy for MmOrphanOrderStrategy {
         }
         let client_order_id = update.client_order_id();
         self.track_order_id(client_order_id);
-        let uniform_ctx = self
-            .order_owners
-            .get(&client_order_id)
-            .map(|owner| owner.uniform_ctx.clone());
+        let uniform_ctx = self.orders.uniform_ctx(client_order_id);
         let prev_cumulative_filled_qty = MonitorChannel::try_order_manager()
             .and_then(|order_mgr| {
                 order_mgr
@@ -461,10 +333,7 @@ impl Strategy for MmOrphanOrderStrategy {
         }
         let client_order_id = trade.client_order_id();
         self.track_order_id(client_order_id);
-        let uniform_ctx = self
-            .order_owners
-            .get(&client_order_id)
-            .map(|owner| owner.uniform_ctx.clone());
+        let uniform_ctx = self.orders.uniform_ctx(client_order_id);
         let prev_cumulative_filled_qty = MonitorChannel::try_order_manager()
             .and_then(|order_mgr| {
                 order_mgr
@@ -556,7 +425,7 @@ impl Strategy for MmOrphanOrderStrategy {
     }
 
     fn handle_period_clock(&mut self, _current_tp: i64) {
-        let tracked_order_ids: Vec<i64> = self.order_ids.iter().copied().collect();
+        let tracked_order_ids = self.orders.tracked_order_ids();
         let Some(order_mgr) = MonitorChannel::try_order_manager() else {
             return;
         };
@@ -577,19 +446,10 @@ impl Strategy for MmOrphanOrderStrategy {
                 continue;
             }
 
-            let Some(query_state) = self.query_states.get_mut(&client_order_id) else {
-                continue;
-            };
-            if query_state.ticks_until_next_query > 0 {
-                query_state.ticks_until_next_query -= 1;
-                continue;
-            }
-
-            let next_query_count = query_state.query_count.saturating_add(1);
-            query_state.query_count = next_query_count;
-            query_state.ticks_until_next_query = Self::next_query_ticks(next_query_count);
             drop(order);
-            let _ = self.send_order_query(client_order_id);
+            if self.orders.query_due_now(client_order_id) {
+                let _ = self.send_order_query(client_order_id);
+            }
         }
     }
 
