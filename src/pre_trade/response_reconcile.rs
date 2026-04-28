@@ -148,10 +148,7 @@ pub fn apply_query_response_as_updates(
 
     let options = if strategy
         .as_any()
-        .is::<crate::strategy::arb_orphan_strategy::ArbOrphanStrategy>()
-        || strategy
-            .as_any()
-            .is::<crate::strategy::mm_orphan_order_strategy::MmOrphanOrderStrategy>()
+        .is::<crate::strategy::orphan_order_strategy::OrphanOrderStrategy>()
         || strategy
             .as_any()
             .is::<crate::strategy::hedge_orphan_order_strategy::HedgeOrphanOrderStrategy>()

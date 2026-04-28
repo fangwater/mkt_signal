@@ -128,7 +128,6 @@ impl OrphanOrderTracker {
         strategy_role: &str,
         strategy_id: i32,
         client_order_id: i64,
-        forget_on_missing_local_order: bool,
     ) -> bool {
         let Some(order_mgr) = MonitorChannel::try_order_manager() else {
             return false;
@@ -138,14 +137,6 @@ impl OrphanOrderTracker {
                 "{}: strategy_id={} send_order_query missing local order client_order_id={}",
                 strategy_role, strategy_id, client_order_id
             );
-            if forget_on_missing_local_order {
-                self.forget_order_id(
-                    strategy_role,
-                    strategy_id,
-                    client_order_id,
-                    "query missing local order",
-                );
-            }
             return false;
         };
         let request_query_id = client_order_id;
@@ -180,7 +171,6 @@ impl OrphanOrderTracker {
         strategy_role: &str,
         strategy_id: i32,
         update: &dyn OrderUpdate,
-        terminal_record_eps: f64,
     ) -> bool {
         let client_order_id = update.client_order_id();
         if !self.contains(client_order_id) {
@@ -290,7 +280,7 @@ impl OrphanOrderTracker {
                 client_order_id,
                 update.event_time(),
                 "terminal order update",
-                terminal_record_eps,
+                0.0,
             );
         } else {
             let _ = self.request_cancel_from_order_update(strategy_role, strategy_id, update);
@@ -314,7 +304,6 @@ impl OrphanOrderTracker {
         strategy_role: &str,
         strategy_id: i32,
         trade: &dyn TradeUpdate,
-        terminal_record_eps: f64,
     ) -> bool {
         let client_order_id = trade.client_order_id();
         if !self.contains(client_order_id) {
@@ -403,7 +392,7 @@ impl OrphanOrderTracker {
                 client_order_id,
                 trade.event_time(),
                 "terminal trade update",
-                terminal_record_eps,
+                0.0,
             );
         }
         info!(
@@ -598,13 +587,7 @@ impl OrphanOrderTracker {
         self.forget_order_id(strategy_role, strategy_id, client_order_id, reason);
     }
 
-    pub fn handle_period_clock(
-        &mut self,
-        strategy_role: &str,
-        strategy_id: i32,
-        terminal_record_eps: f64,
-        forget_on_missing_local_order_query: bool,
-    ) {
+    pub fn handle_period_clock(&mut self, strategy_role: &str, strategy_id: i32) {
         let tracked_order_ids = self.tracked_order_ids();
         let Some(order_mgr) = MonitorChannel::try_order_manager() else {
             return;
@@ -629,19 +612,14 @@ impl OrphanOrderTracker {
                     client_order_id,
                     get_timestamp_us(),
                     "terminal local order on period clock",
-                    terminal_record_eps,
+                    0.0,
                 );
                 continue;
             }
 
             drop(order);
             if self.query_due_now(client_order_id) {
-                let _ = self.send_order_query(
-                    strategy_role,
-                    strategy_id,
-                    client_order_id,
-                    forget_on_missing_local_order_query,
-                );
+                let _ = self.send_order_query(strategy_role, strategy_id, client_order_id);
             }
         }
     }

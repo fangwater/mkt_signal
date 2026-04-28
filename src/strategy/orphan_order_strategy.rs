@@ -5,38 +5,37 @@ use crate::strategy::manager::{OrphanHandoff, Strategy};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::orphan_order_common::{OrphanOrderOwner, OrphanOrderTracker};
 use crate::strategy::trade_update::TradeUpdate;
-use log::info;
+use log::{info, warn};
 use std::any::Any;
 
-const ARB_ORPHAN_EPS: f64 = 1e-12;
-const ARB_ORPHAN_QUERY_BASE_TICKS: u32 = 25;
-const ARB_ORPHAN_QUERY_MAX_TICKS: u32 = 3_200;
-const ARB_ORPHAN_ROLE: &str = "ArbOrphanStrategy: strategy_role=arb_orphan";
+const ORPHAN_QUERY_BASE_TICKS: u32 = 25;
+const ORPHAN_QUERY_MAX_TICKS: u32 = 3_200;
+const ORPHAN_ROLE: &str = "OrphanOrderStrategy";
 
 #[derive(Debug, Clone)]
-pub struct ArbOrphanSnapshot {
+pub struct OrphanOrderSnapshot {
     pub symbol: String,
     pub tracked_orders: usize,
 }
 
-pub struct ArbOrphanStrategy {
+pub struct OrphanOrderStrategy {
     strategy_id: i32,
     symbol: String,
-    active: bool,
     orders: OrphanOrderTracker,
+    active: bool,
 }
 
-impl ArbOrphanStrategy {
+impl OrphanOrderStrategy {
     pub fn new(strategy_id: i32, symbol: impl Into<String>) -> Self {
         Self {
             strategy_id,
             symbol: normalize_symbol_for_internal(&symbol.into()),
-            active: true,
             orders: OrphanOrderTracker::new(
-                ARB_ORPHAN_QUERY_BASE_TICKS,
-                ARB_ORPHAN_QUERY_BASE_TICKS,
-                ARB_ORPHAN_QUERY_MAX_TICKS,
+                ORPHAN_QUERY_BASE_TICKS,
+                ORPHAN_QUERY_BASE_TICKS,
+                ORPHAN_QUERY_MAX_TICKS,
             ),
+            active: true,
         }
     }
 
@@ -48,6 +47,10 @@ impl ArbOrphanStrategy {
             return false;
         };
         let Some(order) = order_mgr.borrow().get(handoff.client_order_id) else {
+            warn!(
+                "{}: strategy_id={} adopt missing local order client_order_id={} reason={}",
+                ORPHAN_ROLE, self.strategy_id, handoff.client_order_id, handoff.reason
+            );
             return false;
         };
         let symbol = normalize_symbol_for_internal(&order.symbol);
@@ -67,28 +70,29 @@ impl ArbOrphanStrategy {
             },
         );
         info!(
-            "ArbOrphanStrategy: strategy_role=arb_orphan strategy_id={} adopted order symbol={} client_order_id={} venue={:?} status={:?} source_kind={:?} source_strategy_id={} reason={}",
+            "{}: strategy_id={} adopted order symbol={} client_order_id={} venue={:?} status={:?} source_strategy_id={} source_kind={:?} reason={}",
+            ORPHAN_ROLE,
             self.strategy_id,
             symbol,
             handoff.client_order_id,
             venue,
             status,
-            handoff.source_kind,
             handoff.source_strategy_id,
+            handoff.source_kind,
             handoff.reason
         );
         true
     }
 
-    pub fn snapshot(&self) -> ArbOrphanSnapshot {
-        ArbOrphanSnapshot {
+    pub fn snapshot(&self) -> OrphanOrderSnapshot {
+        OrphanOrderSnapshot {
             symbol: self.symbol.clone(),
             tracked_orders: self.orders.len(),
         }
     }
 }
 
-impl Strategy for ArbOrphanStrategy {
+impl Strategy for OrphanOrderStrategy {
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -111,29 +115,23 @@ impl Strategy for ArbOrphanStrategy {
         if normalize_symbol_for_internal(update.symbol()) != self.symbol {
             return;
         }
-        let _ = self.orders.apply_order_update(
-            ARB_ORPHAN_ROLE,
-            self.strategy_id,
-            update,
-            ARB_ORPHAN_EPS,
-        );
+        let _ = self
+            .orders
+            .apply_order_update(ORPHAN_ROLE, self.strategy_id, update);
     }
 
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
         if normalize_symbol_for_internal(trade.symbol()) != self.symbol {
             return;
         }
-        let _ = self.orders.apply_trade_update(
-            ARB_ORPHAN_ROLE,
-            self.strategy_id,
-            trade,
-            ARB_ORPHAN_EPS,
-        );
+        let _ = self
+            .orders
+            .apply_trade_update(ORPHAN_ROLE, self.strategy_id, trade);
     }
 
     fn handle_period_clock(&mut self, _current_tp: i64) {
         self.orders
-            .handle_period_clock(ARB_ORPHAN_ROLE, self.strategy_id, ARB_ORPHAN_EPS, true);
+            .handle_period_clock(ORPHAN_ROLE, self.strategy_id);
     }
 
     fn is_active(&self) -> bool {

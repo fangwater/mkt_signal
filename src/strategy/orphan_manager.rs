@@ -1,10 +1,9 @@
 use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use crate::strategy::arb_orphan_strategy::{ArbOrphanSnapshot, ArbOrphanStrategy};
 use crate::strategy::hedge_orphan_order_strategy::HedgeOrphanOrderStrategy;
 use crate::strategy::manager::{OrphanHandoff, OrphanStrategyRole, Strategy, StrategyManager};
-use crate::strategy::mm_orphan_order_strategy::MmOrphanOrderStrategy;
 use crate::strategy::order_update::OrderUpdate;
+use crate::strategy::orphan_order_strategy::{OrphanOrderSnapshot, OrphanOrderStrategy};
 use crate::strategy::trade_update::TradeUpdate;
 use log::info;
 use std::collections::{BTreeSet, HashMap, VecDeque};
@@ -125,26 +124,13 @@ impl OrphanStrategyManager {
         None
     }
 
-    fn ensure_mm_orphan_strategy(&mut self, symbol: &str) -> i32 {
+    fn ensure_order_orphan_strategy(&mut self, symbol: &str) -> i32 {
         let symbol = normalize_symbol_for_internal(symbol);
-        if let Some(strategy_id) = self.find_strategy_id_by::<MmOrphanOrderStrategy>(&symbol) {
+        if let Some(strategy_id) = self.find_strategy_id_by::<OrphanOrderStrategy>(&symbol) {
             return strategy_id;
         }
         let strategy_id = StrategyManager::generate_strategy_id();
-        self.insert(Box::new(MmOrphanOrderStrategy::new(
-            strategy_id,
-            symbol.clone(),
-        )));
-        strategy_id
-    }
-
-    fn ensure_arb_orphan_strategy(&mut self, symbol: &str) -> i32 {
-        let symbol = normalize_symbol_for_internal(symbol);
-        if let Some(strategy_id) = self.find_strategy_id_by::<ArbOrphanStrategy>(&symbol) {
-            return strategy_id;
-        }
-        let strategy_id = StrategyManager::generate_strategy_id();
-        self.insert(Box::new(ArbOrphanStrategy::new(
+        self.insert(Box::new(OrphanOrderStrategy::new(
             strategy_id,
             symbol.clone(),
         )));
@@ -178,25 +164,22 @@ impl OrphanStrategyManager {
         let symbol = order.symbol.clone();
         drop(order);
         let strategy_id = match role {
-            OrphanStrategyRole::Mm => self.ensure_mm_orphan_strategy(&symbol),
+            OrphanStrategyRole::Mm | OrphanStrategyRole::Arb => {
+                self.ensure_order_orphan_strategy(&symbol)
+            }
             OrphanStrategyRole::Hedge => self.ensure_hedge_orphan_strategy(&symbol),
-            OrphanStrategyRole::Arb => self.ensure_arb_orphan_strategy(&symbol),
         };
         let Some(strategy) = self.strategies.get_mut(&strategy_id) else {
             return false;
         };
         match role {
-            OrphanStrategyRole::Mm => strategy
-                .as_any_mut()
-                .downcast_mut::<MmOrphanOrderStrategy>()
-                .is_some_and(|strategy| strategy.adopt_orphan_order_id(handoff)),
             OrphanStrategyRole::Hedge => strategy
                 .as_any_mut()
                 .downcast_mut::<HedgeOrphanOrderStrategy>()
                 .is_some_and(|strategy| strategy.adopt_orphan_order_id(handoff)),
-            OrphanStrategyRole::Arb => strategy
+            OrphanStrategyRole::Mm | OrphanStrategyRole::Arb => strategy
                 .as_any_mut()
-                .downcast_mut::<ArbOrphanStrategy>()
+                .downcast_mut::<OrphanOrderStrategy>()
                 .is_some_and(|strategy| strategy.adopt_orphan_order_id(handoff)),
         }
     }
@@ -267,14 +250,14 @@ impl OrphanStrategyManager {
         false
     }
 
-    pub fn arb_orphan_snapshots(&self) -> Vec<ArbOrphanSnapshot> {
+    pub fn orphan_order_snapshots(&self) -> Vec<OrphanOrderSnapshot> {
         self.strategies
             .values()
             .filter_map(|strategy| {
                 strategy
                     .as_any()
-                    .downcast_ref::<ArbOrphanStrategy>()
-                    .map(|arb| arb.snapshot())
+                    .downcast_ref::<OrphanOrderStrategy>()
+                    .map(|strategy| strategy.snapshot())
             })
             .collect()
     }
