@@ -250,6 +250,10 @@ pub struct StrategyParams {
     #[serde(default = "default_order_interval_ms")]
     pub order_interval_ms: u64,
 
+    /// MM 每个 symbol 的最大随机时钟偏移（毫秒）；0 表示关闭
+    #[serde(default = "default_clock_shift_ms", alias = "enable_clock_shift_ms")]
+    pub clock_shift_ms: u64,
+
     /// MM 每轮报单数量
     #[serde(default = "default_open_orders_per_round")]
     pub open_orders_per_round: u32,
@@ -386,6 +390,9 @@ fn default_open_sell_vol_scale() -> String {
 fn default_order_interval_ms() -> u64 {
     5_000
 }
+fn default_clock_shift_ms() -> u64 {
+    0
+}
 fn default_open_orders_per_round() -> u32 {
     1
 }
@@ -490,6 +497,7 @@ impl Default for StrategyParams {
             open_buy_vol_scale: default_open_buy_vol_scale(),
             open_sell_vol_scale: default_open_sell_vol_scale(),
             order_interval_ms: default_order_interval_ms(),
+            clock_shift_ms: default_clock_shift_ms(),
             open_orders_per_round: default_open_orders_per_round(),
             hedge_orders_per_round: default_hedge_orders_per_round(),
             open_order_timeout: default_open_order_timeout(),
@@ -635,6 +643,27 @@ impl StrategyParams {
             }
             None => default_order_interval_ms(),
         };
+        let clock_shift_ms = match hash_map
+            .get("enable_clock_shift_ms")
+            .or_else(|| hash_map.get("clock_shift_ms"))
+        {
+            Some(raw) => {
+                let parsed = raw.parse::<i64>().unwrap_or_else(|_| {
+                    panic!(
+                        "Redis hash '{}' enable_clock_shift_ms 无法解析为整数: {}",
+                        redis_key, raw
+                    )
+                });
+                if parsed < 0 {
+                    panic!(
+                        "Redis hash '{}' enable_clock_shift_ms 无效(需>=0): {}",
+                        redis_key, parsed
+                    );
+                }
+                parsed as u64
+            }
+            None => default_clock_shift_ms(),
+        };
 
         let open_orders_per_round = match hash_map.get("open_orders_per_round") {
             Some(raw) => {
@@ -668,6 +697,14 @@ impl StrategyParams {
             .get("next_query_delay_ms")
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or_else(default_next_query_delay_ms);
+        if clock_shift_ms > 0
+            && (clock_shift_ms >= order_interval_ms || clock_shift_ms >= next_query_delay_ms)
+        {
+            panic!(
+                "Redis hash '{}' enable_clock_shift_ms 必须小于 order_interval_ms 和 next_query_delay_ms: enable_clock_shift_ms={} order_interval_ms={} next_query_delay_ms={}",
+                redis_key, clock_shift_ms, order_interval_ms, next_query_delay_ms
+            );
+        }
         let hedge_vol_multiplier = hash_map
             .get("hedge_vol_multiplier")
             .and_then(|s| s.parse::<f64>().ok())
@@ -992,6 +1029,7 @@ impl StrategyParams {
             open_buy_vol_scale,
             open_sell_vol_scale,
             order_interval_ms,
+            clock_shift_ms,
             open_orders_per_round,
             hedge_orders_per_round,
             open_order_timeout,
@@ -1143,7 +1181,11 @@ impl StrategyParams {
                 );
                 _decision.update_order_amount(self.order_amount);
                 _decision.update_order_amount_overrides(self.mm_amount_u_overrides.clone());
-                _decision.update_order_interval_ms(self.order_interval_ms);
+                _decision.update_clock_timing_params(
+                    self.order_interval_ms,
+                    self.next_query_delay_ms,
+                    self.clock_shift_ms,
+                );
                 _decision.update_open_orders_per_round(self.open_orders_per_round);
                 _decision.update_open_vol_scale_ranges(open_buy_vol_scale, open_sell_vol_scale);
                 _decision.update_enable_tlen_cancel(self.enable_tlen_cancel);
@@ -1191,7 +1233,7 @@ impl StrategyParams {
         }
 
         info!(
-            "✅ 策略参数已更新: mode={}, amount={:.2}, arb_open_scale={:.4}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, hedge_window_scale_low={:.4}, hedge_window_scale_high={:.4}, order_interval_ms={}, open_orders_per_round={}, cooldown={}s, enable_return_score_cancel={}, return_score_buy_cancel_quantile={}, return_score_sell_cancel_quantile={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, spread_cancel_cooldown_ms={}, enable_return_score_adjust_hedge={}, enable_environment_model={}, enable_volatility_limit={}, open_volatility_limit={}, enable_tradecount_limit={}, open_tradecount_limit={}, enable_open_time_block={}, open_block_utc_time_range={}, return_model_service={}, environment_model_service={}",
+            "✅ 策略参数已更新: mode={}, amount={:.2}, arb_open_scale={:.4}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, hedge_window_scale_low={:.4}, hedge_window_scale_high={:.4}, order_interval_ms={}, enable_clock_shift_ms={}, open_orders_per_round={}, cooldown={}s, enable_return_score_cancel={}, return_score_buy_cancel_quantile={}, return_score_sell_cancel_quantile={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, spread_cancel_cooldown_ms={}, enable_return_score_adjust_hedge={}, enable_environment_model={}, enable_volatility_limit={}, open_volatility_limit={}, enable_tradecount_limit={}, open_tradecount_limit={}, enable_open_time_block={}, open_block_utc_time_range={}, return_model_service={}, environment_model_service={}",
             self.mode,
             self.order_amount,
             self.open_scale,
@@ -1200,6 +1242,7 @@ impl StrategyParams {
             self.hedge_window_scale_low,
             self.hedge_window_scale_high,
             self.order_interval_ms,
+            self.clock_shift_ms,
             self.open_orders_per_round,
             self.signal_cooldown,
             self.enable_return_score_cancel,

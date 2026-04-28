@@ -44,11 +44,13 @@ impl MmOpenDecision {
         now_us: i64,
     ) -> Result<MmOpenEvalResult> {
         let symbol_key = normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures);
+        let clock_shift_ms = state.clock_shift_for_symbol(symbol);
         let open_quote = match MktChannel::instance().get_quote(symbol, state.open_venue) {
             Some(quote) => quote,
             None => {
                 return Ok(MmOpenEvalResult::skipped(
                     &symbol_key,
+                    clock_shift_ms,
                     "missing_open_quote",
                     None,
                     None,
@@ -67,6 +69,7 @@ impl MmOpenDecision {
         else {
             return Ok(MmOpenEvalResult::skipped(
                 &symbol_key,
+                clock_shift_ms,
                 &format!("missing_volatility({})", volatility_lookup.note),
                 None,
                 None,
@@ -80,6 +83,7 @@ impl MmOpenDecision {
             let Some(open_volatility_threshold) = open_volatility_snapshot.threshold else {
                 return Ok(MmOpenEvalResult::skipped(
                     &symbol_key,
+                    clock_shift_ms,
                     &format!(
                         "volatility_threshold_warming_up(samples={} min_samples={} percentile={:.2})",
                         open_volatility_snapshot.sample_count,
@@ -104,6 +108,7 @@ impl MmOpenDecision {
                 );
                 return Ok(MmOpenEvalResult::skipped(
                     &symbol_key,
+                    clock_shift_ms,
                     &format!(
                         "volatility_limited(current={:.8}>threshold={:.8},samples={},percentile={:.2},last_recompute_tp_ms={})",
                         open_volatility_snapshot.current,
@@ -130,6 +135,7 @@ impl MmOpenDecision {
             let Some(tradecount_threshold) = tradecount_snapshot.threshold else {
                 return Ok(MmOpenEvalResult::skipped(
                     &symbol_key,
+                    clock_shift_ms,
                     &format!(
                         "tradecount_threshold_warming_up(samples={} min_samples={} percentile={:.2})",
                         tradecount_snapshot.sample_count,
@@ -146,6 +152,7 @@ impl MmOpenDecision {
                 if current_tradecount >= tradecount_threshold {
                     return Ok(MmOpenEvalResult::skipped(
                         &symbol_key,
+                        clock_shift_ms,
                         &format!(
                             "tradecount_blocked(current={:.8}>=threshold={:.8},samples={},percentile={:.2},last_recompute_tp_ms={})",
                             current_tradecount,
@@ -163,6 +170,7 @@ impl MmOpenDecision {
             } else {
                 return Ok(MmOpenEvalResult::skipped(
                     &symbol_key,
+                    clock_shift_ms,
                     "missing_tradecount_ipc_snapshot",
                     None,
                     Some(volatility),
@@ -181,6 +189,7 @@ impl MmOpenDecision {
         if mm_open_blocked_by_environment(state.enable_environment_model, &environment_signal) {
             return Ok(MmOpenEvalResult::skipped(
                 &symbol_key,
+                clock_shift_ms,
                 &format!("environment_blocked({})", environment_signal.note),
                 Some(return_score),
                 Some(volatility),
@@ -217,6 +226,7 @@ impl MmOpenDecision {
                 );
                 return Ok(MmOpenEvalResult::skipped(
                     &symbol_key,
+                    clock_shift_ms,
                     &format!("build_plan_failed({err})"),
                     Some(return_score),
                     Some(volatility),
@@ -228,8 +238,9 @@ impl MmOpenDecision {
 
         let publish_stats = state.publish_mm_open_plan(now_us, &plan, &from_key, prediction_side);
         info!(
-            "{}",
-            publish_stats.breakdown_line(&symbol_key, prediction_side)
+            "{} clock_shift_ms={}",
+            publish_stats.breakdown_line(&symbol_key, prediction_side),
+            clock_shift_ms
         );
 
         if publish_stats.sent > 0 {
@@ -238,8 +249,9 @@ impl MmOpenDecision {
                 None => "both",
             };
             info!(
-                "MmDecision: MMOpen symbol={} side={} buy={} sell={} score={:.6}",
+                "MmDecision: MMOpen symbol={} clock_shift_ms={} side={} buy={} sell={} score={:.6}",
                 symbol_key,
+                clock_shift_ms,
                 side_text,
                 publish_stats.sent_buy,
                 publish_stats.sent_sell,
@@ -247,6 +259,7 @@ impl MmOpenDecision {
             );
             Ok(MmOpenEvalResult::emitted(
                 &symbol_key,
+                clock_shift_ms,
                 &format!(
                     "emitted(sent={} buy={} sell={})",
                     publish_stats.sent, publish_stats.sent_buy, publish_stats.sent_sell
@@ -260,6 +273,7 @@ impl MmOpenDecision {
         } else {
             Ok(MmOpenEvalResult::skipped(
                 &symbol_key,
+                clock_shift_ms,
                 &publish_failure_reason(&publish_stats),
                 Some(return_score),
                 Some(volatility),
@@ -271,14 +285,27 @@ impl MmOpenDecision {
 
     pub(crate) fn process_interval(&mut self, state: &mut MmDecisionState) {
         let now_us = get_timestamp_us();
+        let symbols = state.due_open_symbols(now_us, SymbolList::instance().get_online_symbols());
+        if symbols.is_empty() {
+            return;
+        }
+
         if let Some(reason) = state.mm_open_time_block_reason(now_us) {
-            let results: Vec<MmOpenEvalResult> = SymbolList::instance()
-                .get_online_symbols()
+            let results: Vec<MmOpenEvalResult> = symbols
                 .into_iter()
                 .map(|symbol| {
                     let symbol_key =
                         normalize_symbol_for_whitelist(&symbol, TradingVenue::OkexFutures);
-                    MmOpenEvalResult::skipped(&symbol_key, &reason, None, None, None, None)
+                    let clock_shift_ms = state.clock_shift_for_symbol(&symbol);
+                    MmOpenEvalResult::skipped(
+                        &symbol_key,
+                        clock_shift_ms,
+                        &reason,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
                 })
                 .collect();
             if results.is_empty() {
@@ -293,18 +320,20 @@ impl MmOpenDecision {
         }
 
         let mut results = Vec::new();
-        for symbol in SymbolList::instance().get_online_symbols() {
+        for symbol in symbols {
             match self.emit_for_symbol(state, &symbol, now_us) {
                 Ok(result) => results.push(result),
                 Err(err) => {
                     let symbol_key =
                         normalize_symbol_for_whitelist(&symbol, TradingVenue::OkexFutures);
+                    let clock_shift_ms = state.clock_shift_for_symbol(&symbol);
                     warn!(
                         "MmDecision: MMOpen evaluate failed symbol={} err={:#}",
                         symbol_key, err
                     );
                     results.push(MmOpenEvalResult::skipped(
                         &symbol_key,
+                        clock_shift_ms,
                         &format!("evaluate_failed({})", err.root_cause()),
                         None,
                         None,
@@ -322,6 +351,7 @@ impl MmOpenDecision {
 #[derive(Debug, Clone)]
 struct MmOpenEvalResult {
     symbol: String,
+    clock_shift_ms: u64,
     result: &'static str,
     reason: String,
     return_score: Option<f64>,
@@ -337,6 +367,7 @@ struct MmOpenEvalResult {
 impl MmOpenEvalResult {
     fn skipped(
         symbol: &str,
+        clock_shift_ms: u64,
         reason: &str,
         return_score: Option<f64>,
         volatility: Option<f64>,
@@ -346,6 +377,7 @@ impl MmOpenEvalResult {
         let (env_note, env_score, env_threshold) = env_fields(env.as_ref());
         Self {
             symbol: symbol.to_string(),
+            clock_shift_ms,
             result: "skip",
             reason: reason.to_string(),
             return_score,
@@ -361,6 +393,7 @@ impl MmOpenEvalResult {
 
     fn emitted(
         symbol: &str,
+        clock_shift_ms: u64,
         reason: &str,
         return_score: Option<f64>,
         volatility: Option<f64>,
@@ -371,6 +404,7 @@ impl MmOpenEvalResult {
         let (env_note, env_score, env_threshold) = env_fields(env.as_ref());
         Self {
             symbol: symbol.to_string(),
+            clock_shift_ms,
             result: "emit",
             reason: reason.to_string(),
             return_score,
@@ -475,10 +509,10 @@ fn build_rule(widths: &[usize], left: char, mid: char, right: char) -> String {
 }
 
 fn format_mm_open_eval_table(results: &[MmOpenEvalResult]) -> String {
-    let widths = [14usize, 6, 10, 10, 12, 10, 12, 12, 28, 44];
+    let widths = [14usize, 8, 6, 10, 10, 12, 10, 12, 12, 28, 44];
     let headers = [
-        "symbol", "result", "ret", "vol", "tradecnt", "vol_tr", "pnlu", "pnlu_thr", "env_note",
-        "reason",
+        "symbol", "shift_ms", "result", "ret", "vol", "tradecnt", "vol_tr", "pnlu", "pnlu_thr",
+        "env_note", "reason",
     ];
     let mut lines = Vec::new();
     lines.push(build_rule(&widths, '┌', '┬', '┐'));
@@ -488,7 +522,7 @@ fn format_mm_open_eval_table(results: &[MmOpenEvalResult]) -> String {
         .map(|(header, width)| pad_cell(header, *width))
         .collect();
     lines.push(format!(
-        "│ {} │ {} │ {} │ {} │ {} │ {} │ {} │ {} │ {} │ {} │",
+        "│ {} │ {} │ {} │ {} │ {} │ {} │ {} │ {} │ {} │ {} │ {} │",
         header_cells[0],
         header_cells[1],
         header_cells[2],
@@ -499,6 +533,7 @@ fn format_mm_open_eval_table(results: &[MmOpenEvalResult]) -> String {
         header_cells[7],
         header_cells[8],
         header_cells[9],
+        header_cells[10],
     ));
     lines.push(build_rule(&widths, '├', '┼', '┤'));
     for item in results {
@@ -507,17 +542,18 @@ fn format_mm_open_eval_table(results: &[MmOpenEvalResult]) -> String {
             _ => item.result,
         };
         lines.push(format!(
-            "│ {} │ {} │ {} │ {} │ {} │ {} │ {} │ {} │ {} │ {} │",
+            "│ {} │ {} │ {} │ {} │ {} │ {} │ {} │ {} │ {} │ {} │ {} │",
             pad_cell(&item.symbol, widths[0]),
-            pad_cell(signal_hint, widths[1]),
-            pad_cell(&format_opt_f64(item.return_score), widths[2]),
-            pad_cell(&format_opt_f64(item.volatility), widths[3]),
-            pad_cell(&format_opt_f64(item.tradecount), widths[4]),
-            pad_cell(&format_opt_f64(item.vol_tr), widths[5]),
-            pad_cell(&format_opt_f64(item.env_score), widths[6]),
-            pad_cell(&format_opt_f64(item.env_threshold), widths[7]),
-            pad_cell(&item.env_note, widths[8]),
-            pad_cell(&item.reason, widths[9]),
+            pad_cell(&item.clock_shift_ms.to_string(), widths[1]),
+            pad_cell(signal_hint, widths[2]),
+            pad_cell(&format_opt_f64(item.return_score), widths[3]),
+            pad_cell(&format_opt_f64(item.volatility), widths[4]),
+            pad_cell(&format_opt_f64(item.tradecount), widths[5]),
+            pad_cell(&format_opt_f64(item.vol_tr), widths[6]),
+            pad_cell(&format_opt_f64(item.env_score), widths[7]),
+            pad_cell(&format_opt_f64(item.env_threshold), widths[8]),
+            pad_cell(&item.env_note, widths[9]),
+            pad_cell(&item.reason, widths[10]),
         ));
     }
     lines.push(build_rule(&widths, '└', '┴', '┘'));
@@ -532,9 +568,16 @@ fn log_interval_summary(state: &MmDecisionState, results: &[MmOpenEvalResult]) {
     let evaluated = results.len();
     let emitted = results.iter().filter(|item| item.result == "emit").count();
     let skipped = evaluated.saturating_sub(emitted);
+    let shift_summary = results
+        .iter()
+        .map(|item| format!("{}:{}", item.symbol, item.clock_shift_ms))
+        .collect::<Vec<_>>()
+        .join(",");
     info!(
-        "MmDecision: MMOpen interval summary interval_ms={} evaluated={} emitted_symbols={} skipped_symbols={} environment_gate_enabled={}",
+        "MmDecision: MMOpen interval summary interval_ms={} max_clock_shift_ms={} due_clock_shifts=[{}] evaluated={} emitted_symbols={} skipped_symbols={} environment_gate_enabled={}",
         state.order_interval_ms,
+        state.clock_shift_ms,
+        shift_summary,
         evaluated,
         emitted,
         skipped,

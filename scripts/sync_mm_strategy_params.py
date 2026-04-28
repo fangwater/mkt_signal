@@ -80,6 +80,7 @@ def parse_args() -> argparse.Namespace:
 STRATEGY_PARAMS = {
     "default_order_amount": "100.0",
     "order_interval_ms": "5000",
+    "enable_clock_shift_ms": "0",
     "open_orders_per_round": "8",
     "open_buy_vol_scale": "[0.1,2.0]",
     "open_sell_vol_scale": "[0.1,2.0]",
@@ -130,11 +131,13 @@ REMOVED_KEYS = [
     "hedge_offset_shift_in_k",
     "prediction_mode",
     "enable_open_cancel",
+    "clock_shift_ms",
 ]
 
 PARAM_COMMENTS: Dict[str, str] = {
     "default_order_amount": "默认单量(USDT，可被配置覆盖)",
     "order_interval_ms": "报单触发间隔(ms)",
+    "enable_clock_shift_ms": "每个 symbol 的最大随机时钟偏移(ms)，0=关闭；实际偏移固定为 0..enable_clock_shift_ms 的随机值，并同时用于 open/hedge 对齐",
     "open_orders_per_round": "MM open 每轮报单数量",
     "open_buy_vol_scale": "MM open 买侧波动率放缩区间，格式为长度为2的 JSON 数组，例如 [0.1,2.0]",
     "open_sell_vol_scale": "MM open 卖侧波动率放缩区间，格式为长度为2的 JSON 数组，例如 [0.1,2.0]",
@@ -170,6 +173,7 @@ PARAM_COMMENTS: Dict[str, str] = {
 PARAM_PRINT_ORDER = [
     "default_order_amount",
     "order_interval_ms",
+    "enable_clock_shift_ms",
     "open_orders_per_round",
     "open_buy_vol_scale",
     "open_sell_vol_scale",
@@ -229,6 +233,18 @@ def validate_strategy_params(params: Dict[str, str]) -> None:
             value = float(params[key])
             if not (0.0 < value < 99.0):
                 raise ValueError(f"{key} 必须在 (0,99) 内: {value}")
+    if "enable_clock_shift_ms" in params:
+        shift = int(params["enable_clock_shift_ms"])
+        if shift < 0:
+            raise ValueError(f"enable_clock_shift_ms 必须 >= 0: {shift}")
+        order_interval_ms = int(params.get("order_interval_ms", "5000"))
+        next_query_delay_ms = int(params.get("next_query_delay_ms", "30000"))
+        if shift and (shift >= order_interval_ms or shift >= next_query_delay_ms):
+            raise ValueError(
+                "enable_clock_shift_ms 必须小于 order_interval_ms 和 next_query_delay_ms: "
+                f"enable_clock_shift_ms={shift} order_interval_ms={order_interval_ms} "
+                f"next_query_delay_ms={next_query_delay_ms}"
+            )
 
 
 def sync_strategy_params(rds, key: str) -> int:

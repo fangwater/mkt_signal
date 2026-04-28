@@ -45,6 +45,7 @@ pub struct InventoryHedgeBuildInput<'a> {
     pub hedge_window_scale_low: f64,
     pub hedge_window_scale_high: f64,
     pub next_query_delay_ms: u64,
+    pub clock_shift_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -71,16 +72,21 @@ pub struct InventoryHedgeQuotePlan {
     pub levels: Vec<QuotePlanLevel>,
 }
 
-fn next_aligned_query_ts_us(now_us: i64, interval_ms: u64) -> i64 {
+fn next_aligned_query_ts_us(now_us: i64, interval_ms: u64, shift_ms: u64) -> i64 {
     let now_ms = now_us.max(0).div_euclid(1_000);
     let interval_ms = i64::try_from(interval_ms).unwrap_or(i64::MAX);
-    let remainder = now_ms.rem_euclid(interval_ms);
+    let shift_ms = i64::try_from(shift_ms).unwrap_or(i64::MAX);
+    let shifted_now_ms = now_ms.saturating_sub(shift_ms);
+    let remainder = shifted_now_ms.rem_euclid(interval_ms);
     let delay_ms = if remainder == 0 {
         interval_ms
     } else {
         interval_ms - remainder
     };
-    now_ms.saturating_add(delay_ms).saturating_mul(1_000)
+    shifted_now_ms
+        .saturating_add(delay_ms)
+        .saturating_add(shift_ms)
+        .saturating_mul(1_000)
 }
 
 pub fn resolve_inventory_hedge_signal_inputs(
@@ -665,7 +671,11 @@ pub fn build_inventory_hedge_quote_plan(
         symbol,
         quote: input.quote,
         now_us,
-        next_query_ts: next_aligned_query_ts_us(now_us, input.next_query_delay_ms),
+        next_query_ts: next_aligned_query_ts_us(
+            now_us,
+            input.next_query_delay_ms,
+            input.clock_shift_ms,
+        ),
         side,
         signal: input.signal,
         signal_qtl: input.signal_qtl,
@@ -762,15 +772,31 @@ mod tests {
 
     #[test]
     fn next_query_ts_aligns_to_half_minute_boundary() {
-        assert_eq!(next_aligned_query_ts_us(29_999_000, 30_000), 30_000_000);
-        assert_eq!(next_aligned_query_ts_us(30_000_000, 30_000), 60_000_000);
-        assert_eq!(next_aligned_query_ts_us(30_001_000, 30_000), 60_000_000);
+        assert_eq!(next_aligned_query_ts_us(29_999_000, 30_000, 0), 30_000_000);
+        assert_eq!(next_aligned_query_ts_us(30_000_000, 30_000, 0), 60_000_000);
+        assert_eq!(next_aligned_query_ts_us(30_001_000, 30_000, 0), 60_000_000);
     }
 
     #[test]
     fn next_query_ts_aligns_to_minute_boundary() {
-        assert_eq!(next_aligned_query_ts_us(59_999_000, 60_000), 60_000_000);
-        assert_eq!(next_aligned_query_ts_us(60_000_000, 60_000), 120_000_000);
+        assert_eq!(next_aligned_query_ts_us(59_999_000, 60_000, 0), 60_000_000);
+        assert_eq!(next_aligned_query_ts_us(60_000_000, 60_000, 0), 120_000_000);
+    }
+
+    #[test]
+    fn next_query_ts_preserves_shifted_interval_boundary() {
+        assert_eq!(
+            next_aligned_query_ts_us(36_999_000, 30_000, 7_000),
+            37_000_000
+        );
+        assert_eq!(
+            next_aligned_query_ts_us(37_000_000, 30_000, 7_000),
+            67_000_000
+        );
+        assert_eq!(
+            next_aligned_query_ts_us(37_001_000, 30_000, 7_000),
+            67_000_000
+        );
     }
 
     #[test]
@@ -812,6 +838,7 @@ mod tests {
             hedge_window_scale_low: 0.8,
             hedge_window_scale_high: 1.3,
             next_query_delay_ms: 60_000,
+            clock_shift_ms: 0,
         };
 
         let plan = build_inventory_hedge_quote_plan(input, &table).unwrap();

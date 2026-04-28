@@ -34,6 +34,8 @@ mod state;
 use cancel::MmCancelDecision;
 use from_key::build_mm_cancel_from_key;
 use open::MmOpenDecision;
+#[cfg(test)]
+use state::compute_next_shifted_deadline_us;
 use state::MmDecisionState;
 
 thread_local! {
@@ -48,16 +50,9 @@ pub struct MmDecision {
     _node: Node<ipc::Service>,
 }
 
+#[cfg(test)]
 fn compute_next_open_deadline_us(now_us: i64, interval_ms: u64) -> i64 {
-    let now_ms = now_us.max(0).div_euclid(1_000);
-    let interval_ms = i64::try_from(interval_ms).unwrap_or(i64::MAX);
-    let remainder = now_ms.rem_euclid(interval_ms);
-    let delay_ms = if remainder == 0 {
-        interval_ms
-    } else {
-        interval_ms - remainder
-    };
-    now_ms.saturating_add(delay_ms).saturating_mul(1_000)
+    compute_next_shifted_deadline_us(now_us, interval_ms, 0)
 }
 
 fn build_mm_hedge_ctx_from_plan(plan: InventoryHedgeQuotePlan) -> MmHedgeCtx {
@@ -237,8 +232,25 @@ impl MmDecision {
         self.state.update_order_interval_ms(interval_ms);
     }
 
-    pub fn next_open_deadline_us(&self, now_us: i64) -> i64 {
-        compute_next_open_deadline_us(now_us, self.state.order_interval_ms)
+    pub fn update_clock_timing_params(
+        &mut self,
+        order_interval_ms: u64,
+        next_query_delay_ms: u64,
+        clock_shift_ms: u64,
+    ) {
+        self.state.update_clock_timing_params(
+            order_interval_ms,
+            next_query_delay_ms,
+            clock_shift_ms,
+        );
+    }
+
+    pub fn next_open_deadline_us(&mut self, now_us: i64, symbols: &[String]) -> i64 {
+        self.state.next_open_deadline_us(now_us, symbols)
+    }
+
+    pub fn update_clock_shift_ms(&mut self, clock_shift_ms: u64) {
+        self.state.update_clock_shift_ms(clock_shift_ms);
     }
 
     pub fn update_open_orders_per_round(&mut self, open_orders_per_round: u32) {
@@ -425,9 +437,11 @@ impl MmDecision {
             warn!("MmDecision: MMHedge query missing symbol");
             return;
         }
+        let clock_shift_ms = self.state.clock_shift_for_symbol(&symbol);
         info!(
-            "MmDecision: MMHedge query received symbol={} request_seq={} net_qty={:.8} symbol_exposure_u={:.8} weighted_inventory_price={:.8} period_buy_qty={:.8} period_sell_qty={:.8} hedge_venue={:?} next_query_delay_ms={}",
+            "MmDecision: MMHedge query received symbol={} clock_shift_ms={} request_seq={} net_qty={:.8} symbol_exposure_u={:.8} weighted_inventory_price={:.8} period_buy_qty={:.8} period_sell_qty={:.8} hedge_venue={:?} next_query_delay_ms={}",
             symbol,
+            clock_shift_ms,
             query.request_seq,
             query.net_qty,
             query.symbol_exposure_u,
@@ -487,6 +501,7 @@ impl MmDecision {
             hedge_window_scale_low: self.state.hedge_window_scale_low,
             hedge_window_scale_high: self.state.hedge_window_scale_high,
             next_query_delay_ms: self.state.next_query_delay_ms,
+            clock_shift_ms,
             enable_return_score_adjust_hedge: self.state.enable_return_score_adjust_hedge,
         };
         let plan = match build_inventory_hedge_quote_plan(input, &self.state.open_min_qty_table) {
@@ -514,8 +529,9 @@ impl MmDecision {
             let pct_change_pct = pct_change * 100.0;
             let threshold_pct = threshold_ratio * 100.0;
             info!(
-                "MmDecision: MMHedge mode decision symbol={} request_seq={} hedge_mid={:.8} weighted_inventory_price={:.8} bid={:.8} ask={:.8} compare={:.6}% {} {:.6}% -> {}",
+                "MmDecision: MMHedge mode decision symbol={} clock_shift_ms={} request_seq={} hedge_mid={:.8} weighted_inventory_price={:.8} bid={:.8} ask={:.8} compare={:.6}% {} {:.6}% -> {}",
                 symbol,
+                clock_shift_ms,
                 query.request_seq,
                 hedge_mid,
                 query.weighted_inventory_price,
@@ -528,8 +544,9 @@ impl MmDecision {
             );
         } else {
             info!(
-                "MmDecision: MMHedge mode decision symbol={} request_seq={} hedge_mid=0 weighted_inventory_price={:.8} bid={:.8} ask={:.8} compare=0.000000% <= {:.6}% -> maker note=weighted_inventory_price_or_mid_invalid",
+                "MmDecision: MMHedge mode decision symbol={} clock_shift_ms={} request_seq={} hedge_mid=0 weighted_inventory_price={:.8} bid={:.8} ask={:.8} compare=0.000000% <= {:.6}% -> maker note=weighted_inventory_price_or_mid_invalid",
                 symbol,
+                clock_shift_ms,
                 query.request_seq,
                 query.weighted_inventory_price,
                 quote.bid,
@@ -572,8 +589,10 @@ impl MmDecision {
             return;
         }
         info!(
-            "MmDecision: MMHedge query reply symbol={} levels={} request_seq={}",
+            "MmDecision: MMHedge query reply symbol={} clock_shift_ms={} next_query_ts={} levels={} request_seq={}",
             symbol,
+            clock_shift_ms,
+            ctx.next_query_ts,
             ctx.price_qv_list.len(),
             ctx.request_seq
         );
@@ -838,6 +857,7 @@ impl MmDecision {
 
 #[cfg(test)]
 mod tests {
+    use super::state::compute_next_shifted_deadline_us;
     use super::{compute_next_open_deadline_us, MmDecision};
 
     #[test]
@@ -873,6 +893,18 @@ mod tests {
         assert_eq!(
             compute_next_open_deadline_us(10_000_000, 10_000),
             20_000_000
+        );
+    }
+
+    #[test]
+    fn next_open_deadline_preserves_shifted_boundary() {
+        assert_eq!(
+            compute_next_shifted_deadline_us(11_999_000, 10_000, 2_000),
+            12_000_000
+        );
+        assert_eq!(
+            compute_next_shifted_deadline_us(12_000_000, 10_000, 2_000),
+            22_000_000
         );
     }
 }

@@ -1318,6 +1318,19 @@ def normalize_positive_int_text(raw: Any, field_name: str) -> str:
     return str(value)
 
 
+def normalize_nonnegative_int_text(raw: Any, field_name: str) -> str:
+    text = str(raw).strip()
+    if not text:
+        raise ValueError(f"{field_name} is required")
+    try:
+        value = int(text)
+    except Exception as exc:
+        raise ValueError(f"{field_name} must be a non-negative integer: {text}") from exc
+    if value < 0:
+        raise ValueError(f"{field_name} must be >= 0: {text}")
+    return str(value)
+
+
 def normalize_open_block_utc_time_range(raw: Any) -> str:
     text = str(raw or "").strip()
     matched = re.fullmatch(
@@ -1345,6 +1358,24 @@ def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, st
         normalized["tlen_cancel_freq_ms"] = normalize_positive_int_text(
             normalized["tlen_cancel_freq_ms"], "tlen_cancel_freq_ms"
         )
+    for key in ("order_interval_ms", "next_query_delay_ms"):
+        if key in normalized:
+            normalized[key] = normalize_positive_int_text(normalized[key], key)
+    if "enable_clock_shift_ms" in normalized:
+        normalized["enable_clock_shift_ms"] = normalize_nonnegative_int_text(
+            normalized["enable_clock_shift_ms"], "enable_clock_shift_ms"
+        )
+        shift = int(normalized["enable_clock_shift_ms"])
+        order_interval_ms = int(
+            normalized.get("order_interval_ms", DEFAULT_STRATEGY_PARAMS.get("order_interval_ms", "5000"))
+        )
+        next_query_delay_ms = int(
+            normalized.get("next_query_delay_ms", DEFAULT_STRATEGY_PARAMS.get("next_query_delay_ms", "30000"))
+        )
+        if shift and (shift >= order_interval_ms or shift >= next_query_delay_ms):
+            raise ValueError(
+                "enable_clock_shift_ms must be smaller than both order_interval_ms and next_query_delay_ms"
+            )
     for key in ("return_score_buy_cancel_quantile", "return_score_sell_cancel_quantile"):
         if key in normalized:
             value = float(str(normalized[key]).strip())

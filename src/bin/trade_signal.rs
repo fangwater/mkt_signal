@@ -206,7 +206,9 @@ fn env_flag(name: &str) -> bool {
 
 fn next_mm_open_deadline() -> Instant {
     let now_us = get_timestamp_us();
-    let deadline_us = MmDecision::with(|decision| decision.next_open_deadline_us(now_us));
+    let symbols = SymbolList::instance().get_online_symbols();
+    let deadline_us =
+        MmDecision::with_mut(|decision| decision.next_open_deadline_us(now_us, &symbols));
     let delay_us = deadline_us.saturating_sub(now_us).max(1) as u64;
     Instant::now() + Duration::from_micros(delay_us)
 }

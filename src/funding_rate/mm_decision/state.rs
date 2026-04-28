@@ -1,7 +1,7 @@
 use anyhow::Result;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::debug;
+use log::{debug, info};
 use std::collections::HashMap;
 
 use super::super::arb_decision::DEFAULT_ARBITRAGE_SIGNAL_CHANNEL;
@@ -13,6 +13,7 @@ use super::super::inline_volatility::{
 use crate::common::iceoryx_publisher::SignalPublisher;
 use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
+use crate::common::time_util::get_timestamp_us;
 use crate::depth_pub::query_client::DepthQueryClient;
 use crate::market_maker::open_quote_plan::MmOpenQuotePlan;
 use crate::pre_trade::order_manager::{OrderType, Side};
@@ -169,6 +170,7 @@ pub(crate) struct MmDecisionState {
     pub(crate) open_venue: TradingVenue,
     pub(crate) hedge_venue: TradingVenue,
     pub(crate) order_interval_ms: u64,
+    pub(crate) clock_shift_ms: u64,
     pub(crate) open_orders_per_round: u32,
     pub(crate) open_buy_vol_scale: [f64; 2],
     pub(crate) open_sell_vol_scale: [f64; 2],
@@ -203,6 +205,9 @@ pub(crate) struct MmDecisionState {
     pub(crate) tlen_thresholds: HashMap<String, f64>,
     pub(crate) open_min_qty_table: VenueMinQtyTable,
     pub(crate) factor_value_hub: FactorValueHub,
+    pub(crate) clock_shift_seed: u64,
+    pub(crate) symbol_clock_shift_ms: HashMap<String, u64>,
+    pub(crate) symbol_next_open_deadline_us: HashMap<String, i64>,
     pub(crate) last_tlen_threshold_reload_ts_us: i64,
     pub(crate) last_cancel_trigger_ts_us: i64,
 }
@@ -224,6 +229,56 @@ fn is_supported_clock_aligned_interval_ms(interval_ms: u64) -> bool {
     interval_ms > 0
         && interval_ms % MM_OPEN_INTERVAL_ALIGN_MS == 0
         && (CLOCK_ALIGN_BASE_MS % interval_ms == 0 || interval_ms % CLOCK_ALIGN_BASE_MS == 0)
+}
+
+pub(crate) fn compute_next_shifted_deadline_us(
+    now_us: i64,
+    interval_ms: u64,
+    shift_ms: u64,
+) -> i64 {
+    let now_ms = now_us.max(0).div_euclid(1_000);
+    let interval_ms = i64::try_from(interval_ms).unwrap_or(i64::MAX);
+    let shift_ms = i64::try_from(shift_ms).unwrap_or(i64::MAX);
+    let shifted_now_ms = now_ms.saturating_sub(shift_ms);
+    let remainder = shifted_now_ms.rem_euclid(interval_ms);
+    let delay_ms = if remainder == 0 {
+        interval_ms
+    } else {
+        interval_ms - remainder
+    };
+    shifted_now_ms
+        .saturating_add(delay_ms)
+        .saturating_add(shift_ms)
+        .saturating_mul(1_000)
+}
+
+fn splitmix64(mut value: u64) -> u64 {
+    value = value.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = value;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+fn symbol_hash(symbol: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in symbol.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01B3);
+    }
+    hash
+}
+
+fn validate_clock_shift_ms(clock_shift_ms: u64, order_interval_ms: u64, next_query_delay_ms: u64) {
+    if clock_shift_ms == 0 {
+        return;
+    }
+    if clock_shift_ms >= order_interval_ms || clock_shift_ms >= next_query_delay_ms {
+        panic!(
+            "MmDecision: clock_shift_ms must be 0 or smaller than both order_interval_ms and next_query_delay_ms, got clock_shift_ms={} order_interval_ms={} next_query_delay_ms={}",
+            clock_shift_ms, order_interval_ms, next_query_delay_ms
+        );
+    }
 }
 
 fn parse_utc_hhmm_minute(raw: &str) -> Option<u16> {
@@ -295,6 +350,7 @@ impl MmDecisionState {
             open_venue,
             hedge_venue,
             order_interval_ms: 5_000,
+            clock_shift_ms: 0,
             open_orders_per_round: 8,
             open_buy_vol_scale: [0.0, 1.0],
             open_sell_vol_scale: [0.0, 1.0],
@@ -329,6 +385,9 @@ impl MmDecisionState {
             tlen_thresholds: HashMap::new(),
             open_min_qty_table: VenueMinQtyTable::new(open_venue),
             factor_value_hub,
+            clock_shift_seed: get_timestamp_us().max(0) as u64,
+            symbol_clock_shift_ms: HashMap::new(),
+            symbol_next_open_deadline_us: HashMap::new(),
             last_tlen_threshold_reload_ts_us: 0,
             last_cancel_trigger_ts_us: 0,
         })
@@ -346,11 +405,145 @@ impl MmDecisionState {
                 interval_ms
             );
         }
+        validate_clock_shift_ms(self.clock_shift_ms, interval_ms, self.next_query_delay_ms);
+        if self.order_interval_ms != interval_ms {
+            self.symbol_next_open_deadline_us.clear();
+        }
         self.order_interval_ms = interval_ms;
         debug!(
             "MmDecision: order interval updated interval_ms={}",
             self.order_interval_ms
         );
+    }
+
+    pub(crate) fn update_clock_timing_params(
+        &mut self,
+        order_interval_ms: u64,
+        next_query_delay_ms: u64,
+        clock_shift_ms: u64,
+    ) {
+        if order_interval_ms == 0 {
+            panic!("MmDecision: order_interval_ms must be > 0");
+        }
+        if !is_supported_clock_aligned_interval_ms(order_interval_ms) {
+            panic!(
+                "MmDecision: order_interval_ms must be a multiple of {}ms and either divide {}ms or be a multiple of it, got {}",
+                MM_OPEN_INTERVAL_ALIGN_MS,
+                CLOCK_ALIGN_BASE_MS,
+                order_interval_ms
+            );
+        }
+        if next_query_delay_ms == 0 {
+            panic!("MmDecision: next_query_delay_ms must be > 0");
+        }
+        if !is_supported_clock_aligned_interval_ms(next_query_delay_ms) {
+            panic!(
+                "MmDecision: next_query_delay_ms must be a multiple of {}ms and either divide {}ms or be a multiple of it, got {}",
+                MM_OPEN_INTERVAL_ALIGN_MS,
+                CLOCK_ALIGN_BASE_MS,
+                next_query_delay_ms
+            );
+        }
+        validate_clock_shift_ms(clock_shift_ms, order_interval_ms, next_query_delay_ms);
+
+        if self.clock_shift_ms != clock_shift_ms {
+            self.symbol_clock_shift_ms.clear();
+            self.symbol_next_open_deadline_us.clear();
+        } else if self.order_interval_ms != order_interval_ms {
+            self.symbol_next_open_deadline_us.clear();
+        }
+
+        self.order_interval_ms = order_interval_ms;
+        self.next_query_delay_ms = next_query_delay_ms;
+        self.clock_shift_ms = clock_shift_ms;
+        info!(
+            "MmDecision: clock timing updated order_interval_ms={} next_query_delay_ms={} clock_shift_ms={}",
+            self.order_interval_ms, self.next_query_delay_ms, self.clock_shift_ms
+        );
+    }
+
+    pub(crate) fn update_clock_shift_ms(&mut self, clock_shift_ms: u64) {
+        validate_clock_shift_ms(
+            clock_shift_ms,
+            self.order_interval_ms,
+            self.next_query_delay_ms,
+        );
+        if self.clock_shift_ms != clock_shift_ms {
+            self.clock_shift_ms = clock_shift_ms;
+            self.symbol_clock_shift_ms.clear();
+            self.symbol_next_open_deadline_us.clear();
+        }
+        info!(
+            "MmDecision: clock shift updated max_shift_ms={}",
+            self.clock_shift_ms
+        );
+    }
+
+    pub(crate) fn clock_shift_for_symbol(&mut self, symbol: &str) -> u64 {
+        if self.clock_shift_ms == 0 {
+            return 0;
+        }
+        let key = normalize_symbol_for_venue(symbol, self.open_venue);
+        if let Some(shift_ms) = self.symbol_clock_shift_ms.get(&key) {
+            return *shift_ms;
+        }
+        let mixed = splitmix64(self.clock_shift_seed ^ symbol_hash(&key));
+        let shift_ms = mixed % self.clock_shift_ms.saturating_add(1);
+        self.symbol_clock_shift_ms.insert(key.clone(), shift_ms);
+        info!(
+            "MmDecision: assigned clock shift symbol={} shift_ms={} max_shift_ms={}",
+            key, shift_ms, self.clock_shift_ms
+        );
+        shift_ms
+    }
+
+    pub(crate) fn next_open_deadline_us(&mut self, now_us: i64, symbols: &[String]) -> i64 {
+        if self.clock_shift_ms == 0 || symbols.is_empty() {
+            return compute_next_shifted_deadline_us(now_us, self.order_interval_ms, 0);
+        }
+        let order_interval_ms = self.order_interval_ms;
+        symbols
+            .iter()
+            .map(|symbol| {
+                let shift_ms = self.clock_shift_for_symbol(symbol);
+                let key = normalize_symbol_for_venue(symbol, self.open_venue);
+                *self
+                    .symbol_next_open_deadline_us
+                    .entry(key)
+                    .or_insert_with(|| {
+                        compute_next_shifted_deadline_us(now_us, order_interval_ms, shift_ms)
+                    })
+            })
+            .min()
+            .unwrap_or_else(|| compute_next_shifted_deadline_us(now_us, self.order_interval_ms, 0))
+    }
+
+    pub(crate) fn due_open_symbols(&mut self, now_us: i64, symbols: Vec<String>) -> Vec<String> {
+        if self.clock_shift_ms == 0 {
+            return symbols;
+        }
+        let order_interval_ms = self.order_interval_ms;
+        symbols
+            .into_iter()
+            .filter(|symbol| {
+                let shift_ms = self.clock_shift_for_symbol(symbol);
+                let key = normalize_symbol_for_venue(symbol, self.open_venue);
+                let deadline_us = *self
+                    .symbol_next_open_deadline_us
+                    .entry(key.clone())
+                    .or_insert_with(|| {
+                        compute_next_shifted_deadline_us(now_us, order_interval_ms, shift_ms)
+                    });
+                if now_us < deadline_us {
+                    return false;
+                }
+                self.symbol_next_open_deadline_us.insert(
+                    key,
+                    compute_next_shifted_deadline_us(now_us, order_interval_ms, shift_ms),
+                );
+                true
+            })
+            .collect()
     }
 
     pub(crate) fn update_open_orders_per_round(&mut self, open_orders_per_round: u32) {
@@ -453,6 +646,11 @@ impl MmDecisionState {
                 next_query_delay_ms
             );
         }
+        validate_clock_shift_ms(
+            self.clock_shift_ms,
+            self.order_interval_ms,
+            next_query_delay_ms,
+        );
         self.hedge_orders_per_round = hedge_orders_per_round;
         self.hedge_vol_multiplier = hedge_vol_multiplier;
         self.hedge_offset_ratio = hedge_offset_ratio;

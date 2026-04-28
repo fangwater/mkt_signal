@@ -1537,6 +1537,7 @@ fn drive_shared_arb_hedge_state_query(
         hedge_window_scale_low: params.hedge_window_scale_low,
         hedge_window_scale_high: params.hedge_window_scale_high,
         next_query_delay_ms: 60_000,
+        clock_shift_ms: 0,
     };
     let plan = match build_inventory_hedge_quote_plan(input, table) {
         Ok(plan) => plan,

@@ -77,6 +77,7 @@ def parse_args() -> argparse.Namespace:
 PARAM_COMMENTS: Dict[str, str] = {
     "default_order_amount": "默认单量(USDT，可被配置覆盖)",
     "order_interval_ms": "报单触发间隔(ms)",
+    "enable_clock_shift_ms": "每个 symbol 的最大随机时钟偏移(ms)，0=关闭；实际偏移固定为 0..enable_clock_shift_ms 的随机值，并同时用于 open/hedge 对齐",
     "open_orders_per_round": "MM open 每轮报单数量",
     "open_buy_vol_scale": "MM open 买侧波动率放缩区间，格式为长度为2的 JSON 数组，例如 [0.1,2.0]",
     "open_sell_vol_scale": "MM open 卖侧波动率放缩区间，格式为长度为2的 JSON 数组，例如 [0.1,2.0]",
@@ -112,6 +113,7 @@ PARAM_COMMENTS: Dict[str, str] = {
 PARAM_PRINT_ORDER = [
     "default_order_amount",
     "order_interval_ms",
+    "enable_clock_shift_ms",
     "open_orders_per_round",
     "open_buy_vol_scale",
     "open_sell_vol_scale",
