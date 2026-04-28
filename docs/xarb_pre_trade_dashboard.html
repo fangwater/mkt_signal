@@ -540,6 +540,9 @@
                 <th>arb_net</th>
                 <th>arb_pending</th>
                 <th>arb_due</th>
+                <th>arb_time</th>
+                <th>arb_mode</th>
+                <th>arb_ret</th>
                 <th>net_qty</th>
                 <th>net_usdt</th>
               </tr>
@@ -628,6 +631,10 @@
           minimumFractionDigits: 3,
           maximumFractionDigits: 3,
         });
+        const fmtQtl = new Intl.NumberFormat("en-US", {
+          minimumFractionDigits: 3,
+          maximumFractionDigits: 3,
+        });
 
         function setStatus(cls, text) {
           el.wsIndicator.className = `indicator ${cls}`;
@@ -667,6 +674,14 @@
           return formatter.format(x);
         }
 
+        function fmtTimeMs(x) {
+          return isFiniteNumber(x) ? new Date(x).toLocaleTimeString() : "--";
+        }
+
+        function fmtTaker(x) {
+          return typeof x === "boolean" ? (x ? "taker" : "maker") : "--";
+        }
+
         function classify(x) {
           if (!isFiniteNumber(x)) return "muted";
           if (x > 0) return "positive";
@@ -691,6 +706,7 @@
             "arb_hedge_net_qty",
             "arb_pending_hedge_qty",
             "arb_due_hedge_qty",
+            "arb_hedge_time_ms",
             "net_qty",
             "net_usdt",
           ];
@@ -874,6 +890,9 @@
               <td class="${classify(r.arb_hedge_net_qty)}">${fmt(r.arb_hedge_net_qty, fmtQty)}</td>
               <td class="${classify(r.arb_pending_hedge_qty)}">${fmt(r.arb_pending_hedge_qty, fmtQty)}</td>
               <td class="${classify(r.arb_due_hedge_qty)}">${fmt(r.arb_due_hedge_qty, fmtQty)}</td>
+              <td class="muted">${fmtTimeMs(r.arb_hedge_time_ms)}</td>
+              <td class="muted">${fmtTaker(r.arb_hedge_is_taker)}</td>
+              <td class="${classify(r.arb_hedge_ret_qtl)}">${fmt(r.arb_hedge_ret_qtl, fmtQtl)}</td>
               <td class="${classify(r.net_qty)}">${fmt(r.net_qty, fmtQty)}</td>
               <td class="${classify(r.net_usdt)}">${fmt(r.net_usdt, fmtUsd)}</td>
             `;

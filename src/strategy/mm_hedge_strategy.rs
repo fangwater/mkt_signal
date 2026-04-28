@@ -19,8 +19,8 @@ use crate::signal::mm_signal::MmBackwardQueryMsg;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::hedge_order_reconcile::{HedgeOrderReconcileCommon, HedgeOrderReconcileState};
 use crate::strategy::hedge_strategy_common::{
-    mark_price_lookup_symbol, CANCEL_RESEND_THROTTLE_US, HEDGE_QUERY_INTERVAL_US,
-    HEDGE_QUERY_WATCHDOG_US, NET_EXPOSURE_EPS_USDT,
+    mark_price_lookup_symbol, parse_return_qtl_from_from_key, CANCEL_RESEND_THROTTLE_US,
+    HEDGE_QUERY_INTERVAL_US, HEDGE_QUERY_WATCHDOG_US, NET_EXPOSURE_EPS_USDT,
 };
 use crate::strategy::manager::{
     OrderTerminalRecorder, OrphanHandoff, OrphanStrategyRole, Strategy,
@@ -134,19 +134,6 @@ impl MarketMakerHedgeStrategy {
 
     fn extract_strategy_id(order_id: i64) -> i32 {
         (order_id >> 32) as i32
-    }
-
-    fn hedge_order_set_snapshot(&self) -> String {
-        let mut ids: Vec<i64> = self.hedge_order_ids.iter().copied().collect();
-        ids.sort_unstable();
-        if ids.is_empty() {
-            return "[]".to_string();
-        }
-        let parts: Vec<String> = ids
-            .into_iter()
-            .map(|order_id| self.hedge_order_trace_snapshot(order_id))
-            .collect();
-        format!("[{}]", parts.join("; "))
     }
 
     fn log_hedge_order_release(&self, cause: &str, client_order_id: i64) {
@@ -314,14 +301,6 @@ impl MarketMakerHedgeStrategy {
         }
     }
 
-    fn parse_return_qtl_from_from_key(from_key: &[u8]) -> Option<f64> {
-        let text = std::str::from_utf8(from_key).ok()?;
-        text.split(':').find_map(|part| {
-            let (_, value_text) = part.split_once("ret_qtl=")?;
-            value_text.parse::<f64>().ok()
-        })
-    }
-
     fn weighted_inventory_price(&self) -> f64 {
         self.net_qty_queue.weighted_avg_price().unwrap_or(0.0)
     }
@@ -421,7 +400,7 @@ impl MarketMakerHedgeStrategy {
         self.pending_hedge_request_seq = None;
         self.signal_ts = ctx.signal_ts;
         self.hedge_from_key = ctx.from_key.clone();
-        self.last_ret_qtl = Self::parse_return_qtl_from_from_key(&ctx.from_key);
+        self.last_ret_qtl = parse_return_qtl_from_from_key(&ctx.from_key);
         self.last_offset_low = ctx
             .price_offsets
             .iter()
@@ -716,7 +695,7 @@ impl MarketMakerHedgeStrategy {
             .map(|price| Self::net_exposure_usdt_with_mark_price(self.net_qty, price))
             .unwrap_or(0.0);
         debug!(
-            "MMHedgeTrace: strategy_id={} query_timer fired symbol={} now={} next_query_ts_us={} net_qty_base={:.8} mark_price={:?} net_exposure_usdt={:.8} pending_query={} tracked_orders={}",
+            "MMHedgeTrace: strategy_id={} query_timer fired symbol={} now={} next_query_ts_us={} net_qty_base={:.8} mark_price={:?} net_exposure_usdt={:.8} pending_query={} tracked_order_count={}",
             self.strategy_id,
             self.symbol,
             now,
@@ -725,7 +704,7 @@ impl MarketMakerHedgeStrategy {
             mark_price,
             net_exposure_usdt,
             self.pending_query,
-            self.hedge_order_set_snapshot()
+            self.hedge_order_ids.len()
         );
 
         // 如果上一轮 hedge 订单还在场内，先撤旧单；撤单完成/回补后再进入下一轮 query。
@@ -776,9 +755,9 @@ impl MarketMakerHedgeStrategy {
         }
 
         debug!(
-            "MMHedgeTrace: strategy_id={} cancel_scan_start tracked_orders={}",
+            "MMHedgeTrace: strategy_id={} cancel_scan_start tracked_order_count={}",
             self.strategy_id,
-            self.hedge_order_set_snapshot()
+            self.hedge_order_ids.len()
         );
 
         let order_mgr = MonitorChannel::instance().order_manager();
@@ -838,9 +817,8 @@ impl MarketMakerHedgeStrategy {
 
         if to_cancel.is_empty() {
             debug!(
-                "MMHedgeTrace: strategy_id={} cancel_scan no cancel sent because all tracked orders are reconciling: tracked_orders={}",
-                self.strategy_id,
-                self.hedge_order_set_snapshot()
+                "MMHedgeTrace: strategy_id={} cancel_scan no cancel sent because all tracked orders are reconciling",
+                self.strategy_id
             );
         }
 
@@ -890,10 +868,10 @@ impl MarketMakerHedgeStrategy {
         if !to_cancel.is_empty() {
             self.next_query_ts_us = get_timestamp_us().saturating_add(CANCEL_RESEND_THROTTLE_US);
             debug!(
-                "MMHedgeTrace: strategy_id={} cancel_scan rescheduled next_query_ts_us={} tracked_orders={}",
+                "MMHedgeTrace: strategy_id={} cancel_scan rescheduled next_query_ts_us={} tracked_order_count={}",
                 self.strategy_id,
                 self.next_query_ts_us,
-                self.hedge_order_set_snapshot()
+                self.hedge_order_ids.len()
             );
         }
 

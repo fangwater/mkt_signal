@@ -13,3 +13,11 @@ pub(crate) fn mark_price_lookup_symbol(symbol: &str, exchange: Exchange) -> Stri
         .map(|base_asset| create_symbol_mapper(exchange).asset_to_price_symbol(&base_asset))
         .unwrap_or_else(|| symbol.to_uppercase())
 }
+
+pub(crate) fn parse_return_qtl_from_from_key(from_key: &[u8]) -> Option<f64> {
+    let text = std::str::from_utf8(from_key).ok()?;
+    text.split(':').find_map(|part| {
+        let (_, value_text) = part.split_once("ret_qtl=")?;
+        value_text.parse::<f64>().ok()
+    })
+}

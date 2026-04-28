@@ -390,6 +390,9 @@
                 <th>arb net</th>
                 <th>arb pending</th>
                 <th>arb due</th>
+                <th>arb time</th>
+                <th>arb mode</th>
+                <th>arb ret</th>
                 <th>net qty</th>
                 <th>net usdt</th>
               </tr>
@@ -489,6 +492,10 @@
           minimumFractionDigits: 1,
           maximumFractionDigits: 1,
         });
+        const fmtQtl = new Intl.NumberFormat("en-US", {
+          minimumFractionDigits: 3,
+          maximumFractionDigits: 3,
+        });
 
         function setStatus(kind, text) {
           el.wsIndicator.className = `indicator ${kind}`;
@@ -528,6 +535,14 @@
           return isFiniteNumber(x) ? formatter.format(x) : "--";
         }
 
+        function fmtTimeMs(x) {
+          return isFiniteNumber(x) ? new Date(x).toLocaleTimeString() : "--";
+        }
+
+        function fmtTaker(x) {
+          return typeof x === "boolean" ? (x ? "taker" : "maker") : "--";
+        }
+
         function cssByValue(x) {
           if (!isFiniteNumber(x)) return "muted";
           if (x > 0) return "pos";
@@ -561,6 +576,7 @@
             "arb_hedge_net_qty",
             "arb_pending_hedge_qty",
             "arb_due_hedge_qty",
+            "arb_hedge_time_ms",
             "net_qty",
             "net_usdt",
           ].every((key) => {
@@ -724,6 +740,9 @@
                   <td class="${cssByValue(row.arb_hedge_net_qty)}">${fmt(row.arb_hedge_net_qty, fmtQty)}</td>
                   <td class="${cssByValue(row.arb_pending_hedge_qty)}">${fmt(row.arb_pending_hedge_qty, fmtQty)}</td>
                   <td class="${cssByValue(row.arb_due_hedge_qty)}">${fmt(row.arb_due_hedge_qty, fmtQty)}</td>
+                  <td class="muted">${fmtTimeMs(row.arb_hedge_time_ms)}</td>
+                  <td class="muted">${fmtTaker(row.arb_hedge_is_taker)}</td>
+                  <td class="${cssByValue(row.arb_hedge_ret_qtl)}">${fmt(row.arb_hedge_ret_qtl, fmtQtl)}</td>
                   <td class="${cssByValue(row.net_qty)}">${fmt(row.net_qty, fmtQty)}</td>
                   <td class="${cssByValue(row.net_usdt)}">${fmt(row.net_usdt, fmtUsd)}</td>
                 </tr>

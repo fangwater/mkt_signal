@@ -102,6 +102,8 @@
 - `rows[]`：每个资产一行（最后一行 `is_total=true` 为汇总）
   - `open_qty/open_usdt`：open 侧净头寸及其 USDT 估值
   - `hedge_qty/hedge_usdt`：hedge 侧净头寸及其 USDT 估值
+  - `arb_hedge_net_qty/arb_pending_hedge_qty/arb_due_hedge_qty`：Arb hedge 的净敞口、待对冲量、已到期待对冲量
+  - `arb_hedge_time_ms/arb_hedge_is_taker/arb_hedge_ret_qtl`：Arb hedge 最近一次状态对冲查询/决策的时间、taker/maker 模式、ret 分位
   - `net_qty/net_usdt`：净敞口（open + hedge）及其 USDT 估值
 
 ### 3. 预交易风险指标 `pre_trade_risk`

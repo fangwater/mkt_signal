@@ -11,7 +11,9 @@ use crate::signal::hedge_signal::{ArbHedgeStateCtx, ArbHedgeStateQueryMsg};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::arb_helper::create_and_send_order;
 use crate::strategy::hedge_order_reconcile::{HedgeOrderReconcileCommon, HedgeOrderReconcileState};
-use crate::strategy::hedge_strategy_common::HEDGE_QUERY_INTERVAL_US;
+use crate::strategy::hedge_strategy_common::{
+    parse_return_qtl_from_from_key, HEDGE_QUERY_INTERVAL_US,
+};
 use crate::strategy::manager::{
     OrderTerminalRecorder, OrphanHandoff, OrphanSourceKind, OrphanStrategyRole, Strategy,
 };
@@ -47,6 +49,9 @@ pub struct ArbHedgeSnapshot {
     pub net_qty: f64,
     pub pending_hedge_qty: f64,
     pub due_hedge_qty: f64,
+    pub hedge_ts_ms: Option<i64>,
+    pub hedge_is_taker: Option<bool>,
+    pub ret_qtl: Option<f64>,
 }
 
 /// Arb 对冲状态策略。
@@ -64,6 +69,9 @@ pub struct ArbHedgeStrategy {
     hedge_mode: ArbHedgeMode,
     hedge_request_seq: u64,
     pending_hedge_request_seq: Option<u64>,
+    last_hedge_ts_ms: Option<i64>,
+    last_hedge_is_taker: Option<bool>,
+    last_ret_qtl: Option<f64>,
     next_query_ts_us: i64,
     order_seq: u32,
     hedge_order_meta: HashMap<i64, ArbHedgeOrderMeta>,
@@ -101,6 +109,9 @@ impl ArbHedgeStrategy {
             hedge_mode,
             hedge_request_seq: 0,
             pending_hedge_request_seq: None,
+            last_hedge_ts_ms: None,
+            last_hedge_is_taker: None,
+            last_ret_qtl: None,
             next_query_ts_us: 0,
             order_seq: 0,
             hedge_order_meta: HashMap::new(),
@@ -117,6 +128,9 @@ impl ArbHedgeStrategy {
             net_qty: self.net_qty_queue.net_qty(),
             pending_hedge_qty: self.pending_hedge_queue.net_qty(),
             due_hedge_qty: self.pending_hedge_queue.due_qty(now_ts),
+            hedge_ts_ms: self.last_hedge_ts_ms,
+            hedge_is_taker: self.last_hedge_is_taker,
+            ret_qtl: self.last_ret_qtl,
         }
     }
 
@@ -142,6 +156,7 @@ impl ArbHedgeStrategy {
     }
 
     fn send_hedge_state_query(&mut self, now_ts: i64, due_hedge_qty: f64) {
+        self.last_hedge_ts_ms = Some(now_ts / 1000);
         let risk_loader = PreTradeParamsLoader::instance();
         let symbol_exposure_u = risk_loader
             .max_pos_u_for_symbol(self.open_venue, &self.symbol)
@@ -245,6 +260,8 @@ impl ArbHedgeStrategy {
             return;
         }
         self.pending_hedge_request_seq = None;
+        self.last_hedge_is_taker = Some(ctx.is_taker());
+        self.last_ret_qtl = parse_return_qtl_from_from_key(&ctx.from_key);
 
         let Some(side) = ctx.get_side() else {
             warn!(

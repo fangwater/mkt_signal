@@ -569,12 +569,22 @@ impl ResampleChannel {
                     )
                 })
                 .collect();
-            let arb_hedge_snapshot_by_asset: HashMap<String, (f64, f64, f64)> = arb_hedge_snapshots
+            let arb_hedge_snapshot_by_asset: HashMap<
+                String,
+                (f64, f64, f64, Option<i64>, Option<bool>, Option<f64>),
+            > = arb_hedge_snapshots
                 .into_iter()
                 .map(|snap| {
                     (
                         arb_hedge_snapshot_asset_key(&snap.symbol),
-                        (snap.net_qty, snap.pending_hedge_qty, snap.due_hedge_qty),
+                        (
+                            snap.net_qty,
+                            snap.pending_hedge_qty,
+                            snap.due_hedge_qty,
+                            snap.hedge_ts_ms,
+                            snap.hedge_is_taker,
+                            snap.ret_qtl,
+                        ),
                     )
                 })
                 .collect();
@@ -596,23 +606,44 @@ impl ResampleChannel {
                 if asset_upper == "USDT" {
                     continue;
                 }
-                let (arb_hedge_net_qty, arb_pending_hedge_qty, arb_due_hedge_qty) =
-                    arb_hedge_snapshot_by_asset
-                        .get(&asset_upper)
-                        .map(|(net_qty, pending_hedge_qty, due_hedge_qty)| {
+                let (
+                    arb_hedge_net_qty,
+                    arb_pending_hedge_qty,
+                    arb_due_hedge_qty,
+                    arb_hedge_time_ms,
+                    arb_hedge_is_taker,
+                    arb_hedge_ret_qtl,
+                ) = arb_hedge_snapshot_by_asset
+                    .get(&asset_upper)
+                    .map(
+                        |(
+                            net_qty,
+                            pending_hedge_qty,
+                            due_hedge_qty,
+                            hedge_ts_ms,
+                            hedge_is_taker,
+                            ret_qtl,
+                        )| {
                             (
                                 Some(*net_qty),
                                 Some(*pending_hedge_qty),
                                 Some(*due_hedge_qty),
+                                *hedge_ts_ms,
+                                *hedge_is_taker,
+                                *ret_qtl,
                             )
-                        })
-                        .unwrap_or((None, None, None));
+                        },
+                    )
+                    .unwrap_or((None, None, None, None, None, None));
                 let has_arb_hedge_state =
                     arb_hedge_net_qty.map(|v| v.abs() > 1e-12).unwrap_or(false)
                         || arb_pending_hedge_qty
                             .map(|v| v.abs() > 1e-12)
                             .unwrap_or(false)
-                        || arb_due_hedge_qty.map(|v| v.abs() > 1e-12).unwrap_or(false);
+                        || arb_due_hedge_qty.map(|v| v.abs() > 1e-12).unwrap_or(false)
+                        || arb_hedge_time_ms.is_some()
+                        || arb_hedge_is_taker.is_some()
+                        || arb_hedge_ret_qtl.is_some();
                 if open_qty.abs() <= 1e-12 && hedge_qty.abs() <= 1e-12 && !has_arb_hedge_state {
                     continue;
                 }
@@ -677,6 +708,9 @@ impl ResampleChannel {
                     arb_hedge_net_qty,
                     arb_pending_hedge_qty,
                     arb_due_hedge_qty,
+                    arb_hedge_time_ms,
+                    arb_hedge_is_taker,
+                    arb_hedge_ret_qtl,
                     net_qty: Some(net_qty),
                     net_usdt: Some(net_usdt),
                     is_total: false,
@@ -699,6 +733,9 @@ impl ResampleChannel {
                     arb_hedge_net_qty: None,
                     arb_pending_hedge_qty: None,
                     arb_due_hedge_qty: None,
+                    arb_hedge_time_ms: None,
+                    arb_hedge_is_taker: None,
+                    arb_hedge_ret_qtl: None,
                     net_qty: None,
                     net_usdt: Some(exposure_sum_usdt),
                     is_total: true,
