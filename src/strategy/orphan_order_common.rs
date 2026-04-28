@@ -1,11 +1,17 @@
 use crate::common::symbol_util::normalize_symbol_for_internal;
+use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
+use crate::pre_trade::order_manager::OrderExecutionStatus;
 use crate::pre_trade::{QueryEngHub, TradeEngHub};
 use crate::signal::common::{ExecutionType, OrderStatus};
 use crate::strategy::manager::OrphanSourceKind;
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::order_update::OrderUpdate;
-use crate::strategy::uniform_order_helper::UniformPublishCtx;
+use crate::strategy::trade_update::TradeUpdate;
+use crate::strategy::uniform_order_helper::{
+    publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
+    publish_uniform_trade_order_from_order_update, UniformPublishCtx,
+};
 use log::{info, warn};
 use std::collections::{HashMap, HashSet};
 
@@ -13,7 +19,7 @@ use std::collections::{HashMap, HashSet};
 pub struct OrphanOrderOwner {
     pub source_strategy_id: i32,
     pub source_kind: OrphanSourceKind,
-    pub uniform_ctx: Option<UniformPublishCtx>,
+    pub uniform_ctx: UniformPublishCtx,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,23 +68,15 @@ impl OrphanOrderTracker {
     pub fn uniform_ctx(&self, client_order_id: i64) -> Option<UniformPublishCtx> {
         self.order_owners
             .get(&client_order_id)
-            .and_then(|owner| owner.uniform_ctx.clone())
+            .map(|owner| owner.uniform_ctx.clone())
     }
 
-    pub fn track_order_id(&mut self, client_order_id: i64) {
+    fn track_order_id(&mut self, client_order_id: i64) {
         if client_order_id <= 0 {
             return;
         }
         self.order_ids.insert(client_order_id);
         self.ensure_query_state(client_order_id);
-    }
-
-    pub fn track_order_with_owner(&mut self, client_order_id: i64, owner: OrphanOrderOwner) {
-        if client_order_id <= 0 {
-            return;
-        }
-        self.track_order_id(client_order_id);
-        self.order_owners.entry(client_order_id).or_insert(owner);
     }
 
     pub fn adopt_order_owner(&mut self, client_order_id: i64, owner: OrphanOrderOwner) {
@@ -175,6 +173,251 @@ impl OrphanOrderTracker {
                 false
             }
         }
+    }
+
+    pub fn apply_order_update(
+        &mut self,
+        strategy_role: &str,
+        strategy_id: i32,
+        update: &dyn OrderUpdate,
+        terminal_record_eps: f64,
+    ) -> bool {
+        let client_order_id = update.client_order_id();
+        if !self.contains(client_order_id) {
+            return false;
+        }
+        let Some(ctx) = self.uniform_ctx(client_order_id) else {
+            return false;
+        };
+        let prev_cumulative_filled_qty = MonitorChannel::try_order_manager()
+            .and_then(|order_mgr| {
+                order_mgr
+                    .borrow()
+                    .get(client_order_id)
+                    .map(|order| order.cumulative_filled_quantity)
+            })
+            .unwrap_or(0.0);
+
+        if let Some(order_mgr) = MonitorChannel::try_order_manager() {
+            let incoming_cum = update.cumulative_filled_quantity();
+            let incoming_order_id = update.order_id();
+            let incoming_price = update.price();
+            let event_time = update.event_time();
+            let status = update.status();
+            let _ = order_mgr.borrow_mut().update(client_order_id, |order| {
+                if incoming_cum > order.cumulative_filled_quantity {
+                    order.cumulative_filled_quantity = incoming_cum;
+                }
+                if incoming_order_id > 0 {
+                    order.set_exchange_order_id(incoming_order_id);
+                }
+                if incoming_price > 0.0 {
+                    order.price = incoming_price;
+                }
+                match status {
+                    OrderStatus::New | OrderStatus::PartiallyFilled => {
+                        if !order.status.is_terminal() {
+                            order.status = OrderExecutionStatus::Create;
+                        }
+                    }
+                    OrderStatus::Canceled => {
+                        order.status = OrderExecutionStatus::Cancelled;
+                        order.set_end_time(event_time);
+                    }
+                    OrderStatus::Filled => {
+                        order.status = OrderExecutionStatus::Filled;
+                        order.set_end_time(event_time);
+                    }
+                    OrderStatus::Expired | OrderStatus::ExpiredInMatch => {
+                        order.status = OrderExecutionStatus::Rejected;
+                        order.set_end_time(event_time);
+                    }
+                }
+            });
+        }
+
+        let updated_order = MonitorChannel::try_order_manager()
+            .and_then(|order_mgr| order_mgr.borrow().get(client_order_id));
+        if let Some(order) = updated_order {
+            if update.status() == OrderStatus::New {
+                publish_uniform_new_order(
+                    update,
+                    &order,
+                    prev_cumulative_filled_qty,
+                    &ctx,
+                    strategy_role,
+                    strategy_id,
+                );
+            }
+            if matches!(
+                update.status(),
+                OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::ExpiredInMatch
+            ) {
+                publish_uniform_terminal_order(
+                    update,
+                    &order,
+                    prev_cumulative_filled_qty,
+                    &ctx,
+                    strategy_role,
+                    strategy_id,
+                );
+            }
+            if matches!(
+                update.status(),
+                OrderStatus::PartiallyFilled | OrderStatus::Filled
+            ) {
+                publish_uniform_trade_order_from_order_update(
+                    update,
+                    &order,
+                    prev_cumulative_filled_qty,
+                    &ctx,
+                    strategy_role,
+                    strategy_id,
+                );
+            }
+        }
+
+        if matches!(
+            update.status(),
+            OrderStatus::Canceled
+                | OrderStatus::Filled
+                | OrderStatus::Expired
+                | OrderStatus::ExpiredInMatch
+        ) {
+            self.finalize_terminal_order(
+                strategy_role,
+                strategy_id,
+                client_order_id,
+                update.event_time(),
+                "terminal order update",
+                terminal_record_eps,
+            );
+        } else {
+            let _ = self.request_cancel_from_order_update(strategy_role, strategy_id, update);
+        }
+        info!(
+            "{}: strategy_id={} adopted order_update symbol={} client_order_id={} order_id={} venue={:?} x={:?} X={:?}",
+            strategy_role,
+            strategy_id,
+            update.symbol(),
+            update.client_order_id(),
+            update.order_id(),
+            update.trading_venue(),
+            update.execution_type(),
+            update.status()
+        );
+        true
+    }
+
+    pub fn apply_trade_update(
+        &mut self,
+        strategy_role: &str,
+        strategy_id: i32,
+        trade: &dyn TradeUpdate,
+        terminal_record_eps: f64,
+    ) -> bool {
+        let client_order_id = trade.client_order_id();
+        if !self.contains(client_order_id) {
+            return false;
+        }
+        let Some(ctx) = self.uniform_ctx(client_order_id) else {
+            return false;
+        };
+        let prev_cumulative_filled_qty = MonitorChannel::try_order_manager()
+            .and_then(|order_mgr| {
+                order_mgr
+                    .borrow()
+                    .get(client_order_id)
+                    .map(|order| order.cumulative_filled_quantity)
+            })
+            .unwrap_or(0.0);
+
+        if let Some(order_mgr) = MonitorChannel::try_order_manager() {
+            let cumulative_qty = trade.cumulative_filled_quantity();
+            let trade_time = trade.trade_time();
+            let event_time = trade.event_time();
+            let order_id = trade.order_id();
+            let price = trade.price();
+            let terminal_status = trade.order_status();
+            let _ = order_mgr.borrow_mut().update(client_order_id, |order| {
+                if cumulative_qty > order.cumulative_filled_quantity {
+                    order.cumulative_filled_quantity = cumulative_qty;
+                }
+                order.set_filled_time(trade_time);
+                if order_id > 0 {
+                    order.set_exchange_order_id(order_id);
+                }
+                if price > 0.0 {
+                    order.price = price;
+                }
+                match terminal_status {
+                    Some(OrderStatus::Filled) => {
+                        order.status = OrderExecutionStatus::Filled;
+                        order.set_end_time(event_time);
+                    }
+                    Some(OrderStatus::PartiallyFilled) => {
+                        if !order.status.is_terminal() {
+                            order.status = OrderExecutionStatus::Create;
+                        }
+                    }
+                    Some(OrderStatus::Canceled) => {
+                        order.status = OrderExecutionStatus::Cancelled;
+                        order.set_end_time(event_time);
+                    }
+                    Some(OrderStatus::Expired | OrderStatus::ExpiredInMatch) => {
+                        order.status = OrderExecutionStatus::Rejected;
+                        order.set_end_time(event_time);
+                    }
+                    Some(OrderStatus::New) | None => {}
+                }
+            });
+        }
+
+        if let Some(status) = trade.order_status() {
+            let updated_order = MonitorChannel::try_order_manager()
+                .and_then(|order_mgr| order_mgr.borrow().get(client_order_id));
+            if let Some(order) = updated_order {
+                publish_uniform_trade_order(
+                    trade,
+                    &order,
+                    prev_cumulative_filled_qty,
+                    status,
+                    &ctx,
+                    strategy_role,
+                    strategy_id,
+                );
+            }
+        }
+        if trade.order_status().is_some_and(|status| {
+            matches!(
+                status,
+                OrderStatus::Canceled
+                    | OrderStatus::Filled
+                    | OrderStatus::Expired
+                    | OrderStatus::ExpiredInMatch
+            )
+        }) {
+            self.finalize_terminal_order(
+                strategy_role,
+                strategy_id,
+                client_order_id,
+                trade.event_time(),
+                "terminal trade update",
+                terminal_record_eps,
+            );
+        }
+        info!(
+            "{}: strategy_id={} adopted trade_update symbol={} client_order_id={} order_id={} venue={:?} cumulative_qty={:.8} status={:?}",
+            strategy_role,
+            strategy_id,
+            trade.symbol(),
+            trade.client_order_id(),
+            trade.order_id(),
+            trade.trading_venue(),
+            trade.cumulative_filled_quantity(),
+            trade.order_status()
+        );
+        true
     }
 
     pub fn request_cancel_from_order_update(
@@ -353,6 +596,54 @@ impl OrphanOrderTracker {
             let _ = order_mgr.borrow_mut().remove(client_order_id);
         }
         self.forget_order_id(strategy_role, strategy_id, client_order_id, reason);
+    }
+
+    pub fn handle_period_clock(
+        &mut self,
+        strategy_role: &str,
+        strategy_id: i32,
+        terminal_record_eps: f64,
+        forget_on_missing_local_order_query: bool,
+    ) {
+        let tracked_order_ids = self.tracked_order_ids();
+        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
+            return;
+        };
+
+        for client_order_id in tracked_order_ids {
+            let order_opt = order_mgr.borrow().get(client_order_id);
+            let Some(order) = order_opt else {
+                self.forget_order_id(
+                    strategy_role,
+                    strategy_id,
+                    client_order_id,
+                    "missing local order on period clock",
+                );
+                continue;
+            };
+            if order.status.is_terminal() {
+                drop(order);
+                self.finalize_terminal_order(
+                    strategy_role,
+                    strategy_id,
+                    client_order_id,
+                    get_timestamp_us(),
+                    "terminal local order on period clock",
+                    terminal_record_eps,
+                );
+                continue;
+            }
+
+            drop(order);
+            if self.query_due_now(client_order_id) {
+                let _ = self.send_order_query(
+                    strategy_role,
+                    strategy_id,
+                    client_order_id,
+                    forget_on_missing_local_order_query,
+                );
+            }
+        }
     }
 
     fn ensure_query_state(&mut self, client_order_id: i64) {
