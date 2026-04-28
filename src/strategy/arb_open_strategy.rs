@@ -141,7 +141,7 @@ impl OpenStrategyCommon for ArbOpenStrategy {
     }
 
     fn orphan_strategy_role(&self) -> OrphanStrategyRole {
-        OrphanStrategyRole::Hedge
+        OrphanStrategyRole::Arb
     }
 
     fn open_order_rate_bucket(&self) -> OrderRateBucket {
