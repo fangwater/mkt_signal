@@ -872,7 +872,6 @@ pub trait OpenStrategyCommon {
 
     fn apply_order_update_common(&mut self, order_update: &dyn OrderUpdate) -> bool {
         let client_order_id = order_update.client_order_id();
-        self.clear_query_watchdogs(client_order_id);
         if client_order_id != self.open_order_id() {
             debug!(
                 "{}: strategy_id={} ignore order_update client_order_id={}",
@@ -1053,6 +1052,15 @@ pub trait OpenStrategyCommon {
             return false;
         };
 
+        // 不能在函数入口统一清理 query/cancel watchdog：交易所可能在撤单后补发重复的
+        // New/PartiallyFilled。如果这种幂等 live update 先清掉 CancelWatchdog 再被跳过，
+        // 本地订单就会失去后续 query/orphan 兜底。只有 terminal update 才能确认生命周期闭环。
+        if order_update.status().is_finished() {
+            self.clear_query_watchdogs(client_order_id);
+        } else {
+            self.clear_live_order_query_state(client_order_id);
+        }
+
         if matches!(
             order_update.status(),
             OrderStatus::Canceled | OrderStatus::Filled
@@ -1127,7 +1135,6 @@ pub trait OpenStrategyCommon {
 
     fn apply_trade_update_common(&mut self, trade: &dyn TradeUpdate) -> bool {
         let client_order_id = trade.client_order_id();
-        self.clear_query_watchdogs(client_order_id);
         if client_order_id != self.open_order_id() {
             debug!(
                 "{}: strategy_id={} ignore trade_update client_order_id={}",
@@ -1207,6 +1214,12 @@ pub trait OpenStrategyCommon {
             );
             return false;
         };
+
+        if status == OrderStatus::Filled {
+            self.clear_query_watchdogs(client_order_id);
+        } else {
+            self.clear_live_order_query_state(client_order_id);
+        }
 
         let ctx = self.uniform_open_publish_ctx();
         publish_uniform_trade_order(
@@ -1412,6 +1425,20 @@ pub trait OpenStrategyCommon {
             .is_some_and(|w| w.client_order_id == client_order_id)
         {
             self.set_cancel_query_watchdog(None);
+        }
+    }
+
+    fn clear_live_order_query_state(&mut self, client_order_id: i64) {
+        // live update 只证明下单/查单链路已经被交易所确认，不能证明撤单链路完成；
+        // 因此这里只清 OrderWatchdog，保留 CancelWatchdog 等待 terminal 或 query 兜底。
+        if self.pending_order_query() == Some(PendingOrderQueryReason::OrderWatchdog) {
+            self.set_pending_order_query(None);
+        }
+        if self
+            .order_query_watchdog()
+            .is_some_and(|w| w.client_order_id == client_order_id)
+        {
+            self.set_order_query_watchdog(None);
         }
     }
 

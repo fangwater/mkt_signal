@@ -697,6 +697,8 @@ impl StrategyManager {
     fn find_order_terminal_recorder_id(&self, symbol: &str) -> Option<i32> {
         let symbol_upper = normalize_symbol_for_internal(symbol);
         let ids = self.symbol_index.get(&symbol_upper)?;
+        // 这里按 symbol 找 terminal recorder，依赖部署侧保证同一 symbol 不会同时启用
+        // MM hedge 和 Arb hedge recorder；否则两个账本都能接 terminal record，会出现串账。
         for id in ids {
             if self
                 .strategies

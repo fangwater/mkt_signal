@@ -56,6 +56,9 @@ pub const DEFAULT_ENV_MODEL_TRUE_THRESHOLD: f64 = 0.0;
 const TARGET_FACTOR_MAX_AGE_MS: i64 = 30_000;
 const FUNDING_ARB_SHELL_NAME: &str = "ArbDecision(FundingArb)";
 const SPREAD_ARB_SHELL_NAME: &str = "ArbDecision(SpreadArb)";
+// Arb hedge 是 open terminal 触发的高频对冲闭环，不走 MM hedge 的多档拆单模型；
+// 单轮只出一笔，剩余 pending 会由后续触发继续滚动处理。
+const ARB_HEDGE_STATE_ORDERS_PER_ROUND: u32 = 1;
 
 pub fn default_pnlu_redis_settings() -> RedisSettings {
     RedisSettings {
@@ -1531,7 +1534,7 @@ fn drive_shared_arb_hedge_state_query(
         target_base_qty: Some(query.due_hedge_qty),
         inventory_net_qty: query.net_qty,
         symbol_exposure_u: query.symbol_exposure_u,
-        hedge_orders_per_round: 1,
+        hedge_orders_per_round: ARB_HEDGE_STATE_ORDERS_PER_ROUND,
         offset_low: params.hedge_price_offset_limit_lower,
         offset_high_limit: params.hedge_price_offset_limit_upper,
         hedge_window_scale_low: params.hedge_window_scale_low,
@@ -1551,6 +1554,18 @@ fn drive_shared_arb_hedge_state_query(
             return;
         }
     };
+    log::info!(
+        "{source}: ArbHedgeState single-order plan strategy_id={} symbol={} request_seq={} split_policy=single_order_high_frequency hedge_orders_per_round={} plan_levels={} target_base_qty={:.8} due_hedge_qty={:.8} pending_hedge_qty={:.8} mid_price={:.8}",
+        query.strategy_id,
+        symbol,
+        query.request_seq,
+        ARB_HEDGE_STATE_ORDERS_PER_ROUND,
+        plan.levels.len(),
+        query.due_hedge_qty,
+        query.due_hedge_qty,
+        query.pending_hedge_qty,
+        mid_price
+    );
     let Some(level) = plan.levels.first() else {
         log::warn!(
             "{source}: ArbHedgeState plan empty levels strategy_id={} symbol={} request_seq={}",

@@ -4,7 +4,7 @@ use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::signal_channel::SignalChannel;
-use crate::pre_trade::PersistChannel;
+use crate::pre_trade::{PersistChannel, TradeEngHub};
 use crate::signal::arb_signal::ArbBackwardQueryMsg;
 use crate::signal::common::{OrderStatus, SignalBytes, TradingVenue};
 use crate::signal::hedge_signal::{ArbHedgeStateCtx, ArbHedgeStateQueryMsg};
@@ -12,7 +12,8 @@ use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::arb_helper::create_and_send_order;
 use crate::strategy::hedge_order_reconcile::{HedgeOrderReconcileCommon, HedgeOrderReconcileState};
 use crate::strategy::hedge_strategy_common::{
-    mark_price_lookup_symbol, parse_return_qtl_from_from_key, HEDGE_QUERY_INTERVAL_US,
+    mark_price_lookup_symbol, parse_return_qtl_from_from_key, CANCEL_RESEND_THROTTLE_US,
+    HEDGE_QUERY_INTERVAL_US,
 };
 use crate::strategy::manager::{
     OrderTerminalRecorder, OrphanHandoff, OrphanSourceKind, OrphanStrategyRole, Strategy,
@@ -28,7 +29,7 @@ use crate::strategy::uniform_order_helper::{
 };
 use log::{debug, info, warn};
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 const ARB_HEDGE_QTY_EPS: f64 = 1e-12;
 const ARB_HEDGE_PENDING_QUERY_MIN_USDT: f64 = 25.0;
@@ -76,6 +77,7 @@ pub struct ArbHedgeStrategy {
     next_query_ts_us: i64,
     order_seq: u32,
     hedge_order_meta: HashMap<i64, ArbHedgeOrderMeta>,
+    hedge_order_expiry_wheel: BTreeMap<i64, Vec<i64>>,
     order_reconcile_state: HedgeOrderReconcileState,
     alive_flag: bool,
 }
@@ -87,6 +89,9 @@ struct ArbHedgeOrderMeta {
     price_offset: f64,
     borrowed_qv: f64,
     order_base_qty: f64,
+    expire_ts: i64,
+    next_expire_check_ts: i64,
+    cancel_requested: bool,
 }
 
 impl ArbHedgeStrategy {
@@ -116,6 +121,7 @@ impl ArbHedgeStrategy {
             next_query_ts_us: 0,
             order_seq: 0,
             hedge_order_meta: HashMap::new(),
+            hedge_order_expiry_wheel: BTreeMap::new(),
             order_reconcile_state: HedgeOrderReconcileState::default(),
             alive_flag: true,
         }
@@ -169,6 +175,80 @@ impl ArbHedgeStrategy {
 
     fn pending_hedge_usdt_with_mark_price(pending_hedge_qty: f64, mark_price: f64) -> f64 {
         pending_hedge_qty.abs() * mark_price.abs()
+    }
+
+    fn schedule_hedge_order_expiry_check(&mut self, client_order_id: i64, due_ts: i64) {
+        if due_ts <= 0 {
+            return;
+        }
+        if let Some(meta) = self.hedge_order_meta.get_mut(&client_order_id) {
+            meta.next_expire_check_ts = due_ts;
+        }
+        self.hedge_order_expiry_wheel
+            .entry(due_ts)
+            .or_default()
+            .push(client_order_id);
+    }
+
+    fn reschedule_expired_hedge_cancel_if_still_live(
+        &mut self,
+        client_order_id: i64,
+        now_ts: i64,
+        reason: &'static str,
+    ) {
+        {
+            let Some(meta) = self.hedge_order_meta.get_mut(&client_order_id) else {
+                return;
+            };
+            if meta.expire_ts <= 0 || !meta.cancel_requested {
+                return;
+            }
+            meta.cancel_requested = false;
+        }
+        let retry_ts = now_ts.saturating_add(CANCEL_RESEND_THROTTLE_US);
+        self.schedule_hedge_order_expiry_check(client_order_id, retry_ts);
+        debug!(
+            "ArbHedgeStrategy: strategy_id={} expired hedge order still live after cancel query, retry scheduled client_order_id={} reason={} retry_ts={}",
+            self.strategy_id,
+            client_order_id,
+            reason,
+            retry_ts
+        );
+    }
+
+    fn trigger_hedge_state_query_after_pending_release(
+        &mut self,
+        terminal_ts: i64,
+        reason: &'static str,
+    ) -> bool {
+        let triggered = self.trigger_hedge_state_query_after_open_terminal(terminal_ts);
+        if triggered {
+            debug!(
+                "ArbHedgeStrategy: strategy_id={} symbol={} trigger hedge state query after pending release reason={}",
+                self.strategy_id, self.symbol, reason
+            );
+        }
+        triggered
+    }
+
+    fn clear_live_order_query_state(&mut self, client_order_id: i64) {
+        // live update 只说明订单仍被交易所识别，不能说明撤单请求已经完成。
+        // 对冲单过期撤单后可能收到重复 New/Partial，这里必须保留 CancelWatchdog，
+        // 否则幂等 update 会把撤单后的 query/orphan 兜底清掉。
+        let state = self.hedge_reconcile_state_mut();
+        if state.pending_order_queries.get(&client_order_id).copied()
+            == Some(PendingOrderQueryReason::OrderWatchdog)
+        {
+            state.pending_order_queries.remove(&client_order_id);
+        }
+        if state
+            .order_query_watchdogs
+            .get(&client_order_id)
+            .map(|(_, reason)| *reason)
+            == Some(PendingOrderQueryReason::OrderWatchdog)
+        {
+            state.order_query_watchdogs.remove(&client_order_id);
+        }
     }
 
     fn send_hedge_state_query(&mut self, now_ts: i64, due_hedge_qty: f64) {
@@ -435,6 +515,9 @@ impl ArbHedgeStrategy {
                 price_offset: ctx.price_offset,
                 borrowed_qv: borrowed.qv,
                 order_base_qty,
+                expire_ts: ctx.exp_time,
+                next_expire_check_ts: ctx.exp_time,
+                cancel_requested: false,
             },
         );
 
@@ -447,12 +530,22 @@ impl ArbHedgeStrategy {
                     meta.borrowed_qv,
                     price.max(ctx.hedging_leg.bid0),
                 );
+                self.trigger_hedge_state_query_after_pending_release(
+                    now_ts,
+                    "hedge_order_send_failed",
+                );
             }
             warn!(
                 "ArbHedgeStrategy: strategy_id={} send ArbHedgeState order failed client_order_id={} symbol={} err={}",
                 self.strategy_id, client_order_id, symbol, err
             );
             return;
+        }
+        if !is_taker && ctx.exp_time > 0 {
+            // Arb hedge 的 maker 对冲单也有本地生命周期。这里登记到时间轮，
+            // period clock 到期后会发 cancel；等撤单终态释放 pending 后，再触发
+            // 下一轮状态查询，避免旧挂单无限占用 borrowed pending。
+            self.schedule_hedge_order_expiry_check(client_order_id, ctx.exp_time);
         }
         debug!(
             "ArbHedgeStrategy: strategy_id={} ArbHedgeState order sent client_order_id={} symbol={} venue={:?} side={:?} type={:?} qty={:.8} base_qty={:.8} price={:.8} request_seq={}",
@@ -540,10 +633,125 @@ impl ArbHedgeStrategy {
         );
     }
 
-    fn record_terminal_hedge_order(&mut self, client_order_id: i64, terminal_ts: i64, price: f64) {
-        let Some(meta) = self.hedge_order_meta.remove(&client_order_id) else {
+    fn handle_expired_hedge_orders(&mut self, now_ts: i64) {
+        if self.hedge_order_expiry_wheel.is_empty() {
+            return;
+        }
+
+        let due_keys: Vec<i64> = self
+            .hedge_order_expiry_wheel
+            .keys()
+            .copied()
+            .take_while(|due_ts| *due_ts <= now_ts)
+            .collect();
+        if due_keys.is_empty() {
+            return;
+        }
+
+        let mut due_order_ids = Vec::new();
+        for due_ts in due_keys {
+            if let Some(order_ids) = self.hedge_order_expiry_wheel.remove(&due_ts) {
+                due_order_ids.extend(order_ids.into_iter().map(|order_id| (due_ts, order_id)));
+            }
+        }
+
+        for (due_ts, client_order_id) in due_order_ids {
+            let Some(meta) = self.hedge_order_meta.get(&client_order_id) else {
+                continue;
+            };
+            if meta.expire_ts <= 0 || meta.next_expire_check_ts != due_ts || meta.cancel_requested {
+                continue;
+            }
+            self.request_cancel_for_expired_hedge_order(client_order_id, now_ts);
+        }
+    }
+
+    fn request_cancel_for_expired_hedge_order(&mut self, client_order_id: i64, now_ts: i64) {
+        let order_snapshot = MonitorChannel::try_order_manager().and_then(|order_mgr| {
+            order_mgr.borrow().get(client_order_id).map(|order| {
+                (
+                    order.status,
+                    order.price,
+                    order.symbol.clone(),
+                    order.clone(),
+                )
+            })
+        });
+        let Some((status, price, symbol, order)) = order_snapshot else {
+            let retry_ts = now_ts.saturating_add(HEDGE_QUERY_INTERVAL_US);
+            if let Some(meta) = self.hedge_order_meta.get(&client_order_id) {
+                warn!(
+                    "ArbHedgeStrategy: strategy_id={} expired hedge order missing locally, keep borrowed pending and retry check client_order_id={} borrowed_qv={:.8} retry_ts={}",
+                    self.strategy_id,
+                    client_order_id,
+                    meta.borrowed_qv,
+                    retry_ts
+                );
+            }
+            self.schedule_hedge_order_expiry_check(client_order_id, retry_ts);
             return;
         };
+
+        if status.is_terminal() {
+            self.record_terminal_hedge_order(client_order_id, now_ts, price);
+            return;
+        }
+
+        let exchange = order.venue.trade_engine_exchange();
+        match order.get_order_cancel_bytes() {
+            Ok(req_bin) => {
+                if let Err(err) = TradeEngHub::publish_order_request(exchange, &req_bin) {
+                    warn!(
+                        "ArbHedgeStrategy: strategy_id={} expired hedge cancel publish failed, handoff orphan client_order_id={} symbol={} exchange={} err={}",
+                        self.strategy_id,
+                        client_order_id,
+                        symbol,
+                        exchange,
+                        err
+                    );
+                    self.handoff_hedge_order_after_query_failure(
+                        client_order_id,
+                        "expired hedge cancel publish failed",
+                    );
+                    return;
+                }
+                if let Some(meta) = self.hedge_order_meta.get_mut(&client_order_id) {
+                    meta.cancel_requested = true;
+                }
+                self.schedule_order_query_watchdog(
+                    client_order_id,
+                    PendingOrderQueryReason::CancelWatchdog,
+                );
+                debug!(
+                    "ArbHedgeStrategy: strategy_id={} expired hedge cancel sent client_order_id={} symbol={} exchange={} expire_ts={} now_ts={}",
+                    self.strategy_id,
+                    client_order_id,
+                    symbol,
+                    exchange,
+                    self.hedge_order_meta
+                        .get(&client_order_id)
+                        .map(|meta| meta.expire_ts)
+                        .unwrap_or(0),
+                    now_ts
+                );
+            }
+            Err(err) => {
+                warn!(
+                    "ArbHedgeStrategy: strategy_id={} expired hedge cancel build failed, handoff orphan client_order_id={} symbol={} err={}",
+                    self.strategy_id,
+                    client_order_id,
+                    symbol,
+                    err
+                );
+                self.handoff_hedge_order_after_query_failure(
+                    client_order_id,
+                    "expired hedge cancel build failed",
+                );
+            }
+        }
+    }
+
+    fn record_terminal_hedge_order(&mut self, client_order_id: i64, terminal_ts: i64, price: f64) {
         let order_snapshot = MonitorChannel::instance()
             .order_manager()
             .borrow()
@@ -553,9 +761,18 @@ impl ArbHedgeStrategy {
                     order.side,
                     order.cumulative_filled_quantity * order.qty_multiplier,
                     order.price,
+                    order.status,
                 )
             });
-        let Some((side, filled_base_qty, order_price)) = order_snapshot else {
+        let Some((side, filled_base_qty, order_price, status)) = order_snapshot else {
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} terminal hedge order missing locally, keep borrowed pending client_order_id={}",
+                self.strategy_id,
+                client_order_id
+            );
+            return;
+        };
+        let Some(meta) = self.hedge_order_meta.remove(&client_order_id) else {
             return;
         };
         let terminal_price = if price.is_finite() && price > 0.0 {
@@ -570,11 +787,16 @@ impl ArbHedgeStrategy {
             filled_base_qty,
             terminal_price,
         );
+        if status != OrderExecutionStatus::Filled {
+            self.trigger_hedge_state_query_after_pending_release(
+                terminal_ts,
+                "hedge_order_terminal",
+            );
+        }
     }
 
     fn apply_order_update(&mut self, order_update: &dyn OrderUpdate) -> bool {
         let client_order_id = order_update.client_order_id();
-        self.clear_order_query_state(client_order_id);
         let order_mgr = MonitorChannel::instance().order_manager();
         let mut order_manager = order_mgr.borrow_mut();
         let Some(current_order) = order_manager.get(client_order_id) else {
@@ -658,10 +880,18 @@ impl ArbHedgeStrategy {
             }
         }
         if status.is_finished() {
+            self.clear_order_query_state(client_order_id);
             self.record_terminal_hedge_order(
                 client_order_id,
                 order_update.event_time(),
                 order_update.price(),
+            );
+        } else {
+            self.clear_live_order_query_state(client_order_id);
+            self.reschedule_expired_hedge_cancel_if_still_live(
+                client_order_id,
+                order_update.event_time(),
+                "order_update_non_terminal",
             );
         }
         true
@@ -669,7 +899,6 @@ impl ArbHedgeStrategy {
 
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) -> bool {
         let client_order_id = trade.client_order_id();
-        self.clear_order_query_state(client_order_id);
         let Some(status) = trade.order_status() else {
             return false;
         };
@@ -718,7 +947,15 @@ impl ArbHedgeStrategy {
         }
         drop(order_manager);
         if status == OrderStatus::Filled {
+            self.clear_order_query_state(client_order_id);
             self.record_terminal_hedge_order(client_order_id, trade.event_time(), trade.price());
+        } else {
+            self.clear_live_order_query_state(client_order_id);
+            self.reschedule_expired_hedge_cancel_if_still_live(
+                client_order_id,
+                trade.event_time(),
+                "trade_update_partial_fill",
+            );
         }
         true
     }
@@ -809,6 +1046,7 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
                 .unwrap_or(0.0);
             self.pending_hedge_queue
                 .release(now_ts, meta.borrowed_qv, release_price);
+            self.trigger_hedge_state_query_after_pending_release(now_ts, "hedge_open_failed");
         }
         self.clear_order_query_state(client_order_id);
         if let Some(order_mgr) = MonitorChannel::try_order_manager() {
@@ -886,18 +1124,19 @@ impl Strategy for ArbHedgeStrategy {
     }
 
     fn handle_period_clock(&mut self, current_tp: i64) {
-        if self.is_active() {
-            self.handle_order_query_watchdogs();
-        }
-        match self.hedge_mode {
-            ArbHedgeMode::Trigger => return,
-            ArbHedgeMode::Period => {}
-        }
         let now_ts = if current_tp > 0 {
             current_tp
         } else {
             get_timestamp_us()
         };
+        if self.is_active() {
+            self.handle_order_query_watchdogs();
+            self.handle_expired_hedge_orders(now_ts);
+        }
+        match self.hedge_mode {
+            ArbHedgeMode::Trigger => return,
+            ArbHedgeMode::Period => {}
+        }
         if self.next_query_ts_us > 0 && now_ts < self.next_query_ts_us {
             return;
         }
