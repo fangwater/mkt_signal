@@ -2,7 +2,6 @@
 //!
 //! 提供做市策略的交易信号生成功能
 
-pub mod hedge_quote_plan;
 pub mod hedge_scale;
 pub mod hedge_split;
 pub mod open_quote_plan;

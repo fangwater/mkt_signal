@@ -16,18 +16,18 @@ use crate::common::ipc_service_name::build_service_name;
 use crate::common::redis_client::RedisSettings;
 use crate::common::time_util::get_timestamp_us;
 use crate::funding_rate::FundingRatePeriod;
-use crate::market_maker::hedge_quote_plan::{
-    build_mm_hedge_ctx as build_mm_hedge_ctx_core, resolve_mm_hedge_signal_inputs,
-    MmHedgeBuildInput,
-};
 use crate::pre_trade::order_manager::Side;
 use crate::signal::arb_signal::{ArbBackwardQueryMsg, ArbCancelCandidateQueryMsg};
 use crate::signal::common::{SignalBytes, TradingLeg, TradingVenue};
 use crate::signal::hedge_signal::{
-    ArbHedgeSignalQueryMsg, ArbHedgeStateCtx, ArbHedgeStateQueryMsg, MmHedgeSignalQueryMsg,
+    ArbHedgeSignalQueryMsg, ArbHedgeStateCtx, ArbHedgeStateQueryMsg,
 };
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
+use crate::strategy::inventory_hedge_quote_plan::{
+    build_inventory_hedge_from_key, build_inventory_hedge_quote_plan,
+    resolve_inventory_hedge_signal_inputs, InventoryHedgeBuildInput,
+};
 use crate::symbol_match::normalize_symbol_for_whitelist;
 
 use super::arb_cooldown::is_cooldown_hit;
@@ -1409,7 +1409,7 @@ fn resolve_arb_hedge_state_build_params(
             .hedge_factor_value_hub
             .as_mut()
             .ok_or_else(|| "hedge_factor_value_hub unavailable".to_string())?;
-        let (signal, signal_qtl, volatility) = resolve_mm_hedge_signal_inputs(
+        let (signal, signal_qtl, volatility) = resolve_inventory_hedge_signal_inputs(
             hedge_factor_value_hub,
             &model_service,
             symbol,
@@ -1511,21 +1511,12 @@ fn drive_shared_arb_hedge_state_query(
     let mid_price = Bbo::new(quote.bid, quote.ask, quote.ts)
         .get_mid_price()
         .unwrap_or_else(|| ((quote.bid + quote.ask) * 0.5).max(0.0));
-    let mm_query = MmHedgeSignalQueryMsg::new(
-        &symbol,
-        0.0,
-        0.0,
-        query.due_hedge_qty,
-        query.symbol_exposure_u,
-        query.weighted_inventory_price,
-        query.request_seq,
-    );
     let table = if hedge_venue == runtime.venues.0 {
         &runtime.open_min_qty_table
     } else {
         &runtime.hedge_min_qty_table
     };
-    let input = MmHedgeBuildInput {
+    let input = InventoryHedgeBuildInput {
         venue: hedge_venue,
         symbol: &symbol,
         quote,
@@ -1536,8 +1527,10 @@ fn drive_shared_arb_hedge_state_query(
         hedge_vol_multiplier: params.hedge_vol_multiplier,
         hedge_offset_ratio: params.hedge_offset_ratio,
         order_amount_u: query.due_hedge_qty.abs() * mid_price,
+        hedge_target_qty: query.due_hedge_qty,
         target_base_qty: Some(query.due_hedge_qty),
-        inventory_net_qty: Some(query.net_qty),
+        inventory_net_qty: query.net_qty,
+        symbol_exposure_u: query.symbol_exposure_u,
         hedge_orders_per_round: 1,
         offset_low: params.hedge_price_offset_limit_lower,
         offset_high_limit: params.hedge_price_offset_limit_upper,
@@ -1545,11 +1538,11 @@ fn drive_shared_arb_hedge_state_query(
         hedge_window_scale_high: params.hedge_window_scale_high,
         next_query_delay_ms: 60_000,
     };
-    let mm_ctx = match build_mm_hedge_ctx_core(input, table, &mm_query) {
-        Ok(ctx) => ctx,
+    let plan = match build_inventory_hedge_quote_plan(input, table) {
+        Ok(plan) => plan,
         Err(err) => {
             log::warn!(
-                "{source}: build ArbHedgeState ctx failed strategy_id={} symbol={} err={}",
+                "{source}: build ArbHedgeState plan failed strategy_id={} symbol={} err={}",
                 query.strategy_id,
                 symbol,
                 err
@@ -1557,21 +1550,39 @@ fn drive_shared_arb_hedge_state_query(
             return;
         }
     };
-    let Some(amount_qv) = mm_ctx.amount_qv_list.first().cloned() else {
+    let Some(level) = plan.levels.first() else {
         log::warn!(
-            "{source}: ArbHedgeState ctx empty amount strategy_id={} symbol={} request_seq={}",
+            "{source}: ArbHedgeState plan empty levels strategy_id={} symbol={} request_seq={}",
             query.strategy_id,
             symbol,
             query.request_seq
         );
         return;
     };
-    let Some(price_qv) = mm_ctx.price_qv_list.first().cloned() else {
+    let Some(amount_qv) =
+        crate::common::tick_math::QuantizedValue::encode_floor(level.aligned_qty, plan.qty_tick)
+    else {
         log::warn!(
-            "{source}: ArbHedgeState ctx empty price strategy_id={} symbol={} request_seq={}",
+            "{source}: ArbHedgeState amount qv invalid strategy_id={} symbol={} request_seq={} qty={:.8} qty_tick={:.8}",
             query.strategy_id,
             symbol,
-            query.request_seq
+            query.request_seq,
+            level.aligned_qty,
+            plan.qty_tick
+        );
+        return;
+    };
+    let Some(price_qv) = crate::common::tick_math::QuantizedValue::encode_floor(
+        level.aligned_price,
+        plan.price_tick,
+    ) else {
+        log::warn!(
+            "{source}: ArbHedgeState price qv invalid strategy_id={} symbol={} request_seq={} price={:.8} price_tick={:.8}",
+            query.strategy_id,
+            symbol,
+            query.request_seq,
+            level.aligned_price,
+            plan.price_tick
         );
         return;
     };
@@ -1596,11 +1607,7 @@ fn drive_shared_arb_hedge_state_query(
         price_qv
     };
     ctx.amount_qv = amount_qv;
-    ctx.price_offset = if use_taker {
-        0.0
-    } else {
-        mm_ctx.price_offsets.first().copied().unwrap_or(0.0)
-    };
+    ctx.price_offset = if use_taker { 0.0 } else { level.offset };
     ctx.signal_ts = get_timestamp_us();
     ctx.exp_time = if use_taker {
         0
@@ -1608,7 +1615,11 @@ fn drive_shared_arb_hedge_state_query(
         ctx.signal_ts.saturating_add(params.hedge_timeout_mm_us)
     };
     ctx.request_seq = query.request_seq;
-    ctx.set_from_key(mm_ctx.from_key);
+    ctx.set_from_key(build_inventory_hedge_from_key(
+        plan.now_us,
+        plan.signal_qtl,
+        plan.volatility,
+    ));
 
     let signal = TradeSignal::create(
         SignalType::ArbHedgeState,

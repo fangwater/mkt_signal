@@ -9,23 +9,22 @@ use crate::market_maker::quote_plan_levels::{
 };
 use crate::pre_trade::order_manager::Side;
 use crate::signal::common::{align_price_floor, TradingVenue};
-use crate::signal::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
 use log::{debug, warn};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-const MM_NEUTRAL_SIGNAL: f64 = 0.0;
-const MM_NEUTRAL_SIGNAL_QUANTILE: f64 = 0.5;
+const INVENTORY_HEDGE_NEUTRAL_SIGNAL: f64 = 0.0;
+const INVENTORY_HEDGE_NEUTRAL_SIGNAL_QUANTILE: f64 = 0.5;
 const MISSING_HEDGE_SCORE_LOG_INTERVAL_SECS: u64 = 30;
 
 thread_local! {
-    static MM_HEDGE_MISSING_SCORE_LAST_LOG_AT: RefCell<HashMap<String, Instant>> =
+    static INVENTORY_HEDGE_MISSING_SCORE_LAST_LOG_AT: RefCell<HashMap<String, Instant>> =
         RefCell::new(HashMap::new());
 }
 
-pub struct MmHedgeBuildInput<'a> {
+pub struct InventoryHedgeBuildInput<'a> {
     pub venue: TradingVenue,
     pub symbol: &'a str,
     pub quote: Quote,
@@ -36,8 +35,10 @@ pub struct MmHedgeBuildInput<'a> {
     pub hedge_vol_multiplier: f64,
     pub hedge_offset_ratio: f64,
     pub order_amount_u: f64,
+    pub hedge_target_qty: f64,
     pub target_base_qty: Option<f64>,
-    pub inventory_net_qty: Option<f64>,
+    pub inventory_net_qty: f64,
+    pub symbol_exposure_u: f64,
     pub hedge_orders_per_round: u32,
     pub offset_low: f64,
     pub offset_high_limit: f64,
@@ -47,7 +48,7 @@ pub struct MmHedgeBuildInput<'a> {
 }
 
 #[derive(Debug, Clone)]
-pub struct MmHedgeQuotePlan {
+pub struct InventoryHedgeQuotePlan {
     pub venue: TradingVenue,
     pub symbol: String,
     pub quote: Quote,
@@ -82,7 +83,7 @@ fn next_aligned_query_ts_us(now_us: i64, interval_ms: u64) -> i64 {
     now_ms.saturating_add(delay_ms).saturating_mul(1_000)
 }
 
-pub fn resolve_mm_hedge_signal_inputs(
+pub fn resolve_inventory_hedge_signal_inputs(
     factor_value_hub: &mut FactorValueHub,
     model_service: &str,
     symbol: &str,
@@ -110,16 +111,16 @@ pub fn resolve_mm_hedge_signal_inputs(
             )
         {
             warn!(
-                "MmDecision: MMHedge missing return_score, fallback to neutral symbol={} venue={:?} service={} note={} volatility={:.8} signal_qtl={:.2}",
+                "InventoryHedge missing return_score, fallback to neutral symbol={} venue={:?} service={} note={} volatility={:.8} signal_qtl={:.2}",
                 symbol,
                 venue,
                 score_lookup.service_name,
                 score_lookup.note,
                 volatility,
-                MM_NEUTRAL_SIGNAL_QUANTILE
+                INVENTORY_HEDGE_NEUTRAL_SIGNAL_QUANTILE
             );
         }
-        resolve_mm_hedge_effective_signal(
+        resolve_inventory_hedge_effective_signal(
             enable_return_score_adjust_hedge,
             score_lookup.score,
             Some(volatility),
@@ -127,9 +128,9 @@ pub fn resolve_mm_hedge_signal_inputs(
             &score_lookup.note,
         )?
     } else {
-        MM_NEUTRAL_SIGNAL
+        INVENTORY_HEDGE_NEUTRAL_SIGNAL
     };
-    let signal_qtl = resolve_mm_hedge_signal_quantile(
+    let signal_qtl = resolve_inventory_hedge_signal_quantile(
         enable_return_score_adjust_hedge,
         score_lookup.score,
         score_lookup.score_quantile,
@@ -141,7 +142,7 @@ pub fn resolve_mm_hedge_signal_inputs(
 fn should_log_missing_hedge_score(symbol: &str, service_name: &str, note: &str) -> bool {
     let now = Instant::now();
     let key = format!("{symbol}|{service_name}|{note}");
-    MM_HEDGE_MISSING_SCORE_LAST_LOG_AT.with(|last_log_at| {
+    INVENTORY_HEDGE_MISSING_SCORE_LAST_LOG_AT.with(|last_log_at| {
         let mut last_log_at = last_log_at.borrow_mut();
         match last_log_at.get(&key) {
             Some(last)
@@ -158,7 +159,7 @@ fn should_log_missing_hedge_score(symbol: &str, service_name: &str, note: &str) 
     })
 }
 
-fn resolve_mm_hedge_effective_signal(
+fn resolve_inventory_hedge_effective_signal(
     enable_return_score_adjust_hedge: bool,
     score: Option<f64>,
     volatility: Option<f64>,
@@ -166,10 +167,10 @@ fn resolve_mm_hedge_effective_signal(
     note: &str,
 ) -> Result<f64, String> {
     if !enable_return_score_adjust_hedge {
-        return Ok(MM_NEUTRAL_SIGNAL);
+        return Ok(INVENTORY_HEDGE_NEUTRAL_SIGNAL);
     }
     if volatility.filter(|v| v.is_finite()).is_some() && score.filter(|v| v.is_finite()).is_none() {
-        return Ok(MM_NEUTRAL_SIGNAL);
+        return Ok(INVENTORY_HEDGE_NEUTRAL_SIGNAL);
     }
     score.filter(|v| v.is_finite()).ok_or_else(|| {
         format!(
@@ -179,22 +180,26 @@ fn resolve_mm_hedge_effective_signal(
     })
 }
 
-fn resolve_mm_hedge_signal_quantile(
+fn resolve_inventory_hedge_signal_quantile(
     enable_return_score_adjust_hedge: bool,
     score: Option<f64>,
     score_quantile: Option<f64>,
     volatility: Option<f64>,
 ) -> Option<f64> {
     if !enable_return_score_adjust_hedge {
-        return Some(MM_NEUTRAL_SIGNAL_QUANTILE);
+        return Some(INVENTORY_HEDGE_NEUTRAL_SIGNAL_QUANTILE);
     }
     if volatility.filter(|v| v.is_finite()).is_some() && score.filter(|v| v.is_finite()).is_none() {
-        return Some(MM_NEUTRAL_SIGNAL_QUANTILE);
+        return Some(INVENTORY_HEDGE_NEUTRAL_SIGNAL_QUANTILE);
     }
     score_quantile.filter(|v| v.is_finite())
 }
 
-fn build_mm_hedge_from_key(now_us: i64, signal_qtl: Option<f64>, volatility: f64) -> Vec<u8> {
+pub fn build_inventory_hedge_from_key(
+    now_us: i64,
+    signal_qtl: Option<f64>,
+    volatility: f64,
+) -> Vec<u8> {
     build_decision_from_key_base(now_us, signal_qtl, None, Some(volatility), None, None)
         .into_bytes()
 }
@@ -239,7 +244,7 @@ fn map_offset_from_signal_legacy(
     Ok((offset, bound, s_clipped, n))
 }
 
-struct MmHedgeOffsetPlan {
+struct InventoryHedgeOffsetPlan {
     bound: f64,
     clipped_signal: f64,
     normalized_signal: f64,
@@ -336,7 +341,7 @@ fn build_quantile_offset_plan(
     split_count: usize,
     hedge_window_scale_low: f64,
     hedge_window_scale_high: f64,
-) -> Result<MmHedgeOffsetPlan, String> {
+) -> Result<InventoryHedgeOffsetPlan, String> {
     if !(signal_qtl.is_finite() && (0.0..=1.0).contains(&signal_qtl)) {
         return Err(format!("invalid signal_qtl={}", signal_qtl));
     }
@@ -399,7 +404,7 @@ fn build_quantile_offset_plan(
     );
     let final_offset = offsets.last().copied().unwrap_or(center_offset);
 
-    Ok(MmHedgeOffsetPlan {
+    Ok(InventoryHedgeOffsetPlan {
         bound,
         clipped_signal,
         normalized_signal,
@@ -423,7 +428,7 @@ fn build_legacy_offset_plan(
     max_exposure_abs: f64,
     hedge_offset_ratio: f64,
     split_count: usize,
-) -> Result<MmHedgeOffsetPlan, String> {
+) -> Result<InventoryHedgeOffsetPlan, String> {
     let (mapped_offset, bound, clipped_signal, normalized_signal) =
         map_offset_from_signal_legacy(side, signal, volatility, multiplier, low, high)?;
     let net_amount_u = net_qty.abs() * mid_price.max(0.0);
@@ -436,7 +441,7 @@ fn build_legacy_offset_plan(
         .clamp(low.max(0.0), high.max(low.max(0.0)));
     let offsets = build_linear_offsets(low, adjusted_offset, split_count);
 
-    Ok(MmHedgeOffsetPlan {
+    Ok(InventoryHedgeOffsetPlan {
         bound,
         clipped_signal,
         normalized_signal,
@@ -448,22 +453,21 @@ fn build_legacy_offset_plan(
     })
 }
 
-pub fn build_mm_hedge_quote_plan(
-    input: MmHedgeBuildInput,
+pub fn build_inventory_hedge_quote_plan(
+    input: InventoryHedgeBuildInput,
     table: &VenueMinQtyTable,
-    query: &MmHedgeSignalQueryMsg,
-) -> Result<MmHedgeQuotePlan, String> {
+) -> Result<InventoryHedgeQuotePlan, String> {
     let now_us = get_timestamp_us();
     let symbol = normalize_symbol_for_internal(input.symbol);
     if symbol.is_empty() {
         return Err("empty symbol".to_string());
     }
 
-    let hedge_target_qty = input.target_base_qty.unwrap_or(query.net_qty);
+    let hedge_target_qty = input.hedge_target_qty;
     if hedge_target_qty.abs() <= 1e-12 {
         return Err("hedge target qty is zero, skip hedge".to_string());
     }
-    let inventory_net_qty = input.inventory_net_qty.unwrap_or(query.net_qty);
+    let inventory_net_qty = input.inventory_net_qty;
     if input.hedge_orders_per_round == 0 {
         return Err("hedge_orders_per_round must be > 0".to_string());
     }
@@ -500,7 +504,7 @@ pub fn build_mm_hedge_quote_plan(
             input.offset_high_limit,
             inventory_net_qty,
             mid_price,
-            query.symbol_exposure_u,
+            input.symbol_exposure_u,
             input.hedge_offset_ratio,
             split_count,
             input.hedge_window_scale_low,
@@ -515,7 +519,7 @@ pub fn build_mm_hedge_quote_plan(
             input.offset_high_limit,
             inventory_net_qty,
             mid_price,
-            query.symbol_exposure_u,
+            input.symbol_exposure_u,
             input.hedge_offset_ratio,
             split_count,
         )?,
@@ -556,7 +560,7 @@ pub fn build_mm_hedge_quote_plan(
         );
     let (price_tick, qty_tick, levels) = if one_hand_below_min {
         warn!(
-            "MMHedge: skip hedge levels because one-hand qty is below min_qty symbol={} venue={:?} order_amount_u={:.8} base_price={:.8} hedge_target_qty_base={:.8} inventory_net_qty_base={:.8}",
+            "InventoryHedge: skip hedge levels because one-hand qty is below min_qty symbol={} venue={:?} order_amount_u={:.8} base_price={:.8} hedge_target_qty_base={:.8} inventory_net_qty_base={:.8}",
             symbol,
             input.venue,
             input.order_amount_u,
@@ -585,7 +589,7 @@ pub fn build_mm_hedge_quote_plan(
             Ok(result) => result,
             Err(err) if err.contains("aligned qty invalid") => {
                 warn!(
-                    "MMHedge: skip hedge levels because one-hand qty cannot be aligned symbol={} venue={:?} order_amount_u={:.8} hedge_target_qty_base={:.8} inventory_net_qty_base={:.8} err={}",
+                    "InventoryHedge: skip hedge levels because one-hand qty cannot be aligned symbol={} venue={:?} order_amount_u={:.8} hedge_target_qty_base={:.8} inventory_net_qty_base={:.8} err={}",
                     symbol,
                     input.venue,
                     input.order_amount_u,
@@ -602,7 +606,7 @@ pub fn build_mm_hedge_quote_plan(
     };
 
     debug!(
-        "MMHedge query->scale: symbol={} side={:?} hedge_target_qty_base={:.8} inventory_net_qty_base={:.8} bid0={:.8} ask0={:.8} signal={:.8} signal_qtl={} enable_return_score_adjust_hedge={} clipped_signal={:.8} normalized_signal={:.8} volatility={:.8} hedge_vol_multiplier={:.8} bound={:.8} offset_low={:.8} offset_high_limit={:.8} hedge_window_scale_low={:.8} hedge_window_scale_high={:.8} mapped_offset={:.8} adjusted_offset={:.8} symbol_exposure_u={:.8} exposure_offset_factor={:.8} hedge_offset_ratio={:.8} final_offset={:.8}",
+        "InventoryHedge query->scale: symbol={} side={:?} hedge_target_qty_base={:.8} inventory_net_qty_base={:.8} bid0={:.8} ask0={:.8} signal={:.8} signal_qtl={} enable_return_score_adjust_hedge={} clipped_signal={:.8} normalized_signal={:.8} volatility={:.8} hedge_vol_multiplier={:.8} bound={:.8} offset_low={:.8} offset_high_limit={:.8} hedge_window_scale_low={:.8} hedge_window_scale_high={:.8} mapped_offset={:.8} adjusted_offset={:.8} symbol_exposure_u={:.8} exposure_offset_factor={:.8} hedge_offset_ratio={:.8} final_offset={:.8}",
         symbol,
         side,
         hedge_target_qty,
@@ -623,13 +627,13 @@ pub fn build_mm_hedge_quote_plan(
         input.hedge_window_scale_high,
         offset_plan.mapped_offset,
         offset_plan.adjusted_offset,
-        query.symbol_exposure_u,
+        input.symbol_exposure_u,
         offset_plan.exposure_offset_factor,
         input.hedge_offset_ratio,
         offset_plan.final_offset,
     );
     debug!(
-        "MMHedgeQuerySummary {{\"symbol\":\"{}\",\"side\":\"{}\",\"hedge_target_qty_base\":{:.8},\"inventory_net_qty_base\":{:.8},\"hedge_bid0\":{:.8},\"hedge_ask0\":{:.8},\"signal\":{:.8},\"signal_qtl\":{},\"enable_return_score_adjust_hedge\":{},\"clipped_signal\":{:.8},\"normalized_signal\":{:.8},\"volatility\":{:.8},\"hedge_vol_multiplier\":{:.8},\"bound\":{:.8},\"offset_low\":{:.8},\"offset_high_limit\":{:.8},\"hedge_window_scale_low\":{:.8},\"hedge_window_scale_high\":{:.8},\"mapped_offset\":{:.8},\"adjusted_offset\":{:.8},\"symbol_exposure_u\":{:.8},\"exposure_offset_factor\":{:.8},\"hedge_offset_ratio\":{:.8},\"final_offset\":{:.8}}}",
+        "InventoryHedgeQuerySummary {{\"symbol\":\"{}\",\"side\":\"{}\",\"hedge_target_qty_base\":{:.8},\"inventory_net_qty_base\":{:.8},\"hedge_bid0\":{:.8},\"hedge_ask0\":{:.8},\"signal\":{:.8},\"signal_qtl\":{},\"enable_return_score_adjust_hedge\":{},\"clipped_signal\":{:.8},\"normalized_signal\":{:.8},\"volatility\":{:.8},\"hedge_vol_multiplier\":{:.8},\"bound\":{:.8},\"offset_low\":{:.8},\"offset_high_limit\":{:.8},\"hedge_window_scale_low\":{:.8},\"hedge_window_scale_high\":{:.8},\"mapped_offset\":{:.8},\"adjusted_offset\":{:.8},\"symbol_exposure_u\":{:.8},\"exposure_offset_factor\":{:.8},\"hedge_offset_ratio\":{:.8},\"final_offset\":{:.8}}}",
         symbol,
         side.as_str(),
         hedge_target_qty,
@@ -650,13 +654,13 @@ pub fn build_mm_hedge_quote_plan(
         input.hedge_window_scale_high,
         offset_plan.mapped_offset,
         offset_plan.adjusted_offset,
-        query.symbol_exposure_u,
+        input.symbol_exposure_u,
         offset_plan.exposure_offset_factor,
         input.hedge_offset_ratio,
         offset_plan.final_offset,
     );
 
-    Ok(MmHedgeQuotePlan {
+    Ok(InventoryHedgeQuotePlan {
         venue: input.venue,
         symbol,
         quote: input.quote,
@@ -680,85 +684,19 @@ pub fn build_mm_hedge_quote_plan(
     })
 }
 
-pub fn build_mm_hedge_ctx(
-    input: MmHedgeBuildInput,
-    table: &VenueMinQtyTable,
-    query: &MmHedgeSignalQueryMsg,
-) -> Result<MmHedgeCtx, String> {
-    let plan = build_mm_hedge_quote_plan(input, table, query)?;
-    let mut ctx = MmHedgeCtx::new();
-    ctx.opening_leg = crate::signal::common::TradingLeg::new(
-        plan.venue,
-        plan.quote.bid,
-        plan.quote.ask,
-        plan.quote.ts,
-    );
-    ctx.set_opening_symbol(&plan.symbol);
-    for level in &plan.levels {
-        let Some(price_qv) = crate::common::tick_math::QuantizedValue::encode_floor(
-            level.aligned_price,
-            plan.price_tick,
-        ) else {
-            continue;
-        };
-        let Some(amount_qv) = crate::common::tick_math::QuantizedValue::encode_floor(
-            level.aligned_qty,
-            plan.qty_tick,
-        ) else {
-            continue;
-        };
-        if price_qv.get_count() <= 0 || amount_qv.get_count() <= 0 {
-            continue;
-        }
-        ctx.price_qv_list.push(price_qv);
-        ctx.amount_qv_list.push(amount_qv);
-        ctx.price_offsets.push(level.offset);
-    }
-    if ctx.price_qv_list.is_empty() || ctx.amount_qv_list.is_empty() || ctx.price_offsets.is_empty()
-    {
-        warn!(
-            "MMHedge ctx has no aligned levels: symbol={} venue={:?} order_amount_u={:.8}",
-            plan.symbol, plan.venue, plan.order_amount_u
-        );
-    } else {
-        debug!(
-            "MMHedge ctx levels: symbol={} levels={} price_values={:?} amount_values={:?} offsets={:?}",
-            plan.symbol,
-            ctx.price_qv_list.len(),
-            ctx.price_qv_list
-                .iter()
-                .map(crate::common::tick_math::QuantizedValue::get_val)
-                .collect::<Vec<_>>(),
-            ctx.amount_qv_list
-                .iter()
-                .map(crate::common::tick_math::QuantizedValue::get_val)
-                .collect::<Vec<_>>(),
-            ctx.price_offsets,
-        );
-    }
-    ctx.signal_ts = plan.now_us;
-    ctx.next_query_ts = plan.next_query_ts;
-    ctx.set_from_key(build_mm_hedge_from_key(
-        plan.now_us,
-        plan.signal_qtl,
-        plan.volatility,
-    ));
-    Ok(ctx)
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        build_mm_hedge_ctx, build_quantile_offset_plan, map_offset_from_signal_legacy,
-        next_aligned_query_ts_us, resolve_mm_hedge_effective_signal,
-        resolve_mm_hedge_signal_quantile, MmHedgeBuildInput,
+        build_inventory_hedge_quote_plan, build_quantile_offset_plan,
+        map_offset_from_signal_legacy, next_aligned_query_ts_us,
+        resolve_inventory_hedge_effective_signal, resolve_inventory_hedge_signal_quantile,
+        InventoryHedgeBuildInput,
     };
     use crate::common::min_qty_table::MinQtyEntry;
     use crate::funding_rate::common::Quote;
     use crate::market_maker::hedge_scale::{scale_offsets_by_inventory, HedgeOffsetScaleInput};
     use crate::pre_trade::order_manager::Side;
     use crate::signal::common::TradingVenue;
-    use crate::signal::hedge_signal::MmHedgeSignalQueryMsg;
     use crate::signal::venue_min_qty_table::VenueMinQtyTable;
 
     #[test]
@@ -782,11 +720,11 @@ mod tests {
     #[test]
     fn disabled_return_score_adjust_hedge_uses_neutral_quantile() {
         assert_eq!(
-            resolve_mm_hedge_signal_quantile(false, Some(0.12), Some(0.91), Some(0.02)),
+            resolve_inventory_hedge_signal_quantile(false, Some(0.12), Some(0.91), Some(0.02)),
             Some(0.5)
         );
         assert_eq!(
-            resolve_mm_hedge_signal_quantile(false, None, None, Some(0.02)),
+            resolve_inventory_hedge_signal_quantile(false, None, None, Some(0.02)),
             Some(0.5)
         );
     }
@@ -794,11 +732,11 @@ mod tests {
     #[test]
     fn enabled_return_score_adjust_hedge_preserves_quantile() {
         assert_eq!(
-            resolve_mm_hedge_signal_quantile(true, Some(0.12), Some(0.91), Some(0.02)),
+            resolve_inventory_hedge_signal_quantile(true, Some(0.12), Some(0.91), Some(0.02)),
             Some(0.91)
         );
         assert_eq!(
-            resolve_mm_hedge_signal_quantile(true, Some(0.12), None, Some(0.02)),
+            resolve_inventory_hedge_signal_quantile(true, Some(0.12), None, Some(0.02)),
             None
         );
     }
@@ -806,7 +744,7 @@ mod tests {
     #[test]
     fn enabled_return_score_adjust_hedge_uses_neutral_when_score_missing_and_volatility_ready() {
         assert_eq!(
-            resolve_mm_hedge_effective_signal(
+            resolve_inventory_hedge_effective_signal(
                 true,
                 None,
                 Some(0.02),
@@ -817,7 +755,7 @@ mod tests {
             0.0
         );
         assert_eq!(
-            resolve_mm_hedge_signal_quantile(true, None, None, Some(0.02)),
+            resolve_inventory_hedge_signal_quantile(true, None, None, Some(0.02)),
             Some(0.5)
         );
     }
@@ -836,7 +774,7 @@ mod tests {
     }
 
     #[test]
-    fn build_mm_hedge_ctx_keeps_empty_levels_when_one_hand_qty_cannot_align() {
+    fn build_inventory_hedge_plan_keeps_empty_levels_when_one_hand_qty_cannot_align() {
         let mut table = VenueMinQtyTable::new(TradingVenue::GateFutures);
         table.set_entry_for_test(MinQtyEntry {
             symbol: "SOLUSDT".to_string(),
@@ -849,7 +787,7 @@ mod tests {
         });
         table.set_contract_multiplier_for_test("SOLUSDT", 0.01);
 
-        let input = MmHedgeBuildInput {
+        let input = InventoryHedgeBuildInput {
             venue: TradingVenue::GateFutures,
             symbol: "SOLUSDT",
             quote: Quote {
@@ -864,8 +802,10 @@ mod tests {
             hedge_vol_multiplier: 2.0,
             hedge_offset_ratio: 1.3,
             order_amount_u: 100.0,
+            hedge_target_qty: 1.0,
             target_base_qty: None,
-            inventory_net_qty: None,
+            inventory_net_qty: 1.0,
+            symbol_exposure_u: 250.0,
             hedge_orders_per_round: 8,
             offset_low: 0.0003,
             offset_high_limit: 0.005,
@@ -873,14 +813,11 @@ mod tests {
             hedge_window_scale_high: 1.3,
             next_query_delay_ms: 60_000,
         };
-        let query = MmHedgeSignalQueryMsg::new("SOLUSDT", 1.0, 0.0, 1.0, 250.0, 85.57, 2);
 
-        let ctx = build_mm_hedge_ctx(input, &table, &query).unwrap();
+        let plan = build_inventory_hedge_quote_plan(input, &table).unwrap();
 
-        assert!(ctx.price_qv_list.is_empty());
-        assert!(ctx.amount_qv_list.is_empty());
-        assert!(ctx.price_offsets.is_empty());
-        assert!(ctx.next_query_ts > 0);
+        assert!(plan.levels.is_empty());
+        assert!(plan.next_query_ts > 0);
     }
 
     #[test]
@@ -1068,11 +1005,17 @@ mod tests {
     #[test]
     fn disabled_return_score_adjust_skips_missing_score() {
         assert_eq!(
-            resolve_mm_hedge_effective_signal(false, None, None, "model_output/test", "missing")
-                .unwrap(),
+            resolve_inventory_hedge_effective_signal(
+                false,
+                None,
+                None,
+                "model_output/test",
+                "missing"
+            )
+            .unwrap(),
             0.0
         );
-        assert!(resolve_mm_hedge_effective_signal(
+        assert!(resolve_inventory_hedge_effective_signal(
             true,
             None,
             None,

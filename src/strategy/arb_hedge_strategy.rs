@@ -1,18 +1,27 @@
 use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::common::time_util::get_timestamp_us;
+use crate::pre_trade::monitor_channel::MonitorChannel;
+use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::signal_channel::SignalChannel;
+use crate::pre_trade::PersistChannel;
 use crate::signal::arb_signal::ArbBackwardQueryMsg;
-use crate::signal::common::TradingVenue;
-use crate::signal::hedge_signal::ArbHedgeStateQueryMsg;
-use crate::signal::trade_signal::TradeSignal;
+use crate::signal::common::{OrderStatus, SignalBytes, TradingVenue};
+use crate::signal::hedge_signal::{ArbHedgeStateCtx, ArbHedgeStateQueryMsg};
+use crate::signal::trade_signal::{SignalType, TradeSignal};
+use crate::strategy::arb_helper::create_and_send_order;
 use crate::strategy::hedge_strategy_common::HEDGE_QUERY_INTERVAL_US;
 use crate::strategy::manager::{OrderTerminalRecorder, Strategy};
 use crate::strategy::net_qty_queue::{NetQtyQueue, TimedNetQtyQueue};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
+use crate::strategy::uniform_order_helper::{
+    publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
+    publish_uniform_trade_order_from_order_update, UniformPublishCtx,
+};
 use log::{debug, warn};
 use std::any::Any;
+use std::collections::HashMap;
 
 const ARB_HEDGE_QTY_EPS: f64 = 1e-12;
 
@@ -51,8 +60,20 @@ pub struct ArbHedgeStrategy {
     pub(super) pending_hedge_queue: TimedNetQtyQueue,
     hedge_mode: ArbHedgeMode,
     hedge_request_seq: u64,
+    pending_hedge_request_seq: Option<u64>,
     next_query_ts_us: i64,
+    order_seq: u32,
+    hedge_order_meta: HashMap<i64, ArbHedgeOrderMeta>,
     alive_flag: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ArbHedgeOrderMeta {
+    signal_ts: i64,
+    from_key: Vec<u8>,
+    price_offset: f64,
+    borrowed_qv: f64,
+    order_base_qty: f64,
 }
 
 impl ArbHedgeStrategy {
@@ -90,7 +111,10 @@ impl ArbHedgeStrategy {
             pending_hedge_queue: TimedNetQtyQueue::new(),
             hedge_mode,
             hedge_request_seq: 0,
+            pending_hedge_request_seq: None,
             next_query_ts_us: 0,
+            order_seq: 0,
+            hedge_order_meta: HashMap::new(),
             alive_flag: true,
         }
     }
@@ -136,6 +160,7 @@ impl ArbHedgeStrategy {
             .max(0.0)
             * risk_loader.max_symbol_exposure_ratio().max(0.0);
         let request_seq = self.next_hedge_request_seq();
+        self.pending_hedge_request_seq = Some(request_seq);
         let query_msg = ArbHedgeStateQueryMsg::new(
             self.strategy_id,
             &self.symbol,
@@ -175,6 +200,449 @@ impl ArbHedgeStrategy {
             }
         }
     }
+
+    fn compose_order_id(strategy_id: i32, seq: u32) -> i64 {
+        ((strategy_id as i64) << 32) | seq as i64
+    }
+
+    fn extract_strategy_id(order_id: i64) -> i32 {
+        (order_id >> 32) as i32
+    }
+
+    fn next_order_id(&mut self) -> i64 {
+        self.order_seq = self.order_seq.wrapping_add(1);
+        if self.order_seq == 0 {
+            self.order_seq = 1;
+        }
+        Self::compose_order_id(self.strategy_id, self.order_seq)
+    }
+
+    fn uniform_hedge_publish_ctx(&self, client_order_id: i64) -> UniformPublishCtx {
+        let meta = self.hedge_order_meta.get(&client_order_id);
+        let signal_ts = meta.map(|m| m.signal_ts).unwrap_or(0);
+        let price_offset = meta.map(|m| m.price_offset).unwrap_or(0.0);
+        let raw_from_key = meta.map(|m| m.from_key.clone()).unwrap_or_default();
+        UniformPublishCtx {
+            signal_ts,
+            from_key: format!("hedge|{}", String::from_utf8_lossy(&raw_from_key)).into_bytes(),
+            price_offset,
+        }
+    }
+
+    fn hedge_pending_qv_from_order(side: Side, base_qty: f64) -> f64 {
+        match side {
+            Side::Sell => base_qty.abs(),
+            Side::Buy => -base_qty.abs(),
+        }
+    }
+
+    fn handle_arb_hedge_state_signal(&mut self, ctx: ArbHedgeStateCtx) {
+        let Some(expected_request_seq) = self.pending_hedge_request_seq else {
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} drop unexpected ArbHedgeState reply without pending query: symbol={} request_seq={}",
+                self.strategy_id,
+                ctx.get_hedging_symbol(),
+                ctx.request_seq
+            );
+            return;
+        };
+        if ctx.request_seq != expected_request_seq {
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} drop stale/duplicate ArbHedgeState reply: symbol={} request_seq={} expected_request_seq={}",
+                self.strategy_id,
+                ctx.get_hedging_symbol(),
+                ctx.request_seq,
+                expected_request_seq
+            );
+            return;
+        }
+        self.pending_hedge_request_seq = None;
+
+        let Some(side) = ctx.get_side() else {
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} ArbHedgeState invalid side={}",
+                self.strategy_id, ctx.hedge_side
+            );
+            return;
+        };
+        let symbol = normalize_symbol_for_internal(&ctx.get_hedging_symbol());
+        if symbol.is_empty() {
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} ArbHedgeState empty symbol",
+                self.strategy_id
+            );
+            return;
+        }
+        let Some(venue) = TradingVenue::from_u8(ctx.hedging_leg.venue) else {
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} ArbHedgeState invalid venue={}",
+                self.strategy_id, ctx.hedging_leg.venue
+            );
+            return;
+        };
+        let qty = ctx.amount_value();
+        if qty <= 0.0 {
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} ArbHedgeState qty invalid symbol={} qty={:.8}",
+                self.strategy_id, symbol, qty
+            );
+            return;
+        }
+        let is_taker = ctx.is_taker();
+        let order_type = if is_taker {
+            OrderType::Market
+        } else {
+            OrderType::Limit
+        };
+        let price = if is_taker { 0.0 } else { ctx.price_value() };
+        if !is_taker && price <= 0.0 {
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} ArbHedgeState price invalid symbol={} price={:.8}",
+                self.strategy_id, symbol, price
+            );
+            return;
+        }
+
+        let order_base_qty = MonitorChannel::instance().qty_to_base(venue, &symbol, qty);
+        if order_base_qty <= 0.0 {
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} ArbHedgeState base qty invalid symbol={} venue={:?} qty={:.8}",
+                self.strategy_id, symbol, venue, qty
+            );
+            return;
+        }
+        let pending_qv = Self::hedge_pending_qv_from_order(side, order_base_qty);
+        let now_ts = get_timestamp_us();
+        let borrowed = self.pending_hedge_queue.borrow(now_ts, pending_qv);
+        if borrowed.qty + ARB_HEDGE_QTY_EPS < order_base_qty {
+            if borrowed.qv.abs() > ARB_HEDGE_QTY_EPS {
+                self.pending_hedge_queue.release(
+                    now_ts,
+                    borrowed.qv,
+                    price.max(ctx.hedging_leg.bid0),
+                );
+            }
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} ArbHedgeState borrow insufficient symbol={} request_seq={} want_qv={:.8} borrowed_qv={:.8} pending_after={:.8}",
+                self.strategy_id,
+                symbol,
+                ctx.request_seq,
+                pending_qv,
+                borrowed.qv,
+                self.pending_hedge_queue.net_qty()
+            );
+            return;
+        }
+
+        let client_order_id = self.next_order_id();
+        let qty_multiplier = (order_base_qty / qty).max(1e-12);
+        MonitorChannel::instance()
+            .order_manager()
+            .borrow_mut()
+            .create_order(
+                venue,
+                client_order_id,
+                order_type,
+                symbol.clone(),
+                side,
+                qty,
+                price,
+                false,
+                qty_multiplier,
+                now_ts,
+            );
+        self.hedge_order_meta.insert(
+            client_order_id,
+            ArbHedgeOrderMeta {
+                signal_ts: ctx.signal_ts,
+                from_key: ctx.from_key.clone(),
+                price_offset: ctx.price_offset,
+                borrowed_qv: borrowed.qv,
+                order_base_qty,
+            },
+        );
+
+        if let Err(err) =
+            create_and_send_order(self.strategy_id, client_order_id, "状态对冲", &symbol)
+        {
+            if let Some(meta) = self.hedge_order_meta.remove(&client_order_id) {
+                self.pending_hedge_queue.release(
+                    now_ts,
+                    meta.borrowed_qv,
+                    price.max(ctx.hedging_leg.bid0),
+                );
+            }
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} send ArbHedgeState order failed client_order_id={} symbol={} err={}",
+                self.strategy_id, client_order_id, symbol, err
+            );
+            return;
+        }
+        debug!(
+            "ArbHedgeStrategy: strategy_id={} ArbHedgeState order sent client_order_id={} symbol={} venue={:?} side={:?} type={:?} qty={:.8} base_qty={:.8} price={:.8} request_seq={}",
+            self.strategy_id,
+            client_order_id,
+            symbol,
+            venue,
+            side,
+            order_type,
+            qty,
+            order_base_qty,
+            price,
+            ctx.request_seq
+        );
+    }
+
+    fn publish_uniform_new_order(
+        &self,
+        order_update: &dyn OrderUpdate,
+        order: &Order,
+        prev_cumulative_filled_qty: f64,
+    ) {
+        let ctx = self.uniform_hedge_publish_ctx(order.client_order_id);
+        publish_uniform_new_order(
+            order_update,
+            order,
+            prev_cumulative_filled_qty,
+            &ctx,
+            "ArbHedgeStrategy",
+            self.strategy_id,
+        );
+    }
+
+    fn publish_uniform_terminal_order(
+        &self,
+        order_update: &dyn OrderUpdate,
+        order: &Order,
+        prev_cumulative_filled_qty: f64,
+    ) {
+        let ctx = self.uniform_hedge_publish_ctx(order.client_order_id);
+        publish_uniform_terminal_order(
+            order_update,
+            order,
+            prev_cumulative_filled_qty,
+            &ctx,
+            "ArbHedgeStrategy",
+            self.strategy_id,
+        );
+    }
+
+    fn publish_uniform_trade_order_from_order_update(
+        &self,
+        order_update: &dyn OrderUpdate,
+        order: &Order,
+        prev_cumulative_filled_qty: f64,
+    ) {
+        let ctx = self.uniform_hedge_publish_ctx(order.client_order_id);
+        publish_uniform_trade_order_from_order_update(
+            order_update,
+            order,
+            prev_cumulative_filled_qty,
+            &ctx,
+            "ArbHedgeStrategy",
+            self.strategy_id,
+        );
+    }
+
+    fn publish_uniform_trade_order(
+        &self,
+        trade: &dyn TradeUpdate,
+        order: &Order,
+        prev_cumulative_filled_qty: f64,
+        status: OrderStatus,
+    ) {
+        let ctx = self.uniform_hedge_publish_ctx(order.client_order_id);
+        publish_uniform_trade_order(
+            trade,
+            order,
+            prev_cumulative_filled_qty,
+            status,
+            &ctx,
+            "ArbHedgeStrategy",
+            self.strategy_id,
+        );
+    }
+
+    fn record_terminal_hedge_order(&mut self, client_order_id: i64, terminal_ts: i64, price: f64) {
+        let Some(meta) = self.hedge_order_meta.remove(&client_order_id) else {
+            return;
+        };
+        let order_snapshot = MonitorChannel::instance()
+            .order_manager()
+            .borrow()
+            .get(client_order_id)
+            .map(|order| {
+                (
+                    order.side,
+                    order.cumulative_filled_quantity * order.qty_multiplier,
+                    order.price,
+                )
+            });
+        let Some((side, filled_base_qty, order_price)) = order_snapshot else {
+            return;
+        };
+        let terminal_price = if price.is_finite() && price > 0.0 {
+            price
+        } else {
+            order_price
+        };
+        self.record_hedge_order_terminal(
+            terminal_ts,
+            side,
+            meta.order_base_qty,
+            filled_base_qty,
+            terminal_price,
+        );
+    }
+
+    fn apply_order_update_inner(&mut self, order_update: &dyn OrderUpdate) -> bool {
+        let client_order_id = order_update.client_order_id();
+        let order_mgr = MonitorChannel::instance().order_manager();
+        let mut order_manager = order_mgr.borrow_mut();
+        let Some(current_order) = order_manager.get(client_order_id) else {
+            return false;
+        };
+        if OrderManager::should_skip_idempotent_order_update(
+            &current_order,
+            order_update.status(),
+            order_update.order_id(),
+            order_update.cumulative_filled_quantity(),
+            "ArbHedgeStrategy",
+            self.strategy_id,
+        )
+        .is_some()
+        {
+            return false;
+        }
+        let prev_cumulative_filled_qty = current_order.cumulative_filled_quantity;
+        let status = order_update.status();
+        let protected_cumulative_fill =
+            current_order.protected_cumulative_fill(order_update.cumulative_filled_quantity());
+        let effective_cumulative_filled_qty = protected_cumulative_fill.effective_cum;
+        let updated = order_manager.update(client_order_id, |order| match status {
+            OrderStatus::New => {
+                order.status = OrderExecutionStatus::Create;
+                order.set_exchange_order_id(order_update.order_id());
+                order.set_create_time(order_update.event_time());
+            }
+            OrderStatus::Canceled => {
+                order.status = OrderExecutionStatus::Cancelled;
+                order.set_exchange_order_id(order_update.order_id());
+                order.cumulative_filled_quantity = effective_cumulative_filled_qty;
+                order.set_end_time(order_update.event_time());
+            }
+            OrderStatus::Filled => {
+                order.status = OrderExecutionStatus::Filled;
+                order.set_exchange_order_id(order_update.order_id());
+                order.cumulative_filled_quantity = effective_cumulative_filled_qty;
+                order.set_filled_time(order_update.event_time());
+                order.set_end_time(order_update.event_time());
+            }
+            OrderStatus::Expired | OrderStatus::ExpiredInMatch => {
+                order.status = OrderExecutionStatus::Rejected;
+                order.set_exchange_order_id(order_update.order_id());
+                order.cumulative_filled_quantity = effective_cumulative_filled_qty;
+                order.set_end_time(order_update.event_time());
+            }
+            OrderStatus::PartiallyFilled => {
+                order.status = OrderExecutionStatus::Create;
+                order.set_exchange_order_id(order_update.order_id());
+                order.cumulative_filled_quantity = effective_cumulative_filled_qty;
+                order.set_filled_time(order_update.event_time());
+            }
+        });
+        drop(order_manager);
+        if !updated {
+            return false;
+        }
+        if let Some(order) = MonitorChannel::instance()
+            .order_manager()
+            .borrow()
+            .get(client_order_id)
+        {
+            if status == OrderStatus::New {
+                self.publish_uniform_new_order(order_update, &order, prev_cumulative_filled_qty);
+            } else if matches!(
+                status,
+                OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::ExpiredInMatch
+            ) {
+                self.publish_uniform_terminal_order(
+                    order_update,
+                    &order,
+                    prev_cumulative_filled_qty,
+                );
+            } else if matches!(status, OrderStatus::PartiallyFilled | OrderStatus::Filled) {
+                self.publish_uniform_trade_order_from_order_update(
+                    order_update,
+                    &order,
+                    prev_cumulative_filled_qty,
+                );
+            }
+        }
+        if status.is_finished() {
+            self.record_terminal_hedge_order(
+                client_order_id,
+                order_update.event_time(),
+                order_update.price(),
+            );
+        }
+        true
+    }
+
+    fn apply_trade_update_inner(&mut self, trade: &dyn TradeUpdate) -> bool {
+        let client_order_id = trade.client_order_id();
+        let Some(status) = trade.order_status() else {
+            return false;
+        };
+        if !matches!(status, OrderStatus::PartiallyFilled | OrderStatus::Filled) {
+            return false;
+        }
+        let order_mgr = MonitorChannel::instance().order_manager();
+        let mut order_manager = order_mgr.borrow_mut();
+        let Some(current_order) = order_manager.get(client_order_id) else {
+            return false;
+        };
+        let prev_cumulative_filled_qty = current_order.cumulative_filled_quantity;
+        if OrderManager::should_skip_idempotent_trade_update(
+            &current_order,
+            status,
+            trade.cumulative_filled_quantity(),
+            trade.event_time(),
+            "ArbHedgeStrategy",
+            self.strategy_id,
+        )
+        .is_some()
+        {
+            return false;
+        }
+        let updated = order_manager.update(client_order_id, |order| {
+            order.cumulative_filled_quantity = trade.cumulative_filled_quantity();
+            order.set_filled_time(trade.trade_time());
+            order.set_exchange_order_id(trade.order_id());
+            if trade.price() > 0.0 {
+                order.price = trade.price();
+            }
+            order.status = if status == OrderStatus::Filled {
+                OrderExecutionStatus::Filled
+            } else {
+                OrderExecutionStatus::Create
+            };
+            if status == OrderStatus::Filled {
+                order.set_end_time(trade.event_time());
+            }
+        });
+        if !updated {
+            return false;
+        }
+        if let Some(order) = order_manager.get(client_order_id) {
+            self.publish_uniform_trade_order(trade, &order, prev_cumulative_filled_qty, status);
+        }
+        drop(order_manager);
+        if status == OrderStatus::Filled {
+            self.record_terminal_hedge_order(client_order_id, trade.event_time(), trade.price());
+        }
+        true
+    }
 }
 
 impl Strategy for ArbHedgeStrategy {
@@ -190,20 +658,43 @@ impl Strategy for ArbHedgeStrategy {
         self.strategy_id
     }
 
-    fn is_strategy_order(&self, _order_id: i64) -> bool {
-        false
+    fn is_strategy_order(&self, order_id: i64) -> bool {
+        Self::extract_strategy_id(order_id) == self.strategy_id
+            && self.hedge_order_meta.contains_key(&order_id)
     }
 
     fn handle_signal(&mut self, signal: &TradeSignal) {
-        debug!(
-            "ArbHedgeStrategy: strategy_id={} ignore signal {:?}",
-            self.strategy_id, signal.signal_type
-        );
+        match signal.signal_type {
+            SignalType::ArbHedgeState => match ArbHedgeStateCtx::from_bytes(signal.context.clone())
+            {
+                Ok(ctx) => self.handle_arb_hedge_state_signal(ctx),
+                Err(err) => warn!(
+                    "ArbHedgeStrategy: strategy_id={} decode ArbHedgeState failed err={}",
+                    self.strategy_id, err
+                ),
+            },
+            _ => {
+                debug!(
+                    "ArbHedgeStrategy: strategy_id={} ignore signal {:?}",
+                    self.strategy_id, signal.signal_type
+                );
+            }
+        }
     }
 
-    fn apply_order_update(&mut self, _update: &dyn OrderUpdate) {}
+    fn apply_order_update(&mut self, update: &dyn OrderUpdate) {
+        let should_persist = self.apply_order_update_inner(update);
+        if should_persist {
+            PersistChannel::with(|ch| ch.publish_order_update(update));
+        }
+    }
 
-    fn apply_trade_update(&mut self, _trade: &dyn TradeUpdate) {}
+    fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
+        let should_persist = self.apply_trade_update_inner(trade);
+        if should_persist {
+            PersistChannel::with(|ch| ch.publish_trade_update(trade));
+        }
+    }
 
     fn handle_period_clock(&mut self, current_tp: i64) {
         match self.hedge_mode {

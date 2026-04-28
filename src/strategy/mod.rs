@@ -10,6 +10,7 @@ pub mod gate_basic_impl;
 pub mod hedge_arb_strategy;
 pub mod hedge_orphan_order_strategy;
 pub mod hedge_strategy_common;
+pub mod inventory_hedge_quote_plan;
 pub mod manager;
 pub mod mm_hedge_strategy;
 pub mod mm_open_strategy;

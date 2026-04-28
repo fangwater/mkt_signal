@@ -16,14 +16,14 @@ use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
 use crate::common::ipc_service_name::build_service_name;
 use crate::common::redis_client::RedisSettings;
 use crate::common::time_util::get_timestamp_us;
-use crate::market_maker::hedge_quote_plan::{
-    build_mm_hedge_ctx as build_mm_hedge_ctx_core, resolve_mm_hedge_signal_inputs,
-    MmHedgeBuildInput,
-};
-use crate::signal::common::{SignalBytes, TradingVenue};
-use crate::signal::hedge_signal::MmHedgeSignalQueryMsg;
+use crate::signal::common::{SignalBytes, TradingLeg, TradingVenue};
+use crate::signal::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
 use crate::signal::mm_signal::{MmBackwardQueryMsg, MmCancelCandidateQueryMsg};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
+use crate::strategy::inventory_hedge_quote_plan::{
+    build_inventory_hedge_from_key, build_inventory_hedge_quote_plan,
+    resolve_inventory_hedge_signal_inputs, InventoryHedgeBuildInput, InventoryHedgeQuotePlan,
+};
 use crate::symbol_match::normalize_symbol_for_whitelist;
 
 mod cancel;
@@ -58,6 +58,40 @@ fn compute_next_open_deadline_us(now_us: i64, interval_ms: u64) -> i64 {
         interval_ms - remainder
     };
     now_ms.saturating_add(delay_ms).saturating_mul(1_000)
+}
+
+fn build_mm_hedge_ctx_from_plan(plan: InventoryHedgeQuotePlan) -> MmHedgeCtx {
+    let mut ctx = MmHedgeCtx::new();
+    ctx.opening_leg = TradingLeg::new(plan.venue, plan.quote.bid, plan.quote.ask, plan.quote.ts);
+    ctx.set_opening_symbol(&plan.symbol);
+    for level in &plan.levels {
+        let Some(price_qv) = crate::common::tick_math::QuantizedValue::encode_floor(
+            level.aligned_price,
+            plan.price_tick,
+        ) else {
+            continue;
+        };
+        let Some(amount_qv) = crate::common::tick_math::QuantizedValue::encode_floor(
+            level.aligned_qty,
+            plan.qty_tick,
+        ) else {
+            continue;
+        };
+        if price_qv.get_count() <= 0 || amount_qv.get_count() <= 0 {
+            continue;
+        }
+        ctx.price_qv_list.push(price_qv);
+        ctx.amount_qv_list.push(amount_qv);
+        ctx.price_offsets.push(level.offset);
+    }
+    ctx.signal_ts = plan.now_us;
+    ctx.next_query_ts = plan.next_query_ts;
+    ctx.set_from_key(build_inventory_hedge_from_key(
+        plan.now_us,
+        plan.signal_qtl,
+        plan.volatility,
+    ));
+    ctx
 }
 
 impl MmDecision {
@@ -417,7 +451,7 @@ impl MmDecision {
             warn!("MmDecision: MMHedge return_model_service unavailable");
             return;
         };
-        let (signal, signal_qtl, volatility) = match resolve_mm_hedge_signal_inputs(
+        let (signal, signal_qtl, volatility) = match resolve_inventory_hedge_signal_inputs(
             &mut self.state.factor_value_hub,
             &model_service,
             &symbol,
@@ -433,7 +467,7 @@ impl MmDecision {
                 return;
             }
         };
-        let input = MmHedgeBuildInput {
+        let input = InventoryHedgeBuildInput {
             venue: self.state.hedge_venue,
             symbol: &symbol,
             quote,
@@ -443,8 +477,10 @@ impl MmDecision {
             hedge_vol_multiplier: self.state.hedge_vol_multiplier,
             hedge_offset_ratio: self.state.hedge_offset_ratio,
             order_amount_u: self.state.resolve_order_amount_u(&symbol),
+            hedge_target_qty: query.net_qty,
             target_base_qty: None,
-            inventory_net_qty: None,
+            inventory_net_qty: query.net_qty,
+            symbol_exposure_u: query.symbol_exposure_u,
             hedge_orders_per_round: self.state.hedge_orders_per_round,
             offset_low: self.state.hedge_price_offset_limit_lower,
             offset_high_limit: self.state.hedge_price_offset_limit_upper,
@@ -453,17 +489,17 @@ impl MmDecision {
             next_query_delay_ms: self.state.next_query_delay_ms,
             enable_return_score_adjust_hedge: self.state.enable_return_score_adjust_hedge,
         };
-        let ctx = match build_mm_hedge_ctx_core(input, &self.state.open_min_qty_table, &query) {
-            Ok(ctx) => ctx,
+        let plan = match build_inventory_hedge_quote_plan(input, &self.state.open_min_qty_table) {
+            Ok(plan) => plan,
             Err(err) => {
                 warn!(
-                    "MmDecision: build MMHedge ctx failed symbol={} err={}",
+                    "MmDecision: build MMHedge plan failed symbol={} err={}",
                     symbol, err
                 );
                 return;
             }
         };
-        let mut ctx = ctx;
+        let mut ctx = build_mm_hedge_ctx_from_plan(plan);
         ctx.request_seq = query.request_seq;
         if let Some((pct_change, threshold_ratio)) = Self::should_use_mm_hedge_taker(
             query.weighted_inventory_price,
