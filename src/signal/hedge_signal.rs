@@ -136,20 +136,14 @@ pub struct MmHedgeCtx {
     pub from_key: Vec<u8>,
 }
 
-/// 新 arb hedge 单订单上下文。
+/// Arb hedge state query response context.
 ///
 /// 和 MM hedge query response 的语义接近，但这里只保留一个 hedge 单和一个 offset。
-/// 拿到 price/amount 的 QV 后，pre-trade 可以直接按该上下文发单。
+/// ArbHedgeStrategy 拿到 price/amount 的 QV 后生成订单并维护 pending borrow/release。
 #[derive(Debug, Clone)]
-pub struct ArbHedgeOrderCtx {
+pub struct ArbHedgeStateCtx {
     /// Arb hedge strategy id.
     pub strategy_id: i32,
-
-    /// Source arb open strategy id. Hedge 订单维护会用它映射到 client_order_id。
-    pub open_strategy_id: i32,
-
-    /// Client order id for the hedge order.
-    pub client_order_id: i64,
 
     /// Hedge side (Buy/Sell), stored as u8.
     pub hedge_side: u8,
@@ -444,12 +438,10 @@ impl MmHedgeCtx {
     }
 }
 
-impl ArbHedgeOrderCtx {
+impl ArbHedgeStateCtx {
     pub fn new() -> Self {
         Self {
             strategy_id: 0,
-            open_strategy_id: 0,
-            client_order_id: 0,
             hedge_side: 0,
             hedging_leg: TradingLeg {
                 venue: 0,
@@ -529,13 +521,11 @@ impl ArbHedgeOrderCtx {
     }
 }
 
-impl SignalBytes for ArbHedgeOrderCtx {
+impl SignalBytes for ArbHedgeStateCtx {
     fn to_bytes(&self) -> Bytes {
         let mut buf = BytesMut::new();
 
         buf.put_i32_le(self.strategy_id);
-        buf.put_i32_le(self.open_strategy_id);
-        buf.put_i64_le(self.client_order_id);
         buf.put_u8(self.hedge_side);
 
         buf.put_u8(self.hedging_leg.venue);
@@ -559,16 +549,14 @@ impl SignalBytes for ArbHedgeOrderCtx {
     }
 
     fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
-        if bytes.remaining() < 4 + 4 + 8 + 1 {
-            return Err("Not enough bytes for ArbHedgeOrderCtx basic fields".to_string());
+        if bytes.remaining() < 4 + 1 {
+            return Err("Not enough bytes for ArbHedgeStateCtx basic fields".to_string());
         }
         let strategy_id = bytes.get_i32_le();
-        let open_strategy_id = bytes.get_i32_le();
-        let client_order_id = bytes.get_i64_le();
         let hedge_side = bytes.get_u8();
 
         if bytes.remaining() < 1 + 8 + 8 + 8 {
-            return Err("Not enough bytes for ArbHedgeOrderCtx hedging leg".to_string());
+            return Err("Not enough bytes for ArbHedgeStateCtx hedging leg".to_string());
         }
         let hedging_venue = bytes.get_u8();
         let hedging_bid0 = bytes.get_f64_le();
@@ -576,11 +564,11 @@ impl SignalBytes for ArbHedgeOrderCtx {
         let hedging_ts = bytes.get_i64_le();
         let hedging_symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
 
-        let price_qv = read_qv(&mut bytes, "ArbHedgeOrderCtx price_qv")?;
-        let amount_qv = read_qv(&mut bytes, "ArbHedgeOrderCtx amount_qv")?;
+        let price_qv = read_qv(&mut bytes, "ArbHedgeStateCtx price_qv")?;
+        let amount_qv = read_qv(&mut bytes, "ArbHedgeStateCtx amount_qv")?;
 
         if bytes.remaining() < 8 + 8 + 8 + 8 + 4 {
-            return Err("Not enough bytes for ArbHedgeOrderCtx tail".to_string());
+            return Err("Not enough bytes for ArbHedgeStateCtx tail".to_string());
         }
         let price_offset = bytes.get_f64_le();
         let signal_ts = bytes.get_i64_le();
@@ -598,13 +586,11 @@ impl SignalBytes for ArbHedgeOrderCtx {
         let from_key = bytes.copy_to_bytes(from_key_len).to_vec();
 
         if bytes.remaining() != 0 {
-            return Err("Unexpected trailing bytes for ArbHedgeOrderCtx".to_string());
+            return Err("Unexpected trailing bytes for ArbHedgeStateCtx".to_string());
         }
 
         Ok(Self {
             strategy_id,
-            open_strategy_id,
-            client_order_id,
             hedge_side,
             hedging_leg: TradingLeg {
                 venue: hedging_venue,
@@ -1076,6 +1062,112 @@ impl MmHedgeSignalQueryMsg {
     }
 }
 
+/// Arb hedge 状态查询消息。
+///
+/// 新 ArbHedgeStrategy 发出该查询，请求上游根据当前真实净头寸和已到期待对冲量生成 hedge 回包。
+#[derive(Debug, Clone)]
+pub struct ArbHedgeStateQueryMsg {
+    /// Arb hedge strategy id that owns this symbol-level inventory.
+    pub strategy_id: i32,
+
+    /// Internal normalized symbol.
+    pub symbol: [u8; 32],
+
+    /// open/hedge 合并后的真实净头寸，base qty 口径。
+    pub net_qty: f64,
+
+    /// 已到 close_ts、当前可尝试 hedge 的 pending qty，base qty 口径。
+    pub due_hedge_qty: f64,
+
+    /// 全部 pending qty，包含未到 close_ts 的部分。
+    pub pending_hedge_qty: f64,
+
+    /// 单币敞口预算（USDT），来源 pre_trade_risk_params: max_pos_u * max_symbol_exposure_ratio.
+    pub symbol_exposure_u: f64,
+
+    /// Remaining inventory weighted average price recorded by pre-trade.
+    pub weighted_inventory_price: f64,
+
+    /// Pre-trade owned hedge request sequence.
+    pub request_seq: u64,
+}
+
+impl ArbHedgeStateQueryMsg {
+    pub fn new(
+        strategy_id: i32,
+        symbol: &str,
+        net_qty: f64,
+        due_hedge_qty: f64,
+        pending_hedge_qty: f64,
+        symbol_exposure_u: f64,
+        weighted_inventory_price: f64,
+        request_seq: u64,
+    ) -> Self {
+        let mut symbol_bytes = [0u8; 32];
+        let bytes = symbol.as_bytes();
+        let len = bytes.len().min(32);
+        symbol_bytes[..len].copy_from_slice(&bytes[..len]);
+        Self {
+            strategy_id,
+            symbol: symbol_bytes,
+            net_qty,
+            due_hedge_qty,
+            pending_hedge_qty,
+            symbol_exposure_u,
+            weighted_inventory_price,
+            request_seq,
+        }
+    }
+
+    pub fn get_symbol(&self) -> String {
+        let end = self.symbol.iter().position(|&b| b == 0).unwrap_or(32);
+        String::from_utf8_lossy(&self.symbol[..end]).to_string()
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::new();
+        buf.put_i32_le(self.strategy_id);
+        bytes_helper::write_fixed_bytes(&mut buf, &self.symbol);
+        buf.put_f64_le(self.net_qty);
+        buf.put_f64_le(self.due_hedge_qty);
+        buf.put_f64_le(self.pending_hedge_qty);
+        buf.put_f64_le(self.symbol_exposure_u);
+        buf.put_f64_le(self.weighted_inventory_price);
+        buf.put_u64_le(self.request_seq);
+        buf.freeze()
+    }
+
+    pub fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
+        if bytes.remaining() < 4 {
+            return Err("insufficient bytes for strategy_id".to_string());
+        }
+        let strategy_id = bytes.get_i32_le();
+        let symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
+        if bytes.remaining() < 8 * 6 {
+            return Err(
+                "insufficient bytes for net/due/pending/symbol_exposure_u/weighted_inventory_price/request_seq"
+                    .to_string(),
+            );
+        }
+        let net_qty = bytes.get_f64_le();
+        let due_hedge_qty = bytes.get_f64_le();
+        let pending_hedge_qty = bytes.get_f64_le();
+        let symbol_exposure_u = bytes.get_f64_le();
+        let weighted_inventory_price = bytes.get_f64_le();
+        let request_seq = bytes.get_u64_le();
+        Ok(Self {
+            strategy_id,
+            symbol,
+            net_qty,
+            due_hedge_qty,
+            pending_hedge_qty,
+            symbol_exposure_u,
+            weighted_inventory_price,
+            request_seq,
+        })
+    }
+}
+
 /// Query message for requesting hedge order pricing from upstream model
 /// Used for limit order strategies where upstream decides the limit price
 #[derive(Debug, Clone)]
@@ -1316,7 +1408,7 @@ impl ArbHedgeSignalQueryMsg {
 
 #[cfg(test)]
 mod tests {
-    use super::{ArbHedgeOrderCtx, MmHedgeCtx, MmHedgeSignalQueryMsg};
+    use super::{ArbHedgeStateCtx, MmHedgeCtx, MmHedgeSignalQueryMsg};
     use crate::common::tick_math::QuantizedValue;
     use crate::pre_trade::order_manager::Side;
     use crate::signal::common::{SignalBytes, TradingLeg, TradingVenue};
@@ -1375,11 +1467,9 @@ mod tests {
     }
 
     #[test]
-    fn arb_hedge_order_ctx_roundtrip_single_order_single_offset() {
-        let mut ctx = ArbHedgeOrderCtx::new();
+    fn arb_hedge_state_ctx_roundtrip_single_order_single_offset() {
+        let mut ctx = ArbHedgeStateCtx::new();
         ctx.strategy_id = 11;
-        ctx.open_strategy_id = 7;
-        ctx.client_order_id = 123;
         ctx.set_side(Side::Sell);
         ctx.hedging_leg = TradingLeg::new(TradingVenue::BinanceFutures, 100.0, 100.1, 123456);
         ctx.set_hedging_symbol("BTCUSDT");
@@ -1391,10 +1481,8 @@ mod tests {
         ctx.request_seq = 3;
         ctx.set_from_key(b"arb-fk".to_vec());
 
-        let parsed = ArbHedgeOrderCtx::from_bytes(ctx.to_bytes()).unwrap();
+        let parsed = ArbHedgeStateCtx::from_bytes(ctx.to_bytes()).unwrap();
         assert_eq!(parsed.strategy_id, 11);
-        assert_eq!(parsed.open_strategy_id, 7);
-        assert_eq!(parsed.client_order_id, 123);
         assert_eq!(parsed.get_side(), Some(Side::Sell));
         assert_eq!(parsed.get_hedging_symbol(), "BTCUSDT");
         assert!((parsed.price_value() - 100.05).abs() < 1e-12);

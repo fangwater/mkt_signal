@@ -60,6 +60,7 @@ impl OrderTerminalRecorder for ArbHedgeStrategy {
         }
         let signed_base_qty = signed_qty_from_side(side, filled_base_qty);
         let unfilled_base_qty = (order_base_qty - filled_base_qty).max(0.0);
+        // arb下单时会按照挂单量borrow待对冲量，在terminal的时候根据实际成交量释放
         let pending_release_qv = match side {
             Side::Buy => -unfilled_base_qty,
             Side::Sell => unfilled_base_qty,

@@ -443,6 +443,8 @@ impl MmDecision {
             hedge_vol_multiplier: self.state.hedge_vol_multiplier,
             hedge_offset_ratio: self.state.hedge_offset_ratio,
             order_amount_u: self.state.resolve_order_amount_u(&symbol),
+            target_base_qty: None,
+            inventory_net_qty: None,
             hedge_orders_per_round: self.state.hedge_orders_per_round,
             offset_low: self.state.hedge_price_offset_limit_lower,
             offset_high_limit: self.state.hedge_price_offset_limit_upper,

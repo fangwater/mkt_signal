@@ -1,11 +1,12 @@
 use crate::common::tick_math::QuantizedValue;
-use crate::signal::hedge_signal::ArbHedgeSignalQueryMsg;
+use crate::signal::hedge_signal::{ArbHedgeSignalQueryMsg, ArbHedgeStateQueryMsg};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use super::common::bytes_helper;
 
 const ARB_BACKWARD_QUERY_HEDGE: u8 = 1;
 const ARB_BACKWARD_QUERY_CANCEL_CANDIDATES: u8 = 2;
+const ARB_BACKWARD_QUERY_HEDGE_STATE: u8 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ArbCancelTriggerCtx {
@@ -138,6 +139,7 @@ impl ArbCancelCandidateQueryMsg {
 pub enum ArbBackwardQueryMsg {
     Hedge(ArbHedgeSignalQueryMsg),
     CancelCandidates(ArbCancelCandidateQueryMsg),
+    HedgeState(ArbHedgeStateQueryMsg),
 }
 
 impl ArbBackwardQueryMsg {
@@ -163,6 +165,10 @@ impl ArbBackwardQueryMsg {
                         buf.put_i64_le(item.price_qv.get_count());
                     }
                 }
+            }
+            Self::HedgeState(msg) => {
+                buf.put_u8(ARB_BACKWARD_QUERY_HEDGE_STATE);
+                buf.put(msg.to_bytes());
             }
         }
         buf.freeze()
@@ -216,7 +222,37 @@ impl ArbBackwardQueryMsg {
                     groups,
                 }))
             }
+            ARB_BACKWARD_QUERY_HEDGE_STATE => {
+                Ok(Self::HedgeState(ArbHedgeStateQueryMsg::from_bytes(bytes)?))
+            }
             _ => Err(format!("Unknown ArbBackwardQueryMsg kind: {}", kind)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ArbBackwardQueryMsg;
+    use crate::signal::hedge_signal::ArbHedgeStateQueryMsg;
+
+    #[test]
+    fn arb_backward_query_wraps_hedge_state_query() {
+        let msg = ArbBackwardQueryMsg::HedgeState(ArbHedgeStateQueryMsg::new(
+            42, "BTCUSDT", 1.5, 0.75, 2.25, 1000.0, 101.25, 7,
+        ));
+        let parsed = ArbBackwardQueryMsg::from_bytes(msg.to_bytes()).expect("roundtrip");
+        match parsed {
+            ArbBackwardQueryMsg::HedgeState(inner) => {
+                assert_eq!(inner.strategy_id, 42);
+                assert_eq!(inner.get_symbol(), "BTCUSDT");
+                assert_eq!(inner.request_seq, 7);
+                assert!((inner.net_qty - 1.5).abs() < 1e-12);
+                assert!((inner.due_hedge_qty - 0.75).abs() < 1e-12);
+                assert!((inner.pending_hedge_qty - 2.25).abs() < 1e-12);
+                assert!((inner.symbol_exposure_u - 1000.0).abs() < 1e-12);
+                assert!((inner.weighted_inventory_price - 101.25).abs() < 1e-12);
+            }
+            _ => panic!("expected hedge state query"),
         }
     }
 }

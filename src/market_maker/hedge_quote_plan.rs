@@ -4,7 +4,8 @@ use crate::funding_rate::common::{build_decision_from_key_base, Quote};
 use crate::funding_rate::factor_value_hub::FactorValueHub;
 use crate::market_maker::order_align::{contract_qty_multiplier, min_qty_symbol_key};
 use crate::market_maker::quote_plan_levels::{
-    build_quote_plan_levels, QuotePlanLevel, QuotePlanLevelSpec,
+    build_quote_plan_levels, build_quote_plan_levels_for_base_qty, QuotePlanLevel,
+    QuotePlanLevelSpec,
 };
 use crate::pre_trade::order_manager::Side;
 use crate::signal::common::{align_price_floor, TradingVenue};
@@ -35,6 +36,8 @@ pub struct MmHedgeBuildInput<'a> {
     pub hedge_vol_multiplier: f64,
     pub hedge_offset_ratio: f64,
     pub order_amount_u: f64,
+    pub target_base_qty: Option<f64>,
+    pub inventory_net_qty: Option<f64>,
     pub hedge_orders_per_round: u32,
     pub offset_low: f64,
     pub offset_high_limit: f64,
@@ -456,10 +459,11 @@ pub fn build_mm_hedge_quote_plan(
         return Err("empty symbol".to_string());
     }
 
-    let net_qty = query.net_qty;
-    if net_qty.abs() <= 1e-12 {
-        return Err("net_qty is zero, skip hedge".to_string());
+    let hedge_target_qty = input.target_base_qty.unwrap_or(query.net_qty);
+    if hedge_target_qty.abs() <= 1e-12 {
+        return Err("hedge target qty is zero, skip hedge".to_string());
     }
+    let inventory_net_qty = input.inventory_net_qty.unwrap_or(query.net_qty);
     if input.hedge_orders_per_round == 0 {
         return Err("hedge_orders_per_round must be > 0".to_string());
     }
@@ -470,7 +474,7 @@ pub fn build_mm_hedge_quote_plan(
         ));
     }
 
-    let side = if net_qty >= 0.0 {
+    let side = if hedge_target_qty >= 0.0 {
         Side::Sell
     } else {
         Side::Buy
@@ -494,7 +498,7 @@ pub fn build_mm_hedge_quote_plan(
             input.hedge_vol_multiplier,
             input.offset_low,
             input.offset_high_limit,
-            net_qty,
+            inventory_net_qty,
             mid_price,
             query.symbol_exposure_u,
             input.hedge_offset_ratio,
@@ -509,7 +513,7 @@ pub fn build_mm_hedge_quote_plan(
             input.hedge_vol_multiplier,
             input.offset_low,
             input.offset_high_limit,
-            net_qty,
+            inventory_net_qty,
             mid_price,
             query.symbol_exposure_u,
             input.hedge_offset_ratio,
@@ -538,21 +542,27 @@ pub fn build_mm_hedge_quote_plan(
         .collect();
     let trade_symbol = normalize_symbol_for_venue(&symbol, input.venue);
     let symbol_key = min_qty_symbol_key(input.venue, &trade_symbol);
-    let one_hand_below_min = one_hand_qty_below_min(
-        input.venue,
-        &symbol_key,
-        input.order_amount_u,
-        base_price,
-        table,
-    );
+    let use_target_base_qty = input
+        .target_base_qty
+        .filter(|qty| qty.is_finite() && qty.abs() > 0.0)
+        .map(f64::abs);
+    let one_hand_below_min = use_target_base_qty.is_none()
+        && one_hand_qty_below_min(
+            input.venue,
+            &symbol_key,
+            input.order_amount_u,
+            base_price,
+            table,
+        );
     let (price_tick, qty_tick, levels) = if one_hand_below_min {
         warn!(
-            "MMHedge: skip hedge levels because one-hand qty is below min_qty symbol={} venue={:?} order_amount_u={:.8} base_price={:.8} net_qty_base={:.8}",
+            "MMHedge: skip hedge levels because one-hand qty is below min_qty symbol={} venue={:?} order_amount_u={:.8} base_price={:.8} hedge_target_qty_base={:.8} inventory_net_qty_base={:.8}",
             symbol,
             input.venue,
             input.order_amount_u,
             base_price,
-            net_qty
+            hedge_target_qty,
+            inventory_net_qty
         );
         (
             table.price_tick(&symbol_key).unwrap_or(0.0),
@@ -560,15 +570,27 @@ pub fn build_mm_hedge_quote_plan(
             Vec::new(),
         )
     } else {
-        match build_quote_plan_levels(input.venue, &symbol, input.order_amount_u, &specs, table) {
+        let build_result = if let Some(target_base_qty) = use_target_base_qty {
+            build_quote_plan_levels_for_base_qty(
+                input.venue,
+                &symbol,
+                target_base_qty,
+                &specs,
+                table,
+            )
+        } else {
+            build_quote_plan_levels(input.venue, &symbol, input.order_amount_u, &specs, table)
+        };
+        match build_result {
             Ok(result) => result,
             Err(err) if err.contains("aligned qty invalid") => {
                 warn!(
-                    "MMHedge: skip hedge levels because one-hand qty cannot be aligned symbol={} venue={:?} order_amount_u={:.8} net_qty_base={:.8} err={}",
+                    "MMHedge: skip hedge levels because one-hand qty cannot be aligned symbol={} venue={:?} order_amount_u={:.8} hedge_target_qty_base={:.8} inventory_net_qty_base={:.8} err={}",
                     symbol,
                     input.venue,
                     input.order_amount_u,
-                    net_qty,
+                    hedge_target_qty,
+                    inventory_net_qty,
                     err
                 );
                 let price_tick = table.price_tick(&symbol_key).unwrap_or(0.0);
@@ -580,10 +602,11 @@ pub fn build_mm_hedge_quote_plan(
     };
 
     debug!(
-        "MMHedge query->scale: symbol={} side={:?} net_qty_base={:.8} bid0={:.8} ask0={:.8} signal={:.8} signal_qtl={} enable_return_score_adjust_hedge={} clipped_signal={:.8} normalized_signal={:.8} volatility={:.8} hedge_vol_multiplier={:.8} bound={:.8} offset_low={:.8} offset_high_limit={:.8} hedge_window_scale_low={:.8} hedge_window_scale_high={:.8} mapped_offset={:.8} adjusted_offset={:.8} symbol_exposure_u={:.8} exposure_offset_factor={:.8} hedge_offset_ratio={:.8} final_offset={:.8}",
+        "MMHedge query->scale: symbol={} side={:?} hedge_target_qty_base={:.8} inventory_net_qty_base={:.8} bid0={:.8} ask0={:.8} signal={:.8} signal_qtl={} enable_return_score_adjust_hedge={} clipped_signal={:.8} normalized_signal={:.8} volatility={:.8} hedge_vol_multiplier={:.8} bound={:.8} offset_low={:.8} offset_high_limit={:.8} hedge_window_scale_low={:.8} hedge_window_scale_high={:.8} mapped_offset={:.8} adjusted_offset={:.8} symbol_exposure_u={:.8} exposure_offset_factor={:.8} hedge_offset_ratio={:.8} final_offset={:.8}",
         symbol,
         side,
-        net_qty,
+        hedge_target_qty,
+        inventory_net_qty,
         input.quote.bid,
         input.quote.ask,
         input.signal,
@@ -606,10 +629,11 @@ pub fn build_mm_hedge_quote_plan(
         offset_plan.final_offset,
     );
     debug!(
-        "MMHedgeQuerySummary {{\"symbol\":\"{}\",\"side\":\"{}\",\"net_qty_base\":{:.8},\"hedge_bid0\":{:.8},\"hedge_ask0\":{:.8},\"signal\":{:.8},\"signal_qtl\":{},\"enable_return_score_adjust_hedge\":{},\"clipped_signal\":{:.8},\"normalized_signal\":{:.8},\"volatility\":{:.8},\"hedge_vol_multiplier\":{:.8},\"bound\":{:.8},\"offset_low\":{:.8},\"offset_high_limit\":{:.8},\"hedge_window_scale_low\":{:.8},\"hedge_window_scale_high\":{:.8},\"mapped_offset\":{:.8},\"adjusted_offset\":{:.8},\"symbol_exposure_u\":{:.8},\"exposure_offset_factor\":{:.8},\"hedge_offset_ratio\":{:.8},\"final_offset\":{:.8}}}",
+        "MMHedgeQuerySummary {{\"symbol\":\"{}\",\"side\":\"{}\",\"hedge_target_qty_base\":{:.8},\"inventory_net_qty_base\":{:.8},\"hedge_bid0\":{:.8},\"hedge_ask0\":{:.8},\"signal\":{:.8},\"signal_qtl\":{},\"enable_return_score_adjust_hedge\":{},\"clipped_signal\":{:.8},\"normalized_signal\":{:.8},\"volatility\":{:.8},\"hedge_vol_multiplier\":{:.8},\"bound\":{:.8},\"offset_low\":{:.8},\"offset_high_limit\":{:.8},\"hedge_window_scale_low\":{:.8},\"hedge_window_scale_high\":{:.8},\"mapped_offset\":{:.8},\"adjusted_offset\":{:.8},\"symbol_exposure_u\":{:.8},\"exposure_offset_factor\":{:.8},\"hedge_offset_ratio\":{:.8},\"final_offset\":{:.8}}}",
         symbol,
         side.as_str(),
-        net_qty,
+        hedge_target_qty,
+        inventory_net_qty,
         input.quote.bid,
         input.quote.ask,
         input.signal,
@@ -840,6 +864,8 @@ mod tests {
             hedge_vol_multiplier: 2.0,
             hedge_offset_ratio: 1.3,
             order_amount_u: 100.0,
+            target_base_qty: None,
+            inventory_net_qty: None,
             hedge_orders_per_round: 8,
             offset_low: 0.0003,
             offset_high_limit: 0.005,

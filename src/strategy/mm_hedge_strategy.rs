@@ -4,14 +4,16 @@ use crate::funding_rate::mm_decision::from_key::append_mm_hedge_tlen_to_from_key
 use crate::market_maker::hedge_split::{
     split_hedge_orders_round_robin, HedgeLevel, HedgeSplitOrder,
 };
-use crate::market_maker::order_align::{contract_qty_multiplier, min_qty_symbol_key};
+use crate::market_maker::order_align::{
+    align_final_order_qty, contract_qty_multiplier, min_qty_symbol_key,
+};
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::signal_channel::SignalChannel;
 use crate::pre_trade::{PersistChannel, QueryEngHub, TradeEngHub};
-use crate::signal::common::{align_price_floor, OrderStatus, SignalBytes, TradingVenue};
+use crate::signal::common::{OrderStatus, SignalBytes, TradingVenue};
 use crate::signal::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
 use crate::signal::mm_signal::MmBackwardQueryMsg;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
@@ -99,29 +101,6 @@ pub struct MarketMakerHedgeStrategy {
 }
 
 impl MarketMakerHedgeStrategy {
-    fn align_final_hedge_qty(raw_qty: f64, step: f64, min_qty: f64) -> (f64, f64) {
-        if !raw_qty.is_finite() || raw_qty <= 0.0 {
-            return (0.0, 0.0);
-        }
-
-        let mut aligned_qty = if step.is_finite() && step > 0.0 {
-            align_price_floor(raw_qty, step)
-        } else {
-            raw_qty
-        };
-
-        if min_qty.is_finite() && min_qty > 0.0 && aligned_qty + 1e-12 < min_qty {
-            aligned_qty = 0.0;
-        }
-
-        let dropped_qty = if raw_qty > aligned_qty {
-            raw_qty - aligned_qty
-        } else {
-            0.0
-        };
-        (aligned_qty, dropped_qty)
-    }
-
     pub fn new(strategy_id: i32, symbol: String) -> Self {
         let now = get_timestamp_us();
         Self {
@@ -1262,8 +1241,7 @@ impl MarketMakerHedgeStrategy {
         let mut borrowed_open_count_10s = 0usize;
         let mut borrowed_open_count_1m = 0usize;
         for plan in plans {
-            let (aligned_qty, dropped_qty) =
-                Self::align_final_hedge_qty(plan.qty, qty_step, min_qty);
+            let (aligned_qty, dropped_qty) = align_final_order_qty(plan.qty, qty_step, min_qty);
             if aligned_qty <= 0.0 {
                 warn!(
                     "MarketMakerHedgeStrategy: strategy_id={} skip hedge order after final qty align client_order_id={} venue={:?} symbol={} raw_qty={:.8} qty_step={:.8} min_qty={:.8} dropped_qty={:.8}",
@@ -1901,23 +1879,6 @@ mod tests {
     #[test]
     fn monotonic_cumulative_fill_accepts_forward_progress() {
         assert!((monotonic_cumulative_fill(4.2, 5.6) - 5.6).abs() < 1e-12);
-    }
-
-    #[test]
-    fn final_hedge_qty_align_drops_sub_step_tail() {
-        let (aligned, dropped) =
-            MarketMakerHedgeStrategy::align_final_hedge_qty(1.20000005, 0.1, 0.1);
-        assert!((aligned - 1.2).abs() < 1e-12);
-        assert!(dropped > 0.0);
-        assert!(dropped < 1e-6);
-    }
-
-    #[test]
-    fn final_hedge_qty_align_skips_below_min_qty() {
-        let (aligned, dropped) =
-            MarketMakerHedgeStrategy::align_final_hedge_qty(0.09999999, 0.1, 0.1);
-        assert_eq!(aligned, 0.0);
-        assert!(dropped > 0.0);
     }
 
     #[test]

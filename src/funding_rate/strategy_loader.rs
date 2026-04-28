@@ -1103,6 +1103,13 @@ impl StrategyParams {
                 .saturating_mul(1_000_000)
                 .min(i64::MAX as u64) as i64;
             arb.hedge_price_offset = self.hedge_price_offset;
+            arb.hedge_vol_multiplier = self.hedge_vol_multiplier;
+            arb.hedge_offset_ratio = self.hedge_offset_ratio;
+            arb.hedge_price_offset_limit_lower = self.hedge_price_offset_limit_lower;
+            arb.hedge_price_offset_limit_upper = self.hedge_price_offset_limit_upper;
+            arb.hedge_window_scale_low = self.hedge_window_scale_low;
+            arb.hedge_window_scale_high = self.hedge_window_scale_high;
+            arb.enable_return_score_adjust_hedge = self.enable_return_score_adjust_hedge;
             arb.hedge_aggressive_seq_threshold = self.hedge_aggressive_seq_threshold;
             arb.enable_tlen_cancel = self.enable_tlen_cancel;
             arb.tlen_cancel_freq_ms = self.tlen_cancel_freq_ms;

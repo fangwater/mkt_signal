@@ -10,7 +10,7 @@ use crate::signal::arb_signal::{
 };
 use crate::signal::cancel_signal::{ArbCancelCtx, MmCancelCtx};
 use crate::signal::common::{SignalBytes, TradingVenue};
-use crate::signal::hedge_signal::{ArbHedgeCtx, MmHedgeCtx};
+use crate::signal::hedge_signal::{ArbHedgeCtx, ArbHedgeStateCtx, MmHedgeCtx};
 use crate::signal::mm_signal::{
     MmBackwardQueryMsg, MmCancelCandidateEntry, MmCancelCandidateQueryMsg, MmCancelTriggerCtx,
 };
@@ -858,6 +858,44 @@ fn handle_trade_signal(signal: TradeSignal) {
                 drop(strategy_mgr);
             }
             Err(err) => warn!("failed to decode hedge context: {err}"),
+        },
+        SignalType::ArbHedgeState => match ArbHedgeStateCtx::from_bytes(signal.context.clone()) {
+            Ok(mut hedge_ctx) => {
+                let strategy_id = hedge_ctx.strategy_id;
+                let hedging_symbol = normalize_symbol_for_internal(&hedge_ctx.get_hedging_symbol());
+                let hedging_venue = TradingVenue::from_u8(hedge_ctx.hedging_leg.venue)
+                    .unwrap_or(TradingVenue::BinanceFutures);
+
+                let configured_hedge_venue = MonitorChannel::instance().hedge_venue();
+                if hedging_venue != configured_hedge_venue {
+                    warn!(
+                        "ArbHedgeState: signal venue mismatch, configured_hedge={:?} but got {:?}, ignore",
+                        configured_hedge_venue, hedging_venue
+                    );
+                    return;
+                }
+
+                hedge_ctx.set_hedging_symbol(&hedging_symbol);
+                let normalized_signal = TradeSignal::create(
+                    SignalType::ArbHedgeState,
+                    signal.generation_time,
+                    signal.handle_time,
+                    hedge_ctx.to_bytes(),
+                );
+                let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+                if !strategy_mgr.borrow().contains(strategy_id) {
+                    warn!("ArbHedgeState: 策略 id={} 不存在", strategy_id);
+                    return;
+                }
+                let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
+                if let Some(mut strategy) = strategy_opt {
+                    strategy.handle_signal(&normalized_signal);
+                    if strategy.is_active() {
+                        strategy_mgr.borrow_mut().insert(strategy);
+                    }
+                }
+            }
+            Err(err) => warn!("failed to decode ArbHedgeState context: {err}"),
         },
         SignalType::MMOpen => {
             if !is_mm_mode {

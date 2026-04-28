@@ -43,6 +43,29 @@ pub fn contract_qty_multiplier(
     }
 }
 
+pub fn align_final_order_qty(raw_qty: f64, step: f64, min_qty: f64) -> (f64, f64) {
+    if !raw_qty.is_finite() || raw_qty <= 0.0 {
+        return (0.0, 0.0);
+    }
+
+    let mut aligned_qty = if step.is_finite() && step > 0.0 {
+        align_price_floor(raw_qty, step)
+    } else {
+        raw_qty
+    };
+
+    if min_qty.is_finite() && min_qty > 0.0 && aligned_qty + 1e-12 < min_qty {
+        aligned_qty = 0.0;
+    }
+
+    let dropped_qty = if raw_qty > aligned_qty {
+        raw_qty - aligned_qty
+    } else {
+        0.0
+    };
+    (aligned_qty, dropped_qty)
+}
+
 pub fn align_order_with_table(
     symbol_key: &str,
     raw_qty: f64,
@@ -129,4 +152,24 @@ pub fn align_order_for_venue(
     };
 
     align_order_with_table(symbol_key, raw_qty, raw_price, table, enforce_min_notional)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::align_final_order_qty;
+
+    #[test]
+    fn final_order_qty_align_drops_sub_step_tail() {
+        let (aligned, dropped) = align_final_order_qty(1.20000005, 0.1, 0.1);
+        assert!((aligned - 1.2).abs() < 1e-12);
+        assert!(dropped > 0.0);
+        assert!(dropped < 1e-6);
+    }
+
+    #[test]
+    fn final_order_qty_align_skips_below_min_qty() {
+        let (aligned, dropped) = align_final_order_qty(0.09999999, 0.1, 0.1);
+        assert_eq!(aligned, 0.0);
+        assert!(dropped > 0.0);
+    }
 }

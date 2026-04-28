@@ -16,11 +16,17 @@ use crate::common::ipc_service_name::build_service_name;
 use crate::common::redis_client::RedisSettings;
 use crate::common::time_util::get_timestamp_us;
 use crate::funding_rate::FundingRatePeriod;
+use crate::market_maker::hedge_quote_plan::{
+    build_mm_hedge_ctx as build_mm_hedge_ctx_core, resolve_mm_hedge_signal_inputs,
+    MmHedgeBuildInput,
+};
 use crate::pre_trade::order_manager::Side;
 use crate::signal::arb_signal::{ArbBackwardQueryMsg, ArbCancelCandidateQueryMsg};
-use crate::signal::common::{SignalBytes, TradingVenue};
-use crate::signal::hedge_signal::ArbHedgeSignalQueryMsg;
-use crate::signal::trade_signal::SignalType;
+use crate::signal::common::{SignalBytes, TradingLeg, TradingVenue};
+use crate::signal::hedge_signal::{
+    ArbHedgeSignalQueryMsg, ArbHedgeStateCtx, ArbHedgeStateQueryMsg, MmHedgeSignalQueryMsg,
+};
+use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
 use crate::symbol_match::normalize_symbol_for_whitelist;
 
@@ -474,6 +480,9 @@ impl FundingArbShell {
                                     ArbBackwardQueryMsg::CancelCandidates(query) => {
                                         drive_funding_cancel_candidate_query(&mut decision, query)
                                     }
+                                    ArbBackwardQueryMsg::HedgeState(query) => {
+                                        drive_funding_arb_hedge_state_query(&mut decision, query)
+                                    }
                                 }
                             }
                             true
@@ -548,6 +557,9 @@ impl SpreadArbShell {
                                             &mut decision,
                                             query,
                                         )
+                                    }
+                                    ArbBackwardQueryMsg::HedgeState(query) => {
+                                        drive_spread_arb_hedge_state_query(&mut decision, query)
                                     }
                                 }
                             }
@@ -1354,6 +1366,279 @@ fn drive_funding_hedge_query(decision: &mut FundingArbShell, query: ArbHedgeSign
 
 fn drive_spread_arb_hedge_query(decision: &mut SpreadArbShell, query: ArbHedgeSignalQueryMsg) {
     drive_shared_arb_hedge_query(SPREAD_ARB_SHELL_NAME, &decision.runtime, query);
+}
+
+fn drive_funding_arb_hedge_state_query(
+    decision: &mut FundingArbShell,
+    query: ArbHedgeStateQueryMsg,
+) {
+    drive_shared_arb_hedge_state_query(FUNDING_ARB_SHELL_NAME, &decision.runtime, query);
+}
+
+fn drive_spread_arb_hedge_state_query(decision: &mut SpreadArbShell, query: ArbHedgeStateQueryMsg) {
+    drive_shared_arb_hedge_state_query(SPREAD_ARB_SHELL_NAME, &decision.runtime, query);
+}
+
+#[derive(Debug, Clone)]
+struct ArbHedgeStateBuildParams {
+    signal: f64,
+    signal_qtl: Option<f64>,
+    volatility: f64,
+    hedge_vol_multiplier: f64,
+    hedge_offset_ratio: f64,
+    hedge_price_offset_limit_lower: f64,
+    hedge_price_offset_limit_upper: f64,
+    hedge_window_scale_low: f64,
+    hedge_window_scale_high: f64,
+    hedge_timeout_mm_us: i64,
+    max_hedge_price_pct_change: f64,
+    enable_return_score_adjust_hedge: bool,
+}
+
+fn resolve_arb_hedge_state_build_params(
+    source: &'static str,
+    symbol: &str,
+    hedge_venue: TradingVenue,
+) -> Option<ArbHedgeStateBuildParams> {
+    match ArbDecision::with_state_mut(|arb| {
+        let model_service = arb
+            .return_model_service
+            .clone()
+            .ok_or_else(|| "return_model_service unavailable".to_string())?;
+        let hedge_factor_value_hub = arb
+            .hedge_factor_value_hub
+            .as_mut()
+            .ok_or_else(|| "hedge_factor_value_hub unavailable".to_string())?;
+        let (signal, signal_qtl, volatility) = resolve_mm_hedge_signal_inputs(
+            hedge_factor_value_hub,
+            &model_service,
+            symbol,
+            hedge_venue,
+            arb.enable_return_score_adjust_hedge,
+        )?;
+        Ok::<_, String>(ArbHedgeStateBuildParams {
+            signal,
+            signal_qtl,
+            volatility,
+            hedge_vol_multiplier: arb.hedge_vol_multiplier,
+            hedge_offset_ratio: arb.hedge_offset_ratio,
+            hedge_price_offset_limit_lower: arb.hedge_price_offset_limit_lower,
+            hedge_price_offset_limit_upper: arb.hedge_price_offset_limit_upper,
+            hedge_window_scale_low: arb.hedge_window_scale_low,
+            hedge_window_scale_high: arb.hedge_window_scale_high,
+            hedge_timeout_mm_us: arb.hedge_timeout_mm_us,
+            max_hedge_price_pct_change: arb.max_hedge_price_pct_change,
+            enable_return_score_adjust_hedge: arb.enable_return_score_adjust_hedge,
+        })
+    }) {
+        Some(Ok(params)) => Some(params),
+        Some(Err(err)) => {
+            log::warn!(
+                "{source}: ArbHedgeState factor lookup failed symbol={} venue={:?} err={}",
+                symbol,
+                hedge_venue,
+                err
+            );
+            None
+        }
+        None => {
+            log::warn!(
+                "{source}: ArbHedgeState factor lookup failed symbol={} venue={:?} err=ArbDecisionState unavailable",
+                symbol,
+                hedge_venue
+            );
+            None
+        }
+    }
+}
+
+fn should_use_arb_hedge_state_taker(
+    weighted_inventory_price: f64,
+    bid: f64,
+    ask: f64,
+    threshold_pct: f64,
+) -> Option<(f64, f64)> {
+    if !(weighted_inventory_price.is_finite() && weighted_inventory_price > 0.0) {
+        return None;
+    }
+    let hedge_mid = Bbo::new(bid, ask, 0).get_mid_price().unwrap_or(0.0);
+    if !(hedge_mid.is_finite() && hedge_mid > 0.0) {
+        return None;
+    }
+    let pct_change = (hedge_mid - weighted_inventory_price).abs() / weighted_inventory_price;
+    Some((pct_change, threshold_pct / 100.0))
+}
+
+fn drive_shared_arb_hedge_state_query(
+    source: &'static str,
+    runtime: &ArbShellRuntime,
+    query: ArbHedgeStateQueryMsg,
+) {
+    let symbol = query.get_symbol().to_uppercase();
+    if symbol.is_empty() {
+        log::warn!("{source}: ArbHedgeState query missing symbol");
+        return;
+    }
+    if query.due_hedge_qty.abs() <= 1e-12 {
+        log::debug!(
+            "{source}: ArbHedgeState query skip zero due qty strategy_id={} symbol={} request_seq={}",
+            query.strategy_id,
+            symbol,
+            query.request_seq
+        );
+        return;
+    }
+
+    let hedge_venue = runtime.venues.1;
+    let Some(quote) = MktChannel::instance().get_quote(&symbol, hedge_venue) else {
+        log::warn!(
+            "{source}: ArbHedgeState quote unavailable strategy_id={} symbol={} venue={:?}",
+            query.strategy_id,
+            symbol,
+            hedge_venue
+        );
+        return;
+    };
+    let Some(params) = resolve_arb_hedge_state_build_params(source, &symbol, hedge_venue) else {
+        return;
+    };
+
+    let hedge_side = if query.due_hedge_qty >= 0.0 {
+        Side::Sell
+    } else {
+        Side::Buy
+    };
+    let mid_price = Bbo::new(quote.bid, quote.ask, quote.ts)
+        .get_mid_price()
+        .unwrap_or_else(|| ((quote.bid + quote.ask) * 0.5).max(0.0));
+    let mm_query = MmHedgeSignalQueryMsg::new(
+        &symbol,
+        0.0,
+        0.0,
+        query.due_hedge_qty,
+        query.symbol_exposure_u,
+        query.weighted_inventory_price,
+        query.request_seq,
+    );
+    let table = if hedge_venue == runtime.venues.0 {
+        &runtime.open_min_qty_table
+    } else {
+        &runtime.hedge_min_qty_table
+    };
+    let input = MmHedgeBuildInput {
+        venue: hedge_venue,
+        symbol: &symbol,
+        quote,
+        volatility: params.volatility,
+        signal: params.signal,
+        signal_qtl: params.signal_qtl,
+        enable_return_score_adjust_hedge: params.enable_return_score_adjust_hedge,
+        hedge_vol_multiplier: params.hedge_vol_multiplier,
+        hedge_offset_ratio: params.hedge_offset_ratio,
+        order_amount_u: query.due_hedge_qty.abs() * mid_price,
+        target_base_qty: Some(query.due_hedge_qty),
+        inventory_net_qty: Some(query.net_qty),
+        hedge_orders_per_round: 1,
+        offset_low: params.hedge_price_offset_limit_lower,
+        offset_high_limit: params.hedge_price_offset_limit_upper,
+        hedge_window_scale_low: params.hedge_window_scale_low,
+        hedge_window_scale_high: params.hedge_window_scale_high,
+        next_query_delay_ms: 60_000,
+    };
+    let mm_ctx = match build_mm_hedge_ctx_core(input, table, &mm_query) {
+        Ok(ctx) => ctx,
+        Err(err) => {
+            log::warn!(
+                "{source}: build ArbHedgeState ctx failed strategy_id={} symbol={} err={}",
+                query.strategy_id,
+                symbol,
+                err
+            );
+            return;
+        }
+    };
+    let Some(amount_qv) = mm_ctx.amount_qv_list.first().cloned() else {
+        log::warn!(
+            "{source}: ArbHedgeState ctx empty amount strategy_id={} symbol={} request_seq={}",
+            query.strategy_id,
+            symbol,
+            query.request_seq
+        );
+        return;
+    };
+    let Some(price_qv) = mm_ctx.price_qv_list.first().cloned() else {
+        log::warn!(
+            "{source}: ArbHedgeState ctx empty price strategy_id={} symbol={} request_seq={}",
+            query.strategy_id,
+            symbol,
+            query.request_seq
+        );
+        return;
+    };
+
+    let use_taker = should_use_arb_hedge_state_taker(
+        query.weighted_inventory_price,
+        quote.bid,
+        quote.ask,
+        params.max_hedge_price_pct_change,
+    )
+    .map(|(pct_change, threshold)| pct_change > threshold)
+    .unwrap_or(false);
+
+    let mut ctx = ArbHedgeStateCtx::new();
+    ctx.strategy_id = query.strategy_id;
+    ctx.set_side(hedge_side);
+    ctx.hedging_leg = TradingLeg::new(hedge_venue, quote.bid, quote.ask, quote.ts);
+    ctx.set_hedging_symbol(&symbol);
+    ctx.price_qv = if use_taker {
+        crate::common::tick_math::QuantizedValue::zero()
+    } else {
+        price_qv
+    };
+    ctx.amount_qv = amount_qv;
+    ctx.price_offset = if use_taker {
+        0.0
+    } else {
+        mm_ctx.price_offsets.first().copied().unwrap_or(0.0)
+    };
+    ctx.signal_ts = get_timestamp_us();
+    ctx.exp_time = if use_taker {
+        0
+    } else {
+        ctx.signal_ts.saturating_add(params.hedge_timeout_mm_us)
+    };
+    ctx.request_seq = query.request_seq;
+    ctx.set_from_key(mm_ctx.from_key);
+
+    let signal = TradeSignal::create(
+        SignalType::ArbHedgeState,
+        get_timestamp_us(),
+        0.0,
+        ctx.to_bytes(),
+    );
+    if let Err(err) = runtime.signal_pub.publish(&signal.to_bytes()) {
+        log::warn!(
+            "{source}: publish ArbHedgeState failed strategy_id={} symbol={} err={:#}",
+            query.strategy_id,
+            symbol,
+            err
+        );
+        return;
+    }
+
+    log::info!(
+        "{source}: ArbHedgeState reply strategy_id={} symbol={} side={:?} qty={:.8} price={:.8} mode={} request_seq={} net_qty={:.8} due_hedge_qty={:.8} pending_hedge_qty={:.8}",
+        query.strategy_id,
+        symbol,
+        hedge_side,
+        ctx.amount_value(),
+        ctx.price_value(),
+        if use_taker { "taker" } else { "maker" },
+        query.request_seq,
+        query.net_qty,
+        query.due_hedge_qty,
+        query.pending_hedge_qty
+    );
 }
 
 fn drive_shared_arb_hedge_query(
@@ -3037,6 +3322,13 @@ pub(crate) struct ArbDecisionState {
     pub open_order_ttl_us: i64,
     pub hedge_timeout_mm_us: i64,
     pub hedge_price_offset: f64,
+    pub hedge_vol_multiplier: f64,
+    pub hedge_offset_ratio: f64,
+    pub hedge_price_offset_limit_lower: f64,
+    pub hedge_price_offset_limit_upper: f64,
+    pub hedge_window_scale_low: f64,
+    pub hedge_window_scale_high: f64,
+    pub enable_return_score_adjust_hedge: bool,
     pub hedge_aggressive_seq_threshold: u32,
     pub max_hedge_price_pct_change: f64,
     pub enable_tlen_cancel: bool,
@@ -3073,6 +3365,13 @@ impl ArbDecisionState {
             open_order_ttl_us: 120_000_000,
             hedge_timeout_mm_us: 30_000_000,
             hedge_price_offset: 0.0003,
+            hedge_vol_multiplier: 2.0,
+            hedge_offset_ratio: 1.3,
+            hedge_price_offset_limit_lower: 0.0003,
+            hedge_price_offset_limit_upper: 0.005,
+            hedge_window_scale_low: 0.5,
+            hedge_window_scale_high: 1.5,
+            enable_return_score_adjust_hedge: true,
             hedge_aggressive_seq_threshold: 6,
             max_hedge_price_pct_change: 5.0,
             enable_tlen_cancel: false,
