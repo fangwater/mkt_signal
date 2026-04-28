@@ -92,7 +92,7 @@ impl NetQtyQueue {
     }
 
     pub fn apply_fill(&mut self, ts: i64, qv: f64, price: f64) -> NetQtyApplyResult {
-        self.inner.apply_fill(ts, ts, qv, price)
+        self.inner.put(ts, ts, qv, price)
     }
 }
 
@@ -159,7 +159,7 @@ impl TimedNetQtyQueue {
         }
     }
 
-    pub fn apply_fill(&mut self, ts: i64, close_ts: i64, qv: f64, price: f64) -> NetQtyApplyResult {
+    pub fn put(&mut self, ts: i64, close_ts: i64, qv: f64, price: f64) -> NetQtyApplyResult {
         if qv.abs() <= NET_QTY_EPS {
             return NetQtyApplyResult {
                 matched_qty: 0.0,
@@ -326,7 +326,7 @@ impl TimedNetQtyQueue {
 
             let direction = direction_from_signed_qty(lot.qv);
             let qv = signed_qty_for_direction(direction, release_qty);
-            self.apply_fill(now_ts, lot.close_ts, qv, price);
+            self.put(now_ts, lot.close_ts, qv, price);
             released_qv += qv;
             remaining_qty -= release_qty;
         }
@@ -506,8 +506,8 @@ mod tests {
     #[test]
     fn timed_queue_tracks_due_qty_by_close_ts() {
         let mut queue = TimedNetQtyQueue::new();
-        queue.apply_fill(10, 100, 2.0, 100.0);
-        queue.apply_fill(20, 200, 3.0, 101.0);
+        queue.put(10, 100, 2.0, 100.0);
+        queue.put(20, 200, 3.0, 101.0);
 
         assert_eq!(queue.due_qty(99), 0.0);
         assert_eq!(queue.due_qty(100), 2.0);
@@ -517,9 +517,9 @@ mod tests {
     #[test]
     fn timed_queue_offsets_oldest_close_ts_first() {
         let mut queue = TimedNetQtyQueue::new();
-        queue.apply_fill(10, 200, 2.0, 100.0);
-        queue.apply_fill(20, 100, 3.0, 101.0);
-        let result = queue.apply_fill(30, 0, -4.0, 102.0);
+        queue.put(10, 200, 2.0, 100.0);
+        queue.put(20, 100, 3.0, 101.0);
+        let result = queue.put(30, 0, -4.0, 102.0);
 
         assert_eq!(result.matched_qty, 4.0);
         assert_eq!(queue.net_qty(), 1.0);
@@ -532,8 +532,8 @@ mod tests {
     #[test]
     fn timed_queue_borrow_reserves_pending_qty() {
         let mut queue = TimedNetQtyQueue::new();
-        queue.apply_fill(10, 100, 2.0, 100.0);
-        queue.apply_fill(20, 200, 3.0, 101.0);
+        queue.put(10, 100, 2.0, 100.0);
+        queue.put(20, 200, 3.0, 101.0);
 
         let borrowed = queue.borrow(4.0);
 
@@ -550,7 +550,7 @@ mod tests {
     #[test]
     fn timed_queue_release_restores_unexpired_borrow() {
         let mut queue = TimedNetQtyQueue::new();
-        queue.apply_fill(10, 100, 2.0, 100.0);
+        queue.put(10, 100, 2.0, 100.0);
 
         let borrowed = queue.borrow(2.0);
         let released = queue.release(50, &borrowed.lots, 0.75, 101.0);
@@ -564,7 +564,7 @@ mod tests {
     #[test]
     fn timed_queue_release_after_close_ts_is_zero() {
         let mut queue = TimedNetQtyQueue::new();
-        queue.apply_fill(10, 100, 2.0, 100.0);
+        queue.put(10, 100, 2.0, 100.0);
 
         let borrowed = queue.borrow(2.0);
         let released = queue.release(100, &borrowed.lots, 2.0, 101.0);

@@ -21,7 +21,7 @@ impl OrderTerminalRecorder for ArbHedgeStrategy {
             .apply_fill(fill_ts, signed_base_qty, price);
         // Arb 开仓 terminal 会形成一笔待对冲需求；close_ts 决定它什么时候进入 due 数量。
         self.pending_hedge_queue
-            .apply_fill(fill_ts, close_ts, signed_base_qty, price);
+            .put(fill_ts, close_ts, signed_base_qty, price);
         info!(
             "ArbHedgeRecord: strategy_id={} symbol={} leg=open qv={:.8} price={:.8} fill_ts={} close_ts={} net={:.8} pending_hedge={:.8}",
             self.strategy_id,
