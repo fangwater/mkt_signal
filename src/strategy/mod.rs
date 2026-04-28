@@ -20,6 +20,7 @@ pub mod open_strategy_common;
 pub mod order_query_builder;
 pub mod order_query_parser;
 pub mod order_reconcile;
+mod order_terminal_recorder_impl;
 pub mod order_update;
 pub mod orphan_manager;
 pub mod query_engine_response;

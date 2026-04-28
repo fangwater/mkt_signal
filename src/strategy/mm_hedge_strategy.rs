@@ -75,8 +75,8 @@ pub struct MarketMakerHedgeStrategy {
     symbol: String,
     net_qty: f64,
     net_qty_queue: NetQtyQueue,
-    period_buy_qty: f64,
-    period_sell_qty: f64,
+    pub(super) period_buy_qty: f64,
+    pub(super) period_sell_qty: f64,
     signal_ts: i64,
     last_hedge_ts_ms: Option<i64>,
     last_hedge_is_taker: Option<bool>,
@@ -310,7 +310,13 @@ impl MarketMakerHedgeStrategy {
             .unwrap_or(0.0)
     }
 
-    fn apply_net_qty_fill(&mut self, fill_ts: i64, signed_qty: f64, price: f64, source: &str) {
+    pub(super) fn apply_net_qty_fill(
+        &mut self,
+        fill_ts: i64,
+        signed_qty: f64,
+        price: f64,
+        source: &str,
+    ) {
         if signed_qty.abs() <= 1e-12 {
             return;
         }
@@ -353,34 +359,6 @@ impl MarketMakerHedgeStrategy {
             Side::Sell => -cumulative_base_qty,
         };
         self.apply_net_qty_fill(fill_ts, signed_qty, price, source);
-        true
-    }
-
-    /// 记录 MM 开仓订单 terminal 后的累计成交量（使用 base qty 口径）。
-    fn apply_open_order_terminal(
-        &mut self,
-        fill_ts: i64,
-        signed_qty: f64,
-        price: f64,
-        _close_ts: i64,
-    ) -> bool {
-        if signed_qty.abs() <= 1e-12 {
-            return false;
-        }
-        let buy_qty = if signed_qty > 0.0 { signed_qty } else { 0.0 };
-        let sell_qty = if signed_qty < 0.0 { -signed_qty } else { 0.0 };
-        self.apply_net_qty_fill(fill_ts, signed_qty, price, "open_order_terminal");
-        self.period_buy_qty += buy_qty;
-        self.period_sell_qty += sell_qty;
-        true
-    }
-
-    /// 记录 MM 对冲订单 terminal 后的累计成交量（使用 base qty 口径）。
-    fn apply_hedge_order_terminal(&mut self, fill_ts: i64, signed_qty: f64, price: f64) -> bool {
-        if signed_qty.abs() <= 1e-12 {
-            return false;
-        }
-        self.apply_net_qty_fill(fill_ts, signed_qty, price, "hedge_order_terminal");
         true
     }
 
@@ -474,6 +452,7 @@ impl MarketMakerHedgeStrategy {
     }
 
     fn should_send_hedge_query(&self) -> bool {
+        // 只有净敞口换算成 USDT 后超过阈值才发 hedge query；没有 mark price 时保守跳过。
         self.mark_price()
             .map(|mark_price| {
                 Self::net_exposure_usdt_with_mark_price(self.net_qty, mark_price)
@@ -802,6 +781,7 @@ impl MarketMakerHedgeStrategy {
     }
 
     fn handle_query_timer(&mut self) {
+        // 周期触发入口：由 handle_period_clock 驱动，到达 next_query_ts_us 后才考虑发 query。
         if self.next_query_ts_us <= 0 {
             return;
         }
@@ -828,6 +808,7 @@ impl MarketMakerHedgeStrategy {
             self.hedge_order_set_snapshot()
         );
 
+        // 如果上一轮 hedge 订单还在场内，先撤旧单；撤单完成/回补后再进入下一轮 query。
         if self.request_cancel_for_hedge_orders() {
             return;
         }
@@ -850,6 +831,7 @@ impl MarketMakerHedgeStrategy {
     }
 
     fn handle_query_watchdog(&mut self) {
+        // 已发 query 但短时间没有收到 MMHedge 回包时，使用同一个 request_seq 重发。
         if !self.pending_query {
             return;
         }
@@ -999,7 +981,8 @@ impl MarketMakerHedgeStrategy {
     }
 
     fn send_hedge_query(&mut self) {
-        // 定时发送对冲查询（携带 symbol + 当期买/卖成交 + 累计净头寸）
+        // 发送对冲查询：携带 symbol、当期买/卖成交、累计净头寸和风控敞口上限。
+        // 调用方已确认净敞口超过阈值；这里负责组包、记录 pending 状态并启动 watchdog。
         let hedge_ts_ms = (get_timestamp_us() / 1000) as i64;
         self.last_hedge_ts_ms = Some(hedge_ts_ms);
         let risk_loader = PreTradeParamsLoader::instance();
@@ -2022,27 +2005,6 @@ mod tests {
         assert_eq!(strategy.weighted_inventory_price(), 2500.0);
 
         std::mem::forget(strategy);
-    }
-}
-
-impl OrderTerminalRecorder for MarketMakerHedgeStrategy {
-    fn record_open_order_terminal(
-        &mut self,
-        fill_ts: i64,
-        signed_base_qty: f64,
-        price: f64,
-        close_ts: i64,
-    ) -> bool {
-        self.apply_open_order_terminal(fill_ts, signed_base_qty, price, close_ts)
-    }
-
-    fn record_hedge_order_terminal(
-        &mut self,
-        fill_ts: i64,
-        signed_base_qty: f64,
-        price: f64,
-    ) -> bool {
-        self.apply_hedge_order_terminal(fill_ts, signed_base_qty, price)
     }
 }
 

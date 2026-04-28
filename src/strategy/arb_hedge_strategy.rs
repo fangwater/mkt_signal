@@ -5,7 +5,7 @@ use crate::strategy::manager::{OrderTerminalRecorder, Strategy};
 use crate::strategy::net_qty_queue::TimedNetQtyQueue;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
-use log::{debug, info};
+use log::debug;
 use std::any::Any;
 
 const ARB_HEDGE_EPS: f64 = 1e-12;
@@ -31,16 +31,16 @@ pub struct ArbHedgeSnapshot {
 ///
 /// 这一阶段只维护记录接口和队列状态，不负责生成对冲订单。
 pub struct ArbHedgeStrategy {
-    strategy_id: i32,
-    symbol: String,
+    pub(super) strategy_id: i32,
+    pub(super) symbol: String,
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
     /// 开仓腿累计净敞口。买入记正，卖出记负。
-    open_net_queue: TimedNetQtyQueue,
+    pub(super) open_net_queue: TimedNetQtyQueue,
     /// 对冲腿累计净敞口。单独维护，便于核对真实对冲成交。
-    hedge_net_queue: TimedNetQtyQueue,
+    pub(super) hedge_net_queue: TimedNetQtyQueue,
     /// 尚需由对冲腿覆盖的开仓成交队列，到期时间来自开仓记录的 close_ts。
-    pending_hedge_queue: TimedNetQtyQueue,
+    pub(super) pending_hedge_queue: TimedNetQtyQueue,
     alive_flag: bool,
 }
 
@@ -92,75 +92,6 @@ impl ArbHedgeStrategy {
     // due_hedge_qty 则只计算已到期的部分。
     pub fn due_hedge_qty(&self, now_ts: i64) -> f64 {
         self.pending_hedge_queue.due_qty(now_ts)
-    }
-
-    fn apply_open_order_terminal(
-        &mut self,
-        fill_ts: i64,
-        qv: f64,
-        price: f64,
-        close_ts: i64,
-    ) -> bool {
-        if qv.abs() <= ARB_HEDGE_EPS {
-            return false;
-        }
-        self.open_net_queue.apply_fill(fill_ts, 0, qv, price);
-        // 开仓订单 terminal 后的累计成交量形成待对冲需求，close_ts 决定这笔需求何时进入 due 数量。
-        self.pending_hedge_queue
-            .apply_fill(fill_ts, close_ts, qv, price);
-        info!(
-            "ArbHedgeRecord: strategy_id={} symbol={} leg=open qv={:.8} price={:.8} fill_ts={} close_ts={} open_net={:.8} pending_hedge={:.8}",
-            self.strategy_id,
-            self.symbol,
-            qv,
-            price,
-            fill_ts,
-            close_ts,
-            self.open_net_queue.net_qty(),
-            self.pending_hedge_queue.net_qty()
-        );
-        true
-    }
-
-    fn apply_hedge_order_terminal(&mut self, fill_ts: i64, qv: f64, price: f64) -> bool {
-        if qv.abs() <= ARB_HEDGE_EPS {
-            return false;
-        }
-        self.hedge_net_queue.apply_fill(fill_ts, 0, qv, price);
-        // 对冲订单 terminal 后的累计成交量立即抵消待对冲队列；若方向相同，则会增加待处理的净需求。
-        self.pending_hedge_queue.apply_fill(fill_ts, 0, qv, price);
-        info!(
-            "ArbHedgeRecord: strategy_id={} symbol={} leg=hedge qv={:.8} price={:.8} fill_ts={} hedge_net={:.8} pending_hedge={:.8}",
-            self.strategy_id,
-            self.symbol,
-            qv,
-            price,
-            fill_ts,
-            self.hedge_net_queue.net_qty(),
-            self.pending_hedge_queue.net_qty()
-        );
-        true
-    }
-}
-
-impl OrderTerminalRecorder for ArbHedgeStrategy {
-    fn record_open_order_terminal(
-        &mut self,
-        fill_ts: i64,
-        signed_base_qty: f64,
-        price: f64,
-        close_ts: i64,
-    ) -> bool {
-        self.apply_open_order_terminal(fill_ts, signed_base_qty, price, close_ts)
-    }
-
-    fn record_hedge_order_terminal(
-        &mut self,
-        fill_ts: i64,
-        signed_base_qty: f64,
-        price: f64,
-    ) -> bool {
-        self.apply_hedge_order_terminal(fill_ts, signed_base_qty, price)
     }
 }
 
