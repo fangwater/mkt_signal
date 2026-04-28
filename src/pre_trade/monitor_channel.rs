@@ -341,6 +341,10 @@ impl MonitorChannel {
         Self::with_inner(|inner| inner.price_table.clone())
     }
 
+    pub fn try_price_table(&self) -> Option<Rc<RefCell<PriceTable>>> {
+        Self::try_with_inner(|inner| inner.price_table.clone())
+    }
+
     pub fn open_venue(&self) -> TradingVenue {
         Self::with_inner(|inner| inner.open_venue)
     }
@@ -464,6 +468,12 @@ impl MonitorChannel {
 
     pub fn mark_price_exchange(&self) -> Exchange {
         Self::with_inner(|inner| {
+            Self::mark_price_exchange_for_venues(inner.open_venue, inner.hedge_venue)
+        })
+    }
+
+    pub fn try_mark_price_exchange(&self) -> Option<Exchange> {
+        Self::try_with_inner(|inner| {
             Self::mark_price_exchange_for_venues(inner.open_venue, inner.hedge_venue)
         })
     }

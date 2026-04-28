@@ -12,7 +12,7 @@ use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::arb_helper::create_and_send_order;
 use crate::strategy::hedge_order_reconcile::{HedgeOrderReconcileCommon, HedgeOrderReconcileState};
 use crate::strategy::hedge_strategy_common::{
-    parse_return_qtl_from_from_key, HEDGE_QUERY_INTERVAL_US,
+    mark_price_lookup_symbol, parse_return_qtl_from_from_key, HEDGE_QUERY_INTERVAL_US,
 };
 use crate::strategy::manager::{
     OrderTerminalRecorder, OrphanHandoff, OrphanSourceKind, OrphanStrategyRole, Strategy,
@@ -26,11 +26,12 @@ use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
     publish_uniform_trade_order_from_order_update, UniformPublishCtx,
 };
-use log::{debug, warn};
+use log::{debug, info, warn};
 use std::any::Any;
 use std::collections::HashMap;
 
 const ARB_HEDGE_QTY_EPS: f64 = 1e-12;
+const ARB_HEDGE_PENDING_QUERY_MIN_USDT: f64 = 25.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArbHedgeMode {
@@ -155,6 +156,21 @@ impl ArbHedgeStrategy {
         self.hedge_request_seq
     }
 
+    fn mark_price(&self) -> Option<f64> {
+        let monitor = MonitorChannel::instance();
+        let mark_price_exchange = monitor.try_mark_price_exchange()?;
+        let price_symbol = mark_price_lookup_symbol(&self.symbol, mark_price_exchange);
+        monitor
+            .try_price_table()?
+            .borrow()
+            .mark_price(&price_symbol)
+            .filter(|price| price.is_finite() && *price > 0.0)
+    }
+
+    fn pending_hedge_usdt_with_mark_price(pending_hedge_qty: f64, mark_price: f64) -> f64 {
+        pending_hedge_qty.abs() * mark_price.abs()
+    }
+
     fn send_hedge_state_query(&mut self, now_ts: i64, due_hedge_qty: f64) {
         self.last_hedge_ts_ms = Some(now_ts / 1000);
         let risk_loader = PreTradeParamsLoader::instance();
@@ -202,6 +218,61 @@ impl ArbHedgeStrategy {
                 );
             }
         }
+    }
+
+    pub(super) fn trigger_hedge_state_query_after_open_terminal(
+        &mut self,
+        terminal_ts: i64,
+    ) -> bool {
+        // Arb hedge 当前是 Trigger 模式：每笔 open 订单 terminal 后都会把成交量写入
+        // pending_hedge_queue，并立即触发一次状态查询。这里不依赖 period clock，也不做
+        // query watchdog；如果查询没有回包，下一笔 open terminal 会再次触发新的查询。
+        //
+        // close_ts 的判断仍然保留在 TimedNetQtyQueue::due_qty 里：
+        // - close_ts == 0 的开仓成交会立刻进入 due_hedge_qty；
+        // - close_ts > now 的藏仓成交只计入 pending_hedge_qty，due_hedge_qty 为 0；
+        // 查询消息同时携带 pending 和 due，让上游按当前规则决定是否实际发 hedge。
+        //
+        // 但 trigger 不是无条件刷消息：pending 待对冲量需要先按 mark price 折算成
+        // USDT 名义价值，低于 25U 时直接跳过。这样小额残值仍留在 pending 队列里，
+        // 等后续 open terminal 累积到足够名义价值后再触发 query，避免频繁发送无意义
+        // 的状态查询。
+        let now_ts = if terminal_ts > 0 {
+            terminal_ts
+        } else {
+            get_timestamp_us()
+        };
+        let pending_hedge_qty = self.pending_hedge_queue.net_qty();
+        if pending_hedge_qty.abs() <= ARB_HEDGE_QTY_EPS {
+            return false;
+        }
+        let Some(mark_price) = self.mark_price() else {
+            info!(
+                "ArbHedgeStrategy: strategy_id={} symbol={} skip trigger hedge query because mark_price missing pending_hedge_qty={:.8} threshold_usdt={:.8}",
+                self.strategy_id,
+                self.symbol,
+                pending_hedge_qty,
+                ARB_HEDGE_PENDING_QUERY_MIN_USDT
+            );
+            return false;
+        };
+        let pending_hedge_usdt =
+            Self::pending_hedge_usdt_with_mark_price(pending_hedge_qty, mark_price);
+        if pending_hedge_usdt < ARB_HEDGE_PENDING_QUERY_MIN_USDT {
+            info!(
+                "ArbHedgeStrategy: strategy_id={} symbol={} skip trigger hedge query because pending hedge below threshold pending_hedge_qty={:.8} mark_price={:.8} pending_hedge_usdt={:.8} threshold_usdt={:.8}",
+                self.strategy_id,
+                self.symbol,
+                pending_hedge_qty,
+                mark_price,
+                pending_hedge_usdt,
+                ARB_HEDGE_PENDING_QUERY_MIN_USDT
+            );
+            return false;
+        }
+        let due_hedge_qty = self.pending_hedge_queue.due_qty(now_ts);
+        self.send_hedge_state_query(now_ts, due_hedge_qty);
+        true
     }
 
     fn compose_order_id(strategy_id: i32, seq: u32) -> i64 {
@@ -915,6 +986,15 @@ mod tests {
         assert_eq!(strategy.pending_hedge_qty(), 2.0);
         assert_eq!(strategy.due_hedge_qty(1_000), 2.0);
         assert_eq!(strategy.hedge_request_seq, 0);
+    }
+
+    #[test]
+    fn pending_hedge_query_threshold_uses_mark_price_usdt_value() {
+        let below = ArbHedgeStrategy::pending_hedge_usdt_with_mark_price(0.1, 200.0);
+        let above = ArbHedgeStrategy::pending_hedge_usdt_with_mark_price(-0.2, 200.0);
+
+        assert!(below < super::ARB_HEDGE_PENDING_QUERY_MIN_USDT);
+        assert!(above > super::ARB_HEDGE_PENDING_QUERY_MIN_USDT);
     }
 
     #[test]
