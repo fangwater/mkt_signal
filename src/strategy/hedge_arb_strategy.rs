@@ -23,7 +23,9 @@ use crate::strategy::arb_orphan_strategy::ArbOrphanLeg;
 use crate::strategy::manager::{
     ArbOrphanHandoff, ArbOrphanResidualHandoff, OpenPriceMapEntry, Strategy,
 };
-use crate::strategy::order_reconcile::{qv_decimal_or_fallback, ORDER_QUERY_WATCHDOG_DELAY_US};
+use crate::strategy::order_reconcile::{
+    qv_decimal_or_fallback, PendingOrderQueryReason, ORDER_QUERY_WATCHDOG_DELAY_US,
+};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKind};
 use crate::strategy::trade_update::TradeUpdate;
@@ -78,12 +80,6 @@ pub struct HedgeArbStrategy {
 enum Leg {
     Open,
     Hedge,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PendingOrderQueryReason {
-    OrderWatchdog,
-    CancelWatchdog,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -10,6 +10,7 @@ use crate::pre_trade::{QueryEngHub, TradeEngHub};
 use crate::signal::common::{OrderStatus, TradingVenue};
 use crate::strategy::manager::{OpenPriceMapEntry, OrphanHandoff, OrphanStrategyRole, Strategy};
 use crate::strategy::order_query_builder::build_order_query_request;
+pub use crate::strategy::order_reconcile::PendingOrderQueryReason;
 use crate::strategy::order_reconcile::{qv_decimal_or_fallback, ORDER_QUERY_WATCHDOG_DELAY_US};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKind};
@@ -18,39 +19,10 @@ use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
     publish_uniform_trade_order_from_order_update, UniformPublishCtx,
 };
-use crate::strategy::ws_order_update::try_apply_ws_order_update_for_strategy;
+use crate::strategy::ws_order_update::prepare_failed_trade_engine_response_for_strategy;
 use log::{debug, error, info, warn};
 
 const OPEN_BALANCE_EPS: f64 = 1e-12;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PendingOrderQueryReason {
-    OrderWatchdog,
-    CancelWatchdog,
-    CancelRejected,
-}
-
-impl PendingOrderQueryReason {
-    pub fn is_cancel_rejected(self) -> bool {
-        matches!(self, Self::CancelRejected)
-    }
-
-    pub fn watchdog_hint(self) -> &'static str {
-        if self.is_cancel_rejected() {
-            "CancelRejectedWatchdog触发"
-        } else {
-            "CancelWatchdog触发"
-        }
-    }
-
-    pub fn query_send_failed_trigger(self) -> &'static str {
-        if self.is_cancel_rejected() {
-            "cancel_rejected_query_send_failed"
-        } else {
-            "cancel_query_send_failed"
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueryWatchdog {
@@ -825,18 +797,11 @@ pub trait OpenStrategyCommon {
     where
         Self: Strategy + Sized,
     {
-        if try_apply_ws_order_update_for_strategy(self, response) {
+        let Some(client_order_id) =
+            prepare_failed_trade_engine_response_for_strategy(self, response)
+        else {
             return;
-        }
-
-        if response.is_request_success() {
-            return;
-        }
-
-        let client_order_id = response.client_order_id();
-        if client_order_id != self.open_order_id() {
-            return;
-        }
+        };
 
         let exchange = response.exchange_enum();
         let code_desc = exchange
@@ -1490,6 +1455,9 @@ pub trait OpenStrategyCommon {
     }
 
     fn handle_open_failed_cleanup(&mut self, client_order_id: i64) {
+        // Open strategies are one-shot owners of a single open order. If the exchange rejects
+        // creation, there is no live exchange order to reconcile, so the strategy terminalizes the
+        // local order, removes it, and exits instead of handing it to an orphan strategy.
         self.set_pending_order_query(None);
         self.clear_query_watchdogs(client_order_id);
         self.terminalize_open_order_before_cleanup(client_order_id);

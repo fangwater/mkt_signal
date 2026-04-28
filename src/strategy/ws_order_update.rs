@@ -261,6 +261,31 @@ pub fn try_apply_ws_order_update_for_strategy<S: Strategy + ?Sized>(
     true
 }
 
+/// Shared prelude for trade-engine responses that still need strategy-specific failure handling.
+///
+/// Success responses may already carry enough order state to synthesize a websocket-style update;
+/// if so, it is applied here. Plain success responses are intentionally ignored because normal
+/// account/order streams or query reconciliation own the final state. The returned client order id
+/// is therefore only for failed responses that belong to this strategy.
+pub fn prepare_failed_trade_engine_response_for_strategy<S: Strategy + ?Sized>(
+    strategy: &mut S,
+    response: &dyn TradeEngineResponse,
+) -> Option<i64> {
+    if try_apply_ws_order_update_for_strategy(strategy, response) {
+        return None;
+    }
+    if response.is_request_success() {
+        return None;
+    }
+
+    let client_order_id = response.client_order_id();
+    if !strategy.is_strategy_order(client_order_id) {
+        return None;
+    }
+
+    Some(client_order_id)
+}
+
 fn ws_strategy_name<S: ?Sized>() -> &'static str {
     std::any::type_name::<S>()
         .rsplit("::")

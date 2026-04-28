@@ -1,4 +1,3 @@
-use crate::common::exchange::Exchange;
 use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::common::time_util::get_timestamp_us;
 use crate::funding_rate::mm_decision::from_key::append_mm_hedge_tlen_to_from_key;
@@ -11,19 +10,23 @@ use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimite
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::signal_channel::SignalChannel;
-use crate::pre_trade::symbol_mapper::create_symbol_mapper;
-use crate::pre_trade::symbol_util::extract_base_asset;
 use crate::pre_trade::{PersistChannel, QueryEngHub, TradeEngHub};
 use crate::signal::common::{align_price_floor, OrderStatus, SignalBytes, TradingVenue};
 use crate::signal::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
 use crate::signal::mm_signal::MmBackwardQueryMsg;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
+use crate::strategy::hedge_strategy_common::{
+    mark_price_lookup_symbol, CANCEL_RESEND_THROTTLE_US, HEDGE_QUERY_INTERVAL_US,
+    HEDGE_QUERY_WATCHDOG_US, NET_EXPOSURE_EPS_USDT,
+};
 use crate::strategy::manager::{
     OrderTerminalRecorder, OrphanHandoff, OrphanStrategyRole, Strategy,
 };
 use crate::strategy::net_qty_queue::NetQtyQueue;
 use crate::strategy::order_query_builder::build_order_query_request;
-use crate::strategy::order_reconcile::{qv_decimal_or_fallback, ORDER_QUERY_WATCHDOG_DELAY_US};
+use crate::strategy::order_reconcile::{
+    qv_decimal_or_fallback, PendingOrderQueryReason, ORDER_QUERY_WATCHDOG_DELAY_US,
+};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKind};
 use crate::strategy::trade_update::TradeUpdate;
@@ -35,17 +38,6 @@ use crate::strategy::ws_order_update::prepare_failed_trade_engine_response_for_s
 use log::{debug, warn};
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
-
-const HEDGE_QUERY_INTERVAL_US: i64 = 30_000_000;
-const HEDGE_QUERY_WATCHDOG_US: i64 = 30_000;
-const CANCEL_RESEND_THROTTLE_US: i64 = 500_000;
-const NET_EXPOSURE_EPS_USDT: f64 = 5.0;
-
-fn mark_price_lookup_symbol(symbol: &str, exchange: Exchange) -> String {
-    extract_base_asset(symbol)
-        .map(|base_asset| create_symbol_mapper(exchange).asset_to_price_symbol(&base_asset))
-        .unwrap_or_else(|| symbol.to_uppercase())
-}
 
 #[derive(Debug, Clone)]
 pub struct MmHedgeSnapshot {
@@ -104,13 +96,6 @@ pub struct MarketMakerHedgeStrategy {
     query_watchdog_due_ts: i64,
     pending_order_queries: HashMap<i64, PendingOrderQueryReason>,
     order_query_watchdogs: HashMap<i64, (i64, PendingOrderQueryReason)>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PendingOrderQueryReason {
-    OrderWatchdog,
-    CancelFailed,
-    CancelRejected,
 }
 
 impl MarketMakerHedgeStrategy {
@@ -1866,13 +1851,11 @@ impl MarketMakerHedgeStrategy {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        mark_price_lookup_symbol, HedgeOrderMeta, MarketMakerHedgeStrategy,
-        PendingOrderQueryReason, NET_EXPOSURE_EPS_USDT,
-    };
+    use super::{HedgeOrderMeta, MarketMakerHedgeStrategy};
     use crate::common::exchange::Exchange;
     use crate::pre_trade::order_manager::Side;
-    use crate::strategy::order_reconcile::monotonic_cumulative_fill;
+    use crate::strategy::hedge_strategy_common::{mark_price_lookup_symbol, NET_EXPOSURE_EPS_USDT};
+    use crate::strategy::order_reconcile::{monotonic_cumulative_fill, PendingOrderQueryReason};
 
     #[test]
     fn zero_net_exposure_does_not_send_hedge_query() {

@@ -7,6 +7,36 @@ use crate::trade_engine::query_parsers::compact_order::CompactOrderQueryResp;
 
 pub const ORDER_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingOrderQueryReason {
+    OrderWatchdog,
+    CancelWatchdog,
+    CancelFailed,
+    CancelRejected,
+}
+
+impl PendingOrderQueryReason {
+    pub fn is_cancel_rejected(self) -> bool {
+        matches!(self, Self::CancelRejected)
+    }
+
+    pub fn watchdog_hint(self) -> &'static str {
+        match self {
+            Self::CancelRejected => "CancelRejectedWatchdog触发",
+            Self::CancelWatchdog | Self::CancelFailed => "CancelWatchdog触发",
+            Self::OrderWatchdog => "OrderWatchdog触发",
+        }
+    }
+
+    pub fn query_send_failed_trigger(self) -> &'static str {
+        match self {
+            Self::CancelRejected => "cancel_rejected_query_send_failed",
+            Self::CancelWatchdog | Self::CancelFailed => "cancel_query_send_failed",
+            Self::OrderWatchdog => "order_query_send_failed",
+        }
+    }
+}
+
 pub fn qv_decimal_or_fallback(value: f64) -> String {
     QuantizedValue::from_decimal(value)
         .map(|qv| qv.decimal_string())
