@@ -569,22 +569,15 @@ impl ResampleChannel {
                     )
                 })
                 .collect();
-            let arb_hedge_snapshot_by_asset: HashMap<String, (f64, f64, f64, usize, usize)> =
-                arb_hedge_snapshots
-                    .into_iter()
-                    .map(|snap| {
-                        (
-                            arb_hedge_snapshot_asset_key(&snap.symbol),
-                            (
-                                snap.net_qty,
-                                snap.pending_hedge_qty,
-                                snap.due_hedge_qty,
-                                snap.net_lot_count,
-                                snap.pending_hedge_lot_count,
-                            ),
-                        )
-                    })
-                    .collect();
+            let arb_hedge_snapshot_by_asset: HashMap<String, (f64, f64, f64)> = arb_hedge_snapshots
+                .into_iter()
+                .map(|snap| {
+                    (
+                        arb_hedge_snapshot_asset_key(&snap.symbol),
+                        (snap.net_qty, snap.pending_hedge_qty, snap.due_hedge_qty),
+                    )
+                })
+                .collect();
 
             let mut exposure_items: Vec<(String, f64, f64)> = exposures
                 .iter()
@@ -603,32 +596,17 @@ impl ResampleChannel {
                 if asset_upper == "USDT" {
                     continue;
                 }
-                let (
-                    arb_hedge_net_qty,
-                    arb_pending_hedge_qty,
-                    arb_due_hedge_qty,
-                    arb_net_lot_count,
-                    arb_pending_hedge_lot_count,
-                ) = arb_hedge_snapshot_by_asset
-                    .get(&asset_upper)
-                    .map(
-                        |(
-                            net_qty,
-                            pending_hedge_qty,
-                            due_hedge_qty,
-                            net_lot_count,
-                            pending_hedge_lot_count,
-                        )| {
+                let (arb_hedge_net_qty, arb_pending_hedge_qty, arb_due_hedge_qty) =
+                    arb_hedge_snapshot_by_asset
+                        .get(&asset_upper)
+                        .map(|(net_qty, pending_hedge_qty, due_hedge_qty)| {
                             (
                                 Some(*net_qty),
                                 Some(*pending_hedge_qty),
                                 Some(*due_hedge_qty),
-                                Some(*net_lot_count),
-                                Some(*pending_hedge_lot_count),
                             )
-                        },
-                    )
-                    .unwrap_or((None, None, None, None, None));
+                        })
+                        .unwrap_or((None, None, None));
                 let has_arb_hedge_state =
                     arb_hedge_net_qty.map(|v| v.abs() > 1e-12).unwrap_or(false)
                         || arb_pending_hedge_qty
@@ -699,8 +677,6 @@ impl ResampleChannel {
                     arb_hedge_net_qty,
                     arb_pending_hedge_qty,
                     arb_due_hedge_qty,
-                    arb_net_lot_count,
-                    arb_pending_hedge_lot_count,
                     net_qty: Some(net_qty),
                     net_usdt: Some(net_usdt),
                     is_total: false,
@@ -723,8 +699,6 @@ impl ResampleChannel {
                     arb_hedge_net_qty: None,
                     arb_pending_hedge_qty: None,
                     arb_due_hedge_qty: None,
-                    arb_net_lot_count: None,
-                    arb_pending_hedge_lot_count: None,
                     net_qty: None,
                     net_usdt: Some(exposure_sum_usdt),
                     is_total: true,

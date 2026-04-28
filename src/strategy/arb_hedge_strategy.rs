@@ -38,7 +38,7 @@ pub enum ArbHedgeMode {
 
 /// Arb 对冲策略的只读状态快照。
 ///
-/// 调用方可以通过它观察双 venue 合并后的净敞口、待对冲数量，以及各队列的批次数量。
+/// 调用方可以通过它观察双 venue 合并后的净敞口和待对冲数量。
 #[derive(Debug, Clone)]
 pub struct ArbHedgeSnapshot {
     pub symbol: String,
@@ -47,8 +47,6 @@ pub struct ArbHedgeSnapshot {
     pub net_qty: f64,
     pub pending_hedge_qty: f64,
     pub due_hedge_qty: f64,
-    pub net_lot_count: usize,
-    pub pending_hedge_lot_count: usize,
 }
 
 /// Arb 对冲状态策略。
@@ -119,8 +117,6 @@ impl ArbHedgeStrategy {
             net_qty: self.net_qty_queue.net_qty(),
             pending_hedge_qty: self.pending_hedge_queue.net_qty(),
             due_hedge_qty: self.pending_hedge_queue.due_qty(now_ts),
-            net_lot_count: self.net_qty_queue.len(),
-            pending_hedge_lot_count: self.pending_hedge_queue.len(),
         }
     }
 

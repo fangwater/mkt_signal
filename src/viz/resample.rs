@@ -68,8 +68,6 @@ pub struct PreTradeExposureRow {
     pub arb_hedge_net_qty: Option<f64>,
     pub arb_pending_hedge_qty: Option<f64>,
     pub arb_due_hedge_qty: Option<f64>,
-    pub arb_net_lot_count: Option<usize>,
-    pub arb_pending_hedge_lot_count: Option<usize>,
     pub net_qty: Option<f64>,
     pub net_usdt: Option<f64>,
     pub is_total: bool,
