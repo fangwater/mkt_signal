@@ -726,7 +726,7 @@ mod tests {
     use crate::signal::trade_signal::TradeSignal;
     use crate::strategy::query_engine_response::QueryEngineResponseMessage;
     use crate::strategy::{order_update::OrderUpdate, trade_update::TradeUpdate};
-    use crate::strategy::{ForceCloseControl, OrphanStrategyManager, Strategy, StrategyManager};
+    use crate::strategy::{OrphanStrategyManager, Strategy, StrategyManager};
     use bytes::Bytes;
     use std::any::Any;
     use std::cell::RefCell;
@@ -735,14 +735,6 @@ mod tests {
     struct ReentrantQueryStrategy {
         id: i32,
         active: bool,
-    }
-
-    impl ForceCloseControl for ReentrantQueryStrategy {
-        fn set_force_close_mode(&mut self, _enabled: bool) {}
-
-        fn is_force_close_mode(&self) -> bool {
-            false
-        }
     }
 
     impl Strategy for ReentrantQueryStrategy {
@@ -782,14 +774,6 @@ mod tests {
     struct ReentrantOrphanQueryStrategy {
         id: i32,
         active: bool,
-    }
-
-    impl ForceCloseControl for ReentrantOrphanQueryStrategy {
-        fn set_force_close_mode(&mut self, _enabled: bool) {}
-
-        fn is_force_close_mode(&self) -> bool {
-            false
-        }
     }
 
     impl Strategy for ReentrantOrphanQueryStrategy {

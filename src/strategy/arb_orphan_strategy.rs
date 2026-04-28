@@ -7,7 +7,7 @@ use crate::pre_trade::{QueryEngHub, TradeEngHub};
 use crate::signal::common::{OrderStatus, TradingVenue};
 use crate::signal::trade_signal::TradeSignal;
 use crate::strategy::manager::{
-    ArbOrphanHandoff, ArbOrphanResidualHandoff, ArbOrphanUniformCtx, ForceCloseControl, Strategy,
+    ArbOrphanHandoff, ArbOrphanResidualHandoff, ArbOrphanUniformCtx, Strategy,
 };
 use crate::strategy::net_qty_queue::NetQtyQueue;
 use crate::strategy::order_query_builder::build_order_query_request;
@@ -738,14 +738,6 @@ impl ArbOrphanStrategy {
                 false
             }
         }
-    }
-}
-
-impl ForceCloseControl for ArbOrphanStrategy {
-    fn set_force_close_mode(&mut self, _enabled: bool) {}
-
-    fn is_force_close_mode(&self) -> bool {
-        false
     }
 }
 

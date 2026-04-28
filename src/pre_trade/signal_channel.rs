@@ -20,7 +20,7 @@ use crate::strategy::arb_open_strategy::ArbOpenStrategy;
 use crate::strategy::hedge_arb_strategy::HedgeArbStrategy;
 use crate::strategy::mm_open_strategy::MarketMakerOpenStrategy;
 use crate::strategy::open_strategy_common::OpenStrategyCommon;
-use crate::strategy::{ForceCloseControl, Strategy, StrategyManager};
+use crate::strategy::{Strategy, StrategyManager};
 use anyhow::Result;
 use bytes::Bytes;
 use iceoryx2::port::subscriber::Subscriber;
@@ -525,7 +525,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                     let strategy_id = StrategyManager::generate_strategy_id();
                     let mut strategy: HedgeArbStrategy =
                         HedgeArbStrategy::new(strategy_id, opening_symbol.clone());
-                    strategy.set_force_close_mode(true);
+                    strategy.force_close_mode = true;
 
                     strategy.handle_signal(&converted_signal);
                     if strategy.is_active() {

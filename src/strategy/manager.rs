@@ -111,13 +111,7 @@ pub struct OpenPriceMapEntry {
     pub price_qv: QuantizedValueKey,
 }
 
-/// 控制策略是否处于强平模式的 Trait
-pub trait ForceCloseControl {
-    fn set_force_close_mode(&mut self, enabled: bool);
-    fn is_force_close_mode(&self) -> bool;
-}
-
-pub trait Strategy: ForceCloseControl {
+pub trait Strategy {
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
     fn get_id(&self) -> i32;
@@ -819,8 +813,8 @@ impl StrategyManager {
 #[cfg(test)]
 mod tests {
     use super::{
-        next_strategy_id_state, ForceCloseControl, OpenPriceMapEntry, OpenPriceMapKey,
-        QuantizedValueKey, Strategy, StrategyManager, STRATEGY_ID_MASK,
+        next_strategy_id_state, OpenPriceMapEntry, OpenPriceMapKey, QuantizedValueKey, Strategy,
+        StrategyManager, STRATEGY_ID_MASK,
     };
     use crate::common::tick_math::QuantizedValue;
     use crate::pre_trade::order_manager::Side;
@@ -834,14 +828,6 @@ mod tests {
         side: Side,
         client_order_id: i64,
         price_qv: QuantizedValue,
-    }
-
-    impl ForceCloseControl for DummyOpenStrategy {
-        fn set_force_close_mode(&mut self, _enabled: bool) {}
-
-        fn is_force_close_mode(&self) -> bool {
-            false
-        }
     }
 
     impl Strategy for DummyOpenStrategy {

@@ -21,7 +21,7 @@ use crate::strategy::arb_helper::{
 };
 use crate::strategy::arb_orphan_strategy::ArbOrphanLeg;
 use crate::strategy::manager::{
-    ArbOrphanHandoff, ArbOrphanResidualHandoff, ForceCloseControl, OpenPriceMapEntry, Strategy,
+    ArbOrphanHandoff, ArbOrphanResidualHandoff, OpenPriceMapEntry, Strategy,
 };
 use crate::strategy::order_reconcile::{qv_decimal_or_fallback, ORDER_QUERY_WATCHDOG_DELAY_US};
 use crate::strategy::order_update::OrderUpdate;
@@ -260,7 +260,7 @@ impl HedgeArbStrategy {
 
     fn handle_arb_open_signal(&mut self, ctx: ArbOpenCtx) {
         // 开仓open leg，打开头寸，根据信号创建开仓leg, 进行风控判断，失败就直接把策略标记为不活跃，等待定时器清理
-        let force_close = self.is_force_close_mode();
+        let force_close = self.force_close_mode;
         // 解析开仓信号参数；参数无效时直接标记策略不活跃。
         let Some(params) = parse_arb_open_signal_params(self.strategy_id, &ctx) else {
             self.alive_flag = false;
@@ -475,7 +475,7 @@ impl HedgeArbStrategy {
                 hedge_side,
                 aligned_qty,
                 aligned_price,
-                self.is_force_close_mode(),
+                self.force_close_mode,
                 self.hedge_qty_multiplier,
                 ts,
             );
@@ -2071,16 +2071,6 @@ impl HedgeArbStrategy {
 impl Drop for HedgeArbStrategy {
     fn drop(&mut self) {
         self.cleanup_strategy_orders();
-    }
-}
-
-impl ForceCloseControl for HedgeArbStrategy {
-    fn set_force_close_mode(&mut self, enabled: bool) {
-        self.force_close_mode = enabled;
-    }
-
-    fn is_force_close_mode(&self) -> bool {
-        self.force_close_mode
     }
 }
 

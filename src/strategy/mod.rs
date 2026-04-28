@@ -28,5 +28,5 @@ pub mod trade_update;
 pub mod trade_update_lite;
 pub mod uniform_order_helper;
 pub mod ws_order_update;
-pub use manager::{ForceCloseControl, Strategy, StrategyManager};
+pub use manager::{Strategy, StrategyManager};
 pub use orphan_manager::OrphanStrategyManager;

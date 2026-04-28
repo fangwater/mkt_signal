@@ -139,7 +139,7 @@ mod tests {
     use super::{drive_orphan_manager_period_clock_rc, drive_strategy_manager_period_clock_rc};
     use crate::signal::trade_signal::TradeSignal;
     use crate::strategy::{order_update::OrderUpdate, trade_update::TradeUpdate};
-    use crate::strategy::{ForceCloseControl, OrphanStrategyManager, Strategy, StrategyManager};
+    use crate::strategy::{OrphanStrategyManager, Strategy, StrategyManager};
     use std::any::Any;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
@@ -149,14 +149,6 @@ mod tests {
         manager: Rc<RefCell<StrategyManager>>,
         tick_hits: Rc<Cell<u32>>,
         active: bool,
-    }
-
-    impl ForceCloseControl for ReentrantTickStrategy {
-        fn set_force_close_mode(&mut self, _enabled: bool) {}
-
-        fn is_force_close_mode(&self) -> bool {
-            false
-        }
     }
 
     impl Strategy for ReentrantTickStrategy {
@@ -202,14 +194,6 @@ mod tests {
         manager: Rc<RefCell<OrphanStrategyManager>>,
         tick_hits: Rc<Cell<u32>>,
         active: bool,
-    }
-
-    impl ForceCloseControl for ReentrantOrphanTickStrategy {
-        fn set_force_close_mode(&mut self, _enabled: bool) {}
-
-        fn is_force_close_mode(&self) -> bool {
-            false
-        }
     }
 
     impl Strategy for ReentrantOrphanTickStrategy {

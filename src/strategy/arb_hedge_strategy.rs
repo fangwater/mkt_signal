@@ -1,7 +1,7 @@
 use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::signal::common::TradingVenue;
 use crate::signal::trade_signal::TradeSignal;
-use crate::strategy::manager::{ForceCloseControl, OrderTerminalRecorder, Strategy};
+use crate::strategy::manager::{OrderTerminalRecorder, Strategy};
 use crate::strategy::net_qty_queue::TimedNetQtyQueue;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
@@ -161,14 +161,6 @@ impl OrderTerminalRecorder for ArbHedgeStrategy {
         price: f64,
     ) -> bool {
         self.apply_hedge_order_terminal(fill_ts, signed_base_qty, price)
-    }
-}
-
-impl ForceCloseControl for ArbHedgeStrategy {
-    fn set_force_close_mode(&mut self, _enabled: bool) {}
-
-    fn is_force_close_mode(&self) -> bool {
-        false
     }
 }
 

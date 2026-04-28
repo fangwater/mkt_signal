@@ -2305,7 +2305,7 @@ mod tests {
     use crate::signal::common::SignalBytes;
     use crate::signal::trade_signal::{SignalType, TradeSignal};
     use crate::strategy::manager::OpenPriceMapEntry;
-    use crate::strategy::{ForceCloseControl, Strategy, StrategyManager};
+    use crate::strategy::{Strategy, StrategyManager};
     use std::any::Any;
     use std::cell::RefCell;
     use std::collections::HashMap;
@@ -2332,14 +2332,6 @@ mod tests {
                 last_trigger_ts: 0,
                 active: true,
             }
-        }
-    }
-
-    impl ForceCloseControl for TestMmOpenStrategy {
-        fn set_force_close_mode(&mut self, _enabled: bool) {}
-
-        fn is_force_close_mode(&self) -> bool {
-            false
         }
     }
 

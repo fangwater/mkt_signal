@@ -5,7 +5,7 @@ use crate::pre_trade::order_manager::OrderExecutionStatus;
 use crate::pre_trade::{QueryEngHub, TradeEngHub};
 use crate::signal::common::{ExecutionType, OrderStatus, TradingVenue};
 use crate::signal::trade_signal::TradeSignal;
-use crate::strategy::manager::{ForceCloseControl, OrphanHandoff, OrphanSourceKind, Strategy};
+use crate::strategy::manager::{OrphanHandoff, OrphanSourceKind, Strategy};
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
@@ -308,14 +308,6 @@ impl MmOrphanOrderStrategy {
                 false
             }
         }
-    }
-}
-
-impl ForceCloseControl for MmOrphanOrderStrategy {
-    fn set_force_close_mode(&mut self, _enabled: bool) {}
-
-    fn is_force_close_mode(&self) -> bool {
-        false
     }
 }
 

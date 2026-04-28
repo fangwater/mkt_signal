@@ -6,9 +6,7 @@ use crate::signal::cancel_signal::ArbCancelCtx;
 use crate::signal::common::{SignalBytes, TradingVenue};
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
-use crate::strategy::manager::{
-    ForceCloseControl, OpenPriceMapEntry, OrphanStrategyRole, Strategy,
-};
+use crate::strategy::manager::{OpenPriceMapEntry, OrphanStrategyRole, Strategy};
 use crate::strategy::open_strategy_common::{
     OpenCancelInput, OpenSignalInput, OpenStrategyCommon, OpenStrategyState,
 };
@@ -176,14 +174,6 @@ impl OpenStrategyCommon for ArbOpenStrategy {
             self.open_state.strategy_id, marker, client_order_id
         );
         self.handoff_open_order_to_orphan(client_order_id, marker);
-    }
-}
-
-impl ForceCloseControl for ArbOpenStrategy {
-    fn set_force_close_mode(&mut self, _enabled: bool) {}
-
-    fn is_force_close_mode(&self) -> bool {
-        false
     }
 }
 

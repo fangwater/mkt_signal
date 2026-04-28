@@ -19,7 +19,7 @@ use crate::signal::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
 use crate::signal::mm_signal::MmBackwardQueryMsg;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::manager::{
-    ForceCloseControl, OrderTerminalRecorder, OrphanHandoff, OrphanStrategyRole, Strategy,
+    OrderTerminalRecorder, OrphanHandoff, OrphanStrategyRole, Strategy,
 };
 use crate::strategy::net_qty_queue::NetQtyQueue;
 use crate::strategy::order_query_builder::build_order_query_request;
@@ -31,7 +31,7 @@ use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
     publish_uniform_trade_order_from_order_update, UniformPublishCtx,
 };
-use crate::strategy::ws_order_update::try_apply_ws_order_update_for_strategy;
+use crate::strategy::ws_order_update::prepare_failed_trade_engine_response_for_strategy;
 use log::{debug, warn};
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
@@ -263,6 +263,9 @@ impl MarketMakerHedgeStrategy {
     }
 
     fn release_hedge_tracking(&mut self, client_order_id: i64, cause: &str, remove_local: bool) {
+        // MM hedge is a long-lived per-symbol state strategy. Releasing a hedge order only drops
+        // this child order's tracking/query metadata; the strategy itself stays alive to maintain
+        // inventory state and process future hedge signals.
         self.log_hedge_order_release(cause, client_order_id);
         self.clear_order_query_state(client_order_id);
         self.hedge_order_ids.remove(&client_order_id);
@@ -369,7 +372,7 @@ impl MarketMakerHedgeStrategy {
     }
 
     /// 记录 MM 开仓订单 terminal 后的累计成交量（使用 base qty 口径）。
-    pub fn record_open_order_terminal(
+    fn apply_open_order_terminal(
         &mut self,
         fill_ts: i64,
         signed_qty: f64,
@@ -388,12 +391,7 @@ impl MarketMakerHedgeStrategy {
     }
 
     /// 记录 MM 对冲订单 terminal 后的累计成交量（使用 base qty 口径）。
-    pub fn record_hedge_order_terminal(
-        &mut self,
-        fill_ts: i64,
-        signed_qty: f64,
-        price: f64,
-    ) -> bool {
+    fn apply_hedge_order_terminal(&mut self, fill_ts: i64, signed_qty: f64, price: f64) -> bool {
         if signed_qty.abs() <= 1e-12 {
             return false;
         }
@@ -2044,14 +2042,6 @@ mod tests {
     }
 }
 
-impl ForceCloseControl for MarketMakerHedgeStrategy {
-    fn set_force_close_mode(&mut self, _enabled: bool) {}
-
-    fn is_force_close_mode(&self) -> bool {
-        false
-    }
-}
-
 impl OrderTerminalRecorder for MarketMakerHedgeStrategy {
     fn record_open_order_terminal(
         &mut self,
@@ -2060,13 +2050,7 @@ impl OrderTerminalRecorder for MarketMakerHedgeStrategy {
         price: f64,
         close_ts: i64,
     ) -> bool {
-        MarketMakerHedgeStrategy::record_open_order_terminal(
-            self,
-            fill_ts,
-            signed_base_qty,
-            price,
-            close_ts,
-        )
+        self.apply_open_order_terminal(fill_ts, signed_base_qty, price, close_ts)
     }
 
     fn record_hedge_order_terminal(
@@ -2075,7 +2059,7 @@ impl OrderTerminalRecorder for MarketMakerHedgeStrategy {
         signed_base_qty: f64,
         price: f64,
     ) -> bool {
-        MarketMakerHedgeStrategy::record_hedge_order_terminal(self, fill_ts, signed_base_qty, price)
+        self.apply_hedge_order_terminal(fill_ts, signed_base_qty, price)
     }
 }
 
@@ -2127,17 +2111,11 @@ impl Strategy for MarketMakerHedgeStrategy {
     }
 
     fn apply_trade_engine_response(&mut self, response: &dyn TradeEngineResponse) {
-        if try_apply_ws_order_update_for_strategy(self, response) {
+        let Some(client_order_id) =
+            prepare_failed_trade_engine_response_for_strategy(self, response)
+        else {
             return;
-        }
-        if response.is_request_success() {
-            return;
-        }
-
-        let client_order_id = response.client_order_id();
-        if !self.hedge_order_ids.contains(&client_order_id) {
-            return;
-        }
+        };
 
         let req_type = response.req_type();
         match response.request_kind() {

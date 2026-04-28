@@ -6,7 +6,7 @@ use crate::signal::common::{SignalBytes, TradingVenue};
 use crate::signal::open_signal::MmOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::manager::OpenPriceMapEntry;
-use crate::strategy::manager::{ForceCloseControl, OrphanStrategyRole, Strategy};
+use crate::strategy::manager::{OrphanStrategyRole, Strategy};
 use crate::strategy::open_strategy_common::{
     OpenCancelInput, OpenSignalInput, OpenStrategyCommon, OpenStrategyState,
 };
@@ -141,14 +141,6 @@ impl OpenStrategyCommon for MarketMakerOpenStrategy {
             self.open_state.strategy_id, marker, client_order_id
         );
         self.handoff_open_order_to_orphan(client_order_id, marker);
-    }
-}
-
-impl ForceCloseControl for MarketMakerOpenStrategy {
-    fn set_force_close_mode(&mut self, _enabled: bool) {}
-
-    fn is_force_close_mode(&self) -> bool {
-        false
     }
 }
 
