@@ -370,6 +370,9 @@
                 <th>open_usdt</th>
                 <th>hedge_qty</th>
                 <th>hedge_usdt</th>
+                <th>arb_net</th>
+                <th>arb_pending</th>
+                <th>arb_due</th>
                 <th>net_qty</th>
                 <th>net_usdt</th>
               </tr>
@@ -512,7 +515,15 @@
         }
 
         function isZeroRow(row) {
-          const fields = ["open_qty", "hedge_qty", "net_qty", "net_usdt"];
+          const fields = [
+            "open_qty",
+            "hedge_qty",
+            "arb_hedge_net_qty",
+            "arb_pending_hedge_qty",
+            "arb_due_hedge_qty",
+            "net_qty",
+            "net_usdt",
+          ];
           for (const f of fields) {
             const v = row && row[f];
             if (isFiniteNumber(v) && Math.abs(v) > 1e-12) return false;
@@ -632,6 +643,9 @@
               <td class="${classify(r.open_usdt)}">${fmt(r.open_usdt, fmtUsd)}</td>
               <td class="${classify(r.hedge_qty)}">${fmt(r.hedge_qty, fmtQty)}</td>
               <td class="${classify(r.hedge_usdt)}">${fmt(r.hedge_usdt, fmtUsd)}</td>
+              <td class="${classify(r.arb_hedge_net_qty)}">${fmt(r.arb_hedge_net_qty, fmtQty)}</td>
+              <td class="${classify(r.arb_pending_hedge_qty)}">${fmt(r.arb_pending_hedge_qty, fmtQty)}</td>
+              <td class="${classify(r.arb_due_hedge_qty)}">${fmt(r.arb_due_hedge_qty, fmtQty)}</td>
               <td class="${classify(r.net_qty)}">${fmt(r.net_qty, fmtQty)}</td>
               <td class="${classify(r.net_usdt)}">${fmt(r.net_usdt, fmtUsd)}</td>
             `;

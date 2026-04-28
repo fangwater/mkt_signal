@@ -10,6 +10,7 @@ use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::price_table::PriceEntry;
 use crate::pre_trade::symbol_mapper::create_symbol_mapper;
+use crate::pre_trade::symbol_util::extract_base_asset;
 use crate::pre_trade::usdt_balance_manager::UsdtBalanceSnapshot;
 use crate::signal::common::TradingVenue;
 use crate::viz::resample::{
@@ -194,6 +195,12 @@ fn sum_borrow_interest_usd(
 
 fn hedge_snapshot_symbol_key(symbol: &str) -> String {
     normalize_symbol_for_internal(symbol)
+}
+
+fn arb_hedge_snapshot_asset_key(symbol: &str) -> String {
+    extract_base_asset(symbol)
+        .unwrap_or_else(|| normalize_symbol_for_internal(symbol))
+        .to_ascii_uppercase()
 }
 
 fn compute_leg_risk_entry(
@@ -532,6 +539,10 @@ impl ResampleChannel {
             let mut rows: Vec<PreTradeExposureRow> = Vec::new();
             let mut exposure_sum_usdt = 0.0_f64;
             let hedge_snapshots = mon.strategy_mgr().borrow().mm_hedge_snapshots();
+            let arb_hedge_snapshots = mon
+                .strategy_mgr()
+                .borrow()
+                .arb_hedge_snapshots(ts_ms * 1000);
             let hedge_snapshot_by_symbol: HashMap<
                 String,
                 (
@@ -558,18 +569,73 @@ impl ResampleChannel {
                     )
                 })
                 .collect();
+            let arb_hedge_snapshot_by_asset: HashMap<String, (f64, f64, f64, usize, usize)> =
+                arb_hedge_snapshots
+                    .into_iter()
+                    .map(|snap| {
+                        (
+                            arb_hedge_snapshot_asset_key(&snap.symbol),
+                            (
+                                snap.net_qty,
+                                snap.pending_hedge_qty,
+                                snap.due_hedge_qty,
+                                snap.net_lot_count,
+                                snap.pending_hedge_lot_count,
+                            ),
+                        )
+                    })
+                    .collect();
 
             let mut exposure_items: Vec<(String, f64, f64)> = exposures
                 .iter()
                 .map(|(asset, &(open_qty, hedge_qty))| (asset.to_uppercase(), open_qty, hedge_qty))
                 .collect();
+            for asset in arb_hedge_snapshot_by_asset.keys() {
+                if asset == "USDT" {
+                    continue;
+                }
+                exposure_items.push((asset.clone(), 0.0, 0.0));
+            }
             exposure_items.sort_by(|a, b| a.0.cmp(&b.0));
+            exposure_items.dedup_by(|a, b| a.0 == b.0);
 
             for (asset_upper, open_qty, hedge_qty) in exposure_items {
                 if asset_upper == "USDT" {
                     continue;
                 }
-                if open_qty.abs() <= 1e-12 && hedge_qty.abs() <= 1e-12 {
+                let (
+                    arb_hedge_net_qty,
+                    arb_pending_hedge_qty,
+                    arb_due_hedge_qty,
+                    arb_net_lot_count,
+                    arb_pending_hedge_lot_count,
+                ) = arb_hedge_snapshot_by_asset
+                    .get(&asset_upper)
+                    .map(
+                        |(
+                            net_qty,
+                            pending_hedge_qty,
+                            due_hedge_qty,
+                            net_lot_count,
+                            pending_hedge_lot_count,
+                        )| {
+                            (
+                                Some(*net_qty),
+                                Some(*pending_hedge_qty),
+                                Some(*due_hedge_qty),
+                                Some(*net_lot_count),
+                                Some(*pending_hedge_lot_count),
+                            )
+                        },
+                    )
+                    .unwrap_or((None, None, None, None, None));
+                let has_arb_hedge_state =
+                    arb_hedge_net_qty.map(|v| v.abs() > 1e-12).unwrap_or(false)
+                        || arb_pending_hedge_qty
+                            .map(|v| v.abs() > 1e-12)
+                            .unwrap_or(false)
+                        || arb_due_hedge_qty.map(|v| v.abs() > 1e-12).unwrap_or(false);
+                if open_qty.abs() <= 1e-12 && hedge_qty.abs() <= 1e-12 && !has_arb_hedge_state {
                     continue;
                 }
 
@@ -630,6 +696,11 @@ impl ResampleChannel {
                     hedge_ret_qtl,
                     hedge_offset_low,
                     hedge_offset_high,
+                    arb_hedge_net_qty,
+                    arb_pending_hedge_qty,
+                    arb_due_hedge_qty,
+                    arb_net_lot_count,
+                    arb_pending_hedge_lot_count,
                     net_qty: Some(net_qty),
                     net_usdt: Some(net_usdt),
                     is_total: false,
@@ -649,6 +720,11 @@ impl ResampleChannel {
                     hedge_ret_qtl: None,
                     hedge_offset_low: None,
                     hedge_offset_high: None,
+                    arb_hedge_net_qty: None,
+                    arb_pending_hedge_qty: None,
+                    arb_due_hedge_qty: None,
+                    arb_net_lot_count: None,
+                    arb_pending_hedge_lot_count: None,
                     net_qty: None,
                     net_usdt: Some(exposure_sum_usdt),
                     is_total: true,
@@ -731,12 +807,19 @@ impl ResampleChannel {
 
 #[cfg(test)]
 mod tests {
-    use super::hedge_snapshot_symbol_key;
+    use super::{arb_hedge_snapshot_asset_key, hedge_snapshot_symbol_key};
 
     #[test]
     fn hedge_snapshot_symbol_key_normalizes_internal_and_price_symbols() {
         assert_eq!(hedge_snapshot_symbol_key("SOLUSDT"), "SOLUSDT");
         assert_eq!(hedge_snapshot_symbol_key("SOL_USDT"), "SOLUSDT");
         assert_eq!(hedge_snapshot_symbol_key("SOL-USDT-SWAP"), "SOLUSDT");
+    }
+
+    #[test]
+    fn arb_hedge_snapshot_asset_key_extracts_base_asset() {
+        assert_eq!(arb_hedge_snapshot_asset_key("SOLUSDT"), "SOL");
+        assert_eq!(arb_hedge_snapshot_asset_key("SOL_USDT"), "SOL");
+        assert_eq!(arb_hedge_snapshot_asset_key("SOL-USDT-SWAP"), "SOL");
     }
 }
