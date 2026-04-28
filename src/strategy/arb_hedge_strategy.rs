@@ -2,28 +2,24 @@ use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::signal::common::TradingVenue;
 use crate::signal::trade_signal::TradeSignal;
 use crate::strategy::manager::{OrderTerminalRecorder, Strategy};
-use crate::strategy::net_qty_queue::TimedNetQtyQueue;
+use crate::strategy::net_qty_queue::{NetQtyQueue, TimedNetQtyQueue};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
 use log::debug;
 use std::any::Any;
 
-const ARB_HEDGE_EPS: f64 = 1e-12;
-
 /// Arb 对冲策略的只读状态快照。
 ///
-/// 调用方可以通过它观察两条腿当前净敞口、待对冲数量，以及各队列的批次数量。
+/// 调用方可以通过它观察双 venue 合并后的净敞口、待对冲数量，以及各队列的批次数量。
 #[derive(Debug, Clone)]
 pub struct ArbHedgeSnapshot {
     pub symbol: String,
     pub open_venue: TradingVenue,
     pub hedge_venue: TradingVenue,
-    pub open_net_qty: f64,
-    pub hedge_net_qty: f64,
+    pub net_qty: f64,
     pub pending_hedge_qty: f64,
     pub due_hedge_qty: f64,
-    pub open_net_lot_count: usize,
-    pub hedge_net_lot_count: usize,
+    pub net_lot_count: usize,
     pub pending_hedge_lot_count: usize,
 }
 
@@ -35,10 +31,8 @@ pub struct ArbHedgeStrategy {
     pub(super) symbol: String,
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
-    /// 开仓腿累计净敞口。买入记正，卖出记负。
-    pub(super) open_net_queue: TimedNetQtyQueue,
-    /// 对冲腿累计净敞口。单独维护，便于核对真实对冲成交。
-    pub(super) hedge_net_queue: TimedNetQtyQueue,
+    /// open/hedge 两个 venue 合并后的实时净敞口，使用 base qty 口径互相冲销。
+    pub(super) net_qty_queue: NetQtyQueue,
     /// 尚需由对冲腿覆盖的开仓成交队列，到期时间来自开仓记录的 close_ts。
     pub(super) pending_hedge_queue: TimedNetQtyQueue,
     alive_flag: bool,
@@ -56,8 +50,7 @@ impl ArbHedgeStrategy {
             symbol: normalize_symbol_for_internal(&symbol.into()),
             open_venue,
             hedge_venue,
-            open_net_queue: TimedNetQtyQueue::new(),
-            hedge_net_queue: TimedNetQtyQueue::new(),
+            net_qty_queue: NetQtyQueue::new(),
             pending_hedge_queue: TimedNetQtyQueue::new(),
             alive_flag: true,
         }
@@ -68,23 +61,18 @@ impl ArbHedgeStrategy {
             symbol: self.symbol.clone(),
             open_venue: self.open_venue,
             hedge_venue: self.hedge_venue,
-            open_net_qty: self.open_net_queue.net_qty(),
-            hedge_net_qty: self.hedge_net_queue.net_qty(),
+            net_qty: self.net_qty_queue.net_qty(),
             pending_hedge_qty: self.pending_hedge_queue.net_qty(),
             due_hedge_qty: self.pending_hedge_queue.due_qty(now_ts),
-            open_net_lot_count: self.open_net_queue.len(),
-            hedge_net_lot_count: self.hedge_net_queue.len(),
+            net_lot_count: self.net_qty_queue.len(),
             pending_hedge_lot_count: self.pending_hedge_queue.len(),
         }
     }
 
-    pub fn open_net_qty(&self) -> f64 {
-        self.open_net_queue.net_qty()
+    pub fn net_qty(&self) -> f64 {
+        self.net_qty_queue.net_qty()
     }
 
-    pub fn hedge_net_qty(&self) -> f64 {
-        self.hedge_net_queue.net_qty()
-    }
     // pending_hedge_qty 包含了所有开仓成交形成的对冲需求，无论是否已到期；
     pub fn pending_hedge_qty(&self) -> f64 {
         self.pending_hedge_queue.net_qty()
@@ -149,7 +137,7 @@ mod tests {
     use crate::strategy::manager::OrderTerminalRecorder;
 
     #[test]
-    fn open_fill_records_open_net_and_pending_hedge() {
+    fn open_fill_records_net_and_pending_hedge() {
         let mut strategy = ArbHedgeStrategy::new(
             1,
             "BTCUSDT",
@@ -159,15 +147,14 @@ mod tests {
 
         strategy.record_open_order_terminal(10, 2.0, 100.0, 1_000);
 
-        assert_eq!(strategy.open_net_qty(), 2.0);
-        assert_eq!(strategy.hedge_net_qty(), 0.0);
+        assert_eq!(strategy.net_qty(), 2.0);
         assert_eq!(strategy.pending_hedge_qty(), 2.0);
         assert_eq!(strategy.due_hedge_qty(999), 0.0);
         assert_eq!(strategy.due_hedge_qty(1_000), 2.0);
     }
 
     #[test]
-    fn hedge_fill_offsets_pending_but_keeps_separate_venue_net() {
+    fn hedge_fill_offsets_pending_and_base_net() {
         let mut strategy = ArbHedgeStrategy::new(
             1,
             "BTCUSDT",
@@ -178,8 +165,7 @@ mod tests {
         strategy.record_open_order_terminal(10, 2.0, 100.0, 1_000);
         strategy.record_hedge_order_terminal(20, -1.25, 101.0);
 
-        assert_eq!(strategy.open_net_qty(), 2.0);
-        assert_eq!(strategy.hedge_net_qty(), -1.25);
-        assert_eq!(strategy.pending_hedge_qty(), 0.75);
+        assert_eq!(strategy.net_qty(), 0.75);
+        assert_eq!(strategy.pending_hedge_qty(), 2.0);
     }
 }

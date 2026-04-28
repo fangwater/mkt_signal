@@ -26,6 +26,13 @@ pub struct TimedNetQtyLot {
     pub price: f64,
 }
 
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct TimedNetQtyBorrow {
+    pub qv: f64,
+    pub qty: f64,
+    pub lots: Vec<TimedNetQtyLot>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NetQtyApplyResult {
     pub matched_qty: f64,
@@ -218,6 +225,119 @@ impl TimedNetQtyQueue {
         }
     }
 
+    /// 从待处理队列里借出一段同方向数量，用于挂单先占用 hedge 需求。
+    ///
+    /// `qv` 使用 pending 需求方向，而不是 hedge 订单方向。比如 open 买入形成 `+2` 的
+    /// pending，挂 sell hedge 时这里借出的仍然是 `+2`。函数只做数量扣减，不表达成交。
+    pub fn borrow(&mut self, qv: f64) -> TimedNetQtyBorrow {
+        if qv.abs() <= NET_QTY_EPS {
+            return TimedNetQtyBorrow::default();
+        }
+
+        let direction = direction_from_signed_qty(qv);
+        if direction == NetQtyDirection::Flat || self.direction() != direction {
+            return TimedNetQtyBorrow::default();
+        }
+
+        let mut remaining_qty = qv.abs();
+        let mut borrowed_qty = 0.0;
+        let mut borrowed_lots = Vec::new();
+
+        while remaining_qty > NET_QTY_EPS {
+            let Some(oldest_key) = self.lots.keys().next().copied() else {
+                break;
+            };
+
+            let Some(oldest_lot) = self.lots.get(&oldest_key).cloned() else {
+                break;
+            };
+            if direction_from_signed_qty(oldest_lot.qv) != direction {
+                break;
+            }
+
+            let take_qty = remaining_qty.min(oldest_lot.qty);
+            if take_qty <= NET_QTY_EPS {
+                self.lots.remove(&oldest_key);
+                continue;
+            }
+
+            let borrowed_qv = signed_qty_for_direction(direction, take_qty);
+            borrowed_lots.push(TimedNetQtyLot {
+                ts: oldest_lot.ts,
+                close_ts: oldest_lot.close_ts,
+                qv: borrowed_qv,
+                qty: take_qty,
+                price: oldest_lot.price,
+            });
+
+            if take_qty + NET_QTY_EPS < oldest_lot.qty {
+                if let Some(lot) = self.lots.get_mut(&oldest_key) {
+                    lot.qty = oldest_lot.qty - take_qty;
+                    lot.qv = signed_qty_for_direction(direction, lot.qty);
+                }
+            } else {
+                self.lots.remove(&oldest_key);
+            }
+
+            borrowed_qty += take_qty;
+            remaining_qty -= take_qty;
+        }
+
+        let borrowed_qv = signed_qty_for_direction(direction, borrowed_qty);
+        self.net_qty -= borrowed_qv;
+        if self.net_qty.abs() <= NET_QTY_EPS {
+            self.net_qty = 0.0;
+            self.lots.clear();
+        }
+
+        TimedNetQtyBorrow {
+            qv: borrowed_qv,
+            qty: borrowed_qty,
+            lots: borrowed_lots,
+        }
+    }
+
+    /// 释放未成交的借用数量。已到 close_ts 的借用不再加回 pending，按 0 处理。
+    pub fn release(
+        &mut self,
+        now_ts: i64,
+        borrowed_lots: &[TimedNetQtyLot],
+        release_qty: f64,
+        price: f64,
+    ) -> f64 {
+        if release_qty <= NET_QTY_EPS {
+            return 0.0;
+        }
+
+        let mut remaining_qty = release_qty;
+        let mut released_qv = 0.0;
+        for lot in borrowed_lots {
+            if remaining_qty <= NET_QTY_EPS {
+                break;
+            }
+            if lot.close_ts <= 0 || lot.close_ts <= now_ts {
+                continue;
+            }
+
+            let release_qty = remaining_qty.min(lot.qty);
+            if release_qty <= NET_QTY_EPS {
+                continue;
+            }
+
+            let direction = direction_from_signed_qty(lot.qv);
+            let qv = signed_qty_for_direction(direction, release_qty);
+            self.apply_fill(now_ts, lot.close_ts, qv, price);
+            released_qv += qv;
+            remaining_qty -= release_qty;
+        }
+
+        if released_qv.abs() <= NET_QTY_EPS {
+            0.0
+        } else {
+            released_qv
+        }
+    }
+
     fn insert_lot(&mut self, ts: i64, close_ts: i64, qv: f64, price: f64) {
         let qty = qv.abs();
         if qty <= NET_QTY_EPS {
@@ -407,5 +527,50 @@ mod tests {
         assert_eq!(lots.len(), 1);
         assert_eq!(lots[0].close_ts, 200);
         assert_eq!(lots[0].qty, 1.0);
+    }
+
+    #[test]
+    fn timed_queue_borrow_reserves_pending_qty() {
+        let mut queue = TimedNetQtyQueue::new();
+        queue.apply_fill(10, 100, 2.0, 100.0);
+        queue.apply_fill(20, 200, 3.0, 101.0);
+
+        let borrowed = queue.borrow(4.0);
+
+        assert_eq!(borrowed.qv, 4.0);
+        assert_eq!(borrowed.qty, 4.0);
+        assert_eq!(borrowed.lots.len(), 2);
+        assert_eq!(queue.net_qty(), 1.0);
+        let lots = queue.lots();
+        assert_eq!(lots.len(), 1);
+        assert_eq!(lots[0].close_ts, 200);
+        assert_eq!(lots[0].qv, 1.0);
+    }
+
+    #[test]
+    fn timed_queue_release_restores_unexpired_borrow() {
+        let mut queue = TimedNetQtyQueue::new();
+        queue.apply_fill(10, 100, 2.0, 100.0);
+
+        let borrowed = queue.borrow(2.0);
+        let released = queue.release(50, &borrowed.lots, 0.75, 101.0);
+
+        assert_eq!(released, 0.75);
+        assert_eq!(queue.net_qty(), 0.75);
+        assert_eq!(queue.due_qty(99), 0.0);
+        assert_eq!(queue.due_qty(100), 0.75);
+    }
+
+    #[test]
+    fn timed_queue_release_after_close_ts_is_zero() {
+        let mut queue = TimedNetQtyQueue::new();
+        queue.apply_fill(10, 100, 2.0, 100.0);
+
+        let borrowed = queue.borrow(2.0);
+        let released = queue.release(100, &borrowed.lots, 2.0, 101.0);
+
+        assert_eq!(released, 0.0);
+        assert_eq!(queue.net_qty(), 0.0);
+        assert!(queue.is_empty());
     }
 }
