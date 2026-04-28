@@ -10,10 +10,11 @@ use crate::signal::common::{OrderStatus, SignalBytes, TradingVenue};
 use crate::signal::hedge_signal::{ArbHedgeStateCtx, ArbHedgeStateQueryMsg};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::arb_helper::create_and_send_order;
-use crate::strategy::arb_orphan_strategy::ArbOrphanLeg;
 use crate::strategy::hedge_order_reconcile::{HedgeOrderReconcileCommon, HedgeOrderReconcileState};
 use crate::strategy::hedge_strategy_common::HEDGE_QUERY_INTERVAL_US;
-use crate::strategy::manager::{ArbOrphanHandoff, OrderTerminalRecorder, Strategy};
+use crate::strategy::manager::{
+    OrderTerminalRecorder, OrphanHandoff, OrphanSourceKind, OrphanStrategyRole, Strategy,
+};
 use crate::strategy::net_qty_queue::{NetQtyQueue, TimedNetQtyQueue};
 use crate::strategy::order_reconcile::PendingOrderQueryReason;
 use crate::strategy::order_update::OrderUpdate;
@@ -671,11 +672,12 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
             reason,
             self.hedge_order_trace_snapshot(client_order_id)
         );
-        let handoff = ArbOrphanHandoff {
+        let handoff = OrphanHandoff {
             client_order_id,
             source_strategy_id: self.strategy_id,
-            leg: ArbOrphanLeg::Hedge,
-            uniform_ctx: Some(self.uniform_hedge_publish_ctx(client_order_id)),
+            source_kind: OrphanSourceKind::Hedge,
+            uniform_ctx: self.uniform_hedge_publish_ctx(client_order_id),
+            reason: reason.to_string(),
         };
         let Some(orphan_mgr) = MonitorChannel::try_orphan_strategy_mgr() else {
             warn!(
@@ -684,7 +686,9 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
             );
             return false;
         };
-        let adopted = orphan_mgr.borrow_mut().adopt_arb_orphan_order_id(&handoff);
+        let adopted = orphan_mgr
+            .borrow_mut()
+            .adopt_orphan_order_id(OrphanStrategyRole::Arb, &handoff);
         if !adopted {
             warn!(
                 "ArbHedgeStrategy: strategy_id={} arb orphan handoff rejected client_order_id={} reason={}",

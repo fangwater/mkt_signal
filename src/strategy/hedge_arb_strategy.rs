@@ -19,8 +19,9 @@ use crate::strategy::arb_helper::{
     align_taker_qty, arb_cancel_log_reason, base_to_venue_qty, create_and_send_order,
     panic_invalid_maker_hedge_price, parse_arb_open_signal_params,
 };
-use crate::strategy::arb_orphan_strategy::ArbOrphanLeg;
-use crate::strategy::manager::{ArbOrphanHandoff, OpenPriceMapEntry, Strategy};
+use crate::strategy::manager::{
+    OpenPriceMapEntry, OrphanHandoff, OrphanSourceKind, OrphanStrategyRole, Strategy,
+};
 use crate::strategy::order_reconcile::{
     qv_decimal_or_fallback, PendingOrderQueryReason, ORDER_QUERY_WATCHDOG_DELAY_US,
 };
@@ -106,56 +107,63 @@ impl HedgeArbStrategy {
     }
 
     // 将订单移交给 arb orphan 策略，后续 cancel/query 收敛完全由 orphan 自行决定。
-    fn handoff_order_to_arb_orphan(&mut self, client_order_id: i64, leg: ArbOrphanLeg) -> bool {
+    fn handoff_order_to_arb_orphan(
+        &mut self,
+        client_order_id: i64,
+        source_kind: OrphanSourceKind,
+    ) -> bool {
         // 订单ID无效时不进行移交
         if client_order_id <= 0 {
             return false;
         }
         // 构造移交信息，尝试移交给 orphan manager
-        let uniform_ctx = Some(match leg {
-            ArbOrphanLeg::Open => self.uniform_publish_ctx_for_leg(Leg::Open),
-            ArbOrphanLeg::Hedge => self.uniform_publish_ctx_for_leg(Leg::Hedge),
-        });
+        let uniform_ctx = match source_kind {
+            OrphanSourceKind::Open => self.uniform_publish_ctx_for_leg(Leg::Open),
+            OrphanSourceKind::Hedge => self.uniform_publish_ctx_for_leg(Leg::Hedge),
+        };
         // 这里的 source_strategy_id 是为了让 orphan manager 能够记录来源，便于后续查询和监控
-        let handoff = ArbOrphanHandoff {
+        let handoff = OrphanHandoff {
             client_order_id,
             source_strategy_id: self.strategy_id,
-            leg,
+            source_kind,
             uniform_ctx,
+            reason: "arb orphan handoff".to_string(),
         };
         // 尝试移交给 orphan manager，移交成功后根据 leg 清理对应的订单信息
         let Some(orphan_mgr) = MonitorChannel::try_orphan_strategy_mgr() else {
             warn!(
-                "HedgeArbStrategy: strategy_id={} arb orphan manager unavailable client_order_id={} leg={:?}",
-                self.strategy_id, client_order_id, leg
+                "HedgeArbStrategy: strategy_id={} arb orphan manager unavailable client_order_id={} source_kind={:?}",
+                self.strategy_id, client_order_id, source_kind
             );
             return false;
         };
-        let adopted = orphan_mgr.borrow_mut().adopt_arb_orphan_order_id(&handoff);
+        let adopted = orphan_mgr
+            .borrow_mut()
+            .adopt_orphan_order_id(OrphanStrategyRole::Arb, &handoff);
         if !adopted {
             warn!(
-                "HedgeArbStrategy: strategy_id={} arb orphan handoff rejected client_order_id={} leg={:?}",
-                self.strategy_id, client_order_id, leg
+                "HedgeArbStrategy: strategy_id={} arb orphan handoff rejected client_order_id={} source_kind={:?}",
+                self.strategy_id, client_order_id, source_kind
             );
             return false;
         }
-        match leg {
+        match source_kind {
             // 移交成功后清理订单信息，避免重复移交
-            ArbOrphanLeg::Open if self.open_order_id == client_order_id => {
+            OrphanSourceKind::Open if self.open_order_id == client_order_id => {
                 self.clear_query_watchdogs(client_order_id);
                 self.open_order_id = 0;
             }
-            ArbOrphanLeg::Hedge if self.hedge_order_id == Some(client_order_id) => {
+            OrphanSourceKind::Hedge if self.hedge_order_id == Some(client_order_id) => {
                 self.clear_query_watchdogs(client_order_id);
                 self.hedge_order_id = None;
             }
             _ => {}
         }
         info!(
-            "HedgeArbStrategy: strategy_id={} handoff order to arb orphan adopted client_order_id={} leg={:?}",
+            "HedgeArbStrategy: strategy_id={} handoff order to arb orphan adopted client_order_id={} source_kind={:?}",
             self.strategy_id,
             client_order_id,
-            leg
+            source_kind
         );
         true
     }
@@ -863,7 +871,9 @@ impl HedgeArbStrategy {
                             w.client_order_id,
                             w.reason
                         );
-                        if self.handoff_order_to_arb_orphan(w.client_order_id, ArbOrphanLeg::Open) {
+                        if self
+                            .handoff_order_to_arb_orphan(w.client_order_id, OrphanSourceKind::Open)
+                        {
                             self.alive_flag = false;
                         }
                     } else {
@@ -874,7 +884,8 @@ impl HedgeArbStrategy {
                             w.client_order_id,
                             w.reason
                         );
-                        if self.handoff_order_to_arb_orphan(w.client_order_id, ArbOrphanLeg::Hedge)
+                        if self
+                            .handoff_order_to_arb_orphan(w.client_order_id, OrphanSourceKind::Hedge)
                         {
                             self.alive_flag = false;
                         }
@@ -919,7 +930,9 @@ impl HedgeArbStrategy {
                             self.strategy_id,
                             w.client_order_id
                         );
-                        if self.handoff_order_to_arb_orphan(w.client_order_id, ArbOrphanLeg::Open) {
+                        if self
+                            .handoff_order_to_arb_orphan(w.client_order_id, OrphanSourceKind::Open)
+                        {
                             self.alive_flag = false;
                         }
                     } else {
@@ -929,7 +942,8 @@ impl HedgeArbStrategy {
                             self.strategy_id,
                             w.client_order_id
                         );
-                        if self.handoff_order_to_arb_orphan(w.client_order_id, ArbOrphanLeg::Hedge)
+                        if self
+                            .handoff_order_to_arb_orphan(w.client_order_id, OrphanSourceKind::Hedge)
                         {
                             self.alive_flag = false;
                         }
@@ -2009,7 +2023,7 @@ impl HedgeArbStrategy {
             code_desc,
             response.is_cancel_not_cancellable()
         );
-        if self.handoff_order_to_arb_orphan(client_order_id, ArbOrphanLeg::Hedge) {
+        if self.handoff_order_to_arb_orphan(client_order_id, OrphanSourceKind::Hedge) {
             self.alive_flag = false;
         }
     }

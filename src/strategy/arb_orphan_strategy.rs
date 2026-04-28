@@ -4,7 +4,7 @@ use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::OrderExecutionStatus;
 use crate::signal::common::OrderStatus;
 use crate::signal::trade_signal::TradeSignal;
-use crate::strategy::manager::{ArbOrphanHandoff, OrphanSourceKind, Strategy};
+use crate::strategy::manager::{OrphanHandoff, Strategy};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::orphan_order_common::{OrphanOrderOwner, OrphanOrderTracker};
 use crate::strategy::trade_update::TradeUpdate;
@@ -12,7 +12,7 @@ use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
     publish_uniform_trade_order_from_order_update,
 };
-use log::{debug, info};
+use log::info;
 use std::any::Any;
 
 const ARB_ORPHAN_EPS: f64 = 1e-12;
@@ -20,19 +20,11 @@ const ARB_ORPHAN_QUERY_BASE_TICKS: u32 = 25;
 const ARB_ORPHAN_QUERY_MAX_TICKS: u32 = 3_200;
 const ARB_ORPHAN_ROLE: &str = "ArbOrphanStrategy: strategy_role=arb_orphan";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ArbOrphanLeg {
-    Open,
-    Hedge,
-}
-
 #[derive(Debug, Clone)]
 pub struct ArbOrphanSnapshot {
     pub symbol: String,
     pub tracked_orders: usize,
 }
-
-pub type ArbOrphanOrderOwner = OrphanOrderOwner;
 
 pub struct ArbOrphanStrategy {
     strategy_id: i32,
@@ -55,14 +47,7 @@ impl ArbOrphanStrategy {
         }
     }
 
-    fn source_kind_from_leg(leg: ArbOrphanLeg) -> OrphanSourceKind {
-        match leg {
-            ArbOrphanLeg::Open => OrphanSourceKind::Open,
-            ArbOrphanLeg::Hedge => OrphanSourceKind::Hedge,
-        }
-    }
-
-    pub fn adopt_order_id(&mut self, handoff: &ArbOrphanHandoff) -> bool {
+    pub(crate) fn adopt_orphan_order_id(&mut self, handoff: &OrphanHandoff) -> bool {
         if handoff.client_order_id <= 0 {
             return false;
         }
@@ -84,47 +69,22 @@ impl ArbOrphanStrategy {
             handoff.client_order_id,
             OrphanOrderOwner {
                 source_strategy_id: handoff.source_strategy_id,
-                source_kind: Self::source_kind_from_leg(handoff.leg),
-                uniform_ctx: handoff.uniform_ctx.clone(),
+                source_kind: handoff.source_kind,
+                uniform_ctx: Some(handoff.uniform_ctx.clone()),
             },
         );
         info!(
-            "ArbOrphanStrategy: strategy_role=arb_orphan strategy_id={} adopted order symbol={} client_order_id={} venue={:?} status={:?} leg={:?} source_strategy_id={}",
+            "ArbOrphanStrategy: strategy_role=arb_orphan strategy_id={} adopted order symbol={} client_order_id={} venue={:?} status={:?} source_kind={:?} source_strategy_id={} reason={}",
             self.strategy_id,
             symbol,
             handoff.client_order_id,
             venue,
             status,
-            handoff.leg,
-            handoff.source_strategy_id
+            handoff.source_kind,
+            handoff.source_strategy_id,
+            handoff.reason
         );
         true
-    }
-
-    pub fn track_open_order_id(&mut self, client_order_id: i64) {
-        self.track_order_id(client_order_id, ArbOrphanLeg::Open);
-    }
-
-    pub fn track_hedge_order_id(&mut self, client_order_id: i64) {
-        self.track_order_id(client_order_id, ArbOrphanLeg::Hedge);
-    }
-
-    pub fn track_order_id(&mut self, client_order_id: i64, leg: ArbOrphanLeg) {
-        if client_order_id <= 0 {
-            return;
-        }
-        self.orders.track_order_with_owner(
-            client_order_id,
-            OrphanOrderOwner {
-                source_strategy_id: 0,
-                source_kind: Self::source_kind_from_leg(leg),
-                uniform_ctx: None,
-            },
-        );
-        debug!(
-            "ArbOrphanStrategy: strategy_id={} track order client_order_id={} leg={:?}",
-            self.strategy_id, client_order_id, leg
-        );
     }
 
     pub fn snapshot(&self) -> ArbOrphanSnapshot {
@@ -255,10 +215,6 @@ impl Strategy for ArbOrphanStrategy {
     }
 
     fn handle_signal(&mut self, _signal: &TradeSignal) {}
-
-    fn adopt_arb_orphan_order_id(&mut self, handoff: &ArbOrphanHandoff) -> bool {
-        self.adopt_order_id(handoff)
-    }
 
     fn apply_order_update(&mut self, update: &dyn OrderUpdate) {
         if normalize_symbol_for_internal(update.symbol()) != self.symbol {

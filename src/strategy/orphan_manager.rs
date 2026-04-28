@@ -2,9 +2,7 @@ use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::strategy::arb_orphan_strategy::{ArbOrphanSnapshot, ArbOrphanStrategy};
 use crate::strategy::hedge_orphan_order_strategy::HedgeOrphanOrderStrategy;
-use crate::strategy::manager::{
-    ArbOrphanHandoff, OrphanHandoff, OrphanStrategyRole, Strategy, StrategyManager,
-};
+use crate::strategy::manager::{OrphanHandoff, OrphanStrategyRole, Strategy, StrategyManager};
 use crate::strategy::mm_orphan_order_strategy::MmOrphanOrderStrategy;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
@@ -182,6 +180,7 @@ impl OrphanStrategyManager {
         let strategy_id = match role {
             OrphanStrategyRole::Mm => self.ensure_mm_orphan_strategy(&symbol),
             OrphanStrategyRole::Hedge => self.ensure_hedge_orphan_strategy(&symbol),
+            OrphanStrategyRole::Arb => self.ensure_arb_orphan_strategy(&symbol),
         };
         let Some(strategy) = self.strategies.get_mut(&strategy_id) else {
             return false;
@@ -195,23 +194,11 @@ impl OrphanStrategyManager {
                 .as_any_mut()
                 .downcast_mut::<HedgeOrphanOrderStrategy>()
                 .is_some_and(|strategy| strategy.adopt_orphan_order_id(handoff)),
+            OrphanStrategyRole::Arb => strategy
+                .as_any_mut()
+                .downcast_mut::<ArbOrphanStrategy>()
+                .is_some_and(|strategy| strategy.adopt_orphan_order_id(handoff)),
         }
-    }
-
-    pub fn adopt_arb_orphan_order_id(&mut self, handoff: &ArbOrphanHandoff) -> bool {
-        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
-            return false;
-        };
-        let Some(order) = order_mgr.borrow().get(handoff.client_order_id) else {
-            return false;
-        };
-        let symbol = order.symbol.clone();
-        drop(order);
-        let strategy_id = self.ensure_arb_orphan_strategy(&symbol);
-        let Some(strategy) = self.strategies.get_mut(&strategy_id) else {
-            return false;
-        };
-        strategy.adopt_arb_orphan_order_id(handoff)
     }
 
     pub fn apply_order_update(&mut self, update: &dyn OrderUpdate) -> bool {

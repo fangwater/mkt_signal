@@ -5,7 +5,6 @@ use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::Side;
 use crate::signal::trade_signal::TradeSignal;
 use crate::strategy::arb_hedge_strategy::{ArbHedgeMode, ArbHedgeSnapshot, ArbHedgeStrategy};
-use crate::strategy::arb_orphan_strategy::ArbOrphanLeg;
 use crate::strategy::mm_hedge_strategy::{MarketMakerHedgeStrategy, MmHedgeSnapshot};
 use crate::strategy::uniform_order_helper::UniformPublishCtx;
 use crate::strategy::{
@@ -119,9 +118,6 @@ pub trait Strategy {
     fn apply_order_update(&mut self, update: &dyn OrderUpdate);
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate);
     fn apply_trade_engine_response(&mut self, _response: &dyn TradeEngineResponse) {}
-    fn adopt_arb_orphan_order_id(&mut self, _handoff: &ArbOrphanHandoff) -> bool {
-        false
-    }
     fn handle_period_clock(&mut self, current_tp: i64);
     fn is_active(&self) -> bool;
     fn symbol(&self) -> Option<&str>;
@@ -170,6 +166,7 @@ pub enum OrphanSourceKind {
 pub enum OrphanStrategyRole {
     Mm,
     Hedge,
+    Arb,
 }
 
 impl OrphanStrategyRole {
@@ -177,6 +174,7 @@ impl OrphanStrategyRole {
         match self {
             Self::Mm => "mm_orphan",
             Self::Hedge => "hedge_orphan",
+            Self::Arb => "arb_orphan",
         }
     }
 }
@@ -221,16 +219,6 @@ impl OrphanHandoff {
         }
     }
 }
-
-#[derive(Debug, Clone)]
-pub struct ArbOrphanHandoff {
-    pub client_order_id: i64,
-    pub source_strategy_id: i32,
-    pub leg: ArbOrphanLeg,
-    pub uniform_ctx: Option<ArbOrphanUniformCtx>,
-}
-
-pub type ArbOrphanUniformCtx = UniformPublishCtx;
 
 /// Strategy id -> Strategy 映射的简单管理器
 pub struct StrategyManager {
