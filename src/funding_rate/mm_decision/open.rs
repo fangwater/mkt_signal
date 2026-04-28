@@ -7,6 +7,7 @@ use super::super::mkt_channel::MktChannel;
 use super::super::symbol_list::SymbolList;
 use super::from_key::build_from_key;
 use super::state::{MmDecisionState, MmOpenPublishStats};
+use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::time_util::get_timestamp_us;
 use crate::market_maker::open_quote_plan::build_mm_open_quote_plan;
 use crate::signal::common::TradingVenue;
@@ -25,6 +26,10 @@ fn mm_open_blocked_by_environment(
     environment_signal: &EnvironmentSignalResult,
 ) -> bool {
     enable_environment_model && !environment_signal.allow_open
+}
+
+fn tradecount_threshold_symbol_key(symbol: &str, hedge_venue: TradingVenue) -> String {
+    normalize_symbol_for_venue(symbol, hedge_venue)
 }
 
 impl MmOpenDecision {
@@ -119,8 +124,9 @@ impl MmOpenDecision {
             .factor_value_hub
             .latest_tradecount_mean(symbol, state.hedge_venue);
         if state.enable_tradecount_limit {
-            let tradecount_snapshot =
-                state.snapshot_open_tradecount(&symbol_key, tradecount.unwrap_or_default());
+            let tradecount_symbol_key = tradecount_threshold_symbol_key(symbol, state.hedge_venue);
+            let tradecount_snapshot = state
+                .snapshot_open_tradecount(&tradecount_symbol_key, tradecount.unwrap_or_default());
             let Some(tradecount_threshold) = tradecount_snapshot.threshold else {
                 return Ok(MmOpenEvalResult::skipped(
                     &symbol_key,
@@ -550,9 +556,13 @@ fn log_interval_summary(state: &MmDecisionState, results: &[MmOpenEvalResult]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{mm_open_blocked_by_environment, publish_failure_reason};
+    use super::{
+        mm_open_blocked_by_environment, publish_failure_reason, tradecount_threshold_symbol_key,
+    };
     use crate::funding_rate::factor_value_hub::{EnvironmentSignalResult, EnvironmentSignalSource};
     use crate::funding_rate::mm_decision::state::MmOpenPublishStats;
+    use crate::signal::common::TradingVenue;
+    use crate::symbol_match::normalize_symbol_for_whitelist;
 
     fn sample_environment_signal(allow_open: bool) -> EnvironmentSignalResult {
         EnvironmentSignalResult {
@@ -631,6 +641,22 @@ mod tests {
         assert_eq!(
             publish_failure_reason(&stats),
             "all_levels_filtered(mixed_reasons zero_quantized=2 tlen_filtered=5)"
+        );
+    }
+
+    #[test]
+    fn tradecount_threshold_key_matches_trade_flow_sampling_key() {
+        assert_eq!(
+            tradecount_threshold_symbol_key("BTCUSDT", TradingVenue::OkexFutures),
+            "BTC-USDT-SWAP"
+        );
+        assert_eq!(
+            normalize_symbol_for_whitelist("BTCUSDT", TradingVenue::OkexFutures),
+            "BTCUSDT"
+        );
+        assert_eq!(
+            tradecount_threshold_symbol_key("BTC-USDT-SWAP", TradingVenue::BinanceFutures),
+            "BTCUSDT"
         );
     }
 }

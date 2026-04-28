@@ -133,6 +133,7 @@ impl Strategy for ArbHedgeStrategy {
 #[cfg(test)]
 mod tests {
     use super::ArbHedgeStrategy;
+    use crate::pre_trade::order_manager::Side;
     use crate::signal::common::TradingVenue;
     use crate::strategy::manager::OrderTerminalRecorder;
 
@@ -145,7 +146,7 @@ mod tests {
             TradingVenue::BinanceFutures,
         );
 
-        strategy.record_open_order_terminal(10, 2.0, 100.0, 1_000);
+        strategy.record_open_order_terminal(10, Side::Buy, 2.0, 2.0, 100.0, 1_000);
 
         assert_eq!(strategy.net_qty(), 2.0);
         assert_eq!(strategy.pending_hedge_qty(), 2.0);
@@ -162,10 +163,13 @@ mod tests {
             TradingVenue::BinanceFutures,
         );
 
-        strategy.record_open_order_terminal(10, 2.0, 100.0, 1_000);
-        strategy.record_hedge_order_terminal(20, -1.25, 101.0);
+        strategy.record_open_order_terminal(10, Side::Buy, 2.0, 2.0, 100.0, 1_000);
+        let borrowed = strategy.pending_hedge_queue.borrow(1_000, 2.0);
+        assert_eq!(borrowed.qv, 2.0);
+        strategy.record_hedge_order_terminal(1_000, Side::Sell, 2.0, 1.25, 101.0);
 
         assert_eq!(strategy.net_qty(), 0.75);
-        assert_eq!(strategy.pending_hedge_qty(), 2.0);
+        assert_eq!(strategy.pending_hedge_qty(), 0.75);
+        assert_eq!(strategy.due_hedge_qty(1_000), 0.75);
     }
 }

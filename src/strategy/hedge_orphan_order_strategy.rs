@@ -145,30 +145,37 @@ impl HedgeOrphanOrderStrategy {
                     (
                         order.symbol.clone(),
                         order.side,
+                        order.quantity * order.qty_multiplier,
                         order.cumulative_filled_quantity * order.qty_multiplier,
                         order.price,
                     )
                 })
             };
-            if let Some((symbol, side, cumulative_base_qty, price)) = snapshot {
-                if cumulative_base_qty > 1e-12 {
-                    let signed_base_qty = match side {
-                        crate::pre_trade::order_manager::Side::Buy => cumulative_base_qty.abs(),
-                        crate::pre_trade::order_manager::Side::Sell => -cumulative_base_qty.abs(),
-                    };
+            if let Some((symbol, side, order_base_qty, cumulative_base_qty, price)) = snapshot {
+                let should_record = match owner.source_kind {
+                    OrphanSourceKind::Open => cumulative_base_qty > 1e-12,
+                    OrphanSourceKind::Hedge => {
+                        order_base_qty > 1e-12 || cumulative_base_qty > 1e-12
+                    }
+                };
+                if should_record {
                     let strategy_mgr = MonitorChannel::instance().strategy_mgr();
                     let mut strategy_mgr = strategy_mgr.borrow_mut();
                     let recorded = match owner.source_kind {
                         OrphanSourceKind::Open => strategy_mgr.record_open_order_terminal(
                             &symbol,
-                            signed_base_qty,
+                            side,
+                            order_base_qty,
+                            cumulative_base_qty,
                             event_time,
                             price,
                             0,
                         ),
                         OrphanSourceKind::Hedge => strategy_mgr.record_hedge_order_terminal(
                             &symbol,
-                            signed_base_qty,
+                            side,
+                            order_base_qty,
+                            cumulative_base_qty,
                             event_time,
                             price,
                         ),

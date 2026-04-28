@@ -225,11 +225,11 @@ impl TimedNetQtyQueue {
         }
     }
 
-    /// 从待处理队列里借出一段同方向数量，用于挂单先占用 hedge 需求。
+    /// 从待处理队列里借出一段已到期的同方向数量，用于挂单先占用 hedge 需求。
     ///
     /// `qv` 使用 pending 需求方向，而不是 hedge 订单方向。比如 open 买入形成 `+2` 的
     /// pending，挂 sell hedge 时这里借出的仍然是 `+2`。函数只做数量扣减，不表达成交。
-    pub fn borrow(&mut self, qv: f64) -> TimedNetQtyBorrow {
+    pub fn borrow(&mut self, now_ts: i64, qv: f64) -> TimedNetQtyBorrow {
         if qv.abs() <= NET_QTY_EPS {
             return TimedNetQtyBorrow::default();
         }
@@ -251,6 +251,9 @@ impl TimedNetQtyQueue {
             let Some(oldest_lot) = self.lots.get(&oldest_key).cloned() else {
                 break;
             };
+            if oldest_lot.close_ts > 0 && oldest_lot.close_ts > now_ts {
+                break;
+            }
             if direction_from_signed_qty(oldest_lot.qv) != direction {
                 break;
             }
@@ -297,45 +300,14 @@ impl TimedNetQtyQueue {
         }
     }
 
-    /// 释放未成交的借用数量。已到 close_ts 的借用不再加回 pending，按 0 处理。
-    pub fn release(
-        &mut self,
-        now_ts: i64,
-        borrowed_lots: &[TimedNetQtyLot],
-        release_qty: f64,
-        price: f64,
-    ) -> f64 {
-        if release_qty <= NET_QTY_EPS {
+    /// 释放未成交的借用数量。release 回来的数量按 close_ts=0 放回，下一轮优先 borrow。
+    pub fn release(&mut self, now_ts: i64, qv: f64, price: f64) -> f64 {
+        if qv.abs() <= NET_QTY_EPS {
             return 0.0;
         }
 
-        let mut remaining_qty = release_qty;
-        let mut released_qv = 0.0;
-        for lot in borrowed_lots {
-            if remaining_qty <= NET_QTY_EPS {
-                break;
-            }
-            if lot.close_ts <= 0 || lot.close_ts <= now_ts {
-                continue;
-            }
-
-            let release_qty = remaining_qty.min(lot.qty);
-            if release_qty <= NET_QTY_EPS {
-                continue;
-            }
-
-            let direction = direction_from_signed_qty(lot.qv);
-            let qv = signed_qty_for_direction(direction, release_qty);
-            self.put(now_ts, lot.close_ts, qv, price);
-            released_qv += qv;
-            remaining_qty -= release_qty;
-        }
-
-        if released_qv.abs() <= NET_QTY_EPS {
-            0.0
-        } else {
-            released_qv
-        }
+        self.put(now_ts, 0, qv, price);
+        qv
     }
 
     fn insert_lot(&mut self, ts: i64, close_ts: i64, qv: f64, price: f64) {
@@ -535,42 +507,65 @@ mod tests {
         queue.put(10, 100, 2.0, 100.0);
         queue.put(20, 200, 3.0, 101.0);
 
-        let borrowed = queue.borrow(4.0);
+        let borrowed = queue.borrow(150, 4.0);
 
-        assert_eq!(borrowed.qv, 4.0);
-        assert_eq!(borrowed.qty, 4.0);
-        assert_eq!(borrowed.lots.len(), 2);
-        assert_eq!(queue.net_qty(), 1.0);
+        assert_eq!(borrowed.qv, 2.0);
+        assert_eq!(borrowed.qty, 2.0);
+        assert_eq!(borrowed.lots.len(), 1);
+        assert_eq!(queue.net_qty(), 3.0);
         let lots = queue.lots();
         assert_eq!(lots.len(), 1);
         assert_eq!(lots[0].close_ts, 200);
-        assert_eq!(lots[0].qv, 1.0);
+        assert_eq!(lots[0].qv, 3.0);
     }
 
     #[test]
-    fn timed_queue_release_restores_unexpired_borrow() {
+    fn timed_queue_release_restores_borrow_as_due_qty() {
         let mut queue = TimedNetQtyQueue::new();
         queue.put(10, 100, 2.0, 100.0);
 
-        let borrowed = queue.borrow(2.0);
-        let released = queue.release(50, &borrowed.lots, 0.75, 101.0);
+        let _borrowed = queue.borrow(100, 2.0);
+        let released = queue.release(150, 0.75, 101.0);
 
         assert_eq!(released, 0.75);
         assert_eq!(queue.net_qty(), 0.75);
-        assert_eq!(queue.due_qty(99), 0.0);
-        assert_eq!(queue.due_qty(100), 0.75);
+        assert_eq!(queue.due_qty(150), 0.75);
+        assert_eq!(queue.lots()[0].close_ts, 0);
+
+        let borrowed_again = queue.borrow(150, 0.5);
+        assert_eq!(borrowed_again.qv, 0.5);
+        assert_eq!(queue.net_qty(), 0.25);
+        assert_eq!(queue.lots()[0].close_ts, 0);
     }
 
     #[test]
-    fn timed_queue_release_after_close_ts_is_zero() {
+    fn timed_queue_borrow_before_close_ts_is_zero() {
         let mut queue = TimedNetQtyQueue::new();
         queue.put(10, 100, 2.0, 100.0);
 
-        let borrowed = queue.borrow(2.0);
-        let released = queue.release(100, &borrowed.lots, 2.0, 101.0);
+        let borrowed = queue.borrow(99, 2.0);
 
-        assert_eq!(released, 0.0);
-        assert_eq!(queue.net_qty(), 0.0);
-        assert!(queue.is_empty());
+        assert_eq!(borrowed.qty, 0.0);
+        assert_eq!(queue.net_qty(), 2.0);
+        assert_eq!(queue.due_qty(99), 0.0);
+    }
+
+    #[test]
+    fn timed_queue_release_then_opposite_put_offsets_direction() {
+        let mut queue = TimedNetQtyQueue::new();
+        queue.put(10, 100, 2.0, 100.0);
+
+        let _borrowed = queue.borrow(100, 2.0);
+        let released = queue.release(150, 1.5, 101.0);
+        let result = queue.put(160, 0, -1.0, 99.0);
+
+        assert_eq!(released, 1.5);
+        assert_eq!(result.matched_qty, 1.0);
+        assert_eq!(result.appended_qty, 0.0);
+        assert_eq!(queue.net_qty(), 0.5);
+        let lots = queue.lots();
+        assert_eq!(lots.len(), 1);
+        assert_eq!(lots[0].close_ts, 0);
+        assert_eq!(lots[0].qv, 0.5);
     }
 }

@@ -143,32 +143,38 @@ pub trait OpenStrategyCommon {
         &mut self,
         symbol: &str,
         side: Side,
-        base_qty: f64,
-        fill_ts: i64,
+        order_base_qty: f64,
+        filled_base_qty: f64,
+        terminal_ts: i64,
         price: f64,
         update_detail: &str,
     ) -> bool {
-        if base_qty <= 1e-12 {
+        if filled_base_qty <= 1e-12 {
             return false;
         }
-        let signed_base_qty = match side {
-            Side::Buy => base_qty.abs(),
-            Side::Sell => -base_qty.abs(),
-        };
         let close_ts = self.open_terminal_close_ts();
         let updated = MonitorChannel::instance()
             .strategy_mgr()
             .borrow_mut()
-            .record_open_order_terminal(symbol, signed_base_qty, fill_ts, price, close_ts);
+            .record_open_order_terminal(
+                symbol,
+                side,
+                order_base_qty,
+                filled_base_qty,
+                terminal_ts,
+                price,
+                close_ts,
+            );
         if !updated {
             warn!(
-                "{}: strategy_id={} record open order terminal failed symbol={} side={:?} base_qty={:.8} fill_ts={} price={:.8} close_ts={} detail={}",
+                "{}: strategy_id={} record open order terminal failed symbol={} side={:?} order_base_qty={:.8} filled_base_qty={:.8} terminal_ts={} price={:.8} close_ts={} detail={}",
                 self.strategy_name(),
                 self.strategy_id(),
                 symbol,
                 side,
-                base_qty,
-                fill_ts,
+                order_base_qty,
+                filled_base_qty,
+                terminal_ts,
                 price,
                 close_ts,
                 update_detail
@@ -1070,6 +1076,7 @@ pub trait OpenStrategyCommon {
             self.record_open_order_terminal_base_qty(
                 &order.symbol,
                 order.side,
+                order.quantity * order.qty_multiplier,
                 terminal_base_qty,
                 order_update.event_time(),
                 order.price,
@@ -1232,6 +1239,7 @@ pub trait OpenStrategyCommon {
             self.record_open_order_terminal_base_qty(
                 &order.symbol,
                 order.side,
+                order.quantity * order.qty_multiplier,
                 terminal_base_qty,
                 event_time,
                 order.price,

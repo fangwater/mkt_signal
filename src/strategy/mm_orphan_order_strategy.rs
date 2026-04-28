@@ -158,6 +158,7 @@ impl MmOrphanOrderStrategy {
                     order.venue,
                     order.symbol.clone(),
                     order.side,
+                    order.quantity,
                     order.cumulative_filled_quantity,
                     order.price,
                 )
@@ -165,35 +166,39 @@ impl MmOrphanOrderStrategy {
         };
 
         let owner = self.order_owners.get(&client_order_id).cloned();
-        if let (Some((venue, symbol, side, cumulative_qty, price)), Some(owner)) = (snapshot, owner)
+        if let (Some((venue, symbol, side, order_qty, cumulative_qty, price)), Some(owner)) =
+            (snapshot, owner)
         {
-            if cumulative_qty > 0.0 {
-                let base_qty =
-                    MonitorChannel::instance().qty_to_base(venue, &symbol, cumulative_qty);
-                if base_qty > 0.0 {
-                    let signed_base_qty = match side {
-                        crate::pre_trade::order_manager::Side::Buy => base_qty,
-                        crate::pre_trade::order_manager::Side::Sell => -base_qty,
-                    };
-                    let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-                    let mut strategy_mgr = strategy_mgr.borrow_mut();
-                    let symbol = normalize_symbol_for_internal(&symbol);
-                    let _ = match owner.source_kind {
-                        OrphanSourceKind::Open => strategy_mgr.record_open_order_terminal(
-                            &symbol,
-                            signed_base_qty,
-                            event_time,
-                            price,
-                            0,
-                        ),
-                        OrphanSourceKind::Hedge => strategy_mgr.record_hedge_order_terminal(
-                            &symbol,
-                            signed_base_qty,
-                            event_time,
-                            price,
-                        ),
-                    };
-                }
+            let order_base_qty = MonitorChannel::instance().qty_to_base(venue, &symbol, order_qty);
+            let cumulative_base_qty =
+                MonitorChannel::instance().qty_to_base(venue, &symbol, cumulative_qty);
+            let should_record = match owner.source_kind {
+                OrphanSourceKind::Open => cumulative_base_qty > 0.0,
+                OrphanSourceKind::Hedge => order_base_qty > 0.0 || cumulative_base_qty > 0.0,
+            };
+            if should_record {
+                let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+                let mut strategy_mgr = strategy_mgr.borrow_mut();
+                let symbol = normalize_symbol_for_internal(&symbol);
+                let _ = match owner.source_kind {
+                    OrphanSourceKind::Open => strategy_mgr.record_open_order_terminal(
+                        &symbol,
+                        side,
+                        order_base_qty,
+                        cumulative_base_qty,
+                        event_time,
+                        price,
+                        0,
+                    ),
+                    OrphanSourceKind::Hedge => strategy_mgr.record_hedge_order_terminal(
+                        &symbol,
+                        side,
+                        order_base_qty,
+                        cumulative_base_qty,
+                        event_time,
+                        price,
+                    ),
+                };
             }
             let _ = order_mgr.borrow_mut().remove(client_order_id);
         }

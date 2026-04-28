@@ -146,16 +146,20 @@ pub trait Strategy {
 pub trait OrderTerminalRecorder {
     fn record_open_order_terminal(
         &mut self,
-        fill_ts: i64,
-        signed_base_qty: f64,
+        terminal_ts: i64,
+        side: Side,
+        order_base_qty: f64,
+        filled_base_qty: f64,
         price: f64,
         close_ts: i64,
     ) -> bool;
 
     fn record_hedge_order_terminal(
         &mut self,
-        fill_ts: i64,
-        signed_base_qty: f64,
+        terminal_ts: i64,
+        side: Side,
+        order_base_qty: f64,
+        filled_base_qty: f64,
         price: f64,
     ) -> bool;
 }
@@ -727,8 +731,10 @@ impl StrategyManager {
     pub fn record_open_order_terminal(
         &mut self,
         symbol: &str,
-        signed_base_qty: f64,
-        fill_ts: i64,
+        side: Side,
+        order_base_qty: f64,
+        filled_base_qty: f64,
+        terminal_ts: i64,
         price: f64,
         close_ts: i64,
     ) -> bool {
@@ -741,14 +747,23 @@ impl StrategyManager {
         let Some(recorder) = strategy.order_terminal_recorder_mut() else {
             return false;
         };
-        recorder.record_open_order_terminal(fill_ts, signed_base_qty, price, close_ts)
+        recorder.record_open_order_terminal(
+            terminal_ts,
+            side,
+            order_base_qty,
+            filled_base_qty,
+            price,
+            close_ts,
+        )
     }
 
     pub fn record_hedge_order_terminal(
         &mut self,
         symbol: &str,
-        signed_base_qty: f64,
-        fill_ts: i64,
+        side: Side,
+        order_base_qty: f64,
+        filled_base_qty: f64,
+        terminal_ts: i64,
         price: f64,
     ) -> bool {
         let Some(id) = self.find_order_terminal_recorder_id(symbol) else {
@@ -760,7 +775,13 @@ impl StrategyManager {
         let Some(recorder) = strategy.order_terminal_recorder_mut() else {
             return false;
         };
-        recorder.record_hedge_order_terminal(fill_ts, signed_base_qty, price)
+        recorder.record_hedge_order_terminal(
+            terminal_ts,
+            side,
+            order_base_qty,
+            filled_base_qty,
+            price,
+        )
     }
 
     pub fn arb_hedge_snapshots(&self, now_ts: i64) -> Vec<ArbHedgeSnapshot> {
