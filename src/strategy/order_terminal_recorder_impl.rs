@@ -42,10 +42,9 @@ impl OrderTerminalRecorder for ArbHedgeStrategy {
             self.net_qty_queue.net_qty(),
             self.pending_hedge_queue.net_qty()
         );
-        // Trigger 模式下，开仓成交 terminal 就是状态式对冲查询的触发点。
-        // 这里必须放在 pending_hedge_queue.put(...) 之后，确保 query 看到最新的
-        // net_qty / pending_hedge_qty / due_hedge_qty。即使 close_ts 还没到，query
-        // 也会带上 pending 总量和 due=0，避免 Arb hedge 依赖 period clock 才刷新状态。
+        // 开仓成交 terminal 会尝试立即触发一次状态查询，但它只负责“已经 due 的量”。
+        // 如果 close_ts 还没到，trigger 会跳过，后续由 ArbHedgeStrategy::handle_period_clock
+        // 作为 close_ts 时间轮在到期后重新拉起 query，避免藏仓 pending 永远留在队列里。
         self.trigger_hedge_state_query_after_open_terminal(terminal_ts);
         true
     }

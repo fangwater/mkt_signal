@@ -34,12 +34,6 @@ use std::collections::{BTreeMap, HashMap};
 const ARB_HEDGE_QTY_EPS: f64 = 1e-12;
 const ARB_HEDGE_PENDING_QUERY_MIN_USDT: f64 = 25.0;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ArbHedgeMode {
-    Trigger,
-    Period,
-}
-
 /// Arb 对冲策略的只读状态快照。
 ///
 /// 调用方可以通过它观察双 venue 合并后的净敞口和待对冲数量。
@@ -68,7 +62,6 @@ pub struct ArbHedgeStrategy {
     pub(super) net_qty_queue: NetQtyQueue,
     /// 尚需由对冲腿覆盖的开仓成交队列，到期时间来自开仓记录的 close_ts。
     pub(super) pending_hedge_queue: TimedNetQtyQueue,
-    hedge_mode: ArbHedgeMode,
     hedge_request_seq: u64,
     pending_hedge_request_seq: Option<u64>,
     last_hedge_ts_ms: Option<i64>,
@@ -100,11 +93,7 @@ impl ArbHedgeStrategy {
         symbol: impl Into<String>,
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
-        hedge_mode: ArbHedgeMode,
     ) -> Self {
-        if hedge_mode == ArbHedgeMode::Period {
-            panic!("ArbHedgeStrategy period hedge mode is not implemented");
-        }
         Self {
             strategy_id,
             symbol: normalize_symbol_for_internal(&symbol.into()),
@@ -112,7 +101,6 @@ impl ArbHedgeStrategy {
             hedge_venue,
             net_qty_queue: NetQtyQueue::new(),
             pending_hedge_queue: TimedNetQtyQueue::new(),
-            hedge_mode,
             hedge_request_seq: 0,
             pending_hedge_request_seq: None,
             last_hedge_ts_ms: None,
@@ -304,53 +292,76 @@ impl ArbHedgeStrategy {
         &mut self,
         terminal_ts: i64,
     ) -> bool {
-        // Arb hedge 当前是 Trigger 模式：每笔 open 订单 terminal 后都会把成交量写入
-        // pending_hedge_queue，并立即触发一次状态查询。这里不依赖 period clock，也不做
-        // query watchdog；如果查询没有回包，下一笔 open terminal 会再次触发新的查询。
-        //
-        // close_ts 的判断仍然保留在 TimedNetQtyQueue::due_qty 里：
-        // - close_ts == 0 的开仓成交会立刻进入 due_hedge_qty；
-        // - close_ts > now 的藏仓成交只计入 pending_hedge_qty，due_hedge_qty 为 0；
-        // 查询消息同时携带 pending 和 due，让上游按当前规则决定是否实际发 hedge。
-        //
-        // 但 trigger 不是无条件刷消息：pending 待对冲量需要先按 mark price 折算成
-        // USDT 名义价值，低于 25U 时直接跳过。这样小额残值仍留在 pending 队列里，
-        // 等后续 open terminal 累积到足够名义价值后再触发 query，避免频繁发送无意义
-        // 的状态查询。
         let now_ts = if terminal_ts > 0 {
             terminal_ts
         } else {
             get_timestamp_us()
         };
+        // Arb hedge 固定只有一套长期运行流程。这里是事件触发入口：
+        // open terminal、hedge 撤单/终态释放后，如果已有 due 数量就立即补一次查询；
+        // 如果 close_ts 还没到，固定由 period clock 的时间轮到期后重新拉起。
+        self.try_send_due_hedge_state_query(now_ts, "trigger", false)
+    }
+
+    fn try_send_due_hedge_state_query(
+        &mut self,
+        now_ts: i64,
+        reason: &'static str,
+        throttle_on_skip: bool,
+    ) -> bool {
         let pending_hedge_qty = self.pending_hedge_queue.net_qty();
         if pending_hedge_qty.abs() <= ARB_HEDGE_QTY_EPS {
             return false;
         }
-        let Some(mark_price) = self.mark_price() else {
-            info!(
-                "ArbHedgeStrategy: strategy_id={} symbol={} skip trigger hedge query because mark_price missing pending_hedge_qty={:.8} threshold_usdt={:.8}",
+        let due_hedge_qty = self.pending_hedge_queue.due_qty(now_ts);
+        if due_hedge_qty.abs() <= ARB_HEDGE_QTY_EPS {
+            debug!(
+                "ArbHedgeStrategy: strategy_id={} symbol={} skip {} hedge query because pending hedge is not due yet pending_hedge_qty={:.8} due_hedge_qty={:.8} now_ts={}",
                 self.strategy_id,
                 self.symbol,
+                reason,
                 pending_hedge_qty,
-                ARB_HEDGE_PENDING_QUERY_MIN_USDT
+                due_hedge_qty,
+                now_ts
+            );
+            return false;
+        }
+        let Some(mark_price) = self.mark_price() else {
+            if throttle_on_skip {
+                self.next_query_ts_us = now_ts.saturating_add(HEDGE_QUERY_INTERVAL_US);
+            }
+            info!(
+                "ArbHedgeStrategy: strategy_id={} symbol={} skip {} hedge query because mark_price missing pending_hedge_qty={:.8} due_hedge_qty={:.8} threshold_usdt={:.8} next_query_ts_us={}",
+                self.strategy_id,
+                self.symbol,
+                reason,
+                pending_hedge_qty,
+                due_hedge_qty,
+                ARB_HEDGE_PENDING_QUERY_MIN_USDT,
+                self.next_query_ts_us
             );
             return false;
         };
         let pending_hedge_usdt =
             Self::pending_hedge_usdt_with_mark_price(pending_hedge_qty, mark_price);
         if pending_hedge_usdt < ARB_HEDGE_PENDING_QUERY_MIN_USDT {
+            if throttle_on_skip {
+                self.next_query_ts_us = now_ts.saturating_add(HEDGE_QUERY_INTERVAL_US);
+            }
             info!(
-                "ArbHedgeStrategy: strategy_id={} symbol={} skip trigger hedge query because pending hedge below threshold pending_hedge_qty={:.8} mark_price={:.8} pending_hedge_usdt={:.8} threshold_usdt={:.8}",
+                "ArbHedgeStrategy: strategy_id={} symbol={} skip {} hedge query because pending hedge below threshold pending_hedge_qty={:.8} due_hedge_qty={:.8} mark_price={:.8} pending_hedge_usdt={:.8} threshold_usdt={:.8} next_query_ts_us={}",
                 self.strategy_id,
                 self.symbol,
+                reason,
                 pending_hedge_qty,
+                due_hedge_qty,
                 mark_price,
                 pending_hedge_usdt,
-                ARB_HEDGE_PENDING_QUERY_MIN_USDT
+                ARB_HEDGE_PENDING_QUERY_MIN_USDT,
+                self.next_query_ts_us
             );
             return false;
         }
-        let due_hedge_qty = self.pending_hedge_queue.due_qty(now_ts);
         self.send_hedge_state_query(now_ts, due_hedge_qty);
         true
     }
@@ -1129,22 +1140,17 @@ impl Strategy for ArbHedgeStrategy {
         } else {
             get_timestamp_us()
         };
-        if self.is_active() {
-            self.handle_order_query_watchdogs();
-            self.handle_expired_hedge_orders(now_ts);
+        if !self.is_active() {
+            return;
         }
-        match self.hedge_mode {
-            ArbHedgeMode::Trigger => return,
-            ArbHedgeMode::Period => {}
-        }
+        self.handle_order_query_watchdogs();
+        self.handle_expired_hedge_orders(now_ts);
+        // period clock 是 close_ts 的时间轮触发器：即使刚开仓时 trigger 因 due=0
+        // 没有发 query，pending_hedge_queue 到期后也必须在这里重新触发状态查询。
         if self.next_query_ts_us > 0 && now_ts < self.next_query_ts_us {
             return;
         }
-        let due_hedge_qty = self.pending_hedge_queue.due_qty(now_ts);
-        if due_hedge_qty.abs() <= ARB_HEDGE_QTY_EPS {
-            return;
-        }
-        self.send_hedge_state_query(now_ts, due_hedge_qty);
+        self.try_send_due_hedge_state_query(now_ts, "period_clock", true);
     }
 
     fn is_active(&self) -> bool {
@@ -1166,7 +1172,7 @@ impl Strategy for ArbHedgeStrategy {
 
 #[cfg(test)]
 mod tests {
-    use super::{ArbHedgeMode, ArbHedgeStrategy};
+    use super::{ArbHedgeStrategy, HEDGE_QUERY_INTERVAL_US};
     use crate::pre_trade::order_manager::Side;
     use crate::signal::common::TradingVenue;
     use crate::strategy::manager::{OrderTerminalRecorder, Strategy};
@@ -1178,7 +1184,6 @@ mod tests {
             "BTCUSDT",
             TradingVenue::BinanceMargin,
             TradingVenue::BinanceFutures,
-            ArbHedgeMode::Trigger,
         );
 
         strategy.record_open_order_terminal(10, Side::Buy, 2.0, 2.0, 100.0, 1_000);
@@ -1196,7 +1201,6 @@ mod tests {
             "BTCUSDT",
             TradingVenue::BinanceMargin,
             TradingVenue::BinanceFutures,
-            ArbHedgeMode::Trigger,
         );
 
         strategy.record_open_order_terminal(10, Side::Buy, 2.0, 2.0, 100.0, 1_000);
@@ -1210,21 +1214,28 @@ mod tests {
     }
 
     #[test]
-    fn trigger_mode_does_not_send_period_query() {
+    fn trigger_skips_pending_before_close_ts_and_period_clock_rechecks_after_due() {
         let mut strategy = ArbHedgeStrategy::new(
             1,
             "BTCUSDT",
             TradingVenue::BinanceMargin,
             TradingVenue::BinanceFutures,
-            ArbHedgeMode::Trigger,
         );
 
-        strategy.record_open_order_terminal(10, Side::Buy, 2.0, 2.0, 100.0, 1_000);
-        strategy.handle_period_clock(1_000);
+        strategy.record_open_order_terminal(10, Side::Buy, 2.0, 2.0, 100.0, 2_000);
 
         assert_eq!(strategy.pending_hedge_qty(), 2.0);
-        assert_eq!(strategy.due_hedge_qty(1_000), 2.0);
+        assert_eq!(strategy.due_hedge_qty(1_000), 0.0);
         assert_eq!(strategy.hedge_request_seq, 0);
+        assert_eq!(strategy.next_query_ts_us, 0);
+
+        strategy.handle_period_clock(2_000);
+
+        assert_eq!(strategy.due_hedge_qty(2_000), 2.0);
+        assert_eq!(
+            strategy.next_query_ts_us,
+            2_000_i64.saturating_add(HEDGE_QUERY_INTERVAL_US)
+        );
     }
 
     #[test]
@@ -1234,17 +1245,5 @@ mod tests {
 
         assert!(below < super::ARB_HEDGE_PENDING_QUERY_MIN_USDT);
         assert!(above > super::ARB_HEDGE_PENDING_QUERY_MIN_USDT);
-    }
-
-    #[test]
-    #[should_panic(expected = "ArbHedgeStrategy period hedge mode is not implemented")]
-    fn period_mode_panics_until_implemented() {
-        let _strategy = ArbHedgeStrategy::new(
-            1,
-            "BTCUSDT",
-            TradingVenue::BinanceMargin,
-            TradingVenue::BinanceFutures,
-            ArbHedgeMode::Period,
-        );
     }
 }

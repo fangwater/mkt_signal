@@ -4,7 +4,7 @@ use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::Side;
 use crate::signal::trade_signal::TradeSignal;
-use crate::strategy::arb_hedge_strategy::{ArbHedgeMode, ArbHedgeSnapshot, ArbHedgeStrategy};
+use crate::strategy::arb_hedge_strategy::{ArbHedgeSnapshot, ArbHedgeStrategy};
 use crate::strategy::mm_hedge_strategy::{MarketMakerHedgeStrategy, MmHedgeSnapshot};
 use crate::strategy::uniform_order_helper::UniformPublishCtx;
 use crate::strategy::{
@@ -679,13 +679,8 @@ impl StrategyManager {
         let strategy_id = StrategyManager::generate_strategy_id();
         let open_venue = MonitorChannel::instance().open_venue();
         let hedge_venue = MonitorChannel::instance().hedge_venue();
-        let strategy = ArbHedgeStrategy::new(
-            strategy_id,
-            symbol_upper.clone(),
-            open_venue,
-            hedge_venue,
-            ArbHedgeMode::Trigger,
-        );
+        let strategy =
+            ArbHedgeStrategy::new(strategy_id, symbol_upper.clone(), open_venue, hedge_venue);
         self.insert(Box::new(strategy));
         info!(
             "ArbHedge init: symbol={} open_venue={:?} hedge_venue={:?}",
