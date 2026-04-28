@@ -2,8 +2,7 @@ use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::OrderExecutionStatus;
-use crate::pre_trade::TradeEngHub;
-use crate::signal::common::{ExecutionType, OrderStatus, TradingVenue};
+use crate::signal::common::OrderStatus;
 use crate::signal::trade_signal::TradeSignal;
 use crate::strategy::manager::{OrphanHandoff, Strategy};
 use crate::strategy::order_update::OrderUpdate;
@@ -13,7 +12,7 @@ use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
     publish_uniform_trade_order_from_order_update,
 };
-use log::{debug, info, warn};
+use log::{info, warn};
 use std::any::Any;
 
 const MM_ORPHAN_QUERY_BASE_TICKS: u32 = 25;
@@ -112,77 +111,9 @@ impl MmOrphanOrderStrategy {
         );
     }
 
-    fn request_cancel_if_needed(&mut self, update: &dyn OrderUpdate) {
-        if update.execution_type() == ExecutionType::Trade {
-            return;
-        }
-        if !matches!(
-            update.status(),
-            OrderStatus::New | OrderStatus::PartiallyFilled
-        ) {
-            return;
-        }
-
-        let venue = update.trading_venue();
-        if !matches!(
-            venue,
-            TradingVenue::BinanceMargin | TradingVenue::BinanceFutures
-        ) {
-            debug!(
-                "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} skip cancel unsupported venue={:?} symbol={} client_order_id={}",
-                self.strategy_id,
-                venue,
-                update.symbol(),
-                update.client_order_id()
-            );
-            return;
-        }
-
-        let client_order_id = update.client_order_id();
-        let symbol = normalize_symbol_for_internal(update.symbol());
-        let cancel_bytes = {
-            let order_mgr = MonitorChannel::instance().order_manager();
-            let mgr = order_mgr.borrow();
-            match mgr.build_unmatched_cancel_bytes(venue, &symbol, client_order_id) {
-                Ok(bytes) => bytes,
-                Err(err) => {
-                    warn!(
-                        "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} failed to build cancel client_order_id={} symbol={} venue={:?}: {}",
-                        self.strategy_id,
-                        client_order_id,
-                        symbol,
-                        venue,
-                        err
-                    );
-                    return;
-                }
-            }
-        };
-
-        let exchange = venue.trade_engine_exchange();
-        match TradeEngHub::publish_order_request(exchange, &cancel_bytes) {
-            Ok(()) => {
-                warn!(
-                    "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} sent cancel client_order_id={} order_id={} symbol={} venue={:?} x={:?} X={:?}",
-                    self.strategy_id,
-                    client_order_id,
-                    update.order_id(),
-                    symbol,
-                    venue,
-                    update.execution_type(),
-                    update.status()
-                );
-            }
-            Err(err) => warn!(
-                "MmOrphanOrderStrategy: strategy_role=mm_orphan strategy_id={} failed to send cancel client_order_id={} order_id={} symbol={} venue={:?}: {:#}",
-                self.strategy_id,
-                client_order_id,
-                update.order_id(),
-                symbol,
-                venue,
-                err
-            ),
-        }
+    fn request_cancel_if_needed(&self, update: &dyn OrderUpdate) -> bool {
+        self.orders
+            .request_cancel_from_order_update(MM_ORPHAN_ROLE, self.strategy_id, update)
     }
 
     fn send_order_query(&mut self, client_order_id: i64) -> bool {

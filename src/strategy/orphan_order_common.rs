@@ -1,8 +1,10 @@
 use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use crate::pre_trade::QueryEngHub;
+use crate::pre_trade::{QueryEngHub, TradeEngHub};
+use crate::signal::common::{ExecutionType, OrderStatus};
 use crate::strategy::manager::OrphanSourceKind;
 use crate::strategy::order_query_builder::build_order_query_request;
+use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::uniform_order_helper::UniformPublishCtx;
 use log::{info, warn};
 use std::collections::{HashMap, HashSet};
@@ -169,6 +171,79 @@ impl OrphanOrderTracker {
                 warn!(
                     "{}: strategy_id={} build query failed client_order_id={} err={}",
                     strategy_role, strategy_id, client_order_id, err
+                );
+                false
+            }
+        }
+    }
+
+    pub fn request_cancel_from_order_update(
+        &self,
+        strategy_role: &str,
+        strategy_id: i32,
+        update: &dyn OrderUpdate,
+    ) -> bool {
+        if update.execution_type() == ExecutionType::Trade {
+            return false;
+        }
+        if !matches!(
+            update.status(),
+            OrderStatus::New | OrderStatus::PartiallyFilled
+        ) {
+            return false;
+        }
+
+        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
+            return false;
+        };
+        let Some(order) = order_mgr.borrow().get(update.client_order_id()) else {
+            return false;
+        };
+        if order.status.is_terminal() {
+            return false;
+        }
+
+        let client_order_id = order.client_order_id;
+        let symbol = order.symbol.clone();
+        let venue = order.venue;
+        let exchange = venue.trade_engine_exchange();
+        let cancel_bytes = match order.get_order_cancel_bytes() {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                warn!(
+                    "{}: strategy_id={} failed to build cancel client_order_id={} symbol={} venue={:?}: {}",
+                    strategy_role, strategy_id, client_order_id, symbol, venue, err
+                );
+                return false;
+            }
+        };
+        drop(order);
+
+        match TradeEngHub::publish_order_request(exchange, &cancel_bytes) {
+            Ok(()) => {
+                warn!(
+                    "{}: strategy_id={} sent cancel client_order_id={} order_id={} symbol={} venue={:?} x={:?} X={:?}",
+                    strategy_role,
+                    strategy_id,
+                    update.client_order_id(),
+                    update.order_id(),
+                    update.symbol(),
+                    update.trading_venue(),
+                    update.execution_type(),
+                    update.status()
+                );
+                true
+            }
+            Err(err) => {
+                warn!(
+                    "{}: strategy_id={} failed to send cancel client_order_id={} order_id={} symbol={} venue={:?}: {:#}",
+                    strategy_role,
+                    strategy_id,
+                    update.client_order_id(),
+                    update.order_id(),
+                    update.symbol(),
+                    update.trading_venue(),
+                    err
                 );
                 false
             }

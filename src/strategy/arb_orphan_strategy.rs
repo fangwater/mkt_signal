@@ -2,7 +2,6 @@ use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::OrderExecutionStatus;
-use crate::pre_trade::TradeEngHub;
 use crate::signal::common::OrderStatus;
 use crate::signal::trade_signal::TradeSignal;
 use crate::strategy::manager::{ArbOrphanHandoff, OrphanSourceKind, Strategy};
@@ -13,7 +12,7 @@ use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
     publish_uniform_trade_order_from_order_update,
 };
-use log::{debug, info, warn};
+use log::{debug, info};
 use std::any::Any;
 
 const ARB_ORPHAN_EPS: f64 = 1e-12;
@@ -54,10 +53,6 @@ impl ArbOrphanStrategy {
                 ARB_ORPHAN_QUERY_MAX_TICKS,
             ),
         }
-    }
-
-    fn should_cancel_order(status: OrderExecutionStatus) -> bool {
-        !status.is_terminal() && status != OrderExecutionStatus::Commit
     }
 
     fn source_kind_from_leg(leg: ArbOrphanLeg) -> OrphanSourceKind {
@@ -231,43 +226,9 @@ impl ArbOrphanStrategy {
         });
     }
 
-    fn request_cancel_for_order(&mut self, client_order_id: i64, reason: &str) -> bool {
-        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
-            return false;
-        };
-        let Some(order) = order_mgr.borrow().get(client_order_id) else {
-            return false;
-        };
-        if !Self::should_cancel_order(order.status) {
-            return false;
-        }
-        let exchange = order.venue.trade_engine_exchange();
-        let cancel_bytes = match order.get_order_cancel_bytes() {
-            Ok(bytes) => bytes,
-            Err(err) => {
-                warn!(
-                    "ArbOrphanStrategy: strategy_role=arb_orphan strategy_id={} build cancel failed client_order_id={} reason={} err={}",
-                    self.strategy_id, client_order_id, reason, err
-                );
-                return false;
-            }
-        };
-        match TradeEngHub::publish_order_request(exchange, &cancel_bytes) {
-            Ok(()) => {
-                info!(
-                    "ArbOrphanStrategy: strategy_role=arb_orphan strategy_id={} sent cancel client_order_id={} exchange={} reason={}",
-                    self.strategy_id, client_order_id, exchange, reason
-                );
-                true
-            }
-            Err(err) => {
-                warn!(
-                    "ArbOrphanStrategy: strategy_role=arb_orphan strategy_id={} send cancel failed client_order_id={} exchange={} reason={} err={:#}",
-                    self.strategy_id, client_order_id, exchange, reason, err
-                );
-                false
-            }
-        }
+    fn request_cancel_if_needed(&self, update: &dyn OrderUpdate) -> bool {
+        self.orders
+            .request_cancel_from_order_update(ARB_ORPHAN_ROLE, self.strategy_id, update)
     }
 
     fn send_order_query(&mut self, client_order_id: i64) -> bool {
@@ -372,7 +333,7 @@ impl Strategy for ArbOrphanStrategy {
                 "terminal order update",
             );
         } else {
-            self.request_cancel_for_order(client_order_id, "non-terminal order update");
+            let _ = self.request_cancel_if_needed(update);
         }
     }
 
@@ -423,8 +384,6 @@ impl Strategy for ArbOrphanStrategy {
                 trade.event_time(),
                 "terminal trade update",
             );
-        } else {
-            self.request_cancel_for_order(client_order_id, "non-terminal trade update");
         }
     }
 
@@ -448,11 +407,7 @@ impl Strategy for ArbOrphanStrategy {
                 );
                 continue;
             }
-            let should_cancel = Self::should_cancel_order(order.status);
             drop(order);
-            if should_cancel {
-                self.request_cancel_for_order(client_order_id, "period clock");
-            }
 
             if self.orders.query_due_now(client_order_id) {
                 let _ = self.send_order_query(client_order_id);
@@ -466,24 +421,5 @@ impl Strategy for ArbOrphanStrategy {
 
     fn symbol(&self) -> Option<&str> {
         Some(&self.symbol)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::ArbOrphanStrategy;
-    use crate::pre_trade::order_manager::OrderExecutionStatus;
-
-    #[test]
-    fn cancel_policy_is_owned_by_orphan_from_local_status() {
-        assert!(!ArbOrphanStrategy::should_cancel_order(
-            OrderExecutionStatus::Commit
-        ));
-        assert!(ArbOrphanStrategy::should_cancel_order(
-            OrderExecutionStatus::Create
-        ));
-        assert!(!ArbOrphanStrategy::should_cancel_order(
-            OrderExecutionStatus::Cancelled
-        ));
     }
 }
