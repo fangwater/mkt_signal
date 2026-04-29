@@ -411,7 +411,7 @@ async fn reload_dynamic_thresholds(
     hedge_venue: TradingVenue,
 ) -> Result<()> {
     let ns = normalize_namespace(namespace);
-    if ns != "fr" && ns != "xarb" {
+    if ns != "fr" && ns != "intra" && ns != "cross" {
         if ns == "mm" {
             reload_open_volatility_thresholds(redis, namespace, open_venue, hedge_venue).await?;
         }
@@ -419,7 +419,9 @@ async fn reload_dynamic_thresholds(
     }
 
     match ns.as_str() {
-        "xarb" => reload_xarb_thresholds_from_rolling(redis, open_venue, hedge_venue).await?,
+        "intra" | "cross" => {
+            reload_spread_thresholds_from_rolling(redis, &ns, open_venue, hedge_venue).await?
+        }
         "fr" => reload_fr_dynamic_thresholds_from_rolling(redis, open_venue, hedge_venue).await?,
         _ => {}
     }
@@ -444,7 +446,7 @@ async fn reload_fr_thresholds(
             let funding_map = match client.hgetall_map(&redis_key).await {
                 Ok(map) => map,
                 Err(err) => {
-                    if ns == "fr" || ns == "xarb" {
+                    if ns == "fr" {
                         panic!(
                             "读取 Redis Hash '{}' 失败，无法加载资金费率阈值: {:?}",
                             redis_key, err
@@ -455,7 +457,7 @@ async fn reload_fr_thresholds(
                 }
             };
             if funding_map.is_empty() {
-                if ns == "fr" || ns == "xarb" {
+                if ns == "fr" {
                     panic!(
                         "Redis hash '{}' 为空或不存在，无法加载资金费率阈值",
                         redis_key
@@ -488,7 +490,7 @@ async fn reload_open_volatility_thresholds(
     hedge_venue: TradingVenue,
 ) -> Result<()> {
     let ns = normalize_namespace(namespace);
-    if ns != "mm" && ns != "xarb" && ns != "fr" {
+    if ns != "mm" && ns != "intra" && ns != "cross" && ns != "fr" {
         return Ok(());
     }
 
@@ -734,8 +736,9 @@ fn default_rolling_thresholds_key(open_venue: TradingVenue, hedge_venue: Trading
     )
 }
 
-async fn reload_xarb_thresholds_from_rolling(
+async fn reload_spread_thresholds_from_rolling(
     redis: &RedisSettings,
+    namespace: &str,
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
 ) -> Result<()> {
@@ -775,7 +778,10 @@ async fn reload_xarb_thresholds_from_rolling(
         )
     })?;
     if rolling_map.is_empty() {
-        anyhow::bail!("xarb rolling metrics hash '{}' 为空", rolling_key);
+        anyhow::bail!(
+            "{} rolling metrics hash '{}' 为空",
+            namespace, rolling_key
+        );
     }
 
     let pair_payloads = parse_xarb_rolling_payloads(rolling_map, &active_symbols);
@@ -823,7 +829,7 @@ async fn reload_xarb_thresholds_from_rolling(
     let mut open_vol_missing_refs = 0usize;
     let mut open_vol_field_ref = String::new();
 
-    match StrategyParams::load_from_redis(redis, "xarb", open_venue, hedge_venue).await {
+    match StrategyParams::load_from_redis(redis, namespace, open_venue, hedge_venue).await {
         Ok(params) => {
             if let Err(err) = ensure_open_volatility_source_params(
                 &mut client,
@@ -833,7 +839,8 @@ async fn reload_xarb_thresholds_from_rolling(
             .await
             {
                 warn!(
-                    "补齐 xarb open volatility rolling 配置失败 (open={} hedge={} percentile={}): {:?}",
+                    "补齐 {} open volatility rolling 配置失败 (open={} hedge={} percentile={}): {:?}",
+                    namespace,
                     open_venue.data_pub_slug(),
                     hedge_venue.data_pub_slug(),
                     params.open_volatility_limit,
@@ -850,7 +857,8 @@ async fn reload_xarb_thresholds_from_rolling(
             let updated = ArbDecision::with_state_mut(|_| {});
             if updated.is_none() {
                 warn!(
-                    "xarb open volatility thresholds 已生成，但 ArbDecision 尚未初始化 (open={} hedge={})",
+                    "{} open volatility thresholds 已生成，但 ArbDecision 尚未初始化 (open={} hedge={})",
+                    namespace,
                     open_venue.data_pub_slug(),
                     hedge_venue.data_pub_slug()
                 );
@@ -858,7 +866,8 @@ async fn reload_xarb_thresholds_from_rolling(
         }
         Err(err) => {
             warn!(
-                "读取 xarb open volatility limit 策略参数失败 (open={} hedge={}): {:?}",
+                "读取 {} open volatility limit 策略参数失败 (open={} hedge={}): {:?}",
+                namespace,
                 open_venue.data_pub_slug(),
                 hedge_venue.data_pub_slug(),
                 err
@@ -869,7 +878,8 @@ async fn reload_xarb_thresholds_from_rolling(
     let spread_applied = apply_xarb_spread_thresholds(&resolved_spread, open_venue, hedge_venue);
     sync_xarb_spread_thresholds_to_redis(
         redis,
-        &spread_thresholds_key("xarb", open_venue, hedge_venue),
+        namespace,
+        &spread_thresholds_key(namespace, open_venue, hedge_venue),
         &xarb_spread_mapping_key(open_venue, hedge_venue),
         open_venue,
         hedge_venue,
@@ -887,14 +897,16 @@ async fn reload_xarb_thresholds_from_rolling(
     });
     if updated.is_none() {
         warn!(
-            "xarb funding thresholds 已生成，但 ArbDecision 尚未初始化 (open={} hedge={})",
+            "{} funding thresholds 已生成，但 ArbDecision 尚未初始化 (open={} hedge={})",
+            namespace,
             open_venue.data_pub_slug(),
             hedge_venue.data_pub_slug()
         );
     }
 
     info!(
-        "xarb rolling thresholds 应用完成 rolling_key={} active_symbols={} rolling_symbols={} spread_cfg_fields={} spread_applied={} spread_skipped={} spread_missing_refs={} funding_cfg_fields={} funding_symbols={} funding_skipped={} funding_missing_refs={} open_vol_field_ref={} open_vol_symbols={} open_vol_missing_refs={}",
+        "{} rolling thresholds 应用完成 rolling_key={} active_symbols={} rolling_symbols={} spread_cfg_fields={} spread_applied={} spread_skipped={} spread_missing_refs={} funding_cfg_fields={} funding_symbols={} funding_skipped={} funding_missing_refs={} open_vol_field_ref={} open_vol_symbols={} open_vol_missing_refs={}",
+        namespace,
         rolling_key,
         active_symbols.len(),
         rolling_payloads.len(),

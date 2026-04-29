@@ -141,23 +141,35 @@ fn fr_symbol_key_suffix(open_venue: TradingVenue, hedge_venue: TradingVenue) -> 
     )
 }
 
-fn infer_xarb_venues_from_key_suffix(key_suffix: &str) -> Option<(TradingVenue, TradingVenue)> {
+fn infer_intra_venues_from_key_suffix(key_suffix: &str) -> Option<(TradingVenue, TradingVenue)> {
+    let suffix = key_suffix.trim().to_ascii_lowercase();
+    if suffix.contains('-') || suffix.contains('_') {
+        return None;
+    }
+    let ex = normalize_exchange_str(&suffix);
+    Some((
+        margin_venue_for_exchange(ex)?,
+        futures_venue_for_exchange(ex)?,
+    ))
+}
+
+fn infer_cross_venues_from_key_suffix(key_suffix: &str) -> Option<(TradingVenue, TradingVenue)> {
     let suffix = key_suffix.trim().to_ascii_lowercase();
     let mut parts = suffix.split('-');
-    let open_ex = parts.next()?;
-    let hedge_ex = parts.next()?;
+    let open_ex = normalize_exchange_str(parts.next()?);
+    let hedge_ex = normalize_exchange_str(parts.next()?);
     if parts.next().is_some() {
         return None;
     }
     let open = futures_venue_for_exchange(open_ex)?;
     let hedge = futures_venue_for_exchange(hedge_ex)?;
     if open == hedge {
-        return Some((margin_venue_for_exchange(open_ex)?, hedge));
+        return None;
     }
     Some((open, hedge))
 }
 
-fn infer_xarb_venues_from_env() -> Option<(TradingVenue, TradingVenue)> {
+fn infer_arb_venues_from_env() -> Option<(TradingVenue, TradingVenue)> {
     let open = std::env::var("OPEN_VENUE").ok()?;
     let hedge = std::env::var("HEDGE_VENUE").ok()?;
     let open_venue = venue_from_slug(&open)?;
@@ -407,19 +419,37 @@ async fn main() -> Result<()> {
     }
     let (branch, arb_mode, symbol_namespace, symbol_key_suffix, exchange, open_venue, hedge_venue) =
         match infer_namespace_and_key_suffix_from_cwd() {
-            Some((ns, suffix)) if ns.eq_ignore_ascii_case("xarb") => {
-                let (open_venue, hedge_venue) = infer_xarb_venues_from_env()
-                    .or_else(|| infer_xarb_venues_from_key_suffix(&suffix))
+            Some((ns, suffix)) if ns.eq_ignore_ascii_case("intra") => {
+                let (open_venue, hedge_venue) = infer_intra_venues_from_key_suffix(&suffix)
+                    .or_else(infer_arb_venues_from_env)
                     .with_context(|| {
                         format!(
-                            "failed to infer xarb venues from env OPEN_VENUE/HEDGE_VENUE or CWD suffix='{}'",
+                            "failed to infer intra venues from CWD suffix='{}' or env OPEN_VENUE/HEDGE_VENUE",
                             suffix
                         )
                     })?;
-                let arb_mode = ArbMode::from_venues(open_venue, hedge_venue);
                 (
                     DecisionBranch::Arb,
-                    Some(arb_mode),
+                    Some(ArbMode::IntraArb),
+                    ns,
+                    suffix,
+                    None,
+                    open_venue,
+                    hedge_venue,
+                )
+            }
+            Some((ns, suffix)) if ns.eq_ignore_ascii_case("cross") => {
+                let (open_venue, hedge_venue) = infer_cross_venues_from_key_suffix(&suffix)
+                    .or_else(infer_arb_venues_from_env)
+                    .with_context(|| {
+                        format!(
+                            "failed to infer cross venues from CWD suffix='{}' or env OPEN_VENUE/HEDGE_VENUE",
+                            suffix
+                        )
+                    })?;
+                (
+                    DecisionBranch::Arb,
+                    Some(ArbMode::CrossArb),
                     ns,
                     suffix,
                     None,
@@ -547,14 +577,24 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_namespace_and_key_suffix;
+    use super::{
+        infer_cross_venues_from_key_suffix, infer_intra_venues_from_key_suffix,
+        parse_namespace_and_key_suffix,
+    };
+    use mkt_signal::signal::common::TradingVenue;
 
     #[test]
-    fn parse_xarb_dir_with_numeric_env_tag() {
-        let parsed = parse_namespace_and_key_suffix("binance-binance-xarb-trade01");
+    fn parse_intra_dir_with_numeric_env_tag() {
+        let parsed = parse_namespace_and_key_suffix("binance-intra-trade01");
+        assert_eq!(parsed, Some(("intra".to_string(), "binance".to_string())));
+    }
+
+    #[test]
+    fn parse_cross_dir_with_numeric_env_tag() {
+        let parsed = parse_namespace_and_key_suffix("binance-okex-cross-trade01");
         assert_eq!(
             parsed,
-            Some(("xarb".to_string(), "binance-binance".to_string()))
+            Some(("cross".to_string(), "binance-okex".to_string()))
         );
     }
 
@@ -565,11 +605,35 @@ mod tests {
     }
 
     #[test]
-    fn parse_xarb_dir_with_plain_env_tag() {
-        let parsed = parse_namespace_and_key_suffix("okex-binance-xarb-test");
+    fn parse_cross_dir_with_plain_env_tag() {
+        let parsed = parse_namespace_and_key_suffix("okex-binance-cross-test");
         assert_eq!(
             parsed,
-            Some(("xarb".to_string(), "okex-binance".to_string()))
+            Some(("cross".to_string(), "okex-binance".to_string()))
         );
+    }
+
+    #[test]
+    fn intra_suffix_resolves_to_margin_futures() {
+        let (open, hedge) = infer_intra_venues_from_key_suffix("binance").unwrap();
+        assert_eq!(open, TradingVenue::BinanceMargin);
+        assert_eq!(hedge, TradingVenue::BinanceFutures);
+    }
+
+    #[test]
+    fn cross_suffix_resolves_to_futures_pair() {
+        let (open, hedge) = infer_cross_venues_from_key_suffix("binance-okex").unwrap();
+        assert_eq!(open, TradingVenue::BinanceFutures);
+        assert_eq!(hedge, TradingVenue::OkexFutures);
+    }
+
+    #[test]
+    fn intra_rejects_two_token_suffix() {
+        assert!(infer_intra_venues_from_key_suffix("binance-okex").is_none());
+    }
+
+    #[test]
+    fn cross_rejects_same_exchange_suffix() {
+        assert!(infer_cross_venues_from_key_suffix("binance-binance").is_none());
     }
 }

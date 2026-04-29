@@ -250,21 +250,32 @@ fn is_valid_exchange_name(exchange: &str) -> bool {
             .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
 }
 
+fn is_valid_exchange_pair_name(exchange_pair: &str) -> bool {
+    !exchange_pair.is_empty()
+        && !exchange_pair.starts_with('-')
+        && !exchange_pair.ends_with('-')
+        && exchange_pair
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+}
+
 fn validate_supported_env_name(env_name: &str) -> Result<()> {
-    if let Some((exchange, suffix)) = env_name.split_once("_mm_") {
-        if is_valid_exchange_name(exchange) && is_valid_env_suffix(suffix) {
-            return Ok(());
+    for token in ["_mm_", "_fr_", "_intra_"] {
+        if let Some((exchange, suffix)) = env_name.split_once(token) {
+            if is_valid_exchange_name(exchange) && is_valid_env_suffix(suffix) {
+                return Ok(());
+            }
         }
     }
 
-    if let Some((exchange, suffix)) = env_name.split_once("_fr_") {
-        if is_valid_exchange_name(exchange) && is_valid_env_suffix(suffix) {
+    if let Some((exchange_pair, suffix)) = env_name.split_once("_cross_") {
+        if is_valid_exchange_pair_name(exchange_pair) && is_valid_env_suffix(suffix) {
             return Ok(());
         }
     }
 
     Err(anyhow!(
-        "env_name must match <exchange>_mm_<suffix> or <exchange>_fr_<suffix> (got: {})",
+        "env_name must match <exchange>_<mm|fr|intra>_<suffix> or <open_ex>-<hedge_ex>_cross_<suffix> (got: {})",
         env_name
     ))
 }
@@ -350,6 +361,18 @@ mod tests {
     }
 
     #[test]
+    fn validate_supported_env_name_accepts_intra_values() {
+        assert!(validate_supported_env_name("binance_intra_trade01").is_ok());
+        assert!(validate_supported_env_name("okex_intra_hf01").is_ok());
+    }
+
+    #[test]
+    fn validate_supported_env_name_accepts_cross_values() {
+        assert!(validate_supported_env_name("binance-okex_cross_trade01").is_ok());
+        assert!(validate_supported_env_name("okex-binance_cross_test").is_ok());
+    }
+
+    #[test]
     fn validate_supported_env_name_rejects_other_patterns() {
         assert!(validate_supported_env_name("binance_mm").is_err());
         assert!(validate_supported_env_name("okex_mm_").is_err());
@@ -357,6 +380,8 @@ mod tests {
         assert!(validate_supported_env_name("binance_mm_ALPHA").is_err());
         assert!(validate_supported_env_name("binance_fr").is_err());
         assert!(validate_supported_env_name("binance_fr_ALPHA").is_err());
+        assert!(validate_supported_env_name("binance_intra").is_err());
+        assert!(validate_supported_env_name("_cross_alpha").is_err());
     }
 
     #[test]

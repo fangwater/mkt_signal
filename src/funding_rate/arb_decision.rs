@@ -3792,7 +3792,7 @@ impl ArbDecision {
     fn backend_for_mode(mode: ArbMode) -> ArbBackend {
         match mode {
             ArbMode::FundingArb => ArbBackend::Funding,
-            ArbMode::SpotFuturesXarb | ArbMode::FuturesPairXarb => ArbBackend::Spread,
+            ArbMode::IntraArb | ArbMode::CrossArb => ArbBackend::Spread,
         }
     }
 

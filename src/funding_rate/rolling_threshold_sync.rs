@@ -611,6 +611,7 @@ pub(crate) fn build_xarb_spread_sync_entries(
 
 pub(crate) async fn sync_xarb_spread_thresholds_to_redis(
     redis: &RedisSettings,
+    namespace: &str,
     sync_key: &str,
     config_key: &str,
     open_venue: TradingVenue,
@@ -682,7 +683,7 @@ pub(crate) async fn sync_xarb_spread_thresholds_to_redis(
 
     let payload = serde_json::json!({
         "schema_version": 1,
-        "namespace": "xarb",
+        "namespace": namespace,
         "open_venue": open_venue.data_pub_slug(),
         "hedge_venue": hedge_venue.data_pub_slug(),
         "rolling_key": rolling_key,

@@ -3,16 +3,16 @@ use crate::signal::common::TradingVenue;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArbMode {
     FundingArb,
-    SpotFuturesXarb,
-    FuturesPairXarb,
+    IntraArb,
+    CrossArb,
 }
 
 impl ArbMode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::FundingArb => "funding_arb",
-            Self::SpotFuturesXarb => "spot_futures_xarb",
-            Self::FuturesPairXarb => "futures_pair_xarb",
+            Self::IntraArb => "intra_arb",
+            Self::CrossArb => "cross_arb",
         }
     }
 
@@ -37,12 +37,12 @@ impl ArbMode {
         );
         if open_is_margin && hedge_is_futures {
             if open_venue.trade_engine_exchange() == hedge_venue.trade_engine_exchange() {
-                Self::SpotFuturesXarb
+                Self::IntraArb
             } else {
                 Self::FundingArb
             }
         } else {
-            Self::FuturesPairXarb
+            Self::CrossArb
         }
     }
 

@@ -72,17 +72,20 @@ fn infer_venues_from_cwd() -> Option<(TradingVenue, TradingVenue)> {
 
     let parts: Vec<&str> = normalized.split('-').filter(|s| !s.is_empty()).collect();
 
-    // xarb: <open>-<hedge>-xarb-<trade|test|...>
-    if parts.len() >= 3 && parts[2] == "xarb" {
+    // intra: <exchange>-intra-<trade|test|...> → margin × futures (same exchange)
+    if parts.len() >= 2 && parts[1] == "intra" {
+        let ex = normalize_exchange(parts[0]);
+        return Some((margin_venue(ex)?, futures_venue(ex)?));
+    }
+
+    // cross: <open>-<hedge>-cross-<trade|test|...> → futures × futures (different exchanges)
+    if parts.len() >= 3 && parts[2] == "cross" {
         let open_ex = normalize_exchange(parts[0]);
         let hedge_ex = normalize_exchange(parts[1]);
-        if open_ex == hedge_ex {
-            return Some((margin_venue(open_ex)?, futures_venue(hedge_ex)?));
-        }
         return Some((futures_venue(open_ex)?, futures_venue(hedge_ex)?));
     }
 
-    // fr: <exchange>-fr-<trade|test|...> (例如 binance_fr_trade -> binance-fr-trade)
+    // fr: <exchange>-fr-<trade|test|...> → margin × futures (cross-exchange funding-rate arb)
     if parts.len() >= 2 && parts[1] == "fr" {
         let ex = normalize_exchange(parts[0]);
         return Some((margin_venue(ex)?, futures_venue(ex)?));

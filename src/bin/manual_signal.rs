@@ -142,23 +142,42 @@ fn fr_symbol_key_suffix(open: TradingVenue, hedge: TradingVenue) -> String {
     format!("{}_{}", open.data_pub_slug(), hedge.data_pub_slug())
 }
 
-fn infer_xarb_venues_from_key_suffix(key_suffix: &str) -> Option<(TradingVenue, TradingVenue)> {
+fn normalize_exchange_str(raw: &str) -> &str {
+    match raw {
+        "okx" => "okex",
+        other => other,
+    }
+}
+
+fn infer_intra_venues_from_key_suffix(key_suffix: &str) -> Option<(TradingVenue, TradingVenue)> {
+    let suffix = key_suffix.trim().to_ascii_lowercase();
+    if suffix.contains('-') || suffix.contains('_') {
+        return None;
+    }
+    let ex = normalize_exchange_str(&suffix);
+    Some((
+        margin_venue_for_exchange(ex)?,
+        futures_venue_for_exchange(ex)?,
+    ))
+}
+
+fn infer_cross_venues_from_key_suffix(key_suffix: &str) -> Option<(TradingVenue, TradingVenue)> {
     let suffix = key_suffix.trim().to_ascii_lowercase();
     let mut parts = suffix.split('-');
-    let open_ex = parts.next()?;
-    let hedge_ex = parts.next()?;
+    let open_ex = normalize_exchange_str(parts.next()?);
+    let hedge_ex = normalize_exchange_str(parts.next()?);
     if parts.next().is_some() {
         return None;
     }
     let open = futures_venue_for_exchange(open_ex)?;
     let hedge = futures_venue_for_exchange(hedge_ex)?;
     if open == hedge {
-        return Some((margin_venue_for_exchange(open_ex)?, hedge));
+        return None;
     }
     Some((open, hedge))
 }
 
-fn infer_xarb_venues_from_env() -> Option<(TradingVenue, TradingVenue)> {
+fn infer_arb_venues_from_env() -> Option<(TradingVenue, TradingVenue)> {
     let open = std::env::var("OPEN_VENUE").ok()?;
     let hedge = std::env::var("HEDGE_VENUE").ok()?;
     let open_venue = venue_from_slug(&open)?;
@@ -195,28 +214,25 @@ fn infer_symbol_key_suffix_from_cwd(symbol_namespace: &str) -> Option<String> {
 }
 
 fn infer_symbol_namespace_and_key_suffix_from_cwd() -> Option<(String, String)> {
+    fn split_last_segment(input: &str) -> Option<(&str, &str)> {
+        let idx = input.rfind(['-', '_'])?;
+        let (head, tail_with_sep) = input.split_at(idx);
+        let tail = tail_with_sep.get(1..)?;
+        if head.is_empty() || tail.is_empty() {
+            return None;
+        }
+        Some((head, tail))
+    }
+
     let cwd = std::env::current_dir().ok()?;
     let name = cwd.file_name()?.to_string_lossy().to_ascii_lowercase();
 
-    if let Some(base) = name.strip_suffix("_trade") {
-        let base = base.trim_end_matches('_');
-        let (prefix, ns) = base.rsplit_once('_')?;
-        if prefix.is_empty() || ns.is_empty() {
-            return None;
-        }
-        return Some((ns.to_string(), prefix.to_string()));
+    let (base, _env_tag) = split_last_segment(&name)?;
+    let (prefix, ns) = split_last_segment(base)?;
+    if prefix.is_empty() || ns.is_empty() {
+        return None;
     }
-
-    if let Some(base) = name.strip_suffix("-trade") {
-        let base = base.trim_end_matches('-');
-        let (prefix, ns) = base.rsplit_once('-')?;
-        if prefix.is_empty() || ns.is_empty() {
-            return None;
-        }
-        return Some((ns.to_string(), prefix.to_string()));
-    }
-
-    None
+    Some((ns.to_string(), prefix.to_string()))
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -251,7 +267,7 @@ struct CliArgs {
     #[arg(long, default_value_t = 60)]
     symbol_reload_secs: u64,
 
-    /// SymbolList Redis key namespace (e.g. "xarb" -> xarb_dump_symbols:{...}); if omitted, inferred from CWD
+    /// SymbolList Redis key namespace (e.g. "intra" -> intra_dump_symbols:{...}, "cross" -> cross_dump_symbols:{...}); if omitted, inferred from CWD
     #[arg(long)]
     symbol_namespace: Option<String>,
 
@@ -1330,15 +1346,24 @@ async fn main() -> Result<()> {
     let (open, hedge) = match (args.open, args.hedge) {
         (Some(open), Some(hedge)) => (open, hedge),
         (None, None) => {
-            if let Some(venues) = infer_xarb_venues_from_key_suffix(&symbol_key_suffix) {
-                if symbol_namespace.eq_ignore_ascii_case("xarb") {
-                    infer_xarb_venues_from_env().unwrap_or(venues)
-                } else {
-                    anyhow::bail!(
-                        "CWD suggests cross-exchange symbol key suffix='{}' but --open/--hedge were not provided; please pass --open and --hedge explicitly",
-                        symbol_key_suffix
-                    );
-                }
+            if symbol_namespace.eq_ignore_ascii_case("intra") {
+                infer_intra_venues_from_key_suffix(&symbol_key_suffix)
+                    .or_else(infer_arb_venues_from_env)
+                    .with_context(|| {
+                        format!(
+                            "failed to infer intra venues from CWD suffix='{}' or env OPEN_VENUE/HEDGE_VENUE",
+                            symbol_key_suffix
+                        )
+                    })?
+            } else if symbol_namespace.eq_ignore_ascii_case("cross") {
+                infer_cross_venues_from_key_suffix(&symbol_key_suffix)
+                    .or_else(infer_arb_venues_from_env)
+                    .with_context(|| {
+                        format!(
+                            "failed to infer cross venues from CWD suffix='{}' or env OPEN_VENUE/HEDGE_VENUE",
+                            symbol_key_suffix
+                        )
+                    })?
             } else {
                 infer_venues_from_cwd().with_context(|| {
                     "missing --open/--hedge and failed to infer from CWD; pass --open/--hedge explicitly"

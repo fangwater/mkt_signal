@@ -326,7 +326,7 @@ pub struct StrategyParams {
     #[serde(default = "default_tlen_cancel_freq_ms")]
     pub tlen_cancel_freq_ms: u64,
 
-    /// Spread cancel 信号限流（毫秒），仅作用于 xarb spread cancel
+    /// Spread cancel 信号限流（毫秒），仅作用于 intra/cross spread cancel
     #[serde(default = "default_spread_cancel_cooldown_ms")]
     pub spread_cancel_cooldown_ms: u64,
 
@@ -751,7 +751,7 @@ impl StrategyParams {
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or_else(default_hedge_aggressive_seq_threshold);
 
-        let require_max_hedge_pct = ns == "xarb";
+        let require_max_hedge_pct = ns == "intra" || ns == "cross";
         let max_hedge_price_pct_change = match hash_map.get("max_hedge_price_pct_change") {
             Some(raw) => {
                 let parsed = raw.parse::<f64>().unwrap_or_else(|_| {
