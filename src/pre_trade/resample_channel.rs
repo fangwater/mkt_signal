@@ -635,16 +635,15 @@ impl ResampleChannel {
                         },
                     )
                     .unwrap_or((None, None, None, None, None, None));
-                let has_arb_hedge_state =
-                    arb_hedge_net_qty.map(|v| v.abs() > 1e-12).unwrap_or(false)
-                        || arb_pending_hedge_qty
-                            .map(|v| v.abs() > 1e-12)
-                            .unwrap_or(false)
-                        || arb_due_hedge_qty.map(|v| v.abs() > 1e-12).unwrap_or(false)
-                        || arb_hedge_time_ms.is_some()
-                        || arb_hedge_is_taker.is_some()
-                        || arb_hedge_ret_qtl.is_some();
-                if open_qty.abs() <= 1e-12 && hedge_qty.abs() <= 1e-12 && !has_arb_hedge_state {
+                let has_arb_hedge = arb_hedge_net_qty.map(|v| v.abs() > 1e-12).unwrap_or(false)
+                    || arb_pending_hedge_qty
+                        .map(|v| v.abs() > 1e-12)
+                        .unwrap_or(false)
+                    || arb_due_hedge_qty.map(|v| v.abs() > 1e-12).unwrap_or(false)
+                    || arb_hedge_time_ms.is_some()
+                    || arb_hedge_is_taker.is_some()
+                    || arb_hedge_ret_qtl.is_some();
+                if open_qty.abs() <= 1e-12 && hedge_qty.abs() <= 1e-12 && !has_arb_hedge {
                     continue;
                 }
 

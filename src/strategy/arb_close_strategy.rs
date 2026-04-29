@@ -6,7 +6,6 @@ use crate::pre_trade::PersistChannel;
 use crate::signal::common::{SignalBytes, TradingVenue};
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
-use crate::strategy::arb_helper::base_to_venue_qty;
 use crate::strategy::manager::{OrphanStrategyRole, Strategy};
 use crate::strategy::open_strategy_common::{
     OpenSignalInput, OpenStrategyCommon, OpenStrategyState,
@@ -18,6 +17,13 @@ use log::{debug, info, warn};
 use std::any::Any;
 
 const ARB_CLOSE_QTY_EPS: f64 = 1e-12;
+
+fn base_to_venue_qty(base_qty: f64, multiplier: f64, leg_name: &str) -> Result<f64, String> {
+    if multiplier <= 0.0 {
+        return Err(format!("{} multiplier invalid: {}", leg_name, multiplier));
+    }
+    Ok(base_qty / multiplier)
+}
 
 /// Arb 强平开仓腿：复用 common open 下单生命周期，只把 open leg reduce-only 平到 0。
 pub struct ArbCloseStrategy {

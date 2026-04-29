@@ -19,9 +19,7 @@ use crate::funding_rate::FundingRatePeriod;
 use crate::pre_trade::order_manager::Side;
 use crate::signal::arb_signal::{ArbBackwardQueryMsg, ArbCancelCandidateQueryMsg};
 use crate::signal::common::{SignalBytes, TradingLeg, TradingVenue};
-use crate::signal::hedge_signal::{
-    ArbHedgeSignalQueryMsg, ArbHedgeStateCtx, ArbHedgeStateQueryMsg,
-};
+use crate::signal::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
 use crate::strategy::inventory_hedge_quote_plan::{
@@ -42,9 +40,6 @@ use super::factor_value_hub::{
     EnvironmentSignalResult, FactorValueHub, FactorValueLookupResult, ModelOutputScoreLookupResult,
 };
 use super::funding_rate_factor::FundingRateFactor;
-use super::inline_volatility::{
-    snapshot_inline_volatility, InlineVolatilitySnapshot, INLINE_VOLATILITY_MIN_SAMPLES,
-};
 use super::mkt_channel::MktChannel;
 use super::rate_fetcher::RateFetcher;
 use super::xarb_funding_threshold_loader::XarbFundingThresholdsResolved;
@@ -58,7 +53,7 @@ const FUNDING_ARB_SHELL_NAME: &str = "ArbDecision(FundingArb)";
 const SPREAD_ARB_SHELL_NAME: &str = "ArbDecision(SpreadArb)";
 // Arb hedge 是 open terminal 触发的高频对冲闭环，不走 MM hedge 的多档拆单模型；
 // 单轮只出一笔，剩余 pending 会由后续触发继续滚动处理。
-const ARB_HEDGE_STATE_ORDERS_PER_ROUND: u32 = 1;
+const ARB_HEDGE_ORDERS_PER_ROUND: u32 = 1;
 
 pub fn default_pnlu_redis_settings() -> RedisSettings {
     RedisSettings {
@@ -418,8 +413,6 @@ fn build_spread_arb_shell(venues: VenuePair) -> Result<SpreadArbShell> {
         arb.hedge_factor_value_hub = Some(hedge_factor_value_hub);
         arb.apply_shared_bootstrap(ArbDecisionState::default_shared_bootstrap(5));
         arb.enable_environment_model = true;
-        arb.enable_volatility_limit = true;
-        arb.open_volatility_limit = 70.0;
         arb.return_model_service = None;
         arb.environment_model_service = None;
         arb.environment_model_true_threshold = DEFAULT_ENV_MODEL_TRUE_THRESHOLD;
@@ -477,14 +470,11 @@ impl FundingArbShell {
                                 dispatch_arb_backward_query(FUNDING_ARB_SHELL_NAME, data)
                             {
                                 match query {
-                                    ArbBackwardQueryMsg::Hedge(query) => {
-                                        drive_funding_hedge_query(&mut decision, query)
-                                    }
                                     ArbBackwardQueryMsg::CancelCandidates(query) => {
                                         drive_funding_cancel_candidate_query(&mut decision, query)
                                     }
-                                    ArbBackwardQueryMsg::HedgeState(query) => {
-                                        drive_funding_arb_hedge_state_query(&mut decision, query)
+                                    ArbBackwardQueryMsg::Hedge(query) => {
+                                        drive_funding_arb_hedge_query(&mut decision, query)
                                     }
                                 }
                             }
@@ -552,17 +542,14 @@ impl SpreadArbShell {
                                 dispatch_arb_backward_query(SPREAD_ARB_SHELL_NAME, data)
                             {
                                 match query {
-                                    ArbBackwardQueryMsg::Hedge(query) => {
-                                        drive_spread_arb_hedge_query(&mut decision, query)
-                                    }
                                     ArbBackwardQueryMsg::CancelCandidates(query) => {
                                         drive_spread_arb_cancel_candidate_query(
                                             &mut decision,
                                             query,
                                         )
                                     }
-                                    ArbBackwardQueryMsg::HedgeState(query) => {
-                                        drive_spread_arb_hedge_state_query(&mut decision, query)
+                                    ArbBackwardQueryMsg::Hedge(query) => {
+                                        drive_spread_arb_hedge_query(&mut decision, query)
                                     }
                                 }
                             }
@@ -802,86 +789,6 @@ pub fn funding_open_inputs_ready(hedge_symbol: &str, hedge_venue: TradingVenue) 
     has_predict_fr && has_predict_loan
 }
 
-fn prepare_arb_hedge_query(
-    source: &str,
-    query: &ArbHedgeSignalQueryMsg,
-) -> Option<ArbHedgePreparedQuery> {
-    let Some(side) = query.get_side() else {
-        log::warn!("{source}: hedge query side invalid: {}", query.hedge_side);
-        return None;
-    };
-
-    let Some(hedge_venue) = TradingVenue::from_u8(query.hedging_venue) else {
-        log::warn!(
-            "{source}: hedge query hedge venue invalid: {}",
-            query.hedging_venue
-        );
-        return None;
-    };
-
-    let hedge_symbol = query.get_hedging_symbol();
-    if hedge_symbol.is_empty() {
-        log::warn!("{source}: hedge query missing hedge symbol");
-        return None;
-    }
-
-    let open_symbol = query.get_opening_symbol();
-    if open_symbol.is_empty() {
-        log::warn!("{source}: hedge query missing open symbol");
-        return None;
-    }
-
-    let Some(open_venue) = TradingVenue::from_u8(query.opening_venue) else {
-        log::warn!(
-            "{source}: hedge query opening venue invalid: {}",
-            query.opening_venue
-        );
-        return None;
-    };
-
-    let hedge_base_qty = query.hedge_base_qty;
-    if hedge_base_qty <= 0.0 {
-        log::warn!(
-            "{source}: hedge query quantity <= 0 strategy_id={} qty={:.8}",
-            query.strategy_id,
-            hedge_base_qty
-        );
-        return None;
-    }
-
-    let mkt_channel = MktChannel::instance();
-    let Some(open_quote) = mkt_channel.get_quote(&open_symbol, open_venue) else {
-        log::warn!(
-            "{source}: hedge query missing open quote strategy_id={} symbol={} venue={:?}",
-            query.strategy_id,
-            open_symbol,
-            open_venue
-        );
-        return None;
-    };
-    let Some(hedge_quote) = mkt_channel.get_quote(&hedge_symbol, hedge_venue) else {
-        log::warn!(
-            "{source}: hedge query missing hedge quote strategy_id={} symbol={} venue={:?}",
-            query.strategy_id,
-            hedge_symbol,
-            hedge_venue
-        );
-        return None;
-    };
-
-    Some(ArbHedgePreparedQuery {
-        side,
-        open_symbol,
-        hedge_symbol,
-        open_venue,
-        hedge_venue,
-        hedge_base_qty,
-        open_quote,
-        hedge_quote,
-        now: get_timestamp_us(),
-    })
-}
-
 pub fn dispatch_arb_backward_query(source: &str, data: Bytes) -> Option<ArbBackwardQueryMsg> {
     match ArbBackwardQueryMsg::from_bytes(data) {
         Ok(query) => Some(query),
@@ -889,53 +796,6 @@ pub fn dispatch_arb_backward_query(source: &str, data: Bytes) -> Option<ArbBackw
             log::warn!("{source}: parse backward query failed: {err}");
             None
         }
-    }
-}
-
-fn evaluate_hedge_stop_loss(
-    query: &ArbHedgeSignalQueryMsg,
-    hedge_quote: &Quote,
-    threshold_pct: f64,
-) -> ArbHedgeStopLossDecision {
-    let open_bbo = Bbo::new(query.hedge_bid0, query.hedge_ask0, query.hedge_leg_ts);
-    let hedge_bbo = Bbo::new(hedge_quote.bid, hedge_quote.ask, hedge_quote.ts);
-    let open_mid = open_bbo.get_mid_price().unwrap_or(0.0);
-    let hedge_mid = hedge_bbo.get_mid_price().unwrap_or(0.0);
-    let mut pct_change = 0.0;
-    let mut valid = false;
-    let mut triggered = false;
-    let threshold_ratio = threshold_pct / 100.0;
-    if open_mid > 0.0 && hedge_mid > 0.0 {
-        pct_change = (hedge_mid - open_mid).abs() / open_mid;
-        valid = true;
-        triggered = pct_change > threshold_ratio;
-    }
-    ArbHedgeStopLossDecision {
-        pct_change,
-        threshold_pct,
-        valid,
-        triggered,
-    }
-}
-
-pub fn hedge_taker_market_price(side: Side, hedge_quote: &Quote) -> f64 {
-    match side {
-        Side::Buy => hedge_quote.ask,
-        Side::Sell => hedge_quote.bid,
-    }
-}
-
-pub fn hedge_maker_limit_price(side: Side, hedge_quote: &Quote, offset: f64) -> f64 {
-    let base_price = match side {
-        Side::Buy => hedge_quote.bid,
-        Side::Sell => hedge_quote.ask,
-    };
-    if base_price <= 0.0 {
-        return 0.0;
-    }
-    match side {
-        Side::Buy => base_price * (1.0 - offset),
-        Side::Sell => base_price * (1.0 + offset),
     }
 }
 
@@ -1363,7 +1223,7 @@ fn drive_spread_arb_decision(
     Ok(Some(SignalType::ArbOpen))
 }
 
-fn drive_funding_hedge_query(decision: &mut FundingArbShell, query: ArbHedgeSignalQueryMsg) {
+fn drive_funding_arb_hedge_query(decision: &mut FundingArbShell, query: ArbHedgeSignalQueryMsg) {
     drive_shared_arb_hedge_query(FUNDING_ARB_SHELL_NAME, &decision.runtime, query);
 }
 
@@ -1371,19 +1231,8 @@ fn drive_spread_arb_hedge_query(decision: &mut SpreadArbShell, query: ArbHedgeSi
     drive_shared_arb_hedge_query(SPREAD_ARB_SHELL_NAME, &decision.runtime, query);
 }
 
-fn drive_funding_arb_hedge_state_query(
-    decision: &mut FundingArbShell,
-    query: ArbHedgeStateQueryMsg,
-) {
-    drive_shared_arb_hedge_state_query(FUNDING_ARB_SHELL_NAME, &decision.runtime, query);
-}
-
-fn drive_spread_arb_hedge_state_query(decision: &mut SpreadArbShell, query: ArbHedgeStateQueryMsg) {
-    drive_shared_arb_hedge_state_query(SPREAD_ARB_SHELL_NAME, &decision.runtime, query);
-}
-
 #[derive(Debug, Clone)]
-struct ArbHedgeStateBuildParams {
+struct ArbHedgeBuildParams {
     signal: f64,
     signal_qtl: Option<f64>,
     volatility: f64,
@@ -1398,11 +1247,11 @@ struct ArbHedgeStateBuildParams {
     enable_return_score_adjust_hedge: bool,
 }
 
-fn resolve_arb_hedge_state_build_params(
+fn resolve_arb_hedge_build_params(
     source: &'static str,
     symbol: &str,
     hedge_venue: TradingVenue,
-) -> Option<ArbHedgeStateBuildParams> {
+) -> Option<ArbHedgeBuildParams> {
     match ArbDecision::with_state_mut(|arb| {
         let model_service = arb
             .return_model_service
@@ -1419,7 +1268,7 @@ fn resolve_arb_hedge_state_build_params(
             hedge_venue,
             arb.enable_return_score_adjust_hedge,
         )?;
-        Ok::<_, String>(ArbHedgeStateBuildParams {
+        Ok::<_, String>(ArbHedgeBuildParams {
             signal,
             signal_qtl,
             volatility,
@@ -1437,7 +1286,7 @@ fn resolve_arb_hedge_state_build_params(
         Some(Ok(params)) => Some(params),
         Some(Err(err)) => {
             log::warn!(
-                "{source}: ArbHedgeState factor lookup failed symbol={} venue={:?} err={}",
+                "{source}: ArbHedge factor lookup failed symbol={} venue={:?} err={}",
                 symbol,
                 hedge_venue,
                 err
@@ -1446,7 +1295,7 @@ fn resolve_arb_hedge_state_build_params(
         }
         None => {
             log::warn!(
-                "{source}: ArbHedgeState factor lookup failed symbol={} venue={:?} err=ArbDecisionState unavailable",
+                "{source}: ArbHedge factor lookup failed symbol={} venue={:?} err=ArbDecisionState unavailable",
                 symbol,
                 hedge_venue
             );
@@ -1455,7 +1304,7 @@ fn resolve_arb_hedge_state_build_params(
     }
 }
 
-fn should_use_arb_hedge_state_taker(
+fn should_use_arb_hedge_taker(
     weighted_inventory_price: f64,
     bid: f64,
     ask: f64,
@@ -1472,19 +1321,19 @@ fn should_use_arb_hedge_state_taker(
     Some((pct_change, threshold_pct / 100.0))
 }
 
-fn drive_shared_arb_hedge_state_query(
+fn drive_shared_arb_hedge_query(
     source: &'static str,
     runtime: &ArbShellRuntime,
-    query: ArbHedgeStateQueryMsg,
+    query: ArbHedgeSignalQueryMsg,
 ) {
     let symbol = query.get_symbol().to_uppercase();
     if symbol.is_empty() {
-        log::warn!("{source}: ArbHedgeState query missing symbol");
+        log::warn!("{source}: ArbHedge query missing symbol");
         return;
     }
     if query.due_hedge_qty.abs() <= 1e-12 {
         log::debug!(
-            "{source}: ArbHedgeState query skip zero due qty strategy_id={} symbol={} request_seq={}",
+            "{source}: ArbHedge query skip zero due qty strategy_id={} symbol={} request_seq={}",
             query.strategy_id,
             symbol,
             query.request_seq
@@ -1495,14 +1344,14 @@ fn drive_shared_arb_hedge_state_query(
     let hedge_venue = runtime.venues.1;
     let Some(quote) = MktChannel::instance().get_quote(&symbol, hedge_venue) else {
         log::warn!(
-            "{source}: ArbHedgeState quote unavailable strategy_id={} symbol={} venue={:?}",
+            "{source}: ArbHedge quote unavailable strategy_id={} symbol={} venue={:?}",
             query.strategy_id,
             symbol,
             hedge_venue
         );
         return;
     };
-    let Some(params) = resolve_arb_hedge_state_build_params(source, &symbol, hedge_venue) else {
+    let Some(params) = resolve_arb_hedge_build_params(source, &symbol, hedge_venue) else {
         return;
     };
 
@@ -1534,7 +1383,7 @@ fn drive_shared_arb_hedge_state_query(
         target_base_qty: Some(query.due_hedge_qty),
         inventory_net_qty: query.net_qty,
         symbol_exposure_u: query.symbol_exposure_u,
-        hedge_orders_per_round: ARB_HEDGE_STATE_ORDERS_PER_ROUND,
+        hedge_orders_per_round: ARB_HEDGE_ORDERS_PER_ROUND,
         offset_low: params.hedge_price_offset_limit_lower,
         offset_high_limit: params.hedge_price_offset_limit_upper,
         hedge_window_scale_low: params.hedge_window_scale_low,
@@ -1546,7 +1395,7 @@ fn drive_shared_arb_hedge_state_query(
         Ok(plan) => plan,
         Err(err) => {
             log::warn!(
-                "{source}: build ArbHedgeState plan failed strategy_id={} symbol={} err={}",
+                "{source}: build ArbHedge plan failed strategy_id={} symbol={} err={}",
                 query.strategy_id,
                 symbol,
                 err
@@ -1555,11 +1404,11 @@ fn drive_shared_arb_hedge_state_query(
         }
     };
     log::info!(
-        "{source}: ArbHedgeState single-order plan strategy_id={} symbol={} request_seq={} split_policy=single_order_high_frequency hedge_orders_per_round={} plan_levels={} target_base_qty={:.8} due_hedge_qty={:.8} pending_hedge_qty={:.8} mid_price={:.8}",
+        "{source}: ArbHedge single-order plan strategy_id={} symbol={} request_seq={} split_policy=single_order_high_frequency hedge_orders_per_round={} plan_levels={} target_base_qty={:.8} due_hedge_qty={:.8} pending_hedge_qty={:.8} mid_price={:.8}",
         query.strategy_id,
         symbol,
         query.request_seq,
-        ARB_HEDGE_STATE_ORDERS_PER_ROUND,
+        ARB_HEDGE_ORDERS_PER_ROUND,
         plan.levels.len(),
         query.due_hedge_qty,
         query.due_hedge_qty,
@@ -1568,7 +1417,7 @@ fn drive_shared_arb_hedge_state_query(
     );
     let Some(level) = plan.levels.first() else {
         log::warn!(
-            "{source}: ArbHedgeState plan empty levels strategy_id={} symbol={} request_seq={}",
+            "{source}: ArbHedge plan empty levels strategy_id={} symbol={} request_seq={}",
             query.strategy_id,
             symbol,
             query.request_seq
@@ -1579,7 +1428,7 @@ fn drive_shared_arb_hedge_state_query(
         crate::common::tick_math::QuantizedValue::encode_floor(level.aligned_qty, plan.qty_tick)
     else {
         log::warn!(
-            "{source}: ArbHedgeState amount qv invalid strategy_id={} symbol={} request_seq={} qty={:.8} qty_tick={:.8}",
+            "{source}: ArbHedge amount qv invalid strategy_id={} symbol={} request_seq={} qty={:.8} qty_tick={:.8}",
             query.strategy_id,
             symbol,
             query.request_seq,
@@ -1593,7 +1442,7 @@ fn drive_shared_arb_hedge_state_query(
         plan.price_tick,
     ) else {
         log::warn!(
-            "{source}: ArbHedgeState price qv invalid strategy_id={} symbol={} request_seq={} price={:.8} price_tick={:.8}",
+            "{source}: ArbHedge price qv invalid strategy_id={} symbol={} request_seq={} price={:.8} price_tick={:.8}",
             query.strategy_id,
             symbol,
             query.request_seq,
@@ -1603,7 +1452,7 @@ fn drive_shared_arb_hedge_state_query(
         return;
     };
 
-    let use_taker = should_use_arb_hedge_state_taker(
+    let use_taker = should_use_arb_hedge_taker(
         query.weighted_inventory_price,
         quote.bid,
         quote.ask,
@@ -1612,7 +1461,7 @@ fn drive_shared_arb_hedge_state_query(
     .map(|(pct_change, threshold)| pct_change > threshold)
     .unwrap_or(false);
 
-    let mut ctx = ArbHedgeStateCtx::new();
+    let mut ctx = ArbHedgeCtx::new();
     ctx.strategy_id = query.strategy_id;
     ctx.set_side(hedge_side);
     ctx.hedging_leg = TradingLeg::new(hedge_venue, quote.bid, quote.ask, quote.ts);
@@ -1638,14 +1487,14 @@ fn drive_shared_arb_hedge_state_query(
     ));
 
     let signal = TradeSignal::create(
-        SignalType::ArbHedgeState,
+        SignalType::ArbHedge,
         get_timestamp_us(),
         0.0,
         ctx.to_bytes(),
     );
     if let Err(err) = runtime.signal_pub.publish(&signal.to_bytes()) {
         log::warn!(
-            "{source}: publish ArbHedgeState failed strategy_id={} symbol={} err={:#}",
+            "{source}: publish ArbHedge failed strategy_id={} symbol={} err={:#}",
             query.strategy_id,
             symbol,
             err
@@ -1654,7 +1503,7 @@ fn drive_shared_arb_hedge_state_query(
     }
 
     log::info!(
-        "{source}: ArbHedgeState reply strategy_id={} symbol={} side={:?} qty={:.8} price={:.8} mode={} request_seq={} net_qty={:.8} due_hedge_qty={:.8} pending_hedge_qty={:.8}",
+        "{source}: ArbHedge reply strategy_id={} symbol={} side={:?} qty={:.8} price={:.8} mode={} request_seq={} net_qty={:.8} due_hedge_qty={:.8} pending_hedge_qty={:.8}",
         query.strategy_id,
         symbol,
         hedge_side,
@@ -1665,314 +1514,6 @@ fn drive_shared_arb_hedge_state_query(
         query.net_qty,
         query.due_hedge_qty,
         query.pending_hedge_qty
-    );
-}
-
-fn drive_shared_arb_hedge_query(
-    source: &'static str,
-    runtime: &ArbShellRuntime,
-    query: ArbHedgeSignalQueryMsg,
-) {
-    let Some(prepared) = prepare_arb_hedge_query(source, &query) else {
-        return;
-    };
-    let side = prepared.side;
-    let hedge_venue = prepared.hedge_venue;
-    let hedge_symbol = prepared.hedge_symbol;
-    let open_symbol = prepared.open_symbol;
-    let open_venue = prepared.open_venue;
-    let hedge_base_qty = prepared.hedge_base_qty;
-    let open_quote = prepared.open_quote;
-    let hedge_quote = prepared.hedge_quote;
-    let now = prepared.now;
-    let table = if hedge_venue == runtime.venues.0 {
-        &runtime.open_min_qty_table
-    } else {
-        &runtime.hedge_min_qty_table
-    };
-    let symbol_key = super::arb_qty_align::min_qty_symbol_key(hedge_venue, &hedge_symbol);
-    let qty_tick = table.step_size(&symbol_key).unwrap_or(0.0);
-    let price_tick = table.price_tick(&symbol_key).unwrap_or(0.0);
-    let spread_rate = super::common::compute_spread_rate(&open_quote, &hedge_quote);
-    let open_symbol_key = normalize_arb_symbol_key(&open_symbol);
-
-    let hedge_inputs = ArbDecision::with_state_mut(|arb| {
-        arb.evaluate_shared_hedge_inputs(
-            open_symbol_key.as_str(),
-            &hedge_symbol,
-            hedge_venue,
-            now,
-            &query,
-            &hedge_quote,
-        )
-    })
-    .expect("ArbDecisionState should be initialized");
-    let environment_signal = hedge_inputs.environment_signal;
-    let environment_score = hedge_inputs.environment_score;
-    let return_qtl = hedge_inputs.return_qtl;
-    let return_threshold = hedge_inputs.return_threshold;
-    let target_factor_lookup = hedge_inputs.target_factor_lookup;
-    let aggressive = hedge_inputs.aggressive;
-    let default_offset = hedge_inputs.default_offset;
-    let stop_loss = hedge_inputs.stop_loss;
-    let (premium_rate, spread_fr) = match super::arb_open_filter::lookup_realtime_open_filter_value(
-        &open_symbol,
-        &hedge_symbol,
-        open_venue,
-        hedge_venue,
-    ) {
-        Some((value, "premium_rate")) => (Some(value), None),
-        Some((value, "spread_fr")) => (None, Some(value)),
-        _ => (None, None),
-    };
-
-    log::info!(
-        "{source}: hedge stop-loss check strategy_id={} pct_change={:.6} threshold_pct={:.2} trigger={} valid={}",
-        query.strategy_id,
-        stop_loss.pct_change,
-        stop_loss.threshold_pct,
-        stop_loss.triggered,
-        stop_loss.valid
-    );
-
-    if stop_loss.triggered {
-        let market_price = hedge_taker_market_price(side, &hedge_quote);
-        let aligned_hedge_qty = super::arb_qty_align::convert_aligned_base_qty_to_open_venue_qty(
-            if hedge_venue == runtime.venues.0 {
-                &runtime.open_min_qty_table
-            } else {
-                &runtime.hedge_min_qty_table
-            },
-            hedge_venue,
-            &hedge_symbol,
-            market_price,
-            hedge_base_qty,
-        );
-        if aligned_hedge_qty <= 0.0 {
-            log::warn!(
-                "{source}: stop-loss taker aligned qty invalid strategy_id={} symbol_key={} base_qty={:.8}",
-                query.strategy_id,
-                symbol_key,
-                hedge_base_qty
-            );
-            return;
-        }
-
-        let from_key = super::arb_hedge_context::build_spread_arb_hedge_from_key(
-            source,
-            now,
-            return_qtl,
-            return_threshold,
-            environment_score,
-            environment_signal.threshold,
-            target_factor_lookup.target_factor_value,
-            stop_loss.pct_change,
-            spread_rate,
-            premium_rate,
-            spread_fr,
-            open_venue,
-            hedge_venue,
-            &hedge_symbol,
-            market_price,
-            if hedge_venue == runtime.venues.0 {
-                &runtime.open_min_qty_table
-            } else {
-                &runtime.hedge_min_qty_table
-            },
-            if hedge_venue == runtime.venues.0 {
-                &runtime.open_depth_query_client
-            } else {
-                runtime
-                    .hedge_depth_query_client
-                    .as_ref()
-                    .expect("missing hedge depth query client")
-            },
-        );
-        let ctx = match super::arb_hedge_context::build_fill_and_publish_arb_taker_hedge(
-            super::arb_hedge_context::ArbTakerHedgeSignalInput {
-                signal_pub: &runtime.signal_pub,
-                now,
-                strategy_id: query.strategy_id,
-                client_order_id: query.client_order_id,
-                side: side.to_u8(),
-                hedge_qty: aligned_hedge_qty,
-                qty_tick,
-                common: super::arb_hedge_context::ArbHedgeContextCommonInput {
-                    open_symbol: &open_symbol,
-                    hedge_symbol: &hedge_symbol,
-                    open_venue,
-                    hedge_venue,
-                    open_quote: &open_quote,
-                    hedge_quote: &hedge_quote,
-                    now,
-                    price_offset: 0.0,
-                    spread_rate,
-                    from_key,
-                },
-            },
-        ) {
-            Ok(ctx) => ctx,
-            Err(err) => {
-                log::warn!(
-                    "{source}: send stop-loss taker hedge failed strategy_id={} err={:?}",
-                    query.strategy_id,
-                    err
-                );
-                return;
-            }
-        };
-        log::info!(
-            "{source}: trigger stop-loss taker hedge strategy_id={} hedge_symbol={} qty={:.6} side={:?} pct_change={:.6} threshold_pct={:.2} spread_rate={:.6}",
-            query.strategy_id,
-            hedge_symbol,
-            ctx.hedge_qty_value(),
-            side,
-            stop_loss.pct_change,
-            stop_loss.threshold_pct,
-            spread_rate
-        );
-        return;
-    }
-
-    let offset_decision =
-        ArbDecisionState::resolve_hedge_offset(&target_factor_lookup, default_offset, aggressive);
-    let offset = offset_decision.offset;
-
-    log::info!(
-        "{source}: hedge query offset source={} key={} symbol={} venue={:?} norm_symbol={} ready={} factor={:?} factor_index={:?} ts_ms={:?} offset={:.6} default_offset={:.6} aggressive={} note={}",
-        offset_decision.source,
-        target_factor_lookup.key,
-        hedge_symbol,
-        hedge_venue,
-        target_factor_lookup.symbol_key,
-        offset_decision.ready,
-        target_factor_lookup.target_factor_value,
-        target_factor_lookup.factor_index,
-        target_factor_lookup.ts_ms,
-        offset,
-        default_offset,
-        aggressive,
-        offset_decision.note
-    );
-
-    let limit_price = hedge_maker_limit_price(side, &hedge_quote, offset);
-    if limit_price <= 0.0 {
-        log::warn!(
-            "{source}: hedge query limit_price invalid strategy_id={} price={:.8}",
-            query.strategy_id,
-            limit_price
-        );
-        return;
-    }
-
-    let aligned_hedge_qty = super::arb_qty_align::convert_aligned_base_qty_to_open_venue_qty(
-        if hedge_venue == runtime.venues.0 {
-            &runtime.open_min_qty_table
-        } else {
-            &runtime.hedge_min_qty_table
-        },
-        hedge_venue,
-        &hedge_symbol,
-        limit_price,
-        hedge_base_qty,
-    );
-    if aligned_hedge_qty <= 0.0 {
-        log::warn!(
-            "{source}: hedge query aligned qty invalid strategy_id={} symbol_key={} base_qty={:.8}",
-            query.strategy_id,
-            symbol_key,
-            hedge_base_qty
-        );
-        return;
-    }
-
-    let hedge_timeout_mm_us = ArbDecision::with_state_mut(|arb| arb.hedge_timeout_mm_us)
-        .expect("ArbDecisionState should be initialized");
-    let Some(mut ctx) = super::arb_hedge_context::build_and_fill_arb_maker_hedge(
-        super::arb_hedge_context::ArbMakerHedgeBuildInput {
-            strategy_id: query.strategy_id,
-            client_order_id: query.client_order_id,
-            side: side.to_u8(),
-            hedge_qty: aligned_hedge_qty,
-            qty_tick,
-            hedge_price: limit_price,
-            price_tick,
-            expire_ts: now + hedge_timeout_mm_us,
-            common: super::arb_hedge_context::ArbHedgeContextCommonInput {
-                open_symbol: &open_symbol,
-                hedge_symbol: &hedge_symbol,
-                open_venue,
-                hedge_venue,
-                open_quote: &open_quote,
-                hedge_quote: &hedge_quote,
-                now,
-                price_offset: offset,
-                spread_rate,
-                from_key: Vec::new(),
-            },
-        },
-    ) else {
-        log::warn!(
-            "{source}: hedge query qv invalid strategy_id={} qty={:.8} price={:.8}",
-            query.strategy_id,
-            aligned_hedge_qty,
-            limit_price
-        );
-        return;
-    };
-    let from_key = super::arb_hedge_context::build_spread_arb_hedge_from_key(
-        source,
-        now,
-        return_qtl,
-        return_threshold,
-        environment_score,
-        environment_signal.threshold,
-        target_factor_lookup.target_factor_value,
-        stop_loss.pct_change,
-        spread_rate,
-        premium_rate,
-        spread_fr,
-        open_venue,
-        hedge_venue,
-        &hedge_symbol,
-        ctx.hedge_price_value(),
-        if hedge_venue == runtime.venues.0 {
-            &runtime.open_min_qty_table
-        } else {
-            &runtime.hedge_min_qty_table
-        },
-        if hedge_venue == runtime.venues.0 {
-            &runtime.open_depth_query_client
-        } else {
-            runtime
-                .hedge_depth_query_client
-                .as_ref()
-                .expect("missing hedge depth query client")
-        },
-    );
-    ctx.set_from_key(from_key);
-    if let Err(err) =
-        super::arb_hedge_context::publish_arb_hedge_signal(&runtime.signal_pub, now, &ctx)
-    {
-        log::warn!(
-            "{source}: send hedge signal failed strategy_id={} err={:?}",
-            query.strategy_id,
-            err
-        );
-        return;
-    }
-
-    log::info!(
-        "{source}: reply hedge query strategy_id={} hedge_symbol={} qty={:.6} side={:?} seq={} aggressive={} limit_price={:.8} offset={:.6} spread_rate={:.6} (maker)",
-        query.strategy_id,
-        hedge_symbol,
-        ctx.hedge_qty_value(),
-        side,
-        query.request_seq,
-        aggressive,
-        ctx.hedge_price_value(),
-        offset,
-        spread_rate
     );
 }
 
@@ -3262,27 +2803,6 @@ pub(crate) struct ArbCancelGatePassed {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ArbHedgePreparedQuery {
-    pub side: Side,
-    pub open_symbol: String,
-    pub hedge_symbol: String,
-    pub open_venue: TradingVenue,
-    pub hedge_venue: TradingVenue,
-    pub hedge_base_qty: f64,
-    pub open_quote: Quote,
-    pub hedge_quote: Quote,
-    pub now: i64,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct ArbHedgeStopLossDecision {
-    pub pct_change: f64,
-    pub threshold_pct: f64,
-    pub valid: bool,
-    pub triggered: bool,
-}
-
-#[derive(Debug, Clone)]
 pub(crate) struct ArbFundingControlPassed {
     pub final_signal: SignalType,
     pub side: Side,
@@ -3305,30 +2825,6 @@ pub(crate) struct ArbSharedBootstrap {
     pub spread_cancel_cooldown_us: i64,
     pub last_open_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
     pub last_close_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ArbXarbHedgeInputs {
-    pub environment_signal: EnvironmentSignalResult,
-    pub environment_score: f64,
-    pub return_qtl: Option<f64>,
-    pub return_threshold: Option<f64>,
-    pub target_factor_lookup: FactorValueLookupResult,
-    pub aggressive: bool,
-    pub default_offset: f64,
-    pub stop_loss: ArbHedgeStopLossDecision,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ArbSharedHedgeInputs {
-    pub environment_signal: EnvironmentSignalResult,
-    pub environment_score: f64,
-    pub return_qtl: Option<f64>,
-    pub return_threshold: Option<f64>,
-    pub target_factor_lookup: FactorValueLookupResult,
-    pub aggressive: bool,
-    pub default_offset: f64,
-    pub stop_loss: ArbHedgeStopLossDecision,
 }
 
 #[derive(Debug, Clone)]
@@ -3362,8 +2858,6 @@ pub(crate) struct ArbDecisionState {
     pub tlen_cancel_freq_ms: u64,
     pub enable_funding_open_filter: bool,
     pub enable_environment_model: bool,
-    pub enable_volatility_limit: bool,
-    pub open_volatility_limit: f64,
     pub return_model_service: Option<String>,
     pub environment_model_service: Option<String>,
     pub environment_model_true_threshold: f64,
@@ -3405,8 +2899,6 @@ impl ArbDecisionState {
             tlen_cancel_freq_ms: 3_000,
             enable_funding_open_filter: true,
             enable_environment_model: true,
-            enable_volatility_limit: true,
-            open_volatility_limit: 70.0,
             return_model_service: None,
             environment_model_service: None,
             environment_model_true_threshold: 0.0,
@@ -3431,12 +2923,11 @@ impl ArbDecisionState {
     }
 
     pub fn poll_factor_value_updates(&mut self) {
-        let percentile = Some(self.open_volatility_limit);
         if let Some(hub) = self.open_factor_value_hub.as_mut() {
-            let _ = hub.poll_factor_value_updates_with_inline_sampling(percentile);
+            let _ = hub.poll_factor_value_updates_with_inline_sampling(None);
         }
         if let Some(hub) = self.hedge_factor_value_hub.as_mut() {
-            let _ = hub.poll_factor_value_updates_with_inline_sampling(percentile);
+            let _ = hub.poll_factor_value_updates_with_inline_sampling(None);
         }
     }
 
@@ -3585,72 +3076,6 @@ impl ArbDecisionState {
             spread_cancel_cooldown_us: 0,
             last_open_ts: Rc::new(RefCell::new(HashMap::new())),
             last_close_ts: Rc::new(RefCell::new(HashMap::new())),
-        }
-    }
-
-    pub fn evaluate_xarb_hedge_inputs(
-        &mut self,
-        open_symbol_key: &str,
-        hedge_symbol: &str,
-        hedge_venue: TradingVenue,
-        now: i64,
-        query: &ArbHedgeSignalQueryMsg,
-        hedge_quote: &Quote,
-    ) -> ArbXarbHedgeInputs {
-        let environment_signal =
-            self.evaluate_environment_signal(open_symbol_key, hedge_symbol, hedge_venue, now);
-        let return_lookup = self.lookup_return_model_score_lookup(hedge_symbol, hedge_venue);
-        let return_qtl = return_lookup
-            .as_ref()
-            .and_then(|lookup| lookup.score_quantile)
-            .filter(|v| v.is_finite());
-        let return_threshold = None;
-        let environment_score = environment_signal
-            .score
-            .unwrap_or(environment_signal.class_label as f64);
-        let target_factor_lookup = self.lookup_hedge_factor_value(hedge_symbol, hedge_venue);
-        let aggressive = query.request_seq >= self.hedge_aggressive_seq_threshold;
-        let default_offset = self.hedge_price_offset.abs();
-        let stop_loss =
-            evaluate_hedge_stop_loss(query, hedge_quote, self.max_hedge_price_pct_change);
-        ArbXarbHedgeInputs {
-            environment_signal,
-            environment_score,
-            return_qtl,
-            return_threshold,
-            target_factor_lookup,
-            aggressive,
-            default_offset,
-            stop_loss,
-        }
-    }
-
-    pub fn evaluate_shared_hedge_inputs(
-        &mut self,
-        open_symbol_key: &str,
-        hedge_symbol: &str,
-        hedge_venue: TradingVenue,
-        now: i64,
-        query: &ArbHedgeSignalQueryMsg,
-        hedge_quote: &Quote,
-    ) -> ArbSharedHedgeInputs {
-        let xarb = self.evaluate_xarb_hedge_inputs(
-            open_symbol_key,
-            hedge_symbol,
-            hedge_venue,
-            now,
-            query,
-            hedge_quote,
-        );
-        ArbSharedHedgeInputs {
-            environment_signal: xarb.environment_signal,
-            environment_score: xarb.environment_score,
-            return_qtl: xarb.return_qtl,
-            return_threshold: xarb.return_threshold,
-            target_factor_lookup: xarb.target_factor_lookup,
-            aggressive: xarb.aggressive,
-            default_offset: xarb.default_offset,
-            stop_loss: xarb.stop_loss,
         }
     }
 
@@ -3982,14 +3407,6 @@ impl ArbDecisionState {
             .copied()
     }
 
-    pub fn observe_open_volatility(
-        &self,
-        symbol_key: &str,
-        current: f64,
-    ) -> InlineVolatilitySnapshot {
-        snapshot_inline_volatility(symbol_key, current, self.open_volatility_limit)
-    }
-
     fn snapshot_open_from_key_fields(
         &mut self,
         open_symbol_key: &str,
@@ -4174,35 +3591,7 @@ impl ArbDecisionState {
             }
             _ => return Some("vol".to_string()),
         };
-
-        if self.enable_volatility_limit {
-            let snapshot = self.observe_open_volatility(symbol, open_volatility_factor);
-            let Some(open_volatility_threshold) = snapshot.threshold else {
-                return Some(format!(
-                    "vol_warming_up(samples={} min_samples={} percentile={:.2})",
-                    snapshot.sample_count, INLINE_VOLATILITY_MIN_SAMPLES, snapshot.percentile
-                ));
-            };
-            if open_volatility_factor > open_volatility_threshold {
-                log::warn!(
-                    "ArbDecision: open blocked by inline volatility threshold symbol={} current={:.8} threshold={:.8} samples={} percentile={:.2} last_recompute_tp_ms={:?}",
-                    symbol,
-                    snapshot.current,
-                    open_volatility_threshold,
-                    snapshot.sample_count,
-                    snapshot.percentile,
-                    snapshot.last_recompute_tp_ms
-                );
-                return Some(format!(
-                    "vol(current={:.8}>threshold={:.8},samples={},percentile={:.2},last_recompute_tp_ms={})",
-                    snapshot.current,
-                    open_volatility_threshold,
-                    snapshot.sample_count,
-                    snapshot.percentile,
-                    snapshot.last_recompute_tp_ms.unwrap_or_default()
-                ));
-            }
-        }
+        let _ = open_volatility_factor;
 
         let key = Self::build_threshold_key(symbol, hedge_symbol, open_venue, hedge_venue);
         if self.is_open_cooldown_hit(&key, get_timestamp_us()) {
@@ -4404,37 +3793,6 @@ impl ArbDecisionState {
                     return None;
                 }
             };
-
-        if self.enable_volatility_limit {
-            let snapshot = self.observe_open_volatility(open_symbol_key, open_volatility_factor);
-            let Some(open_volatility_threshold) = snapshot.threshold else {
-                self.record_intercept_summary(format!(
-                    "vol_warming_up(samples={} min_samples={} percentile={:.2})",
-                    snapshot.sample_count, INLINE_VOLATILITY_MIN_SAMPLES, snapshot.percentile
-                ));
-                return None;
-            };
-            if open_volatility_factor > open_volatility_threshold {
-                log::warn!(
-                    "ArbDecision: open gate blocked by inline volatility threshold symbol={} current={:.8} threshold={:.8} samples={} percentile={:.2} last_recompute_tp_ms={:?}",
-                    open_symbol_key,
-                    snapshot.current,
-                    open_volatility_threshold,
-                    snapshot.sample_count,
-                    snapshot.percentile,
-                    snapshot.last_recompute_tp_ms
-                );
-                self.record_intercept_summary(format!(
-                    "vol(current={:.8}>threshold={:.8},samples={},percentile={:.2},last_recompute_tp_ms={})",
-                    snapshot.current,
-                    open_volatility_threshold,
-                    snapshot.sample_count,
-                    snapshot.percentile,
-                    snapshot.last_recompute_tp_ms.unwrap_or_default()
-                ));
-                return None;
-            }
-        }
 
         Some(ArbOpenGatePassed {
             return_qtl,

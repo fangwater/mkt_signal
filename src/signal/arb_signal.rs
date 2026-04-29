@@ -1,12 +1,11 @@
 use crate::common::tick_math::QuantizedValue;
-use crate::signal::hedge_signal::{ArbHedgeSignalQueryMsg, ArbHedgeStateQueryMsg};
+use crate::signal::hedge_signal::ArbHedgeSignalQueryMsg;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use super::common::bytes_helper;
 
-const ARB_BACKWARD_QUERY_HEDGE: u8 = 1;
 const ARB_BACKWARD_QUERY_CANCEL_CANDIDATES: u8 = 2;
-const ARB_BACKWARD_QUERY_HEDGE_STATE: u8 = 3;
+const ARB_BACKWARD_QUERY_HEDGE: u8 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ArbCancelTriggerCtx {
@@ -137,19 +136,14 @@ impl ArbCancelCandidateQueryMsg {
 
 #[derive(Debug, Clone)]
 pub enum ArbBackwardQueryMsg {
-    Hedge(ArbHedgeSignalQueryMsg),
     CancelCandidates(ArbCancelCandidateQueryMsg),
-    HedgeState(ArbHedgeStateQueryMsg),
+    Hedge(ArbHedgeSignalQueryMsg),
 }
 
 impl ArbBackwardQueryMsg {
     pub fn to_bytes(&self) -> Bytes {
         let mut buf = BytesMut::new();
         match self {
-            Self::Hedge(msg) => {
-                buf.put_u8(ARB_BACKWARD_QUERY_HEDGE);
-                buf.put(msg.to_bytes());
-            }
             Self::CancelCandidates(msg) => {
                 buf.put_u8(ARB_BACKWARD_QUERY_CANCEL_CANDIDATES);
                 buf.put_i64_le(msg.trigger_ts);
@@ -166,8 +160,8 @@ impl ArbBackwardQueryMsg {
                     }
                 }
             }
-            Self::HedgeState(msg) => {
-                buf.put_u8(ARB_BACKWARD_QUERY_HEDGE_STATE);
+            Self::Hedge(msg) => {
+                buf.put_u8(ARB_BACKWARD_QUERY_HEDGE);
                 buf.put(msg.to_bytes());
             }
         }
@@ -180,7 +174,6 @@ impl ArbBackwardQueryMsg {
         }
         let kind = bytes.get_u8();
         match kind {
-            ARB_BACKWARD_QUERY_HEDGE => Ok(Self::Hedge(ArbHedgeSignalQueryMsg::from_bytes(bytes)?)),
             ARB_BACKWARD_QUERY_CANCEL_CANDIDATES => {
                 if bytes.remaining() < 8 + 4 {
                     return Err(
@@ -222,9 +215,7 @@ impl ArbBackwardQueryMsg {
                     groups,
                 }))
             }
-            ARB_BACKWARD_QUERY_HEDGE_STATE => {
-                Ok(Self::HedgeState(ArbHedgeStateQueryMsg::from_bytes(bytes)?))
-            }
+            ARB_BACKWARD_QUERY_HEDGE => Ok(Self::Hedge(ArbHedgeSignalQueryMsg::from_bytes(bytes)?)),
             _ => Err(format!("Unknown ArbBackwardQueryMsg kind: {}", kind)),
         }
     }
@@ -233,16 +224,16 @@ impl ArbBackwardQueryMsg {
 #[cfg(test)]
 mod tests {
     use super::ArbBackwardQueryMsg;
-    use crate::signal::hedge_signal::ArbHedgeStateQueryMsg;
+    use crate::signal::hedge_signal::ArbHedgeSignalQueryMsg;
 
     #[test]
-    fn arb_backward_query_wraps_hedge_state_query() {
-        let msg = ArbBackwardQueryMsg::HedgeState(ArbHedgeStateQueryMsg::new(
+    fn arb_backward_query_wraps_hedge_query() {
+        let msg = ArbBackwardQueryMsg::Hedge(ArbHedgeSignalQueryMsg::new(
             42, "BTCUSDT", 1.5, 0.75, 2.25, 1000.0, 101.25, 7,
         ));
         let parsed = ArbBackwardQueryMsg::from_bytes(msg.to_bytes()).expect("roundtrip");
         match parsed {
-            ArbBackwardQueryMsg::HedgeState(inner) => {
+            ArbBackwardQueryMsg::Hedge(inner) => {
                 assert_eq!(inner.strategy_id, 42);
                 assert_eq!(inner.get_symbol(), "BTCUSDT");
                 assert_eq!(inner.request_seq, 7);

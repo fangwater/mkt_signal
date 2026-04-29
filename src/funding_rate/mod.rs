@@ -9,7 +9,6 @@ pub mod arb_cooldown;
 pub mod arb_decision;
 pub mod arb_emit;
 pub mod arb_from_key;
-pub mod arb_hedge_context;
 pub mod arb_mode;
 pub mod arb_open_context;
 pub mod arb_open_filter;

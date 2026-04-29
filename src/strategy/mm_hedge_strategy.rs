@@ -19,8 +19,9 @@ use crate::signal::mm_signal::MmBackwardQueryMsg;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::hedge_order_reconcile::{HedgeOrderReconcileCommon, HedgeOrderReconcileState};
 use crate::strategy::hedge_strategy_common::{
-    mark_price_lookup_symbol, parse_return_qtl_from_from_key, CANCEL_RESEND_THROTTLE_US,
-    HEDGE_QUERY_INTERVAL_US, HEDGE_QUERY_WATCHDOG_US, NET_EXPOSURE_EPS_USDT,
+    mark_price_lookup_symbol, parse_return_qtl_from_from_key, signed_qty_from_side,
+    CANCEL_RESEND_THROTTLE_US, HEDGE_QUERY_INTERVAL_US, HEDGE_QUERY_WATCHDOG_US,
+    NET_EXPOSURE_EPS_USDT, TERMINAL_QTY_EPS,
 };
 use crate::strategy::manager::{
     OrderTerminalRecorder, OrphanHandoff, OrphanStrategyRole, Strategy,
@@ -34,7 +35,7 @@ use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
     publish_uniform_trade_order_from_order_update, UniformPublishCtx,
 };
-use log::{debug, warn};
+use log::{debug, info, warn};
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 
@@ -1848,6 +1849,83 @@ impl Strategy for MarketMakerHedgeStrategy {
 
     fn is_active(&self) -> bool {
         self.alive_flag
+    }
+}
+
+impl OrderTerminalRecorder for MarketMakerHedgeStrategy {
+    fn record_open_order_terminal(
+        &mut self,
+        terminal_ts: i64,
+        side: Side,
+        order_base_qty: f64,
+        filled_base_qty: f64,
+        price: f64,
+        _close_ts: i64,
+    ) -> bool {
+        let order_base_qty = order_base_qty.abs();
+        let filled_base_qty = filled_base_qty.abs();
+        if filled_base_qty <= TERMINAL_QTY_EPS {
+            return false;
+        }
+        let signed_base_qty = signed_qty_from_side(side, filled_base_qty);
+        let buy_qty = if signed_base_qty > 0.0 {
+            signed_base_qty
+        } else {
+            0.0
+        };
+        let sell_qty = if signed_base_qty < 0.0 {
+            -signed_base_qty
+        } else {
+            0.0
+        };
+        info!(
+            "MMHedgeRecord: strategy_id={} symbol={} leg=open side={:?} order_base_qty={:.8} filled_base_qty={:.8} qv={:.8} price={:.8} terminal_ts={}",
+            self.get_id(),
+            self.symbol().unwrap_or(""),
+            side,
+            order_base_qty,
+            filled_base_qty,
+            signed_base_qty,
+            price,
+            terminal_ts
+        );
+        self.apply_net_qty_fill(terminal_ts, signed_base_qty, price, "open_order_terminal");
+        self.period_buy_qty += buy_qty;
+        self.period_sell_qty += sell_qty;
+        // MM open terminal 计入当前 period 的买/卖成交量，后续 hedge query 会带上这段增量。
+        true
+    }
+
+    fn record_hedge_order_terminal(
+        &mut self,
+        terminal_ts: i64,
+        side: Side,
+        order_base_qty: f64,
+        filled_base_qty: f64,
+        price: f64,
+    ) -> bool {
+        let order_base_qty = order_base_qty.abs();
+        let filled_base_qty = filled_base_qty.abs();
+        if order_base_qty <= TERMINAL_QTY_EPS && filled_base_qty <= TERMINAL_QTY_EPS {
+            return false;
+        }
+        let signed_base_qty = signed_qty_from_side(side, filled_base_qty);
+        info!(
+            "MMHedgeRecord: strategy_id={} symbol={} leg=hedge side={:?} order_base_qty={:.8} filled_base_qty={:.8} qv={:.8} price={:.8} terminal_ts={}",
+            self.get_id(),
+            self.symbol().unwrap_or(""),
+            side,
+            order_base_qty,
+            filled_base_qty,
+            signed_base_qty,
+            price,
+            terminal_ts
+        );
+        // MM hedge terminal 只更新净库存；period 买/卖量只由 open/external fill 累加。
+        if filled_base_qty > TERMINAL_QTY_EPS {
+            self.apply_net_qty_fill(terminal_ts, signed_base_qty, price, "hedge_order_terminal");
+        }
+        true
     }
 }
 

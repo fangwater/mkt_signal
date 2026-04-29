@@ -9,10 +9,10 @@ use crate::signal::arb_signal::ArbBackwardQueryMsg;
 use crate::signal::common::{OrderStatus, SignalBytes, TradingVenue};
 use crate::signal::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
-use crate::strategy::arb_helper::create_and_send_order;
 use crate::strategy::hedge_order_reconcile::{HedgeOrderReconcileCommon, HedgeOrderReconcileState};
 use crate::strategy::hedge_strategy_common::{
-    mark_price_lookup_symbol, parse_return_qtl_from_from_key, CANCEL_RESEND_THROTTLE_US,
+    mark_price_lookup_symbol, parse_return_qtl_from_from_key, signed_qty_from_side,
+    CANCEL_RESEND_THROTTLE_US, TERMINAL_QTY_EPS,
 };
 use crate::strategy::manager::{
     OrderTerminalRecorder, OrphanHandoff, OrphanSourceKind, OrphanStrategyRole, Strategy,
@@ -26,7 +26,7 @@ use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
     publish_uniform_trade_order_from_order_update, UniformPublishCtx,
 };
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use std::any::Any;
 use std::collections::{BTreeMap, HashMap};
 
@@ -1157,6 +1157,135 @@ impl Strategy for ArbHedgeStrategy {
 
     fn order_terminal_recorder_mut(&mut self) -> Option<&mut dyn OrderTerminalRecorder> {
         Some(self)
+    }
+}
+
+impl OrderTerminalRecorder for ArbHedgeStrategy {
+    fn record_open_order_terminal(
+        &mut self,
+        terminal_ts: i64,
+        side: Side,
+        order_base_qty: f64,
+        filled_base_qty: f64,
+        price: f64,
+        close_ts: i64,
+    ) -> bool {
+        let order_base_qty = order_base_qty.abs();
+        let filled_base_qty = filled_base_qty.abs();
+        if filled_base_qty <= TERMINAL_QTY_EPS {
+            return false;
+        }
+        let signed_base_qty = signed_qty_from_side(side, filled_base_qty);
+        // Arb 开仓 terminal 直接更新净敞口
+        self.net_qty_queue
+            .apply_fill(terminal_ts, signed_base_qty, price);
+        // Arb 开仓 terminal 会形成一笔待对冲需求；close_ts 决定它什么时候进入 due 数量。
+        self.pending_hedge_queue
+            .put(terminal_ts, close_ts, signed_base_qty, price);
+        info!(
+            "ArbHedgeRecord: strategy_id={} symbol={} leg=open side={:?} order_base_qty={:.8} filled_base_qty={:.8} qv={:.8} price={:.8} terminal_ts={} close_ts={} net={:.8} pending_hedge={:.8}",
+            self.strategy_id,
+            self.symbol,
+            side,
+            order_base_qty,
+            filled_base_qty,
+            signed_base_qty,
+            price,
+            terminal_ts,
+            close_ts,
+            self.net_qty_queue.net_qty(),
+            self.pending_hedge_queue.net_qty()
+        );
+        // 开仓成交 terminal 会尝试立即触发一次状态查询，但它只负责"已经 due 的量"。
+        // 如果 close_ts 还没到，trigger 会跳过，后续由 ArbHedgeStrategy::handle_period_clock
+        // 作为 close_ts 时间轮在到期后重新拉起 query，避免藏仓 pending 永远留在队列里。
+        self.trigger_hedge_query_after_open_terminal(terminal_ts);
+        true
+    }
+
+    fn record_hedge_order_terminal(
+        &mut self,
+        terminal_ts: i64,
+        side: Side,
+        order_base_qty: f64,
+        filled_base_qty: f64,
+        price: f64,
+    ) -> bool {
+        let order_base_qty = order_base_qty.abs();
+        let filled_base_qty = filled_base_qty.abs();
+        if order_base_qty <= TERMINAL_QTY_EPS && filled_base_qty <= TERMINAL_QTY_EPS {
+            return false;
+        }
+        let signed_base_qty = signed_qty_from_side(side, filled_base_qty);
+        let unfilled_base_qty = (order_base_qty - filled_base_qty).max(0.0);
+        // arb下单时会按照挂单量borrow待对冲量，在terminal的时候根据实际成交量释放
+        let pending_release_qv = match side {
+            Side::Buy => -unfilled_base_qty,
+            Side::Sell => unfilled_base_qty,
+        };
+        let released_qv = self
+            .pending_hedge_queue
+            .release(terminal_ts, pending_release_qv, price);
+        if filled_base_qty > TERMINAL_QTY_EPS {
+            self.net_qty_queue
+                .apply_fill(terminal_ts, signed_base_qty, price);
+        }
+        info!(
+            "ArbHedgeRecord: strategy_id={} symbol={} leg=hedge side={:?} order_base_qty={:.8} filled_base_qty={:.8} unfilled_base_qty={:.8} released_pending={:.8} qv={:.8} price={:.8} terminal_ts={} net={:.8} pending_hedge={:.8}",
+            self.strategy_id,
+            self.symbol,
+            side,
+            order_base_qty,
+            filled_base_qty,
+            unfilled_base_qty,
+            released_qv,
+            signed_base_qty,
+            price,
+            terminal_ts,
+            self.net_qty_queue.net_qty(),
+            self.pending_hedge_queue.net_qty()
+        );
+        true
+    }
+}
+
+fn create_and_send_order(
+    strategy_id: i32,
+    client_order_id: i64,
+    order_type_str: &str,
+    symbol: &str,
+) -> Result<(), String> {
+    let order = MonitorChannel::instance()
+        .order_manager()
+        .borrow_mut()
+        .get(client_order_id);
+    if let Some(order) = order.as_ref() {
+        let exchange = order.venue.trade_engine_exchange();
+        match order.get_order_request_bytes() {
+            Ok(req_bin) => {
+                if let Err(e) = TradeEngHub::publish_order_request(exchange, &req_bin) {
+                    error!(
+                        "ArbHedgeStrategy: strategy_id={} symbol={} exchange={} 推送{}订单失败: {}",
+                        strategy_id, symbol, exchange, order_type_str, e
+                    );
+                    return Err(format!("推送{}订单失败: {}", order_type_str, e));
+                }
+                Ok(())
+            }
+            Err(e) => {
+                error!(
+                    "ArbHedgeStrategy: strategy_id={} symbol={} 获取{}订单请求字节失败: {}",
+                    strategy_id, symbol, order_type_str, e
+                );
+                Err(format!("获取{}订单请求字节失败: {}", order_type_str, e))
+            }
+        }
+    } else {
+        error!(
+            "ArbHedgeStrategy: strategy_id={} symbol={} 未找到创建的{}订单 client_order_id={}",
+            strategy_id, symbol, order_type_str, client_order_id
+        );
+        Err(format!("未找到创建的{}订单", order_type_str))
     }
 }
 

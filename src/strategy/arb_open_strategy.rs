@@ -65,6 +65,7 @@ impl ArbOpenStrategy {
             from_key: ctx.from_key,
             price_qv: ctx.price_qv,
             price_offset: ctx.price_offset,
+            reduce_only: false,
             close_ts,
         }) else {
             return;

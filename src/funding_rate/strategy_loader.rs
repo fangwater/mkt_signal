@@ -1162,8 +1162,6 @@ impl StrategyParams {
 
             arb.max_hedge_price_pct_change = self.max_hedge_price_pct_change;
             arb.enable_environment_model = self.enable_environment_model;
-            arb.enable_volatility_limit = self.enable_volatility_limit;
-            arb.open_volatility_limit = self.open_volatility_limit;
             arb.return_model_service = return_model_service.clone();
             arb.environment_model_service = environment_model_service.clone();
             arb.environment_model_true_threshold = 0.0;

@@ -2,8 +2,6 @@
 //!
 //! - Publishes manual signals to the same channel as `trade_signal` (default).
 //! - Subscribes `dat_pbs/{open,hedge}/ask_bid_spread` to build bid/ask and compute prices.
-//! - Subscribes `trade_query` (backward channel) and replies with `ArbHedge` pricing, to assist
-//!   pre_trade's MM hedge-query flow.
 //! - Serves a tiny web UI for symbol list + manual signal emission.
 
 use anyhow::{Context, Result};
@@ -28,8 +26,6 @@ use tokio_util::sync::CancellationToken;
 
 use mkt_signal::common::exchange::Exchange;
 use mkt_signal::common::iceoryx_publisher::SignalPublisher;
-use mkt_signal::common::iceoryx_subscriber::GenericSignalSubscriber;
-use mkt_signal::common::ipc_service_name::build_service_name;
 use mkt_signal::common::mkt_msg::{get_msg_type, AskBidSpreadMsg, MktMsgType};
 use mkt_signal::common::redis_client::{RedisClient, RedisSettings};
 use mkt_signal::common::symbol_util::normalize_symbol_for_venue;
@@ -39,7 +35,6 @@ use mkt_signal::funding_rate::symbol_list::SymbolList;
 use mkt_signal::pre_trade::order_manager::{OrderType, Side};
 use mkt_signal::signal::cancel_signal::ArbCancelCtx;
 use mkt_signal::signal::common::{SignalBytes, TradingLeg, TradingVenue};
-use mkt_signal::signal::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
 use mkt_signal::signal::open_signal::ArbOpenCtx;
 use mkt_signal::signal::trade_signal::{SignalType, TradeSignal};
 use mkt_signal::symbol_match::normalize_symbol_for_whitelist;
@@ -267,14 +262,6 @@ struct CliArgs {
     /// Default MM hedge timeout (milliseconds) carried in open/close context
     #[arg(long, default_value_t = 30_000)]
     mm_hedge_timeout_ms: u64,
-
-    /// Hedge pricing offset used when replying to pre_trade hedge queries (maker)
-    #[arg(long, default_value_t = 0.0003)]
-    hedge_price_offset: f64,
-
-    /// Hedge request seq >= threshold is considered aggressive (offset=0)
-    #[arg(long, default_value_t = 6)]
-    hedge_aggressive_seq_threshold: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -290,8 +277,6 @@ struct Args {
     symbol_key_suffix: String,
     open_ttl_ms: u64,
     mm_hedge_timeout_ms: u64,
-    hedge_price_offset: f64,
-    hedge_aggressive_seq_threshold: u32,
 }
 
 fn get_redis_settings() -> RedisSettings {
@@ -355,8 +340,6 @@ struct AppCfg {
     symbol_key_suffix: String,
     default_open_ttl_ms: u64,
     default_mm_hedge_timeout_ms: u64,
-    hedge_price_offset: f64,
-    hedge_aggressive_seq_threshold: u32,
 }
 
 #[derive(Clone)]
@@ -529,20 +512,6 @@ fn resolve_trade_symbols(
     ))
 }
 
-fn compute_hedge_limit_price(hedge_quote: Quote, side: Side, offset: f64) -> f64 {
-    let base_price = match side {
-        Side::Buy => hedge_quote.bid,
-        Side::Sell => hedge_quote.ask,
-    };
-    if base_price <= 0.0 {
-        return 0.0;
-    }
-    match side {
-        Side::Buy => base_price * (1.0 - offset),
-        Side::Sell => base_price * (1.0 + offset),
-    }
-}
-
 fn side_for_kind(kind: &ManualSignalKind) -> Option<Side> {
     match kind {
         ManualSignalKind::ForwardOpen => Some(Side::Buy),
@@ -646,168 +615,6 @@ fn spawn_askbid_listener(quotes: Arc<RwLock<QuoteCache>>, venue: TradingVenue) {
 
         if let Err(err) = result {
             warn!("frmanual ask_bid listener exited: {err:#}");
-        }
-    });
-}
-
-fn spawn_backward_query_responder(
-    cfg: AppCfg,
-    quotes: Arc<RwLock<QuoteCache>>,
-    publish_tx: mpsc::UnboundedSender<PublishCmd>,
-    token: CancellationToken,
-) {
-    tokio::task::spawn_local(async move {
-        let node_suffix = cfg.symbol_key_suffix.replace('-', "_");
-        let node_name = format!("{}_backward_sub_{}", PROCESS_NAME, node_suffix);
-        let service_path = build_service_name(&format!("signal_pubs/{}", cfg.backward_channel));
-
-        let result: Result<()> = async move {
-            let node = NodeBuilder::new()
-                .name(&NodeName::new(&node_name)?)
-                .create::<ipc::Service>()?;
-
-            let service = node
-                .service_builder(&ServiceName::new(&service_path)?)
-                .publish_subscribe::<[u8; mkt_signal::common::iceoryx_publisher::SIGNAL_PAYLOAD]>()
-                .max_publishers(1)
-                .max_subscribers(32)
-                .history_size(128)
-                .subscriber_max_buffer_size(256)
-                .open_or_create()?;
-
-            let subscriber: Subscriber<
-                ipc::Service,
-                [u8; mkt_signal::common::iceoryx_publisher::SIGNAL_PAYLOAD],
-                (),
-            > = service.subscriber_builder().create()?;
-
-            let sub = GenericSignalSubscriber::Size4K(subscriber);
-
-            info!(
-                "frmanual subscribed backward channel: {} (service={})",
-                cfg.backward_channel, service_path
-            );
-
-            loop {
-                tokio::select! {
-                    _ = token.cancelled() => break,
-                    _ = tokio::time::sleep(Duration::from_millis(1)) => {
-                        match sub.receive_msg() {
-                            Ok(Some(data)) => {
-                                let query = match ArbHedgeSignalQueryMsg::from_bytes(data) {
-                                    Ok(q) => q,
-                                    Err(err) => {
-                                        warn!("frmanual: decode hedge query failed: {err}");
-                                        continue;
-                                    }
-                                };
-
-                                let Some(open_venue) = TradingVenue::from_u8(query.opening_venue) else {
-                                    warn!("frmanual: hedge query invalid opening_venue={}", query.opening_venue);
-                                    continue;
-                                };
-                                let Some(hedge_venue) = TradingVenue::from_u8(query.hedging_venue) else {
-                                    warn!("frmanual: hedge query invalid hedging_venue={}", query.hedging_venue);
-                                    continue;
-                                };
-                                if open_venue != cfg.open || hedge_venue != cfg.hedge {
-                                    warn!(
-                                        "frmanual: hedge query venue mismatch, configured_open={:?} configured_hedge={:?} but got open={:?} hedge={:?}, ignore",
-                                        cfg.open, cfg.hedge, open_venue, hedge_venue
-                                    );
-                                    continue;
-                                }
-
-                                let Some(side) = query.get_side() else {
-                                    warn!("frmanual: hedge query invalid side={}", query.hedge_side);
-                                    continue;
-                                };
-
-                                let hedge_base_qty = query.hedge_base_qty;
-                                if hedge_base_qty <= 0.0 {
-                                    warn!("frmanual: hedge query qty<=0 strategy_id={} qty={}", query.strategy_id, hedge_base_qty);
-                                    continue;
-                                }
-
-                                let opening_symbol = query.get_opening_symbol();
-                                let hedging_symbol = query.get_hedging_symbol();
-                                if opening_symbol.is_empty() || hedging_symbol.is_empty() {
-                                    warn!("frmanual: hedge query missing symbols strategy_id={}", query.strategy_id);
-                                    continue;
-                                }
-
-                                let open_quote = quotes.read().get_valid(open_venue, &opening_symbol);
-                                let hedge_quote = quotes.read().get_valid(hedge_venue, &hedging_symbol);
-                                let (Some(open_quote), Some(hedge_quote)) = (open_quote, hedge_quote) else {
-                                    warn!(
-                                        "frmanual: hedge query quote unavailable strategy_id={} open={} ({:?}) hedge={} ({:?})",
-                                        query.strategy_id,
-                                        opening_symbol, open_quote.is_some(),
-                                        hedging_symbol, hedge_quote.is_some(),
-                                    );
-                                    continue;
-                                };
-
-                                let now = get_timestamp_us();
-                                let aggressive = query.request_seq >= cfg.hedge_aggressive_seq_threshold;
-                                let offset = if aggressive { 0.0 } else { cfg.hedge_price_offset.abs() };
-                                let limit_price = compute_hedge_limit_price(hedge_quote, side, offset);
-                                if limit_price <= 0.0 {
-                                    warn!("frmanual: hedge query invalid limit_price strategy_id={}", query.strategy_id);
-                                    continue;
-                                }
-
-                                let mut ctx = ArbHedgeCtx::new_maker(
-                                    query.strategy_id,
-                                    query.client_order_id,
-                                    side.to_u8(),
-                                    hedge_base_qty,
-                                    0.0,
-                                    limit_price,
-                                    0.0,
-                                    false,
-                                    now + (cfg.default_mm_hedge_timeout_ms as i64) * 1000,
-                                );
-                                ctx.opening_leg = TradingLeg::new(
-                                    open_venue,
-                                    open_quote.bid,
-                                    open_quote.ask,
-                                    open_quote.ts,
-                                );
-                                ctx.set_opening_symbol(&opening_symbol);
-                                ctx.hedging_leg = TradingLeg::new(
-                                    hedge_venue,
-                                    hedge_quote.bid,
-                                    hedge_quote.ask,
-                                    hedge_quote.ts,
-                                );
-                                ctx.set_hedging_symbol(&hedging_symbol);
-                                ctx.market_ts = now;
-                                ctx.price_offset = offset;
-                                let aggressive_flag = if aggressive { 1 } else { 0 };
-                                let from_key = format!("{now}:{}:{aggressive_flag}", query.request_seq);
-                                ctx.set_from_key(from_key.into_bytes());
-
-                                let signal = TradeSignal::create(SignalType::ArbHedge, now, 0.0, ctx.to_bytes());
-                                let bytes = signal.to_bytes();
-                                let _ = publish_tx.send(PublishCmd::PublishRaw { bytes });
-                            }
-                            Ok(None) => {}
-                            Err(err) => {
-                                warn!("frmanual: backward receive error: {err:#}");
-                                tokio::time::sleep(Duration::from_millis(200)).await;
-                            }
-                        }
-                    }
-                }
-            }
-
-            Ok(())
-        }
-        .await;
-
-        if let Err(err) = result {
-            warn!("frmanual backward responder exited: {err:#}");
         }
     });
 }
@@ -1480,18 +1287,10 @@ async fn run(args: Args, token: CancellationToken) -> Result<()> {
         symbol_key_suffix: args.symbol_key_suffix.clone(),
         default_open_ttl_ms: args.open_ttl_ms,
         default_mm_hedge_timeout_ms: args.mm_hedge_timeout_ms,
-        hedge_price_offset: args.hedge_price_offset,
-        hedge_aggressive_seq_threshold: args.hedge_aggressive_seq_threshold,
     };
 
     let (publish_tx, publish_rx) = mpsc::unbounded_channel();
     spawn_publisher_worker(cfg.clone(), quotes.clone(), publish_rx, token.clone());
-    spawn_backward_query_responder(
-        cfg.clone(),
-        quotes.clone(),
-        publish_tx.clone(),
-        token.clone(),
-    );
 
     tokio::task::spawn_local(symbol_list_reload_loop(
         args.symbol_reload_secs,
@@ -1578,8 +1377,6 @@ async fn main() -> Result<()> {
         symbol_key_suffix,
         open_ttl_ms: args.open_ttl_ms,
         mm_hedge_timeout_ms: args.mm_hedge_timeout_ms,
-        hedge_price_offset: args.hedge_price_offset,
-        hedge_aggressive_seq_threshold: args.hedge_aggressive_seq_threshold,
     };
     let token = CancellationToken::new();
 

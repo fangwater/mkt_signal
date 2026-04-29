@@ -3,7 +3,6 @@ use bytes::{BufMut, Bytes, BytesMut};
 #[derive(Debug, Clone)]
 pub enum SignalType {
     ArbOpen = 1,          // 套利开仓信号
-    ArbHedge = 2,         // 套利对冲信号
     ArbCancel = 3,        // 套利撤单信号
     ArbClose = 4,         // 套利平仓信号，和开仓信号类似，区别是如果对应方向头寸为0就不执行
     MMOpen = 5,           // 做市开仓信号
@@ -11,7 +10,7 @@ pub enum SignalType {
     MMHedge = 7,          // 做市对冲信号
     MMCancelTrigger = 8,  // 做市撤单触发信号
     ArbCancelTrigger = 9, // 套利撤单触发信号
-    ArbHedgeState = 10,   // 套利状态对冲回包信号
+    ArbHedge = 10,        // 套利对冲回包信号
 }
 
 impl SignalType {
@@ -19,7 +18,6 @@ impl SignalType {
     pub fn from_u32(value: u32) -> Option<Self> {
         match value {
             1 => Some(SignalType::ArbOpen),
-            2 => Some(SignalType::ArbHedge),
             3 => Some(SignalType::ArbCancel),
             4 => Some(SignalType::ArbClose),
             5 => Some(SignalType::MMOpen),
@@ -27,7 +25,7 @@ impl SignalType {
             7 => Some(SignalType::MMHedge),
             8 => Some(SignalType::MMCancelTrigger),
             9 => Some(SignalType::ArbCancelTrigger),
-            10 => Some(SignalType::ArbHedgeState),
+            10 => Some(SignalType::ArbHedge),
             _ => None,
         }
     }

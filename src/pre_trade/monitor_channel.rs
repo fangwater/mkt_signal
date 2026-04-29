@@ -32,7 +32,7 @@ use crate::pre_trade::symbol_mapper::create_symbol_mapper;
 use crate::pre_trade::symbol_util::extract_base_asset;
 use crate::pre_trade::usdt_balance_manager::{UsdtBalanceManager, UsdtBalanceSnapshot};
 use crate::pre_trade::PersistChannel;
-use crate::signal::cancel_signal::{MmCancelCtx, MmCancelReason};
+use crate::signal::cancel_signal::{ArbCancelCtx, ArbCancelReason, MmCancelCtx, MmCancelReason};
 use crate::signal::common::{ExecutionType, OrderStatus, SignalBytes, TradingLeg, TradingVenue};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 
@@ -462,6 +462,124 @@ impl MonitorChannel {
             warn!(
                 "MM position risk cancel triggered: symbol={} venue={:?} net_qty={:.8} cancel_side={:?} cancelled_strategies={} trigger_ts={}",
                 normalized_symbol, venue, net_qty, cancel_side, cancelled, trigger_ts
+            );
+        }
+    }
+
+    fn cancel_arb_open_strategies_for_symbol_side(
+        &self,
+        symbol: &str,
+        side: Side,
+        trigger_ts: i64,
+        reason: ArbCancelReason,
+    ) -> usize {
+        let normalized_symbol = normalize_symbol_for_internal(symbol);
+        if normalized_symbol.is_empty() {
+            return 0;
+        }
+
+        let strategy_mgr = self.strategy_mgr();
+        let candidate_ids: Vec<i32> = {
+            let mgr = strategy_mgr.borrow();
+            mgr.ids_for_symbol(&normalized_symbol)
+                .map(|set| set.iter().copied().collect())
+                .unwrap_or_default()
+        };
+        if candidate_ids.is_empty() {
+            return 0;
+        }
+
+        let open_venue = self.open_venue();
+        let hedge_venue = self.hedge_venue();
+        let mut cancelled = 0usize;
+        for strategy_id in candidate_ids {
+            let mut strategy = {
+                let mut mgr = strategy_mgr.borrow_mut();
+                let Some(entry) = mgr.arb_open_price_map_entry(strategy_id).cloned() else {
+                    continue;
+                };
+                if entry.side != side {
+                    continue;
+                }
+                match mgr.take(strategy_id) {
+                    Some(strategy) => strategy,
+                    None => continue,
+                }
+            };
+
+            let mut cancel_ctx = ArbCancelCtx::new();
+            cancel_ctx.opening_leg = TradingLeg {
+                venue: open_venue.to_u8(),
+                bid0: 0.0,
+                ask0: 0.0,
+                ts: trigger_ts,
+            };
+            cancel_ctx.set_opening_symbol(&normalized_symbol);
+            cancel_ctx.hedging_leg = TradingLeg {
+                venue: hedge_venue.to_u8(),
+                bid0: 0.0,
+                ask0: 0.0,
+                ts: trigger_ts,
+            };
+            cancel_ctx.set_hedging_symbol(&normalized_symbol);
+            cancel_ctx.set_side(side);
+            cancel_ctx.set_reason(reason);
+            cancel_ctx.trigger_ts = trigger_ts;
+            cancel_ctx.set_from_key(b"arb_position_risk".to_vec());
+            cancel_ctx.set_target_strategy(strategy_id);
+
+            let signal = TradeSignal::create(
+                SignalType::ArbCancel,
+                trigger_ts,
+                trigger_ts as f64,
+                cancel_ctx.to_bytes(),
+            );
+            strategy.handle_signal(&signal);
+            if strategy.is_active() {
+                strategy_mgr.borrow_mut().insert(strategy);
+            }
+            cancelled += 1;
+        }
+
+        cancelled
+    }
+
+    fn handle_arb_position_risk_after_update(&self, symbol: &str) {
+        let normalized_symbol = normalize_symbol_for_internal(symbol);
+        if normalized_symbol.is_empty() {
+            return;
+        }
+        if self.open_venue() == self.hedge_venue() {
+            return;
+        }
+        if self.check_symbol_exposure(&normalized_symbol).is_ok() {
+            return;
+        }
+
+        let open_venue = self.open_venue();
+        let hedge_venue = self.hedge_venue();
+        let net_qty = self.get_position_qty(&normalized_symbol, open_venue);
+        let Some(cancel_side) = (if net_qty > 0.0 {
+            Some(Side::Buy)
+        } else if net_qty < 0.0 {
+            Some(Side::Sell)
+        } else {
+            None
+        }) else {
+            return;
+        };
+
+        let trigger_ts = get_timestamp_us();
+        let cancelled = self.cancel_arb_open_strategies_for_symbol_side(
+            &normalized_symbol,
+            cancel_side,
+            trigger_ts,
+            ArbCancelReason::PositionRisk,
+        );
+        if cancelled > 0 {
+            warn!(
+                "Arb position risk cancel triggered: symbol={} open_venue={:?} hedge_venue={:?} net_qty={:.8} cancel_side={:?} cancelled_strategies={} trigger_ts={}",
+                normalized_symbol, open_venue, hedge_venue, net_qty, cancel_side, cancelled, trigger_ts
             );
         }
     }
@@ -1468,11 +1586,14 @@ impl MonitorChannel {
                                                 um.borrow_mut().apply_position(&msg);
                                             }
                                         }
-                                        if open_venue == hedge_venue {
-                                            let symbol = normalize_symbol_for_internal(&msg.inst_id);
-                                            if !symbol.is_empty() {
+                                        let symbol = normalize_symbol_for_internal(&msg.inst_id);
+                                        if !symbol.is_empty() {
+                                            if open_venue == hedge_venue {
                                                 MonitorChannel::instance()
                                                     .handle_mm_position_risk_after_update(&symbol);
+                                            } else {
+                                                MonitorChannel::instance()
+                                                    .handle_arb_position_risk_after_update(&symbol);
                                             }
                                         }
                                     }

@@ -74,6 +74,7 @@ pub struct OpenSignalInput {
     pub from_key: Vec<u8>,
     pub price_qv: QuantizedValue,
     pub price_offset: f64,
+    pub reduce_only: bool,
     // 绝对 close_ts。0 表示不设置藏仓窗口；>0 表示这笔 ArbOpen 不追求立刻对冲，
     // 而是先藏一段时间，到 close_ts 后才进入可对冲/可关闭的 due 数量。
     pub close_ts: i64,
@@ -139,6 +140,14 @@ pub trait OpenStrategyCommon {
         0
     }
 
+    fn skip_open_position_risk_checks(&self) -> bool {
+        false
+    }
+
+    fn enable_open_order_rate_limit(&self) -> bool {
+        true
+    }
+
     fn record_open_order_terminal_base_qty(
         &mut self,
         symbol: &str,
@@ -199,20 +208,22 @@ pub trait OpenStrategyCommon {
         let exchange = order.venue.trade_engine_exchange();
         match order.get_order_request_bytes() {
             Ok(req_bin) => {
-                let stats = OrderRateLimiter::record(
-                    self.open_order_rate_bucket(),
-                    client_order_id,
-                    get_timestamp_us(),
-                );
-                info!(
-                    "{}: strategy_id={} {} order action recorded client_order_id={} count_10s={} count_1m={}",
-                    self.strategy_name(),
-                    self.strategy_id(),
-                    self.open_order_action_log_name(),
-                    client_order_id,
-                    stats.count_10s,
-                    stats.count_1m
-                );
+                if self.enable_open_order_rate_limit() {
+                    let stats = OrderRateLimiter::record(
+                        self.open_order_rate_bucket(),
+                        client_order_id,
+                        get_timestamp_us(),
+                    );
+                    info!(
+                        "{}: strategy_id={} {} order action recorded client_order_id={} count_10s={} count_1m={}",
+                        self.strategy_name(),
+                        self.strategy_id(),
+                        self.open_order_action_log_name(),
+                        client_order_id,
+                        stats.count_10s,
+                        stats.count_1m
+                    );
+                }
                 if let Err(e) = TradeEngHub::publish_order_request(exchange, &req_bin) {
                     self.open_state_mut().alive = false;
                     return Err(format!(
@@ -359,26 +370,49 @@ pub trait OpenStrategyCommon {
             );
         }
 
-        if let Err(e) = MonitorChannel::instance().check_symbol_exposure(&symbol) {
-            error!(
-                "{}: strategy_id={} symbol={} 单品种敞口风控检查失败: {}，标记策略为不活跃",
+        let skip_position_risk_checks = self.skip_open_position_risk_checks();
+        if !skip_position_risk_checks {
+            if let Err(e) = MonitorChannel::instance().check_symbol_exposure(&symbol) {
+                error!(
+                    "{}: strategy_id={} symbol={} 单品种敞口风控检查失败: {}，标记策略为不活跃",
+                    self.strategy_name(),
+                    self.strategy_id(),
+                    symbol,
+                    e
+                );
+                self.open_state_mut().alive = false;
+                return None;
+            }
+        } else {
+            info!(
+                "{}: strategy_id={} skip 单品种敞口风控 for reduce-only close symbol={} side={:?} qty={:.8}",
                 self.strategy_name(),
                 self.strategy_id(),
                 symbol,
-                e
+                side,
+                input.qty
             );
-            self.open_state_mut().alive = false;
-            return None;
         }
-        if let Err(e) = MonitorChannel::instance().check_total_exposure() {
-            error!(
-                "{}: strategy_id={} 总敞口风控检查失败: {}，标记策略为不活跃",
+        if !skip_position_risk_checks {
+            if let Err(e) = MonitorChannel::instance().check_total_exposure() {
+                error!(
+                    "{}: strategy_id={} 总敞口风控检查失败: {}，标记策略为不活跃",
+                    self.strategy_name(),
+                    self.strategy_id(),
+                    e
+                );
+                self.open_state_mut().alive = false;
+                return None;
+            }
+        } else {
+            info!(
+                "{}: strategy_id={} skip 总敞口风控 for reduce-only close symbol={} side={:?} qty={:.8}",
                 self.strategy_name(),
                 self.strategy_id(),
-                e
+                symbol,
+                side,
+                input.qty
             );
-            self.open_state_mut().alive = false;
-            return None;
         }
         if order_type == OrderType::Limit {
             if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&symbol, side) {
@@ -395,21 +429,23 @@ pub trait OpenStrategyCommon {
         }
 
         let rate_params = PreTradeParamsLoader::instance();
-        if let Err(e) = OrderRateLimiter::check_limit(
-            input.order_rate_bucket,
-            rate_params.open_order_rate_limit_per_min(),
-            rate_params.open_order_rate_limit_10s(),
-            get_timestamp_us(),
-        ) {
-            info!(
-                "{}: strategy_id={} symbol={} 开仓下单频率风控触发: {}，标记策略为不活跃",
-                self.strategy_name(),
-                self.strategy_id(),
-                symbol,
-                e
-            );
-            self.open_state_mut().alive = false;
-            return None;
+        if self.enable_open_order_rate_limit() {
+            if let Err(e) = OrderRateLimiter::check_limit(
+                input.order_rate_bucket,
+                rate_params.open_order_rate_limit_per_min(),
+                rate_params.open_order_rate_limit_10s(),
+                get_timestamp_us(),
+            ) {
+                info!(
+                    "{}: strategy_id={} symbol={} 开仓下单频率风控触发: {}，标记策略为不活跃",
+                    self.strategy_name(),
+                    self.strategy_id(),
+                    symbol,
+                    e
+                );
+                self.open_state_mut().alive = false;
+                return None;
+            }
         }
 
         let qty_multiplier = match self.resolve_open_qty_multiplier(venue, &symbol) {
@@ -440,7 +476,7 @@ pub trait OpenStrategyCommon {
                 .order_manager()
                 .borrow()
                 .binance_is_standard();
-        if binance_standard {
+        if binance_standard && !skip_position_risk_checks {
             // Binance margin 非统一账户不能在下单时自动借币；资产或仓位不足时，
             // 反向开仓会被交易所拒绝，所以这里提前拦截。
             let (base_asset, quote_asset) = extract_assets_from_symbol(&symbol);
@@ -483,7 +519,9 @@ pub trait OpenStrategyCommon {
         };
         let current_base_qty = MonitorChannel::instance().get_position_qty(&symbol, venue);
         let projected_base_qty = current_base_qty + add_base_qty;
-        if projected_base_qty.abs() > current_base_qty.abs() + 1e-12_f64 {
+        if !skip_position_risk_checks
+            && projected_base_qty.abs() > current_base_qty.abs() + 1e-12_f64
+        {
             if let Err(e) = MonitorChannel::instance().check_leverage() {
                 error!(
                     "{}: strategy_id={} 杠杆风控检查失败: {}，标记策略为不活跃",
@@ -495,17 +533,19 @@ pub trait OpenStrategyCommon {
                 return None;
             }
         }
-        if let Err(e) =
-            MonitorChannel::instance().ensure_max_pos_u(&symbol, signed_qty, order_price)
-        {
-            error!(
-                "{}: strategy_id={} 仓位限制检查失败: {}，标记策略为不活跃",
-                self.strategy_name(),
-                self.strategy_id(),
-                e
-            );
-            self.open_state_mut().alive = false;
-            return None;
+        if !skip_position_risk_checks {
+            if let Err(e) =
+                MonitorChannel::instance().ensure_max_pos_u(&symbol, signed_qty, order_price)
+            {
+                error!(
+                    "{}: strategy_id={} 仓位限制检查失败: {}，标记策略为不活跃",
+                    self.strategy_name(),
+                    self.strategy_id(),
+                    e
+                );
+                self.open_state_mut().alive = false;
+                return None;
+            }
         }
 
         {
@@ -534,7 +574,7 @@ pub trait OpenStrategyCommon {
                 side,
                 order_qty,
                 order_price,
-                false,
+                input.reduce_only,
                 qty_multiplier,
                 submit_ts,
             );

@@ -21,8 +21,8 @@ struct OrderRateState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OrderRateBucket {
     MmOpen,
-    // Standalone ArbOpenStrategy open orders only. HedgeArb open leg is managed as
-    // a paired arb lifecycle and intentionally does not use this bucket.
+    // Standalone ArbOpenStrategy open orders only. ArbCloseStrategy / ArbHedgeStrategy
+    // run their own paired lifecycle and intentionally do not use this bucket.
     ArbOpen,
     MmHedge,
 }

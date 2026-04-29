@@ -1,4 +1,5 @@
 use crate::common::exchange::Exchange;
+use crate::pre_trade::order_manager::Side;
 use crate::pre_trade::symbol_mapper::create_symbol_mapper;
 use crate::pre_trade::symbol_util::extract_base_asset;
 
@@ -7,6 +8,14 @@ pub(crate) const HEDGE_QUERY_WATCHDOG_US: i64 = 30_000;
 pub(crate) const CANCEL_RESEND_THROTTLE_US: i64 = 500_000;
 // 净敞口按 mark price 折算后超过该 USDT 阈值，MM hedge 才会发 query。
 pub(crate) const NET_EXPOSURE_EPS_USDT: f64 = 5.0;
+pub(crate) const TERMINAL_QTY_EPS: f64 = 1e-12;
+
+pub(crate) fn signed_qty_from_side(side: Side, qty: f64) -> f64 {
+    match side {
+        Side::Buy => qty.abs(),
+        Side::Sell => -qty.abs(),
+    }
+}
 
 pub(crate) fn mark_price_lookup_symbol(symbol: &str, exchange: Exchange) -> String {
     extract_base_asset(symbol)
