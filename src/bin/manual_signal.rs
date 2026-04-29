@@ -350,9 +350,6 @@ struct AppState {
 }
 
 enum PublishCmd {
-    PublishRaw {
-        bytes: bytes::Bytes,
-    },
     ManualSend {
         req: ManualSendRequest,
         reply: oneshot::Sender<Result<ManualSendResponse>>,
@@ -641,11 +638,6 @@ fn spawn_publisher_worker(
                 cmd = rx.recv() => {
                     let Some(cmd) = cmd else { break; };
                     match cmd {
-                        PublishCmd::PublishRaw { bytes } => {
-                            if let Err(err) = publisher.publish(&bytes) {
-                                warn!("frmanual publish failed: {err:#}");
-                            }
-                        }
                         PublishCmd::ManualSend { req, reply } => {
                             let res = build_and_publish_manual(&cfg, &quotes, &publisher, req);
                             let _ = reply.send(res);

@@ -2827,14 +2827,6 @@ pub(crate) struct ArbSharedBootstrap {
     pub last_close_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct ArbHedgeOffsetDecision {
-    pub offset: f64,
-    pub source: &'static str,
-    pub note: String,
-    pub ready: bool,
-}
-
 pub(crate) struct ArbDecisionState {
     pub venues: VenuePair,
     pub open_factor_value_hub: Option<FactorValueHub>,
@@ -2998,51 +2990,6 @@ impl ArbDecisionState {
         let key =
             Self::build_threshold_key(open_symbol_key, hedge_symbol_key, open_venue, hedge_venue);
         Some(ArbCancelGatePassed { key })
-    }
-
-    pub fn resolve_hedge_offset(
-        target_factor_lookup: &FactorValueLookupResult,
-        default_offset: f64,
-        aggressive: bool,
-    ) -> ArbHedgeOffsetDecision {
-        let mut offset = default_offset;
-        let mut source = "config";
-        let mut note = String::new();
-        let ready = target_factor_lookup.ready.unwrap_or(false);
-
-        if ready {
-            if let Some(value) = target_factor_lookup.target_factor_value {
-                if value.is_finite() && value > 0.0 {
-                    offset = value;
-                    source = "hedge_volatility_factor";
-                } else {
-                    note = "invalid_factor".to_string();
-                }
-            } else {
-                note = "missing_factor".to_string();
-            }
-        } else if target_factor_lookup.note == "ok" {
-            note = "not_ready".to_string();
-        } else {
-            note = target_factor_lookup.note.clone();
-        }
-
-        if aggressive {
-            offset = 0.0;
-            source = "aggressive";
-            if note.is_empty() {
-                note = "aggressive_override".to_string();
-            } else {
-                note = format!("aggressive_override({})", note);
-            }
-        }
-
-        ArbHedgeOffsetDecision {
-            offset,
-            source,
-            note,
-            ready,
-        }
     }
 
     pub fn apply_shared_bootstrap(&mut self, bootstrap: ArbSharedBootstrap) {
