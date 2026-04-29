@@ -10,14 +10,14 @@ use crate::signal::arb_signal::{
 };
 use crate::signal::cancel_signal::{ArbCancelCtx, MmCancelCtx};
 use crate::signal::common::{SignalBytes, TradingVenue};
-use crate::signal::hedge_signal::{ArbHedgeCtx, ArbHedgeStateCtx, MmHedgeCtx};
+use crate::signal::hedge_signal::{ArbHedgeCtx, MmHedgeCtx};
 use crate::signal::mm_signal::{
     MmBackwardQueryMsg, MmCancelCandidateEntry, MmCancelCandidateQueryMsg, MmCancelTriggerCtx,
 };
 use crate::signal::open_signal::{ArbOpenCtx, MmOpenCtx};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
+use crate::strategy::arb_close_strategy::ArbCloseStrategy;
 use crate::strategy::arb_open_strategy::ArbOpenStrategy;
-use crate::strategy::hedge_arb_strategy::HedgeArbStrategy;
 use crate::strategy::mm_open_strategy::MarketMakerOpenStrategy;
 use crate::strategy::open_strategy_common::OpenStrategyCommon;
 use crate::strategy::{Strategy, StrategyManager};
@@ -470,64 +470,56 @@ fn handle_trade_signal(signal: TradeSignal) {
                         Side::Buy => opening_pos < 0.0,
                     };
 
-                    // 检查hedging leg方向是否匹配（方向相反）
-                    // 如果opening close是Sell，hedging close应该是Buy，持仓应该<0（空头）
-                    let hedging_direction_match = match close_side {
-                        Side::Sell => hedging_pos < 0.0,
-                        Side::Buy => hedging_pos > 0.0,
-                    };
-
-                    if !opening_direction_match || !hedging_direction_match {
+                    if !opening_direction_match {
                         // ArbClose 可能在仓位已经被其他流程平掉后触发，这属于正常情况，只记录信息方便追踪
                         info!(
-                            "ArbClose: position direction mismatch, close_side={:?} opening_symbol={} opening_pos={:.6} hedging_symbol={} hedging_pos={:.6}",
+                            "ArbClose: opening position direction mismatch, close_side={:?} opening_symbol={} opening_pos={:.6} hedging_symbol={} hedging_pos={:.6}",
                             close_side, opening_symbol, opening_pos, hedging_symbol, hedging_pos
                         );
                         return;
                     }
 
-                    // 两条腿方向都匹配，取绝对值的最小值
-                    let closeable_qty = opening_pos.abs().min(hedging_pos.abs());
-
-                    let signal_amount = close_ctx.amount_value();
-
-                    // 和信号中的amount对比，取较小值
-                    let final_qty = closeable_qty.min(signal_amount);
-
-                    if final_qty <= 0.0 {
-                        warn!(
-                            "ArbClose: final_qty <= 0, closeable_qty={:.6} signal_amount={:.6}",
-                            closeable_qty, signal_amount
-                        );
-                        return;
-                    }
-
-                    info!(
-                        "ArbClose: final_qty={:.6} (closeable={:.6} signal_amount={:.6}) opening_symbol={} opening_pos={:.6} hedging_symbol={} hedging_pos={:.6}",
-                        final_qty, closeable_qty, signal_amount, opening_symbol, opening_pos, hedging_symbol, hedging_pos
-                    );
-
-                    // 使用最终可平仓数量覆盖原始 amount，并转换为 ArbOpen 信号
-                    close_ctx.set_amount_from_value_floor(final_qty);
-                    let converted_signal = TradeSignal::create(
-                        SignalType::ArbOpen,
+                    let normalized_signal = TradeSignal::create(
+                        SignalType::ArbClose,
                         signal.generation_time,
                         signal.handle_time,
                         close_ctx.to_bytes(),
                     );
 
-                    info!(
-                        "ArbClose: converted to ArbOpen signal side={:?} qty={:.6} opening={} hedging={}",
-                        close_side, final_qty, opening_symbol, hedging_symbol
-                    );
+                    let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+                    {
+                        let _ = strategy_mgr
+                            .borrow_mut()
+                            .ensure_arb_hedge_strategy(&opening_symbol);
+                    }
+                    let has_active_close = {
+                        let mgr = strategy_mgr.borrow();
+                        mgr.ids_for_symbol(&opening_symbol)
+                            .map(|ids| {
+                                ids.iter().any(|id| {
+                                    mgr.get(*id)
+                                        .and_then(|strategy| {
+                                            strategy.as_any().downcast_ref::<ArbCloseStrategy>()
+                                        })
+                                        .is_some_and(|strategy| {
+                                            strategy.close_side() == Some(close_side)
+                                                && strategy.is_active()
+                                        })
+                                })
+                            })
+                            .unwrap_or(false)
+                    };
+                    if has_active_close {
+                        info!(
+                            "ArbClose: active close strategy already exists, skip duplicate opening_symbol={} side={:?} opening_pos={:.6} hedging_pos={:.6}",
+                            opening_symbol, close_side, opening_pos, hedging_pos
+                        );
+                        return;
+                    }
 
-                    // 平仓本质就是反向开仓，复用 HedgeArbStrategy
                     let strategy_id = StrategyManager::generate_strategy_id();
-                    let mut strategy: HedgeArbStrategy =
-                        HedgeArbStrategy::new(strategy_id, opening_symbol.clone());
-                    strategy.force_close_mode = true;
-
-                    strategy.handle_signal(&converted_signal);
+                    let mut strategy = ArbCloseStrategy::new(strategy_id);
+                    strategy.handle_signal(&normalized_signal);
                     if strategy.is_active() {
                         let hedge_mode = if close_ctx.hedge_timeout_us > 0 {
                             "MM"
@@ -535,16 +527,12 @@ fn handle_trade_signal(signal: TradeSignal) {
                             "MT"
                         };
                         info!(
-                            "🔔 收到 ArbClose 信号({}): opening={} {:?} hedging={} {:?} | side={:?} amount={:.4} price={:.6} hedge_timeout_us={}",
+                            "🔔 收到 ArbClose 信号({}): opening={} {:?} hedging={} {:?} | side={:?} open_pos={:.4} hedge_pos={:.4} price={:.6} hedge_timeout_us={}",
                             hedge_mode,
                             opening_symbol, opening_venue, hedging_symbol, hedging_venue,
-                            close_side, close_ctx.amount_value(), close_ctx.price_value(), close_ctx.hedge_timeout_us
+                            close_side, opening_pos, hedging_pos, close_ctx.price_value(), close_ctx.hedge_timeout_us
                         );
-
-                        MonitorChannel::instance()
-                            .strategy_mgr()
-                            .borrow_mut()
-                            .insert(Box::new(strategy));
+                        strategy_mgr.borrow_mut().insert(Box::new(strategy));
                     }
                 }
                 Err(err) => warn!("failed to decode ArbClose context: {err}"),
@@ -557,12 +545,6 @@ fn handle_trade_signal(signal: TradeSignal) {
                 let hedging_symbol =
                     normalize_symbol_for_internal(&cancel_ctx.get_hedging_symbol());
                 let cancel_side = cancel_ctx.get_side();
-                // ArbCancel side 是开仓侧方向；策略只保存 hedge_side，分发前转一次再匹配。
-                let cancel_hedge_side = if cancel_side == Side::Buy {
-                    Side::Sell
-                } else {
-                    Side::Buy
-                };
                 let cancel_reason = cancel_ctx.get_reason();
                 let require_direction_match = matches!(
                     cancel_reason,
@@ -611,19 +593,15 @@ fn handle_trade_signal(signal: TradeSignal) {
                     }
                     let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
                     if let Some(mut strategy) = strategy_opt {
-                        if require_direction_match {
-                            let direction_match = strategy
-                                .as_any()
-                                .downcast_ref::<HedgeArbStrategy>()
-                                .is_some_and(|arb| arb.hedge_side == cancel_hedge_side)
-                                || strategy
-                                    .as_any()
-                                    .downcast_ref::<ArbOpenStrategy>()
-                                    .is_some_and(|arb| arb.open_side() == Some(cancel_side));
-                            if !direction_match {
-                                strategy_mgr.borrow_mut().insert(strategy);
-                                return;
-                            }
+                        let should_handle = strategy
+                            .as_any()
+                            .downcast_ref::<ArbOpenStrategy>()
+                            .is_some_and(|arb| {
+                                !require_direction_match || arb.open_side() == Some(cancel_side)
+                            });
+                        if !should_handle {
+                            strategy_mgr.borrow_mut().insert(strategy);
+                            return;
                         }
                         strategy.handle_signal(&normalized_signal);
                         if strategy.is_active() {
@@ -652,19 +630,15 @@ fn handle_trade_signal(signal: TradeSignal) {
                     }
                     let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
                     if let Some(mut strategy) = strategy_opt {
-                        if require_direction_match {
-                            let direction_match = strategy
-                                .as_any()
-                                .downcast_ref::<HedgeArbStrategy>()
-                                .is_some_and(|arb| arb.hedge_side == cancel_hedge_side)
-                                || strategy
-                                    .as_any()
-                                    .downcast_ref::<ArbOpenStrategy>()
-                                    .is_some_and(|arb| arb.open_side() == Some(cancel_side));
-                            if !direction_match {
-                                strategy_mgr.borrow_mut().insert(strategy);
-                                continue;
-                            }
+                        let should_handle = strategy
+                            .as_any()
+                            .downcast_ref::<ArbOpenStrategy>()
+                            .is_some_and(|arb| {
+                                !require_direction_match || arb.open_side() == Some(cancel_side)
+                            });
+                        if !should_handle {
+                            strategy_mgr.borrow_mut().insert(strategy);
+                            continue;
                         }
                         strategy.handle_signal(&normalized_signal);
                         if strategy.is_active() {
@@ -801,13 +775,9 @@ fn handle_trade_signal(signal: TradeSignal) {
         SignalType::ArbHedge => match ArbHedgeCtx::from_bytes(signal.context.clone()) {
             Ok(mut hedge_ctx) => {
                 let strategy_id = hedge_ctx.strategy_id;
-                let opening_symbol = normalize_symbol_for_internal(&hedge_ctx.get_opening_symbol());
                 let hedging_symbol = normalize_symbol_for_internal(&hedge_ctx.get_hedging_symbol());
                 let hedging_venue = TradingVenue::from_u8(hedge_ctx.hedging_leg.venue)
                     .unwrap_or(TradingVenue::BinanceFutures);
-                let hedge_side = hedge_ctx.get_side();
-                let hedge_price = hedge_ctx.get_hedge_price();
-                let from_key = String::from_utf8_lossy(&hedge_ctx.from_key).to_string();
 
                 let configured_hedge_venue = MonitorChannel::instance().hedge_venue();
                 if hedging_venue != configured_hedge_venue {
@@ -818,7 +788,6 @@ fn handle_trade_signal(signal: TradeSignal) {
                     return;
                 }
 
-                hedge_ctx.set_opening_symbol(&opening_symbol);
                 hedge_ctx.set_hedging_symbol(&hedging_symbol);
                 let normalized_signal = TradeSignal::create(
                     SignalType::ArbHedge,
@@ -826,67 +795,11 @@ fn handle_trade_signal(signal: TradeSignal) {
                     signal.handle_time,
                     hedge_ctx.to_bytes(),
                 );
-                debug!(
-                    "🔔 收到 ArbHedge 信号: strategy_id={} hedging={} {:?} | side={:?} qty={:.4} price={:.6} is_maker={} spread_rate={:.6} from_key='{}'",
-                    strategy_id,
-                    hedging_symbol,
-                    hedging_venue,
-                    hedge_side,
-                    hedge_ctx.hedge_qty_value(),
-                    hedge_price,
-                    hedge_ctx.is_maker(),
-                    hedge_ctx.spread_rate,
-                    from_key
-                );
-
                 let strategy_mgr = MonitorChannel::instance().strategy_mgr();
                 if !strategy_mgr.borrow().contains(strategy_id) {
                     warn!("ArbHedge: 策略 id={} 不存在", strategy_id);
                     return;
                 }
-                // 取出策略，处理信号，然后放回
-                let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
-                if let Some(mut strategy) = strategy_opt {
-                    debug!("ArbHedge: 处理策略 id={}", strategy_id);
-                    strategy.handle_signal(&normalized_signal);
-                    if strategy.is_active() {
-                        strategy_mgr.borrow_mut().insert(strategy);
-                    } else {
-                        debug!("ArbHedge: 策略 id={} 已不活跃，不再放回", strategy_id);
-                    }
-                }
-                drop(strategy_mgr);
-            }
-            Err(err) => warn!("failed to decode hedge context: {err}"),
-        },
-        SignalType::ArbHedgeState => match ArbHedgeStateCtx::from_bytes(signal.context.clone()) {
-            Ok(mut hedge_ctx) => {
-                let strategy_id = hedge_ctx.strategy_id;
-                let hedging_symbol = normalize_symbol_for_internal(&hedge_ctx.get_hedging_symbol());
-                let hedging_venue = TradingVenue::from_u8(hedge_ctx.hedging_leg.venue)
-                    .unwrap_or(TradingVenue::BinanceFutures);
-
-                let configured_hedge_venue = MonitorChannel::instance().hedge_venue();
-                if hedging_venue != configured_hedge_venue {
-                    warn!(
-                        "ArbHedgeState: signal venue mismatch, configured_hedge={:?} but got {:?}, ignore",
-                        configured_hedge_venue, hedging_venue
-                    );
-                    return;
-                }
-
-                hedge_ctx.set_hedging_symbol(&hedging_symbol);
-                let normalized_signal = TradeSignal::create(
-                    SignalType::ArbHedgeState,
-                    signal.generation_time,
-                    signal.handle_time,
-                    hedge_ctx.to_bytes(),
-                );
-                let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-                if !strategy_mgr.borrow().contains(strategy_id) {
-                    warn!("ArbHedgeState: 策略 id={} 不存在", strategy_id);
-                    return;
-                }
                 let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
                 if let Some(mut strategy) = strategy_opt {
                     strategy.handle_signal(&normalized_signal);
@@ -895,7 +808,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                     }
                 }
             }
-            Err(err) => warn!("failed to decode ArbHedgeState context: {err}"),
+            Err(err) => warn!("failed to decode ArbHedge context: {err}"),
         },
         SignalType::MMOpen => {
             if !is_mm_mode {

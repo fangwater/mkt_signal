@@ -7,7 +7,7 @@ use crate::pre_trade::signal_channel::SignalChannel;
 use crate::pre_trade::{PersistChannel, TradeEngHub};
 use crate::signal::arb_signal::ArbBackwardQueryMsg;
 use crate::signal::common::{OrderStatus, SignalBytes, TradingVenue};
-use crate::signal::hedge_signal::{ArbHedgeStateCtx, ArbHedgeStateQueryMsg};
+use crate::signal::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::arb_helper::create_and_send_order;
 use crate::strategy::hedge_order_reconcile::{HedgeOrderReconcileCommon, HedgeOrderReconcileState};
@@ -204,12 +204,12 @@ impl ArbHedgeStrategy {
         );
     }
 
-    fn trigger_hedge_state_query_after_pending_release(
+    fn trigger_hedge_query_after_pending_release(
         &mut self,
         terminal_ts: i64,
         reason: &'static str,
     ) -> bool {
-        let triggered = self.trigger_hedge_state_query_after_open_terminal(terminal_ts);
+        let triggered = self.trigger_hedge_query_after_open_terminal(terminal_ts);
         if triggered {
             debug!(
                 "ArbHedgeStrategy: strategy_id={} symbol={} trigger hedge state query after pending release reason={}",
@@ -239,7 +239,7 @@ impl ArbHedgeStrategy {
         }
     }
 
-    fn send_hedge_state_query(&mut self, now_ts: i64, due_hedge_qty: f64) {
+    fn send_hedge_query(&mut self, now_ts: i64, due_hedge_qty: f64) {
         self.last_hedge_ts_ms = Some(now_ts / 1000);
         let risk_loader = PreTradeParamsLoader::instance();
         let symbol_exposure_u = risk_loader
@@ -248,7 +248,7 @@ impl ArbHedgeStrategy {
             * risk_loader.max_symbol_exposure_ratio().max(0.0);
         let request_seq = self.next_hedge_request_seq();
         self.pending_hedge_request_seq = Some(request_seq);
-        let query_msg = ArbHedgeStateQueryMsg::new(
+        let query_msg = ArbHedgeSignalQueryMsg::new(
             self.strategy_id,
             &self.symbol,
             self.net_qty_queue.net_qty(),
@@ -258,7 +258,7 @@ impl ArbHedgeStrategy {
             self.net_qty_queue.weighted_avg_price().unwrap_or(0.0),
             request_seq,
         );
-        let payload = ArbBackwardQueryMsg::HedgeState(query_msg).to_bytes();
+        let payload = ArbBackwardQueryMsg::Hedge(query_msg).to_bytes();
         match SignalChannel::with(|ch| ch.publish_backward(&payload)) {
             Ok(true) => {
                 self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
@@ -288,10 +288,7 @@ impl ArbHedgeStrategy {
         }
     }
 
-    pub(super) fn trigger_hedge_state_query_after_open_terminal(
-        &mut self,
-        terminal_ts: i64,
-    ) -> bool {
+    pub(super) fn trigger_hedge_query_after_open_terminal(&mut self, terminal_ts: i64) -> bool {
         let now_ts = if terminal_ts > 0 {
             terminal_ts
         } else {
@@ -300,10 +297,10 @@ impl ArbHedgeStrategy {
         // Arb hedge 固定只有一套长期运行流程。这里是事件触发入口：
         // open terminal、hedge 撤单/终态释放后，如果已有 due 数量就立即补一次查询；
         // 如果 close_ts 还没到，固定由 period clock 的时间轮到期后重新拉起。
-        self.try_send_due_hedge_state_query(now_ts, "trigger", false)
+        self.try_send_due_hedge_query(now_ts, "trigger", false)
     }
 
-    fn try_send_due_hedge_state_query(
+    fn try_send_due_hedge_query(
         &mut self,
         now_ts: i64,
         reason: &'static str,
@@ -362,7 +359,7 @@ impl ArbHedgeStrategy {
             );
             return false;
         }
-        self.send_hedge_state_query(now_ts, due_hedge_qty);
+        self.send_hedge_query(now_ts, due_hedge_qty);
         true
     }
 
@@ -401,10 +398,10 @@ impl ArbHedgeStrategy {
         }
     }
 
-    fn handle_arb_hedge_state_signal(&mut self, ctx: ArbHedgeStateCtx) {
+    fn handle_arb_hedge_signal(&mut self, ctx: ArbHedgeCtx) {
         let Some(expected_request_seq) = self.pending_hedge_request_seq else {
             warn!(
-                "ArbHedgeStrategy: strategy_id={} drop unexpected ArbHedgeState reply without pending query: symbol={} request_seq={}",
+                "ArbHedgeStrategy: strategy_id={} drop unexpected ArbHedge reply without pending query: symbol={} request_seq={}",
                 self.strategy_id,
                 ctx.get_hedging_symbol(),
                 ctx.request_seq
@@ -413,7 +410,7 @@ impl ArbHedgeStrategy {
         };
         if ctx.request_seq != expected_request_seq {
             warn!(
-                "ArbHedgeStrategy: strategy_id={} drop stale/duplicate ArbHedgeState reply: symbol={} request_seq={} expected_request_seq={}",
+                "ArbHedgeStrategy: strategy_id={} drop stale/duplicate ArbHedge reply: symbol={} request_seq={} expected_request_seq={}",
                 self.strategy_id,
                 ctx.get_hedging_symbol(),
                 ctx.request_seq,
@@ -427,7 +424,7 @@ impl ArbHedgeStrategy {
 
         let Some(side) = ctx.get_side() else {
             warn!(
-                "ArbHedgeStrategy: strategy_id={} ArbHedgeState invalid side={}",
+                "ArbHedgeStrategy: strategy_id={} ArbHedge invalid side={}",
                 self.strategy_id, ctx.hedge_side
             );
             return;
@@ -435,14 +432,14 @@ impl ArbHedgeStrategy {
         let symbol = normalize_symbol_for_internal(&ctx.get_hedging_symbol());
         if symbol.is_empty() {
             warn!(
-                "ArbHedgeStrategy: strategy_id={} ArbHedgeState empty symbol",
+                "ArbHedgeStrategy: strategy_id={} ArbHedge empty symbol",
                 self.strategy_id
             );
             return;
         }
         let Some(venue) = TradingVenue::from_u8(ctx.hedging_leg.venue) else {
             warn!(
-                "ArbHedgeStrategy: strategy_id={} ArbHedgeState invalid venue={}",
+                "ArbHedgeStrategy: strategy_id={} ArbHedge invalid venue={}",
                 self.strategy_id, ctx.hedging_leg.venue
             );
             return;
@@ -450,7 +447,7 @@ impl ArbHedgeStrategy {
         let qty = ctx.amount_value();
         if qty <= 0.0 {
             warn!(
-                "ArbHedgeStrategy: strategy_id={} ArbHedgeState qty invalid symbol={} qty={:.8}",
+                "ArbHedgeStrategy: strategy_id={} ArbHedge qty invalid symbol={} qty={:.8}",
                 self.strategy_id, symbol, qty
             );
             return;
@@ -464,7 +461,7 @@ impl ArbHedgeStrategy {
         let price = if is_taker { 0.0 } else { ctx.price_value() };
         if !is_taker && price <= 0.0 {
             warn!(
-                "ArbHedgeStrategy: strategy_id={} ArbHedgeState price invalid symbol={} price={:.8}",
+                "ArbHedgeStrategy: strategy_id={} ArbHedge price invalid symbol={} price={:.8}",
                 self.strategy_id, symbol, price
             );
             return;
@@ -473,7 +470,7 @@ impl ArbHedgeStrategy {
         let order_base_qty = MonitorChannel::instance().qty_to_base(venue, &symbol, qty);
         if order_base_qty <= 0.0 {
             warn!(
-                "ArbHedgeStrategy: strategy_id={} ArbHedgeState base qty invalid symbol={} venue={:?} qty={:.8}",
+                "ArbHedgeStrategy: strategy_id={} ArbHedge base qty invalid symbol={} venue={:?} qty={:.8}",
                 self.strategy_id, symbol, venue, qty
             );
             return;
@@ -490,7 +487,7 @@ impl ArbHedgeStrategy {
                 );
             }
             warn!(
-                "ArbHedgeStrategy: strategy_id={} ArbHedgeState borrow insufficient symbol={} request_seq={} want_qv={:.8} borrowed_qv={:.8} pending_after={:.8}",
+                "ArbHedgeStrategy: strategy_id={} ArbHedge borrow insufficient symbol={} request_seq={} want_qv={:.8} borrowed_qv={:.8} pending_after={:.8}",
                 self.strategy_id,
                 symbol,
                 ctx.request_seq,
@@ -541,13 +538,10 @@ impl ArbHedgeStrategy {
                     meta.borrowed_qv,
                     price.max(ctx.hedging_leg.bid0),
                 );
-                self.trigger_hedge_state_query_after_pending_release(
-                    now_ts,
-                    "hedge_order_send_failed",
-                );
+                self.trigger_hedge_query_after_pending_release(now_ts, "hedge_order_send_failed");
             }
             warn!(
-                "ArbHedgeStrategy: strategy_id={} send ArbHedgeState order failed client_order_id={} symbol={} err={}",
+                "ArbHedgeStrategy: strategy_id={} send ArbHedge order failed client_order_id={} symbol={} err={}",
                 self.strategy_id, client_order_id, symbol, err
             );
             return;
@@ -559,7 +553,7 @@ impl ArbHedgeStrategy {
             self.schedule_hedge_order_expiry_check(client_order_id, ctx.exp_time);
         }
         debug!(
-            "ArbHedgeStrategy: strategy_id={} ArbHedgeState order sent client_order_id={} symbol={} venue={:?} side={:?} type={:?} qty={:.8} base_qty={:.8} price={:.8} request_seq={}",
+            "ArbHedgeStrategy: strategy_id={} ArbHedge order sent client_order_id={} symbol={} venue={:?} side={:?} type={:?} qty={:.8} base_qty={:.8} price={:.8} request_seq={}",
             self.strategy_id,
             client_order_id,
             symbol,
@@ -799,10 +793,7 @@ impl ArbHedgeStrategy {
             terminal_price,
         );
         if status != OrderExecutionStatus::Filled {
-            self.trigger_hedge_state_query_after_pending_release(
-                terminal_ts,
-                "hedge_order_terminal",
-            );
+            self.trigger_hedge_query_after_pending_release(terminal_ts, "hedge_order_terminal");
         }
     }
 
@@ -1057,7 +1048,7 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
                 .unwrap_or(0.0);
             self.pending_hedge_queue
                 .release(now_ts, meta.borrowed_qv, release_price);
-            self.trigger_hedge_state_query_after_pending_release(now_ts, "hedge_open_failed");
+            self.trigger_hedge_query_after_pending_release(now_ts, "hedge_open_failed");
         }
         self.clear_order_query_state(client_order_id);
         if let Some(order_mgr) = MonitorChannel::try_order_manager() {
@@ -1099,11 +1090,10 @@ impl Strategy for ArbHedgeStrategy {
 
     fn handle_signal(&mut self, signal: &TradeSignal) {
         match signal.signal_type {
-            SignalType::ArbHedgeState => match ArbHedgeStateCtx::from_bytes(signal.context.clone())
-            {
-                Ok(ctx) => self.handle_arb_hedge_state_signal(ctx),
+            SignalType::ArbHedge => match ArbHedgeCtx::from_bytes(signal.context.clone()) {
+                Ok(ctx) => self.handle_arb_hedge_signal(ctx),
                 Err(err) => warn!(
-                    "ArbHedgeStrategy: strategy_id={} decode ArbHedgeState failed err={}",
+                    "ArbHedgeStrategy: strategy_id={} decode ArbHedge failed err={}",
                     self.strategy_id, err
                 ),
             },
@@ -1150,7 +1140,7 @@ impl Strategy for ArbHedgeStrategy {
         if self.next_query_ts_us > 0 && now_ts < self.next_query_ts_us {
             return;
         }
-        self.try_send_due_hedge_state_query(now_ts, "period_clock", true);
+        self.try_send_due_hedge_query(now_ts, "period_clock", true);
     }
 
     fn is_active(&self) -> bool {
