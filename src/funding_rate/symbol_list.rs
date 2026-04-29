@@ -195,6 +195,25 @@ impl SymbolList {
             }
         }
 
+        // intra: 同所期现没有正反开方向限制，fwd ∪ bwd 视为单一 online 列表，
+        // 让 is_in_fwd_trade_list / is_in_bwd_trade_list 对任一方向都放行
+        if ns == "intra" {
+            Self::with_inner_mut(|inner| {
+                let union: HashSet<String> = inner
+                    .fwd_trade_symbols
+                    .union(&inner.bwd_trade_symbols)
+                    .cloned()
+                    .collect();
+                let count = union.len();
+                inner.fwd_trade_symbols = union.clone();
+                inner.bwd_trade_symbols = union;
+                info!(
+                    "intra online 列表 {}: 合并 fwd∪bwd = {} 个交易对",
+                    key_suffix, count
+                );
+            });
+        }
+
         // 记录当前 exchange（仅当 suffix 可解析为单交易所）
         Self::with_inner_mut(|inner| {
             inner.current_exchange = exchange_from_key_suffix(&key_suffix);
