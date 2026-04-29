@@ -1,0 +1,882 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>INTRA Pre-Trade Dashboard</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Segoe UI", "PingFang SC", "Helvetica Neue", sans-serif;
+        --bg: #0d1117;
+        --bg-soft: #161b22;
+        --bg-card: #0b1220;
+        --border: #30363d;
+        --text: #e6edf3;
+        --muted: #8b949e;
+        --accent-green: #3fb950;
+        --accent-red: #f85149;
+        --accent-warn: #d29922;
+        --accent-blue: #58a6ff;
+        --shadow: rgba(0, 0, 0, 0.32);
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+      header {
+        padding: 12px 18px;
+        border-bottom: 1px solid var(--border);
+        background: var(--bg-soft);
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      header h1 {
+        margin: 0;
+        font-size: 17px;
+        letter-spacing: 0.2px;
+        font-weight: 600;
+      }
+      .status {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        font-size: 12px;
+        color: var(--muted);
+        flex-wrap: wrap;
+      }
+      .indicator {
+        width: 9px;
+        height: 9px;
+        border-radius: 999px;
+        display: inline-block;
+        margin-right: 6px;
+        box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.05);
+      }
+      .indicator.ok {
+        background: var(--accent-green);
+      }
+      .indicator.err {
+        background: var(--accent-red);
+      }
+      .indicator.warn {
+        background: var(--accent-warn);
+      }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 10px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.02);
+      }
+      .controls {
+        margin-left: auto;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .controls input[type="text"] {
+        padding: 6px 10px;
+        background: var(--bg);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        min-width: 220px;
+        outline: none;
+        font-size: 13px;
+      }
+      .controls input[type="text"]:focus {
+        border-color: var(--accent-blue);
+        box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.15);
+      }
+      .controls label {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--muted);
+        font-size: 12px;
+        user-select: none;
+      }
+      .controls button {
+        padding: 6px 12px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: transparent;
+        color: var(--text);
+        cursor: pointer;
+        font-size: 13px;
+      }
+      .controls button:hover {
+        border-color: var(--text);
+      }
+      main {
+        flex: 1;
+        overflow: auto;
+        padding: 14px 18px 24px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+      section.section {
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        box-shadow: 0 8px 22px var(--shadow);
+      }
+      .section-header {
+        display: flex;
+        align-items: baseline;
+        gap: 14px;
+        flex-wrap: wrap;
+      }
+      .section-header h2 {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 600;
+      }
+      .meta {
+        font-size: 12px;
+        color: var(--muted);
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .meta.stale {
+        color: var(--accent-red);
+      }
+      .risk-grid {
+        display: grid;
+        grid-template-columns: 2fr 1fr;
+        gap: 12px;
+      }
+      .card-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: 10px;
+      }
+      .metric-card {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 12px 14px;
+        background: var(--bg-card);
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .metric-card h3 {
+        margin: 0;
+        font-size: 11px;
+        color: var(--muted);
+        font-weight: 500;
+        letter-spacing: 0.2px;
+        text-transform: uppercase;
+      }
+      .metric-card .value {
+        font-size: 19px;
+        font-weight: 650;
+        line-height: 1.1;
+        font-variant-numeric: tabular-nums;
+      }
+      .metric-card.warn .value {
+        color: var(--accent-red);
+      }
+      .chips {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        justify-content: flex-start;
+      }
+      .chip {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 8px 12px;
+        background: var(--bg-card);
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 12px;
+        font-size: 12px;
+      }
+      .chip .label {
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+        font-size: 11px;
+      }
+      .chip .value {
+        font-variant-numeric: tabular-nums;
+        font-weight: 600;
+        font-size: 13px;
+      }
+      .table-wrapper {
+        overflow: auto;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--bg);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        min-width: 760px;
+      }
+      thead {
+        background: rgba(22, 27, 34, 0.6);
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        backdrop-filter: blur(6px);
+      }
+      th {
+        font-size: 11px;
+        color: var(--muted);
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+      }
+      th,
+      td {
+        padding: 8px 12px;
+        text-align: right;
+        border-bottom: 1px solid var(--border);
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+        font-size: 13px;
+      }
+      th:first-child,
+      td:first-child {
+        text-align: left;
+      }
+      tbody tr:last-child td {
+        border-bottom: none;
+      }
+      tr.total-row {
+        background: rgba(88, 166, 255, 0.08);
+        font-weight: 600;
+      }
+      td.negative {
+        color: var(--accent-red);
+      }
+      td.positive {
+        color: var(--accent-green);
+      }
+      td.muted {
+        color: var(--muted);
+      }
+      .empty {
+        text-align: center;
+        padding: 28px 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+          "Liberation Mono", "Courier New", monospace;
+      }
+      .small {
+        font-size: 12px;
+      }
+      @media (max-width: 1100px) {
+        .risk-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+      @media (max-width: 960px) {
+        header {
+          align-items: flex-start;
+        }
+        .controls {
+          margin-left: 0;
+          width: 100%;
+        }
+        .controls input[type="text"] {
+          flex: 1;
+          min-width: 160px;
+        }
+        table {
+          min-width: 620px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>INTRA Pre-Trade</h1>
+      <div class="status">
+        <span class="pill"
+          ><span class="indicator warn" id="ws-indicator"></span
+          ><span id="ws-status">等待连接…</span></span
+        >
+        <span class="pill">最后消息：<span id="last-update">-</span></span>
+        <span class="pill">WS：<span class="mono small" id="ws-url">-</span></span>
+      </div>
+      <div class="controls">
+        <input type="text" id="filter-input" placeholder="过滤资产（如 BTC / ETH）" />
+        <label><input type="checkbox" id="hide-zero" />隐藏 0 行</label>
+        <button id="reload-btn" title="强制重连 WebSocket">重连</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="section" id="risk-section">
+        <div class="section-header">
+          <h2>风险指标</h2>
+          <div class="meta" id="risk-meta">-</div>
+        </div>
+        <div class="risk-grid">
+          <div class="card-grid">
+            <div class="metric-card">
+              <h3>总权益</h3>
+              <div class="value" id="risk-equity">--</div>
+            </div>
+            <div class="metric-card">
+              <h3>总敞口</h3>
+              <div class="value" id="risk-exposure">--</div>
+            </div>
+            <div class="metric-card">
+              <h3>总仓位</h3>
+              <div class="value" id="risk-position">--</div>
+            </div>
+            <div class="metric-card" id="metric-leverage">
+              <h3>Leverage</h3>
+              <div class="value" id="risk-leverage">--</div>
+            </div>
+            <div class="metric-card">
+              <h3>Max Leverage</h3>
+              <div class="value" id="risk-max-leverage">--</div>
+            </div>
+          </div>
+          <div class="chips">
+            <div class="chip">
+              <span class="label">借款 USD</span>
+              <span class="value" id="risk-borrowed">--</span>
+            </div>
+            <div class="chip">
+              <span class="label">利息 USD</span>
+              <span class="value" id="risk-interest">--</span>
+            </div>
+            <div class="chip">
+              <span class="label">UM 未实现</span>
+              <span class="value" id="risk-um-upl">--</span>
+            </div>
+            <div class="chip">
+              <span class="label">现货权益</span>
+              <span class="value" id="risk-spot-equity">--</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="exposure-section">
+        <div class="section-header">
+          <h2>敞口（按资产）</h2>
+          <div class="meta" id="exposure-meta">-</div>
+        </div>
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>asset</th>
+                <th>open_qty</th>
+                <th>hedge_qty</th>
+                <th>arb_time</th>
+                <th>arb_mode</th>
+                <th>arb_ret_qtl</th>
+                <th>offset</th>
+                <th>exposure_usdt</th>
+              </tr>
+            </thead>
+            <tbody id="exposure-body"></tbody>
+          </table>
+        </div>
+        <div class="empty" id="exposure-empty">暂无数据</div>
+      </section>
+    </main>
+
+    <script>
+      (function () {
+        const RECONNECT_MS = 5000;
+        const STALE_MS = 15000;
+        const POLL_MS = 2000;
+        const MAX_WS_FAILS = 2;
+
+        const state = {
+          ws: null,
+          reconnectTimer: null,
+          lastMessageAtMs: null,
+          wsUrl: null,
+          snapshotUrl: null,
+          pollTimer: null,
+          wsConnected: false,
+          wsFailCount: 0,
+          wsDisabled: false,
+          filter: "",
+          hideZero: false,
+          risk: null,
+          exposure: null,
+        };
+
+        const el = {
+          wsIndicator: document.getElementById("ws-indicator"),
+          wsStatus: document.getElementById("ws-status"),
+          wsUrl: document.getElementById("ws-url"),
+          lastUpdate: document.getElementById("last-update"),
+          filterInput: document.getElementById("filter-input"),
+          hideZero: document.getElementById("hide-zero"),
+          reloadBtn: document.getElementById("reload-btn"),
+
+          riskMeta: document.getElementById("risk-meta"),
+          exposureMeta: document.getElementById("exposure-meta"),
+
+          riskEquity: document.getElementById("risk-equity"),
+          riskExposure: document.getElementById("risk-exposure"),
+          riskPosition: document.getElementById("risk-position"),
+          riskLeverage: document.getElementById("risk-leverage"),
+          riskMaxLeverage: document.getElementById("risk-max-leverage"),
+          metricLeverage: document.getElementById("metric-leverage"),
+          riskBorrowed: document.getElementById("risk-borrowed"),
+          riskInterest: document.getElementById("risk-interest"),
+          riskUmUpl: document.getElementById("risk-um-upl"),
+          riskSpotEquity: document.getElementById("risk-spot-equity"),
+
+          exposureBody: document.getElementById("exposure-body"),
+          exposureEmpty: document.getElementById("exposure-empty"),
+        };
+
+        const fmtQty = new Intl.NumberFormat("en-US", {
+          minimumFractionDigits: 6,
+          maximumFractionDigits: 6,
+        });
+        const fmtUsd = new Intl.NumberFormat("en-US", {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        });
+        const fmtLev = new Intl.NumberFormat("en-US", {
+          minimumFractionDigits: 3,
+          maximumFractionDigits: 3,
+        });
+        const fmtQtl = new Intl.NumberFormat("en-US", {
+          minimumFractionDigits: 3,
+          maximumFractionDigits: 3,
+        });
+        const fmtOffset = new Intl.NumberFormat("en-US", {
+          minimumFractionDigits: 4,
+          maximumFractionDigits: 4,
+        });
+
+        function setStatus(cls, text) {
+          el.wsIndicator.className = `indicator ${cls}`;
+          el.wsStatus.textContent = text;
+        }
+
+        function toWsUrl(httpUrl) {
+          const u = new URL(httpUrl);
+          u.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+          return u.toString();
+        }
+
+        function computeWsUrl() {
+          const qs = new URLSearchParams(window.location.search);
+          const override = qs.get("ws");
+          const base = override
+            ? new URL(override, window.location.href)
+            : new URL("./ws", window.location.href);
+          return toWsUrl(base.toString());
+        }
+
+        function computeSnapshotUrl() {
+          const qs = new URLSearchParams(window.location.search);
+          const override = qs.get("snapshot");
+          const base = override
+            ? new URL(override, window.location.href)
+            : new URL("./snapshot", window.location.href);
+          return base.toString();
+        }
+
+        function isFiniteNumber(x) {
+          return typeof x === "number" && Number.isFinite(x);
+        }
+
+        function fmt(x, formatter) {
+          if (!isFiniteNumber(x)) return "--";
+          return formatter.format(x);
+        }
+
+        function fmtTimeUtc8(tsMs) {
+          if (!isFiniteNumber(tsMs)) return "--";
+          return new Intl.DateTimeFormat("zh-CN", {
+            timeZone: "Asia/Shanghai",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: false,
+          }).format(new Date(tsMs));
+        }
+
+        function classify(x) {
+          if (!isFiniteNumber(x)) return "muted";
+          if (x > 0) return "positive";
+          if (x < 0) return "negative";
+          return "";
+        }
+
+        function normalizeStr(s) {
+          if (!s) return "";
+          return String(s).trim().toUpperCase();
+        }
+
+        function matchesFilter(asset, filter) {
+          if (!filter) return true;
+          return normalizeStr(asset).includes(filter);
+        }
+
+        function isZeroRow(row) {
+          const fields = [
+            "open_qty",
+            "hedge_qty",
+            "arb_hedge_net_qty",
+            "arb_pending_hedge_qty",
+            "arb_due_hedge_qty",
+            "net_qty",
+            "net_usdt",
+          ];
+          for (const f of fields) {
+            const v = row && row[f];
+            if (isFiniteNumber(v) && Math.abs(v) > 1e-12) return false;
+          }
+          return true;
+        }
+
+        function pickOffset(row) {
+          if (!row) return null;
+          if (isFiniteNumber(row.hedge_offset_low)) return row.hedge_offset_low;
+          if (isFiniteNumber(row.hedge_offset_high)) return row.hedge_offset_high;
+          return null;
+        }
+
+        function metaText(s, kind) {
+          if (!s) return { text: "-", stale: false };
+          const now = Date.now();
+          const age = isFiniteNumber(s.received_ms) ? now - s.received_ms : null;
+          const stale = age !== null && age > STALE_MS;
+          const parts = [
+            `${kind} ts=${
+              s.entry_ts_ms ? new Date(s.entry_ts_ms).toLocaleTimeString() : "-"
+            }`,
+            `recv=${
+              s.received_ms ? new Date(s.received_ms).toLocaleTimeString() : "-"
+            }`,
+            `ns=${s.namespace || "-"}`,
+            `ch=${s.channel || "-"}`,
+          ];
+          return { text: parts.join(" · "), stale };
+        }
+
+        function renderRisk() {
+          const s = state.risk;
+          const meta = metaText(s, "risk");
+          el.riskMeta.textContent = meta.text;
+          el.riskMeta.classList.toggle("stale", meta.stale);
+
+          const e = s && s.entry ? s.entry : null;
+          const totalEquity =
+            e && isFiniteNumber(e.total_equity) ? e.total_equity : null;
+          const totalPosition =
+            e && isFiniteNumber(e.total_position) ? e.total_position : null;
+          const leverageRaw = e && isFiniteNumber(e.leverage) ? e.leverage : null;
+          const leverageCalc =
+            totalPosition !== null &&
+            totalEquity !== null &&
+            Math.abs(totalEquity) > Number.EPSILON
+              ? totalPosition / totalEquity
+              : null;
+          const leverage = leverageCalc !== null ? leverageCalc : leverageRaw;
+
+          el.riskEquity.textContent = fmt(totalEquity, fmtUsd);
+          el.riskExposure.textContent = e ? fmt(e.total_exposure, fmtUsd) : "--";
+          el.riskPosition.textContent = e ? fmt(e.total_position, fmtUsd) : "--";
+          el.riskLeverage.textContent = fmt(leverage, fmtLev);
+          el.riskMaxLeverage.textContent = e ? fmt(e.max_leverage, fmtLev) : "--";
+
+          if (
+            e &&
+            isFiniteNumber(leverage) &&
+            isFiniteNumber(e.max_leverage) &&
+            e.max_leverage > 0 &&
+            leverage > e.max_leverage
+          ) {
+            el.metricLeverage.classList.add("warn");
+          } else {
+            el.metricLeverage.classList.remove("warn");
+          }
+
+          el.riskBorrowed.textContent = e ? fmt(e.borrowed_usd, fmtUsd) : "--";
+          el.riskInterest.textContent = e ? fmt(e.interest_usd, fmtUsd) : "--";
+          el.riskUmUpl.textContent = e ? fmt(e.um_unrealized_usd, fmtUsd) : "--";
+          el.riskSpotEquity.textContent = e
+            ? fmt(e.spot_equity_usd, fmtUsd)
+            : "--";
+        }
+
+        function renderExposure() {
+          const s = state.exposure;
+          const meta = metaText(s, "exposure");
+          el.exposureMeta.textContent = meta.text;
+          el.exposureMeta.classList.toggle("stale", meta.stale);
+
+          const rows =
+            (s && s.entry && Array.isArray(s.entry.rows) && s.entry.rows) || [];
+          const filter = state.filter;
+          const hideZero = state.hideZero;
+
+          const filtered = rows
+            .filter((r) => r && matchesFilter(r.asset, filter))
+            .filter((r) => (hideZero ? !isZeroRow(r) : true))
+            .slice()
+            .sort((a, b) => {
+              if (a.is_total && !b.is_total) return 1;
+              if (!a.is_total && b.is_total) return -1;
+              const av = isFiniteNumber(a.net_usdt) ? Math.abs(a.net_usdt) : 0;
+              const bv = isFiniteNumber(b.net_usdt) ? Math.abs(b.net_usdt) : 0;
+              return bv - av;
+            });
+
+          el.exposureBody.innerHTML = "";
+          for (const r of filtered) {
+            const arbMode =
+              r && typeof r.arb_hedge_is_taker === "boolean"
+                ? r.arb_hedge_is_taker
+                  ? "taker"
+                  : "maker"
+                : "-";
+            const arbTime = fmtTimeUtc8(r && r.arb_hedge_time_ms);
+            const arbRetQtl = isFiniteNumber(r && r.arb_hedge_ret_qtl)
+              ? fmt(r.arb_hedge_ret_qtl, fmtQtl)
+              : "--";
+            const offset = pickOffset(r);
+            const offsetText = isFiniteNumber(offset)
+              ? fmt(offset, fmtOffset)
+              : "--";
+            const tr = document.createElement("tr");
+            if (r.is_total) tr.classList.add("total-row");
+            tr.innerHTML = `
+              <td>${r.asset || "-"}</td>
+              <td class="${classify(r.open_qty)}">${fmt(r.open_qty, fmtQty)}</td>
+              <td class="${classify(r.hedge_qty)}">${fmt(r.hedge_qty, fmtQty)}</td>
+              <td class="muted">${arbTime}</td>
+              <td class="muted">${arbMode}</td>
+              <td class="${classify(r.arb_hedge_ret_qtl)}">${arbRetQtl}</td>
+              <td class="muted">${offsetText}</td>
+              <td class="${classify(r.net_usdt)}">${fmt(r.net_usdt, fmtUsd)}</td>
+            `;
+            el.exposureBody.appendChild(tr);
+          }
+          el.exposureEmpty.style.display = filtered.length ? "none" : "block";
+        }
+
+        function renderAll() {
+          renderRisk();
+          renderExposure();
+          if (state.lastMessageAtMs) {
+            el.lastUpdate.textContent = new Date(
+              state.lastMessageAtMs
+            ).toLocaleString();
+          } else {
+            el.lastUpdate.textContent = "-";
+          }
+        }
+
+        function applyIncoming(msg) {
+          if (!msg || typeof msg !== "object") return;
+          if (!msg.type || !msg.entry) return;
+
+          const common = {
+            namespace: msg.namespace || "",
+            source: msg.source || "",
+            channel: msg.channel || "",
+            server_ts_ms: msg.ts_ms || null,
+          };
+
+          if (msg.type === "pre_trade_risk") {
+            state.risk = {
+              ...common,
+              received_ms: Date.now(),
+              entry_ts_ms: msg.entry.ts_ms || null,
+              entry: msg.entry,
+            };
+          } else if (msg.type === "pre_trade_exposure") {
+            state.exposure = {
+              ...common,
+              received_ms: Date.now(),
+              entry_ts_ms: msg.entry.ts_ms || null,
+              entry: msg.entry,
+            };
+          }
+          state.lastMessageAtMs = Date.now();
+        }
+
+        function applySnapshot(payload) {
+          if (!payload || !Array.isArray(payload.entries)) return;
+          for (const entry of payload.entries) {
+            applyIncoming(entry);
+          }
+          renderAll();
+        }
+
+        function fetchSnapshot() {
+          if (!state.snapshotUrl) {
+            state.snapshotUrl = computeSnapshotUrl();
+          }
+          fetch(state.snapshotUrl, { cache: "no-store" })
+            .then((res) => {
+              if (!res.ok) throw new Error(`snapshot ${res.status}`);
+              return res.json();
+            })
+            .then((payload) => {
+              applySnapshot(payload);
+            })
+            .catch(() => {});
+        }
+
+        function startPolling() {
+          if (state.pollTimer) return;
+          state.pollTimer = setInterval(fetchSnapshot, POLL_MS);
+          setStatus(
+            "warn",
+            state.wsDisabled ? "WS 不可用，轮询中…" : "WS 断开，轮询中…"
+          );
+          fetchSnapshot();
+        }
+
+        function stopPolling() {
+          if (!state.pollTimer) return;
+          clearInterval(state.pollTimer);
+          state.pollTimer = null;
+        }
+
+        function handleMessage(ev) {
+          let payload;
+          try {
+            payload = JSON.parse(ev.data);
+          } catch (e) {
+            return;
+          }
+          applyIncoming(payload);
+          renderAll();
+        }
+
+        function scheduleReconnect() {
+          if (state.reconnectTimer) return;
+          state.reconnectTimer = setTimeout(() => {
+            state.reconnectTimer = null;
+            connect();
+          }, RECONNECT_MS);
+        }
+
+        function connect() {
+          if (state.wsDisabled) {
+            startPolling();
+            return;
+          }
+          if (state.ws) {
+            state.ws.close();
+            state.ws = null;
+          }
+
+          setStatus("warn", "连接中…");
+          state.wsUrl = computeWsUrl();
+          state.snapshotUrl = computeSnapshotUrl();
+          el.wsUrl.textContent = state.wsUrl;
+
+          try {
+            const ws = new WebSocket(state.wsUrl);
+            state.ws = ws;
+            ws.addEventListener("open", () => {
+              state.wsConnected = true;
+              state.wsFailCount = 0;
+              setStatus("ok", "已连接");
+              stopPolling();
+              if (state.reconnectTimer) {
+                clearTimeout(state.reconnectTimer);
+                state.reconnectTimer = null;
+              }
+            });
+            ws.addEventListener("message", handleMessage);
+            ws.addEventListener("close", () => {
+              state.wsConnected = false;
+              state.wsFailCount += 1;
+              if (state.wsFailCount >= MAX_WS_FAILS) {
+                state.wsDisabled = true;
+                setStatus("warn", "WS 不可用，轮询中…");
+                startPolling();
+              } else {
+                setStatus("warn", "连接断开，准备重试…");
+                startPolling();
+                scheduleReconnect();
+              }
+            });
+            ws.addEventListener("error", () => {
+              state.wsConnected = false;
+              state.wsFailCount += 1;
+              if (state.wsFailCount >= MAX_WS_FAILS) {
+                state.wsDisabled = true;
+                setStatus("warn", "WS 不可用，轮询中…");
+                startPolling();
+                ws.close();
+              } else {
+                setStatus("err", "连接异常");
+                startPolling();
+                ws.close();
+              }
+            });
+          } catch (err) {
+            state.wsConnected = false;
+            state.wsFailCount += 1;
+            if (state.wsFailCount >= MAX_WS_FAILS) {
+              state.wsDisabled = true;
+              setStatus("warn", "WS 不可用，轮询中…");
+              startPolling();
+            } else {
+              setStatus("err", "创建连接失败");
+              startPolling();
+              scheduleReconnect();
+            }
+          }
+        }
+
+        el.filterInput.addEventListener("input", () => {
+          state.filter = normalizeStr(el.filterInput.value);
+          renderAll();
+        });
+        el.hideZero.addEventListener("change", () => {
+          state.hideZero = !!el.hideZero.checked;
+          renderAll();
+        });
+        el.reloadBtn.addEventListener("click", () => {
+          state.wsDisabled = false;
+          state.wsFailCount = 0;
+          connect();
+        });
+
+        connect();
+        setInterval(renderAll, 1000);
+        renderAll();
+      })();
+    </script>
+  </body>
+</html>
