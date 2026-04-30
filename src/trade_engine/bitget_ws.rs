@@ -74,9 +74,11 @@ fn normalize_bitget_trade_arg(
     req_type: TradeRequestType,
 ) -> Result<(String, serde_json::Map<String, Value>)> {
     if !obj.contains_key("category") {
+        // Bitget UTA v3：BitgetMargin 默认走 cross-margin 现货（category=margin），
+        // 这样 UTA 才会自动借币；用 spot 不会借币。
         let default_category = match req_type {
             TradeRequestType::BitgetNewMarginOrder | TradeRequestType::BitgetCancelMarginOrder => {
-                "spot"
+                "margin"
             }
             TradeRequestType::BitgetNewUMOrder | TradeRequestType::BitgetCancelUMOrder => {
                 "usdt-futures"

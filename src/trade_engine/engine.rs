@@ -37,7 +37,7 @@ use crate::trade_engine::trade_request::{TradeRequestMsg, TradeRequestType};
 use crate::trade_engine::trade_response_handle::{spawn_response_handle, TradeExecOutcome};
 use crate::trade_engine::trade_type_mapping::TradeTypeMapping;
 use crate::trade_engine::ws_client::{TradeWsClient, WsCommand, WsEndpointHandle};
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
@@ -265,6 +265,18 @@ impl TradeEngine {
         let mut binance_spot_ws_endpoints: Option<Vec<WsEndpointHandle>> = None;
 
         let ws_endpoints = if exchange == Exchange::Bitget {
+            // 前置校验：账户必须升级到 UTA，否则 category=margin 的现货单会被拒
+            let bitget_precheck_creds =
+                crate::portfolio_margin::bitget_auth::BitgetCredentials::from_env().context(
+                    "bitget precheck: BITGET_API_KEY/BITGET_API_SECRET/BITGET_PASSPHRASE not set",
+                )?;
+            let bitget_precheck_http = reqwest::Client::new();
+            crate::trade_engine::bitget_precheck::ensure_unified_account(
+                &bitget_precheck_http,
+                &bitget_precheck_creds,
+            )
+            .await?;
+
             let mut local_ips = self.local_ips.clone();
             if local_ips.is_empty() {
                 warn!("bitget ws local_ips empty; using default binding 0.0.0.0");
@@ -311,6 +323,17 @@ impl TradeEngine {
             }
             Some(endpoints)
         } else if exchange == Exchange::Bybit {
+            // 前置校验：账号必须升级到 UTA 且开启 spot margin，否则 isLeverage=1 的现货单会被交易所直接拒
+            let bybit_precheck_creds =
+                crate::portfolio_margin::bybit_auth::BybitCredentials::from_env()
+                    .context("bybit precheck: BYBIT_API_KEY/BYBIT_API_SECRET not set")?;
+            let bybit_precheck_http = reqwest::Client::new();
+            crate::trade_engine::bybit_precheck::ensure_uta_and_spot_margin(
+                &bybit_precheck_http,
+                &bybit_precheck_creds,
+            )
+            .await?;
+
             let mut local_ips = self.local_ips.clone();
             if local_ips.is_empty() {
                 warn!("bybit ws local_ips empty; using default binding 0.0.0.0");
@@ -357,6 +380,18 @@ impl TradeEngine {
             }
             Some(endpoints)
         } else if exchange == Exchange::Okex {
+            // 前置校验：账户必须处于 Multi-currency margin (acctLv=3) 或 Portfolio margin (acctLv=4)，
+            // 否则 tdMode=cross 的现货/合约单会被拒
+            let okex_precheck_creds =
+                crate::portfolio_margin::okex_auth::OkexCredentials::from_env()
+                    .context("okex precheck: OKX_API_KEY/OKX_API_SECRET/OKX_PASSPHRASE not set")?;
+            let okex_precheck_http = reqwest::Client::new();
+            crate::trade_engine::okex_precheck::ensure_unified_margin_mode(
+                &okex_precheck_http,
+                &okex_precheck_creds,
+            )
+            .await?;
+
             let mut local_ips = self.local_ips.clone();
             if local_ips.is_empty() {
                 warn!("okex ws local_ips empty; using default binding 0.0.0.0");
@@ -421,6 +456,17 @@ impl TradeEngine {
             }
             Some(endpoints)
         } else if exchange == Exchange::Gate {
+            // 前置校验：账户必须升级到统一账户（mode != classic），否则 account=unified+auto_borrow 会被拒
+            let gate_precheck_creds =
+                crate::portfolio_margin::gate_auth::GateCredentials::from_env()
+                    .context("gate precheck: GATE_API_KEY/GATE_API_SECRET not set")?;
+            let gate_precheck_http = reqwest::Client::new();
+            crate::trade_engine::gate_precheck::ensure_unified_account(
+                &gate_precheck_http,
+                &gate_precheck_creds,
+            )
+            .await?;
+
             let mut local_ips = self.local_ips.clone();
             if local_ips.is_empty() {
                 warn!("gate ws local_ips empty; using default binding 0.0.0.0");

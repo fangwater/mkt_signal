@@ -1429,6 +1429,8 @@ impl Order {
                 req_param.insert("type".to_string(), json!(order_type));
                 req_param.insert("account".to_string(), json!("unified"));
                 req_param.insert("auto_borrow".to_string(), json!(true));
+                // 仅 unified/cross-margin 单支持 order 级 auto_repay；成交所得用于偿还本单借入。
+                req_param.insert("auto_repay".to_string(), json!(true));
                 req_param.insert("side".to_string(), json!(self.side.as_str_lower()));
                 req_param.insert("amount".to_string(), json!(format_quantity(self.quantity)));
                 if self.order_type.is_limit() {
@@ -1526,7 +1528,8 @@ impl Order {
             TradingVenue::BitgetMargin => {
                 let create_ts = get_timestamp_us();
                 let mut req_param = serde_json::Map::new();
-                req_param.insert("category".to_string(), json!("spot"));
+                // Bitget UTA v3：category=margin 走 cross-margin 现货并自动借币；category=spot 不会借币。
+                req_param.insert("category".to_string(), json!("margin"));
                 req_param.insert(
                     "symbol".to_string(),
                     json!(self.symbol.to_ascii_uppercase()),
