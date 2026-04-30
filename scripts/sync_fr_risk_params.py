@@ -101,6 +101,18 @@ RISK_PARAMS = {
 
     # 最大挂单数（>=0）
     "max_pending_limit_orders": "10",
+
+    # 套利买/卖侧最大限价挂单数（>=0，0 表示关闭方向风控）
+    "arb_max_pending_limit_buy_orders": "0",
+    "arb_max_pending_limit_sell_orders": "0",
+
+    # 套利开仓 60s/10s 下单数频率上限（>=0，0 表示不限）
+    "arb_open_order_rate_limit_per_min": "0",
+    "arb_open_order_rate_limit_10s": "0",
+
+    # 套利对冲 60s/10s 下单数频率上限（>=0，0 表示不限）
+    "arb_hedge_order_rate_limit_per_min": "0",
+    "arb_hedge_order_rate_limit_10s": "0",
 }
 
 # ========== 参数注释（用于打印） ==========
@@ -111,6 +123,12 @@ PARAM_COMMENTS: Dict[str, str] = {
     "max_total_exposure_ratio": "总敞口比例",
     "max_leverage": "最大杠杆倍数",
     "max_pending_limit_orders": "最大挂单数",
+    "arb_max_pending_limit_buy_orders": "套利买侧最大挂单数",
+    "arb_max_pending_limit_sell_orders": "套利卖侧最大挂单数",
+    "arb_open_order_rate_limit_per_min": "套利开仓60s频率上限",
+    "arb_open_order_rate_limit_10s": "套利开仓10s频率上限",
+    "arb_hedge_order_rate_limit_per_min": "套利对冲60s频率上限",
+    "arb_hedge_order_rate_limit_10s": "套利对冲10s频率上限",
 }
 
 def build_risk_params_key(open_venue: str | None, hedge_venue: str | None) -> str:

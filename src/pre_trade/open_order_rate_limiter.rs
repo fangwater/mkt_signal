@@ -16,15 +16,19 @@ struct OrderRateState {
     open_orders: HashMap<i64, i64>,
     arb_open_orders: HashMap<i64, i64>,
     hedge_orders: HashMap<i64, i64>,
+    arb_hedge_orders: HashMap<i64, i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OrderRateBucket {
     MmOpen,
-    // Standalone ArbOpenStrategy open orders only. ArbCloseStrategy / ArbHedgeStrategy
-    // run their own paired lifecycle and intentionally do not use this bucket.
+    // Standalone ArbOpenStrategy open orders only. ArbCloseStrategy
+    // runs its own paired lifecycle and intentionally does not use this bucket.
     ArbOpen,
     MmHedge,
+    // ArbHedgeStrategy hedge orders. Tracked separately from MmHedge so arbitrage
+    // can be throttled with its own thresholds.
+    ArbHedge,
 }
 
 impl OrderRateBucket {
@@ -33,6 +37,7 @@ impl OrderRateBucket {
             Self::MmOpen => "mm_open",
             Self::ArbOpen => "arb_open",
             Self::MmHedge => "mm_hedge",
+            Self::ArbHedge => "arb_hedge",
         }
     }
 }
@@ -98,6 +103,7 @@ impl OrderRateLimiter {
                 OrderRateBucket::MmOpen,
                 OrderRateBucket::ArbOpen,
                 OrderRateBucket::MmHedge,
+                OrderRateBucket::ArbHedge,
             ] {
                 let bucket_map = Self::bucket_map_mut(&mut state, bucket);
                 let before = bucket_map.len();
@@ -139,6 +145,7 @@ impl OrderRateLimiter {
             state.open_orders.clear();
             state.arb_open_orders.clear();
             state.hedge_orders.clear();
+            state.arb_hedge_orders.clear();
         });
     }
 
@@ -147,6 +154,7 @@ impl OrderRateLimiter {
             OrderRateBucket::MmOpen => &state.open_orders,
             OrderRateBucket::ArbOpen => &state.arb_open_orders,
             OrderRateBucket::MmHedge => &state.hedge_orders,
+            OrderRateBucket::ArbHedge => &state.arb_hedge_orders,
         }
     }
 
@@ -158,6 +166,7 @@ impl OrderRateLimiter {
             OrderRateBucket::MmOpen => &mut state.open_orders,
             OrderRateBucket::ArbOpen => &mut state.arb_open_orders,
             OrderRateBucket::MmHedge => &mut state.hedge_orders,
+            OrderRateBucket::ArbHedge => &mut state.arb_hedge_orders,
         }
     }
 }
@@ -190,6 +199,22 @@ mod tests {
         let err =
             OrderRateLimiter::check_limit(OrderRateBucket::MmOpen, 10, 2, 60_000_000).unwrap_err();
         assert!(err.contains("近10秒"));
+
+        OrderRateLimiter::clear();
+    }
+
+    #[test]
+    fn arb_hedge_bucket_is_independent_from_mm_hedge() {
+        OrderRateLimiter::clear();
+        OrderRateLimiter::record(OrderRateBucket::MmHedge, 1, 51_000_000);
+        OrderRateLimiter::record(OrderRateBucket::ArbHedge, 2, 52_000_000);
+
+        let mm_stats =
+            OrderRateLimiter::check_limit(OrderRateBucket::MmHedge, 10, 10, 60_000_000).unwrap();
+        let arb_stats =
+            OrderRateLimiter::check_limit(OrderRateBucket::ArbHedge, 10, 10, 60_000_000).unwrap();
+        assert_eq!(mm_stats.count_10s, 1);
+        assert_eq!(arb_stats.count_10s, 1);
 
         OrderRateLimiter::clear();
     }

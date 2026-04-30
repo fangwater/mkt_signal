@@ -2,6 +2,8 @@ use crate::common::symbol_util::{extract_assets_from_symbol, normalize_symbol_fo
 use crate::common::tick_math::QuantizedValue;
 use crate::common::time_util::get_timestamp_us;
 use crate::common::trade_error_code::describe_trade_error_code;
+use crate::funding_rate::ArbMode;
+use crate::pre_trade::intra_bwd_symbol_list::IntraBwdSymbolList;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
 use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderManager, OrderType, Side};
@@ -415,7 +417,14 @@ pub trait OpenStrategyCommon {
             );
         }
         if order_type == OrderType::Limit {
-            if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&symbol, side) {
+            let monitor = MonitorChannel::instance();
+            let limit_check = match input.order_rate_bucket {
+                OrderRateBucket::ArbOpen => {
+                    monitor.check_pending_limit_order_for_arb(&symbol, side)
+                }
+                _ => monitor.check_pending_limit_order(&symbol, side),
+            };
+            if let Err(e) = limit_check {
                 error!(
                     "{}: strategy_id={} symbol={} 限价挂单数量风控检查失败: {}，标记策略为不活跃",
                     self.strategy_name(),
@@ -430,10 +439,20 @@ pub trait OpenStrategyCommon {
 
         let rate_params = PreTradeParamsLoader::instance();
         if self.enable_open_order_rate_limit() {
+            let (rate_per_min, rate_10s) = match input.order_rate_bucket {
+                OrderRateBucket::ArbOpen => (
+                    rate_params.arb_open_order_rate_limit_per_min(),
+                    rate_params.arb_open_order_rate_limit_10s(),
+                ),
+                _ => (
+                    rate_params.open_order_rate_limit_per_min(),
+                    rate_params.open_order_rate_limit_10s(),
+                ),
+            };
             if let Err(e) = OrderRateLimiter::check_limit(
                 input.order_rate_bucket,
-                rate_params.open_order_rate_limit_per_min(),
-                rate_params.open_order_rate_limit_10s(),
+                rate_per_min,
+                rate_10s,
                 get_timestamp_us(),
             ) {
                 info!(
@@ -471,26 +490,54 @@ pub trait OpenStrategyCommon {
             Side::Sell => -order_qty.abs(),
         };
 
-        let binance_standard = venue == TradingVenue::BinanceMargin
-            && MonitorChannel::instance()
-                .order_manager()
-                .borrow()
-                .binance_is_standard();
-        if binance_standard && !skip_position_risk_checks {
-            // Binance margin 非统一账户不能在下单时自动借币；资产或仓位不足时，
-            // 反向开仓会被交易所拒绝，所以这里提前拦截。
+        // 现货/保证金开仓腿借币规则：
+        // - Intra arb（任意同交易所 margin+futures）：默认所有 margin 都禁用借币；
+        //   仅当账户处于 UNIFIED 模式 且 symbol 命中 intra_bwd 借贷白名单
+        //   （Redis key `intra_bwd_trade_symbols:<exchange>`，由 trade_signal 维护）时放行。
+        //   * Binance UNIFIED ≡ 非 STANDARD（STANDARD 模式交易所不会自动借币）
+        //   * 其它交易所 margin 默认即视为 UNIFIED
+        // - Binance STANDARD 在 FR / Cross arb 等非 intra 场景仍独立兜底。
+        // - FR / Cross arb（非 intra）下不受此白名单影响。
+        let monitor = MonitorChannel::instance();
+        let binance_is_standard = monitor.order_manager().borrow().binance_is_standard();
+        let venue_is_margin = matches!(
+            venue,
+            TradingVenue::BinanceMargin
+                | TradingVenue::OkexMargin
+                | TradingVenue::BybitMargin
+                | TradingVenue::BitgetMargin
+                | TradingVenue::GateMargin
+        );
+        let intra = venue_is_margin
+            && ArbMode::from_venues(monitor.open_venue(), monitor.hedge_venue())
+                == ArbMode::IntraArb;
+        let venue_is_uniform = match venue {
+            TradingVenue::BinanceMargin => !binance_is_standard,
+            _ => true,
+        };
+        let intra_borrow_bypass =
+            intra && venue_is_uniform && IntraBwdSymbolList::instance().contains(&symbol);
+        let intra_no_borrow = intra && !intra_borrow_bypass;
+        let binance_standard_gate = venue == TradingVenue::BinanceMargin && binance_is_standard;
+        if (binance_standard_gate || intra_no_borrow) && !skip_position_risk_checks {
             let (base_asset, quote_asset) = extract_assets_from_symbol(&symbol);
             let (check_asset, required_amount) = match side {
                 Side::Buy => (quote_asset, order_qty * order_price),
                 Side::Sell => (base_asset, order_qty),
             };
-            let available_balance =
-                MonitorChannel::instance().balance_position_for_venue(venue, &check_asset);
+            let available_balance = monitor.balance_position_for_venue(venue, &check_asset);
             if available_balance + OPEN_BALANCE_EPS < required_amount {
+                let gate = if binance_standard_gate {
+                    "STANDARD"
+                } else {
+                    "INTRA_NO_BORROW"
+                };
                 error!(
-                    "{}: strategy_id={} BinanceMargin STANDARD 余额不足，拒绝开仓并标记策略不活跃 symbol={} side={:?} asset={} required={:.8} available={:.8}",
+                    "{}: strategy_id={} {:?} {} 余额不足，拒绝开仓并标记策略不活跃 symbol={} side={:?} asset={} required={:.8} available={:.8}",
                     self.strategy_name(),
                     self.strategy_id(),
+                    venue,
+                    gate,
                     symbol,
                     side,
                     check_asset,
@@ -500,6 +547,15 @@ pub trait OpenStrategyCommon {
                 self.open_state_mut().alive = false;
                 return None;
             }
+        }
+        if intra_borrow_bypass {
+            info!(
+                "{}: strategy_id={} 命中 intra_bwd 借贷白名单，跳过 INTRA_NO_BORROW 余额预检 symbol={} side={:?}",
+                self.strategy_name(),
+                self.strategy_id(),
+                symbol,
+                side
+            );
         }
 
         let add_base_qty = match self.open_order_qty_to_base(signed_qty, qty_multiplier) {

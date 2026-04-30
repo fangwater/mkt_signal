@@ -1703,15 +1703,38 @@ impl MonitorChannel {
     }
     // ==================== 风控方法（从 RiskChecker 迁移） ====================
 
-    /// 检查当前 symbol 的限价挂单数量
+    /// 检查当前 symbol 的限价挂单数量（MM 路径，使用 max_pending_limit_buy/sell_orders）
     pub fn check_pending_limit_order(&self, symbol: &str, side: Side) -> Result<(), String> {
+        let params = PreTradeParamsLoader::instance();
+        let side_limit = match side {
+            Side::Buy => params.max_pending_limit_buy_orders(),
+            Side::Sell => params.max_pending_limit_sell_orders(),
+        };
+        Self::check_pending_limit_order_with_side_limit(symbol, side, side_limit)
+    }
+
+    /// 检查当前 symbol 的限价挂单数量（套利路径，使用 arb_max_pending_limit_buy/sell_orders）
+    pub fn check_pending_limit_order_for_arb(
+        &self,
+        symbol: &str,
+        side: Side,
+    ) -> Result<(), String> {
+        let params = PreTradeParamsLoader::instance();
+        let side_limit = match side {
+            Side::Buy => params.arb_max_pending_limit_buy_orders(),
+            Side::Sell => params.arb_max_pending_limit_sell_orders(),
+        };
+        Self::check_pending_limit_order_with_side_limit(symbol, side, side_limit)
+    }
+
+    fn check_pending_limit_order_with_side_limit(
+        symbol: &str,
+        side: Side,
+        side_limit: i32,
+    ) -> Result<(), String> {
         Self::with_inner(|inner| {
             let params = PreTradeParamsLoader::instance();
             let max_pending_limit_orders = params.max_pending_limit_orders();
-            let side_limit = match side {
-                Side::Buy => params.max_pending_limit_buy_orders(),
-                Side::Sell => params.max_pending_limit_sell_orders(),
-            };
 
             let symbol_upper = symbol.to_uppercase();
             let order_manager = inner.order_manager.borrow();

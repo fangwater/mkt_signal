@@ -90,6 +90,12 @@ PARAM_COMMENTS: Dict[str, str] = {
     "max_total_exposure_ratio": "总敞口比例",
     "max_leverage": "最大杠杆倍数",
     "max_pending_limit_orders": "最大挂单数",
+    "arb_max_pending_limit_buy_orders": "套利买侧最大挂单数",
+    "arb_max_pending_limit_sell_orders": "套利卖侧最大挂单数",
+    "arb_open_order_rate_limit_per_min": "套利开仓60s频率上限",
+    "arb_open_order_rate_limit_10s": "套利开仓10s频率上限",
+    "arb_hedge_order_rate_limit_per_min": "套利对冲60s频率上限",
+    "arb_hedge_order_rate_limit_10s": "套利对冲10s频率上限",
 }
 
 # 参数顺序（用于排序）
@@ -99,6 +105,12 @@ PARAM_ORDER = [
     "max_total_exposure_ratio",
     "max_leverage",
     "max_pending_limit_orders",
+    "arb_max_pending_limit_buy_orders",
+    "arb_max_pending_limit_sell_orders",
+    "arb_open_order_rate_limit_per_min",
+    "arb_open_order_rate_limit_10s",
+    "arb_hedge_order_rate_limit_per_min",
+    "arb_hedge_order_rate_limit_10s",
 ]
 
 

@@ -2,20 +2,15 @@
 # -*- coding: utf-8 -*-
 
 """
-将 cross（跨所）Pre-Trade 风控参数同步到 Redis 并打印（futures-only）。
+打印 intra（同所期现）Pre-Trade 风控参数（从 Redis 读取）。
 
-注意：
-  - Rust pre_trade 固定读取 hash key: `pre_trade_risk_params`，并通过 Redis prefix 隔离实例。
-  - pre_trade 的 prefix 规则："<dir>:<open_venue>:<hedge_venue>:"
-  - 因此这里写入的 Redis Hash key 为：
-      "<dir>:<open_venue>:<hedge_venue>:pre_trade_risk_params"
+读取 Redis Hash:
+  "<dir>:<open_venue>:<hedge_venue>:pre_trade_risk_params"
+
+规则（intra 同所期现）：
+  - exchange 推断优先级：--exchange > --env-name > CWD 目录名（<exchange>-intra-<tag>）
+  - venue: open=<exchange>-margin, hedge=<exchange>-futures
   - dir 推断优先级：--dir-prefix > --env-name > CWD 目录名
-
-推断规则（优先级从高到低）：
-  1) --open-venue/--hedge-venue（必须为 *-futures）
-  2) 环境变量 OPEN_VENUE/HEDGE_VENUE（deploy_setup_env_cross.sh 生成的 env.sh 会设置）
-  3) --env-name（例如 okex-binance-cross-trade）
-  4) CWD 目录名（例如 okex-binance-cross-trade）
 """
 
 from __future__ import annotations
@@ -24,7 +19,7 @@ import argparse
 import os
 import re
 import sys
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 
 def try_import_redis():
@@ -46,38 +41,28 @@ def normalize_exchange(ex: str) -> str:
     return ex
 
 
-def ensure_cross_venue(venue: str) -> str:
+def ensure_intra_venue(venue: str) -> str:
     v = (venue or "").strip().lower()
-    if not re.match(r"^[a-z0-9]+-(futures|swap|perp|perpetual)$", v):
-        raise SystemExit(f"cross venue 非法: {venue}")
+    if not re.match(r"^[a-z0-9]+-(margin|futures|spot|swap|perp|perpetual)$", v):
+        raise SystemExit(f"intra venue 非法: {venue}")
     return v
 
 
-def infer_pair_from_name(name: str) -> Optional[Tuple[str, str]]:
+def infer_exchange_from_name(name: str) -> Optional[str]:
     n = (name or "").strip().lower()
-    m = re.match(r"^([a-z0-9]+)[-_]([a-z0-9]+)[-_]cross([_-].*)?$", n)
+    m = re.match(r"^([a-z0-9]+)[-_]intra([_-].*)?$", n)
     if not m:
         return None
-    open_ex = normalize_exchange(m.group(1))
-    hedge_ex = normalize_exchange(m.group(2))
-    if open_ex not in SUPPORTED_EXCHANGES or hedge_ex not in SUPPORTED_EXCHANGES:
+    ex = normalize_exchange(m.group(1))
+    if ex not in SUPPORTED_EXCHANGES:
         return None
-    return open_ex, hedge_ex
+    return ex
 
 
-def infer_cross_venues_from_env_name(env_name: str) -> Optional[Tuple[str, str]]:
-    pair = infer_pair_from_name(env_name)
-    if not pair:
-        return None
-    if pair[0] == pair[1]:
-        return None  # cross 要求 open/hedge 必须不同 exchange
-    return f"{pair[0]}-futures", f"{pair[1]}-futures"
-
-
-def infer_cross_venues_from_cwd() -> Optional[Tuple[str, str]]:
+def infer_exchange_from_cwd() -> Optional[str]:
     from pathlib import Path
 
-    return infer_cross_venues_from_env_name(Path.cwd().name)
+    return infer_exchange_from_name(Path.cwd().name)
 
 
 def infer_dir_prefix_from_cwd() -> Optional[str]:
@@ -105,46 +90,38 @@ def resolve_dir_prefix(dir_prefix: Optional[str], env_name: Optional[str]) -> Op
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Sync cross pre-trade risk params to Redis (futures-only)")
+    p = argparse.ArgumentParser(description="Print intra pre-trade risk params from Redis")
+    p.add_argument("--exchange", default=os.environ.get("EXCHANGE"))
     p.add_argument("--open-venue", default=os.environ.get("OPEN_VENUE"))
     p.add_argument("--hedge-venue", default=os.environ.get("HEDGE_VENUE"))
-    p.add_argument("--env-name", help="环境目录名（例如 okex-binance-cross-trade）")
-    p.add_argument("--dir-prefix", help="Redis key 前缀中的 dir（默认使用 --env-name 或当前目录名）")
+    p.add_argument("--env-name", help="环境目录名（例如 binance-intra-trade）")
+    p.add_argument("--dir-prefix", help="Redis key 前缀中的 dir（默认使用 --env-name 或 CWD）")
     args = p.parse_args()
 
-    open_venue = args.open_venue
-    hedge_venue = args.hedge_venue
-    if not open_venue and not hedge_venue:
-        inferred = infer_cross_venues_from_env_name(args.env_name) if args.env_name else infer_cross_venues_from_cwd()
-        if inferred:
-            open_venue, hedge_venue = inferred
-            print(f"[INFO] 未提供 open/hedge，基于目录推断: open={open_venue}, hedge={hedge_venue}")
+    exchange = args.exchange
+    if not exchange:
+        exchange = infer_exchange_from_name(args.env_name) if args.env_name else infer_exchange_from_cwd()
+        if exchange:
+            print(f"[INFO] 未提供 --exchange，基于目录推断: exchange={exchange}", file=sys.stderr)
 
-    if not open_venue or not hedge_venue:
+    if exchange:
+        exchange = normalize_exchange(exchange)
+        if exchange not in SUPPORTED_EXCHANGES:
+            p.error(f"不支持的 exchange: {exchange}")
+        if not args.open_venue:
+            args.open_venue = f"{exchange}-margin"
+        if not args.hedge_venue:
+            args.hedge_venue = f"{exchange}-futures"
+
+    if not args.open_venue or not args.hedge_venue:
         p.error(
-            "需要 --open-venue 与 --hedge-venue（futures-only），或使用 --env-name / 在目录名包含 '<open>-<hedge>-cross-...' 以自动推断"
+            "需要 --exchange，或同时提供 --open-venue 与 --hedge-venue，或使用 --env-name <exchange>-intra-<tag>"
         )
 
-    args.open_venue = ensure_cross_venue(open_venue)
-    args.hedge_venue = ensure_cross_venue(hedge_venue)
-    if args.open_venue == args.hedge_venue:
-        p.error(f"cross open/hedge venue 不能完全相同：open={args.open_venue} hedge={args.hedge_venue}")
+    args.open_venue = ensure_intra_venue(args.open_venue)
+    args.hedge_venue = ensure_intra_venue(args.hedge_venue)
     return args
 
-
-RISK_PARAMS = {
-    "max_pos_u": "10000.0",
-    "max_symbol_exposure_ratio": "0.05",
-    "max_total_exposure_ratio": "0.02",
-    "max_leverage": "5.0",
-    "max_pending_limit_orders": "10",
-    "arb_max_pending_limit_buy_orders": "0",
-    "arb_max_pending_limit_sell_orders": "0",
-    "arb_open_order_rate_limit_per_min": "0",
-    "arb_open_order_rate_limit_10s": "0",
-    "arb_hedge_order_rate_limit_per_min": "0",
-    "arb_hedge_order_rate_limit_10s": "0",
-}
 
 PARAM_COMMENTS: Dict[str, str] = {
     "max_pos_u": "最大单币种持仓(USDT)",
@@ -159,6 +136,20 @@ PARAM_COMMENTS: Dict[str, str] = {
     "arb_hedge_order_rate_limit_per_min": "套利对冲60s频率上限",
     "arb_hedge_order_rate_limit_10s": "套利对冲10s频率上限",
 }
+
+PARAM_ORDER = [
+    "max_pos_u",
+    "max_symbol_exposure_ratio",
+    "max_total_exposure_ratio",
+    "max_leverage",
+    "max_pending_limit_orders",
+    "arb_max_pending_limit_buy_orders",
+    "arb_max_pending_limit_sell_orders",
+    "arb_open_order_rate_limit_per_min",
+    "arb_open_order_rate_limit_10s",
+    "arb_hedge_order_rate_limit_per_min",
+    "arb_hedge_order_rate_limit_10s",
+]
 
 
 def build_risk_params_key(open_venue: str, hedge_venue: str, dir_prefix: Optional[str]) -> str:
@@ -210,17 +201,25 @@ def main() -> int:
 
     dir_prefix = resolve_dir_prefix(args.dir_prefix, args.env_name)
     key = build_risk_params_key(args.open_venue, args.hedge_venue, dir_prefix)
-    rds.hset(key, mapping=RISK_PARAMS)
-    print(f"✅ 已写入 {len(RISK_PARAMS)} 个参数到 HASH '{key}' (primary)")
+    data = rds.hgetall(key)
     print("📍 Redis: 127.0.0.1:6379/0")
     print(f"📍 pretrade open={args.open_venue} hedge={args.hedge_venue}")
+    print(f"🔑 Redis Hash Key: {key}")
 
-    data = rds.hgetall(key)
+    if not data:
+        print("⚠️  未找到参数或 HASH 为空")
+        print("💡 提示：先运行 sync_intra_risk_params.py 同步参数")
+        print()
+        return 0
+
     kv = decode_map(data)
     rows: List[List[str]] = []
-    for k in RISK_PARAMS.keys():
-        rows.append([k, kv.get(k, "-"), PARAM_COMMENTS.get(k, "-")])
-    rows.extend([[k, kv[k], "-"] for k in sorted(kv.keys()) if k not in RISK_PARAMS])
+    for k in PARAM_ORDER:
+        if k in kv:
+            rows.append([k, kv[k], PARAM_COMMENTS.get(k, "-")])
+    for k in sorted(kv.keys()):
+        if k not in PARAM_ORDER:
+            rows.append([k, kv[k], "-"])
     print_three_line_table(["Parameter", "Value", "Comment"], rows)
     print()
     return 0

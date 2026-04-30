@@ -1,6 +1,7 @@
 use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
+use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::signal_channel::SignalChannel;
@@ -1263,6 +1264,20 @@ fn create_and_send_order(
         let exchange = order.venue.trade_engine_exchange();
         match order.get_order_request_bytes() {
             Ok(req_bin) => {
+                let now_us = get_timestamp_us();
+                let params = PreTradeParamsLoader::instance();
+                if let Err(e) = OrderRateLimiter::check_limit(
+                    OrderRateBucket::ArbHedge,
+                    params.arb_hedge_order_rate_limit_per_min(),
+                    params.arb_hedge_order_rate_limit_10s(),
+                    now_us,
+                ) {
+                    warn!(
+                        "ArbHedgeStrategy: strategy_id={} symbol={} 对冲下单频率风控触发: {}",
+                        strategy_id, symbol, e
+                    );
+                    return Err(format!("对冲下单频率风控触发: {}", e));
+                }
                 if let Err(e) = TradeEngHub::publish_order_request(exchange, &req_bin) {
                     error!(
                         "ArbHedgeStrategy: strategy_id={} symbol={} exchange={} 推送{}订单失败: {}",
@@ -1270,6 +1285,12 @@ fn create_and_send_order(
                     );
                     return Err(format!("推送{}订单失败: {}", order_type_str, e));
                 }
+                let stats =
+                    OrderRateLimiter::record(OrderRateBucket::ArbHedge, client_order_id, now_us);
+                debug!(
+                    "ArbHedgeStrategy: strategy_id={} {} order action recorded client_order_id={} count_10s={} count_1m={}",
+                    strategy_id, order_type_str, client_order_id, stats.count_10s, stats.count_1m
+                );
                 Ok(())
             }
             Err(e) => {
