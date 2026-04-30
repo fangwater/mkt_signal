@@ -378,11 +378,14 @@ pub fn build_open_from_key_base(
     return_qtl: Option<f64>,
     return_threshold: Option<f64>,
     volatility: Option<f64>,
-    open_scale: Option<f64>,
+    vol_band_scale: Option<[f64; 2]>,
     env_score: Option<f64>,
     env_threshold: Option<f64>,
     spread: f64,
 ) -> String {
+    let vol_band_scale_text = vol_band_scale
+        .map(|[lo, hi]| format!("{lo:.4},{hi:.4}"))
+        .unwrap_or_else(|| "-".to_string());
     append_key_value_fields(
         build_decision_from_key_base(
             now_us,
@@ -393,7 +396,7 @@ pub fn build_open_from_key_base(
             env_threshold,
         ),
         &[
-            ("open_scale", format_from_key_optional_value(open_scale, 6)),
+            ("vol_band_scale", vol_band_scale_text),
             ("spread", format!("{spread:.6}")),
         ],
     )

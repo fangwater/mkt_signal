@@ -94,8 +94,8 @@ STRATEGY_PARAMS = {
     # 单笔下单量（USDT）
     "order_amount": "100.0",
 
-    # 开仓波动缩放系数（实际边界=vol*open_scale）
-    "open_scale": "1.0",
+    # 开仓 plan 波动带缩放倍率 [low,high]（JSON 数组，实际偏移区间=vol*[low,high]）
+    "vol_band_scale": "[0.0,1.0]",
 
     # 每轮开仓档位数
     "open_orders_per_round": "10",
@@ -106,8 +106,20 @@ STRATEGY_PARAMS = {
     # 对冲订单超时（秒）
     "hedge_timeout": "60",
 
-    # 对冲价格偏移（万分之几）
-    "hedge_price_offset": "0.001",
+    # 对冲波动率倍数（bound = volatility * hedge_vol_multiplier）
+    "hedge_vol_multiplier": "2.0",
+
+    # 对冲偏移手动系数（最终 offset 直接乘该系数）
+    "hedge_offset_ratio": "1.3",
+
+    # 对冲侧偏移下界（price_offset_limit）
+    "hedge_price_offset_limit_lower": "0.0003",
+
+    # 对冲侧偏移上界（price_offset_limit）
+    "hedge_price_offset_limit_upper": "0.005",
+
+    # 是否启用 return score 调整 hedge offset（false=使用中性 score 计算 hedge offset）
+    "enable_return_score_adjust_hedge": "true",
 
     # 对冲激进阈值（request_seq>=该值时不偏移，但仍为maker限价单）
     "hedge_aggressive_seq_threshold": "6",
@@ -145,11 +157,15 @@ STRATEGY_PARAMS = {
 PARAM_COMMENTS: Dict[str, str] = {
     "mode": "做市模式(MM=双边挂单/MT=吃单对冲)",
     "order_amount": "单笔下单量(USDT)",
-    "open_scale": "开仓 plan 的波动边界缩放系数（实际边界=vol*open_scale）",
+    "vol_band_scale": "开仓 plan 波动带缩放倍率 [low,high]（JSON 数组，实际偏移区间=vol*[low,high]）",
     "open_orders_per_round": "每轮开仓档位数",
     "open_order_timeout": "开仓订单超时(秒)",
     "hedge_timeout": "对冲订单超时(秒)",
-    "hedge_price_offset": "对冲价格偏移(万分之几)",
+    "hedge_vol_multiplier": "对冲波动率倍数（bound = volatility * hedge_vol_multiplier）",
+    "hedge_offset_ratio": "对冲偏移手动系数（最终 offset 直接乘该系数）",
+    "hedge_price_offset_limit_lower": "对冲侧偏移下界（price_offset_limit）",
+    "hedge_price_offset_limit_upper": "对冲侧偏移上界（price_offset_limit）",
+    "enable_return_score_adjust_hedge": "是否启用 return score 调整 hedge offset（false=使用中性 score 计算 hedge offset）",
     "hedge_aggressive_seq_threshold": "对冲激进阈值(request_seq>=该值时不偏移，但仍为maker限价单)",
     "enable_tlen_cancel": "是否启用基于 tlen 的 open 撤单链路（true=允许发 trigger/query/cancel）",
     "tlen_cancel_freq_ms": "tlen 撤单触发频率(ms)，需为正整数，默认 3000",
@@ -165,11 +181,15 @@ PARAM_COMMENTS: Dict[str, str] = {
 PARAM_PRINT_ORDER = [
     "mode",
     "order_amount",
-    "open_scale",
+    "vol_band_scale",
     "open_orders_per_round",
     "open_order_timeout",
     "hedge_timeout",
-    "hedge_price_offset",
+    "hedge_vol_multiplier",
+    "hedge_offset_ratio",
+    "hedge_price_offset_limit_lower",
+    "hedge_price_offset_limit_upper",
+    "enable_return_score_adjust_hedge",
     "hedge_aggressive_seq_threshold",
     "enable_tlen_cancel",
     "tlen_cancel_freq_ms",
@@ -185,6 +205,8 @@ PARAM_PRINT_ORDER = [
 
 def sync_strategy_params(rds, key: str) -> int:
     """同步策略参数到 Redis Hash"""
+    for stale_field in ("open_scale", "hedge_price_offset", "hedge_window_scale_low", "hedge_window_scale_high"):
+        rds.hdel(key, stale_field)
     rds.hset(key, mapping=STRATEGY_PARAMS)
     print(f"✅ 已写入 {len(STRATEGY_PARAMS)} 个参数到 HASH '{key}'")
     return len(STRATEGY_PARAMS)

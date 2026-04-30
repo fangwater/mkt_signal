@@ -1812,7 +1812,7 @@ fn emit_funding_precise_tlen_cancel(
         snapshot.return_qtl,
         snapshot.return_threshold,
         snapshot.volatility,
-        snapshot.open_scale,
+        snapshot.vol_band_scale,
         snapshot.env_score,
         snapshot.env_threshold,
         spread_rate,
@@ -1878,7 +1878,7 @@ fn emit_spread_arb_precise_tlen_cancel(
         environment_score,
         environment_signal.threshold,
         volatility,
-        ArbDecision::with_state_mut(|arb| Some(arb.open_scale)).flatten(),
+        ArbDecision::with_state_mut(|arb| Some(arb.vol_band_scale)).flatten(),
         spread_rate,
         super::arb_open_filter::lookup_realtime_open_filter_value(
             open_symbol,
@@ -1946,7 +1946,7 @@ fn emit_spread_arb_spread_cancel(
         environment_score,
         environment_signal.threshold,
         volatility,
-        ArbDecision::with_state_mut(|arb| Some(arb.open_scale)).flatten(),
+        ArbDecision::with_state_mut(|arb| Some(arb.vol_band_scale)).flatten(),
         spread_rate,
         super::arb_open_filter::lookup_realtime_open_filter_value(
             open_symbol,
@@ -2046,15 +2046,15 @@ fn emit_spread_arb_open_signals(
         .unwrap_or(false);
     let batch_ts = get_timestamp_us();
     let spread_rate = super::common::compute_spread_rate(&open_quote, &hedge_quote);
-    let open_scale = ArbDecision::with_state_mut(|arb| arb.open_scale)
+    let vol_band_scale = ArbDecision::with_state_mut(|arb| arb.vol_band_scale)
         .expect("ArbDecisionState should be initialized");
-    let scaled_volatility = (open_volatility_factor * open_scale).max(0.0);
+    let plan_volatility = open_volatility_factor.max(0.0);
     let base_from_key = super::common::build_open_from_key_base(
         batch_ts,
         return_qtl,
         return_threshold,
         Some(open_volatility_factor),
-        Some(open_scale),
+        Some(vol_band_scale),
         Some(environment_score),
         environment_threshold,
         spread_rate,
@@ -2083,7 +2083,8 @@ fn emit_spread_arb_open_signals(
         order_amount,
         open_orders_per_round,
         side,
-        scaled_volatility,
+        plan_volatility,
+        vol_band_scale,
         if open_venue == decision.runtime.venues.0 {
             &decision.runtime.open_min_qty_table
         } else {
@@ -2217,7 +2218,7 @@ fn emit_spread_arb_open_signals(
     )?;
 
     log::info!(
-        "{SPREAD_ARB_SHELL_NAME}: emitted {} {:?} signal(s) to '{}' open={} hedge={} side={:?} inner={:.8} outer={:.8} vol={:.8} open_scale={:.6} scaled_vol={:.8} price_tick={:.8} qty_tick={:.8}",
+        "{SPREAD_ARB_SHELL_NAME}: emitted {} {:?} signal(s) to '{}' open={} hedge={} side={:?} inner={:.8} outer={:.8} vol={:.8} vol_band_scale=[{:.4},{:.4}] price_tick={:.8} qty_tick={:.8}",
         plan.levels.len(),
         SignalType::ArbOpen,
         DEFAULT_ARBITRAGE_SIGNAL_CHANNEL,
@@ -2227,8 +2228,8 @@ fn emit_spread_arb_open_signals(
         plan.inner_price,
         plan.outer_price,
         open_volatility_factor,
-        open_scale,
-        scaled_volatility,
+        vol_band_scale[0],
+        vol_band_scale[1],
         plan.price_tick,
         plan.qty_tick
     );
@@ -2273,7 +2274,7 @@ fn emit_spread_arb_close_signals(
             snapshot.return_qtl,
             snapshot.return_threshold,
             snapshot.volatility,
-            snapshot.open_scale,
+            snapshot.vol_band_scale,
             snapshot.env_score,
             snapshot.env_threshold,
             spread_rate,
@@ -2308,6 +2309,7 @@ fn emit_spread_arb_close_signals(
         open_orders_per_round,
         side,
         volatility,
+        [0.0, 1.0],
         if open_venue == decision.runtime.venues.0 {
             &decision.runtime.open_min_qty_table
         } else {
@@ -2424,7 +2426,7 @@ fn emit_funding_open_close_signals(
     };
     let batch_ts = get_timestamp_us();
     let spread_rate = super::common::compute_spread_rate(&spot_quote, &futures_quote);
-    let open_scale = ArbDecision::with_state_mut(|arb| arb.open_scale)
+    let vol_band_scale = ArbDecision::with_state_mut(|arb| arb.vol_band_scale)
         .expect("ArbDecisionState should be initialized");
     let premium_rate = if matches!(signal_type, SignalType::ArbOpen) {
         gate.and_then(|v| v.open_filter_value)
@@ -2449,7 +2451,7 @@ fn emit_funding_open_close_signals(
             gate.map(|v| v.environment_score),
             gate.and_then(|v| v.environment_threshold),
             premium_rate,
-            Some(open_scale),
+            Some(vol_band_scale),
         )
     } else {
         super::arb_from_key::build_funding_decision_from_key(
@@ -2478,7 +2480,7 @@ fn emit_funding_open_close_signals(
                 snapshot.return_qtl,
                 snapshot.return_threshold,
                 snapshot.volatility,
-                snapshot.open_scale,
+                snapshot.vol_band_scale,
                 snapshot.env_score,
                 snapshot.env_threshold,
                 futures_symbol,
@@ -2500,10 +2502,11 @@ fn emit_funding_open_close_signals(
         })
         .expect("ArbDecisionState should be initialized")
     });
-    let plan_volatility = if matches!(signal_type, SignalType::ArbOpen) {
-        (raw_volatility * open_scale).max(0.0)
+    let plan_volatility = raw_volatility.max(0.0);
+    let plan_vol_band_scale = if matches!(signal_type, SignalType::ArbOpen) {
+        vol_band_scale
     } else {
-        raw_volatility
+        [0.0, 1.0]
     };
     let order_amount = ArbDecision::with_state_mut(|arb| arb.order_amount)
         .expect("ArbDecisionState should be initialized") as f64;
@@ -2523,6 +2526,7 @@ fn emit_funding_open_close_signals(
         open_orders_per_round,
         side,
         plan_volatility,
+        plan_vol_band_scale,
         if spot_venue == decision.runtime.venues.0 {
             &decision.runtime.open_min_qty_table
         } else {
@@ -2634,7 +2638,7 @@ fn emit_funding_open_close_signals(
     )?;
 
     log::info!(
-        "{FUNDING_ARB_SHELL_NAME}: emitted {} {:?} signal(s) to '{}' open={} hedge={} side={:?} inner={:.8} outer={:.8} vol={:.8} open_scale={:.6} plan_vol={:.8} price_tick={:.8} qty_tick={:.8}",
+        "{FUNDING_ARB_SHELL_NAME}: emitted {} {:?} signal(s) to '{}' open={} hedge={} side={:?} inner={:.8} outer={:.8} vol={:.8} vol_band_scale=[{:.4},{:.4}] plan_vol={:.8} price_tick={:.8} qty_tick={:.8}",
         plan.levels.len(),
         signal_type,
         DEFAULT_ARBITRAGE_SIGNAL_CHANNEL,
@@ -2644,7 +2648,8 @@ fn emit_funding_open_close_signals(
         plan.inner_price,
         plan.outer_price,
         raw_volatility,
-        open_scale,
+        plan_vol_band_scale[0],
+        plan_vol_band_scale[1],
         plan_volatility,
         plan.price_tick,
         plan.qty_tick
@@ -2692,7 +2697,7 @@ fn emit_funding_spread_cancel(
         snapshot.return_qtl,
         snapshot.return_threshold,
         snapshot.volatility,
-        snapshot.open_scale,
+        snapshot.vol_band_scale,
         snapshot.env_score,
         snapshot.env_threshold,
         futures_symbol,
@@ -2766,7 +2771,7 @@ struct OpenFromKeySnapshot {
     volatility: Option<f64>,
     env_score: Option<f64>,
     env_threshold: Option<f64>,
-    open_scale: Option<f64>,
+    vol_band_scale: Option<[f64; 2]>,
 }
 
 #[derive(Debug, Clone)]
@@ -2812,12 +2817,11 @@ pub(crate) struct ArbFundingControlPassed {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ArbSharedBootstrap {
-    pub open_scale: f64,
+    pub vol_band_scale: [f64; 2],
     pub open_orders_per_round: u32,
     pub order_amount: f32,
     pub open_order_ttl_us: i64,
     pub hedge_timeout_mm_us: i64,
-    pub hedge_price_offset: f64,
     pub hedge_aggressive_seq_threshold: u32,
     pub enable_tlen_cancel: bool,
     pub tlen_cancel_freq_ms: u64,
@@ -2831,12 +2835,11 @@ pub(crate) struct ArbDecisionState {
     pub venues: VenuePair,
     pub open_factor_value_hub: Option<FactorValueHub>,
     pub hedge_factor_value_hub: Option<FactorValueHub>,
-    pub open_scale: f64,
+    pub vol_band_scale: [f64; 2],
     pub open_orders_per_round: u32,
     pub order_amount: f32,
     pub open_order_ttl_us: i64,
     pub hedge_timeout_mm_us: i64,
-    pub hedge_price_offset: f64,
     pub hedge_vol_multiplier: f64,
     pub hedge_offset_ratio: f64,
     pub hedge_price_offset_limit_lower: f64,
@@ -2872,12 +2875,11 @@ impl ArbDecisionState {
             venues,
             open_factor_value_hub: None,
             hedge_factor_value_hub: None,
-            open_scale: 1.0,
+            vol_band_scale: [0.0, 1.0],
             open_orders_per_round: 1,
             order_amount: 100.0,
             open_order_ttl_us: 120_000_000,
             hedge_timeout_mm_us: 30_000_000,
-            hedge_price_offset: 0.0003,
             hedge_vol_multiplier: 2.0,
             hedge_offset_ratio: 1.3,
             hedge_price_offset_limit_lower: 0.0003,
@@ -2993,12 +2995,11 @@ impl ArbDecisionState {
     }
 
     pub fn apply_shared_bootstrap(&mut self, bootstrap: ArbSharedBootstrap) {
-        self.open_scale = bootstrap.open_scale;
+        self.vol_band_scale = bootstrap.vol_band_scale;
         self.open_orders_per_round = bootstrap.open_orders_per_round;
         self.order_amount = bootstrap.order_amount;
         self.open_order_ttl_us = bootstrap.open_order_ttl_us;
         self.hedge_timeout_mm_us = bootstrap.hedge_timeout_mm_us;
-        self.hedge_price_offset = bootstrap.hedge_price_offset;
         self.hedge_aggressive_seq_threshold = bootstrap.hedge_aggressive_seq_threshold;
         self.enable_tlen_cancel = bootstrap.enable_tlen_cancel;
         self.tlen_cancel_freq_ms = bootstrap.tlen_cancel_freq_ms;
@@ -3010,12 +3011,11 @@ impl ArbDecisionState {
 
     pub fn default_shared_bootstrap(open_orders_per_round: u32) -> ArbSharedBootstrap {
         ArbSharedBootstrap {
-            open_scale: 1.0,
+            vol_band_scale: [0.0, 1.0],
             open_orders_per_round,
             order_amount: 100.0,
             open_order_ttl_us: 120_000_000,
             hedge_timeout_mm_us: 30_000_000,
-            hedge_price_offset: 0.0003,
             hedge_aggressive_seq_threshold: 6,
             enable_tlen_cancel: false,
             tlen_cancel_freq_ms: 3_000,
@@ -3385,7 +3385,7 @@ impl ArbDecisionState {
             volatility,
             env_score,
             env_threshold: environment_signal.threshold,
-            open_scale: Some(self.open_scale),
+            vol_band_scale: Some(self.vol_band_scale),
         }
     }
 

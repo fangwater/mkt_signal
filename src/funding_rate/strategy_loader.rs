@@ -2,7 +2,6 @@
 //!
 //! 定义策略参数结构及其 Redis 加载逻辑：
 //! - ArbDecision: 套利参数（订单量、超时、偏移、冷却时间等）
-//! - SpreadFactor: MM/MT 模式
 
 use anyhow::Result;
 use log::{info, warn};
@@ -13,9 +12,7 @@ use crate::common::redis_client::{RedisClient, RedisSettings};
 use crate::common::symbol_util::normalize_symbol_for_venue;
 
 use super::arb_decision::ArbDecision;
-use super::common::FactorMode;
 use super::mm_decision::MmDecision;
-use super::spread_factor::SpreadFactor;
 use crate::signal::common::TradingVenue;
 
 /// Redis Key 配置
@@ -222,10 +219,6 @@ fn order_amount_field_name(namespace: &str) -> &'static str {
 /// 策略参数结构（从 Redis Hash 反序列化）
 #[derive(Debug, Clone, Deserialize)]
 pub struct StrategyParams {
-    /// 做市模式：MM（Maker-Maker）或 MT（Maker-Taker）
-    #[serde(default = "default_mode")]
-    pub mode: String,
-
     /// 单笔下单量（USDT）
     #[serde(default = "default_order_amount")]
     pub order_amount: f32,
@@ -234,9 +227,9 @@ pub struct StrategyParams {
     #[serde(default)]
     pub mm_amount_u_overrides: HashMap<String, f64>,
 
-    /// arb 开仓 plan 的波动边界缩放系数
-    #[serde(default = "default_open_scale")]
-    pub open_scale: f64,
+    /// arb 开仓 plan 波动带缩放倍率 [low, high]（JSON 数组字符串，实际偏移区间=vol*[low,high]）
+    #[serde(default = "default_vol_band_scale")]
+    pub vol_band_scale: String,
 
     /// MM open 买侧波动区间缩放系数 [low, high]
     #[serde(default = "default_open_buy_vol_scale")]
@@ -289,10 +282,6 @@ pub struct StrategyParams {
     /// 对冲订单超时（秒）
     #[serde(default = "default_hedge_timeout")]
     pub hedge_timeout: u64,
-
-    /// 对冲价格偏移
-    #[serde(default = "default_hedge_price_offset")]
-    pub hedge_price_offset: f64,
 
     /// 对冲 request_seq 激进阈值（>=该值不偏移但仍挂 maker）
     #[serde(default = "default_hedge_aggressive_seq_threshold")]
@@ -372,14 +361,11 @@ pub struct StrategyParams {
 }
 
 // 默认值函数
-fn default_mode() -> String {
-    "MM".to_string()
-}
 fn default_order_amount() -> f32 {
     100.0
 }
-fn default_open_scale() -> f64 {
-    1.0
+fn default_vol_band_scale() -> String {
+    "[0.0,1.0]".to_string()
 }
 fn default_open_buy_vol_scale() -> String {
     "[0.0,1.0]".to_string()
@@ -425,9 +411,6 @@ fn default_hedge_window_scale_high() -> f64 {
 }
 fn default_hedge_timeout() -> u64 {
     30
-}
-fn default_hedge_price_offset() -> f64 {
-    0.0003
 }
 fn default_hedge_aggressive_seq_threshold() -> u32 {
     6
@@ -490,10 +473,9 @@ fn default_environment_model_service() -> String {
 impl Default for StrategyParams {
     fn default() -> Self {
         Self {
-            mode: default_mode(),
             order_amount: default_order_amount(),
             mm_amount_u_overrides: HashMap::new(),
-            open_scale: default_open_scale(),
+            vol_band_scale: default_vol_band_scale(),
             open_buy_vol_scale: default_open_buy_vol_scale(),
             open_sell_vol_scale: default_open_sell_vol_scale(),
             order_interval_ms: default_order_interval_ms(),
@@ -509,7 +491,6 @@ impl Default for StrategyParams {
             hedge_window_scale_low: default_hedge_window_scale_low(),
             hedge_window_scale_high: default_hedge_window_scale_high(),
             hedge_timeout: default_hedge_timeout(),
-            hedge_price_offset: default_hedge_price_offset(),
             hedge_aggressive_seq_threshold: default_hedge_aggressive_seq_threshold(),
             max_hedge_price_pct_change: default_max_hedge_price_pct_change(),
             signal_cooldown: default_signal_cooldown(),
@@ -559,11 +540,6 @@ impl StrategyParams {
         }
 
         // 手动解析 Hash 字段
-        let mode = hash_map
-            .get("mode")
-            .map(|s| s.to_string())
-            .unwrap_or_else(default_mode);
-
         let order_amount_field = order_amount_field_name(&ns);
         let order_amount = match hash_map.get(order_amount_field) {
             Some(raw) => raw.parse::<f32>().unwrap_or_else(|_| {
@@ -601,11 +577,10 @@ impl StrategyParams {
         } else {
             HashMap::new()
         };
-        let open_scale = hash_map
-            .get("open_scale")
-            .and_then(|s| s.parse::<f64>().ok())
-            .filter(|v| v.is_finite() && *v > 0.0)
-            .unwrap_or_else(default_open_scale);
+        let vol_band_scale = match hash_map.get("vol_band_scale") {
+            Some(raw) => raw.to_string(),
+            None => default_vol_band_scale(),
+        };
         let open_buy_vol_scale = match hash_map.get("open_buy_vol_scale") {
             Some(raw) => raw.to_string(),
             None => {
@@ -740,11 +715,6 @@ impl StrategyParams {
             .get("hedge_timeout")
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or_else(default_hedge_timeout);
-
-        let hedge_price_offset = hash_map
-            .get("hedge_price_offset")
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or_else(default_hedge_price_offset);
 
         let hedge_aggressive_seq_threshold = hash_map
             .get("hedge_aggressive_seq_threshold")
@@ -1022,10 +992,9 @@ impl StrategyParams {
             }
         };
         Ok(Self {
-            mode,
             order_amount,
             mm_amount_u_overrides,
-            open_scale,
+            vol_band_scale,
             open_buy_vol_scale,
             open_sell_vol_scale,
             order_interval_ms,
@@ -1041,7 +1010,6 @@ impl StrategyParams {
             hedge_window_scale_low,
             hedge_window_scale_high,
             hedge_timeout,
-            hedge_price_offset,
             hedge_aggressive_seq_threshold,
             max_hedge_price_pct_change,
             signal_cooldown,
@@ -1088,18 +1056,6 @@ impl StrategyParams {
         [low, high]
     }
 
-    /// 解析 mode
-    fn parse_mode(&self) -> FactorMode {
-        match self.mode.to_uppercase().as_str() {
-            "MM" => FactorMode::MM,
-            "MT" => FactorMode::MT,
-            _ => {
-                warn!("未知的 mode: {}, 使用默认 MM", self.mode);
-                FactorMode::MM
-            }
-        }
-    }
-
     fn parse_model_output_services(&self) -> Vec<String> {
         let mut services = Vec::new();
         for raw in [&self.return_model_service, &self.environment_model_service] {
@@ -1128,9 +1084,11 @@ impl StrategyParams {
             Some(env_trimmed.to_string())
         };
 
+        let arb_vol_band_scale =
+            self.parse_required_vol_scale_range(&self.vol_band_scale, "vol_band_scale");
         let applied = ArbDecision::with_state_mut(|arb| {
             arb.order_amount = self.order_amount;
-            arb.open_scale = self.open_scale;
+            arb.vol_band_scale = arb_vol_band_scale;
             arb.open_orders_per_round = self.open_orders_per_round;
             arb.open_order_ttl_us = self
                 .open_order_timeout
@@ -1140,7 +1098,6 @@ impl StrategyParams {
                 .hedge_timeout
                 .saturating_mul(1_000_000)
                 .min(i64::MAX as u64) as i64;
-            arb.hedge_price_offset = self.hedge_price_offset;
             arb.hedge_vol_multiplier = self.hedge_vol_multiplier;
             arb.hedge_offset_ratio = self.hedge_offset_ratio;
             arb.hedge_price_offset_limit_lower = self.hedge_price_offset_limit_lower;
@@ -1222,19 +1179,14 @@ impl StrategyParams {
             })
             .is_some();
 
-        // 2. 更新 SpreadFactor 模式
-        let spread_factor = SpreadFactor::instance();
-        spread_factor.set_mode(self.parse_mode());
-
         if !applied {
-            warn!("策略参数已加载，但 decision 尚未初始化（将仅更新 SpreadFactor）");
+            warn!("策略参数已加载，但 decision 尚未初始化");
         }
 
         info!(
-            "✅ 策略参数已更新: mode={}, amount={:.2}, arb_open_scale={:.4}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, hedge_window_scale_low={:.4}, hedge_window_scale_high={:.4}, order_interval_ms={}, enable_clock_shift_ms={}, open_orders_per_round={}, cooldown={}s, enable_return_score_cancel={}, return_score_buy_cancel_quantile={}, return_score_sell_cancel_quantile={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, spread_cancel_cooldown_ms={}, enable_return_score_adjust_hedge={}, enable_environment_model={}, enable_volatility_limit={}, open_volatility_limit={}, enable_tradecount_limit={}, open_tradecount_limit={}, enable_open_time_block={}, open_block_utc_time_range={}, return_model_service={}, environment_model_service={}",
-            self.mode,
+            "✅ 策略参数已更新: amount={:.2}, arb_vol_band_scale={}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, hedge_window_scale_low={:.4}, hedge_window_scale_high={:.4}, order_interval_ms={}, enable_clock_shift_ms={}, open_orders_per_round={}, cooldown={}s, enable_return_score_cancel={}, return_score_buy_cancel_quantile={}, return_score_sell_cancel_quantile={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, spread_cancel_cooldown_ms={}, enable_return_score_adjust_hedge={}, enable_environment_model={}, enable_volatility_limit={}, open_volatility_limit={}, enable_tradecount_limit={}, open_tradecount_limit={}, enable_open_time_block={}, open_block_utc_time_range={}, return_model_service={}, environment_model_service={}",
             self.order_amount,
-            self.open_scale,
+            self.vol_band_scale,
             self.open_buy_vol_scale,
             self.open_sell_vol_scale,
             self.hedge_window_scale_low,
@@ -1266,21 +1218,6 @@ impl StrategyParams {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_parse_mode() {
-        let params_mm = StrategyParams {
-            mode: "MM".to_string(),
-            ..Default::default()
-        };
-        assert_eq!(params_mm.parse_mode(), FactorMode::MM);
-
-        let params_mt = StrategyParams {
-            mode: "mt".to_string(),
-            ..Default::default()
-        };
-        assert_eq!(params_mt.parse_mode(), FactorMode::MT);
-    }
 
     #[test]
     fn test_enable_return_score_cancel_default_is_false() {

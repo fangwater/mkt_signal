@@ -21,6 +21,7 @@ pub fn build_arb_level_specs(
     side: Side,
     inner_price: f64,
     volatility: f64,
+    vol_band_scale: [f64; 2],
     level_count: usize,
 ) -> Vec<QuotePlanLevelSpec> {
     if level_count == 0 || !inner_price.is_finite() || inner_price <= 0.0 {
@@ -29,26 +30,36 @@ pub fn build_arb_level_specs(
     if !volatility.is_finite() || volatility < 0.0 {
         return Vec::new();
     }
-    if level_count == 1 || volatility <= 0.0 {
+    if !vol_band_scale[0].is_finite()
+        || !vol_band_scale[1].is_finite()
+        || vol_band_scale[0] < 0.0
+        || vol_band_scale[1] < vol_band_scale[0]
+    {
+        return Vec::new();
+    }
+
+    let start = vol_band_scale[0] * volatility;
+    let end = vol_band_scale[1] * volatility;
+    if level_count == 1 {
         return vec![QuotePlanLevelSpec {
             side,
             side_level_index: 1,
-            offset: 0.0,
+            offset: end,
             base_price: inner_price,
         }];
     }
-
-    let step = volatility / (level_count - 1) as f64;
+    let step = (end - start) / (level_count - 1) as f64;
     (0..level_count)
         .map(|idx| QuotePlanLevelSpec {
             side,
             side_level_index: idx + 1,
-            offset: step * idx as f64,
+            offset: start + step * idx as f64,
             base_price: inner_price,
         })
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_arb_open_quote_plan(
     venue: TradingVenue,
     symbol: &str,
@@ -57,6 +68,7 @@ pub fn build_arb_open_quote_plan(
     orders_per_round: u32,
     side: Side,
     volatility: f64,
+    vol_band_scale: [f64; 2],
     table: &VenueMinQtyTable,
 ) -> Result<ArbOpenQuotePlan, String> {
     if symbol.trim().is_empty() {
@@ -83,20 +95,36 @@ pub fn build_arb_open_quote_plan(
             symbol, volatility
         ));
     }
+    if !vol_band_scale[0].is_finite()
+        || !vol_band_scale[1].is_finite()
+        || vol_band_scale[0] < 0.0
+        || vol_band_scale[1] < vol_band_scale[0]
+    {
+        return Err(format!(
+            "invalid vol_band_scale symbol={} vol_band_scale={:?} (must satisfy 0<=low<=high)",
+            symbol, vol_band_scale
+        ));
+    }
 
     let inner_price = match side {
         Side::Buy => quote.bid,
         Side::Sell => quote.ask,
     };
     let outer_price = match side {
-        Side::Buy => inner_price * (1.0 - volatility),
-        Side::Sell => inner_price * (1.0 + volatility),
+        Side::Buy => inner_price * (1.0 - vol_band_scale[1] * volatility),
+        Side::Sell => inner_price * (1.0 + vol_band_scale[1] * volatility),
     };
-    let specs = build_arb_level_specs(side, inner_price, volatility, orders_per_round as usize);
+    let specs = build_arb_level_specs(
+        side,
+        inner_price,
+        volatility,
+        vol_band_scale,
+        orders_per_round as usize,
+    );
     if specs.is_empty() {
         return Err(format!(
-            "empty arb level specs symbol={} side={:?} inner={:.8} volatility={:.8} levels={}",
-            symbol, side, inner_price, volatility, orders_per_round
+            "empty arb level specs symbol={} side={:?} inner={:.8} volatility={:.8} vol_band_scale={:?} levels={}",
+            symbol, side, inner_price, volatility, vol_band_scale, orders_per_round
         ));
     }
 
