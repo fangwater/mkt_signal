@@ -77,3 +77,44 @@ pub fn normalize_symbol_for_whitelist(symbol: &str, venue: TradingVenue) -> Stri
     }
     cleaned
 }
+
+/// 用于 premium 配对（mark_price + index_price 算 rate）的符号规范化。
+/// 通用规则（适用于 OKEx / Bybit / Gate / Binance 等所有交易所）:
+///   - 大写、移除 '-'/'_'、去掉 SWAP 后缀
+///   - **USD 与 USDT 视为同一种**：尾部 USD（不是 USDT）补一个 T
+///     OKEx 的 USDT 永续 mark 用 BTC-USDT-SWAP，index-tickers 用 BTC-USD；
+///     这两个代表同一个 USDT 永续的 mark/index，应配对算 premium。
+/// 这样 mark "BTCUSDT" 和 index "BTCUSD" 都归一为 "BTCUSDT"，
+/// 在同一个 key 下配对，且不破坏下游按 "BTCUSDT" 取数的 schema。
+pub fn normalize_symbol_for_premium_pair(symbol: &str) -> String {
+    let mut cleaned = symbol.to_uppercase().replace(['-', '_'], "");
+    if cleaned.ends_with("SWAP") {
+        cleaned.truncate(cleaned.len().saturating_sub(4));
+    }
+    if cleaned.ends_with("USD") && !cleaned.ends_with("USDT") {
+        cleaned.push('T');
+    }
+    cleaned
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn premium_pair_normalizes_okex_variants() {
+        assert_eq!(
+            normalize_symbol_for_premium_pair("BTC-USDT-SWAP"),
+            "BTCUSDT"
+        );
+        assert_eq!(normalize_symbol_for_premium_pair("BTCUSDT"), "BTCUSDT");
+        assert_eq!(normalize_symbol_for_premium_pair("BTC-USD"), "BTCUSDT");
+        assert_eq!(normalize_symbol_for_premium_pair("BTCUSD"), "BTCUSDT");
+        assert_eq!(
+            normalize_symbol_for_premium_pair("ETH-USDT-SWAP"),
+            "ETHUSDT"
+        );
+        assert_eq!(normalize_symbol_for_premium_pair("ETHUSD"), "ETHUSDT");
+        assert_eq!(normalize_symbol_for_premium_pair("solusdt"), "SOLUSDT");
+    }
+}

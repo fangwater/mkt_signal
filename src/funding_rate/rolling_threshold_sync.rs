@@ -9,8 +9,8 @@ use crate::common::redis_client::{RedisClient, RedisSettings};
 use crate::signal::common::TradingVenue;
 use crate::symbol_match::normalize_symbol_for_whitelist;
 
-use super::spread_factor::SpreadFactor;
 use super::funding_threshold_loader::{FactorDirectionalThresholds, FundingThresholdsResolved};
+use super::spread_factor::SpreadFactor;
 
 const XARB_SPREAD_REDIS_SYNC_SECS: u64 = 1800;
 const QUANTILE_MATCH_EPSILON: f64 = 1e-6;
@@ -187,12 +187,17 @@ fn default_xarb_spread_threshold_order() -> [&'static str; 8] {
     ]
 }
 
+/// Spread mapping config 在 Redis 里的 key:`<ns>_spread_thresholds_config_<o>_<h>`。
+/// 三个套利路由 (intra / cross / xarb) 用各自 namespace 前缀（fr 走单独的
+/// `fr_spread_threshold_mapping_*`）；config_server 与 trade_signal 必须用同一 key。
 pub(crate) fn xarb_spread_mapping_key(
+    namespace: &str,
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
 ) -> String {
+    let ns = namespace.trim().to_ascii_lowercase();
     format!(
-        "xarb_spread_thresholds_config_{}_{}",
+        "{ns}_spread_thresholds_config_{}_{}",
         open_venue.data_pub_slug(),
         hedge_venue.data_pub_slug()
     )

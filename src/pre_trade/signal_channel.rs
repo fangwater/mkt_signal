@@ -372,19 +372,15 @@ fn handle_trade_signal(signal: TradeSignal) {
                 let mut strategy = ArbOpenStrategy::new(strategy_id);
                 strategy.handle_signal(&normalized_signal);
                 if strategy.is_active() {
-                    let hedge_mode = if open_ctx.hedge_timeout_us > 0 {
-                        "MM"
-                    } else {
-                        "MT"
-                    };
+                    // hedge_timeout 已不再做 close_ts 延迟（强制 0），原本根据这个字段
+                    // 推断 MM/MT 的标签也就失效，去掉。
                     let signal_price = open_ctx.price_value();
                     let signal_amount = open_ctx.amount_value();
                     info!(
-                        "🔔 收到 ArbOpen 信号({}): opening={} {:?} side={:?} price={:.6} hedging={} {:?} | amount={:.4} hedge_timeout_us={} spread_rate={:.6} from_key='{}'",
-                        hedge_mode,
+                        "🔔 收到 ArbOpen 信号: opening={} {:?} side={:?} price={:.6} hedging={} {:?} | amount={:.4} spread_rate={:.6} from_key='{}'",
                         symbol, opening_venue, side, signal_price,
                         hedging_symbol, hedging_venue,
-                        signal_amount, open_ctx.hedge_timeout_us,
+                        signal_amount,
                         open_ctx.spread_rate,
                         from_key
                     );
@@ -521,16 +517,10 @@ fn handle_trade_signal(signal: TradeSignal) {
                     let mut strategy = ArbCloseStrategy::new(strategy_id);
                     strategy.handle_signal(&normalized_signal);
                     if strategy.is_active() {
-                        let hedge_mode = if close_ctx.hedge_timeout_us > 0 {
-                            "MM"
-                        } else {
-                            "MT"
-                        };
                         info!(
-                            "🔔 收到 ArbClose 信号({}): opening={} {:?} hedging={} {:?} | side={:?} open_pos={:.4} hedge_pos={:.4} price={:.6} hedge_timeout_us={}",
-                            hedge_mode,
+                            "🔔 收到 ArbClose 信号: opening={} {:?} hedging={} {:?} | side={:?} open_pos={:.4} hedge_pos={:.4} price={:.6}",
                             opening_symbol, opening_venue, hedging_symbol, hedging_venue,
-                            close_side, opening_pos, hedging_pos, close_ctx.price_value(), close_ctx.hedge_timeout_us
+                            close_side, opening_pos, hedging_pos, close_ctx.price_value()
                         );
                         strategy_mgr.borrow_mut().insert(Box::new(strategy));
                     }

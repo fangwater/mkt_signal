@@ -38,15 +38,15 @@ use super::arb_open_filter::{
 };
 use super::common::normalize_tlens_for_compare;
 use super::common::Quote;
-use super::common::{ThresholdKey, VenuePair};
+use super::common::{ArbDirection, OperationType, ThresholdKey, VenuePair};
 use super::factor_value_hub::{
     EnvironmentSignalResult, FactorValueHub, FactorValueLookupResult, ModelOutputScoreLookupResult,
 };
 use super::funding_rate_factor::FundingRateFactor;
+use super::funding_threshold_loader::FundingThresholdsResolved;
 use super::mkt_channel::MktChannel;
 use super::rate_fetcher::RateFetcher;
 use super::rolling_threshold_sync::StoredFactorChainEntry;
-use super::funding_threshold_loader::FundingThresholdsResolved;
 
 pub const DEFAULT_ARBITRAGE_SIGNAL_CHANNEL: &str = "trade_signal";
 pub const DEFAULT_ARBITRAGE_BACKWARD_CHANNEL: &str = "trade_query";
@@ -1051,6 +1051,28 @@ fn drive_spread_arb_decision(
                 hedge_symbol_key.as_str(),
             );
             arb.record_intercept_summary("spread_seen");
+            // 记录本 tick 的 forward/backward open 实际值与阈值，summary 表后用于
+            // 打印 spread 观测带，直观核对"信号设计是否合理"。
+            if let Some((value, threshold, _, _)) = spread_factor.get_spread_check_detail(
+                open_venue,
+                open_symbol_key.as_str(),
+                hedge_venue,
+                hedge_symbol_key.as_str(),
+                ArbDirection::Forward,
+                OperationType::Open,
+            ) {
+                arb.record_spread_observation_fwd(open_symbol_key.as_str(), value, threshold);
+            }
+            if let Some((value, threshold, _, _)) = spread_factor.get_spread_check_detail(
+                open_venue,
+                open_symbol_key.as_str(),
+                hedge_venue,
+                hedge_symbol_key.as_str(),
+                ArbDirection::Backward,
+                OperationType::Open,
+            ) {
+                arb.record_spread_observation_bwd(open_symbol_key.as_str(), value, threshold);
+            }
         });
     }
 
@@ -2879,6 +2901,34 @@ pub(crate) struct ArbDecisionState {
     pub last_cancel_trigger_ts_us: i64,
     pub intercept_counts: HashMap<String, u64>,
     pub last_intercept_log: Instant,
+    /// 30s 窗口内的 spread 观测：每个 symbol 记录 forward/backward 两个方向的
+    /// 实际 spread 值 min/max，并保留最新看到的 open 阈值，便于在 summary 后打表
+    /// 直观判断"信号设计是否合理（区间能否覆盖阈值）"。
+    pub spread_observation: HashMap<String, SpreadObservation>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SpreadObservation {
+    pub fwd_min: Option<f64>,
+    pub fwd_max: Option<f64>,
+    pub fwd_threshold: Option<f64>,
+    pub bwd_min: Option<f64>,
+    pub bwd_max: Option<f64>,
+    pub bwd_threshold: Option<f64>,
+}
+
+impl SpreadObservation {
+    fn record_fwd(&mut self, value: f64, threshold: f64) {
+        self.fwd_threshold = Some(threshold);
+        self.fwd_min = Some(self.fwd_min.map_or(value, |m| m.min(value)));
+        self.fwd_max = Some(self.fwd_max.map_or(value, |m| m.max(value)));
+    }
+
+    fn record_bwd(&mut self, value: f64, threshold: f64) {
+        self.bwd_threshold = Some(threshold);
+        self.bwd_min = Some(self.bwd_min.map_or(value, |m| m.min(value)));
+        self.bwd_max = Some(self.bwd_max.map_or(value, |m| m.max(value)));
+    }
 }
 
 impl ArbDecisionState {
@@ -2921,7 +2971,22 @@ impl ArbDecisionState {
             last_cancel_trigger_ts_us: 0,
             intercept_counts: HashMap::new(),
             last_intercept_log: Instant::now(),
+            spread_observation: HashMap::new(),
         }
+    }
+
+    pub fn record_spread_observation_fwd(&mut self, symbol: &str, value: f64, threshold: f64) {
+        self.spread_observation
+            .entry(symbol.to_string())
+            .or_default()
+            .record_fwd(value, threshold);
+    }
+
+    pub fn record_spread_observation_bwd(&mut self, symbol: &str, value: f64, threshold: f64) {
+        self.spread_observation
+            .entry(symbol.to_string())
+            .or_default()
+            .record_bwd(value, threshold);
     }
 
     pub fn poll_model_output_updates(&mut self) {
@@ -3515,9 +3580,74 @@ impl ArbDecisionState {
         log::info!("{rule}");
 
         self.log_xarb_open_blocker_table(source);
+        self.log_spread_observation_table(source);
 
         self.intercept_counts.clear();
+        self.spread_observation.clear();
         self.last_intercept_log = Instant::now();
+    }
+
+    fn log_spread_observation_table(&self, source: &str) {
+        if self.spread_observation.is_empty() {
+            return;
+        }
+
+        let mut symbols: Vec<&String> = self.spread_observation.keys().collect();
+        symbols.sort();
+
+        let fmt_opt = |v: Option<f64>| -> String {
+            match v {
+                Some(value) if value.is_finite() => format!("{value:.6}"),
+                _ => "-".to_string(),
+            }
+        };
+
+        let headers = [
+            "symbol", "fwd_min", "fwd_max", "fwd_open", "bwd_min", "bwd_max", "bwd_open",
+        ];
+        let mut widths = headers.iter().map(|h| h.len()).collect::<Vec<_>>();
+        let rows: Vec<[String; 7]> = symbols
+            .iter()
+            .map(|sym| {
+                let obs = &self.spread_observation[*sym];
+                [
+                    (*sym).clone(),
+                    fmt_opt(obs.fwd_min),
+                    fmt_opt(obs.fwd_max),
+                    fmt_opt(obs.fwd_threshold),
+                    fmt_opt(obs.bwd_min),
+                    fmt_opt(obs.bwd_max),
+                    fmt_opt(obs.bwd_threshold),
+                ]
+            })
+            .collect();
+        for row in &rows {
+            for (i, cell) in row.iter().enumerate() {
+                if cell.len() > widths[i] {
+                    widths[i] = cell.len();
+                }
+            }
+        }
+
+        let fmt_row = |cells: &[String; 7]| -> String {
+            (0..7)
+                .map(|i| format!("{:<width$}", cells[i], width = widths[i]))
+                .collect::<Vec<_>>()
+                .join("  ")
+        };
+        let header_cells: [String; 7] = std::array::from_fn(|i| headers[i].to_string());
+        let header = fmt_row(&header_cells);
+        let rule = "=".repeat(header.len());
+        let mid = "-".repeat(header.len());
+
+        log::info!("{source}: xarb spread observation (last 30s, MM thresholds)");
+        log::info!("{rule}");
+        log::info!("{header}");
+        log::info!("{mid}");
+        for row in &rows {
+            log::info!("{}", fmt_row(row));
+        }
+        log::info!("{rule}");
     }
 
     fn build_xarb_open_blocker_reason(&mut self, symbol: &str, side: Side) -> Option<String> {

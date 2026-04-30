@@ -66,11 +66,13 @@ DEFAULTS = {
 }
 
 
-def build_single_side_factor(*, quantiles: list[float]) -> Dict[str, Any]:
+def build_single_side_factor(
+    *, quantiles: list[float], min_periods: int = 7_200
+) -> Dict[str, Any]:
     return {
         "resample_interval_ms": 1_000,
         "rolling_window": 14_400,
-        "min_periods": 7_200,
+        "min_periods": min_periods,
         "quantiles": quantiles,
     }
 
@@ -89,7 +91,8 @@ def apply_pair_specific_defaults(
         if isinstance(spread_cfg, dict):
             spread_cfg["quantiles"] = [5, 10, 90, 95]
         factors.setdefault(
-            "hedge_premium_rate", build_single_side_factor(quantiles=[0.5])
+            "hedge_premium_rate",
+            build_single_side_factor(quantiles=[30, 50, 70], min_periods=1),
         )
 
     if pair == ("okex-futures", "binance-futures"):

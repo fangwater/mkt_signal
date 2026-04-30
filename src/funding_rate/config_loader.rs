@@ -743,7 +743,7 @@ async fn reload_spread_thresholds_from_rolling(
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
 ) -> Result<()> {
-    let spread_config_key = xarb_spread_mapping_key(open_venue, hedge_venue);
+    let spread_config_key = xarb_spread_mapping_key(namespace, open_venue, hedge_venue);
     let funding_chain_key = funding_chain_config_key(namespace, open_venue, hedge_venue);
     let default_rolling_key = default_rolling_thresholds_key(open_venue, hedge_venue);
 
@@ -876,7 +876,7 @@ async fn reload_spread_thresholds_from_rolling(
         redis,
         namespace,
         &spread_thresholds_key(namespace, open_venue, hedge_venue),
-        &xarb_spread_mapping_key(open_venue, hedge_venue),
+        &xarb_spread_mapping_key(namespace, open_venue, hedge_venue),
         open_venue,
         hedge_venue,
         &rolling_key,

@@ -432,10 +432,6 @@ def clone_json_value(value: Any) -> Any:
     return value
 
 
-def is_vol_factor_name(factor_name: str) -> bool:
-    return factor_name in {"open_vol", "hedge_vol"}
-
-
 def build_intra_rolling_defaults(
     base_defaults: Dict[str, Any], *mappings: Dict[str, str]
 ) -> Dict[str, Any]:
@@ -464,16 +460,11 @@ def build_intra_rolling_defaults(
     factors: Dict[str, Dict[str, Any]] = {}
     for factor_name, quantiles in factor_quantiles.items():
         factor_cfg = clone_json_value(base_factors.get(factor_name) or {})
-        if is_vol_factor_name(factor_name):
-            factor_cfg.setdefault("resample_interval_ms", 5_000)
-            factor_cfg.setdefault("rolling_window", 720)
-            factor_cfg.setdefault("min_periods", 1)
-        else:
-            factor_cfg.setdefault("resample_interval_ms", 1_000)
+        factor_cfg.setdefault("resample_interval_ms", 1_000)
         if factor_name.endswith("_fr") or factor_name.endswith("_premium_rate"):
             factor_cfg.setdefault("rolling_window", 14_400)
             factor_cfg.setdefault("min_periods", 7_200)
-        elif not is_vol_factor_name(factor_name):
+        else:
             factor_cfg.setdefault("rolling_window", 100_000)
             factor_cfg.setdefault("min_periods", 1)
         if quantiles:
@@ -1635,17 +1626,7 @@ def parse_rolling_params(values: Dict[str, str]) -> Dict[str, Any]:
 def normalize_rolling_factors_for_save(factors: Any) -> Dict[str, Any]:
     if not isinstance(factors, dict):
         return {}
-    normalized = json.loads(json.dumps(factors, ensure_ascii=False))
-    for factor_name in ("open_vol", "hedge_vol"):
-        factor_cfg = normalized.get(factor_name)
-        if not isinstance(factor_cfg, dict):
-            continue
-        quantiles = factor_cfg.get("quantiles")
-        if not isinstance(quantiles, list):
-            continue
-        while len(quantiles) > 8:
-            quantiles.pop(0)
-    return normalized
+    return json.loads(json.dumps(factors, ensure_ascii=False))
 
 
 def serialize_rolling_params(values: Dict[str, Any]) -> Dict[str, str]:
@@ -1663,19 +1644,13 @@ def serialize_rolling_params(values: Dict[str, Any]) -> Dict[str, str]:
 
 
 def default_factor_config_for_name(factor_name: str) -> Dict[str, Any]:
-    cfg: Dict[str, Any] = {}
-    if is_vol_factor_name(factor_name):
-        cfg["resample_interval_ms"] = 5_000
-        cfg["rolling_window"] = 720
-        cfg["min_periods"] = 1
+    cfg: Dict[str, Any] = {"resample_interval_ms": 1_000}
+    if factor_name.endswith("_fr") or factor_name.endswith("_premium_rate"):
+        cfg["rolling_window"] = 14_400
+        cfg["min_periods"] = 7_200
     else:
-        cfg["resample_interval_ms"] = 1_000
-        if factor_name.endswith("_fr") or factor_name.endswith("_premium_rate"):
-            cfg["rolling_window"] = 14_400
-            cfg["min_periods"] = 7_200
-        else:
-            cfg["rolling_window"] = 100_000
-            cfg["min_periods"] = 1
+        cfg["rolling_window"] = 100_000
+        cfg["min_periods"] = 1
     cfg["quantiles"] = []
     return cfg
 

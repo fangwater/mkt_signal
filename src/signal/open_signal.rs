@@ -91,6 +91,8 @@ pub struct MmOpenCtx {
 }
 
 fn set_symbol(target: &mut [u8; 32], symbol: &str) {
+    // 清零再写，避免上次写入的尾部残留（更短的新值会保留旧字节，触发 get_symbol 读到错误后缀）
+    target.fill(0);
     let bytes = symbol.as_bytes();
     let len = bytes.len().min(32);
     target[..len].copy_from_slice(&bytes[..len]);

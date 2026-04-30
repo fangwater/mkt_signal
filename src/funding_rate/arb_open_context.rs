@@ -104,10 +104,11 @@ pub fn build_arb_open_context_from_level(input: ArbOpenContextInput<'_>) -> ArbO
     ctx.create_ts = input.now;
     ctx.price_offset = input.level.offset;
     ctx.spread_rate = compute_spread_rate(input.open_quote, input.hedge_quote);
-    ctx.hedge_timeout_us = match input.factor_mode {
-        FactorMode::MT => 0,
-        FactorMode::MM => input.hedge_timeout_mm_us,
-    };
+    // hedge_timeout 参数语义专属于 hedge maker 单的 TTL（见 ArbHedgeCtx.exp_time），
+    // 不再用来延迟 pending → due 进队列。这里强制 0，让 close_ts=0，开仓 fill 后
+    // pending hedge 立即变 due，不再额外等 hedge_timeout 秒。
+    let _ = input.factor_mode;
+    ctx.hedge_timeout_us = 0;
 
     ctx.set_from_key(input.from_key.as_bytes().to_vec());
 

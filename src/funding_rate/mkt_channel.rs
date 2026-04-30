@@ -20,7 +20,7 @@ use crate::common::mkt_msg::{
     get_msg_type, AskBidSpreadMsg, FundingRateMsg, IndexPriceMsg, MarkPriceMsg, MktMsgType,
 };
 use crate::signal::common::TradingVenue;
-use crate::symbol_match::normalize_symbol_for_whitelist;
+use crate::symbol_match::{normalize_symbol_for_premium_pair, normalize_symbol_for_whitelist};
 
 // 常量定义
 const ASKBID_PAYLOAD: usize = 128;
@@ -88,6 +88,10 @@ impl MktChannel {
     /// 获取全局单例实例
     pub fn instance() -> Self {
         MktChannel
+    }
+
+    pub fn is_initialized() -> bool {
+        MKT_CHANNEL.with(|mc| mc.borrow().is_some())
     }
 
     /// 访问内部状态的辅助方法（内部使用）
@@ -167,6 +171,20 @@ impl MktChannel {
             MARKET_SERVICE_ROOT
         );
 
+        // Publish the singleton before listeners start. IPC backlog can deliver a
+        // market message immediately, and decision code reads MktChannel during
+        // that callback.
+        let inner = MktChannelInner {
+            quotes: quotes.clone(),
+            funding_rates: funding_rates.clone(),
+            mark_prices: mark_prices.clone(),
+            index_prices: index_prices.clone(),
+        };
+
+        MKT_CHANNEL.with(|mc| {
+            *mc.borrow_mut() = Some(inner);
+        });
+
         // 启动订阅任务
         Self::spawn_askbid_listener(
             open_node,
@@ -217,18 +235,6 @@ impl MktChannel {
             );
         }
 
-        // 保存到 thread-local
-        let inner = MktChannelInner {
-            quotes,
-            funding_rates,
-            mark_prices,
-            index_prices,
-        };
-
-        MKT_CHANNEL.with(|mc| {
-            *mc.borrow_mut() = Some(inner);
-        });
-
         Ok(())
     }
 
@@ -265,23 +271,24 @@ impl MktChannel {
     /// - `symbol`: 交易对符号
     /// - `venue`: 交易场所
     pub fn get_mark_price(&self, symbol: &str, venue: TradingVenue) -> Option<f64> {
-        let symbol_upper = normalize_symbol_key(symbol);
+        // premium 专用规范化（USD≡USDT，只看前缀），存取双方一致
+        let symbol_key = normalize_symbol_for_premium_pair(symbol);
 
         Self::with_inner(|inner| {
             let mark_prices_map = inner.mark_prices.borrow();
             let venue_prices = mark_prices_map.get(&venue)?;
-            venue_prices.get(&symbol_upper).copied()
+            venue_prices.get(&symbol_key).copied()
         })
     }
 
     /// 查询 Index Price（只返回最新值）
     pub fn get_index_price(&self, symbol: &str, venue: TradingVenue) -> Option<f64> {
-        let symbol_upper = normalize_symbol_key(symbol);
+        let symbol_key = normalize_symbol_for_premium_pair(symbol);
 
         Self::with_inner(|inner| {
             let index_prices_map = inner.index_prices.borrow();
             let venue_prices = index_prices_map.get(&venue)?;
-            venue_prices.get(&symbol_upper).copied()
+            venue_prices.get(&symbol_key).copied()
         })
     }
 
@@ -584,25 +591,20 @@ impl MktChannel {
                                 MktMsgType::MarkPrice => {
                                     // 零拷贝解析
                                     let symbol_raw = MarkPriceMsg::get_symbol(payload);
-                                    let symbol = normalize_symbol_key(symbol_raw);
+                                    // premium 配对：USD≡USDT，统一前缀，让 BTCUSDT/BTCUSD 落到同一 key
+                                    let symbol = normalize_symbol_for_premium_pair(symbol_raw);
                                     let mark_price = MarkPriceMsg::get_mark_price(payload);
                                     stats_mark_msgs += 1;
 
                                     let mut mark_prices_map = mark_prices.borrow_mut();
                                     if let Some(venue_prices) = mark_prices_map.get_mut(&feed_venue)
                                     {
-                                        // 只存最新值
-                                        venue_prices.insert(symbol.clone(), mark_price);
-
-                                        // debug!(
-                                        //     "Mark Price 更新: {} price={:.6}",
-                                        //     symbol, mark_price
-                                        // );
+                                        venue_prices.insert(symbol, mark_price);
                                     }
                                 }
                                 MktMsgType::IndexPrice => {
                                     let symbol_raw = IndexPriceMsg::get_symbol(payload);
-                                    let symbol = normalize_symbol_key(symbol_raw);
+                                    let symbol = normalize_symbol_for_premium_pair(symbol_raw);
                                     let index_price = IndexPriceMsg::get_index_price(payload);
 
                                     let mut index_prices_map = index_prices.borrow_mut();

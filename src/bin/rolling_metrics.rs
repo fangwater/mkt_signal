@@ -35,7 +35,7 @@ use mkt_signal::rolling_metrics::service::{
     ensure_series_capacity, init_log_prefix, log_prefix, new_series_map, spawn_compute_thread,
     ComputeResult, SeriesMap, SymbolSeries,
 };
-use mkt_signal::symbol_match::normalize_symbol_for_pairing;
+use mkt_signal::symbol_match::{normalize_symbol_for_pairing, normalize_symbol_for_premium_pair};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -690,7 +690,6 @@ fn process_derivatives_msg(
         MktMsgType::MarkPrice => process_premium_price_msg(
             msg,
             prefix,
-            venue_topic,
             is_open_side,
             PremiumPriceField::MarkPrice,
             quotes,
@@ -701,7 +700,6 @@ fn process_derivatives_msg(
         MktMsgType::IndexPrice => process_premium_price_msg(
             msg,
             prefix,
-            venue_topic,
             is_open_side,
             PremiumPriceField::IndexPrice,
             quotes,
@@ -760,7 +758,6 @@ enum PremiumPriceField {
 fn process_premium_price_msg(
     msg: &[u8],
     prefix: &str,
-    venue_topic: &str,
     is_open_side: bool,
     field: PremiumPriceField,
     quotes: &mut HashMap<String, SymbolQuotes>,
@@ -781,10 +778,13 @@ fn process_premium_price_msg(
         ),
     };
 
-    let symbol = normalize_symbol_for_pairing(&raw_symbol, venue_topic);
     if should_skip_symbol(&raw_symbol) || !value.is_finite() || value <= 0.0 {
         return;
     }
+
+    // premium 配对用 base coin 作 key（USD/USDT 视为同一种），让 mark "BTCUSDT" 与 index "BTCUSD"
+    // 落到同一个 entry，premium_rate 才能算出来。
+    let symbol = normalize_symbol_for_premium_pair(&raw_symbol);
 
     let entry = quotes.entry(symbol.clone()).or_default();
     let premium_state = if is_open_side {
