@@ -305,6 +305,14 @@ impl MmDecision {
         self.state.update_order_amount_overrides(overrides);
     }
 
+    pub fn update_hedge_price_offset_limit_overrides(
+        &mut self,
+        overrides: std::collections::HashMap<String, (f64, f64)>,
+    ) {
+        self.state
+            .update_hedge_price_offset_limit_overrides(overrides);
+    }
+
     pub fn update_open_order_timeout(&mut self, open_order_timeout_secs: u64) {
         self.state
             .update_open_order_timeout(open_order_timeout_secs);
@@ -481,6 +489,8 @@ impl MmDecision {
                 return;
             }
         };
+        let (offset_low, offset_high_limit) =
+            self.state.resolve_hedge_price_offset_limits(&symbol);
         let input = InventoryHedgeBuildInput {
             venue: self.state.hedge_venue,
             symbol: &symbol,
@@ -496,8 +506,8 @@ impl MmDecision {
             inventory_net_qty: query.net_qty,
             symbol_exposure_u: query.symbol_exposure_u,
             hedge_orders_per_round: self.state.hedge_orders_per_round,
-            offset_low: self.state.hedge_price_offset_limit_lower,
-            offset_high_limit: self.state.hedge_price_offset_limit_upper,
+            offset_low,
+            offset_high_limit,
             hedge_window_scale_low: self.state.hedge_window_scale_low,
             hedge_window_scale_high: self.state.hedge_window_scale_high,
             next_query_delay_ms: self.state.next_query_delay_ms,

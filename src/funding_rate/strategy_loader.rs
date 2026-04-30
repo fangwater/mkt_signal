@@ -141,6 +141,17 @@ pub fn mm_amount_u_override_key_for_env(
     format!("{env_name}:{}:mm:amount_u", hedge_venue.data_pub_slug())
 }
 
+pub fn mm_hedge_price_offset_limits_override_key_for_env(
+    env_name: Option<&str>,
+    hedge_venue: TradingVenue,
+) -> String {
+    let env_name = normalize_mm_env_name(env_name);
+    format!(
+        "{env_name}:{}:mm:hedge_price_offset_limits",
+        hedge_venue.data_pub_slug()
+    )
+}
+
 /// Arb（intra/cross/fr）共用的 per-symbol amount_u 覆盖键。
 /// 由 sync_*_amount_u.py 写入 Redis STRING(JSON {symbol: amount_u})。
 /// 与 MM 不同，arb 用 (open, hedge) 二元组定位，覆盖键可选（env 缺失时返回 None，
@@ -179,6 +190,33 @@ fn infer_arb_env_name_from_runtime() -> Option<String> {
     Some(leaf)
 }
 
+fn normalize_mm_override_symbol(
+    raw_symbol: &str,
+    open_venue: TradingVenue,
+    redis_key: &str,
+) -> String {
+    let symbol_trimmed = raw_symbol.trim();
+    if symbol_trimmed.is_empty() {
+        panic!("Redis string '{}' 包含空 symbol", redis_key);
+    }
+    let normalized_input = symbol_trimmed
+        .chars()
+        .filter_map(|ch| match ch {
+            'a'..='z' | 'A'..='Z' | '0'..='9' => Some(ch.to_ascii_uppercase()),
+            '-' | '_' | '/' | ' ' => Some('-'),
+            _ => None,
+        })
+        .collect::<String>()
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if normalized_input.is_empty() {
+        panic!("Redis string '{}' 包含空 symbol", redis_key);
+    }
+    normalize_symbol_for_venue(&normalized_input, open_venue)
+}
+
 fn parse_mm_amount_u_overrides(
     raw: &str,
     open_venue: TradingVenue,
@@ -194,32 +232,52 @@ fn parse_mm_amount_u_overrides(
     let mut normalized = HashMap::new();
     for (symbol, amount_u) in parsed {
         let symbol_trimmed = symbol.trim();
-        if symbol_trimmed.is_empty() {
-            panic!("Redis string '{}' 包含空 symbol", redis_key);
-        }
         if !(amount_u.is_finite() && amount_u > 0.0) {
             panic!(
                 "Redis string '{}' symbol={} amount_u 非法: {}",
                 redis_key, symbol_trimmed, amount_u
             );
         }
-        let normalized_input = symbol_trimmed
-            .chars()
-            .filter_map(|ch| match ch {
-                'a'..='z' | 'A'..='Z' | '0'..='9' => Some(ch.to_ascii_uppercase()),
-                '-' | '_' | '/' | ' ' => Some('-'),
-                _ => None,
-            })
-            .collect::<String>()
-            .split('-')
-            .filter(|part| !part.is_empty())
-            .collect::<Vec<_>>()
-            .join("-");
-        if normalized_input.is_empty() {
-            panic!("Redis string '{}' 包含空 symbol", redis_key);
-        }
-        let symbol_key = normalize_symbol_for_venue(&normalized_input, open_venue);
+        let symbol_key = normalize_mm_override_symbol(symbol_trimmed, open_venue, redis_key);
         normalized.insert(symbol_key, amount_u);
+    }
+    normalized
+}
+
+#[derive(Debug, Deserialize)]
+struct MmHedgePriceOffsetLimitOverride {
+    #[serde(alias = "upper")]
+    hedge_price_offset_limit_upper: f64,
+    #[serde(alias = "lower")]
+    hedge_price_offset_limit_lower: f64,
+}
+
+fn parse_mm_hedge_price_offset_limit_overrides(
+    raw: &str,
+    open_venue: TradingVenue,
+    redis_key: &str,
+) -> HashMap<String, (f64, f64)> {
+    let parsed: HashMap<String, MmHedgePriceOffsetLimitOverride> =
+        serde_json::from_str(raw).unwrap_or_else(|err| {
+            panic!(
+                "Redis string '{}' 不是合法 JSON(symbol->hedge_price_offset_limits): {} ({})",
+                redis_key, raw, err
+            )
+        });
+
+    let mut normalized = HashMap::new();
+    for (symbol, limits) in parsed {
+        let symbol_trimmed = symbol.trim();
+        let upper = limits.hedge_price_offset_limit_upper;
+        let lower = limits.hedge_price_offset_limit_lower;
+        if !(lower.is_finite() && upper.is_finite() && lower > 0.0 && upper >= lower) {
+            panic!(
+                "Redis string '{}' symbol={} hedge_price_offset_limit 非法: lower={} upper={} (need 0<lower<=upper)",
+                redis_key, symbol_trimmed, lower, upper
+            );
+        }
+        let symbol_key = normalize_mm_override_symbol(symbol_trimmed, open_venue, redis_key);
+        normalized.insert(symbol_key, (lower, upper));
     }
     normalized
 }
@@ -264,6 +322,11 @@ pub struct StrategyParams {
     /// MM 按 symbol 覆盖的下单量（USDT）
     #[serde(default)]
     pub mm_amount_u_overrides: HashMap<String, f64>,
+
+    /// MM 按 symbol 覆盖的对冲侧 price_offset_limit (lower, upper)
+    /// Redis STRING key: <env>:<hedge_venue>:mm:hedge_price_offset_limits
+    #[serde(default)]
+    pub mm_hedge_price_offset_limit_overrides: HashMap<String, (f64, f64)>,
 
     /// Arb（intra/cross/fr）按 symbol 覆盖的下单量（USDT）
     /// Redis STRING key: <env>:<open>:<hedge>:amount_u_overrides
@@ -446,6 +509,9 @@ fn default_hedge_price_offset_limit_upper() -> f64 {
 fn default_hedge_price_offset_limit_lower() -> f64 {
     0.0003
 }
+fn default_mm_hedge_price_offset_limit_lower() -> f64 {
+    0.0005
+}
 fn default_hedge_window_scale_low() -> f64 {
     0.8
 }
@@ -518,6 +584,7 @@ impl Default for StrategyParams {
         Self {
             order_amount: default_order_amount(),
             mm_amount_u_overrides: HashMap::new(),
+            mm_hedge_price_offset_limit_overrides: HashMap::new(),
             arb_amount_u_overrides: HashMap::new(),
             vol_band_scale: default_vol_band_scale(),
             open_buy_vol_scale: default_open_buy_vol_scale(),
@@ -613,6 +680,36 @@ impl StrategyParams {
                 None => {
                     info!(
                         "MM amount_u override missing; use default_order_amount from key='{}'",
+                        redis_key
+                    );
+                    HashMap::new()
+                }
+            }
+        } else {
+            HashMap::new()
+        };
+        let mm_hedge_price_offset_limit_overrides = if ns == "mm" {
+            let override_key = mm_hedge_price_offset_limits_override_key_for_env(
+                mm_env_name.as_deref(),
+                hedge_venue,
+            );
+            match client.get_string(&override_key).await? {
+                Some(raw) => {
+                    let parsed = parse_mm_hedge_price_offset_limit_overrides(
+                        &raw,
+                        open_venue,
+                        &override_key,
+                    );
+                    info!(
+                        "MM hedge price_offset_limit overrides loaded key='{}' symbols={}",
+                        override_key,
+                        parsed.len()
+                    );
+                    parsed
+                }
+                None => {
+                    info!(
+                        "MM hedge price_offset_limit override missing; use global limits from key='{}'",
                         redis_key
                     );
                     HashMap::new()
@@ -778,7 +875,13 @@ impl StrategyParams {
             .get("hedge_price_offset_limit_lower")
             .and_then(|s| s.parse::<f64>().ok())
             .filter(|v| v.is_finite())
-            .unwrap_or_else(default_hedge_price_offset_limit_lower);
+            .unwrap_or_else(|| {
+                if ns == "mm" {
+                    default_mm_hedge_price_offset_limit_lower()
+                } else {
+                    default_hedge_price_offset_limit_lower()
+                }
+            });
         let hedge_window_scale_low = hash_map
             .get("hedge_window_scale_low")
             .and_then(|s| s.parse::<f64>().ok())
@@ -1073,6 +1176,7 @@ impl StrategyParams {
         Ok(Self {
             order_amount,
             mm_amount_u_overrides,
+            mm_hedge_price_offset_limit_overrides,
             arb_amount_u_overrides,
             vol_band_scale,
             open_buy_vol_scale,
@@ -1217,6 +1321,9 @@ impl StrategyParams {
                 );
                 _decision.update_order_amount(self.order_amount);
                 _decision.update_order_amount_overrides(self.mm_amount_u_overrides.clone());
+                _decision.update_hedge_price_offset_limit_overrides(
+                    self.mm_hedge_price_offset_limit_overrides.clone(),
+                );
                 _decision.update_clock_timing_params(
                     self.order_interval_ms,
                     self.next_query_delay_ms,
@@ -1412,6 +1519,18 @@ mod tests {
     }
 
     #[test]
+    fn test_mm_hedge_price_offset_limit_override_key_includes_env_and_venue() {
+        let key = mm_hedge_price_offset_limits_override_key_for_env(
+            Some("binance_mm_beta"),
+            TradingVenue::BinanceFutures,
+        );
+        assert_eq!(
+            key,
+            "binance_mm_beta:binance-futures:mm:hedge_price_offset_limits"
+        );
+    }
+
+    #[test]
     fn test_parse_mm_amount_u_overrides_normalizes_symbols() {
         let overrides = parse_mm_amount_u_overrides(
             r#"{"btc-usdt":150,"ETH_USDT":80}"#,
@@ -1420,6 +1539,27 @@ mod tests {
         );
         assert_eq!(overrides.get("BTCUSDT"), Some(&150.0));
         assert_eq!(overrides.get("ETHUSDT"), Some(&80.0));
+    }
+
+    #[test]
+    fn test_parse_mm_hedge_price_offset_limit_overrides_normalizes_symbols() {
+        let overrides = parse_mm_hedge_price_offset_limit_overrides(
+            r#"{"btc-usdt":{"hedge_price_offset_limit_upper":0.005,"hedge_price_offset_limit_lower":0.0005},"ETH_USDT":{"upper":0.004,"lower":0.0004}}"#,
+            TradingVenue::BinanceMargin,
+            "binance_mm_beta:binance-futures:mm:hedge_price_offset_limits",
+        );
+        assert_eq!(overrides.get("BTCUSDT"), Some(&(0.0005, 0.005)));
+        assert_eq!(overrides.get("ETHUSDT"), Some(&(0.0004, 0.004)));
+    }
+
+    #[test]
+    #[should_panic(expected = "hedge_price_offset_limit 非法")]
+    fn test_parse_mm_hedge_price_offset_limit_overrides_rejects_invalid_range() {
+        let _ = parse_mm_hedge_price_offset_limit_overrides(
+            r#"{"BTCUSDT":{"hedge_price_offset_limit_upper":0.0004,"hedge_price_offset_limit_lower":0.0005}}"#,
+            TradingVenue::BinanceMargin,
+            "binance_mm_beta:binance-futures:mm:hedge_price_offset_limits",
+        );
     }
 
     #[test]

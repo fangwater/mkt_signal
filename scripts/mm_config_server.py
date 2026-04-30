@@ -7,6 +7,7 @@ MM 配置服务器（mm_config_server）
 - symbol list
 - strategy params
 - amount_u overrides
+- hedge price offset limit overrides
 - max_pos_u overrides
 - pre-trade risk params
 """
@@ -15,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -36,6 +38,14 @@ AMOUNT_U_EXAMPLE = {
 MAX_POS_U_EXAMPLE = {
     "BTCUSDT": 200000.0,
     "ETHUSDT": 120000.0,
+}
+HEDGE_PRICE_OFFSET_LIMIT_UPPER_EXAMPLE = {
+    "BTCUSDT": 0.005,
+    "ETHUSDT": 0.005,
+}
+HEDGE_PRICE_OFFSET_LIMIT_LOWER_EXAMPLE = {
+    "BTCUSDT": 0.0005,
+    "ETHUSDT": 0.0005,
 }
 MODEL_SCORE_ROLLING_SCRIPT_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
@@ -303,6 +313,8 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       <span class="badge mono" id="symbol-key">-</span>
       <span class="badge mono" id="strategy-key">-</span>
       <span class="badge mono" id="amount-u-key">-</span>
+      <span class="badge mono" id="hedge-offset-upper-key">-</span>
+      <span class="badge mono" id="hedge-offset-lower-key">-</span>
       <span class="badge mono" id="max-pos-u-key">-</span>
       <span class="badge mono" id="risk-key">-</span>
       <span class="badge mono" id="model-params-key">-</span>
@@ -356,6 +368,44 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       <pre id="amount-u-example" class="mono"></pre>
       <textarea id="amount-u-text" class="mono" spellcheck="false"></textarea>
       <div id="amount-u-status" class="status"></div>
+    </section>
+
+    <section class="panel">
+      <div class="section-header">
+        <h2>MM Hedge Price Offset Limit Upper Overrides</h2>
+        <div class="actions">
+          <button id="load-hedge-offset-upper" class="secondary">读取</button>
+          <button id="reset-hedge-offset-upper" class="ghost">示例</button>
+          <button id="save-hedge-offset-upper">保存</button>
+        </div>
+      </div>
+      <div class="hint">
+        JSON 结构为 `{"SYMBOL": hedge_price_offset_limit_upper}`。保存时会写入 Redis String
+        `<env_name>:<venue>:mm:hedge_price_offset_limit_upper`，用于按 symbol 覆盖对冲侧偏移上界。
+      </div>
+      <div class="hint">示例：</div>
+      <pre id="hedge-offset-upper-example" class="mono"></pre>
+      <textarea id="hedge-offset-upper-text" class="mono" spellcheck="false"></textarea>
+      <div id="hedge-offset-upper-status" class="status"></div>
+    </section>
+
+    <section class="panel">
+      <div class="section-header">
+        <h2>MM Hedge Price Offset Limit Lower Overrides</h2>
+        <div class="actions">
+          <button id="load-hedge-offset-lower" class="secondary">读取</button>
+          <button id="reset-hedge-offset-lower" class="ghost">示例</button>
+          <button id="save-hedge-offset-lower">保存</button>
+        </div>
+      </div>
+      <div class="hint">
+        JSON 结构为 `{"SYMBOL": hedge_price_offset_limit_lower}`。保存时会写入 Redis String
+        `<env_name>:<venue>:mm:hedge_price_offset_limit_lower`，用于按 symbol 覆盖对冲侧偏移下界。
+      </div>
+      <div class="hint">示例：</div>
+      <pre id="hedge-offset-lower-example" class="mono"></pre>
+      <textarea id="hedge-offset-lower-text" class="mono" spellcheck="false"></textarea>
+      <div id="hedge-offset-lower-status" class="status"></div>
     </section>
 
     <section class="panel">
@@ -591,6 +641,10 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       document.getElementById('strategy-key').textContent = `mm_strategy_params_${state.venue}`;
       document.getElementById('amount-u-key').textContent =
         `${state.envName}:${state.venue}:mm:amount_u`;
+      document.getElementById('hedge-offset-upper-key').textContent =
+        `${state.envName}:${state.venue}:mm:hedge_price_offset_limit_upper`;
+      document.getElementById('hedge-offset-lower-key').textContent =
+        `${state.envName}:${state.venue}:mm:hedge_price_offset_limit_lower`;
       document.getElementById('max-pos-u-key').textContent =
         `${state.envName}:${state.venue}:mm:max_pos_u`;
       document.getElementById('risk-key').textContent =
@@ -871,6 +925,106 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       setStatus('amount-u-status', '已填入示例，尚未写入 Redis', 'warn');
     }
 
+    async function loadHedgeOffsetUpper() {
+      setStatus('hedge-offset-upper-status', '读取中...');
+      try {
+        const data = await fetchJson(`${apiUrl('hedge-offset-upper')}?exchange=${encodeURIComponent(state.exchange)}`);
+        document.getElementById('hedge-offset-upper-text').value =
+          JSON.stringify(data.values || {}, null, 2);
+        setStatus(
+          'hedge-offset-upper-status',
+          `已读取 ${data.count || 0} 个 symbol ${data.key}`,
+          'ok'
+        );
+      } catch (err) {
+        setStatus('hedge-offset-upper-status', `读取失败: ${formatError(err)}`, 'err');
+        throw err;
+      }
+    }
+
+    async function saveHedgeOffsetUpper() {
+      setStatus('hedge-offset-upper-status', '保存中...');
+      let values;
+      try {
+        values = JSON.parse(document.getElementById('hedge-offset-upper-text').value || '{}');
+      } catch (err) {
+        setStatus('hedge-offset-upper-status', `JSON 解析失败: ${err.message}`, 'err');
+        return;
+      }
+      try {
+        const data = await fetchJson(apiUrl('hedge-offset-upper'), {
+          method: 'POST',
+          body: JSON.stringify({exchange: state.exchange, values}),
+        });
+        document.getElementById('hedge-offset-upper-text').value =
+          JSON.stringify(data.values || {}, null, 2);
+        setStatus(
+          'hedge-offset-upper-status',
+          `已保存 ${data.count || 0} 个 symbol ${data.key}`,
+          'ok'
+        );
+      } catch (err) {
+        setStatus('hedge-offset-upper-status', `保存失败: ${formatError(err)}`, 'err');
+        throw err;
+      }
+    }
+
+    function resetHedgeOffsetUpper() {
+      document.getElementById('hedge-offset-upper-text').value =
+        JSON.stringify(BOOTSTRAP.hedge_price_offset_limit_upper_example || {}, null, 2);
+      setStatus('hedge-offset-upper-status', '已填入示例，尚未写入 Redis', 'warn');
+    }
+
+    async function loadHedgeOffsetLower() {
+      setStatus('hedge-offset-lower-status', '读取中...');
+      try {
+        const data = await fetchJson(`${apiUrl('hedge-offset-lower')}?exchange=${encodeURIComponent(state.exchange)}`);
+        document.getElementById('hedge-offset-lower-text').value =
+          JSON.stringify(data.values || {}, null, 2);
+        setStatus(
+          'hedge-offset-lower-status',
+          `已读取 ${data.count || 0} 个 symbol ${data.key}`,
+          'ok'
+        );
+      } catch (err) {
+        setStatus('hedge-offset-lower-status', `读取失败: ${formatError(err)}`, 'err');
+        throw err;
+      }
+    }
+
+    async function saveHedgeOffsetLower() {
+      setStatus('hedge-offset-lower-status', '保存中...');
+      let values;
+      try {
+        values = JSON.parse(document.getElementById('hedge-offset-lower-text').value || '{}');
+      } catch (err) {
+        setStatus('hedge-offset-lower-status', `JSON 解析失败: ${err.message}`, 'err');
+        return;
+      }
+      try {
+        const data = await fetchJson(apiUrl('hedge-offset-lower'), {
+          method: 'POST',
+          body: JSON.stringify({exchange: state.exchange, values}),
+        });
+        document.getElementById('hedge-offset-lower-text').value =
+          JSON.stringify(data.values || {}, null, 2);
+        setStatus(
+          'hedge-offset-lower-status',
+          `已保存 ${data.count || 0} 个 symbol ${data.key}`,
+          'ok'
+        );
+      } catch (err) {
+        setStatus('hedge-offset-lower-status', `保存失败: ${formatError(err)}`, 'err');
+        throw err;
+      }
+    }
+
+    function resetHedgeOffsetLower() {
+      document.getElementById('hedge-offset-lower-text').value =
+        JSON.stringify(BOOTSTRAP.hedge_price_offset_limit_lower_example || {}, null, 2);
+      setStatus('hedge-offset-lower-status', '已填入示例，尚未写入 Redis', 'warn');
+    }
+
     async function loadMaxPosU() {
       setStatus('max-pos-u-status', '读取中...');
       try {
@@ -976,6 +1130,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         loadSymbols(),
         loadStrategy(),
         loadAmountU(),
+        loadHedgeOffsetLimits(),
         loadMaxPosU(),
         loadRisk(),
       ];
@@ -1051,6 +1206,9 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     document.getElementById('load-amount-u').addEventListener('click', () => loadAmountU());
     document.getElementById('save-amount-u').addEventListener('click', () => saveAmountU());
     document.getElementById('reset-amount-u').addEventListener('click', () => resetAmountU());
+    document.getElementById('load-hedge-offset-limits').addEventListener('click', () => loadHedgeOffsetLimits());
+    document.getElementById('save-hedge-offset-limits').addEventListener('click', () => saveHedgeOffsetLimits());
+    document.getElementById('reset-hedge-offset-limits').addEventListener('click', () => resetHedgeOffsetLimits());
     document.getElementById('load-max-pos-u').addEventListener('click', () => loadMaxPosU());
     document.getElementById('save-max-pos-u').addEventListener('click', () => saveMaxPosU());
     document.getElementById('reset-max-pos-u').addEventListener('click', () => resetMaxPosU());
@@ -1065,6 +1223,8 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     initModelNameInput();
     document.getElementById('amount-u-example').textContent =
       JSON.stringify(BOOTSTRAP.amount_u_example || {}, null, 2);
+    document.getElementById('hedge-offset-limits-example').textContent =
+      JSON.stringify(BOOTSTRAP.hedge_price_offset_limits_example || {}, null, 2);
     document.getElementById('max-pos-u-example').textContent =
       JSON.stringify(BOOTSTRAP.max_pos_u_example || {}, null, 2);
     loadAll().catch((err) => {
@@ -1155,6 +1315,10 @@ def make_amount_u_key(env_name: str, venue: str) -> str:
     return f"{env_name}:{venue}:mm:amount_u"
 
 
+def make_hedge_offset_limits_key(env_name: str, venue: str) -> str:
+    return f"{env_name}:{venue}:mm:hedge_price_offset_limits"
+
+
 def make_max_pos_u_key(env_name: str, venue: str) -> str:
     return f"{env_name}:{venue}:mm:max_pos_u"
 
@@ -1236,6 +1400,57 @@ def normalize_amount_u_mapping(values: Any) -> Dict[str, float]:
 
 def dumps_amount_u_mapping(values: Dict[str, float]) -> str:
     ordered = {symbol: float(f"{values[symbol]:.12g}") for symbol in sorted(values.keys())}
+    return json.dumps(ordered, ensure_ascii=False, separators=(",", ":"))
+
+
+def normalize_hedge_offset_limits_mapping(values: Any) -> Dict[str, Dict[str, float]]:
+    if values is None:
+        return {}
+    if not isinstance(values, dict):
+        raise ValueError("hedge offset limit values must be an object")
+
+    normalized: Dict[str, Dict[str, float]] = {}
+    required = ("hedge_price_offset_limit_upper", "hedge_price_offset_limit_lower")
+    for raw_symbol, raw_limits in values.items():
+        symbol = normalize_amount_u_symbol(raw_symbol)
+        if not isinstance(raw_limits, dict):
+            raise ValueError(f"hedge offset limits for {symbol} must be an object")
+        missing = [key for key in required if key not in raw_limits]
+        if missing:
+            raise ValueError(
+                f"hedge offset limits for {symbol} missing fields: {', '.join(missing)}"
+            )
+        try:
+            upper = float(raw_limits["hedge_price_offset_limit_upper"])
+            lower = float(raw_limits["hedge_price_offset_limit_lower"])
+        except Exception as exc:
+            raise ValueError(f"invalid hedge offset limits for {symbol}: {raw_limits}") from exc
+        if not (math.isfinite(upper) and math.isfinite(lower)):
+            raise ValueError(f"hedge offset limits must be finite for {symbol}: {raw_limits}")
+        if not (lower > 0.0 and upper >= lower):
+            raise ValueError(
+                f"hedge offset limits must satisfy 0 < lower <= upper for {symbol}: "
+                f"lower={lower}, upper={upper}"
+            )
+        normalized[symbol] = {
+            "hedge_price_offset_limit_upper": upper,
+            "hedge_price_offset_limit_lower": lower,
+        }
+    return dict(sorted(normalized.items()))
+
+
+def dumps_hedge_offset_limits_mapping(values: Dict[str, Dict[str, float]]) -> str:
+    ordered: Dict[str, Dict[str, float]] = {}
+    for symbol in sorted(values.keys()):
+        limits = values[symbol]
+        ordered[symbol] = {
+            "hedge_price_offset_limit_upper": float(
+                f"{limits['hedge_price_offset_limit_upper']:.12g}"
+            ),
+            "hedge_price_offset_limit_lower": float(
+                f"{limits['hedge_price_offset_limit_lower']:.12g}"
+            ),
+        }
     return json.dumps(ordered, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -1487,11 +1702,13 @@ def build_bootstrap(default_exchange: str, env_name: str) -> Dict[str, Any]:
             "model_score_rolling_params": MODEL_SCORE_PARAM_ORDER,
         },
         "amount_u_example": AMOUNT_U_EXAMPLE,
+        "hedge_price_offset_limits_example": HEDGE_PRICE_OFFSET_LIMITS_EXAMPLE,
         "max_pos_u_example": MAX_POS_U_EXAMPLE,
         "keys": {
             "symbol": make_symbol_key(venue),
             "strategy": make_strategy_key(venue),
             "amount_u": make_amount_u_key(env_name, venue),
+            "hedge_offset_limits": make_hedge_offset_limits_key(env_name, venue),
             "max_pos_u": make_max_pos_u_key(env_name, venue),
             "risk": make_risk_key(env_name, venue),
         },
@@ -1656,6 +1873,35 @@ class MMConfigStore:
         key = make_amount_u_key(self._config.env_name, venue)
         normalized = normalize_amount_u_mapping(values)
         payload = dumps_amount_u_mapping(normalized)
+        self.redis().set(key, payload)
+        return {
+            "key": key,
+            "values": normalized,
+            "count": len(normalized),
+        }
+
+    def read_hedge_offset_limits(self, venue: str) -> Dict[str, Any]:
+        key = make_hedge_offset_limits_key(self._config.env_name, venue)
+        raw = self.redis().get(key)
+        if raw is None:
+            values: Dict[str, Dict[str, float]] = {}
+        else:
+            text = raw.decode("utf-8", "ignore") if isinstance(raw, bytes) else str(raw)
+            try:
+                decoded = json.loads(text)
+            except Exception as exc:
+                raise ValueError(f"invalid JSON in {key}: {exc}") from exc
+            values = normalize_hedge_offset_limits_mapping(decoded)
+        return {
+            "key": key,
+            "values": values,
+            "count": len(values),
+        }
+
+    def write_hedge_offset_limits(self, venue: str, values: Any) -> Dict[str, Any]:
+        key = make_hedge_offset_limits_key(self._config.env_name, venue)
+        normalized = normalize_hedge_offset_limits_mapping(values)
+        payload = dumps_hedge_offset_limits_mapping(normalized)
         self.redis().set(key, payload)
         return {
             "key": key,
@@ -1850,6 +2096,13 @@ def build_handler(config: AppConfig):
                     )
                     return
 
+                if parsed.path == "/api/hedge-offset-limits":
+                    self._send_json(
+                        200,
+                        {"ok": True, "exchange": exchange, "venue": venue, **store.read_hedge_offset_limits(venue)},
+                    )
+                    return
+
                 if parsed.path == "/api/max-pos-u":
                     self._send_json(
                         200,
@@ -1904,6 +2157,11 @@ def build_handler(config: AppConfig):
 
                 if parsed.path == "/api/amount-u":
                     result = store.write_amount_u(venue, payload.get("values"))
+                    self._send_json(200, {"ok": True, "exchange": exchange, "venue": venue, **result})
+                    return
+
+                if parsed.path == "/api/hedge-offset-limits":
+                    result = store.write_hedge_offset_limits(venue, payload.get("values"))
                     self._send_json(200, {"ok": True, "exchange": exchange, "venue": venue, **result})
                     return
 

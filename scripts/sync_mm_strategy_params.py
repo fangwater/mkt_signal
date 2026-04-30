@@ -89,7 +89,7 @@ STRATEGY_PARAMS = {
     "next_query_delay_ms": "30000",
     "hedge_vol_multiplier": "2.0",
     "hedge_price_offset_limit_upper": "0.005",
-    "hedge_price_offset_limit_lower": "0.0003",
+    "hedge_price_offset_limit_lower": "0.0005",
     "hedge_offset_ratio": "1.3",
     "hedge_window_scale_low": "0.8",
     "hedge_window_scale_high": "1.3",

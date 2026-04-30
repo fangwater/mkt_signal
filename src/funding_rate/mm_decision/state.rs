@@ -183,6 +183,7 @@ pub(crate) struct MmDecisionState {
     pub(crate) hedge_offset_ratio: f64,
     pub(crate) hedge_price_offset_limit_upper: f64,
     pub(crate) hedge_price_offset_limit_lower: f64,
+    pub(crate) hedge_price_offset_limit_overrides: HashMap<String, (f64, f64)>,
     pub(crate) hedge_window_scale_low: f64,
     pub(crate) hedge_window_scale_high: f64,
     pub(crate) max_hedge_price_pct_change: f64,
@@ -223,6 +224,29 @@ fn resolve_mm_order_amount_u(
         .get(&symbol_key)
         .copied()
         .unwrap_or(default_order_amount_u)
+}
+
+fn validate_hedge_price_offset_limits(lower: f64, upper: f64) {
+    if !(lower.is_finite() && upper.is_finite() && lower > 0.0 && upper >= lower) {
+        panic!(
+            "MmDecision: hedge price offset limits must satisfy 0<lower<=upper, got lower={} upper={}",
+            lower, upper
+        );
+    }
+}
+
+fn resolve_mm_hedge_price_offset_limits(
+    default_lower: f64,
+    default_upper: f64,
+    overrides: &HashMap<String, (f64, f64)>,
+    open_venue: TradingVenue,
+    symbol: &str,
+) -> (f64, f64) {
+    let symbol_key = normalize_symbol_for_venue(symbol, open_venue);
+    overrides
+        .get(&symbol_key)
+        .copied()
+        .unwrap_or((default_lower, default_upper))
 }
 
 fn is_supported_clock_aligned_interval_ms(interval_ms: u64) -> bool {
@@ -362,7 +386,8 @@ impl MmDecisionState {
             hedge_vol_multiplier: 2.0,
             hedge_offset_ratio: 1.3,
             hedge_price_offset_limit_upper: 0.005,
-            hedge_price_offset_limit_lower: 0.0003,
+            hedge_price_offset_limit_lower: 0.0005,
+            hedge_price_offset_limit_overrides: HashMap::new(),
             hedge_window_scale_low: 0.8,
             hedge_window_scale_high: 1.3,
             max_hedge_price_pct_change: 5.0,
@@ -615,11 +640,10 @@ impl MmDecisionState {
                 hedge_offset_ratio
             );
         }
-        if !hedge_price_offset_limit_lower.is_finite()
-            || !hedge_price_offset_limit_upper.is_finite()
-        {
-            panic!("MmDecision: hedge price offset limits must be finite");
-        }
+        validate_hedge_price_offset_limits(
+            hedge_price_offset_limit_lower,
+            hedge_price_offset_limit_upper,
+        );
         if !hedge_window_scale_low.is_finite() || !hedge_window_scale_high.is_finite() {
             panic!("MmDecision: hedge_window_scale values must be finite");
         }
@@ -674,6 +698,33 @@ impl MmDecisionState {
             self.next_query_delay_ms,
             self.enable_return_score_adjust_hedge
         );
+    }
+
+    pub(crate) fn update_hedge_price_offset_limit_overrides(
+        &mut self,
+        overrides: HashMap<String, (f64, f64)>,
+    ) {
+        for (symbol, (lower, upper)) in &overrides {
+            validate_hedge_price_offset_limits(*lower, *upper);
+            if symbol.trim().is_empty() {
+                panic!("MmDecision: hedge price offset override symbol cannot be empty");
+            }
+        }
+        self.hedge_price_offset_limit_overrides = overrides;
+        debug!(
+            "MmDecision: hedge_price_offset_limit_overrides updated symbols={}",
+            self.hedge_price_offset_limit_overrides.len()
+        );
+    }
+
+    pub(crate) fn resolve_hedge_price_offset_limits(&self, symbol: &str) -> (f64, f64) {
+        resolve_mm_hedge_price_offset_limits(
+            self.hedge_price_offset_limit_lower,
+            self.hedge_price_offset_limit_upper,
+            &self.hedge_price_offset_limit_overrides,
+            self.open_venue,
+            symbol,
+        )
     }
 
     pub(crate) fn update_order_amount(&mut self, order_amount: f32) {
@@ -1210,6 +1261,32 @@ mod tests {
         let amount_u =
             resolve_mm_order_amount_u(100.0, &overrides, TradingVenue::BinanceMargin, "btc-usdt");
         assert_eq!(amount_u, 100.0);
+    }
+
+    #[test]
+    fn test_resolve_mm_hedge_price_offset_limits_uses_symbol_override() {
+        let overrides = HashMap::from([(String::from("BTCUSDT"), (0.0005, 0.005))]);
+        let limits = resolve_mm_hedge_price_offset_limits(
+            0.0003,
+            0.004,
+            &overrides,
+            TradingVenue::BinanceMargin,
+            "btc-usdt",
+        );
+        assert_eq!(limits, (0.0005, 0.005));
+    }
+
+    #[test]
+    fn test_resolve_mm_hedge_price_offset_limits_falls_back_to_default() {
+        let overrides = HashMap::from([(String::from("ETHUSDT"), (0.0005, 0.005))]);
+        let limits = resolve_mm_hedge_price_offset_limits(
+            0.0003,
+            0.004,
+            &overrides,
+            TradingVenue::BinanceMargin,
+            "btc-usdt",
+        );
+        assert_eq!(limits, (0.0003, 0.004));
     }
 
     #[test]
