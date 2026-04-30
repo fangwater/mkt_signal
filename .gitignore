@@ -8,6 +8,9 @@ monitor
 batch_setup_servers.sh
 batch_install_dev_tools.sh
 
+# Claude Code 本地配置（包含 ANTHROPIC_AUTH_TOKEN 等凭证）
+.claude/settings.json
+
 __pycache__/
 .venv/
 .venv
