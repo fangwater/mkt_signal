@@ -231,7 +231,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     }
     .kv-table {
       display: grid;
-      grid-template-columns: 220px 1fr 1.5fr;
+      grid-template-columns: 280px 1fr 1.5fr;
       gap: 8px;
     }
     .kv-row { display: contents; }

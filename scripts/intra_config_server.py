@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-CROSS 配置服务器（cross_config_server）
------------------------------------
-提供页面/接口用于查看和编辑 cross 相关配置：
+INTRA 配置服务器（intra_config_server）
+-------------------------------------
+同所期现（intra-exchange spot/futures arb）的配置中心。
+
+提供页面/接口查看和编辑：
 - symbol lists
 - rolling metrics params
-- funding thresholds mapping
+- funding thresholds (premium_rate)
 - strategy params
 - risk params
 - spread thresholds mapping (可从 rolling_metrics 同步)
+
+部署目录约定：<exchange>-intra-<tag>
+默认 venues：(<exchange>-margin, <exchange>-futures)
 """
 
 from __future__ import annotations
@@ -26,15 +31,15 @@ from urllib.parse import parse_qs, urlparse
 
 SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CROSS_SCRIPT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "cross_scripts"))
-PAIR_RE = re.compile(r"^([a-z0-9]+)[-_]([a-z0-9]+)[-_]cross([_-].*)?$")
+INTRA_SCRIPT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "intra_scripts"))
+INTRA_RE = re.compile(r"^([a-z0-9]+)[-_]intra([_-].*)?$")
 
 EXCHANGE_DEFAULTS = {
-    "binance": ("binance-futures", "okex-futures"),
-    "okex": ("okex-futures", "binance-futures"),
-    "bybit": ("bybit-futures", "binance-futures"),
-    "bitget": ("bitget-futures", "binance-futures"),
-    "gate": ("gate-futures", "binance-futures"),
+    "binance": ("binance-margin", "binance-futures"),
+    "okex": ("okex-margin", "okex-futures"),
+    "bybit": ("bybit-margin", "bybit-futures"),
+    "bitget": ("bitget-margin", "bitget-futures"),
+    "gate": ("gate-margin", "gate-futures"),
 }
 
 ROLLING_METRICS_SCRIPT_DIR = os.path.join(
@@ -43,8 +48,8 @@ ROLLING_METRICS_SCRIPT_DIR = os.path.join(
 )
 if os.path.isdir(ROLLING_METRICS_SCRIPT_DIR):
     sys.path.insert(0, ROLLING_METRICS_SCRIPT_DIR)
-if os.path.isdir(CROSS_SCRIPT_DIR):
-    sys.path.insert(0, CROSS_SCRIPT_DIR)
+if os.path.isdir(INTRA_SCRIPT_DIR):
+    sys.path.insert(0, INTRA_SCRIPT_DIR)
 
 
 def infer_dir_prefix_from_cwd() -> Optional[str]:
@@ -67,24 +72,30 @@ def exchange_from_venue(venue: str) -> Optional[str]:
     return exchange
 
 
-def infer_pair_from_name(name: str) -> Optional[Tuple[str, str]]:
-    matched = PAIR_RE.match((name or "").strip().lower())
+def infer_exchange_from_name(name: str) -> Optional[str]:
+    """同所期现：从 <exchange>-intra-<tag> 推单一 exchange。"""
+    matched = INTRA_RE.match((name or "").strip().lower())
     if not matched:
         return None
-    open_ex = normalize_exchange(matched.group(1))
-    hedge_ex = normalize_exchange(matched.group(2))
-    if open_ex not in SUPPORTED_EXCHANGES or hedge_ex not in SUPPORTED_EXCHANGES:
+    exchange = normalize_exchange(matched.group(1))
+    if exchange not in SUPPORTED_EXCHANGES:
         return None
-    return open_ex, hedge_ex
+    return exchange
+
+
+def infer_pair_from_name(name: str) -> Optional[Tuple[str, str]]:
+    """兼容旧调用方：返回 (exchange, exchange)（同所，两个 exchange 相同）。"""
+    exchange = infer_exchange_from_name(name)
+    if not exchange:
+        return None
+    return exchange, exchange
 
 
 def infer_default_venues_from_name(name: str) -> Optional[Tuple[str, str]]:
-    pair = infer_pair_from_name(name)
-    if not pair:
+    exchange = infer_exchange_from_name(name)
+    if not exchange:
         return None
-    if pair[0] == pair[1]:
-        return None  # cross 要求 open/hedge 必须不同 exchange
-    return f"{pair[0]}-futures", f"{pair[1]}-futures"
+    return f"{exchange}-margin", f"{exchange}-futures"
 
 
 def infer_default_venues_from_cwd() -> Optional[Tuple[str, str]]:
@@ -228,7 +239,7 @@ def funding_thresholds_applicable(open_venue: Optional[str], hedge_venue: Option
     return True
 
 try:
-    import sync_cross_risk_params as risk_defaults
+    import sync_intra_risk_params as risk_defaults
 
     DEFAULT_RISK_PARAMS = dict(risk_defaults.RISK_PARAMS)
     RISK_PARAM_COMMENTS = dict(risk_defaults.PARAM_COMMENTS)
@@ -239,7 +250,7 @@ except Exception:
     RISK_PARAM_ORDER = []
 
 try:
-    import sync_cross_strategy_params as strategy_defaults
+    import sync_intra_strategy_params as strategy_defaults
 
     DEFAULT_STRATEGY_PARAMS = dict(strategy_defaults.STRATEGY_PARAMS)
     STRATEGY_PARAM_COMMENTS = dict(strategy_defaults.PARAM_COMMENTS)
@@ -252,29 +263,19 @@ except Exception:
     STRATEGY_PARAM_ORDER = []
 
 try:
-    import sync_cross_funding_thresholds as funding_defaults
+    import sync_intra_funding_thresholds as funding_defaults
 
     FUNDING_THRESHOLD_ORDER = list(funding_defaults.THRESHOLD_ORDER)
 except Exception:
     FUNDING_THRESHOLD_ORDER = []
 
 
-def default_funding_threshold_mapping(
-    open_venue: Optional[str], hedge_venue: Optional[str]
-) -> Dict[str, str]:
-    if "funding_defaults" not in globals():
-        return {}
-    open_v = (open_venue or "").strip()
-    hedge_v = (hedge_venue or "").strip()
-    if not open_v or not hedge_v:
-        return {}
-    try:
-        return dict(funding_defaults.default_funding_threshold_mapping(open_v, hedge_v))
-    except Exception:
-        return {}
-
-
-FUNDING_FILTER_FACTOR = "spread_fr"
+# Funding 因子链(hardcoded)。未来扩到第 2、3 个因子时直接在 list 尾部追加。
+# 因子名必须与 Rust 侧 `arb_open_filter::lookup_factor_realtime_value` 中登记的取数路径
+# 一一对应,任一边漏改链上对应因子会被跳过 / 报 `miss_<factor>_value`。
+INTRA_FACTOR_CHAIN: List[Dict[str, Any]] = [
+    {"factor": "hedge_premium_rate", "enabled": True, "forward_open": 50, "backward_open": 50},
+]
 
 
 def percentile_text_from_value(value: float) -> str:
@@ -284,32 +285,35 @@ def percentile_text_from_value(value: float) -> str:
     return f"{value:.12g}"
 
 
-def build_funding_threshold_mapping_from_percentiles(
-    open_venue: Optional[str],
-    hedge_venue: Optional[str],
-    forward_percentile_raw: Any,
-    backward_percentile_raw: Any,
-) -> Dict[str, str]:
-    forward_value, forward_text = normalize_percentile_text(forward_percentile_raw)
-    backward_value, backward_text = normalize_percentile_text(backward_percentile_raw)
-    if not (0.0 < forward_value <= 99.0):
-        raise ValueError("forward percentile must be in (0,99]")
-    if not (0.0 < backward_value <= 99.0):
-        raise ValueError("backward percentile must be in (0,99]")
-    return {
-        "forward_open_mm": f"{FUNDING_FILTER_FACTOR}_{forward_text}",
-        "backward_open_mm": f"{FUNDING_FILTER_FACTOR}_{backward_text}",
-    }
+def _funding_dashboard_keys() -> List[str]:
+    """按因子链顺序展开 dashboard 平铺 key:`<factor>.enabled` / `.forward_open` / `.backward_open`。"""
+    keys: List[str] = []
+    for entry in INTRA_FACTOR_CHAIN:
+        f = entry["factor"]
+        keys.extend([f"{f}.enabled", f"{f}.forward_open", f"{f}.backward_open"])
+    return keys
 
 
 def default_funding_threshold_config(
     open_venue: Optional[str], hedge_venue: Optional[str]
 ) -> Dict[str, str]:
-    return {
-        "enabled": "true",
-        "forward_open_mm": "80",
-        "backward_open_mm": "20",
-    }
+    out: Dict[str, str] = {}
+    for entry in INTRA_FACTOR_CHAIN:
+        f = entry["factor"]
+        out[f"{f}.enabled"] = "true" if entry.get("enabled", True) else "false"
+        out[f"{f}.forward_open"] = str(entry.get("forward_open", 50))
+        out[f"{f}.backward_open"] = str(entry.get("backward_open", 50))
+    return out
+
+
+def default_funding_threshold_comments() -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for entry in INTRA_FACTOR_CHAIN:
+        f = entry["factor"]
+        out[f"{f}.enabled"] = f"[{f}] 是否启用 (链上 enabled=false 的因子在评估时跳过)"
+        out[f"{f}.forward_open"] = f"[{f}] 正向开仓分位数 (0,99]"
+        out[f"{f}.backward_open"] = f"[{f}] 反向开仓分位数 (0,99]"
+    return out
 
 
 def parse_bool_text(raw: Any, default: bool = True) -> bool:
@@ -323,19 +327,10 @@ def parse_bool_text(raw: Any, default: bool = True) -> bool:
     return default
 
 
-def infer_percentile_from_mapping(
-    mapping: Dict[str, str], field_name: str, factor: str, default_text: str
-) -> str:
-    field = (mapping or {}).get(field_name, "").strip()
-    prefix = f"{factor}_"
-    if field.startswith(prefix):
-        return field[len(prefix) :].strip() or default_text
-    return default_text
-
-
 def read_funding_threshold_config(
     rds, open_venue: str, hedge_venue: str
 ) -> Dict[str, str]:
+    """从 Redis 读 factor_chain JSON,展平成 dashboard 用的 `<factor>.<key>` flat dict。"""
     defaults = default_funding_threshold_config(open_venue, hedge_venue)
     key = threshold_mapping_key("funding", open_venue, hedge_venue)
     raw = rds.get(key)
@@ -348,20 +343,23 @@ def read_funding_threshold_config(
         return defaults
     if not isinstance(parsed, dict):
         return defaults
-    mapping = normalize_threshold_mapping(parsed.get("mapping") or {})
-    forward_text = infer_percentile_from_mapping(
-        mapping, "forward_open_mm", FUNDING_FILTER_FACTOR, defaults["forward_open_mm"]
-    )
-    backward_text = infer_percentile_from_mapping(
-        mapping, "backward_open_mm", FUNDING_FILTER_FACTOR, defaults["backward_open_mm"]
-    )
-    return {
-        "enabled": "true" if parsed.get("enabled", True) else "false",
-        "forward_open_mm": str(parsed.get("forward_open_mm") or forward_text).strip()
-        or defaults["forward_open_mm"],
-        "backward_open_mm": str(parsed.get("backward_open_mm") or backward_text).strip()
-        or defaults["backward_open_mm"],
-    }
+    chain = parsed.get("factor_chain")
+    if not isinstance(chain, list):
+        return defaults
+    out = dict(defaults)  # 用 default 填底,Redis 有的覆盖
+    for entry in chain:
+        if not isinstance(entry, dict):
+            continue
+        f = str(entry.get("factor") or "").strip()
+        if not f:
+            continue
+        if "enabled" in entry:
+            out[f"{f}.enabled"] = "true" if bool(entry["enabled"]) else "false"
+        if "forward_open" in entry:
+            out[f"{f}.forward_open"] = str(entry["forward_open"])
+        if "backward_open" in entry:
+            out[f"{f}.backward_open"] = str(entry["backward_open"])
+    return out
 
 
 def write_funding_threshold_config(
@@ -370,55 +368,47 @@ def write_funding_threshold_config(
     hedge_venue: str,
     values: Dict[str, Any],
 ) -> Dict[str, Any]:
-    defaults = default_funding_threshold_config(open_venue, hedge_venue)
-    enabled = parse_bool_text((values or {}).get("enabled"), True)
-    forward_raw = (values or {}).get("forward_open_mm", defaults["forward_open_mm"])
-    backward_raw = (values or {}).get("backward_open_mm", defaults["backward_open_mm"])
-    mapping = (
-        build_funding_threshold_mapping_from_percentiles(
-            open_venue, hedge_venue, forward_raw, backward_raw
+    """从 dashboard 平铺 input 反向组装 factor_chain JSON 写 Redis。
+    链顺序 hardcoded 在 `INTRA_FACTOR_CHAIN`,Redis 里只覆盖 enabled/forward_open/backward_open。
+    """
+    values = values or {}
+    chain_payload: List[Dict[str, Any]] = []
+    flat_out: Dict[str, str] = {}
+    for default_entry in INTRA_FACTOR_CHAIN:
+        f = default_entry["factor"]
+        enabled = parse_bool_text(
+            values.get(f"{f}.enabled"), bool(default_entry.get("enabled", True))
         )
-        if enabled
-        else {}
-    )
-    forward_value, forward_text = normalize_percentile_text(forward_raw)
-    backward_value, backward_text = normalize_percentile_text(backward_raw)
+        forward_raw = values.get(f"{f}.forward_open", default_entry.get("forward_open", 50))
+        backward_raw = values.get(f"{f}.backward_open", default_entry.get("backward_open", 50))
+        forward_value, forward_text = normalize_percentile_text(forward_raw)
+        backward_value, backward_text = normalize_percentile_text(backward_raw)
+        if not (0.0 < forward_value <= 99.0):
+            raise ValueError(f"{f}.forward_open must be in (0,99]")
+        if not (0.0 < backward_value <= 99.0):
+            raise ValueError(f"{f}.backward_open must be in (0,99]")
+        chain_payload.append(
+            {
+                "factor": f,
+                "enabled": enabled,
+                "forward_open": forward_value,
+                "backward_open": backward_value,
+            }
+        )
+        flat_out[f"{f}.enabled"] = "true" if enabled else "false"
+        flat_out[f"{f}.forward_open"] = forward_text
+        flat_out[f"{f}.backward_open"] = backward_text
+
     key = threshold_mapping_key("funding", open_venue, hedge_venue)
-    existing: Dict[str, Any] = {}
-    raw = rds.get(key)
-    if raw:
-        try:
-            decoded = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
-            parsed = json.loads(decoded)
-            if isinstance(parsed, dict):
-                existing = parsed
-        except Exception:
-            existing = {}
     payload = {
-        "schema_version": 2,
-        "namespace": "cross",
-        "kind": "funding",
-        "open_venue": open_venue,
-        "hedge_venue": hedge_venue,
-        "enabled": enabled,
-        "forward_open_mm": forward_value,
-        "backward_open_mm": backward_value,
-        "rolling_key": existing.get(
-            "rolling_key", f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}"
-        ),
-        "mapping": mapping,
-        "threshold_order": list(mapping.keys()),
-        "generated_at": existing.get("generated_at"),
+        "factor_chain": chain_payload,
+        "rolling_key": f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}",
     }
     rds.set(key, json.dumps(payload, ensure_ascii=False, sort_keys=True))
     return {
         "key": key,
-        "count": 3,
-        "values": {
-            "enabled": "true" if enabled else "false",
-            "forward_open_mm": forward_text,
-            "backward_open_mm": backward_text,
-        },
+        "count": len(flat_out),
+        "values": flat_out,
     }
 
 try:
@@ -446,7 +436,7 @@ def is_vol_factor_name(factor_name: str) -> bool:
     return factor_name in {"open_vol", "hedge_vol"}
 
 
-def build_cross_rolling_defaults(
+def build_intra_rolling_defaults(
     base_defaults: Dict[str, Any], *mappings: Dict[str, str]
 ) -> Dict[str, Any]:
     defaults = clone_json_value(base_defaults or {})
@@ -496,7 +486,7 @@ def build_cross_rolling_defaults(
     return defaults
 
 try:
-    import sync_cross_symbol_lists as symbol_defaults
+    import sync_intra_symbol_lists as symbol_defaults
 
     SYMBOL_DEFAULTS_SRC = symbol_defaults
 except Exception:
@@ -504,7 +494,7 @@ except Exception:
 
 spread_sync = None
 try:
-    import sync_cross_spread_thresholds as spread_sync
+    import sync_intra_spread_thresholds as spread_sync
 
     SPREAD_THRESHOLD_MAPPING = dict(spread_sync.SPREAD_THRESHOLD_MAPPING)
     SPREAD_THRESHOLD_ORDER = list(spread_sync.THRESHOLD_ORDER)
@@ -515,22 +505,20 @@ except Exception:
 def build_runtime_rolling_defaults(
     open_venue: Optional[str], hedge_venue: Optional[str]
 ) -> Dict[str, Any]:
-    funding_mapping = build_funding_threshold_mapping_from_percentiles(
-        open_venue,
-        hedge_venue,
-        default_funding_threshold_config(open_venue, hedge_venue)["forward_open_mm"],
-        default_funding_threshold_config(open_venue, hedge_venue)["backward_open_mm"],
-    )
-    strategy_open_vol_limit = (
-        DEFAULT_STRATEGY_PARAMS.get("open_volatility_limit", "70")
-        if isinstance(DEFAULT_STRATEGY_PARAMS, dict)
-        else "70"
-    )
-    open_vol_factor = attached_vol_factor_name_for_venue(open_venue or "")
-    open_vol_mapping = {}
-    if open_vol_factor:
-        open_vol_mapping = {"open_vol_limit": f"{open_vol_factor}_{strategy_open_vol_limit}"}
-    defaults = build_cross_rolling_defaults(
+    # 把 hardcoded 因子链展开成 rolling_metrics_params 用的 dest_field → field_ref 形式,
+    # 给 build_intra_rolling_defaults 注入,保证启动时 rolling pipeline 会算出每个因子
+    # 默认分位数。disabled 因子也保留(以便用户后续打开时已经有对应数据)。
+    funding_mapping: Dict[str, str] = {}
+    for entry in INTRA_FACTOR_CHAIN:
+        f = entry["factor"]
+        funding_mapping[f"{f}.forward_open"] = (
+            f"{f}_{percentile_text_from_value(float(entry.get('forward_open', 50)))}"
+        )
+        funding_mapping[f"{f}.backward_open"] = (
+            f"{f}_{percentile_text_from_value(float(entry.get('backward_open', 50)))}"
+        )
+    open_vol_mapping: Dict[str, Any] = {}
+    defaults = build_intra_rolling_defaults(
         BASE_ROLLING_PARAMS,
         SPREAD_THRESHOLD_MAPPING,
         funding_mapping,
@@ -553,7 +541,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>CROSS 配置中心</title>
+  <title>INTRA 配置中心</title>
   <style>
     :root {
       color-scheme: light dark;
@@ -676,7 +664,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
 </head>
 <body>
   <header>
-    <h1>CROSS 配置中心</h1>
+    <h1>INTRA 配置中心</h1>
     <div class="toolbar">
       <div class="field">
         <label for="env-name">Env</label>
@@ -719,19 +707,19 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       </div>
       <div class="grid-2">
         <div>
-          <h3>平仓列表 <span class="hint">cross_dump_symbols</span></h3>
+          <h3>平仓列表 <span class="hint">intra_dump_symbols</span></h3>
           <textarea id="sym-dump" class="mono" placeholder="每行一个 symbol"></textarea>
         </div>
         <div>
-          <h3>正套建仓 <span class="hint">cross_fwd_trade_symbols</span></h3>
+          <h3>正套建仓 <span class="hint">intra_fwd_trade_symbols</span></h3>
           <textarea id="sym-fwd" class="mono" placeholder="每行一个 symbol"></textarea>
         </div>
         <div>
-          <h3>反套建仓 <span class="hint">cross_bwd_trade_symbols</span></h3>
+          <h3>反套建仓 <span class="hint">intra_bwd_trade_symbols</span></h3>
           <textarea id="sym-bwd" class="mono" placeholder="每行一个 symbol"></textarea>
         </div>
         <div>
-      <div class="hint">说明：cross 统一按基础 symbol 管理；支持逗号/空格/换行分隔，保存时会做大写和基础归一化。</div>
+      <div class="hint">说明：intra 统一按基础 symbol 管理；支持逗号/空格/换行分隔，保存时会做大写和基础归一化。</div>
         </div>
       </div>
       <div id="sym-status" class="status"></div>
@@ -747,7 +735,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         </div>
       </div>
       <div class="hint">
-        `enable_tlen_cancel` 控制基于 tlen 的 open 撤单 trigger/query/cancel 链路；`tlen_cancel_freq_ms` 控制 trigger 频率(ms)；`spread_cancel_cooldown_ms` 控制 spread cancel 的去抖冷却(ms，默认 100，可设 0 关闭)。`open_volatility_limit` 的 rolling 挂靠按真实 venue 解析：会读取该 venue 所属交易所的 `margin-futures` rolling params，并按 venue 类型选择 `open_vol` 或 `hedge_vol`。
+        `enable_tlen_cancel` 控制基于 tlen 的 open 撤单 trigger/query/cancel 链路；`tlen_cancel_freq_ms` 控制 trigger 频率(ms)；`spread_cancel_cooldown_ms` 控制 spread cancel 的去抖冷却(ms，默认 100，可设 0 关闭)。
       </div>
       <div id="strategy-table" class="kv-table"></div>
       <div id="strategy-vol-preview" class="status"></div>
@@ -776,7 +764,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
           <button id="funding-default" class="ghost">默认</button>
         </div>
       </div>
-      <div class="hint" style="margin-bottom: 10px;">只配置 enable 与 forward/backward 两个分位数。cross 固定使用 spread_fr；trade_signal 会自动读取 rolling quantiles，不需要手工同步阈值。</div>
+      <div class="hint" style="margin-bottom: 10px;">只配置 enable 与 forward/backward 两个分位数。固定使用 hedge_premium_rate；trade_signal 会自动读取 rolling quantiles，不需要手工同步阈值。</div>
       <div id="funding-table" class="kv-table"></div>
       <div id="funding-status" class="status"></div>
     </section>
@@ -812,7 +800,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         <label for="rolling-factors">factors (JSON)</label>
         <textarea id="rolling-factors" class="mono"></textarea>
       </div>
-      <div class="hint" style="margin-top: 8px;">可用 factor: bidask, askbid, spread, open_premium_rate, open_vol, hedge_vol, spread_fr。cross 的 funding filter 固定读取 spread_fr 的 quantiles，无需单独配置 mapping。</div>
+      <div class="hint" style="margin-top: 8px;">可用 factor: bidask, askbid, spread, hedge_premium_rate, open_vol, hedge_vol。intra 的 funding filter 固定读取 hedge_premium_rate 的 quantiles，无需单独配置 mapping。</div>
       <div id="rolling-status" class="status"></div>
     </section>
 
@@ -942,7 +930,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         const rawValue = values[key] ?? defaults[key] ?? '';
         const useBooleanSelect =
           ((containerId === 'strategy-table' &&
-            ['enable_tlen_cancel', 'enable_environment_model', 'enable_volatility_limit'].includes(key)) ||
+            ['enable_tlen_cancel', 'enable_environment_model'].includes(key)) ||
            (containerId === 'funding-table' && ['enabled'].includes(key))) &&
           isBooleanParamValue(rawValue);
         let input;
@@ -993,42 +981,11 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     }
 
     async function refreshStrategyVolPreview() {
-      const input = findStrategyInput('open_volatility_limit');
-      if (!input) {
-        setStatus('strategy-vol-preview', '', '');
-        return;
-      }
-
-      const raw = String(input.value || '').trim();
-      if (!raw) {
-        setStatus('strategy-vol-preview', '未填写 open_volatility_limit，无法预判挂靠的 rolling vol 配置。', 'warn');
-        return;
-      }
-
-      try {
-        const data = await fetchJson(`${apiUrl('open-volatility-preview')}?open_venue=${encodeURIComponent(openVenueInput.value.trim())}&hedge_venue=${encodeURIComponent(hedgeVenueInput.value.trim())}&percentile=${encodeURIComponent(raw)}`);
-        const factorRef = `${data.factor}_${data.percentile_text}`;
-        const prefix = `挂靠检查: ${data.source_key} / ${factorRef} (venue=${data.venue})`;
-        if (data.will_modify) {
-          setStatus('strategy-vol-preview', `${prefix}，当前未就绪，运行时会自动补配置${data.modification_detail ? `（${data.modification_detail}）` : ''}`, 'warn');
-        } else {
-          setStatus('strategy-vol-preview', `${prefix}，当前已存在，不会额外改 rolling 配置`, 'ok');
-        }
-      } catch (err) {
-        setStatus('strategy-vol-preview', `挂靠检查失败: ${err}`, 'err');
-      }
+      setStatus('strategy-vol-preview', '', '');
     }
 
     function bindStrategyVolPreview() {
-      const input = findStrategyInput('open_volatility_limit');
-      if (!input) {
-        setStatus('strategy-vol-preview', '', '');
-        return;
-      }
-      if (input.dataset.previewBound === '1') return;
-      input.dataset.previewBound = '1';
-      input.addEventListener('input', () => refreshStrategyVolPreview().catch(console.error));
-      input.addEventListener('change', () => refreshStrategyVolPreview().catch(console.error));
+      setStatus('strategy-vol-preview', '', '');
     }
 
     async function loadSymbolLists() {
@@ -1373,7 +1330,7 @@ def try_import_redis():
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="CROSS 配置服务器 (cross_config_server)")
+    parser = argparse.ArgumentParser(description="INTRA 配置服务器 (intra_config_server)")
     parser.add_argument("--host", default=os.environ.get("HOST", "0.0.0.0"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8000)))
     parser.add_argument(
@@ -1415,7 +1372,7 @@ def normalize_symbol_list(value: Any) -> List[str]:
     return items
 
 
-def normalize_symbol_list_for_cross(value: Any) -> List[str]:
+def normalize_symbol_list_for_intra(value: Any) -> List[str]:
     base = normalize_symbol_list(value)
 
     items: List[str] = []
@@ -1603,17 +1560,10 @@ def make_key_suffix(open_venue: str, hedge_venue: str) -> str:
     open_ex = exchange_from_venue(open_venue)
     hedge_ex = exchange_from_venue(hedge_venue)
     if not open_ex or not hedge_ex:
-        raise ValueError(f"invalid cross venues: open={open_venue}, hedge={hedge_venue}")
-    if open_ex == hedge_ex:
-        raise ValueError(f"cross requires different exchanges: open={open_venue}, hedge={hedge_venue}")
-    open_v = (open_venue or "").strip().lower()
-    hedge_v = (hedge_venue or "").strip().lower()
-    futures_like = ("-futures", "-swap", "-perp", "-perpetual")
-    if not open_v.endswith(futures_like) or not hedge_v.endswith(futures_like):
-        raise ValueError(
-            f"cross venues must end with -futures/-swap/-perp/-perpetual: open={open_venue}, hedge={hedge_venue}"
-        )
-    return f"{open_ex}-{hedge_ex}"
+        raise ValueError(f"invalid intra venues: open={open_venue}, hedge={hedge_venue}")
+    if open_ex != hedge_ex:
+        raise ValueError(f"intra requires same exchange: open={open_venue}, hedge={hedge_venue}")
+    return open_ex
 
 
 def resolve_venues(
@@ -1636,10 +1586,8 @@ def resolve_venues(
         open_v = default_open_venue.strip().lower()
         hedge_v = default_hedge_venue.strip().lower()
     else:
-        raise ValueError("cross 需要 open_venue/hedge_venue（或通过默认配置提供）")
+        raise ValueError("intra 需要 open_venue/hedge_venue（或通过默认配置提供）")
 
-    if open_v == hedge_v:
-        raise ValueError(f"cross requires cross venues: open={open_v}, hedge={hedge_v}")
     key_suffix = make_key_suffix(open_v, hedge_v)
     resolved_ex = exchange_from_venue(open_v) or ex
     return resolved_ex, open_v, hedge_v, key_suffix
@@ -1762,12 +1710,11 @@ def ensure_factor_quantile_config(
     return True
 
 
-def ensure_cross_runtime_quantiles(
+def ensure_intra_runtime_quantiles(
     rds,
     open_venue: str,
     hedge_venue: str,
     funding_values: Optional[Dict[str, Any]] = None,
-    open_volatility_limit_raw: Optional[Any] = None,
 ) -> Dict[str, Any]:
     key = f"rolling_metrics_params_{open_venue}_{hedge_venue}"
     parsed = parse_rolling_params(read_hash(rds, key))
@@ -1777,18 +1724,19 @@ def ensure_cross_runtime_quantiles(
         parsed["factors"] = factors
 
     changed_factors: List[str] = []
-    if funding_values is not None and parse_bool_text(funding_values.get("enabled"), True):
-        for field in ("forward_open_mm", "backward_open_mm"):
-            raw = funding_values.get(field)
-            if raw in (None, ""):
+    if funding_values is not None:
+        # 遍历 hardcoded 因子链,只为 enabled=true 的因子在 rolling_metrics_params
+        # 里登记 forward/backward 分位数,确保上游 rolling_metrics 会算出对应 quantile。
+        for default_entry in INTRA_FACTOR_CHAIN:
+            f = default_entry["factor"]
+            if not parse_bool_text(funding_values.get(f"{f}.enabled"), True):
                 continue
-            if ensure_factor_quantile_config(factors, FUNDING_FILTER_FACTOR, raw):
-                changed_factors.append(f"{FUNDING_FILTER_FACTOR}_{field}")
-
-    if open_volatility_limit_raw not in (None, ""):
-        vol_factor = attached_vol_factor_name_for_venue(open_venue)
-        if vol_factor and ensure_factor_quantile_config(factors, vol_factor, open_volatility_limit_raw):
-            changed_factors.append(f"{vol_factor}_open_volatility_limit")
+            for direction in ("forward_open", "backward_open"):
+                raw = funding_values.get(f"{f}.{direction}")
+                if raw in (None, ""):
+                    continue
+                if ensure_factor_quantile_config(factors, f, raw):
+                    changed_factors.append(f"{f}_{direction}")
 
     if changed_factors:
         write_hash(rds, key, serialize_rolling_params(parsed))
@@ -1801,7 +1749,7 @@ def ensure_cross_runtime_quantiles(
 
 
 def threshold_mapping_key(kind: str, open_venue: str, hedge_venue: str) -> str:
-    return f"cross_{kind}_thresholds_config_{open_venue}_{hedge_venue}"
+    return f"intra_{kind}_thresholds_config_{open_venue}_{hedge_venue}"
 
 
 def normalize_threshold_mapping(values: Dict[str, Any]) -> Dict[str, str]:
@@ -1861,7 +1809,7 @@ def write_threshold_mapping(
             existing = {}
     payload = {
         "schema_version": 1,
-        "namespace": "cross",
+        "namespace": "intra",
         "kind": kind,
         "open_venue": open_venue,
         "hedge_venue": hedge_venue,
@@ -1913,7 +1861,7 @@ def sync_thresholds(
     symbol: Optional[str] = None,
 ) -> Dict[str, Any]:
     rolling_key = f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}"
-    write_key = f"cross_{kind}_thresholds_{open_venue}_{hedge_venue}"
+    write_key = f"intra_{kind}_thresholds_{open_venue}_{hedge_venue}"
 
     mapping = normalize_threshold_mapping(mapping or {})
     if not mapping:
@@ -1984,7 +1932,7 @@ def sync_spread_thresholds(
     symbol: Optional[str] = None,
 ) -> Dict[str, Any]:
     if spread_sync is None:
-        raise RuntimeError("sync_cross_spread_thresholds.py not available")
+        raise RuntimeError("sync_intra_spread_thresholds.py not available")
     return sync_thresholds(
         rds,
         "spread",
@@ -2001,39 +1949,12 @@ def sync_spread_thresholds(
     )
 
 
-def sync_funding_thresholds(
-    rds,
-    open_venue: str,
-    hedge_venue: str,
-    key_suffix: str,
-    mapping: Optional[Dict[str, str]] = None,
-    symbol: Optional[str] = None,
-) -> Dict[str, Any]:
-    if "funding_defaults" not in globals():
-        raise RuntimeError("sync_cross_funding_thresholds.py not available")
-    defaults = default_funding_threshold_mapping(open_venue, hedge_venue)
-    return sync_thresholds(
-        rds,
-        "funding",
-        open_venue,
-        hedge_venue,
-        key_suffix,
-        mapping,
-        defaults,
-        funding_defaults.load_symbol_lists,
-        funding_defaults.read_rolling_metrics,
-        funding_defaults.normalize_for_rolling,
-        funding_defaults.extract_quantile_value,
-        symbol,
-    )
-
-
 def render_index_html(
     default_exchange: str,
     default_open_venue: Optional[str],
     default_hedge_venue: Optional[str],
 ) -> str:
-    funding_defaults_mapping = default_funding_threshold_mapping(
+    funding_defaults_mapping = default_funding_threshold_config(
         default_open_venue, default_hedge_venue
     )
     rolling_defaults_mapping = build_runtime_rolling_defaults(
@@ -2062,16 +1983,12 @@ def render_index_html(
         "comments": {
             "risk_params": RISK_PARAM_COMMENTS,
             "strategy_params": STRATEGY_PARAM_COMMENTS,
-            "funding_thresholds": {
-                "enabled": "是否启用 funding filter（false=trade_signal 跳过这层判断）",
-                "forward_open_mm": "正向开仓分位数（0,99]；cross 固定作用于 spread_fr）",
-                "backward_open_mm": "反向开仓分位数（0,99]；cross 固定作用于 spread_fr）",
-            },
+            "funding_thresholds": default_funding_threshold_comments(),
         },
         "order": {
             "risk": RISK_PARAM_ORDER,
             "strategy": STRATEGY_PARAM_ORDER,
-            "funding_thresholds": ["enabled", "forward_open_mm", "backward_open_mm"],
+            "funding_thresholds": _funding_dashboard_keys(),
             "spread_mapping": SPREAD_THRESHOLD_ORDER,
         },
     }
@@ -2135,7 +2052,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         open_venue = self.server.context.default_open_venue
         hedge_venue = self.server.context.default_hedge_venue
         if not open_venue or not hedge_venue:
-            raise ValueError("cross_config_server missing fixed open/hedge venue")
+            raise ValueError("intra_config_server missing fixed open/hedge venue")
         exchange = exchange_from_venue(open_venue) or self.server.context.default_exchange
         key_suffix = make_key_suffix(open_venue, hedge_venue)
         return exchange, open_venue, hedge_venue, key_suffix
@@ -2149,15 +2066,15 @@ class RequestHandler(BaseHTTPRequestHandler):
         fixed_exchange, fixed_open, fixed_hedge, _ = self._fixed_context()
         if exchange and normalize_exchange(exchange) != fixed_exchange:
             raise ValueError(
-                f"cross_config_server is bound to exchange={fixed_exchange}, got {exchange}"
+                f"intra_config_server is bound to exchange={fixed_exchange}, got {exchange}"
             )
         if open_venue and open_venue.strip().lower() != fixed_open:
             raise ValueError(
-                f"cross_config_server is bound to open_venue={fixed_open}, got {open_venue}"
+                f"intra_config_server is bound to open_venue={fixed_open}, got {open_venue}"
             )
         if hedge_venue and hedge_venue.strip().lower() != fixed_hedge:
             raise ValueError(
-                f"cross_config_server is bound to hedge_venue={fixed_hedge}, got {hedge_venue}"
+                f"intra_config_server is bound to hedge_venue={fixed_hedge}, got {hedge_venue}"
             )
 
     def _resolve_request_context(self, params: Dict[str, List[str]]) -> Tuple[str, str, str, str]:
@@ -2204,9 +2121,9 @@ class RequestHandler(BaseHTTPRequestHandler):
             data = {
                 "exchange": exchange,
                 "key_suffix": key_suffix,
-                "dump_symbols": read_symbol_list(rds, f"cross_dump_symbols:{key_suffix}"),
-                "fwd_trade_symbols": read_symbol_list(rds, f"cross_fwd_trade_symbols:{key_suffix}"),
-                "bwd_trade_symbols": read_symbol_list(rds, f"cross_bwd_trade_symbols:{key_suffix}"),
+                "dump_symbols": read_symbol_list(rds, f"intra_dump_symbols:{key_suffix}"),
+                "fwd_trade_symbols": read_symbol_list(rds, f"intra_fwd_trade_symbols:{key_suffix}"),
+                "bwd_trade_symbols": read_symbol_list(rds, f"intra_bwd_trade_symbols:{key_suffix}"),
             }
             self._send_json(200, data)
             return
@@ -2248,7 +2165,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send_error(400, str(exc))
                 return
-            key = f"cross_strategy_params_{open_venue}_{hedge_venue}"
+            key = f"intra_strategy_params_{open_venue}_{hedge_venue}"
             raw_values = read_hash(self.server.context.redis_client, key)
             values, stale_values = filter_mapping_by_schema(
                 raw_values,
@@ -2368,9 +2285,9 @@ class RequestHandler(BaseHTTPRequestHandler):
             raw_dump = payload.get("dump_symbols") or []
             raw_fwd = payload.get("fwd_trade_symbols") or []
             raw_bwd = payload.get("bwd_trade_symbols") or []
-            dump_symbols = normalize_symbol_list_for_cross(raw_dump)
-            fwd_symbols = normalize_symbol_list_for_cross(raw_fwd)
-            bwd_symbols = normalize_symbol_list_for_cross(raw_bwd)
+            dump_symbols = normalize_symbol_list_for_intra(raw_dump)
+            fwd_symbols = normalize_symbol_list_for_intra(raw_fwd)
+            bwd_symbols = normalize_symbol_list_for_intra(raw_bwd)
             raw_dump_len, raw_dump_sample = summarize_symbol_payload(raw_dump)
             raw_fwd_len, raw_fwd_sample = summarize_symbol_payload(raw_fwd)
             raw_bwd_len, raw_bwd_sample = summarize_symbol_payload(raw_bwd)
@@ -2399,15 +2316,15 @@ class RequestHandler(BaseHTTPRequestHandler):
             rds = self.server.context.redis_client
             try:
                 rds.set(
-                    f"cross_dump_symbols:{key_suffix}",
+                    f"intra_dump_symbols:{key_suffix}",
                     json.dumps(dump_symbols, ensure_ascii=False),
                 )
                 rds.set(
-                    f"cross_fwd_trade_symbols:{key_suffix}",
+                    f"intra_fwd_trade_symbols:{key_suffix}",
                     json.dumps(fwd_symbols, ensure_ascii=False),
                 )
                 rds.set(
-                    f"cross_bwd_trade_symbols:{key_suffix}",
+                    f"intra_bwd_trade_symbols:{key_suffix}",
                     json.dumps(bwd_symbols, ensure_ascii=False),
                 )
             except Exception as exc:
@@ -2457,7 +2374,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._send_error(400, str(exc))
                 return
             values = payload.get("values") or {}
-            key = f"cross_strategy_params_{open_v}_{hedge_v}"
+            key = f"intra_strategy_params_{open_v}_{hedge_v}"
             try:
                 mapping = sanitize_mapping_by_schema(
                     values,
@@ -2470,11 +2387,10 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._send_error(400, str(exc))
                 return
             result = replace_hash(self.server.context.redis_client, key, mapping)
-            rolling_attach = ensure_cross_runtime_quantiles(
+            rolling_attach = ensure_intra_runtime_quantiles(
                 self.server.context.redis_client,
                 open_v,
                 hedge_v,
-                open_volatility_limit_raw=mapping.get("open_volatility_limit"),
             )
             result["rolling_attach"] = rolling_attach
             self._send_json(200, result)
@@ -2497,7 +2413,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send_error(400, str(exc))
                 return
-            result["rolling_attach"] = ensure_cross_runtime_quantiles(
+            result["rolling_attach"] = ensure_intra_runtime_quantiles(
                 self.server.context.redis_client,
                 open_v,
                 hedge_v,
@@ -2617,7 +2533,7 @@ def main() -> int:
         )
         return 2
     print(
-        f"🚀 cross_config_server started on http://{args.host}:{args.port} "
+        f"🚀 intra_config_server started on http://{args.host}:{args.port} "
         f"(default_open={default_open_venue or '-'}, default_hedge={default_hedge_venue or '-'})"
     )
     print("按 Ctrl+C 退出")

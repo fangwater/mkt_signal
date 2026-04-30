@@ -299,29 +299,54 @@ def _find_symbol_data(rolling_data: Dict[str, Dict], target_symbols: List[str]) 
 
 
 def _generate_threshold_fields(symbol_data: Dict[str, Dict]) -> tuple[Dict[str, str], Set[str]]:
-    """为每个 symbol 生成阈值字段
+    """为每个 symbol 生成阈值字段，mm/mt 分组独立提取，互不影响。
 
-    返回: (生成的字段, 跳过的 symbols)
+    返回: (生成的字段, 跳过的 symbols（mm 和 mt 均缺失的）)
     """
-    all_fields = {}
+    mm_mapping = {k: v for k, v in SPREAD_THRESHOLD_MAPPING.items() if k.endswith("_mm")}
+    mt_mapping = {k: v for k, v in SPREAD_THRESHOLD_MAPPING.items() if k.endswith("_mt")}
+    other_mapping = {k: v for k, v in SPREAD_THRESHOLD_MAPPING.items() if not k.endswith(("_mm", "_mt"))}
+
+    all_fields: Dict[str, str] = {}
     skipped_symbols: Set[str] = set()
+    mm_skipped: Set[str] = set()
+    mt_skipped: Set[str] = set()
 
     for symbol, obj in symbol_data.items():
-        symbol_fields = {}
+        sym_written = False
 
-        # 尝试提取所有阈值
-        for suffix, field_ref in SPREAD_THRESHOLD_MAPPING.items():
+        for role, role_mapping, role_skipped_set in [
+            ("mm", mm_mapping, mm_skipped),
+            ("mt", mt_mapping, mt_skipped),
+        ]:
+            if not role_mapping:
+                continue
+            role_fields: Dict[str, str] = {}
+            for suffix, field_ref in role_mapping.items():
+                value = extract_quantile_value(obj, field_ref)
+                if value is None:
+                    role_fields = {}
+                    break
+                role_fields[f"{symbol}_{suffix}"] = f"{value:.8f}".rstrip("0").rstrip(".")
+            if role_fields:
+                all_fields |= role_fields
+                sym_written = True
+            else:
+                role_skipped_set.add(symbol)
+
+        for suffix, field_ref in other_mapping.items():
             value = extract_quantile_value(obj, field_ref)
-            if value is None:
-                print(f"⚠️  {symbol}: 无法提取 {suffix} (来源: {field_ref})，跳过该 symbol")
-                skipped_symbols.add(symbol)
-                break
+            if value is not None:
+                all_fields[f"{symbol}_{suffix}"] = f"{value:.8f}".rstrip("0").rstrip(".")
+                sym_written = True
 
-            field_key = f"{symbol}_{suffix}"
-            symbol_fields[field_key] = f"{value:.8f}".rstrip("0").rstrip(".")
-        else:
-            # 所有阈值提取成功，添加到结果中
-            all_fields |= symbol_fields
+        if not sym_written:
+            skipped_symbols.add(symbol)
+
+    if mm_skipped:
+        print(f"⚠️  mm 阈值缺少 rolling 数据，跳过 {len(mm_skipped)} 个 symbols: {', '.join(sorted(mm_skipped))}")
+    if mt_skipped:
+        print(f"⚠️  mt 阈值缺少 rolling 数据，跳过 {len(mt_skipped)} 个 symbols: {', '.join(sorted(mt_skipped))}")
 
     return all_fields, skipped_symbols
 
@@ -361,10 +386,10 @@ def sync_thresholds(
 
     print(f"✅ 找到 {len(symbol_data)} 个 symbols 的 rolling metrics 数据")
 
-    # 4. 生成阈值字段
+    # 4. 生成阈值字段（mm/mt 独立提取）
     all_fields, skipped_symbols = _generate_threshold_fields(symbol_data)
     if not all_fields:
-        print("❌ 所有 symbols 都无法提取完整的阈值数据")
+        print("❌ 所有 symbols 的 mm/mt 阈值均无法提取")
         return 0
 
     # 5. 写入 Redis
@@ -375,7 +400,7 @@ def sync_thresholds(
     print(f"✅ 已写入 {len(all_fields)} 个价差阈值到 HASH '{write_key}'")
     print(f"   成功: {successful_symbols} 个 symbols")
     if skipped_symbols:
-        print(f"   跳过: {len(skipped_symbols)} 个 symbols ({', '.join(sorted(skipped_symbols))})")
+        print(f"   跳过(mm/mt 均缺): {len(skipped_symbols)} 个 symbols ({', '.join(sorted(skipped_symbols))})")
 
     return len(all_fields)
 

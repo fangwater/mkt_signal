@@ -244,7 +244,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     .status.err { color: var(--danger); }
     .hint { color: var(--muted); font-size: 12px; }
     .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
-    .kv-table { display: grid; grid-template-columns: 220px 1fr 1.5fr; gap: 8px; }
+    .kv-table { display: grid; grid-template-columns: 280px 1fr 1.5fr; gap: 8px; }
     .kv-row { display: contents; }
     .kv-key {
       padding: 8px 10px;
@@ -978,7 +978,8 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
           body: JSON.stringify(payload),
         });
         const changed = data.changed != null ? `, changed=${data.changed}` : '';
-        setStatus('spread-status', `同步完成: ${data.written || 0} 字段${changed}`);
+        const warnings = data.warnings && data.warnings.length ? ` ⚠️ ${data.warnings.join('; ')}` : '';
+        setStatus('spread-status', `同步完成: ${data.written || 0} 字段${changed}${warnings}`, !warnings);
       } catch (err) {
         setStatus('spread-status', `同步失败: ${err}`, false);
       }
@@ -1660,7 +1661,23 @@ def sync_spread_thresholds(
     symbol_data, missing_symbols = spread_sync._find_symbol_data(
         rolling_data, target_symbols
     )
-    all_fields, skipped_symbols = generate_threshold_fields(symbol_data, mapping)
+    mm_mapping = {k: v for k, v in mapping.items() if k.endswith("_mm")}
+    mt_mapping = {k: v for k, v in mapping.items() if k.endswith("_mt")}
+    other_mapping = {k: v for k, v in mapping.items() if not k.endswith(("_mm", "_mt"))}
+
+    all_fields: Dict[str, str] = {}
+    all_skipped: set[str] = set()
+    sync_warnings: List[str] = []
+
+    for role, role_mapping in [("mm", mm_mapping), ("mt", mt_mapping), ("other", other_mapping)]:
+        if not role_mapping:
+            continue
+        role_fields, role_skipped = generate_threshold_fields(symbol_data, role_mapping)
+        all_skipped.update(role_skipped)
+        if role_fields:
+            all_fields.update(role_fields)
+        else:
+            sync_warnings.append(f"{role} 阈值无可写入数据（rolling 数据不足，{len(role_skipped)} 个 symbols 缺少数据）")
 
     changed = 0
     if all_fields:
@@ -1671,7 +1688,8 @@ def sync_spread_thresholds(
         "written": len(all_fields),
         "changed": changed,
         "missing_symbols": sorted(list(missing_symbols)),
-        "skipped_symbols": sorted(list(skipped_symbols)),
+        "skipped_symbols": sorted(list(all_skipped)),
+        "warnings": sync_warnings,
         "write_key": write_key,
         "rolling_key": rolling_key,
         "mapping_key": spread_mapping_key(open_venue, hedge_venue),

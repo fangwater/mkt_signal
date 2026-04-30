@@ -665,7 +665,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     .status.err { color: var(--danger); }
     .hint { color: var(--muted); font-size: 12px; }
     .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
-    .kv-table { display: grid; grid-template-columns: 220px 1fr 1.5fr; gap: 8px; }
+    .kv-table { display: grid; grid-template-columns: 280px 1fr 1.5fr; gap: 8px; }
     .kv-row { display: contents; }
     .kv-key {
       padding: 8px 10px;

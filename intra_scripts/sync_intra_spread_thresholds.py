@@ -2,20 +2,16 @@
 # -*- coding: utf-8 -*-
 
 """
-从 rolling_metrics_thresholds_{open_venue}_{hedge_venue} 读取百分位数据，生成价差阈值并同步到 Redis（cross 版本）。
+从 rolling_metrics_thresholds_{open_venue}_{hedge_venue} 读取百分位数据，生成价差阈值并同步到 Redis（intra 同所期现）。
 
 工作流程：
-  1. 从 Redis 读取 cross_dump_symbols:{key_suffix}、cross_fwd_trade_symbols:{key_suffix}、cross_bwd_trade_symbols:{key_suffix}
+  1. 从 Redis 读取 intra_dump_symbols:{exchange}、intra_fwd_trade_symbols:{exchange}、intra_bwd_trade_symbols:{exchange}
   2. 合并列表得到要同步的 symbols（去重）
   3. 从 rolling_metrics_thresholds_{open_venue}_{hedge_venue} 读取这些 symbols 的百分位数据
-  4. 根据 SPREAD_THRESHOLD_MAPPING 配置，提取对应的百分位值
-  5. 生成价差阈值并写入 cross_spread_thresholds_{open_venue}_{hedge_venue}
+  4. 根据 SPREAD_THRESHOLD_MAPPING 提取对应百分位值
+  5. 生成价差阈值并写入 intra_spread_thresholds_{open_venue}_{hedge_venue}
 
-其中 key_suffix 为 "<open_exchange>-<hedge_exchange>"（例如 okex-binance）。
-
-推断规则：
-  - open/hedge venue：优先 --open-venue/--hedge-venue，其次 --env-name，再其次 CWD（如 okex-binance-cross-trade）
-  - key_suffix：从 open/hedge venue 的 exchange 前缀推断（okex-futures -> okex）
+推断规则：--exchange / --open-venue / --hedge-venue / --env-name / CWD（<exchange>-intra-<tag>）
 """
 
 from __future__ import annotations
@@ -23,14 +19,15 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set
 
 SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
-NAMESPACE = "cross"
+NAMESPACE = "intra"
 QUANTILE_MATCH_EPSILON = 1e-6
 
 
@@ -60,37 +57,28 @@ def exchange_from_venue(venue: str) -> Optional[str]:
     return ex
 
 
-def infer_pair_from_name(name: str) -> Optional[Tuple[str, str]]:
+def infer_exchange_from_name(name: str) -> Optional[str]:
     n = (name or "").strip().lower()
-    m = re.match(r"^([a-z0-9]+)[-_]([a-z0-9]+)[-_]cross([_-].*)?$", n)
+    m = re.match(r"^([a-z0-9]+)[-_]intra([_-].*)?$", n)
     if not m:
         return None
-    open_ex = normalize_exchange(m.group(1))
-    hedge_ex = normalize_exchange(m.group(2))
-    if open_ex not in SUPPORTED_EXCHANGES or hedge_ex not in SUPPORTED_EXCHANGES:
+    ex = normalize_exchange(m.group(1))
+    if ex not in SUPPORTED_EXCHANGES:
         return None
-    return open_ex, hedge_ex
+    return ex
 
 
-def infer_cross_venues_from_env_name(env_name: str) -> Optional[Tuple[str, str]]:
-    pair = infer_pair_from_name(env_name)
-    if not pair:
-        return None
-    if pair[0] == pair[1]:
-        return None  # cross 要求 open/hedge 必须不同 exchange
-    return f"{pair[0]}-futures", f"{pair[1]}-futures"
-
-
-def infer_cross_venues_from_cwd() -> Optional[Tuple[str, str]]:
-    return infer_cross_venues_from_env_name(Path.cwd().name)
+def infer_exchange_from_cwd() -> Optional[str]:
+    return infer_exchange_from_name(Path.cwd().name)
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Sync cross spread thresholds from rolling metrics to Redis")
-    p.add_argument("--open-venue", help="open 侧 venue（例如 okex-futures）")
-    p.add_argument("--hedge-venue", help="hedge 侧 venue（例如 binance-futures）")
-    p.add_argument("--env-name", help="环境目录名（例如 okex-binance-cross-trade）")
-    p.add_argument("--symbol", help="只同步指定 symbol（如 BTCUSDT 或 BTC-USDT）")
+    p = argparse.ArgumentParser(description="Sync intra spread thresholds from rolling metrics to Redis")
+    p.add_argument("--exchange", default=os.environ.get("EXCHANGE"))
+    p.add_argument("--open-venue", default=os.environ.get("OPEN_VENUE"))
+    p.add_argument("--hedge-venue", default=os.environ.get("HEDGE_VENUE"))
+    p.add_argument("--env-name", help="环境目录名（例如 binance-intra-trade）")
+    p.add_argument("--symbol", help="只同步指定 symbol（如 BTCUSDT）")
     return p.parse_args()
 
 
@@ -122,11 +110,11 @@ def _read_symbol_list(rds, key: str, label: str, symbols_set: Set[str]) -> None:
         print(f"⚠️  解析 '{key}' 失败: {exc}")
 
 
-def load_symbol_lists(rds, key_suffix: str) -> List[str]:
+def load_symbol_lists(rds, exchange: str) -> List[str]:
     symbols_set: Set[str] = set()
-    _read_symbol_list(rds, f"{NAMESPACE}_dump_symbols:{key_suffix}", "dump", symbols_set)
-    _read_symbol_list(rds, f"{NAMESPACE}_fwd_trade_symbols:{key_suffix}", "fwd_trade", symbols_set)
-    _read_symbol_list(rds, f"{NAMESPACE}_bwd_trade_symbols:{key_suffix}", "bwd_trade", symbols_set)
+    _read_symbol_list(rds, f"{NAMESPACE}_dump_symbols:{exchange}", "dump", symbols_set)
+    _read_symbol_list(rds, f"{NAMESPACE}_fwd_trade_symbols:{exchange}", "fwd_trade", symbols_set)
+    _read_symbol_list(rds, f"{NAMESPACE}_bwd_trade_symbols:{exchange}", "bwd_trade", symbols_set)
     result = sorted(symbols_set)
     print(f"✅ 合并后共 {len(result)} 个唯一 symbols")
     return result
@@ -140,12 +128,7 @@ def normalize_for_rolling(symbol: str) -> str:
 
 
 def read_rolling_metrics(rds, key: str) -> Dict[str, Dict]:
-    """
-    rolling_metrics 输出的 hash field 在 cross 环境常见为：
-      "<open>_<hedge>::<SYMBOL>" 例如 "okex-futures_binance-futures::BTCUSDT"
-
-    为了便于下游按 SYMBOL 查找，这里会把 field 统一索引为 symbol（去掉前缀部分）。
-    """
+    """rolling_metrics 输出 hash field 形如 "<open>_<hedge>::<SYMBOL>"，统一索引为 base symbol。"""
     result: Dict[str, Dict] = {}
     data = rds.hgetall(key)
     for k, v in data.items():
@@ -157,14 +140,11 @@ def read_rolling_metrics(rds, key: str) -> Dict[str, Dict]:
             continue
         if not isinstance(obj, dict):
             continue
-
-        # 优先用 payload 内的 base_symbol，其次使用 field 尾部（:: 之后）
         base_symbol = obj.get("base_symbol") or obj.get("symbol")
         if isinstance(base_symbol, str) and base_symbol.strip():
             sym = normalize_for_rolling(base_symbol)
             result[sym] = obj
             continue
-
         tail = field.split("::")[-1]
         sym = normalize_for_rolling(tail)
         result[sym] = obj
@@ -204,7 +184,6 @@ def extract_quantile_value(obj: Dict, field_ref: str) -> Optional[float]:
             q = float(raw)
         except Exception:
             return None
-        # 兼容 10/15/90（百分位整数）与 0.10/0.15/0.90（比例）
         if q > 1.0:
             q = q / 100.0
         if 0.0 <= q <= 1.0:
@@ -212,9 +191,6 @@ def extract_quantile_value(obj: Dict, field_ref: str) -> Optional[float]:
         return None
 
     def _to_v(item: Dict) -> Optional[float]:
-        # 兼容两种 schema:
-        # - {"q": 0.15, "v": 0.0002}
-        # - {"quantile": 0.15, "threshold": 0.0002}
         for key in ("v", "threshold", "value"):
             if key in item:
                 try:
@@ -260,31 +236,34 @@ def main() -> int:
         print("❌ redis 包未安装，请使用 pip install redis", file=sys.stderr)
         return 2
 
-    if args.open_venue and args.hedge_venue:
-        open_venue, hedge_venue = args.open_venue.lower(), args.hedge_venue.lower()
-    elif args.env_name:
-        inferred = infer_cross_venues_from_env_name(args.env_name)
-        if not inferred:
-            print(f"❌ 无法从 --env-name 推断 venues: {args.env_name}", file=sys.stderr)
-            return 2
-        open_venue, hedge_venue = inferred[0], inferred[1]
-    else:
-        inferred = infer_cross_venues_from_cwd()
-        if not inferred:
-            print("❌ 需要 --open-venue/--hedge-venue 或 --env-name，或在目录名包含 '<open>-<hedge>-cross-...'", file=sys.stderr)
-            return 2
-        open_venue, hedge_venue = inferred[0], inferred[1]
+    exchange = args.exchange
+    if not exchange:
+        exchange = infer_exchange_from_name(args.env_name) if args.env_name else infer_exchange_from_cwd()
+        if exchange:
+            print(f"[INFO] 未提供 --exchange，基于目录推断: exchange={exchange}", file=sys.stderr)
 
-    open_ex = exchange_from_venue(open_venue)
-    hedge_ex = exchange_from_venue(hedge_venue)
-    if not open_ex or not hedge_ex:
-        print(f"❌ 无效 venue: open={open_venue} hedge={hedge_venue}", file=sys.stderr)
+    if exchange:
+        exchange = normalize_exchange(exchange)
+        if exchange not in SUPPORTED_EXCHANGES:
+            print(f"❌ 不支持的 exchange: {exchange}", file=sys.stderr)
+            return 2
+        if not args.open_venue:
+            args.open_venue = f"{exchange}-margin"
+        if not args.hedge_venue:
+            args.hedge_venue = f"{exchange}-futures"
+
+    if not args.open_venue or not args.hedge_venue:
+        print("❌ 需要 --exchange 或同时提供 --open-venue/--hedge-venue，或使用 --env-name", file=sys.stderr)
         return 2
-    key_suffix = f"{open_ex}-{hedge_ex}"
+
+    open_venue = args.open_venue.lower()
+    hedge_venue = args.hedge_venue.lower()
+    if not exchange:
+        exchange = exchange_from_venue(open_venue)
 
     rds = redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
 
-    symbols = load_symbol_lists(rds, key_suffix)
+    symbols = load_symbol_lists(rds, exchange)
     if args.symbol:
         symbols = [args.symbol.upper()]
 
@@ -354,8 +333,8 @@ def main() -> int:
         print(f"⚠️  mt 阈值缺少 rolling 数据，跳过 {len(mt_skipped)} 个 symbols: {', '.join(sorted(set(mt_skipped)))}", file=sys.stderr)
 
     if not all_fields:
-        print(f"❌ 无可写入的阈值字段（可能 rolling metrics 数据不足或 symbols 列表为空）", file=sys.stderr)
-        print(f"🧾 sync 配置已写入 '{config_key}'（可用 print 脚本查看 mapping 是否匹配）")
+        print("❌ 无可写入的阈值字段（rolling metrics 数据不足或 symbols 列表为空）", file=sys.stderr)
+        print(f"🧾 sync 配置已写入 '{config_key}'")
         return 2
 
     rds.hset(write_key, mapping=all_fields)
@@ -372,4 +351,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-QUANTILE_MATCH_EPSILON = 1e-6
