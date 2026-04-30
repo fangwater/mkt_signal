@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check balance APIs for Binance, Gate and OKX.
+"""Check balance APIs for Binance, Gate, OKX, Bybit and Bitget.
 
 默认行为：
   - Binance:
@@ -12,6 +12,12 @@
   - OKX:
     1) 查询账户维度余额快照；
     2) 走 /api/v5/account/balance（读取 totalEq 与 details）。
+  - Bybit:
+    1) 仅支持 UTA / 统一账户（UNIFIED）；
+    2) 走 /v5/account/wallet-balance?accountType=UNIFIED。
+  - Bitget:
+    1) 仅支持 UTA 统一账户；
+    2) 走 /api/v3/account/assets。
 """
 
 from __future__ import annotations
@@ -159,6 +165,91 @@ def signed_get_okx(
         return False, 0, "", f"URLError: {exc.reason}", signed_path
 
 
+def sign_bybit(timestamp_ms: str, api_key: str, recv_window: str, query: str, secret: str) -> str:
+    payload = f"{timestamp_ms}{api_key}{recv_window}{query}"
+    return hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def signed_get_bybit(
+    base_url: str,
+    path: str,
+    params: Dict[str, Any],
+    api_key: str,
+    api_secret: str,
+    recv_window: int,
+    timeout: int,
+) -> Tuple[bool, int, str, Optional[str], str]:
+    query = urllib.parse.urlencode(sorted((k, str(v)) for k, v in params.items()), safe="-_.~")
+    timestamp_ms = str(now_ms())
+    recv_window_str = str(recv_window)
+    signature = sign_bybit(timestamp_ms, api_key, recv_window_str, query, api_secret)
+
+    url = f"{base_url.rstrip('/')}{path}"
+    if query:
+        url = f"{url}?{query}"
+    signed_path = path if not query else f"{path}?{query}"
+
+    headers = {
+        "X-BAPI-API-KEY": api_key,
+        "X-BAPI-SIGN": signature,
+        "X-BAPI-SIGN-TYPE": "2",
+        "X-BAPI-TIMESTAMP": timestamp_ms,
+        "X-BAPI-RECV-WINDOW": recv_window_str,
+        "Content-Type": "application/json",
+    }
+    req = urllib.request.Request(url, method="GET", headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+            return True, resp.getcode(), body, None, signed_path
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        return False, exc.code, body, f"HTTPError: {exc.code} {exc.reason}", signed_path
+    except urllib.error.URLError as exc:
+        return False, 0, "", f"URLError: {exc.reason}", signed_path
+
+
+def sign_bitget(timestamp_ms: str, method: str, signed_path: str, body: str, secret: str) -> str:
+    payload = f"{timestamp_ms}{method.upper()}{signed_path}{body}"
+    digest = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).digest()
+    return base64.b64encode(digest).decode("utf-8")
+
+
+def signed_get_bitget(
+    base_url: str,
+    path: str,
+    params: Dict[str, Any],
+    api_key: str,
+    api_secret: str,
+    passphrase: str,
+    timeout: int,
+) -> Tuple[bool, int, str, Optional[str], str]:
+    query = urllib.parse.urlencode(sorted((k, str(v)) for k, v in params.items()), safe="-_.~")
+    signed_path = path if not query else f"{path}?{query}"
+    timestamp_ms = str(now_ms())
+    signature = sign_bitget(timestamp_ms, "GET", signed_path, "", api_secret)
+
+    url = f"{base_url.rstrip('/')}{signed_path}"
+    headers = {
+        "ACCESS-KEY": api_key,
+        "ACCESS-SIGN": signature,
+        "ACCESS-TIMESTAMP": timestamp_ms,
+        "ACCESS-PASSPHRASE": passphrase,
+        "Content-Type": "application/json",
+        "locale": "zh-CN",
+    }
+    req = urllib.request.Request(url, method="GET", headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+            return True, resp.getcode(), body, None, signed_path
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        return False, exc.code, body, f"HTTPError: {exc.code} {exc.reason}", signed_path
+    except urllib.error.URLError as exc:
+        return False, 0, "", f"URLError: {exc.reason}", signed_path
+
+
 def env_flag(name: str, default: bool = False) -> bool:
     raw = os.environ.get(name, "")
     if not raw:
@@ -168,13 +259,13 @@ def env_flag(name: str, default: bool = False) -> bool:
 
 def parse_args() -> argparse.Namespace:
     default_exchange = os.environ.get("CHECK_BALANCE_EXCHANGE", "binance").strip().lower()
-    if default_exchange not in {"binance", "gate", "okex"}:
+    if default_exchange not in {"binance", "gate", "okex", "bybit", "bitget"}:
         default_exchange = "binance"
 
-    parser = argparse.ArgumentParser(description="检查 Binance / Gate / OKX 余额")
+    parser = argparse.ArgumentParser(description="检查 Binance / Gate / OKX / Bybit / Bitget 余额")
     parser.add_argument(
         "--exchange",
-        choices=["binance", "gate", "okex"],
+        choices=["binance", "gate", "okex", "bybit", "bitget"],
         default=default_exchange,
         help="交易所（默认 binance）",
     )
@@ -182,7 +273,7 @@ def parse_args() -> argparse.Namespace:
         "--mode",
         choices=["UNIFIED", "STANDARD", "AUTO"],
         default=None,
-        help="账户模式；默认 binance=AUTO、gate=UNIFIED、okex=UNIFIED。Gate/OKX 不支持 STANDARD",
+        help="账户模式；默认 binance=AUTO，其它均为 UNIFIED。Gate/OKX/Bybit/Bitget 不支持 STANDARD",
     )
     parser.add_argument(
         "--papi-url",
@@ -214,6 +305,22 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         default=env_flag("OKX_SIMULATED_TRADING", False),
         help="OKX 模拟盘（请求头 x-simulated-trading: 1）",
+    )
+    parser.add_argument(
+        "--bybit-url",
+        default=os.environ.get("BYBIT_REST_URL", "https://api.bybit.com"),
+        help="Bybit REST 基础地址",
+    )
+    parser.add_argument(
+        "--bybit-recv-window",
+        type=int,
+        default=int(os.environ.get("BYBIT_RECV_WINDOW_MS", "5000")),
+        help="Bybit recvWindow（毫秒）",
+    )
+    parser.add_argument(
+        "--bitget-url",
+        default=os.environ.get("BITGET_REST_URL", "https://api.bitget.com"),
+        help="Bitget REST 基础地址",
     )
     parser.add_argument(
         "--timeout",
@@ -561,6 +668,132 @@ def print_okx_account_balance_view(payload: Any, asset: str) -> None:
         print(f"{target} not found")
 
 
+def print_bybit_unified_view(payload: Any, asset: str) -> None:
+    target = asset.upper()
+    if not isinstance(payload, dict):
+        print("无法识别 Bybit 返回结构，请直接查看 Raw response。")
+        return
+
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        print("无法识别 Bybit 返回结构（缺少 result），请直接查看 Raw response。")
+        return
+
+    accounts = result.get("list")
+    if not isinstance(accounts, list) or not accounts or not isinstance(accounts[0], dict):
+        print("无法识别 Bybit 返回结构（list 为空），请直接查看 Raw response。")
+        return
+
+    account = accounts[0]
+    coins = account.get("coin")
+    if not isinstance(coins, list):
+        coins = []
+
+    print("=== BYBIT ACCOUNT SUMMARY ===")
+    summary_fields = [
+        "accountType",
+        "totalEquity",
+        "totalWalletBalance",
+        "totalAvailableBalance",
+        "totalMarginBalance",
+        "totalInitialMargin",
+        "totalMaintenanceMargin",
+        "totalPerpUPL",
+        "accountIMRate",
+        "accountMMRate",
+        "accountLTV",
+    ]
+    for key in summary_fields:
+        value = account.get(key)
+        if value not in (None, ""):
+            print(f"{key}: {value}")
+
+    print("\n=== BYBIT: assets with non-zero walletBalance/borrowAmount ===")
+    printed_any = False
+    for item in coins:
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("coin", "")).upper() or "UNKNOWN"
+        wallet = to_float(item.get("walletBalance")) or 0.0
+        equity = to_float(item.get("equity")) or 0.0
+        usd_value = to_float(item.get("usdValue")) or 0.0
+        borrow = to_float(item.get("borrowAmount")) or 0.0
+        spot_borrow = to_float(item.get("spotBorrow")) or 0.0
+        accrued = to_float(item.get("accruedInterest")) or 0.0
+        if any(abs(v) > 1e-12 for v in (wallet, equity, borrow, spot_borrow, accrued)):
+            printed_any = True
+            print(
+                f"{symbol}: walletBalance={wallet}, equity={equity}, usdValue={usd_value}, "
+                f"borrowAmount={borrow}, spotBorrow={spot_borrow}, accruedInterest={accrued}"
+            )
+            print(json.dumps(item, indent=2, ensure_ascii=False))
+    if not printed_any:
+        print("none")
+
+    print(f"\n=== BYBIT: {target} balance (full response) ===")
+    found_target = False
+    for item in coins:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("coin", "")).upper() == target:
+            found_target = True
+            print(json.dumps(item, indent=2, ensure_ascii=False))
+    if not found_target:
+        print(f"{target} not found")
+
+
+def print_bitget_unified_view(payload: Any, asset: str) -> None:
+    target = asset.upper()
+    if not isinstance(payload, dict):
+        print("无法识别 Bitget 返回结构，请直接查看 Raw response。")
+        return
+
+    data = payload.get("data")
+    if isinstance(data, dict):
+        assets = data.get("assets")
+    elif isinstance(data, list):
+        assets = data
+    else:
+        assets = None
+    if not isinstance(assets, list):
+        print("无法识别 Bitget 返回结构（缺少 data.assets），请直接查看 Raw response。")
+        return
+
+    print("=== BITGET: assets with non-zero balance/debt ===")
+    printed_any = False
+    for item in assets:
+        if not isinstance(item, dict):
+            continue
+        coin = str(item.get("coin", "")).upper() or "UNKNOWN"
+        balance = to_float(item.get("balance")) or 0.0
+        available = to_float(item.get("available")) or 0.0
+        frozen = to_float(item.get("frozen")) or 0.0
+        locked = to_float(item.get("locked")) or 0.0
+        borrow = to_float(item.get("borrow")) or 0.0
+        debt = to_float(item.get("debt")) or 0.0
+        debts = to_float(item.get("debts")) or 0.0
+        if any(abs(v) > 1e-12 for v in (balance, available, frozen, locked, borrow, debt, debts)):
+            printed_any = True
+            print(
+                f"{coin}: balance={balance}, available={available}, frozen={frozen}, "
+                f"locked={locked}, borrow={borrow}, debt={debt}, debts={debts}"
+            )
+            print(json.dumps(item, indent=2, ensure_ascii=False))
+    if not printed_any:
+        print("none")
+
+    print(f"\n=== BITGET: {target} balance (full response) ===")
+    found_target = False
+    for item in assets:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("coin", "")).upper() == target:
+            found_target = True
+            print(json.dumps(item, indent=2, ensure_ascii=False))
+    if not found_target:
+        print(f"{target} not found")
+
+
 def run_binance(args: argparse.Namespace) -> None:
     api_key = os.environ.get("BINANCE_API_KEY", "").strip()
     api_secret = os.environ.get("BINANCE_API_SECRET", "").strip()
@@ -717,12 +950,124 @@ def run_okex(args: argparse.Namespace) -> None:
     print_okx_account_balance_view(payload, args.asset)
 
 
+def run_bybit(args: argparse.Namespace) -> None:
+    api_key = os.environ.get("BYBIT_API_KEY", "").strip()
+    api_secret = os.environ.get("BYBIT_API_SECRET", "").strip()
+    if not api_key or not api_secret:
+        print("ERROR: set BYBIT_API_KEY / BYBIT_API_SECRET")
+        return
+
+    mode_arg = normalize_mode(args.mode or "UNIFIED")
+    if mode_arg == "STANDARD":
+        print("ERROR: bybit does not support --mode STANDARD")
+        return
+    mode_source = "--mode" if args.mode else "default(UNIFIED)"
+
+    success, status, body, error, signed_path = signed_get_bybit(
+        base_url=args.bybit_url,
+        path="/v5/account/wallet-balance",
+        params={"accountType": "UNIFIED"},
+        api_key=api_key,
+        api_secret=api_secret,
+        recv_window=args.bybit_recv_window,
+        timeout=args.timeout,
+    )
+
+    status_text = status if status else "N/A"
+    print("Exchange: bybit")
+    print(f"Mode: UNIFIED ({mode_source})")
+    print(f"Endpoint: {args.bybit_url.rstrip('/')}{signed_path}")
+    print(f"Request success: {success} (status={status_text})")
+    if error:
+        print(f"Request error: {error}")
+    print("Raw response:")
+    print(body)
+    if not success:
+        return
+
+    payload = parse_json_any(body)
+    if payload is None:
+        return
+    if not isinstance(payload, dict):
+        print("ERROR: invalid Bybit response object")
+        return
+
+    ret_code = payload.get("retCode")
+    ret_msg = payload.get("retMsg", "")
+    api_success = (200 <= status < 300) and ret_code == 0
+    print(f"API success: {api_success} (retCode={ret_code}, retMsg={ret_msg})")
+    if not api_success:
+        return
+
+    print_bybit_unified_view(payload, args.asset)
+
+
+def run_bitget(args: argparse.Namespace) -> None:
+    api_key = os.environ.get("BITGET_API_KEY", "").strip()
+    api_secret = os.environ.get("BITGET_API_SECRET", "").strip()
+    passphrase = (
+        os.environ.get("BITGET_API_PASSPHRASE", "").strip()
+        or os.environ.get("BITGET_PASSPHRASE", "").strip()
+    )
+    if not api_key or not api_secret or not passphrase:
+        print("ERROR: set BITGET_API_KEY / BITGET_API_SECRET / BITGET_API_PASSPHRASE")
+        return
+
+    mode_arg = normalize_mode(args.mode or "UNIFIED")
+    if mode_arg == "STANDARD":
+        print("ERROR: bitget does not support --mode STANDARD")
+        return
+    mode_source = "--mode" if args.mode else "default(UNIFIED)"
+
+    success, status, body, error, signed_path = signed_get_bitget(
+        base_url=args.bitget_url,
+        path="/api/v3/account/assets",
+        params={},
+        api_key=api_key,
+        api_secret=api_secret,
+        passphrase=passphrase,
+        timeout=args.timeout,
+    )
+
+    status_text = status if status else "N/A"
+    print("Exchange: bitget")
+    print(f"Mode: UNIFIED ({mode_source})")
+    print(f"Endpoint: {args.bitget_url.rstrip('/')}{signed_path}")
+    print(f"Request success: {success} (status={status_text})")
+    if error:
+        print(f"Request error: {error}")
+    print("Raw response:")
+    print(body)
+    if not success:
+        return
+
+    payload = parse_json_any(body)
+    if payload is None:
+        return
+    if not isinstance(payload, dict):
+        print("ERROR: invalid Bitget response object")
+        return
+
+    code = str(payload.get("code", ""))
+    msg = str(payload.get("msg", ""))
+    api_success = (200 <= status < 300) and code in {"00000", "0"}
+    print(f"API success: {api_success} (code={code or 'N/A'}, msg={msg})")
+    if not api_success:
+        return
+
+    print_bitget_unified_view(payload, args.asset)
+
+
 def main() -> None:
     args = parse_args()
     if args.exchange == "gate":
         run_gate(args)
     elif args.exchange == "okex":
         run_okex(args)
+    elif args.exchange == "bybit":
+        run_bybit(args)
+    elif args.exchange == "bitget":
+        run_bitget(args)
     else:
         run_binance(args)
 
