@@ -5,6 +5,7 @@ pub mod basic_exposure_manager;
 pub mod basic_um_manager;
 mod channel;
 pub mod event;
+pub mod intra_bwd_symbol_list;
 pub mod monitor_channel;
 pub mod net_position;
 pub mod open_order_rate_limiter;

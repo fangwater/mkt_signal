@@ -84,7 +84,7 @@ def apply_pair_specific_defaults(
     if not isinstance(factors, dict):
         return
 
-    if open_venue == "binance-margin" and hedge_venue == "binance-futures":
+    if open_venue.endswith("-margin") and hedge_venue.endswith("-futures"):
         spread_cfg = factors.get("spread")
         if isinstance(spread_cfg, dict):
             spread_cfg["quantiles"] = [5, 10, 90, 95]

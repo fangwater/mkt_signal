@@ -126,26 +126,56 @@ except Exception:
 xarb_funding_sync = None
 try:
     import sync_xarb_funding_thresholds as xarb_funding_sync
-
-    def default_dynamic_funding_mapping(open_venue: str, hedge_venue: str) -> Dict[str, str]:
-        return dict(
-            xarb_funding_sync.default_funding_threshold_mapping(open_venue, hedge_venue)
-        )
 except Exception:
-    def default_dynamic_funding_mapping(open_venue: str, hedge_venue: str) -> Dict[str, str]:
-        if open_venue.endswith("-futures") and hedge_venue.endswith("-futures"):
-            return {
-                "forward_open_mm": "spread_fr_80",
-                "backward_open_mm": "spread_fr_20",
-            }
-        return {
-            "forward_open_mm": "hedge_premium_rate_50",
-            "backward_open_mm": "hedge_premium_rate_50",
-        }
+    pass
 
 
-def dynamic_funding_threshold_order() -> List[str]:
-    return ["forward_open_mm", "backward_open_mm"]
+def default_funding_factor_chain(open_venue: str, hedge_venue: str) -> List[Dict[str, Any]]:
+    """fr 因子链按 venue 对动态选择:
+    - 双 futures(跨所或同所):因子=spread_fr,默认 80/20
+    - margin × futures(同所):因子=hedge_premium_rate,默认 50/50
+
+    Rust 侧 `arb_open_filter::lookup_factor_realtime_value` 必须支持这里出现的因子名。
+    """
+    if open_venue.endswith("-futures") and hedge_venue.endswith("-futures"):
+        return [
+            {"factor": "spread_fr", "enabled": True, "forward_open": 80, "backward_open": 20}
+        ]
+    return [
+        {"factor": "hedge_premium_rate", "enabled": True, "forward_open": 50, "backward_open": 50}
+    ]
+
+
+def default_funding_threshold_config(
+    open_venue: str, hedge_venue: str
+) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for entry in default_funding_factor_chain(open_venue, hedge_venue):
+        f = entry["factor"]
+        out[f"{f}.enabled"] = "true" if entry.get("enabled", True) else "false"
+        out[f"{f}.forward_open"] = str(entry.get("forward_open"))
+        out[f"{f}.backward_open"] = str(entry.get("backward_open"))
+    return out
+
+
+def default_funding_threshold_comments(
+    open_venue: str, hedge_venue: str
+) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for entry in default_funding_factor_chain(open_venue, hedge_venue):
+        f = entry["factor"]
+        out[f"{f}.enabled"] = f"[{f}] 是否启用 (链上 enabled=false 的因子在评估时跳过)"
+        out[f"{f}.forward_open"] = f"[{f}] 正向开仓分位数 (0,99]"
+        out[f"{f}.backward_open"] = f"[{f}] 反向开仓分位数 (0,99]"
+    return out
+
+
+def funding_dashboard_keys(open_venue: str, hedge_venue: str) -> List[str]:
+    keys: List[str] = []
+    for entry in default_funding_factor_chain(open_venue, hedge_venue):
+        f = entry["factor"]
+        keys.extend([f"{f}.enabled", f"{f}.forward_open", f"{f}.backward_open"])
+    return keys
 
 INDEX_HTML_TEMPLATE = """<!doctype html>
 <html lang="zh-CN">
@@ -1498,12 +1528,8 @@ def spread_mapping_key(open_venue: str, hedge_venue: str) -> str:
     return f"fr_spread_threshold_mapping_{open_venue}_{hedge_venue}"
 
 
-def legacy_funding_mapping_key(open_venue: str, hedge_venue: str) -> str:
-    return f"fr_funding_threshold_mapping_{open_venue}_{hedge_venue}"
-
-
 def funding_mapping_key(open_venue: str, hedge_venue: str) -> str:
-    return f"xarb_funding_thresholds_config_{open_venue}_{hedge_venue}"
+    return f"fr_funding_thresholds_config_{open_venue}_{hedge_venue}"
 
 
 def normalize_threshold_mapping(values: Dict[str, Any]) -> Dict[str, str]:
@@ -1536,80 +1562,103 @@ def read_spread_mapping(rds, open_venue: str, hedge_venue: str) -> Dict[str, str
     return normalize_spread_mapping(SPREAD_THRESHOLD_MAPPING)
 
 
-def read_funding_mapping_config(
+def read_funding_chain_config(
     rds,
     open_venue: str,
     hedge_venue: str,
 ) -> Dict[str, Any]:
+    """读 factor_chain JSON,展平成 dashboard `<factor>.<key>` flat dict。
+    没有 Redis 数据 → 返回 hardcoded chain 默认值。"""
     key = funding_mapping_key(open_venue, hedge_venue)
-    legacy_key = legacy_funding_mapping_key(open_venue, hedge_venue)
-    default_values = normalize_threshold_mapping(
-        default_dynamic_funding_mapping(open_venue, hedge_venue)
-    )
+    defaults = default_funding_threshold_config(open_venue, hedge_venue)
 
     raw = rds.get(key)
-    if raw:
-        text = decode_redis_value(raw).strip()
-        if text:
-            try:
-                parsed = json.loads(text)
-            except Exception:
-                parsed = None
-            if isinstance(parsed, dict):
-                values = normalize_threshold_mapping(parsed.get("mapping") or {})
-                if not values:
-                    values = default_values
-                enabled = parsed.get("enabled")
-                if not isinstance(enabled, bool):
-                    enabled = True
-                return {
-                    "key": key,
-                    "legacy_key": legacy_key,
-                    "enabled": enabled,
-                    "rolling_key": normalize_optional_text(parsed.get("rolling_key")),
-                    "values": values,
-                    "source": "runtime_json",
-                }
+    if not raw:
+        return {"key": key, "values": defaults, "rolling_key": None, "source": "default"}
+    text = decode_redis_value(raw).strip()
+    if not text:
+        return {"key": key, "values": defaults, "rolling_key": None, "source": "default"}
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return {"key": key, "values": defaults, "rolling_key": None, "source": "default"}
+    if not isinstance(parsed, dict):
+        return {"key": key, "values": defaults, "rolling_key": None, "source": "default"}
+    chain = parsed.get("factor_chain")
+    if not isinstance(chain, list):
+        return {"key": key, "values": defaults, "rolling_key": None, "source": "default"}
 
-    legacy_values = read_hash(rds, legacy_key)
-    if legacy_values:
-        return {
-            "key": key,
-            "legacy_key": legacy_key,
-            "enabled": True,
-            "rolling_key": None,
-            "values": normalize_threshold_mapping(legacy_values),
-            "source": "legacy_hash",
-        }
-
+    out = dict(defaults)
+    for entry in chain:
+        if not isinstance(entry, dict):
+            continue
+        f = str(entry.get("factor") or "").strip()
+        if not f:
+            continue
+        if "enabled" in entry:
+            out[f"{f}.enabled"] = "true" if bool(entry["enabled"]) else "false"
+        if "forward_open" in entry:
+            out[f"{f}.forward_open"] = str(entry["forward_open"])
+        if "backward_open" in entry:
+            out[f"{f}.backward_open"] = str(entry["backward_open"])
     return {
         "key": key,
-        "legacy_key": legacy_key,
-        "enabled": True,
-        "rolling_key": None,
-        "values": default_values,
-        "source": "default",
+        "values": out,
+        "rolling_key": normalize_optional_text(parsed.get("rolling_key")),
+        "source": "runtime_json",
     }
 
 
-def read_funding_mapping(rds, open_venue: str, hedge_venue: str) -> Dict[str, str]:
-    return dict(read_funding_mapping_config(rds, open_venue, hedge_venue).get("values") or {})
+def write_funding_chain_config(
+    rds,
+    open_venue: str,
+    hedge_venue: str,
+    values: Dict[str, Any],
+) -> Dict[str, Any]:
+    """从 dashboard 平铺 input 反向组装 factor_chain JSON 写 Redis。
+    fr 链按 venue 对动态选择,故每次写都从默认链拿因子顺序。"""
+    values = values or {}
+    chain_payload: List[Dict[str, Any]] = []
+    flat_out: Dict[str, str] = {}
+    for default_entry in default_funding_factor_chain(open_venue, hedge_venue):
+        f = default_entry["factor"]
+        enabled_raw = values.get(f"{f}.enabled")
+        if enabled_raw is None:
+            enabled = bool(default_entry.get("enabled", True))
+        else:
+            enabled = str(enabled_raw).strip().lower() in {"1", "true", "yes", "on"}
+        forward_raw = values.get(f"{f}.forward_open", default_entry.get("forward_open"))
+        backward_raw = values.get(f"{f}.backward_open", default_entry.get("backward_open"))
+        forward_value = float(forward_raw)
+        backward_value = float(backward_raw)
+        if not (0.0 < forward_value <= 99.0):
+            raise ValueError(f"{f}.forward_open must be in (0,99]")
+        if not (0.0 < backward_value <= 99.0):
+            raise ValueError(f"{f}.backward_open must be in (0,99]")
+        chain_payload.append(
+            {
+                "factor": f,
+                "enabled": enabled,
+                "forward_open": forward_value,
+                "backward_open": backward_value,
+            }
+        )
+        flat_out[f"{f}.enabled"] = "true" if enabled else "false"
+        flat_out[f"{f}.forward_open"] = str(int(forward_value)) if forward_value == int(forward_value) else f"{forward_value:.12g}"
+        flat_out[f"{f}.backward_open"] = str(int(backward_value)) if backward_value == int(backward_value) else f"{backward_value:.12g}"
 
-
-def encode_funding_mapping_config(
-    mapping: Dict[str, str],
-    *,
-    enabled: bool = True,
-    rolling_key: Optional[str] = None,
-) -> str:
-    payload: Dict[str, Any] = {
-        "enabled": bool(enabled),
-        "mapping": normalize_threshold_mapping(mapping),
+    key = funding_mapping_key(open_venue, hedge_venue)
+    payload = {
+        "factor_chain": chain_payload,
+        "rolling_key": f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}",
     }
-    rolling_key = normalize_optional_text(rolling_key)
-    if rolling_key:
-        payload["rolling_key"] = rolling_key
-    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    rds.set(key, json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+    return {
+        "key": key,
+        "count": len(flat_out),
+        "values": flat_out,
+        "rolling_key": payload["rolling_key"],
+    }
 
 
 def generate_threshold_fields(
@@ -1696,71 +1745,8 @@ def sync_spread_thresholds(
     }
 
 
-def sync_funding_thresholds(
-    rds,
-    open_venue: str,
-    hedge_venue: str,
-    key_suffix: str,
-    mapping: Optional[Dict[str, str]] = None,
-    symbol: Optional[str] = None,
-) -> Dict[str, Any]:
-    if xarb_funding_sync is None:
-        raise RuntimeError("sync_xarb_funding_thresholds.py not available")
-
-    dump_keys = [f"fr_dump_symbols:{key_suffix}"]
-    fwd_keys = [f"fr_fwd_trade_symbols:{key_suffix}"]
-    bwd_keys = [f"fr_bwd_trade_symbols:{key_suffix}"]
-    stored_cfg = read_funding_mapping_config(rds, open_venue, hedge_venue)
-    rolling_key = (
-        normalize_optional_text(stored_cfg.get("rolling_key"))
-        or f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}"
-    )
-    write_key = f"fr_funding_thresholds_{open_venue}_{hedge_venue}"
-
-    mapping = normalize_threshold_mapping(mapping or {})
-    if not mapping:
-        mapping = dict(stored_cfg.get("values") or {})
-    if not mapping:
-        raise RuntimeError("funding mapping is empty")
-
-    target_symbols = xarb_funding_sync.load_symbol_lists(rds, dump_keys, fwd_keys, bwd_keys)
-    if symbol:
-        target_symbols = [str(symbol).strip().upper()]
-    if not target_symbols:
-        raise RuntimeError(f"no symbols found for key_suffix={key_suffix}")
-
-    rolling_data = xarb_funding_sync.read_rolling_metrics(rds, rolling_key)
-    if not rolling_data:
-        raise RuntimeError(f"rolling metrics not found: {rolling_key}")
-
-    symbol_data: Dict[str, Dict] = {}
-    missing_symbols: set[str] = set()
-    for sym in target_symbols:
-        obj = xarb_funding_sync.find_symbol_data(rolling_data, sym)
-        if obj is None:
-            missing_symbols.add(sym)
-        else:
-            symbol_data[sym] = obj
-
-    all_fields, skipped_symbols = xarb_funding_sync.generate_threshold_fields(symbol_data, mapping)
-    changed = 0
-    if all_fields:
-        res = rds.hset(write_key, mapping=all_fields)
-        changed = int(res) if res is not None else 0
-
-    return {
-        "written": len(all_fields),
-        "changed": changed,
-        "missing_symbols": sorted(list(missing_symbols)),
-        "skipped_symbols": sorted(list(skipped_symbols)),
-        "write_key": write_key,
-        "rolling_key": rolling_key,
-        "mapping_key": funding_mapping_key(open_venue, hedge_venue),
-        "mapping_source": stored_cfg.get("source"),
-    }
-
-
 def render_index_html(default_exchange: str) -> str:
+    default_open, default_hedge = EXCHANGE_DEFAULTS.get(default_exchange, ("", ""))
     bootstrap = {
         "exchanges": SUPPORTED_EXCHANGES,
         "default_exchange": default_exchange,
@@ -1770,10 +1756,7 @@ def render_index_html(default_exchange: str) -> str:
             "risk_params": DEFAULT_RISK_PARAMS,
             "strategy_params": DEFAULT_STRATEGY_PARAMS,
             "funding_thresholds": DEFAULT_FUNDING_THRESHOLDS,
-            "funding_mapping": default_dynamic_funding_mapping(
-                EXCHANGE_DEFAULTS.get(default_exchange, ("", ""))[0],
-                EXCHANGE_DEFAULTS.get(default_exchange, ("", ""))[1],
-            ),
+            "funding_mapping": default_funding_threshold_config(default_open, default_hedge),
             "rolling_params": DEFAULT_ROLLING_PARAMS,
             "spread_mapping": SPREAD_THRESHOLD_MAPPING,
         },
@@ -1781,12 +1764,13 @@ def render_index_html(default_exchange: str) -> str:
             "risk_params": RISK_PARAM_COMMENTS,
             "strategy_params": STRATEGY_PARAM_COMMENTS,
             "funding_thresholds": FUNDING_THRESHOLD_COMMENTS,
+            "funding_mapping": default_funding_threshold_comments(default_open, default_hedge),
         },
         "order": {
             "risk": RISK_PARAM_ORDER,
             "strategy": STRATEGY_PARAM_ORDER,
             "funding_thresholds": FUNDING_THRESHOLD_ORDER,
-            "funding_mapping": dynamic_funding_threshold_order(),
+            "funding_mapping": funding_dashboard_keys(default_open, default_hedge),
             "spread_mapping": SPREAD_THRESHOLD_ORDER,
         },
     }
@@ -1974,7 +1958,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send_error(400, str(exc))
                 return
-            cfg = read_funding_mapping_config(
+            cfg = read_funding_chain_config(
                 self.server.context.redis_client, open_venue, hedge_venue
             )
             values = dict(cfg.get("values") or {})
@@ -1982,11 +1966,9 @@ class RequestHandler(BaseHTTPRequestHandler):
                 200,
                 {
                     "key": cfg.get("key") or funding_mapping_key(open_venue, hedge_venue),
-                    "legacy_key": cfg.get("legacy_key"),
                     "count": len(values),
                     "values": values,
                     "rolling_key": cfg.get("rolling_key"),
-                    "enabled": cfg.get("enabled"),
                     "source": cfg.get("source"),
                 },
             )
@@ -2215,41 +2197,14 @@ class RequestHandler(BaseHTTPRequestHandler):
             if not isinstance(values, dict):
                 self._send_error(400, "values must be object")
                 return
-            mapping = normalize_threshold_mapping(values)
-            if not mapping:
-                mapping = normalize_threshold_mapping(
-                    default_dynamic_funding_mapping(open_v, hedge_v)
+            try:
+                result = write_funding_chain_config(
+                    self.server.context.redis_client, open_v, hedge_v, values
                 )
-            if not mapping:
-                self._send_error(400, "mapping is empty")
+            except Exception as exc:
+                self._send_error(400, str(exc))
                 return
-            current_cfg = read_funding_mapping_config(
-                self.server.context.redis_client, open_v, hedge_v
-            )
-            rolling_key = normalize_optional_text(
-                payload.get("rolling_key", current_cfg.get("rolling_key"))
-            )
-            enabled = payload.get("enabled", current_cfg.get("enabled", True))
-            if not isinstance(enabled, bool):
-                enabled = str(enabled).strip().lower() in {"1", "true", "yes", "on"}
-            key = funding_mapping_key(open_v, hedge_v)
-            config_text = encode_funding_mapping_config(
-                mapping,
-                enabled=enabled,
-                rolling_key=rolling_key,
-            )
-            self.server.context.redis_client.set(key, config_text)
-            self._send_json(
-                200,
-                {
-                    "key": key,
-                    "count": len(mapping),
-                    "values": mapping,
-                    "rolling_key": rolling_key,
-                    "enabled": enabled,
-                    "source": "runtime_json",
-                },
-            )
+            self._send_json(200, result)
             return
 
         if parsed.path == "/api/rolling-params":
@@ -2326,31 +2281,10 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/funding-filter-thresholds/sync":
-            exchange = normalize_exchange(
-                str(payload.get("exchange") or self.server.context.default_exchange)
+            self._send_error(
+                410,
+                "funding filter sync is deprecated; pre_trade reads factor_chain config directly",
             )
-            try:
-                _, open_v, hedge_v, key_suffix = resolve_venues(
-                    exchange, payload.get("open_venue"), payload.get("hedge_venue")
-                )
-            except Exception as exc:
-                self._send_error(400, str(exc))
-                return
-            symbol = payload.get("symbol")
-            mapping = payload.get("mapping") if isinstance(payload, dict) else None
-            try:
-                result = sync_funding_thresholds(
-                    self.server.context.redis_client,
-                    open_v,
-                    hedge_v,
-                    key_suffix,
-                    mapping,
-                    symbol,
-                )
-            except Exception as exc:
-                self._send_error(500, f"sync failed: {exc}")
-                return
-            self._send_json(200, result)
             return
 
         self._send_error(404, "not found")

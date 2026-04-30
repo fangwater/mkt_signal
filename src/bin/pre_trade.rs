@@ -5,8 +5,10 @@ use log::{info, warn};
 use mkt_signal::common::binance_account_mode::{init_binance_account_mode, BinanceAccountMode};
 use mkt_signal::common::redis_client::RedisSettings;
 use mkt_signal::common::time_util::get_timestamp_us;
+use mkt_signal::funding_rate::ArbMode;
 use mkt_signal::pre_trade::auto_collection_service::AutoCollectionService;
 use mkt_signal::pre_trade::auto_repay_service::AutoRepayService;
+use mkt_signal::pre_trade::intra_bwd_symbol_list::IntraBwdSymbolList;
 use mkt_signal::pre_trade::monitor_channel::MonitorChannel;
 use mkt_signal::pre_trade::params_load::PreTradeParamsLoader;
 use mkt_signal::pre_trade::persist_channel::PersistChannel;
@@ -200,7 +202,7 @@ async fn main() -> Result<()> {
 
             let loader = PreTradeParamsLoader::instance();
             loader
-                .load_from_redis(&redis_settings, dir_prefix.as_deref(), open_venue)
+                .load_from_redis(&redis_settings, dir_prefix.as_deref(), open_venue, hedge_venue)
                 .await
                 .unwrap_or_else(|err| {
                     panic!(
@@ -220,8 +222,28 @@ async fn main() -> Result<()> {
                 redis_settings,
                 dir_prefix.clone(),
                 open_venue,
+                hedge_venue,
             );
             info!("Background refresh task started (interval: 60s)");
+
+            // IntraArb 部署：拉取 trade_signal 维护的 intra_bwd_trade_symbols 作为
+            // PM 借贷白名单（仅在 UNIFIED 账户下生效，详见 open_strategy_common）。
+            // 启动时同步加载一次，避免首个开仓信号到来时白名单还是空的；
+            // 之后由后台任务按 60s 周期 reload。
+            // 与 trade_signal 共用同一份 Redis key（无 prefix）以保证两侧视图一致。
+            if ArbMode::from_venues(open_venue, hedge_venue) == ArbMode::IntraArb {
+                let bwd_key_suffix = open_venue.trade_engine_exchange().to_string();
+                let bwd_redis = RedisSettings::default();
+                if let Err(err) =
+                    IntraBwdSymbolList::load_from_redis(&bwd_redis, &bwd_key_suffix).await
+                {
+                    warn!(
+                        "intra_bwd 借贷白名单初次加载失败 key_suffix='{}': {:#}",
+                        bwd_key_suffix, err
+                    );
+                }
+                IntraBwdSymbolList::start_background_refresh(bwd_redis, bwd_key_suffix);
+            }
 
             info!(
                 "MM-only pre_trade path enabled={} (open={:?} hedge={:?})",

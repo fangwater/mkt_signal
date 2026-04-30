@@ -10,7 +10,7 @@ use crate::signal::common::TradingVenue;
 use crate::symbol_match::normalize_symbol_for_whitelist;
 
 use super::spread_factor::SpreadFactor;
-use super::xarb_funding_threshold_loader::XarbFundingThresholdsResolved;
+use super::funding_threshold_loader::{FactorDirectionalThresholds, FundingThresholdsResolved};
 
 const XARB_SPREAD_REDIS_SYNC_SECS: u64 = 1800;
 const QUANTILE_MATCH_EPSILON: f64 = 1e-6;
@@ -25,6 +25,61 @@ pub(crate) struct StoredXarbMappingConfig {
     pub(crate) enabled: bool,
     pub(crate) rolling_key: Option<String>,
     pub(crate) mapping: HashMap<String, String>,
+}
+
+/// Funding 因子链单元素:配对 forward/backward 两个分位数 + 独立 enable。
+/// Python 侧的因子注册表(`intra_scripts/sync_intra_funding_thresholds.py`、
+/// `cross_scripts/sync_cross_funding_thresholds.py`)与 Rust 侧
+/// `arb_open_filter::lookup_factor_realtime_value` 必须 lockstep——
+/// 新增因子时两侧同步,否则链跳过 / 报 `miss_<factor>_value`。
+#[derive(Debug, Clone)]
+pub(crate) struct StoredFactorChainEntry {
+    pub(crate) factor: String,
+    pub(crate) enabled: bool,
+    pub(crate) forward_open_pct: f64,
+    pub(crate) backward_open_pct: f64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct StoredFundingChainConfig {
+    /// 链上至少有一个 factor.enabled=true 时为 true。
+    pub(crate) enabled: bool,
+    pub(crate) rolling_key: Option<String>,
+    pub(crate) factor_chain: Vec<StoredFactorChainEntry>,
+}
+
+/// 组合 dest_field key:`<factor>__<direction>` 给 resolve_symbol_quantile_thresholds 使用。
+/// `__`(双下划线)作为 factor↔direction 分隔,避免与因子名内部的 `_` 冲突。
+const FACTOR_FIELD_SEP: &str = "__";
+
+pub(crate) fn factor_field_name(factor: &str, direction: &str) -> String {
+    format!("{factor}{FACTOR_FIELD_SEP}{direction}")
+}
+
+pub(crate) fn parse_factor_field_name(field: &str) -> Option<(&str, &str)> {
+    field.rsplit_once(FACTOR_FIELD_SEP)
+}
+
+/// 把因子链展开成 funding pipeline 用的 mapping(<factor>__<direction> → <factor>_<percentile>)。
+/// disabled 因子会被跳过——我们不会去读它们的阈值。
+pub(crate) fn factor_chain_to_funding_mapping(
+    chain: &[StoredFactorChainEntry],
+) -> HashMap<String, String> {
+    let mut mapping = HashMap::new();
+    for entry in chain {
+        if !entry.enabled {
+            continue;
+        }
+        mapping.insert(
+            factor_field_name(&entry.factor, "forward_open"),
+            format_quantile_field_ref(&entry.factor, entry.forward_open_pct),
+        );
+        mapping.insert(
+            factor_field_name(&entry.factor, "backward_open"),
+            format_quantile_field_ref(&entry.factor, entry.backward_open_pct),
+        );
+    }
+    mapping
 }
 
 pub(crate) fn format_quantile_field_ref(prefix: &str, percentile: f64) -> String {
@@ -132,29 +187,6 @@ fn default_xarb_spread_threshold_order() -> [&'static str; 8] {
     ]
 }
 
-pub(crate) fn default_xarb_funding_mapping(
-    open_venue: TradingVenue,
-    hedge_venue: TradingVenue,
-) -> HashMap<String, String> {
-    if open_venue.is_futures() && hedge_venue.is_futures() {
-        HashMap::from([
-            ("forward_open_mm".to_string(), "spread_fr_80".to_string()),
-            ("backward_open_mm".to_string(), "spread_fr_20".to_string()),
-        ])
-    } else {
-        HashMap::from([
-            (
-                "forward_open_mm".to_string(),
-                "hedge_premium_rate_50".to_string(),
-            ),
-            (
-                "backward_open_mm".to_string(),
-                "hedge_premium_rate_50".to_string(),
-            ),
-        ])
-    }
-}
-
 pub(crate) fn xarb_spread_mapping_key(
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
@@ -166,12 +198,17 @@ pub(crate) fn xarb_spread_mapping_key(
     )
 }
 
-pub(crate) fn xarb_funding_mapping_key(
+/// Funding 因子链配置在 Redis 里的 key:`<ns>_funding_thresholds_config_<o>_<h>`。
+/// 三个套利路由(intra / cross / fr)用各自 namespace 前缀,Python 侧
+/// `intra_config_server` / `cross_config_server` / `fr_config_server` 必须输出同样的 key。
+pub(crate) fn funding_chain_config_key(
+    namespace: &str,
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
 ) -> String {
+    let ns = namespace.trim().to_ascii_lowercase();
     format!(
-        "xarb_funding_thresholds_config_{}_{}",
+        "{ns}_funding_thresholds_config_{}_{}",
         open_venue.data_pub_slug(),
         hedge_venue.data_pub_slug()
     )
@@ -207,7 +244,7 @@ pub(crate) fn parse_xarb_mapping_config(
     let parsed: serde_json::Value = match serde_json::from_str(&text) {
         Ok(value) => value,
         Err(err) => {
-            warn!("解析 xarb mapping config 失败，回退默认 mapping: {err}");
+            warn!("解析 spread mapping config 失败，回退默认 mapping: {err}");
             return StoredXarbMappingConfig {
                 enabled: true,
                 rolling_key: None,
@@ -254,6 +291,73 @@ pub(crate) fn parse_xarb_mapping_config(
         } else {
             mapping
         },
+    }
+}
+
+/// 解析 funding 因子链配置 JSON。Redis 里只有一种合法 shape:
+/// ```json
+/// {
+///   "factor_chain": [
+///     {"factor": "hedge_premium_rate", "enabled": true,
+///      "forward_open": 50, "backward_open": 50}
+///   ],
+///   "rolling_key": "rolling_metrics_thresholds_..."
+/// }
+/// ```
+/// JSON 缺失/解析失败/factor_chain 为空 → 返回空链(`enable_funding_open_filter`=false,
+/// 不会跑到任何因子的阈值检查)。运维需要通过 sync 脚本或 dashboard 写入合法 chain
+/// 才会启用 funding filter。**不**做老 schema fallback。
+pub(crate) fn parse_funding_chain_config(raw: Option<String>) -> StoredFundingChainConfig {
+    let Some(text) = raw else {
+        return StoredFundingChainConfig::default();
+    };
+    let parsed: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(value) => value,
+        Err(err) => {
+            warn!("解析 funding chain config 失败，funding filter 视为禁用: {err}");
+            return StoredFundingChainConfig::default();
+        }
+    };
+
+    let rolling_key = parsed
+        .get("rolling_key")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+
+    let factor_chain = parsed
+        .get("factor_chain")
+        .and_then(|value| value.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    let obj = item.as_object()?;
+                    let factor = obj
+                        .get("factor")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())?
+                        .to_string();
+                    let enabled = obj.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+                    let forward_open_pct = obj.get("forward_open").and_then(|v| v.as_f64())?;
+                    let backward_open_pct = obj.get("backward_open").and_then(|v| v.as_f64())?;
+                    Some(StoredFactorChainEntry {
+                        factor,
+                        enabled,
+                        forward_open_pct,
+                        backward_open_pct,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let enabled = factor_chain.iter().any(|entry| entry.enabled);
+    StoredFundingChainConfig {
+        enabled,
+        rolling_key,
+        factor_chain,
     }
 }
 
@@ -544,21 +648,49 @@ pub(crate) fn apply_xarb_spread_thresholds(
     applied
 }
 
-pub(crate) fn resolve_xarb_funding_thresholds(
+/// 把 resolve_symbol_quantile_thresholds 的输出(dest_field 形如 `<factor>__<direction>`)
+/// 聚合到 per-factor 阈值结构。每个 symbol 上,只有当因子的 forward+backward 都齐全时
+/// 才录入,缺失任一方向的因子会被跳过。
+pub(crate) fn resolve_funding_thresholds(
     resolved: &HashMap<String, HashMap<String, f64>>,
-) -> HashMap<String, XarbFundingThresholdsResolved> {
-    resolved
-        .iter()
-        .filter_map(|(symbol, values)| {
-            Some((
+) -> HashMap<String, FundingThresholdsResolved> {
+    let mut out = HashMap::new();
+    for (symbol, values) in resolved {
+        // factor → (Option<forward>, Option<backward>)
+        let mut grouped: HashMap<String, (Option<f64>, Option<f64>)> = HashMap::new();
+        for (dest_field, value) in values {
+            let Some((factor, direction)) = parse_factor_field_name(dest_field) else {
+                continue;
+            };
+            let entry = grouped.entry(factor.to_string()).or_insert((None, None));
+            match direction {
+                "forward_open" => entry.0 = Some(*value),
+                "backward_open" => entry.1 = Some(*value),
+                _ => {}
+            }
+        }
+        let mut resolved_factors = HashMap::new();
+        for (factor, (fwd, bwd)) in grouped {
+            if let (Some(forward_open), Some(backward_open)) = (fwd, bwd) {
+                resolved_factors.insert(
+                    factor,
+                    FactorDirectionalThresholds {
+                        forward_open,
+                        backward_open,
+                    },
+                );
+            }
+        }
+        if !resolved_factors.is_empty() {
+            out.insert(
                 symbol.clone(),
-                XarbFundingThresholdsResolved {
-                    forward_open: *values.get("forward_open_mm")?,
-                    backward_open: *values.get("backward_open_mm")?,
+                FundingThresholdsResolved {
+                    factors: resolved_factors,
                 },
-            ))
-        })
-        .collect()
+            );
+        }
+    }
+    out
 }
 
 pub(crate) fn xarb_spread_threshold_order(mapping: &HashMap<String, String>) -> Vec<String> {
@@ -716,9 +848,11 @@ pub(crate) async fn sync_xarb_spread_thresholds_to_redis(
 mod tests {
     use super::{
         alias_single_side_payloads, build_xarb_spread_sync_entries, default_fr_spread_mapping,
-        default_xarb_funding_mapping, extract_quantile_value, merge_rolling_payloads,
-        normalize_xarb_symbol, parse_plain_mapping_config, parse_xarb_mapping_config,
+        extract_quantile_value, factor_chain_to_funding_mapping, factor_field_name,
+        merge_rolling_payloads, normalize_xarb_symbol, parse_funding_chain_config,
+        parse_plain_mapping_config, parse_xarb_mapping_config, resolve_funding_thresholds,
         resolve_symbol_quantile_thresholds, resolve_threshold_value, xarb_spread_threshold_order,
+        StoredFactorChainEntry,
     };
     use crate::signal::common::TradingVenue;
     use std::collections::HashMap;
@@ -747,27 +881,98 @@ mod tests {
     }
 
     #[test]
-    fn xarb_default_funding_mapping_depends_on_venues() {
-        let fut_fut =
-            default_xarb_funding_mapping(TradingVenue::BinanceFutures, TradingVenue::OkexFutures);
+    fn parse_funding_chain_config_reads_factor_chain_only() {
+        let raw = r#"{
+            "factor_chain": [
+                {"factor": "hedge_premium_rate", "enabled": true,
+                 "forward_open": 50, "backward_open": 50},
+                {"factor": "spread_fr", "enabled": false,
+                 "forward_open": 80, "backward_open": 20}
+            ],
+            "rolling_key": "rolling_metrics_thresholds_a_b"
+        }"#;
+        let cfg = parse_funding_chain_config(Some(raw.to_string()));
+        assert!(cfg.enabled, "any factor enabled => config enabled");
+        assert_eq!(cfg.factor_chain.len(), 2);
+        assert_eq!(cfg.factor_chain[0].factor, "hedge_premium_rate");
+        assert!(cfg.factor_chain[0].enabled);
+        assert!((cfg.factor_chain[0].forward_open_pct - 50.0).abs() < 1e-12);
+        assert_eq!(cfg.factor_chain[1].factor, "spread_fr");
+        assert!(!cfg.factor_chain[1].enabled);
         assert_eq!(
-            fut_fut.get("forward_open_mm").map(String::as_str),
-            Some("spread_fr_80")
+            cfg.rolling_key.as_deref(),
+            Some("rolling_metrics_thresholds_a_b")
         );
-        assert_eq!(
-            fut_fut.get("backward_open_mm").map(String::as_str),
-            Some("spread_fr_20")
-        );
+    }
 
-        let margin_fut =
-            default_xarb_funding_mapping(TradingVenue::BinanceMargin, TradingVenue::BinanceFutures);
+    #[test]
+    fn parse_funding_chain_config_treats_missing_chain_as_disabled() {
+        let cfg = parse_funding_chain_config(None);
+        assert!(!cfg.enabled);
+        assert!(cfg.factor_chain.is_empty());
+
+        let bad = parse_funding_chain_config(Some("{not json".to_string()));
+        assert!(!bad.enabled);
+        assert!(bad.factor_chain.is_empty());
+
+        let empty_chain = parse_funding_chain_config(Some(r#"{"factor_chain":[]}"#.to_string()));
+        assert!(!empty_chain.enabled);
+    }
+
+    #[test]
+    fn factor_chain_to_mapping_skips_disabled() {
+        let chain = vec![
+            StoredFactorChainEntry {
+                factor: "hedge_premium_rate".to_string(),
+                enabled: true,
+                forward_open_pct: 50.0,
+                backward_open_pct: 50.0,
+            },
+            StoredFactorChainEntry {
+                factor: "spread_fr".to_string(),
+                enabled: false,
+                forward_open_pct: 80.0,
+                backward_open_pct: 20.0,
+            },
+        ];
+        let mapping = factor_chain_to_funding_mapping(&chain);
+        assert_eq!(mapping.len(), 2);
         assert_eq!(
-            margin_fut.get("forward_open_mm").map(String::as_str),
+            mapping
+                .get(&factor_field_name("hedge_premium_rate", "forward_open"))
+                .map(String::as_str),
             Some("hedge_premium_rate_50")
         );
-        assert_eq!(
-            margin_fut.get("backward_open_mm").map(String::as_str),
-            Some("hedge_premium_rate_50")
+        assert!(
+            mapping.keys().all(|k| !k.starts_with("spread_fr__")),
+            "disabled factor not in mapping"
+        );
+    }
+
+    #[test]
+    fn resolve_funding_thresholds_groups_per_factor() {
+        let mut resolved: HashMap<String, HashMap<String, f64>> = HashMap::new();
+        let mut sym = HashMap::new();
+        sym.insert(
+            factor_field_name("hedge_premium_rate", "forward_open"),
+            0.01,
+        );
+        sym.insert(
+            factor_field_name("hedge_premium_rate", "backward_open"),
+            -0.01,
+        );
+        // 缺 backward 的因子应被丢弃
+        sym.insert(factor_field_name("spread_fr", "forward_open"), 0.0005);
+        resolved.insert("BTCUSDT".to_string(), sym);
+
+        let out = resolve_funding_thresholds(&resolved);
+        let btc = out.get("BTCUSDT").expect("BTCUSDT present");
+        let hpr = btc.factor("hedge_premium_rate").expect("hpr factor");
+        assert!((hpr.forward_open - 0.01).abs() < 1e-12);
+        assert!((hpr.backward_open + 0.01).abs() < 1e-12);
+        assert!(
+            btc.factor("spread_fr").is_none(),
+            "incomplete factor dropped"
         );
     }
 

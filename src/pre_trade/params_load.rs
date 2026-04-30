@@ -190,9 +190,7 @@ impl PreTradeParamsLoader {
                 max_pos_u_overrides.extend(parsed);
             }
         }
-        if let Some(override_key) =
-            arb_max_pos_u_override_key(env_name, open_venue, hedge_venue)
-        {
+        if let Some(override_key) = arb_max_pos_u_override_key(env_name, open_venue, hedge_venue) {
             if let Some(raw) = client.get_string(&override_key).await? {
                 let parsed = parse_max_pos_u_overrides(&raw, open_venue, &override_key);
                 debug!(

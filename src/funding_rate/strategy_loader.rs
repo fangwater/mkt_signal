@@ -141,6 +141,44 @@ pub fn mm_amount_u_override_key_for_env(
     format!("{env_name}:{}:mm:amount_u", hedge_venue.data_pub_slug())
 }
 
+/// Arb（intra/cross/fr）共用的 per-symbol amount_u 覆盖键。
+/// 由 sync_*_amount_u.py 写入 Redis STRING(JSON {symbol: amount_u})。
+/// 与 MM 不同，arb 用 (open, hedge) 二元组定位，覆盖键可选（env 缺失时返回 None，
+/// 让加载流程优雅 fallback 到 default order_amount）。
+pub fn arb_amount_u_override_key(
+    env_name: Option<&str>,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+) -> Option<String> {
+    let env_name = env_name.map(str::trim).filter(|s| !s.is_empty())?;
+    Some(format!(
+        "{env_name}:{}:{}:amount_u_overrides",
+        open_venue.data_pub_slug(),
+        hedge_venue.data_pub_slug()
+    ))
+}
+
+/// 从运行时（ENV_NAME 环境变量或当前工作目录名）推断 arb 的 env_name。
+/// 与 MM 版本不同：env 缺失时不 panic，返回 None。
+fn infer_arb_env_name_from_runtime() -> Option<String> {
+    if let Ok(env_name) = std::env::var("ENV_NAME") {
+        let trimmed = env_name.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_ascii_lowercase());
+        }
+    }
+    let cwd = std::env::current_dir().ok()?;
+    let leaf = cwd
+        .file_name()?
+        .to_string_lossy()
+        .trim()
+        .to_ascii_lowercase();
+    if leaf.is_empty() {
+        return None;
+    }
+    Some(leaf)
+}
+
 fn parse_mm_amount_u_overrides(
     raw: &str,
     open_venue: TradingVenue,
@@ -226,6 +264,11 @@ pub struct StrategyParams {
     /// MM 按 symbol 覆盖的下单量（USDT）
     #[serde(default)]
     pub mm_amount_u_overrides: HashMap<String, f64>,
+
+    /// Arb（intra/cross/fr）按 symbol 覆盖的下单量（USDT）
+    /// Redis STRING key: <env>:<open>:<hedge>:amount_u_overrides
+    #[serde(default)]
+    pub arb_amount_u_overrides: HashMap<String, f64>,
 
     /// arb 开仓 plan 波动带缩放倍率 [low, high]（JSON 数组字符串，实际偏移区间=vol*[low,high]）
     #[serde(default = "default_vol_band_scale")]
@@ -475,6 +518,7 @@ impl Default for StrategyParams {
         Self {
             order_amount: default_order_amount(),
             mm_amount_u_overrides: HashMap::new(),
+            arb_amount_u_overrides: HashMap::new(),
             vol_band_scale: default_vol_band_scale(),
             open_buy_vol_scale: default_open_buy_vol_scale(),
             open_sell_vol_scale: default_open_sell_vol_scale(),
@@ -570,6 +614,41 @@ impl StrategyParams {
                     info!(
                         "MM amount_u override missing; use default_order_amount from key='{}'",
                         redis_key
+                    );
+                    HashMap::new()
+                }
+            }
+        } else {
+            HashMap::new()
+        };
+        // Arb（intra/cross/fr）的 per-symbol amount_u 覆盖：可选，env 缺失或键不存在
+        // 都视为没有覆盖，回退到 strategy_params 的 default order_amount。
+        let arb_amount_u_overrides = if ns == "intra" || ns == "cross" || ns == "fr" {
+            let arb_env_name = infer_arb_env_name_from_runtime();
+            match arb_amount_u_override_key(arb_env_name.as_deref(), open_venue, hedge_venue) {
+                Some(override_key) => match client.get_string(&override_key).await? {
+                    Some(raw) => {
+                        let parsed = parse_mm_amount_u_overrides(&raw, open_venue, &override_key);
+                        info!(
+                            "Arb amount_u overrides loaded ns={} key='{}' symbols={}",
+                            ns,
+                            override_key,
+                            parsed.len()
+                        );
+                        parsed
+                    }
+                    None => {
+                        info!(
+                            "Arb amount_u override missing ns={} key='{}'; use default order_amount",
+                            ns, override_key
+                        );
+                        HashMap::new()
+                    }
+                },
+                None => {
+                    info!(
+                        "Arb amount_u override skipped ns={} (env_name unavailable); use default order_amount",
+                        ns
                     );
                     HashMap::new()
                 }
@@ -994,6 +1073,7 @@ impl StrategyParams {
         Ok(Self {
             order_amount,
             mm_amount_u_overrides,
+            arb_amount_u_overrides,
             vol_band_scale,
             open_buy_vol_scale,
             open_sell_vol_scale,
@@ -1088,6 +1168,7 @@ impl StrategyParams {
             self.parse_required_vol_scale_range(&self.vol_band_scale, "vol_band_scale");
         let applied = ArbDecision::with_state_mut(|arb| {
             arb.order_amount = self.order_amount;
+            arb.amount_u_overrides = self.arb_amount_u_overrides.clone();
             arb.vol_band_scale = arb_vol_band_scale;
             arb.open_orders_per_round = self.open_orders_per_round;
             arb.open_order_ttl_us = self

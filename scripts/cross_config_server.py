@@ -259,22 +259,11 @@ except Exception:
     FUNDING_THRESHOLD_ORDER = []
 
 
-def default_funding_threshold_mapping(
-    open_venue: Optional[str], hedge_venue: Optional[str]
-) -> Dict[str, str]:
-    if "funding_defaults" not in globals():
-        return {}
-    open_v = (open_venue or "").strip()
-    hedge_v = (hedge_venue or "").strip()
-    if not open_v or not hedge_v:
-        return {}
-    try:
-        return dict(funding_defaults.default_funding_threshold_mapping(open_v, hedge_v))
-    except Exception:
-        return {}
-
-
-FUNDING_FILTER_FACTOR = "spread_fr"
+# Funding 因子链(hardcoded)。和 Rust 侧 `arb_open_filter::lookup_factor_realtime_value`
+# / `cross_scripts/sync_cross_funding_thresholds.py:CROSS_FACTOR_CHAIN` 必须 lockstep。
+CROSS_FACTOR_CHAIN: List[Dict[str, Any]] = [
+    {"factor": "spread_fr", "enabled": True, "forward_open": 80, "backward_open": 20},
+]
 
 
 def percentile_text_from_value(value: float) -> str:
@@ -284,32 +273,34 @@ def percentile_text_from_value(value: float) -> str:
     return f"{value:.12g}"
 
 
-def build_funding_threshold_mapping_from_percentiles(
-    open_venue: Optional[str],
-    hedge_venue: Optional[str],
-    forward_percentile_raw: Any,
-    backward_percentile_raw: Any,
-) -> Dict[str, str]:
-    forward_value, forward_text = normalize_percentile_text(forward_percentile_raw)
-    backward_value, backward_text = normalize_percentile_text(backward_percentile_raw)
-    if not (0.0 < forward_value <= 99.0):
-        raise ValueError("forward percentile must be in (0,99]")
-    if not (0.0 < backward_value <= 99.0):
-        raise ValueError("backward percentile must be in (0,99]")
-    return {
-        "forward_open_mm": f"{FUNDING_FILTER_FACTOR}_{forward_text}",
-        "backward_open_mm": f"{FUNDING_FILTER_FACTOR}_{backward_text}",
-    }
+def _funding_dashboard_keys() -> List[str]:
+    keys: List[str] = []
+    for entry in CROSS_FACTOR_CHAIN:
+        f = entry["factor"]
+        keys.extend([f"{f}.enabled", f"{f}.forward_open", f"{f}.backward_open"])
+    return keys
 
 
 def default_funding_threshold_config(
     open_venue: Optional[str], hedge_venue: Optional[str]
 ) -> Dict[str, str]:
-    return {
-        "enabled": "true",
-        "forward_open_mm": "80",
-        "backward_open_mm": "20",
-    }
+    out: Dict[str, str] = {}
+    for entry in CROSS_FACTOR_CHAIN:
+        f = entry["factor"]
+        out[f"{f}.enabled"] = "true" if entry.get("enabled", True) else "false"
+        out[f"{f}.forward_open"] = str(entry.get("forward_open", 80))
+        out[f"{f}.backward_open"] = str(entry.get("backward_open", 20))
+    return out
+
+
+def default_funding_threshold_comments() -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for entry in CROSS_FACTOR_CHAIN:
+        f = entry["factor"]
+        out[f"{f}.enabled"] = f"[{f}] 是否启用 (链上 enabled=false 的因子在评估时跳过)"
+        out[f"{f}.forward_open"] = f"[{f}] 正向开仓分位数 (0,99]"
+        out[f"{f}.backward_open"] = f"[{f}] 反向开仓分位数 (0,99]"
+    return out
 
 
 def parse_bool_text(raw: Any, default: bool = True) -> bool:
@@ -323,19 +314,10 @@ def parse_bool_text(raw: Any, default: bool = True) -> bool:
     return default
 
 
-def infer_percentile_from_mapping(
-    mapping: Dict[str, str], field_name: str, factor: str, default_text: str
-) -> str:
-    field = (mapping or {}).get(field_name, "").strip()
-    prefix = f"{factor}_"
-    if field.startswith(prefix):
-        return field[len(prefix) :].strip() or default_text
-    return default_text
-
-
 def read_funding_threshold_config(
     rds, open_venue: str, hedge_venue: str
 ) -> Dict[str, str]:
+    """读 factor_chain JSON,展平成 dashboard 用的 `<factor>.<key>` flat dict。"""
     defaults = default_funding_threshold_config(open_venue, hedge_venue)
     key = threshold_mapping_key("funding", open_venue, hedge_venue)
     raw = rds.get(key)
@@ -348,20 +330,23 @@ def read_funding_threshold_config(
         return defaults
     if not isinstance(parsed, dict):
         return defaults
-    mapping = normalize_threshold_mapping(parsed.get("mapping") or {})
-    forward_text = infer_percentile_from_mapping(
-        mapping, "forward_open_mm", FUNDING_FILTER_FACTOR, defaults["forward_open_mm"]
-    )
-    backward_text = infer_percentile_from_mapping(
-        mapping, "backward_open_mm", FUNDING_FILTER_FACTOR, defaults["backward_open_mm"]
-    )
-    return {
-        "enabled": "true" if parsed.get("enabled", True) else "false",
-        "forward_open_mm": str(parsed.get("forward_open_mm") or forward_text).strip()
-        or defaults["forward_open_mm"],
-        "backward_open_mm": str(parsed.get("backward_open_mm") or backward_text).strip()
-        or defaults["backward_open_mm"],
-    }
+    chain = parsed.get("factor_chain")
+    if not isinstance(chain, list):
+        return defaults
+    out = dict(defaults)
+    for entry in chain:
+        if not isinstance(entry, dict):
+            continue
+        f = str(entry.get("factor") or "").strip()
+        if not f:
+            continue
+        if "enabled" in entry:
+            out[f"{f}.enabled"] = "true" if bool(entry["enabled"]) else "false"
+        if "forward_open" in entry:
+            out[f"{f}.forward_open"] = str(entry["forward_open"])
+        if "backward_open" in entry:
+            out[f"{f}.backward_open"] = str(entry["backward_open"])
+    return out
 
 
 def write_funding_threshold_config(
@@ -370,55 +355,45 @@ def write_funding_threshold_config(
     hedge_venue: str,
     values: Dict[str, Any],
 ) -> Dict[str, Any]:
-    defaults = default_funding_threshold_config(open_venue, hedge_venue)
-    enabled = parse_bool_text((values or {}).get("enabled"), True)
-    forward_raw = (values or {}).get("forward_open_mm", defaults["forward_open_mm"])
-    backward_raw = (values or {}).get("backward_open_mm", defaults["backward_open_mm"])
-    mapping = (
-        build_funding_threshold_mapping_from_percentiles(
-            open_venue, hedge_venue, forward_raw, backward_raw
+    """从 dashboard 平铺 input 反向组装 factor_chain JSON 写 Redis。"""
+    values = values or {}
+    chain_payload: List[Dict[str, Any]] = []
+    flat_out: Dict[str, str] = {}
+    for default_entry in CROSS_FACTOR_CHAIN:
+        f = default_entry["factor"]
+        enabled = parse_bool_text(
+            values.get(f"{f}.enabled"), bool(default_entry.get("enabled", True))
         )
-        if enabled
-        else {}
-    )
-    forward_value, forward_text = normalize_percentile_text(forward_raw)
-    backward_value, backward_text = normalize_percentile_text(backward_raw)
+        forward_raw = values.get(f"{f}.forward_open", default_entry.get("forward_open", 80))
+        backward_raw = values.get(f"{f}.backward_open", default_entry.get("backward_open", 20))
+        forward_value, forward_text = normalize_percentile_text(forward_raw)
+        backward_value, backward_text = normalize_percentile_text(backward_raw)
+        if not (0.0 < forward_value <= 99.0):
+            raise ValueError(f"{f}.forward_open must be in (0,99]")
+        if not (0.0 < backward_value <= 99.0):
+            raise ValueError(f"{f}.backward_open must be in (0,99]")
+        chain_payload.append(
+            {
+                "factor": f,
+                "enabled": enabled,
+                "forward_open": forward_value,
+                "backward_open": backward_value,
+            }
+        )
+        flat_out[f"{f}.enabled"] = "true" if enabled else "false"
+        flat_out[f"{f}.forward_open"] = forward_text
+        flat_out[f"{f}.backward_open"] = backward_text
+
     key = threshold_mapping_key("funding", open_venue, hedge_venue)
-    existing: Dict[str, Any] = {}
-    raw = rds.get(key)
-    if raw:
-        try:
-            decoded = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
-            parsed = json.loads(decoded)
-            if isinstance(parsed, dict):
-                existing = parsed
-        except Exception:
-            existing = {}
     payload = {
-        "schema_version": 2,
-        "namespace": "cross",
-        "kind": "funding",
-        "open_venue": open_venue,
-        "hedge_venue": hedge_venue,
-        "enabled": enabled,
-        "forward_open_mm": forward_value,
-        "backward_open_mm": backward_value,
-        "rolling_key": existing.get(
-            "rolling_key", f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}"
-        ),
-        "mapping": mapping,
-        "threshold_order": list(mapping.keys()),
-        "generated_at": existing.get("generated_at"),
+        "factor_chain": chain_payload,
+        "rolling_key": f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}",
     }
     rds.set(key, json.dumps(payload, ensure_ascii=False, sort_keys=True))
     return {
         "key": key,
-        "count": 3,
-        "values": {
-            "enabled": "true" if enabled else "false",
-            "forward_open_mm": forward_text,
-            "backward_open_mm": backward_text,
-        },
+        "count": len(flat_out),
+        "values": flat_out,
     }
 
 try:
@@ -515,12 +490,16 @@ except Exception:
 def build_runtime_rolling_defaults(
     open_venue: Optional[str], hedge_venue: Optional[str]
 ) -> Dict[str, Any]:
-    funding_mapping = build_funding_threshold_mapping_from_percentiles(
-        open_venue,
-        hedge_venue,
-        default_funding_threshold_config(open_venue, hedge_venue)["forward_open_mm"],
-        default_funding_threshold_config(open_venue, hedge_venue)["backward_open_mm"],
-    )
+    # 把 hardcoded 因子链展开成 rolling_metrics_params 用的 dest_field → field_ref。
+    funding_mapping: Dict[str, str] = {}
+    for entry in CROSS_FACTOR_CHAIN:
+        f = entry["factor"]
+        funding_mapping[f"{f}.forward_open"] = (
+            f"{f}_{percentile_text_from_value(float(entry.get('forward_open', 80)))}"
+        )
+        funding_mapping[f"{f}.backward_open"] = (
+            f"{f}_{percentile_text_from_value(float(entry.get('backward_open', 20)))}"
+        )
     strategy_open_vol_limit = (
         DEFAULT_STRATEGY_PARAMS.get("open_volatility_limit", "70")
         if isinstance(DEFAULT_STRATEGY_PARAMS, dict)
@@ -1777,13 +1756,19 @@ def ensure_cross_runtime_quantiles(
         parsed["factors"] = factors
 
     changed_factors: List[str] = []
-    if funding_values is not None and parse_bool_text(funding_values.get("enabled"), True):
-        for field in ("forward_open_mm", "backward_open_mm"):
-            raw = funding_values.get(field)
-            if raw in (None, ""):
+    if funding_values is not None:
+        # 遍历 hardcoded 因子链,只为 enabled=true 的因子在 rolling_metrics_params 里
+        # 登记 forward/backward 分位数。
+        for default_entry in CROSS_FACTOR_CHAIN:
+            f = default_entry["factor"]
+            if not parse_bool_text(funding_values.get(f"{f}.enabled"), True):
                 continue
-            if ensure_factor_quantile_config(factors, FUNDING_FILTER_FACTOR, raw):
-                changed_factors.append(f"{FUNDING_FILTER_FACTOR}_{field}")
+            for direction in ("forward_open", "backward_open"):
+                raw = funding_values.get(f"{f}.{direction}")
+                if raw in (None, ""):
+                    continue
+                if ensure_factor_quantile_config(factors, f, raw):
+                    changed_factors.append(f"{f}_{direction}")
 
     if open_volatility_limit_raw not in (None, ""):
         vol_factor = attached_vol_factor_name_for_venue(open_venue)
@@ -2001,39 +1986,12 @@ def sync_spread_thresholds(
     )
 
 
-def sync_funding_thresholds(
-    rds,
-    open_venue: str,
-    hedge_venue: str,
-    key_suffix: str,
-    mapping: Optional[Dict[str, str]] = None,
-    symbol: Optional[str] = None,
-) -> Dict[str, Any]:
-    if "funding_defaults" not in globals():
-        raise RuntimeError("sync_cross_funding_thresholds.py not available")
-    defaults = default_funding_threshold_mapping(open_venue, hedge_venue)
-    return sync_thresholds(
-        rds,
-        "funding",
-        open_venue,
-        hedge_venue,
-        key_suffix,
-        mapping,
-        defaults,
-        funding_defaults.load_symbol_lists,
-        funding_defaults.read_rolling_metrics,
-        funding_defaults.normalize_for_rolling,
-        funding_defaults.extract_quantile_value,
-        symbol,
-    )
-
-
 def render_index_html(
     default_exchange: str,
     default_open_venue: Optional[str],
     default_hedge_venue: Optional[str],
 ) -> str:
-    funding_defaults_mapping = default_funding_threshold_mapping(
+    funding_defaults_mapping = default_funding_threshold_config(
         default_open_venue, default_hedge_venue
     )
     rolling_defaults_mapping = build_runtime_rolling_defaults(
@@ -2062,16 +2020,12 @@ def render_index_html(
         "comments": {
             "risk_params": RISK_PARAM_COMMENTS,
             "strategy_params": STRATEGY_PARAM_COMMENTS,
-            "funding_thresholds": {
-                "enabled": "是否启用 funding filter（false=trade_signal 跳过这层判断）",
-                "forward_open_mm": "正向开仓分位数（0,99]；cross 固定作用于 spread_fr）",
-                "backward_open_mm": "反向开仓分位数（0,99]；cross 固定作用于 spread_fr）",
-            },
+            "funding_thresholds": default_funding_threshold_comments(),
         },
         "order": {
             "risk": RISK_PARAM_ORDER,
             "strategy": STRATEGY_PARAM_ORDER,
-            "funding_thresholds": ["enabled", "forward_open_mm", "backward_open_mm"],
+            "funding_thresholds": _funding_dashboard_keys(),
             "spread_mapping": SPREAD_THRESHOLD_ORDER,
         },
     }

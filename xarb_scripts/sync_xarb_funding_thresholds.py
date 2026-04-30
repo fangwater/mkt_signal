@@ -97,34 +97,18 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-DEFAULT_SPOT_FUTURES_FUNDING_THRESHOLD_MAPPING = {
-    "forward_open_mm": "hedge_premium_rate_50",
-    "backward_open_mm": "hedge_premium_rate_50",
-}
-
-DEFAULT_FUTURES_FUTURES_FUNDING_THRESHOLD_MAPPING = {
-    "forward_open_mm": "spread_fr_80",
-    "backward_open_mm": "spread_fr_20",
-}
-
-THRESHOLD_ORDER = [
-    "forward_open_mm",
-    "backward_open_mm",
-]
-
-
-def default_funding_threshold_mapping(
-    open_venue: str,
-    hedge_venue: str,
-) -> Dict[str, str]:
-    open_name = (open_venue or "").strip().lower()
-    hedge_name = (hedge_venue or "").strip().lower()
-
-    if open_name.endswith("-margin") and hedge_name.endswith("-futures"):
-        return DEFAULT_SPOT_FUTURES_FUNDING_THRESHOLD_MAPPING.copy()
-    if open_name.endswith("-futures") and hedge_name.endswith("-futures"):
-        return DEFAULT_FUTURES_FUTURES_FUNDING_THRESHOLD_MAPPING.copy()
-    return DEFAULT_SPOT_FUTURES_FUNDING_THRESHOLD_MAPPING.copy()
+# fr 因子链按 venue 对动态选择(和 fr_config_server.default_funding_factor_chain 一致)。
+# Rust 侧 `arb_open_filter::lookup_factor_realtime_value` 必须支持这里出现的因子名。
+def default_funding_factor_chain(open_venue: str, hedge_venue: str) -> List[Dict[str, object]]:
+    o = (open_venue or "").strip().lower()
+    h = (hedge_venue or "").strip().lower()
+    if o.endswith("-futures") and h.endswith("-futures"):
+        return [
+            {"factor": "spread_fr", "enabled": True, "forward_open": 80, "backward_open": 20}
+        ]
+    return [
+        {"factor": "hedge_premium_rate", "enabled": True, "forward_open": 50, "backward_open": 50}
+    ]
 
 
 def _read_symbol_list(rds, key: str, label: str, symbols_set: Set[str]) -> None:
@@ -305,54 +289,34 @@ def main() -> int:
     rolling_key = f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}"
     print(f"📍 rolling metrics key: {rolling_key}")
 
-    rolling = read_rolling_metrics(rds, rolling_key)
-    if not rolling:
-        print(f"❌ rolling metrics hash '{rolling_key}' 为空或不存在", file=sys.stderr)
-        return 2
+    # NAMESPACE 设置成 "fr" 让 key 是 fr_funding_thresholds_config_*,和 Rust 侧
+    # `funding_chain_config_key("fr", ...)` 对齐。
+    config_key = f"fr_funding_thresholds_config_{open_venue}_{hedge_venue}"
 
-    funding_threshold_mapping = default_funding_threshold_mapping(open_venue, hedge_venue)
-    thresholds = generate_funding_thresholds(symbols, rolling, funding_threshold_mapping)
-    write_key = f"{NAMESPACE}_funding_thresholds_{open_venue}_{hedge_venue}"
-    config_key = f"{NAMESPACE}_funding_thresholds_config_{open_venue}_{hedge_venue}"
-
+    chain_payload = [
+        {
+            "factor": entry["factor"],
+            "enabled": bool(entry.get("enabled", True)),
+            "forward_open": float(entry.get("forward_open")),
+            "backward_open": float(entry.get("backward_open")),
+        }
+        for entry in default_funding_factor_chain(open_venue, hedge_venue)
+    ]
     config = {
-        "schema_version": 1,
-        "namespace": NAMESPACE,
-        "open_venue": open_venue,
-        "hedge_venue": hedge_venue,
+        "factor_chain": chain_payload,
         "rolling_key": rolling_key,
-        "mapping": funding_threshold_mapping,
-        "threshold_order": THRESHOLD_ORDER,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
     }
     rds.set(config_key, json.dumps(config, ensure_ascii=False, sort_keys=True))
 
-    all_fields: Dict[str, str] = {}
-    skipped_symbols: List[str] = []
-
-    for sym_key, row in thresholds.items():
-        missing = [k for k in THRESHOLD_ORDER if k not in row]
-        if missing:
-            skipped_symbols.append(sym_key)
-            continue
-
-        for suffix in THRESHOLD_ORDER:
-            value = float(row[suffix])
-            all_fields[f"{sym_key}_{suffix}"] = f"{value:.8f}".rstrip("0").rstrip(".")
-
-    if not all_fields:
-        print("❌ 无可写入的 funding 阈值字段（可能 rolling metrics 数据不足）", file=sys.stderr)
-        print(f"🧾 sync 配置已写入 '{config_key}'")
-        return 2
-
-    rds.hset(write_key, mapping=all_fields)
-
-    successful_symbols = len(set(k.rsplit("_", 3)[0] for k in all_fields.keys()))
-    print(f"✅ 已写入 {len(all_fields)} 个 funding 阈值字段到 HASH '{write_key}'")
-    print(f"🧾 已写入 sync 配置到 '{config_key}'")
-    print(f"   成功: {successful_symbols} 个 symbols")
-    if skipped_symbols:
-        print(f"   跳过: {len(skipped_symbols)} 个 symbols ({', '.join(sorted(set(skipped_symbols)))})")
+    print(f"🧾 已写入 funding factor_chain 配置到 '{config_key}'")
+    print(f"   chain 长度={len(chain_payload)} enabled={sum(1 for e in chain_payload if e['enabled'])}")
+    for entry in chain_payload:
+        print(
+            f"   - {entry['factor']}: enabled={entry['enabled']} "
+            f"forward_open={entry['forward_open']} backward_open={entry['backward_open']}"
+        )
+    print(f"📍 rolling_key={rolling_key}")
+    print(f"📦 涉及 symbols={len(symbols)}(由 pre_trade 从 rolling 实时算阈值,本脚本只写 chain config)")
     print("📍 Redis: 127.0.0.1:6379/0")
     return 0
 

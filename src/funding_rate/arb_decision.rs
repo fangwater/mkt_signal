@@ -14,6 +14,7 @@ use crate::common::iceoryx_publisher::SignalPublisher;
 use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
 use crate::common::ipc_service_name::build_service_name;
 use crate::common::redis_client::RedisSettings;
+use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::time_util::get_timestamp_us;
 use crate::funding_rate::FundingRatePeriod;
 use crate::pre_trade::order_manager::Side;
@@ -32,7 +33,9 @@ use super::arb_cooldown::is_cooldown_hit;
 use super::arb_cooldown::threshold_key;
 use super::arb_cooldown::update_last_ts;
 use super::arb_mode::ArbMode;
-use super::arb_open_filter::{lookup_realtime_open_filter_value, select_open_filter_threshold};
+use super::arb_open_filter::{
+    lookup_factor_realtime_value, lookup_realtime_open_filter_value, select_factor_threshold,
+};
 use super::common::normalize_tlens_for_compare;
 use super::common::Quote;
 use super::common::{ThresholdKey, VenuePair};
@@ -42,7 +45,8 @@ use super::factor_value_hub::{
 use super::funding_rate_factor::FundingRateFactor;
 use super::mkt_channel::MktChannel;
 use super::rate_fetcher::RateFetcher;
-use super::xarb_funding_threshold_loader::XarbFundingThresholdsResolved;
+use super::rolling_threshold_sync::StoredFactorChainEntry;
+use super::funding_threshold_loader::FundingThresholdsResolved;
 
 pub const DEFAULT_ARBITRAGE_SIGNAL_CHANNEL: &str = "trade_signal";
 pub const DEFAULT_ARBITRAGE_BACKWARD_CHANNEL: &str = "trade_query";
@@ -2066,8 +2070,8 @@ fn emit_spread_arb_open_signals(
             super::common::format_from_key_optional_value(open_filter_value, 6),
         )],
     );
-    let order_amount = ArbDecision::with_state_mut(|arb| arb.order_amount)
-        .expect("ArbDecisionState should be initialized") as f64;
+    let order_amount = ArbDecision::with_state_mut(|arb| arb.resolve_order_amount_u(open_symbol))
+        .expect("ArbDecisionState should be initialized");
     let open_orders_per_round = ArbDecision::with_state_mut(|arb| arb.open_orders_per_round)
         .expect("ArbDecisionState should be initialized");
     let open_order_ttl_us = ArbDecision::with_state_mut(|arb| arb.open_order_ttl_us)
@@ -2291,8 +2295,8 @@ fn emit_spread_arb_close_signals(
             .unwrap_or(0.0)
     })
     .expect("ArbDecisionState should be initialized");
-    let order_amount = ArbDecision::with_state_mut(|arb| arb.order_amount)
-        .expect("ArbDecisionState should be initialized") as f64;
+    let order_amount = ArbDecision::with_state_mut(|arb| arb.resolve_order_amount_u(open_symbol))
+        .expect("ArbDecisionState should be initialized");
     let open_orders_per_round = ArbDecision::with_state_mut(|arb| arb.open_orders_per_round)
         .expect("ArbDecisionState should be initialized");
     let open_order_ttl_us = ArbDecision::with_state_mut(|arb| arb.open_order_ttl_us)
@@ -2508,8 +2512,8 @@ fn emit_funding_open_close_signals(
     } else {
         [0.0, 1.0]
     };
-    let order_amount = ArbDecision::with_state_mut(|arb| arb.order_amount)
-        .expect("ArbDecisionState should be initialized") as f64;
+    let order_amount = ArbDecision::with_state_mut(|arb| arb.resolve_order_amount_u(spot_symbol))
+        .expect("ArbDecisionState should be initialized");
     let open_orders_per_round = ArbDecision::with_state_mut(|arb| arb.open_orders_per_round)
         .expect("ArbDecisionState should be initialized");
     let open_order_ttl_us = ArbDecision::with_state_mut(|arb| arb.open_order_ttl_us)
@@ -2820,6 +2824,7 @@ pub(crate) struct ArbSharedBootstrap {
     pub vol_band_scale: [f64; 2],
     pub open_orders_per_round: u32,
     pub order_amount: f32,
+    pub amount_u_overrides: HashMap<String, f64>,
     pub open_order_ttl_us: i64,
     pub hedge_timeout_mm_us: i64,
     pub hedge_aggressive_seq_threshold: u32,
@@ -2838,6 +2843,9 @@ pub(crate) struct ArbDecisionState {
     pub vol_band_scale: [f64; 2],
     pub open_orders_per_round: u32,
     pub order_amount: f32,
+    /// per-symbol amount_u 覆盖（USDT），由 strategy_loader 从 Redis 拉取。
+    /// 命中即覆盖 order_amount；未命中按 order_amount 走默认。
+    pub amount_u_overrides: HashMap<String, f64>,
     pub open_order_ttl_us: i64,
     pub hedge_timeout_mm_us: i64,
     pub hedge_vol_multiplier: f64,
@@ -2856,7 +2864,11 @@ pub(crate) struct ArbDecisionState {
     pub return_model_service: Option<String>,
     pub environment_model_service: Option<String>,
     pub environment_model_true_threshold: f64,
-    pub funding_open_thresholds: HashMap<String, XarbFundingThresholdsResolved>,
+    pub funding_open_thresholds: HashMap<String, FundingThresholdsResolved>,
+    /// Funding 因子链。每次 reload threshold 时由 config_loader 整体替换。链上 enabled=false
+    /// 的因子在评估时跳过。因子名必须在 `arb_open_filter::lookup_factor_realtime_value`
+    /// 中有对应取数路径,否则报 `miss_<factor>_value`。
+    pub funding_factor_chain: Vec<StoredFactorChainEntry>,
     pub tlen_thresholds: HashMap<String, f64>,
     pub signal_cooldown_us: i64,
     pub spread_cancel_cooldown_us: i64,
@@ -2878,6 +2890,7 @@ impl ArbDecisionState {
             vol_band_scale: [0.0, 1.0],
             open_orders_per_round: 1,
             order_amount: 100.0,
+            amount_u_overrides: HashMap::new(),
             open_order_ttl_us: 120_000_000,
             hedge_timeout_mm_us: 30_000_000,
             hedge_vol_multiplier: 2.0,
@@ -2897,6 +2910,7 @@ impl ArbDecisionState {
             environment_model_service: None,
             environment_model_true_threshold: 0.0,
             funding_open_thresholds: HashMap::new(),
+            funding_factor_chain: Vec::new(),
             tlen_thresholds: HashMap::new(),
             signal_cooldown_us: 5_000_000,
             spread_cancel_cooldown_us: 0,
@@ -2994,10 +3008,22 @@ impl ArbDecisionState {
         Some(ArbCancelGatePassed { key })
     }
 
+    /// 解析 per-symbol amount_u：命中覆盖即返回覆盖值，否则回退到 order_amount。
+    /// 与 MM 的 resolve_order_amount_u 同语义；symbol 会按 open venue 规范化以匹配
+    /// strategy_loader 里写入 overrides 时使用的同一规范键。
+    pub fn resolve_order_amount_u(&self, symbol: &str) -> f64 {
+        let symbol_key = normalize_symbol_for_venue(symbol, self.venues.0);
+        self.amount_u_overrides
+            .get(&symbol_key)
+            .copied()
+            .unwrap_or(self.order_amount as f64)
+    }
+
     pub fn apply_shared_bootstrap(&mut self, bootstrap: ArbSharedBootstrap) {
         self.vol_band_scale = bootstrap.vol_band_scale;
         self.open_orders_per_round = bootstrap.open_orders_per_round;
         self.order_amount = bootstrap.order_amount;
+        self.amount_u_overrides = bootstrap.amount_u_overrides;
         self.open_order_ttl_us = bootstrap.open_order_ttl_us;
         self.hedge_timeout_mm_us = bootstrap.hedge_timeout_mm_us;
         self.hedge_aggressive_seq_threshold = bootstrap.hedge_aggressive_seq_threshold;
@@ -3014,6 +3040,7 @@ impl ArbDecisionState {
             vol_band_scale: [0.0, 1.0],
             open_orders_per_round,
             order_amount: 100.0,
+            amount_u_overrides: HashMap::new(),
             open_order_ttl_us: 120_000_000,
             hedge_timeout_mm_us: 30_000_000,
             hedge_aggressive_seq_threshold: 6,
@@ -3348,10 +3375,9 @@ impl ArbDecisionState {
     pub fn lookup_funding_open_thresholds(
         &self,
         symbol_key: &str,
-    ) -> Option<XarbFundingThresholdsResolved> {
+    ) -> Option<&FundingThresholdsResolved> {
         self.funding_open_thresholds
             .get(&symbol_key.to_ascii_uppercase())
-            .copied()
     }
 
     fn snapshot_open_from_key_fields(
@@ -3498,28 +3524,36 @@ impl ArbDecisionState {
         let hedge_symbol = symbol;
         let open_venue = self.venues.0;
         let hedge_venue = self.venues.1;
-        let open_filter_lookup =
-            lookup_realtime_open_filter_value(symbol, hedge_symbol, open_venue, hedge_venue);
-        let missing_filter_reason = if open_venue.is_futures() && hedge_venue.is_futures() {
-            "miss_spread_fr"
-        } else {
-            "miss_premium_rate"
-        };
 
         if self.enable_funding_open_filter {
+            // 因子链 AND 串联:每个 enabled 因子都要拿到阈值 + 实时值 + 通过比较,否则 reject。
             let Some(open_filter_thresholds) = self.lookup_funding_open_thresholds(symbol) else {
-                return Some(missing_filter_reason.to_string());
+                return Some("miss_funding_thresholds".to_string());
             };
-            let Some((open_filter_value_ready, open_filter_source)) = open_filter_lookup else {
-                return Some(missing_filter_reason.to_string());
-            };
-            let open_filter_threshold = select_open_filter_threshold(side, open_filter_thresholds);
-            let open_filter_hit = match side {
-                Side::Buy => open_filter_value_ready > open_filter_threshold,
-                Side::Sell => open_filter_value_ready < open_filter_threshold,
-            };
-            if !open_filter_hit {
-                return Some(open_filter_source.to_string());
+            for entry in &self.funding_factor_chain {
+                if !entry.enabled {
+                    continue;
+                }
+                let Some(per_factor) = open_filter_thresholds.factor(&entry.factor) else {
+                    return Some(format!("miss_{}_threshold", entry.factor));
+                };
+                let Some(value) = lookup_factor_realtime_value(
+                    &entry.factor,
+                    symbol,
+                    hedge_symbol,
+                    open_venue,
+                    hedge_venue,
+                ) else {
+                    return Some(format!("miss_{}_value", entry.factor));
+                };
+                let threshold = select_factor_threshold(side, per_factor);
+                let pass = match side {
+                    Side::Buy => value > threshold,
+                    Side::Sell => value < threshold,
+                };
+                if !pass {
+                    return Some(format!("filter_{}", entry.factor));
+                }
             }
         }
 
@@ -3670,6 +3704,8 @@ impl ArbDecisionState {
         forward_open: bool,
         backward_open: bool,
     ) -> Option<ArbOpenGatePassed> {
+        // 仅供 logging:保留按 venue 类型推断的单一因子值快照(spread_fr 或 premium_rate)。
+        // 真正的 funding filter 检查走下面的因子链 AND 串联。
         let open_filter_lookup = lookup_realtime_open_filter_value(
             open_symbol_key,
             hedge_symbol_key,
@@ -3677,30 +3713,40 @@ impl ArbDecisionState {
             hedge_venue,
         );
         let open_filter_value = open_filter_lookup.map(|(value, _)| value);
-        let missing_filter_reason = if open_venue.is_futures() && hedge_venue.is_futures() {
-            "miss_spread_fr"
-        } else {
-            "miss_premium_rate"
-        };
 
         if self.enable_funding_open_filter {
             let Some(open_filter_thresholds) = self.lookup_funding_open_thresholds(open_symbol_key)
             else {
-                self.record_intercept_summary(missing_filter_reason);
+                self.record_intercept_summary("miss_funding_thresholds");
                 return None;
             };
-            let Some((open_filter_value_ready, open_filter_source)) = open_filter_lookup else {
-                self.record_intercept_summary(missing_filter_reason);
-                return None;
-            };
-            let open_filter_threshold = select_open_filter_threshold(side, open_filter_thresholds);
-            let open_filter_hit = match side {
-                Side::Buy => open_filter_value_ready > open_filter_threshold,
-                Side::Sell => open_filter_value_ready < open_filter_threshold,
-            };
-            if !open_filter_hit {
-                self.record_intercept_summary(open_filter_source);
-                return None;
+            for entry in &self.funding_factor_chain {
+                if !entry.enabled {
+                    continue;
+                }
+                let Some(per_factor) = open_filter_thresholds.factor(&entry.factor) else {
+                    self.record_intercept_summary(format!("miss_{}_threshold", entry.factor));
+                    return None;
+                };
+                let Some(value) = lookup_factor_realtime_value(
+                    &entry.factor,
+                    open_symbol_key,
+                    hedge_symbol_key,
+                    open_venue,
+                    hedge_venue,
+                ) else {
+                    self.record_intercept_summary(format!("miss_{}_value", entry.factor));
+                    return None;
+                };
+                let threshold = select_factor_threshold(side, per_factor);
+                let pass = match side {
+                    Side::Buy => value > threshold,
+                    Side::Sell => value < threshold,
+                };
+                if !pass {
+                    self.record_intercept_summary(format!("filter_{}", entry.factor));
+                    return None;
+                }
             }
         }
 
