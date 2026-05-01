@@ -71,6 +71,8 @@ pub struct PreTradeExposureRow {
     pub arb_hedge_time_ms: Option<i64>,
     pub arb_hedge_is_taker: Option<bool>,
     pub arb_hedge_ret_qtl: Option<f64>,
+    /// arb hedge 单一档报单，单值即 last hedge order 的 price_offset。
+    pub arb_hedge_offset: Option<f64>,
     pub net_qty: Option<f64>,
     pub net_usdt: Option<f64>,
     pub is_total: bool,

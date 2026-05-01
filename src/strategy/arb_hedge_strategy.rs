@@ -49,6 +49,9 @@ pub struct ArbHedgeSnapshot {
     pub hedge_ts_ms: Option<i64>,
     pub hedge_is_taker: Option<bool>,
     pub ret_qtl: Option<f64>,
+    /// arb 永远 single-order hedge（drive_shared_arb_hedge_query 取 plan.levels.first()），
+    /// 不存在 MM 那种多档拆单的 low/high，单一 price_offset 即可。
+    pub offset: Option<f64>,
 }
 
 /// Arb 对冲状态策略。
@@ -68,6 +71,8 @@ pub struct ArbHedgeStrategy {
     last_hedge_ts_ms: Option<i64>,
     last_hedge_is_taker: Option<bool>,
     last_ret_qtl: Option<f64>,
+    /// 最近一次 ArbHedge maker 单的 price_offset；taker 时为 0。供 dashboard 显示。
+    last_hedge_offset: Option<f64>,
     next_query_ts_us: i64,
     order_seq: u32,
     hedge_order_meta: HashMap<i64, ArbHedgeOrderMeta>,
@@ -107,6 +112,7 @@ impl ArbHedgeStrategy {
             last_hedge_ts_ms: None,
             last_hedge_is_taker: None,
             last_ret_qtl: None,
+            last_hedge_offset: None,
             next_query_ts_us: 0,
             order_seq: 0,
             hedge_order_meta: HashMap::new(),
@@ -127,6 +133,7 @@ impl ArbHedgeStrategy {
             hedge_ts_ms: self.last_hedge_ts_ms,
             hedge_is_taker: self.last_hedge_is_taker,
             ret_qtl: self.last_ret_qtl,
+            offset: self.last_hedge_offset,
         }
     }
 
@@ -422,6 +429,8 @@ impl ArbHedgeStrategy {
         self.pending_hedge_request_seq = None;
         self.last_hedge_is_taker = Some(ctx.is_taker());
         self.last_ret_qtl = parse_return_qtl_from_from_key(&ctx.from_key);
+        // taker 时 ctx.price_offset = 0；maker 时由 trade_signal 计算的偏移量
+        self.last_hedge_offset = Some(ctx.price_offset);
 
         let Some(side) = ctx.get_side() else {
             warn!(
@@ -530,6 +539,22 @@ impl ArbHedgeStrategy {
             },
         );
 
+        info!(
+            "📤 ArbHedge订单已创建: strategy_id={} client_order_id={} symbol={} {:?} side={:?} type={:?} qty={:.8} base_qty={:.8} price={:.8} mode={} request_seq={} expire_ts={}",
+            self.strategy_id,
+            client_order_id,
+            symbol,
+            venue,
+            side,
+            order_type,
+            qty,
+            order_base_qty,
+            price,
+            if is_taker { "taker" } else { "maker" },
+            ctx.request_seq,
+            ctx.exp_time
+        );
+
         if let Err(err) =
             create_and_send_order(self.strategy_id, client_order_id, "状态对冲", &symbol)
         {
@@ -553,18 +578,9 @@ impl ArbHedgeStrategy {
             // 下一轮状态查询，避免旧挂单无限占用 borrowed pending。
             self.schedule_hedge_order_expiry_check(client_order_id, ctx.exp_time);
         }
-        debug!(
-            "ArbHedgeStrategy: strategy_id={} ArbHedge order sent client_order_id={} symbol={} venue={:?} side={:?} type={:?} qty={:.8} base_qty={:.8} price={:.8} request_seq={}",
-            self.strategy_id,
-            client_order_id,
-            symbol,
-            venue,
-            side,
-            order_type,
-            qty,
-            order_base_qty,
-            price,
-            ctx.request_seq
+        info!(
+            "✅ ArbHedge订单已发送: strategy_id={} client_order_id={}",
+            self.strategy_id, client_order_id
         );
         self.schedule_order_query_watchdog(client_order_id, PendingOrderQueryReason::OrderWatchdog);
     }

@@ -571,7 +571,15 @@ impl ResampleChannel {
                 .collect();
             let arb_hedge_snapshot_by_asset: HashMap<
                 String,
-                (f64, f64, f64, Option<i64>, Option<bool>, Option<f64>),
+                (
+                    f64,
+                    f64,
+                    f64,
+                    Option<i64>,
+                    Option<bool>,
+                    Option<f64>,
+                    Option<f64>,
+                ),
             > = arb_hedge_snapshots
                 .into_iter()
                 .map(|snap| {
@@ -584,6 +592,7 @@ impl ResampleChannel {
                             snap.hedge_ts_ms,
                             snap.hedge_is_taker,
                             snap.ret_qtl,
+                            snap.offset,
                         ),
                     )
                 })
@@ -613,6 +622,7 @@ impl ResampleChannel {
                     arb_hedge_time_ms,
                     arb_hedge_is_taker,
                     arb_hedge_ret_qtl,
+                    arb_hedge_offset,
                 ) = arb_hedge_snapshot_by_asset
                     .get(&asset_upper)
                     .map(
@@ -623,6 +633,7 @@ impl ResampleChannel {
                             hedge_ts_ms,
                             hedge_is_taker,
                             ret_qtl,
+                            offset,
                         )| {
                             (
                                 Some(*net_qty),
@@ -631,10 +642,11 @@ impl ResampleChannel {
                                 *hedge_ts_ms,
                                 *hedge_is_taker,
                                 *ret_qtl,
+                                *offset,
                             )
                         },
                     )
-                    .unwrap_or((None, None, None, None, None, None));
+                    .unwrap_or((None, None, None, None, None, None, None));
                 let has_arb_hedge = arb_hedge_net_qty.map(|v| v.abs() > 1e-12).unwrap_or(false)
                     || arb_pending_hedge_qty
                         .map(|v| v.abs() > 1e-12)
@@ -710,6 +722,7 @@ impl ResampleChannel {
                     arb_hedge_time_ms,
                     arb_hedge_is_taker,
                     arb_hedge_ret_qtl,
+                    arb_hedge_offset,
                     net_qty: Some(net_qty),
                     net_usdt: Some(net_usdt),
                     is_total: false,
@@ -735,6 +748,7 @@ impl ResampleChannel {
                     arb_hedge_time_ms: None,
                     arb_hedge_is_taker: None,
                     arb_hedge_ret_qtl: None,
+                    arb_hedge_offset: None,
                     net_qty: None,
                     net_usdt: Some(exposure_sum_usdt),
                     is_total: true,

@@ -563,9 +563,10 @@
         }
 
         function pickOffset(row) {
+          // intra 部署只走 arb hedge 路径，offset 直接读 arb_hedge_offset（单一档报单）。
+          // 不走 MM 的 hedge_offset_low/high。
           if (!row) return null;
-          if (isFiniteNumber(row.hedge_offset_low)) return row.hedge_offset_low;
-          if (isFiniteNumber(row.hedge_offset_high)) return row.hedge_offset_high;
+          if (isFiniteNumber(row.arb_hedge_offset)) return row.arb_hedge_offset;
           return null;
         }
 
