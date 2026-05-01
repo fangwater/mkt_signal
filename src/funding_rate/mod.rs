@@ -21,6 +21,7 @@ pub mod decision_router;
 pub mod factor_value_hub;
 pub mod fr_threshold_loader;
 pub mod funding_rate_factor;
+pub mod funding_threshold_loader;
 pub mod inline_volatility;
 pub mod mkt_channel;
 pub mod mm_decision;
@@ -31,7 +32,6 @@ pub mod spread_threshold_loader;
 pub mod strategy_loader;
 pub mod symbol_list;
 pub mod tlen_threshold_loader;
-pub mod funding_threshold_loader;
 
 // 公共导出 - 通用定义（枚举、数据结构、辅助函数）
 pub use common::{

@@ -127,27 +127,6 @@ pub(crate) fn resolve_symbol_single_quantile_thresholds(
     (resolved, missing_refs)
 }
 
-pub(crate) fn resolve_symbol_single_thresholds(
-    rolling_payloads: &HashMap<String, serde_json::Value>,
-    field_ref: &str,
-) -> (HashMap<String, f64>, usize) {
-    let mut resolved = HashMap::new();
-    let mut missing_refs = 0usize;
-
-    for (symbol, payload) in rolling_payloads {
-        match resolve_threshold_value(payload, field_ref) {
-            Some(value) => {
-                resolved.insert(symbol.clone(), value);
-            }
-            None => {
-                missing_refs += 1;
-            }
-        }
-    }
-
-    (resolved, missing_refs)
-}
-
 pub(crate) fn default_xarb_spread_mapping() -> HashMap<String, String> {
     HashMap::from([
         ("forward_open_mm".to_string(), "spread_5".to_string()),

@@ -1,8 +1,8 @@
 use crate::pre_trade::order_manager::Side;
 use crate::signal::common::TradingVenue;
 
-use super::mkt_channel::MktChannel;
 use super::funding_threshold_loader::FactorDirectionalThresholds;
+use super::mkt_channel::MktChannel;
 
 /// Per-side(forward/backward)阈值选择,用于因子链上单个因子的阈值比较。
 pub fn select_factor_threshold(side: Side, t: FactorDirectionalThresholds) -> f64 {

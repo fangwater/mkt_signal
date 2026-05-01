@@ -28,8 +28,7 @@ use super::rolling_threshold_sync::{
     normalize_xarb_symbol, parse_funding_chain_config, parse_plain_mapping_config,
     parse_xarb_mapping_config, parse_xarb_rolling_payloads, resolve_funding_thresholds,
     resolve_symbol_quantile_thresholds, resolve_symbol_single_quantile_thresholds,
-    resolve_symbol_single_thresholds, sync_xarb_spread_thresholds_to_redis,
-    xarb_spread_mapping_key,
+    sync_xarb_spread_thresholds_to_redis, xarb_spread_mapping_key,
 };
 use super::strategy_loader::StrategyParams;
 use super::symbol_list::SymbolList;
@@ -821,55 +820,6 @@ async fn reload_spread_thresholds_from_rolling(
         resolve_symbol_quantile_thresholds(&rolling_payloads, &spread_config.mapping);
     let (resolved_funding, funding_missing_refs, funding_skipped) =
         resolve_symbol_quantile_thresholds(&rolling_payloads, &funding_mapping);
-    let mut open_vol_loaded_symbols = 0usize;
-    let mut open_vol_missing_refs = 0usize;
-    let mut open_vol_field_ref = String::new();
-
-    match StrategyParams::load_from_redis(redis, namespace, open_venue, hedge_venue).await {
-        Ok(params) => {
-            if let Err(err) = ensure_open_volatility_source_params(
-                &mut client,
-                open_venue,
-                params.open_volatility_limit,
-            )
-            .await
-            {
-                warn!(
-                    "补齐 {} open volatility rolling 配置失败 (open={} hedge={} percentile={}): {:?}",
-                    namespace,
-                    open_venue.data_pub_slug(),
-                    hedge_venue.data_pub_slug(),
-                    params.open_volatility_limit,
-                    err
-                );
-            }
-            open_vol_field_ref =
-                format_quantile_field_ref("open_vol", params.open_volatility_limit);
-            let (thresholds, missing_refs) =
-                resolve_symbol_single_quantile_thresholds(&rolling_payloads, &open_vol_field_ref);
-            open_vol_loaded_symbols = thresholds.len();
-            open_vol_missing_refs = missing_refs;
-
-            let updated = ArbDecision::with_state_mut(|_| {});
-            if updated.is_none() {
-                warn!(
-                    "{} open volatility thresholds 已生成，但 ArbDecision 尚未初始化 (open={} hedge={})",
-                    namespace,
-                    open_venue.data_pub_slug(),
-                    hedge_venue.data_pub_slug()
-                );
-            }
-        }
-        Err(err) => {
-            warn!(
-                "读取 {} open volatility limit 策略参数失败 (open={} hedge={}): {:?}",
-                namespace,
-                open_venue.data_pub_slug(),
-                hedge_venue.data_pub_slug(),
-                err
-            );
-        }
-    }
 
     let spread_applied = apply_xarb_spread_thresholds(&resolved_spread, open_venue, hedge_venue);
     sync_xarb_spread_thresholds_to_redis(
@@ -902,7 +852,7 @@ async fn reload_spread_thresholds_from_rolling(
     }
 
     info!(
-        "{} rolling thresholds 应用完成 rolling_key={} active_symbols={} rolling_symbols={} spread_cfg_fields={} spread_applied={} spread_skipped={} spread_missing_refs={} funding_chain_len={} funding_chain_enabled={} funding_symbols={} funding_skipped={} funding_missing_refs={} open_vol_field_ref={} open_vol_symbols={} open_vol_missing_refs={}",
+        "{} rolling thresholds 应用完成 rolling_key={} active_symbols={} rolling_symbols={} spread_cfg_fields={} spread_applied={} spread_skipped={} spread_missing_refs={} funding_chain_len={} funding_chain_enabled={} funding_symbols={} funding_skipped={} funding_missing_refs={}",
         namespace,
         rolling_key,
         active_symbols.len(),
@@ -916,9 +866,6 @@ async fn reload_spread_thresholds_from_rolling(
         funding_symbols,
         funding_skipped.len(),
         funding_missing_refs,
-        open_vol_field_ref,
-        open_vol_loaded_symbols,
-        open_vol_missing_refs
     );
 
     Ok(())
@@ -938,16 +885,6 @@ async fn reload_fr_dynamic_thresholds_from_rolling(
         .map(|symbol| normalize_xarb_symbol(&symbol))
         .filter(|symbol| !symbol.is_empty())
         .collect();
-
-    let params = StrategyParams::load_from_redis(redis, "fr", open_venue, hedge_venue)
-        .await
-        .with_context(|| {
-            format!(
-                "读取 fr 策略参数失败 (open={} hedge={})",
-                open_venue.data_pub_slug(),
-                hedge_venue.data_pub_slug()
-            )
-        })?;
 
     let mut client = RedisClient::connect(redis.clone()).await?;
     let spread_config = parse_plain_mapping_config(
@@ -1018,25 +955,9 @@ async fn reload_fr_dynamic_thresholds_from_rolling(
     let (resolved_funding, funding_missing_refs, funding_skipped) =
         resolve_symbol_quantile_thresholds(&rolling_payloads, &funding_mapping);
 
-    if let Err(err) =
-        ensure_open_volatility_source_params(&mut client, open_venue, params.open_volatility_limit)
-            .await
-    {
-        warn!(
-            "补齐 fr open volatility rolling 配置失败 (open={} hedge={} percentile={}): {:?}",
-            open_venue.data_pub_slug(),
-            hedge_venue.data_pub_slug(),
-            params.open_volatility_limit,
-            err
-        );
-    }
-    let open_vol_field_ref = format_quantile_field_ref("open_vol", params.open_volatility_limit);
-    let (open_vol_thresholds, open_vol_missing_refs) =
-        resolve_symbol_single_thresholds(&rolling_payloads, &open_vol_field_ref);
     let spread_applied = apply_xarb_spread_thresholds(&resolved_spread, open_venue, hedge_venue);
     let funding_thresholds = resolve_funding_thresholds(&resolved_funding);
     let funding_symbols = funding_thresholds.len();
-    let open_vol_loaded_symbols = open_vol_thresholds.len();
 
     let updated = ArbDecision::with_state_mut(|arb| {
         arb.enable_funding_open_filter = funding_config.enabled;
@@ -1052,7 +973,7 @@ async fn reload_fr_dynamic_thresholds_from_rolling(
     }
 
     info!(
-        "fr rolling thresholds 应用完成 rolling_key={} active_symbols={} rolling_symbols={} spread_cfg_fields={} spread_applied={} spread_skipped={} spread_missing_refs={} funding_chain_len={} funding_chain_enabled={} funding_symbols={} funding_skipped={} funding_missing_refs={} open_vol_field_ref={} open_vol_symbols={} open_vol_missing_refs={}",
+        "fr rolling thresholds 应用完成 rolling_key={} active_symbols={} rolling_symbols={} spread_cfg_fields={} spread_applied={} spread_skipped={} spread_missing_refs={} funding_chain_len={} funding_chain_enabled={} funding_symbols={} funding_skipped={} funding_missing_refs={}",
         rolling_key,
         active_symbols.len(),
         rolling_payloads.len(),
@@ -1065,9 +986,6 @@ async fn reload_fr_dynamic_thresholds_from_rolling(
         funding_symbols,
         funding_skipped.len(),
         funding_missing_refs,
-        open_vol_field_ref,
-        open_vol_loaded_symbols,
-        open_vol_missing_refs
     );
 
     Ok(())
