@@ -321,6 +321,7 @@ mod tests {
                         tick_size: Some("0.1".to_string()),
                     },
                 }],
+                next_page_cursor: None,
             }),
         };
 
@@ -752,23 +753,64 @@ impl BybitProvider {
             MarketType::Futures => "bybit_linear",
             MarketType::Margin => "bybit_margin",
         };
-        let resp = client.get(url).send().await?;
-        let status = resp.status();
-        let body = resp.text().await?;
-        debug!(
-            "GET {} ({}) -> status={} bytes={}",
-            url,
-            label,
-            status.as_u16(),
-            body.len()
-        );
-        if !status.is_success() {
-            return Err(anyhow!("GET {} failed: {} - {}", url, status, body));
+        let mut all_entries = HashMap::new();
+        let mut all_multipliers = HashMap::new();
+        let mut cursor: Option<String> = None;
+        let mut page = 0usize;
+
+        loop {
+            page += 1;
+            if page > 20 {
+                return Err(anyhow!(
+                    "Bybit instruments pagination exceeded safety limit for {}",
+                    label
+                ));
+            }
+
+            let mut req = client.get(url);
+            if market_type == MarketType::Futures {
+                req = req.query(&[("limit", "1000")]);
+            }
+            if let Some(cursor) = cursor.as_deref() {
+                req = req.query(&[("cursor", cursor)]);
+            }
+
+            let resp = req.send().await?;
+            let status = resp.status();
+            let body = resp.text().await?;
+            debug!(
+                "GET {} ({}) page={} cursor={:?} -> status={} bytes={}",
+                url,
+                label,
+                page,
+                cursor,
+                status.as_u16(),
+                body.len()
+            );
+            if !status.is_success() {
+                return Err(anyhow!("GET {} failed: {} - {}", url, status, body));
+            }
+
+            let response: BybitInstrumentsResponse = serde_json::from_str(&body)
+                .with_context(|| format!("failed to parse {} response", label))?;
+            let next_cursor = response
+                .result
+                .as_ref()
+                .and_then(|result| result.next_page_cursor.as_deref())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned);
+            let (entries, multipliers) = self.parse_response(response, market_type)?;
+            all_entries.extend(entries);
+            all_multipliers.extend(multipliers);
+
+            if next_cursor.is_none() {
+                break;
+            }
+            cursor = next_cursor;
         }
 
-        let response: BybitInstrumentsResponse = serde_json::from_str(&body)
-            .with_context(|| format!("failed to parse {} response", label))?;
-        self.parse_response(response, market_type)
+        Ok((all_entries, all_multipliers))
     }
 
     fn parse_response(
@@ -892,6 +934,8 @@ struct BybitInstrumentsResponse {
 struct BybitInstrumentsResult {
     #[serde(default)]
     list: Vec<BybitInstrument>,
+    #[serde(default)]
+    next_page_cursor: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

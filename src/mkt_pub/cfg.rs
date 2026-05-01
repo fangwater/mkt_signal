@@ -58,6 +58,8 @@ struct BybitInstrumentsResponse {
 struct BybitInstrumentsResult {
     #[serde(default)]
     list: Vec<BybitInstrument>,
+    #[serde(default)]
+    next_page_cursor: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -261,43 +263,93 @@ impl Config {
     }
 
     async fn fetch_bybit_instruments(category: &str) -> Result<Vec<BybitInstrument>> {
-        let url = format!(
-            "https://api.bybit.com/v5/market/instruments-info?category={}",
-            category
+        const BYBIT_INSTRUMENTS_URL: &str = "https://api.bybit.com/v5/market/instruments-info";
+        const BYBIT_INSTRUMENTS_LIMIT: &str = "1000";
+
+        info!(
+            "Fetching Bybit instruments from: {} category={} limit={}",
+            BYBIT_INSTRUMENTS_URL, category, BYBIT_INSTRUMENTS_LIMIT
         );
-        info!("Fetching Bybit instruments from: {}", url);
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .build()
             .context("Failed to build Bybit HTTP client")?;
-        let response = client
-            .get(&url)
-            .send()
-            .await
-            .context("Failed to request Bybit instruments")?;
-        let status = response.status();
-        if !status.is_success() {
-            anyhow::bail!(
-                "Bybit instruments request failed: status={} url={}",
-                status,
-                url
-            );
+
+        let mut cursor = String::new();
+        let mut instruments = Vec::new();
+        let mut page_count = 0usize;
+
+        loop {
+            let mut request = client
+                .get(BYBIT_INSTRUMENTS_URL)
+                .query(&[("category", category), ("limit", BYBIT_INSTRUMENTS_LIMIT)]);
+            if !cursor.is_empty() {
+                request = request.query(&[("cursor", cursor.as_str())]);
+            }
+
+            let response = request
+                .send()
+                .await
+                .context("Failed to request Bybit instruments")?;
+            let status = response.status();
+            if !status.is_success() {
+                anyhow::bail!(
+                    "Bybit instruments request failed: status={} category={} cursor={}",
+                    status,
+                    category,
+                    if cursor.is_empty() {
+                        "-"
+                    } else {
+                        cursor.as_str()
+                    }
+                );
+            }
+
+            let body = response
+                .text()
+                .await
+                .context("Failed to read Bybit response body")?;
+            let parsed: BybitInstrumentsResponse =
+                serde_json::from_str(&body).context("Failed to parse Bybit response JSON")?;
+            if parsed.ret_code != 0 {
+                anyhow::bail!(
+                    "Bybit API error: code={} msg={} category={} cursor={}",
+                    parsed.ret_code,
+                    parsed.ret_msg,
+                    category,
+                    if cursor.is_empty() {
+                        "-"
+                    } else {
+                        cursor.as_str()
+                    }
+                );
+            }
+
+            page_count = page_count.saturating_add(1);
+            let Some(result) = parsed.result else {
+                break;
+            };
+            let next_cursor = result.next_page_cursor.trim().to_string();
+            instruments.extend(result.list);
+            if next_cursor.is_empty() {
+                break;
+            }
+            if next_cursor == cursor {
+                anyhow::bail!(
+                    "Bybit instruments pagination cursor did not advance: category={} cursor={}",
+                    category,
+                    next_cursor
+                );
+            }
+            cursor = next_cursor;
         }
 
-        let body = response
-            .text()
-            .await
-            .context("Failed to read Bybit response body")?;
-        let parsed: BybitInstrumentsResponse =
-            serde_json::from_str(&body).context("Failed to parse Bybit response JSON")?;
-        if parsed.ret_code != 0 {
-            anyhow::bail!(
-                "Bybit API error: code={} msg={}",
-                parsed.ret_code,
-                parsed.ret_msg
-            );
-        }
-        let instruments = parsed.result.map(|r| r.list).unwrap_or_default();
+        info!(
+            "Fetched Bybit instruments category={} pages={} total={}",
+            category,
+            page_count,
+            instruments.len()
+        );
         Ok(instruments)
     }
 
