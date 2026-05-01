@@ -4,6 +4,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+ENV_FILE="${BASE_DIR}/env.sh"
+if [[ -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+fi
+
 PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
 PMDAEMON=("$PMDAEMON_BIN")
 
@@ -53,16 +59,6 @@ if [[ $# -gt 0 ]]; then
 fi
 
 ensure_pmdaemon
-
-ENV_FILE="${BASE_DIR}/env.sh"
-if [[ -f "$ENV_FILE" ]]; then
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
-else
-  echo "[ERROR] 未找到 env.sh：${ENV_FILE}"
-  echo "[ERROR] 请先生成: scripts/deploy_setup_env_intra.sh --env-name $(basename "${BASE_DIR}") --exchange <ex>"
-  exit 1
-fi
 
 if [[ -z "${IPC_NAMESPACE:-}" ]]; then
   echo "[ERROR] IPC_NAMESPACE 未设置（请 source env.sh）"

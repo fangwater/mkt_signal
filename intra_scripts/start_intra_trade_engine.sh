@@ -4,6 +4,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+ENV_FILE="${BASE_DIR}/env.sh"
+if [[ -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+fi
+
 PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
 PMDAEMON=("$PMDAEMON_BIN")
 
@@ -55,15 +61,6 @@ if [[ $# -gt 0 ]]; then
 fi
 
 ensure_pmdaemon
-
-ENV_FILE="${BASE_DIR}/env.sh"
-if [[ -f "$ENV_FILE" ]]; then
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
-else
-  echo "[WARN] 未找到 env.sh：${ENV_FILE}"
-  echo "[WARN] 若需要凭证，请先生成: scripts/deploy_setup_env_intra.sh --env-name $(basename "${BASE_DIR}") --exchange <ex>"
-fi
 
 dir_name="$(basename "${BASE_DIR}")"
 dir_lc="${dir_name,,}"

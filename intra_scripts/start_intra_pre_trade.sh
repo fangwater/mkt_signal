@@ -4,6 +4,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+ENV_FILE="${BASE_DIR}/env.sh"
+if [[ -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+fi
+
 PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
 PMDAEMON=("$PMDAEMON_BIN")
 
@@ -66,15 +72,6 @@ while [[ $# -gt 0 ]]; do
 done
 
 ensure_pmdaemon
-
-ENV_FILE="${BASE_DIR}/env.sh"
-if [[ -f "$ENV_FILE" ]]; then
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
-else
-  echo "[WARN] 未找到 env.sh：${ENV_FILE}"
-  echo "[WARN] 若 IPC_NAMESPACE 未设置，pre_trade 会直接 panic；建议先生成并配置 env.sh。"
-fi
 
 # 同所期现目录约定：<exchange>-intra-<tag>
 dir_name="$(basename "${BASE_DIR}")"
