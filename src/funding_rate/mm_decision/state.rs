@@ -183,7 +183,8 @@ pub(crate) struct MmDecisionState {
     pub(crate) hedge_offset_ratio: f64,
     pub(crate) hedge_price_offset_limit_upper: f64,
     pub(crate) hedge_price_offset_limit_lower: f64,
-    pub(crate) hedge_price_offset_limit_overrides: HashMap<String, (f64, f64)>,
+    pub(crate) hedge_price_offset_limit_upper_overrides: HashMap<String, f64>,
+    pub(crate) hedge_price_offset_limit_lower_overrides: HashMap<String, f64>,
     pub(crate) hedge_window_scale_low: f64,
     pub(crate) hedge_window_scale_high: f64,
     pub(crate) max_hedge_price_pct_change: f64,
@@ -238,15 +239,22 @@ fn validate_hedge_price_offset_limits(lower: f64, upper: f64) {
 fn resolve_mm_hedge_price_offset_limits(
     default_lower: f64,
     default_upper: f64,
-    overrides: &HashMap<String, (f64, f64)>,
+    lower_overrides: &HashMap<String, f64>,
+    upper_overrides: &HashMap<String, f64>,
     open_venue: TradingVenue,
     symbol: &str,
 ) -> (f64, f64) {
     let symbol_key = normalize_symbol_for_venue(symbol, open_venue);
-    overrides
+    let lower = lower_overrides
         .get(&symbol_key)
         .copied()
-        .unwrap_or((default_lower, default_upper))
+        .unwrap_or(default_lower);
+    let upper = upper_overrides
+        .get(&symbol_key)
+        .copied()
+        .unwrap_or(default_upper);
+    validate_hedge_price_offset_limits(lower, upper);
+    (lower, upper)
 }
 
 fn is_supported_clock_aligned_interval_ms(interval_ms: u64) -> bool {
@@ -387,7 +395,8 @@ impl MmDecisionState {
             hedge_offset_ratio: 1.3,
             hedge_price_offset_limit_upper: 0.005,
             hedge_price_offset_limit_lower: 0.0005,
-            hedge_price_offset_limit_overrides: HashMap::new(),
+            hedge_price_offset_limit_upper_overrides: HashMap::new(),
+            hedge_price_offset_limit_lower_overrides: HashMap::new(),
             hedge_window_scale_low: 0.8,
             hedge_window_scale_high: 1.3,
             max_hedge_price_pct_change: 5.0,
@@ -680,6 +689,7 @@ impl MmDecisionState {
         self.hedge_offset_ratio = hedge_offset_ratio;
         self.hedge_price_offset_limit_lower = hedge_price_offset_limit_lower;
         self.hedge_price_offset_limit_upper = hedge_price_offset_limit_upper;
+        self.validate_hedge_price_offset_limit_overrides();
         self.hedge_window_scale_low = hedge_window_scale_low;
         self.hedge_window_scale_high = hedge_window_scale_high;
         self.max_hedge_price_pct_change = max_hedge_price_pct_change;
@@ -700,20 +710,60 @@ impl MmDecisionState {
         );
     }
 
-    pub(crate) fn update_hedge_price_offset_limit_overrides(
-        &mut self,
-        overrides: HashMap<String, (f64, f64)>,
-    ) {
-        for (symbol, (lower, upper)) in &overrides {
-            validate_hedge_price_offset_limits(*lower, *upper);
+    fn validate_hedge_price_offset_limit_overrides(&self) {
+        for (symbol, lower) in &self.hedge_price_offset_limit_lower_overrides {
             if symbol.trim().is_empty() {
                 panic!("MmDecision: hedge price offset override symbol cannot be empty");
             }
+            if !(lower.is_finite() && *lower > 0.0) {
+                panic!(
+                    "MmDecision: hedge_price_offset_limit_lower override must be finite and > 0, symbol={} value={}",
+                    symbol, lower
+                );
+            }
         }
-        self.hedge_price_offset_limit_overrides = overrides;
+        for (symbol, upper) in &self.hedge_price_offset_limit_upper_overrides {
+            if symbol.trim().is_empty() {
+                panic!("MmDecision: hedge price offset override symbol cannot be empty");
+            }
+            if !(upper.is_finite() && *upper > 0.0) {
+                panic!(
+                    "MmDecision: hedge_price_offset_limit_upper override must be finite and > 0, symbol={} value={}",
+                    symbol, upper
+                );
+            }
+        }
+        for symbol in self
+            .hedge_price_offset_limit_lower_overrides
+            .keys()
+            .chain(self.hedge_price_offset_limit_upper_overrides.keys())
+        {
+            let lower = self
+                .hedge_price_offset_limit_lower_overrides
+                .get(symbol)
+                .copied()
+                .unwrap_or(self.hedge_price_offset_limit_lower);
+            let upper = self
+                .hedge_price_offset_limit_upper_overrides
+                .get(symbol)
+                .copied()
+                .unwrap_or(self.hedge_price_offset_limit_upper);
+            validate_hedge_price_offset_limits(lower, upper);
+        }
+    }
+
+    pub(crate) fn update_hedge_price_offset_limit_overrides(
+        &mut self,
+        lower_overrides: HashMap<String, f64>,
+        upper_overrides: HashMap<String, f64>,
+    ) {
+        self.hedge_price_offset_limit_lower_overrides = lower_overrides;
+        self.hedge_price_offset_limit_upper_overrides = upper_overrides;
+        self.validate_hedge_price_offset_limit_overrides();
         debug!(
-            "MmDecision: hedge_price_offset_limit_overrides updated symbols={}",
-            self.hedge_price_offset_limit_overrides.len()
+            "MmDecision: hedge_price_offset_limit_overrides updated lower_symbols={} upper_symbols={}",
+            self.hedge_price_offset_limit_lower_overrides.len(),
+            self.hedge_price_offset_limit_upper_overrides.len()
         );
     }
 
@@ -721,7 +771,8 @@ impl MmDecisionState {
         resolve_mm_hedge_price_offset_limits(
             self.hedge_price_offset_limit_lower,
             self.hedge_price_offset_limit_upper,
-            &self.hedge_price_offset_limit_overrides,
+            &self.hedge_price_offset_limit_lower_overrides,
+            &self.hedge_price_offset_limit_upper_overrides,
             self.open_venue,
             symbol,
         )
@@ -1265,11 +1316,13 @@ mod tests {
 
     #[test]
     fn test_resolve_mm_hedge_price_offset_limits_uses_symbol_override() {
-        let overrides = HashMap::from([(String::from("BTCUSDT"), (0.0005, 0.005))]);
+        let lower_overrides = HashMap::from([(String::from("BTCUSDT"), 0.0005)]);
+        let upper_overrides = HashMap::from([(String::from("BTCUSDT"), 0.005)]);
         let limits = resolve_mm_hedge_price_offset_limits(
             0.0003,
             0.004,
-            &overrides,
+            &lower_overrides,
+            &upper_overrides,
             TradingVenue::BinanceMargin,
             "btc-usdt",
         );
@@ -1278,11 +1331,13 @@ mod tests {
 
     #[test]
     fn test_resolve_mm_hedge_price_offset_limits_falls_back_to_default() {
-        let overrides = HashMap::from([(String::from("ETHUSDT"), (0.0005, 0.005))]);
+        let lower_overrides = HashMap::from([(String::from("ETHUSDT"), 0.0005)]);
+        let upper_overrides = HashMap::from([(String::from("ETHUSDT"), 0.005)]);
         let limits = resolve_mm_hedge_price_offset_limits(
             0.0003,
             0.004,
-            &overrides,
+            &lower_overrides,
+            &upper_overrides,
             TradingVenue::BinanceMargin,
             "btc-usdt",
         );

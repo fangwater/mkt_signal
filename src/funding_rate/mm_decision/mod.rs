@@ -307,10 +307,11 @@ impl MmDecision {
 
     pub fn update_hedge_price_offset_limit_overrides(
         &mut self,
-        overrides: std::collections::HashMap<String, (f64, f64)>,
+        lower_overrides: std::collections::HashMap<String, f64>,
+        upper_overrides: std::collections::HashMap<String, f64>,
     ) {
         self.state
-            .update_hedge_price_offset_limit_overrides(overrides);
+            .update_hedge_price_offset_limit_overrides(lower_overrides, upper_overrides);
     }
 
     pub fn update_open_order_timeout(&mut self, open_order_timeout_secs: u64) {
@@ -440,6 +441,11 @@ impl MmDecision {
     }
 
     fn handle_mm_hedge_query(&mut self, query: MmHedgeSignalQueryMsg) {
+        if !MktChannel::is_initialized() {
+            warn!("MmDecision: MMHedge query skipped because MktChannel is not initialized yet");
+            return;
+        }
+
         let symbol = query.get_symbol().to_uppercase();
         if symbol.is_empty() {
             warn!("MmDecision: MMHedge query missing symbol");
@@ -489,8 +495,7 @@ impl MmDecision {
                 return;
             }
         };
-        let (offset_low, offset_high_limit) =
-            self.state.resolve_hedge_price_offset_limits(&symbol);
+        let (offset_low, offset_high_limit) = self.state.resolve_hedge_price_offset_limits(&symbol);
         let input = InventoryHedgeBuildInput {
             venue: self.state.hedge_venue,
             symbol: &symbol,
@@ -611,6 +616,10 @@ impl MmDecision {
     fn handle_mm_cancel_candidate_query(&mut self, query: MmCancelCandidateQueryMsg) {
         if query.groups.is_empty() {
             debug!("MmDecision: MM cancel candidate query empty");
+            return;
+        }
+        if !MktChannel::is_initialized() {
+            warn!("MmDecision: MMCancel candidate query skipped because MktChannel is not initialized yet");
             return;
         }
 
