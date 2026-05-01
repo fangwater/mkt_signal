@@ -8,6 +8,14 @@ monitor
 batch_setup_servers.sh
 batch_install_dev_tools.sh
 
+# 本机一次性环境配置脚本（含 API key）
+setup-codexzh-mac.sh
+
+# 仅本地排错用的 OKX 只读查询脚本（避免与生产脚本混用）
+scripts/query_okx_account_snapshot.py
+scripts/query_okx_order_history.py
+scripts/query_okx_pending_orders.py
+
 # Claude Code 本地配置（包含 ANTHROPIC_AUTH_TOKEN 等凭证）
 .claude/settings.json
 
