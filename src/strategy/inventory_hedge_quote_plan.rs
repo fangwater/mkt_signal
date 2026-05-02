@@ -11,7 +11,7 @@ use crate::market_maker::quote_plan_levels::{
 use crate::pre_trade::order_manager::Side;
 use crate::signal::common::{align_price_floor, TradingVenue};
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
-use log::{debug, warn};
+use log::{debug, info, warn};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -210,6 +210,51 @@ pub fn build_inventory_hedge_from_key(
 ) -> Vec<u8> {
     build_decision_from_key_base(now_us, signal_qtl, None, Some(volatility), None, None)
         .into_bytes()
+}
+
+fn log_hedge_build_table(
+    symbol: &str,
+    side: Side,
+    input: &InventoryHedgeBuildInput<'_>,
+    signal_qtl_log: &str,
+    bound: f64,
+    mapped_offset: f64,
+    adjusted_offset: f64,
+    final_offset: f64,
+) {
+    let header = format!(
+        " {:<10} {:<5} {:>14} {:>14} {:>12} {:>14} {:>14} {:>14} {:>14} {:>5}",
+        "symbol",
+        "side",
+        "vol",
+        "signal",
+        "signal_qtl",
+        "bound",
+        "mapped",
+        "adjusted",
+        "final",
+        "adj"
+    );
+    let row = format!(
+        " {:<10} {:<5} {:>14.8} {:>14.8} {:>12} {:>14.8} {:>14.8} {:>14.8} {:>14.8} {:>5}",
+        symbol,
+        side.as_str(),
+        input.volatility,
+        input.signal,
+        signal_qtl_log,
+        bound,
+        mapped_offset,
+        adjusted_offset,
+        final_offset,
+        if input.enable_return_score_adjust_hedge {
+            "on"
+        } else {
+            "off"
+        }
+    );
+    let rule = "=".repeat(header.len());
+    let mid = "-".repeat(header.len());
+    info!("\n{rule}\n{header}\n{mid}\n{row}\n{rule}");
 }
 
 fn normalize_signal_legacy(signal: f64, bound: f64) -> (f64, f64) {
@@ -665,6 +710,17 @@ pub fn build_inventory_hedge_quote_plan(
         input.symbol_exposure_u,
         offset_plan.exposure_offset_factor,
         input.hedge_offset_ratio,
+        offset_plan.final_offset,
+    );
+
+    log_hedge_build_table(
+        &symbol,
+        side,
+        &input,
+        signal_qtl_log.as_str(),
+        offset_plan.bound,
+        offset_plan.mapped_offset,
+        offset_plan.adjusted_offset,
         offset_plan.final_offset,
     );
 

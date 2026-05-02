@@ -338,14 +338,7 @@ fn log_arb_hedge_debug_table() {
         ));
     }
 
-    info!(
-        "\n{rule_top}\n ARB_HEDGE_DEBUG ts_us={} open_venue={} hedge_venue={} model_service={} enable_return_score_adjust_hedge={}\n{rule_mid}\n{header}{body}\n{rule_top}",
-        get_timestamp_us(),
-        snapshot.open_venue.data_pub_slug(),
-        snapshot.hedge_venue.data_pub_slug(),
-        snapshot.model_service.as_deref().unwrap_or("-"),
-        snapshot.enable_return_score_adjust_hedge,
-    );
+    info!("\n{rule_top}\n{header}\n{rule_mid}{body}\n{rule_top}");
 }
 
 fn truncate_for_col(s: &str, max: usize) -> String {
