@@ -53,8 +53,8 @@ pub use spread_threshold_loader::load_from_redis as load_spread_thresholds;
 
 // 公共导出 - 单例访问器
 pub use arb_decision::{
-    snapshot_arb_hedge_debug_rows, ArbDecision, ArbHedgeDebugRow, ArbHedgeDebugSnapshot,
-    ArbSignalKind, DEFAULT_ARBITRAGE_BACKWARD_CHANNEL, DEFAULT_ARBITRAGE_SIGNAL_CHANNEL,
+    ArbDecision, ArbSignalKind, DEFAULT_ARBITRAGE_BACKWARD_CHANNEL,
+    DEFAULT_ARBITRAGE_SIGNAL_CHANNEL,
 };
 pub use arb_mode::ArbMode;
 pub use decision_router::{init_decision_branch, trigger_decision, DecisionBranch};

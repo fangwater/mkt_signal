@@ -18,9 +18,9 @@ use mkt_signal::signal::common::TradingVenue;
 
 // 使用模块化的 funding_rate
 use mkt_signal::funding_rate::{
-    init_decision_branch, load_all_once_with_namespace, snapshot_arb_hedge_debug_rows,
-    spawn_config_loader_with_namespace, ArbDecision, ArbMode, DecisionBranch, FundingRateFactor,
-    MktChannel, MmDecision, RateFetcher, SpreadFactor, SymbolList,
+    init_decision_branch, load_all_once_with_namespace, spawn_config_loader_with_namespace,
+    ArbDecision, ArbMode, DecisionBranch, FundingRateFactor, MktChannel, MmDecision, RateFetcher,
+    SpreadFactor, SymbolList,
 };
 
 const PROCESS_NAME: &str = "trade_signal";
@@ -282,75 +282,6 @@ fn spawn_arb_cancel_trigger_worker(token: CancellationToken) {
     });
 }
 
-/// 排查 arb 对冲 qtl 长期为 0.5 的情形：每 30s 打一次三线表，固定看
-/// BTCUSDT/ETHUSDT/SOLUSDT 的 open_vol、hedge_vol、model_score、score_qtl，
-/// 与配置 symbol 列表无关。
-const ARB_HEDGE_DEBUG_FIXED_SYMBOLS: [&str; 3] = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
-
-fn spawn_arb_hedge_debug_dump_worker(token: CancellationToken) {
-    tokio::task::spawn_local(async move {
-        let mut interval = time::interval(Duration::from_secs(30));
-        // 第一拍立即触发，便于启动后尽快看到一份基线。
-        interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-        loop {
-            tokio::select! {
-                _ = token.cancelled() => break,
-                _ = interval.tick() => {
-                    log_arb_hedge_debug_table();
-                }
-            }
-        }
-    });
-}
-
-fn log_arb_hedge_debug_table() {
-    let Some(snapshot) = snapshot_arb_hedge_debug_rows(&ARB_HEDGE_DEBUG_FIXED_SYMBOLS) else {
-        debug!("ArbHedgeDebug: ArbDecision singleton not initialized yet");
-        return;
-    };
-
-    fn fmt_opt_f64(v: Option<f64>) -> String {
-        match v {
-            Some(v) if v.is_finite() => format!("{:>14.8}", v),
-            _ => format!("{:>14}", "-"),
-        }
-    }
-
-    let header = format!(
-        " {:<10} {:>14} {:>14} {:>14} {:>14}   {:<24} {:<24}",
-        "symbol", "open_vol", "hedge_vol", "model_score", "score_qtl", "vol_note(open/hedge)", "score_note"
-    );
-    let rule_top = "=".repeat(header.len());
-    let rule_mid = "-".repeat(header.len());
-
-    let mut body = String::new();
-    for row in &snapshot.rows {
-        let vol_note = format!("{}/{}", row.open_volatility_note, row.hedge_volatility_note);
-        body.push_str(&format!(
-            "\n {:<10} {} {} {} {}   {:<24} {:<24}",
-            row.symbol,
-            fmt_opt_f64(row.open_volatility),
-            fmt_opt_f64(row.hedge_volatility),
-            fmt_opt_f64(row.model_score),
-            fmt_opt_f64(row.score_quantile),
-            truncate_for_col(&vol_note, 24),
-            truncate_for_col(&row.score_note, 24),
-        ));
-    }
-
-    info!("\n{rule_top}\n{header}\n{rule_mid}{body}\n{rule_top}");
-}
-
-fn truncate_for_col(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let mut truncated: String = s.chars().take(max.saturating_sub(1)).collect();
-        truncated.push('…');
-        truncated
-    }
-}
-
 /// 主运行循环
 async fn run(
     branch: DecisionBranch,
@@ -422,9 +353,8 @@ async fn run(
         debug!("MM workers started open=interval cancel=return_score_update");
     } else if matches!(branch, DecisionBranch::Arb) {
         spawn_arb_cancel_trigger_worker(token.clone());
-        spawn_arb_hedge_debug_dump_worker(token.clone());
         debug!(
-            "ARB workers started cancel_trigger=tlen hedge_debug=30s mode={:?}",
+            "ARB workers started cancel_trigger=tlen mode={:?}",
             arb_mode
         );
     }
