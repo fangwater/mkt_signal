@@ -88,6 +88,57 @@ esac
 RUST_LOG="${RUST_LOG:-info}"
 IPC_NS="${IPC_NAMESPACE:-}"
 PROC_NAME="intra_te_${EXCHANGE}_${ENV_TAG}"
+KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
+
+find_running_pids() {
+  local exchange_arg="--exchange ${EXCHANGE}"
+  local pids=()
+  while IFS= read -r pid; do
+    if [[ -n "$pid" ]]; then
+      pids+=("$pid")
+    fi
+  done < <(
+    ps -eo pid=,args= | awk -v base_dir="$BASE_DIR" -v exchange_arg="$exchange_arg" '
+      index($0, base_dir "/") > 0 && index($0, "trade_engine") > 0 && index($0, exchange_arg) > 0 {
+        print $1
+      }
+    '
+  )
+  if [[ ${#pids[@]} -gt 0 ]]; then
+    printf '%s\n' "${pids[@]}"
+  fi
+}
+
+cleanup_leaked() {
+  mapfile -t leaked_pids < <(find_running_pids || true)
+  if [[ ${#leaked_pids[@]} -eq 0 ]]; then
+    return
+  fi
+  echo "[WARN] Found pre-existing process(es) before start: ${leaked_pids[*]}"
+  echo "[INFO] Sending SIGTERM"
+  kill "${leaked_pids[@]}" >/dev/null 2>&1 || true
+
+  deadline=$((SECONDS + KILL_WAIT_SECS))
+  while [[ $SECONDS -lt $deadline ]]; do
+    mapfile -t leaked_pids < <(find_running_pids || true)
+    if [[ ${#leaked_pids[@]} -eq 0 ]]; then
+      break
+    fi
+    sleep 1
+  done
+
+  if [[ ${#leaked_pids[@]} -gt 0 ]]; then
+    echo "[WARN] SIGTERM timeout, sending SIGKILL: ${leaked_pids[*]}"
+    kill -9 "${leaked_pids[@]}" >/dev/null 2>&1 || true
+    sleep 1
+    mapfile -t leaked_pids < <(find_running_pids || true)
+  fi
+
+  if [[ ${#leaked_pids[@]} -gt 0 ]]; then
+    echo "[ERROR] Failed to kill pre-existing process(es): ${leaked_pids[*]}" >&2
+    exit 1
+  fi
+}
 
 cfg_file="$(mktemp)"
 trap 'rm -f "$cfg_file" >/dev/null 2>&1 || true' EXIT
@@ -122,6 +173,7 @@ JSON
 
 echo "[INFO] Restarting $PROC_NAME (exchange=$EXCHANGE)"
 "${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1 || true
+cleanup_leaked
 "${PMDAEMON[@]}" --config "$cfg_file" start --name "$PROC_NAME"
 
 echo "[INFO] Started: $PROC_NAME"
