@@ -164,7 +164,7 @@ impl MmCancelDecision {
 
     pub(crate) fn process_return_score_updates(&mut self, state: &mut MmDecisionState) {
         if !state.enable_return_score_cancel {
-            let _ = state.factor_value_hub.poll_model_output_updates();
+            let _ = state.model_output_hub.poll_updates();
             return;
         }
 
@@ -174,7 +174,7 @@ impl MmCancelDecision {
 
         let online_symbols = SymbolList::instance().get_online_symbols();
         if online_symbols.is_empty() {
-            let _ = state.factor_value_hub.poll_model_output_updates();
+            let _ = state.model_output_hub.poll_updates();
             return;
         }
 
@@ -189,7 +189,7 @@ impl MmCancelDecision {
             .collect();
 
         let now_us = get_timestamp_us();
-        for event in state.factor_value_hub.poll_model_output_updates() {
+        for event in state.model_output_hub.poll_updates() {
             if event.service_name != service_name || !event.score.is_finite() {
                 continue;
             }

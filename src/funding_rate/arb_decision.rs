@@ -39,9 +39,8 @@ use super::arb_open_filter::{
 use super::common::normalize_tlens_for_compare;
 use super::common::Quote;
 use super::common::{ArbDirection, OperationType, ThresholdKey, VenuePair};
-use super::factor_value_hub::{
-    EnvironmentSignalResult, FactorValueHub, FactorValueLookupResult, ModelOutputScoreLookupResult,
-};
+use super::factor_value_hub::{EnvironmentSignalResult, FactorValueHub, FactorValueLookupResult};
+use super::model_output_hub::{ModelOutputHub, ModelOutputScoreLookupResult};
 use super::funding_rate_factor::FundingRateFactor;
 use super::funding_threshold_loader::FundingThresholdsResolved;
 use super::mkt_channel::MktChannel;
@@ -391,6 +390,7 @@ fn build_funding_arb_shell(venues: VenuePair) -> Result<FundingArbShell> {
     let _ = ArbDecision::with_state_mut(|arb| {
         arb.open_factor_value_hub = Some(open_factor_value_hub);
         arb.hedge_factor_value_hub = Some(hedge_factor_value_hub);
+        arb.model_output_hub = Some(ModelOutputHub::new(venues.1));
         arb.apply_shared_bootstrap(ArbDecisionState::default_shared_bootstrap(1));
     });
     Ok(state)
@@ -415,6 +415,7 @@ fn build_spread_arb_shell(venues: VenuePair) -> Result<SpreadArbShell> {
     let _ = ArbDecision::with_state_mut(|arb| {
         arb.open_factor_value_hub = Some(open_factor_value_hub);
         arb.hedge_factor_value_hub = Some(hedge_factor_value_hub);
+        arb.model_output_hub = Some(ModelOutputHub::new(venues.1));
         arb.apply_shared_bootstrap(ArbDecisionState::default_shared_bootstrap(5));
         arb.enable_environment_model = true;
         arb.return_model_service = None;
@@ -745,17 +746,106 @@ where
 
 pub fn update_model_output_services_for_arb(node: &Node<ipc::Service>, services: Vec<String>) {
     let _ = ArbDecision::with_state_mut(|arb| {
-        if let Some(hub) = arb.hedge_factor_value_hub.as_mut() {
-            hub.update_model_output_services(node, services);
+        if let Some(hub) = arb.model_output_hub.as_mut() {
+            hub.update_services(node, services);
         }
     });
 }
 
-pub fn try_update_spread_arb_model_output_services(services: Vec<String>) -> bool {
-    try_with_thread_local_shell_mut(&SPREAD_ARB_SHELL, |decision| {
+pub fn try_update_arb_model_output_services(services: Vec<String>) -> bool {
+    if try_with_thread_local_shell_mut(&SPREAD_ARB_SHELL, |decision| {
+        update_model_output_services_for_arb(&decision.runtime.node, services.clone());
+    })
+    .is_some()
+    {
+        return true;
+    }
+    try_with_thread_local_shell_mut(&FUNDING_ARB_SHELL, |decision| {
         update_model_output_services_for_arb(&decision.runtime.node, services);
     })
     .is_some()
+}
+
+/// 排查日志快照：每个 symbol 同时取 open_factor_value_hub / hedge_factor_value_hub
+/// 当前 vol（with_last_valid_fallback）以及 hedge 模型 score / quantile / note。
+/// 主要用于排查 arb 对冲 qtl 始终为 0.5（model_score 取不到 → 中性回退）的成因。
+#[derive(Debug, Clone)]
+pub struct ArbHedgeDebugRow {
+    pub symbol: String,
+    pub open_volatility: Option<f64>,
+    pub open_volatility_note: String,
+    pub hedge_volatility: Option<f64>,
+    pub hedge_volatility_note: String,
+    pub model_score: Option<f64>,
+    pub score_quantile: Option<f64>,
+    pub score_note: String,
+    pub score_subscribed: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ArbHedgeDebugSnapshot {
+    pub rows: Vec<ArbHedgeDebugRow>,
+    pub model_service: Option<String>,
+    pub open_venue: TradingVenue,
+    pub hedge_venue: TradingVenue,
+    pub enable_return_score_adjust_hedge: bool,
+}
+
+pub fn snapshot_arb_hedge_debug_rows(symbols: &[&str]) -> Option<ArbHedgeDebugSnapshot> {
+    ArbDecision::with_state_mut(|arb| {
+        let model_service = arb.return_model_service.clone();
+        let open_venue = arb.venues.0;
+        let hedge_venue = arb.venues.1;
+        let enable_return_score_adjust_hedge = arb.enable_return_score_adjust_hedge;
+        let mut rows = Vec::with_capacity(symbols.len());
+        for symbol in symbols {
+            let (open_volatility, open_volatility_note) = match arb.open_factor_value_hub.as_mut() {
+                Some(hub) => {
+                    let r = hub.lookup_factor_value_with_last_valid_fallback(symbol, open_venue);
+                    (r.target_factor_value, r.note)
+                }
+                None => (None, "open_hub_unset".to_string()),
+            };
+            let (hedge_volatility, hedge_volatility_note) =
+                match arb.hedge_factor_value_hub.as_mut() {
+                    Some(hub) => {
+                        let r =
+                            hub.lookup_factor_value_with_last_valid_fallback(symbol, hedge_venue);
+                        (r.target_factor_value, r.note)
+                    }
+                    None => (None, "hedge_hub_unset".to_string()),
+                };
+            let (model_score, score_quantile, score_note, score_subscribed) =
+                match arb.model_output_hub.as_mut() {
+                    Some(hub) => match model_service.as_deref() {
+                        Some(svc) => {
+                            let r = hub.lookup_score(svc, symbol, hedge_venue);
+                            (r.score, r.score_quantile, r.note, r.subscribed)
+                        }
+                        None => (None, None, "service_unset".to_string(), false),
+                    },
+                    None => (None, None, "model_hub_unset".to_string(), false),
+                };
+            rows.push(ArbHedgeDebugRow {
+                symbol: (*symbol).to_string(),
+                open_volatility,
+                open_volatility_note,
+                hedge_volatility,
+                hedge_volatility_note,
+                model_score,
+                score_quantile,
+                score_note,
+                score_subscribed,
+            });
+        }
+        ArbHedgeDebugSnapshot {
+            rows,
+            model_service,
+            open_venue,
+            hedge_venue,
+            enable_return_score_adjust_hedge,
+        }
+    })
 }
 
 fn log_shell_runtime_ready(source: &str) {
@@ -1283,30 +1373,44 @@ fn resolve_arb_hedge_build_params(
             .return_model_service
             .clone()
             .ok_or_else(|| "return_model_service unavailable".to_string())?;
+        let enable_return_score_adjust_hedge = arb.enable_return_score_adjust_hedge;
+        let hedge_vol_multiplier = arb.hedge_vol_multiplier;
+        let hedge_offset_ratio = arb.hedge_offset_ratio;
+        let hedge_price_offset_limit_lower = arb.hedge_price_offset_limit_lower;
+        let hedge_price_offset_limit_upper = arb.hedge_price_offset_limit_upper;
+        let hedge_window_scale_low = arb.hedge_window_scale_low;
+        let hedge_window_scale_high = arb.hedge_window_scale_high;
+        let hedge_timeout_mm_us = arb.hedge_timeout_mm_us;
+        let max_hedge_price_pct_change = arb.max_hedge_price_pct_change;
         let hedge_factor_value_hub = arb
             .hedge_factor_value_hub
             .as_mut()
             .ok_or_else(|| "hedge_factor_value_hub unavailable".to_string())?;
+        let model_output_hub = arb
+            .model_output_hub
+            .as_mut()
+            .ok_or_else(|| "model_output_hub unavailable".to_string())?;
         let (signal, signal_qtl, volatility) = resolve_inventory_hedge_signal_inputs(
             hedge_factor_value_hub,
+            model_output_hub,
             &model_service,
             symbol,
             hedge_venue,
-            arb.enable_return_score_adjust_hedge,
+            enable_return_score_adjust_hedge,
         )?;
         Ok::<_, String>(ArbHedgeBuildParams {
             signal,
             signal_qtl,
             volatility,
-            hedge_vol_multiplier: arb.hedge_vol_multiplier,
-            hedge_offset_ratio: arb.hedge_offset_ratio,
-            hedge_price_offset_limit_lower: arb.hedge_price_offset_limit_lower,
-            hedge_price_offset_limit_upper: arb.hedge_price_offset_limit_upper,
-            hedge_window_scale_low: arb.hedge_window_scale_low,
-            hedge_window_scale_high: arb.hedge_window_scale_high,
-            hedge_timeout_mm_us: arb.hedge_timeout_mm_us,
-            max_hedge_price_pct_change: arb.max_hedge_price_pct_change,
-            enable_return_score_adjust_hedge: arb.enable_return_score_adjust_hedge,
+            hedge_vol_multiplier,
+            hedge_offset_ratio,
+            hedge_price_offset_limit_lower,
+            hedge_price_offset_limit_upper,
+            hedge_window_scale_low,
+            hedge_window_scale_high,
+            hedge_timeout_mm_us,
+            max_hedge_price_pct_change,
+            enable_return_score_adjust_hedge,
         })
     }) {
         Some(Ok(params)) => Some(params),
@@ -2862,6 +2966,7 @@ pub(crate) struct ArbDecisionState {
     pub venues: VenuePair,
     pub open_factor_value_hub: Option<FactorValueHub>,
     pub hedge_factor_value_hub: Option<FactorValueHub>,
+    pub model_output_hub: Option<ModelOutputHub>,
     pub vol_band_scale: [f64; 2],
     pub open_orders_per_round: u32,
     pub order_amount: f32,
@@ -2937,6 +3042,7 @@ impl ArbDecisionState {
             venues,
             open_factor_value_hub: None,
             hedge_factor_value_hub: None,
+            model_output_hub: None,
             vol_band_scale: [0.0, 1.0],
             open_orders_per_round: 1,
             order_amount: 100.0,
@@ -2990,8 +3096,8 @@ impl ArbDecisionState {
     }
 
     pub fn poll_model_output_updates(&mut self) {
-        if let Some(hub) = self.hedge_factor_value_hub.as_mut() {
-            hub.poll_model_output_updates();
+        if let Some(hub) = self.model_output_hub.as_mut() {
+            hub.poll_updates();
         }
     }
 
@@ -3430,10 +3536,10 @@ impl ArbDecisionState {
             return None;
         };
         Some(
-            self.hedge_factor_value_hub
+            self.model_output_hub
                 .as_mut()
-                .expect("ArbDecisionState.hedge_factor_value_hub must be initialized")
-                .lookup_model_output_score(&service_name, hedge_symbol, hedge_venue),
+                .expect("ArbDecisionState.model_output_hub must be initialized")
+                .lookup_score(&service_name, hedge_symbol, hedge_venue),
         )
     }
 
@@ -3487,17 +3593,25 @@ impl ArbDecisionState {
         hedge_venue: TradingVenue,
         now_us: i64,
     ) -> EnvironmentSignalResult {
-        self.hedge_factor_value_hub
+        let env_service = self.environment_model_service.clone();
+        let threshold = self.environment_model_true_threshold;
+        let model_hub = self
+            .model_output_hub
+            .as_ref()
+            .expect("ArbDecisionState.model_output_hub must be initialized");
+        let hedge_hub = self
+            .hedge_factor_value_hub
             .as_mut()
-            .expect("ArbDecisionState.hedge_factor_value_hub must be initialized")
-            .evaluate_environment_signal(
-                self.environment_model_service.as_deref(),
-                hedge_symbol,
-                hedge_venue,
-                self.environment_model_true_threshold,
-                open_symbol_key,
-                now_us,
-            )
+            .expect("ArbDecisionState.hedge_factor_value_hub must be initialized");
+        hedge_hub.evaluate_environment_signal(
+            model_hub,
+            env_service.as_deref(),
+            hedge_symbol,
+            hedge_venue,
+            threshold,
+            open_symbol_key,
+            now_us,
+        )
     }
 
     pub fn record_intercept_summary(&mut self, reason: impl Into<String>) {
@@ -3929,8 +4043,8 @@ impl ArbDecisionState {
 }
 
 impl ArbDecision {
-    pub(crate) fn try_update_spread_arb_model_output_services(services: Vec<String>) -> bool {
-        try_update_spread_arb_model_output_services(services)
+    pub(crate) fn try_update_model_output_services(services: Vec<String>) -> bool {
+        try_update_arb_model_output_services(services)
     }
 
     pub fn init_mode(mode: ArbMode) -> Result<()> {

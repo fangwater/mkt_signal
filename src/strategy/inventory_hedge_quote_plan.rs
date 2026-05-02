@@ -2,6 +2,7 @@ use crate::common::symbol_util::{normalize_symbol_for_internal, normalize_symbol
 use crate::common::time_util::get_timestamp_us;
 use crate::funding_rate::common::{build_decision_from_key_base, Quote};
 use crate::funding_rate::factor_value_hub::FactorValueHub;
+use crate::funding_rate::model_output_hub::ModelOutputHub;
 use crate::market_maker::order_align::{contract_qty_multiplier, min_qty_symbol_key};
 use crate::market_maker::quote_plan_levels::{
     build_quote_plan_levels, build_quote_plan_levels_for_base_qty, QuotePlanLevel,
@@ -91,12 +92,13 @@ fn next_aligned_query_ts_us(now_us: i64, interval_ms: u64, shift_ms: u64) -> i64
 
 pub fn resolve_inventory_hedge_signal_inputs(
     factor_value_hub: &mut FactorValueHub,
+    model_output_hub: &mut ModelOutputHub,
     model_service: &str,
     symbol: &str,
     venue: TradingVenue,
     enable_return_score_adjust_hedge: bool,
 ) -> Result<(f64, Option<f64>, f64), String> {
-    let score_lookup = factor_value_hub.lookup_model_output_score(model_service, symbol, venue);
+    let score_lookup = model_output_hub.lookup_score(model_service, symbol, venue);
     let factor_lookup =
         factor_value_hub.lookup_factor_value_with_last_valid_fallback(symbol, venue);
     let volatility = factor_lookup

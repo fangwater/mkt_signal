@@ -25,6 +25,7 @@ pub mod funding_threshold_loader;
 pub mod inline_volatility;
 pub mod mkt_channel;
 pub mod mm_decision;
+pub mod model_output_hub;
 pub mod rate_fetcher;
 pub mod rolling_threshold_sync;
 pub mod spread_factor;
@@ -52,8 +53,8 @@ pub use spread_threshold_loader::load_from_redis as load_spread_thresholds;
 
 // 公共导出 - 单例访问器
 pub use arb_decision::{
-    ArbDecision, ArbSignalKind, DEFAULT_ARBITRAGE_BACKWARD_CHANNEL,
-    DEFAULT_ARBITRAGE_SIGNAL_CHANNEL,
+    snapshot_arb_hedge_debug_rows, ArbDecision, ArbHedgeDebugRow, ArbHedgeDebugSnapshot,
+    ArbSignalKind, DEFAULT_ARBITRAGE_BACKWARD_CHANNEL, DEFAULT_ARBITRAGE_SIGNAL_CHANNEL,
 };
 pub use arb_mode::ArbMode;
 pub use decision_router::{init_decision_branch, trigger_decision, DecisionBranch};

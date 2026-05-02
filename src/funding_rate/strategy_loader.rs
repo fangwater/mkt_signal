@@ -1356,7 +1356,7 @@ impl StrategyParams {
 
         let arb_vol_band_scale =
             self.parse_required_vol_scale_range(&self.vol_band_scale, "vol_band_scale");
-        let applied = ArbDecision::with_state_mut(|arb| {
+        let arb_state_applied = ArbDecision::with_state_mut(|arb| {
             arb.order_amount = self.order_amount;
             arb.amount_u_overrides = self.arb_amount_u_overrides.clone();
             arb.vol_band_scale = arb_vol_band_scale;
@@ -1394,11 +1394,13 @@ impl StrategyParams {
             arb.environment_model_service = environment_model_service.clone();
             arb.environment_model_true_threshold = 0.0;
         })
-        .is_some()
-            || ArbDecision::try_update_spread_arb_model_output_services(
-                self.parse_model_output_services(),
-            )
-            || MmDecision::try_with_mut(|_decision| {
+        .is_some();
+        // 旧版用 || 短路把 model_output 服务订阅串在 arb state 写入之后；ArbDecision 已初始化时
+        // 第一项总返回 true，订阅这一步永远跑不到，导致 hedge 模型订阅从未建立。这里拆开顺序执行。
+        if arb_state_applied {
+            ArbDecision::try_update_model_output_services(self.parse_model_output_services());
+        }
+        let mm_applied = MmDecision::try_with_mut(|_decision| {
                 let open_buy_vol_scale = self
                     .parse_required_vol_scale_range(&self.open_buy_vol_scale, "open_buy_vol_scale");
                 let open_sell_vol_scale = self.parse_required_vol_scale_range(
@@ -1454,7 +1456,7 @@ impl StrategyParams {
             })
             .is_some();
 
-        if !applied {
+        if !arb_state_applied && !mm_applied {
             warn!("策略参数已加载，但 decision 尚未初始化");
         }
 

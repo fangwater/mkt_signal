@@ -10,8 +10,7 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::time::{Duration, Instant};
 
-use crate::common::mkt_msg::{FactorValueMsg, ModelMsg, MODEL_STATUS_OK};
-use crate::common::model_ipc::MODEL_PAYLOAD_MAX_BYTES;
+use crate::common::mkt_msg::FactorValueMsg;
 use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::time_util::get_timestamp_us;
@@ -22,14 +21,11 @@ use crate::factor_pub::factor_index::{factor_name_to_channel, factor_name_to_ind
 use crate::funding_rate::inline_volatility::{
     observe_inline_tradecount, observe_inline_volatility, InlineVolatilitySnapshot,
 };
+use crate::funding_rate::model_output_hub::ModelOutputHub;
 use crate::signal::common::TradingVenue;
 
 const FACTOR_VALUE_PAYLOAD_MAX_BYTES: usize = 256;
 const FACTOR_VALUE_SUBSCRIBER_BUFFER_SIZE: usize = 8192;
-const MODEL_OUTPUT_HISTORY_SIZE: usize = 128;
-const MODEL_OUTPUT_SUBSCRIBER_BUFFER_SIZE: usize = 256;
-const MODEL_OUTPUT_POLL_MAX_PER_CHANNEL: usize = 256;
-const MODEL_OUTPUT_STATS_LOG_INTERVAL_SECS: u64 = 60;
 const DEFAULT_PNLU_MAX_AGE_SECS: i64 = 30 * 60;
 const FACTOR_VALUE_ISSUE_LOG_INTERVAL_SECS: u64 = 10;
 const TRADE_FLOW_FEATURE_SUBSCRIBER_BUFFER_SIZE: usize = 1024;
@@ -110,24 +106,6 @@ pub struct EnvironmentSignalResult {
     pub note: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct ModelOutputScoreLookupResult {
-    pub service_name: String,
-    pub symbol_key: String,
-    pub subscribed: bool,
-    pub score: Option<f64>,
-    pub score_quantile: Option<f64>,
-    pub note: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct ModelOutputUpdateEvent {
-    pub service_name: String,
-    pub symbol_key: String,
-    pub score: f64,
-    pub score_quantile: Option<f64>,
-}
-
 #[derive(Debug, Clone, Copy)]
 struct FactorValueSnapshot {
     value: f64,
@@ -136,20 +114,9 @@ struct FactorValueSnapshot {
     factor_index: u16,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct ModelOutputSnapshot {
-    score: f64,
-    score_quantile: Option<f64>,
-}
-
 struct FactorIssueLogState {
     note: String,
     last_log_at: Instant,
-}
-
-struct ModelOutputSubscriberEntry {
-    service_name: String,
-    subscriber: Subscriber<ipc::Service, [u8; MODEL_PAYLOAD_MAX_BYTES], ()>,
 }
 
 struct PnluRedis {
@@ -217,12 +184,6 @@ pub struct FactorValueHub {
     tradecount_windows: HashMap<String, VecDeque<f64>>,
     latest_tradecount_means: HashMap<String, f64>,
     factor_issue_log_state: HashMap<String, FactorIssueLogState>,
-    model_output_subscribers: Vec<ModelOutputSubscriberEntry>,
-    model_output_services: Vec<String>,
-    model_output_latest_scores: HashMap<(String, String), ModelOutputSnapshot>,
-    model_output_msg_count: u64,
-    model_output_parse_err_count: u64,
-    model_output_last_log: Instant,
     pnlu_redis: PnluRedis,
     pnlu_key_suffix: String,
     pnlu_max_age_secs: i64,
@@ -277,12 +238,6 @@ impl FactorValueHub {
             tradecount_windows: HashMap::new(),
             latest_tradecount_means: HashMap::new(),
             factor_issue_log_state: HashMap::new(),
-            model_output_subscribers: Vec::new(),
-            model_output_services: Vec::new(),
-            model_output_latest_scores: HashMap::new(),
-            model_output_msg_count: 0,
-            model_output_parse_err_count: 0,
-            model_output_last_log: Instant::now(),
             pnlu_redis,
             pnlu_key_suffix,
             pnlu_max_age_secs,
@@ -428,54 +383,6 @@ impl FactorValueHub {
         );
     }
 
-    fn create_model_output_subscriber(
-        node: &Node<ipc::Service>,
-        service_name: &str,
-    ) -> Result<Subscriber<ipc::Service, [u8; MODEL_PAYLOAD_MAX_BYTES], ()>> {
-        let service = node
-            .service_builder(&ServiceName::new(service_name)?)
-            .publish_subscribe::<[u8; MODEL_PAYLOAD_MAX_BYTES]>()
-            .max_publishers(1)
-            .max_subscribers(10)
-            .history_size(MODEL_OUTPUT_HISTORY_SIZE)
-            .subscriber_max_buffer_size(MODEL_OUTPUT_SUBSCRIBER_BUFFER_SIZE)
-            .open_or_create()
-            .with_context(|| {
-                format!("failed to open/create model_output subscriber service={service_name}")
-            })?;
-
-        service
-            .subscriber_builder()
-            .buffer_size(MODEL_OUTPUT_SUBSCRIBER_BUFFER_SIZE)
-            .create()
-            .with_context(|| format!("failed to create model_output subscriber: {service_name}"))
-    }
-
-    fn normalize_model_output_service_name(service_name: &str) -> Option<String> {
-        let trimmed = service_name.trim();
-        if trimmed.is_empty() || trimmed == "-" {
-            return None;
-        }
-        if trimmed.contains('/') {
-            Some(trimmed.to_string())
-        } else {
-            Some(format!("model_output/{trimmed}"))
-        }
-    }
-
-    fn normalize_model_output_services(services: Vec<String>) -> Vec<String> {
-        let mut normalized = Vec::new();
-        for raw in services {
-            let Some(service) = Self::normalize_model_output_service_name(&raw) else {
-                continue;
-            };
-            if !normalized.iter().any(|s| s == &service) {
-                normalized.push(service);
-            }
-        }
-        normalized
-    }
-
     fn poll_factor_value_updates(&mut self) {
         loop {
             match self.factor_value_sub.receive() {
@@ -547,86 +454,6 @@ impl FactorValueHub {
                 }
             }
         }
-    }
-
-    pub fn poll_model_output_updates(&mut self) -> Vec<ModelOutputUpdateEvent> {
-        let mut events = Vec::new();
-        if self.model_output_subscribers.is_empty() {
-            return events;
-        }
-
-        for entry in &mut self.model_output_subscribers {
-            let mut polled = 0usize;
-            while polled < MODEL_OUTPUT_POLL_MAX_PER_CHANNEL {
-                match entry.subscriber.receive() {
-                    Ok(Some(sample)) => {
-                        polled += 1;
-                        let payload = sample.payload();
-                        if payload.iter().all(|&b| b == 0) {
-                            continue;
-                        }
-
-                        let msg = match ModelMsg::from_bytes(payload) {
-                            Ok(msg) => msg,
-                            Err(err) => {
-                                self.model_output_parse_err_count =
-                                    self.model_output_parse_err_count.saturating_add(1);
-                                warn!(
-                                    "FactorValueHub: parse model_output payload failed service={} err={}",
-                                    entry.service_name, err
-                                );
-                                continue;
-                            }
-                        };
-
-                        if msg.status != MODEL_STATUS_OK {
-                            continue;
-                        }
-
-                        let symbol_key = normalize_symbol_for_venue(&msg.symbol, self.hedge_venue);
-                        let cache_key = (entry.service_name.clone(), symbol_key);
-                        let event = ModelOutputUpdateEvent {
-                            service_name: entry.service_name.clone(),
-                            symbol_key: cache_key.1.clone(),
-                            score: msg.score,
-                            score_quantile: msg.score_quantile,
-                        };
-                        self.model_output_latest_scores.insert(
-                            cache_key,
-                            ModelOutputSnapshot {
-                                score: msg.score,
-                                score_quantile: msg.score_quantile,
-                            },
-                        );
-                        self.model_output_msg_count = self.model_output_msg_count.saturating_add(1);
-                        events.push(event);
-                    }
-                    Ok(None) => break,
-                    Err(err) => {
-                        warn!(
-                            "FactorValueHub: model_output subscriber receive error service={} err={}",
-                            entry.service_name, err
-                        );
-                        break;
-                    }
-                }
-            }
-        }
-
-        if self.model_output_last_log.elapsed().as_secs() >= MODEL_OUTPUT_STATS_LOG_INTERVAL_SECS {
-            info!(
-                "FactorValueHub: model_output stats services={} latest_scores={} recv={} parse_err={}",
-                self.model_output_services.len(),
-                self.model_output_latest_scores.len(),
-                self.model_output_msg_count,
-                self.model_output_parse_err_count
-            );
-            self.model_output_last_log = Instant::now();
-            self.model_output_msg_count = 0;
-            self.model_output_parse_err_count = 0;
-        }
-
-        events
     }
 
     pub fn lookup_factor_value(
@@ -876,64 +703,6 @@ impl FactorValueHub {
         strict
     }
 
-    pub fn update_model_output_services(
-        &mut self,
-        node: &Node<ipc::Service>,
-        services: Vec<String>,
-    ) {
-        let normalized = Self::normalize_model_output_services(services);
-        if normalized == self.model_output_services {
-            return;
-        }
-
-        if normalized.is_empty() {
-            self.model_output_services.clear();
-            self.model_output_subscribers.clear();
-            self.model_output_latest_scores.clear();
-            info!("FactorValueHub: model_output subscriptions cleared");
-            return;
-        }
-
-        let mut subscribers = Vec::new();
-        for service_name in &normalized {
-            match Self::create_model_output_subscriber(node, service_name) {
-                Ok(subscriber) => {
-                    subscribers.push(ModelOutputSubscriberEntry {
-                        service_name: service_name.clone(),
-                        subscriber,
-                    });
-                }
-                Err(err) => {
-                    warn!(
-                        "FactorValueHub: subscribe model_output failed service={} err={:#}",
-                        service_name, err
-                    );
-                }
-            }
-        }
-
-        if subscribers.is_empty() {
-            warn!(
-                "FactorValueHub: no model_output subscriber created, keep previous subscriptions count={}",
-                self.model_output_subscribers.len()
-            );
-            return;
-        }
-
-        self.model_output_services = normalized;
-        self.model_output_subscribers = subscribers;
-        self.model_output_latest_scores.clear();
-        self.model_output_msg_count = 0;
-        self.model_output_parse_err_count = 0;
-        self.model_output_last_log = Instant::now();
-        info!(
-            "FactorValueHub: model_output subscriptions updated count={} services={:?} buffer_size={}",
-            self.model_output_subscribers.len(),
-            self.model_output_services,
-            MODEL_OUTPUT_SUBSCRIBER_BUFFER_SIZE
-        );
-    }
-
     fn normalize_pnlu_ts_us(ts: i64) -> Option<i64> {
         if ts <= 0 {
             return None;
@@ -1049,6 +818,7 @@ impl FactorValueHub {
 
     pub fn evaluate_environment_signal(
         &mut self,
+        model_output_hub: &ModelOutputHub,
         environment_model_service: Option<&str>,
         hedge_symbol: &str,
         hedge_venue: TradingVenue,
@@ -1056,140 +826,49 @@ impl FactorValueHub {
         pnlu_symbol_key: &str,
         now_us: i64,
     ) -> EnvironmentSignalResult {
-        let normalized_service =
-            environment_model_service.and_then(Self::normalize_model_output_service_name);
-
-        if let Some(service_name) = normalized_service {
-            let symbol_key = normalize_symbol_for_venue(hedge_symbol, hedge_venue);
-            let cache_key = (service_name.clone(), symbol_key.clone());
-            match self.model_output_latest_scores.get(&cache_key).copied() {
-                Some(snapshot) if snapshot.score.is_finite() => {
-                    let allow_open = snapshot.score >= model_true_threshold;
-                    EnvironmentSignalResult {
-                        source: EnvironmentSignalSource::ModelOutput,
-                        allow_open,
-                        class_label: if allow_open { 1 } else { 0 },
-                        service_name: Some(service_name),
-                        symbol_key,
-                        score: Some(snapshot.score),
-                        score_quantile: snapshot.score_quantile,
-                        threshold: Some(model_true_threshold),
-                        note: if allow_open {
-                            "model_score_ge_threshold".to_string()
-                        } else {
-                            "model_score_lt_threshold".to_string()
-                        },
+        if let Some(env_service) = environment_model_service {
+            let lookup = model_output_hub.cached_score(env_service, hedge_symbol, hedge_venue);
+            if !matches!(lookup.note.as_str(), "service_disabled") {
+                let (allow_open, note) = match (lookup.score, lookup.note.as_str()) {
+                    (Some(score), _) if score.is_finite() => {
+                        let allow = score >= model_true_threshold;
+                        (
+                            allow,
+                            if allow {
+                                "model_score_ge_threshold".to_string()
+                            } else {
+                                "model_score_lt_threshold".to_string()
+                            },
+                        )
                     }
-                }
-                Some(_) => EnvironmentSignalResult {
+                    _ => (false, lookup.note.clone()),
+                };
+                return EnvironmentSignalResult {
                     source: EnvironmentSignalSource::ModelOutput,
-                    allow_open: false,
-                    class_label: 0,
-                    service_name: Some(service_name),
-                    symbol_key,
-                    score: None,
-                    score_quantile: None,
+                    allow_open,
+                    class_label: if allow_open { 1 } else { 0 },
+                    service_name: Some(lookup.service_name),
+                    symbol_key: lookup.symbol_key,
+                    score: lookup.score,
+                    score_quantile: lookup.score_quantile,
                     threshold: Some(model_true_threshold),
-                    note: "invalid_model_score".to_string(),
-                },
-                None => EnvironmentSignalResult {
-                    source: EnvironmentSignalSource::ModelOutput,
-                    allow_open: false,
-                    class_label: 0,
-                    service_name: Some(service_name),
-                    symbol_key,
-                    score: None,
-                    score_quantile: None,
-                    threshold: Some(model_true_threshold),
-                    note: "missing_model_score".to_string(),
-                },
-            }
-        } else {
-            let pnlu_check = self.check_pnlu_factor(pnlu_symbol_key, now_us);
-            let allow_open = pnlu_check.ok;
-            EnvironmentSignalResult {
-                source: EnvironmentSignalSource::PnluFallback,
-                allow_open,
-                class_label: if allow_open { 1 } else { 0 },
-                service_name: None,
-                symbol_key: pnlu_symbol_key.to_string(),
-                score: pnlu_check.factor,
-                score_quantile: None,
-                threshold: pnlu_check.threshold,
-                note: format!("pnlu_fallback:{}", pnlu_check.reason),
+                    note,
+                };
             }
         }
-    }
 
-    pub fn lookup_model_output_score(
-        &mut self,
-        model_service: &str,
-        hedge_symbol: &str,
-        hedge_venue: TradingVenue,
-    ) -> ModelOutputScoreLookupResult {
-        let _ = self.poll_model_output_updates();
-        self.cached_model_output_score(model_service, hedge_symbol, hedge_venue)
-    }
-
-    pub fn cached_model_output_score(
-        &self,
-        model_service: &str,
-        hedge_symbol: &str,
-        hedge_venue: TradingVenue,
-    ) -> ModelOutputScoreLookupResult {
-        let Some(service_name) = Self::normalize_model_output_service_name(model_service) else {
-            return ModelOutputScoreLookupResult {
-                service_name: model_service.trim().to_string(),
-                symbol_key: normalize_symbol_for_venue(hedge_symbol, hedge_venue),
-                subscribed: false,
-                score: None,
-                score_quantile: None,
-                note: "service_disabled".to_string(),
-            };
-        };
-        let symbol_key = normalize_symbol_for_venue(hedge_symbol, hedge_venue);
-
-        let subscribed = self
-            .model_output_services
-            .iter()
-            .any(|s| s == &service_name);
-        if !subscribed {
-            return ModelOutputScoreLookupResult {
-                service_name,
-                symbol_key,
-                subscribed: false,
-                score: None,
-                score_quantile: None,
-                note: "service_not_subscribed".to_string(),
-            };
-        }
-
-        let cache_key = (service_name.clone(), symbol_key.clone());
-        match self.model_output_latest_scores.get(&cache_key).copied() {
-            Some(snapshot) if snapshot.score.is_finite() => ModelOutputScoreLookupResult {
-                service_name,
-                symbol_key,
-                subscribed: true,
-                score: Some(snapshot.score),
-                score_quantile: snapshot.score_quantile,
-                note: "ok".to_string(),
-            },
-            Some(_) => ModelOutputScoreLookupResult {
-                service_name,
-                symbol_key,
-                subscribed: true,
-                score: None,
-                score_quantile: None,
-                note: "invalid_model_score".to_string(),
-            },
-            None => ModelOutputScoreLookupResult {
-                service_name,
-                symbol_key,
-                subscribed: true,
-                score: None,
-                score_quantile: None,
-                note: "missing_model_score".to_string(),
-            },
+        let pnlu_check = self.check_pnlu_factor(pnlu_symbol_key, now_us);
+        let allow_open = pnlu_check.ok;
+        EnvironmentSignalResult {
+            source: EnvironmentSignalSource::PnluFallback,
+            allow_open,
+            class_label: if allow_open { 1 } else { 0 },
+            service_name: None,
+            symbol_key: pnlu_symbol_key.to_string(),
+            score: pnlu_check.factor,
+            score_quantile: None,
+            threshold: pnlu_check.threshold,
+            note: format!("pnlu_fallback:{}", pnlu_check.reason),
         }
     }
 
@@ -1212,9 +891,6 @@ mod tests {
     use super::{FactorValueHub, FactorValueSnapshot};
     use crate::signal::common::TradingVenue;
 
-    const TEST_MODEL_OUTPUT_NAME: &str = "binance_futures_direction_model";
-    const TEST_MODEL_OUTPUT_SERVICE: &str = "model_output/binance_futures_direction_model";
-
     #[test]
     fn builds_profile_from_open_and_hedge_venues() {
         let profile = FactorValueHub::build_pnlu_profile(
@@ -1234,30 +910,6 @@ mod tests {
         assert_eq!(
             key,
             "ETHUSDT_pnlu_factor_thresholds_binance-margin-binance-futures"
-        );
-    }
-
-    #[test]
-    fn normalizes_bare_model_output_service_name() {
-        assert_eq!(
-            FactorValueHub::normalize_model_output_service_name(TEST_MODEL_OUTPUT_NAME),
-            Some(TEST_MODEL_OUTPUT_SERVICE.to_string())
-        );
-        assert_eq!(
-            FactorValueHub::normalize_model_output_service_name(TEST_MODEL_OUTPUT_SERVICE),
-            Some(TEST_MODEL_OUTPUT_SERVICE.to_string())
-        );
-    }
-
-    #[test]
-    fn ignores_disabled_model_output_service_name() {
-        assert_eq!(
-            FactorValueHub::normalize_model_output_service_name(""),
-            None
-        );
-        assert_eq!(
-            FactorValueHub::normalize_model_output_service_name("-"),
-            None
         );
     }
 

@@ -481,6 +481,7 @@ impl MmDecision {
         };
         let (signal, signal_qtl, volatility) = match resolve_inventory_hedge_signal_inputs(
             &mut self.state.factor_value_hub,
+            &mut self.state.model_output_hub,
             &model_service,
             &symbol,
             self.state.hedge_venue,
@@ -712,7 +713,7 @@ impl MmDecision {
                     ));
                 }
                 let return_lookup = self.state.return_model_service.clone().map(|service_name| {
-                    self.state.factor_value_hub.lookup_model_output_score(
+                    self.state.model_output_hub.lookup_score(
                         &service_name,
                         &symbol,
                         self.state.hedge_venue,

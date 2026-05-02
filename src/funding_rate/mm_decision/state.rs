@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use super::super::arb_decision::DEFAULT_ARBITRAGE_SIGNAL_CHANNEL;
 use super::super::common::apply_open_tlen_gate_and_build_from_keys;
 use super::super::factor_value_hub::{EnvironmentSignalResult, FactorValueHub};
+use super::super::model_output_hub::ModelOutputHub;
 use super::super::inline_volatility::{
     snapshot_inline_tradecount, snapshot_inline_volatility, InlineVolatilitySnapshot,
 };
@@ -207,6 +208,7 @@ pub(crate) struct MmDecisionState {
     pub(crate) tlen_thresholds: HashMap<String, f64>,
     pub(crate) open_min_qty_table: VenueMinQtyTable,
     pub(crate) factor_value_hub: FactorValueHub,
+    pub(crate) model_output_hub: ModelOutputHub,
     pub(crate) clock_shift_seed: u64,
     pub(crate) symbol_clock_shift_ms: HashMap<String, u64>,
     pub(crate) symbol_next_open_deadline_us: HashMap<String, i64>,
@@ -419,6 +421,7 @@ impl MmDecisionState {
             tlen_thresholds: HashMap::new(),
             open_min_qty_table: VenueMinQtyTable::new(open_venue),
             factor_value_hub,
+            model_output_hub: ModelOutputHub::new(hedge_venue),
             clock_shift_seed: get_timestamp_us().max(0) as u64,
             symbol_clock_shift_ms: HashMap::new(),
             symbol_next_open_deadline_us: HashMap::new(),
@@ -984,8 +987,7 @@ impl MmDecisionState {
                 services.push(env_service.clone());
             }
         }
-        self.factor_value_hub
-            .update_model_output_services(node, services);
+        self.model_output_hub.update_services(node, services);
         debug!(
             "MmDecision: model roles updated return={:?} environment={:?} env_true_threshold={:.6}",
             self.return_model_service,
@@ -1019,6 +1021,7 @@ impl MmDecisionState {
         now_us: i64,
     ) -> EnvironmentSignalResult {
         self.factor_value_hub.evaluate_environment_signal(
+            &self.model_output_hub,
             self.environment_model_service.as_deref(),
             hedge_symbol,
             self.hedge_venue,
