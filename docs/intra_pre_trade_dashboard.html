@@ -233,7 +233,7 @@
       table {
         width: 100%;
         border-collapse: collapse;
-        min-width: 760px;
+        min-width: 860px;
       }
       thead {
         background: rgba(22, 27, 34, 0.6);
@@ -309,7 +309,7 @@
           min-width: 160px;
         }
         table {
-          min-width: 620px;
+          min-width: 720px;
         }
       }
     </style>
@@ -393,6 +393,7 @@
               <tr>
                 <th>asset</th>
                 <th>open_qty</th>
+                <th>open_usdt</th>
                 <th>hedge_qty</th>
                 <th>arb_time</th>
                 <th>arb_mode</th>
@@ -678,6 +679,7 @@
             tr.innerHTML = `
               <td>${r.asset || "-"}</td>
               <td class="${classify(r.open_qty)}">${fmt(r.open_qty, fmtQty)}</td>
+              <td class="${classify(r.open_usdt)}">${fmt(r.open_usdt, fmtUsd)}</td>
               <td class="${classify(r.hedge_qty)}">${fmt(r.hedge_qty, fmtQty)}</td>
               <td class="muted">${arbTime}</td>
               <td class="muted">${arbMode}</td>
