@@ -20,8 +20,11 @@ struct OkexBalanceAccount {
 struct OkexBalanceDetail {
     #[serde(default)]
     ccy: String,
-    #[serde(default)]
-    eq: String,
+    // cashBal: 净现金（不含 swap UPL），与 WS balance_and_position.cashBal 同义。
+    // 使用 cashBal 而非 eq，是因为 USDT 行的 eq 把账户级 swap UPL 折进来了，
+    // 下游 compute_leg_risk_entry 还会单独加 um_unrealized_pnl，会双计。
+    #[serde(default, rename = "cashBal")]
+    cash_bal: String,
     #[serde(default)]
     liab: String,
     #[serde(default)]
@@ -48,7 +51,7 @@ fn parse_f64(v: &str) -> Option<f64> {
 
 pub fn parse_okex_account_balance_snapshot(json: &str) -> Option<Vec<Bytes>> {
     let resp: OkexBalanceResponse = serde_json::from_str(json).ok()?;
-    let account = resp.data.get(0)?;
+    let account = resp.data.first()?;
     let fallback_ts = parse_i64(&account.u_time).unwrap_or(chrono::Utc::now().timestamp_millis());
 
     let mut out = Vec::new();
@@ -56,12 +59,12 @@ pub fn parse_okex_account_balance_snapshot(json: &str) -> Option<Vec<Bytes>> {
         if d.ccy.is_empty() {
             continue;
         }
-        let Some(eq) = parse_f64(&d.eq) else {
+        let Some(cash_bal) = parse_f64(&d.cash_bal) else {
             continue;
         };
         let ts = parse_i64(&d.u_time).unwrap_or(fallback_ts);
         let symbol = d.ccy.to_ascii_uppercase();
-        out.push(BasicBalanceMsg::create(ts, symbol.clone(), eq).to_bytes());
+        out.push(BasicBalanceMsg::create(ts, symbol.clone(), cash_bal).to_bytes());
 
         // OKX 跨保证金负债：liab 是当前借入本金 + 利息合计（绝对值），interest 单独给出已计利息。
         // 仅 liab>0 或 interest>0 时才发 borrow 事件，避免无负债币种刷无效消息。
@@ -90,7 +93,7 @@ mod tests {
                 "uTime": "1705474164160",
                 "details": [{
                     "ccy": "USDT",
-                    "eq": "4992.890093622894",
+                    "cashBal": "4992.890093622894",
                     "uTime": "1705449605015"
                 }]
             }],
@@ -116,14 +119,14 @@ mod tests {
                 "details": [
                     {
                         "ccy": "USDT",
-                        "eq": "1000",
+                        "cashBal": "1000",
                         "liab": "-50.5",
                         "interest": "-0.5",
                         "uTime": "1705449605015"
                     },
                     {
                         "ccy": "BTC",
-                        "eq": "1.25",
+                        "cashBal": "1.25",
                         "liab": "0",
                         "interest": "0",
                         "uTime": "1705449605015"
