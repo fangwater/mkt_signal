@@ -534,7 +534,7 @@ impl OkexWsOrderResponse {
         let data = obj
             .get("data")
             .and_then(|v| v.as_array())
-            .and_then(|arr| arr.get(0))
+            .and_then(|arr| arr.first())
             .map(|item| {
                 let cl_ord_id = parse_i64_field(item.get("clOrdId"));
                 let ord_id = parse_i64_field(item.get("ordId"));
@@ -582,7 +582,7 @@ impl OkexWsOrderResponse {
                     None
                 }
             })
-            .or_else(|| if self.id != 0 { Some(self.id) } else { None })
+            .or(if self.id != 0 { Some(self.id) } else { None })
     }
 
     pub fn order_id(&self) -> i64 {

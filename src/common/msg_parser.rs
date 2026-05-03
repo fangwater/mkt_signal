@@ -227,7 +227,7 @@ pub fn parse_pairmm_resample(data: &[u8]) -> Result<PairMmResampleMsg> {
 
     let venue = cursor.get_u8();
     let remaining = cursor.len();
-    if remaining % 8 != 0 {
+    if !remaining.is_multiple_of(8) {
         bail!(
             "PairMmResampleMsg payload misaligned: {} bytes remaining",
             remaining

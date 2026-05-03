@@ -13,8 +13,7 @@ pub fn min_qty_symbol_key(venue: TradingVenue, trade_symbol: &str) -> String {
             .replace('-', ""),
         TradingVenue::GateMargin | TradingVenue::GateFutures => trade_symbol
             .to_uppercase()
-            .replace('_', "")
-            .replace('-', ""),
+            .replace(['_', '-'], ""),
         _ => trade_symbol.to_uppercase(),
     }
 }

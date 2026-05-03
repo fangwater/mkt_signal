@@ -45,6 +45,12 @@ pub fn default_tuning() -> RocksDbTuning {
 
 pub struct PersistManager {}
 
+impl Default for PersistManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PersistManager {
     pub fn new() -> Self {
         Self {}

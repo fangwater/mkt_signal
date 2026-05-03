@@ -14,7 +14,7 @@ use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
 
 thread_local! {
-    static PERSIST_CHANNEL: OnceCell<PersistChannel> = OnceCell::new();
+    static PERSIST_CHANNEL: OnceCell<PersistChannel> = const { OnceCell::new() };
 }
 
 /// 通用交易更新记录频道（支持所有交易所）

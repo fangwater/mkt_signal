@@ -690,7 +690,7 @@ fn compute_factor_quantiles(
         let points = cfg
             .quantiles
             .iter()
-            .zip(values.into_iter())
+            .zip(values)
             .map(|(q, value)| QuantilePoint {
                 quantile: *q,
                 threshold: value,

@@ -1566,7 +1566,7 @@ impl FusionFactorPubApp {
                 _ => interval_other_status = interval_other_status.saturating_add(1),
             }
 
-            if loaded % ROCKSDB_BOOTSTRAP_LOG_EVERY == 0 {
+            if loaded.is_multiple_of(ROCKSDB_BOOTSTRAP_LOG_EVERY) {
                 info!(
                     "FusionFactorPubApp[{}] rocksdb bootstrap progress: symbol={} interval_loaded={} interval_calculated={} interval_reload={} interval_warming_up={} interval_other={}",
                     venue_slug,
@@ -6595,7 +6595,7 @@ where
     }
     values.sort_by(|a, b| a.total_cmp(b));
     let mid = values.len() / 2;
-    if values.len() % 2 == 0 {
+    if values.len().is_multiple_of(2) {
         finite_opt(Some((values[mid - 1] + values[mid]) / 2.0))
     } else {
         finite_opt(Some(values[mid]))

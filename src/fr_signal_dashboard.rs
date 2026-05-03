@@ -253,7 +253,7 @@ fn build_snapshot(cfg: &FrDashboardConfig) -> FrDashboardSnapshot {
 
     FrDashboardSnapshot {
         kind: "fr_dashboard".to_string(),
-        ts_ms: (get_timestamp_us() / 1000) as i64,
+        ts_ms: (get_timestamp_us() / 1000),
         exchange: cfg.exchange.as_str().to_string(),
         factor_mode: factor_mode_label(FundingRateFactor::instance().get_mode()).to_string(),
         symbol_namespace: cfg.symbol_namespace.clone(),
@@ -561,14 +561,14 @@ async fn ws_route(
 
 async fn ws_handler(mut socket: WebSocket, hub: DashboardHub) {
     if let Ok(msg) = serde_json::to_string(&hub.snapshot()) {
-        if socket.send(Message::Text(msg.into())).await.is_err() {
+        if socket.send(Message::Text(msg)).await.is_err() {
             return;
         }
     }
 
     let mut rx = hub.subscribe();
     while let Ok(msg) = rx.recv().await {
-        if socket.send(Message::Text(msg.into())).await.is_err() {
+        if socket.send(Message::Text(msg)).await.is_err() {
             break;
         }
     }

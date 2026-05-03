@@ -40,7 +40,7 @@ fn map_execution_type(state: u8) -> ExecutionType {
 /// - 其余（默认 1: 现货保证金） => TradingVenue::OkexMargin
 fn map_trading_venue(inst_type: u8) -> TradingVenue {
     match inst_type {
-        2 | 3 | 4 => TradingVenue::OkexFutures,
+        2..=4 => TradingVenue::OkexFutures,
         _ => TradingVenue::OkexMargin,
     }
 }

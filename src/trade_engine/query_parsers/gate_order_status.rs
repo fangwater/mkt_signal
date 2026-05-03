@@ -42,7 +42,7 @@ fn parse_i64_ms(v: Option<&Value>) -> Option<i64> {
     }
 }
 
-fn extract_result<'a>(root: &'a Value) -> Option<&'a Value> {
+fn extract_result(root: &Value) -> Option<&Value> {
     if let Some(r) = root.get("data").and_then(|d| d.get("result")) {
         return Some(r);
     }

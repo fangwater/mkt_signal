@@ -558,7 +558,7 @@ impl TradeEngine {
             let connect_timeout_ms = WsConstants::CONNECT_TIMEOUT_MS;
             let ping_interval_ms = WsConstants::PING_INTERVAL_MS;
             let max_inflight = WsConstants::MAX_INFLIGHT;
-            let binance_creds = self.accounts.get(0).cloned();
+            let binance_creds = self.accounts.first().cloned();
 
             let shutdown_on_rate_limit = local_ips.len() <= 1;
             let mut um_endpoints = Vec::with_capacity(local_ips.len());
@@ -1312,7 +1312,7 @@ impl TradeEngine {
                                                         let _ = query_resp_tx.send(QueryExecOutcome {
                                                             req_type: msg.req_type,
                                                             client_query_id: msg.client_query_id,
-                                                            status: status as u16,
+                                                            status,
                                                             body: payload,
                                                             exchange: exchange_copy,
                                                             ip_used_weight_1m: None,
@@ -1334,7 +1334,7 @@ impl TradeEngine {
                                                         let _ = query_resp_tx.send(QueryExecOutcome {
                                                             req_type: msg.req_type,
                                                             client_query_id: msg.client_query_id,
-                                                            status: status as u16,
+                                                            status,
                                                             body: payload,
                                                             exchange: exchange_copy,
                                                             ip_used_weight_1m: None,
@@ -1352,7 +1352,7 @@ impl TradeEngine {
                                     let _ = query_resp_tx.send(QueryExecOutcome {
                                         req_type: msg.req_type,
                                         client_query_id: msg.client_query_id,
-                                        status: status as u16,
+                                        status,
                                         body: body_bytes,
                                         exchange: exchange_copy,
                                         ip_used_weight_1m: None,
@@ -1509,7 +1509,7 @@ impl TradeEngine {
                                                         let _ = query_resp_tx.send(QueryExecOutcome {
                                                             req_type: msg.req_type,
                                                             client_query_id: msg.client_query_id,
-                                                            status: status as u16,
+                                                            status,
                                                             body: payload,
                                                             exchange: exchange_copy,
                                                             ip_used_weight_1m: None,
@@ -1533,7 +1533,7 @@ impl TradeEngine {
                                                         let _ = query_resp_tx.send(QueryExecOutcome {
                                                             req_type: msg.req_type,
                                                             client_query_id: msg.client_query_id,
-                                                            status: status as u16,
+                                                            status,
                                                             body: payload,
                                                             exchange: exchange_copy,
                                                             ip_used_weight_1m: None,
@@ -1576,7 +1576,7 @@ impl TradeEngine {
                                     let _ = query_resp_tx.send(QueryExecOutcome {
                                         req_type: msg.req_type,
                                         client_query_id: msg.client_query_id,
-                                        status: status as u16,
+                                        status,
                                         body: body_bytes,
                                         exchange: exchange_copy,
                                         ip_used_weight_1m: None,
@@ -1686,7 +1686,7 @@ impl TradeEngine {
                                                         let _ = query_resp_tx.send(QueryExecOutcome {
                                                             req_type: msg.req_type,
                                                             client_query_id: msg.client_query_id,
-                                                            status: status as u16,
+                                                            status,
                                                             body: payload,
                                                             exchange: exchange_copy,
                                                             ip_used_weight_1m: None,
@@ -1716,7 +1716,7 @@ impl TradeEngine {
                                                         let _ = query_resp_tx.send(QueryExecOutcome {
                                                             req_type: msg.req_type,
                                                             client_query_id: msg.client_query_id,
-                                                            status: status as u16,
+                                                            status,
                                                             body: payload,
                                                             exchange: exchange_copy,
                                                             ip_used_weight_1m: None,
@@ -1742,7 +1742,7 @@ impl TradeEngine {
                                     let _ = query_resp_tx.send(QueryExecOutcome {
                                         req_type: msg.req_type,
                                         client_query_id: msg.client_query_id,
-                                        status: status as u16,
+                                        status,
                                         body: body_bytes,
                                         exchange: exchange_copy,
                                         ip_used_weight_1m: None,
@@ -1856,7 +1856,7 @@ impl TradeEngine {
                                                         let _ = query_resp_tx.send(QueryExecOutcome {
                                                             req_type: msg.req_type,
                                                             client_query_id: msg.client_query_id,
-                                                            status: status as u16,
+                                                            status,
                                                             body: payload,
                                                             exchange: exchange_copy,
                                                             ip_used_weight_1m: None,
@@ -1882,7 +1882,7 @@ impl TradeEngine {
                                                         let _ = query_resp_tx.send(QueryExecOutcome {
                                                             req_type: msg.req_type,
                                                             client_query_id: msg.client_query_id,
-                                                            status: status as u16,
+                                                            status,
                                                             body: payload,
                                                             exchange: exchange_copy,
                                                             ip_used_weight_1m: None,
@@ -1906,7 +1906,7 @@ impl TradeEngine {
                                     let _ = query_resp_tx.send(QueryExecOutcome {
                                         req_type: msg.req_type,
                                         client_query_id: msg.client_query_id,
-                                        status: status as u16,
+                                        status,
                                         body: body_bytes,
                                         exchange: exchange_copy,
                                         ip_used_weight_1m: None,

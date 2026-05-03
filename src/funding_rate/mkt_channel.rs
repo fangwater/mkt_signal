@@ -32,7 +32,7 @@ const MARKET_SERVICE_ROOT: &str = "bridge";
 
 // Thread-local 单例存储
 thread_local! {
-    static MKT_CHANNEL: RefCell<Option<MktChannelInner>> = RefCell::new(None);
+    static MKT_CHANNEL: RefCell<Option<MktChannelInner>> = const { RefCell::new(None) };
 }
 
 fn build_node_name(slug: &str, suffix: &str) -> String {

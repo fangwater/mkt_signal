@@ -66,6 +66,12 @@ impl Parser for OkexSignalParser {
 #[derive(Clone)]
 pub struct OkexKlineParser;
 
+impl Default for OkexKlineParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OkexKlineParser {
     pub fn new() -> Self {
         Self
@@ -392,6 +398,12 @@ impl OkexDerivativesMetricsParser {
 #[derive(Clone)]
 pub struct OkexTradeParser;
 
+impl Default for OkexTradeParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OkexTradeParser {
     pub fn new() -> Self {
         Self
@@ -475,6 +487,12 @@ impl OkexTradeParser {
 
 #[derive(Clone)]
 pub struct OkexAskBidSpreadParser;
+
+impl Default for OkexAskBidSpreadParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl OkexAskBidSpreadParser {
     pub fn new() -> Self {
@@ -672,6 +690,12 @@ fn split_levels(
 #[derive(Clone)]
 pub struct OkexIncParser {
     max_levels: Option<usize>,
+}
+
+impl Default for OkexIncParser {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl OkexIncParser {

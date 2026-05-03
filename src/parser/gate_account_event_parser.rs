@@ -138,6 +138,12 @@ impl GateParseReport {
     }
 }
 
+impl Default for GateAccountEventParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GateAccountEventParser {
     pub fn new() -> Self {
         Self

@@ -12,6 +12,12 @@ use tokio::sync::mpsc;
 #[derive(Clone)]
 pub struct OkexAccountEventParser;
 
+impl Default for OkexAccountEventParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OkexAccountEventParser {
     pub fn new() -> Self {
         Self

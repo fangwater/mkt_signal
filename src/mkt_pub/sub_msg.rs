@@ -378,8 +378,8 @@ impl BybitPerpsSubscribeMsgs {
             ));
         }
         Self {
-            ticker_stream_msgs: ticker_stream_msgs,
-            liquidation_orders_msgs: liquidation_orders_msgs,
+            ticker_stream_msgs,
+            liquidation_orders_msgs,
         }
     }
 }
@@ -565,7 +565,7 @@ impl SubscribeMsgs {
     pub fn compare_symbol_set(prev_symbols: &HashSet<String>, new_symbols: &HashSet<String>) {
         println!("Updating symbols (current: {} symbols)", prev_symbols.len());
 
-        let new_set: HashSet<String> = new_symbols.iter().map(|s| s.clone()).collect();
+        let new_set: HashSet<String> = new_symbols.iter().cloned().collect();
         let old_set = &prev_symbols;
 
         let added_count = new_set.difference(old_set).count();
@@ -927,7 +927,7 @@ impl SubscribeMsgs {
             }
         }
         Self {
-            active_symbols: symbols.iter().map(|s| s.clone()).collect(),
+            active_symbols: symbols.iter().cloned().collect(),
             inc_subscribe_msgs,
             depth_subscribe_msgs,
             trade_subscribe_msgs,
@@ -964,7 +964,7 @@ impl DerivativesMetricsSubscribeMsgs {
         };
 
         Self {
-            active_symbols: symbols.iter().map(|s| s.clone()).collect(),
+            active_symbols: symbols.iter().cloned().collect(),
             exchange_msgs,
         }
     }

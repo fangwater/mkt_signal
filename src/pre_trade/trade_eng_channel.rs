@@ -22,7 +22,7 @@ use crate::strategy::trade_engine_response::{
 use crate::trade_engine::trade_request::TradeRequestType;
 
 thread_local! {
-    static TRADE_ENG_HUB: OnceCell<TradeEngHub> = OnceCell::new();
+    static TRADE_ENG_HUB: OnceCell<TradeEngHub> = const { OnceCell::new() };
 }
 
 const TRADE_REQ_PAYLOAD: usize = 4_096;

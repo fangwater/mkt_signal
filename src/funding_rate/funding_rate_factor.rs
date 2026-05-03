@@ -58,7 +58,7 @@ impl FundingRateFactor {
     /// 使用 thread_local 实现单线程单例
     pub fn instance() -> &'static FundingRateFactor {
         thread_local! {
-            static INSTANCE: std::cell::OnceCell<FundingRateFactor> = std::cell::OnceCell::new();
+            static INSTANCE: std::cell::OnceCell<FundingRateFactor> = const { std::cell::OnceCell::new() };
         }
 
         INSTANCE.with(|cell| {
@@ -67,7 +67,7 @@ impl FundingRateFactor {
             unsafe {
                 let ptr = cell as *const std::cell::OnceCell<FundingRateFactor>
                     as *mut std::cell::OnceCell<FundingRateFactor>;
-                (*ptr).get_or_init(|| FundingRateFactor::new())
+                (*ptr).get_or_init(FundingRateFactor::new)
             }
         })
     }

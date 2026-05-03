@@ -645,7 +645,7 @@ fn align_to_period(ts_us: i64, period_us: i64) -> i64 {
 }
 
 fn build_kline_channel_label(period_ms: u64) -> String {
-    if period_ms % 1_000 == 0 {
+    if period_ms.is_multiple_of(1_000) {
         format!("kline{}s", period_ms / 1_000)
     } else {
         format!("kline{}ms", period_ms)

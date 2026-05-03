@@ -58,6 +58,12 @@ pub struct MessageQueues {
     pub ask_bid_spread_rx: mpsc::UnboundedReceiver<Bytes>,
 }
 
+impl Default for MessageQueues {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MessageQueues {
     pub fn new() -> Self {
         let (incremental_tx, incremental_rx) = mpsc::unbounded_channel();
@@ -712,24 +718,24 @@ impl MktManager {
             let exchange_msgs = &derivatives_msgs.exchange_msgs;
             match exchange_msgs {
                 crate::sub_msg::ExchangePerpsSubscribeMsgs::Binance(binance_msgs) => {
-                    self.start_binance_derivatives_connections(&binance_msgs)
+                    self.start_binance_derivatives_connections(binance_msgs)
                         .await;
                 }
                 crate::sub_msg::ExchangePerpsSubscribeMsgs::Okex(okex_msgs) => {
-                    self.start_okex_derivatives_connections(&okex_msgs).await;
+                    self.start_okex_derivatives_connections(okex_msgs).await;
                 }
                 crate::sub_msg::ExchangePerpsSubscribeMsgs::Bybit(bybit_msgs) => {
-                    self.start_bybit_derivatives_connections(&bybit_msgs).await;
+                    self.start_bybit_derivatives_connections(bybit_msgs).await;
                 }
                 crate::sub_msg::ExchangePerpsSubscribeMsgs::Bitget(bitget_msgs) => {
-                    self.start_bitget_derivatives_connections(&bitget_msgs)
+                    self.start_bitget_derivatives_connections(bitget_msgs)
                         .await;
                 }
                 crate::sub_msg::ExchangePerpsSubscribeMsgs::Gate(gate_msgs) => {
-                    self.start_gate_derivatives_connections(&gate_msgs).await;
+                    self.start_gate_derivatives_connections(gate_msgs).await;
                 }
                 crate::sub_msg::ExchangePerpsSubscribeMsgs::Hyperliquid(hyperliquid_msgs) => {
-                    self.start_hyperliquid_derivatives_connections(&hyperliquid_msgs)
+                    self.start_hyperliquid_derivatives_connections(hyperliquid_msgs)
                         .await;
                 }
             }

@@ -1422,7 +1422,7 @@ fn compute_tp_vpi_014(series: &SymbolSeries<'_>) -> Option<f64> {
     let ratio_series = binary_opt_vec(
         &collect_vec(&series.volume)
             .into_iter()
-            .map(|v| Some(v))
+            .map(Some)
             .collect::<Vec<Option<f64>>>(),
         &mean20,
         ratio,

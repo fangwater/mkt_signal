@@ -30,7 +30,7 @@ fn parse_i64_value(v: &Value) -> Option<i64> {
 
 fn normalize_contract(raw: &str) -> String {
     let mut inst = raw.trim().to_ascii_uppercase();
-    inst = inst.replace('_', "").replace('-', "");
+    inst = inst.replace(['_', '-'], "");
     if let Some(stripped) = inst.strip_suffix("SWAP") {
         return stripped.to_string();
     }

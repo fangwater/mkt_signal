@@ -343,6 +343,12 @@ pub struct HyperliquidIncParser {
     max_levels: Option<usize>,
 }
 
+impl Default for HyperliquidIncParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HyperliquidIncParser {
     pub fn new() -> Self {
         Self { max_levels: None }
@@ -441,6 +447,12 @@ impl Parser for HyperliquidIncParser {
 #[derive(Clone)]
 pub struct HyperliquidTradeParser;
 
+impl Default for HyperliquidTradeParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HyperliquidTradeParser {
     pub fn new() -> Self {
         Self
@@ -527,6 +539,12 @@ impl Parser for HyperliquidTradeParser {
 
 #[derive(Clone)]
 pub struct HyperliquidAskBidSpreadParser;
+
+impl Default for HyperliquidAskBidSpreadParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl HyperliquidAskBidSpreadParser {
     pub fn new() -> Self {
@@ -682,6 +700,12 @@ impl Parser for HyperliquidKlineParser {
 
 #[derive(Clone)]
 pub struct HyperliquidDerivativesMetricsParser;
+
+impl Default for HyperliquidDerivativesMetricsParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl HyperliquidDerivativesMetricsParser {
     pub fn new() -> Self {

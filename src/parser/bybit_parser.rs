@@ -48,6 +48,12 @@ impl Parser for BybitSignalParser {
 #[derive(Clone)]
 pub struct BybitKlineParser;
 
+impl Default for BybitKlineParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BybitKlineParser {
     pub fn new() -> Self {
         Self
@@ -70,7 +76,7 @@ impl Parser for BybitKlineParser {
                                 if let Some(confirm) =
                                     kline_data.get("confirm").and_then(|v| v.as_bool())
                                 {
-                                    if confirm == false {
+                                    if !confirm {
                                         return 0; // 未确认的K线，不处理
                                     }
                                 } else {
@@ -78,7 +84,7 @@ impl Parser for BybitKlineParser {
                                 }
 
                                 // 从topic字段提取symbol
-                                if let Some(symbol) = topic.split('.').last() {
+                                if let Some(symbol) = topic.split('.').next_back() {
                                     // 从kline_data对象中提取OHLCV数据
                                     if let (
                                         Some(open_str),
@@ -139,6 +145,12 @@ impl Parser for BybitKlineParser {
 
 #[derive(Clone)]
 pub struct BybitDerivativesMetricsParser;
+
+impl Default for BybitDerivativesMetricsParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl BybitDerivativesMetricsParser {
     pub fn new() -> Self {
@@ -331,7 +343,7 @@ fn parse_hex_u64(hex: &str) -> Result<u64, String> {
     }
 
     let mut result = 0u64;
-    for (_i, c) in hex.chars().take(8).enumerate() {
+    for c in hex.chars().take(8) {
         result = (result << 4) | (hex_char_to_int(c)? as u64);
     }
     Ok(result)
@@ -355,6 +367,12 @@ fn uuid_to_int64_mixed(uuid: &str) -> Result<i64, String> {
 
 #[derive(Clone)]
 pub struct BybitTradeParser;
+
+impl Default for BybitTradeParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl BybitTradeParser {
     pub fn new() -> Self {
@@ -645,6 +663,12 @@ mod tests {
 
 #[derive(Clone)]
 pub struct BybitAskBidSpreadParser;
+
+impl Default for BybitAskBidSpreadParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl BybitAskBidSpreadParser {
     pub fn new() -> Self {
@@ -993,6 +1017,12 @@ fn split_levels(
 #[derive(Clone)]
 pub struct BybitIncParser {
     max_levels: Option<usize>,
+}
+
+impl Default for BybitIncParser {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl BybitIncParser {

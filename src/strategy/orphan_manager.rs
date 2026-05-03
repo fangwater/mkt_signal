@@ -14,6 +14,12 @@ pub struct OrphanStrategyManager {
     symbol_index: HashMap<String, BTreeSet<i32>>,
 }
 
+impl Default for OrphanStrategyManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OrphanStrategyManager {
     pub fn new() -> Self {
         Self {

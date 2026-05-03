@@ -28,7 +28,7 @@ use crate::strategy::{OrphanStrategyManager, StrategyManager};
 use crate::trade_engine::query_request::QueryRequestType;
 
 thread_local! {
-    static QUERY_ENG_HUB: OnceCell<QueryEngHub> = OnceCell::new();
+    static QUERY_ENG_HUB: OnceCell<QueryEngHub> = const { OnceCell::new() };
 }
 
 const QUERY_ENG_SUBSCRIBER_MAX_BUFFER_SIZE: usize = 256;
@@ -477,8 +477,8 @@ impl QueryEngChannel {
                                                     | TradingVenue::OkexMargin
                                                     | TradingVenue::GateMargin
                                                     | TradingVenue::BitgetMargin
-                                            ) {
-                                                if exchange_enum == open_exchange
+                                            )
+                                                && exchange_enum == open_exchange
                                                     && scope_matches_venue(
                                                         account_scope,
                                                         open_venue,
@@ -489,15 +489,14 @@ impl QueryEngChannel {
                                                         applied = true;
                                                     }
                                                 }
-                                            }
                                             if matches!(
                                                 hedge_venue,
                                                 TradingVenue::BinanceMargin
                                                     | TradingVenue::OkexMargin
                                                     | TradingVenue::GateMargin
                                                     | TradingVenue::BitgetMargin
-                                            ) {
-                                                if exchange_enum == hedge_exchange
+                                            )
+                                                && exchange_enum == hedge_exchange
                                                     && scope_matches_venue(
                                                         account_scope,
                                                         hedge_venue,
@@ -508,7 +507,6 @@ impl QueryEngChannel {
                                                         applied = true;
                                                     }
                                                 }
-                                            }
                                             let _ = applied;
                                         }
                                     }
@@ -527,8 +525,8 @@ impl QueryEngChannel {
                                                     | TradingVenue::OkexMargin
                                                     | TradingVenue::GateMargin
                                                     | TradingVenue::BitgetMargin
-                                            ) {
-                                                if exchange_enum == open_exchange
+                                            )
+                                                && exchange_enum == open_exchange
                                                     && scope_matches_venue(
                                                         account_scope,
                                                         open_venue,
@@ -539,15 +537,14 @@ impl QueryEngChannel {
                                                         applied = true;
                                                     }
                                                 }
-                                            }
                                             if matches!(
                                                 hedge_venue,
                                                 TradingVenue::BinanceMargin
                                                     | TradingVenue::OkexMargin
                                                     | TradingVenue::GateMargin
                                                     | TradingVenue::BitgetMargin
-                                            ) {
-                                                if exchange_enum == hedge_exchange
+                                            )
+                                                && exchange_enum == hedge_exchange
                                                     && scope_matches_venue(
                                                         account_scope,
                                                         hedge_venue,
@@ -558,7 +555,6 @@ impl QueryEngChannel {
                                                         applied = true;
                                                     }
                                                 }
-                                            }
                                             let _ = applied;
                                         }
                                     }
@@ -571,8 +567,8 @@ impl QueryEngChannel {
                                                     | TradingVenue::OkexFutures
                                                     | TradingVenue::GateFutures
                                                     | TradingVenue::BitgetFutures
-                                            ) {
-                                                if exchange_enum == open_exchange
+                                            )
+                                                && exchange_enum == open_exchange
                                                     && scope_matches_venue(
                                                         account_scope,
                                                         open_venue,
@@ -583,15 +579,14 @@ impl QueryEngChannel {
                                                         applied = true;
                                                     }
                                                 }
-                                            }
                                             if matches!(
                                                 hedge_venue,
                                                 TradingVenue::BinanceFutures
                                                     | TradingVenue::OkexFutures
                                                     | TradingVenue::GateFutures
                                                     | TradingVenue::BitgetFutures
-                                            ) {
-                                                if exchange_enum == hedge_exchange
+                                            )
+                                                && exchange_enum == hedge_exchange
                                                     && scope_matches_venue(
                                                         account_scope,
                                                         hedge_venue,
@@ -602,7 +597,6 @@ impl QueryEngChannel {
                                                         applied = true;
                                                     }
                                                 }
-                                            }
                                             let _ = applied;
                                         }
                                     }
@@ -615,8 +609,8 @@ impl QueryEngChannel {
                                                     | TradingVenue::OkexFutures
                                                     | TradingVenue::GateFutures
                                                     | TradingVenue::BitgetFutures
-                                            ) {
-                                                if exchange_enum == open_exchange
+                                            )
+                                                && exchange_enum == open_exchange
                                                     && scope_matches_venue(
                                                         account_scope,
                                                         open_venue,
@@ -627,15 +621,14 @@ impl QueryEngChannel {
                                                         applied = true;
                                                     }
                                                 }
-                                            }
                                             if matches!(
                                                 hedge_venue,
                                                 TradingVenue::BinanceFutures
                                                     | TradingVenue::OkexFutures
                                                     | TradingVenue::GateFutures
                                                     | TradingVenue::BitgetFutures
-                                            ) {
-                                                if exchange_enum == hedge_exchange
+                                            )
+                                                && exchange_enum == hedge_exchange
                                                     && scope_matches_venue(
                                                         account_scope,
                                                         hedge_venue,
@@ -646,7 +639,6 @@ impl QueryEngChannel {
                                                         applied = true;
                                                     }
                                                 }
-                                            }
                                             let _ = applied;
                                         }
                                     }

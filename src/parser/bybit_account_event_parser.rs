@@ -39,6 +39,12 @@ struct BybitWalletChannelCoin {
     borrow_interest: String,
 }
 
+impl Default for BybitAccountEventParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BybitAccountEventParser {
     pub fn new() -> Self {
         Self
@@ -605,7 +611,7 @@ impl Parser for BybitAccountEventParser {
     }
 }
 
-fn collect_data_objects<'a>(json_value: &'a Value) -> Vec<&'a Map<String, Value>> {
+fn collect_data_objects(json_value: &Value) -> Vec<&Map<String, Value>> {
     match json_value.get("data") {
         Some(Value::Array(arr)) => arr.iter().filter_map(|v| v.as_object()).collect(),
         Some(Value::Object(obj)) => vec![obj],

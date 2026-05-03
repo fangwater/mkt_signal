@@ -261,8 +261,8 @@ fn resolve_mm_hedge_price_offset_limits(
 
 fn is_supported_clock_aligned_interval_ms(interval_ms: u64) -> bool {
     interval_ms > 0
-        && interval_ms % MM_OPEN_INTERVAL_ALIGN_MS == 0
-        && (CLOCK_ALIGN_BASE_MS % interval_ms == 0 || interval_ms % CLOCK_ALIGN_BASE_MS == 0)
+        && interval_ms.is_multiple_of(MM_OPEN_INTERVAL_ALIGN_MS)
+        && (CLOCK_ALIGN_BASE_MS.is_multiple_of(interval_ms) || interval_ms.is_multiple_of(CLOCK_ALIGN_BASE_MS))
 }
 
 pub(crate) fn compute_next_shifted_deadline_us(
@@ -885,7 +885,7 @@ impl MmDecisionState {
     }
 
     pub(crate) fn update_open_volatility_limit(&mut self, percentile: f64) {
-        if !(percentile.is_finite() && percentile >= 0.0 && percentile <= 100.0) {
+        if !(percentile.is_finite() && (0.0..=100.0).contains(&percentile)) {
             panic!(
                 "MmDecision: open_volatility_limit must be finite and within [0,100], got {}",
                 percentile
@@ -909,7 +909,7 @@ impl MmDecisionState {
     }
 
     pub(crate) fn update_open_tradecount_limit(&mut self, percentile: f64) {
-        if !(percentile.is_finite() && percentile >= 0.0 && percentile <= 100.0) {
+        if !(percentile.is_finite() && (0.0..=100.0).contains(&percentile)) {
             panic!(
                 "MmDecision: open_tradecount_limit must be finite and within [0,100], got {}",
                 percentile
@@ -1201,7 +1201,7 @@ impl MmDecisionState {
             tlen_filtered_levels += filtered_levels;
             from_keys
                 .into_iter()
-                .zip(prepared.into_iter())
+                .zip(prepared)
                 .filter_map(|(from_key_bytes, mut item)| {
                     let Some(from_key_bytes) = from_key_bytes else {
                         side_breakdown_mut(item.side, &mut buy, &mut sell).tlen_filtered += 1;

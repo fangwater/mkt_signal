@@ -51,6 +51,12 @@ impl Parser for BinanceSignalParser {
 #[derive(Clone)]
 pub struct BinanceKlineParser;
 
+impl Default for BinanceKlineParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BinanceKlineParser {
     pub fn new() -> Self {
         Self
@@ -328,6 +334,12 @@ impl BinanceDerivativesMetricsParser {
 #[derive(Clone)]
 pub struct BinanceSnapshotParser {
     max_levels: Option<usize>,
+}
+
+impl Default for BinanceSnapshotParser {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl BinanceSnapshotParser {
@@ -707,6 +719,12 @@ impl Parser for BinanceSbeDepthDiffParser {
 #[derive(Clone)]
 pub struct BinanceSbeBestBidAskParser;
 
+impl Default for BinanceSbeBestBidAskParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BinanceSbeBestBidAskParser {
     pub fn new() -> Self {
         Self
@@ -798,6 +816,12 @@ impl Parser for BinanceSbeBestBidAskParser {
 
 #[derive(Clone)]
 pub struct BinanceSbeTradeParser;
+
+impl Default for BinanceSbeTradeParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl BinanceSbeTradeParser {
     pub fn new() -> Self {
@@ -1079,6 +1103,12 @@ pub struct BinanceIncParser {
     mode: BinanceDepthMode,
 }
 
+impl Default for BinanceIncParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BinanceIncParser {
     pub fn new() -> Self {
         Self::futures_incremental(None)
@@ -1316,6 +1346,12 @@ impl BinanceIncParser {
 #[derive(Clone)]
 pub struct BinanceTradeParser;
 
+impl Default for BinanceTradeParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BinanceTradeParser {
     pub fn new() -> Self {
         Self
@@ -1324,6 +1360,12 @@ impl BinanceTradeParser {
 
 #[derive(Clone)]
 pub struct BinanceAskBidSpreadParser;
+
+impl Default for BinanceAskBidSpreadParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl BinanceAskBidSpreadParser {
     pub fn new() -> Self {

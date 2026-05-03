@@ -161,6 +161,12 @@ pub struct WelfordCovariance {
     c2_xy: f64,
 }
 
+impl Default for WelfordCovariance {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WelfordCovariance {
     pub fn new() -> Self {
         Self {

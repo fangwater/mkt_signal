@@ -226,39 +226,36 @@ impl TradeFlowFeaturePublisher {
             return false;
         }
 
-        match self.publisher.loan_uninit() {
-            Ok(mut sample) => {
-                sample
-                    .payload_mut()
-                    .write([0u8; TRADE_FLOW_FEATURE_MAX_BYTES]);
-                let mut sample = unsafe { sample.assume_init() };
-                sample.payload_mut()[..data.len()].copy_from_slice(data);
-                if sample.send().is_ok() {
-                    let now = Instant::now();
-                    self.maybe_log_exceed_summary(now);
+        if let Ok(mut sample) = self.publisher.loan_uninit() {
+            sample
+                .payload_mut()
+                .write([0u8; TRADE_FLOW_FEATURE_MAX_BYTES]);
+            let mut sample = unsafe { sample.assume_init() };
+            sample.payload_mut()[..data.len()].copy_from_slice(data);
+            if sample.send().is_ok() {
+                let now = Instant::now();
+                self.maybe_log_exceed_summary(now);
 
-                    if let Some(gap) = self.record_publish_gap(symbol, now) {
-                        let exceed_at_ms = current_unix_time_ms();
-                        if let Some(events) = self.exceeded_events_in_window.get_mut(symbol) {
-                            events.push(exceed_at_ms);
-                        } else {
-                            self.exceeded_events_in_window
-                                .insert(symbol.to_string(), vec![exceed_at_ms]);
-                        }
-                        error!(
-                            "TradeFlowFeature publish gap exceeded: venue={} symbol={} gap_ms={} threshold_ms={} exceed_at_ms={}",
-                            self.venue_slug,
-                            symbol,
-                            gap.as_millis(),
-                            PUBLISH_GAP_ERROR_THRESHOLD.as_millis(),
-                            exceed_at_ms
-                        );
+                if let Some(gap) = self.record_publish_gap(symbol, now) {
+                    let exceed_at_ms = current_unix_time_ms();
+                    if let Some(events) = self.exceeded_events_in_window.get_mut(symbol) {
+                        events.push(exceed_at_ms);
+                    } else {
+                        self.exceeded_events_in_window
+                            .insert(symbol.to_string(), vec![exceed_at_ms]);
                     }
-                    self.published += 1;
-                    return true;
+                    error!(
+                        "TradeFlowFeature publish gap exceeded: venue={} symbol={} gap_ms={} threshold_ms={} exceed_at_ms={}",
+                        self.venue_slug,
+                        symbol,
+                        gap.as_millis(),
+                        PUBLISH_GAP_ERROR_THRESHOLD.as_millis(),
+                        exceed_at_ms
+                    );
                 }
+                self.published += 1;
+                return true;
             }
-            Err(_) => {}
         }
 
         self.dropped += 1;

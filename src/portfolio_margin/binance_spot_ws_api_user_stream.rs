@@ -115,7 +115,7 @@ impl MktConnectionRunner for BinanceSpotWsApiUserDataConnection {
                 .lock()
                 .await;
             ws_stream
-                .send(Message::Text(subscribe_payload.clone().into()))
+                .send(Message::Text(subscribe_payload.clone()))
                 .await
                 .with_context(|| "send spot ws-api subscribe request")?;
         }

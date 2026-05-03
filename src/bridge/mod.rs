@@ -190,7 +190,7 @@ impl BridgeApp {
                     info!("ZMQ PUSH connected: route='{}' -> {}", rid, addr);
 
                     while let Some(payload) = rx.blocking_recv() {
-                        if let Err(e) = push.send_multipart(&[rid.as_bytes(), &payload], 0) {
+                        if let Err(e) = push.send_multipart([rid.as_bytes(), &payload], 0) {
                             warn!("ZMQ send error (route='{}' addr='{}'): {e}", rid, addr);
                             std::thread::sleep(Duration::from_millis(200));
                         }

@@ -62,7 +62,7 @@ enum VolFactorEnsureStatus {
 fn normalize_namespace(namespace: &str) -> String {
     let ns = namespace
         .trim()
-        .trim_end_matches(|c: char| c == '_' || c == '-' || c == ':')
+        .trim_end_matches(['_', '-', ':'])
         .to_ascii_lowercase();
     if ns.is_empty() {
         DEFAULT_NAMESPACE.to_string()

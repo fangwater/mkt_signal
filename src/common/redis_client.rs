@@ -59,7 +59,7 @@ impl RedisSettings {
         format!("redis://{}{}:{}/{}", auth, self.host, self.port, self.db)
     }
 
-    fn prefixed_key<'a>(&self, key: &'a str) -> String {
+    fn prefixed_key(&self, key: &str) -> String {
         match &self.prefix {
             Some(prefix) if !prefix.is_empty() => format!("{}{}", prefix, key),
             _ => key.to_string(),

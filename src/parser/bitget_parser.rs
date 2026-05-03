@@ -10,6 +10,12 @@ use tokio::sync::mpsc;
 #[derive(Clone)]
 pub struct BitgetAskBidSpreadParser;
 
+impl Default for BitgetAskBidSpreadParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BitgetAskBidSpreadParser {
     pub fn new() -> Self {
         Self
@@ -48,7 +54,7 @@ impl Parser for BitgetAskBidSpreadParser {
                                     asks.and_then(|arr| arr.first()).and_then(|v| v.as_array());
 
                                 let bid_price = bid
-                                    .and_then(|entry| entry.get(0))
+                                    .and_then(|entry| entry.first())
                                     .and_then(|v| v.as_str())
                                     .and_then(|s| s.parse::<f64>().ok());
                                 let bid_amount = bid
@@ -56,7 +62,7 @@ impl Parser for BitgetAskBidSpreadParser {
                                     .and_then(|v| v.as_str())
                                     .and_then(|s| s.parse::<f64>().ok());
                                 let ask_price = ask
-                                    .and_then(|entry| entry.get(0))
+                                    .and_then(|entry| entry.first())
                                     .and_then(|v| v.as_str())
                                     .and_then(|s| s.parse::<f64>().ok());
                                 let ask_amount = ask
@@ -101,6 +107,12 @@ impl Parser for BitgetAskBidSpreadParser {
 /// Bitget Signal Parser - 用于深度行情信号
 #[derive(Clone)]
 pub struct BitgetSignalParser;
+
+impl Default for BitgetSignalParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl BitgetSignalParser {
     pub fn new() -> Self {
@@ -163,6 +175,12 @@ impl Parser for BitgetSignalParser {
 /// data 格式: [timestamp, open, high, low, close, baseVol, quoteVol, usdtVol]
 #[derive(Clone)]
 pub struct BitgetKlineParser;
+
+impl Default for BitgetKlineParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl BitgetKlineParser {
     pub fn new() -> Self {
@@ -276,6 +294,12 @@ impl Parser for BitgetKlineParser {
 /// ```
 #[derive(Clone)]
 pub struct BitgetDerivativesMetricsParser;
+
+impl Default for BitgetDerivativesMetricsParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl BitgetDerivativesMetricsParser {
     pub fn new() -> Self {
@@ -431,6 +455,12 @@ pub struct BitgetIncParser {
     max_levels: Option<usize>,
 }
 
+impl Default for BitgetIncParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BitgetIncParser {
     pub fn new() -> Self {
         Self { max_levels: None }
@@ -577,6 +607,12 @@ impl Parser for BitgetIncParser {
 /// Bitget Trade Parser (spot & futures)
 #[derive(Clone)]
 pub struct BitgetTradeParser;
+
+impl Default for BitgetTradeParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl BitgetTradeParser {
     pub fn new() -> Self {

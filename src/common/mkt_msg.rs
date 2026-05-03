@@ -1091,7 +1091,7 @@ impl PairMmResampleMsg {
         let symbol_length = symbol.len() as u32;
         let venue = cursor.get_u8();
         let remaining = cursor.len();
-        if remaining % 8 != 0 {
+        if !remaining.is_multiple_of(8) {
             bail!(
                 "PairMmResampleMsg payload misaligned: {} bytes remaining",
                 remaining
@@ -1561,7 +1561,7 @@ impl MktMsg {
     pub fn to_bytes(&self) -> Bytes {
         let mut buf = BytesMut::with_capacity(8 + self.data.len());
         buf.put_u32_le(self.msg_type as u32);
-        buf.put_u32_le(self.msg_length as u32);
+        buf.put_u32_le(self.msg_length);
         buf.put(self.data.clone());
         buf.freeze()
     }

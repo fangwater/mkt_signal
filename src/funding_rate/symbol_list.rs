@@ -23,7 +23,7 @@ const DEFAULT_SYMBOL_NAMESPACE: &str = "fr";
 
 // Thread-local 单例存储
 thread_local! {
-    static SYMBOL_LIST: RefCell<Option<SymbolListInner>> = RefCell::new(None);
+    static SYMBOL_LIST: RefCell<Option<SymbolListInner>> = const { RefCell::new(None) };
 }
 
 /// SymbolList 单例访问器（零大小类型）
@@ -256,7 +256,7 @@ impl SymbolList {
 
     /// 获取 online symbols（平仓 ∪ 正套/反套建仓列表）
     pub fn get_online_symbols(&self) -> Vec<String> {
-        Self::with_inner(|inner| Self::collect_online(inner))
+        Self::with_inner(Self::collect_online)
     }
 
     /// 获取所有交易场所的 online symbols（基于当前 exchange）
@@ -318,7 +318,7 @@ impl SymbolList {
 fn normalize_symbol_list_namespace(namespace: &str) -> String {
     let namespace = namespace
         .trim()
-        .trim_end_matches(|c: char| c == '_' || c == '-' || c == ':')
+        .trim_end_matches(['_', '-', ':'])
         .to_ascii_lowercase();
     if namespace.is_empty() {
         DEFAULT_SYMBOL_NAMESPACE.to_string()

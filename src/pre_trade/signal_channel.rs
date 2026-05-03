@@ -32,7 +32,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 thread_local! {
-    static SIGNAL_CHANNEL: OnceCell<SignalChannel> = OnceCell::new();
+    static SIGNAL_CHANNEL: OnceCell<SignalChannel> = const { OnceCell::new() };
 }
 
 /// 默认信号频道名称（与 trade_signal 的发布频道一致）
@@ -234,7 +234,7 @@ impl SignalChannel {
                             if should_drop_startup_buffered_signal(&signal, listener_start_us) {
                                 dropped_startup_buffered += 1;
                                 if dropped_startup_buffered <= 5
-                                    || dropped_startup_buffered % 100 == 0
+                                    || dropped_startup_buffered.is_multiple_of(100)
                                 {
                                     info!(
                                         "signal channel {} dropped startup-buffered signal count={} type={:?} generation_time={} listener_start_us={}",

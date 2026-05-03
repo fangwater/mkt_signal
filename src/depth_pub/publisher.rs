@@ -124,7 +124,7 @@ impl DepthMsgPublisher {
         match publisher.loan_uninit() {
             Ok(sample) => {
                 let sample = sample.write_payload(buffer);
-                matches!(sample.send(), Ok(_))
+                sample.send().is_ok()
             }
             Err(_) => false,
         }

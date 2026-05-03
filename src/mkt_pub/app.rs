@@ -81,7 +81,7 @@ impl MktSignalApp {
         let message_queues = MessageQueues::new();
 
         // 初始化订阅消息
-        let subscribe_msgs = SubscribeMsgs::new(&config).await;
+        let subscribe_msgs = SubscribeMsgs::new(config).await;
 
         // 只为期货交易所初始化衍生品订阅消息
         let derivatives_subscribe_msgs = if !config.data_types.enable_derivatives {
@@ -91,7 +91,7 @@ impl MktSignalApp {
                 "Initializing derivatives metrics subscriptions for {}",
                 config.get_exchange()
             );
-            let msgs = DerivativesMetricsSubscribeMsgs::new(&config).await;
+            let msgs = DerivativesMetricsSubscribeMsgs::new(config).await;
             info!(
                 "Derivatives symbols loaded: {}",
                 msgs.get_active_symbols().len()
@@ -328,13 +328,13 @@ impl MktSignalApp {
     async fn update_subscribe_msgs(&mut self) -> Result<()> {
         // 更新普通订阅消息并比较
         let prev_symbols = self.subscribe_msgs.get_active_symbols();
-        self.subscribe_msgs = SubscribeMsgs::new(&self.config).await;
+        self.subscribe_msgs = SubscribeMsgs::new(self.config).await;
         SubscribeMsgs::compare_symbol_set(&prev_symbols, &self.subscribe_msgs.get_active_symbols());
 
         // 更新衍生品订阅消息
         if self.derivatives_subscribe_msgs.is_some() {
             self.derivatives_subscribe_msgs =
-                Some(DerivativesMetricsSubscribeMsgs::new(&self.config).await);
+                Some(DerivativesMetricsSubscribeMsgs::new(self.config).await);
         }
 
         Ok(())

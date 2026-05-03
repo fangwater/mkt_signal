@@ -995,12 +995,11 @@ impl Order {
     /// 更新订单状态
     pub fn update_status(&mut self, status: OrderExecutionStatus) {
         // 增加订单状态检查
-        if status == OrderExecutionStatus::Create {
-            if self.status != OrderExecutionStatus::Commit {
+        if status == OrderExecutionStatus::Create
+            && self.status != OrderExecutionStatus::Commit {
                 //出现非正常的状态切换，打印日志
                 warn!("unexpected OrderExecutionStatus");
             }
-        }
         self.status = status;
     }
 
@@ -1083,7 +1082,7 @@ impl Order {
                 }
                 let request: BinanceCancelMarginOrderRequest =
                     BinanceCancelMarginOrderRequest::create(now, self.client_order_id, params);
-                return Ok(request.to_bytes());
+                Ok(request.to_bytes())
             }
             TradingVenue::BinanceFutures => {
                 let params = Bytes::from(format!(
@@ -1097,7 +1096,7 @@ impl Order {
                 }
                 let request: BinanceCancelUMOrderRequest =
                     BinanceCancelUMOrderRequest::create(now, self.client_order_id, params);
-                return Ok(request.to_bytes());
+                Ok(request.to_bytes())
             }
             TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
                 let inst_id = okex_inst_id_from_symbol(&self.symbol, self.venue)?;

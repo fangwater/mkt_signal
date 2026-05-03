@@ -171,6 +171,12 @@ impl MmHedgeCtx {
     }
 }
 
+impl Default for ArbHedgeCtx {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ArbHedgeCtx {
     pub fn new() -> Self {
         Self {

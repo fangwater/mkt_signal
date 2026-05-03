@@ -360,7 +360,7 @@ fn print_usdt_summary(open_venue: TradingVenue, hedge_venue: TradingVenue, mon: 
 }
 
 thread_local! {
-    static RESAMPLE_CHANNEL: OnceCell<ResampleChannel> = OnceCell::new();
+    static RESAMPLE_CHANNEL: OnceCell<ResampleChannel> = const { OnceCell::new() };
 }
 
 /// 默认敞口采样频道名称
@@ -468,7 +468,7 @@ impl ResampleChannel {
     fn print_exposure_table_snapshot(&self) {
         let mon = MonitorChannel::instance();
         let price_snapshot = mon.price_table().borrow().snapshot();
-        let ts_ms = (get_timestamp_us() / 1000) as i64;
+        let ts_ms = get_timestamp_us() / 1000 ;
         let (exposures, _total_equity, total_abs_exposure, _total_position, _um_unrealized_usd) =
             mon.basic_state_snapshot();
         let price_mapper = create_symbol_mapper(mon.mark_price_exchange());
@@ -526,7 +526,7 @@ impl ResampleChannel {
 
         let mon = MonitorChannel::instance();
         let price_snapshot = mon.price_table().borrow().snapshot();
-        let ts_ms = (get_timestamp_us() / 1000) as i64;
+        let ts_ms = get_timestamp_us() / 1000 ;
         let exposure_price_mapper = create_symbol_mapper(mon.mark_price_exchange());
 
         let (exposures, total_equity, total_abs_exposure, total_position, um_unrealized_usd) =

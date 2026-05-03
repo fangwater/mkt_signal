@@ -51,7 +51,7 @@ fn extract_rows(value: &Value) -> Option<&Vec<Value>> {
     None
 }
 
-fn extract_balance_map<'a>(value: &'a Value) -> Option<&'a serde_json::Map<String, Value>> {
+fn extract_balance_map(value: &Value) -> Option<&serde_json::Map<String, Value>> {
     value.get("balances")?.as_object()
 }
 

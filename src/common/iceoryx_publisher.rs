@@ -108,7 +108,7 @@ impl<const PAYLOAD: usize> GenericPublisher<PAYLOAD> {
                 .suppressed_publish_count
                 .fetch_add(1, Ordering::Relaxed)
                 + 1;
-            if suppressed == 1 || suppressed % 100 == 0 {
+            if suppressed == 1 || suppressed.is_multiple_of(100) {
                 warn!(
                     "Signal publish suppressed (dry-run): service={} count={} {}",
                     self.full_service,

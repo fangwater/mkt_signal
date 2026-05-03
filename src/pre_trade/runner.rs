@@ -62,6 +62,12 @@ fn drive_orphan_manager_period_clock(now: i64) {
     let _ = drive_orphan_manager_period_clock_rc(&orphan_strategy_mgr, now);
 }
 
+impl Default for PreTrade {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PreTrade {
     pub fn new() -> Self {
         Self {}

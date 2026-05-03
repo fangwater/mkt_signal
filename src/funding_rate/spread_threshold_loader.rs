@@ -106,7 +106,7 @@ pub fn load_from_redis(
         // 存入缓存
         let symbol_map = symbols_thresholds
             .entry(symbol.clone())
-            .or_insert_with(HashMap::new);
+            .or_default();
         let cache = symbol_map.entry(op_key).or_insert_with(ThresholdCache::new);
 
         match mode_str.to_uppercase().as_str() {

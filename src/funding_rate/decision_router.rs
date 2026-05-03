@@ -21,7 +21,7 @@ pub enum DecisionBranch {
 }
 
 thread_local! {
-    static DECISION_BRANCH: OnceCell<DecisionBranch> = OnceCell::new();
+    static DECISION_BRANCH: OnceCell<DecisionBranch> = const { OnceCell::new() };
     static DECISION_SKIP_NOT_READY: RefCell<DecisionSkipNotReadyStats> =
         RefCell::new(DecisionSkipNotReadyStats::default());
 }

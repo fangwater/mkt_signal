@@ -882,7 +882,7 @@ impl MarketMakerHedgeStrategy {
     fn send_hedge_query(&mut self) {
         // 发送对冲查询：携带 symbol、当期买/卖成交、累计净头寸和风控敞口上限。
         // 调用方已确认净敞口超过阈值；这里负责组包、记录 pending 状态并启动 watchdog。
-        let hedge_ts_ms = (get_timestamp_us() / 1000) as i64;
+        let hedge_ts_ms = get_timestamp_us() / 1000 ;
         self.last_hedge_ts_ms = Some(hedge_ts_ms);
         let risk_loader = PreTradeParamsLoader::instance();
         let open_venue = MonitorChannel::instance().open_venue();

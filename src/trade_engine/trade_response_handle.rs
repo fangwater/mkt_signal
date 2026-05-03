@@ -313,22 +313,20 @@ pub fn spawn_response_handle(
                             m
                         );
                     }
+                } else if downgrade {
+                    debug!(
+                        "trade resp benign cancel terminal: ex={:?} type={:?} cli_ord_id={} status={} code={}",
+                        out.exchange,
+                        out.req_type,
+                        out.client_order_id,
+                        out.status,
+                        error_code
+                    );
                 } else {
-                    if downgrade {
-                        debug!(
-                            "trade resp benign cancel terminal: ex={:?} type={:?} cli_ord_id={} status={} code={}",
-                            out.exchange,
-                            out.req_type,
-                            out.client_order_id,
-                            out.status,
-                            error_code
-                        );
-                    } else {
-                        warn!(
-                            "trade resp error: ex={:?} type={:?} cli_ord_id={} status={} code={}",
-                            out.exchange, out.req_type, out.client_order_id, out.status, error_code
-                        );
-                    }
+                    warn!(
+                        "trade resp error: ex={:?} type={:?} cli_ord_id={} status={} code={}",
+                        out.exchange, out.req_type, out.client_order_id, out.status, error_code
+                    );
                 }
             }
 

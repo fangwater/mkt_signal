@@ -47,6 +47,12 @@ struct BitgetAccountChannelCoin {
     debts: String,
 }
 
+impl Default for BitgetAccountEventParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BitgetAccountEventParser {
     pub fn new() -> Self {
         Self
@@ -494,7 +500,7 @@ impl Parser for BitgetAccountEventParser {
     }
 }
 
-fn collect_data_objects<'a>(json_value: &'a Value) -> Vec<&'a Map<String, Value>> {
+fn collect_data_objects(json_value: &Value) -> Vec<&Map<String, Value>> {
     match json_value.get("data") {
         Some(Value::Array(arr)) => arr.iter().filter_map(|v| v.as_object()).collect(),
         Some(Value::Object(obj)) => vec![obj],

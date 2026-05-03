@@ -127,6 +127,7 @@ pub fn apply_open_tlen_gate_and_build_from_keys(
 
 /// 资金费率周期类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Default)]
 pub enum FundingRatePeriod {
     /// 1小时周期（一天24次）
     Hours1,
@@ -137,6 +138,7 @@ pub enum FundingRatePeriod {
     /// 6小时周期（一天4次）
     Hours6,
     /// 8小时周期（一天3次）
+    #[default]
     Hours8,
 }
 
@@ -174,11 +176,6 @@ impl FundingRatePeriod {
     }
 }
 
-impl Default for FundingRatePeriod {
-    fn default() -> Self {
-        FundingRatePeriod::Hours8
-    }
-}
 
 // ========== RateFetcher Trait ==========
 
@@ -258,18 +255,15 @@ pub type ThresholdKey = (TradingVenue, String, TradingVenue, String);
 
 /// 因子模式（MM/MT 模式通用定义）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Default)]
 pub enum FactorMode {
     /// Maker-Maker 模式
+    #[default]
     MM,
     /// Maker-Taker 模式（对冲是 taker 方）
     MT,
 }
 
-impl Default for FactorMode {
-    fn default() -> Self {
-        FactorMode::MM
-    }
-}
 
 /// 根据命令行 exchange 映射现货/期货交易场所
 pub fn venue_pair_for_exchange(exchange: Exchange) -> (TradingVenue, TradingVenue) {
@@ -429,6 +423,12 @@ pub struct FundingRateData {
     series: VecDeque<f64>,
     sum: f64,
     mean: Option<f64>,
+}
+
+impl Default for FundingRateData {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FundingRateData {

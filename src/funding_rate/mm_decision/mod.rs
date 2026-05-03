@@ -39,7 +39,7 @@ use state::compute_next_shifted_deadline_us;
 use state::MmDecisionState;
 
 thread_local! {
-    static MM_DECISION: OnceCell<RefCell<MmDecision>> = OnceCell::new();
+    static MM_DECISION: OnceCell<RefCell<MmDecision>> = const { OnceCell::new() };
 }
 
 pub struct MmDecision {

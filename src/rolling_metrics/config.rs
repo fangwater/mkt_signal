@@ -354,7 +354,7 @@ fn parse_quantile_list(raw: &str, key: &str) -> Option<Vec<f32>> {
         }
     } else {
         let mut values: Vec<f32> = Vec::new();
-        for token in trimmed.split(|c| c == ',' || c == ';' || c == ' ') {
+        for token in trimmed.split([',', ';', ' ']) {
             let part = token.trim();
             if part.is_empty() {
                 continue;

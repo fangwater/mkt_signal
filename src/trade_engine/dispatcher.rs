@@ -507,11 +507,11 @@ impl Dispatcher {
                     ip_used_1m,
                     acc_used_1m,
                 );
-                if !status.is_success() {
-                    if status.as_u16() == 403
+                if !status.is_success()
+                    && (status.as_u16() == 403
                         || status.as_u16() == 418
                         || status.as_u16() == 429
-                        || !suppress_http_warn
+                        || !suppress_http_warn)
                     {
                         warn!(
                             "rest dispatch error: req_type={} req_id={:?} method={} endpoint={} account={} ip={} symbol={} status={} code={:?} msg={:?} ip_used_weight_1m={:?} order_count_1m={:?}",
@@ -529,7 +529,6 @@ impl Dispatcher {
                             acc_used_1m
                         );
                     }
-                }
                 if !suppress_http_warn {
                     classify_http_and_log(status.as_u16(), &text);
                 }
@@ -846,7 +845,7 @@ fn classify_http_and_log(status: u16, body: &str) {
 
     if bl.contains("request occur unknown error.") {
         if !hint.is_empty() {
-            hint.push_str("；");
+            hint.push('；');
         }
         hint.push_str("检测到 'Request occur unknown error.'，建议稍后重试");
     }

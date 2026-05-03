@@ -185,7 +185,7 @@ use std::rc::Rc;
 
 // Thread-local 单例存储
 thread_local! {
-    static MONITOR_CHANNEL: RefCell<Option<MonitorChannelInner>> = RefCell::new(None);
+    static MONITOR_CHANNEL: RefCell<Option<MonitorChannelInner>> = const { RefCell::new(None) };
 }
 
 /// MonitorChannel 单例访问器（零大小类型）
@@ -1017,7 +1017,7 @@ impl MonitorChannel {
             match leg {
                 LegMgr::Margin { exchange, bal } => {
                     let mgr = bal.borrow();
-                    let mgr_ref: &BasicBalanceManager = &*mgr;
+                    let mgr_ref: &BasicBalanceManager = &mgr;
                     BasicExposureManager::compute_exposures_for_exchange(
                         *exchange,
                         std::slice::from_ref(&mgr_ref),
@@ -1089,7 +1089,7 @@ impl MonitorChannel {
             }
             if let LegMgr::Margin { exchange, bal } = leg {
                 let mgr = bal.borrow();
-                let mgr_ref: &BasicBalanceManager = &*mgr;
+                let mgr_ref: &BasicBalanceManager = &mgr;
                 let mut exposure_mgr = BasicExposureManager::new_from_sources(
                     *exchange,
                     std::slice::from_ref(&mgr_ref),
@@ -1916,7 +1916,7 @@ impl MonitorChannel {
                 let table = inner.price_table.borrow();
                 table.mark_price(&mark_symbol)
             };
-            let price = price_from_table.or_else(|| {
+            let price = price_from_table.or({
                 if price_hint > 0.0 {
                     Some(price_hint)
                 } else {
@@ -2139,36 +2139,34 @@ impl MonitorChannel {
                                                 "mark price received: symbol={} mark_price={} ts={}",
                                                 msg.symbol, msg.mark_price, msg.timestamp
                                             );
-                                        } else {
-                                            if is_first_mark_price {
-                                                let (symbol, mark_price, ts) = last_mark_price
-                                                    .as_ref()
-                                                    .expect("last mark price set above");
-                                                info!(
-                                                    "mark price stream live: samples={} last_symbol={} last_mark_price={} last_ts={}",
-                                                    mark_price_samples_since_log,
-                                                    symbol,
-                                                    mark_price,
-                                                    ts
-                                                );
-                                                mark_price_samples_since_log = 0;
-                                                last_mark_price_log_at = Instant::now();
-                                            } else if last_mark_price_log_at.elapsed()
-                                                >= mark_price_log_interval
-                                            {
-                                                let (symbol, mark_price, ts) = last_mark_price
-                                                    .as_ref()
-                                                    .expect("last mark price set above");
-                                                debug!(
-                                                    "mark price stream live: samples={} last_symbol={} last_mark_price={} last_ts={}",
-                                                    mark_price_samples_since_log,
-                                                    symbol,
-                                                    mark_price,
-                                                    ts
-                                                );
-                                                mark_price_samples_since_log = 0;
-                                                last_mark_price_log_at = Instant::now();
-                                            }
+                                        } else if is_first_mark_price {
+                                            let (symbol, mark_price, ts) = last_mark_price
+                                                .as_ref()
+                                                .expect("last mark price set above");
+                                            info!(
+                                                "mark price stream live: samples={} last_symbol={} last_mark_price={} last_ts={}",
+                                                mark_price_samples_since_log,
+                                                symbol,
+                                                mark_price,
+                                                ts
+                                            );
+                                            mark_price_samples_since_log = 0;
+                                            last_mark_price_log_at = Instant::now();
+                                        } else if last_mark_price_log_at.elapsed()
+                                            >= mark_price_log_interval
+                                        {
+                                            let (symbol, mark_price, ts) = last_mark_price
+                                                .as_ref()
+                                                .expect("last mark price set above");
+                                            debug!(
+                                                "mark price stream live: samples={} last_symbol={} last_mark_price={} last_ts={}",
+                                                mark_price_samples_since_log,
+                                                symbol,
+                                                mark_price,
+                                                ts
+                                            );
+                                            mark_price_samples_since_log = 0;
+                                            last_mark_price_log_at = Instant::now();
                                         }
 
                                         let mut table = price_table.borrow_mut();

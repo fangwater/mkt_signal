@@ -585,7 +585,7 @@ impl BinanceBasicOrderMsg {
             + 4
             + self.symbol_length as usize
             + 8 * 3
-            + 1 * 6
+            + 6
             + 8 * 8
             + 4
             + self.commission_asset_length as usize;
@@ -628,7 +628,7 @@ impl BinanceBasicOrderMsg {
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         // u32 msg_type + u8 venue + i64 + i64 + u32 symbol_len + (symbol bytes) + 3*i64
         // + 6*u8 + 8*f64 + u32 comm_asset_len + (comm_asset bytes)
-        const MIN_FIXED_SIZE: usize = 4 + 1 + 8 + 8 + 4 + 8 * 3 + 1 * 6 + 8 * 8 + 4;
+        const MIN_FIXED_SIZE: usize = 4 + 1 + 8 + 8 + 4 + 8 * 3 + 6 + 8 * 8 + 4;
         if data.len() < MIN_FIXED_SIZE {
             anyhow::bail!("BinanceBasicOrderMsg too short: {}", data.len());
         }
@@ -649,7 +649,7 @@ impl BinanceBasicOrderMsg {
         }
         let symbol = String::from_utf8(cursor.copy_to_bytes(symbol_length as usize).to_vec())?;
 
-        if cursor.remaining() < 8 * 3 + 1 * 6 + 8 * 8 + 4 {
+        if cursor.remaining() < 8 * 3 + 6 + 8 * 8 + 4 {
             anyhow::bail!("BinanceBasicOrderMsg truncated after symbol");
         }
 
@@ -911,7 +911,7 @@ impl GateBasicOrderMsg {
             + 8  // event_time
             + 4 + self.symbol_length as usize  // symbol
             + 8 * 2  // order_id, client_order_id
-            + 1 * 6  // side, order_type, time_in_force, execution_type, order_status, is_maker
+            + 6  // side, order_type, time_in_force, execution_type, order_status, is_maker
             + 8 * 4  // price, quantity, cumulative_filled_quantity, last_executed_price
             + 4 + self.commission_asset_length as usize; // commission_asset
 
@@ -945,7 +945,7 @@ impl GateBasicOrderMsg {
     }
 
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        const MIN_FIXED_SIZE: usize = 4 + 1 + 8 + 4 + 8 * 2 + 1 * 6 + 8 * 4 + 4;
+        const MIN_FIXED_SIZE: usize = 4 + 1 + 8 + 4 + 8 * 2 + 6 + 8 * 4 + 4;
         if data.len() < MIN_FIXED_SIZE {
             anyhow::bail!("GateBasicOrderMsg too short: {}", data.len());
         }
@@ -965,7 +965,7 @@ impl GateBasicOrderMsg {
         }
         let symbol = String::from_utf8(cursor.copy_to_bytes(symbol_length as usize).to_vec())?;
 
-        if cursor.remaining() < 8 * 2 + 1 * 6 + 8 * 4 + 4 {
+        if cursor.remaining() < 8 * 2 + 6 + 8 * 4 + 4 {
             anyhow::bail!("GateBasicOrderMsg truncated after symbol");
         }
 

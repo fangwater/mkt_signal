@@ -254,7 +254,7 @@ const DEFAULT_OKEX_LOAN_RATE_URL: &str = "http://127.0.0.1:28901/rates";
 // ==================== Thread-local 单例 ====================
 
 thread_local! {
-    static RATE_FETCHER: RefCell<Option<RateFetcherInner>> = RefCell::new(None);
+    static RATE_FETCHER: RefCell<Option<RateFetcherInner>> = const { RefCell::new(None) };
 }
 
 /// RateFetcher 单例访问器

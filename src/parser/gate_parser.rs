@@ -224,6 +224,12 @@ impl Parser for GateSignalParser {
 #[derive(Clone)]
 pub struct GateTickerParser;
 
+impl Default for GateTickerParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GateTickerParser {
     pub fn new() -> Self {
         Self
@@ -448,6 +454,12 @@ impl Parser for GateKlineParser {
 #[derive(Clone)]
 pub struct GateTradeParser;
 
+impl Default for GateTradeParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GateTradeParser {
     pub fn new() -> Self {
         Self
@@ -575,6 +587,12 @@ impl Parser for GateTradeParser {
 #[derive(Clone)]
 pub struct GateIncParser {
     max_levels: Option<usize>,
+}
+
+impl Default for GateIncParser {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl GateIncParser {
@@ -735,6 +753,12 @@ impl Parser for GateIncParser {
 /// Gate.io 衍生品指标解析（基于 futures.tickers）
 #[derive(Clone)]
 pub struct GateDerivativesMetricsParser;
+
+impl Default for GateDerivativesMetricsParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl GateDerivativesMetricsParser {
     pub fn new() -> Self {

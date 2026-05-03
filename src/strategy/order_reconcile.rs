@@ -54,12 +54,8 @@ pub fn parse_strategy_compact_order_query_resp(
     if parsed.order_id <= 0 {
         return None;
     }
-    if OrderExecutionStatus::from_u8(parsed.status_u8).is_none() {
-        return None;
-    }
-    if TimeInForce::from_u8(parsed.time_in_force_u8).is_none() {
-        return None;
-    }
+    OrderExecutionStatus::from_u8(parsed.status_u8)?;
+    TimeInForce::from_u8(parsed.time_in_force_u8)?;
     if parsed.update_time_ms < 0 {
         return None;
     }

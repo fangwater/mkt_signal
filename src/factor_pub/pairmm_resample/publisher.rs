@@ -78,15 +78,12 @@ impl PairMmPublisher {
         let mut buffer = [0u8; FACTOR_MAX_BYTES];
         buffer[..bytes.len()].copy_from_slice(&bytes);
 
-        match self.publisher.loan_uninit() {
-            Ok(sample) => {
-                let sample = sample.write_payload(buffer);
-                if sample.send().is_ok() {
-                    self.published += 1;
-                    return true;
-                }
+        if let Ok(sample) = self.publisher.loan_uninit() {
+            let sample = sample.write_payload(buffer);
+            if sample.send().is_ok() {
+                self.published += 1;
+                return true;
             }
-            Err(_) => {}
         }
 
         self.dropped += 1;
