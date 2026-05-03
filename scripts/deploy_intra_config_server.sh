@@ -189,6 +189,7 @@ mkdir -p "$DEST_SCRIPT_DIR" "$TARGET_DIR/config"
 
 FILES=(
   "scripts/intra_config_server.py"
+  "scripts/arb_per_symbol_overrides.py"
   "scripts/start_intra_config_server.sh"
   "scripts/stop_intra_config_server.sh"
   "intra_scripts/sync_intra_risk_params.py"
