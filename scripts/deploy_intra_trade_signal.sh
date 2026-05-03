@@ -98,6 +98,11 @@ if [[ "$SYNC_SCRIPTS" == "1" ]]; then
     "print_intra_spread_thresholds.py"
     "sync_intra_funding_thresholds.py"
     "print_intra_funding_thresholds.py"
+    "sync_intra_amount_u.py"
+    "print_intra_amount_u.py"
+    "sync_intra_max_pos_u.py"
+    "print_intra_max_pos_u.py"
+    "print_intra_hedge_offset_limits.py"
   )
   mkdir -p "$TARGET_DIR/intra_scripts"
   for f in "${TO_SYNC[@]}"; do
