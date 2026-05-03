@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Query OKX SWAP open orders and optionally cancel them.
 
+Defaults to REAL trading. Add --simulate for paper.
+
 Examples:
   OKX_API_KEY=... OKX_API_SECRET=... OKX_PASSPHRASE=... \
     python scripts/okx_swap_open_orders.py
 
   OKX_API_KEY=... OKX_API_SECRET=... OKX_PASSPHRASE=... \
-    python scripts/okx_swap_open_orders.py --cancel --real
+    python scripts/okx_swap_open_orders.py --cancel
 """
 
 from __future__ import annotations
@@ -54,7 +56,7 @@ def request_okx_private(
     params: Optional[Dict[str, Any]] = None,
     body: Any = None,
     timeout: int = 10,
-    simulated: bool = True,
+    simulated: bool = False,
 ) -> Tuple[int, str, Dict[str, str]]:
     method = method.upper()
     params = params or {}
@@ -234,7 +236,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-pages", type=int, default=10, help="Max pages when using --fetch-all")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="OKX REST base URL")
     parser.add_argument("--timeout", type=int, default=10, help="HTTP timeout seconds")
-    parser.add_argument("--real", action="store_true", help="Disable x-simulated-trading header")
+    parser.add_argument("--simulate", action="store_true", help="Send x-simulated-trading: 1 (paper). Default: real")
     parser.add_argument("--cancel", action="store_true", help="Cancel all open orders returned")
     return parser.parse_args()
 
@@ -247,7 +249,7 @@ def main() -> None:
 
     api_key, api_secret, passphrase = load_credentials()
     base_url = args.base_url.rstrip("/")
-    simulated = not args.real
+    simulated = args.simulate
 
     inst_id = args.inst_id.strip().upper() if args.inst_id else None
 

@@ -5,12 +5,14 @@ OKX margin open orders share the same endpoint as spot/swap (instType filter).
 For intra (spot/futures arb), the open leg is always margin, so we filter by
 instType=MARGIN.
 
+Defaults to REAL trading. Add --simulate for paper.
+
 Examples:
   OKX_API_KEY=... OKX_API_SECRET=... OKX_PASSPHRASE=... \\
-    python scripts/okx_cancel_all_margin_orders.py --real
+    python scripts/okx_cancel_all_margin_orders.py
 
   OKX_API_KEY=... OKX_API_SECRET=... OKX_PASSPHRASE=... \\
-    python scripts/okx_cancel_all_margin_orders.py --real --execute --inst-id BTC-USDT
+    python scripts/okx_cancel_all_margin_orders.py --execute --inst-id BTC-USDT
 """
 
 from __future__ import annotations
@@ -58,7 +60,7 @@ def request_okx_private(
     params: Optional[Dict[str, Any]] = None,
     body: Any = None,
     timeout: int = 10,
-    simulated: bool = True,
+    simulated: bool = False,
 ) -> Tuple[int, str, Dict[str, str]]:
     method = method.upper()
     params = params or {}
@@ -256,7 +258,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-pages", type=int, default=20, help="Max pagination pages per inst-id")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="OKX REST base URL")
     parser.add_argument("--timeout", type=int, default=10, help="HTTP timeout seconds")
-    parser.add_argument("--real", action="store_true", help="Disable x-simulated-trading header")
+    parser.add_argument("--simulate", action="store_true", help="Send x-simulated-trading: 1 (paper). Default: real")
     parser.add_argument("--execute", action="store_true", help="Actually cancel orders; default is dry-run")
     return parser.parse_args()
 
@@ -269,7 +271,7 @@ def main() -> None:
 
     api_key, api_secret, passphrase = load_credentials()
     base_url = args.base_url.rstrip("/")
-    simulated = not args.real
+    simulated = args.simulate
 
     inst_ids: List[Optional[str]] = []
     if args.inst_id:

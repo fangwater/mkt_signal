@@ -21,7 +21,7 @@ usage() {
       Bybit margin/spot: bybit_cancel_all_spot_orders.py (category=spot)
   - 期货撤单：
       Binance STANDARD : binance_cancel_all_std_um_ws_orders.py
-      OKEx swap        : okx_swap_open_orders.py --cancel --real
+      OKEx swap        : okx_swap_open_orders.py --cancel
       Bybit linear     : bybit_cancel_all_um_orders.py
   - 其余参数（如 --symbol / --timeout）会透传给底层 python 脚本
 EOF
@@ -146,8 +146,8 @@ case "$EXCHANGE" in
     exec "$PYTHON_BIN" "$SCRIPT_DIR/binance_cancel_all_std_um_ws_orders.py" "${PASS_ARGS[@]}"
     ;;
   okex)
-    OKX_SPOT_ARGS=(--real)
-    OKX_SWAP_ARGS=(--real)
+    OKX_SPOT_ARGS=()
+    OKX_SWAP_ARGS=()
     idx=0
     while [[ $idx -lt ${#PASS_ARGS[@]} ]]; do
       arg="${PASS_ARGS[$idx]}"

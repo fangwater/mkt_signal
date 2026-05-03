@@ -11,8 +11,8 @@ Reads:
   - GET <OKX_BASE_URL>/api/v5/public/instruments?instType=SWAP
 
 Writes (only with --execute):
-  - subprocess: scripts/okx_cancel_all_margin_orders.py --real --execute
-  - subprocess: scripts/okx_swap_open_orders.py --real --cancel
+  - subprocess: scripts/okx_cancel_all_margin_orders.py --execute
+  - subprocess: scripts/okx_swap_open_orders.py --cancel
   - POST /api/v5/trade/order  (margin close: side opposite sign(open_qty))
   - POST /api/v5/trade/order  (swap close:   side opposite sign(hedge_qty))
 
@@ -290,11 +290,11 @@ def fetch_snapshot(suffix: str) -> List[ExposureRow]:
 
 def cancel_all_orders(python_bin: str, simulated: bool, timeout: int) -> None:
     """Cancel all margin and swap open orders. Print and continue on failure."""
-    real_flag: List[str] = [] if simulated else ["--real"]
+    sim_flag: List[str] = ["--simulate"] if simulated else []
     margin_cmd = [
         python_bin,
         os.path.join(SCRIPTS_DIR, "okx_cancel_all_margin_orders.py"),
-        *real_flag,
+        *sim_flag,
         "--execute",
         "--timeout",
         str(timeout),
@@ -302,7 +302,7 @@ def cancel_all_orders(python_bin: str, simulated: bool, timeout: int) -> None:
     swap_cmd = [
         python_bin,
         os.path.join(SCRIPTS_DIR, "okx_swap_open_orders.py"),
-        *real_flag,
+        *sim_flag,
         "--cancel",
         "--timeout",
         str(timeout),

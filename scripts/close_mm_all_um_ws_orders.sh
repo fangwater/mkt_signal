@@ -178,7 +178,7 @@ if [[ "$EXCHANGE" == "binance" ]]; then
   exec "$PYTHON_BIN" "$SCRIPT_DIR/binance_cancel_all_std_um_ws_orders.py" --env-dir "$ENV_DIR" "${PASS_ARGS[@]}"
 fi
 
-OKX_ARGS=(--real)
+OKX_ARGS=()
 idx=0
 while [[ $idx -lt ${#PASS_ARGS[@]} ]]; do
   arg="${PASS_ARGS[$idx]}"
