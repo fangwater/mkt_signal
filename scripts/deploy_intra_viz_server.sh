@@ -24,7 +24,7 @@ usage() {
 说明:
   - 同所期现：构建并部署 viz_server 到 $HOME/<exchange>-<env_suffix>/
   - 在目标目录生成 config/viz.toml（订阅 pre_trade resample exposure/risk 通道）
-  - port 由 env-suffix 硬编码映射决定（intra-trade → 10131）
+  - port 由 (exchange, env-suffix) 硬编码 2D 映射决定（见 resolve_port）
 
 启动/停止（在目标目录）:
   source ./env.sh
@@ -76,17 +76,39 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# env-suffix → port 硬编码映射
-resolve_port_by_suffix() {
-  case "$1" in
-    intra-trade) echo "10131" ;;
-    intra-arb01) echo "10171" ;;
-    intra-arb02) echo "10172" ;;
-    intra-arb03) echo "10173" ;;
-    *) echo "[ERROR] 未知的 env-suffix: $1，无法确定 port" >&2; exit 1 ;;
+# (exchange, env-suffix) → port 硬编码映射
+# 矩阵布局，每个 exchange 独占一个 decade，避免多交易所同 tier 撞口
+#             arb01    arb02    arb03
+#   okex      10171    10172    10173
+#   bybit     10174    10175    10176
+#   gate      10177    10178    10179
+#   binance   10180    10181    10182
+#   bitget    10183    10184    10185
+#   intra-trade(legacy 单交易所兼容): 10131
+resolve_port() {
+  local exchange="$1" suffix="$2"
+  case "$suffix" in
+    intra-trade) echo "10131"; return ;;
+  esac
+  case "$exchange:$suffix" in
+    okex:intra-arb01)    echo "10171" ;;
+    okex:intra-arb02)    echo "10172" ;;
+    okex:intra-arb03)    echo "10173" ;;
+    bybit:intra-arb01)   echo "10174" ;;
+    bybit:intra-arb02)   echo "10175" ;;
+    bybit:intra-arb03)   echo "10176" ;;
+    gate:intra-arb01)    echo "10177" ;;
+    gate:intra-arb02)    echo "10178" ;;
+    gate:intra-arb03)    echo "10179" ;;
+    binance:intra-arb01) echo "10180" ;;
+    binance:intra-arb02) echo "10181" ;;
+    binance:intra-arb03) echo "10182" ;;
+    bitget:intra-arb01)  echo "10183" ;;
+    bitget:intra-arb02)  echo "10184" ;;
+    bitget:intra-arb03)  echo "10185" ;;
+    *) echo "[ERROR] 未知的 (exchange, env-suffix): ($exchange, $suffix)" >&2; exit 1 ;;
   esac
 }
-PORT="$(resolve_port_by_suffix "$ENV_SUFFIX")"
 
 if [[ -n "$ENV_NAME" && -z "$EXCHANGE" ]]; then
   if [[ "${ENV_NAME,,}" =~ ^([a-z0-9]+)[-_]intra[-_][a-z0-9][a-z0-9_-]*$ ]]; then
@@ -105,6 +127,8 @@ if [[ -z "$ENV_NAME" ]]; then
   ENV_NAME="${EXCHANGE}-${ENV_SUFFIX}"
 fi
 ENV_NAME="${ENV_NAME,,}"
+
+PORT="$(resolve_port "$EXCHANGE" "$ENV_SUFFIX")"
 
 if [[ "$WS_PATH" != /* ]]; then WS_PATH="/$WS_PATH"; fi
 
