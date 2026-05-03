@@ -42,6 +42,7 @@ use super::common::{ArbDirection, OperationType, ThresholdKey, VenuePair};
 use super::factor_value_hub::{EnvironmentSignalResult, FactorValueHub, FactorValueLookupResult};
 use super::funding_rate_factor::FundingRateFactor;
 use super::funding_threshold_loader::FundingThresholdsResolved;
+use super::inline_volatility::{snapshot_inline_volatility, INLINE_VOLATILITY_MIN_SAMPLES};
 use super::mkt_channel::MktChannel;
 use super::model_output_hub::{ModelOutputHub, ModelOutputScoreLookupResult};
 use super::rate_fetcher::RateFetcher;
@@ -435,8 +436,8 @@ struct SpreadArbShell {
 }
 
 thread_local! {
-    static FUNDING_ARB_SHELL: OnceCell<RefCell<FundingArbShell>> = OnceCell::new();
-    static SPREAD_ARB_SHELL: OnceCell<RefCell<SpreadArbShell>> = OnceCell::new();
+    static FUNDING_ARB_SHELL: OnceCell<RefCell<FundingArbShell>> = const { OnceCell::new() };
+    static SPREAD_ARB_SHELL: OnceCell<RefCell<SpreadArbShell>> = const { OnceCell::new() };
 }
 
 impl FundingArbShell {
@@ -966,7 +967,7 @@ fn drive_funding_decision(
     let rate_ready = RateFetcher::is_initial_ready(hedge_venue);
     let open_inputs_ready = funding_open_inputs_ready(hedge_symbol_key.as_str(), hedge_venue);
     let fr_signal = evaluate_funding_mode_signal(
-        &spread_factor,
+        spread_factor,
         open_symbol_key.as_str(),
         hedge_symbol_key.as_str(),
         hedge_symbol_key.as_str(),
@@ -994,7 +995,7 @@ fn drive_funding_decision(
     let Some(control) = ArbDecision::with_state_mut(|arb| {
         arb.evaluate_funding_control(
             fr_signal,
-            &spread_factor,
+            spread_factor,
             &symbol_list,
             open_symbol_key.as_str(),
             hedge_symbol_key.as_str(),
@@ -1124,16 +1125,14 @@ fn drive_spread_arb_decision(
             let _ = ArbDecision::with_state_mut(|arb| {
                 arb.record_intercept_summary("spread_cancel");
             });
-            if let Err(err) = emit_spread_arb_spread_cancel(
+            emit_spread_arb_spread_cancel(
                 decision,
                 open_symbol_key.as_str(),
                 hedge_symbol_key.as_str(),
                 open_venue,
                 hedge_venue,
                 Side::Buy,
-            ) {
-                return Err(err);
-            }
+            )?;
             let cancel_key = cancel_gate.key.clone();
             let _ = ArbDecision::with_state_mut(|arb| {
                 arb.mark_signal_triggered(&SignalType::ArbCancel, cancel_gate.key, now);
@@ -1169,16 +1168,14 @@ fn drive_spread_arb_decision(
             let _ = ArbDecision::with_state_mut(|arb| {
                 arb.record_intercept_summary("spread_cancel");
             });
-            if let Err(err) = emit_spread_arb_spread_cancel(
+            emit_spread_arb_spread_cancel(
                 decision,
                 open_symbol_key.as_str(),
                 hedge_symbol_key.as_str(),
                 open_venue,
                 hedge_venue,
                 Side::Sell,
-            ) {
-                return Err(err);
-            }
+            )?;
             let cancel_key = cancel_gate.key.clone();
             let _ = ArbDecision::with_state_mut(|arb| {
                 arb.mark_signal_triggered(&SignalType::ArbCancel, cancel_gate.key, now);
@@ -1192,7 +1189,7 @@ fn drive_spread_arb_decision(
     if in_dump {
         let Some(close_gate) = ArbDecision::with_state_mut(|arb| {
             arb.evaluate_close_gate(
-                &spread_factor,
+                spread_factor,
                 open_symbol_key.as_str(),
                 hedge_symbol_key.as_str(),
                 open_venue,
@@ -1222,7 +1219,7 @@ fn drive_spread_arb_decision(
 
     let Some(open_control) = ArbDecision::with_state_mut(|arb| {
         arb.evaluate_open_control(
-            &spread_factor,
+            spread_factor,
             &symbol_list,
             open_symbol_key.as_str(),
             hedge_symbol_key.as_str(),
@@ -2217,7 +2214,7 @@ fn emit_spread_arb_open_signals(
         );
         contexts = from_keys
             .into_iter()
-            .zip(contexts.into_iter())
+            .zip(contexts)
             .filter_map(|(from_key_bytes, mut ctx)| {
                 let from_key_bytes = from_key_bytes?;
                 ctx.set_from_key(from_key_bytes);
@@ -2660,7 +2657,7 @@ fn emit_funding_open_close_signals(
         );
         contexts = from_keys
             .into_iter()
-            .zip(contexts.into_iter())
+            .zip(contexts)
             .filter_map(|(from_key_bytes, mut ctx)| {
                 let from_key_bytes = from_key_bytes?;
                 ctx.set_from_key(from_key_bytes);
@@ -2911,6 +2908,11 @@ pub(crate) struct ArbDecisionState {
     pub tlen_cancel_freq_ms: u64,
     pub enable_funding_open_filter: bool,
     pub enable_environment_model: bool,
+    /// 是否启用 open vol 阈值 gate；与 mm 同语义：开仓时若 inline vol percentile 阈值
+    /// 已 warm up 且当前 vol 超阈值，则拦截开仓。
+    pub enable_volatility_limit: bool,
+    /// open vol 阈值采样使用的分位数（0-100）。
+    pub open_volatility_limit: f64,
     pub return_model_service: Option<String>,
     pub environment_model_service: Option<String>,
     pub environment_model_true_threshold: f64,
@@ -2987,6 +2989,8 @@ impl ArbDecisionState {
             tlen_cancel_freq_ms: 3_000,
             enable_funding_open_filter: true,
             enable_environment_model: true,
+            enable_volatility_limit: true,
+            open_volatility_limit: 70.0,
             return_model_service: None,
             environment_model_service: None,
             environment_model_true_threshold: 0.0,
@@ -3027,12 +3031,43 @@ impl ArbDecisionState {
     }
 
     pub fn poll_factor_value_updates(&mut self) {
+        // open hub 把 percentile 传进去，让 FactorValueHub 在每次推进 vol 时
+        // 顺手把 (symbol, value) 喂给 inline_volatility 的 thread_local store；
+        // hedge hub 不参与 gate，保持 None。
+        let percentile = if self.enable_volatility_limit {
+            Some(self.open_volatility_limit)
+        } else {
+            None
+        };
         if let Some(hub) = self.open_factor_value_hub.as_mut() {
-            let _ = hub.poll_factor_value_updates_with_inline_sampling(None);
+            let _ = hub.poll_factor_value_updates_with_inline_sampling(percentile);
         }
         if let Some(hub) = self.hedge_factor_value_hub.as_mut() {
             let _ = hub.poll_factor_value_updates_with_inline_sampling(None);
         }
+    }
+
+    pub fn update_enable_volatility_limit(&mut self, enabled: bool) {
+        self.enable_volatility_limit = enabled;
+        log::debug!(
+            "ArbDecision: enable_volatility_limit updated enabled={}",
+            self.enable_volatility_limit
+        );
+    }
+
+    pub fn update_open_volatility_limit(&mut self, percentile: f64) {
+        if !(percentile.is_finite() && (0.0..=100.0).contains(&percentile)) {
+            log::warn!(
+                "ArbDecision: open_volatility_limit must be finite and within [0,100], got {}; keep previous {}",
+                percentile, self.open_volatility_limit
+            );
+            return;
+        }
+        self.open_volatility_limit = percentile;
+        log::debug!(
+            "ArbDecision: open_volatility_limit updated percentile={}",
+            self.open_volatility_limit
+        );
     }
 
     pub fn evaluate_close_side(
@@ -4009,21 +4044,56 @@ impl ArbDecisionState {
         let environment_score = environment_signal
             .score
             .unwrap_or(environment_signal.class_label as f64);
-        let open_volatility_factor =
-            match self.lookup_open_factor_value(open_symbol_key, open_venue) {
-                lookup if lookup.ready == Some(true) => {
-                    let Some(value) = lookup.target_factor_value.filter(|v| v.is_finite()) else {
-                        self.record_intercept_summary("vol");
-                        return None;
-                    };
-                    value
-                }
-                lookup => {
-                    let _ = lookup;
+        let vol_lookup = self.lookup_open_factor_value(open_symbol_key, open_venue);
+        let open_volatility_factor = match vol_lookup.ready {
+            Some(true) => {
+                let Some(value) = vol_lookup.target_factor_value.filter(|v| v.is_finite())
+                else {
                     self.record_intercept_summary("vol");
                     return None;
-                }
+                };
+                value
+            }
+            _ => {
+                self.record_intercept_summary("vol");
+                return None;
+            }
+        };
+
+        // Inline vol gate（与 mm_decision/open.rs 同语义）：threshold 来源是 thread_local
+        // store 里同 symbol、同 percentile 的 rolling sample；warming up 时直接拦截，
+        // 阈值就绪后只放行 vol <= threshold 的开仓。
+        if self.enable_volatility_limit {
+            let snapshot = snapshot_inline_volatility(
+                &vol_lookup.symbol_key,
+                open_volatility_factor,
+                self.open_volatility_limit,
+            );
+            let Some(threshold) = snapshot.threshold else {
+                log::debug!(
+                    "ArbDecision: open intercept volatility_warming_up symbol={} samples={} min_samples={} percentile={:.2}",
+                    open_symbol_key,
+                    snapshot.sample_count,
+                    INLINE_VOLATILITY_MIN_SAMPLES,
+                    snapshot.percentile
+                );
+                self.record_intercept_summary("vol_warming_up");
+                return None;
             };
+            if open_volatility_factor > threshold {
+                log::warn!(
+                    "ArbDecision: open blocked by inline volatility threshold symbol={} current={:.8} threshold={:.8} samples={} percentile={:.2} last_recompute_tp_ms={:?}",
+                    open_symbol_key,
+                    open_volatility_factor,
+                    threshold,
+                    snapshot.sample_count,
+                    snapshot.percentile,
+                    snapshot.last_recompute_tp_ms
+                );
+                self.record_intercept_summary("vol_limited");
+                return None;
+            }
+        }
 
         Some(ArbOpenGatePassed {
             return_qtl,
@@ -4381,7 +4451,7 @@ impl ArbDecision {
                         .and_then(|signal| {
                             ArbDecisionState::evaluate_funding_final_signal(
                                 signal,
-                                &spread_factor,
+                                spread_factor,
                                 &symbol_list,
                                 symbol,
                                 symbol,
@@ -4451,6 +4521,36 @@ mod hedge_offset_overrides_tests {
         let (l, u) = state.resolve_hedge_price_offset_limits("BTCUSDT");
         assert!((l - 0.0010).abs() < 1e-12);
         assert!((u - 0.008).abs() < 1e-12);
+    }
+
+    #[test]
+    fn defaults_match_mm_volatility_gate_settings() {
+        let state = fresh_state();
+        assert!(state.enable_volatility_limit);
+        assert!((state.open_volatility_limit - 70.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn update_open_volatility_limit_rejects_invalid_and_keeps_previous() {
+        let mut state = fresh_state();
+        state.update_open_volatility_limit(60.0);
+        assert!((state.open_volatility_limit - 60.0).abs() < 1e-12);
+        // NaN / 越界 / 负值 全被拒绝，保留原值
+        state.update_open_volatility_limit(f64::NAN);
+        assert!((state.open_volatility_limit - 60.0).abs() < 1e-12);
+        state.update_open_volatility_limit(150.0);
+        assert!((state.open_volatility_limit - 60.0).abs() < 1e-12);
+        state.update_open_volatility_limit(-1.0);
+        assert!((state.open_volatility_limit - 60.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn update_enable_volatility_limit_toggles() {
+        let mut state = fresh_state();
+        state.update_enable_volatility_limit(false);
+        assert!(!state.enable_volatility_limit);
+        state.update_enable_volatility_limit(true);
+        assert!(state.enable_volatility_limit);
     }
 
     #[test]
