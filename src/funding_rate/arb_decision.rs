@@ -40,10 +40,10 @@ use super::common::normalize_tlens_for_compare;
 use super::common::Quote;
 use super::common::{ArbDirection, OperationType, ThresholdKey, VenuePair};
 use super::factor_value_hub::{EnvironmentSignalResult, FactorValueHub, FactorValueLookupResult};
-use super::model_output_hub::{ModelOutputHub, ModelOutputScoreLookupResult};
 use super::funding_rate_factor::FundingRateFactor;
 use super::funding_threshold_loader::FundingThresholdsResolved;
 use super::mkt_channel::MktChannel;
+use super::model_output_hub::{ModelOutputHub, ModelOutputScoreLookupResult};
 use super::rate_fetcher::RateFetcher;
 use super::rolling_threshold_sync::StoredFactorChainEntry;
 
@@ -1294,8 +1294,8 @@ fn resolve_arb_hedge_build_params(
         let enable_return_score_adjust_hedge = arb.enable_return_score_adjust_hedge;
         let hedge_vol_multiplier = arb.hedge_vol_multiplier;
         let hedge_offset_ratio = arb.hedge_offset_ratio;
-        let hedge_price_offset_limit_lower = arb.hedge_price_offset_limit_lower;
-        let hedge_price_offset_limit_upper = arb.hedge_price_offset_limit_upper;
+        let (hedge_price_offset_limit_lower, hedge_price_offset_limit_upper) =
+            arb.resolve_hedge_price_offset_limits(symbol);
         let hedge_window_scale_low = arb.hedge_window_scale_low;
         let hedge_window_scale_high = arb.hedge_window_scale_high;
         let hedge_timeout_mm_us = arb.hedge_timeout_mm_us;
@@ -2897,6 +2897,11 @@ pub(crate) struct ArbDecisionState {
     pub hedge_offset_ratio: f64,
     pub hedge_price_offset_limit_lower: f64,
     pub hedge_price_offset_limit_upper: f64,
+    /// per-symbol hedge_price_offset_limit_lower 覆盖（合并 STRING / 拆分 STRING 加载）。
+    /// 命中即覆盖 hedge_price_offset_limit_lower；未命中按全局默认走。
+    pub hedge_price_offset_limit_lower_overrides: HashMap<String, f64>,
+    /// per-symbol hedge_price_offset_limit_upper 覆盖。
+    pub hedge_price_offset_limit_upper_overrides: HashMap<String, f64>,
     pub hedge_window_scale_low: f64,
     pub hedge_window_scale_high: f64,
     pub enable_return_score_adjust_hedge: bool,
@@ -2971,6 +2976,8 @@ impl ArbDecisionState {
             hedge_offset_ratio: 1.3,
             hedge_price_offset_limit_lower: 0.0003,
             hedge_price_offset_limit_upper: 0.005,
+            hedge_price_offset_limit_lower_overrides: HashMap::new(),
+            hedge_price_offset_limit_upper_overrides: HashMap::new(),
             hedge_window_scale_low: 0.5,
             hedge_window_scale_high: 1.5,
             enable_return_score_adjust_hedge: true,
@@ -3106,6 +3113,75 @@ impl ArbDecisionState {
             .get(&symbol_key)
             .copied()
             .unwrap_or(self.order_amount as f64)
+    }
+
+    /// 解析 per-symbol hedge_price_offset_limit (lower, upper)：命中覆盖即返回覆盖值，
+    /// 未命中回退到全局 hedge_price_offset_limit_lower / hedge_price_offset_limit_upper。
+    /// 与 MM 的 resolve_hedge_price_offset_limits 同语义。
+    pub fn resolve_hedge_price_offset_limits(&self, symbol: &str) -> (f64, f64) {
+        let symbol_key = normalize_symbol_for_venue(symbol, self.venues.0);
+        let lower = self
+            .hedge_price_offset_limit_lower_overrides
+            .get(&symbol_key)
+            .copied()
+            .unwrap_or(self.hedge_price_offset_limit_lower);
+        let upper = self
+            .hedge_price_offset_limit_upper_overrides
+            .get(&symbol_key)
+            .copied()
+            .unwrap_or(self.hedge_price_offset_limit_upper);
+        (lower, upper)
+    }
+
+    /// 设置 per-symbol hedge_price_offset_limit 覆盖表，并对每个符号验证有效区间。
+    /// 不通过 panic 是为了不让"配错的 redis 数据"打死整个进程；非法记录被丢弃并 warn。
+    pub fn update_hedge_price_offset_limit_overrides(
+        &mut self,
+        lower_overrides: HashMap<String, f64>,
+        upper_overrides: HashMap<String, f64>,
+    ) {
+        let mut valid_lower: HashMap<String, f64> = HashMap::with_capacity(lower_overrides.len());
+        let mut valid_upper: HashMap<String, f64> = HashMap::with_capacity(upper_overrides.len());
+        let mut warned = 0usize;
+        let mut symbols: std::collections::HashSet<String> = std::collections::HashSet::new();
+        symbols.extend(lower_overrides.keys().cloned());
+        symbols.extend(upper_overrides.keys().cloned());
+        for symbol in symbols {
+            if symbol.trim().is_empty() {
+                warned += 1;
+                continue;
+            }
+            let lower = lower_overrides
+                .get(&symbol)
+                .copied()
+                .unwrap_or(self.hedge_price_offset_limit_lower);
+            let upper = upper_overrides
+                .get(&symbol)
+                .copied()
+                .unwrap_or(self.hedge_price_offset_limit_upper);
+            if !(lower.is_finite() && upper.is_finite() && lower > 0.0 && upper >= lower) {
+                log::warn!(
+                    "ArbDecision: drop invalid hedge_price_offset_limit override symbol={} lower={} upper={} (need 0<lower<=upper)",
+                    symbol, lower, upper
+                );
+                warned += 1;
+                continue;
+            }
+            if let Some(v) = lower_overrides.get(&symbol) {
+                valid_lower.insert(symbol.clone(), *v);
+            }
+            if let Some(v) = upper_overrides.get(&symbol) {
+                valid_upper.insert(symbol, *v);
+            }
+        }
+        self.hedge_price_offset_limit_lower_overrides = valid_lower;
+        self.hedge_price_offset_limit_upper_overrides = valid_upper;
+        log::debug!(
+            "ArbDecision: hedge_price_offset_limit_overrides updated lower_symbols={} upper_symbols={} dropped={}",
+            self.hedge_price_offset_limit_lower_overrides.len(),
+            self.hedge_price_offset_limit_upper_overrides.len(),
+            warned
+        );
     }
 
     pub fn apply_shared_bootstrap(&mut self, bootstrap: ArbSharedBootstrap) {
@@ -4333,5 +4409,80 @@ impl ArbDecision {
                 }
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod hedge_offset_overrides_tests {
+    use super::*;
+    use crate::signal::common::TradingVenue;
+
+    fn fresh_state() -> ArbDecisionState {
+        ArbDecisionState::new(
+            ArbMode::IntraArb,
+            (TradingVenue::OkexMargin, TradingVenue::OkexFutures),
+        )
+    }
+
+    #[test]
+    fn resolve_falls_back_to_global_when_no_overrides() {
+        let mut state = fresh_state();
+        state.hedge_price_offset_limit_lower = 0.0003;
+        state.hedge_price_offset_limit_upper = 0.005;
+        let (lower, upper) = state.resolve_hedge_price_offset_limits("BTCUSDT");
+        assert!((lower - 0.0003).abs() < 1e-12);
+        assert!((upper - 0.005).abs() < 1e-12);
+    }
+
+    #[test]
+    fn resolve_uses_per_symbol_override_when_present() {
+        let mut state = fresh_state();
+        state.hedge_price_offset_limit_lower = 0.0003;
+        state.hedge_price_offset_limit_upper = 0.005;
+        // 直接调用 update_* 走规范化校验路径
+        let mut lower = HashMap::new();
+        let mut upper = HashMap::new();
+        // 注意：normalize_symbol_for_venue(open_venue=OkexMargin) 会把 "BTCUSDT" 映射为
+        // "BTC-USDT"（margin 形态），所以这里直接用规范化后的 key 作为 override key。
+        let symbol_key = normalize_symbol_for_venue("BTCUSDT", state.venues.0);
+        lower.insert(symbol_key.clone(), 0.0010);
+        upper.insert(symbol_key.clone(), 0.008);
+        state.update_hedge_price_offset_limit_overrides(lower, upper);
+        let (l, u) = state.resolve_hedge_price_offset_limits("BTCUSDT");
+        assert!((l - 0.0010).abs() < 1e-12);
+        assert!((u - 0.008).abs() < 1e-12);
+    }
+
+    #[test]
+    fn update_drops_invalid_overrides_keeping_state_consistent() {
+        let mut state = fresh_state();
+        state.hedge_price_offset_limit_lower = 0.0003;
+        state.hedge_price_offset_limit_upper = 0.005;
+        let mut lower = HashMap::new();
+        let mut upper = HashMap::new();
+        // 一个有效，一个非法（lower > upper）
+        let ok_key = normalize_symbol_for_venue("BTCUSDT", state.venues.0);
+        let bad_key = normalize_symbol_for_venue("ETHUSDT", state.venues.0);
+        lower.insert(ok_key.clone(), 0.001);
+        upper.insert(ok_key.clone(), 0.008);
+        lower.insert(bad_key.clone(), 0.01);
+        upper.insert(bad_key.clone(), 0.005);
+        state.update_hedge_price_offset_limit_overrides(lower, upper);
+        // ok_key 保留
+        assert_eq!(
+            state.hedge_price_offset_limit_lower_overrides.get(&ok_key),
+            Some(&0.001)
+        );
+        assert_eq!(
+            state.hedge_price_offset_limit_upper_overrides.get(&ok_key),
+            Some(&0.008)
+        );
+        // bad_key 全部丢弃
+        assert!(!state
+            .hedge_price_offset_limit_lower_overrides
+            .contains_key(&bad_key));
+        assert!(!state
+            .hedge_price_offset_limit_upper_overrides
+            .contains_key(&bad_key));
     }
 }

@@ -70,11 +70,7 @@ impl ModelOutputHub {
         }
     }
 
-    pub fn update_services(
-        &mut self,
-        node: &Node<ipc::Service>,
-        services: Vec<String>,
-    ) -> usize {
+    pub fn update_services(&mut self, node: &Node<ipc::Service>, services: Vec<String>) -> usize {
         let normalized = Self::normalize_services(services);
         if normalized == self.services {
             return self.subscribers.len();

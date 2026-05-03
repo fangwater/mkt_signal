@@ -191,6 +191,50 @@ pub fn arb_amount_u_override_key(
     ))
 }
 
+/// Arb（intra/cross/fr）共用的 per-symbol hedge_price_offset_limit 合并 STRING 键：
+/// JSON {symbol: {hedge_price_offset_limit_lower, hedge_price_offset_limit_upper}}。
+/// 加载时优先读这个键，缺失再回退到拆分的 upper / lower 两个键。
+pub fn arb_hedge_price_offset_limits_override_key(
+    env_name: Option<&str>,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+) -> Option<String> {
+    let env_name = env_name.map(str::trim).filter(|s| !s.is_empty())?;
+    Some(format!(
+        "{env_name}:{}:{}:hedge_price_offset_limits",
+        open_venue.data_pub_slug(),
+        hedge_venue.data_pub_slug()
+    ))
+}
+
+/// 拆分版 hedge_price_offset_limit_upper：JSON {symbol: f64}。
+pub fn arb_hedge_price_offset_limit_upper_override_key(
+    env_name: Option<&str>,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+) -> Option<String> {
+    let env_name = env_name.map(str::trim).filter(|s| !s.is_empty())?;
+    Some(format!(
+        "{env_name}:{}:{}:hedge_price_offset_limit_upper",
+        open_venue.data_pub_slug(),
+        hedge_venue.data_pub_slug()
+    ))
+}
+
+/// 拆分版 hedge_price_offset_limit_lower：JSON {symbol: f64}。
+pub fn arb_hedge_price_offset_limit_lower_override_key(
+    env_name: Option<&str>,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+) -> Option<String> {
+    let env_name = env_name.map(str::trim).filter(|s| !s.is_empty())?;
+    Some(format!(
+        "{env_name}:{}:{}:hedge_price_offset_limit_lower",
+        open_venue.data_pub_slug(),
+        hedge_venue.data_pub_slug()
+    ))
+}
+
 /// 从运行时（ENV_NAME 环境变量或当前工作目录名）推断 arb 的 env_name。
 /// 与 MM 版本不同：env 缺失时不 panic，返回 None。
 fn infer_arb_env_name_from_runtime() -> Option<String> {
@@ -370,6 +414,16 @@ pub struct StrategyParams {
     /// Redis STRING key: <env>:<open>:<hedge>:amount_u_overrides
     #[serde(default)]
     pub arb_amount_u_overrides: HashMap<String, f64>,
+
+    /// Arb 按 symbol 覆盖的对冲侧 price_offset_limit upper
+    /// Redis STRING key: <env>:<open>:<hedge>:hedge_price_offset_limits（合并）
+    /// 或 <env>:<open>:<hedge>:hedge_price_offset_limit_upper（拆分回退）
+    #[serde(default)]
+    pub arb_hedge_price_offset_limit_upper_overrides: HashMap<String, f64>,
+
+    /// Arb 按 symbol 覆盖的对冲侧 price_offset_limit lower
+    #[serde(default)]
+    pub arb_hedge_price_offset_limit_lower_overrides: HashMap<String, f64>,
 
     /// arb 开仓 plan 波动带缩放倍率 [low, high]（JSON 数组字符串，实际偏移区间=vol*[low,high]）
     #[serde(default = "default_vol_band_scale")]
@@ -625,6 +679,8 @@ impl Default for StrategyParams {
             mm_hedge_price_offset_limit_upper_overrides: HashMap::new(),
             mm_hedge_price_offset_limit_lower_overrides: HashMap::new(),
             arb_amount_u_overrides: HashMap::new(),
+            arb_hedge_price_offset_limit_upper_overrides: HashMap::new(),
+            arb_hedge_price_offset_limit_lower_overrides: HashMap::new(),
             vol_band_scale: default_vol_band_scale(),
             open_buy_vol_scale: default_open_buy_vol_scale(),
             open_sell_vol_scale: default_open_sell_vol_scale(),
@@ -837,6 +893,110 @@ impl StrategyParams {
             }
         } else {
             HashMap::new()
+        };
+        // Arb 的 per-symbol hedge_price_offset_limit 覆盖：先试合并 STRING（mm 同款 schema），
+        // 缺失再回退到拆分的 upper / lower 两个 STRING。任一存在都按 per-symbol 覆盖处理；
+        // 三者全缺则使用 strategy_params 全局 lower / upper。
+        let (
+            arb_hedge_price_offset_limit_lower_overrides,
+            arb_hedge_price_offset_limit_upper_overrides,
+        ) = if ns == "intra" || ns == "cross" || ns == "fr" {
+            let arb_env_name = infer_arb_env_name_from_runtime();
+            match arb_hedge_price_offset_limits_override_key(
+                arb_env_name.as_deref(),
+                open_venue,
+                hedge_venue,
+            ) {
+                Some(limits_key) => match client.get_string(&limits_key).await? {
+                    Some(raw) => {
+                        let (lower_overrides, upper_overrides) =
+                            parse_mm_hedge_price_offset_limit_overrides(
+                                &raw,
+                                open_venue,
+                                &limits_key,
+                            );
+                        info!(
+                            "Arb hedge_price_offset_limits overrides loaded ns={} key='{}' symbols={}",
+                            ns,
+                            limits_key,
+                            lower_overrides.len()
+                        );
+                        (lower_overrides, upper_overrides)
+                    }
+                    None => {
+                        let upper_key = arb_hedge_price_offset_limit_upper_override_key(
+                            arb_env_name.as_deref(),
+                            open_venue,
+                            hedge_venue,
+                        );
+                        let upper_overrides = match upper_key {
+                            Some(ref key) => match client.get_string(key).await? {
+                                Some(raw) => {
+                                    let parsed = parse_mm_positive_f64_overrides(
+                                        &raw,
+                                        open_venue,
+                                        key,
+                                        "hedge_price_offset_limit_upper",
+                                    );
+                                    info!(
+                                        "Arb hedge_price_offset_limit_upper split fallback loaded ns={} key='{}' symbols={}",
+                                        ns,
+                                        key,
+                                        parsed.len()
+                                    );
+                                    parsed
+                                }
+                                None => HashMap::new(),
+                            },
+                            None => HashMap::new(),
+                        };
+
+                        let lower_key = arb_hedge_price_offset_limit_lower_override_key(
+                            arb_env_name.as_deref(),
+                            open_venue,
+                            hedge_venue,
+                        );
+                        let lower_overrides = match lower_key {
+                            Some(ref key) => match client.get_string(key).await? {
+                                Some(raw) => {
+                                    let parsed = parse_mm_positive_f64_overrides(
+                                        &raw,
+                                        open_venue,
+                                        key,
+                                        "hedge_price_offset_limit_lower",
+                                    );
+                                    info!(
+                                        "Arb hedge_price_offset_limit_lower split fallback loaded ns={} key='{}' symbols={}",
+                                        ns,
+                                        key,
+                                        parsed.len()
+                                    );
+                                    parsed
+                                }
+                                None => HashMap::new(),
+                            },
+                            None => HashMap::new(),
+                        };
+
+                        if lower_overrides.is_empty() && upper_overrides.is_empty() {
+                            info!(
+                                "Arb hedge_price_offset_limits override missing ns={} key='{}'; use global lower/upper from key='{}'",
+                                ns, limits_key, redis_key
+                            );
+                        }
+                        (lower_overrides, upper_overrides)
+                    }
+                },
+                None => {
+                    info!(
+                        "Arb hedge_price_offset_limits override skipped ns={} (env_name unavailable); use global lower/upper",
+                        ns
+                    );
+                    (HashMap::new(), HashMap::new())
+                }
+            }
+        } else {
+            (HashMap::new(), HashMap::new())
         };
         let vol_band_scale = match hash_map.get("vol_band_scale") {
             Some(raw) => raw.to_string(),
@@ -1264,6 +1424,8 @@ impl StrategyParams {
             mm_hedge_price_offset_limit_upper_overrides,
             mm_hedge_price_offset_limit_lower_overrides,
             arb_amount_u_overrides,
+            arb_hedge_price_offset_limit_upper_overrides,
+            arb_hedge_price_offset_limit_lower_overrides,
             vol_band_scale,
             open_buy_vol_scale,
             open_sell_vol_scale,
@@ -1373,6 +1535,10 @@ impl StrategyParams {
             arb.hedge_offset_ratio = self.hedge_offset_ratio;
             arb.hedge_price_offset_limit_lower = self.hedge_price_offset_limit_lower;
             arb.hedge_price_offset_limit_upper = self.hedge_price_offset_limit_upper;
+            arb.update_hedge_price_offset_limit_overrides(
+                self.arb_hedge_price_offset_limit_lower_overrides.clone(),
+                self.arb_hedge_price_offset_limit_upper_overrides.clone(),
+            );
             arb.hedge_window_scale_low = self.hedge_window_scale_low;
             arb.hedge_window_scale_high = self.hedge_window_scale_high;
             arb.enable_return_score_adjust_hedge = self.enable_return_score_adjust_hedge;
@@ -1401,64 +1567,72 @@ impl StrategyParams {
             ArbDecision::try_update_model_output_services(self.parse_model_output_services());
         }
         let mm_applied = MmDecision::try_with_mut(|_decision| {
-                let open_buy_vol_scale = self
-                    .parse_required_vol_scale_range(&self.open_buy_vol_scale, "open_buy_vol_scale");
-                let open_sell_vol_scale = self.parse_required_vol_scale_range(
-                    &self.open_sell_vol_scale,
-                    "open_sell_vol_scale",
-                );
-                _decision.update_order_amount(self.order_amount);
-                _decision.update_order_amount_overrides(self.mm_amount_u_overrides.clone());
-                _decision.update_clock_timing_params(
-                    self.order_interval_ms,
-                    self.next_query_delay_ms,
-                    self.clock_shift_ms,
-                );
-                _decision.update_open_orders_per_round(self.open_orders_per_round);
-                _decision.update_open_vol_scale_ranges(open_buy_vol_scale, open_sell_vol_scale);
-                _decision.update_enable_tlen_cancel(self.enable_tlen_cancel);
-                _decision.update_tlen_cancel_freq_ms(self.tlen_cancel_freq_ms);
-                _decision.update_mm_hedge_params(
-                    self.hedge_orders_per_round,
-                    self.hedge_vol_multiplier,
-                    self.hedge_offset_ratio,
-                    self.hedge_price_offset_limit_lower,
-                    self.hedge_price_offset_limit_upper,
-                    self.hedge_window_scale_low,
-                    self.hedge_window_scale_high,
-                    self.max_hedge_price_pct_change,
-                    self.next_query_delay_ms,
-                    self.enable_return_score_adjust_hedge,
-                );
-                _decision.update_hedge_price_offset_limit_overrides(
-                    self.mm_hedge_price_offset_limit_lower_overrides.clone(),
-                    self.mm_hedge_price_offset_limit_upper_overrides.clone(),
-                );
-                _decision.update_open_order_timeout(self.open_order_timeout);
-                _decision.update_return_score_cancel_params(
-                    self.enable_return_score_cancel,
-                    self.return_score_buy_cancel_quantile,
-                    self.return_score_sell_cancel_quantile,
-                );
-                _decision.update_enable_environment_model(self.enable_environment_model);
-                _decision.update_enable_volatility_limit(self.enable_volatility_limit);
-                _decision.update_open_volatility_limit(self.open_volatility_limit);
-                _decision.update_enable_tradecount_limit(self.enable_tradecount_limit);
-                _decision.update_open_tradecount_limit(self.open_tradecount_limit);
-                _decision.update_open_time_block(
-                    self.enable_open_time_block,
-                    &self.open_block_utc_time_range,
-                );
-                _decision.update_model_service_roles(
-                    self.return_model_service.clone(),
-                    self.environment_model_service.clone(),
-                );
-            })
-            .is_some();
+            let open_buy_vol_scale =
+                self.parse_required_vol_scale_range(&self.open_buy_vol_scale, "open_buy_vol_scale");
+            let open_sell_vol_scale = self
+                .parse_required_vol_scale_range(&self.open_sell_vol_scale, "open_sell_vol_scale");
+            _decision.update_order_amount(self.order_amount);
+            _decision.update_order_amount_overrides(self.mm_amount_u_overrides.clone());
+            _decision.update_clock_timing_params(
+                self.order_interval_ms,
+                self.next_query_delay_ms,
+                self.clock_shift_ms,
+            );
+            _decision.update_open_orders_per_round(self.open_orders_per_round);
+            _decision.update_open_vol_scale_ranges(open_buy_vol_scale, open_sell_vol_scale);
+            _decision.update_enable_tlen_cancel(self.enable_tlen_cancel);
+            _decision.update_tlen_cancel_freq_ms(self.tlen_cancel_freq_ms);
+            _decision.update_mm_hedge_params(
+                self.hedge_orders_per_round,
+                self.hedge_vol_multiplier,
+                self.hedge_offset_ratio,
+                self.hedge_price_offset_limit_lower,
+                self.hedge_price_offset_limit_upper,
+                self.hedge_window_scale_low,
+                self.hedge_window_scale_high,
+                self.max_hedge_price_pct_change,
+                self.next_query_delay_ms,
+                self.enable_return_score_adjust_hedge,
+            );
+            _decision.update_hedge_price_offset_limit_overrides(
+                self.mm_hedge_price_offset_limit_lower_overrides.clone(),
+                self.mm_hedge_price_offset_limit_upper_overrides.clone(),
+            );
+            _decision.update_open_order_timeout(self.open_order_timeout);
+            _decision.update_return_score_cancel_params(
+                self.enable_return_score_cancel,
+                self.return_score_buy_cancel_quantile,
+                self.return_score_sell_cancel_quantile,
+            );
+            _decision.update_enable_environment_model(self.enable_environment_model);
+            _decision.update_enable_volatility_limit(self.enable_volatility_limit);
+            _decision.update_open_volatility_limit(self.open_volatility_limit);
+            _decision.update_enable_tradecount_limit(self.enable_tradecount_limit);
+            _decision.update_open_tradecount_limit(self.open_tradecount_limit);
+            _decision.update_open_time_block(
+                self.enable_open_time_block,
+                &self.open_block_utc_time_range,
+            );
+            _decision.update_model_service_roles(
+                self.return_model_service.clone(),
+                self.environment_model_service.clone(),
+            );
+        })
+        .is_some();
 
         if !arb_state_applied && !mm_applied {
             warn!("策略参数已加载，但 decision 尚未初始化");
         }
+
+        info!(
+            "✅ overrides applied: arb_amount_u_symbols={} arb_hedge_offset_lower_symbols={} arb_hedge_offset_upper_symbols={} mm_amount_u_symbols={} mm_hedge_offset_lower_symbols={} mm_hedge_offset_upper_symbols={}",
+            self.arb_amount_u_overrides.len(),
+            self.arb_hedge_price_offset_limit_lower_overrides.len(),
+            self.arb_hedge_price_offset_limit_upper_overrides.len(),
+            self.mm_amount_u_overrides.len(),
+            self.mm_hedge_price_offset_limit_lower_overrides.len(),
+            self.mm_hedge_price_offset_limit_upper_overrides.len(),
+        );
 
         info!(
             "✅ 策略参数已更新: amount={:.2}, arb_vol_band_scale={}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, hedge_window_scale_low={:.4}, hedge_window_scale_high={:.4}, order_interval_ms={}, enable_clock_shift_ms={}, open_orders_per_round={}, cooldown={}s, enable_return_score_cancel={}, return_score_buy_cancel_quantile={}, return_score_sell_cancel_quantile={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, spread_cancel_cooldown_ms={}, enable_return_score_adjust_hedge={}, enable_environment_model={}, enable_volatility_limit={}, open_volatility_limit={}, enable_tradecount_limit={}, open_tradecount_limit={}, enable_open_time_block={}, open_block_utc_time_range={}, return_model_service={}, environment_model_service={}",
@@ -1644,6 +1818,56 @@ mod tests {
         );
         assert_eq!(overrides.get("BTCUSDT"), Some(&150.0));
         assert_eq!(overrides.get("ETHUSDT"), Some(&80.0));
+    }
+
+    #[test]
+    fn test_arb_hedge_price_offset_limit_keys_include_env_and_venue_pair() {
+        let limits_key = arb_hedge_price_offset_limits_override_key(
+            Some("okex-intra-arb01"),
+            TradingVenue::OkexMargin,
+            TradingVenue::OkexFutures,
+        )
+        .unwrap();
+        let upper_key = arb_hedge_price_offset_limit_upper_override_key(
+            Some("okex-intra-arb01"),
+            TradingVenue::OkexMargin,
+            TradingVenue::OkexFutures,
+        )
+        .unwrap();
+        let lower_key = arb_hedge_price_offset_limit_lower_override_key(
+            Some("okex-intra-arb01"),
+            TradingVenue::OkexMargin,
+            TradingVenue::OkexFutures,
+        )
+        .unwrap();
+        assert_eq!(
+            limits_key,
+            "okex-intra-arb01:okex-margin:okex-futures:hedge_price_offset_limits"
+        );
+        assert_eq!(
+            upper_key,
+            "okex-intra-arb01:okex-margin:okex-futures:hedge_price_offset_limit_upper"
+        );
+        assert_eq!(
+            lower_key,
+            "okex-intra-arb01:okex-margin:okex-futures:hedge_price_offset_limit_lower"
+        );
+    }
+
+    #[test]
+    fn test_arb_hedge_price_offset_limit_keys_skip_when_env_missing() {
+        assert!(arb_hedge_price_offset_limits_override_key(
+            None,
+            TradingVenue::OkexMargin,
+            TradingVenue::OkexFutures,
+        )
+        .is_none());
+        assert!(arb_hedge_price_offset_limit_upper_override_key(
+            Some("   "),
+            TradingVenue::OkexMargin,
+            TradingVenue::OkexFutures,
+        )
+        .is_none());
     }
 
     #[test]
