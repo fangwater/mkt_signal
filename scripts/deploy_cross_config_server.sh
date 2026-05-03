@@ -247,6 +247,7 @@ mkdir -p "$TARGET_DIR/config"
 
 FILES=(
   "scripts/cross_config_server.py"
+  "scripts/arb_per_symbol_overrides.py"
   "scripts/start_cross_config_server.sh"
   "scripts/stop_cross_config_server.sh"
   "cross_scripts/sync_cross_risk_params.py"

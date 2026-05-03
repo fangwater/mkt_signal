@@ -29,6 +29,11 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CROSS_SCRIPT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "cross_scripts"))
 PAIR_RE = re.compile(r"^([a-z0-9]+)[-_]([a-z0-9]+)[-_]cross([_-].*)?$")
 
+# Per-symbol overrides 面板（amount_u / max_pos_u / hedge_offset_limits）：
+# 三 arb config_server 共用 helper，这里只负责 import + 在 HTML / 路由里挂接。
+sys.path.insert(0, SCRIPT_DIR)
+import arb_per_symbol_overrides as ps_overrides  # noqa: E402
+
 EXCHANGE_DEFAULTS = {
     "binance": ("binance-futures", "okex-futures"),
     "okex": ("okex-futures", "binance-futures"),
@@ -814,6 +819,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       <div id="spread-table" class="kv-table"></div>
       <div id="spread-status" class="status"></div>
     </section>
+__PER_SYMBOL_PANELS_HTML__
   </main>
 
   <script>
@@ -1334,6 +1340,20 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     document.getElementById('spread-sync').addEventListener('click', syncSpreadThresholds);
 
     document.getElementById('reload-all').addEventListener('click', reloadAll);
+
+    // Per-symbol overrides panels：context 取自现有 venue input
+    function _psGetContext() {
+      return {
+        exchange: (BOOTSTRAP.default_exchange || '').trim(),
+        openVenue: (openVenueInput.value || '').trim(),
+        hedgeVenue: (hedgeVenueInput.value || '').trim(),
+      };
+    }
+__PER_SYMBOL_PANELS_JS__
+    bindPerSymbolPanels();
+    loadAmountU();
+    loadMaxPosU();
+    loadHedgeOffsetLimits();
 
     reloadAll();
   </script>
@@ -2031,6 +2051,8 @@ def render_index_html(
     }
 
     html = INDEX_HTML_TEMPLATE.replace("__BOOTSTRAP__", json.dumps(bootstrap, ensure_ascii=False))
+    html = html.replace("__PER_SYMBOL_PANELS_HTML__", ps_overrides.render_per_symbol_panels_html())
+    html = html.replace("__PER_SYMBOL_PANELS_JS__", ps_overrides.render_per_symbol_panels_js())
     return html
 
 
@@ -2291,6 +2313,32 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"key": key, "count": len(values), "values": values})
             return
 
+        if parsed.path in ("/api/amount-u", "/api/max-pos-u", "/api/hedge-offset-limits"):
+            try:
+                _, open_venue, hedge_venue, _ = self._resolve_request_context(params)
+            except Exception as exc:
+                self._send_error(400, str(exc))
+                return
+            env_name = infer_dir_prefix_from_cwd() or ""
+            if not env_name:
+                self._send_error(400, "env_name unavailable (no cwd prefix)")
+                return
+            rds = self.server.context.redis_client
+            try:
+                if parsed.path == "/api/amount-u":
+                    data = ps_overrides.read_amount_u(rds, env_name, open_venue, hedge_venue)
+                elif parsed.path == "/api/max-pos-u":
+                    data = ps_overrides.read_max_pos_u(rds, env_name, open_venue, hedge_venue)
+                else:
+                    data = ps_overrides.read_hedge_offset_limits(
+                        rds, env_name, open_venue, hedge_venue
+                    )
+            except ValueError as exc:
+                self._send_error(400, str(exc))
+                return
+            self._send_json(200, data)
+            return
+
         self._send_error(404, "not found")
 
     def do_POST(self) -> None:
@@ -2523,6 +2571,36 @@ class RequestHandler(BaseHTTPRequestHandler):
                 )
             except Exception as exc:
                 self._send_error(500, f"sync failed: {exc}")
+                return
+            self._send_json(200, result)
+            return
+
+        if parsed.path in ("/api/amount-u", "/api/max-pos-u", "/api/hedge-offset-limits"):
+            try:
+                _, open_v, hedge_v, _ = self._resolve_payload_context(payload)
+            except Exception as exc:
+                self._send_error(400, str(exc))
+                return
+            env_name = infer_dir_prefix_from_cwd() or ""
+            if not env_name:
+                self._send_error(400, "env_name unavailable (no cwd prefix)")
+                return
+            rds = self.server.context.redis_client
+            values = payload.get("values")
+            try:
+                if parsed.path == "/api/amount-u":
+                    result = ps_overrides.write_amount_u(rds, env_name, open_v, hedge_v, values)
+                elif parsed.path == "/api/max-pos-u":
+                    result = ps_overrides.write_max_pos_u(rds, env_name, open_v, hedge_v, values)
+                else:
+                    result = ps_overrides.write_hedge_offset_limits(
+                        rds, env_name, open_v, hedge_v, values
+                    )
+            except ValueError as exc:
+                self._send_error(400, str(exc))
+                return
+            except Exception as exc:
+                self._send_error(500, f"write failed: {exc}")
                 return
             self._send_json(200, result)
             return

@@ -259,6 +259,7 @@ mkdir -p "$TARGET_DIR/config"
 
 FILES=(
   "scripts/fr_config_server.py"
+  "scripts/arb_per_symbol_overrides.py"
   "scripts/start_fr_config_server.sh"
   "scripts/stop_fr_config_server.sh"
   "scripts/sync_fr_risk_params.py"
