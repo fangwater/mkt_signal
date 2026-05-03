@@ -1152,7 +1152,9 @@ fn parse_gate_side(raw: Option<&str>) -> Option<u8> {
 fn parse_gate_order_type(raw: Option<&str>) -> Option<u8> {
     match raw?.trim().to_ascii_lowercase().as_str() {
         "limit" => Some(1),
+        "limit_borrow" | "limit_repay" | "limit_borrow_repay" => Some(1),
         "market" => Some(3),
+        "market_borrow" | "market_repay" | "market_borrow_repay" => Some(3),
         _ => None,
     }
 }
@@ -1566,6 +1568,64 @@ mod tests {
         assert_eq!(report.emitted, 0);
         assert!(!report.complete);
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn gate_spot_orders_accept_margin_types() {
+        let parser = GateAccountEventParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let payload = Bytes::from_static(
+            br#"{
+                "channel":"spot.orders_v2",
+                "event":"update",
+                "time":1777821643,
+                "time_ms":1777821643188,
+                "result":[{
+                    "id":"1058143375971",
+                    "text":"t-2296188760250908673",
+                    "create_time":"1777821642",
+                    "update_time":"1777821643",
+                    "create_time_ms":"1777821642219",
+                    "update_time_ms":"1777821643187",
+                    "currency_pair":"BTC_USDT",
+                    "type":"limit_borrow_repay",
+                    "account":"unified",
+                    "side":"sell",
+                    "amount":"0.0063",
+                    "price":"78756.6",
+                    "time_in_force":"poc",
+                    "left":"0.0063",
+                    "filled_amount":"0",
+                    "filled_total":"0",
+                    "avg_deal_price":"0",
+                    "fee_currency":"USDT",
+                    "rebated_fee_currency":"USDT",
+                    "user":14481073,
+                    "event":"finish",
+                    "stp_id":0,
+                    "stp_act":"-",
+                    "finish_as":"cancelled",
+                    "biz_info":"-",
+                    "amend_text":"-"
+                }]
+            }"#,
+        );
+
+        let report = parser.parse_with_report(payload, &tx);
+        assert_eq!(report.emitted, 1);
+        assert!(report.complete);
+
+        let wrapped = rx.try_recv().expect("order event");
+        let (event_type, scope, body) = split_basic_account_event(&wrapped).expect("wrapped order");
+        assert_eq!(event_type, BasicAccountEventType::OrderUpdate);
+        assert_eq!(scope, BasicAccountScope::GateUnified);
+
+        let msg = GateBasicOrderMsg::from_bytes(body).expect("gate order body");
+        assert_eq!(msg.symbol, "BTC_USDT");
+        assert_eq!(msg.order_type, 1);
+        assert_eq!(msg.execution_type, 2);
+        assert_eq!(msg.order_status, 4);
+        assert_eq!(msg.client_order_id, 2296188760250908673);
     }
 
     #[test]

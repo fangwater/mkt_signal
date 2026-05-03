@@ -16,7 +16,9 @@ safe_find_running_pids() {
     if [[ "$pid" == "$$" || "$pid" == "$PPID" ]]; then
       continue
     fi
-    if [[ "$comm" != "$target_comm" ]]; then
+    local argv0="${args%% *}"
+    local argv0_base="${argv0##*/}"
+    if [[ "$comm" != "$target_comm" && "$argv0_base" != "$target_comm" ]]; then
       continue
     fi
 

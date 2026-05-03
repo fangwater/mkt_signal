@@ -8,6 +8,7 @@ usage() {
   cat <<'EOF'
 用法:
   scripts/close_intra_full_exit.sh --env-name okex-intra-arb01 [--execute] [--symbol BTC]
+  scripts/close_intra_full_exit.sh --env-name bybit-intra-arb01 [--execute] [--mode align-futures-to-spot]
   scripts/close_intra_full_exit.sh okex-intra-arb01 --execute --skip-assets BNB,SOL
   scripts/close_intra_full_exit.sh okex-intra-arb01 --execute --min-net-usdt 5
 
@@ -26,7 +27,10 @@ usage() {
 
 支持的 exchange:
   - okex   ✓
-  - binance / bybit  ✗ (尚未实现 — 现货侧批量市价清仓需要新写)
+  - gate   ✓
+  - bitget ✓
+  - bybit  ✓
+  - binance ✗ (尚未实现 — 现货侧批量市价清仓需要新写)
 EOF
 }
 
@@ -63,7 +67,7 @@ done
 
 if [[ -z "$ENV_NAME" ]]; then
   cwd_name="$(basename "$(pwd)")"
-  if [[ "$cwd_name" =~ ^(binance|okex|bybit)-intra-[a-z0-9][a-z0-9_-]*$ ]]; then
+  if [[ "$cwd_name" =~ ^(binance|okex|bybit|gate|bitget)-intra-[a-z0-9][a-z0-9_-]*$ ]]; then
     ENV_NAME="$cwd_name"
   fi
 fi
@@ -104,7 +108,16 @@ case "$EXCHANGE" in
   okex)
     exec "$PYTHON_BIN" "$ROOT_DIR/intra_scripts/full_exit_intra_okx.py" --suffix "$SUFFIX" "${PASS_ARGS[@]}"
     ;;
-  binance|bybit)
+  gate)
+    exec "$PYTHON_BIN" "$ROOT_DIR/intra_scripts/full_exit_intra_gate.py" --suffix "$SUFFIX" "${PASS_ARGS[@]}"
+    ;;
+  bitget)
+    exec "$PYTHON_BIN" "$ROOT_DIR/intra_scripts/full_exit_intra_bitget.py" --suffix "$SUFFIX" "${PASS_ARGS[@]}"
+    ;;
+  bybit)
+    exec "$PYTHON_BIN" "$ROOT_DIR/intra_scripts/full_exit_intra_bybit.py" --suffix "$SUFFIX" "${PASS_ARGS[@]}"
+    ;;
+  binance)
     echo "[ERROR] full-exit 尚未为 $EXCHANGE 实现 (env_name=$ENV_NAME)" >&2
     echo "       现有可用脚本：close_intra_all_orders.sh + close_intra_futures_exposure.sh" >&2
     exit 2 ;;

@@ -1655,7 +1655,7 @@ fn drive_funding_cancel_candidate_query(
             cancel_sent += 1;
             group_cancel_sent += 1;
         }
-        log::info!(
+        log::debug!(
             "{FUNDING_ARB_SHELL_NAME}: ArbCancel tlen compare symbol={} trigger_ts={} candidates={} threshold={:.4} min_tlen={:.4} max_tlen={:.4} details={}",
             open_symbol,
             query.trigger_ts,
@@ -1671,23 +1671,28 @@ fn drive_funding_cancel_candidate_query(
         );
         if group_cancel_sent > 0 {
             matched_symbols += 1;
-            log::info!(
-                "{FUNDING_ARB_SHELL_NAME}: ArbCancel tlen hits symbol={} trigger_ts={} candidates={} matched={} threshold={:.4} strategies={}",
-                open_symbol,
-                query.trigger_ts,
-                preview.tick_indices.len(),
-                group_cancel_sent,
-                threshold,
-                matched_preview.join(",")
-            );
+            let _ = ArbDecision::with_state_mut(|arb| {
+                arb.record_tlen_cancel_summary(
+                    FUNDING_ARB_SHELL_NAME,
+                    &open_symbol,
+                    query.trigger_ts,
+                    preview.tick_indices.len(),
+                    group_cancel_sent,
+                    threshold,
+                    preview.min_tlen,
+                    preview.max_tlen,
+                    &matched_preview,
+                );
+            });
         }
     }
     if cancel_sent > 0 {
-        log::info!(
+        log::debug!(
             "{FUNDING_ARB_SHELL_NAME}: ArbCancel candidate query processed trigger_ts={} matched_symbols={} cancels_sent={}",
             query.trigger_ts, matched_symbols, cancel_sent
         );
     }
+    let _ = ArbDecision::with_state_mut(|arb| arb.maybe_log_tlen_cancel_summary());
 }
 
 fn drive_spread_arb_cancel_candidate_query(
@@ -1783,7 +1788,7 @@ fn drive_spread_arb_cancel_candidate_query(
             cancel_sent += 1;
             group_cancel_sent += 1;
         }
-        log::info!(
+        log::debug!(
             "{SPREAD_ARB_SHELL_NAME}: ArbCancel tlen compare symbol={} trigger_ts={} candidates={} threshold={:.4} min_tlen={:.4} max_tlen={:.4} details={}",
             open_symbol,
             query.trigger_ts,
@@ -1799,23 +1804,28 @@ fn drive_spread_arb_cancel_candidate_query(
         );
         if group_cancel_sent > 0 {
             matched_symbols += 1;
-            log::info!(
-                "{SPREAD_ARB_SHELL_NAME}: ArbCancel tlen hits symbol={} trigger_ts={} candidates={} matched={} threshold={:.4} strategies={}",
-                open_symbol,
-                query.trigger_ts,
-                preview.tick_indices.len(),
-                group_cancel_sent,
-                threshold,
-                matched_preview.join(",")
-            );
+            let _ = ArbDecision::with_state_mut(|arb| {
+                arb.record_tlen_cancel_summary(
+                    SPREAD_ARB_SHELL_NAME,
+                    &open_symbol,
+                    query.trigger_ts,
+                    preview.tick_indices.len(),
+                    group_cancel_sent,
+                    threshold,
+                    preview.min_tlen,
+                    preview.max_tlen,
+                    &matched_preview,
+                );
+            });
         }
     }
     if cancel_sent > 0 {
-        log::info!(
+        log::debug!(
             "{SPREAD_ARB_SHELL_NAME}: ArbCancel candidate query processed trigger_ts={} matched_symbols={} cancels_sent={}",
             query.trigger_ts, matched_symbols, cancel_sent
         );
     }
+    let _ = ArbDecision::with_state_mut(|arb| arb.maybe_log_tlen_cancel_summary());
 }
 
 fn emit_funding_precise_tlen_cancel(
@@ -2222,7 +2232,10 @@ fn emit_spread_arb_open_signals(
             })
             .collect();
         if filtered_levels > 0 {
-            log::info!(
+            let _ = ArbDecision::with_state_mut(|arb| {
+                arb.record_intercept_summary_by("tlen_gate", filtered_levels as u64);
+            });
+            log::debug!(
                 "{SPREAD_ARB_SHELL_NAME}: ArbOpen tlen gated symbol={} threshold={:?} filtered_levels={} kept_levels={}",
                 query_symbol,
                 tlen_gate,
@@ -2665,7 +2678,10 @@ fn emit_funding_open_close_signals(
             })
             .collect();
         if filtered_levels > 0 {
-            log::info!(
+            let _ = ArbDecision::with_state_mut(|arb| {
+                arb.record_intercept_summary_by("tlen_gate", filtered_levels as u64);
+            });
+            log::debug!(
                 "{FUNDING_ARB_SHELL_NAME}: ArbOpen tlen gated symbol={} threshold={:?} filtered_levels={} kept_levels={}",
                 query_symbol,
                 tlen_gate,
@@ -2931,6 +2947,8 @@ pub(crate) struct ArbDecisionState {
     pub last_cancel_trigger_ts_us: i64,
     pub intercept_counts: HashMap<String, u64>,
     pub last_intercept_log: Instant,
+    pub tlen_cancel_summaries: HashMap<(String, String), TlenCancelSummary>,
+    pub last_tlen_cancel_log: Instant,
     /// 30s 窗口内的 spread 观测：每个 symbol 记录 forward/backward 两个方向的
     /// 实际 spread 值 min/max，并保留最新看到的 open 阈值，便于在 summary 后打表
     /// 直观判断"信号设计是否合理（区间能否覆盖阈值）"。
@@ -2945,6 +2963,18 @@ pub(crate) struct SpreadObservation {
     pub bwd_min: Option<f64>,
     pub bwd_max: Option<f64>,
     pub bwd_threshold: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TlenCancelSummary {
+    pub trigger_count: u64,
+    pub candidate_count: u64,
+    pub matched_count: u64,
+    pub threshold: Option<f64>,
+    pub min_tlen: Option<f64>,
+    pub max_tlen: Option<f64>,
+    pub last_trigger_ts: i64,
+    pub sample_matches: Vec<String>,
 }
 
 impl SpreadObservation {
@@ -3006,6 +3036,8 @@ impl ArbDecisionState {
             last_cancel_trigger_ts_us: 0,
             intercept_counts: HashMap::new(),
             last_intercept_log: Instant::now(),
+            tlen_cancel_summaries: HashMap::new(),
+            last_tlen_cancel_log: Instant::now(),
             spread_observation: HashMap::new(),
         }
     }
@@ -3644,7 +3676,72 @@ impl ArbDecisionState {
     }
 
     pub fn record_intercept_summary(&mut self, reason: impl Into<String>) {
-        *self.intercept_counts.entry(reason.into()).or_insert(0) += 1;
+        self.record_intercept_summary_by(reason, 1);
+    }
+
+    pub fn record_intercept_summary_by(&mut self, reason: impl Into<String>, count: u64) {
+        if count == 0 {
+            return;
+        }
+        *self.intercept_counts.entry(reason.into()).or_insert(0) += count;
+    }
+
+    pub fn record_tlen_cancel_summary(
+        &mut self,
+        source: &str,
+        symbol: &str,
+        trigger_ts: i64,
+        candidates: usize,
+        matched: usize,
+        threshold: f64,
+        min_tlen: f64,
+        max_tlen: f64,
+        matched_preview: &[String],
+    ) {
+        let summary = self
+            .tlen_cancel_summaries
+            .entry((source.to_string(), symbol.to_string()))
+            .or_default();
+        summary.trigger_count += 1;
+        summary.candidate_count += candidates as u64;
+        summary.matched_count += matched as u64;
+        if threshold.is_finite() {
+            summary.threshold = Some(threshold);
+        }
+        if min_tlen.is_finite() {
+            summary.min_tlen = Some(
+                summary
+                    .min_tlen
+                    .map_or(min_tlen, |value| value.min(min_tlen)),
+            );
+        }
+        if max_tlen.is_finite() {
+            summary.max_tlen = Some(
+                summary
+                    .max_tlen
+                    .map_or(max_tlen, |value| value.max(max_tlen)),
+            );
+        }
+        summary.last_trigger_ts = trigger_ts;
+
+        let remaining = 12usize.saturating_sub(summary.sample_matches.len());
+        for item in matched_preview.iter().take(remaining) {
+            summary.sample_matches.push(item.clone());
+        }
+    }
+
+    pub fn maybe_log_tlen_cancel_summary(&mut self) {
+        const TLEN_CANCEL_LOG_INTERVAL_SECS: u64 = 30;
+        if self.tlen_cancel_summaries.is_empty() {
+            return;
+        }
+        if self.last_tlen_cancel_log.elapsed() < Duration::from_secs(TLEN_CANCEL_LOG_INTERVAL_SECS)
+        {
+            return;
+        }
+
+        self.tlen_cancel_summaries.clear();
+        self.last_tlen_cancel_log = Instant::now();
     }
 
     pub fn maybe_log_intercept_summary(&mut self, source: &str) {
@@ -3674,8 +3771,9 @@ impl ArbDecisionState {
                 "spread_close" => 3u8,
                 "spread_block" => 4u8,
                 "spread_hit" => 5u8,
-                "cooldown" => 6u8,
-                _ => 7u8,
+                "tlen_gate" => 6u8,
+                "cooldown" => 7u8,
+                _ => 8u8,
             };
             priority(&a.0)
                 .cmp(&priority(&b.0))
@@ -4047,8 +4145,7 @@ impl ArbDecisionState {
         let vol_lookup = self.lookup_open_factor_value(open_symbol_key, open_venue);
         let open_volatility_factor = match vol_lookup.ready {
             Some(true) => {
-                let Some(value) = vol_lookup.target_factor_value.filter(|v| v.is_finite())
-                else {
+                let Some(value) = vol_lookup.target_factor_value.filter(|v| v.is_finite()) else {
                     self.record_intercept_summary("vol");
                     return None;
                 };
@@ -4081,15 +4178,6 @@ impl ArbDecisionState {
                 return None;
             };
             if open_volatility_factor > threshold {
-                log::warn!(
-                    "ArbDecision: open blocked by inline volatility threshold symbol={} current={:.8} threshold={:.8} samples={} percentile={:.2} last_recompute_tp_ms={:?}",
-                    open_symbol_key,
-                    open_volatility_factor,
-                    threshold,
-                    snapshot.sample_count,
-                    snapshot.percentile,
-                    snapshot.last_recompute_tp_ms
-                );
                 self.record_intercept_summary("vol_limited");
                 return None;
             }
