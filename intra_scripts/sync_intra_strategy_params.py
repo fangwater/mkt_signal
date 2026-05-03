@@ -87,7 +87,9 @@ def parse_args() -> argparse.Namespace:
 
 
 # Hash key: intra_strategy_params_{open_venue}_{hedge_venue}
-# 注意：intra 不再有 enable_volatility_limit / open_volatility_limit（vol 只用于定价，不当 gate）
+# 注：intra 默认 enable_volatility_limit=false。Rust ArbDecision 已支持 mm 同款
+# inline vol gate；老 intra 实例升级时如果 redis 没写过该字段，进程会用默认值
+# 启动，所以这里默认关掉避免 vol gate 突然激活拦截开仓。需要时面板或 sync 改 true。
 STRATEGY_PARAMS = {
     "order_amount": "100.0",
     "vol_band_scale": "[0.0,1.0]",
@@ -104,6 +106,8 @@ STRATEGY_PARAMS = {
     "tlen_cancel_freq_ms": "3000",
     "spread_cancel_cooldown_ms": "100",
     "enable_environment_model": "true",
+    "enable_volatility_limit": "false",
+    "open_volatility_limit": "70",
     "return_model_service": "-",
     "environment_model_service": "-",
     "signal_cooldown": "5",
@@ -126,6 +130,8 @@ PARAM_COMMENTS: Dict[str, str] = {
     "tlen_cancel_freq_ms": "tlen 撤单触发频率(ms)，需为正整数，默认 3000",
     "spread_cancel_cooldown_ms": "spread cancel 冷却时间(ms)，需为非负整数，默认 100；0 表示不冷却",
     "enable_environment_model": "是否启用 env 开仓限制（false=继续读取 env / pnlu 并写入 from_key，但不阻拦开仓）",
+    "enable_volatility_limit": "是否启用基于 inline vol 阈值的开仓 gate（true=vol > rolling-percentile threshold 时拦截开仓；intra 默认 false）",
+    "open_volatility_limit": "开仓 vol gate 使用的 rolling 分位数（0-100，默认 70；与 mm 同语义）",
     "return_model_service": "收益率模型输出通道名（'-' 表示不读取；配置通道名时仅读取并记录到 from_key，不拦截开仓）",
     "environment_model_service": "环境模型输出通道名（'-' 表示禁用）",
     "max_hedge_price_pct_change": "对冲价格最大变动阈值(%)，范围>0且<=99，可为小数，超过则强制 taker",
@@ -148,6 +154,8 @@ PARAM_PRINT_ORDER = [
     "tlen_cancel_freq_ms",
     "spread_cancel_cooldown_ms",
     "enable_environment_model",
+    "enable_volatility_limit",
+    "open_volatility_limit",
     "return_model_service",
     "environment_model_service",
     "max_hedge_price_pct_change",
@@ -156,8 +164,17 @@ PARAM_PRINT_ORDER = [
 
 
 def sync_strategy_params(rds, key: str) -> int:
-    # 兼容性清理：删掉 intra 不再使用的字段
-    for stale_field in ("price_offsets", "hedge_price_offset_fallback", "enable_volatility_limit", "open_volatility_limit", "open_scale", "hedge_price_offset", "hedge_window_scale_low", "hedge_window_scale_high"):
+    # 兼容性清理：删掉 intra 已废弃的字段（此前 enable_volatility_limit /
+    # open_volatility_limit 也在 stale 列表里，但 Rust 端已支持 inline vol gate
+    # 后这两个字段重新启用，故移出 stale 名单。）
+    for stale_field in (
+        "price_offsets",
+        "hedge_price_offset_fallback",
+        "open_scale",
+        "hedge_price_offset",
+        "hedge_window_scale_low",
+        "hedge_window_scale_high",
+    ):
         rds.hdel(key, stale_field)
     rds.hset(key, mapping=STRATEGY_PARAMS)
     print(f"✅ 已写入 {len(STRATEGY_PARAMS)} 个参数到 HASH '{key}'")

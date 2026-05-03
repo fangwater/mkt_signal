@@ -602,7 +602,7 @@ __PER_SYMBOL_PANELS_HTML__
         const rawValue = values[key] ?? defaults[key] ?? '';
         const useBooleanSelect =
           containerId === 'strategy-table' &&
-          ['enable_tlen_cancel'].includes(key) &&
+          ['enable_tlen_cancel', 'enable_volatility_limit'].includes(key) &&
           isBooleanParamValue(rawValue);
         let input;
         if (useBooleanSelect) {

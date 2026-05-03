@@ -927,7 +927,7 @@ __PER_SYMBOL_PANELS_HTML__
         const rawValue = values[key] ?? defaults[key] ?? '';
         const useBooleanSelect =
           ((containerId === 'strategy-table' &&
-            ['enable_tlen_cancel', 'enable_environment_model'].includes(key)) ||
+            ['enable_tlen_cancel', 'enable_environment_model', 'enable_volatility_limit'].includes(key)) ||
            (containerId === 'funding-table' && ['enabled'].includes(key))) &&
           isBooleanParamValue(rawValue);
         let input;
