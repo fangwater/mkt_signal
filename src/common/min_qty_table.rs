@@ -289,6 +289,8 @@ mod tests {
                 min_order_qty: "0.001".to_string(),
                 price_multiplier: Some("0.1".to_string()),
                 quantity_multiplier: Some("0.001".to_string()),
+                price_precision: Some("1".to_string()),
+                quantity_precision: Some("3".to_string()),
                 min_order_amount: Some("5".to_string()),
             }],
         };
@@ -297,6 +299,35 @@ mod tests {
             .parse_response(response, MarketType::Futures)
             .unwrap();
         assert_eq!(multipliers.get("BTCUSDT").copied(), Some(1.0));
+    }
+
+    #[test]
+    fn bitget_margin_precision_fields_fallback_to_ticks() {
+        let provider = BitgetProvider::new();
+        let response = BitgetResponse {
+            code: "00000".to_string(),
+            msg: "success".to_string(),
+            data: vec![BitgetInstrument {
+                symbol: "BRETTUSDT".to_string(),
+                base_coin: "BRETT".to_string(),
+                quote_coin: "USDT".to_string(),
+                min_order_qty: "0.01".to_string(),
+                price_multiplier: None,
+                quantity_multiplier: None,
+                price_precision: Some("5".to_string()),
+                quantity_precision: Some("2".to_string()),
+                min_order_amount: Some("1".to_string()),
+            }],
+        };
+
+        let (entries, multipliers) = provider
+            .parse_response(response, MarketType::Margin)
+            .unwrap();
+        let entry = entries.get("BRETTUSDT").unwrap();
+
+        assert!(multipliers.is_empty());
+        assert_eq!(entry.step_size, 0.01);
+        assert!((entry.price_tick.unwrap() - 0.00001).abs() < 1e-12);
     }
 
     #[test]
@@ -1052,15 +1083,11 @@ impl BitgetProvider {
         let mut multipliers = HashMap::new();
         for inst in response.data {
             let symbol = inst.symbol.to_uppercase();
-            let step_size: f64 = inst
-                .quantity_multiplier
-                .as_deref()
-                .and_then(|v| v.parse().ok())
+            let step_size = parse_positive_decimal(inst.quantity_multiplier.as_deref())
+                .or_else(|| precision_field_to_step(inst.quantity_precision.as_deref()))
                 .unwrap_or(0.0);
-            let price_tick: f64 = inst
-                .price_multiplier
-                .as_deref()
-                .and_then(|v| v.parse().ok())
+            let price_tick = parse_positive_decimal(inst.price_multiplier.as_deref())
+                .or_else(|| precision_field_to_step(inst.price_precision.as_deref()))
                 .unwrap_or(0.0);
             let entry = MinQtyEntry {
                 symbol: symbol.clone(),
@@ -1126,8 +1153,25 @@ struct BitgetInstrument {
     price_multiplier: Option<String>,
     #[serde(rename = "quantityMultiplier", default)]
     quantity_multiplier: Option<String>,
+    #[serde(rename = "pricePrecision", default)]
+    price_precision: Option<String>,
+    #[serde(rename = "quantityPrecision", default)]
+    quantity_precision: Option<String>,
     #[serde(rename = "minOrderAmount", default)]
     min_order_amount: Option<String>,
+}
+
+fn parse_positive_decimal(value: Option<&str>) -> Option<f64> {
+    value
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| *v > 0.0)
+}
+
+fn precision_field_to_step(value: Option<&str>) -> Option<f64> {
+    value
+        .and_then(|v| v.parse::<i32>().ok())
+        .map(precision_to_step)
+        .filter(|v| *v > 0.0)
 }
 
 // ============================================================================

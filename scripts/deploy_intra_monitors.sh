@@ -90,6 +90,8 @@ if ! intra_atomic_install "$BIN_PATH" "$TARGET_DIR/$OUT_NAME"; then
 fi
 
 SCRIPTS_TO_SYNC=(
+  "scripts/process_match_lib.sh"
+  "intra_scripts/intra_monitor_process_lib.sh"
   "intra_scripts/start_intra_monitors.sh"
   "intra_scripts/stop_intra_monitors.sh"
 )

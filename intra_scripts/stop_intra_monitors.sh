@@ -10,8 +10,23 @@ if [[ -f "$ENV_FILE" ]]; then
   source "$ENV_FILE"
 fi
 
+PROCESS_MATCH_LIB="${BASE_DIR}/scripts/process_match_lib.sh"
+if [[ -f "$PROCESS_MATCH_LIB" ]]; then
+  # shellcheck disable=SC1090
+  source "$PROCESS_MATCH_LIB"
+fi
+INTRA_MONITOR_PROCESS_LIB="${SCRIPT_DIR}/intra_monitor_process_lib.sh"
+if [[ -f "$INTRA_MONITOR_PROCESS_LIB" ]]; then
+  # shellcheck disable=SC1090
+  source "$INTRA_MONITOR_PROCESS_LIB"
+else
+  echo "[ERROR] intra monitor process helper not found: $INTRA_MONITOR_PROCESS_LIB" >&2
+  exit 1
+fi
+
 PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
 PMDAEMON=("$PMDAEMON_BIN")
+KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 
 ensure_pmdaemon() {
   if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1; then
@@ -52,5 +67,6 @@ if "${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1; then
 else
   echo "[WARN] Process not found: $PROC_NAME"
 fi
+intra_cleanup_leaked_account_monitor "$BASE_DIR" "$EXCHANGE" "$KILL_WAIT_SECS"
 
 echo "[INFO] Status: ${PMDAEMON[*]} list"
