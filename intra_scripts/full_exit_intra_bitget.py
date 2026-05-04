@@ -66,6 +66,13 @@ def ceil_to_step(value: Decimal, step: Decimal) -> Decimal:
     return (value / step).to_integral_value(rounding=ROUND_CEILING) * step
 
 
+def precision_to_step(value: Any) -> Decimal:
+    precision = dec(value, "-1")
+    if precision < 0:
+        return Decimal("0")
+    return Decimal("1").scaleb(-int(precision))
+
+
 def load_credentials() -> Tuple[str, str, str]:
     api_key = os.environ.get("BITGET_API_KEY", "").strip()
     api_secret = os.environ.get("BITGET_API_SECRET", "").strip()
@@ -211,8 +218,12 @@ def fetch_specs(category: str, timeout: int) -> Dict[str, InstrumentSpec]:
         if not symbol.endswith("USDT"):
             continue
         qty_step = dec(entry.get("quantityMultiplier"), "0")
+        if qty_step <= 0:
+            qty_step = precision_to_step(entry.get("quantityPrecision"))
         min_qty = dec(entry.get("minOrderQty"), "0")
         price_step = dec(entry.get("priceMultiplier"), "0")
+        if price_step <= 0:
+            price_step = precision_to_step(entry.get("pricePrecision"))
         min_notional = dec(entry.get("minOrderAmount"), "0")
         specs[symbol] = InstrumentSpec(
             symbol=symbol,
