@@ -92,6 +92,34 @@ def read_json(resp: requests.Response) -> Any:
         return {"raw": resp.text}
 
 
+def flatten_spot_open_orders(data: Any) -> List[Dict[str, Any]]:
+    """Gate /spot/open_orders may return orders directly or grouped by pair."""
+    if isinstance(data, dict) and "orders" in data:
+        raw_orders = data.get("orders", [])
+    elif isinstance(data, list):
+        raw_orders = data
+    else:
+        raise RuntimeError(f"unexpected spot open_orders response: {data}")
+
+    flattened: List[Dict[str, Any]] = []
+    for item in raw_orders:
+        if not isinstance(item, dict):
+            continue
+        children = item.get("orders")
+        if isinstance(children, list):
+            pair = str(item.get("currency_pair") or item.get("pair") or "")
+            for child in children:
+                if not isinstance(child, dict):
+                    continue
+                order = dict(child)
+                if pair and not order.get("currency_pair"):
+                    order["currency_pair"] = pair
+                flattened.append(order)
+        else:
+            flattened.append(item)
+    return flattened
+
+
 def fetch_spot_open_orders(
     api_key: str,
     api_secret: str,
@@ -112,12 +140,7 @@ def fetch_spot_open_orders(
             data = read_json(resp)
             raise RuntimeError(f"spot open_orders failed: {resp.status_code} {data}")
         data = read_json(resp)
-        if isinstance(data, dict) and "orders" in data:
-            batch = data.get("orders", [])
-        elif isinstance(data, list):
-            batch = data
-        else:
-            raise RuntimeError(f"unexpected spot open_orders response: {data}")
+        batch = flatten_spot_open_orders(data)
         if not batch:
             break
         orders.extend(batch)

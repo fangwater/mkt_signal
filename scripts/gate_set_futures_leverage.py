@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Set Gate USDT futures leverage for contracts from an intra dashboard snapshot.
+"""Set Gate USDT futures leverage for intra contracts.
 
 Default is dry-run. Source the target env first so GATE_API_KEY/GATE_API_SECRET
 are available, then add --execute to call Gate.
@@ -218,6 +218,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Treat POSITION_NOT_FOUND as an error instead of skipping the contract.",
     )
+    parser.add_argument(
+        "--set-missing-position",
+        action="store_true",
+        help="When GET position returns POSITION_NOT_FOUND, still try POST leverage for that contract.",
+    )
     return parser.parse_args()
 
 
@@ -243,6 +248,27 @@ def main() -> None:
         path = f"/futures/{settle}/positions/{contract}"
         status, before = private_request(api_key, api_secret, "GET", path, timeout=args.timeout)
         if status >= 300:
+            if is_position_not_found(status, before) and args.set_missing_position:
+                params = leverage_params_for(None, target, args.force_isolated)
+                print(f"\n[{idx}/{len(contracts)}]")
+                print(f"before  {contract:<14} missing position")
+                print(f"plan    {contract:<14} POST {path}/leverage?{build_query(params)}")
+                if not args.execute:
+                    continue
+                status, after = private_request(
+                    api_key,
+                    api_secret,
+                    "POST",
+                    f"{path}/leverage",
+                    params=params,
+                    timeout=args.timeout,
+                )
+                if status >= 300:
+                    failures += 1
+                    print(f"after   {contract:<14} ERR status={status} body={after}")
+                    continue
+                print_position("after", contract, after)
+                continue
             if is_position_not_found(status, before) and not args.strict_missing_position:
                 print(f"[{idx}/{len(contracts)}] {contract} skip: Gate futures position not found")
                 continue
