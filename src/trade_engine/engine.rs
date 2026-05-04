@@ -265,17 +265,21 @@ impl TradeEngine {
         let mut binance_spot_ws_endpoints: Option<Vec<WsEndpointHandle>> = None;
 
         let ws_endpoints = if exchange == Exchange::Bitget {
-            // 前置校验：账户必须升级到 UTA，否则 category=margin 的现货单会被拒
+            // 前置校验：Bitget 必须是 UTA + one-way 持仓模式；margin 路径还要求 Advanced。
+            // 这里直接 panic，避免配置错误时 trade_engine 继续运行并反复拒单。
             let bitget_precheck_creds =
                 crate::portfolio_margin::bitget_auth::BitgetCredentials::from_env().context(
                     "bitget precheck: BITGET_API_KEY/BITGET_API_SECRET/BITGET_PASSPHRASE not set",
                 )?;
             let bitget_precheck_http = reqwest::Client::new();
-            crate::trade_engine::bitget_precheck::ensure_unified_account(
+            if let Err(err) = crate::trade_engine::bitget_precheck::ensure_unified_account(
                 &bitget_precheck_http,
                 &bitget_precheck_creds,
             )
-            .await?;
+            .await
+            {
+                panic!("bitget precheck failed: {err:#}");
+            }
 
             let mut local_ips = self.local_ips.clone();
             if local_ips.is_empty() {

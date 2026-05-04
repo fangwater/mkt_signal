@@ -3,8 +3,10 @@ pub fn describe_trade_error_code(code: i32) -> Option<&'static str> {
     match code {
         0 => Some("Success"),
         25001 => Some("Operation timed out"),
+        25120 => Some("Current mode does not support leverage"),
         40015 => Some("System error, retry later"),
         40715 => Some("Order size exceeds max open size"),
+        40774 => Some("One-way position account requires one-way order type"),
         40798 => Some("Contract account balance insufficient"),
         40800 => Some("Insufficient margin amount"),
         40815 => Some("Order price above max buy price"),

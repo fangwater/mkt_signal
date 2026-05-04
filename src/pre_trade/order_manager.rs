@@ -995,11 +995,10 @@ impl Order {
     /// 更新订单状态
     pub fn update_status(&mut self, status: OrderExecutionStatus) {
         // 增加订单状态检查
-        if status == OrderExecutionStatus::Create
-            && self.status != OrderExecutionStatus::Commit {
-                //出现非正常的状态切换，打印日志
-                warn!("unexpected OrderExecutionStatus");
-            }
+        if status == OrderExecutionStatus::Create && self.status != OrderExecutionStatus::Commit {
+            //出现非正常的状态切换，打印日志
+            warn!("unexpected OrderExecutionStatus");
+        }
         self.status = status;
     }
 
@@ -1542,8 +1541,10 @@ impl Order {
                         "market"
                     }),
                 );
-                req_param.insert("force".to_string(), json!("post_only"));
-                req_param.insert("price".to_string(), json!(format_price(self.price)));
+                if self.order_type.is_limit() {
+                    req_param.insert("force".to_string(), json!("post_only"));
+                    req_param.insert("price".to_string(), json!(format_price(self.price)));
+                }
                 req_param.insert("size".to_string(), json!(format_quantity(self.quantity)));
                 req_param.insert(
                     "clientOid".to_string(),
@@ -1557,6 +1558,8 @@ impl Order {
             TradingVenue::BitgetFutures => {
                 let create_ts = get_timestamp_us();
                 let mut req_param = serde_json::Map::new();
+                // trade_engine precheck 强制 Bitget UTA futures 为 one_way_mode。
+                // one-way 模式下开/平仓由 side + reduceOnly 表达，不传 hedge-mode 的 posSide。
                 req_param.insert("category".to_string(), json!("usdt-futures"));
                 req_param.insert(
                     "symbol".to_string(),
@@ -1571,8 +1574,10 @@ impl Order {
                         "market"
                     }),
                 );
-                req_param.insert("force".to_string(), json!("post_only"));
-                req_param.insert("price".to_string(), json!(format_price(self.price)));
+                if self.order_type.is_limit() {
+                    req_param.insert("force".to_string(), json!("post_only"));
+                    req_param.insert("price".to_string(), json!(format_price(self.price)));
+                }
                 req_param.insert("size".to_string(), json!(format_quantity(self.quantity)));
                 req_param.insert(
                     "clientOid".to_string(),
@@ -1745,5 +1750,85 @@ mod tests {
             payload.get("reduce_only").and_then(Value::as_bool),
             Some(true)
         );
+    }
+
+    #[test]
+    fn bitget_futures_sell_order_serializes_one_way_fields() {
+        let order = Order::new(
+            TradingVenue::BitgetFutures,
+            77,
+            OrderType::Limit,
+            "ETHUSDT".to_string(),
+            Side::Sell,
+            0.21,
+            2363.73,
+            false,
+            1.0,
+            None,
+            true,
+        );
+
+        let bytes = order
+            .get_order_request_bytes()
+            .expect("bitget futures request should build");
+        let payload = extract_request_json(bytes.as_ref());
+
+        assert_eq!(
+            payload.get("category").and_then(Value::as_str),
+            Some("usdt-futures")
+        );
+        assert_eq!(
+            payload.get("symbol").and_then(Value::as_str),
+            Some("ETHUSDT")
+        );
+        assert_eq!(payload.get("side").and_then(Value::as_str), Some("sell"));
+        assert_eq!(
+            payload.get("orderType").and_then(Value::as_str),
+            Some("limit")
+        );
+        assert_eq!(
+            payload.get("force").and_then(Value::as_str),
+            Some("post_only")
+        );
+        assert_eq!(
+            payload.get("price").and_then(Value::as_str),
+            Some("2363.73")
+        );
+        assert_eq!(payload.get("size").and_then(Value::as_str), Some("0.21"));
+        assert_eq!(payload.get("clientOid").and_then(Value::as_str), Some("77"));
+        assert!(payload.get("reduceOnly").is_none());
+        assert!(payload.get("posSide").is_none());
+    }
+
+    #[test]
+    fn bitget_futures_reduce_only_order_serializes_reduce_only_flag() {
+        let order = Order::new(
+            TradingVenue::BitgetFutures,
+            78,
+            OrderType::Market,
+            "ETHUSDT".to_string(),
+            Side::Buy,
+            0.21,
+            0.0,
+            true,
+            1.0,
+            None,
+            true,
+        );
+
+        let bytes = order
+            .get_order_request_bytes()
+            .expect("bitget futures request should build");
+        let payload = extract_request_json(bytes.as_ref());
+
+        assert_eq!(
+            payload.get("category").and_then(Value::as_str),
+            Some("usdt-futures")
+        );
+        assert_eq!(
+            payload.get("reduceOnly").and_then(Value::as_str),
+            Some("YES")
+        );
+        assert!(payload.get("posSide").is_none());
     }
 }

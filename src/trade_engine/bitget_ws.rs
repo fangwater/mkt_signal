@@ -320,6 +320,22 @@ mod tests {
     }
 
     #[test]
+    fn preserves_bitget_reduce_only_and_does_not_add_pos_side() {
+        let msg = TradeRequestMsg {
+            req_type: TradeRequestType::BitgetNewUMOrder,
+            create_time: 0,
+            client_order_id: 123,
+            params: Bytes::from(
+                r#"{"symbol":"BTCUSDT","side":"sell","orderType":"limit","force":"post_only","size":"0.01","price":"100000","clientOid":"123","reduceOnly":"YES"}"#,
+            ),
+        };
+        let payload = build_order_payload(&msg, 999).expect("payload");
+        let val: Value = serde_json::from_str(&payload).expect("json");
+        assert_eq!(val["args"][0]["reduceOnly"], json!("YES"));
+        assert!(val["args"][0].get("posSide").is_none());
+    }
+
+    #[test]
     fn builds_bitget_um_cancel_payload_in_uta_format() {
         let msg = TradeRequestMsg {
             req_type: TradeRequestType::BitgetCancelUMOrder,
