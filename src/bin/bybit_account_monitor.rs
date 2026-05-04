@@ -273,6 +273,7 @@ fn spawn_bybit_balance_poll(
             }
         };
         let mut ticker = tokio::time::interval(Duration::from_secs(30));
+        let mut previous_borrow_symbols: HashSet<String> = HashSet::new();
         loop {
             tokio::select! {
                 _ = shutdown_rx.changed() => break,
@@ -288,13 +289,36 @@ fn spawn_bybit_balance_poll(
                     ).await {
                         Ok((status, body)) if status == 200 => {
                             if let Some(msgs) = parse_bybit_account_balance_snapshot(&body) {
+                                let mut current_borrow_symbols: HashSet<String> = HashSet::new();
                                 for payload in msgs {
+                                    if let Ok(msg) = BasicBorrowInterestMsg::from_bytes(&payload) {
+                                        current_borrow_symbols.insert(msg.symbol.clone());
+                                    }
                                     send_wrapped_payload(
                                         &evt_tx,
                                         payload,
                                         "Bybit REST balance msg",
                                     );
                                 }
+                                let mut stale_symbols: Vec<String> = previous_borrow_symbols
+                                    .difference(&current_borrow_symbols)
+                                    .cloned()
+                                    .collect();
+                                stale_symbols.sort();
+                                let ts = chrono::Utc::now().timestamp_millis();
+                                for symbol in stale_symbols {
+                                    info!(
+                                        "Bybit REST balance snapshot missing previously-seen borrow; emitting zero cleanup: symbol={}",
+                                        symbol
+                                    );
+                                    send_wrapped_payload(
+                                        &evt_tx,
+                                        BasicBorrowInterestMsg::create(ts, symbol, 0.0, 0.0)
+                                            .to_bytes(),
+                                        "Bybit REST zero borrow cleanup",
+                                    );
+                                }
+                                previous_borrow_symbols = current_borrow_symbols;
                             }
                         }
                         Ok((status, body)) => {

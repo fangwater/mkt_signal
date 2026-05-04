@@ -262,7 +262,8 @@ fn resolve_mm_hedge_price_offset_limits(
 fn is_supported_clock_aligned_interval_ms(interval_ms: u64) -> bool {
     interval_ms > 0
         && interval_ms.is_multiple_of(MM_OPEN_INTERVAL_ALIGN_MS)
-        && (CLOCK_ALIGN_BASE_MS.is_multiple_of(interval_ms) || interval_ms.is_multiple_of(CLOCK_ALIGN_BASE_MS))
+        && (CLOCK_ALIGN_BASE_MS.is_multiple_of(interval_ms)
+            || interval_ms.is_multiple_of(CLOCK_ALIGN_BASE_MS))
 }
 
 pub(crate) fn compute_next_shifted_deadline_us(

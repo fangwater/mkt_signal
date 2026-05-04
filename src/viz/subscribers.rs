@@ -112,7 +112,7 @@ fn spawn_pre_trade_exposure_listener(
         ),
         &service_name,
         move |entry: PreTradeExposureResampleEntry, hub: WsHub| {
-            let now_ts_ms = get_timestamp_us() / 1000 ;
+            let now_ts_ms = get_timestamp_us() / 1000;
             if let Ok(msg) = serde_json::to_string(&json!({
                 "type": "pre_trade_exposure",
                 "namespace": namespace_for_msg.as_str(),
@@ -153,7 +153,7 @@ fn spawn_pre_trade_risk_listener(
         ),
         &service_name,
         move |entry: PreTradeRiskResampleEntry, hub: WsHub| {
-            let now_ts_ms = get_timestamp_us() / 1000 ;
+            let now_ts_ms = get_timestamp_us() / 1000;
             if let Ok(msg) = serde_json::to_string(&json!({
                 "type": "pre_trade_risk",
                 "namespace": namespace_for_msg.as_str(),

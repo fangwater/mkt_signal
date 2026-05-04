@@ -82,13 +82,17 @@ impl BybitAccountEventParser {
                     count += 1;
                 }
 
+                let has_liability_fields = !coin_item.borrow_amount.trim().is_empty()
+                    || !coin_item.spot_borrow.trim().is_empty()
+                    || !coin_item.accrued_interest.trim().is_empty()
+                    || !coin_item.borrow_interest.trim().is_empty();
                 let borrowed = parse_f64_str(&coin_item.borrow_amount)
                     .or_else(|| parse_f64_str(&coin_item.spot_borrow))
                     .unwrap_or(0.0);
                 let interest = parse_f64_str(&coin_item.accrued_interest)
                     .or_else(|| parse_f64_str(&coin_item.borrow_interest))
                     .unwrap_or(0.0);
-                if borrowed > 0.0 || interest > 0.0 {
+                if borrowed > 0.0 || interest > 0.0 || has_liability_fields {
                     let interest_msg =
                         BasicBorrowInterestMsg::create(timestamp, coin, borrowed, interest);
                     let interest_event = BasicAccountEventMsg::create(
@@ -749,8 +753,52 @@ fn parse_boolish(value: &Value) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::basic_account_msg::split_basic_account_event;
+    use crate::common::basic_account_msg::{split_basic_account_event, BasicBorrowInterestMsg};
     use crate::strategy::trade_update::TradeUpdate;
+
+    #[test]
+    fn wallet_channel_emits_zero_borrow_when_liability_fields_are_present() {
+        let parser = BybitAccountEventParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        let wallet = Bytes::from_static(
+            br#"{
+                "topic":"wallet",
+                "creationTime":1710000000999,
+                "data":[
+                    {
+                        "updatedTime":"1710000000123",
+                        "coin":[
+                            {
+                                "coin":"USDT",
+                                "walletBalance":"1000",
+                                "borrowAmount":"0",
+                                "accruedInterest":"0"
+                            }
+                        ]
+                    }
+                ]
+            }"#,
+        );
+
+        assert_eq!(parser.parse(wallet, &tx), 2);
+
+        let wrapped_balance = rx.try_recv().expect("balance event");
+        let (event_type, scope, _) =
+            split_basic_account_event(&wrapped_balance).expect("wrapped balance");
+        assert_eq!(event_type, BasicAccountEventType::BalanceUpdate);
+        assert_eq!(scope, BasicAccountScope::BybitUnified);
+
+        let wrapped_borrow = rx.try_recv().expect("zero borrow event");
+        let (event_type, scope, payload) =
+            split_basic_account_event(&wrapped_borrow).expect("wrapped borrow");
+        assert_eq!(event_type, BasicAccountEventType::BorrowInterest);
+        assert_eq!(scope, BasicAccountScope::BybitUnified);
+        let msg = BasicBorrowInterestMsg::from_bytes(payload).expect("borrow payload");
+        assert_eq!(msg.symbol, "USDT");
+        assert_eq!(msg.borrowed, 0.0);
+        assert_eq!(msg.interest, 0.0);
+    }
 
     #[test]
     fn drops_order_when_order_link_id_is_not_i64() {

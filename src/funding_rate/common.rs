@@ -126,8 +126,7 @@ pub fn apply_open_tlen_gate_and_build_from_keys(
 // ========== 资金费率周期 ==========
 
 /// 资金费率周期类型
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum FundingRatePeriod {
     /// 1小时周期（一天24次）
     Hours1,
@@ -175,7 +174,6 @@ impl FundingRatePeriod {
         }
     }
 }
-
 
 // ========== RateFetcher Trait ==========
 
@@ -254,8 +252,7 @@ pub type SymbolPair = (String, String);
 pub type ThresholdKey = (TradingVenue, String, TradingVenue, String);
 
 /// 因子模式（MM/MT 模式通用定义）
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum FactorMode {
     /// Maker-Maker 模式
     #[default]
@@ -263,7 +260,6 @@ pub enum FactorMode {
     /// Maker-Taker 模式（对冲是 taker 方）
     MT,
 }
-
 
 /// 根据命令行 exchange 映射现货/期货交易场所
 pub fn venue_pair_for_exchange(exchange: Exchange) -> (TradingVenue, TradingVenue) {

@@ -290,6 +290,7 @@ fn spawn_bitget_balance_poll(
             }
         };
         let mut ticker = tokio::time::interval(Duration::from_secs(30));
+        let mut previous_borrow_symbols: HashSet<String> = HashSet::new();
         loop {
             tokio::select! {
                 _ = shutdown_rx.changed() => break,
@@ -300,7 +301,11 @@ fn spawn_bitget_balance_poll(
                     match bitget_rest_get_account_assets(&client, &credentials).await {
                         Ok(body) => {
                             if let Some(msgs) = parse_bitget_account_assets_snapshot(&body) {
+                                let mut current_borrow_symbols: HashSet<String> = HashSet::new();
                                 for payload in msgs {
+                                    if let Ok(msg) = BasicBorrowInterestMsg::from_bytes(&payload) {
+                                        current_borrow_symbols.insert(msg.symbol.clone());
+                                    }
                                     if let Some(wrapped) =
                                         wrap_basic_payload(BasicAccountScope::BitgetUnified, payload)
                                     {
@@ -309,6 +314,36 @@ fn spawn_bitget_balance_poll(
                                         }
                                     }
                                 }
+                                let mut stale_symbols: Vec<String> = previous_borrow_symbols
+                                    .difference(&current_borrow_symbols)
+                                    .cloned()
+                                    .collect();
+                                stale_symbols.sort();
+                                let now_ms = chrono::Utc::now().timestamp_millis();
+                                for symbol in stale_symbols {
+                                    info!(
+                                        "Bitget REST balance snapshot missing previously-seen borrow; emitting zero cleanup: symbol={}",
+                                        symbol
+                                    );
+                                    let payload = BasicBorrowInterestMsg::create(
+                                        now_ms,
+                                        symbol,
+                                        0.0,
+                                        0.0,
+                                    )
+                                    .to_bytes();
+                                    if let Some(wrapped) =
+                                        wrap_basic_payload(BasicAccountScope::BitgetUnified, payload)
+                                    {
+                                        if let Err(e) = evt_tx.send(wrapped) {
+                                            warn!(
+                                                "failed to send Bitget REST zero borrow cleanup: {}",
+                                                e
+                                            );
+                                        }
+                                    }
+                                }
+                                previous_borrow_symbols = current_borrow_symbols;
                             }
                         }
                         Err(e) => {

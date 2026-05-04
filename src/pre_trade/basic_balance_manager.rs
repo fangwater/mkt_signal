@@ -80,14 +80,7 @@ impl BasicBalanceManager {
             });
         entry.borrowed = msg.borrowed;
         // interest 字段为“当前应计利息总额”，按最新值覆盖即可。
-        match self.exchange {
-            Exchange::Okex
-            | Exchange::Binance
-            | Exchange::Gate
-            | Exchange::Hyperliquid
-            | Exchange::Bybit => entry.cumulative_interest = msg.interest,
-            _ => {}
-        }
+        entry.cumulative_interest = msg.interest;
         entry.last_timestamp = entry.last_timestamp.max(msg.timestamp);
     }
 
@@ -106,21 +99,10 @@ impl BasicBalanceManager {
     /// 获取指定币种的净余额头寸（base qty）。
     ///
     /// - Binance margin: balance 为总余额，需要扣除 borrowed 与累计 interest 才是净头寸
+    /// - Bitget UTA margin: balance 为币种余额，需要扣除 debt/borrow/interest
     /// - OKX margin/spot: balance 已经与负债轧差，直接使用 balance
-    ///
-    /// 其他交易所暂不支持，会 panic。
     pub fn balance_position_of(&self, symbol: &str) -> f64 {
-        let mapped = match self.exchange {
-            Exchange::Okex
-            | Exchange::Binance
-            | Exchange::Gate
-            | Exchange::Hyperliquid
-            | Exchange::Bybit => symbol.to_ascii_uppercase(),
-            _ => panic!(
-                "balance_position_of not implemented for {:?}",
-                self.exchange
-            ),
-        };
+        let mapped = symbol.to_ascii_uppercase();
         let entry = self
             .balances
             .get(&mapped)
@@ -132,10 +114,9 @@ impl BasicBalanceManager {
 
         match self.exchange {
             Exchange::Okex | Exchange::Gate => b.balance,
-            Exchange::Binance | Exchange::Hyperliquid | Exchange::Bybit => {
+            Exchange::Binance | Exchange::Hyperliquid | Exchange::Bitget | Exchange::Bybit => {
                 b.balance - b.borrowed - b.cumulative_interest
             }
-            _ => unreachable!(),
         }
     }
 }
@@ -168,6 +149,34 @@ mod tests {
     #[test]
     fn binance_balance_position_keeps_netting_liability() {
         let mut mgr = BasicBalanceManager::new(Exchange::Binance);
+        mgr.apply_balance(&BasicBalanceMsg::create(1, "BTC".to_string(), 5.0));
+        mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
+            1,
+            "BTC".to_string(),
+            2.0,
+            0.5,
+        ));
+
+        assert!((mgr.balance_position_of("BTC") - 2.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn bitget_balance_position_nets_liability() {
+        let mut mgr = BasicBalanceManager::new(Exchange::Bitget);
+        mgr.apply_balance(&BasicBalanceMsg::create(1, "BTC".to_string(), 5.0));
+        mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
+            1,
+            "BTC".to_string(),
+            2.0,
+            0.5,
+        ));
+
+        assert!((mgr.balance_position_of("BTC") - 2.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn bybit_balance_position_keeps_netting_liability() {
+        let mut mgr = BasicBalanceManager::new(Exchange::Bybit);
         mgr.apply_balance(&BasicBalanceMsg::create(1, "BTC".to_string(), 5.0));
         mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
             1,

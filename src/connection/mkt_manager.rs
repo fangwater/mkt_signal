@@ -728,8 +728,7 @@ impl MktManager {
                     self.start_bybit_derivatives_connections(bybit_msgs).await;
                 }
                 crate::sub_msg::ExchangePerpsSubscribeMsgs::Bitget(bitget_msgs) => {
-                    self.start_bitget_derivatives_connections(bitget_msgs)
-                        .await;
+                    self.start_bitget_derivatives_connections(bitget_msgs).await;
                 }
                 crate::sub_msg::ExchangePerpsSubscribeMsgs::Gate(gate_msgs) => {
                     self.start_gate_derivatives_connections(gate_msgs).await;

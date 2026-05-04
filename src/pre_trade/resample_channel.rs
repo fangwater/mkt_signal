@@ -127,11 +127,10 @@ fn print_exposure_table(
 
 fn usdt_net_position(exchange: Exchange, s: &UsdtBalanceSnapshot) -> f64 {
     match exchange {
-        Exchange::Okex => s.balance,
-        Exchange::Binance | Exchange::Gate | Exchange::Hyperliquid => {
+        Exchange::Okex | Exchange::Gate => s.balance,
+        Exchange::Binance | Exchange::Hyperliquid | Exchange::Bitget | Exchange::Bybit => {
             s.balance - s.borrowed - s.cumulative_interest
         }
-        _ => s.balance,
     }
 }
 
@@ -468,7 +467,7 @@ impl ResampleChannel {
     fn print_exposure_table_snapshot(&self) {
         let mon = MonitorChannel::instance();
         let price_snapshot = mon.price_table().borrow().snapshot();
-        let ts_ms = get_timestamp_us() / 1000 ;
+        let ts_ms = get_timestamp_us() / 1000;
         let (exposures, _total_equity, total_abs_exposure, _total_position, _um_unrealized_usd) =
             mon.basic_state_snapshot();
         let price_mapper = create_symbol_mapper(mon.mark_price_exchange());
@@ -526,7 +525,7 @@ impl ResampleChannel {
 
         let mon = MonitorChannel::instance();
         let price_snapshot = mon.price_table().borrow().snapshot();
-        let ts_ms = get_timestamp_us() / 1000 ;
+        let ts_ms = get_timestamp_us() / 1000;
         let exposure_price_mapper = create_symbol_mapper(mon.mark_price_exchange());
 
         let (exposures, total_equity, total_abs_exposure, total_position, um_unrealized_usd) =

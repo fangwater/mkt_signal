@@ -92,7 +92,9 @@ fn parse_i64_value(v: Option<&Value>) -> Option<i64> {
             Some(n as i64)
         } else if let Some(s) = val.as_str() {
             s.trim().parse::<i64>().ok()
-        } else { val.as_f64().map(|f| f as i64) }
+        } else {
+            val.as_f64().map(|f| f as i64)
+        }
     })
 }
 

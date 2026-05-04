@@ -104,9 +104,7 @@ pub fn load_from_redis(
         let op_key = format!("{}_{}", direction_str, operation_str);
 
         // 存入缓存
-        let symbol_map = symbols_thresholds
-            .entry(symbol.clone())
-            .or_default();
+        let symbol_map = symbols_thresholds.entry(symbol.clone()).or_default();
         let cache = symbol_map.entry(op_key).or_insert_with(ThresholdCache::new);
 
         match mode_str.to_uppercase().as_str() {

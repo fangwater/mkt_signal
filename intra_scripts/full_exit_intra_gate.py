@@ -2,7 +2,8 @@
 """Cancel Gate intra orders, then either full-exit or align futures to spot.
 
 Modes:
-  - full-exit: close the Gate unified spot leg and USDT futures leg to zero.
+  - full-exit: close the Gate unified spot leg and USDT futures leg to zero,
+    then repay Gate unified loans when residual exposure is within threshold.
   - align-futures-to-spot: leave spot unchanged and trade futures so hedge_qty
     becomes -open_qty.
 
@@ -163,7 +164,9 @@ def public_get(path: str, *, params: Optional[Dict[str, Any]] = None, timeout: i
 class ExposureRow:
     asset: str
     open_qty: Decimal
+    open_usdt: Decimal
     hedge_qty: Decimal
+    hedge_usdt: Decimal
     net_qty: Decimal
     net_usdt: Decimal
 
@@ -191,12 +194,100 @@ def fetch_snapshot(suffix: str) -> List[ExposureRow]:
                 ExposureRow(
                     asset=asset,
                     open_qty=dec(row.get("open_qty")),
+                    open_usdt=dec(row.get("open_usdt")),
                     hedge_qty=dec(row.get("hedge_qty")),
+                    hedge_usdt=dec(row.get("hedge_usdt")),
                     net_qty=dec(row.get("net_qty")),
                     net_usdt=dec(row.get("net_usdt")),
                 )
             )
     return rows
+
+
+@dataclass
+class LoanRow:
+    currency: str
+    amount: Decimal
+    category: str
+
+
+def parse_asset_csv(value: str) -> set[str]:
+    return {normalize_asset(part) for part in value.split(",") if part.strip()}
+
+
+def fetch_unified_loans(api_key: str, api_secret: str, timeout: int) -> List[LoanRow]:
+    status, data = private_request(api_key, api_secret, "GET", "/unified/loans", timeout=timeout)
+    if status >= 300:
+        raise RuntimeError(f"Gate GET /unified/loans failed: http={status} body={data}")
+    if not isinstance(data, list):
+        raise RuntimeError(f"Gate GET /unified/loans returned non-list body: {data}")
+
+    rows: List[LoanRow] = []
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        currency = normalize_asset(str(entry.get("currency") or ""))
+        amount = dec(entry.get("amount"))
+        if not currency or amount <= 0:
+            continue
+        rows.append(
+            LoanRow(
+                currency=currency,
+                amount=amount,
+                category=str(entry.get("type") or "").strip().lower(),
+            )
+        )
+    rows.sort(key=lambda row: row.currency)
+    return rows
+
+
+def select_repay_loans(
+    loans: List[LoanRow],
+    *,
+    only_asset: str,
+    skip_assets: set[str],
+    repay_assets: set[str],
+) -> List[LoanRow]:
+    selected: List[LoanRow] = []
+    for loan in loans:
+        if only_asset and loan.currency != only_asset:
+            continue
+        if loan.currency in skip_assets:
+            continue
+        if repay_assets and loan.currency not in repay_assets:
+            continue
+        selected.append(loan)
+    return selected
+
+
+def print_repay_plan(loans: List[LoanRow]) -> None:
+    print("\n[repay] Gate unified loans")
+    if not loans:
+        print("  No repayable Gate unified loans found.")
+        return
+    print(f"{'Currency':<10} {'Amount':>24} {'Category':>12}")
+    print("-" * 50)
+    for loan in loans:
+        print(f"{loan.currency:<10} {fmt_dec(loan.amount):>24} {loan.category or '--':>12}")
+
+
+def residual_repay_blockers(
+    rows: List[ExposureRow],
+    *,
+    only_asset: str,
+    skip_assets: set[str],
+    min_usdt: Decimal,
+) -> List[ExposureRow]:
+    blockers: List[ExposureRow] = []
+    for row in rows:
+        if only_asset and row.asset != only_asset:
+            continue
+        if row.asset in skip_assets:
+            continue
+        gross_usdt = abs(row.open_usdt) + abs(row.hedge_usdt)
+        if gross_usdt >= min_usdt or abs(row.net_usdt) >= min_usdt:
+            blockers.append(row)
+    return blockers
 
 
 @dataclass
@@ -485,6 +576,28 @@ def submit_futures_order(
     return ok
 
 
+def submit_unified_repay(
+    api_key: str,
+    api_secret: str,
+    loan: LoanRow,
+    *,
+    timeout: int,
+    idx: int,
+) -> bool:
+    payload: Dict[str, Any] = {
+        "currency": loan.currency,
+        "amount": fmt_dec(loan.amount),
+        "type": "repay",
+        "repaid_all": True,
+        "text": f"t-repay{int(time.time() * 1000)}{idx:02d}",
+    }
+    print(f"\n[repay] {loan.currency} amount={fmt_dec(loan.amount)} repaid_all=true")
+    status, data = private_request(api_key, api_secret, "POST", "/unified/loans", payload=payload, timeout=timeout)
+    ok = 200 <= status < 300
+    print(f"  [{'OK' if ok else 'ERR'}] status={status} {json.dumps(data, ensure_ascii=True, sort_keys=True)}")
+    return ok
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Cancel orders and close/align exposure for Gate intra arb",
@@ -512,6 +625,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--post-execute-sleep-sec", type=float, default=1.0)
     parser.add_argument("--disable-auto-borrow", action="store_true", help="do not set auto_borrow on spot orders")
     parser.add_argument("--disable-auto-repay", action="store_true", help="do not set auto_repay on spot orders")
+    parser.add_argument(
+        "--skip-repay",
+        action="store_true",
+        help="skip post-full-exit Gate unified loan repayment",
+    )
+    parser.add_argument(
+        "--repay-assets",
+        default="",
+        help="Comma-separated repayment asset allowlist; defaults to all selected assets",
+    )
+    parser.add_argument(
+        "--force-repay",
+        action="store_true",
+        help="repay even when residual gross/net exposure exceeds --min-net-usdt",
+    )
+    parser.add_argument("--post-repay-sleep-sec", type=float, default=1.0)
     return parser.parse_args()
 
 

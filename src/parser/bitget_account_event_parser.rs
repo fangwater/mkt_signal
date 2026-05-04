@@ -123,10 +123,12 @@ impl BitgetAccountEventParser {
             sent += 1;
         }
 
+        let has_liability_fields =
+            !coin_obj.borrow.trim().is_empty() || !coin_obj.debts.trim().is_empty();
         let borrowed = parse_f64_str(&coin_obj.borrow).unwrap_or(0.0);
         let debts = parse_f64_str(&coin_obj.debts).unwrap_or(0.0);
         let interest = (debts - borrowed).max(0.0);
-        if borrowed > 0.0 || interest > 0.0 {
+        if borrowed > 0.0 || interest > 0.0 || has_liability_fields {
             let interest_msg = BasicBorrowInterestMsg::create(timestamp, coin, borrowed, interest);
             let payload = interest_msg.to_bytes();
             let event = BasicAccountEventMsg::create(
@@ -575,9 +577,49 @@ fn parse_i64_str(v: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::basic_account_msg::split_basic_account_event;
+    use crate::common::basic_account_msg::{split_basic_account_event, BasicBorrowInterestMsg};
     use crate::common::bitget_account_msg::BitgetBasicOrderMsg;
     use crate::strategy::trade_update::TradeUpdate;
+
+    #[test]
+    fn account_channel_emits_zero_borrow_when_liability_fields_are_present() {
+        let parser = BitgetAccountEventParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        let account = Bytes::from_static(
+            br#"{
+                "arg":{"channel":"account","instType":"UTA"},
+                "ts":"1710000000999",
+                "data":[
+                    {
+                        "uTime":"1710000000123",
+                        "coin":[
+                            {"coin":"USDT","balance":"1000","borrow":"0","debts":"0"}
+                        ]
+                    }
+                ]
+            }"#,
+        );
+
+        let emitted = parser.parse(account, &tx);
+        assert_eq!(emitted, 2);
+
+        let wrapped_balance = rx.try_recv().expect("balance event");
+        let (event_type, scope, _) =
+            split_basic_account_event(&wrapped_balance).expect("wrapped balance");
+        assert_eq!(event_type, BasicAccountEventType::BalanceUpdate);
+        assert_eq!(scope, BasicAccountScope::BitgetUnified);
+
+        let wrapped_borrow = rx.try_recv().expect("zero borrow event");
+        let (event_type, scope, payload) =
+            split_basic_account_event(&wrapped_borrow).expect("wrapped borrow");
+        assert_eq!(event_type, BasicAccountEventType::BorrowInterest);
+        assert_eq!(scope, BasicAccountScope::BitgetUnified);
+        let msg = BasicBorrowInterestMsg::from_bytes(payload).expect("borrow payload");
+        assert_eq!(msg.symbol, "USDT");
+        assert_eq!(msg.borrowed, 0.0);
+        assert_eq!(msg.interest, 0.0);
+    }
 
     #[test]
     fn fill_channel_emits_trade_update_lite_event() {

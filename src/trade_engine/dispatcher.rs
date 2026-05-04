@@ -512,8 +512,8 @@ impl Dispatcher {
                         || status.as_u16() == 418
                         || status.as_u16() == 429
                         || !suppress_http_warn)
-                    {
-                        warn!(
+                {
+                    warn!(
                             "rest dispatch error: req_type={} req_id={:?} method={} endpoint={} account={} ip={} symbol={} status={} code={:?} msg={:?} ip_used_weight_1m={:?} order_count_1m={:?}",
                             req_type,
                             evt.req_id,
@@ -528,7 +528,7 @@ impl Dispatcher {
                             ip_used_1m,
                             acc_used_1m
                         );
-                    }
+                }
                 if !suppress_http_warn {
                     classify_http_and_log(status.as_u16(), &text);
                 }

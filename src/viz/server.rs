@@ -74,7 +74,7 @@ impl WsHub {
         };
         if let Ok(mut cache) = self.latest.lock() {
             cache.by_type.insert(msg_type.to_string(), value);
-            cache.ts_ms = get_timestamp_us() / 1000 ;
+            cache.ts_ms = get_timestamp_us() / 1000;
         }
     }
 }

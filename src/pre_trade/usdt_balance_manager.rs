@@ -45,14 +45,7 @@ impl UsdtBalanceManager {
             return;
         }
         self.state.borrowed = msg.borrowed;
-        match self.exchange {
-            Exchange::Okex
-            | Exchange::Binance
-            | Exchange::Gate
-            | Exchange::Hyperliquid
-            | Exchange::Bybit => self.state.cumulative_interest = msg.interest,
-            _ => {}
-        }
+        self.state.cumulative_interest = msg.interest;
         self.state.last_timestamp = self.state.last_timestamp.max(msg.timestamp);
     }
 
@@ -60,10 +53,9 @@ impl UsdtBalanceManager {
     pub fn net_usdt_position(&self) -> f64 {
         match self.exchange {
             Exchange::Okex | Exchange::Gate => self.state.balance,
-            Exchange::Binance | Exchange::Hyperliquid | Exchange::Bybit => {
+            Exchange::Binance | Exchange::Hyperliquid | Exchange::Bitget | Exchange::Bybit => {
                 self.state.balance - self.state.borrowed - self.state.cumulative_interest
             }
-            _ => self.state.balance,
         }
     }
 }
@@ -98,5 +90,33 @@ mod tests {
         ));
 
         assert!((mgr.net_usdt_position() + 150.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn bitget_usdt_position_nets_liability() {
+        let mut mgr = UsdtBalanceManager::new(Exchange::Bitget);
+        mgr.apply_balance(&BasicBalanceMsg::create(1, "USDT".to_string(), 100.0));
+        mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
+            1,
+            "USDT".to_string(),
+            30.0,
+            0.5,
+        ));
+
+        assert!((mgr.net_usdt_position() - 69.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn bybit_usdt_position_keeps_netting_liability() {
+        let mut mgr = UsdtBalanceManager::new(Exchange::Bybit);
+        mgr.apply_balance(&BasicBalanceMsg::create(1, "USDT".to_string(), 100.0));
+        mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
+            1,
+            "USDT".to_string(),
+            30.0,
+            0.5,
+        ));
+
+        assert!((mgr.net_usdt_position() - 69.5).abs() < 1e-12);
     }
 }

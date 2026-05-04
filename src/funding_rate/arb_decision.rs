@@ -2267,7 +2267,8 @@ fn emit_spread_arb_open_signals(
         }
     }
 
-    let _ = super::arb_emit::emit_levels_as_signals(
+    let planned_levels = plan.levels.len();
+    let sent = super::arb_emit::emit_levels_as_signals(
         &decision.runtime.signal_pub,
         SignalType::ArbOpen,
         batch_ts,
@@ -2276,8 +2277,9 @@ fn emit_spread_arb_open_signals(
     )?;
 
     log::info!(
-        "{SPREAD_ARB_SHELL_NAME}: emitted {} {:?} signal(s) to '{}' open={} hedge={} side={:?} inner={:.8} outer={:.8} vol={:.8} vol_band_scale=[{:.4},{:.4}] price_tick={:.8} qty_tick={:.8}",
-        plan.levels.len(),
+        "{SPREAD_ARB_SHELL_NAME}: emitted {}/{} {:?} signal(s) to '{}' open={} hedge={} side={:?} inner={:.8} outer={:.8} vol={:.8} vol_band_scale=[{:.4},{:.4}] price_tick={:.8} qty_tick={:.8}",
+        sent,
+        planned_levels,
         SignalType::ArbOpen,
         DEFAULT_ARBITRAGE_SIGNAL_CHANNEL,
         open_symbol,
@@ -2438,7 +2440,8 @@ fn emit_spread_arb_close_signals(
             );
         }
     }
-    let _ = super::arb_emit::emit_levels_as_signals(
+    let planned_levels = plan.levels.len();
+    let sent = super::arb_emit::emit_levels_as_signals(
         &decision.runtime.signal_pub,
         SignalType::ArbClose,
         batch_ts,
@@ -2447,8 +2450,9 @@ fn emit_spread_arb_close_signals(
     )?;
 
     log::info!(
-        "{SPREAD_ARB_SHELL_NAME}: emitted {} {:?} signal(s) to '{}' open={} hedge={} side={:?} inner={:.8} outer={:.8} vol={:.8} price_tick={:.8} qty_tick={:.8}",
-        plan.levels.len(),
+        "{SPREAD_ARB_SHELL_NAME}: emitted {}/{} {:?} signal(s) to '{}' open={} hedge={} side={:?} inner={:.8} outer={:.8} vol={:.8} price_tick={:.8} qty_tick={:.8}",
+        sent,
+        planned_levels,
         SignalType::ArbClose,
         DEFAULT_ARBITRAGE_SIGNAL_CHANNEL,
         open_symbol,
@@ -2690,7 +2694,8 @@ fn emit_funding_open_close_signals(
             );
         }
     }
-    let _ = super::arb_emit::emit_levels_as_signals(
+    let planned_levels = plan.levels.len();
+    let sent = super::arb_emit::emit_levels_as_signals(
         &decision.runtime.signal_pub,
         signal_type.clone(),
         batch_ts,
@@ -2699,8 +2704,9 @@ fn emit_funding_open_close_signals(
     )?;
 
     log::info!(
-        "{FUNDING_ARB_SHELL_NAME}: emitted {} {:?} signal(s) to '{}' open={} hedge={} side={:?} inner={:.8} outer={:.8} vol={:.8} vol_band_scale=[{:.4},{:.4}] plan_vol={:.8} price_tick={:.8} qty_tick={:.8}",
-        plan.levels.len(),
+        "{FUNDING_ARB_SHELL_NAME}: emitted {}/{} {:?} signal(s) to '{}' open={} hedge={} side={:?} inner={:.8} outer={:.8} vol={:.8} vol_band_scale=[{:.4},{:.4}] plan_vol={:.8} price_tick={:.8} qty_tick={:.8}",
+        sent,
+        planned_levels,
         signal_type,
         DEFAULT_ARBITRAGE_SIGNAL_CHANNEL,
         spot_symbol,

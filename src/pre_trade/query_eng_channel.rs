@@ -477,36 +477,28 @@ impl QueryEngChannel {
                                                     | TradingVenue::OkexMargin
                                                     | TradingVenue::GateMargin
                                                     | TradingVenue::BitgetMargin
-                                            )
-                                                && exchange_enum == open_exchange
-                                                    && scope_matches_venue(
-                                                        account_scope,
-                                                        open_venue,
-                                                    )
-                                                {
-                                                    if let Some(bal) = mc.open_balance_mgr() {
-                                                        bal.borrow_mut().apply_balance(&m);
-                                                        applied = true;
-                                                    }
+                                            ) && exchange_enum == open_exchange
+                                                && scope_matches_venue(account_scope, open_venue)
+                                            {
+                                                if let Some(bal) = mc.open_balance_mgr() {
+                                                    bal.borrow_mut().apply_balance(&m);
+                                                    applied = true;
                                                 }
+                                            }
                                             if matches!(
                                                 hedge_venue,
                                                 TradingVenue::BinanceMargin
                                                     | TradingVenue::OkexMargin
                                                     | TradingVenue::GateMargin
                                                     | TradingVenue::BitgetMargin
-                                            )
-                                                && exchange_enum == hedge_exchange
-                                                    && scope_matches_venue(
-                                                        account_scope,
-                                                        hedge_venue,
-                                                    )
-                                                {
-                                                    if let Some(bal) = mc.hedge_balance_mgr() {
-                                                        bal.borrow_mut().apply_balance(&m);
-                                                        applied = true;
-                                                    }
+                                            ) && exchange_enum == hedge_exchange
+                                                && scope_matches_venue(account_scope, hedge_venue)
+                                            {
+                                                if let Some(bal) = mc.hedge_balance_mgr() {
+                                                    bal.borrow_mut().apply_balance(&m);
+                                                    applied = true;
                                                 }
+                                            }
                                             let _ = applied;
                                         }
                                     }
@@ -525,36 +517,28 @@ impl QueryEngChannel {
                                                     | TradingVenue::OkexMargin
                                                     | TradingVenue::GateMargin
                                                     | TradingVenue::BitgetMargin
-                                            )
-                                                && exchange_enum == open_exchange
-                                                    && scope_matches_venue(
-                                                        account_scope,
-                                                        open_venue,
-                                                    )
-                                                {
-                                                    if let Some(bal) = mc.open_balance_mgr() {
-                                                        bal.borrow_mut().apply_borrow_interest(&m);
-                                                        applied = true;
-                                                    }
+                                            ) && exchange_enum == open_exchange
+                                                && scope_matches_venue(account_scope, open_venue)
+                                            {
+                                                if let Some(bal) = mc.open_balance_mgr() {
+                                                    bal.borrow_mut().apply_borrow_interest(&m);
+                                                    applied = true;
                                                 }
+                                            }
                                             if matches!(
                                                 hedge_venue,
                                                 TradingVenue::BinanceMargin
                                                     | TradingVenue::OkexMargin
                                                     | TradingVenue::GateMargin
                                                     | TradingVenue::BitgetMargin
-                                            )
-                                                && exchange_enum == hedge_exchange
-                                                    && scope_matches_venue(
-                                                        account_scope,
-                                                        hedge_venue,
-                                                    )
-                                                {
-                                                    if let Some(bal) = mc.hedge_balance_mgr() {
-                                                        bal.borrow_mut().apply_borrow_interest(&m);
-                                                        applied = true;
-                                                    }
+                                            ) && exchange_enum == hedge_exchange
+                                                && scope_matches_venue(account_scope, hedge_venue)
+                                            {
+                                                if let Some(bal) = mc.hedge_balance_mgr() {
+                                                    bal.borrow_mut().apply_borrow_interest(&m);
+                                                    applied = true;
                                                 }
+                                            }
                                             let _ = applied;
                                         }
                                     }
@@ -567,36 +551,28 @@ impl QueryEngChannel {
                                                     | TradingVenue::OkexFutures
                                                     | TradingVenue::GateFutures
                                                     | TradingVenue::BitgetFutures
-                                            )
-                                                && exchange_enum == open_exchange
-                                                    && scope_matches_venue(
-                                                        account_scope,
-                                                        open_venue,
-                                                    )
-                                                {
-                                                    if let Some((um, _)) = mc.open_um_mgr() {
-                                                        um.borrow_mut().apply_position(&m);
-                                                        applied = true;
-                                                    }
+                                            ) && exchange_enum == open_exchange
+                                                && scope_matches_venue(account_scope, open_venue)
+                                            {
+                                                if let Some((um, _)) = mc.open_um_mgr() {
+                                                    um.borrow_mut().apply_position(&m);
+                                                    applied = true;
                                                 }
+                                            }
                                             if matches!(
                                                 hedge_venue,
                                                 TradingVenue::BinanceFutures
                                                     | TradingVenue::OkexFutures
                                                     | TradingVenue::GateFutures
                                                     | TradingVenue::BitgetFutures
-                                            )
-                                                && exchange_enum == hedge_exchange
-                                                    && scope_matches_venue(
-                                                        account_scope,
-                                                        hedge_venue,
-                                                    )
-                                                {
-                                                    if let Some((um, _)) = mc.hedge_um_mgr() {
-                                                        um.borrow_mut().apply_position(&m);
-                                                        applied = true;
-                                                    }
+                                            ) && exchange_enum == hedge_exchange
+                                                && scope_matches_venue(account_scope, hedge_venue)
+                                            {
+                                                if let Some((um, _)) = mc.hedge_um_mgr() {
+                                                    um.borrow_mut().apply_position(&m);
+                                                    applied = true;
                                                 }
+                                            }
                                             let _ = applied;
                                         }
                                     }
@@ -609,36 +585,28 @@ impl QueryEngChannel {
                                                     | TradingVenue::OkexFutures
                                                     | TradingVenue::GateFutures
                                                     | TradingVenue::BitgetFutures
-                                            )
-                                                && exchange_enum == open_exchange
-                                                    && scope_matches_venue(
-                                                        account_scope,
-                                                        open_venue,
-                                                    )
-                                                {
-                                                    if let Some((um, _)) = mc.open_um_mgr() {
-                                                        um.borrow_mut().apply_unrealized_pnl(&m);
-                                                        applied = true;
-                                                    }
+                                            ) && exchange_enum == open_exchange
+                                                && scope_matches_venue(account_scope, open_venue)
+                                            {
+                                                if let Some((um, _)) = mc.open_um_mgr() {
+                                                    um.borrow_mut().apply_unrealized_pnl(&m);
+                                                    applied = true;
                                                 }
+                                            }
                                             if matches!(
                                                 hedge_venue,
                                                 TradingVenue::BinanceFutures
                                                     | TradingVenue::OkexFutures
                                                     | TradingVenue::GateFutures
                                                     | TradingVenue::BitgetFutures
-                                            )
-                                                && exchange_enum == hedge_exchange
-                                                    && scope_matches_venue(
-                                                        account_scope,
-                                                        hedge_venue,
-                                                    )
-                                                {
-                                                    if let Some((um, _)) = mc.hedge_um_mgr() {
-                                                        um.borrow_mut().apply_unrealized_pnl(&m);
-                                                        applied = true;
-                                                    }
+                                            ) && exchange_enum == hedge_exchange
+                                                && scope_matches_venue(account_scope, hedge_venue)
+                                            {
+                                                if let Some((um, _)) = mc.hedge_um_mgr() {
+                                                    um.borrow_mut().apply_unrealized_pnl(&m);
+                                                    applied = true;
                                                 }
+                                            }
                                             let _ = applied;
                                         }
                                     }
