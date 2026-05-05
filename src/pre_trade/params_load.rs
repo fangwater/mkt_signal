@@ -2,6 +2,7 @@ use anyhow::Result;
 use log::{debug, info, warn};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::common::redis_client::{RedisClient, RedisSettings};
@@ -68,6 +69,16 @@ pub struct PreTradeParamsLoader;
 thread_local! {
     static PARAMS_DATA: RefCell<PreTradeParamsData> = RefCell::new(PreTradeParamsData::default());
 }
+
+/// 应急写回 Redis 所需的运行时上下文（settings + 完整 hash key）。
+/// 在 `load_from_redis` 首次成功加载后由 OnceLock 兜底设置一次，供 `set_max_leverage_async` 使用。
+#[derive(Debug, Clone)]
+struct RedisWritebackContext {
+    settings: RedisSettings,
+    risk_params_full_key: String,
+}
+
+static REDIS_WRITEBACK: OnceLock<RedisWritebackContext> = OnceLock::new();
 
 fn risk_params_full_key(redis: &RedisSettings) -> String {
     match redis.prefix.as_deref() {
@@ -159,6 +170,11 @@ impl PreTradeParamsLoader {
         let risk_key = risk_params_full_key(redis);
         let mut raw_settings = redis.clone();
         raw_settings.prefix = None;
+        // 首次加载成功后缓存 settings + 完整 key，供后续应急写回（idempotent，set 失败忽略）。
+        let _ = REDIS_WRITEBACK.set(RedisWritebackContext {
+            settings: raw_settings.clone(),
+            risk_params_full_key: risk_key.clone(),
+        });
         let mut client = RedisClient::connect(raw_settings).await?;
         let hash_map = client.hgetall_map(&risk_key).await?;
         if hash_map.is_empty() {
@@ -445,6 +461,55 @@ impl PreTradeParamsLoader {
     /// 获取 max_leverage
     pub fn max_leverage(&self) -> f64 {
         PARAMS_DATA.with(|data| data.borrow().max_leverage)
+    }
+
+    /// 应急下调 max_leverage：立即更新本进程 thread-local 缓存（不等 60s 热加载），
+    /// 同时 spawn 一个 tokio 任务把新值写回 Redis 风控 hash。
+    /// Redis 写失败仅 warn，不影响本进程运行（下次 60s 热加载会按 Redis 实际值刷新）。
+    /// 必须在 tokio runtime 上下文里调用（pre_trade 主循环已是 LocalSet）。
+    pub fn set_max_leverage_async(&self, new_value: f64) {
+        if !new_value.is_finite() || new_value <= 0.0 {
+            warn!(
+                "set_max_leverage_async ignored non-positive value {}",
+                new_value
+            );
+            return;
+        }
+        // 1. 立即生效到本进程
+        PARAMS_DATA.with(|data| data.borrow_mut().max_leverage = new_value);
+
+        // 2. 异步写回 Redis；OnceLock 未初始化（理论上 load_from_redis 之前不应被调）说明启动序失常
+        let Some(ctx) = REDIS_WRITEBACK.get() else {
+            warn!(
+                "set_max_leverage_async: REDIS_WRITEBACK not initialized, skip redis writeback (new_value={:.1})",
+                new_value
+            );
+            return;
+        };
+        let settings = ctx.settings.clone();
+        let key = ctx.risk_params_full_key.clone();
+        let value = format!("{:.1}", new_value);
+        tokio::task::spawn_local(async move {
+            match RedisClient::connect(settings).await {
+                Ok(mut client) => {
+                    if let Err(e) = client
+                        .hset_multiple_str(&key, &[("max_leverage".to_string(), value.clone())])
+                        .await
+                    {
+                        warn!(
+                            "set_max_leverage_async redis HSET failed key={} max_leverage={} err={:#}",
+                            key, value, e
+                        );
+                    } else {
+                        info!(
+                            "set_max_leverage_async redis HSET ok key={} max_leverage={}",
+                            key, value
+                        );
+                    }
+                }
+                Err(e) => warn!("set_max_leverage_async redis connect failed: {:#}", e),
+            }
+        });
     }
 
     /// 获取 max_pending_limit_orders

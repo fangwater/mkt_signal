@@ -5,7 +5,9 @@ use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::Side;
 use crate::signal::trade_signal::TradeSignal;
 use crate::strategy::arb_hedge_strategy::{ArbHedgeSnapshot, ArbHedgeStrategy};
+use crate::strategy::arb_open_strategy::ArbOpenStrategy;
 use crate::strategy::mm_hedge_strategy::{MarketMakerHedgeStrategy, MmHedgeSnapshot};
+use crate::strategy::open_strategy_common::{OpenCancelInput, OpenStrategyCommon};
 use crate::strategy::uniform_order_helper::UniformPublishCtx;
 use crate::strategy::{
     order_update::OrderUpdate, trade_engine_response::TradeEngineResponse,
@@ -579,6 +581,48 @@ impl StrategyManager {
             price_qv,
             side,
         )
+    }
+
+    /// 按 symbol + side 查找所有 ArbOpen 策略 id（不限 price_qv）。
+    /// 51008 应急专用：用于扫出同 symbol 同 open 方向的全部挂单 strategy。
+    pub fn arb_open_strategy_ids_by_symbol_and_side(
+        &self,
+        symbol: &str,
+        side: Side,
+    ) -> Vec<i32> {
+        let symbol_norm = normalize_symbol_for_internal(symbol);
+        self.arb_open_strategy_index
+            .iter()
+            .filter(|(_, entry)| entry.symbol == symbol_norm && entry.side == side)
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    /// 应急撤单入口：给指定 ArbOpen 策略走一次 handle_open_cancel_signal_common。
+    /// 调用方需保证 strategy_id 对应 ArbOpenStrategy；不是的话返回 false。
+    pub fn cancel_arb_open_by_id(
+        &mut self,
+        strategy_id: i32,
+        cancel_side: Side,
+        cancel_reason: &'static str,
+        trigger_ts: i64,
+    ) -> bool {
+        let Some(strategy) = self.strategies.get_mut(&strategy_id) else {
+            return false;
+        };
+        let Some(arb_open) = strategy.as_any_mut().downcast_mut::<ArbOpenStrategy>() else {
+            return false;
+        };
+        arb_open.handle_open_cancel_signal_common(OpenCancelInput {
+            signal_name: "EmergencyInsufficientMargin",
+            target_strategy_id: strategy_id,
+            target_client_order_id: 0,
+            cancel_side,
+            cancel_reason,
+            trigger_ts,
+            from_key: Vec::new(),
+        });
+        true
     }
 
     pub fn arb_open_price_map_snapshot(&self) -> Vec<(OpenPriceMapKey, Vec<i32>)> {

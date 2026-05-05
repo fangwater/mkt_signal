@@ -34,6 +34,11 @@ use std::collections::{BTreeMap, HashMap};
 const ARB_HEDGE_QTY_EPS: f64 = 1e-12;
 const ARB_HEDGE_PENDING_QUERY_MIN_USDT: f64 = 25.0;
 const ARB_HEDGE_QUERY_INTERVAL_US: i64 = 1_000_000;
+/// 51008（保证金不足）应急动作的冷却时间。同一 strategy 在窗口内的连续 51008
+/// 只触发一次撤单 + 杠杆下调。避免一秒万次拒单情况下重复执行。
+const ARB_HEDGE_INSUFFICIENT_MARGIN_COOLDOWN_US: i64 = 5_000_000;
+/// 应急每次降杠杆的衰减系数：new = round(current * 0.8, 1)。
+const ARB_HEDGE_LEVERAGE_DAMPING: f64 = 0.8;
 
 /// Arb 对冲策略的只读状态快照。
 ///
@@ -79,6 +84,8 @@ pub struct ArbHedgeStrategy {
     hedge_order_expiry_wheel: BTreeMap<i64, Vec<i64>>,
     order_reconcile_state: HedgeOrderReconcileState,
     alive_flag: bool,
+    /// 上一次因 51008 触发应急动作的时间戳（us）。0 表示从未触发。
+    last_insufficient_margin_action_ts: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -119,6 +126,7 @@ impl ArbHedgeStrategy {
             hedge_order_expiry_wheel: BTreeMap::new(),
             order_reconcile_state: HedgeOrderReconcileState::default(),
             alive_flag: true,
+            last_insufficient_margin_action_ts: 0,
         }
     }
 
@@ -978,6 +986,65 @@ impl ArbHedgeStrategy {
         }
         true
     }
+
+    /// 51008 应急动作：撤同 symbol、对应 open 方向（=hedge 反向）的 open 挂单，
+    /// 并把 max_leverage 下调一档（current * 0.8 取 1 位小数）写回 Redis。
+    /// 进入这里前调用方已经做了冷却节流（5s）。
+    fn handle_insufficient_margin_emergency(&mut self, now_ts: i64, hedge_side: Option<Side>) {
+        let Some(hedge_side) = hedge_side else {
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} symbol={} INSUFFICIENT_MARGIN emergency skipped: hedge_side unknown (order missing)",
+                self.strategy_id, self.symbol
+            );
+            return;
+        };
+        // open 方向永远是 hedge 反向：long-spot/short-perp ↔ short-spot/long-perp 都自然成立。
+        let open_side = match hedge_side {
+            Side::Buy => Side::Sell,
+            Side::Sell => Side::Buy,
+        };
+
+        // 1) 撤同 symbol、同 open 方向的 open 单（最小爆破：不影响相反方向 arb 的策略）。
+        self.cancel_same_symbol_open_orders(open_side, now_ts);
+
+        // 2) 杠杆下调：current * 0.8，取 1 位小数；不设下限。
+        let loader = PreTradeParamsLoader::instance();
+        let current = loader.max_leverage();
+        let new_lev = ((current * ARB_HEDGE_LEVERAGE_DAMPING) * 10.0).round() / 10.0;
+        if new_lev > 0.0 && (new_lev - current).abs() > f64::EPSILON {
+            loader.set_max_leverage_async(new_lev);
+        }
+
+        warn!(
+            "ArbHedgeStrategy: strategy_id={} symbol={} INSUFFICIENT_MARGIN emergency triggered: hedge_side={:?} open_side={:?} leverage {:.2} -> {:.1}",
+            self.strategy_id, self.symbol, hedge_side, open_side, current, new_lev
+        );
+    }
+
+    fn cancel_same_symbol_open_orders(&mut self, open_side: Side, now_ts: i64) {
+        let strategy_mgr_handle = MonitorChannel::instance().strategy_mgr();
+        let ids: Vec<i32> = strategy_mgr_handle
+            .borrow()
+            .arb_open_strategy_ids_by_symbol_and_side(&self.symbol, open_side);
+        if ids.is_empty() {
+            debug!(
+                "ArbHedgeStrategy: strategy_id={} symbol={} no live ArbOpen with side={:?} to cancel",
+                self.strategy_id, self.symbol, open_side
+            );
+            return;
+        }
+        for sid in &ids {
+            let mut mgr = strategy_mgr_handle.borrow_mut();
+            mgr.cancel_arb_open_by_id(*sid, open_side, "insufficient_margin_emergency", now_ts);
+        }
+        info!(
+            "ArbHedgeStrategy: strategy_id={} symbol={} INSUFFICIENT_MARGIN cancel dispatched count={} side={:?}",
+            self.strategy_id,
+            self.symbol,
+            ids.len(),
+            open_side
+        );
+    }
 }
 
 impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
@@ -1052,27 +1119,42 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
         client_order_id: i64,
     ) {
         let now_ts = get_timestamp_us();
+        // 同时取出 hedge 失败那笔单的 side：51008 应急时需要据此推算 open 端方向。
         let order_snapshot = MonitorChannel::instance()
             .order_manager()
             .borrow()
             .get(client_order_id)
-            .map(|order| (order.price, order.symbol.clone()));
+            .map(|order| (order.side, order.price, order.symbol.clone()));
+        let is_insufficient_margin = response.is_insufficient_margin();
         if let Some(meta) = self.hedge_order_meta.remove(&client_order_id) {
             let release_price = order_snapshot
                 .as_ref()
-                .map(|(price, _)| *price)
+                .map(|(_, price, _)| *price)
                 .filter(|price| price.is_finite() && *price > 0.0)
                 .unwrap_or(0.0);
             self.pending_hedge_queue
                 .release(now_ts, meta.borrowed_qv, release_price);
-            self.trigger_hedge_query_after_pending_release(now_ts, "hedge_open_failed");
+            // 51008 / 51061：保证金已经被打满，立刻重发等同于扔进死循环；
+            // 走应急路径（撤同方向 open 单 + 降杠杆），并跳过普通的 trigger 重发。
+            // 1Hz period_clock 兜底保证 pending 不会永远卡住。
+            if is_insufficient_margin {
+                if now_ts.saturating_sub(self.last_insufficient_margin_action_ts)
+                    >= ARB_HEDGE_INSUFFICIENT_MARGIN_COOLDOWN_US
+                {
+                    self.last_insufficient_margin_action_ts = now_ts;
+                    let hedge_side = order_snapshot.as_ref().map(|(side, _, _)| *side);
+                    self.handle_insufficient_margin_emergency(now_ts, hedge_side);
+                }
+            } else {
+                self.trigger_hedge_query_after_pending_release(now_ts, "hedge_open_failed");
+            }
         }
         self.clear_order_query_state(client_order_id);
         if let Some(order_mgr) = MonitorChannel::try_order_manager() {
             let _ = order_mgr.borrow_mut().remove(client_order_id);
         }
         warn!(
-            "ArbHedgeStrategy: strategy_id={} hedge open failed: req_type={} status={} code={}({}) client_order_id={} symbol={}",
+            "ArbHedgeStrategy: strategy_id={} hedge open failed: req_type={} status={} code={}({}) client_order_id={} symbol={}{}",
             self.strategy_id,
             response.req_type(),
             response.status(),
@@ -1081,10 +1163,12 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
             client_order_id,
             order_snapshot
                 .as_ref()
-                .map(|(_, symbol)| symbol.as_str())
-                .unwrap_or("")
+                .map(|(_, _, symbol)| symbol.as_str())
+                .unwrap_or(""),
+            if is_insufficient_margin { " [INSUFFICIENT_MARGIN]" } else { "" }
         );
     }
+
 }
 
 impl Strategy for ArbHedgeStrategy {
