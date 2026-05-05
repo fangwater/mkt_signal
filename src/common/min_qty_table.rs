@@ -347,6 +347,7 @@ mod tests {
                         min_order_qty: Some("0.001".to_string()),
                         qty_step: Some("0.001".to_string()),
                         min_notional_value: Some("5".to_string()),
+                        ..Default::default()
                     },
                     price_filter: BybitPriceFilter {
                         tick_size: Some("0.1".to_string()),
@@ -360,6 +361,75 @@ mod tests {
             .parse_response_for_test(response, MarketType::Futures)
             .unwrap();
         assert_eq!(multipliers.get("BTCUSDT").copied(), Some(1.0));
+    }
+
+    #[test]
+    fn bybit_spot_uses_base_precision_and_min_order_amt() {
+        let provider = BybitProvider::new();
+        let response = BybitInstrumentsResponse {
+            ret_code: 0,
+            ret_msg: "OK".to_string(),
+            result: Some(BybitInstrumentsResult {
+                list: vec![BybitInstrument {
+                    symbol: "DOGEUSDT".to_string(),
+                    status: "Trading".to_string(),
+                    base_coin: "DOGE".to_string(),
+                    quote_coin: "USDT".to_string(),
+                    contract_type: "".to_string(),
+                    lot_size_filter: BybitLotSizeFilter {
+                        min_order_qty: Some("0.1".to_string()),
+                        base_precision: Some("0.1".to_string()),
+                        min_order_amt: Some("5".to_string()),
+                        ..Default::default()
+                    },
+                    price_filter: BybitPriceFilter {
+                        tick_size: Some("0.00001".to_string()),
+                    },
+                }],
+                next_page_cursor: None,
+            }),
+        };
+
+        let (entries, multipliers) = provider
+            .parse_response_for_test(response, MarketType::Margin)
+            .unwrap();
+        let entry = entries.get("DOGEUSDT").expect("spot entry present");
+        assert!((entry.step_size - 0.1).abs() < 1e-12);
+        assert!((entry.min_qty - 0.1).abs() < 1e-12);
+        assert!((entry.price_tick.unwrap() - 0.00001).abs() < 1e-12);
+        assert!((entry.min_notional.unwrap() - 5.0).abs() < 1e-12);
+        assert!(multipliers.is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "lotSizeFilter.basePrecision")]
+    fn bybit_spot_panics_when_required_field_missing() {
+        let provider = BybitProvider::new();
+        let response = BybitInstrumentsResponse {
+            ret_code: 0,
+            ret_msg: "OK".to_string(),
+            result: Some(BybitInstrumentsResult {
+                list: vec![BybitInstrument {
+                    symbol: "DOGEUSDT".to_string(),
+                    status: "Trading".to_string(),
+                    base_coin: "DOGE".to_string(),
+                    quote_coin: "USDT".to_string(),
+                    contract_type: "".to_string(),
+                    lot_size_filter: BybitLotSizeFilter {
+                        min_order_qty: Some("0.1".to_string()),
+                        // basePrecision intentionally absent → must panic
+                        min_order_amt: Some("5".to_string()),
+                        ..Default::default()
+                    },
+                    price_filter: BybitPriceFilter {
+                        tick_size: Some("0.00001".to_string()),
+                    },
+                }],
+                next_page_cursor: None,
+            }),
+        };
+
+        let _ = provider.parse_response_for_test(response, MarketType::Margin);
     }
 }
 
@@ -879,31 +949,76 @@ impl BybitProvider {
             }
 
             let symbol = inst.symbol.to_uppercase();
-            let min_qty = inst
-                .lot_size_filter
+            let lot = &inst.lot_size_filter;
+
+            // Per-market-type required-field map (panic loudly so we notice when
+            // Bybit changes the schema instead of silently degrading to step_size=0).
+            //   spot/margin (category=spot)   → basePrecision, minOrderAmt
+            //   futures   (category=linear)   → qtyStep,       minNotionalValue
+            // minOrderQty / tickSize are required on every category.
+            let (step_field_name, step_raw, notional_field_name, notional_raw) = match market_type
+            {
+                MarketType::Spot | MarketType::Margin => (
+                    "lotSizeFilter.basePrecision",
+                    lot.base_precision.as_deref(),
+                    "lotSizeFilter.minOrderAmt",
+                    lot.min_order_amt.as_deref(),
+                ),
+                MarketType::Futures => (
+                    "lotSizeFilter.qtyStep",
+                    lot.qty_step.as_deref(),
+                    "lotSizeFilter.minNotionalValue",
+                    lot.min_notional_value.as_deref(),
+                ),
+            };
+
+            let min_qty = lot
                 .min_order_qty
                 .as_deref()
                 .and_then(|v| v.parse::<f64>().ok())
-                .unwrap_or(0.0);
-            let step_size = inst
-                .lot_size_filter
-                .qty_step
-                .as_deref()
-                .and_then(|v| v.parse::<f64>().ok())
-                .unwrap_or(0.0);
-            let price_tick = inst
-                .price_filter
-                .tick_size
-                .as_deref()
-                .and_then(|v| v.parse::<f64>().ok())
-                .filter(|v| *v > 0.0);
+                .filter(|v| *v > 0.0)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "Bybit {:?} {}: required field lotSizeFilter.minOrderQty missing or unparseable (raw={:?}); exchange API may have changed",
+                        market_type, symbol, lot.min_order_qty
+                    )
+                });
 
-            let min_notional = inst
-                .lot_size_filter
-                .min_notional_value
-                .as_deref()
+            let step_size = step_raw
                 .and_then(|v| v.parse::<f64>().ok())
-                .filter(|v| *v > 0.0);
+                .filter(|v| *v > 0.0)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "Bybit {:?} {}: required field {} missing or unparseable (raw={:?}); exchange API may have changed",
+                        market_type, symbol, step_field_name, step_raw
+                    )
+                });
+
+            let price_tick = Some(
+                inst.price_filter
+                    .tick_size
+                    .as_deref()
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .filter(|v| *v > 0.0)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "Bybit {:?} {}: required field priceFilter.tickSize missing or unparseable (raw={:?}); exchange API may have changed",
+                            market_type, symbol, inst.price_filter.tick_size
+                        )
+                    }),
+            );
+
+            let min_notional = Some(
+                notional_raw
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .filter(|v| *v > 0.0)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "Bybit {:?} {}: required field {} missing or unparseable (raw={:?}); exchange API may have changed",
+                            market_type, symbol, notional_field_name, notional_raw
+                        )
+                    }),
+            );
 
             let entry = MinQtyEntry {
                 symbol: symbol.clone(),
@@ -995,6 +1110,10 @@ struct BybitLotSizeFilter {
     qty_step: Option<String>,
     #[serde(default)]
     min_notional_value: Option<String>,
+    #[serde(default)]
+    base_precision: Option<String>,
+    #[serde(default)]
+    min_order_amt: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
