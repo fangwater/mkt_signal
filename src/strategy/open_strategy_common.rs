@@ -425,7 +425,7 @@ pub trait OpenStrategyCommon {
                 _ => monitor.check_pending_limit_order(&symbol, side),
             };
             if let Err(e) = limit_check {
-                error!(
+                debug!(
                     "{}: strategy_id={} symbol={} 限价挂单数量风控检查失败: {}，标记策略为不活跃",
                     self.strategy_name(),
                     self.strategy_id(),
@@ -705,7 +705,7 @@ pub trait OpenStrategyCommon {
                             e
                         );
                     } else {
-                        info!(
+                        debug!(
                             "{}: strategy_id={} exchange={} reason=timeout 已发送开仓撤单请求 order_id={}",
                             self.strategy_name(),
                             self.strategy_id(),
@@ -869,7 +869,7 @@ pub trait OpenStrategyCommon {
                     self.open_order_state_mut().last_open_cancel_reason = Some(input.cancel_reason);
                     self.open_order_state_mut().last_cancel_trigger_ts = Some(input.trigger_ts);
                     self.schedule_cancel_query_watchdog(order.client_order_id);
-                    info!(
+                    debug!(
                         "{}: strategy_id={} exchange={} reason={} 已发送开仓撤单请求 order_id={} trigger_ts={} from_key='{}'",
                         self.strategy_name(),
                         self.strategy_id(),
