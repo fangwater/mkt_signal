@@ -135,10 +135,9 @@ impl BitgetAccountEventParser {
             sent += 1;
         }
 
-        let has_liability_fields =
-            !coin_obj.borrow.trim().is_empty()
-                || !coin_obj.debt.trim().is_empty()
-                || !coin_obj.debts.trim().is_empty();
+        let has_liability_fields = !coin_obj.borrow.trim().is_empty()
+            || !coin_obj.debt.trim().is_empty()
+            || !coin_obj.debts.trim().is_empty();
         let borrowed = parse_f64_str(&coin_obj.borrow)
             .or_else(|| parse_f64_str(&coin_obj.debt))
             .or_else(|| parse_f64_str(&coin_obj.debts))

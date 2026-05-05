@@ -1,34 +1,26 @@
-use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use parking_lot::RwLock;
-
-use crate::common::sliding_quantile::SlidingQuantileWindow;
+use crate::rolling_metrics::kll_quantile::segmented_quantiles_linear;
 
 /// 单生产者、多读者友好的定长环形缓冲，使用连续内存存储 f32 值。
 /// 内部通过自增计数 + 取模定位，写入覆盖最旧元素。
 pub struct RingBuffer {
     capacity: usize,
-    data: Vec<UnsafeCell<f32>>,
+    data: Vec<AtomicU32>,
     write_cursor: AtomicU64,
     published: AtomicU64,
-    quantile_window: RwLock<SlidingQuantileWindow>,
 }
-
-unsafe impl Send for RingBuffer {}
-unsafe impl Sync for RingBuffer {}
 
 impl RingBuffer {
     pub fn new(capacity: usize) -> Self {
         assert!(capacity > 0, "ring capacity must be positive");
         let mut data = Vec::with_capacity(capacity);
-        data.resize_with(capacity, || UnsafeCell::new(0.0));
+        data.resize_with(capacity, || AtomicU32::new(0.0_f32.to_bits()));
         Self {
             capacity,
             data,
             write_cursor: AtomicU64::new(0),
             published: AtomicU64::new(0),
-            quantile_window: RwLock::new(SlidingQuantileWindow::new(capacity, capacity)),
         }
     }
 
@@ -42,10 +34,7 @@ impl RingBuffer {
     pub fn push(&self, value: f32) {
         let pos = self.write_cursor.fetch_add(1, Ordering::Relaxed);
         let idx = (pos % self.capacity as u64) as usize;
-        unsafe {
-            *self.data[idx].get() = value;
-        }
-        let _ = self.quantile_window.write().push_f64(value as f64);
+        self.data[idx].store(value.to_bits(), Ordering::Relaxed);
         std::sync::atomic::fence(Ordering::Release);
         self.published.store(pos + 1, Ordering::Release);
     }
@@ -66,18 +55,25 @@ impl RingBuffer {
         }
         let idx = ((total - 1) % self.capacity as u64) as usize;
         std::sync::atomic::fence(Ordering::Acquire);
-        let value = unsafe { *self.data[idx].get() };
+        let value = f32::from_bits(self.data[idx].load(Ordering::Relaxed));
         Some(value)
     }
 
     pub fn quantiles_linear(&self, active_window: usize, qs: &[f32]) -> (usize, Vec<Option<f64>>) {
-        let mut window = self.quantile_window.write();
         let active_window = active_window.min(self.capacity).max(1);
-        if window.history_capacity() != self.capacity || window.active_window() != active_window {
-            window.reconfigure(self.capacity, active_window);
-        }
-        let sample_size = window.sample_size();
-        let values = window.quantiles_linear(qs);
+        let (window_len, values) = self.latest_values(active_window);
+        let (sample_size, values) = segmented_quantiles_linear(values, window_len, qs);
+        (sample_size, values)
+    }
+
+    fn latest_values(&self, active_window: usize) -> (usize, impl Iterator<Item = f64> + '_) {
+        let total = self.published.load(Ordering::Acquire) as usize;
+        let sample_size = total.min(self.capacity).min(active_window);
+        let start = total.saturating_sub(sample_size);
+        let values = (start..total).map(|pos| {
+            let idx = pos % self.capacity;
+            f32::from_bits(self.data[idx].load(Ordering::Relaxed)) as f64
+        });
         (sample_size, values)
     }
 }

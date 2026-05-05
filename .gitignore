@@ -17,6 +17,9 @@ scripts/query_okx_account_snapshot.py
 scripts/query_okx_order_history.py
 scripts/query_okx_pending_orders.py
 
+# OKX 下单时延测试（含 API key 调用，仅本地）
+scripts/test_okx_order_latency.py
+
 # Claude Code 本地配置（包含 ANTHROPIC_AUTH_TOKEN 等凭证）
 .claude/settings.json
 
