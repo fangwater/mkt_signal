@@ -52,8 +52,8 @@ impl UsdtBalanceManager {
     /// 返回 USDT 的“净头寸”（与 BasicBalanceManager::balance_position_of 语义保持一致）。
     pub fn net_usdt_position(&self) -> f64 {
         match self.exchange {
-            Exchange::Okex | Exchange::Gate => self.state.balance,
-            Exchange::Binance | Exchange::Hyperliquid | Exchange::Bitget | Exchange::Bybit => {
+            Exchange::Okex | Exchange::Gate | Exchange::Bitget => self.state.balance,
+            Exchange::Binance | Exchange::Hyperliquid | Exchange::Bybit => {
                 self.state.balance - self.state.borrowed - self.state.cumulative_interest
             }
         }
@@ -93,7 +93,7 @@ mod tests {
     }
 
     #[test]
-    fn bitget_usdt_position_nets_liability() {
+    fn bitget_usdt_position_uses_equity_directly() {
         let mut mgr = UsdtBalanceManager::new(Exchange::Bitget);
         mgr.apply_balance(&BasicBalanceMsg::create(1, "USDT".to_string(), 100.0));
         mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
@@ -103,7 +103,7 @@ mod tests {
             0.5,
         ));
 
-        assert!((mgr.net_usdt_position() - 69.5).abs() < 1e-12);
+        assert!((mgr.net_usdt_position() - 100.0).abs() < 1e-12);
     }
 
     #[test]

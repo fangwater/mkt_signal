@@ -21,6 +21,8 @@ struct BitgetAccountAssetRow {
     #[serde(default)]
     coin: String,
     #[serde(default)]
+    equity: String,
+    #[serde(default)]
     balance: String,
     #[serde(default)]
     debt: String,
@@ -52,7 +54,9 @@ pub fn parse_bitget_account_balance_snapshot(json: &str) -> Option<Vec<Bytes>> {
             continue;
         }
 
-        let balance = parse_f64(&row.balance).unwrap_or(0.0);
+        let balance = parse_f64(&row.equity)
+            .or_else(|| parse_f64(&row.balance))
+            .unwrap_or(0.0);
         out.push(BasicBalanceMsg::create(ts, coin.clone(), balance).to_bytes());
 
         let borrowed = parse_f64(&row.borrow)
@@ -83,7 +87,7 @@ mod tests {
             "code":"00000",
             "data":{
                 "assets":[
-                    {"coin":"USDT","balance":"1000","debt":"50"},
+                    {"coin":"USDT","equity":"950","balance":"1000","debt":"50"},
                     {"coin":"BTC","balance":"1.25","debt":"0"}
                 ]
             }
@@ -97,6 +101,7 @@ mod tests {
             BasicAccountEventType::BalanceUpdate as u32
         );
         assert_eq!(bal.symbol, "USDT");
+        assert!((bal.balance - 950.0).abs() < 1e-12);
 
         let borrow = BasicBorrowInterestMsg::from_bytes(&msgs[1]).expect("borrow");
         assert_eq!(

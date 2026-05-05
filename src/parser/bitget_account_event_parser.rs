@@ -30,6 +30,10 @@ struct BitgetAccountChannelRow {
     #[serde(default)]
     balance: String,
     #[serde(default)]
+    equity: String,
+    #[serde(default)]
+    debt: String,
+    #[serde(default)]
     borrow: String,
     #[serde(default)]
     debts: String,
@@ -41,6 +45,10 @@ struct BitgetAccountChannelCoin {
     coin: String,
     #[serde(default)]
     balance: String,
+    #[serde(default)]
+    equity: String,
+    #[serde(default)]
+    debt: String,
     #[serde(default)]
     borrow: String,
     #[serde(default)]
@@ -88,6 +96,8 @@ impl BitgetAccountEventParser {
                 let coin_item = BitgetAccountChannelCoin {
                     coin: account_row.margin_coin,
                     balance: account_row.balance,
+                    equity: account_row.equity,
+                    debt: account_row.debt,
                     borrow: account_row.borrow,
                     debts: account_row.debts,
                 };
@@ -111,7 +121,9 @@ impl BitgetAccountEventParser {
 
         let mut sent = 0;
 
-        let balance = parse_f64_str(&coin_obj.balance).unwrap_or(0.0);
+        let balance = parse_f64_str(&coin_obj.equity)
+            .or_else(|| parse_f64_str(&coin_obj.balance))
+            .unwrap_or(0.0);
         let balance_msg = BasicBalanceMsg::create(timestamp, coin.clone(), balance);
         let payload = balance_msg.to_bytes();
         let event = BasicAccountEventMsg::create(
@@ -124,10 +136,17 @@ impl BitgetAccountEventParser {
         }
 
         let has_liability_fields =
-            !coin_obj.borrow.trim().is_empty() || !coin_obj.debts.trim().is_empty();
-        let borrowed = parse_f64_str(&coin_obj.borrow).unwrap_or(0.0);
-        let debts = parse_f64_str(&coin_obj.debts).unwrap_or(0.0);
-        let interest = (debts - borrowed).max(0.0);
+            !coin_obj.borrow.trim().is_empty()
+                || !coin_obj.debt.trim().is_empty()
+                || !coin_obj.debts.trim().is_empty();
+        let borrowed = parse_f64_str(&coin_obj.borrow)
+            .or_else(|| parse_f64_str(&coin_obj.debt))
+            .or_else(|| parse_f64_str(&coin_obj.debts))
+            .unwrap_or(0.0);
+        let debt_total = parse_f64_str(&coin_obj.debts)
+            .or_else(|| parse_f64_str(&coin_obj.debt))
+            .unwrap_or(borrowed);
+        let interest = (debt_total - borrowed).max(0.0);
         if borrowed > 0.0 || interest > 0.0 || has_liability_fields {
             let interest_msg = BasicBorrowInterestMsg::create(timestamp, coin, borrowed, interest);
             let payload = interest_msg.to_bytes();
@@ -577,7 +596,9 @@ fn parse_i64_str(v: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::basic_account_msg::{split_basic_account_event, BasicBorrowInterestMsg};
+    use crate::common::basic_account_msg::{
+        split_basic_account_event, BasicBalanceMsg, BasicBorrowInterestMsg,
+    };
     use crate::common::bitget_account_msg::BitgetBasicOrderMsg;
     use crate::strategy::trade_update::TradeUpdate;
 
@@ -619,6 +640,39 @@ mod tests {
         assert_eq!(msg.symbol, "USDT");
         assert_eq!(msg.borrowed, 0.0);
         assert_eq!(msg.interest, 0.0);
+    }
+
+    #[test]
+    fn account_channel_prefers_equity_over_balance() {
+        let parser = BitgetAccountEventParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        let account = Bytes::from_static(
+            br#"{
+                "arg":{"channel":"account","instType":"UTA"},
+                "ts":"1710000000999",
+                "data":[
+                    {
+                        "uTime":"1710000000123",
+                        "coin":[
+                            {"coin":"SOL","equity":"-11.8","balance":"-70.8","debt":"70.8"}
+                        ]
+                    }
+                ]
+            }"#,
+        );
+
+        let emitted = parser.parse(account, &tx);
+        assert_eq!(emitted, 2);
+
+        let wrapped_balance = rx.try_recv().expect("balance event");
+        let (event_type, scope, payload) =
+            split_basic_account_event(&wrapped_balance).expect("wrapped balance");
+        assert_eq!(event_type, BasicAccountEventType::BalanceUpdate);
+        assert_eq!(scope, BasicAccountScope::BitgetUnified);
+        let msg = BasicBalanceMsg::from_bytes(payload).expect("balance payload");
+        assert_eq!(msg.symbol, "SOL");
+        assert!((msg.balance + 11.8).abs() < 1e-12);
     }
 
     #[test]

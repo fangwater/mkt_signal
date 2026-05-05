@@ -1060,7 +1060,12 @@ pub trait OpenStrategyCommon {
                     .open_order_state()
                     .last_open_cancel_reason
                     .unwrap_or("unknown");
-                info!(
+                log::log!(
+                    if cancel_reason == "spread_cancel" {
+                        log::Level::Debug
+                    } else {
+                        log::Level::Info
+                    },
                     "{}: strategy_id={} open order canceled client_order_id={} exchange_order_id={} exchange={} symbol={} reason={} side={:?} price={} filled={}/{}",
                     self.strategy_name(),
                     self.strategy_id(),

@@ -54,10 +54,10 @@
 
 ## 3) 账户与持仓字段近似
 
-### C1. 余额口径近似
-- 逻辑：余额按 `available -> equity -> balance` 优先级选取。
+### C1. 余额口径
+- 逻辑：余额按 `equity -> balance` 优先级选取。
 - 代码位置：`src/parser/bitget_account_event_parser.rs:72`
-- 影响：不同业务场景（可用、权益、总额）语义不同，当前统一映射为 `BasicBalanceMsg.balance`。
+- 影响：`equity` 为账户净权益数量，避免 `balance/locked/debt` 口径混用导致现货净值重复扣减或漏计锁定资产。
 
 ### C2. 借贷/利息口径近似
 - 逻辑：

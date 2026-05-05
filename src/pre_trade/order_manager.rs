@@ -901,7 +901,7 @@ impl OrderManager {
             self.pending_limit_order_count.remove(&symbol);
         }
 
-        info!(
+        debug!(
             "OrderManager: symbol={} pending_limit_count dec -> {}",
             symbol,
             remaining.unwrap_or(0)

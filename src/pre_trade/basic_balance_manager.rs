@@ -99,8 +99,7 @@ impl BasicBalanceManager {
     /// 获取指定币种的净余额头寸（base qty）。
     ///
     /// - Binance margin: balance 为总余额，需要扣除 borrowed 与累计 interest 才是净头寸
-    /// - Bitget UTA margin: balance 为币种余额，需要扣除 debt/borrow/interest
-    /// - OKX margin/spot: balance 已经与负债轧差，直接使用 balance
+    /// - OKX/Gate/Bitget margin/spot: balance 已经与负债轧差，直接使用 balance
     pub fn balance_position_of(&self, symbol: &str) -> f64 {
         let mapped = symbol.to_ascii_uppercase();
         let entry = self
@@ -113,8 +112,8 @@ impl BasicBalanceManager {
         };
 
         match self.exchange {
-            Exchange::Okex | Exchange::Gate => b.balance,
-            Exchange::Binance | Exchange::Hyperliquid | Exchange::Bitget | Exchange::Bybit => {
+            Exchange::Okex | Exchange::Gate | Exchange::Bitget => b.balance,
+            Exchange::Binance | Exchange::Hyperliquid | Exchange::Bybit => {
                 b.balance - b.borrowed - b.cumulative_interest
             }
         }
@@ -161,7 +160,7 @@ mod tests {
     }
 
     #[test]
-    fn bitget_balance_position_nets_liability() {
+    fn bitget_balance_position_uses_equity_directly() {
         let mut mgr = BasicBalanceManager::new(Exchange::Bitget);
         mgr.apply_balance(&BasicBalanceMsg::create(1, "BTC".to_string(), 5.0));
         mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
@@ -171,7 +170,7 @@ mod tests {
             0.5,
         ));
 
-        assert!((mgr.balance_position_of("BTC") - 2.5).abs() < 1e-12);
+        assert!((mgr.balance_position_of("BTC") - 5.0).abs() < 1e-12);
     }
 
     #[test]
