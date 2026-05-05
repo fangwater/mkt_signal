@@ -166,6 +166,21 @@ fn normalize_trade_error(
             if m.eq_ignore_ascii_case("ORDER_POC") {
                 return (gate::ORDER_POC, msg);
             }
+            // Insufficient-margin / balance class. Mapped to synthetic codes so
+            // downstream `is_insufficient_margin()` (used by ArbHedge 51008
+            // emergency path) treats Gate the same as the other venues.
+            if m.eq_ignore_ascii_case("BALANCE_NOT_ENOUGH") {
+                return (gate::BALANCE_NOT_ENOUGH, msg);
+            }
+            if m.eq_ignore_ascii_case("MARGIN_NOT_ENOUGH") {
+                return (gate::MARGIN_NOT_ENOUGH, msg);
+            }
+            if m.eq_ignore_ascii_case("POSITION_MARGIN_TOO_LOW") {
+                return (gate::POSITION_MARGIN_TOO_LOW, msg);
+            }
+            if m.eq_ignore_ascii_case("LIQUIDITY_NOT_ENOUGH") {
+                return (gate::LIQUIDITY_NOT_ENOUGH, msg);
+            }
         }
     }
 

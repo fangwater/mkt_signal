@@ -144,6 +144,9 @@ pub trait TradeEngineResponse {
     }
 
     /// OKX: insufficient margin / loanable assets.
+    /// Gate uses string labels for errors; mapping happens in
+    /// `trade_response_handle::normalize_trade_error`, which converts the
+    /// labels into the synthetic codes defined in `common::trade_error_code::gate`.
     fn is_insufficient_margin(&self) -> bool {
         match self.exchange_enum() {
             Some(Exchange::Binance) => {
@@ -157,6 +160,13 @@ pub trait TradeEngineResponse {
             Some(Exchange::Bitget) => {
                 matches!(self.error_code(), 40798 | 40800 | 43012 | 45002 | 45003)
             }
+            Some(Exchange::Gate) => matches!(
+                self.error_code(),
+                gate::BALANCE_NOT_ENOUGH
+                    | gate::MARGIN_NOT_ENOUGH
+                    | gate::POSITION_MARGIN_TOO_LOW
+                    | gate::LIQUIDITY_NOT_ENOUGH
+            ),
             _ => false,
         }
     }
