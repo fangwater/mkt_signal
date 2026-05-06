@@ -1159,6 +1159,7 @@ impl MktManager {
     {
         let global_shutdown_rx = self.global_shutdown_rx.clone();
         let local_ip = self.local_ip.clone();
+        let venue_label = self.cfg.venue.data_pub_slug();
 
         self.join_set.spawn(async move {
             let (raw_tx, mut raw_rx) = broadcast::channel(8192);
@@ -1177,7 +1178,8 @@ impl MktManager {
                     ws_subscribe_msg,
                     raw_tx,
                     ws_global_shutdown_rx,
-                    ws_local_ip
+                    ws_local_ip,
+                    venue_label,
                 ) {
                     Ok(c) => c,
                     Err(e) => {
@@ -1237,6 +1239,7 @@ impl MktManager {
     ) {
         let global_shutdown_rx = self.global_shutdown_rx.clone();
         let local_ip = self.local_ip.clone();
+        let venue_label = self.cfg.venue.data_pub_slug();
 
         self.join_set.spawn(async move {
             let (raw_tx, mut raw_rx) = broadcast::channel(8192);
@@ -1255,7 +1258,8 @@ impl MktManager {
                     ws_subscribe_msg,
                     raw_tx,
                     ws_global_shutdown_rx,
-                    ws_local_ip
+                    ws_local_ip,
+                    venue_label,
                 ) {
                     Ok(c) => c,
                     Err(e) => {

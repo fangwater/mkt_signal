@@ -585,11 +585,7 @@ impl StrategyManager {
 
     /// 按 symbol + side 查找所有 ArbOpen 策略 id（不限 price_qv）。
     /// 51008 应急专用：用于扫出同 symbol 同 open 方向的全部挂单 strategy。
-    pub fn arb_open_strategy_ids_by_symbol_and_side(
-        &self,
-        symbol: &str,
-        side: Side,
-    ) -> Vec<i32> {
+    pub fn arb_open_strategy_ids_by_symbol_and_side(&self, symbol: &str, side: Side) -> Vec<i32> {
         let symbol_norm = normalize_symbol_for_internal(symbol);
         self.arb_open_strategy_index
             .iter()

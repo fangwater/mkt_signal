@@ -4,13 +4,14 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BIN_NAME="dat_pbs"
 BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
-KNOWN_EXCHANGES=("okex" "binance" "bybit" "bitget" "gate")
+KNOWN_EXCHANGES=("okex" "binance" "bybit" "bitget" "gate" "aster")
 KNOWN_VENUES=(
   "okex-futures" "okex-margin"
   "binance-futures" "binance-margin"
   "bybit-futures" "bybit-margin"
   "bitget-futures" "bitget-margin"
   "gate-futures" "gate-margin"
+  "aster-futures" "aster-margin"
 )
 
 is_known_exchange() {
@@ -31,6 +32,7 @@ default_venues_for_exchange() {
     bybit) echo "bybit-futures bybit-margin" ;;
     bitget) echo "bitget-futures bitget-margin" ;;
     gate) echo "gate-futures gate-margin" ;;
+    aster) echo "aster-futures aster-margin" ;;
     *)
       echo ""
       return 1
@@ -71,6 +73,7 @@ Notes:
       bybit   -> bybit-futures bybit-margin
       bitget  -> bitget-futures bitget-margin
       gate    -> gate-futures gate-margin
+      aster   -> aster-futures aster-margin
   - start/stop 在单个 venue 目录中执行（按目录名推断 venue）。
 USAGE
 }

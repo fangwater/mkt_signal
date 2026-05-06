@@ -13,14 +13,16 @@ pub struct BinanceConnection {
     base_connection: MktConnection,
     delay_interval: Duration,
     ping_interval: Duration,
+    label: String, // venue 标签，用于日志（如 "binance-futures"、"aster-margin"）
 }
 
 impl BinanceConnection {
-    pub fn new(connection: MktConnection) -> Self {
+    pub fn new(connection: MktConnection, label: impl Into<String>) -> Self {
         Self {
             base_connection: connection,
             delay_interval: Duration::from_secs(5),
             ping_interval: Duration::from_secs(180),
+            label: label.into(),
         }
     }
 }
@@ -50,7 +52,7 @@ impl MktConnectionRunner for BinanceConnection {
                 }
                 // ====处理ping超时====
                 _ = time::sleep_until(ping_send_timer) => {
-                    warn!("Binance-futures: Ping timeout detected. reset connecting...");
+                    warn!("{}: Ping timeout detected. reset connecting...", self.label);
                     ws_stream.close(None).await?; // 发送 CLOSE 帧
                     break;
                 }
@@ -166,8 +168,8 @@ impl MktConnectionHandler for BinanceConnection {
             match connect_result {
                 Ok(connection) => {
                     debug!(
-                        "successfully connected to Binance Futures at {:?}",
-                        connection.connected_at
+                        "{}: successfully connected at {:?}",
+                        self.label, connection.connected_at
                     );
                     self.base_connection.connection = Some(connection);
                     self.run_connection().await?;
@@ -175,11 +177,11 @@ impl MktConnectionHandler for BinanceConnection {
                     if *self.base_connection.shutdown_rx.borrow() {
                         break Ok(());
                     } else {
-                        info!("Connection closed, reconnecting...");
+                        info!("{}: connection closed, reconnecting...", self.label);
                     }
                 }
                 Err(e) => {
-                    error!("Failed to connect to binance-futures: {:?}", e);
+                    error!("{}: failed to connect: {:?}", self.label, e);
                     time::sleep(Duration::from_secs(5)).await;
                 }
             }

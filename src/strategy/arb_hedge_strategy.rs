@@ -220,6 +220,22 @@ impl ArbHedgeStrategy {
         );
     }
 
+    fn cleanup_unsent_hedge_order_after_send_failure(
+        &mut self,
+        client_order_id: i64,
+        now_ts: i64,
+        release_price: f64,
+    ) {
+        if let Some(meta) = self.hedge_order_meta.remove(&client_order_id) {
+            self.pending_hedge_queue
+                .release(now_ts, meta.borrowed_qv, release_price);
+        }
+        self.clear_order_query_state(client_order_id);
+        if let Some(order_mgr) = MonitorChannel::try_order_manager() {
+            let _ = order_mgr.borrow_mut().remove(client_order_id);
+        }
+    }
+
     fn trigger_hedge_query_after_pending_release(
         &mut self,
         terminal_ts: i64,
@@ -566,14 +582,11 @@ impl ArbHedgeStrategy {
         if let Err(err) =
             create_and_send_order(self.strategy_id, client_order_id, "状态对冲", &symbol)
         {
-            if let Some(meta) = self.hedge_order_meta.remove(&client_order_id) {
-                self.pending_hedge_queue.release(
-                    now_ts,
-                    meta.borrowed_qv,
-                    price.max(ctx.hedging_leg.bid0),
-                );
-                self.trigger_hedge_query_after_pending_release(now_ts, "hedge_order_send_failed");
-            }
+            self.cleanup_unsent_hedge_order_after_send_failure(
+                client_order_id,
+                now_ts,
+                price.max(ctx.hedging_leg.bid0),
+            );
             warn!(
                 "ArbHedgeStrategy: strategy_id={} send ArbHedge order failed client_order_id={} symbol={} err={}",
                 self.strategy_id, client_order_id, symbol, err
@@ -1168,7 +1181,6 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
             if is_insufficient_margin { " [INSUFFICIENT_MARGIN]" } else { "" }
         );
     }
-
 }
 
 impl Strategy for ArbHedgeStrategy {
@@ -1412,7 +1424,7 @@ fn create_and_send_order(
 
 #[cfg(test)]
 mod tests {
-    use super::{ArbHedgeStrategy, ARB_HEDGE_QUERY_INTERVAL_US};
+    use super::{ArbHedgeOrderMeta, ArbHedgeStrategy, ARB_HEDGE_QUERY_INTERVAL_US};
     use crate::pre_trade::order_manager::Side;
     use crate::signal::common::TradingVenue;
     use crate::strategy::manager::{OrderTerminalRecorder, Strategy};
@@ -1451,6 +1463,42 @@ mod tests {
         assert_eq!(strategy.net_qty(), 0.75);
         assert_eq!(strategy.pending_hedge_qty(), 0.75);
         assert_eq!(strategy.due_hedge_qty(1_000), 0.75);
+    }
+
+    #[test]
+    fn send_failure_cleanup_releases_pending_without_triggering_query() {
+        let mut strategy = ArbHedgeStrategy::new(
+            1,
+            "DOGEUSDT",
+            TradingVenue::BybitMargin,
+            TradingVenue::BybitFutures,
+        );
+
+        strategy.pending_hedge_queue.put(10, 0, -5.0, 0.1147);
+        let borrowed = strategy.pending_hedge_queue.borrow(20, -2.0);
+        assert_eq!(borrowed.qv, -2.0);
+        assert_eq!(strategy.pending_hedge_qty(), -3.0);
+
+        let client_order_id = 123;
+        strategy.hedge_order_meta.insert(
+            client_order_id,
+            ArbHedgeOrderMeta {
+                signal_ts: 10,
+                from_key: Vec::new(),
+                price_offset: 0.0,
+                borrowed_qv: borrowed.qv,
+                order_base_qty: borrowed.qty,
+                expire_ts: 0,
+                next_expire_check_ts: 0,
+                cancel_requested: false,
+            },
+        );
+
+        strategy.cleanup_unsent_hedge_order_after_send_failure(client_order_id, 30, 0.1147);
+
+        assert_eq!(strategy.pending_hedge_qty(), -5.0);
+        assert!(!strategy.hedge_order_meta.contains_key(&client_order_id));
+        assert_eq!(strategy.next_query_ts_us, 0);
     }
 
     #[test]

@@ -656,6 +656,8 @@ pub trait OpenStrategyCommon {
                 self.strategy_id(),
                 err
             );
+            self.handle_open_failed_cleanup(client_order_id);
+            return None;
         } else {
             info!(
                 "✅ {}订单已发送: strategy_id={} client_order_id={}",

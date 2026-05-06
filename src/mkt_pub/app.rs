@@ -83,8 +83,14 @@ impl MktSignalApp {
         // 初始化订阅消息
         let subscribe_msgs = SubscribeMsgs::new(config).await;
 
-        // 只为期货交易所初始化衍生品订阅消息
+        // markPrice / forceOrder 是永续合约概念，spot/margin venue 即便配置 enable_derivatives 也不订阅。
         let derivatives_subscribe_msgs = if !config.data_types.enable_derivatives {
+            None
+        } else if config.venue.is_spot() {
+            info!(
+                "Skipping derivatives metrics subscriptions for spot/margin venue {}",
+                config.venue.data_pub_slug()
+            );
             None
         } else {
             info!(
