@@ -158,7 +158,10 @@ pub trait TradeEngineResponse {
                 110004 | 110006 | 110007 | 110012 | 110014 | 110044 | 110045 | 170131
             ),
             Some(Exchange::Bitget) => {
-                matches!(self.error_code(), 40798 | 40800 | 43012 | 45002 | 45003)
+                matches!(
+                    self.error_code(),
+                    25116 | 40798 | 40800 | 43012 | 45002 | 45003
+                )
             }
             Some(Exchange::Gate) => matches!(
                 self.error_code(),
@@ -314,6 +317,22 @@ mod tests {
         assert!(max_borrowable_exceeded.is_insufficient_margin());
         assert!(loanable_unavailable.is_insufficient_margin());
         assert!(collateral_cap.is_insufficient_margin());
+    }
+
+    #[test]
+    fn detects_bitget_lending_limit_as_insufficient_margin() {
+        let bitget_ex = crate::common::exchange::Exchange::Bitget as u32;
+        let lending_limit = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::BitgetNewMarginOrder as u32,
+            bitget_ex,
+            123,
+            25116,
+        );
+
+        assert!(lending_limit.is_open_request());
+        assert!(lending_limit.is_open_rejected());
+        assert!(lending_limit.is_insufficient_margin());
     }
 
     #[test]

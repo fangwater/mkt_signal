@@ -10,6 +10,7 @@ pub const SIGNAL_THROTTLE_TTL_US: i64 = 2 * 60 * 60 * 1_000_000;
 pub const SIGNAL_THROTTLE_ERROR_CODE_UM_COLLATERAL_LIMIT: i32 = 51169;
 pub const SIGNAL_THROTTLE_ERROR_CODE_MARGIN_INSUFFICIENT: i32 = -2019;
 pub const SIGNAL_THROTTLE_ERROR_CODE_MAX_BORROWABLE_EXCEEDED: i32 = 51006;
+pub const SIGNAL_THROTTLE_ERROR_CODE_BITGET_LENDING_LIMIT: i32 = 25116;
 // 51061: 借币池可借资产不足（Binance/OKX 都可能返回该 code）
 pub const SIGNAL_THROTTLE_ERROR_CODE_LOANABLE_ASSET_UNAVAILABLE: i32 = 51061;
 
@@ -63,6 +64,9 @@ pub fn is_throttle_error_code(exchange: Option<Exchange>, error_code: i32) -> bo
         }
         SIGNAL_THROTTLE_ERROR_CODE_LOANABLE_ASSET_UNAVAILABLE => {
             matches!(exchange, Some(Exchange::Binance))
+        }
+        SIGNAL_THROTTLE_ERROR_CODE_BITGET_LENDING_LIMIT => {
+            matches!(exchange, Some(Exchange::Bitget))
         }
         _ => false,
     }
@@ -226,6 +230,9 @@ mod tests {
         assert!(is_throttle_error_code(Some(Exchange::Binance), -2019));
         assert!(is_throttle_error_code(Some(Exchange::Binance), 51006));
         assert!(is_throttle_error_code(Some(Exchange::Binance), 51061));
+        assert!(is_throttle_error_code(Some(Exchange::Bitget), 25116));
+        assert!(!is_throttle_error_code(Some(Exchange::Binance), 25116));
+        assert!(!is_throttle_error_code(Some(Exchange::Okex), 25116));
         assert!(!is_throttle_error_code(Some(Exchange::Okex), 51006));
         assert!(!is_throttle_error_code(Some(Exchange::Okex), 51061));
         assert!(!is_throttle_error_code(Some(Exchange::Binance), 51168));

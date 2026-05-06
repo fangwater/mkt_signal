@@ -86,6 +86,10 @@ mod tests {
             Some("Success")
         );
         assert_eq!(
+            describe_trade_error_code(Exchange::Bitget, 25116),
+            Some("Exceeded the currency lending limit")
+        );
+        assert_eq!(
             describe_trade_error_code(Exchange::Bitget, 40015),
             Some("System error, retry later")
         );

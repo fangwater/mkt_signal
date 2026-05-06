@@ -3,6 +3,7 @@ pub fn describe_trade_error_code(code: i32) -> Option<&'static str> {
     match code {
         0 => Some("Success"),
         25001 => Some("Operation timed out"),
+        25116 => Some("Exceeded the currency lending limit"),
         25120 => Some("Current mode does not support leverage"),
         40015 => Some("System error, retry later"),
         40715 => Some("Order size exceeds max open size"),

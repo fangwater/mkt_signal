@@ -8,6 +8,7 @@ use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
 use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderManager, OrderType, Side};
 use crate::pre_trade::params_load::PreTradeParamsLoader;
+use crate::pre_trade::signal_throttle::register_signal_throttle;
 use crate::pre_trade::{QueryEngHub, TradeEngHub};
 use crate::signal::common::{OrderStatus, TradingVenue};
 use crate::strategy::manager::{OpenPriceMapEntry, OrphanHandoff, OrphanStrategyRole, Strategy};
@@ -860,11 +861,9 @@ pub trait OpenStrategyCommon {
         match order.get_order_cancel_bytes() {
             Ok(cancel_bytes) => {
                 let exchange = order.venue.trade_engine_exchange();
-                if let Err(e) = TradeEngHub::publish_order_request_for(
-                    open_order_id,
-                    exchange,
-                    &cancel_bytes,
-                ) {
+                if let Err(e) =
+                    TradeEngHub::publish_order_request_for(open_order_id, exchange, &cancel_bytes)
+                {
                     error!(
                         "{}: strategy_id={} exchange={} 发送撤单请求失败 order_id={} trigger_ts={} from_key='{}' err={}",
                         self.strategy_name(),
@@ -932,6 +931,7 @@ pub trait OpenStrategyCommon {
                     code_desc,
                     client_order_id
                 );
+                self.register_open_failure_signal_throttle(response, client_order_id);
                 self.handle_open_failed_cleanup(client_order_id);
             }
             TradeRequestKind::Cancel => {
@@ -1514,6 +1514,53 @@ pub trait OpenStrategyCommon {
             .is_some_and(|w| w.client_order_id == client_order_id)
         {
             self.set_order_query_watchdog(None);
+        }
+    }
+
+    fn register_open_failure_signal_throttle(
+        &self,
+        response: &dyn TradeEngineResponse,
+        client_order_id: i64,
+    ) {
+        if !response.is_open_rejected() || self.skip_open_position_risk_checks() {
+            return;
+        }
+
+        let order_snapshot = MonitorChannel::try_order_manager()
+            .and_then(|order_mgr| order_mgr.borrow().get(client_order_id));
+
+        let (symbol, side, reduce_only) = if let Some(order) = order_snapshot {
+            (order.symbol, Some(order.side), order.reduce_only)
+        } else {
+            (
+                self.open_state().open_symbol.clone(),
+                self.open_state().order.open_side,
+                false,
+            )
+        };
+
+        if reduce_only || symbol.trim().is_empty() {
+            return;
+        }
+        let Some(side) = side else {
+            return;
+        };
+
+        if register_signal_throttle(
+            &symbol,
+            side,
+            response.exchange_enum(),
+            response.error_code(),
+        ) {
+            info!(
+                "{}: strategy_id={} registered open signal throttle after open_failed symbol={} side={:?} code={} client_order_id={}",
+                self.strategy_name(),
+                self.strategy_id(),
+                symbol,
+                side,
+                response.error_code(),
+                client_order_id
+            );
         }
     }
 
