@@ -65,6 +65,8 @@ pub fn build_uniform_order_record(
         create_ts,
         update_ts,
         signal_ts,
+        submit_ts: order.timestamp.submit_t,
+        local_ts: order.timestamp.local_t,
         client_order_id: order.client_order_id,
         venue: order.venue as u8,
         ttype: order.order_type.to_u8(),

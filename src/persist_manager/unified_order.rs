@@ -21,6 +21,10 @@ pub struct UnifiedOrderRecord {
     pub update_ts: i64,
     /// 触发该订单的信号时间戳。
     pub signal_ts: i64,
+    /// 最近一次给 trade engine / query engine 发送请求的本地时间戳（µs）。
+    pub submit_ts: i64,
+    /// OrderUpdate / TradeUpdate / 查询回报最近一次被本地实质性接受的时间戳（µs）。
+    pub local_ts: i64,
 
     /// 客户端自定义订单 ID（幂等与追踪）。
     pub client_order_id: i64,

@@ -426,6 +426,8 @@ fn put_opt_string(buf: &mut BytesMut, value: Option<&str>) {
 /// - create_ts: i64
 /// - update_ts: i64
 /// - signal_ts: i64
+/// - submit_ts: i64
+/// - local_ts: i64
 /// - client_order_id: i64
 /// - venue: u8
 /// - ttype: u8
@@ -456,6 +458,8 @@ fn serialize_uniform_order(record: &UnifiedOrderRecord) -> Bytes {
     buf.put_i64_le(record.create_ts);
     buf.put_i64_le(record.update_ts);
     buf.put_i64_le(record.signal_ts);
+    buf.put_i64_le(record.submit_ts);
+    buf.put_i64_le(record.local_ts);
 
     buf.put_i64_le(record.client_order_id);
 
