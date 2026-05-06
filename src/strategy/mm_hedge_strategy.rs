@@ -1091,21 +1091,22 @@ impl MarketMakerHedgeStrategy {
             let exchange = order.venue.trade_engine_exchange();
             match order.get_order_request_bytes() {
                 Ok(req_bin) => {
-                    let stats = OrderRateLimiter::record(
-                        OrderRateBucket::MmHedge,
-                        plan.client_order_id,
-                        get_timestamp_us(),
-                    );
-                    debug!(
-                        "MarketMakerHedgeStrategy: strategy_id={} MM hedge order action recorded client_order_id={} count_10s={} count_1m={}",
-                        self.strategy_id, plan.client_order_id, stats.count_10s, stats.count_1m
-                    );
                     if let Err(e) = TradeEngHub::publish_order_request(exchange, &req_bin) {
                         warn!(
                             "MarketMakerHedgeStrategy: strategy_id={} send hedge order failed: exchange={} client_order_id={} err={}",
                             self.strategy_id, exchange, plan.client_order_id, e
                         );
+                        self.release_hedge_order(plan.client_order_id, "send_failed");
                     } else {
+                        let stats = OrderRateLimiter::record(
+                            OrderRateBucket::MmHedge,
+                            plan.client_order_id,
+                            get_timestamp_us(),
+                        );
+                        debug!(
+                            "MarketMakerHedgeStrategy: strategy_id={} MM hedge order action recorded client_order_id={} count_10s={} count_1m={}",
+                            self.strategy_id, plan.client_order_id, stats.count_10s, stats.count_1m
+                        );
                         debug!(
                             "MarketMakerHedgeStrategy: strategy_id={} hedge order sent: exchange={} client_order_id={} level_index={} side={:?} price={} qty={} from_key='{}'",
                             self.strategy_id,
@@ -1129,6 +1130,7 @@ impl MarketMakerHedgeStrategy {
                         "MarketMakerHedgeStrategy: strategy_id={} get hedge order bytes failed: client_order_id={} err={}",
                         self.strategy_id, plan.client_order_id, e
                     );
+                    self.release_hedge_order(plan.client_order_id, "send_build_failed");
                 }
             }
         }
