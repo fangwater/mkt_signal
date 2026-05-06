@@ -1088,7 +1088,6 @@ pub trait OpenStrategyCommon {
                 order.status = OrderExecutionStatus::Filled;
                 order.set_exchange_order_id(order_update.order_id());
                 order.cumulative_filled_quantity = effective_cumulative_filled_qty;
-                order.set_filled_time(order_update.event_time());
                 order.set_end_time(order_update.event_time());
                 debug!(
                     "{}: strategy_id={} open order filled client_order_id={} exchange_order_id={} symbol={}",
@@ -1120,7 +1119,6 @@ pub trait OpenStrategyCommon {
                 order.status = OrderExecutionStatus::Create;
                 order.set_exchange_order_id(order_update.order_id());
                 order.cumulative_filled_quantity = effective_cumulative_filled_qty;
-                order.set_filled_time(order_update.event_time());
                 debug!(
                     "{}: strategy_id={} open order partially filled client_order_id={} exchange_order_id={} symbol={}",
                     self.strategy_name(),
@@ -1282,11 +1280,9 @@ pub trait OpenStrategyCommon {
         let prev_cumulative_filled_qty = current_order.cumulative_filled_quantity;
         let prev_order_terminal = current_order.status.is_terminal();
         let cumulative_qty = trade.cumulative_filled_quantity();
-        let trade_time = trade.trade_time();
         let event_time = trade.event_time();
         let updated = order_manager.update(client_order_id, |order| {
             order.cumulative_filled_quantity = cumulative_qty;
-            order.set_filled_time(trade_time);
             order.set_exchange_order_id(trade.order_id());
             if status == OrderStatus::Filled {
                 order.status = OrderExecutionStatus::Filled;

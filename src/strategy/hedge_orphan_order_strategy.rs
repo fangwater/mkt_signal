@@ -454,7 +454,6 @@ impl Strategy for HedgeOrphanOrderStrategy {
 
         if let Some(order_mgr) = MonitorChannel::try_order_manager() {
             let cumulative_qty = trade.cumulative_filled_quantity();
-            let trade_time = trade.trade_time();
             let event_time = trade.event_time();
             let order_id = trade.order_id();
             let price = trade.price();
@@ -463,7 +462,6 @@ impl Strategy for HedgeOrphanOrderStrategy {
                 if cumulative_qty > order.cumulative_filled_quantity {
                     order.cumulative_filled_quantity = cumulative_qty;
                 }
-                order.set_filled_time(trade_time);
                 if order_id > 0 {
                     order.set_exchange_order_id(order_id);
                 }

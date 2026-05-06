@@ -875,7 +875,6 @@ impl ArbHedgeStrategy {
                 order.status = OrderExecutionStatus::Filled;
                 order.set_exchange_order_id(order_update.order_id());
                 order.cumulative_filled_quantity = effective_cumulative_filled_qty;
-                order.set_filled_time(order_update.event_time());
                 order.set_end_time(order_update.event_time());
             }
             OrderStatus::Expired | OrderStatus::ExpiredInMatch => {
@@ -888,7 +887,6 @@ impl ArbHedgeStrategy {
                 order.status = OrderExecutionStatus::Create;
                 order.set_exchange_order_id(order_update.order_id());
                 order.cumulative_filled_quantity = effective_cumulative_filled_qty;
-                order.set_filled_time(order_update.event_time());
             }
         });
         drop(order_manager);
@@ -965,7 +963,6 @@ impl ArbHedgeStrategy {
         }
         let updated = order_manager.update(client_order_id, |order| {
             order.cumulative_filled_quantity = trade.cumulative_filled_quantity();
-            order.set_filled_time(trade.trade_time());
             order.set_exchange_order_id(trade.order_id());
             if trade.price() > 0.0 {
                 order.price = trade.price();

@@ -1300,7 +1300,6 @@ impl MarketMakerHedgeStrategy {
                 order.status = OrderExecutionStatus::Filled;
                 order.set_exchange_order_id(order_update.order_id());
                 order.cumulative_filled_quantity = effective_cumulative_filled_qty;
-                order.set_filled_time(order_update.event_time());
                 order.set_end_time(order_update.event_time());
             }
             OrderStatus::Expired | OrderStatus::ExpiredInMatch => {
@@ -1313,7 +1312,6 @@ impl MarketMakerHedgeStrategy {
                 order.status = OrderExecutionStatus::Create;
                 order.set_exchange_order_id(order_update.order_id());
                 order.cumulative_filled_quantity = effective_cumulative_filled_qty;
-                order.set_filled_time(order_update.event_time());
             }
         });
         drop(order_manager);
@@ -1453,13 +1451,11 @@ impl MarketMakerHedgeStrategy {
         }
 
         let cumulative_qty = trade.cumulative_filled_quantity();
-        let trade_time = trade.trade_time();
         let event_time = trade.event_time();
         let reported_trade_price = trade.price();
 
         let updated = order_manager.update(client_order_id, |order| {
             order.cumulative_filled_quantity = cumulative_qty;
-            order.set_filled_time(trade_time);
             order.set_exchange_order_id(trade.order_id());
             if reported_trade_price > 0.0 {
                 order.price = reported_trade_price;

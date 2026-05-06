@@ -826,7 +826,6 @@ impl OrderManager {
         warn!("订单状态:     {:?}", order.status);
         warn!("提交时间:     {}", order.timestamp.submit_t);
         warn!("创建时间:     {}", order.timestamp.create_t);
-        warn!("成交时间:     {}", order.timestamp.filled_t);
         warn!("结束时间:     {}", order.timestamp.end_t);
         warn!("═══════════════════════════════════════════════════════════════");
     }
@@ -913,7 +912,6 @@ impl OrderManager {
 pub struct OrderTimeStamp {
     pub submit_t: i64, // 订单提交时间(本地时间)
     pub create_t: i64, // 交易所订单创建时间(交易所时间)
-    pub filled_t: i64, // 订单执行成功的时间（交易所时间，记录最后一次）
     pub end_t: i64,    // 交易所时间(完全成交或者被撤单的时间)
 }
 
@@ -922,7 +920,6 @@ impl OrderTimeStamp {
         OrderTimeStamp {
             submit_t: 0,
             create_t: 0,
-            filled_t: 0,
             end_t: 0,
         }
     }
@@ -1030,11 +1027,6 @@ impl Order {
     /// 设置执行时间
     pub fn set_create_time(&mut self, time: i64) {
         self.timestamp.create_t = time;
-    }
-
-    /// 设置成交时间
-    pub fn set_filled_time(&mut self, time: i64) {
-        self.timestamp.filled_t = time;
     }
 
     /// 设置结束时间
@@ -1627,7 +1619,6 @@ mod tests {
         );
         order.status = OrderExecutionStatus::Create;
         order.cumulative_filled_quantity = 0.04;
-        order.timestamp.filled_t = 1_000;
 
         let skip = OrderManager::should_skip_idempotent_trade_update(
             &order,
@@ -1658,7 +1649,6 @@ mod tests {
         );
         order.status = OrderExecutionStatus::Create;
         order.cumulative_filled_quantity = 1.0;
-        order.timestamp.filled_t = 1_000;
 
         let skip = OrderManager::should_skip_idempotent_trade_update(
             &order,
