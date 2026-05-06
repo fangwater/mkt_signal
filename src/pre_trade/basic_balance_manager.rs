@@ -98,8 +98,8 @@ impl BasicBalanceManager {
 
     /// 获取指定币种的净余额头寸（base qty）。
     ///
-    /// - Binance margin: balance 为总余额，需要扣除 borrowed 与累计 interest 才是净头寸
-    /// - OKX/Gate/Bitget margin/spot: balance 已经与负债轧差，直接使用 balance
+    /// 全交易所统一口径：BasicBalanceMsg.balance 已是净额（equity 口径，已与负债轧差），直接使用。
+    /// 调用方若需要 gross/借款分量，请单独读取 `borrowed` / `cumulative_interest`。
     pub fn balance_position_of(&self, symbol: &str) -> f64 {
         let mapped = symbol.to_ascii_uppercase();
         let entry = self
@@ -107,16 +107,7 @@ impl BasicBalanceManager {
             .get(&mapped)
             .or_else(|| self.balances.get(symbol));
 
-        let Some(b) = entry else {
-            return 0.0;
-        };
-
-        match self.exchange {
-            Exchange::Okex | Exchange::Gate | Exchange::Bitget => b.balance,
-            Exchange::Binance | Exchange::Hyperliquid | Exchange::Bybit => {
-                b.balance - b.borrowed - b.cumulative_interest
-            }
-        }
+        entry.map(|b| b.balance).unwrap_or(0.0)
     }
 }
 
@@ -146,7 +137,7 @@ mod tests {
     }
 
     #[test]
-    fn binance_balance_position_keeps_netting_liability() {
+    fn binance_balance_position_uses_equity_directly() {
         let mut mgr = BasicBalanceManager::new(Exchange::Binance);
         mgr.apply_balance(&BasicBalanceMsg::create(1, "BTC".to_string(), 5.0));
         mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
@@ -156,7 +147,7 @@ mod tests {
             0.5,
         ));
 
-        assert!((mgr.balance_position_of("BTC") - 2.5).abs() < 1e-12);
+        assert!((mgr.balance_position_of("BTC") - 5.0).abs() < 1e-12);
     }
 
     #[test]
@@ -174,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn bybit_balance_position_keeps_netting_liability() {
+    fn bybit_balance_position_uses_equity_directly() {
         let mut mgr = BasicBalanceManager::new(Exchange::Bybit);
         mgr.apply_balance(&BasicBalanceMsg::create(1, "BTC".to_string(), 5.0));
         mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
@@ -184,6 +175,6 @@ mod tests {
             0.5,
         ));
 
-        assert!((mgr.balance_position_of("BTC") - 2.5).abs() < 1e-12);
+        assert!((mgr.balance_position_of("BTC") - 5.0).abs() < 1e-12);
     }
 }

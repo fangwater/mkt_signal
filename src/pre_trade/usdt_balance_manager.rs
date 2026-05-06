@@ -50,13 +50,10 @@ impl UsdtBalanceManager {
     }
 
     /// 返回 USDT 的“净头寸”（与 BasicBalanceManager::balance_position_of 语义保持一致）。
+    ///
+    /// 全交易所统一口径：上游 BasicBalanceMsg.balance 已是净额（已与负债轧差），直接使用。
     pub fn net_usdt_position(&self) -> f64 {
-        match self.exchange {
-            Exchange::Okex | Exchange::Gate | Exchange::Bitget => self.state.balance,
-            Exchange::Binance | Exchange::Hyperliquid | Exchange::Bybit => {
-                self.state.balance - self.state.borrowed - self.state.cumulative_interest
-            }
-        }
+        self.state.balance
     }
 }
 
@@ -79,7 +76,7 @@ mod tests {
     }
 
     #[test]
-    fn binance_usdt_position_keeps_netting_liability() {
+    fn binance_usdt_position_uses_equity_directly() {
         let mut mgr = UsdtBalanceManager::new(Exchange::Binance);
         mgr.apply_balance(&BasicBalanceMsg::create(1, "USDT".to_string(), -100.0));
         mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
@@ -89,7 +86,7 @@ mod tests {
             0.0,
         ));
 
-        assert!((mgr.net_usdt_position() + 150.0).abs() < 1e-12);
+        assert!((mgr.net_usdt_position() + 100.0).abs() < 1e-12);
     }
 
     #[test]
@@ -107,7 +104,7 @@ mod tests {
     }
 
     #[test]
-    fn bybit_usdt_position_keeps_netting_liability() {
+    fn bybit_usdt_position_uses_equity_directly() {
         let mut mgr = UsdtBalanceManager::new(Exchange::Bybit);
         mgr.apply_balance(&BasicBalanceMsg::create(1, "USDT".to_string(), 100.0));
         mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
@@ -117,6 +114,6 @@ mod tests {
             0.5,
         ));
 
-        assert!((mgr.net_usdt_position() - 69.5).abs() < 1e-12);
+        assert!((mgr.net_usdt_position() - 100.0).abs() < 1e-12);
     }
 }

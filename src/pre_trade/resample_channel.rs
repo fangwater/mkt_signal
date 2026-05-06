@@ -125,15 +125,6 @@ fn print_exposure_table(
     println!("{top_rule}");
 }
 
-fn usdt_net_position(exchange: Exchange, s: &UsdtBalanceSnapshot) -> f64 {
-    match exchange {
-        Exchange::Okex | Exchange::Gate | Exchange::Bitget => s.balance,
-        Exchange::Binance | Exchange::Hyperliquid | Exchange::Bybit => {
-            s.balance - s.borrowed - s.cumulative_interest
-        }
-    }
-}
-
 fn sum_position_usd(
     exchange: Exchange,
     balance_mgrs: &[&BasicBalanceManager],
@@ -267,7 +258,7 @@ fn compute_leg_risk_entry(
 
     if include_usdt_scope {
         if let Some(snapshot) = mon.usdt_snapshot_for_venue(venue) {
-            total_equity += usdt_net_position(exchange, &snapshot);
+            total_equity += snapshot.balance;
             borrowed_usd += snapshot.borrowed;
             interest_usd += snapshot.cumulative_interest;
         }
@@ -304,8 +295,8 @@ fn print_usdt_summary(open_venue: TradingVenue, hedge_venue: TradingVenue, mon: 
     let hedge_snap = mon.usdt_snapshot_for_venue(hedge_venue).unwrap_or_default();
 
     let fmt_u = |v: f64| format!("{:.2}", v);
-    let open_net = usdt_net_position(open_ex, &open_snap);
-    let hedge_net = usdt_net_position(hedge_ex, &hedge_snap);
+    let open_net = open_snap.balance;
+    let hedge_net = hedge_snap.balance;
 
     let (total_balance, total_borrowed, total_interest, total_net) = if open_ex == hedge_ex {
         (
