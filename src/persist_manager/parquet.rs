@@ -482,6 +482,7 @@ fn decode_order_record(bytes: &[u8]) -> Result<DecodedOrderRecord> {
 }
 
 fn decode_uniform_order_record(bytes: &[u8]) -> Result<DecodedUniformOrderRecord> {
+    let total_len = bytes.len();
     let mut cursor = Bytes::copy_from_slice(bytes);
     let recv_ts_us = read_i64(&mut cursor, "uniform order recv_ts_us")?;
 
@@ -491,9 +492,32 @@ fn decode_uniform_order_record(bytes: &[u8]) -> Result<DecodedUniformOrderRecord
     let create_ts = read_i64(&mut cursor, "uniform order create_ts")?;
     let update_ts = read_i64(&mut cursor, "uniform order update_ts")?;
     let signal_ts = read_i64(&mut cursor, "uniform order signal_ts")?;
-    let submit_ts = read_i64(&mut cursor, "uniform order submit_ts")?;
-    let local_ts = read_i64(&mut cursor, "uniform order local_ts")?;
-    let mkt_ts = read_i64(&mut cursor, "uniform order mkt_ts")?;
+
+    // 兼容 v1（无 submit_ts/local_ts/mkt_ts）和 v2（含三个 ts）的两种 payload。
+    // 用 length 判断：v2 layout 下 from_key_len 的 u32 位置在 102 + symbol_len，
+    // 若读出来再加上自身的 4 字节加 fk_len 恰好等于 total_len，认为是 v2，
+    // 否则按 v1 处理（三个 ts 补 0）。
+    let v2_fk_len_pos = 34 + symbol_len + 68;
+    let is_v2 = if v2_fk_len_pos + 4 <= total_len {
+        let fk_candidate = u32::from_le_bytes(
+            bytes[v2_fk_len_pos..v2_fk_len_pos + 4]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        v2_fk_len_pos + 4 + fk_candidate == total_len
+    } else {
+        false
+    };
+
+    let (submit_ts, local_ts, mkt_ts) = if is_v2 {
+        (
+            read_i64(&mut cursor, "uniform order submit_ts")?,
+            read_i64(&mut cursor, "uniform order local_ts")?,
+            read_i64(&mut cursor, "uniform order mkt_ts")?,
+        )
+    } else {
+        (0, 0, 0)
+    };
 
     let client_order_id = read_i64(&mut cursor, "uniform order client_order_id")?;
 
