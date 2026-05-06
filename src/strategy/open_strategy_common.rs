@@ -226,7 +226,9 @@ pub trait OpenStrategyCommon {
                         stats.count_1m
                     );
                 }
-                if let Err(e) = TradeEngHub::publish_order_request(exchange, &req_bin) {
+                if let Err(e) =
+                    TradeEngHub::publish_order_request_for(client_order_id, exchange, &req_bin)
+                {
                     self.open_state_mut().alive = false;
                     return Err(format!(
                         "publish order request failed: symbol={} exchange={} err={}",
@@ -618,7 +620,6 @@ pub trait OpenStrategyCommon {
         let client_order_id = Self::compose_order_id(self.strategy_id());
         self.open_order_state_mut().open_order_id = client_order_id;
 
-        let submit_ts = get_timestamp_us();
         MonitorChannel::instance()
             .order_manager()
             .borrow_mut()
@@ -632,7 +633,6 @@ pub trait OpenStrategyCommon {
                 order_price,
                 input.reduce_only,
                 qty_multiplier,
-                submit_ts,
             );
 
         info!(
@@ -698,7 +698,11 @@ pub trait OpenStrategyCommon {
             match order.get_order_cancel_bytes() {
                 Ok(cancel_bytes) => {
                     let exchange = order.venue.trade_engine_exchange();
-                    if let Err(e) = TradeEngHub::publish_order_request(exchange, &cancel_bytes) {
+                    if let Err(e) = TradeEngHub::publish_order_request_for(
+                        client_order_id,
+                        exchange,
+                        &cancel_bytes,
+                    ) {
                         info!(
                             "{}: strategy_id={} exchange={} 发送开仓撤单请求失败: {}",
                             self.strategy_name(),
@@ -856,7 +860,11 @@ pub trait OpenStrategyCommon {
         match order.get_order_cancel_bytes() {
             Ok(cancel_bytes) => {
                 let exchange = order.venue.trade_engine_exchange();
-                if let Err(e) = TradeEngHub::publish_order_request(exchange, &cancel_bytes) {
+                if let Err(e) = TradeEngHub::publish_order_request_for(
+                    open_order_id,
+                    exchange,
+                    &cancel_bytes,
+                ) {
                     error!(
                         "{}: strategy_id={} exchange={} 发送撤单请求失败 order_id={} trigger_ts={} from_key='{}' err={}",
                         self.strategy_name(),
@@ -1621,8 +1629,11 @@ pub trait OpenStrategyCommon {
 
         match build_order_query_request(&order, client_order_id, client_order_id) {
             Ok((exchange, req_bytes)) => {
-                if let Err(err) = QueryEngHub::publish_query_request(exchange.as_str(), &req_bytes)
-                {
+                if let Err(err) = QueryEngHub::publish_query_request_for(
+                    client_order_id,
+                    exchange.as_str(),
+                    &req_bytes,
+                ) {
                     warn!(
                         "{}: strategy_id={} publish order query failed: exchange={} client_order_id={} reason={:?} err={:#}",
                         self.strategy_name(),

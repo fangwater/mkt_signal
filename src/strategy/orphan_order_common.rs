@@ -142,8 +142,11 @@ impl OrphanOrderTracker {
         let request_query_id = client_order_id;
         match build_order_query_request(&order, request_query_id, client_order_id) {
             Ok((exchange, req_bytes)) => {
-                if let Err(err) = QueryEngHub::publish_query_request(exchange.as_str(), &req_bytes)
-                {
+                if let Err(err) = QueryEngHub::publish_query_request_for(
+                    client_order_id,
+                    exchange.as_str(),
+                    &req_bytes,
+                ) {
                     warn!(
                         "{}: strategy_id={} publish query failed client_order_id={} request_query_id={} err={:#}",
                         strategy_role, strategy_id, client_order_id, request_query_id, err
@@ -449,7 +452,7 @@ impl OrphanOrderTracker {
         };
         drop(order);
 
-        match TradeEngHub::publish_order_request(exchange, &cancel_bytes) {
+        match TradeEngHub::publish_order_request_for(client_order_id, exchange, &cancel_bytes) {
             Ok(()) => {
                 warn!(
                     "{}: strategy_id={} sent cancel client_order_id={} order_id={} symbol={} venue={:?} x={:?} X={:?}",

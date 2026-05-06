@@ -351,8 +351,11 @@ pub trait HedgeOrderReconcileCommon: Strategy {
         let query_by_exchange_order_id = order.exchange_order_id.is_some_and(|id| id > 0);
         match build_order_query_request(&order, client_order_id, client_order_id) {
             Ok((exchange, req_bytes)) => {
-                if let Err(err) = QueryEngHub::publish_query_request(exchange.as_str(), &req_bytes)
-                {
+                if let Err(err) = QueryEngHub::publish_query_request_for(
+                    client_order_id,
+                    exchange.as_str(),
+                    &req_bytes,
+                ) {
                     warn!(
                         "{}: strategy_id={} publish order query failed: exchange={} client_order_id={} reason={:?} err={:#}",
                         self.hedge_reconcile_strategy_name(),

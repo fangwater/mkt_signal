@@ -843,7 +843,9 @@ impl MarketMakerHedgeStrategy {
             );
             match order.get_order_cancel_bytes() {
                 Ok(req_bin) => {
-                    if let Err(e) = TradeEngHub::publish_order_request(exchange, &req_bin) {
+                    if let Err(e) =
+                        TradeEngHub::publish_order_request_for(*order_id, exchange, &req_bin)
+                    {
                         warn!(
                             "MarketMakerHedgeStrategy: strategy_id={} cancel hedge order failed: exchange={} client_order_id={} err={}",
                             self.strategy_id, exchange, order_id, e
@@ -1057,7 +1059,6 @@ impl MarketMakerHedgeStrategy {
                 }
             }
 
-            let submit_ts = now_us;
             MonitorChannel::instance()
                 .order_manager()
                 .borrow_mut()
@@ -1071,7 +1072,6 @@ impl MarketMakerHedgeStrategy {
                     plan.price,
                     false,
                     1.0,
-                    submit_ts,
                     false,
                 );
             self.hedge_order_ids.insert(plan.client_order_id);
@@ -1091,7 +1091,11 @@ impl MarketMakerHedgeStrategy {
             let exchange = order.venue.trade_engine_exchange();
             match order.get_order_request_bytes() {
                 Ok(req_bin) => {
-                    if let Err(e) = TradeEngHub::publish_order_request(exchange, &req_bin) {
+                    if let Err(e) = TradeEngHub::publish_order_request_for(
+                        plan.client_order_id,
+                        exchange,
+                        &req_bin,
+                    ) {
                         warn!(
                             "MarketMakerHedgeStrategy: strategy_id={} send hedge order failed: exchange={} client_order_id={} err={}",
                             self.strategy_id, exchange, plan.client_order_id, e

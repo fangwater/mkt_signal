@@ -547,7 +547,6 @@ impl ArbHedgeStrategy {
                 price,
                 false,
                 qty_multiplier,
-                now_ts,
             );
         self.hedge_order_meta.insert(
             client_order_id,
@@ -743,7 +742,9 @@ impl ArbHedgeStrategy {
         let exchange = order.venue.trade_engine_exchange();
         match order.get_order_cancel_bytes() {
             Ok(req_bin) => {
-                if let Err(err) = TradeEngHub::publish_order_request(exchange, &req_bin) {
+                if let Err(err) =
+                    TradeEngHub::publish_order_request_for(client_order_id, exchange, &req_bin)
+                {
                     warn!(
                         "ArbHedgeStrategy: strategy_id={} expired hedge cancel publish failed, handoff orphan client_order_id={} symbol={} exchange={} err={}",
                         self.strategy_id,
@@ -1387,7 +1388,9 @@ fn create_and_send_order(
                     );
                     return Err(format!("对冲下单频率风控触发: {}", e));
                 }
-                if let Err(e) = TradeEngHub::publish_order_request(exchange, &req_bin) {
+                if let Err(e) =
+                    TradeEngHub::publish_order_request_for(client_order_id, exchange, &req_bin)
+                {
                     error!(
                         "ArbHedgeStrategy: strategy_id={} symbol={} exchange={} 推送{}订单失败: {}",
                         strategy_id, symbol, exchange, order_type_str, e

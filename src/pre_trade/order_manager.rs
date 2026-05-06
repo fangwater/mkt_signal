@@ -663,7 +663,6 @@ impl OrderManager {
         price: f64,
         reduce_only: bool,
         qty_multiplier: f64,
-        sumbit_ts_local: i64,
     ) -> i64 {
         self.create_order_with_pending_limit_flag(
             venue,
@@ -675,7 +674,6 @@ impl OrderManager {
             price,
             reduce_only,
             qty_multiplier,
-            sumbit_ts_local,
             true,
         )
     }
@@ -691,7 +689,6 @@ impl OrderManager {
         price: f64,
         reduce_only: bool,
         qty_multiplier: f64,
-        sumbit_ts_local: i64,
         count_pending_limit: bool,
     ) -> i64 {
         let qty_multiplier = if qty_multiplier.is_finite() && qty_multiplier > 0.0 {
@@ -707,7 +704,7 @@ impl OrderManager {
             1.0
         };
         let symbol = normalize_symbol_for_internal(&symbol);
-        let mut order = Order::new(
+        let order = Order::new(
             venue,
             id,
             order_type,
@@ -720,7 +717,6 @@ impl OrderManager {
             self.binance_account_mode,
             count_pending_limit,
         );
-        order.set_submit_time(sumbit_ts_local);
         self.insert(order);
         id
     }
@@ -910,7 +906,7 @@ impl OrderManager {
 
 #[derive(Debug, Clone)]
 pub struct OrderTimeStamp {
-    pub submit_t: i64, // 订单提交时间(本地时间)
+    pub submit_t: i64, // 最近一次给 trade engine / query engine 发送请求的本地时间(µs)
     pub create_t: i64, // 交易所订单创建时间(交易所时间)
     pub end_t: i64,    // 交易所时间(完全成交或者被撤单的时间)
 }
@@ -1019,7 +1015,7 @@ impl Order {
         }
     }
 
-    /// 设置提交时间
+    /// 设置最近一次给 trade engine / query engine 发送请求的时间（每次 send 都覆写）
     pub fn set_submit_time(&mut self, time: i64) {
         self.timestamp.submit_t = time;
     }

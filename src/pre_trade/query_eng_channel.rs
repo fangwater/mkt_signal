@@ -16,6 +16,7 @@ use crate::common::basic_account_msg::{
 use crate::common::exchange::Exchange;
 use crate::common::iceoryx_publisher::{QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD};
 use crate::common::ipc_service_name::build_service_name;
+use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::OrderExecutionStatus;
 use crate::pre_trade::response_reconcile::apply_query_response_as_updates;
@@ -126,6 +127,24 @@ impl QueryEngHub {
 
     pub fn publish_query_request(exchange: &str, bytes: &Bytes) -> Result<()> {
         Self::with(|hub| hub.publish_to_exchange(exchange, bytes))
+    }
+
+    /// 发布 query 请求并同步刷新对应订单的最近一次发送时间戳（submit_t）。
+    ///
+    /// 调用方在 strategy 层有 `client_order_id` 时统一走该 helper：先把 OrderManager
+    /// 中对应订单的 `submit_t` 覆写为当前本地时间（µs），随后通过 iceoryx 发布请求。
+    pub fn publish_query_request_for(
+        client_order_id: i64,
+        exchange: &str,
+        bytes: &Bytes,
+    ) -> Result<()> {
+        let now = get_timestamp_us();
+        if let Some(om) = MonitorChannel::try_order_manager() {
+            om.borrow_mut().update(client_order_id, |order| {
+                order.set_submit_time(now);
+            });
+        }
+        Self::publish_query_request(exchange, bytes)
     }
 
     fn new() -> Self {
