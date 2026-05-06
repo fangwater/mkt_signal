@@ -12,6 +12,8 @@ const BYBIT_SPOT_PUBLIC_WS_URL: &str = "wss://stream.bybit.com/v5/public/spot";
 const BYBIT_LINEAR_PUBLIC_WS_URL: &str = "wss://stream.bybit.com/v5/public/linear";
 const BYBIT_SPOT_SBE_WS_URL: &str = "wss://stream.bybit.com/v5/public-sbe/spot";
 const BYBIT_LINEAR_SBE_WS_URL: &str = "wss://stream.bybit.com/v5/public-sbe/linear";
+const ASTER_SPOT_WS_URL: &str = "wss://sstream.asterdex.com/ws";
+const ASTER_FUTURES_WS_URL: &str = "wss://fstream.asterdex.com/ws";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinanceFuturesWsRoute {
@@ -63,7 +65,7 @@ fn construct_subscribe_message(
     channel: &str,
 ) -> Value {
     match exchange {
-        Exchange::Binance => {
+        Exchange::Binance | Exchange::Aster => {
             let params: Vec<String> = symbols
                 .iter()
                 .map(|symbol| format!("{}@{}", symbol.to_lowercase(), channel))
@@ -255,6 +257,24 @@ impl BinancePerpsSubscribeMsgs {
                 "params": ["!forceOrder@arr"],
                 "id": 1,
             }),
+        }
+    }
+}
+
+/// Aster 衍生品订阅消息 — 协议与 Binance 同构，只换 WS URL
+#[derive(Debug, Clone)]
+pub struct AsterPerpsSubscribeMsgs {
+    pub mark_price_stream_for_all_market: serde_json::Value,
+    pub liquidation_orders_msg: serde_json::Value,
+}
+
+impl AsterPerpsSubscribeMsgs {
+    pub const WS_URL: &'static str = ASTER_FUTURES_WS_URL;
+    pub async fn new() -> Self {
+        let inner = BinancePerpsSubscribeMsgs::new().await;
+        Self {
+            mark_price_stream_for_all_market: inner.mark_price_stream_for_all_market,
+            liquidation_orders_msg: inner.liquidation_orders_msg,
         }
     }
 }
@@ -504,6 +524,7 @@ pub enum ExchangePerpsSubscribeMsgs {
     Bitget(BitgetPerpsSubscribeMsgs),
     Gate(GatePerpsSubscribeMsgs),
     Hyperliquid(HyperliquidPerpsSubscribeMsgs),
+    Aster(AsterPerpsSubscribeMsgs),
 }
 
 //衍生品(永续合约)的额外消息
@@ -596,12 +617,9 @@ impl SubscribeMsgs {
         }
     }
 
-    fn get_inc_channel(exchange: &Exchange, venue: TradingVenue) -> Option<String> {
+    fn get_inc_channel(exchange: &Exchange, _venue: TradingVenue) -> Option<String> {
         match exchange {
-            Exchange::Binance => match venue {
-                TradingVenue::BinanceMargin => Some("depth@100ms".to_string()),
-                _ => Some("depth@100ms".to_string()),
-            },
+            Exchange::Binance | Exchange::Aster => Some("depth@100ms".to_string()),
             Exchange::Okex => Some("books".to_string()),
             // Bybit V5 public spot/linear docs currently expose orderbook depths such as 1/50/200/1000.
             Exchange::Bybit => Some("orderbook.1000".to_string()),
@@ -611,20 +629,17 @@ impl SubscribeMsgs {
         }
     }
 
-    /// 获取有限档深度快照 channel（目前只有 binance 支持）
-    fn get_depth_channel(exchange: &Exchange, venue: TradingVenue) -> Option<String> {
+    /// 获取有限档深度快照 channel（目前只有 binance / aster 支持）
+    fn get_depth_channel(exchange: &Exchange, _venue: TradingVenue) -> Option<String> {
         match exchange {
-            Exchange::Binance => match venue {
-                TradingVenue::BinanceMargin => Some("depth20@100ms".to_string()),
-                _ => Some("depth20@100ms".to_string()),
-            },
+            Exchange::Binance | Exchange::Aster => Some("depth20@100ms".to_string()),
             _ => None, // 其他交易所暂不支持
         }
     }
 
     fn get_kline_channel(exchange: &Exchange) -> String {
         match exchange {
-            Exchange::Binance => "kline_1m".to_string(),
+            Exchange::Binance | Exchange::Aster => "kline_1m".to_string(),
             Exchange::Okex => "candle1m".to_string(),
             Exchange::Bybit => "kline.1".to_string(),
             Exchange::Bitget => "candle1m".to_string(),
@@ -635,7 +650,7 @@ impl SubscribeMsgs {
 
     fn get_trade_channel(exchange: &Exchange) -> String {
         match exchange {
-            Exchange::Binance => "trade".to_string(),
+            Exchange::Binance | Exchange::Aster => "trade".to_string(),
             Exchange::Okex => "trades".to_string(),
             Exchange::Bybit => "publicTrade".to_string(),
             Exchange::Bitget => "trade".to_string(),
@@ -646,10 +661,7 @@ impl SubscribeMsgs {
 
     fn get_ask_bid_spread_channel(exchange: &Exchange, venue: TradingVenue) -> String {
         match exchange {
-            Exchange::Binance => match venue {
-                TradingVenue::BinanceMargin => "bookTicker".to_string(),
-                _ => "bookTicker".to_string(),
-            },
+            Exchange::Binance | Exchange::Aster => "bookTicker".to_string(),
             Exchange::Okex => "bbo-tbt".to_string(),
             Exchange::Bybit => {
                 if Self::bybit_ask_bid_uses_sbe() {
@@ -745,6 +757,14 @@ impl SubscribeMsgs {
         Self::get_binance_ws_url_with_route(venue, route)
     }
 
+    /// Aster 的所有公共行情流走单一 endpoint，按 venue 区分现货 / 合约。
+    pub fn get_aster_ws_url_with_venue(venue: TradingVenue) -> &'static str {
+        match venue {
+            TradingVenue::AsterMargin => ASTER_SPOT_WS_URL,
+            _ => ASTER_FUTURES_WS_URL,
+        }
+    }
+
     pub fn get_exchange_mkt_data_url_with_venue(
         exchange: &Exchange,
         venue: TradingVenue,
@@ -754,6 +774,8 @@ impl SubscribeMsgs {
             Exchange::Binance => {
                 Self::get_binance_ws_url_with_route(venue, BinanceFuturesWsRoute::Market)
             }
+            //Aster：与币安协议同构，但所有流走单一 endpoint
+            Exchange::Aster => Self::get_aster_ws_url_with_venue(venue),
             //OKEXu本位期货合约和现货
             Exchange::Okex => "wss://ws.okx.com:8443/ws/v5/public",
             //Bybitu本位期货合约和现货
@@ -782,6 +804,8 @@ impl SubscribeMsgs {
             Exchange::Binance => {
                 Self::get_binance_ws_url_with_route(venue, BinanceFuturesWsRoute::Market)
             }
+            //Aster：单一 endpoint
+            Exchange::Aster => Self::get_aster_ws_url_with_venue(venue),
             //OKEXu本位期货合约和现货
             Exchange::Okex => "wss://ws.okx.com:8443/ws/v5/business",
             //Bybitu本位期货合约和现货
@@ -803,7 +827,7 @@ impl SubscribeMsgs {
 
     fn get_signal_subscribe_message(exchange: &Exchange, venue: TradingVenue) -> serde_json::Value {
         match exchange {
-            Exchange::Binance => {
+            Exchange::Binance | Exchange::Aster => {
                 serde_json::json!({
                     "method": "SUBSCRIBE",
                     "params": ["btcusdt@depth5@100ms"],
@@ -961,6 +985,9 @@ impl DerivativesMetricsSubscribeMsgs {
             Exchange::Hyperliquid => ExchangePerpsSubscribeMsgs::Hyperliquid(
                 HyperliquidPerpsSubscribeMsgs::new(cfg).await,
             ),
+            Exchange::Aster => {
+                ExchangePerpsSubscribeMsgs::Aster(AsterPerpsSubscribeMsgs::new().await)
+            }
         };
 
         Self {

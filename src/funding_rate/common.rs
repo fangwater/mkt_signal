@@ -273,6 +273,7 @@ pub fn venue_pair_for_exchange(exchange: Exchange) -> (TradingVenue, TradingVenu
             TradingVenue::HyperliquidMargin,
             TradingVenue::HyperliquidFutures,
         ),
+        Exchange::Aster => (TradingVenue::AsterMargin, TradingVenue::AsterFutures),
     }
 }
 

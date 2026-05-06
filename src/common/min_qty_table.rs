@@ -956,8 +956,7 @@ impl BybitProvider {
             //   spot/margin (category=spot)   → basePrecision, minOrderAmt
             //   futures   (category=linear)   → qtyStep,       minNotionalValue
             // minOrderQty / tickSize are required on every category.
-            let (step_field_name, step_raw, notional_field_name, notional_raw) = match market_type
-            {
+            let (step_field_name, step_raw, notional_field_name, notional_raw) = match market_type {
                 MarketType::Spot | MarketType::Margin => (
                     "lotSizeFilter.basePrecision",
                     lot.base_precision.as_deref(),
@@ -1330,7 +1329,9 @@ impl MinQtyTable {
             Exchange::Bitget => self.refresh_bitget().await,
             Exchange::Okex => self.refresh_okex().await,
             Exchange::Bybit => self.refresh_bybit().await,
-            Exchange::Hyperliquid => Err(anyhow!("exchange {} not supported yet", self.exchange)),
+            Exchange::Hyperliquid | Exchange::Aster => {
+                Err(anyhow!("exchange {} not supported yet", self.exchange))
+            }
         }
     }
 
@@ -1477,7 +1478,7 @@ impl MinQtyTable {
 
     pub fn contract_multiplier(&self, symbol: &str) -> f64 {
         match self.exchange {
-            Exchange::Binance => 1.0, // Binance UM 合约面值默认为 1
+            Exchange::Binance | Exchange::Aster => 1.0, // Binance/Aster UM 合约面值默认为 1
             Exchange::Gate | Exchange::Okex | Exchange::Bitget | Exchange::Bybit => {
                 let key = symbol.to_uppercase();
                 *self.contract_multipliers.get(&key).unwrap_or(&1.0)

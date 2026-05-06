@@ -45,6 +45,11 @@ impl VenueInfoProvider for ExchangeVenueProvider {
                 let entries = provider.fetch_filters(client, self.market_type).await?;
                 Ok((entries, HashMap::new()))
             }
+            Exchange::Aster => Err(anyhow!(
+                "exchange {} not supported yet for venue {:?}",
+                self.exchange,
+                self.venue
+            )),
             Exchange::Gate => {
                 let provider = GateProvider::new();
                 provider
@@ -92,6 +97,8 @@ fn provider_for_venue(venue: TradingVenue) -> ExchangeVenueProvider {
         TradingVenue::GateFutures => (Exchange::Gate, MarketType::Futures),
         TradingVenue::HyperliquidMargin => (Exchange::Hyperliquid, MarketType::Margin),
         TradingVenue::HyperliquidFutures => (Exchange::Hyperliquid, MarketType::Futures),
+        TradingVenue::AsterMargin => (Exchange::Aster, MarketType::Margin),
+        TradingVenue::AsterFutures => (Exchange::Aster, MarketType::Futures),
     };
     ExchangeVenueProvider::new(venue, exchange, market_type)
 }

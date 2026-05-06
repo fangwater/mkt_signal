@@ -370,6 +370,7 @@ impl RateFetcher {
             TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures => {
                 Exchange::Hyperliquid
             }
+            TradingVenue::AsterMargin | TradingVenue::AsterFutures => Exchange::Aster,
         }
     }
 
@@ -448,6 +449,15 @@ impl RateFetcher {
                         .or_default();
                 });
                 info!("RateFetcher: Hyperliquid initialized (fetch task not enabled)");
+            }
+            Exchange::Aster => {
+                Self::with_inner_mut(|inner| {
+                    inner
+                        .venue_states
+                        .entry(TradingVenue::AsterFutures)
+                        .or_default();
+                });
+                info!("RateFetcher: Aster initialized (fetch task not enabled)");
             }
         }
 

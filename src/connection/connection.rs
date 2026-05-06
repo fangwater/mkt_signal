@@ -550,6 +550,7 @@ pub fn construct_connection_with_ip(
 
     match exchange {
         Exchange::Binance => Ok(Box::new(BinanceConnection::new(base_connection))),
+        Exchange::Aster => Ok(Box::new(BinanceConnection::new(base_connection))),
         Exchange::Okex => Ok(Box::new(OkexConnection::new(base_connection))),
         Exchange::Bybit => Ok(Box::new(BybitConnection::new(base_connection))),
         Exchange::Bitget => Ok(Box::new(BitgetConnection::new(base_connection))),
@@ -582,6 +583,7 @@ pub fn construct_connection(
 
     match exchange {
         Exchange::Binance => Ok(Box::new(BinanceConnection::new(base_connection))),
+        Exchange::Aster => Ok(Box::new(BinanceConnection::new(base_connection))),
         Exchange::Okex => Ok(Box::new(OkexConnection::new(base_connection))),
         Exchange::Bybit => Ok(Box::new(BybitConnection::new(base_connection))),
         Exchange::Bitget => Ok(Box::new(BitgetConnection::new(base_connection))),

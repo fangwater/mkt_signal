@@ -311,6 +311,9 @@ impl SymbolList {
                     TradingVenue::HyperliquidFutures,
                 ]
             }
+            Exchange::Aster => {
+                vec![TradingVenue::AsterMargin, TradingVenue::AsterFutures]
+            }
         }
     }
 }

@@ -191,6 +191,8 @@ impl Config {
             TradingVenue::BybitMargin => 10,
             TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => 50,
             TradingVenue::GateMargin | TradingVenue::GateFutures => 50,
+            TradingVenue::AsterFutures => 50,
+            TradingVenue::AsterMargin => 100,
             TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures => 200,
         }
     }
@@ -351,6 +353,62 @@ impl Config {
             instruments.len()
         );
         Ok(instruments)
+    }
+
+    async fn get_symbol_for_aster_futures() -> Result<Vec<String>> {
+        const URL: &str = "https://fapi.asterdex.com/fapi/v1/exchangeInfo";
+        let info = Self::fetch_binance_exchange_info(URL).await?;
+        let symbols: Vec<String> = info
+            .symbols
+            .into_iter()
+            .filter(|s| s.quote_asset == "USDT")
+            .filter(|s| s.status == "TRADING")
+            .filter(|s| s.contract_type.as_deref() == Some("PERPETUAL"))
+            .map(|s| s.symbol)
+            .collect();
+        info!(
+            "Aster futures USDT-denominated symbol count {:?}",
+            symbols.len()
+        );
+        Ok(symbols)
+    }
+
+    async fn get_spot_symbols_from_aster_api() -> Result<Vec<String>> {
+        const URL: &str = "https://sapi.asterdex.com/api/v3/exchangeInfo";
+        let info = Self::fetch_binance_exchange_info(URL).await?;
+        let symbols: Vec<String> = info
+            .symbols
+            .into_iter()
+            .filter(|s| s.quote_asset == "USDT")
+            .filter(|s| s.status == "TRADING")
+            .filter(|s| s.is_spot_trading_allowed.unwrap_or(true))
+            .map(|s| s.symbol)
+            .collect();
+        info!(
+            "Aster spot USDT-denominated symbol count {:?}",
+            symbols.len()
+        );
+        Ok(symbols)
+    }
+
+    async fn get_spot_symbols_related_to_aster_futures() -> Result<Vec<String>> {
+        let symbols = Self::get_spot_symbols_from_aster_api().await?;
+        let futures_symbols = Self::get_symbol_for_aster_futures().await?;
+        let spot_symbols_related_to_futures: Vec<String> = symbols
+            .iter()
+            .filter(|spot_symbol| {
+                futures_symbols.iter().any(|futures_symbol| {
+                    Self::is_spot_symbol_related_to_futures(spot_symbol, futures_symbol)
+                })
+            })
+            .cloned()
+            .collect();
+        info!(
+            "Aster spot symbols related to futures {:?}",
+            spot_symbols_related_to_futures.len()
+        );
+        print_symbol_comparison(&futures_symbols, &symbols, &spot_symbols_related_to_futures);
+        Ok(spot_symbols_related_to_futures)
     }
 
     async fn get_spot_symbols_related_to_binance_futures() -> Result<Vec<String>> {
@@ -793,6 +851,10 @@ impl Config {
             TradingVenue::GateMargin => Self::get_spot_symbols_related_to_gate_futures().await,
             TradingVenue::HyperliquidFutures => Self::get_symbol_for_hyperliquid_futures().await,
             TradingVenue::HyperliquidMargin => Self::get_symbol_for_hyperliquid_spot().await,
+            //Aster USDT永续合约
+            TradingVenue::AsterFutures => Self::get_symbol_for_aster_futures().await,
+            //Aster现货（与 futures 关联）
+            TradingVenue::AsterMargin => Self::get_spot_symbols_related_to_aster_futures().await,
         }
     }
 

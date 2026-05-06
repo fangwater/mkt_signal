@@ -11,6 +11,7 @@ pub enum Exchange {
     Bitget = 4,
     Gate = 5,
     Hyperliquid = 6,
+    Aster = 7,
 }
 
 impl Exchange {
@@ -22,6 +23,7 @@ impl Exchange {
             Exchange::Bitget => "bitget",
             Exchange::Gate => "gate",
             Exchange::Hyperliquid => "hyperliquid",
+            Exchange::Aster => "aster",
         }
     }
 
@@ -34,6 +36,7 @@ impl Exchange {
             "bitget" => Some(Exchange::Bitget),
             "gate" => Some(Exchange::Gate),
             "hyperliquid" => Some(Exchange::Hyperliquid),
+            "aster" => Some(Exchange::Aster),
             _ => None,
         }
     }
@@ -47,6 +50,7 @@ impl Exchange {
             4 => Some(Exchange::Bitget),
             5 => Some(Exchange::Gate),
             6 => Some(Exchange::Hyperliquid),
+            7 => Some(Exchange::Aster),
             _ => None,
         }
     }

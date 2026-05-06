@@ -122,7 +122,9 @@ impl SymbolMapper for GateSymbolMapper {
 pub fn create_symbol_mapper(exchange: Exchange) -> Box<dyn SymbolMapper> {
     match exchange {
         Exchange::Okex => Box::new(OkexSymbolMapper),
-        Exchange::Binance | Exchange::Bybit | Exchange::Bitget => Box::new(BinanceSymbolMapper),
+        Exchange::Binance | Exchange::Bybit | Exchange::Bitget | Exchange::Aster => {
+            Box::new(BinanceSymbolMapper)
+        }
         Exchange::Gate => Box::new(GateSymbolMapper),
         Exchange::Hyperliquid => Box::new(BinanceSymbolMapper),
     }

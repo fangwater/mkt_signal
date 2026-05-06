@@ -1351,6 +1351,9 @@ impl MonitorChannel {
                 TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures => {
                     Err("尚未实现 Hyperliquid 的订单对齐".to_string())
                 }
+                TradingVenue::AsterMargin | TradingVenue::AsterFutures => {
+                    Err("尚未实现 Aster 的订单对齐".to_string())
+                }
             }
         })
     }

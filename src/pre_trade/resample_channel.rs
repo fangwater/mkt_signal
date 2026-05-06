@@ -11,7 +11,6 @@ use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::price_table::PriceEntry;
 use crate::pre_trade::symbol_mapper::create_symbol_mapper;
 use crate::pre_trade::symbol_util::extract_base_asset;
-use crate::pre_trade::usdt_balance_manager::UsdtBalanceSnapshot;
 use crate::signal::common::TradingVenue;
 use crate::viz::resample::{
     PreTradeExposureResampleEntry, PreTradeExposureRow, PreTradeRiskResampleEntry,

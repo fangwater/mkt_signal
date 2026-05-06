@@ -107,6 +107,7 @@ short_exchange() {
     bybit) echo "bb" ;;
     bitget) echo "bg" ;;
     gate) echo "gt" ;;
+    aster) echo "at" ;;
     *)
       echo "${1,,}" | sed -E 's/[^a-z0-9]+//g' | cut -c1-2
       ;;
