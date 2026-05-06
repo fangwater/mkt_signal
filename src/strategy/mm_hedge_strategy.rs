@@ -1278,7 +1278,7 @@ impl MarketMakerHedgeStrategy {
         }
         let effective_cumulative_filled_qty = protected_cumulative_fill.effective_cum;
 
-        let updated = order_manager.update(client_order_id, |order| match status {
+        let updated = order_manager.apply_remote_update(client_order_id, |order| match status {
             OrderStatus::New => {
                 order.status = OrderExecutionStatus::Create;
                 order.set_exchange_order_id(order_update.order_id());
@@ -1458,7 +1458,7 @@ impl MarketMakerHedgeStrategy {
         let event_time = trade.event_time();
         let reported_trade_price = trade.price();
 
-        let updated = order_manager.update(client_order_id, |order| {
+        let updated = order_manager.apply_remote_update(client_order_id, |order| {
             order.cumulative_filled_quantity = cumulative_qty;
             order.set_exchange_order_id(trade.order_id());
             if reported_trade_price > 0.0 {

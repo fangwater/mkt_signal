@@ -823,6 +823,7 @@ impl OrderManager {
         warn!("提交时间:     {}", order.timestamp.submit_t);
         warn!("创建时间:     {}", order.timestamp.create_t);
         warn!("结束时间:     {}", order.timestamp.end_t);
+        warn!("本地更新:     {}", order.timestamp.local_t);
         warn!("═══════════════════════════════════════════════════════════════");
     }
 
@@ -838,6 +839,22 @@ impl OrderManager {
         } else {
             false
         }
+    }
+
+    /// 应用一次远端来的订单更新（OrderUpdate / TradeUpdate / 查询回报），
+    /// 在闭包执行之前先把 `Order.timestamp.local_t` 覆写为当前本地时间(µs)。
+    ///
+    /// 仅用于"实质性接受"的远端事件；本地内部状态调整（例如 cleanup 阶段
+    /// 的 terminalize）请继续使用 [`OrderManager::update`]。
+    pub fn apply_remote_update<F>(&mut self, order_id: i64, f: F) -> bool
+    where
+        F: FnOnce(&mut Order),
+    {
+        let now = get_timestamp_us();
+        self.update(order_id, |order| {
+            order.timestamp.local_t = now;
+            f(order);
+        })
     }
 
     /// 移除订单
@@ -909,6 +926,7 @@ pub struct OrderTimeStamp {
     pub submit_t: i64, // 最近一次给 trade engine / query engine 发送请求的本地时间(µs)
     pub create_t: i64, // 交易所订单创建时间(交易所时间)
     pub end_t: i64,    // 交易所时间(完全成交或者被撤单的时间)
+    pub local_t: i64,  // OrderUpdate/TradeUpdate/查询回报在本地最近一次被实质性接受的时间(µs)，每次覆写
 }
 
 impl OrderTimeStamp {
@@ -917,6 +935,7 @@ impl OrderTimeStamp {
             submit_t: 0,
             create_t: 0,
             end_t: 0,
+            local_t: 0,
         }
     }
 }

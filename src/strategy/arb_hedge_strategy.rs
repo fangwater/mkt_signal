@@ -860,7 +860,7 @@ impl ArbHedgeStrategy {
         let protected_cumulative_fill =
             current_order.protected_cumulative_fill(order_update.cumulative_filled_quantity());
         let effective_cumulative_filled_qty = protected_cumulative_fill.effective_cum;
-        let updated = order_manager.update(client_order_id, |order| match status {
+        let updated = order_manager.apply_remote_update(client_order_id, |order| match status {
             OrderStatus::New => {
                 order.status = OrderExecutionStatus::Create;
                 order.set_exchange_order_id(order_update.order_id());
@@ -962,7 +962,7 @@ impl ArbHedgeStrategy {
         {
             return false;
         }
-        let updated = order_manager.update(client_order_id, |order| {
+        let updated = order_manager.apply_remote_update(client_order_id, |order| {
             order.cumulative_filled_quantity = trade.cumulative_filled_quantity();
             order.set_exchange_order_id(trade.order_id());
             if trade.price() > 0.0 {

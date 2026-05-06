@@ -1033,7 +1033,7 @@ pub trait OpenStrategyCommon {
         }
         let effective_cumulative_filled_qty = protected_cumulative_fill.effective_cum;
 
-        let updated = order_manager.update(client_order_id, |order| match order_update.status() {
+        let updated = order_manager.apply_remote_update(client_order_id, |order| match order_update.status() {
             OrderStatus::New => {
                 if !self.open_state().alive {
                     warn!(
@@ -1289,7 +1289,7 @@ pub trait OpenStrategyCommon {
         let prev_order_terminal = current_order.status.is_terminal();
         let cumulative_qty = trade.cumulative_filled_quantity();
         let event_time = trade.event_time();
-        let updated = order_manager.update(client_order_id, |order| {
+        let updated = order_manager.apply_remote_update(client_order_id, |order| {
             order.cumulative_filled_quantity = cumulative_qty;
             order.set_exchange_order_id(trade.order_id());
             if status == OrderStatus::Filled {

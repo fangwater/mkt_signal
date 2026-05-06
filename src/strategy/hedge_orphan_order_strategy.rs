@@ -342,7 +342,7 @@ impl Strategy for HedgeOrphanOrderStrategy {
             let incoming_order_id = update.order_id();
             let event_time = update.event_time();
             let status = update.status();
-            let _ = order_mgr.borrow_mut().update(client_order_id, |order| {
+            let _ = order_mgr.borrow_mut().apply_remote_update(client_order_id, |order| {
                 if incoming_cum > order.cumulative_filled_quantity {
                     order.cumulative_filled_quantity = incoming_cum;
                 }
@@ -465,7 +465,7 @@ impl Strategy for HedgeOrphanOrderStrategy {
             let order_id = trade.order_id();
             let price = trade.price();
             let terminal_status = trade.order_status();
-            let _ = order_mgr.borrow_mut().update(client_order_id, |order| {
+            let _ = order_mgr.borrow_mut().apply_remote_update(client_order_id, |order| {
                 if cumulative_qty > order.cumulative_filled_quantity {
                     order.cumulative_filled_quantity = cumulative_qty;
                 }
