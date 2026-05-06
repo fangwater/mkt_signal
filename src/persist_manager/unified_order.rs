@@ -25,6 +25,8 @@ pub struct UnifiedOrderRecord {
     pub submit_ts: i64,
     /// OrderUpdate / TradeUpdate / 查询回报最近一次被本地实质性接受的时间戳（µs）。
     pub local_ts: i64,
+    /// 行情时间戳预留位（µs）；当前由调用方填 0，留给后续接入行情链路时间用。
+    pub mkt_ts: i64,
 
     /// 客户端自定义订单 ID（幂等与追踪）。
     pub client_order_id: i64,

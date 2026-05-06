@@ -119,6 +119,7 @@ fn uniform_order_used_len(payload: &[u8]) -> Option<usize> {
     skip_i64(&mut cursor)?; // signal_ts
     skip_i64(&mut cursor)?; // submit_ts
     skip_i64(&mut cursor)?; // local_ts
+    skip_i64(&mut cursor)?; // mkt_ts
 
     skip_i64(&mut cursor)?; // client_order_id
 

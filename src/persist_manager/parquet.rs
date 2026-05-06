@@ -226,6 +226,7 @@ pub(crate) fn build_parquet_uniform_orders(
     let mut signal_ts_col = Vec::with_capacity(entries.len());
     let mut submit_ts_col = Vec::with_capacity(entries.len());
     let mut local_ts_col = Vec::with_capacity(entries.len());
+    let mut mkt_ts_col = Vec::with_capacity(entries.len());
     let mut client_order_id_col = Vec::with_capacity(entries.len());
     let mut venue_col = Vec::with_capacity(entries.len());
     let mut order_type_col = Vec::with_capacity(entries.len());
@@ -254,6 +255,7 @@ pub(crate) fn build_parquet_uniform_orders(
             signal_ts,
             submit_ts,
             local_ts,
+            mkt_ts,
             client_order_id,
             trading_venue,
             order_type,
@@ -276,6 +278,7 @@ pub(crate) fn build_parquet_uniform_orders(
         signal_ts_col.push(signal_ts);
         submit_ts_col.push(submit_ts);
         local_ts_col.push(local_ts);
+        mkt_ts_col.push(mkt_ts);
         client_order_id_col.push(client_order_id);
         venue_col.push(trading_venue);
         order_type_col.push(order_type);
@@ -299,6 +302,7 @@ pub(crate) fn build_parquet_uniform_orders(
         Series::new("signal_ts".into(), signal_ts_col),
         Series::new("submit_ts".into(), submit_ts_col),
         Series::new("local_ts".into(), local_ts_col),
+        Series::new("mkt_ts".into(), mkt_ts_col),
         Series::new("client_order_id".into(), client_order_id_col),
         Series::new("trading_venue".into(), venue_col),
         Series::new("order_type".into(), order_type_col),
@@ -361,6 +365,7 @@ struct DecodedUniformOrderRecord {
     signal_ts: i64,
     submit_ts: i64,
     local_ts: i64,
+    mkt_ts: i64,
     client_order_id: i64,
     trading_venue: String,
     order_type: String,
@@ -488,6 +493,7 @@ fn decode_uniform_order_record(bytes: &[u8]) -> Result<DecodedUniformOrderRecord
     let signal_ts = read_i64(&mut cursor, "uniform order signal_ts")?;
     let submit_ts = read_i64(&mut cursor, "uniform order submit_ts")?;
     let local_ts = read_i64(&mut cursor, "uniform order local_ts")?;
+    let mkt_ts = read_i64(&mut cursor, "uniform order mkt_ts")?;
 
     let client_order_id = read_i64(&mut cursor, "uniform order client_order_id")?;
 
@@ -541,6 +547,7 @@ fn decode_uniform_order_record(bytes: &[u8]) -> Result<DecodedUniformOrderRecord
         signal_ts,
         submit_ts,
         local_ts,
+        mkt_ts,
         client_order_id,
         trading_venue,
         order_type,
