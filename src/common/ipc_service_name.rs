@@ -4,6 +4,7 @@ use std::env;
 ///
 /// # 规则
 /// - `dat_pbs/*` 保持不变（公用市场数据）
+/// - `spread_pbs/*` 保持不变（独立的高速 askbidspread 通道）
 /// - `bridge/*` 保持不变（公用桥接市场数据）
 /// - `factor_pub/*` 保持不变（公用因子流）
 /// - 其他路径（如 `signal_pubs/*`, `viz_pubs/*`, `persist_pubs/*`, `account_pubs/*`）添加命名空间前缀
@@ -47,8 +48,9 @@ use std::env;
 /// # Panics
 /// - 如果环境变量 `IPC_NAMESPACE` 未设置，将 panic
 pub fn build_service_name(base_name: &str) -> String {
-    // dat_pbs / bridge / factor_pub 保持不变（公用）
+    // dat_pbs / spread_pbs / bridge / factor_pub 保持不变（公用市场数据）
     if base_name.starts_with("dat_pbs/")
+        || base_name.starts_with("spread_pbs/")
         || base_name.starts_with("bridge/")
         || base_name.starts_with("factor_pub/")
     {

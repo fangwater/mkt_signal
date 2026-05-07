@@ -13,6 +13,10 @@ name = "dat_pbs"
 path = "src/bin/dat_pbs.rs"
 
 [[bin]]
+name = "spread_pbs"
+path = "src/bin/spread_pbs.rs"
+
+[[bin]]
 name = "trade_signal"
 path = "src/bin/trade_signal.rs"
 
