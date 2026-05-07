@@ -1,8 +1,11 @@
 //! trade_engine 定期发布的延迟分位数 IPC 快照消息。
 //!
 //! - **触发**：venue 进程内每 30s 一次（不依赖单桶满 10000 才输出）。
-//! - **载荷**：定长 `LatencySnapshotMsg`（512 字节，`repr(C)`），通过 iceoryx2
-//!   `publish_subscribe::<[u8; LATENCY_SNAPSHOT_PAYLOAD_LEN]>` 推出。
+//! - **服务名**：`<IPC_NAMESPACE>/te_pubs/<venue>/latency`，载荷
+//!   `[u8; LATENCY_SNAPSHOT_PAYLOAD_LEN]`（512 字节）。`IPC_NAMESPACE` 让多 te
+//!   实例互不冲突；`te_pubs` 前缀声明发布源是 trade_engine。
+//! - **载荷**：定长 `LatencySnapshotMsg`（`repr(C)`），通过 iceoryx2
+//!   `publish_subscribe` 推出。
 //! - **语义**：本周期里所有非空桶的统计；空桶不占位（`n_buckets` 标记有效条数，
 //!   后续 slot 为 0 填充——消费者只读前 `n_buckets` 条）。
 //!

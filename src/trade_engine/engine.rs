@@ -230,9 +230,12 @@ impl TradeEngine {
             query_resp_service_obj.publisher_builder().create()?;
         debug!("publisher created for service: {}", query_resp_service);
 
-        // Latency snapshot publisher（每 30s venue 级 IPC 推送，512B 定长载荷）
+        // Latency snapshot publisher（每 30s venue 级 IPC 推送，512B 定长载荷）。
+        // service name: `<IPC_NAMESPACE>/te_pubs/<venue>/latency`——
+        //   - `IPC_NAMESPACE` 由 `build_service_name` 自动加（多 te 实例的隔离）
+        //   - `te_pubs` 前缀表明发布方是 trade_engine，避免与 spread_pbs 等其他源混淆
         let latency_service =
-            build_service_name(&format!("latency_snapshots/{}", canonical_exchange));
+            build_service_name(&format!("te_pubs/{}/latency", canonical_exchange));
         let latency_service_obj = node
             .service_builder(&ServiceName::new(&latency_service)?)
             .publish_subscribe::<[u8; LATENCY_SNAPSHOT_PAYLOAD_LEN]>()
@@ -313,7 +316,8 @@ impl TradeEngine {
         let mut worker_handles: Vec<(&'static str, tokio::task::JoinHandle<()>)> = Vec::new();
 
         // 周期 publisher：每 30s 把所有非空桶的 KLL 快照打包成 LatencySnapshotMsg
-        // 推到 IPC（service: latency_snapshots/<venue>）。空桶不入消息，没桶不发。
+        // 推到 IPC（service: <IPC_NAMESPACE>/te_pubs/<venue>/latency）。
+        // 空桶不入消息，没桶不发。
         {
             let lat_buckets_for_ticker = lat_buckets.clone();
             let venue_id = exchange.to_u8() as u32;
