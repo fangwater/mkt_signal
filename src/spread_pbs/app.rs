@@ -7,11 +7,15 @@ use tokio::sync::watch;
 use crate::common::mkt_msg::AskBidSpreadMsg;
 use crate::common::time_util::get_timestamp_us;
 use crate::mkt_pub::cfg::Config;
+use crate::signal::common::TradingVenue;
 
 use crate::spread_pbs::adapter::{create_adapter, BboFrame, VenueAdapter};
 use crate::spread_pbs::latency::LatencyKll;
 use crate::spread_pbs::publisher::SpreadPublisher;
 use crate::spread_pbs::ws::{run_public_ws, FrameHandler, WsLoopParams};
+
+const BINANCE_FUTURES_SPREAD_SYMBOLS: [&str; 5] =
+    ["BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "XRPUSDT"];
 
 pub struct SpreadPbsApp {
     config: Config,
@@ -22,7 +26,7 @@ impl SpreadPbsApp {
         Self { config }
     }
 
-    /// 主入口：拉 venue 全 symbol → 起双路 ws → 帧在 ws task 内同步处理（无 mpsc）。
+    /// 主入口：拉 symbol → 起双路 ws → 帧在 ws task 内同步处理（无 mpsc）。
     ///
     /// 必须在 `LocalSet` 上下文里 await（`main` 用 `LocalSet::run_until`）。
     pub async fn run(self) -> Result<()> {
@@ -43,11 +47,23 @@ impl SpreadPbsApp {
         );
 
         // ---- 拉 symbol list & 构造订阅消息 ----
-        let symbols = self
-            .config
-            .get_symbols()
-            .await
-            .with_context(|| format!("fetch symbols for {}", venue_slug))?;
+        let symbols = if venue == TradingVenue::BinanceFutures {
+            let symbols: Vec<String> = BINANCE_FUTURES_SPREAD_SYMBOLS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect();
+            log::warn!(
+                "spread_pbs[{}] using hardcoded Binance futures symbols: {}",
+                venue_slug,
+                symbols.join(",")
+            );
+            symbols
+        } else {
+            self.config
+                .get_symbols()
+                .await
+                .with_context(|| format!("fetch symbols for {}", venue_slug))?
+        };
         if symbols.is_empty() {
             bail!("symbol list 为空（{}）", venue_slug);
         }
@@ -143,9 +159,9 @@ impl SpreadPbsApp {
 
 struct SharedState {
     dedup: HashMap<String, i64>,
-    /// 端到端：`publish_us - ts_ms*1000`（含 ws read → parse → dedup → IceOryx publish）
+    /// 被采纳消息：`accepted_us - ts_ms*1000`（u 最新判断通过后立刻采样）。
     latency_e2e: LatencyKll,
-    /// 纯网络：`recv_us - ts_ms*1000`（ws read 命中那一刻 - 服务端 ts，剔除 pipeline 开销）
+    /// 同上，保留 `-net` 标签便于与旧日志兼容。
     latency_net: LatencyKll,
     published: u64,
     dropped_by_seq: u64,
@@ -162,12 +178,35 @@ fn make_handler(
             Ok(s) => s,
             Err(_) => return,
         };
+        let accepted_us = match adapter.seq_hint(text) {
+            Ok(Some((symbol, seq_id))) => {
+                let mut s = state.borrow_mut();
+                let prev = s.dedup.get(&symbol).copied().unwrap_or(i64::MIN);
+                if seq_id <= prev {
+                    s.dropped_by_seq += 1;
+                    return;
+                }
+                Some(get_timestamp_us())
+            }
+            Ok(None) => None,
+            Err(e) => {
+                log::error!(
+                    "spread_pbs[{}] adapter.seq_hint failed: {:#} payload={}",
+                    label,
+                    e,
+                    text
+                );
+                return;
+            }
+        };
         let frames = match adapter.parse_frame(text) {
             Ok(v) => v,
             Err(e) => {
                 log::error!(
                     "spread_pbs[{}] adapter.parse_frame failed: {:#} payload={}",
-                    label, e, text
+                    label,
+                    e,
+                    text
                 );
                 return;
             }
@@ -177,7 +216,7 @@ fn make_handler(
         }
         let mut s = state.borrow_mut();
         for f in frames {
-            process_frame(&mut s, &publisher, recv_us, f);
+            process_frame(&mut s, &publisher, recv_us, accepted_us, f);
         }
     })
 }
@@ -186,6 +225,7 @@ fn process_frame(
     state: &mut SharedState,
     publisher: &Rc<SpreadPublisher>,
     recv_us: i64,
+    accepted_us: Option<i64>,
     f: BboFrame,
 ) {
     let prev = state.dedup.get(&f.symbol).copied().unwrap_or(i64::MIN);
@@ -194,6 +234,13 @@ fn process_frame(
         return;
     }
     state.dedup.insert(f.symbol.clone(), f.seq_id);
+
+    if f.ts_ms > 0 {
+        let ts_us = f.ts_ms.saturating_mul(1000);
+        let sample_us = accepted_us.unwrap_or(recv_us);
+        state.latency_net.push((sample_us - ts_us) as f64);
+        state.latency_e2e.push((sample_us - ts_us) as f64);
+    }
 
     let msg = AskBidSpreadMsg::create(
         f.symbol.clone(),
@@ -209,13 +256,4 @@ fn process_frame(
         return;
     }
     state.published += 1;
-
-    if f.ts_ms > 0 {
-        let ts_us = f.ts_ms.saturating_mul(1000);
-        // 纯网络：ws read 命中时刻 - 服务端 ts
-        state.latency_net.push((recv_us - ts_us) as f64);
-        // 端到端：publish 完成时刻 - 服务端 ts
-        let publish_us = get_timestamp_us();
-        state.latency_e2e.push((publish_us - ts_us) as f64);
-    }
 }

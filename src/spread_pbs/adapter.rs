@@ -13,7 +13,7 @@ pub struct BboFrame {
     /// 单 symbol 内严格单调递增的序号（双路去重用）。
     /// 各 venue 字段各异：
     /// - OKex bbo-tbt:    `data[].seqId`
-    /// - Binance bookTicker: `u`
+    /// - Binance depth5/bookTicker: `u`
     /// - Bybit  orderbook.1: `data.u`
     /// - Gate  *.book_ticker: `result.u`
     /// - Bitget books1:    `data[].seq` (字符串)
@@ -55,6 +55,10 @@ pub trait VenueAdapter {
     fn name(&self) -> &'static str;
     fn ws_url(&self) -> String;
     fn build_subscribe(&self, symbols: &[String]) -> Vec<Value>;
+    /// 轻量提取 `(symbol, seq_id)`，用于双路竞速时在完整解析前丢弃落后帧。
+    fn seq_hint(&self, _raw: &str) -> Result<Option<(String, i64)>> {
+        Ok(None)
+    }
     fn parse_frame(&self, raw: &str) -> Result<Vec<BboFrame>>;
     /// 返回 None 表示完全依赖服务端 ws-Ping/Pong；返回 Some 表示主动按 interval 发心跳。
     fn keepalive(&self) -> Option<KeepaliveSpec>;
