@@ -51,15 +51,15 @@ impl KeepaliveSpec {
 ///
 /// `current_thread` runtime 下被 `Rc<dyn VenueAdapter>` 共享给两条 ws task，
 /// 因此 trait 不要求 `Send`/`Sync`。
+///
+/// `parse_frame` 接收 `app.rs` 已经 `serde_json` 解析过的 `&Value`，
+/// 避免双路竞速场景下同一帧被重复 `from_str`。
+/// 双路去重统一基于 `BboFrame.seq_id` 在 `process_frame` 内完成。
 pub trait VenueAdapter {
     fn name(&self) -> &'static str;
     fn ws_url(&self) -> String;
     fn build_subscribe(&self, symbols: &[String]) -> Vec<Value>;
-    /// 轻量提取 `(symbol, seq_id)`，用于双路竞速时在完整解析前丢弃落后帧。
-    fn seq_hint(&self, _raw: &str) -> Result<Option<(String, i64)>> {
-        Ok(None)
-    }
-    fn parse_frame(&self, raw: &str) -> Result<Vec<BboFrame>>;
+    fn parse_frame(&self, value: &Value) -> Result<Vec<BboFrame>>;
     /// 返回 None 表示完全依赖服务端 ws-Ping/Pong；返回 Some 表示主动按 interval 发心跳。
     fn keepalive(&self) -> Option<KeepaliveSpec>;
 }

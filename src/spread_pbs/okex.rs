@@ -27,11 +27,8 @@ pub fn normalize_okex_symbol(symbol: &str) -> String {
     upper
 }
 
-/// OKex spot/swap 共用 bbo-tbt frame 解析。
-pub fn parse_bbo_tbt(json_str: &str) -> Result<Vec<BboFrame>> {
-    let value: Value =
-        serde_json::from_str(json_str).map_err(|e| anyhow!("bbo-tbt json parse failed: {}", e))?;
-
+/// OKex spot/swap 共用 bbo-tbt frame 解析。`value` 已由 `app.rs` 解析过。
+pub fn parse_bbo_tbt(value: &Value) -> Result<Vec<BboFrame>> {
     let arg = value
         .get("arg")
         .and_then(|v| v.as_object())
@@ -182,9 +179,7 @@ pub fn build_tickers_subscribe_messages(
 }
 
 /// 解析 OKex `tickers` 帧的 `data[].ts`（毫秒）。tickers 没 seqId，仅做延迟统计。
-fn extract_tickers_timestamps(json_str: &str) -> Result<Vec<i64>> {
-    let value: Value =
-        serde_json::from_str(json_str).map_err(|e| anyhow!("tickers json parse failed: {}", e))?;
+fn extract_tickers_timestamps(value: &Value) -> Result<Vec<i64>> {
     let channel = value
         .get("arg")
         .and_then(|v| v.get("channel"))
@@ -225,8 +220,8 @@ impl OkexAdapter {
         }
     }
 
-    fn record_tickers_rtt(&self, raw: &str) {
-        match extract_tickers_timestamps(raw) {
+    fn record_tickers_rtt(&self, value: &Value) {
+        match extract_tickers_timestamps(value) {
             Ok(ts_list) => {
                 if ts_list.is_empty() {
                     return;
@@ -239,7 +234,7 @@ impl OkexAdapter {
                 }
             }
             Err(e) => {
-                log::error!("okex tickers parse failed: {:#} payload={}", e, raw);
+                log::error!("okex tickers parse failed: {:#} payload={}", e, value);
             }
         }
     }
@@ -272,18 +267,23 @@ impl VenueAdapter for OkexAdapter {
         out
     }
 
-    fn parse_frame(&self, raw: &str) -> Result<Vec<BboFrame>> {
-        // bbo-tbt 是主链路，命中后直接走原解析。
-        if raw.contains("\"channel\":\"bbo-tbt\"") {
-            return parse_bbo_tbt(raw);
+    fn parse_frame(&self, value: &Value) -> Result<Vec<BboFrame>> {
+        let channel = value
+            .get("arg")
+            .and_then(|v| v.get("channel"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        match channel {
+            // bbo-tbt 是主链路。
+            "bbo-tbt" => parse_bbo_tbt(value),
+            // tickers 仅用作 RTT 监控：内部统计、不返回 BboFrame、不发布到 IceOryx。
+            "tickers" => {
+                self.record_tickers_rtt(value);
+                Ok(Vec::new())
+            }
+            // 其他控制帧（subscribe ack / pong）忽略。
+            _ => Ok(Vec::new()),
         }
-        // tickers 仅用作 RTT 监控：内部统计、不返回 BboFrame、不发布到 IceOryx。
-        if raw.contains("\"channel\":\"tickers\"") {
-            self.record_tickers_rtt(raw);
-            return Ok(Vec::new());
-        }
-        // 其他控制帧（subscribe ack / pong）忽略。
-        Ok(Vec::new())
     }
 
     fn keepalive(&self) -> Option<KeepaliveSpec> {
@@ -294,6 +294,10 @@ impl VenueAdapter for OkexAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn v(raw: &str) -> Value {
+        serde_json::from_str(raw).expect("test fixture must be valid JSON")
+    }
 
     #[test]
     fn parses_full_bbo_tbt_frame() {
@@ -307,7 +311,7 @@ mod tests {
                 "checksum": -1
             }]
         }"#;
-        let frames = parse_bbo_tbt(raw).expect("parse ok");
+        let frames = parse_bbo_tbt(&v(raw)).expect("parse ok");
         assert_eq!(frames.len(), 1);
         let f = &frames[0];
         assert_eq!(f.symbol, "BTCUSDT");
@@ -329,7 +333,7 @@ mod tests {
                 "ts": "1700000000123"
             }]
         }"#;
-        let err = parse_bbo_tbt(raw).unwrap_err();
+        let err = parse_bbo_tbt(&v(raw)).unwrap_err();
         assert!(err.to_string().contains("seqId"));
     }
 
@@ -339,7 +343,7 @@ mod tests {
             "arg": {"channel": "books", "instId": "BTC-USDT-SWAP"},
             "data": []
         }"#;
-        let frames = parse_bbo_tbt(raw).expect("parse ok");
+        let frames = parse_bbo_tbt(&v(raw)).expect("parse ok");
         assert!(frames.is_empty());
     }
 
@@ -397,13 +401,13 @@ mod tests {
             "data": [{"instId":"BTC-USDT-SWAP","last":"100","askPx":"101","askSz":"1",
                       "bidPx":"99","bidSz":"2","ts":"1700000000123"}]
         }"#;
-        let ts = extract_tickers_timestamps(raw).unwrap();
+        let ts = extract_tickers_timestamps(&v(raw)).unwrap();
         assert_eq!(ts, vec![1700000000123_i64]);
     }
 
     #[test]
     fn extract_tickers_ts_ignores_other_channels() {
         let raw = r#"{"arg":{"channel":"bbo-tbt","instId":"X"},"data":[]}"#;
-        assert!(extract_tickers_timestamps(raw).unwrap().is_empty());
+        assert!(extract_tickers_timestamps(&v(raw)).unwrap().is_empty());
     }
 }

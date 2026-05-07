@@ -72,30 +72,9 @@ impl VenueAdapter for BinanceAdapter {
         out
     }
 
-    fn seq_hint(&self, raw: &str) -> Result<Option<(String, i64)>> {
-        let value: Value = match serde_json::from_str(raw) {
-            Ok(v) => v,
-            Err(_) => return Ok(None),
-        };
-        let payload = value.get("data").unwrap_or(&value);
-        if !payload.is_object() {
-            return Ok(None);
-        }
-        let Some(symbol) = payload.get("s").and_then(|v| v.as_str()) else {
-            return Ok(None);
-        };
-        let seq_id = parse_seq_id(payload, symbol)?;
-        Ok(Some((symbol.to_ascii_uppercase(), seq_id)))
-    }
-
-    fn parse_frame(&self, raw: &str) -> Result<Vec<BboFrame>> {
-        let value: Value = match serde_json::from_str(raw) {
-            Ok(v) => v,
-            Err(_) => return Ok(Vec::new()),
-        };
-
+    fn parse_frame(&self, value: &Value) -> Result<Vec<BboFrame>> {
         // combined stream 把 payload 包在 `data` 下；裸 stream 直接是 payload
-        let payload = value.get("data").unwrap_or(&value);
+        let payload = value.get("data").unwrap_or(value);
         if !payload.is_object() {
             return Ok(Vec::new());
         }
@@ -193,6 +172,10 @@ fn parse_level_str_f64(v: Option<&Value>, field: &str, symbol: &str) -> Result<f
 mod tests {
     use super::*;
 
+    fn v(raw: &str) -> Value {
+        serde_json::from_str(raw).expect("test fixture must be valid JSON")
+    }
+
     #[test]
     fn parses_depth5_top_of_book_prefers_e_field() {
         let raw = r#"{
@@ -205,11 +188,7 @@ mod tests {
             }
         }"#;
         let a = BinanceAdapter::new(TradingVenue::BinanceFutures);
-        assert_eq!(
-            a.seq_hint(raw).unwrap(),
-            Some(("BTCUSDT".to_string(), 12345))
-        );
-        let frames = a.parse_frame(raw).unwrap();
+        let frames = a.parse_frame(&v(raw)).unwrap();
         assert_eq!(frames.len(), 1);
         let f = &frames[0];
         assert_eq!(f.symbol, "BTCUSDT");
@@ -232,7 +211,7 @@ mod tests {
             }
         }"#;
         let a = BinanceAdapter::new(TradingVenue::BinanceFutures);
-        let frames = a.parse_frame(raw).unwrap();
+        let frames = a.parse_frame(&v(raw)).unwrap();
         assert_eq!(frames.len(), 1);
         let f = &frames[0];
         assert_eq!(f.symbol, "BTCUSDT");
@@ -246,7 +225,7 @@ mod tests {
     fn parses_depth5_falls_back_to_t_field() {
         let raw = r#"{"data":{"u":12345,"s":"BTCUSDT","b":[["25.0","1"]],"a":[["25.1","2"]],"T":1700000000000}}"#;
         let a = BinanceAdapter::new(TradingVenue::BinanceFutures);
-        let frames = a.parse_frame(raw).unwrap();
+        let frames = a.parse_frame(&v(raw)).unwrap();
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].ts_ms, 1700000000000);
     }
@@ -255,7 +234,7 @@ mod tests {
     fn parses_bookticker_falls_back_to_t_field() {
         let raw = r#"{"data":{"u":12345,"s":"BTCUSDT","b":"25.0","B":"1","a":"25.1","A":"2","T":1700000000000}}"#;
         let a = BinanceAdapter::new(TradingVenue::BinanceFutures);
-        let frames = a.parse_frame(raw).unwrap();
+        let frames = a.parse_frame(&v(raw)).unwrap();
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].ts_ms, 1700000000000);
     }
@@ -264,7 +243,7 @@ mod tests {
     fn parses_spot_bookticker_without_ts_field() {
         let raw = r#"{"data":{"u":12345,"s":"BTCUSDT","b":"25.0","B":"1","a":"25.1","A":"2"}}"#;
         let a = BinanceAdapter::new(TradingVenue::BinanceMargin);
-        let frames = a.parse_frame(raw).unwrap();
+        let frames = a.parse_frame(&v(raw)).unwrap();
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].ts_ms, 0);
     }
@@ -273,7 +252,7 @@ mod tests {
     fn missing_u_field_is_an_error() {
         let raw = r#"{"data":{"s":"BTCUSDT","b":"25","B":"1","a":"25.1","A":"1"}}"#;
         let a = BinanceAdapter::new(TradingVenue::BinanceFutures);
-        assert!(a.parse_frame(raw).is_err());
+        assert!(a.parse_frame(&v(raw)).is_err());
     }
 
     #[test]

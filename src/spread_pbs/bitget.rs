@@ -68,12 +68,7 @@ impl VenueAdapter for BitgetAdapter {
         out
     }
 
-    fn parse_frame(&self, raw: &str) -> Result<Vec<BboFrame>> {
-        let value: Value = match serde_json::from_str(raw) {
-            Ok(v) => v,
-            Err(_) => return Ok(Vec::new()),
-        };
-
+    fn parse_frame(&self, value: &Value) -> Result<Vec<BboFrame>> {
         let arg = match value.get("arg").and_then(|v| v.as_object()) {
             Some(obj) => obj,
             None => return Ok(Vec::new()),
@@ -159,6 +154,10 @@ fn parse_str_f64(v: Option<&Value>, field: &str, symbol: &str) -> Result<f64> {
 mod tests {
     use super::*;
 
+    fn v(raw: &str) -> Value {
+        serde_json::from_str(raw).expect("test fixture must be valid JSON")
+    }
+
     #[test]
     fn parses_books1_full_frame() {
         let raw = r#"{
@@ -173,7 +172,7 @@ mod tests {
             }]
         }"#;
         let a = BitgetAdapter::new(TradingVenue::BitgetMargin);
-        let frames = a.parse_frame(raw).unwrap();
+        let frames = a.parse_frame(&v(raw)).unwrap();
         assert_eq!(frames.len(), 1);
         let f = &frames[0];
         assert_eq!(f.symbol, "BTCUSDT");
@@ -190,14 +189,14 @@ mod tests {
             "data":[{"bids":[["1","1"]],"asks":[["2","1"]],"ts":"1"}]
         }"#;
         let a = BitgetAdapter::new(TradingVenue::BitgetMargin);
-        assert!(a.parse_frame(raw).is_err());
+        assert!(a.parse_frame(&v(raw)).is_err());
     }
 
     #[test]
     fn ignores_other_channels() {
         let raw = r#"{"arg":{"channel":"books"},"data":[]}"#;
         let a = BitgetAdapter::new(TradingVenue::BitgetMargin);
-        assert!(a.parse_frame(raw).unwrap().is_empty());
+        assert!(a.parse_frame(&v(raw)).unwrap().is_empty());
     }
 
     #[test]

@@ -72,12 +72,7 @@ impl VenueAdapter for GateAdapter {
         out
     }
 
-    fn parse_frame(&self, raw: &str) -> Result<Vec<BboFrame>> {
-        let value: Value = match serde_json::from_str(raw) {
-            Ok(v) => v,
-            Err(_) => return Ok(Vec::new()),
-        };
-
+    fn parse_frame(&self, value: &Value) -> Result<Vec<BboFrame>> {
         let channel = value.get("channel").and_then(|v| v.as_str()).unwrap_or("");
         let event = value.get("event").and_then(|v| v.as_str()).unwrap_or("");
         if event != "update" || !channel.ends_with(".book_ticker") {
@@ -191,6 +186,10 @@ fn parse_f64_loose(v: &Value) -> Option<f64> {
 mod tests {
     use super::*;
 
+    fn v(raw: &str) -> Value {
+        serde_json::from_str(raw).expect("test fixture must be valid JSON")
+    }
+
     #[test]
     fn parses_futures_book_ticker_string_fields() {
         let raw = r#"{
@@ -200,7 +199,7 @@ mod tests {
                       "b":"19177.79","B":"11","a":"19178.4","A":"1"}
         }"#;
         let a = GateAdapter::new(TradingVenue::GateFutures);
-        let frames = a.parse_frame(raw).unwrap();
+        let frames = a.parse_frame(&v(raw)).unwrap();
         assert_eq!(frames.len(), 1);
         let f = &frames[0];
         assert_eq!(f.symbol, "BTCUSDT");
@@ -219,7 +218,7 @@ mod tests {
                       "b":"3000","B":"0.5","a":"3001","A":"1.0"}
         }"#;
         let a = GateAdapter::new(TradingVenue::GateMargin);
-        let frames = a.parse_frame(raw).unwrap();
+        let frames = a.parse_frame(&v(raw)).unwrap();
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].symbol, "ETHUSDT");
         assert_eq!(frames[0].seq_id, 111);
@@ -232,7 +231,7 @@ mod tests {
             "result":{"t":1,"s":"BTC_USDT","b":"1","B":"1","a":"2","A":"1"}
         }"#;
         let a = GateAdapter::new(TradingVenue::GateFutures);
-        assert!(a.parse_frame(raw).is_err());
+        assert!(a.parse_frame(&v(raw)).is_err());
     }
 
     #[test]
@@ -241,7 +240,7 @@ mod tests {
             "channel":"futures.book_ticker","event":"subscribe","result":{"status":"success"}
         }"#;
         let a = GateAdapter::new(TradingVenue::GateFutures);
-        assert!(a.parse_frame(raw).unwrap().is_empty());
+        assert!(a.parse_frame(&v(raw)).unwrap().is_empty());
     }
 
     #[test]

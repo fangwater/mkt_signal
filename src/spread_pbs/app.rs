@@ -174,39 +174,20 @@ fn make_handler(
     state: Rc<RefCell<SharedState>>,
 ) -> FrameHandler {
     Rc::new(move |recv_us: i64, raw: &[u8]| {
-        let text = match std::str::from_utf8(raw) {
-            Ok(s) => s,
+        // 上层只 from_slice 一次，把同一份 &Value 给 adapter；非 JSON 文本帧
+        // （如 Bitget "pong"）静默丢弃。dedup 统一在 process_frame 用 BboFrame.seq_id 完成。
+        let value: serde_json::Value = match serde_json::from_slice(raw) {
+            Ok(v) => v,
             Err(_) => return,
         };
-        let accepted_us = match adapter.seq_hint(text) {
-            Ok(Some((symbol, seq_id))) => {
-                let mut s = state.borrow_mut();
-                let prev = s.dedup.get(&symbol).copied().unwrap_or(i64::MIN);
-                if seq_id <= prev {
-                    s.dropped_by_seq += 1;
-                    return;
-                }
-                Some(get_timestamp_us())
-            }
-            Ok(None) => None,
-            Err(e) => {
-                log::error!(
-                    "spread_pbs[{}] adapter.seq_hint failed: {:#} payload={}",
-                    label,
-                    e,
-                    text
-                );
-                return;
-            }
-        };
-        let frames = match adapter.parse_frame(text) {
+        let frames = match adapter.parse_frame(&value) {
             Ok(v) => v,
             Err(e) => {
                 log::error!(
                     "spread_pbs[{}] adapter.parse_frame failed: {:#} payload={}",
                     label,
                     e,
-                    text
+                    value
                 );
                 return;
             }
@@ -214,6 +195,7 @@ fn make_handler(
         if frames.is_empty() {
             return;
         }
+        let accepted_us = get_timestamp_us();
         let mut s = state.borrow_mut();
         for f in frames {
             process_frame(&mut s, &publisher, recv_us, accepted_us, f);
@@ -225,7 +207,7 @@ fn process_frame(
     state: &mut SharedState,
     publisher: &Rc<SpreadPublisher>,
     recv_us: i64,
-    accepted_us: Option<i64>,
+    accepted_us: i64,
     f: BboFrame,
 ) {
     let prev = state.dedup.get(&f.symbol).copied().unwrap_or(i64::MIN);
@@ -237,9 +219,8 @@ fn process_frame(
 
     if f.ts_ms > 0 {
         let ts_us = f.ts_ms.saturating_mul(1000);
-        let sample_us = accepted_us.unwrap_or(recv_us);
-        state.latency_net.push((sample_us - ts_us) as f64);
-        state.latency_e2e.push((sample_us - ts_us) as f64);
+        state.latency_net.push((recv_us - ts_us) as f64);
+        state.latency_e2e.push((accepted_us - ts_us) as f64);
     }
 
     let msg = AskBidSpreadMsg::create(

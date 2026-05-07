@@ -93,11 +93,7 @@ impl VenueAdapter for BybitAdapter {
         out
     }
 
-    fn parse_frame(&self, raw: &str) -> Result<Vec<BboFrame>> {
-        let value: Value = match serde_json::from_str(raw) {
-            Ok(v) => v,
-            Err(_) => return Ok(Vec::new()),
-        };
+    fn parse_frame(&self, value: &Value) -> Result<Vec<BboFrame>> {
         let topic = match value.get("topic").and_then(|v| v.as_str()) {
             Some(t) if t.starts_with("orderbook.1.") => t,
             _ => return Ok(Vec::new()),
@@ -212,6 +208,10 @@ fn pick_top_level(arr: &[Value], symbol: &str, side: &str) -> Result<Option<(f64
 mod tests {
     use super::*;
 
+    fn v(raw: &str) -> Value {
+        serde_json::from_str(raw).expect("test fixture must be valid JSON")
+    }
+
     #[test]
     fn snapshot_seeds_cache_and_emits_full_bbo() {
         let raw = r#"{
@@ -219,7 +219,7 @@ mod tests {
             "data":{"s":"BTCUSDT","b":[["100","1"]],"a":[["101","2"]],"u":1}
         }"#;
         let a = BybitAdapter::new(TradingVenue::BybitFutures);
-        let frames = a.parse_frame(raw).unwrap();
+        let frames = a.parse_frame(&v(raw)).unwrap();
         assert_eq!(frames.len(), 1);
         let f = &frames[0];
         assert_eq!(f.symbol, "BTCUSDT");
@@ -235,7 +235,7 @@ mod tests {
             "data":{"s":"BTCUSDT","b":[["100","1"]],"a":[],"u":1}
         }"#;
         let a = BybitAdapter::new(TradingVenue::BybitFutures);
-        assert!(a.parse_frame(raw).unwrap().is_empty());
+        assert!(a.parse_frame(&v(raw)).unwrap().is_empty());
     }
 
     #[test]
@@ -245,13 +245,13 @@ mod tests {
             "topic":"orderbook.1.BTCUSDT","type":"snapshot","ts":1,
             "data":{"s":"BTCUSDT","b":[["100","1"]],"a":[["101","2"]],"u":1}
         }"#;
-        a.parse_frame(snap).unwrap();
+        a.parse_frame(&v(snap)).unwrap();
         // 只更新 ask 一侧
         let delta = r#"{
             "topic":"orderbook.1.BTCUSDT","type":"delta","ts":2,
             "data":{"s":"BTCUSDT","b":[],"a":[["101.5","3"]],"u":2}
         }"#;
-        let frames = a.parse_frame(delta).unwrap();
+        let frames = a.parse_frame(&v(delta)).unwrap();
         assert_eq!(frames.len(), 1);
         let f = &frames[0];
         assert_eq!(f.seq_id, 2);
@@ -267,7 +267,7 @@ mod tests {
             "data":{"s":"BTCUSDT","b":[["100","1"]],"a":[["101","2"]]}
         }"#;
         let a = BybitAdapter::new(TradingVenue::BybitFutures);
-        assert!(a.parse_frame(raw).is_err());
+        assert!(a.parse_frame(&v(raw)).is_err());
     }
 
     #[test]
