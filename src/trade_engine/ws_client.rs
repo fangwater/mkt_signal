@@ -2378,8 +2378,13 @@ impl TradeWsClient {
             return true;
         };
         // Binance WS 仅暴露一个服务端时间戳 `result.updateTime`（ms），退化为 T2=T3。
-        // 仅 status==200 时采样。
-        if resp.status == Some(200) {
+        // 仅 status==200 且非 Binance Margin（现货）时采样——Margin 路径暂不参与响应 RTT 测量。
+        let is_binance_margin = matches!(
+            meta.req_type,
+            TradeRequestType::BinanceWsNewMarginOrder
+                | TradeRequestType::BinanceWsCancelMarginOrder
+        );
+        if resp.status == Some(200) && !is_binance_margin {
             let (_, _, update_time_ms, _, _) = binance_ws::extract_order_info(&resp);
             if update_time_ms > 0 {
                 let ts_us = update_time_ms.saturating_mul(1000);

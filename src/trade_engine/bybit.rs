@@ -450,17 +450,11 @@ impl BybitWsOrderResponse {
                 None
             }
         };
-        // Bybit v5 trade API 顶层 `time`（ms）；旧格式在 `header.Timenow`。两者择一。
+        // Bybit v5 trade API 顶层 `time`（ms）。固定字段，缺失即 schema 异常，直接 panic。
         let time_now_ms = obj
             .get("time")
             .and_then(parse_ms)
-            .or_else(|| {
-                obj.get("header")
-                    .and_then(|v| v.as_object())
-                    .and_then(|header| header.get("Timenow"))
-                    .and_then(parse_ms)
-            })
-            .unwrap_or(0);
+            .expect("Bybit ws order response: missing top-level `time` field");
 
         Some(Self {
             req_id: obj
@@ -617,7 +611,7 @@ mod tests {
 
     #[test]
     fn parses_bybit_ws_order_response() {
-        let payload = r#"{"reqId":"123","retCode":0,"retMsg":"OK","op":"order.create","data":{"orderId":"abcdef","orderLinkId":"42"},"header":{"Timenow":"1711001595209"}}"#;
+        let payload = r#"{"reqId":"123","retCode":0,"retMsg":"OK","op":"order.create","data":{"orderId":"abcdef","orderLinkId":"42"},"time":1711001595209}"#;
         let resp = BybitWsOrderResponse::from_json_str(payload).unwrap();
         assert_eq!(resp.transport_id(), Some(123));
         assert_eq!(resp.client_order_id(), Some(42));
@@ -629,7 +623,7 @@ mod tests {
 
     #[test]
     fn parses_bybit_ws_order_response_without_order_link_id() {
-        let payload = r#"{"reqId":"123","retCode":0,"retMsg":"OK","op":"order.create","data":{"orderId":"abcdef","orderLinkId":""},"header":{"Timenow":"1711001595209"}}"#;
+        let payload = r#"{"reqId":"123","retCode":0,"retMsg":"OK","op":"order.create","data":{"orderId":"abcdef","orderLinkId":""},"time":1711001595209}"#;
         let resp = BybitWsOrderResponse::from_json_str(payload).unwrap();
         assert_eq!(resp.transport_id(), Some(123));
         assert_eq!(resp.client_order_id(), None);
@@ -639,7 +633,7 @@ mod tests {
 
     #[test]
     fn parses_failed_bybit_ws_order_response_without_order_link_id() {
-        let payload = r#"{"reqId":"123","retCode":170217,"retMsg":"Only reduceOnly order is allowed","op":"order.create","data":{"orderId":"","orderLinkId":""},"header":{"Timenow":"1711001595209"}}"#;
+        let payload = r#"{"reqId":"123","retCode":170217,"retMsg":"Only reduceOnly order is allowed","op":"order.create","data":{"orderId":"","orderLinkId":""},"time":1711001595209}"#;
         let resp = BybitWsOrderResponse::from_json_str(payload).unwrap();
         assert_eq!(resp.transport_id(), Some(123));
         assert_eq!(resp.client_order_id(), None);
