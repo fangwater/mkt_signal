@@ -200,13 +200,19 @@ pub enum WsCommand {
     Shutdown,
 }
 
-/// 跨 WS endpoint 共享的 IPC→WS 端到端延迟分桶（new vs cancel）。
+/// 跨 WS endpoint 共享的延迟分桶。
+/// - `new` / `cancel`：所有 venue 通用，IPC→WS 端到端（自 IPC 解析至 `ws.send` 之前）。
+/// - `rtt_new` / `rtt_cancel`：仅在需要测响应 RTT 的 venue 下为 `Some`（当前仅 Bitget），
+///   样本来源是 venue 的成功响应回到本地的时刻减去 `track_inflight` 时的 `sent_at`。
+///
 /// trade_engine 跑在 `current_thread` runtime + `LocalSet`，所有 ws task 同线程，
 /// 因此 `Rc<RefCell<..>>` 已经够用，无须 `Arc<Mutex<..>>`。
 #[derive(Clone)]
 pub(crate) struct WsLatencyBuckets {
     pub new: Rc<RefCell<LatencyKll>>,
     pub cancel: Rc<RefCell<LatencyKll>>,
+    pub rtt_new: Option<Rc<RefCell<LatencyKll>>>,
+    pub rtt_cancel: Option<Rc<RefCell<LatencyKll>>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -289,6 +295,8 @@ struct TradeInflightMeta {
     req_type: TradeRequestType,
     client_order_id: i64,
     ws_open_update_enabled: bool,
+    /// 单调时钟，`track_inflight`（即 `ws.send` 之后）时打点；用于响应 RTT 统计。
+    sent_at: std::time::Instant,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1466,6 +1474,7 @@ impl TradeWsClient {
                 req_type: msg.req_type,
                 client_order_id: msg.client_order_id,
                 ws_open_update_enabled,
+                sent_at: std::time::Instant::now(),
             },
         );
     }
@@ -1717,6 +1726,24 @@ impl TradeWsClient {
                     return;
                 };
                 let client_order_id = resp.client_order_id().unwrap_or(meta.client_order_id);
+                // Bitget 响应 RTT 采样：仅成功响应，按 req_type 分流到 new/cancel 桶。
+                // RTT = T2(收到响应) - T1(track_inflight 时的 sent_at)，纯网络 RTT。
+                if resp.is_success() {
+                    let rtt_us = meta.sent_at.elapsed().as_micros() as f64;
+                    match classify_ws_action(meta.req_type) {
+                        WsAction::New => {
+                            if let Some(bucket) = self.lat_buckets.rtt_new.as_ref() {
+                                bucket.borrow_mut().push(rtt_us);
+                            }
+                        }
+                        WsAction::Cancel => {
+                            if let Some(bucket) = self.lat_buckets.rtt_cancel.as_ref() {
+                                bucket.borrow_mut().push(rtt_us);
+                            }
+                        }
+                        WsAction::Other => {}
+                    }
+                }
                 if resp.is_cancel() {
                     // Bitget cancel-order success lacks sufficient order-state detail; rely on
                     // account stream for terminal state reconciliation and only keep error payloads.

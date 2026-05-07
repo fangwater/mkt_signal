@@ -247,15 +247,21 @@ impl TradeEngine {
 
         // IPC→WS 端到端延迟分桶（new vs cancel）。capacity 10000，跨 endpoint 共享。
         // current_thread runtime + LocalSet 下所有 ws task 同线程，`Rc<RefCell<..>>` 即可。
+        // 响应 RTT 桶（rtt_new / rtt_cancel）目前仅对 Bitget 启用，其他 venue 留 None。
+        let mk_bucket = |label: String| {
+            Rc::new(RefCell::new(LatencyKll::with_capacity(
+                label,
+                LatencyKll::DEFAULT_CAPACITY,
+            )))
+        };
+        let rtt_buckets_enabled = exchange == Exchange::Bitget;
         let lat_buckets = WsLatencyBuckets {
-            new: Rc::new(RefCell::new(LatencyKll::with_capacity(
-                format!("trade_engine:{}:ws:new", exchange.as_str()),
-                LatencyKll::DEFAULT_CAPACITY,
-            ))),
-            cancel: Rc::new(RefCell::new(LatencyKll::with_capacity(
-                format!("trade_engine:{}:ws:cancel", exchange.as_str()),
-                LatencyKll::DEFAULT_CAPACITY,
-            ))),
+            new: mk_bucket(format!("trade_engine:{}:ws:new", exchange.as_str())),
+            cancel: mk_bucket(format!("trade_engine:{}:ws:cancel", exchange.as_str())),
+            rtt_new: rtt_buckets_enabled
+                .then(|| mk_bucket(format!("trade_engine:{}:ws:rtt:new", exchange.as_str()))),
+            rtt_cancel: rtt_buckets_enabled
+                .then(|| mk_bucket(format!("trade_engine:{}:ws:rtt:cancel", exchange.as_str()))),
         };
 
         // 初始化 REST dispatcher（用于 Binance）
