@@ -96,6 +96,15 @@ infer_exchange_from_env_name() {
   fi
 }
 
+require_fr_env_name() {
+  local exchange="$1"
+  local name="$2"
+  if [[ ! "$name" =~ ^${exchange}_fr_[a-z0-9][a-z0-9_-]*$ ]]; then
+    echo "[ERROR] env-name must match ${exchange}_fr_<suffix> (got: ${name})" >&2
+    exit 1
+  fi
+}
+
 if [[ -z "$ENV_NAME" ]]; then
   echo "[ERROR] --env-name is required (e.g. binance_fr_trade01)" >&2
   usage >&2
@@ -125,6 +134,7 @@ case "$EXCHANGE" in
     exit 1
     ;;
 esac
+require_fr_env_name "$EXCHANGE" "$ENV_NAME"
 
 PORT=$((VIZ_PORT + 1))
 TARGET_DIR="${HOME}/${ENV_NAME}"
