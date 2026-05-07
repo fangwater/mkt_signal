@@ -3,6 +3,7 @@ use crate::common::exchange::Exchange;
 use crate::common::iceoryx_publisher::{QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD};
 use crate::common::ipc_service_name::build_service_name;
 use crate::rolling_metrics::latency_kll::LatencyKll;
+use crate::rolling_metrics::latency_snapshot::LATENCY_SNAPSHOT_PAYLOAD_LEN;
 use crate::trade_engine::bitget_query_rate_limiter::BitgetQueryRateLimiter;
 use crate::trade_engine::config::{ApiKey, WsConstants};
 use crate::trade_engine::dispatcher::Dispatcher;
@@ -229,6 +230,18 @@ impl TradeEngine {
             query_resp_service_obj.publisher_builder().create()?;
         debug!("publisher created for service: {}", query_resp_service);
 
+        // Latency snapshot publisher（每 30s venue 级 IPC 推送，512B 定长载荷）
+        let latency_service =
+            build_service_name(&format!("latency_snapshots/{}", canonical_exchange));
+        let latency_service_obj = node
+            .service_builder(&ServiceName::new(&latency_service)?)
+            .publish_subscribe::<[u8; LATENCY_SNAPSHOT_PAYLOAD_LEN]>()
+            .subscriber_max_buffer_size(8)
+            .open_or_create()?;
+        let latency_publisher: Publisher<ipc::Service, [u8; LATENCY_SNAPSHOT_PAYLOAD_LEN], ()> =
+            latency_service_obj.publisher_builder().create()?;
+        debug!("publisher created for service: {}", latency_service);
+
         // 直接使用传入的 exchange 枚举
 
         // Internal mpsc pipeline
@@ -298,6 +311,37 @@ impl TradeEngine {
             info!("binance ws disabled (BINANCE_ACCOUNT_MODE!=STANDARD)");
         }
         let mut worker_handles: Vec<(&'static str, tokio::task::JoinHandle<()>)> = Vec::new();
+
+        // 周期 publisher：每 30s 把所有非空桶的 KLL 快照打包成 LatencySnapshotMsg
+        // 推到 IPC（service: latency_snapshots/<venue>）。空桶不入消息，没桶不发。
+        {
+            let lat_buckets_for_ticker = lat_buckets.clone();
+            let venue_id = exchange.to_u8() as u32;
+            let shutdown_for_ticker = shutdown.clone();
+            let ticker = tokio::task::spawn_local(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(30));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                interval.tick().await; // 跳过启动后立即触发的第一次
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = shutdown_for_ticker.cancelled() => break,
+                        _ = interval.tick() => {
+                            if let Some(msg) = lat_buckets_for_ticker.take_snapshot(venue_id) {
+                                if let Err(e) = latency_publisher.send_copy(msg.into_bytes()) {
+                                    warn!(
+                                        "trade_engine: latency snapshot publish failed: {}",
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                info!("trade_engine: latency snapshot ticker stopped");
+            });
+            worker_handles.push(("latency_snapshot_ticker", ticker));
+        }
 
         let mut gate_futures_ws_endpoints: Option<Vec<WsEndpointHandle>> = None;
         let mut binance_spot_ws_endpoints: Option<Vec<WsEndpointHandle>> = None;

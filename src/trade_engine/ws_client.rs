@@ -5,6 +5,10 @@ use crate::portfolio_margin::bybit_auth::BybitCredentials;
 use crate::portfolio_margin::gate_auth::GateCredentials;
 use crate::portfolio_margin::okex_auth::OkexCredentials;
 use crate::rolling_metrics::latency_kll::LatencyKll;
+use crate::rolling_metrics::latency_snapshot::{
+    LatencyBucketStat, LatencySnapshotMsg, ACTION_ID_CANCEL, ACTION_ID_NEW, METRIC_ID_DOWNLINK,
+    METRIC_ID_IPC_TO_WS, METRIC_ID_RTT, METRIC_ID_SERVER, METRIC_ID_UPLINK,
+};
 use crate::trade_engine::binance_ws;
 use crate::trade_engine::bitget_ws;
 use crate::trade_engine::bybit::{
@@ -222,6 +226,32 @@ pub(crate) struct WsLatencyBuckets {
     pub resp: Option<RespLatencyBuckets>,
 }
 
+/// `WsLatencyBuckets::take_snapshot` 用：把单桶 KLL 快照写进消息槽位。
+fn snap_into(
+    buckets: &mut [LatencyBucketStat;
+             crate::rolling_metrics::latency_snapshot::LATENCY_SNAPSHOT_MAX_BUCKETS],
+    idx: &mut usize,
+    kll: &Rc<RefCell<LatencyKll>>,
+    metric_id: u8,
+    action_id: u8,
+) {
+    if let Some(s) = kll.borrow_mut().snapshot_and_reset() {
+        if *idx < buckets.len() {
+            buckets[*idx] = LatencyBucketStat {
+                metric_id,
+                action_id,
+                _pad: [0; 6],
+                n: s.n,
+                p50_us: s.p50_us,
+                p90_us: s.p90_us,
+                p95_us: s.p95_us,
+                p99_us: s.p99_us,
+            };
+            *idx += 1;
+        }
+    }
+}
+
 /// 服务端响应的细粒度延迟分解（4 区间 × {new, cancel}）：
 /// - `uplink_*`     = T2 − T1（us → server）
 /// - `server_*`     = T3 − T2（服务端处理；Bitget/Binance 退化为 0）
@@ -240,6 +270,93 @@ pub(crate) struct RespLatencyBuckets {
 }
 
 impl WsLatencyBuckets {
+    /// 周期性 publisher 调用：取所有非空桶的 KLL 快照、清空 buffer，拼成定长
+    /// `LatencySnapshotMsg`。所有桶都为空时返回 `None`，调用方可以选择不发布。
+    pub(crate) fn take_snapshot(&self, venue_id: u32) -> Option<LatencySnapshotMsg> {
+        let mut msg = LatencySnapshotMsg::new(venue_id, get_timestamp_us());
+        let mut idx = 0usize;
+
+        snap_into(
+            &mut msg.buckets,
+            &mut idx,
+            &self.new,
+            METRIC_ID_IPC_TO_WS,
+            ACTION_ID_NEW,
+        );
+        snap_into(
+            &mut msg.buckets,
+            &mut idx,
+            &self.cancel,
+            METRIC_ID_IPC_TO_WS,
+            ACTION_ID_CANCEL,
+        );
+        if let Some(r) = self.resp.as_ref() {
+            snap_into(
+                &mut msg.buckets,
+                &mut idx,
+                &r.uplink_new,
+                METRIC_ID_UPLINK,
+                ACTION_ID_NEW,
+            );
+            snap_into(
+                &mut msg.buckets,
+                &mut idx,
+                &r.uplink_cancel,
+                METRIC_ID_UPLINK,
+                ACTION_ID_CANCEL,
+            );
+            snap_into(
+                &mut msg.buckets,
+                &mut idx,
+                &r.server_new,
+                METRIC_ID_SERVER,
+                ACTION_ID_NEW,
+            );
+            snap_into(
+                &mut msg.buckets,
+                &mut idx,
+                &r.server_cancel,
+                METRIC_ID_SERVER,
+                ACTION_ID_CANCEL,
+            );
+            snap_into(
+                &mut msg.buckets,
+                &mut idx,
+                &r.downlink_new,
+                METRIC_ID_DOWNLINK,
+                ACTION_ID_NEW,
+            );
+            snap_into(
+                &mut msg.buckets,
+                &mut idx,
+                &r.downlink_cancel,
+                METRIC_ID_DOWNLINK,
+                ACTION_ID_CANCEL,
+            );
+            snap_into(
+                &mut msg.buckets,
+                &mut idx,
+                &r.rtt_new,
+                METRIC_ID_RTT,
+                ACTION_ID_NEW,
+            );
+            snap_into(
+                &mut msg.buckets,
+                &mut idx,
+                &r.rtt_cancel,
+                METRIC_ID_RTT,
+                ACTION_ID_CANCEL,
+            );
+        }
+
+        if idx == 0 {
+            None
+        } else {
+            msg.n_buckets = idx as u32;
+            Some(msg)
+        }
+    }
+
     /// 从 venue 响应里取到 T2/T3 后调用，用 inflight 里记下的 T1 与本地 T4
     /// 推 4 个分位桶。`rtt = T4 − T1` 用 `Instant` 单调时钟（免受墙钟跳动影响）。
     fn record_resp(
