@@ -1,7 +1,8 @@
-//! OKex public ws 极简连接 + 重连 + 心跳 + 帧上抛。
+//! OKex/Binance/Bybit/Gate/Bitget 通用 ws 连接 + 重连 + 帧上抛。
 //!
-//! 不复用 `connection::MktConnection`，避免它的 `Arc<Mutex<WebSocketStream>>`
-//! 共享所有权语义；这里 single-thread runtime 下 sink/stream 独占即可。
+//! single-thread runtime 下被 `spawn_local` 拉起，sink/stream 独占。
+//! per-venue 的心跳格式由 [`crate::spread_pbs::adapter::KeepaliveSpec`] 决定，
+//! `keepalive=None` 时仅依赖服务端 ws-Ping/Pong。
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
@@ -11,32 +12,42 @@ use native_tls::TlsConnector as NativeTlsConnector;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 use tokio::net::{lookup_host, TcpSocket, TcpStream};
-use tokio::sync::mpsc;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio_native_tls::TlsConnector as TokioTlsConnector;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{client_async, MaybeTlsStream, WebSocketStream};
 use url::Url;
+
+use crate::spread_pbs::adapter::KeepaliveSpec;
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type WsSink = SplitSink<WsStream, Message>;
 type WsRead = SplitStream<WsStream>;
 
 const RECONNECT_BACKOFF_SECS: u64 = 3;
-const PING_INTERVAL_SECS: u64 = 20;
 
-/// 启动并维护一条 OKex public ws；ws frame 中的 Text 帧 raw bytes 通过 `frame_tx` 上抛。
-///
-/// `label` 用作日志前缀（如 `"primary"` / `"secondary"`）。
-/// `local_ip` 为空或 `"0.0.0.0"` 时不绑定本地地址。
-pub async fn run_okex_public_ws(
-    label: &'static str,
-    url: String,
-    local_ip: String,
-    subscribe_msgs: Vec<serde_json::Value>,
+pub struct WsLoopParams {
+    pub label: &'static str,
+    pub url: String,
+    pub local_ip: String,
+    pub subscribe_msgs: Vec<serde_json::Value>,
+    pub keepalive: Option<KeepaliveSpec>,
+}
+
+/// 一条 ws 的连接 + 自动重连主循环。Text/Binary 帧 raw bytes 通过 `frame_tx` 上抛。
+pub async fn run_public_ws(
+    params: WsLoopParams,
     frame_tx: mpsc::UnboundedSender<Bytes>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
+    let WsLoopParams {
+        label,
+        url,
+        local_ip,
+        subscribe_msgs,
+        keepalive,
+    } = params;
+
     loop {
         if *shutdown_rx.borrow() {
             log::info!("spread_pbs ws[{}] shutdown requested, exiting", label);
@@ -46,7 +57,8 @@ pub async fn run_okex_public_ws(
         match connect_and_subscribe(&url, &local_ip, &subscribe_msgs).await {
             Ok((sink, read)) => {
                 log::info!("spread_pbs ws[{}] connected to {}", label, url);
-                run_session(label, sink, read, &frame_tx, &mut shutdown_rx).await;
+                run_session(label, sink, read, &frame_tx, &mut shutdown_rx, keepalive.as_ref())
+                    .await;
                 if *shutdown_rx.borrow() {
                     return;
                 }
@@ -162,9 +174,15 @@ async fn run_session(
     mut read: WsRead,
     frame_tx: &mpsc::UnboundedSender<Bytes>,
     shutdown_rx: &mut watch::Receiver<bool>,
+    keepalive: Option<&KeepaliveSpec>,
 ) {
-    let mut ping_ticker = tokio::time::interval(Duration::from_secs(PING_INTERVAL_SECS));
-    ping_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let interval = keepalive
+        .map(|k| k.interval)
+        .unwrap_or(Duration::from_secs(60));
+    let mut keepalive_ticker = tokio::time::interval(interval);
+    keepalive_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // 第一次 tick 立刻就触发，跳过它以免连上来就发心跳干扰订阅。
+    keepalive_ticker.tick().await;
 
     loop {
         tokio::select! {
@@ -175,17 +193,18 @@ async fn run_session(
                     return;
                 }
             }
-            _ = ping_ticker.tick() => {
-                if let Err(e) = sink.send(Message::Text("ping".to_string())).await {
-                    log::warn!("spread_pbs ws[{}] ping failed: {:#}", label, e);
+            _ = keepalive_ticker.tick(), if keepalive.is_some() => {
+                let payload = (keepalive.unwrap().build)();
+                if let Err(e) = sink.send(payload).await {
+                    log::warn!("spread_pbs ws[{}] keepalive failed: {:#}", label, e);
                     return;
                 }
             }
             next = read.next() => {
                 match next {
                     Some(Ok(Message::Text(text))) => {
-                        // OKex 心跳响应直接丢；其他业务帧 raw bytes 上抛
-                        if text == "pong" {
+                        // 应用层 pong（OKex/Bitget 是 "pong"，Bybit/Gate 是 JSON）一律不上抛。
+                        if is_keepalive_response(&text) {
                             continue;
                         }
                         if frame_tx.send(Bytes::from(text)).is_err() {
@@ -219,4 +238,23 @@ async fn run_session(
             }
         }
     }
+}
+
+/// 各家服务端 pong/事件 ack 的轻量识别——避免 parser 对它们报 error。
+fn is_keepalive_response(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    if trimmed == "pong" || trimmed == "\"pong\"" {
+        return true;
+    }
+    // Bybit `{"op":"pong",...}` / `{"success":true,"op":"ping",...}`；
+    // Gate `{"channel":"...pong",...}` / `{"event":"subscribe","result":...}`；
+    // Binance / Bitget 订阅 ack 也走这里跳过。
+    if trimmed.contains("\"pong\"")
+        || trimmed.contains("\"op\":\"ping\"")
+        || trimmed.contains("\"event\":\"subscribe\"")
+        || trimmed.contains("\"event\":\"unsubscribe\"")
+    {
+        return true;
+    }
+    false
 }

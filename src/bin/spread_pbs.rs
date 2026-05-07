@@ -11,7 +11,7 @@ use mkt_signal::spread_pbs::SpreadPbsApp;
 #[command(name = "spread_pbs")]
 #[command(about = "Dedicated high-speed askbidspread publisher (single-venue, pinned core).")]
 struct Args {
-    /// Trading venue（目前仅支持 okex_margin / okex_futures）
+    /// Trading venue（OKex / Binance / Bybit / Gate / Bitget × spot+futures，共 10 个）
     #[arg(short, long)]
     venue: TradingVenue,
 

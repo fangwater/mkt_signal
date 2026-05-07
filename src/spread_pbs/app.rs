@@ -7,15 +7,11 @@ use tokio::sync::{mpsc, watch};
 use crate::common::mkt_msg::AskBidSpreadMsg;
 use crate::common::time_util::get_timestamp_us;
 use crate::mkt_pub::cfg::Config;
-use crate::mkt_pub::sub_msg::SubscribeMsgs;
-use crate::signal::common::TradingVenue;
 
+use crate::spread_pbs::adapter::{create_adapter, BboFrame, VenueAdapter};
 use crate::spread_pbs::latency::LatencyKll;
-use crate::spread_pbs::okex::{parse_bbo_tbt, OkexBboFrame};
 use crate::spread_pbs::publisher::SpreadPublisher;
-use crate::spread_pbs::ws::run_okex_public_ws;
-
-const OKEX_PUBLIC_WS_URL: &str = "wss://ws.okx.com:8443/ws/v5/public";
+use crate::spread_pbs::ws::{run_public_ws, WsLoopParams};
 
 pub struct SpreadPbsApp {
     config: Config,
@@ -26,36 +22,44 @@ impl SpreadPbsApp {
         Self { config }
     }
 
-    /// 主入口：拉 OKex 全 symbol → 起双路 ws → 单 task 内 dedup + publish + KLL。
+    /// 主入口：拉 venue 全 symbol → 起双路 ws → 单 task 内 dedup + publish + KLL。
     ///
-    /// 必须在 `LocalSet` 上下文里 await（main 用 `LocalSet::run_until`）。
+    /// 必须在 `LocalSet` 上下文里 await（`main` 用 `LocalSet::run_until`）。
     pub async fn run(self) -> Result<()> {
         let venue = self.config.venue;
-        if !matches!(venue, TradingVenue::OkexMargin | TradingVenue::OkexFutures) {
-            bail!(
-                "spread_pbs 当前仅支持 okex venues，收到 {:?}（其他 venue 解析后续接入）",
-                venue
-            );
-        }
-        if !self.config.data_types.enable_ask_bid_spread {
-            bail!("mkt_cfg.data_types.enable_ask_bid_spread 必须为 true");
-        }
-
         let venue_slug: &'static str = venue.data_pub_slug();
-        log::info!("spread_pbs starting venue={}", venue_slug);
+
+        let adapter = match create_adapter(venue) {
+            Some(a) => Rc::<dyn VenueAdapter>::from(a),
+            None => bail!(
+                "spread_pbs 当前不支持 venue {:?}（仅 OKex/Binance/Bybit/Gate/Bitget × spot+futures）",
+                venue
+            ),
+        };
+        log::info!(
+            "spread_pbs starting venue={} adapter={}",
+            venue_slug,
+            adapter.name()
+        );
 
         // ---- 拉 symbol list & 构造订阅消息 ----
-        let sub_msgs = SubscribeMsgs::new(&self.config).await;
-        let n_msgs = sub_msgs.get_ask_bid_spread_subscribe_msg_len();
-        if n_msgs == 0 {
-            bail!("没有 ask_bid_spread 订阅消息（symbol list 为空？）");
+        let symbols = self
+            .config
+            .get_symbols()
+            .await
+            .with_context(|| format!("fetch symbols for {}", venue_slug))?;
+        if symbols.is_empty() {
+            bail!("symbol list 为空（{}）", venue_slug);
         }
-        let subscribe_payloads: Vec<serde_json::Value> = (0..n_msgs)
-            .map(|i| sub_msgs.get_ask_bid_spread_subscribe_msg(i).clone())
-            .collect();
+        let subscribe_msgs = adapter.build_subscribe(&symbols);
+        if subscribe_msgs.is_empty() {
+            bail!("adapter.build_subscribe 返回空（{} symbols 数={}）", venue_slug, symbols.len());
+        }
         log::info!(
-            "spread_pbs[{}] subscribe payloads prepared: {} batches",
-            venue_slug, n_msgs
+            "spread_pbs[{}] symbols={} subscribe_batches={}",
+            venue_slug,
+            symbols.len(),
+            subscribe_msgs.len()
         );
 
         // ---- IceOryx publisher ----
@@ -69,25 +73,31 @@ impl SpreadPbsApp {
         let (secondary_tx, mut secondary_rx) = mpsc::unbounded_channel::<Bytes>();
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-        tokio::task::spawn_local(run_okex_public_ws(
-            "primary",
-            OKEX_PUBLIC_WS_URL.to_string(),
-            self.config.primary_local_ip.clone(),
-            subscribe_payloads.clone(),
-            primary_tx,
-            shutdown_rx.clone(),
-        ));
-        tokio::task::spawn_local(run_okex_public_ws(
-            "secondary",
-            OKEX_PUBLIC_WS_URL.to_string(),
-            self.config.secondary_local_ip.clone(),
-            subscribe_payloads,
+        let url = adapter.ws_url();
+        let primary_params = WsLoopParams {
+            label: "primary",
+            url: url.clone(),
+            local_ip: self.config.primary_local_ip.clone(),
+            subscribe_msgs: subscribe_msgs.clone(),
+            keepalive: adapter.keepalive(),
+        };
+        let secondary_params = WsLoopParams {
+            label: "secondary",
+            url,
+            local_ip: self.config.secondary_local_ip.clone(),
+            subscribe_msgs,
+            keepalive: adapter.keepalive(),
+        };
+        tokio::task::spawn_local(run_public_ws(primary_params, primary_tx, shutdown_rx.clone()));
+        tokio::task::spawn_local(run_public_ws(
+            secondary_params,
             secondary_tx,
             shutdown_rx.clone(),
         ));
 
         // ---- 单 task dedup + publish + KLL ----
         let mut state = ProcessState {
+            adapter: Rc::clone(&adapter),
             dedup: HashMap::with_capacity(2048),
             latency: LatencyKll::new(venue_slug),
             publisher: publisher.clone(),
@@ -119,6 +129,7 @@ impl SpreadPbsApp {
 }
 
 struct ProcessState {
+    adapter: Rc<dyn VenueAdapter>,
     dedup: HashMap<String, i64>,
     latency: LatencyKll,
     publisher: Rc<SpreadPublisher>,
@@ -129,26 +140,24 @@ struct ProcessState {
 
 impl ProcessState {
     fn handle_frame(&mut self, label: &'static str, raw: &[u8]) {
-        // Most OKex public ws frames are short JSON text; reject non-utf8 immediately.
         let text = match std::str::from_utf8(raw) {
             Ok(s) => s,
             Err(_) => return,
         };
-        // 跳过控制帧（subscribe ack / pong）。OKex 的 bbo-tbt 业务帧总是以 `{"arg":` 开头。
-        if !text.contains("\"channel\":\"bbo-tbt\"") {
-            return;
-        }
 
-        let frames = match parse_bbo_tbt(text) {
+        let frames = match self.adapter.parse_frame(text) {
             Ok(v) => v,
             Err(e) => {
                 log::error!(
-                    "spread_pbs[{}] parse_bbo_tbt failed: {:#} payload={}",
+                    "spread_pbs[{}] adapter.parse_frame failed: {:#} payload={}",
                     label, e, text
                 );
                 return;
             }
         };
+        if frames.is_empty() {
+            return;
+        }
 
         let local_us = get_timestamp_us();
         for f in frames {
@@ -156,7 +165,7 @@ impl ProcessState {
         }
     }
 
-    fn process_frame(&mut self, local_us: i64, f: OkexBboFrame) {
+    fn process_frame(&mut self, local_us: i64, f: BboFrame) {
         let prev = self.dedup.get(&f.symbol).copied().unwrap_or(i64::MIN);
         if f.seq_id <= prev {
             self.dropped_by_seq += 1;
@@ -179,9 +188,12 @@ impl ProcessState {
         }
         self.published += 1;
 
-        let okex_us = f.ts_ms.saturating_mul(1000);
-        let delta = (local_us - okex_us) as f64;
-        self.latency.push(delta);
+        // 仅在 venue 提供 ts 时统计端到端延迟（spot bookTicker 无 ts，跳过）
+        if f.ts_ms > 0 {
+            let okex_us = f.ts_ms.saturating_mul(1000);
+            let delta = (local_us - okex_us) as f64;
+            self.latency.push(delta);
+        }
     }
 
     fn tick_stats(&mut self, venue_slug: &str) {

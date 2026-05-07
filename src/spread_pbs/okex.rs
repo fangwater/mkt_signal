@@ -1,20 +1,12 @@
 use anyhow::{anyhow, Result};
 use serde_json::Value;
+use std::time::Duration;
 
-/// OKex bbo-tbt 单帧解析结果。
-#[derive(Debug, Clone)]
-pub struct OkexBboFrame {
-    /// 归一化后的 symbol（如 `BTCUSDT`）。
-    pub symbol: String,
-    /// 服务器时间，毫秒。
-    pub ts_ms: i64,
-    /// OKex 单 instId 内单调递增的序号。
-    pub seq_id: i64,
-    pub bid_price: f64,
-    pub bid_amount: f64,
-    pub ask_price: f64,
-    pub ask_amount: f64,
-}
+use crate::signal::common::TradingVenue;
+use crate::spread_pbs::adapter::{BboFrame, KeepaliveSpec, VenueAdapter};
+
+const OKEX_PUBLIC_WS_URL: &str = "wss://ws.okx.com:8443/ws/v5/public";
+const OKEX_SUBSCRIBE_CHUNK: usize = 240;
 
 /// 把 OKex `BTC-USDT-SWAP` / `BTC-USDT` 归一化成 `BTCUSDT`。
 pub fn normalize_okex_symbol(symbol: &str) -> String {
@@ -26,11 +18,8 @@ pub fn normalize_okex_symbol(symbol: &str) -> String {
     upper
 }
 
-/// 解析 OKex bbo-tbt 私有 ws 推送（`{"arg":{...},"data":[...]}` 形态）。
-///
-/// 返回所有可用的 frame。`seqId` 字段是必需的——OKex 公共/私有 bbo-tbt
-/// 都在 `data[].seqId` 里给出，缺失即视为协议异常，由调用方决定丢帧或报错。
-pub fn parse_bbo_tbt(json_str: &str) -> Result<Vec<OkexBboFrame>> {
+/// OKex spot/swap 共用 bbo-tbt frame 解析。
+pub fn parse_bbo_tbt(json_str: &str) -> Result<Vec<BboFrame>> {
     let value: Value = serde_json::from_str(json_str)
         .map_err(|e| anyhow!("bbo-tbt json parse failed: {}", e))?;
 
@@ -90,7 +79,7 @@ pub fn parse_bbo_tbt(json_str: &str) -> Result<Vec<OkexBboFrame>> {
             continue;
         }
 
-        out.push(OkexBboFrame {
+        out.push(BboFrame {
             symbol: symbol.clone(),
             ts_ms,
             seq_id,
@@ -111,7 +100,7 @@ fn parse_string_f64(value: Option<&Value>, field: &str, inst_id: &str) -> Result
         .ok_or_else(|| anyhow!("bbo-tbt {} missing/invalid {}", inst_id, field))
 }
 
-/// 把 OKex inst_id 列表切片成多条 subscribe 消息，单条 args 上限 240（OKex 公开文档软限）。
+/// 把 inst_id 列表切片成多条 subscribe 消息（OKex 软上限 240 args/帧）。
 pub fn build_bbo_tbt_subscribe_messages(inst_ids: &[String], chunk_size: usize) -> Vec<Value> {
     let chunk_size = chunk_size.max(1);
     let mut out = Vec::new();
@@ -131,6 +120,42 @@ pub fn build_bbo_tbt_subscribe_messages(inst_ids: &[String], chunk_size: usize) 
         }));
     }
     out
+}
+
+pub struct OkexAdapter {
+    _venue: TradingVenue,
+}
+
+impl OkexAdapter {
+    pub fn new(venue: TradingVenue) -> Self {
+        Self { _venue: venue }
+    }
+}
+
+impl VenueAdapter for OkexAdapter {
+    fn name(&self) -> &'static str {
+        "okex"
+    }
+
+    fn ws_url(&self) -> String {
+        OKEX_PUBLIC_WS_URL.to_string()
+    }
+
+    fn build_subscribe(&self, symbols: &[String]) -> Vec<Value> {
+        build_bbo_tbt_subscribe_messages(symbols, OKEX_SUBSCRIBE_CHUNK)
+    }
+
+    fn parse_frame(&self, raw: &str) -> Result<Vec<BboFrame>> {
+        // 控制帧 / pong / event ack 直接返回空集（不要 anyhow!）。
+        if !raw.contains("\"channel\":\"bbo-tbt\"") {
+            return Ok(Vec::new());
+        }
+        parse_bbo_tbt(raw)
+    }
+
+    fn keepalive(&self) -> Option<KeepaliveSpec> {
+        Some(KeepaliveSpec::text(Duration::from_secs(20), "ping"))
+    }
 }
 
 #[cfg(test)]
@@ -189,7 +214,7 @@ mod tests {
     fn chunks_subscribe_into_240_per_batch() {
         let inst_ids: Vec<String> = (0..500).map(|i| format!("INST-{}", i)).collect();
         let msgs = build_bbo_tbt_subscribe_messages(&inst_ids, 240);
-        assert_eq!(msgs.len(), 3); // 240 + 240 + 20
+        assert_eq!(msgs.len(), 3);
         let first_args = msgs[0]["args"].as_array().unwrap();
         assert_eq!(first_args.len(), 240);
         let last_args = msgs[2]["args"].as_array().unwrap();
