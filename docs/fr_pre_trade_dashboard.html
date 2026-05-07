@@ -1,0 +1,1065 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FR Pre-Trade Dashboard</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Segoe UI", "PingFang SC", "Helvetica Neue", sans-serif;
+        --bg: #0d1117;
+        --bg-soft: #161b22;
+        --bg-card: #0b1220;
+        --border: #30363d;
+        --text: #e6edf3;
+        --muted: #8b949e;
+        --accent-green: #3fb950;
+        --accent-red: #f85149;
+        --accent-warn: #d29922;
+        --accent-blue: #58a6ff;
+        --accent-purple: #b392f0;
+        --shadow: rgba(0, 0, 0, 0.32);
+        --tone-fwd-open: #f0883e;
+        --tone-fwd-close: #79c0ff;
+        --tone-bwd-open: #d2a8ff;
+        --tone-bwd-close: #56d364;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+      header {
+        padding: 12px 18px;
+        border-bottom: 1px solid var(--border);
+        background: var(--bg-soft);
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      header h1 {
+        margin: 0;
+        font-size: 17px;
+        letter-spacing: 0.2px;
+        font-weight: 600;
+      }
+      .demo-badge {
+        font-size: 11px;
+        font-weight: 600;
+        padding: 2px 8px;
+        border-radius: 4px;
+        background: var(--accent-purple);
+        color: var(--bg);
+        letter-spacing: 0.5px;
+      }
+      .status {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        font-size: 12px;
+        color: var(--muted);
+        flex-wrap: wrap;
+      }
+      .indicator {
+        width: 9px;
+        height: 9px;
+        border-radius: 999px;
+        display: inline-block;
+        margin-right: 6px;
+        box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.05);
+      }
+      .indicator.ok { background: var(--accent-green); }
+      .indicator.err { background: var(--accent-red); }
+      .indicator.warn { background: var(--accent-warn); }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 10px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.02);
+      }
+      .controls {
+        margin-left: auto;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .controls input[type="text"] {
+        padding: 6px 10px;
+        background: var(--bg);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        min-width: 220px;
+        outline: none;
+        font-size: 13px;
+      }
+      .controls input[type="text"]:focus {
+        border-color: var(--accent-blue);
+        box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.15);
+      }
+      .controls button {
+        padding: 6px 12px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: transparent;
+        color: var(--text);
+        cursor: pointer;
+        font-size: 13px;
+      }
+      .controls button:hover { border-color: var(--text); }
+      main {
+        flex: 1;
+        overflow: auto;
+        padding: 14px 18px 24px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+      section.section {
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        box-shadow: 0 8px 22px var(--shadow);
+      }
+      .section-header {
+        display: flex;
+        align-items: baseline;
+        gap: 14px;
+        flex-wrap: wrap;
+      }
+      .section-header h2 {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 600;
+      }
+      .meta {
+        font-size: 12px;
+        color: var(--muted);
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .meta.stale { color: var(--accent-red); }
+
+      /* Summary 信号层 */
+      .signal-summary {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+      }
+      .signal-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 5px 12px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: var(--bg-card);
+        font-size: 12px;
+      }
+      .signal-chip .label {
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+        font-size: 10px;
+      }
+      .signal-chip .value {
+        font-variant-numeric: tabular-nums;
+        font-weight: 700;
+        font-size: 14px;
+      }
+      .signal-chip.active { border-color: var(--accent-blue); }
+      .signal-chip.fwd-open .value { color: var(--tone-fwd-open); }
+      .signal-chip.fwd-close .value { color: var(--tone-fwd-close); }
+      .signal-chip.bwd-open .value { color: var(--tone-bwd-open); }
+      .signal-chip.bwd-close .value { color: var(--tone-bwd-close); }
+
+      /* 风险层 */
+      .risk-grid {
+        display: grid;
+        grid-template-columns: 2fr 1fr;
+        gap: 12px;
+      }
+      .card-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: 10px;
+      }
+      .metric-card {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 12px 14px;
+        background: var(--bg-card);
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .metric-card h3 {
+        margin: 0;
+        font-size: 11px;
+        color: var(--muted);
+        font-weight: 500;
+        letter-spacing: 0.2px;
+        text-transform: uppercase;
+      }
+      .metric-card .value {
+        font-size: 19px;
+        font-weight: 650;
+        line-height: 1.1;
+        font-variant-numeric: tabular-nums;
+      }
+      .metric-card.warn .value { color: var(--accent-red); }
+      .chips {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        justify-content: flex-start;
+      }
+      .chip {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 8px 12px;
+        background: var(--bg-card);
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 12px;
+        font-size: 12px;
+      }
+      .chip .label {
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+        font-size: 11px;
+      }
+      .chip .value {
+        font-variant-numeric: tabular-nums;
+        font-weight: 600;
+        font-size: 13px;
+      }
+
+      /* 抽屉 */
+      .drawer-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        cursor: pointer;
+        user-select: none;
+      }
+      .drawer-arrow {
+        font-size: 11px;
+        color: var(--muted);
+        transition: transform 0.15s;
+      }
+      .drawer.open .drawer-arrow { transform: rotate(90deg); }
+      .drawer-body { display: none; }
+      .drawer.open .drawer-body { display: block; }
+
+      /* 阈值图例 */
+      .threshold-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 8px;
+      }
+      .thr-card {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 8px 12px;
+        background: var(--bg-card);
+        font-size: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .thr-card .head {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .thr-card .period {
+        font-weight: 700;
+        color: var(--accent-blue);
+      }
+      .thr-card .signal {
+        font-weight: 600;
+      }
+      .thr-card .signal.fwd-open { color: var(--tone-fwd-open); }
+      .thr-card .signal.fwd-close { color: var(--tone-fwd-close); }
+      .thr-card .signal.bwd-open { color: var(--tone-bwd-open); }
+      .thr-card .signal.bwd-close { color: var(--tone-bwd-close); }
+      .thr-card .expr {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .thr-card .threshold {
+        font-variant-numeric: tabular-nums;
+        font-weight: 600;
+      }
+
+      /* 表格 */
+      .table-wrapper {
+        overflow: auto;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--bg);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        min-width: 1280px;
+      }
+      thead {
+        background: rgba(22, 27, 34, 0.6);
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        backdrop-filter: blur(6px);
+      }
+      thead.col-group th {
+        font-size: 10px;
+        color: var(--accent-blue);
+        font-weight: 600;
+        letter-spacing: 0.4px;
+        border-bottom: 1px solid var(--border);
+        padding: 4px 12px;
+      }
+      th {
+        font-size: 11px;
+        color: var(--muted);
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+      }
+      th, td {
+        padding: 8px 12px;
+        text-align: right;
+        border-bottom: 1px solid var(--border);
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+        font-size: 13px;
+      }
+      th.group-fr, td.group-fr {
+        background: rgba(88, 166, 255, 0.04);
+      }
+      th:first-child, td:first-child { text-align: left; }
+      tbody tr:last-child td { border-bottom: none; }
+      tbody tr:hover { background: rgba(88, 166, 255, 0.05); }
+      td.negative { color: var(--accent-red); }
+      td.positive { color: var(--accent-green); }
+      td.muted { color: var(--muted); }
+      td.missing { color: var(--muted); opacity: 0.4; }
+
+      /* 4 个规则 hits 色块（无文字，纯颜色） */
+      .hits {
+        display: inline-flex;
+        gap: 4px;
+      }
+      .hit-dot {
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        border-radius: 3px;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid var(--border);
+      }
+      .hit-dot.hit-fwd-open { background: var(--tone-fwd-open); border-color: var(--tone-fwd-open); }
+      .hit-dot.hit-fwd-close { background: var(--tone-fwd-close); border-color: var(--tone-fwd-close); }
+      .hit-dot.hit-bwd-open { background: var(--tone-bwd-open); border-color: var(--tone-bwd-open); }
+      .hit-dot.hit-bwd-close { background: var(--tone-bwd-close); border-color: var(--tone-bwd-close); }
+
+      .empty {
+        text-align: center;
+        padding: 20px 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+      }
+      .small { font-size: 12px; }
+
+      @media (max-width: 1100px) {
+        .risk-grid { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>FR Pre-Trade</h1>
+      <span class="demo-badge" id="demo-badge">DEMO</span>
+      <div class="status">
+        <span class="pill"
+          ><span class="indicator warn" id="viz-indicator"></span
+          ><span id="viz-status">viz: 等待</span></span
+        >
+        <span class="pill"
+          ><span class="indicator warn" id="fr-indicator"></span
+          ><span id="fr-status">fr: 等待</span></span
+        >
+        <span class="pill">最后消息：<span id="last-update">-</span></span>
+      </div>
+      <div class="controls">
+        <input type="text" id="filter-input" placeholder="过滤 asset / symbol（如 BTC）" />
+        <button id="reload-btn" title="强制重连两路 WS">重连</button>
+      </div>
+    </header>
+
+    <main>
+      <!-- Summary：信号 + 风险 -->
+      <section class="section" id="summary-section">
+        <div class="section-header">
+          <h2>Summary</h2>
+          <div class="meta" id="summary-meta">-</div>
+        </div>
+
+        <div class="signal-summary" id="signal-summary"></div>
+
+        <div class="risk-grid">
+          <div class="card-grid">
+            <div class="metric-card">
+              <h3>总权益</h3>
+              <div class="value" id="risk-equity">--</div>
+            </div>
+            <div class="metric-card">
+              <h3>总敞口</h3>
+              <div class="value" id="risk-exposure">--</div>
+            </div>
+            <div class="metric-card">
+              <h3>总仓位</h3>
+              <div class="value" id="risk-position">--</div>
+            </div>
+            <div class="metric-card" id="metric-leverage">
+              <h3>Leverage</h3>
+              <div class="value" id="risk-leverage">--</div>
+            </div>
+            <div class="metric-card">
+              <h3>Max Leverage</h3>
+              <div class="value" id="risk-max-leverage">--</div>
+            </div>
+          </div>
+          <div class="chips">
+            <div class="chip">
+              <span class="label">借款 USD</span>
+              <span class="value" id="risk-borrowed">--</span>
+            </div>
+            <div class="chip">
+              <span class="label">利息 USD</span>
+              <span class="value" id="risk-interest">--</span>
+            </div>
+            <div class="chip">
+              <span class="label">UM 未实现</span>
+              <span class="value" id="risk-um-upl">--</span>
+            </div>
+            <div class="chip">
+              <span class="label">现货权益</span>
+              <span class="value" id="risk-spot-equity">--</span>
+            </div>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- 阈值图例抽屉 -->
+      <section class="section drawer" id="threshold-drawer">
+        <div class="drawer-header" id="threshold-toggle">
+          <span class="drawer-arrow">▶</span>
+          <h2 style="margin:0;font-size:14px;font-weight:600">阈值图例 <span class="muted small" id="threshold-count">(0)</span></h2>
+        </div>
+        <div class="drawer-body">
+          <div class="threshold-grid" id="threshold-grid"></div>
+        </div>
+      </section>
+
+      <!-- Table 1: 已持仓 -->
+      <section class="section" id="held-section">
+        <div class="section-header">
+          <h2>已持仓资产 <span class="muted small" id="held-count">(0)</span></h2>
+          <div class="meta" id="held-meta">-</div>
+        </div>
+        <div class="table-wrapper">
+          <table>
+            <thead class="col-group">
+              <tr>
+                <th colspan="1"></th>
+                <th colspan="6">敞口</th>
+                <th colspan="4">对冲</th>
+                <th colspan="9" class="group-fr">FR 信号</th>
+              </tr>
+            </thead>
+            <thead>
+              <tr>
+                <th>asset</th>
+                <th>open_qty</th>
+                <th>open_usdt</th>
+                <th>hedge_qty</th>
+                <th>hedge_usdt</th>
+                <th>net_qty</th>
+                <th>net_usdt</th>
+                <th>arb_time</th>
+                <th>mode</th>
+                <th>ret_qtl</th>
+                <th>offset</th>
+                <th class="group-fr">period</th>
+                <th class="group-fr">latest_fr%</th>
+                <th class="group-fr">pred_fr%</th>
+                <th class="group-fr">fr_ma%</th>
+                <th class="group-fr">cur_loan%</th>
+                <th class="group-fr">pred_loan%</th>
+                <th class="group-fr">fr+pred_loan</th>
+                <th class="group-fr">ma+cur_loan</th>
+                <th class="group-fr">hits</th>
+              </tr>
+            </thead>
+            <tbody id="held-body"></tbody>
+          </table>
+        </div>
+        <div class="empty" id="held-empty" style="display:none">暂无持仓</div>
+      </section>
+
+      <!-- Table 2: 评估中（默认折叠） -->
+      <section class="section drawer" id="eval-drawer">
+        <div class="drawer-header" id="eval-toggle">
+          <span class="drawer-arrow">▶</span>
+          <h2 style="margin:0;font-size:14px;font-weight:600">评估中信号 <span class="muted small" id="eval-count">(0)</span></h2>
+          <div class="meta" id="eval-meta">-</div>
+        </div>
+        <div class="drawer-body">
+          <div class="table-wrapper">
+            <table>
+              <thead>
+                <tr>
+                  <th>symbol</th>
+                  <th>period</th>
+                  <th>signal</th>
+                  <th>latest_fr%</th>
+                  <th>pred_fr%</th>
+                  <th>fr_ma%</th>
+                  <th>cur_loan%</th>
+                  <th>pred_loan%</th>
+                  <th>fr+pred_loan</th>
+                  <th>ma+cur_loan</th>
+                  <th>hits</th>
+                </tr>
+              </thead>
+              <tbody id="eval-body"></tbody>
+            </table>
+          </div>
+          <div class="empty" id="eval-empty" style="display:none">暂无评估中信号</div>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      (function () {
+        const RECONNECT_MS = 5000;
+        const STALE_MS = 15000;
+
+        const qs = new URLSearchParams(window.location.search);
+        const LIVE = qs.get("live") === "1";
+
+        const state = {
+          viz: { ws: null, connected: false, reconnectTimer: null },
+          fr: { ws: null, connected: false, reconnectTimer: null },
+          risk: null,        // { entry, received_ms, ... }
+          exposure: null,    // { entry, received_ms, ... }  entry.rows = PreTradeExposureRow[]
+          frSnapshot: null,  // { ...FrDashboardSnapshot, received_ms }
+          filter: "",
+          drawerStates: { threshold: false, eval: false },
+          lastMessageAtMs: null,
+        };
+
+        const RULE_ORDER = [
+          { key: "forward_open", label: "FwdO", cls: "hit-fwd-open" },
+          { key: "forward_close", label: "FwdC", cls: "hit-fwd-close" },
+          { key: "backward_open", label: "BwdO", cls: "hit-bwd-open" },
+          { key: "backward_close", label: "BwdC", cls: "hit-bwd-close" },
+        ];
+
+        const fmtQty = new Intl.NumberFormat("en-US", { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+        const fmtUsd = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const fmtLev = new Intl.NumberFormat("en-US", { minimumFractionDigits: 3, maximumFractionDigits: 3 });
+        const fmtQtl = new Intl.NumberFormat("en-US", { minimumFractionDigits: 3, maximumFractionDigits: 3 });
+        const fmtOffset = new Intl.NumberFormat("en-US", { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+        const fmtPct = new Intl.NumberFormat("en-US", { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+
+        const isNum = (x) => typeof x === "number" && Number.isFinite(x);
+        const fmt = (x, f) => (isNum(x) ? f.format(x) : "--");
+        const cls = (x) => (!isNum(x) ? "muted" : x > 0 ? "positive" : x < 0 ? "negative" : "");
+        const baseOf = (sym) => (sym || "").replace(/USDT$/i, "").replace(/_PERP$/i, "").toUpperCase();
+        const fmtTimeUtc8 = (ts) => isNum(ts) ? new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date(ts)) : "--";
+
+        // ---- DOM 引用 ----
+        const $ = (id) => document.getElementById(id);
+        const el = {
+          demoBadge: $("demo-badge"),
+          vizIndicator: $("viz-indicator"), vizStatus: $("viz-status"),
+          frIndicator: $("fr-indicator"), frStatus: $("fr-status"),
+          lastUpdate: $("last-update"),
+          filterInput: $("filter-input"),
+          reloadBtn: $("reload-btn"),
+          summaryMeta: $("summary-meta"),
+          signalSummary: $("signal-summary"),
+          riskEquity: $("risk-equity"), riskExposure: $("risk-exposure"), riskPosition: $("risk-position"),
+          riskLeverage: $("risk-leverage"), riskMaxLeverage: $("risk-max-leverage"),
+          metricLeverage: $("metric-leverage"),
+          riskBorrowed: $("risk-borrowed"), riskInterest: $("risk-interest"),
+          riskUmUpl: $("risk-um-upl"), riskSpotEquity: $("risk-spot-equity"),
+          thresholdDrawer: $("threshold-drawer"), thresholdToggle: $("threshold-toggle"),
+          thresholdGrid: $("threshold-grid"), thresholdCount: $("threshold-count"),
+          heldCount: $("held-count"), heldMeta: $("held-meta"),
+          heldBody: $("held-body"), heldEmpty: $("held-empty"),
+          evalDrawer: $("eval-drawer"), evalToggle: $("eval-toggle"),
+          evalCount: $("eval-count"), evalMeta: $("eval-meta"),
+          evalBody: $("eval-body"), evalEmpty: $("eval-empty"),
+        };
+
+        // ---- Mock 数据（DEMO 模式默认开启） ----
+        function mockVizExposure() {
+          return {
+            type: "pre_trade_exposure",
+            namespace: "okex_fr_trade",
+            channel: "exposure_resample",
+            ts_ms: Date.now(),
+            entry: {
+              ts_ms: Date.now(),
+              rows: [
+                { asset: "BTC", open_qty: 0.452, open_usdt: 31840.5, hedge_qty: -0.452, hedge_usdt: -31835.2, net_qty: 0.0001, net_usdt: 5.3, arb_hedge_net_qty: 0, arb_hedge_time_ms: Date.now() - 3200, arb_hedge_is_taker: false, arb_hedge_ret_qtl: 0.124, arb_hedge_offset: 1.2, is_total: false },
+                { asset: "ETH", open_qty: 8.31, open_usdt: 28154.0, hedge_qty: -8.31, hedge_usdt: -28148.5, net_qty: 0.0002, net_usdt: 5.5, arb_hedge_net_qty: 0, arb_hedge_time_ms: Date.now() - 8500, arb_hedge_is_taker: false, arb_hedge_ret_qtl: 0.087, arb_hedge_offset: 0.8, is_total: false },
+                { asset: "SOL", open_qty: 124.8, open_usdt: 22464.0, hedge_qty: -124.8, hedge_usdt: -22458.4, net_qty: 0.0, net_usdt: 5.6, arb_hedge_net_qty: 0, arb_hedge_time_ms: Date.now() - 1200, arb_hedge_is_taker: true, arb_hedge_ret_qtl: 0.213, arb_hedge_offset: 2.1, is_total: false },
+                { asset: "DOGE", open_qty: 18420.0, open_usdt: 5894.4, hedge_qty: -18420.0, hedge_usdt: -5891.2, net_qty: 0.0, net_usdt: 3.2, arb_hedge_net_qty: 0, arb_hedge_time_ms: Date.now() - 21000, arb_hedge_is_taker: false, arb_hedge_ret_qtl: -0.041, arb_hedge_offset: 0.5, is_total: false },
+                { asset: "AVAX", open_qty: 142.5, open_usdt: 4318.4, hedge_qty: -142.5, hedge_usdt: -4316.1, net_qty: 0.0, net_usdt: 2.3, arb_hedge_net_qty: 12.5, arb_hedge_time_ms: Date.now() - 450, arb_hedge_is_taker: true, arb_hedge_ret_qtl: 0.305, arb_hedge_offset: 3.4, is_total: false },
+              ],
+            },
+          };
+        }
+        function mockVizRisk() {
+          return {
+            type: "pre_trade_risk",
+            namespace: "okex_fr_trade",
+            channel: "risk_resample",
+            ts_ms: Date.now(),
+            entry: {
+              ts_ms: Date.now(),
+              total_equity: 1247563.42,
+              total_exposure: 92671.30,
+              total_position: 2854000.0,
+              spot_equity_usd: 92671.30,
+              borrowed_usd: 432184.55,
+              interest_usd: 18.42,
+              um_unrealized_usd: -245.18,
+              leverage: 2.288,
+              max_leverage: 4.0,
+              open_leg: { venue: "okex-margin", total_equity: 645312.10, total_position: 1342850.0, spot_equity_usd: 92671.30, borrowed_usd: 432184.55, interest_usd: 18.42, um_unrealized_usd: 0, leverage: 2.081 },
+              hedge_leg: { venue: "okex-futures", total_equity: 602251.32, total_position: 1511150.0, spot_equity_usd: 0, borrowed_usd: 0, interest_usd: 0, um_unrealized_usd: -245.18, leverage: 2.509 },
+            },
+          };
+        }
+        function mockFrSnapshot() {
+          const periods = ["1h", "2h", "4h", "6h", "8h"];
+          const sigs = [
+            { signal: "forward_open", tone: "fwd-open", expr: "fr_ma + cur_loan > 0.05%", op: ">", thr: 0.05 },
+            { signal: "forward_close", tone: "fwd-close", expr: "fr_ma + cur_loan < 0.01%", op: "<", thr: 0.01 },
+            { signal: "backward_open", tone: "bwd-open", expr: "fr + pred_loan < -0.04%", op: "<", thr: -0.04 },
+            { signal: "backward_close", tone: "bwd-close", expr: "fr + pred_loan > -0.005%", op: ">", thr: -0.005 },
+          ];
+          const thresholds = [];
+          for (const p of periods) for (const s of sigs) thresholds.push({ period: p, signal: s.signal, compare_op: s.op, expression: s.expr, threshold_pct: s.thr, tone: s.tone });
+
+          // 持仓资产 + 评估中 symbol
+          const heldSyms = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "AVAXUSDT"];
+          const evalSyms = ["LINKUSDT", "ARBUSDT", "OPUSDT", "MATICUSDT", "ATOMUSDT", "NEARUSDT", "FILUSDT", "INJUSDT", "TIAUSDT", "SUIUSDT", "APTUSDT", "RUNEUSDT", "FTMUSDT", "BLURUSDT", "PYTHUSDT", "JTOUSDT", "WLDUSDT", "ENAUSDT"];
+
+          function mkRow(sym, isHeld) {
+            const period = periods[Math.floor(Math.random() * periods.length)];
+            const latest = (Math.random() - 0.5) * 0.18;
+            const pred = latest + (Math.random() - 0.5) * 0.04;
+            const ma = latest * 0.7 + (Math.random() - 0.5) * 0.02;
+            const curLoan = 0.018 + Math.random() * 0.025;
+            const predLoan = curLoan * 0.92;
+            const frPlus = pred + predLoan;
+            const maPlus = ma + curLoan;
+            const rules = [
+              { key: "forward_open", label: "FwdO", expression: "ma+loan > 0.05%", threshold_pct: 0.05, value_pct: maPlus, hit: maPlus > 0.05, active: maPlus > 0.05, tone: "fwd-open", compare_op: ">" },
+              { key: "forward_close", label: "FwdC", expression: "ma+loan < 0.01%", threshold_pct: 0.01, value_pct: maPlus, hit: maPlus < 0.01, active: maPlus < 0.01 && isHeld, tone: "fwd-close", compare_op: "<" },
+              { key: "backward_open", label: "BwdO", expression: "fr+pred_loan < -0.04%", threshold_pct: -0.04, value_pct: frPlus, hit: frPlus < -0.04, active: frPlus < -0.04, tone: "bwd-open", compare_op: "<" },
+              { key: "backward_close", label: "BwdC", expression: "fr+pred_loan > -0.005%", threshold_pct: -0.005, value_pct: frPlus, hit: frPlus > -0.005, active: frPlus > -0.005 && isHeld, tone: "bwd-close", compare_op: ">" },
+            ];
+            const activeRule = rules.find((r) => r.active);
+            return {
+              symbol: sym,
+              period,
+              signal: activeRule ? activeRule.key : "neutral",
+              signal_tone: activeRule ? activeRule.tone : "",
+              lists: { in_dump: false, in_forward_trade: isHeld, in_backward_trade: false },
+              latest_fr_pct: latest, pred_fr_pct: pred, fr_ma_pct: ma,
+              pred_loan_pct: predLoan, cur_loan_pct: curLoan,
+              fr_plus_pred_loan_pct: frPlus, ma_plus_cur_loan_pct: maPlus,
+              rules,
+            };
+          }
+
+          const rows = [
+            ...heldSyms.map((s) => mkRow(s, true)),
+            ...evalSyms.map((s) => mkRow(s, false)),
+          ];
+          const summary = { total_symbols: rows.length, active_signals: 0, forward_open: 0, forward_close: 0, backward_open: 0, backward_close: 0, neutral: 0 };
+          for (const r of rows) {
+            if (r.signal === "neutral") summary.neutral++;
+            else { summary.active_signals++; summary[r.signal]++; }
+          }
+
+          return {
+            type: "fr_dashboard_snapshot",
+            ts_ms: Date.now(),
+            exchange: "okex",
+            factor_mode: "default",
+            symbol_namespace: "okex_fr_trade",
+            symbol_key_suffix: "okex",
+            open_venue: "okex-margin",
+            hedge_venue: "okex-futures",
+            summary,
+            thresholds,
+            rows,
+          };
+        }
+
+        // ---- 状态指示 ----
+        function setVizStatus(c, t) { el.vizIndicator.className = `indicator ${c}`; el.vizStatus.textContent = `viz: ${t}`; }
+        function setFrStatus(c, t) { el.frIndicator.className = `indicator ${c}`; el.frStatus.textContent = `fr: ${t}`; }
+
+        // ---- 数据接收 ----
+        function onVizMessage(msg) {
+          if (!msg || typeof msg !== "object" || !msg.type || !msg.entry) return;
+          const common = { received_ms: Date.now(), namespace: msg.namespace || "", channel: msg.channel || "", entry_ts_ms: msg.entry.ts_ms || null, entry: msg.entry };
+          if (msg.type === "pre_trade_risk") state.risk = common;
+          else if (msg.type === "pre_trade_exposure") state.exposure = common;
+          state.lastMessageAtMs = Date.now();
+        }
+        function onFrMessage(msg) {
+          if (!msg || typeof msg !== "object") return;
+          state.frSnapshot = { ...msg, received_ms: Date.now() };
+          state.lastMessageAtMs = Date.now();
+        }
+
+        // ---- 渲染 ----
+        function renderSignalSummary() {
+          const s = state.frSnapshot && state.frSnapshot.summary;
+          const items = [
+            { cls: "active", label: "active", val: s ? s.active_signals : "--" },
+            { cls: "fwd-open", label: "fwd_o", val: s ? s.forward_open : "--" },
+            { cls: "fwd-close", label: "fwd_c", val: s ? s.forward_close : "--" },
+            { cls: "bwd-open", label: "bwd_o", val: s ? s.backward_open : "--" },
+            { cls: "bwd-close", label: "bwd_c", val: s ? s.backward_close : "--" },
+            { cls: "", label: "neutral", val: s ? s.neutral : "--" },
+            { cls: "", label: "total", val: s ? s.total_symbols : "--" },
+          ];
+          el.signalSummary.innerHTML = items.map((it) => `
+            <div class="signal-chip ${it.cls}">
+              <span class="label">${it.label}</span>
+              <span class="value">${it.val}</span>
+            </div>`).join("");
+        }
+
+        function renderRisk() {
+          const r = state.risk;
+          const e = r && r.entry ? r.entry : null;
+          const lev = e && isNum(e.leverage) ? e.leverage : null;
+          el.riskEquity.textContent = e ? fmt(e.total_equity, fmtUsd) : "--";
+          el.riskExposure.textContent = e ? fmt(e.total_exposure, fmtUsd) : "--";
+          el.riskPosition.textContent = e ? fmt(e.total_position, fmtUsd) : "--";
+          el.riskLeverage.textContent = fmt(lev, fmtLev);
+          el.riskMaxLeverage.textContent = e ? fmt(e.max_leverage, fmtLev) : "--";
+          if (e && isNum(lev) && isNum(e.max_leverage) && e.max_leverage > 0 && lev > e.max_leverage) {
+            el.metricLeverage.classList.add("warn");
+          } else {
+            el.metricLeverage.classList.remove("warn");
+          }
+          el.riskBorrowed.textContent = e ? fmt(e.borrowed_usd, fmtUsd) : "--";
+          el.riskInterest.textContent = e ? fmt(e.interest_usd, fmtUsd) : "--";
+          el.riskUmUpl.textContent = e ? fmt(e.um_unrealized_usd, fmtUsd) : "--";
+          el.riskSpotEquity.textContent = e ? fmt(e.spot_equity_usd, fmtUsd) : "--";
+        }
+
+        function renderThresholds() {
+          const list = (state.frSnapshot && Array.isArray(state.frSnapshot.thresholds) && state.frSnapshot.thresholds) || [];
+          el.thresholdCount.textContent = `(${list.length})`;
+          if (!list.length) {
+            el.thresholdGrid.innerHTML = `<div class="empty">暂无</div>`;
+            return;
+          }
+          el.thresholdGrid.innerHTML = list.map((t) => `
+            <div class="thr-card">
+              <div class="head">
+                <span class="period">${t.period || "-"}</span>
+                <span class="signal ${t.tone || ""}">${t.signal || "-"}</span>
+                <span class="threshold">${t.compare_op || ""} ${isNum(t.threshold_pct) ? fmtPct.format(t.threshold_pct) + "%" : "--"}</span>
+              </div>
+              <div class="expr">${t.expression || ""}</div>
+            </div>`).join("");
+        }
+
+        function frRowBySymbol() {
+          const map = new Map();
+          const rows = (state.frSnapshot && Array.isArray(state.frSnapshot.rows) && state.frSnapshot.rows) || [];
+          for (const r of rows) map.set(baseOf(r.symbol), r);
+          return map;
+        }
+
+        function hitsHtml(rules) {
+          const byKey = Array.isArray(rules) ? new Map(rules.map((r) => [r.key, r])) : new Map();
+          return `<span class="hits">` + RULE_ORDER.map((meta) => {
+            const r = byKey.get(meta.key);
+            const hit = r && r.hit;
+            const klass = hit ? `hit-dot ${meta.cls}` : "hit-dot";
+            const tooltip = r
+              ? `${meta.label} ${r.compare_op || ""} ${isNum(r.threshold_pct) ? fmtPct.format(r.threshold_pct) + "%" : "?"} | val=${isNum(r.value_pct) ? fmtPct.format(r.value_pct) + "%" : "?"}`
+              : meta.label;
+            return `<span class="${klass}" title="${tooltip}"></span>`;
+          }).join("") + `</span>`;
+        }
+
+        function renderHeld() {
+          const exp = state.exposure;
+          const rows = (exp && exp.entry && Array.isArray(exp.entry.rows) && exp.entry.rows) || [];
+          const filtered = rows
+            .filter((r) => r && !r.is_total && (isNum(r.open_qty) || isNum(r.hedge_qty) || isNum(r.arb_hedge_net_qty)))
+            .filter((r) => Math.abs(r.open_qty || 0) > 1e-9 || Math.abs(r.hedge_qty || 0) > 1e-9 || Math.abs(r.arb_hedge_net_qty || 0) > 1e-9)
+            .filter((r) => !state.filter || (r.asset || "").toUpperCase().includes(state.filter))
+            .sort((a, b) => Math.abs(b.net_usdt || 0) - Math.abs(a.net_usdt || 0));
+
+          el.heldCount.textContent = `(${filtered.length})`;
+          el.heldEmpty.style.display = filtered.length ? "none" : "block";
+
+          const frMap = frRowBySymbol();
+          el.heldBody.innerHTML = filtered.map((r) => {
+            const fr = frMap.get((r.asset || "").toUpperCase());
+            const arbMode = typeof r.arb_hedge_is_taker === "boolean" ? (r.arb_hedge_is_taker ? "taker" : "maker") : "-";
+            const offset = isNum(r.arb_hedge_offset) ? fmt(r.arb_hedge_offset, fmtOffset) : "--";
+            const frCells = fr ? `
+              <td class="group-fr muted">${fr.period || "--"}</td>
+              <td class="group-fr ${cls(fr.latest_fr_pct)}">${fmt(fr.latest_fr_pct, fmtPct)}%</td>
+              <td class="group-fr ${cls(fr.pred_fr_pct)}">${fmt(fr.pred_fr_pct, fmtPct)}%</td>
+              <td class="group-fr ${cls(fr.fr_ma_pct)}">${fmt(fr.fr_ma_pct, fmtPct)}%</td>
+              <td class="group-fr muted">${fmt(fr.cur_loan_pct, fmtPct)}%</td>
+              <td class="group-fr muted">${fmt(fr.pred_loan_pct, fmtPct)}%</td>
+              <td class="group-fr ${cls(fr.fr_plus_pred_loan_pct)}">${fmt(fr.fr_plus_pred_loan_pct, fmtPct)}%</td>
+              <td class="group-fr ${cls(fr.ma_plus_cur_loan_pct)}">${fmt(fr.ma_plus_cur_loan_pct, fmtPct)}%</td>
+              <td class="group-fr">${hitsHtml(fr.rules)}</td>` : Array(9).fill('<td class="group-fr missing">—</td>').join("");
+            return `
+              <tr>
+                <td>${r.asset || "-"}</td>
+                <td class="${cls(r.open_qty)}">${fmt(r.open_qty, fmtQty)}</td>
+                <td class="${cls(r.open_usdt)}">${fmt(r.open_usdt, fmtUsd)}</td>
+                <td class="${cls(r.hedge_qty)}">${fmt(r.hedge_qty, fmtQty)}</td>
+                <td class="${cls(r.hedge_usdt)}">${fmt(r.hedge_usdt, fmtUsd)}</td>
+                <td class="${cls(r.net_qty)}">${fmt(r.net_qty, fmtQty)}</td>
+                <td class="${cls(r.net_usdt)}">${fmt(r.net_usdt, fmtUsd)}</td>
+                <td class="muted">${fmtTimeUtc8(r.arb_hedge_time_ms)}</td>
+                <td class="muted">${arbMode}</td>
+                <td class="${cls(r.arb_hedge_ret_qtl)}">${fmt(r.arb_hedge_ret_qtl, fmtQtl)}</td>
+                <td class="muted">${offset}</td>
+                ${frCells}
+              </tr>`;
+          }).join("");
+        }
+
+        function renderEval() {
+          const heldAssets = new Set();
+          const expRows = (state.exposure && state.exposure.entry && state.exposure.entry.rows) || [];
+          for (const r of expRows) if (!r.is_total && (Math.abs(r.open_qty || 0) > 1e-9 || Math.abs(r.hedge_qty || 0) > 1e-9 || Math.abs(r.arb_hedge_net_qty || 0) > 1e-9)) heldAssets.add((r.asset || "").toUpperCase());
+
+          const frRows = (state.frSnapshot && Array.isArray(state.frSnapshot.rows) && state.frSnapshot.rows) || [];
+          const ranked = frRows
+            .filter((r) => !heldAssets.has(baseOf(r.symbol)))
+            .filter((r) => !state.filter || (r.symbol || "").toUpperCase().includes(state.filter))
+            .map((r) => {
+              const activeIdx = (r.rules || []).findIndex((rule) => rule.hit);
+              return { r, activeIdx, absLatest: Math.abs(r.latest_fr_pct || 0) };
+            })
+            .sort((a, b) => {
+              const ah = a.activeIdx >= 0, bh = b.activeIdx >= 0;
+              if (ah !== bh) return ah ? -1 : 1;
+              if (ah && bh && a.activeIdx !== b.activeIdx) return a.activeIdx - b.activeIdx;
+              return b.absLatest - a.absLatest;
+            })
+            .map((x) => x.r);
+
+          el.evalCount.textContent = `(${ranked.length})`;
+          el.evalEmpty.style.display = ranked.length ? "none" : "block";
+
+          el.evalBody.innerHTML = ranked.map((r) => `
+            <tr>
+              <td>${r.symbol || "-"}</td>
+              <td class="muted">${r.period || "--"}</td>
+              <td class="muted">${r.signal === "neutral" ? "—" : (r.signal || "-")}</td>
+              <td class="${cls(r.latest_fr_pct)}">${fmt(r.latest_fr_pct, fmtPct)}%</td>
+              <td class="${cls(r.pred_fr_pct)}">${fmt(r.pred_fr_pct, fmtPct)}%</td>
+              <td class="${cls(r.fr_ma_pct)}">${fmt(r.fr_ma_pct, fmtPct)}%</td>
+              <td class="muted">${fmt(r.cur_loan_pct, fmtPct)}%</td>
+              <td class="muted">${fmt(r.pred_loan_pct, fmtPct)}%</td>
+              <td class="${cls(r.fr_plus_pred_loan_pct)}">${fmt(r.fr_plus_pred_loan_pct, fmtPct)}%</td>
+              <td class="${cls(r.ma_plus_cur_loan_pct)}">${fmt(r.ma_plus_cur_loan_pct, fmtPct)}%</td>
+              <td>${hitsHtml(r.rules)}</td>
+            </tr>`).join("");
+        }
+
+        function metaText(s, kind) {
+          if (!s) return "-";
+          const age = isNum(s.received_ms) ? Date.now() - s.received_ms : null;
+          const stale = age !== null && age > STALE_MS;
+          return { stale, text: `${kind} ts=${isNum(s.entry_ts_ms || s.ts_ms) ? new Date(s.entry_ts_ms || s.ts_ms).toLocaleTimeString() : "-"} · recv=${isNum(s.received_ms) ? new Date(s.received_ms).toLocaleTimeString() : "-"}${s.namespace ? " · ns=" + s.namespace : ""}${s.channel ? " · ch=" + s.channel : ""}` };
+        }
+
+        function renderMeta() {
+          const parts = [];
+          if (state.risk) {
+            const m = metaText(state.risk, "risk");
+            if (typeof m === "string") parts.push(m); else parts.push(`<span class="${m.stale ? "stale" : ""}">${m.text}</span>`);
+          }
+          if (state.exposure) {
+            const m = metaText(state.exposure, "exp");
+            if (typeof m === "string") parts.push(m); else parts.push(`<span class="${m.stale ? "stale" : ""}">${m.text}</span>`);
+          }
+          el.summaryMeta.innerHTML = parts.join(" &nbsp;|&nbsp; ") || "-";
+
+          if (state.frSnapshot) {
+            const m = metaText({ received_ms: state.frSnapshot.received_ms, ts_ms: state.frSnapshot.ts_ms }, "fr");
+            if (typeof m !== "string") el.evalMeta.textContent = m.text;
+          } else {
+            el.evalMeta.textContent = "-";
+          }
+        }
+
+        function renderAll() {
+          renderSignalSummary();
+          renderRisk();
+          renderThresholds();
+          renderHeld();
+          renderEval();
+          renderMeta();
+          el.lastUpdate.textContent = state.lastMessageAtMs ? new Date(state.lastMessageAtMs).toLocaleTimeString() : "-";
+        }
+
+        // ---- WS 连接（live 模式） ----
+        function computeUrl(defaultPath, paramKey) {
+          const override = qs.get(paramKey);
+          const base = override ? new URL(override, window.location.href) : new URL(defaultPath, window.location.href);
+          const u = new URL(base.toString());
+          u.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+          return u.toString();
+        }
+
+        function connectWs(slot, url, onMessage, label) {
+          if (slot.ws) { try { slot.ws.close(); } catch (_) {} slot.ws = null; }
+          if (label === "viz") setVizStatus("warn", "连接中…"); else setFrStatus("warn", "连接中…");
+          try {
+            const ws = new WebSocket(url);
+            slot.ws = ws;
+            ws.addEventListener("open", () => {
+              slot.connected = true;
+              if (label === "viz") setVizStatus("ok", "已连接"); else setFrStatus("ok", "已连接");
+            });
+            ws.addEventListener("message", (ev) => {
+              try { onMessage(JSON.parse(ev.data)); } catch (_) {}
+              renderAll();
+            });
+            ws.addEventListener("close", () => {
+              slot.connected = false;
+              if (label === "viz") setVizStatus("err", "断开"); else setFrStatus("err", "断开");
+              if (!slot.reconnectTimer) {
+                slot.reconnectTimer = setTimeout(() => { slot.reconnectTimer = null; connectWs(slot, url, onMessage, label); }, RECONNECT_MS);
+              }
+            });
+            ws.addEventListener("error", () => {
+              if (label === "viz") setVizStatus("err", "异常"); else setFrStatus("err", "异常");
+            });
+          } catch (e) {
+            if (label === "viz") setVizStatus("err", "失败"); else setFrStatus("err", "失败");
+          }
+        }
+
+        function startLive() {
+          el.demoBadge.textContent = "LIVE";
+          el.demoBadge.style.background = "var(--accent-green)";
+          connectWs(state.viz, computeUrl("./ws", "ws"), onVizMessage, "viz");
+          connectWs(state.fr, computeUrl("./fr_ws", "fr_ws"), onFrMessage, "fr");
+        }
+
+        function startMock() {
+          setVizStatus("ok", "MOCK");
+          setFrStatus("ok", "MOCK");
+          // 初始数据
+          onVizMessage(mockVizExposure());
+          onVizMessage(mockVizRisk());
+          onFrMessage(mockFrSnapshot());
+          renderAll();
+          // 模拟周期更新
+          setInterval(() => {
+            onVizMessage(mockVizExposure());
+            onVizMessage(mockVizRisk());
+            renderAll();
+          }, 1500);
+          setInterval(() => {
+            onFrMessage(mockFrSnapshot());
+            renderAll();
+          }, 2500);
+        }
+
+        // ---- Drawer 交互 ----
+        function setupDrawer(drawerEl, toggleEl, key) {
+          const stored = localStorage.getItem(`fr_drawer_${key}`);
+          const open = stored === "1";
+          state.drawerStates[key] = open;
+          if (open) drawerEl.classList.add("open");
+          toggleEl.addEventListener("click", () => {
+            const willOpen = !drawerEl.classList.contains("open");
+            drawerEl.classList.toggle("open", willOpen);
+            state.drawerStates[key] = willOpen;
+            localStorage.setItem(`fr_drawer_${key}`, willOpen ? "1" : "0");
+          });
+        }
+
+        // ---- 初始化 ----
+        setupDrawer(el.thresholdDrawer, el.thresholdToggle, "threshold");
+        setupDrawer(el.evalDrawer, el.evalToggle, "eval");
+
+        el.filterInput.addEventListener("input", () => {
+          state.filter = (el.filterInput.value || "").trim().toUpperCase();
+          renderAll();
+        });
+        el.reloadBtn.addEventListener("click", () => {
+          if (LIVE) {
+            if (state.viz.ws) try { state.viz.ws.close(); } catch (_) {}
+            if (state.fr.ws) try { state.fr.ws.close(); } catch (_) {}
+            startLive();
+          } else {
+            onVizMessage(mockVizExposure());
+            onVizMessage(mockVizRisk());
+            onFrMessage(mockFrSnapshot());
+            renderAll();
+          }
+        });
+
+        if (LIVE) startLive();
+        else startMock();
+        setInterval(renderMeta, 1000);
+      })();
+    </script>
+  </body>
+</html>
