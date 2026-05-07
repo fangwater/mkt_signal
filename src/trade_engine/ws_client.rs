@@ -1,4 +1,5 @@
 use crate::common::exchange::Exchange;
+use crate::common::time_util::get_timestamp_us;
 use crate::portfolio_margin::bitget_auth::BitgetCredentials;
 use crate::portfolio_margin::bybit_auth::BybitCredentials;
 use crate::portfolio_margin::gate_auth::GateCredentials;
@@ -201,9 +202,16 @@ pub enum WsCommand {
 }
 
 /// 跨 WS endpoint 共享的延迟分桶。
-/// - `new` / `cancel`：所有 venue 通用，IPC→WS 端到端（自 IPC 解析至 `ws.send` 之前）。
-/// - `rtt_new` / `rtt_cancel`：仅在需要测响应 RTT 的 venue 下为 `Some`（当前仅 Bitget），
-///   样本来源是 venue 的成功响应回到本地的时刻减去 `track_inflight` 时的 `sent_at`。
+///
+/// 时间点统一为 5 个：
+/// - **T0**：IPC parse 完成（`msg.ipc_recv`）
+/// - **T1**：`ws.send` 返回（`track_inflight` 时打点）
+/// - **T2**：服务端收到（Gate=`x_in_time`，OKEx=`inTime`，Bitget=`ts`，Binance=`updateTime`）
+/// - **T3**：服务端发出（Gate=`x_out_time`，OKEx=`outTime`，Bitget=T2，Binance=T2）
+/// - **T4**：本地解析响应（`get_timestamp_us()`）
+///
+/// `new`/`cancel`：T1−T0（IPC→WS 端到端，所有 venue 通用）。
+/// `resp`：仅当 venue 暴露服务端时间戳（Bitget/Gate/OKEx/Binance WS）时为 `Some`。
 ///
 /// trade_engine 跑在 `current_thread` runtime + `LocalSet`，所有 ws task 同线程，
 /// 因此 `Rc<RefCell<..>>` 已经够用，无须 `Arc<Mutex<..>>`。
@@ -211,8 +219,55 @@ pub enum WsCommand {
 pub(crate) struct WsLatencyBuckets {
     pub new: Rc<RefCell<LatencyKll>>,
     pub cancel: Rc<RefCell<LatencyKll>>,
-    pub rtt_new: Option<Rc<RefCell<LatencyKll>>>,
-    pub rtt_cancel: Option<Rc<RefCell<LatencyKll>>>,
+    pub resp: Option<RespLatencyBuckets>,
+}
+
+/// 服务端响应的细粒度延迟分解（4 区间 × {new, cancel}）：
+/// - `uplink_*`     = T2 − T1（us → server）
+/// - `server_*`     = T3 − T2（服务端处理；Bitget/Binance 退化为 0）
+/// - `downlink_*`   = T4 − T3（server → us）
+/// - `rtt_*`        = T4 − T1（本地时钟下完整往返）
+#[derive(Clone)]
+pub(crate) struct RespLatencyBuckets {
+    pub uplink_new: Rc<RefCell<LatencyKll>>,
+    pub uplink_cancel: Rc<RefCell<LatencyKll>>,
+    pub server_new: Rc<RefCell<LatencyKll>>,
+    pub server_cancel: Rc<RefCell<LatencyKll>>,
+    pub downlink_new: Rc<RefCell<LatencyKll>>,
+    pub downlink_cancel: Rc<RefCell<LatencyKll>>,
+    pub rtt_new: Rc<RefCell<LatencyKll>>,
+    pub rtt_cancel: Rc<RefCell<LatencyKll>>,
+}
+
+impl WsLatencyBuckets {
+    /// 从 venue 响应里取到 T2/T3 后调用，用 inflight 里记下的 T1 与本地 T4
+    /// 推 4 个分位桶。`rtt = T4 − T1` 用 `Instant` 单调时钟（免受墙钟跳动影响）。
+    fn record_resp(
+        &self,
+        action: WsAction,
+        sent_at: std::time::Instant,
+        sent_at_us: i64,
+        t2_us: i64,
+        t3_us: i64,
+    ) {
+        let Some(r) = self.resp.as_ref() else { return };
+        let (uplink, server, downlink, rtt) = match action {
+            WsAction::New => (&r.uplink_new, &r.server_new, &r.downlink_new, &r.rtt_new),
+            WsAction::Cancel => (
+                &r.uplink_cancel,
+                &r.server_cancel,
+                &r.downlink_cancel,
+                &r.rtt_cancel,
+            ),
+            WsAction::Other => return,
+        };
+        let t4_us = get_timestamp_us();
+        let rtt_us = sent_at.elapsed().as_micros() as i64;
+        uplink.borrow_mut().push((t2_us - sent_at_us) as f64);
+        server.borrow_mut().push((t3_us - t2_us) as f64);
+        downlink.borrow_mut().push((t4_us - t3_us) as f64);
+        rtt.borrow_mut().push(rtt_us as f64);
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -295,8 +350,10 @@ struct TradeInflightMeta {
     req_type: TradeRequestType,
     client_order_id: i64,
     ws_open_update_enabled: bool,
-    /// 单调时钟，`track_inflight`（即 `ws.send` 之后）时打点；用于响应 RTT 统计。
+    /// 单调时钟，`track_inflight`（即 `ws.send` 之后）时打点；用于本地 RTT。
     sent_at: std::time::Instant,
+    /// 墙钟 epoch μs，与 `sent_at` 同时打点；用于跨时钟差值（uplink / downlink）。
+    sent_at_us: i64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1475,6 +1532,7 @@ impl TradeWsClient {
                 client_order_id: msg.client_order_id,
                 ws_open_update_enabled,
                 sent_at: std::time::Instant::now(),
+                sent_at_us: get_timestamp_us(),
             },
         );
     }
@@ -1726,23 +1784,16 @@ impl TradeWsClient {
                     return;
                 };
                 let client_order_id = resp.client_order_id().unwrap_or(meta.client_order_id);
-                // Bitget 响应 RTT 采样：仅成功响应，按 req_type 分流到 new/cancel 桶。
-                // RTT = T2(收到响应) - T1(track_inflight 时的 sent_at)，纯网络 RTT。
-                if resp.is_success() {
-                    let rtt_us = meta.sent_at.elapsed().as_micros() as f64;
-                    match classify_ws_action(meta.req_type) {
-                        WsAction::New => {
-                            if let Some(bucket) = self.lat_buckets.rtt_new.as_ref() {
-                                bucket.borrow_mut().push(rtt_us);
-                            }
-                        }
-                        WsAction::Cancel => {
-                            if let Some(bucket) = self.lat_buckets.rtt_cancel.as_ref() {
-                                bucket.borrow_mut().push(rtt_us);
-                            }
-                        }
-                        WsAction::Other => {}
-                    }
+                // Bitget 仅暴露顶层 `ts`（ms），统一模型里 T2=T3=ts。仅成功响应采样。
+                if resp.is_success() && resp.ts_ms > 0 {
+                    let ts_us = resp.ts_ms.saturating_mul(1000);
+                    self.lat_buckets.record_resp(
+                        classify_ws_action(meta.req_type),
+                        meta.sent_at,
+                        meta.sent_at_us,
+                        ts_us,
+                        ts_us,
+                    );
                 }
                 if resp.is_cancel() {
                     // Bitget cancel-order success lacks sufficient order-state detail; rely on
@@ -1981,6 +2032,18 @@ impl TradeWsClient {
                         resp.ret_msg
                     );
                 }
+                // Bybit 仅暴露一个服务端时间戳（顶层 `time` ms 或 header.Timenow ms），
+                // 退化为 T2=T3。仅 ret_code==0 时采样。
+                if resp.ret_code == 0 && resp.time_now_ms > 0 {
+                    let ts_us = resp.time_now_ms.saturating_mul(1000);
+                    self.lat_buckets.record_resp(
+                        classify_ws_action(meta.req_type),
+                        meta.sent_at,
+                        meta.sent_at_us,
+                        ts_us,
+                        ts_us,
+                    );
+                }
                 self.publish_bybit_ws_response(
                     client_order_id,
                     meta.req_type,
@@ -1999,6 +2062,16 @@ impl TradeWsClient {
                     return;
                 };
                 let client_order_id = resp.client_order_id().unwrap_or(meta.client_order_id);
+                // OKEx 顶层 `inTime` / `outTime` 直接是 μs；仅 `code==0` 时采样。
+                if resp.code == 0 && resp.in_time_us > 0 && resp.out_time_us > 0 {
+                    self.lat_buckets.record_resp(
+                        classify_ws_action(meta.req_type),
+                        meta.sent_at,
+                        meta.sent_at_us,
+                        resp.in_time_us,
+                        resp.out_time_us,
+                    );
+                }
                 self.publish_okex_ws_response(
                     client_order_id,
                     meta.req_type,
@@ -2219,6 +2292,31 @@ impl TradeWsClient {
         };
         let client_order_id =
             Self::extract_gate_client_order_id(&json_val).unwrap_or(meta.client_order_id);
+        // Gate header 给出 `x_in_time` / `x_out_time`（μs）；status==200 时采样。
+        let header_status_ok = json_val
+            .pointer("/header/status")
+            .and_then(Self::extract_status_code)
+            .map(|s| s == 200)
+            .unwrap_or(false);
+        if header_status_ok {
+            let t2 = json_val
+                .pointer("/header/x_in_time")
+                .and_then(Self::extract_i64_lossy);
+            let t3 = json_val
+                .pointer("/header/x_out_time")
+                .and_then(Self::extract_i64_lossy);
+            if let (Some(t2), Some(t3)) = (t2, t3) {
+                if t2 > 0 && t3 > 0 {
+                    self.lat_buckets.record_resp(
+                        classify_ws_action(meta.req_type),
+                        meta.sent_at,
+                        meta.sent_at_us,
+                        t2,
+                        t3,
+                    );
+                }
+            }
+        }
         self.publish_gate_ws_response(
             client_order_id,
             meta.req_type,
@@ -2227,6 +2325,32 @@ impl TradeWsClient {
             channel,
         );
         true
+    }
+
+    fn extract_status_code(v: &Value) -> Option<u16> {
+        if let Some(n) = v.as_u64() {
+            return u16::try_from(n).ok();
+        }
+        if let Some(n) = v.as_i64() {
+            return u16::try_from(n).ok();
+        }
+        if let Some(s) = v.as_str() {
+            return s.trim().parse::<u16>().ok();
+        }
+        None
+    }
+
+    fn extract_i64_lossy(v: &Value) -> Option<i64> {
+        if let Some(n) = v.as_i64() {
+            return Some(n);
+        }
+        if let Some(n) = v.as_u64() {
+            return i64::try_from(n).ok();
+        }
+        if let Some(s) = v.as_str() {
+            return s.trim().parse::<i64>().ok();
+        }
+        None
     }
 
     fn handle_binance_payload(&mut self, payload: &str) -> bool {
@@ -2253,6 +2377,21 @@ impl TradeWsClient {
             self.warn_uncorrelated_trade_payload(payload);
             return true;
         };
+        // Binance WS 仅暴露一个服务端时间戳 `result.updateTime`（ms），退化为 T2=T3。
+        // 仅 status==200 时采样。
+        if resp.status == Some(200) {
+            let (_, _, update_time_ms, _, _) = binance_ws::extract_order_info(&resp);
+            if update_time_ms > 0 {
+                let ts_us = update_time_ms.saturating_mul(1000);
+                self.lat_buckets.record_resp(
+                    classify_ws_action(meta.req_type),
+                    meta.sent_at,
+                    meta.sent_at_us,
+                    ts_us,
+                    ts_us,
+                );
+            }
+        }
         self.publish_binance_ws_response(
             meta.client_order_id,
             meta.req_type,

@@ -38,7 +38,7 @@ use crate::trade_engine::trade_request::{TradeRequestMsg, TradeRequestType};
 use crate::trade_engine::trade_response_handle::{spawn_response_handle, TradeExecOutcome};
 use crate::trade_engine::trade_type_mapping::TradeTypeMapping;
 use crate::trade_engine::ws_client::{
-    TradeWsClient, WsCommand, WsEndpointHandle, WsLatencyBuckets,
+    RespLatencyBuckets, TradeWsClient, WsCommand, WsEndpointHandle, WsLatencyBuckets,
 };
 use anyhow::{anyhow, Context, Result};
 use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
@@ -245,23 +245,39 @@ impl TradeEngine {
             return Err(anyhow!("Binance requires API keys in config"));
         }
 
-        // IPC→WS 端到端延迟分桶（new vs cancel）。capacity 10000，跨 endpoint 共享。
+        // 跨 endpoint 共享的延迟分桶。capacity 10000。
+        // - new/cancel: T1−T0（IPC→WS 端到端），所有 venue 通用。
+        // - resp: 服务端响应 4 区间分解（uplink/server/downlink/rtt × new/cancel = 8 桶），
+        //   仅在 venue 暴露服务端时间戳时启用（Bitget/Gate/Binance/OKEx/Bybit 均支持）。
         // current_thread runtime + LocalSet 下所有 ws task 同线程，`Rc<RefCell<..>>` 即可。
-        // 响应 RTT 桶（rtt_new / rtt_cancel）目前仅对 Bitget 启用，其他 venue 留 None。
         let mk_bucket = |label: String| {
             Rc::new(RefCell::new(LatencyKll::with_capacity(
                 label,
                 LatencyKll::DEFAULT_CAPACITY,
             )))
         };
-        let rtt_buckets_enabled = exchange == Exchange::Bitget;
+        let venue = exchange.as_str();
+        let resp_enabled = matches!(
+            exchange,
+            Exchange::Bitget
+                | Exchange::Gate
+                | Exchange::Binance
+                | Exchange::Okex
+                | Exchange::Bybit
+        );
         let lat_buckets = WsLatencyBuckets {
-            new: mk_bucket(format!("trade_engine:{}:ws:new", exchange.as_str())),
-            cancel: mk_bucket(format!("trade_engine:{}:ws:cancel", exchange.as_str())),
-            rtt_new: rtt_buckets_enabled
-                .then(|| mk_bucket(format!("trade_engine:{}:ws:rtt:new", exchange.as_str()))),
-            rtt_cancel: rtt_buckets_enabled
-                .then(|| mk_bucket(format!("trade_engine:{}:ws:rtt:cancel", exchange.as_str()))),
+            new: mk_bucket(format!("trade_engine:{}:ws:new", venue)),
+            cancel: mk_bucket(format!("trade_engine:{}:ws:cancel", venue)),
+            resp: resp_enabled.then(|| RespLatencyBuckets {
+                uplink_new: mk_bucket(format!("trade_engine:{}:ws:uplink:new", venue)),
+                uplink_cancel: mk_bucket(format!("trade_engine:{}:ws:uplink:cancel", venue)),
+                server_new: mk_bucket(format!("trade_engine:{}:ws:server:new", venue)),
+                server_cancel: mk_bucket(format!("trade_engine:{}:ws:server:cancel", venue)),
+                downlink_new: mk_bucket(format!("trade_engine:{}:ws:downlink:new", venue)),
+                downlink_cancel: mk_bucket(format!("trade_engine:{}:ws:downlink:cancel", venue)),
+                rtt_new: mk_bucket(format!("trade_engine:{}:ws:rtt:new", venue)),
+                rtt_cancel: mk_bucket(format!("trade_engine:{}:ws:rtt:cancel", venue)),
+            }),
         };
 
         // 初始化 REST dispatcher（用于 Binance）

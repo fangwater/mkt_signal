@@ -138,6 +138,8 @@ pub struct BitgetWsOrderResponse {
     pub order_id: String,
     pub client_oid: String,
     pub create_time_ms: i64,
+    /// 顶层 `ts`（ms）。Bitget 仅暴露这一个服务端时间戳，统一模型里既当 T2 也当 T3。
+    pub ts_ms: i64,
 }
 
 impl BitgetWsOrderResponse {
@@ -189,6 +191,7 @@ impl BitgetWsOrderResponse {
                 .unwrap_or_default()
                 .to_string(),
             create_time_ms,
+            ts_ms: obj.get("ts").and_then(parse_i64_value).unwrap_or(0),
         })
     }
 

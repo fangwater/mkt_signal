@@ -439,20 +439,26 @@ impl BybitWsOrderResponse {
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
+        let parse_ms = |v: &Value| -> Option<i64> {
+            if let Some(n) = v.as_i64() {
+                Some(n)
+            } else if let Some(n) = v.as_u64() {
+                i64::try_from(n).ok()
+            } else if let Some(s) = v.as_str() {
+                s.parse::<i64>().ok()
+            } else {
+                None
+            }
+        };
+        // Bybit v5 trade API 顶层 `time`（ms）；旧格式在 `header.Timenow`。两者择一。
         let time_now_ms = obj
-            .get("header")
-            .and_then(|v| v.as_object())
-            .and_then(|header| header.get("Timenow"))
-            .and_then(|v| {
-                if let Some(n) = v.as_i64() {
-                    Some(n)
-                } else if let Some(n) = v.as_u64() {
-                    i64::try_from(n).ok()
-                } else if let Some(s) = v.as_str() {
-                    s.parse::<i64>().ok()
-                } else {
-                    None
-                }
+            .get("time")
+            .and_then(parse_ms)
+            .or_else(|| {
+                obj.get("header")
+                    .and_then(|v| v.as_object())
+                    .and_then(|header| header.get("Timenow"))
+                    .and_then(parse_ms)
             })
             .unwrap_or(0);
 
