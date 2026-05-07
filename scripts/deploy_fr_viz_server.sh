@@ -118,7 +118,9 @@ upsert_main_nginx_mapping() {
   local ws_location="${base_prefix}${ws_path}"
   local health_location="${base_prefix}/healthz"
   local snapshot_location="${base_prefix}/snapshot"
+  local fr_ws_location="${base_prefix}/fr_ws"
   local static_dir="${TARGET_DIR}/www/"
+  local fr_port=$((PORT + 1))
 
   begin_marker="# BEGIN managed: fr viz ${base_prefix}"
   end_marker="# END managed: fr viz ${base_prefix}"
@@ -139,18 +141,21 @@ upsert_main_nginx_mapping() {
       -v ws_location="$ws_location" \
       -v health_location="$health_location" \
       -v snapshot_location="$snapshot_location" \
+      -v fr_ws_location="$fr_ws_location" \
       -v port="$PORT" \
+      -v fr_port="$fr_port" \
       -v ws_path="$ws_path" '
     BEGIN { in_block = 0; replaced = 0 }
     $0 == begin { in_block = 1; replaced = 1; next }
     in_block && $0 == end {
         in_block = 0;
         print begin;
-        print "# fr pre_trade dashboard (static) + viz_server (WS/healthz/snapshot)";
+        print "# fr pre_trade dashboard (static) + viz_server (WS/healthz/snapshot) + fr_signal_dashboard (fr_ws)";
         print static_prefix " static:" static_dir;
         print ws_location " http://127.0.0.1:" port ws_path;
         print health_location " http://127.0.0.1:" port "/healthz";
         print snapshot_location " http://127.0.0.1:" port "/snapshot";
+        print fr_ws_location " http://127.0.0.1:" fr_port "/ws";
         print end;
         next
     }
@@ -168,11 +173,12 @@ upsert_main_nginx_mapping() {
         if (!replaced) {
             print "";
             print begin;
-            print "# fr pre_trade dashboard (static) + viz_server (WS/healthz/snapshot)";
+            print "# fr pre_trade dashboard (static) + viz_server (WS/healthz/snapshot) + fr_signal_dashboard (fr_ws)";
             print static_prefix " static:" static_dir;
             print ws_location " http://127.0.0.1:" port ws_path;
             print health_location " http://127.0.0.1:" port "/healthz";
             print snapshot_location " http://127.0.0.1:" port "/snapshot";
+            print fr_ws_location " http://127.0.0.1:" fr_port "/ws";
             print end;
         }
     }
