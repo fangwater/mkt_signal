@@ -64,9 +64,7 @@ pub trait VenueAdapter {
 ///
 /// 当前支持：OKex / Binance / Bybit / Gate / Bitget（spot+futures 各 2 个）。
 /// Hyperliquid / Aster 为 DEX，spread_pbs 不接入。
-pub fn create_adapter(
-    venue: crate::signal::common::TradingVenue,
-) -> Option<Box<dyn VenueAdapter>> {
+pub fn create_adapter(venue: crate::signal::common::TradingVenue) -> Option<Box<dyn VenueAdapter>> {
     use crate::signal::common::TradingVenue;
     match venue {
         TradingVenue::OkexMargin | TradingVenue::OkexFutures => {

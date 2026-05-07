@@ -246,7 +246,8 @@ impl MktManager {
                     }
                 },
                 Exchange::Aster => {
-                    let url = SubscribeMsgs::get_aster_ws_url_with_venue(self.cfg.venue).to_string();
+                    let url =
+                        SubscribeMsgs::get_aster_ws_url_with_venue(self.cfg.venue).to_string();
                     let parser = if self.cfg.venue == TradingVenue::AsterMargin {
                         BinanceIncParser::spot_incremental(max_levels)
                     } else {
@@ -432,7 +433,8 @@ impl MktManager {
                     }
                 },
                 Exchange::Aster => {
-                    let url = SubscribeMsgs::get_aster_ws_url_with_venue(self.cfg.venue).to_string();
+                    let url =
+                        SubscribeMsgs::get_aster_ws_url_with_venue(self.cfg.venue).to_string();
                     let parser = BinanceTradeParser::new();
                     self.spawn_connection_with_mpsc(
                         exchange,
@@ -558,7 +560,8 @@ impl MktManager {
                 }
                 Exchange::Aster => {
                     let parser = BinanceKlineParser::new();
-                    let url = SubscribeMsgs::get_aster_ws_url_with_venue(self.cfg.venue).to_string();
+                    let url =
+                        SubscribeMsgs::get_aster_ws_url_with_venue(self.cfg.venue).to_string();
                     self.spawn_connection_with_mpsc(
                         exchange,
                         url,
@@ -678,7 +681,8 @@ impl MktManager {
                     }
                 },
                 Exchange::Aster => {
-                    let url = SubscribeMsgs::get_aster_ws_url_with_venue(self.cfg.venue).to_string();
+                    let url =
+                        SubscribeMsgs::get_aster_ws_url_with_venue(self.cfg.venue).to_string();
                     let parser = BinanceAskBidSpreadParser::new();
                     self.spawn_connection_with_mpsc(
                         exchange,
@@ -1099,7 +1103,9 @@ impl MktManager {
                 BinanceFuturesStreamKind::Depth,
             )
             .to_string(),
-            Exchange::Aster => SubscribeMsgs::get_aster_ws_url_with_venue(self.cfg.venue).to_string(),
+            Exchange::Aster => {
+                SubscribeMsgs::get_aster_ws_url_with_venue(self.cfg.venue).to_string()
+            }
             _ => SubscribeMsgs::get_exchange_mkt_data_url_with_venue(&exchange, self.cfg.venue)
                 .to_string(),
         };

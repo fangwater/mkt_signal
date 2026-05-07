@@ -553,8 +553,14 @@ pub fn construct_connection_with_ip(
     base_connection.local_ip = Some(local_ip);
 
     match exchange {
-        Exchange::Binance => Ok(Box::new(BinanceConnection::new(base_connection, venue_label))),
-        Exchange::Aster => Ok(Box::new(BinanceConnection::new(base_connection, venue_label))),
+        Exchange::Binance => Ok(Box::new(BinanceConnection::new(
+            base_connection,
+            venue_label,
+        ))),
+        Exchange::Aster => Ok(Box::new(BinanceConnection::new(
+            base_connection,
+            venue_label,
+        ))),
         Exchange::Okex => Ok(Box::new(OkexConnection::new(base_connection))),
         Exchange::Bybit => Ok(Box::new(BybitConnection::new(base_connection))),
         Exchange::Bitget => Ok(Box::new(BitgetConnection::new(base_connection))),
@@ -590,8 +596,14 @@ pub fn construct_connection(
     let base_connection = MktConnection::new(url, subscribe_msg, tx, global_shutdown_rx);
 
     match exchange {
-        Exchange::Binance => Ok(Box::new(BinanceConnection::new(base_connection, venue_label))),
-        Exchange::Aster => Ok(Box::new(BinanceConnection::new(base_connection, venue_label))),
+        Exchange::Binance => Ok(Box::new(BinanceConnection::new(
+            base_connection,
+            venue_label,
+        ))),
+        Exchange::Aster => Ok(Box::new(BinanceConnection::new(
+            base_connection,
+            venue_label,
+        ))),
         Exchange::Okex => Ok(Box::new(OkexConnection::new(base_connection))),
         Exchange::Bybit => Ok(Box::new(BybitConnection::new(base_connection))),
         Exchange::Bitget => Ok(Box::new(BitgetConnection::new(base_connection))),

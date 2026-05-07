@@ -21,6 +21,9 @@ use crate::spread_pbs::adapter::{BboFrame, KeepaliveSpec, VenueAdapter};
 const BYBIT_SPOT_WS_URL: &str = "wss://stream.bybit.com/v5/public/spot";
 const BYBIT_LINEAR_WS_URL: &str = "wss://stream.bybit.com/v5/public/linear";
 const BYBIT_SUBSCRIBE_CHUNK: usize = 100;
+/// Bybit V5 spot 单 connection args 软限实测 ~200，超过会静默丢推送；
+/// 截断到 100 留余量、确保单批 subscribe 后立即可订（不需要继续累积订阅）。
+const BYBIT_SPOT_MAX_SYMBOLS: usize = 100;
 
 #[derive(Default, Clone, Copy)]
 struct BboCacheEntry {
@@ -60,8 +63,24 @@ impl VenueAdapter for BybitAdapter {
 
     fn build_subscribe(&self, symbols: &[String]) -> Vec<Value> {
         let chunk_size = BYBIT_SUBSCRIBE_CHUNK.max(1);
+        // spot 走 V5 单连接 args 上限较紧，强制截断；linear 上限 2000，无需截断
+        let effective: &[String] = match self.venue {
+            TradingVenue::BybitMargin => {
+                let cap = BYBIT_SPOT_MAX_SYMBOLS.min(symbols.len());
+                if cap < symbols.len() {
+                    log::warn!(
+                        "spread_pbs[bybit-margin] truncating symbols {} -> {} (V5 spot single-conn args cap)",
+                        symbols.len(),
+                        cap
+                    );
+                }
+                &symbols[..cap]
+            }
+            _ => symbols,
+        };
+
         let mut out = Vec::new();
-        for chunk in symbols.chunks(chunk_size) {
+        for chunk in effective.chunks(chunk_size) {
             let args: Vec<String> = chunk
                 .iter()
                 .map(|sym| format!("orderbook.1.{}", sym.to_ascii_uppercase()))
@@ -174,7 +193,8 @@ fn pick_top_level(arr: &[Value], symbol: &str, side: &str) -> Result<Option<(f64
     if level.len() < 2 {
         return Err(anyhow!(
             "bybit {} {} top level needs [price,size]",
-            symbol, side
+            symbol,
+            side
         ));
     }
     let price = level[0]
@@ -251,7 +271,7 @@ mod tests {
     }
 
     #[test]
-    fn build_subscribe_chunks_100() {
+    fn build_subscribe_chunks_100_for_linear() {
         let a = BybitAdapter::new(TradingVenue::BybitFutures);
         let symbols: Vec<String> = (0..250).map(|i| format!("SYM{}USDT", i)).collect();
         let msgs = a.build_subscribe(&symbols);
@@ -260,5 +280,24 @@ mod tests {
         assert_eq!(msgs[2]["args"].as_array().unwrap().len(), 50);
         let first_arg = msgs[0]["args"][0].as_str().unwrap();
         assert!(first_arg.starts_with("orderbook.1."));
+    }
+
+    #[test]
+    fn build_subscribe_truncates_spot_to_100() {
+        let a = BybitAdapter::new(TradingVenue::BybitMargin);
+        let symbols: Vec<String> = (0..313).map(|i| format!("SYM{}USDT", i)).collect();
+        let msgs = a.build_subscribe(&symbols);
+        // 100 个 symbol 在 chunk_size=100 下恰好 1 批
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["args"].as_array().unwrap().len(), 100);
+    }
+
+    #[test]
+    fn build_subscribe_spot_under_cap_no_truncate() {
+        let a = BybitAdapter::new(TradingVenue::BybitMargin);
+        let symbols: Vec<String> = (0..40).map(|i| format!("SYM{}USDT", i)).collect();
+        let msgs = a.build_subscribe(&symbols);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["args"].as_array().unwrap().len(), 40);
     }
 }

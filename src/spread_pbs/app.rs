@@ -1,8 +1,8 @@
 use anyhow::{bail, Context, Result};
-use bytes::Bytes;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 
 use crate::common::mkt_msg::AskBidSpreadMsg;
 use crate::common::time_util::get_timestamp_us;
@@ -11,7 +11,7 @@ use crate::mkt_pub::cfg::Config;
 use crate::spread_pbs::adapter::{create_adapter, BboFrame, VenueAdapter};
 use crate::spread_pbs::latency::LatencyKll;
 use crate::spread_pbs::publisher::SpreadPublisher;
-use crate::spread_pbs::ws::{run_public_ws, WsLoopParams};
+use crate::spread_pbs::ws::{run_public_ws, FrameHandler, WsLoopParams};
 
 pub struct SpreadPbsApp {
     config: Config,
@@ -22,7 +22,7 @@ impl SpreadPbsApp {
         Self { config }
     }
 
-    /// 主入口：拉 venue 全 symbol → 起双路 ws → 单 task 内 dedup + publish + KLL。
+    /// 主入口：拉 venue 全 symbol → 起双路 ws → 帧在 ws task 内同步处理（无 mpsc）。
     ///
     /// 必须在 `LocalSet` 上下文里 await（`main` 用 `LocalSet::run_until`）。
     pub async fn run(self) -> Result<()> {
@@ -53,7 +53,11 @@ impl SpreadPbsApp {
         }
         let subscribe_msgs = adapter.build_subscribe(&symbols);
         if subscribe_msgs.is_empty() {
-            bail!("adapter.build_subscribe 返回空（{} symbols 数={}）", venue_slug, symbols.len());
+            bail!(
+                "adapter.build_subscribe 返回空（{} symbols 数={}）",
+                venue_slug,
+                symbols.len()
+            );
         }
         log::info!(
             "spread_pbs[{}] symbols={} subscribe_batches={}",
@@ -62,90 +66,103 @@ impl SpreadPbsApp {
             subscribe_msgs.len()
         );
 
-        // ---- IceOryx publisher ----
+        // ---- IceOryx publisher + 共享态（Rc<RefCell> 单线程零锁）----
         let publisher = Rc::new(
             SpreadPublisher::new(venue_slug)
                 .with_context(|| format!("create iceoryx publisher for {}", venue_slug))?,
         );
+        let net_label = format!("{}-net", venue_slug);
+        let state: Rc<RefCell<SharedState>> = Rc::new(RefCell::new(SharedState {
+            dedup: HashMap::with_capacity(2048),
+            latency_e2e: LatencyKll::new(venue_slug),
+            latency_net: LatencyKll::new(net_label),
+            published: 0,
+            dropped_by_seq: 0,
+        }));
 
-        // ---- 双路 ws ----
-        let (primary_tx, mut primary_rx) = mpsc::unbounded_channel::<Bytes>();
-        let (secondary_tx, mut secondary_rx) = mpsc::unbounded_channel::<Bytes>();
+        // ---- 双路 ws：每条直接持有 adapter / publisher / state，无 mpsc 转交 ----
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
-
         let url = adapter.ws_url();
-        let primary_params = WsLoopParams {
-            label: "primary",
-            url: url.clone(),
-            local_ip: self.config.primary_local_ip.clone(),
-            subscribe_msgs: subscribe_msgs.clone(),
-            keepalive: adapter.keepalive(),
-        };
-        let secondary_params = WsLoopParams {
-            label: "secondary",
-            url,
-            local_ip: self.config.secondary_local_ip.clone(),
-            subscribe_msgs,
-            keepalive: adapter.keepalive(),
-        };
-        tokio::task::spawn_local(run_public_ws(primary_params, primary_tx, shutdown_rx.clone()));
+
+        let primary_handler =
+            make_handler("primary", adapter.clone(), publisher.clone(), state.clone());
+        let secondary_handler = make_handler(
+            "secondary",
+            adapter.clone(),
+            publisher.clone(),
+            state.clone(),
+        );
+
         tokio::task::spawn_local(run_public_ws(
-            secondary_params,
-            secondary_tx,
+            WsLoopParams {
+                label: "primary",
+                url: url.clone(),
+                local_ip: self.config.primary_local_ip.clone(),
+                subscribe_msgs: subscribe_msgs.clone(),
+                keepalive: adapter.keepalive(),
+            },
+            primary_handler,
+            shutdown_rx.clone(),
+        ));
+        tokio::task::spawn_local(run_public_ws(
+            WsLoopParams {
+                label: "secondary",
+                url,
+                local_ip: self.config.secondary_local_ip.clone(),
+                subscribe_msgs,
+                keepalive: adapter.keepalive(),
+            },
+            secondary_handler,
             shutdown_rx.clone(),
         ));
 
-        // ---- 单 task dedup + publish + KLL ----
-        let mut state = ProcessState {
-            adapter: Rc::clone(&adapter),
-            dedup: HashMap::with_capacity(2048),
-            latency: LatencyKll::new(venue_slug),
-            publisher: publisher.clone(),
-            published: 0u64,
-            dropped_by_seq: 0u64,
-            stats_due_at: tokio::time::Instant::now() + std::time::Duration::from_secs(30),
-        };
-
+        // ---- 主循环：仅 ctrl-c 与 30s stats 心跳，不再处理 frame ----
+        let mut stats_ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+        stats_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        stats_ticker.tick().await;
         loop {
             tokio::select! {
-                biased;
                 _ = tokio::signal::ctrl_c() => {
                     log::info!("spread_pbs[{}] SIGINT received, shutting down", venue_slug);
                     let _ = shutdown_tx.send(true);
                     break;
                 }
-                Some(frame) = primary_rx.recv() => {
-                    state.handle_frame("primary", &frame);
-                }
-                Some(frame) = secondary_rx.recv() => {
-                    state.handle_frame("secondary", &frame);
+                _ = stats_ticker.tick() => {
+                    let s = state.borrow();
+                    log::info!(
+                        "spread_pbs[{}] stats published={} dropped_by_seq={} symbols_seen={}",
+                        venue_slug, s.published, s.dropped_by_seq, s.dedup.len()
+                    );
                 }
             }
-            state.tick_stats(venue_slug);
         }
 
         Ok(())
     }
 }
 
-struct ProcessState {
-    adapter: Rc<dyn VenueAdapter>,
+struct SharedState {
     dedup: HashMap<String, i64>,
-    latency: LatencyKll,
-    publisher: Rc<SpreadPublisher>,
+    /// 端到端：`publish_us - ts_ms*1000`（含 ws read → parse → dedup → IceOryx publish）
+    latency_e2e: LatencyKll,
+    /// 纯网络：`recv_us - ts_ms*1000`（ws read 命中那一刻 - 服务端 ts，剔除 pipeline 开销）
+    latency_net: LatencyKll,
     published: u64,
     dropped_by_seq: u64,
-    stats_due_at: tokio::time::Instant,
 }
 
-impl ProcessState {
-    fn handle_frame(&mut self, label: &'static str, raw: &[u8]) {
+fn make_handler(
+    label: &'static str,
+    adapter: Rc<dyn VenueAdapter>,
+    publisher: Rc<SpreadPublisher>,
+    state: Rc<RefCell<SharedState>>,
+) -> FrameHandler {
+    Rc::new(move |recv_us: i64, raw: &[u8]| {
         let text = match std::str::from_utf8(raw) {
             Ok(s) => s,
             Err(_) => return,
         };
-
-        let frames = match self.adapter.parse_frame(text) {
+        let frames = match adapter.parse_frame(text) {
             Ok(v) => v,
             Err(e) => {
                 log::error!(
@@ -158,53 +175,47 @@ impl ProcessState {
         if frames.is_empty() {
             return;
         }
-
-        let local_us = get_timestamp_us();
+        let mut s = state.borrow_mut();
         for f in frames {
-            self.process_frame(local_us, f);
+            process_frame(&mut s, &publisher, recv_us, f);
         }
+    })
+}
+
+fn process_frame(
+    state: &mut SharedState,
+    publisher: &Rc<SpreadPublisher>,
+    recv_us: i64,
+    f: BboFrame,
+) {
+    let prev = state.dedup.get(&f.symbol).copied().unwrap_or(i64::MIN);
+    if f.seq_id <= prev {
+        state.dropped_by_seq += 1;
+        return;
     }
+    state.dedup.insert(f.symbol.clone(), f.seq_id);
 
-    fn process_frame(&mut self, local_us: i64, f: BboFrame) {
-        let prev = self.dedup.get(&f.symbol).copied().unwrap_or(i64::MIN);
-        if f.seq_id <= prev {
-            self.dropped_by_seq += 1;
-            return;
-        }
-        self.dedup.insert(f.symbol.clone(), f.seq_id);
-
-        let msg = AskBidSpreadMsg::create(
-            f.symbol.clone(),
-            f.ts_ms,
-            f.bid_price,
-            f.bid_amount,
-            f.ask_price,
-            f.ask_amount,
-        );
-        let bytes = msg.to_bytes();
-        if let Err(e) = self.publisher.publish(&bytes) {
-            log::warn!("spread_pbs publish failed: {:#}", e);
-            return;
-        }
-        self.published += 1;
-
-        // 仅在 venue 提供 ts 时统计端到端延迟（spot bookTicker 无 ts，跳过）
-        if f.ts_ms > 0 {
-            let okex_us = f.ts_ms.saturating_mul(1000);
-            let delta = (local_us - okex_us) as f64;
-            self.latency.push(delta);
-        }
+    let msg = AskBidSpreadMsg::create(
+        f.symbol.clone(),
+        f.ts_ms,
+        f.bid_price,
+        f.bid_amount,
+        f.ask_price,
+        f.ask_amount,
+    );
+    let bytes = msg.to_bytes();
+    if let Err(e) = publisher.publish(&bytes) {
+        log::warn!("spread_pbs publish failed: {:#}", e);
+        return;
     }
+    state.published += 1;
 
-    fn tick_stats(&mut self, venue_slug: &str) {
-        let now = tokio::time::Instant::now();
-        if now < self.stats_due_at {
-            return;
-        }
-        log::info!(
-            "spread_pbs[{}] stats published={} dropped_by_seq={} symbols_seen={}",
-            venue_slug, self.published, self.dropped_by_seq, self.dedup.len()
-        );
-        self.stats_due_at = now + std::time::Duration::from_secs(30);
+    if f.ts_ms > 0 {
+        let ts_us = f.ts_ms.saturating_mul(1000);
+        // 纯网络：ws read 命中时刻 - 服务端 ts
+        state.latency_net.push((recv_us - ts_us) as f64);
+        // 端到端：publish 完成时刻 - 服务端 ts
+        let publish_us = get_timestamp_us();
+        state.latency_e2e.push((publish_us - ts_us) as f64);
     }
 }

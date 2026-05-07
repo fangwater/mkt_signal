@@ -43,7 +43,8 @@ impl SpreadPublisher {
 
         log::info!(
             "spread_pbs publisher ready: service={} max_subscribers=64 payload={}B",
-            service_name, SPREAD_PAYLOAD_BYTES
+            service_name,
+            SPREAD_PAYLOAD_BYTES
         );
         Ok(Self {
             publisher,

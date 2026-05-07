@@ -124,7 +124,7 @@ else
 fi
 
 echo "[INFO] 构建 $BIN_NAME (release)"
-cargo build --release --bin "$BIN_NAME"
+( cd "$ROOT_DIR" && cargo build --release --bin "$BIN_NAME" )
 
 SCRIPT_DIR_SRC="$ROOT_DIR/scripts/spread_pbs"
 SCRIPTS_TO_DEPLOY=(
@@ -137,6 +137,9 @@ for venue in "${VENUES[@]}"; do
   echo "[INFO] 部署 $BIN_NAME 到 $TARGET_DIR"
   mkdir -p "$TARGET_DIR/scripts"
 
+  # Linux 下若 binary 仍有进程持有，cp 直接覆盖会触发 ETXTBSY；
+  # 先 unlink 旧路径（原 inode 仍被进程持有不影响），再 cp 新文件占用同一路径。
+  rm -f "$TARGET_DIR/$BIN_NAME"
   cp "$BIN_PATH" "$TARGET_DIR/"
   chmod +x "$TARGET_DIR/$BIN_NAME"
 

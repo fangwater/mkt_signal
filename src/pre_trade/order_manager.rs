@@ -926,7 +926,7 @@ pub struct OrderTimeStamp {
     pub submit_t: i64, // 最近一次给 trade engine / query engine 发送请求的本地时间(µs)
     pub create_t: i64, // 交易所订单创建时间(交易所时间)
     pub end_t: i64,    // 交易所时间(完全成交或者被撤单的时间)
-    pub local_t: i64,  // OrderUpdate/TradeUpdate/查询回报在本地最近一次被实质性接受的时间(µs)，每次覆写
+    pub local_t: i64, // OrderUpdate/TradeUpdate/查询回报在本地最近一次被实质性接受的时间(µs)，每次覆写
 }
 
 impl OrderTimeStamp {

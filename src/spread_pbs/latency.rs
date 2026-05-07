@@ -34,13 +34,18 @@ impl LatencyKll {
 
     fn flush(&mut self) {
         let qs = [0.90_f32, 0.95, 0.99];
-        let (n, results) = segmented_quantiles_linear(self.buffer.iter().copied(), self.capacity, &qs);
+        let (n, results) =
+            segmented_quantiles_linear(self.buffer.iter().copied(), self.capacity, &qs);
         let p90 = results.first().and_then(|v| *v).unwrap_or(f64::NAN);
         let p95 = results.get(1).and_then(|v| *v).unwrap_or(f64::NAN);
         let p99 = results.get(2).and_then(|v| *v).unwrap_or(f64::NAN);
         log::info!(
             "spread_pbs[{}] latency_us n={} p90={:.0} p95={:.0} p99={:.0}",
-            self.label, n, p90, p95, p99
+            self.label,
+            n,
+            p90,
+            p95,
+            p99
         );
         self.buffer.clear();
     }

@@ -1,8 +1,9 @@
-//! OKex/Binance/Bybit/Gate/Bitget 通用 ws 连接 + 重连 + 帧上抛。
+//! OKex/Binance/Bybit/Gate/Bitget 通用 ws 连接 + 重连 + 同步帧处理。
 //!
 //! single-thread runtime 下被 `spawn_local` 拉起，sink/stream 独占。
-//! per-venue 的心跳格式由 [`crate::spread_pbs::adapter::KeepaliveSpec`] 决定，
-//! `keepalive=None` 时仅依赖服务端 ws-Ping/Pong。
+//! 帧处理通过 `frame_handler` 闭包**同步**调用——避免 mpsc 转交带来的额外 us 级
+//! 延迟（在 colo 场景下这部分占比可观）。Handler 内部读取 `Rc<RefCell<...>>`
+//! 共享状态，borrow 区间内不 await，符合单线程模型。
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
@@ -10,14 +11,16 @@ use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use native_tls::TlsConnector as NativeTlsConnector;
 use std::net::{IpAddr, SocketAddr};
+use std::rc::Rc;
 use std::time::Duration;
 use tokio::net::{lookup_host, TcpSocket, TcpStream};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 use tokio_native_tls::TlsConnector as TokioTlsConnector;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{client_async, MaybeTlsStream, WebSocketStream};
 use url::Url;
 
+use crate::common::time_util::get_timestamp_us;
 use crate::spread_pbs::adapter::KeepaliveSpec;
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -25,6 +28,10 @@ type WsSink = SplitSink<WsStream, Message>;
 type WsRead = SplitStream<WsStream>;
 
 const RECONNECT_BACKOFF_SECS: u64 = 3;
+
+/// 帧处理回调：`(recv_us, payload_bytes)`。`recv_us` 是 `read.next()` 命中那一刻
+/// 立即抓的本地微秒时间戳，下游可用作"纯网络延迟"统计的端点。
+pub type FrameHandler = Rc<dyn Fn(i64, &[u8])>;
 
 pub struct WsLoopParams {
     pub label: &'static str,
@@ -34,10 +41,10 @@ pub struct WsLoopParams {
     pub keepalive: Option<KeepaliveSpec>,
 }
 
-/// 一条 ws 的连接 + 自动重连主循环。Text/Binary 帧 raw bytes 通过 `frame_tx` 上抛。
+/// 一条 ws 的连接 + 自动重连主循环。每个业务帧同步调 `handler`。
 pub async fn run_public_ws(
     params: WsLoopParams,
-    frame_tx: mpsc::UnboundedSender<Bytes>,
+    handler: FrameHandler,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
     let WsLoopParams {
@@ -57,20 +64,30 @@ pub async fn run_public_ws(
         match connect_and_subscribe(&url, &local_ip, &subscribe_msgs).await {
             Ok((sink, read)) => {
                 log::info!("spread_pbs ws[{}] connected to {}", label, url);
-                run_session(label, sink, read, &frame_tx, &mut shutdown_rx, keepalive.as_ref())
-                    .await;
+                run_session(
+                    label,
+                    sink,
+                    read,
+                    &handler,
+                    &mut shutdown_rx,
+                    keepalive.as_ref(),
+                )
+                .await;
                 if *shutdown_rx.borrow() {
                     return;
                 }
                 log::warn!(
                     "spread_pbs ws[{}] disconnected; reconnect in {}s",
-                    label, RECONNECT_BACKOFF_SECS
+                    label,
+                    RECONNECT_BACKOFF_SECS
                 );
             }
             Err(e) => {
                 log::error!(
                     "spread_pbs ws[{}] connect failed: {:#}; retry in {}s",
-                    label, e, RECONNECT_BACKOFF_SECS
+                    label,
+                    e,
+                    RECONNECT_BACKOFF_SECS
                 );
             }
         }
@@ -108,9 +125,11 @@ async fn open_ws(url: &str, local_ip: &str) -> Result<WsStream> {
     let local_addr_opt = if local_ip.is_empty() || local_ip == "0.0.0.0" {
         None
     } else {
-        Some(local_ip.parse::<IpAddr>().with_context(|| {
-            format!("invalid local_ip {}", local_ip)
-        })?)
+        Some(
+            local_ip
+                .parse::<IpAddr>()
+                .with_context(|| format!("invalid local_ip {}", local_ip))?,
+        )
     };
 
     let tcp = match local_addr_opt {
@@ -119,6 +138,8 @@ async fn open_ws(url: &str, local_ip: &str) -> Result<WsStream> {
             .await
             .with_context(|| format!("tcp connect to {}:{}", host, port))?,
     };
+    // 关闭 Nagle 减少 ws 数据帧的合并/延迟（colo 场景关键）。
+    let _ = tcp.set_nodelay(true);
 
     let stream = if scheme.eq_ignore_ascii_case("wss") {
         let native = NativeTlsConnector::builder()
@@ -145,7 +166,12 @@ async fn connect_tcp_with_local_ip(host: &str, port: u16, local: IpAddr) -> Resu
         .await
         .with_context(|| format!("resolve {}:{}", host, port))?;
     let target = addrs
-        .find(|sa| matches!((sa, local), (SocketAddr::V4(_), IpAddr::V4(_)) | (SocketAddr::V6(_), IpAddr::V6(_))))
+        .find(|sa| {
+            matches!(
+                (sa, local),
+                (SocketAddr::V4(_), IpAddr::V4(_)) | (SocketAddr::V6(_), IpAddr::V6(_))
+            )
+        })
         .ok_or_else(|| anyhow::anyhow!("no matching address family for {}", host))?;
 
     let socket = match local {
@@ -172,7 +198,7 @@ async fn run_session(
     label: &'static str,
     mut sink: WsSink,
     mut read: WsRead,
-    frame_tx: &mpsc::UnboundedSender<Bytes>,
+    handler: &FrameHandler,
     shutdown_rx: &mut watch::Receiver<bool>,
     keepalive: Option<&KeepaliveSpec>,
 ) {
@@ -201,21 +227,19 @@ async fn run_session(
                 }
             }
             next = read.next() => {
+                // recv_us 必须在 await 落地后立刻抓——这是"纯网络延迟"统计的本地端点
+                let recv_us = get_timestamp_us();
                 match next {
                     Some(Ok(Message::Text(text))) => {
-                        // 应用层 pong（OKex/Bitget 是 "pong"，Bybit/Gate 是 JSON）一律不上抛。
                         if is_keepalive_response(&text) {
                             continue;
                         }
-                        if frame_tx.send(Bytes::from(text)).is_err() {
-                            log::info!("spread_pbs ws[{}] frame_tx closed; exit", label);
-                            return;
-                        }
+                        let bytes = Bytes::from(text);
+                        handler(recv_us, &bytes);
                     }
                     Some(Ok(Message::Binary(bin))) => {
-                        if frame_tx.send(Bytes::from(bin)).is_err() {
-                            return;
-                        }
+                        let bytes = Bytes::from(bin);
+                        handler(recv_us, &bytes);
                     }
                     Some(Ok(Message::Ping(payload))) => {
                         let _ = sink.send(Message::Pong(payload)).await;
