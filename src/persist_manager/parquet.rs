@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use bytes::{Buf, Bytes};
+use log::warn;
 use polars::prelude::ParquetWriter;
 use polars::prelude::*;
 
@@ -239,14 +240,39 @@ pub(crate) fn build_parquet_uniform_orders(
     let mut from_key_col = Vec::with_capacity(entries.len());
     let mut from_key_hex_col = Vec::with_capacity(entries.len());
 
+    let mut dropped = 0usize;
     for (key_bytes, value_bytes) in entries {
-        let key = String::from_utf8(key_bytes)?;
-        let ts_us = parse_simple_key(&key)?;
+        let key = match String::from_utf8(key_bytes) {
+            Ok(k) => k,
+            Err(err) => {
+                warn!("uniform order: drop record with non-utf8 key: {err}");
+                dropped += 1;
+                continue;
+            }
+        };
+        let ts_us = match parse_simple_key(&key) {
+            Ok(v) => v,
+            Err(err) => {
+                warn!("uniform order: drop record key={key} unparsable: {err:#}");
+                dropped += 1;
+                continue;
+            }
+        };
         if !range.contains(ts_us) {
             continue;
         }
 
-        let record = decode_uniform_order_record(&value_bytes)?;
+        let record = match decode_uniform_order_record(&value_bytes) {
+            Ok(r) => r,
+            Err(err) => {
+                warn!(
+                    "uniform order: drop record key={key} payload_len={} decode failed: {err:#}",
+                    value_bytes.len()
+                );
+                dropped += 1;
+                continue;
+            }
+        };
         let DecodedUniformOrderRecord {
             recv_ts_us,
             symbol,
@@ -290,6 +316,10 @@ pub(crate) fn build_parquet_uniform_orders(
         status_col.push(status);
         from_key_col.push(from_key);
         from_key_hex_col.push(from_key_hex);
+    }
+
+    if dropped > 0 {
+        warn!("uniform order: dropped {dropped} undecodable records");
     }
 
     let mut df = DataFrame::new(vec![
@@ -482,7 +512,6 @@ fn decode_order_record(bytes: &[u8]) -> Result<DecodedOrderRecord> {
 }
 
 fn decode_uniform_order_record(bytes: &[u8]) -> Result<DecodedUniformOrderRecord> {
-    let total_len = bytes.len();
     let mut cursor = Bytes::copy_from_slice(bytes);
     let recv_ts_us = read_i64(&mut cursor, "uniform order recv_ts_us")?;
 
@@ -493,31 +522,11 @@ fn decode_uniform_order_record(bytes: &[u8]) -> Result<DecodedUniformOrderRecord
     let update_ts = read_i64(&mut cursor, "uniform order update_ts")?;
     let signal_ts = read_i64(&mut cursor, "uniform order signal_ts")?;
 
-    // 兼容 v1（无 submit_ts/local_ts/mkt_ts）和 v2（含三个 ts）的两种 payload。
-    // 用 length 判断：v2 layout 下 from_key_len 的 u32 位置在 102 + symbol_len，
-    // 若读出来再加上自身的 4 字节加 fk_len 恰好等于 total_len，认为是 v2，
-    // 否则按 v1 处理（三个 ts 补 0）。
-    let v2_fk_len_pos = 34 + symbol_len + 68;
-    let is_v2 = if v2_fk_len_pos + 4 <= total_len {
-        let fk_candidate = u32::from_le_bytes(
-            bytes[v2_fk_len_pos..v2_fk_len_pos + 4]
-                .try_into()
-                .unwrap(),
-        ) as usize;
-        v2_fk_len_pos + 4 + fk_candidate == total_len
-    } else {
-        false
-    };
-
-    let (submit_ts, local_ts, mkt_ts) = if is_v2 {
-        (
-            read_i64(&mut cursor, "uniform order submit_ts")?,
-            read_i64(&mut cursor, "uniform order local_ts")?,
-            read_i64(&mut cursor, "uniform order mkt_ts")?,
-        )
-    } else {
-        (0, 0, 0)
-    };
+    // 强制按 v2 layout 解码（含 submit_ts/local_ts/mkt_ts）。
+    // v1 残留记录会在下游字段读取时报错，由调用方 drop。
+    let submit_ts = read_i64(&mut cursor, "uniform order submit_ts")?;
+    let local_ts = read_i64(&mut cursor, "uniform order local_ts")?;
+    let mkt_ts = read_i64(&mut cursor, "uniform order mkt_ts")?;
 
     let client_order_id = read_i64(&mut cursor, "uniform order client_order_id")?;
 
