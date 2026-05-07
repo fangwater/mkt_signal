@@ -144,6 +144,7 @@ impl PreTrade {
 mod tests {
     use super::{drive_orphan_manager_period_clock_rc, drive_strategy_manager_period_clock_rc};
     use crate::signal::trade_signal::TradeSignal;
+    use crate::strategy::orphan_order_strategy::OrphanOrderStrategy;
     use crate::strategy::{order_update::OrderUpdate, trade_update::TradeUpdate};
     use crate::strategy::{OrphanStrategyManager, Strategy, StrategyManager};
     use std::any::Any;
@@ -276,5 +277,19 @@ mod tests {
         assert_eq!(inspected, 1);
         assert_eq!(tick_hits.get(), 1);
         assert!(!manager.borrow().contains(202));
+    }
+
+    #[test]
+    fn period_clock_driver_removes_empty_orphan_strategy() {
+        let manager = Rc::new(RefCell::new(OrphanStrategyManager::new()));
+        manager
+            .borrow_mut()
+            .insert(Box::new(OrphanOrderStrategy::new(303, "BTCUSDT")));
+
+        let inspected = drive_orphan_manager_period_clock_rc(&manager, 0);
+
+        assert_eq!(inspected, 1);
+        assert!(!manager.borrow().contains(303));
+        assert!(manager.borrow().is_empty());
     }
 }

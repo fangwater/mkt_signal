@@ -135,7 +135,7 @@ impl Strategy for OrphanOrderStrategy {
     }
 
     fn is_active(&self) -> bool {
-        self.active
+        self.active && self.orders.len() > 0
     }
 
     fn symbol(&self) -> Option<&str> {

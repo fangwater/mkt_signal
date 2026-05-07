@@ -62,11 +62,6 @@ impl OrphanStrategyManager {
         }
         if old.is_none() {
             self.strategy_queue.push_back(id);
-            info!(
-                "OrphanStrategyManager: add strategy_id={} active_strategies={}",
-                id,
-                self.strategies.len()
-            );
         }
         old
     }

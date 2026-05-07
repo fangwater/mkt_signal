@@ -1,7 +1,7 @@
 use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use crate::pre_trade::order_manager::OrderExecutionStatus;
+use crate::pre_trade::order_manager::{Order, OrderExecutionStatus};
 use crate::pre_trade::{QueryEngHub, TradeEngHub};
 use crate::signal::common::{ExecutionType, OrderStatus};
 use crate::strategy::manager::OrphanSourceKind;
@@ -14,6 +14,8 @@ use crate::strategy::uniform_order_helper::{
 };
 use log::{info, warn};
 use std::collections::{HashMap, HashSet};
+
+pub(crate) const ORPHAN_QUERY_LOG_THRESHOLD: u8 = 25;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct OrphanOrderOwner {
@@ -123,6 +125,41 @@ impl OrphanOrderTracker {
         true
     }
 
+    pub fn query_count(&self, client_order_id: i64) -> Option<u8> {
+        self.query_states
+            .get(&client_order_id)
+            .map(|state| state.query_count)
+    }
+
+    pub fn log_orders_over_query_threshold(&self, strategy_role: &str, strategy_id: i32) {
+        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
+            return;
+        };
+        let now_us = get_timestamp_us();
+        let order_mgr = order_mgr.borrow();
+        let mut rows: Vec<(i64, String)> = self
+            .query_states
+            .iter()
+            .filter(|(_, state)| state.query_count > ORPHAN_QUERY_LOG_THRESHOLD)
+            .filter_map(|(client_order_id, _)| {
+                order_mgr
+                    .get(*client_order_id)
+                    .map(|order| (*client_order_id, order_query_time_utc(&order, now_us)))
+            })
+            .collect();
+        rows.sort_by_key(|(client_order_id, _)| *client_order_id);
+        if rows.is_empty() {
+            return;
+        }
+        warn!(
+            "{}: strategy_id={} orphan orders query_count>{}\n{}",
+            strategy_role,
+            strategy_id,
+            ORPHAN_QUERY_LOG_THRESHOLD,
+            format_orphan_query_table(&rows)
+        );
+    }
+
     pub fn send_order_query(
         &mut self,
         strategy_role: &str,
@@ -197,36 +234,38 @@ impl OrphanOrderTracker {
             let incoming_price = update.price();
             let event_time = update.event_time();
             let status = update.status();
-            let _ = order_mgr.borrow_mut().apply_remote_update(client_order_id, |order| {
-                if incoming_cum > order.cumulative_filled_quantity {
-                    order.cumulative_filled_quantity = incoming_cum;
-                }
-                if incoming_order_id > 0 {
-                    order.set_exchange_order_id(incoming_order_id);
-                }
-                if incoming_price > 0.0 {
-                    order.price = incoming_price;
-                }
-                match status {
-                    OrderStatus::New | OrderStatus::PartiallyFilled => {
-                        if !order.status.is_terminal() {
-                            order.status = OrderExecutionStatus::Create;
+            let _ = order_mgr
+                .borrow_mut()
+                .apply_remote_update(client_order_id, |order| {
+                    if incoming_cum > order.cumulative_filled_quantity {
+                        order.cumulative_filled_quantity = incoming_cum;
+                    }
+                    if incoming_order_id > 0 {
+                        order.set_exchange_order_id(incoming_order_id);
+                    }
+                    if incoming_price > 0.0 {
+                        order.price = incoming_price;
+                    }
+                    match status {
+                        OrderStatus::New | OrderStatus::PartiallyFilled => {
+                            if !order.status.is_terminal() {
+                                order.status = OrderExecutionStatus::Create;
+                            }
+                        }
+                        OrderStatus::Canceled => {
+                            order.status = OrderExecutionStatus::Cancelled;
+                            order.set_end_time(event_time);
+                        }
+                        OrderStatus::Filled => {
+                            order.status = OrderExecutionStatus::Filled;
+                            order.set_end_time(event_time);
+                        }
+                        OrderStatus::Expired | OrderStatus::ExpiredInMatch => {
+                            order.status = OrderExecutionStatus::Rejected;
+                            order.set_end_time(event_time);
                         }
                     }
-                    OrderStatus::Canceled => {
-                        order.status = OrderExecutionStatus::Cancelled;
-                        order.set_end_time(event_time);
-                    }
-                    OrderStatus::Filled => {
-                        order.status = OrderExecutionStatus::Filled;
-                        order.set_end_time(event_time);
-                    }
-                    OrderStatus::Expired | OrderStatus::ExpiredInMatch => {
-                        order.status = OrderExecutionStatus::Rejected;
-                        order.set_end_time(event_time);
-                    }
-                }
-            });
+                });
         }
 
         let updated_order = MonitorChannel::try_order_manager()
@@ -330,37 +369,39 @@ impl OrphanOrderTracker {
             let order_id = trade.order_id();
             let price = trade.price();
             let terminal_status = trade.order_status();
-            let _ = order_mgr.borrow_mut().apply_remote_update(client_order_id, |order| {
-                if cumulative_qty > order.cumulative_filled_quantity {
-                    order.cumulative_filled_quantity = cumulative_qty;
-                }
-                if order_id > 0 {
-                    order.set_exchange_order_id(order_id);
-                }
-                if price > 0.0 {
-                    order.price = price;
-                }
-                match terminal_status {
-                    Some(OrderStatus::Filled) => {
-                        order.status = OrderExecutionStatus::Filled;
-                        order.set_end_time(event_time);
+            let _ = order_mgr
+                .borrow_mut()
+                .apply_remote_update(client_order_id, |order| {
+                    if cumulative_qty > order.cumulative_filled_quantity {
+                        order.cumulative_filled_quantity = cumulative_qty;
                     }
-                    Some(OrderStatus::PartiallyFilled) => {
-                        if !order.status.is_terminal() {
-                            order.status = OrderExecutionStatus::Create;
+                    if order_id > 0 {
+                        order.set_exchange_order_id(order_id);
+                    }
+                    if price > 0.0 {
+                        order.price = price;
+                    }
+                    match terminal_status {
+                        Some(OrderStatus::Filled) => {
+                            order.status = OrderExecutionStatus::Filled;
+                            order.set_end_time(event_time);
                         }
+                        Some(OrderStatus::PartiallyFilled) => {
+                            if !order.status.is_terminal() {
+                                order.status = OrderExecutionStatus::Create;
+                            }
+                        }
+                        Some(OrderStatus::Canceled) => {
+                            order.status = OrderExecutionStatus::Cancelled;
+                            order.set_end_time(event_time);
+                        }
+                        Some(OrderStatus::Expired | OrderStatus::ExpiredInMatch) => {
+                            order.status = OrderExecutionStatus::Rejected;
+                            order.set_end_time(event_time);
+                        }
+                        Some(OrderStatus::New) | None => {}
                     }
-                    Some(OrderStatus::Canceled) => {
-                        order.status = OrderExecutionStatus::Cancelled;
-                        order.set_end_time(event_time);
-                    }
-                    Some(OrderStatus::Expired | OrderStatus::ExpiredInMatch) => {
-                        order.status = OrderExecutionStatus::Rejected;
-                        order.set_end_time(event_time);
-                    }
-                    Some(OrderStatus::New) | None => {}
-                }
-            });
+                });
         }
 
         if let Some(status) = trade.order_status() {
@@ -620,7 +661,11 @@ impl OrphanOrderTracker {
 
             drop(order);
             if self.query_due_now(client_order_id) {
+                let query_count = self.query_count(client_order_id).unwrap_or_default();
                 let _ = self.send_order_query(strategy_role, strategy_id, client_order_id);
+                if query_count > ORPHAN_QUERY_LOG_THRESHOLD {
+                    self.log_orders_over_query_threshold(strategy_role, strategy_id);
+                }
             }
         }
     }
@@ -641,5 +686,104 @@ impl OrphanOrderTracker {
         query_base_ticks
             .saturating_mul(multiplier)
             .min(query_max_ticks)
+    }
+}
+
+pub(crate) fn order_query_time_utc(order: &Order, fallback_us: i64) -> String {
+    let ts = [
+        order.timestamp.create_t,
+        order.timestamp.local_t,
+        order.timestamp.submit_t,
+    ]
+    .into_iter()
+    .find(|ts| *ts > 0)
+    .unwrap_or(fallback_us);
+    format_epoch_utc(ts)
+}
+
+pub(crate) fn format_orphan_query_table(rows: &[(i64, String)]) -> String {
+    let id_width = rows
+        .iter()
+        .map(|(id, _)| id.to_string().len())
+        .max()
+        .unwrap_or(0)
+        .max("id".len());
+    let time_width = rows
+        .iter()
+        .map(|(_, time)| time.len())
+        .max()
+        .unwrap_or(0)
+        .max("time_utc".len());
+    let rule = format!(
+        "{:-<id_width$}  {:-<time_width$}",
+        "",
+        "",
+        id_width = id_width,
+        time_width = time_width
+    );
+    let mut table = format!(
+        "{}\n{:id_width$}  {:time_width$}\n{}\n",
+        rule,
+        "id",
+        "time_utc",
+        rule,
+        id_width = id_width,
+        time_width = time_width
+    );
+    for (client_order_id, time_utc) in rows {
+        table.push_str(&format!(
+            "{:id_width$}  {:time_width$}\n",
+            client_order_id,
+            time_utc,
+            id_width = id_width,
+            time_width = time_width
+        ));
+    }
+    table.push_str(&rule);
+    table
+}
+
+fn format_epoch_utc(ts: i64) -> String {
+    let ts_us = normalize_epoch_to_us(ts);
+    let secs = ts_us.div_euclid(1_000_000);
+    let nanos = ts_us.rem_euclid(1_000_000) as u32 * 1_000;
+    chrono::DateTime::<chrono::Utc>::from_timestamp(secs, nanos)
+        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Micros, true))
+        .unwrap_or_else(|| ts.to_string())
+}
+
+fn normalize_epoch_to_us(ts: i64) -> i64 {
+    let abs_ts = ts.unsigned_abs();
+    if abs_ts >= 1_000_000_000_000_000 {
+        ts
+    } else if abs_ts >= 1_000_000_000_000 {
+        ts.saturating_mul(1_000)
+    } else if abs_ts >= 1_000_000_000 {
+        ts.saturating_mul(1_000_000)
+    } else {
+        ts
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_orphan_query_table;
+
+    #[test]
+    fn orphan_query_table_uses_three_lines() {
+        let rows = vec![
+            (42_i64, "2026-05-07T02:31:38.000000Z".to_string()),
+            (7_i64, "2026-05-07T02:32:00.123456Z".to_string()),
+        ];
+
+        let table = format_orphan_query_table(&rows);
+
+        let lines: Vec<&str> = table.lines().collect();
+        assert_eq!(lines.len(), 6);
+        assert!(lines[0].chars().all(|c| c == '-' || c == ' '));
+        assert!(lines[2].chars().all(|c| c == '-' || c == ' '));
+        assert!(lines[5].chars().all(|c| c == '-' || c == ' '));
+        assert!(lines[1].contains("id"));
+        assert!(lines[1].contains("time_utc"));
     }
 }

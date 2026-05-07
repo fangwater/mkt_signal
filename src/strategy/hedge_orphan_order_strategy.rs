@@ -8,6 +8,9 @@ use crate::signal::trade_signal::TradeSignal;
 use crate::strategy::manager::{OrphanHandoff, OrphanSourceKind, Strategy};
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::order_update::OrderUpdate;
+use crate::strategy::orphan_order_common::{
+    format_orphan_query_table, order_query_time_utc, ORPHAN_QUERY_LOG_THRESHOLD,
+};
 use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
@@ -297,6 +300,34 @@ impl HedgeOrphanOrderStrategy {
             }
         }
     }
+
+    fn log_orders_over_query_threshold(&self) {
+        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
+            return;
+        };
+        let now_us = get_timestamp_us();
+        let order_mgr = order_mgr.borrow();
+        let mut rows: Vec<(i64, String)> = self
+            .query_states
+            .iter()
+            .filter(|(_, state)| state.query_count > ORPHAN_QUERY_LOG_THRESHOLD)
+            .filter_map(|(client_order_id, _)| {
+                order_mgr
+                    .get(*client_order_id)
+                    .map(|order| (*client_order_id, order_query_time_utc(&order, now_us)))
+            })
+            .collect();
+        rows.sort_by_key(|(client_order_id, _)| *client_order_id);
+        if rows.is_empty() {
+            return;
+        }
+        warn!(
+            "HedgeOrphanOrderStrategy: strategy_role=hedge_orphan strategy_id={} orphan orders query_count>{}\n{}",
+            self.strategy_id,
+            ORPHAN_QUERY_LOG_THRESHOLD,
+            format_orphan_query_table(&rows)
+        );
+    }
 }
 
 impl Strategy for HedgeOrphanOrderStrategy {
@@ -342,33 +373,35 @@ impl Strategy for HedgeOrphanOrderStrategy {
             let incoming_order_id = update.order_id();
             let event_time = update.event_time();
             let status = update.status();
-            let _ = order_mgr.borrow_mut().apply_remote_update(client_order_id, |order| {
-                if incoming_cum > order.cumulative_filled_quantity {
-                    order.cumulative_filled_quantity = incoming_cum;
-                }
-                if incoming_order_id > 0 {
-                    order.set_exchange_order_id(incoming_order_id);
-                }
-                match status {
-                    OrderStatus::New | OrderStatus::PartiallyFilled => {
-                        if !order.status.is_terminal() {
-                            order.status = OrderExecutionStatus::Create;
+            let _ = order_mgr
+                .borrow_mut()
+                .apply_remote_update(client_order_id, |order| {
+                    if incoming_cum > order.cumulative_filled_quantity {
+                        order.cumulative_filled_quantity = incoming_cum;
+                    }
+                    if incoming_order_id > 0 {
+                        order.set_exchange_order_id(incoming_order_id);
+                    }
+                    match status {
+                        OrderStatus::New | OrderStatus::PartiallyFilled => {
+                            if !order.status.is_terminal() {
+                                order.status = OrderExecutionStatus::Create;
+                            }
+                        }
+                        OrderStatus::Canceled => {
+                            order.status = OrderExecutionStatus::Cancelled;
+                            order.set_end_time(event_time);
+                        }
+                        OrderStatus::Filled => {
+                            order.status = OrderExecutionStatus::Filled;
+                            order.set_end_time(event_time);
+                        }
+                        OrderStatus::Expired | OrderStatus::ExpiredInMatch => {
+                            order.status = OrderExecutionStatus::Rejected;
+                            order.set_end_time(event_time);
                         }
                     }
-                    OrderStatus::Canceled => {
-                        order.status = OrderExecutionStatus::Cancelled;
-                        order.set_end_time(event_time);
-                    }
-                    OrderStatus::Filled => {
-                        order.status = OrderExecutionStatus::Filled;
-                        order.set_end_time(event_time);
-                    }
-                    OrderStatus::Expired | OrderStatus::ExpiredInMatch => {
-                        order.status = OrderExecutionStatus::Rejected;
-                        order.set_end_time(event_time);
-                    }
-                }
-            });
+                });
         }
 
         if let Some(ctx) = uniform_ctx.as_ref() {
@@ -465,37 +498,39 @@ impl Strategy for HedgeOrphanOrderStrategy {
             let order_id = trade.order_id();
             let price = trade.price();
             let terminal_status = trade.order_status();
-            let _ = order_mgr.borrow_mut().apply_remote_update(client_order_id, |order| {
-                if cumulative_qty > order.cumulative_filled_quantity {
-                    order.cumulative_filled_quantity = cumulative_qty;
-                }
-                if order_id > 0 {
-                    order.set_exchange_order_id(order_id);
-                }
-                if price > 0.0 {
-                    order.price = price;
-                }
-                match terminal_status {
-                    Some(OrderStatus::Filled) => {
-                        order.status = OrderExecutionStatus::Filled;
-                        order.set_end_time(event_time);
+            let _ = order_mgr
+                .borrow_mut()
+                .apply_remote_update(client_order_id, |order| {
+                    if cumulative_qty > order.cumulative_filled_quantity {
+                        order.cumulative_filled_quantity = cumulative_qty;
                     }
-                    Some(OrderStatus::PartiallyFilled) => {
-                        if !order.status.is_terminal() {
-                            order.status = OrderExecutionStatus::Create;
+                    if order_id > 0 {
+                        order.set_exchange_order_id(order_id);
+                    }
+                    if price > 0.0 {
+                        order.price = price;
+                    }
+                    match terminal_status {
+                        Some(OrderStatus::Filled) => {
+                            order.status = OrderExecutionStatus::Filled;
+                            order.set_end_time(event_time);
                         }
+                        Some(OrderStatus::PartiallyFilled) => {
+                            if !order.status.is_terminal() {
+                                order.status = OrderExecutionStatus::Create;
+                            }
+                        }
+                        Some(OrderStatus::Canceled) => {
+                            order.status = OrderExecutionStatus::Cancelled;
+                            order.set_end_time(event_time);
+                        }
+                        Some(OrderStatus::Expired | OrderStatus::ExpiredInMatch) => {
+                            order.status = OrderExecutionStatus::Rejected;
+                            order.set_end_time(event_time);
+                        }
+                        Some(OrderStatus::New) | None => {}
                     }
-                    Some(OrderStatus::Canceled) => {
-                        order.status = OrderExecutionStatus::Cancelled;
-                        order.set_end_time(event_time);
-                    }
-                    Some(OrderStatus::Expired | OrderStatus::ExpiredInMatch) => {
-                        order.status = OrderExecutionStatus::Rejected;
-                        order.set_end_time(event_time);
-                    }
-                    Some(OrderStatus::New) | None => {}
-                }
-            });
+                });
         }
 
         if let (Some(ctx), Some(status)) = (uniform_ctx.as_ref(), trade.order_status()) {
@@ -573,11 +608,14 @@ impl Strategy for HedgeOrphanOrderStrategy {
             query_state.query_count = next_query_count;
             query_state.ticks_until_next_query = Self::next_query_ticks(next_query_count);
             let _ = self.send_order_query(client_order_id);
+            if next_query_count > ORPHAN_QUERY_LOG_THRESHOLD {
+                self.log_orders_over_query_threshold();
+            }
         }
     }
 
     fn is_active(&self) -> bool {
-        self.active
+        self.active && !self.order_ids.is_empty()
     }
 
     fn symbol(&self) -> Option<&str> {
