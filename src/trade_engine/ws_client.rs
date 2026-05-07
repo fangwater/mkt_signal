@@ -3,6 +3,7 @@ use crate::portfolio_margin::bitget_auth::BitgetCredentials;
 use crate::portfolio_margin::bybit_auth::BybitCredentials;
 use crate::portfolio_margin::gate_auth::GateCredentials;
 use crate::portfolio_margin::okex_auth::OkexCredentials;
+use crate::rolling_metrics::latency_kll::LatencyKll;
 use crate::trade_engine::binance_ws;
 use crate::trade_engine::bitget_ws;
 use crate::trade_engine::bybit::{
@@ -199,6 +200,51 @@ pub enum WsCommand {
     Shutdown,
 }
 
+/// 跨 WS endpoint 共享的 IPC→WS 端到端延迟分桶（new vs cancel）。
+/// trade_engine 跑在 `current_thread` runtime + `LocalSet`，所有 ws task 同线程，
+/// 因此 `Rc<RefCell<..>>` 已经够用，无须 `Arc<Mutex<..>>`。
+#[derive(Clone)]
+pub(crate) struct WsLatencyBuckets {
+    pub new: Rc<RefCell<LatencyKll>>,
+    pub cancel: Rc<RefCell<LatencyKll>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WsAction {
+    New,
+    Cancel,
+    Other,
+}
+
+fn classify_ws_action(rt: TradeRequestType) -> WsAction {
+    use TradeRequestType::*;
+    match rt {
+        BinanceWsNewUMOrder
+        | BinanceWsNewMarginOrder
+        | OkexNewMarginOrder
+        | OkexNewUMOrder
+        | GateUnifiedNewOrder
+        | GateFuturesNewOrder
+        | BybitNewMarginOrder
+        | BybitNewUMOrder
+        | BitgetNewMarginOrder
+        | BitgetNewUMOrder => WsAction::New,
+
+        BinanceWsCancelUMOrder
+        | BinanceWsCancelMarginOrder
+        | OkexCancelMarginOrder
+        | OkexCancelUMOrder
+        | GateUnifiedCancelOrder
+        | GateFuturesCancelOrder
+        | BybitCancelMarginOrder
+        | BybitCancelUMOrder
+        | BitgetCancelMarginOrder
+        | BitgetCancelUMOrder => WsAction::Cancel,
+
+        _ => WsAction::Other,
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct WsEndpointState {
     cooldown_until: Option<std::time::Instant>,
@@ -303,6 +349,7 @@ pub struct TradeWsClient {
     bybit_waiting_pong: bool,
     last_okex_login_ts: Option<String>,
     last_gate_login_req_id: Option<String>,
+    lat_buckets: WsLatencyBuckets,
 }
 
 impl TradeWsClient {
@@ -324,6 +371,7 @@ impl TradeWsClient {
         engine_shutdown: CancellationToken,
         endpoint_state: Rc<RefCell<WsEndpointState>>,
         shutdown_on_rate_limit: bool,
+        lat_buckets: WsLatencyBuckets,
     ) -> Self {
         let (login_payload, bitget_creds, bybit_creds, okex_creds, gate_creds) = match exchange {
             Exchange::Bitget => {
@@ -428,6 +476,7 @@ impl TradeWsClient {
             bybit_waiting_pong: false,
             last_okex_login_ts: None,
             last_gate_login_req_id: None,
+            lat_buckets,
         }
     }
 
@@ -1031,6 +1080,14 @@ impl TradeWsClient {
                 transport_id,
                 payload.len()
             );
+        }
+        if let Some(t0) = msg.ipc_recv {
+            let us = t0.elapsed().as_micros() as f64;
+            match classify_ws_action(msg.req_type) {
+                WsAction::New => self.lat_buckets.new.borrow_mut().push(us),
+                WsAction::Cancel => self.lat_buckets.cancel.borrow_mut().push(us),
+                WsAction::Other => {}
+            }
         }
         ws.send(Message::Text(payload)).await?;
         self.track_inflight(msg, transport_id);

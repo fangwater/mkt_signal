@@ -274,6 +274,7 @@ mod tests {
             params: Bytes::from(
                 r#"{"category":"usdt-futures","symbol":"BTCUSDT","side":"buy","orderType":"limit","force":"post_only","size":"0.01","price":"100000","clientOid":"123"}"#,
             ),
+            ipc_recv: None,
         };
         let payload = build_order_payload(&msg, 999).expect("payload");
         let val: Value = serde_json::from_str(&payload).expect("json");
@@ -296,6 +297,7 @@ mod tests {
             params: Bytes::from(
                 r#"{"symbol":"BTCUSDT","side":"buy","orderType":"limit","force":"post_only","size":"0.01","price":"100000","clientOid":"123"}"#,
             ),
+            ipc_recv: None,
         };
         let payload = build_order_payload(&msg, 999).expect("payload");
         let val: Value = serde_json::from_str(&payload).expect("json");
@@ -313,6 +315,7 @@ mod tests {
             params: Bytes::from(
                 r#"{"symbol":"BTCUSDT","side":"SELL","orderType":"limit","force":"post_only","size":"0.01","price":"100000","clientOid":"123"}"#,
             ),
+            ipc_recv: None,
         };
         let payload = build_order_payload(&msg, 999).expect("payload");
         let val: Value = serde_json::from_str(&payload).expect("json");
@@ -328,6 +331,7 @@ mod tests {
             params: Bytes::from(
                 r#"{"symbol":"BTCUSDT","side":"sell","orderType":"limit","force":"post_only","size":"0.01","price":"100000","clientOid":"123","reduceOnly":"YES"}"#,
             ),
+            ipc_recv: None,
         };
         let payload = build_order_payload(&msg, 999).expect("payload");
         let val: Value = serde_json::from_str(&payload).expect("json");
@@ -342,6 +346,7 @@ mod tests {
             create_time: 0,
             client_order_id: 123,
             params: Bytes::from(r#"{"orderId":"abc","clientOid":"123"}"#),
+            ipc_recv: None,
         };
         let payload = build_order_payload(&msg, 999).expect("payload");
         let val: Value = serde_json::from_str(&payload).expect("json");

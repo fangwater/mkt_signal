@@ -1,6 +1,7 @@
 use bytes::{BufMut, Bytes, BytesMut};
 use log::debug;
 use std::convert::TryFrom;
+use std::time::Instant;
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +56,9 @@ pub struct TradeRequestMsg {
     pub create_time: i64,
     pub client_order_id: i64,
     pub params: Bytes,
+    /// 进程内本地单调时间戳，IPC 解析后由 engine 立即填入，用于"IPC→WS 发出"延迟统计。
+    /// 不参与 IPC 二进制序列化。
+    pub ipc_recv: Option<Instant>,
 }
 
 impl TryFrom<u32> for TradeRequestType {
@@ -129,6 +133,7 @@ impl TradeRequestMsg {
             create_time,
             client_order_id,
             params,
+            ipc_recv: None,
         })
     }
 }

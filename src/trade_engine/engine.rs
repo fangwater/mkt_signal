@@ -2,6 +2,7 @@ use crate::common::binance_account_mode::{binance_account_mode, BinanceAccountMo
 use crate::common::exchange::Exchange;
 use crate::common::iceoryx_publisher::{QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD};
 use crate::common::ipc_service_name::build_service_name;
+use crate::rolling_metrics::latency_kll::LatencyKll;
 use crate::trade_engine::bitget_query_rate_limiter::BitgetQueryRateLimiter;
 use crate::trade_engine::config::{ApiKey, WsConstants};
 use crate::trade_engine::dispatcher::Dispatcher;
@@ -36,7 +37,9 @@ use crate::trade_engine::query_type_mapping::QueryTypeMapping;
 use crate::trade_engine::trade_request::{TradeRequestMsg, TradeRequestType};
 use crate::trade_engine::trade_response_handle::{spawn_response_handle, TradeExecOutcome};
 use crate::trade_engine::trade_type_mapping::TradeTypeMapping;
-use crate::trade_engine::ws_client::{TradeWsClient, WsCommand, WsEndpointHandle};
+use crate::trade_engine::ws_client::{
+    TradeWsClient, WsCommand, WsEndpointHandle, WsLatencyBuckets,
+};
 use anyhow::{anyhow, Context, Result};
 use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
 use iceoryx2::prelude::*;
@@ -45,7 +48,7 @@ use log::{debug, info, warn};
 use serde_json::Value;
 use std::net::IpAddr;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{cell::RefCell, rc::Rc as StdRc};
 use tokio_util::sync::CancellationToken;
 
@@ -242,6 +245,19 @@ impl TradeEngine {
             return Err(anyhow!("Binance requires API keys in config"));
         }
 
+        // IPC→WS 端到端延迟分桶（new vs cancel）。capacity 10000，跨 endpoint 共享。
+        // current_thread runtime + LocalSet 下所有 ws task 同线程，`Rc<RefCell<..>>` 即可。
+        let lat_buckets = WsLatencyBuckets {
+            new: Rc::new(RefCell::new(LatencyKll::with_capacity(
+                format!("trade_engine:{}:ws:new", exchange.as_str()),
+                LatencyKll::DEFAULT_CAPACITY,
+            ))),
+            cancel: Rc::new(RefCell::new(LatencyKll::with_capacity(
+                format!("trade_engine:{}:ws:cancel", exchange.as_str()),
+                LatencyKll::DEFAULT_CAPACITY,
+            ))),
+        };
+
         // 初始化 REST dispatcher（用于 Binance）
         let rest_dispatcher = if exchange == Exchange::Binance {
             Some(Rc::new(tokio::sync::Mutex::new(Dispatcher::new(
@@ -312,6 +328,7 @@ impl TradeEngine {
                     shutdown.clone(),
                     state.clone(),
                     false,
+                    lat_buckets.clone(),
                 );
                 info!(
                     "spawning bitget ws client id={} ip={} max_inflight={}",
@@ -369,6 +386,7 @@ impl TradeEngine {
                     shutdown.clone(),
                     state.clone(),
                     false,
+                    lat_buckets.clone(),
                 );
                 info!(
                     "spawning bybit ws client id={} ip={} max_inflight={}",
@@ -445,6 +463,7 @@ impl TradeEngine {
                     shutdown.clone(),
                     state.clone(),
                     false,
+                    lat_buckets.clone(),
                 );
                 info!(
                     "spawning ws client id={} ip={} max_inflight={}",
@@ -504,6 +523,7 @@ impl TradeEngine {
                     shutdown.clone(),
                     spot_state.clone(),
                     false,
+                    lat_buckets.clone(),
                 );
                 info!(
                     "spawning gate spot ws client id={} ip={} max_inflight={}",
@@ -536,6 +556,7 @@ impl TradeEngine {
                     shutdown.clone(),
                     fut_state.clone(),
                     false,
+                    lat_buckets.clone(),
                 );
                 info!(
                     "spawning gate futures ws client id={} ip={} max_inflight={}",
@@ -587,6 +608,7 @@ impl TradeEngine {
                     shutdown.clone(),
                     um_state.clone(),
                     shutdown_on_rate_limit,
+                    lat_buckets.clone(),
                 );
                 info!(
                     "spawning binance um ws client id={} ip={} max_inflight={}",
@@ -619,6 +641,7 @@ impl TradeEngine {
                     shutdown.clone(),
                     spot_state.clone(),
                     shutdown_on_rate_limit,
+                    lat_buckets.clone(),
                 );
                 info!(
                     "spawning binance spot ws client id={} ip={} max_inflight={}",
@@ -2014,7 +2037,8 @@ impl TradeEngine {
                     debug!("received payload bytes: {}", actual_len);
 
                     match crate::trade_engine::trade_request::TradeRequestMsg::parse(&owned) {
-                        Some(msg) => {
+                        Some(mut msg) => {
+                            msg.ipc_recv = Some(Instant::now());
                             debug!(
                                 "enqueue request: type={:?}, client_order_id={}, params_len={}",
                                 msg.req_type,
