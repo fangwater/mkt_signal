@@ -393,12 +393,16 @@ if [[ "$DO_SCRIPTS" -eq 1 ]]; then
   echo "[INFO] Writing viz config: $TARGET_DIR/config/viz.toml (namespace=$IPC_NAMESPACE)"
   emit_server_block "$BIND" "$PORT" "$WS_PATH" > "$TARGET_DIR/config/viz.toml"
 
-  if [[ -f "$ROOT_DIR/docs/pre_trade_dashboard.html" ]]; then
+  if [[ -f "$ROOT_DIR/docs/fr_pre_trade_dashboard.html" ]]; then
+    cp "$ROOT_DIR/docs/fr_pre_trade_dashboard.html" "$TARGET_DIR/www/pre_trade_dashboard.html"
+    cp "$ROOT_DIR/docs/fr_pre_trade_dashboard.html" "$TARGET_DIR/www/index.html"
+    echo "[INFO] Synced dashboard: $TARGET_DIR/www/pre_trade_dashboard.html (FR 二合一)"
+  elif [[ -f "$ROOT_DIR/docs/pre_trade_dashboard.html" ]]; then
     cp "$ROOT_DIR/docs/pre_trade_dashboard.html" "$TARGET_DIR/www/pre_trade_dashboard.html"
     cp "$ROOT_DIR/docs/pre_trade_dashboard.html" "$TARGET_DIR/www/index.html"
-    echo "[INFO] Synced dashboard: $TARGET_DIR/www/pre_trade_dashboard.html"
+    echo "[INFO] Synced dashboard: $TARGET_DIR/www/pre_trade_dashboard.html (通用回退)"
   else
-    echo "[WARN] Missing dashboard: $ROOT_DIR/docs/pre_trade_dashboard.html"
+    echo "[WARN] Missing dashboard: $ROOT_DIR/docs/fr_pre_trade_dashboard.html"
   fi
 
   EXTRA_FILES=(
