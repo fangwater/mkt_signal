@@ -1,7 +1,7 @@
 # FR Pre-Trade Dashboard（二合一）
 
 **日期**: 2026-05-07
-**目标**: 给资金费率（FR）套利做一个浏览器面板，把 intra dashboard 的实时持仓 / 对冲 / 风险信息和现有 `fr_signal_dashboard` 的信号视角（4 条规则、阈值、pred_fr/loan）合并到同一页面。架构与 intra/cross dashboard 对齐：单 HTML 文件、由 nginx serve、前端连相对路径 ws；后端零改动。
+**目标**: 给资金费率（FR）套利做一个浏览器面板，把 intra dashboard 的实时持仓 / 对冲 / 风险信息和现有 `fr_signal_dashboard` 的信号视角（4 条规则、阈值、pred_fr/loan）合并到同一页面。架构与 intra/cross dashboard 对齐：单 HTML 文件、由 nginx serve、前端连相对路径 ws；后端 Rust 代码零改动；同时把 `fr_signal_dashboard` 进程改为 per-env-name 部署，与 viz_server 同 dir 共生。
 
 ## 背景与现状
 
@@ -10,7 +10,38 @@
 | intra 风格的 exposure + risk（`PreTradeExposureResampleEntry` / `PreTradeRiskResampleEntry`） | ✅ FR 套利的 pre_trade 已发布到 iceoryx2，`viz_server` 已转发；`config/viz.toml` 已为 `okex_fr_trade` / `gate_fr_trade` / `binance_fr_trade` 三个实例配好 | intra/cross dashboard |
 | FR 信号字段（`FrDashboardSnapshot`：funding_rate / predicted / ma / loan / 4 条规则 hit / 阈值图例 / signal summary） | ✅ `fr_signal_dashboard` 进程在跑，自带 axum + WS（`/ws`） | fr_signal_dashboard 内嵌的旧 HTML |
 
-也就是说，新面板只是把两路已有 ws 在前端合并展示，不需要改 Rust 代码、不需要改 `viz.toml`。
+## 多策略部署模型（新章节）
+
+### 现状的部署单元
+
+每套 FR 策略 = 一个 `env-name`（如 `binance_fr_trade01` / `_trade02` / `_trade03`），含一组进程：
+- `trade_signal` / `pre_trade` / `trade_engine` / `viz_server`
+- 这些进程都部署在 `$HOME/<env-name>/`，PM2 namespace = env-name
+- 同一台机器可并跑多个 env-name（symbol 集合、阈值各自独立）
+- `viz_server` 的端口由 `deploy_fr_viz_server.sh --port` 显式分配
+
+`fr_signal_dashboard` 也是 per-strategy 的：从 CWD 推断 `(symbol_namespace, symbol_key_suffix, exchange, open_venue, hedge_venue)`（src/bin/fr_signal_dashboard.rs:119），每个进程绑定一对 venue + 一组 symbol_list。但当前 `deploy_fr_signal_dashboard.sh` 把它部署到全局 `/ubuntu/dashboard` + 端口 6305，**不支持多 env-name 共存**。本 spec 把它改为 per-env-name。
+
+### 端口约定
+
+```
+fr_dashboard_port = viz_port + 1
+```
+
+- `viz_port` 由 `deploy_fr_viz_server.sh --port` 决定（已有 CLI 参数）
+- `fr_dashboard_port` 不需要单独 CLI 参数，两个 deploy 脚本各自按 `viz_port + 1` 算
+- `dashboard.env` 仍保留（fr_signal_dashboard 进程启动时需要 `FR_DASHBOARD_PORT` 等环境变量），但只由 `deploy_fr_signal_dashboard.sh` 写、由 `start_fr_signal_dashboard.sh` 读。`deploy_fr_viz_server.sh` 不读取它，自己计算 `viz_port + 1` 用于 nginx 反代
+
+### 部署顺序
+
+```
+1. scripts/deploy_fr_signal_dashboard.sh --env-name binance_fr_trade01 \
+     --exchange binance --viz-port 10031          # → fr_dash 端口 10032，部署到 $HOME/binance_fr_trade01/
+2. scripts/deploy_fr_viz_server.sh --env-name binance_fr_trade01 \
+     --port 10031 --apply-nginx                    # nginx /fr_ws 反代到 127.0.0.1:10032
+```
+
+两个脚本都接 `--env-name` 与 `--viz-port` / `--port`（同一含义不同名以匹配各自语义）；fr_dashboard_port 在两边都按 `viz_port + 1` 推算，无需文件 source。
 
 ## 不做（明确边界）
 
@@ -19,21 +50,22 @@
 - 不做 `fr_config_server.py` 改造：单独下次 spec
 - 不做行级搜索 / 列筛选 / 列点击排序 / 多 quote（非 USDT）支持：留给后续迭代
 - 不做 MM 路径的 `hedge_offset_low/high` 展示：FR 套利只走 arb hedge 单档报单（与 intra 一致）
+- 不引入 sibling-env source / 配置文件 indirection；端口约定 hardcode 在两脚本
 
 ## 架构与数据流
 
 ```
-       浏览器（fr_pre_trade_dashboard.html）
+       浏览器（fr_pre_trade_dashboard.html，单文件 demo 已实现）
                 │ 双 WS 长连接 + 各自独立的状态指示灯
         ┌───────┴───────┐
         ▼               ▼
     ./ws  (viz)     ./fr_ws  (fr)
         │               │
         │ nginx prefix/ws → 127.0.0.1:viz_port
-        │ nginx prefix/fr_ws → 127.0.0.1:fr_dash_port
+        │ nginx prefix/fr_ws → 127.0.0.1:(viz_port + 1)
         ▼               ▼
    viz_server     fr_signal_dashboard
-   (无改动)        (无改动)
+   (无 Rust 改动)  (无 Rust 改动；但 deploy 脚本改为 per-env-name)
         │               │
         │ iceoryx2      │ 1s 轮询
         │ exposure/risk │ funding_rate + ArbDecision
@@ -119,45 +151,39 @@
 
 ## 部署变更
 
-只动一处：`scripts/deploy_fr_viz_server.sh`。
+### 1. `deploy_fr_signal_dashboard.sh` 改 per-env-name
 
-### 1. 拷贝 HTML
+破坏性改动：原"全局 `/ubuntu/dashboard`"模式弃用，强制 per-env-name。
 
-把 `docs/pre_trade_dashboard.html`（当前默认通用版本）替换为 `docs/fr_pre_trade_dashboard.html`：
+| 项 | 现状 | 改后 |
+|---|---|---|
+| 必传参数 | `--exchange` | `--env-name` + `--viz-port` |
+| TARGET_DIR | `/ubuntu/dashboard`（默认） | `$HOME/<env-name>/`（强制） |
+| 端口 | `--port`（默认 6305） | `viz_port + 1`（自动算，不接 CLI 端口参数） |
+| PM2 namespace | `dashboard` | env-name |
+| PM2 name | `fr_signal_dashboard` | `${env_name}_fr_signal_dashboard` |
+| exchange | 必传 | 可选；不传时从 env-name 第一段推断（`binance_fr_trade01` → `binance`），与 deploy_fr_viz_server.sh 的 `infer_exchange_from_env_name` 同源逻辑 |
+| `dashboard.env` 写到 | `$TARGET_DIR/dashboard.env` | `$HOME/<env-name>/dashboard.env`（同 dir，PM2 启动时被 `start_fr_signal_dashboard.sh` source） |
 
-```bash
-# 现有逻辑（line ~396）
-if [[ -f "$ROOT_DIR/docs/pre_trade_dashboard.html" ]]; then
-  cp "$ROOT_DIR/docs/pre_trade_dashboard.html" "$TARGET_DIR/www/pre_trade_dashboard.html"
-  cp "$ROOT_DIR/docs/pre_trade_dashboard.html" "$TARGET_DIR/www/index.html"
+### 2. `deploy_fr_viz_server.sh` 改 nginx upsert
 
-# 改为优先用 FR 专属 dashboard
-if [[ -f "$ROOT_DIR/docs/fr_pre_trade_dashboard.html" ]]; then
-  cp "$ROOT_DIR/docs/fr_pre_trade_dashboard.html" "$TARGET_DIR/www/pre_trade_dashboard.html"
-  cp "$ROOT_DIR/docs/fr_pre_trade_dashboard.html" "$TARGET_DIR/www/index.html"
-elif [[ -f "$ROOT_DIR/docs/pre_trade_dashboard.html" ]]; then
-  ...保留旧 fallback...
-```
-
-### 2. nginx 加 `/fr_ws` 反代
-
-`nginx_locations.txt` managed block 现状为 prefix 下三行（`/ws`, `/snapshot`, `/healthz`），需追加一行：
+只动 nginx awk 段。在 `/ws` `/snapshot` `/healthz` 三行后追加一行：
 
 ```
-{prefix}/fr_ws  http://127.0.0.1:{fr_dashboard_port}/ws
+{prefix}/fr_ws  http://127.0.0.1:{viz_port + 1}/ws
 ```
 
-`fr_dashboard_port` 从 `start_fr_signal_dashboard.sh` 当前实例端口取（每个 venue 各自的 fr_signal_dashboard 实例独立端口）。
+`viz_port + 1` 直接在 awk 之前用 bash `local fr_port=$((PORT + 1))` 算出再传给 awk。**不增加 `--fr-dashboard-port` CLI 参数。**
 
-实施侧需要：
-- `deploy_fr_viz_server.sh` 新增 `--fr-dashboard-port` 参数（或从 sibling 配置文件中读取）
-- 在 nginx mapping 生成代码（line ~118-175）加一段产出 `/fr_ws` 反代行
+### 3. HTML 拷贝优先 FR 二合一
 
-### 3. 不改
+`deploy_fr_viz_server.sh` 拷 HTML 段：优先 `docs/fr_pre_trade_dashboard.html`，回退 `docs/pre_trade_dashboard.html`（保险起见）。
+
+### 4. 不改
 
 - `config/viz.toml`：FR 三个实例已配好，不动
-- `Cargo.toml` / Rust 代码：零改动
-- `fr_signal_dashboard` 部署脚本：不动
+- Rust 源码：零改动
+- `start_fr_signal_dashboard.sh` / `stop_fr_signal_dashboard.sh`：不动（已经支持从 sibling 路径 source `dashboard.env`）
 
 ## 测试计划
 
@@ -165,32 +191,30 @@ elif [[ -f "$ROOT_DIR/docs/pre_trade_dashboard.html" ]]; then
 
 `open file:///home/fanghaizhou/mkt_signal/docs/fr_pre_trade_dashboard.html`
 
-预期：
-- 紫色 `DEMO` 徽章
-- 两路指示灯都显示 `MOCK`
-- Summary 区显示假数据（active>0、equity ~$1.2M、leverage ~2.3x）
-- 阈值图例抽屉折叠态，点击展开看到 20 张卡片
-- Table 1 显示 5 行（BTC/ETH/SOL/DOGE/AVAX），FR 列有数值且 hits 色块按规则点亮
-- Table 2 折叠态，点击展开看到 ~18 行评估中 symbol，命中规则的 symbol 排前
-- 过滤框输入 `BTC` 两表只剩 BTC 相关
-- 抽屉展开 / 折叠状态在刷新后保持
+预期：紫色 `DEMO` 徽章；两路指示灯 `MOCK`；Summary / 阈值图例 / Table 1（5 持仓行）/ Table 2（默认折叠，展开 18 行）；hits 色块按命中点亮；过滤框作用于两表；抽屉折叠状态在 F5 后保持。
 
 ### 部署后验证（live）
 
-1. 运行 `scripts/deploy_fr_viz_server.sh --exchange okex --apply-nginx`，确认 nginx 配置中包含 `prefix/fr_ws`
-2. 浏览器访问 `https://<host>{prefix}/?live=1`
-3. 两路指示灯应在 5s 内变绿（已连接）
-4. Summary / Table 1 数据来自 viz_server，Table 2 / 阈值图例数据来自 fr_signal_dashboard
-5. 用 `?ws=...&fr_ws=...` 测试 URL override
+跑两个 deploy 脚本后浏览器访问 `https://<host>{prefix}/?live=1`：
+- 徽章绿色 `LIVE`，5s 内两路指示灯变绿
+- DevTools Network 看到两路 WebSocket：`./ws` 和 `./fr_ws`，端口分别为 `viz_port` 和 `viz_port + 1`，都是 101
+- Summary / Table 1 用真实 viz 数据；Table 2 / 阈值图例用真实 fr 数据
+- 阈值图例展开后与 fr_signal_dashboard 旧 UI 一致
 
-### 边界
+### 多 env-name 验证
 
-- 单路 ws 断开：另一路区块继续刷新，断开侧指示灯红，5s 后自动重连
-- 持仓 symbol 不在 fr rows 中（罕见）：Table 1 该行 FR 列显示 `—`
-- fr rows 全为 neutral：Table 2 仍展示但无色块点亮，summary `active=0`
+同机器上同时部署 `binance_fr_trade01` (viz=10031, fr=10032) 和 `binance_fr_trade02` (viz=10041, fr=10042)：
+- 两个 nginx prefix 各自独立工作
+- `nginx_locations.txt` 含两段 managed block（`/fr/binance_fr_trade01` 和 `/fr/binance_fr_trade02`），互不干扰
+- 浏览器分别访问两个 URL 显示不同 symbol 集合 / 不同阈值
+
+### 降级
+
+- 关停 `${env_name}_fr_signal_dashboard` PM2 进程：`fr` 指示灯转红、Table 1 FR 列变 `—`、阈值图例变 `(0)`、Table 2 空；`viz` 指示灯仍绿
+- 重启后 5s 内 `fr` 指示灯自动恢复绿
 
 ## 风险
 
-- **nginx mapping 生成逻辑改动**：`deploy_fr_viz_server.sh` 的 awk 脚本现有 4 个反代行（`/ws` `/snapshot` `/healthz` + static），新增 `/fr_ws` 不能破坏 idempotent upsert。实施时需要按现有 begin/end marker 模式扩展，单元测试用 dry-run + diff 验证。
-- **fr_dashboard_port 来源**：当前 `start_fr_signal_dashboard.sh` 各 venue 实例端口可能不一致，需要 deploy 脚本能从 sibling 路径推断或显式参数传入。
-- **资产 ↔ symbol 映射**：MVP 仅支持 USDT quote，多 quote 路径全部走 console.warn 跳过。如未来 FR 接入非 USDT pair，需要在 fr row 加 `base` / `quote` 字段并改前端合并 key。
+- **端口约定 viz_port + 1**：约定简单清晰，但需要部署方自觉避免在 viz_port + 1 上放别的服务。多 env-name 部署 viz_port 间隔需 ≥ 2（如 10031 / 10041，不要 10031 / 10032）
+- **per-env-name 改造的破坏性**：原"全局 `/ubuntu/dashboard`"部署点弃用。如果生产线已经用旧模式跑了 fr_signal_dashboard，需要先停旧进程再按新流程重部署
+- **资产 ↔ symbol 映射**：MVP 仅支持 USDT quote，多 quote 路径全部走 console.warn 跳过。如未来 FR 接入非 USDT pair，需要在 fr row 加 `base` / `quote` 字段并改前端合并 key
