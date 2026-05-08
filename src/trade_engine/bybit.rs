@@ -450,11 +450,17 @@ impl BybitWsOrderResponse {
                 None
             }
         };
-        // Bybit v5 trade API 顶层 `time`（ms）。固定字段，缺失即 schema 异常，直接 panic。
+        // Bybit v5 trade API 顶层 `time`（ms）；旧/部分响应放在 `header.Timenow`。两者择一，缺失则记 0。
         let time_now_ms = obj
             .get("time")
             .and_then(parse_ms)
-            .expect("Bybit ws order response: missing top-level `time` field");
+            .or_else(|| {
+                obj.get("header")
+                    .and_then(|v| v.as_object())
+                    .and_then(|header| header.get("Timenow"))
+                    .and_then(parse_ms)
+            })
+            .unwrap_or(0);
 
         Some(Self {
             req_id: obj
@@ -629,6 +635,23 @@ mod tests {
         assert_eq!(resp.client_order_id(), None);
         assert_eq!(resp.ret_code, 0);
         assert_eq!(resp.order_status_u8(), 1);
+    }
+
+    #[test]
+    fn parses_bybit_ws_order_response_with_header_timenow_fallback() {
+        let payload = r#"{"reqId":"123","retCode":0,"retMsg":"OK","op":"order.create","data":{"orderId":"abcdef","orderLinkId":"42"},"header":{"Timenow":"1711001595209"}}"#;
+        let resp = BybitWsOrderResponse::from_json_str(payload).unwrap();
+        assert_eq!(resp.transport_id(), Some(123));
+        assert_eq!(resp.client_order_id(), Some(42));
+        assert_eq!(resp.time_now_ms, 1_711_001_595_209);
+    }
+
+    #[test]
+    fn parses_bybit_ws_order_response_without_time_field() {
+        let payload = r#"{"reqId":"123","retCode":0,"retMsg":"OK","op":"order.create","data":{"orderId":"abcdef","orderLinkId":"42"}}"#;
+        let resp = BybitWsOrderResponse::from_json_str(payload).unwrap();
+        assert_eq!(resp.transport_id(), Some(123));
+        assert_eq!(resp.time_now_ms, 0);
     }
 
     #[test]
