@@ -103,11 +103,14 @@ fr_remote_sync_env_dir() {
 }
 
 fr_remote_sync_binaries() {
-  # --bin mode: only push binaries the deploy_fr_* sub-scripts produce.
+  # --bin mode: push only top-level files (binaries) from $HOME/$ENV_NAME,
+  # leaving config/ scripts/ www/ data/ untouched. The "*/" exclude drops all
+  # sub-directories so this works for FR (account_monitor) and intra
+  # (account_monitor_<exchange>) without per-pipeline binary lists.
   local env_name="$1"
-  local local_dir="$HOME/$env_name"
+  local local_dir="$HOME/$env_name/"
   local remote_dir="$FR_REMOTE_HOME/$env_name/"
-  local opts bin
+  local opts
   opts="$(_fr_ssh_opts)"
 
   if [[ ! -d "$local_dir" ]]; then
@@ -115,13 +118,15 @@ fr_remote_sync_binaries() {
     return 1
   fi
 
-  for bin in account_monitor persist_manager pre_trade trade_engine trade_signal viz_server; do
-    if [[ -f "$local_dir/$bin" ]]; then
-      echo "[INFO] rsync $bin -> $FR_DEPLOY_HOST:$remote_dir"
-      # shellcheck disable=SC2086
-      rsync -a -e "ssh $opts" "$local_dir/$bin" "$FR_DEPLOY_HOST:$remote_dir"
-    fi
-  done
+  echo "[INFO] rsync top-level binaries $local_dir -> $FR_DEPLOY_HOST:$remote_dir"
+  # shellcheck disable=SC2086
+  rsync -a --human-readable --info=stats1 \
+    --exclude='env.sh' \
+    --exclude='*/' \
+    --exclude='*.log' \
+    --exclude='*.pid' \
+    -e "ssh $opts" \
+    "$local_dir" "$FR_DEPLOY_HOST:$remote_dir"
 }
 
 fr_remote_apply_nginx() {
