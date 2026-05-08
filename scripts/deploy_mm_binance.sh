@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/fr_remote_deploy.sh
+source "$ROOT_DIR/scripts/lib/fr_remote_deploy.sh"
 
 usage() {
   cat <<'EOF'
@@ -10,7 +12,8 @@ usage() {
   scripts/deploy_mm_binance.sh <suffix>
 
 说明:
-  - 只部署，不启动任何进程。
+  - 部署到远端 ${FR_DEPLOY_HOST:-ubuntu@54.64.147.69}（不启动进程）。
+  - 子脚本仍在本地生成 $HOME/$ENV_NAME/，随后 rsync 到远端。
   - 目前支持固定 suffix:
       1) beta: 使用基础端口
       2) alpha: 在基础端口上 +1
@@ -107,8 +110,13 @@ elif [[ "$RUNTIME_ONLY" == "1" ]]; then
 fi
 
 if [[ ( "$BIN_MODE" == "1" || "$RUNTIME_ONLY" == "1" ) && ! -d "$HOME/$ENV_NAME" ]]; then
-  echo "[ERROR] 仅替换模式要求环境目录已存在: $HOME/$ENV_NAME" >&2
+  echo "[ERROR] 仅替换模式要求本地环境目录已存在: $HOME/$ENV_NAME" >&2
   exit 1
+fi
+
+fr_remote_init "$ROOT_DIR" "$ENV_NAME"
+if [[ "$BIN_MODE" != "1" && "$RUNTIME_ONLY" != "1" ]]; then
+  fr_remote_fetch_nginx_mapping "$ROOT_DIR"
 fi
 
 run_deploy() {
@@ -208,7 +216,8 @@ else
     --env-name "$ENV_NAME" \
     --exchange binance \
     --port "$CONFIG_PORT" \
-    --apply-nginx
+    --nginx-mapping-file "$FR_NGINX_STAGING" \
+    --skip-nginx-apply
 
   run_deploy bash scripts/deploy_mm_account_monitor.sh \
     --exchange binance \
@@ -226,7 +235,7 @@ else
     --exchange binance \
     --env-suffix "$ENV_SUFFIX" \
     --port "$VIZ_PORT" \
-    --apply-nginx
+    --nginx-mapping-file "$FR_NGINX_STAGING"
 
   run_deploy bash scripts/deploy_mm_persist_manager.sh \
     --exchange binance \
@@ -237,4 +246,14 @@ else
     --env-suffix "$ENV_SUFFIX"
 fi
 
-echo "[INFO] Binance MM 部署完成（仅 deploy，不含 start）"
+if [[ "$BIN_MODE" == "1" ]]; then
+  fr_remote_sync_binaries "$ENV_NAME"
+elif [[ "$RUNTIME_ONLY" == "1" ]]; then
+  fr_remote_sync_env_dir "$ENV_NAME"
+else
+  fr_remote_sync_env_dir "$ENV_NAME"
+  fr_remote_apply_nginx "$ENV_NAME"
+fi
+
+echo "[INFO] Binance MM 部署完成（远端 ${FR_DEPLOY_HOST}，未启动进程）"
+echo "[INFO] 远端环境目录: ${FR_REMOTE_HOME}/${ENV_NAME}"
