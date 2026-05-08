@@ -20,10 +20,12 @@ usage() {
       * close_intra_full_exit.sh         双腿都打到 0，账户回到无敞口
   - 默认 source $HOME/<env-name>/env.sh
   - 默认 dry-run，仅打印动作计划；加 --execute 才真正撤单 + 下单
-  - 数据来源：本机 dashboard /intra/<exchange>-intra-<suffix>/snapshot 的 pre_trade_exposure
+  - 数据来源：默认直查交易所 REST（spot 余额 + 合约 position）；in-scope assets 取 Redis intra_fwd/bwd_trade_symbols 并集
+      要切回旧的 dashboard pre_trade_exposure 路径，加 --source dashboard
   - 透传给底层 python 的常用参数：
       --execute / --symbol BTC / --skip-assets BNB,SOL / --min-net-usdt 5
       --skip-cancel / --simulate / --td-mode cross|isolated / --timeout N
+      --source {exchange,dashboard}
 
 支持的 exchange:
   - okex   ✓

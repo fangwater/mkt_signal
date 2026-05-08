@@ -15,7 +15,7 @@ usage() {
   - 同所期现 intra 环境的“仅期货平敞口”脚本
   - 默认 source $HOME/<env-name>/env.sh
   - 默认 dry-run；加 --execute 才真实下单
-  - 数据来源：本机 dashboard /intra/<exchange>-intra-<suffix>/snapshot 的 pre_trade_exposure
+  - 数据来源：OKX/Bybit 默认直查交易所 REST（--source dashboard 可切回旧 panel）；Binance 仍走 panel
   - 只通过期货侧（Binance UM / OKX SWAP / Bybit linear）市价下单平 net_qty
   - 默认跳过 BNB（Binance），可通过 --skip-assets 覆盖
   - suffix 从 <exchange>-intra-<suffix> 自动提取

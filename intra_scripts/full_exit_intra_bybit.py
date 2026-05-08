@@ -25,6 +25,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlencode
 
 import requests
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "lib"))
+from exchange_state import fetch_exchange_state  # noqa: E402
 
 getcontext().prec = 36
 
@@ -138,7 +142,8 @@ class ExposureRow:
     net_usdt: Decimal
 
 
-def fetch_snapshot(suffix: str) -> List[ExposureRow]:
+def fetch_snapshot_legacy(suffix: str) -> List[ExposureRow]:
+    """Fetch exposure rows from the dashboard pre_trade_exposure snapshot (legacy path)."""
     url = f"http://{DASHBOARD_HOST}:{DASHBOARD_PORT}/intra/bybit-intra-{suffix}/snapshot"
     req = urllib.request.Request(url)
     try:
@@ -167,6 +172,33 @@ def fetch_snapshot(suffix: str) -> List[ExposureRow]:
                 )
             )
     return rows
+
+
+def fetch_snapshot_exchange(suffix: str, timeout: int = 10) -> List[ExposureRow]:
+    """Fetch exposure rows by querying Bybit REST APIs directly (lib path)."""
+    canonical = fetch_exchange_state("bybit", suffix, timeout=timeout, verbose=True)
+    rows: List[ExposureRow] = []
+    for entry in canonical:
+        net_qty = entry.exposure
+        net_usdt = net_qty * entry.mark_price if entry.mark_price > 0 else Decimal(0)
+        rows.append(
+            ExposureRow(
+                asset=entry.asset,
+                open_qty=entry.balance,
+                hedge_qty=entry.um_position,
+                net_qty=net_qty,
+                net_usdt=net_usdt,
+            )
+        )
+    return rows
+
+
+def fetch_exposure_rows(args: argparse.Namespace) -> List[ExposureRow]:
+    if args.source == "dashboard":
+        print(f"[info] using DASHBOARD snapshot (legacy) for bybit-intra-{args.suffix}")
+        return fetch_snapshot_legacy(args.suffix)
+    print(f"[info] using EXCHANGE state for bybit-intra-{args.suffix}")
+    return fetch_snapshot_exchange(args.suffix, timeout=args.timeout)
 
 
 @dataclass
@@ -511,11 +543,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-assets", default="", help="Comma-separated assets to skip")
     parser.add_argument("--min-net-usdt", type=float, default=5.0)
     parser.add_argument("--timeout", type=int, default=10)
-    parser.add_argument("--spot-slippage-bps", type=float, default=50.0, help="Aggressive spot IOC price offset")
+    parser.add_argument("--spot-slippage-bps", type=float, default=20.0, help="Aggressive spot IOC price offset")
     parser.add_argument("--execute", action="store_true", help="actually cancel and submit orders")
     parser.add_argument("--skip-cancel", action="store_true", help="skip the up-front cancel-all step")
     parser.add_argument("--cancel-settle-sec", type=float, default=1.5)
     parser.add_argument("--post-execute-sleep-sec", type=float, default=1.0)
+    parser.add_argument(
+        "--source",
+        choices=["exchange", "dashboard"],
+        default="exchange",
+        help="exposure data source (default: exchange = direct Bybit REST; dashboard = legacy panel)",
+    )
     return parser.parse_args()
 
 
@@ -535,7 +573,7 @@ def main() -> None:
             time.sleep(args.cancel_settle_sec)
 
     print("\n[info] fetching dashboard snapshot ...")
-    rows = fetch_snapshot(args.suffix)
+    rows = fetch_exposure_rows(args)
     if not rows:
         print("No exposure rows found. Nothing to close.")
         return
@@ -643,7 +681,7 @@ def main() -> None:
         time.sleep(args.post_execute_sleep_sec)
 
     print("\n[info] residual exposure snapshot:")
-    residual = fetch_snapshot(args.suffix)
+    residual = fetch_exposure_rows(args)
     print(f"{'Asset':<8} {'OpenQty':>14} {'HedgeQty':>14} {'NetUSDT':>10}")
     print("-" * 52)
     nonzero = 0

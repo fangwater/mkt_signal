@@ -25,7 +25,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "lib"))
+from exchange_state import fetch_exchange_state  # noqa: E402
 
 DASHBOARD_HOST = os.environ.get("DASHBOARD_HOST", "127.0.0.1")
 DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", "4191"))
@@ -199,7 +203,8 @@ class ExposureRow:
     hedge_qty: float
 
 
-def fetch_snapshot(exchange: str, suffix: str) -> List[ExposureRow]:
+def fetch_snapshot_legacy(exchange: str, suffix: str) -> List[ExposureRow]:
+    """Fetch exposure rows from the dashboard pre_trade_exposure snapshot (legacy path)."""
     url = (
         f"http://{DASHBOARD_HOST}:{DASHBOARD_PORT}"
         f"/intra/{exchange}-intra-{suffix}/snapshot"
@@ -233,6 +238,36 @@ def fetch_snapshot(exchange: str, suffix: str) -> List[ExposureRow]:
                 )
             )
     return rows
+
+
+def fetch_snapshot_exchange(exchange: str, suffix: str, timeout: int = 10) -> List[ExposureRow]:
+    """Fetch exposure rows by querying OKX REST APIs directly (lib path)."""
+    canonical = fetch_exchange_state(exchange, suffix, timeout=timeout, verbose=True)
+    rows: List[ExposureRow] = []
+    for entry in canonical:
+        net_qty = float(entry.exposure)
+        mark = float(entry.mark_price)
+        net_usdt = net_qty * mark if mark > 0 else 0.0
+        rows.append(
+            ExposureRow(
+                asset=entry.asset,
+                inst_id=asset_to_inst_id(entry.asset),
+                net_qty=net_qty,
+                net_usdt=net_usdt,
+                open_qty=float(entry.balance),
+                hedge_qty=float(entry.um_position),
+            )
+        )
+    return rows
+
+
+def fetch_exposure_rows(args: argparse.Namespace) -> List[ExposureRow]:
+    exchange = (args.exchange or "okex").strip().lower()
+    if args.source == "dashboard":
+        print(f"[info] using DASHBOARD snapshot (legacy) for {exchange}-intra-{args.suffix}")
+        return fetch_snapshot_legacy(exchange, args.suffix)
+    print(f"[info] using EXCHANGE state for {exchange}-intra-{args.suffix}")
+    return fetch_snapshot_exchange(exchange, args.suffix, timeout=args.timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +312,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=int, default=10)
     parser.add_argument("--simulate", action="store_true", help="x-simulated-trading: 1")
     parser.add_argument("--execute", action="store_true", help="actually submit; default dry-run")
+    parser.add_argument(
+        "--source",
+        choices=["exchange", "dashboard"],
+        default="exchange",
+        help="exposure data source (default: exchange = direct OKX REST; dashboard = legacy panel)",
+    )
     return parser.parse_args()
 
 
@@ -307,8 +348,8 @@ def main() -> None:
     skip = {s.strip().upper() for s in args.skip_assets.split(",") if s.strip()}
     exchange = (args.exchange or "okex").strip().lower()
 
-    print(f"[info] fetching snapshot for exchange={exchange} suffix={args.suffix} ...")
-    rows = fetch_snapshot(exchange, args.suffix)
+    print(f"[info] fetching exposure rows for exchange={exchange} suffix={args.suffix} ...")
+    rows = fetch_exposure_rows(args)
     if not rows:
         print("No exposure rows found.")
         return
