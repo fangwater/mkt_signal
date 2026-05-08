@@ -92,7 +92,7 @@ if [[ -z "$env_tag" ]]; then
   env_tag="fr"
 fi
 
-PROC_NAME="${PMDAEMON_NAME:-pm_$(short_exchange "$EXCHANGE")_${env_tag}}"
+PROC_NAME="${PMDAEMON_NAME:-fr_pm_$(short_exchange "$EXCHANGE")_${env_tag}}"
 LEGACY_PROC_NAME="persist_manager_${dir_tag}"
 KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 

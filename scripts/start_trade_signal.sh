@@ -100,6 +100,11 @@ case "$NS" in
       echo "[ERROR] exchange mismatch: dir exchange=${EXCHANGE} arg exchange=${CLI_EXCHANGE}"
       exit 1
     fi
+    ENV_TAG="fr"
+    if [[ "$dir_lc" =~ ^[a-z0-9]+[-_]fr[-_](.+)$ ]]; then
+      ENV_TAG="$(echo "${BASH_REMATCH[1]}" | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//')"
+    fi
+    if [[ -z "$ENV_TAG" ]]; then ENV_TAG="fr"; fi
     PM2_TAG="$dir_tag"
     ARGS=(--exchange "$EXCHANGE")
     ;;
@@ -133,6 +138,17 @@ case "$NS" in
     ;;
 esac
 
+short_exchange() {
+  case "${1,,}" in
+    binance) echo "bn" ;;
+    okex)    echo "ok" ;;
+    bybit)   echo "bb" ;;
+    bitget)  echo "bg" ;;
+    gate)    echo "gt" ;;
+    *)       echo "${1,,}" | sed -E 's/[^a-z0-9]+//g' | cut -c1-2 ;;
+  esac
+}
+
 if [[ "$NS" == "mm" ]]; then
   if type mm_trade_signal_proc_name >/dev/null 2>&1; then
     DEFAULT_PROC_NAME="$(mm_trade_signal_proc_name "$EXCHANGE" "$ENV_TAG")"
@@ -141,6 +157,9 @@ if [[ "$NS" == "mm" ]]; then
     DEFAULT_PROC_NAME="mm_${EXCHANGE}_futures_${ENV_TAG}_trade_signal"
     BUGGY_PROC_NAME="mm_${EXCHANGE}_futures_${EXCHANGE}_trade_signal"
   fi
+  LEGACY_PROC_NAME="trade_signal_${dir_tag}"
+elif [[ "$NS" == "fr" ]]; then
+  DEFAULT_PROC_NAME="fr_ts_$(short_exchange "$EXCHANGE")_${ENV_TAG}"
   LEGACY_PROC_NAME="trade_signal_${dir_tag}"
 else
   DEFAULT_PROC_NAME="trade_signal_${PM2_TAG}"

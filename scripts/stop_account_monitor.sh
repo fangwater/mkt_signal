@@ -67,11 +67,15 @@ else
         ;;
     esac
   }
-  DEFAULT_PROC_NAME="am_$(short_exchange "$EXCHANGE")_${ENV_TAG}"
+  DEFAULT_PROC_NAME="fr_am_$(short_exchange "$EXCHANGE")_${ENV_TAG}"
 fi
 
 PROC_NAME="${PMDAEMON_NAME:-$DEFAULT_PROC_NAME}"
 LEGACY_PROC_NAME="account_monitor_${dir_tag}"
+LEGACY_FR_PROC_NAME=""
+if [[ "$MODE" == "fr" ]]; then
+  LEGACY_FR_PROC_NAME="am_$(short_exchange "$EXCHANGE")_${ENV_TAG}"
+fi
 BUGGY_MM_PROC_NAME=""
 if [[ "$MODE" == "mm" ]]; then
   if type mm_short_exchange >/dev/null 2>&1; then
@@ -105,6 +109,9 @@ if "${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1; then
   deleted=true
 fi
 if [[ "$LEGACY_PROC_NAME" != "$PROC_NAME" ]] && "${PMDAEMON[@]}" delete "$LEGACY_PROC_NAME" >/dev/null 2>&1; then
+  deleted=true
+fi
+if [[ -n "$LEGACY_FR_PROC_NAME" && "$LEGACY_FR_PROC_NAME" != "$PROC_NAME" ]] && "${PMDAEMON[@]}" delete "$LEGACY_FR_PROC_NAME" >/dev/null 2>&1; then
   deleted=true
 fi
 if [[ -n "$BUGGY_MM_PROC_NAME" && "$BUGGY_MM_PROC_NAME" != "$PROC_NAME" ]] && "${PMDAEMON[@]}" delete "$BUGGY_MM_PROC_NAME" >/dev/null 2>&1; then

@@ -90,11 +90,15 @@ else
         ;;
     esac
   }
-  DEFAULT_PROC_NAME="am_$(short_exchange "$EXCHANGE")_${ENV_TAG}"
+  DEFAULT_PROC_NAME="fr_am_$(short_exchange "$EXCHANGE")_${ENV_TAG}"
 fi
 
 PROC_NAME="${PMDAEMON_NAME:-$DEFAULT_PROC_NAME}"
 LEGACY_PROC_NAME="account_monitor_${dir_tag}"
+LEGACY_FR_PROC_NAME=""
+if [[ "$MODE" == "fr" ]]; then
+  LEGACY_FR_PROC_NAME="am_$(short_exchange "$EXCHANGE")_${ENV_TAG}"
+fi
 BUGGY_MM_PROC_NAME=""
 if [[ "$MODE" == "mm" ]]; then
   if type mm_short_exchange >/dev/null 2>&1; then
@@ -141,6 +145,9 @@ JSON
 
 echo "[INFO] 启动 ${PROC_NAME} (exchange=${EXCHANGE})"
 "${PMDAEMON[@]}" delete "$LEGACY_PROC_NAME" >/dev/null 2>&1 || true
+if [[ -n "$LEGACY_FR_PROC_NAME" && "$LEGACY_FR_PROC_NAME" != "$PROC_NAME" ]]; then
+  "${PMDAEMON[@]}" delete "$LEGACY_FR_PROC_NAME" >/dev/null 2>&1 || true
+fi
 if [[ -n "$BUGGY_MM_PROC_NAME" ]]; then
   "${PMDAEMON[@]}" delete "$BUGGY_MM_PROC_NAME" >/dev/null 2>&1 || true
 fi

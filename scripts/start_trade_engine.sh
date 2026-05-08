@@ -126,7 +126,7 @@ else
 fi
 
 if [[ "$NS" == "fr" ]]; then
-  PROC_NAME="${PMDAEMON_NAME:-te_$(short_exchange "$EXCHANGE")_${ENV_TAG}}"
+  PROC_NAME="${PMDAEMON_NAME:-fr_te_$(short_exchange "$EXCHANGE")_${ENV_TAG}}"
 else
   PROC_NAME="${PMDAEMON_NAME:-${PM2_NAME:-trade_engine_${dir_tag}}}"
 fi

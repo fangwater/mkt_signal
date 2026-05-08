@@ -116,7 +116,7 @@ if [[ -z "$env_tag" ]]; then
   env_tag="fr"
 fi
 
-PROC_NAME="${PMDAEMON_NAME:-pt_$(short_exchange "$EXCHANGE")_${env_tag}}"
+PROC_NAME="${PMDAEMON_NAME:-fr_pt_$(short_exchange "$EXCHANGE")_${env_tag}}"
 LEGACY_PROC_NAME="pre_trade_${dir_tag}"
 RUST_LOG="${RUST_LOG:-info}"
 ARGS=()
