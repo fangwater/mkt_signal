@@ -40,3 +40,6 @@ factor_pool/**/*.h5
 
 # local model artifacts
 model/
+
+# SSH keys for FR remote deploy (never commit private keys)
+*.pem

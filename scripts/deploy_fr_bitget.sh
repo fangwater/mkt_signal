@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/fr_remote_deploy.sh
+source "$ROOT_DIR/scripts/lib/fr_remote_deploy.sh"
 
 usage() {
   cat <<'EOF'
@@ -10,7 +12,8 @@ usage() {
   scripts/deploy_fr_bitget.sh <suffix>
 
 说明:
-  - 只部署，不启动任何进程。
+  - 部署到远端 ${FR_DEPLOY_HOST:-ubuntu@54.64.147.69}（不启动进程）。
+  - 子脚本仍在本地生成 $HOME/$ENV_NAME/，随后 rsync 到远端。
   - 支持 suffix: arb01、arb02、arb03、arb04、arb05。
   - 端口按 suffix 明文写死，不允许外部传入覆盖：
       arb01 -> CONFIG 20051 / VIZ 20151
@@ -90,8 +93,13 @@ if [[ "$BIN_MODE" == "1" ]]; then
 fi
 
 if [[ "$BIN_MODE" == "1" && ! -d "$TARGET_DIR" ]]; then
-  echo "[ERROR] --bin 模式要求环境目录已存在: $TARGET_DIR" >&2
+  echo "[ERROR] --bin 模式要求本地环境目录已存在: $TARGET_DIR" >&2
   exit 1
+fi
+
+fr_remote_init "$ROOT_DIR" "$ENV_NAME"
+if [[ "$BIN_MODE" != "1" ]]; then
+  fr_remote_fetch_nginx_mapping "$ROOT_DIR"
 fi
 
 run_deploy() {
@@ -159,7 +167,7 @@ else
     --env-name "$ENV_NAME" \
     --exchange bitget \
     --port "$CONFIG_PORT" \
-    --apply-nginx
+    --nginx-mapping-file "$FR_NGINX_STAGING"
 
   run_deploy bash scripts/deploy_account_monitor.sh \
     --exchange bitget \
@@ -173,7 +181,7 @@ else
     --env-name "$ENV_NAME" \
     --exchange bitget \
     --port "$VIZ_PORT" \
-    --apply-nginx
+    --nginx-mapping-file "$FR_NGINX_STAGING"
 
   run_deploy bash scripts/deploy_fr_persist_manager.sh \
     --exchange bitget \
@@ -188,7 +196,15 @@ else
     --env-name "$ENV_NAME"
 fi
 
-echo "[INFO] Bitget FR 部署完成（仅 deploy，不含 start）"
-echo "[INFO] 请确保 $TARGET_DIR/env.sh 含以下变量:"
+if [[ "$BIN_MODE" == "1" ]]; then
+  fr_remote_sync_binaries "$ENV_NAME"
+else
+  fr_remote_sync_env_dir "$ENV_NAME"
+  fr_remote_apply_nginx "$ENV_NAME"
+fi
+
+REMOTE_TARGET_DIR="${FR_REMOTE_HOME}/${ENV_NAME}"
+echo "[INFO] Bitget FR 部署完成（远端 ${FR_DEPLOY_HOST}，未启动进程）"
+echo "[INFO] 请确保 ${REMOTE_TARGET_DIR}/env.sh 含以下变量:"
 echo "[INFO]   IPC_NAMESPACE=${ENV_NAME}"
 echo "[INFO]   BITGET_API_KEY / BITGET_API_SECRET / BITGET_API_PASSPHRASE"
