@@ -85,10 +85,6 @@ name = "query_client"
 path = "src/bin/query_client.rs"
 
 [[bin]]
-name = "manual_signal"
-path = "src/bin/manual_signal.rs"
-
-[[bin]]
 name = "demo_qty_alignment"
 path = "src/bin/demo_qty_alignment.rs"
 
