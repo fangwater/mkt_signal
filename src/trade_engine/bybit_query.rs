@@ -59,3 +59,38 @@ pub async fn bybit_rest_get(
     let body = resp.text().await.unwrap_or_default();
     Ok((status, body))
 }
+
+/// Bybit V5 POST：签名 payload 用 `body_json` 替换 GET 里的 `query_string`。
+pub async fn bybit_rest_post(
+    client: &Client,
+    credentials: &BybitCredentials,
+    path: &str,
+    body: &str,
+) -> Result<(u16, String)> {
+    let timestamp_ms = Utc::now().timestamp_millis();
+    let sign = build_bybit_sign(
+        timestamp_ms,
+        &credentials.api_key,
+        BYBIT_RECV_WINDOW_MS,
+        body,
+        &credentials.secret_key,
+    );
+
+    let url = format!("{}{}", BYBIT_REST_BASE, path);
+
+    let resp = client
+        .post(&url)
+        .header("X-BAPI-API-KEY", &credentials.api_key)
+        .header("X-BAPI-SIGN", sign)
+        .header("X-BAPI-SIGN-TYPE", "2")
+        .header("X-BAPI-TIMESTAMP", timestamp_ms.to_string())
+        .header("X-BAPI-RECV-WINDOW", BYBIT_RECV_WINDOW_MS.to_string())
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body.to_string())
+        .send()
+        .await?;
+
+    let status = resp.status().as_u16();
+    let resp_body = resp.text().await.unwrap_or_default();
+    Ok((status, resp_body))
+}

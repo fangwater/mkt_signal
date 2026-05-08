@@ -60,3 +60,30 @@ pub async fn gate_rest_get(
     let body = resp.text().await.unwrap_or_default();
     Ok((status, body))
 }
+
+pub async fn gate_rest_post(
+    client: &Client,
+    credentials: &GateCredentials,
+    path: &str,
+    body: &str,
+) -> Result<(u16, String)> {
+    let ts = Utc::now().timestamp();
+    let sign = sign_gate_request(&credentials.secret_key, "POST", path, "", body, ts);
+
+    let url = format!("{}{}", GATE_REST_BASE, path);
+
+    let resp = client
+        .post(&url)
+        .header("Accept", "application/json")
+        .header("Content-Type", "application/json")
+        .header("KEY", &credentials.api_key)
+        .header("Timestamp", ts.to_string())
+        .header("SIGN", sign)
+        .body(body.to_string())
+        .send()
+        .await?;
+
+    let status = resp.status().as_u16();
+    let resp_body = resp.text().await.unwrap_or_default();
+    Ok((status, resp_body))
+}

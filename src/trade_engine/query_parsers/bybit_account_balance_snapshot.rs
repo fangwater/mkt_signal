@@ -136,13 +136,27 @@ mod tests {
         // 这里采用与 OKX 现行约定一致的更保守做法 (扣本金+利息)；和 equity 仅有 ~interest 量级偏差。
         let bnb = balances["BNB"];
         let bnb_expected = -0.00035791_f64 - 24.474621056148061433_f64 - 0.0000466_f64;
-        assert!((bnb - bnb_expected).abs() < 1e-9, "BNB net={} 应≈{}", bnb, bnb_expected);
+        assert!(
+            (bnb - bnb_expected).abs() < 1e-9,
+            "BNB net={} 应≈{}",
+            bnb,
+            bnb_expected
+        );
         let doge = balances["DOGE"];
         let doge_expected = 9272.16931417_f64 - 101920.083364849093576718_f64 - 0.24072979_f64;
-        assert!((doge - doge_expected).abs() < 1e-6, "DOGE net={} 应≈{}", doge, doge_expected);
+        assert!(
+            (doge - doge_expected).abs() < 1e-6,
+            "DOGE net={} 应≈{}",
+            doge,
+            doge_expected
+        );
         // USDT borrow=0, net 应该回退为 walletBalance（避免和下游 um_unrealized 双计 UPL）
         let usdt = balances["USDT"];
-        assert!((usdt - 124649.74470369).abs() < 1e-6, "USDT net={} 应=walletBalance", usdt);
+        assert!(
+            (usdt - 124649.74470369).abs() < 1e-6,
+            "USDT net={} 应=walletBalance",
+            usdt
+        );
     }
 
     #[test]
@@ -171,6 +185,11 @@ mod tests {
         let msgs = parse_bybit_account_balance_snapshot(json).expect("parse ok");
         let bal = BasicBalanceMsg::from_bytes(&msgs[0]).expect("bal ok");
         let expected = -0.00011795_f64 - 11.82734984_f64 - 0.00001258_f64;
-        assert!((bal.balance - expected).abs() < 1e-9, "ETH net={} 应≈{}", bal.balance, expected);
+        assert!(
+            (bal.balance - expected).abs() < 1e-9,
+            "ETH net={} 应≈{}",
+            bal.balance,
+            expected
+        );
     }
 }

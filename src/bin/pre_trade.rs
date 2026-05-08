@@ -6,7 +6,10 @@ use mkt_signal::common::binance_account_mode::{init_binance_account_mode, Binanc
 use mkt_signal::common::redis_client::RedisSettings;
 use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::funding_rate::ArbMode;
+use mkt_signal::portfolio_margin::bybit_auth::BybitCredentials;
+use mkt_signal::portfolio_margin::gate_auth::GateCredentials;
 use mkt_signal::pre_trade::auto_collection_service::AutoCollectionService;
+use mkt_signal::pre_trade::auto_repay::{BinanceRepayer, BybitRepayer, GateRepayer};
 use mkt_signal::pre_trade::auto_repay_service::AutoRepayService;
 use mkt_signal::pre_trade::intra_bwd_symbol_list::IntraBwdSymbolList;
 use mkt_signal::pre_trade::monitor_channel::MonitorChannel;
@@ -275,29 +278,72 @@ async fn main() -> Result<()> {
             }
             info!("MonitorChannel initialized successfully");
 
-            // 3.1 启动 Binance 自动还币任务（每小时 55 分触发）
-            if matches!(open_venue, TradingVenue::BinanceMargin)
-                || matches!(hedge_venue, TradingVenue::BinanceMargin)
+            // 3.1 启动多交易所自动还款服务（启动即跑一次 + 每小时 :55 UTC）。
+            //     - Binance：仅 PM (UNIFIED) 账户模式注册，端点 /papi/v1/repayLoan
+            //     - Gate   ：UNIFIED 账户，端点 POST /api/v4/unified/loans (type=repay)
+            //     - Bybit  ：UNIFIED 账户，端点 POST /v5/account/quick-repayment（占位实现，
+            //               已知近期返回 "no liability" 但 borrowAmount 不归零，待端点确认）
             {
-                info!("auto repay enabled (binance-margin detected)");
-                let binance_api_key = std::env::var("BINANCE_API_KEY").unwrap_or_default();
-                let binance_api_secret = std::env::var("BINANCE_API_SECRET").unwrap_or_default();
-                if binance_api_key.trim().is_empty() || binance_api_secret.trim().is_empty() {
-                    warn!("BINANCE_API_KEY/SECRET missing; auto repay task will still start but API calls may fail");
+                let mut repay_svc = AutoRepayService::new();
+
+                let binance_in_play = matches!(open_venue, TradingVenue::BinanceMargin)
+                    || matches!(hedge_venue, TradingVenue::BinanceMargin);
+                let binance_is_unified =
+                    matches!(binance_account_mode, Some(BinanceAccountMode::Unified));
+                if binance_in_play && binance_is_unified {
+                    let binance_api_key = std::env::var("BINANCE_API_KEY").unwrap_or_default();
+                    let binance_api_secret =
+                        std::env::var("BINANCE_API_SECRET").unwrap_or_default();
+                    if binance_api_key.trim().is_empty() || binance_api_secret.trim().is_empty() {
+                        warn!(
+                            "binance auto-repay disabled: BINANCE_API_KEY/SECRET missing"
+                        );
+                    } else {
+                        let rest_base = match std::env::var("BINANCE_PAPI_URL")
+                            .or_else(|_| std::env::var("BINANCE_FAPI_URL"))
+                        {
+                            Ok(url) if !url.trim().is_empty() => url,
+                            _ => RestConstants::BINANCE_BASE_URL.to_string(),
+                        };
+                        repay_svc.register(Box::new(BinanceRepayer::new(
+                            rest_base,
+                            binance_api_key,
+                            binance_api_secret,
+                            RestConstants::RECV_WINDOW_MS,
+                        )));
+                    }
+                } else if binance_in_play {
+                    info!(
+                        "binance auto-repay disabled: account_mode={:?} (requires UNIFIED/PM)",
+                        binance_account_mode
+                    );
                 }
-                let rest_base = match std::env::var("BINANCE_PAPI_URL")
-                    .or_else(|_| std::env::var("BINANCE_FAPI_URL"))
+
+                if matches!(open_venue, TradingVenue::GateMargin)
+                    || matches!(hedge_venue, TradingVenue::GateMargin)
                 {
-                    Ok(url) if !url.trim().is_empty() => url,
-                    _ => RestConstants::BINANCE_BASE_URL.to_string(),
-                };
-                AutoRepayService::new(
-                    rest_base,
-                    binance_api_key,
-                    binance_api_secret,
-                    RestConstants::RECV_WINDOW_MS,
-                )
-                .start_auto_repay_task();
+                    match GateCredentials::from_env() {
+                        Ok(creds) => repay_svc.register(Box::new(GateRepayer::new(creds))),
+                        Err(e) => {
+                            warn!("gate auto-repay disabled: {e}");
+                        }
+                    }
+                }
+
+                if matches!(open_venue, TradingVenue::BybitMargin)
+                    || matches!(hedge_venue, TradingVenue::BybitMargin)
+                {
+                    match BybitCredentials::from_env() {
+                        Ok(creds) => repay_svc.register(Box::new(BybitRepayer::new(creds))),
+                        Err(e) => {
+                            warn!("bybit auto-repay disabled: {e}");
+                        }
+                    }
+                }
+
+                if !repay_svc.is_empty() {
+                    repay_svc.start();
+                }
             }
 
             // 3.2 启动 Binance PM 自动资金归集任务：
