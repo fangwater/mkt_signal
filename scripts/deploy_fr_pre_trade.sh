@@ -9,7 +9,7 @@ usage() {
   cat <<'EOF'
 用法:
   scripts/deploy_fr_pre_trade.sh --env-name <exchange>_fr_<suffix>
-                                 [--exchange <binance|okex|gate>]
+                                 [--exchange <binance|okex|gate|bybit|bitget>]
                                  [--scripts-only|--bin-only]
 
 说明:
@@ -119,10 +119,10 @@ if [[ -z "$EXCHANGE" ]]; then
 fi
 EXCHANGE="$(normalize_exchange "$EXCHANGE")"
 case "$EXCHANGE" in
-  binance|okex|gate)
+  binance|okex|gate|bybit|bitget)
     ;;
   *)
-    echo "[ERROR] 无法从 --env-name 推断 exchange，或 --exchange 无效: $EXCHANGE (支持: binance/okex/gate)" >&2
+    echo "[ERROR] 无法从 --env-name 推断 exchange，或 --exchange 无效: $EXCHANGE (支持: binance/okex/gate/bybit/bitget)" >&2
     usage
     exit 1
     ;;

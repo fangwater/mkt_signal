@@ -7,7 +7,7 @@ usage() {
   cat <<'USAGE_EOF'
 Usage:
   deploy_account_monitor.sh --env-name <exchange>_fr_<suffix>
-                            [--exchange okex|binance|gate|bitget]
+                            [--exchange okex|binance|gate|bitget|bybit]
                             [--scripts-only|--bin-only]
 
 Examples:
@@ -21,6 +21,7 @@ Notes:
       binance-> binance_account_monitor
       gate   -> gate_account_monitor
       bitget -> bitget_account_monitor
+      bybit  -> bybit_account_monitor
   - Deploy dir:
       $HOME/<exchange>_fr_<suffix> (e.g. $HOME/okex_fr_hf01, $HOME/binance_fr_hf02)
   - exchange can be omitted and inferred from --env-name.
@@ -115,9 +116,9 @@ if [[ -z "$EXCHANGE" ]]; then
 fi
 EXCHANGE="$(normalize_exchange "$EXCHANGE")"
 case "$EXCHANGE" in
-  okex|binance|gate|bitget) ;;
+  okex|binance|gate|bitget|bybit) ;;
   *)
-    echo "[ERROR] --exchange must be one of: okex, binance, gate, bitget" >&2
+    echo "[ERROR] --exchange must be one of: okex, binance, gate, bitget, bybit" >&2
     usage >&2
     exit 1
     ;;
@@ -132,6 +133,7 @@ case "$EXCHANGE" in
   binance) BIN_NAME="binance_account_monitor" ;;
   gate) BIN_NAME="gate_account_monitor" ;;
   bitget) BIN_NAME="bitget_account_monitor" ;;
+  bybit) BIN_NAME="bybit_account_monitor" ;;
 esac
 
 BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"

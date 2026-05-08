@@ -6,19 +6,18 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 usage() {
   cat <<'EOF'
 用法:
-  scripts/deploy_fr_gate.sh --env-suffix <suffix> [--bin]
-  scripts/deploy_fr_gate.sh <suffix>
+  scripts/deploy_fr_bitget.sh --env-suffix <suffix> [--bin]
+  scripts/deploy_fr_bitget.sh <suffix>
 
 说明:
   - 只部署，不启动任何进程。
-  - 支持 suffix: trade、arb01、arb02、arb03、arb04、arb05。
+  - 支持 suffix: arb01、arb02、arb03、arb04、arb05。
   - 端口按 suffix 明文写死，不允许外部传入覆盖：
-      trade -> CONFIG 18021 / VIZ 10021
-      arb01 -> CONFIG 20021 / VIZ 20121
-      arb02 -> CONFIG 20022 / VIZ 20122
-      arb03 -> CONFIG 20023 / VIZ 20123
-      arb04 -> CONFIG 20024 / VIZ 20124
-      arb05 -> CONFIG 20025 / VIZ 20125
+      arb01 -> CONFIG 20051 / VIZ 20151
+      arb02 -> CONFIG 20052 / VIZ 20152
+      arb03 -> CONFIG 20053 / VIZ 20153
+      arb04 -> CONFIG 20054 / VIZ 20154
+      arb05 -> CONFIG 20055 / VIZ 20155
   - --bin: 仅替换二进制（不改脚本/配置/nginx）。
 EOF
 }
@@ -32,73 +31,57 @@ ENV_SUFFIX=""
 BIN_MODE="0"
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --env-suffix)
-      ENV_SUFFIX="${2:-}"
-      shift 2
-      ;;
-    --bin)
-      BIN_MODE="1"
-      shift
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
+    --env-suffix) ENV_SUFFIX="${2:-}"; shift 2 ;;
+    --bin)        BIN_MODE="1"; shift ;;
+    -h|--help)    usage; exit 0 ;;
     *)
       if [[ -z "$ENV_SUFFIX" ]]; then
-        ENV_SUFFIX="$1"
-        shift
+        ENV_SUFFIX="$1"; shift
       else
-        echo "[ERROR] 未知参数: $1" >&2
-        usage
-        exit 1
+        echo "[ERROR] 未知参数: $1" >&2; usage; exit 1
       fi
       ;;
   esac
 done
 
 if [[ -z "$ENV_SUFFIX" ]]; then
-  echo "[ERROR] 需要传入 env suffix（例如 trade）" >&2
-  usage
-  exit 1
+  echo "[ERROR] 需要传入 env suffix（arb01|arb02|arb03|arb04|arb05）" >&2
+  usage; exit 1
 fi
 
 ENV_SUFFIX="$(echo "$ENV_SUFFIX" | tr 'A-Z' 'a-z')"
 
 case "$ENV_SUFFIX" in
-  trade)
-    CONFIG_PORT="18021"
-    VIZ_PORT="10021"
-    ;;
   arb01)
-    CONFIG_PORT="20021"
-    VIZ_PORT="20121"
+    CONFIG_PORT="20051"
+    VIZ_PORT="20151"
     ;;
   arb02)
-    CONFIG_PORT="20022"
-    VIZ_PORT="20122"
+    CONFIG_PORT="20052"
+    VIZ_PORT="20152"
     ;;
   arb03)
-    CONFIG_PORT="20023"
-    VIZ_PORT="20123"
+    CONFIG_PORT="20053"
+    VIZ_PORT="20153"
     ;;
   arb04)
-    CONFIG_PORT="20024"
-    VIZ_PORT="20124"
+    CONFIG_PORT="20054"
+    VIZ_PORT="20154"
     ;;
   arb05)
-    CONFIG_PORT="20025"
-    VIZ_PORT="20125"
+    CONFIG_PORT="20055"
+    VIZ_PORT="20155"
     ;;
   *)
-    echo "[ERROR] gate FR 仅支持 suffix: trade|arb01|arb02|arb03|arb04|arb05（收到: ${ENV_SUFFIX}）" >&2
+    echo "[ERROR] bitget FR 仅支持 suffix: arb01|arb02|arb03|arb04|arb05（收到: ${ENV_SUFFIX}）" >&2
     exit 1
     ;;
 esac
 
-ENV_NAME="gate_fr_${ENV_SUFFIX}"
+ENV_NAME="bitget_fr_${ENV_SUFFIX}"
+TARGET_DIR="$HOME/$ENV_NAME"
 
-echo "[INFO] Gate FR deploy-only"
+echo "[INFO] Bitget FR deploy-only"
 echo "[INFO] env_name=${ENV_NAME}"
 echo "[INFO] config_port=${CONFIG_PORT}, viz_port=${VIZ_PORT}"
 echo "[INFO] 不会执行 start 命令"
@@ -106,8 +89,8 @@ if [[ "$BIN_MODE" == "1" ]]; then
   echo "[INFO] mode=bin (仅替换二进制)"
 fi
 
-if [[ "$BIN_MODE" == "1" && ! -d "$HOME/$ENV_NAME" ]]; then
-  echo "[ERROR] --bin 模式要求环境目录已存在: $HOME/$ENV_NAME" >&2
+if [[ "$BIN_MODE" == "1" && ! -d "$TARGET_DIR" ]]; then
+  echo "[ERROR] --bin 模式要求环境目录已存在: $TARGET_DIR" >&2
   exit 1
 fi
 
@@ -142,67 +125,70 @@ cd "$ROOT_DIR"
 
 if [[ "$BIN_MODE" == "1" ]]; then
   run_deploy bash scripts/deploy_account_monitor.sh \
-    --exchange gate \
+    --exchange bitget \
     --env-name "$ENV_NAME" \
     --bin-only
 
   run_deploy bash scripts/deploy_fr_trade_engine.sh \
-    --exchange gate \
+    --exchange bitget \
     --env-name "$ENV_NAME" \
     --bin-only
 
   run_deploy bash scripts/deploy_fr_viz_server.sh \
     --env-name "$ENV_NAME" \
-    --exchange gate \
+    --exchange bitget \
     --port "$VIZ_PORT" \
     --bin-only
 
   run_deploy bash scripts/deploy_fr_persist_manager.sh \
-    --exchange gate \
+    --exchange bitget \
     --env-name "$ENV_NAME" \
     --bin-only
 
   run_deploy bash scripts/deploy_fr_pre_trade.sh \
-    --exchange gate \
+    --exchange bitget \
     --env-name "$ENV_NAME" \
     --bin-only
 
   run_deploy bash scripts/deploy_fr_signal.sh \
-    --exchange gate \
+    --exchange bitget \
     --env-name "$ENV_NAME" \
     --bin-only
 else
   run_deploy bash scripts/deploy_fr_config_server.sh \
     --env-name "$ENV_NAME" \
-    --exchange gate \
+    --exchange bitget \
     --port "$CONFIG_PORT" \
     --apply-nginx
 
   run_deploy bash scripts/deploy_account_monitor.sh \
-    --exchange gate \
+    --exchange bitget \
     --env-name "$ENV_NAME"
 
   run_deploy bash scripts/deploy_fr_trade_engine.sh \
-    --exchange gate \
+    --exchange bitget \
     --env-name "$ENV_NAME"
 
   run_deploy bash scripts/deploy_fr_viz_server.sh \
     --env-name "$ENV_NAME" \
-    --exchange gate \
+    --exchange bitget \
     --port "$VIZ_PORT" \
     --apply-nginx
 
   run_deploy bash scripts/deploy_fr_persist_manager.sh \
-    --exchange gate \
+    --exchange bitget \
     --env-name "$ENV_NAME"
 
   run_deploy bash scripts/deploy_fr_pre_trade.sh \
-    --exchange gate \
+    --exchange bitget \
     --env-name "$ENV_NAME"
 
   run_deploy bash scripts/deploy_fr_signal.sh \
-    --exchange gate \
+    --exchange bitget \
     --env-name "$ENV_NAME"
 fi
 
-echo "[INFO] Gate FR 部署完成（仅 deploy，不含 start）"
+echo "[INFO] Bitget FR 部署完成（仅 deploy，不含 start）"
+echo "[INFO] 请确保 $TARGET_DIR/env.sh 含以下变量:"
+echo "[INFO]   IPC_NAMESPACE=${ENV_NAME}"
+echo "[INFO]   BITGET_API_KEY / BITGET_API_SECRET / BITGET_API_PASSPHRASE"

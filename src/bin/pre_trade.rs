@@ -59,6 +59,8 @@ fn infer_venues_from_cwd() -> Option<(TradingVenue, TradingVenue)> {
             "binance" => Some(TradingVenue::BinanceFutures),
             "okex" => Some(TradingVenue::OkexFutures),
             "gate" => Some(TradingVenue::GateFutures),
+            "bybit" => Some(TradingVenue::BybitFutures),
+            "bitget" => Some(TradingVenue::BitgetFutures),
             _ => None,
         }
     }
@@ -68,6 +70,8 @@ fn infer_venues_from_cwd() -> Option<(TradingVenue, TradingVenue)> {
             "binance" => Some(TradingVenue::BinanceMargin),
             "okex" => Some(TradingVenue::OkexMargin),
             "gate" => Some(TradingVenue::GateMargin),
+            "bybit" => Some(TradingVenue::BybitMargin),
+            "bitget" => Some(TradingVenue::BitgetMargin),
             _ => None,
         }
     }

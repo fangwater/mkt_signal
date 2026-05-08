@@ -11,10 +11,22 @@ usage() {
 
 说明:
   - 只部署，不启动任何进程。
-  - 支持两组固定 suffix：
+  - 支持三组固定 suffix：
       1) 老组：trade、hf01、hf02
       2) 新组：trade01、trade02、trade03（独立环境）
-  - 端口按 suffix 明文写死，不允许外部覆盖。
+      3) arb 组：arb01..arb05（独立环境，2xxxx 端口段）
+  - 端口按 suffix 明文写死，不允许外部覆盖：
+      trade   -> CONFIG 18031 / VIZ 10031
+      hf01    -> CONFIG 18041 / VIZ 10041
+      hf02    -> CONFIG 18042 / VIZ 10042
+      trade01 -> CONFIG 18051 / VIZ 10051
+      trade02 -> CONFIG 18052 / VIZ 10052
+      trade03 -> CONFIG 18053 / VIZ 10053
+      arb01   -> CONFIG 20031 / VIZ 20131
+      arb02   -> CONFIG 20032 / VIZ 20132
+      arb03   -> CONFIG 20033 / VIZ 20133
+      arb04   -> CONFIG 20034 / VIZ 20134
+      arb05   -> CONFIG 20035 / VIZ 20135
   - --bin: 仅替换二进制（不改脚本/配置/nginx）。
 EOF
 }
@@ -54,7 +66,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$ENV_SUFFIX" ]]; then
-  echo "[ERROR] 需要传入 env suffix（trade|hf01|hf02|trade01|trade02|trade03）" >&2
+  echo "[ERROR] 需要传入 env suffix（trade|hf01|hf02|trade01|trade02|trade03|arb01|arb02|arb03|arb04|arb05）" >&2
   usage
   exit 1
 fi
@@ -86,8 +98,28 @@ case "$ENV_SUFFIX" in
     CONFIG_PORT="18053"
     VIZ_PORT="10053"
     ;;
+  arb01)
+    CONFIG_PORT="20031"
+    VIZ_PORT="20131"
+    ;;
+  arb02)
+    CONFIG_PORT="20032"
+    VIZ_PORT="20132"
+    ;;
+  arb03)
+    CONFIG_PORT="20033"
+    VIZ_PORT="20133"
+    ;;
+  arb04)
+    CONFIG_PORT="20034"
+    VIZ_PORT="20134"
+    ;;
+  arb05)
+    CONFIG_PORT="20035"
+    VIZ_PORT="20135"
+    ;;
   *)
-    echo "[ERROR] binance FR 仅支持 suffix: trade|hf01|hf02|trade01|trade02|trade03（收到: ${ENV_SUFFIX}）" >&2
+    echo "[ERROR] binance FR 仅支持 suffix: trade|hf01|hf02|trade01|trade02|trade03|arb01|arb02|arb03|arb04|arb05（收到: ${ENV_SUFFIX}）" >&2
     exit 1
     ;;
 esac

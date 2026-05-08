@@ -11,8 +11,14 @@ usage() {
 
 说明:
   - 只部署，不启动任何进程。
-  - 目前只支持固定 suffix：trade。
-  - 端口按 suffix 明文写死，不允许外部传入覆盖。
+  - 支持 suffix: trade、arb01、arb02、arb03、arb04、arb05。
+  - 端口按 suffix 明文写死，不允许外部传入覆盖：
+      trade -> CONFIG 18011 / VIZ 10011
+      arb01 -> CONFIG 20011 / VIZ 20111
+      arb02 -> CONFIG 20012 / VIZ 20112
+      arb03 -> CONFIG 20013 / VIZ 20113
+      arb04 -> CONFIG 20014 / VIZ 20114
+      arb05 -> CONFIG 20015 / VIZ 20115
   - --bin: 仅替换二进制（不改脚本/配置/nginx）。
 EOF
 }
@@ -64,8 +70,28 @@ case "$ENV_SUFFIX" in
     CONFIG_PORT="18011"
     VIZ_PORT="10011"
     ;;
+  arb01)
+    CONFIG_PORT="20011"
+    VIZ_PORT="20111"
+    ;;
+  arb02)
+    CONFIG_PORT="20012"
+    VIZ_PORT="20112"
+    ;;
+  arb03)
+    CONFIG_PORT="20013"
+    VIZ_PORT="20113"
+    ;;
+  arb04)
+    CONFIG_PORT="20014"
+    VIZ_PORT="20114"
+    ;;
+  arb05)
+    CONFIG_PORT="20015"
+    VIZ_PORT="20115"
+    ;;
   *)
-    echo "[ERROR] okex FR 目前只支持固定 suffix: trade（收到: ${ENV_SUFFIX}）" >&2
+    echo "[ERROR] okex FR 仅支持 suffix: trade|arb01|arb02|arb03|arb04|arb05（收到: ${ENV_SUFFIX}）" >&2
     exit 1
     ;;
 esac
