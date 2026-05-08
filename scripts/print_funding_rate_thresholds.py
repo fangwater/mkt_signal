@@ -4,8 +4,10 @@
 """
 打印资金费率阈值（从 Redis 读取）。
 
-读取 Redis Hash:
-  `funding_rate_thresholds_{open_venue}_{hedge_venue}` - 资金费率阈值（8个字段，不区分 MM/MT）
+读取 Redis Hash（env-aware）:
+  `<env_name>:funding_rate_thresholds_{open_venue}_{hedge_venue}`
+    - env_name: 部署目录名，例如 `binance_fr_arb01`
+    - 8 个字段（不区分 MM/MT）
 
 格式: {period}_{direction}_{operation}
   - period: 8h, 4h
@@ -13,15 +15,18 @@
   - operation: open, close
 
 示例：
-  python scripts/print_funding_rate_thresholds.py --exchange binance
-  python scripts/print_funding_rate_thresholds.py --exchange okex
-  # 也可省略 --exchange，脚本会基于当前目录名推断 (binance/okex/bybit/bitget/gate 前缀)
+  # 在部署目录下（例如 ~/binance_fr_arb01）直接运行：
+  python scripts/print_funding_rate_thresholds.py
+  # 或显式传 env-name / exchange：
+  python scripts/print_funding_rate_thresholds.py --env-name binance_fr_arb01
+  python scripts/print_funding_rate_thresholds.py --env-name okex_fr_trade --exchange okex
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -44,6 +49,10 @@ def parse_args() -> argparse.Namespace:
         "--exchange",
         choices=SUPPORTED_EXCHANGES,
         help="交易所名称（可选，未提供则尝试根据当前目录名推断）",
+    )
+    p.add_argument(
+        "--env-name",
+        help="部署 env 名（例如 binance_fr_arb01）；未提供时使用当前目录名",
     )
     return p.parse_args()
 
@@ -74,19 +83,27 @@ THRESHOLD_ORDER = [
 ]
 
 
-def funding_thresholds_key(exchange: str) -> str:
-    """生成与 Rust 端一致的资金费率阈值 Redis Key"""
-    venue_pairs = {
-        "binance": ("binance-margin", "binance-futures"),
-        "okex": ("okex-margin", "okex-futures"),
-        "bybit": ("bybit-margin", "bybit-futures"),
-        "bitget": ("bitget-margin", "bitget-futures"),
-        "gate": ("gate-margin", "gate-futures"),
-    }
-    if exchange not in venue_pairs:
+VENUE_PAIRS: Dict[str, tuple] = {
+    "binance": ("binance-margin", "binance-futures"),
+    "okex": ("okex-margin", "okex-futures"),
+    "bybit": ("bybit-margin", "bybit-futures"),
+    "bitget": ("bitget-margin", "bitget-futures"),
+    "gate": ("gate-margin", "gate-futures"),
+}
+
+
+def funding_thresholds_key(env_name: str, exchange: str) -> str:
+    """生成与 Rust 端一致的资金费率阈值 Redis Key（env-aware）"""
+    if exchange not in VENUE_PAIRS:
         raise ValueError(f"Unsupported exchange: {exchange}")
-    open_slug, hedge_slug = venue_pairs[exchange]
-    return f"funding_rate_thresholds_{open_slug}_{hedge_slug}"
+    open_slug, hedge_slug = VENUE_PAIRS[exchange]
+    return f"{env_name}:funding_rate_thresholds_{open_slug}_{hedge_slug}"
+
+
+def infer_env_name_from_cwd() -> Optional[str]:
+    """从当前目录名推断部署 env 名（如 ~/binance_fr_arb01 -> binance_fr_arb01）"""
+    name = Path.cwd().name.strip().lower()
+    return name or None
 
 
 def infer_exchange_from_cwd() -> Optional[str]:
@@ -100,6 +117,16 @@ def infer_exchange_from_cwd() -> Optional[str]:
             if cand.startswith(ex):
                 return ex
     return None
+
+
+def warn_if_env_name_mismatched(env_name: str, exchange: str) -> None:
+    """env_name 应形如 `<exchange>_fr_<suffix>`，不一致时打印 warning。"""
+    pattern = rf"^{re.escape(exchange)}_fr_[a-z0-9][a-z0-9_-]*$"
+    if not re.match(pattern, env_name):
+        print(
+            f"[WARN] env-name '{env_name}' 不符合 {exchange}_fr_<suffix> 规范，仍然继续",
+            file=sys.stderr,
+        )
 
 
 def print_three_line_table(headers: List[str], rows: List[List[str]]) -> None:
@@ -133,9 +160,9 @@ def print_three_line_table(headers: List[str], rows: List[List[str]]) -> None:
     print(bot_rule)
 
 
-def print_thresholds(rds, exchange: str) -> None:
+def print_thresholds(rds, env_name: str, exchange: str) -> None:
     """打印资金费率阈值"""
-    key = funding_thresholds_key(exchange)
+    key = funding_thresholds_key(env_name, exchange)
     print(f"📊 资金费率阈值 ({key}):")
     print("-" * 80)
 
@@ -187,12 +214,23 @@ def main() -> int:
     if not args.exchange:
         print(f"[INFO] 未提供 exchange，基于目录推断: {exchange}", file=sys.stderr)
 
+    env_name = (args.env_name or infer_env_name_from_cwd() or "").strip().lower()
+    if not env_name:
+        print(
+            "❌ 需要 --env-name，或在 <exchange>_fr_<suffix> 命名的目录下运行以自动推断",
+            file=sys.stderr,
+        )
+        return 2
+    if not args.env_name:
+        print(f"[INFO] 未提供 env-name，基于目录推断: {env_name}", file=sys.stderr)
+    warn_if_env_name_mismatched(env_name, exchange)
+
     rds = redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
 
     print("📍 Redis: 127.0.0.1:6379/0\n")
 
     # 打印阈值
-    print_thresholds(rds, exchange)
+    print_thresholds(rds, env_name, exchange)
 
     print()
     return 0

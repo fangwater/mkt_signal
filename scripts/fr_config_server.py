@@ -65,6 +65,15 @@ def build_risk_params_key(open_venue: str, hedge_venue: str) -> str:
         return f"{dir_prefix}:{open_venue}:{hedge_venue}:pre_trade_risk_params"
     return f"{open_venue}:{hedge_venue}:pre_trade_risk_params"
 
+
+def build_funding_thresholds_key(open_venue: str, hedge_venue: str) -> str:
+    dir_prefix = infer_dir_prefix_from_cwd()
+    if not dir_prefix:
+        raise ValueError(
+            "env_name unavailable (no cwd prefix); fr_config_server must run under <exchange>_fr_<env> dir"
+        )
+    return f"{dir_prefix}:funding_rate_thresholds_{open_venue}_{hedge_venue}"
+
 try:
     import sync_fr_risk_params as risk_defaults
 
@@ -135,53 +144,6 @@ try:
 except Exception:
     pass
 
-
-def default_funding_factor_chain(open_venue: str, hedge_venue: str) -> List[Dict[str, Any]]:
-    """fr 因子链按 venue 对动态选择:
-    - 双 futures(跨所或同所):因子=spread_fr,默认 80/20
-    - margin × futures(同所):因子=hedge_premium_rate,默认 50/50
-
-    Rust 侧 `arb_open_filter::lookup_factor_realtime_value` 必须支持这里出现的因子名。
-    """
-    if open_venue.endswith("-futures") and hedge_venue.endswith("-futures"):
-        return [
-            {"factor": "spread_fr", "enabled": True, "forward_open": 80, "backward_open": 20}
-        ]
-    return [
-        {"factor": "hedge_premium_rate", "enabled": True, "forward_open": 50, "backward_open": 50}
-    ]
-
-
-def default_funding_threshold_config(
-    open_venue: str, hedge_venue: str
-) -> Dict[str, str]:
-    out: Dict[str, str] = {}
-    for entry in default_funding_factor_chain(open_venue, hedge_venue):
-        f = entry["factor"]
-        out[f"{f}.enabled"] = "true" if entry.get("enabled", True) else "false"
-        out[f"{f}.forward_open"] = str(entry.get("forward_open"))
-        out[f"{f}.backward_open"] = str(entry.get("backward_open"))
-    return out
-
-
-def default_funding_threshold_comments(
-    open_venue: str, hedge_venue: str
-) -> Dict[str, str]:
-    out: Dict[str, str] = {}
-    for entry in default_funding_factor_chain(open_venue, hedge_venue):
-        f = entry["factor"]
-        out[f"{f}.enabled"] = f"[{f}] 是否启用 (链上 enabled=false 的因子在评估时跳过)"
-        out[f"{f}.forward_open"] = f"[{f}] 正向开仓分位数 (0,99]"
-        out[f"{f}.backward_open"] = f"[{f}] 反向开仓分位数 (0,99]"
-    return out
-
-
-def funding_dashboard_keys(open_venue: str, hedge_venue: str) -> List[str]:
-    keys: List[str] = []
-    for entry in default_funding_factor_chain(open_venue, hedge_venue):
-        f = entry["factor"]
-        keys.extend([f"{f}.enabled", f"{f}.forward_open", f"{f}.backward_open"])
-    return keys
 
 INDEX_HTML_TEMPLATE = """<!doctype html>
 <html lang="zh-CN">
@@ -339,7 +301,6 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       <a href="#strategy-params">Strategy Params</a>
       <a href="#risk-params">Risk Params</a>
       <a href="#funding-thresholds">Static Funding Thresholds</a>
-      <a href="#funding-filter-thresholds">Dynamic Funding Mapping</a>
       <a href="#rolling-params">Rolling Params</a>
       <a href="#spread-thresholds">Spread Thresholds</a>
     </div>
@@ -414,26 +375,6 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       </div>
       <div id="funding-table" class="kv-table"></div>
       <div id="funding-status" class="status"></div>
-    </section>
-
-    <section id="funding-filter-thresholds" class="panel">
-      <div class="section-header">
-        <h2>Dynamic Funding Filter Mapping</h2>
-        <div class="actions">
-          <button id="funding-map-load" class="secondary">读取配置</button>
-          <button id="funding-map-save">保存配置</button>
-          <button id="funding-map-sync" class="ghost">同步阈值</button>
-        </div>
-      </div>
-      <div class="toolbar" style="margin-bottom: 10px;">
-        <div class="field">
-          <label for="funding-map-symbol">Symbol (可选)</label>
-          <input id="funding-map-symbol" placeholder="BTCUSDT" />
-        </div>
-        <div class="hint">格式: spread_fr_80 / hedge_premium_rate_50 / 0.0005</div>
-      </div>
-      <div id="funding-map-table" class="kv-table"></div>
-      <div id="funding-map-status" class="status"></div>
     </section>
 
     <section id="rolling-params" class="panel">
@@ -847,65 +788,6 @@ __PER_SYMBOL_PANELS_HTML__
       setStatus('funding-status', '已载入默认参数');
     }
 
-    async function loadFundingMapping() {
-      setStatus('funding-map-status', '读取中...');
-      try {
-        const data = await fetchJson(`${apiUrl('funding-filter-thresholds')}?${queryParams()}`);
-        buildParamRows('funding-map-table', BOOTSTRAP.defaults.funding_mapping || {}, {}, BOOTSTRAP.order.funding_mapping || [], data.values || {});
-        setStatus('funding-map-status', '读取完成');
-      } catch (err) {
-        setStatus('funding-map-status', `读取失败: ${err}`, false);
-      }
-    }
-
-    async function saveFundingMapping() {
-      setStatus('funding-map-status', '保存中...');
-      try {
-        const payload = {
-          exchange: normalizeExchange(exchangeSelect.value),
-          open_venue: openVenueInput.value.trim(),
-          hedge_venue: hedgeVenueInput.value.trim(),
-          values: collectParamValues('funding-map-table'),
-        };
-        const data = await fetchJson(apiUrl('funding-filter-thresholds'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-        setStatus('funding-map-status', `保存成功 (${data.count || 0} 字段)`);
-      } catch (err) {
-        setStatus('funding-map-status', `保存失败: ${err}`, false);
-      }
-    }
-
-    async function syncFundingMapping() {
-      setStatus('funding-map-status', '同步中...');
-      try {
-        const symbol = document.getElementById('funding-map-symbol').value.trim();
-        const payload = {
-          exchange: normalizeExchange(exchangeSelect.value),
-          open_venue: openVenueInput.value.trim(),
-          hedge_venue: hedgeVenueInput.value.trim(),
-          symbol,
-          mapping: collectParamValues('funding-map-table'),
-        };
-        const data = await fetchJson(apiUrl('funding-filter-thresholds/sync'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-        const changed = data.changed != null ? `, changed=${data.changed}` : '';
-        setStatus('funding-map-status', `同步完成: ${data.written || 0} 字段${changed}`);
-      } catch (err) {
-        setStatus('funding-map-status', `同步失败: ${err}`, false);
-      }
-    }
-
-    function applyFundingMappingDefaults() {
-      buildParamRows('funding-map-table', BOOTSTRAP.defaults.funding_mapping || {}, {}, BOOTSTRAP.order.funding_mapping || [], {});
-      setStatus('funding-map-status', '已载入默认配置');
-    }
-
     function applyRollingDefaults() {
       const open = openVenueInput.value.trim().toLowerCase();
       const hedge = hedgeVenueInput.value.trim().toLowerCase();
@@ -1027,7 +909,6 @@ __PER_SYMBOL_PANELS_HTML__
       await loadStrategyParams();
       await loadRiskParams();
       await loadFundingThresholds();
-      await loadFundingMapping();
       await loadRollingParams();
       await loadSpreadMapping();
     }
@@ -1037,7 +918,6 @@ __PER_SYMBOL_PANELS_HTML__
     buildParamRows('risk-table', BOOTSTRAP.defaults.risk_params || {}, BOOTSTRAP.comments.risk_params || {}, BOOTSTRAP.order.risk || [], {});
     buildParamRows('strategy-table', BOOTSTRAP.defaults.strategy_params || {}, BOOTSTRAP.comments.strategy_params || {}, BOOTSTRAP.order.strategy || [], {});
     buildParamRows('funding-table', BOOTSTRAP.defaults.funding_thresholds || {}, BOOTSTRAP.comments.funding_thresholds || {}, BOOTSTRAP.order.funding_thresholds || [], {});
-    buildParamRows('funding-map-table', BOOTSTRAP.defaults.funding_mapping || {}, {}, BOOTSTRAP.order.funding_mapping || [], {});
     buildParamRows('spread-table', BOOTSTRAP.defaults.spread_mapping || {}, {}, BOOTSTRAP.order.spread_mapping || [], {});
 
     exchangeSelect.addEventListener('change', () => {
@@ -1064,10 +944,6 @@ __PER_SYMBOL_PANELS_HTML__
     document.getElementById('funding-load').addEventListener('click', loadFundingThresholds);
     document.getElementById('funding-save').addEventListener('click', saveFundingThresholds);
     document.getElementById('funding-default').addEventListener('click', applyFundingDefaults);
-
-    document.getElementById('funding-map-load').addEventListener('click', loadFundingMapping);
-    document.getElementById('funding-map-save').addEventListener('click', saveFundingMapping);
-    document.getElementById('funding-map-sync').addEventListener('click', syncFundingMapping);
 
     document.getElementById('rolling-load').addEventListener('click', loadRollingParams);
     document.getElementById('rolling-save').addEventListener('click', saveRollingParams);
@@ -1549,10 +1425,6 @@ def spread_mapping_key(open_venue: str, hedge_venue: str) -> str:
     return f"fr_spread_threshold_mapping_{open_venue}_{hedge_venue}"
 
 
-def funding_mapping_key(open_venue: str, hedge_venue: str) -> str:
-    return f"fr_funding_thresholds_config_{open_venue}_{hedge_venue}"
-
-
 def normalize_threshold_mapping(values: Dict[str, Any]) -> Dict[str, str]:
     mapping: Dict[str, str] = {}
     for key, value in (values or {}).items():
@@ -1581,105 +1453,6 @@ def read_spread_mapping(rds, open_venue: str, hedge_venue: str) -> Dict[str, str
     if values:
         return normalize_spread_mapping(values)
     return normalize_spread_mapping(SPREAD_THRESHOLD_MAPPING)
-
-
-def read_funding_chain_config(
-    rds,
-    open_venue: str,
-    hedge_venue: str,
-) -> Dict[str, Any]:
-    """读 factor_chain JSON,展平成 dashboard `<factor>.<key>` flat dict。
-    没有 Redis 数据 → 返回 hardcoded chain 默认值。"""
-    key = funding_mapping_key(open_venue, hedge_venue)
-    defaults = default_funding_threshold_config(open_venue, hedge_venue)
-
-    raw = rds.get(key)
-    if not raw:
-        return {"key": key, "values": defaults, "rolling_key": None, "source": "default"}
-    text = decode_redis_value(raw).strip()
-    if not text:
-        return {"key": key, "values": defaults, "rolling_key": None, "source": "default"}
-    try:
-        parsed = json.loads(text)
-    except Exception:
-        return {"key": key, "values": defaults, "rolling_key": None, "source": "default"}
-    if not isinstance(parsed, dict):
-        return {"key": key, "values": defaults, "rolling_key": None, "source": "default"}
-    chain = parsed.get("factor_chain")
-    if not isinstance(chain, list):
-        return {"key": key, "values": defaults, "rolling_key": None, "source": "default"}
-
-    out = dict(defaults)
-    for entry in chain:
-        if not isinstance(entry, dict):
-            continue
-        f = str(entry.get("factor") or "").strip()
-        if not f:
-            continue
-        if "enabled" in entry:
-            out[f"{f}.enabled"] = "true" if bool(entry["enabled"]) else "false"
-        if "forward_open" in entry:
-            out[f"{f}.forward_open"] = str(entry["forward_open"])
-        if "backward_open" in entry:
-            out[f"{f}.backward_open"] = str(entry["backward_open"])
-    return {
-        "key": key,
-        "values": out,
-        "rolling_key": normalize_optional_text(parsed.get("rolling_key")),
-        "source": "runtime_json",
-    }
-
-
-def write_funding_chain_config(
-    rds,
-    open_venue: str,
-    hedge_venue: str,
-    values: Dict[str, Any],
-) -> Dict[str, Any]:
-    """从 dashboard 平铺 input 反向组装 factor_chain JSON 写 Redis。
-    fr 链按 venue 对动态选择,故每次写都从默认链拿因子顺序。"""
-    values = values or {}
-    chain_payload: List[Dict[str, Any]] = []
-    flat_out: Dict[str, str] = {}
-    for default_entry in default_funding_factor_chain(open_venue, hedge_venue):
-        f = default_entry["factor"]
-        enabled_raw = values.get(f"{f}.enabled")
-        if enabled_raw is None:
-            enabled = bool(default_entry.get("enabled", True))
-        else:
-            enabled = str(enabled_raw).strip().lower() in {"1", "true", "yes", "on"}
-        forward_raw = values.get(f"{f}.forward_open", default_entry.get("forward_open"))
-        backward_raw = values.get(f"{f}.backward_open", default_entry.get("backward_open"))
-        forward_value = float(forward_raw)
-        backward_value = float(backward_raw)
-        if not (0.0 < forward_value <= 99.0):
-            raise ValueError(f"{f}.forward_open must be in (0,99]")
-        if not (0.0 < backward_value <= 99.0):
-            raise ValueError(f"{f}.backward_open must be in (0,99]")
-        chain_payload.append(
-            {
-                "factor": f,
-                "enabled": enabled,
-                "forward_open": forward_value,
-                "backward_open": backward_value,
-            }
-        )
-        flat_out[f"{f}.enabled"] = "true" if enabled else "false"
-        flat_out[f"{f}.forward_open"] = str(int(forward_value)) if forward_value == int(forward_value) else f"{forward_value:.12g}"
-        flat_out[f"{f}.backward_open"] = str(int(backward_value)) if backward_value == int(backward_value) else f"{backward_value:.12g}"
-
-    key = funding_mapping_key(open_venue, hedge_venue)
-    payload = {
-        "factor_chain": chain_payload,
-        "rolling_key": f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}",
-    }
-    rds.set(key, json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
-    return {
-        "key": key,
-        "count": len(flat_out),
-        "values": flat_out,
-        "rolling_key": payload["rolling_key"],
-    }
 
 
 def generate_threshold_fields(
@@ -1767,7 +1540,6 @@ def sync_spread_thresholds(
 
 
 def render_index_html(default_exchange: str) -> str:
-    default_open, default_hedge = EXCHANGE_DEFAULTS.get(default_exchange, ("", ""))
     bootstrap = {
         "exchanges": SUPPORTED_EXCHANGES,
         "default_exchange": default_exchange,
@@ -1777,7 +1549,6 @@ def render_index_html(default_exchange: str) -> str:
             "risk_params": DEFAULT_RISK_PARAMS,
             "strategy_params": DEFAULT_STRATEGY_PARAMS,
             "funding_thresholds": DEFAULT_FUNDING_THRESHOLDS,
-            "funding_mapping": default_funding_threshold_config(default_open, default_hedge),
             "rolling_params": DEFAULT_ROLLING_PARAMS,
             "spread_mapping": SPREAD_THRESHOLD_MAPPING,
         },
@@ -1785,13 +1556,11 @@ def render_index_html(default_exchange: str) -> str:
             "risk_params": RISK_PARAM_COMMENTS,
             "strategy_params": STRATEGY_PARAM_COMMENTS,
             "funding_thresholds": FUNDING_THRESHOLD_COMMENTS,
-            "funding_mapping": default_funding_threshold_comments(default_open, default_hedge),
         },
         "order": {
             "risk": RISK_PARAM_ORDER,
             "strategy": STRATEGY_PARAM_ORDER,
             "funding_thresholds": FUNDING_THRESHOLD_ORDER,
-            "funding_mapping": funding_dashboard_keys(default_open, default_hedge),
             "spread_mapping": SPREAD_THRESHOLD_ORDER,
         },
     }
@@ -1970,31 +1739,13 @@ class RequestHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send_error(400, str(exc))
                 return
-            key = f"funding_rate_thresholds_{open_venue}_{hedge_venue}"
-            values = read_hash(self.server.context.redis_client, key)
-            self._send_json(200, {"key": key, "values": values})
-            return
-
-        if parsed.path == "/api/funding-filter-thresholds":
             try:
-                _, open_venue, hedge_venue, _ = self._resolve_request_context(params)
-            except Exception as exc:
+                key = build_funding_thresholds_key(open_venue, hedge_venue)
+            except ValueError as exc:
                 self._send_error(400, str(exc))
                 return
-            cfg = read_funding_chain_config(
-                self.server.context.redis_client, open_venue, hedge_venue
-            )
-            values = dict(cfg.get("values") or {})
-            self._send_json(
-                200,
-                {
-                    "key": cfg.get("key") or funding_mapping_key(open_venue, hedge_venue),
-                    "count": len(values),
-                    "values": values,
-                    "rolling_key": cfg.get("rolling_key"),
-                    "source": cfg.get("source"),
-                },
-            )
+            values = read_hash(self.server.context.redis_client, key)
+            self._send_json(200, {"key": key, "values": values})
             return
 
         if parsed.path == "/api/rolling-params":
@@ -2226,34 +1977,13 @@ class RequestHandler(BaseHTTPRequestHandler):
             if not isinstance(values, dict):
                 self._send_error(400, "values must be object")
                 return
-            key = f"funding_rate_thresholds_{open_v}_{hedge_v}"
+            try:
+                key = build_funding_thresholds_key(open_v, hedge_v)
+            except ValueError as exc:
+                self._send_error(400, str(exc))
+                return
             written = write_hash(self.server.context.redis_client, key, values)
             self._send_json(200, {"key": key, "count": written})
-            return
-
-        if parsed.path == "/api/funding-filter-thresholds":
-            exchange = normalize_exchange(
-                str(payload.get("exchange") or self.server.context.default_exchange)
-            )
-            try:
-                _, open_v, hedge_v, _ = resolve_venues(
-                    exchange, payload.get("open_venue"), payload.get("hedge_venue")
-                )
-            except Exception as exc:
-                self._send_error(400, str(exc))
-                return
-            values = payload.get("values") or {}
-            if not isinstance(values, dict):
-                self._send_error(400, "values must be object")
-                return
-            try:
-                result = write_funding_chain_config(
-                    self.server.context.redis_client, open_v, hedge_v, values
-                )
-            except Exception as exc:
-                self._send_error(400, str(exc))
-                return
-            self._send_json(200, result)
             return
 
         if parsed.path == "/api/rolling-params":
@@ -2327,13 +2057,6 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._send_error(500, f"sync failed: {exc}")
                 return
             self._send_json(200, result)
-            return
-
-        if parsed.path == "/api/funding-filter-thresholds/sync":
-            self._send_error(
-                410,
-                "funding filter sync is deprecated; pre_trade reads factor_chain config directly",
-            )
             return
 
         if parsed.path in ("/api/amount-u", "/api/max-pos-u", "/api/hedge-offset-limits"):

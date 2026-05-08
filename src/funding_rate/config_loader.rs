@@ -435,49 +435,43 @@ async fn reload_fr_thresholds(
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
 ) -> Result<()> {
-    let redis_key = funding_thresholds_key(namespace, open_venue, hedge_venue);
     let ns = normalize_namespace(namespace);
     if ns != "fr" {
         return Ok(());
     }
+
+    let env_dir = fr_env_dir_or_panic();
+    let redis_key = funding_thresholds_key(&env_dir, open_venue, hedge_venue);
 
     match RedisClient::connect(redis.clone()).await {
         Ok(mut client) => {
             let funding_map = match client.hgetall_map(&redis_key).await {
                 Ok(map) => map,
                 Err(err) => {
-                    if ns == "fr" {
-                        panic!(
-                            "读取 Redis Hash '{}' 失败，无法加载资金费率阈值: {:?}",
-                            redis_key, err
-                        );
-                    }
-                    warn!("读取 Redis Hash 失败: {} ({:?})", redis_key, err);
-                    return Ok(());
+                    panic!(
+                        "读取 Redis Hash '{}' 失败，无法加载资金费率阈值 (env_dir={}): {:?}",
+                        redis_key, env_dir, err
+                    );
                 }
             };
             if funding_map.is_empty() {
-                if ns == "fr" {
-                    panic!(
-                        "Redis hash '{}' 为空或不存在，无法加载资金费率阈值",
-                        redis_key
-                    );
-                }
-                warn!(
-                    "Redis hash '{}' 为空或不存在，跳过资金费率阈值加载 (ns={})",
-                    redis_key, ns
+                panic!(
+                    "Redis hash '{}' 为空或不存在，无法加载资金费率阈值 (env_dir={})",
+                    redis_key, env_dir
                 );
-                return Ok(());
             }
             load_fr_thresholds(funding_map)
                 .with_context(|| format!("解析资金费率阈值失败 (key: {})", redis_key))?;
-            info!("资金费率阈值重载成功 (key: {})", redis_key);
+            info!(
+                "资金费率阈值重载成功 (key: {}, env_dir: {})",
+                redis_key, env_dir
+            );
         }
         Err(err) => {
-            if ns == "fr" {
-                panic!("连接 Redis 失败，无法加载资金费率阈值: {:?}", err);
-            }
-            warn!("连接 Redis 加载资金费率阈值失败: {:?}", err);
+            panic!(
+                "连接 Redis 失败，无法加载资金费率阈值 (key: {}, env_dir: {}): {:?}",
+                redis_key, env_dir, err
+            );
         }
     }
     Ok(())
@@ -691,22 +685,31 @@ fn fr_spread_mapping_key(open_venue: TradingVenue, hedge_venue: TradingVenue) ->
 }
 
 fn funding_thresholds_key(
-    namespace: &str,
+    env_dir: &str,
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
 ) -> String {
-    let ns = normalize_namespace(namespace);
-    let prefix = if ns == "fr" {
-        "funding_rate_thresholds".to_string()
-    } else {
-        format!("{ns}_funding_rate_thresholds")
-    };
     format!(
-        "{}_{}_{}",
-        prefix,
+        "{env_dir}:funding_rate_thresholds_{}_{}",
         open_venue.data_pub_slug(),
         hedge_venue.data_pub_slug()
     )
+}
+
+/// 从 CWD basename 推断 FR 部署 env 名（如 `binance_fr_arb01`）。
+/// 用于构造 env-aware 的资金费率阈值 Redis key（与 `pre_trade.rs` 的 `infer_dir_prefix_from_cwd` 一致）。
+fn fr_env_dir_or_panic() -> String {
+    std::env::current_dir()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            panic!(
+                "FR static thresholds require running under <exchange>_fr_<env> CWD; \
+                 could not infer env_dir from current_dir()"
+            )
+        })
 }
 
 fn spread_thresholds_key(
