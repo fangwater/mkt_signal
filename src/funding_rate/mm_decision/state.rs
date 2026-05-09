@@ -178,6 +178,10 @@ pub(crate) struct MmDecisionState {
     pub(crate) hedge_orders_per_round: u32,
     pub(crate) order_amount_u: f64,
     pub(crate) order_amount_u_overrides: HashMap<String, f64>,
+    /// 全局默认开仓内层 offset 下限（价格分数）。MM 默认 0.0005。
+    pub(crate) open_offset_lower_default: f64,
+    /// per-symbol open_offset_lower 覆盖；命中即覆盖默认。
+    pub(crate) open_offset_lower_overrides: HashMap<String, f64>,
     pub(crate) open_order_ttl_us: i64,
     pub(crate) next_query_delay_ms: u64,
     pub(crate) hedge_vol_multiplier: f64,
@@ -392,6 +396,8 @@ impl MmDecisionState {
             hedge_orders_per_round: 8,
             order_amount_u: 100.0,
             order_amount_u_overrides: HashMap::new(),
+            open_offset_lower_default: 0.0005,
+            open_offset_lower_overrides: HashMap::new(),
             open_order_ttl_us: 120_000_000,
             next_query_delay_ms: 30_000,
             hedge_vol_multiplier: 2.0,
@@ -812,6 +818,26 @@ impl MmDecisionState {
             self.open_venue,
             symbol,
         )
+    }
+
+    pub(crate) fn update_open_offset_lower_overrides(
+        &mut self,
+        overrides: HashMap<String, f64>,
+    ) {
+        self.open_offset_lower_overrides = overrides;
+        debug!(
+            "MmDecision: open_offset_lower_overrides updated symbols={}",
+            self.open_offset_lower_overrides.len()
+        );
+    }
+
+    /// 解析 per-symbol open_offset_lower：命中覆盖即返回覆盖值，未命中回退到全局默认 0.0005。
+    pub(crate) fn resolve_open_offset_lower(&self, symbol: &str) -> f64 {
+        let symbol_key = normalize_symbol_for_venue(symbol, self.open_venue);
+        self.open_offset_lower_overrides
+            .get(&symbol_key)
+            .copied()
+            .unwrap_or(self.open_offset_lower_default)
     }
 
     pub(crate) fn update_open_order_timeout(&mut self, open_order_timeout_secs: u64) {

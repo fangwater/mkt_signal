@@ -215,6 +215,7 @@ impl MmOpenDecision {
             volatility,
             state.open_buy_vol_scale,
             state.open_sell_vol_scale,
+            state.resolve_open_offset_lower(symbol),
             now_us,
             &state.open_min_qty_table,
         ) {

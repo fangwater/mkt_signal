@@ -38,13 +38,21 @@ fn build_level_specs(
     levels_per_side: usize,
     buy_vol_scale: [f64; 2],
     sell_vol_scale: [f64; 2],
+    open_offset_lower: f64,
 ) -> Vec<QuotePlanLevelSpec> {
-    fn build_side_offsets(vol: f64, levels: usize, scale: [f64; 2]) -> Vec<f64> {
+    fn build_side_offsets(
+        vol: f64,
+        levels: usize,
+        scale: [f64; 2],
+        lower: f64,
+    ) -> Vec<f64> {
         if levels == 0 {
             return Vec::new();
         }
-        let start = scale[0] * vol;
+        let raw_start = scale[0] * vol;
         let end = scale[1] * vol;
+        // 内层 offset 至少为 lower，但不超过 end（避免 step<0 / 反向）。
+        let start = raw_start.max(lower).min(end);
         if levels == 1 {
             return vec![end];
         }
@@ -74,8 +82,15 @@ fn build_level_specs(
         return Vec::new();
     }
 
-    let sell_offsets = build_side_offsets(vol, levels_per_side, sell_vol_scale);
-    let buy_offsets = build_side_offsets(vol, levels_per_side, buy_vol_scale);
+    // open_offset_lower 非法时退化为 0（不 clamp）。
+    let lower = if open_offset_lower.is_finite() && open_offset_lower >= 0.0 {
+        open_offset_lower
+    } else {
+        0.0
+    };
+
+    let sell_offsets = build_side_offsets(vol, levels_per_side, sell_vol_scale, lower);
+    let buy_offsets = build_side_offsets(vol, levels_per_side, buy_vol_scale, lower);
     if sell_offsets.len() != levels_per_side || buy_offsets.len() != levels_per_side {
         return Vec::new();
     }
@@ -119,6 +134,7 @@ pub fn build_mm_open_quote_plan(
     volatility: f64,
     open_buy_vol_scale: [f64; 2],
     open_sell_vol_scale: [f64; 2],
+    open_offset_lower: f64,
     now_us: i64,
     table: &VenueMinQtyTable,
 ) -> Result<MmOpenQuotePlan, String> {
@@ -185,6 +201,7 @@ pub fn build_mm_open_quote_plan(
         orders_per_round as usize,
         open_buy_vol_scale,
         open_sell_vol_scale,
+        open_offset_lower,
     );
     if specs.is_empty() {
         return Err(format!(
@@ -248,7 +265,7 @@ mod tests {
 
     #[test]
     fn level_prices_cover_both_sides_with_per_side_count() {
-        let specs = build_level_specs(0.99, 1.01, 0.0008, 8, [0.0, 1.0], [0.0, 1.0]);
+        let specs = build_level_specs(0.99, 1.01, 0.0008, 8, [0.0, 1.0], [0.0, 1.0], 0.0);
         assert_eq!(specs.len(), 16);
 
         assert_eq!(specs[0].side, Side::Sell);
@@ -272,7 +289,7 @@ mod tests {
 
     #[test]
     fn zero_vol_still_anchors_sell_to_ask_and_buy_to_bid() {
-        let specs = build_level_specs(100.0, 100.1, 0.0, 2, [0.2, 0.8], [0.3, 0.9]);
+        let specs = build_level_specs(100.0, 100.1, 0.0, 2, [0.2, 0.8], [0.3, 0.9], 0.0);
         assert_eq!(specs.len(), 4);
         assert_eq!(specs[0].side, Side::Sell);
         assert!((specs[0].base_price - 100.1).abs() < 1e-12);
@@ -290,7 +307,7 @@ mod tests {
 
     #[test]
     fn custom_vol_scale_ranges_apply_per_side() {
-        let specs = build_level_specs(100.0, 101.0, 0.01, 3, [0.2, 0.6], [0.1, 0.9]);
+        let specs = build_level_specs(100.0, 101.0, 0.01, 3, [0.2, 0.6], [0.1, 0.9], 0.0);
         assert_eq!(specs.len(), 6);
         assert_eq!(specs[0].side, Side::Sell);
         assert!((specs[0].offset - 0.001).abs() < 1e-12);

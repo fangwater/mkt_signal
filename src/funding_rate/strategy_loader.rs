@@ -174,6 +174,19 @@ pub fn mm_hedge_price_offset_limit_lower_override_key_for_env(
     )
 }
 
+/// MM 的 per-symbol open_offset_lower 覆盖键。
+/// 由 mm_config_server 写入 Redis STRING(JSON {symbol: f64})，单位价格分数。
+pub fn mm_open_offset_lower_override_key_for_env(
+    env_name: Option<&str>,
+    hedge_venue: TradingVenue,
+) -> String {
+    let env_name = normalize_mm_env_name(env_name);
+    format!(
+        "{env_name}:{}:mm:open_offset_lower",
+        hedge_venue.data_pub_slug()
+    )
+}
+
 /// Arb（intra/cross/fr）共用的 per-symbol amount_u 覆盖键。
 /// 由 sync_*_amount_u.py 写入 Redis STRING(JSON {symbol: amount_u})。
 /// 与 MM 不同，arb 用 (open, hedge) 二元组定位，覆盖键可选（env 缺失时返回 None，
@@ -443,6 +456,11 @@ pub struct StrategyParams {
     /// MM 按 symbol 覆盖的下单量（USDT）
     #[serde(default)]
     pub mm_amount_u_overrides: HashMap<String, f64>,
+
+    /// MM 按 symbol 覆盖的开仓内层 offset 下限（价格分数；缺省取全局默认 0.0005）。
+    /// Redis STRING key: <env>:<hedge_venue>:mm:open_offset_lower
+    #[serde(default)]
+    pub mm_open_offset_lower_overrides: HashMap<String, f64>,
 
     /// MM 按 symbol 覆盖的对冲侧 price_offset_limit upper
     /// Redis STRING key: <env>:<hedge_venue>:mm:hedge_price_offset_limits
@@ -725,6 +743,7 @@ impl Default for StrategyParams {
         Self {
             order_amount: default_order_amount(),
             mm_amount_u_overrides: HashMap::new(),
+            mm_open_offset_lower_overrides: HashMap::new(),
             mm_hedge_price_offset_limit_upper_overrides: HashMap::new(),
             mm_hedge_price_offset_limit_lower_overrides: HashMap::new(),
             arb_amount_u_overrides: HashMap::new(),
@@ -826,6 +845,35 @@ impl StrategyParams {
                     info!(
                         "MM amount_u override missing; use default_order_amount from key='{}'",
                         redis_key
+                    );
+                    HashMap::new()
+                }
+            }
+        } else {
+            HashMap::new()
+        };
+        // MM 的 per-symbol open_offset_lower 覆盖：缺失走全局默认（0.0005，由 MmDecision 持有）。
+        let mm_open_offset_lower_overrides = if ns == "mm" {
+            let override_key =
+                mm_open_offset_lower_override_key_for_env(mm_env_name.as_deref(), hedge_venue);
+            match client.get_string(&override_key).await? {
+                Some(raw) => {
+                    let parsed = parse_arb_open_offset_lower_overrides(
+                        &raw,
+                        open_venue,
+                        &override_key,
+                    );
+                    info!(
+                        "MM open_offset_lower overrides loaded key='{}' symbols={}",
+                        override_key,
+                        parsed.len()
+                    );
+                    parsed
+                }
+                None => {
+                    info!(
+                        "MM open_offset_lower override missing key='{}'; use default 0.0005",
+                        override_key
                     );
                     HashMap::new()
                 }
@@ -1514,6 +1562,7 @@ impl StrategyParams {
         Ok(Self {
             order_amount,
             mm_amount_u_overrides,
+            mm_open_offset_lower_overrides,
             mm_hedge_price_offset_limit_upper_overrides,
             mm_hedge_price_offset_limit_lower_overrides,
             arb_amount_u_overrides,
@@ -1670,6 +1719,9 @@ impl StrategyParams {
                 .parse_required_vol_scale_range(&self.open_sell_vol_scale, "open_sell_vol_scale");
             _decision.update_order_amount(self.order_amount);
             _decision.update_order_amount_overrides(self.mm_amount_u_overrides.clone());
+            _decision.update_open_offset_lower_overrides(
+                self.mm_open_offset_lower_overrides.clone(),
+            );
             _decision.update_clock_timing_params(
                 self.order_interval_ms,
                 self.next_query_delay_ms,

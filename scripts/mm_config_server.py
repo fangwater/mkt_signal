@@ -39,6 +39,10 @@ MAX_POS_U_EXAMPLE = {
     "BTCUSDT": 200000.0,
     "ETHUSDT": 120000.0,
 }
+OPEN_OFFSET_LOWER_EXAMPLE = {
+    "BTCUSDT": 0.0005,
+    "ETHUSDT": 0.0008,
+}
 HEDGE_PRICE_OFFSET_LIMITS_EXAMPLE = {
     "BTCUSDT": {
         "hedge_price_offset_limit_lower": 0.0005,
@@ -317,6 +321,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       <span class="badge mono" id="amount-u-key">-</span>
       <span class="badge mono" id="hedge-offset-limits-key">-</span>
       <span class="badge mono" id="max-pos-u-key">-</span>
+      <span class="badge mono" id="open-offset-lower-key">-</span>
       <span class="badge mono" id="risk-key">-</span>
       <span class="badge mono" id="model-params-key">-</span>
     </div>
@@ -408,6 +413,27 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       <pre id="max-pos-u-example" class="mono"></pre>
       <textarea id="max-pos-u-text" class="mono" spellcheck="false"></textarea>
       <div id="max-pos-u-status" class="status"></div>
+    </section>
+
+    <section class="panel">
+      <div class="section-header">
+        <h2>MM Open Offset Lower Overrides</h2>
+        <div class="actions">
+          <button id="load-open-offset-lower" class="secondary">读取</button>
+          <button id="reset-open-offset-lower" class="ghost">示例</button>
+          <button id="save-open-offset-lower">保存</button>
+        </div>
+      </div>
+      <div class="hint">
+        JSON 结构为 `{"SYMBOL": open_offset_lower}`，单位价格分数（0.001=10bps）。
+        保存时会写入 Redis String `<env_name>:<venue>:mm:open_offset_lower`，
+        命中即抬升开仓 inner offset：start = max(vol_scale[0]*volatility, lower)。
+        全局默认 0.0005，per-symbol 不命中即取默认。
+      </div>
+      <div class="hint">示例：</div>
+      <pre id="open-offset-lower-example" class="mono"></pre>
+      <textarea id="open-offset-lower-text" class="mono" spellcheck="false"></textarea>
+      <div id="open-offset-lower-status" class="status"></div>
     </section>
 
     <section class="panel">
@@ -628,6 +654,8 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         `${state.envName}:${state.venue}:mm:hedge_price_offset_limits`;
       document.getElementById('max-pos-u-key').textContent =
         `${state.envName}:${state.venue}:mm:max_pos_u`;
+      document.getElementById('open-offset-lower-key').textContent =
+        `${state.envName}:${state.venue}:mm:open_offset_lower`;
       document.getElementById('risk-key').textContent =
         `${state.envName}:${state.venue}:${state.venue}:pre_trade_risk_params`;
       const modelName = currentModelName();
@@ -1006,6 +1034,56 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       setStatus('max-pos-u-status', '已填入示例，尚未写入 Redis', 'warn');
     }
 
+    async function loadOpenOffsetLower() {
+      setStatus('open-offset-lower-status', '读取中...');
+      try {
+        const data = await fetchJson(`${apiUrl('open-offset-lower')}?exchange=${encodeURIComponent(state.exchange)}`);
+        document.getElementById('open-offset-lower-text').value =
+          JSON.stringify(data.values || {}, null, 2);
+        setStatus(
+          'open-offset-lower-status',
+          `已读取 ${data.count || 0} 个 symbol ${data.key}`,
+          'ok'
+        );
+      } catch (err) {
+        setStatus('open-offset-lower-status', `读取失败: ${formatError(err)}`, 'err');
+        throw err;
+      }
+    }
+
+    async function saveOpenOffsetLower() {
+      setStatus('open-offset-lower-status', '保存中...');
+      let values;
+      try {
+        values = JSON.parse(document.getElementById('open-offset-lower-text').value || '{}');
+      } catch (err) {
+        setStatus('open-offset-lower-status', `JSON 解析失败: ${err.message}`, 'err');
+        return;
+      }
+      try {
+        const data = await fetchJson(apiUrl('open-offset-lower'), {
+          method: 'POST',
+          body: JSON.stringify({exchange: state.exchange, values}),
+        });
+        document.getElementById('open-offset-lower-text').value =
+          JSON.stringify(data.values || {}, null, 2);
+        setStatus(
+          'open-offset-lower-status',
+          `已保存 ${data.count || 0} 个 symbol ${data.key}`,
+          'ok'
+        );
+      } catch (err) {
+        setStatus('open-offset-lower-status', `保存失败: ${formatError(err)}`, 'err');
+        throw err;
+      }
+    }
+
+    function resetOpenOffsetLower() {
+      document.getElementById('open-offset-lower-text').value =
+        JSON.stringify(BOOTSTRAP.open_offset_lower_example || {}, null, 2);
+      setStatus('open-offset-lower-status', '已填入示例，尚未写入 Redis', 'warn');
+    }
+
     async function loadRisk() {
       setStatus('risk-status', '读取中...');
       try {
@@ -1063,6 +1141,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         loadAmountU(),
         loadHedgeOffsetLimits(),
         loadMaxPosU(),
+        loadOpenOffsetLower(),
         loadRisk(),
       ];
       if (currentModelName()) {
@@ -1143,6 +1222,9 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     document.getElementById('load-max-pos-u').addEventListener('click', () => loadMaxPosU());
     document.getElementById('save-max-pos-u').addEventListener('click', () => saveMaxPosU());
     document.getElementById('reset-max-pos-u').addEventListener('click', () => resetMaxPosU());
+    document.getElementById('load-open-offset-lower').addEventListener('click', () => loadOpenOffsetLower());
+    document.getElementById('save-open-offset-lower').addEventListener('click', () => saveOpenOffsetLower());
+    document.getElementById('reset-open-offset-lower').addEventListener('click', () => resetOpenOffsetLower());
     document.getElementById('load-risk').addEventListener('click', () => loadRisk());
     document.getElementById('save-risk').addEventListener('click', () => saveRisk());
     document.getElementById('reset-risk').addEventListener('click', () => resetRisk());
@@ -1158,6 +1240,8 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       JSON.stringify(BOOTSTRAP.hedge_price_offset_limits_example || {}, null, 2);
     document.getElementById('max-pos-u-example').textContent =
       JSON.stringify(BOOTSTRAP.max_pos_u_example || {}, null, 2);
+    document.getElementById('open-offset-lower-example').textContent =
+      JSON.stringify(BOOTSTRAP.open_offset_lower_example || {}, null, 2);
     loadAll().catch((err) => {
       console.error(err);
       setStatus('symbols-status', err.message || String(err), 'err');
@@ -1260,6 +1344,10 @@ def make_hedge_offset_lower_key(env_name: str, venue: str) -> str:
 
 def make_max_pos_u_key(env_name: str, venue: str) -> str:
     return f"{env_name}:{venue}:mm:max_pos_u"
+
+
+def make_open_offset_lower_key(env_name: str, venue: str) -> str:
+    return f"{env_name}:{venue}:mm:open_offset_lower"
 
 
 def make_risk_key(env_name: str, venue: str) -> str:
@@ -1459,6 +1547,32 @@ def normalize_max_pos_u_mapping(values: Any) -> Dict[str, float]:
 
 
 def dumps_max_pos_u_mapping(values: Dict[str, float]) -> str:
+    ordered = {symbol: float(f"{values[symbol]:.12g}") for symbol in sorted(values.keys())}
+    return json.dumps(ordered, ensure_ascii=False, separators=(",", ":"))
+
+
+def normalize_open_offset_lower_mapping(values: Any) -> Dict[str, float]:
+    if values is None:
+        return {}
+    if not isinstance(values, dict):
+        raise ValueError("open_offset_lower values must be an object")
+
+    normalized: Dict[str, float] = {}
+    for raw_symbol, raw_value in values.items():
+        symbol = normalize_amount_u_symbol(raw_symbol)
+        try:
+            value = float(raw_value)
+        except Exception as exc:
+            raise ValueError(f"invalid open_offset_lower for {symbol}: {raw_value}") from exc
+        if not (math.isfinite(value) and value >= 0.0):
+            raise ValueError(
+                f"open_offset_lower must be finite and >= 0 for {symbol}: {raw_value}"
+            )
+        normalized[symbol] = value
+    return dict(sorted(normalized.items()))
+
+
+def dumps_open_offset_lower_mapping(values: Dict[str, float]) -> str:
     ordered = {symbol: float(f"{values[symbol]:.12g}") for symbol in sorted(values.keys())}
     return json.dumps(ordered, ensure_ascii=False, separators=(",", ":"))
 
@@ -1689,6 +1803,7 @@ def build_bootstrap(default_exchange: str, env_name: str) -> Dict[str, Any]:
         "amount_u_example": AMOUNT_U_EXAMPLE,
         "hedge_price_offset_limits_example": HEDGE_PRICE_OFFSET_LIMITS_EXAMPLE,
         "max_pos_u_example": MAX_POS_U_EXAMPLE,
+        "open_offset_lower_example": OPEN_OFFSET_LOWER_EXAMPLE,
         "keys": {
             "symbol": make_symbol_key(venue),
             "strategy": make_strategy_key(venue),
@@ -1697,6 +1812,7 @@ def build_bootstrap(default_exchange: str, env_name: str) -> Dict[str, Any]:
             "hedge_offset_upper": make_hedge_offset_upper_key(env_name, venue),
             "hedge_offset_lower": make_hedge_offset_lower_key(env_name, venue),
             "max_pos_u": make_max_pos_u_key(env_name, venue),
+            "open_offset_lower": make_open_offset_lower_key(env_name, venue),
             "risk": make_risk_key(env_name, venue),
         },
     }
@@ -2010,6 +2126,35 @@ class MMConfigStore:
             "count": len(normalized),
         }
 
+    def read_open_offset_lower(self, venue: str) -> Dict[str, Any]:
+        key = make_open_offset_lower_key(self._config.env_name, venue)
+        raw = self.redis().get(key)
+        if raw is None:
+            values: Dict[str, float] = {}
+        else:
+            text = raw.decode("utf-8", "ignore") if isinstance(raw, bytes) else str(raw)
+            try:
+                decoded = json.loads(text)
+            except Exception as exc:
+                raise ValueError(f"invalid JSON in {key}: {exc}") from exc
+            values = normalize_open_offset_lower_mapping(decoded)
+        return {
+            "key": key,
+            "values": values,
+            "count": len(values),
+        }
+
+    def write_open_offset_lower(self, venue: str, values: Any) -> Dict[str, Any]:
+        key = make_open_offset_lower_key(self._config.env_name, venue)
+        normalized = normalize_open_offset_lower_mapping(values)
+        payload = dumps_open_offset_lower_mapping(normalized)
+        self.redis().set(key, payload)
+        return {
+            "key": key,
+            "values": normalized,
+            "count": len(normalized),
+        }
+
     def read_risk_params(self, venue: str) -> Dict[str, Any]:
         key = make_risk_key(self._config.env_name, venue)
         raw_values = decode_hash(self.redis().hgetall(key))
@@ -2196,6 +2341,13 @@ def build_handler(config: AppConfig):
                     )
                     return
 
+                if parsed.path == "/api/open-offset-lower":
+                    self._send_json(
+                        200,
+                        {"ok": True, "exchange": exchange, "venue": venue, **store.read_open_offset_lower(venue)},
+                    )
+                    return
+
                 if parsed.path == "/api/risk-params":
                     self._send_json(
                         200,
@@ -2263,6 +2415,11 @@ def build_handler(config: AppConfig):
 
                 if parsed.path == "/api/max-pos-u":
                     result = store.write_max_pos_u(venue, payload.get("values"))
+                    self._send_json(200, {"ok": True, "exchange": exchange, "venue": venue, **result})
+                    return
+
+                if parsed.path == "/api/open-offset-lower":
+                    result = store.write_open_offset_lower(venue, payload.get("values"))
                     self._send_json(200, {"ok": True, "exchange": exchange, "venue": venue, **result})
                     return
 

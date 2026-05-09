@@ -305,6 +305,13 @@ impl MmDecision {
         self.state.update_order_amount_overrides(overrides);
     }
 
+    pub fn update_open_offset_lower_overrides(
+        &mut self,
+        overrides: std::collections::HashMap<String, f64>,
+    ) {
+        self.state.update_open_offset_lower_overrides(overrides);
+    }
+
     pub fn update_hedge_price_offset_limit_overrides(
         &mut self,
         lower_overrides: std::collections::HashMap<String, f64>,
