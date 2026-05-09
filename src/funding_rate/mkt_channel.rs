@@ -118,8 +118,12 @@ impl MktChannel {
     ///
     /// open/hedge 由调用方传入；每个 venue 都订阅 ask_bid_spread。
     /// 若某个 venue 是 futures，则额外订阅 funding/mark/index price 衍生品频道。
-    pub fn init_singleton(open_venue: TradingVenue, hedge_venue: TradingVenue) -> Result<()> {
-        Self::init_singleton_with_mode(open_venue, hedge_venue, true)
+    pub fn init_singleton(
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
+        arb_mode: Option<ArbMode>,
+    ) -> Result<()> {
+        Self::init_singleton_with_mode(open_venue, hedge_venue, true, arb_mode)
     }
 
     /// 初始化只读单例并启动订阅任务，但不触发任何决策逻辑。
@@ -129,19 +133,21 @@ impl MktChannel {
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
     ) -> Result<()> {
-        Self::init_singleton_with_mode(open_venue, hedge_venue, false)
+        Self::init_singleton_with_mode(open_venue, hedge_venue, false, None)
     }
 
     fn init_singleton_with_mode(
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
         trigger_decisions: bool,
+        arb_mode: Option<ArbMode>,
     ) -> Result<()> {
         let open_slug = open_venue.data_pub_slug();
         let hedge_slug = hedge_venue.data_pub_slug();
 
-        let open_service = build_market_service(open_slug, "ask_bid_spread");
-        let hedge_service = build_market_service(hedge_slug, "ask_bid_spread");
+        let askbid_root = askbid_service_root(arb_mode);
+        let open_service = format!("{}/{}/ask_bid_spread", askbid_root, open_slug);
+        let hedge_service = format!("{}/{}/ask_bid_spread", askbid_root, hedge_slug);
 
         let open_node = build_node_name(open_slug, "askbid");
         let hedge_node = build_node_name(hedge_slug, "askbid");
@@ -174,7 +180,10 @@ impl MktChannel {
             }
         }
 
-        info!("MktChannel 初始化完成");
+        info!(
+            "MktChannel 初始化完成: askbid_root={} derivatives_root=bridge arb_mode={:?}",
+            askbid_root, arb_mode
+        );
 
         // Publish the singleton before listeners start. IPC backlog can deliver a
         // market message immediately, and decision code reads MktChannel during
