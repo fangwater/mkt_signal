@@ -148,3 +148,58 @@ fr_remote_apply_nginx() {
   ssh $opts "$FR_DEPLOY_HOST" \
     "PORT=$FR_NGINX_PORT MAPPING_FILE=$FR_REMOTE_HOME/nginx_locations.txt bash $FR_REMOTE_HOME/$env_name/scripts/setup_nginx_4191.sh"
 }
+
+# Lightweight ssh-only init: load FR_DEPLOY_KEY, chmod, and ssh probe.
+# Used by callers (dat_pbs / spread_pbs) that don't need nginx staging.
+fr_remote_init_ssh() {
+  local root_dir="$1"
+  if [[ -z "$FR_DEPLOY_KEY" ]]; then
+    FR_DEPLOY_KEY="$root_dir/aws-jp-srv-1.pem"
+  fi
+  if [[ ! -f "$FR_DEPLOY_KEY" ]]; then
+    echo "[ERROR] missing ssh key: $FR_DEPLOY_KEY" >&2
+    return 1
+  fi
+  chmod 400 "$FR_DEPLOY_KEY" 2>/dev/null || true
+
+  echo "[INFO] remote target : $FR_DEPLOY_HOST:$FR_REMOTE_HOME"
+  echo "[INFO] ssh key       : $FR_DEPLOY_KEY"
+
+  local opts
+  opts="$(_fr_ssh_opts)"
+  # shellcheck disable=SC2086
+  if ! ssh $opts "$FR_DEPLOY_HOST" 'echo ok' >/dev/null 2>&1; then
+    echo "[ERROR] ssh probe to $FR_DEPLOY_HOST failed" >&2
+    return 1
+  fi
+}
+
+# Rsync $HOME/<rel_path>/ -> $FR_DEPLOY_HOST:$FR_REMOTE_HOME/<rel_path>/.
+# Same excludes as fr_remote_sync_env_dir (env.sh / data / *.rocksdb / logs /
+# pids / __pycache__).
+fr_remote_sync_path() {
+  local rel_path="$1"
+  local local_dir="$HOME/$rel_path/"
+  local remote_dir="$FR_REMOTE_HOME/$rel_path/"
+  local opts
+  opts="$(_fr_ssh_opts)"
+
+  if [[ ! -d "$local_dir" ]]; then
+    echo "[ERROR] local dir missing: $local_dir" >&2
+    return 1
+  fi
+
+  echo "[INFO] rsync $local_dir -> $FR_DEPLOY_HOST:$remote_dir"
+  # shellcheck disable=SC2086
+  rsync -a --human-readable --info=stats1 \
+    --exclude='env.sh' \
+    --exclude='data/' \
+    --exclude='persist/' \
+    --exclude='*.rocksdb/' \
+    --exclude='logs/' \
+    --exclude='*.log' \
+    --exclude='*.pid' \
+    --exclude='__pycache__/' \
+    -e "ssh $opts" \
+    "$local_dir" "$FR_DEPLOY_HOST:$remote_dir"
+}
