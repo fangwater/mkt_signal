@@ -101,11 +101,8 @@ impl VenueAdapter for BybitAdapter {
             .get("u")
             .and_then(|v| v.as_i64())
             .ok_or_else(|| anyhow!("bybit {} missing data.u (updateId)", topic))?;
-        let ts_ms = data
-            .get("t")
-            .and_then(|v| v.as_i64())
-            .or_else(|| value.get("ts").and_then(|v| v.as_i64()))
-            .unwrap_or(0);
+        // Bybit V5 orderbook.<depth> 文档定义：时间戳在顶层 `ts`（ms，gateway 生成时间）
+        let ts_ms = value.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
 
         let bid_levels = data.get("b").and_then(|v| v.as_array());
         let ask_levels = data.get("a").and_then(|v| v.as_array());
