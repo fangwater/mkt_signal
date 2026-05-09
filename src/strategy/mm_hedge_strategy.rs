@@ -61,6 +61,7 @@ pub struct HedgePlanOrder {
     pub price: f64,
     pub qty: f64,
     pub from_key: Vec<u8>,
+    pub mkt_ts: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -585,6 +586,7 @@ impl MarketMakerHedgeStrategy {
                 price: self.weighted_inventory_price(),
                 qty: total_qty,
                 from_key: ctx.from_key.clone(),
+                mkt_ts: ctx.opening_leg.ts,
             });
         } else {
             for HedgeSplitOrder {
@@ -621,6 +623,7 @@ impl MarketMakerHedgeStrategy {
                     price,
                     qty,
                     from_key: order_from_key,
+                    mkt_ts: ctx.opening_leg.ts,
                 });
             }
         }
@@ -1074,6 +1077,12 @@ impl MarketMakerHedgeStrategy {
                     1.0,
                     false,
                 );
+            if plan.mkt_ts > 0 {
+                let _ = MonitorChannel::instance()
+                    .order_manager()
+                    .borrow_mut()
+                    .update(plan.client_order_id, |order| order.set_mkt_time(plan.mkt_ts));
+            }
             self.hedge_order_ids.insert(plan.client_order_id);
             self.log_hedge_order_state("order_created_local", plan.client_order_id);
 
