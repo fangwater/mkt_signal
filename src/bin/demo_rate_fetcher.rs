@@ -37,7 +37,7 @@ async fn run_demo() -> Result<()> {
     info!("SymbolList 初始化完成");
 
     let (open_venue, hedge_venue) = venue_pair_for_exchange(Exchange::Binance);
-    MktChannel::init_singleton(open_venue, hedge_venue)?;
+    MktChannel::init_singleton(open_venue, hedge_venue, None)?;
     info!("MktChannel 初始化完成");
 
     RateFetcher::init(Exchange::Binance)?;
