@@ -207,6 +207,11 @@ for v in "${VENUES[@]}"; do
   fi
 done
 
+if [[ ${#REMOTE_VENUES[@]} -gt 0 && "${TARGET_ROOT%/}" != "$HOME/dat_pbs" ]]; then
+  echo "[ERROR] --root override 与远端 rsync 不兼容（fr_remote_sync_path 固定从 \$HOME/dat_pbs/ 读）" >&2
+  exit 1
+fi
+
 if [[ ${#REMOTE_VENUES[@]} -gt 0 ]]; then
   # shellcheck source=../lib/fr_remote_deploy.sh
   source "$ROOT_DIR/scripts/lib/fr_remote_deploy.sh"
