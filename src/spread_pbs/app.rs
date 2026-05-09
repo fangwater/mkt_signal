@@ -1,24 +1,38 @@
 use anyhow::{bail, Context, Result};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use tokio::sync::watch;
+use tokio::task::JoinHandle;
+use tokio::time::{Duration, Instant};
 
 use crate::common::mkt_msg::AskBidSpreadMsg;
 use crate::common::time_util::get_timestamp_us;
 use crate::mkt_pub::cfg::Config;
-use crate::signal::common::TradingVenue;
 
 use crate::spread_pbs::adapter::{create_adapter, BboFrame, VenueAdapter};
 use crate::spread_pbs::latency::LatencyKll;
 use crate::spread_pbs::publisher::SpreadPublisher;
 use crate::spread_pbs::ws::{run_public_ws, FrameHandler, WsLoopParams};
 
-const BINANCE_FUTURES_SPREAD_SYMBOLS: [&str; 5] =
-    ["BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "XRPUSDT"];
-
 pub struct SpreadPbsApp {
     config: Config,
+}
+
+/// 一条 ws 连接的运行态：shutdown 通道 + JoinHandle，外加重启用得上的 local_ip。
+struct WsLeg {
+    label: &'static str,
+    local_ip: String,
+    shutdown_tx: watch::Sender<bool>,
+    handle: JoinHandle<()>,
+}
+
+/// 跨 leg 共享的上下文：adapter / publisher / state / ws url 在 spread_pbs 整个生命周期不变。
+struct LegCtx {
+    adapter: Rc<dyn VenueAdapter>,
+    publisher: Rc<SpreadPublisher>,
+    state: Rc<RefCell<SharedState>>,
+    url: String,
 }
 
 impl SpreadPbsApp {
@@ -27,6 +41,7 @@ impl SpreadPbsApp {
     }
 
     /// 主入口：拉 symbol → 起双路 ws → 帧在 ws task 内同步处理（无 mpsc）。
+    /// 与 dat_pbs 对齐：两条 ws 按错开半周期定时重启，重启前重新拉 symbol。
     ///
     /// 必须在 `LocalSet` 上下文里 await（`main` 用 `LocalSet::run_until`）。
     pub async fn run(self) -> Result<()> {
@@ -46,43 +61,32 @@ impl SpreadPbsApp {
             adapter.name()
         );
 
-        // ---- 拉 symbol list & 构造订阅消息 ----
-        let symbols = if venue == TradingVenue::BinanceFutures {
-            let symbols: Vec<String> = BINANCE_FUTURES_SPREAD_SYMBOLS
-                .iter()
-                .map(|s| (*s).to_string())
-                .collect();
-            log::warn!(
-                "spread_pbs[{}] using hardcoded Binance futures symbols: {}",
-                venue_slug,
-                symbols.join(",")
-            );
-            symbols
-        } else {
-            self.config
-                .get_symbols()
-                .await
-                .with_context(|| format!("fetch symbols for {}", venue_slug))?
-        };
-        if symbols.is_empty() {
+        // ---- 首次拉 symbol（含 BinanceFutures，无硬编码） ----
+        let initial_symbols = self
+            .config
+            .get_symbols()
+            .await
+            .with_context(|| format!("fetch symbols for {}", venue_slug))?;
+        if initial_symbols.is_empty() {
             bail!("symbol list 为空（{}）", venue_slug);
         }
-        let subscribe_msgs = adapter.build_subscribe(&symbols);
-        if subscribe_msgs.is_empty() {
+        let mut current_symbols: HashSet<String> = initial_symbols.iter().cloned().collect();
+        let initial_subs = adapter.build_subscribe(&initial_symbols);
+        if initial_subs.is_empty() {
             bail!(
                 "adapter.build_subscribe 返回空（{} symbols 数={}）",
                 venue_slug,
-                symbols.len()
+                initial_symbols.len()
             );
         }
         log::info!(
-            "spread_pbs[{}] symbols={} subscribe_batches={}",
+            "spread_pbs[{}] initial symbols={} subscribe_batches={}",
             venue_slug,
-            symbols.len(),
-            subscribe_msgs.len()
+            initial_symbols.len(),
+            initial_subs.len()
         );
 
-        // ---- IceOryx publisher + 共享态（Rc<RefCell> 单线程零锁）----
+        // ---- IceOryx publisher + 共享态（Rc<RefCell> 单线程零锁，跨重启复用）----
         let publisher = Rc::new(
             SpreadPublisher::new(venue_slug)
                 .with_context(|| format!("create iceoryx publisher for {}", venue_slug))?,
@@ -96,51 +100,51 @@ impl SpreadPbsApp {
             dropped_by_seq: 0,
         }));
 
-        // ---- 双路 ws：每条直接持有 adapter / publisher / state，无 mpsc 转交 ----
-        let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let url = adapter.ws_url();
+        let ctx = LegCtx {
+            adapter: adapter.clone(),
+            publisher: publisher.clone(),
+            state: state.clone(),
+            url: adapter.ws_url(),
+        };
 
-        let primary_handler =
-            make_handler("primary", adapter.clone(), publisher.clone(), state.clone());
-        let secondary_handler = make_handler(
+        // ---- 起两条 leg：primary / secondary，独立 shutdown 通道 ----
+        let mut primary = spawn_leg(
+            "primary",
+            self.config.primary_local_ip.clone(),
+            initial_subs.clone(),
+            &ctx,
+        );
+        let mut secondary = spawn_leg(
             "secondary",
-            adapter.clone(),
-            publisher.clone(),
-            state.clone(),
+            self.config.secondary_local_ip.clone(),
+            initial_subs,
+            &ctx,
         );
 
-        tokio::task::spawn_local(run_public_ws(
-            WsLoopParams {
-                label: "primary",
-                url: url.clone(),
-                local_ip: self.config.primary_local_ip.clone(),
-                subscribe_msgs: subscribe_msgs.clone(),
-                keepalive: adapter.keepalive(),
-            },
-            primary_handler,
-            shutdown_rx.clone(),
-        ));
-        tokio::task::spawn_local(run_public_ws(
-            WsLoopParams {
-                label: "secondary",
-                url,
-                local_ip: self.config.secondary_local_ip.clone(),
-                subscribe_msgs,
-                keepalive: adapter.keepalive(),
-            },
-            secondary_handler,
-            shutdown_rx.clone(),
-        ));
+        // ---- 错开半周期：primary t+T，secondary t+T/2，与 src/mkt_pub/app.rs 一致 ----
+        let restart_duration = Duration::from_secs(self.config.restart_duration_secs);
+        let mut next_primary_restart = Instant::now() + restart_duration;
+        let mut next_secondary_restart = Instant::now() + restart_duration / 2;
+        log::info!(
+            "spread_pbs[{}] restart period={}s; first primary at +{}s, secondary at +{}s",
+            venue_slug,
+            self.config.restart_duration_secs,
+            self.config.restart_duration_secs,
+            self.config.restart_duration_secs / 2,
+        );
 
-        // ---- 主循环：仅 ctrl-c 与 30s stats 心跳，不再处理 frame ----
-        let mut stats_ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+        let mut stats_ticker = tokio::time::interval(Duration::from_secs(30));
         stats_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         stats_ticker.tick().await;
+
         loop {
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => {
                     log::info!("spread_pbs[{}] SIGINT received, shutting down", venue_slug);
-                    let _ = shutdown_tx.send(true);
+                    let _ = primary.shutdown_tx.send(true);
+                    let _ = secondary.shutdown_tx.send(true);
+                    let _ = (&mut primary.handle).await;
+                    let _ = (&mut secondary.handle).await;
                     break;
                 }
                 _ = stats_ticker.tick() => {
@@ -150,11 +154,129 @@ impl SpreadPbsApp {
                         venue_slug, s.published, s.dropped_by_seq, s.dedup.len()
                     );
                 }
+                _ = tokio::time::sleep_until(next_primary_restart) => {
+                    restart_leg(
+                        venue_slug,
+                        &mut primary,
+                        &self.config,
+                        &ctx,
+                        &mut current_symbols,
+                    ).await;
+                    next_primary_restart = Instant::now() + restart_duration;
+                }
+                _ = tokio::time::sleep_until(next_secondary_restart) => {
+                    restart_leg(
+                        venue_slug,
+                        &mut secondary,
+                        &self.config,
+                        &ctx,
+                        &mut current_symbols,
+                    ).await;
+                    next_secondary_restart = Instant::now() + restart_duration;
+                }
             }
         }
 
         Ok(())
     }
+}
+
+fn spawn_leg(
+    label: &'static str,
+    local_ip: String,
+    subs: Vec<serde_json::Value>,
+    ctx: &LegCtx,
+) -> WsLeg {
+    let (tx, rx) = watch::channel(false);
+    let handler = make_handler(
+        label,
+        ctx.adapter.clone(),
+        ctx.publisher.clone(),
+        ctx.state.clone(),
+    );
+    let handle = tokio::task::spawn_local(run_public_ws(
+        WsLoopParams {
+            label,
+            url: ctx.url.clone(),
+            local_ip: local_ip.clone(),
+            subscribe_msgs: subs,
+            keepalive: ctx.adapter.keepalive(),
+        },
+        handler,
+        rx,
+    ));
+    WsLeg {
+        label,
+        local_ip,
+        shutdown_tx: tx,
+        handle,
+    }
+}
+
+async fn restart_leg(
+    venue_slug: &'static str,
+    leg: &mut WsLeg,
+    config: &Config,
+    ctx: &LegCtx,
+    current_symbols: &mut HashSet<String>,
+) {
+    log::info!("spread_pbs[{}] leg={} restart begin", venue_slug, leg.label);
+
+    // 先拉新 symbol；失败/空一律保留旧 leg，不重启。
+    let new_symbols = match config.get_symbols().await {
+        Ok(v) if !v.is_empty() => v,
+        Ok(_) => {
+            log::error!(
+                "spread_pbs[{}] leg={} restart skipped: get_symbols() returned empty",
+                venue_slug,
+                leg.label
+            );
+            return;
+        }
+        Err(e) => {
+            log::error!(
+                "spread_pbs[{}] leg={} restart skipped: get_symbols() failed: {:#}",
+                venue_slug,
+                leg.label,
+                e
+            );
+            return;
+        }
+    };
+    let new_subs = ctx.adapter.build_subscribe(&new_symbols);
+    if new_subs.is_empty() {
+        log::error!(
+            "spread_pbs[{}] leg={} restart skipped: adapter.build_subscribe empty (symbols={})",
+            venue_slug,
+            leg.label,
+            new_symbols.len()
+        );
+        return;
+    }
+    let new_subs_len = new_subs.len();
+
+    let new_set: HashSet<String> = new_symbols.iter().cloned().collect();
+    let added = new_set.difference(current_symbols).count();
+    let removed = current_symbols.difference(&new_set).count();
+    *current_symbols = new_set;
+
+    // 关旧、等真正退出，再起新。错开半周期保证此刻另一条 leg 仍在工作。
+    let _ = leg.shutdown_tx.send(true);
+    let _ = (&mut leg.handle).await;
+
+    let new_leg = spawn_leg(leg.label, leg.local_ip.clone(), new_subs, ctx);
+    leg.shutdown_tx = new_leg.shutdown_tx;
+    leg.handle = new_leg.handle;
+
+    log::info!(
+        "spread_pbs[{}] leg={} restart done symbols={} added={} removed={} subscribe_batches={}",
+        venue_slug,
+        leg.label,
+        new_symbols.len(),
+        added,
+        removed,
+        new_subs_len,
+    );
 }
 
 struct SharedState {

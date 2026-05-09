@@ -91,7 +91,6 @@ pub struct ArbHedgeStrategy {
 #[derive(Debug, Clone)]
 struct ArbHedgeOrderMeta {
     signal_ts: i64,
-    from_key: Vec<u8>,
     price_offset: f64,
     borrowed_qv: f64,
     order_base_qty: f64,
@@ -592,7 +591,6 @@ impl ArbHedgeStrategy {
             client_order_id,
             ArbHedgeOrderMeta {
                 signal_ts: ctx.signal_ts,
-                from_key: ctx.from_key.clone(),
                 price_offset: ctx.price_offset,
                 borrowed_qv: borrowed.qv,
                 order_base_qty,
@@ -1580,7 +1578,6 @@ mod tests {
             client_order_id,
             ArbHedgeOrderMeta {
                 signal_ts: 10,
-                from_key: Vec::new(),
                 price_offset: 0.0,
                 borrowed_qv: borrowed.qv,
                 order_base_qty: borrowed.qty,

@@ -57,7 +57,7 @@ impl VenueAdapter for GateAdapter {
         let channel = format!("{}.book_ticker", prefix);
         let mut out = Vec::new();
         for chunk in symbols.chunks(chunk_size) {
-            let payload: Vec<String> = chunk.iter().cloned().collect();
+            let payload: Vec<String> = chunk.to_vec();
             let timestamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())

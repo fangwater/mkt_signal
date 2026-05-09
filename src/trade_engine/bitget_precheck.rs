@@ -127,7 +127,7 @@ fn parse_account_settings(v: &Value, body: &str) -> Result<BitgetAccountSettings
         .ok_or_else(|| {
             anyhow!(
                 "bitget precheck: GET {ACCOUNT_SETTINGS_PATH} missing data.accountMode: {}",
-                truncate_body(&body)
+                truncate_body(body)
             )
         })?
         .to_string();
