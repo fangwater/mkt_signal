@@ -191,6 +191,21 @@ pub fn arb_amount_u_override_key(
     ))
 }
 
+/// Arb（intra/cross/fr）共用的 per-symbol open_offset_lower 覆盖键。
+/// 由 config server 写入 Redis STRING(JSON {symbol: f64})，单位价格分数。
+pub fn arb_open_offset_lower_override_key(
+    env_name: Option<&str>,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+) -> Option<String> {
+    let env_name = env_name.map(str::trim).filter(|s| !s.is_empty())?;
+    Some(format!(
+        "{env_name}:{}:{}:open_offset_lower_overrides",
+        open_venue.data_pub_slug(),
+        hedge_venue.data_pub_slug()
+    ))
+}
+
 /// Arb（intra/cross/fr）共用的 per-symbol hedge_price_offset_limit 合并 STRING 键：
 /// JSON {symbol: {hedge_price_offset_limit_lower, hedge_price_offset_limit_upper}}。
 /// 加载时优先读这个键，缺失再回退到拆分的 upper / lower 两个键。
@@ -319,6 +334,35 @@ fn parse_mm_amount_u_overrides(
     parse_mm_positive_f64_overrides(raw, open_venue, redis_key, "amount_u")
 }
 
+/// `parse_mm_positive_f64_overrides` 的零下限版本：允许 0（"不 clamp"语义），
+/// 仍要求 finite 且非负。
+fn parse_arb_open_offset_lower_overrides(
+    raw: &str,
+    open_venue: TradingVenue,
+    redis_key: &str,
+) -> HashMap<String, f64> {
+    let parsed: HashMap<String, f64> = serde_json::from_str(raw).unwrap_or_else(|err| {
+        panic!(
+            "Redis string '{}' 不是合法 JSON(symbol->open_offset_lower): {} ({})",
+            redis_key, raw, err
+        )
+    });
+
+    let mut normalized = HashMap::new();
+    for (symbol, value) in parsed {
+        let symbol_trimmed = symbol.trim();
+        if !(value.is_finite() && value >= 0.0) {
+            panic!(
+                "Redis string '{}' symbol={} open_offset_lower 非法: {}",
+                redis_key, symbol_trimmed, value
+            );
+        }
+        let symbol_key = normalize_mm_override_symbol(symbol_trimmed, open_venue, redis_key);
+        normalized.insert(symbol_key, value);
+    }
+    normalized
+}
+
 #[derive(Debug, Deserialize)]
 struct MmHedgePriceOffsetLimitOverride {
     #[serde(alias = "lower")]
@@ -424,6 +468,11 @@ pub struct StrategyParams {
     /// Arb 按 symbol 覆盖的对冲侧 price_offset_limit lower
     #[serde(default)]
     pub arb_hedge_price_offset_limit_lower_overrides: HashMap<String, f64>,
+
+    /// Arb 按 symbol 覆盖的开仓内层 offset 下限（价格分数；0 = 不 clamp）。
+    /// Redis STRING key: <env>:<open>:<hedge>:open_offset_lower_overrides
+    #[serde(default)]
+    pub arb_open_offset_lower_overrides: HashMap<String, f64>,
 
     /// arb 开仓 plan 波动带缩放倍率 [low, high]（JSON 数组字符串，实际偏移区间=vol*[low,high]）
     #[serde(default = "default_vol_band_scale")]
@@ -681,6 +730,7 @@ impl Default for StrategyParams {
             arb_amount_u_overrides: HashMap::new(),
             arb_hedge_price_offset_limit_upper_overrides: HashMap::new(),
             arb_hedge_price_offset_limit_lower_overrides: HashMap::new(),
+            arb_open_offset_lower_overrides: HashMap::new(),
             vol_band_scale: default_vol_band_scale(),
             open_buy_vol_scale: default_open_buy_vol_scale(),
             open_sell_vol_scale: default_open_sell_vol_scale(),
@@ -886,6 +936,49 @@ impl StrategyParams {
                 None => {
                     info!(
                         "Arb amount_u override skipped ns={} (env_name unavailable); use default order_amount",
+                        ns
+                    );
+                    HashMap::new()
+                }
+            }
+        } else {
+            HashMap::new()
+        };
+        // Arb（intra/cross/fr）的 per-symbol open_offset_lower 覆盖：可选。env 缺失或键
+        // 不存在视为没有覆盖，回退到 0（不 clamp，保持本字段加入前的行为）。
+        let arb_open_offset_lower_overrides = if ns == "intra" || ns == "cross" || ns == "fr" {
+            let arb_env_name = infer_arb_env_name_from_runtime();
+            match arb_open_offset_lower_override_key(
+                arb_env_name.as_deref(),
+                open_venue,
+                hedge_venue,
+            ) {
+                Some(override_key) => match client.get_string(&override_key).await? {
+                    Some(raw) => {
+                        let parsed = parse_arb_open_offset_lower_overrides(
+                            &raw,
+                            open_venue,
+                            &override_key,
+                        );
+                        info!(
+                            "Arb open_offset_lower overrides loaded ns={} key='{}' symbols={}",
+                            ns,
+                            override_key,
+                            parsed.len()
+                        );
+                        parsed
+                    }
+                    None => {
+                        info!(
+                            "Arb open_offset_lower override missing ns={} key='{}'; lower=0 (no clamp)",
+                            ns, override_key
+                        );
+                        HashMap::new()
+                    }
+                },
+                None => {
+                    info!(
+                        "Arb open_offset_lower override skipped ns={} (env_name unavailable); lower=0",
                         ns
                     );
                     HashMap::new()
@@ -1426,6 +1519,7 @@ impl StrategyParams {
             arb_amount_u_overrides,
             arb_hedge_price_offset_limit_upper_overrides,
             arb_hedge_price_offset_limit_lower_overrides,
+            arb_open_offset_lower_overrides,
             vol_band_scale,
             open_buy_vol_scale,
             open_sell_vol_scale,
