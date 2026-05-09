@@ -1421,7 +1421,10 @@ impl OrderTerminalRecorder for ArbHedgeStrategy {
 /// qty 相等时取 close_ts 较早者；borrow 没拿到任何带 id 的 lot 时返回 0（按用户约定的兜底）。
 fn pick_main_component_open_id(lots: &[TimedNetQtyLot]) -> i64 {
     lots.iter()
-        .filter_map(|lot| lot.open_client_order_id.map(|id| (id, lot.qty, lot.close_ts)))
+        .filter_map(|lot| {
+            lot.open_client_order_id
+                .map(|id| (id, lot.qty, lot.close_ts))
+        })
         .max_by(|(_, qty_a, close_a), (_, qty_b, close_b)| {
             qty_a
                 .partial_cmp(qty_b)

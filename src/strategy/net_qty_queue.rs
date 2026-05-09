@@ -419,10 +419,7 @@ impl TimedNetQtyQueue {
     }
 
     /// 通过 open_client_order_id 查找队列中的 lot；用于上层对账。
-    pub fn find_lot_by_open_id(
-        &self,
-        open_client_order_id: i64,
-    ) -> Option<&TimedNetQtyLot> {
+    pub fn find_lot_by_open_id(&self, open_client_order_id: i64) -> Option<&TimedNetQtyLot> {
         self.lots
             .values()
             .find(|lot| lot.open_client_order_id == Some(open_client_order_id))
