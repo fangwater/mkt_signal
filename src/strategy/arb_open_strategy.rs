@@ -13,6 +13,7 @@ use crate::strategy::open_strategy_common::{
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_engine_response::TradeEngineResponse;
 use crate::strategy::trade_update::TradeUpdate;
+use crate::strategy::uniform_order_helper::UniformPublishCtx;
 use log::{debug, warn};
 use std::any::Any;
 
@@ -175,6 +176,17 @@ impl OpenStrategyCommon for ArbOpenStrategy {
             self.open_state.strategy_id, marker, client_order_id
         );
         self.handoff_open_order_to_orphan(client_order_id, marker);
+    }
+
+    /// arb open 用自身 client_order_id 作为 uniform from_key；
+    /// 配对的 hedge 单回写时也用同一个 id —— 下游可直接按 from_key 字符串 JOIN open/hedge。
+    fn uniform_open_publish_ctx(&self) -> UniformPublishCtx {
+        let open_state = self.open_state();
+        UniformPublishCtx {
+            signal_ts: open_state.signal_ts,
+            from_key: open_state.order.open_order_id.to_string().into_bytes(),
+            price_offset: open_state.price_offset,
+        }
     }
 }
 

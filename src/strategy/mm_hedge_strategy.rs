@@ -1863,6 +1863,7 @@ impl OrderTerminalRecorder for MarketMakerHedgeStrategy {
         filled_base_qty: f64,
         price: f64,
         _close_ts: i64,
+        _open_client_order_id: i64,
     ) -> bool {
         let order_base_qty = order_base_qty.abs();
         let filled_base_qty = filled_base_qty.abs();
@@ -1905,6 +1906,7 @@ impl OrderTerminalRecorder for MarketMakerHedgeStrategy {
         order_base_qty: f64,
         filled_base_qty: f64,
         price: f64,
+        _bound_open_client_order_id: i64,
     ) -> bool {
         let order_base_qty = order_base_qty.abs();
         let filled_base_qty = filled_base_qty.abs();

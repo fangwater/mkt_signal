@@ -173,6 +173,7 @@ impl HedgeOrphanOrderStrategy {
                             event_time,
                             price,
                             0,
+                            client_order_id,
                         ),
                         OrphanSourceKind::Hedge => strategy_mgr.record_hedge_order_terminal(
                             &symbol,
@@ -181,6 +182,7 @@ impl HedgeOrphanOrderStrategy {
                             cumulative_base_qty,
                             event_time,
                             price,
+                            0,
                         ),
                     };
                     if !recorded {

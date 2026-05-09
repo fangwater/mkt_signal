@@ -159,6 +159,7 @@ pub trait OpenStrategyCommon {
         filled_base_qty: f64,
         terminal_ts: i64,
         price: f64,
+        open_client_order_id: i64,
         update_detail: &str,
     ) -> bool {
         if filled_base_qty <= 1e-12 {
@@ -176,10 +177,11 @@ pub trait OpenStrategyCommon {
                 terminal_ts,
                 price,
                 close_ts,
+                open_client_order_id,
             );
         if !updated {
             warn!(
-                "{}: strategy_id={} record open order terminal failed symbol={} side={:?} order_base_qty={:.8} filled_base_qty={:.8} terminal_ts={} price={:.8} close_ts={} detail={}",
+                "{}: strategy_id={} record open order terminal failed symbol={} side={:?} order_base_qty={:.8} filled_base_qty={:.8} terminal_ts={} price={:.8} close_ts={} open_co_id={} detail={}",
                 self.strategy_name(),
                 self.strategy_id(),
                 symbol,
@@ -189,6 +191,7 @@ pub trait OpenStrategyCommon {
                 terminal_ts,
                 price,
                 close_ts,
+                open_client_order_id,
                 update_detail
             );
         }
@@ -1197,6 +1200,7 @@ pub trait OpenStrategyCommon {
                 terminal_base_qty,
                 order_update.event_time(),
                 order.price,
+                order.client_order_id,
                 &update_detail,
             );
         }
@@ -1363,6 +1367,7 @@ pub trait OpenStrategyCommon {
                 terminal_base_qty,
                 event_time,
                 order.price,
+                order.client_order_id,
                 &update_detail,
             );
             debug!(
