@@ -827,46 +827,51 @@ impl MarketMakerHedgeStrategy {
         }
 
         for order_id in &to_cancel {
-            let order_mgr = MonitorChannel::instance().order_manager();
-            let mgr = order_mgr.borrow();
-            let Some(order) = mgr.get(*order_id) else {
-                warn!(
-                    "MMHedgeTrace: strategy_id={} cancel_send skipped because local order disappeared: {}",
+            let cancel_req = {
+                let order_mgr = MonitorChannel::instance().order_manager();
+                let mgr = order_mgr.borrow();
+                let Some(order) = mgr.get(*order_id) else {
+                    warn!(
+                        "MMHedgeTrace: strategy_id={} cancel_send skipped because local order disappeared: {}",
+                        self.strategy_id,
+                        self.hedge_order_trace_snapshot(*order_id)
+                    );
+                    continue;
+                };
+                let exchange = order.venue.trade_engine_exchange();
+                debug!(
+                    "MMHedgeTrace: strategy_id={} cancel_send preparing exchange={} {}",
                     self.strategy_id,
+                    exchange,
                     self.hedge_order_trace_snapshot(*order_id)
                 );
-                continue;
-            };
-            let exchange = order.venue.trade_engine_exchange();
-            debug!(
-                "MMHedgeTrace: strategy_id={} cancel_send preparing exchange={} {}",
-                self.strategy_id,
-                exchange,
-                self.hedge_order_trace_snapshot(*order_id)
-            );
-            match order.get_order_cancel_bytes() {
-                Ok(req_bin) => {
-                    if let Err(e) =
-                        TradeEngHub::publish_order_request_for(*order_id, exchange, &req_bin)
-                    {
+                match order.get_order_cancel_bytes() {
+                    Ok(req_bin) => Some((exchange, req_bin)),
+                    Err(e) => {
                         warn!(
-                            "MarketMakerHedgeStrategy: strategy_id={} cancel hedge order failed: exchange={} client_order_id={} err={}",
-                            self.strategy_id, exchange, order_id, e
+                            "MarketMakerHedgeStrategy: strategy_id={} build cancel bytes failed: client_order_id={} err={}",
+                            self.strategy_id, order_id, e
                         );
-                    } else {
-                        debug!(
-                            "MarketMakerHedgeStrategy: strategy_id={} cancel hedge order sent: exchange={} client_order_id={}",
-                            self.strategy_id, exchange, order_id
-                        );
-                        self.log_hedge_order_state("cancel_sent", *order_id);
+                        None
                     }
                 }
-                Err(e) => {
-                    warn!(
-                        "MarketMakerHedgeStrategy: strategy_id={} build cancel bytes failed: client_order_id={} err={}",
-                        self.strategy_id, order_id, e
-                    );
-                }
+            };
+
+            let Some((exchange, req_bin)) = cancel_req else {
+                continue;
+            };
+
+            if let Err(e) = TradeEngHub::publish_order_request_for(*order_id, exchange, &req_bin) {
+                warn!(
+                    "MarketMakerHedgeStrategy: strategy_id={} cancel hedge order failed: exchange={} client_order_id={} err={}",
+                    self.strategy_id, exchange, order_id, e
+                );
+            } else {
+                debug!(
+                    "MarketMakerHedgeStrategy: strategy_id={} cancel hedge order sent: exchange={} client_order_id={}",
+                    self.strategy_id, exchange, order_id
+                );
+                self.log_hedge_order_state("cancel_sent", *order_id);
             }
         }
 
@@ -1081,7 +1086,9 @@ impl MarketMakerHedgeStrategy {
                 let _ = MonitorChannel::instance()
                     .order_manager()
                     .borrow_mut()
-                    .update(plan.client_order_id, |order| order.set_mkt_time(plan.mkt_ts));
+                    .update(plan.client_order_id, |order| {
+                        order.set_mkt_time(plan.mkt_ts)
+                    });
             }
             self.hedge_order_ids.insert(plan.client_order_id);
             self.log_hedge_order_state("order_created_local", plan.client_order_id);
