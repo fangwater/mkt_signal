@@ -52,11 +52,12 @@ pub fn parse_bbo_tbt(value: &Value) -> Result<Vec<BboFrame>> {
     let mut out = Vec::with_capacity(data.len());
 
     for entry in data {
-        let ts_ms = entry
+        let ts_us = entry
             .get("ts")
             .and_then(|v| v.as_str())
             .and_then(|s| s.parse::<i64>().ok())
-            .ok_or_else(|| anyhow!("bbo-tbt {} missing ts", inst_id))?;
+            .ok_or_else(|| anyhow!("bbo-tbt {} missing ts", inst_id))?
+            .saturating_mul(1000);
 
         let seq_id = entry
             .get("seqId")
@@ -87,7 +88,7 @@ pub fn parse_bbo_tbt(value: &Value) -> Result<Vec<BboFrame>> {
 
         out.push(BboFrame {
             symbol: symbol.clone(),
-            ts_ms,
+            ts_us,
             seq_id,
             bid_price,
             bid_amount,
@@ -315,7 +316,7 @@ mod tests {
         assert_eq!(frames.len(), 1);
         let f = &frames[0];
         assert_eq!(f.symbol, "BTCUSDT");
-        assert_eq!(f.ts_ms, 1700000000123);
+        assert_eq!(f.ts_us, 1700000000123 * 1000);
         assert_eq!(f.seq_id, 12345678);
         assert!((f.bid_price - 91234.4).abs() < 1e-9);
         assert!((f.ask_price - 91234.5).abs() < 1e-9);

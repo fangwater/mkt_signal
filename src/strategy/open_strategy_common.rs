@@ -81,6 +81,9 @@ pub struct OpenSignalInput {
     // 绝对 close_ts。0 表示不设置藏仓窗口；>0 表示这笔 ArbOpen 不追求立刻对冲，
     // 而是先藏一段时间，到 close_ts 后才进入可对冲/可关闭的 due 数量。
     pub close_ts: i64,
+    // 触发该 open 动作时的最新盘口时间(µs)，套利路径=max(open_leg.ts, hedge_leg.ts)；
+    // 0 表示无概念（MM）或无上下文，不会覆写已有 order.timestamp.mkt_t
+    pub mkt_ts: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -97,6 +100,9 @@ pub struct OpenCancelInput {
     pub cancel_reason: &'static str,
     pub trigger_ts: i64,
     pub from_key: Vec<u8>,
+    // 触发该 cancel 动作时的最新盘口时间(µs)，套利路径=max(open_leg.ts, hedge_leg.ts)；
+    // 0 表示无上下文（应急/MM 路径），不会覆写已有 order.timestamp.mkt_t
+    pub mkt_ts: i64,
 }
 
 impl OpenStrategyState {
@@ -639,6 +645,13 @@ pub trait OpenStrategyCommon {
                 qty_multiplier,
             );
 
+        if input.mkt_ts > 0 {
+            let _ = MonitorChannel::instance()
+                .order_manager()
+                .borrow_mut()
+                .update(client_order_id, |order| order.set_mkt_time(input.mkt_ts));
+        }
+
         info!(
             "📤 {}订单已创建: strategy_id={} client_order_id={} symbol={} {:?} side={:?} qty={} price={} qty_multiplier={:.8} from_key_len={}",
             input.order_log_name,
@@ -878,6 +891,12 @@ pub trait OpenStrategyCommon {
                         e
                     );
                 } else {
+                    if input.mkt_ts > 0 {
+                        let _ = MonitorChannel::instance()
+                            .order_manager()
+                            .borrow_mut()
+                            .update(open_order_id, |o| o.set_mkt_time(input.mkt_ts));
+                    }
                     self.open_order_state_mut().last_open_cancel_reason = Some(input.cancel_reason);
                     self.open_order_state_mut().last_cancel_trigger_ts = Some(input.trigger_ts);
                     self.schedule_cancel_query_watchdog(order.client_order_id);

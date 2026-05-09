@@ -102,7 +102,12 @@ impl VenueAdapter for BybitAdapter {
             .and_then(|v| v.as_i64())
             .ok_or_else(|| anyhow!("bybit {} missing data.u (updateId)", topic))?;
         // Bybit V5 orderbook.<depth> 文档定义：时间戳在顶层 `ts`（ms，gateway 生成时间）
-        let ts_ms = value.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
+        // 这里立即升精度到 µs，BboFrame.ts_us 全链路统一单位
+        let ts_us = value
+            .get("ts")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0)
+            .saturating_mul(1000);
 
         let bid_levels = data.get("b").and_then(|v| v.as_array());
         let ask_levels = data.get("a").and_then(|v| v.as_array());
@@ -147,7 +152,7 @@ impl VenueAdapter for BybitAdapter {
 
         Ok(vec![BboFrame {
             symbol,
-            ts_ms,
+            ts_us,
             seq_id,
             bid_price: entry.bid_price,
             bid_amount: entry.bid_amount,

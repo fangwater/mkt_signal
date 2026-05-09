@@ -227,10 +227,10 @@ pub struct AskBidSpreadMsg {
     pub msg_type: MktMsgType,
     pub symbol_length: u32,
     pub symbol: String,
-    pub timestamp: i64,  // 时间戳，币安现货设为0
-    pub bid_price: f64,  // 最优买价
+    pub timestamp: i64, // 时间戳 µs（spread_pbs 已统一升精度）；币安现货 bookTicker 缺 E/T 时为 0
+    pub bid_price: f64, // 最优买价
     pub bid_amount: f64, // 最优买量
-    pub ask_price: f64,  // 最优卖价
+    pub ask_price: f64, // 最优卖价
     pub ask_amount: f64, // 最优卖量
 }
 

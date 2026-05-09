@@ -8,8 +8,10 @@ use tokio_tungstenite::tungstenite::Message;
 pub struct BboFrame {
     /// 归一化后的 symbol（去 `-`/`-SWAP`、统一大写，例如 `BTCUSDT`）。
     pub symbol: String,
-    /// 服务器时间戳，毫秒（部分 venue 没有就填 0）。
-    pub ts_ms: i64,
+    /// 服务器时间戳，微秒（µs）。各 adapter 在解析点把交易所原生 ms 升精度到 us，
+    /// 全链路下游（Quote.ts / TradingLeg.ts / OrderTimeStamp.mkt_t）统一 µs。
+    /// 部分 venue 没有事件时间时（例如 Binance 现货 bookTicker 缺 `E/T`）填 0。
+    pub ts_us: i64,
     /// 单 symbol 内严格单调递增的序号（双路去重用）。
     /// 各 venue 字段各异：
     /// - OKex bbo-tbt:    `data[].seqId`

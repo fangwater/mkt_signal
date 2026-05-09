@@ -619,6 +619,7 @@ impl StrategyManager {
             cancel_reason,
             trigger_ts,
             from_key: Vec::new(),
+            mkt_ts: 0,
         });
         true
     }

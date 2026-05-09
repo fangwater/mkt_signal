@@ -96,12 +96,13 @@ impl VenueAdapter for BitgetAdapter {
                 .or_else(|| entry.get("seq").and_then(|v| v.as_i64()))
                 .ok_or_else(|| anyhow!("bitget books1 {} missing/invalid seq", symbol))?;
 
-            let ts_ms = entry
+            let ts_us = entry
                 .get("ts")
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<i64>().ok())
                 .or_else(|| entry.get("ts").and_then(|v| v.as_i64()))
-                .unwrap_or(0);
+                .unwrap_or(0)
+                .saturating_mul(1000);
 
             let bid_arr = entry
                 .get("bids")
@@ -127,7 +128,7 @@ impl VenueAdapter for BitgetAdapter {
 
             out.push(BboFrame {
                 symbol: symbol.clone(),
-                ts_ms,
+                ts_us,
                 seq_id,
                 bid_price,
                 bid_amount,
@@ -177,7 +178,7 @@ mod tests {
         let f = &frames[0];
         assert_eq!(f.symbol, "BTCUSDT");
         assert_eq!(f.seq_id, 123456);
-        assert_eq!(f.ts_ms, 1700000000123);
+        assert_eq!(f.ts_us, 1700000000123 * 1000);
         assert!((f.bid_price - 27000.5).abs() < 1e-9);
         assert!((f.ask_amount - 0.7).abs() < 1e-9);
     }

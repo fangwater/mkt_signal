@@ -120,6 +120,7 @@ impl ArbCloseStrategy {
             return;
         }
 
+        let mkt_ts = ctx.opening_leg.ts.max(ctx.hedging_leg.ts);
         let _ = self.handle_open_signal_common(OpenSignalInput {
             signal_kind: "ArbClose",
             order_log_name: "ArbClose",
@@ -140,6 +141,7 @@ impl ArbCloseStrategy {
             price_offset: ctx.price_offset,
             reduce_only: true,
             close_ts: 0,
+            mkt_ts,
         });
     }
 

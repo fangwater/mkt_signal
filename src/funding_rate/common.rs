@@ -286,7 +286,7 @@ const MAX_SERIES_LEN: usize = 60;
 pub struct Quote {
     pub bid: f64,
     pub ask: f64,
-    pub ts: i64,
+    pub ts: i64, // µs，源自 spread_pbs `AskBidSpreadMsg.timestamp`
 }
 
 impl Quote {

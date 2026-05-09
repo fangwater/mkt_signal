@@ -49,6 +49,7 @@ impl MarketMakerOpenStrategy {
             price_offset: ctx.price_offset,
             reduce_only: false,
             close_ts: 0,
+            mkt_ts: 0,
         });
     }
 
@@ -81,6 +82,7 @@ impl MarketMakerOpenStrategy {
                     cancel_reason: ctx.get_reason().as_log_reason(),
                     trigger_ts: ctx.trigger_ts,
                     from_key: ctx.from_key,
+                    mkt_ts: 0,
                 }),
                 Err(err) => {
                     warn!(

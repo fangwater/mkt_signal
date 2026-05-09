@@ -85,11 +85,12 @@ impl VenueAdapter for BinanceAdapter {
         };
         let seq_id = parse_seq_id(payload, &symbol)?;
 
-        let ts_ms = payload
+        let ts_us = payload
             .get("E")
             .and_then(|v| v.as_i64())
             .or_else(|| payload.get("T").and_then(|v| v.as_i64()))
-            .unwrap_or(0);
+            .unwrap_or(0)
+            .saturating_mul(1000);
 
         let (bid_price, bid_amount, ask_price, ask_amount) =
             if payload.get("b").and_then(|v| v.as_array()).is_some()
@@ -111,7 +112,7 @@ impl VenueAdapter for BinanceAdapter {
 
         Ok(vec![BboFrame {
             symbol,
-            ts_ms,
+            ts_us,
             seq_id,
             bid_price,
             bid_amount,
@@ -193,7 +194,7 @@ mod tests {
         let f = &frames[0];
         assert_eq!(f.symbol, "BTCUSDT");
         assert_eq!(f.seq_id, 12345);
-        assert_eq!(f.ts_ms, 1700000000001);
+        assert_eq!(f.ts_us, 1700000000001 * 1000);
         assert!((f.bid_price - 25.0).abs() < 1e-9);
         assert!((f.bid_amount - 100.0).abs() < 1e-9);
         assert!((f.ask_price - 25.1).abs() < 1e-9);
@@ -216,7 +217,7 @@ mod tests {
         let f = &frames[0];
         assert_eq!(f.symbol, "BTCUSDT");
         assert_eq!(f.seq_id, 12345);
-        assert_eq!(f.ts_ms, 1700000000001); // 优先 E，用于延迟统计
+        assert_eq!(f.ts_us, 1700000000001 * 1000); // 优先 E，用于延迟统计
         assert!((f.bid_price - 25.0).abs() < 1e-9);
         assert!((f.ask_price - 25.1).abs() < 1e-9);
     }
@@ -227,7 +228,7 @@ mod tests {
         let a = BinanceAdapter::new(TradingVenue::BinanceFutures);
         let frames = a.parse_frame(&v(raw)).unwrap();
         assert_eq!(frames.len(), 1);
-        assert_eq!(frames[0].ts_ms, 1700000000000);
+        assert_eq!(frames[0].ts_us, 1700000000000 * 1000);
     }
 
     #[test]
@@ -236,7 +237,7 @@ mod tests {
         let a = BinanceAdapter::new(TradingVenue::BinanceFutures);
         let frames = a.parse_frame(&v(raw)).unwrap();
         assert_eq!(frames.len(), 1);
-        assert_eq!(frames[0].ts_ms, 1700000000000);
+        assert_eq!(frames[0].ts_us, 1700000000000 * 1000);
     }
 
     #[test]
@@ -245,7 +246,7 @@ mod tests {
         let a = BinanceAdapter::new(TradingVenue::BinanceMargin);
         let frames = a.parse_frame(&v(raw)).unwrap();
         assert_eq!(frames.len(), 1);
-        assert_eq!(frames[0].ts_ms, 0);
+        assert_eq!(frames[0].ts_us, 0);
     }
 
     #[test]

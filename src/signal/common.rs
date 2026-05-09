@@ -668,7 +668,7 @@ pub struct TradingLeg {
     pub venue: u8, // TradingVenue as u8
     pub bid0: f64,
     pub ask0: f64,
-    pub ts: i64, // last quote event time (ms)
+    pub ts: i64, // last quote event time (µs)
 }
 
 impl TradingLeg {

@@ -927,6 +927,8 @@ pub struct OrderTimeStamp {
     pub create_t: i64, // 交易所订单创建时间(交易所时间)
     pub end_t: i64,    // 交易所时间(完全成交或者被撤单的时间)
     pub local_t: i64, // OrderUpdate/TradeUpdate/查询回报在本地最近一次被实质性接受的时间(µs)，每次覆写
+    pub mkt_t: i64,   // 触发该订单动作（open/cancel/close）时所参考的最新盘口时间(µs)；
+                      // 套利场景=max(open_leg.ts, hedge_leg.ts)；MM/Hedge 等无概念路径保持 0
 }
 
 impl OrderTimeStamp {
@@ -936,6 +938,7 @@ impl OrderTimeStamp {
             create_t: 0,
             end_t: 0,
             local_t: 0,
+            mkt_t: 0,
         }
     }
 }
@@ -1047,6 +1050,12 @@ impl Order {
     /// 设置结束时间
     pub fn set_end_time(&mut self, time: i64) {
         self.timestamp.end_t = time;
+    }
+
+    /// 设置触发该订单动作时所参考的最新盘口时间（µs）。
+    /// 套利策略在 ArbOpen / ArbCancel / ArbClose 信号到达时调用，传入两腿盘口 ts 的较新者。
+    pub fn set_mkt_time(&mut self, time: i64) {
+        self.timestamp.mkt_t = time;
     }
 
     pub fn set_exchange_order_id(&mut self, exchange_order_id: i64) {

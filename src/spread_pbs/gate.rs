@@ -98,15 +98,17 @@ impl VenueAdapter for GateAdapter {
             .and_then(parse_i64_loose)
             .ok_or_else(|| anyhow!("gate {} missing result.u (updateId)", channel))?;
 
-        let ts_ms = res
+        // result.t / time_ms 都是 ms；time 是秒。统一升精度到 µs（time 升 *1_000_000）
+        let ts_us = res
             .get("t")
             .and_then(parse_i64_loose)
             .or_else(|| value.get("time_ms").and_then(parse_i64_loose))
+            .map(|ms| ms.saturating_mul(1000))
             .or_else(|| {
                 value
                     .get("time")
                     .and_then(parse_i64_loose)
-                    .map(|s| s.saturating_mul(1000))
+                    .map(|s| s.saturating_mul(1_000_000))
             })
             .unwrap_or(0);
 
@@ -133,7 +135,7 @@ impl VenueAdapter for GateAdapter {
 
         Ok(vec![BboFrame {
             symbol,
-            ts_ms,
+            ts_us,
             seq_id,
             bid_price,
             bid_amount,
@@ -204,7 +206,7 @@ mod tests {
         let f = &frames[0];
         assert_eq!(f.symbol, "BTCUSDT");
         assert_eq!(f.seq_id, 48733182);
-        assert_eq!(f.ts_ms, 1606293803097);
+        assert_eq!(f.ts_us, 1606293803097 * 1000);
         assert!((f.bid_price - 19177.79).abs() < 1e-6);
         assert!((f.ask_amount - 1.0).abs() < 1e-9);
     }

@@ -339,15 +339,14 @@ fn process_frame(
     }
     state.dedup.insert(f.symbol.clone(), f.seq_id);
 
-    if f.ts_ms > 0 {
-        let ts_us = f.ts_ms.saturating_mul(1000);
-        state.latency_net.push((recv_us - ts_us) as f64);
-        state.latency_e2e.push((accepted_us - ts_us) as f64);
+    if f.ts_us > 0 {
+        state.latency_net.push((recv_us - f.ts_us) as f64);
+        state.latency_e2e.push((accepted_us - f.ts_us) as f64);
     }
 
     let msg = AskBidSpreadMsg::create(
         f.symbol.clone(),
-        f.ts_ms,
+        f.ts_us,
         f.bid_price,
         f.bid_amount,
         f.ask_price,
