@@ -448,6 +448,27 @@ def render_per_symbol_panels_html() -> str:
       <textarea id="hedge-offset-limits-text" class="mono" spellcheck="false"></textarea>
       <div id="hedge-offset-limits-status" class="status"></div>
     </section>
+
+    <section class="panel">
+      <div class="section-header">
+        <h2>Per-Symbol Open Offset Lower Overrides</h2>
+        <div class="actions">
+          <button id="load-open-offset-lower" class="secondary">读取</button>
+          <button id="reset-open-offset-lower" class="ghost">示例</button>
+          <button id="save-open-offset-lower">保存</button>
+        </div>
+      </div>
+      <div class="hint">
+        JSON 结构 <code>{"SYMBOL": open_offset_lower}</code>，单位价格分数（0.001=10bps）。
+        Redis String <code>&lt;env_name&gt;:&lt;open_venue&gt;:&lt;hedge_venue&gt;:open_offset_lower_overrides</code>。
+        Arb 开仓内层 offset 取 <code>max(vol_band_scale[0]*volatility, lower)</code>，
+        默认 0（不 clamp，保持 vol_band_scale 行为）。
+      </div>
+      <div class="hint">示例：</div>
+      <pre id="open-offset-lower-example" class="mono"></pre>
+      <textarea id="open-offset-lower-text" class="mono" spellcheck="false"></textarea>
+      <div id="open-offset-lower-status" class="status"></div>
+    </section>
 """
 
 
@@ -466,6 +487,7 @@ PANEL_EXAMPLES_JSON: str = json.dumps(
                 "hedge_price_offset_limit_upper": 0.006,
             },
         },
+        "open_offset_lower": {"BTCUSDT": 0.0008, "ETHUSDT": 0.0010},
     },
     ensure_ascii=False,
     separators=(",", ":"),
@@ -657,6 +679,41 @@ def render_per_symbol_panels_js() -> str:
       _psSetStatus('hedge-offset-limits-status', '已填入示例，尚未写入 Redis', 'warn');
     }}
 
+    async function loadOpenOffsetLower() {{
+      _psSetStatus('open-offset-lower-status', '读取中...');
+      try {{
+        const data = await _psFetch('open-offset-lower');
+        document.getElementById('open-offset-lower-text').value =
+          JSON.stringify(data.values || {{}}, null, 2);
+        _psSetStatus('open-offset-lower-status',
+          '已读取 ' + (data.count || 0) + ' 个 symbol ' + (data.key || ''), 'ok');
+      }} catch (err) {{
+        _psSetStatus('open-offset-lower-status', '读取失败: ' + _psFormatError(err), 'err');
+      }}
+    }}
+
+    async function saveOpenOffsetLower() {{
+      _psSetStatus('open-offset-lower-status', '保存中...');
+      let values;
+      try {{ values = JSON.parse(document.getElementById('open-offset-lower-text').value || '{{}}'); }}
+      catch (err) {{ _psSetStatus('open-offset-lower-status', 'JSON 解析失败: ' + err.message, 'err'); return; }}
+      try {{
+        const data = await _psFetch('open-offset-lower', {{method: 'POST', body: _psBody(values)}});
+        document.getElementById('open-offset-lower-text').value =
+          JSON.stringify(data.values || {{}}, null, 2);
+        _psSetStatus('open-offset-lower-status',
+          '已保存 ' + (data.count || 0) + ' 个 symbol ' + (data.key || ''), 'ok');
+      }} catch (err) {{
+        _psSetStatus('open-offset-lower-status', '保存失败: ' + _psFormatError(err), 'err');
+      }}
+    }}
+
+    function resetOpenOffsetLower() {{
+      document.getElementById('open-offset-lower-text').value =
+        JSON.stringify(PER_SYMBOL_PANEL_EXAMPLES.open_offset_lower || {{}}, null, 2);
+      _psSetStatus('open-offset-lower-status', '已填入示例，尚未写入 Redis', 'warn');
+    }}
+
     function bindPerSymbolPanels() {{
       const map = [
         ['load-amount-u', loadAmountU],
@@ -668,6 +725,9 @@ def render_per_symbol_panels_js() -> str:
         ['load-hedge-offset-limits', loadHedgeOffsetLimits],
         ['save-hedge-offset-limits', saveHedgeOffsetLimits],
         ['reset-hedge-offset-limits', resetHedgeOffsetLimits],
+        ['load-open-offset-lower', loadOpenOffsetLower],
+        ['save-open-offset-lower', saveOpenOffsetLower],
+        ['reset-open-offset-lower', resetOpenOffsetLower],
       ];
       for (const [id, fn] of map) {{
         const el = document.getElementById(id);
@@ -679,5 +739,7 @@ def render_per_symbol_panels_js() -> str:
       if (exM) exM.textContent = JSON.stringify(PER_SYMBOL_PANEL_EXAMPLES.max_pos_u || {{}}, null, 2);
       const exH = document.getElementById('hedge-offset-limits-example');
       if (exH) exH.textContent = JSON.stringify(PER_SYMBOL_PANEL_EXAMPLES.hedge_offset_limits || {{}}, null, 2);
+      const exO = document.getElementById('open-offset-lower-example');
+      if (exO) exO.textContent = JSON.stringify(PER_SYMBOL_PANEL_EXAMPLES.open_offset_lower || {{}}, null, 2);
     }}
 """
