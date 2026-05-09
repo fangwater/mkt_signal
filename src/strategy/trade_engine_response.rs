@@ -169,6 +169,7 @@ pub trait TradeEngineResponse {
                     | gate::MARGIN_NOT_ENOUGH
                     | gate::POSITION_MARGIN_TOO_LOW
                     | gate::LIQUIDITY_NOT_ENOUGH
+                    | gate::AUTO_BORROW_TOO_MUCH
             ),
             _ => false,
         }
@@ -434,6 +435,20 @@ mod tests {
             gate::ORDER_POC,
         );
         assert!(!same_code_on_bitget.is_post_only_rejected());
+    }
+
+    #[test]
+    fn detects_gate_auto_borrow_too_much_as_insufficient_margin() {
+        let resp = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::GateUnifiedNewOrder as u32,
+            crate::common::exchange::Exchange::Gate as u32,
+            123,
+            gate::AUTO_BORROW_TOO_MUCH,
+        );
+        assert!(resp.is_open_request());
+        assert!(resp.is_open_rejected());
+        assert!(resp.is_insufficient_margin());
     }
 }
 

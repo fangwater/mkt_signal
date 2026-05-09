@@ -160,26 +160,8 @@ fn normalize_trade_error(
 ) -> (i32, Option<String>) {
     if exchange == Exchange::Gate && code == 0 {
         if let Some(m) = msg.as_deref() {
-            if m.eq_ignore_ascii_case("ORDER_NOT_FOUND") {
-                return (gate::ORDER_NOT_FOUND, msg);
-            }
-            if m.eq_ignore_ascii_case("ORDER_POC") {
-                return (gate::ORDER_POC, msg);
-            }
-            // Insufficient-margin / balance class. Mapped to synthetic codes so
-            // downstream `is_insufficient_margin()` (used by ArbHedge 51008
-            // emergency path) treats Gate the same as the other venues.
-            if m.eq_ignore_ascii_case("BALANCE_NOT_ENOUGH") {
-                return (gate::BALANCE_NOT_ENOUGH, msg);
-            }
-            if m.eq_ignore_ascii_case("MARGIN_NOT_ENOUGH") {
-                return (gate::MARGIN_NOT_ENOUGH, msg);
-            }
-            if m.eq_ignore_ascii_case("POSITION_MARGIN_TOO_LOW") {
-                return (gate::POSITION_MARGIN_TOO_LOW, msg);
-            }
-            if m.eq_ignore_ascii_case("LIQUIDITY_NOT_ENOUGH") {
-                return (gate::LIQUIDITY_NOT_ENOUGH, msg);
+            if let Some(mapped_code) = gate::parse_error_label(m) {
+                return (mapped_code, msg);
             }
         }
     }
@@ -262,6 +244,24 @@ mod tests {
         let (code, msg) = normalize_trade_error(Exchange::Gate, code, msg);
         assert_eq!(code, gate::ORDER_POC);
         assert_eq!(msg.as_deref(), Some("ORDER_POC"));
+    }
+
+    #[test]
+    fn normalizes_gate_poc_fill_immediately_from_label() {
+        let body = r#"{"header":{"status":400},"data":{"errs":{"label":"POC_FILL_IMMEDIATELY","message":"poc order would be filled immediately"}}}"#;
+        let (code, msg) = parse_error_code_and_msg(body);
+        let (code, msg) = normalize_trade_error(Exchange::Gate, code, msg);
+        assert_eq!(code, gate::ORDER_POC);
+        assert_eq!(msg.as_deref(), Some("POC_FILL_IMMEDIATELY"));
+    }
+
+    #[test]
+    fn normalizes_gate_auto_borrow_too_much_from_label() {
+        let body = r#"{"header":{"status":400},"data":{"errs":{"label":"AUTO_BORROW_TOO_MUCH","message":"auto borrow too much"}}}"#;
+        let (code, msg) = parse_error_code_and_msg(body);
+        let (code, msg) = normalize_trade_error(Exchange::Gate, code, msg);
+        assert_eq!(code, gate::AUTO_BORROW_TOO_MUCH);
+        assert_eq!(msg.as_deref(), Some("AUTO_BORROW_TOO_MUCH"));
     }
 
     fn sample_outcome(req_type: TradeRequestType, exchange: Exchange) -> TradeExecOutcome {

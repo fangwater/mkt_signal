@@ -1697,6 +1697,17 @@ pub trait OpenStrategyCommon {
             );
             return false;
         };
+        if order.status.is_terminal() {
+            debug!(
+                "{}: strategy_id={} skip order query because local order terminal: client_order_id={} status={:?} reason={:?}",
+                self.strategy_name(),
+                self.strategy_id(),
+                client_order_id,
+                order.status,
+                reason
+            );
+            return true;
+        }
 
         match build_order_query_request(&order, client_order_id, client_order_id) {
             Ok((exchange, req_bytes)) => {

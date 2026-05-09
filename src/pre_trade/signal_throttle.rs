@@ -1,5 +1,6 @@
 use crate::common::exchange::Exchange;
 use crate::common::time_util::get_timestamp_us;
+use crate::common::trade_error_code::gate;
 use crate::pre_trade::order_manager::Side;
 use log::{debug, info, warn};
 use once_cell::sync::Lazy;
@@ -68,6 +69,11 @@ pub fn is_throttle_error_code(exchange: Option<Exchange>, error_code: i32) -> bo
         SIGNAL_THROTTLE_ERROR_CODE_BITGET_LENDING_LIMIT => {
             matches!(exchange, Some(Exchange::Bitget))
         }
+        gate::BALANCE_NOT_ENOUGH
+        | gate::MARGIN_NOT_ENOUGH
+        | gate::POSITION_MARGIN_TOO_LOW
+        | gate::LIQUIDITY_NOT_ENOUGH
+        | gate::AUTO_BORROW_TOO_MUCH => matches!(exchange, Some(Exchange::Gate)),
         _ => false,
     }
 }
@@ -231,8 +237,20 @@ mod tests {
         assert!(is_throttle_error_code(Some(Exchange::Binance), 51006));
         assert!(is_throttle_error_code(Some(Exchange::Binance), 51061));
         assert!(is_throttle_error_code(Some(Exchange::Bitget), 25116));
+        assert!(is_throttle_error_code(
+            Some(Exchange::Gate),
+            gate::AUTO_BORROW_TOO_MUCH
+        ));
+        assert!(is_throttle_error_code(
+            Some(Exchange::Gate),
+            gate::BALANCE_NOT_ENOUGH
+        ));
         assert!(!is_throttle_error_code(Some(Exchange::Binance), 25116));
         assert!(!is_throttle_error_code(Some(Exchange::Okex), 25116));
+        assert!(!is_throttle_error_code(
+            Some(Exchange::Binance),
+            gate::AUTO_BORROW_TOO_MUCH
+        ));
         assert!(!is_throttle_error_code(Some(Exchange::Okex), 51006));
         assert!(!is_throttle_error_code(Some(Exchange::Okex), 51061));
         assert!(!is_throttle_error_code(Some(Exchange::Binance), 51168));
