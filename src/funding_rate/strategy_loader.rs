@@ -1615,6 +1615,7 @@ impl StrategyParams {
         let arb_state_applied = ArbDecision::with_state_mut(|arb| {
             arb.order_amount = self.order_amount;
             arb.amount_u_overrides = self.arb_amount_u_overrides.clone();
+            arb.open_offset_lower_overrides = self.arb_open_offset_lower_overrides.clone();
             arb.vol_band_scale = arb_vol_band_scale;
             arb.open_orders_per_round = self.open_orders_per_round;
             arb.open_order_ttl_us = self
