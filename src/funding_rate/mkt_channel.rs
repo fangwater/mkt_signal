@@ -29,7 +29,6 @@ const DERIVATIVES_PAYLOAD: usize = 128;
 const DERIVATIVES_HISTORY_SIZE: usize = 50;
 const DERIVATIVES_MAX_SUBSCRIBERS: usize = 10;
 const DERIVATIVES_SUBSCRIBER_MAX_BUFFER: usize = 8192;
-const MARKET_SERVICE_ROOT: &str = "bridge";
 
 // Thread-local 单例存储
 thread_local! {
@@ -57,7 +56,8 @@ fn normalize_symbol_key(symbol: &str) -> String {
 }
 
 fn build_market_service(slug: &str, channel: &str) -> String {
-    format!("{}/{}/{}", MARKET_SERVICE_ROOT, slug, channel)
+    // bridge 用于 derivatives（funding/mark/index）；askbid 走 askbid_service_root
+    format!("bridge/{}/{}", slug, channel)
 }
 
 fn askbid_service_root(arb_mode: Option<ArbMode>) -> &'static str {
@@ -174,10 +174,7 @@ impl MktChannel {
             }
         }
 
-        info!(
-            "MktChannel 初始化完成: service_root={}",
-            MARKET_SERVICE_ROOT
-        );
+        info!("MktChannel 初始化完成");
 
         // Publish the singleton before listeners start. IPC backlog can deliver a
         // market message immediately, and decision code reads MktChannel during
