@@ -195,8 +195,47 @@ if [[ -f "$ROOT_DIR/config/iceoryx2.toml" ]]; then
   rsync -a "$ROOT_DIR/config/iceoryx2.toml" "${TARGET_ROOT%/}/config/"
 fi
 
+# 远端分流：binance/bitget/gate 的 venue 推到 AWS 远端主机
+REMOTE_VENUE_REGEX='^(binance|bitget|gate)-(futures|margin)$'
+REMOTE_VENUES=()
+LOCAL_VENUES=()
+for v in "${VENUES[@]}"; do
+  if [[ "$v" =~ $REMOTE_VENUE_REGEX ]]; then
+    REMOTE_VENUES+=("$v")
+  else
+    LOCAL_VENUES+=("$v")
+  fi
+done
+
+if [[ ${#REMOTE_VENUES[@]} -gt 0 ]]; then
+  # shellcheck source=../lib/fr_remote_deploy.sh
+  source "$ROOT_DIR/scripts/lib/fr_remote_deploy.sh"
+  fr_remote_init_ssh "$ROOT_DIR"
+  for v in "${REMOTE_VENUES[@]}"; do
+    fr_remote_sync_path "dat_pbs/$v"
+  done
+  fr_remote_sync_path "dat_pbs/config"
+fi
+
 echo "[INFO] $BIN_NAME 部署完成"
 echo "[INFO] root_dir: ${TARGET_ROOT%/}"
-echo "[INFO] venues: ${VENUES[*]}"
+if [[ ${#LOCAL_VENUES[@]} -gt 0 ]]; then
+  echo "[INFO] local venues:"
+  for v in "${LOCAL_VENUES[@]}"; do
+    echo "  - ${v} -> ${TARGET_ROOT%/}/${v}/"
+  done
+fi
+if [[ ${#REMOTE_VENUES[@]} -gt 0 ]]; then
+  echo "[INFO] remote venues (${FR_DEPLOY_HOST}:${FR_REMOTE_HOME}/dat_pbs/):"
+  for v in "${REMOTE_VENUES[@]}"; do
+    echo "  - ${v}"
+  done
+fi
 echo "[INFO] config: ${TARGET_ROOT%/}/config/mkt_cfg.yaml"
-echo "[INFO] 启动示例: cd ${TARGET_ROOT%/}/${VENUES[0]} && ./scripts/start_dat_pbs.sh"
+echo "[INFO] 启动:"
+if [[ ${#LOCAL_VENUES[@]} -gt 0 ]]; then
+  echo "  - 本地: cd ${TARGET_ROOT%/}/<venue> && ./scripts/start_dat_pbs.sh"
+fi
+if [[ ${#REMOTE_VENUES[@]} -gt 0 ]]; then
+  echo "  - 远端: ssh ${FR_DEPLOY_HOST} 'cd ${FR_REMOTE_HOME}/dat_pbs/<venue> && ./scripts/start_dat_pbs.sh'"
+fi
