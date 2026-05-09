@@ -402,7 +402,7 @@ impl ArbHedgeStrategy {
             if throttle_on_skip {
                 self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
             }
-            info!(
+            debug!(
                 "ArbHedgeStrategy: strategy_id={} symbol={} skip {} hedge query because pending hedge below threshold pending_hedge_qty={:.8} due_hedge_qty={:.8} mark_price={:.8} pending_hedge_usdt={:.8} threshold_usdt={:.8} next_query_ts_us={}",
                 self.strategy_id,
                 self.symbol,

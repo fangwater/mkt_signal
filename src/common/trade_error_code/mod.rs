@@ -169,6 +169,10 @@ mod tests {
             describe_trade_error_code(Exchange::Gate, gate::ORDER_POC),
             Some("Post Only rejected")
         );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Gate, gate::AUTO_BORROW_TOO_MUCH),
+            Some("Auto borrow too much")
+        );
         assert_eq!(describe_trade_error_code(Exchange::Bitget, 999), None);
         assert_eq!(
             describe_trade_error_code(Exchange::Bybit, 10403),
