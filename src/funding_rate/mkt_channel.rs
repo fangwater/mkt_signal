@@ -62,8 +62,10 @@ fn build_market_service(slug: &str, channel: &str) -> String {
 
 fn askbid_service_root(arb_mode: Option<ArbMode>) -> &'static str {
     match arb_mode {
-        Some(ArbMode::FundingArb) => "spread_pbs",
-        _ => "bridge",
+        Some(ArbMode::FundingArb) | Some(ArbMode::IntraArb) | Some(ArbMode::CrossArb) => {
+            "spread_pbs"
+        }
+        None => "bridge",
     }
 }
 
@@ -681,13 +683,13 @@ mod tests {
     }
 
     #[test]
-    fn askbid_root_intra_arb_uses_bridge() {
-        assert_eq!(askbid_service_root(Some(ArbMode::IntraArb)), "bridge");
+    fn askbid_root_intra_arb_uses_spread_pbs() {
+        assert_eq!(askbid_service_root(Some(ArbMode::IntraArb)), "spread_pbs");
     }
 
     #[test]
-    fn askbid_root_cross_arb_uses_bridge() {
-        assert_eq!(askbid_service_root(Some(ArbMode::CrossArb)), "bridge");
+    fn askbid_root_cross_arb_uses_spread_pbs() {
+        assert_eq!(askbid_service_root(Some(ArbMode::CrossArb)), "spread_pbs");
     }
 
     #[test]

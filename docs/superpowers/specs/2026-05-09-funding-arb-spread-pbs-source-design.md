@@ -1,7 +1,7 @@
-# FundingArb 切换 ask_bid_spread 行情源至 spread_pbs
+# Arb 切换 ask_bid_spread 行情源至 spread_pbs
 
 **Date:** 2026-05-09
-**Status:** Draft
+**Status:** Draft（实施过程中扩大范围：从仅 FundingArb 扩到所有 ArbMode）
 
 ## 背景
 
@@ -9,13 +9,15 @@
 
 仓内已存在独立的高速发布器 `spread_pbs`（`src/bin/spread_pbs.rs` + `src/spread_pbs/`），按 venue 部署，发布到 `spread_pbs/<venue_slug>/ask_bid_spread`，payload 为 128B `AskBidSpreadMsg`，与 bridge 路径完全 wire-compatible。
 
-`spread_pbs` 路径相比 `dat_pbs → bridge` 少一跳转发，对延迟敏感的 FundingArb 模式（跨所 margin × futures 套利）有意义。其他模式（IntraArb、CrossArb、Mm）暂不切换。
+`spread_pbs` 路径相比 `dat_pbs → bridge` 少一跳转发，对所有 Arb 模式（FundingArb / IntraArb / CrossArb）的延迟敏感判定都有收益；Mm 分支不依赖跨所价差，继续走 bridge。
 
 ## 目标
 
-- `trade_signal` 当 `ArbMode == FundingArb` 时，open + hedge 两条腿的 `ask_bid_spread` 通道改从 `spread_pbs/<slug>/ask_bid_spread` 订阅。
-- 其他模式（IntraArb / CrossArb / Mm）以及 readonly 路径（`fr_signal_dashboard`、`demo_rate_fetcher`）继续走 `bridge/<slug>/ask_bid_spread`。
+- `trade_signal` 当 `DecisionBranch == Arb`（即 `arb_mode` 为 `Some(_)`，覆盖 FundingArb / IntraArb / CrossArb 三种）时，open + hedge 两条腿的 `ask_bid_spread` 通道改从 `spread_pbs/<slug>/ask_bid_spread` 订阅。
+- Mm 分支（`arb_mode == None`）以及 readonly 路径（`fr_signal_dashboard`、`demo_rate_fetcher`）继续走 `bridge/<slug>/ask_bid_spread`。
 - `derivatives`（funding rate / mark / index）通道不变，仍从 `bridge/<slug>/derivatives` 订阅。
+
+> **范围说明：** 初版 spec 只切换 FundingArb；实施过程中扩展为所有 ArbMode 都走 spread_pbs。Intra/Cross 同样追求低延迟，路由规则简化为 "Arb→spread_pbs / Mm 与 readonly→bridge"。
 
 ## 非目标
 
@@ -79,10 +81,13 @@ fn init_singleton_with_mode(
   ```rust
   fn askbid_service_root(arb_mode: Option<ArbMode>) -> &'static str {
       match arb_mode {
-          Some(ArbMode::FundingArb) => "spread_pbs",
-          _ => "bridge",
+          Some(ArbMode::FundingArb) | Some(ArbMode::IntraArb) | Some(ArbMode::CrossArb) => {
+              "spread_pbs"
+          }
+          None => "bridge",
       }
   }
+  // 显式列举所有 ArbMode 变体（不用 `_` 通配）：未来加新变体时编译器会强制此处给出路由决定。
   ```
 
 `init_singleton_with_mode` 内部组装服务名：
@@ -109,7 +114,7 @@ let hedge_derivatives_service = build_market_service(hedge_slug, "derivatives");
 | `src/fr_signal_dashboard.rs` | 166 | 不动（仍调 readonly） |
 | `src/bin/demo_rate_fetcher.rs` | 40 | 增加显式 `None`：`MktChannel::init_singleton(open_venue, hedge_venue, None)` |
 
-### 数据流（FundingArb 场景）
+### 数据流（任意 Arb 模式 = FundingArb / IntraArb / CrossArb）
 
 ```
 spread_pbs[venue_a]  → spread_pbs/<slug_a>/ask_bid_spread (128B AskBidSpreadMsg)
@@ -131,7 +136,7 @@ dat_pbs → bridge → bridge/<slug>/derivatives
               funding_rates / mark_prices / index_prices
 ```
 
-其他模式（IntraArb / CrossArb / Mm）下，open/hedge askbid 与 derivatives 全部继续走 `bridge/...`。
+Mm 分支（`arb_mode == None`）以及 readonly 路径下，open/hedge askbid 与 derivatives 全部继续走 `bridge/...`。
 
 ### 错误处理
 
@@ -150,9 +155,17 @@ fn askbid_root_funding_arb_uses_spread_pbs() {
 }
 
 #[test]
-fn askbid_root_other_modes_use_bridge() {
-    assert_eq!(askbid_service_root(Some(ArbMode::IntraArb)), "bridge");
-    assert_eq!(askbid_service_root(Some(ArbMode::CrossArb)), "bridge");
+fn askbid_root_intra_arb_uses_spread_pbs() {
+    assert_eq!(askbid_service_root(Some(ArbMode::IntraArb)), "spread_pbs");
+}
+
+#[test]
+fn askbid_root_cross_arb_uses_spread_pbs() {
+    assert_eq!(askbid_service_root(Some(ArbMode::CrossArb)), "spread_pbs");
+}
+
+#[test]
+fn askbid_root_none_uses_bridge() {
     assert_eq!(askbid_service_root(None), "bridge");
 }
 ```
@@ -160,27 +173,29 @@ fn askbid_root_other_modes_use_bridge() {
 **集成验证**（手工，在实现 PR 上跑）：
 
 1. `cargo build --release` 通过。
-2. 启动一个 binance-margin × bybit-futures 的 FundingArb trade_signal，确认日志出现：
-   - `订阅盘口: spread_pbs/binance-spot/ask_bid_spread`（或对应 margin slug）
-   - `订阅盘口: spread_pbs/bybit-futures/ask_bid_spread`
+2. 启动一个 FundingArb trade_signal（例如 binance-margin × bybit-futures），确认日志出现：
+   - `订阅盘口: spread_pbs/<open_slug>/ask_bid_spread`
+   - `订阅盘口: spread_pbs/<hedge_slug>/ask_bid_spread`
    - `订阅衍生品数据: bridge/<slug>/derivatives`
-3. 启动一个 IntraArb（如 okex-margin × okex-futures）trade_signal，确认日志仍是 `bridge/...`。
-4. `fr_signal_dashboard` 启动，确认日志仍是 `bridge/...`。
+3. 启动一个 IntraArb trade_signal（如 okex-margin × okex-futures），确认 askbid 日志为 `spread_pbs/...`，derivatives 仍为 `bridge/...`。
+4. 启动一个 CrossArb trade_signal，同上。
+5. 启动一个 MM trade_signal，确认日志仍是 `bridge/<slug>/ask_bid_spread`。
+6. `fr_signal_dashboard` 启动，确认日志仍是 `bridge/...`。
 
-**回归保护**：FundingArb 跑通后，肉眼对账 SpreadFactor 输出（已有的 `record_spread_observation_fwd/bwd` 调试日志）的频率与之前一致，无掉数据。
+**回归保护**：跑通后，肉眼对账 SpreadFactor 输出（已有的 `record_spread_observation_fwd/bwd` 调试日志）的频率与之前一致，无掉数据。
 
 ## 风险与缓解
 
 | 风险 | 缓解 |
 | --- | --- |
-| spread_pbs 部署不齐全，FundingArb 启动后无 BBO | 现有 degraded 日志（10s 一次 warn）；部署 checklist 要求 spread_pbs 与 trade_signal FundingArb 同时上线 |
-| dashboard 与 live trader 看到的盘口源不同，可能有微秒级延迟差 | 接受现状；如需统一，后续把 dashboard 也接到 spread_pbs（独立小改动） |
-| 后续若 IntraArb / CrossArb 也想切 spread_pbs | `askbid_service_root` 是 `match` 分支，扩一行即可 |
+| spread_pbs 部署不齐全，Arb 启动后无 BBO | 现有 degraded 日志（10s 一次 warn）；部署 checklist 要求所有 Arb 涉及 venue 的 spread_pbs 与 trade_signal 同时上线 |
+| dashboard / MM 与 live arb trader 看到的盘口源不同，可能有微秒级延迟差 | 接受现状；MM 不依赖跨所价差，差异无业务影响；dashboard 如需统一可后续单独改 |
+| 未来给 ArbMode 添加新变体时漏掉路由配置 | `askbid_service_root` 用显式枚举（无 `_` 通配），加新变体会编译失败强制提醒 |
 
 ## 兼容性 / 部署
 
-- 部署顺序：先确保所有 FundingArb 涉及的 venue 都跑了 `spread_pbs` 进程（PM2 进程清单已支持），再发布带本次改动的 `trade_signal`。
-- 回滚：撤销 `trade_signal.rs` 调用点的参数改动并把 `askbid_service_root` 改回返回 `"bridge"` 即可，无 schema / 持久化变更。
+- 部署顺序：先确保所有 Arb（FundingArb / IntraArb / CrossArb）涉及的 venue 都跑了 `spread_pbs` 进程（PM2 进程清单已支持），再发布带本次改动的 `trade_signal`。
+- 回滚：撤销 `trade_signal.rs` 调用点的参数改动并把 `askbid_service_root` 的所有 Arb 分支改回 `"bridge"` 即可，无 schema / 持久化变更。
 
 ## 开放问题
 
