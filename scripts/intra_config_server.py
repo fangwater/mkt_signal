@@ -2251,7 +2251,12 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"key": key, "count": len(values), "values": values})
             return
 
-        if parsed.path in ("/api/amount-u", "/api/max-pos-u", "/api/hedge-offset-limits"):
+        if parsed.path in (
+            "/api/amount-u",
+            "/api/max-pos-u",
+            "/api/hedge-offset-limits",
+            "/api/open-offset-lower",
+        ):
             try:
                 _, open_venue, hedge_venue, _ = self._resolve_request_context(params)
             except Exception as exc:
@@ -2267,8 +2272,12 @@ class RequestHandler(BaseHTTPRequestHandler):
                     data = ps_overrides.read_amount_u(rds, env_name, open_venue, hedge_venue)
                 elif parsed.path == "/api/max-pos-u":
                     data = ps_overrides.read_max_pos_u(rds, env_name, open_venue, hedge_venue)
-                else:
+                elif parsed.path == "/api/hedge-offset-limits":
                     data = ps_overrides.read_hedge_offset_limits(
+                        rds, env_name, open_venue, hedge_venue
+                    )
+                else:
+                    data = ps_overrides.read_open_offset_lower(
                         rds, env_name, open_venue, hedge_venue
                     )
             except ValueError as exc:
@@ -2512,7 +2521,12 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send_json(200, result)
             return
 
-        if parsed.path in ("/api/amount-u", "/api/max-pos-u", "/api/hedge-offset-limits"):
+        if parsed.path in (
+            "/api/amount-u",
+            "/api/max-pos-u",
+            "/api/hedge-offset-limits",
+            "/api/open-offset-lower",
+        ):
             try:
                 _, open_v, hedge_v, _ = self._resolve_payload_context(payload)
             except Exception as exc:
@@ -2529,8 +2543,12 @@ class RequestHandler(BaseHTTPRequestHandler):
                     result = ps_overrides.write_amount_u(rds, env_name, open_v, hedge_v, values)
                 elif parsed.path == "/api/max-pos-u":
                     result = ps_overrides.write_max_pos_u(rds, env_name, open_v, hedge_v, values)
-                else:
+                elif parsed.path == "/api/hedge-offset-limits":
                     result = ps_overrides.write_hedge_offset_limits(
+                        rds, env_name, open_v, hedge_v, values
+                    )
+                else:
+                    result = ps_overrides.write_open_offset_lower(
                         rds, env_name, open_v, hedge_v, values
                     )
             except ValueError as exc:
