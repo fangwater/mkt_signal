@@ -146,6 +146,7 @@ pub trait OrderTerminalRecorder {
         filled_base_qty: f64,
         price: f64,
         close_ts: i64,
+        open_client_order_id: i64,
     ) -> bool;
 
     fn record_hedge_order_terminal(
@@ -155,6 +156,7 @@ pub trait OrderTerminalRecorder {
         order_base_qty: f64,
         filled_base_qty: f64,
         price: f64,
+        bound_open_client_order_id: i64,
     ) -> bool;
 }
 
@@ -755,6 +757,7 @@ impl StrategyManager {
         terminal_ts: i64,
         price: f64,
         close_ts: i64,
+        open_client_order_id: i64,
     ) -> bool {
         let Some(id) = self.find_order_terminal_recorder_id(symbol) else {
             return false;
@@ -772,6 +775,7 @@ impl StrategyManager {
             filled_base_qty,
             price,
             close_ts,
+            open_client_order_id,
         )
     }
 
@@ -783,6 +787,7 @@ impl StrategyManager {
         filled_base_qty: f64,
         terminal_ts: i64,
         price: f64,
+        bound_open_client_order_id: i64,
     ) -> bool {
         let Some(id) = self.find_order_terminal_recorder_id(symbol) else {
             return false;
@@ -799,6 +804,7 @@ impl StrategyManager {
             order_base_qty,
             filled_base_qty,
             price,
+            bound_open_client_order_id,
         )
     }
 
