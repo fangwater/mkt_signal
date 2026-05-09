@@ -45,6 +45,10 @@ def make_hedge_offset_lower_key(env_name: str, open_venue: str, hedge_venue: str
     return f"{env_name}:{open_venue}:{hedge_venue}:hedge_price_offset_limit_lower"
 
 
+def make_open_offset_lower_key(env_name: str, open_venue: str, hedge_venue: str) -> str:
+    return f"{env_name}:{open_venue}:{hedge_venue}:open_offset_lower_overrides"
+
+
 def normalize_amount_u_symbol(raw: Any) -> str:
     """与 mm_config_server.normalize_amount_u_symbol 等价：丢分隔符、转大写。"""
     symbol = re.sub(r"[^A-Za-z0-9]", "", str(raw or "").strip()).upper()
@@ -95,6 +99,31 @@ def normalize_max_pos_u_mapping(values: Any) -> Dict[str, float]:
 
 
 def dumps_max_pos_u_mapping(values: Dict[str, float]) -> str:
+    ordered = {symbol: float(f"{values[symbol]:.12g}") for symbol in sorted(values.keys())}
+    return json.dumps(ordered, ensure_ascii=False, separators=(",", ":"))
+
+
+def normalize_open_offset_lower_mapping(values: Any) -> Dict[str, float]:
+    if values is None:
+        return {}
+    if not isinstance(values, dict):
+        raise ValueError("open_offset_lower values must be an object")
+    normalized: Dict[str, float] = {}
+    for raw_symbol, raw_value in values.items():
+        symbol = normalize_amount_u_symbol(raw_symbol)
+        try:
+            value = float(raw_value)
+        except Exception as exc:
+            raise ValueError(f"invalid open_offset_lower for {symbol}: {raw_value}") from exc
+        if not (math.isfinite(value) and value >= 0.0):
+            raise ValueError(
+                f"open_offset_lower must be finite and >= 0 for {symbol}: {raw_value}"
+            )
+        normalized[symbol] = value
+    return dict(sorted(normalized.items()))
+
+
+def dumps_open_offset_lower_mapping(values: Dict[str, float]) -> str:
     ordered = {symbol: float(f"{values[symbol]:.12g}") for symbol in sorted(values.keys())}
     return json.dumps(ordered, ensure_ascii=False, separators=(",", ":"))
 
@@ -247,6 +276,31 @@ def write_max_pos_u(
     key = make_max_pos_u_key(env_name, open_venue, hedge_venue)
     normalized = normalize_max_pos_u_mapping(values)
     rds.set(key, dumps_max_pos_u_mapping(normalized))
+    return {"key": key, "values": normalized, "count": len(normalized)}
+
+
+def read_open_offset_lower(
+    rds, env_name: str, open_venue: str, hedge_venue: str
+) -> Dict[str, Any]:
+    key = make_open_offset_lower_key(env_name, open_venue, hedge_venue)
+    raw = rds.get(key)
+    if raw is None:
+        values: Dict[str, float] = {}
+    else:
+        try:
+            decoded = json.loads(_decode_redis_str(raw))
+        except Exception as exc:
+            raise ValueError(f"invalid JSON in {key}: {exc}") from exc
+        values = normalize_open_offset_lower_mapping(decoded)
+    return {"key": key, "values": values, "count": len(values)}
+
+
+def write_open_offset_lower(
+    rds, env_name: str, open_venue: str, hedge_venue: str, values: Any
+) -> Dict[str, Any]:
+    key = make_open_offset_lower_key(env_name, open_venue, hedge_venue)
+    normalized = normalize_open_offset_lower_mapping(values)
+    rds.set(key, dumps_open_offset_lower_mapping(normalized))
     return {"key": key, "values": normalized, "count": len(normalized)}
 
 
