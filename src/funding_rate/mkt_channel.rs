@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 
 use super::common::{FundingRateData, Quote};
 use super::symbol_list::SymbolList;
+use super::ArbMode;
 use crate::common::mkt_msg::{
     get_msg_type, AskBidSpreadMsg, FundingRateMsg, IndexPriceMsg, MarkPriceMsg, MktMsgType,
 };
@@ -57,6 +58,13 @@ fn normalize_symbol_key(symbol: &str) -> String {
 
 fn build_market_service(slug: &str, channel: &str) -> String {
     format!("{}/{}/{}", MARKET_SERVICE_ROOT, slug, channel)
+}
+
+fn askbid_service_root(arb_mode: Option<ArbMode>) -> &'static str {
+    match arb_mode {
+        Some(ArbMode::FundingArb) => "spread_pbs",
+        _ => "bridge",
+    }
 }
 
 fn should_trigger_decision(symbol: &str) -> bool {
@@ -653,5 +661,31 @@ impl MktChannel {
                 warn!("衍生品数据监听退出: {:?}", err);
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::funding_rate::ArbMode;
+
+    #[test]
+    fn askbid_root_funding_arb_uses_spread_pbs() {
+        assert_eq!(askbid_service_root(Some(ArbMode::FundingArb)), "spread_pbs");
+    }
+
+    #[test]
+    fn askbid_root_intra_arb_uses_bridge() {
+        assert_eq!(askbid_service_root(Some(ArbMode::IntraArb)), "bridge");
+    }
+
+    #[test]
+    fn askbid_root_cross_arb_uses_bridge() {
+        assert_eq!(askbid_service_root(Some(ArbMode::CrossArb)), "bridge");
+    }
+
+    #[test]
+    fn askbid_root_none_uses_bridge() {
+        assert_eq!(askbid_service_root(None), "bridge");
     }
 }
