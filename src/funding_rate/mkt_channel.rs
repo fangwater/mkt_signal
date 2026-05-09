@@ -16,7 +16,6 @@ use std::time::{Duration, Instant};
 
 use super::common::{FundingRateData, Quote};
 use super::symbol_list::SymbolList;
-use super::ArbMode;
 use crate::common::mkt_msg::{
     get_msg_type, AskBidSpreadMsg, FundingRateMsg, IndexPriceMsg, MarkPriceMsg, MktMsgType,
 };
@@ -58,15 +57,6 @@ fn normalize_symbol_key(symbol: &str) -> String {
 fn build_market_service(slug: &str, channel: &str) -> String {
     // bridge 用于 derivatives（funding/mark/index）；askbid 走 askbid_service_root
     format!("bridge/{}/{}", slug, channel)
-}
-
-fn askbid_service_root(arb_mode: Option<ArbMode>) -> &'static str {
-    match arb_mode {
-        Some(ArbMode::FundingArb) | Some(ArbMode::IntraArb) | Some(ArbMode::CrossArb) => {
-            "spread_pbs"
-        }
-        None => "bridge",
-    }
 }
 
 fn should_trigger_decision(symbol: &str) -> bool {
@@ -123,9 +113,8 @@ impl MktChannel {
     pub fn init_singleton(
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
-        arb_mode: Option<ArbMode>,
     ) -> Result<()> {
-        Self::init_singleton_with_mode(open_venue, hedge_venue, true, arb_mode)
+        Self::init_singleton_with_mode(open_venue, hedge_venue, true)
     }
 
     /// 初始化只读单例并启动订阅任务，但不触发任何决策逻辑。
@@ -135,21 +124,20 @@ impl MktChannel {
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
     ) -> Result<()> {
-        Self::init_singleton_with_mode(open_venue, hedge_venue, false, None)
+        Self::init_singleton_with_mode(open_venue, hedge_venue, false)
     }
 
     fn init_singleton_with_mode(
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
         trigger_decisions: bool,
-        arb_mode: Option<ArbMode>,
     ) -> Result<()> {
         let open_slug = open_venue.data_pub_slug();
         let hedge_slug = hedge_venue.data_pub_slug();
 
-        let askbid_root = askbid_service_root(arb_mode);
-        let open_service = format!("{}/{}/ask_bid_spread", askbid_root, open_slug);
-        let hedge_service = format!("{}/{}/ask_bid_spread", askbid_root, hedge_slug);
+        // ask_bid_spread 全部走独立的 spread_pbs 通道（MM/Arb/Dashboard 一致）
+        let open_service = format!("spread_pbs/{}/ask_bid_spread", open_slug);
+        let hedge_service = format!("spread_pbs/{}/ask_bid_spread", hedge_slug);
 
         let open_node = build_node_name(open_slug, "askbid");
         let hedge_node = build_node_name(hedge_slug, "askbid");
@@ -183,8 +171,8 @@ impl MktChannel {
         }
 
         info!(
-            "MktChannel 初始化完成: askbid_root={} derivatives_root=bridge arb_mode={:?}",
-            askbid_root, arb_mode
+            "MktChannel 初始化完成: askbid_root=spread_pbs derivatives_root=bridge trigger_decisions={}",
+            trigger_decisions
         );
 
         // Publish the singleton before listeners start. IPC backlog can deliver a
@@ -672,28 +660,3 @@ impl MktChannel {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::funding_rate::ArbMode;
-
-    #[test]
-    fn askbid_root_funding_arb_uses_spread_pbs() {
-        assert_eq!(askbid_service_root(Some(ArbMode::FundingArb)), "spread_pbs");
-    }
-
-    #[test]
-    fn askbid_root_intra_arb_uses_spread_pbs() {
-        assert_eq!(askbid_service_root(Some(ArbMode::IntraArb)), "spread_pbs");
-    }
-
-    #[test]
-    fn askbid_root_cross_arb_uses_spread_pbs() {
-        assert_eq!(askbid_service_root(Some(ArbMode::CrossArb)), "spread_pbs");
-    }
-
-    #[test]
-    fn askbid_root_none_uses_bridge() {
-        assert_eq!(askbid_service_root(None), "bridge");
-    }
-}

@@ -324,7 +324,7 @@ async fn run(
         log::warn!("配置加载失败: {:?}，将使用默认值", err);
     }
 
-    MktChannel::init_singleton(open_venue, hedge_venue, arb_mode)?;
+    MktChannel::init_singleton(open_venue, hedge_venue)?;
     RateFetcher::init_for_venues(open_venue, hedge_venue)?;
 
     // SpreadFactor 和 FundingRateFactor 会在首次访问时自动初始化
