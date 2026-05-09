@@ -17,29 +17,19 @@ pub struct ArbOpenQuotePlan {
     pub levels: Vec<QuotePlanLevel>,
 }
 
-pub fn build_arb_level_specs(
+fn build_arb_level_specs_from_band(
     side: Side,
     inner_price: f64,
-    volatility: f64,
-    vol_band_scale: [f64; 2],
+    start: f64,
+    end: f64,
     level_count: usize,
 ) -> Vec<QuotePlanLevelSpec> {
     if level_count == 0 || !inner_price.is_finite() || inner_price <= 0.0 {
         return Vec::new();
     }
-    if !volatility.is_finite() || volatility < 0.0 {
+    if !start.is_finite() || !end.is_finite() || start < 0.0 || end < start {
         return Vec::new();
     }
-    if !vol_band_scale[0].is_finite()
-        || !vol_band_scale[1].is_finite()
-        || vol_band_scale[0] < 0.0
-        || vol_band_scale[1] < vol_band_scale[0]
-    {
-        return Vec::new();
-    }
-
-    let start = vol_band_scale[0] * volatility;
-    let end = vol_band_scale[1] * volatility;
     if level_count == 1 {
         return vec![QuotePlanLevelSpec {
             side,
@@ -70,6 +60,7 @@ pub fn build_arb_open_quote_plan(
     volatility: f64,
     vol_band_scale: [f64; 2],
     table: &VenueMinQtyTable,
+    open_offset_lower: f64,
 ) -> Result<ArbOpenQuotePlan, String> {
     if symbol.trim().is_empty() {
         return Err("symbol is empty".to_string());
@@ -105,6 +96,17 @@ pub fn build_arb_open_quote_plan(
             symbol, vol_band_scale
         ));
     }
+    // open_offset_lower 非法时退化为 0（不 clamp），warn 一行供运维察觉。
+    let lower = if open_offset_lower.is_finite() && open_offset_lower >= 0.0 {
+        open_offset_lower
+    } else {
+        log::warn!(
+            "build_arb_open_quote_plan: invalid open_offset_lower={} symbol={} (treated as 0)",
+            open_offset_lower,
+            symbol
+        );
+        0.0
+    };
 
     let inner_price = match side {
         Side::Buy => quote.bid,
@@ -114,17 +116,20 @@ pub fn build_arb_open_quote_plan(
         Side::Buy => inner_price * (1.0 - vol_band_scale[1] * volatility),
         Side::Sell => inner_price * (1.0 + vol_band_scale[1] * volatility),
     };
-    let specs = build_arb_level_specs(
+    let raw_start = vol_band_scale[0] * volatility;
+    let end = vol_band_scale[1] * volatility;
+    let start = raw_start.max(lower).min(end);
+    let specs = build_arb_level_specs_from_band(
         side,
         inner_price,
-        volatility,
-        vol_band_scale,
+        start,
+        end,
         orders_per_round as usize,
     );
     if specs.is_empty() {
         return Err(format!(
-            "empty arb level specs symbol={} side={:?} inner={:.8} volatility={:.8} vol_band_scale={:?} levels={}",
-            symbol, side, inner_price, volatility, vol_band_scale, orders_per_round
+            "empty arb level specs symbol={} side={:?} inner={:.8} volatility={:.8} vol_band_scale={:?} lower={} levels={}",
+            symbol, side, inner_price, volatility, vol_band_scale, lower, orders_per_round
         ));
     }
 

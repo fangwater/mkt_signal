@@ -2131,6 +2131,9 @@ fn emit_spread_arb_open_signals(
         .expect("ArbDecisionState should be initialized");
     let factor_mode = super::spread_factor::SpreadFactor::instance().get_mode();
 
+    let open_offset_lower =
+        ArbDecision::with_state_mut(|arb| arb.resolve_open_offset_lower(open_symbol))
+            .expect("ArbDecisionState should be initialized");
     let plan = match super::arb_quote_plan::build_arb_open_quote_plan(
         open_venue,
         open_symbol,
@@ -2145,6 +2148,7 @@ fn emit_spread_arb_open_signals(
         } else {
             &decision.runtime.hedge_min_qty_table
         },
+        open_offset_lower,
     ) {
         Ok(plan) => plan,
         Err(err) => {
@@ -2361,6 +2365,9 @@ fn emit_spread_arb_close_signals(
         .expect("ArbDecisionState should be initialized");
     let factor_mode = super::spread_factor::SpreadFactor::instance().get_mode();
 
+    let open_offset_lower =
+        ArbDecision::with_state_mut(|arb| arb.resolve_open_offset_lower(open_symbol))
+            .expect("ArbDecisionState should be initialized");
     let plan = match super::arb_quote_plan::build_arb_open_quote_plan(
         open_venue,
         open_symbol,
@@ -2375,6 +2382,7 @@ fn emit_spread_arb_close_signals(
         } else {
             &decision.runtime.hedge_min_qty_table
         },
+        open_offset_lower,
     ) {
         Ok(plan) => plan,
         Err(err) => {
@@ -2580,6 +2588,9 @@ fn emit_funding_open_close_signals(
         .expect("ArbDecisionState should be initialized");
     let factor_mode = super::spread_factor::SpreadFactor::instance().get_mode();
 
+    let open_offset_lower =
+        ArbDecision::with_state_mut(|arb| arb.resolve_open_offset_lower(spot_symbol))
+            .expect("ArbDecisionState should be initialized");
     let plan = match super::arb_quote_plan::build_arb_open_quote_plan(
         spot_venue,
         spot_symbol,
@@ -2594,6 +2605,7 @@ fn emit_funding_open_close_signals(
         } else {
             &decision.runtime.hedge_min_qty_table
         },
+        open_offset_lower,
     ) {
         Ok(plan) => plan,
         Err(err) => {
