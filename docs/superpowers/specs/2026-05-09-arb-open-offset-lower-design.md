@@ -249,13 +249,7 @@ build_quote_plan_levels → 实际订单价格
 
 #### Rust 单元测试
 
-新增到 `arb_quote_plan.rs` 内联 `mod tests`，至少覆盖以下 3 个用例（实际 plan 文档会写出完整可编译代码）：
-
-| 用例 | 输入 | 期望 |
-| --- | --- | --- |
-| `open_offset_lower_clamp_lifts_inner_only` | `vol_band_scale=[0.1, 1.0]`, `volatility=0.01`, `lower=0.005`, `level_count=3` | `levels[0].offset ≈ 0.005`，`levels[last].offset ≈ 0.01`，中间均匀分布 |
-| `open_offset_lower_clamp_above_end_collapses` | `vol_band_scale=[0.1, 0.5]`, `volatility=0.01`, `lower=0.01`, `level_count=3`（`end_pre_clamp=0.005 < lower`） | `start = end = 0.005` 后所有 spec offset 相同；经 `build_quote_plan_levels` align/dedup 后剩余 ≥ 1 个 level，且 `levels[0].offset` 在对齐误差内等于 0.005 |
-| `open_offset_lower_zero_preserves_current_behavior` | 任意合法输入，`lower=0.0` | 跑两次：一次过老路径（仅 `vol_band_scale + volatility`），一次过新签名 `lower=0.0`；`levels` 长度与每个 `offset` 完全一致 |
+`arb_quote_plan.rs` 不新增单测：clamp 行为属于一行算式（`raw_start.max(lower).min(end)`），与下游 `build_quote_plan_levels` 的 align/dedup 强耦合，纯 unit 测覆盖性价比低。clamp 行为通过部署期集成 smoke 验证（见下）。
 
 `arb_decision.rs::tests` 增加（验证 resolve 行为，不依赖完整 ArbDecision 初始化，用 helper 构造一个 minimal `ArbDecisionState`）：
 
