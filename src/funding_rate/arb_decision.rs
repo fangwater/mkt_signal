@@ -2888,6 +2888,7 @@ pub(crate) struct ArbSharedBootstrap {
     pub open_orders_per_round: u32,
     pub order_amount: f32,
     pub amount_u_overrides: HashMap<String, f64>,
+    pub open_offset_lower_overrides: HashMap<String, f64>,
     pub open_order_ttl_us: i64,
     pub hedge_timeout_mm_us: i64,
     pub hedge_aggressive_seq_threshold: u32,
@@ -2910,6 +2911,10 @@ pub(crate) struct ArbDecisionState {
     /// per-symbol amount_u 覆盖（USDT），由 strategy_loader 从 Redis 拉取。
     /// 命中即覆盖 order_amount；未命中按 order_amount 走默认。
     pub amount_u_overrides: HashMap<String, f64>,
+    /// per-symbol open_offset_lower 覆盖（价格分数）。
+    /// 命中即抬升 build_arb_open_quote_plan 的内层 start = max(scale[0]*vol, lower)；
+    /// 未命中按全局走（lower=0，行为与本字段加入前一致）。
+    pub open_offset_lower_overrides: HashMap<String, f64>,
     pub open_order_ttl_us: i64,
     pub hedge_timeout_mm_us: i64,
     pub hedge_vol_multiplier: f64,
@@ -3008,6 +3013,7 @@ impl ArbDecisionState {
             open_orders_per_round: 1,
             order_amount: 100.0,
             amount_u_overrides: HashMap::new(),
+            open_offset_lower_overrides: HashMap::new(),
             open_order_ttl_us: 120_000_000,
             hedge_timeout_mm_us: 30_000_000,
             hedge_vol_multiplier: 2.0,
@@ -3188,6 +3194,16 @@ impl ArbDecisionState {
             .unwrap_or(self.order_amount as f64)
     }
 
+    /// 解析 per-symbol open_offset_lower：命中覆盖即返回覆盖值，否则回退到 0.0（不 clamp）。
+    /// symbol 按 open venue 规范化以匹配 strategy_loader 写入 overrides 时使用的同一规范键。
+    pub fn resolve_open_offset_lower(&self, symbol: &str) -> f64 {
+        let symbol_key = normalize_symbol_for_venue(symbol, self.venues.0);
+        self.open_offset_lower_overrides
+            .get(&symbol_key)
+            .copied()
+            .unwrap_or(0.0)
+    }
+
     /// 解析 per-symbol hedge_price_offset_limit (lower, upper)：命中覆盖即返回覆盖值，
     /// 未命中回退到全局 hedge_price_offset_limit_lower / hedge_price_offset_limit_upper。
     /// 与 MM 的 resolve_hedge_price_offset_limits 同语义。
@@ -3262,6 +3278,7 @@ impl ArbDecisionState {
         self.open_orders_per_round = bootstrap.open_orders_per_round;
         self.order_amount = bootstrap.order_amount;
         self.amount_u_overrides = bootstrap.amount_u_overrides;
+        self.open_offset_lower_overrides = bootstrap.open_offset_lower_overrides;
         self.open_order_ttl_us = bootstrap.open_order_ttl_us;
         self.hedge_timeout_mm_us = bootstrap.hedge_timeout_mm_us;
         self.hedge_aggressive_seq_threshold = bootstrap.hedge_aggressive_seq_threshold;
@@ -3279,6 +3296,7 @@ impl ArbDecisionState {
             open_orders_per_round,
             order_amount: 100.0,
             amount_u_overrides: HashMap::new(),
+            open_offset_lower_overrides: HashMap::new(),
             open_order_ttl_us: 120_000_000,
             hedge_timeout_mm_us: 30_000_000,
             hedge_aggressive_seq_threshold: 6,
@@ -4678,5 +4696,24 @@ mod hedge_offset_overrides_tests {
         assert!(!state
             .hedge_price_offset_limit_upper_overrides
             .contains_key(&bad_key));
+    }
+
+    #[test]
+    fn resolve_open_offset_lower_returns_zero_when_missing() {
+        let mut state = fresh_state();
+        state.open_offset_lower_overrides.clear();
+        assert_eq!(state.resolve_open_offset_lower("BTCUSDT"), 0.0);
+        assert_eq!(state.resolve_open_offset_lower("anything"), 0.0);
+    }
+
+    #[test]
+    fn resolve_open_offset_lower_normalizes_symbol() {
+        let mut state = fresh_state();
+        // strategy_loader stores the normalized symbol key. We mimic that here.
+        let key = normalize_symbol_for_venue("BTCUSDT", state.venues.0);
+        state.open_offset_lower_overrides.insert(key, 0.001);
+        assert!((state.resolve_open_offset_lower("BTCUSDT") - 0.001).abs() < 1e-9);
+        assert!((state.resolve_open_offset_lower("btc-usdt") - 0.001).abs() < 1e-9);
+        assert!((state.resolve_open_offset_lower("btc_usdt") - 0.001).abs() < 1e-9);
     }
 }
