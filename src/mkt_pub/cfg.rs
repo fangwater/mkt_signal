@@ -1,12 +1,20 @@
 use crate::exchange::Exchange;
 use crate::signal::common::TradingVenue;
 use anyhow::{Context, Result};
-use log::info;
+use log::{error, info, warn};
 use prettytable::{format, Cell, Row, Table};
 use serde::Deserialize;
 use serde_yaml;
+use std::collections::HashMap;
+use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::fs;
+use tokio::sync::Mutex as AsyncMutex;
+
+fn symbols_cache() -> &'static AsyncMutex<HashMap<TradingVenue, Vec<String>>> {
+    static CACHE: OnceLock<AsyncMutex<HashMap<TradingVenue, Vec<String>>>> = OnceLock::new();
+    CACHE.get_or_init(|| AsyncMutex::new(HashMap::new()))
+}
 
 #[derive(Debug, Deserialize)]
 struct ConfigFile {
@@ -273,7 +281,7 @@ impl Config {
             BYBIT_INSTRUMENTS_URL, category, BYBIT_INSTRUMENTS_LIMIT
         );
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(15))
             .build()
             .context("Failed to build Bybit HTTP client")?;
 
@@ -436,7 +444,10 @@ impl Config {
     async fn get_symbol_for_okex_swap() -> Result<Vec<String>> {
         let url = "https://www.okx.com/api/v5/public/instruments?instType=SWAP";
         info!("Fetching OKEx swap symbols from: {}", url);
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .context("Failed to build HTTP client")?;
         let response = client
             .get(url)
             .send()
@@ -473,7 +484,10 @@ impl Config {
     async fn get_spot_symbols_from_okex_api() -> Result<Vec<String>> {
         let url = "https://www.okx.com/api/v5/public/instruments?instType=SPOT";
         info!("Fetching OKEx spot symbols from: {}", url);
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .context("Failed to build HTTP client")?;
         let response = client
             .get(url)
             .send()
@@ -597,7 +611,10 @@ impl Config {
         );
         info!("Fetching Bitget symbols from: {}", url);
 
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .context("Failed to build HTTP client")?;
         let response = client
             .get(&url)
             .send()
@@ -674,7 +691,10 @@ impl Config {
     async fn get_symbol_for_gate_futures() -> Result<Vec<String>> {
         let url = "https://api.gateio.ws/api/v4/futures/usdt/contracts";
         info!("Fetching Gate futures symbols from: {}", url);
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .context("Failed to build HTTP client")?;
         let response = client
             .get(url)
             .send()
@@ -701,7 +721,10 @@ impl Config {
     async fn get_spot_symbols_from_gate_api() -> Result<Vec<String>> {
         let url = "https://api.gateio.ws/api/v4/spot/currency_pairs";
         info!("Fetching Gate spot symbols from: {}", url);
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .context("Failed to build HTTP client")?;
         let response = client
             .get(url)
             .send()
@@ -824,8 +847,8 @@ impl Config {
         Ok(symbols)
     }
 
-    pub async fn get_symbols(&self) -> Result<Vec<String>> {
-        match self.venue {
+    async fn fetch_symbols_uncached(venue: TradingVenue) -> Result<Vec<String>> {
+        match venue {
             //币安u本位期货合约
             TradingVenue::BinanceFutures => Self::get_symbol_for_binance_futures().await,
             TradingVenue::BinanceMargin => {
@@ -855,6 +878,99 @@ impl Config {
             TradingVenue::AsterFutures => Self::get_symbol_for_aster_futures().await,
             //Aster现货（与 futures 关联）
             TradingVenue::AsterMargin => Self::get_spot_symbols_related_to_aster_futures().await,
+        }
+    }
+
+    /// 通用退避重试：最多 3 次（2/4/8s）。
+    /// 给所有 venue 的 REST 拉取兜底，瞬时 DNS/网络抖动不会立刻 fallback 到缓存。
+    async fn with_retry<F, Fut, T>(label: &str, mut op: F) -> Result<T>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<T>>,
+    {
+        const BACKOFFS_SECS: [u64; 3] = [2, 4, 8];
+        let mut last_err: Option<anyhow::Error> = None;
+        for (attempt, backoff) in BACKOFFS_SECS.iter().enumerate() {
+            match op().await {
+                Ok(v) => return Ok(v),
+                Err(err) => {
+                    warn!(
+                        "{} REST attempt {}/{} failed: {:#}",
+                        label,
+                        attempt + 1,
+                        BACKOFFS_SECS.len(),
+                        err
+                    );
+                    last_err = Some(err);
+                    if attempt + 1 < BACKOFFS_SECS.len() {
+                        tokio::time::sleep(Duration::from_secs(*backoff)).await;
+                    }
+                }
+            }
+        }
+        Err(last_err.expect("retry loop must produce at least one error on failure"))
+    }
+
+    pub async fn get_symbols(&self) -> Result<Vec<String>> {
+        let venue = self.venue;
+        let label = format!("get_symbols[{:?}]", venue);
+        match Self::with_retry(&label, || Self::fetch_symbols_uncached(venue)).await {
+            Ok(symbols) if !symbols.is_empty() => {
+                symbols_cache()
+                    .lock()
+                    .await
+                    .insert(venue, symbols.clone());
+                Ok(symbols)
+            }
+            Ok(empty) => {
+                // 交易所偶发返回空列表时也降级到上次缓存，避免重连误清订阅
+                if let Some(cached) = symbols_cache().lock().await.get(&venue).cloned() {
+                    warn!(
+                        "get_symbols for {:?} returned empty list; falling back to cached {} symbols",
+                        venue,
+                        cached.len()
+                    );
+                    Ok(cached)
+                } else {
+                    Ok(empty)
+                }
+            }
+            Err(err) => {
+                if let Some(cached) = symbols_cache().lock().await.get(&venue).cloned() {
+                    warn!(
+                        "get_symbols for {:?} failed: {:#}; falling back to cached {} symbols",
+                        venue,
+                        err,
+                        cached.len()
+                    );
+                    Ok(cached)
+                } else {
+                    Err(err)
+                }
+            }
+        }
+    }
+
+    /// 等到拿到非空 symbol 列表为止：失败/空都按指数退避重试。
+    /// 用于不能在启动期/重订阅期直接 panic/退出的路径。
+    pub async fn wait_for_symbols(&self) -> Vec<String> {
+        let venue = self.venue;
+        let mut backoff = Duration::from_secs(2);
+        let cap = Duration::from_secs(30);
+        loop {
+            match self.get_symbols().await {
+                Ok(v) if !v.is_empty() => return v,
+                Ok(_) => error!(
+                    "wait_for_symbols[{:?}] returned empty; retry in {:?}",
+                    venue, backoff
+                ),
+                Err(e) => error!(
+                    "wait_for_symbols[{:?}] failed: {:#}; retry in {:?}",
+                    venue, e, backoff
+                ),
+            }
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(cap);
         }
     }
 

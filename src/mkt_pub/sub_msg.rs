@@ -290,7 +290,7 @@ pub struct OkexPerpsSubscribeMsgs {
 impl OkexPerpsSubscribeMsgs {
     pub const WS_URL: &'static str = "wss://ws.okx.com:8443/ws/v5/public";
     pub async fn new(cfg: &Config) -> Self {
-        let symbols: Vec<String> = cfg.get_symbols().await.unwrap();
+        let symbols: Vec<String> = cfg.wait_for_symbols().await;
         let batch_size = cfg.get_batch_size();
         let mut mark_price_msgs = Vec::new();
         let mut index_tickers_msgs = Vec::new();
@@ -381,7 +381,7 @@ impl BybitPerpsSubscribeMsgs {
             };
         }
 
-        let symbols: Vec<String> = cfg.get_symbols().await.unwrap();
+        let symbols: Vec<String> = cfg.wait_for_symbols().await;
         let batch_size = cfg.get_batch_size();
         let mut ticker_stream_msgs = Vec::new();
         let mut liquidation_orders_msgs = Vec::new();
@@ -425,7 +425,7 @@ impl BitgetPerpsSubscribeMsgs {
             };
         }
 
-        let symbols: Vec<String> = cfg.get_symbols().await.unwrap();
+        let symbols: Vec<String> = cfg.wait_for_symbols().await;
         // 使用 Bitget 特定的 batch size，不超过50
         let batch_size = cfg.get_batch_size().min(Self::MAX_CHANNELS_PER_CONNECTION);
         let mut ticker_stream_msgs = Vec::new();
@@ -461,7 +461,7 @@ impl GatePerpsSubscribeMsgs {
             };
         }
 
-        let symbols: Vec<String> = cfg.get_symbols().await.unwrap();
+        let symbols: Vec<String> = cfg.wait_for_symbols().await;
         let batch_size = cfg.get_batch_size().min(Self::MAX_CHANNELS_PER_CONNECTION);
         let mut ticker_stream_msgs = Vec::new();
         let exchange = cfg.get_exchange();
@@ -485,7 +485,7 @@ impl HyperliquidPerpsSubscribeMsgs {
     pub const WS_URL: &'static str = "wss://api.hyperliquid.xyz/ws";
 
     pub async fn new(cfg: &Config) -> Self {
-        let symbols: Vec<String> = cfg.get_symbols().await.unwrap();
+        let symbols: Vec<String> = cfg.wait_for_symbols().await;
         let batch_size = cfg.get_batch_size();
         let mut active_asset_ctx_msgs = Vec::new();
 
@@ -885,7 +885,7 @@ impl SubscribeMsgs {
     }
 
     pub async fn new(cfg: &Config) -> Self {
-        let symbols: Vec<String> = cfg.get_symbols().await.unwrap();
+        let symbols: Vec<String> = cfg.wait_for_symbols().await;
         let batch_size = cfg.get_batch_size();
         let mut inc_subscribe_msgs = Vec::new();
         let mut depth_subscribe_msgs = Vec::new();
@@ -964,7 +964,7 @@ impl SubscribeMsgs {
 
 impl DerivativesMetricsSubscribeMsgs {
     pub async fn new(cfg: &Config) -> Self {
-        let symbols: Vec<String> = cfg.get_symbols().await.unwrap();
+        let symbols: Vec<String> = cfg.wait_for_symbols().await;
         let exchange = cfg.get_exchange();
         let exchange_msgs = match exchange {
             Exchange::Binance => {

@@ -62,14 +62,8 @@ impl SpreadPbsApp {
         );
 
         // ---- 首次拉 symbol（含 BinanceFutures，无硬编码） ----
-        let initial_symbols = self
-            .config
-            .get_symbols()
-            .await
-            .with_context(|| format!("fetch symbols for {}", venue_slug))?;
-        if initial_symbols.is_empty() {
-            bail!("symbol list 为空（{}）", venue_slug);
-        }
+        // spread_pbs 不归 pm2 管，启动期 REST 抖动不能直接退出；用退避循环等到拿到非空列表
+        let initial_symbols = self.config.wait_for_symbols().await;
         let mut current_symbols: HashSet<String> = initial_symbols.iter().cloned().collect();
         let initial_subs = adapter.build_subscribe(&initial_symbols);
         if initial_subs.is_empty() {
