@@ -3,3 +3,4 @@
 pub mod app;
 pub mod cfg;
 pub mod publisher;
+pub mod vol_state;

@@ -19,13 +19,13 @@ use std::time::{Duration, Instant};
 
 use super::cfg::{PersistenceConfig, RlFactorConfig, RuntimeConfig, TradeFlowFeaturePubConfig};
 use super::publisher::{RlFactorPublisher, TradeFlowFeaturePublisher};
+use super::vol_state::{SealedBar, VolState};
 use crate::common::amount_threshold::{is_online_amount_threshold, AmountThreshold};
 use crate::common::mkt_msg::MktMsgType;
 use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::trade_flow_feature_msg::{TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_DIM};
 use crate::depth_pub::depth_msg::{DepthMsgType, DEPTH25_MAX_BYTES, DEPTH50_MAX_BYTES};
-use crate::factor_pub::rl_vol::compute_rl_return_volatility;
 use crate::signal::common::TradingVenue;
 
 const TRADE_MAX_BYTES: usize = 128;
@@ -44,8 +44,6 @@ const FIXED_REDIS_DB: i64 = 0;
 const TRADE_DEDUP_WINDOW_MS: i64 = 10_000;
 const MAX_DEPTH_LEVELS_CACHE: usize = 20;
 const APPENDED_DEPTH_DIM: usize = MAX_DEPTH_LEVELS_CACHE * 4;
-const MAX_SYMBOL_HISTORY: usize = 4096;
-
 #[derive(Debug, Clone)]
 struct RlReturnVolatilityRuntimeConfig {
     pct_change_period: usize,
@@ -55,39 +53,17 @@ struct RlReturnVolatilityRuntimeConfig {
 
 impl RlReturnVolatilityRuntimeConfig {
     fn from_config(cfg: &RlFactorConfig) -> Result<Self> {
-        let required = cfg.pct_change_period + cfg.rolling_window;
-        if required > MAX_SYMBOL_HISTORY {
-            anyhow::bail!(
-                "rl required history {} exceeds MAX_SYMBOL_HISTORY {}",
-                required,
-                MAX_SYMBOL_HISTORY
-            );
+        if cfg.pct_change_period == 0 {
+            anyhow::bail!("rl pct_change_period must be > 0");
         }
-
+        if cfg.rolling_window == 0 {
+            anyhow::bail!("rl rolling_window must be > 0");
+        }
         Ok(Self {
             pct_change_period: cfg.pct_change_period,
             rolling_window: cfg.rolling_window,
             scale_factor: cfg.scale_factor,
         })
-    }
-
-    fn apply_scale(&self, raw: f64) -> f64 {
-        raw * self.scale_factor
-    }
-
-    fn compute_scaled_value(&self, closes: &VecDeque<f64>) -> Result<Option<f64>> {
-        let Some(raw) =
-            compute_rl_return_volatility(closes, self.pct_change_period, self.rolling_window)?
-        else {
-            return Ok(None);
-        };
-
-        let scaled = self.apply_scale(raw);
-        if scaled.is_finite() {
-            Ok(Some(scaled))
-        } else {
-            Ok(None)
-        }
     }
 }
 
@@ -417,7 +393,6 @@ struct SymbolState {
     last_buy_vwap: Option<f64>,
     last_sell_vwap: Option<f64>,
     closed_bars: Vec<TradeBar>,
-    published_closes: VecDeque<f64>,
 }
 
 impl SymbolState {
@@ -430,7 +405,6 @@ impl SymbolState {
             last_buy_vwap: None,
             last_sell_vwap: None,
             closed_bars: Vec::new(),
-            published_closes: VecDeque::new(),
         }
     }
 
@@ -540,21 +514,6 @@ impl SymbolState {
 
     fn take_closed_bars(&mut self) -> Vec<TradeBar> {
         std::mem::take(&mut self.closed_bars)
-    }
-
-    fn record_published_close(&mut self, close: f64) {
-        if !(close.is_finite() && close > 0.0) {
-            return;
-        }
-
-        self.published_closes.push_back(close);
-        if self.published_closes.len() > MAX_SYMBOL_HISTORY {
-            self.published_closes.pop_front();
-        }
-    }
-
-    fn published_closes(&self) -> &VecDeque<f64> {
-        &self.published_closes
     }
 
     fn next_due_close_ms(&self, period_ms: i64) -> Option<i64> {
@@ -1010,6 +969,8 @@ pub struct TradeFlowFeaturePubApp {
     publisher: TradeFlowFeaturePublisher,
     rl_config: RlReturnVolatilityRuntimeConfig,
     rl_publisher: RlFactorPublisher,
+    /// Per-symbol vol pipeline,与 Redis 白名单解耦,服务于 venue 全 symbol 集合。
+    vol_states: HashMap<String, VolState>,
     symbols: HashMap<String, SymbolState>,
     latest_depth_by_symbol: HashMap<String, DepthSnapshot>,
     thresholds: HashMap<String, AmountThreshold>,
@@ -1080,6 +1041,7 @@ impl TradeFlowFeaturePubApp {
             publisher,
             rl_config,
             rl_publisher,
+            vol_states: HashMap::new(),
             symbols: HashMap::new(),
             latest_depth_by_symbol: HashMap::new(),
             thresholds: HashMap::new(),
@@ -1221,6 +1183,7 @@ impl TradeFlowFeaturePubApp {
             }
 
             self.maybe_close_due_bars()?;
+            self.maybe_close_due_vol_bars();
             if !has_message {
                 std::thread::sleep(Duration::from_micros(IDLE_SLEEP_MICROS));
             }
@@ -1236,6 +1199,9 @@ impl TradeFlowFeaturePubApp {
             price,
             amount,
         } = trade;
+
+        // Vol 通道:无 Redis 白名单,venue 全 symbol 都喂。在 threshold gate 之前。
+        self.feed_vol_state(&symbol, timestamp_ms, price);
 
         let Some(threshold) = self.thresholds.get(symbol.as_str()).copied() else {
             self.trade_filtered_offline_count = self.trade_filtered_offline_count.saturating_add(1);
@@ -1281,6 +1247,62 @@ impl TradeFlowFeaturePubApp {
             return Ok(());
         }
         self.close_due_bars(now_ms)
+    }
+
+    /// Vol 通道每轮 tick:把已经过期的 pending bucket 全部 seal,无 trade 也 ffill。
+    /// 不依赖 next_due_close_ms(那个是 feature 路径的),vol_states 自己用 now_ms。
+    fn maybe_close_due_vol_bars(&mut self) {
+        if self.vol_states.is_empty() {
+            return;
+        }
+        let now_ms = now_millis();
+        let mut all_sealed: Vec<(String, Vec<SealedBar>)> = Vec::new();
+        for (symbol, vs) in self.vol_states.iter_mut() {
+            let mut sealed: Vec<SealedBar> = Vec::new();
+            vs.on_period_tick(now_ms, &mut sealed);
+            if !sealed.is_empty() {
+                all_sealed.push((symbol.clone(), sealed));
+            }
+        }
+        for (symbol, sealed) in all_sealed {
+            self.publish_sealed_vol(&symbol, &sealed);
+        }
+    }
+
+    /// 喂一笔 trade 给 vol_state,顺手把 seal 出来的 bar 发走。
+    /// 调用方:handle_trade(无白名单)。
+    fn feed_vol_state(&mut self, symbol: &str, ts_ms: i64, price: f64) {
+        let pct = self.rl_config.pct_change_period;
+        let win = self.rl_config.rolling_window;
+        let scale = self.rl_config.scale_factor;
+        let bar_ms = self.config.runtime.bar_ms;
+
+        let mut sealed: Vec<SealedBar> = Vec::new();
+        {
+            let entry = self
+                .vol_states
+                .entry(symbol.to_string())
+                .or_insert_with(|| VolState::new(pct, win, scale, bar_ms));
+            entry.on_trade(ts_ms, price, &mut sealed);
+        }
+        if !sealed.is_empty() {
+            self.publish_sealed_vol(symbol, &sealed);
+        }
+    }
+
+    fn publish_sealed_vol(&mut self, symbol: &str, sealed: &[SealedBar]) {
+        for sb in sealed {
+            let ready = sb.vol.is_some();
+            let value = sb.vol.unwrap_or(0.0);
+            if self
+                .rl_publisher
+                .publish(symbol, value, sb.bar_start_ms, ready)
+            {
+                self.rl_publish_success_count = self.rl_publish_success_count.saturating_add(1);
+            } else {
+                self.rl_publish_fail_count = self.rl_publish_fail_count.saturating_add(1);
+            }
+        }
     }
 
     fn close_due_bars(&mut self, now_ms: i64) -> Result<()> {
@@ -1331,48 +1353,9 @@ impl TradeFlowFeaturePubApp {
                 );
             } else {
                 self.publish_success_count = self.publish_success_count.saturating_add(1);
-                self.publish_rl_return_volatility(symbol, bar.start_ms, bar.close);
             }
         }
         Ok(())
-    }
-
-    fn publish_rl_return_volatility(&mut self, symbol: &str, timestamp_ms: i64, close: f64) {
-        let scaled_value = {
-            let Some(state) = self.symbols.get_mut(symbol) else {
-                self.rl_publish_fail_count = self.rl_publish_fail_count.saturating_add(1);
-                warn!(
-                    "rl publish skipped: missing symbol state, venue={} symbol={}",
-                    self.venue_slug, symbol
-                );
-                return;
-            };
-            state.record_published_close(close);
-            self.rl_config
-                .compute_scaled_value(state.published_closes())
-        };
-
-        let (value, ready) = match scaled_value {
-            Ok(Some(value)) => (value, true),
-            Ok(None) => (0.0, false),
-            Err(err) => {
-                self.rl_publish_fail_count = self.rl_publish_fail_count.saturating_add(1);
-                warn!(
-                    "rl compute failed: venue={} symbol={} err={}",
-                    self.venue_slug, symbol, err
-                );
-                return;
-            }
-        };
-
-        if self
-            .rl_publisher
-            .publish(symbol, value, timestamp_ms, ready)
-        {
-            self.rl_publish_success_count = self.rl_publish_success_count.saturating_add(1);
-        } else {
-            self.rl_publish_fail_count = self.rl_publish_fail_count.saturating_add(1);
-        }
     }
 
     fn record_next_due_close_ms(&mut self, next_due_close_ms: Option<i64>) {
@@ -1491,11 +1474,15 @@ impl TradeFlowFeaturePubApp {
                 Ok(runtime) => {
                     self.config.rl_factor = loaded.rl_factor.clone();
                     self.rl_config = runtime;
+                    // 参数变了 → 清空所有 VolState 强制重新预热,避免新旧参数混用。
+                    let cleared = self.vol_states.len();
+                    self.vol_states.clear();
                     info!(
-                        "trade_flow_feature rl config updated: pct_change_period={} rolling_window={} scale_factor={}",
+                        "trade_flow_feature rl config updated: pct_change_period={} rolling_window={} scale_factor={} vol_states_cleared={}",
                         self.rl_config.pct_change_period,
                         self.rl_config.rolling_window,
-                        self.rl_config.scale_factor
+                        self.rl_config.scale_factor,
+                        cleared
                     );
                 }
                 Err(err) => {
