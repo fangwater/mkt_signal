@@ -358,7 +358,8 @@ upsert_main_nginx_mapping() {
   local ws_location="${base_prefix}${ws_path}"
   local health_location="${base_prefix}/healthz"
   local snapshot_location="${base_prefix}/snapshot"
-  local static_dir="${TARGET_DIR}/www/"
+  # 写字面 $HOME 让 setup_nginx_4191.sh 在目标机上展开（远端部署 $HOME 与本机不同）
+  local static_dir="\$HOME/${ENV_NAME}/www/"
 
   begin_marker="# BEGIN managed: mm viz ${base_prefix}"
   end_marker="# END managed: mm viz ${base_prefix}"
