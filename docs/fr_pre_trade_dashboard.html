@@ -49,15 +49,6 @@
         letter-spacing: 0.2px;
         font-weight: 600;
       }
-      .demo-badge {
-        font-size: 11px;
-        font-weight: 600;
-        padding: 2px 8px;
-        border-radius: 4px;
-        background: var(--accent-purple);
-        color: var(--bg);
-        letter-spacing: 0.5px;
-      }
       .status {
         display: flex;
         gap: 10px;
@@ -402,7 +393,6 @@
   <body>
     <header>
       <h1>FR Pre-Trade</h1>
-      <span class="demo-badge" id="demo-badge">DEMO</span>
       <div class="status">
         <span class="pill"
           ><span class="indicator warn" id="viz-indicator"></span
@@ -571,7 +561,6 @@
         const STALE_MS = 15000;
 
         const qs = new URLSearchParams(window.location.search);
-        const LIVE = qs.get("live") === "1";
 
         const state = {
           viz: { ws: null, connected: false, reconnectTimer: null },
@@ -607,7 +596,6 @@
         // ---- DOM 引用 ----
         const $ = (id) => document.getElementById(id);
         const el = {
-          demoBadge: $("demo-badge"),
           vizIndicator: $("viz-indicator"), vizStatus: $("viz-status"),
           frIndicator: $("fr-indicator"), frStatus: $("fr-status"),
           lastUpdate: $("last-update"),
@@ -628,116 +616,6 @@
           evalCount: $("eval-count"), evalMeta: $("eval-meta"),
           evalBody: $("eval-body"), evalEmpty: $("eval-empty"),
         };
-
-        // ---- Mock 数据（DEMO 模式默认开启） ----
-        function mockVizExposure() {
-          return {
-            type: "pre_trade_exposure",
-            namespace: "okex_fr_trade",
-            channel: "exposure_resample",
-            ts_ms: Date.now(),
-            entry: {
-              ts_ms: Date.now(),
-              rows: [
-                { asset: "BTC", open_qty: 0.452, open_usdt: 31840.5, hedge_qty: -0.452, hedge_usdt: -31835.2, net_qty: 0.0001, net_usdt: 5.3, arb_hedge_net_qty: 0, arb_hedge_time_ms: Date.now() - 3200, arb_hedge_is_taker: false, arb_hedge_ret_qtl: 0.124, arb_hedge_offset: 1.2, is_total: false },
-                { asset: "ETH", open_qty: 8.31, open_usdt: 28154.0, hedge_qty: -8.31, hedge_usdt: -28148.5, net_qty: 0.0002, net_usdt: 5.5, arb_hedge_net_qty: 0, arb_hedge_time_ms: Date.now() - 8500, arb_hedge_is_taker: false, arb_hedge_ret_qtl: 0.087, arb_hedge_offset: 0.8, is_total: false },
-                { asset: "SOL", open_qty: 124.8, open_usdt: 22464.0, hedge_qty: -124.8, hedge_usdt: -22458.4, net_qty: 0.0, net_usdt: 5.6, arb_hedge_net_qty: 0, arb_hedge_time_ms: Date.now() - 1200, arb_hedge_is_taker: true, arb_hedge_ret_qtl: 0.213, arb_hedge_offset: 2.1, is_total: false },
-                { asset: "DOGE", open_qty: 18420.0, open_usdt: 5894.4, hedge_qty: -18420.0, hedge_usdt: -5891.2, net_qty: 0.0, net_usdt: 3.2, arb_hedge_net_qty: 0, arb_hedge_time_ms: Date.now() - 21000, arb_hedge_is_taker: false, arb_hedge_ret_qtl: -0.041, arb_hedge_offset: 0.5, is_total: false },
-                { asset: "AVAX", open_qty: 142.5, open_usdt: 4318.4, hedge_qty: -142.5, hedge_usdt: -4316.1, net_qty: 0.0, net_usdt: 2.3, arb_hedge_net_qty: 12.5, arb_hedge_time_ms: Date.now() - 450, arb_hedge_is_taker: true, arb_hedge_ret_qtl: 0.305, arb_hedge_offset: 3.4, is_total: false },
-              ],
-            },
-          };
-        }
-        function mockVizRisk() {
-          return {
-            type: "pre_trade_risk",
-            namespace: "okex_fr_trade",
-            channel: "risk_resample",
-            ts_ms: Date.now(),
-            entry: {
-              ts_ms: Date.now(),
-              total_equity: 1247563.42,
-              total_exposure: 92671.30,
-              total_position: 2854000.0,
-              spot_equity_usd: 92671.30,
-              borrowed_usd: 432184.55,
-              interest_usd: 18.42,
-              um_unrealized_usd: -245.18,
-              leverage: 2.288,
-              max_leverage: 4.0,
-              open_leg: { venue: "okex-margin", total_equity: 645312.10, total_position: 1342850.0, spot_equity_usd: 92671.30, borrowed_usd: 432184.55, interest_usd: 18.42, um_unrealized_usd: 0, leverage: 2.081 },
-              hedge_leg: { venue: "okex-futures", total_equity: 602251.32, total_position: 1511150.0, spot_equity_usd: 0, borrowed_usd: 0, interest_usd: 0, um_unrealized_usd: -245.18, leverage: 2.509 },
-            },
-          };
-        }
-        function mockFrSnapshot() {
-          const periods = ["1h", "2h", "4h", "6h", "8h"];
-          const sigs = [
-            { signal: "forward_open", tone: "fwd-open", expr: "fr_ma + cur_loan > 0.05%", op: ">", thr: 0.05 },
-            { signal: "forward_close", tone: "fwd-close", expr: "fr_ma + cur_loan < 0.01%", op: "<", thr: 0.01 },
-            { signal: "backward_open", tone: "bwd-open", expr: "fr + pred_loan < -0.04%", op: "<", thr: -0.04 },
-            { signal: "backward_close", tone: "bwd-close", expr: "fr + pred_loan > -0.005%", op: ">", thr: -0.005 },
-          ];
-          const thresholds = [];
-          for (const p of periods) for (const s of sigs) thresholds.push({ period: p, signal: s.signal, compare_op: s.op, expression: s.expr, threshold_pct: s.thr, tone: s.tone });
-
-          // 持仓资产 + 评估中 symbol
-          const heldSyms = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "AVAXUSDT"];
-          const evalSyms = ["LINKUSDT", "ARBUSDT", "OPUSDT", "MATICUSDT", "ATOMUSDT", "NEARUSDT", "FILUSDT", "INJUSDT", "TIAUSDT", "SUIUSDT", "APTUSDT", "RUNEUSDT", "FTMUSDT", "BLURUSDT", "PYTHUSDT", "JTOUSDT", "WLDUSDT", "ENAUSDT"];
-
-          function mkRow(sym, isHeld) {
-            const period = periods[Math.floor(Math.random() * periods.length)];
-            const latest = (Math.random() - 0.5) * 0.18;
-            const pred = latest + (Math.random() - 0.5) * 0.04;
-            const ma = latest * 0.7 + (Math.random() - 0.5) * 0.02;
-            const curLoan = 0.018 + Math.random() * 0.025;
-            const predLoan = curLoan * 0.92;
-            const frPlus = pred + predLoan;
-            const maPlus = ma + curLoan;
-            const rules = [
-              { key: "forward_open", label: "FwdO", expression: "ma+loan > 0.05%", threshold_pct: 0.05, value_pct: maPlus, hit: maPlus > 0.05, active: maPlus > 0.05, tone: "fwd-open", compare_op: ">" },
-              { key: "forward_close", label: "FwdC", expression: "ma+loan < 0.01%", threshold_pct: 0.01, value_pct: maPlus, hit: maPlus < 0.01, active: maPlus < 0.01 && isHeld, tone: "fwd-close", compare_op: "<" },
-              { key: "backward_open", label: "BwdO", expression: "fr+pred_loan < -0.04%", threshold_pct: -0.04, value_pct: frPlus, hit: frPlus < -0.04, active: frPlus < -0.04, tone: "bwd-open", compare_op: "<" },
-              { key: "backward_close", label: "BwdC", expression: "fr+pred_loan > -0.005%", threshold_pct: -0.005, value_pct: frPlus, hit: frPlus > -0.005, active: frPlus > -0.005 && isHeld, tone: "bwd-close", compare_op: ">" },
-            ];
-            const activeRule = rules.find((r) => r.active);
-            return {
-              symbol: sym,
-              period,
-              signal: activeRule ? activeRule.key : "neutral",
-              signal_tone: activeRule ? activeRule.tone : "",
-              lists: { in_dump: false, in_forward_trade: isHeld, in_backward_trade: false },
-              latest_fr_pct: latest, pred_fr_pct: pred, fr_ma_pct: ma,
-              pred_loan_pct: predLoan, cur_loan_pct: curLoan,
-              fr_plus_pred_loan_pct: frPlus, ma_plus_cur_loan_pct: maPlus,
-              rules,
-            };
-          }
-
-          const rows = [
-            ...heldSyms.map((s) => mkRow(s, true)),
-            ...evalSyms.map((s) => mkRow(s, false)),
-          ];
-          const summary = { total_symbols: rows.length, active_signals: 0, forward_open: 0, forward_close: 0, backward_open: 0, backward_close: 0, neutral: 0 };
-          for (const r of rows) {
-            if (r.signal === "neutral") summary.neutral++;
-            else { summary.active_signals++; summary[r.signal]++; }
-          }
-
-          return {
-            type: "fr_dashboard_snapshot",
-            ts_ms: Date.now(),
-            exchange: "okex",
-            factor_mode: "default",
-            symbol_namespace: "okex_fr_trade",
-            symbol_key_suffix: "okex",
-            open_venue: "okex-margin",
-            hedge_venue: "okex-futures",
-            summary,
-            thresholds,
-            rows,
-          };
-        }
 
         // ---- 状态指示 ----
         function setVizStatus(c, t) { el.vizIndicator.className = `indicator ${c}`; el.vizStatus.textContent = `viz: ${t}`; }
@@ -995,31 +873,10 @@
         }
 
         function startLive() {
-          el.demoBadge.textContent = "LIVE";
-          el.demoBadge.style.background = "var(--accent-green)";
           connectWs(state.viz, computeUrl("./ws", "ws"), onVizMessage, "viz");
           connectWs(state.fr, computeUrl("./fr_ws", "fr_ws"), onFrMessage, "fr");
         }
 
-        function startMock() {
-          setVizStatus("ok", "MOCK");
-          setFrStatus("ok", "MOCK");
-          // 初始数据
-          onVizMessage(mockVizExposure());
-          onVizMessage(mockVizRisk());
-          onFrMessage(mockFrSnapshot());
-          renderAll();
-          // 模拟周期更新
-          setInterval(() => {
-            onVizMessage(mockVizExposure());
-            onVizMessage(mockVizRisk());
-            renderAll();
-          }, 1500);
-          setInterval(() => {
-            onFrMessage(mockFrSnapshot());
-            renderAll();
-          }, 2500);
-        }
 
         // ---- Drawer 交互 ----
         function setupDrawer(drawerEl, toggleEl, key) {
@@ -1044,20 +901,12 @@
           renderAll();
         });
         el.reloadBtn.addEventListener("click", () => {
-          if (LIVE) {
-            if (state.viz.ws) try { state.viz.ws.close(); } catch (_) {}
-            if (state.fr.ws) try { state.fr.ws.close(); } catch (_) {}
-            startLive();
-          } else {
-            onVizMessage(mockVizExposure());
-            onVizMessage(mockVizRisk());
-            onFrMessage(mockFrSnapshot());
-            renderAll();
-          }
+          if (state.viz.ws) try { state.viz.ws.close(); } catch (_) {}
+          if (state.fr.ws) try { state.fr.ws.close(); } catch (_) {}
+          startLive();
         });
 
-        if (LIVE) startLive();
-        else startMock();
+        startLive();
         setInterval(renderMeta, 1000);
       })();
     </script>

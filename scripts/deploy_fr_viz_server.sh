@@ -17,6 +17,7 @@ Usage: scripts/deploy_fr_viz_server.sh --env-name <exchange>_fr_<suffix>
                                       [--nginx-mapping-file $HOME/nginx_locations.txt]
                                       [--apply-nginx]
                                       [--scripts-only|--bin-only]
+                                      [--no-dashboard]
 
 Notes:
   - exchange 可省略，会从 --env-name 推断（格式如 binance_fr_hf01）。
@@ -27,6 +28,8 @@ Notes:
   - --port 必填（不再按 exchange 自动补默认端口）。
   - Default nginx prefix follows deploy dir name: /fr/<env-name> (e.g. /fr/binance_fr_trade).
   - Updates nginx mapping file with static + ws + healthz entries (managed block).
+  - Also runs scripts/deploy_fr_signal_dashboard.sh (port=viz_port+1) to deploy
+    fr_signal_dashboard alongside viz_server. Pass --no-dashboard to skip.
 EOF
 }
 
@@ -56,6 +59,8 @@ NGINX_PREFIX=""
 NGINX_PORT="4191"
 NGINX_MAPPING_FILE=""
 APPLY_NGINX="0"
+
+DEPLOY_DASHBOARD=1
 
 normalize_exchange() {
   local ex="${1,,}"
@@ -260,6 +265,10 @@ while [[ $# -gt 0 ]]; do
       DO_SCRIPTS=0
       shift
       ;;
+    --no-dashboard)
+      DEPLOY_DASHBOARD=0
+      shift
+      ;;
     *)
       echo "[ERROR] Unknown arg: $1"
       usage
@@ -437,10 +446,34 @@ if [[ "$DO_SCRIPTS" -eq 1 ]]; then
   fi
 fi
 
+if [[ "$DEPLOY_DASHBOARD" -eq 1 ]]; then
+  DASHBOARD_SCRIPT="$ROOT_DIR/scripts/deploy_fr_signal_dashboard.sh"
+  if [[ ! -x "$DASHBOARD_SCRIPT" ]]; then
+    echo "[ERROR] companion deploy script not executable: $DASHBOARD_SCRIPT" >&2
+    exit 1
+  fi
+  DASHBOARD_ARGS=(
+    --env-name "$ENV_NAME"
+    --exchange "$EXCHANGE"
+    --viz-port "$PORT"
+    --bind "$BIND"
+    --ws-path "$WS_PATH"
+  )
+  if [[ "$DO_BUILD" -eq 0 ]]; then
+    DASHBOARD_ARGS+=( --scripts-only )
+  fi
+  echo ""
+  echo "[INFO] Deploying fr_signal_dashboard companion (port=$((PORT + 1)))"
+  "$DASHBOARD_SCRIPT" "${DASHBOARD_ARGS[@]}"
+fi
+
 echo ""
 echo "[INFO] viz_server deployed: $TARGET_DIR"
 echo "[INFO] Start: cd $TARGET_DIR && ./scripts/start_fr_viz_server.sh"
 echo "[INFO] Stop:  cd $TARGET_DIR && ./scripts/stop_fr_viz_server.sh"
+if [[ "$DEPLOY_DASHBOARD" -eq 1 ]]; then
+  echo "[INFO] fr_signal_dashboard: cd $TARGET_DIR && ./start_fr_signal_dashboard.sh / ./stop_fr_signal_dashboard.sh"
+fi
 
 if [[ "$DO_SCRIPTS" -eq 1 ]]; then
   echo "[INFO] nginx mapping updated: ${NGINX_MAPPING_FILE}"
