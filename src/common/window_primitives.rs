@@ -2,16 +2,25 @@
 //!
 //! All helpers here run on lightweight native loops and avoid DataFrame construction.
 
+// SeriesView 只暴露 value_at(idx),没有 iter,index loop 是 trait 形态决定的。
+#![allow(clippy::needless_range_loop)]
+
 use crate::common::rolling_welford::{RollingWelford, WelfordCovariance};
 use anyhow::Result;
 
 pub trait F64SeriesView {
     fn len(&self) -> usize;
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
     fn value_at(&self, idx: usize) -> f64;
 }
 
 pub trait OptF64SeriesView {
     fn len(&self) -> usize;
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
     fn value_at(&self, idx: usize) -> Option<f64>;
 }
 

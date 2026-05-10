@@ -820,10 +820,7 @@ impl MmDecisionState {
         )
     }
 
-    pub(crate) fn update_open_offset_lower_overrides(
-        &mut self,
-        overrides: HashMap<String, f64>,
-    ) {
+    pub(crate) fn update_open_offset_lower_overrides(&mut self, overrides: HashMap<String, f64>) {
         self.open_offset_lower_overrides = overrides;
         debug!(
             "MmDecision: open_offset_lower_overrides updated symbols={}",

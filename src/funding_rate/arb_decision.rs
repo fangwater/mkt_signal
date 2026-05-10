@@ -3629,9 +3629,7 @@ impl ArbDecisionState {
         hedge_symbol: &str,
         hedge_venue: TradingVenue,
     ) -> Option<ModelOutputScoreLookupResult> {
-        let Some(service_name) = self.return_model_service.clone() else {
-            return None;
-        };
+        let service_name = self.return_model_service.clone()?;
         Some(
             self.model_output_hub
                 .as_mut()

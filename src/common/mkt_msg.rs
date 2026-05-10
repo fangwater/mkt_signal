@@ -380,7 +380,6 @@ impl AskBidSpreadMsg {
 }
 
 /// 对永续合约来说, 币安的预估结算没有意义，不需要考虑Estimated Settle Price字段
-
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Level {

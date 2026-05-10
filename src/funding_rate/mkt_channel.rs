@@ -110,10 +110,7 @@ impl MktChannel {
     ///
     /// open/hedge 由调用方传入；每个 venue 都订阅 ask_bid_spread。
     /// 若某个 venue 是 futures，则额外订阅 funding/mark/index price 衍生品频道。
-    pub fn init_singleton(
-        open_venue: TradingVenue,
-        hedge_venue: TradingVenue,
-    ) -> Result<()> {
+    pub fn init_singleton(open_venue: TradingVenue, hedge_venue: TradingVenue) -> Result<()> {
         Self::init_singleton_with_mode(open_venue, hedge_venue, true)
     }
 
@@ -659,4 +656,3 @@ impl MktChannel {
         });
     }
 }
-

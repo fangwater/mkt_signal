@@ -916,10 +916,7 @@ impl Config {
         let label = format!("get_symbols[{:?}]", venue);
         match Self::with_retry(&label, || Self::fetch_symbols_uncached(venue)).await {
             Ok(symbols) if !symbols.is_empty() => {
-                symbols_cache()
-                    .lock()
-                    .await
-                    .insert(venue, symbols.clone());
+                symbols_cache().lock().await.insert(venue, symbols.clone());
                 Ok(symbols)
             }
             Ok(empty) => {

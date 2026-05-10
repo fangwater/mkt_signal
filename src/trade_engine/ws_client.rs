@@ -1115,10 +1115,11 @@ impl TradeWsClient {
             .await
             .with_context(|| format!("resolve {}:{}", host, port))?;
         let target = candidates
-            .find(|addr| match (addr, local_ip) {
-                (SocketAddr::V4(_), IpAddr::V4(_)) => true,
-                (SocketAddr::V6(_), IpAddr::V6(_)) => true,
-                _ => false,
+            .find(|addr| {
+                matches!(
+                    (addr, local_ip),
+                    (SocketAddr::V4(_), IpAddr::V4(_)) | (SocketAddr::V6(_), IpAddr::V6(_))
+                )
             })
             .ok_or_else(|| anyhow!("no compatible address family for {}", local_ip))?;
 

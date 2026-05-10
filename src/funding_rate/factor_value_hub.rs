@@ -281,9 +281,7 @@ impl FactorValueHub {
             .with_context(|| format!("failed to open factor subscriber service={service_name}"))?;
         let service_max_buffer = service.static_config().subscriber_max_buffer_size();
         let service_history = service.static_config().history_size();
-        let requested_buffer = service_max_buffer
-            .min(FACTOR_VALUE_SUBSCRIBER_BUFFER_SIZE)
-            .max(1);
+        let requested_buffer = service_max_buffer.clamp(1, FACTOR_VALUE_SUBSCRIBER_BUFFER_SIZE);
 
         info!(
             "FactorValueHub: subscribed factor stream service={} subscriber_buffer_size={} service_subscriber_max_buffer_size={} service_history_size={}",

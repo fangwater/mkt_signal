@@ -523,9 +523,7 @@ impl OrderManager {
         log_owner: &str,
         strategy_id: i32,
     ) -> Option<OrderUpdateSkipReason> {
-        let Some(incoming_exec_status) = Self::map_update_status(incoming_status) else {
-            return None;
-        };
+        let incoming_exec_status = Self::map_update_status(incoming_status)?;
 
         if order.status == incoming_exec_status {
             Self::validate_duplicate_order_update_fields(
@@ -721,7 +719,7 @@ impl OrderManager {
         id
     }
 
-    pub fn get_symbol_pending_limit_order_count(&self, symbol: &String) -> i32 {
+    pub fn get_symbol_pending_limit_order_count(&self, symbol: &str) -> i32 {
         let symbol = normalize_symbol_for_internal(symbol);
         let actual = self
             .orders

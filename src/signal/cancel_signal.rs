@@ -157,6 +157,12 @@ fn read_leg(
     ))
 }
 
+impl Default for ArbCancelCtx {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ArbCancelCtx {
     /// Create new arbitrage cancel context
     pub fn new() -> Self {
@@ -228,6 +234,12 @@ impl ArbCancelCtx {
 
     pub fn set_target_strategy(&mut self, strategy_id: i32) {
         self.strategy_id = strategy_id.max(0);
+    }
+}
+
+impl Default for MmCancelCtx {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

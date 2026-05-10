@@ -1,3 +1,6 @@
+// 中英混排的 doc 注释会被 rustdoc 渲染正确,不必逐处调整缩进
+#![allow(clippy::doc_lazy_continuation)]
+
 // Normal module declarations
 pub mod account;
 pub mod bridge;

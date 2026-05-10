@@ -46,6 +46,12 @@ impl RingBuffer {
         total.min(self.capacity)
     }
 
+    /// 是否为空。
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// 获取最新值；若缓冲为空则返回 None。
     #[inline]
     pub fn last(&self) -> Option<f32> {

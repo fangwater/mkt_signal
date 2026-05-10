@@ -1,3 +1,6 @@
+// 多个因子需要同步索引访问 SeriesView + 普通 Vec,index loop 是必要形态。
+#![allow(clippy::needless_range_loop)]
+
 use std::f64::consts::PI;
 
 use factor_engine::math::{

@@ -119,13 +119,8 @@ pub fn build_arb_open_quote_plan(
     let raw_start = vol_band_scale[0] * volatility;
     let end = vol_band_scale[1] * volatility;
     let start = raw_start.max(lower).min(end);
-    let specs = build_arb_level_specs_from_band(
-        side,
-        inner_price,
-        start,
-        end,
-        orders_per_round as usize,
-    );
+    let specs =
+        build_arb_level_specs_from_band(side, inner_price, start, end, orders_per_round as usize);
     if specs.is_empty() {
         return Err(format!(
             "empty arb level specs symbol={} side={:?} inner={:.8} volatility={:.8} vol_band_scale={:?} lower={} levels={}",

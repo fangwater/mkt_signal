@@ -3,6 +3,8 @@
 //! 订阅 trade_flow_feature（包含 trade + depth）并触发融合因子计算。
 //! 当前先落地 factor_118，后续在同一框架上扩展全部因子。
 
+#![allow(clippy::needless_range_loop)]
+
 use anyhow::{bail, Context, Result};
 use factor_engine::baseline as baseline_engine;
 use factor_engine::math::pct_change_last;

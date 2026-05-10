@@ -55,6 +55,10 @@ impl OrphanOrderTracker {
         self.order_ids.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.order_ids.is_empty()
+    }
+
     pub fn contains(&self, client_order_id: i64) -> bool {
         self.order_ids.contains(&client_order_id)
     }

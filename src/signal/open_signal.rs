@@ -143,6 +143,12 @@ fn read_leg(
     ))
 }
 
+impl Default for ArbOpenCtx {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ArbOpenCtx {
     /// Create new arbitrage open context
     pub fn new() -> Self {
@@ -253,6 +259,12 @@ impl ArbOpenCtx {
 
     pub fn set_amount_from_value_floor(&mut self, amount: f64) {
         self.amount_qv.set_count_floor_from_val(amount);
+    }
+}
+
+impl Default for MmOpenCtx {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

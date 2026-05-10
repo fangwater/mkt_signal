@@ -119,6 +119,12 @@ pub struct ArbHedgeCtx {
     pub from_key: Vec<u8>,
 }
 
+impl Default for MmHedgeCtx {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MmHedgeCtx {
     /// Create new market maker hedge context
     pub fn new() -> Self {

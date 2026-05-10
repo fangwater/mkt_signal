@@ -396,8 +396,10 @@ pub async fn load_config_from_redis(
     client: &mut RedisClient,
     key: &str,
 ) -> Result<(RollingConfig, HashMap<String, String>)> {
-    let mut cfg = RollingConfig::default();
-    cfg.params_hash_key = key.to_string();
+    let mut cfg = RollingConfig {
+        params_hash_key: key.to_string(),
+        ..RollingConfig::default()
+    };
     match client.hgetall_map(key).await {
         Ok(map) => {
             if map.is_empty() {

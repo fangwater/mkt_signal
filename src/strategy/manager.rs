@@ -236,6 +236,12 @@ pub struct StrategyManager {
     arb_open_strategy_index: HashMap<i32, OpenPriceMapEntry>,
 }
 
+impl Default for StrategyManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StrategyManager {
     /// 创建空的策略管理器
     pub fn new() -> Self {
@@ -640,9 +646,7 @@ impl StrategyManager {
     /// 查询指定 symbol 的 MM 对冲策略 id（symbol 不区分大小写）
     pub fn find_mm_hedge_id(&self, symbol: &str) -> Option<i32> {
         let symbol_upper = normalize_symbol_for_internal(symbol);
-        let Some(ids) = self.symbol_index.get(&symbol_upper) else {
-            return None;
-        };
+        let ids = self.symbol_index.get(&symbol_upper)?;
         for id in ids {
             if let Some(strategy) = self.strategies.get(id) {
                 if strategy.as_any().is::<MarketMakerHedgeStrategy>() {
@@ -700,9 +704,7 @@ impl StrategyManager {
     /// 查询指定 symbol 的 Arb 对冲状态策略 id（symbol 不区分大小写）
     pub fn find_arb_hedge_id(&self, symbol: &str) -> Option<i32> {
         let symbol_upper = normalize_symbol_for_internal(symbol);
-        let Some(ids) = self.symbol_index.get(&symbol_upper) else {
-            return None;
-        };
+        let ids = self.symbol_index.get(&symbol_upper)?;
         for id in ids {
             if let Some(strategy) = self.strategies.get(id) {
                 if strategy.as_any().is::<ArbHedgeStrategy>() {

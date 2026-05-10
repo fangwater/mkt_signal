@@ -595,7 +595,7 @@ impl RateFetcher {
         symbol: &str,
         limit: usize,
     ) -> Result<Vec<BinanceFundingHistItem>> {
-        let limit_s = limit.max(1).min(1000).to_string();
+        let limit_s = limit.clamp(1, 1000).to_string();
         let resp = client
             .get(BINANCE_FUNDING_RATE_API)
             .query(&[("symbol", symbol), ("limit", &limit_s)])
@@ -992,7 +992,7 @@ impl RateFetcher {
         symbol: &str,
         limit: usize,
     ) -> Result<Vec<f64>> {
-        let limit_s = limit.max(1).min(100).to_string();
+        let limit_s = limit.clamp(1, 100).to_string();
         let resp = client
             .get(OKEX_FUNDING_RATE_HISTORY_API)
             .query(&[("instId", symbol), ("limit", &limit_s)])
@@ -1227,7 +1227,7 @@ impl RateFetcher {
         symbol: &str,
         limit: usize,
     ) -> Result<(Vec<f64>, FundingRatePeriod)> {
-        let limit_s = limit.max(1).min(100).to_string();
+        let limit_s = limit.clamp(1, 100).to_string();
         let resp = client
             .get(BITGET_FUNDING_RATE_HISTORY_API)
             .query(&[
@@ -1408,7 +1408,7 @@ impl RateFetcher {
         symbol: &str,
         limit: usize,
     ) -> Result<(Vec<f64>, FundingRatePeriod)> {
-        let limit_s = limit.max(1).min(200).to_string();
+        let limit_s = limit.clamp(1, 200).to_string();
         let resp = client
             .get(BYBIT_FUNDING_RATE_HISTORY_API)
             .query(&[
@@ -1841,7 +1841,7 @@ impl RateFetcher {
         symbol: &str,
         limit: usize,
     ) -> Result<(Vec<f64>, FundingRatePeriod)> {
-        let limit_s = limit.max(1).min(1000).to_string();
+        let limit_s = limit.clamp(1, 1000).to_string();
         let url = format!("{}{}", GATE_API_BASE_URL, GATE_FUNDING_RATE_HISTORY_PATH);
         let resp = client
             .get(&url)
@@ -2234,6 +2234,7 @@ impl RateFetcher {
         Some((period, period.convert_daily_rate(daily)))
     }
 
+    #[allow(clippy::absurd_extreme_comparisons)]
     fn calculate_predicted_rate(rates: &[f64]) -> Option<f64> {
         let n = rates.len();
         if n == 0 || n - 1 < PREDICT_NUM {

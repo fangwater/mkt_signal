@@ -40,12 +40,7 @@ fn build_level_specs(
     sell_vol_scale: [f64; 2],
     open_offset_lower: f64,
 ) -> Vec<QuotePlanLevelSpec> {
-    fn build_side_offsets(
-        vol: f64,
-        levels: usize,
-        scale: [f64; 2],
-        lower: f64,
-    ) -> Vec<f64> {
+    fn build_side_offsets(vol: f64, levels: usize, scale: [f64; 2], lower: f64) -> Vec<f64> {
         if levels == 0 {
             return Vec::new();
         }

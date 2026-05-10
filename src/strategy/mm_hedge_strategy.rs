@@ -550,7 +550,7 @@ impl MarketMakerHedgeStrategy {
         let reply_is_taker = ctx.use_taker;
         self.last_hedge_is_taker = Some(reply_is_taker);
         if reply_is_taker {
-            if self.order_seq >= u32::MAX {
+            if self.order_seq == u32::MAX {
                 self.order_seq = 1;
             } else {
                 self.order_seq += 1;
@@ -596,7 +596,7 @@ impl MarketMakerHedgeStrategy {
                 qty,
             } in split.orders
             {
-                if self.order_seq >= u32::MAX {
+                if self.order_seq == u32::MAX {
                     self.order_seq = 1;
                 } else {
                     self.order_seq += 1;

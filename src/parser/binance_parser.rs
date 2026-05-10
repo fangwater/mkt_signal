@@ -36,7 +36,7 @@ impl Parser for BinanceSignalParser {
                     let signal_bytes = signal_msg.to_bytes();
 
                     // Send signal
-                    if let Err(_) = tx.send(signal_bytes) {
+                    if tx.send(signal_bytes).is_err() {
                         return 0;
                     }
 

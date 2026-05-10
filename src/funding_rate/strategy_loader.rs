@@ -858,11 +858,8 @@ impl StrategyParams {
                 mm_open_offset_lower_override_key_for_env(mm_env_name.as_deref(), hedge_venue);
             match client.get_string(&override_key).await? {
                 Some(raw) => {
-                    let parsed = parse_arb_open_offset_lower_overrides(
-                        &raw,
-                        open_venue,
-                        &override_key,
-                    );
+                    let parsed =
+                        parse_arb_open_offset_lower_overrides(&raw, open_venue, &override_key);
                     info!(
                         "MM open_offset_lower overrides loaded key='{}' symbols={}",
                         override_key,
@@ -1003,11 +1000,8 @@ impl StrategyParams {
             ) {
                 Some(override_key) => match client.get_string(&override_key).await? {
                     Some(raw) => {
-                        let parsed = parse_arb_open_offset_lower_overrides(
-                            &raw,
-                            open_venue,
-                            &override_key,
-                        );
+                        let parsed =
+                            parse_arb_open_offset_lower_overrides(&raw, open_venue, &override_key);
                         info!(
                             "Arb open_offset_lower overrides loaded ns={} key='{}' symbols={}",
                             ns,
@@ -1719,9 +1713,8 @@ impl StrategyParams {
                 .parse_required_vol_scale_range(&self.open_sell_vol_scale, "open_sell_vol_scale");
             _decision.update_order_amount(self.order_amount);
             _decision.update_order_amount_overrides(self.mm_amount_u_overrides.clone());
-            _decision.update_open_offset_lower_overrides(
-                self.mm_open_offset_lower_overrides.clone(),
-            );
+            _decision
+                .update_open_offset_lower_overrides(self.mm_open_offset_lower_overrides.clone());
             _decision.update_clock_timing_params(
                 self.order_interval_ms,
                 self.next_query_delay_ms,

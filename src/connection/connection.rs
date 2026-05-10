@@ -149,10 +149,11 @@ impl WsConnector {
             .await
             .with_context(|| format!("Failed to resolve {}:{}", host, port))?;
         let target = addrs
-            .find(|sa| match (sa, local_addr) {
-                (SocketAddr::V4(_), IpAddr::V4(_)) => true,
-                (SocketAddr::V6(_), IpAddr::V6(_)) => true,
-                _ => false,
+            .find(|sa| {
+                matches!(
+                    (sa, local_addr),
+                    (SocketAddr::V4(_), IpAddr::V4(_)) | (SocketAddr::V6(_), IpAddr::V6(_))
+                )
             })
             .ok_or_else(|| anyhow::anyhow!("No matching address family for host"))?;
 
@@ -243,10 +244,11 @@ impl WsConnector {
             .await
             .with_context(|| format!("Failed to resolve {}:{}", host, port))?;
         let target = addrs
-            .find(|sa| match (sa, local_addr) {
-                (SocketAddr::V4(_), IpAddr::V4(_)) => true,
-                (SocketAddr::V6(_), IpAddr::V6(_)) => true,
-                _ => false,
+            .find(|sa| {
+                matches!(
+                    (sa, local_addr),
+                    (SocketAddr::V4(_), IpAddr::V4(_)) | (SocketAddr::V6(_), IpAddr::V6(_))
+                )
             })
             .ok_or_else(|| anyhow::anyhow!("No matching address family for host"))?;
 
@@ -448,10 +450,11 @@ impl WsConnector {
             .await
             .with_context(|| format!("Failed to resolve {}:{}", host, port))?;
         let target = addrs
-            .find(|sa| match (sa, local_addr) {
-                (SocketAddr::V4(_), IpAddr::V4(_)) => true,
-                (SocketAddr::V6(_), IpAddr::V6(_)) => true,
-                _ => false,
+            .find(|sa| {
+                matches!(
+                    (sa, local_addr),
+                    (SocketAddr::V4(_), IpAddr::V4(_)) | (SocketAddr::V6(_), IpAddr::V6(_))
+                )
             })
             .ok_or_else(|| anyhow::anyhow!("No matching address family for host"))?;
 
