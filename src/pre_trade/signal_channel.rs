@@ -27,12 +27,13 @@ use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info, warn};
-use std::cell::OnceCell;
-use std::collections::BTreeMap;
+use std::cell::{OnceCell, RefCell};
+use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
 thread_local! {
     static SIGNAL_CHANNEL: OnceCell<SignalChannel> = const { OnceCell::new() };
+    static SIGNAL_COUNTS: RefCell<HashMap<String, u64>> = RefCell::new(HashMap::new());
 }
 
 /// 默认信号频道名称（与 trade_signal 的发布频道一致）
@@ -43,6 +44,17 @@ pub const DEFAULT_BACKWARD_CHANNEL: &str = "trade_query";
 
 fn should_drop_startup_buffered_signal(signal: &TradeSignal, listener_start_us: i64) -> bool {
     signal.generation_time > 0 && signal.generation_time < listener_start_us
+}
+
+pub fn take_signal_counts() -> HashMap<String, u64> {
+    SIGNAL_COUNTS.with(|counts| std::mem::take(&mut *counts.borrow_mut()))
+}
+
+fn record_signal_count(signal_type: &SignalType) {
+    SIGNAL_COUNTS.with(|counts| {
+        let mut counts = counts.borrow_mut();
+        *counts.entry(signal_type.as_str().to_string()).or_insert(0) += 1;
+    });
 }
 
 /// 信号频道 - 负责信号进程和 pre-trade 之间的双向通讯
@@ -256,6 +268,7 @@ impl SignalChannel {
                                 );
                                 dropped_startup_buffered = 0;
                             }
+                            record_signal_count(&signal.signal_type);
                             handle_trade_signal(signal);
                         }
                         Err(err) => warn!(
@@ -444,96 +457,23 @@ fn handle_trade_signal(signal: TradeSignal) {
                         return;
                     }
 
+                    if close_ctx.amount_value() <= 1e-12 || close_ctx.amount_count() <= 0 {
+                        return;
+                    }
+
                     let opening_pos =
                         MonitorChannel::instance().get_position_qty(&opening_symbol, opening_venue);
                     let hedging_pos =
                         MonitorChannel::instance().get_position_qty(&hedging_symbol, hedging_venue);
-
-                    let signal_base_qty = MonitorChannel::instance()
-                        .qty_to_base(opening_venue, &opening_symbol, close_ctx.amount_value())
-                        .abs();
-                    if signal_base_qty <= 1e-12 {
-                        return;
-                    }
-
-                    // opening leg 小于当前 close signal 的单手 base qty 时，不再创建
-                    // open-leg close 单；如果 hedge leg 仍有对应方向仓位，则把本次
-                    // close signal 转成一笔 hedge-only pending。
-                    let hedge_reduce_capacity = match close_side {
-                        Side::Sell => (-hedging_pos).max(0.0),
-                        Side::Buy => hedging_pos.max(0.0),
-                    };
                     let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-                    let has_active_close = {
-                        let mgr = strategy_mgr.borrow();
-                        mgr.ids_for_symbol(&opening_symbol)
-                            .map(|ids| {
-                                ids.iter().any(|id| {
-                                    mgr.get(*id)
-                                        .and_then(|strategy| {
-                                            strategy.as_any().downcast_ref::<ArbCloseStrategy>()
-                                        })
-                                        .is_some_and(|strategy| {
-                                            strategy.close_side() == Some(close_side)
-                                                && strategy.is_active()
-                                        })
-                                })
-                            })
-                            .unwrap_or(false)
-                    };
-                    if has_active_close {
-                        return;
-                    }
 
-                    if opening_pos.abs() + 1e-12 < signal_base_qty {
-                        if hedge_reduce_capacity <= 1e-12 {
-                            return;
-                        }
-                        let target_base_qty = signal_base_qty.min(hedge_reduce_capacity);
-                        if target_base_qty <= 1e-12 {
-                            return;
-                        }
-                        let hedge_strategy_id = {
-                            strategy_mgr
-                                .borrow_mut()
-                                .ensure_arb_hedge_strategy(&opening_symbol)
-                        };
-                        let recorded = strategy_mgr.borrow_mut().record_hedge_only_close_pending(
-                            &opening_symbol,
-                            close_side,
-                            target_base_qty,
-                            get_timestamp_us(),
-                            close_ctx.price_value(),
-                        );
-                        if recorded {
-                            info!(
-                                "🔔 ArbClose hedge-only pending: opening={} {:?} hedging={} {:?} strategy_id={} side={:?} open_pos={:.8} hedge_pos={:.8} signal_base_qty={:.8} target_base_qty={:.8} price={:.6}",
-                                opening_symbol,
-                                opening_venue,
-                                hedging_symbol,
-                                hedging_venue,
-                                hedge_strategy_id,
-                                close_side,
-                                opening_pos,
-                                hedging_pos,
-                                signal_base_qty,
-                                target_base_qty,
-                                close_ctx.price_value()
-                            );
-                        }
-                        return;
-                    }
-
-                    // 检查opening leg方向是否匹配
-                    // 如果close是Sell，持仓应该>0（多头）；如果close是Buy，持仓应该<0（空头）
                     let opening_direction_match = match close_side {
                         Side::Sell => opening_pos > 0.0,
                         Side::Buy => opening_pos < 0.0,
                     };
 
                     if !opening_direction_match {
-                        // ArbClose 可能在仓位已经被其他流程平掉后触发，或 close
-                        // side 与当前仓位方向不一致；按过期/无效信号静默忽略。
+                        // 平到 opening leg 净仓反向为止；反向后按过期/无效 close 信号忽略。
                         return;
                     }
 

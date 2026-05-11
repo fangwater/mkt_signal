@@ -9,6 +9,7 @@ use crate::pre_trade::basic_um_manager::BasicUmManager;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::price_table::PriceEntry;
+use crate::pre_trade::signal_channel::take_signal_counts;
 use crate::pre_trade::symbol_mapper::create_symbol_mapper;
 use crate::pre_trade::symbol_util::extract_base_asset;
 use crate::signal::common::TradingVenue;
@@ -516,6 +517,7 @@ impl ResampleChannel {
         let mon = MonitorChannel::instance();
         let price_snapshot = mon.price_table().borrow().snapshot();
         let ts_ms = get_timestamp_us() / 1000;
+        let signal_counts = take_signal_counts();
         let exposure_price_mapper = create_symbol_mapper(mon.mark_price_exchange());
 
         let (exposures, total_equity, total_abs_exposure, total_position, um_unrealized_usd) =
@@ -772,9 +774,9 @@ impl ResampleChannel {
             };
             // 这里显式保留“纯现货权益”字段，便于与 total_equity(eq) 对照排查。
             let spot_equity_usd = total_equity - um_unrealized_usd;
-
             let entry = PreTradeRiskResampleEntry {
                 ts_ms,
+                signal_counts,
                 total_equity,
                 total_exposure: total_abs_exposure,
                 total_position,

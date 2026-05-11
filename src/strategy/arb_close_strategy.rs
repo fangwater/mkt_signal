@@ -18,7 +18,7 @@ use std::any::Any;
 
 const ARB_CLOSE_QTY_EPS: f64 = 1e-12;
 
-/// Arb 强平开仓腿：复用 common open 下单生命周期，按信号数量逐单 reduce-only close。
+/// Arb close 复用 common open 下单生命周期，按信号数量逐单执行。
 pub struct ArbCloseStrategy {
     open_state: OpenStrategyState,
 }
@@ -111,7 +111,7 @@ impl ArbCloseStrategy {
             from_key: ctx.from_key,
             price_qv: ctx.price_qv,
             price_offset: ctx.price_offset,
-            reduce_only: true,
+            reduce_only: false,
             close_ts: 0,
             mkt_ts,
         });
@@ -152,19 +152,16 @@ impl OpenStrategyCommon for ArbCloseStrategy {
         &mut self.open_state
     }
 
-    // close 单是镜像 ArbHedge 的 reduce-only 单，不交给 orphan：orphan 会把 close 单的
-    // terminal 当普通 open 释放 pending，导致 ArbHedge 重复对冲。这里 query 发不出去时
-    // 只 warn，不清 watchdog —— 下一轮 period clock 会重试，交易所终态最终也会通过
-    // apply_order_update_common 闭环。极端的 publisher + 交易所同时长时间故障需要运维处理。
     fn handoff_open_order_after_query_failure(
         &mut self,
         client_order_id: i64,
         marker: &'static str,
     ) {
         warn!(
-            "ArbCloseStrategy: strategy_id={} order query {} failed, keep force-close order local: client_order_id={}",
+            "ArbCloseStrategy: strategy_id={} order query {} failed, handoff to arb orphan: client_order_id={}",
             self.open_state.strategy_id, marker, client_order_id
         );
+        self.handoff_open_order_to_orphan(client_order_id, marker);
     }
 
     fn orphan_strategy_role(&self) -> OrphanStrategyRole {
@@ -177,10 +174,6 @@ impl OpenStrategyCommon for ArbCloseStrategy {
 
     fn open_order_action_log_name(&self) -> &'static str {
         "arb close"
-    }
-
-    fn record_terminal_as_arb_close(&self) -> bool {
-        true
     }
 
     fn resolve_open_qty_multiplier(

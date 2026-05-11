@@ -1,5 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FundingRateArbResampleEntry {
@@ -87,6 +88,7 @@ pub struct PreTradeExposureResampleEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreTradeRiskResampleEntry {
     pub ts_ms: i64,
+    pub signal_counts: HashMap<String, u64>,
     pub total_equity: f64,
     pub total_exposure: f64,
     pub total_position: f64,

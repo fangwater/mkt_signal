@@ -415,7 +415,7 @@ pub trait OpenStrategyCommon {
             }
         } else {
             info!(
-                "{}: strategy_id={} skip 单品种敞口风控 for reduce-only close symbol={} side={:?} qty={:.8}",
+                "{}: strategy_id={} skip 单品种敞口风控 for arb close symbol={} side={:?} qty={:.8}",
                 self.strategy_name(),
                 self.strategy_id(),
                 symbol,
@@ -436,7 +436,7 @@ pub trait OpenStrategyCommon {
             }
         } else {
             info!(
-                "{}: strategy_id={} skip 总敞口风控 for reduce-only close symbol={} side={:?} qty={:.8}",
+                "{}: strategy_id={} skip 总敞口风控 for arb close symbol={} side={:?} qty={:.8}",
                 self.strategy_name(),
                 self.strategy_id(),
                 symbol,

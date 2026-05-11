@@ -162,6 +162,7 @@ fn spawn_pre_trade_risk_listener(
                 "ts_ms": now_ts_ms,
                 "entry": {
                     "ts_ms": entry.ts_ms,
+                    "signal_counts": entry.signal_counts,
                     "total_equity": entry.total_equity,
                     "total_exposure": entry.total_exposure,
                     "total_position": entry.total_position,

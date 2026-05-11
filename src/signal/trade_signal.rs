@@ -14,6 +14,20 @@ pub enum SignalType {
 }
 
 impl SignalType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SignalType::ArbOpen => "ArbOpen",
+            SignalType::ArbCancel => "ArbCancel",
+            SignalType::ArbClose => "ArbClose",
+            SignalType::MMOpen => "MMOpen",
+            SignalType::MMCancel => "MMCancel",
+            SignalType::MMHedge => "MMHedge",
+            SignalType::MMCancelTrigger => "MMCancelTrigger",
+            SignalType::ArbCancelTrigger => "ArbCancelTrigger",
+            SignalType::ArbHedge => "ArbHedge",
+        }
+    }
+
     /// 从u32转换为SignalType
     pub fn from_u32(value: u32) -> Option<Self> {
         match value {
