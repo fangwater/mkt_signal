@@ -170,6 +170,16 @@ pub trait OrderTerminalRecorder {
         )
     }
 
+    fn record_hedge_only_close_pending(
+        &mut self,
+        _terminal_ts: i64,
+        _close_side: Side,
+        _target_base_qty: f64,
+        _price: f64,
+    ) -> bool {
+        false
+    }
+
     fn record_hedge_order_terminal(
         &mut self,
         terminal_ts: i64,
@@ -848,6 +858,26 @@ impl StrategyManager {
             close_ts,
             open_client_order_id,
         )
+    }
+
+    pub fn record_hedge_only_close_pending(
+        &mut self,
+        symbol: &str,
+        close_side: Side,
+        target_base_qty: f64,
+        terminal_ts: i64,
+        price: f64,
+    ) -> bool {
+        let Some(id) = self.find_order_terminal_recorder_id(symbol) else {
+            return false;
+        };
+        let Some(strategy) = self.strategies.get_mut(&id) else {
+            return false;
+        };
+        let Some(recorder) = strategy.order_terminal_recorder_mut() else {
+            return false;
+        };
+        recorder.record_hedge_only_close_pending(terminal_ts, close_side, target_base_qty, price)
     }
 
     pub fn record_hedge_order_terminal(

@@ -449,13 +449,78 @@ fn handle_trade_signal(signal: TradeSignal) {
                     let hedging_pos =
                         MonitorChannel::instance().get_position_qty(&hedging_symbol, hedging_venue);
 
-                    // opening leg 已经接近 0，说明信号很可能过期/重复（静默跳过，避免刷屏）
-                    const OPENING_FLAT_THRESHOLD: f64 = 1e-5;
-                    let is_opening_balance_venue = matches!(
-                        opening_venue,
-                        TradingVenue::BinanceMargin | TradingVenue::OkexMargin
-                    );
-                    if is_opening_balance_venue && opening_pos.abs() <= OPENING_FLAT_THRESHOLD {
+                    let signal_base_qty = MonitorChannel::instance()
+                        .qty_to_base(opening_venue, &opening_symbol, close_ctx.amount_value())
+                        .abs();
+                    if signal_base_qty <= 1e-12 {
+                        return;
+                    }
+
+                    // opening leg 小于当前 close signal 的单手 base qty 时，不再创建
+                    // open-leg close 单；如果 hedge leg 仍有对应方向仓位，则把本次
+                    // close signal 转成一笔 hedge-only pending。
+                    let hedge_reduce_capacity = match close_side {
+                        Side::Sell => (-hedging_pos).max(0.0),
+                        Side::Buy => hedging_pos.max(0.0),
+                    };
+                    let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+                    let has_active_close = {
+                        let mgr = strategy_mgr.borrow();
+                        mgr.ids_for_symbol(&opening_symbol)
+                            .map(|ids| {
+                                ids.iter().any(|id| {
+                                    mgr.get(*id)
+                                        .and_then(|strategy| {
+                                            strategy.as_any().downcast_ref::<ArbCloseStrategy>()
+                                        })
+                                        .is_some_and(|strategy| {
+                                            strategy.close_side() == Some(close_side)
+                                                && strategy.is_active()
+                                        })
+                                })
+                            })
+                            .unwrap_or(false)
+                    };
+                    if has_active_close {
+                        return;
+                    }
+
+                    if opening_pos.abs() + 1e-12 < signal_base_qty {
+                        if hedge_reduce_capacity <= 1e-12 {
+                            return;
+                        }
+                        let target_base_qty = signal_base_qty.min(hedge_reduce_capacity);
+                        if target_base_qty <= 1e-12 {
+                            return;
+                        }
+                        let hedge_strategy_id = {
+                            strategy_mgr
+                                .borrow_mut()
+                                .ensure_arb_hedge_strategy(&opening_symbol)
+                        };
+                        let recorded = strategy_mgr.borrow_mut().record_hedge_only_close_pending(
+                            &opening_symbol,
+                            close_side,
+                            target_base_qty,
+                            get_timestamp_us(),
+                            close_ctx.price_value(),
+                        );
+                        if recorded {
+                            info!(
+                                "🔔 ArbClose hedge-only pending: opening={} {:?} hedging={} {:?} strategy_id={} side={:?} open_pos={:.8} hedge_pos={:.8} signal_base_qty={:.8} target_base_qty={:.8} price={:.6}",
+                                opening_symbol,
+                                opening_venue,
+                                hedging_symbol,
+                                hedging_venue,
+                                hedge_strategy_id,
+                                close_side,
+                                opening_pos,
+                                hedging_pos,
+                                signal_base_qty,
+                                target_base_qty,
+                                close_ctx.price_value()
+                            );
+                        }
                         return;
                     }
 
@@ -479,31 +544,10 @@ fn handle_trade_signal(signal: TradeSignal) {
                         close_ctx.to_bytes(),
                     );
 
-                    let strategy_mgr = MonitorChannel::instance().strategy_mgr();
                     {
                         let _ = strategy_mgr
                             .borrow_mut()
                             .ensure_arb_hedge_strategy(&opening_symbol);
-                    }
-                    let has_active_close = {
-                        let mgr = strategy_mgr.borrow();
-                        mgr.ids_for_symbol(&opening_symbol)
-                            .map(|ids| {
-                                ids.iter().any(|id| {
-                                    mgr.get(*id)
-                                        .and_then(|strategy| {
-                                            strategy.as_any().downcast_ref::<ArbCloseStrategy>()
-                                        })
-                                        .is_some_and(|strategy| {
-                                            strategy.close_side() == Some(close_side)
-                                                && strategy.is_active()
-                                        })
-                                })
-                            })
-                            .unwrap_or(false)
-                    };
-                    if has_active_close {
-                        return;
                     }
 
                     let strategy_id = StrategyManager::generate_strategy_id();

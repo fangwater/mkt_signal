@@ -18,14 +18,7 @@ use std::any::Any;
 
 const ARB_CLOSE_QTY_EPS: f64 = 1e-12;
 
-fn base_to_venue_qty(base_qty: f64, multiplier: f64, leg_name: &str) -> Result<f64, String> {
-    if multiplier <= 0.0 {
-        return Err(format!("{} multiplier invalid: {}", leg_name, multiplier));
-    }
-    Ok(base_qty / multiplier)
-}
-
-/// Arb 强平开仓腿：复用 common open 下单生命周期，只把 open leg reduce-only 平到 0。
+/// Arb 强平开仓腿：复用 common open 下单生命周期，按信号数量逐单 reduce-only close。
 pub struct ArbCloseStrategy {
     open_state: OpenStrategyState,
 }
@@ -73,48 +66,27 @@ impl ArbCloseStrategy {
         };
 
         let open_pos = MonitorChannel::instance().get_position_qty(&symbol, venue);
-        let close_base_qty = match side {
-            Side::Sell if open_pos > ARB_CLOSE_QTY_EPS => open_pos,
-            Side::Buy if open_pos < -ARB_CLOSE_QTY_EPS => -open_pos,
-            _ => {
-                info!(
-                    "ArbCloseStrategy: strategy_id={} skip because close side does not reduce open position symbol={} venue={:?} side={:?} open_pos={:.8}",
-                    self.open_state.strategy_id, symbol, venue, side, open_pos
-                );
-                self.open_state.alive = false;
-                return;
-            }
+        let close_side_reduces_open_pos = match side {
+            Side::Sell => open_pos > ARB_CLOSE_QTY_EPS,
+            Side::Buy => open_pos < -ARB_CLOSE_QTY_EPS,
         };
+        if !close_side_reduces_open_pos {
+            info!(
+                "ArbCloseStrategy: strategy_id={} skip because close side does not reduce open position symbol={} venue={:?} side={:?} open_pos={:.8}",
+                self.open_state.strategy_id, symbol, venue, side, open_pos
+            );
+            self.open_state.alive = false;
+            return;
+        }
 
-        let qty_multiplier = match MonitorChannel::instance()
-            .qty_multiplier_for_venue(venue, &symbol)
-        {
-            Ok(multiplier) => multiplier,
-            Err(err) => {
-                warn!(
-                    "ArbCloseStrategy: strategy_id={} qty multiplier unavailable symbol={} venue={:?}: {}",
-                    self.open_state.strategy_id, symbol, venue, err
-                );
-                self.open_state.alive = false;
-                return;
-            }
-        };
-        let close_venue_qty = match base_to_venue_qty(close_base_qty, qty_multiplier, "arb_close") {
-            Ok(qty) => qty,
-            Err(err) => {
-                warn!(
-                    "ArbCloseStrategy: strategy_id={} close qty convert failed symbol={} venue={:?} base_qty={:.8}: {}",
-                    self.open_state.strategy_id, symbol, venue, close_base_qty, err
-                );
-                self.open_state.alive = false;
-                return;
-            }
-        };
-        ctx.set_amount_from_value_floor(close_venue_qty);
         if ctx.amount_value() <= ARB_CLOSE_QTY_EPS || ctx.amount_count() <= 0 {
             info!(
-                "ArbCloseStrategy: strategy_id={} skip because aligned close qty is zero symbol={} venue={:?} base_qty={:.8} raw_venue_qty={:.8}",
-                self.open_state.strategy_id, symbol, venue, close_base_qty, close_venue_qty
+                "ArbCloseStrategy: strategy_id={} skip because signal close qty is zero symbol={} venue={:?} open_pos={:.8} signal_qty={:.8}",
+                self.open_state.strategy_id,
+                symbol,
+                venue,
+                open_pos,
+                ctx.amount_value()
             );
             self.open_state.alive = false;
             return;

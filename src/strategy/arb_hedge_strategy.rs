@@ -219,6 +219,12 @@ impl ArbHedgeStrategy {
         (hedge_side, hedge_pos, reduce_capacity)
     }
 
+    fn has_outstanding_hedge_work(&self) -> bool {
+        self.pending_hedge_queue.net_qty().abs() > ARB_HEDGE_QTY_EPS
+            || self.pending_hedge_request_seq.is_some()
+            || !self.hedge_order_meta.is_empty()
+    }
+
     fn pending_hedge_usdt_with_mark_price(pending_hedge_qty: f64, mark_price: f64) -> f64 {
         pending_hedge_qty.abs() * mark_price.abs()
     }
@@ -1463,6 +1469,76 @@ impl OrderTerminalRecorder for ArbHedgeStrategy {
         if pending_base_qty > TERMINAL_QTY_EPS {
             self.trigger_hedge_query_after_open_terminal(terminal_ts);
         }
+        true
+    }
+
+    fn record_hedge_only_close_pending(
+        &mut self,
+        terminal_ts: i64,
+        close_side: Side,
+        target_base_qty: f64,
+        price: f64,
+    ) -> bool {
+        let target_base_qty = target_base_qty.abs();
+        if target_base_qty <= TERMINAL_QTY_EPS {
+            return false;
+        }
+        if self.has_outstanding_hedge_work() {
+            info!(
+                "ArbHedgeRecord: strategy_id={} symbol={} skip hedge-only close pending because hedge work exists close_side={:?} target_base_qty={:.8} pending_hedge={:.8} pending_request_seq={:?} live_hedge_orders={}",
+                self.strategy_id,
+                self.symbol,
+                close_side,
+                target_base_qty,
+                self.pending_hedge_queue.net_qty(),
+                self.pending_hedge_request_seq,
+                self.hedge_order_meta.len()
+            );
+            return false;
+        }
+
+        let (hedge_side, hedge_pos, hedge_reduce_capacity) =
+            self.close_hedge_reduce_capacity(close_side);
+        let pending_base_qty = target_base_qty.min(hedge_reduce_capacity);
+        if pending_base_qty <= TERMINAL_QTY_EPS {
+            info!(
+                "ArbHedgeRecord: strategy_id={} symbol={} skip hedge-only close pending because hedge reduce capacity is zero close_side={:?} hedge_side={:?} hedge_pos={:.8} target_base_qty={:.8}",
+                self.strategy_id,
+                self.symbol,
+                close_side,
+                hedge_side,
+                hedge_pos,
+                target_base_qty
+            );
+            return false;
+        }
+
+        let pending_qv = signed_qty_from_side(close_side, pending_base_qty);
+        let pending_price = if price.is_finite() && price > 0.0 {
+            price
+        } else {
+            self.mark_price().unwrap_or(0.0)
+        };
+        self.pending_hedge_queue
+            .put(terminal_ts, 0, pending_qv, pending_price);
+
+        info!(
+            "ArbHedgeRecord: strategy_id={} symbol={} leg=hedge_only_close close_side={:?} hedge_side={:?} hedge_pos={:.8} hedge_reduce_capacity={:.8} target_base_qty={:.8} pending_qv={:.8} price={:.8} terminal_ts={} net={:.8} pending_hedge={:.8}",
+            self.strategy_id,
+            self.symbol,
+            close_side,
+            hedge_side,
+            hedge_pos,
+            hedge_reduce_capacity,
+            target_base_qty,
+            pending_qv,
+            pending_price,
+            terminal_ts,
+            self.net_qty_queue.net_qty(),
+            self.pending_hedge_queue.net_qty()
+        );
+
+        self.trigger_hedge_query_after_open_terminal(terminal_ts);
         true
     }
 
