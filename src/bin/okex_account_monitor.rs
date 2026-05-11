@@ -27,8 +27,8 @@ use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::default_parser::Parser;
 use mkt_signal::parser::okex_account_event_parser::OkexAccountEventParser;
 use mkt_signal::portfolio_margin::okex_auth::{
-    build_balance_and_position_subscribe_message, build_orders_subscribe_message, OkexCredentials,
-    OkexPrivateWsUrls,
+    build_account_subscribe_message, build_balance_and_position_subscribe_message,
+    build_orders_subscribe_message, OkexCredentials, OkexPrivateWsUrls,
 };
 use mkt_signal::portfolio_margin::okex_rest::fetch_borrow_interest;
 use mkt_signal::portfolio_margin::okex_user_stream::OkexUserDataConnection;
@@ -92,11 +92,12 @@ async fn main() -> Result<()> {
     );
 
     // 构建订阅消息。
-    // 当前 OKX 账户链路有意只依赖 balance_and_position 做实时余额/仓位数量更新；
-    // UPL 由 pre_trade 侧的周期性 positions snapshot 补齐，因此这里不单独订阅 positions/account。
+    // account 频道提供 eq 余额口径；balance_and_position 提供实时仓位数量。
+    // UPL 保留由 pre_trade 侧的周期性 positions snapshot 补齐/展示，避免与 eq 双计。
     let subscribe_messages = vec![
         build_orders_subscribe_message("SPOT"),
         build_orders_subscribe_message("SWAP"),
+        build_account_subscribe_message(),
         build_balance_and_position_subscribe_message(),
     ];
 

@@ -20,11 +20,9 @@ struct OkexBalanceAccount {
 struct OkexBalanceDetail {
     #[serde(default)]
     ccy: String,
-    // cashBal: 净现金（不含 swap UPL），与 WS balance_and_position.cashBal 同义。
-    // 使用 cashBal 而非 eq，是因为 USDT 行的 eq 把账户级 swap UPL 折进来了，
-    // 下游 compute_leg_risk_entry 还会单独加 um_unrealized_pnl，会双计。
-    #[serde(default, rename = "cashBal")]
-    cash_bal: String,
+    // OKX eq 是账户权益口径；USDT 行已包含账户级 swap UPL。
+    #[serde(default)]
+    eq: String,
     #[serde(default)]
     liab: String,
     #[serde(default)]
@@ -59,12 +57,12 @@ pub fn parse_okex_account_balance_snapshot(json: &str) -> Option<Vec<Bytes>> {
         if d.ccy.is_empty() {
             continue;
         }
-        let Some(cash_bal) = parse_f64(&d.cash_bal) else {
+        let Some(eq) = parse_f64(&d.eq) else {
             continue;
         };
         let ts = parse_i64(&d.u_time).unwrap_or(fallback_ts);
         let symbol = d.ccy.to_ascii_uppercase();
-        out.push(BasicBalanceMsg::create(ts, symbol.clone(), cash_bal).to_bytes());
+        out.push(BasicBalanceMsg::create(ts, symbol.clone(), eq).to_bytes());
 
         // OKX 跨保证金负债：liab 是当前借入本金 + 利息合计（绝对值），interest 单独给出已计利息。
         // 仅 liab>0 或 interest>0 时才发 borrow 事件，避免无负债币种刷无效消息。
@@ -94,6 +92,7 @@ mod tests {
                 "details": [{
                     "ccy": "USDT",
                     "cashBal": "4992.890093622894",
+                    "eq": "4990.5",
                     "uTime": "1705449605015"
                 }]
             }],
@@ -107,7 +106,30 @@ mod tests {
             BasicAccountEventType::BalanceUpdate as u32
         );
         assert_eq!(bal.symbol, "USDT");
-        assert!((bal.balance - 4992.890093622894).abs() < 1e-10);
+        assert!((bal.balance - 4990.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn okex_usdt_balance_snapshot_uses_eq_with_upl() {
+        let json = r#"{
+            "code": "0",
+            "data": [{
+                "uTime": "1705474164160",
+                "details": [{
+                    "ccy": "USDT",
+                    "cashBal": "56243.85926211993",
+                    "eq": "53443.166831427916",
+                    "upl": "-2800.6924306920096",
+                    "uTime": "1705449605015"
+                }]
+            }],
+            "msg": ""
+        }"#;
+        let msgs = parse_okex_account_balance_snapshot(json).expect("parse ok");
+        assert_eq!(msgs.len(), 1);
+        let bal = BasicBalanceMsg::from_bytes(&msgs[0]).expect("bal ok");
+        assert_eq!(bal.symbol, "USDT");
+        assert!((bal.balance - 53443.166831427916).abs() < 1e-10);
     }
 
     #[test]
@@ -120,6 +142,7 @@ mod tests {
                     {
                         "ccy": "USDT",
                         "cashBal": "1000",
+                        "eq": "950",
                         "liab": "-50.5",
                         "interest": "-0.5",
                         "uTime": "1705449605015"
@@ -127,6 +150,7 @@ mod tests {
                     {
                         "ccy": "BTC",
                         "cashBal": "1.25",
+                        "eq": "1.25",
                         "liab": "0",
                         "interest": "0",
                         "uTime": "1705449605015"

@@ -23,6 +23,22 @@ impl OkexAccountEventParser {
         Self
     }
 
+    fn emit_balance(
+        tx: &mpsc::UnboundedSender<Bytes>,
+        timestamp: i64,
+        symbol: String,
+        balance: f64,
+    ) -> bool {
+        let msg = BasicBalanceMsg::create(timestamp, symbol, balance);
+        let payload = msg.to_bytes();
+        let event = BasicAccountEventMsg::create(
+            msg.msg_type,
+            BasicAccountScope::OkexUnified,
+            payload,
+        );
+        tx.send(event.to_bytes()).is_ok()
+    }
+
     fn parse_balance_and_position(
         &self,
         json_value: &serde_json::Value,
@@ -31,6 +47,8 @@ impl OkexAccountEventParser {
         let mut count = 0;
 
         // balance
+        // `balance_and_position.balData` 通常只有 cashBal。OKX eq 口径下不能用 cashBal
+        // 覆盖 account channel 的 eq，因此这里只消费明确带 eq 的行。
         if let Some(arr) = json_value
             .get("data")
             .and_then(|d| d.get(0))
@@ -43,11 +61,13 @@ impl OkexAccountEventParser {
                     .and_then(|v| v.as_str())
                     .and_then(|s| s.parse::<i64>().ok())
                     .unwrap_or(0);
-                let balance = bal
-                    .get("cashBal")
+                let Some(balance) = bal
+                    .get("eq")
                     .and_then(|v| v.as_str())
                     .and_then(|s| s.parse::<f64>().ok())
-                    .unwrap_or(0.0);
+                else {
+                    continue;
+                };
 
                 let symbol = bal
                     .get("ccy")
@@ -55,14 +75,7 @@ impl OkexAccountEventParser {
                     .unwrap_or_default()
                     .to_string();
 
-                let msg = BasicBalanceMsg::create(timestamp, symbol, balance);
-                let payload = msg.to_bytes();
-                let event = BasicAccountEventMsg::create(
-                    msg.msg_type,
-                    BasicAccountScope::OkexUnified,
-                    payload,
-                );
-                if tx.send(event.to_bytes()).is_ok() {
+                if Self::emit_balance(tx, timestamp, symbol, balance) {
                     count += 1;
                 }
             }
@@ -70,8 +83,8 @@ impl OkexAccountEventParser {
 
         // position
         // 当前仅从 balance_and_position.posData 提取仓位方向/数量/更新时间。
-        // 未实现将 OKX 的 UPL 从该 WS 事件映射为 BasicUmUnrealizedMsg；
-        // 这部分由启动后和周期性的 positions snapshot 回补。
+        // OKX 这个 WS 事件里的 UPL 字段不稳定/可能缺失；UPL 统一由周期性
+        // positions REST snapshot 补齐，避免 WS 覆盖 REST 的正确账户净值口径。
         if let Some(arr) = json_value
             .get("data")
             .and_then(|d| d.get(0))
@@ -116,6 +129,54 @@ impl OkexAccountEventParser {
                 if tx.send(event.to_bytes()).is_ok() {
                     count += 1;
                 }
+            }
+        }
+
+        count
+    }
+
+    fn parse_account(
+        &self,
+        json_value: &serde_json::Value,
+        tx: &mpsc::UnboundedSender<Bytes>,
+    ) -> usize {
+        let mut count = 0;
+        let Some(account) = json_value.get("data").and_then(|d| d.get(0)) else {
+            return 0;
+        };
+        let fallback_ts = account
+            .get("uTime")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
+        let Some(arr) = account.get("details").and_then(|v| v.as_array()) else {
+            return 0;
+        };
+
+        for bal in arr {
+            let symbol = bal
+                .get("ccy")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if symbol.is_empty() {
+                continue;
+            }
+            let Some(balance) = bal
+                .get("eq")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+            else {
+                continue;
+            };
+            let timestamp = bal
+                .get("uTime")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(fallback_ts);
+
+            if Self::emit_balance(tx, timestamp, symbol, balance) {
+                count += 1;
             }
         }
 
@@ -242,10 +303,10 @@ impl Parser for OkexAccountEventParser {
         match channel {
             "balance_and_position" => self.parse_balance_and_position(&json_value, tx),
             "orders" => self.parse_orders(&json_value, tx),
-            "positions" | "account" => {
-                // 当前设计不消费这两个 OKX 频道：
+            "account" => self.parse_account(&json_value, tx),
+            "positions" => {
+                // 当前设计不消费 OKX positions 频道：
                 // - positions: 未单独订阅，避免与 balance_and_position 的仓位数量语义重叠
-                // - account: 余额/权益初始化与补偿由 snapshot 负责
                 debug!("OKX: ignored channel={} payload={}", channel, json_str);
                 0
             }
@@ -340,4 +401,77 @@ fn parse_okex_order_price_by_state(order: &serde_json::Value, state_u8: u8) -> f
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+    use crate::common::basic_account_msg::{
+        split_basic_account_event, BasicAccountEventType, BasicBalanceMsg,
+    };
+
+    #[test]
+    fn balance_and_position_ignores_cashbal_and_ws_upl() {
+        let parser = OkexAccountEventParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let json = r#"{
+            "arg": {"channel": "balance_and_position"},
+            "data": [{
+                "balData": [{
+                    "uTime": "1778479696355",
+                    "cashBal": "56243.85926211993",
+                    "ccy": "USDT"
+                }],
+                "posData": [{
+                    "instId": "BTC-USDT-SWAP",
+                    "posSide": "net",
+                    "pos": "2",
+                    "uTime": "1778472000000",
+                    "upl": "-12.25"
+                }]
+            }]
+        }"#;
+
+        assert_eq!(parser.parse(Bytes::from(json), &tx), 1);
+
+        let mut event_types = Vec::new();
+        while let Ok(msg) = rx.try_recv() {
+            let (event_type, scope, _payload) =
+                split_basic_account_event(&msg).expect("wrapped event");
+            assert_eq!(scope, BasicAccountScope::OkexUnified);
+            event_types.push(event_type);
+        }
+
+        assert_eq!(
+            event_types,
+            vec![BasicAccountEventType::PositionUpdate]
+        );
+    }
+
+    #[test]
+    fn account_channel_uses_eq_balance() {
+        let parser = OkexAccountEventParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let json = r#"{
+            "arg": {"channel": "account"},
+            "data": [{
+                "uTime": "1778479700000",
+                "details": [{
+                    "uTime": "1778479696355",
+                    "ccy": "USDT",
+                    "cashBal": "56243.85926211993",
+                    "eq": "53443.166831427916",
+                    "upl": "-2800.6924306920096"
+                }]
+            }]
+        }"#;
+
+        assert_eq!(parser.parse(Bytes::from(json), &tx), 1);
+        let msg = rx.try_recv().expect("one balance event");
+        let (event_type, scope, payload) =
+            split_basic_account_event(&msg).expect("wrapped event");
+        assert_eq!(event_type, BasicAccountEventType::BalanceUpdate);
+        assert_eq!(scope, BasicAccountScope::OkexUnified);
+        let balance = BasicBalanceMsg::from_bytes(&payload).expect("balance msg");
+        assert_eq!(balance.symbol, "USDT");
+        assert!((balance.balance - 53443.166831427916).abs() < 1e-10);
+        assert!(rx.try_recv().is_err());
+    }
+}

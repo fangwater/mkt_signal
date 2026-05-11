@@ -71,9 +71,7 @@ pub fn parse_okex_positions_snapshot(json: &str) -> Option<Vec<Bytes>> {
         out.push(BasicPositionMsg::create(ts, row.inst_id.clone(), side, pos).to_bytes());
         if let Some(upl) = parse_f32(&row.upl) {
             let pnl = upl as f64;
-            if pnl.abs() > 0.0 {
-                out.push(BasicUmUnrealizedMsg::create(ts, row.inst_id, side, pnl).to_bytes());
-            }
+            out.push(BasicUmUnrealizedMsg::create(ts, row.inst_id, side, pnl).to_bytes());
         }
     }
     Some(out)
@@ -116,5 +114,25 @@ mod tests {
         assert_eq!(pnl.inst_id, "BTC-USDT-SWAP");
         assert_eq!(pnl.position_side, 'N');
         assert!((pnl.unrealized_pnl + 12.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn emits_zero_upl_to_clear_stale_pnl() {
+        let json = r#"{
+            "code": "0",
+            "data": [{
+                "instId": "BTC-USDT-SWAP",
+                "instType": "SWAP",
+                "pos": "2",
+                "posSide": "net",
+                "uTime": "1724742632153",
+                "upl": "0"
+            }],
+            "msg": ""
+        }"#;
+        let msgs = parse_okex_positions_snapshot(json).expect("parse ok");
+        assert_eq!(msgs.len(), 2);
+        let pnl = BasicUmUnrealizedMsg::from_bytes(&msgs[1]).expect("pnl ok");
+        assert_eq!(pnl.unrealized_pnl, 0.0);
     }
 }

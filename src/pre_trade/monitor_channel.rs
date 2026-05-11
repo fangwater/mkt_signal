@@ -1080,8 +1080,8 @@ impl MonitorChannel {
         // total_equity(eq) 口径：
         // - 非 USDT 资产：从 balance manager 统计净资产估值
         // - USDT：按交易所维度单独维护
-        // - Binance/OKX/Bitget 等 futures UPL 单独来自 BasicUmManager 并叠加
-        // - Gate unified 的 balance/equity 已隐含账户级合约影响，因此只保留 UPL 展示，不再重复叠加
+        // - Binance/Bitget 等 futures UPL 单独来自 BasicUmManager 并叠加
+        // - OKX/Gate unified 的 balance/equity 已隐含账户级合约影响，因此只保留 UPL 展示，不再重复叠加
         let mut total_equity_usdt: f64 = 0.0;
         for (idx, leg) in [&inner.open_leg, &inner.hedge_leg].iter().enumerate() {
             if same_venue && idx == 1 {
@@ -1117,7 +1117,7 @@ impl MonitorChannel {
             if let LegMgr::Futures { exchange, um, .. } = leg {
                 let upl = um.borrow().total_unrealized_pnl_usdt();
                 total_um_unrealized_usdt += upl;
-                if *exchange != Exchange::Gate {
+                if !matches!(*exchange, Exchange::Gate | Exchange::Okex) {
                     total_equity_usdt += upl;
                 }
             }

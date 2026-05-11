@@ -131,7 +131,7 @@ fr_remote_sync_binaries() {
 
 fr_remote_apply_nginx() {
   local env_name="$1"
-  local opts
+  local opts mapping_to_push rewritten_mapping
   opts="$(_fr_ssh_opts)"
 
   if [[ ! -s "$FR_NGINX_STAGING" ]]; then
@@ -139,9 +139,27 @@ fr_remote_apply_nginx() {
     return 0
   fi
 
+  mapping_to_push="$FR_NGINX_STAGING"
+  rewritten_mapping=""
+  if [[ "$HOME" != "$FR_REMOTE_HOME" ]]; then
+    rewritten_mapping="$(mktemp -t "fr_nginx_locations.remote.${env_name}.XXXXXX")"
+    awk -v from="static:${HOME}/" -v to="static:${FR_REMOTE_HOME}/" '
+      {
+        while ((pos = index($0, from)) > 0) {
+          $0 = substr($0, 1, pos - 1) to substr($0, pos + length(from))
+        }
+        print
+      }
+    ' "$FR_NGINX_STAGING" > "$rewritten_mapping"
+    mapping_to_push="$rewritten_mapping"
+  fi
+
   echo "[INFO] push nginx mapping -> $FR_DEPLOY_HOST:$FR_REMOTE_HOME/nginx_locations.txt"
   # shellcheck disable=SC2086
-  rsync -a -e "ssh $opts" "$FR_NGINX_STAGING" "$FR_DEPLOY_HOST:$FR_REMOTE_HOME/nginx_locations.txt"
+  rsync -a -e "ssh $opts" "$mapping_to_push" "$FR_DEPLOY_HOST:$FR_REMOTE_HOME/nginx_locations.txt"
+  if [[ -n "$rewritten_mapping" ]]; then
+    rm -f "$rewritten_mapping"
+  fi
 
   echo "[INFO] reload nginx on remote (PORT=$FR_NGINX_PORT)"
   # shellcheck disable=SC2086,SC2029

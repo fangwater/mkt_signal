@@ -250,7 +250,7 @@ fn compute_leg_risk_entry(
         );
         let upl = um_ref.total_unrealized_pnl_usdt();
         um_unrealized_usd += upl;
-        if exchange != Exchange::Gate {
+        if !matches!(exchange, Exchange::Gate | Exchange::Okex) {
             total_equity += upl;
         }
     }

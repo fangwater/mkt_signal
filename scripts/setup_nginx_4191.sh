@@ -93,13 +93,10 @@ locations() {
 EOF
                 fi
 
-                # SPA-friendly: fallback to index.html under the same prefix.
-                index_uri="${path}index.html"
                 cat <<EOF
     location ${path} {
         alias ${dir};
         index index.html;
-        try_files \$uri \$uri/ ${index_uri};
         add_header Cache-Control "no-cache";
     }
 
