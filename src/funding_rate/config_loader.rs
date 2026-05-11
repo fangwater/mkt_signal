@@ -383,6 +383,12 @@ async fn reload_symbol_list(
     match RedisClient::connect(redis.clone()).await {
         Ok(mut client) => {
             let symbol_list = SymbolList::instance();
+            let ns = normalize_namespace(namespace);
+            let env_dir = if ns == "fr" {
+                Some(fr_env_dir_or_panic())
+            } else {
+                None
+            };
             let suffix = if symbol_key_suffix.trim().is_empty() {
                 format!(
                     "{}_{}",
@@ -393,9 +399,19 @@ async fn reload_symbol_list(
                 symbol_key_suffix.to_string()
             };
             symbol_list
-                .reload_from_redis_with_key_suffix(&mut client, &suffix, namespace)
+                .reload_from_redis_with_key_prefix(
+                    &mut client,
+                    &suffix,
+                    namespace,
+                    env_dir.as_deref(),
+                )
                 .await?;
-            info!("SymbolList 重载成功 (ns={} suffix={})", namespace, suffix);
+            info!(
+                "SymbolList 重载成功 (ns={} suffix={} env_prefix={})",
+                namespace,
+                suffix,
+                env_dir.as_deref().unwrap_or("-")
+            );
         }
         Err(err) => {
             warn!("SymbolList 重载失败: {:?}", err);

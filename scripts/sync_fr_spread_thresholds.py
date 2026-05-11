@@ -5,15 +5,16 @@
 从 rolling_metrics_thresholds_{open_venue}_{hedge_venue} 读取百分位数据，生成价差阈值并同步到 Redis。
 
 工作流程：
-  1. 从 Redis 读取 fr_dump_symbols:{key_suffix}、fr_fwd_trade_symbols:{key_suffix}、fr_bwd_trade_symbols:{key_suffix}
+  1. 从 Redis 读取 {env_name}:fr_dump_symbols:{key_suffix}、
+     {env_name}:fr_fwd_trade_symbols:{key_suffix}、{env_name}:fr_bwd_trade_symbols:{key_suffix}
   2. 合并列表得到要同步的 symbols（去重）
   3. 从 rolling_metrics_thresholds_{open_venue}_{hedge_venue} 读取这些 symbols 的百分位数据
   4. 根据 SPREAD_THRESHOLD_MAPPING 配置，提取对应的百分位值
   5. 生成价差阈值并写入 fr_spread_thresholds_{open_venue}_{hedge_venue}
 
 读取 Redis:
-  - String `fr_dump_symbols:{key_suffix}` - 平仓列表（JSON 数组）
-  - String `fr_fwd_trade_symbols:{key_suffix}` / `fr_bwd_trade_symbols:{key_suffix}` - 建仓列表（JSON 数组）
+  - String `{env_name}:fr_dump_symbols:{key_suffix}` - 平仓列表（JSON 数组）
+  - String `{env_name}:fr_fwd_trade_symbols:{key_suffix}` / `{env_name}:fr_bwd_trade_symbols:{key_suffix}` - 建仓列表（JSON 数组）
   - Hash `rolling_metrics_thresholds_{open_venue}_{hedge_venue}` - rolling metrics 百分位数据
 
 写入 Redis Hash:
@@ -31,7 +32,9 @@ import argparse
 import json
 import math
 import os
+import re
 import sys
+from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 # 目录推断用的默认 open/hedge 组合
@@ -82,6 +85,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--venue",
         help="(deprecated) dump/fwd_trade/bwd_trade 列表用的 key_suffix（如 binance_margin），建议使用 --key-suffix",
+    )
+    p.add_argument(
+        "--env-name",
+        help="部署 env 名（例如 binance_fr_trade01）；未提供时使用当前目录名",
     )
     return p.parse_args()
 
@@ -500,6 +507,24 @@ def make_key_suffix(open_venue: str, hedge_venue: str) -> str:
     return f"{open_venue.strip().lower()}_{hedge_venue.strip().lower()}"
 
 
+def symbol_list_key(env_name: str, list_name: str, key_suffix: str) -> str:
+    return f"{env_name}:fr_{list_name}:{key_suffix}"
+
+
+def infer_env_name_from_cwd() -> Optional[str]:
+    name = Path.cwd().name.strip().lower()
+    return name or None
+
+
+def warn_if_env_name_mismatched(env_name: str, exchange: str) -> None:
+    pattern = rf"^{re.escape(exchange)}_fr_[a-z0-9][a-z0-9_-]*$"
+    if not re.match(pattern, env_name):
+        print(
+            f"[WARN] env-name '{env_name}' 不符合 {exchange}_fr_<suffix> 规范，仍然继续",
+            file=sys.stderr,
+        )
+
+
 def main() -> int:
     args = parse_args()
     redis = try_import_redis()
@@ -519,16 +544,28 @@ def main() -> int:
     key_suffix = key_suffix.strip().lower()
     if args.venue and not args.key_suffix:
         print(f"[WARN] --venue 已废弃，请改用 --key-suffix（当前 key_suffix={key_suffix}）")
+    exchange = open_venue.split("-", 1)[0] if "-" in open_venue else open_venue
+    env_name = (args.env_name or infer_env_name_from_cwd() or "").strip().lower()
+    if not env_name:
+        print(
+            "❌ 需要 --env-name，或在 <exchange>_fr_<suffix> 命名的目录下运行以自动推断",
+            file=sys.stderr,
+        )
+        return 2
+    if not args.env_name:
+        print(f"[INFO] 未提供 env-name，基于目录推断: {env_name}", file=sys.stderr)
+    warn_if_env_name_mismatched(env_name, exchange)
 
-    dump_keys = [f"fr_dump_symbols:{key_suffix}"]
-    fwd_trade_keys = [f"fr_fwd_trade_symbols:{key_suffix}"]
-    bwd_trade_keys = [f"fr_bwd_trade_symbols:{key_suffix}"]
+    dump_keys = [symbol_list_key(env_name, "dump_symbols", key_suffix)]
+    fwd_trade_keys = [symbol_list_key(env_name, "fwd_trade_symbols", key_suffix)]
+    bwd_trade_keys = [symbol_list_key(env_name, "bwd_trade_symbols", key_suffix)]
 
     def fmt_keys(keys: List[str]) -> str:
         return ", ".join(keys) if keys else "-"
 
     print(f"🔄 开始从 rolling metrics 同步价差阈值 ...")
     print("📍 Redis: 127.0.0.1:6379/0")
+    print(f"📦 Env: {env_name}")
     print(f"📖 Rolling Metrics: {rolling_key}")
     print(f"📖 Dump List: {fmt_keys(dump_keys)}")
     print(f"📖 Fwd Trade List: {fmt_keys(fwd_trade_keys)}")

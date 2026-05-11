@@ -125,18 +125,31 @@ impl SymbolList {
         key_suffix: &str,
         namespace: &str,
     ) -> Result<()> {
+        self.reload_from_redis_with_key_prefix(client, key_suffix, namespace, None)
+            .await
+    }
+
+    pub async fn reload_from_redis_with_key_prefix(
+        &self,
+        client: &mut RedisClient,
+        key_suffix: &str,
+        namespace: &str,
+        key_prefix: Option<&str>,
+    ) -> Result<()> {
         let key_suffix = key_suffix.trim().to_ascii_lowercase();
         let ns = normalize_symbol_list_namespace(namespace);
+        let key_prefix = normalize_symbol_list_key_prefix(key_prefix);
 
         // 读取平仓列表
-        let dump_key = format!("{ns}_dump_symbols:{key_suffix}");
+        let dump_key =
+            symbol_list_redis_key(key_prefix.as_deref(), &ns, "dump_symbols", &key_suffix);
         if let Ok(Some(value)) = client.get_string(&dump_key).await {
             if let Ok(symbols) = serde_json::from_str::<Vec<String>>(&value) {
                 Self::with_inner_mut(|inner| {
                     inner.dump_symbols = symbols.iter().map(|s| s.to_uppercase()).collect();
                     info!(
-                        "更新平仓列表 {}: {} 个交易对",
-                        key_suffix,
+                        "更新平仓列表 key='{}': {} 个交易对",
+                        dump_key,
                         inner.dump_symbols.len()
                     );
                 });
@@ -146,7 +159,8 @@ impl SymbolList {
         // 读取建仓列表
         // （废弃）建仓列表现阶段未使用，留空
         if ns == "mm" {
-            let trade_key = format!("{ns}_trade_symbols:{key_suffix}");
+            let trade_key =
+                symbol_list_redis_key(key_prefix.as_deref(), &ns, "trade_symbols", &key_suffix);
             if let Ok(Some(value)) = client.get_string(&trade_key).await {
                 if let Ok(symbols) = serde_json::from_str::<Vec<String>>(&value) {
                     let normalized: HashSet<String> =
@@ -156,8 +170,8 @@ impl SymbolList {
                         inner.fwd_trade_symbols = normalized.clone();
                         inner.bwd_trade_symbols = normalized.clone();
                         info!(
-                            "更新 MM 交易列表 {}: {} 个交易对",
-                            key_suffix,
+                            "更新 MM 交易列表 key='{}': {} 个交易对",
+                            trade_key,
                             inner.fwd_trade_symbols.len()
                         );
                     });
@@ -166,14 +180,15 @@ impl SymbolList {
         }
 
         // 读取正套建仓列表
-        let fwd_trade_key = format!("{ns}_fwd_trade_symbols:{key_suffix}");
+        let fwd_trade_key =
+            symbol_list_redis_key(key_prefix.as_deref(), &ns, "fwd_trade_symbols", &key_suffix);
         if let Ok(Some(value)) = client.get_string(&fwd_trade_key).await {
             if let Ok(symbols) = serde_json::from_str::<Vec<String>>(&value) {
                 Self::with_inner_mut(|inner| {
                     inner.fwd_trade_symbols = symbols.iter().map(|s| s.to_uppercase()).collect();
                     info!(
-                        "更新正套建仓列表 {}: {} 个交易对",
-                        key_suffix,
+                        "更新正套建仓列表 key='{}': {} 个交易对",
+                        fwd_trade_key,
                         inner.fwd_trade_symbols.len()
                     );
                 });
@@ -181,14 +196,15 @@ impl SymbolList {
         }
 
         // 读取反套建仓列表
-        let bwd_trade_key = format!("{ns}_bwd_trade_symbols:{key_suffix}");
+        let bwd_trade_key =
+            symbol_list_redis_key(key_prefix.as_deref(), &ns, "bwd_trade_symbols", &key_suffix);
         if let Ok(Some(value)) = client.get_string(&bwd_trade_key).await {
             if let Ok(symbols) = serde_json::from_str::<Vec<String>>(&value) {
                 Self::with_inner_mut(|inner| {
                     inner.bwd_trade_symbols = symbols.iter().map(|s| s.to_uppercase()).collect();
                     info!(
-                        "更新反套建仓列表 {}: {} 个交易对",
-                        key_suffix,
+                        "更新反套建仓列表 key='{}': {} 个交易对",
+                        bwd_trade_key,
                         inner.bwd_trade_symbols.len()
                     );
                 });
@@ -330,6 +346,25 @@ fn normalize_symbol_list_namespace(namespace: &str) -> String {
     }
 }
 
+fn normalize_symbol_list_key_prefix(prefix: Option<&str>) -> Option<String> {
+    prefix
+        .map(|p| p.trim().trim_end_matches(':').to_ascii_lowercase())
+        .filter(|p| !p.is_empty())
+}
+
+fn symbol_list_redis_key(
+    prefix: Option<&str>,
+    namespace: &str,
+    list_name: &str,
+    suffix: &str,
+) -> String {
+    let base = format!("{namespace}_{list_name}:{suffix}");
+    match prefix {
+        Some(prefix) if !prefix.is_empty() => format!("{prefix}:{base}"),
+        _ => base,
+    }
+}
+
 fn exchange_from_key_suffix(key_suffix: &str) -> Option<Exchange> {
     let suffix = key_suffix.trim().to_ascii_lowercase();
     if !suffix.contains('_') {
@@ -338,4 +373,35 @@ fn exchange_from_key_suffix(key_suffix: &str) -> Option<Exchange> {
     let open_part = suffix.split('_').next()?;
     let open_exchange = open_part.split('-').next().unwrap_or(open_part);
     Exchange::from_str(open_exchange)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::symbol_list_redis_key;
+
+    #[test]
+    fn symbol_list_redis_key_without_prefix_matches_legacy_shape() {
+        assert_eq!(
+            symbol_list_redis_key(
+                None,
+                "fr",
+                "fwd_trade_symbols",
+                "binance-margin_binance-futures"
+            ),
+            "fr_fwd_trade_symbols:binance-margin_binance-futures"
+        );
+    }
+
+    #[test]
+    fn symbol_list_redis_key_with_prefix_is_env_scoped() {
+        assert_eq!(
+            symbol_list_redis_key(
+                Some("binance_fr_trade01"),
+                "fr",
+                "bwd_trade_symbols",
+                "binance-margin_binance-futures"
+            ),
+            "binance_fr_trade01:fr_bwd_trade_symbols:binance-margin_binance-futures"
+        );
+    }
 }

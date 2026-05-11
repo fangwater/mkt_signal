@@ -4,7 +4,7 @@
 从 Redis 获取 FR symbol list，拉取每个 symbol 的借贷利率历史（1天），构造 DataFrame 并 stack 成一起。
 
 参考 rate_fetcher.rs 的算法：
-  - 从 Redis 读取 fr_trade_symbols:binance_um 获取当前 symbol list
+  - 从 Redis 读取 {env_name}:fr_fwd_trade_symbols:{key_suffix} 获取当前 symbol list
   - 对每个 symbol 提取 base asset（去掉 USDT 后缀）
   - 调用 Binance /sapi/v1/margin/interestRateHistory API 获取借贷利率历史
   - 构造 DataFrame，增加 symbol 列，然后 stack 成一起
@@ -20,12 +20,14 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 
@@ -69,10 +71,41 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--redis-key",
-        default="fr_trade_symbols:binance_um",
-        help="Redis key for symbol list",
+        help="Redis key for symbol list；提供后会覆盖 env/key-suffix/list-name 自动拼 key",
+    )
+    p.add_argument(
+        "--env-name",
+        help="部署 env 名（例如 binance_fr_trade01）；未提供时使用当前目录名",
+    )
+    p.add_argument(
+        "--key-suffix",
+        default="binance-margin_binance-futures",
+        help="FR symbol list key_suffix",
+    )
+    p.add_argument(
+        "--list-name",
+        default="fwd_trade_symbols",
+        choices=["dump_symbols", "trade_symbols", "fwd_trade_symbols", "bwd_trade_symbols"],
+        help="FR symbol list name",
     )
     return p.parse_args()
+
+
+def infer_env_name_from_cwd() -> Optional[str]:
+    name = Path.cwd().name.strip().lower()
+    return name or None
+
+
+def symbol_list_key(env_name: str, list_name: str, key_suffix: str) -> str:
+    return f"{env_name}:fr_{list_name}:{key_suffix.strip().lower()}"
+
+
+def warn_if_env_name_mismatched(env_name: str) -> None:
+    if not re.match(r"^binance_fr_[a-z0-9][a-z0-9_-]*$", env_name):
+        print(
+            f"[WARN] env-name '{env_name}' 不符合 binance_fr_<suffix> 规范，仍然继续",
+            file=sys.stderr,
+        )
 
 
 def now_ms() -> int:
@@ -196,14 +229,28 @@ def main() -> int:
 
     # 连接 Redis
     rds = redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
+    if args.redis_key:
+        redis_key = args.redis_key
+    else:
+        env_name = (args.env_name or infer_env_name_from_cwd() or "").strip().lower()
+        if not env_name:
+            print(
+                "❌ 需要 --env-name，或在 binance_fr_<suffix> 命名的目录下运行以自动推断",
+                file=sys.stderr,
+            )
+            return 2
+        if not args.env_name:
+            print(f"[INFO] 未提供 env-name，基于目录推断: {env_name}", file=sys.stderr)
+        warn_if_env_name_mismatched(env_name)
+        redis_key = symbol_list_key(env_name, args.list_name, args.key_suffix)
 
     print("📍 Redis: 127.0.0.1:6379/0")
-    print(f"📍 Redis Key: {args.redis_key}")
+    print(f"📍 Redis Key: {redis_key}")
 
     # 获取 symbol list
-    symbols = get_symbols_from_redis(rds, args.redis_key)
+    symbols = get_symbols_from_redis(rds, redis_key)
     if not symbols:
-        print(f"⚠️  未找到 symbol list (key: {args.redis_key})")
+        print(f"⚠️  未找到 symbol list (key: {redis_key})")
         return 1
 
     print(f"📊 找到 {len(symbols)} 个 symbol")

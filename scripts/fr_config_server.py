@@ -74,6 +74,15 @@ def build_funding_thresholds_key(open_venue: str, hedge_venue: str) -> str:
         )
     return f"{dir_prefix}:funding_rate_thresholds_{open_venue}_{hedge_venue}"
 
+
+def build_symbol_list_key(list_name: str, key_suffix: str) -> str:
+    dir_prefix = infer_dir_prefix_from_cwd()
+    if not dir_prefix:
+        raise ValueError(
+            "env_name unavailable (no cwd prefix); fr_config_server must run under <exchange>_fr_<env> dir"
+        )
+    return f"{dir_prefix}:fr_{list_name}:{key_suffix}"
+
 try:
     import sync_fr_risk_params as risk_defaults
 
@@ -316,15 +325,15 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       </div>
       <div class="grid-2">
         <div>
-          <h3>平仓列表 <span class="hint">fr_dump_symbols</span></h3>
+          <h3>平仓列表 <span class="hint">{env}:fr_dump_symbols</span></h3>
           <textarea id="sym-dump" class="mono" placeholder="每行一个 symbol"></textarea>
         </div>
         <div>
-          <h3>正套建仓 <span class="hint">fr_fwd_trade_symbols</span></h3>
+          <h3>正套建仓 <span class="hint">{env}:fr_fwd_trade_symbols</span></h3>
           <textarea id="sym-fwd" class="mono" placeholder="每行一个 symbol"></textarea>
         </div>
         <div>
-          <h3>反套建仓 <span class="hint">fr_bwd_trade_symbols</span></h3>
+          <h3>反套建仓 <span class="hint">{env}:fr_bwd_trade_symbols</span></h3>
           <textarea id="sym-bwd" class="mono" placeholder="每行一个 symbol"></textarea>
         </div>
         <div>
@@ -1487,9 +1496,9 @@ def sync_spread_thresholds(
     if spread_sync is None:
         raise RuntimeError("sync_fr_spread_thresholds.py not available")
 
-    dump_keys = [f"fr_dump_symbols:{key_suffix}"]
-    fwd_keys = [f"fr_fwd_trade_symbols:{key_suffix}"]
-    bwd_keys = [f"fr_bwd_trade_symbols:{key_suffix}"]
+    dump_keys = [build_symbol_list_key("dump_symbols", key_suffix)]
+    fwd_keys = [build_symbol_list_key("fwd_trade_symbols", key_suffix)]
+    bwd_keys = [build_symbol_list_key("bwd_trade_symbols", key_suffix)]
     rolling_key = f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}"
     write_key = f"fr_spread_thresholds_{open_venue}_{hedge_venue}"
 
@@ -1647,12 +1656,20 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
 
             rds = self.server.context.redis_client
+            env_name = infer_dir_prefix_from_cwd() or ""
             data = {
                 "exchange": exchange,
+                "env_name": env_name,
                 "key_suffix": key_suffix,
-                "dump_symbols": read_symbol_list(rds, f"fr_dump_symbols:{key_suffix}"),
-                "fwd_trade_symbols": read_symbol_list(rds, f"fr_fwd_trade_symbols:{key_suffix}"),
-                "bwd_trade_symbols": read_symbol_list(rds, f"fr_bwd_trade_symbols:{key_suffix}"),
+                "dump_symbols": read_symbol_list(
+                    rds, build_symbol_list_key("dump_symbols", key_suffix)
+                ),
+                "fwd_trade_symbols": read_symbol_list(
+                    rds, build_symbol_list_key("fwd_trade_symbols", key_suffix)
+                ),
+                "bwd_trade_symbols": read_symbol_list(
+                    rds, build_symbol_list_key("bwd_trade_symbols", key_suffix)
+                ),
             }
             self._send_json(200, data)
             return
@@ -1863,8 +1880,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             raw_fwd_len, raw_fwd_sample = summarize_symbol_payload(raw_fwd)
             raw_bwd_len, raw_bwd_sample = summarize_symbol_payload(raw_bwd)
             print(
-                "[symbol-lists] exchange={} open={} hedge={} key_suffix={}".format(
-                    exchange, open_v, hedge_v, key_suffix
+                "[symbol-lists] env={} exchange={} open={} hedge={} key_suffix={}".format(
+                    infer_dir_prefix_from_cwd() or "-", exchange, open_v, hedge_v, key_suffix
                 )
             )
             print(
@@ -1887,15 +1904,15 @@ class RequestHandler(BaseHTTPRequestHandler):
             rds = self.server.context.redis_client
             try:
                 rds.set(
-                    f"fr_dump_symbols:{key_suffix}",
+                    build_symbol_list_key("dump_symbols", key_suffix),
                     json.dumps(dump_symbols, ensure_ascii=False),
                 )
                 rds.set(
-                    f"fr_fwd_trade_symbols:{key_suffix}",
+                    build_symbol_list_key("fwd_trade_symbols", key_suffix),
                     json.dumps(fwd_symbols, ensure_ascii=False),
                 )
                 rds.set(
-                    f"fr_bwd_trade_symbols:{key_suffix}",
+                    build_symbol_list_key("bwd_trade_symbols", key_suffix),
                     json.dumps(bwd_symbols, ensure_ascii=False),
                 )
             except Exception as exc:

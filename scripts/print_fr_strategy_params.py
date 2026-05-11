@@ -6,7 +6,7 @@
 
 读取两个 Redis key：
   1. HASH `fr_strategy_params_{open_venue}_{hedge_venue}` - 策略参数（按 open/hedge 组合区分）
-  2. String `fr_trade_symbols:binance_um` - 交易对白名单
+  2. String `{env_name}:fr_*_symbols:{open_venue}_{hedge_venue}` - env 级交易对白名单
 
 示例：
   python scripts/print_fr_strategy_params.py --open-venue binance-margin --hedge-venue binance-futures
@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -60,6 +61,10 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--open-venue", help="open 侧 venue（如 binance-margin）")
     p.add_argument("--hedge-venue", help="hedge 侧 venue（如 binance-futures）")
+    p.add_argument(
+        "--env-name",
+        help="部署 env 名（例如 binance_fr_trade01）；未提供时使用当前目录名",
+    )
     args = p.parse_args()
 
     open_venue = args.open_venue
@@ -80,6 +85,28 @@ def parse_args() -> argparse.Namespace:
     args.open_venue = open_venue
     args.hedge_venue = hedge_venue
     return args
+
+
+def infer_env_name_from_cwd() -> Optional[str]:
+    name = Path.cwd().name.strip().lower()
+    return name or None
+
+
+def make_key_suffix(open_venue: str, hedge_venue: str) -> str:
+    return f"{open_venue.strip().lower()}_{hedge_venue.strip().lower()}"
+
+
+def symbol_list_key(env_name: str, list_name: str, key_suffix: str) -> str:
+    return f"{env_name}:fr_{list_name}:{key_suffix}"
+
+
+def warn_if_env_name_mismatched(env_name: str, exchange: str) -> None:
+    pattern = rf"^{re.escape(exchange)}_fr_[a-z0-9][a-z0-9_-]*$"
+    if not re.match(pattern, env_name):
+        print(
+            f"[WARN] env-name '{env_name}' 不符合 {exchange}_fr_<suffix> 规范，仍然继续",
+            file=sys.stderr,
+        )
 
 
 # ========== 参数注释 ==========
@@ -228,15 +255,31 @@ def print_symbol_list(rds, key: str, title: str) -> None:
         print(f"  原始值: {symbols_str}")
 
 
-def print_all_symbol_lists(rds) -> None:
+def print_all_symbol_lists(rds, env_name: str, key_suffix: str) -> None:
     """打印所有交易对列表"""
     print("\n📊 交易对列表配置:")
     print("=" * 80)
 
-    print_symbol_list(rds, "fr_dump_symbols:binance_um", "🔴 Binance UM - 平仓列表")
-    print_symbol_list(rds, "fr_trade_symbols:binance_um", "🟢 Binance UM - 建仓列表")
-    print_symbol_list(rds, "fr_dump_symbols:binance_margin", "🔴 Binance Margin - 平仓列表")
-    print_symbol_list(rds, "fr_trade_symbols:binance_margin", "🟢 Binance Margin - 建仓列表")
+    print_symbol_list(
+        rds,
+        symbol_list_key(env_name, "dump_symbols", key_suffix),
+        f"🔴 {key_suffix} - 平仓列表",
+    )
+    print_symbol_list(
+        rds,
+        symbol_list_key(env_name, "trade_symbols", key_suffix),
+        f"🟢 {key_suffix} - 建仓列表（旧字段）",
+    )
+    print_symbol_list(
+        rds,
+        symbol_list_key(env_name, "fwd_trade_symbols", key_suffix),
+        f"🟢 {key_suffix} - 正套建仓列表",
+    )
+    print_symbol_list(
+        rds,
+        symbol_list_key(env_name, "bwd_trade_symbols", key_suffix),
+        f"🔴 {key_suffix} - 反套建仓列表",
+    )
 
 
 def main() -> int:
@@ -253,9 +296,23 @@ def main() -> int:
     # 打印参数
     open_venue = args.open_venue.strip()
     hedge_venue = args.hedge_venue.strip()
+    key_suffix = make_key_suffix(open_venue, hedge_venue)
+    exchange = open_venue.split("-", 1)[0] if "-" in open_venue else open_venue
+    env_name = (args.env_name or infer_env_name_from_cwd() or "").strip().lower()
+    if not env_name:
+        print(
+            "❌ 需要 --env-name，或在 <exchange>_fr_<suffix> 命名的目录下运行以自动推断",
+            file=sys.stderr,
+        )
+        return 2
+    if not args.env_name:
+        print(f"[INFO] 未提供 env-name，基于目录推断: {env_name}", file=sys.stderr)
+    warn_if_env_name_mismatched(env_name, exchange)
+
     key = f"fr_strategy_params_{open_venue}_{hedge_venue}"
+    print(f"📦 Env: {env_name}")
     print_strategy_params(rds, key)
-    print_all_symbol_lists(rds)
+    print_all_symbol_lists(rds, env_name, key_suffix)
 
     print()
     return 0

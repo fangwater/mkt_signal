@@ -2,20 +2,20 @@
 # -*- coding: utf-8 -*-
 
 """
-将 Funding Rate 交易对列表同步到 Redis 并打印（按 key_suffix 维度）。
+将 Funding Rate 交易对列表同步到 Redis 并打印（按 env_name + key_suffix 维度）。
 
 根据 open/hedge 生成 key_suffix 并写入 Redis key（String 类型，JSON 数组）：
-  - fr_dump_symbols:{key_suffix}          - 平仓列表
-  - fr_fwd_trade_symbols:{key_suffix}     - 正套建仓列表
-  - fr_bwd_trade_symbols:{key_suffix}     - 反套建仓列表
+  - {env_name}:fr_dump_symbols:{key_suffix}          - 平仓列表
+  - {env_name}:fr_fwd_trade_symbols:{key_suffix}     - 正套建仓列表
+  - {env_name}:fr_bwd_trade_symbols:{key_suffix}     - 反套建仓列表
 
 其中 key_suffix 为 "<open_venue>_<hedge_venue>"（例如 gate-margin_gate-futures）。
+env_name 为部署目录名，例如 `binance_fr_trade01`。
 
 示例：
-  python scripts/sync_fr_symbol_lists.py --open-venue binance-margin --hedge-venue binance-futures
-  python scripts/sync_fr_symbol_lists.py --exchange binance
-  python scripts/sync_fr_symbol_lists.py       # 在目录名包含 binance/okex/bybit/... 前缀时自动推断
-  python scripts/sync_fr_symbol_lists.py --exchange okex
+  python scripts/sync_fr_symbol_lists.py --env-name binance_fr_trade01 --exchange binance
+  python scripts/sync_fr_symbol_lists.py       # 在部署目录下自动推断 env_name/exchange
+  python scripts/sync_fr_symbol_lists.py --env-name okex_fr_trade --exchange okex
 """
 
 from __future__ import annotations
@@ -23,7 +23,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
+from pathlib import Path
 from typing import Dict, List, Optional
 
 # 支持的交易所
@@ -70,6 +72,10 @@ def parse_args() -> argparse.Namespace:
         "--exchange",
         choices=SUPPORTED_EXCHANGES,
         help="交易所名称（可选，若未提供则尝试从目录名推断）",
+    )
+    p.add_argument(
+        "--env-name",
+        help="部署 env 名（例如 binance_fr_trade01）；未提供时使用当前目录名",
     )
     return p.parse_args()
 
@@ -189,6 +195,24 @@ def make_key_suffix(open_venue: str, hedge_venue: str) -> str:
     return f"{open_venue.strip().lower()}_{hedge_venue.strip().lower()}"
 
 
+def symbol_list_key(env_name: str, list_name: str, key_suffix: str) -> str:
+    return f"{env_name}:fr_{list_name}:{key_suffix}"
+
+
+def infer_env_name_from_cwd() -> Optional[str]:
+    name = Path.cwd().name.strip().lower()
+    return name or None
+
+
+def warn_if_env_name_mismatched(env_name: str, exchange: str) -> None:
+    pattern = rf"^{re.escape(exchange)}_fr_[a-z0-9][a-z0-9_-]*$"
+    if not re.match(pattern, env_name):
+        print(
+            f"[WARN] env-name '{env_name}' 不符合 {exchange}_fr_<suffix> 规范，仍然继续",
+            file=sys.stderr,
+        )
+
+
 def resolve_venues(args: argparse.Namespace) -> Optional[tuple[str, str]]:
     if args.open_venue and args.hedge_venue:
         return args.open_venue.strip().lower(), args.hedge_venue.strip().lower()
@@ -209,24 +233,25 @@ def resolve_symbol_lists(exchange: str) -> tuple[List[str], List[str], str]:
 
 def sync_symbol_lists(
     rds,
+    env_name: str,
     key_suffix: str,
     fwd_symbols: List[str],
     bwd_symbols: List[str],
 ) -> int:
     """同步交易对列表到 Redis"""
     # 1. 平仓列表（默认空）
-    dump_key = f"fr_dump_symbols:{key_suffix}"
+    dump_key = symbol_list_key(env_name, "dump_symbols", key_suffix)
     empty_list: List[str] = []
     rds.set(dump_key, json.dumps(empty_list, ensure_ascii=False))
     print(f"✅ 已写入 {len(empty_list)} 个交易对到 '{dump_key}'（平仓列表）")
 
     # 2. 正套建仓列表
-    fwd_key = f"fr_fwd_trade_symbols:{key_suffix}"
+    fwd_key = symbol_list_key(env_name, "fwd_trade_symbols", key_suffix)
     rds.set(fwd_key, json.dumps(fwd_symbols, ensure_ascii=False))
     print(f"✅ 已写入 {len(fwd_symbols)} 个交易对到 '{fwd_key}'（正套）")
     total = len(fwd_symbols)
     # 3. 反套建仓列表
-    bwd_key = f"fr_bwd_trade_symbols:{key_suffix}"
+    bwd_key = symbol_list_key(env_name, "bwd_trade_symbols", key_suffix)
     rds.set(bwd_key, json.dumps(bwd_symbols, ensure_ascii=False))
     print(f"✅ 已写入 {len(bwd_symbols)} 个交易对到 '{bwd_key}'（反套）")
     total += len(bwd_symbols)
@@ -291,14 +316,26 @@ def print_symbol_list(rds, key: str, title: str) -> None:
         print(f"  原始值: {symbols_str}")
 
 
-def print_all_symbol_lists(rds, key_suffix: str) -> None:
+def print_all_symbol_lists(rds, env_name: str, key_suffix: str) -> None:
     """打印所有交易对列表"""
     print("\n📊 交易对列表配置:")
     print("=" * 80)
 
-    print_symbol_list(rds, f"fr_dump_symbols:{key_suffix}", f"🔴 {key_suffix} - 平仓列表")
-    print_symbol_list(rds, f"fr_fwd_trade_symbols:{key_suffix}", f"🟢 {key_suffix} - 正套建仓列表")
-    print_symbol_list(rds, f"fr_bwd_trade_symbols:{key_suffix}", f"🔴 {key_suffix} - 反套建仓列表")
+    print_symbol_list(
+        rds,
+        symbol_list_key(env_name, "dump_symbols", key_suffix),
+        f"🔴 {key_suffix} - 平仓列表",
+    )
+    print_symbol_list(
+        rds,
+        symbol_list_key(env_name, "fwd_trade_symbols", key_suffix),
+        f"🟢 {key_suffix} - 正套建仓列表",
+    )
+    print_symbol_list(
+        rds,
+        symbol_list_key(env_name, "bwd_trade_symbols", key_suffix),
+        f"🔴 {key_suffix} - 反套建仓列表",
+    )
 
 
 def main() -> int:
@@ -319,20 +356,30 @@ def main() -> int:
     key_suffix = make_key_suffix(open_venue, hedge_venue)
     exchange = open_venue.split("-", 1)[0] if "-" in open_venue else open_venue
     fwd_symbols, bwd_symbols, source = resolve_symbol_lists(exchange)
+    env_name = (args.env_name or infer_env_name_from_cwd() or "").strip().lower()
+    if not env_name:
+        print(
+            "❌ 需要 --env-name，或在 <exchange>_fr_<suffix> 命名的目录下运行以自动推断",
+            file=sys.stderr,
+        )
+        return 2
+    if not args.env_name:
+        print(f"[INFO] 未提供 env-name，基于目录推断: {env_name}", file=sys.stderr)
+    warn_if_env_name_mismatched(env_name, exchange)
 
     rds = redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
 
-    print(f"🔄 开始同步 Funding Rate 交易对列表 (key_suffix={key_suffix})...")
+    print(f"🔄 开始同步 Funding Rate 交易对列表 (env={env_name}, key_suffix={key_suffix})...")
     print("📍 Redis: 127.0.0.1:6379/0")
     print(f"📋 Symbol source: {source}")
     print()
 
     # 同步列表
-    total = sync_symbol_lists(rds, key_suffix, fwd_symbols, bwd_symbols)
+    total = sync_symbol_lists(rds, env_name, key_suffix, fwd_symbols, bwd_symbols)
     print(f"\n✅ 共写入 {total} 个交易对条目")
 
     # 打印结果
-    print_all_symbol_lists(rds, key_suffix)
+    print_all_symbol_lists(rds, env_name, key_suffix)
 
     print("\n✅ 同步完成！")
     return 0
