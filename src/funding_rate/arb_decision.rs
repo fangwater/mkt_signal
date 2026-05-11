@@ -907,6 +907,35 @@ fn drive_funding_decision(
         );
     }
 
+    let in_dump = symbol_list.is_in_dump_list(open_symbol_key.as_str());
+    if in_dump {
+        if let Some(CloseGateOutcome::Pass(close_gate)) = ArbDecision::with_state_mut(|arb| {
+            arb.evaluate_close_gate(
+                spread_factor,
+                open_symbol_key.as_str(),
+                hedge_symbol_key.as_str(),
+                open_venue,
+                hedge_venue,
+                now,
+            )
+        }) {
+            emit_funding_open_close_signals(
+                decision,
+                open_symbol_key.as_str(),
+                hedge_symbol_key.as_str(),
+                open_venue,
+                hedge_venue,
+                SignalType::ArbClose,
+                close_gate.side,
+                None,
+            )?;
+            let _ = ArbDecision::with_state_mut(|arb| {
+                arb.mark_close_triggered(close_gate.key, now);
+            });
+            return Ok(Some(SignalType::ArbClose));
+        }
+    }
+
     let forward_cancel = spread_factor.satisfy_forward_cancel(
         open_venue,
         open_symbol_key.as_str(),
@@ -953,15 +982,8 @@ fn drive_funding_decision(
         return Ok(Some(SignalType::ArbCancel));
     }
 
-    let in_dump = symbol_list.is_in_dump_list(open_symbol_key.as_str());
     if in_dump {
-        log::debug!(
-            "{FUNDING_ARB_SHELL_NAME} symbol in dump list open={} hedge={} open_venue={:?} hedge_venue={:?}",
-            open_symbol_key,
-            hedge_symbol_key,
-            open_venue,
-            hedge_venue
-        );
+        return Ok(None);
     }
 
     let rate_ready = RateFetcher::is_initial_ready(hedge_venue);
@@ -1086,6 +1108,35 @@ fn drive_spread_arb_decision(
     }
 
     let mut emitted_signal: Option<SignalType> = None;
+    let in_dump = symbol_list.is_in_dump_list(open_symbol_key.as_str());
+    if in_dump {
+        if let Some(CloseGateOutcome::Pass(close_gate)) = ArbDecision::with_state_mut(|arb| {
+            arb.evaluate_close_gate(
+                spread_factor,
+                open_symbol_key.as_str(),
+                hedge_symbol_key.as_str(),
+                open_venue,
+                hedge_venue,
+                now,
+            )
+        }) {
+            let _ = ArbDecision::with_state_mut(|arb| {
+                arb.record_intercept_summary("spread_close");
+            });
+            emit_spread_arb_close_signals(
+                decision,
+                open_symbol_key.as_str(),
+                hedge_symbol_key.as_str(),
+                open_venue,
+                hedge_venue,
+                close_gate.side,
+            )?;
+            let _ = ArbDecision::with_state_mut(|arb| {
+                arb.mark_close_triggered(close_gate.key, now);
+            });
+            return Ok(Some(SignalType::ArbClose));
+        }
+    }
 
     let forward_cancel = spread_factor.satisfy_forward_cancel(
         open_venue,
@@ -1185,36 +1236,8 @@ fn drive_spread_arb_decision(
         }
     }
 
-    let in_dump = symbol_list.is_in_dump_list(open_symbol_key.as_str());
     if in_dump {
-        let Some(close_gate) = ArbDecision::with_state_mut(|arb| {
-            arb.evaluate_close_gate(
-                spread_factor,
-                open_symbol_key.as_str(),
-                hedge_symbol_key.as_str(),
-                open_venue,
-                hedge_venue,
-                now,
-            )
-        })
-        .flatten() else {
-            return Ok(emitted_signal);
-        };
-        let _ = ArbDecision::with_state_mut(|arb| {
-            arb.record_intercept_summary("spread_close");
-        });
-        emit_spread_arb_close_signals(
-            decision,
-            open_symbol_key.as_str(),
-            hedge_symbol_key.as_str(),
-            open_venue,
-            hedge_venue,
-            close_gate.side,
-        )?;
-        let _ = ArbDecision::with_state_mut(|arb| {
-            arb.mark_close_triggered(close_gate.key, now);
-        });
-        return Ok(Some(SignalType::ArbClose));
+        return Ok(emitted_signal);
     }
 
     let Some(open_control) = ArbDecision::with_state_mut(|arb| {
@@ -2882,6 +2905,13 @@ pub(crate) struct ArbCloseGatePassed {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) enum CloseGateOutcome {
+    Pass(ArbCloseGatePassed),
+    NoSide,
+    Cooldown,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct ArbCancelGatePassed {
     pub key: ThresholdKey,
 }
@@ -3162,20 +3192,22 @@ impl ArbDecisionState {
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
         now: i64,
-    ) -> Option<ArbCloseGatePassed> {
-        let side = Self::evaluate_close_side(
+    ) -> CloseGateOutcome {
+        let Some(side) = Self::evaluate_close_side(
             spread_factor,
             open_symbol_key,
             hedge_symbol_key,
             open_venue,
             hedge_venue,
-        )?;
+        ) else {
+            return CloseGateOutcome::NoSide;
+        };
         let key =
             Self::build_threshold_key(open_symbol_key, hedge_symbol_key, open_venue, hedge_venue);
         if self.is_close_cooldown_hit(&key, now) {
-            return None;
+            return CloseGateOutcome::Cooldown;
         }
-        Some(ArbCloseGatePassed { side, key })
+        CloseGateOutcome::Pass(ArbCloseGatePassed { side, key })
     }
 
     pub fn evaluate_cancel_gate(

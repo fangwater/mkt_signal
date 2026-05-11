@@ -207,6 +207,10 @@ impl OpenStrategyCommon for ArbCloseStrategy {
         "arb close"
     }
 
+    fn record_terminal_as_arb_close(&self) -> bool {
+        true
+    }
+
     fn resolve_open_qty_multiplier(
         &self,
         venue: TradingVenue,

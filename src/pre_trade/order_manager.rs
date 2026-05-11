@@ -63,6 +63,30 @@ fn format_order_price(price: f64) -> String {
         .unwrap_or_else(|| format_price(price))
 }
 
+fn quantize_order_decimal(value: f64) -> Option<QuantizedValue> {
+    if let Some(qv) = QuantizedValue::from_decimal(value) {
+        return Some(qv);
+    }
+    if !value.is_finite() || value <= 0.0 {
+        return None;
+    }
+
+    const SCALE_EXP: i32 = -12;
+    const SCALE: f64 = 1_000_000_000_000.0;
+    let scaled = (value * SCALE).round();
+    if !scaled.is_finite() || scaled <= 0.0 || scaled > i64::MAX as f64 {
+        return None;
+    }
+
+    let mut int_value = scaled as i64;
+    let mut int_exp = SCALE_EXP;
+    while int_exp < 0 && int_value % 10 == 0 {
+        int_value /= 10;
+        int_exp += 1;
+    }
+    (int_value > 0).then(|| QuantizedValue::from_parts(int_value, int_exp, 1))
+}
+
 fn binance_ws_um_new_order_resp_type() -> &'static str {
     "RESULT"
 }
@@ -1377,14 +1401,14 @@ impl Order {
                 let create_ts = get_timestamp_us();
                 let inst_id = okex_inst_id_from_symbol(&self.symbol, self.venue)?;
                 let okex_order_type = okex_order_type_from_order_type(self.order_type)?;
-                let quantity_qv = QuantizedValue::from_decimal(self.quantity).ok_or_else(|| {
+                let quantity_qv = quantize_order_decimal(self.quantity).ok_or_else(|| {
                     format!(
                         "failed to quantize okex quantity: qty={:.12} symbol={} client_order_id={}",
                         self.quantity, self.symbol, self.client_order_id
                     )
                 })?;
                 let price_qv = if self.order_type.is_limit() {
-                    QuantizedValue::from_decimal(self.price).ok_or_else(|| {
+                    quantize_order_decimal(self.price).ok_or_else(|| {
                         format!(
                             "failed to quantize okex price: price={:.12} symbol={} client_order_id={}",
                             self.price, self.symbol, self.client_order_id
@@ -1500,14 +1524,14 @@ impl Order {
             TradingVenue::BybitMargin | TradingVenue::BybitFutures => {
                 let create_ts = get_timestamp_us();
                 let symbol = bybit_symbol_from_symbol(&self.symbol);
-                let quantity_qv = QuantizedValue::from_decimal(self.quantity).ok_or_else(|| {
+                let quantity_qv = quantize_order_decimal(self.quantity).ok_or_else(|| {
                     format!(
                         "failed to quantize bybit quantity: qty={:.12} symbol={} client_order_id={}",
                         self.quantity, self.symbol, self.client_order_id
                     )
                 })?;
                 let price_qv = if self.order_type.is_limit() {
-                    QuantizedValue::from_decimal(self.price).ok_or_else(|| {
+                    quantize_order_decimal(self.price).ok_or_else(|| {
                         format!(
                             "failed to quantize bybit price: price={:.12} symbol={} client_order_id={}",
                             self.price, self.symbol, self.client_order_id

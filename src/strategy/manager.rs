@@ -149,6 +149,27 @@ pub trait OrderTerminalRecorder {
         open_client_order_id: i64,
     ) -> bool;
 
+    fn record_close_order_terminal(
+        &mut self,
+        terminal_ts: i64,
+        side: Side,
+        order_base_qty: f64,
+        filled_base_qty: f64,
+        price: f64,
+        close_ts: i64,
+        open_client_order_id: i64,
+    ) -> bool {
+        self.record_open_order_terminal(
+            terminal_ts,
+            side,
+            order_base_qty,
+            filled_base_qty,
+            price,
+            close_ts,
+            open_client_order_id,
+        )
+    }
+
     fn record_hedge_order_terminal(
         &mut self,
         terminal_ts: i64,
@@ -724,13 +745,29 @@ impl StrategyManager {
         let strategy_id = StrategyManager::generate_strategy_id();
         let open_venue = MonitorChannel::instance().open_venue();
         let hedge_venue = MonitorChannel::instance().hedge_venue();
-        let strategy =
+        let mut strategy =
             ArbHedgeStrategy::new(strategy_id, symbol_upper.clone(), open_venue, hedge_venue);
+        let open_pos = MonitorChannel::instance().get_position_qty(&symbol_upper, open_venue);
+        let hedge_pos = MonitorChannel::instance().get_position_qty(&symbol_upper, hedge_venue);
+        let net_qty = open_pos + hedge_pos;
+        if net_qty.abs() > 1e-12 {
+            let seed_price = MonitorChannel::instance()
+                .price_table()
+                .borrow()
+                .mark_price(&symbol_upper)
+                .unwrap_or(0.0);
+            strategy.seed_net_position(get_timestamp_us(), net_qty, seed_price, "position_seed");
+            info!(
+                "ArbHedge init: symbol={} open_venue={:?} hedge_venue={:?} open_pos={:.8} hedge_pos={:.8} net={:.8} seed_price={:.8} (seed from positions)",
+                symbol_upper, open_venue, hedge_venue, open_pos, hedge_pos, net_qty, seed_price
+            );
+        } else {
+            info!(
+                "ArbHedge init: symbol={} open_venue={:?} hedge_venue={:?} open_pos={:.8} hedge_pos={:.8} net=0.0 (no seed)",
+                symbol_upper, open_venue, hedge_venue, open_pos, hedge_pos
+            );
+        }
         self.insert(Box::new(strategy));
-        info!(
-            "ArbHedge init: symbol={} open_venue={:?} hedge_venue={:?}",
-            symbol_upper, open_venue, hedge_venue
-        );
         strategy_id
     }
 
@@ -772,6 +809,37 @@ impl StrategyManager {
             return false;
         };
         recorder.record_open_order_terminal(
+            terminal_ts,
+            side,
+            order_base_qty,
+            filled_base_qty,
+            price,
+            close_ts,
+            open_client_order_id,
+        )
+    }
+
+    pub fn record_close_order_terminal(
+        &mut self,
+        symbol: &str,
+        side: Side,
+        order_base_qty: f64,
+        filled_base_qty: f64,
+        terminal_ts: i64,
+        price: f64,
+        close_ts: i64,
+        open_client_order_id: i64,
+    ) -> bool {
+        let Some(id) = self.find_order_terminal_recorder_id(symbol) else {
+            return false;
+        };
+        let Some(strategy) = self.strategies.get_mut(&id) else {
+            return false;
+        };
+        let Some(recorder) = strategy.order_terminal_recorder_mut() else {
+            return false;
+        };
+        recorder.record_close_order_terminal(
             terminal_ts,
             side,
             order_base_qty,

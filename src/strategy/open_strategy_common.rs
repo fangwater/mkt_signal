@@ -149,6 +149,10 @@ pub trait OpenStrategyCommon {
         0
     }
 
+    fn record_terminal_as_arb_close(&self) -> bool {
+        false
+    }
+
     fn skip_open_position_risk_checks(&self) -> bool {
         false
     }
@@ -172,10 +176,10 @@ pub trait OpenStrategyCommon {
             return false;
         }
         let close_ts = self.open_terminal_close_ts();
-        let updated = MonitorChannel::instance()
-            .strategy_mgr()
-            .borrow_mut()
-            .record_open_order_terminal(
+        let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+        let mut strategy_mgr = strategy_mgr.borrow_mut();
+        let updated = if self.record_terminal_as_arb_close() {
+            strategy_mgr.record_close_order_terminal(
                 symbol,
                 side,
                 order_base_qty,
@@ -184,7 +188,19 @@ pub trait OpenStrategyCommon {
                 price,
                 close_ts,
                 open_client_order_id,
-            );
+            )
+        } else {
+            strategy_mgr.record_open_order_terminal(
+                symbol,
+                side,
+                order_base_qty,
+                filled_base_qty,
+                terminal_ts,
+                price,
+                close_ts,
+                open_client_order_id,
+            )
+        };
         if !updated {
             warn!(
                 "{}: strategy_id={} record open order terminal failed symbol={} side={:?} order_base_qty={:.8} filled_base_qty={:.8} terminal_ts={} price={:.8} close_ts={} open_co_id={} detail={}",

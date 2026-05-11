@@ -152,6 +152,36 @@ impl ArbHedgeStrategy {
         self.net_qty_queue.net_qty()
     }
 
+    pub fn seed_net_position(
+        &mut self,
+        seed_ts: i64,
+        signed_base_qty: f64,
+        price: f64,
+        source: &'static str,
+    ) -> bool {
+        if signed_base_qty.abs() <= TERMINAL_QTY_EPS {
+            return false;
+        }
+        let seed_price = if price.is_finite() && price > 0.0 {
+            price
+        } else {
+            0.0
+        };
+        self.net_qty_queue
+            .apply_fill(seed_ts, signed_base_qty, seed_price);
+        info!(
+            "ArbHedgeSeed: strategy_id={} symbol={} source={} qv={:.8} price={:.8} seed_ts={} net={:.8}",
+            self.strategy_id,
+            self.symbol,
+            source,
+            signed_base_qty,
+            seed_price,
+            seed_ts,
+            self.net_qty_queue.net_qty()
+        );
+        true
+    }
+
     // pending_hedge_qty 包含了所有开仓成交形成的对冲需求，无论是否已到期；
     pub fn pending_hedge_qty(&self) -> f64 {
         self.pending_hedge_queue.net_qty()
@@ -178,6 +208,15 @@ impl ArbHedgeStrategy {
             .borrow()
             .mark_price(&price_symbol)
             .filter(|price| price.is_finite() && *price > 0.0)
+    }
+
+    fn close_hedge_reduce_capacity(&self, close_side: Side) -> (Side, f64, f64) {
+        let hedge_pos = MonitorChannel::instance().get_position_qty(&self.symbol, self.hedge_venue);
+        let (hedge_side, reduce_capacity) = match close_side {
+            Side::Sell => (Side::Buy, (-hedge_pos).max(0.0)),
+            Side::Buy => (Side::Sell, hedge_pos.max(0.0)),
+        };
+        (hedge_side, hedge_pos, reduce_capacity)
     }
 
     fn pending_hedge_usdt_with_mark_price(pending_hedge_qty: f64, mark_price: f64) -> f64 {
@@ -1363,6 +1402,67 @@ impl OrderTerminalRecorder for ArbHedgeStrategy {
         // 如果 close_ts 还没到，trigger 会跳过，后续由 ArbHedgeStrategy::handle_period_clock
         // 作为 close_ts 时间轮在到期后重新拉起 query，避免藏仓 pending 永远留在队列里。
         self.trigger_hedge_query_after_open_terminal(terminal_ts);
+        true
+    }
+
+    fn record_close_order_terminal(
+        &mut self,
+        terminal_ts: i64,
+        side: Side,
+        order_base_qty: f64,
+        filled_base_qty: f64,
+        price: f64,
+        close_ts: i64,
+        open_client_order_id: i64,
+    ) -> bool {
+        let order_base_qty = order_base_qty.abs();
+        let filled_base_qty = filled_base_qty.abs();
+        if filled_base_qty <= TERMINAL_QTY_EPS {
+            return false;
+        }
+
+        let signed_base_qty = signed_qty_from_side(side, filled_base_qty);
+        self.net_qty_queue
+            .apply_fill(terminal_ts, signed_base_qty, price);
+
+        let (hedge_side, hedge_pos, hedge_reduce_capacity) = self.close_hedge_reduce_capacity(side);
+        let pending_base_qty = filled_base_qty.min(hedge_reduce_capacity);
+        let skipped_pending_base_qty = (filled_base_qty - pending_base_qty).max(0.0);
+        let pending_qv = signed_qty_from_side(side, pending_base_qty);
+        if pending_base_qty > TERMINAL_QTY_EPS {
+            self.pending_hedge_queue.upsert_open_lot(
+                terminal_ts,
+                close_ts,
+                pending_qv,
+                price,
+                open_client_order_id,
+            );
+        }
+
+        info!(
+            "ArbHedgeRecord: strategy_id={} symbol={} leg=close side={:?} order_base_qty={:.8} filled_base_qty={:.8} qv={:.8} price={:.8} terminal_ts={} close_ts={} open_co_id={} hedge_side={:?} hedge_pos={:.8} hedge_reduce_capacity={:.8} pending_qv={:.8} skipped_pending_base_qty={:.8} net={:.8} pending_hedge={:.8}",
+            self.strategy_id,
+            self.symbol,
+            side,
+            order_base_qty,
+            filled_base_qty,
+            signed_base_qty,
+            price,
+            terminal_ts,
+            close_ts,
+            open_client_order_id,
+            hedge_side,
+            hedge_pos,
+            hedge_reduce_capacity,
+            pending_qv,
+            skipped_pending_base_qty,
+            self.net_qty_queue.net_qty(),
+            self.pending_hedge_queue.net_qty()
+        );
+
+        if pending_base_qty > TERMINAL_QTY_EPS {
+            self.trigger_hedge_query_after_open_terminal(terminal_ts);
+        }
         true
     }
 
