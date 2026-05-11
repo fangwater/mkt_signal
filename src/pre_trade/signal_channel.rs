@@ -503,10 +503,6 @@ fn handle_trade_signal(signal: TradeSignal) {
                             .unwrap_or(false)
                     };
                     if has_active_close {
-                        info!(
-                            "ArbClose: active close strategy already exists, skip duplicate opening_symbol={} side={:?} opening_pos={:.6} hedging_pos={:.6}",
-                            opening_symbol, close_side, opening_pos, hedging_pos
-                        );
                         return;
                     }
 
