@@ -9,6 +9,7 @@
   2. {env_name}:fr_trade_symbols:{key_suffix}         - 建仓列表（旧字段）
   3. {env_name}:fr_fwd_trade_symbols:{key_suffix}     - 正套建仓列表
   4. {env_name}:fr_bwd_trade_symbols:{key_suffix}     - 反套建仓列表
+  5. {env_name}:fr_unimmr_close_symbols:{key_suffix}  - UniMMR 算法平仓候选列表
 
 其中 key_suffix 为 "<open_venue>_<hedge_venue>"（例如 gate-margin_gate-futures）。
 env_name 为部署目录名，例如 `binance_fr_trade01`。
@@ -154,6 +155,11 @@ def print_all_symbol_lists(rds, env_name: str, key_suffix: str) -> None:
     )
     print_symbol_list(
         rds,
+        symbol_list_key(env_name, "unimmr_close_symbols", key_suffix),
+        f"🟠 {key_suffix} - UniMMR 平仓候选",
+    )
+    print_symbol_list(
+        rds,
         symbol_list_key(env_name, "fwd_trade_symbols", key_suffix),
         f"🟢 {key_suffix} - 正套建仓列表",
     )
@@ -172,6 +178,7 @@ def print_summary(rds, env_name: str, key_suffix: str) -> None:
     keys = [
         symbol_list_key(env_name, "dump_symbols", key_suffix),
         symbol_list_key(env_name, "trade_symbols", key_suffix),
+        symbol_list_key(env_name, "unimmr_close_symbols", key_suffix),
         symbol_list_key(env_name, "fwd_trade_symbols", key_suffix),
         symbol_list_key(env_name, "bwd_trade_symbols", key_suffix),
     ]

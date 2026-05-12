@@ -260,14 +260,10 @@ if [[ -f "$ROOT_DIR/docs/cross_pre_trade_dashboard.html" ]]; then
   cp "$ROOT_DIR/docs/cross_pre_trade_dashboard.html" "$TARGET_DIR/www/pre_trade_dashboard.html"
   cp "$ROOT_DIR/docs/cross_pre_trade_dashboard.html" "$TARGET_DIR/www/index.html"
   echo "[INFO] 已同步 cross dashboard: $TARGET_DIR/www/pre_trade_dashboard.html"
-elif [[ -f "$ROOT_DIR/docs/xarb_pre_trade_dashboard.html" ]]; then
-  cp "$ROOT_DIR/docs/xarb_pre_trade_dashboard.html" "$TARGET_DIR/www/pre_trade_dashboard.html"
-  cp "$ROOT_DIR/docs/xarb_pre_trade_dashboard.html" "$TARGET_DIR/www/index.html"
-  echo "[WARN] 缺少 cross dashboard，回退到 xarb 版"
 elif [[ -f "$ROOT_DIR/docs/pre_trade_dashboard.html" ]]; then
   cp "$ROOT_DIR/docs/pre_trade_dashboard.html" "$TARGET_DIR/www/pre_trade_dashboard.html"
   cp "$ROOT_DIR/docs/pre_trade_dashboard.html" "$TARGET_DIR/www/index.html"
-  echo "[WARN] 缺少 cross/xarb dashboard，回退到通用版"
+  echo "[WARN] 缺少 cross dashboard，回退到通用版"
 fi
 
 EXTRA_FILES=(

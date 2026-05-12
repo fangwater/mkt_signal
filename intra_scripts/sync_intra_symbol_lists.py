@@ -4,10 +4,12 @@
 """
 将 intra（同所期现）交易对列表同步到 Redis 并打印（按 exchange 维度）。
 
-写入 3 个 Redis key（String 类型，JSON 数组）：
+写入 4 个 Redis key（String 类型，JSON 数组）：
   - intra_dump_symbols:{exchange}        - 平仓列表
   - intra_fwd_trade_symbols:{exchange}   - 正套建仓列表
   - intra_bwd_trade_symbols:{exchange}   - 反套建仓列表
+  - {env_name}:intra_unimmr_close_symbols:{open_venue}_{hedge_venue}
+                                            - UniMMR 算法平仓候选列表
 
 推断规则：--exchange / --open-venue / --env-name / CWD（<exchange>-intra-<tag>）
 """
@@ -79,6 +81,7 @@ def parse_args() -> argparse.Namespace:
 # ========== 交易对白名单配置 ==========
 
 DUMP_SYMBOLS: List[str] = []
+UNIMMR_CLOSE_SYMBOLS: List[str] = []
 FWD_SYMBOLS: List[str] = [
     "BTCUSDT",
     "ETHUSDT",
@@ -147,6 +150,23 @@ def resolve_exchange(args: argparse.Namespace) -> Optional[str]:
     return infer_exchange_from_cwd()
 
 
+def resolve_env_name(args: argparse.Namespace) -> str:
+    if args.env_name:
+        return args.env_name.strip().lower()
+    return Path.cwd().name.strip().lower()
+
+
+def resolve_venues(args: argparse.Namespace, exchange: str) -> tuple[str, str]:
+    open_venue = (args.open_venue or f"{exchange}-margin").strip().lower()
+    hedge_venue = (args.hedge_venue or f"{exchange}-futures").strip().lower()
+    return open_venue, hedge_venue
+
+
+def unimmr_close_key(env_name: str, open_venue: str, hedge_venue: str) -> str:
+    suffix = f"{open_venue.strip().lower()}_{hedge_venue.strip().lower()}"
+    return f"{env_name}:intra_unimmr_close_symbols:{suffix}" if env_name else f"intra_unimmr_close_symbols:{suffix}"
+
+
 def print_symbol_list(rds, key: str, title: str) -> None:
     print(f"\n{title} ({key}):")
     data = rds.get(key)
@@ -188,10 +208,11 @@ def validate_symbol_partition() -> bool:
     return True
 
 
-def sync_symbol_lists(rds, exchange: str) -> int:
+def sync_symbol_lists(rds, exchange: str, env_name: str, open_venue: str, hedge_venue: str) -> int:
     dump_key = f"{NAMESPACE}_dump_symbols:{exchange}"
     fwd_key = f"{NAMESPACE}_fwd_trade_symbols:{exchange}"
     bwd_key = f"{NAMESPACE}_bwd_trade_symbols:{exchange}"
+    unimmr_key = unimmr_close_key(env_name, open_venue, hedge_venue)
 
     rds.set(dump_key, json.dumps(DUMP_SYMBOLS, ensure_ascii=False))
     print(f"✅ 已写入 {len(DUMP_SYMBOLS)} 个交易对到 '{dump_key}'（平仓列表）")
@@ -202,7 +223,12 @@ def sync_symbol_lists(rds, exchange: str) -> int:
     rds.set(bwd_key, json.dumps(BWD_SYMBOLS, ensure_ascii=False))
     print(f"✅ 已写入 {len(BWD_SYMBOLS)} 个交易对到 '{bwd_key}'（反套）")
 
-    return len(DUMP_SYMBOLS) + len(FWD_SYMBOLS) + len(BWD_SYMBOLS)
+    rds.set(unimmr_key, json.dumps(UNIMMR_CLOSE_SYMBOLS, ensure_ascii=False))
+    print(
+        f"✅ 已写入 {len(UNIMMR_CLOSE_SYMBOLS)} 个交易对到 '{unimmr_key}'（UniMMR 平仓候选）"
+    )
+
+    return len(DUMP_SYMBOLS) + len(FWD_SYMBOLS) + len(BWD_SYMBOLS) + len(UNIMMR_CLOSE_SYMBOLS)
 
 
 def main() -> int:
@@ -222,14 +248,17 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
+    open_venue, hedge_venue = resolve_venues(args, exchange)
+    env_name = resolve_env_name(args)
 
     rds = redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
 
     print(f"🔄 开始同步 intra 交易对列表 (exchange={exchange})...")
+    print(f"📦 Env: {env_name or '-'}")
     print("📍 Redis: 127.0.0.1:6379/0")
     print()
 
-    total = sync_symbol_lists(rds, exchange)
+    total = sync_symbol_lists(rds, exchange, env_name, open_venue, hedge_venue)
     print(f"\n✅ 共写入 {total} 个交易对条目")
 
     print("\n📊 intra 交易对列表配置:")
@@ -237,6 +266,7 @@ def main() -> int:
     print_symbol_list(rds, f"{NAMESPACE}_dump_symbols:{exchange}", "🔴 dump_symbols")
     print_symbol_list(rds, f"{NAMESPACE}_fwd_trade_symbols:{exchange}", "🟢 fwd_trade_symbols")
     print_symbol_list(rds, f"{NAMESPACE}_bwd_trade_symbols:{exchange}", "🔴 bwd_trade_symbols")
+    print_symbol_list(rds, unimmr_close_key(env_name, open_venue, hedge_venue), "🟠 unimmr_close_symbols")
     print()
     return 0
 

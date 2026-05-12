@@ -12,7 +12,6 @@ use mkt_signal::pre_trade::auto_collection_service::AutoCollectionService;
 use mkt_signal::pre_trade::auto_repay::{BinanceRepayer, BybitRepayer, GateRepayer};
 use mkt_signal::pre_trade::auto_repay_service::AutoRepayService;
 use mkt_signal::pre_trade::intra_bwd_symbol_list::IntraBwdSymbolList;
-use mkt_signal::pre_trade::unimmr_close_symbol_list::UnimmrCloseSymbolList;
 use mkt_signal::pre_trade::monitor_channel::MonitorChannel;
 use mkt_signal::pre_trade::params_load::PreTradeParamsLoader;
 use mkt_signal::pre_trade::persist_channel::PersistChannel;
@@ -20,6 +19,7 @@ use mkt_signal::pre_trade::resample_channel::ResampleChannel;
 use mkt_signal::pre_trade::signal_channel::{
     SignalChannel, DEFAULT_BACKWARD_CHANNEL, DEFAULT_SIGNAL_CHANNEL,
 };
+use mkt_signal::pre_trade::unimmr_close_symbol_list::UnimmrCloseSymbolList;
 use mkt_signal::pre_trade::PreTrade;
 use mkt_signal::pre_trade::QueryEngHub;
 use mkt_signal::pre_trade::TradeEngHub;

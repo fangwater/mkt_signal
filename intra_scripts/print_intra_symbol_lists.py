@@ -4,10 +4,12 @@
 """
 打印 intra（同所期现）交易对列表（按 exchange 维度，从 Redis 读取）。
 
-读取 3 个 Redis key（均为 String，JSON 数组）：
+读取 4 个 Redis key（均为 String，JSON 数组）：
   1. intra_dump_symbols:{exchange}        - 平仓列表
   2. intra_fwd_trade_symbols:{exchange}   - 正套建仓列表
   3. intra_bwd_trade_symbols:{exchange}   - 反套建仓列表
+  4. {env_name}:intra_unimmr_close_symbols:{open_venue}_{hedge_venue}
+                                            - UniMMR 算法平仓候选列表
 
 key_suffix 为单一 exchange（同所期现），可通过 --exchange / --env-name / CWD 推断。
 """
@@ -90,6 +92,23 @@ def resolve_exchange(args: argparse.Namespace) -> Optional[str]:
     return infer_exchange_from_cwd()
 
 
+def resolve_env_name(args: argparse.Namespace) -> str:
+    if args.env_name:
+        return args.env_name.strip().lower()
+    return Path.cwd().name.strip().lower()
+
+
+def resolve_venues(args: argparse.Namespace, exchange: str) -> tuple[str, str]:
+    open_venue = (args.open_venue or f"{exchange}-margin").strip().lower()
+    hedge_venue = (args.hedge_venue or f"{exchange}-futures").strip().lower()
+    return open_venue, hedge_venue
+
+
+def unimmr_close_key(env_name: str, open_venue: str, hedge_venue: str) -> str:
+    suffix = f"{open_venue.strip().lower()}_{hedge_venue.strip().lower()}"
+    return f"{env_name}:intra_unimmr_close_symbols:{suffix}" if env_name else f"intra_unimmr_close_symbols:{suffix}"
+
+
 def print_symbol_list(rds, key: str, title: str) -> int:
     print(f"\n{title} ({key}):")
     data = rds.get(key)
@@ -127,10 +146,13 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
+    open_venue, hedge_venue = resolve_venues(args, exchange)
+    env_name = resolve_env_name(args)
 
     rds = redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
 
     print("📍 Redis: 127.0.0.1:6379/0")
+    print(f"📦 env_name: {env_name or '-'}")
     print(f"📍 exchange: {exchange}\n")
 
     print("\n📊 intra 交易对列表配置:")
@@ -139,6 +161,11 @@ def main() -> int:
     total += print_symbol_list(rds, f"{NAMESPACE}_dump_symbols:{exchange}", "🔴 dump_symbols")
     total += print_symbol_list(rds, f"{NAMESPACE}_fwd_trade_symbols:{exchange}", "🟢 fwd_trade_symbols")
     total += print_symbol_list(rds, f"{NAMESPACE}_bwd_trade_symbols:{exchange}", "🔴 bwd_trade_symbols")
+    total += print_symbol_list(
+        rds,
+        unimmr_close_key(env_name, open_venue, hedge_venue),
+        "🟠 unimmr_close_symbols",
+    )
 
     print("\n📈 统计摘要:")
     print("=" * 80)
@@ -146,6 +173,7 @@ def main() -> int:
         f"{NAMESPACE}_dump_symbols:{exchange}",
         f"{NAMESPACE}_fwd_trade_symbols:{exchange}",
         f"{NAMESPACE}_bwd_trade_symbols:{exchange}",
+        unimmr_close_key(env_name, open_venue, hedge_venue),
     ]:
         data = rds.get(k)
         if not data:

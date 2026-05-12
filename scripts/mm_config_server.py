@@ -1620,6 +1620,24 @@ def sanitize_mapping_by_schema(
     return normalize_strategy_params_by_schema(sanitized)
 
 
+def normalize_unimmr_control_lines(mapping: Dict[str, str]) -> Dict[str, str]:
+    normalized = dict(mapping)
+    if "unimmr_trigger_line" not in normalized or "unimmr_recover_line" not in normalized:
+        return normalized
+    try:
+        trigger = float(str(normalized["unimmr_trigger_line"]).strip())
+        recover = float(str(normalized["unimmr_recover_line"]).strip())
+    except Exception as exc:
+        raise ValueError("unimmr_trigger_line/unimmr_recover_line must be numbers") from exc
+    if not (math.isfinite(trigger) and math.isfinite(recover) and 1.5 < trigger < recover):
+        raise ValueError(
+            "unimmr control lines must satisfy 1.5 < unimmr_trigger_line < unimmr_recover_line"
+        )
+    normalized["unimmr_trigger_line"] = f"{trigger:g}"
+    normalized["unimmr_recover_line"] = f"{recover:g}"
+    return normalized
+
+
 def normalize_positive_int_text(raw: Any, field_name: str) -> str:
     text = str(raw).strip()
     if not text:
@@ -2182,6 +2200,7 @@ class MMConfigStore:
             RISK_PARAM_COMMENTS,
             RISK_PARAM_ORDER,
         )
+        mapping = normalize_unimmr_control_lines(mapping)
         return self._replace_hash(key, mapping)
 
     def read_model_score_rolling_params(self, model_name: str) -> Dict[str, Any]:

@@ -17,7 +17,6 @@
   - `rolling_metrics_params_{open_venue}_{hedge_venue}` - 配置参数
   - `rolling_metrics_thresholds_{open_venue}_{hedge_venue}` - 输出结果
   - `funding_rate_thresholds_{exchange}` - FR 策略阈值
-  - `xarb_funding_thresholds_{open_venue}_{hedge_venue}` - xarb 开仓过滤阈值
 
 ## 支持的交易所
 
@@ -75,9 +74,6 @@ python scripts/sync_funding_rate_thresholds.py --exchange binance
 # FR 策略：同步 okex 资金费率阈值
 python scripts/sync_funding_rate_thresholds.py --exchange okex
 
-# XARB spot/futures：同步 rolling_metrics 派生的开仓过滤阈值
-python xarb_scripts/sync_xarb_funding_thresholds.py --open-venue binance-margin --hedge-venue binance-futures
-
 # 当前默认:
 # - spot/futures 使用 hedge_premium_rate_50
 # - futures/futures 使用 spread_fr_80 / spread_fr_20
@@ -95,8 +91,6 @@ python scripts/rolling_metrics/print_rolling_metrics_thresholds.py --open-venue 
 # 查看资金费率阈值
 python scripts/print_funding_rate_thresholds.py --exchange binance
 
-# 查看 xarb funding/premium 过滤阈值
-python xarb_scripts/print_xarb_funding_thresholds.py --open-venue binance-margin --hedge-venue binance-futures
 ```
 
 ### 5. 启动 rolling_metrics 服务
@@ -157,10 +151,6 @@ FUNDING_THRESHOLD_REDIS_KEY="funding_rate_thresholds_okex" \
 - Bitget: `funding_rate_thresholds_bitget`
 - Gate: `funding_rate_thresholds_gate`
 
-### XARB 开仓过滤阈值
-- Binance margin/futures: `xarb_funding_thresholds_binance-margin_binance-futures`
-- OKEx futures/Binance futures: `xarb_funding_thresholds_okex-futures_binance-futures`
-
 ## 数据隔离
 
 ### 数据 Prefix 格式
@@ -210,8 +200,6 @@ for exchange in binance okex bybit bitget gate; do
     python scripts/rolling_metrics/sync_rolling_metrics_params.py --open-venue ${exchange}-margin --hedge-venue ${exchange}-futures
     python scripts/sync_funding_rate_thresholds.py --exchange ${exchange}
 done
-
-python xarb_scripts/sync_xarb_funding_thresholds.py --open-venue binance-margin --hedge-venue binance-futures
 ```
 
 ### 3. 更新启动脚本
@@ -329,14 +317,6 @@ rolling_metrics_thresholds_okex-margin_okex-futures
 - **用途**: 配置交易策略的决策阈值
 - **内容**: 8h/4h 的正反套开平仓阈值
 - **使用者**: 交易策略进程
-
-### `xarb_scripts/sync_xarb_funding_thresholds.py` - XARB 开仓过滤阈值
-- **写入**: `xarb_funding_thresholds_{open}_{hedge}`
-- **用途**: 从 rolling_metrics 输出中提取 xarb 开仓过滤阈值
-- **内容**:
-  - spot/futures 默认取 `hedge_premium_rate_50`
-  - futures/futures 默认取 `spread_fr_80` / `spread_fr_20`
-- **使用者**: `trade_signal` 中的 xarb 决策链路
 
 两个脚本分开是为了：
 1. **职责分离**：统计层 vs 策略层

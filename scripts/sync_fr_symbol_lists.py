@@ -6,6 +6,7 @@
 
 根据 open/hedge 生成 key_suffix 并写入 Redis key（String 类型，JSON 数组）：
   - {env_name}:fr_dump_symbols:{key_suffix}          - 平仓列表
+  - {env_name}:fr_unimmr_close_symbols:{key_suffix}  - UniMMR 算法平仓候选列表
   - {env_name}:fr_fwd_trade_symbols:{key_suffix}     - 正套建仓列表
   - {env_name}:fr_bwd_trade_symbols:{key_suffix}     - 反套建仓列表
 
@@ -134,6 +135,7 @@ BWD_SYMBOLS: List[str] = BWD_SYMBOLS_8H + BWD_SYMBOLS_4H
 
 # 合并所有交易对（用于平仓列表）
 SYMBOL_ALLOWLIST: List[str] = list(set(FWD_SYMBOLS + BWD_SYMBOLS))
+UNIMMR_CLOSE_SYMBOLS: List[str] = []
 
 # Gate 专用交易对列表（USDT，下划线格式）
 GATE_FWD_SYMBOLS_8H: List[str] = [
@@ -245,12 +247,19 @@ def sync_symbol_lists(
     rds.set(dump_key, json.dumps(empty_list, ensure_ascii=False))
     print(f"✅ 已写入 {len(empty_list)} 个交易对到 '{dump_key}'（平仓列表）")
 
-    # 2. 正套建仓列表
+    # 2. UniMMR 算法平仓候选列表（默认空，运行时走 fallback）
+    unimmr_close_key = symbol_list_key(env_name, "unimmr_close_symbols", key_suffix)
+    rds.set(unimmr_close_key, json.dumps(UNIMMR_CLOSE_SYMBOLS, ensure_ascii=False))
+    print(
+        f"✅ 已写入 {len(UNIMMR_CLOSE_SYMBOLS)} 个交易对到 '{unimmr_close_key}'（UniMMR 平仓候选）"
+    )
+
+    # 3. 正套建仓列表
     fwd_key = symbol_list_key(env_name, "fwd_trade_symbols", key_suffix)
     rds.set(fwd_key, json.dumps(fwd_symbols, ensure_ascii=False))
     print(f"✅ 已写入 {len(fwd_symbols)} 个交易对到 '{fwd_key}'（正套）")
-    total = len(fwd_symbols)
-    # 3. 反套建仓列表
+    total = len(UNIMMR_CLOSE_SYMBOLS) + len(fwd_symbols)
+    # 4. 反套建仓列表
     bwd_key = symbol_list_key(env_name, "bwd_trade_symbols", key_suffix)
     rds.set(bwd_key, json.dumps(bwd_symbols, ensure_ascii=False))
     print(f"✅ 已写入 {len(bwd_symbols)} 个交易对到 '{bwd_key}'（反套）")
@@ -325,6 +334,11 @@ def print_all_symbol_lists(rds, env_name: str, key_suffix: str) -> None:
         rds,
         symbol_list_key(env_name, "dump_symbols", key_suffix),
         f"🔴 {key_suffix} - 平仓列表",
+    )
+    print_symbol_list(
+        rds,
+        symbol_list_key(env_name, "unimmr_close_symbols", key_suffix),
+        f"🟠 {key_suffix} - UniMMR 平仓候选",
     )
     print_symbol_list(
         rds,

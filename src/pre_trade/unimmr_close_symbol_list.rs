@@ -130,8 +130,7 @@ impl UnimmrCloseSymbolList {
             .iter()
             .filter(|(asset, &(open_qty, hedge_qty))| {
                 !asset.eq_ignore_ascii_case("USDT")
-                    && (open_qty.abs() > POSITION_EPSILON
-                        || hedge_qty.abs() > POSITION_EPSILON)
+                    && (open_qty.abs() > POSITION_EPSILON || hedge_qty.abs() > POSITION_EPSILON)
             })
             .map(|(asset, _)| {
                 let asset_upper = asset.to_ascii_uppercase();
@@ -160,30 +159,25 @@ impl UnimmrCloseSymbolList {
             .await
             .context("connect redis for unimmr_close_symbols")?;
         match client.get_string(&key).await? {
-            Some(raw) => {
-                match serde_json::from_str::<Vec<String>>(&raw) {
-                    Ok(parsed) => {
-                        let normalized: HashSet<String> = parsed
-                            .iter()
-                            .map(|s| Self::normalize(s))
-                            .filter(|s| !s.is_empty())
-                            .collect();
-                        let count = normalized.len();
-                        SYMBOLS.with(|s| *s.borrow_mut() = normalized);
-                        info!(
-                            "unimmr_close_symbols 已更新 key='{}' count={}",
-                            key, count
-                        );
-                    }
-                    Err(err) => {
-                        SYMBOLS.with(|s| s.borrow_mut().clear());
-                        warn!(
-                            "unimmr_close_symbols 解析失败 key='{}' raw={} err={:#}，清空本地缓存",
-                            key, raw, err
-                        );
-                    }
+            Some(raw) => match serde_json::from_str::<Vec<String>>(&raw) {
+                Ok(parsed) => {
+                    let normalized: HashSet<String> = parsed
+                        .iter()
+                        .map(|s| Self::normalize(s))
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    let count = normalized.len();
+                    SYMBOLS.with(|s| *s.borrow_mut() = normalized);
+                    info!("unimmr_close_symbols 已更新 key='{}' count={}", key, count);
                 }
-            }
+                Err(err) => {
+                    SYMBOLS.with(|s| s.borrow_mut().clear());
+                    warn!(
+                        "unimmr_close_symbols 解析失败 key='{}' raw={} err={:#}，清空本地缓存",
+                        key, raw, err
+                    );
+                }
+            },
             None => {
                 SYMBOLS.with(|s| s.borrow_mut().clear());
                 info!(
@@ -325,8 +319,11 @@ mod tests {
     fn effective_falls_back_to_online_when_redis_list_empty() {
         reset();
         let list = UnimmrCloseSymbolList::instance();
-        let fallback: Vec<String> =
-            vec!["BTC-USDT".to_string(), "ETHUSDT".to_string(), "SOLUSDT".to_string()];
+        let fallback: Vec<String> = vec![
+            "BTC-USDT".to_string(),
+            "ETHUSDT".to_string(),
+            "SOLUSDT".to_string(),
+        ];
         let with_pos: HashSet<String> = ["BTCUSDT", "SOLUSDT"]
             .iter()
             .map(|s| s.to_string())
@@ -340,8 +337,7 @@ mod tests {
     fn effective_returns_empty_when_both_empty() {
         reset();
         let list = UnimmrCloseSymbolList::instance();
-        let result =
-            list.effective_close_symbols(Vec::<String>::new(), |_| true);
+        let result = list.effective_close_symbols(Vec::<String>::new(), |_| true);
         assert!(result.is_empty());
     }
 

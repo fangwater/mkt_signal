@@ -60,7 +60,7 @@
 
 建议采用方案 A，原因：
 
-- FR / XARB 的 `manual_signal` 和 MM 最终职责不应混淆
+- FR 的 `manual_signal` 和 MM 最终职责不应混淆
 - MM 需要自己的配置结构和页面字段
 
 ### 1.3 `deploy_mm_account_monitor.sh` 当前不支持 Bybit

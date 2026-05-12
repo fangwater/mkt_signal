@@ -19,7 +19,7 @@ usage() {
   - 部署 cross_config_server 到 $HOME/<env-name>/（或 --target）。
   - env-name/目标目录名必须匹配 <open>-<hedge>-cross-<suffix>，例如 okex-binance-cross-trade。
   - open/hedge venue 可省略，会从 env-name 推断为 <exchange>-futures。
-  - 默认端口按 open/hedge 组合映射：18200 + open_rank*10 + hedge_rank（避开 xarb 18100 段）。
+  - 默认端口按 open/hedge 组合映射：18200 + open_rank*10 + hedge_rank。
   - 可选写入 nginx mapping（/cross/<env-name>/config）。
 
 示例:

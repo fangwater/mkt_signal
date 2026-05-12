@@ -2,7 +2,7 @@
 """Transfer cash between Binance standard spot and UM futures via universal transfer API.
 
 Examples:
-  source /home/ubuntu/binance-binance-xarb-trade01/env.sh
+  source /home/ubuntu/binance-intra-trade01/env.sh
   python scripts/binance_transfer_std_cash.py
 
   BINANCE_API_KEY=... BINANCE_API_SECRET=... \

@@ -6,7 +6,8 @@
 
 工作流程：
   1. 从 Redis 读取 {env_name}:fr_dump_symbols:{key_suffix}、
-     {env_name}:fr_fwd_trade_symbols:{key_suffix}、{env_name}:fr_bwd_trade_symbols:{key_suffix}
+     {env_name}:fr_fwd_trade_symbols:{key_suffix}、{env_name}:fr_bwd_trade_symbols:{key_suffix}、
+     {env_name}:fr_unimmr_close_symbols:{key_suffix}
   2. 合并列表得到要同步的 symbols（去重）
   3. 从 rolling_metrics_thresholds_{open_venue}_{hedge_venue} 读取这些 symbols 的百分位数据
   4. 根据 SPREAD_THRESHOLD_MAPPING 配置，提取对应的百分位值
@@ -15,6 +16,7 @@
 读取 Redis:
   - String `{env_name}:fr_dump_symbols:{key_suffix}` - 平仓列表（JSON 数组）
   - String `{env_name}:fr_fwd_trade_symbols:{key_suffix}` / `{env_name}:fr_bwd_trade_symbols:{key_suffix}` - 建仓列表（JSON 数组）
+  - String `{env_name}:fr_unimmr_close_symbols:{key_suffix}` - UniMMR 算法平仓候选列表（JSON 数组）
   - Hash `rolling_metrics_thresholds_{open_venue}_{hedge_venue}` - rolling metrics 百分位数据
 
 写入 Redis Hash:
@@ -135,6 +137,7 @@ def load_symbol_lists(
     dump_keys: List[str],
     fwd_trade_keys: List[str],
     bwd_trade_keys: List[str],
+    unimmr_close_keys: Optional[List[str]] = None,
 ) -> List[str]:
     """
     从 Redis 读取 dump / fwd_trade / bwd_trade 列表，返回并集（去重且排序）
@@ -154,6 +157,8 @@ def load_symbol_lists(
         _read_symbol_list(rds, key, "fwd_trade", symbols_set)
     for key in bwd_trade_keys:
         _read_symbol_list(rds, key, "bwd_trade", symbols_set)
+    for key in unimmr_close_keys or []:
+        _read_symbol_list(rds, key, "unimmr_close", symbols_set)
 
     result = sorted(symbols_set)
     print(f"✅ 合并后共 {len(result)} 个唯一 symbols")
@@ -251,15 +256,18 @@ def _get_target_symbols(
     fwd_trade_keys: List[str],
     bwd_trade_keys: List[str],
     filter_symbol: Optional[str],
+    unimmr_close_keys: Optional[List[str]] = None,
 ) -> List[str]:
     """获取要处理的目标 symbols"""
     if filter_symbol:
         print(f"🎯 目标 symbols: {filter_symbol.upper()} (单独指定)")
         return [normalize_for_rolling(filter_symbol)]
 
-    target_symbols = load_symbol_lists(rds, dump_keys, fwd_trade_keys, bwd_trade_keys)
+    target_symbols = load_symbol_lists(
+        rds, dump_keys, fwd_trade_keys, bwd_trade_keys, unimmr_close_keys
+    )
     if not target_symbols:
-        print("❌ 未找到任何 symbols，请检查 Redis 中的 dump/fwd_trade/bwd_trade 列表")
+        print("❌ 未找到任何 symbols，请检查 Redis 中的 dump/fwd_trade/bwd_trade/unimmr_close 列表")
         return []
 
     normalized: List[str] = []
@@ -366,6 +374,7 @@ def sync_thresholds(
     fwd_trade_keys: List[str],
     bwd_trade_keys: List[str],
     filter_symbol: Optional[str] = None,
+    unimmr_close_keys: Optional[List[str]] = None,
 ) -> int:
     """
     从 rolling metrics 生成价差阈值并同步到 Redis
@@ -374,7 +383,7 @@ def sync_thresholds(
     """
     # 1. 获取目标 symbols
     target_symbols = _get_target_symbols(
-        rds, dump_keys, fwd_trade_keys, bwd_trade_keys, filter_symbol
+        rds, dump_keys, fwd_trade_keys, bwd_trade_keys, filter_symbol, unimmr_close_keys
     )
     if not target_symbols:
         return 0
@@ -559,6 +568,7 @@ def main() -> int:
     dump_keys = [symbol_list_key(env_name, "dump_symbols", key_suffix)]
     fwd_trade_keys = [symbol_list_key(env_name, "fwd_trade_symbols", key_suffix)]
     bwd_trade_keys = [symbol_list_key(env_name, "bwd_trade_symbols", key_suffix)]
+    unimmr_close_keys = [symbol_list_key(env_name, "unimmr_close_symbols", key_suffix)]
 
     def fmt_keys(keys: List[str]) -> str:
         return ", ".join(keys) if keys else "-"
@@ -570,6 +580,7 @@ def main() -> int:
     print(f"📖 Dump List: {fmt_keys(dump_keys)}")
     print(f"📖 Fwd Trade List: {fmt_keys(fwd_trade_keys)}")
     print(f"📖 Bwd Trade List: {fmt_keys(bwd_trade_keys)}")
+    print(f"📖 UniMMR Close List: {fmt_keys(unimmr_close_keys)}")
     print(f"📝 写入: {write_key}")
     print()
 
@@ -582,6 +593,7 @@ def main() -> int:
         fwd_trade_keys,
         bwd_trade_keys,
         args.symbol,
+        unimmr_close_keys,
     )
     if count == 0:
         return 1

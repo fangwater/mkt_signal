@@ -99,6 +99,10 @@ RISK_PARAMS = {
     # 最大杠杆倍数（>0）
     "max_leverage": "1.75",
 
+    # UniMMR 算法平仓触发/恢复线（固定交易所 warning 上沿 1.5；要求 1.5 < trigger < recover）
+    "unimmr_trigger_line": "2.0",
+    "unimmr_recover_line": "2.2",
+
     # 最大挂单数（>=0）
     "max_pending_limit_orders": "10",
 
@@ -122,6 +126,8 @@ PARAM_COMMENTS: Dict[str, str] = {
     "max_symbol_exposure_ratio": "单币种最大敞口比例",
     "max_total_exposure_ratio": "总敞口比例",
     "max_leverage": "最大杠杆倍数",
+    "unimmr_trigger_line": "UniMMR 算法平仓触发线（>1.5 且 < recover）",
+    "unimmr_recover_line": "UniMMR 算法平仓恢复线（> trigger）",
     "max_pending_limit_orders": "最大挂单数",
     "arb_max_pending_limit_buy_orders": "套利买侧最大挂单数",
     "arb_max_pending_limit_sell_orders": "套利卖侧最大挂单数",

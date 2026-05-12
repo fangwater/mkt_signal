@@ -103,4 +103,4 @@ and makes the trading layer deterministic and auditable.
 - Hedge signal (`ArbHedgeCtx`) encodes qty/price using qv fields:
   - `hedge_qty_qv`
   - `hedge_price_qv`
-- `fr/xarb decision` aligns hedge qty/price before emitting `ArbHedge`; downstream strategy consumes aligned qv values directly.
+- `fr decision` aligns hedge qty/price before emitting `ArbHedge`; downstream strategy consumes aligned qv values directly.

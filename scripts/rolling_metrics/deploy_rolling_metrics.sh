@@ -17,8 +17,7 @@ Description:
   - Process management uses pmdaemon via:
       ./scripts/rolling_metrics/start_rolling_metrics.sh
       ./scripts/rolling_metrics/stop_rolling_metrics.sh
-  - Unified scripts layout: deploy dir contains `scripts/` only
-    (no split between xarb_scripts/fr scripts for rolling_metrics).
+  - Unified scripts layout: deploy dir contains `scripts/` only.
 
 Examples:
   scripts/rolling_metrics/deploy_rolling_metrics.sh --open-venue binance-margin --hedge-venue binance-futures

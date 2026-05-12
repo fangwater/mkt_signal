@@ -16,7 +16,7 @@
 - `ArbHedge` 信号上下文 `ArbHedgeCtx` 的量价使用 `qv`（tick/count）编码：
   - `hedge_qty_qv`
   - `hedge_price_qv`
-- `fr/xarb decision` 在返回 `ArbHedge` 信号前已完成量价对齐；下游策略直接消费对齐后的 `qv` 值。
+- `fr decision` 在返回 `ArbHedge` 信号前已完成量价对齐；下游策略直接消费对齐后的 `qv` 值。
 
 ## 当前格式（按策略/信号）
 
@@ -26,15 +26,6 @@
   - `time:funding_ma:predicted_funding_rate:loan_rate:spread_rate`
 - `ArbHedge`
   - `time:request_seq:spread_rate`
-
-### XARB
-
-- `ArbOpen`
-  - `time:ret_score=...:ret_thr=...:vol=...:env_score=...:env_thr=...:spread=...:open_scale=...`
-- `ArbHedge`
-  - `time:ret_score=...:ret_thr=...:vol=...:env_score=...:env_thr=...:spread=...:pct_change=...`
-- `ArbClose`（dump 路径）
-  - `time:dump:spread_rate`
 
 ### MM
 
@@ -47,10 +38,6 @@
   - `docs/from_key_rules/arb_open_fr.md`
   - `docs/from_key_rules/arb_hedge_fr.md`
   - `docs/from_key_rules/arb_close_fr.md`
-- XARB：
-  - `docs/from_key_rules/arb_open_xarb.md`
-  - `docs/from_key_rules/arb_hedge_xarb.md`
-  - `docs/from_key_rules/arb_close_xarb.md`
 - MM：
   - `docs/from_key_rules/mm_open.md`
   - `docs/from_key_rules/mm_hedge.md`

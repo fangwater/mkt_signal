@@ -13,7 +13,7 @@ source "$ROOT_DIR/scripts/deploy_intra_lib.sh"
 #
 # 说明:
 #   - 同所期现：只需要一个 exchange，open=<ex>-margin，hedge=<ex>-futures
-#   - IPC_NAMESPACE 默认按 exchange/env_suffix 生成（避免与 fr / xarb / mm 等冲突）
+#   - IPC_NAMESPACE 默认按 exchange/env_suffix 生成（避免与 fr / cross / mm 等冲突）
 
 usage() {
   cat <<'EOF'

@@ -89,6 +89,8 @@ RISK_PARAMS = {
     "max_symbol_exposure_ratio": "0.015",  # 单币种最大敞口比例（0.0-1.0）
     "max_total_exposure_ratio": "0.01",  # 总敞口比例（0.0-1.0）
     "max_leverage": "1.75",  # 最大杠杆倍数（>0）
+    "unimmr_trigger_line": "2.0",  # UniMMR 算法平仓触发线（需 > 1.5）
+    "unimmr_recover_line": "2.2",  # UniMMR 算法平仓恢复线（需 > trigger）
     "max_pending_limit_orders": "10",  # 最大挂单数（>=0）
     "max_pending_limit_buy_orders": "0",  # 买侧最大挂单数（>=0, 0=关闭）
     "max_pending_limit_sell_orders": "0",  # 卖侧最大挂单数（>=0, 0=关闭）
@@ -104,6 +106,8 @@ PARAM_COMMENTS: Dict[str, str] = {
     "max_symbol_exposure_ratio": "单币种最大敞口比例",
     "max_total_exposure_ratio": "总敞口比例",
     "max_leverage": "最大杠杆倍数",
+    "unimmr_trigger_line": "UniMMR 算法平仓触发线（>1.5 且 < recover）",
+    "unimmr_recover_line": "UniMMR 算法平仓恢复线（> trigger）",
     "max_pending_limit_orders": "最大挂单数",
     "max_pending_limit_buy_orders": "买侧最大挂单数（只限制 open，0=关闭）",
     "max_pending_limit_sell_orders": "卖侧最大挂单数（只限制 open，0=关闭）",

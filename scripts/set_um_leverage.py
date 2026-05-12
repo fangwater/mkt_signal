@@ -4,11 +4,11 @@
 """
 批量设置 U 本位合约杠杆（仅支持 binance / okex）。
 
-默认逻辑（推荐，适配 xarb 目录/部署）：
-  - 按照 xarb_scripts/sync_xarb_symbol_lists.py 的规则推断 key_suffix（例如 okex-binance）
+默认逻辑（推荐，适配跨所目录/部署）：
+  - 按照 <open-exchange>-<hedge-exchange> 规则推断 key_suffix（例如 okex-binance）
   - 从 Redis 读取:
-      xarb_fwd_trade_symbols:{key_suffix}
-      xarb_bwd_trade_symbols:{key_suffix}
+      cross_fwd_trade_symbols:{key_suffix}
+      cross_bwd_trade_symbols:{key_suffix}
     取并集后，对涉及的交易所（open/hedge）批量设置杠杆。
 
 也支持手动指定单个/多个 symbol：
@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 SUPPORTED_EXCHANGES = {"binance", "okex"}
-NAMESPACE = "xarb"
+NAMESPACE = "cross"
 
 
 def try_import_redis():
@@ -68,7 +68,7 @@ def exchange_from_venue(venue: str) -> Optional[str]:
 
 def infer_pair_from_name(name: str) -> Optional[Tuple[str, str]]:
     n = (name or "").strip().lower()
-    m = re.match(r"^([a-z0-9]+)[-_]([a-z0-9]+)[-_]xarb([_-].*)?$", n)
+    m = re.match(r"^([a-z0-9]+)[-_]([a-z0-9]+)[-_]cross([_-].*)?$", n)
     if not m:
         return None
     open_ex = normalize_exchange(m.group(1))
@@ -100,16 +100,16 @@ def resolve_open_hedge(args: argparse.Namespace) -> Optional[Tuple[str, str]]:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Set U-margined leverage for xarb symbols (binance/okex only)",
+        description="Set U-margined leverage for cross symbols (binance/okex only)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--open-venue", help="开仓 venue（例如 okex-futures）")
     p.add_argument("--hedge-venue", help="对冲 venue（例如 binance-futures）")
-    p.add_argument("--env-name", help="环境目录名（例如 okex-binance-xarb-trade）")
+    p.add_argument("--env-name", help="环境目录名（例如 okex-binance-cross-trade）")
     p.add_argument(
         "--exchange",
         choices=sorted(SUPPORTED_EXCHANGES),
-        help="仅设置单边交易所（与 --symbol 搭配使用；不读取 xarb 目录/Redis）",
+        help="仅设置单边交易所（与 --symbol 搭配使用；不读取 cross 目录/Redis）",
     )
     p.add_argument("--symbol", action="append", help="指定单个币对（可重复）。例如 BTCUSDT / btcusdt")
     p.add_argument("--leverage", type=int, default=4, help="目标杠杆倍数（整数）")
@@ -225,7 +225,7 @@ def normalize_okx_um_inst_id(raw: str) -> str:
     return f"{base}-USDT-SWAP"
 
 
-def load_xarb_union_symbols(rds, key_suffix: str) -> List[str]:
+def load_cross_union_symbols(rds, key_suffix: str) -> List[str]:
     fwd_key = f"{NAMESPACE}_fwd_trade_symbols:{key_suffix}"
     bwd_key = f"{NAMESPACE}_bwd_trade_symbols:{key_suffix}"
     fwd = load_redis_list(rds, fwd_key)
@@ -473,14 +473,14 @@ def main() -> int:
         pair = resolve_open_hedge(args)
         if not pair:
             print(
-                "❌ 需要 --open-venue/--hedge-venue 或 --env-name，或在目录名包含 '<open>-<hedge>-xarb-...' 以自动推断",
+                "❌ 需要 --open-venue/--hedge-venue 或 --env-name，或在目录名包含 '<open>-<hedge>-cross-...' 以自动推断",
                 file=sys.stderr,
             )
             return 2
         key_suffix = f"{pair[0]}-{pair[1]}"
         rds = connect_redis(args)
         # Redis 列表通常是“通用”币对（例如 solusdt），这里使用 canonical form 作为输入。
-        symbol_inputs = load_xarb_union_symbols(rds, key_suffix)
+        symbol_inputs = load_cross_union_symbols(rds, key_suffix)
 
     if not symbol_inputs:
         print("❌ 未找到任何 symbols", file=sys.stderr)

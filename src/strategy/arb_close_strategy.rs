@@ -103,9 +103,12 @@ impl ArbCloseStrategy {
                 None
             }
         };
-        if let Err(reason) = MonitorChannel::instance()
-            .check_min_trading_requirements(venue, &symbol, ctx.amount_value(), price_hint)
-        {
+        if let Err(reason) = MonitorChannel::instance().check_min_trading_requirements(
+            venue,
+            &symbol,
+            ctx.amount_value(),
+            price_hint,
+        ) {
             info!(
                 "ArbCloseStrategy: strategy_id={} skip below min trade requirements symbol={} venue={:?} open_pos={:.8} signal_qty={:.8} price_hint={:?} reason={}",
                 self.open_state.strategy_id,

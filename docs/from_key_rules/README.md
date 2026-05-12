@@ -8,14 +8,11 @@
 - 同一 `signal` 在不同策略下可使用不同格式。
 - dump 强平会复用 `ArbClose`，不会新增 `DumpClose` 信号类型。
 
-## Arb（按 FR/XARB 拆分）
+## Arb
 
 - [ArbOpen（FR）](arb_open_fr.md)
-- [ArbOpen（XARB）](arb_open_xarb.md)
 - [ArbClose（FR）](arb_close_fr.md)
-- [ArbClose（XARB）](arb_close_xarb.md)
 - [ArbHedge（FR）](arb_hedge_fr.md)
-- [ArbHedge（XARB）](arb_hedge_xarb.md)
 
 ## MM
 

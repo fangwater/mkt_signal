@@ -65,7 +65,7 @@ locations() {
 
             # static directory (served by nginx directly)
             # Mapping format:
-            #   /xarb/okex-binance/ static:/abs/path/to/www/
+            #   /cross/okex-binance/ static:/abs/path/to/www/
             # Note: path and directory are recommended to end with '/'.
             if [[ "${upstream}" == static:* ]]; then
                 dir="$(expand_static_dir "${upstream#static:}")"

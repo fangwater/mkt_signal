@@ -268,7 +268,6 @@ FILES=(
   "scripts/sync_fr_symbol_lists.py"
   "scripts/sync_fr_strategy_params.py"
   "scripts/sync_fr_spread_thresholds.py"
-  "xarb_scripts/sync_xarb_funding_thresholds.py"
 )
 
 for file in "${FILES[@]}"; do

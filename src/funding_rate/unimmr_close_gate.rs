@@ -357,7 +357,10 @@ pub fn spawn_account_risk_listener(exchange: Exchange) {
         .await;
 
         if let Err(err) = result {
-            warn!("UnimmrCloseGate 订阅任务退出 (exchange={:?}): {err:?}", exchange);
+            warn!(
+                "UnimmrCloseGate 订阅任务退出 (exchange={:?}): {err:?}",
+                exchange
+            );
         }
     });
 }

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -46,12 +47,6 @@ ROLLING_METRICS_SCRIPT_DIR = os.path.join(
 )
 if os.path.isdir(ROLLING_METRICS_SCRIPT_DIR):
     sys.path.insert(0, ROLLING_METRICS_SCRIPT_DIR)
-
-XARB_SCRIPT_DIR = os.path.normpath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "xarb_scripts")
-)
-if os.path.isdir(XARB_SCRIPT_DIR):
-    sys.path.insert(0, XARB_SCRIPT_DIR)
 
 
 def infer_dir_prefix_from_cwd() -> Optional[str]:
@@ -146,13 +141,6 @@ try:
 except Exception:
     SPREAD_THRESHOLD_MAPPING = {}
     SPREAD_THRESHOLD_ORDER = []
-
-xarb_funding_sync = None
-try:
-    import sync_xarb_funding_thresholds as xarb_funding_sync
-except Exception:
-    pass
-
 
 INDEX_HTML_TEMPLATE = """<!doctype html>
 <html lang="zh-CN">
@@ -327,6 +315,10 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         <div>
           <h3>平仓列表 <span class="hint">{env}:fr_dump_symbols</span></h3>
           <textarea id="sym-dump" class="mono" placeholder="每行一个 symbol"></textarea>
+        </div>
+        <div>
+          <h3>UniMMR 平仓候选 <span class="hint">{env}:fr_unimmr_close_symbols</span></h3>
+          <textarea id="sym-unimmr-close" class="mono" placeholder="每行一个 symbol"></textarea>
         </div>
         <div>
           <h3>正套建仓 <span class="hint">{env}:fr_fwd_trade_symbols</span></h3>
@@ -645,6 +637,7 @@ __PER_SYMBOL_PANELS_HTML__
       try {
         const data = await fetchJson(`${apiUrl('symbol-lists')}?${queryParams()}`);
         document.getElementById('sym-dump').value = fromList(data.dump_symbols || []);
+        document.getElementById('sym-unimmr-close').value = fromList(data.unimmr_close_symbols || []);
         document.getElementById('sym-fwd').value = fromList(data.fwd_trade_symbols || []);
         document.getElementById('sym-bwd').value = fromList(data.bwd_trade_symbols || []);
         setStatus('sym-status', '读取完成');
@@ -661,6 +654,7 @@ __PER_SYMBOL_PANELS_HTML__
           open_venue: openVenueInput.value.trim(),
           hedge_venue: hedgeVenueInput.value.trim(),
           dump_symbols: toList(document.getElementById('sym-dump').value),
+          unimmr_close_symbols: toList(document.getElementById('sym-unimmr-close').value),
           fwd_trade_symbols: toList(document.getElementById('sym-fwd').value),
           bwd_trade_symbols: toList(document.getElementById('sym-bwd').value),
         };
@@ -679,6 +673,7 @@ __PER_SYMBOL_PANELS_HTML__
       const ex = normalizeExchange(exchangeSelect.value);
       const defaults = (BOOTSTRAP.defaults.symbol_lists || {})[ex] || {};
       document.getElementById('sym-dump').value = fromList(defaults.dump_symbols || []);
+      document.getElementById('sym-unimmr-close').value = fromList(defaults.unimmr_close_symbols || []);
       document.getElementById('sym-fwd').value = fromList(defaults.fwd_trade_symbols || []);
       document.getElementById('sym-bwd').value = fromList(defaults.bwd_trade_symbols || []);
       setStatus('sym-status', '已载入默认列表');
@@ -1327,6 +1322,24 @@ def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, st
     return normalized
 
 
+def normalize_unimmr_control_lines(mapping: Dict[str, str]) -> Dict[str, str]:
+    normalized = dict(mapping)
+    if "unimmr_trigger_line" not in normalized or "unimmr_recover_line" not in normalized:
+        return normalized
+    try:
+        trigger = float(str(normalized["unimmr_trigger_line"]).strip())
+        recover = float(str(normalized["unimmr_recover_line"]).strip())
+    except Exception as exc:
+        raise ValueError("unimmr_trigger_line/unimmr_recover_line must be numbers") from exc
+    if not (math.isfinite(trigger) and math.isfinite(recover) and 1.5 < trigger < recover):
+        raise ValueError(
+            "unimmr control lines must satisfy 1.5 < unimmr_trigger_line < unimmr_recover_line"
+        )
+    normalized["unimmr_trigger_line"] = f"{trigger:g}"
+    normalized["unimmr_recover_line"] = f"{recover:g}"
+    return normalized
+
+
 def sanitize_mapping_by_schema(
     values: Any,
     defaults: Dict[str, Any],
@@ -1375,6 +1388,7 @@ def get_symbol_defaults() -> Dict[str, Dict[str, List[str]]]:
         dump_symbols = list(dict.fromkeys(fwd + bwd))
         defaults[ex] = {
             "dump_symbols": dump_symbols,
+            "unimmr_close_symbols": [],
             "fwd_trade_symbols": fwd,
             "bwd_trade_symbols": bwd,
         }
@@ -1499,6 +1513,7 @@ def sync_spread_thresholds(
     dump_keys = [build_symbol_list_key("dump_symbols", key_suffix)]
     fwd_keys = [build_symbol_list_key("fwd_trade_symbols", key_suffix)]
     bwd_keys = [build_symbol_list_key("bwd_trade_symbols", key_suffix)]
+    unimmr_close_keys = [build_symbol_list_key("unimmr_close_symbols", key_suffix)]
     rolling_key = f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}"
     write_key = f"fr_spread_thresholds_{open_venue}_{hedge_venue}"
 
@@ -1508,7 +1523,9 @@ def sync_spread_thresholds(
     if not mapping:
         raise RuntimeError("spread mapping is empty")
 
-    target_symbols = spread_sync._get_target_symbols(rds, dump_keys, fwd_keys, bwd_keys, symbol)
+    target_symbols = spread_sync._get_target_symbols(
+        rds, dump_keys, fwd_keys, bwd_keys, symbol, unimmr_close_keys
+    )
     rolling_data = spread_sync.read_rolling_metrics(rds, rolling_key)
     symbol_data, missing_symbols = spread_sync._find_symbol_data(
         rolling_data, target_symbols
@@ -1663,6 +1680,9 @@ class RequestHandler(BaseHTTPRequestHandler):
                 "key_suffix": key_suffix,
                 "dump_symbols": read_symbol_list(
                     rds, build_symbol_list_key("dump_symbols", key_suffix)
+                ),
+                "unimmr_close_symbols": read_symbol_list(
+                    rds, build_symbol_list_key("unimmr_close_symbols", key_suffix)
                 ),
                 "fwd_trade_symbols": read_symbol_list(
                     rds, build_symbol_list_key("fwd_trade_symbols", key_suffix)
@@ -1865,10 +1885,14 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._send_error(400, str(exc))
                 return
             raw_dump = payload.get("dump_symbols") or []
+            raw_unimmr_close = payload.get("unimmr_close_symbols") or []
             raw_fwd = payload.get("fwd_trade_symbols") or []
             raw_bwd = payload.get("bwd_trade_symbols") or []
             dump_symbols = normalize_symbol_list_for_exchange(
                 exchange, raw_dump
+            )
+            unimmr_close_symbols = normalize_symbol_list_for_exchange(
+                exchange, raw_unimmr_close
             )
             fwd_symbols = normalize_symbol_list_for_exchange(
                 exchange, raw_fwd
@@ -1877,6 +1901,9 @@ class RequestHandler(BaseHTTPRequestHandler):
                 exchange, raw_bwd
             )
             raw_dump_len, raw_dump_sample = summarize_symbol_payload(raw_dump)
+            raw_unimmr_close_len, raw_unimmr_close_sample = summarize_symbol_payload(
+                raw_unimmr_close
+            )
             raw_fwd_len, raw_fwd_sample = summarize_symbol_payload(raw_fwd)
             raw_bwd_len, raw_bwd_sample = summarize_symbol_payload(raw_bwd)
             print(
@@ -1887,6 +1914,14 @@ class RequestHandler(BaseHTTPRequestHandler):
             print(
                 "[symbol-lists] dump raw={} norm={} sample_raw={} sample_norm={}".format(
                     raw_dump_len, len(dump_symbols), raw_dump_sample, dump_symbols[:5]
+                )
+            )
+            print(
+                "[symbol-lists] unimmr_close raw={} norm={} sample_raw={} sample_norm={}".format(
+                    raw_unimmr_close_len,
+                    len(unimmr_close_symbols),
+                    raw_unimmr_close_sample,
+                    unimmr_close_symbols[:5],
                 )
             )
             print(
@@ -1908,6 +1943,10 @@ class RequestHandler(BaseHTTPRequestHandler):
                     json.dumps(dump_symbols, ensure_ascii=False),
                 )
                 rds.set(
+                    build_symbol_list_key("unimmr_close_symbols", key_suffix),
+                    json.dumps(unimmr_close_symbols, ensure_ascii=False),
+                )
+                rds.set(
                     build_symbol_list_key("fwd_trade_symbols", key_suffix),
                     json.dumps(fwd_symbols, ensure_ascii=False),
                 )
@@ -1925,6 +1964,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                     "exchange": exchange,
                     "key_suffix": key_suffix,
                     "dump_count": len(dump_symbols),
+                    "unimmr_close_count": len(unimmr_close_symbols),
                     "fwd_count": len(fwd_symbols),
                     "bwd_count": len(bwd_symbols),
                 },
@@ -1948,6 +1988,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 mapping = sanitize_mapping_by_schema(
                     values, DEFAULT_RISK_PARAMS, RISK_PARAM_COMMENTS, RISK_PARAM_ORDER
                 )
+                mapping = normalize_unimmr_control_lines(mapping)
             except Exception as exc:
                 self._send_error(400, str(exc))
                 return

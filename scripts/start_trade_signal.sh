@@ -108,16 +108,6 @@ case "$NS" in
     PM2_TAG="$dir_tag"
     ARGS=(--exchange "$EXCHANGE")
     ;;
-  xarb)
-    open_ex="${SUFFIX%%-*}"
-    rest="${SUFFIX#*-}"
-    hedge_ex="${rest%%-*}"
-    if [[ -z "$open_ex" || -z "$hedge_ex" || "$open_ex" == "$hedge_ex" ]]; then
-      echo "[ERROR] invalid xarb dir suffix: ${SUFFIX} (expect like okex-binance)"
-      exit 1
-    fi
-    PM2_TAG="${open_ex}_${hedge_ex}"
-    ;;
   mm)
     EXCHANGE="${SUFFIX%%_*}"
     ENV_TAG="${SUFFIX#*_}"

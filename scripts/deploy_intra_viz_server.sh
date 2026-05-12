@@ -278,10 +278,6 @@ if [[ -f "$ROOT_DIR/docs/intra_pre_trade_dashboard.html" ]]; then
   cp "$ROOT_DIR/docs/intra_pre_trade_dashboard.html" "$TARGET_DIR/www/pre_trade_dashboard.html"
   cp "$ROOT_DIR/docs/intra_pre_trade_dashboard.html" "$TARGET_DIR/www/index.html"
   echo "[INFO] 已同步 dashboard: $TARGET_DIR/www/pre_trade_dashboard.html"
-elif [[ -f "$ROOT_DIR/docs/xarb_binance_std_pre_trade_dashboard.html" && "$EXCHANGE" == "binance" ]]; then
-  cp "$ROOT_DIR/docs/xarb_binance_std_pre_trade_dashboard.html" "$TARGET_DIR/www/pre_trade_dashboard.html"
-  cp "$ROOT_DIR/docs/xarb_binance_std_pre_trade_dashboard.html" "$TARGET_DIR/www/index.html"
-  echo "[INFO] 已同步 binance 同所 dashboard"
 elif [[ -f "$ROOT_DIR/docs/pre_trade_dashboard.html" ]]; then
   cp "$ROOT_DIR/docs/pre_trade_dashboard.html" "$TARGET_DIR/www/pre_trade_dashboard.html"
   cp "$ROOT_DIR/docs/pre_trade_dashboard.html" "$TARGET_DIR/www/index.html"

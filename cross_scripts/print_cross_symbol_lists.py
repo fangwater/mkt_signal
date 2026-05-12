@@ -4,10 +4,12 @@
 """
 打印 cross（跨所）交易对列表（按跨所 pair 维度，从 Redis 读取）。
 
-读取 3 个 Redis key（均为 String，JSON 数组）：
+读取 4 个 Redis key（均为 String，JSON 数组）：
   1. cross_dump_symbols:{key_suffix}          - 平仓列表
   2. cross_fwd_trade_symbols:{key_suffix}     - 正套建仓列表
   3. cross_bwd_trade_symbols:{key_suffix}     - 反套建仓列表
+  4. {env_name}:cross_unimmr_close_symbols:{open_venue}_{hedge_venue}
+                                                - UniMMR 算法平仓候选列表
 
 其中 key_suffix 为 "<open_exchange>-<hedge_exchange>"（例如 okex-binance）。
 可通过 --open-venue/--hedge-venue、--env-name 或 CWD 目录名推断。
@@ -98,6 +100,35 @@ def resolve_key_suffix(args: argparse.Namespace) -> Optional[str]:
     return None
 
 
+def resolve_env_name(args: argparse.Namespace) -> str:
+    if args.env_name:
+        return args.env_name.strip().lower()
+    from pathlib import Path
+
+    return Path.cwd().name.strip().lower()
+
+
+def resolve_venues(args: argparse.Namespace, key_suffix: str) -> Optional[Tuple[str, str]]:
+    if args.open_venue and args.hedge_venue:
+        return args.open_venue.strip().lower(), args.hedge_venue.strip().lower()
+
+    pair = infer_pair_from_name(args.env_name or "")
+    if not pair:
+        pair = infer_pair_from_cwd()
+    if pair:
+        return f"{pair[0]}-futures", f"{pair[1]}-futures"
+
+    parts = key_suffix.split("-", 1)
+    if len(parts) == 2:
+        return f"{parts[0]}-futures", f"{parts[1]}-futures"
+    return None
+
+
+def unimmr_close_key(env_name: str, open_venue: str, hedge_venue: str) -> str:
+    suffix = f"{open_venue.strip().lower()}_{hedge_venue.strip().lower()}"
+    return f"{env_name}:cross_unimmr_close_symbols:{suffix}" if env_name else f"cross_unimmr_close_symbols:{suffix}"
+
+
 def print_symbol_list(rds, key: str, title: str) -> int:
     print(f"\n{title} ({key}):")
     data = rds.get(key)
@@ -135,10 +166,17 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
+    venues = resolve_venues(args, key_suffix)
+    if not venues:
+        print("❌ 无法推断 open/hedge venue", file=sys.stderr)
+        return 2
+    open_venue, hedge_venue = venues
+    env_name = resolve_env_name(args)
 
     rds = redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
 
     print("📍 Redis: 127.0.0.1:6379/0")
+    print(f"📦 env_name: {env_name or '-'}")
     print(f"📍 key_suffix: {key_suffix}\n")
 
     print("\n📊 cross 交易对列表配置:")
@@ -147,6 +185,11 @@ def main() -> int:
     total += print_symbol_list(rds, f"{NAMESPACE}_dump_symbols:{key_suffix}", "🔴 dump_symbols")
     total += print_symbol_list(rds, f"{NAMESPACE}_fwd_trade_symbols:{key_suffix}", "🟢 fwd_trade_symbols")
     total += print_symbol_list(rds, f"{NAMESPACE}_bwd_trade_symbols:{key_suffix}", "🔴 bwd_trade_symbols")
+    total += print_symbol_list(
+        rds,
+        unimmr_close_key(env_name, open_venue, hedge_venue),
+        "🟠 unimmr_close_symbols",
+    )
 
     print("\n📈 统计摘要:")
     print("=" * 80)
@@ -154,6 +197,7 @@ def main() -> int:
         f"{NAMESPACE}_dump_symbols:{key_suffix}",
         f"{NAMESPACE}_fwd_trade_symbols:{key_suffix}",
         f"{NAMESPACE}_bwd_trade_symbols:{key_suffix}",
+        unimmr_close_key(env_name, open_venue, hedge_venue),
     ]:
         data = rds.get(k)
         if not data:
