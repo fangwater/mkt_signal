@@ -33,6 +33,7 @@ pub mod spread_threshold_loader;
 pub mod strategy_loader;
 pub mod symbol_list;
 pub mod tlen_threshold_loader;
+pub mod unimmr_close_gate;
 
 // 公共导出 - 通用定义（枚举、数据结构、辅助函数）
 pub use common::{
@@ -62,6 +63,12 @@ pub use mkt_channel::MktChannel;
 pub use mm_decision::MmDecision;
 pub use rate_fetcher::{ExchangeConfig, RateFetcher, BINANCE_CONFIG, OKEX_CONFIG};
 pub use symbol_list::SymbolList;
+pub use unimmr_close_gate::{
+    load_thresholds_from_redis as load_unimmr_thresholds_from_redis, spawn_account_risk_listener,
+    start_threshold_refresh as start_unimmr_threshold_refresh, UnimmrCloseGate, UnimmrCloseState,
+    DEFAULT_RECOVER_LINE as UNIMMR_DEFAULT_RECOVER_LINE,
+    DEFAULT_TRIGGER_LINE as UNIMMR_DEFAULT_TRIGGER_LINE,
+};
 
 // 公共导出 - 价差因子
 pub use spread_factor::{SpreadFactor, SpreadThresholdConfig, SpreadType};

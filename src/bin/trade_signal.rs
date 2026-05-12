@@ -19,9 +19,10 @@ use mkt_signal::signal::common::TradingVenue;
 
 // 使用模块化的 funding_rate
 use mkt_signal::funding_rate::{
-    init_decision_branch, load_all_once_with_namespace, spawn_config_loader_with_namespace,
-    trigger_decision, ArbDecision, ArbMode, DecisionBranch, FundingRateFactor, MktChannel,
-    MmDecision, RateFetcher, SpreadFactor, SymbolList,
+    init_decision_branch, load_all_once_with_namespace, load_unimmr_thresholds_from_redis,
+    spawn_account_risk_listener, spawn_config_loader_with_namespace,
+    start_unimmr_threshold_refresh, trigger_decision, ArbDecision, ArbMode, DecisionBranch,
+    FundingRateFactor, MktChannel, MmDecision, RateFetcher, SpreadFactor, SymbolList,
 };
 
 const PROCESS_NAME: &str = "trade_signal";
@@ -58,6 +59,16 @@ fn infer_namespace_and_key_suffix_from_cwd() -> Option<(String, String)> {
     let cwd: PathBuf = std::env::current_dir().ok()?;
     let name = cwd.file_name()?.to_string_lossy().to_ascii_lowercase();
     parse_namespace_and_key_suffix(&name)
+}
+
+/// 与 `pre_trade::infer_dir_prefix_from_cwd` 同口径，用作 Redis hash 的 env 前缀。
+fn infer_env_dir_from_cwd() -> Option<String> {
+    let cwd = std::env::current_dir().ok()?;
+    let leaf = cwd.file_name()?.to_string_lossy().trim().to_string();
+    if leaf.is_empty() {
+        return None;
+    }
+    Some(leaf.to_ascii_lowercase())
 }
 
 fn parse_namespace_and_key_suffix(name: &str) -> Option<(String, String)> {
@@ -411,6 +422,37 @@ async fn run(
             "ARB workers started cancel_trigger=tlen cooldown_sweep=true mode={:?}",
             arb_mode
         );
+
+        // UniMMR 算法平仓状态机（仅 arb 分支 fr/intra/cross）：
+        // - 从 `pre_trade_risk_params` 拉 trigger/recover 同步加载一次 + 60s 刷新
+        // - 订阅 open/hedge 涉及到的 exchange 的 `account_pubs/<ex>_pm`，过滤
+        //   AccountRisk 消息并喂入 `UnimmrCloseGate`，按 BasicAccountScope 维度
+        //   维护带迟滞的状态（mr>recover→Normal / mr<trigger→CloseAllowed）
+        // - 本次只听+维护，不接 close 触发
+        let unimmr_redis = get_redis_settings();
+        let unimmr_env_prefix = infer_env_dir_from_cwd();
+        if let Err(err) =
+            load_unimmr_thresholds_from_redis(&unimmr_redis, unimmr_env_prefix.as_deref()).await
+        {
+            log::warn!(
+                "UnimmrCloseGate 阈值初次加载失败 prefix={:?}: {:#}，使用默认值",
+                unimmr_env_prefix,
+                err
+            );
+        }
+        start_unimmr_threshold_refresh(unimmr_redis, unimmr_env_prefix);
+
+        let open_exchange = Exchange::from_str(open_venue.trade_engine_exchange())
+            .context("invalid open venue exchange for UnimmrCloseGate")?;
+        let hedge_exchange = Exchange::from_str(hedge_venue.trade_engine_exchange())
+            .context("invalid hedge venue exchange for UnimmrCloseGate")?;
+        let mut listener_exchanges: Vec<Exchange> = vec![open_exchange];
+        if hedge_exchange != open_exchange {
+            listener_exchanges.push(hedge_exchange);
+        }
+        for ex in listener_exchanges {
+            spawn_account_risk_listener(ex);
+        }
     }
 
     // if matches!(branch, DecisionBranch::Fr) {
