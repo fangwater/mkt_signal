@@ -387,38 +387,55 @@
 
       .account-risks-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
         gap: 12px;
         margin-top: 12px;
       }
       .account-risk-card {
         border: 1px solid var(--border);
-        border-radius: 12px;
-        padding: 12px 14px;
+        border-radius: 10px;
+        padding: 16px;
         background: var(--bg-card);
         display: flex;
         flex-direction: column;
-        gap: 4px;
+        gap: 10px;
+        min-width: 0;
       }
-      .account-risk-card h3 {
-        margin: 0 0 6px 0;
-        font-size: 12px;
-        color: var(--muted);
-        font-weight: 500;
-      }
-      .account-risk-card .ar-row {
+      .account-risk-head {
         display: flex;
         justify-content: space-between;
-        gap: 12px;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+      .account-risk-title {
+        color: var(--muted);
         font-size: 12px;
-        line-height: 1.5;
+        font-weight: 500;
+        text-transform: uppercase;
+      }
+      .account-risk-state {
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 4px 9px;
+        background: rgba(255, 255, 255, 0.04);
+        font-size: 12px;
+        font-weight: 650;
+        white-space: nowrap;
+      }
+      .account-risk-label {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .account-risk-value {
+        font-size: 34px;
+        line-height: 1;
+        font-weight: 750;
         font-variant-numeric: tabular-nums;
       }
-      .account-risk-card .ar-k { color: var(--muted); }
-      .account-risk-card .ar-v { font-weight: 600; }
-      .account-risk-card .ar-v.color-green { color: var(--accent-green); }
-      .account-risk-card .ar-v.color-orange { color: var(--accent-warn); }
-      .account-risk-card .ar-v.color-red { color: var(--accent-red); }
+      .account-risk-value.color-green { color: var(--accent-green); }
+      .account-risk-value.color-orange { color: var(--accent-warn); }
+      .account-risk-value.color-red { color: var(--accent-red); }
 
       @media (max-width: 1100px) {
         .risk-grid { grid-template-columns: 1fr; }
@@ -702,17 +719,12 @@
               const colorCls = pickMarginRatioColor(ar.margin_ratio, t, r);
               return `
                 <div class="account-risk-card">
-                  <h3>account risk${headerSuffix} · #${idx + 1}</h3>
-                  <div class="ar-row"><span class="ar-k">state</span><span class="ar-v">${escText(ar.state)}</span></div>
-                  <div class="ar-row"><span class="ar-k">margin_ratio</span><span class="ar-v ${colorCls}">${fmt(ar.margin_ratio, fmtLev)}</span></div>
-                  <div class="ar-row"><span class="ar-k">ts</span><span class="ar-v">${escText(fmtTimeUtc8(ar.ts_ms))}</span></div>
-                  <div class="ar-row"><span class="ar-k">adj_equity_usd</span><span class="ar-v">${fmt(ar.adj_equity_usd, fmtUsd)}</span></div>
-                  <div class="ar-row"><span class="ar-k">actual_equity_usd</span><span class="ar-v">${fmt(ar.actual_equity_usd, fmtUsd)}</span></div>
-                  <div class="ar-row"><span class="ar-k">maint_margin_usd</span><span class="ar-v">${fmt(ar.maintenance_margin_usd, fmtUsd)}</span></div>
-                  <div class="ar-row"><span class="ar-k">initial_margin_usd</span><span class="ar-v">${fmt(ar.initial_margin_usd, fmtUsd)}</span></div>
-                  <div class="ar-row"><span class="ar-k">borrowed_usd</span><span class="ar-v">${fmt(ar.borrowed_usd, fmtUsd)}</span></div>
-                  <div class="ar-row"><span class="ar-k">notional_usd</span><span class="ar-v">${fmt(ar.notional_usd, fmtUsd)}</span></div>
-                  <div class="ar-row"><span class="ar-k">trigger / recover</span><span class="ar-v">${fmt(t, fmtLev)} / ${fmt(r, fmtLev)}</span></div>
+                  <div class="account-risk-head">
+                    <span class="account-risk-title">account risk${headerSuffix} · #${idx + 1}</span>
+                    <span class="account-risk-state">${escText(ar.state)}</span>
+                  </div>
+                  <div class="account-risk-label">UniMMR</div>
+                  <div class="account-risk-value ${colorCls}">${fmt(ar.margin_ratio, fmtLev)}</div>
                 </div>
               `;
             })
