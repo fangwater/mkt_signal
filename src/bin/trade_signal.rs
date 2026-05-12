@@ -13,17 +13,20 @@ use tokio_util::sync::CancellationToken;
 use mkt_signal::common::exchange::Exchange;
 use mkt_signal::common::iceoryx_publisher::configure_signal_publish_dry_run;
 use mkt_signal::common::redis_client::RedisSettings;
+use mkt_signal::common::symbol_util::normalize_symbol_for_venue;
 use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::signal::common::TradingVenue;
 
 // 使用模块化的 funding_rate
 use mkt_signal::funding_rate::{
     init_decision_branch, load_all_once_with_namespace, spawn_config_loader_with_namespace,
-    ArbDecision, ArbMode, DecisionBranch, FundingRateFactor, MktChannel, MmDecision, RateFetcher,
-    SpreadFactor, SymbolList,
+    trigger_decision, ArbDecision, ArbMode, DecisionBranch, FundingRateFactor, MktChannel,
+    MmDecision, RateFetcher, SpreadFactor, SymbolList,
 };
 
 const PROCESS_NAME: &str = "trade_signal";
+const ARB_COOLDOWN_SWEEP_MIN_INTERVAL_MS: u64 = 100;
+const ARB_COOLDOWN_SWEEP_MAX_INTERVAL_MS: u64 = 1_000;
 
 #[derive(Parser, Debug)]
 #[command(name = "trade_signal")]
@@ -282,6 +285,56 @@ fn spawn_arb_cancel_trigger_worker(token: CancellationToken) {
     });
 }
 
+fn arb_cooldown_sweep_interval() -> Duration {
+    let cooldown_us = ArbDecision::signal_cooldown_us().unwrap_or(5_000_000);
+    let cooldown_ms = if cooldown_us <= 0 {
+        ARB_COOLDOWN_SWEEP_MAX_INTERVAL_MS
+    } else {
+        (cooldown_us as u64).div_ceil(1_000)
+    };
+    let interval_ms = cooldown_ms.clamp(
+        ARB_COOLDOWN_SWEEP_MIN_INTERVAL_MS,
+        ARB_COOLDOWN_SWEEP_MAX_INTERVAL_MS,
+    );
+    Duration::from_millis(interval_ms.max(1))
+}
+
+fn process_arb_cooldown_sweep(open_venue: TradingVenue, hedge_venue: TradingVenue) {
+    let mut symbols = SymbolList::instance().get_online_symbols();
+    if symbols.is_empty() {
+        return;
+    }
+    symbols.sort_unstable();
+    symbols.dedup();
+
+    for symbol in symbols {
+        let open_symbol = normalize_symbol_for_venue(&symbol, open_venue);
+        let hedge_symbol = normalize_symbol_for_venue(&symbol, hedge_venue);
+        trigger_decision(&open_symbol, &hedge_symbol, open_venue, hedge_venue);
+    }
+}
+
+fn spawn_arb_cooldown_sweep_worker(
+    token: CancellationToken,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+) {
+    tokio::task::spawn_local(async move {
+        let mut next_interval = arb_cooldown_sweep_interval();
+        loop {
+            let sleep = time::sleep(next_interval);
+            tokio::pin!(sleep);
+            tokio::select! {
+                _ = token.cancelled() => break,
+                _ = &mut sleep => {
+                    process_arb_cooldown_sweep(open_venue, hedge_venue);
+                    next_interval = arb_cooldown_sweep_interval();
+                }
+            }
+        }
+    });
+}
+
 /// 主运行循环
 async fn run(
     branch: DecisionBranch,
@@ -353,8 +406,9 @@ async fn run(
         debug!("MM workers started open=interval cancel=return_score_update");
     } else if matches!(branch, DecisionBranch::Arb) {
         spawn_arb_cancel_trigger_worker(token.clone());
+        spawn_arb_cooldown_sweep_worker(token.clone(), open_venue, hedge_venue);
         debug!(
-            "ARB workers started cancel_trigger=tlen mode={:?}",
+            "ARB workers started cancel_trigger=tlen cooldown_sweep=true mode={:?}",
             arb_mode
         );
     }

@@ -4287,6 +4287,10 @@ impl ArbDecision {
         ARB_MODE.with(|cell| cell.get().copied())
     }
 
+    pub fn signal_cooldown_us() -> Option<i64> {
+        Self::with_state_mut(|arb| arb.signal_cooldown_us)
+    }
+
     pub(crate) fn with_state_mut<F, R>(f: F) -> Option<R>
     where
         F: FnOnce(&mut ArbDecisionState) -> R,
