@@ -93,6 +93,10 @@ name = "demo_gate_minqty"
 path = "src/bin/demo_gate_minqty.rs"
 
 [[bin]]
+name = "delist_schedule"
+path = "src/bin/delist_schedule.rs"
+
+[[bin]]
 name = "demo_depth_query_tlen"
 path = "src/bin/demo_depth_query_tlen.rs"
 
