@@ -10,8 +10,8 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use crate::common::basic_account_msg::{
-    get_basic_event_type, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
-    BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
+    get_basic_event_type, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
+    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
 };
 use crate::common::exchange::Exchange;
 use crate::common::iceoryx_publisher::{QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD};
@@ -627,6 +627,16 @@ impl QueryEngChannel {
                                                 }
                                             }
                                             let _ = applied;
+                                        }
+                                    }
+                                    BasicAccountEventType::AccountRisk => {
+                                        match BasicAccountRiskMsg::from_bytes(body) {
+                                            Ok(msg) => MonitorChannel::instance()
+                                                .apply_account_risk(account_scope, msg),
+                                            Err(err) => warn!(
+                                                "AccountRisk decode failed via query_eng_channel: scope={} err={err:#}",
+                                                account_scope.as_str()
+                                            ),
                                         }
                                     }
                                     _ => {}

@@ -1,3 +1,4 @@
+use crate::common::basic_account_msg::{AccountRiskLevelProvider, BasicAccountRiskMsg};
 use crate::common::exchange::Exchange;
 use crate::common::iceoryx_publisher::{ResamplePublisher, RESAMPLE_PAYLOAD};
 use crate::common::min_qty_table::MinQtyTable;
@@ -14,8 +15,8 @@ use crate::pre_trade::symbol_mapper::create_symbol_mapper;
 use crate::pre_trade::symbol_util::extract_base_asset;
 use crate::signal::common::TradingVenue;
 use crate::viz::resample::{
-    PreTradeExposureResampleEntry, PreTradeExposureRow, PreTradeRiskResampleEntry,
-    PreTradeVenueRiskResampleEntry,
+    PreTradeAccountRiskView, PreTradeExposureResampleEntry, PreTradeExposureRow,
+    PreTradeRiskResampleEntry, PreTradeVenueRiskResampleEntry,
 };
 use anyhow::Result;
 use log::{debug, info, trace, warn};
@@ -185,6 +186,28 @@ fn sum_borrow_interest_usd(
 
 fn hedge_snapshot_symbol_key(symbol: &str) -> String {
     normalize_symbol_for_internal(symbol)
+}
+
+fn build_account_risk_view(
+    scope: crate::common::basic_account_msg::BasicAccountScope,
+    msg: &BasicAccountRiskMsg,
+) -> PreTradeAccountRiskView {
+    let state = msg
+        .account_risk_level(scope)
+        .map(|level| level.as_str().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    PreTradeAccountRiskView {
+        // 5 个 producer 均填毫秒（详见 docs/account_risk_msg_mapping.md 与各 parser 单测）
+        ts_ms: msg.timestamp,
+        adj_equity_usd: msg.adj_equity_usd,
+        actual_equity_usd: msg.actual_equity_usd,
+        maintenance_margin_usd: msg.maintenance_margin_usd,
+        initial_margin_usd: msg.initial_margin_usd,
+        margin_ratio: msg.margin_ratio,
+        borrowed_usd: msg.borrowed_usd,
+        notional_usd: msg.notional_usd,
+        state,
+    }
 }
 
 fn arb_hedge_snapshot_asset_key(symbol: &str) -> String {
@@ -765,7 +788,10 @@ impl ResampleChannel {
             );
             let borrowed_usd = open_leg.borrowed_usd + hedge_leg.borrowed_usd;
             let interest_usd = open_leg.interest_usd + hedge_leg.interest_usd;
-            let max_leverage = PreTradeParamsLoader::instance().max_leverage();
+            let params = PreTradeParamsLoader::instance();
+            let max_leverage = params.max_leverage();
+            let unimmr_trigger_line = params.unimmr_trigger_line();
+            let unimmr_recover_line = params.unimmr_recover_line();
             // total_equity 口径：若涉及合约 venue，已包含 UPL。
             let leverage = if total_equity.abs() <= f64::EPSILON {
                 0.0
@@ -774,6 +800,20 @@ impl ResampleChannel {
             };
             // 这里显式保留“纯现货权益”字段，便于与 total_equity(eq) 对照排查。
             let spot_equity_usd = total_equity - um_unrealized_usd;
+
+            // 账户级风险：按 scope 去重收集，open 优先；没拿到快照的 scope 直接省略
+            let mut scope_order = vec![open_scope];
+            if hedge_scope != open_scope {
+                scope_order.push(hedge_scope);
+            }
+            let account_risks: Vec<PreTradeAccountRiskView> = scope_order
+                .into_iter()
+                .filter_map(|scope| {
+                    mon.account_risk_snapshot(scope)
+                        .map(|msg| build_account_risk_view(scope, &msg))
+                })
+                .collect();
+
             let entry = PreTradeRiskResampleEntry {
                 ts_ms,
                 signal_counts,
@@ -788,6 +828,9 @@ impl ResampleChannel {
                 max_leverage,
                 open_leg,
                 hedge_leg,
+                unimmr_trigger_line,
+                unimmr_recover_line,
+                account_risks,
             };
             if Self::publish_encoded(entry.to_bytes()?, publisher)? {
                 published += 1;

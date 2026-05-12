@@ -8,9 +8,9 @@ use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
 use crate::common::basic_account_msg::{
-    split_basic_account_event, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
-    BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg, BinanceBasicOrderMsg,
-    GateBasicOrderMsg, OkexOrderMsg,
+    split_basic_account_event, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
+    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
+    BinanceBasicOrderMsg, GateBasicOrderMsg, OkexOrderMsg,
 };
 use crate::common::bitget_account_msg::BitgetBasicOrderMsg;
 use crate::common::bybit_account_msg::BybitBasicOrderMsg;
@@ -245,6 +245,8 @@ struct MonitorChannelInner {
     order_manager: Rc<RefCell<OrderManager>>,
     /// Monotonic counter incremented when a TradeUpdate is received.
     trade_update_seq: u64,
+    /// 各账户 scope 最新一份风险快照，由 account_monitor 端 AccountRisk 消息驱动。
+    latest_account_risk: HashMap<BasicAccountScope, BasicAccountRiskMsg>,
 }
 
 struct BasicState {
@@ -670,6 +672,18 @@ impl MonitorChannel {
         })
     }
 
+    /// 写入某个账户 scope 的最新风险快照（后写覆盖前写）。
+    pub fn apply_account_risk(&self, scope: BasicAccountScope, msg: BasicAccountRiskMsg) {
+        Self::with_inner_mut(|inner| {
+            inner.latest_account_risk.insert(scope, msg);
+        });
+    }
+
+    /// 读取指定 scope 的最新风险快照；未到货则返回 None。
+    pub fn account_risk_snapshot(&self, scope: BasicAccountScope) -> Option<BasicAccountRiskMsg> {
+        Self::with_inner(|inner| inner.latest_account_risk.get(&scope).cloned())
+    }
+
     /// 获取当前基础风控口径的快照（用于 resample/viz）
     ///
     /// 返回：
@@ -915,6 +929,7 @@ impl MonitorChannel {
             orphan_strategy_mgr: Rc::new(RefCell::new(OrphanStrategyManager::new())),
             order_manager: Rc::new(RefCell::new(OrderManager::new(binance_account_mode))),
             trade_update_seq: 0,
+            latest_account_risk: HashMap::new(),
         };
 
         MONITOR_CHANNEL.with(|mc| {
@@ -1683,7 +1698,16 @@ impl MonitorChannel {
                                     _ => {}
                                 },
                                 BasicAccountEventType::TradeUpdateLite => {}
-                                BasicAccountEventType::AccountRisk => {}
+                                BasicAccountEventType::AccountRisk => {
+                                    match BasicAccountRiskMsg::from_bytes(data) {
+                                        Ok(msg) => MonitorChannel::instance()
+                                            .apply_account_risk(account_scope, msg),
+                                        Err(err) => warn!(
+                                            "AccountRisk decode failed: scope={} err={err:#}",
+                                            account_scope.as_str()
+                                        ),
+                                    }
+                                }
                                 BasicAccountEventType::Error => {}
                             }
                         }
@@ -2581,6 +2605,7 @@ mod tests {
                 BinanceAccountMode::Unified,
             )))),
             trade_update_seq: 0,
+            latest_account_risk: HashMap::new(),
         };
 
         MONITOR_CHANNEL.with(|mc| {
@@ -2628,6 +2653,7 @@ mod tests {
                 BinanceAccountMode::Unified,
             )))),
             trade_update_seq: 0,
+            latest_account_risk: HashMap::new(),
         };
 
         MONITOR_CHANNEL.with(|mc| {
@@ -2675,6 +2701,7 @@ mod tests {
                 BinanceAccountMode::Unified,
             )))),
             trade_update_seq: 0,
+            latest_account_risk: HashMap::new(),
         };
 
         MONITOR_CHANNEL.with(|mc| {
@@ -2721,6 +2748,7 @@ mod tests {
                 BinanceAccountMode::Unified,
             )))),
             trade_update_seq: 0,
+            latest_account_risk: HashMap::new(),
         };
 
         MONITOR_CHANNEL.with(|mc| {
@@ -2797,6 +2825,7 @@ mod tests {
                 BinanceAccountMode::Unified,
             )))),
             trade_update_seq: 0,
+            latest_account_risk: HashMap::new(),
         };
 
         MONITOR_CHANNEL.with(|mc| {

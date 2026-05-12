@@ -38,6 +38,18 @@ pub enum AccountRiskLevel {
     Liquidation,
 }
 
+impl AccountRiskLevel {
+    /// 等级文字（snake_case），供 viz 透出与日志使用。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FreeTrade => "free_trade",
+            Self::Warning => "warning",
+            Self::ReduceOnly => "reduce_only",
+            Self::Liquidation => "liquidation",
+        }
+    }
+}
+
 /// 从账户风险快照获取风险等级。
 ///
 /// 不同交易所的等级定义可能不同，因此接口显式传入 scope。

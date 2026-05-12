@@ -14,6 +14,9 @@ const REDIS_KEY_RISK_PARAMS: &str = "pre_trade_risk_params";
 
 /// 后台刷新间隔（固定 60 秒）
 const REFRESH_INTERVAL_SECS: u64 = 60;
+const EXCHANGE_WARNING_MODE_UPPER_UNIMMR: f64 = 1.5;
+const DEFAULT_UNIMMR_TRIGGER_LINE: f64 = 2.0;
+const DEFAULT_UNIMMR_RECOVER_LINE: f64 = 2.2;
 
 /// 从 Redis 加载的 Pre-Trade 风控参数（内部数据结构）
 #[derive(Debug, Clone)]
@@ -23,6 +26,8 @@ struct PreTradeParamsData {
     max_symbol_exposure_ratio: f64,
     max_total_exposure_ratio: f64,
     max_leverage: f64,
+    unimmr_trigger_line: f64,
+    unimmr_recover_line: f64,
     max_pending_limit_orders: i32,
     max_pending_limit_buy_orders: i32,
     max_pending_limit_sell_orders: i32,
@@ -46,6 +51,8 @@ impl Default for PreTradeParamsData {
             max_symbol_exposure_ratio: 0.8,
             max_total_exposure_ratio: 1.0,
             max_leverage: 3.0,
+            unimmr_trigger_line: DEFAULT_UNIMMR_TRIGGER_LINE,
+            unimmr_recover_line: DEFAULT_UNIMMR_RECOVER_LINE,
             max_pending_limit_orders: 3,
             max_pending_limit_buy_orders: 0,
             max_pending_limit_sell_orders: 0,
@@ -153,6 +160,18 @@ fn resolve_max_pos_u_for_symbol(
         .unwrap_or(default_max_pos_u)
 }
 
+fn normalize_unimmr_control_lines(trigger_line: f64, recover_line: f64) -> Option<(f64, f64)> {
+    if trigger_line.is_finite()
+        && recover_line.is_finite()
+        && trigger_line > EXCHANGE_WARNING_MODE_UPPER_UNIMMR
+        && recover_line > trigger_line
+    {
+        Some((trigger_line, recover_line))
+    } else {
+        None
+    }
+}
+
 impl PreTradeParamsLoader {
     /// 获取全局单例实例
     pub fn instance() -> Self {
@@ -247,6 +266,28 @@ impl PreTradeParamsLoader {
                 }
             }
 
+            let raw_unimmr_trigger_line = parse_f64("unimmr_trigger_line")
+                .unwrap_or(data.unimmr_trigger_line);
+            let raw_unimmr_recover_line =
+                parse_f64("unimmr_recover_line").unwrap_or(data.unimmr_recover_line);
+            if let Some((trigger_line, recover_line)) =
+                normalize_unimmr_control_lines(raw_unimmr_trigger_line, raw_unimmr_recover_line)
+            {
+                data.unimmr_trigger_line = trigger_line;
+                data.unimmr_recover_line = recover_line;
+            } else {
+                warn!(
+                    "unimmr control lines invalid trigger={} recover={}，要求 {:.2} < trigger < recover，回退默认 trigger={:.2} recover={:.2}",
+                    raw_unimmr_trigger_line,
+                    raw_unimmr_recover_line,
+                    EXCHANGE_WARNING_MODE_UPPER_UNIMMR,
+                    DEFAULT_UNIMMR_TRIGGER_LINE,
+                    DEFAULT_UNIMMR_RECOVER_LINE
+                );
+                data.unimmr_trigger_line = DEFAULT_UNIMMR_TRIGGER_LINE;
+                data.unimmr_recover_line = DEFAULT_UNIMMR_RECOVER_LINE;
+            }
+
             if let Some(v) = parse_i64("max_pending_limit_orders") {
                 data.max_pending_limit_orders = v.max(0) as i32;
             }
@@ -300,12 +341,14 @@ impl PreTradeParamsLoader {
             }
 
             debug!(
-                "风控参数已加载: max_pos_u={:.2} overrides={} sym_ratio={:.4} total_ratio={:.4} max_leverage={:.2} max_pending={} max_pending_buy={} max_pending_sell={} open_rate_1m={} open_rate_10s={} hedge_rate_1m={} hedge_rate_10s={} arb_max_pending_buy={} arb_max_pending_sell={} arb_open_rate_1m={} arb_open_rate_10s={} arb_hedge_rate_1m={} arb_hedge_rate_10s={}",
+                "风控参数已加载: max_pos_u={:.2} overrides={} sym_ratio={:.4} total_ratio={:.4} max_leverage={:.2} unimmr_trigger={:.2} unimmr_recover={:.2} max_pending={} max_pending_buy={} max_pending_sell={} open_rate_1m={} open_rate_10s={} hedge_rate_1m={} hedge_rate_10s={} arb_max_pending_buy={} arb_max_pending_sell={} arb_open_rate_1m={} arb_open_rate_10s={} arb_hedge_rate_1m={} arb_hedge_rate_10s={}",
                 data.max_pos_u,
                 data.max_pos_u_overrides.len(),
                 data.max_symbol_exposure_ratio,
                 data.max_total_exposure_ratio,
                 data.max_leverage,
+                data.unimmr_trigger_line,
+                data.unimmr_recover_line,
                 data.max_pending_limit_orders,
                 data.max_pending_limit_buy_orders,
                 data.max_pending_limit_sell_orders,
@@ -376,6 +419,14 @@ impl PreTradeParamsLoader {
             "max_total_exposure_ratio", data.max_total_exposure_ratio
         );
         println!("{:<40} {:>18.2}", "max_leverage", data.max_leverage);
+        println!(
+            "{:<40} {:>18.2}",
+            "unimmr_trigger_line", data.unimmr_trigger_line
+        );
+        println!(
+            "{:<40} {:>18.2}",
+            "unimmr_recover_line", data.unimmr_recover_line
+        );
         println!(
             "{:<40} {:>18}",
             "max_pending_limit_orders", data.max_pending_limit_orders
@@ -461,6 +512,16 @@ impl PreTradeParamsLoader {
     /// 获取 max_leverage
     pub fn max_leverage(&self) -> f64 {
         PARAMS_DATA.with(|data| data.borrow().max_leverage)
+    }
+
+    /// 获取 UniMMR 算法平仓触发线
+    pub fn unimmr_trigger_line(&self) -> f64 {
+        PARAMS_DATA.with(|data| data.borrow().unimmr_trigger_line)
+    }
+
+    /// 获取 UniMMR 算法平仓恢复线
+    pub fn unimmr_recover_line(&self) -> f64 {
+        PARAMS_DATA.with(|data| data.borrow().unimmr_recover_line)
     }
 
     /// 应急下调 max_leverage：立即更新本进程 thread-local 缓存（不等 60s 热加载），
@@ -586,6 +647,8 @@ impl PreTradeParamsLoader {
                 max_symbol_exposure_ratio: data.max_symbol_exposure_ratio,
                 max_total_exposure_ratio: data.max_total_exposure_ratio,
                 max_leverage: data.max_leverage,
+                unimmr_trigger_line: data.unimmr_trigger_line,
+                unimmr_recover_line: data.unimmr_recover_line,
                 max_pending_limit_orders: data.max_pending_limit_orders,
                 max_pending_limit_buy_orders: data.max_pending_limit_buy_orders,
                 max_pending_limit_sell_orders: data.max_pending_limit_sell_orders,
@@ -611,6 +674,8 @@ pub struct PreTradeParamsSnapshot {
     pub max_symbol_exposure_ratio: f64,
     pub max_total_exposure_ratio: f64,
     pub max_leverage: f64,
+    pub unimmr_trigger_line: f64,
+    pub unimmr_recover_line: f64,
     pub max_pending_limit_orders: i32,
     pub max_pending_limit_buy_orders: i32,
     pub max_pending_limit_sell_orders: i32,
@@ -637,6 +702,8 @@ mod tests {
         assert_eq!(loader.max_symbol_exposure_ratio(), 0.8);
         assert_eq!(loader.max_total_exposure_ratio(), 1.0);
         assert_eq!(loader.max_leverage(), 3.0);
+        assert_eq!(loader.unimmr_trigger_line(), DEFAULT_UNIMMR_TRIGGER_LINE);
+        assert_eq!(loader.unimmr_recover_line(), DEFAULT_UNIMMR_RECOVER_LINE);
         assert_eq!(loader.max_pending_limit_orders(), 3);
         assert_eq!(loader.max_pending_limit_buy_orders(), 0);
         assert_eq!(loader.max_pending_limit_sell_orders(), 0);
@@ -658,6 +725,8 @@ mod tests {
         let snapshot = loader.snapshot();
         assert_eq!(snapshot.max_pos_u, 1000.0);
         assert_eq!(snapshot.max_leverage, 3.0);
+        assert_eq!(snapshot.unimmr_trigger_line, DEFAULT_UNIMMR_TRIGGER_LINE);
+        assert_eq!(snapshot.unimmr_recover_line, DEFAULT_UNIMMR_RECOVER_LINE);
         assert_eq!(snapshot.max_pending_limit_buy_orders, 0);
         assert_eq!(snapshot.max_pending_limit_sell_orders, 0);
         assert_eq!(snapshot.open_order_rate_limit_per_min, 0);
@@ -719,5 +788,12 @@ mod tests {
             key.as_deref(),
             Some("okex-intra-arb01:okex-margin:okex-futures:max_pos_u_overrides")
         );
+    }
+
+    #[test]
+    fn test_normalize_unimmr_control_lines() {
+        assert_eq!(normalize_unimmr_control_lines(2.0, 2.2), Some((2.0, 2.2)));
+        assert_eq!(normalize_unimmr_control_lines(1.5, 2.2), None);
+        assert_eq!(normalize_unimmr_control_lines(2.2, 2.0), None);
     }
 }

@@ -174,6 +174,9 @@ fn spawn_pre_trade_risk_listener(
                     "max_leverage": entry.max_leverage,
                     "open_leg": entry.open_leg,
                     "hedge_leg": entry.hedge_leg,
+                    "unimmr_trigger_line": entry.unimmr_trigger_line,
+                    "unimmr_recover_line": entry.unimmr_recover_line,
+                    "account_risks": entry.account_risks,
                 },
             })) {
                 hub.broadcast(msg);

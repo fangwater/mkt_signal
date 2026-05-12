@@ -25,7 +25,7 @@ commit `3f08b60`（2026-05-12）让 5 个 account monitor（binance/okex/gate/bi
 - pre_trade 在 `MonitorChannel` 内按 `BasicAccountScope` 缓存最新一份 AccountRisk 快照。
 - 重采样时把当前作用域涉及到的快照（open_scope + hedge_scope 去重后）放进 `PreTradeRiskResampleEntry` 顶层，随 `pre_trade_risk` 频道发往 viz。
 - 同步新增两个 process-level 风控阈值 `unimmr_trigger_line / unimmr_recover_line`，从 `pre_trade_risk_params` Redis hash 加载，挂在 risk entry 顶层用于前端着色。
-- 改 7 个 `docs/*_pre_trade_dashboard.html` —— 每个 dashboard 渲染顶层 `account_risks` 数组，按账户维度出 1 或 2 张卡。
+- 改 5 个 `docs/*_pre_trade_dashboard.html` —— 每个 dashboard 渲染顶层 `account_risks` 数组，按账户维度出 1 或 2 张卡。
 
 ## 非目标
 
@@ -76,7 +76,7 @@ MonitorChannel       ts_ms, ..., max_leverage,
                               WS broadcast `type: pre_trade_risk`
                                             |
                                             v
-                                7 个 dashboard HTML 渲染 account_risks
+                                5 个 dashboard HTML 渲染 account_risks
 ```
 
 ## 设计
@@ -109,7 +109,7 @@ WIP 已经实现完整：
 - 新增 getter `unimmr_trigger_line()` / `unimmr_recover_line()`
 - `PreTradeParamsSnapshot` / `print_params_table` 同步加字段，对应单测覆盖
 
-5 个 risk params 同步/打印脚本（`scripts/{sync,print}_{fr,mm}_risk_params.py`、`cross_scripts/sync_cross_risk_params.py`）也在 WIP 里加了这两个 key（默认 `"2.0" / "2.2"` 字符串）。
+4 组 risk params 同步/打印脚本（MM / FR / CROSS / INTRA）也在 WIP 里加了这两个 key（默认 `"2.0" / "2.2"` 字符串）。
 
 **本设计文档不再重复实现该部分**，仅声明 viz 端的 consumer 直接调用 `PreTradeParamsLoader::instance().unimmr_trigger_line()` / `unimmr_recover_line()`，永远得到合法值。
 
@@ -254,7 +254,7 @@ let entry = PreTradeRiskResampleEntry {
 
 `open_leg / hedge_leg` 仍整体 serialize，本次不动。
 
-### 8. 7 个 dashboard 改动
+### 8. 5 个 dashboard 改动
 
 目标文件：
 
@@ -262,8 +262,6 @@ let entry = PreTradeRiskResampleEntry {
 - `docs/intra_pre_trade_dashboard.html`
 - `docs/fr_pre_trade_dashboard.html`
 - `docs/cross_pre_trade_dashboard.html`
-- `docs/xarb_pre_trade_dashboard.html`
-- `docs/xarb_binance_std_pre_trade_dashboard.html`
 - `docs/pre_trade_dashboard.html`
 
 每个 dashboard 在 risk 信息区附近新增一段 `Account Risk` 区块，按 `entry.account_risks` 数组渲染 N 张卡（N ∈ {0, 1, 2}）。每张卡格式：
@@ -292,7 +290,7 @@ let entry = PreTradeRiskResampleEntry {
 | `margin_ratio < t` | 红（`var(--accent-red)`） |
 | `t <= margin_ratio <= r` | 橙（`var(--accent-warn)`） |
 
-`account_risks` 数组为空 / N=0 时区块整体隐藏（避免空卡）。所有 7 个 dashboard 共用同一段 JS 渲染逻辑（同一个函数），通过 `document.getElementById('account-risks')` 找到容器，注入 `<div class="account-risk-card">…</div>` 卡片。
+`account_risks` 数组为空 / N=0 时区块整体隐藏（避免空卡）。所有 5 个 dashboard 共用同一段 JS 渲染逻辑（同一个函数），通过 `document.getElementById('account-risks')` 找到容器，注入 `<div class="account-risk-card">…</div>` 卡片。
 
 ## 错误处理
 
@@ -317,5 +315,5 @@ let entry = PreTradeRiskResampleEntry {
 ## 部署
 
 - pre_trade 与 viz_server 必须同周期 rebuild + 重启（bincode schema 变更）。
-- Redis `pre_trade_risk_params` hash 在切换前可用 5 个 sync 脚本 HSET `unimmr_trigger_line` / `unimmr_recover_line`（默认 `"2.0" / "2.2"`）；不配置或配置非法时进程会 `warn!` 并使用代码内默认值 `(2.0, 2.2)`，永不崩溃。
-- 前端 7 个 dashboard HTML 是静态文件，按既有 deploy 流程一并发布。
+- Redis `pre_trade_risk_params` hash 在切换前可用 MM / FR / CROSS / INTRA 的 sync 脚本 HSET `unimmr_trigger_line` / `unimmr_recover_line`（默认 `"2.0" / "2.2"`）；不配置或配置非法时进程会 `warn!` 并使用代码内默认值 `(2.0, 2.2)`，永不崩溃。
+- 前端 5 个 dashboard HTML 是静态文件，按既有 deploy 流程一并发布。

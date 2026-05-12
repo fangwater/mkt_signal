@@ -86,6 +86,19 @@ pub struct PreTradeExposureResampleEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreTradeAccountRiskView {
+    pub ts_ms: i64,
+    pub adj_equity_usd: f64,
+    pub actual_equity_usd: f64,
+    pub maintenance_margin_usd: f64,
+    pub initial_margin_usd: f64,
+    pub margin_ratio: f64,
+    pub borrowed_usd: f64,
+    pub notional_usd: f64,
+    pub state: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreTradeRiskResampleEntry {
     pub ts_ms: i64,
     pub signal_counts: HashMap<String, u64>,
@@ -100,6 +113,9 @@ pub struct PreTradeRiskResampleEntry {
     pub max_leverage: f64,
     pub open_leg: PreTradeVenueRiskResampleEntry,
     pub hedge_leg: PreTradeVenueRiskResampleEntry,
+    pub unimmr_trigger_line: f64,
+    pub unimmr_recover_line: f64,
+    pub account_risks: Vec<PreTradeAccountRiskView>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
