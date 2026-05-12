@@ -154,6 +154,21 @@ impl UnimmrCloseGate {
         matches!(self.state(scope), UnimmrCloseState::CloseAllowed)
     }
 
+    /// 任意一个已观测的 scope 处于 [`UnimmrCloseState::CloseAllowed`]。
+    ///
+    /// 供 `SymbolList::is_in_dump_list` 等 venue/scope 上下文不可得的下游使用：
+    /// 单交易所部署（intra/fr）下两个 scope 相同；跨所部署（cross）下任一 leg
+    /// 进入 close 状态都意味着账户处于风险中，应将 unimmr_close_symbols 暂时视
+    /// 作 dump symbols。
+    pub fn any_close_allowed(&self) -> bool {
+        GATE.with(|gate| {
+            gate.borrow()
+                .states
+                .values()
+                .any(|state| matches!(state, UnimmrCloseState::CloseAllowed))
+        })
+    }
+
     /// 最近一份原始 [`BasicAccountRiskMsg`]（None 表示还未观测）。
     pub fn snapshot(&self, scope: BasicAccountScope) -> Option<BasicAccountRiskMsg> {
         GATE.with(|gate| gate.borrow().snapshots.get(&scope).cloned())

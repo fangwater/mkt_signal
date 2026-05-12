@@ -289,9 +289,24 @@ impl SymbolList {
 
     // ==================== 查询接口 ====================
 
-    /// 判断交易对是否在平仓列表中
+    /// 判断交易对是否在平仓列表中。
+    ///
+    /// 语义：原有 `dump_symbols` ∪（当 `UnimmrCloseGate` 任一 scope 处于
+    /// `CloseAllowed` 时，叠加 `unimmr_close_symbols`）。也就是把 UniMMR
+    /// 平仓列表看作"满足条件时才生效的 dump"，arb_decision 现有 dump 路径
+    /// 自然把这些 symbol 走 close 流程，无需新增分支。
     pub fn is_in_dump_list(&self, symbol: &str) -> bool {
-        Self::with_inner(|inner| Self::contains_normalized(&inner.dump_symbols, symbol))
+        Self::with_inner(|inner| {
+            if Self::contains_normalized(&inner.dump_symbols, symbol) {
+                return true;
+            }
+            if super::unimmr_close_gate::UnimmrCloseGate::instance().any_close_allowed()
+                && Self::contains_normalized(&inner.unimmr_close_symbols, symbol)
+            {
+                return true;
+            }
+            false
+        })
     }
 
     /// 判断交易对是否在正套建仓列表中
