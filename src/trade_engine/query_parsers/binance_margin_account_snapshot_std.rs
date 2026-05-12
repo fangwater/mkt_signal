@@ -81,7 +81,7 @@ mod tests {
 
         let bal = BasicBalanceMsg::from_bytes(&msgs[0]).expect("balance");
         assert_eq!(bal.symbol, "USDT");
-        assert!((bal.balance - 102.0).abs() < 1e-12);
+        assert!((bal.wallet - 102.0).abs() < 1e-12);
 
         let borrow = BasicBorrowInterestMsg::from_bytes(&msgs[1]).expect("borrow");
         assert_eq!(borrow.symbol, "USDT");

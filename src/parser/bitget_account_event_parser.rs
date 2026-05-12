@@ -121,10 +121,10 @@ impl BitgetAccountEventParser {
 
         let mut sent = 0;
 
-        let balance = parse_f64_str(&coin_obj.equity)
-            .or_else(|| parse_f64_str(&coin_obj.balance))
+        let wallet = parse_f64_str(&coin_obj.balance)
+            .or_else(|| parse_f64_str(&coin_obj.equity))
             .unwrap_or(0.0);
-        let balance_msg = BasicBalanceMsg::create(timestamp, coin.clone(), balance);
+        let balance_msg = BasicBalanceMsg::create(timestamp, coin.clone(), wallet);
         let payload = balance_msg.to_bytes();
         let event = BasicAccountEventMsg::create(
             BasicAccountEventType::BalanceUpdate,
@@ -642,7 +642,7 @@ mod tests {
     }
 
     #[test]
-    fn account_channel_prefers_equity_over_balance() {
+    fn account_channel_prefers_gross_balance_over_equity() {
         let parser = BitgetAccountEventParser::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
 
@@ -671,7 +671,7 @@ mod tests {
         assert_eq!(scope, BasicAccountScope::BitgetUnified);
         let msg = BasicBalanceMsg::from_bytes(payload).expect("balance payload");
         assert_eq!(msg.symbol, "SOL");
-        assert!((msg.balance + 11.8).abs() < 1e-12);
+        assert!((msg.wallet + 70.8).abs() < 1e-12);
     }
 
     #[test]

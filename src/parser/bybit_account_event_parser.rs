@@ -76,17 +76,13 @@ impl BybitAccountEventParser {
                     || !coin_item.spot_borrow.trim().is_empty()
                     || !coin_item.accrued_interest.trim().is_empty()
                     || !coin_item.borrow_interest.trim().is_empty();
-                let borrowed = parse_f64_str(&coin_item.borrow_amount)
-                    .or_else(|| parse_f64_str(&coin_item.spot_borrow))
+                let borrowed = parse_f64_str(&coin_item.spot_borrow)
+                    .or_else(|| parse_f64_str(&coin_item.borrow_amount))
                     .unwrap_or(0.0);
                 let interest = parse_f64_str(&coin_item.accrued_interest)
                     .or_else(|| parse_f64_str(&coin_item.borrow_interest))
                     .unwrap_or(0.0);
-                // 与 OKX/Gate/Binance 对齐：BasicBalanceMsg.balance 写入 net 现货头寸 (= 物理持仓 - 借币本金 - 利息)。
-                // Bybit V5 walletBalance 是物理持仓 (借币卖出后会变负)，自身不含负债，必须显式扣掉。
-                // 不直接用 Bybit 的 equity 字段，因为 USDT 的 equity 会折进账户级 UPL，下游会与 um_unrealized 双计。
-                let net_balance = wallet_balance - borrowed - interest;
-                let balance_msg = BasicBalanceMsg::create(timestamp, coin.clone(), net_balance);
+                let balance_msg = BasicBalanceMsg::create(timestamp, coin.clone(), wallet_balance);
                 let balance_event = BasicAccountEventMsg::create(
                     BasicAccountEventType::BalanceUpdate,
                     BasicAccountScope::BybitUnified,
@@ -807,10 +803,9 @@ mod tests {
     }
 
     #[test]
-    fn wallet_channel_balance_is_net_of_borrow_and_interest() {
+    fn wallet_channel_balance_is_gross_wallet() {
         // Bybit UNIFIED 真实场景：借币卖出后 walletBalance 接近 0/为负，borrow 仍挂着。
-        // BasicBalanceMsg.balance 必须输出 net = walletBalance - borrowAmount - accruedInterest，
-        // 与 OKX/Gate/Binance 的"balance is net"约定一致。
+        // BasicBalanceMsg.wallet 直接输出 walletBalance，净额由 manager 读取时计算。
         let parser = BybitAccountEventParser::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
 
@@ -842,13 +837,10 @@ mod tests {
         assert_eq!(event_type, BasicAccountEventType::BalanceUpdate);
         let bal = BasicBalanceMsg::from_bytes(payload).expect("balance payload");
         assert_eq!(bal.symbol, "BNB");
-        // 公式：net = walletBalance - borrowAmount - accruedInterest（扣本金+利息，比 Bybit equity 略保守）
-        let expected = -0.00035791_f64 - 24.474621056148061433_f64 - 0.0000466_f64;
         assert!(
-            (bal.balance - expected).abs() < 1e-9,
-            "net balance = {} 应≈ {}",
-            bal.balance,
-            expected
+            (bal.wallet + 0.00035791).abs() < 1e-9,
+            "wallet = {} 应≈ -0.00035791",
+            bal.wallet
         );
 
         let wrapped_borrow = rx.try_recv().expect("borrow event");

@@ -258,7 +258,7 @@ fn compute_leg_risk_entry(
 
     if include_usdt_scope {
         if let Some(snapshot) = mon.usdt_snapshot_for_venue(venue) {
-            total_equity += snapshot.balance;
+            total_equity += snapshot.net();
             borrowed_usd += snapshot.borrowed;
             interest_usd += snapshot.cumulative_interest;
         }
@@ -295,19 +295,19 @@ fn print_usdt_summary(open_venue: TradingVenue, hedge_venue: TradingVenue, mon: 
     let hedge_snap = mon.usdt_snapshot_for_venue(hedge_venue).unwrap_or_default();
 
     let fmt_u = |v: f64| format!("{:.2}", v);
-    let open_net = open_snap.balance;
-    let hedge_net = hedge_snap.balance;
+    let open_net = open_snap.net();
+    let hedge_net = hedge_snap.net();
 
-    let (total_balance, total_borrowed, total_interest, total_net) = if open_ex == hedge_ex {
+    let (total_wallet, total_borrowed, total_interest, total_net) = if open_ex == hedge_ex {
         (
-            open_snap.balance,
+            open_snap.wallet,
             open_snap.borrowed,
             open_snap.cumulative_interest,
             open_net,
         )
     } else {
         (
-            open_snap.balance + hedge_snap.balance,
+            open_snap.wallet + hedge_snap.wallet,
             open_snap.borrowed + hedge_snap.borrowed,
             open_snap.cumulative_interest + hedge_snap.cumulative_interest,
             open_net + hedge_net,
@@ -317,7 +317,7 @@ fn print_usdt_summary(open_venue: TradingVenue, hedge_venue: TradingVenue, mon: 
     // 若完全没有更新过（避免刷屏）
     if open_snap.last_timestamp == 0
         && hedge_snap.last_timestamp == 0
-        && total_balance.abs() <= 1e-12
+        && total_wallet.abs() <= 1e-12
         && total_borrowed.abs() <= 1e-12
         && total_interest.abs() <= 1e-12
     {
@@ -325,24 +325,24 @@ fn print_usdt_summary(open_venue: TradingVenue, hedge_venue: TradingVenue, mon: 
     }
 
     trace!(
-        "USDT(open:{}): balance={} borrowed={} interest={} net={}",
+        "USDT(open:{}): wallet={} borrowed={} interest={} net={}",
         open_ex.as_str(),
-        fmt_u(open_snap.balance),
+        fmt_u(open_snap.wallet),
         fmt_u(open_snap.borrowed),
         fmt_u(open_snap.cumulative_interest),
         fmt_u(open_net)
     );
     trace!(
-        "USDT(hedge:{}): balance={} borrowed={} interest={} net={}",
+        "USDT(hedge:{}): wallet={} borrowed={} interest={} net={}",
         hedge_ex.as_str(),
-        fmt_u(hedge_snap.balance),
+        fmt_u(hedge_snap.wallet),
         fmt_u(hedge_snap.borrowed),
         fmt_u(hedge_snap.cumulative_interest),
         fmt_u(hedge_net)
     );
     trace!(
-        "USDT(total): balance={} borrowed={} interest={} net={}",
-        fmt_u(total_balance),
+        "USDT(total): wallet={} borrowed={} interest={} net={}",
+        fmt_u(total_wallet),
         fmt_u(total_borrowed),
         fmt_u(total_interest),
         fmt_u(total_net)

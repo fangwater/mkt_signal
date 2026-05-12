@@ -54,11 +54,14 @@ pub fn parse_bitget_account_balance_snapshot(json: &str) -> Option<Vec<Bytes>> {
             continue;
         }
 
-        let balance = parse_f64(&row.equity)
-            .or_else(|| parse_f64(&row.balance))
+        let wallet = parse_f64(&row.balance)
+            .or_else(|| parse_f64(&row.equity))
             .unwrap_or(0.0);
-        out.push(BasicBalanceMsg::create(ts, coin.clone(), balance).to_bytes());
+        out.push(BasicBalanceMsg::create(ts, coin.clone(), wallet).to_bytes());
 
+        let has_liability_fields = !row.borrow.trim().is_empty()
+            || !row.debt.trim().is_empty()
+            || !row.debts.trim().is_empty();
         let borrowed = parse_f64(&row.borrow)
             .or_else(|| parse_f64(&row.debt))
             .or_else(|| parse_f64(&row.debts))
@@ -67,7 +70,7 @@ pub fn parse_bitget_account_balance_snapshot(json: &str) -> Option<Vec<Bytes>> {
             .or_else(|| parse_f64(&row.debt))
             .unwrap_or(borrowed);
         let interest = (debt_total - borrowed).max(0.0);
-        if borrowed > 0.0 || interest > 0.0 {
+        if borrowed > 0.0 || interest > 0.0 || has_liability_fields {
             out.push(BasicBorrowInterestMsg::create(ts, coin, borrowed, interest).to_bytes());
         }
     }
@@ -93,7 +96,7 @@ mod tests {
             }
         }"#;
         let msgs = parse_bitget_account_balance_snapshot(json).expect("parse ok");
-        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs.len(), 4);
 
         let bal = BasicBalanceMsg::from_bytes(&msgs[0]).expect("balance");
         assert_eq!(
@@ -101,7 +104,7 @@ mod tests {
             BasicAccountEventType::BalanceUpdate as u32
         );
         assert_eq!(bal.symbol, "USDT");
-        assert!((bal.balance - 950.0).abs() < 1e-12);
+        assert!((bal.wallet - 1000.0).abs() < 1e-12);
 
         let borrow = BasicBorrowInterestMsg::from_bytes(&msgs[1]).expect("borrow");
         assert_eq!(
@@ -110,5 +113,10 @@ mod tests {
         );
         assert_eq!(borrow.symbol, "USDT");
         assert!((borrow.borrowed - 50.0).abs() < 1e-12);
+
+        let btc_clear = BasicBorrowInterestMsg::from_bytes(&msgs[3]).expect("btc clear");
+        assert_eq!(btc_clear.symbol, "BTC");
+        assert_eq!(btc_clear.borrowed, 0.0);
+        assert_eq!(btc_clear.interest, 0.0);
     }
 }

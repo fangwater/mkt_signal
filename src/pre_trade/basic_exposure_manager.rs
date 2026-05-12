@@ -12,7 +12,7 @@ use crate::pre_trade::{
 #[derive(Debug, Clone)]
 pub struct BasicExposureEntry {
     pub asset: String,    // 基础资产（如 "BTC"）
-    pub balance: f64,     // 现货余额（净值 = 余额 - 借币 - 利息）
+    pub balance: f64,     // 现货净头寸（wallet - borrowed - interest）
     pub borrowed: f64,    // 借币数量
     pub interest: f64,    // 累计利息
     pub um_position: f64, // UM 持仓（标的资产数量，已考虑合约乘数）
@@ -190,18 +190,12 @@ impl BasicExposureManager {
                 continue;
             }
 
-            // balance 是净值（已扣除借币和利息），需要加回利息单独统计
-            let spot_value = (entry.balance + entry.interest) * mark;
-            let borrowed_value = entry.borrowed * mark;
-            let interest_value = entry.interest * mark;
-
-            total_spot_value += spot_value;
-            total_borrowed_value += borrowed_value;
-            total_interest_value += interest_value;
+            total_spot_value += entry.balance * mark;
+            total_borrowed_value += entry.borrowed * mark;
+            total_interest_value += entry.interest * mark;
         }
 
-        // 总权益 = spot 估值 - 利息（负债已在 balance 中扣除）
-        self.total_equity = total_spot_value - total_interest_value;
+        self.total_equity = total_spot_value;
         self.total_borrowed_usd = total_borrowed_value;
         self.total_interest_usd = total_interest_value;
 
@@ -294,5 +288,43 @@ impl BasicExposureManager {
         }
         let scale = lhs.abs().max(rhs.abs()).max(1.0);
         diff <= EPS_REL * scale
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::basic_account_msg::{BasicBalanceMsg, BasicBorrowInterestMsg};
+    use crate::pre_trade::basic_balance_manager::BasicBalanceManager;
+
+    #[test]
+    fn revalue_uses_net_balance_directly() {
+        let mut balance_mgr = BasicBalanceManager::new(Exchange::Binance);
+        balance_mgr.apply_balance(&BasicBalanceMsg::create(1, "BTC".to_string(), 100.0));
+        balance_mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
+            1,
+            "BTC".to_string(),
+            30.0,
+            2.0,
+        ));
+
+        let mut exposure_mgr =
+            BasicExposureManager::new_from_sources(Exchange::Binance, &[&balance_mgr], &[]);
+        let mut price_map = BTreeMap::new();
+        price_map.insert(
+            "BTCUSDT".to_string(),
+            PriceEntry {
+                symbol: "BTCUSDT".to_string(),
+                mark_price: 10.0,
+                index_price: 10.0,
+                update_time: 1,
+            },
+        );
+
+        exposure_mgr.revalue_with_prices(&price_map);
+
+        assert!((exposure_mgr.total_equity() - 680.0).abs() < 1e-12);
+        assert!((exposure_mgr.total_borrowed_usd() - 300.0).abs() < 1e-12);
+        assert!((exposure_mgr.total_interest_usd() - 20.0).abs() < 1e-12);
     }
 }

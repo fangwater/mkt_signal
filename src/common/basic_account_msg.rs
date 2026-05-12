@@ -1018,24 +1018,27 @@ impl GateBasicOrderMsg {
     }
 }
 
-/// Basic 余额消息（仅一个时间字段）
+/// Basic 余额消息（仅一个时间字段）。
+///
+/// `wallet` 是物理钱包余额（gross），不扣借币本金和利息。借币本金/利息由
+/// `BasicBorrowInterestMsg` 单独发送，读取端通过 manager 计算净头寸。
 #[derive(Debug, Clone)]
 pub struct BasicBalanceMsg {
     pub msg_type: BasicAccountEventType,
     pub timestamp: i64,
     pub symbol_length: u32,
     pub symbol: String,
-    pub balance: f64,
+    pub wallet: f64,
 }
 
 impl BasicBalanceMsg {
-    pub fn create(timestamp: i64, symbol: String, balance: f64) -> Self {
+    pub fn create(timestamp: i64, symbol: String, wallet: f64) -> Self {
         Self {
             msg_type: BasicAccountEventType::BalanceUpdate,
             timestamp,
             symbol_length: symbol.len() as u32,
             symbol,
-            balance,
+            wallet,
         }
     }
 
@@ -1047,7 +1050,7 @@ impl BasicBalanceMsg {
         buf.put_i64_le(self.timestamp);
         buf.put_u32_le(self.symbol_length);
         buf.put(self.symbol.as_bytes());
-        buf.put_f64_le(self.balance);
+        buf.put_f64_le(self.wallet);
 
         buf.freeze()
     }
@@ -1070,14 +1073,14 @@ impl BasicBalanceMsg {
             anyhow::bail!("invalid okex balance msg length");
         }
         let symbol = String::from_utf8(cursor.copy_to_bytes(symbol_length as usize).to_vec())?;
-        let balance = cursor.get_f64_le();
+        let wallet = cursor.get_f64_le();
 
         Ok(Self {
             msg_type: BasicAccountEventType::BalanceUpdate,
             timestamp,
             symbol_length,
             symbol,
-            balance,
+            wallet,
         })
     }
 }

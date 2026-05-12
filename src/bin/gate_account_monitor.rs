@@ -788,7 +788,7 @@ impl AccountEventDeduper {
             BasicAccountEventType::BalanceUpdate as u32 as u64,
             msg.timestamp as u64,
             self.hash_str64(&msg.symbol),
-            msg.balance.to_bits(),
+            msg.wallet.to_bits(),
         ])
     }
 

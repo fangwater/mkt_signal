@@ -20,7 +20,7 @@ struct OkexBalanceAccount {
 struct OkexBalanceDetail {
     #[serde(default)]
     ccy: String,
-    // OKX eq 是账户权益口径；USDT 行已包含账户级 swap UPL。
+    // OKX eq 是净权益口径；wallet 由 eq + liab 推导。
     #[serde(default)]
     eq: String,
     #[serde(default)]
@@ -62,14 +62,14 @@ pub fn parse_okex_account_balance_snapshot(json: &str) -> Option<Vec<Bytes>> {
         };
         let ts = parse_i64(&d.u_time).unwrap_or(fallback_ts);
         let symbol = d.ccy.to_ascii_uppercase();
-        out.push(BasicBalanceMsg::create(ts, symbol.clone(), eq).to_bytes());
-
-        // OKX 跨保证金负债：liab 是当前借入本金 + 利息合计（绝对值），interest 单独给出已计利息。
-        // 仅 liab>0 或 interest>0 时才发 borrow 事件，避免无负债币种刷无效消息。
         let liab = parse_f64(&d.liab).map(f64::abs).unwrap_or(0.0);
         let interest = parse_f64(&d.interest).map(f64::abs).unwrap_or(0.0);
-        if liab > 0.0 || interest > 0.0 {
-            let principal = (liab - interest).max(0.0);
+        let wallet = eq + liab;
+        out.push(BasicBalanceMsg::create(ts, symbol.clone(), wallet).to_bytes());
+
+        let has_liability_fields = !d.liab.trim().is_empty() || !d.interest.trim().is_empty();
+        let principal = (liab - interest).max(0.0);
+        if principal > 0.0 || interest > 0.0 || has_liability_fields {
             out.push(BasicBorrowInterestMsg::create(ts, symbol, principal, interest).to_bytes());
         }
     }
@@ -106,11 +106,11 @@ mod tests {
             BasicAccountEventType::BalanceUpdate as u32
         );
         assert_eq!(bal.symbol, "USDT");
-        assert!((bal.balance - 4990.5).abs() < 1e-10);
+        assert!((bal.wallet - 4990.5).abs() < 1e-10);
     }
 
     #[test]
-    fn okex_usdt_balance_snapshot_uses_eq_with_upl() {
+    fn okex_usdt_balance_snapshot_uses_gross_wallet() {
         let json = r#"{
             "code": "0",
             "data": [{
@@ -129,7 +129,7 @@ mod tests {
         assert_eq!(msgs.len(), 1);
         let bal = BasicBalanceMsg::from_bytes(&msgs[0]).expect("bal ok");
         assert_eq!(bal.symbol, "USDT");
-        assert!((bal.balance - 53443.166831427916).abs() < 1e-10);
+        assert!((bal.wallet - 53443.166831427916).abs() < 1e-10);
     }
 
     #[test]
@@ -160,24 +160,35 @@ mod tests {
             "msg": ""
         }"#;
         let msgs = parse_okex_account_balance_snapshot(json).expect("parse ok");
-        // USDT: balance + borrow; BTC: balance only.
-        assert_eq!(msgs.len(), 3);
+        // USDT: wallet + borrow; BTC: wallet + zero-borrow clear.
+        assert_eq!(msgs.len(), 4);
 
+        let mut usdt_wallet = None;
         let mut usdt_borrow = None;
-        let mut saw_btc_borrow = false;
+        let mut btc_borrow = None;
         for msg in &msgs {
-            if get_basic_event_type(msg) == BasicAccountEventType::BorrowInterest {
-                let bi = BasicBorrowInterestMsg::from_bytes(msg).expect("bi ok");
-                if bi.symbol == "USDT" {
-                    usdt_borrow = Some((bi.borrowed, bi.interest));
-                } else if bi.symbol == "BTC" {
-                    saw_btc_borrow = true;
+            match get_basic_event_type(msg) {
+                BasicAccountEventType::BalanceUpdate => {
+                    let bal = BasicBalanceMsg::from_bytes(msg).expect("bal ok");
+                    if bal.symbol == "USDT" {
+                        usdt_wallet = Some(bal.wallet);
+                    }
                 }
+                BasicAccountEventType::BorrowInterest => {
+                    let bi = BasicBorrowInterestMsg::from_bytes(msg).expect("bi ok");
+                    if bi.symbol == "USDT" {
+                        usdt_borrow = Some((bi.borrowed, bi.interest));
+                    } else if bi.symbol == "BTC" {
+                        btc_borrow = Some((bi.borrowed, bi.interest));
+                    }
+                }
+                _ => {}
             }
         }
+        assert!((usdt_wallet.expect("usdt wallet") - 1000.5).abs() < 1e-9);
         let (principal, interest) = usdt_borrow.expect("usdt borrow event");
         assert!((principal - 50.0).abs() < 1e-9);
         assert!((interest - 0.5).abs() < 1e-9);
-        assert!(!saw_btc_borrow);
+        assert_eq!(btc_borrow, Some((0.0, 0.0)));
     }
 }

@@ -51,7 +51,9 @@ pub fn parse_binance_pm_balance_snapshot(json: &str) -> Option<Vec<Bytes>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::basic_account_msg::{BasicAccountEventType, BasicBalanceMsg};
+    use crate::common::basic_account_msg::{
+        BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
+    };
 
     #[test]
     fn parse_balance_snapshot_to_basic_msgs() {
@@ -71,6 +73,28 @@ mod tests {
             BasicAccountEventType::BalanceUpdate as u32
         );
         assert_eq!(bal.symbol, "BTC");
-        assert!((bal.balance - 2.345).abs() < 1e-12);
+        assert!((bal.wallet - 2.345).abs() < 1e-12);
+    }
+
+    #[test]
+    fn parser_emits_gross_wallet_not_net_pm() {
+        let json = r#"[{
+            "asset": "APT",
+            "totalWalletBalance": "0",
+            "crossMarginBorrowed": "5395.92",
+            "crossMarginInterest": "0",
+            "updateTime": 1700000000000
+        }]"#;
+        let msgs = parse_binance_pm_balance_snapshot(json).expect("parse ok");
+        assert_eq!(msgs.len(), 2);
+
+        let bal = BasicBalanceMsg::from_bytes(&msgs[0]).expect("bal ok");
+        assert_eq!(bal.symbol, "APT");
+        assert_eq!(bal.wallet, 0.0);
+
+        let borrow = BasicBorrowInterestMsg::from_bytes(&msgs[1]).expect("borrow ok");
+        assert_eq!(borrow.symbol, "APT");
+        assert!((borrow.borrowed - 5395.92).abs() < 1e-9);
+        assert_eq!(borrow.interest, 0.0);
     }
 }

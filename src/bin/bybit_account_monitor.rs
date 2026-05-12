@@ -545,11 +545,11 @@ fn log_parsed_event(msg: &Bytes) {
         BasicAccountEventType::BalanceUpdate => {
             if let Ok(m) = BasicBalanceMsg::from_bytes(&payload) {
                 debug!(
-                    "Bybit BalanceUpdate: scope={} ts={} symbol={} balance={}",
+                    "Bybit BalanceUpdate: scope={} ts={} symbol={} wallet={}",
                     account_scope.as_str(),
                     m.timestamp,
                     m.symbol,
-                    m.balance
+                    m.wallet
                 );
             }
         }
@@ -695,7 +695,7 @@ impl AccountEventDeduper {
             BasicAccountEventType::BalanceUpdate as u32 as u64,
             msg.timestamp as u64,
             self.hash_str64(&msg.symbol),
-            msg.balance.to_bits(),
+            msg.wallet.to_bits(),
         ])
     }
 

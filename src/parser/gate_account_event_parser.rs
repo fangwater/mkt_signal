@@ -205,16 +205,38 @@ impl GateAccountEventParser {
                 continue;
             }
 
-            // Gate unified 使用 equity(e) 作为净资产数量，避免重复扣减负债或重复叠加 UPL。
-            let Some(balance) = parse_f64_str_or_num(details.get("e")) else {
+            let total_liab = match details.get("tl") {
+                Some(raw_total_liab) => match parse_f64_str_or_num(Some(raw_total_liab)) {
+                    Some(v) => Some(v),
+                    None => {
+                        warn!(
+                            "Gate: unified.asset_detail invalid tl for symbol={}",
+                            symbol
+                        );
+                        incomplete = true;
+                        None
+                    }
+                },
+                None => None,
+            };
+
+            let wallet = if let Some(wallet) = parse_f64_str_or_num(details.get("b")) {
+                Some(wallet)
+            } else if let Some(equity) = parse_f64_str_or_num(details.get("e")) {
+                Some(equity + total_liab.unwrap_or(0.0))
+            } else {
                 warn!(
-                    "Gate: unified.asset_detail missing/invalid equity for symbol={}",
+                    "Gate: unified.asset_detail missing/invalid wallet/equity for symbol={}",
                     symbol
                 );
                 incomplete = true;
+                None
+            };
+            let Some(wallet) = wallet else {
                 continue;
             };
-            let msg = BasicBalanceMsg::create(timestamp, symbol.to_string(), balance);
+
+            let msg = BasicBalanceMsg::create(timestamp, symbol.to_string(), wallet);
             let payload = msg.to_bytes();
             let event = BasicAccountEventMsg::create(
                 BasicAccountEventType::BalanceUpdate,
@@ -225,34 +247,23 @@ impl GateAccountEventParser {
                 count += 1;
             }
 
-            // 解析借款 (tl) -> BasicBorrowInterestMsg (interest 设为 0)
-            if let Some(raw_total_liab) = details.get("tl") {
-                match parse_f64_str_or_num(Some(raw_total_liab)) {
-                    Some(borrowed) if borrowed > 0.0 => {
-                        let msg = BasicBorrowInterestMsg::create(
-                            timestamp,
-                            symbol.to_string(),
-                            borrowed,
-                            0.0, // Gate.io 不在此消息中提供利息，设为 0
-                        );
-                        let payload = msg.to_bytes();
-                        let event = BasicAccountEventMsg::create(
-                            BasicAccountEventType::BorrowInterest,
-                            BasicAccountScope::GateUnified,
-                            payload,
-                        );
-                        if tx.send(event.to_bytes()).is_ok() {
-                            count += 1;
-                        }
-                    }
-                    Some(_) => {}
-                    None => {
-                        warn!(
-                            "Gate: unified.asset_detail invalid tl for symbol={}",
-                            symbol
-                        );
-                        incomplete = true;
-                    }
+            // 解析借款 (tl) -> BasicBorrowInterestMsg (interest 设为 0)。字段存在时即使为 0
+            // 也发送，用来清理 manager 中已归零的旧负债。
+            if let Some(borrowed) = total_liab {
+                let msg = BasicBorrowInterestMsg::create(
+                    timestamp,
+                    symbol.to_string(),
+                    borrowed,
+                    0.0, // Gate.io 不在此消息中提供利息，设为 0
+                );
+                let payload = msg.to_bytes();
+                let event = BasicAccountEventMsg::create(
+                    BasicAccountEventType::BorrowInterest,
+                    BasicAccountScope::GateUnified,
+                    payload,
+                );
+                if tx.send(event.to_bytes()).is_ok() {
+                    count += 1;
                 }
             }
         }
@@ -1276,7 +1287,7 @@ mod tests {
     };
 
     #[test]
-    fn unified_asset_detail_uses_equity_field() {
+    fn unified_asset_detail_uses_gross_wallet_field() {
         let parser = GateAccountEventParser::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
         let payload = Bytes::from_static(
@@ -1311,7 +1322,7 @@ mod tests {
         assert_eq!(scope, BasicAccountScope::GateUnified);
         let balance = BasicBalanceMsg::from_bytes(body).expect("balance body");
         assert_eq!(balance.symbol, "USDT");
-        assert!((balance.balance + 1029.02217879).abs() < 1e-9);
+        assert!((balance.wallet + 53.2047041).abs() < 1e-9);
 
         let wrapped_borrow = rx.try_recv().expect("borrow event");
         let (event_type, scope, body) =

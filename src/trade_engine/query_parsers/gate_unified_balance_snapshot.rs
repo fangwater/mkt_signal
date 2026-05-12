@@ -91,14 +91,37 @@ fn find_time_ms(row: &Value) -> Option<i64> {
     None
 }
 
-fn find_equity(row: &Value) -> Option<f64> {
-    let keys = ["equity", "eq"];
+fn find_wallet(row: &Value) -> Option<f64> {
+    let keys = ["balance", "b", "wallet", "wallet_balance", "walletBalance"];
     for key in keys {
         if let Some(v) = row.get(key).and_then(parse_f64_value) {
             return Some(v);
         }
     }
     None
+}
+
+fn find_liability(details: &Value) -> f64 {
+    let total_liab = find_f64(details, &["total_liab", "tl"]).unwrap_or(0.0);
+    if total_liab > 0.0 {
+        return total_liab;
+    }
+    let borrowed = find_f64(details, &["borrowed"]).unwrap_or(0.0);
+    let negative_liab = find_f64(details, &["negative_liab"]).unwrap_or(0.0);
+    let futures_liab = find_f64(details, &["futures_pos_liab"]).unwrap_or(0.0);
+    borrowed + negative_liab + futures_liab
+}
+
+fn has_liability_fields(details: &Value) -> bool {
+    [
+        "total_liab",
+        "tl",
+        "borrowed",
+        "negative_liab",
+        "futures_pos_liab",
+    ]
+    .iter()
+    .any(|key| details.get(*key).is_some())
 }
 
 fn find_f64(row: &Value, keys: &[&str]) -> Option<f64> {
@@ -118,9 +141,23 @@ pub fn parse_gate_unified_balance_snapshot(json: &str) -> Option<Vec<Bytes>> {
     if let Some(rows) = extract_rows(&value) {
         for row in rows {
             let symbol = find_str(row, &["currency", "ccy", "asset", "symbol", "coin"])?;
-            let balance = find_equity(row)?;
+            let wallet = find_wallet(row).or_else(|| {
+                let equity = find_f64(row, &["equity", "eq"])?;
+                Some(equity + find_liability(row))
+            })?;
             let ts = find_time_ms(row).unwrap_or(now_ts);
-            out.push(BasicBalanceMsg::create(ts, symbol.to_ascii_uppercase(), balance).to_bytes());
+            out.push(BasicBalanceMsg::create(ts, symbol.to_ascii_uppercase(), wallet).to_bytes());
+            if has_liability_fields(row) {
+                out.push(
+                    BasicBorrowInterestMsg::create(
+                        ts,
+                        symbol.to_ascii_uppercase(),
+                        find_liability(row),
+                        0.0,
+                    )
+                    .to_bytes(),
+                );
+            }
         }
     }
 
@@ -130,20 +167,16 @@ pub fn parse_gate_unified_balance_snapshot(json: &str) -> Option<Vec<Bytes>> {
 
     if let Some(balances) = extract_balance_map(&value) {
         for (symbol, details) in balances {
-            let balance = find_f64(details, &["equity"]).unwrap_or(0.0);
+            let liab = find_liability(details);
+            let wallet = find_wallet(details)
+                .or_else(|| {
+                    let equity = find_f64(details, &["equity", "eq"])?;
+                    Some(equity + liab)
+                })
+                .unwrap_or(0.0);
 
             let ts = now_ts;
-            out.push(BasicBalanceMsg::create(ts, symbol.to_ascii_uppercase(), balance).to_bytes());
-
-            let total_liab = find_f64(details, &["total_liab"]).unwrap_or(0.0);
-            let borrowed = find_f64(details, &["borrowed"]).unwrap_or(0.0);
-            let negative_liab = find_f64(details, &["negative_liab"]).unwrap_or(0.0);
-            let futures_liab = find_f64(details, &["futures_pos_liab"]).unwrap_or(0.0);
-            let liab = if total_liab > 0.0 {
-                total_liab
-            } else {
-                borrowed + negative_liab + futures_liab
-            };
+            out.push(BasicBalanceMsg::create(ts, symbol.to_ascii_uppercase(), wallet).to_bytes());
             out.push(
                 BasicBorrowInterestMsg::create(ts, symbol.to_ascii_uppercase(), liab, 0.0)
                     .to_bytes(),
@@ -166,14 +199,18 @@ mod tests {
         let json = r#"[{
             "currency": "USDT",
             "equity": "100.5",
+            "total_liab": "2.0",
             "update_time": 1716796364
         }]"#;
         let msgs = parse_gate_unified_balance_snapshot(json).expect("parse ok");
-        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs.len(), 2);
         let bal = BasicBalanceMsg::from_bytes(&msgs[0]).expect("bal ok");
         assert_eq!(bal.symbol, "USDT");
-        assert!((bal.balance - 100.5).abs() < 1e-12);
+        assert!((bal.wallet - 102.5).abs() < 1e-12);
         assert_eq!(bal.timestamp, 1716796364000);
+        let borrow = BasicBorrowInterestMsg::from_bytes(&msgs[1]).expect("borrow ok");
+        assert_eq!(borrow.symbol, "USDT");
+        assert!((borrow.borrowed - 2.0).abs() < 1e-12);
     }
 
     #[test]
@@ -181,16 +218,21 @@ mod tests {
         let json = r#"{
             "data": [{
                 "asset": "BTC",
-                "equity": 0.25,
+                "b": 0.25,
+                "e": 0.20,
+                "tl": 0.05,
                 "update_time_ms": 1716796364000
             }]
         }"#;
         let msgs = parse_gate_unified_balance_snapshot(json).expect("parse ok");
-        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs.len(), 2);
         let bal = BasicBalanceMsg::from_bytes(&msgs[0]).expect("bal ok");
         assert_eq!(bal.symbol, "BTC");
-        assert!((bal.balance - 0.25).abs() < 1e-12);
+        assert!((bal.wallet - 0.25).abs() < 1e-12);
         assert_eq!(bal.timestamp, 1716796364000);
+        let borrow = BasicBorrowInterestMsg::from_bytes(&msgs[1]).expect("borrow ok");
+        assert_eq!(borrow.symbol, "BTC");
+        assert!((borrow.borrowed - 0.05).abs() < 1e-12);
     }
 
     #[test]
@@ -231,7 +273,7 @@ mod tests {
                 BasicAccountEventType::BalanceUpdate => {
                     let bal = BasicBalanceMsg::from_bytes(&msg).expect("bal ok");
                     if bal.symbol == "ETH" {
-                        eth_balance = Some(bal.balance);
+                        eth_balance = Some(bal.wallet);
                     }
                 }
                 BasicAccountEventType::BorrowInterest => {
@@ -244,7 +286,7 @@ mod tests {
             }
         }
 
-        assert_eq!(eth_balance, Some(1016.1));
+        assert!((eth_balance.expect("eth balance") - 1016.175).abs() < 1e-9);
         assert_eq!(eth_borrowed, Some(0.075));
     }
 }

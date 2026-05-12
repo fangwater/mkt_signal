@@ -2,7 +2,7 @@
 
 use crate::common::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
-    BasicPositionMsg, OkexOrderMsg,
+    BasicBorrowInterestMsg, BasicPositionMsg, OkexOrderMsg,
 };
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
@@ -31,11 +31,8 @@ impl OkexAccountEventParser {
     ) -> bool {
         let msg = BasicBalanceMsg::create(timestamp, symbol, balance);
         let payload = msg.to_bytes();
-        let event = BasicAccountEventMsg::create(
-            msg.msg_type,
-            BasicAccountScope::OkexUnified,
-            payload,
-        );
+        let event =
+            BasicAccountEventMsg::create(msg.msg_type, BasicAccountScope::OkexUnified, payload);
         tx.send(event.to_bytes()).is_ok()
     }
 
@@ -47,8 +44,9 @@ impl OkexAccountEventParser {
         let mut count = 0;
 
         // balance
-        // `balance_and_position.balData` 通常只有 cashBal。OKX eq 口径下不能用 cashBal
-        // 覆盖 account channel 的 eq，因此这里只消费明确带 eq 的行。
+        // `balance_and_position.balData` 通常不带 liab。新口径下 BasicBalanceMsg 必须是
+        // gross wallet，只有 eq 但没有 liab 时不能安全推导 wallet，因此这里不再消费 balData
+        // 的余额，避免把 net 覆盖成 wallet。
         if let Some(arr) = json_value
             .get("data")
             .and_then(|d| d.get(0))
@@ -61,11 +59,14 @@ impl OkexAccountEventParser {
                     .and_then(|v| v.as_str())
                     .and_then(|s| s.parse::<i64>().ok())
                     .unwrap_or(0);
-                let Some(balance) = bal
+                let Some(eq) = bal
                     .get("eq")
                     .and_then(|v| v.as_str())
                     .and_then(|s| s.parse::<f64>().ok())
                 else {
+                    continue;
+                };
+                let Some(liab) = parse_abs_f64_field(bal.get("liab")) else {
                     continue;
                 };
 
@@ -75,6 +76,7 @@ impl OkexAccountEventParser {
                     .unwrap_or_default()
                     .to_string();
 
+                let balance = eq + liab;
                 if Self::emit_balance(tx, timestamp, symbol, balance) {
                     count += 1;
                 }
@@ -162,7 +164,7 @@ impl OkexAccountEventParser {
             if symbol.is_empty() {
                 continue;
             }
-            let Some(balance) = bal
+            let Some(eq) = bal
                 .get("eq")
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<f64>().ok())
@@ -175,7 +177,29 @@ impl OkexAccountEventParser {
                 .and_then(|s| s.parse::<i64>().ok())
                 .unwrap_or(fallback_ts);
 
-            if Self::emit_balance(tx, timestamp, symbol, balance) {
+            let Some(liab) = parse_abs_f64_field(bal.get("liab")) else {
+                continue;
+            };
+            let interest = parse_abs_f64_field(bal.get("interest")).unwrap_or(0.0);
+            let balance = eq + liab;
+
+            if Self::emit_balance(tx, timestamp, symbol.clone(), balance) {
+                count += 1;
+            }
+
+            let msg = BasicBorrowInterestMsg::create(
+                timestamp,
+                symbol,
+                (liab - interest).max(0.0),
+                interest,
+            );
+            let payload = msg.to_bytes();
+            let event = BasicAccountEventMsg::create(
+                BasicAccountEventType::BorrowInterest,
+                BasicAccountScope::OkexUnified,
+                payload,
+            );
+            if tx.send(event.to_bytes()).is_ok() {
                 count += 1;
             }
         }
@@ -353,6 +377,18 @@ fn parse_f64_field(v: Option<&serde_json::Value>) -> f64 {
     .unwrap_or(0.0)
 }
 
+fn parse_abs_f64_field(v: Option<&serde_json::Value>) -> Option<f64> {
+    v.and_then(|val| {
+        if let Some(n) = val.as_f64() {
+            Some(n.abs())
+        } else if let Some(s) = val.as_str() {
+            s.parse::<f64>().ok().map(f64::abs)
+        } else {
+            None
+        }
+    })
+}
+
 fn parse_u8_field(v: Option<&serde_json::Value>) -> u8 {
     v.and_then(|val| {
         if let Some(n) = val.as_u64() {
@@ -404,7 +440,7 @@ fn parse_okex_order_price_by_state(order: &serde_json::Value, state_u8: u8) -> f
 mod tests {
     use super::*;
     use crate::common::basic_account_msg::{
-        split_basic_account_event, BasicAccountEventType, BasicBalanceMsg,
+        split_basic_account_event, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
     };
 
     #[test]
@@ -439,14 +475,11 @@ mod tests {
             event_types.push(event_type);
         }
 
-        assert_eq!(
-            event_types,
-            vec![BasicAccountEventType::PositionUpdate]
-        );
+        assert_eq!(event_types, vec![BasicAccountEventType::PositionUpdate]);
     }
 
     #[test]
-    fn account_channel_uses_eq_balance() {
+    fn account_channel_emits_gross_wallet_and_borrow() {
         let parser = OkexAccountEventParser::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
         let json = r#"{
@@ -458,20 +491,50 @@ mod tests {
                     "ccy": "USDT",
                     "cashBal": "56243.85926211993",
                     "eq": "53443.166831427916",
+                    "liab": "-50.5",
+                    "interest": "-0.5",
                     "upl": "-2800.6924306920096"
                 }]
             }]
         }"#;
 
-        assert_eq!(parser.parse(Bytes::from(json), &tx), 1);
+        assert_eq!(parser.parse(Bytes::from(json), &tx), 2);
         let msg = rx.try_recv().expect("one balance event");
-        let (event_type, scope, payload) =
-            split_basic_account_event(&msg).expect("wrapped event");
+        let (event_type, scope, payload) = split_basic_account_event(&msg).expect("wrapped event");
         assert_eq!(event_type, BasicAccountEventType::BalanceUpdate);
         assert_eq!(scope, BasicAccountScope::OkexUnified);
         let balance = BasicBalanceMsg::from_bytes(&payload).expect("balance msg");
         assert_eq!(balance.symbol, "USDT");
-        assert!((balance.balance - 53443.166831427916).abs() < 1e-10);
+        assert!((balance.wallet - 53493.666831427916).abs() < 1e-10);
+
+        let msg = rx.try_recv().expect("borrow event");
+        let (event_type, scope, payload) = split_basic_account_event(&msg).expect("wrapped event");
+        assert_eq!(event_type, BasicAccountEventType::BorrowInterest);
+        assert_eq!(scope, BasicAccountScope::OkexUnified);
+        let borrow = BasicBorrowInterestMsg::from_bytes(&payload).expect("borrow msg");
+        assert_eq!(borrow.symbol, "USDT");
+        assert!((borrow.borrowed - 50.0).abs() < 1e-10);
+        assert!((borrow.interest - 0.5).abs() < 1e-10);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn account_channel_skips_balance_when_liab_missing() {
+        let parser = OkexAccountEventParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let json = r#"{
+            "arg": {"channel": "account"},
+            "data": [{
+                "uTime": "1778479700000",
+                "details": [{
+                    "uTime": "1778479696355",
+                    "ccy": "USDT",
+                    "eq": "53443.166831427916"
+                }]
+            }]
+        }"#;
+
+        assert_eq!(parser.parse(Bytes::from(json), &tx), 0);
         assert!(rx.try_recv().is_err());
     }
 }
