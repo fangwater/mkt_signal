@@ -347,6 +347,33 @@ fn parse_mm_amount_u_overrides(
     parse_mm_positive_f64_overrides(raw, open_venue, redis_key, "amount_u")
 }
 
+fn parse_mm_open_offset_lower_overrides(
+    raw: &str,
+    open_venue: TradingVenue,
+    redis_key: &str,
+) -> HashMap<String, f64> {
+    let parsed: HashMap<String, f64> = serde_json::from_str(raw).unwrap_or_else(|err| {
+        panic!(
+            "Redis string '{}' 不是合法 JSON(symbol->open_offset_lower): {} ({})",
+            redis_key, raw, err
+        )
+    });
+
+    let mut normalized = HashMap::new();
+    for (symbol, value) in parsed {
+        let symbol_trimmed = symbol.trim();
+        if !(value.is_finite() && value >= 0.0) {
+            panic!(
+                "Redis string '{}' symbol={} open_offset_lower 非法: {}",
+                redis_key, symbol_trimmed, value
+            );
+        }
+        let symbol_key = normalize_mm_override_symbol(symbol_trimmed, open_venue, redis_key);
+        normalized.insert(symbol_key, value);
+    }
+    normalized
+}
+
 /// `parse_mm_positive_f64_overrides` 的零下限版本：允许 0（"不 clamp"语义），
 /// 仍要求 finite 且非负。
 fn parse_arb_open_offset_lower_overrides(
@@ -859,7 +886,7 @@ impl StrategyParams {
             match client.get_string(&override_key).await? {
                 Some(raw) => {
                     let parsed =
-                        parse_arb_open_offset_lower_overrides(&raw, open_venue, &override_key);
+                        parse_mm_open_offset_lower_overrides(&raw, open_venue, &override_key);
                     info!(
                         "MM open_offset_lower overrides loaded key='{}' symbols={}",
                         override_key,
@@ -1767,11 +1794,12 @@ impl StrategyParams {
         }
 
         info!(
-            "✅ overrides applied: arb_amount_u_symbols={} arb_hedge_offset_lower_symbols={} arb_hedge_offset_upper_symbols={} mm_amount_u_symbols={} mm_hedge_offset_lower_symbols={} mm_hedge_offset_upper_symbols={}",
+            "✅ overrides applied: arb_amount_u_symbols={} arb_hedge_offset_lower_symbols={} arb_hedge_offset_upper_symbols={} mm_amount_u_symbols={} mm_open_offset_lower_symbols={} mm_hedge_offset_lower_symbols={} mm_hedge_offset_upper_symbols={}",
             self.arb_amount_u_overrides.len(),
             self.arb_hedge_price_offset_limit_lower_overrides.len(),
             self.arb_hedge_price_offset_limit_upper_overrides.len(),
             self.mm_amount_u_overrides.len(),
+            self.mm_open_offset_lower_overrides.len(),
             self.mm_hedge_price_offset_limit_lower_overrides.len(),
             self.mm_hedge_price_offset_limit_upper_overrides.len(),
         );
@@ -1924,6 +1952,23 @@ mod tests {
     }
 
     #[test]
+    fn test_mm_open_offset_lower_override_key_includes_env_and_venue() {
+        let okex_key = mm_open_offset_lower_override_key_for_env(
+            Some("okex_mm_alpha"),
+            TradingVenue::OkexFutures,
+        );
+        let bybit_key = mm_open_offset_lower_override_key_for_env(
+            Some("bybit_mm_alpha"),
+            TradingVenue::BybitFutures,
+        );
+        assert_eq!(okex_key, "okex_mm_alpha:okex-futures:mm:open_offset_lower");
+        assert_eq!(
+            bybit_key,
+            "bybit_mm_alpha:bybit-futures:mm:open_offset_lower"
+        );
+    }
+
+    #[test]
     fn test_mm_hedge_price_offset_limit_keys_include_env_and_venue() {
         let limits_key = mm_hedge_price_offset_limits_override_key_for_env(
             Some("binance_mm_beta"),
@@ -1960,6 +2005,37 @@ mod tests {
         );
         assert_eq!(overrides.get("BTCUSDT"), Some(&150.0));
         assert_eq!(overrides.get("ETHUSDT"), Some(&80.0));
+    }
+
+    #[test]
+    fn test_parse_mm_open_offset_lower_overrides_normalizes_symbols_and_allows_zero() {
+        let overrides = parse_mm_open_offset_lower_overrides(
+            r#"{"btc-usdt":0,"ETH_USDT":0.0008}"#,
+            TradingVenue::OkexFutures,
+            "okex_mm_alpha:okex-futures:mm:open_offset_lower",
+        );
+        assert_eq!(overrides.get("BTC-USDT-SWAP"), Some(&0.0));
+        assert_eq!(overrides.get("ETH-USDT-SWAP"), Some(&0.0008));
+    }
+
+    #[test]
+    #[should_panic(expected = "open_offset_lower 非法")]
+    fn test_parse_mm_open_offset_lower_overrides_rejects_negative() {
+        let _ = parse_mm_open_offset_lower_overrides(
+            r#"{"BTCUSDT":-0.0001}"#,
+            TradingVenue::BybitFutures,
+            "bybit_mm_alpha:bybit-futures:mm:open_offset_lower",
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_parse_mm_open_offset_lower_overrides_rejects_nan_or_non_finite() {
+        let _ = parse_mm_open_offset_lower_overrides(
+            r#"{"BTCUSDT":1e999}"#,
+            TradingVenue::BybitFutures,
+            "bybit_mm_alpha:bybit-futures:mm:open_offset_lower",
+        );
     }
 
     #[test]

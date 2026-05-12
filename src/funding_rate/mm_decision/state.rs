@@ -233,6 +233,19 @@ fn resolve_mm_order_amount_u(
         .unwrap_or(default_order_amount_u)
 }
 
+fn resolve_mm_open_offset_lower(
+    default_open_offset_lower: f64,
+    overrides: &HashMap<String, f64>,
+    open_venue: TradingVenue,
+    symbol: &str,
+) -> f64 {
+    let symbol_key = normalize_symbol_for_venue(symbol, open_venue);
+    overrides
+        .get(&symbol_key)
+        .copied()
+        .unwrap_or(default_open_offset_lower)
+}
+
 fn validate_hedge_price_offset_limits(lower: f64, upper: f64) {
     if !(lower.is_finite() && upper.is_finite() && lower > 0.0 && upper >= lower) {
         panic!(
@@ -821,6 +834,17 @@ impl MmDecisionState {
     }
 
     pub(crate) fn update_open_offset_lower_overrides(&mut self, overrides: HashMap<String, f64>) {
+        for (symbol, value) in &overrides {
+            if symbol.trim().is_empty() {
+                panic!("MmDecision: open_offset_lower override symbol cannot be empty");
+            }
+            if !(value.is_finite() && *value >= 0.0) {
+                panic!(
+                    "MmDecision: open_offset_lower override must be finite and >= 0, symbol={} value={}",
+                    symbol, value
+                );
+            }
+        }
         self.open_offset_lower_overrides = overrides;
         debug!(
             "MmDecision: open_offset_lower_overrides updated symbols={}",
@@ -830,11 +854,12 @@ impl MmDecisionState {
 
     /// 解析 per-symbol open_offset_lower：命中覆盖即返回覆盖值，未命中回退到全局默认 0.0005。
     pub(crate) fn resolve_open_offset_lower(&self, symbol: &str) -> f64 {
-        let symbol_key = normalize_symbol_for_venue(symbol, self.open_venue);
-        self.open_offset_lower_overrides
-            .get(&symbol_key)
-            .copied()
-            .unwrap_or(self.open_offset_lower_default)
+        resolve_mm_open_offset_lower(
+            self.open_offset_lower_default,
+            &self.open_offset_lower_overrides,
+            self.open_venue,
+            symbol,
+        )
     }
 
     pub(crate) fn update_open_order_timeout(&mut self, open_order_timeout_secs: u64) {
@@ -1339,6 +1364,26 @@ mod tests {
         let amount_u =
             resolve_mm_order_amount_u(100.0, &overrides, TradingVenue::BinanceMargin, "btc-usdt");
         assert_eq!(amount_u, 100.0);
+    }
+
+    #[test]
+    fn test_resolve_mm_open_offset_lower_uses_symbol_override() {
+        let overrides = HashMap::from([(String::from("BTC-USDT-SWAP"), 0.0008)]);
+        let lower =
+            resolve_mm_open_offset_lower(0.0005, &overrides, TradingVenue::OkexFutures, "btc-usdt");
+        assert_eq!(lower, 0.0008);
+    }
+
+    #[test]
+    fn test_resolve_mm_open_offset_lower_falls_back_to_default() {
+        let overrides = HashMap::from([(String::from("ETHUSDT"), 0.0008)]);
+        let lower = resolve_mm_open_offset_lower(
+            0.0005,
+            &overrides,
+            TradingVenue::BybitFutures,
+            "btc-usdt",
+        );
+        assert_eq!(lower, 0.0005);
     }
 
     #[test]

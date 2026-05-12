@@ -26,6 +26,7 @@ use crate::strategy::ws_order_update::prepare_failed_trade_engine_response_for_s
 use log::{debug, error, info, warn};
 
 const OPEN_BALANCE_EPS: f64 = 1e-12;
+const OPEN_DELEVERAGING_EPS: f64 = 1e-12;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueryWatchdog {
@@ -157,8 +158,48 @@ pub trait OpenStrategyCommon {
         false
     }
 
+    fn log_open_deleveraging_risk_rejects(&self) -> bool {
+        false
+    }
+
     fn enable_open_order_rate_limit(&self) -> bool {
         true
+    }
+
+    fn log_open_deleveraging_risk_reject(
+        &self,
+        risk_name: &str,
+        reason: &str,
+        symbol: &str,
+        venue: TradingVenue,
+        side: Side,
+        current_open_base_qty: f64,
+        order_qty: f64,
+    ) {
+        if !self.log_open_deleveraging_risk_rejects() {
+            return;
+        }
+
+        let reduces_open_position = match side {
+            Side::Sell => current_open_base_qty > OPEN_DELEVERAGING_EPS,
+            Side::Buy => current_open_base_qty < -OPEN_DELEVERAGING_EPS,
+        };
+        if !reduces_open_position {
+            return;
+        }
+
+        info!(
+            "{}: strategy_id={} ArbOpen去杠杆方向被{}拒绝，未激活 symbol={} venue={:?} side={:?} current_open_base_qty={:.8} order_qty={:.8} reason={}",
+            self.strategy_name(),
+            self.strategy_id(),
+            risk_name,
+            symbol,
+            venue,
+            side,
+            current_open_base_qty,
+            order_qty,
+            reason
+        );
     }
 
     fn record_open_order_terminal_base_qty(
@@ -401,8 +442,18 @@ pub trait OpenStrategyCommon {
         }
 
         let skip_position_risk_checks = self.skip_open_position_risk_checks();
+        let current_open_base_qty = MonitorChannel::instance().get_position_qty(&symbol, venue);
         if !skip_position_risk_checks {
             if let Err(e) = MonitorChannel::instance().check_symbol_exposure(&symbol) {
+                self.log_open_deleveraging_risk_reject(
+                    "单品种敞口风控",
+                    &e,
+                    &symbol,
+                    venue,
+                    side,
+                    current_open_base_qty,
+                    input.qty,
+                );
                 error!(
                     "{}: strategy_id={} symbol={} 单品种敞口风控检查失败: {}，标记策略为不活跃",
                     self.strategy_name(),
@@ -425,6 +476,15 @@ pub trait OpenStrategyCommon {
         }
         if !skip_position_risk_checks {
             if let Err(e) = MonitorChannel::instance().check_total_exposure() {
+                self.log_open_deleveraging_risk_reject(
+                    "总敞口风控",
+                    &e,
+                    &symbol,
+                    venue,
+                    side,
+                    current_open_base_qty,
+                    input.qty,
+                );
                 error!(
                     "{}: strategy_id={} 总敞口风控检查失败: {}，标记策略为不活跃",
                     self.strategy_name(),
@@ -453,6 +513,15 @@ pub trait OpenStrategyCommon {
                 _ => monitor.check_pending_limit_order(&symbol, side),
             };
             if let Err(e) = limit_check {
+                self.log_open_deleveraging_risk_reject(
+                    "限价挂单数量风控",
+                    &e,
+                    &symbol,
+                    venue,
+                    side,
+                    current_open_base_qty,
+                    input.qty,
+                );
                 debug!(
                     "{}: strategy_id={} symbol={} 限价挂单数量风控检查失败: {}，标记策略为不活跃",
                     self.strategy_name(),
@@ -483,6 +552,15 @@ pub trait OpenStrategyCommon {
                 rate_10s,
                 get_timestamp_us(),
             ) {
+                self.log_open_deleveraging_risk_reject(
+                    "开仓下单频率风控",
+                    &e,
+                    &symbol,
+                    venue,
+                    side,
+                    current_open_base_qty,
+                    input.qty,
+                );
                 info!(
                     "{}: strategy_id={} symbol={} 开仓下单频率风控触发: {}，标记策略为不活跃",
                     self.strategy_name(),
@@ -560,6 +638,19 @@ pub trait OpenStrategyCommon {
                 } else {
                     "INTRA_NO_BORROW"
                 };
+                let reject_reason = format!(
+                    "{gate} 余额不足 asset={} required={:.8} available={:.8}",
+                    check_asset, required_amount, available_balance
+                );
+                self.log_open_deleveraging_risk_reject(
+                    "余额预检",
+                    &reject_reason,
+                    &symbol,
+                    venue,
+                    side,
+                    current_open_base_qty,
+                    input.qty,
+                );
                 error!(
                     "{}: strategy_id={} {:?} {} 余额不足，拒绝开仓并标记策略不活跃 symbol={} side={:?} asset={} required={:.8} available={:.8}",
                     self.strategy_name(),
@@ -607,6 +698,15 @@ pub trait OpenStrategyCommon {
             && projected_base_qty.abs() > current_base_qty.abs() + 1e-12_f64
         {
             if let Err(e) = MonitorChannel::instance().check_leverage() {
+                self.log_open_deleveraging_risk_reject(
+                    "杠杆风控",
+                    &e,
+                    &symbol,
+                    venue,
+                    side,
+                    current_open_base_qty,
+                    input.qty,
+                );
                 error!(
                     "{}: strategy_id={} 杠杆风控检查失败: {}，标记策略为不活跃",
                     self.strategy_name(),
@@ -621,6 +721,15 @@ pub trait OpenStrategyCommon {
             if let Err(e) =
                 MonitorChannel::instance().ensure_max_pos_u(&symbol, signed_qty, order_price)
             {
+                self.log_open_deleveraging_risk_reject(
+                    "仓位限制风控",
+                    &e,
+                    &symbol,
+                    venue,
+                    side,
+                    current_open_base_qty,
+                    input.qty,
+                );
                 error!(
                     "{}: strategy_id={} 仓位限制检查失败: {}，标记策略为不活跃",
                     self.strategy_name(),

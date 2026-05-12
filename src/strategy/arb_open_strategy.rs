@@ -164,6 +164,10 @@ impl OpenStrategyCommon for ArbOpenStrategy {
         self.close_ts.unwrap_or(0)
     }
 
+    fn log_open_deleveraging_risk_rejects(&self) -> bool {
+        true
+    }
+
     fn resolve_open_qty_multiplier(
         &self,
         venue: TradingVenue,

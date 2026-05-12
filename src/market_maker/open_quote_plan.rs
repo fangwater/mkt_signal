@@ -49,7 +49,7 @@ fn build_level_specs(
         // 内层 offset 至少为 lower，但不超过 end（避免 step<0 / 反向）。
         let start = raw_start.max(lower).min(end);
         if levels == 1 {
-            return vec![end];
+            return vec![start];
         }
         let step = (end - start) / (levels - 1) as f64;
         (0..levels).map(|idx| start + step * idx as f64).collect()
@@ -312,5 +312,44 @@ mod tests {
         assert!((specs[4].offset - 0.009).abs() < 1e-12);
         assert_eq!(specs[5].side, Side::Buy);
         assert!((specs[5].offset - 0.006).abs() < 1e-12);
+    }
+
+    #[test]
+    fn open_offset_lower_raises_inner_offset_per_side_without_changing_end() {
+        let specs = build_level_specs(100.0, 101.0, 0.01, 3, [0.1, 0.5], [0.2, 0.8], 0.004);
+        assert_eq!(specs.len(), 6);
+
+        assert_eq!(specs[0].side, Side::Sell);
+        assert!((specs[0].offset - 0.004).abs() < 1e-12);
+        assert_eq!(specs[1].side, Side::Buy);
+        assert!((specs[1].offset - 0.004).abs() < 1e-12);
+
+        assert_eq!(specs[4].side, Side::Sell);
+        assert!((specs[4].offset - 0.008).abs() < 1e-12);
+        assert_eq!(specs[5].side, Side::Buy);
+        assert!((specs[5].offset - 0.005).abs() < 1e-12);
+    }
+
+    #[test]
+    fn single_level_uses_clamped_start_as_inner_offset() {
+        let specs = build_level_specs(100.0, 101.0, 0.01, 1, [0.1, 0.5], [0.2, 0.8], 0.004);
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].side, Side::Sell);
+        assert!((specs[0].offset - 0.004).abs() < 1e-12);
+        assert_eq!(specs[1].side, Side::Buy);
+        assert!((specs[1].offset - 0.004).abs() < 1e-12);
+    }
+
+    #[test]
+    fn open_offset_lower_above_end_collapses_to_end_per_side() {
+        let specs = build_level_specs(100.0, 101.0, 0.01, 3, [0.1, 0.4], [0.2, 0.5], 0.01);
+        assert_eq!(specs.len(), 6);
+
+        for spec in specs {
+            match spec.side {
+                Side::Sell => assert!((spec.offset - 0.005).abs() < 1e-12),
+                Side::Buy => assert!((spec.offset - 0.004).abs() < 1e-12),
+            }
+        }
     }
 }

@@ -8,6 +8,7 @@ MM 配置服务器（mm_config_server）
 - strategy params
 - amount_u overrides
 - hedge price offset limit overrides
+- open_offset_lower overrides
 - max_pos_u overrides
 - pre-trade risk params
 """
@@ -427,7 +428,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       <div class="hint">
         JSON 结构为 `{"SYMBOL": open_offset_lower}`，单位价格分数（0.001=10bps）。
         保存时会写入 Redis String `<env_name>:<venue>:mm:open_offset_lower`，
-        命中即抬升开仓 inner offset：start = max(vol_scale[0]*volatility, lower)。
+        命中即抬升开仓 inner offset：start = max(vol_scale[0]*volatility, lower).min(vol_scale[1]*volatility)。
         全局默认 0.0005，per-symbol 不命中即取默认。
       </div>
       <div class="hint">示例：</div>
