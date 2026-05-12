@@ -92,6 +92,34 @@ impl ArbCloseStrategy {
             return;
         }
 
+        // 方向 & net 都通过后，再做 min_qty / min_notional 检查。
+        // close 不像 open 那样"凑齐到 min"——残余仓位本来就少，凑齐会过头去开反向仓位。
+        // 因此这里只查不补：低于最小要求 → info! 打印具体原因并跳过整张单。
+        let price_hint = {
+            let p = ctx.price_value();
+            if p > 0.0 {
+                Some(p)
+            } else {
+                None
+            }
+        };
+        if let Err(reason) = MonitorChannel::instance()
+            .check_min_trading_requirements(venue, &symbol, ctx.amount_value(), price_hint)
+        {
+            info!(
+                "ArbCloseStrategy: strategy_id={} skip below min trade requirements symbol={} venue={:?} open_pos={:.8} signal_qty={:.8} price_hint={:?} reason={}",
+                self.open_state.strategy_id,
+                symbol,
+                venue,
+                open_pos,
+                ctx.amount_value(),
+                price_hint,
+                reason
+            );
+            self.open_state.alive = false;
+            return;
+        }
+
         let mkt_ts = ctx.opening_leg.ts.max(ctx.hedging_leg.ts);
         let _ = self.handle_open_signal_common(OpenSignalInput {
             signal_kind: "ArbClose",
