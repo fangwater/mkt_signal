@@ -34,6 +34,7 @@ use std::time::Duration;
 thread_local! {
     static SIGNAL_CHANNEL: OnceCell<SignalChannel> = const { OnceCell::new() };
     static SIGNAL_COUNTS: RefCell<HashMap<String, u64>> = RefCell::new(HashMap::new());
+    static ARB_CLOSE_DIRECTION_SKIP_LOG_TS: RefCell<HashMap<String, i64>> = RefCell::new(HashMap::new());
 }
 
 /// 默认信号频道名称（与 trade_signal 的发布频道一致）
@@ -55,6 +56,19 @@ fn record_signal_count(signal_type: &SignalType) {
         let mut counts = counts.borrow_mut();
         *counts.entry(signal_type.as_str().to_string()).or_insert(0) += 1;
     });
+}
+
+fn should_log_arb_close_direction_skip(key: String, signal_ts: i64) -> bool {
+    ARB_CLOSE_DIRECTION_SKIP_LOG_TS.with(|state| {
+        let mut state = state.borrow_mut();
+        match state.get(&key) {
+            Some(&last_ts) if last_ts == signal_ts => false,
+            _ => {
+                state.insert(key, signal_ts);
+                true
+            }
+        }
+    })
 }
 
 /// 信号频道 - 负责信号进程和 pre-trade 之间的双向通讯
@@ -474,6 +488,26 @@ fn handle_trade_signal(signal: TradeSignal) {
 
                     if !opening_direction_match {
                         // 平到 opening leg 净仓反向为止；反向后按过期/无效 close 信号忽略。
+                        let log_key = format!(
+                            "{}:{}:{}",
+                            opening_symbol,
+                            opening_venue as u8,
+                            close_side.to_u8()
+                        );
+                        if should_log_arb_close_direction_skip(log_key, signal.generation_time) {
+                            info!(
+                                "ArbClose: skip because close side does not reduce opening position symbol={} opening_venue={:?} hedging_venue={:?} side={:?} open_pos={:.8} hedge_pos={:.8} signal_ts={} price={:.8} qty={:.8}",
+                                opening_symbol,
+                                opening_venue,
+                                hedging_venue,
+                                close_side,
+                                opening_pos,
+                                hedging_pos,
+                                signal.generation_time,
+                                close_ctx.price_value(),
+                                close_ctx.amount_value()
+                            );
+                        }
                         return;
                     }
 
