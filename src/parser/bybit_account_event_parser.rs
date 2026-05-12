@@ -1,8 +1,9 @@
 //! Bybit V5 私有账户事件解析器（wallet / position / order）
 
 use crate::common::basic_account_msg::{
-    BasicAccountEventMsg, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
-    BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg, BinanceTradeLiteMsg,
+    BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
+    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
+    BinanceTradeLiteMsg,
 };
 use crate::common::bybit_account_msg::BybitBasicOrderMsg;
 use crate::parser::default_parser::Parser;
@@ -19,6 +20,20 @@ pub struct BybitAccountEventParser;
 struct BybitWalletChannelRow {
     #[serde(default, rename = "updatedTime")]
     updated_time: String,
+    #[serde(default, rename = "totalEquity")]
+    total_equity: String,
+    #[serde(default, rename = "totalMarginBalance")]
+    total_margin_balance: String,
+    #[serde(default, rename = "totalInitialMargin")]
+    total_initial_margin: String,
+    #[serde(default, rename = "totalMaintenanceMargin")]
+    total_maintenance_margin: String,
+    #[serde(default, rename = "accountMMRate")]
+    account_mm_rate: String,
+    #[serde(default, rename = "accountIMRate")]
+    account_im_rate: String,
+    #[serde(default, rename = "accountLTV")]
+    account_ltv: String,
     #[serde(default)]
     coin: Vec<BybitWalletChannelCoin>,
 }
@@ -64,6 +79,50 @@ impl BybitAccountEventParser {
             };
             let timestamp = parse_i64_str_or_num(Some(&Value::String(wallet_row.updated_time)))
                 .unwrap_or(top_timestamp);
+
+            let has_risk_fields = [
+                &wallet_row.total_equity,
+                &wallet_row.total_margin_balance,
+                &wallet_row.total_initial_margin,
+                &wallet_row.total_maintenance_margin,
+                &wallet_row.account_mm_rate,
+                &wallet_row.account_im_rate,
+            ]
+            .iter()
+            .any(|value| !value.trim().is_empty());
+            if has_risk_fields {
+                let total_equity = parse_f64_str(&wallet_row.total_equity).unwrap_or(0.0);
+                let total_margin_balance =
+                    parse_f64_str(&wallet_row.total_margin_balance).unwrap_or(total_equity);
+                let maintenance_margin =
+                    parse_f64_str(&wallet_row.total_maintenance_margin).unwrap_or(0.0);
+                let account_mm_rate = parse_f64_str(&wallet_row.account_mm_rate).unwrap_or(0.0);
+                let margin_ratio = if account_mm_rate.abs() > f64::EPSILON {
+                    1.0 / account_mm_rate
+                } else if maintenance_margin.abs() > f64::EPSILON {
+                    total_margin_balance / maintenance_margin
+                } else {
+                    0.0
+                };
+                let msg = BasicAccountRiskMsg::create(
+                    timestamp,
+                    total_margin_balance,
+                    total_equity,
+                    maintenance_margin,
+                    parse_f64_str(&wallet_row.total_initial_margin).unwrap_or(0.0),
+                    margin_ratio,
+                    parse_f64_str(&wallet_row.account_ltv).unwrap_or(0.0),
+                    0.0,
+                );
+                let event = BasicAccountEventMsg::create(
+                    BasicAccountEventType::AccountRisk,
+                    BasicAccountScope::BybitUnified,
+                    msg.to_bytes(),
+                );
+                if tx.send(event.to_bytes()).is_ok() {
+                    count += 1;
+                }
+            }
 
             for coin_item in wallet_row.coin {
                 let coin = coin_item.coin;
@@ -754,7 +813,7 @@ fn parse_boolish(value: &Value) -> Option<bool> {
 mod tests {
     use super::*;
     use crate::common::basic_account_msg::{
-        split_basic_account_event, BasicBalanceMsg, BasicBorrowInterestMsg,
+        split_basic_account_event, BasicAccountRiskMsg, BasicBalanceMsg, BasicBorrowInterestMsg,
     };
     use crate::strategy::trade_update::TradeUpdate;
 
@@ -850,6 +909,55 @@ mod tests {
         let bi = BasicBorrowInterestMsg::from_bytes(payload).expect("borrow payload");
         assert!((bi.borrowed - 24.474621056148061433).abs() < 1e-9);
         assert!((bi.interest - 0.0000466).abs() < 1e-9);
+    }
+
+    #[test]
+    fn account_risk_parses_wallet_channel_account_metrics() {
+        let parser = BybitAccountEventParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        let wallet = Bytes::from_static(
+            br#"{
+                "topic":"wallet",
+                "creationTime":1710000000999,
+                "data":[
+                    {
+                        "updatedTime":"1710000000123",
+                        "totalEquity":"100123.45",
+                        "totalMarginBalance":"99876.50",
+                        "totalInitialMargin":"8000.00",
+                        "totalMaintenanceMargin":"1500.00",
+                        "accountMMRate":"0.0150185459",
+                        "accountIMRate":"0.0800989150",
+                        "accountLTV":"0.001",
+                        "coin":[
+                            {
+                                "coin":"USDT",
+                                "walletBalance":"1000",
+                                "borrowAmount":"0",
+                                "accruedInterest":"0"
+                            }
+                        ]
+                    }
+                ]
+            }"#,
+        );
+
+        assert_eq!(parser.parse(wallet, &tx), 3);
+
+        let wrapped_risk = rx.try_recv().expect("risk event");
+        let (event_type, scope, payload) =
+            split_basic_account_event(&wrapped_risk).expect("wrapped risk");
+        assert_eq!(event_type, BasicAccountEventType::AccountRisk);
+        assert_eq!(scope, BasicAccountScope::BybitUnified);
+        let risk = BasicAccountRiskMsg::from_bytes(payload).expect("risk payload");
+        assert_eq!(risk.timestamp, 1_710_000_000_123);
+        assert!((risk.adj_equity_usd - 99_876.50).abs() < 1e-9);
+        assert!((risk.actual_equity_usd - 100_123.45).abs() < 1e-9);
+        assert!((risk.maintenance_margin_usd - 1_500.0).abs() < 1e-9);
+        assert!((risk.initial_margin_usd - 8_000.0).abs() < 1e-9);
+        assert!((risk.margin_ratio - (1.0 / 0.0150185459)).abs() < 1e-9);
+        assert!((risk.borrowed_usd - 0.001).abs() < 1e-12);
     }
 
     #[test]

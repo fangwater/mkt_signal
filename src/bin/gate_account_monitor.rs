@@ -19,8 +19,8 @@ use bytes::Bytes;
 use log::{debug, error, info, warn};
 use mkt_signal::common::basic_account_msg::{
     get_basic_event_type, split_basic_account_event, BasicAccountEventMsg, BasicAccountEventType,
-    BasicAccountScope, BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg,
-    BasicUmUnrealizedMsg, GateBasicOrderMsg,
+    BasicAccountRiskMsg, BasicAccountScope, BasicBalanceMsg, BasicBorrowInterestMsg,
+    BasicPositionMsg, BasicUmUnrealizedMsg, GateBasicOrderMsg,
 };
 use mkt_signal::common::mkt_cfg::load_local_ips_preferring_trade_engine;
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
@@ -96,11 +96,17 @@ async fn main() -> Result<()> {
         primary_ip, secondary_ip, session_max, ip_source
     );
 
-    // 统一账户频道 (unified.asset_detail)
-    let unified_channels = vec![SubscribeChannel {
-        channel: "unified.asset_detail".to_string(),
-        payload: vec!["!all".to_string()],
-    }];
+    // 统一账户频道：资产明细 + 账户级聚合风险。
+    let unified_channels = vec![
+        SubscribeChannel {
+            channel: "unified.asset_detail".to_string(),
+            payload: vec!["!all".to_string()],
+        },
+        SubscribeChannel {
+            channel: "unified.assets".to_string(),
+            payload: vec!["!all".to_string()],
+        },
+    ];
 
     // 现货频道 (spot.orders_v2)
     let spot_channels = vec![SubscribeChannel {
@@ -689,6 +695,20 @@ fn log_parsed_event(msg: &Bytes) {
                 );
             }
         }
+        BasicAccountEventType::AccountRisk => {
+            if let Ok(m) = BasicAccountRiskMsg::from_bytes(&payload) {
+                info!(
+                    "Gate AccountRisk: scope={} ts={} adj_eq_usd={:.2} actual_eq_usd={:.2} maint_margin_usd={:.2} initial_margin_usd={:.2} margin_ratio={:.6}",
+                    account_scope.as_str(),
+                    m.timestamp,
+                    m.adj_equity_usd,
+                    m.actual_equity_usd,
+                    m.maintenance_margin_usd,
+                    m.initial_margin_usd,
+                    m.margin_ratio
+                );
+            }
+        }
         _ => {
             info!(
                 "Gate basic msg: scope={} type={:?}",
@@ -741,6 +761,9 @@ impl AccountEventDeduper {
                     .ok()
                     .map(|msg| self.key_unrealized_pnl(&msg))
             }
+            BasicAccountEventType::AccountRisk => BasicAccountRiskMsg::from_bytes(&payload)
+                .ok()
+                .map(|msg| self.key_account_risk(&msg)),
             _ => return true, // 其他类型直接转发
         };
 
@@ -830,6 +853,16 @@ impl AccountEventDeduper {
             self.hash_str64(&msg.inst_id),
             msg.position_side as u8 as u64,
             msg.unrealized_pnl.to_bits(),
+        ])
+    }
+
+    fn key_account_risk(&self, msg: &BasicAccountRiskMsg) -> u64 {
+        self.hash64(&[
+            BasicAccountEventType::AccountRisk as u32 as u64,
+            msg.timestamp as u64,
+            msg.adj_equity_usd.to_bits(),
+            msg.maintenance_margin_usd.to_bits(),
+            msg.margin_ratio.to_bits(),
         ])
     }
 }

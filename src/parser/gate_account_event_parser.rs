@@ -102,9 +102,9 @@
 //!   - `finish_as`（终态原因，用于映射 execution_type / order_status）
 
 use crate::common::basic_account_msg::{
-    BasicAccountEventMsg, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
-    BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg, BinanceTradeLiteMsg,
-    GateBasicOrderMsg,
+    BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
+    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
+    BinanceTradeLiteMsg, GateBasicOrderMsg,
 };
 use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::parser::default_parser::Parser;
@@ -272,6 +272,66 @@ impl GateAccountEventParser {
             GateParseReport::incomplete(count)
         } else {
             GateParseReport::complete(count)
+        }
+    }
+
+    /// 解析 unified.assets 账户级聚合风险。
+    fn parse_unified_assets(
+        &self,
+        json_value: &serde_json::Value,
+        tx: &mpsc::UnboundedSender<Bytes>,
+    ) -> GateParseReport {
+        let Some(raw_result) = json_value.get("result") else {
+            warn!("Gate: unified.assets missing result");
+            return GateParseReport::incomplete(0);
+        };
+
+        let result = raw_result
+            .as_array()
+            .and_then(|arr| arr.first())
+            .unwrap_or(raw_result);
+        let timestamp_s = parse_i64_str_or_num(result.get("t"))
+            .or_else(|| parse_i64_str_or_num(json_value.get("time")))
+            .unwrap_or(0);
+        let timestamp = timestamp_s.saturating_mul(1_000);
+
+        let initial_rate_pct = parse_f64_str_or_num(result.get("r")).unwrap_or(0.0);
+        let maintenance_rate_pct = parse_f64_str_or_num(result.get("R")).unwrap_or(0.0);
+        let margin_balance = parse_f64_str_or_num(result.get("b")).unwrap_or(0.0).abs();
+        let equity = parse_f64_str_or_num(result.get("e")).unwrap_or(0.0);
+        let liabilities = parse_f64_str_or_num(result.get("l")).unwrap_or(0.0).abs();
+
+        let margin_ratio = maintenance_rate_pct / 100.0;
+        let maintenance_margin_usd = if maintenance_rate_pct.abs() > f64::EPSILON {
+            margin_balance / (maintenance_rate_pct / 100.0)
+        } else {
+            0.0
+        };
+        let initial_margin_usd = if initial_rate_pct.abs() > f64::EPSILON {
+            margin_balance / (initial_rate_pct / 100.0)
+        } else {
+            0.0
+        };
+
+        let msg = BasicAccountRiskMsg::create(
+            timestamp,
+            equity,
+            equity,
+            maintenance_margin_usd,
+            initial_margin_usd,
+            margin_ratio,
+            liabilities,
+            0.0,
+        );
+        let event = BasicAccountEventMsg::create(
+            BasicAccountEventType::AccountRisk,
+            BasicAccountScope::GateUnified,
+            msg.to_bytes(),
+        );
+        if tx.send(event.to_bytes()).is_ok() {
+            GateParseReport::complete(1)
+        } else {
+            GateParseReport::incomplete(0)
         }
     }
 
@@ -1067,6 +1127,13 @@ impl GateAccountEventParser {
                     GateParseReport::incomplete(0)
                 }
             }
+            "unified.assets" => {
+                if event == "update" {
+                    self.parse_unified_assets(&json_value, tx)
+                } else {
+                    GateParseReport::incomplete(0)
+                }
+            }
             "spot.orders_v2" | "spot.orders" => {
                 if event == "update" {
                     self.parse_spot_orders_v2(&json_value, tx)
@@ -1282,8 +1349,9 @@ impl Parser for GateAccountEventParser {
 mod tests {
     use super::*;
     use crate::common::basic_account_msg::{
-        split_basic_account_event, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
-        BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg, GateBasicOrderMsg,
+        split_basic_account_event, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
+        BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
+        GateBasicOrderMsg,
     };
 
     #[test]
@@ -1332,6 +1400,46 @@ mod tests {
         let borrow = BasicBorrowInterestMsg::from_bytes(body).expect("borrow body");
         assert_eq!(borrow.symbol, "USDT");
         assert!((borrow.borrowed - 3112.250826).abs() < 1e-12);
+    }
+
+    #[test]
+    fn account_risk_parses_unified_assets_rates() {
+        let parser = GateAccountEventParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let payload = Bytes::from_static(
+            br#"{
+                "time": 1700625194,
+                "channel": "unified.assets",
+                "event": "update",
+                "result": {
+                    "u": 9008,
+                    "t": 1700625194,
+                    "r": "20.10",
+                    "R": "18.56",
+                    "b": "-675222.27",
+                    "e": "-617985.29",
+                    "l": "1293939.74",
+                    "T": "675222.27",
+                    "a": "-1432719.62"
+                }
+            }"#,
+        );
+
+        let report = parser.parse_with_report(payload, &tx);
+        assert_eq!(report.emitted, 1);
+        assert!(report.complete);
+
+        let wrapped = rx.try_recv().expect("risk event");
+        let (event_type, scope, body) = split_basic_account_event(&wrapped).expect("wrapped risk");
+        assert_eq!(event_type, BasicAccountEventType::AccountRisk);
+        assert_eq!(scope, BasicAccountScope::GateUnified);
+        let risk = BasicAccountRiskMsg::from_bytes(body).expect("risk body");
+        assert_eq!(risk.timestamp, 1_700_625_194_000);
+        assert!((risk.adj_equity_usd + 617_985.29).abs() < 1e-9);
+        assert!((risk.margin_ratio - 0.1856).abs() < 1e-12);
+        assert!((risk.maintenance_margin_usd - (675_222.27 / 0.1856)).abs() < 1e-6);
+        assert!((risk.initial_margin_usd - (675_222.27 / 0.2010)).abs() < 1e-6);
+        assert!((risk.borrowed_usd - 1_293_939.74).abs() < 1e-9);
     }
 
     #[test]

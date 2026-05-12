@@ -1,8 +1,8 @@
 //! OKX 账户事件解析器（余额 / 持仓 / 订单）
 
 use crate::common::basic_account_msg::{
-    BasicAccountEventMsg, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
-    BasicBorrowInterestMsg, BasicPositionMsg, OkexOrderMsg,
+    BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
+    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, OkexOrderMsg,
 };
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
@@ -151,8 +151,51 @@ impl OkexAccountEventParser {
             .and_then(|v| v.as_str())
             .and_then(|s| s.parse::<i64>().ok())
             .unwrap_or(0);
+
+        let has_risk_fields = [
+            "adjEq",
+            "totalEq",
+            "mmr",
+            "imr",
+            "mgnRatio",
+            "borrowFroz",
+            "notionalUsd",
+        ]
+        .iter()
+        .any(|key| account.get(key).is_some());
+        if has_risk_fields {
+            let adj_equity_usd = parse_f64_field(account.get("adjEq"));
+            let actual_equity_usd = {
+                let total_eq = parse_f64_field(account.get("totalEq"));
+                if total_eq.abs() > 0.0 {
+                    total_eq
+                } else {
+                    adj_equity_usd
+                }
+            };
+            let msg = BasicAccountRiskMsg::create(
+                fallback_ts,
+                adj_equity_usd,
+                actual_equity_usd,
+                parse_f64_field(account.get("mmr")),
+                parse_f64_field(account.get("imr")),
+                parse_f64_field(account.get("mgnRatio")),
+                parse_f64_field(account.get("borrowFroz")),
+                parse_f64_field(account.get("notionalUsd")),
+            );
+            let payload = msg.to_bytes();
+            let event = BasicAccountEventMsg::create(
+                BasicAccountEventType::AccountRisk,
+                BasicAccountScope::OkexUnified,
+                payload,
+            );
+            if tx.send(event.to_bytes()).is_ok() {
+                count += 1;
+            }
+        }
+
         let Some(arr) = account.get("details").and_then(|v| v.as_array()) else {
-            return 0;
+            return count;
         };
 
         for bal in arr {
@@ -440,7 +483,8 @@ fn parse_okex_order_price_by_state(order: &serde_json::Value, state_u8: u8) -> f
 mod tests {
     use super::*;
     use crate::common::basic_account_msg::{
-        split_basic_account_event, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
+        split_basic_account_event, BasicAccountEventType, BasicAccountRiskMsg, BasicBalanceMsg,
+        BasicBorrowInterestMsg,
     };
 
     #[test]
@@ -516,6 +560,48 @@ mod tests {
         assert!((borrow.borrowed - 50.0).abs() < 1e-10);
         assert!((borrow.interest - 0.5).abs() < 1e-10);
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn account_risk_parses_account_channel_top_level_metrics() {
+        let parser = OkexAccountEventParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let json = r#"{
+            "arg": {"channel": "account"},
+            "data": [{
+                "uTime": "1778479700000",
+                "adjEq": "100123.45",
+                "totalEq": "100500.00",
+                "mmr": "1500.00",
+                "imr": "8000.00",
+                "mgnRatio": "66.7489666667",
+                "borrowFroz": "100.0",
+                "notionalUsd": "300000.00",
+                "details": [{
+                    "uTime": "1778479696355",
+                    "ccy": "USDT",
+                    "eq": "53443.166831427916",
+                    "liab": "-50.5",
+                    "interest": "-0.5"
+                }]
+            }]
+        }"#;
+
+        assert_eq!(parser.parse(Bytes::from(json), &tx), 3);
+
+        let msg = rx.try_recv().expect("risk event");
+        let (event_type, scope, payload) = split_basic_account_event(&msg).expect("wrapped event");
+        assert_eq!(event_type, BasicAccountEventType::AccountRisk);
+        assert_eq!(scope, BasicAccountScope::OkexUnified);
+        let risk = BasicAccountRiskMsg::from_bytes(payload).expect("risk msg");
+        assert_eq!(risk.timestamp, 1_778_479_700_000);
+        assert!((risk.adj_equity_usd - 100_123.45).abs() < 1e-9);
+        assert!((risk.actual_equity_usd - 100_500.0).abs() < 1e-9);
+        assert!((risk.maintenance_margin_usd - 1_500.0).abs() < 1e-9);
+        assert!((risk.initial_margin_usd - 8_000.0).abs() < 1e-9);
+        assert!((risk.margin_ratio - 66.7489666667).abs() < 1e-12);
+        assert!((risk.borrowed_usd - 100.0).abs() < 1e-12);
+        assert!((risk.notional_usd - 300_000.0).abs() < 1e-9);
     }
 
     #[test]

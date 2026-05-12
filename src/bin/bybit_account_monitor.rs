@@ -11,9 +11,9 @@ use anyhow::Result;
 use bytes::Bytes;
 use log::{debug, error, info, warn};
 use mkt_signal::common::basic_account_msg::{
-    split_basic_account_event, BasicAccountEventMsg, BasicAccountEventType, BasicAccountScope,
-    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
-    BinanceTradeLiteMsg,
+    split_basic_account_event, BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg,
+    BasicAccountScope, BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg,
+    BasicUmUnrealizedMsg, BinanceTradeLiteMsg,
 };
 use mkt_signal::common::bybit_account_msg::BybitBasicOrderMsg;
 use mkt_signal::common::mkt_cfg::load_local_ips_preferring_trade_engine;
@@ -608,6 +608,20 @@ fn log_parsed_event(msg: &Bytes) {
                 );
             }
         }
+        BasicAccountEventType::AccountRisk => {
+            if let Ok(m) = BasicAccountRiskMsg::from_bytes(&payload) {
+                info!(
+                    "Bybit AccountRisk: scope={} ts={} adj_eq_usd={:.2} actual_eq_usd={:.2} maint_margin_usd={:.2} initial_margin_usd={:.2} margin_ratio={:.6}",
+                    account_scope.as_str(),
+                    m.timestamp,
+                    m.adj_equity_usd,
+                    m.actual_equity_usd,
+                    m.maintenance_margin_usd,
+                    m.initial_margin_usd,
+                    m.margin_ratio
+                );
+            }
+        }
         _ => {}
     }
 }
@@ -650,6 +664,9 @@ impl AccountEventDeduper {
             BasicAccountEventType::BorrowInterest => BasicBorrowInterestMsg::from_bytes(&payload)
                 .ok()
                 .map(|msg| self.key_borrow_interest(&msg)),
+            BasicAccountEventType::AccountRisk => BasicAccountRiskMsg::from_bytes(&payload)
+                .ok()
+                .map(|msg| self.key_account_risk(&msg)),
             BasicAccountEventType::TradeUpdateLite => return true,
             BasicAccountEventType::Error => return true,
         };
@@ -726,6 +743,16 @@ impl AccountEventDeduper {
             self.hash_str64(&msg.inst_id),
             msg.position_side as u8 as u64,
             msg.unrealized_pnl.to_bits(),
+        ])
+    }
+
+    fn key_account_risk(&self, msg: &BasicAccountRiskMsg) -> u64 {
+        self.hash64(&[
+            BasicAccountEventType::AccountRisk as u32 as u64,
+            msg.timestamp as u64,
+            msg.adj_equity_usd.to_bits(),
+            msg.maintenance_margin_usd.to_bits(),
+            msg.margin_ratio.to_bits(),
         ])
     }
 

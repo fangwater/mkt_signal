@@ -1,8 +1,9 @@
 //! Bitget UTA 账户事件解析器（余额 / 持仓 / 订单）
 
 use crate::common::basic_account_msg::{
-    BasicAccountEventMsg, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
-    BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg, BinanceTradeLiteMsg,
+    BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
+    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
+    BinanceTradeLiteMsg,
 };
 use crate::common::bitget_account_msg::BitgetBasicOrderMsg;
 use crate::parser::default_parser::Parser;
@@ -37,6 +38,22 @@ struct BitgetAccountChannelRow {
     borrow: String,
     #[serde(default)]
     debts: String,
+    #[serde(default, rename = "totalEquity")]
+    total_equity: String,
+    #[serde(default, rename = "accountEquity")]
+    account_equity: String,
+    #[serde(default, rename = "effEquity")]
+    eff_equity: String,
+    #[serde(default)]
+    mmr: String,
+    #[serde(default)]
+    imr: String,
+    #[serde(default, rename = "mgnRatio")]
+    mgn_ratio: String,
+    #[serde(default, rename = "totalLiabilities")]
+    total_liabilities: String,
+    #[serde(default, rename = "notionalUsd")]
+    notional_usd: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,14 +111,58 @@ impl BitgetAccountEventParser {
                 }
             } else if !account_row.margin_coin.is_empty() {
                 let coin_item = BitgetAccountChannelCoin {
-                    coin: account_row.margin_coin,
-                    balance: account_row.balance,
-                    equity: account_row.equity,
-                    debt: account_row.debt,
-                    borrow: account_row.borrow,
-                    debts: account_row.debts,
+                    coin: account_row.margin_coin.clone(),
+                    balance: account_row.balance.clone(),
+                    equity: account_row.equity.clone(),
+                    debt: account_row.debt.clone(),
+                    borrow: account_row.borrow.clone(),
+                    debts: account_row.debts.clone(),
                 };
                 count += self.emit_account_coin(&coin_item, timestamp, tx);
+            }
+
+            let has_risk_fields = [
+                &account_row.eff_equity,
+                &account_row.total_equity,
+                &account_row.account_equity,
+                &account_row.mmr,
+                &account_row.imr,
+                &account_row.mgn_ratio,
+            ]
+            .iter()
+            .any(|value| !value.trim().is_empty());
+            if has_risk_fields {
+                let actual_equity_usd = parse_f64_str(&account_row.total_equity)
+                    .or_else(|| parse_f64_str(&account_row.account_equity))
+                    .unwrap_or(0.0);
+                let adj_equity_usd =
+                    parse_f64_str(&account_row.eff_equity).unwrap_or(actual_equity_usd);
+                let maintenance_margin_usd = parse_f64_str(&account_row.mmr).unwrap_or(0.0);
+                let margin_ratio = if maintenance_margin_usd.abs() > f64::EPSILON {
+                    adj_equity_usd / maintenance_margin_usd
+                } else {
+                    0.0
+                };
+                let msg = BasicAccountRiskMsg::create(
+                    timestamp,
+                    adj_equity_usd,
+                    actual_equity_usd,
+                    maintenance_margin_usd,
+                    parse_f64_str(&account_row.imr).unwrap_or(0.0),
+                    margin_ratio,
+                    parse_f64_str(&account_row.total_liabilities)
+                        .unwrap_or(0.0)
+                        .abs(),
+                    parse_f64_str(&account_row.notional_usd).unwrap_or(0.0),
+                );
+                let event = BasicAccountEventMsg::create(
+                    BasicAccountEventType::AccountRisk,
+                    BasicAccountScope::BitgetUnified,
+                    msg.to_bytes(),
+                );
+                if tx.send(event.to_bytes()).is_ok() {
+                    count += 1;
+                }
             }
         }
 
@@ -596,7 +657,7 @@ fn parse_i64_str(v: &str) -> Option<i64> {
 mod tests {
     use super::*;
     use crate::common::basic_account_msg::{
-        split_basic_account_event, BasicBalanceMsg, BasicBorrowInterestMsg,
+        split_basic_account_event, BasicAccountRiskMsg, BasicBalanceMsg, BasicBorrowInterestMsg,
     };
     use crate::common::bitget_account_msg::BitgetBasicOrderMsg;
     use crate::strategy::trade_update::TradeUpdate;
@@ -672,6 +733,54 @@ mod tests {
         let msg = BasicBalanceMsg::from_bytes(payload).expect("balance payload");
         assert_eq!(msg.symbol, "SOL");
         assert!((msg.wallet + 70.8).abs() < 1e-12);
+    }
+
+    #[test]
+    fn account_risk_parses_account_channel_top_level_metrics() {
+        let parser = BitgetAccountEventParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        let account = Bytes::from_static(
+            br#"{
+                "arg":{"channel":"account","instType":"UTA"},
+                "ts":"1710000000999",
+                "data":[
+                    {
+                        "uTime":"1710000000123",
+                        "totalEquity":"100123.45",
+                        "effEquity":"99876.50",
+                        "mmr":"1500.00",
+                        "imr":"8000.00",
+                        "mgnRatio":"5.23",
+                        "totalLiabilities":"100.0",
+                        "notionalUsd":"300000.00",
+                        "coin":[
+                            {"coin":"USDT","balance":"1000","borrow":"0","debts":"0"}
+                        ]
+                    }
+                ]
+            }"#,
+        );
+
+        let emitted = parser.parse(account, &tx);
+        assert_eq!(emitted, 3);
+
+        let _balance = rx.try_recv().expect("balance event");
+        let _borrow = rx.try_recv().expect("borrow event");
+        let wrapped_risk = rx.try_recv().expect("risk event");
+        let (event_type, scope, payload) =
+            split_basic_account_event(&wrapped_risk).expect("wrapped risk");
+        assert_eq!(event_type, BasicAccountEventType::AccountRisk);
+        assert_eq!(scope, BasicAccountScope::BitgetUnified);
+        let risk = BasicAccountRiskMsg::from_bytes(payload).expect("risk payload");
+        assert_eq!(risk.timestamp, 1_710_000_000_123);
+        assert!((risk.adj_equity_usd - 99_876.50).abs() < 1e-9);
+        assert!((risk.actual_equity_usd - 100_123.45).abs() < 1e-9);
+        assert!((risk.maintenance_margin_usd - 1_500.0).abs() < 1e-9);
+        assert!((risk.initial_margin_usd - 8_000.0).abs() < 1e-9);
+        assert!((risk.margin_ratio - (99_876.50 / 1_500.0)).abs() < 1e-12);
+        assert!((risk.borrowed_usd - 100.0).abs() < 1e-12);
+        assert!((risk.notional_usd - 300_000.0).abs() < 1e-9);
     }
 
     #[test]

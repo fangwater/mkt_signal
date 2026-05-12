@@ -19,8 +19,30 @@ pub enum BasicAccountEventType {
     UnrealizedPnlUpdate = 4005,
     /// 轻量成交更新（最初用于 Binance TRADE_LITE，也可复用于其他仅提供增量成交的频道）
     TradeUpdateLite = 4006,
+    /// 账户级风险快照（保证金率、权益、维持/初始保证金）
+    AccountRisk = 4007,
     /// 错误
     Error = 4999,
+}
+
+/// 账户风险等级。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountRiskLevel {
+    /// 可自由交易。
+    FreeTrade,
+    /// 预警状态，需要补充保证金、还款或降仓。
+    Warning,
+    /// 仅支持只减仓订单。
+    ReduceOnly,
+    /// 触发强平状态。
+    Liquidation,
+}
+
+/// 从账户风险快照获取风险等级。
+///
+/// 不同交易所的等级定义可能不同，因此接口显式传入 scope。
+pub trait AccountRiskLevelProvider {
+    fn account_risk_level(&self, scope: BasicAccountScope) -> Option<AccountRiskLevel>;
 }
 
 /// Basic 账户事件来源范围。
@@ -1322,6 +1344,118 @@ impl BasicBorrowInterestMsg {
     }
 }
 
+/// Basic 账户级风险快照消息。
+///
+/// 统一口径：`margin_ratio = 1.0` 表示强平边界，数值越大越安全。
+#[derive(Debug, Clone)]
+pub struct BasicAccountRiskMsg {
+    pub msg_type: BasicAccountEventType,
+    pub timestamp: i64,
+    pub adj_equity_usd: f64,
+    pub actual_equity_usd: f64,
+    pub maintenance_margin_usd: f64,
+    pub initial_margin_usd: f64,
+    pub margin_ratio: f64,
+    pub borrowed_usd: f64,
+    pub notional_usd: f64,
+}
+
+impl BasicAccountRiskMsg {
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        timestamp: i64,
+        adj_equity_usd: f64,
+        actual_equity_usd: f64,
+        maintenance_margin_usd: f64,
+        initial_margin_usd: f64,
+        margin_ratio: f64,
+        borrowed_usd: f64,
+        notional_usd: f64,
+    ) -> Self {
+        Self {
+            msg_type: BasicAccountEventType::AccountRisk,
+            timestamp,
+            adj_equity_usd,
+            actual_equity_usd,
+            maintenance_margin_usd,
+            initial_margin_usd,
+            margin_ratio,
+            borrowed_usd,
+            notional_usd,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 8 + 8 * 7;
+        let mut buf = BytesMut::with_capacity(total_size);
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_i64_le(self.timestamp);
+        buf.put_f64_le(self.adj_equity_usd);
+        buf.put_f64_le(self.actual_equity_usd);
+        buf.put_f64_le(self.maintenance_margin_usd);
+        buf.put_f64_le(self.initial_margin_usd);
+        buf.put_f64_le(self.margin_ratio);
+        buf.put_f64_le(self.borrowed_usd);
+        buf.put_f64_le(self.notional_usd);
+        buf.freeze()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        const MIN_SIZE: usize = 4 + 8 + 8 * 7;
+        if data.len() < MIN_SIZE {
+            anyhow::bail!("account risk msg too short: {}", data.len());
+        }
+
+        let mut cursor = Bytes::copy_from_slice(data);
+        let msg_type = cursor.get_u32_le();
+        if msg_type != BasicAccountEventType::AccountRisk as u32 {
+            anyhow::bail!("invalid account risk msg type: {}", msg_type);
+        }
+
+        Ok(Self {
+            msg_type: BasicAccountEventType::AccountRisk,
+            timestamp: cursor.get_i64_le(),
+            adj_equity_usd: cursor.get_f64_le(),
+            actual_equity_usd: cursor.get_f64_le(),
+            maintenance_margin_usd: cursor.get_f64_le(),
+            initial_margin_usd: cursor.get_f64_le(),
+            margin_ratio: cursor.get_f64_le(),
+            borrowed_usd: cursor.get_f64_le(),
+            notional_usd: cursor.get_f64_le(),
+        })
+    }
+}
+
+impl AccountRiskLevelProvider for BasicAccountRiskMsg {
+    fn account_risk_level(&self, scope: BasicAccountScope) -> Option<AccountRiskLevel> {
+        match scope {
+            BasicAccountScope::BinanceUnified
+            | BasicAccountScope::OkexUnified
+            | BasicAccountScope::GateUnified
+            | BasicAccountScope::BitgetUnified
+            | BasicAccountScope::BybitUnified => {
+                account_risk_level_from_margin_ratio(self.margin_ratio)
+            }
+            _ => None,
+        }
+    }
+}
+
+fn account_risk_level_from_margin_ratio(margin_ratio: f64) -> Option<AccountRiskLevel> {
+    if !margin_ratio.is_finite() {
+        return None;
+    }
+    if margin_ratio > 1.5 {
+        Some(AccountRiskLevel::FreeTrade)
+    } else if margin_ratio > 1.2 {
+        Some(AccountRiskLevel::Warning)
+    } else if margin_ratio > 1.05 {
+        Some(AccountRiskLevel::ReduceOnly)
+    } else {
+        Some(AccountRiskLevel::Liquidation)
+    }
+}
+
 /// Basic 账户事件消息包装
 pub struct BasicAccountEventMsg {
     pub msg_type: BasicAccountEventType,
@@ -1398,6 +1532,7 @@ pub fn get_basic_event_type(data: &[u8]) -> BasicAccountEventType {
         4004 => BasicAccountEventType::BorrowInterest,
         4005 => BasicAccountEventType::UnrealizedPnlUpdate,
         4006 => BasicAccountEventType::TradeUpdateLite,
+        4007 => BasicAccountEventType::AccountRisk,
         _ => BasicAccountEventType::Error,
     }
 }
@@ -1431,5 +1566,65 @@ mod tests {
         assert_eq!(event_type, BasicAccountEventType::BalanceUpdate);
         assert_eq!(scope, BasicAccountScope::BinanceStdSpot);
         assert_eq!(body, payload.as_ref());
+    }
+
+    #[test]
+    fn account_risk_msg_envelope_round_trip() {
+        let payload =
+            BasicAccountRiskMsg::create(123, 100.0, 99.0, 20.0, 40.0, 5.0, 3.0, 200.0).to_bytes();
+        let event = BasicAccountEventMsg::create(
+            BasicAccountEventType::AccountRisk,
+            BasicAccountScope::BinanceUnified,
+            payload,
+        )
+        .to_bytes();
+
+        let (event_type, scope, body) =
+            split_basic_account_event(&event).expect("should parse risk event");
+        assert_eq!(event_type, BasicAccountEventType::AccountRisk);
+        assert_eq!(scope, BasicAccountScope::BinanceUnified);
+
+        let msg = BasicAccountRiskMsg::from_bytes(body).expect("should decode risk payload");
+        assert_eq!(msg.timestamp, 123);
+        assert!((msg.adj_equity_usd - 100.0).abs() < 1e-12);
+        assert!((msg.margin_ratio - 5.0).abs() < 1e-12);
+        assert!((msg.notional_usd - 200.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn account_risk_level_uses_shared_margin_ratio_thresholds_for_supported_scopes() {
+        let mk = |margin_ratio| {
+            BasicAccountRiskMsg::create(123, 100.0, 100.0, 10.0, 20.0, margin_ratio, 0.0, 0.0)
+        };
+
+        for scope in [
+            BasicAccountScope::BinanceUnified,
+            BasicAccountScope::OkexUnified,
+            BasicAccountScope::GateUnified,
+            BasicAccountScope::BitgetUnified,
+            BasicAccountScope::BybitUnified,
+        ] {
+            assert_eq!(
+                mk(1.5001).account_risk_level(scope),
+                Some(AccountRiskLevel::FreeTrade)
+            );
+            assert_eq!(
+                mk(1.5).account_risk_level(scope),
+                Some(AccountRiskLevel::Warning)
+            );
+            assert_eq!(
+                mk(1.2).account_risk_level(scope),
+                Some(AccountRiskLevel::ReduceOnly)
+            );
+            assert_eq!(
+                mk(1.05).account_risk_level(scope),
+                Some(AccountRiskLevel::Liquidation)
+            );
+        }
+        assert_eq!(
+            mk(1.5).account_risk_level(BasicAccountScope::BybitUnified),
+            Some(AccountRiskLevel::Warning)
+        );
+        assert_eq!(mk(1.5).account_risk_level(BasicAccountScope::Unknown), None);
     }
 }
