@@ -19,7 +19,6 @@ use mkt_signal::pre_trade::resample_channel::ResampleChannel;
 use mkt_signal::pre_trade::signal_channel::{
     SignalChannel, DEFAULT_BACKWARD_CHANNEL, DEFAULT_SIGNAL_CHANNEL,
 };
-use mkt_signal::pre_trade::unimmr_close_symbol_list::UnimmrCloseSymbolList;
 use mkt_signal::pre_trade::PreTrade;
 use mkt_signal::pre_trade::QueryEngHub;
 use mkt_signal::pre_trade::TradeEngHub;
@@ -251,57 +250,6 @@ async fn main() -> Result<()> {
                     );
                 }
                 IntraBwdSymbolList::start_background_refresh(bwd_redis, bwd_key_suffix);
-            }
-
-            // UniMMR 算法平仓 symbol list（仅 fr / intra / cross arb 部署使用，MM 跳过）
-            //
-            // - namespace 由 ArbMode 派生（funding_arb→fr, intra_arb→intra, cross_arb→cross）
-            // - suffix 取 open/hedge 的 data_pub_slug 组合，与 fwd/bwd/dump 同口径
-            // - env prefix 沿用 pre_trade 的 dir_prefix（与 risk_params 一致）
-            // - 启动同步加载一次（key 不存在/解析失败 = 清空缓存，后续走 fallback），
-            //   再起 60s 间隔后台 refresh。
-            // - 本次只接入加载，不接入交易决策；下游消费者通过
-            //   `UnimmrCloseSymbolList::effective_close_symbols(...)` 自行融合
-            //   net-position lookup。
-            //
-            // MM 部署里 open_venue == hedge_venue，`ArbMode::from_venues` 会把它
-            // 归到 CrossArb，所以必须先用 `is_mm_pre_trade_mode` 把 MM 显式排除。
-            let unimmr_namespace = if is_mm_pre_trade_mode(open_venue, hedge_venue) {
-                None
-            } else {
-                match ArbMode::from_venues(open_venue, hedge_venue) {
-                    ArbMode::FundingArb => Some("fr"),
-                    ArbMode::IntraArb => Some("intra"),
-                    ArbMode::CrossArb => Some("cross"),
-                }
-            };
-            if let Some(namespace) = unimmr_namespace {
-                let unimmr_suffix = format!(
-                    "{}_{}",
-                    open_venue.data_pub_slug(),
-                    hedge_venue.data_pub_slug()
-                );
-                let unimmr_redis = RedisSettings::default();
-                let unimmr_env_prefix = dir_prefix.clone();
-                if let Err(err) = UnimmrCloseSymbolList::load_from_redis(
-                    &unimmr_redis,
-                    unimmr_env_prefix.as_deref(),
-                    namespace,
-                    &unimmr_suffix,
-                )
-                .await
-                {
-                    warn!(
-                        "unimmr_close_symbols 初次加载失败 ns='{}' suffix='{}' prefix={:?}: {:#}",
-                        namespace, unimmr_suffix, unimmr_env_prefix, err
-                    );
-                }
-                UnimmrCloseSymbolList::start_background_refresh(
-                    unimmr_redis,
-                    unimmr_env_prefix,
-                    namespace.to_string(),
-                    unimmr_suffix,
-                );
             }
 
             info!(

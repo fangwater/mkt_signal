@@ -431,8 +431,13 @@ async fn run(
         // - 本次只听+维护，不接 close 触发
         let unimmr_redis = get_redis_settings();
         let unimmr_env_prefix = infer_env_dir_from_cwd();
-        if let Err(err) =
-            load_unimmr_thresholds_from_redis(&unimmr_redis, unimmr_env_prefix.as_deref()).await
+        if let Err(err) = load_unimmr_thresholds_from_redis(
+            &unimmr_redis,
+            unimmr_env_prefix.as_deref(),
+            open_venue,
+            hedge_venue,
+        )
+        .await
         {
             log::warn!(
                 "UnimmrCloseGate 阈值初次加载失败 prefix={:?}: {:#}，使用默认值",
@@ -440,7 +445,7 @@ async fn run(
                 err
             );
         }
-        start_unimmr_threshold_refresh(unimmr_redis, unimmr_env_prefix);
+        start_unimmr_threshold_refresh(unimmr_redis, unimmr_env_prefix, open_venue, hedge_venue);
 
         let open_exchange = Exchange::from_str(open_venue.trade_engine_exchange())
             .context("invalid open venue exchange for UnimmrCloseGate")?;

@@ -851,9 +851,20 @@ pub fn evaluate_funding_mode_signal(
         return Ok(signal);
     }
 
-    if !rate_ready && !open_inputs_ready {
+    if !rate_ready {
         let signal = spread_close_signal();
-        if signal.is_none() {
+        if let Some(signal) = signal {
+            log::debug!(
+                "ArbDecision funding mode rate not ready, allow spread-close open={} hedge={} open_venue={:?} hedge_venue={:?}",
+                open_symbol_key,
+                hedge_symbol_key,
+                open_venue,
+                hedge_venue
+            );
+            return Ok(Some(signal));
+        }
+
+        if !open_inputs_ready {
             log::debug!(
                 "ArbDecision funding mode rate not ready and open inputs incomplete, no spread-close signal open={} hedge={} open_venue={:?} hedge_venue={:?}",
                 open_symbol_key,
@@ -861,19 +872,9 @@ pub fn evaluate_funding_mode_signal(
                 open_venue,
                 hedge_venue
             );
-        } else {
-            log::debug!(
-                "ArbDecision funding mode rate not ready and open inputs incomplete, allow spread-close open={} hedge={} open_venue={:?} hedge_venue={:?}",
-                open_symbol_key,
-                hedge_symbol_key,
-                open_venue,
-                hedge_venue
-            );
+            return Ok(None);
         }
-        return Ok(signal);
-    }
 
-    if !rate_ready {
         log::debug!(
             "ArbDecision funding mode rate not fully ready, but symbol open inputs are ready; run full funding decision open={} hedge={} open_venue={:?} hedge_venue={:?}",
             open_symbol_key,

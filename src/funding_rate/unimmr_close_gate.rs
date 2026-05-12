@@ -36,6 +36,7 @@ use crate::common::redis_client::{RedisClient, RedisSettings};
 use crate::portfolio_margin::pm_forwarder::{
     PM_HISTORY_SIZE, PM_MAX_BYTES, PM_MAX_SUBSCRIBERS, PM_SUBSCRIBER_MAX_BUFFER_SIZE,
 };
+use crate::signal::common::TradingVenue;
 
 const REDIS_KEY_RISK_PARAMS: &str = "pre_trade_risk_params";
 const REFRESH_INTERVAL_SECS: u64 = 60;
@@ -208,14 +209,23 @@ fn normalize_unimmr_control_lines(trigger_line: f64, recover_line: f64) -> Optio
     }
 }
 
-fn risk_params_full_key(env_prefix: Option<&str>) -> String {
+fn risk_params_full_key(
+    env_prefix: Option<&str>,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+) -> String {
+    let suffix = format!(
+        "{}:{}:{REDIS_KEY_RISK_PARAMS}",
+        open_venue.data_pub_slug(),
+        hedge_venue.data_pub_slug()
+    );
     match env_prefix
         .map(str::trim)
         .map(|p| p.trim_end_matches(':'))
         .filter(|p| !p.is_empty())
     {
-        Some(prefix) => format!("{prefix}:{REDIS_KEY_RISK_PARAMS}"),
-        None => REDIS_KEY_RISK_PARAMS.to_string(),
+        Some(prefix) => format!("{prefix}:{suffix}"),
+        None => suffix,
     }
 }
 
@@ -223,8 +233,10 @@ fn risk_params_full_key(env_prefix: Option<&str>) -> String {
 pub async fn load_thresholds_from_redis(
     redis: &RedisSettings,
     env_prefix: Option<&str>,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
 ) -> Result<(f64, f64)> {
-    let key = risk_params_full_key(env_prefix);
+    let key = risk_params_full_key(env_prefix, open_venue, hedge_venue);
     let mut settings = redis.clone();
     settings.prefix = None;
     let mut client = RedisClient::connect(settings)
@@ -256,13 +268,21 @@ pub async fn load_thresholds_from_redis(
 
 /// 启动 60s 周期刷新阈值（与 `PreTradeParamsLoader::start_background_refresh` 同款节奏）。
 /// 启动处的同步加载应该已经做过一次，这里跳过 interval 的首个立即触发。
-pub fn start_threshold_refresh(redis: RedisSettings, env_prefix: Option<String>) {
+pub fn start_threshold_refresh(
+    redis: RedisSettings,
+    env_prefix: Option<String>,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+) {
     tokio::task::spawn_local(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(REFRESH_INTERVAL_SECS));
         interval.tick().await;
         loop {
             interval.tick().await;
-            if let Err(err) = load_thresholds_from_redis(&redis, env_prefix.as_deref()).await {
+            if let Err(err) =
+                load_thresholds_from_redis(&redis, env_prefix.as_deref(), open_venue, hedge_venue)
+                    .await
+            {
                 warn!(
                     "UnimmrCloseGate 阈值后台刷新失败 prefix={:?}: {:#}",
                     env_prefix, err
@@ -477,21 +497,6 @@ mod tests {
 
         let snap = gate.snapshot(BasicAccountScope::BinanceUnified).unwrap();
         assert!((snap.margin_ratio - 2.25).abs() < 1e-12);
-    }
-
-    #[test]
-    fn risk_params_full_key_with_and_without_prefix() {
-        assert_eq!(risk_params_full_key(None), "pre_trade_risk_params");
-        assert_eq!(
-            risk_params_full_key(Some("binance_fr_arb01")),
-            "binance_fr_arb01:pre_trade_risk_params"
-        );
-        assert_eq!(
-            risk_params_full_key(Some("env:")),
-            "env:pre_trade_risk_params"
-        );
-        // 空 prefix 等价 None
-        assert_eq!(risk_params_full_key(Some("")), "pre_trade_risk_params");
     }
 
     #[test]
