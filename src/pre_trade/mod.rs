@@ -23,6 +23,7 @@ pub mod signal_throttle;
 pub mod symbol_mapper;
 pub mod symbol_util;
 pub mod trade_eng_channel;
+pub mod unimmr_close_symbol_list;
 pub mod usdt_balance_manager;
 pub use persist_channel::{
     PersistChannel, ORDER_UPDATE_RECORD_CHANNEL, ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL,

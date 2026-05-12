@@ -9,7 +9,7 @@
 //! 从 Redis 读取并支持热更新
 
 use anyhow::Result;
-use log::info;
+use log::{info, warn};
 use serde_json;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -42,6 +42,10 @@ struct SymbolListInner {
 
     /// 反套建仓列表
     bwd_trade_symbols: HashSet<String>,
+
+    /// UniMMR 算法平仓 symbol list（仅 fr / intra / cross 加载；mm 跳过）。
+    /// 参与 `collect_online` 并集，确保下游阈值/订阅会覆盖这些 symbol。
+    unimmr_close_symbols: HashSet<String>,
 }
 
 impl SymbolList {
@@ -81,6 +85,7 @@ impl SymbolList {
             dump_symbols: HashSet::new(),
             fwd_trade_symbols: HashSet::new(),
             bwd_trade_symbols: HashSet::new(),
+            unimmr_close_symbols: HashSet::new(),
         };
 
         SYMBOL_LIST.with(|sl| {
@@ -211,6 +216,50 @@ impl SymbolList {
             }
         }
 
+        // 读取 UniMMR 算法平仓 symbol list（仅 fr/intra/cross；mm 跳过）。
+        // 与 `pre_trade::unimmr_close_symbol_list` 共用同一 Redis key 与归一化口径，
+        // 这里加载只是为了把它并入 online 集合，保证下游阈值/数据订阅覆盖到这些
+        // symbol；pre_trade 仍以自己的副本做 close 决策。
+        if ns != "mm" {
+            let unimmr_key = symbol_list_redis_key(
+                key_prefix.as_deref(),
+                &ns,
+                "unimmr_close_symbols",
+                &key_suffix,
+            );
+            match client.get_string(&unimmr_key).await {
+                Ok(Some(value)) => match serde_json::from_str::<Vec<String>>(&value) {
+                    Ok(symbols) => {
+                        Self::with_inner_mut(|inner| {
+                            inner.unimmr_close_symbols =
+                                symbols.iter().map(|s| s.to_uppercase()).collect();
+                            info!(
+                                "更新 UniMMR 平仓列表 key='{}': {} 个交易对",
+                                unimmr_key,
+                                inner.unimmr_close_symbols.len()
+                            );
+                        });
+                    }
+                    Err(err) => {
+                        Self::with_inner_mut(|inner| inner.unimmr_close_symbols.clear());
+                        warn!(
+                            "UniMMR 平仓列表 key='{}' 解析失败 raw={} err={:#}，清空本地缓存",
+                            unimmr_key, value, err
+                        );
+                    }
+                },
+                Ok(None) => {
+                    Self::with_inner_mut(|inner| inner.unimmr_close_symbols.clear());
+                }
+                Err(err) => {
+                    warn!(
+                        "UniMMR 平仓列表 key='{}' 读取失败: {:#}（保留旧缓存）",
+                        unimmr_key, err
+                    );
+                }
+            }
+        }
+
         // intra: 同所期现没有正反开方向限制，fwd ∪ bwd 视为单一 online 列表，
         // 让 is_in_fwd_trade_list / is_in_bwd_trade_list 对任一方向都放行
         if ns == "intra" {
@@ -270,6 +319,11 @@ impl SymbolList {
         Self::with_inner(|inner| inner.bwd_trade_symbols.iter().cloned().collect())
     }
 
+    /// 获取 UniMMR 算法平仓列表（fr/intra/cross 加载；mm 始终为空）
+    pub fn get_unimmr_close_symbols(&self) -> Vec<String> {
+        Self::with_inner(|inner| inner.unimmr_close_symbols.iter().cloned().collect())
+    }
+
     /// 获取 online symbols（平仓 ∪ 正套/反套建仓列表）
     pub fn get_online_symbols(&self) -> Vec<String> {
         Self::with_inner(Self::collect_online)
@@ -291,12 +345,13 @@ impl SymbolList {
 
     // ==================== 内部辅助方法 ====================
 
-    /// 汇总 online symbols（平仓 ∪ 建仓 ∪ 正套/反套建仓）
+    /// 汇总 online symbols（平仓 ∪ 正套/反套建仓 ∪ UniMMR 算法平仓）
     fn collect_online(inner: &SymbolListInner) -> Vec<String> {
         let mut online_set = HashSet::new();
         online_set.extend(inner.dump_symbols.iter().cloned());
         online_set.extend(inner.fwd_trade_symbols.iter().cloned());
         online_set.extend(inner.bwd_trade_symbols.iter().cloned());
+        online_set.extend(inner.unimmr_close_symbols.iter().cloned());
         online_set.into_iter().collect()
     }
 
