@@ -152,6 +152,8 @@ SCRIPTS_TO_SYNC=(
   "start_fr_signal.sh"
   "stop_fr_signal.sh"
   "flatten_fr_futures_exposure.py"
+  "flatten_binance_pm.py"
+  "cancel_binance_pm_orders.py"
   "sync_funding_rate_thresholds.py"
   "print_funding_rate_thresholds.py"
   "sync_fr_strategy_params.py"
