@@ -9,6 +9,7 @@ usage() {
 Usage: scripts/deploy_fr_viz_server.sh --env-name <exchange>_fr_<suffix>
                                       [--exchange <binance|okex|gate|bybit|bitget>]
                                       [--bind 0.0.0.0] --port <port>
+                                      [--dashboard-port <port>]
                                       [--ws-path /ws]
                                       [--namespace <IPC_NAMESPACE>]
                                       [--instance-label <label>]
@@ -26,9 +27,11 @@ Notes:
   - Copies docs/pre_trade_dashboard.html into www/ and index.html.
   - env-name 必须匹配 <exchange>_fr_<suffix>（suffix 必填，例如 binance_fr_hf01）。
   - --port 必填（不再按 exchange 自动补默认端口）。
+  - --dashboard-port 是 fr_signal_dashboard 的监听端口；不传则回退到 viz-port+10
+    （仅向后兼容；新的入口脚本应该显式传入，因为跨交易所 viz 段可能重叠）。
   - Default nginx prefix follows deploy dir name: /fr/<env-name> (e.g. /fr/binance_fr_trade).
   - Updates nginx mapping file with static + ws + healthz entries (managed block).
-  - Also runs scripts/deploy_fr_signal_dashboard.sh (port=viz_port+1) to deploy
+  - Also runs scripts/deploy_fr_signal_dashboard.sh to deploy
     fr_signal_dashboard alongside viz_server. Pass --no-dashboard to skip.
 EOF
 }
@@ -40,6 +43,7 @@ fi
 
 EXCHANGE=""
 ENV_NAME=""
+DASH_PORT_ARG=""
 
 BIND="0.0.0.0"
 PORT=""
@@ -125,7 +129,7 @@ upsert_main_nginx_mapping() {
   local snapshot_location="${base_prefix}/snapshot"
   local fr_ws_location="${base_prefix}/fr_ws"
   local static_dir="${TARGET_DIR}/www/"
-  local fr_port=$((PORT + 10))
+  local fr_port="${DASH_PORT_ARG:-$((PORT + 10))}"
 
   begin_marker="# BEGIN managed: fr viz ${base_prefix}"
   end_marker="# END managed: fr viz ${base_prefix}"
@@ -207,6 +211,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --port)
       PORT="${2:-}"
+      shift 2
+      ;;
+    --dashboard-port)
+      DASH_PORT_ARG="${2:-}"
       shift 2
       ;;
     --ws-path)
@@ -452,18 +460,21 @@ if [[ "$DEPLOY_DASHBOARD" -eq 1 ]]; then
     echo "[ERROR] companion deploy script not executable: $DASHBOARD_SCRIPT" >&2
     exit 1
   fi
+  DASHBOARD_PORT="${DASH_PORT_ARG:-$((PORT + 10))}"
   DASHBOARD_ARGS=(
     --env-name "$ENV_NAME"
     --exchange "$EXCHANGE"
     --viz-port "$PORT"
+    --dashboard-port "$DASHBOARD_PORT"
     --bind "$BIND"
     --ws-path "$WS_PATH"
+    --no-start
   )
   if [[ "$DO_BUILD" -eq 0 ]]; then
     DASHBOARD_ARGS+=( --scripts-only )
   fi
   echo ""
-  echo "[INFO] Deploying fr_signal_dashboard companion (port=$((PORT + 10)))"
+  echo "[INFO] Deploying fr_signal_dashboard companion (port=${DASHBOARD_PORT})"
   "$DASHBOARD_SCRIPT" "${DASHBOARD_ARGS[@]}"
 fi
 

@@ -72,26 +72,32 @@ case "$ENV_SUFFIX" in
   trade)
     CONFIG_PORT="18021"
     VIZ_PORT="10021"
+    DASH_PORT=""
     ;;
   arb01)
     CONFIG_PORT="20021"
     VIZ_PORT="20121"
+    DASH_PORT="20171"
     ;;
   arb02)
     CONFIG_PORT="20022"
     VIZ_PORT="20122"
+    DASH_PORT="20172"
     ;;
   arb03)
     CONFIG_PORT="20023"
     VIZ_PORT="20123"
+    DASH_PORT="20173"
     ;;
   arb04)
     CONFIG_PORT="20024"
     VIZ_PORT="20124"
+    DASH_PORT="20174"
     ;;
   arb05)
     CONFIG_PORT="20025"
     VIZ_PORT="20125"
+    DASH_PORT="20175"
     ;;
   *)
     echo "[ERROR] gate FR 仅支持 suffix: trade|arb01|arb02|arb03|arb04|arb05（收到: ${ENV_SUFFIX}）" >&2
@@ -103,8 +109,15 @@ ENV_NAME="gate_fr_${ENV_SUFFIX}"
 
 echo "[INFO] Gate FR deploy-only"
 echo "[INFO] env_name=${ENV_NAME}"
-echo "[INFO] config_port=${CONFIG_PORT}, viz_port=${VIZ_PORT}"
+echo "[INFO] config_port=${CONFIG_PORT}, viz_port=${VIZ_PORT}, dash_port=${DASH_PORT:-<none>}"
 echo "[INFO] 不会执行 start 命令"
+
+VIZ_DASH_ARGS=()
+if [[ -n "$DASH_PORT" ]]; then
+  VIZ_DASH_ARGS=( --dashboard-port "$DASH_PORT" )
+else
+  VIZ_DASH_ARGS=( --no-dashboard )
+fi
 if [[ "$BIN_MODE" == "1" ]]; then
   echo "[INFO] mode=bin (仅替换二进制)"
 fi
@@ -163,6 +176,7 @@ if [[ "$BIN_MODE" == "1" ]]; then
     --env-name "$ENV_NAME" \
     --exchange gate \
     --port "$VIZ_PORT" \
+    "${VIZ_DASH_ARGS[@]}" \
     --bin-only
 
   run_deploy bash scripts/deploy_fr_persist_manager.sh \
@@ -198,6 +212,7 @@ else
     --env-name "$ENV_NAME" \
     --exchange gate \
     --port "$VIZ_PORT" \
+    "${VIZ_DASH_ARGS[@]}" \
     --nginx-mapping-file "$FR_NGINX_STAGING"
 
   run_deploy bash scripts/deploy_fr_persist_manager.sh \
@@ -217,6 +232,9 @@ if [[ "$BIN_MODE" == "1" ]]; then
   fr_remote_sync_binaries "$ENV_NAME"
 else
   fr_remote_sync_env_dir "$ENV_NAME"
+  if [[ -n "$DASH_PORT" ]]; then
+    fr_remote_upsert_dashboard_env_sh "$ENV_NAME" "gate" "0.0.0.0" "$DASH_PORT" "/ws"
+  fi
   fr_remote_apply_nginx "$ENV_NAME"
 fi
 

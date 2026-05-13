@@ -80,46 +80,57 @@ case "$ENV_SUFFIX" in
   trade)
     CONFIG_PORT="18031"
     VIZ_PORT="10031"
+    DASH_PORT=""
     ;;
   hf01)
     CONFIG_PORT="18041"
     VIZ_PORT="10041"
+    DASH_PORT=""
     ;;
   hf02)
     CONFIG_PORT="18042"
     VIZ_PORT="10042"
+    DASH_PORT=""
     ;;
   trade01)
     CONFIG_PORT="18051"
     VIZ_PORT="10051"
+    DASH_PORT=""
     ;;
   trade02)
     CONFIG_PORT="18052"
     VIZ_PORT="10052"
+    DASH_PORT=""
     ;;
   trade03)
     CONFIG_PORT="18053"
     VIZ_PORT="10053"
+    DASH_PORT=""
     ;;
   arb01)
     CONFIG_PORT="20031"
     VIZ_PORT="20131"
+    DASH_PORT="20141"
     ;;
   arb02)
     CONFIG_PORT="20032"
     VIZ_PORT="20132"
+    DASH_PORT="20142"
     ;;
   arb03)
     CONFIG_PORT="20033"
     VIZ_PORT="20133"
+    DASH_PORT="20143"
     ;;
   arb04)
     CONFIG_PORT="20034"
     VIZ_PORT="20134"
+    DASH_PORT="20144"
     ;;
   arb05)
     CONFIG_PORT="20035"
     VIZ_PORT="20135"
+    DASH_PORT="20145"
     ;;
   *)
     echo "[ERROR] binance FR 仅支持 suffix: trade|hf01|hf02|trade01|trade02|trade03|arb01|arb02|arb03|arb04|arb05（收到: ${ENV_SUFFIX}）" >&2
@@ -131,8 +142,15 @@ ENV_NAME="binance_fr_${ENV_SUFFIX}"
 
 echo "[INFO] Binance FR deploy-only"
 echo "[INFO] env_name=${ENV_NAME}"
-echo "[INFO] config_port=${CONFIG_PORT}, viz_port=${VIZ_PORT}"
+echo "[INFO] config_port=${CONFIG_PORT}, viz_port=${VIZ_PORT}, dash_port=${DASH_PORT:-<none>}"
 echo "[INFO] 不会执行 start 命令"
+
+VIZ_DASH_ARGS=()
+if [[ -n "$DASH_PORT" ]]; then
+  VIZ_DASH_ARGS=( --dashboard-port "$DASH_PORT" )
+else
+  VIZ_DASH_ARGS=( --no-dashboard )
+fi
 if [[ "$BIN_MODE" == "1" ]]; then
   echo "[INFO] mode=bin (仅替换二进制)"
 fi
@@ -191,6 +209,7 @@ if [[ "$BIN_MODE" == "1" ]]; then
     --env-name "$ENV_NAME" \
     --exchange binance \
     --port "$VIZ_PORT" \
+    "${VIZ_DASH_ARGS[@]}" \
     --bin-only
 
   run_deploy bash scripts/deploy_fr_persist_manager.sh \
@@ -226,6 +245,7 @@ else
     --env-name "$ENV_NAME" \
     --exchange binance \
     --port "$VIZ_PORT" \
+    "${VIZ_DASH_ARGS[@]}" \
     --nginx-mapping-file "$FR_NGINX_STAGING"
 
   run_deploy bash scripts/deploy_fr_persist_manager.sh \
@@ -245,6 +265,9 @@ if [[ "$BIN_MODE" == "1" ]]; then
   fr_remote_sync_binaries "$ENV_NAME"
 else
   fr_remote_sync_env_dir "$ENV_NAME"
+  if [[ -n "$DASH_PORT" ]]; then
+    fr_remote_upsert_dashboard_env_sh "$ENV_NAME" "binance" "0.0.0.0" "$DASH_PORT" "/ws"
+  fi
   fr_remote_apply_nginx "$ENV_NAME"
 fi
 

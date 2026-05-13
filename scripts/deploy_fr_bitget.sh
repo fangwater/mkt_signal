@@ -58,22 +58,27 @@ case "$ENV_SUFFIX" in
   arb01)
     CONFIG_PORT="20051"
     VIZ_PORT="20151"
+    DASH_PORT="20161"
     ;;
   arb02)
     CONFIG_PORT="20052"
     VIZ_PORT="20152"
+    DASH_PORT="20162"
     ;;
   arb03)
     CONFIG_PORT="20053"
     VIZ_PORT="20153"
+    DASH_PORT="20163"
     ;;
   arb04)
     CONFIG_PORT="20054"
     VIZ_PORT="20154"
+    DASH_PORT="20164"
     ;;
   arb05)
     CONFIG_PORT="20055"
     VIZ_PORT="20155"
+    DASH_PORT="20165"
     ;;
   *)
     echo "[ERROR] bitget FR 仅支持 suffix: arb01|arb02|arb03|arb04|arb05（收到: ${ENV_SUFFIX}）" >&2
@@ -86,8 +91,10 @@ TARGET_DIR="$HOME/$ENV_NAME"
 
 echo "[INFO] Bitget FR deploy-only"
 echo "[INFO] env_name=${ENV_NAME}"
-echo "[INFO] config_port=${CONFIG_PORT}, viz_port=${VIZ_PORT}"
+echo "[INFO] config_port=${CONFIG_PORT}, viz_port=${VIZ_PORT}, dash_port=${DASH_PORT}"
 echo "[INFO] 不会执行 start 命令"
+
+VIZ_DASH_ARGS=( --dashboard-port "$DASH_PORT" )
 if [[ "$BIN_MODE" == "1" ]]; then
   echo "[INFO] mode=bin (仅替换二进制)"
 fi
@@ -146,6 +153,7 @@ if [[ "$BIN_MODE" == "1" ]]; then
     --env-name "$ENV_NAME" \
     --exchange bitget \
     --port "$VIZ_PORT" \
+    "${VIZ_DASH_ARGS[@]}" \
     --bin-only
 
   run_deploy bash scripts/deploy_fr_persist_manager.sh \
@@ -181,6 +189,7 @@ else
     --env-name "$ENV_NAME" \
     --exchange bitget \
     --port "$VIZ_PORT" \
+    "${VIZ_DASH_ARGS[@]}" \
     --nginx-mapping-file "$FR_NGINX_STAGING"
 
   run_deploy bash scripts/deploy_fr_persist_manager.sh \
@@ -200,6 +209,9 @@ if [[ "$BIN_MODE" == "1" ]]; then
   fr_remote_sync_binaries "$ENV_NAME"
 else
   fr_remote_sync_env_dir "$ENV_NAME"
+  if [[ -n "$DASH_PORT" ]]; then
+    fr_remote_upsert_dashboard_env_sh "$ENV_NAME" "bitget" "0.0.0.0" "$DASH_PORT" "/ws"
+  fi
   fr_remote_apply_nginx "$ENV_NAME"
 fi
 

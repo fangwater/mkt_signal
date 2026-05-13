@@ -129,6 +129,53 @@ fr_remote_sync_binaries() {
     "$local_dir" "$FR_DEPLOY_HOST:$remote_dir"
 }
 
+fr_remote_upsert_dashboard_env_sh() {
+  # Idempotently inject the managed "fr_signal_dashboard" block into the
+  # remote $HOME/<env-name>/env.sh. Required because fr_remote_sync_env_dir
+  # excludes env.sh, so any local FR_DASHBOARD_* writes never reach the host.
+  local env_name="$1" exchange="$2" bind="$3" port="$4" ws_path="$5"
+  local opts remote_env_sh
+  opts="$(_fr_ssh_opts)"
+  remote_env_sh="$FR_REMOTE_HOME/$env_name/env.sh"
+
+  echo "[INFO] upsert fr_signal_dashboard block in $FR_DEPLOY_HOST:$remote_env_sh (port=$port)"
+
+  # shellcheck disable=SC2086
+  ssh $opts "$FR_DEPLOY_HOST" \
+    EXCHANGE="$exchange" BIND="$bind" PORT="$port" WS_PATH="$ws_path" \
+    ENV_SH="$remote_env_sh" \
+    'bash -s' <<'REMOTE_EOF'
+set -euo pipefail
+if [[ ! -f "$ENV_SH" ]]; then
+  : > "$ENV_SH"
+  chmod 600 "$ENV_SH"
+fi
+TMP="$(mktemp)"
+awk -v begin="# BEGIN managed: fr_signal_dashboard" \
+    -v end="# END managed: fr_signal_dashboard" \
+    -v exchange="$EXCHANGE" -v bind="$BIND" -v port="$PORT" -v ws_path="$WS_PATH" '
+  function emit() {
+    print begin
+    print "export FR_DASHBOARD_EXCHANGE=\"" exchange "\""
+    print "export FR_DASHBOARD_BIND=\"" bind "\""
+    print "export FR_DASHBOARD_PORT=\"" port "\""
+    print "export FR_DASHBOARD_WS_PATH=\"" ws_path "\""
+    print end
+  }
+  BEGIN { in_block = 0; replaced = 0 }
+  $0 == begin { in_block = 1; replaced = 1; next }
+  in_block && $0 == end { in_block = 0; emit(); next }
+  in_block { next }
+  { print }
+  END { if (!replaced) { print ""; emit() } }
+' "$ENV_SH" > "$TMP"
+mv "$TMP" "$ENV_SH"
+chmod 600 "$ENV_SH"
+echo "[remote] env.sh upserted; FR_DASHBOARD_PORT now:"
+grep -E "^export FR_DASHBOARD_" "$ENV_SH" || true
+REMOTE_EOF
+}
+
 fr_remote_apply_nginx() {
   local env_name="$1"
   local opts mapping_to_push rewritten_mapping
