@@ -140,10 +140,12 @@ fr_remote_upsert_dashboard_env_sh() {
 
   echo "[INFO] upsert fr_signal_dashboard block in $FR_DEPLOY_HOST:$remote_env_sh (port=$port)"
 
+  local remote_target_dir="$FR_REMOTE_HOME/$env_name"
+
   # shellcheck disable=SC2086
   ssh $opts "$FR_DEPLOY_HOST" \
     EXCHANGE="$exchange" BIND="$bind" PORT="$port" WS_PATH="$ws_path" \
-    ENV_SH="$remote_env_sh" \
+    ENV_SH="$remote_env_sh" TARGET_DIR="$remote_target_dir" \
     'bash -s' <<'REMOTE_EOF'
 set -euo pipefail
 if [[ ! -f "$ENV_SH" ]]; then
@@ -173,6 +175,13 @@ mv "$TMP" "$ENV_SH"
 chmod 600 "$ENV_SH"
 echo "[remote] env.sh upserted; FR_DASHBOARD_PORT now:"
 grep -E "^export FR_DASHBOARD_" "$ENV_SH" || true
+
+# Drop deprecated sidecar (rsync excludes env.sh but doesn't --delete other
+# files; without this, dashboard.env hangs around forever on the host).
+if [[ -f "$TARGET_DIR/dashboard.env" ]]; then
+  rm -f "$TARGET_DIR/dashboard.env"
+  echo "[remote] removed deprecated $TARGET_DIR/dashboard.env"
+fi
 REMOTE_EOF
 }
 
