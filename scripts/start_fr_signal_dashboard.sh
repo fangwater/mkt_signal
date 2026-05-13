@@ -2,24 +2,18 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "${SCRIPT_DIR}/dashboard.env" || -f "${SCRIPT_DIR}/fr_signal_dashboard" ]]; then
+if [[ -f "${SCRIPT_DIR}/env.sh" || -x "${SCRIPT_DIR}/fr_signal_dashboard" ]]; then
   BASE_DIR="${SCRIPT_DIR}"
 else
   BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 fi
 
-ENV_FILE_CANDIDATES=(
-  "${BASE_DIR}/dashboard.env"
-  "${BASE_DIR}/config/dashboard.env"
-)
-
-for env_file in "${ENV_FILE_CANDIDATES[@]}"; do
-  if [[ -f "$env_file" ]]; then
-    # shellcheck disable=SC1090
-    source "$env_file"
-    break
-  fi
-done
+if [[ ! -f "${BASE_DIR}/env.sh" ]]; then
+  echo "[ERROR] missing ${BASE_DIR}/env.sh (single source for BINANCE_API_* and FR_DASHBOARD_*)" >&2
+  exit 1
+fi
+# shellcheck disable=SC1091
+source "${BASE_DIR}/env.sh"
 
 BIN_CANDIDATES=(
   "${BASE_DIR}/fr_signal_dashboard"
@@ -40,16 +34,22 @@ if [[ -z "$BIN_PATH" ]]; then
   exit 1
 fi
 
+ENV_NAME="$(basename "${BASE_DIR}")"
+
 EXCHANGE="${FR_DASHBOARD_EXCHANGE:-${1:-}}"
 BIND="${FR_DASHBOARD_BIND:-0.0.0.0}"
-PORT="${FR_DASHBOARD_PORT:-6305}"
+PORT="${FR_DASHBOARD_PORT:-}"
 WS_PATH="${FR_DASHBOARD_WS_PATH:-/ws}"
-NAMESPACE="${PM2_NAMESPACE:-dashboard}"
-PROC_NAME="${PM2_NAME:-fr_signal_dashboard}"
+NAMESPACE="${ENV_NAME}"
+PROC_NAME="${ENV_NAME}_fr_signal_dashboard"
 RUST_LOG="${RUST_LOG:-info}"
 
 if [[ -z "$EXCHANGE" ]]; then
-  echo "[ERROR] missing exchange. Set FR_DASHBOARD_EXCHANGE in dashboard.env or pass it as the first arg." >&2
+  echo "[ERROR] missing FR_DASHBOARD_EXCHANGE (set it in env.sh, or pass as first arg)" >&2
+  exit 1
+fi
+if [[ -z "$PORT" ]]; then
+  echo "[ERROR] missing FR_DASHBOARD_PORT (set it in env.sh)" >&2
   exit 1
 fi
 

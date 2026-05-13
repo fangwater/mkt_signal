@@ -29,7 +29,7 @@ Notes:
   - fr_signal_dashboard port = viz-port + 1 (hardcoded convention,
     matched by deploy_fr_viz_server.sh nginx upsert).
   - PM2 namespace = env-name; proc_name = ${env_name}_fr_signal_dashboard.
-  - Generates dashboard.env for start_fr_signal_dashboard.sh consumption.
+  - Upserts FR_DASHBOARD_* managed block into env.sh (no separate dashboard.env).
   - --exchange optional; inferred from env-name prefix if omitted.
 EOF
 }
@@ -157,18 +157,40 @@ cp -f "${ROOT_DIR}/scripts/start_fr_signal_dashboard.sh" "${TARGET_DIR}/start_fr
 cp -f "${ROOT_DIR}/scripts/stop_fr_signal_dashboard.sh" "${TARGET_DIR}/stop_fr_signal_dashboard.sh"
 chmod +x "${TARGET_DIR}/start_fr_signal_dashboard.sh" "${TARGET_DIR}/stop_fr_signal_dashboard.sh"
 
-cat > "${TARGET_DIR}/dashboard.env" <<EOF
-FR_DASHBOARD_EXCHANGE=${EXCHANGE}
-FR_DASHBOARD_BIND=${BIND}
-FR_DASHBOARD_PORT=${PORT}
-FR_DASHBOARD_WS_PATH=${WS_PATH}
-PM2_NAMESPACE=${PM2_NS}
-PM2_NAME=${PM2_NAME}
-RUST_LOG=info
-EOF
+ENV_FILE="${TARGET_DIR}/env.sh"
+if [[ ! -f "${ENV_FILE}" ]]; then
+  echo "[ERROR] missing ${ENV_FILE}; deploy trade_signal first so env.sh exists with BINANCE_API_KEY/SECRET" >&2
+  exit 1
+fi
+
+BEGIN_MARKER="# BEGIN managed: fr_signal_dashboard"
+END_MARKER="# END managed: fr_signal_dashboard"
+TMP_FILE="$(mktemp)"
+awk -v begin="${BEGIN_MARKER}" -v end="${END_MARKER}" \
+    -v exchange="${EXCHANGE}" -v bind="${BIND}" -v port="${PORT}" -v ws_path="${WS_PATH}" '
+  function emit() {
+    print begin
+    print "export FR_DASHBOARD_EXCHANGE=\"" exchange "\""
+    print "export FR_DASHBOARD_BIND=\"" bind "\""
+    print "export FR_DASHBOARD_PORT=\"" port "\""
+    print "export FR_DASHBOARD_WS_PATH=\"" ws_path "\""
+    print end
+  }
+  BEGIN { in_block = 0; replaced = 0 }
+  $0 == begin { in_block = 1; replaced = 1; next }
+  in_block && $0 == end { in_block = 0; emit(); next }
+  in_block { next }
+  { print }
+  END { if (!replaced) { print ""; emit() } }
+' "${ENV_FILE}" > "${TMP_FILE}"
+mv "${TMP_FILE}" "${ENV_FILE}"
+chmod 600 "${ENV_FILE}"
+
+# Drop deprecated dashboard.env (config now lives in env.sh).
+rm -f "${TARGET_DIR}/dashboard.env"
 
 echo "[INFO] deployed ${BIN_NAME} to ${TARGET_DIR} (port=${PORT}, viz_port=${VIZ_PORT})"
-echo "[INFO] config: ${TARGET_DIR}/dashboard.env"
+echo "[INFO] config: ${ENV_FILE} (managed block: fr_signal_dashboard)"
 echo "[INFO] PM2: namespace=${PM2_NS} name=${PM2_NAME}"
 
 if [[ "$DO_START" -eq 1 ]]; then
