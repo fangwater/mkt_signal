@@ -26,8 +26,10 @@ Usage:
 
 Notes:
   - Per-env deploy under $HOME/<env-name>/, parallel to viz_server.
-  - fr_signal_dashboard port = viz-port + 1 (hardcoded convention,
-    matched by deploy_fr_viz_server.sh nginx upsert).
+  - fr_signal_dashboard port = viz-port + 10 (hardcoded convention,
+    matched by deploy_fr_viz_server.sh nginx upsert). The +10 offset
+    leaves room for densely-packed viz_ports (e.g. 20131..20140)
+    without colliding with the next env's dashboard.
   - PM2 namespace = env-name; proc_name = ${env_name}_fr_signal_dashboard.
   - Upserts FR_DASHBOARD_* managed block into env.sh (no separate dashboard.env).
   - --exchange optional; inferred from env-name prefix if omitted.
@@ -136,7 +138,7 @@ case "$EXCHANGE" in
 esac
 require_fr_env_name "$EXCHANGE" "$ENV_NAME"
 
-PORT=$((VIZ_PORT + 1))
+PORT=$((VIZ_PORT + 10))
 TARGET_DIR="${HOME}/${ENV_NAME}"
 PM2_NS="${ENV_NAME}"
 PM2_NAME="${ENV_NAME}_fr_signal_dashboard"

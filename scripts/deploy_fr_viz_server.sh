@@ -125,7 +125,7 @@ upsert_main_nginx_mapping() {
   local snapshot_location="${base_prefix}/snapshot"
   local fr_ws_location="${base_prefix}/fr_ws"
   local static_dir="${TARGET_DIR}/www/"
-  local fr_port=$((PORT + 1))
+  local fr_port=$((PORT + 10))
 
   begin_marker="# BEGIN managed: fr viz ${base_prefix}"
   end_marker="# END managed: fr viz ${base_prefix}"
@@ -463,7 +463,7 @@ if [[ "$DEPLOY_DASHBOARD" -eq 1 ]]; then
     DASHBOARD_ARGS+=( --scripts-only )
   fi
   echo ""
-  echo "[INFO] Deploying fr_signal_dashboard companion (port=$((PORT + 1)))"
+  echo "[INFO] Deploying fr_signal_dashboard companion (port=$((PORT + 10)))"
   "$DASHBOARD_SCRIPT" "${DASHBOARD_ARGS[@]}"
 fi
 
