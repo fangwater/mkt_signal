@@ -1,6 +1,8 @@
 # order_export: dash env names + remote binary sync — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+>
+> **No new Rust tests.** Per user preference, do not add `#[test]` cases for this change and do not run `cargo test` as part of the workflow. Validate via `cargo build --release` + `cargo clippy -- -D warnings` + a real-env smoke run. Existing tests in the file stay untouched.
 
 **Goal:** Extend `order_export` to accept dash-form env names (`binance-intra-arb01` etc.) and have `deploy_order_export.sh` push the built binary to the remote host alongside the local install.
 
@@ -16,59 +18,11 @@
 
 **Files:**
 - Modify: `src/bin/order_export.rs:239-281` (helpers + `validate_supported_env_name`)
-- Modify: `src/bin/order_export.rs:344-385` (existing `mod tests`)
+- **Do not** touch `mod tests` — no new test cases.
 
-### Step 1.1: Add failing tests for dash forms + mixed-separator rejection
+### Step 1.1: Replace `is_valid_env_suffix` with separator-aware helper
 
-- [ ] Open `src/bin/order_export.rs` and locate the `mod tests` block (around line 344). Append the four new tests below **after** the existing `validate_supported_env_name_rejects_other_patterns` test (which currently ends with `assert!(validate_supported_env_name("_cross_alpha").is_err());`):
-
-```rust
-    #[test]
-    fn validate_supported_env_name_accepts_dash_intra() {
-        assert!(validate_supported_env_name("binance-intra-arb01").is_ok());
-        assert!(validate_supported_env_name("okex-intra-arb01").is_ok());
-        assert!(validate_supported_env_name("gate-intra-arb01").is_ok());
-        assert!(validate_supported_env_name("bybit-intra-arb01").is_ok());
-        assert!(validate_supported_env_name("bitget-intra-arb01").is_ok());
-    }
-
-    #[test]
-    fn validate_supported_env_name_accepts_dash_mm_and_fr() {
-        assert!(validate_supported_env_name("binance-mm-alpha").is_ok());
-        assert!(validate_supported_env_name("binance-fr-trade01").is_ok());
-        assert!(validate_supported_env_name("okex-mm-hf01").is_ok());
-    }
-
-    #[test]
-    fn validate_supported_env_name_rejects_mixed_separators() {
-        assert!(validate_supported_env_name("binance_intra-arb01").is_err());
-        assert!(validate_supported_env_name("binance-intra_arb01").is_err());
-        assert!(validate_supported_env_name("okex-mm_alpha").is_err());
-    }
-
-    #[test]
-    fn validate_supported_env_name_rejects_dash_cross() {
-        // cross 仅允许下划线形式 (现网 cross env 全是下划线)
-        assert!(validate_supported_env_name("binance-okex-cross-trade01").is_err());
-    }
-```
-
-### Step 1.2: Run the new tests and verify they fail
-
-- [ ] Run:
-
-```bash
-cargo test --bin order_export validate_supported_env_name_accepts_dash_intra \
-  validate_supported_env_name_accepts_dash_mm_and_fr \
-  validate_supported_env_name_rejects_mixed_separators \
-  validate_supported_env_name_rejects_dash_cross
-```
-
-Expected: the two `accepts_dash_*` tests **FAIL** with `assertion failed: validate_supported_env_name("binance-intra-arb01").is_ok()` (or similar — current validator returns Err for dash forms). The two `rejects_*` tests should already PASS by accident (current validator also rejects them). That's fine — we still want them documented as guard tests.
-
-### Step 1.3: Refactor validator helpers
-
-- [ ] Replace `is_valid_env_suffix` (currently `src/bin/order_export.rs:239-244`) with a separator-aware version, keeping the old name as a thin wrapper for the unchanged `_cross_` branch:
+- [ ] Open `src/bin/order_export.rs`. Locate `is_valid_env_suffix` at line 239-244. Replace it with the two functions below (the old name remains as a thin wrapper so the unchanged `_cross_` branch still compiles):
 
 ```rust
 fn is_valid_env_suffix_for(suffix: &str, sep: char) -> bool {
@@ -85,11 +39,11 @@ fn is_valid_env_suffix(suffix: &str) -> bool {
 }
 ```
 
-Why: underscore mode keeps the original `[a-z0-9_-]` charset (so existing `okex_mm_beta-1`-style suffixes still pass); dash mode forbids `_` to prevent half-mixed `okex-intra-arb_01` writes from slipping through.
+Rationale: underscore mode keeps the original `[a-z0-9_-]` charset (so existing `okex_mm_beta-1`-style suffixes still pass); dash mode forbids `_` to prevent half-mixed `okex-intra-arb_01` writes from slipping through.
 
-### Step 1.4: Rewrite `validate_supported_env_name`
+### Step 1.2: Rewrite `validate_supported_env_name` with `TOKEN_GROUPS`
 
-- [ ] Replace the current function body (currently `src/bin/order_export.rs:262-281`) with:
+- [ ] Replace the current function body at `src/bin/order_export.rs:262-281` with the version below. Place the `const TOKEN_GROUPS` immediately above the function:
 
 ```rust
 const TOKEN_GROUPS: &[(char, [&str; 3])] = &[
@@ -121,49 +75,38 @@ fn validate_supported_env_name(env_name: &str) -> Result<()> {
 }
 ```
 
-Note the constant `TOKEN_GROUPS` is a module-level `const` placed **immediately above** the function (Rust allows `const` between function definitions). Place it right above `validate_supported_env_name`.
-
-### Step 1.5: Run full `order_export` test suite
-
-- [ ] Run:
-
-```bash
-cargo test --bin order_export
-```
-
-Expected: all tests PASS — both existing tests (around 12 tests including `validate_supported_env_name_accepts_mm_values`, `..._fr_values`, `..._intra_values`, `..._cross_values`, `..._rejects_other_patterns`, `utc_day_bounds_cover_full_day`, `export_window_*`, `parse_utc_datetime_*`) and the four new tests.
-
-If any **existing** test fails (e.g., `validate_supported_env_name_accepts_mm_values` with `okex_mm_beta-1`), trace whether `is_valid_env_suffix_for("alpha", '_')` / `("beta-1", '_')` correctly returns true. They should — `'-'` is always allowed.
-
-### Step 1.6: Run clippy + fmt to catch style issues
+### Step 1.3: Build + clippy + fmt
 
 - [ ] Run:
 
 ```bash
 cargo fmt --all
+cargo build --release --bin order_export
 cargo clippy --bin order_export -- -D warnings
 ```
 
-Expected: no output (or just whitespace fixups from fmt). Any clippy warning must be fixed before committing.
+Expected:
+- `fmt` produces no diff (or trivial whitespace adjustments).
+- `build --release` succeeds.
+- `clippy` reports no warnings.
 
-### Step 1.7: Smoke-test against a real dash env dir
+If clippy flags anything (e.g., unused `is_valid_env_suffix` because `_cross_` no longer routes through it — it should still, but double-check), fix inline.
 
-- [ ] Verify the change end-to-end. Build release and run from a dash-form intra env:
+### Step 1.4: Real-env smoke test
+
+- [ ] Verify the change end-to-end against a dash-form intra env:
 
 ```bash
-cargo build --release --bin order_export
 cd ~/okex-intra-arb01
 RUST_LOG=info /home/fanghaizhou/mkt_signal/target/release/order_export --date 2026-05-12 \
   --base-dir /home/fanghaizhou 2>&1 | head -20
 ```
 
-Expected behavior:
-- Validator no longer rejects the env_name (no "env_name must match ..." error).
-- The next failure point becomes `input_dir does not exist: ...` **only if** the env dir lacks `data/persist_manager/`. If `data/persist_manager` exists, you'll see `export env_name=okex-intra-arb01 window=2026-05-12 ...` and possibly RocksDB-open errors if the DB is held by a live `persist_manager` process. Either of those outcomes means the validator change is correct — we don't need a successful export for this task to pass.
+Expected: the validator no longer emits `env_name must match ...`. The next failure point becomes `input_dir does not exist: ...` (if `data/persist_manager` is absent) or a RocksDB-open error (if a live `persist_manager` holds the DB). Either outcome confirms the validator change is correct — a successful export is **not** required to pass this task.
 
-If you instead see "env_name must match ...", the validator regression is not fixed; recheck Step 1.4.
+If you see `env_name must match ...`, the validator regression is not fixed; recheck Step 1.2.
 
-### Step 1.8: Commit
+### Step 1.5: Commit
 
 - [ ] Stage and commit:
 
@@ -282,12 +225,12 @@ EOF
 Why these choices (recap from spec):
 - `fr_remote_init_ssh` (not `fr_remote_init`) — we don't need nginx staging, only the key + ssh probe.
 - Single-file rsync (not `fr_remote_sync_env_dir`) — that helper is directory-grained.
-- `--skip-local` check for local binary existence before pushing — prevents accidentally pushing a stale or missing file.
-- Failure semantics: any failed step exits non-zero; local install is **not** rolled back if remote push fails.
+- `--skip-local` path: check the local binary exists before pushing, so we don't silently push a missing file.
+- Failure: any failed step exits non-zero; local install is **not** rolled back if remote push fails.
 
 ### Step 2.2: Sanity-check via `bash -n`
 
-- [ ] Static-check the script doesn't have syntax errors:
+- [ ] Run:
 
 ```bash
 bash -n scripts/deploy_order_export.sh && echo OK
@@ -295,7 +238,7 @@ bash -n scripts/deploy_order_export.sh && echo OK
 
 Expected: `OK`.
 
-### Step 2.3: Help/usage smoke test
+### Step 2.3: Help/usage smoke
 
 - [ ] Run:
 
@@ -303,9 +246,9 @@ Expected: `OK`.
 bash scripts/deploy_order_export.sh --help
 ```
 
-Expected: usage text printed, exit 0, **no** cargo invocation, **no** ssh.
+Expected: usage text printed, exit 0, no cargo invocation, no ssh.
 
-### Step 2.4: `--skip-local --skip-remote` no-op smoke test
+### Step 2.4: `--skip-local --skip-remote` no-op smoke
 
 - [ ] Run:
 
@@ -323,7 +266,7 @@ Expected: prints `--skip-local: leaving ...`, `--skip-remote: not pushing to rem
 bash scripts/deploy_order_export.sh --skip-remote
 ```
 
-Expected: `cargo install` runs and overwrites `/home/fanghaizhou/order_export/bin/order_export`. The `[INFO] --skip-remote: not pushing to remote` line appears. No ssh attempted. Verify binary updated:
+Expected: `cargo install` runs and overwrites `/home/fanghaizhou/order_export/bin/order_export`. The `[INFO] --skip-remote: not pushing to remote` line appears. No ssh attempted. Verify binary mtime:
 
 ```bash
 ls -la /home/fanghaizhou/order_export/bin/order_export
@@ -364,7 +307,7 @@ If `fr_remote_init_ssh` fails with `missing ssh key`, the engineer must place `a
 bash scripts/deploy_order_export.sh
 ```
 
-Expected: both Step 2.5 and Step 2.6 happen in one shot. Exit 0. Both local and remote binaries are fresh.
+Expected: Step 2.5 and Step 2.6 happen in one shot. Exit 0. Both local and remote binaries are fresh.
 
 ### Step 2.8: Commit
 
@@ -391,27 +334,9 @@ Expected: commit succeeds, working tree clean.
 
 After both tasks are committed:
 
-- [ ] `cargo test --bin order_export` — all tests pass (existing + 4 new).
+- [ ] `cargo build --release --bin order_export` — compiles cleanly.
 - [ ] `cargo clippy --bin order_export -- -D warnings` — no warnings.
 - [ ] `cd ~/okex-intra-arb01 && ~/order_export/bin/order_export --date 2026-05-12` — no validator error (RocksDB-open errors or missing-input-dir errors are acceptable; the validator no longer rejects).
 - [ ] `bash scripts/deploy_order_export.sh --skip-remote` — exits 0, only local binary updated.
 - [ ] `bash scripts/deploy_order_export.sh --skip-local` — exits 0, only remote binary updated (verify via `ssh ... ls -la /home/ubuntu/order_export/bin/order_export`).
 - [ ] `bash scripts/deploy_order_export.sh` — full happy path: local + remote both updated.
-
----
-
-## Self-Review Notes
-
-**Spec coverage:**
-- Validator dash support (mm/fr/intra) → Task 1, Step 1.3-1.4.
-- Cross unchanged → Task 1, Step 1.4 (cross branch left as-is, plus regression test Step 1.1).
-- Same-separator-throughout enforcement → `is_valid_env_suffix_for` in Step 1.3, regression test in Step 1.1.
-- Deploy default = local + remote → Task 2, Step 2.1.
-- `--skip-local` / `--skip-remote` flags → Task 2, Step 2.1.
-- Failure: no local rollback → `set -euo pipefail` keeps it implicit; ordering puts remote after local.
-- Path: `/home/ubuntu/order_export/bin/order_export` → Task 2, `REMOTE_BIN_DIR="${FR_REMOTE_HOME}/order_export/bin"`.
-- Usage hints printed for both targets → Task 2, trailing `cat <<EOF`.
-
-**Placeholder scan:** no `TBD` / `TODO` / "add validation here"; every code step has full code.
-
-**Type/name consistency:** `TOKEN_GROUPS`, `is_valid_env_suffix_for`, `OPTS`, `REMOTE_BIN_DIR`, `LOCAL_BIN`, `FR_DEPLOY_HOST`, `FR_REMOTE_HOME`, `FR_DEPLOY_KEY` — all used consistently across steps.

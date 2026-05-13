@@ -125,40 +125,16 @@ print usage hints for both local and remote
 [INFO] remote: ssh -i $FR_DEPLOY_KEY $FR_DEPLOY_HOST '/home/ubuntu/order_export/bin/order_export --date YYYY-MM-DD'
 ```
 
-### 3. 单测增量
+### 3. 不新增单测
 
-在 `src/bin/order_export.rs` 的 `mod tests`:
+按用户偏好,Rust 改动不写新 `#[test]`,也不把 `cargo test` 列为 deploy/CI 必过项。
 
-```rust
-#[test]
-fn validate_supported_env_name_accepts_dash_intra() {
-    assert!(validate_supported_env_name("binance-intra-arb01").is_ok());
-    assert!(validate_supported_env_name("okex-intra-arb01").is_ok());
-    assert!(validate_supported_env_name("gate-intra-arb01").is_ok());
-    assert!(validate_supported_env_name("bybit-intra-arb01").is_ok());
-    assert!(validate_supported_env_name("bitget-intra-arb01").is_ok());
-}
+验证手段:
+- `cargo build --release --bin order_export` 通过。
+- `cargo clippy --bin order_export -- -D warnings` 无 warning。
+- 真实 env 跑一次: `cd ~/okex-intra-arb01 && ~/order_export/bin/order_export --date <date>` 不再被 validator 拒。
 
-#[test]
-fn validate_supported_env_name_accepts_dash_mm_and_fr() {
-    assert!(validate_supported_env_name("binance-mm-alpha").is_ok());
-    assert!(validate_supported_env_name("binance-fr-trade01").is_ok());
-}
-
-#[test]
-fn validate_supported_env_name_rejects_mixed_separators() {
-    assert!(validate_supported_env_name("binance_intra-arb01").is_err());
-    assert!(validate_supported_env_name("binance-intra_arb01").is_err());
-}
-
-#[test]
-fn validate_supported_env_name_rejects_dash_cross() {
-    // cross 只允许下划线形式
-    assert!(validate_supported_env_name("binance-okex-cross-trade01").is_err());
-}
-```
-
-现有测试不动,所有原 case 仍然通过。
+`mod tests` 里既有的 `validate_supported_env_name_*` / `export_window_*` / `parse_utc_datetime_*` 等老测试**保留不动**,出问题时再单独跑。
 
 ## 风险与回滚
 
@@ -168,7 +144,7 @@ fn validate_supported_env_name_rejects_dash_cross() {
 
 ## 验收
 
-- `cargo test --bin order_export` 全部新旧 case 通过。
+- `cargo build --release --bin order_export` 通过、`cargo clippy -- -D warnings` 无 warning。
 - 在 `~/okex-intra-arb01` 下跑 `~/order_export/bin/order_export --date 2026-05-12`,不再被 validator 拒。
 - `bash scripts/deploy_order_export.sh` 本地装好,且远端 `/home/ubuntu/order_export/bin/order_export` 出现(`ls -l` 时间戳是新的)。
 - `bash scripts/deploy_order_export.sh --skip-remote` 不发起 ssh,只装本地。
