@@ -236,11 +236,17 @@ fn resolve_env_name(value: Option<String>) -> Result<String> {
     Ok(name.to_ascii_lowercase())
 }
 
-fn is_valid_env_suffix(suffix: &str) -> bool {
+fn is_valid_env_suffix_for(suffix: &str, sep: char) -> bool {
     !suffix.is_empty()
-        && suffix
-            .chars()
-            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' || ch == '-')
+        && suffix.chars().all(|ch| match ch {
+            'a'..='z' | '0'..='9' | '-' => true,
+            '_' => sep == '_',
+            _ => false,
+        })
+}
+
+fn is_valid_env_suffix(suffix: &str) -> bool {
+    is_valid_env_suffix_for(suffix, '_')
 }
 
 fn is_valid_exchange_name(exchange: &str) -> bool {
@@ -259,11 +265,18 @@ fn is_valid_exchange_pair_name(exchange_pair: &str) -> bool {
             .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
 }
 
+const TOKEN_GROUPS: &[(char, [&str; 3])] = &[
+    ('_', ["_mm_", "_fr_", "_intra_"]),
+    ('-', ["-mm-", "-fr-", "-intra-"]),
+];
+
 fn validate_supported_env_name(env_name: &str) -> Result<()> {
-    for token in ["_mm_", "_fr_", "_intra_"] {
-        if let Some((exchange, suffix)) = env_name.split_once(token) {
-            if is_valid_exchange_name(exchange) && is_valid_env_suffix(suffix) {
-                return Ok(());
+    for (sep, tokens) in TOKEN_GROUPS {
+        for token in tokens {
+            if let Some((exchange, suffix)) = env_name.split_once(*token) {
+                if is_valid_exchange_name(exchange) && is_valid_env_suffix_for(suffix, *sep) {
+                    return Ok(());
+                }
             }
         }
     }
@@ -275,7 +288,7 @@ fn validate_supported_env_name(env_name: &str) -> Result<()> {
     }
 
     Err(anyhow!(
-        "env_name must match <exchange>_<mm|fr|intra>_<suffix> or <open_ex>-<hedge_ex>_cross_<suffix> (got: {})",
+        "env_name must match <exchange>{{_|-}}<mm|fr|intra>{{_|-}}<suffix> or <open_ex>-<hedge_ex>_cross_<suffix> (got: {})",
         env_name
     ))
 }
