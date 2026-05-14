@@ -780,25 +780,12 @@ fn log_shell_runtime_ready(source: &str) {
 
 pub fn funding_open_inputs_ready(hedge_symbol: &str, hedge_venue: TradingVenue) -> bool {
     let rate_fetcher = RateFetcher::instance();
-    let loan_required = matches!(
-        hedge_venue,
-        TradingVenue::BinanceMargin
-            | TradingVenue::BinanceFutures
-            | TradingVenue::OkexMargin
-            | TradingVenue::OkexFutures
-            | TradingVenue::GateMargin
-            | TradingVenue::GateFutures
-    );
     let has_predict_fr = rate_fetcher
         .get_predicted_funding_rate(hedge_symbol, hedge_venue)
         .is_some();
-    let has_predict_loan = if loan_required {
-        rate_fetcher
-            .get_predict_loan_rate(hedge_symbol, hedge_venue)
-            .is_some()
-    } else {
-        true
-    };
+    let has_predict_loan = rate_fetcher
+        .get_predict_loan_rate(hedge_symbol, hedge_venue)
+        .is_some();
     has_predict_fr && has_predict_loan
 }
 
@@ -821,7 +808,6 @@ pub fn evaluate_funding_mode_signal(
     hedge_venue: TradingVenue,
     in_dump: bool,
     rate_ready: bool,
-    open_inputs_ready: bool,
 ) -> Result<Option<ArbSignalKind>> {
     let spread_close_signal = || {
         ArbDecisionState::evaluate_close_side(
@@ -852,36 +838,14 @@ pub fn evaluate_funding_mode_signal(
     }
 
     if !rate_ready {
-        let signal = spread_close_signal();
-        if let Some(signal) = signal {
-            log::debug!(
-                "ArbDecision funding mode rate not ready, allow spread-close open={} hedge={} open_venue={:?} hedge_venue={:?}",
-                open_symbol_key,
-                hedge_symbol_key,
-                open_venue,
-                hedge_venue
-            );
-            return Ok(Some(signal));
-        }
-
-        if !open_inputs_ready {
-            log::debug!(
-                "ArbDecision funding mode rate not ready and open inputs incomplete, no spread-close signal open={} hedge={} open_venue={:?} hedge_venue={:?}",
-                open_symbol_key,
-                hedge_symbol_key,
-                open_venue,
-                hedge_venue
-            );
-            return Ok(None);
-        }
-
         log::debug!(
-            "ArbDecision funding mode rate not fully ready, but symbol open inputs are ready; run full funding decision open={} hedge={} open_venue={:?} hedge_venue={:?}",
+            "ArbDecision funding mode rate not fully ready, suppress non-dump signal open={} hedge={} open_venue={:?} hedge_venue={:?}",
             open_symbol_key,
             hedge_symbol_key,
             open_venue,
             hedge_venue
         );
+        return Ok(None);
     }
     evaluate_funding_signal(hedge_venue_symbol, hedge_venue)
 }
@@ -1051,7 +1015,6 @@ fn drive_funding_decision(
         hedge_venue,
         in_dump,
         rate_ready,
-        open_inputs_ready,
     )?;
 
     // FR 阈值判定结果细分：summary 里区分出哪条信号被触发、还是全 miss。
@@ -4870,6 +4833,86 @@ impl ArbDecision {
                 }
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod funding_mode_signal_tests {
+    use super::*;
+    use crate::funding_rate::common::FactorMode;
+    use crate::funding_rate::spread_factor::SpreadFactor;
+
+    fn setup_spread_factor_with_forward_close(symbol: &str) -> &'static SpreadFactor {
+        let spread_factor = SpreadFactor::instance();
+        spread_factor.clear_thresholds();
+        spread_factor.set_mode(FactorMode::MM);
+        spread_factor.set_backward_open_threshold(
+            TradingVenue::BitgetMargin,
+            symbol,
+            TradingVenue::BitgetFutures,
+            symbol,
+            0.0001,
+            0.0001,
+        );
+        let _ = spread_factor.update(
+            TradingVenue::BitgetMargin,
+            symbol,
+            TradingVenue::BitgetFutures,
+            symbol,
+            100.0,
+            100.0,
+            99.95,
+            99.95,
+        );
+        assert!(ArbDecisionState::evaluate_close_side(
+            &spread_factor,
+            symbol,
+            symbol,
+            TradingVenue::BitgetMargin,
+            TradingVenue::BitgetFutures,
+        )
+        .is_some());
+        spread_factor
+    }
+
+    #[test]
+    fn dump_symbol_allows_spread_close_without_rate_inputs() {
+        let symbol = "UNITDUMPUSDT";
+        let spread_factor = setup_spread_factor_with_forward_close(symbol);
+
+        let signal = evaluate_funding_mode_signal(
+            &spread_factor,
+            symbol,
+            symbol,
+            symbol,
+            TradingVenue::BitgetMargin,
+            TradingVenue::BitgetFutures,
+            true,
+            false,
+        )
+        .expect("mode signal");
+
+        assert_eq!(signal, Some(ArbSignalKind::ForwardClose));
+    }
+
+    #[test]
+    fn non_dump_symbol_suppresses_spread_close_until_rate_inputs_ready() {
+        let symbol = "UNITNONDUMPUSDT";
+        let spread_factor = setup_spread_factor_with_forward_close(symbol);
+
+        let signal = evaluate_funding_mode_signal(
+            &spread_factor,
+            symbol,
+            symbol,
+            symbol,
+            TradingVenue::BitgetMargin,
+            TradingVenue::BitgetFutures,
+            false,
+            false,
+        )
+        .expect("mode signal");
+
+        assert_eq!(signal, None);
     }
 }
 
