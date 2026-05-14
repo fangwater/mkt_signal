@@ -220,10 +220,12 @@ impl GateAccountEventParser {
                 None => None,
             };
 
-            let wallet = if let Some(wallet) = parse_f64_str_or_num(details.get("b")) {
-                Some(wallet)
-            } else if let Some(equity) = parse_f64_str_or_num(details.get("e")) {
+            // 下游以 gross wallet - borrowed - interest 计算净头寸；Gate unified 的
+            // raw balance(b) 在 USDT 上可能不是 equity + liability，优先用 e+tl 保持净值口径。
+            let wallet = if let Some(equity) = parse_f64_str_or_num(details.get("e")) {
                 Some(equity + total_liab.unwrap_or(0.0))
+            } else if let Some(wallet) = parse_f64_str_or_num(details.get("b")) {
+                Some(wallet)
             } else {
                 warn!(
                     "Gate: unified.asset_detail missing/invalid wallet/equity for symbol={}",
@@ -1353,9 +1355,11 @@ mod tests {
         BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
         GateBasicOrderMsg,
     };
+    use crate::common::exchange::Exchange;
+    use crate::pre_trade::usdt_balance_manager::UsdtBalanceManager;
 
     #[test]
-    fn unified_asset_detail_uses_gross_wallet_field() {
+    fn unified_asset_detail_prefers_equity_plus_liability_over_raw_balance() {
         let parser = GateAccountEventParser::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
         let payload = Bytes::from_static(
@@ -1390,7 +1394,7 @@ mod tests {
         assert_eq!(scope, BasicAccountScope::GateUnified);
         let balance = BasicBalanceMsg::from_bytes(body).expect("balance body");
         assert_eq!(balance.symbol, "USDT");
-        assert!((balance.wallet + 53.2047041).abs() < 1e-9);
+        assert!((balance.wallet - 2_083.22864721).abs() < 1e-9);
 
         let wrapped_borrow = rx.try_recv().expect("borrow event");
         let (event_type, scope, body) =
@@ -1400,6 +1404,52 @@ mod tests {
         let borrow = BasicBorrowInterestMsg::from_bytes(body).expect("borrow body");
         assert_eq!(borrow.symbol, "USDT");
         assert!((borrow.borrowed - 3112.250826).abs() < 1e-12);
+    }
+
+    #[test]
+    fn gate_usdt_asset_detail_net_position_matches_equity() {
+        let parser = GateAccountEventParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let payload = Bytes::from_static(
+            br#"{
+                "time": 1775532902,
+                "time_ms": 1775532902286,
+                "channel": "unified.asset_detail",
+                "event": "update",
+                "result": {
+                    "u": 46586604,
+                    "t": 1775532902,
+                    "dts": {
+                        "USDT": {
+                            "e": "102126.004737962706",
+                            "tl": "1509.291784781151",
+                            "b": "103635.296522743857"
+                        }
+                    }
+                }
+            }"#,
+        );
+
+        let count = parser.parse(payload, &tx);
+        assert_eq!(count, 2);
+
+        let mut usdt_mgr = UsdtBalanceManager::new(Exchange::Gate);
+        let wrapped_balance = rx.try_recv().expect("balance event");
+        let (event_type, _, body) =
+            split_basic_account_event(&wrapped_balance).expect("wrapped balance");
+        assert_eq!(event_type, BasicAccountEventType::BalanceUpdate);
+        let balance = BasicBalanceMsg::from_bytes(body).expect("balance body");
+        usdt_mgr.apply_balance(&balance);
+
+        let wrapped_borrow = rx.try_recv().expect("borrow event");
+        let (event_type, _, body) =
+            split_basic_account_event(&wrapped_borrow).expect("wrapped borrow");
+        assert_eq!(event_type, BasicAccountEventType::BorrowInterest);
+        let borrow = BasicBorrowInterestMsg::from_bytes(body).expect("borrow body");
+        usdt_mgr.apply_borrow_interest(&borrow);
+
+        assert!((balance.wallet - 103_635.296522743857).abs() < 1e-9);
+        assert!((usdt_mgr.net_usdt_position() - 102_126.004737962706).abs() < 1e-9);
     }
 
     #[test]
