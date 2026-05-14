@@ -3,6 +3,7 @@ use crate::common::tick_math::QuantizedValue;
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::Side;
+use crate::signal::common::TradingVenue;
 use crate::signal::trade_signal::TradeSignal;
 use crate::strategy::arb_hedge_strategy::{ArbHedgeSnapshot, ArbHedgeStrategy};
 use crate::strategy::arb_open_strategy::ArbOpenStrategy;
@@ -148,37 +149,6 @@ pub trait OrderTerminalRecorder {
         close_ts: i64,
         open_client_order_id: i64,
     ) -> bool;
-
-    fn record_close_order_terminal(
-        &mut self,
-        terminal_ts: i64,
-        side: Side,
-        order_base_qty: f64,
-        filled_base_qty: f64,
-        price: f64,
-        close_ts: i64,
-        open_client_order_id: i64,
-    ) -> bool {
-        self.record_open_order_terminal(
-            terminal_ts,
-            side,
-            order_base_qty,
-            filled_base_qty,
-            price,
-            close_ts,
-            open_client_order_id,
-        )
-    }
-
-    fn record_hedge_only_close_pending(
-        &mut self,
-        _terminal_ts: i64,
-        _close_side: Side,
-        _target_base_qty: f64,
-        _price: f64,
-    ) -> bool {
-        false
-    }
 
     fn record_hedge_order_terminal(
         &mut self,
@@ -781,6 +751,27 @@ impl StrategyManager {
         strategy_id
     }
 
+    fn ensure_empty_arb_hedge_strategy(
+        &mut self,
+        symbol: &str,
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
+    ) -> i32 {
+        let symbol_upper = normalize_symbol_for_internal(symbol);
+        if let Some(id) = self.find_arb_hedge_id(&symbol_upper) {
+            return id;
+        }
+        let strategy_id = StrategyManager::generate_strategy_id();
+        let strategy =
+            ArbHedgeStrategy::new(strategy_id, symbol_upper.clone(), open_venue, hedge_venue);
+        info!(
+            "ArbHedge startup init: symbol={} open_venue={:?} hedge_venue={:?} create empty hedge state before stable net pending",
+            symbol_upper, open_venue, hedge_venue
+        );
+        self.insert(Box::new(strategy));
+        strategy_id
+    }
+
     fn find_order_terminal_recorder_id(&self, symbol: &str) -> Option<i32> {
         let symbol_upper = normalize_symbol_for_internal(symbol);
         let ids = self.symbol_index.get(&symbol_upper)?;
@@ -829,55 +820,23 @@ impl StrategyManager {
         )
     }
 
-    pub fn record_close_order_terminal(
+    pub fn put_arb_startup_stable_net_pending(
         &mut self,
         symbol: &str,
-        side: Side,
-        order_base_qty: f64,
-        filled_base_qty: f64,
+        signed_base_qty: f64,
         terminal_ts: i64,
         price: f64,
-        close_ts: i64,
-        open_client_order_id: i64,
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
     ) -> bool {
-        let Some(id) = self.find_order_terminal_recorder_id(symbol) else {
+        let strategy_id = self.ensure_empty_arb_hedge_strategy(symbol, open_venue, hedge_venue);
+        let Some(strategy) = self.strategies.get_mut(&strategy_id) else {
             return false;
         };
-        let Some(strategy) = self.strategies.get_mut(&id) else {
+        let Some(arb_hedge) = strategy.as_any_mut().downcast_mut::<ArbHedgeStrategy>() else {
             return false;
         };
-        let Some(recorder) = strategy.order_terminal_recorder_mut() else {
-            return false;
-        };
-        recorder.record_close_order_terminal(
-            terminal_ts,
-            side,
-            order_base_qty,
-            filled_base_qty,
-            price,
-            close_ts,
-            open_client_order_id,
-        )
-    }
-
-    pub fn record_hedge_only_close_pending(
-        &mut self,
-        symbol: &str,
-        close_side: Side,
-        target_base_qty: f64,
-        terminal_ts: i64,
-        price: f64,
-    ) -> bool {
-        let Some(id) = self.find_order_terminal_recorder_id(symbol) else {
-            return false;
-        };
-        let Some(strategy) = self.strategies.get_mut(&id) else {
-            return false;
-        };
-        let Some(recorder) = strategy.order_terminal_recorder_mut() else {
-            return false;
-        };
-        recorder.record_hedge_only_close_pending(terminal_ts, close_side, target_base_qty, price)
+        arb_hedge.put_startup_stable_net_pending(terminal_ts, signed_base_qty, price)
     }
 
     pub fn record_hedge_order_terminal(

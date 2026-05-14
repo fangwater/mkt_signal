@@ -1210,16 +1210,28 @@ impl TradeEngine {
                                             if outcome.status == 200 =>
                                         {
                                             if let Some(msgs) = parse_binance_um_account_snapshot(&outcome.body) {
-                                                for payload in msgs {
+                                                if msgs.is_empty() {
                                                     let _ = query_resp_tx.send(QueryExecOutcome {
                                                         req_type: msg.req_type,
                                                         client_query_id: msg.client_query_id,
                                                         status: outcome.status,
-                                                        body: payload,
+                                                        body: bytes::Bytes::new(),
                                                         exchange: exchange_copy,
                                                         ip_used_weight_1m: outcome.ip_used_weight_1m,
                                                         query_count_1m: outcome.order_count_1m,
                                                     });
+                                                } else {
+                                                    for payload in msgs {
+                                                        let _ = query_resp_tx.send(QueryExecOutcome {
+                                                            req_type: msg.req_type,
+                                                            client_query_id: msg.client_query_id,
+                                                            status: outcome.status,
+                                                            body: payload,
+                                                            exchange: exchange_copy,
+                                                            ip_used_weight_1m: outcome.ip_used_weight_1m,
+                                                            query_count_1m: outcome.order_count_1m,
+                                                        });
+                                                    }
                                                 }
                                             }
                                         }
@@ -1227,16 +1239,28 @@ impl TradeEngine {
                                             if outcome.status == 200 =>
                                         {
                                             if let Some(msgs) = parse_binance_um_account_snapshot(&outcome.body) {
-                                                for payload in msgs {
+                                                if msgs.is_empty() {
                                                     let _ = query_resp_tx.send(QueryExecOutcome {
                                                         req_type: msg.req_type,
                                                         client_query_id: msg.client_query_id,
                                                         status: outcome.status,
-                                                        body: payload,
+                                                        body: bytes::Bytes::new(),
                                                         exchange: exchange_copy,
                                                         ip_used_weight_1m: outcome.ip_used_weight_1m,
                                                         query_count_1m: outcome.order_count_1m,
                                                     });
+                                                } else {
+                                                    for payload in msgs {
+                                                        let _ = query_resp_tx.send(QueryExecOutcome {
+                                                            req_type: msg.req_type,
+                                                            client_query_id: msg.client_query_id,
+                                                            status: outcome.status,
+                                                            body: payload,
+                                                            exchange: exchange_copy,
+                                                            ip_used_weight_1m: outcome.ip_used_weight_1m,
+                                                            query_count_1m: outcome.order_count_1m,
+                                                        });
+                                                    }
                                                 }
                                             }
                                         }
@@ -1651,6 +1675,7 @@ impl TradeEngine {
                                                         parsed.rows_with_nonzero_size,
                                                         parsed.rows_with_pnl
                                                     );
+                                                    bytes::Bytes::new()
                                                 } else {
                                                     warn!(
                                                         "gate positions snapshot parse produced no basic msgs; rows_total={}, rows_with_inst={}, rows_nonzero_size={}, rows_with_pnl={}",
@@ -1659,14 +1684,15 @@ impl TradeEngine {
                                                         parsed.rows_with_nonzero_size,
                                                         parsed.rows_with_pnl
                                                     );
+                                                    bytes::Bytes::from_static(b"E")
                                                 }
                                             } else {
                                                 warn!(
                                                     "gate positions snapshot parse failed; body_len={}",
                                                     body.len()
                                                 );
+                                                bytes::Bytes::from_static(b"E")
                                             }
-                                            bytes::Bytes::new()
                                         }
                                         _ => bytes::Bytes::from(body),
                                     };
@@ -1806,9 +1832,19 @@ impl TradeEngine {
                                         crate::trade_engine::query_request::QueryRequestType::BybitPositionsSnapshot
                                             if status == 200 =>
                                         {
-                                            if let Some(msgs) = parse_bybit_positions_snapshot(&body)
+                                            if let Some(msgs) =
+                                                parse_bybit_positions_snapshot(&body)
                                             {
-                                                if !msgs.is_empty() {
+                                                if msgs.is_empty() {
+                                                    debug!(
+                                                        "trade_engine bybit positions snapshot returned empty list req_type={:?} client_query_id={} status={} {}",
+                                                        msg.req_type,
+                                                        msg.client_query_id,
+                                                        status,
+                                                        bybit_summary
+                                                    );
+                                                    bytes::Bytes::new()
+                                                } else {
                                                     for payload in msgs {
                                                         let _ = query_resp_tx.send(QueryExecOutcome {
                                                             req_type: msg.req_type,
@@ -1822,16 +1858,17 @@ impl TradeEngine {
                                                     }
                                                     continue;
                                                 }
+                                            } else {
+                                                debug!(
+                                                    "trade_engine bybit positions snapshot parse produced no basic msgs req_type={:?} client_query_id={} status={} {} body={}",
+                                                    msg.req_type,
+                                                    msg.client_query_id,
+                                                    status,
+                                                    bybit_summary,
+                                                    truncate_for_log(&body, 512)
+                                                );
+                                                bytes::Bytes::from_static(b"E")
                                             }
-                                            debug!(
-                                                "trade_engine bybit positions snapshot parse produced no basic msgs req_type={:?} client_query_id={} status={} {} body={}",
-                                                msg.req_type,
-                                                msg.client_query_id,
-                                                status,
-                                                bybit_summary,
-                                                truncate_for_log(&body, 512)
-                                            );
-                                            bytes::Bytes::new()
                                         }
                                         _ => bytes::Bytes::from(body),
                                     };
@@ -1994,7 +2031,7 @@ impl TradeEngine {
                                                     "bitget positions snapshot parse failed; body={}",
                                                     truncate_for_log(&body, 512)
                                                 );
-                                                bytes::Bytes::new()
+                                                bytes::Bytes::from_static(b"E")
                                             }
                                         }
                                         _ => bytes::Bytes::from(body),

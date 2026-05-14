@@ -1294,6 +1294,19 @@ impl Order {
                 // 余额判断：记录余额不足场景。STANDARD 模式走 spot ws-api，不传 sideEffectType。
                 if available_balance < required_amount {
                     let borrow_amount = required_amount - available_balance;
+                    if self.reduce_only {
+                        return Err(format!(
+                            "reduce-only BinanceMargin order has insufficient balance: asset={} required={:.8} available={:.8} borrow={:.8} symbol={} side={:?} qty={} price={}",
+                            check_asset,
+                            required_amount,
+                            available_balance,
+                            borrow_amount,
+                            self.symbol,
+                            self.side,
+                            format_order_quantity(self.quantity),
+                            format_order_price(self.price)
+                        ));
+                    }
                     if !(use_binance_ws_margin && self.side == Side::Sell) {
                         warn!(
                             "💰 余额不足将借币: 资产={} 需要={:.8} 可用={:.8} 需借={:.8} symbol={} side={:?} qty={} price={}",

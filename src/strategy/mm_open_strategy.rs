@@ -48,6 +48,7 @@ impl MarketMakerOpenStrategy {
             price_qv: ctx.price_qv,
             price_offset: ctx.price_offset,
             reduce_only: false,
+            client_order_id: None,
             close_ts: 0,
             mkt_ts: ctx.opening_leg.ts,
         });

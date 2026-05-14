@@ -295,10 +295,13 @@ impl QueryEngChannel {
                                     | 7102
                                     | 8101
                                     | 8102
+                                    | 9101
+                                    | 9102
                                     | 9203
                                     | 9204
                             ) {
                                 let body = resp.body_bytes().as_ref();
+                                let body_is_empty = body.iter().all(|b| *b == 0);
                                 let event_type = get_basic_event_type(body);
 
                                 // Apply into MonitorChannel managers (same semantics as account_pubs basic stream).
@@ -315,90 +318,41 @@ impl QueryEngChannel {
                                     mc.order_manager().borrow().binance_is_standard();
                                 if matches!(
                                     req_type,
-                                    Some(QueryRequestType::BybitPositionsSnapshot)
-                                ) && resp.body_bytes().is_empty()
+                                    Some(
+                                        QueryRequestType::BinanceUmAccountSnapshot
+                                            | QueryRequestType::BinanceUmAccountSnapshotStd
+                                            | QueryRequestType::OkexPositionsSnapshot
+                                            | QueryRequestType::GateUnifiedPositionsSnapshot
+                                            | QueryRequestType::BybitPositionsSnapshot
+                                            | QueryRequestType::BitgetPositionsSnapshot
+                                    )
+                                ) && body_is_empty
                                 {
                                     let mut cleared = false;
-                                    if matches!(open_venue, TradingVenue::BybitFutures)
-                                        && exchange_enum == open_exchange
-                                    {
+                                    if open_venue.is_futures() && exchange_enum == open_exchange {
                                         if let Some((um, _)) = mc.open_um_mgr() {
                                             um.borrow_mut().clear();
                                             cleared = true;
+                                            mc.mark_arb_startup_net_seen_for_venue(
+                                                open_venue,
+                                                "query_positions_empty",
+                                            );
                                         }
                                     }
-                                    if matches!(hedge_venue, TradingVenue::BybitFutures)
-                                        && exchange_enum == hedge_exchange
-                                    {
+                                    if hedge_venue.is_futures() && exchange_enum == hedge_exchange {
                                         if let Some((um, _)) = mc.hedge_um_mgr() {
                                             um.borrow_mut().clear();
                                             cleared = true;
+                                            mc.mark_arb_startup_net_seen_for_venue(
+                                                hedge_venue,
+                                                "query_positions_empty",
+                                            );
                                         }
                                     }
                                     if cleared {
                                         info!(
-                                            "Bybit positions snapshot returned empty list; cleared pre_trade UM state (exchange={})",
-                                            exchange
-                                        );
-                                    }
-                                    continue;
-                                }
-                                if matches!(
-                                    req_type,
-                                    Some(QueryRequestType::GateUnifiedPositionsSnapshot)
-                                ) && resp.body_bytes().is_empty()
-                                {
-                                    let mut cleared = false;
-                                    if matches!(open_venue, TradingVenue::GateFutures)
-                                        && exchange_enum == open_exchange
-                                    {
-                                        if let Some((um, _)) = mc.open_um_mgr() {
-                                            um.borrow_mut().clear();
-                                            cleared = true;
-                                        }
-                                    }
-                                    if matches!(hedge_venue, TradingVenue::GateFutures)
-                                        && exchange_enum == hedge_exchange
-                                    {
-                                        if let Some((um, _)) = mc.hedge_um_mgr() {
-                                            um.borrow_mut().clear();
-                                            cleared = true;
-                                        }
-                                    }
-                                    if cleared {
-                                        info!(
-                                            "Gate positions snapshot returned empty list; cleared pre_trade UM state (exchange={})",
-                                            exchange
-                                        );
-                                    }
-                                    continue;
-                                }
-                                if matches!(
-                                    req_type,
-                                    Some(QueryRequestType::BitgetPositionsSnapshot)
-                                ) && resp.body_bytes().is_empty()
-                                {
-                                    let mut cleared = false;
-                                    if matches!(open_venue, TradingVenue::BitgetFutures)
-                                        && exchange_enum == open_exchange
-                                    {
-                                        if let Some((um, _)) = mc.open_um_mgr() {
-                                            um.borrow_mut().clear();
-                                            cleared = true;
-                                        }
-                                    }
-                                    if matches!(hedge_venue, TradingVenue::BitgetFutures)
-                                        && exchange_enum == hedge_exchange
-                                    {
-                                        if let Some((um, _)) = mc.hedge_um_mgr() {
-                                            um.borrow_mut().clear();
-                                            cleared = true;
-                                        }
-                                    }
-                                    if cleared {
-                                        info!(
-                                            "Bitget positions snapshot returned empty list; cleared pre_trade UM state (exchange={})",
-                                            exchange
+                                            "positions snapshot returned empty list; cleared pre_trade UM state exchange={} req_type={:?}",
+                                            exchange, req_type
                                         );
                                     }
                                     continue;
@@ -496,12 +450,17 @@ impl QueryEngChannel {
                                                     | TradingVenue::OkexMargin
                                                     | TradingVenue::GateMargin
                                                     | TradingVenue::BitgetMargin
+                                                    | TradingVenue::BybitMargin
                                             ) && exchange_enum == open_exchange
                                                 && scope_matches_venue(account_scope, open_venue)
                                             {
                                                 if let Some(bal) = mc.open_balance_mgr() {
                                                     bal.borrow_mut().apply_balance(&m);
                                                     applied = true;
+                                                    mc.mark_arb_startup_net_seen_for_venue(
+                                                        open_venue,
+                                                        "query_balance",
+                                                    );
                                                 }
                                             }
                                             if matches!(
@@ -510,12 +469,17 @@ impl QueryEngChannel {
                                                     | TradingVenue::OkexMargin
                                                     | TradingVenue::GateMargin
                                                     | TradingVenue::BitgetMargin
+                                                    | TradingVenue::BybitMargin
                                             ) && exchange_enum == hedge_exchange
                                                 && scope_matches_venue(account_scope, hedge_venue)
                                             {
                                                 if let Some(bal) = mc.hedge_balance_mgr() {
                                                     bal.borrow_mut().apply_balance(&m);
                                                     applied = true;
+                                                    mc.mark_arb_startup_net_seen_for_venue(
+                                                        hedge_venue,
+                                                        "query_balance",
+                                                    );
                                                 }
                                             }
                                             let _ = applied;
@@ -536,12 +500,17 @@ impl QueryEngChannel {
                                                     | TradingVenue::OkexMargin
                                                     | TradingVenue::GateMargin
                                                     | TradingVenue::BitgetMargin
+                                                    | TradingVenue::BybitMargin
                                             ) && exchange_enum == open_exchange
                                                 && scope_matches_venue(account_scope, open_venue)
                                             {
                                                 if let Some(bal) = mc.open_balance_mgr() {
                                                     bal.borrow_mut().apply_borrow_interest(&m);
                                                     applied = true;
+                                                    mc.mark_arb_startup_net_seen_for_venue(
+                                                        open_venue,
+                                                        "query_borrow_interest",
+                                                    );
                                                 }
                                             }
                                             if matches!(
@@ -550,12 +519,17 @@ impl QueryEngChannel {
                                                     | TradingVenue::OkexMargin
                                                     | TradingVenue::GateMargin
                                                     | TradingVenue::BitgetMargin
+                                                    | TradingVenue::BybitMargin
                                             ) && exchange_enum == hedge_exchange
                                                 && scope_matches_venue(account_scope, hedge_venue)
                                             {
                                                 if let Some(bal) = mc.hedge_balance_mgr() {
                                                     bal.borrow_mut().apply_borrow_interest(&m);
                                                     applied = true;
+                                                    mc.mark_arb_startup_net_seen_for_venue(
+                                                        hedge_venue,
+                                                        "query_borrow_interest",
+                                                    );
                                                 }
                                             }
                                             let _ = applied;
@@ -570,12 +544,17 @@ impl QueryEngChannel {
                                                     | TradingVenue::OkexFutures
                                                     | TradingVenue::GateFutures
                                                     | TradingVenue::BitgetFutures
+                                                    | TradingVenue::BybitFutures
                                             ) && exchange_enum == open_exchange
                                                 && scope_matches_venue(account_scope, open_venue)
                                             {
                                                 if let Some((um, _)) = mc.open_um_mgr() {
                                                     um.borrow_mut().apply_position(&m);
                                                     applied = true;
+                                                    mc.mark_arb_startup_net_seen_for_venue(
+                                                        open_venue,
+                                                        "query_position",
+                                                    );
                                                 }
                                             }
                                             if matches!(
@@ -584,12 +563,17 @@ impl QueryEngChannel {
                                                     | TradingVenue::OkexFutures
                                                     | TradingVenue::GateFutures
                                                     | TradingVenue::BitgetFutures
+                                                    | TradingVenue::BybitFutures
                                             ) && exchange_enum == hedge_exchange
                                                 && scope_matches_venue(account_scope, hedge_venue)
                                             {
                                                 if let Some((um, _)) = mc.hedge_um_mgr() {
                                                     um.borrow_mut().apply_position(&m);
                                                     applied = true;
+                                                    mc.mark_arb_startup_net_seen_for_venue(
+                                                        hedge_venue,
+                                                        "query_position",
+                                                    );
                                                 }
                                             }
                                             let _ = applied;

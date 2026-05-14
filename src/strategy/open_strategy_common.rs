@@ -79,6 +79,7 @@ pub struct OpenSignalInput {
     pub price_qv: QuantizedValue,
     pub price_offset: f64,
     pub reduce_only: bool,
+    pub client_order_id: Option<i64>,
     // 绝对 close_ts。0 表示不设置藏仓窗口；>0 表示这笔 ArbOpen 不追求立刻对冲，
     // 而是先藏一段时间，到 close_ts 后才进入可对冲/可关闭的 due 数量。
     pub close_ts: i64,
@@ -154,6 +155,24 @@ pub trait OpenStrategyCommon {
         false
     }
 
+    fn update_close_inventory_for_open_fill(
+        &self,
+        _venue: TradingVenue,
+        _symbol: &str,
+        _side: Side,
+        _filled_base_delta: f64,
+    ) {
+    }
+
+    fn update_close_inventory_for_close_fill(
+        &self,
+        _client_order_id: i64,
+        _filled_base_delta: f64,
+    ) {
+    }
+
+    fn release_close_inventory_unfilled(&self, _client_order_id: i64, _reason: &str) {}
+
     fn skip_open_position_risk_checks(&self) -> bool {
         false
     }
@@ -219,29 +238,16 @@ pub trait OpenStrategyCommon {
         let close_ts = self.open_terminal_close_ts();
         let strategy_mgr = MonitorChannel::instance().strategy_mgr();
         let mut strategy_mgr = strategy_mgr.borrow_mut();
-        let updated = if self.record_terminal_as_arb_close() {
-            strategy_mgr.record_close_order_terminal(
-                symbol,
-                side,
-                order_base_qty,
-                filled_base_qty,
-                terminal_ts,
-                price,
-                close_ts,
-                open_client_order_id,
-            )
-        } else {
-            strategy_mgr.record_open_order_terminal(
-                symbol,
-                side,
-                order_base_qty,
-                filled_base_qty,
-                terminal_ts,
-                price,
-                close_ts,
-                open_client_order_id,
-            )
-        };
+        let updated = strategy_mgr.record_open_order_terminal(
+            symbol,
+            side,
+            order_base_qty,
+            filled_base_qty,
+            terminal_ts,
+            price,
+            close_ts,
+            open_client_order_id,
+        );
         if !updated {
             warn!(
                 "{}: strategy_id={} record open order terminal failed symbol={} side={:?} order_base_qty={:.8} filled_base_qty={:.8} terminal_ts={} price={:.8} close_ts={} open_co_id={} detail={}",
@@ -259,6 +265,24 @@ pub trait OpenStrategyCommon {
             );
         }
         updated
+    }
+
+    fn apply_inventory_fill_delta(
+        &self,
+        venue: TradingVenue,
+        symbol: &str,
+        side: Side,
+        client_order_id: i64,
+        filled_base_delta: f64,
+    ) {
+        if filled_base_delta <= 1e-12 {
+            return;
+        }
+        if self.record_terminal_as_arb_close() {
+            self.update_close_inventory_for_close_fill(client_order_id, filled_base_delta);
+        } else {
+            self.update_close_inventory_for_open_fill(venue, symbol, side, filled_base_delta);
+        }
     }
 
     fn send_open_order_common(&mut self, client_order_id: i64, symbol: &str) -> Result<(), String> {
@@ -752,7 +776,9 @@ pub trait OpenStrategyCommon {
             state.price_qv = input.price_qv;
             state.price_offset = input.price_offset;
         }
-        let client_order_id = Self::compose_order_id(self.strategy_id());
+        let client_order_id = input
+            .client_order_id
+            .unwrap_or_else(|| Self::compose_order_id(self.strategy_id()));
         self.open_order_state_mut().open_order_id = client_order_id;
 
         MonitorChannel::instance()
@@ -1349,6 +1375,21 @@ pub trait OpenStrategyCommon {
             );
         }
 
+        let fill_delta_venue_qty =
+            (effective_cumulative_filled_qty - prev_cumulative_filled_qty).max(0.0);
+        let fill_delta_base_qty = fill_delta_venue_qty * order.qty_multiplier;
+        self.apply_inventory_fill_delta(
+            order.venue,
+            &order.symbol,
+            order.side,
+            order.client_order_id,
+            fill_delta_base_qty,
+        );
+
+        if order_update.status().is_finished() && self.record_terminal_as_arb_close() {
+            self.release_close_inventory_unfilled(client_order_id, "order_update_terminal");
+        }
+
         let ctx = self.uniform_open_publish_ctx();
         if order_update.status() == OrderStatus::New {
             publish_uniform_new_order(
@@ -1487,6 +1528,16 @@ pub trait OpenStrategyCommon {
             self.strategy_id(),
         );
 
+        let fill_delta_venue_qty = (cumulative_qty - prev_cumulative_filled_qty).max(0.0);
+        let fill_delta_base_qty = fill_delta_venue_qty * order.qty_multiplier;
+        self.apply_inventory_fill_delta(
+            order.venue,
+            &order.symbol,
+            order.side,
+            order.client_order_id,
+            fill_delta_base_qty,
+        );
+
         if status == OrderStatus::Filled {
             let terminal_venue_qty = if prev_order_terminal {
                 cumulative_qty - prev_cumulative_filled_qty
@@ -1523,6 +1574,9 @@ pub trait OpenStrategyCommon {
                 cumulative_qty,
                 trade.debug_summary()
             );
+            if self.record_terminal_as_arb_close() {
+                self.release_close_inventory_unfilled(client_order_id, "trade_update_filled");
+            }
             self.open_state_mut().alive = false;
         }
 
@@ -1796,6 +1850,9 @@ pub trait OpenStrategyCommon {
         // Open strategies are one-shot owners of a single open order. If the exchange rejects
         // creation, there is no live exchange order to reconcile, so the strategy terminalizes the
         // local order, removes it, and exits instead of handing it to an orphan strategy.
+        if self.record_terminal_as_arb_close() {
+            self.release_close_inventory_unfilled(client_order_id, "open_failed_cleanup");
+        }
         self.set_pending_order_query(None);
         self.clear_query_watchdogs(client_order_id);
         self.terminalize_open_order_before_cleanup(client_order_id);

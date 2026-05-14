@@ -5,6 +5,7 @@ pub mod basic_balance_manager;
 pub mod basic_exposure_manager;
 pub mod basic_um_manager;
 mod channel;
+pub mod close_inventory;
 pub mod event;
 pub mod intra_bwd_symbol_list;
 pub mod monitor_channel;

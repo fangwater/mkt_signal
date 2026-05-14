@@ -48,12 +48,17 @@ impl ArbOpenStrategy {
             0
         };
 
+        let symbol = ctx.get_opening_symbol();
+        if let Some(venue) = TradingVenue::from_u8(ctx.opening_leg.venue) {
+            MonitorChannel::instance().seed_close_inventory_if_absent(venue, &symbol);
+        }
+
         let mkt_ts = ctx.opening_leg.ts.max(ctx.hedging_leg.ts);
         let Some(init) = self.handle_open_signal_common(OpenSignalInput {
             signal_kind: "ArbOpen",
             order_log_name: "ArbOpen",
             order_rate_bucket: OrderRateBucket::ArbOpen,
-            opening_symbol: ctx.get_opening_symbol(),
+            opening_symbol: symbol,
             venue_u8: ctx.opening_leg.venue,
             side_u8: ctx.side,
             order_type_u8: ctx.order_type,
@@ -68,6 +73,7 @@ impl ArbOpenStrategy {
             price_qv: ctx.price_qv,
             price_offset: ctx.price_offset,
             reduce_only: false,
+            client_order_id: None,
             close_ts,
             mkt_ts,
         }) else {
@@ -166,6 +172,21 @@ impl OpenStrategyCommon for ArbOpenStrategy {
 
     fn log_open_deleveraging_risk_rejects(&self) -> bool {
         true
+    }
+
+    fn update_close_inventory_for_open_fill(
+        &self,
+        venue: TradingVenue,
+        symbol: &str,
+        side: crate::pre_trade::order_manager::Side,
+        filled_base_delta: f64,
+    ) {
+        MonitorChannel::instance().apply_open_inventory_fill_delta(
+            venue,
+            symbol,
+            side,
+            filled_base_delta,
+        );
     }
 
     fn resolve_open_qty_multiplier(

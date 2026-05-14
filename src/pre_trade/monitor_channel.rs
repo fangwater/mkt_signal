@@ -25,6 +25,7 @@ use crate::portfolio_margin::pm_forwarder::{
 use crate::pre_trade::basic_balance_manager::BasicBalanceManager;
 use crate::pre_trade::basic_exposure_manager::{BasicExposureEntry, BasicExposureManager};
 use crate::pre_trade::basic_um_manager::BasicUmManager;
+use crate::pre_trade::close_inventory::{CloseInventoryLedger, CloseReservationGrant};
 use crate::pre_trade::net_position::NetPosition;
 use crate::pre_trade::order_manager::Side;
 use crate::pre_trade::price_table::PriceTable;
@@ -243,10 +244,63 @@ struct MonitorChannelInner {
     orphan_strategy_mgr: Rc<RefCell<OrphanStrategyManager>>,
     /// 订单管理器，所有订单维护在其中，完全成交或者撤单会被移除
     order_manager: Rc<RefCell<OrderManager>>,
+    /// 本地 ArbClose 可平库存账本。启动/首次访问用账户快照 seed，运行中只相信本地订单回报。
+    close_inventory: Rc<RefCell<CloseInventoryLedger>>,
     /// Monotonic counter incremented when a TradeUpdate is received.
     trade_update_seq: u64,
     /// 各账户 scope 最新一份风险快照，由 account_monitor 端 AccountRisk 消息驱动。
     latest_account_risk: HashMap<BasicAccountScope, BasicAccountRiskMsg>,
+    arb_startup_net_gate: ArbStartupNetGate,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ArbStartupNetGateStatus {
+    pub enabled: bool,
+    pub ready: bool,
+    pub open_ready: bool,
+    pub hedge_ready: bool,
+    pub open_ts_us: i64,
+    pub hedge_ts_us: i64,
+    pub dropped_signals: u64,
+}
+
+#[derive(Debug, Clone)]
+struct ArbStartupNetGate {
+    enabled: bool,
+    open_ready: bool,
+    hedge_ready: bool,
+    open_ts_us: i64,
+    hedge_ts_us: i64,
+    dropped_signals: u64,
+}
+
+impl ArbStartupNetGate {
+    fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            open_ready: !enabled,
+            hedge_ready: !enabled,
+            open_ts_us: 0,
+            hedge_ts_us: 0,
+            dropped_signals: 0,
+        }
+    }
+
+    fn ready(&self) -> bool {
+        !self.enabled || (self.open_ready && self.hedge_ready)
+    }
+
+    fn status(&self) -> ArbStartupNetGateStatus {
+        ArbStartupNetGateStatus {
+            enabled: self.enabled,
+            ready: self.ready(),
+            open_ready: self.open_ready,
+            hedge_ready: self.hedge_ready,
+            open_ts_us: self.open_ts_us,
+            hedge_ts_us: self.hedge_ts_us,
+            dropped_signals: self.dropped_signals,
+        }
+    }
 }
 
 struct BasicState {
@@ -300,6 +354,135 @@ impl MonitorChannel {
         })
     }
 
+    fn mark_arb_startup_net_seen_for_venue_inner(
+        inner: &mut MonitorChannelInner,
+        venue: TradingVenue,
+        source: &'static str,
+    ) {
+        if !inner.arb_startup_net_gate.enabled || inner.arb_startup_net_gate.ready() {
+            return;
+        }
+
+        let now = get_timestamp_us();
+        let mut changed = false;
+        if venue == inner.open_venue && !inner.arb_startup_net_gate.open_ready {
+            inner.arb_startup_net_gate.open_ready = true;
+            inner.arb_startup_net_gate.open_ts_us = now;
+            changed = true;
+            info!(
+                "Arb startup net gate: open leg net initialized venue={:?} source={}",
+                venue, source
+            );
+        }
+        if venue == inner.hedge_venue && !inner.arb_startup_net_gate.hedge_ready {
+            inner.arb_startup_net_gate.hedge_ready = true;
+            inner.arb_startup_net_gate.hedge_ts_us = now;
+            changed = true;
+            info!(
+                "Arb startup net gate: hedge leg net initialized venue={:?} source={}",
+                venue, source
+            );
+        }
+
+        if changed && inner.arb_startup_net_gate.ready() {
+            let initialized = Self::initialize_arb_startup_stable_net_pending_inner(inner, now);
+            info!(
+                "Arb startup net gate released: 双边net已初始化 open_venue={:?} hedge_venue={:?} open_ts_us={} hedge_ts_us={} dropped_signals={} startup_pending_symbols={}",
+                inner.open_venue,
+                inner.hedge_venue,
+                inner.arb_startup_net_gate.open_ts_us,
+                inner.arb_startup_net_gate.hedge_ts_us,
+                inner.arb_startup_net_gate.dropped_signals,
+                initialized
+            );
+        }
+    }
+
+    pub fn mark_arb_startup_net_seen_for_venue(&self, venue: TradingVenue, source: &'static str) {
+        Self::with_inner_mut(|inner| {
+            Self::mark_arb_startup_net_seen_for_venue_inner(inner, venue, source);
+        });
+    }
+
+    pub fn arb_startup_net_gate_status(&self) -> ArbStartupNetGateStatus {
+        Self::with_inner(|inner| inner.arb_startup_net_gate.status())
+    }
+
+    pub fn record_arb_startup_net_gate_signal_drop(&self) -> ArbStartupNetGateStatus {
+        Self::with_inner_mut(|inner| {
+            inner.arb_startup_net_gate.dropped_signals =
+                inner.arb_startup_net_gate.dropped_signals.saturating_add(1);
+            inner.arb_startup_net_gate.status()
+        })
+    }
+
+    fn initialize_arb_startup_stable_net_pending_inner(
+        inner: &MonitorChannelInner,
+        ready_ts: i64,
+    ) -> usize {
+        let state = Self::compute_basic_state(inner);
+        if state.exposures.is_empty() {
+            return 0;
+        }
+
+        let price_mapper = create_symbol_mapper(Self::mark_price_exchange_for_venues(
+            inner.open_venue,
+            inner.hedge_venue,
+        ));
+        let price_snap = inner.price_table.borrow().snapshot();
+        let mut initialized = 0usize;
+        let mut rows: Vec<(String, f64, f64, f64)> = state
+            .exposures
+            .into_iter()
+            .filter_map(|(asset, (open_qty, hedge_qty))| {
+                if asset.eq_ignore_ascii_case("USDT") {
+                    return None;
+                }
+                let net_qty = open_qty + hedge_qty;
+                if net_qty.abs() <= 1e-12 {
+                    return None;
+                }
+                Some((asset, open_qty, hedge_qty, net_qty))
+            })
+            .collect();
+        rows.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+
+        let mut strategy_mgr = inner.strategy_mgr.borrow_mut();
+        for (asset, open_qty, hedge_qty, net_qty) in rows {
+            let symbol = normalize_symbol_for_internal(&price_mapper.asset_to_price_symbol(&asset));
+            if symbol.is_empty() {
+                continue;
+            }
+            let price_symbol = price_mapper.asset_to_price_symbol(&asset);
+            let price = price_snap
+                .get(&price_symbol)
+                .map(|entry| entry.mark_price)
+                .filter(|price| price.is_finite() && *price > 0.0)
+                .unwrap_or(0.0);
+            if strategy_mgr.put_arb_startup_stable_net_pending(
+                &symbol,
+                net_qty,
+                ready_ts,
+                price,
+                inner.open_venue,
+                inner.hedge_venue,
+            ) {
+                initialized += 1;
+                info!(
+                    "Arb startup stable net pending initialized: symbol={} asset={} open_qty={:.8} hedge_qty={:.8} net_qty={:.8} price={:.8} ready_ts={}",
+                    symbol,
+                    asset,
+                    open_qty,
+                    hedge_qty,
+                    net_qty,
+                    price,
+                    ready_ts
+                );
+            }
+        }
+        initialized
+    }
+
     pub fn bump_trade_update_seq(&self) {
         Self::with_inner_mut(|inner| {
             inner.trade_update_seq = inner.trade_update_seq.saturating_add(1);
@@ -308,6 +491,81 @@ impl MonitorChannel {
 
     pub fn trade_update_seq(&self) -> u64 {
         Self::with_inner(|inner| inner.trade_update_seq)
+    }
+
+    pub fn reserve_close_inventory(
+        &self,
+        venue: TradingVenue,
+        symbol: &str,
+        side: Side,
+        requested_base_qty: f64,
+        client_order_id: i64,
+    ) -> CloseReservationGrant {
+        Self::with_inner(|inner| {
+            let snapshot_pos_base = Self::get_position_qty_inner(inner, symbol, venue);
+            inner.close_inventory.borrow_mut().reserve_close(
+                venue,
+                symbol,
+                side,
+                requested_base_qty,
+                client_order_id,
+                snapshot_pos_base,
+            )
+        })
+    }
+
+    pub fn seed_close_inventory_if_absent(&self, venue: TradingVenue, symbol: &str) {
+        Self::with_inner(|inner| {
+            let snapshot_pos_base = Self::get_position_qty_inner(inner, symbol, venue);
+            inner
+                .close_inventory
+                .borrow_mut()
+                .seed_if_absent(venue, symbol, snapshot_pos_base);
+        });
+    }
+
+    pub fn apply_open_inventory_fill_delta(
+        &self,
+        venue: TradingVenue,
+        symbol: &str,
+        side: Side,
+        filled_base_delta: f64,
+    ) {
+        Self::with_inner(|inner| {
+            inner.close_inventory.borrow_mut().apply_open_fill_delta(
+                venue,
+                symbol,
+                side,
+                filled_base_delta,
+            );
+        });
+    }
+
+    pub fn apply_close_inventory_fill_delta(&self, client_order_id: i64, filled_base_delta: f64) {
+        Self::with_inner(|inner| {
+            inner
+                .close_inventory
+                .borrow_mut()
+                .apply_close_fill_delta(client_order_id, filled_base_delta);
+        });
+    }
+
+    pub fn release_close_inventory_unfilled(&self, client_order_id: i64, reason: &str) {
+        Self::with_inner(|inner| {
+            inner
+                .close_inventory
+                .borrow_mut()
+                .release_close_unfilled(client_order_id, reason);
+        });
+    }
+
+    pub fn close_inventory_has_reservation(&self, client_order_id: i64) -> bool {
+        Self::with_inner(|inner| {
+            inner
+                .close_inventory
+                .borrow()
+                .has_reservation(client_order_id)
+        })
     }
 
     /// 获取指定交易场所的最小下单量表
@@ -928,8 +1186,10 @@ impl MonitorChannel {
             strategy_mgr,
             orphan_strategy_mgr: Rc::new(RefCell::new(OrphanStrategyManager::new())),
             order_manager: Rc::new(RefCell::new(OrderManager::new(binance_account_mode))),
+            close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
+            arb_startup_net_gate: ArbStartupNetGate::new(open_venue != hedge_venue),
         };
 
         MONITOR_CHANNEL.with(|mc| {
@@ -1554,6 +1814,11 @@ impl MonitorChannel {
                                         ) {
                                             if let LegMgr::Margin { bal, .. } = &open_leg {
                                                 bal.borrow_mut().apply_balance(&msg);
+                                                MonitorChannel::instance()
+                                                    .mark_arb_startup_net_seen_for_venue(
+                                                        open_venue,
+                                                        "account_balance",
+                                                    );
                                             }
                                         }
                                         if scope_matches_venue(
@@ -1564,6 +1829,11 @@ impl MonitorChannel {
                                         ) {
                                             if let LegMgr::Margin { bal, .. } = &hedge_leg {
                                                 bal.borrow_mut().apply_balance(&msg);
+                                                MonitorChannel::instance()
+                                                    .mark_arb_startup_net_seen_for_venue(
+                                                        hedge_venue,
+                                                        "account_balance",
+                                                    );
                                             }
                                         }
                                     }
@@ -1592,6 +1862,11 @@ impl MonitorChannel {
                                         ) {
                                             if let LegMgr::Futures { um, .. } = &open_leg {
                                                 um.borrow_mut().apply_position(&msg);
+                                                MonitorChannel::instance()
+                                                    .mark_arb_startup_net_seen_for_venue(
+                                                        open_venue,
+                                                        "account_position",
+                                                    );
                                             }
                                         }
                                         if scope_matches_venue(
@@ -1602,6 +1877,11 @@ impl MonitorChannel {
                                         ) {
                                             if let LegMgr::Futures { um, .. } = &hedge_leg {
                                                 um.borrow_mut().apply_position(&msg);
+                                                MonitorChannel::instance()
+                                                    .mark_arb_startup_net_seen_for_venue(
+                                                        hedge_venue,
+                                                        "account_position",
+                                                    );
                                             }
                                         }
                                         let symbol = normalize_symbol_for_internal(&msg.inst_id);
@@ -1655,6 +1935,11 @@ impl MonitorChannel {
                                         ) {
                                             if let LegMgr::Margin { bal, .. } = &open_leg {
                                                 bal.borrow_mut().apply_borrow_interest(&msg);
+                                                MonitorChannel::instance()
+                                                    .mark_arb_startup_net_seen_for_venue(
+                                                        open_venue,
+                                                        "account_borrow_interest",
+                                                    );
                                             }
                                         }
                                         if scope_matches_venue(
@@ -1665,6 +1950,11 @@ impl MonitorChannel {
                                         ) {
                                             if let LegMgr::Margin { bal, .. } = &hedge_leg {
                                                 bal.borrow_mut().apply_borrow_interest(&msg);
+                                                MonitorChannel::instance()
+                                                    .mark_arb_startup_net_seen_for_venue(
+                                                        hedge_venue,
+                                                        "account_borrow_interest",
+                                                    );
                                             }
                                         }
                                     }
@@ -2056,34 +2346,40 @@ impl MonitorChannel {
     /// 获取指定交易对和交易场所的持仓数量（带符号）
     /// 返回持仓数量，正数表示多头，负数表示空头
     pub fn get_position_qty(&self, symbol: &str, venue: TradingVenue) -> f64 {
-        Self::with_inner(|inner| {
-            let leg = if venue == inner.open_venue {
-                &inner.open_leg
-            } else if venue == inner.hedge_venue {
-                &inner.hedge_leg
-            } else {
-                return 0.0;
-            };
-
-            match leg {
-                LegMgr::Margin { bal, .. } => {
-                    let symbol_upper = symbol.to_uppercase();
-                    let Some(base_asset) = extract_base_asset(&symbol_upper) else {
-                        return 0.0;
-                    };
-                    bal.borrow().net_position(&base_asset, None)
-                }
-                LegMgr::Futures {
-                    um, min_qty_table, ..
-                } => {
-                    let table_ref = min_qty_table.borrow();
-                    um.borrow().net_position(symbol, Some(&table_ref))
-                }
-            }
-        })
+        Self::with_inner(|inner| Self::get_position_qty_inner(inner, symbol, venue))
     }
 
     // ==================== 内部辅助方法 ====================
+
+    fn get_position_qty_inner(
+        inner: &MonitorChannelInner,
+        symbol: &str,
+        venue: TradingVenue,
+    ) -> f64 {
+        let leg = if venue == inner.open_venue {
+            &inner.open_leg
+        } else if venue == inner.hedge_venue {
+            &inner.hedge_leg
+        } else {
+            return 0.0;
+        };
+
+        match leg {
+            LegMgr::Margin { bal, .. } => {
+                let symbol_upper = symbol.to_uppercase();
+                let Some(base_asset) = extract_base_asset(&symbol_upper) else {
+                    return 0.0;
+                };
+                bal.borrow().net_position(&base_asset, None)
+            }
+            LegMgr::Futures {
+                um, min_qty_table, ..
+            } => {
+                let table_ref = min_qty_table.borrow();
+                um.borrow().net_position(symbol, Some(&table_ref))
+            }
+        }
+    }
 
     fn spawn_derivatives_listener(
         price_table: Rc<RefCell<PriceTable>>,
@@ -2604,8 +2900,10 @@ mod tests {
             order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
                 BinanceAccountMode::Unified,
             )))),
+            close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
+            arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
 
         MONITOR_CHANNEL.with(|mc| {
@@ -2652,8 +2950,10 @@ mod tests {
             order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
                 BinanceAccountMode::Unified,
             )))),
+            close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
+            arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
 
         MONITOR_CHANNEL.with(|mc| {
@@ -2700,8 +3000,10 @@ mod tests {
             order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
                 BinanceAccountMode::Unified,
             )))),
+            close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
+            arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
 
         MONITOR_CHANNEL.with(|mc| {
@@ -2747,8 +3049,10 @@ mod tests {
             order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
                 BinanceAccountMode::Unified,
             )))),
+            close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
+            arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
 
         MONITOR_CHANNEL.with(|mc| {
@@ -2824,8 +3128,10 @@ mod tests {
             order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
                 BinanceAccountMode::Unified,
             )))),
+            close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
+            arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
 
         MONITOR_CHANNEL.with(|mc| {
