@@ -207,7 +207,13 @@ cat >"$cfg_file" <<JSON
 JSON
 
 echo "[INFO] Restarting ${PROC_NAME}"
-echo "[INFO] 本地 IP 配置来自 /home/<user>/config/mkt_cfg.yaml"
+if [[ -f "${BASE_DIR}/trade_engine.toml" ]]; then
+  echo "[INFO] 本地 IP 配置来自 ${BASE_DIR}/trade_engine.toml"
+elif [[ -f "${BASE_DIR}/trade engine.toml" ]]; then
+  echo "[INFO] 本地 IP 配置来自 ${BASE_DIR}/trade engine.toml"
+else
+  echo "[INFO] 本地 IP 配置来自 ${HOME}/config/mkt_cfg.yaml (fallback)"
+fi
 stop_duplicate_trade_engines
 if [[ -n "$LEGACY_PROC_NAME" && "$LEGACY_PROC_NAME" != "$PROC_NAME" ]]; then
   "${PMDAEMON[@]}" delete "$LEGACY_PROC_NAME" >/dev/null 2>&1 || true

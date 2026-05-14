@@ -244,6 +244,37 @@ impl FactorValueHub {
         })
     }
 
+    /// 统计当前 target factor 在缓存里的覆盖情况：(fresh, total_seen, stale_symbols)。
+    /// - `total_seen`：曾经从 IPC 拿到过 snapshot 的 (target_factor, symbol) 数量
+    /// - `fresh`：其中 ready=true 且 ts 未超出 `factor_value_max_age_ms` 的数量
+    /// - `stale_symbols`：cache 里存在但当前不 fresh 的 symbol（按字典序排序，全部返回）
+    pub fn vol_ready_summary(&self, now_ms: i64) -> (usize, usize, Vec<String>) {
+        let mut total = 0usize;
+        let mut fresh = 0usize;
+        let mut stale: Vec<String> = Vec::new();
+        for ((idx, sym), snap) in &self.factor_value_cache {
+            if *idx != self.target_factor_index {
+                continue;
+            }
+            total += 1;
+            let is_fresh = snap.ready
+                && snap.value.is_finite()
+                && (self.factor_value_max_age_ms <= 0
+                    || now_ms - snap.timestamp_ms <= self.factor_value_max_age_ms);
+            if is_fresh {
+                fresh += 1;
+            } else {
+                stale.push(sym.clone());
+            }
+        }
+        stale.sort();
+        (fresh, total, stale)
+    }
+
+    pub fn factor_value_service_name(&self) -> &str {
+        &self.factor_value_service_name
+    }
+
     pub fn set_inline_volatility_percentile(&mut self, percentile: Option<f64>) {
         self.inline_volatility_percentile = percentile
             .filter(|v| v.is_finite())

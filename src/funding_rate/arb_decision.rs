@@ -893,11 +893,23 @@ fn drive_funding_decision(
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
 ) -> Result<Option<SignalType>> {
+    let _ = ArbDecision::with_state_mut(|arb| {
+        arb.maybe_log_intercept_summary(FUNDING_ARB_SHELL_NAME);
+    });
     let spread_factor = super::spread_factor::SpreadFactor::instance();
     let now = get_timestamp_us();
     let symbol_list = super::symbol_list::SymbolList::instance();
     let open_symbol_key = normalize_arb_symbol_key(open_symbol);
     let hedge_symbol_key = normalize_arb_symbol_key(hedge_symbol);
+    // 心跳计数：活跃 symbol 每 tick 记一条 fr_seen，保证 summary 不会空表早退。
+    if symbol_list.is_in_fwd_trade_list(open_symbol_key.as_str())
+        || symbol_list.is_in_bwd_trade_list(open_symbol_key.as_str())
+        || symbol_list.is_in_dump_list(open_symbol_key.as_str())
+    {
+        let _ = ArbDecision::with_state_mut(|arb| {
+            arb.record_intercept_summary("fr_seen");
+        });
+    }
     if log::log_enabled!(log::Level::Debug) {
         log::debug!(
             "{FUNDING_ARB_SHELL_NAME} decision start open={} hedge={} open_venue={:?} hedge_venue={:?}",
@@ -949,42 +961,83 @@ fn drive_funding_decision(
         hedge_venue,
         hedge_symbol_key.as_str(),
     );
-    if let Some(cancel_gate) = ArbDecision::with_state_mut(|arb| {
-        arb.evaluate_cancel_gate(
-            forward_cancel,
-            backward_cancel,
-            open_symbol_key.as_str(),
-            hedge_symbol_key.as_str(),
-            open_venue,
-            hedge_venue,
-        )
-    })
-    .flatten()
-    {
-        log::debug!(
-            "{FUNDING_ARB_SHELL_NAME} cancel triggered open={} hedge={} open_venue={:?} hedge_venue={:?} forward_cancel={} backward_cancel={}",
-            open_symbol_key,
-            hedge_symbol_key,
-            open_venue,
-            hedge_venue,
-            forward_cancel,
-            backward_cancel
-        );
-        emit_funding_spread_cancel(
-            decision,
-            open_symbol_key.as_str(),
-            hedge_symbol_key.as_str(),
-            open_venue,
-            hedge_venue,
-        )?;
-        let _ = ArbDecision::with_state_mut(|arb| {
-            arb.mark_signal_triggered(&SignalType::ArbCancel, cancel_gate.key, now);
-        });
-        return Ok(Some(SignalType::ArbCancel));
+    // Cancel fwd/bwd 拆开独立处理（参考 drive_spread_arb_decision 同结构）：
+    // - 各自只在本方向触发时发对应 Side 的 ArbCancel
+    // - 不早退，落到 open 评估让本 tick 还能开新仓
+    let mut emitted_signal: Option<SignalType> = None;
+    if forward_cancel {
+        if let Some(cancel_gate) = ArbDecision::with_state_mut(|arb| {
+            arb.evaluate_cancel_gate(
+                true,
+                false,
+                open_symbol_key.as_str(),
+                hedge_symbol_key.as_str(),
+                open_venue,
+                hedge_venue,
+            )
+        })
+        .flatten()
+        {
+            log::debug!(
+                "{FUNDING_ARB_SHELL_NAME} fwd cancel triggered open={} hedge={} open_venue={:?} hedge_venue={:?}",
+                open_symbol_key,
+                hedge_symbol_key,
+                open_venue,
+                hedge_venue
+            );
+            emit_funding_spread_cancel(
+                decision,
+                open_symbol_key.as_str(),
+                hedge_symbol_key.as_str(),
+                open_venue,
+                hedge_venue,
+                Side::Buy,
+            )?;
+            let _ = ArbDecision::with_state_mut(|arb| {
+                arb.record_intercept_summary("cancel_fwd");
+                arb.mark_signal_triggered(&SignalType::ArbCancel, cancel_gate.key, now);
+            });
+            emitted_signal = Some(SignalType::ArbCancel);
+        }
+    }
+    if backward_cancel {
+        if let Some(cancel_gate) = ArbDecision::with_state_mut(|arb| {
+            arb.evaluate_cancel_gate(
+                false,
+                true,
+                open_symbol_key.as_str(),
+                hedge_symbol_key.as_str(),
+                open_venue,
+                hedge_venue,
+            )
+        })
+        .flatten()
+        {
+            log::debug!(
+                "{FUNDING_ARB_SHELL_NAME} bwd cancel triggered open={} hedge={} open_venue={:?} hedge_venue={:?}",
+                open_symbol_key,
+                hedge_symbol_key,
+                open_venue,
+                hedge_venue
+            );
+            emit_funding_spread_cancel(
+                decision,
+                open_symbol_key.as_str(),
+                hedge_symbol_key.as_str(),
+                open_venue,
+                hedge_venue,
+                Side::Sell,
+            )?;
+            let _ = ArbDecision::with_state_mut(|arb| {
+                arb.record_intercept_summary("cancel_bwd");
+                arb.mark_signal_triggered(&SignalType::ArbCancel, cancel_gate.key, now);
+            });
+            emitted_signal = Some(SignalType::ArbCancel);
+        }
     }
 
     if in_dump {
-        return Ok(None);
+        return Ok(emitted_signal);
     }
 
     let rate_ready = RateFetcher::is_initial_ready(hedge_venue);
@@ -1001,6 +1054,47 @@ fn drive_funding_decision(
         open_inputs_ready,
     )?;
 
+    // FR 阈值判定结果细分：summary 里区分出哪条信号被触发、还是全 miss。
+    // 仅活跃 symbol 记，避免 6300/30s 的全量 trigger 噪音。
+    {
+        let in_active = symbol_list.is_in_fwd_trade_list(open_symbol_key.as_str())
+            || symbol_list.is_in_bwd_trade_list(open_symbol_key.as_str())
+            || symbol_list.is_in_dump_list(open_symbol_key.as_str());
+        if in_active {
+            let flags = evaluate_funding_signal_flags(hedge_symbol_key.as_str(), hedge_venue);
+            let _ = ArbDecision::with_state_mut(|arb| {
+                if !rate_ready {
+                    arb.record_intercept_summary("fr_rate_not_ready");
+                }
+                if !open_inputs_ready {
+                    arb.record_intercept_summary("fr_inputs_not_ready");
+                }
+                if flags.forward_open {
+                    arb.record_intercept_summary("fr_fwd_open_hit");
+                }
+                if flags.backward_open {
+                    arb.record_intercept_summary("fr_bwd_open_hit");
+                }
+                if flags.forward_close {
+                    arb.record_intercept_summary("fr_fwd_close_hit");
+                }
+                if flags.backward_close {
+                    arb.record_intercept_summary("fr_bwd_close_hit");
+                }
+                if !flags.forward_open
+                    && !flags.backward_open
+                    && !flags.forward_close
+                    && !flags.backward_close
+                {
+                    arb.record_intercept_summary("fr_no_threshold_hit");
+                }
+                if fr_signal.is_none() {
+                    arb.record_intercept_summary("fr_no_signal");
+                }
+            });
+        }
+    }
+
     let fr_signal = match fr_signal {
         Some(signal) => signal,
         None => {
@@ -1011,9 +1105,81 @@ fn drive_funding_decision(
                 open_venue,
                 hedge_venue
             );
-            return Ok(None);
+            return Ok(emitted_signal);
         }
     };
+
+    // 此处 fr_signal 已是 Some(ArbSignalKind)。evaluate_funding_final_signal 还会过
+    // open_inputs_ready / in_dump / spread / in_trade_list 四关。把每一关的拦截原因
+    // 计数到 summary 里，方便定位是哪一关在挡 signal。
+    {
+        let reason: Option<&'static str> = match fr_signal {
+            ArbSignalKind::ForwardOpen => {
+                if !open_inputs_ready {
+                    Some("final_inputs_not_ready")
+                } else if in_dump {
+                    Some("final_in_dump")
+                } else if !spread_factor.satisfy_forward_open(
+                    open_venue,
+                    open_symbol_key.as_str(),
+                    hedge_venue,
+                    hedge_symbol_key.as_str(),
+                ) {
+                    Some("final_fwd_spread_miss")
+                } else if !symbol_list.is_in_fwd_trade_list(open_symbol_key.as_str()) {
+                    Some("final_not_in_fwd_list")
+                } else {
+                    None
+                }
+            }
+            ArbSignalKind::BackwardOpen => {
+                if !open_inputs_ready {
+                    Some("final_inputs_not_ready")
+                } else if in_dump {
+                    Some("final_in_dump")
+                } else if !spread_factor.satisfy_backward_open(
+                    open_venue,
+                    open_symbol_key.as_str(),
+                    hedge_venue,
+                    hedge_symbol_key.as_str(),
+                ) {
+                    Some("final_bwd_spread_miss")
+                } else if !symbol_list.is_in_bwd_trade_list(open_symbol_key.as_str()) {
+                    Some("final_not_in_bwd_list")
+                } else {
+                    None
+                }
+            }
+            ArbSignalKind::ForwardClose => {
+                if !spread_factor.satisfy_forward_close(
+                    open_venue,
+                    open_symbol_key.as_str(),
+                    hedge_venue,
+                    hedge_symbol_key.as_str(),
+                ) {
+                    Some("final_fwd_close_spread_miss")
+                } else {
+                    None
+                }
+            }
+            ArbSignalKind::BackwardClose => {
+                if !spread_factor.satisfy_backward_close(
+                    open_venue,
+                    open_symbol_key.as_str(),
+                    hedge_venue,
+                    hedge_symbol_key.as_str(),
+                ) {
+                    Some("final_bwd_close_spread_miss")
+                } else {
+                    None
+                }
+            }
+        };
+        let _ = ArbDecision::with_state_mut(|arb| match reason {
+            Some(r) => arb.record_intercept_summary(r),
+            None => arb.record_intercept_summary("final_pass"),
+        });
+    }
 
     let Some(control) = ArbDecision::with_state_mut(|arb| {
         arb.evaluate_funding_control(
@@ -1030,7 +1196,7 @@ fn drive_funding_decision(
         )
     })
     .flatten() else {
-        return Ok(None);
+        return Ok(emitted_signal);
     };
 
     emit_funding_open_close_signals(
@@ -2766,6 +2932,7 @@ fn emit_funding_spread_cancel(
     futures_symbol: &str,
     spot_venue: TradingVenue,
     futures_venue: TradingVenue,
+    side: Side,
 ) -> Result<()> {
     let (spot_quote, futures_quote) = match ArbDecision::load_valid_quotes(
         spot_symbol,
@@ -2819,7 +2986,7 @@ fn emit_funding_spread_cancel(
         now: batch_ts,
         from_key: &from_key,
         reason: crate::signal::cancel_signal::ArbCancelReason::Spread,
-        side: Side::Buy,
+        side,
         strategy_id: 0,
     })
 }
@@ -3887,12 +4054,34 @@ impl ArbDecisionState {
         }
         log::info!("{rule}");
 
+        self.log_vol_coverage(source);
         self.log_xarb_open_blocker_table(source);
         self.log_spread_observation_table(source);
 
         self.intercept_counts.clear();
         self.spread_observation.clear();
         self.last_intercept_log = Instant::now();
+    }
+
+    /// 直接从 open 端 FactorValueHub 缓存里数：fresh / total_seen / stale 名单。
+    /// total_seen = 曾收到过 IPC snapshot 的 (target_factor, symbol) 数量；
+    /// fresh = 其中 ready=true 且未过期；stale = 进过 cache 但当前不 fresh 的 symbol（全列）。
+    /// blocker 表里报 `vol` 的 symbol 应该是"从来没进过 cache"的，跟 stale 是两组。
+    fn log_vol_coverage(&mut self, source: &str) {
+        let Some(hub) = self.open_factor_value_hub.as_ref() else {
+            return;
+        };
+        let service = hub.factor_value_service_name().to_string();
+        let now_ms = get_timestamp_us() / 1000;
+        let (fresh, total, stale) = hub.vol_ready_summary(now_ms);
+        log::info!(
+            "{source}: vol coverage service={} fresh={}/{} stale_count={} stale=[{}]",
+            service,
+            fresh,
+            total,
+            stale.len(),
+            stale.join(",")
+        );
     }
 
     fn log_spread_observation_table(&self, source: &str) {

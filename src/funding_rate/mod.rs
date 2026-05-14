@@ -22,6 +22,7 @@ pub mod factor_value_hub;
 pub mod fr_threshold_loader;
 pub mod funding_rate_factor;
 pub mod funding_threshold_loader;
+pub mod gate_fr_supplement;
 pub mod inline_volatility;
 pub mod mkt_channel;
 pub mod mm_decision;
