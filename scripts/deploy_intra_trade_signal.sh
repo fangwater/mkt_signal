@@ -112,6 +112,57 @@ if [[ "$SYNC_SCRIPTS" == "1" ]]; then
       chmod +x "$TARGET_DIR/intra_scripts/$f"
     fi
   done
+
+  SCRIPT_DIR_SRC="$ROOT_DIR/scripts"
+  OPS_TO_SYNC=()
+  OPS_CANCEL_CMD="<none>"
+  OPS_FLATTEN_CMD="<none>"
+  case "$EXCHANGE" in
+    binance)
+      OPS_TO_SYNC=(
+        "flatten_binance_std.py"
+        "flatten_margin_and_um.py"
+        "flatten_binance_std_um.py"
+        "cancel_binance_std_orders.py"
+        "binance_cancel_all_std_spot_orders.py"
+        "binance_cancel_all_std_um_ws_orders.py"
+        "binance_local_ip.py"
+        "sell_margin_spot.py"
+      )
+      OPS_CANCEL_CMD="./scripts/cancel_binance_std_orders.py"
+      OPS_FLATTEN_CMD="./scripts/flatten_binance_std.py"
+      ;;
+    okex)
+      OPS_TO_SYNC=("flatten_okex_pm.py" "cancel_okex_pm_orders.py")
+      OPS_CANCEL_CMD="./scripts/cancel_okex_pm_orders.py"
+      OPS_FLATTEN_CMD="./scripts/flatten_okex_pm.py"
+      ;;
+    gate)
+      OPS_TO_SYNC=("flatten_gate_pm.py" "cancel_gate_pm_orders.py")
+      OPS_CANCEL_CMD="./scripts/cancel_gate_pm_orders.py"
+      OPS_FLATTEN_CMD="./scripts/flatten_gate_pm.py"
+      ;;
+    bybit)
+      OPS_TO_SYNC=("flatten_bybit_pm.py" "cancel_bybit_pm_orders.py")
+      OPS_CANCEL_CMD="./scripts/cancel_bybit_pm_orders.py"
+      OPS_FLATTEN_CMD="./scripts/flatten_bybit_pm.py"
+      ;;
+    bitget)
+      OPS_TO_SYNC=("flatten_bitget_pm.py" "cancel_bitget_pm_orders.py")
+      OPS_CANCEL_CMD="./scripts/cancel_bitget_pm_orders.py"
+      OPS_FLATTEN_CMD="./scripts/flatten_bitget_pm.py"
+      ;;
+  esac
+
+  mkdir -p "$TARGET_DIR/scripts"
+  for script in "${OPS_TO_SYNC[@]}"; do
+    SRC="$SCRIPT_DIR_SRC/$script"
+    if [[ -f "$SRC" ]]; then
+      rsync -a "$SRC" "$TARGET_DIR/scripts/"
+      chmod +x "$TARGET_DIR/scripts/$script"
+    fi
+  done
+  echo "[INFO] 运维脚本已同步到 $TARGET_DIR/scripts"
 else
   echo "[INFO] 跳过脚本同步（如需同步，请添加 --sync-scripts）"
 fi
@@ -131,5 +182,7 @@ if [[ "$SYNC_SCRIPTS" == "1" ]]; then
   ./intra_scripts/print_intra_symbol_lists.py
   ./intra_scripts/sync_intra_strategy_params.py
   ./intra_scripts/print_intra_strategy_params.py
+  ${OPS_CANCEL_CMD}
+  ${OPS_FLATTEN_CMD}
 EOF
 fi

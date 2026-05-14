@@ -4,7 +4,7 @@
 Self-contained: no imports from other scripts in this repo.
 
 Behavior:
-  - CWD basename must match ^okex_fr_.
+  - CWD basename must match ^okex_fr_ or ^okex-intra-.
   - Auto-sources ./env.sh; OKX_API_KEY/SECRET/PASSPHRASE — env.sh always wins.
   - Lists open orders via /api/v5/trade/orders-pending; cancels in batches of ≤20
     via /api/v5/trade/cancel-batch-orders.
@@ -38,7 +38,7 @@ OKX_BASE = os.environ.get("OKX_BASE_URL", "https://www.okx.com").rstrip("/")
 OKX_ORDERS_PENDING_PATH = "/api/v5/trade/orders-pending"
 OKX_CANCEL_BATCH_PATH = "/api/v5/trade/cancel-batch-orders"
 
-ENV_DIR_PATTERN = re.compile(r"^okex_fr_")
+ENV_DIR_PATTERN = re.compile(r"^(okex_fr_|okex[-_]intra[-_])")
 AUTHORITATIVE_KEYS = ("OKX_API_KEY", "OKX_API_SECRET", "OKX_PASSPHRASE")
 BATCH_LIMIT = 20
 
@@ -95,7 +95,7 @@ def check_env_safety() -> str:
     cwd_name = os.path.basename(os.path.normpath(os.getcwd()))
     if not ENV_DIR_PATTERN.match(cwd_name):
         sys.stderr.write(
-            f"[ERROR] CWD basename must match ^okex_fr_, got {cwd_name!r} "
+            f"[ERROR] CWD basename must match ^okex_fr_ or ^okex-intra-, got {cwd_name!r} "
             f"(CWD={os.getcwd()}). Aborting for safety.\n"
         )
         sys.exit(2)

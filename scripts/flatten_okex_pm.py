@@ -14,7 +14,7 @@ Modes:
   clear           — close SWAP to 0; then B or S to drain asset
 
 Behavior:
-  - CWD basename must match ^okex_fr_ (safety guard).
+  - CWD basename must match ^okex_fr_ or ^okex-intra- (safety guard).
   - Auto-sources ./env.sh; OKX_API_KEY/SECRET/PASSPHRASE — env.sh always wins.
   - Dry-run by default. --execute required for state changes.
 
@@ -51,7 +51,7 @@ OKX_BORROW_REPAY_PATH = "/api/v5/account/borrow-repay"
 OKX_ORDER_PATH = "/api/v5/trade/order"
 OKX_INSTRUMENTS_PUBLIC = "/api/v5/public/instruments"
 
-ENV_DIR_PATTERN = re.compile(r"^okex_fr_")
+ENV_DIR_PATTERN = re.compile(r"^(okex_fr_|okex[-_]intra[-_])")
 AUTHORITATIVE_KEYS = ("OKX_API_KEY", "OKX_API_SECRET", "OKX_PASSPHRASE")
 ZERO = Decimal("0")
 
@@ -227,7 +227,7 @@ def check_env_safety() -> str:
     cwd_name = os.path.basename(os.path.normpath(os.getcwd()))
     if not ENV_DIR_PATTERN.match(cwd_name):
         sys.stderr.write(
-            f"[ERROR] CWD basename must match ^okex_fr_, got {cwd_name!r} "
+            f"[ERROR] CWD basename must match ^okex_fr_ or ^okex-intra-, got {cwd_name!r} "
             f"(CWD={os.getcwd()}). Aborting for safety.\n"
         )
         sys.exit(2)
