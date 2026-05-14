@@ -48,6 +48,7 @@ const BYBIT_DERIVATIVES_SERVICE: &str = "bridge/bybit-futures/derivatives";
 const BITGET_DERIVATIVES_SERVICE: &str = "bridge/bitget-futures/derivatives";
 const GATE_DERIVATIVES_SERVICE: &str = "bridge/gate-futures/derivatives";
 const DEFAULT_NODE_PRE_TRADE_DERIVATIVES: &str = "pre_trade_derivatives";
+const ARB_STARTUP_NET_EXPOSURE_PANIC_USDT: f64 = 500.0;
 
 // ==================== Helper Functions ====================
 
@@ -395,15 +396,15 @@ impl MonitorChannel {
         }
 
         if changed && inner.arb_startup_net_gate.ready() {
-            let initialized = Self::initialize_arb_startup_stable_net_pending_inner(inner, now);
+            let checked = Self::initialize_arb_startup_stable_net_pending_inner(inner, now);
             info!(
-                "Arb startup net gate released: 双边net已初始化 open_venue={:?} hedge_venue={:?} open_ts_us={} hedge_ts_us={} dropped_signals={} startup_pending_symbols={}",
+                "Arb startup net gate released: 双边net已初始化 open_venue={:?} hedge_venue={:?} open_ts_us={} hedge_ts_us={} dropped_signals={} startup_net_checked_symbols={} pending_write=false",
                 inner.open_venue,
                 inner.hedge_venue,
                 inner.arb_startup_net_gate.open_ts_us,
                 inner.arb_startup_net_gate.hedge_ts_us,
                 inner.arb_startup_net_gate.dropped_signals,
-                initialized
+                checked
             );
         }
     }
@@ -440,7 +441,7 @@ impl MonitorChannel {
             inner.hedge_venue,
         ));
         let price_snap = inner.price_table.borrow().snapshot();
-        let mut initialized = 0usize;
+        let mut checked = 0usize;
         let mut rows: Vec<(String, f64, f64, f64)> = state
             .exposures
             .into_iter()
@@ -457,7 +458,6 @@ impl MonitorChannel {
             .collect();
         rows.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
 
-        let mut strategy_mgr = inner.strategy_mgr.borrow_mut();
         for (asset, open_qty, hedge_qty, net_qty) in rows {
             let symbol = normalize_symbol_for_internal(&price_mapper.asset_to_price_symbol(&asset));
             if symbol.is_empty() {
@@ -469,28 +469,48 @@ impl MonitorChannel {
                 .map(|entry| entry.mark_price)
                 .filter(|price| price.is_finite() && *price > 0.0)
                 .unwrap_or(0.0);
-            if strategy_mgr.put_arb_startup_stable_net_pending(
-                &symbol,
-                net_qty,
-                ready_ts,
-                price,
-                inner.open_venue,
-                inner.hedge_venue,
-            ) {
-                initialized += 1;
-                info!(
-                    "Arb startup stable net pending initialized: symbol={} asset={} open_qty={:.8} hedge_qty={:.8} net_qty={:.8} price={:.8} ready_ts={}",
+            if price <= 0.0 {
+                panic!(
+                    "Arb startup stable net check failed: symbol={} asset={} open_qty={:.8} hedge_qty={:.8} net_qty={:.8} missing mark price, threshold_usdt={:.2} ready_ts={}",
+                    symbol,
+                    asset,
+                    open_qty,
+                    hedge_qty,
+                    net_qty,
+                    ARB_STARTUP_NET_EXPOSURE_PANIC_USDT,
+                    ready_ts
+                );
+            }
+            let exposure_usdt = net_qty.abs() * price;
+            if exposure_usdt > ARB_STARTUP_NET_EXPOSURE_PANIC_USDT {
+                panic!(
+                    "Arb startup stable net exposure too large: symbol={} asset={} open_qty={:.8} hedge_qty={:.8} net_qty={:.8} price={:.8} exposure_usdt={:.8} threshold_usdt={:.2} ready_ts={}",
                     symbol,
                     asset,
                     open_qty,
                     hedge_qty,
                     net_qty,
                     price,
+                    exposure_usdt,
+                    ARB_STARTUP_NET_EXPOSURE_PANIC_USDT,
                     ready_ts
                 );
             }
+            checked += 1;
+            info!(
+                "Arb startup stable net checked: symbol={} asset={} open_qty={:.8} hedge_qty={:.8} net_qty={:.8} price={:.8} exposure_usdt={:.8} threshold_usdt={:.2} pending_write=false ready_ts={}",
+                symbol,
+                asset,
+                open_qty,
+                hedge_qty,
+                net_qty,
+                price,
+                exposure_usdt,
+                ARB_STARTUP_NET_EXPOSURE_PANIC_USDT,
+                ready_ts
+            );
         }
-        initialized
+        checked
     }
 
     pub fn bump_trade_update_seq(&self) {
@@ -3209,7 +3229,11 @@ mod tests {
             .is_ok());
     }
 
-    fn install_binance_arb_hedge_exposure_fixture(open_qty: f32, hedge_qty: f32) {
+    fn install_binance_arb_hedge_exposure_fixture(
+        open_qty: f32,
+        hedge_qty: f32,
+        startup_gate_enabled: bool,
+    ) -> Rc<RefCell<StrategyManager>> {
         let mut open_um = BasicUmManager::new(Exchange::Binance);
         if open_qty != 0.0 {
             let side = if open_qty > 0.0 { 'L' } else { 'S' };
@@ -3253,6 +3277,7 @@ mod tests {
             BasicAccountScope::BinanceUnified,
             Rc::new(RefCell::new(usdt_mgr)),
         );
+        let strategy_mgr = Rc::new(RefCell::new(StrategyManager::new()));
 
         let inner = MonitorChannelInner {
             open_venue: TradingVenue::BinanceMargin,
@@ -3262,7 +3287,7 @@ mod tests {
             usdt_mgrs,
             price_table: Rc::new(RefCell::new(price_table)),
             venue_min_qty_tables: HashMap::new(),
-            strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
+            strategy_mgr: strategy_mgr.clone(),
             orphan_strategy_mgr: Rc::new(RefCell::new(OrphanStrategyManager::new())),
             order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
                 BinanceAccountMode::Unified,
@@ -3270,17 +3295,18 @@ mod tests {
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
-            arb_startup_net_gate: ArbStartupNetGate::new(false),
+            arb_startup_net_gate: ArbStartupNetGate::new(startup_gate_enabled),
         };
 
         MONITOR_CHANNEL.with(|mc| {
             *mc.borrow_mut() = Some(inner);
         });
+        strategy_mgr
     }
 
     #[test]
     fn arb_hedge_exposure_risk_allows_reducing_when_current_over_limit() {
-        install_binance_arb_hedge_exposure_fixture(20.0, 0.0);
+        install_binance_arb_hedge_exposure_fixture(20.0, 0.0, false);
 
         assert!(MonitorChannel::instance()
             .check_arb_hedge_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, -5.0)
@@ -3289,7 +3315,7 @@ mod tests {
 
     #[test]
     fn arb_hedge_exposure_risk_rejects_expanding_when_current_over_limit() {
-        install_binance_arb_hedge_exposure_fixture(20.0, 0.0);
+        install_binance_arb_hedge_exposure_fixture(20.0, 0.0, false);
 
         let err = MonitorChannel::instance()
             .check_arb_hedge_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, 5.0)
@@ -3299,11 +3325,39 @@ mod tests {
 
     #[test]
     fn arb_hedge_exposure_risk_allows_expanding_when_current_within_limit() {
-        install_binance_arb_hedge_exposure_fixture(1.0, 0.0);
+        install_binance_arb_hedge_exposure_fixture(1.0, 0.0, false);
 
         assert!(MonitorChannel::instance()
             .check_arb_hedge_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, 5.0)
             .is_ok());
+    }
+
+    #[test]
+    fn arb_startup_net_gate_checks_small_net_without_pending_write() {
+        let strategy_mgr = install_binance_arb_hedge_exposure_fixture(1.0, 0.0, true);
+
+        MonitorChannel::instance()
+            .mark_arb_startup_net_seen_for_venue(TradingVenue::BinanceMargin, "test-open");
+        MonitorChannel::instance()
+            .mark_arb_startup_net_seen_for_venue(TradingVenue::BinanceFutures, "test-hedge");
+
+        assert!(
+            MonitorChannel::instance()
+                .arb_startup_net_gate_status()
+                .ready
+        );
+        assert_eq!(strategy_mgr.borrow().len(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Arb startup stable net exposure too large")]
+    fn arb_startup_net_gate_panics_when_net_exposure_over_500u() {
+        install_binance_arb_hedge_exposure_fixture(6.0, 0.0, true);
+
+        MonitorChannel::instance()
+            .mark_arb_startup_net_seen_for_venue(TradingVenue::BinanceMargin, "test-open");
+        MonitorChannel::instance()
+            .mark_arb_startup_net_seen_for_venue(TradingVenue::BinanceFutures, "test-hedge");
     }
 
     #[test]
