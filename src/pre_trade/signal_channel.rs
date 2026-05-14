@@ -437,7 +437,13 @@ fn handle_trade_signal(signal: TradeSignal) {
                     );
                     strategy_mgr.borrow_mut().insert(Box::new(strategy));
                 } else {
-                    warn!("⚠️ ArbOpen: strategy_id={} {} 未激活", strategy_id, symbol);
+                    let reason = strategy
+                        .open_strategy_inactive_reason()
+                        .unwrap_or("unknown");
+                    warn!(
+                        "⚠️ ArbOpen: strategy_id={} {} 未激活 reason={}",
+                        strategy_id, symbol, reason
+                    );
                 }
             }
             Err(err) => warn!("failed to decode ArbOpen context: {err}"),

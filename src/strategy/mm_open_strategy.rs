@@ -71,7 +71,7 @@ impl MarketMakerOpenStrategy {
                         "MarketMakerOpenStrategy: strategy_id={} decode MMOpen failed: {}",
                         self.open_state.strategy_id, err
                     );
-                    self.open_state.alive = false;
+                    self.mark_open_strategy_inactive(format!("decode MMOpen failed: {}", err));
                 }
             },
             SignalType::MMCancel => match MmCancelCtx::from_bytes(signal.context.clone()) {

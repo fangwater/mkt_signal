@@ -58,6 +58,7 @@ pub struct OpenStrategyState {
     pub price_qv: QuantizedValue,
     pub price_offset: f64,
     pub alive: bool,
+    pub inactive_reason: Option<String>,
 }
 
 pub struct OpenSignalInput {
@@ -119,6 +120,7 @@ impl OpenStrategyState {
             price_qv: QuantizedValue::zero(),
             price_offset: 0.0,
             alive: true,
+            inactive_reason: None,
         }
     }
 }
@@ -179,6 +181,16 @@ pub trait OpenStrategyCommon {
 
     fn log_open_deleveraging_risk_rejects(&self) -> bool {
         false
+    }
+
+    fn mark_open_strategy_inactive(&mut self, reason: String) {
+        let state = self.open_state_mut();
+        state.alive = false;
+        state.inactive_reason = Some(reason);
+    }
+
+    fn open_strategy_inactive_reason(&self) -> Option<&str> {
+        self.open_state().inactive_reason.as_deref()
     }
 
     fn enable_open_order_rate_limit(&self) -> bool {
@@ -291,7 +303,6 @@ pub trait OpenStrategyCommon {
             .borrow()
             .get(client_order_id);
         let Some(order) = order else {
-            self.open_state_mut().alive = false;
             return Err(format!(
                 "order not found: client_order_id={}",
                 client_order_id
@@ -320,7 +331,6 @@ pub trait OpenStrategyCommon {
                 if let Err(e) =
                     TradeEngHub::publish_order_request_for(client_order_id, exchange, &req_bin)
                 {
-                    self.open_state_mut().alive = false;
                     return Err(format!(
                         "publish order request failed: symbol={} exchange={} err={}",
                         symbol, exchange, e
@@ -329,10 +339,7 @@ pub trait OpenStrategyCommon {
                 self.schedule_order_query_watchdog(client_order_id);
                 Ok(())
             }
-            Err(e) => {
-                self.open_state_mut().alive = false;
-                Err(format!("get order request bytes failed: {}", e))
-            }
+            Err(e) => Err(format!("get order request bytes failed: {}", e)),
         }
     }
 
@@ -388,7 +395,7 @@ pub trait OpenStrategyCommon {
                 self.strategy_name(),
                 self.strategy_id()
             );
-            self.open_state_mut().alive = false;
+            self.mark_open_strategy_inactive("empty symbol".to_string());
             return None;
         }
 
@@ -399,7 +406,7 @@ pub trait OpenStrategyCommon {
                 self.strategy_id(),
                 input.venue_u8
             );
-            self.open_state_mut().alive = false;
+            self.mark_open_strategy_inactive(format!("invalid venue={}", input.venue_u8));
             return None;
         };
         let Some(side) = Side::from_u8(input.side_u8) else {
@@ -409,7 +416,7 @@ pub trait OpenStrategyCommon {
                 self.strategy_id(),
                 input.side_u8
             );
-            self.open_state_mut().alive = false;
+            self.mark_open_strategy_inactive(format!("invalid side={}", input.side_u8));
             return None;
         };
         let Some(order_type) = OrderType::from_u8(input.order_type_u8) else {
@@ -419,7 +426,7 @@ pub trait OpenStrategyCommon {
                 self.strategy_id(),
                 input.order_type_u8
             );
-            self.open_state_mut().alive = false;
+            self.mark_open_strategy_inactive(format!("invalid order_type={}", input.order_type_u8));
             return None;
         };
 
@@ -430,7 +437,7 @@ pub trait OpenStrategyCommon {
                 self.strategy_id(),
                 input.qty
             );
-            self.open_state_mut().alive = false;
+            self.mark_open_strategy_inactive(format!("invalid qty={}", input.qty));
             return None;
         }
         if input.price <= 0.0 {
@@ -441,7 +448,10 @@ pub trait OpenStrategyCommon {
                 input.price,
                 order_type
             );
-            self.open_state_mut().alive = false;
+            self.mark_open_strategy_inactive(format!(
+                "invalid price={} order_type={:?}",
+                input.price, order_type
+            ));
             return None;
         }
         if input.price_count <= 0 || input.amount_count <= 0 {
@@ -453,7 +463,10 @@ pub trait OpenStrategyCommon {
                 input.price_count,
                 input.amount_count
             );
-            self.open_state_mut().alive = false;
+            self.mark_open_strategy_inactive(format!(
+                "invalid {} qv count price_count={} amount_count={}",
+                input.signal_kind, input.price_count, input.amount_count
+            ));
             return None;
         }
         if !venue.supports_pre_trade_stack() {
@@ -485,7 +498,7 @@ pub trait OpenStrategyCommon {
                     symbol,
                     e
                 );
-                self.open_state_mut().alive = false;
+                self.mark_open_strategy_inactive(format!("symbol exposure risk failed: {}", e));
                 return None;
             }
             if let Err(e) = MonitorChannel::instance().check_total_exposure() {
@@ -504,7 +517,7 @@ pub trait OpenStrategyCommon {
                     self.strategy_id(),
                     e
                 );
-                self.open_state_mut().alive = false;
+                self.mark_open_strategy_inactive(format!("total exposure risk failed: {}", e));
                 return None;
             }
         }
@@ -533,7 +546,7 @@ pub trait OpenStrategyCommon {
                     symbol,
                     e
                 );
-                self.open_state_mut().alive = false;
+                self.mark_open_strategy_inactive(format!("pending limit order risk failed: {}", e));
                 return None;
             }
         }
@@ -572,7 +585,7 @@ pub trait OpenStrategyCommon {
                     symbol,
                     e
                 );
-                self.open_state_mut().alive = false;
+                self.mark_open_strategy_inactive(format!("open order rate limit triggered: {}", e));
                 return None;
             }
         }
@@ -588,7 +601,10 @@ pub trait OpenStrategyCommon {
                     venue,
                     err
                 );
-                self.open_state_mut().alive = false;
+                self.mark_open_strategy_inactive(format!(
+                    "resolve qty multiplier failed venue={:?}: {}",
+                    venue, err
+                ));
                 return None;
             }
         };
@@ -667,7 +683,7 @@ pub trait OpenStrategyCommon {
                     required_amount,
                     available_balance
                 );
-                self.open_state_mut().alive = false;
+                self.mark_open_strategy_inactive(reject_reason);
                 return None;
             }
         }
@@ -692,7 +708,10 @@ pub trait OpenStrategyCommon {
                     venue,
                     err
                 );
-                self.open_state_mut().alive = false;
+                self.mark_open_strategy_inactive(format!(
+                    "open qty to base failed venue={:?}: {}",
+                    venue, err
+                ));
                 return None;
             }
         };
@@ -715,7 +734,7 @@ pub trait OpenStrategyCommon {
                     self.strategy_id(),
                     e
                 );
-                self.open_state_mut().alive = false;
+                self.mark_open_strategy_inactive(format!("leverage risk failed: {}", e));
                 return None;
             }
         }
@@ -738,7 +757,7 @@ pub trait OpenStrategyCommon {
                     self.strategy_id(),
                     e
                 );
-                self.open_state_mut().alive = false;
+                self.mark_open_strategy_inactive(format!("max position risk failed: {}", e));
                 return None;
             }
         }
@@ -802,6 +821,7 @@ pub trait OpenStrategyCommon {
                 self.strategy_id(),
                 err
             );
+            self.mark_open_strategy_inactive(format!("open order send failed: {}", err));
             self.handle_open_failed_cleanup(client_order_id);
             return None;
         } else {
@@ -1835,7 +1855,14 @@ pub trait OpenStrategyCommon {
         self.clear_query_watchdogs(client_order_id);
         self.terminalize_open_order_before_cleanup(client_order_id);
         self.cleanup_strategy_orders();
-        self.open_state_mut().alive = false;
+        if self.open_strategy_inactive_reason().is_none() {
+            self.mark_open_strategy_inactive(format!(
+                "open failed cleanup client_order_id={}",
+                client_order_id
+            ));
+        } else {
+            self.open_state_mut().alive = false;
+        }
     }
 
     fn send_order_query(&mut self, client_order_id: i64, reason: PendingOrderQueryReason) -> bool {

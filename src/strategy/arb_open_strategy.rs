@@ -105,7 +105,7 @@ impl ArbOpenStrategy {
                         "ArbOpenStrategy: strategy_id={} decode ArbOpen failed: {}",
                         self.open_state.strategy_id, err
                     );
-                    self.open_state.alive = false;
+                    self.mark_open_strategy_inactive(format!("decode ArbOpen failed: {}", err));
                 }
             },
             SignalType::ArbCancel => match ArbCancelCtx::from_bytes(signal.context.clone()) {
