@@ -1457,6 +1457,7 @@ struct ArbHedgeBuildParams {
     signal: f64,
     signal_qtl: Option<f64>,
     volatility: f64,
+    amount_cap_u: f64,
     hedge_vol_multiplier: f64,
     hedge_offset_ratio: f64,
     hedge_price_offset_limit_lower: f64,
@@ -1479,6 +1480,7 @@ fn resolve_arb_hedge_build_params(
             .clone()
             .ok_or_else(|| "return_model_service unavailable".to_string())?;
         let enable_return_score_adjust_hedge = arb.enable_return_score_adjust_hedge;
+        let amount_cap_u = arb.resolve_order_amount_u(symbol);
         let hedge_vol_multiplier = arb.hedge_vol_multiplier;
         let hedge_offset_ratio = arb.hedge_offset_ratio;
         let (hedge_price_offset_limit_lower, hedge_price_offset_limit_upper) =
@@ -1507,6 +1509,7 @@ fn resolve_arb_hedge_build_params(
             signal,
             signal_qtl,
             volatility,
+            amount_cap_u,
             hedge_vol_multiplier,
             hedge_offset_ratio,
             hedge_price_offset_limit_lower,
@@ -1556,6 +1559,29 @@ fn should_use_arb_hedge_taker(
     Some((pct_change, threshold_pct / 100.0))
 }
 
+fn cap_arb_hedge_due_qty_by_amount_u(due_hedge_qty: f64, mid_price: f64, amount_cap_u: f64) -> f64 {
+    if !(due_hedge_qty.is_finite() && due_hedge_qty.abs() > 0.0) {
+        return due_hedge_qty;
+    }
+    if !(mid_price.is_finite() && mid_price > 0.0) {
+        return due_hedge_qty;
+    }
+    if !(amount_cap_u.is_finite() && amount_cap_u > 0.0) {
+        return due_hedge_qty;
+    }
+
+    let max_base_qty = amount_cap_u / mid_price;
+    if !(max_base_qty.is_finite() && max_base_qty > 0.0) {
+        return due_hedge_qty;
+    }
+    let capped_abs = due_hedge_qty.abs().min(max_base_qty);
+    if due_hedge_qty.is_sign_negative() {
+        -capped_abs
+    } else {
+        capped_abs
+    }
+}
+
 fn drive_shared_arb_hedge_query(
     source: &'static str,
     runtime: &ArbShellRuntime,
@@ -1598,6 +1624,20 @@ fn drive_shared_arb_hedge_query(
     let mid_price = Bbo::new(quote.bid, quote.ask, quote.ts)
         .get_mid_price()
         .unwrap_or_else(|| ((quote.bid + quote.ask) * 0.5).max(0.0));
+    let capped_due_hedge_qty =
+        cap_arb_hedge_due_qty_by_amount_u(query.due_hedge_qty, mid_price, params.amount_cap_u);
+    if capped_due_hedge_qty.abs() + 1e-12 < query.due_hedge_qty.abs() {
+        log::info!(
+            "{source}: ArbHedge due qty capped strategy_id={} symbol={} request_seq={} due_hedge_qty={:.8} capped_due_hedge_qty={:.8} mid_price={:.8} amount_cap_u={:.8}",
+            query.strategy_id,
+            symbol,
+            query.request_seq,
+            query.due_hedge_qty,
+            capped_due_hedge_qty,
+            mid_price,
+            params.amount_cap_u
+        );
+    }
     let table = if hedge_venue == runtime.venues.0 {
         &runtime.open_min_qty_table
     } else {
@@ -1613,9 +1653,9 @@ fn drive_shared_arb_hedge_query(
         enable_return_score_adjust_hedge: params.enable_return_score_adjust_hedge,
         hedge_vol_multiplier: params.hedge_vol_multiplier,
         hedge_offset_ratio: params.hedge_offset_ratio,
-        order_amount_u: query.due_hedge_qty.abs() * mid_price,
-        hedge_target_qty: query.due_hedge_qty,
-        target_base_qty: Some(query.due_hedge_qty),
+        order_amount_u: capped_due_hedge_qty.abs() * mid_price,
+        hedge_target_qty: capped_due_hedge_qty,
+        target_base_qty: Some(capped_due_hedge_qty),
         inventory_net_qty: query.net_qty,
         symbol_exposure_u: query.symbol_exposure_u,
         hedge_orders_per_round: ARB_HEDGE_ORDERS_PER_ROUND,
@@ -1639,16 +1679,18 @@ fn drive_shared_arb_hedge_query(
         }
     };
     log::info!(
-        "{source}: ArbHedge single-order plan strategy_id={} symbol={} request_seq={} split_policy=single_order_high_frequency hedge_orders_per_round={} plan_levels={} target_base_qty={:.8} due_hedge_qty={:.8} pending_hedge_qty={:.8} mid_price={:.8}",
+        "{source}: ArbHedge single-order plan strategy_id={} symbol={} request_seq={} split_policy=single_order_high_frequency hedge_orders_per_round={} plan_levels={} target_base_qty={:.8} due_hedge_qty={:.8} capped_due_hedge_qty={:.8} pending_hedge_qty={:.8} mid_price={:.8} amount_cap_u={:.8}",
         query.strategy_id,
         symbol,
         query.request_seq,
         ARB_HEDGE_ORDERS_PER_ROUND,
         plan.levels.len(),
+        capped_due_hedge_qty,
         query.due_hedge_qty,
-        query.due_hedge_qty,
+        capped_due_hedge_qty,
         query.pending_hedge_qty,
-        mid_price
+        mid_price,
+        params.amount_cap_u
     );
     let Some(level) = plan.levels.first() else {
         log::warn!(
@@ -1738,7 +1780,7 @@ fn drive_shared_arb_hedge_query(
     }
 
     log::info!(
-        "{source}: ArbHedge reply strategy_id={} symbol={} side={:?} qty={:.8} price={:.8} mode={} request_seq={} net_qty={:.8} due_hedge_qty={:.8} pending_hedge_qty={:.8}",
+        "{source}: ArbHedge reply strategy_id={} symbol={} side={:?} qty={:.8} price={:.8} mode={} request_seq={} net_qty={:.8} due_hedge_qty={:.8} capped_due_hedge_qty={:.8} pending_hedge_qty={:.8}",
         query.strategy_id,
         symbol,
         hedge_side,
@@ -1748,6 +1790,7 @@ fn drive_shared_arb_hedge_query(
         query.request_seq,
         query.net_qty,
         query.due_hedge_qty,
+        capped_due_hedge_qty,
         query.pending_hedge_qty
     );
 }
@@ -4951,5 +4994,30 @@ mod hedge_offset_overrides_tests {
         assert!((state.resolve_open_offset_lower("BTCUSDT") - 0.001).abs() < 1e-9);
         assert!((state.resolve_open_offset_lower("btc-usdt") - 0.001).abs() < 1e-9);
         assert!((state.resolve_open_offset_lower("btc_usdt") - 0.001).abs() < 1e-9);
+    }
+
+    #[test]
+    fn arb_hedge_due_qty_cap_limits_positive_qty_by_amount_u() {
+        let capped = cap_arb_hedge_due_qty_by_amount_u(5.0, 100.0, 250.0);
+        assert!((capped - 2.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn arb_hedge_due_qty_cap_preserves_negative_sign() {
+        let capped = cap_arb_hedge_due_qty_by_amount_u(-5.0, 100.0, 250.0);
+        assert!((capped + 2.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn arb_hedge_due_qty_cap_keeps_qty_below_amount_u() {
+        let capped = cap_arb_hedge_due_qty_by_amount_u(2.0, 100.0, 250.0);
+        assert!((capped - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn arb_hedge_due_qty_cap_ignores_invalid_inputs() {
+        assert_eq!(cap_arb_hedge_due_qty_by_amount_u(5.0, 0.0, 250.0), 5.0);
+        assert_eq!(cap_arb_hedge_due_qty_by_amount_u(5.0, 100.0, 0.0), 5.0);
+        assert_eq!(cap_arb_hedge_due_qty_by_amount_u(5.0, 100.0, f64::NAN), 5.0);
     }
 }
