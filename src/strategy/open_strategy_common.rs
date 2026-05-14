@@ -488,17 +488,6 @@ pub trait OpenStrategyCommon {
                 self.open_state_mut().alive = false;
                 return None;
             }
-        } else {
-            info!(
-                "{}: strategy_id={} skip 单品种敞口风控 for arb close symbol={} side={:?} qty={:.8}",
-                self.strategy_name(),
-                self.strategy_id(),
-                symbol,
-                side,
-                input.qty
-            );
-        }
-        if !skip_position_risk_checks {
             if let Err(e) = MonitorChannel::instance().check_total_exposure() {
                 self.log_open_deleveraging_risk_reject(
                     "总敞口风控",
@@ -518,15 +507,6 @@ pub trait OpenStrategyCommon {
                 self.open_state_mut().alive = false;
                 return None;
             }
-        } else {
-            info!(
-                "{}: strategy_id={} skip 总敞口风控 for arb close symbol={} side={:?} qty={:.8}",
-                self.strategy_name(),
-                self.strategy_id(),
-                symbol,
-                side,
-                input.qty
-            );
         }
         if order_type == OrderType::Limit {
             let monitor = MonitorChannel::instance();
@@ -717,10 +697,8 @@ pub trait OpenStrategyCommon {
             }
         };
         let current_base_qty = MonitorChannel::instance().get_position_qty(&symbol, venue);
-        let projected_base_qty = current_base_qty + add_base_qty;
-        if !skip_position_risk_checks
-            && projected_base_qty.abs() > current_base_qty.abs() + 1e-12_f64
-        {
+        let next_base_qty = current_base_qty + add_base_qty;
+        if !skip_position_risk_checks && next_base_qty.abs() > current_base_qty.abs() + 1e-12_f64 {
             if let Err(e) = MonitorChannel::instance().check_leverage() {
                 self.log_open_deleveraging_risk_reject(
                     "杠杆风控",

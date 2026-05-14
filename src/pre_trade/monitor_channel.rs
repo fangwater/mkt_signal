@@ -2292,19 +2292,19 @@ impl MonitorChannel {
                     return Err(e);
                 }
             };
-            let projected_qty = current_open_qty + add_base_qty;
+            let next_qty = current_open_qty + add_base_qty;
             let current_usdt = current_open_qty.abs() * price;
             let order_usdt = add_base_qty.abs() * price;
-            let projected_usdt = projected_qty.abs() * price;
+            let next_usdt = next_qty.abs() * price;
             let limit_eps = 1e-6_f64;
 
-            if projected_usdt <= current_usdt + limit_eps {
+            if next_usdt <= current_usdt + limit_eps {
                 return Ok(());
             }
 
-            if projected_usdt > max_pos_u + limit_eps {
+            if next_usdt > max_pos_u + limit_eps {
                 info!(
-                    "max_pos_u check reject detail: symbol={} base_asset={} venue={:?} price_source={} mark_symbol={} price={:.8} qty_unit={} raw_qty={:.8} fut_symbol_key={:?} qty_multiplier={:?} current_open_qty(base)={:.8} add_base_qty={:.8} projected_qty(base)={:.8} current_usdt={:.4} order_usdt={:.4} projected_usdt={:.4} max_pos_u={:.4}",
+                    "max_pos_u check reject detail: symbol={} base_asset={} venue={:?} price_source={} mark_symbol={} price={:.8} qty_unit={} raw_qty={:.8} fut_symbol_key={:?} qty_multiplier={:?} current_open_qty(base)={:.8} add_base_qty={:.8} next_qty(base)={:.8} current_usdt={:.4} order_usdt={:.4} next_usdt={:.4} max_pos_u={:.4}",
                     symbol,
                     base_asset,
                     open_venue,
@@ -2317,25 +2317,25 @@ impl MonitorChannel {
                     qty_multiplier,
                     current_open_qty,
                     add_base_qty,
-                    projected_qty,
+                    next_qty,
                     current_usdt,
                     order_usdt,
-                    projected_usdt,
+                    next_usdt,
                     max_pos_u
                 );
                 warn!(
-                    "symbol={} 当前持仓={:.6}({:.4}USDT) 下单数量={:.6}({:.4}USDT) 预计持仓={:.4}USDT 超过阈值 {:.4}USDT",
+                    "symbol={} 当前持仓={:.6}({:.4}USDT) 下单数量={:.6}({:.4}USDT) 下单后持仓={:.4}USDT 超过阈值 {:.4}USDT",
                     symbol,
                     current_open_qty,
                     current_usdt,
                     add_base_qty,
                     order_usdt,
-                    projected_usdt,
+                    next_usdt,
                     max_pos_u
                 );
                 return Err(format!(
-                    "symbol={} 预计持仓 {:.4}USDT 超过阈值 {:.4}USDT",
-                    symbol, projected_usdt, max_pos_u
+                    "symbol={} 下单后持仓 {:.4}USDT 超过阈值 {:.4}USDT",
+                    symbol, next_usdt, max_pos_u
                 ));
             }
 

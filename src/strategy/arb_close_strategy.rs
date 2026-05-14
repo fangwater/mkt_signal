@@ -286,14 +286,6 @@ impl OpenStrategyCommon for ArbCloseStrategy {
     ) -> Result<f64, String> {
         MonitorChannel::instance().qty_multiplier_for_venue(venue, symbol)
     }
-
-    fn skip_open_position_risk_checks(&self) -> bool {
-        true
-    }
-
-    fn enable_open_order_rate_limit(&self) -> bool {
-        false
-    }
 }
 
 impl Strategy for ArbCloseStrategy {
