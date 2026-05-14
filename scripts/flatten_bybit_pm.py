@@ -6,13 +6,14 @@ Self-contained: no imports from other scripts in this repo.
 Four-phase pipeline per symbol (no dust convert):
   Phase R — explicit /v5/account/no-convert-repay (per repo memory; buying back
             alone updates walletBalance but does NOT zero borrowAmount/LTV/IM)
-  Phase U — USDT perpetual (category=linear) reduce-only MARKET close
+  Phase U — USDT perpetual (category=linear) MARKET align/close
   Phase B — clear-mode only — spot BUY (category=spot), THEN explicit repay
   Phase S — clear-mode only — spot SELL for USDT
 
 Modes:
-  align (default) — net_qty = walletBalance - borrowAmount + linear_position = 0
-  clear           — close linear to 0; B or S to drain asset
+  align (default) — net_qty = walletBalance - borrowAmount + linear_position = 0;
+                    linear order is allowed to add/flip to match spot exposure
+  clear           — close linear to 0 with reduceOnly; B or S to drain asset
 
 Behavior:
   - CWD basename must match ^bybit_fr_ or ^bybit-intra-.
@@ -79,6 +80,7 @@ class SymbolPlan:
     net_qty: Decimal
     linear_side: Optional[str]
     linear_qty: Decimal
+    linear_reduce_only: bool
     linear_skip_reason: Optional[str]
     buyback_amt: Decimal
     buyback_skip_reason: Optional[str]
@@ -371,6 +373,7 @@ def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
 
     linear_side: Optional[str] = None
     linear_qty = ZERO
+    linear_reduce_only = mode == "clear"
     linear_skip: Optional[str] = None
     buyback_amt = ZERO
     buyback_skip: Optional[str] = None
@@ -395,11 +398,11 @@ def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
             )
             linear_qty = ZERO
             linear_side = None
-        elif linear_side == "Sell" and pos <= 0:
+        elif linear_reduce_only and linear_side == "Sell" and pos <= 0:
             linear_skip = f"reduceOnly Sell needs pos>0, have {format_decimal(pos)}"
             linear_qty = ZERO
             linear_side = None
-        elif linear_side == "Buy" and pos >= 0:
+        elif linear_reduce_only and linear_side == "Buy" and pos >= 0:
             linear_skip = f"reduceOnly Buy needs pos<0, have {format_decimal(pos)}"
             linear_qty = ZERO
             linear_side = None
@@ -431,6 +434,7 @@ def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
         net_qty=net_qty,
         linear_side=linear_side,
         linear_qty=linear_qty,
+        linear_reduce_only=linear_reduce_only,
         linear_skip_reason=linear_skip,
         buyback_amt=buyback_amt,
         buyback_skip_reason=buyback_skip,
@@ -448,7 +452,7 @@ def print_plan(env_name, mode, plans: List[SymbolPlan], execute: bool) -> None:
     header = (
         f"{'Symbol':<12} {'Asset':<6} {'Wallet':>14} {'Borrowed':>14} {'Interest':>10} "
         f"{'Pos':>14} {'Repay':>12} {'Net':>12} {'Lin Side':>9} {'Lin Qty':>14} "
-        f"{'Buyback':>12} {'Selldown':>12} Notes"
+        f"{'Lin RO':>6} {'Buyback':>12} {'Selldown':>12} Notes"
     )
     print(header)
     print("-" * len(header))
@@ -473,6 +477,7 @@ def print_plan(env_name, mode, plans: List[SymbolPlan], execute: bool) -> None:
             f"{format_decimal(p.net_qty):>12} "
             f"{(p.linear_side or '-'):>9} "
             f"{format_decimal(p.linear_qty):>14} "
+            f"{str(p.linear_reduce_only).lower():>6} "
             f"{format_decimal(p.buyback_amt):>12} "
             f"{format_decimal(p.selldown_amt):>12} "
             f"{'; '.join(notes)}"
@@ -553,10 +558,10 @@ def execute_linear(plan: SymbolPlan, api_key, api_secret) -> PhaseOutcome:
         "side": plan.linear_side,
         "orderType": "Market",
         "qty": qty,
-        "reduceOnly": True,
+        "reduceOnly": plan.linear_reduce_only,
         "timeInForce": "IOC",
     }
-    print(f"\n[linear] {sym} {plan.linear_side} qty={qty} reduceOnly=true")
+    print(f"\n[linear] {sym} {plan.linear_side} qty={qty} reduceOnly={str(plan.linear_reduce_only).lower()}")
     status, resp = bybit_private("POST", "/v5/order/create", api_key, api_secret, body=body)
     ok_http = 200 <= status < 300
     ok_ret, brief = bybit_ok(resp)
@@ -667,7 +672,7 @@ def main() -> None:
         r = results_by_symbol[p.state.spec.symbol]
         r.repay = execute_repay(p, api_key, api_secret)
 
-    print("\n--- Phase U: linear reduce-only ---")
+    print("\n--- Phase U: linear align/close ---")
     for p in plans:
         r = results_by_symbol[p.state.spec.symbol]
         r.linear = execute_linear(p, api_key, api_secret)

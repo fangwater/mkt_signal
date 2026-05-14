@@ -6,14 +6,15 @@ Self-contained: no imports from other scripts in this repo.
 Four-phase pipeline per symbol (no dust convert):
   Phase R — explicit /unified/loans repay (per repo memory; order-level auto_repay
             does not retire historical borrow)
-  Phase U — USDT futures reduce-only MARKET close
+  Phase U — USDT futures MARKET align/close
   Phase B — clear-mode only — spot BUY (account=unified) with auto_repay=true,
             THEN explicit /unified/loans repay (still required per memory)
   Phase S — clear-mode only — spot SELL for USDT (free>borrow case)
 
 Modes:
-  align (default) — net_qty = available + futures_position_coins - borrowed = 0
-  clear           — close futures fully; then B or S to drain asset
+  align (default) — net_qty = available + futures_position_coins - borrowed = 0;
+                    futures order is allowed to add/flip to match spot exposure
+  clear           — close futures fully with reduce_only; then B or S to drain asset
 
 Behavior:
   - CWD basename must match ^gate_fr_ or ^gate-intra-.
@@ -83,6 +84,7 @@ class SymbolPlan:
     net_qty: Decimal
     futures_side: Optional[str]   # "buy" / "sell"
     futures_contracts: Decimal
+    futures_reduce_only: bool
     futures_skip_reason: Optional[str]
     buyback_amt: Decimal
     buyback_skip_reason: Optional[str]
@@ -373,6 +375,7 @@ def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
 
     futures_side: Optional[str] = None
     futures_contracts = ZERO
+    futures_reduce_only = mode == "clear"
     futures_skip: Optional[str] = None
     buyback_amt = ZERO
     buyback_skip: Optional[str] = None
@@ -397,11 +400,11 @@ def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
             )
             futures_contracts = ZERO
             futures_side = None
-        elif futures_side == "sell" and pos_contracts <= 0:
+        elif futures_reduce_only and futures_side == "sell" and pos_contracts <= 0:
             futures_skip = f"reduce_only sell needs pos>0 contracts, have {format_decimal(pos_contracts)}"
             futures_contracts = ZERO
             futures_side = None
-        elif futures_side == "buy" and pos_contracts >= 0:
+        elif futures_reduce_only and futures_side == "buy" and pos_contracts >= 0:
             futures_skip = f"reduce_only buy needs pos<0 contracts, have {format_decimal(pos_contracts)}"
             futures_contracts = ZERO
             futures_side = None
@@ -433,6 +436,7 @@ def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
         net_qty=net_qty,
         futures_side=futures_side,
         futures_contracts=futures_contracts,
+        futures_reduce_only=futures_reduce_only,
         futures_skip_reason=futures_skip,
         buyback_amt=buyback_amt,
         buyback_skip_reason=buyback_skip,
@@ -450,7 +454,7 @@ def print_plan(env_name, mode, plans: List[SymbolPlan], execute: bool) -> None:
     header = (
         f"{'Symbol':<12} {'Asset':<6} {'Free':>14} {'Borrowed':>14} {'Interest':>10} "
         f"{'PosContracts':>14} {'Repay':>12} {'Net':>12} {'Fut Side':>8} {'Contracts':>12} "
-        f"{'Buyback':>12} {'Selldown':>12} Notes"
+        f"{'Fut RO':>6} {'Buyback':>12} {'Selldown':>12} Notes"
     )
     print(header)
     print("-" * len(header))
@@ -475,6 +479,7 @@ def print_plan(env_name, mode, plans: List[SymbolPlan], execute: bool) -> None:
             f"{format_decimal(p.net_qty):>12} "
             f"{(p.futures_side or '-'):>8} "
             f"{format_decimal(p.futures_contracts):>12} "
+            f"{str(p.futures_reduce_only).lower():>6} "
             f"{format_decimal(p.buyback_amt):>12} "
             f"{format_decimal(p.selldown_amt):>12} "
             f"{'; '.join(notes)}"
@@ -560,9 +565,9 @@ def execute_futures(plan: SymbolPlan, api_key, api_secret) -> PhaseOutcome:
         "size": format_decimal(signed_size),
         "price": "0",
         "tif": "ioc",
-        "reduce_only": True,
+        "reduce_only": plan.futures_reduce_only,
     }
-    print(f"\n[futures] {sym} {side} size={body['size']} (contracts) reduce_only=true")
+    print(f"\n[futures] {sym} {side} size={body['size']} (contracts) reduce_only={str(plan.futures_reduce_only).lower()}")
     status, body_resp = gate_private("POST", "/futures/usdt/orders", api_key, api_secret, body=body)
     ok = 200 <= status < 300
     print(f"  [{'OK' if ok else 'ERR'}] status={status}")
@@ -670,7 +675,7 @@ def main() -> None:
         r = results_by_symbol[p.state.spec.symbol]
         r.repay = execute_repay(p, api_key, api_secret, idx)
 
-    print("\n--- Phase U: futures reduce-only ---")
+    print("\n--- Phase U: futures align/close ---")
     for p in plans:
         r = results_by_symbol[p.state.spec.symbol]
         r.futures = execute_futures(p, api_key, api_secret)
