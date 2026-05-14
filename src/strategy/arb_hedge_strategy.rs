@@ -620,6 +620,23 @@ impl ArbHedgeStrategy {
             );
             return;
         }
+        let signed_base_qty = signed_qty_from_side(side, order_base_qty);
+        if let Err(err) = MonitorChannel::instance().check_arb_hedge_exposure_risk(
+            &symbol,
+            venue,
+            signed_base_qty,
+        ) {
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} ArbHedge exposure risk reject symbol={} venue={:?} side={:?} base_qty={:.8} err={}",
+                self.strategy_id,
+                symbol,
+                venue,
+                side,
+                order_base_qty,
+                err
+            );
+            return;
+        }
         let pending_qv = Self::hedge_pending_qv_from_order(side, order_base_qty);
         let now_ts = get_timestamp_us();
         let borrowed = self.pending_hedge_queue.borrow(now_ts, pending_qv);
@@ -660,7 +677,7 @@ impl ArbHedgeStrategy {
         MonitorChannel::instance()
             .order_manager()
             .borrow_mut()
-            .create_order(
+            .create_order_with_pending_limit_flag(
                 venue,
                 client_order_id,
                 order_type,
@@ -670,6 +687,7 @@ impl ArbHedgeStrategy {
                 price,
                 false,
                 qty_multiplier,
+                false,
             );
         self.hedge_order_meta.insert(
             client_order_id,

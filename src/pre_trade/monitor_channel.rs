@@ -312,6 +312,16 @@ struct BasicState {
     total_um_unrealized_usdt: f64,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ArbHedgeExposureProjection {
+    symbol_current_exposure_usdt: f64,
+    symbol_next_exposure_usdt: f64,
+    symbol_limit_usdt: f64,
+    total_current_exposure_usdt: f64,
+    total_next_exposure_usdt: f64,
+    total_limit_usdt: f64,
+}
+
 impl MonitorChannel {
     /// 获取全局单例实例
     pub fn instance() -> Self {
@@ -2196,6 +2206,140 @@ impl MonitorChannel {
         })
     }
 
+    fn arb_hedge_exposure_projection_inner(
+        inner: &MonitorChannelInner,
+        symbol: &str,
+        hedge_venue: TradingVenue,
+        hedge_signed_base_qty: f64,
+    ) -> Result<ArbHedgeExposureProjection, String> {
+        let loader = PreTradeParamsLoader::instance();
+        let symbol_limit_ratio = loader.max_symbol_exposure_ratio();
+        let total_limit_ratio = loader.max_total_exposure_ratio();
+        let symbol_upper = symbol.to_uppercase();
+        let base_asset = extract_base_asset(&symbol_upper).ok_or_else(|| {
+            format!(
+                "无法识别 symbol={} 的基础资产，无法校验 ArbHedge 敞口",
+                symbol
+            )
+        })?;
+        let base_asset_upper = base_asset.to_uppercase();
+        let state = Self::compute_basic_state(inner);
+        let price_mapper = create_symbol_mapper(Self::mark_price_exchange_for_venues(
+            inner.open_venue,
+            inner.hedge_venue,
+        ));
+        let mark = if base_asset.eq_ignore_ascii_case("USDT") {
+            1.0
+        } else {
+            let mark_symbol = price_mapper.asset_to_price_symbol(&base_asset);
+            let price = inner
+                .price_table
+                .borrow()
+                .mark_price(&mark_symbol)
+                .unwrap_or(0.0);
+            if price <= 0.0 {
+                return Err(format!(
+                    "symbol={} 缺少 USDT 标记价格，无法校验 ArbHedge 敞口",
+                    symbol
+                ));
+            }
+            price
+        };
+        let (open_qty, hedge_qty) = state
+            .exposures
+            .get(&base_asset_upper)
+            .copied()
+            .unwrap_or((0.0, 0.0));
+        let current_net_qty = open_qty + hedge_qty;
+        let next_net_qty = if hedge_venue == inner.open_venue {
+            current_net_qty + hedge_signed_base_qty
+        } else if hedge_venue == inner.hedge_venue {
+            current_net_qty + hedge_signed_base_qty
+        } else {
+            return Err(format!(
+                "ArbHedge venue {:?} 不匹配 open={:?} hedge={:?}",
+                hedge_venue, inner.open_venue, inner.hedge_venue
+            ));
+        };
+        let symbol_current_exposure_usdt = current_net_qty.abs() * mark;
+        let symbol_next_exposure_usdt = next_net_qty.abs() * mark;
+        let max_pos_u = loader.max_pos_u_for_symbol(inner.open_venue, symbol);
+        if max_pos_u <= f64::EPSILON && symbol_limit_ratio > 0.0 {
+            return Err("max_pos_u 配置无效，无法校验 ArbHedge 单币敞口".to_string());
+        }
+        let symbol_limit_usdt = if symbol_limit_ratio > 0.0 {
+            max_pos_u * symbol_limit_ratio
+        } else {
+            f64::INFINITY
+        };
+
+        let total_current_exposure_usdt = state.abs_total_exposure_usdt;
+        let total_next_exposure_usdt = (total_current_exposure_usdt - symbol_current_exposure_usdt
+            + symbol_next_exposure_usdt)
+            .max(0.0);
+        let total_limit_usdt = if total_limit_ratio > 0.0 {
+            let total_equity = state.total_equity_usdt;
+            if total_equity <= f64::EPSILON {
+                return Err(
+                    "账户总权益(eq，含UPL如有合约)近似为 0，无法校验 ArbHedge 总敞口".to_string(),
+                );
+            }
+            total_equity * total_limit_ratio
+        } else {
+            f64::INFINITY
+        };
+
+        Ok(ArbHedgeExposureProjection {
+            symbol_current_exposure_usdt,
+            symbol_next_exposure_usdt,
+            symbol_limit_usdt,
+            total_current_exposure_usdt,
+            total_next_exposure_usdt,
+            total_limit_usdt,
+        })
+    }
+
+    /// ArbHedge 报单只做敞口风控：如果本单降低敞口则放行；否则当前敞口必须仍在阈值内。
+    pub fn check_arb_hedge_exposure_risk(
+        &self,
+        symbol: &str,
+        hedge_venue: TradingVenue,
+        hedge_signed_base_qty: f64,
+    ) -> Result<(), String> {
+        Self::with_inner(|inner| {
+            let projection = Self::arb_hedge_exposure_projection_inner(
+                inner,
+                symbol,
+                hedge_venue,
+                hedge_signed_base_qty,
+            )?;
+            let eps = 1e-6_f64;
+            if projection.symbol_next_exposure_usdt > projection.symbol_current_exposure_usdt + eps
+                && projection.symbol_current_exposure_usdt > projection.symbol_limit_usdt + eps
+            {
+                return Err(format!(
+                    "symbol={} ArbHedge 单币敞口扩大且当前已超限: current={:.4}USDT next={:.4}USDT limit={:.4}USDT",
+                    symbol,
+                    projection.symbol_current_exposure_usdt,
+                    projection.symbol_next_exposure_usdt,
+                    projection.symbol_limit_usdt
+                ));
+            }
+            if projection.total_next_exposure_usdt > projection.total_current_exposure_usdt + eps
+                && projection.total_current_exposure_usdt > projection.total_limit_usdt + eps
+            {
+                return Err(format!(
+                    "symbol={} ArbHedge 总敞口扩大且当前已超限: current={:.4}USDT next={:.4}USDT limit={:.4}USDT",
+                    symbol,
+                    projection.total_current_exposure_usdt,
+                    projection.total_next_exposure_usdt,
+                    projection.total_limit_usdt
+                ));
+            }
+            Ok(())
+        })
+    }
+
     /// 检查最大持仓限制
     pub fn ensure_max_pos_u(
         &self,
@@ -2772,7 +2916,7 @@ fn dispatch_order_update_generic<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::basic_account_msg::BasicPositionMsg;
+    use crate::common::basic_account_msg::{BasicBalanceMsg, BasicPositionMsg};
     use crate::common::min_qty_table::MinQtyTable;
     use crate::common::tick_math::QuantizedValue;
     use crate::pre_trade::price_table::PriceTable;
@@ -3062,6 +3206,103 @@ mod tests {
         // 当前持仓 20 * 100 = 2000 > max_pos_u(1000)，但减少仓位应放行。
         assert!(MonitorChannel::instance()
             .ensure_max_pos_u("FILUSDT", -5.0, 100.0)
+            .is_ok());
+    }
+
+    fn install_binance_arb_hedge_exposure_fixture(open_qty: f32, hedge_qty: f32) {
+        let mut open_um = BasicUmManager::new(Exchange::Binance);
+        if open_qty != 0.0 {
+            let side = if open_qty > 0.0 { 'L' } else { 'S' };
+            open_um.apply_position(&BasicPositionMsg::create(
+                0,
+                "FILUSDT".to_string(),
+                side,
+                open_qty.abs(),
+            ));
+        }
+        let mut hedge_um = BasicUmManager::new(Exchange::Binance);
+        if hedge_qty != 0.0 {
+            let side = if hedge_qty > 0.0 { 'L' } else { 'S' };
+            hedge_um.apply_position(&BasicPositionMsg::create(
+                0,
+                "FILUSDT".to_string(),
+                side,
+                hedge_qty.abs(),
+            ));
+        }
+
+        let open_leg = LegMgr::Futures {
+            exchange: Exchange::Binance,
+            um: Rc::new(RefCell::new(open_um)),
+            min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Binance))),
+        };
+        let hedge_leg = LegMgr::Futures {
+            exchange: Exchange::Binance,
+            um: Rc::new(RefCell::new(hedge_um)),
+            min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Binance))),
+        };
+
+        let mut price_table = PriceTable::new();
+        price_table.update_mark_price("FILUSDT", 100.0, 0);
+
+        let mut usdt_mgr = UsdtBalanceManager::new(Exchange::Binance);
+        usdt_mgr.apply_balance(&BasicBalanceMsg::create(0, "USDT".to_string(), 10_000.0));
+        let mut usdt_mgrs: HashMap<BasicAccountScope, Rc<RefCell<UsdtBalanceManager>>> =
+            HashMap::new();
+        usdt_mgrs.insert(
+            BasicAccountScope::BinanceUnified,
+            Rc::new(RefCell::new(usdt_mgr)),
+        );
+
+        let inner = MonitorChannelInner {
+            open_venue: TradingVenue::BinanceMargin,
+            hedge_venue: TradingVenue::BinanceFutures,
+            open_leg,
+            hedge_leg,
+            usdt_mgrs,
+            price_table: Rc::new(RefCell::new(price_table)),
+            venue_min_qty_tables: HashMap::new(),
+            strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
+            orphan_strategy_mgr: Rc::new(RefCell::new(OrphanStrategyManager::new())),
+            order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
+                BinanceAccountMode::Unified,
+            )))),
+            close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            trade_update_seq: 0,
+            latest_account_risk: HashMap::new(),
+            arb_startup_net_gate: ArbStartupNetGate::new(false),
+        };
+
+        MONITOR_CHANNEL.with(|mc| {
+            *mc.borrow_mut() = Some(inner);
+        });
+    }
+
+    #[test]
+    fn arb_hedge_exposure_risk_allows_reducing_when_current_over_limit() {
+        install_binance_arb_hedge_exposure_fixture(20.0, 0.0);
+
+        assert!(MonitorChannel::instance()
+            .check_arb_hedge_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, -5.0)
+            .is_ok());
+    }
+
+    #[test]
+    fn arb_hedge_exposure_risk_rejects_expanding_when_current_over_limit() {
+        install_binance_arb_hedge_exposure_fixture(20.0, 0.0);
+
+        let err = MonitorChannel::instance()
+            .check_arb_hedge_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, 5.0)
+            .unwrap_err();
+        assert!(err.contains("单币敞口扩大且当前已超限"), "err={err}");
+    }
+
+    #[test]
+    fn arb_hedge_exposure_risk_allows_expanding_when_current_within_limit() {
+        install_binance_arb_hedge_exposure_fixture(1.0, 0.0);
+
+        assert!(MonitorChannel::instance()
+            .check_arb_hedge_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, 5.0)
             .is_ok());
     }
 
