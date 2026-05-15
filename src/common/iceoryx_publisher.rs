@@ -1,3 +1,5 @@
+use anyhow::{anyhow, Result};
+use iceoryx2::config::Config;
 use iceoryx2::port::publisher::Publisher;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
@@ -33,6 +35,14 @@ fn signal_publish_dry_run_enabled() -> bool {
     SIGNAL_PUBLISH_DRY_RUN.load(Ordering::Relaxed)
 }
 
+fn is_corrupted_service_err(err_text: &str) -> bool {
+    err_text.contains("ServiceInCorruptedState")
+}
+
+fn is_publisher_capacity_err(err_text: &str) -> bool {
+    err_text.contains("ExceedsMaxSupportedPublishers")
+}
+
 fn describe_signal_payload(data: &[u8]) -> String {
     let signal_type = TradeSignal::get_signal_type(data)
         .map(|v| format!("{:?}", v))
@@ -49,11 +59,11 @@ fn describe_signal_payload(data: &[u8]) -> String {
 }
 
 impl<const PAYLOAD: usize> GenericPublisher<PAYLOAD> {
-    pub fn new(channel_name: &str) -> anyhow::Result<Self> {
+    pub fn new(channel_name: &str) -> Result<Self> {
         Self::new_with_prefix("signal_pubs", channel_name)
     }
 
-    pub fn new_with_prefix(prefix: &str, channel_name: &str) -> anyhow::Result<Self> {
+    pub fn new_with_prefix(prefix: &str, channel_name: &str) -> Result<Self> {
         let full_service = build_service_name(&format!("{}/{}", prefix, channel_name));
         let suppress_trade_signal_publish =
             prefix == "signal_pubs" && channel_name == "trade_signal";
@@ -77,16 +87,70 @@ impl<const PAYLOAD: usize> GenericPublisher<PAYLOAD> {
             .name(&NodeName::new(&node_id)?)
             .create::<ipc::Service>()?;
 
-        let service = node
-            .service_builder(&service_name)
-            .publish_subscribe::<[u8; PAYLOAD]>()
-            .max_publishers(1)
-            .max_subscribers(32)
-            .history_size(128)
-            .subscriber_max_buffer_size(256)
-            .open_or_create()?;
+        let service_builder = || {
+            node.service_builder(&service_name)
+                .publish_subscribe::<[u8; PAYLOAD]>()
+                .max_publishers(1)
+                .max_subscribers(32)
+                .history_size(128)
+                .subscriber_max_buffer_size(256)
+        };
 
-        let publisher = service.publisher_builder().create()?;
+        let service = match service_builder().open_or_create() {
+            Ok(service) => service,
+            Err(create_err) => {
+                let create_text = format!("{:?}", create_err);
+                if is_corrupted_service_err(&create_text) {
+                    warn!(
+                        "Signal publisher hit ServiceInCorruptedState, attempting dead-node cleanup: service='{}' err={:?}",
+                        full_service, create_err
+                    );
+                    let cleanup = Node::<ipc::Service>::cleanup_dead_nodes(Config::global_config());
+                    warn!(
+                        "dead-node cleanup completed for signal publisher: service='{}' cleanups={} failed_cleanups={}",
+                        full_service, cleanup.cleanups, cleanup.failed_cleanups
+                    );
+                    service_builder().open_or_create().map_err(|retry_err| {
+                        anyhow!(
+                            "failed to open/create signal publisher service after dead-node cleanup: service='{}', err={:?}, retry_err={:?}",
+                            full_service,
+                            create_err,
+                            retry_err
+                        )
+                    })?
+                } else {
+                    return Err(create_err.into());
+                }
+            }
+        };
+
+        let publisher = match service.publisher_builder().create() {
+            Ok(publisher) => publisher,
+            Err(err) => {
+                let err_text = format!("{:?}", err);
+                if is_publisher_capacity_err(&err_text) {
+                    warn!(
+                        "Signal publisher hit max-publishers, attempting dead-node cleanup: service='{}' err={:?}",
+                        full_service, err
+                    );
+                    let cleanup = Node::<ipc::Service>::cleanup_dead_nodes(Config::global_config());
+                    warn!(
+                        "dead-node cleanup completed for signal publisher: service='{}' cleanups={} failed_cleanups={}",
+                        full_service, cleanup.cleanups, cleanup.failed_cleanups
+                    );
+                    service.publisher_builder().create().map_err(|retry_err| {
+                        anyhow!(
+                            "failed to create signal publisher after dead-node cleanup: service='{}', err={:?}, retry_err={:?}",
+                            full_service,
+                            err,
+                            retry_err
+                        )
+                    })?
+                } else {
+                    return Err(err.into());
+                }
+            }
+        };
 
         info!("IceOryx publisher created: {}", full_service);
 
@@ -98,7 +162,7 @@ impl<const PAYLOAD: usize> GenericPublisher<PAYLOAD> {
         })
     }
 
-    pub fn publish(&self, data: &[u8]) -> anyhow::Result<()> {
+    pub fn publish(&self, data: &[u8]) -> Result<()> {
         if data.len() > PAYLOAD {
             anyhow::bail!("Data size exceeds {} bytes", PAYLOAD);
         }

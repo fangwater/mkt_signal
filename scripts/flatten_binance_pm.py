@@ -5,12 +5,13 @@ Self-contained: no imports from other scripts in this repo.
 
 Three-phase pipeline per symbol:
   Phase R — repay margin borrow (always; max repayable = min(free, borrowed))
-  Phase U — UM reduce-only MARKET close
+  Phase U — UM MARKET align/close
   Phase D — (clear mode only) collect to margin pool + dust-convert to BNB
 
 Modes:
-  align (default) — make net_qty = margin_free + um_position - margin_borrowed = 0
-  clear           — close UM position to 0; convert remaining asset → BNB
+  align (default) — make net_qty = margin_free + um_position - margin_borrowed = 0;
+                    UM order is allowed to add/flip to match margin exposure
+  clear           — close UM position to 0 with reduceOnly; convert remaining asset → BNB
 
 Behavior:
   - Must run from an env dir whose basename matches ^binance_fr_ (CWD safety check).
@@ -90,6 +91,7 @@ class SymbolPlan:
     net_qty: Decimal
     um_side: Optional[str]
     um_qty: Decimal
+    um_reduce_only: bool
     um_skip_reason: Optional[str]
     buyback_amt: Decimal
     buyback_skip_reason: Optional[str]
@@ -395,6 +397,7 @@ def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
 
     um_side: Optional[str] = None
     um_qty = ZERO
+    um_reduce_only = mode == "clear"
     um_skip: Optional[str] = None
     buyback_amt = ZERO
     buyback_skip: Optional[str] = None
@@ -421,11 +424,11 @@ def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
             )
             um_qty = ZERO
             um_side = None
-        elif um_side == "SELL" and pos <= 0:
+        elif um_reduce_only and um_side == "SELL" and pos <= 0:
             um_skip = f"reduceOnly SELL needs pos>0, have pos={format_decimal(pos)}"
             um_qty = ZERO
             um_side = None
-        elif um_side == "BUY" and pos >= 0:
+        elif um_reduce_only and um_side == "BUY" and pos >= 0:
             um_skip = f"reduceOnly BUY needs pos<0, have pos={format_decimal(pos)}"
             um_qty = ZERO
             um_side = None
@@ -479,6 +482,7 @@ def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
         net_qty=net_qty,
         um_side=um_side,
         um_qty=um_qty,
+        um_reduce_only=um_reduce_only,
         um_skip_reason=um_skip,
         buyback_amt=buyback_amt,
         buyback_skip_reason=buyback_skip,
@@ -498,7 +502,7 @@ def print_plan(env_name: str, mode: str, plans: List[SymbolPlan], execute: bool)
     header = (
         f"{'Symbol':<12} {'Asset':<6} {'Free':>14} {'Borrowed':>14} {'Interest':>10} "
         f"{'Pos':>14} {'Repay':>12} {'Net':>12} {'UM Side':>8} {'UM Qty':>14} "
-        f"{'Buyback':>12} {'Selldown':>12} {'Dust':>12} Notes"
+        f"{'UM RO':>5} {'Buyback':>12} {'Selldown':>12} {'Dust':>12} Notes"
     )
     print(header)
     print("-" * len(header))
@@ -526,6 +530,7 @@ def print_plan(env_name: str, mode: str, plans: List[SymbolPlan], execute: bool)
             f"{format_decimal(p.net_qty):>12} "
             f"{(p.um_side or '-'):>8} "
             f"{format_decimal(p.um_qty):>14} "
+            f"{str(p.um_reduce_only).lower():>5} "
             f"{format_decimal(p.buyback_amt):>12} "
             f"{format_decimal(p.selldown_amt):>12} "
             f"{format_decimal(p.dust_amt):>12} "
@@ -611,17 +616,19 @@ def execute_um(
         return PhaseOutcome(ok=None)
     sym = plan.state.spec.symbol
     qty = format_decimal(plan.um_qty)
-    print(f"\n[um] {sym} {plan.um_side} qty={qty} reduceOnly=true")
+    print(f"\n[um] {sym} {plan.um_side} qty={qty} reduceOnly={str(plan.um_reduce_only).lower()}")
+    params: Dict[str, Any] = {
+        "symbol": sym,
+        "side": plan.um_side,
+        "type": "MARKET",
+        "quantity": qty,
+    }
+    if plan.um_reduce_only:
+        params["reduceOnly"] = "true"
     status, body = signed_request(
         BINANCE_PAPI_BASE,
         PAPI_UM_ORDER_PATH,
-        {
-            "symbol": sym,
-            "side": plan.um_side,
-            "type": "MARKET",
-            "quantity": qty,
-            "reduceOnly": "true",
-        },
+        params,
         api_key,
         api_secret,
         method="POST",
@@ -863,8 +870,8 @@ def main() -> None:
         r = results_by_symbol[p.state.spec.symbol]
         r.repay = execute_repay(p, api_key, api_secret)
 
-    # Phase U: UM reduce-only (best-effort, continue-on-error)
-    print("\n--- Phase U: UM reduce-only ---")
+    # Phase U: UM align/close (best-effort, continue-on-error)
+    print("\n--- Phase U: UM align/close ---")
     for p in plans:
         r = results_by_symbol[p.state.spec.symbol]
         r.um = execute_um(p, api_key, api_secret)

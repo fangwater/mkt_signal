@@ -4,7 +4,7 @@
 Self-contained: no imports from other scripts in this repo.
 
 Behavior:
-  - CWD basename must match ^bitget_fr_.
+  - CWD basename must match ^bitget_fr_ or ^bitget-intra-.
   - Auto-sources ./env.sh; BITGET_API_KEY/SECRET/PASSPHRASE — env.sh always wins.
   - POST /api/v3/trade/cancel-symbol-order per (category, symbol).
 
@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 BITGET_BASE = os.environ.get("BITGET_API_BASE", "https://api.bitget.com").rstrip("/")
-ENV_DIR_PATTERN = re.compile(r"^bitget_fr_")
+ENV_DIR_PATTERN = re.compile(r"^(bitget_fr_|bitget[-_]intra[-_])")
 AUTHORITATIVE_KEYS = ("BITGET_API_KEY", "BITGET_API_SECRET", "BITGET_PASSPHRASE", "BITGET_API_PASSPHRASE")
 
 
@@ -98,7 +98,7 @@ def check_env_safety() -> str:
     cwd_name = os.path.basename(os.path.normpath(os.getcwd()))
     if not ENV_DIR_PATTERN.match(cwd_name):
         sys.stderr.write(
-            f"[ERROR] CWD basename must match ^bitget_fr_, got {cwd_name!r} "
+            f"[ERROR] CWD basename must match ^bitget_fr_ or ^bitget-intra-, got {cwd_name!r} "
             f"(CWD={os.getcwd()}). Aborting for safety.\n"
         )
         sys.exit(2)

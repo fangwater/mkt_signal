@@ -20,6 +20,10 @@ pub struct BboFrame {
     /// - Gate  *.book_ticker: `result.u`
     /// - Bitget books1:    `data[].seq` (字符串)
     pub seq_id: i64,
+    /// True when this frame is a venue snapshot that may reset the global sequence baseline.
+    /// Bybit can send a fresh snapshot with `u=1` after backend restart; the shared de-dup layer
+    /// clears its high-water marks when such a snapshot moves below the previous `u`.
+    pub reset_seq: bool,
     pub bid_price: f64,
     pub bid_amount: f64,
     pub ask_price: f64,

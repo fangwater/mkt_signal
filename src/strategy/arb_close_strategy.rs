@@ -66,19 +66,6 @@ impl ArbCloseStrategy {
         };
 
         let open_pos = MonitorChannel::instance().get_position_qty(&symbol, venue);
-        let close_side_reduces_open_pos = match side {
-            Side::Sell => open_pos > ARB_CLOSE_QTY_EPS,
-            Side::Buy => open_pos < -ARB_CLOSE_QTY_EPS,
-        };
-        if !close_side_reduces_open_pos {
-            info!(
-                "ArbCloseStrategy: strategy_id={} skip because close side does not reduce open position symbol={} venue={:?} side={:?} open_pos={:.8}",
-                self.open_state.strategy_id, symbol, venue, side, open_pos
-            );
-            self.open_state.alive = false;
-            return;
-        }
-
         if ctx.amount_value() <= ARB_CLOSE_QTY_EPS || ctx.amount_count() <= 0 {
             info!(
                 "ArbCloseStrategy: strategy_id={} skip because signal close qty is zero symbol={} venue={:?} open_pos={:.8} signal_qty={:.8}",
@@ -92,6 +79,74 @@ impl ArbCloseStrategy {
             return;
         }
 
+        if let Err(e) = MonitorChannel::instance().check_pending_limit_order_for_arb(&symbol, side)
+        {
+            info!(
+                "ArbCloseStrategy: strategy_id={} skip because pending limit order limit hit symbol={} venue={:?} side={:?} open_pos={:.8} signal_qty={:.8} reason={}",
+                self.open_state.strategy_id,
+                symbol,
+                venue,
+                side,
+                open_pos,
+                ctx.amount_value(),
+                e
+            );
+            self.open_state.alive = false;
+            return;
+        }
+
+        let client_order_id = Self::compose_order_id(self.open_state.strategy_id);
+        let qty_multiplier = match self.resolve_open_qty_multiplier(venue, &symbol) {
+            Ok(multiplier) => multiplier,
+            Err(err) => {
+                warn!(
+                    "ArbCloseStrategy: strategy_id={} resolve qty multiplier failed symbol={} venue={:?}: {}",
+                    self.open_state.strategy_id, symbol, venue, err
+                );
+                self.open_state.alive = false;
+                return;
+            }
+        };
+        let requested_base_qty = ctx.amount_value() * qty_multiplier;
+        let grant = MonitorChannel::instance().reserve_close_inventory(
+            venue,
+            &symbol,
+            side,
+            requested_base_qty,
+            client_order_id,
+        );
+        if grant.granted_base_qty <= ARB_CLOSE_QTY_EPS {
+            info!(
+                "ArbCloseStrategy: strategy_id={} skip because close inventory unavailable symbol={} venue={:?} side={:?} open_pos={:.8} signal_qty={:.8} requested_base={:.8} available_before={:.8} inventory={:.8}",
+                self.open_state.strategy_id,
+                symbol,
+                venue,
+                side,
+                open_pos,
+                ctx.amount_value(),
+                requested_base_qty,
+                grant.available_before_base,
+                grant.closable_inventory_base
+            );
+            self.open_state.alive = false;
+            return;
+        }
+        let order_qty = grant.granted_base_qty / qty_multiplier;
+        if order_qty + ARB_CLOSE_QTY_EPS < ctx.amount_value() {
+            info!(
+                "ArbCloseStrategy: strategy_id={} clip close qty by close inventory symbol={} venue={:?} side={:?} signal_qty={:.8} order_qty={:.8} requested_base={:.8} granted_base={:.8} inventory={:.8}",
+                self.open_state.strategy_id,
+                symbol,
+                venue,
+                side,
+                ctx.amount_value(),
+                order_qty,
+                requested_base_qty,
+                grant.granted_base_qty,
+                grant.closable_inventory_base
+            );
+        }
+
         // 方向 & net 都通过后，再做 min_qty / min_notional 检查。
         // close 不像 open 那样"凑齐到 min"——残余仓位本来就少，凑齐会过头去开反向仓位。
         // 因此这里只查不补：低于最小要求 → info! 打印具体原因并跳过整张单。
@@ -103,19 +158,18 @@ impl ArbCloseStrategy {
                 None
             }
         };
-        if let Err(reason) = MonitorChannel::instance().check_min_trading_requirements(
-            venue,
-            &symbol,
-            ctx.amount_value(),
-            price_hint,
-        ) {
+        if let Err(reason) = MonitorChannel::instance()
+            .check_min_trading_requirements(venue, &symbol, order_qty, price_hint)
+        {
+            MonitorChannel::instance()
+                .release_close_inventory_unfilled(client_order_id, "below_min_trade_requirement");
             info!(
                 "ArbCloseStrategy: strategy_id={} skip below min trade requirements symbol={} venue={:?} open_pos={:.8} signal_qty={:.8} price_hint={:?} reason={}",
                 self.open_state.strategy_id,
                 symbol,
                 venue,
                 open_pos,
-                ctx.amount_value(),
+                order_qty,
                 price_hint,
                 reason
             );
@@ -124,7 +178,7 @@ impl ArbCloseStrategy {
         }
 
         let mkt_ts = ctx.opening_leg.ts.max(ctx.hedging_leg.ts);
-        let _ = self.handle_open_signal_common(OpenSignalInput {
+        let init = self.handle_open_signal_common(OpenSignalInput {
             signal_kind: "ArbClose",
             order_log_name: "ArbClose",
             order_rate_bucket: OrderRateBucket::ArbOpen,
@@ -132,7 +186,7 @@ impl ArbCloseStrategy {
             venue_u8: ctx.opening_leg.venue,
             side_u8: ctx.side,
             order_type_u8: ctx.order_type,
-            qty: ctx.amount_value(),
+            qty: order_qty,
             price: ctx.price_value(),
             price_count: ctx.price_count(),
             amount_count: ctx.amount_count(),
@@ -142,10 +196,15 @@ impl ArbCloseStrategy {
             from_key: ctx.from_key,
             price_qv: ctx.price_qv,
             price_offset: ctx.price_offset,
-            reduce_only: false,
+            reduce_only: true,
+            client_order_id: Some(client_order_id),
             close_ts: 0,
             mkt_ts,
         });
+        if init.is_none() {
+            MonitorChannel::instance()
+                .release_close_inventory_unfilled(client_order_id, "handle_open_signal_failed");
+        }
     }
 
     fn handle_signal(&mut self, signal: &TradeSignal) {
@@ -207,20 +266,25 @@ impl OpenStrategyCommon for ArbCloseStrategy {
         "arb close"
     }
 
+    fn record_terminal_as_arb_close(&self) -> bool {
+        true
+    }
+
+    fn update_close_inventory_for_close_fill(&self, client_order_id: i64, filled_base_delta: f64) {
+        MonitorChannel::instance()
+            .apply_close_inventory_fill_delta(client_order_id, filled_base_delta);
+    }
+
+    fn release_close_inventory_unfilled(&self, client_order_id: i64, reason: &str) {
+        MonitorChannel::instance().release_close_inventory_unfilled(client_order_id, reason);
+    }
+
     fn resolve_open_qty_multiplier(
         &self,
         venue: TradingVenue,
         symbol: &str,
     ) -> Result<f64, String> {
         MonitorChannel::instance().qty_multiplier_for_venue(venue, symbol)
-    }
-
-    fn skip_open_position_risk_checks(&self) -> bool {
-        true
-    }
-
-    fn enable_open_order_rate_limit(&self) -> bool {
-        false
     }
 }
 

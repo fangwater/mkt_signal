@@ -69,8 +69,10 @@ pub struct ArbHedgeStrategy {
     hedge_venue: TradingVenue,
     /// open/hedge 两个 venue 合并后的实时净敞口，使用 base qty 口径互相冲销。
     pub(super) net_qty_queue: NetQtyQueue,
-    /// 尚需由对冲腿覆盖的开仓成交队列，到期时间来自开仓记录的 close_ts。
+    /// 尚需由对冲腿覆盖的 opening-leg 成交队列，到期时间来自成交记录的 close_ts。
     pub(super) pending_hedge_queue: TimedNetQtyQueue,
+    /// 启动时从账户快照带入的净敞口基线。这部分只作为状态展示，不反推出 hedge work。
+    hedge_work_baseline_qv: f64,
     hedge_request_seq: u64,
     pending_hedge_request_seq: Option<u64>,
     last_hedge_ts_ms: Option<i64>,
@@ -117,6 +119,7 @@ impl ArbHedgeStrategy {
             hedge_venue,
             net_qty_queue: NetQtyQueue::new(),
             pending_hedge_queue: TimedNetQtyQueue::new(),
+            hedge_work_baseline_qv: 0.0,
             hedge_request_seq: 0,
             pending_hedge_request_seq: None,
             last_hedge_ts_ms: None,
@@ -169,20 +172,53 @@ impl ArbHedgeStrategy {
         };
         self.net_qty_queue
             .apply_fill(seed_ts, signed_base_qty, seed_price);
+        self.hedge_work_baseline_qv = self.net_qty_queue.net_qty();
         info!(
-            "ArbHedgeSeed: strategy_id={} symbol={} source={} qv={:.8} price={:.8} seed_ts={} net={:.8}",
+            "ArbHedgeSeed: strategy_id={} symbol={} source={} qv={:.8} price={:.8} seed_ts={} net={:.8} hedge_work_baseline={:.8}",
             self.strategy_id,
             self.symbol,
             source,
             signed_base_qty,
             seed_price,
             seed_ts,
-            self.net_qty_queue.net_qty()
+            self.net_qty_queue.net_qty(),
+            self.hedge_work_baseline_qv
         );
         true
     }
 
-    // pending_hedge_qty 包含了所有开仓成交形成的对冲需求，无论是否已到期；
+    pub fn put_startup_stable_net_pending(
+        &mut self,
+        ready_ts: i64,
+        signed_base_qty: f64,
+        price: f64,
+    ) -> bool {
+        if signed_base_qty.abs() <= TERMINAL_QTY_EPS {
+            return false;
+        }
+        let price = if price.is_finite() && price > 0.0 {
+            price
+        } else {
+            0.0
+        };
+        self.net_qty_queue
+            .apply_fill(ready_ts, signed_base_qty, price);
+        self.pending_hedge_queue
+            .put(ready_ts, 0, signed_base_qty, price);
+        info!(
+            "ArbHedgeStartupNet: strategy_id={} symbol={} qv={:.8} price={:.8} ready_ts={} net={:.8} pending_hedge={:.8}",
+            self.strategy_id,
+            self.symbol,
+            signed_base_qty,
+            price,
+            ready_ts,
+            self.net_qty_queue.net_qty(),
+            self.pending_hedge_queue.net_qty()
+        );
+        true
+    }
+
+    // pending_hedge_qty 包含尚未借给 live hedge order 的对冲需求，无论是否已到期；
     pub fn pending_hedge_qty(&self) -> f64 {
         self.pending_hedge_queue.net_qty()
     }
@@ -210,19 +246,19 @@ impl ArbHedgeStrategy {
             .filter(|price| price.is_finite() && *price > 0.0)
     }
 
-    fn close_hedge_reduce_capacity(&self, close_side: Side) -> (Side, f64, f64) {
-        let hedge_pos = MonitorChannel::instance().get_position_qty(&self.symbol, self.hedge_venue);
-        let (hedge_side, reduce_capacity) = match close_side {
-            Side::Sell => (Side::Buy, (-hedge_pos).max(0.0)),
-            Side::Buy => (Side::Sell, hedge_pos.max(0.0)),
-        };
-        (hedge_side, hedge_pos, reduce_capacity)
+    fn borrowed_hedge_qv(&self) -> f64 {
+        self.hedge_order_meta
+            .values()
+            .map(|meta| meta.borrowed_qv)
+            .sum()
     }
 
-    fn has_outstanding_hedge_work(&self) -> bool {
-        self.pending_hedge_queue.net_qty().abs() > ARB_HEDGE_QTY_EPS
-            || self.pending_hedge_request_seq.is_some()
-            || !self.hedge_order_meta.is_empty()
+    fn outstanding_hedge_work_qv(&self) -> f64 {
+        self.pending_hedge_queue.net_qty() + self.borrowed_hedge_qv()
+    }
+
+    fn target_hedge_work_qv(&self) -> f64 {
+        self.net_qty_queue.net_qty() - self.hedge_work_baseline_qv
     }
 
     fn pending_hedge_usdt_with_mark_price(pending_hedge_qty: f64, mark_price: f64) -> f64 {
@@ -311,7 +347,7 @@ impl ArbHedgeStrategy {
         terminal_ts: i64,
         reason: &'static str,
     ) -> bool {
-        let triggered = self.trigger_hedge_query_after_open_terminal(terminal_ts);
+        let triggered = self.trigger_hedge_query_after_opening_leg_terminal(terminal_ts);
         if triggered {
             debug!(
                 "ArbHedgeStrategy: strategy_id={} symbol={} trigger hedge state query after pending release reason={}",
@@ -390,14 +426,17 @@ impl ArbHedgeStrategy {
         }
     }
 
-    pub(super) fn trigger_hedge_query_after_open_terminal(&mut self, terminal_ts: i64) -> bool {
+    pub(super) fn trigger_hedge_query_after_opening_leg_terminal(
+        &mut self,
+        terminal_ts: i64,
+    ) -> bool {
         let now_ts = if terminal_ts > 0 {
             terminal_ts
         } else {
             get_timestamp_us()
         };
         // Arb hedge 固定只有一套长期运行流程。这里是事件触发入口：
-        // open terminal、hedge 撤单/终态释放后，如果已有 due 数量就立即补一次查询；
+        // opening-leg terminal、hedge 撤单/终态释放后，如果已有 due 数量就立即补一次查询；
         // 如果 close_ts 还没到，固定由 period clock 的时间轮到期后重新拉起。
         self.try_send_due_hedge_query(now_ts, "trigger", false)
     }
@@ -581,6 +620,23 @@ impl ArbHedgeStrategy {
             );
             return;
         }
+        let signed_base_qty = signed_qty_from_side(side, order_base_qty);
+        if let Err(err) = MonitorChannel::instance().check_arb_hedge_exposure_risk(
+            &symbol,
+            venue,
+            signed_base_qty,
+        ) {
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} ArbHedge exposure risk reject symbol={} venue={:?} side={:?} base_qty={:.8} err={}",
+                self.strategy_id,
+                symbol,
+                venue,
+                side,
+                order_base_qty,
+                err
+            );
+            return;
+        }
         let pending_qv = Self::hedge_pending_qv_from_order(side, order_base_qty);
         let now_ts = get_timestamp_us();
         let borrowed = self.pending_hedge_queue.borrow(now_ts, pending_qv);
@@ -621,7 +677,7 @@ impl ArbHedgeStrategy {
         MonitorChannel::instance()
             .order_manager()
             .borrow_mut()
-            .create_order(
+            .create_order_with_pending_limit_flag(
                 venue,
                 client_order_id,
                 order_type,
@@ -631,6 +687,7 @@ impl ArbHedgeStrategy {
                 price,
                 false,
                 qty_multiplier,
+                false,
             );
         self.hedge_order_meta.insert(
             client_order_id,
@@ -1376,169 +1433,51 @@ impl OrderTerminalRecorder for ArbHedgeStrategy {
         if filled_base_qty <= TERMINAL_QTY_EPS {
             return false;
         }
-        let signed_base_qty = signed_qty_from_side(side, filled_base_qty);
-        // Arb 开仓 terminal 直接更新净敞口
-        self.net_qty_queue
-            .apply_fill(terminal_ts, signed_base_qty, price);
-        // Arb 开仓 terminal 会形成一笔待对冲需求；以 open client_order_id 作为绑定身份。
-        // 同 open id 重复回调时（partial-fill terminal 复发）会合并到既有 lot。
-        self.pending_hedge_queue.upsert_open_lot(
-            terminal_ts,
-            close_ts,
-            signed_base_qty,
-            price,
-            open_client_order_id,
-        );
-        info!(
-            "ArbHedgeRecord: strategy_id={} symbol={} leg=open side={:?} order_base_qty={:.8} filled_base_qty={:.8} qv={:.8} price={:.8} terminal_ts={} close_ts={} open_co_id={} net={:.8} pending_hedge={:.8}",
-            self.strategy_id,
-            self.symbol,
-            side,
-            order_base_qty,
-            filled_base_qty,
-            signed_base_qty,
-            price,
-            terminal_ts,
-            close_ts,
-            open_client_order_id,
-            self.net_qty_queue.net_qty(),
-            self.pending_hedge_queue.net_qty()
-        );
-        // 开仓成交 terminal 会尝试立即触发一次状态查询，但它只负责"已经 due 的量"。
-        // 如果 close_ts 还没到，trigger 会跳过，后续由 ArbHedgeStrategy::handle_period_clock
-        // 作为 close_ts 时间轮在到期后重新拉起 query，避免藏仓 pending 永远留在队列里。
-        self.trigger_hedge_query_after_open_terminal(terminal_ts);
-        true
-    }
 
-    fn record_close_order_terminal(
-        &mut self,
-        terminal_ts: i64,
-        side: Side,
-        order_base_qty: f64,
-        filled_base_qty: f64,
-        price: f64,
-        close_ts: i64,
-        open_client_order_id: i64,
-    ) -> bool {
-        let order_base_qty = order_base_qty.abs();
-        let filled_base_qty = filled_base_qty.abs();
-        if filled_base_qty <= TERMINAL_QTY_EPS {
-            return false;
-        }
-
+        let outstanding_before = self.outstanding_hedge_work_qv();
         let signed_base_qty = signed_qty_from_side(side, filled_base_qty);
         self.net_qty_queue
             .apply_fill(terminal_ts, signed_base_qty, price);
 
-        let (hedge_side, hedge_pos, hedge_reduce_capacity) = self.close_hedge_reduce_capacity(side);
-        let pending_base_qty = filled_base_qty.min(hedge_reduce_capacity);
-        let skipped_pending_base_qty = (filled_base_qty - pending_base_qty).max(0.0);
-        let pending_qv = signed_qty_from_side(side, pending_base_qty);
-        if pending_base_qty > TERMINAL_QTY_EPS {
+        let target_outstanding = self.target_hedge_work_qv();
+        let hedge_work_delta = target_outstanding - outstanding_before;
+        if hedge_work_delta.abs() > TERMINAL_QTY_EPS {
             self.pending_hedge_queue.upsert_open_lot(
                 terminal_ts,
                 close_ts,
-                pending_qv,
+                hedge_work_delta,
                 price,
                 open_client_order_id,
             );
         }
+        let pending_after = self.pending_hedge_queue.net_qty();
+        let borrowed_after = self.borrowed_hedge_qv();
 
         info!(
-            "ArbHedgeRecord: strategy_id={} symbol={} leg=close side={:?} order_base_qty={:.8} filled_base_qty={:.8} qv={:.8} price={:.8} terminal_ts={} close_ts={} open_co_id={} hedge_side={:?} hedge_pos={:.8} hedge_reduce_capacity={:.8} pending_qv={:.8} skipped_pending_base_qty={:.8} net={:.8} pending_hedge={:.8}",
+            "ArbHedgeRecord: strategy_id={} symbol={} leg=opening side={:?} order_base_qty={:.8} filled_base_qty={:.8} fill_qv={:.8} hedge_work_delta={:.8} price={:.8} terminal_ts={} close_ts={} open_co_id={} outstanding_before={:.8} outstanding_after={:.8} net={:.8} hedge_work_baseline={:.8} pending_hedge={:.8} borrowed_hedge={:.8}",
             self.strategy_id,
             self.symbol,
             side,
             order_base_qty,
             filled_base_qty,
             signed_base_qty,
+            hedge_work_delta,
             price,
             terminal_ts,
             close_ts,
             open_client_order_id,
-            hedge_side,
-            hedge_pos,
-            hedge_reduce_capacity,
-            pending_qv,
-            skipped_pending_base_qty,
+            outstanding_before,
+            pending_after + borrowed_after,
             self.net_qty_queue.net_qty(),
-            self.pending_hedge_queue.net_qty()
+            self.hedge_work_baseline_qv,
+            pending_after,
+            borrowed_after
         );
 
-        if pending_base_qty > TERMINAL_QTY_EPS {
-            self.trigger_hedge_query_after_open_terminal(terminal_ts);
-        }
-        true
-    }
-
-    fn record_hedge_only_close_pending(
-        &mut self,
-        terminal_ts: i64,
-        close_side: Side,
-        target_base_qty: f64,
-        price: f64,
-    ) -> bool {
-        let target_base_qty = target_base_qty.abs();
-        if target_base_qty <= TERMINAL_QTY_EPS {
-            return false;
-        }
-        if self.has_outstanding_hedge_work() {
-            info!(
-                "ArbHedgeRecord: strategy_id={} symbol={} skip hedge-only close pending because hedge work exists close_side={:?} target_base_qty={:.8} pending_hedge={:.8} pending_request_seq={:?} live_hedge_orders={}",
-                self.strategy_id,
-                self.symbol,
-                close_side,
-                target_base_qty,
-                self.pending_hedge_queue.net_qty(),
-                self.pending_hedge_request_seq,
-                self.hedge_order_meta.len()
-            );
-            return false;
-        }
-
-        let (hedge_side, hedge_pos, hedge_reduce_capacity) =
-            self.close_hedge_reduce_capacity(close_side);
-        let pending_base_qty = target_base_qty.min(hedge_reduce_capacity);
-        if pending_base_qty <= TERMINAL_QTY_EPS {
-            info!(
-                "ArbHedgeRecord: strategy_id={} symbol={} skip hedge-only close pending because hedge reduce capacity is zero close_side={:?} hedge_side={:?} hedge_pos={:.8} target_base_qty={:.8}",
-                self.strategy_id,
-                self.symbol,
-                close_side,
-                hedge_side,
-                hedge_pos,
-                target_base_qty
-            );
-            return false;
-        }
-
-        let pending_qv = signed_qty_from_side(close_side, pending_base_qty);
-        let pending_price = if price.is_finite() && price > 0.0 {
-            price
-        } else {
-            self.mark_price().unwrap_or(0.0)
-        };
-        self.pending_hedge_queue
-            .put(terminal_ts, 0, pending_qv, pending_price);
-
-        info!(
-            "ArbHedgeRecord: strategy_id={} symbol={} leg=hedge_only_close close_side={:?} hedge_side={:?} hedge_pos={:.8} hedge_reduce_capacity={:.8} target_base_qty={:.8} pending_qv={:.8} price={:.8} terminal_ts={} net={:.8} pending_hedge={:.8}",
-            self.strategy_id,
-            self.symbol,
-            close_side,
-            hedge_side,
-            hedge_pos,
-            hedge_reduce_capacity,
-            target_base_qty,
-            pending_qv,
-            pending_price,
-            terminal_ts,
-            self.net_qty_queue.net_qty(),
-            self.pending_hedge_queue.net_qty()
-        );
-
-        self.trigger_hedge_query_after_open_terminal(terminal_ts);
+        // opening-leg terminal 会尝试立即触发一次状态查询，但它只负责"已经 due 的量"。
+        // 如果 close_ts 还没到，trigger 会跳过，后续由 ArbHedgeStrategy::handle_period_clock
+        // 作为 close_ts 时间轮在到期后重新拉起 query。
+        self.trigger_hedge_query_after_opening_leg_terminal(terminal_ts);
         true
     }
 

@@ -4,7 +4,7 @@
 Self-contained: no imports from other scripts in this repo.
 
 Three-phase pipeline per symbol (Phase R removed; no dust convert):
-  Phase U — USDT-FUTURES reduce-only MARKET close
+  Phase U — USDT-FUTURES MARKET align/close
   Phase B — clear-mode only — cross-margin BUY (category=margin), which
             auto-borrows on demand AND auto-repays existing borrow on settlement
   Phase S — clear-mode only — cross-margin SELL for USDT (free>borrow case)
@@ -13,15 +13,17 @@ Note: Bitget UTA has no documented manual repay REST endpoint. Debt clearing
 relies on Phase B's auto-repay via the BUY back, per user direction.
 
 Modes:
-  align (default) — net_qty = available + futures_position_coins - borrow = 0
-  clear           — close futures to 0; B or S to drain asset
+  align (default) — net_qty = available + futures_position_coins - borrow = 0;
+                    futures order is allowed to add/flip to match spot exposure
+  clear           — close futures to 0 with reduceOnly; B or S to drain asset
 
 Behavior:
-  - CWD basename must match ^bitget_fr_.
+  - CWD basename must match ^bitget_fr_ or ^bitget-intra-.
   - Auto-sources ./env.sh; BITGET_API_KEY/SECRET/PASSPHRASE — env.sh always wins.
   - Dry-run by default; --execute required.
 
 Usage:
+  python3 scripts/flatten_bitget_pm.py --symbol BTCUSDT
   python3 scripts/flatten_bitget_pm.py --symbols BTCUSDT,ETHUSDT
   python3 scripts/flatten_bitget_pm.py --symbols BTCUSDT --mode clear --execute
 """
@@ -48,7 +50,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 BITGET_BASE = os.environ.get("BITGET_API_BASE", "https://api.bitget.com").rstrip("/")
 
-ENV_DIR_PATTERN = re.compile(r"^bitget_fr_")
+ENV_DIR_PATTERN = re.compile(r"^(bitget_fr_|bitget[-_]intra[-_])")
 # Bitget repo scripts accept either passphrase env var name.
 AUTHORITATIVE_KEYS = ("BITGET_API_KEY", "BITGET_API_SECRET", "BITGET_PASSPHRASE", "BITGET_API_PASSPHRASE")
 ZERO = Decimal("0")
@@ -80,6 +82,7 @@ class SymbolPlan:
     net_qty: Decimal
     futures_side: Optional[str]
     futures_qty: Decimal
+    futures_reduce_only: bool
     futures_skip_reason: Optional[str]
     buyback_amt: Decimal
     buyback_skip_reason: Optional[str]
@@ -193,7 +196,7 @@ def check_env_safety() -> str:
     cwd_name = os.path.basename(os.path.normpath(os.getcwd()))
     if not ENV_DIR_PATTERN.match(cwd_name):
         sys.stderr.write(
-            f"[ERROR] CWD basename must match ^bitget_fr_, got {cwd_name!r} "
+            f"[ERROR] CWD basename must match ^bitget_fr_ or ^bitget-intra-, got {cwd_name!r} "
             f"(CWD={os.getcwd()}). Aborting for safety.\n"
         )
         sys.exit(2)
@@ -244,14 +247,22 @@ def load_credentials() -> Tuple[str, str, str]:
     return k, s, p
 
 
-def parse_symbols(raw: str) -> List[str]:
-    out = []
-    for tok in raw.split(","):
-        s = tok.strip().upper()
-        if s:
-            out.append(s)
+def normalize_symbol(raw: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "", raw or "").upper()
+
+
+def parse_symbol_args(single_symbols: List[str], multi_symbols: List[str]) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    chunks = list(single_symbols or []) + list(multi_symbols or [])
+    for chunk in chunks:
+        for tok in re.split(r"[\s,]+", chunk.strip()):
+            s = normalize_symbol(tok)
+            if s and s not in seen:
+                out.append(s)
+                seen.add(s)
     if not out:
-        sys.exit("[ERROR] --symbols produced empty list")
+        sys.exit("[ERROR] provide at least one --symbol or --symbols value")
     return out
 
 
@@ -363,7 +374,10 @@ def fetch_positions(symbols: List[str], api_key, api_secret, passphrase) -> Dict
         sys.stderr.write(f"[WARN] current-position: {body}\n")
         return out
     data = parsed.get("data")
-    rows = data.get("positions", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+    if isinstance(data, dict):
+        rows = data.get("positions") or data.get("list") or []
+    else:
+        rows = data if isinstance(data, list) else []
     for row in rows or []:
         if not isinstance(row, dict):
             continue
@@ -371,11 +385,13 @@ def fetch_positions(symbols: List[str], api_key, api_secret, passphrase) -> Dict
         if sym not in out:
             continue
         size = decimal_or(row.get("total") or row.get("size") or row.get("holdSize"))
-        side = str(row.get("holdSide") or row.get("side", "")).lower()
-        if side == "short":
+        side = str(row.get("posSide") or row.get("holdSide") or row.get("side", "")).lower()
+        if side in ("short", "sell"):
             out[sym] = -abs(size)
-        else:
+        elif side in ("long", "buy"):
             out[sym] = abs(size)
+        else:
+            out[sym] = size
     return out
 
 
@@ -394,6 +410,7 @@ def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
 
     futures_side: Optional[str] = None
     futures_qty = ZERO
+    futures_reduce_only = mode == "clear"
     futures_skip: Optional[str] = None
     buyback_amt = ZERO
     buyback_skip: Optional[str] = None
@@ -418,11 +435,11 @@ def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
             )
             futures_qty = ZERO
             futures_side = None
-        elif futures_side == "sell" and pos <= 0:
+        elif futures_reduce_only and futures_side == "sell" and pos <= 0:
             futures_skip = f"reduceOnly sell needs pos>0, have {format_decimal(pos)}"
             futures_qty = ZERO
             futures_side = None
-        elif futures_side == "buy" and pos >= 0:
+        elif futures_reduce_only and futures_side == "buy" and pos >= 0:
             futures_skip = f"reduceOnly buy needs pos<0, have {format_decimal(pos)}"
             futures_qty = ZERO
             futures_side = None
@@ -454,6 +471,7 @@ def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
         net_qty=net_qty,
         futures_side=futures_side,
         futures_qty=futures_qty,
+        futures_reduce_only=futures_reduce_only,
         futures_skip_reason=futures_skip,
         buyback_amt=buyback_amt,
         buyback_skip_reason=buyback_skip,
@@ -471,7 +489,7 @@ def print_plan(env_name, mode, plans: List[SymbolPlan], execute: bool) -> None:
     header = (
         f"{'Symbol':<12} {'Asset':<6} {'Avail':>14} {'Borrowed':>14} {'Interest':>10} "
         f"{'Pos':>14} {'Net':>12} {'Fut Side':>9} {'Fut Qty':>14} "
-        f"{'Buyback':>12} {'Selldown':>12} Notes"
+        f"{'Fut RO':>6} {'Buyback':>12} {'Selldown':>12} Notes"
     )
     print(header)
     print("-" * len(header))
@@ -495,6 +513,7 @@ def print_plan(env_name, mode, plans: List[SymbolPlan], execute: bool) -> None:
             f"{format_decimal(p.net_qty):>12} "
             f"{(p.futures_side or '-'):>9} "
             f"{format_decimal(p.futures_qty):>14} "
+            f"{str(p.futures_reduce_only).lower():>6} "
             f"{format_decimal(p.buyback_amt):>12} "
             f"{format_decimal(p.selldown_amt):>12} "
             f"{'; '.join(notes)}"
@@ -546,15 +565,16 @@ def execute_futures(plan: SymbolPlan, api_key, api_secret, passphrase) -> PhaseO
     sym = plan.state.spec.symbol
     qty = format_decimal(plan.futures_qty)
     body = {
-        "category": "usdt-futures",
+        "category": "USDT-FUTURES",
         "symbol": sym,
         "side": plan.futures_side,
         "orderType": "market",
-        "size": qty,
-        "reduceOnly": "YES",
+        "qty": qty,
         "clientOid": f"frflat-{int(time.time() * 1000)}",
     }
-    print(f"\n[futures] {sym} {plan.futures_side} size={qty} reduceOnly=YES")
+    if plan.futures_reduce_only:
+        body["reduceOnly"] = "YES"
+    print(f"\n[futures] {sym} {plan.futures_side} qty={qty} reduceOnly={str(plan.futures_reduce_only).lower()}")
     status, resp = bitget_private(
         "POST", "/api/v3/trade/place-order", api_key, api_secret, passphrase, body=body,
     )
@@ -572,14 +592,14 @@ def execute_buyback(plan: SymbolPlan, api_key, api_secret, passphrase) -> PhaseO
     sym = plan.state.spec.symbol
     qty = format_decimal(plan.buyback_amt)
     body = {
-        "category": "margin",  # cross-margin (auto-borrow + auto-repay)
+        "category": "MARGIN",  # cross-margin (auto-borrow + auto-repay)
         "symbol": sym,
         "side": "buy",
         "orderType": "market",
-        "size": qty,
+        "qty": qty,
         "clientOid": f"frbuy-{int(time.time() * 1000)}",
     }
-    print(f"\n[buyback] {sym} buy size={qty} category=margin (auto-repay)")
+    print(f"\n[buyback] {sym} buy qty={qty} category=MARGIN (auto-repay)")
     status, resp = bitget_private(
         "POST", "/api/v3/trade/place-order", api_key, api_secret, passphrase, body=body,
     )
@@ -597,14 +617,14 @@ def execute_selldown(plan: SymbolPlan, api_key, api_secret, passphrase) -> Phase
     sym = plan.state.spec.symbol
     qty = format_decimal(plan.selldown_amt)
     body = {
-        "category": "margin",
+        "category": "MARGIN",
         "symbol": sym,
         "side": "sell",
         "orderType": "market",
-        "size": qty,
+        "qty": qty,
         "clientOid": f"frsell-{int(time.time() * 1000)}",
     }
-    print(f"\n[selldown] {sym} sell size={qty} category=margin")
+    print(f"\n[selldown] {sym} sell qty={qty} category=MARGIN")
     status, resp = bitget_private(
         "POST", "/api/v3/trade/place-order", api_key, api_secret, passphrase, body=body,
     )
@@ -624,8 +644,10 @@ def parse_args() -> argparse.Namespace:
         description="Flatten Bitget UTA positions (no Phase R; futures close + buyback/selldown)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--symbols", required=True,
-                        help="Comma-separated symbol list (BTCUSDT,...); USDT-quoted only")
+    parser.add_argument("--symbol", action="append", default=[],
+                        help="Single symbol filter; repeatable, e.g. --symbol BTCUSDT --symbol ETHUSDT")
+    parser.add_argument("--symbols", action="append", default=[],
+                        help="Comma/space-separated symbol list (BTCUSDT,...); USDT-quoted only")
     parser.add_argument("--mode", choices=["align", "clear"], default="align")
     parser.add_argument("--execute", action="store_true")
     return parser.parse_args()
@@ -636,7 +658,7 @@ def main() -> None:
     env_name = check_env_safety()
     auto_source_env_sh()
     api_key, api_secret, passphrase = load_credentials()
-    symbols = parse_symbols(args.symbols)
+    symbols = parse_symbol_args(args.symbol, args.symbols)
 
     specs = fetch_specs(symbols)
     balances = fetch_assets(api_key, api_secret, passphrase)
@@ -666,7 +688,7 @@ def main() -> None:
         p.state.spec.symbol: SymbolResult(plan=p) for p in plans
     }
 
-    print("\n--- Phase U: futures reduce-only ---")
+    print("\n--- Phase U: futures align/close ---")
     for p in plans:
         r = results_by_symbol[p.state.spec.symbol]
         r.futures = execute_futures(p, api_key, api_secret, passphrase)

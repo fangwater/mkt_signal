@@ -164,8 +164,6 @@ pub async fn run(cfg: FrDashboardConfig, token: CancellationToken) -> Result<()>
 
     SymbolList::init_singleton()?;
     MktChannel::init_singleton_readonly(cfg.open_venue, cfg.hedge_venue)?;
-    RateFetcher::init_for_venues(cfg.open_venue, cfg.hedge_venue)?;
-    let _ = FundingRateFactor::instance();
 
     let redis = default_redis_settings();
     if let Err(err) = load_all_once_with_namespace(
@@ -179,6 +177,8 @@ pub async fn run(cfg: FrDashboardConfig, token: CancellationToken) -> Result<()>
     {
         warn!("fr_signal_dashboard initial config load failed, using defaults: {err:#}");
     }
+    RateFetcher::init_for_venues(cfg.open_venue, cfg.hedge_venue)?;
+    let _ = FundingRateFactor::instance();
     spawn_config_loader_with_namespace(
         redis,
         cfg.symbol_namespace.clone(),

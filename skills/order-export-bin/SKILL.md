@@ -30,7 +30,7 @@ Primary sources in this repo:
 - Use `--start` and `--end` only for incident windows that need narrower slicing.
 - If the user is in an env directory like `~/binance_mm_alpha` or `~/okex_mm_alpha`, let `order_export` infer `env_name` from `cwd`.
 - `base_dir` must be absolute.
-- `env_name` must match `<exchange>_mm_<suffix>` or `<exchange>_fr_<suffix>` and is normalized to lowercase.
+- `env_name` must match one of: `<exchange>_<mm|fr|intra>_<suffix>` (underscore form, e.g. `binance_mm_alpha`, `okex_intra_hf01`), `<exchange>-<mm|fr|intra>-<suffix>` (dash form, e.g. `binance-intra-arb01`, `okex-intra-arb01`), or `<open_ex>-<hedge_ex>_cross_<suffix>` (cross). Separator must be consistent within an `env_name` — mixed forms like `binance_intra-arb01` are rejected. Normalized to lowercase.
 
 ## Install
 
@@ -105,6 +105,13 @@ cd ~/okex_mm_alpha
 /home/$USER/order_export/bin/order_export \
   --start 2026-04-16T13:18:24Z \
   --end 2026-04-16T13:18:34Z
+```
+
+intra arb env (dash form) day export:
+
+```bash
+cd ~/okex-intra-arb01
+/home/$USER/order_export/bin/order_export --date 2026-05-12
 ```
 
 Run from outside the env directory:

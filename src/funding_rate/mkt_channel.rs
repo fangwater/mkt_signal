@@ -318,6 +318,30 @@ impl MktChannel {
         })
     }
 
+    /// REST 补丁注入：把外部拉到的 funding rate 当作一条样本推进 rolling buffer。
+    /// 与 WS 路径共用同一个 push，WS 后续到达会通过 rolling window 自然顶替这条样本。
+    /// 目前仅 Gate venue 调用：futures.tickers 是事件驱动，冷门 symbol 长时间无推送，
+    /// 用 `/futures/usdt/contracts` 的 funding_rate（与 WS 同字段）每分钟兜底。
+    /// 返回是否真的写入（false=venue 未初始化或值非有限）。
+    pub fn seed_funding_rate(&self, symbol: &str, venue: TradingVenue, rate: f64) -> bool {
+        if !rate.is_finite() {
+            return false;
+        }
+        let symbol_upper = normalize_symbol_key(symbol);
+        Self::with_inner(|inner| {
+            let mut map = inner.funding_rates.borrow_mut();
+            if let Some(venue_rates) = map.get_mut(&venue) {
+                let rate_data = venue_rates
+                    .entry(symbol_upper)
+                    .or_insert_with(FundingRateData::new);
+                rate_data.push(rate);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
     /// 查询最新 Funding Rate
     ///
     /// # 参数

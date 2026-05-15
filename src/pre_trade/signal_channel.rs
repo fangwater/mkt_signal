@@ -34,7 +34,6 @@ use std::time::Duration;
 thread_local! {
     static SIGNAL_CHANNEL: OnceCell<SignalChannel> = const { OnceCell::new() };
     static SIGNAL_COUNTS: RefCell<HashMap<String, u64>> = RefCell::new(HashMap::new());
-    static ARB_CLOSE_DIRECTION_SKIP_LOG_TS: RefCell<HashMap<String, i64>> = RefCell::new(HashMap::new());
 }
 
 /// 默认信号频道名称（与 trade_signal 的发布频道一致）
@@ -58,17 +57,34 @@ fn record_signal_count(signal_type: &SignalType) {
     });
 }
 
-fn should_log_arb_close_direction_skip(key: String, signal_ts: i64) -> bool {
-    ARB_CLOSE_DIRECTION_SKIP_LOG_TS.with(|state| {
-        let mut state = state.borrow_mut();
-        match state.get(&key) {
-            Some(&last_ts) if last_ts == signal_ts => false,
-            _ => {
-                state.insert(key, signal_ts);
-                true
-            }
-        }
-    })
+fn is_arb_signal_type(signal_type: &SignalType) -> bool {
+    matches!(
+        signal_type,
+        SignalType::ArbOpen
+            | SignalType::ArbClose
+            | SignalType::ArbCancel
+            | SignalType::ArbCancelTrigger
+            | SignalType::ArbHedge
+    )
+}
+
+fn should_block_arb_signal_for_startup_net_gate(signal_type: &SignalType) -> bool {
+    if !is_arb_signal_type(signal_type) {
+        return false;
+    }
+    let status = MonitorChannel::instance().arb_startup_net_gate_status();
+    if !status.enabled || status.ready {
+        return false;
+    }
+    let status = MonitorChannel::instance().record_arb_startup_net_gate_signal_drop();
+    debug!(
+        "Arb signal blocked by startup net gate: type={} open_ready={} hedge_ready={} dropped_signals={}",
+        signal_type.as_str(),
+        status.open_ready,
+        status.hedge_ready,
+        status.dropped_signals
+    );
+    true
 }
 
 /// 信号频道 - 负责信号进程和 pre-trade 之间的双向通讯
@@ -330,6 +346,10 @@ mod tests {
 }
 
 fn handle_trade_signal(signal: TradeSignal) {
+    if should_block_arb_signal_for_startup_net_gate(&signal.signal_type) {
+        return;
+    }
+
     let is_mm_mode = {
         let monitor = MonitorChannel::instance();
         monitor.open_venue() == monitor.hedge_venue()
@@ -417,7 +437,13 @@ fn handle_trade_signal(signal: TradeSignal) {
                     );
                     strategy_mgr.borrow_mut().insert(Box::new(strategy));
                 } else {
-                    warn!("⚠️ ArbOpen: strategy_id={} {} 未激活", strategy_id, symbol);
+                    let reason = strategy
+                        .open_strategy_inactive_reason()
+                        .unwrap_or("unknown");
+                    warn!(
+                        "⚠️ ArbOpen: strategy_id={} {} 未激活 reason={}",
+                        strategy_id, symbol, reason
+                    );
                 }
             }
             Err(err) => warn!("failed to decode ArbOpen context: {err}"),
@@ -480,36 +506,6 @@ fn handle_trade_signal(signal: TradeSignal) {
                     let hedging_pos =
                         MonitorChannel::instance().get_position_qty(&hedging_symbol, hedging_venue);
                     let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-
-                    let opening_direction_match = match close_side {
-                        Side::Sell => opening_pos > 0.0,
-                        Side::Buy => opening_pos < 0.0,
-                    };
-
-                    if !opening_direction_match {
-                        // 平到 opening leg 净仓反向为止；反向后按过期/无效 close 信号忽略。
-                        let log_key = format!(
-                            "{}:{}:{}",
-                            opening_symbol,
-                            opening_venue as u8,
-                            close_side.to_u8()
-                        );
-                        if should_log_arb_close_direction_skip(log_key, signal.generation_time) {
-                            info!(
-                                "ArbClose: skip because close side does not reduce opening position symbol={} opening_venue={:?} hedging_venue={:?} side={:?} open_pos={:.8} hedge_pos={:.8} signal_ts={} price={:.8} qty={:.8}",
-                                opening_symbol,
-                                opening_venue,
-                                hedging_venue,
-                                close_side,
-                                opening_pos,
-                                hedging_pos,
-                                signal.generation_time,
-                                close_ctx.price_value(),
-                                close_ctx.amount_value()
-                            );
-                        }
-                        return;
-                    }
 
                     let normalized_signal = TradeSignal::create(
                         SignalType::ArbClose,

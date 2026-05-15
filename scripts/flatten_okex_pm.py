@@ -5,16 +5,17 @@ Self-contained: no imports from other scripts in this repo.
 
 Four-phase pipeline per symbol (no dust convert):
   Phase R — explicit repay via /api/v5/account/borrow-repay
-  Phase U — SWAP reduce-only MARKET close (tdMode=cross)
+  Phase U — SWAP MARKET align/close (tdMode=cross)
   Phase B — clear-mode only — BUY spot (tdMode=cross) to extinguish borrow
   Phase S — clear-mode only — SELL spot for USDT (free>borrow case)
 
 Modes:
-  align (default) — net_qty = free + swap_position - borrowed = 0; SWAP reduce-only
-  clear           — close SWAP to 0; then B or S to drain asset
+  align (default) — net_qty = free + swap_position - borrowed = 0;
+                    SWAP order is allowed to add/flip to match spot exposure
+  clear           — close SWAP to 0 with reduceOnly; then B or S to drain asset
 
 Behavior:
-  - CWD basename must match ^okex_fr_ (safety guard).
+  - CWD basename must match ^okex_fr_ or ^okex-intra- (safety guard).
   - Auto-sources ./env.sh; OKX_API_KEY/SECRET/PASSPHRASE — env.sh always wins.
   - Dry-run by default. --execute required for state changes.
 
@@ -51,7 +52,7 @@ OKX_BORROW_REPAY_PATH = "/api/v5/account/borrow-repay"
 OKX_ORDER_PATH = "/api/v5/trade/order"
 OKX_INSTRUMENTS_PUBLIC = "/api/v5/public/instruments"
 
-ENV_DIR_PATTERN = re.compile(r"^okex_fr_")
+ENV_DIR_PATTERN = re.compile(r"^(okex_fr_|okex[-_]intra[-_])")
 AUTHORITATIVE_KEYS = ("OKX_API_KEY", "OKX_API_SECRET", "OKX_PASSPHRASE")
 ZERO = Decimal("0")
 
@@ -87,6 +88,7 @@ class SymbolPlan:
     net_qty: Decimal
     swap_side: Optional[str]
     swap_contracts: Decimal
+    swap_reduce_only: bool
     swap_skip_reason: Optional[str]
     buyback_amt: Decimal
     buyback_skip_reason: Optional[str]
@@ -227,7 +229,7 @@ def check_env_safety() -> str:
     cwd_name = os.path.basename(os.path.normpath(os.getcwd()))
     if not ENV_DIR_PATTERN.match(cwd_name):
         sys.stderr.write(
-            f"[ERROR] CWD basename must match ^okex_fr_, got {cwd_name!r} "
+            f"[ERROR] CWD basename must match ^okex_fr_ or ^okex-intra-, got {cwd_name!r} "
             f"(CWD={os.getcwd()}). Aborting for safety.\n"
         )
         sys.exit(2)
@@ -442,6 +444,7 @@ def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
 
     swap_side: Optional[str] = None
     swap_contracts = ZERO
+    swap_reduce_only = mode == "clear"
     swap_skip: Optional[str] = None
     buyback_amt = ZERO
     buyback_skip: Optional[str] = None
@@ -466,11 +469,11 @@ def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
             )
             swap_contracts = ZERO
             swap_side = None
-        elif swap_side == "sell" and pos_coins <= 0:
+        elif swap_reduce_only and swap_side == "sell" and pos_coins <= 0:
             swap_skip = f"reduceOnly sell needs pos>0, have pos={format_decimal(pos_coins)}"
             swap_contracts = ZERO
             swap_side = None
-        elif swap_side == "buy" and pos_coins >= 0:
+        elif swap_reduce_only and swap_side == "buy" and pos_coins >= 0:
             swap_skip = f"reduceOnly buy needs pos<0, have pos={format_decimal(pos_coins)}"
             swap_contracts = ZERO
             swap_side = None
@@ -502,6 +505,7 @@ def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
         net_qty=net_qty,
         swap_side=swap_side,
         swap_contracts=swap_contracts,
+        swap_reduce_only=swap_reduce_only,
         swap_skip_reason=swap_skip,
         buyback_amt=buyback_amt,
         buyback_skip_reason=buyback_skip,
@@ -519,7 +523,7 @@ def print_plan(env_name: str, mode: str, plans: List[SymbolPlan], execute: bool)
     header = (
         f"{'Symbol':<12} {'Asset':<6} {'Free':>14} {'Borrowed':>14} {'Interest':>10} "
         f"{'PosCoins':>14} {'Repay':>12} {'Net':>12} {'SWAP':>6} {'Contracts':>12} "
-        f"{'Buyback':>12} {'Selldown':>12} Notes"
+        f"{'SWAP RO':>7} {'Buyback':>12} {'Selldown':>12} Notes"
     )
     print(header)
     print("-" * len(header))
@@ -545,6 +549,7 @@ def print_plan(env_name: str, mode: str, plans: List[SymbolPlan], execute: bool)
             f"{format_decimal(p.net_qty):>12} "
             f"{(p.swap_side or '-'):>6} "
             f"{format_decimal(p.swap_contracts):>12} "
+            f"{str(p.swap_reduce_only).lower():>7} "
             f"{format_decimal(p.buyback_amt):>12} "
             f"{format_decimal(p.selldown_amt):>12} "
             f"{notes}"
@@ -615,7 +620,7 @@ def execute_swap(plan: SymbolPlan, api_key: str, api_secret: str, passphrase: st
         return PhaseOutcome(ok=None)
     inst = plan.state.spec.swap_inst
     sz = format_decimal(plan.swap_contracts)
-    print(f"\n[swap] {inst} {plan.swap_side} sz={sz} (contracts) reduceOnly=true")
+    print(f"\n[swap] {inst} {plan.swap_side} sz={sz} (contracts) reduceOnly={str(plan.swap_reduce_only).lower()}")
     status, body = okx_private(
         "POST",
         OKX_ORDER_PATH,
@@ -626,7 +631,7 @@ def execute_swap(plan: SymbolPlan, api_key: str, api_secret: str, passphrase: st
             "side": plan.swap_side,
             "ordType": "market",
             "sz": sz,
-            "reduceOnly": True,
+            "reduceOnly": plan.swap_reduce_only,
         },
     )
     okx_ok, brief = okx_response_ok(body)
@@ -748,7 +753,7 @@ def main() -> None:
         r = results_by_symbol[p.state.spec.symbol]
         r.repay = execute_repay(p, api_key, api_secret, passphrase)
 
-    print("\n--- Phase U: SWAP reduce-only ---")
+    print("\n--- Phase U: SWAP align/close ---")
     for p in plans:
         r = results_by_symbol[p.state.spec.symbol]
         r.swap = execute_swap(p, api_key, api_secret, passphrase)

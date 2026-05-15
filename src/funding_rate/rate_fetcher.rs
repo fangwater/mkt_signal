@@ -5,9 +5,9 @@
 //! 支持：
 //! - Binance: 4h/8h 资金费率 + 借贷利率
 //! - OKEx: 1h/2h/4h/6h/8h 资金费率
-//! - Bybit/Bitget/Gate: 8h 资金费率（Gate 同时支持签名拉取借贷利率）
+//! - Bybit/Bitget/Gate: 8h 资金费率 + 借贷利率
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use chrono::{Timelike, Utc};
 use hmac::{Hmac, Mac};
 use log::{debug, info, warn};
@@ -17,6 +17,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256, Sha512};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 use tokio::time::{sleep, Duration};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -25,6 +26,7 @@ type HmacSha512 = Hmac<Sha512>;
 use super::common::{FundingRatePeriod, RateFetcherTrait};
 use super::symbol_list::SymbolList;
 use crate::common::exchange::Exchange;
+use crate::common::mkt_cfg::load_primary_local_ip_preferring_trade_engine_sync;
 use crate::signal::common::TradingVenue;
 use crate::symbol_match::normalize_symbol_for_whitelist;
 
@@ -100,6 +102,23 @@ struct BitgetFundingRateItem {
     funding_rate_timestamp: String,
 }
 
+/// Bitget UTA 借贷利率响应
+#[derive(Debug, Deserialize)]
+struct BitgetMarginLoansResponse {
+    code: String,
+    data: BitgetMarginLoansData,
+}
+
+/// Bitget UTA 借贷利率数据
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BitgetMarginLoansData {
+    #[serde(default)]
+    daily_interest: String,
+    #[serde(default)]
+    limit: String,
+}
+
 /// Bybit v5 资金费率历史响应
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -122,6 +141,29 @@ struct BybitFundingRateItem {
     symbol: String,
     funding_rate: String,
     funding_rate_timestamp: String,
+}
+
+/// Bybit v5 历史借贷利率响应
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BybitInterestRateHistoryResponse {
+    ret_code: i32,
+    #[serde(default)]
+    result: BybitInterestRateHistoryResult,
+}
+
+/// Bybit v5 历史借贷利率结果
+#[derive(Debug, Default, Deserialize)]
+struct BybitInterestRateHistoryResult {
+    #[serde(default)]
+    list: Vec<BybitInterestRateHistoryItem>,
+}
+
+/// Bybit v5 历史借贷利率项
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BybitInterestRateHistoryItem {
+    hourly_borrow_rate: String,
 }
 
 /// Gate.io 资金费率历史项
@@ -243,7 +285,12 @@ const OKEX_FUNDING_RATE_HISTORY_API: &str =
 const OKEX_FUNDING_RATE_API: &str = "https://www.okx.com/api/v5/public/funding-rate";
 const BITGET_FUNDING_RATE_HISTORY_API: &str =
     "https://api.bitget.com/api/v3/market/history-fund-rate";
+const BITGET_API_BASE_URL: &str = "https://api.bitget.com";
+const BITGET_MARGIN_LOANS_PATH: &str = "/api/v3/market/margin-loans";
 const BYBIT_FUNDING_RATE_HISTORY_API: &str = "https://api.bybit.com/v5/market/funding/history";
+const BYBIT_API_BASE_URL: &str = "https://api.bybit.com";
+const BYBIT_INTEREST_RATE_HISTORY_PATH: &str = "/v5/spot-margin-trade/interest-rate-history";
+const BYBIT_RECV_WINDOW_MS: i64 = 5_000;
 // Gate 仅支持实盘，Base URL 固定写死，不做配置化
 const GATE_API_BASE_URL: &str = "https://api.gateio.ws/api/v4";
 const GATE_FUNDING_RATE_HISTORY_PATH: &str = "/futures/usdt/funding_rate";
@@ -299,6 +346,10 @@ struct RateFetcherInner {
     binance_api_secret: Option<String>,
     /// Okex 借贷利率缓存服务地址
     okex_loan_rate_url: Option<String>,
+    /// Bybit API Key（Bybit FR 必须拉取账户 VIP 借贷利率）
+    bybit_api_key: Option<String>,
+    /// Bybit API Secret
+    bybit_api_secret: Option<String>,
     /// Gate API Key（必填，仅 Gate 使用）
     gate_api_key: Option<String>,
     /// Gate API Secret（必填，仅 Gate 使用）
@@ -341,15 +392,19 @@ impl RateFetcher {
     fn ensure_initialized() -> Result<()> {
         RATE_FETCHER.with(|frf| {
             if frf.borrow().is_none() {
+                let (http_client, local_ip_log) = Self::build_http_client_from_local_cfg()?;
+                info!("RateFetcher: REST client local_ip={local_ip_log}");
                 let inner = RateFetcherInner {
                     funding_rates: HashMap::new(),
                     lending_rates: HashMap::new(),
                     funding_periods: HashMap::new(),
                     venue_states: HashMap::new(),
-                    http_client: Client::builder().timeout(Duration::from_secs(10)).build()?,
+                    http_client,
                     binance_api_key: None,
                     binance_api_secret: None,
                     okex_loan_rate_url: None,
+                    bybit_api_key: None,
+                    bybit_api_secret: None,
                     gate_api_key: None,
                     gate_api_secret: None,
                     started_exchanges: HashSet::new(),
@@ -358,6 +413,31 @@ impl RateFetcher {
             }
             Ok(())
         })
+    }
+
+    fn build_http_client_from_local_cfg() -> Result<(Client, String)> {
+        let builder = Client::builder().timeout(Duration::from_secs(10));
+        match load_primary_local_ip_preferring_trade_engine_sync() {
+            Ok((ip, source)) => {
+                let trimmed = ip.trim();
+                if trimmed.is_empty() || trimmed == "0.0.0.0" {
+                    return Ok((builder.build()?, format!("system-default ({source})")));
+                }
+                let parsed: IpAddr = trimmed
+                    .parse()
+                    .map_err(|err| anyhow!("invalid RateFetcher REST local_ip {trimmed}: {err}"))?;
+                Ok((
+                    builder.local_address(parsed).build()?,
+                    format!("{trimmed} ({source})"),
+                ))
+            }
+            Err(err) => {
+                warn!(
+                    "RateFetcher: load REST local_ip config failed: {err:#}; using system-default"
+                );
+                Ok((builder.build()?, "system-default".to_string()))
+            }
+        }
     }
 
     fn exchange_from_venue(venue: TradingVenue) -> Exchange {
@@ -372,6 +452,18 @@ impl RateFetcher {
             }
             TradingVenue::AsterMargin | TradingVenue::AsterFutures => Exchange::Aster,
         }
+    }
+
+    fn required_env(name: &str, exchange: &str) -> Result<String> {
+        let value = std::env::var(name)
+            .map(|value| value.trim().to_string())
+            .map_err(|_| anyhow!("{exchange} FR requires {name} to fetch lending rates"))?;
+        if value.is_empty() {
+            return Err(anyhow!(
+                "{exchange} FR requires non-empty {name} to fetch lending rates"
+            ));
+        }
+        Ok(value)
     }
 
     // ==================== 初始化接口 ====================
@@ -418,14 +510,18 @@ impl RateFetcher {
                 Self::with_inner_mut(|inner| {
                     inner.venue_states.entry(BITGET_CONFIG.venue).or_default();
                 });
-                info!("RateFetcher: Bitget 初始化完成");
+                info!("RateFetcher: Bitget 初始化完成 (lending_rate=required)");
                 Self::spawn_bitget_fetch_task();
             }
             Exchange::Bybit => {
+                let api_key = Self::required_env("BYBIT_API_KEY", "Bybit")?;
+                let api_secret = Self::required_env("BYBIT_API_SECRET", "Bybit")?;
                 Self::with_inner_mut(|inner| {
                     inner.venue_states.entry(BYBIT_CONFIG.venue).or_default();
+                    inner.bybit_api_key = Some(api_key.clone());
+                    inner.bybit_api_secret = Some(api_secret.clone());
                 });
-                info!("RateFetcher: Bybit 初始化完成");
+                info!("RateFetcher: Bybit 初始化完成 (lending_rate=required)");
                 Self::spawn_bybit_fetch_task();
             }
             Exchange::Gate => {
@@ -739,6 +835,19 @@ impl RateFetcher {
         let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("invalid secret");
         mac.update(query.as_bytes());
         Ok(hex::encode(mac.finalize().into_bytes()))
+    }
+
+    fn sign_bybit_query(
+        secret: &str,
+        timestamp_ms: i64,
+        api_key: &str,
+        recv_window_ms: i64,
+        query: &str,
+    ) -> String {
+        let payload = format!("{timestamp_ms}{api_key}{recv_window_ms}{query}");
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("invalid secret");
+        mac.update(payload.as_bytes());
+        hex::encode(mac.finalize().into_bytes())
     }
 
     fn print_binance_rate_table(symbols: &[String]) {
@@ -1157,20 +1266,17 @@ impl RateFetcher {
             Self::update_symbol_cache(BITGET_CONFIG.venue, &online_symbols, is_full_fetch);
         Self::log_fetch_status("Bitget", is_full_fetch, &new_symbols, online_symbols.len());
 
-        let symbols_to_fetch = if is_full_fetch {
-            &online_symbols
+        if is_full_fetch {
+            Self::fetch_bitget_funding_rates(&online_symbols).await?;
         } else if !new_symbols.is_empty() {
-            &new_symbols
-        } else {
-            return Ok(());
-        };
-
-        Self::fetch_bitget_funding_rates(symbols_to_fetch).await?;
+            Self::fetch_bitget_funding_rates(&new_symbols).await?;
+        }
+        Self::fetch_bitget_lending_rates(&online_symbols).await?;
 
         Self::check_initial_rates_if_needed(
             BITGET_CONFIG.venue,
             &online_symbols,
-            false,
+            true,
             all_changed || is_full_fetch,
         );
 
@@ -1219,6 +1325,85 @@ impl RateFetcher {
             info!("Bitget 资金费率: 成功 {}, 失败 {}", success, fail);
         }
         Ok(())
+    }
+
+    async fn fetch_bitget_lending_rates(symbols: &[String]) -> Result<()> {
+        let assets = Self::collect_base_assets(symbols);
+        if assets.is_empty() {
+            return Ok(());
+        }
+
+        let mut success = 0;
+        let mut fail = 0;
+        for asset in &assets {
+            match Self::fetch_bitget_lending_rate_for_asset(asset).await {
+                Ok(rate) => {
+                    Self::with_inner_mut(|inner| {
+                        inner
+                            .lending_rates
+                            .entry(BITGET_CONFIG.venue)
+                            .or_default()
+                            .insert(
+                                asset.to_uppercase(),
+                                LendingRateCache {
+                                    predict_daily_rate: rate,
+                                    current_daily_rate: rate,
+                                    raw_daily_rates: vec![rate],
+                                },
+                            );
+                    });
+                    success += 1;
+                }
+                Err(err) => {
+                    warn!("Bitget {} 借贷利率失败: {:?}", asset, err);
+                    fail += 1;
+                }
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+        if success + fail > 0 {
+            info!("Bitget 借贷利率: 成功 {}, 失败 {}", success, fail);
+        }
+        Self::maybe_recover_initial_ready(BITGET_CONFIG.venue);
+        Ok(())
+    }
+
+    async fn fetch_bitget_lending_rate_for_asset(asset: &str) -> Result<f64> {
+        let client = Self::with_inner(|inner| inner.http_client.clone());
+        let query = format!(
+            "coin={}&category=MARGIN",
+            urlencoding::encode(&asset.to_uppercase())
+        );
+        let url = format!(
+            "{}{}?{}",
+            BITGET_API_BASE_URL, BITGET_MARGIN_LOANS_PATH, query
+        );
+        let resp = client.get(&url).send().await?;
+        if !resp.status().is_success() {
+            return Err(anyhow!(
+                "Bitget lending HTTP status={} asset={}",
+                resp.status(),
+                asset
+            ));
+        }
+
+        let data: BitgetMarginLoansResponse = resp.json().await?;
+        if data.code != "00000" {
+            return Err(anyhow!("Bitget lending code={} asset={}", data.code, asset));
+        }
+        Self::parse_bitget_lending_rate(data, asset)
+    }
+
+    fn parse_bitget_lending_rate(data: BitgetMarginLoansResponse, asset: &str) -> Result<f64> {
+        data.data
+            .daily_interest
+            .parse::<f64>()
+            .ok()
+            .zip(data.data.limit.parse::<f64>().ok())
+            .and_then(|(rate, limit)| {
+                (rate.is_finite() && limit.is_finite() && rate > 0.0 && limit > 0.0).then_some(rate)
+            })
+            .ok_or_else(|| anyhow!("Bitget lending missing rate asset={}", asset))
     }
 
     /// 从 Bitget API 获取资金费率历史，同时推断周期
@@ -1295,19 +1480,29 @@ impl RateFetcher {
                 let fr = RateFetcher::instance()
                     .get_predicted_funding_rate(s, BITGET_CONFIG.venue)
                     .map(|(_, v)| v);
-                (s.clone(), period, fr)
+                let loan = RateFetcher::instance()
+                    .get_predict_loan_rate(s, BITGET_CONFIG.venue)
+                    .map(|(_, v)| v);
+                (s.clone(), period, fr, loan)
             })
             .collect();
         data.sort_by(|a, b| a.0.cmp(&b.0));
 
-        info!("┌────────────────────────────────────────────────┐");
-        info!("│ Bitget              │ Period │ Predict FR      │");
-        info!("├────────────────────────────────────────────────┤");
-        for (sym, period, fr) in data {
+        info!("┌──────────────────────────────────────────────────────────────┐");
+        info!("│ Bitget              │ Period │ Predict FR      │ Predict Loan │");
+        info!("├──────────────────────────────────────────────────────────────┤");
+        for (sym, period, fr, loan) in data {
             let fr_s = fr.map_or("          N/A".into(), |v| format!("{:>12.6}%", v * 100.0));
-            info!("│ {:<19} │ {:>6} │ {} │", sym, period.as_str(), fr_s);
+            let loan_s = loan.map_or("          N/A".into(), |v| format!("{:>12.6}%", v * 100.0));
+            info!(
+                "│ {:<19} │ {:>6} │ {} │ {} │",
+                sym,
+                period.as_str(),
+                fr_s,
+                loan_s
+            );
         }
-        info!("└────────────────────────────────────────────────┘");
+        info!("└──────────────────────────────────────────────────────────────┘");
     }
 
     // ==================== Bybit 拉取任务 ====================
@@ -1339,20 +1534,17 @@ impl RateFetcher {
             Self::update_symbol_cache(BYBIT_CONFIG.venue, &online_symbols, is_full_fetch);
         Self::log_fetch_status("Bybit", is_full_fetch, &new_symbols, online_symbols.len());
 
-        let symbols_to_fetch = if is_full_fetch {
-            &online_symbols
+        if is_full_fetch {
+            Self::fetch_bybit_funding_rates(&online_symbols).await?;
         } else if !new_symbols.is_empty() {
-            &new_symbols
-        } else {
-            return Ok(());
-        };
-
-        Self::fetch_bybit_funding_rates(symbols_to_fetch).await?;
+            Self::fetch_bybit_funding_rates(&new_symbols).await?;
+        }
+        Self::fetch_bybit_lending_rates(&online_symbols).await?;
 
         Self::check_initial_rates_if_needed(
             BYBIT_CONFIG.venue,
             &online_symbols,
-            false,
+            true,
             all_changed || is_full_fetch,
         );
 
@@ -1400,6 +1592,120 @@ impl RateFetcher {
             info!("Bybit 资金费率: 成功 {}, 失败 {}", success, fail);
         }
         Ok(())
+    }
+
+    async fn fetch_bybit_lending_rates(symbols: &[String]) -> Result<()> {
+        let assets = Self::collect_base_assets(symbols);
+        if assets.is_empty() {
+            return Ok(());
+        }
+
+        let mut success = 0;
+        let mut fail = 0;
+        for asset in &assets {
+            match Self::fetch_bybit_lending_rate_for_asset(asset).await {
+                Ok(rates) => {
+                    let predict = rates.iter().sum::<f64>() / rates.len() as f64;
+                    let n = 3.min(rates.len());
+                    let current = rates.iter().take(n).copied().sum::<f64>() / n as f64;
+                    Self::with_inner_mut(|inner| {
+                        inner
+                            .lending_rates
+                            .entry(BYBIT_CONFIG.venue)
+                            .or_default()
+                            .insert(
+                                asset.to_uppercase(),
+                                LendingRateCache {
+                                    predict_daily_rate: predict,
+                                    current_daily_rate: current,
+                                    raw_daily_rates: rates,
+                                },
+                            );
+                    });
+                    success += 1;
+                }
+                Err(err) => {
+                    warn!("Bybit {} 借贷利率失败: {:?}", asset, err);
+                    fail += 1;
+                }
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+        if success + fail > 0 {
+            info!("Bybit 借贷利率: 成功 {}, 失败 {}", success, fail);
+        }
+        Self::maybe_recover_initial_ready(BYBIT_CONFIG.venue);
+        Ok(())
+    }
+
+    async fn fetch_bybit_lending_rate_for_asset(asset: &str) -> Result<Vec<f64>> {
+        let (client, api_key, api_secret) = Self::with_inner(|inner| {
+            (
+                inner.http_client.clone(),
+                inner.bybit_api_key.clone(),
+                inner.bybit_api_secret.clone(),
+            )
+        });
+        let (api_key, api_secret) = match (api_key, api_secret) {
+            (Some(k), Some(s)) => (k, s),
+            _ => {
+                return Err(anyhow!(
+                    "Bybit lending credentials are missing after initialization"
+                ))
+            }
+        };
+
+        let query = format!("currency={}", urlencoding::encode(asset));
+        let timestamp_ms = Utc::now().timestamp_millis();
+        let sign = Self::sign_bybit_query(
+            &api_secret,
+            timestamp_ms,
+            &api_key,
+            BYBIT_RECV_WINDOW_MS,
+            &query,
+        );
+        let url = format!(
+            "{}{}?{}",
+            BYBIT_API_BASE_URL, BYBIT_INTEREST_RATE_HISTORY_PATH, query
+        );
+        let resp = client
+            .get(&url)
+            .header("X-BAPI-API-KEY", &api_key)
+            .header("X-BAPI-SIGN", sign)
+            .header("X-BAPI-SIGN-TYPE", "2")
+            .header("X-BAPI-TIMESTAMP", timestamp_ms.to_string())
+            .header("X-BAPI-RECV-WINDOW", BYBIT_RECV_WINDOW_MS.to_string())
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(anyhow!(
+                "Bybit lending HTTP status={} asset={}",
+                resp.status(),
+                asset
+            ));
+        }
+
+        let data: BybitInterestRateHistoryResponse = resp.json().await?;
+        if data.ret_code != 0 {
+            return Err(anyhow!(
+                "Bybit lending ret_code={} asset={}",
+                data.ret_code,
+                asset
+            ));
+        }
+        let daily_rates: Vec<f64> = data
+            .result
+            .list
+            .iter()
+            .take(24)
+            .filter_map(|item| item.hourly_borrow_rate.parse::<f64>().ok())
+            .map(|hourly| hourly * 24.0)
+            .collect();
+        if daily_rates.is_empty() {
+            return Err(anyhow!("Bybit lending missing rate asset={}", asset));
+        }
+        Ok(daily_rates)
     }
 
     /// 从 Bybit v5 API 获取资金费率历史，同时推断周期
@@ -1476,19 +1782,29 @@ impl RateFetcher {
                 let fr = RateFetcher::instance()
                     .get_predicted_funding_rate(s, BYBIT_CONFIG.venue)
                     .map(|(_, v)| v);
-                (s.clone(), period, fr)
+                let loan = RateFetcher::instance()
+                    .get_predict_loan_rate(s, BYBIT_CONFIG.venue)
+                    .map(|(_, v)| v);
+                (s.clone(), period, fr, loan)
             })
             .collect();
         data.sort_by(|a, b| a.0.cmp(&b.0));
 
-        info!("┌────────────────────────────────────────────────┐");
-        info!("│ Bybit               │ Period │ Predict FR      │");
-        info!("├────────────────────────────────────────────────┤");
-        for (sym, period, fr) in data {
+        info!("┌──────────────────────────────────────────────────────────────┐");
+        info!("│ Bybit               │ Period │ Predict FR      │ Predict Loan │");
+        info!("├──────────────────────────────────────────────────────────────┤");
+        for (sym, period, fr, loan) in data {
             let fr_s = fr.map_or("          N/A".into(), |v| format!("{:>12.6}%", v * 100.0));
-            info!("│ {:<19} │ {:>6} │ {} │", sym, period.as_str(), fr_s);
+            let loan_s = loan.map_or("          N/A".into(), |v| format!("{:>12.6}%", v * 100.0));
+            info!(
+                "│ {:<19} │ {:>6} │ {} │ {} │",
+                sym,
+                period.as_str(),
+                fr_s,
+                loan_s
+            );
         }
-        info!("└────────────────────────────────────────────────┘");
+        info!("└──────────────────────────────────────────────────────────────┘");
     }
 
     // ==================== Gate 拉取任务 ====================
@@ -2053,6 +2369,23 @@ impl RateFetcher {
         );
     }
 
+    fn maybe_recover_initial_ready(venue: TradingVenue) {
+        let should_check = Self::with_inner(|inner| {
+            inner
+                .venue_states
+                .get(&venue)
+                .map(|state| !state.initial_ready)
+                .unwrap_or(false)
+        });
+        if !should_check {
+            return;
+        }
+        let symbols = SymbolList::instance().get_online_symbols();
+        if !symbols.is_empty() {
+            Self::check_initial_rates_if_needed(venue, &symbols, true, true);
+        }
+    }
+
     pub fn is_initial_ready(venue: TradingVenue) -> bool {
         Self::with_inner(|inner| {
             inner
@@ -2283,5 +2616,46 @@ impl RateFetcherTrait for RateFetcher {
         venue: TradingVenue,
     ) -> Option<(FundingRatePeriod, f64)> {
         RateFetcher::get_current_loan_rate(self, symbol, venue)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_bitget_lending_rate_accepts_v3_margin_loans_object() {
+        let response: BitgetMarginLoansResponse = serde_json::from_str(
+            r#"{
+                "code": "00000",
+                "msg": "success",
+                "requestTime": 1778764755974,
+                "data": {
+                    "dailyInterest": "0.00001296",
+                    "annualInterest": "0.0047304",
+                    "limit": "397"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let rate = RateFetcher::parse_bitget_lending_rate(response, "BTC").unwrap();
+        assert_eq!(rate, 0.00001296);
+    }
+
+    #[test]
+    fn parse_bitget_lending_rate_rejects_zero_limit() {
+        let response: BitgetMarginLoansResponse = serde_json::from_str(
+            r#"{
+                "code": "00000",
+                "data": {
+                    "dailyInterest": "0.00001296",
+                    "limit": "0"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert!(RateFetcher::parse_bitget_lending_rate(response, "BTC").is_err());
     }
 }

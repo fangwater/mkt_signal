@@ -4,7 +4,7 @@
 Self-contained: no imports from other scripts in this repo.
 
 Behavior:
-  - CWD basename must match ^gate_fr_.
+  - CWD basename must match ^gate_fr_ or ^gate-intra-.
   - Auto-sources ./env.sh; GATE_API_KEY/SECRET — env.sh always wins.
   - Lists open orders, cancels all by contract / currency_pair.
 
@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional, Tuple
 GATE_HOST = "https://api.gateio.ws"
 GATE_PREFIX = "/api/v4"
 
-ENV_DIR_PATTERN = re.compile(r"^gate_fr_")
+ENV_DIR_PATTERN = re.compile(r"^(gate_fr_|gate[-_]intra[-_])")
 AUTHORITATIVE_KEYS = ("GATE_API_KEY", "GATE_API_SECRET")
 
 
@@ -85,7 +85,7 @@ def check_env_safety() -> str:
     cwd_name = os.path.basename(os.path.normpath(os.getcwd()))
     if not ENV_DIR_PATTERN.match(cwd_name):
         sys.stderr.write(
-            f"[ERROR] CWD basename must match ^gate_fr_, got {cwd_name!r} "
+            f"[ERROR] CWD basename must match ^gate_fr_ or ^gate-intra-, got {cwd_name!r} "
             f"(CWD={os.getcwd()}). Aborting for safety.\n"
         )
         sys.exit(2)

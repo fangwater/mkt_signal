@@ -89,6 +89,8 @@ impl PreTrade {
         let mut next_throttle_log = std::time::Instant::now() + throttle_log_interval;
         let order_rate_cleanup_interval = std::time::Duration::from_secs(10);
         let mut next_order_rate_cleanup = std::time::Instant::now() + order_rate_cleanup_interval;
+        let arb_startup_net_log_interval = std::time::Duration::from_secs(30);
+        let mut next_arb_startup_net_log = std::time::Instant::now() + arb_startup_net_log_interval;
         info!(
             "pre_trade signal throttle log started (interval={}s)",
             throttle_log_interval_secs
@@ -129,6 +131,21 @@ impl PreTrade {
                     while instant_now >= next_order_rate_cleanup {
                         OrderRateLimiter::cleanup_expired(now);
                         next_order_rate_cleanup += order_rate_cleanup_interval;
+                    }
+
+                    while instant_now >= next_arb_startup_net_log {
+                        let status = MonitorChannel::instance().arb_startup_net_gate_status();
+                        if status.enabled && !status.ready {
+                            warn!(
+                                "双边net还没有初始化: open_ready={} hedge_ready={} open_ts_us={} hedge_ts_us={} dropped_arb_signals={}",
+                                status.open_ready,
+                                status.hedge_ready,
+                                status.open_ts_us,
+                                status.hedge_ts_us,
+                                status.dropped_signals
+                            );
+                        }
+                        next_arb_startup_net_log += arb_startup_net_log_interval;
                     }
                 }
                 else => break,
