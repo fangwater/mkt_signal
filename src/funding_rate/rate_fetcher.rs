@@ -7,7 +7,7 @@
 //! - OKEx: 1h/2h/4h/6h/8h 资金费率
 //! - Bybit/Bitget/Gate: 8h 资金费率 + 借贷利率
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use chrono::{Timelike, Utc};
 use hmac::{Hmac, Mac};
 use log::{debug, info, warn};
@@ -26,7 +26,7 @@ type HmacSha512 = Hmac<Sha512>;
 use super::common::{FundingRatePeriod, RateFetcherTrait};
 use super::symbol_list::SymbolList;
 use crate::common::exchange::Exchange;
-use crate::common::mkt_cfg::load_primary_local_ip_preferring_trade_engine_sync;
+use crate::common::mkt_cfg::load_primary_local_ip_from_trade_engine_sync;
 use crate::signal::common::TradingVenue;
 use crate::symbol_match::normalize_symbol_for_whitelist;
 
@@ -417,27 +417,20 @@ impl RateFetcher {
 
     fn build_http_client_from_local_cfg() -> Result<(Client, String)> {
         let builder = Client::builder().timeout(Duration::from_secs(10));
-        match load_primary_local_ip_preferring_trade_engine_sync() {
-            Ok((ip, source)) => {
-                let trimmed = ip.trim();
-                if trimmed.is_empty() || trimmed == "0.0.0.0" {
-                    return Ok((builder.build()?, format!("system-default ({source})")));
-                }
-                let parsed: IpAddr = trimmed
-                    .parse()
-                    .map_err(|err| anyhow!("invalid RateFetcher REST local_ip {trimmed}: {err}"))?;
-                Ok((
-                    builder.local_address(parsed).build()?,
-                    format!("{trimmed} ({source})"),
-                ))
-            }
-            Err(err) => {
-                warn!(
-                    "RateFetcher: load REST local_ip config failed: {err:#}; using system-default"
-                );
-                Ok((builder.build()?, "system-default".to_string()))
-            }
+        let (ip, source) = load_primary_local_ip_from_trade_engine_sync()
+            .context("RateFetcher requires trade_engine.toml local IP config")?;
+        let trimmed = ip.trim();
+        if trimmed.is_empty() || trimmed == "0.0.0.0" {
+            return Ok((builder.build()?, format!("system-default ({source})")));
         }
+
+        let parsed: IpAddr = trimmed
+            .parse()
+            .map_err(|err| anyhow!("invalid RateFetcher REST local_ip {trimmed}: {err}"))?;
+        Ok((
+            builder.local_address(parsed).build()?,
+            format!("{trimmed} ({source})"),
+        ))
     }
 
     fn exchange_from_venue(venue: TradingVenue) -> Exchange {

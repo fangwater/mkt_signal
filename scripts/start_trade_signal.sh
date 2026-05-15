@@ -170,6 +170,7 @@ npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
 RUST_LOG="${RUST_LOG}" npx pm2 start "$BIN_PATH" \
   --name "$PROC_NAME" \
   --namespace "$NAMESPACE" \
+  --cwd "$BASE_DIR" \
   -- \
   "${ARGS[@]}"
 

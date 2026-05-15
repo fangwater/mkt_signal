@@ -100,6 +100,19 @@ pub fn load_primary_local_ip_preferring_trade_engine_sync() -> Result<(String, S
     ))
 }
 
+pub fn load_primary_local_ip_from_trade_engine_sync() -> Result<(String, String)> {
+    let Some(path) = find_trade_engine_local_cfg_path()? else {
+        let cwd = std::env::current_dir().context("resolve current dir for trade_engine config")?;
+        return Err(anyhow!(
+            "trade_engine local IP config not found in {} (expected trade_engine.toml or trade engine.toml)",
+            cwd.display()
+        ));
+    };
+
+    let local_ips = load_trade_engine_local_ips_from_toml_path_sync(&path)?;
+    Ok((local_ips[0].clone(), path.display().to_string()))
+}
+
 pub fn find_trade_engine_local_cfg_path() -> Result<Option<PathBuf>> {
     let cwd = std::env::current_dir().context("resolve current dir for trade_engine config")?;
     let candidates = [cwd.join("trade_engine.toml"), cwd.join("trade engine.toml")];
