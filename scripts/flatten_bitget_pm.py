@@ -23,6 +23,7 @@ Behavior:
   - Dry-run by default; --execute required.
 
 Usage:
+  python3 scripts/flatten_bitget_pm.py --symbol BTCUSDT
   python3 scripts/flatten_bitget_pm.py --symbols BTCUSDT,ETHUSDT
   python3 scripts/flatten_bitget_pm.py --symbols BTCUSDT --mode clear --execute
 """
@@ -246,14 +247,22 @@ def load_credentials() -> Tuple[str, str, str]:
     return k, s, p
 
 
-def parse_symbols(raw: str) -> List[str]:
-    out = []
-    for tok in raw.split(","):
-        s = tok.strip().upper()
-        if s:
-            out.append(s)
+def normalize_symbol(raw: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "", raw or "").upper()
+
+
+def parse_symbol_args(single_symbols: List[str], multi_symbols: List[str]) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    chunks = list(single_symbols or []) + list(multi_symbols or [])
+    for chunk in chunks:
+        for tok in re.split(r"[\s,]+", chunk.strip()):
+            s = normalize_symbol(tok)
+            if s and s not in seen:
+                out.append(s)
+                seen.add(s)
     if not out:
-        sys.exit("[ERROR] --symbols produced empty list")
+        sys.exit("[ERROR] provide at least one --symbol or --symbols value")
     return out
 
 
@@ -365,7 +374,10 @@ def fetch_positions(symbols: List[str], api_key, api_secret, passphrase) -> Dict
         sys.stderr.write(f"[WARN] current-position: {body}\n")
         return out
     data = parsed.get("data")
-    rows = data.get("positions", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+    if isinstance(data, dict):
+        rows = data.get("positions") or data.get("list") or []
+    else:
+        rows = data if isinstance(data, list) else []
     for row in rows or []:
         if not isinstance(row, dict):
             continue
@@ -373,11 +385,13 @@ def fetch_positions(symbols: List[str], api_key, api_secret, passphrase) -> Dict
         if sym not in out:
             continue
         size = decimal_or(row.get("total") or row.get("size") or row.get("holdSize"))
-        side = str(row.get("holdSide") or row.get("side", "")).lower()
-        if side == "short":
+        side = str(row.get("posSide") or row.get("holdSide") or row.get("side", "")).lower()
+        if side in ("short", "sell"):
             out[sym] = -abs(size)
-        else:
+        elif side in ("long", "buy"):
             out[sym] = abs(size)
+        else:
+            out[sym] = size
     return out
 
 
@@ -551,16 +565,16 @@ def execute_futures(plan: SymbolPlan, api_key, api_secret, passphrase) -> PhaseO
     sym = plan.state.spec.symbol
     qty = format_decimal(plan.futures_qty)
     body = {
-        "category": "usdt-futures",
+        "category": "USDT-FUTURES",
         "symbol": sym,
         "side": plan.futures_side,
         "orderType": "market",
-        "size": qty,
+        "qty": qty,
         "clientOid": f"frflat-{int(time.time() * 1000)}",
     }
     if plan.futures_reduce_only:
         body["reduceOnly"] = "YES"
-    print(f"\n[futures] {sym} {plan.futures_side} size={qty} reduceOnly={str(plan.futures_reduce_only).lower()}")
+    print(f"\n[futures] {sym} {plan.futures_side} qty={qty} reduceOnly={str(plan.futures_reduce_only).lower()}")
     status, resp = bitget_private(
         "POST", "/api/v3/trade/place-order", api_key, api_secret, passphrase, body=body,
     )
@@ -578,14 +592,14 @@ def execute_buyback(plan: SymbolPlan, api_key, api_secret, passphrase) -> PhaseO
     sym = plan.state.spec.symbol
     qty = format_decimal(plan.buyback_amt)
     body = {
-        "category": "margin",  # cross-margin (auto-borrow + auto-repay)
+        "category": "MARGIN",  # cross-margin (auto-borrow + auto-repay)
         "symbol": sym,
         "side": "buy",
         "orderType": "market",
-        "size": qty,
+        "qty": qty,
         "clientOid": f"frbuy-{int(time.time() * 1000)}",
     }
-    print(f"\n[buyback] {sym} buy size={qty} category=margin (auto-repay)")
+    print(f"\n[buyback] {sym} buy qty={qty} category=MARGIN (auto-repay)")
     status, resp = bitget_private(
         "POST", "/api/v3/trade/place-order", api_key, api_secret, passphrase, body=body,
     )
@@ -603,14 +617,14 @@ def execute_selldown(plan: SymbolPlan, api_key, api_secret, passphrase) -> Phase
     sym = plan.state.spec.symbol
     qty = format_decimal(plan.selldown_amt)
     body = {
-        "category": "margin",
+        "category": "MARGIN",
         "symbol": sym,
         "side": "sell",
         "orderType": "market",
-        "size": qty,
+        "qty": qty,
         "clientOid": f"frsell-{int(time.time() * 1000)}",
     }
-    print(f"\n[selldown] {sym} sell size={qty} category=margin")
+    print(f"\n[selldown] {sym} sell qty={qty} category=MARGIN")
     status, resp = bitget_private(
         "POST", "/api/v3/trade/place-order", api_key, api_secret, passphrase, body=body,
     )
@@ -630,8 +644,10 @@ def parse_args() -> argparse.Namespace:
         description="Flatten Bitget UTA positions (no Phase R; futures close + buyback/selldown)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--symbols", required=True,
-                        help="Comma-separated symbol list (BTCUSDT,...); USDT-quoted only")
+    parser.add_argument("--symbol", action="append", default=[],
+                        help="Single symbol filter; repeatable, e.g. --symbol BTCUSDT --symbol ETHUSDT")
+    parser.add_argument("--symbols", action="append", default=[],
+                        help="Comma/space-separated symbol list (BTCUSDT,...); USDT-quoted only")
     parser.add_argument("--mode", choices=["align", "clear"], default="align")
     parser.add_argument("--execute", action="store_true")
     return parser.parse_args()
@@ -642,7 +658,7 @@ def main() -> None:
     env_name = check_env_safety()
     auto_source_env_sh()
     api_key, api_secret, passphrase = load_credentials()
-    symbols = parse_symbols(args.symbols)
+    symbols = parse_symbol_args(args.symbol, args.symbols)
 
     specs = fetch_specs(symbols)
     balances = fetch_assets(api_key, api_secret, passphrase)

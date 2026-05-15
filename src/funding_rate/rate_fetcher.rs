@@ -17,6 +17,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256, Sha512};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 use tokio::time::{sleep, Duration};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -25,6 +26,7 @@ type HmacSha512 = Hmac<Sha512>;
 use super::common::{FundingRatePeriod, RateFetcherTrait};
 use super::symbol_list::SymbolList;
 use crate::common::exchange::Exchange;
+use crate::common::mkt_cfg::load_primary_local_ip_preferring_trade_engine_sync;
 use crate::signal::common::TradingVenue;
 use crate::symbol_match::normalize_symbol_for_whitelist;
 
@@ -112,20 +114,9 @@ struct BitgetMarginLoansResponse {
 #[serde(rename_all = "camelCase")]
 struct BitgetMarginLoansData {
     #[serde(default)]
-    margin_list: Vec<BitgetMarginLoanItem>,
-}
-
-/// Bitget UTA 借贷利率项
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct BitgetMarginLoanItem {
-    coin: String,
-    #[serde(default)]
     daily_interest: String,
     #[serde(default)]
-    leverage: String,
-    #[serde(default)]
-    max_borrowable_amount: String,
+    limit: String,
 }
 
 /// Bybit v5 资金费率历史响应
@@ -401,12 +392,14 @@ impl RateFetcher {
     fn ensure_initialized() -> Result<()> {
         RATE_FETCHER.with(|frf| {
             if frf.borrow().is_none() {
+                let (http_client, local_ip_log) = Self::build_http_client_from_local_cfg()?;
+                info!("RateFetcher: REST client local_ip={local_ip_log}");
                 let inner = RateFetcherInner {
                     funding_rates: HashMap::new(),
                     lending_rates: HashMap::new(),
                     funding_periods: HashMap::new(),
                     venue_states: HashMap::new(),
-                    http_client: Client::builder().timeout(Duration::from_secs(10)).build()?,
+                    http_client,
                     binance_api_key: None,
                     binance_api_secret: None,
                     okex_loan_rate_url: None,
@@ -420,6 +413,31 @@ impl RateFetcher {
             }
             Ok(())
         })
+    }
+
+    fn build_http_client_from_local_cfg() -> Result<(Client, String)> {
+        let builder = Client::builder().timeout(Duration::from_secs(10));
+        match load_primary_local_ip_preferring_trade_engine_sync() {
+            Ok((ip, source)) => {
+                let trimmed = ip.trim();
+                if trimmed.is_empty() || trimmed == "0.0.0.0" {
+                    return Ok((builder.build()?, format!("system-default ({source})")));
+                }
+                let parsed: IpAddr = trimmed
+                    .parse()
+                    .map_err(|err| anyhow!("invalid RateFetcher REST local_ip {trimmed}: {err}"))?;
+                Ok((
+                    builder.local_address(parsed).build()?,
+                    format!("{trimmed} ({source})"),
+                ))
+            }
+            Err(err) => {
+                warn!(
+                    "RateFetcher: load REST local_ip config failed: {err:#}; using system-default"
+                );
+                Ok((builder.build()?, "system-default".to_string()))
+            }
+        }
     }
 
     fn exchange_from_venue(venue: TradingVenue) -> Exchange {
@@ -1373,21 +1391,17 @@ impl RateFetcher {
         if data.code != "00000" {
             return Err(anyhow!("Bitget lending code={} asset={}", data.code, asset));
         }
+        Self::parse_bitget_lending_rate(data, asset)
+    }
+
+    fn parse_bitget_lending_rate(data: BitgetMarginLoansResponse, asset: &str) -> Result<f64> {
         data.data
-            .margin_list
-            .iter()
-            .find(|item| item.coin.eq_ignore_ascii_case(asset))
-            .and_then(|item| {
-                let rate = item.daily_interest.parse::<f64>().ok()?;
-                let leverage = item.leverage.parse::<f64>().ok()?;
-                let max_borrow = item.max_borrowable_amount.parse::<f64>().ok()?;
-                (rate.is_finite()
-                    && leverage.is_finite()
-                    && max_borrow.is_finite()
-                    && rate > 0.0
-                    && leverage > 0.0
-                    && max_borrow > 0.0)
-                    .then_some(rate)
+            .daily_interest
+            .parse::<f64>()
+            .ok()
+            .zip(data.data.limit.parse::<f64>().ok())
+            .and_then(|(rate, limit)| {
+                (rate.is_finite() && limit.is_finite() && rate > 0.0 && limit > 0.0).then_some(rate)
             })
             .ok_or_else(|| anyhow!("Bitget lending missing rate asset={}", asset))
     }
@@ -2602,5 +2616,46 @@ impl RateFetcherTrait for RateFetcher {
         venue: TradingVenue,
     ) -> Option<(FundingRatePeriod, f64)> {
         RateFetcher::get_current_loan_rate(self, symbol, venue)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_bitget_lending_rate_accepts_v3_margin_loans_object() {
+        let response: BitgetMarginLoansResponse = serde_json::from_str(
+            r#"{
+                "code": "00000",
+                "msg": "success",
+                "requestTime": 1778764755974,
+                "data": {
+                    "dailyInterest": "0.00001296",
+                    "annualInterest": "0.0047304",
+                    "limit": "397"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let rate = RateFetcher::parse_bitget_lending_rate(response, "BTC").unwrap();
+        assert_eq!(rate, 0.00001296);
+    }
+
+    #[test]
+    fn parse_bitget_lending_rate_rejects_zero_limit() {
+        let response: BitgetMarginLoansResponse = serde_json::from_str(
+            r#"{
+                "code": "00000",
+                "data": {
+                    "dailyInterest": "0.00001296",
+                    "limit": "0"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert!(RateFetcher::parse_bitget_lending_rate(response, "BTC").is_err());
     }
 }

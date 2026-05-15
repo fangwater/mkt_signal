@@ -76,6 +76,30 @@ pub async fn load_local_ips_preferring_trade_engine() -> Result<((String, String
     ))
 }
 
+pub fn load_primary_local_ip_preferring_trade_engine_sync() -> Result<(String, String)> {
+    if let Some(path) = find_trade_engine_local_cfg_path()? {
+        let local_ips = load_trade_engine_local_ips_from_toml_path_sync(&path)?;
+        return Ok((local_ips[0].clone(), path.display().to_string()));
+    }
+
+    let cfg_path = home_mkt_cfg_path()?;
+    let content = std::fs::read_to_string(&cfg_path)
+        .with_context(|| format!("read mkt cfg: {}", cfg_path.display()))?;
+    let cfg: LocalIpConfig = serde_yaml::from_str(&content)
+        .with_context(|| format!("parse mkt cfg: {}", cfg_path.display()))?;
+    let primary = cfg.primary_local_ip.trim().to_string();
+    if primary.is_empty() {
+        return Err(anyhow!(
+            "primary_local_ip is empty in {}",
+            cfg_path.display()
+        ));
+    }
+    Ok((
+        primary,
+        format!("{} (fallback mkt_cfg.yaml)", cfg_path.display()),
+    ))
+}
+
 pub fn find_trade_engine_local_cfg_path() -> Result<Option<PathBuf>> {
     let cwd = std::env::current_dir().context("resolve current dir for trade_engine config")?;
     let candidates = [cwd.join("trade_engine.toml"), cwd.join("trade engine.toml")];
@@ -151,6 +175,12 @@ fn parse_trade_engine_local_ips_toml(content: &str, path: &Path) -> Result<Vec<S
 pub async fn load_trade_engine_local_ips_from_toml_path(path: &Path) -> Result<Vec<String>> {
     let content = tokio::fs::read_to_string(path)
         .await
+        .with_context(|| format!("read trade_engine toml: {}", path.display()))?;
+    parse_trade_engine_local_ips_toml(&content, path)
+}
+
+pub fn load_trade_engine_local_ips_from_toml_path_sync(path: &Path) -> Result<Vec<String>> {
+    let content = std::fs::read_to_string(path)
         .with_context(|| format!("read trade_engine toml: {}", path.display()))?;
     parse_trade_engine_local_ips_toml(&content, path)
 }

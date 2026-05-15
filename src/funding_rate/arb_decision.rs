@@ -1,5 +1,6 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use bytes::Bytes;
+use iceoryx2::config::Config;
 use iceoryx2::prelude::{Node, NodeBuilder, NodeName, ServiceName};
 use iceoryx2::service::ipc;
 use std::cell::{OnceCell, RefCell};
@@ -58,6 +59,14 @@ const SPREAD_ARB_SHELL_NAME: &str = "ArbDecision(SpreadArb)";
 // Arb hedge 是 open terminal 触发的高频对冲闭环，不走 MM hedge 的多档拆单模型；
 // 单轮只出一笔，剩余 pending 会由后续触发继续滚动处理。
 const ARB_HEDGE_ORDERS_PER_ROUND: u32 = 1;
+
+fn is_corrupted_service_err(err_text: &str) -> bool {
+    err_text.contains("ServiceInCorruptedState")
+}
+
+fn is_subscriber_capacity_err(err_text: &str) -> bool {
+    err_text.contains("ExceedsMaxSupportedSubscribers")
+}
 
 pub fn default_pnlu_redis_settings() -> RedisSettings {
     RedisSettings {
@@ -222,19 +231,81 @@ pub fn create_backward_subscriber(
     source: &str,
 ) -> Result<GenericSignalSubscriber> {
     let service_name = build_service_name(&format!("signal_pubs/{}", channel_name));
-    let service = node
-        .service_builder(&ServiceName::new(&service_name)?)
-        .publish_subscribe::<[u8; crate::common::iceoryx_publisher::SIGNAL_PAYLOAD]>()
-        .max_publishers(1)
-        .max_subscribers(32)
-        .history_size(128)
-        .subscriber_max_buffer_size(256)
-        .open_or_create()
-        .with_context(|| {
-            format!("{source}: failed to open/create backward signal service={service_name}")
-        })?;
+    let service_name_obj = ServiceName::new(&service_name)?;
+    let service_builder = || {
+        node.service_builder(&service_name_obj)
+            .publish_subscribe::<[u8; crate::common::iceoryx_publisher::SIGNAL_PAYLOAD]>()
+            .max_publishers(1)
+            .max_subscribers(32)
+            .history_size(128)
+            .subscriber_max_buffer_size(256)
+    };
 
-    let subscriber = service.subscriber_builder().create()?;
+    let service = match service_builder().open_or_create() {
+        Ok(service) => service,
+        Err(create_err) => {
+            let create_text = format!("{:?}", create_err);
+            if is_corrupted_service_err(&create_text) {
+                log::warn!(
+                    "{source}: backward subscriber hit ServiceInCorruptedState, attempting dead-node cleanup: service={} err={:?}",
+                    service_name,
+                    create_err
+                );
+                let cleanup = Node::<ipc::Service>::cleanup_dead_nodes(Config::global_config());
+                log::warn!(
+                    "{source}: dead-node cleanup completed for backward subscriber: service={} cleanups={} failed_cleanups={}",
+                    service_name,
+                    cleanup.cleanups,
+                    cleanup.failed_cleanups
+                );
+                service_builder().open_or_create().map_err(|retry_err| {
+                    anyhow!(
+                        "{source}: failed to open/create backward signal service after dead-node cleanup: service={}, err={:?}, retry_err={:?}",
+                        service_name,
+                        create_err,
+                        retry_err
+                    )
+                })?
+            } else {
+                return Err(create_err).with_context(|| {
+                    format!(
+                        "{source}: failed to open/create backward signal service={service_name}"
+                    )
+                });
+            }
+        }
+    };
+
+    let subscriber = match service.subscriber_builder().create() {
+        Ok(subscriber) => subscriber,
+        Err(err) => {
+            let err_text = format!("{:?}", err);
+            if is_subscriber_capacity_err(&err_text) {
+                log::warn!(
+                    "{source}: backward subscriber hit max-subscribers, attempting dead-node cleanup: service={} err={:?}",
+                    service_name,
+                    err
+                );
+                let cleanup = Node::<ipc::Service>::cleanup_dead_nodes(Config::global_config());
+                log::warn!(
+                    "{source}: dead-node cleanup completed for backward subscriber: service={} cleanups={} failed_cleanups={}",
+                    service_name,
+                    cleanup.cleanups,
+                    cleanup.failed_cleanups
+                );
+                service.subscriber_builder().create().map_err(|retry_err| {
+                    anyhow!(
+                        "{source}: failed to create backward signal subscriber after dead-node cleanup: service={}, err={:?}, retry_err={:?}",
+                        service_name,
+                        err,
+                        retry_err
+                    )
+                })?
+            } else {
+                return Err(err.into());
+            }
+        }
+    };
     Ok(GenericSignalSubscriber::Size4K(subscriber))
 }
 
@@ -896,7 +967,7 @@ fn drive_funding_decision(
                 now,
             )
         }) {
-            emit_funding_open_close_signals(
+            let emit_allowed = emit_funding_open_close_signals(
                 decision,
                 open_symbol_key.as_str(),
                 hedge_symbol_key.as_str(),
@@ -906,6 +977,9 @@ fn drive_funding_decision(
                 close_gate.side,
                 None,
             )?;
+            if !emit_allowed {
+                return Ok(None);
+            }
             let _ = ArbDecision::with_state_mut(|arb| {
                 arb.mark_close_triggered(close_gate.key, now);
             });
@@ -1162,7 +1236,7 @@ fn drive_funding_decision(
         return Ok(emitted_signal);
     };
 
-    emit_funding_open_close_signals(
+    let emit_allowed = emit_funding_open_close_signals(
         decision,
         open_symbol_key.as_str(),
         hedge_symbol_key.as_str(),
@@ -1172,6 +1246,9 @@ fn drive_funding_decision(
         control.side,
         control.gate.as_ref(),
     )?;
+    if !emit_allowed {
+        return Ok(emitted_signal);
+    }
     let _ = ArbDecision::with_state_mut(|arb| {
         arb.mark_signal_triggered(&control.final_signal, control.key, now);
     });
@@ -2680,7 +2757,39 @@ fn emit_funding_open_close_signals(
     signal_type: SignalType,
     side: Side,
     gate: Option<&ArbOpenGatePassed>,
-) -> Result<()> {
+) -> Result<bool> {
+    if matches!(signal_type, SignalType::ArbOpen | SignalType::ArbClose) {
+        let readiness = ArbDecision::with_state_mut(|arb| {
+            arb.lookup_dual_venue_volatility_readiness(
+                spot_symbol,
+                futures_symbol,
+                spot_venue,
+                futures_venue,
+            )
+        })
+        .expect("ArbDecisionState should be initialized");
+        if !readiness.is_ready() {
+            let reason = readiness.missing_reason();
+            let _ = ArbDecision::with_state_mut(|arb| {
+                arb.record_intercept_summary(match signal_type {
+                    SignalType::ArbOpen => "dual_vol_block_open",
+                    SignalType::ArbClose => "dual_vol_block_close",
+                    _ => "dual_vol_block",
+                });
+            });
+            log::warn!(
+                "{FUNDING_ARB_SHELL_NAME}: suppress {:?} because dual venue volatility is not ready open={} hedge={} open_venue={:?} hedge_venue={:?} reason={}",
+                signal_type,
+                spot_symbol,
+                futures_symbol,
+                spot_venue,
+                futures_venue,
+                reason
+            );
+            return Ok(false);
+        }
+    }
+
     let (spot_quote, futures_quote) = match ArbDecision::load_valid_quotes(
         spot_symbol,
         futures_symbol,
@@ -2688,7 +2797,7 @@ fn emit_funding_open_close_signals(
         futures_venue,
     ) {
         Some(quotes) => quotes,
-        None => return Ok(()),
+        None => return Ok(false),
     };
     let batch_ts = get_timestamp_us();
     let spread_rate = super::common::compute_spread_rate(&spot_quote, &futures_quote);
@@ -2809,7 +2918,7 @@ fn emit_funding_open_close_signals(
                 "{FUNDING_ARB_SHELL_NAME}: build quote plan failed open={} hedge={} side={:?} signal={:?} err={}",
                 spot_symbol, futures_symbol, side, signal_type, err
             );
-            return Ok(());
+            return Ok(false);
         }
     };
 
@@ -2929,7 +3038,7 @@ fn emit_funding_open_close_signals(
         plan.price_tick,
         plan.qty_tick
     );
-    Ok(())
+    Ok(sent > 0)
 }
 
 fn emit_funding_spread_cancel(
@@ -3048,6 +3157,60 @@ struct OpenFromKeySnapshot {
     env_score: Option<f64>,
     env_threshold: Option<f64>,
     vol_band_scale: Option<[f64; 2]>,
+}
+
+#[derive(Debug, Clone)]
+struct VenueVolatilityReadiness {
+    venue: TradingVenue,
+    symbol_key: String,
+    key: String,
+    value: Option<f64>,
+    ready: Option<bool>,
+    note: String,
+}
+
+impl VenueVolatilityReadiness {
+    fn is_ready(&self) -> bool {
+        self.ready == Some(true) && self.value.is_some_and(|v| v.is_finite() && v >= 0.0)
+    }
+
+    fn reason(&self) -> String {
+        format!(
+            "venue={:?} symbol={} key={} ready={:?} value={} note={}",
+            self.venue,
+            self.symbol_key,
+            self.key,
+            self.ready,
+            self.value
+                .filter(|v| v.is_finite())
+                .map(|v| format!("{v:.8}"))
+                .unwrap_or_else(|| "-".to_string()),
+            self.note
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+struct DualVenueVolatilityReadiness {
+    open: VenueVolatilityReadiness,
+    hedge: VenueVolatilityReadiness,
+}
+
+impl DualVenueVolatilityReadiness {
+    fn is_ready(&self) -> bool {
+        self.open.is_ready() && self.hedge.is_ready()
+    }
+
+    fn missing_reason(&self) -> String {
+        let mut reasons = Vec::new();
+        if !self.open.is_ready() {
+            reasons.push(format!("open({})", self.open.reason()));
+        }
+        if !self.hedge.is_ready() {
+            reasons.push(format!("hedge({})", self.hedge.reason()));
+        }
+        reasons.join("; ")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -3828,6 +3991,35 @@ impl ArbDecisionState {
             .as_mut()
             .expect("ArbDecisionState.hedge_factor_value_hub must be initialized")
             .lookup_factor_value_with_last_valid_fallback(hedge_symbol, hedge_venue)
+    }
+
+    fn lookup_dual_venue_volatility_readiness(
+        &mut self,
+        open_symbol: &str,
+        hedge_symbol: &str,
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
+    ) -> DualVenueVolatilityReadiness {
+        let open_lookup = self.lookup_open_factor_value(open_symbol, open_venue);
+        let hedge_lookup = self.lookup_hedge_factor_value(hedge_symbol, hedge_venue);
+        DualVenueVolatilityReadiness {
+            open: VenueVolatilityReadiness {
+                venue: open_venue,
+                symbol_key: open_lookup.symbol_key,
+                key: open_lookup.key,
+                value: open_lookup.target_factor_value,
+                ready: open_lookup.ready,
+                note: open_lookup.note,
+            },
+            hedge: VenueVolatilityReadiness {
+                venue: hedge_venue,
+                symbol_key: hedge_lookup.symbol_key,
+                key: hedge_lookup.key,
+                value: hedge_lookup.target_factor_value,
+                ready: hedge_lookup.ready,
+                note: hedge_lookup.note,
+            },
+        }
     }
 
     pub fn lookup_return_model_score_lookup(
@@ -4985,6 +5177,60 @@ mod hedge_offset_overrides_tests {
         assert!(!state.enable_volatility_limit);
         state.update_enable_volatility_limit(true);
         assert!(state.enable_volatility_limit);
+    }
+
+    #[test]
+    fn dual_venue_volatility_readiness_requires_both_sides() {
+        let readiness = DualVenueVolatilityReadiness {
+            open: VenueVolatilityReadiness {
+                venue: TradingVenue::BitgetMargin,
+                symbol_key: "BTCUSDT".to_string(),
+                key: "rl_return_volatility_bitget-margin_BTCUSDT".to_string(),
+                value: Some(0.001),
+                ready: Some(true),
+                note: "ok".to_string(),
+            },
+            hedge: VenueVolatilityReadiness {
+                venue: TradingVenue::BitgetFutures,
+                symbol_key: "BTCUSDT".to_string(),
+                key: "rl_return_volatility_bitget-futures_BTCUSDT".to_string(),
+                value: None,
+                ready: None,
+                note: "missing_ipc_snapshot".to_string(),
+            },
+        };
+
+        assert!(!readiness.is_ready());
+        let reason = readiness.missing_reason();
+        assert!(reason.contains("hedge("));
+        assert!(reason.contains("missing_ipc_snapshot"));
+        assert!(!reason.contains("open("));
+    }
+
+    #[test]
+    fn dual_venue_volatility_readiness_passes_with_finite_non_negative_values() {
+        let readiness = DualVenueVolatilityReadiness {
+            open: VenueVolatilityReadiness {
+                venue: TradingVenue::BitgetMargin,
+                symbol_key: "BTCUSDT".to_string(),
+                key: "rl_return_volatility_bitget-margin_BTCUSDT".to_string(),
+                value: Some(0.0),
+                ready: Some(true),
+                note: "ok".to_string(),
+            },
+            hedge: VenueVolatilityReadiness {
+                venue: TradingVenue::BitgetFutures,
+                symbol_key: "BTCUSDT".to_string(),
+                key: "rl_return_volatility_bitget-futures_BTCUSDT".to_string(),
+                value: Some(0.002),
+                ready: Some(true),
+                note: "fallback_last_valid(factor_ipc_timeout(age_ms=31000 max_age_ms=30000))"
+                    .to_string(),
+            },
+        };
+
+        assert!(readiness.is_ready());
+        assert!(readiness.missing_reason().is_empty());
     }
 
     #[test]
