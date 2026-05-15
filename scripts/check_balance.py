@@ -520,6 +520,29 @@ def print_bitget_unified_view(payload: Any, asset: str) -> None:
         print("无法识别 Bitget 返回结构（缺少 data.assets），请直接查看 Raw response。")
         return
 
+    if isinstance(data, dict):
+        print("=== BITGET ACCOUNT SUMMARY ===")
+        summary_fields = [
+            "accountEquity",
+            "totalEquity",
+            "usdtEquity",
+            "effEquity",
+            "unrealisedPnl",
+            "usdtUnrealisedPnl",
+            "btcUnrealizedPnl",
+            "mmr",
+            "imr",
+            "mgnRatio",
+            "positionMgnRatio",
+            "totalLiabilities",
+            "notionalUsd",
+        ]
+        for key in summary_fields:
+            value = data.get(key)
+            if value not in (None, ""):
+                print(f"{key}: {value}")
+        print("")
+
     print("=== BITGET: assets with non-zero balance/debt ===")
     printed_any = False
     for item in assets:
@@ -553,6 +576,48 @@ def print_bitget_unified_view(payload: Any, asset: str) -> None:
             print(json.dumps(item, indent=2, ensure_ascii=False))
     if not found_target:
         print(f"{target} not found")
+
+
+def print_bitget_positions_view(payload: Any) -> None:
+    if not isinstance(payload, dict):
+        print("无法识别 Bitget positions 返回结构，请直接查看 Raw response。")
+        return
+
+    data = payload.get("data")
+    if isinstance(data, dict):
+        rows = data.get("positions")
+        if rows is None:
+            rows = data.get("list")
+    elif isinstance(data, list):
+        rows = data
+    else:
+        rows = None
+
+    if not isinstance(rows, list):
+        print("无法识别 Bitget positions 返回结构（缺少 data.positions/list），请直接查看 Raw response。")
+        return
+
+    print("=== BITGET: futures positions ===")
+    printed_any = False
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("symbol", "")).upper() or "UNKNOWN"
+        side = str(row.get("holdSide") or row.get("side") or row.get("posSide") or "").lower()
+        total = to_float(row.get("total") or row.get("size") or row.get("holdSize") or row.get("pos")) or 0.0
+        upl = to_float(
+            row.get("unrealizedPL")
+            or row.get("unrealizedPnl")
+            or row.get("unrealisedPnl")
+            or row.get("upl")
+        ) or 0.0
+        if abs(total) <= 1e-12 and abs(upl) <= 1e-12:
+            continue
+        printed_any = True
+        print(f"{symbol}: side={side or 'unknown'}, qty={total}, upl={upl}")
+        print(json.dumps(row, indent=2, ensure_ascii=False))
+    if not printed_any:
+        print("none")
 
 
 def run_binance(args: argparse.Namespace) -> None:
@@ -817,6 +882,42 @@ def run_bitget(args: argparse.Namespace) -> None:
         return
 
     print_bitget_unified_view(payload, args.asset)
+
+    pos_success, pos_status, pos_body, pos_error, pos_signed_path = signed_get_bitget(
+        base_url=args.bitget_url,
+        path="/api/v3/position/current-position",
+        params={"category": "USDT-FUTURES"},
+        api_key=api_key,
+        api_secret=api_secret,
+        passphrase=passphrase,
+        timeout=args.timeout,
+    )
+    pos_status_text = pos_status if pos_status else "N/A"
+    print("\n=== BITGET FUTURES SNAPSHOT ===")
+    print(f"Endpoint: {args.bitget_url.rstrip('/')}{pos_signed_path}")
+    print(f"Request success: {pos_success} (status={pos_status_text})")
+    if pos_error:
+        print(f"Request error: {pos_error}")
+    print("Raw response:")
+    print(pos_body)
+    if not pos_success:
+        return
+
+    pos_payload = parse_json_any(pos_body)
+    if pos_payload is None:
+        return
+    if not isinstance(pos_payload, dict):
+        print("ERROR: invalid Bitget positions response object")
+        return
+
+    pos_code = str(pos_payload.get("code", ""))
+    pos_msg = str(pos_payload.get("msg", ""))
+    pos_api_success = (200 <= pos_status < 300) and pos_code in {"00000", "0"}
+    print(f"API success: {pos_api_success} (code={pos_code or 'N/A'}, msg={pos_msg})")
+    if not pos_api_success:
+        return
+
+    print_bitget_positions_view(pos_payload)
 
 
 def main() -> None:

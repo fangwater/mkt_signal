@@ -27,6 +27,7 @@ use mkt_signal::portfolio_margin::bitget_auth::{
 use mkt_signal::portfolio_margin::bitget_user_stream::BitgetUserDataConnection;
 use mkt_signal::portfolio_margin::pm_forwarder::PmForwarder;
 use mkt_signal::trade_engine::query_parsers::bitget_account_balance_snapshot::parse_bitget_account_balance_snapshot;
+use mkt_signal::trade_engine::query_parsers::bitget_positions_snapshot::parse_bitget_positions_snapshot;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
@@ -99,6 +100,12 @@ async fn main() -> Result<()> {
         evt_tx.clone(),
         shutdown_rx.clone(),
     );
+    let mut position_poll = spawn_bitget_position_poll(
+        credentials.clone(),
+        primary_ip.clone(),
+        evt_tx.clone(),
+        shutdown_rx.clone(),
+    );
 
     let mut primary = spawn_bitget_stream_path(
         "primary",
@@ -141,6 +148,20 @@ async fn main() -> Result<()> {
                 }
                 if !*shutdown_rx.borrow() {
                     balance_poll = spawn_bitget_balance_poll(
+                        credentials.clone(),
+                        primary_ip.clone(),
+                        evt_tx.clone(),
+                        shutdown_rx.clone(),
+                    );
+                }
+            }
+            res = &mut position_poll => {
+                match res {
+                    Ok(()) => warn!("position poll task exited; restarting"),
+                    Err(e) => warn!("position poll task join error: {}; restarting", e),
+                }
+                if !*shutdown_rx.borrow() {
+                    position_poll = spawn_bitget_position_poll(
                         credentials.clone(),
                         primary_ip.clone(),
                         evt_tx.clone(),
@@ -224,6 +245,18 @@ fn wrap_basic_payload(account_scope: BasicAccountScope, payload: Bytes) -> Optio
     Some(BasicAccountEventMsg::create(event_type, account_scope, payload).to_bytes())
 }
 
+fn send_wrapped_payload(
+    evt_tx: &tokio::sync::mpsc::UnboundedSender<Bytes>,
+    payload: Bytes,
+    context: &str,
+) {
+    if let Some(wrapped) = wrap_basic_payload(BasicAccountScope::BitgetUnified, payload) {
+        if let Err(e) = evt_tx.send(wrapped) {
+            warn!("failed to send {}: {}", context, e);
+        }
+    }
+}
+
 fn sign_bitget_rest_request(
     credentials: &BitgetCredentials,
     timestamp_ms: i64,
@@ -276,6 +309,38 @@ fn parse_bitget_account_assets_snapshot(json: &str) -> Option<Vec<Bytes>> {
     parse_bitget_account_balance_snapshot(json)
 }
 
+async fn bitget_rest_get_positions(
+    client: &reqwest::Client,
+    credentials: &BitgetCredentials,
+) -> Result<String> {
+    let timestamp_ms = chrono::Utc::now().timestamp_millis();
+    let path = "/api/v3/position/current-position";
+    let query = "category=USDT-FUTURES";
+    let request_path = format!("{}?{}", path, query);
+    let sign = sign_bitget_rest_request(credentials, timestamp_ms, "GET", &request_path);
+    let url = format!("https://api.bitget.com{}", request_path);
+
+    let resp = client
+        .get(url)
+        .header("ACCESS-KEY", &credentials.api_key)
+        .header("ACCESS-SIGN", sign)
+        .header("ACCESS-TIMESTAMP", timestamp_ms.to_string())
+        .header("ACCESS-PASSPHRASE", &credentials.passphrase)
+        .header("locale", "zh-CN")
+        .send()
+        .await?;
+    let status = resp.status();
+    let body = resp.text().await?;
+    if !status.is_success() {
+        anyhow::bail!(
+            "bitget current-position GET failed: status={} body={}",
+            status.as_u16(),
+            body
+        );
+    }
+    Ok(body)
+}
+
 fn spawn_bitget_balance_poll(
     credentials: BitgetCredentials,
     local_ip: String,
@@ -307,13 +372,11 @@ fn spawn_bitget_balance_poll(
                                     if let Ok(msg) = BasicBorrowInterestMsg::from_bytes(&payload) {
                                         current_borrow_symbols.insert(msg.symbol.clone());
                                     }
-                                    if let Some(wrapped) =
-                                        wrap_basic_payload(BasicAccountScope::BitgetUnified, payload)
-                                    {
-                                        if let Err(e) = evt_tx.send(wrapped) {
-                                            warn!("failed to send Bitget REST balance msg: {}", e);
-                                        }
-                                    }
+                                    send_wrapped_payload(
+                                        &evt_tx,
+                                        payload,
+                                        "Bitget REST balance msg",
+                                    );
                                 }
                                 let mut stale_symbols: Vec<String> = previous_borrow_symbols
                                     .difference(&current_borrow_symbols)
@@ -333,16 +396,11 @@ fn spawn_bitget_balance_poll(
                                         0.0,
                                     )
                                     .to_bytes();
-                                    if let Some(wrapped) =
-                                        wrap_basic_payload(BasicAccountScope::BitgetUnified, payload)
-                                    {
-                                        if let Err(e) = evt_tx.send(wrapped) {
-                                            warn!(
-                                                "failed to send Bitget REST zero borrow cleanup: {}",
-                                                e
-                                            );
-                                        }
-                                    }
+                                    send_wrapped_payload(
+                                        &evt_tx,
+                                        payload,
+                                        "Bitget REST zero borrow cleanup",
+                                    );
                                 }
                                 previous_borrow_symbols = current_borrow_symbols;
                             }
@@ -355,6 +413,89 @@ fn spawn_bitget_balance_poll(
             }
         }
         info!("Bitget balance poller exiting");
+    })
+}
+
+fn spawn_bitget_position_poll(
+    credentials: BitgetCredentials,
+    local_ip: String,
+    evt_tx: tokio::sync::mpsc::UnboundedSender<Bytes>,
+    mut shutdown_rx: watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let client = match build_bitget_rest_client(Some(&local_ip), Duration::from_secs(10)) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("build Bitget REST client failed: {:?}", e);
+                return;
+            }
+        };
+        let mut ticker = tokio::time::interval(Duration::from_secs(30));
+        let mut previous_positions: HashSet<(String, char)> = HashSet::new();
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.changed() => break,
+                _ = ticker.tick() => {
+                    if *shutdown_rx.borrow() {
+                        break;
+                    }
+                    match bitget_rest_get_positions(&client, &credentials).await {
+                        Ok(body) => {
+                            if let Some(msgs) = parse_bitget_positions_snapshot(&body) {
+                                let mut current_positions: HashSet<(String, char)> = HashSet::new();
+                                for payload in msgs {
+                                    let event_type =
+                                        mkt_signal::common::basic_account_msg::get_basic_event_type(&payload);
+                                    if matches!(event_type, BasicAccountEventType::PositionUpdate) {
+                                        if let Ok(msg) = BasicPositionMsg::from_bytes(&payload) {
+                                            current_positions.insert((
+                                                msg.inst_id().to_string(),
+                                                msg.position_side(),
+                                            ));
+                                        }
+                                    }
+                                    send_wrapped_payload(
+                                        &evt_tx,
+                                        payload,
+                                        "Bitget REST position msg",
+                                    );
+                                }
+
+                                let mut stale_positions: Vec<(String, char)> = previous_positions
+                                    .difference(&current_positions)
+                                    .cloned()
+                                    .collect();
+                                stale_positions.sort();
+                                for (inst_id, side) in stale_positions {
+                                    let ts = chrono::Utc::now().timestamp_millis();
+                                    info!(
+                                        "Bitget REST position snapshot missing previously-seen position; emitting zero cleanup: inst_id={} side={}",
+                                        inst_id, side
+                                    );
+                                    send_wrapped_payload(
+                                        &evt_tx,
+                                        BasicPositionMsg::create(ts, inst_id.clone(), side, 0.0)
+                                            .to_bytes(),
+                                        "Bitget REST zero position cleanup",
+                                    );
+                                    send_wrapped_payload(
+                                        &evt_tx,
+                                        BasicUmUnrealizedMsg::create(ts, inst_id, side, 0.0)
+                                            .to_bytes(),
+                                        "Bitget REST zero pnl cleanup",
+                                    );
+                                }
+                                previous_positions = current_positions;
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Bitget position poll failed: {:?}", e);
+                        }
+                    }
+                }
+            }
+        }
+        info!("Bitget position poller exiting");
     })
 }
 

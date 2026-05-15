@@ -39,21 +39,23 @@ pub fn parse_bitget_positions_snapshot(json: &str) -> Option<Vec<Bytes>> {
         return None;
     }
 
-    let rows = if let Some(rows) = value
-        .get("data")
-        .and_then(|v| v.get("list"))
+    let data = value.get("data");
+    let rows = if let Some(rows) = data.and_then(|v| v.get("list")).and_then(|v| v.as_array()) {
+        rows
+    } else if let Some(rows) = data
+        .and_then(|v| v.get("positions"))
         .and_then(|v| v.as_array())
     {
         rows
-    } else if value
-        .get("data")
-        .and_then(|v| v.get("list"))
-        .is_some_and(Value::is_null)
+    } else if data.and_then(|v| v.get("list")).is_some_and(Value::is_null)
+        || data
+            .and_then(|v| v.get("positions"))
+            .is_some_and(Value::is_null)
     {
         return Some(Vec::new());
-    } else if let Some(rows) = value.get("data").and_then(|v| v.as_array()) {
+    } else if let Some(rows) = data.and_then(|v| v.as_array()) {
         rows
-    } else if value.get("data").is_some_and(Value::is_null) {
+    } else if data.is_some_and(Value::is_null) {
         return Some(Vec::new());
     } else {
         return None;
@@ -164,5 +166,34 @@ mod tests {
         let json = r#"{"code":"00000","data":{"list":null}}"#;
         let msgs = parse_bitget_positions_snapshot(json).expect("parse ok");
         assert!(msgs.is_empty());
+    }
+
+    #[test]
+    fn parses_bitget_positions_snapshot_with_positions_key() {
+        let json = r#"{
+            "code":"00000",
+            "data":{
+                "positions":[
+                    {
+                        "symbol":"ETHUSDT",
+                        "holdSide":"short",
+                        "total":"3",
+                        "uTime":"1724742632154",
+                        "unrealizedPL":"7.5"
+                    }
+                ]
+            }
+        }"#;
+        let msgs = parse_bitget_positions_snapshot(json).expect("parse ok");
+        assert_eq!(msgs.len(), 2);
+
+        let pos = BasicPositionMsg::from_bytes(&msgs[0]).expect("pos");
+        assert_eq!(pos.inst_id, "ETHUSDT");
+        assert_eq!(pos.position_side, 'S');
+
+        let pnl = BasicUmUnrealizedMsg::from_bytes(&msgs[1]).expect("pnl");
+        assert_eq!(pnl.inst_id, "ETHUSDT");
+        assert_eq!(pnl.position_side, 'S');
+        assert!((pnl.unrealized_pnl - 7.5).abs() < 1e-9);
     }
 }

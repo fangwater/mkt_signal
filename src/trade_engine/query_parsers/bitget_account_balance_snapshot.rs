@@ -1,4 +1,6 @@
-use crate::common::basic_account_msg::{BasicBalanceMsg, BasicBorrowInterestMsg};
+use crate::common::basic_account_msg::{
+    BasicAccountRiskMsg, BasicBalanceMsg, BasicBorrowInterestMsg,
+};
 use bytes::Bytes;
 use serde::Deserialize;
 
@@ -12,6 +14,24 @@ struct BitgetAccountAssetsResponse {
 
 #[derive(Debug, Deserialize)]
 struct BitgetAccountAssetsData {
+    #[serde(default, rename = "accountEquity")]
+    account_equity: String,
+    #[serde(default, rename = "totalEquity")]
+    total_equity: String,
+    #[serde(default, rename = "usdtEquity")]
+    usdt_equity: String,
+    #[serde(default, rename = "effEquity")]
+    eff_equity: String,
+    #[serde(default)]
+    mmr: String,
+    #[serde(default)]
+    imr: String,
+    #[serde(default, rename = "mgnRatio")]
+    mgn_ratio: String,
+    #[serde(default, rename = "totalLiabilities")]
+    total_liabilities: String,
+    #[serde(default, rename = "notionalUsd")]
+    notional_usd: String,
     #[serde(default)]
     assets: Vec<BitgetAccountAssetRow>,
 }
@@ -46,9 +66,51 @@ pub fn parse_bitget_account_balance_snapshot(json: &str) -> Option<Vec<Bytes>> {
         return None;
     }
 
+    let data = resp.data?;
     let ts = chrono::Utc::now().timestamp_millis();
     let mut out = Vec::new();
-    for row in resp.data?.assets {
+    let has_risk_fields = [
+        &data.account_equity,
+        &data.total_equity,
+        &data.usdt_equity,
+        &data.eff_equity,
+        &data.mmr,
+        &data.imr,
+        &data.mgn_ratio,
+        &data.total_liabilities,
+        &data.notional_usd,
+    ]
+    .iter()
+    .any(|value| !value.trim().is_empty());
+    if has_risk_fields {
+        let actual_equity_usd = parse_f64(&data.total_equity)
+            .or_else(|| parse_f64(&data.account_equity))
+            .or_else(|| parse_f64(&data.usdt_equity))
+            .unwrap_or(0.0);
+        let adj_equity_usd = parse_f64(&data.eff_equity).unwrap_or(actual_equity_usd);
+        let maintenance_margin_usd = parse_f64(&data.mmr).unwrap_or(0.0);
+        let initial_margin_usd = parse_f64(&data.imr).unwrap_or(0.0);
+        let margin_ratio = if maintenance_margin_usd.abs() > f64::EPSILON {
+            adj_equity_usd / maintenance_margin_usd
+        } else {
+            0.0
+        };
+        out.push(
+            BasicAccountRiskMsg::create(
+                ts,
+                adj_equity_usd,
+                actual_equity_usd,
+                maintenance_margin_usd,
+                initial_margin_usd,
+                margin_ratio,
+                parse_f64(&data.total_liabilities).unwrap_or(0.0).abs(),
+                parse_f64(&data.notional_usd).unwrap_or(0.0),
+            )
+            .to_bytes(),
+        );
+    }
+
+    for row in data.assets {
         let coin = row.coin.to_ascii_uppercase();
         if coin.is_empty() {
             continue;
@@ -81,7 +143,8 @@ pub fn parse_bitget_account_balance_snapshot(json: &str) -> Option<Vec<Bytes>> {
 mod tests {
     use super::*;
     use crate::common::basic_account_msg::{
-        BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
+        get_basic_event_type, BasicAccountEventType, BasicAccountRiskMsg, BasicBalanceMsg,
+        BasicBorrowInterestMsg,
     };
 
     #[test]
@@ -118,5 +181,35 @@ mod tests {
         assert_eq!(btc_clear.symbol, "BTC");
         assert_eq!(btc_clear.borrowed, 0.0);
         assert_eq!(btc_clear.interest, 0.0);
+    }
+
+    #[test]
+    fn emits_bitget_account_risk_from_top_level_snapshot() {
+        let json = r#"{
+            "code":"00000",
+            "data":{
+                "accountEquity":"100028.20011143",
+                "usdtEquity":"100054.66537698",
+                "effEquity":"96513.01171034",
+                "mmr":"186.3",
+                "imr":"385.88",
+                "mgnRatio":"0.0019",
+                "assets":[
+                    {"coin":"USDT","equity":"91264.36927005","balance":"91057.40610131","debt":"0"}
+                ]
+            }
+        }"#;
+        let msgs = parse_bitget_account_balance_snapshot(json).expect("parse ok");
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(
+            get_basic_event_type(&msgs[0]),
+            BasicAccountEventType::AccountRisk
+        );
+        let risk = BasicAccountRiskMsg::from_bytes(&msgs[0]).expect("risk");
+        assert!((risk.actual_equity_usd - 100028.20011143).abs() < 1e-9);
+        assert!((risk.adj_equity_usd - 96513.01171034).abs() < 1e-9);
+        assert!((risk.maintenance_margin_usd - 186.3).abs() < 1e-12);
+        assert!((risk.initial_margin_usd - 385.88).abs() < 1e-12);
+        assert!(risk.margin_ratio > 500.0);
     }
 }
