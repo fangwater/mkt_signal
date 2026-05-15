@@ -50,8 +50,10 @@ DEFAULT_MARGIN_ORDER_FALLBACK_PATH = "/sapi/v1/margin/order"
 DEFAULT_UM_ORDER_FALLBACK_PATH = "/fapi/v1/order"
 DEFAULT_SPOT_EXCHANGE_INFO_BASE_URL = os.environ.get("BINANCE_SPOT_API_URL") or "https://api.binance.com"
 DEFAULT_UM_EXCHANGE_INFO_BASE_URL = os.environ.get("BINANCE_FAPI_URL") or "https://fapi.binance.com"
+DEFAULT_SAPI_BASE_URL = os.environ.get("BINANCE_SAPI_URL") or "https://api.binance.com"
 SPOT_EXCHANGE_INFO_PATH = "/api/v3/exchangeInfo"
 UM_EXCHANGE_INFO_PATH = "/fapi/v1/exchangeInfo"
+SAPI_DUST_PATH = "/sapi/v1/asset/dust"
 
 FALLBACK_STATUSES = {0, 404}
 
@@ -151,6 +153,11 @@ def parse_args() -> argparse.Namespace:
         "--um-exchange-info-base-url",
         default=DEFAULT_UM_EXCHANGE_INFO_BASE_URL,
         help="UM 数量过滤器 exchangeInfo base URL",
+    )
+    parser.add_argument(
+        "--sapi-base-url",
+        default=DEFAULT_SAPI_BASE_URL,
+        help="SAPI base URL，用于 clear 模式下 dust→BNB",
     )
     parser.add_argument(
         "--skip-margin",
@@ -276,6 +283,19 @@ def decimal_or_zero(value: Any) -> Decimal:
         return Decimal(str(value))
     except InvalidOperation:
         return Decimal("0")
+
+
+def now_ms() -> int:
+    import time
+
+    return int(time.time() * 1000)
+
+
+def sign_query(query: str, secret: str) -> str:
+    import hashlib
+    import hmac
+
+    return hmac.new(secret.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def round_down_to_step(value: Decimal, step_size: Decimal) -> Decimal:
@@ -697,6 +717,46 @@ def submit_um_order(
     return status
 
 
+def submit_dust_convert(
+    base_url: str,
+    assets: Iterable[str],
+    api_key: str,
+    api_secret: str,
+    recv_window: Optional[int],
+) -> Tuple[int, str]:
+    deduped = sorted(
+        {asset.strip().upper() for asset in assets if asset and asset.strip() and asset.strip().upper() != "BNB"}
+    )
+    if not deduped:
+        return 200, ""
+
+    params: List[Tuple[str, str]] = [("asset", asset) for asset in deduped]
+    params.append(("recvWindow", str(recv_window or 5000)))
+    params.append(("timestamp", str(now_ms())))
+    query = urllib.parse.urlencode(sorted(params, key=lambda kv: kv[0]), safe="-_.~")
+    signature = sign_query(query, api_secret)
+    url = f"{base_url.rstrip('/')}{SAPI_DUST_PATH}?{query}&signature={signature}"
+    req = urllib.request.Request(url, method="POST", headers={"X-MBX-APIKEY": api_key})
+    print(f"[dust] assets={','.join(deduped)}")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            status = resp.getcode()
+            body = resp.read().decode("utf-8", errors="replace")
+            headers = dict(resp.headers.items())
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+        body = exc.read().decode("utf-8", errors="replace")
+        headers = dict(getattr(exc, "headers", {}).items()) if getattr(exc, "headers", None) else {}
+    except Exception as exc:
+        status = 0
+        body = str(exc)
+        headers = {}
+    weight = headers.get("x-mbx-used-weight-1m") or headers.get("x-mbx-used-weight")
+    print(f"[dust] status={status} used_weight={weight}")
+    print(body)
+    return status, body
+
+
 def main() -> None:
     args = parse_args()
     api_key, api_secret = load_credentials()
@@ -832,6 +892,7 @@ def main() -> None:
 
     margin_orders: List[MarginOrder] = []
     um_orders: List[UmOrder] = []
+    dust_assets: List[str] = []
     plan_rows: List[
         Tuple[
             str,
@@ -931,6 +992,14 @@ def main() -> None:
         )
         margin_orders.extend(symbol_margin_orders)
         um_orders.extend(symbol_um_orders)
+        if (
+            args.mode == "clear"
+            and margin_pos is not None
+            and margin_qty > 0
+            and margin_remaining > 0
+            and margin_pos.asset != "BNB"
+        ):
+            dust_assets.append(margin_pos.asset)
 
     for (
         symbol,
@@ -957,6 +1026,14 @@ def main() -> None:
             print(
                 f"  um -> {order.side} {format_str(order.quantity)} positionSide={order.position_side}"
             )
+        if args.mode == "clear":
+            for order in symbol_margin_orders:
+                if order.asset in dust_assets:
+                    print(f"  dust -> convert {order.asset} to BNB")
+            if not symbol_margin_orders and margin_remaining > 0:
+                margin_pos = margin_by_symbol.get(symbol)
+                if margin_pos is not None and margin_pos.asset in dust_assets:
+                    print(f"  dust -> convert {margin_pos.asset} to BNB")
         if margin_remaining > 0 or um_remaining > 0:
             warn = []
             if margin_remaining > 0:
@@ -996,6 +1073,26 @@ def main() -> None:
         )
         if not (200 <= status < 300):
             failures += 1
+
+    if args.mode == "clear" and dust_assets:
+        status, body = submit_dust_convert(
+            args.sapi_base_url,
+            dust_assets,
+            api_key,
+            api_secret,
+            args.recv_window,
+        )
+        if not (200 <= status < 300):
+            is_no_balance = False
+            try:
+                parsed = json.loads(body)
+                is_no_balance = str(parsed.get("code", "")) == "-31002"
+            except json.JSONDecodeError:
+                pass
+            if is_no_balance:
+                print("[dust] skip: no eligible dust balance (-31002)")
+            else:
+                failures += 1
 
     if failures:
         print(f"有 {failures} 笔订单失败", file=sys.stderr)
