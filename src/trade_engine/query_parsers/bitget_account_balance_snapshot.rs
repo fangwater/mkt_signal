@@ -45,6 +45,8 @@ struct BitgetAccountAssetRow {
     #[serde(default)]
     balance: String,
     #[serde(default)]
+    locked: String,
+    #[serde(default)]
     debt: String,
     #[serde(default)]
     debts: String,
@@ -117,6 +119,7 @@ pub fn parse_bitget_account_balance_snapshot(json: &str) -> Option<Vec<Bytes>> {
         }
 
         let wallet = parse_f64(&row.balance)
+            .map(|balance| balance + parse_f64(&row.locked).unwrap_or(0.0))
             .or_else(|| parse_f64(&row.equity))
             .unwrap_or(0.0);
         out.push(BasicBalanceMsg::create(ts, coin.clone(), wallet).to_bytes());
@@ -153,7 +156,7 @@ mod tests {
             "code":"00000",
             "data":{
                 "assets":[
-                    {"coin":"USDT","equity":"950","balance":"1000","debt":"50"},
+                    {"coin":"USDT","equity":"950","balance":"1000","locked":"25","debt":"50"},
                     {"coin":"BTC","balance":"1.25","debt":"0"}
                 ]
             }
@@ -167,7 +170,7 @@ mod tests {
             BasicAccountEventType::BalanceUpdate as u32
         );
         assert_eq!(bal.symbol, "USDT");
-        assert!((bal.wallet - 1000.0).abs() < 1e-12);
+        assert!((bal.wallet - 1025.0).abs() < 1e-12);
 
         let borrow = BasicBorrowInterestMsg::from_bytes(&msgs[1]).expect("borrow");
         assert_eq!(
@@ -211,5 +214,21 @@ mod tests {
         assert!((risk.maintenance_margin_usd - 186.3).abs() < 1e-12);
         assert!((risk.initial_margin_usd - 385.88).abs() < 1e-12);
         assert!(risk.margin_ratio > 500.0);
+    }
+
+    #[test]
+    fn adds_locked_to_bitget_balance_snapshot_wallet() {
+        let json = r#"{
+            "code":"00000",
+            "data":{
+                "assets":[
+                    {"coin":"USDT","equity":"120","balance":"100","locked":"15.5","debt":"0"}
+                ]
+            }
+        }"#;
+        let msgs = parse_bitget_account_balance_snapshot(json).expect("parse ok");
+        let bal = BasicBalanceMsg::from_bytes(&msgs[0]).expect("balance");
+        assert_eq!(bal.symbol, "USDT");
+        assert!((bal.wallet - 115.5).abs() < 1e-12);
     }
 }

@@ -31,6 +31,8 @@ struct BitgetAccountChannelRow {
     #[serde(default)]
     balance: String,
     #[serde(default)]
+    locked: String,
+    #[serde(default)]
     equity: String,
     #[serde(default)]
     debt: String,
@@ -62,6 +64,8 @@ struct BitgetAccountChannelCoin {
     coin: String,
     #[serde(default)]
     balance: String,
+    #[serde(default)]
+    locked: String,
     #[serde(default)]
     equity: String,
     #[serde(default)]
@@ -113,6 +117,7 @@ impl BitgetAccountEventParser {
                 let coin_item = BitgetAccountChannelCoin {
                     coin: account_row.margin_coin.clone(),
                     balance: account_row.balance.clone(),
+                    locked: account_row.locked.clone(),
                     equity: account_row.equity.clone(),
                     debt: account_row.debt.clone(),
                     borrow: account_row.borrow.clone(),
@@ -183,6 +188,7 @@ impl BitgetAccountEventParser {
         let mut sent = 0;
 
         let wallet = parse_f64_str(&coin_obj.balance)
+            .map(|balance| balance + parse_f64_str(&coin_obj.locked).unwrap_or(0.0))
             .or_else(|| parse_f64_str(&coin_obj.equity))
             .unwrap_or(0.0);
         let balance_msg = BasicBalanceMsg::create(timestamp, coin.clone(), wallet);
@@ -733,6 +739,39 @@ mod tests {
         let msg = BasicBalanceMsg::from_bytes(payload).expect("balance payload");
         assert_eq!(msg.symbol, "SOL");
         assert!((msg.wallet + 70.8).abs() < 1e-12);
+    }
+
+    #[test]
+    fn account_channel_adds_locked_to_balance_wallet() {
+        let parser = BitgetAccountEventParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        let account = Bytes::from_static(
+            br#"{
+                "arg":{"channel":"account","instType":"UTA"},
+                "ts":"1710000000999",
+                "data":[
+                    {
+                        "uTime":"1710000000123",
+                        "coin":[
+                            {"coin":"USDT","equity":"120","balance":"100","locked":"15.5","borrow":"0","debts":"0"}
+                        ]
+                    }
+                ]
+            }"#,
+        );
+
+        let emitted = parser.parse(account, &tx);
+        assert_eq!(emitted, 2);
+
+        let wrapped_balance = rx.try_recv().expect("balance event");
+        let (event_type, scope, payload) =
+            split_basic_account_event(&wrapped_balance).expect("wrapped balance");
+        assert_eq!(event_type, BasicAccountEventType::BalanceUpdate);
+        assert_eq!(scope, BasicAccountScope::BitgetUnified);
+        let msg = BasicBalanceMsg::from_bytes(payload).expect("balance payload");
+        assert_eq!(msg.symbol, "USDT");
+        assert!((msg.wallet - 115.5).abs() < 1e-12);
     }
 
     #[test]
