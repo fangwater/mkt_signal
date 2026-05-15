@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Query Binance PM margin spot + UM 合约仓位，按对齐规则平敞口。
+"""Query Binance margin/spot + UM 合约仓位，按对齐规则平敞口。
 
 默认仅打印计划，添加 --execute 后提交市价单：
 - 优先调用 /papi/v1/margin/account 与 /papi/v1/um/account；若 404 会 fallback 到 /sapi/v1/margin/account 或 /fapi/v2/account（可用 --no-fallback 禁用）。
+- 显式指定 --margin-account-kind spot 时，现货腿按 /api/v3/account 的 balances 解析，不做 margin fallback。
 - margin/UM 方向相反时，仅平掉多出的敞口（对齐两边）。
 - margin/UM 同向或单边时，平掉该方向的全部敞口。
 - margin netAsset > 0 走 SELL、< 0 走 BUY（忽略与 quote 相同的资产）。
+- spot free+locked > 0 走 SELL（与 STANDARD 面板快照口径一致）。
 - UM positionAmt > 0 走 SELL reduceOnly，< 0 走 BUY reduceOnly。
 
 依赖环境变量 BINANCE_API_KEY / BINANCE_API_SECRET。
@@ -20,7 +22,7 @@ import re
 import sys
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from sell_margin_spot import request_papi
 
@@ -92,6 +94,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--symbols",
         help="仅处理指定交易对，逗号或空格分隔，例如 BTCUSDT,ETHUSDT",
+    )
+    parser.add_argument(
+        "--symbol",
+        action="append",
+        default=[],
+        help="追加单个交易对，可重复传入，例如 --symbol BTCUSDT --symbol ETHUSDT",
+    )
+    parser.add_argument(
+        "--margin-account-kind",
+        choices=["margin", "spot"],
+        default="margin",
+        help="现货腿账户响应类型；margin 解析 userAssets.netAsset，spot 解析 balances.free+locked",
     )
     parser.add_argument(
         "--margin-account-path",
@@ -220,6 +234,7 @@ def fetch_margin_positions(
     api_secret: str,
     quote_asset: str,
     recv_window: Optional[int],
+    account_kind: str,
 ) -> Tuple[int, str, List[MarginPosition]]:
     params: Dict[str, Any] = {}
     if recv_window is not None:
@@ -232,9 +247,15 @@ def fetch_margin_positions(
     except json.JSONDecodeError as exc:
         raise SystemExit(f"解析 margin 账户响应失败: {exc}") from exc
 
-    assets = data.get("userAssets")
-    if not isinstance(assets, list):
-        raise SystemExit("margin 响应缺少 userAssets 字段")
+    account_kind = account_kind.lower()
+    if account_kind == "spot":
+        assets = data.get("balances")
+        if not isinstance(assets, list):
+            raise SystemExit("spot 响应缺少 balances 字段")
+    else:
+        assets = data.get("userAssets")
+        if not isinstance(assets, list):
+            raise SystemExit("margin 响应缺少 userAssets 字段")
 
     positions: List[MarginPosition] = []
     for entry in assets:
@@ -243,13 +264,21 @@ def fetch_margin_positions(
         asset = str(entry.get("asset", "")).strip().upper()
         if not asset or asset == quote_asset.upper():
             continue
-        net_raw = entry.get("netAsset")
-        if net_raw is None:
-            continue
-        try:
-            net_qty = Decimal(str(net_raw))
-        except InvalidOperation:
-            continue
+        if account_kind == "spot":
+            try:
+                free_qty = Decimal(str(entry.get("free", "0")))
+                locked_qty = Decimal(str(entry.get("locked", "0")))
+                net_qty = free_qty + locked_qty
+            except InvalidOperation:
+                continue
+        else:
+            net_raw = entry.get("netAsset")
+            if net_raw is None:
+                continue
+            try:
+                net_qty = Decimal(str(net_raw))
+            except InvalidOperation:
+                continue
         if net_qty == 0:
             continue
         symbol = f"{asset}{quote_asset.upper()}"
@@ -307,10 +336,11 @@ def format_signed(qty: Decimal) -> str:
     return f"{sign}{format_str(abs(qty))}"
 
 
-def parse_symbol_filter(raw: Optional[str]) -> Optional[set[str]]:
-    if not raw:
-        return None
-    items = [s.strip().upper() for s in re.split(r"[,\s]+", raw) if s.strip()]
+def parse_symbol_filter(raw: Optional[str], symbols_list: Iterable[str]) -> Optional[set[str]]:
+    items: List[str] = []
+    if raw:
+        items.extend(s.strip().upper() for s in re.split(r"[,\s]+", raw) if s.strip())
+    items.extend(s.strip().upper() for s in symbols_list if s and s.strip())
     if not items:
         return None
     return set(items)
@@ -379,6 +409,7 @@ def submit_margin_order(
     recv_window: Optional[int],
     isolated: bool,
     side_effect: Optional[str],
+    account_kind: str,
 ) -> int:
     params: Dict[str, Any] = {
         "symbol": order.symbol,
@@ -386,9 +417,10 @@ def submit_margin_order(
         "type": "MARKET",
         "quantity": format_str(order.quantity),
     }
-    if isolated:
+    is_spot = account_kind.lower() == "spot"
+    if isolated and not is_spot:
         params["isIsolated"] = "TRUE"
-    if side_effect:
+    if side_effect and not is_spot:
         params["sideEffectType"] = side_effect
     if recv_window is not None:
         params["recvWindow"] = str(recv_window)
@@ -438,7 +470,10 @@ def main() -> None:
     um_account_path = args.um_account_path or DEFAULT_PAPI_UM_ACCOUNT_PATH
     margin_order_path = args.margin_order_path or DEFAULT_MARGIN_ORDER_PATH
     um_order_path = args.um_order_path or DEFAULT_UM_ORDER_PATH
-    symbol_filter = parse_symbol_filter(args.symbols)
+    symbol_filter = parse_symbol_filter(args.symbols, args.symbol)
+
+    if args.margin_account_kind == "spot" and not args.no_fallback:
+        raise SystemExit("spot 模式必须显式禁用 fallback（请传 --no-fallback）")
 
     if args.skip_margin and args.skip_um:
         print("skip-margin 与 skip-um 同时开启，无事可做", file=sys.stderr)
@@ -456,6 +491,7 @@ def main() -> None:
             api_secret=api_secret,
             quote_asset=args.quote_asset,
             recv_window=args.recv_window,
+            account_kind=args.margin_account_kind,
         )
         if (
             m_status in FALLBACK_STATUSES
@@ -474,9 +510,12 @@ def main() -> None:
                 api_secret=api_secret,
                 quote_asset=args.quote_asset,
                 recv_window=args.recv_window,
+                account_kind=args.margin_account_kind,
             )
         if m_status != 200:
-            raise SystemExit(f"获取 margin 账户失败 status={m_status} body={m_body}")
+            raise SystemExit(
+                f"获取 {args.margin_account_kind} 账户失败 status={m_status} body={m_body}"
+            )
 
     if not args.skip_um:
         if (
@@ -658,6 +697,7 @@ def main() -> None:
             recv_window=args.recv_window,
             isolated=args.isolated,
             side_effect=args.side_effect,
+            account_kind=args.margin_account_kind,
         )
         if not (200 <= status < 300):
             failures += 1

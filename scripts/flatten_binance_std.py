@@ -6,6 +6,7 @@ intra-only wrapper around flatten_margin_and_um.py:
   - CWD basename must match ^binance-intra-.
   - Auto-sources ./env.sh.
   - Requires BINANCE_ACCOUNT_MODE=STANDARD.
+  - Uses STANDARD endpoints directly: spot /api/v3/account + UM /fapi/v2/account.
   - Dry-run behavior is inherited from flatten_margin_and_um.py.
 """
 
@@ -85,7 +86,28 @@ def main() -> None:
 
     script_dir = Path(__file__).resolve().parent
     target = script_dir / "flatten_margin_and_um.py"
-    cmd = [sys.executable or "python3", str(target), *sys.argv[1:]]
+    cmd = [
+        sys.executable or "python3",
+        str(target),
+        *sys.argv[1:],
+        "--base-url",
+        "https://api.binance.com",
+        "--margin-base-url",
+        "https://api.binance.com",
+        "--margin-account-path",
+        "/api/v3/account",
+        "--margin-order-path",
+        "/api/v3/order",
+        "--margin-account-kind",
+        "spot",
+        "--um-base-url",
+        "https://fapi.binance.com",
+        "--um-account-path",
+        "/fapi/v2/account",
+        "--um-order-path",
+        "/fapi/v1/order",
+        "--no-fallback",
+    ]
     print(f"[info] env={env_name} account_mode=STANDARD")
     print("[RUN] " + " ".join(cmd))
     raise SystemExit(subprocess.run(cmd, check=False).returncode)
