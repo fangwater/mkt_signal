@@ -588,6 +588,7 @@ impl QueryEngChannel {
                                                     | TradingVenue::OkexFutures
                                                     | TradingVenue::GateFutures
                                                     | TradingVenue::BitgetFutures
+                                                    | TradingVenue::BybitFutures
                                             ) && exchange_enum == open_exchange
                                                 && scope_matches_venue(account_scope, open_venue)
                                             {
@@ -602,6 +603,7 @@ impl QueryEngChannel {
                                                     | TradingVenue::OkexFutures
                                                     | TradingVenue::GateFutures
                                                     | TradingVenue::BitgetFutures
+                                                    | TradingVenue::BybitFutures
                                             ) && exchange_enum == hedge_exchange
                                                 && scope_matches_venue(account_scope, hedge_venue)
                                             {
