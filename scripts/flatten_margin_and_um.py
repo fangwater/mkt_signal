@@ -115,6 +115,12 @@ def parse_args() -> argparse.Namespace:
         help="处理所有发现的 spot/margin 与 UM 仓位，按当前对齐规则全量调整",
     )
     parser.add_argument(
+        "--mode",
+        choices=["align", "clear"],
+        default="align",
+        help="align: 调整多出的单腿使两边对齐；clear: spot/margin 与 UM 两腿分别清到 0",
+    )
+    parser.add_argument(
         "--margin-account-kind",
         choices=["margin", "spot"],
         default="margin",
@@ -597,6 +603,39 @@ def build_um_orders(
     return orders, remaining
 
 
+def build_um_clear_orders(
+    positions: List[UmPosition],
+    precision: int,
+    min_qty: Decimal,
+    qty_rule: Optional[QuantityRule],
+) -> Tuple[List[UmOrder], Decimal]:
+    orders: List[UmOrder] = []
+    remaining = Decimal("0")
+    for pos in sorted(positions, key=lambda p: abs(p.quantity), reverse=True):
+        available = abs(pos.quantity)
+        qty, effective_min_qty = apply_quantity_rule_nearest(
+            available,
+            available,
+            precision,
+            min_qty,
+            qty_rule,
+        )
+        if qty <= 0 or qty < effective_min_qty:
+            remaining += available
+            continue
+        side = "SELL" if pos.quantity > 0 else "BUY"
+        orders.append(
+            UmOrder(
+                symbol=pos.symbol,
+                side=side,
+                position_side=pos.position_side,
+                quantity=qty,
+            )
+        )
+        remaining += available - qty
+    return orders, remaining
+
+
 def submit_margin_order(
     order: MarginOrder,
     base_url: str,
@@ -818,7 +857,25 @@ def main() -> None:
         margin_remaining = Decimal("0")
         um_remaining = Decimal("0")
 
-        if margin_qty != 0 and um_qty != 0 and margin_qty * um_qty < 0:
+        if args.mode == "clear":
+            if margin_qty != 0 and margin_pos is not None:
+                order, margin_remaining = build_margin_order(
+                    margin_pos,
+                    abs(margin_qty),
+                    args.quantity_precision,
+                    args.min_qty,
+                    margin_qty_rules.get(symbol),
+                )
+                if order:
+                    symbol_margin_orders.append(order)
+            if um_list:
+                symbol_um_orders, um_remaining = build_um_clear_orders(
+                    um_list,
+                    args.um_qty_precision,
+                    args.min_qty,
+                    um_qty_rules.get(symbol),
+                )
+        elif margin_qty != 0 and um_qty != 0 and margin_qty * um_qty < 0:
             diff = abs(margin_qty) - abs(um_qty)
             if diff > 0 and margin_pos is not None:
                 order, margin_remaining = build_margin_order(
