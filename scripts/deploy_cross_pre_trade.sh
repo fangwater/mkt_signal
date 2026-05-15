@@ -144,6 +144,7 @@ if [[ "$SYNC_SCRIPTS" == "1" ]]; then
       chmod +x "$DEST_DIR/$(basename "$file")" 2>/dev/null || true
     fi
   done
+  cross_sync_contract_ops_scripts "$ROOT_DIR" "$TARGET_DIR"
 else
   echo "[INFO] 跳过脚本同步（如需，请添加 --sync-scripts）"
 fi
@@ -170,3 +171,6 @@ echo "[INFO] venues: open=${OPEN_VENUE} hedge=${HEDGE_VENUE}"
 echo "[INFO] 建议先配置 env: scripts/deploy_setup_env_cross.sh --env-name ${ENV_NAME} --open-venue ${OPEN_VENUE} --hedge-venue ${HEDGE_VENUE}"
 echo "[INFO] 启动: cd $TARGET_DIR && ./cross_scripts/start_cross_pre_trade.sh"
 echo "[INFO] 停止: cd $TARGET_DIR && ./cross_scripts/stop_cross_pre_trade.sh"
+if [[ "$SYNC_SCRIPTS" == "1" ]]; then
+  echo "[INFO] 合约应急操作: cd $TARGET_DIR && ./cross_scripts/cross_contract_ops.py cancel both"
+fi

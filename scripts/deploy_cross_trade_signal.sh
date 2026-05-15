@@ -162,6 +162,7 @@ if [[ "$SYNC_SCRIPTS" == "1" ]]; then
       chmod +x "$TARGET_DIR/cross_scripts/$tool"
     fi
   done
+  cross_sync_contract_ops_scripts "$ROOT_DIR" "$TARGET_DIR"
 else
   echo "[INFO] 跳过脚本同步（如需同步脚本，请添加 --sync-scripts）"
 fi
@@ -182,6 +183,7 @@ if [[ "$SYNC_SCRIPTS" == "1" ]]; then
   ./cross_scripts/set_um_leverage.py --leverage 6
   ./cross_scripts/sync_cross_strategy_params.py
   ./cross_scripts/print_cross_strategy_params.py
+  ./cross_scripts/cross_contract_ops.py cancel both
 EOF
 else
   echo "[INFO] 未同步脚本（保留目标目录已有 cross_scripts，需更新请加 --sync-scripts）"

@@ -163,6 +163,34 @@ EOF
 # Binance credentials (required when any venue exchange is binance)
 export BINANCE_API_KEY="${BINANCE_API_KEY:-}"
 export BINANCE_API_SECRET="${BINANCE_API_SECRET:-}"
+# Cross contract mode uses Binance STANDARD UM, never PM/unified.
+export BINANCE_ACCOUNT_MODE="STANDARD"
+EOF
+      ;;
+    gate)
+      cat <<'EOF'
+
+# Gate credentials (required when any venue exchange is gate)
+export GATE_API_KEY="${GATE_API_KEY:-}"
+export GATE_API_SECRET="${GATE_API_SECRET:-}"
+EOF
+      ;;
+    bybit)
+      cat <<'EOF'
+
+# Bybit credentials (required when any venue exchange is bybit)
+export BYBIT_API_KEY="${BYBIT_API_KEY:-}"
+export BYBIT_API_SECRET="${BYBIT_API_SECRET:-}"
+EOF
+      ;;
+    bitget)
+      cat <<'EOF'
+
+# Bitget credentials (required when any venue exchange is bitget)
+export BITGET_API_KEY="${BITGET_API_KEY:-}"
+export BITGET_API_SECRET="${BITGET_API_SECRET:-}"
+export BITGET_API_PASSPHRASE="${BITGET_API_PASSPHRASE:-${BITGET_PASSPHRASE:-}}"
+export BITGET_PASSPHRASE="${BITGET_PASSPHRASE:-${BITGET_API_PASSPHRASE:-}}"
 EOF
       ;;
   esac
