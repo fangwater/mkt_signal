@@ -35,8 +35,6 @@ impl WsOrderUpdate {
                 | TradeRequestType::BinanceWsCancelMarginOrder
                 | TradeRequestType::BybitNewMarginOrder
                 | TradeRequestType::BybitNewUMOrder
-                | TradeRequestType::BybitCancelMarginOrder
-                | TradeRequestType::BybitCancelUMOrder
                 | TradeRequestType::OkexNewMarginOrder
                 | TradeRequestType::OkexNewUMOrder
                 | TradeRequestType::GateUnifiedNewOrder
@@ -291,4 +289,42 @@ fn ws_strategy_name<S: ?Sized>() -> &'static str {
         .rsplit("::")
         .next()
         .unwrap_or("Strategy")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bybit_cancel_response_does_not_drive_ws_order_update() {
+        assert!(WsOrderUpdate::supports_trade_response_req_type(
+            TradeRequestType::BybitNewUMOrder as u32
+        ));
+        assert!(WsOrderUpdate::supports_trade_response_req_type(
+            TradeRequestType::BybitNewMarginOrder as u32
+        ));
+
+        assert!(!WsOrderUpdate::supports_trade_response_req_type(
+            TradeRequestType::BybitCancelUMOrder as u32
+        ));
+        assert!(!WsOrderUpdate::supports_trade_response_req_type(
+            TradeRequestType::BybitCancelMarginOrder as u32
+        ));
+    }
+
+    #[test]
+    fn binance_ws_cancel_response_still_drives_ws_order_update() {
+        assert!(WsOrderUpdate::supports_trade_response_req_type(
+            TradeRequestType::BinanceWsNewUMOrder as u32
+        ));
+        assert!(WsOrderUpdate::supports_trade_response_req_type(
+            TradeRequestType::BinanceWsCancelUMOrder as u32
+        ));
+        assert!(WsOrderUpdate::supports_trade_response_req_type(
+            TradeRequestType::BinanceWsNewMarginOrder as u32
+        ));
+        assert!(WsOrderUpdate::supports_trade_response_req_type(
+            TradeRequestType::BinanceWsCancelMarginOrder as u32
+        ));
+    }
 }
