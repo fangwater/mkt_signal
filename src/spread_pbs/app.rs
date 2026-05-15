@@ -15,6 +15,8 @@ use crate::spread_pbs::latency::LatencyKll;
 use crate::spread_pbs::publisher::SpreadPublisher;
 use crate::spread_pbs::ws::{run_public_ws, FrameHandler, WsLoopParams};
 
+const DEDUP_RESET_INTERVAL_US: i64 = 5 * 60 * 1_000_000;
+
 pub struct SpreadPbsApp {
     config: Config,
 }
@@ -92,6 +94,7 @@ impl SpreadPbsApp {
             latency_net: LatencyKll::new(net_label),
             published: 0,
             dropped_by_seq: 0,
+            last_dedup_reset_us: get_timestamp_us(),
         }));
 
         let ctx = LegCtx {
@@ -281,6 +284,7 @@ struct SharedState {
     latency_net: LatencyKll,
     published: u64,
     dropped_by_seq: u64,
+    last_dedup_reset_us: i64,
 }
 
 fn make_handler(
@@ -326,6 +330,8 @@ fn process_frame(
     accepted_us: i64,
     f: BboFrame,
 ) {
+    reset_dedup_high_water_if_needed(state, accepted_us, &f);
+
     let prev = state.dedup.get(&f.symbol).copied().unwrap_or(i64::MIN);
     if f.seq_id <= prev {
         state.dropped_by_seq += 1;
@@ -352,4 +358,104 @@ fn process_frame(
         return;
     }
     state.published += 1;
+}
+
+fn reset_dedup_high_water_if_needed(state: &mut SharedState, accepted_us: i64, f: &BboFrame) {
+    if accepted_us.saturating_sub(state.last_dedup_reset_us) >= DEDUP_RESET_INTERVAL_US {
+        let cleared = state.dedup.len();
+        state.dedup.clear();
+        state.last_dedup_reset_us = accepted_us;
+        log::warn!(
+            "spread_pbs dedup high-water reset by interval cleared_symbols={} interval_us={}",
+            cleared,
+            DEDUP_RESET_INTERVAL_US
+        );
+    }
+
+    let prev = state.dedup.get(&f.symbol).copied().unwrap_or(i64::MIN);
+    if f.reset_seq && f.seq_id < prev {
+        let cleared = state.dedup.len();
+        state.dedup.clear();
+        state.last_dedup_reset_us = accepted_us;
+        log::warn!(
+            "spread_pbs dedup high-water reset by snapshot symbol={} snapshot_u={} prev_u={} cleared_symbols={}",
+            f.symbol,
+            f.seq_id,
+            prev,
+            cleared
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_state(now_us: i64) -> SharedState {
+        SharedState {
+            dedup: HashMap::new(),
+            latency_e2e: LatencyKll::new("test-e2e"),
+            latency_net: LatencyKll::new("test-net"),
+            published: 0,
+            dropped_by_seq: 0,
+            last_dedup_reset_us: now_us,
+        }
+    }
+
+    fn frame(symbol: &str, seq_id: i64, reset_seq: bool) -> BboFrame {
+        BboFrame {
+            symbol: symbol.to_string(),
+            ts_us: 0,
+            seq_id,
+            reset_seq,
+            bid_price: 1.0,
+            bid_amount: 1.0,
+            ask_price: 2.0,
+            ask_amount: 1.0,
+        }
+    }
+
+    #[test]
+    fn bybit_snapshot_lower_u_resets_all_high_water_marks() {
+        let now_us = 1_000_000;
+        let mut state = test_state(now_us);
+        state.dedup.insert("BTCUSDT".to_string(), 100);
+        state.dedup.insert("ETHUSDT".to_string(), 200);
+
+        reset_dedup_high_water_if_needed(&mut state, now_us + 1, &frame("BTCUSDT", 1, true));
+
+        assert!(state.dedup.is_empty());
+        assert_eq!(state.last_dedup_reset_us, now_us + 1);
+    }
+
+    #[test]
+    fn bybit_forced_snapshot_same_u_does_not_reset_high_water_marks() {
+        let now_us = 1_000_000;
+        let mut state = test_state(now_us);
+        state.dedup.insert("BTCUSDT".to_string(), 100);
+        state.dedup.insert("ETHUSDT".to_string(), 200);
+
+        reset_dedup_high_water_if_needed(&mut state, now_us + 1, &frame("BTCUSDT", 100, true));
+
+        assert_eq!(state.dedup.get("BTCUSDT"), Some(&100));
+        assert_eq!(state.dedup.get("ETHUSDT"), Some(&200));
+        assert_eq!(state.last_dedup_reset_us, now_us);
+    }
+
+    #[test]
+    fn dedup_high_water_marks_reset_periodically() {
+        let now_us = 1_000_000;
+        let mut state = test_state(now_us);
+        state.dedup.insert("BTCUSDT".to_string(), 100);
+        state.dedup.insert("ETHUSDT".to_string(), 200);
+
+        reset_dedup_high_water_if_needed(
+            &mut state,
+            now_us + DEDUP_RESET_INTERVAL_US,
+            &frame("BTCUSDT", 100, false),
+        );
+
+        assert!(state.dedup.is_empty());
+        assert_eq!(state.last_dedup_reset_us, now_us + DEDUP_RESET_INTERVAL_US);
+    }
 }

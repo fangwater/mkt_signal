@@ -137,6 +137,7 @@ impl VenueAdapter for GateAdapter {
             symbol,
             ts_us,
             seq_id,
+            reset_seq: false,
             bid_price,
             bid_amount,
             ask_price,

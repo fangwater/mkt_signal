@@ -90,6 +90,7 @@ pub fn parse_bbo_tbt(value: &Value) -> Result<Vec<BboFrame>> {
             symbol: symbol.clone(),
             ts_us,
             seq_id,
+            reset_seq: false,
             bid_price,
             bid_amount,
             ask_price,

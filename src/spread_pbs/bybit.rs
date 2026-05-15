@@ -154,6 +154,7 @@ impl VenueAdapter for BybitAdapter {
             symbol,
             ts_us,
             seq_id,
+            reset_seq: push_type == "snapshot",
             bid_price: entry.bid_price,
             bid_amount: entry.bid_amount,
             ask_price: entry.ask_price,
