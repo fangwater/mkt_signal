@@ -8,7 +8,8 @@
 - margin/UM 同向或单边时，平掉该方向的全部敞口。
 - margin netAsset > 0 走 SELL、< 0 走 BUY（忽略与 quote 相同的资产）。
 - spot free+locked > 0 走 SELL（与 STANDARD 面板快照口径一致）。
-- UM positionAmt > 0 走 SELL reduceOnly，< 0 走 BUY reduceOnly。
+- UM 按 positionSide 归一为净标的数量：BOTH 使用 positionAmt，LONG 记正，SHORT 记负。
+  净数量 > 0 走 SELL reduceOnly，< 0 走 BUY reduceOnly。
 
 依赖环境变量 BINANCE_API_KEY / BINANCE_API_SECRET。
 """
@@ -249,6 +250,15 @@ class UmOrder:
     quantity: Decimal
 
 
+def normalize_um_quantity(position_side: str, amount: Decimal) -> Decimal:
+    side = position_side.upper()
+    if side == "LONG":
+        return abs(amount)
+    if side == "SHORT":
+        return -abs(amount)
+    return amount
+
+
 @dataclass(frozen=True)
 class QuantityRule:
     min_qty: Decimal
@@ -269,6 +279,15 @@ def round_down_to_step(value: Decimal, step_size: Decimal) -> Decimal:
     return steps * step_size
 
 
+def round_up_to_step(value: Decimal, step_size: Decimal) -> Decimal:
+    if step_size <= 0:
+        return value
+    steps = (value / step_size).to_integral_value(rounding=ROUND_DOWN)
+    if steps * step_size < value:
+        steps += 1
+    return steps * step_size
+
+
 def apply_quantity_rule(
     value: Decimal,
     precision: int,
@@ -281,6 +300,37 @@ def apply_quantity_rule(
         qty = round_down_to_step(qty, qty_rule.step_size)
         effective_min_qty = max(effective_min_qty, qty_rule.min_qty)
     return qty, effective_min_qty
+
+
+def apply_quantity_rule_nearest(
+    value: Decimal,
+    max_qty: Decimal,
+    precision: int,
+    min_qty: Decimal,
+    qty_rule: Optional[QuantityRule],
+) -> Tuple[Decimal, Decimal]:
+    qty = format_qty(value, precision)
+    effective_min_qty = min_qty
+    if qty_rule is None:
+        if qty > max_qty:
+            qty = format_qty(max_qty, precision)
+        return qty, effective_min_qty
+
+    effective_min_qty = max(effective_min_qty, qty_rule.min_qty)
+    floor_qty = round_down_to_step(qty, qty_rule.step_size)
+    ceil_qty = round_up_to_step(qty, qty_rule.step_size)
+    max_aligned = round_down_to_step(max_qty, qty_rule.step_size)
+
+    candidates = []
+    for candidate in (floor_qty, ceil_qty, max_aligned):
+        if candidate <= 0 or candidate < effective_min_qty or candidate > max_aligned:
+            continue
+        candidates.append(candidate)
+    if not candidates:
+        return Decimal("0"), effective_min_qty
+
+    best = min(candidates, key=lambda candidate: (abs(value - candidate), candidate))
+    return best, effective_min_qty
 
 
 def public_get_json(base_url: str, path: str, params: Dict[str, str]) -> Tuple[int, str, Any]:
@@ -437,12 +487,12 @@ def fetch_um_positions(
     except json.JSONDecodeError as exc:
         raise SystemExit(f"解析 UM 响应失败: {exc}") from exc
 
-    positions = data.get("positions")
-    if not isinstance(positions, list):
+    raw_positions = data.get("positions")
+    if not isinstance(raw_positions, list):
         raise SystemExit("UM 响应缺少 positions 字段")
 
     positions: List[UmPosition] = []
-    for entry in positions:
+    for entry in raw_positions:
         if not isinstance(entry, dict):
             continue
         symbol = str(entry.get("symbol", "")).strip().upper()
@@ -457,8 +507,14 @@ def fetch_um_positions(
             continue
         if amt == 0:
             continue
-        pos_side = str(entry.get("positionSide") or ("LONG" if amt > 0 else "SHORT")).upper()
-        positions.append(UmPosition(symbol=symbol, position_side=pos_side, quantity=amt))
+        pos_side = str(entry.get("positionSide") or "BOTH").strip().upper() or "BOTH"
+        positions.append(
+            UmPosition(
+                symbol=symbol,
+                position_side=pos_side,
+                quantity=normalize_um_quantity(pos_side, amt),
+            )
+        )
     return status, body, positions
 
 
@@ -519,7 +575,13 @@ def build_um_orders(
             break
         available = abs(pos.quantity)
         use_qty = min(available, remaining)
-        qty, effective_min_qty = apply_quantity_rule(use_qty, precision, min_qty, qty_rule)
+        qty, effective_min_qty = apply_quantity_rule_nearest(
+            use_qty,
+            available,
+            precision,
+            min_qty,
+            qty_rule,
+        )
         if qty <= 0 or qty < effective_min_qty:
             continue
         side = "SELL" if pos.quantity > 0 else "BUY"
