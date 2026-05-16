@@ -1,4 +1,4 @@
-use log::debug;
+use log::{debug, warn};
 
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
@@ -11,7 +11,9 @@ use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTrad
 use crate::strategy::trade_engine_response::TradeEngineResponse;
 use crate::strategy::ws_order_update::WsOrderUpdate;
 use crate::strategy::Strategy;
-use crate::trade_engine::query_parsers::compact_order::CompactOrderQueryResp;
+use crate::trade_engine::query_parsers::compact_order::{
+    is_order_query_not_found_marker, CompactOrderQueryResp,
+};
 
 const DEFAULT_FILL_EPSILON: f64 = 1e-12;
 
@@ -123,21 +125,17 @@ pub fn apply_query_response_as_updates(
     }
 
     let body = response.body_bytes().as_ref();
-    if !body.iter().any(|&b| b != 0) {
-        return false;
-    }
     let actual_len = body
         .iter()
         .rposition(|&b| b != 0)
         .map(|pos| pos + 1)
         .unwrap_or(0);
-    if actual_len == 1 && matches!(body[0], b'E' | b'N') {
+    if actual_len == 0 {
         return false;
     }
-
-    let Some(parsed) = parse_compact_order_query_resp(response.body_bytes()) else {
+    if actual_len == 1 && body[0] == b'E' {
         return false;
-    };
+    }
 
     let Some(order_mgr) = MonitorChannel::try_order_manager() else {
         return false;
@@ -156,6 +154,38 @@ pub fn apply_query_response_as_updates(
         CompactOrderQueryApplyOptions::orphan_reconcile(DEFAULT_FILL_EPSILON)
     } else {
         CompactOrderQueryApplyOptions::open_reconcile()
+    };
+
+    if is_order_query_not_found_marker(&body[..actual_len]) {
+        if options.emit_rejected_as_expired {
+            let event_time_us = if options.fallback_event_time_to_now {
+                get_timestamp_us()
+            } else {
+                0
+            };
+            let order_id = order.exchange_order_id.unwrap_or(order.client_order_id);
+            let update = OrderQueryOrderUpdate::new(
+                &order,
+                order_id,
+                event_time_us,
+                OrderStatus::Expired,
+                ExecutionType::Rejected,
+                order.cumulative_filled_quantity,
+                infer_query_time_in_force(&order),
+            );
+            strategy.apply_order_update(&update);
+            return true;
+        }
+        warn!(
+            "ResponseReconcile: strategy_id={} order query not found for non-orphan strategy client_order_id={}",
+            strategy.get_id(),
+            client_order_id
+        );
+        return false;
+    }
+
+    let Some(parsed) = parse_compact_order_query_resp(response.body_bytes()) else {
+        return false;
     };
 
     apply_compact_order_query_updates(strategy, &order, parsed, options)
@@ -261,4 +291,21 @@ pub fn apply_compact_order_query_updates(
     }
 
     applied
+}
+
+fn infer_query_time_in_force(order: &Order) -> TimeInForce {
+    if !order.order_type.is_limit() {
+        return TimeInForce::GTC;
+    }
+    match order.venue {
+        TradingVenue::BinanceFutures
+        | TradingVenue::BybitMargin
+        | TradingVenue::BybitFutures
+        | TradingVenue::OkexMargin
+        | TradingVenue::OkexFutures
+        | TradingVenue::GateMargin
+        | TradingVenue::GateFutures
+        | TradingVenue::BitgetFutures => TimeInForce::GTX,
+        _ => TimeInForce::GTC,
+    }
 }

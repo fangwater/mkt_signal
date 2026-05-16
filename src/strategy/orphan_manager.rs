@@ -107,6 +107,13 @@ impl OrphanStrategyManager {
         removed
     }
 
+    pub(crate) fn take_by_order_id(&mut self, client_order_id: i64) -> Option<Box<dyn Strategy>> {
+        let strategy_id = self.strategies.iter().find_map(|(id, strategy)| {
+            strategy.is_strategy_order(client_order_id).then_some(*id)
+        })?;
+        self.take(strategy_id)
+    }
+
     pub(crate) fn take_next_queued(&mut self) -> Option<Box<dyn Strategy>> {
         let strategy_id = self.strategy_queue.pop_front()?;
         self.take(strategy_id)

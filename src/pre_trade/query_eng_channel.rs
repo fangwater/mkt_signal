@@ -39,6 +39,7 @@ fn dispatch_query_response_to_strategy_manager(
     strategy_id: i32,
     response: &dyn QueryEngineResponse,
 ) -> bool {
+    let client_order_id = response.client_query_id();
     let strategy_opt = {
         let mut mgr = strategy_mgr.borrow_mut();
         if mgr.contains(strategy_id) {
@@ -48,11 +49,14 @@ fn dispatch_query_response_to_strategy_manager(
         }
     };
     if let Some(mut strategy) = strategy_opt {
-        let _ = apply_query_response_as_updates(strategy.as_mut(), response);
+        let matched = strategy.is_strategy_order(client_order_id);
+        if matched {
+            let _ = apply_query_response_as_updates(strategy.as_mut(), response);
+        }
         if strategy.is_active() {
             strategy_mgr.borrow_mut().insert(strategy);
         }
-        true
+        matched
     } else {
         false
     }
@@ -63,20 +67,26 @@ fn dispatch_query_response_to_orphan_manager(
     strategy_id: i32,
     response: &dyn QueryEngineResponse,
 ) -> bool {
+    let client_order_id = response.client_query_id();
     let strategy_opt = {
         let mut mgr = orphan_strategy_mgr.borrow_mut();
-        if mgr.contains(strategy_id) {
+        if let Some(strategy) = mgr.take_by_order_id(client_order_id) {
+            Some(strategy)
+        } else if mgr.contains(strategy_id) {
             mgr.take(strategy_id)
         } else {
             None
         }
     };
     if let Some(mut strategy) = strategy_opt {
-        let _ = apply_query_response_as_updates(strategy.as_mut(), response);
+        let matched = strategy.is_strategy_order(client_order_id);
+        if matched {
+            let _ = apply_query_response_as_updates(strategy.as_mut(), response);
+        }
         if strategy.is_active() {
             orphan_strategy_mgr.borrow_mut().insert(strategy);
         }
-        true
+        matched
     } else {
         false
     }
@@ -640,6 +650,8 @@ impl QueryEngChannel {
                                         | QueryRequestType::OkexUMQuery
                                         | QueryRequestType::BybitMarginQuery
                                         | QueryRequestType::BybitUMQuery
+                                        | QueryRequestType::BitgetMarginQuery
+                                        | QueryRequestType::BitgetUMQuery
                                         | QueryRequestType::GateUnifiedOrderQuery
                                         | QueryRequestType::GateFuturesOrderQuery
                                 ) {
@@ -710,6 +722,7 @@ mod tests {
     struct ReentrantQueryStrategy {
         id: i32,
         active: bool,
+        order_id: i64,
     }
 
     impl Strategy for ReentrantQueryStrategy {
@@ -725,8 +738,8 @@ mod tests {
             self.id
         }
 
-        fn is_strategy_order(&self, _order_id: i64) -> bool {
-            false
+        fn is_strategy_order(&self, order_id: i64) -> bool {
+            order_id == self.order_id
         }
 
         fn handle_signal(&mut self, _signal: &TradeSignal) {}
@@ -749,6 +762,7 @@ mod tests {
     struct ReentrantOrphanQueryStrategy {
         id: i32,
         active: bool,
+        order_id: i64,
     }
 
     impl Strategy for ReentrantOrphanQueryStrategy {
@@ -764,8 +778,8 @@ mod tests {
             self.id
         }
 
-        fn is_strategy_order(&self, _order_id: i64) -> bool {
-            false
+        fn is_strategy_order(&self, order_id: i64) -> bool {
+            order_id == self.order_id
         }
 
         fn handle_signal(&mut self, _signal: &TradeSignal) {}
@@ -793,6 +807,7 @@ mod tests {
             .insert(Box::new(ReentrantQueryStrategy {
                 id: 301,
                 active: true,
+                order_id: 301_i64 << 32,
             }));
         let response = QueryEngineResponseMessage::new(0, 301_i64 << 32, Bytes::new());
 
@@ -810,6 +825,7 @@ mod tests {
             .insert(Box::new(ReentrantOrphanQueryStrategy {
                 id: 302,
                 active: true,
+                order_id: 302_i64 << 32,
             }));
         let response = QueryEngineResponseMessage::new(0, 302_i64 << 32, Bytes::new());
 
@@ -817,6 +833,39 @@ mod tests {
 
         assert!(matched);
         assert!(manager.borrow().contains(302));
+    }
+
+    #[test]
+    fn query_dispatch_does_not_steal_unowned_order_from_orphan_manager() {
+        let source_manager = Rc::new(RefCell::new(StrategyManager::new()));
+        source_manager
+            .borrow_mut()
+            .insert(Box::new(ReentrantQueryStrategy {
+                id: 301,
+                active: true,
+                order_id: (301_i64 << 32) | 1,
+            }));
+
+        let orphan_manager = Rc::new(RefCell::new(OrphanStrategyManager::new()));
+        orphan_manager
+            .borrow_mut()
+            .insert(Box::new(ReentrantOrphanQueryStrategy {
+                id: 401,
+                active: true,
+                order_id: (301_i64 << 32) | 2,
+            }));
+
+        let response = QueryEngineResponseMessage::new(0, (301_i64 << 32) | 2, Bytes::new());
+
+        let matched_source =
+            dispatch_query_response_to_strategy_manager(&source_manager, 301, &response);
+        let matched_orphan =
+            dispatch_query_response_to_orphan_manager(&orphan_manager, 301, &response);
+
+        assert!(!matched_source);
+        assert!(matched_orphan);
+        assert!(source_manager.borrow().contains(301));
+        assert!(orphan_manager.borrow().contains(401));
     }
 }
 
