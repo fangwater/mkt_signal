@@ -228,6 +228,43 @@ async fn bootstrap_standard_snapshots(
     Ok(())
 }
 
+async fn bootstrap_unified_snapshots(
+    api_key: &str,
+    api_secret: &str,
+    local_ip: Option<&str>,
+    evt_tx: &tokio::sync::mpsc::UnboundedSender<Bytes>,
+) -> Result<()> {
+    let client = build_binance_rest_client(local_ip, Duration::from_secs(10))?;
+    let mut emitted = 0usize;
+    info!(
+        "bootstrap unified snapshots via local_ip={}",
+        local_ip.unwrap_or("system-default")
+    );
+
+    let um_account_body = signed_get_binance(
+        &client,
+        "https://papi.binance.com",
+        "/papi/v1/um/account",
+        api_key,
+        api_secret,
+    )
+    .await?;
+    if let Some(msgs) = parse_binance_um_account_snapshot(&um_account_body) {
+        for payload in msgs {
+            if let Some(wrapped) = wrap_basic_payload(BasicAccountScope::BinanceUnified, payload) {
+                let _ = evt_tx.send(wrapped);
+                emitted += 1;
+            }
+        }
+    }
+
+    info!(
+        "bootstrap unified snapshots emitted {} basic account event(s)",
+        emitted
+    );
+    Ok(())
+}
+
 fn spawn_pm_risk_poller(
     api_key: String,
     api_secret: String,
@@ -432,6 +469,10 @@ async fn main() -> Result<()> {
             Err(err) => warn!("bootstrap standard snapshots failed: {err:#}"),
         }
     } else {
+        match bootstrap_unified_snapshots(&api_key, &api_secret, Some(&primary_ip), &evt_tx).await {
+            Ok(()) => info!("bootstrap unified snapshots completed"),
+            Err(err) => warn!("bootstrap unified snapshots failed: {err:#}"),
+        }
         let interval_secs = std::env::var("BINANCE_PM_RISK_POLL_INTERVAL_SECS")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
