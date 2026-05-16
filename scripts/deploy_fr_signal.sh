@@ -162,6 +162,7 @@ SCRIPTS_TO_SYNC=(
   "cancel_bybit_pm_orders.py"
   "flatten_bitget_pm.py"
   "cancel_bitget_pm_orders.py"
+  "set_online_futures_leverage.py"
   "sync_funding_rate_thresholds.py"
   "print_funding_rate_thresholds.py"
   "sync_fr_strategy_params.py"

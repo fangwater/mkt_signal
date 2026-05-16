@@ -128,27 +128,28 @@ if [[ "$SYNC_SCRIPTS" == "1" ]]; then
         "binance_cancel_all_std_um_ws_orders.py"
         "binance_local_ip.py"
         "sell_margin_spot.py"
+        "set_online_futures_leverage.py"
       )
       OPS_CANCEL_CMD="./scripts/cancel_binance_std_orders.py"
       OPS_FLATTEN_CMD="./scripts/flatten_binance_std.py"
       ;;
     okex)
-      OPS_TO_SYNC=("flatten_okex_pm.py" "cancel_okex_pm_orders.py")
+      OPS_TO_SYNC=("flatten_okex_pm.py" "cancel_okex_pm_orders.py" "set_online_futures_leverage.py")
       OPS_CANCEL_CMD="./scripts/cancel_okex_pm_orders.py"
       OPS_FLATTEN_CMD="./scripts/flatten_okex_pm.py"
       ;;
     gate)
-      OPS_TO_SYNC=("flatten_gate_pm.py" "cancel_gate_pm_orders.py")
+      OPS_TO_SYNC=("flatten_gate_pm.py" "cancel_gate_pm_orders.py" "set_online_futures_leverage.py")
       OPS_CANCEL_CMD="./scripts/cancel_gate_pm_orders.py"
       OPS_FLATTEN_CMD="./scripts/flatten_gate_pm.py"
       ;;
     bybit)
-      OPS_TO_SYNC=("flatten_bybit_pm.py" "cancel_bybit_pm_orders.py")
+      OPS_TO_SYNC=("flatten_bybit_pm.py" "cancel_bybit_pm_orders.py" "set_online_futures_leverage.py")
       OPS_CANCEL_CMD="./scripts/cancel_bybit_pm_orders.py"
       OPS_FLATTEN_CMD="./scripts/flatten_bybit_pm.py"
       ;;
     bitget)
-      OPS_TO_SYNC=("flatten_bitget_pm.py" "cancel_bitget_pm_orders.py")
+      OPS_TO_SYNC=("flatten_bitget_pm.py" "cancel_bitget_pm_orders.py" "set_online_futures_leverage.py")
       OPS_CANCEL_CMD="./scripts/cancel_bitget_pm_orders.py"
       OPS_FLATTEN_CMD="./scripts/flatten_bitget_pm.py"
       ;;

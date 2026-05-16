@@ -120,6 +120,7 @@ EXTRA_FILES=(
   "intra_scripts/print_intra_risk_params.py"
   "intra_scripts/start_intra_persist_manager.sh"
   "intra_scripts/stop_intra_persist_manager.sh"
+  "scripts/set_online_futures_leverage.py"
 )
 
 if [[ "$SYNC_SCRIPTS" == "1" ]]; then

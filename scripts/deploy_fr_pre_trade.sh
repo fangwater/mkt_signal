@@ -151,6 +151,7 @@ SCRIPTS_TO_SYNC=(
   "start_fr_pre_trade.sh"
   "stop_fr_pre_trade.sh"
   "process_match_lib.sh"
+  "set_online_futures_leverage.py"
 )
 if [[ "$DO_SCRIPTS" -eq 1 ]]; then
   mkdir -p "$TARGET_DIR/scripts"
