@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cancel Bitget UTA open orders (USDT-FUTURES + MARGIN spot).
+"""Cancel Bitget UTA open orders (USDT-FUTURES + SPOT + MARGIN).
 
 Self-contained: no imports from other scripts in this repo.
 
@@ -28,7 +28,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 BITGET_BASE = os.environ.get("BITGET_API_BASE", "https://api.bitget.com").rstrip("/")
@@ -159,36 +159,93 @@ def parse_symbols(raw: Optional[str]) -> Optional[List[str]]:
     return out or None
 
 
-def fetch_unfilled(api_key, api_secret, passphrase, category: str) -> List[Dict[str, Any]]:
-    status, body = bitget_private(
-        "GET", "/api/v3/trade/unfilled-orders", api_key, api_secret, passphrase,
-        query={"category": category},
-    )
-    if not (200 <= status < 300):
-        sys.stderr.write(f"[WARN] unfilled-orders {category} status={status} body={body}\n")
-        return []
-    parsed = json.loads(body)
-    if str(parsed.get("code", "")) not in ("0", "00000"):
-        sys.stderr.write(f"[WARN] unfilled-orders {category}: {body}\n")
-        return []
-    data = parsed.get("data")
-    if isinstance(data, dict):
-        return data.get("orderList", []) or data.get("list", []) or []
+ORDER_LIST_KEYS = ("orderList", "entrustedList", "list", "orders", "items")
+
+
+def extract_order_list(data: Any) -> List[Dict[str, Any]]:
     if isinstance(data, list):
-        return data
+        return [o for o in data if isinstance(o, dict)]
+    if not isinstance(data, dict):
+        return []
+    for key in ORDER_LIST_KEYS:
+        value = data.get(key)
+        if isinstance(value, list):
+            return [o for o in value if isinstance(o, dict)]
     return []
+
+
+def next_cursor(data: Any) -> Optional[str]:
+    if not isinstance(data, dict):
+        return None
+    cursor = str(data.get("cursor", "")).strip()
+    return cursor or None
+
+
+def fetch_unfilled(api_key, api_secret, passphrase, category: str) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    cursor: Optional[str] = None
+    seen_cursors = set()
+    while True:
+        query = {"category": category, "limit": "100"}
+        if cursor:
+            query["cursor"] = cursor
+        status, body = bitget_private(
+            "GET", "/api/v3/trade/unfilled-orders", api_key, api_secret, passphrase,
+            query=query,
+        )
+        if not (200 <= status < 300):
+            sys.stderr.write(f"[WARN] unfilled-orders {category} status={status} body={body}\n")
+            return out
+        parsed = json.loads(body)
+        if str(parsed.get("code", "")) not in ("0", "00000"):
+            sys.stderr.write(f"[WARN] unfilled-orders {category}: {body}\n")
+            return out
+        data = parsed.get("data")
+        page = extract_order_list(data)
+        out.extend(page)
+        cursor = next_cursor(data)
+        if not cursor or not page or cursor in seen_cursors:
+            return out
+        seen_cursors.add(cursor)
+
+
+def scope_categories(scope: str) -> List[Tuple[str, str]]:
+    if scope == "um":
+        return [("USDT-FUTURES", "futures")]
+    if scope == "spot":
+        return [("SPOT", "spot")]
+    if scope == "margin":
+        return [("MARGIN", "margin")]
+    if scope == "cash":
+        return [("SPOT", "spot"), ("MARGIN", "margin")]
+    return [("USDT-FUTURES", "futures"), ("SPOT", "spot"), ("MARGIN", "margin")]
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Cancel Bitget UTA open orders (futures + margin spot)",
+        description="Cancel Bitget UTA open orders (futures + spot + margin)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--symbols", help="Comma-separated symbol whitelist; omit = all")
-    parser.add_argument("--scope", choices=["um", "margin", "both"], default="both",
-                        help="um→USDT-FUTURES, margin→MARGIN spot")
+    parser.add_argument("--scope", choices=["um", "spot", "margin", "cash", "both"], default="both",
+                        help="um→USDT-FUTURES, spot→SPOT, margin→MARGIN, cash→SPOT+MARGIN, both→all")
     parser.add_argument("--execute", action="store_true")
     return parser.parse_args()
+
+
+def count_orders_by_symbol(
+    orders: Iterable[Dict[str, Any]],
+    wanted_set: Optional[set],
+) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for order in orders:
+        sym = str(order.get("symbol", "")).upper()
+        if not sym:
+            continue
+        if wanted_set is not None and sym not in wanted_set:
+            continue
+        counts[sym] = counts.get(sym, 0) + 1
+    return counts
 
 
 def main() -> None:
@@ -201,37 +258,26 @@ def main() -> None:
 
     print(f"[info] env={env_name} scope={args.scope} execute={args.execute}")
 
-    fut_count: Dict[str, int] = {}
-    margin_count: Dict[str, int] = {}
+    categories = scope_categories(args.scope)
+    counts_by_category = {
+        category: count_orders_by_symbol(fetch_unfilled(api_key, api_secret, passphrase, category), wanted_set)
+        for category, _label in categories
+    }
 
-    if args.scope in ("um", "both"):
-        for o in fetch_unfilled(api_key, api_secret, passphrase, "USDT-FUTURES"):
-            sym = str(o.get("symbol", "")).upper()
-            if not sym:
-                continue
-            if wanted_set is not None and sym not in wanted_set:
-                continue
-            fut_count[sym] = fut_count.get(sym, 0) + 1
-    if args.scope in ("margin", "both"):
-        for o in fetch_unfilled(api_key, api_secret, passphrase, "MARGIN"):
-            sym = str(o.get("symbol", "")).upper()
-            if not sym:
-                continue
-            if wanted_set is not None and sym not in wanted_set:
-                continue
-            margin_count[sym] = margin_count.get(sym, 0) + 1
-
-    all_syms = sorted(set(fut_count) | set(margin_count))
+    all_syms = sorted(set().union(*(counts.keys() for counts in counts_by_category.values())))
     if not all_syms:
         print("[plan] no open orders in scope. Nothing to do.")
         return
 
     print()
-    print(f"{'Symbol':<14} {'Futures':>8} {'Margin':>8}")
-    print("-" * 34)
+    print(f"{'Symbol':<14} {'Futures':>8} {'Spot':>8} {'Margin':>8}")
+    print("-" * 44)
     for s in all_syms:
-        print(f"{s:<14} {fut_count.get(s, 0):>8} {margin_count.get(s, 0):>8}")
-    print("-" * 34)
+        fut = counts_by_category.get("USDT-FUTURES", {}).get(s, 0)
+        spot = counts_by_category.get("SPOT", {}).get(s, 0)
+        margin = counts_by_category.get("MARGIN", {}).get(s, 0)
+        print(f"{s:<14} {fut:>8} {spot:>8} {margin:>8}")
+    print("-" * 44)
 
     if not args.execute:
         print("\nDry-run. Pass --execute to actually cancel.")
@@ -244,27 +290,17 @@ def main() -> None:
     failures = 0
     total = 0
     for sym in all_syms:
-        if fut_count.get(sym, 0) > 0:
+        for category, label in categories:
+            if counts_by_category.get(category, {}).get(sym, 0) <= 0:
+                continue
             total += 1
             status, body = bitget_private(
                 "POST", "/api/v3/trade/cancel-symbol-order", api_key, api_secret, passphrase,
-                body={"category": "USDT-FUTURES", "symbol": sym},
+                body={"category": category, "symbol": sym},
             )
             ok_ret, brief = bitget_ok(body)
             ok = (200 <= status < 300) and ok_ret
-            print(f"  [{'OK' if ok else 'ERR'}] futures cancel {sym} status={status} {brief}")
-            if not ok:
-                failures += 1
-                print(f"    {body}")
-        if margin_count.get(sym, 0) > 0:
-            total += 1
-            status, body = bitget_private(
-                "POST", "/api/v3/trade/cancel-symbol-order", api_key, api_secret, passphrase,
-                body={"category": "MARGIN", "symbol": sym},
-            )
-            ok_ret, brief = bitget_ok(body)
-            ok = (200 <= status < 300) and ok_ret
-            print(f"  [{'OK' if ok else 'ERR'}] margin cancel {sym} status={status} {brief}")
+            print(f"  [{'OK' if ok else 'ERR'}] {label} cancel {sym} status={status} {brief}")
             if not ok:
                 failures += 1
                 print(f"    {body}")
