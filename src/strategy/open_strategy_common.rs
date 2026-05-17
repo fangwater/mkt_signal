@@ -35,6 +35,27 @@ pub struct QueryWatchdog {
     pub reason: PendingOrderQueryReason,
 }
 
+fn should_promote_open_pending_query_reason(
+    existing: PendingOrderQueryReason,
+    incoming: PendingOrderQueryReason,
+) -> bool {
+    matches!(
+        (existing, incoming),
+        (
+            PendingOrderQueryReason::OrderWatchdog,
+            PendingOrderQueryReason::CancelWatchdog
+                | PendingOrderQueryReason::CancelFailed
+                | PendingOrderQueryReason::CancelRejected
+        ) | (
+            PendingOrderQueryReason::CancelWatchdog,
+            PendingOrderQueryReason::CancelFailed | PendingOrderQueryReason::CancelRejected
+        ) | (
+            PendingOrderQueryReason::CancelFailed,
+            PendingOrderQueryReason::CancelRejected
+        )
+    )
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct OpenOrderState {
     pub open_order_id: i64,
@@ -1704,12 +1725,50 @@ pub trait OpenStrategyCommon {
         }));
     }
 
+    fn schedule_order_query_response_watchdog(
+        &mut self,
+        client_order_id: i64,
+        reason: PendingOrderQueryReason,
+    ) {
+        self.set_order_query_watchdog(Some(QueryWatchdog {
+            client_order_id,
+            due_ts_us: get_timestamp_us().saturating_add(ORDER_QUERY_WATCHDOG_DELAY_US),
+            reason,
+        }));
+    }
+
     fn schedule_cancel_query_watchdog(&mut self, client_order_id: i64) {
         self.set_cancel_query_watchdog(Some(QueryWatchdog {
             client_order_id,
             due_ts_us: get_timestamp_us().saturating_add(ORDER_QUERY_WATCHDOG_DELAY_US),
             reason: PendingOrderQueryReason::CancelWatchdog,
         }));
+        if let Some(existing) = self.pending_order_query() {
+            let incoming = PendingOrderQueryReason::CancelWatchdog;
+            let effective_reason = if should_promote_open_pending_query_reason(existing, incoming) {
+                self.set_pending_order_query(Some(incoming));
+                incoming
+            } else {
+                existing
+            };
+            if self
+                .order_query_watchdog()
+                .is_some_and(|w| w.client_order_id == client_order_id)
+            {
+                let due_ts_us = self
+                    .order_query_watchdog()
+                    .map(|w| w.due_ts_us)
+                    .unwrap_or_else(get_timestamp_us);
+                self.set_order_query_watchdog(Some(QueryWatchdog {
+                    client_order_id,
+                    due_ts_us,
+                    reason: effective_reason,
+                }));
+            } else {
+                self.schedule_order_query_response_watchdog(client_order_id, effective_reason);
+            }
+            return;
+        }
         if self
             .order_query_watchdog()
             .is_some_and(|w| w.client_order_id == client_order_id)
@@ -1789,10 +1848,10 @@ pub trait OpenStrategyCommon {
         if self.pending_order_query() == Some(PendingOrderQueryReason::OrderWatchdog) {
             self.set_pending_order_query(None);
         }
-        if self
-            .order_query_watchdog()
-            .is_some_and(|w| w.client_order_id == client_order_id)
-        {
+        if self.order_query_watchdog().is_some_and(|w| {
+            w.client_order_id == client_order_id
+                && w.reason == PendingOrderQueryReason::OrderWatchdog
+        }) {
             self.set_order_query_watchdog(None);
         }
     }
@@ -1867,9 +1926,35 @@ pub trait OpenStrategyCommon {
 
     fn send_order_query(&mut self, client_order_id: i64, reason: PendingOrderQueryReason) -> bool {
         if let Some(existing) = self.pending_order_query() {
-            if reason.is_cancel_rejected() && !existing.is_cancel_rejected() {
-                self.set_pending_order_query(Some(PendingOrderQueryReason::CancelRejected));
+            let promoted = should_promote_open_pending_query_reason(existing, reason);
+            let effective_reason = if promoted { reason } else { existing };
+            if promoted {
+                self.set_pending_order_query(Some(reason));
             }
+
+            if let Some(watchdog) = self.order_query_watchdog() {
+                if watchdog.client_order_id == client_order_id
+                    && watchdog.reason != effective_reason
+                {
+                    self.set_order_query_watchdog(Some(QueryWatchdog {
+                        client_order_id,
+                        due_ts_us: watchdog.due_ts_us,
+                        reason: effective_reason,
+                    }));
+                }
+            } else {
+                self.schedule_order_query_response_watchdog(client_order_id, effective_reason);
+            }
+            debug!(
+                "{}: strategy_id={} skip order query because pending query exists: client_order_id={} existing={:?} incoming={:?} promoted={} effective={:?}",
+                self.strategy_name(),
+                self.strategy_id(),
+                client_order_id,
+                existing,
+                reason,
+                promoted,
+                effective_reason
+            );
             return true;
         }
 
@@ -1915,6 +2000,7 @@ pub trait OpenStrategyCommon {
                     return false;
                 }
                 self.set_pending_order_query(Some(reason));
+                self.schedule_order_query_response_watchdog(client_order_id, reason);
                 debug!(
                     "{}: strategy_id={} order query sent: exchange={} client_order_id={} reason={:?}",
                     self.strategy_name(),
@@ -1974,6 +2060,21 @@ pub trait OpenStrategyCommon {
         if let Some(w) = self.order_query_watchdog() {
             if now >= w.due_ts_us {
                 self.set_order_query_watchdog(None);
+                if self.pending_order_query().is_some() {
+                    self.set_pending_order_query(None);
+                    warn!(
+                        "{}: strategy_id={} order query response timeout, handoff to orphan client_order_id={} reason={:?}",
+                        self.strategy_name(),
+                        self.strategy_id(),
+                        w.client_order_id,
+                        w.reason
+                    );
+                    self.handoff_open_order_after_query_failure(
+                        w.client_order_id,
+                        "query response timeout",
+                    );
+                    return;
+                }
                 let order_mgr = MonitorChannel::instance().order_manager();
                 let order_opt = order_mgr.borrow().get(w.client_order_id);
                 if let Some(order) = order_opt.as_ref().filter(|o| !o.status.is_terminal()) {
@@ -2007,5 +2108,160 @@ pub trait OpenStrategyCommon {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        should_promote_open_pending_query_reason, OpenStrategyCommon, OpenStrategyState,
+        PendingOrderQueryReason, QueryWatchdog,
+    };
+    use crate::pre_trade::open_order_rate_limiter::OrderRateBucket;
+    use crate::signal::common::TradingVenue;
+    use crate::strategy::manager::OrphanStrategyRole;
+
+    struct TestOpenStrategy {
+        state: OpenStrategyState,
+        handoffs: Vec<(i64, &'static str)>,
+    }
+
+    impl TestOpenStrategy {
+        fn new(strategy_id: i32) -> Self {
+            Self {
+                state: OpenStrategyState::new(strategy_id),
+                handoffs: Vec::new(),
+            }
+        }
+    }
+
+    impl OpenStrategyCommon for TestOpenStrategy {
+        fn strategy_name(&self) -> &'static str {
+            "TestOpenStrategy"
+        }
+
+        fn open_state(&self) -> &OpenStrategyState {
+            &self.state
+        }
+
+        fn open_state_mut(&mut self) -> &mut OpenStrategyState {
+            &mut self.state
+        }
+
+        fn handoff_open_order_after_query_failure(
+            &mut self,
+            client_order_id: i64,
+            marker: &'static str,
+        ) {
+            self.handoffs.push((client_order_id, marker));
+        }
+
+        fn orphan_strategy_role(&self) -> OrphanStrategyRole {
+            OrphanStrategyRole::Arb
+        }
+
+        fn open_order_rate_bucket(&self) -> OrderRateBucket {
+            OrderRateBucket::ArbOpen
+        }
+
+        fn open_order_action_log_name(&self) -> &'static str {
+            "test open"
+        }
+
+        fn resolve_open_qty_multiplier(
+            &self,
+            _venue: TradingVenue,
+            _symbol: &str,
+        ) -> Result<f64, String> {
+            Ok(1.0)
+        }
+    }
+
+    #[test]
+    fn open_pending_query_reason_promotes_cancel_reconcile() {
+        assert!(should_promote_open_pending_query_reason(
+            PendingOrderQueryReason::OrderWatchdog,
+            PendingOrderQueryReason::CancelWatchdog
+        ));
+        assert!(should_promote_open_pending_query_reason(
+            PendingOrderQueryReason::OrderWatchdog,
+            PendingOrderQueryReason::CancelRejected
+        ));
+        assert!(should_promote_open_pending_query_reason(
+            PendingOrderQueryReason::CancelWatchdog,
+            PendingOrderQueryReason::CancelRejected
+        ));
+        assert!(!should_promote_open_pending_query_reason(
+            PendingOrderQueryReason::CancelRejected,
+            PendingOrderQueryReason::OrderWatchdog
+        ));
+    }
+
+    #[test]
+    fn send_order_query_with_existing_pending_schedules_response_timeout() {
+        let client_order_id = (7_i64 << 32) | 1;
+        let mut strategy = TestOpenStrategy::new(7);
+        strategy.state.order.open_order_id = client_order_id;
+        strategy.state.order.pending_order_query = Some(PendingOrderQueryReason::OrderWatchdog);
+
+        assert!(strategy.send_order_query(client_order_id, PendingOrderQueryReason::CancelWatchdog));
+
+        assert_eq!(
+            strategy.state.order.pending_order_query,
+            Some(PendingOrderQueryReason::CancelWatchdog)
+        );
+        let watchdog = strategy.state.order.order_query_watchdog.unwrap();
+        assert_eq!(watchdog.client_order_id, client_order_id);
+        assert_eq!(watchdog.reason, PendingOrderQueryReason::CancelWatchdog);
+    }
+
+    #[test]
+    fn pending_order_query_response_timeout_handoffs_to_orphan() {
+        let client_order_id = (7_i64 << 32) | 1;
+        let mut strategy = TestOpenStrategy::new(7);
+        strategy.state.order.open_order_id = client_order_id;
+        strategy.state.order.pending_order_query = Some(PendingOrderQueryReason::OrderWatchdog);
+        strategy.state.order.order_query_watchdog = Some(QueryWatchdog {
+            client_order_id,
+            due_ts_us: 0,
+            reason: PendingOrderQueryReason::OrderWatchdog,
+        });
+
+        strategy.handle_query_watchdogs();
+
+        assert_eq!(
+            strategy.handoffs,
+            vec![(client_order_id, "query response timeout")]
+        );
+        assert!(strategy.state.order.pending_order_query.is_none());
+        assert!(strategy.state.order.order_query_watchdog.is_none());
+    }
+
+    #[test]
+    fn live_update_preserves_cancel_query_watchdog() {
+        let client_order_id = (7_i64 << 32) | 1;
+        let mut strategy = TestOpenStrategy::new(7);
+        strategy.state.order.open_order_id = client_order_id;
+        strategy.state.order.pending_order_query = Some(PendingOrderQueryReason::CancelWatchdog);
+        strategy.state.order.order_query_watchdog = Some(QueryWatchdog {
+            client_order_id,
+            due_ts_us: 123,
+            reason: PendingOrderQueryReason::CancelWatchdog,
+        });
+
+        strategy.clear_live_order_query_state(client_order_id);
+
+        assert_eq!(
+            strategy.state.order.pending_order_query,
+            Some(PendingOrderQueryReason::CancelWatchdog)
+        );
+        assert_eq!(
+            strategy.state.order.order_query_watchdog,
+            Some(QueryWatchdog {
+                client_order_id,
+                due_ts_us: 123,
+                reason: PendingOrderQueryReason::CancelWatchdog,
+            })
+        );
     }
 }
