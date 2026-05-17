@@ -48,7 +48,7 @@ const BYBIT_DERIVATIVES_SERVICE: &str = "bridge/bybit-futures/derivatives";
 const BITGET_DERIVATIVES_SERVICE: &str = "bridge/bitget-futures/derivatives";
 const GATE_DERIVATIVES_SERVICE: &str = "bridge/gate-futures/derivatives";
 const DEFAULT_NODE_PRE_TRADE_DERIVATIVES: &str = "pre_trade_derivatives";
-const ARB_STARTUP_NET_EXPOSURE_PANIC_USDT: f64 = 500.0;
+const ARB_STARTUP_NET_EXPOSURE_WARN_USDT: f64 = 500.0;
 
 // ==================== Helper Functions ====================
 
@@ -470,21 +470,21 @@ impl MonitorChannel {
                 .filter(|price| price.is_finite() && *price > 0.0)
                 .unwrap_or(0.0);
             if price <= 0.0 {
-                panic!(
-                    "Arb startup stable net check failed: symbol={} asset={} open_qty={:.8} hedge_qty={:.8} net_qty={:.8} missing mark price, threshold_usdt={:.2} ready_ts={}",
+                warn!(
+                    "Arb startup stable net check skipped: symbol={} asset={} open_qty={:.8} hedge_qty={:.8} net_qty={:.8} missing mark price, threshold_usdt={:.2} ready_ts={}",
                     symbol,
                     asset,
                     open_qty,
                     hedge_qty,
                     net_qty,
-                    ARB_STARTUP_NET_EXPOSURE_PANIC_USDT,
+                    ARB_STARTUP_NET_EXPOSURE_WARN_USDT,
                     ready_ts
                 );
             }
             let exposure_usdt = net_qty.abs() * price;
-            if exposure_usdt > ARB_STARTUP_NET_EXPOSURE_PANIC_USDT {
-                panic!(
-                    "Arb startup stable net exposure too large: symbol={} asset={} open_qty={:.8} hedge_qty={:.8} net_qty={:.8} price={:.8} exposure_usdt={:.8} threshold_usdt={:.2} ready_ts={}",
+            if exposure_usdt > ARB_STARTUP_NET_EXPOSURE_WARN_USDT {
+                warn!(
+                    "Arb startup stable net exposure too large; startup continues: symbol={} asset={} open_qty={:.8} hedge_qty={:.8} net_qty={:.8} price={:.8} exposure_usdt={:.8} threshold_usdt={:.2} ready_ts={}",
                     symbol,
                     asset,
                     open_qty,
@@ -492,9 +492,11 @@ impl MonitorChannel {
                     net_qty,
                     price,
                     exposure_usdt,
-                    ARB_STARTUP_NET_EXPOSURE_PANIC_USDT,
+                    ARB_STARTUP_NET_EXPOSURE_WARN_USDT,
                     ready_ts
                 );
+                checked += 1;
+                continue;
             }
             checked += 1;
             info!(
@@ -506,7 +508,7 @@ impl MonitorChannel {
                 net_qty,
                 price,
                 exposure_usdt,
-                ARB_STARTUP_NET_EXPOSURE_PANIC_USDT,
+                ARB_STARTUP_NET_EXPOSURE_WARN_USDT,
                 ready_ts
             );
         }
@@ -3350,14 +3352,20 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Arb startup stable net exposure too large")]
-    fn arb_startup_net_gate_panics_when_net_exposure_over_500u() {
-        install_binance_arb_hedge_exposure_fixture(6.0, 0.0, true);
+    fn arb_startup_net_gate_warns_and_releases_when_net_exposure_over_500u() {
+        let strategy_mgr = install_binance_arb_hedge_exposure_fixture(6.0, 0.0, true);
 
         MonitorChannel::instance()
             .mark_arb_startup_net_seen_for_venue(TradingVenue::BinanceMargin, "test-open");
         MonitorChannel::instance()
             .mark_arb_startup_net_seen_for_venue(TradingVenue::BinanceFutures, "test-hedge");
+
+        assert!(
+            MonitorChannel::instance()
+                .arb_startup_net_gate_status()
+                .ready
+        );
+        assert_eq!(strategy_mgr.borrow().len(), 0);
     }
 
     #[test]

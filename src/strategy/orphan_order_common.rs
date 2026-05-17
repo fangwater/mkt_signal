@@ -3,10 +3,11 @@ use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus};
 use crate::pre_trade::{QueryEngHub, TradeEngHub};
-use crate::signal::common::{ExecutionType, OrderStatus};
+use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 use crate::strategy::manager::OrphanSourceKind;
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::order_update::OrderUpdate;
+use crate::strategy::query_order_updates::OrderQueryOrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
@@ -16,6 +17,8 @@ use log::{info, warn};
 use std::collections::{HashMap, HashSet};
 
 pub(crate) const ORPHAN_QUERY_LOG_THRESHOLD: u8 = 25;
+pub(crate) const COMMIT_QUERY_MAX_ATTEMPTS: u8 = 3;
+pub(crate) const COMMIT_QUERY_BASE_TICKS: u32 = 25;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct OrphanOrderOwner {
@@ -133,6 +136,30 @@ impl OrphanOrderTracker {
         self.query_states
             .get(&client_order_id)
             .map(|state| state.query_count)
+    }
+
+    fn commit_query_due_now(&mut self, client_order_id: i64) -> Option<CommitQueryAction> {
+        let Some(query_state) = self.query_states.get_mut(&client_order_id) else {
+            return None;
+        };
+        if query_state.query_count == 0 {
+            query_state.ticks_until_next_query = query_state
+                .ticks_until_next_query
+                .min(COMMIT_QUERY_BASE_TICKS);
+        }
+        if query_state.ticks_until_next_query > 0 {
+            query_state.ticks_until_next_query -= 1;
+            return None;
+        }
+        if query_state.query_count >= COMMIT_QUERY_MAX_ATTEMPTS {
+            return Some(CommitQueryAction::Close);
+        }
+
+        query_state.query_count = query_state.query_count.saturating_add(1);
+        query_state.ticks_until_next_query = COMMIT_QUERY_BASE_TICKS;
+        Some(CommitQueryAction::Query {
+            query_count: query_state.query_count,
+        })
     }
 
     pub fn log_orders_over_query_threshold(&self, strategy_role: &str, strategy_id: i32) {
@@ -665,6 +692,27 @@ impl OrphanOrderTracker {
                 continue;
             }
 
+            if order.status == OrderExecutionStatus::Commit {
+                drop(order);
+                match self.commit_query_due_now(client_order_id) {
+                    Some(CommitQueryAction::Query { query_count }) => {
+                        let _ = self.send_order_query(strategy_role, strategy_id, client_order_id);
+                        if query_count > ORPHAN_QUERY_LOG_THRESHOLD {
+                            self.log_orders_over_query_threshold(strategy_role, strategy_id);
+                        }
+                    }
+                    Some(CommitQueryAction::Close) => {
+                        self.close_commit_order_after_query_budget(
+                            strategy_role,
+                            strategy_id,
+                            client_order_id,
+                        );
+                    }
+                    None => {}
+                }
+                continue;
+            }
+
             drop(order);
             if self.query_due_now(client_order_id) {
                 let query_count = self.query_count(client_order_id).unwrap_or_default();
@@ -685,6 +733,51 @@ impl OrphanOrderTracker {
             });
     }
 
+    fn close_commit_order_after_query_budget(
+        &mut self,
+        strategy_role: &str,
+        strategy_id: i32,
+        client_order_id: i64,
+    ) {
+        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
+            self.forget_order_id(
+                strategy_role,
+                strategy_id,
+                client_order_id,
+                "commit query budget exhausted without order manager",
+            );
+            return;
+        };
+        let Some(order) = order_mgr.borrow().get(client_order_id) else {
+            self.forget_order_id(
+                strategy_role,
+                strategy_id,
+                client_order_id,
+                "commit query budget exhausted missing local order",
+            );
+            return;
+        };
+        if order.status != OrderExecutionStatus::Commit {
+            return;
+        }
+
+        let query_count = self.query_count(client_order_id).unwrap_or_default();
+        warn!(
+            "{}: strategy_id={} commit order query budget exhausted; closing local orphan client_order_id={} symbol={} venue={:?} query_count={}",
+            strategy_role, strategy_id, client_order_id, order.symbol, order.venue, query_count
+        );
+        let update = OrderQueryOrderUpdate::new(
+            &order,
+            order.exchange_order_id.unwrap_or(order.client_order_id),
+            get_timestamp_us(),
+            OrderStatus::Expired,
+            ExecutionType::Rejected,
+            order.cumulative_filled_quantity,
+            infer_query_time_in_force(&order),
+        );
+        let _ = self.apply_order_update(strategy_role, strategy_id, &update);
+    }
+
     fn next_query_ticks(query_base_ticks: u32, query_max_ticks: u32, query_count: u8) -> u32 {
         let multiplier = 1_u32
             .checked_shl(query_count.min(31) as u32)
@@ -692,6 +785,29 @@ impl OrphanOrderTracker {
         query_base_ticks
             .saturating_mul(multiplier)
             .min(query_max_ticks)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommitQueryAction {
+    Query { query_count: u8 },
+    Close,
+}
+
+pub(crate) fn infer_query_time_in_force(order: &Order) -> TimeInForce {
+    if !order.order_type.is_limit() {
+        return TimeInForce::GTC;
+    }
+    match order.venue {
+        TradingVenue::BinanceFutures
+        | TradingVenue::BybitMargin
+        | TradingVenue::BybitFutures
+        | TradingVenue::OkexMargin
+        | TradingVenue::OkexFutures
+        | TradingVenue::GateMargin
+        | TradingVenue::GateFutures
+        | TradingVenue::BitgetFutures => TimeInForce::GTX,
+        _ => TimeInForce::GTC,
     }
 }
 
@@ -773,7 +889,10 @@ fn normalize_epoch_to_us(ts: i64) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::format_orphan_query_table;
+    use super::{
+        format_orphan_query_table, CommitQueryAction, OrphanOrderTracker, COMMIT_QUERY_BASE_TICKS,
+        COMMIT_QUERY_MAX_ATTEMPTS,
+    };
 
     #[test]
     fn orphan_query_table_uses_three_lines() {
@@ -791,5 +910,52 @@ mod tests {
         assert!(lines[5].chars().all(|c| c == '-' || c == ' '));
         assert!(lines[1].contains("id"));
         assert!(lines[1].contains("time_utc"));
+    }
+
+    #[test]
+    fn commit_query_budget_closes_after_three_short_queries() {
+        let client_order_id = 42;
+        let mut tracker =
+            OrphanOrderTracker::new(COMMIT_QUERY_BASE_TICKS, COMMIT_QUERY_BASE_TICKS, 3_200);
+        tracker.track_order_id(client_order_id);
+
+        for expected_query_count in 1..=COMMIT_QUERY_MAX_ATTEMPTS {
+            for _ in 0..COMMIT_QUERY_BASE_TICKS {
+                assert_eq!(tracker.commit_query_due_now(client_order_id), None);
+            }
+            assert_eq!(
+                tracker.commit_query_due_now(client_order_id),
+                Some(CommitQueryAction::Query {
+                    query_count: expected_query_count
+                })
+            );
+        }
+
+        for _ in 0..COMMIT_QUERY_BASE_TICKS {
+            assert_eq!(tracker.commit_query_due_now(client_order_id), None);
+        }
+        assert_eq!(
+            tracker.commit_query_due_now(client_order_id),
+            Some(CommitQueryAction::Close)
+        );
+    }
+
+    #[test]
+    fn non_commit_query_uses_exponential_backoff() {
+        let client_order_id = 7;
+        let mut tracker = OrphanOrderTracker::new(25, 25, 3_200);
+        tracker.track_order_id(client_order_id);
+
+        for _ in 0..25 {
+            assert!(!tracker.query_due_now(client_order_id));
+        }
+        assert!(tracker.query_due_now(client_order_id));
+        assert_eq!(tracker.query_count(client_order_id), Some(1));
+
+        for _ in 0..50 {
+            assert!(!tracker.query_due_now(client_order_id));
+        }
+        assert!(tracker.query_due_now(client_order_id));
+        assert_eq!(tracker.query_count(client_order_id), Some(2));
     }
 }

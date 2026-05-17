@@ -9,8 +9,10 @@ use crate::strategy::manager::{OrphanHandoff, OrphanSourceKind, Strategy};
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::orphan_order_common::{
-    format_orphan_query_table, order_query_time_utc, ORPHAN_QUERY_LOG_THRESHOLD,
+    format_orphan_query_table, infer_query_time_in_force, order_query_time_utc,
+    COMMIT_QUERY_BASE_TICKS, COMMIT_QUERY_MAX_ATTEMPTS, ORPHAN_QUERY_LOG_THRESHOLD,
 };
+use crate::strategy::query_order_updates::OrderQueryOrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
@@ -71,6 +73,30 @@ impl HedgeOrphanOrderStrategy {
         HEDGE_ORPHAN_QUERY_BASE_TICKS
             .saturating_mul(multiplier)
             .min(HEDGE_ORPHAN_QUERY_MAX_TICKS)
+    }
+
+    fn commit_query_due_now(&mut self, client_order_id: i64) -> Option<CommitQueryAction> {
+        let Some(query_state) = self.query_states.get_mut(&client_order_id) else {
+            return None;
+        };
+        if query_state.query_count == 0 {
+            query_state.ticks_until_next_query = query_state
+                .ticks_until_next_query
+                .min(COMMIT_QUERY_BASE_TICKS);
+        }
+        if query_state.ticks_until_next_query > 0 {
+            query_state.ticks_until_next_query -= 1;
+            return None;
+        }
+        if query_state.query_count >= COMMIT_QUERY_MAX_ATTEMPTS {
+            return Some(CommitQueryAction::Close);
+        }
+
+        query_state.query_count = query_state.query_count.saturating_add(1);
+        query_state.ticks_until_next_query = COMMIT_QUERY_BASE_TICKS;
+        Some(CommitQueryAction::Query {
+            query_count: query_state.query_count,
+        })
     }
 
     fn ensure_query_state(&mut self, client_order_id: i64) {
@@ -303,6 +329,46 @@ impl HedgeOrphanOrderStrategy {
         }
     }
 
+    fn close_commit_order_after_query_budget(&mut self, client_order_id: i64) {
+        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
+            self.forget_order_id(
+                client_order_id,
+                "commit query budget exhausted without order manager",
+            );
+            return;
+        };
+        let Some(order) = order_mgr.borrow().get(client_order_id) else {
+            self.forget_order_id(
+                client_order_id,
+                "commit query budget exhausted missing local order",
+            );
+            return;
+        };
+        if order.status != OrderExecutionStatus::Commit {
+            return;
+        }
+
+        let query_count = self
+            .query_states
+            .get(&client_order_id)
+            .map(|state| state.query_count)
+            .unwrap_or_default();
+        warn!(
+            "HedgeOrphanOrderStrategy: strategy_role=hedge_orphan strategy_id={} commit order query budget exhausted; closing local orphan client_order_id={} symbol={} venue={:?} query_count={}",
+            self.strategy_id, client_order_id, order.symbol, order.venue, query_count
+        );
+        let update = OrderQueryOrderUpdate::new(
+            &order,
+            order.exchange_order_id.unwrap_or(order.client_order_id),
+            get_timestamp_us(),
+            OrderStatus::Expired,
+            ExecutionType::Rejected,
+            order.cumulative_filled_quantity,
+            infer_query_time_in_force(&order),
+        );
+        self.apply_order_update(&update);
+    }
+
     fn log_orders_over_query_threshold(&self) {
         let Some(order_mgr) = MonitorChannel::try_order_manager() else {
             return;
@@ -330,6 +396,12 @@ impl HedgeOrphanOrderStrategy {
             format_orphan_query_table(&rows)
         );
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommitQueryAction {
+    Query { query_count: u8 },
+    Close,
 }
 
 impl Strategy for HedgeOrphanOrderStrategy {
@@ -595,6 +667,21 @@ impl Strategy for HedgeOrphanOrderStrategy {
                     get_timestamp_us(),
                     "terminal local order on period clock",
                 );
+                continue;
+            }
+            if order.status == OrderExecutionStatus::Commit {
+                match self.commit_query_due_now(client_order_id) {
+                    Some(CommitQueryAction::Query { query_count }) => {
+                        let _ = self.send_order_query(client_order_id);
+                        if query_count > ORPHAN_QUERY_LOG_THRESHOLD {
+                            self.log_orders_over_query_threshold();
+                        }
+                    }
+                    Some(CommitQueryAction::Close) => {
+                        self.close_commit_order_after_query_budget(client_order_id);
+                    }
+                    None => {}
+                }
                 continue;
             }
 
