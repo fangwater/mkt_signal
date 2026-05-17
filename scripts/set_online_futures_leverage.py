@@ -618,7 +618,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--open-venue", default="", help="Override open venue for FR key suffix.")
     parser.add_argument("--hedge-venue", default="", help="Override hedge venue for FR key suffix.")
     parser.add_argument("--symbol", action="append", default=[], help="Optional asset/symbol CSV filter; skips Redis loading.")
-    parser.add_argument("--leverage", type=int, choices=[5, 10], default=5, help="Target leverage. Only 5 or 10 allowed.")
+    parser.add_argument("--leverage", type=int, choices=[3, 4, 5, 10], default=5, help="Target leverage. Only 3, 4, 5, or 10 allowed.")
     parser.add_argument(
         "--binance-mode",
         choices=["auto", "pm", "std"],

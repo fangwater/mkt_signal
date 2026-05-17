@@ -42,6 +42,20 @@ pub const DEFAULT_SIGNAL_CHANNEL: &str = "trade_signal";
 /// 默认反向信号频道名称
 pub const DEFAULT_BACKWARD_CHANNEL: &str = "trade_query";
 
+const ARB_CLOSE_MIN_NOTIONAL_U: f64 = 25.0;
+
+fn arb_close_side_matches_open_position(close_side: Side, opening_pos: f64) -> bool {
+    match close_side {
+        Side::Sell => opening_pos > 0.0,
+        Side::Buy => opening_pos < 0.0,
+    }
+}
+
+fn arb_close_notional_meets_min(ctx: &ArbOpenCtx) -> bool {
+    let notional = ctx.amount_value() * ctx.price_value();
+    notional.is_finite() && notional >= ARB_CLOSE_MIN_NOTIONAL_U
+}
+
 fn should_drop_startup_buffered_signal(signal: &TradeSignal, listener_start_us: i64) -> bool {
     signal.generation_time > 0 && signal.generation_time < listener_start_us
 }
@@ -505,6 +519,12 @@ fn handle_trade_signal(signal: TradeSignal) {
                         MonitorChannel::instance().get_position_qty(&opening_symbol, opening_venue);
                     let hedging_pos =
                         MonitorChannel::instance().get_position_qty(&hedging_symbol, hedging_venue);
+                    if !arb_close_side_matches_open_position(close_side, opening_pos) {
+                        return;
+                    }
+                    if !arb_close_notional_meets_min(&close_ctx) {
+                        return;
+                    }
                     let strategy_mgr = MonitorChannel::instance().strategy_mgr();
 
                     let normalized_signal = TradeSignal::create(

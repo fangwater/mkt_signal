@@ -22,6 +22,7 @@ use crate::pre_trade::order_manager::Side;
 use crate::signal::arb_signal::{ArbBackwardQueryMsg, ArbCancelCandidateQueryMsg};
 use crate::signal::common::{SignalBytes, TradingLeg, TradingVenue};
 use crate::signal::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
+use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
 use crate::strategy::inventory_hedge_quote_plan::{
@@ -56,9 +57,15 @@ pub const DEFAULT_ENV_MODEL_TRUE_THRESHOLD: f64 = 0.0;
 const TARGET_FACTOR_MAX_AGE_MS: i64 = 30_000;
 const FUNDING_ARB_SHELL_NAME: &str = "ArbDecision(FundingArb)";
 const SPREAD_ARB_SHELL_NAME: &str = "ArbDecision(SpreadArb)";
+const ARB_CLOSE_MIN_NOTIONAL_U: f64 = 25.0;
 // Arb hedge 是 open terminal 触发的高频对冲闭环，不走 MM hedge 的多档拆单模型；
 // 单轮只出一笔，剩余 pending 会由后续触发继续滚动处理。
 const ARB_HEDGE_ORDERS_PER_ROUND: u32 = 1;
+
+fn arb_close_notional_meets_min(ctx: &ArbOpenCtx) -> bool {
+    let notional = ctx.amount_value() * ctx.price_value();
+    notional.is_finite() && notional >= ARB_CLOSE_MIN_NOTIONAL_U
+}
 
 fn is_corrupted_service_err(err_text: &str) -> bool {
     err_text.contains("ServiceInCorruptedState")
@@ -1330,7 +1337,7 @@ fn drive_spread_arb_decision(
             let _ = ArbDecision::with_state_mut(|arb| {
                 arb.record_intercept_summary("spread_close");
             });
-            emit_spread_arb_close_signals(
+            let emit_allowed = emit_spread_arb_close_signals(
                 decision,
                 open_symbol_key.as_str(),
                 hedge_symbol_key.as_str(),
@@ -1338,6 +1345,9 @@ fn drive_spread_arb_decision(
                 hedge_venue,
                 close_gate.side,
             )?;
+            if !emit_allowed {
+                return Ok(None);
+            }
             let _ = ArbDecision::with_state_mut(|arb| {
                 arb.mark_close_triggered(close_gate.key, now);
             });
@@ -2580,11 +2590,11 @@ fn emit_spread_arb_close_signals(
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
     side: Side,
-) -> Result<()> {
+) -> Result<bool> {
     let (open_quote, hedge_quote) =
         match ArbDecision::load_valid_quotes(open_symbol, hedge_symbol, open_venue, hedge_venue) {
             Some(quotes) => quotes,
-            None => return Ok(()),
+            None => return Ok(false),
         };
     let batch_ts = get_timestamp_us();
     let spread_rate = super::common::compute_spread_rate(&open_quote, &hedge_quote);
@@ -2663,7 +2673,7 @@ fn emit_spread_arb_close_signals(
                 "{SPREAD_ARB_SHELL_NAME}: build close quote plan failed open={} hedge={} side={:?} err={}",
                 open_symbol, hedge_symbol, side, err
             );
-            return Ok(());
+            return Ok(false);
         }
     };
 
@@ -2721,7 +2731,11 @@ fn emit_spread_arb_close_signals(
             );
         }
     }
-    let planned_levels = plan.levels.len();
+    contexts.retain(arb_close_notional_meets_min);
+    if contexts.is_empty() {
+        return Ok(false);
+    }
+    let planned_levels = contexts.len();
     let sent = super::arb_emit::emit_levels_as_signals(
         &decision.runtime.signal_pub,
         SignalType::ArbClose,
@@ -2745,7 +2759,7 @@ fn emit_spread_arb_close_signals(
         plan.price_tick,
         plan.qty_tick
     );
-    Ok(())
+    Ok(sent > 0)
 }
 
 fn emit_funding_open_close_signals(
@@ -3011,7 +3025,17 @@ fn emit_funding_open_close_signals(
             );
         }
     }
-    let planned_levels = plan.levels.len();
+    if matches!(signal_type, SignalType::ArbClose) {
+        contexts.retain(arb_close_notional_meets_min);
+        if contexts.is_empty() {
+            return Ok(false);
+        }
+    }
+    let planned_levels = if matches!(signal_type, SignalType::ArbClose) {
+        contexts.len()
+    } else {
+        plan.levels.len()
+    };
     let sent = super::arb_emit::emit_levels_as_signals(
         &decision.runtime.signal_pub,
         signal_type.clone(),
