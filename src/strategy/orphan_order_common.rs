@@ -19,6 +19,23 @@ use std::collections::{HashMap, HashSet};
 pub(crate) const ORPHAN_QUERY_LOG_THRESHOLD: u8 = 25;
 pub(crate) const COMMIT_QUERY_MAX_ATTEMPTS: u8 = 3;
 pub(crate) const COMMIT_QUERY_BASE_TICKS: u32 = 25;
+pub(crate) const BINANCE_PM_ORPHAN_INITIAL_QUERY_TICKS: u32 = 100;
+
+pub(crate) fn orphan_initial_query_ticks_for(
+    venue: TradingVenue,
+    binance_is_standard: bool,
+    default_ticks: u32,
+) -> u32 {
+    if matches!(
+        venue,
+        TradingVenue::BinanceMargin | TradingVenue::BinanceFutures
+    ) && !binance_is_standard
+    {
+        BINANCE_PM_ORPHAN_INITIAL_QUERY_TICKS
+    } else {
+        default_ticks
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct OrphanOrderOwner {
@@ -78,6 +95,21 @@ impl OrphanOrderTracker {
         self.order_owners
             .get(&client_order_id)
             .map(|owner| owner.uniform_ctx.clone())
+    }
+
+    fn initial_query_ticks_for_order(&self, client_order_id: i64) -> u32 {
+        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
+            return self.initial_query_ticks;
+        };
+        let mgr = order_mgr.borrow();
+        let Some(order) = mgr.get(client_order_id) else {
+            return self.initial_query_ticks;
+        };
+        orphan_initial_query_ticks_for(
+            order.venue,
+            mgr.binance_is_standard(),
+            self.initial_query_ticks,
+        )
     }
 
     fn track_order_id(&mut self, client_order_id: i64) {
@@ -725,11 +757,12 @@ impl OrphanOrderTracker {
     }
 
     fn ensure_query_state(&mut self, client_order_id: i64) {
+        let initial_query_ticks = self.initial_query_ticks_for_order(client_order_id);
         self.query_states
             .entry(client_order_id)
             .or_insert_with(|| OrphanQueryState {
                 query_count: 0,
-                ticks_until_next_query: self.initial_query_ticks,
+                ticks_until_next_query: initial_query_ticks,
             });
     }
 
@@ -890,9 +923,11 @@ fn normalize_epoch_to_us(ts: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_orphan_query_table, CommitQueryAction, OrphanOrderTracker, COMMIT_QUERY_BASE_TICKS,
+        format_orphan_query_table, orphan_initial_query_ticks_for, CommitQueryAction,
+        OrphanOrderTracker, BINANCE_PM_ORPHAN_INITIAL_QUERY_TICKS, COMMIT_QUERY_BASE_TICKS,
         COMMIT_QUERY_MAX_ATTEMPTS,
     };
+    use crate::signal::common::TradingVenue;
 
     #[test]
     fn orphan_query_table_uses_three_lines() {
@@ -957,5 +992,25 @@ mod tests {
         }
         assert!(tracker.query_due_now(client_order_id));
         assert_eq!(tracker.query_count(client_order_id), Some(2));
+    }
+
+    #[test]
+    fn binance_pm_orphan_initial_query_starts_at_two_seconds() {
+        assert_eq!(
+            orphan_initial_query_ticks_for(TradingVenue::BinanceFutures, false, 25),
+            BINANCE_PM_ORPHAN_INITIAL_QUERY_TICKS
+        );
+        assert_eq!(
+            orphan_initial_query_ticks_for(TradingVenue::BinanceMargin, false, 25),
+            BINANCE_PM_ORPHAN_INITIAL_QUERY_TICKS
+        );
+        assert_eq!(
+            orphan_initial_query_ticks_for(TradingVenue::BinanceFutures, true, 25),
+            25
+        );
+        assert_eq!(
+            orphan_initial_query_ticks_for(TradingVenue::GateFutures, false, 25),
+            25
+        );
     }
 }

@@ -10,7 +10,8 @@ use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::orphan_order_common::{
     format_orphan_query_table, infer_query_time_in_force, order_query_time_utc,
-    COMMIT_QUERY_BASE_TICKS, COMMIT_QUERY_MAX_ATTEMPTS, ORPHAN_QUERY_LOG_THRESHOLD,
+    orphan_initial_query_ticks_for, COMMIT_QUERY_BASE_TICKS, COMMIT_QUERY_MAX_ATTEMPTS,
+    ORPHAN_QUERY_LOG_THRESHOLD,
 };
 use crate::strategy::query_order_updates::OrderQueryOrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
@@ -66,6 +67,25 @@ impl HedgeOrphanOrderStrategy {
         }
     }
 
+    fn initial_query_state_for_order(client_order_id: i64) -> HedgeOrphanQueryState {
+        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
+            return Self::initial_query_state();
+        };
+        let mgr = order_mgr.borrow();
+        let Some(order) = mgr.get(client_order_id) else {
+            return Self::initial_query_state();
+        };
+        let ticks_until_next_query = orphan_initial_query_ticks_for(
+            order.venue,
+            mgr.binance_is_standard(),
+            HEDGE_ORPHAN_QUERY_BASE_TICKS,
+        );
+        HedgeOrphanQueryState {
+            query_count: 0,
+            ticks_until_next_query,
+        }
+    }
+
     fn next_query_ticks(query_count: u8) -> u32 {
         let multiplier = 1_u32
             .checked_shl(query_count.min(31) as u32)
@@ -102,7 +122,7 @@ impl HedgeOrphanOrderStrategy {
     fn ensure_query_state(&mut self, client_order_id: i64) {
         self.query_states
             .entry(client_order_id)
-            .or_insert_with(Self::initial_query_state);
+            .or_insert_with(|| Self::initial_query_state_for_order(client_order_id));
     }
 
     fn track_order_id(&mut self, client_order_id: i64) {
