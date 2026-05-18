@@ -8,6 +8,8 @@ use log::{debug, warn};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
+const MAX_TRADE_RESP_ERROR_DETAIL_CHARS: usize = 512;
+
 // REST 请求执行后的输出（内部使用）
 #[derive(Debug, Clone)]
 pub struct TradeExecOutcome {
@@ -153,6 +155,44 @@ fn parse_error_code_and_msg(body: &str) -> (i32, Option<String>) {
     (0, None)
 }
 
+fn compact_for_log(s: &str) -> String {
+    s.trim().split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn truncate_for_log(s: &str, max_chars: usize) -> String {
+    let mut out = String::new();
+    for (idx, ch) in s.chars().enumerate() {
+        if idx >= max_chars {
+            out.push_str("...");
+            return out;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn trade_error_detail_for_log(msg: Option<&str>, body: &str) -> Option<String> {
+    if let Some(msg) = msg {
+        let msg = compact_for_log(msg);
+        if !msg.is_empty() {
+            return Some(format!(
+                "msg={}",
+                truncate_for_log(&msg, MAX_TRADE_RESP_ERROR_DETAIL_CHARS)
+            ));
+        }
+    }
+
+    let body = compact_for_log(body);
+    if body.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "body={}",
+            truncate_for_log(&body, MAX_TRADE_RESP_ERROR_DETAIL_CHARS)
+        ))
+    }
+}
+
 fn normalize_trade_error(
     exchange: Exchange,
     code: i32,
@@ -226,6 +266,15 @@ mod tests {
         let (code, msg) = parse_error_code_and_msg(body);
         assert_eq!(code, -5022);
         assert_eq!(msg.as_deref(), Some("Post Only order would be filled"));
+    }
+
+    #[test]
+    fn logs_non_json_transport_error_body() {
+        let detail = trade_error_detail_for_log(None, "request error: operation timed out\n");
+        assert_eq!(
+            detail.as_deref(),
+            Some("body=request error: operation timed out")
+        );
     }
 
     #[test]
@@ -306,26 +355,27 @@ pub fn spawn_response_handle(
             let is_2xx = (200..300).contains(&(out.status as u32));
             if !is_2xx || error_code != 0 {
                 let downgrade = should_downgrade_trade_resp_error(&out, error_code);
-                if let Some(m) = msg.as_deref() {
+                let detail = trade_error_detail_for_log(msg.as_deref(), &out.body);
+                if let Some(detail) = detail.as_deref() {
                     if downgrade {
                         debug!(
-                            "trade resp benign cancel terminal: ex={:?} type={:?} cli_ord_id={} status={} code={} msg={}",
+                            "trade resp benign cancel terminal: ex={:?} type={:?} cli_ord_id={} status={} code={} {}",
                             out.exchange,
                             out.req_type,
                             out.client_order_id,
                             out.status,
                             error_code,
-                            m
+                            detail
                         );
                     } else {
                         warn!(
-                            "trade resp error: ex={:?} type={:?} cli_ord_id={} status={} code={} msg={}",
+                            "trade resp error: ex={:?} type={:?} cli_ord_id={} status={} code={} {}",
                             out.exchange,
                             out.req_type,
                             out.client_order_id,
                             out.status,
                             error_code,
-                            m
+                            detail
                         );
                     }
                 } else if downgrade {
