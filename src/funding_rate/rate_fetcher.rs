@@ -326,6 +326,7 @@ struct VenueState {
     last_not_ready_symbol: Option<String>,
     last_missing_fr: usize,
     last_missing_loan: usize,
+    runtime_missing: HashMap<String, String>,
 }
 
 /// RateFetcher 内部实现
@@ -2400,21 +2401,48 @@ impl RateFetcher {
         if !ready {
             return;
         }
+        let symbol_key = Self::normalize_symbol_for_lookup(symbol, venue);
+        let mut should_log = false;
         Self::with_inner_mut(|inner| {
             if let Some(state) = inner.venue_states.get_mut(&venue) {
-                state.initial_ready = false;
                 state.last_not_ready_reason = Some(reason.to_string());
-                state.last_not_ready_symbol = Some(symbol.to_string());
+                state.last_not_ready_symbol = Some(symbol_key.clone());
                 state.last_missing_fr = 0;
                 state.last_missing_loan = 0;
+                if state.runtime_missing.get(&symbol_key).map(String::as_str) != Some(reason) {
+                    state
+                        .runtime_missing
+                        .insert(symbol_key.clone(), reason.to_string());
+                    should_log = true;
+                }
             }
         });
-        log::error!(
-            "RateFetcher: missing data, disable signals venue={:?} symbol={} reason={}",
-            venue,
-            symbol,
-            reason
-        );
+        if should_log {
+            log::error!(
+                "RateFetcher: missing symbol data, disable symbol signals venue={:?} symbol={} reason={}",
+                venue,
+                symbol_key,
+                reason
+            );
+        }
+    }
+
+    pub fn mark_available(venue: TradingVenue, symbol: &str) {
+        let symbol_key = Self::normalize_symbol_for_lookup(symbol, venue);
+        Self::with_inner_mut(|inner| {
+            if let Some(state) = inner.venue_states.get_mut(&venue) {
+                state.runtime_missing.remove(&symbol_key);
+            }
+        });
+    }
+
+    pub fn not_ready_detail_for_symbol(venue: TradingVenue, symbol: &str) -> Option<String> {
+        let symbol_key = Self::normalize_symbol_for_lookup(symbol, venue);
+        Self::with_inner(|inner| {
+            let state = inner.venue_states.get(&venue)?;
+            let reason = state.runtime_missing.get(&symbol_key)?;
+            Some(format!("reason={} symbol={}", reason, symbol_key))
+        })
     }
 
     pub fn not_ready_detail(venue: TradingVenue) -> Option<String> {
@@ -2650,5 +2678,23 @@ mod tests {
         .unwrap();
 
         assert!(RateFetcher::parse_bitget_lending_rate(response, "BTC").is_err());
+    }
+
+    #[test]
+    fn runtime_missing_marks_symbol_without_disabling_venue() {
+        let mut state = VenueState {
+            initial_ready: true,
+            ..VenueState::default()
+        };
+
+        state
+            .runtime_missing
+            .insert("CTKUSDT".to_string(), "missing_current_fr_ma".to_string());
+
+        assert!(state.initial_ready);
+        assert_eq!(
+            state.runtime_missing.get("CTKUSDT").map(String::as_str),
+            Some("missing_current_fr_ma")
+        );
     }
 }

@@ -10,6 +10,7 @@ use log::{info, warn};
 use std::cell::{OnceCell, RefCell};
 use std::time::{Duration, Instant};
 
+use crate::funding_rate::arb_decision::funding_rate_symbol_inputs_ready;
 use crate::funding_rate::RateFetcher;
 use crate::funding_rate::{ArbDecision, ArbMode};
 use crate::signal::common::TradingVenue;
@@ -66,9 +67,9 @@ fn log_skip_not_ready(
         stats.last_hedge_symbol.push_str(hedge_symbol);
         stats.last_open_venue = Some(open_venue);
         stats.last_hedge_venue = Some(hedge_venue);
-        stats.last_detail = RateFetcher::not_ready_detail(hedge_venue).unwrap_or_else(|| {
-            "reason=unknown symbol=-".to_string()
-        });
+        stats.last_detail = RateFetcher::not_ready_detail(hedge_venue)
+            .or_else(|| RateFetcher::not_ready_detail_for_symbol(hedge_venue, hedge_symbol))
+            .unwrap_or_else(|| "reason=unknown symbol=-".to_string());
 
         if stats.last_log.elapsed() >= Duration::from_secs(10) {
             info!(
@@ -116,7 +117,8 @@ pub fn trigger_decision(
         DecisionBranch::Arb => {
             let mode = ArbDecision::mode();
             if matches!(mode, Some(ArbMode::FundingArb))
-                && !RateFetcher::is_initial_ready(hedge_venue)
+                && (!RateFetcher::is_initial_ready(hedge_venue)
+                    || !funding_rate_symbol_inputs_ready(hedge_symbol, hedge_venue))
             {
                 log_skip_not_ready(open_symbol, hedge_symbol, open_venue, hedge_venue);
             }

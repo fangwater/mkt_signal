@@ -867,6 +867,42 @@ pub fn funding_open_inputs_ready(hedge_symbol: &str, hedge_venue: TradingVenue) 
     has_predict_fr && has_predict_loan
 }
 
+pub fn funding_rate_symbol_inputs_ready(hedge_symbol: &str, hedge_venue: TradingVenue) -> bool {
+    let rate_fetcher = RateFetcher::instance();
+    let missing_reason = if rate_fetcher
+        .get_predicted_funding_rate(hedge_symbol, hedge_venue)
+        .is_none()
+    {
+        Some("missing_predict_fr")
+    } else if rate_fetcher
+        .get_predict_loan_rate(hedge_symbol, hedge_venue)
+        .is_none()
+    {
+        Some("missing_predict_loan")
+    } else if !MktChannel::is_initialized()
+        || MktChannel::instance()
+            .get_funding_rate_mean(hedge_symbol, hedge_venue)
+            .is_none()
+    {
+        Some("missing_current_fr_ma")
+    } else if rate_fetcher
+        .get_current_loan_rate(hedge_symbol, hedge_venue)
+        .is_none()
+    {
+        Some("missing_current_loan")
+    } else {
+        None
+    };
+
+    if let Some(reason) = missing_reason {
+        RateFetcher::mark_missing(hedge_venue, hedge_symbol, reason);
+        return false;
+    }
+
+    RateFetcher::mark_available(hedge_venue, hedge_symbol);
+    true
+}
+
 pub fn dispatch_arb_backward_query(source: &str, data: Bytes) -> Option<ArbBackwardQueryMsg> {
     match ArbBackwardQueryMsg::from_bytes(data) {
         Ok(query) => Some(query),
@@ -1085,7 +1121,8 @@ fn drive_funding_decision(
         return Ok(emitted_signal);
     }
 
-    let rate_ready = RateFetcher::is_initial_ready(hedge_venue);
+    let rate_ready = RateFetcher::is_initial_ready(hedge_venue)
+        && funding_rate_symbol_inputs_ready(hedge_symbol_key.as_str(), hedge_venue);
     let open_inputs_ready = funding_open_inputs_ready(hedge_symbol_key.as_str(), hedge_venue);
     let fr_signal = evaluate_funding_mode_signal(
         spread_factor,
