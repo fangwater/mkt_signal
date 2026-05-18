@@ -63,6 +63,7 @@ fn should_drop_startup_buffered_signal(signal: &TradeSignal, listener_start_us: 
 
 fn should_suppress_arb_open_inactive_warning(reason: &str) -> bool {
     reason.starts_with("open order rate limit triggered:")
+        || reason.starts_with("pending limit order risk failed:")
         || reason.starts_with("INTRA_NO_BORROW 余额不足")
         || reason.starts_with("STANDARD 余额不足")
 }
@@ -345,7 +346,7 @@ impl SignalChannel {
 
 #[cfg(test)]
 mod tests {
-    use super::should_drop_startup_buffered_signal;
+    use super::{should_drop_startup_buffered_signal, should_suppress_arb_open_inactive_warning};
     use crate::signal::trade_signal::{SignalType, TradeSignal};
     use bytes::Bytes;
 
@@ -363,6 +364,19 @@ mod tests {
         assert!(!should_drop_startup_buffered_signal(&fresh, 1_000));
         assert!(!should_drop_startup_buffered_signal(&newer, 1_000));
         assert!(!should_drop_startup_buffered_signal(&missing_ts, 1_000));
+    }
+
+    #[test]
+    fn suppresses_expected_arb_open_inactive_risk_noise() {
+        assert!(should_suppress_arb_open_inactive_warning(
+            "pending limit order risk failed: symbol=AVAUSDT side=BUY 当前限价挂单数=5，达到方向上限 5"
+        ));
+        assert!(should_suppress_arb_open_inactive_warning(
+            "open order rate limit triggered: symbol=AVAUSDT"
+        ));
+        assert!(!should_suppress_arb_open_inactive_warning(
+            "decode ArbOpen failed: broken payload"
+        ));
     }
 }
 
@@ -420,11 +434,21 @@ fn handle_trade_signal(signal: TradeSignal) {
                     return;
                 }
 
-                // 检查限价挂单数量限制
-                if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&symbol, side)
-                {
-                    log_pending_limit_summary("ArbOpen", None, &symbol, side, &e);
-                    return;
+                match open_ctx.get_order_type() {
+                    Some(order_type) => {
+                        if order_type.is_limit() {
+                            if let Err(e) = MonitorChannel::instance()
+                                .check_pending_limit_order_for_arb(&symbol, side)
+                            {
+                                log_pending_limit_summary("ArbOpen", None, &symbol, side, &e);
+                                return;
+                            }
+                        }
+                    }
+                    None => {
+                        warn!("ArbOpen: invalid order_type {}", open_ctx.order_type);
+                        return;
+                    }
                 }
                 open_ctx.set_opening_symbol(&symbol);
                 open_ctx.set_hedging_symbol(&hedging_symbol);
