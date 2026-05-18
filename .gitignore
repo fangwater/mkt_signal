@@ -43,3 +43,6 @@ model/
 
 # SSH keys for FR remote deploy (never commit private keys)
 *.pem
+
+scripts/gate_full_cleanup_collect.py
+cmd.md
