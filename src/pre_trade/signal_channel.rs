@@ -2,6 +2,7 @@ use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
 use crate::common::ipc_service_name::build_service_name;
 use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::common::time_util::get_timestamp_us;
+use crate::pre_trade::log_throttle::log_pending_limit_summary;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{OrderType, Side};
 use crate::pre_trade::signal_throttle::check_signal_throttle;
@@ -58,6 +59,12 @@ fn arb_close_notional_meets_min(ctx: &ArbOpenCtx) -> bool {
 
 fn should_drop_startup_buffered_signal(signal: &TradeSignal, listener_start_us: i64) -> bool {
     signal.generation_time > 0 && signal.generation_time < listener_start_us
+}
+
+fn should_suppress_arb_open_inactive_warning(reason: &str) -> bool {
+    reason.starts_with("open order rate limit triggered:")
+        || reason.starts_with("INTRA_NO_BORROW 余额不足")
+        || reason.starts_with("STANDARD 余额不足")
 }
 
 pub fn take_signal_counts() -> HashMap<String, u64> {
@@ -416,7 +423,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                 // 检查限价挂单数量限制
                 if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&symbol, side)
                 {
-                    warn!("ArbOpen: {} 限价挂单数量超限: {}", symbol, e);
+                    log_pending_limit_summary("ArbOpen", None, &symbol, side, &e);
                     return;
                 }
                 open_ctx.set_opening_symbol(&symbol);
@@ -454,7 +461,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                     let reason = strategy
                         .open_strategy_inactive_reason()
                         .unwrap_or("unknown");
-                    if !reason.starts_with("open order rate limit triggered:") {
+                    if !should_suppress_arb_open_inactive_warning(reason) {
                         warn!(
                             "⚠️ ArbOpen: strategy_id={} {} 未激活 reason={}",
                             strategy_id, symbol, reason
@@ -852,7 +859,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                     if let Err(e) =
                         MonitorChannel::instance().check_pending_limit_order(&symbol, side)
                     {
-                        info!("MMOpen: {} 限价挂单数量超限: {}", symbol, e);
+                        log_pending_limit_summary("MMOpen", None, &symbol, side, &e);
                         return;
                     }
                 }

@@ -1,11 +1,31 @@
 use crate::common::tick_math::QuantizedValue;
 pub use crate::pre_trade::order_manager::CUMULATIVE_FILL_ROLLBACK_EPS;
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus};
-use crate::signal::common::TimeInForce;
+use crate::signal::common::{TimeInForce, TradingVenue};
 use crate::strategy::order_query_parser::parse_compact_order_query_resp as parse_compact_order_query_resp_common;
 use crate::trade_engine::query_parsers::compact_order::CompactOrderQueryResp;
 
 pub const ORDER_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
+pub const BINANCE_PM_ORDER_QUERY_WATCHDOG_DELAY_US: i64 = 6_000_000;
+
+pub fn order_query_watchdog_delay_us_for_venue(
+    venue: TradingVenue,
+    binance_is_standard: bool,
+) -> i64 {
+    if matches!(
+        venue,
+        TradingVenue::BinanceMargin | TradingVenue::BinanceFutures
+    ) && !binance_is_standard
+    {
+        BINANCE_PM_ORDER_QUERY_WATCHDOG_DELAY_US
+    } else {
+        ORDER_QUERY_WATCHDOG_DELAY_US
+    }
+}
+
+pub fn order_query_watchdog_delay_us(order: &Order, binance_is_standard: bool) -> i64 {
+    order_query_watchdog_delay_us_for_venue(order.venue, binance_is_standard)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PendingOrderQueryReason {
@@ -64,7 +84,11 @@ pub fn parse_strategy_compact_order_query_resp(
 
 #[cfg(test)]
 mod tests {
-    use super::{monotonic_cumulative_fill, qv_decimal_or_fallback};
+    use super::{
+        monotonic_cumulative_fill, order_query_watchdog_delay_us_for_venue, qv_decimal_or_fallback,
+        BINANCE_PM_ORDER_QUERY_WATCHDOG_DELAY_US, ORDER_QUERY_WATCHDOG_DELAY_US,
+    };
+    use crate::signal::common::TradingVenue;
 
     #[test]
     fn monotonic_cumulative_fill_keeps_local_value_on_rollback() {
@@ -79,5 +103,25 @@ mod tests {
     #[test]
     fn qv_decimal_falls_back_for_invalid_decimal() {
         assert_eq!(qv_decimal_or_fallback(f64::NAN), "NaN");
+    }
+
+    #[test]
+    fn binance_pm_uses_long_order_query_watchdog_delay() {
+        assert_eq!(
+            order_query_watchdog_delay_us_for_venue(TradingVenue::BinanceFutures, false),
+            BINANCE_PM_ORDER_QUERY_WATCHDOG_DELAY_US
+        );
+        assert_eq!(
+            order_query_watchdog_delay_us_for_venue(TradingVenue::BinanceMargin, false),
+            BINANCE_PM_ORDER_QUERY_WATCHDOG_DELAY_US
+        );
+        assert_eq!(
+            order_query_watchdog_delay_us_for_venue(TradingVenue::BinanceFutures, true),
+            ORDER_QUERY_WATCHDOG_DELAY_US
+        );
+        assert_eq!(
+            order_query_watchdog_delay_us_for_venue(TradingVenue::GateFutures, false),
+            ORDER_QUERY_WATCHDOG_DELAY_US
+        );
     }
 }

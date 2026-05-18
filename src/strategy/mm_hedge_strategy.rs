@@ -7,6 +7,7 @@ use crate::market_maker::hedge_split::{
 use crate::market_maker::order_align::{
     align_final_order_qty, contract_qty_multiplier, min_qty_symbol_key,
 };
+use crate::pre_trade::log_throttle::log_order_rate_limit_summary;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
@@ -1048,10 +1049,8 @@ impl MarketMakerHedgeStrategy {
                         borrowed_open_count_1m
                     );
                 } else {
-                    warn!(
-                        "MarketMakerHedgeStrategy: strategy_id={} symbol={} hedge 下单频率风控触发，且 open 剩余额度不足: hedge_count_10s={} hedge_limit_10s={} hedge_count_1m={} hedge_limit_1m={} open_count_10s={} open_limit_10s={} open_count_1m={} open_limit_1m={} borrowed_open_10s={} borrowed_open_1m={}",
-                        self.strategy_id,
-                        symbol,
+                    let reason = format!(
+                        "hedge 下单频率风控触发，且 open 剩余额度不足: hedge_count_10s={} hedge_limit_10s={} hedge_count_1m={} hedge_limit_1m={} open_count_10s={} open_limit_10s={} open_count_1m={} open_limit_1m={} borrowed_open_10s={} borrowed_open_1m={}",
                         hedge_stats.count_10s,
                         hedge_limit_10s,
                         hedge_stats.count_1m,
@@ -1062,6 +1061,13 @@ impl MarketMakerHedgeStrategy {
                         open_limit_per_min,
                         borrowed_open_count_10s,
                         borrowed_open_count_1m
+                    );
+                    log_order_rate_limit_summary(
+                        "MarketMakerHedgeStrategy",
+                        Some(self.strategy_id),
+                        OrderRateBucket::MmHedge,
+                        symbol,
+                        &reason,
                     );
                     break;
                 }

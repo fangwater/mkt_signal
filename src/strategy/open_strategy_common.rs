@@ -4,6 +4,7 @@ use crate::common::time_util::get_timestamp_us;
 use crate::common::trade_error_code::describe_trade_error_code;
 use crate::funding_rate::ArbMode;
 use crate::pre_trade::intra_bwd_symbol_list::IntraBwdSymbolList;
+use crate::pre_trade::log_throttle::log_pending_limit_summary;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
 use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderManager, OrderType, Side};
@@ -14,7 +15,9 @@ use crate::signal::common::{OrderStatus, TradingVenue};
 use crate::strategy::manager::{OpenPriceMapEntry, OrphanHandoff, OrphanStrategyRole, Strategy};
 use crate::strategy::order_query_builder::build_order_query_request;
 pub use crate::strategy::order_reconcile::PendingOrderQueryReason;
-use crate::strategy::order_reconcile::{qv_decimal_or_fallback, ORDER_QUERY_WATCHDOG_DELAY_US};
+use crate::strategy::order_reconcile::{
+    order_query_watchdog_delay_us, qv_decimal_or_fallback, ORDER_QUERY_WATCHDOG_DELAY_US,
+};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKind};
 use crate::strategy::trade_update::TradeUpdate;
@@ -29,13 +32,15 @@ use std::collections::HashMap;
 
 const OPEN_BALANCE_EPS: f64 = 1e-12;
 const OPEN_DELEVERAGING_EPS: f64 = 1e-12;
-const OPEN_ORDER_RATE_LIMIT_SUMMARY_INTERVAL_US: i64 = 30_000_000;
+const OPEN_ORDER_RATE_LIMIT_SUMMARY_INTERVAL_US: i64 = 20_000_000;
+const OPEN_BALANCE_REJECT_SUMMARY_INTERVAL_US: i64 = 20_000_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct OpenOrderRateLimitSummaryKey {
     strategy_name: &'static str,
+    bucket: OrderRateBucket,
     symbol: String,
-    reason: String,
+    window: &'static str,
 }
 
 #[derive(Debug, Clone)]
@@ -43,24 +48,109 @@ struct OpenOrderRateLimitSummaryState {
     last_log_ts_us: i64,
     suppressed: usize,
     last_strategy_id: i32,
+    last_reason: String,
 }
 
 thread_local! {
     static OPEN_ORDER_RATE_LIMIT_SUMMARY: RefCell<HashMap<OpenOrderRateLimitSummaryKey, OpenOrderRateLimitSummaryState>> =
         RefCell::new(HashMap::new());
+    static OPEN_BALANCE_REJECT_SUMMARY: RefCell<HashMap<OpenBalanceRejectSummaryKey, OpenBalanceRejectSummaryState>> =
+        RefCell::new(HashMap::new());
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct OpenBalanceRejectSummaryKey {
+    strategy_name: &'static str,
+    venue: TradingVenue,
+    gate: &'static str,
+    side_u8: u8,
+    asset: String,
+}
+
+#[derive(Debug, Clone)]
+struct OpenBalanceRejectSummaryState {
+    last_log_ts_us: i64,
+    suppressed: usize,
+    last_strategy_id: i32,
+    last_symbol: String,
+    max_required: f64,
+    min_available: f64,
+}
+
+struct OpenBalanceRejectSummaryInput<'a> {
+    strategy_name: &'static str,
+    strategy_id: i32,
+    venue: TradingVenue,
+    gate: &'static str,
+    symbol: &'a str,
+    side: Side,
+    asset: &'a str,
+    required_amount: f64,
+    available_balance: f64,
+    now_us: i64,
+}
+
+fn summarize_open_balance_reject(input: OpenBalanceRejectSummaryInput<'_>) {
+    let key = OpenBalanceRejectSummaryKey {
+        strategy_name: input.strategy_name,
+        venue: input.venue,
+        gate: input.gate,
+        side_u8: input.side.to_u8(),
+        asset: input.asset.to_string(),
+    };
+    OPEN_BALANCE_REJECT_SUMMARY.with(|summary| {
+        let mut summary = summary.borrow_mut();
+        let state = summary.entry(key).or_insert_with(|| OpenBalanceRejectSummaryState {
+            last_log_ts_us: 0,
+            suppressed: 0,
+            last_strategy_id: input.strategy_id,
+            last_symbol: input.symbol.to_string(),
+            max_required: 0.0,
+            min_available: input.available_balance,
+        });
+        state.suppressed += 1;
+        state.last_strategy_id = input.strategy_id;
+        state.last_symbol = input.symbol.to_string();
+        state.max_required = state.max_required.max(input.required_amount);
+        state.min_available = state.min_available.min(input.available_balance);
+        if state.last_log_ts_us == 0
+            || input.now_us.saturating_sub(state.last_log_ts_us)
+                >= OPEN_BALANCE_REJECT_SUMMARY_INTERVAL_US
+        {
+            error!(
+                "{}: {:?} {} 余额不足，拒绝开仓 summary: suppressed={} last_strategy_id={} last_symbol={} side={:?} asset={} max_required={:.8} min_available={:.8}",
+                input.strategy_name,
+                input.venue,
+                input.gate,
+                state.suppressed,
+                state.last_strategy_id,
+                state.last_symbol,
+                input.side,
+                input.asset,
+                state.max_required,
+                state.min_available
+            );
+            state.last_log_ts_us = input.now_us;
+            state.suppressed = 0;
+            state.max_required = 0.0;
+            state.min_available = input.available_balance;
+        }
+    });
 }
 
 fn summarize_open_order_rate_limit(
     strategy_name: &'static str,
     strategy_id: i32,
+    bucket: OrderRateBucket,
     symbol: &str,
     reason: &str,
     now_us: i64,
 ) {
     let key = OpenOrderRateLimitSummaryKey {
         strategy_name,
+        bucket,
         symbol: symbol.to_string(),
-        reason: reason.to_string(),
+        window: classify_open_order_rate_limit_window(reason),
     };
     OPEN_ORDER_RATE_LIMIT_SUMMARY.with(|summary| {
         let mut summary = summary.borrow_mut();
@@ -70,25 +160,39 @@ fn summarize_open_order_rate_limit(
                 last_log_ts_us: 0,
                 suppressed: 0,
                 last_strategy_id: strategy_id,
+                last_reason: reason.to_string(),
             });
         state.suppressed += 1;
         state.last_strategy_id = strategy_id;
+        state.last_reason.clear();
+        state.last_reason.push_str(reason);
         if state.last_log_ts_us == 0
             || now_us.saturating_sub(state.last_log_ts_us)
                 >= OPEN_ORDER_RATE_LIMIT_SUMMARY_INTERVAL_US
         {
             info!(
-                "{}: symbol={} 开仓下单频率风控触发 summary: suppressed={} last_strategy_id={} reason={}",
+                "{}: symbol={} 开仓下单频率风控触发 summary: suppressed={} last_strategy_id={} bucket={} reason={}",
                 strategy_name,
                 symbol,
                 state.suppressed,
                 state.last_strategy_id,
-                reason
+                bucket.as_str(),
+                state.last_reason
             );
             state.last_log_ts_us = now_us;
             state.suppressed = 0;
         }
     });
+}
+
+fn classify_open_order_rate_limit_window(reason: &str) -> &'static str {
+    if reason.contains("近10秒") {
+        "10s"
+    } else if reason.contains("近60秒") {
+        "60s"
+    } else {
+        "unknown"
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -292,6 +396,9 @@ pub trait OpenStrategyCommon {
         order_qty: f64,
     ) {
         if !self.log_open_deleveraging_risk_rejects() {
+            return;
+        }
+        if risk_name == "限价挂单数量风控" {
             return;
         }
 
@@ -614,6 +721,13 @@ pub trait OpenStrategyCommon {
                 _ => monitor.check_pending_limit_order(&symbol, side),
             };
             if let Err(e) = limit_check {
+                log_pending_limit_summary(
+                    self.strategy_name(),
+                    Some(self.strategy_id()),
+                    &symbol,
+                    side,
+                    &e,
+                );
                 self.log_open_deleveraging_risk_reject(
                     "限价挂单数量风控",
                     &e,
@@ -656,6 +770,7 @@ pub trait OpenStrategyCommon {
                 summarize_open_order_rate_limit(
                     self.strategy_name(),
                     self.strategy_id(),
+                    input.order_rate_bucket,
                     &symbol,
                     &e,
                     get_timestamp_us(),
@@ -746,18 +861,18 @@ pub trait OpenStrategyCommon {
                     current_open_base_qty,
                     input.qty,
                 );
-                error!(
-                    "{}: strategy_id={} {:?} {} 余额不足，拒绝开仓并标记策略不活跃 symbol={} side={:?} asset={} required={:.8} available={:.8}",
-                    self.strategy_name(),
-                    self.strategy_id(),
+                summarize_open_balance_reject(OpenBalanceRejectSummaryInput {
+                    strategy_name: self.strategy_name(),
+                    strategy_id: self.strategy_id(),
                     venue,
                     gate,
-                    symbol,
+                    symbol: &symbol,
                     side,
-                    check_asset,
+                    asset: &check_asset,
                     required_amount,
-                    available_balance
-                );
+                    available_balance,
+                    now_us: get_timestamp_us(),
+                });
                 self.mark_open_strategy_inactive(reject_reason);
                 return None;
             }
@@ -1771,10 +1886,22 @@ pub trait OpenStrategyCommon {
         out
     }
 
+    fn order_query_watchdog_delay_us_for_order_id(&self, client_order_id: i64) -> i64 {
+        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
+            return ORDER_QUERY_WATCHDOG_DELAY_US;
+        };
+        let mgr = order_mgr.borrow();
+        let Some(order) = mgr.get(client_order_id) else {
+            return ORDER_QUERY_WATCHDOG_DELAY_US;
+        };
+        order_query_watchdog_delay_us(&order, mgr.binance_is_standard())
+    }
+
     fn schedule_order_query_watchdog(&mut self, client_order_id: i64) {
+        let delay_us = self.order_query_watchdog_delay_us_for_order_id(client_order_id);
         self.set_order_query_watchdog(Some(QueryWatchdog {
             client_order_id,
-            due_ts_us: get_timestamp_us().saturating_add(ORDER_QUERY_WATCHDOG_DELAY_US),
+            due_ts_us: get_timestamp_us().saturating_add(delay_us),
             reason: PendingOrderQueryReason::OrderWatchdog,
         }));
     }
@@ -1784,17 +1911,19 @@ pub trait OpenStrategyCommon {
         client_order_id: i64,
         reason: PendingOrderQueryReason,
     ) {
+        let delay_us = self.order_query_watchdog_delay_us_for_order_id(client_order_id);
         self.set_order_query_watchdog(Some(QueryWatchdog {
             client_order_id,
-            due_ts_us: get_timestamp_us().saturating_add(ORDER_QUERY_WATCHDOG_DELAY_US),
+            due_ts_us: get_timestamp_us().saturating_add(delay_us),
             reason,
         }));
     }
 
     fn schedule_cancel_query_watchdog(&mut self, client_order_id: i64) {
+        let delay_us = self.order_query_watchdog_delay_us_for_order_id(client_order_id);
         self.set_cancel_query_watchdog(Some(QueryWatchdog {
             client_order_id,
-            due_ts_us: get_timestamp_us().saturating_add(ORDER_QUERY_WATCHDOG_DELAY_US),
+            due_ts_us: get_timestamp_us().saturating_add(delay_us),
             reason: PendingOrderQueryReason::CancelWatchdog,
         }));
         if let Some(existing) = self.pending_order_query() {
@@ -2088,7 +2217,9 @@ pub trait OpenStrategyCommon {
                 let order_mgr = MonitorChannel::instance().order_manager();
                 let order_opt = order_mgr.borrow().get(w.client_order_id);
                 if let Some(order) = order_opt.as_ref().filter(|o| !o.status.is_terminal()) {
-                    let scheduled_at = w.due_ts_us.saturating_sub(ORDER_QUERY_WATCHDOG_DELAY_US);
+                    let delay_us =
+                        self.order_query_watchdog_delay_us_for_order_id(w.client_order_id);
+                    let scheduled_at = w.due_ts_us.saturating_sub(delay_us);
                     let waited_ms = now.saturating_sub(scheduled_at).saturating_div(1_000);
                     info!(
                         "{}: strategy_id={} client_order_id={} symbol={} status={:?} exch_ord_id={:?} 等待{}ms仍未收到撤单/终态回报，发送order query回补 reason={:?}",
@@ -2132,7 +2263,9 @@ pub trait OpenStrategyCommon {
                 let order_mgr = MonitorChannel::instance().order_manager();
                 let order_opt = order_mgr.borrow().get(w.client_order_id);
                 if let Some(order) = order_opt.as_ref().filter(|o| !o.status.is_terminal()) {
-                    let scheduled_at = w.due_ts_us.saturating_sub(ORDER_QUERY_WATCHDOG_DELAY_US);
+                    let delay_us =
+                        self.order_query_watchdog_delay_us_for_order_id(w.client_order_id);
+                    let scheduled_at = w.due_ts_us.saturating_sub(delay_us);
                     let waited_ms = now.saturating_sub(scheduled_at).saturating_div(1_000);
                     let since_submit_ms = now
                         .saturating_sub(order.timestamp.submit_t)

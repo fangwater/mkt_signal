@@ -1,5 +1,6 @@
 use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::common::time_util::get_timestamp_us;
+use crate::pre_trade::log_throttle::log_order_rate_limit_summary;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
@@ -1572,9 +1573,12 @@ fn create_and_send_order(
                     params.arb_hedge_order_rate_limit_10s(),
                     now_us,
                 ) {
-                    warn!(
-                        "ArbHedgeStrategy: strategy_id={} symbol={} 对冲下单频率风控触发: {}",
-                        strategy_id, symbol, e
+                    log_order_rate_limit_summary(
+                        "ArbHedgeStrategy",
+                        Some(strategy_id),
+                        OrderRateBucket::ArbHedge,
+                        symbol,
+                        &e,
                     );
                     return Err(format!("对冲下单频率风控触发: {}", e));
                 }

@@ -8,6 +8,7 @@ mod channel;
 pub mod close_inventory;
 pub mod event;
 pub mod intra_bwd_symbol_list;
+pub mod log_throttle;
 pub mod monitor_channel;
 pub mod net_position;
 pub mod open_order_rate_limiter;

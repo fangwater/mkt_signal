@@ -32,7 +32,7 @@ pub enum OrderRateBucket {
 }
 
 impl OrderRateBucket {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::MmOpen => "mm_open",
             Self::ArbOpen => "arb_open",

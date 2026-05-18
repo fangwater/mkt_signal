@@ -1,4 +1,5 @@
 use crate::common::symbol_util::normalize_symbol_for_internal;
+use crate::pre_trade::log_throttle::log_pending_limit_summary;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::OrderRateBucket;
 use crate::pre_trade::order_manager::Side;
@@ -81,15 +82,12 @@ impl ArbCloseStrategy {
 
         if let Err(e) = MonitorChannel::instance().check_pending_limit_order_for_arb(&symbol, side)
         {
-            info!(
-                "ArbCloseStrategy: strategy_id={} skip because pending limit order limit hit symbol={} venue={:?} side={:?} open_pos={:.8} signal_qty={:.8} reason={}",
-                self.open_state.strategy_id,
-                symbol,
-                venue,
+            log_pending_limit_summary(
+                "ArbCloseStrategy",
+                Some(self.open_state.strategy_id),
+                &symbol,
                 side,
-                open_pos,
-                ctx.amount_value(),
-                e
+                &e,
             );
             self.open_state.alive = false;
             return;
