@@ -24,9 +24,72 @@ use crate::strategy::uniform_order_helper::{
 };
 use crate::strategy::ws_order_update::prepare_failed_trade_engine_response_for_strategy;
 use log::{debug, error, info, warn};
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 const OPEN_BALANCE_EPS: f64 = 1e-12;
 const OPEN_DELEVERAGING_EPS: f64 = 1e-12;
+const OPEN_ORDER_RATE_LIMIT_SUMMARY_INTERVAL_US: i64 = 30_000_000;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct OpenOrderRateLimitSummaryKey {
+    strategy_name: &'static str,
+    symbol: String,
+    reason: String,
+}
+
+#[derive(Debug, Clone)]
+struct OpenOrderRateLimitSummaryState {
+    last_log_ts_us: i64,
+    suppressed: usize,
+    last_strategy_id: i32,
+}
+
+thread_local! {
+    static OPEN_ORDER_RATE_LIMIT_SUMMARY: RefCell<HashMap<OpenOrderRateLimitSummaryKey, OpenOrderRateLimitSummaryState>> =
+        RefCell::new(HashMap::new());
+}
+
+fn summarize_open_order_rate_limit(
+    strategy_name: &'static str,
+    strategy_id: i32,
+    symbol: &str,
+    reason: &str,
+    now_us: i64,
+) {
+    let key = OpenOrderRateLimitSummaryKey {
+        strategy_name,
+        symbol: symbol.to_string(),
+        reason: reason.to_string(),
+    };
+    OPEN_ORDER_RATE_LIMIT_SUMMARY.with(|summary| {
+        let mut summary = summary.borrow_mut();
+        let state = summary
+            .entry(key)
+            .or_insert_with(|| OpenOrderRateLimitSummaryState {
+                last_log_ts_us: 0,
+                suppressed: 0,
+                last_strategy_id: strategy_id,
+            });
+        state.suppressed += 1;
+        state.last_strategy_id = strategy_id;
+        if state.last_log_ts_us == 0
+            || now_us.saturating_sub(state.last_log_ts_us)
+                >= OPEN_ORDER_RATE_LIMIT_SUMMARY_INTERVAL_US
+        {
+            info!(
+                "{}: symbol={} 开仓下单频率风控触发 summary: suppressed={} last_strategy_id={} reason={}",
+                strategy_name,
+                symbol,
+                state.suppressed,
+                state.last_strategy_id,
+                reason
+            );
+            state.last_log_ts_us = now_us;
+            state.suppressed = 0;
+        }
+    });
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueryWatchdog {
@@ -590,21 +653,12 @@ pub trait OpenStrategyCommon {
                 rate_10s,
                 get_timestamp_us(),
             ) {
-                self.log_open_deleveraging_risk_reject(
-                    "开仓下单频率风控",
-                    &e,
-                    &symbol,
-                    venue,
-                    side,
-                    current_open_base_qty,
-                    input.qty,
-                );
-                info!(
-                    "{}: strategy_id={} symbol={} 开仓下单频率风控触发: {}，标记策略为不活跃",
+                summarize_open_order_rate_limit(
                     self.strategy_name(),
                     self.strategy_id(),
-                    symbol,
-                    e
+                    &symbol,
+                    &e,
+                    get_timestamp_us(),
                 );
                 self.mark_open_strategy_inactive(format!("open order rate limit triggered: {}", e));
                 return None;

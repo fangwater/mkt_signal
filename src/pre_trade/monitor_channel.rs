@@ -876,6 +876,20 @@ impl MonitorChannel {
         }
     }
 
+    fn handle_arb_open_margin_net_risk_after_update(&self, asset: &str) {
+        let asset_upper = asset.trim().to_uppercase();
+        if asset_upper.is_empty() || asset_upper == "USDT" {
+            return;
+        }
+        if self.open_venue() == self.hedge_venue() {
+            return;
+        }
+        let mapper = create_symbol_mapper(exchange_from_venue(self.open_venue()));
+        let symbol =
+            normalize_symbol_for_internal(&mapper.balance_asset_to_um_symbol(&asset_upper));
+        self.handle_arb_position_risk_after_update(&symbol);
+    }
+
     pub fn mark_price_exchange(&self) -> Exchange {
         Self::with_inner(|inner| {
             Self::mark_price_exchange_for_venues(inner.open_venue, inner.hedge_venue)
@@ -1851,6 +1865,10 @@ impl MonitorChannel {
                                                         open_venue,
                                                         "account_balance",
                                                     );
+                                                MonitorChannel::instance()
+                                                    .handle_arb_open_margin_net_risk_after_update(
+                                                        &msg.symbol,
+                                                    );
                                             }
                                         }
                                         if scope_matches_venue(
@@ -1971,6 +1989,10 @@ impl MonitorChannel {
                                                     .mark_arb_startup_net_seen_for_venue(
                                                         open_venue,
                                                         "account_borrow_interest",
+                                                    );
+                                                MonitorChannel::instance()
+                                                    .handle_arb_open_margin_net_risk_after_update(
+                                                        &msg.symbol,
                                                     );
                                             }
                                         }
@@ -2943,7 +2965,7 @@ mod tests {
     use crate::common::tick_math::QuantizedValue;
     use crate::pre_trade::price_table::PriceTable;
     use crate::pre_trade::usdt_balance_manager::UsdtBalanceManager;
-    use crate::signal::cancel_signal::MmCancelCtx;
+    use crate::signal::cancel_signal::{ArbCancelCtx, MmCancelCtx};
     use crate::signal::common::SignalBytes;
     use crate::signal::trade_signal::{SignalType, TradeSignal};
     use crate::strategy::manager::OpenPriceMapEntry;
@@ -2959,6 +2981,7 @@ mod tests {
         side: Side,
         client_order_id: i64,
         cancel_trigger_count: usize,
+        arb_cancel_trigger_count: usize,
         last_trigger_ts: i64,
         active: bool,
     }
@@ -2971,6 +2994,7 @@ mod tests {
                 side,
                 client_order_id,
                 cancel_trigger_count: 0,
+                arb_cancel_trigger_count: 0,
                 last_trigger_ts: 0,
                 active: true,
             }
@@ -2995,12 +3019,15 @@ mod tests {
         }
 
         fn handle_signal(&mut self, signal: &TradeSignal) {
-            if signal.signal_type.clone() as u32 != SignalType::MMCancel as u32 {
-                return;
+            if signal.signal_type.clone() as u32 == SignalType::MMCancel as u32 {
+                let ctx = MmCancelCtx::from_bytes(signal.context.clone()).expect("mm cancel ctx");
+                self.cancel_trigger_count += 1;
+                self.last_trigger_ts = ctx.trigger_ts;
+            } else if signal.signal_type.clone() as u32 == SignalType::ArbCancel as u32 {
+                let ctx = ArbCancelCtx::from_bytes(signal.context.clone()).expect("arb cancel ctx");
+                self.arb_cancel_trigger_count += 1;
+                self.last_trigger_ts = ctx.trigger_ts;
             }
-            let ctx = MmCancelCtx::from_bytes(signal.context.clone()).expect("mm cancel ctx");
-            self.cancel_trigger_count += 1;
-            self.last_trigger_ts = ctx.trigger_ts;
         }
 
         fn apply_order_update(&mut self, _update: &dyn crate::strategy::order_update::OrderUpdate) {
@@ -3019,6 +3046,15 @@ mod tests {
         }
 
         fn mm_open_price_map_entry(&self) -> Option<OpenPriceMapEntry> {
+            Some(OpenPriceMapEntry {
+                symbol: self.symbol.clone(),
+                side: self.side,
+                client_order_id: self.client_order_id,
+                price_qv: QuantizedValue::from_parts(1, 0, 1).into(),
+            })
+        }
+
+        fn arb_open_price_map_entry(&self) -> Option<OpenPriceMapEntry> {
             Some(OpenPriceMapEntry {
                 symbol: self.symbol.clone(),
                 side: self.side,
@@ -3306,6 +3342,59 @@ mod tests {
         strategy_mgr
     }
 
+    fn install_binance_arb_margin_open_fixture() -> (
+        Rc<RefCell<StrategyManager>>,
+        Rc<RefCell<BasicBalanceManager>>,
+    ) {
+        let open_bal = Rc::new(RefCell::new(BasicBalanceManager::new(Exchange::Binance)));
+        let open_leg = LegMgr::Margin {
+            exchange: Exchange::Binance,
+            bal: open_bal.clone(),
+        };
+        let hedge_leg = LegMgr::Futures {
+            exchange: Exchange::Binance,
+            um: Rc::new(RefCell::new(BasicUmManager::new(Exchange::Binance))),
+            min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Binance))),
+        };
+
+        let mut price_table = PriceTable::new();
+        price_table.update_mark_price("FILUSDT", 100.0, 0);
+
+        let mut usdt_mgr = UsdtBalanceManager::new(Exchange::Binance);
+        usdt_mgr.apply_balance(&BasicBalanceMsg::create(0, "USDT".to_string(), 10_000.0));
+        let mut usdt_mgrs: HashMap<BasicAccountScope, Rc<RefCell<UsdtBalanceManager>>> =
+            HashMap::new();
+        usdt_mgrs.insert(
+            BasicAccountScope::BinanceUnified,
+            Rc::new(RefCell::new(usdt_mgr)),
+        );
+
+        let strategy_mgr = Rc::new(RefCell::new(StrategyManager::new()));
+        let inner = MonitorChannelInner {
+            open_venue: TradingVenue::BinanceMargin,
+            hedge_venue: TradingVenue::BinanceFutures,
+            open_leg,
+            hedge_leg,
+            usdt_mgrs,
+            price_table: Rc::new(RefCell::new(price_table)),
+            venue_min_qty_tables: HashMap::new(),
+            strategy_mgr: strategy_mgr.clone(),
+            orphan_strategy_mgr: Rc::new(RefCell::new(OrphanStrategyManager::new())),
+            order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
+                BinanceAccountMode::Unified,
+            )))),
+            close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            trade_update_seq: 0,
+            latest_account_risk: HashMap::new(),
+            arb_startup_net_gate: ArbStartupNetGate::new(false),
+        };
+
+        MONITOR_CHANNEL.with(|mc| {
+            *mc.borrow_mut() = Some(inner);
+        });
+        (strategy_mgr, open_bal)
+    }
+
     #[test]
     fn arb_hedge_exposure_risk_allows_reducing_when_current_over_limit() {
         install_binance_arb_hedge_exposure_fixture(20.0, 0.0, false);
@@ -3366,6 +3455,120 @@ mod tests {
                 .ready
         );
         assert_eq!(strategy_mgr.borrow().len(), 0);
+    }
+
+    #[test]
+    fn arb_open_margin_net_risk_cancel_targets_same_direction_open_strategies() {
+        let (strategy_mgr, open_bal) = install_binance_arb_margin_open_fixture();
+        strategy_mgr
+            .borrow_mut()
+            .insert(Box::new(TestMmOpenStrategy::new(
+                201,
+                "FILUSDT",
+                Side::Buy,
+                201_0001,
+            )));
+        strategy_mgr
+            .borrow_mut()
+            .insert(Box::new(TestMmOpenStrategy::new(
+                202,
+                "FILUSDT",
+                Side::Sell,
+                202_0001,
+            )));
+        strategy_mgr
+            .borrow_mut()
+            .insert(Box::new(TestMmOpenStrategy::new(
+                203,
+                "BTCUSDT",
+                Side::Buy,
+                203_0001,
+            )));
+
+        open_bal
+            .borrow_mut()
+            .apply_balance(&BasicBalanceMsg::create(0, "FIL".to_string(), 20.0));
+        MonitorChannel::instance().handle_arb_open_margin_net_risk_after_update("FIL");
+
+        let mut mgr = strategy_mgr.borrow_mut();
+        let buy = mgr
+            .take(201)
+            .expect("buy strategy")
+            .as_any()
+            .downcast_ref::<TestMmOpenStrategy>()
+            .expect("buy strategy type")
+            .arb_cancel_trigger_count;
+        let sell = mgr
+            .take(202)
+            .expect("sell strategy")
+            .as_any()
+            .downcast_ref::<TestMmOpenStrategy>()
+            .expect("sell strategy type")
+            .arb_cancel_trigger_count;
+        let other = mgr
+            .take(203)
+            .expect("other strategy")
+            .as_any()
+            .downcast_ref::<TestMmOpenStrategy>()
+            .expect("other strategy type")
+            .arb_cancel_trigger_count;
+
+        assert_eq!(buy, 1);
+        assert_eq!(sell, 0);
+        assert_eq!(other, 0);
+    }
+
+    #[test]
+    fn arb_open_margin_borrow_interest_risk_cancel_targets_sell_side_when_net_short() {
+        let (strategy_mgr, open_bal) = install_binance_arb_margin_open_fixture();
+        strategy_mgr
+            .borrow_mut()
+            .insert(Box::new(TestMmOpenStrategy::new(
+                211,
+                "FILUSDT",
+                Side::Buy,
+                211_0001,
+            )));
+        strategy_mgr
+            .borrow_mut()
+            .insert(Box::new(TestMmOpenStrategy::new(
+                212,
+                "FILUSDT",
+                Side::Sell,
+                212_0001,
+            )));
+
+        open_bal
+            .borrow_mut()
+            .apply_balance(&BasicBalanceMsg::create(0, "FIL".to_string(), 0.0));
+        open_bal
+            .borrow_mut()
+            .apply_borrow_interest(&BasicBorrowInterestMsg::create(
+                0,
+                "FIL".to_string(),
+                20.0,
+                0.0,
+            ));
+        MonitorChannel::instance().handle_arb_open_margin_net_risk_after_update("FIL");
+
+        let mut mgr = strategy_mgr.borrow_mut();
+        let buy = mgr
+            .take(211)
+            .expect("buy strategy")
+            .as_any()
+            .downcast_ref::<TestMmOpenStrategy>()
+            .expect("buy strategy type")
+            .arb_cancel_trigger_count;
+        let sell = mgr
+            .take(212)
+            .expect("sell strategy")
+            .as_any()
+            .downcast_ref::<TestMmOpenStrategy>()
+            .expect("sell strategy type")
+            .arb_cancel_trigger_count;
+
+        assert_eq!(buy, 0);
+        assert_eq!(sell, 1);
     }
 
     #[test]

@@ -454,10 +454,12 @@ fn handle_trade_signal(signal: TradeSignal) {
                     let reason = strategy
                         .open_strategy_inactive_reason()
                         .unwrap_or("unknown");
-                    warn!(
-                        "⚠️ ArbOpen: strategy_id={} {} 未激活 reason={}",
-                        strategy_id, symbol, reason
-                    );
+                    if !reason.starts_with("open order rate limit triggered:") {
+                        warn!(
+                            "⚠️ ArbOpen: strategy_id={} {} 未激活 reason={}",
+                            strategy_id, symbol, reason
+                        );
+                    }
                 }
             }
             Err(err) => warn!("failed to decode ArbOpen context: {err}"),
