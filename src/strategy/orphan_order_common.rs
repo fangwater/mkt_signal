@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 
 pub(crate) const ORPHAN_QUERY_LOG_THRESHOLD: u8 = 25;
 pub(crate) const COMMIT_QUERY_MAX_ATTEMPTS: u8 = 3;
-pub(crate) const COMMIT_QUERY_BASE_TICKS: u32 = 25;
+pub(crate) const COMMIT_QUERY_BASE_TICKS: u32 = 50;
 pub(crate) const BINANCE_PM_ORPHAN_INITIAL_QUERY_TICKS: u32 = 100;
 
 pub(crate) fn orphan_initial_query_ticks_for(
@@ -105,6 +105,9 @@ impl OrphanOrderTracker {
         let Some(order) = mgr.get(client_order_id) else {
             return self.initial_query_ticks;
         };
+        if order.status == OrderExecutionStatus::Commit {
+            return COMMIT_QUERY_BASE_TICKS;
+        }
         orphan_initial_query_ticks_for(
             order.venue,
             mgr.binance_is_standard(),
@@ -171,6 +174,7 @@ impl OrphanOrderTracker {
     }
 
     fn commit_query_due_now(&mut self, client_order_id: i64) -> Option<CommitQueryAction> {
+        let query_max_ticks = self.query_max_ticks;
         let Some(query_state) = self.query_states.get_mut(&client_order_id) else {
             return None;
         };
@@ -188,7 +192,11 @@ impl OrphanOrderTracker {
         }
 
         query_state.query_count = query_state.query_count.saturating_add(1);
-        query_state.ticks_until_next_query = COMMIT_QUERY_BASE_TICKS;
+        query_state.ticks_until_next_query = Self::next_query_ticks(
+            COMMIT_QUERY_BASE_TICKS,
+            query_max_ticks,
+            query_state.query_count,
+        );
         Some(CommitQueryAction::Query {
             query_count: query_state.query_count,
         })
@@ -948,14 +956,21 @@ mod tests {
     }
 
     #[test]
-    fn commit_query_budget_closes_after_three_short_queries() {
+    fn commit_query_budget_uses_exponential_backoff_from_one_second() {
         let client_order_id = 42;
         let mut tracker =
             OrphanOrderTracker::new(COMMIT_QUERY_BASE_TICKS, COMMIT_QUERY_BASE_TICKS, 3_200);
         tracker.track_order_id(client_order_id);
 
-        for expected_query_count in 1..=COMMIT_QUERY_MAX_ATTEMPTS {
-            for _ in 0..COMMIT_QUERY_BASE_TICKS {
+        let expected_waits = [
+            COMMIT_QUERY_BASE_TICKS,
+            COMMIT_QUERY_BASE_TICKS * 2,
+            COMMIT_QUERY_BASE_TICKS * 4,
+        ];
+        for (expected_query_count, wait_ticks) in
+            (1..=COMMIT_QUERY_MAX_ATTEMPTS).zip(expected_waits)
+        {
+            for _ in 0..wait_ticks {
                 assert_eq!(tracker.commit_query_due_now(client_order_id), None);
             }
             assert_eq!(
@@ -966,7 +981,7 @@ mod tests {
             );
         }
 
-        for _ in 0..COMMIT_QUERY_BASE_TICKS {
+        for _ in 0..COMMIT_QUERY_BASE_TICKS * 8 {
             assert_eq!(tracker.commit_query_due_now(client_order_id), None);
         }
         assert_eq!(

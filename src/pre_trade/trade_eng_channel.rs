@@ -30,6 +30,14 @@ const TRADE_RESP_PAYLOAD: usize = 64;
 const TRADE_RESP_HEADER_LEN: usize = 22;
 const TRADE_RESP_TAIL_LEN: usize = 33;
 const TRADE_ENG_SUBSCRIBER_MAX_BUFFER_SIZE: usize = 256;
+const TRADE_REQ_PUBLISH_SLOW_WARN_US: i64 = 50_000;
+
+fn trade_request_create_time_us(bytes: &Bytes) -> Option<i64> {
+    if bytes.len() < 16 {
+        return None;
+    }
+    Some(i64::from_le_bytes(bytes[8..16].try_into().ok()?))
+}
 
 /// TradeEngHub 负责与多个 trade engine 进程进行双向通信
 ///
@@ -96,13 +104,38 @@ impl TradeEngHub {
         exchange: &str,
         bytes: &Bytes,
     ) -> Result<()> {
-        let now = get_timestamp_us();
+        let publish_start_us = get_timestamp_us();
+        let create_time_us = trade_request_create_time_us(bytes);
         if let Some(om) = MonitorChannel::try_order_manager() {
             om.borrow_mut().update(client_order_id, |order| {
-                order.set_submit_time(now);
+                order.set_submit_time(publish_start_us);
             });
         }
-        Self::publish_order_request(exchange, bytes)
+        let result = Self::publish_order_request(exchange, bytes);
+        let publish_done_us = get_timestamp_us();
+        let publish_cost_us = publish_done_us.saturating_sub(publish_start_us);
+        let build_to_publish_done_us = create_time_us
+            .filter(|create_time_us| *create_time_us > 0)
+            .map(|create_time_us| publish_done_us.saturating_sub(create_time_us));
+        let build_to_publish_slow = build_to_publish_done_us
+            .map(|latency_us| latency_us >= TRADE_REQ_PUBLISH_SLOW_WARN_US)
+            .unwrap_or(false);
+        if publish_cost_us >= TRADE_REQ_PUBLISH_SLOW_WARN_US || build_to_publish_slow {
+            let result_status = if result.is_ok() { "ok" } else { "err" };
+            warn!(
+                "TradeReqLatency: publish_slow client_order_id={} exchange={} bytes_len={} create_time_us={:?} publish_start_us={} publish_done_us={} publish_cost_us={} build_to_publish_done_us={:?} result={}",
+                client_order_id,
+                exchange,
+                bytes.len(),
+                create_time_us,
+                publish_start_us,
+                publish_done_us,
+                publish_cost_us,
+                build_to_publish_done_us,
+                result_status
+            );
+        }
+        result
     }
 
     fn new() -> Self {

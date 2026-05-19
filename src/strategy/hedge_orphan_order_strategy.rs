@@ -75,6 +75,12 @@ impl HedgeOrphanOrderStrategy {
         let Some(order) = mgr.get(client_order_id) else {
             return Self::initial_query_state();
         };
+        if order.status == OrderExecutionStatus::Commit {
+            return HedgeOrphanQueryState {
+                query_count: 0,
+                ticks_until_next_query: COMMIT_QUERY_BASE_TICKS,
+            };
+        }
         let ticks_until_next_query = orphan_initial_query_ticks_for(
             order.venue,
             mgr.binance_is_standard(),
@@ -91,6 +97,15 @@ impl HedgeOrphanOrderStrategy {
             .checked_shl(query_count.min(31) as u32)
             .unwrap_or(u32::MAX);
         HEDGE_ORPHAN_QUERY_BASE_TICKS
+            .saturating_mul(multiplier)
+            .min(HEDGE_ORPHAN_QUERY_MAX_TICKS)
+    }
+
+    fn commit_next_query_ticks(query_count: u8) -> u32 {
+        let multiplier = 1_u32
+            .checked_shl(query_count.min(31) as u32)
+            .unwrap_or(u32::MAX);
+        COMMIT_QUERY_BASE_TICKS
             .saturating_mul(multiplier)
             .min(HEDGE_ORPHAN_QUERY_MAX_TICKS)
     }
@@ -113,7 +128,7 @@ impl HedgeOrphanOrderStrategy {
         }
 
         query_state.query_count = query_state.query_count.saturating_add(1);
-        query_state.ticks_until_next_query = COMMIT_QUERY_BASE_TICKS;
+        query_state.ticks_until_next_query = Self::commit_next_query_ticks(query_state.query_count);
         Some(CommitQueryAction::Query {
             query_count: query_state.query_count,
         })

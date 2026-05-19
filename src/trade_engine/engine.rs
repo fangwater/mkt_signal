@@ -2,6 +2,7 @@ use crate::common::binance_account_mode::{binance_account_mode, BinanceAccountMo
 use crate::common::exchange::Exchange;
 use crate::common::iceoryx_publisher::{QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD};
 use crate::common::ipc_service_name::build_service_name;
+use crate::common::time_util::get_timestamp_us;
 use crate::rolling_metrics::latency_kll::LatencyKll;
 use crate::rolling_metrics::latency_snapshot::LATENCY_SNAPSHOT_PAYLOAD_LEN;
 use crate::trade_engine::bitget_query_rate_limiter::BitgetQueryRateLimiter;
@@ -52,6 +53,9 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 use std::{cell::RefCell, rc::Rc as StdRc};
 use tokio_util::sync::CancellationToken;
+
+const TRADE_REQ_IPC_RECV_SLOW_WARN_US: i64 = 50_000;
+const QUERY_REQ_IPC_RECV_SLOW_WARN_US: i64 = 50_000;
 
 fn request_payload_len(payload: &[u8]) -> Option<usize> {
     // Layout: u32 msg_type, u32 params_length, i64 create_time, i64 client_id, params...
@@ -2098,6 +2102,22 @@ impl TradeEngine {
 
                         match crate::trade_engine::query_request::QueryRequestMsg::parse(&owned) {
                             Some(msg) => {
+                                let ipc_recv_us = get_timestamp_us();
+                                let create_to_ipc_recv_us =
+                                    ipc_recv_us.saturating_sub(msg.create_time);
+                                if msg.create_time > 0
+                                    && create_to_ipc_recv_us >= QUERY_REQ_IPC_RECV_SLOW_WARN_US
+                                {
+                                    warn!(
+                                        "QueryReqLatency: ipc_recv_slow req_type={:?} client_query_id={} params_len={} create_time_us={} ipc_recv_us={} create_to_ipc_recv_us={}",
+                                        msg.req_type,
+                                        msg.client_query_id,
+                                        msg.params.len(),
+                                        msg.create_time,
+                                        ipc_recv_us,
+                                        create_to_ipc_recv_us
+                                    );
+                                }
                                 let _ = query_req_tx_for_sub.send(msg);
                             }
                             None => {
@@ -2145,7 +2165,23 @@ impl TradeEngine {
 
                     match crate::trade_engine::trade_request::TradeRequestMsg::parse(&owned) {
                         Some(mut msg) => {
-                            msg.ipc_recv = Some(Instant::now());
+                            let ipc_recv = Instant::now();
+                            let ipc_recv_us = get_timestamp_us();
+                            let create_to_ipc_recv_us = ipc_recv_us.saturating_sub(msg.create_time);
+                            if msg.create_time > 0
+                                && create_to_ipc_recv_us >= TRADE_REQ_IPC_RECV_SLOW_WARN_US
+                            {
+                                warn!(
+                                    "TradeReqLatency: ipc_recv_slow req_type={:?} client_order_id={} params_len={} create_time_us={} ipc_recv_us={} create_to_ipc_recv_us={}",
+                                    msg.req_type,
+                                    msg.client_order_id,
+                                    msg.params.len(),
+                                    msg.create_time,
+                                    ipc_recv_us,
+                                    create_to_ipc_recv_us
+                                );
+                            }
+                            msg.ipc_recv = Some(ipc_recv);
                             debug!(
                                 "enqueue request: type={:?}, client_order_id={}, params_len={}",
                                 msg.req_type,
