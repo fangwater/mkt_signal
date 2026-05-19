@@ -196,6 +196,7 @@ fn spawn_leg(
             label,
             url: ctx.url.clone(),
             local_ip: local_ip.clone(),
+            headers: ctx.adapter.ws_headers(),
             subscribe_msgs: subs,
             keepalive: ctx.adapter.keepalive(),
         },
@@ -296,21 +297,30 @@ fn make_handler(
     Rc::new(move |recv_us: i64, raw: &[u8]| {
         // 上层只 from_slice 一次，把同一份 &Value 给 adapter；非 JSON 文本帧
         // （如 Bitget "pong"）静默丢弃。dedup 统一在 process_frame 用 BboFrame.seq_id 完成。
-        let value: serde_json::Value = match serde_json::from_slice(raw) {
-            Ok(v) => v,
-            Err(_) => return,
-        };
-        let frames = match adapter.parse_frame(&value) {
-            Ok(v) => v,
-            Err(e) => {
-                log::error!(
-                    "spread_pbs[{}] adapter.parse_frame failed: {:#} payload={}",
-                    label,
-                    e,
-                    value
-                );
-                return;
-            }
+        let frames = match serde_json::from_slice::<serde_json::Value>(raw) {
+            Ok(value) => match adapter.parse_frame(&value) {
+                Ok(v) => v,
+                Err(e) => {
+                    log::error!(
+                        "spread_pbs[{}] adapter.parse_frame failed: {:#} payload={}",
+                        label,
+                        e,
+                        value
+                    );
+                    return;
+                }
+            },
+            Err(_) => match adapter.parse_binary_frame(raw) {
+                Ok(v) => v,
+                Err(e) => {
+                    log::error!(
+                        "spread_pbs[{}] adapter.parse_binary_frame failed: {:#}",
+                        label,
+                        e
+                    );
+                    return;
+                }
+            },
         };
         if frames.is_empty() {
             return;

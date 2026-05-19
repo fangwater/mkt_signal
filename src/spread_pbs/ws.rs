@@ -17,6 +17,10 @@ use tokio::net::{lookup_host, TcpSocket, TcpStream};
 use tokio::sync::watch;
 use tokio_native_tls::TlsConnector as TokioTlsConnector;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{
+    client::IntoClientRequest,
+    http::{HeaderName, HeaderValue},
+};
 use tokio_tungstenite::{client_async, MaybeTlsStream, WebSocketStream};
 use url::Url;
 
@@ -37,6 +41,7 @@ pub struct WsLoopParams {
     pub label: &'static str,
     pub url: String,
     pub local_ip: String,
+    pub headers: Vec<(String, String)>,
     pub subscribe_msgs: Vec<serde_json::Value>,
     pub keepalive: Option<KeepaliveSpec>,
 }
@@ -51,6 +56,7 @@ pub async fn run_public_ws(
         label,
         url,
         local_ip,
+        headers,
         subscribe_msgs,
         keepalive,
     } = params;
@@ -61,7 +67,7 @@ pub async fn run_public_ws(
             return;
         }
 
-        match connect_and_subscribe(&url, &local_ip, &subscribe_msgs).await {
+        match connect_and_subscribe(&url, &local_ip, &headers, &subscribe_msgs).await {
             Ok((sink, read)) => {
                 log::info!("spread_pbs ws[{}] connected to {}", label, url);
                 run_session(
@@ -98,9 +104,10 @@ pub async fn run_public_ws(
 async fn connect_and_subscribe(
     url: &str,
     local_ip: &str,
+    headers: &[(String, String)],
     subscribe_msgs: &[serde_json::Value],
 ) -> Result<(WsSink, WsRead)> {
-    let stream = open_ws(url, local_ip).await?;
+    let stream = open_ws(url, local_ip, headers).await?;
     let (mut sink, read) = stream.split();
     for msg in subscribe_msgs {
         let payload = msg.to_string();
@@ -111,7 +118,7 @@ async fn connect_and_subscribe(
     Ok((sink, read))
 }
 
-async fn open_ws(url: &str, local_ip: &str) -> Result<WsStream> {
+async fn open_ws(url: &str, local_ip: &str, headers: &[(String, String)]) -> Result<WsStream> {
     let parsed = Url::parse(url).with_context(|| format!("invalid ws url: {}", url))?;
     let scheme = parsed.scheme().to_string();
     let host = parsed
@@ -141,6 +148,15 @@ async fn open_ws(url: &str, local_ip: &str) -> Result<WsStream> {
     // 关闭 Nagle 减少 ws 数据帧的合并/延迟（colo 场景关键）。
     let _ = tcp.set_nodelay(true);
 
+    let mut request = parsed.clone().into_client_request()?;
+    for (name, value) in headers {
+        let name = HeaderName::from_bytes(name.as_bytes())
+            .with_context(|| format!("invalid ws header name: {}", name))?;
+        let value = HeaderValue::from_str(value)
+            .with_context(|| format!("invalid ws header value for {}", name))?;
+        request.headers_mut().insert(name, value);
+    }
+
     let stream = if scheme.eq_ignore_ascii_case("wss") {
         let native = NativeTlsConnector::builder()
             .build()
@@ -151,11 +167,11 @@ async fn open_ws(url: &str, local_ip: &str) -> Result<WsStream> {
             .await
             .with_context(|| "TLS handshake")?;
         let wrapped = MaybeTlsStream::NativeTls(tls_stream);
-        let (ws_stream, _resp) = client_async(url, wrapped).await?;
+        let (ws_stream, _resp) = client_async(request, wrapped).await?;
         ws_stream
     } else {
         let plain = MaybeTlsStream::Plain(tcp);
-        let (ws_stream, _resp) = client_async(url, plain).await?;
+        let (ws_stream, _resp) = client_async(request, plain).await?;
         ws_stream
     };
     Ok(stream)

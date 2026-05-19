@@ -64,8 +64,14 @@ impl KeepaliveSpec {
 pub trait VenueAdapter {
     fn name(&self) -> &'static str;
     fn ws_url(&self) -> String;
+    fn ws_headers(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
     fn build_subscribe(&self, symbols: &[String]) -> Vec<Value>;
     fn parse_frame(&self, value: &Value) -> Result<Vec<BboFrame>>;
+    fn parse_binary_frame(&self, _raw: &[u8]) -> Result<Vec<BboFrame>> {
+        Ok(Vec::new())
+    }
     /// 返回 None 表示完全依赖服务端 ws-Ping/Pong；返回 Some 表示主动按 interval 发心跳。
     fn keepalive(&self) -> Option<KeepaliveSpec>;
 }

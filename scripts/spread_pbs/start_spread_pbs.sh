@@ -148,6 +148,13 @@ json_base="$(json_escape "$BASE_DIR")"
 json_venue="$(json_escape "$venue")"
 json_rust_log="$(json_escape "$rust_log")"
 json_inner_bin="$(json_escape "$BIN_PATH")"
+binance_sbe_env_line=""
+if [[ "$venue" == "binance-margin" ]]; then
+  BINANCE_SBE_API_KEY_HARDCODED="nk1AebIPBgDpTNDl186QeD2imHSuyPm4t2yzIGEul1SmmU0QXFroGVEHI18pVAO4"
+  json_binance_sbe_api_key="$(json_escape "$BINANCE_SBE_API_KEY_HARDCODED")"
+  binance_sbe_env_line=",
+        \"BINANCE_SBE_API_KEY\": \"${json_binance_sbe_api_key}\""
+fi
 
 # iceoryx2 默认按 CWD 查找 ./config/iceoryx2.toml；没有就从 root 兜底
 if [[ ! -f "$BASE_DIR/config/iceoryx2.toml" && -f "$ROOT_DIR/config/iceoryx2.toml" ]]; then
@@ -170,7 +177,7 @@ cat >"$cfg_file" <<JSON
       ],
       "cwd": "${json_base}",
       "env": {
-        "RUST_LOG": "${json_rust_log}"
+        "RUST_LOG": "${json_rust_log}"${binance_sbe_env_line}
       }
     }
   ]
