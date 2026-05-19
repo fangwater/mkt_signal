@@ -1,0 +1,82 @@
+下面这份可以作为下次故障时的查询 checklist。
+
+  核心 grep 目标
+
+  cd /home/ubuntu/.pmdaemon/logs
+
+  rg "TradeReqLatency|QueryReqLatency" mm_pt_binance_alpha-error.log*
+  rg "TradeReqLatency|QueryReqLatency|trade_engine:binance:ws:new" mm_te_binance_alpha-error.log*
+
+  如果有具体 client_order_id
+
+  ID=7470898468098146570
+  rg "$ID|cli_id=$ID|client_order_id=$ID|request_query_id=$ID" \
+    mm_pt_binance_alpha-error.log* \
+    mm_te_binance_alpha-error.log* \
+    mm_am_binance_alpha-error.log*
+
+  多个订单就用：
+
+  rg "7470898468098146570|7470898468098146571|7470898468098146572|7470898468098146573" \
+    mm_pt_binance_alpha-error.log* \
+    mm_te_binance_alpha-error.log* \
+    mm_am_binance_alpha-error.log*
+
+  新加日志怎么判断
+
+  PT: TradeReqLatency: publish_slow
+
+  看 PT 从 order request 创建到 IPC publish 完成：
+
+  - build_to_publish_done_us 大，publish_cost_us 小：PT 内部在 build 后、publish 前卡住。
+  - publish_cost_us 大：Iceoryx publish/loan/send 本身慢。
+  - 两个都不大：PT publish 没问题，继续看 TE。
+
+  PT: QueryReqLatency: publish_slow
+
+  同上，但针对 query request。用于判断 orphan/query 压力是不是 PT query publish 侧卡住。
+
+  TE: TradeReqLatency: ipc_recv_slow
+
+  看 TE 收到 order IPC 是否晚：
+
+  - 这个大，而 PT publish 不大：问题在 IPC buffer 或 TE subscriber 调度。
+  - 这个不大，但 TE sending new_order 晚：问题在 TE 内部 req_worker/router/ws_client 调度。
+  - 这个不大，trade_engine:binance:ws:new p99 也不大：TE 发单链路基本不是瓶颈。
+
+  TE: QueryReqLatency: ipc_recv_slow
+
+  看 query IPC 到 TE 是否晚。特别关注 orphan handoff 后的 order query 是否被延迟。
+
+  原有 TE 延迟统计
+
+  rg "trade_engine:binance:ws:new|sending new_order|recv new_order response|order_query" \
+    mm_te_binance_alpha-error.log*
+
+  trade_engine:binance:ws:new 是 TE 收到 IPC 后到 WS send 前 的延迟统计，不包含 PT build 到 IPC publish 的时间。
+
+  orphan 收敛节奏
+
+  现在 commit orphan 改成：
+
+  query #1: ~1s
+  query #2: ~3s
+  query #3: ~7s
+  close:    ~15s
+
+  所以如果再看到：
+
+  orphan_handoff_start
+  query sent
+  commit order query budget exhausted; closing local orphan
+
+  要检查 close 是否发生在约 15s 后。如果仍然 2s 左右 close，说明运行的不是新代码或有另一套路径没改到。
+
+  最终判断顺序
+
+  1. 用 AM 查交易所真实状态：x=NEW/X=NEW、后续 TRADE/FILLED。
+  2. 用 PT 查该订单是否 orphan_handoff_start、何时 handoff、何时 close。
+  3. 用 PT 新日志看 build->publish 是否慢。
+  4. 用 TE 新日志看 IPC recv 是否慢。
+  5. 用 TE 原有统计看 IPC recv->WS send 是否慢。
+  6. 对比 TE recv new_order response 和 AM NEW 时间，判断交易所响应/账户流是否正常。

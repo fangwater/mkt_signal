@@ -20,7 +20,7 @@ usage() {
 用法: cross_scripts/start_cross_monitors.sh
 
 说明:
-  - 启动 cross 所需的两侧账户 monitor（当前支持 okex + binance）。
+  - 启动 cross 所需的两侧账户 monitor（支持 binance/okex/bybit/bitget/gate）。
   - 会优先从 env.sh 读取 OPEN_VENUE/HEDGE_VENUE；
     若没有，则从部署目录名推断：<open>-<hedge>-cross-...
   - 跨所会启动两个 pmdaemon 进程：
@@ -123,14 +123,14 @@ SIDE_TAG="${CROSS_SIDE:-$(infer_side_from_dir "$(basename "$BASE_DIR")")}"
 
 if [[ -z "${IPC_NAMESPACE:-}" ]]; then
   echo "[ERROR] IPC_NAMESPACE 未设置（请 source env.sh）"
-  echo "[ERROR] 建议: scripts/deploy_setup_env_cross.sh --env-name $(basename "$BASE_DIR") --open-venue ${OPEN_EXCHANGE}-margin --hedge-venue ${HEDGE_EXCHANGE}-futures"
+  echo "[ERROR] 建议: scripts/deploy_setup_env_cross.sh --env-name $(basename "$BASE_DIR") --open-venue ${OPEN_EXCHANGE}-futures --hedge-venue ${HEDGE_EXCHANGE}-futures"
   exit 1
 fi
 
 bin_for_exchange() {
   local ex="$1"
   case "$ex" in
-    okex|binance) ;;
+    binance|okex|bybit|bitget|gate) ;;
     *)
       return 1
       ;;
@@ -196,7 +196,7 @@ start_one() {
   if ! bin="$(bin_for_exchange "$ex")"; then
     echo "[ERROR] 未找到 account monitor 二进制 for exchange=${ex}"
     echo "[ERROR] 期望存在: ${BASE_DIR}/account_monitor_${ex} 或 ${BASE_DIR}/${ex}_account_monitor"
-    echo "[ERROR] 请先部署: scripts/deploy_cross_monitors.sh --env-name $(basename "$BASE_DIR") --open-venue ${OPEN_EXCHANGE}-margin --hedge-venue ${HEDGE_EXCHANGE}-futures"
+    echo "[ERROR] 请先部署: scripts/deploy_cross_monitors.sh --env-name $(basename "$BASE_DIR") --open-venue ${OPEN_EXCHANGE}-futures --hedge-venue ${HEDGE_EXCHANGE}-futures"
     exit 1
   fi
 
