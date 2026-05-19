@@ -3,6 +3,8 @@ use iceoryx2::port::publisher::Publisher;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 
+use crate::rolling_metrics::latency_snapshot::LATENCY_SNAPSHOT_PAYLOAD_LEN;
+
 /// AskBidSpreadMsg wire format 实测占用：4B msg_type + 4B symbol_len + N(symbol)
 /// + 8B ts + 4×8B = 至多 ~80 字节。预留到 128 与 dat_pbs 对齐，便于
 /// 未来扩展且和 forwarder.rs 的 SPREAD_MAX_BYTES 一致。
@@ -17,6 +19,13 @@ const SUBSCRIBER_MAX_BUFFER: usize = 8192;
 /// 与 dat_pbs 的同名 channel 完全独立。
 pub struct SpreadPublisher {
     publisher: Publisher<ipc::Service, [u8; SPREAD_PAYLOAD_BYTES], ()>,
+    service_name: String,
+}
+
+/// `spread_pbs/<venue>/latency` 服务的 publisher。这个 service 不经过
+/// `IPC_NAMESPACE`，因为 spread_pbs 在单机上按 venue 唯一部署。
+pub struct SpreadLatencyPublisher {
+    publisher: Publisher<ipc::Service, [u8; LATENCY_SNAPSHOT_PAYLOAD_LEN], ()>,
     service_name: String,
 }
 
@@ -70,6 +79,47 @@ impl SpreadPublisher {
         let sample = self.publisher.loan_uninit()?;
         let sample = sample.write_payload(buffer);
         sample.send()?;
+        Ok(())
+    }
+}
+
+impl SpreadLatencyPublisher {
+    pub fn new(venue_slug: &str) -> Result<Self> {
+        let service_name = format!("spread_pbs/{}/latency", venue_slug);
+        let node_name = format!("spread_pbs_{}_latency", venue_slug.replace('-', "_"));
+
+        let node = NodeBuilder::new()
+            .name(&NodeName::new(&node_name)?)
+            .create::<ipc::Service>()?;
+
+        let service = node
+            .service_builder(&ServiceName::new(&service_name)?)
+            .publish_subscribe::<[u8; LATENCY_SNAPSHOT_PAYLOAD_LEN]>()
+            .max_publishers(1)
+            .max_subscribers(64)
+            .history_size(HISTORY_SIZE)
+            .subscriber_max_buffer_size(SUBSCRIBER_MAX_BUFFER)
+            .open_or_create()?;
+
+        let publisher = service.publisher_builder().create()?;
+
+        log::info!(
+            "spread_pbs latency publisher ready: service={} max_subscribers=64 payload={}B",
+            service_name,
+            LATENCY_SNAPSHOT_PAYLOAD_LEN
+        );
+        Ok(Self {
+            publisher,
+            service_name,
+        })
+    }
+
+    pub fn service_name(&self) -> &str {
+        &self.service_name
+    }
+
+    pub fn publish(&self, data: [u8; LATENCY_SNAPSHOT_PAYLOAD_LEN]) -> Result<()> {
+        self.publisher.send_copy(data)?;
         Ok(())
     }
 }

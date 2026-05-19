@@ -4,6 +4,8 @@
 //! - **服务名**：`<IPC_NAMESPACE>/te_pubs/<venue>/latency`，载荷
 //!   `[u8; LATENCY_SNAPSHOT_PAYLOAD_LEN]`（512 字节）。`IPC_NAMESPACE` 让多 te
 //!   实例互不冲突；`te_pubs` 前缀声明发布源是 trade_engine。
+//!   `spread_pbs` 复用同一载荷格式，但服务名固定为
+//!   `spread_pbs/<venue>/latency`，不加 `IPC_NAMESPACE`。
 //! - **载荷**：定长 `LatencySnapshotMsg`（`repr(C)`），通过 iceoryx2
 //!   `publish_subscribe` 推出。
 //! - **语义**：本周期里所有非空桶的统计；空桶不占位（`n_buckets` 标记有效条数，
@@ -26,10 +28,13 @@ pub const METRIC_ID_UPLINK: u8 = 1; // T2 − T1
 pub const METRIC_ID_SERVER: u8 = 2; // T3 − T2
 pub const METRIC_ID_DOWNLINK: u8 = 3; // T4 − T3
 pub const METRIC_ID_RTT: u8 = 4; // T4 − T1
+pub const METRIC_ID_SPREAD_NET: u8 = 10; // spread_pbs: recv_us − event_time_us
+pub const METRIC_ID_SPREAD_E2E: u8 = 11; // spread_pbs: accepted_us − event_time_us
 
 // action_id —— 下单还是撤单
 pub const ACTION_ID_NEW: u8 = 0;
 pub const ACTION_ID_CANCEL: u8 = 1;
+pub const ACTION_ID_MARKET_DATA: u8 = 2;
 
 /// 单个桶的快照（48 字节，`repr(C)` + 8 字节对齐）。
 #[repr(C)]

@@ -9,10 +9,15 @@ use tokio::time::{Duration, Instant};
 use crate::common::mkt_msg::AskBidSpreadMsg;
 use crate::common::time_util::get_timestamp_us;
 use crate::mkt_pub::cfg::Config;
+use crate::rolling_metrics::latency_kll::LatencyStats;
+use crate::rolling_metrics::latency_snapshot::{
+    LatencyBucketStat, LatencySnapshotMsg, ACTION_ID_MARKET_DATA, METRIC_ID_SPREAD_E2E,
+    METRIC_ID_SPREAD_NET,
+};
 
 use crate::spread_pbs::adapter::{create_adapter, BboFrame, VenueAdapter};
 use crate::spread_pbs::latency::LatencyKll;
-use crate::spread_pbs::publisher::SpreadPublisher;
+use crate::spread_pbs::publisher::{SpreadLatencyPublisher, SpreadPublisher};
 use crate::spread_pbs::ws::{run_public_ws, FrameHandler, WsLoopParams};
 
 const DEDUP_RESET_INTERVAL_US: i64 = 5 * 60 * 1_000_000;
@@ -87,11 +92,19 @@ impl SpreadPbsApp {
             SpreadPublisher::new(venue_slug)
                 .with_context(|| format!("create iceoryx publisher for {}", venue_slug))?,
         );
+        let latency_publisher = Rc::new(
+            SpreadLatencyPublisher::new(venue_slug)
+                .with_context(|| format!("create iceoryx latency publisher for {}", venue_slug))?,
+        );
         let net_label = format!("{}-net", venue_slug);
+        let ipc_net_label = format!("{}-ipc-net", venue_slug);
+        let ipc_e2e_label = format!("{}-ipc", venue_slug);
         let state: Rc<RefCell<SharedState>> = Rc::new(RefCell::new(SharedState {
             dedup: HashMap::with_capacity(2048),
             latency_e2e: LatencyKll::new(venue_slug),
             latency_net: LatencyKll::new(net_label),
+            latency_ipc_e2e: LatencyKll::new(ipc_e2e_label),
+            latency_ipc_net: LatencyKll::new(ipc_net_label),
             published: 0,
             dropped_by_seq: 0,
             last_dedup_reset_us: get_timestamp_us(),
@@ -145,7 +158,12 @@ impl SpreadPbsApp {
                     break;
                 }
                 _ = stats_ticker.tick() => {
-                    let s = state.borrow();
+                    let mut s = state.borrow_mut();
+                    if let Some(msg) = take_latency_snapshot(&mut s, venue.to_u8() as u32) {
+                        if let Err(e) = latency_publisher.publish(msg.into_bytes()) {
+                            log::warn!("spread_pbs[{}] latency snapshot publish failed: {:#}", venue_slug, e);
+                        }
+                    }
                     log::info!(
                         "spread_pbs[{}] stats published={} dropped_by_seq={} symbols_seen={}",
                         venue_slug, s.published, s.dropped_by_seq, s.dedup.len()
@@ -283,6 +301,9 @@ struct SharedState {
     latency_e2e: LatencyKll,
     /// 同上，保留 `-net` 标签便于与旧日志兼容。
     latency_net: LatencyKll,
+    /// IPC latency snapshot buckets. Kept separate so periodic IPC snapshots do not reset log KLLs.
+    latency_ipc_e2e: LatencyKll,
+    latency_ipc_net: LatencyKll,
     published: u64,
     dropped_by_seq: u64,
     last_dedup_reset_us: i64,
@@ -350,8 +371,12 @@ fn process_frame(
     state.dedup.insert(f.symbol.clone(), f.seq_id);
 
     if f.ts_us > 0 {
-        state.latency_net.push((recv_us - f.ts_us) as f64);
-        state.latency_e2e.push((accepted_us - f.ts_us) as f64);
+        let net_us = (recv_us - f.ts_us) as f64;
+        let e2e_us = (accepted_us - f.ts_us) as f64;
+        state.latency_net.push(net_us);
+        state.latency_e2e.push(e2e_us);
+        state.latency_ipc_net.push(net_us);
+        state.latency_ipc_e2e.push(e2e_us);
     }
 
     let msg = AskBidSpreadMsg::create(
@@ -368,6 +393,56 @@ fn process_frame(
         return;
     }
     state.published += 1;
+}
+
+fn take_latency_snapshot(state: &mut SharedState, venue_id: u32) -> Option<LatencySnapshotMsg> {
+    let mut msg = LatencySnapshotMsg::new(venue_id, get_timestamp_us());
+    let mut idx = 0usize;
+
+    snap_latency_bucket(
+        &mut msg,
+        &mut idx,
+        METRIC_ID_SPREAD_NET,
+        state.latency_ipc_net.snapshot_and_reset(),
+    );
+    snap_latency_bucket(
+        &mut msg,
+        &mut idx,
+        METRIC_ID_SPREAD_E2E,
+        state.latency_ipc_e2e.snapshot_and_reset(),
+    );
+
+    if idx == 0 {
+        None
+    } else {
+        msg.n_buckets = idx as u32;
+        Some(msg)
+    }
+}
+
+fn snap_latency_bucket(
+    msg: &mut LatencySnapshotMsg,
+    idx: &mut usize,
+    metric_id: u8,
+    stats: Option<LatencyStats>,
+) {
+    let Some(stats) = stats else {
+        return;
+    };
+    if *idx >= msg.buckets.len() {
+        return;
+    }
+    msg.buckets[*idx] = LatencyBucketStat {
+        metric_id,
+        action_id: ACTION_ID_MARKET_DATA,
+        _pad: [0; 6],
+        n: stats.n,
+        p50_us: stats.p50_us,
+        p90_us: stats.p90_us,
+        p95_us: stats.p95_us,
+        p99_us: stats.p99_us,
+    };
+    *idx += 1;
 }
 
 fn reset_dedup_high_water_if_needed(state: &mut SharedState, accepted_us: i64, f: &BboFrame) {
@@ -406,6 +481,8 @@ mod tests {
             dedup: HashMap::new(),
             latency_e2e: LatencyKll::new("test-e2e"),
             latency_net: LatencyKll::new("test-net"),
+            latency_ipc_e2e: LatencyKll::new("test-ipc-e2e"),
+            latency_ipc_net: LatencyKll::new("test-ipc-net"),
             published: 0,
             dropped_by_seq: 0,
             last_dedup_reset_us: now_us,
@@ -467,5 +544,25 @@ mod tests {
 
         assert!(state.dedup.is_empty());
         assert_eq!(state.last_dedup_reset_us, now_us + DEDUP_RESET_INTERVAL_US);
+    }
+
+    #[test]
+    fn latency_snapshot_contains_spread_net_and_e2e_buckets() {
+        let mut state = test_state(1_000_000);
+        state.latency_ipc_net.push(10.0);
+        state.latency_ipc_net.push(20.0);
+        state.latency_ipc_e2e.push(12.0);
+        state.latency_ipc_e2e.push(22.0);
+
+        let msg = take_latency_snapshot(&mut state, 7).expect("snapshot");
+        assert_eq!(msg.venue_id, 7);
+        assert_eq!(msg.n_buckets, 2);
+        assert_eq!(msg.buckets[0].metric_id, METRIC_ID_SPREAD_NET);
+        assert_eq!(msg.buckets[0].action_id, ACTION_ID_MARKET_DATA);
+        assert_eq!(msg.buckets[0].n, 2);
+        assert_eq!(msg.buckets[1].metric_id, METRIC_ID_SPREAD_E2E);
+        assert_eq!(msg.buckets[1].action_id, ACTION_ID_MARKET_DATA);
+        assert_eq!(msg.buckets[1].n, 2);
+        assert!(take_latency_snapshot(&mut state, 7).is_none());
     }
 }
