@@ -27,6 +27,7 @@ use crate::trade_engine::query_parsers::gate_order_status::{
 };
 use crate::trade_engine::query_request::{QueryRequestMsg, QueryRequestType};
 use crate::trade_engine::query_response_handle::QueryExecOutcome;
+use crate::trade_engine::response_sink::{QueryResponseSink, TradeResponseSink};
 use crate::trade_engine::trade_request::{TradeRequestMsg, TradeRequestType};
 use crate::trade_engine::trade_response_handle::TradeExecOutcome;
 use anyhow::{anyhow, Context, Result};
@@ -43,7 +44,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 use std::{cell::RefCell, rc::Rc};
 use tokio::net::{lookup_host, TcpSocket, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::Notify;
 use tokio::time;
 use tokio_native_tls::TlsConnector as TokioTlsConnector;
 use tokio_tungstenite::{
@@ -203,6 +204,39 @@ pub enum WsCommand {
     Send(TradeRequestMsg),
     SendQuery(QueryRequestMsg),
     Shutdown,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct WsCommandQueue {
+    inner: Rc<RefCell<VecDeque<WsCommand>>>,
+    notify: Rc<Notify>,
+}
+
+impl WsCommandQueue {
+    pub(crate) fn new() -> Self {
+        Self {
+            inner: Rc::new(RefCell::new(VecDeque::new())),
+            notify: Rc::new(Notify::new()),
+        }
+    }
+
+    fn push(&self, cmd: WsCommand) {
+        self.inner.borrow_mut().push_back(cmd);
+        self.notify.notify_one();
+    }
+
+    fn pop(&self) -> Option<WsCommand> {
+        self.inner.borrow_mut().pop_front()
+    }
+
+    async fn next(&self) -> WsCommand {
+        loop {
+            if let Some(cmd) = self.pop() {
+                return cmd;
+            }
+            self.notify.notified().await;
+        }
+    }
 }
 
 /// 跨 WS endpoint 共享的延迟分桶。
@@ -430,23 +464,21 @@ pub(crate) struct WsEndpointState {
 
 #[derive(Clone, Debug)]
 pub struct WsEndpointHandle {
-    tx: mpsc::UnboundedSender<WsCommand>,
+    cmd_queue: WsCommandQueue,
     state: Rc<RefCell<WsEndpointState>>,
 }
 
 impl WsEndpointHandle {
-    pub(crate) fn new(
-        tx: mpsc::UnboundedSender<WsCommand>,
-        state: Rc<RefCell<WsEndpointState>>,
-    ) -> Self {
-        Self { tx, state }
+    pub(crate) fn new(cmd_queue: WsCommandQueue, state: Rc<RefCell<WsEndpointState>>) -> Self {
+        Self { cmd_queue, state }
     }
 
     pub(crate) fn send(&self, cmd: WsCommand) -> Result<(), ()> {
         if !self.is_available() {
             return Err(());
         }
-        self.tx.send(cmd).map_err(|_| ())
+        self.cmd_queue.push(cmd);
+        Ok(())
     }
 
     pub(crate) fn is_available(&self) -> bool {
@@ -512,9 +544,9 @@ pub struct TradeWsClient {
     okex_inst_id_code_cache: HashMap<String, i64>,
     okex_loaded_inst_types: HashSet<&'static str>,
     gate_ws_kind: Option<gate_ws::GateWsKind>,
-    cmd_rx: mpsc::UnboundedReceiver<WsCommand>,
-    resp_tx: mpsc::UnboundedSender<TradeExecOutcome>,
-    query_resp_tx: Option<mpsc::UnboundedSender<QueryExecOutcome>>,
+    cmd_queue: WsCommandQueue,
+    resp_sink: TradeResponseSink,
+    query_resp_sink: Option<QueryResponseSink>,
     pending: VecDeque<TradeRequestMsg>,
     pending_query: VecDeque<QueryRequestMsg>,
     inflight: HashMap<i64, TradeInflightMeta>,
@@ -547,9 +579,9 @@ impl TradeWsClient {
         login_payload: Option<String>,
         binance_creds: Option<ApiKey>,
         gate_ws_kind: Option<gate_ws::GateWsKind>,
-        query_resp_tx: Option<mpsc::UnboundedSender<QueryExecOutcome>>,
-        cmd_rx: mpsc::UnboundedReceiver<WsCommand>,
-        resp_tx: mpsc::UnboundedSender<TradeExecOutcome>,
+        query_resp_sink: Option<QueryResponseSink>,
+        cmd_queue: WsCommandQueue,
+        resp_sink: TradeResponseSink,
         engine_shutdown: CancellationToken,
         endpoint_state: Rc<RefCell<WsEndpointState>>,
         shutdown_on_rate_limit: bool,
@@ -639,9 +671,9 @@ impl TradeWsClient {
             okex_inst_id_code_cache: HashMap::new(),
             okex_loaded_inst_types: HashSet::new(),
             gate_ws_kind,
-            cmd_rx,
-            resp_tx,
-            query_resp_tx,
+            cmd_queue,
+            resp_sink,
+            query_resp_sink,
             pending: VecDeque::new(),
             pending_query: VecDeque::new(),
             inflight: HashMap::new(),
@@ -752,6 +784,36 @@ impl TradeWsClient {
             .unwrap_or(false)
     }
 
+    async fn next_command(&self) -> WsCommand {
+        self.cmd_queue.next().await
+    }
+
+    fn queue_disconnected_command(&mut self, cmd: WsCommand, context: &str) {
+        match cmd {
+            WsCommand::Send(msg) => {
+                debug!(
+                    "trade ws client id={} queued order {} client_order_id={}",
+                    self.id, context, msg.client_order_id
+                );
+                self.pending.push_back(msg);
+            }
+            WsCommand::SendQuery(msg) => {
+                debug!(
+                    "trade ws client id={} queued query {} client_query_id={}",
+                    self.id, context, msg.client_query_id
+                );
+                self.pending_query.push_back(msg);
+            }
+            WsCommand::Shutdown => {
+                info!(
+                    "trade ws client id={} shutdown requested {}",
+                    self.id, context
+                );
+                self.shutdown = true;
+            }
+        }
+    }
+
     pub async fn run(mut self) {
         let mut backoff_ms = 500u64;
         while !self.shutdown {
@@ -765,27 +827,8 @@ impl TradeWsClient {
                             info!("trade ws client id={} observed trade_engine shutdown during rate-limit cooldown", self.id);
                             self.shutdown = true;
                         }
-                        cmd = self.cmd_rx.recv() => {
-                            match cmd {
-                                Some(WsCommand::Send(msg)) => {
-                                    debug!(
-                                        "trade ws client id={} queued order during rate-limit cooldown client_order_id={}",
-                                        self.id, msg.client_order_id
-                                    );
-                                    self.pending.push_back(msg);
-                                }
-                                Some(WsCommand::SendQuery(msg)) => {
-                                    debug!(
-                                        "trade ws client id={} queued query during rate-limit cooldown client_query_id={}",
-                                        self.id, msg.client_query_id
-                                    );
-                                    self.pending_query.push_back(msg);
-                                }
-                                Some(WsCommand::Shutdown) | None => {
-                                    info!("trade ws client id={} shutdown requested during rate-limit cooldown", self.id);
-                                    self.shutdown = true;
-                                }
-                            }
+                        cmd = self.next_command() => {
+                            self.queue_disconnected_command(cmd, "during rate-limit cooldown");
                         }
                         _ = time::sleep_until(sleep_until) => {
                             self.clear_rate_limit_cooldown_if_elapsed();
@@ -812,30 +855,12 @@ impl TradeWsClient {
                     self.shutdown = true;
                     break;
                 }
-                cmd = self.cmd_rx.recv() => {
-                    match cmd {
-                        Some(WsCommand::Send(msg)) => {
-                            debug!(
-                                "trade ws client id={} queued order while disconnected client_order_id={}",
-                                self.id, msg.client_order_id
-                            );
-                            self.pending.push_back(msg);
-                            continue;
-                        }
-                        Some(WsCommand::SendQuery(msg)) => {
-                            debug!(
-                                "trade ws client id={} queued query while disconnected client_query_id={}",
-                                self.id, msg.client_query_id
-                            );
-                            self.pending_query.push_back(msg);
-                            continue;
-                        }
-                        Some(WsCommand::Shutdown) | None => {
-                            info!("trade ws client id={} shutdown requested while disconnected", self.id);
-                            self.shutdown = true;
-                            break;
-                        }
+                cmd = self.next_command() => {
+                    self.queue_disconnected_command(cmd, "while disconnected");
+                    if self.shutdown {
+                        break;
                     }
+                    continue;
                 }
                 res = Self::establish_connection_with(local_ip, &url, connect_timeout_ms) => {
                     match res {
@@ -986,27 +1011,8 @@ impl TradeWsClient {
                     info!("trade ws client id={} observed trade_engine shutdown during backoff", self.id);
                     self.shutdown = true;
                 }
-                cmd = self.cmd_rx.recv() => {
-                    match cmd {
-                        Some(WsCommand::Send(msg)) => {
-                            debug!(
-                                "trade ws client id={} queued order during backoff client_order_id={}",
-                                self.id, msg.client_order_id
-                            );
-                            self.pending.push_back(msg);
-                        }
-                        Some(WsCommand::SendQuery(msg)) => {
-                            debug!(
-                                "trade ws client id={} queued query during backoff client_query_id={}",
-                                self.id, msg.client_query_id
-                            );
-                            self.pending_query.push_back(msg);
-                        }
-                        Some(WsCommand::Shutdown) | None => {
-                            info!("trade ws client id={} shutdown requested during backoff", self.id);
-                            self.shutdown = true;
-                        }
-                    }
+                cmd = self.next_command() => {
+                    self.queue_disconnected_command(cmd, "during backoff");
                 }
                 _ = time::sleep(Duration::from_millis(backoff_ms)) => {}
             }
@@ -1031,31 +1037,10 @@ impl TradeWsClient {
                     let _ = ws.close(None).await;
                     return Ok(());
                 }
-                cmd = self.cmd_rx.recv() => {
-                    match cmd {
-                        Some(WsCommand::Send(msg)) => {
-                            debug!("trade ws client id={} received order client_order_id={}", self.id, msg.client_order_id);
-                            self.handle_send(msg, ws).await?;
-                        }
-                        Some(WsCommand::SendQuery(msg)) => {
-                            debug!(
-                                "trade ws client id={} received query client_query_id={}",
-                                self.id, msg.client_query_id
-                            );
-                            self.handle_send_query(msg, ws).await?;
-                        }
-                        Some(WsCommand::Shutdown) => {
-                            info!("trade ws client id={} received shutdown signal", self.id);
-                            self.shutdown = true;
-                            let _ = ws.close(None).await;
-                            return Ok(());
-                        }
-                        None => {
-                            info!("trade ws client id={} command channel closed", self.id);
-                            self.shutdown = true;
-                            let _ = ws.close(None).await;
-                            return Ok(());
-                        }
+                cmd = self.next_command() => {
+                    self.handle_command_connected(cmd, ws).await?;
+                    if self.shutdown {
+                        return Ok(());
                     }
                 }
                 message = ws.next() => {
@@ -1096,6 +1081,35 @@ impl TradeWsClient {
                 return Ok(());
             }
         }
+    }
+
+    async fn handle_command_connected(
+        &mut self,
+        cmd: WsCommand,
+        ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
+    ) -> Result<()> {
+        match cmd {
+            WsCommand::Send(msg) => {
+                debug!(
+                    "trade ws client id={} received order client_order_id={}",
+                    self.id, msg.client_order_id
+                );
+                self.handle_send(msg, ws).await?;
+            }
+            WsCommand::SendQuery(msg) => {
+                debug!(
+                    "trade ws client id={} received query client_query_id={}",
+                    self.id, msg.client_query_id
+                );
+                self.handle_send_query(msg, ws).await?;
+            }
+            WsCommand::Shutdown => {
+                info!("trade ws client id={} received shutdown signal", self.id);
+                self.shutdown = true;
+                let _ = ws.close(None).await;
+            }
+        }
+        Ok(())
     }
 
     async fn establish_connection_with(
@@ -1192,7 +1206,7 @@ impl TradeWsClient {
         msg: QueryRequestMsg,
         ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
     ) -> Result<()> {
-        if self.query_resp_tx.is_none() {
+        if self.query_resp_sink.is_none() {
             return Ok(());
         }
         if self.pending_query.len() >= self.max_inflight {
@@ -1806,7 +1820,7 @@ impl TradeWsClient {
             "localIp": self.local_ip.to_string(),
         })
         .to_string();
-        let _ = self.resp_tx.send(TradeExecOutcome {
+        let _ = self.resp_sink.send(TradeExecOutcome {
             req_type: msg.req_type,
             client_order_id: msg.client_order_id,
             status: 200,
@@ -1830,7 +1844,7 @@ impl TradeWsClient {
             "localIp": self.local_ip.to_string(),
         })
         .to_string();
-        let _ = self.resp_tx.send(TradeExecOutcome {
+        let _ = self.resp_sink.send(TradeExecOutcome {
             req_type: msg.req_type,
             client_order_id: msg.client_order_id,
             status: 429,
@@ -2103,7 +2117,7 @@ impl TradeWsClient {
                                 response_price: 0.0,
                             };
 
-                            let _ = self.resp_tx.send(outcome);
+                            let _ = self.resp_sink.send(outcome);
                             info!(
                                 "trade ws client id={} sent error response to strategy: client_order_id={} error_code={}",
                                 self.id, meta.client_order_id, error_code
@@ -2231,7 +2245,7 @@ impl TradeWsClient {
         })
         .to_string();
 
-        let _ = self.resp_tx.send(TradeExecOutcome {
+        let _ = self.resp_sink.send(TradeExecOutcome {
             req_type,
             client_order_id,
             status,
@@ -2273,7 +2287,7 @@ impl TradeWsClient {
             "localIp": self.local_ip.to_string(),
         })
         .to_string();
-        let _ = self.resp_tx.send(TradeExecOutcome {
+        let _ = self.resp_sink.send(TradeExecOutcome {
             req_type,
             client_order_id,
             status,
@@ -2567,7 +2581,7 @@ impl TradeWsClient {
             "localIp": self.local_ip.to_string(),
         })
         .to_string();
-        let _ = self.resp_tx.send(TradeExecOutcome {
+        let _ = self.resp_sink.send(TradeExecOutcome {
             req_type,
             client_order_id,
             status,
@@ -2893,7 +2907,7 @@ impl TradeWsClient {
             "trade ws client id={} exchange=gate recv {} response req_type={:?} client_order_id={} status={} order_id={}",
             self.id, channel, req_type, client_order_id, status, order_id
         );
-        let _ = self.resp_tx.send(TradeExecOutcome {
+        let _ = self.resp_sink.send(TradeExecOutcome {
             req_type,
             client_order_id,
             status,
@@ -2933,7 +2947,7 @@ impl TradeWsClient {
             })
             .to_string()
         };
-        let _ = self.resp_tx.send(TradeExecOutcome {
+        let _ = self.resp_sink.send(TradeExecOutcome {
             req_type,
             client_order_id,
             status: 206,
@@ -2954,7 +2968,7 @@ impl TradeWsClient {
         status: u16,
         body: Bytes,
     ) {
-        let Some(tx) = &self.query_resp_tx else {
+        let Some(tx) = &self.query_resp_sink else {
             return;
         };
         let _ = tx.send(QueryExecOutcome {
@@ -3008,7 +3022,7 @@ impl TradeWsClient {
         })
         .to_string();
 
-        let _ = self.resp_tx.send(TradeExecOutcome {
+        let _ = self.resp_sink.send(TradeExecOutcome {
             req_type,
             client_order_id,
             status,
