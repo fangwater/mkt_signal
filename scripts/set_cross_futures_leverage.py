@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
-"""Set futures leverage for all online FR/intra symbols.
+"""Batch set futures leverage on BOTH sides for cross arb environments.
 
 For Gate, --execute enforces single position mode plus cross margin.
 
-The online set is built from Redis symbol-list keys:
-  dump_symbols + trade_symbols + fwd_trade_symbols + bwd_trade_symbols
-  + unimmr_close_symbols
+For a cross env named ``<open>-<hedge>-cross-<suffix>`` (e.g.
+``bitget-gate-cross-arb01``), the script unions all online symbols from Redis:
 
-Default is dry-run. Add --execute to submit private API requests.
+  cross_dump_symbols:{open_ex}-{hedge_ex}
+  cross_fwd_trade_symbols:{open_ex}-{hedge_ex}
+  cross_bwd_trade_symbols:{open_ex}-{hedge_ex}
+  {env_name}:cross_unimmr_close_symbols:{open_venue}_{hedge_venue}
+
+and then sets leverage for each symbol on BOTH the open exchange and the
+hedge exchange (双边). Default is dry-run; add ``--execute`` to submit.
 
 Examples:
-  ./scripts/set_online_futures_leverage.py --execute
-  ./scripts/set_online_futures_leverage.py --leverage 10 --execute
-  ./scripts/set_online_futures_leverage.py --env-name bitget_fr_arb02 --leverage 5 --execute
-  ./scripts/set_online_futures_leverage.py --env-name binance-intra-arb01 --execute
-  ./scripts/set_online_futures_leverage.py --env-name binance_fr_arb02 --execute
+  scripts/set_cross_futures_leverage.py --env-name bitget-gate-cross-arb01 --leverage 5
+  scripts/set_cross_futures_leverage.py --env-name bitget-gate-cross-arb01 --leverage 5 --execute
+  scripts/set_cross_futures_leverage.py --env-name okex-binance-cross-trade --symbol BTC,ETH --leverage 4 --execute
+  scripts/set_cross_futures_leverage.py --env-name okex-binance-cross-trade --side open --leverage 5 --execute
 """
 
 from __future__ import annotations
@@ -37,18 +41,26 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
-
 SUPPORTED_EXCHANGES = {"binance", "okex", "gate", "bybit", "bitget"}
-SUPPORTED_MODES = {"fr", "intra"}
+NAMESPACE = "cross"
 
 
 @dataclass(frozen=True)
-class EnvContext:
+class CrossContext:
     env_name: str
-    mode: str
-    exchange: str
+    open_ex: str
+    hedge_ex: str
     open_venue: str
     hedge_venue: str
+    suffix: str
+
+    @property
+    def key_suffix(self) -> str:
+        return f"{self.open_ex}-{self.hedge_ex}"
+
+    @property
+    def unimmr_close_suffix(self) -> str:
+        return f"{self.open_venue}_{self.hedge_venue}"
 
 
 def dec(value: Any, default: str = "0") -> Decimal:
@@ -65,101 +77,92 @@ def normalize_exchange(value: str) -> str:
     return "okex" if text == "okx" else text
 
 
-def exchange_defaults(exchange: str) -> Tuple[str, str]:
-    ex = normalize_exchange(exchange)
-    if ex not in SUPPORTED_EXCHANGES:
-        raise SystemExit(f"unsupported exchange: {exchange}")
-    return f"{ex}-margin", f"{ex}-futures"
+def exchange_from_venue(venue: str) -> str:
+    raw = (venue or "").strip().lower()
+    if not raw or "-" not in raw:
+        return ""
+    return normalize_exchange(raw.split("-", 1)[0])
 
 
-def parse_env_name(name: str) -> Tuple[Optional[str], Optional[str]]:
-    text = (name or "").strip().lower()
-    for mode in ("fr", "intra"):
-        match = re.match(rf"^([a-z0-9]+)[-_]{mode}[-_][a-z0-9][a-z0-9_-]*$", text)
-        if match:
-            return mode, normalize_exchange(match.group(1))
-    return None, None
-
-
-def infer_env_name(args: argparse.Namespace) -> str:
-    if args.env_name:
-        return args.env_name.strip().lower()
-    if args.env_dir:
-        return Path(args.env_dir.rstrip("/")).name.strip().lower()
-    return Path.cwd().name.strip().lower()
-
-
-def resolve_context(args: argparse.Namespace) -> EnvContext:
-    env_name = infer_env_name(args)
-    parsed_mode, parsed_exchange = parse_env_name(env_name)
-
-    mode = (args.mode or parsed_mode or "").strip().lower()
-    exchange = normalize_exchange(args.exchange or parsed_exchange or "")
-    if mode not in SUPPORTED_MODES:
-        raise SystemExit(
-            "missing/unsupported mode; pass --mode fr|intra or run under "
-            "<exchange>_fr_<suffix> / <exchange>-intra-<suffix>"
-        )
-    if exchange not in SUPPORTED_EXCHANGES:
-        raise SystemExit(
-            "missing/unsupported exchange; pass --exchange or use an env name "
-            "starting with binance/okex/gate/bybit/bitget"
-        )
-
-    default_open, default_hedge = exchange_defaults(exchange)
-    open_venue = (args.open_venue or default_open).strip().lower()
-    hedge_venue = (args.hedge_venue or default_hedge).strip().lower()
-    if not env_name:
-        raise SystemExit("missing env name; pass --env-name/--env-dir or run in env dir")
-    return EnvContext(
-        env_name=env_name,
-        mode=mode,
-        exchange=exchange,
-        open_venue=open_venue,
-        hedge_venue=hedge_venue,
+def parse_cross_env_name(value: str) -> Tuple[str, str, str]:
+    text = (value or "").strip().lower()
+    match = re.match(
+        r"^([a-z0-9]+)[-_]([a-z0-9]+)[-_]cross[-_]([a-z0-9][a-z0-9_-]*?)(?:[-_](?:open|hedge))?$",
+        text,
     )
+    if not match:
+        raise SystemExit(
+            f"env-name must match <open>-<hedge>-cross-<suffix>: {value}"
+        )
+    open_ex = normalize_exchange(match.group(1))
+    hedge_ex = normalize_exchange(match.group(2))
+    suffix = match.group(3)
+    if open_ex == hedge_ex:
+        raise SystemExit(f"cross requires distinct exchanges: {value}")
+    if open_ex not in SUPPORTED_EXCHANGES or hedge_ex not in SUPPORTED_EXCHANGES:
+        raise SystemExit(f"unsupported cross exchanges in env name: {value}")
+    return open_ex, hedge_ex, suffix
 
 
-def auto_source_env(env_dir: str) -> None:
-    env_path = Path(env_dir) / "env.sh"
-    if not env_path.is_file():
+def load_env_file(path: str) -> None:
+    if not os.path.isfile(path):
+        print(f"[warn] env file not found: {path}", file=sys.stderr)
         return
     env = dict(os.environ)
-    env["ENV_FILE"] = str(env_path)
-    proc = subprocess.run(
-        ["bash", "-lc", 'set -a; source "$ENV_FILE" >/dev/null 2>&1; env -0'],
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=env,
-    )
-    if proc.returncode != 0:
-        print(f"[warn] failed to source {env_path}: exit={proc.returncode}", file=sys.stderr)
-        return
-    for item in proc.stdout.split(b"\0"):
+    env["ENV_FILE"] = path
+    try:
+        out = subprocess.check_output(
+            ["bash", "-lc", 'set -a; source "$ENV_FILE"; env -0'],
+            env=env,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise SystemExit(f"failed to source env file {path}: exit={exc.returncode}") from exc
+    for item in out.split(b"\0"):
         if not item or b"=" not in item:
             continue
-        key_b, value_b = item.split(b"=", 1)
+        key, value = item.split(b"=", 1)
         try:
-            key = key_b.decode("utf-8")
-            value = value_b.decode("utf-8")
+            os.environ[key.decode("utf-8")] = value.decode("utf-8")
         except UnicodeDecodeError:
             continue
-        os.environ[key] = value
 
 
-def maybe_load_env(args: argparse.Namespace, ctx: EnvContext) -> None:
-    if args.no_env_sh:
-        return
-    env_dir = args.env_dir.strip() if args.env_dir else ""
-    if not env_dir and Path.cwd().name.strip().lower() == ctx.env_name:
-        env_dir = str(Path.cwd())
+def resolve_context(args: argparse.Namespace) -> CrossContext:
+    env_name = (args.env_name or "").strip().lower()
+    env_dir = (args.env_dir or "").strip()
+    if not env_name and env_dir:
+        env_name = os.path.basename(env_dir.rstrip("/")).strip().lower()
+    if not env_name:
+        cwd_name = os.path.basename(os.getcwd()).strip().lower()
+        if re.match(r"^[a-z0-9]+[-_][a-z0-9]+[-_]cross[-_]", cwd_name):
+            env_name = cwd_name
+    if not env_name:
+        raise SystemExit(
+            "missing env name; pass --env-name <open>-<hedge>-cross-<suffix> or run from the env dir"
+        )
+
+    open_ex, hedge_ex, suffix = parse_cross_env_name(env_name)
+
     if not env_dir:
-        candidate = Path.home() / ctx.env_name
-        if candidate.is_dir():
-            env_dir = str(candidate)
-    if env_dir:
-        auto_source_env(env_dir)
+        env_dir = os.path.join(os.path.expanduser("~"), env_name)
+    if not args.no_env_sh:
+        load_env_file(os.path.join(env_dir, "env.sh"))
+
+    open_venue = (args.open_venue or os.environ.get("OPEN_VENUE") or f"{open_ex}-futures").strip().lower()
+    hedge_venue = (args.hedge_venue or os.environ.get("HEDGE_VENUE") or f"{hedge_ex}-futures").strip().lower()
+    if exchange_from_venue(open_venue) != open_ex or exchange_from_venue(hedge_venue) != hedge_ex:
+        raise SystemExit(
+            f"open/hedge venue does not match env name: open={open_venue} hedge={hedge_venue} env={env_name}"
+        )
+
+    return CrossContext(
+        env_name=env_name,
+        open_ex=open_ex,
+        hedge_ex=hedge_ex,
+        open_venue=open_venue,
+        hedge_venue=hedge_venue,
+        suffix=suffix,
+    )
 
 
 def try_import_redis():
@@ -197,43 +200,14 @@ def decode_redis_list(raw: Any, key: str) -> List[str]:
     return [str(item).strip() for item in parsed if str(item).strip()]
 
 
-def fr_symbol_keys(ctx: EnvContext) -> List[str]:
-    suffix = f"{ctx.open_venue}_{ctx.hedge_venue}"
-    lists = [
-        "dump_symbols",
-        "trade_symbols",
-        "fwd_trade_symbols",
-        "bwd_trade_symbols",
-        "unimmr_close_symbols",
+def cross_symbol_keys(ctx: CrossContext) -> List[str]:
+    suffix = ctx.key_suffix
+    return [
+        f"{NAMESPACE}_dump_symbols:{suffix}",
+        f"{NAMESPACE}_fwd_trade_symbols:{suffix}",
+        f"{NAMESPACE}_bwd_trade_symbols:{suffix}",
+        f"{ctx.env_name}:{NAMESPACE}_unimmr_close_symbols:{ctx.unimmr_close_suffix}",
     ]
-    return [f"{ctx.env_name}:fr_{name}:{suffix}" for name in lists]
-
-
-def intra_symbol_keys(ctx: EnvContext) -> List[str]:
-    exchange_suffix = ctx.exchange
-    venue_suffix = f"{ctx.open_venue}_{ctx.hedge_venue}"
-    keys = [
-        f"intra_dump_symbols:{exchange_suffix}",
-        f"intra_trade_symbols:{exchange_suffix}",
-        f"intra_fwd_trade_symbols:{exchange_suffix}",
-        f"intra_bwd_trade_symbols:{exchange_suffix}",
-        f"intra_unimmr_close_symbols:{exchange_suffix}",
-        f"{ctx.env_name}:intra_unimmr_close_symbols:{venue_suffix}",
-    ]
-    return keys
-
-
-def load_online_symbols(rds: Any, ctx: EnvContext) -> List[str]:
-    keys = fr_symbol_keys(ctx) if ctx.mode == "fr" else intra_symbol_keys(ctx)
-    symbols: Set[str] = set()
-    for key in keys:
-        values = decode_redis_list(rds.get(key), key)
-        print(f"[redis] {key}: {len(values)}")
-        for value in values:
-            asset = normalize_asset(value)
-            if asset:
-                symbols.add(asset)
-    return sorted(symbols)
 
 
 def normalize_asset(value: str) -> str:
@@ -268,6 +242,28 @@ def symbol_for_exchange(exchange: str, asset: str) -> str:
     if exchange == "gate":
         return f"{base}_USDT"
     return f"{base}USDT"
+
+
+def load_online_assets(rds: Any, ctx: CrossContext) -> List[str]:
+    assets: Set[str] = set()
+    for key in cross_symbol_keys(ctx):
+        values = decode_redis_list(rds.get(key), key)
+        print(f"[redis] {key}: {len(values)}")
+        for value in values:
+            asset = normalize_asset(value)
+            if asset:
+                assets.add(asset)
+    return sorted(assets)
+
+
+def parse_symbol_args(values: Iterable[str]) -> List[str]:
+    out: Set[str] = set()
+    for value in values:
+        for part in re.split(r"[\s,]+", (value or "").strip()):
+            asset = normalize_asset(part)
+            if asset:
+                out.add(asset)
+    return sorted(out)
 
 
 def now_ms() -> int:
@@ -337,7 +333,7 @@ def binance_set_leverage(symbol: str, leverage: int, mode: str, timeout: int) ->
     return ok, status, body, f"base={base} used_weight={used_weight}"
 
 
-def resolve_binance_mode(ctx: EnvContext, arg_mode: str) -> str:
+def resolve_binance_mode(arg_mode: str) -> str:
     value = (arg_mode or "auto").strip().lower()
     if value in ("std", "pm"):
         return value
@@ -346,10 +342,8 @@ def resolve_binance_mode(ctx: EnvContext, arg_mode: str) -> str:
         return "std"
     if account_mode in ("PORTFOLIO", "PORTFOLIO_MARGIN", "PM", "UNIFIED"):
         return "pm"
-    raise SystemExit(
-        "missing/unsupported BINANCE_ACCOUNT_MODE for Binance leverage update; "
-        "set BINANCE_ACCOUNT_MODE=STANDARD for std futures or BINANCE_ACCOUNT_MODE=PM/PORTFOLIO_MARGIN for PM"
-    )
+    # Cross deployments default to STANDARD per deploy_setup_env_cross.sh.
+    return "std"
 
 
 def okx_timestamp() -> str:
@@ -586,51 +580,56 @@ def gate_set_leverage(
     return ok, status, json.dumps(after, ensure_ascii=True), f"settle={settle}"
 
 
-def parse_symbol_args(values: Iterable[str]) -> List[str]:
-    out: Set[str] = set()
-    for value in values:
-        for part in re.split(r"[\s,]+", (value or "").strip()):
-            asset = normalize_asset(part)
-            if asset:
-                out.add(asset)
-    return sorted(out)
+def set_one(
+    exchange: str,
+    symbol: str,
+    leverage: int,
+    *,
+    args: argparse.Namespace,
+    binance_mode: str,
+) -> Tuple[bool, int, str, str]:
+    if exchange == "binance":
+        return binance_set_leverage(symbol, leverage, binance_mode, args.timeout)
+    if exchange == "okex":
+        return okx_set_leverage(symbol, leverage, args.okx_mgn_mode, args.timeout)
+    if exchange == "bybit":
+        return bybit_set_leverage(symbol, leverage, args.timeout)
+    if exchange == "bitget":
+        return bitget_set_leverage(symbol, leverage, args.timeout)
+    if exchange == "gate":
+        return gate_set_leverage(
+            symbol,
+            leverage,
+            args.timeout,
+            skip_missing_position=args.gate_skip_missing_position,
+            force_isolated=args.gate_force_isolated,
+        )
+    raise SystemExit(f"unsupported exchange: {exchange}")
 
 
-def run_updates(args: argparse.Namespace, ctx: EnvContext, assets: List[str]) -> int:
-    leverage = int(args.leverage)
-    binance_mode = resolve_binance_mode(ctx, args.binance_mode) if ctx.exchange == "binance" else ""
+def run_side(
+    exchange: str,
+    assets: List[str],
+    leverage: int,
+    *,
+    args: argparse.Namespace,
+    binance_mode: str,
+) -> int:
     failures = 0
-    print(
-        f"[info] env={ctx.env_name} mode={ctx.mode} exchange={ctx.exchange} "
-        f"leverage={leverage} assets={len(assets)} execute={args.execute}"
-    )
-    if binance_mode:
-        print(f"[info] binance_mode={binance_mode}")
-
+    print(f"\n[info] === side exchange={exchange} symbols={len(assets)} execute={args.execute} ===")
     for idx, asset in enumerate(assets, start=1):
-        symbol = symbol_for_exchange(ctx.exchange, asset)
-        print(f"[{idx}/{len(assets)}] {symbol} -> {leverage} execute={args.execute}")
+        symbol = symbol_for_exchange(exchange, asset)
+        print(f"[{exchange} {idx}/{len(assets)}] {symbol} -> {leverage}")
         if not args.execute:
             continue
-        if ctx.exchange == "binance":
-            ok, status, body, brief = binance_set_leverage(symbol, leverage, binance_mode, args.timeout)
-        elif ctx.exchange == "okex":
-            ok, status, body, brief = okx_set_leverage(symbol, leverage, args.okx_mgn_mode, args.timeout)
-        elif ctx.exchange == "bybit":
-            ok, status, body, brief = bybit_set_leverage(symbol, leverage, args.timeout)
-        elif ctx.exchange == "bitget":
-            ok, status, body, brief = bitget_set_leverage(symbol, leverage, args.timeout)
-        elif ctx.exchange == "gate":
-            ok, status, body, brief = gate_set_leverage(
-                symbol,
-                leverage,
-                args.timeout,
-                skip_missing_position=args.gate_skip_missing_position,
-                force_isolated=args.gate_force_isolated,
+        try:
+            ok, status, body, brief = set_one(
+                exchange, symbol, leverage, args=args, binance_mode=binance_mode
             )
-        else:
-            raise AssertionError(ctx.exchange)
-
+        except SystemExit:
+            raise
+        except Exception as exc:
+            ok, status, body, brief = False, 0, str(exc), "exception"
         tag = "OK" if ok else "ERR"
         print(f"  [{tag}] status={status} {brief}")
         if not ok:
@@ -640,24 +639,40 @@ def run_updates(args: argparse.Namespace, ctx: EnvContext, assets: List[str]) ->
     return failures
 
 
+def select_sides(ctx: CrossContext, side: str) -> List[str]:
+    side = (side or "both").strip().lower()
+    if side == "open":
+        return [ctx.open_ex]
+    if side == "hedge":
+        return [ctx.hedge_ex]
+    if side == "both":
+        # Preserve order: open first, then hedge; dedupe defensively.
+        return list(dict.fromkeys([ctx.open_ex, ctx.hedge_ex]))
+    raise SystemExit(f"invalid --side: {side}")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Set futures leverage for all online FR/intra symbols.",
+        description="Set futures leverage on BOTH sides for a cross arb environment.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--env-name", default="", help="Env name, e.g. bitget_fr_arb02 or bitget-intra-arb01.")
+    parser.add_argument("--env-name", default="", help="Env name, e.g. bitget-gate-cross-arb01.")
     parser.add_argument("--env-dir", default="", help="Env directory containing env.sh.")
-    parser.add_argument("--mode", choices=sorted(SUPPORTED_MODES), default="", help="Override env mode.")
-    parser.add_argument("--exchange", choices=sorted(SUPPORTED_EXCHANGES), default="", help="Override exchange.")
-    parser.add_argument("--open-venue", default="", help="Override open venue for FR key suffix.")
-    parser.add_argument("--hedge-venue", default="", help="Override hedge venue for FR key suffix.")
-    parser.add_argument("--symbol", action="append", default=[], help="Optional asset/symbol CSV filter; skips Redis loading.")
-    parser.add_argument("--leverage", type=int, choices=[3, 4, 5, 10], default=5, help="Target leverage. Only 3, 4, 5, or 10 allowed.")
+    parser.add_argument("--open-venue", default="", help="Override open venue (e.g. bitget-futures).")
+    parser.add_argument("--hedge-venue", default="", help="Override hedge venue (e.g. gate-futures).")
+    parser.add_argument("--symbol", action="append", default=[], help="Asset/symbol filter; repeatable or CSV.")
+    parser.add_argument("--leverage", type=int, required=True, help="Target leverage (positive integer).")
+    parser.add_argument(
+        "--side",
+        choices=["both", "open", "hedge"],
+        default="both",
+        help="Which side(s) to update. Default: both (open + hedge).",
+    )
     parser.add_argument(
         "--binance-mode",
         choices=["auto", "pm", "std"],
         default="auto",
-        help="Binance endpoint mode. auto reads BINANCE_ACCOUNT_MODE from env.sh/environment.",
+        help="Binance endpoint mode. Cross deployments default to std.",
     )
     parser.add_argument("--okx-mgn-mode", choices=["cross", "isolated"], default="cross")
     parser.add_argument("--gate-skip-missing-position", action="store_true")
@@ -675,19 +690,34 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if args.leverage <= 0:
+        raise SystemExit("--leverage must be positive")
+
     ctx = resolve_context(args)
-    maybe_load_env(args, ctx)
+    sides = select_sides(ctx, args.side)
+    binance_mode = resolve_binance_mode(args.binance_mode) if "binance" in sides else ""
 
     assets = parse_symbol_args(args.symbol)
     if assets:
         print(f"[info] using CLI symbols: {len(assets)}")
     else:
         rds = redis_client(args)
-        assets = load_online_symbols(rds, ctx)
+        assets = load_online_assets(rds, ctx)
     if not assets:
-        raise SystemExit("no online symbols selected")
+        raise SystemExit("no symbols selected")
 
-    failures = run_updates(args, ctx, assets)
+    print(
+        f"[info] env={ctx.env_name} open={ctx.open_venue} hedge={ctx.hedge_venue} "
+        f"key_suffix={ctx.key_suffix} leverage={args.leverage} assets={len(assets)} "
+        f"sides={sides} execute={args.execute}"
+    )
+    if "binance" in sides:
+        print(f"[info] binance_mode={binance_mode}")
+
+    failures = 0
+    for exchange in sides:
+        failures += run_side(exchange, assets, args.leverage, args=args, binance_mode=binance_mode)
+
     if failures:
         print(f"WARN: {failures} leverage updates failed", file=sys.stderr)
         return 1
