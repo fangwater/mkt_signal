@@ -366,7 +366,7 @@ fn run_te_ipc_thread(
         }
 
         if pending_order_req.is_none() {
-            for _ in 0..IPC_THREAD_DRAIN_BUDGET {
+            loop {
                 match order_subscriber.receive() {
                     Ok(Some(sample)) => {
                         let msg = parse_trade_request_payload(sample.payload());
