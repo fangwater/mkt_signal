@@ -137,6 +137,9 @@ if [[ "$SYNC_SCRIPTS" == "1" ]]; then
     "sync_cross_symbol_lists.py"
     "print_cross_symbol_lists.py"
     "set_um_leverage.py"
+    "set_cross_futures_leverage.py"
+    "set_cross_cancel_all.py"
+    "set_cross_align.py"
     "sync_cross_strategy_params.py"
     "print_cross_strategy_params.py"
     "sync_cross_spread_thresholds.py"
@@ -181,6 +184,11 @@ if [[ "$SYNC_SCRIPTS" == "1" ]]; then
   ./cross_scripts/sync_cross_symbol_lists.py
   ./cross_scripts/print_cross_symbol_lists.py
   ./cross_scripts/set_um_leverage.py --leverage 6
+  ./cross_scripts/set_cross_futures_leverage.py --leverage 5
+  ./cross_scripts/set_cross_cancel_all.py
+  ./cross_scripts/set_cross_cancel_all.py --execute
+  ./cross_scripts/set_cross_align.py
+  ./cross_scripts/set_cross_align.py --execute
   ./cross_scripts/sync_cross_strategy_params.py
   ./cross_scripts/print_cross_strategy_params.py
   ./cross_scripts/cross_contract_ops.py cancel both
