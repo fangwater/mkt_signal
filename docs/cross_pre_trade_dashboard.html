@@ -571,15 +571,11 @@
                 <th>open_qty</th>
                 <th>open_usdt</th>
                 <th>hedge_qty</th>
-                <th>hedge_usdt</th>
-                <th>arb_net</th>
-                <th>arb_pending</th>
-                <th>arb_due</th>
                 <th>arb_time</th>
                 <th>arb_mode</th>
-                <th>arb_ret</th>
-                <th>net_qty</th>
-                <th>net_usdt</th>
+                <th>arb_ret_qtl</th>
+                <th>offset</th>
+                <th>exposure_usdt</th>
               </tr>
             </thead>
             <tbody id="exposure-body"></tbody>
@@ -665,6 +661,10 @@
           minimumFractionDigits: 3,
           maximumFractionDigits: 3,
         });
+        const fmtOffset = new Intl.NumberFormat("en-US", {
+          minimumFractionDigits: 6,
+          maximumFractionDigits: 6,
+        });
 
         function setStatus(cls, text) {
           el.wsIndicator.className = `indicator ${cls}`;
@@ -734,9 +734,8 @@
             "open_qty",
             "hedge_qty",
             "arb_hedge_net_qty",
-            "arb_pending_hedge_qty",
-            "arb_due_hedge_qty",
             "arb_hedge_time_ms",
+            "arb_hedge_offset",
             "net_qty",
             "net_usdt",
           ];
@@ -752,6 +751,12 @@
             .replace(/&/g, "&amp;")
             .replace(/</g, "&lt;")
             .replace(/>/g, "&gt;");
+        }
+
+        function pickOffset(row) {
+          if (!row) return null;
+          if (isFiniteNumber(row.arb_hedge_offset)) return row.arb_hedge_offset;
+          return null;
         }
 
         function pickMarginRatioColor(mr, trigger, recover) {
@@ -802,34 +807,6 @@
             .join("");
         }
 
-        function exposureLegAbsUsdt(fieldName) {
-          const rows =
-            (state.exposure &&
-              state.exposure.entry &&
-              Array.isArray(state.exposure.entry.rows) &&
-              state.exposure.entry.rows) ||
-            [];
-          let total = 0;
-          let seen = false;
-          for (const row of rows) {
-            if (!row || row.is_total) continue;
-            const value = row[fieldName];
-            if (!isFiniteNumber(value)) continue;
-            total += Math.abs(value);
-            seen = true;
-          }
-          return seen ? total : null;
-        }
-
-        function legPositionForDisplay(prefix, leg) {
-          if (!leg) return null;
-          if (isFiniteNumber(leg.total_position) && Math.abs(leg.total_position) > 1e-12) {
-            return leg.total_position;
-          }
-          const fallback = exposureLegAbsUsdt(prefix === "open" ? "open_usdt" : "hedge_usdt");
-          return fallback !== null ? fallback : leg.total_position;
-        }
-
         function metaText(s, kind) {
           if (!s) return { text: "-", stale: false };
           const now = Date.now();
@@ -858,7 +835,7 @@
           sub.textContent = leg && leg.venue ? leg.venue : "-";
           equity.textContent = leg ? fmt(leg.total_equity, fmtUsd) : "--";
           leverage.textContent = leg ? fmt(leg.leverage, fmtLev) : "--";
-          position.textContent = leg ? fmt(legPositionForDisplay(prefix, leg), fmtUsd) : "--";
+          position.textContent = leg ? fmt(leg.total_position, fmtUsd) : "--";
           upl.textContent = leg ? fmt(leg.um_unrealized_usd, fmtUsd) : "--";
           interest.textContent = leg ? fmt(leg.interest_usd, fmtUsd) : "--";
         }
@@ -908,8 +885,8 @@
             [
               "position",
               e ? e.total_position : null,
-              e && e.open_leg ? legPositionForDisplay("open", e.open_leg) : null,
-              e && e.hedge_leg ? legPositionForDisplay("hedge", e.hedge_leg) : null,
+              e && e.open_leg ? e.open_leg.total_position : null,
+              e && e.hedge_leg ? e.hedge_leg.total_position : null,
               fmtUsd,
             ],
             [
@@ -978,14 +955,10 @@
               <td class="${classify(r.open_qty)}">${fmt(r.open_qty, fmtQty)}</td>
               <td class="${classify(r.open_usdt)}">${fmt(r.open_usdt, fmtUsd)}</td>
               <td class="${classify(r.hedge_qty)}">${fmt(r.hedge_qty, fmtQty)}</td>
-              <td class="${classify(r.hedge_usdt)}">${fmt(r.hedge_usdt, fmtUsd)}</td>
-              <td class="${classify(r.arb_hedge_net_qty)}">${fmt(r.arb_hedge_net_qty, fmtQty)}</td>
-              <td class="${classify(r.arb_pending_hedge_qty)}">${fmt(r.arb_pending_hedge_qty, fmtQty)}</td>
-              <td class="${classify(r.arb_due_hedge_qty)}">${fmt(r.arb_due_hedge_qty, fmtQty)}</td>
               <td class="muted">${fmtTimeMs(r.arb_hedge_time_ms)}</td>
               <td class="muted">${fmtTaker(r.arb_hedge_is_taker)}</td>
               <td class="${classify(r.arb_hedge_ret_qtl)}">${fmt(r.arb_hedge_ret_qtl, fmtQtl)}</td>
-              <td class="${classify(r.net_qty)}">${fmt(r.net_qty, fmtQty)}</td>
+              <td class="muted">${fmt(pickOffset(r), fmtOffset)}</td>
               <td class="${classify(r.net_usdt)}">${fmt(r.net_usdt, fmtUsd)}</td>
             `;
             el.exposureBody.appendChild(tr);

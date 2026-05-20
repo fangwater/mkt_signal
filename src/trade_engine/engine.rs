@@ -59,7 +59,6 @@ use std::{cell::RefCell, rc::Rc as StdRc};
 use tokio_util::sync::CancellationToken;
 
 const TRADE_REQ_IPC_RECV_SLOW_WARN_US: i64 = 50_000;
-const QUERY_REQ_IPC_RECV_SLOW_WARN_US: i64 = 50_000;
 const DEFAULT_TE_IPC_REQ_QUEUE_CAP: usize = 4096;
 const DEFAULT_TE_IPC_RESP_QUEUE_CAP: usize = 4096;
 const SPSC_QUEUE_FULL_WARN_INTERVAL: u64 = 100_000;
@@ -178,19 +177,6 @@ fn parse_query_request_payload(payload: &[u8]) -> Option<QueryRequestMsg> {
                 return None;
             }
         };
-    let ipc_recv_us = get_timestamp_us();
-    let create_to_ipc_recv_us = ipc_recv_us.saturating_sub(msg.create_time);
-    if msg.create_time > 0 && create_to_ipc_recv_us >= QUERY_REQ_IPC_RECV_SLOW_WARN_US {
-        warn!(
-            "IpcIngressLatency: query ipc_recv_slow req_type={:?} client_query_id={} params_len={} create_time_us={} ipc_thread_recv_us={} create_to_ipc_thread_recv_us={}",
-            msg.req_type,
-            msg.client_query_id,
-            msg.params.len(),
-            msg.create_time,
-            ipc_recv_us,
-            create_to_ipc_recv_us
-        );
-    }
     Some(msg)
 }
 
@@ -221,22 +207,7 @@ fn pop_trade_req_for_async(consumer: &mut Consumer<TradeRequestMsg>) -> Option<T
 
 fn pop_query_req_for_async(consumer: &mut Consumer<QueryRequestMsg>) -> Option<QueryRequestMsg> {
     match consumer.pop() {
-        Ok(msg) => {
-            let async_recv_us = get_timestamp_us();
-            let create_to_async_recv_us = async_recv_us.saturating_sub(msg.create_time);
-            if msg.create_time > 0 && create_to_async_recv_us >= QUERY_REQ_IPC_RECV_SLOW_WARN_US {
-                warn!(
-                    "SpscIngressLatency: query async_recv_slow req_type={:?} client_query_id={} params_len={} create_time_us={} async_thread_recv_us={} create_to_async_thread_recv_us={}",
-                    msg.req_type,
-                    msg.client_query_id,
-                    msg.params.len(),
-                    msg.create_time,
-                    async_recv_us,
-                    create_to_async_recv_us
-                );
-            }
-            Some(msg)
-        }
+        Ok(msg) => Some(msg),
         Err(PopError::Empty) => None,
     }
 }
