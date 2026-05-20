@@ -802,6 +802,34 @@
             .join("");
         }
 
+        function exposureLegAbsUsdt(fieldName) {
+          const rows =
+            (state.exposure &&
+              state.exposure.entry &&
+              Array.isArray(state.exposure.entry.rows) &&
+              state.exposure.entry.rows) ||
+            [];
+          let total = 0;
+          let seen = false;
+          for (const row of rows) {
+            if (!row || row.is_total) continue;
+            const value = row[fieldName];
+            if (!isFiniteNumber(value)) continue;
+            total += Math.abs(value);
+            seen = true;
+          }
+          return seen ? total : null;
+        }
+
+        function legPositionForDisplay(prefix, leg) {
+          if (!leg) return null;
+          if (isFiniteNumber(leg.total_position) && Math.abs(leg.total_position) > 1e-12) {
+            return leg.total_position;
+          }
+          const fallback = exposureLegAbsUsdt(prefix === "open" ? "open_usdt" : "hedge_usdt");
+          return fallback !== null ? fallback : leg.total_position;
+        }
+
         function metaText(s, kind) {
           if (!s) return { text: "-", stale: false };
           const now = Date.now();
@@ -830,7 +858,7 @@
           sub.textContent = leg && leg.venue ? leg.venue : "-";
           equity.textContent = leg ? fmt(leg.total_equity, fmtUsd) : "--";
           leverage.textContent = leg ? fmt(leg.leverage, fmtLev) : "--";
-          position.textContent = leg ? fmt(leg.total_position, fmtUsd) : "--";
+          position.textContent = leg ? fmt(legPositionForDisplay(prefix, leg), fmtUsd) : "--";
           upl.textContent = leg ? fmt(leg.um_unrealized_usd, fmtUsd) : "--";
           interest.textContent = leg ? fmt(leg.interest_usd, fmtUsd) : "--";
         }
@@ -880,8 +908,8 @@
             [
               "position",
               e ? e.total_position : null,
-              e && e.open_leg ? e.open_leg.total_position : null,
-              e && e.hedge_leg ? e.hedge_leg.total_position : null,
+              e && e.open_leg ? legPositionForDisplay("open", e.open_leg) : null,
+              e && e.hedge_leg ? legPositionForDisplay("hedge", e.hedge_leg) : null,
               fmtUsd,
             ],
             [
