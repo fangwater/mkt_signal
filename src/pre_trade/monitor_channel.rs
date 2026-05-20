@@ -912,6 +912,10 @@ impl MonitorChannel {
             return open_exchange;
         }
 
+        if is_futures_venue(open_venue) && is_futures_venue(hedge_venue) {
+            return hedge_exchange;
+        }
+
         for preferred in [Exchange::Okex, Exchange::Bybit, Exchange::Binance] {
             if open_exchange == preferred || hedge_exchange == preferred {
                 return preferred;
@@ -3740,6 +3744,42 @@ mod tests {
         assert_eq!(
             MonitorChannel::derivatives_service_for_mark_price_source(
                 TradingVenue::BitgetMargin,
+                TradingVenue::BitgetFutures,
+            ),
+            BITGET_DERIVATIVES_SERVICE
+        );
+    }
+
+    #[test]
+    fn mark_price_source_uses_hedge_exchange_for_cross_futures_pair() {
+        assert_eq!(
+            MonitorChannel::mark_price_exchange_for_venues(
+                TradingVenue::BitgetFutures,
+                TradingVenue::GateFutures,
+            ),
+            Exchange::Gate
+        );
+        assert_eq!(
+            MonitorChannel::derivatives_service_for_mark_price_source(
+                TradingVenue::BitgetFutures,
+                TradingVenue::GateFutures,
+            ),
+            GATE_DERIVATIVES_SERVICE
+        );
+    }
+
+    #[test]
+    fn mark_price_source_uses_hedge_exchange_for_reversed_cross_futures_pair() {
+        assert_eq!(
+            MonitorChannel::mark_price_exchange_for_venues(
+                TradingVenue::GateFutures,
+                TradingVenue::BitgetFutures,
+            ),
+            Exchange::Bitget
+        );
+        assert_eq!(
+            MonitorChannel::derivatives_service_for_mark_price_source(
+                TradingVenue::GateFutures,
                 TradingVenue::BitgetFutures,
             ),
             BITGET_DERIVATIVES_SERVICE

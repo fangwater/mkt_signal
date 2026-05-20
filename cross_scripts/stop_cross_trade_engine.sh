@@ -99,16 +99,20 @@ proc_name_for_side() {
 
 find_running_pids() {
   local exchange="$1"
-  local exchange_arg="--exchange ${exchange}"
   local pids=()
   while IFS= read -r pid; do
-    if [[ -n "$pid" ]]; then
+    if [[ -n "$pid" && "$pid" != "$$" && "$pid" != "$BASHPID" ]]; then
       pids+=("$pid")
     fi
   done < <(
-    ps -eo pid=,args= | awk -v exchange_arg="$exchange_arg" -v base_dir="$BASE_DIR" '
-      index($0, "trade_engine") > 0 && index($0, exchange_arg) > 0 && index($0, base_dir) > 0 {
-        print $1
+    # Build the match string ("<base_dir>/trade_engine --exchange <exchange>") inside
+    # awk from separate -v variables. If we passed the whole string as one -v value,
+    # awk's own command line (visible in `ps args=`) would contain it verbatim and
+    # we would match ourselves.
+    ps -eo pid=,args= | awk -v dir="$BASE_DIR" -v ex="$exchange" -v self="$$" '
+      {
+        pat = dir "/trade_engine --exchange " ex
+        if ($1 != self && index($0, pat) > 0) print $1
       }
     '
   )
@@ -148,7 +152,8 @@ cleanup_leaked() {
 
   if [[ ${#leaked_pids[@]} -gt 0 ]]; then
     echo "[ERROR] Failed to kill leaked process(es): ${leaked_pids[*]}" >&2
-    return 1
+    # NOTE: return 0 anyway so `set -e` doesn't abort the script before the
+    # opposite side (hedge/open) gets a chance to be stopped.
   fi
 
   return 0
@@ -190,5 +195,26 @@ case "$MODE" in
     fi
     ;;
 esac
+
+final_sweep() {
+  local exchanges=("$OPEN_EXCHANGE")
+  if [[ "$HEDGE_EXCHANGE" != "$OPEN_EXCHANGE" ]]; then
+    exchanges+=("$HEDGE_EXCHANGE")
+  fi
+  local any=0
+  local ex
+  for ex in "${exchanges[@]}"; do
+    mapfile -t remaining < <(find_running_pids "$ex" || true)
+    if [[ ${#remaining[@]} -gt 0 ]]; then
+      echo "[ERROR] Post-stop sweep: ${ex} trade_engine still running: ${remaining[*]}" >&2
+      any=1
+    fi
+  done
+  if [[ $any -eq 0 ]]; then
+    echo "[INFO] Post-stop sweep: no trade_engine under ${BASE_DIR}"
+  fi
+}
+
+final_sweep
 
 echo "[INFO] Status: ${PMDAEMON[*]} list"
