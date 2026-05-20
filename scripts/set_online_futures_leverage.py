@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Set futures leverage for all online FR/intra symbols.
 
+For Gate, --execute enforces single position mode plus cross margin.
+
 The online set is built from Redis symbol-list keys:
   dump_symbols + trade_symbols + fwd_trade_symbols + bwd_trade_symbols
   + unimmr_close_symbols
@@ -506,9 +508,12 @@ def gate_request(method: str, path: str, params: Dict[str, Any], timeout: int) -
     return status, data
 
 
-def gate_position_mode(position: Any) -> str:
+def gate_position_margin_mode(position: Any) -> str:
     if not isinstance(position, dict):
         return "unknown"
+    pos_margin_mode = str(position.get("pos_margin_mode", "")).strip().lower()
+    if pos_margin_mode in ("cross", "isolated"):
+        return pos_margin_mode
     leverage = str(position.get("leverage", "")).strip()
     if leverage == "0":
         return "cross"
@@ -521,9 +526,34 @@ def gate_leverage_params(position: Any, leverage: int, force_isolated: bool) -> 
     target = str(leverage)
     if force_isolated:
         return {"leverage": target}
-    if gate_position_mode(position) == "cross":
-        return {"leverage": "0", "cross_leverage_limit": target}
-    return {"leverage": target}
+    return {"leverage": "0", "cross_leverage_limit": target}
+
+
+def gate_account_position_mode(account: Any) -> str:
+    if not isinstance(account, dict):
+        return "unknown"
+    mode = str(account.get("position_mode", "")).strip().lower()
+    if mode:
+        return mode
+    in_dual_mode = account.get("in_dual_mode")
+    if isinstance(in_dual_mode, bool):
+        return "dual" if in_dual_mode else "single"
+    return "unknown"
+
+
+def gate_ensure_single_position_mode(settle: str, timeout: int) -> Tuple[bool, int, str, str]:
+    status, account = gate_request("GET", f"/futures/{settle}/accounts", {}, timeout)
+    if status >= 300:
+        return False, status, json.dumps(account, ensure_ascii=True), "GET account mode failed"
+    current_mode = gate_account_position_mode(account)
+    if current_mode == "single":
+        return True, status, json.dumps(account, ensure_ascii=True), "position_mode=single"
+
+    params = {"position_mode": "single"}
+    status, body = gate_request("POST", f"/futures/{settle}/set_position_mode", params, timeout)
+    if status >= 300:
+        return False, status, json.dumps(body, ensure_ascii=True), f"set position_mode=single failed from {current_mode}"
+    return True, status, json.dumps(body, ensure_ascii=True), "set position_mode=single"
 
 
 def gate_missing_position(status: int, body: Any) -> bool:
@@ -546,6 +576,10 @@ def gate_set_leverage(
     if gate_missing_position(status, before) and skip_missing_position:
         return True, status, json.dumps(before, ensure_ascii=True), "skip missing position"
     position = None if status >= 300 else before
+    if not force_isolated:
+        ok, mode_status, mode_body, mode_brief = gate_ensure_single_position_mode(settle, timeout)
+        if not ok:
+            return False, mode_status, mode_body, mode_brief
     params = gate_leverage_params(position, leverage, force_isolated)
     status, after = gate_request("POST", f"{path}/leverage", params, timeout)
     ok = status < 300

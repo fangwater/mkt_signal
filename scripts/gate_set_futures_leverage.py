@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Set Gate USDT futures leverage for intra contracts.
 
-Default is dry-run. Source the target env first so GATE_API_KEY/GATE_API_SECRET
-are available, then add --execute to call Gate.
+For Gate, the default target is single position mode plus cross margin:
+leverage=0&cross_leverage_limit=<target>. Default is dry-run. Source the
+target env first so GATE_API_KEY/GATE_API_SECRET are available, then add
+--execute to call Gate.
 """
 
 from __future__ import annotations
@@ -156,9 +158,12 @@ def parse_csv_contracts(values: Iterable[str]) -> List[str]:
     return sorted(contracts)
 
 
-def position_mode(position: Any) -> str:
+def position_margin_mode(position: Any) -> str:
     if not isinstance(position, dict):
         return "unknown"
+    pos_margin_mode = str(position.get("pos_margin_mode", "")).strip().lower()
+    if pos_margin_mode in ("cross", "isolated"):
+        return pos_margin_mode
     leverage = str(position.get("leverage", "")).strip()
     if leverage == "0":
         return "cross"
@@ -170,9 +175,52 @@ def position_mode(position: Any) -> str:
 def leverage_params_for(position: Any, target: str, force_isolated: bool) -> Dict[str, str]:
     if force_isolated:
         return {"leverage": target}
-    if position_mode(position) == "cross":
-        return {"leverage": "0", "cross_leverage_limit": target}
-    return {"leverage": target}
+    return {"leverage": "0", "cross_leverage_limit": target}
+
+
+def account_position_mode(account: Any) -> str:
+    if not isinstance(account, dict):
+        return "unknown"
+    mode = str(account.get("position_mode", "")).strip().lower()
+    if mode:
+        return mode
+    in_dual_mode = account.get("in_dual_mode")
+    if isinstance(in_dual_mode, bool):
+        return "dual" if in_dual_mode else "single"
+    return "unknown"
+
+
+def ensure_single_position_mode(
+    api_key: str,
+    api_secret: str,
+    settle: str,
+    timeout: int,
+    *,
+    execute: bool,
+) -> bool:
+    account_path = f"/futures/{settle}/accounts"
+    status, account = private_request(api_key, api_secret, "GET", account_path, timeout=timeout)
+    if status >= 300:
+        print(f"[gate] account mode GET failed status={status} body={account}", file=sys.stderr)
+        return False
+
+    current_mode = account_position_mode(account)
+    print(f"[gate] account position_mode={current_mode}")
+    if current_mode == "single":
+        return True
+
+    mode_path = f"/futures/{settle}/set_position_mode"
+    params = {"position_mode": "single"}
+    print(f"[gate] plan    POST {mode_path}?{build_query(params)}")
+    if not execute:
+        return True
+
+    status, body = private_request(api_key, api_secret, "POST", mode_path, params=params, timeout=timeout)
+    if status >= 300:
+        print(f"[gate] set single failed status={status} body={body}", file=sys.stderr)
+        return False
+    print(f"[gate] set single OK status={status} position_mode={account_position_mode(body)}")
+    return True
 
 
 def print_position(prefix: str, contract: str, position: Any) -> None:
@@ -180,7 +228,8 @@ def print_position(prefix: str, contract: str, position: Any) -> None:
         print(f"{prefix:<7} {contract:<14} non-dict position body={position}")
         return
     print(
-        f"{prefix:<7} {contract:<14} mode={position_mode(position):<8} "
+        f"{prefix:<7} {contract:<14} pos_mode={fmt(position.get('mode')):<10} "
+        f"margin_mode={position_margin_mode(position):<8} "
         f"lev={fmt(position.get('leverage')):<6} cross_limit={fmt(position.get('cross_leverage_limit')):<6} "
         f"risk_limit={fmt(position.get('risk_limit')):<12} lev_max={fmt(position.get('leverage_max')):<8} "
         f"size={fmt(position.get('size')):<12} value={fmt(position.get('value'))}"
@@ -211,7 +260,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--force-isolated",
         action="store_true",
-        help="Send leverage=<target> even for cross positions; default preserves cross with leverage=0&cross_leverage_limit=<target>.",
+        help="Override the Gate default and send isolated leverage=<target> instead of cross leverage=0&cross_leverage_limit=<target>.",
     )
     parser.add_argument(
         "--strict-missing-position",
@@ -242,6 +291,14 @@ def main() -> None:
     api_key, api_secret = load_credentials()
     settle = args.settle.lower()
     print(f"[info] settle={settle} target_leverage={target} contracts={len(contracts)} execute={args.execute}")
+    if not args.force_isolated and not ensure_single_position_mode(
+        api_key,
+        api_secret,
+        settle,
+        args.timeout,
+        execute=args.execute,
+    ):
+        raise SystemExit(1)
 
     failures = 0
     for idx, contract in enumerate(contracts, start=1):
