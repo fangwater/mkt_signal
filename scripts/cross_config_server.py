@@ -111,16 +111,6 @@ def venue_kind(venue: str) -> str:
     return raw.split("-", 1)[1]
 
 
-def attached_vol_source_key_for_venue(venue: str) -> str:
-    exchange = normalize_exchange((venue or "").split("-", 1)[0])
-    return f"rolling_metrics_params_{exchange}-margin_{exchange}-futures"
-
-
-def attached_vol_factor_name_for_venue(venue: str) -> str:
-    normalized = (venue or "").strip().lower()
-    return "hedge_vol" if normalized.endswith("-futures") else "open_vol"
-
-
 def normalize_percentile_text(raw: Any) -> Tuple[float, str]:
     text = str(raw).strip()
     if not text:
@@ -137,97 +127,6 @@ def normalize_percentile_text(raw: Any) -> Tuple[float, str]:
     if abs(value - rounded) < 1e-9:
         return float(rounded), str(int(rounded))
     return value, f"{value:.12g}"
-
-
-def preview_open_volatility_source(rds, venue: str, percentile_raw: Any) -> Dict[str, Any]:
-    percentile_value, percentile_text = normalize_percentile_text(percentile_raw)
-    source_key = attached_vol_source_key_for_venue(venue)
-    factor_name = attached_vol_factor_name_for_venue(venue)
-    raw_values = read_hash(rds, source_key)
-    if not raw_values:
-        return {
-            "venue": venue,
-            "source_key": source_key,
-            "factor": factor_name,
-            "percentile": percentile_value,
-            "percentile_text": percentile_text,
-            "exists": False,
-            "will_modify": True,
-            "modification_detail": "source hash missing",
-            "current_quantiles": [],
-        }
-
-    factors_raw = raw_values.get("factors", "").strip()
-    if not factors_raw:
-        return {
-            "venue": venue,
-            "source_key": source_key,
-            "factor": factor_name,
-            "percentile": percentile_value,
-            "percentile_text": percentile_text,
-            "exists": False,
-            "will_modify": True,
-            "modification_detail": "factors missing",
-            "current_quantiles": [],
-        }
-
-    try:
-        factors = json.loads(factors_raw)
-    except Exception as exc:
-        raise ValueError(f"invalid factors json in {source_key}: {exc}") from exc
-    if not isinstance(factors, dict):
-        raise ValueError(f"invalid factors object in {source_key}")
-
-    factor_cfg = factors.get(factor_name)
-    if not isinstance(factor_cfg, dict):
-        return {
-            "venue": venue,
-            "source_key": source_key,
-            "factor": factor_name,
-            "percentile": percentile_value,
-            "percentile_text": percentile_text,
-            "exists": False,
-            "will_modify": True,
-            "modification_detail": f"{factor_name} missing",
-            "current_quantiles": [],
-        }
-
-    quantiles_raw = factor_cfg.get("quantiles")
-    quantiles_list = quantiles_raw if isinstance(quantiles_raw, list) else []
-    normalized_quantiles: List[str] = []
-    requested_exists = False
-    for item in quantiles_list:
-        try:
-            value = float(item)
-        except Exception:
-            continue
-        text = str(int(round(value))) if abs(value - round(value)) < 1e-9 else f"{value:.12g}"
-        normalized_quantiles.append(text)
-        if abs(value - percentile_value) < 1e-9:
-            requested_exists = True
-
-    will_trim = len(quantiles_list) > 8
-    will_modify = (not requested_exists) or will_trim
-    if not requested_exists:
-        modification_detail = f"{factor_name}_{percentile_text} missing"
-        if len(quantiles_list) >= 8:
-            modification_detail += ", append then trim oldest"
-    elif will_trim:
-        modification_detail = "quantiles exceed limit, will trim oldest"
-    else:
-        modification_detail = ""
-
-    return {
-        "venue": venue,
-        "source_key": source_key,
-        "factor": factor_name,
-        "percentile": percentile_value,
-        "percentile_text": percentile_text,
-        "exists": requested_exists,
-        "will_modify": will_modify,
-        "modification_detail": modification_detail,
-        "current_quantiles": normalized_quantiles,
-    }
 
 
 def funding_thresholds_applicable(open_venue: Optional[str], hedge_venue: Optional[str]) -> bool:
@@ -506,20 +405,10 @@ def build_runtime_rolling_defaults(
         funding_mapping[f"{f}.backward_open"] = (
             f"{f}_{percentile_text_from_value(float(entry.get('backward_open', 20)))}"
         )
-    strategy_open_vol_limit = (
-        DEFAULT_STRATEGY_PARAMS.get("open_volatility_limit", "70")
-        if isinstance(DEFAULT_STRATEGY_PARAMS, dict)
-        else "70"
-    )
-    open_vol_factor = attached_vol_factor_name_for_venue(open_venue or "")
-    open_vol_mapping = {}
-    if open_vol_factor:
-        open_vol_mapping = {"open_vol_limit": f"{open_vol_factor}_{strategy_open_vol_limit}"}
     defaults = build_cross_rolling_defaults(
         BASE_ROLLING_PARAMS,
         SPREAD_THRESHOLD_MAPPING,
         funding_mapping,
-        open_vol_mapping,
     )
     if (
         "rolling_defaults" in globals()
@@ -736,10 +625,9 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         </div>
       </div>
       <div class="hint">
-        `enable_tlen_cancel` 控制基于 tlen 的 open 撤单 trigger/query/cancel 链路；`tlen_cancel_freq_ms` 控制 trigger 频率(ms)；`spread_cancel_cooldown_ms` 控制 spread cancel 的去抖冷却(ms，默认 100，可设 0 关闭)。`open_volatility_limit` 的 rolling 挂靠按真实 venue 解析：会读取该 venue 所属交易所的 `margin-futures` rolling params，并按 venue 类型选择 `open_vol` 或 `hedge_vol`。
+        `enable_tlen_cancel` 控制基于 tlen 的 open 撤单 trigger/query/cancel 链路；`tlen_cancel_freq_ms` 控制 trigger 频率(ms)；`spread_cancel_cooldown_ms` 控制 spread cancel 的去抖冷却(ms，默认 100，可设 0 关闭)。`open_volatility_limit` 直接在 trade_signal 进程内做 inline 滚窗采样（720 条），不再挂 rolling_metrics。
       </div>
       <div id="strategy-table" class="kv-table"></div>
-      <div id="strategy-vol-preview" class="status"></div>
       <div id="strategy-status" class="status"></div>
     </section>
 
@@ -982,45 +870,6 @@ __PER_SYMBOL_PANELS_HTML__
       );
     }
 
-    async function refreshStrategyVolPreview() {
-      const input = findStrategyInput('open_volatility_limit');
-      if (!input) {
-        setStatus('strategy-vol-preview', '', '');
-        return;
-      }
-
-      const raw = String(input.value || '').trim();
-      if (!raw) {
-        setStatus('strategy-vol-preview', '未填写 open_volatility_limit，无法预判挂靠的 rolling vol 配置。', 'warn');
-        return;
-      }
-
-      try {
-        const data = await fetchJson(`${apiUrl('open-volatility-preview')}?open_venue=${encodeURIComponent(openVenueInput.value.trim())}&hedge_venue=${encodeURIComponent(hedgeVenueInput.value.trim())}&percentile=${encodeURIComponent(raw)}`);
-        const factorRef = `${data.factor}_${data.percentile_text}`;
-        const prefix = `挂靠检查: ${data.source_key} / ${factorRef} (venue=${data.venue})`;
-        if (data.will_modify) {
-          setStatus('strategy-vol-preview', `${prefix}，当前未就绪，运行时会自动补配置${data.modification_detail ? `（${data.modification_detail}）` : ''}`, 'warn');
-        } else {
-          setStatus('strategy-vol-preview', `${prefix}，当前已存在，不会额外改 rolling 配置`, 'ok');
-        }
-      } catch (err) {
-        setStatus('strategy-vol-preview', `挂靠检查失败: ${err}`, 'err');
-      }
-    }
-
-    function bindStrategyVolPreview() {
-      const input = findStrategyInput('open_volatility_limit');
-      if (!input) {
-        setStatus('strategy-vol-preview', '', '');
-        return;
-      }
-      if (input.dataset.previewBound === '1') return;
-      input.dataset.previewBound = '1';
-      input.addEventListener('input', () => refreshStrategyVolPreview().catch(console.error));
-      input.addEventListener('change', () => refreshStrategyVolPreview().catch(console.error));
-    }
-
     async function loadSymbolLists() {
       setStatus('sym-status', '读取中...');
       try {
@@ -1108,8 +957,6 @@ __PER_SYMBOL_PANELS_HTML__
       try {
         const data = await fetchJson(`${apiUrl('strategy-params')}?${queryParams()}`);
         buildParamRows('strategy-table', BOOTSTRAP.defaults.strategy_params || {}, BOOTSTRAP.comments.strategy_params || {}, BOOTSTRAP.order.strategy || [], data.values || {});
-        bindStrategyVolPreview();
-        await refreshStrategyVolPreview();
         setStatus('strategy-status', '读取完成');
       } catch (err) {
         setStatus('strategy-status', `读取失败: ${err}`, false);
@@ -1137,8 +984,6 @@ __PER_SYMBOL_PANELS_HTML__
 
     function applyStrategyDefaults() {
       buildParamRows('strategy-table', BOOTSTRAP.defaults.strategy_params || {}, BOOTSTRAP.comments.strategy_params || {}, BOOTSTRAP.order.strategy || [], {});
-      bindStrategyVolPreview();
-      refreshStrategyVolPreview().catch(console.error);
       setStatus('strategy-status', '已载入默认参数');
     }
 
@@ -1803,7 +1648,6 @@ def ensure_cross_runtime_quantiles(
     open_venue: str,
     hedge_venue: str,
     funding_values: Optional[Dict[str, Any]] = None,
-    open_volatility_limit_raw: Optional[Any] = None,
 ) -> Dict[str, Any]:
     key = f"rolling_metrics_params_{open_venue}_{hedge_venue}"
     parsed = parse_rolling_params(read_hash(rds, key))
@@ -1826,11 +1670,6 @@ def ensure_cross_runtime_quantiles(
                     continue
                 if ensure_factor_quantile_config(factors, f, raw):
                     changed_factors.append(f"{f}_{direction}")
-
-    if open_volatility_limit_raw not in (None, ""):
-        vol_factor = attached_vol_factor_name_for_venue(open_venue)
-        if vol_factor and ensure_factor_quantile_config(factors, vol_factor, open_volatility_limit_raw):
-            changed_factors.append(f"{vol_factor}_open_volatility_limit")
 
     if changed_factors:
         write_hash(rds, key, serialize_rolling_params(parsed))
@@ -2290,24 +2129,6 @@ class RequestHandler(BaseHTTPRequestHandler):
             )
             return
 
-        if parsed.path == "/api/open-volatility-preview":
-            try:
-                _, open_venue, _, _ = self._resolve_request_context(params)
-                percentile = (params.get("percentile") or [None])[0]
-                if percentile is None:
-                    self._send_error(400, "missing percentile")
-                    return
-                data = preview_open_volatility_source(
-                    self.server.context.redis_client,
-                    open_venue,
-                    percentile,
-                )
-            except Exception as exc:
-                self._send_error(400, str(exc))
-                return
-            self._send_json(200, data)
-            return
-
         if parsed.path == "/api/funding-thresholds":
             try:
                 _, open_venue, hedge_venue, _ = self._resolve_request_context(params)
@@ -2543,13 +2364,6 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._send_error(400, str(exc))
                 return
             result = replace_hash(self.server.context.redis_client, key, mapping)
-            rolling_attach = ensure_cross_runtime_quantiles(
-                self.server.context.redis_client,
-                open_v,
-                hedge_v,
-                open_volatility_limit_raw=mapping.get("open_volatility_limit"),
-            )
-            result["rolling_attach"] = rolling_attach
             self._send_json(200, result)
             return
 
