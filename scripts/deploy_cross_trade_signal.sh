@@ -140,6 +140,7 @@ if [[ "$SYNC_SCRIPTS" == "1" ]]; then
     "set_cross_futures_leverage.py"
     "set_cross_cancel_all.py"
     "set_cross_align.py"
+    "verify_cross_account_modes.py"
     "sync_cross_strategy_params.py"
     "print_cross_strategy_params.py"
     "sync_cross_spread_thresholds.py"
