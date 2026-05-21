@@ -548,28 +548,38 @@ impl FundingArbShell {
                         return false;
                     }
                     let mut decision = decision_ref.unwrap().borrow_mut();
-                    match decision.runtime.backward_sub.receive_msg() {
-                        Ok(Some(data)) => {
-                            if let Some(query) =
-                                dispatch_arb_backward_query(FUNDING_ARB_SHELL_NAME, data)
-                            {
-                                match query {
-                                    ArbBackwardQueryMsg::CancelCandidates(query) => {
-                                        drive_funding_cancel_candidate_query(&mut decision, query)
-                                    }
-                                    ArbBackwardQueryMsg::Hedge(query) => {
-                                        drive_funding_arb_hedge_query(&mut decision, query)
+                    let mut has_message = false;
+                    loop {
+                        match decision.runtime.backward_sub.receive_msg() {
+                            Ok(Some(data)) => {
+                                has_message = true;
+                                if let Some(query) =
+                                    dispatch_arb_backward_query(FUNDING_ARB_SHELL_NAME, data)
+                                {
+                                    match query {
+                                        ArbBackwardQueryMsg::CancelCandidates(query) => {
+                                            drive_funding_cancel_candidate_query(
+                                                &mut decision,
+                                                query,
+                                            )
+                                        }
+                                        ArbBackwardQueryMsg::Hedge(query) => {
+                                            drive_funding_arb_hedge_query(&mut decision, query)
+                                        }
                                     }
                                 }
                             }
-                            true
-                        }
-                        Ok(None) => false,
-                        Err(err) => {
-                            log::warn!("{FUNDING_ARB_SHELL_NAME}: backward_sub 接收错误: {}", err);
-                            false
+                            Ok(None) => break,
+                            Err(err) => {
+                                log::warn!(
+                                    "{FUNDING_ARB_SHELL_NAME}: backward_sub 接收错误: {}",
+                                    err
+                                );
+                                break;
+                            }
                         }
                     }
+                    has_message
                 })
             },
             |now_us| {
@@ -619,32 +629,39 @@ impl SpreadArbShell {
                         return false;
                     }
                     let mut decision = decision_ref.unwrap().borrow_mut();
-                    let _ = ArbDecision::with_state_mut(|arb| arb.poll_model_output_updates());
-                    match decision.runtime.backward_sub.receive_msg() {
-                        Ok(Some(data)) => {
-                            if let Some(query) =
-                                dispatch_arb_backward_query(SPREAD_ARB_SHELL_NAME, data)
-                            {
-                                match query {
-                                    ArbBackwardQueryMsg::CancelCandidates(query) => {
-                                        drive_spread_arb_cancel_candidate_query(
-                                            &mut decision,
-                                            query,
-                                        )
-                                    }
-                                    ArbBackwardQueryMsg::Hedge(query) => {
-                                        drive_spread_arb_hedge_query(&mut decision, query)
+                    let mut has_message = false;
+                    loop {
+                        let _ = ArbDecision::with_state_mut(|arb| arb.poll_model_output_updates());
+                        match decision.runtime.backward_sub.receive_msg() {
+                            Ok(Some(data)) => {
+                                has_message = true;
+                                if let Some(query) =
+                                    dispatch_arb_backward_query(SPREAD_ARB_SHELL_NAME, data)
+                                {
+                                    match query {
+                                        ArbBackwardQueryMsg::CancelCandidates(query) => {
+                                            drive_spread_arb_cancel_candidate_query(
+                                                &mut decision,
+                                                query,
+                                            )
+                                        }
+                                        ArbBackwardQueryMsg::Hedge(query) => {
+                                            drive_spread_arb_hedge_query(&mut decision, query)
+                                        }
                                     }
                                 }
                             }
-                            true
-                        }
-                        Ok(None) => false,
-                        Err(err) => {
-                            log::warn!("{SPREAD_ARB_SHELL_NAME}: backward_sub 接收错误: {}", err);
-                            false
+                            Ok(None) => break,
+                            Err(err) => {
+                                log::warn!(
+                                    "{SPREAD_ARB_SHELL_NAME}: backward_sub 接收错误: {}",
+                                    err
+                                );
+                                break;
+                            }
                         }
                     }
+                    has_message
                 })
             },
             |now_us| {
@@ -669,14 +686,14 @@ impl SpreadArbShell {
     }
 }
 
-pub fn spawn_backward_listener_loop<F>(source: &'static str, mut receive_one: F)
+pub fn spawn_backward_listener_loop<F>(source: &'static str, mut drain_pending: F)
 where
     F: FnMut() -> bool + 'static,
 {
     tokio::task::spawn_local(async move {
         log::info!("{source} backward listener started");
         loop {
-            let has_message = receive_one();
+            let has_message = drain_pending();
             if !has_message {
                 tokio::task::yield_now().await;
             }
@@ -773,7 +790,7 @@ pub async fn attach_runtime_shell<FApply, FReceive, FReloadGet, FReloadSet>(
     source: &'static str,
     venues: VenuePair,
     apply_tables: FApply,
-    receive_one: FReceive,
+    drain_pending: FReceive,
     reload_state: FReloadGet,
     reload_set_local: FReloadSet,
 ) where
@@ -783,7 +800,7 @@ pub async fn attach_runtime_shell<FApply, FReceive, FReloadGet, FReloadSet>(
     FReloadSet: FnMut(HashMap<String, f64>, i64) + 'static,
 {
     refresh_min_qty_tables(source, venues, apply_tables).await;
-    spawn_backward_listener_loop(source, receive_one);
+    spawn_backward_listener_loop(source, drain_pending);
     spawn_tlen_threshold_reload_loop(source, reload_state, reload_set_local);
     log::info!("{source} backward listener started");
 }
@@ -795,7 +812,7 @@ pub async fn init_shell_runtime<T, FBuild, FApply, FReceive, FReloadGet, FReload
     venues: VenuePair,
     build: FBuild,
     apply_tables: FApply,
-    receive_one: FReceive,
+    drain_pending: FReceive,
     reload_state: FReloadGet,
     reload_set_local: FReloadSet,
 ) -> Result<()>
@@ -815,7 +832,7 @@ where
         source,
         venues,
         apply_tables,
-        receive_one,
+        drain_pending,
         reload_state,
         reload_set_local,
     )
