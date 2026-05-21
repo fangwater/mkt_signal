@@ -1832,9 +1832,12 @@ impl MonitorChannel {
                 let mut dedup = DedupCache::new(8192);
 
                 loop {
-                    match subscriber.receive() {
-                        Ok(Some(sample)) => {
-                            let payload = sample.payload();
+                    let mut has_message = false;
+                    loop {
+                        match subscriber.receive() {
+                            Ok(Some(sample)) => {
+                                has_message = true;
+                                let payload = sample.payload();
                             let Some((msg_type, account_scope, data)) =
                                 split_basic_account_event(payload)
                             else {
@@ -2059,11 +2062,16 @@ impl MonitorChannel {
                                 BasicAccountEventType::Error => {}
                             }
                         }
-                        Ok(None) => tokio::task::yield_now().await,
-                        Err(err) => {
-                            warn!("account stream receive error: {err}");
-                            tokio::time::sleep(Duration::from_millis(200)).await;
+                            Ok(None) => break,
+                            Err(err) => {
+                                warn!("account stream receive error: {err}");
+                                tokio::time::sleep(Duration::from_millis(200)).await;
+                                break;
+                            }
                         }
+                    }
+                    if !has_message {
+                        tokio::task::yield_now().await;
                     }
                 }
             }
@@ -2627,13 +2635,16 @@ impl MonitorChannel {
                         subscriber = Some(created_subscriber);
                     }
 
-                    match subscriber
-                        .as_ref()
-                        .expect("subscriber must exist after successful service open")
-                        .receive()
-                    {
-                        Ok(Some(sample)) => {
-                            let payload = Bytes::copy_from_slice(sample.payload());
+                    let mut has_message = false;
+                    loop {
+                        match subscriber
+                            .as_ref()
+                            .expect("subscriber must exist after successful service open")
+                            .receive()
+                        {
+                            Ok(Some(sample)) => {
+                                has_message = true;
+                                let payload = Bytes::copy_from_slice(sample.payload());
                             if payload.is_empty() {
                                 continue;
                             }
@@ -2708,17 +2719,20 @@ impl MonitorChannel {
                                 _ => {}
                             }
                         }
-                        Ok(None) => {
-                            tokio::task::yield_now().await;
+                            Ok(None) => break,
+                            Err(err) => {
+                                warn!(
+                                    "derivatives stream receive error, reconnecting: node={} service={} err={}",
+                                    node_name, service_name, err
+                                );
+                                subscriber = None;
+                                tokio::time::sleep(Duration::from_millis(200)).await;
+                                break;
+                            }
                         }
-                        Err(err) => {
-                            warn!(
-                                "derivatives stream receive error, reconnecting: node={} service={} err={}",
-                                node_name, service_name, err
-                            );
-                            subscriber = None;
-                            tokio::time::sleep(Duration::from_millis(200)).await;
-                        }
+                    }
+                    if !has_message {
+                        tokio::task::yield_now().await;
                     }
                 }
             }
