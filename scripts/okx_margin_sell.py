@@ -25,7 +25,7 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any, Dict, Tuple
 
-DEFAULT_BASE_URL = os.environ.get("OKX_BASE_URL", "https://www.okx.com")
+DEFAULT_BASE_URL = os.environ.get("OKX_BASE_URL", "https://openapi.okx.com")
 
 
 def utc_timestamp() -> str:

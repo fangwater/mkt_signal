@@ -21,7 +21,7 @@ except ImportError:
     sys.exit(1)
 
 DEFAULT_WS_URL = os.environ.get("OKX_WS_PRIVATE_URL", "wss://ws.okx.com:8443/ws/v5/private")
-DEFAULT_REST_URL = os.environ.get("OKX_BASE_URL", "https://www.okx.com")
+DEFAULT_REST_URL = os.environ.get("OKX_BASE_URL", "https://openapi.okx.com")
 
 
 def utc_timestamp() -> str:

@@ -125,7 +125,7 @@ def parse_args() -> argparse.Namespace:
         ),
         help="Binance UM REST base url",
     )
-    p.add_argument("--okx-base-url", default=os.environ.get("OKX_BASE_URL", "https://www.okx.com"))
+    p.add_argument("--okx-base-url", default=os.environ.get("OKX_BASE_URL", "https://openapi.okx.com"))
     p.add_argument("--okx-mgn-mode", choices=["cross", "isolated"], default="cross", help="OKX mgnMode")
     return p.parse_args()
 

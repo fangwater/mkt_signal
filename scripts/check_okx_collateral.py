@@ -49,7 +49,7 @@ try:
 except ImportError:
     HAS_PANDAS = False
 
-BASE_URL = os.environ.get("OKX_BASE_URL", "https://www.okx.com")
+BASE_URL = os.environ.get("OKX_BASE_URL", "https://openapi.okx.com")
 
 
 def okx_sign(timestamp: str, method: str, path: str, body: str, secret: str) -> str:

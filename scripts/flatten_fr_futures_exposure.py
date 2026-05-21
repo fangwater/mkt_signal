@@ -49,7 +49,7 @@ BINANCE_FAPI_BASE = "https://fapi.binance.com"
 BINANCE_PAPI_BASE = "https://papi.binance.com"
 BINANCE_EXCHANGE_INFO_URL = f"{BINANCE_FAPI_BASE}/fapi/v1/exchangeInfo"
 
-OKX_BASE_URL = os.environ.get("OKX_BASE_URL", "https://www.okx.com")
+OKX_BASE_URL = os.environ.get("OKX_BASE_URL", "https://openapi.okx.com")
 OKX_INSTRUMENTS_URL = f"{OKX_BASE_URL}/api/v5/public/instruments?instType=SWAP"
 
 GATE_HOST = "https://api.gateio.ws"

@@ -358,7 +358,7 @@ def okx_timestamp() -> str:
 
 def okx_set_leverage(symbol: str, leverage: int, mgn_mode: str, timeout: int) -> Tuple[bool, int, str, str]:
     api_key, api_secret, passphrase = load_required(("OKX_API_KEY", "OKX_API_SECRET", "OKX_PASSPHRASE"))
-    base = os.environ.get("OKX_BASE_URL", "https://www.okx.com").rstrip("/")
+    base = os.environ.get("OKX_BASE_URL", "https://openapi.okx.com").rstrip("/")
     path = "/api/v5/account/set-leverage"
     payload = {"instId": symbol, "lever": str(leverage), "mgnMode": mgn_mode}
     body = json.dumps(payload, separators=(",", ":"), ensure_ascii=True)

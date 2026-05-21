@@ -159,7 +159,7 @@ def load_symbols_for_target(target: EnvTarget, args: argparse.Namespace) -> List
 
 def okx_verify_symbol(symbol: str, leverage: str, timeout: int, mgn_mode: str) -> Tuple[bool, str]:
     api_key, api_secret, passphrase = intra.require_env(("OKX_API_KEY", "OKX_API_SECRET", "OKX_PASSPHRASE"))
-    base_url = os.environ.get("OKX_BASE_URL", "https://www.okx.com").rstrip("/")
+    base_url = os.environ.get("OKX_BASE_URL", "https://openapi.okx.com").rstrip("/")
     ok, status, body, err, _signed_path = signed_get_okx(base_url, "/api/v5/account/leverage-info", {"instId": symbol, "mgnMode": mgn_mode}, api_key, api_secret, passphrase, timeout)
     if not ok or status >= 300:
         return False, f"http={status} err={err} body={body[:300]}"

@@ -1557,7 +1557,7 @@ impl TradeWsClient {
             .okex_http_client
             .get_or_insert_with(reqwest::Client::new);
         let url = format!(
-            "https://www.okx.com/api/v5/public/instruments?instType={}",
+            "https://openapi.okx.com/api/v5/public/instruments?instType={}",
             inst_type
         );
         let resp = client

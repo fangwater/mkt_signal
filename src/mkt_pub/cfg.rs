@@ -442,7 +442,7 @@ impl Config {
 
     /// 从 OKEx HTTP API 获取 USDT 永续合约列表
     async fn get_symbol_for_okex_swap() -> Result<Vec<String>> {
-        let url = "https://www.okx.com/api/v5/public/instruments?instType=SWAP";
+        let url = "https://openapi.okx.com/api/v5/public/instruments?instType=SWAP";
         info!("Fetching OKEx swap symbols from: {}", url);
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(15))
@@ -482,7 +482,7 @@ impl Config {
 
     /// 从 OKEx HTTP API 获取现货交易对列表
     async fn get_spot_symbols_from_okex_api() -> Result<Vec<String>> {
-        let url = "https://www.okx.com/api/v5/public/instruments?instType=SPOT";
+        let url = "https://openapi.okx.com/api/v5/public/instruments?instType=SPOT";
         info!("Fetching OKEx spot symbols from: {}", url);
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(15))

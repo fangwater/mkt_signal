@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
-BASE_URL = os.environ.get("OKX_BASE_URL", "https://www.okx.com")
+BASE_URL = os.environ.get("OKX_BASE_URL", "https://openapi.okx.com")
 EPS = 1e-12
 
 

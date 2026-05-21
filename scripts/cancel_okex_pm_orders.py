@@ -34,7 +34,7 @@ import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
 
-OKX_BASE = os.environ.get("OKX_BASE_URL", "https://www.okx.com").rstrip("/")
+OKX_BASE = os.environ.get("OKX_BASE_URL", "https://openapi.okx.com").rstrip("/")
 OKX_ORDERS_PENDING_PATH = "/api/v5/trade/orders-pending"
 OKX_CANCEL_BATCH_PATH = "/api/v5/trade/cancel-batch-orders"
 

@@ -74,7 +74,7 @@ class PlainFloatJSONEncoder(json.JSONEncoder):
         )
         return _iterencode(o, 0)
 
-API = "https://www.okx.com/api/v5/public/interest-rate-loan-quota"
+API = "https://openapi.okx.com/api/v5/public/interest-rate-loan-quota"
 
 
 def fetch_data(ccy: Optional[str]) -> dict:

@@ -159,7 +159,7 @@ def _fetch_okx_state(
     passphrase = os.environ.get("OKX_PASSPHRASE", "").strip()
     if not api_key or not api_secret or not passphrase:
         raise SystemExit("OKX_API_KEY / OKX_API_SECRET / OKX_PASSPHRASE not set")
-    base_url = os.environ.get("OKX_BASE_URL", "https://www.okx.com")
+    base_url = os.environ.get("OKX_BASE_URL", "https://openapi.okx.com")
     simulated = os.environ.get("OKX_SIMULATED_TRADING", "").strip().lower() in {"1", "true", "yes"}
 
     # ---- Balance ----

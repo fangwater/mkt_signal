@@ -44,7 +44,7 @@ from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_UP
 from typing import Any, Dict, List, Optional, Tuple
 
 
-OKX_BASE = os.environ.get("OKX_BASE_URL", "https://www.okx.com").rstrip("/")
+OKX_BASE = os.environ.get("OKX_BASE_URL", "https://openapi.okx.com").rstrip("/")
 
 OKX_BALANCE_PATH = "/api/v5/account/balance"
 OKX_POSITIONS_PATH = "/api/v5/account/positions"

@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, List, Optional
 
-DEFAULT_BASE_URL = os.environ.get("OKX_BASE_URL", "https://www.okx.com")
+DEFAULT_BASE_URL = os.environ.get("OKX_BASE_URL", "https://openapi.okx.com")
 
 
 @dataclass
