@@ -49,7 +49,7 @@ OKX_ACCT_LV_OK = {"3", "4"}
 OKX_POS_MODE_OK = "net_mode"
 BYBIT_SPOT_MARGIN_OK = "1"
 BYBIT_RECV_WINDOW_MS = "5000"
-OKX_BASE_URL_DEFAULT = "https://openapi.okx.com"
+OKX_BASE_URL_DEFAULT = "https://www.okx.com"
 BYBIT_BASE_URL_DEFAULT = "https://api.bybit.com"
 
 ACCT_LV_NAMES = {

@@ -281,8 +281,8 @@ const GATE_TEST_SYMBOLS: &[&str] = &["BTC_USDT", "ETH_USDT", "SOL_USDT"];
 const BINANCE_FUNDING_RATE_API: &str = "https://fapi.binance.com/fapi/v1/fundingRate";
 const BINANCE_LENDING_RATE_API: &str = "https://api.binance.com/sapi/v1/margin/interestRateHistory";
 const OKEX_FUNDING_RATE_HISTORY_API: &str =
-    "https://openapi.okx.com/api/v5/public/funding-rate-history";
-const OKEX_FUNDING_RATE_API: &str = "https://openapi.okx.com/api/v5/public/funding-rate";
+    "https://www.okx.com/api/v5/public/funding-rate-history";
+const OKEX_FUNDING_RATE_API: &str = "https://www.okx.com/api/v5/public/funding-rate";
 const BITGET_FUNDING_RATE_HISTORY_API: &str =
     "https://api.bitget.com/api/v3/market/history-fund-rate";
 const BITGET_API_BASE_URL: &str = "https://api.bitget.com";

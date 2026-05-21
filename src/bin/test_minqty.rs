@@ -33,7 +33,7 @@ struct OkexInstrument {
 }
 
 async fn fetch_okx_raw_data() -> Result<Vec<OkexInstrument>> {
-    let url = "https://openapi.okx.com/api/v5/public/instruments?instType=SWAP";
+    let url = "https://www.okx.com/api/v5/public/instruments?instType=SWAP";
     let client = reqwest::Client::new();
     let response = client.get(url).send().await?;
     let body = response.text().await?;

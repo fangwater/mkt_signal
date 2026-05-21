@@ -635,9 +635,9 @@ impl OkexProvider {
 
     fn get_api_url(&self, market_type: MarketType) -> &'static str {
         match market_type {
-            MarketType::Spot => "https://openapi.okx.com/api/v5/public/instruments?instType=SPOT",
-            MarketType::Margin => "https://openapi.okx.com/api/v5/public/instruments?instType=MARGIN",
-            MarketType::Futures => "https://openapi.okx.com/api/v5/public/instruments?instType=SWAP",
+            MarketType::Spot => "https://www.okx.com/api/v5/public/instruments?instType=SPOT",
+            MarketType::Margin => "https://www.okx.com/api/v5/public/instruments?instType=MARGIN",
+            MarketType::Futures => "https://www.okx.com/api/v5/public/instruments?instType=SWAP",
         }
     }
 

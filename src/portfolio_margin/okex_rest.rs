@@ -14,7 +14,7 @@ use crate::portfolio_margin::okex_auth::OkexCredentials;
 type HmacSha256 = Hmac<Sha256>;
 
 const OKEX_INTEREST_PATH: &str = "/api/v5/account/interest-accrued";
-const OKEX_REST_BASE: &str = "https://openapi.okx.com";
+const OKEX_REST_BASE: &str = "https://www.okx.com";
 
 #[derive(Debug, Deserialize)]
 struct InterestAccruedItem {

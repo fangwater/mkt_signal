@@ -82,7 +82,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--okx-url",
-        default=os.environ.get("OKX_BASE_URL", "https://openapi.okx.com"),
+        default=os.environ.get("OKX_BASE_URL", "https://www.okx.com"),
         help="OKX REST 基础地址",
     )
     parser.add_argument(

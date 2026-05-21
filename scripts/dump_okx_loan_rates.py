@@ -12,7 +12,7 @@ import urllib.parse
 import urllib.request
 from typing import Dict, List
 
-API = "https://openapi.okx.com/api/v5/public/interest-rate-loan-quota"
+API = "https://www.okx.com/api/v5/public/interest-rate-loan-quota"
 
 
 def fetch_data(ccy: str | None) -> dict:

@@ -28,7 +28,7 @@ from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from typing import Any, Dict, Optional, Tuple
 import re
 
-DEFAULT_BASE_URL = os.environ.get("OKX_BASE_URL", "https://openapi.okx.com")
+DEFAULT_BASE_URL = os.environ.get("OKX_BASE_URL", "https://www.okx.com")
 
 
 def utc_timestamp() -> str:

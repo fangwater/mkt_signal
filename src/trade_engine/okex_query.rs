@@ -8,7 +8,7 @@ use sha2::Sha256;
 
 type HmacSha256 = Hmac<Sha256>;
 
-const OKEX_REST_BASE: &str = "https://openapi.okx.com";
+const OKEX_REST_BASE: &str = "https://www.okx.com";
 
 fn build_okex_sign(timestamp: &str, method: &str, path: &str, body: &str, secret: &str) -> String {
     let payload = format!("{}{}{}{}", timestamp, method, path, body);

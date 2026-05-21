@@ -402,7 +402,7 @@ class LotSpecCache:
         return None
 
     def _okex(self, symbol: str, timeout: int) -> Optional[LotSpec]:
-        url = f"https://openapi.okx.com/api/v5/public/instruments?instType=SWAP&instId={symbol}"
+        url = f"https://www.okx.com/api/v5/public/instruments?instType=SWAP&instId={symbol}"
         status, body, _ = http_json_request("GET", url, timeout=timeout)
         if not (200 <= status < 300):
             return None
@@ -600,7 +600,7 @@ def fetch_positions_binance(timeout: int) -> Dict[str, float]:
 
 def fetch_positions_okex(timeout: int) -> Dict[str, float]:
     key, secret, passphrase = load_required(("OKX_API_KEY", "OKX_API_SECRET", "OKX_PASSPHRASE"))
-    base = os.environ.get("OKX_BASE_URL", "https://openapi.okx.com").rstrip("/")
+    base = os.environ.get("OKX_BASE_URL", "https://www.okx.com").rstrip("/")
     path = "/api/v5/account/positions"
     query = "instType=SWAP"
     url_path = f"{path}?{query}"

@@ -376,7 +376,7 @@ async fn fetch_okx_delists(
     inst_type: &'static str,
     query: &DelistScheduleQuery,
 ) -> Result<Vec<DelistEvent>> {
-    let url = format!("https://openapi.okx.com/api/v5/public/instruments?instType={inst_type}");
+    let url = format!("https://www.okx.com/api/v5/public/instruments?instType={inst_type}");
     let response = http_client()?
         .get(&url)
         .send()

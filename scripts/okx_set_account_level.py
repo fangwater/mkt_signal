@@ -38,7 +38,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict, Optional, Tuple
 
-DEFAULT_BASE_URL = os.environ.get("OKX_BASE_URL", "https://openapi.okx.com")
+DEFAULT_BASE_URL = os.environ.get("OKX_BASE_URL", "https://www.okx.com")
 
 ACCT_LV_NAMES = {
     "1": "简单模式",

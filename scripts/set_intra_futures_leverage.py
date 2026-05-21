@@ -255,7 +255,7 @@ def okx_sign(secret: str, timestamp: str, method: str, path: str, body: str) -> 
 
 def okx_post(path: str, payload: Dict[str, Any], timeout: int) -> Tuple[int, Any]:
     api_key, api_secret, passphrase = require_env(("OKX_API_KEY", "OKX_API_SECRET", "OKX_PASSPHRASE"))
-    base = os.environ.get("OKX_BASE_URL", "https://openapi.okx.com").rstrip("/")
+    base = os.environ.get("OKX_BASE_URL", "https://www.okx.com").rstrip("/")
     body = json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
     timestamp = okx_timestamp()
     headers = {
