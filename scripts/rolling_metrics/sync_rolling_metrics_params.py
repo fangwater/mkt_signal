@@ -68,6 +68,8 @@ DEFAULTS = {
 SPREAD_FR_FUTURES_PAIRS = {
     ("okex-futures", "binance-futures"),
     ("okex-futures", "bybit-futures"),
+    ("bybit-futures", "okex-futures"),
+    ("bybit-futures", "binance-futures"),
     ("bitget-futures", "gate-futures"),
 }
 
