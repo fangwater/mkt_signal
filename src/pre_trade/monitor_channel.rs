@@ -188,6 +188,7 @@ use std::rc::Rc;
 // Thread-local 单例存储
 thread_local! {
     static MONITOR_CHANNEL: RefCell<Option<MonitorChannelInner>> = const { RefCell::new(None) };
+    static MONITOR_STATE_LISTENERS: RefCell<Option<MonitorStateListeners>> = const { RefCell::new(None) };
 }
 
 /// MonitorChannel 单例访问器（零大小类型）
@@ -223,6 +224,597 @@ impl LegMgr {
                 um, min_qty_table, ..
             } => Some((um.clone(), min_qty_table.clone())),
             _ => None,
+        }
+    }
+}
+
+struct MonitorStateListeners {
+    account_listeners: Vec<BasicAccountListener>,
+    derivatives_listener: DerivativesPriceListener,
+}
+
+impl MonitorStateListeners {
+    fn drain_pending(&mut self) -> bool {
+        let mut has_message = false;
+        for listener in &mut self.account_listeners {
+            has_message |= listener.drain_pending();
+        }
+        has_message |= self.derivatives_listener.drain_pending();
+        has_message
+    }
+}
+
+struct BasicAccountListener {
+    service_name: String,
+    exchange: Exchange,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+    open_leg: LegMgr,
+    hedge_leg: LegMgr,
+    usdt_mgrs: HashMap<BasicAccountScope, Rc<RefCell<UsdtBalanceManager>>>,
+    binance_account_mode: Option<BinanceAccountMode>,
+    strategy_mgr: Rc<RefCell<crate::strategy::StrategyManager>>,
+    dedup: DedupCache,
+    require_existing_service: bool,
+    node: Node<ipc::Service>,
+    subscriber: Option<Subscriber<ipc::Service, [u8; ACCOUNT_PAYLOAD], ()>>,
+    next_open_attempt_at: Instant,
+}
+
+impl BasicAccountListener {
+    fn new(
+        service_name: String,
+        node_name: String,
+        exchange: Exchange,
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
+        open_leg: LegMgr,
+        hedge_leg: LegMgr,
+        usdt_mgrs: HashMap<BasicAccountScope, Rc<RefCell<UsdtBalanceManager>>>,
+        binance_account_mode: Option<BinanceAccountMode>,
+        strategy_mgr: Rc<RefCell<crate::strategy::StrategyManager>>,
+    ) -> Result<Self> {
+        let node = NodeBuilder::new()
+            .name(&NodeName::new(&node_name)?)
+            .create::<ipc::Service>()?;
+        let require_existing_service = exchange == Exchange::Gate
+            || (exchange == Exchange::Binance
+                && binance_account_mode == Some(BinanceAccountMode::Standard));
+        Ok(Self {
+            service_name,
+            exchange,
+            open_venue,
+            hedge_venue,
+            open_leg,
+            hedge_leg,
+            usdt_mgrs,
+            binance_account_mode,
+            strategy_mgr,
+            dedup: DedupCache::new(8192),
+            require_existing_service,
+            node,
+            subscriber: None,
+            next_open_attempt_at: Instant::now(),
+        })
+    }
+
+    fn ensure_subscriber(&mut self) -> bool {
+        if self.subscriber.is_some() {
+            return true;
+        }
+        let now = Instant::now();
+        if now < self.next_open_attempt_at {
+            return false;
+        }
+
+        let service_name_obj = match ServiceName::new(&self.service_name) {
+            Ok(name) => name,
+            Err(err) => {
+                warn!(
+                    "invalid account_monitor service name: service={} err={:?}",
+                    self.service_name, err
+                );
+                self.next_open_attempt_at = Instant::now() + Duration::from_secs(1);
+                return false;
+            }
+        };
+        let service_builder = || {
+            self.node
+                .service_builder(&service_name_obj)
+                .publish_subscribe::<[u8; ACCOUNT_PAYLOAD]>()
+                .max_publishers(1)
+                .max_subscribers(PM_MAX_SUBSCRIBERS)
+                .history_size(PM_HISTORY_SIZE)
+                .subscriber_max_buffer_size(PM_SUBSCRIBER_MAX_BUFFER_SIZE)
+        };
+
+        let service = if self.require_existing_service {
+            match service_builder().open() {
+                Ok(service) => service,
+                Err(err) => {
+                    warn!(
+                        "waiting for account_monitor service: service={} exchange={:?} err={:?}",
+                        self.service_name, self.exchange, err
+                    );
+                    self.next_open_attempt_at = Instant::now() + Duration::from_secs(1);
+                    return false;
+                }
+            }
+        } else {
+            match service_builder().open() {
+                Ok(service) => service,
+                Err(err) => {
+                    warn!(
+                        "account_monitor service missing, continue with open_or_create: service={} err={:?}",
+                        self.service_name, err
+                    );
+                    match service_builder().open_or_create() {
+                        Ok(service) => service,
+                        Err(err) => {
+                            warn!(
+                                "创建账户 IceOryx service 失败: service={} err={:?}",
+                                self.service_name, err
+                            );
+                            self.next_open_attempt_at = Instant::now() + Duration::from_secs(1);
+                            return false;
+                        }
+                    }
+                }
+            }
+        };
+
+        match service.subscriber_builder().create() {
+            Ok(subscriber) => {
+                info!(
+                    "basic account stream subscribed: service={} exchange={:?}",
+                    self.service_name, self.exchange
+                );
+                self.subscriber = Some(subscriber);
+                true
+            }
+            Err(err) => {
+                warn!(
+                    "创建账户 IceOryx subscriber 失败: service={} err={:?}",
+                    self.service_name, err
+                );
+                self.next_open_attempt_at = Instant::now() + Duration::from_secs(1);
+                false
+            }
+        }
+    }
+
+    fn drain_pending(&mut self) -> bool {
+        if !self.ensure_subscriber() {
+            return false;
+        }
+        let mut has_message = false;
+        loop {
+            let receive_result = self
+                .subscriber
+                .as_ref()
+                .expect("account subscriber should exist after ensure_subscriber")
+                .receive();
+            match receive_result {
+                Ok(Some(sample)) => {
+                    has_message = true;
+                    self.process_payload(sample.payload());
+                }
+                Ok(None) => break,
+                Err(err) => {
+                    warn!("account stream receive error: {err}");
+                    self.subscriber = None;
+                    self.next_open_attempt_at = Instant::now() + Duration::from_millis(200);
+                    break;
+                }
+            }
+        }
+        has_message
+    }
+
+    fn process_payload(&mut self, payload: &[u8]) {
+        let Some((msg_type, account_scope, data)) = split_basic_account_event(payload) else {
+            return;
+        };
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        payload.hash(&mut hasher);
+        let key = hasher.finish();
+        if !self.dedup.insert_check(key) {
+            return;
+        }
+
+        match msg_type {
+            BasicAccountEventType::BalanceUpdate => {
+                if let Ok(msg) = BasicBalanceMsg::from_bytes(data) {
+                    if msg.symbol.eq_ignore_ascii_case("USDT") {
+                        if let Some(mgr) = self.usdt_mgrs.get(&account_scope) {
+                            mgr.borrow_mut().apply_balance(&msg);
+                        }
+                    }
+                    if scope_matches_venue(
+                        account_scope,
+                        self.exchange,
+                        self.open_venue,
+                        self.binance_account_mode,
+                    ) {
+                        if let LegMgr::Margin { bal, .. } = &self.open_leg {
+                            bal.borrow_mut().apply_balance(&msg);
+                            MonitorChannel::instance().mark_arb_startup_net_seen_for_venue(
+                                self.open_venue,
+                                "account_balance",
+                            );
+                            MonitorChannel::instance()
+                                .handle_arb_open_margin_net_risk_after_update(&msg.symbol);
+                        }
+                    }
+                    if scope_matches_venue(
+                        account_scope,
+                        self.exchange,
+                        self.hedge_venue,
+                        self.binance_account_mode,
+                    ) {
+                        if let LegMgr::Margin { bal, .. } = &self.hedge_leg {
+                            bal.borrow_mut().apply_balance(&msg);
+                            MonitorChannel::instance().mark_arb_startup_net_seen_for_venue(
+                                self.hedge_venue,
+                                "account_balance",
+                            );
+                        }
+                    }
+                }
+            }
+            BasicAccountEventType::PositionUpdate => {
+                if let Ok(msg) = BasicPositionMsg::from_bytes(data) {
+                    if self.exchange == Exchange::Okex
+                        && !msg.inst_id.contains('-')
+                        && !msg.inst_id.contains("-SWAP")
+                    {
+                        warn!(
+                            "drop malformed OKX position update (unexpected inst_id format): exchange={:?} inst_id={} side={} amt={} ts={}",
+                            self.exchange,
+                            msg.inst_id,
+                            msg.position_side,
+                            msg.position_amount,
+                            msg.timestamp
+                        );
+                        return;
+                    }
+                    if scope_matches_venue(
+                        account_scope,
+                        self.exchange,
+                        self.open_venue,
+                        self.binance_account_mode,
+                    ) {
+                        if let LegMgr::Futures { um, .. } = &self.open_leg {
+                            um.borrow_mut().apply_position(&msg);
+                            MonitorChannel::instance().mark_arb_startup_net_seen_for_venue(
+                                self.open_venue,
+                                "account_position",
+                            );
+                        }
+                    }
+                    if scope_matches_venue(
+                        account_scope,
+                        self.exchange,
+                        self.hedge_venue,
+                        self.binance_account_mode,
+                    ) {
+                        if let LegMgr::Futures { um, .. } = &self.hedge_leg {
+                            um.borrow_mut().apply_position(&msg);
+                            MonitorChannel::instance().mark_arb_startup_net_seen_for_venue(
+                                self.hedge_venue,
+                                "account_position",
+                            );
+                        }
+                    }
+                    let symbol = normalize_symbol_for_internal(&msg.inst_id);
+                    if !symbol.is_empty() {
+                        if self.open_venue == self.hedge_venue {
+                            MonitorChannel::instance()
+                                .handle_mm_position_risk_after_update(&symbol);
+                        } else {
+                            MonitorChannel::instance()
+                                .handle_arb_position_risk_after_update(&symbol);
+                        }
+                    }
+                }
+            }
+            BasicAccountEventType::UnrealizedPnlUpdate => {
+                if let Ok(msg) = BasicUmUnrealizedMsg::from_bytes(data) {
+                    if scope_matches_venue(
+                        account_scope,
+                        self.exchange,
+                        self.open_venue,
+                        self.binance_account_mode,
+                    ) {
+                        if let LegMgr::Futures { um, .. } = &self.open_leg {
+                            um.borrow_mut().apply_unrealized_pnl(&msg);
+                        }
+                    }
+                    if scope_matches_venue(
+                        account_scope,
+                        self.exchange,
+                        self.hedge_venue,
+                        self.binance_account_mode,
+                    ) {
+                        if let LegMgr::Futures { um, .. } = &self.hedge_leg {
+                            um.borrow_mut().apply_unrealized_pnl(&msg);
+                        }
+                    }
+                }
+            }
+            BasicAccountEventType::BorrowInterest => {
+                if let Ok(msg) = BasicBorrowInterestMsg::from_bytes(data) {
+                    if msg.symbol.eq_ignore_ascii_case("USDT") {
+                        if let Some(mgr) = self.usdt_mgrs.get(&account_scope) {
+                            mgr.borrow_mut().apply_borrow_interest(&msg);
+                        }
+                    }
+                    if scope_matches_venue(
+                        account_scope,
+                        self.exchange,
+                        self.open_venue,
+                        self.binance_account_mode,
+                    ) {
+                        if let LegMgr::Margin { bal, .. } = &self.open_leg {
+                            bal.borrow_mut().apply_borrow_interest(&msg);
+                            MonitorChannel::instance().mark_arb_startup_net_seen_for_venue(
+                                self.open_venue,
+                                "account_borrow_interest",
+                            );
+                            MonitorChannel::instance()
+                                .handle_arb_open_margin_net_risk_after_update(&msg.symbol);
+                        }
+                    }
+                    if scope_matches_venue(
+                        account_scope,
+                        self.exchange,
+                        self.hedge_venue,
+                        self.binance_account_mode,
+                    ) {
+                        if let LegMgr::Margin { bal, .. } = &self.hedge_leg {
+                            bal.borrow_mut().apply_borrow_interest(&msg);
+                            MonitorChannel::instance().mark_arb_startup_net_seen_for_venue(
+                                self.hedge_venue,
+                                "account_borrow_interest",
+                            );
+                        }
+                    }
+                }
+            }
+            BasicAccountEventType::OrderUpdate => match self.exchange {
+                Exchange::Okex => {
+                    if let Ok(msg) = OkexOrderMsg::from_bytes(data) {
+                        dispatch_order_update_generic(&self.strategy_mgr, &msg);
+                    }
+                }
+                Exchange::Binance => {
+                    if let Ok(msg) = BinanceBasicOrderMsg::from_bytes(data) {
+                        dispatch_order_update_generic(&self.strategy_mgr, &msg);
+                    }
+                }
+                Exchange::Gate => {
+                    if let Ok(msg) = GateBasicOrderMsg::from_bytes(data) {
+                        dispatch_order_update_generic(&self.strategy_mgr, &msg);
+                    }
+                }
+                Exchange::Bitget => {
+                    if let Ok(msg) = BitgetBasicOrderMsg::from_bytes(data) {
+                        dispatch_order_update_generic(&self.strategy_mgr, &msg);
+                    }
+                }
+                Exchange::Bybit => {
+                    if let Ok(msg) = BybitBasicOrderMsg::from_bytes(data) {
+                        dispatch_order_update_generic(&self.strategy_mgr, &msg);
+                    }
+                }
+                _ => {}
+            },
+            BasicAccountEventType::TradeUpdateLite => {}
+            BasicAccountEventType::AccountRisk => match BasicAccountRiskMsg::from_bytes(data) {
+                Ok(msg) => MonitorChannel::instance().apply_account_risk(account_scope, msg),
+                Err(err) => warn!(
+                    "AccountRisk decode failed: scope={} err={err:#}",
+                    account_scope.as_str()
+                ),
+            },
+            BasicAccountEventType::Error => {}
+        }
+    }
+}
+
+struct DerivativesPriceListener {
+    price_table: Rc<RefCell<PriceTable>>,
+    node_name: String,
+    service_name: String,
+    print_each_mark_price: bool,
+    mark_price_log_interval: Duration,
+    last_mark_price_log_at: Instant,
+    mark_price_samples_since_log: u64,
+    last_mark_price: Option<(String, f64, i64)>,
+    node: Node<ipc::Service>,
+    subscriber: Option<Subscriber<ipc::Service, [u8; DERIVATIVES_PAYLOAD], ()>>,
+    next_open_attempt_at: Instant,
+}
+
+impl DerivativesPriceListener {
+    fn new(
+        price_table: Rc<RefCell<PriceTable>>,
+        node_name: String,
+        service_name: String,
+    ) -> Result<Self> {
+        let print_each_mark_price = std::env::var_os("PRE_TRADE_PRINT_EACH_MARKPRICE").is_some();
+        let mark_price_log_interval = std::env::var("PRE_TRADE_MARKPRICE_LOG_INTERVAL_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .map(|secs| Duration::from_secs(secs.max(1)))
+            .unwrap_or_else(|| Duration::from_secs(5));
+        let node = NodeBuilder::new()
+            .name(&NodeName::new(&node_name)?)
+            .create::<ipc::Service>()?;
+        Ok(Self {
+            price_table,
+            node_name,
+            service_name,
+            print_each_mark_price,
+            mark_price_log_interval,
+            last_mark_price_log_at: Instant::now(),
+            mark_price_samples_since_log: 0,
+            last_mark_price: None,
+            node,
+            subscriber: None,
+            next_open_attempt_at: Instant::now(),
+        })
+    }
+
+    fn ensure_subscriber(&mut self) -> bool {
+        if self.subscriber.is_some() {
+            return true;
+        }
+        let now = Instant::now();
+        if now < self.next_open_attempt_at {
+            return false;
+        }
+        let service_name_obj = match ServiceName::new(&self.service_name) {
+            Ok(name) => name,
+            Err(err) => {
+                warn!(
+                    "invalid derivatives service name: service={} err={:?}",
+                    self.service_name, err
+                );
+                self.next_open_attempt_at = Instant::now() + Duration::from_millis(500);
+                return false;
+            }
+        };
+        let service = match self
+            .node
+            .service_builder(&service_name_obj)
+            .publish_subscribe::<[u8; DERIVATIVES_PAYLOAD]>()
+            .max_publishers(1)
+            .max_subscribers(DERIVATIVES_MAX_SUBSCRIBERS)
+            .history_size(DERIVATIVES_HISTORY_SIZE)
+            .subscriber_max_buffer_size(DERIVATIVES_SUBSCRIBER_MAX_BUFFER)
+            .open()
+        {
+            Ok(service) => service,
+            Err(err) => {
+                warn!(
+                    "waiting for derivatives service: node={} service={} err={:?}",
+                    self.node_name, self.service_name, err
+                );
+                self.next_open_attempt_at = Instant::now() + Duration::from_millis(500);
+                return false;
+            }
+        };
+        match service.subscriber_builder().create() {
+            Ok(subscriber) => {
+                info!(
+                    "derivatives price stream subscribed: node={} service={}",
+                    self.node_name, self.service_name
+                );
+                self.subscriber = Some(subscriber);
+                true
+            }
+            Err(err) => {
+                warn!(
+                    "derivatives subscriber create failed: node={} service={} err={:?}",
+                    self.node_name, self.service_name, err
+                );
+                self.next_open_attempt_at = Instant::now() + Duration::from_millis(500);
+                false
+            }
+        }
+    }
+
+    fn drain_pending(&mut self) -> bool {
+        if !self.ensure_subscriber() {
+            return false;
+        }
+        let mut has_message = false;
+        loop {
+            let receive_result = self
+                .subscriber
+                .as_ref()
+                .expect("derivatives subscriber should exist after ensure_subscriber")
+                .receive();
+            match receive_result {
+                Ok(Some(sample)) => {
+                    has_message = true;
+                    let payload = Bytes::copy_from_slice(sample.payload());
+                    self.process_payload(&payload);
+                }
+                Ok(None) => break,
+                Err(err) => {
+                    warn!(
+                        "derivatives stream receive error, reconnecting: node={} service={} err={}",
+                        self.node_name, self.service_name, err
+                    );
+                    self.subscriber = None;
+                    self.next_open_attempt_at = Instant::now() + Duration::from_millis(200);
+                    break;
+                }
+            }
+        }
+        has_message
+    }
+
+    fn process_payload(&mut self, payload: &Bytes) {
+        if payload.is_empty() {
+            return;
+        }
+        let Some(msg_type) = get_msg_type(payload) else {
+            return;
+        };
+        match msg_type {
+            MktMsgType::MarkPrice => match parse_mark_price(payload) {
+                Ok(msg) => {
+                    self.mark_price_samples_since_log += 1;
+                    let is_first_mark_price = self.last_mark_price.is_none();
+                    self.last_mark_price =
+                        Some((msg.symbol.clone(), msg.mark_price, msg.timestamp));
+                    if self.print_each_mark_price {
+                        info!(
+                            "mark price received: symbol={} mark_price={} ts={}",
+                            msg.symbol, msg.mark_price, msg.timestamp
+                        );
+                    } else if is_first_mark_price {
+                        let (symbol, mark_price, ts) = self
+                            .last_mark_price
+                            .as_ref()
+                            .expect("last mark price set above");
+                        info!(
+                            "mark price stream live: samples={} last_symbol={} last_mark_price={} last_ts={}",
+                            self.mark_price_samples_since_log, symbol, mark_price, ts
+                        );
+                        self.mark_price_samples_since_log = 0;
+                        self.last_mark_price_log_at = Instant::now();
+                    } else if self.last_mark_price_log_at.elapsed() >= self.mark_price_log_interval
+                    {
+                        let (symbol, mark_price, ts) = self
+                            .last_mark_price
+                            .as_ref()
+                            .expect("last mark price set above");
+                        debug!(
+                            "mark price stream live: samples={} last_symbol={} last_mark_price={} last_ts={}",
+                            self.mark_price_samples_since_log, symbol, mark_price, ts
+                        );
+                        self.mark_price_samples_since_log = 0;
+                        self.last_mark_price_log_at = Instant::now();
+                    }
+
+                    let mut table = self.price_table.borrow_mut();
+                    table.update_mark_price(&msg.symbol, msg.mark_price, msg.timestamp);
+                }
+                Err(err) => warn!("parse mark price failed: {err:?}"),
+            },
+            MktMsgType::IndexPrice => match parse_index_price(payload) {
+                Ok(msg) => {
+                    let mut table = self.price_table.borrow_mut();
+                    table.update_index_price(&msg.symbol, msg.index_price, msg.timestamp);
+                }
+                Err(err) => warn!("parse index price failed: {err:?}"),
+            },
+            _ => {}
         }
     }
 }
@@ -327,6 +919,16 @@ impl MonitorChannel {
     /// 获取全局单例实例
     pub fn instance() -> Self {
         MonitorChannel
+    }
+
+    pub fn drain_pending_state_updates() -> bool {
+        MONITOR_STATE_LISTENERS.with(|listeners| {
+            let mut listeners = listeners.borrow_mut();
+            match listeners.as_mut() {
+                Some(listeners) => listeners.drain_pending(),
+                None => false,
+            }
+        })
     }
 
     /// 访问内部状态的辅助方法（内部使用）
@@ -1193,14 +1795,15 @@ impl MonitorChannel {
             venue_min_qty_tables.insert(venue, Rc::new(table));
         }
 
-        // 为涉及的交易所启动 basic 账户监听（可能是一个或两个）
+        // 为涉及的交易所创建 basic 账户 listener（可能是一个或两个），由 pre_trade reactor 统一 drain。
         let mut exchanges: HashSet<Exchange> = HashSet::new();
         exchanges.insert(open_exchange);
         exchanges.insert(hedge_exchange);
+        let mut account_listeners = Vec::with_capacity(exchanges.len());
         for ex in exchanges {
             let service_name = build_service_name(&format!("account_pubs/{}_pm", ex.as_str()));
             let node_name = format!("pre_trade_account_pubs_{}_pm", ex.as_str());
-            Self::spawn_basic_listener(
+            account_listeners.push(BasicAccountListener::new(
                 service_name,
                 node_name,
                 ex,
@@ -1211,10 +1814,10 @@ impl MonitorChannel {
                 usdt_mgrs.clone(),
                 binance_account_mode,
                 strategy_mgr.clone(),
-            );
+            )?);
         }
 
-        // 启动衍生品价格监听任务（mark_price, index_price）
+        // 创建衍生品价格 listener（mark_price, index_price），由 pre_trade reactor 统一 drain。
         //
         // 约定：默认使用 Binance Futures 的衍生品指标；当 open/hedge 两腿都属于 OKX 时，
         // 切换到 OKX Futures 的 mark/index price。统一从 bridge 订阅，避免继续占用
@@ -1222,7 +1825,8 @@ impl MonitorChannel {
         let node_name = DEFAULT_NODE_PRE_TRADE_DERIVATIVES.to_string();
         let service_name =
             Self::derivatives_service_for_mark_price_source(open_venue, hedge_venue).to_string();
-        Self::spawn_derivatives_listener(price_table.clone(), node_name, service_name);
+        let derivatives_listener =
+            DerivativesPriceListener::new(price_table.clone(), node_name, service_name)?;
 
         // 创建内部实例并保存到 thread-local
         let inner = MonitorChannelInner {
@@ -1244,6 +1848,12 @@ impl MonitorChannel {
 
         MONITOR_CHANNEL.with(|mc| {
             *mc.borrow_mut() = Some(inner);
+        });
+        MONITOR_STATE_LISTENERS.with(|listeners| {
+            *listeners.borrow_mut() = Some(MonitorStateListeners {
+                account_listeners,
+                derivatives_listener,
+            });
         });
 
         Ok(())
@@ -1750,341 +2360,6 @@ impl MonitorChannel {
         })
     }
 
-    fn spawn_basic_listener(
-        service_name: String,
-        node_name: String,
-        exchange: Exchange,
-        open_venue: TradingVenue,
-        hedge_venue: TradingVenue,
-        open_leg: LegMgr,
-        hedge_leg: LegMgr,
-        usdt_mgrs: HashMap<BasicAccountScope, Rc<RefCell<UsdtBalanceManager>>>,
-        binance_account_mode: Option<BinanceAccountMode>,
-        strategy_mgr: Rc<RefCell<crate::strategy::StrategyManager>>,
-    ) {
-        tokio::task::spawn_local(async move {
-            let service_name_for_error = service_name.clone();
-
-            let result: Result<()> = async move {
-                let node = NodeBuilder::new()
-                    .name(&NodeName::new(&node_name)?)
-                    .create::<ipc::Service>()?;
-
-                // Gate 依赖 account_monitor 的 client_order_id，对缺失严格报错；
-                // 其他交易所允许先启动 pre_trade，再由 account_monitor 补上。
-                let service_name_obj = ServiceName::new(&service_name)?;
-                let service_builder = || {
-                    node.service_builder(&service_name_obj)
-                        .publish_subscribe::<[u8; ACCOUNT_PAYLOAD]>()
-                        .max_publishers(1)
-                        .max_subscribers(PM_MAX_SUBSCRIBERS)
-                        .history_size(PM_HISTORY_SIZE)
-                        .subscriber_max_buffer_size(PM_SUBSCRIBER_MAX_BUFFER_SIZE)
-                };
-                let require_existing_service = exchange == Exchange::Gate
-                    || (exchange == Exchange::Binance
-                        && binance_account_mode == Some(BinanceAccountMode::Standard));
-                let service = if require_existing_service {
-                    loop {
-                        match service_builder().open() {
-                            Ok(service) => break service,
-                            Err(err) => {
-                                warn!(
-                                    "waiting for account_monitor service: service={} exchange={:?} err={:?}",
-                                    service_name, exchange, err
-                                );
-                                tokio::time::sleep(Duration::from_secs(1)).await;
-                            }
-                        }
-                    }
-                } else {
-                    match service_builder().open() {
-                        Ok(service) => service,
-                        Err(err) => {
-                            warn!(
-                                "account_monitor service missing, continue with open_or_create: service={} err={:?}",
-                                service_name, err
-                            );
-                            service_builder().open_or_create().unwrap_or_else(|err| {
-                                panic!(
-                                    "创建账户 IceOryx service 失败: service={} err={:?}",
-                                    service_name, err
-                                )
-                            })
-                        }
-                    }
-                };
-                let subscriber: Subscriber<ipc::Service, [u8; ACCOUNT_PAYLOAD], ()> = service
-                    .subscriber_builder()
-                    .create()
-                    .unwrap_or_else(|err| {
-                        panic!(
-                            "创建账户 IceOryx subscriber 失败: service={} err={:?}",
-                            service_name, err
-                        )
-                    });
-
-                info!(
-                    "basic account stream subscribed: service={} exchange={:?}",
-                    service_name, exchange
-                );
-
-                let mut dedup = DedupCache::new(8192);
-
-                loop {
-                    let mut has_message = false;
-                    loop {
-                        match subscriber.receive() {
-                            Ok(Some(sample)) => {
-                                has_message = true;
-                                let payload = sample.payload();
-                            let Some((msg_type, account_scope, data)) =
-                                split_basic_account_event(payload)
-                            else {
-                                continue;
-                            };
-
-                            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                            payload.hash(&mut hasher);
-                            let key = hasher.finish();
-                            if !dedup.insert_check(key) {
-                                continue;
-                            }
-
-                            match msg_type {
-                                BasicAccountEventType::BalanceUpdate => {
-                                    if let Ok(msg) = BasicBalanceMsg::from_bytes(data) {
-                                        if msg.symbol.eq_ignore_ascii_case("USDT") {
-                                            if let Some(mgr) = usdt_mgrs.get(&account_scope) {
-                                                mgr.borrow_mut().apply_balance(&msg);
-                                            }
-                                        }
-                                        if scope_matches_venue(
-                                            account_scope,
-                                            exchange,
-                                            open_venue,
-                                            binance_account_mode,
-                                        ) {
-                                            if let LegMgr::Margin { bal, .. } = &open_leg {
-                                                bal.borrow_mut().apply_balance(&msg);
-                                                MonitorChannel::instance()
-                                                    .mark_arb_startup_net_seen_for_venue(
-                                                        open_venue,
-                                                        "account_balance",
-                                                    );
-                                                MonitorChannel::instance()
-                                                    .handle_arb_open_margin_net_risk_after_update(
-                                                        &msg.symbol,
-                                                    );
-                                            }
-                                        }
-                                        if scope_matches_venue(
-                                            account_scope,
-                                            exchange,
-                                            hedge_venue,
-                                            binance_account_mode,
-                                        ) {
-                                            if let LegMgr::Margin { bal, .. } = &hedge_leg {
-                                                bal.borrow_mut().apply_balance(&msg);
-                                                MonitorChannel::instance()
-                                                    .mark_arb_startup_net_seen_for_venue(
-                                                        hedge_venue,
-                                                        "account_balance",
-                                                    );
-                                            }
-                                        }
-                                    }
-                                }
-                                BasicAccountEventType::PositionUpdate => {
-                                    if let Ok(msg) = BasicPositionMsg::from_bytes(data) {
-                                        if exchange == Exchange::Okex
-                                            && !msg.inst_id.contains('-')
-                                            && !msg.inst_id.contains("-SWAP")
-                                        {
-                                            warn!(
-                                                "drop malformed OKX position update (unexpected inst_id format): exchange={:?} inst_id={} side={} amt={} ts={}",
-                                                exchange,
-                                                msg.inst_id,
-                                                msg.position_side,
-                                                msg.position_amount,
-                                                msg.timestamp
-                                            );
-                                            continue;
-                                        }
-                                        if scope_matches_venue(
-                                            account_scope,
-                                            exchange,
-                                            open_venue,
-                                            binance_account_mode,
-                                        ) {
-                                            if let LegMgr::Futures { um, .. } = &open_leg {
-                                                um.borrow_mut().apply_position(&msg);
-                                                MonitorChannel::instance()
-                                                    .mark_arb_startup_net_seen_for_venue(
-                                                        open_venue,
-                                                        "account_position",
-                                                    );
-                                            }
-                                        }
-                                        if scope_matches_venue(
-                                            account_scope,
-                                            exchange,
-                                            hedge_venue,
-                                            binance_account_mode,
-                                        ) {
-                                            if let LegMgr::Futures { um, .. } = &hedge_leg {
-                                                um.borrow_mut().apply_position(&msg);
-                                                MonitorChannel::instance()
-                                                    .mark_arb_startup_net_seen_for_venue(
-                                                        hedge_venue,
-                                                        "account_position",
-                                                    );
-                                            }
-                                        }
-                                        let symbol = normalize_symbol_for_internal(&msg.inst_id);
-                                        if !symbol.is_empty() {
-                                            if open_venue == hedge_venue {
-                                                MonitorChannel::instance()
-                                                    .handle_mm_position_risk_after_update(&symbol);
-                                            } else {
-                                                MonitorChannel::instance()
-                                                    .handle_arb_position_risk_after_update(&symbol);
-                                            }
-                                        }
-                                    }
-                                }
-                                BasicAccountEventType::UnrealizedPnlUpdate => {
-                                    if let Ok(msg) = BasicUmUnrealizedMsg::from_bytes(data) {
-                                        if scope_matches_venue(
-                                            account_scope,
-                                            exchange,
-                                            open_venue,
-                                            binance_account_mode,
-                                        ) {
-                                            if let LegMgr::Futures { um, .. } = &open_leg {
-                                                um.borrow_mut().apply_unrealized_pnl(&msg);
-                                            }
-                                        }
-                                        if scope_matches_venue(
-                                            account_scope,
-                                            exchange,
-                                            hedge_venue,
-                                            binance_account_mode,
-                                        ) {
-                                            if let LegMgr::Futures { um, .. } = &hedge_leg {
-                                                um.borrow_mut().apply_unrealized_pnl(&msg);
-                                            }
-                                        }
-                                    }
-                                }
-                                BasicAccountEventType::BorrowInterest => {
-                                    if let Ok(msg) = BasicBorrowInterestMsg::from_bytes(data) {
-                                        if msg.symbol.eq_ignore_ascii_case("USDT") {
-                                            if let Some(mgr) = usdt_mgrs.get(&account_scope) {
-                                                mgr.borrow_mut().apply_borrow_interest(&msg);
-                                            }
-                                        }
-                                        if scope_matches_venue(
-                                            account_scope,
-                                            exchange,
-                                            open_venue,
-                                            binance_account_mode,
-                                        ) {
-                                            if let LegMgr::Margin { bal, .. } = &open_leg {
-                                                bal.borrow_mut().apply_borrow_interest(&msg);
-                                                MonitorChannel::instance()
-                                                    .mark_arb_startup_net_seen_for_venue(
-                                                        open_venue,
-                                                        "account_borrow_interest",
-                                                    );
-                                                MonitorChannel::instance()
-                                                    .handle_arb_open_margin_net_risk_after_update(
-                                                        &msg.symbol,
-                                                    );
-                                            }
-                                        }
-                                        if scope_matches_venue(
-                                            account_scope,
-                                            exchange,
-                                            hedge_venue,
-                                            binance_account_mode,
-                                        ) {
-                                            if let LegMgr::Margin { bal, .. } = &hedge_leg {
-                                                bal.borrow_mut().apply_borrow_interest(&msg);
-                                                MonitorChannel::instance()
-                                                    .mark_arb_startup_net_seen_for_venue(
-                                                        hedge_venue,
-                                                        "account_borrow_interest",
-                                                    );
-                                            }
-                                        }
-                                    }
-                                }
-                                BasicAccountEventType::OrderUpdate => match exchange {
-                                    Exchange::Okex => {
-                                        if let Ok(msg) = OkexOrderMsg::from_bytes(data) {
-                                            dispatch_order_update_generic(&strategy_mgr, &msg);
-                                        }
-                                    }
-                                    Exchange::Binance => {
-                                        if let Ok(msg) = BinanceBasicOrderMsg::from_bytes(data) {
-                                            dispatch_order_update_generic(&strategy_mgr, &msg);
-                                        }
-                                    }
-                                    Exchange::Gate => {
-                                        if let Ok(msg) = GateBasicOrderMsg::from_bytes(data) {
-                                            dispatch_order_update_generic(&strategy_mgr, &msg);
-                                        }
-                                    }
-                                    Exchange::Bitget => {
-                                        if let Ok(msg) = BitgetBasicOrderMsg::from_bytes(data) {
-                                            dispatch_order_update_generic(&strategy_mgr, &msg);
-                                        }
-                                    }
-                                    Exchange::Bybit => {
-                                        if let Ok(msg) = BybitBasicOrderMsg::from_bytes(data) {
-                                            dispatch_order_update_generic(&strategy_mgr, &msg);
-                                        }
-                                    }
-                                    _ => {}
-                                },
-                                BasicAccountEventType::TradeUpdateLite => {}
-                                BasicAccountEventType::AccountRisk => {
-                                    match BasicAccountRiskMsg::from_bytes(data) {
-                                        Ok(msg) => MonitorChannel::instance()
-                                            .apply_account_risk(account_scope, msg),
-                                        Err(err) => warn!(
-                                            "AccountRisk decode failed: scope={} err={err:#}",
-                                            account_scope.as_str()
-                                        ),
-                                    }
-                                }
-                                BasicAccountEventType::Error => {}
-                            }
-                        }
-                            Ok(None) => break,
-                            Err(err) => {
-                                warn!("account stream receive error: {err}");
-                                tokio::time::sleep(Duration::from_millis(200)).await;
-                                break;
-                            }
-                        }
-                    }
-                    if !has_message {
-                        tokio::task::yield_now().await;
-                    }
-                }
-            }
-            .await;
-
-            if let Err(err) = result {
-                warn!(
-                    "account listener {} exited: {err:?}",
-                    service_name_for_error
-                );
-            }
-        });
-    }
     // ==================== 风控方法（从 RiskChecker 迁移） ====================
 
     /// 检查当前 symbol 的限价挂单数量（MM 路径，使用 max_pending_limit_buy/sell_orders）
@@ -2579,169 +2854,6 @@ impl MonitorChannel {
                 um.borrow().net_position(symbol, Some(&table_ref))
             }
         }
-    }
-
-    fn spawn_derivatives_listener(
-        price_table: Rc<RefCell<PriceTable>>,
-        node_name: String,
-        service_name: String,
-    ) {
-        tokio::task::spawn_local(async move {
-            let result: Result<()> = async move {
-                let print_each_mark_price =
-                    std::env::var_os("PRE_TRADE_PRINT_EACH_MARKPRICE").is_some();
-                let mark_price_log_interval = std::env::var("PRE_TRADE_MARKPRICE_LOG_INTERVAL_SECS")
-                    .ok()
-                    .and_then(|value| value.parse::<u64>().ok())
-                    .map(|secs| Duration::from_secs(secs.max(1)))
-                    .unwrap_or_else(|| Duration::from_secs(5));
-                let mut last_mark_price_log_at = Instant::now();
-                let mut mark_price_samples_since_log: u64 = 0;
-                let mut last_mark_price: Option<(String, f64, i64)> = None;
-
-                let node = NodeBuilder::new()
-                    .name(&NodeName::new(&node_name)?)
-                    .create::<ipc::Service>()?;
-
-                let mut subscriber: Option<Subscriber<ipc::Service, [u8; DERIVATIVES_PAYLOAD], ()>> =
-                    None;
-
-                loop {
-                    if subscriber.is_none() {
-                        let service = match node
-                            .service_builder(&ServiceName::new(&service_name)?)
-                            .publish_subscribe::<[u8; DERIVATIVES_PAYLOAD]>()
-                            .max_publishers(1)
-                            .max_subscribers(DERIVATIVES_MAX_SUBSCRIBERS)
-                            .history_size(DERIVATIVES_HISTORY_SIZE)
-                            .subscriber_max_buffer_size(DERIVATIVES_SUBSCRIBER_MAX_BUFFER)
-                            .open()
-                        {
-                            Ok(service) => service,
-                            Err(err) => {
-                                warn!(
-                                    "waiting for derivatives service: node={} service={} err={:?}",
-                                    node_name, service_name, err
-                                );
-                                tokio::time::sleep(Duration::from_millis(500)).await;
-                                continue;
-                            }
-                        };
-                        let created_subscriber = service.subscriber_builder().create()?;
-                        info!(
-                            "derivatives price stream subscribed: node={} service={}",
-                            node_name, service_name
-                        );
-                        subscriber = Some(created_subscriber);
-                    }
-
-                    let mut has_message = false;
-                    loop {
-                        match subscriber
-                            .as_ref()
-                            .expect("subscriber must exist after successful service open")
-                            .receive()
-                        {
-                            Ok(Some(sample)) => {
-                                has_message = true;
-                                let payload = Bytes::copy_from_slice(sample.payload());
-                            if payload.is_empty() {
-                                continue;
-                            }
-                            let Some(msg_type) = get_msg_type(&payload) else {
-                                continue;
-                            };
-                            match msg_type {
-                                MktMsgType::MarkPrice => match parse_mark_price(&payload) {
-                                    Ok(msg) => {
-                                        mark_price_samples_since_log += 1;
-                                        let is_first_mark_price = last_mark_price.is_none();
-                                        last_mark_price = Some((
-                                            msg.symbol.clone(),
-                                            msg.mark_price,
-                                            msg.timestamp,
-                                        ));
-                                        if print_each_mark_price {
-                                            info!(
-                                                "mark price received: symbol={} mark_price={} ts={}",
-                                                msg.symbol, msg.mark_price, msg.timestamp
-                                            );
-                                        } else if is_first_mark_price {
-                                            let (symbol, mark_price, ts) = last_mark_price
-                                                .as_ref()
-                                                .expect("last mark price set above");
-                                            info!(
-                                                "mark price stream live: samples={} last_symbol={} last_mark_price={} last_ts={}",
-                                                mark_price_samples_since_log,
-                                                symbol,
-                                                mark_price,
-                                                ts
-                                            );
-                                            mark_price_samples_since_log = 0;
-                                            last_mark_price_log_at = Instant::now();
-                                        } else if last_mark_price_log_at.elapsed()
-                                            >= mark_price_log_interval
-                                        {
-                                            let (symbol, mark_price, ts) = last_mark_price
-                                                .as_ref()
-                                                .expect("last mark price set above");
-                                            debug!(
-                                                "mark price stream live: samples={} last_symbol={} last_mark_price={} last_ts={}",
-                                                mark_price_samples_since_log,
-                                                symbol,
-                                                mark_price,
-                                                ts
-                                            );
-                                            mark_price_samples_since_log = 0;
-                                            last_mark_price_log_at = Instant::now();
-                                        }
-
-                                        let mut table = price_table.borrow_mut();
-                                        table.update_mark_price(
-                                            &msg.symbol,
-                                            msg.mark_price,
-                                            msg.timestamp,
-                                        );
-                                    }
-                                    Err(err) => warn!("parse mark price failed: {err:?}"),
-                                },
-                                MktMsgType::IndexPrice => match parse_index_price(&payload) {
-                                    Ok(msg) => {
-                                        let mut table = price_table.borrow_mut();
-                                        table.update_index_price(
-                                            &msg.symbol,
-                                            msg.index_price,
-                                            msg.timestamp,
-                                        );
-                                    }
-                                    Err(err) => warn!("parse index price failed: {err:?}"),
-                                },
-                                _ => {}
-                            }
-                        }
-                            Ok(None) => break,
-                            Err(err) => {
-                                warn!(
-                                    "derivatives stream receive error, reconnecting: node={} service={} err={}",
-                                    node_name, service_name, err
-                                );
-                                subscriber = None;
-                                tokio::time::sleep(Duration::from_millis(200)).await;
-                                break;
-                            }
-                        }
-                    }
-                    if !has_message {
-                        tokio::task::yield_now().await;
-                    }
-                }
-            }
-            .await;
-
-            if let Err(err) = result {
-                log::error!("derivatives listener exited: {err:?}");
-            }
-        });
     }
 }
 

@@ -6,7 +6,6 @@ use iceoryx2::service::ipc;
 use log::{debug, info, warn};
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
-use std::time::Duration;
 
 use crate::common::ipc_service_name::build_service_name;
 use crate::common::time_util::get_timestamp_us;
@@ -66,7 +65,7 @@ impl TradeEngHub {
         })
     }
 
-    /// 显式初始化 TradeEngHub（优先在程序启动阶段调用）
+    /// 显式初始化 TradeEngHub（优先在程序启动阶段调用）。响应由 PreTrade reactor drain。
     pub fn initialize<S>(exchanges: S) -> Result<()>
     where
         S: IntoIterator,
@@ -93,6 +92,18 @@ impl TradeEngHub {
     /// 发布订单请求到指定交易所
     pub fn publish_order_request(exchange: &str, bytes: &Bytes) -> Result<()> {
         Self::with(|hub| hub.publish_to_exchange(exchange, bytes))
+    }
+
+    pub fn drain_pending_responses() -> bool {
+        Self::with(|hub| hub.drain_pending_responses_inner())
+    }
+
+    fn drain_pending_responses_inner(&self) -> bool {
+        let mut any = false;
+        for channel in self.channels.borrow_mut().values_mut() {
+            any |= channel.drain_trade_responses();
+        }
+        any
     }
 
     /// 发布订单请求并同步刷新该订单的最近一次发送时间戳（submit_t）。
@@ -175,7 +186,10 @@ impl TradeEngHub {
 }
 
 struct TradeEngChannel {
+    exchange: String,
     order_req_publisher: Publisher<ipc::Service, [u8; TRADE_REQ_PAYLOAD], ()>,
+    _resp_node: Node<ipc::Service>,
+    resp_subscriber: Subscriber<ipc::Service, [u8; TRADE_RESP_PAYLOAD], ()>,
 }
 
 impl TradeEngChannel {
@@ -202,22 +216,14 @@ impl TradeEngChannel {
             order_req_service, exchange
         );
 
-        // 启动该交易所的 trade response 监听任务
-        let resp_service_name = order_resp_service.clone();
-        let exchange_name = exchange.to_string();
-        tokio::task::spawn_local(async move {
-            if let Err(err) =
-                Self::run_trade_resp_listener(&exchange_name, &resp_service_name).await
-            {
-                warn!(
-                    "Trade response listener exited (exchange={} service={}): {err:?}",
-                    exchange_name, resp_service_name
-                );
-            }
-        });
+        let (resp_node, resp_subscriber) =
+            Self::create_trade_resp_subscriber(exchange, &order_resp_service)?;
 
         Ok(Self {
+            exchange: exchange.to_string(),
             order_req_publisher,
+            _resp_node: resp_node,
+            resp_subscriber,
         })
     }
 
@@ -245,7 +251,13 @@ impl TradeEngChannel {
         Ok(())
     }
 
-    async fn run_trade_resp_listener(exchange: &str, service_name: &str) -> Result<()> {
+    fn create_trade_resp_subscriber(
+        exchange: &str,
+        service_name: &str,
+    ) -> Result<(
+        Node<ipc::Service>,
+        Subscriber<ipc::Service, [u8; TRADE_RESP_PAYLOAD], ()>,
+    )> {
         let node = NodeBuilder::new()
             .name(&NodeName::new(&format!(
                 "pre_trade_order_resp_{}",
@@ -267,123 +279,117 @@ impl TradeEngChannel {
             service_name, exchange
         );
 
+        Ok((node, subscriber))
+    }
+
+    fn drain_trade_responses(&mut self) -> bool {
+        let mut has_message = false;
         loop {
-            let mut has_message = false;
-            loop {
-                match subscriber.receive() {
-                    Ok(Some(sample)) => {
-                        has_message = true;
-                        let payload = sample.payload();
+            match self.resp_subscriber.receive() {
+                Ok(Some(sample)) => {
+                    has_message = true;
+                    let payload = sample.payload();
 
-                        if payload.len() < TRADE_RESP_HEADER_LEN {
-                            warn!(
-                                "Trade response too short: {} bytes (exchange={})",
-                                payload.len(),
-                                exchange
-                            );
-                            continue;
-                        }
-
-                        let req_type =
-                            u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
-                        let client_order_id = i64::from_le_bytes([
-                            payload[4],
-                            payload[5],
-                            payload[6],
-                            payload[7],
-                            payload[8],
-                            payload[9],
-                            payload[10],
-                            payload[11],
-                        ]);
-                        let exchange = u32::from_le_bytes([
-                            payload[12],
-                            payload[13],
-                            payload[14],
-                            payload[15],
-                        ]);
-                        let status = u16::from_le_bytes([payload[16], payload[17]]);
-                        let error_code = i32::from_le_bytes([
-                            payload[18],
-                            payload[19],
-                            payload[20],
-                            payload[21],
-                        ]);
-                        let mut order_id = 0i64;
-                        let mut order_status_u8 = 0u8;
-                        let mut order_update_time = 0i64;
-                        let mut executed_qty = 0.0f64;
-                        let mut response_price = 0.0f64;
-                        if payload.len() >= TRADE_RESP_HEADER_LEN + TRADE_RESP_TAIL_LEN {
-                            order_id = i64::from_le_bytes([
-                                payload[22],
-                                payload[23],
-                                payload[24],
-                                payload[25],
-                                payload[26],
-                                payload[27],
-                                payload[28],
-                                payload[29],
-                            ]);
-                            order_status_u8 = payload[30];
-                            order_update_time = i64::from_le_bytes([
-                                payload[31],
-                                payload[32],
-                                payload[33],
-                                payload[34],
-                                payload[35],
-                                payload[36],
-                                payload[37],
-                                payload[38],
-                            ]);
-                            executed_qty = f64::from_le_bytes([
-                                payload[39],
-                                payload[40],
-                                payload[41],
-                                payload[42],
-                                payload[43],
-                                payload[44],
-                                payload[45],
-                                payload[46],
-                            ]);
-                            response_price = f64::from_le_bytes([
-                                payload[47],
-                                payload[48],
-                                payload[49],
-                                payload[50],
-                                payload[51],
-                                payload[52],
-                                payload[53],
-                                payload[54],
-                            ]);
-                        }
-                        let response = TradeEngineResponseMessage::new_with_tail(
-                            status,
-                            req_type,
-                            exchange,
-                            client_order_id,
-                            error_code,
-                            order_id,
-                            order_status_u8,
-                            order_update_time,
-                            executed_qty,
-                            response_price,
+                    if payload.len() < TRADE_RESP_HEADER_LEN {
+                        warn!(
+                            "Trade response too short: {} bytes (exchange={})",
+                            payload.len(),
+                            self.exchange
                         );
+                        continue;
+                    }
 
-                        Self::handle_trade_engine_response(&response);
+                    let req_type =
+                        u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                    let client_order_id = i64::from_le_bytes([
+                        payload[4],
+                        payload[5],
+                        payload[6],
+                        payload[7],
+                        payload[8],
+                        payload[9],
+                        payload[10],
+                        payload[11],
+                    ]);
+                    let exchange =
+                        u32::from_le_bytes([payload[12], payload[13], payload[14], payload[15]]);
+                    let status = u16::from_le_bytes([payload[16], payload[17]]);
+                    let error_code =
+                        i32::from_le_bytes([payload[18], payload[19], payload[20], payload[21]]);
+                    let mut order_id = 0i64;
+                    let mut order_status_u8 = 0u8;
+                    let mut order_update_time = 0i64;
+                    let mut executed_qty = 0.0f64;
+                    let mut response_price = 0.0f64;
+                    if payload.len() >= TRADE_RESP_HEADER_LEN + TRADE_RESP_TAIL_LEN {
+                        order_id = i64::from_le_bytes([
+                            payload[22],
+                            payload[23],
+                            payload[24],
+                            payload[25],
+                            payload[26],
+                            payload[27],
+                            payload[28],
+                            payload[29],
+                        ]);
+                        order_status_u8 = payload[30];
+                        order_update_time = i64::from_le_bytes([
+                            payload[31],
+                            payload[32],
+                            payload[33],
+                            payload[34],
+                            payload[35],
+                            payload[36],
+                            payload[37],
+                            payload[38],
+                        ]);
+                        executed_qty = f64::from_le_bytes([
+                            payload[39],
+                            payload[40],
+                            payload[41],
+                            payload[42],
+                            payload[43],
+                            payload[44],
+                            payload[45],
+                            payload[46],
+                        ]);
+                        response_price = f64::from_le_bytes([
+                            payload[47],
+                            payload[48],
+                            payload[49],
+                            payload[50],
+                            payload[51],
+                            payload[52],
+                            payload[53],
+                            payload[54],
+                        ]);
                     }
-                    Ok(None) => break,
-                    Err(err) => {
-                        warn!("Trade response receive error: {err}");
-                        tokio::time::sleep(Duration::from_millis(200)).await;
-                        break;
-                    }
+                    let response = TradeEngineResponseMessage::new_with_tail(
+                        status,
+                        req_type,
+                        exchange,
+                        client_order_id,
+                        error_code,
+                        order_id,
+                        order_status_u8,
+                        order_update_time,
+                        executed_qty,
+                        response_price,
+                    );
+
+                    Self::handle_trade_engine_response(&response);
+                }
+                Ok(None) => break,
+                Err(err) => {
+                    warn!(
+                        "Trade response receive error exchange={}: {err}",
+                        self.exchange
+                    );
+                    break;
                 }
             }
-            if !has_message {
-                tokio::task::yield_now().await;
-            }
         }
+        has_message
     }
 
     fn handle_trade_engine_response(response: &TradeEngineResponseMessage) {

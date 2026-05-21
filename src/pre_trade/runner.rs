@@ -1,14 +1,17 @@
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::OrderRateLimiter;
+use crate::pre_trade::query_eng_channel::QueryEngHub;
 use crate::pre_trade::resample_channel::ResampleChannel;
+use crate::pre_trade::signal_channel::SignalChannel;
 use crate::pre_trade::signal_throttle::log_active_signal_throttles;
+use crate::pre_trade::trade_eng_channel::TradeEngHub;
 use crate::strategy::{OrphanStrategyManager, StrategyManager};
 use anyhow::Result;
 use log::{info, warn};
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub struct PreTrade {}
 
@@ -97,58 +100,90 @@ impl PreTrade {
         );
         info!("pre_trade MM open order rate cleanup started (interval=10s window=60s)");
 
-        // 周期检查频率设为 20ms，提高 MM trigger 响应及时性，同时保持较低调度开销
-        let mut ticker = tokio::time::interval(Duration::from_millis(20));
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // 周期检查频率设为 20ms，提高 MM trigger 响应及时性，同时保持较低调度开销。
+        // IPC hot path 不等待这个 tick；空闲时先做 bounded busy-poll，超过预算才 yield。
+        let period_clock_interval = Duration::from_millis(20);
+        let mut next_period_clock = Instant::now();
+        let idle_spin_iters = std::env::var("PRE_TRADE_REACTOR_IDLE_SPIN_ITERS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(64);
+        let mut idle_spin_count = 0usize;
+        info!(
+            "pre_trade reactor idle spin configured (iters={})",
+            idle_spin_iters
+        );
 
         loop {
+            let mut has_work = false;
+            has_work |= TradeEngHub::drain_pending_responses();
+            has_work |= MonitorChannel::drain_pending_state_updates();
+            has_work |= QueryEngHub::drain_pending_responses();
+            has_work |= SignalChannel::drain_pending();
+
+            let instant_now = Instant::now();
+            let mut ran_periodic = false;
+            if instant_now >= next_period_clock {
+                ran_periodic = true;
+                let now = get_timestamp_us();
+                drive_strategy_manager_period_clock(now);
+                drive_orphan_manager_period_clock(now);
+                while instant_now >= next_period_clock {
+                    next_period_clock += period_clock_interval;
+                }
+
+                // 发布重采样数据
+                while instant_now >= next_resample {
+                    let result = ResampleChannel::with(|ch| ch.publish_resample_entries());
+                    if let Err(err) = result {
+                        warn!("pre_trade resample publish failed: {err:#}");
+                        next_resample = Instant::now() + resample_interval;
+                        break;
+                    }
+                    next_resample += resample_interval;
+                }
+
+                while instant_now >= next_throttle_log {
+                    log_active_signal_throttles(50);
+                    next_throttle_log += throttle_log_interval;
+                }
+
+                while instant_now >= next_order_rate_cleanup {
+                    OrderRateLimiter::cleanup_expired(now);
+                    next_order_rate_cleanup += order_rate_cleanup_interval;
+                }
+
+                while instant_now >= next_arb_startup_net_log {
+                    let status = MonitorChannel::instance().arb_startup_net_gate_status();
+                    if status.enabled && !status.ready {
+                        warn!(
+                            "双边net还没有初始化: open_ready={} hedge_ready={} open_ts_us={} hedge_ts_us={} dropped_arb_signals={}",
+                            status.open_ready,
+                            status.hedge_ready,
+                            status.open_ts_us,
+                            status.hedge_ts_us,
+                            status.dropped_signals
+                        );
+                    }
+                    next_arb_startup_net_log += arb_startup_net_log_interval;
+                }
+            }
+
+            if has_work || ran_periodic {
+                idle_spin_count = 0;
+                continue;
+            }
+
+            if idle_spin_count < idle_spin_iters {
+                idle_spin_count += 1;
+                std::hint::spin_loop();
+                continue;
+            }
+            idle_spin_count = 0;
+
             tokio::select! {
-                _ = tokio::signal::ctrl_c() => {
-                    break;
-                }
-                _ = ticker.tick() => {
-                    let now = get_timestamp_us();
-                    drive_strategy_manager_period_clock(now);
-                    drive_orphan_manager_period_clock(now);
-                    let instant_now = std::time::Instant::now();
-
-                    // 发布重采样数据
-                    while instant_now >= next_resample {
-                        let result = ResampleChannel::with(|ch| ch.publish_resample_entries());
-                        if let Err(err) = result {
-                            warn!("pre_trade resample publish failed: {err:#}");
-                            next_resample = std::time::Instant::now() + resample_interval;
-                            break;
-                        }
-                        next_resample += resample_interval;
-                    }
-
-                    while instant_now >= next_throttle_log {
-                        log_active_signal_throttles(50);
-                        next_throttle_log += throttle_log_interval;
-                    }
-
-                    while instant_now >= next_order_rate_cleanup {
-                        OrderRateLimiter::cleanup_expired(now);
-                        next_order_rate_cleanup += order_rate_cleanup_interval;
-                    }
-
-                    while instant_now >= next_arb_startup_net_log {
-                        let status = MonitorChannel::instance().arb_startup_net_gate_status();
-                        if status.enabled && !status.ready {
-                            warn!(
-                                "双边net还没有初始化: open_ready={} hedge_ready={} open_ts_us={} hedge_ts_us={} dropped_arb_signals={}",
-                                status.open_ready,
-                                status.hedge_ready,
-                                status.open_ts_us,
-                                status.hedge_ts_us,
-                                status.dropped_signals
-                            );
-                        }
-                        next_arb_startup_net_log += arb_startup_net_log_interval;
-                    }
-                }
-                else => break,
+                _ = tokio::signal::ctrl_c() => break,
+                _ = tokio::task::yield_now() => {}
             }
         }
 

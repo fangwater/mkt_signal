@@ -30,7 +30,6 @@ use iceoryx2::service::ipc;
 use log::{debug, info, warn};
 use std::cell::{OnceCell, RefCell};
 use std::collections::{BTreeMap, HashMap};
-use std::time::Duration;
 
 thread_local! {
     static SIGNAL_CHANNEL: OnceCell<SignalChannel> = const { OnceCell::new() };
@@ -128,6 +127,135 @@ pub struct SignalChannel {
     backward_pub: Option<SignalPublisher>,
     /// 频道名称（用于日志）
     channel_name: String,
+    listener: RefCell<SignalListener>,
+}
+
+struct SignalListener {
+    channel_name: String,
+    listener_start_us: i64,
+    dropped_startup_buffered: usize,
+    _node: Node<ipc::Service>,
+    subscriber: Subscriber<ipc::Service, [u8; SIGNAL_PAYLOAD], ()>,
+}
+
+impl SignalListener {
+    fn new(channel_name: &str) -> Result<Self> {
+        let listener_start_us = get_timestamp_us();
+        let node_name = SignalChannel::signal_node_name(channel_name);
+        let service_path = build_service_name(&format!("signal_pubs/{}", channel_name));
+
+        let node = NodeBuilder::new()
+            .name(&NodeName::new(&node_name)?)
+            .create::<ipc::Service>()?;
+
+        let service = node
+            .service_builder(&ServiceName::new(&service_path)?)
+            .publish_subscribe::<[u8; SIGNAL_PAYLOAD]>()
+            .max_publishers(1)
+            .max_subscribers(32)
+            .history_size(128)
+            .subscriber_max_buffer_size(256)
+            .open_or_create()?;
+
+        let subscriber: Subscriber<ipc::Service, [u8; SIGNAL_PAYLOAD], ()> =
+            service.subscriber_builder().create()?;
+
+        info!(
+            "signal subscribed: node={} service={} channel={}",
+            node_name,
+            service.name(),
+            channel_name
+        );
+
+        let mut flushed = 0usize;
+        loop {
+            match subscriber.receive() {
+                Ok(Some(_)) => flushed += 1,
+                Ok(None) => break,
+                Err(err) => {
+                    warn!(
+                        "signal flush failed (channel={}) err={:?}",
+                        channel_name, err
+                    );
+                    break;
+                }
+            }
+        }
+        if flushed > 0 {
+            info!(
+                "signal channel {} flushed {} cached signals before processing new data",
+                channel_name, flushed
+            );
+        }
+
+        Ok(Self {
+            channel_name: channel_name.to_string(),
+            listener_start_us,
+            dropped_startup_buffered: 0,
+            _node: node,
+            subscriber,
+        })
+    }
+
+    fn drain_pending(&mut self) -> bool {
+        let mut has_message = false;
+        loop {
+            match self.subscriber.receive() {
+                Ok(Some(sample)) => {
+                    has_message = true;
+                    let payload = Bytes::copy_from_slice(sample.payload());
+                    if payload.is_empty() {
+                        continue;
+                    }
+                    match TradeSignal::from_bytes(&payload) {
+                        Ok(signal) => {
+                            if should_drop_startup_buffered_signal(&signal, self.listener_start_us)
+                            {
+                                self.dropped_startup_buffered += 1;
+                                if self.dropped_startup_buffered <= 5
+                                    || self.dropped_startup_buffered.is_multiple_of(100)
+                                {
+                                    info!(
+                                        "signal channel {} dropped startup-buffered signal count={} type={:?} generation_time={} listener_start_us={}",
+                                        self.channel_name,
+                                        self.dropped_startup_buffered,
+                                        signal.signal_type,
+                                        signal.generation_time,
+                                        self.listener_start_us
+                                    );
+                                }
+                                continue;
+                            }
+                            if self.dropped_startup_buffered > 0 {
+                                info!(
+                                    "signal channel {} finished dropping startup-buffered signals count={} first_live_generation_time={}",
+                                    self.channel_name,
+                                    self.dropped_startup_buffered,
+                                    signal.generation_time
+                                );
+                                self.dropped_startup_buffered = 0;
+                            }
+                            record_signal_count(&signal.signal_type);
+                            handle_trade_signal(signal);
+                        }
+                        Err(err) => warn!(
+                            "failed to decode trade signal from channel {}: {}",
+                            self.channel_name, err
+                        ),
+                    }
+                }
+                Ok(None) => break,
+                Err(err) => {
+                    warn!(
+                        "signal receive error (channel={}): {err}",
+                        self.channel_name
+                    );
+                    break;
+                }
+            }
+        }
+        has_message
+    }
 }
 
 impl SignalChannel {
@@ -175,7 +303,7 @@ impl SignalChannel {
         })
     }
 
-    /// 创建信号频道并自动启动监听器
+    /// 创建信号频道并订阅信号 IPC。
     ///
     /// # 参数
     /// * `channel_name` - 要订阅的信号频道名称
@@ -190,20 +318,12 @@ impl SignalChannel {
             None
         };
 
-        // 启动监听任务（在这里 clone tx，避免 move 问题）
-        let channel_name_owned = channel_name.to_string();
-        tokio::task::spawn_local(async move {
-            if let Err(err) = Self::run_listener(&channel_name_owned).await {
-                warn!(
-                    "signal listener exited (channel={}): {err:?}",
-                    channel_name_owned
-                );
-            }
-        });
+        let listener = RefCell::new(SignalListener::new(channel_name)?);
 
         Ok(Self {
             backward_pub,
             channel_name: channel_name.to_string(),
+            listener,
         })
     }
 
@@ -233,109 +353,8 @@ impl SignalChannel {
         &self.channel_name
     }
 
-    /// 监听器的核心逻辑
-    async fn run_listener(channel_name: &str) -> Result<()> {
-        let listener_start_us = get_timestamp_us();
-        let node_name = Self::signal_node_name(channel_name);
-        let service_path = build_service_name(&format!("signal_pubs/{}", channel_name));
-
-        let node = NodeBuilder::new()
-            .name(&NodeName::new(&node_name)?)
-            .create::<ipc::Service>()?;
-
-        let service = node
-            .service_builder(&ServiceName::new(&service_path)?)
-            .publish_subscribe::<[u8; SIGNAL_PAYLOAD]>()
-            .max_publishers(1)
-            .max_subscribers(32)
-            .history_size(128)
-            .subscriber_max_buffer_size(256)
-            .open_or_create()?;
-
-        let subscriber: Subscriber<ipc::Service, [u8; SIGNAL_PAYLOAD], ()> =
-            service.subscriber_builder().create()?;
-
-        info!(
-            "signal subscribed: node={} service={} channel={}",
-            node_name,
-            service.name(),
-            channel_name
-        );
-
-        // pre_trade 刚启动时可能存在大量历史信号，先主动清空队列
-        let mut flushed = 0usize;
-        loop {
-            match subscriber.receive() {
-                Ok(Some(_)) => flushed += 1,
-                Ok(None) => break,
-                Err(err) => {
-                    warn!(
-                        "signal flush failed (channel={}) err={:?}",
-                        channel_name, err
-                    );
-                    break;
-                }
-            }
-        }
-        if flushed > 0 {
-            info!(
-                "signal channel {} flushed {} cached signals before processing new data",
-                channel_name, flushed
-            );
-        }
-
-        let mut dropped_startup_buffered = 0usize;
-
-        loop {
-            match subscriber.receive() {
-                Ok(Some(sample)) => {
-                    let payload = Bytes::copy_from_slice(sample.payload());
-                    if payload.is_empty() {
-                        continue;
-                    }
-                    match TradeSignal::from_bytes(&payload) {
-                        Ok(signal) => {
-                            if should_drop_startup_buffered_signal(&signal, listener_start_us) {
-                                dropped_startup_buffered += 1;
-                                if dropped_startup_buffered <= 5
-                                    || dropped_startup_buffered.is_multiple_of(100)
-                                {
-                                    info!(
-                                        "signal channel {} dropped startup-buffered signal count={} type={:?} generation_time={} listener_start_us={}",
-                                        channel_name,
-                                        dropped_startup_buffered,
-                                        signal.signal_type,
-                                        signal.generation_time,
-                                        listener_start_us
-                                    );
-                                }
-                                continue;
-                            }
-                            if dropped_startup_buffered > 0 {
-                                info!(
-                                    "signal channel {} finished dropping startup-buffered signals count={} first_live_generation_time={}",
-                                    channel_name,
-                                    dropped_startup_buffered,
-                                    signal.generation_time
-                                );
-                                dropped_startup_buffered = 0;
-                            }
-                            record_signal_count(&signal.signal_type);
-                            handle_trade_signal(signal);
-                        }
-                        Err(err) => warn!(
-                            "failed to decode trade signal from channel {}: {}",
-                            channel_name, err
-                        ),
-                    }
-                }
-                Ok(None) => tokio::task::yield_now().await,
-                Err(err) => {
-                    warn!("signal receive error (channel={}): {err}", channel_name);
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                }
-            }
-        }
+    pub fn drain_pending() -> bool {
+        Self::with(|ch| ch.listener.borrow_mut().drain_pending())
     }
 
     /// 生成信号节点名称
