@@ -1267,7 +1267,7 @@ impl TradeWsClient {
                 self.id, self.exchange, msg.client_order_id, transport_id, payload
             );
         } else if self.exchange == Exchange::Binance {
-            info!(
+            debug!(
                 "trade ws client id={} exchange={} sending {} req_type={:?} client_order_id={} transport_id={} payload_bytes={}",
                 self.id,
                 self.exchange,
@@ -2559,17 +2559,32 @@ impl TradeWsClient {
         }
         let (order_id, order_status_u8, order_update_time, executed_qty, response_price) =
             binance_ws::extract_order_info(resp);
-        info!(
-            "trade ws client id={} exchange=binance recv {} response req_type={:?} client_order_id={} status={} code={} order_id={} executed_qty={:.8}",
-            self.id,
-            Self::binance_trade_action(req_type),
-            req_type,
-            client_order_id,
-            status,
-            resp.error_code.unwrap_or(0),
-            order_id,
-            executed_qty
-        );
+        let error_code = resp.error_code.unwrap_or(0);
+        if (200..300).contains(&(status as u32)) && error_code == 0 {
+            debug!(
+                "trade ws client id={} exchange=binance recv {} response req_type={:?} client_order_id={} status={} code={} order_id={} executed_qty={:.8}",
+                self.id,
+                Self::binance_trade_action(req_type),
+                req_type,
+                client_order_id,
+                status,
+                error_code,
+                order_id,
+                executed_qty
+            );
+        } else {
+            warn!(
+                "trade ws client id={} exchange=binance recv {} response req_type={:?} client_order_id={} status={} code={} order_id={} executed_qty={:.8}",
+                self.id,
+                Self::binance_trade_action(req_type),
+                req_type,
+                client_order_id,
+                status,
+                error_code,
+                order_id,
+                executed_qty
+            );
+        }
         let body_payload = json!({
             "transport": "ws",
             "exchange": "binance",
