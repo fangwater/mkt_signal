@@ -819,10 +819,13 @@ impl MmDecision {
     pub fn spawn_backward_listener() {
         tokio::task::spawn_local(async move {
             loop {
-                tokio::time::sleep(Duration::from_millis(1)).await;
+                let mut has_message = false;
                 MmDecision::with_mut(|decision| loop {
                     match decision.backward_sub.receive_msg() {
-                        Ok(Some(data)) => decision.handle_backward_query(data),
+                        Ok(Some(data)) => {
+                            has_message = true;
+                            decision.handle_backward_query(data);
+                        }
                         Ok(None) => break,
                         Err(err) => {
                             warn!("MmDecision: backward_sub receive error: {}", err);
@@ -830,6 +833,10 @@ impl MmDecision {
                         }
                     }
                 });
+
+                if !has_message {
+                    tokio::task::yield_now().await;
+                }
             }
         });
     }
