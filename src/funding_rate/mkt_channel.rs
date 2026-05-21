@@ -245,24 +245,15 @@ impl MktChannel {
 
         // 初始化 HashMap（为每个 TradingVenue 创建子 HashMap）
         {
-            quotes.borrow_mut().insert(open_venue, HashMap::new());
-            quotes.borrow_mut().insert(hedge_venue, HashMap::new());
-
-            if is_futures(open_venue) {
-                funding_rates
-                    .borrow_mut()
-                    .insert(open_venue, HashMap::new());
-                mark_prices.borrow_mut().insert(open_venue, HashMap::new());
-                index_prices.borrow_mut().insert(open_venue, HashMap::new());
-            }
-            if is_futures(hedge_venue) {
-                funding_rates
-                    .borrow_mut()
-                    .insert(hedge_venue, HashMap::new());
-                mark_prices.borrow_mut().insert(hedge_venue, HashMap::new());
-                index_prices
-                    .borrow_mut()
-                    .insert(hedge_venue, HashMap::new());
+            let mut quotes_map = quotes.borrow_mut();
+            quotes_map.entry(open_venue).or_default();
+            quotes_map.entry(hedge_venue).or_default();
+        }
+        for venue in [open_venue, hedge_venue] {
+            if is_futures(venue) {
+                funding_rates.borrow_mut().entry(venue).or_default();
+                mark_prices.borrow_mut().entry(venue).or_default();
+                index_prices.borrow_mut().entry(venue).or_default();
             }
         }
 
@@ -285,7 +276,8 @@ impl MktChannel {
             *mc.borrow_mut() = Some(inner);
         });
 
-        // 启动订阅任务
+        // 启动订阅任务。open/hedge 相同（例如 MM）时只订阅一次，避免同一
+        // Iceoryx service 在同一个 LocalSet 里启动两条完全相同的 listener。
         Self::spawn_askbid_listener(
             open_node,
             open_service,
@@ -295,15 +287,23 @@ impl MktChannel {
             hedge_venue,
             quotes.clone(),
         );
-        Self::spawn_askbid_listener(
-            hedge_node,
-            hedge_service,
-            trigger_decisions,
-            hedge_venue,
-            open_venue,
-            hedge_venue,
-            quotes.clone(),
-        );
+        if hedge_venue != open_venue {
+            Self::spawn_askbid_listener(
+                hedge_node,
+                hedge_service,
+                trigger_decisions,
+                hedge_venue,
+                open_venue,
+                hedge_venue,
+                quotes.clone(),
+            );
+        } else {
+            info!(
+                "MktChannel askbid listener deduped for venue={:?}",
+                open_venue
+            );
+        }
+
         if is_futures(open_venue) {
             let derivatives_service = build_market_service(open_slug, "derivatives");
             let derivatives_node = build_node_name(open_slug, "derivatives");
@@ -319,7 +319,7 @@ impl MktChannel {
                 index_prices.clone(),
             );
         }
-        if is_futures(hedge_venue) {
+        if hedge_venue != open_venue && is_futures(hedge_venue) {
             let derivatives_service = build_market_service(hedge_slug, "derivatives");
             let derivatives_node = build_node_name(hedge_slug, "derivatives");
             Self::spawn_derivatives_listener(
@@ -332,6 +332,11 @@ impl MktChannel {
                 funding_rates.clone(),
                 mark_prices.clone(),
                 index_prices.clone(),
+            );
+        } else if hedge_venue == open_venue && is_futures(open_venue) {
+            info!(
+                "MktChannel derivatives listener deduped for venue={:?}",
+                open_venue
             );
         }
 
