@@ -66,6 +66,75 @@ fn should_trigger_decision(symbol: &str) -> bool {
         || symbol_list.is_in_bwd_trade_list(symbol)
 }
 
+fn mark_dirty_symbol(
+    symbol: &str,
+    dirty_symbols: &mut Vec<String>,
+    dirty_set: &mut HashSet<String>,
+) {
+    if dirty_set.insert(symbol.to_string()) {
+        dirty_symbols.push(symbol.to_string());
+    }
+}
+
+fn flush_askbid_dirty_symbols(
+    dirty_symbols: &mut Vec<String>,
+    dirty_set: &mut HashSet<String>,
+    trigger_decisions: bool,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+    quotes: &Rc<RefCell<HashMap<TradingVenue, HashMap<String, Quote>>>>,
+    stats_triggerable_msgs: &mut u64,
+    stats_unlisted_sample: &mut HashSet<String>,
+) {
+    if dirty_symbols.is_empty() {
+        return;
+    }
+
+    for sym in dirty_symbols.iter() {
+        {
+            use super::spread_factor::SpreadFactor;
+
+            let quotes_map = quotes.borrow();
+            let open_quote = quotes_map
+                .get(&open_venue)
+                .and_then(|m| m.get(sym))
+                .copied();
+            let hedge_quote = quotes_map
+                .get(&hedge_venue)
+                .and_then(|m| m.get(sym))
+                .copied();
+            if let (Some(open_q), Some(hedge_q)) = (open_quote, hedge_quote) {
+                if open_q.is_valid() && hedge_q.is_valid() {
+                    let spread_factor = SpreadFactor::instance();
+                    spread_factor.update(
+                        open_venue,
+                        sym,
+                        hedge_venue,
+                        sym,
+                        open_q.bid,
+                        open_q.ask,
+                        hedge_q.bid,
+                        hedge_q.ask,
+                    );
+                }
+            }
+        }
+
+        if trigger_decisions {
+            let can_trigger = should_trigger_decision(sym);
+            if can_trigger {
+                *stats_triggerable_msgs += 1;
+                super::decision_router::trigger_decision(sym, sym, open_venue, hedge_venue);
+            } else if stats_unlisted_sample.len() < 10 {
+                stats_unlisted_sample.insert(sym.clone());
+            }
+        }
+    }
+
+    dirty_symbols.clear();
+    dirty_set.clear();
+}
+
 /// MktChannel 单例访问器（零大小类型）
 pub struct MktChannel;
 
@@ -392,6 +461,8 @@ impl MktChannel {
                 let mut stats_unique_symbols: HashSet<String> = HashSet::new();
                 let mut stats_unlisted_sample: HashSet<String> = HashSet::new();
                 let mut stats_last_symbol: String = String::new();
+                let mut dirty_symbols: Vec<String> = Vec::new();
+                let mut dirty_set: HashSet<String> = HashSet::new();
 
                 loop {
                     match subscriber.receive() {
@@ -417,69 +488,17 @@ impl MktChannel {
                                             .entry(symbol.clone())
                                             .or_insert(Quote::default());
                                         quote.update(bid_price, ask_price, timestamp);
-
-                                        // debug!(
-                                        //     "现货盘口更新: {} bid={:.6} ask={:.6}",
-                                        //     symbol, bid_price, ask_price
-                                        // );
                                         Some(symbol.clone())
                                     } else {
                                         None
                                     }
                                 };
 
-                                // 更新价差因子
-                                if let Some(sym) = &symbol_for_decision {
-                                    use super::spread_factor::SpreadFactor;
-
-                                    // 获取 open/hedge 盘口并更新价差因子（保持 open->hedge 方向）
-                                    let quotes_map = quotes.borrow();
-                                    let open_quote = quotes_map
-                                        .get(&open_venue)
-                                        .and_then(|m| m.get(sym))
-                                        .copied();
-                                    let hedge_quote = quotes_map
-                                        .get(&hedge_venue)
-                                        .and_then(|m| m.get(sym))
-                                        .copied();
-                                    if let (Some(open_q), Some(hedge_q)) = (open_quote, hedge_quote)
-                                    {
-                                        if open_q.is_valid() && hedge_q.is_valid() {
-                                            let spread_factor = SpreadFactor::instance();
-                                            spread_factor.update(
-                                                open_venue,
-                                                sym,
-                                                hedge_venue,
-                                                sym,
-                                                open_q.bid,
-                                                open_q.ask,
-                                                hedge_q.bid,
-                                                hedge_q.ask,
-                                            );
-                                        }
-                                    }
-                                }
-
-                                // 盘口更新后触发决策（事件驱动）
                                 if let Some(sym) = symbol_for_decision {
                                     stats_total_msgs += 1;
                                     stats_last_symbol = sym.clone();
                                     stats_unique_symbols.insert(sym.clone());
-
-                                    if trigger_decisions {
-                                        let can_trigger = should_trigger_decision(&sym);
-                                        if can_trigger {
-                                            stats_triggerable_msgs += 1;
-                                            super::decision_router::trigger_decision(
-                                                &sym,
-                                                &sym,
-                                                open_venue,
-                                                hedge_venue,
-                                            );
-                                        } else if stats_unlisted_sample.len() < 10 {
-                                            stats_unlisted_sample.insert(sym.clone());
-                                        }
-                                    }
+                                    mark_dirty_symbol(&sym, &mut dirty_symbols, &mut dirty_set);
                                 }
 
                                 if stats_window_start.elapsed() >= Duration::from_secs(10) {
@@ -503,8 +522,30 @@ impl MktChannel {
                                 }
                             }
                         }
-                        Ok(None) => tokio::task::yield_now().await,
+                        Ok(None) => {
+                            flush_askbid_dirty_symbols(
+                                &mut dirty_symbols,
+                                &mut dirty_set,
+                                trigger_decisions,
+                                open_venue,
+                                hedge_venue,
+                                &quotes,
+                                &mut stats_triggerable_msgs,
+                                &mut stats_unlisted_sample,
+                            );
+                            tokio::task::yield_now().await;
+                        }
                         Err(err) => {
+                            flush_askbid_dirty_symbols(
+                                &mut dirty_symbols,
+                                &mut dirty_set,
+                                trigger_decisions,
+                                open_venue,
+                                hedge_venue,
+                                &quotes,
+                                &mut stats_triggerable_msgs,
+                                &mut stats_unlisted_sample,
+                            );
                             warn!("现货盘口接收错误: {}", err);
                             tokio::time::sleep(Duration::from_millis(200)).await;
                         }
