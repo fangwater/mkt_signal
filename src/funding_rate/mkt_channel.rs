@@ -91,6 +91,12 @@ fn flush_askbid_dirty_symbols(
         return;
     }
 
+    if open_venue == hedge_venue {
+        dirty_symbols.clear();
+        dirty_set.clear();
+        return;
+    }
+
     for sym in dirty_symbols.iter() {
         {
             use super::spread_factor::SpreadFactor;
@@ -146,6 +152,12 @@ fn flush_derivatives_dirty_symbols(
     stats_unlisted_sample: &mut HashSet<String>,
 ) {
     if dirty_symbols.is_empty() {
+        return;
+    }
+
+    if open_venue == hedge_venue {
+        dirty_symbols.clear();
+        dirty_set.clear();
         return;
     }
 
