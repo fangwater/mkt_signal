@@ -177,6 +177,84 @@ fn flush_derivatives_dirty_symbols(
     dirty_set.clear();
 }
 
+fn process_askbid_payload(
+    payload: &[u8],
+    feed_venue: TradingVenue,
+    quotes: &Rc<RefCell<HashMap<TradingVenue, HashMap<String, Quote>>>>,
+    dirty_symbols: &mut Vec<String>,
+    dirty_set: &mut HashSet<String>,
+    stats_total_msgs: &mut u64,
+    stats_unique_symbols: &mut HashSet<String>,
+    stats_last_symbol: &mut String,
+) {
+    if payload.is_empty() {
+        return;
+    }
+
+    let msg_type = get_msg_type(payload);
+    if msg_type != MktMsgType::AskBidSpread {
+        return;
+    }
+
+    // 零拷贝解析
+    let symbol_raw = AskBidSpreadMsg::get_symbol(payload);
+    let symbol = normalize_symbol_key(symbol_raw);
+    let bid_price = AskBidSpreadMsg::get_bid_price(payload);
+    let ask_price = AskBidSpreadMsg::get_ask_price(payload);
+    let timestamp = AskBidSpreadMsg::get_timestamp(payload);
+
+    let symbol_for_decision = {
+        let mut quotes_map = quotes.borrow_mut();
+        if let Some(venue_quotes) = quotes_map.get_mut(&feed_venue) {
+            let quote = venue_quotes
+                .entry(symbol.clone())
+                .or_insert(Quote::default());
+            quote.update(bid_price, ask_price, timestamp);
+            Some(symbol)
+        } else {
+            None
+        }
+    };
+
+    if let Some(sym) = symbol_for_decision {
+        *stats_total_msgs += 1;
+        *stats_last_symbol = sym.clone();
+        stats_unique_symbols.insert(sym.clone());
+        mark_dirty_symbol(&sym, dirty_symbols, dirty_set);
+    }
+}
+
+fn maybe_log_askbid_stats(
+    stats_label: &str,
+    stats_window_start: &mut Instant,
+    stats_total_msgs: &mut u64,
+    stats_triggerable_msgs: &mut u64,
+    stats_unique_symbols: &mut HashSet<String>,
+    stats_unlisted_sample: &mut HashSet<String>,
+    stats_last_symbol: &str,
+) {
+    if stats_window_start.elapsed() < Duration::from_secs(10) {
+        return;
+    }
+
+    let mut sample: Vec<String> = stats_unlisted_sample.iter().cloned().collect();
+    sample.sort();
+    debug!(
+        "askbid stats: listener={} total_msgs={} triggerable_msgs={} unique_symbols={} last_symbol={} unlisted_sample={}",
+        stats_label,
+        *stats_total_msgs,
+        *stats_triggerable_msgs,
+        stats_unique_symbols.len(),
+        stats_last_symbol,
+        sample.join(",")
+    );
+    *stats_window_start = Instant::now();
+    *stats_total_msgs = 0;
+    *stats_triggerable_msgs = 0;
+    stats_unique_symbols.clear();
+    stats_unlisted_sample.clear();
+}
+
 /// MktChannel 单例访问器（零大小类型）
 pub struct MktChannel;
 
@@ -288,31 +366,32 @@ impl MktChannel {
             *mc.borrow_mut() = Some(inner);
         });
 
-        // 启动订阅任务。open/hedge 相同（例如 MM）时只订阅一次，避免同一
-        // Iceoryx service 在同一个 LocalSet 里启动两条完全相同的 listener。
-        Self::spawn_askbid_listener(
-            open_node,
-            open_service,
-            trigger_decisions,
-            open_venue,
-            open_venue,
-            hedge_venue,
-            quotes.clone(),
-        );
-        if hedge_venue != open_venue {
+        // 启动订阅任务。open/hedge 相同（例如 MM）时只订阅一次维护盘口；
+        // open/hedge 不同时用单个 paired listener 同步 drain 两路后再判断价差。
+        if hedge_venue == open_venue {
             Self::spawn_askbid_listener(
-                hedge_node,
-                hedge_service,
+                open_node,
+                open_service,
                 trigger_decisions,
-                hedge_venue,
+                open_venue,
                 open_venue,
                 hedge_venue,
                 quotes.clone(),
             );
-        } else {
             info!(
-                "MktChannel askbid listener deduped for venue={:?}",
+                "MktChannel askbid paired listener skipped for same venue={:?}",
                 open_venue
+            );
+        } else {
+            Self::spawn_paired_askbid_listener(
+                open_node,
+                open_service,
+                hedge_node,
+                hedge_service,
+                trigger_decisions,
+                open_venue,
+                hedge_venue,
+                quotes.clone(),
             );
         }
 
@@ -514,60 +593,25 @@ impl MktChannel {
                 loop {
                     match subscriber.receive() {
                         Ok(Some(sample)) => {
-                            let payload = sample.payload();
-                            if payload.is_empty() {
-                                continue;
-                            }
-
-                            let msg_type = get_msg_type(payload);
-                            if msg_type == MktMsgType::AskBidSpread {
-                                // 零拷贝解析
-                                let symbol_raw = AskBidSpreadMsg::get_symbol(payload);
-                                let symbol = normalize_symbol_key(symbol_raw);
-                                let bid_price = AskBidSpreadMsg::get_bid_price(payload);
-                                let ask_price = AskBidSpreadMsg::get_ask_price(payload);
-                                let timestamp = AskBidSpreadMsg::get_timestamp(payload);
-
-                                let symbol_for_decision = {
-                                    let mut quotes_map = quotes.borrow_mut();
-                                    if let Some(venue_quotes) = quotes_map.get_mut(&this_venue) {
-                                        let quote = venue_quotes
-                                            .entry(symbol.clone())
-                                            .or_insert(Quote::default());
-                                        quote.update(bid_price, ask_price, timestamp);
-                                        Some(symbol.clone())
-                                    } else {
-                                        None
-                                    }
-                                };
-
-                                if let Some(sym) = symbol_for_decision {
-                                    stats_total_msgs += 1;
-                                    stats_last_symbol = sym.clone();
-                                    stats_unique_symbols.insert(sym.clone());
-                                    mark_dirty_symbol(&sym, &mut dirty_symbols, &mut dirty_set);
-                                }
-
-                                if stats_window_start.elapsed() >= Duration::from_secs(10) {
-                                    let mut sample: Vec<String> =
-                                        stats_unlisted_sample.iter().cloned().collect();
-                                    sample.sort();
-                                    debug!(
-                                        "askbid stats: venue={:?} total_msgs={} triggerable_msgs={} unique_symbols={} last_symbol={} unlisted_sample={}",
-                                        this_venue,
-                                        stats_total_msgs,
-                                        stats_triggerable_msgs,
-                                        stats_unique_symbols.len(),
-                                        stats_last_symbol,
-                                        sample.join(",")
-                                    );
-                                    stats_window_start = Instant::now();
-                                    stats_total_msgs = 0;
-                                    stats_triggerable_msgs = 0;
-                                    stats_unique_symbols.clear();
-                                    stats_unlisted_sample.clear();
-                                }
-                            }
+                            process_askbid_payload(
+                                sample.payload(),
+                                this_venue,
+                                &quotes,
+                                &mut dirty_symbols,
+                                &mut dirty_set,
+                                &mut stats_total_msgs,
+                                &mut stats_unique_symbols,
+                                &mut stats_last_symbol,
+                            );
+                            maybe_log_askbid_stats(
+                                this_venue.data_pub_slug(),
+                                &mut stats_window_start,
+                                &mut stats_total_msgs,
+                                &mut stats_triggerable_msgs,
+                                &mut stats_unique_symbols,
+                                &mut stats_unlisted_sample,
+                                &stats_last_symbol,
+                            );
                         }
                         Ok(None) => {
                             flush_askbid_dirty_symbols(
@@ -603,6 +647,160 @@ impl MktChannel {
 
             if let Err(err) = result {
                 warn!("现货盘口监听退出: {:?}", err);
+            }
+        });
+    }
+
+    /// 启动 open/hedge ask_bid_spread 成对监听任务。
+    ///
+    /// 两路在同一个 LocalSet task 内同步 drain：只有当 open 和 hedge 两边
+    /// 当前都读到 None 后，才用最新 quote 刷新价差并触发决策。
+    fn spawn_paired_askbid_listener(
+        open_node_name: String,
+        open_service_name: String,
+        hedge_node_name: String,
+        hedge_service_name: String,
+        trigger_decisions: bool,
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
+        quotes: Rc<RefCell<HashMap<TradingVenue, HashMap<String, Quote>>>>,
+    ) {
+        tokio::task::spawn_local(async move {
+            let result: Result<()> = async move {
+                let open_node = NodeBuilder::new()
+                    .name(&NodeName::new(&open_node_name)?)
+                    .create::<ipc::Service>()?;
+                let hedge_node = NodeBuilder::new()
+                    .name(&NodeName::new(&hedge_node_name)?)
+                    .create::<ipc::Service>()?;
+
+                let open_service = open_node
+                    .service_builder(&ServiceName::new(&open_service_name)?)
+                    .publish_subscribe::<[u8; ASKBID_PAYLOAD]>()
+                    .open_or_create()?;
+                let hedge_service = hedge_node
+                    .service_builder(&ServiceName::new(&hedge_service_name)?)
+                    .publish_subscribe::<[u8; ASKBID_PAYLOAD]>()
+                    .open_or_create()?;
+
+                let open_subscriber: Subscriber<ipc::Service, [u8; ASKBID_PAYLOAD], ()> =
+                    open_service.subscriber_builder().create()?;
+                let hedge_subscriber: Subscriber<ipc::Service, [u8; ASKBID_PAYLOAD], ()> =
+                    hedge_service.subscriber_builder().create()?;
+
+                info!(
+                    "订阅成对盘口: open={} ({:?}) hedge={} ({:?})",
+                    open_service_name, open_venue, hedge_service_name, hedge_venue
+                );
+
+                let mut stats_window_start = Instant::now();
+                let mut stats_total_msgs: u64 = 0;
+                let mut stats_triggerable_msgs: u64 = 0;
+                let mut stats_unique_symbols: HashSet<String> = HashSet::new();
+                let mut stats_unlisted_sample: HashSet<String> = HashSet::new();
+                let mut stats_last_symbol: String = String::new();
+                let mut dirty_symbols: Vec<String> = Vec::new();
+                let mut dirty_set: HashSet<String> = HashSet::new();
+                let stats_label = format!(
+                    "{}<->{}",
+                    open_venue.data_pub_slug(),
+                    hedge_venue.data_pub_slug()
+                );
+
+                loop {
+                    loop {
+                        match open_subscriber.receive() {
+                            Ok(Some(sample)) => {
+                                process_askbid_payload(
+                                    sample.payload(),
+                                    open_venue,
+                                    &quotes,
+                                    &mut dirty_symbols,
+                                    &mut dirty_set,
+                                    &mut stats_total_msgs,
+                                    &mut stats_unique_symbols,
+                                    &mut stats_last_symbol,
+                                );
+                            }
+                            Ok(None) => break,
+                            Err(err) => {
+                                flush_askbid_dirty_symbols(
+                                    &mut dirty_symbols,
+                                    &mut dirty_set,
+                                    trigger_decisions,
+                                    open_venue,
+                                    hedge_venue,
+                                    &quotes,
+                                    &mut stats_triggerable_msgs,
+                                    &mut stats_unlisted_sample,
+                                );
+                                warn!("open 盘口接收错误: {}", err);
+                                tokio::time::sleep(Duration::from_millis(200)).await;
+                                break;
+                            }
+                        }
+                    }
+
+                    loop {
+                        match hedge_subscriber.receive() {
+                            Ok(Some(sample)) => {
+                                process_askbid_payload(
+                                    sample.payload(),
+                                    hedge_venue,
+                                    &quotes,
+                                    &mut dirty_symbols,
+                                    &mut dirty_set,
+                                    &mut stats_total_msgs,
+                                    &mut stats_unique_symbols,
+                                    &mut stats_last_symbol,
+                                );
+                            }
+                            Ok(None) => break,
+                            Err(err) => {
+                                flush_askbid_dirty_symbols(
+                                    &mut dirty_symbols,
+                                    &mut dirty_set,
+                                    trigger_decisions,
+                                    open_venue,
+                                    hedge_venue,
+                                    &quotes,
+                                    &mut stats_triggerable_msgs,
+                                    &mut stats_unlisted_sample,
+                                );
+                                warn!("hedge 盘口接收错误: {}", err);
+                                tokio::time::sleep(Duration::from_millis(200)).await;
+                                break;
+                            }
+                        }
+                    }
+
+                    maybe_log_askbid_stats(
+                        &stats_label,
+                        &mut stats_window_start,
+                        &mut stats_total_msgs,
+                        &mut stats_triggerable_msgs,
+                        &mut stats_unique_symbols,
+                        &mut stats_unlisted_sample,
+                        &stats_last_symbol,
+                    );
+
+                    flush_askbid_dirty_symbols(
+                        &mut dirty_symbols,
+                        &mut dirty_set,
+                        trigger_decisions,
+                        open_venue,
+                        hedge_venue,
+                        &quotes,
+                        &mut stats_triggerable_msgs,
+                        &mut stats_unlisted_sample,
+                    );
+                    tokio::task::yield_now().await;
+                }
+            }
+            .await;
+
+            if let Err(err) = result {
+                warn!("成对盘口监听退出: {:?}", err);
             }
         });
     }
