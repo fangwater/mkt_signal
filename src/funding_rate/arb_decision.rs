@@ -4396,14 +4396,14 @@ impl ArbDecisionState {
         let rule = "=".repeat(header.len());
         let mid = "-".repeat(header.len());
 
-        log::info!("{source}: xarb spread observation (last 30s, MM thresholds)");
-        log::info!("{rule}");
-        log::info!("{header}");
-        log::info!("{mid}");
+        log::debug!("{source}: xarb spread observation (last 30s, MM thresholds)");
+        log::debug!("{rule}");
+        log::debug!("{header}");
+        log::debug!("{mid}");
         for row in &rows {
-            log::info!("{}", fmt_row(row));
+            log::debug!("{}", fmt_row(row));
         }
-        log::info!("{rule}");
+        log::debug!("{rule}");
     }
 
     fn build_xarb_open_blocker_reason(&mut self, symbol: &str, side: Side) -> Option<String> {
