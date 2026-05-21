@@ -1,9 +1,9 @@
 use anyhow::Result;
-use bytes::Bytes;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info, warn};
 use std::cell::{OnceCell, RefCell};
+use std::collections::HashMap;
 use std::time::Duration;
 
 use super::arb_decision::DEFAULT_ARBITRAGE_BACKWARD_CHANNEL;
@@ -87,6 +87,41 @@ fn build_mm_hedge_ctx_from_plan(plan: InventoryHedgeQuotePlan) -> MmHedgeCtx {
         plan.volatility,
     ));
     ctx
+}
+
+enum MmBackwardBatchItem {
+    CancelCandidates(MmCancelCandidateQueryMsg),
+    Hedge(String),
+}
+
+#[derive(Default)]
+struct MmBackwardQueryBatch {
+    items: Vec<MmBackwardBatchItem>,
+    hedge_queries: HashMap<String, MmHedgeSignalQueryMsg>,
+    hedge_counts: HashMap<String, usize>,
+    hedge_messages: usize,
+}
+
+impl MmBackwardQueryBatch {
+    fn push(&mut self, query: MmBackwardQueryMsg) {
+        match query {
+            MmBackwardQueryMsg::Hedge(query) => {
+                let key = query.get_symbol().to_uppercase();
+                self.items.push(MmBackwardBatchItem::Hedge(key.clone()));
+                self.hedge_queries.insert(key.clone(), query);
+                *self.hedge_counts.entry(key).or_insert(0) += 1;
+                self.hedge_messages += 1;
+            }
+            MmBackwardQueryMsg::CancelCandidates(query) => {
+                self.items
+                    .push(MmBackwardBatchItem::CancelCandidates(query));
+            }
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
 }
 
 impl MmDecision {
@@ -800,18 +835,36 @@ impl MmDecision {
         );
     }
 
-    fn handle_backward_query(&mut self, data: Bytes) {
-        let query = match MmBackwardQueryMsg::from_bytes(data) {
-            Ok(query) => query,
-            Err(err) => {
-                warn!("MmDecision: decode MM backward query failed: {err}");
-                return;
-            }
-        };
-        match query {
-            MmBackwardQueryMsg::Hedge(query) => self.handle_mm_hedge_query(query),
-            MmBackwardQueryMsg::CancelCandidates(query) => {
-                self.handle_mm_cancel_candidate_query(query)
+    fn handle_backward_query_batch(&mut self, batch: MmBackwardQueryBatch) {
+        let unique_hedges = batch.hedge_queries.len();
+        let dropped_hedges = batch.hedge_messages.saturating_sub(unique_hedges);
+        if dropped_hedges > 0 {
+            debug!(
+                "MmDecision: MMHedge query batch deduped total={} unique={} dropped={}",
+                batch.hedge_messages, unique_hedges, dropped_hedges
+            );
+        }
+
+        let mut hedge_queries = batch.hedge_queries;
+        let mut hedge_counts = batch.hedge_counts;
+        for item in batch.items {
+            match item {
+                MmBackwardBatchItem::CancelCandidates(query) => {
+                    self.handle_mm_cancel_candidate_query(query);
+                }
+                MmBackwardBatchItem::Hedge(key) => {
+                    let Some(count) = hedge_counts.get_mut(&key) else {
+                        continue;
+                    };
+                    if *count > 1 {
+                        *count -= 1;
+                        continue;
+                    }
+                    hedge_counts.remove(&key);
+                    if let Some(query) = hedge_queries.remove(&key) {
+                        self.handle_mm_hedge_query(query);
+                    }
+                }
             }
         }
     }
@@ -820,17 +873,28 @@ impl MmDecision {
         tokio::task::spawn_local(async move {
             loop {
                 let mut has_message = false;
-                MmDecision::with_mut(|decision| loop {
-                    match decision.backward_sub.receive_msg() {
-                        Ok(Some(data)) => {
-                            has_message = true;
-                            decision.handle_backward_query(data);
+                MmDecision::with_mut(|decision| {
+                    let mut batch = MmBackwardQueryBatch::default();
+                    loop {
+                        match decision.backward_sub.receive_msg() {
+                            Ok(Some(data)) => {
+                                has_message = true;
+                                match MmBackwardQueryMsg::from_bytes(data) {
+                                    Ok(query) => batch.push(query),
+                                    Err(err) => {
+                                        warn!("MmDecision: decode MM backward query failed: {err}")
+                                    }
+                                }
+                            }
+                            Ok(None) => break,
+                            Err(err) => {
+                                warn!("MmDecision: backward_sub receive error: {}", err);
+                                break;
+                            }
                         }
-                        Ok(None) => break,
-                        Err(err) => {
-                            warn!("MmDecision: backward_sub receive error: {}", err);
-                            break;
-                        }
+                    }
+                    if !batch.is_empty() {
+                        decision.handle_backward_query_batch(batch);
                     }
                 });
 
