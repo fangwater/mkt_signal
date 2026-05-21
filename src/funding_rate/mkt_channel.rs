@@ -28,6 +28,7 @@ const DERIVATIVES_PAYLOAD: usize = 128;
 const DERIVATIVES_HISTORY_SIZE: usize = 50;
 const DERIVATIVES_MAX_SUBSCRIBERS: usize = 10;
 const DERIVATIVES_SUBSCRIBER_MAX_BUFFER: usize = 8192;
+const DERIVATIVES_DRAIN_BUDGET: usize = 1024;
 
 // Thread-local 单例存储
 thread_local! {
@@ -121,6 +122,35 @@ fn flush_askbid_dirty_symbols(
         }
 
         if trigger_decisions {
+            let can_trigger = should_trigger_decision(sym);
+            if can_trigger {
+                *stats_triggerable_msgs += 1;
+                super::decision_router::trigger_decision(sym, sym, open_venue, hedge_venue);
+            } else if stats_unlisted_sample.len() < 10 {
+                stats_unlisted_sample.insert(sym.clone());
+            }
+        }
+    }
+
+    dirty_symbols.clear();
+    dirty_set.clear();
+}
+
+fn flush_derivatives_dirty_symbols(
+    dirty_symbols: &mut Vec<String>,
+    dirty_set: &mut HashSet<String>,
+    trigger_decisions: bool,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+    stats_triggerable_msgs: &mut u64,
+    stats_unlisted_sample: &mut HashSet<String>,
+) {
+    if dirty_symbols.is_empty() {
+        return;
+    }
+
+    if trigger_decisions {
+        for sym in dirty_symbols.iter() {
             let can_trigger = should_trigger_decision(sym);
             if can_trigger {
                 *stats_triggerable_msgs += 1;
@@ -599,12 +629,29 @@ impl MktChannel {
                 let mut stats_unique_symbols: HashSet<String> = HashSet::new();
                 let mut stats_unlisted_sample: HashSet<String> = HashSet::new();
                 let mut stats_last_symbol: String = String::new();
+                let mut dirty_funding_symbols: Vec<String> = Vec::new();
+                let mut dirty_funding_set: HashSet<String> = HashSet::new();
+                let mut drain_count: usize = 0;
 
                 loop {
                     match subscriber.receive() {
                         Ok(Some(sample)) => {
+                            drain_count += 1;
                             let payload = sample.payload();
                             if payload.is_empty() {
+                                if drain_count >= DERIVATIVES_DRAIN_BUDGET {
+                                    flush_derivatives_dirty_symbols(
+                                        &mut dirty_funding_symbols,
+                                        &mut dirty_funding_set,
+                                        trigger_decisions,
+                                        open_venue,
+                                        hedge_venue,
+                                        &mut stats_triggerable_msgs,
+                                        &mut stats_unlisted_sample,
+                                    );
+                                    drain_count = 0;
+                                    tokio::task::yield_now().await;
+                                }
                                 continue;
                             }
 
@@ -636,22 +683,12 @@ impl MktChannel {
                                         }
                                     };
 
-                                    // Funding Rate MA 重算后触发决策（事件驱动）
                                     if let Some(sym) = symbol_for_decision {
-                                        if trigger_decisions {
-                                            let can_trigger = should_trigger_decision(&sym);
-                                            if can_trigger {
-                                                stats_triggerable_msgs += 1;
-                                                super::decision_router::trigger_decision(
-                                                    &sym,
-                                                    &sym,
-                                                    open_venue,
-                                                    hedge_venue,
-                                                );
-                                            } else if stats_unlisted_sample.len() < 10 {
-                                                stats_unlisted_sample.insert(sym.clone());
-                                            }
-                                        }
+                                        mark_dirty_symbol(
+                                            &sym,
+                                            &mut dirty_funding_symbols,
+                                            &mut dirty_funding_set,
+                                        );
                                     }
                                 }
                                 MktMsgType::MarkPrice => {
@@ -704,9 +741,45 @@ impl MktChannel {
                                 stats_unique_symbols.clear();
                                 stats_unlisted_sample.clear();
                             }
+
+                            if drain_count >= DERIVATIVES_DRAIN_BUDGET {
+                                flush_derivatives_dirty_symbols(
+                                    &mut dirty_funding_symbols,
+                                    &mut dirty_funding_set,
+                                    trigger_decisions,
+                                    open_venue,
+                                    hedge_venue,
+                                    &mut stats_triggerable_msgs,
+                                    &mut stats_unlisted_sample,
+                                );
+                                drain_count = 0;
+                                tokio::task::yield_now().await;
+                            }
                         }
-                        Ok(None) => tokio::task::yield_now().await,
+                        Ok(None) => {
+                            flush_derivatives_dirty_symbols(
+                                &mut dirty_funding_symbols,
+                                &mut dirty_funding_set,
+                                trigger_decisions,
+                                open_venue,
+                                hedge_venue,
+                                &mut stats_triggerable_msgs,
+                                &mut stats_unlisted_sample,
+                            );
+                            drain_count = 0;
+                            tokio::task::yield_now().await;
+                        }
                         Err(err) => {
+                            flush_derivatives_dirty_symbols(
+                                &mut dirty_funding_symbols,
+                                &mut dirty_funding_set,
+                                trigger_decisions,
+                                open_venue,
+                                hedge_venue,
+                                &mut stats_triggerable_msgs,
+                                &mut stats_unlisted_sample,
+                            );
+                            drain_count = 0;
                             warn!("衍生品数据接收错误: {}", err);
                             tokio::time::sleep(Duration::from_millis(200)).await;
                         }
