@@ -19,6 +19,8 @@ use super::symbol_list::SymbolList;
 use crate::common::mkt_msg::{
     get_msg_type, AskBidSpreadMsg, FundingRateMsg, IndexPriceMsg, MarkPriceMsg, MktMsgType,
 };
+use crate::common::time_util::get_timestamp_us;
+use crate::rolling_metrics::kll_quantile::segmented_quantiles_linear;
 use crate::signal::common::TradingVenue;
 use crate::symbol_match::{normalize_symbol_for_premium_pair, normalize_symbol_for_whitelist};
 
@@ -29,6 +31,8 @@ const DERIVATIVES_HISTORY_SIZE: usize = 50;
 const DERIVATIVES_MAX_SUBSCRIBERS: usize = 10;
 const DERIVATIVES_SUBSCRIBER_MAX_BUFFER: usize = 8192;
 const DERIVATIVES_DRAIN_BUDGET: usize = 1024;
+const DECISION_QUOTE_AGE_KLL_CAPACITY: usize = 10_000;
+const DECISION_QUOTE_AGE_KLL_MAX_WINDOW: Duration = Duration::from_secs(60);
 
 // Thread-local 单例存储
 thread_local! {
@@ -77,6 +81,65 @@ fn mark_dirty_symbol(
     }
 }
 
+struct DecisionQuoteAgeKll {
+    label: String,
+    buffer: Vec<f64>,
+    window_start: Instant,
+}
+
+impl DecisionQuoteAgeKll {
+    fn new(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            buffer: Vec::with_capacity(DECISION_QUOTE_AGE_KLL_CAPACITY),
+            window_start: Instant::now(),
+        }
+    }
+
+    fn push(&mut self, age_us: i64) {
+        self.maybe_flush();
+        self.buffer.push(age_us as f64);
+        if self.buffer.len() >= DECISION_QUOTE_AGE_KLL_CAPACITY {
+            self.flush();
+        }
+    }
+
+    fn maybe_flush(&mut self) {
+        if self.window_start.elapsed() >= DECISION_QUOTE_AGE_KLL_MAX_WINDOW {
+            self.flush();
+        }
+    }
+
+    fn flush(&mut self) {
+        if self.buffer.is_empty() {
+            self.window_start = Instant::now();
+            return;
+        }
+
+        let qs = [0.50_f32, 0.90, 0.95, 0.99];
+        let (n, results) = segmented_quantiles_linear(
+            self.buffer.iter().copied(),
+            DECISION_QUOTE_AGE_KLL_CAPACITY,
+            &qs,
+        );
+        let p50 = results.first().and_then(|v| *v).unwrap_or(f64::NAN);
+        let p90 = results.get(1).and_then(|v| *v).unwrap_or(f64::NAN);
+        let p95 = results.get(2).and_then(|v| *v).unwrap_or(f64::NAN);
+        let p99 = results.get(3).and_then(|v| *v).unwrap_or(f64::NAN);
+        log::info!(
+            "mkt_channel[{}] decision_quote_age_us n={} p50={:.0} p90={:.0} p95={:.0} p99={:.0}",
+            self.label,
+            n,
+            p50,
+            p90,
+            p95,
+            p99
+        );
+        self.buffer.clear();
+        self.window_start = Instant::now();
+    }
+}
+
 fn flush_askbid_dirty_symbols(
     dirty_symbols: &mut Vec<String>,
     dirty_set: &mut HashSet<String>,
@@ -86,8 +149,10 @@ fn flush_askbid_dirty_symbols(
     quotes: &Rc<RefCell<HashMap<TradingVenue, HashMap<String, Quote>>>>,
     stats_triggerable_msgs: &mut u64,
     stats_unlisted_sample: &mut HashSet<String>,
+    decision_quote_age: &mut DecisionQuoteAgeKll,
 ) {
     if dirty_symbols.is_empty() {
+        decision_quote_age.maybe_flush();
         return;
     }
 
@@ -98,7 +163,7 @@ fn flush_askbid_dirty_symbols(
     }
 
     for sym in dirty_symbols.iter() {
-        {
+        let decision_quote_ts = {
             use super::spread_factor::SpreadFactor;
 
             let quotes_map = quotes.borrow();
@@ -123,20 +188,30 @@ fn flush_askbid_dirty_symbols(
                         hedge_q.bid,
                         hedge_q.ask,
                     );
+                    Some(open_q.ts.max(hedge_q.ts))
+                } else {
+                    None
                 }
+            } else {
+                None
             }
-        }
+        };
 
         if trigger_decisions {
             let can_trigger = should_trigger_decision(sym);
             if can_trigger {
                 *stats_triggerable_msgs += 1;
+                if let Some(quote_ts) = decision_quote_ts.filter(|ts| *ts > 0) {
+                    decision_quote_age.push(get_timestamp_us().saturating_sub(quote_ts));
+                }
                 super::decision_router::trigger_decision(sym, sym, open_venue, hedge_venue);
             } else if stats_unlisted_sample.len() < 10 {
                 stats_unlisted_sample.insert(sym.clone());
             }
         }
     }
+
+    decision_quote_age.maybe_flush();
 
     dirty_symbols.clear();
     dirty_set.clear();
@@ -589,6 +664,7 @@ impl MktChannel {
                 let mut stats_last_symbol: String = String::new();
                 let mut dirty_symbols: Vec<String> = Vec::new();
                 let mut dirty_set: HashSet<String> = HashSet::new();
+                let mut decision_quote_age = DecisionQuoteAgeKll::new(this_venue.data_pub_slug());
 
                 loop {
                     match subscriber.receive() {
@@ -623,6 +699,7 @@ impl MktChannel {
                                 &quotes,
                                 &mut stats_triggerable_msgs,
                                 &mut stats_unlisted_sample,
+                                &mut decision_quote_age,
                             );
                             tokio::task::yield_now().await;
                         }
@@ -636,6 +713,7 @@ impl MktChannel {
                                 &quotes,
                                 &mut stats_triggerable_msgs,
                                 &mut stats_unlisted_sample,
+                                &mut decision_quote_age,
                             );
                             warn!("现货盘口接收错误: {}", err);
                             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -706,6 +784,7 @@ impl MktChannel {
                     open_venue.data_pub_slug(),
                     hedge_venue.data_pub_slug()
                 );
+                let mut decision_quote_age = DecisionQuoteAgeKll::new(stats_label.clone());
 
                 loop {
                     loop {
@@ -733,6 +812,7 @@ impl MktChannel {
                                     &quotes,
                                     &mut stats_triggerable_msgs,
                                     &mut stats_unlisted_sample,
+                                    &mut decision_quote_age,
                                 );
                                 warn!("open 盘口接收错误: {}", err);
                                 tokio::time::sleep(Duration::from_millis(200)).await;
@@ -766,6 +846,7 @@ impl MktChannel {
                                     &quotes,
                                     &mut stats_triggerable_msgs,
                                     &mut stats_unlisted_sample,
+                                    &mut decision_quote_age,
                                 );
                                 warn!("hedge 盘口接收错误: {}", err);
                                 tokio::time::sleep(Duration::from_millis(200)).await;
@@ -793,6 +874,7 @@ impl MktChannel {
                         &quotes,
                         &mut stats_triggerable_msgs,
                         &mut stats_unlisted_sample,
+                        &mut decision_quote_age,
                     );
                     tokio::task::yield_now().await;
                 }
