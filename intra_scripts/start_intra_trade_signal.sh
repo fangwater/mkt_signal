@@ -57,20 +57,15 @@ PROC_NAME="intra_${EXCHANGE}_${ENV_TAG}_trade_signal"
 LEGACY_PROC_NAME="trade_signal_${EXCHANGE}"
 RUST_LOG="${RUST_LOG:-info}"
 
-# CPU core binding lookup (optional, per-host table at ~/.mkt_signal_cores.sh).
-# 不存在或没匹配条目 → 不传 --core，binary 自然跳过绑核。
-CORE_BIND_TABLE="${MKT_CORE_BIND_TABLE:-$HOME/.mkt_signal_cores.sh}"
-if [[ -f "$CORE_BIND_TABLE" ]]; then
-  # shellcheck disable=SC1090
-  source "$CORE_BIND_TABLE"
-fi
+# 绑核来源：env.sh 里 export TRADE_SIGNAL_CORE=<N>，单个整数；未设置则不绑。
 core_args=()
-if declare -p MKT_CORE_BINDINGS >/dev/null 2>&1; then
-  _bind_key="${dir_name}:trade_signal"
-  if [[ -n "${MKT_CORE_BINDINGS[$_bind_key]:-}" ]]; then
-    core_args=(--core "${MKT_CORE_BINDINGS[$_bind_key]}")
-    echo "[INFO] core bind ${MKT_CORE_BINDINGS[$_bind_key]} (table=$CORE_BIND_TABLE key=$_bind_key)"
+if [[ -n "${TRADE_SIGNAL_CORE:-}" ]]; then
+  if [[ ! "$TRADE_SIGNAL_CORE" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR] TRADE_SIGNAL_CORE 必须为单个整数 (got: $TRADE_SIGNAL_CORE)" >&2
+    exit 1
   fi
+  core_args=(--core "$TRADE_SIGNAL_CORE")
+  echo "[INFO] core bind ${TRADE_SIGNAL_CORE} (from $ENV_FILE:TRADE_SIGNAL_CORE)"
 fi
 
 echo "[INFO] Restarting ${PROC_NAME} (namespace=${NAMESPACE})"

@@ -106,20 +106,21 @@ name="dp_$(venue_short_tag "$venue")"
 legacy_name="depth_pub_${venue}"
 rust_log="${RUST_LOG:-info}"
 
-# CPU core binding lookup (optional, per-host table at ~/.mkt_signal_cores.sh).
-# 不存在或没匹配条目 → 不传 --core，binary 自然跳过绑核。
-CORE_BIND_TABLE="${MKT_CORE_BIND_TABLE:-$HOME/.mkt_signal_cores.sh}"
-if [[ -f "$CORE_BIND_TABLE" ]]; then
+# Per-venue env.sh override (与 spread_pbs 一致)。
+# 在 ~/depth_pub/<venue>/env.sh 里 `export DEPTH_PUB_CORE=<N>` 即可绑核;
+# 不存在或未 export → 不传 --core,binary 自然跳过绑核。
+if [[ -f "$BASE_DIR/env.sh" ]]; then
   # shellcheck disable=SC1090
-  source "$CORE_BIND_TABLE"
+  set -a; source "$BASE_DIR/env.sh"; set +a
 fi
 extra_args_json=""
-if declare -p MKT_CORE_BINDINGS >/dev/null 2>&1; then
-  _bind_key="${venue}:depth_pub"
-  if [[ -n "${MKT_CORE_BINDINGS[$_bind_key]:-}" ]]; then
-    extra_args_json=", \"--core\", \"${MKT_CORE_BINDINGS[$_bind_key]}\""
-    echo "[INFO] core bind ${MKT_CORE_BINDINGS[$_bind_key]} (table=$CORE_BIND_TABLE key=$_bind_key)"
+if [[ -n "${DEPTH_PUB_CORE:-}" ]]; then
+  if [[ ! "$DEPTH_PUB_CORE" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR] DEPTH_PUB_CORE 必须为单个整数 (got: $DEPTH_PUB_CORE)" >&2
+    exit 1
   fi
+  extra_args_json=", \"--core\", \"${DEPTH_PUB_CORE}\""
+  echo "[INFO] core bind ${DEPTH_PUB_CORE} (from $BASE_DIR/env.sh:DEPTH_PUB_CORE)"
 fi
 
 cfg_file="$(mktemp)"

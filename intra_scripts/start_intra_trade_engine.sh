@@ -90,25 +90,23 @@ IPC_NS="${IPC_NAMESPACE:-}"
 PROC_NAME="intra_te_${EXCHANGE}_${ENV_TAG}"
 KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 
-# CPU core binding lookup (optional, per-host table at ~/.mkt_signal_cores.sh).
-# 不存在或没匹配条目 → 不传 --core，binary 自然跳过绑核。
-CORE_BIND_TABLE="${MKT_CORE_BIND_TABLE:-$HOME/.mkt_signal_cores.sh}"
-if [[ -f "$CORE_BIND_TABLE" ]]; then
-  # shellcheck disable=SC1090
-  source "$CORE_BIND_TABLE"
-fi
+# 绑核来源：env.sh 里 export TRADE_ENGINE_CORE / TRADE_ENGINE_IPC_CORE；未设置则不绑。
 core_args=()
-if declare -p MKT_CORE_BINDINGS >/dev/null 2>&1; then
-  _bind_key="${dir_name}:trade_engine_${EXCHANGE}"
-  if [[ -n "${MKT_CORE_BINDINGS[$_bind_key]:-}" ]]; then
-    core_args+=(--core "${MKT_CORE_BINDINGS[$_bind_key]}")
-    echo "[INFO] core bind ${MKT_CORE_BINDINGS[$_bind_key]} (main thread, table=$CORE_BIND_TABLE key=$_bind_key)"
+if [[ -n "${TRADE_ENGINE_CORE:-}" ]]; then
+  if [[ ! "$TRADE_ENGINE_CORE" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR] TRADE_ENGINE_CORE 必须为单个整数 (got: $TRADE_ENGINE_CORE)" >&2
+    exit 1
   fi
-  _bind_key_ipc="${dir_name}:trade_engine_${EXCHANGE}_ipc"
-  if [[ -n "${MKT_CORE_BINDINGS[$_bind_key_ipc]:-}" ]]; then
-    core_args+=(--ipc-core "${MKT_CORE_BINDINGS[$_bind_key_ipc]}")
-    echo "[INFO] core bind ${MKT_CORE_BINDINGS[$_bind_key_ipc]} (te-ipc thread, key=$_bind_key_ipc)"
+  core_args+=(--core "$TRADE_ENGINE_CORE")
+  echo "[INFO] core bind ${TRADE_ENGINE_CORE} (main thread, from $ENV_FILE:TRADE_ENGINE_CORE)"
+fi
+if [[ -n "${TRADE_ENGINE_IPC_CORE:-}" ]]; then
+  if [[ ! "$TRADE_ENGINE_IPC_CORE" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR] TRADE_ENGINE_IPC_CORE 必须为单个整数 (got: $TRADE_ENGINE_IPC_CORE)" >&2
+    exit 1
   fi
+  core_args+=(--ipc-core "$TRADE_ENGINE_IPC_CORE")
+  echo "[INFO] core bind ${TRADE_ENGINE_IPC_CORE} (te-ipc thread, from $ENV_FILE:TRADE_ENGINE_IPC_CORE)"
 fi
 
 find_running_pids() {
