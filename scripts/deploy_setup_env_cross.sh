@@ -219,7 +219,11 @@ TARGET_DIR="$HOME/${ENV_NAME}"
 mkdir -p "$TARGET_DIR"
 
 ENV_FILE="$TARGET_DIR/env.sh"
-cat > "$ENV_FILE" << EOF
+if [[ -f "$ENV_FILE" ]]; then
+  echo "[INFO] $ENV_FILE 已存在，不重写（保留现有凭证）"
+  echo "[INFO] 如需重新生成，先 mv/rm 现有 env.sh 再跑 deploy"
+else
+  cat > "$ENV_FILE" << EOF
 #!/usr/bin/env bash
 # 自动生成的环境配置文件（cross）
 # 环境后缀: $ENV_SUFFIX
@@ -241,9 +245,9 @@ export CROSS_SIDE='${CROSS_SIDE}'
 # RUST_LOG 配置
 export RUST_LOG="\${RUST_LOG:-info,funding_rate_signal=info,mkt_signal=info,hyper=warn,hyper_util=warn,h2=warn,reqwest=warn}"
 EOF
+  chmod +x "$ENV_FILE"
+  echo "[INFO] 环境配置已部署到 $TARGET_DIR"
+fi
 
-chmod +x "$ENV_FILE"
-
-echo "[INFO] 环境配置已部署到 $TARGET_DIR"
 echo "[INFO] 使用方法: source $ENV_FILE"
 echo "[INFO] namespace: $NAMESPACE"
