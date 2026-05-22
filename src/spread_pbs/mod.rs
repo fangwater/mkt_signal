@@ -8,7 +8,6 @@
 //! 已支持的 venue（OKex/Binance/Bybit/Gate/Bitget × spot+futures = 10 个）。
 
 pub mod adapter;
-pub mod affinity;
 pub mod app;
 pub mod binance;
 pub mod bitget;

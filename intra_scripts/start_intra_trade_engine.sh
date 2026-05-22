@@ -90,6 +90,27 @@ IPC_NS="${IPC_NAMESPACE:-}"
 PROC_NAME="intra_te_${EXCHANGE}_${ENV_TAG}"
 KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 
+# CPU core binding lookup (optional, per-host table at ~/.mkt_signal_cores.sh).
+# 不存在或没匹配条目 → 不传 --core，binary 自然跳过绑核。
+CORE_BIND_TABLE="${MKT_CORE_BIND_TABLE:-$HOME/.mkt_signal_cores.sh}"
+if [[ -f "$CORE_BIND_TABLE" ]]; then
+  # shellcheck disable=SC1090
+  source "$CORE_BIND_TABLE"
+fi
+core_args=()
+if declare -p MKT_CORE_BINDINGS >/dev/null 2>&1; then
+  _bind_key="${dir_name}:trade_engine_${EXCHANGE}"
+  if [[ -n "${MKT_CORE_BINDINGS[$_bind_key]:-}" ]]; then
+    core_args+=(--core "${MKT_CORE_BINDINGS[$_bind_key]}")
+    echo "[INFO] core bind ${MKT_CORE_BINDINGS[$_bind_key]} (main thread, table=$CORE_BIND_TABLE key=$_bind_key)"
+  fi
+  _bind_key_ipc="${dir_name}:trade_engine_${EXCHANGE}_ipc"
+  if [[ -n "${MKT_CORE_BINDINGS[$_bind_key_ipc]:-}" ]]; then
+    core_args+=(--ipc-core "${MKT_CORE_BINDINGS[$_bind_key_ipc]}")
+    echo "[INFO] core bind ${MKT_CORE_BINDINGS[$_bind_key_ipc]} (te-ipc thread, key=$_bind_key_ipc)"
+  fi
+fi
+
 find_running_pids() {
   local exchange_arg="--exchange ${EXCHANGE}"
   local pids=()
@@ -151,7 +172,14 @@ json_shell="$(json_escape "/bin/bash")"
 json_base="$(json_escape "$BASE_DIR")"
 json_rust_log="$(json_escape "$RUST_LOG")"
 json_ipc_ns="$(json_escape "$IPC_NS")"
-cmd="if [[ -f $(shell_quote "$ENV_FILE") ]]; then source $(shell_quote "$ENV_FILE"); fi; exec $(shell_quote "$BIN_PATH") --exchange $(shell_quote "$EXCHANGE")"
+te_args=(--exchange "$EXCHANGE")
+if [[ ${#core_args[@]} -gt 0 ]]; then
+  te_args+=("${core_args[@]}")
+fi
+cmd="if [[ -f $(shell_quote "$ENV_FILE") ]]; then source $(shell_quote "$ENV_FILE"); fi; exec $(shell_quote "$BIN_PATH")"
+for arg in "${te_args[@]}"; do
+  cmd+=" $(shell_quote "$arg")"
+done
 json_cmd="$(json_escape "$cmd")"
 
 cat >"$cfg_file" <<JSON

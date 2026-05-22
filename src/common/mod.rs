@@ -1,3 +1,4 @@
+pub mod affinity;
 pub mod amount_threshold;
 pub mod basic_account_msg;
 pub mod bbo;

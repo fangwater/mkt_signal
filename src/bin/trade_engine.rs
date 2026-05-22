@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use hmac::{Hmac, Mac};
 use log::{error, info};
+use mkt_signal::common::affinity::{maybe_pin_current_thread, resolve_core};
 use mkt_signal::common::binance_account_mode::{init_binance_account_mode, BinanceAccountMode};
 use mkt_signal::common::exchange::Exchange;
 use mkt_signal::common::mkt_cfg::{
@@ -48,6 +49,15 @@ struct Args {
     /// Target exchange (binance, okex, bybit, bitget, gate)
     #[arg(long, value_enum)]
     exchange: TradeEngineTarget,
+
+    /// 绑定主线程到指定 CPU 核（可选）；未提供则尝试 TRADE_ENGINE_CORE 环境变量
+    #[arg(long)]
+    core: Option<usize>,
+
+    /// 绑定 te-ipc 线程（iceoryx 桥接 busy-poll）到指定 CPU 核（可选）；
+    /// 未提供则尝试 TRADE_ENGINE_IPC_CORE 环境变量
+    #[arg(long)]
+    ipc_core: Option<usize>,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -296,6 +306,8 @@ async fn main() -> Result<()> {
     env_logger::init();
 
     let args = Args::parse();
+    maybe_pin_current_thread(args.core, "TRADE_ENGINE_CORE")?;
+    let ipc_core = resolve_core(args.ipc_core, "TRADE_ENGINE_IPC_CORE");
     let exchange_name = args.exchange.as_str();
     info!("trade_engine starting (exchange={})", exchange_name);
     let binance_account_mode = if exchange_name == "binance" {
@@ -403,7 +415,7 @@ async fn main() -> Result<()> {
     };
 
     info!("trade_engine initialized");
-    let engine = TradeEngine::new(local_ips, accounts);
+    let engine = TradeEngine::new(local_ips, accounts, ipc_core);
 
     // Convert exchange_name to Exchange enum
     let exchange = Exchange::from_str(exchange_name)

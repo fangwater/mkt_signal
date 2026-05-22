@@ -10,6 +10,7 @@ use tokio::signal::unix::{signal as unix_signal, SignalKind};
 use tokio::time::{self, Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
+use mkt_signal::common::affinity::maybe_pin_current_thread;
 use mkt_signal::common::exchange::Exchange;
 use mkt_signal::common::iceoryx_publisher::configure_signal_publish_dry_run;
 use mkt_signal::common::redis_client::RedisSettings;
@@ -40,6 +41,10 @@ struct Args {
     /// Run full decision flow but do not emit trade_signal IPC messages
     #[arg(long, default_value_t = false)]
     no_emit_signals: bool,
+
+    /// 绑定到指定 CPU 核（可选）；未提供则尝试 TRADE_SIGNAL_CORE 环境变量
+    #[arg(long)]
+    core: Option<usize>,
 }
 
 fn get_redis_settings() -> RedisSettings {
@@ -515,6 +520,7 @@ async fn main() -> Result<()> {
 
     // 解析命令行参数
     let args = Args::parse();
+    maybe_pin_current_thread(args.core, "TRADE_SIGNAL_CORE")?;
     let no_emit_signals = args.no_emit_signals || env_flag("TRADE_SIGNAL_NO_EMIT");
     configure_signal_publish_dry_run(no_emit_signals);
     if no_emit_signals {

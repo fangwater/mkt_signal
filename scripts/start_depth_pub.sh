@@ -105,6 +105,23 @@ fi
 name="dp_$(venue_short_tag "$venue")"
 legacy_name="depth_pub_${venue}"
 rust_log="${RUST_LOG:-info}"
+
+# CPU core binding lookup (optional, per-host table at ~/.mkt_signal_cores.sh).
+# 不存在或没匹配条目 → 不传 --core，binary 自然跳过绑核。
+CORE_BIND_TABLE="${MKT_CORE_BIND_TABLE:-$HOME/.mkt_signal_cores.sh}"
+if [[ -f "$CORE_BIND_TABLE" ]]; then
+  # shellcheck disable=SC1090
+  source "$CORE_BIND_TABLE"
+fi
+extra_args_json=""
+if declare -p MKT_CORE_BINDINGS >/dev/null 2>&1; then
+  _bind_key="${venue}:depth_pub"
+  if [[ -n "${MKT_CORE_BINDINGS[$_bind_key]:-}" ]]; then
+    extra_args_json=", \"--core\", \"${MKT_CORE_BINDINGS[$_bind_key]}\""
+    echo "[INFO] core bind ${MKT_CORE_BINDINGS[$_bind_key]} (table=$CORE_BIND_TABLE key=$_bind_key)"
+  fi
+fi
+
 cfg_file="$(mktemp)"
 trap 'rm -f "$cfg_file" >/dev/null 2>&1 || true' EXIT
 
@@ -124,7 +141,7 @@ cat >"$cfg_file" <<JSON
     {
       "name": "${json_name}",
       "script": "${json_bin}",
-      "args": ["--venue", "${json_venue}"],
+      "args": ["--venue", "${json_venue}"${extra_args_json}],
       "cwd": "${json_base}",
       "env": {
         "RUST_LOG": "${json_rust_log}"

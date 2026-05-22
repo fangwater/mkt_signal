@@ -2,6 +2,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use clap::Parser;
 use log::{info, warn};
+use mkt_signal::common::affinity::maybe_pin_current_thread;
 use mkt_signal::common::binance_account_mode::{init_binance_account_mode, BinanceAccountMode};
 use mkt_signal::common::redis_client::RedisSettings;
 use mkt_signal::common::time_util::get_timestamp_us;
@@ -43,6 +44,10 @@ struct Args {
     /// If omitted (and open_venue also omitted), venues will be inferred from current directory name.
     #[arg(long, value_enum)]
     hedge_venue: Option<TradingVenue>,
+
+    /// 绑定到指定 CPU 核（可选）；未提供则尝试 PRE_TRADE_CORE 环境变量
+    #[arg(long)]
+    core: Option<usize>,
 }
 
 fn infer_venues_from_cwd() -> Option<(TradingVenue, TradingVenue)> {
@@ -123,6 +128,7 @@ async fn main() -> Result<()> {
 
     // 解析命令行参数
     let args = Args::parse();
+    maybe_pin_current_thread(args.core, "PRE_TRADE_CORE")?;
     let (open_venue, hedge_venue) = match (args.open_venue, args.hedge_venue) {
         (Some(open), Some(hedge)) => (open, hedge),
         (None, None) => {

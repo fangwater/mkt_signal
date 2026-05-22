@@ -1,3 +1,4 @@
+use crate::common::affinity::pin_to_core;
 use crate::common::binance_account_mode::{binance_account_mode, BinanceAccountMode};
 use crate::common::exchange::Exchange;
 use crate::common::iceoryx_publisher::{QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD};
@@ -270,10 +271,16 @@ fn spawn_te_ipc_thread(
     query_resp_service: String,
     mut queues: IpcThreadQueues,
     shutdown: CancellationToken,
+    ipc_core: Option<usize>,
 ) -> Result<thread::JoinHandle<()>> {
     let handle = thread::Builder::new()
         .name("te-ipc".to_string())
         .spawn(move || {
+            if let Some(c) = ipc_core {
+                if let Err(err) = pin_to_core(c) {
+                    warn!("te-ipc thread pin to core {} failed: {:#}; continuing without affinity", c, err);
+                }
+            }
             if let Err(err) = run_te_ipc_thread(
                 &exchange_name,
                 &order_req_service,
@@ -508,13 +515,15 @@ async fn join_or_abort(name: &str, mut handle: tokio::task::JoinHandle<()>) {
 pub struct TradeEngine {
     local_ips: Vec<IpAddr>,
     accounts: Vec<ApiKey>,
+    ipc_core: Option<usize>,
 }
 
 impl TradeEngine {
-    pub fn new(local_ips: Vec<IpAddr>, accounts: Vec<ApiKey>) -> Self {
+    pub fn new(local_ips: Vec<IpAddr>, accounts: Vec<ApiKey>, ipc_core: Option<usize>) -> Self {
         Self {
             local_ips,
             accounts,
+            ipc_core,
         }
     }
 
@@ -564,6 +573,7 @@ impl TradeEngine {
             query_resp_service.clone(),
             ipc_queues,
             shutdown.clone(),
+            self.ipc_core,
         )?;
 
         // Async thread keeps only async/network-facing IPC publications, such as latency snapshots.

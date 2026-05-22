@@ -77,7 +77,21 @@ if [[ ! "$venue" =~ $VENUE_DIR_REGEX ]]; then
   exit 1
 fi
 
-if ! CORE=$(core_for_venue "$venue"); then
+# 单一 env.sh 来源：每个 venue 部署目录下放一份 (与 fr/intra 一致)。
+# 提前 source 以便 SPREAD_PBS_CORE 等 per-host override 在 core 解析前可见；
+# okex-* 的 SBE handshake 也依赖 OKX_API_KEY/SECRET/PASSPHRASE。
+if [[ -f "$BASE_DIR/env.sh" ]]; then
+  # shellcheck source=/dev/null
+  set -a; source "$BASE_DIR/env.sh"; set +a
+fi
+
+if [[ -n "${SPREAD_PBS_CORE:-}" ]]; then
+  if [[ ! "$SPREAD_PBS_CORE" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR] SPREAD_PBS_CORE 必须为单个整数 (got: $SPREAD_PBS_CORE)" >&2
+    exit 1
+  fi
+  CORE="$SPREAD_PBS_CORE"
+elif ! CORE=$(core_for_venue "$venue"); then
   echo "[ERROR] venue 未配置 core 绑定: $venue" >&2
   exit 1
 fi
@@ -116,13 +130,6 @@ rust_log="${RUST_LOG:-info}"
 KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 cfg_file="$(mktemp)"
 trap 'rm -f "$cfg_file" >/dev/null 2>&1 || true' EXIT
-
-# 单一 env.sh 来源：每个 venue 部署目录下放一份 (与 fr/intra 一致)。
-# okex-* 的 SBE handshake 必须有 OKX_API_KEY/SECRET/PASSPHRASE；其他 venue 暂不依赖。
-if [[ -f "$BASE_DIR/env.sh" ]]; then
-  # shellcheck source=/dev/null
-  set -a; source "$BASE_DIR/env.sh"; set +a
-fi
 
 find_running_pids() {
   local venue_arg="--venue ${venue}"

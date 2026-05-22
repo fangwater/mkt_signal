@@ -8,6 +8,7 @@ use anyhow::Result;
 use clap::Parser;
 use log::info;
 
+use mkt_signal::common::affinity::maybe_pin_current_thread;
 use mkt_signal::depth_pub::app::DepthPubApp;
 use mkt_signal::depth_pub::cfg::DepthPubConfig;
 use mkt_signal::signal::common::TradingVenue;
@@ -19,6 +20,10 @@ struct Args {
     /// Trading venue (e.g., binance-futures, binance-margin, okex-futures)
     #[arg(short, long)]
     venue: TradingVenue,
+
+    /// 绑定主线程到指定 CPU 核（可选）；未提供则尝试 DEPTH_PUB_CORE 环境变量
+    #[arg(long)]
+    core: Option<usize>,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -26,6 +31,7 @@ async fn main() -> Result<()> {
     env_logger::init();
 
     let args = Args::parse();
+    maybe_pin_current_thread(args.core, "DEPTH_PUB_CORE")?;
 
     // 固定配置文件路径
     let config_path = "config/depth_cfg.yaml";
