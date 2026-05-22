@@ -477,7 +477,9 @@ impl MktManager {
                     .await;
                 }
                 Exchange::Bitget => {
-                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
+                    // trade 走独立 SBE endpoint (公开行情, 无鉴权), 与 ask_bid_spread/kline 等
+                    // v2 endpoint 分开。topic=publicTrade, 帧是 SBE binary (templateId=1003)。
+                    let url = SubscribeMsgs::BITGET_TRADE_SBE_WS_URL.to_string();
                     let parser = BitgetTradeParser::new();
                     self.spawn_connection_with_mpsc(
                         exchange,

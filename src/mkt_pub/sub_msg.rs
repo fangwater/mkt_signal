@@ -29,6 +29,15 @@ pub enum BinanceFuturesStreamKind {
     Kline,
 }
 
+/// Bitget UTA v3 (SBE) 用小写 instType，且没有 MARGIN 类别（margin 在 v3 归 spot 端）。
+fn bitget_v3_inst_type_for_venue(venue: TradingVenue) -> &'static str {
+    match venue {
+        TradingVenue::BitgetFutures => "usdt-futures",
+        TradingVenue::BitgetMargin => "spot",
+        _ => panic!("unsupported venue for bitget v3: {:?}", venue),
+    }
+}
+
 fn bitget_inst_type_for_venue(venue: TradingVenue) -> &'static str {
     match venue {
         TradingVenue::BitgetFutures => "USDT-FUTURES",
@@ -155,22 +164,41 @@ fn construct_subscribe_message(
             }
         }
         Exchange::Bitget => {
-            // Bitget v2 API 格式
-            let inst_type = bitget_inst_type_for_venue(venue);
-            let args: Vec<Value> = symbols
-                .iter()
-                .map(|symbol| {
-                    serde_json::json!({
-                        "instType": inst_type,
-                        "channel": channel,
-                        "instId": symbol
+            // publicTrade 走 UTA v3 SBE 端口，命名约定: topic + symbol + 小写 instType
+            // 其他 channel (books / candle1m / books1) 还是 v2 端口的 channel + instId + 大写 instType
+            if channel == "publicTrade" {
+                let inst_type = bitget_v3_inst_type_for_venue(venue);
+                let args: Vec<Value> = symbols
+                    .iter()
+                    .map(|symbol| {
+                        serde_json::json!({
+                            "instType": inst_type,
+                            "topic": channel,
+                            "symbol": symbol
+                        })
                     })
+                    .collect();
+                serde_json::json!({
+                    "op": "subscribe",
+                    "args": args
                 })
-                .collect();
-            serde_json::json!({
-                "op": "subscribe",
-                "args": args
-            })
+            } else {
+                let inst_type = bitget_inst_type_for_venue(venue);
+                let args: Vec<Value> = symbols
+                    .iter()
+                    .map(|symbol| {
+                        serde_json::json!({
+                            "instType": inst_type,
+                            "channel": channel,
+                            "instId": symbol
+                        })
+                    })
+                    .collect();
+                serde_json::json!({
+                    "op": "subscribe",
+                    "args": args
+                })
+            }
         }
         Exchange::Gate => {
             // Gate.io API 格式
@@ -653,11 +681,15 @@ impl SubscribeMsgs {
             Exchange::Binance | Exchange::Aster => "trade".to_string(),
             Exchange::Okex => "trades".to_string(),
             Exchange::Bybit => "publicTrade".to_string(),
-            Exchange::Bitget => "trade".to_string(),
+            // Bitget 切换到 UTA v3 SBE: topic=publicTrade, URL=BITGET_TRADE_SBE_WS_URL
+            Exchange::Bitget => "publicTrade".to_string(),
             Exchange::Gate => "trades".to_string(),
             Exchange::Hyperliquid => "trades".to_string(),
         }
     }
+
+    /// Bitget trade 走的独立 SBE endpoint (与 v2 公共 endpoint 不同, 不需要鉴权)。
+    pub const BITGET_TRADE_SBE_WS_URL: &'static str = "wss://ws.bitget.com/v3/ws/public/sbe";
 
     fn get_ask_bid_spread_channel(exchange: &Exchange, venue: TradingVenue) -> String {
         match exchange {
