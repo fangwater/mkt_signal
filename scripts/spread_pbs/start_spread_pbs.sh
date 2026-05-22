@@ -117,6 +117,13 @@ KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 cfg_file="$(mktemp)"
 trap 'rm -f "$cfg_file" >/dev/null 2>&1 || true' EXIT
 
+# 单一 env.sh 来源：每个 venue 部署目录下放一份 (与 fr/intra 一致)。
+# okex-* 的 SBE handshake 必须有 OKX_API_KEY/SECRET/PASSPHRASE；其他 venue 暂不依赖。
+if [[ -f "$BASE_DIR/env.sh" ]]; then
+  # shellcheck source=/dev/null
+  set -a; source "$BASE_DIR/env.sh"; set +a
+fi
+
 find_running_pids() {
   local venue_arg="--venue ${venue}"
   local pids=()
@@ -156,6 +163,25 @@ if [[ "$venue" == "binance-margin" ]]; then
         \"BINANCE_SBE_API_KEY\": \"${json_binance_sbe_api_key}\""
 fi
 
+okex_sbe_env_line=""
+if [[ "$venue" == "okex-margin" || "$venue" == "okex-futures" ]]; then
+  for v in OKX_API_KEY OKX_API_SECRET OKX_PASSPHRASE; do
+    if [[ -z "${!v:-}" ]]; then
+      echo "[ERROR] ${v} 未设置；OKEx SBE handshake 需要这三个变量。" >&2
+      echo "       请在 ${BASE_DIR}/env.sh 里 export OKX_API_KEY / OKX_API_SECRET / OKX_PASSPHRASE，" >&2
+      echo "       然后重新执行 start_spread_pbs.sh。" >&2
+      exit 1
+    fi
+  done
+  json_okx_api_key="$(json_escape "$OKX_API_KEY")"
+  json_okx_api_secret="$(json_escape "$OKX_API_SECRET")"
+  json_okx_passphrase="$(json_escape "$OKX_PASSPHRASE")"
+  okex_sbe_env_line=",
+        \"OKX_API_KEY\": \"${json_okx_api_key}\",
+        \"OKX_API_SECRET\": \"${json_okx_api_secret}\",
+        \"OKX_PASSPHRASE\": \"${json_okx_passphrase}\""
+fi
+
 # iceoryx2 默认按 CWD 查找 ./config/iceoryx2.toml；没有就从 root 兜底
 if [[ ! -f "$BASE_DIR/config/iceoryx2.toml" && -f "$ROOT_DIR/config/iceoryx2.toml" ]]; then
   mkdir -p "$BASE_DIR/config"
@@ -177,7 +203,7 @@ cat >"$cfg_file" <<JSON
       ],
       "cwd": "${json_base}",
       "env": {
-        "RUST_LOG": "${json_rust_log}"${binance_sbe_env_line}
+        "RUST_LOG": "${json_rust_log}"${binance_sbe_env_line}${okex_sbe_env_line}
       }
     }
   ]

@@ -76,28 +76,33 @@ pub trait VenueAdapter {
     fn keepalive(&self) -> Option<KeepaliveSpec>;
 }
 
-/// 按 venue 创建对应 adapter；非支持的 venue 返回 None。
+/// 按 venue 创建对应 adapter；非支持的 venue 返回 Ok(None)。
 ///
 /// 当前支持：OKex / Binance / Bybit / Gate / Bitget（spot+futures 各 2 个）。
 /// Hyperliquid / Aster 为 DEX，spread_pbs 不接入。
-pub fn create_adapter(venue: crate::signal::common::TradingVenue) -> Option<Box<dyn VenueAdapter>> {
+///
+/// OKex 必须 await：SBE 端订阅要先 REST 拉 instIdCode 映射；其他 venue 同步构造。
+pub async fn create_adapter(
+    venue: crate::signal::common::TradingVenue,
+) -> Result<Option<Box<dyn VenueAdapter>>> {
     use crate::signal::common::TradingVenue;
-    match venue {
+    let adapter: Box<dyn VenueAdapter> = match venue {
         TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
-            Some(Box::new(crate::spread_pbs::okex::OkexAdapter::new(venue)))
+            Box::new(crate::spread_pbs::okex::OkexAdapter::new(venue).await?)
         }
-        TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => Some(Box::new(
-            crate::spread_pbs::binance::BinanceAdapter::new(venue),
-        )),
+        TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => {
+            Box::new(crate::spread_pbs::binance::BinanceAdapter::new(venue))
+        }
         TradingVenue::BybitMargin | TradingVenue::BybitFutures => {
-            Some(Box::new(crate::spread_pbs::bybit::BybitAdapter::new(venue)))
+            Box::new(crate::spread_pbs::bybit::BybitAdapter::new(venue))
         }
         TradingVenue::GateMargin | TradingVenue::GateFutures => {
-            Some(Box::new(crate::spread_pbs::gate::GateAdapter::new(venue)))
+            Box::new(crate::spread_pbs::gate::GateAdapter::new(venue))
         }
-        TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => Some(Box::new(
-            crate::spread_pbs::bitget::BitgetAdapter::new(venue),
-        )),
-        _ => None,
-    }
+        TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => {
+            Box::new(crate::spread_pbs::bitget::BitgetAdapter::new(venue))
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(adapter))
 }

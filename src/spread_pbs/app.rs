@@ -55,7 +55,7 @@ impl SpreadPbsApp {
         let venue = self.config.venue;
         let venue_slug: &'static str = venue.data_pub_slug();
 
-        let adapter = match create_adapter(venue) {
+        let adapter = match create_adapter(venue).await? {
             Some(a) => Rc::<dyn VenueAdapter>::from(a),
             None => bail!(
                 "spread_pbs 当前不支持 venue {:?}（仅 OKex/Binance/Bybit/Gate/Bitget × spot+futures）",
