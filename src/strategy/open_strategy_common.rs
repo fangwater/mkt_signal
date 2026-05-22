@@ -410,7 +410,7 @@ pub trait OpenStrategyCommon {
             return;
         }
 
-        info!(
+        debug!(
             "{}: strategy_id={} ArbOpen去杠杆方向被{}拒绝，未激活 symbol={} venue={:?} side={:?} current_open_base_qty={:.8} order_qty={:.8} reason={}",
             self.strategy_name(),
             self.strategy_id(),
