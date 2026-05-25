@@ -3,6 +3,9 @@
 # Responsibilities:
 # - Local Bybit market-data fan-out on SG:
 #     dat_pbs/bybit-*/... -> bridge/bybit-*/...
+# - Local Binance-futures market-data fan-out on SG (for bybit-binance cross):
+#     dat_pbs/binance-futures/{ask_bid_spread,derivatives} -> bridge/binance-futures/...
+#   (rl_vol 不走 bridge：trade_flow_feature_pub 本地 SG 已发到 factor_pub/binance-futures/rl_vol)
 # - Ingest HK-relayed Binance futures model output:
 #     model_output/binance_futures_direction_model
 #
@@ -50,6 +53,37 @@ routes:
     to:
       type: ipc
       endpoint: "bridge/bybit-futures/derivatives"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 50
+      subscriber_max_buffer_size: 8192
+
+  # -----------------------------
+  # Local Binance-futures market-data fan-out (for bybit-binance cross)
+  # -----------------------------
+  - id: public_local_binance_futures_ask_bid
+    from:
+      type: ipc
+      endpoint: "dat_pbs/binance-futures/ask_bid_spread"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/binance-futures/ask_bid_spread"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 100
+      subscriber_max_buffer_size: 8192
+
+  - id: public_local_binance_futures_derivatives
+    from:
+      type: ipc
+      endpoint: "dat_pbs/binance-futures/derivatives"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/binance-futures/derivatives"
       size: 128
       max_publishers: 1
       max_subscribers: 64
