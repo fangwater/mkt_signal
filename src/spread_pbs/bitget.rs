@@ -232,7 +232,7 @@ mod tests {
         buf.extend_from_slice(&seq_id.to_le_bytes());
         buf.extend_from_slice(&sts_us.to_le_bytes());
         buf.push(1); // category
-        // padding to blockLength=64: 当前 root 写了 8+8+8+8+8+1+1+8+8+1 = 59 bytes, 补 5 bytes
+                     // padding to blockLength=64: 当前 root 写了 8+8+8+8+8+1+1+8+8+1 = 59 bytes, 补 5 bytes
         buf.extend_from_slice(&[0u8; 5]);
         // varString8 symbol
         let sym_bytes = symbol.as_bytes();

@@ -278,7 +278,10 @@ fn spawn_te_ipc_thread(
         .spawn(move || {
             if let Some(c) = ipc_core {
                 if let Err(err) = pin_to_core(c) {
-                    warn!("te-ipc thread pin to core {} failed: {:#}; continuing without affinity", c, err);
+                    warn!(
+                        "te-ipc thread pin to core {} failed: {:#}; continuing without affinity",
+                        c, err
+                    );
                 }
             }
             if let Err(err) = run_te_ipc_thread(

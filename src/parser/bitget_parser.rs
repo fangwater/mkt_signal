@@ -637,7 +637,10 @@ impl Parser for BitgetTradeParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
         let raw = msg.as_ref();
         // 文本帧 (subscribe ack / error event / "pong"): 不业务，丢弃
-        if raw.first().is_some_and(|b| *b < 0x80 && (*b == b'{' || *b == b'"' || *b == b'p')) {
+        if raw
+            .first()
+            .is_some_and(|b| *b < 0x80 && (*b == b'{' || *b == b'"' || *b == b'p'))
+        {
             return 0;
         }
         if raw.len() < SBE_HEADER_SIZE {
@@ -668,7 +671,10 @@ impl Parser for BitgetTradeParser {
         }
         // root: px_exp(1) + sz_exp(1) + sts(8) + padding
         if block_length < 10 {
-            debug!("BitgetTradeParser: trade root blockLength too small: {}", block_length);
+            debug!(
+                "BitgetTradeParser: trade root blockLength too small: {}",
+                block_length
+            );
             return 0;
         }
         let px_exp = raw[body_off] as i8;
@@ -683,7 +689,10 @@ impl Parser for BitgetTradeParser {
         let entry_bl = u16::from_le_bytes([raw[grp_off], raw[grp_off + 1]]) as usize;
         let num = u16::from_le_bytes([raw[grp_off + 2], raw[grp_off + 3]]) as usize;
         if entry_bl < 33 {
-            debug!("BitgetTradeParser: entryBlockLength too small: {}", entry_bl);
+            debug!(
+                "BitgetTradeParser: entryBlockLength too small: {}",
+                entry_bl
+            );
             return 0;
         }
         let entries_off = grp_off + 4;
