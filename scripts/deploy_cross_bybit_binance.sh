@@ -184,11 +184,23 @@ if [[ "$BIN_MODE" == "1" ]]; then
   fr_remote_sync_binaries "$ENV_NAME"
 else
   fr_remote_sync_env_dir "$ENV_NAME"
+
+  # env.sh: 已有就不动；没有就推本地架子（占位符 API_KEY/SECRET 等待手动填）。
+  LOCAL_ENV_SH="$HOME/$ENV_NAME/env.sh"
+  if [[ -f "$LOCAL_ENV_SH" ]]; then
+    OPTS_ENV="$(_fr_ssh_opts)"
+    echo "[INFO] ensure env.sh skeleton on remote (no-overwrite): ${FR_DEPLOY_HOST}:${FR_REMOTE_HOME}/${ENV_NAME}/env.sh"
+    # shellcheck disable=SC2086
+    rsync -a --ignore-existing -e "ssh ${OPTS_ENV}" \
+      "$LOCAL_ENV_SH" \
+      "${FR_DEPLOY_HOST}:${FR_REMOTE_HOME}/${ENV_NAME}/env.sh"
+  fi
+
   fr_remote_apply_nginx "$ENV_NAME"
 fi
 
 echo "[INFO] Bybit/Binance cross 部署完成（远端 ${FR_DEPLOY_HOST}，未启动进程）"
 echo "[INFO] 远端环境目录: ${FR_REMOTE_HOME}/${ENV_NAME}"
-echo "[INFO] 注意: env.sh 不参与 rsync——首次部署需要手动在远端写入"
+echo "[INFO] env.sh: 已存在则保留；首次部署写入占位符架子，需要在远端手动填："
 echo "[INFO]   BYBIT_API_KEY / BYBIT_API_SECRET"
 echo "[INFO]   BINANCE_API_KEY / BINANCE_API_SECRET   (account mode 已固定 STANDARD)"
