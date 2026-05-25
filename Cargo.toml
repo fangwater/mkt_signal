@@ -73,6 +73,10 @@ name = "order_export"
 path = "src/bin/order_export.rs"
 
 [[bin]]
+name = "order_export_server"
+path = "src/bin/order_export_server.rs"
+
+[[bin]]
 name = "test_minqty"
 path = "src/bin/test_minqty.rs"
 
