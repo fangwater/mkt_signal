@@ -9,15 +9,19 @@ DEPLOY_ROOT_NAME="rolling_metrics"
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/rolling_metrics/deploy_rolling_metrics.sh --open-venue <venue> --hedge-venue <venue> [--dir <path>]
+  scripts/rolling_metrics/deploy_rolling_metrics.sh --open-venue <venue> --hedge-venue <venue>
+                                                   [--target auto|sg|hk|jp] [--dir <path>]
 
 Description:
   - Build rolling_metrics and deploy to:
       $HOME/rolling_metrics/<open-venue>-<hedge-venue>
     (or to --dir if specified)
-  - Pair placement follows the public market-data topology:
+  - Pair placement (--target auto, default) follows the public market-data topology:
       local HK : okex/bybit pairs, plus pairs with binance-futures mirrored to HK
       remote JP: binance/bitget/gate pairs
+  - --target sg: force remote SG deploy (ubuntu@47.131.162.78 + aws-sg.pem).
+                 Use for pairs whose data is fanned out by the SG bridge
+                 (bybit-margin/futures, binance-futures).
   - Process management uses pmdaemon via:
       ./scripts/rolling_metrics/start_rolling_metrics.sh
       ./scripts/rolling_metrics/stop_rolling_metrics.sh
@@ -28,9 +32,8 @@ Description:
 Examples:
   scripts/rolling_metrics/deploy_rolling_metrics.sh --open-venue binance-margin --hedge-venue binance-futures
   scripts/rolling_metrics/deploy_rolling_metrics.sh --open-venue okex-futures --hedge-venue binance-futures
-  scripts/rolling_metrics/deploy_rolling_metrics.sh --open-venue okex-futures --hedge-venue bybit-futures
+  scripts/rolling_metrics/deploy_rolling_metrics.sh --open-venue bybit-futures --hedge-venue binance-futures --target sg
   scripts/rolling_metrics/deploy_rolling_metrics.sh --open-venue bitget-futures --hedge-venue gate-futures
-  scripts/rolling_metrics/deploy_rolling_metrics.sh --open-venue okex-futures --hedge-venue binance-futures --dir "$HOME/rolling_metrics/okex-futures-binance-futures"
 EOF
 }
 
@@ -82,11 +85,27 @@ is_jp_available_venue() {
   return 1
 }
 
+# SG bridge currently fans out bybit-{margin,futures} + binance-futures locally.
+is_sg_available_venue() {
+  local venue="${1,,}"
+  local exchange
+  exchange="$(exchange_of_venue "$venue")"
+  case "$exchange" in
+    bybit)
+      return 0
+      ;;
+    binance)
+      [[ "$venue" == "binance-futures" ]] && return 0
+      ;;
+  esac
+  return 1
+}
+
 deploy_location_for_pair() {
   local open_venue="$1"
   local hedge_venue="$2"
   if is_jp_available_venue "$open_venue" && is_jp_available_venue "$hedge_venue"; then
-    echo "remote"
+    echo "remote-jp"
     return 0
   fi
   if is_hk_available_venue "$open_venue" && is_hk_available_venue "$hedge_venue"; then
@@ -106,6 +125,7 @@ OPEN_VENUE=""
 HEDGE_VENUE=""
 TARGET_DIR=""
 TARGET_DIR_OVERRIDE=0
+TARGET_HOST="auto"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -122,6 +142,10 @@ while [[ $# -gt 0 ]]; do
       TARGET_DIR_OVERRIDE=1
       shift 2
       ;;
+    --target)
+      TARGET_HOST="${2:-}"
+      shift 2
+      ;;
     *)
       echo "[ERROR] unknown option: $1" >&2
       usage >&2
@@ -129,6 +153,13 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+case "${TARGET_HOST,,}" in
+  auto|sg|hk|jp) TARGET_HOST="${TARGET_HOST,,}" ;;
+  *)
+    echo "[ERROR] --target must be one of: auto, sg, hk, jp (got: $TARGET_HOST)" >&2
+    exit 1 ;;
+esac
 
 if [[ -z "$OPEN_VENUE" || -z "$HEDGE_VENUE" ]]; then
   echo "[ERROR] --open-venue and --hedge-venue are required" >&2
@@ -145,15 +176,41 @@ if [[ -z "$TARGET_DIR" ]]; then
   TARGET_DIR="$HOME/$DEPLOY_ROOT_NAME/${OPEN_VENUE}-${HEDGE_VENUE}"
 fi
 
-DEPLOY_LOCATION="$(deploy_location_for_pair "$OPEN_VENUE" "$HEDGE_VENUE" || true)"
+if [[ "$TARGET_HOST" == "auto" ]]; then
+  DEPLOY_LOCATION="$(deploy_location_for_pair "$OPEN_VENUE" "$HEDGE_VENUE" || true)"
+else
+  case "$TARGET_HOST" in
+    sg)
+      if ! is_sg_available_venue "$OPEN_VENUE" || ! is_sg_available_venue "$HEDGE_VENUE"; then
+        echo "[ERROR] --target sg requires both venues to be in SG bridge fan-out (bybit-*, binance-futures)" >&2
+        echo "[ERROR]   got: open=${OPEN_VENUE} hedge=${HEDGE_VENUE}" >&2
+        exit 1
+      fi
+      DEPLOY_LOCATION="remote-sg" ;;
+    jp)
+      if ! is_jp_available_venue "$OPEN_VENUE" || ! is_jp_available_venue "$HEDGE_VENUE"; then
+        echo "[ERROR] --target jp requires both venues in {binance,bitget,gate}-*" >&2
+        exit 1
+      fi
+      DEPLOY_LOCATION="remote-jp" ;;
+    hk)
+      if ! is_hk_available_venue "$OPEN_VENUE" || ! is_hk_available_venue "$HEDGE_VENUE"; then
+        echo "[ERROR] --target hk requires both venues HK-available (okex-*, bybit-*, binance-futures)" >&2
+        exit 1
+      fi
+      DEPLOY_LOCATION="local" ;;
+  esac
+fi
+
 if [[ -z "$DEPLOY_LOCATION" ]]; then
   echo "[ERROR] cannot choose rolling_metrics deploy host for open=${OPEN_VENUE} hedge=${HEDGE_VENUE}" >&2
   echo "[ERROR] available local HK venues: okex-*, bybit-*, binance-futures" >&2
   echo "[ERROR] available remote JP venues: binance-*, bitget-*, gate-*" >&2
+  echo "[ERROR] available remote SG venues: bybit-*, binance-futures (--target sg)" >&2
   exit 1
 fi
 
-if [[ "$DEPLOY_LOCATION" == "remote" && "$TARGET_DIR_OVERRIDE" == "1" ]]; then
+if [[ "$DEPLOY_LOCATION" == remote* && "$TARGET_DIR_OVERRIDE" == "1" ]]; then
   echo "[ERROR] --dir override is not compatible with remote rolling_metrics deploy" >&2
   echo "[ERROR] remote rsync staging is fixed at \$HOME/$DEPLOY_ROOT_NAME/${OPEN_VENUE}-${HEDGE_VENUE}" >&2
   exit 1
@@ -194,12 +251,23 @@ cp "$BIN_PATH" "$tmp_bin"
 chmod +x "$tmp_bin"
 mv -f "$tmp_bin" "$TARGET_DIR/$BIN_NAME"
 
-if [[ "$DEPLOY_LOCATION" == "remote" ]]; then
-  # shellcheck source=../lib/fr_remote_deploy.sh
-  source "$ROOT_DIR/scripts/lib/fr_remote_deploy.sh"
-  fr_remote_init_ssh "$ROOT_DIR"
-  fr_remote_sync_path "$DEPLOY_ROOT_NAME/${OPEN_VENUE}-${HEDGE_VENUE}"
-fi
+case "$DEPLOY_LOCATION" in
+  remote-jp)
+    # shellcheck source=../lib/fr_remote_deploy.sh
+    source "$ROOT_DIR/scripts/lib/fr_remote_deploy.sh"
+    fr_remote_init_ssh "$ROOT_DIR"
+    fr_remote_sync_path "$DEPLOY_ROOT_NAME/${OPEN_VENUE}-${HEDGE_VENUE}"
+    ;;
+  remote-sg)
+    export FR_DEPLOY_HOST="ubuntu@47.131.162.78"
+    export FR_DEPLOY_KEY="${FR_DEPLOY_KEY:-$ROOT_DIR/aws-sg.pem}"
+    export FR_REMOTE_HOME="${FR_REMOTE_HOME:-/home/ubuntu}"
+    # shellcheck source=../lib/fr_remote_deploy.sh
+    source "$ROOT_DIR/scripts/lib/fr_remote_deploy.sh"
+    fr_remote_init_ssh "$ROOT_DIR"
+    fr_remote_sync_path "$DEPLOY_ROOT_NAME/${OPEN_VENUE}-${HEDGE_VENUE}"
+    ;;
+esac
 
 echo "[INFO] deploy finished: $TARGET_DIR"
 echo "[INFO] venues: open=${OPEN_VENUE} hedge=${HEDGE_VENUE}"
@@ -209,7 +277,7 @@ if [[ "$DEPLOY_LOCATION" == "local" ]]; then
   echo "[INFO] stop:  cd $TARGET_DIR && ./scripts/rolling_metrics/stop_rolling_metrics.sh"
   echo "[INFO] logs:  pmdaemon logs rm_<open_tag>_<hedge_tag> --follow"
 else
-  echo "[INFO] location: remote ${FR_DEPLOY_HOST}:${FR_REMOTE_HOME}/$DEPLOY_ROOT_NAME/${OPEN_VENUE}-${HEDGE_VENUE}"
+  echo "[INFO] location: ${DEPLOY_LOCATION} (${FR_DEPLOY_HOST}:${FR_REMOTE_HOME}/$DEPLOY_ROOT_NAME/${OPEN_VENUE}-${HEDGE_VENUE})"
   echo "[INFO] start: ssh ${FR_DEPLOY_HOST} 'cd ${FR_REMOTE_HOME}/$DEPLOY_ROOT_NAME/${OPEN_VENUE}-${HEDGE_VENUE} && ./scripts/rolling_metrics/start_rolling_metrics.sh'"
   echo "[INFO] stop:  ssh ${FR_DEPLOY_HOST} 'cd ${FR_REMOTE_HOME}/$DEPLOY_ROOT_NAME/${OPEN_VENUE}-${HEDGE_VENUE} && ./scripts/rolling_metrics/stop_rolling_metrics.sh'"
   echo "[INFO] logs:  ssh ${FR_DEPLOY_HOST} 'pmdaemon logs rm_<open_tag>_<hedge_tag> --follow'"
