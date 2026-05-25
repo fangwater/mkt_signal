@@ -46,3 +46,9 @@ model/
 
 scripts/gate_full_cleanup_collect.py
 cmd.md
+# latency CSV capture runtime output
+data/latency_csv/
+latency_csv/
+
+# generated deploy/client packages
+dist/

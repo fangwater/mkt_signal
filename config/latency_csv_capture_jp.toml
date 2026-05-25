@@ -1,0 +1,15 @@
+# Client-side CSV capture config for JP. Update ip/out_dir before use.
+instance = "jp"
+ip = "127.0.0.1"
+port = 6370
+# endpoint = "tcp://127.0.0.1:6370"
+topic = "latency."
+out_dir = "data/latency_csv/jp"
+flush_every = 1
+recv_timeout_ms = 1000
+stats_secs = 30
+limit = 0
+include_spread_net = false
+pm2_namespace = "latency_csv_capture"
+pm2_name = "latency_csv_capture-jp"
+rust_log = "info"

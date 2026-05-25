@@ -15,7 +15,7 @@ struct Args {
     /// Fully qualified service path, for example factor_pub/binance-margin/rl_vol
     service: String,
 
-    /// Payload size in bytes. rl_vol uses 256.
+    /// Payload size in bytes. rl_vol uses 256; latency snapshots use 512.
     #[arg(long, default_value_t = 256)]
     payload_size: usize,
 }
@@ -45,9 +45,12 @@ fn main() -> Result<()> {
         64 => inspect_typed::<64>(&local_node, &args.service),
         128 => inspect_typed::<128>(&local_node, &args.service),
         256 => inspect_typed::<256>(&local_node, &args.service),
+        512 => inspect_typed::<512>(&local_node, &args.service),
         1024 => inspect_typed::<1024>(&local_node, &args.service),
         2048 => inspect_typed::<2048>(&local_node, &args.service),
-        other => bail!("unsupported payload_size={other}; supported: 64, 128, 256, 1024, 2048"),
+        other => {
+            bail!("unsupported payload_size={other}; supported: 64, 128, 256, 512, 1024, 2048")
+        }
     }
 }
 
@@ -91,8 +94,6 @@ fn inspect_typed<const SIZE: usize>(node: &Node<ipc::Service>, service_name: &st
     let pubsub = node
         .service_builder(&ServiceName::new(service_name)?)
         .publish_subscribe::<[u8; SIZE]>()
-        .max_publishers(1)
-        .max_subscribers(10)
         .open()
         .with_context(|| {
             format!(
@@ -101,6 +102,16 @@ fn inspect_typed<const SIZE: usize>(node: &Node<ipc::Service>, service_name: &st
             )
         })?;
 
+    print_pubsub_details(&pubsub)
+}
+
+fn print_pubsub_details<const SIZE: usize>(
+    pubsub: &iceoryx2::service::port_factory::publish_subscribe::PortFactory<
+        ipc::Service,
+        [u8; SIZE],
+        (),
+    >,
+) -> Result<()> {
     println!("payload_size={SIZE}");
     println!("max_publishers={}", pubsub.static_config().max_publishers());
     println!(

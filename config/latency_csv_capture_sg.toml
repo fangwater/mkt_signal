@@ -1,0 +1,25 @@
+# Client-side CSV capture config for the SG latency monitor.
+# The start/stop scripts also read instance/pm2_* from this file.
+instance = "sg"
+
+# ZMQ source. endpoint takes precedence if set; otherwise endpoint is built as tcp://<ip>:<port>.
+ip = "47.131.162.78"
+port = 6370
+# endpoint = "tcp://47.131.162.78:6370"
+
+topic = "latency."
+
+# All subscribed topics are written under this root as <out_dir>/<topic>/<YYYYMMDD_HH>.csv.
+out_dir = "data/latency_csv/sg"
+
+flush_every = 1
+recv_timeout_ms = 1000
+stats_secs = 30
+limit = 0
+
+# spread_pbs writes only spread_e2e by default. Set true to also write spread_net.
+include_spread_net = false
+
+pm2_namespace = "latency_csv_capture"
+pm2_name = "latency_csv_capture-sg"
+rust_log = "info"

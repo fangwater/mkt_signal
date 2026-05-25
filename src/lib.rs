@@ -11,6 +11,7 @@ pub mod factor_pub;
 pub mod fr_signal_dashboard;
 pub mod funding_rate;
 pub mod kline_pub;
+pub mod latency_stable_monitor;
 pub mod market_maker;
 pub mod mkt_pub;
 pub mod parser;

@@ -85,6 +85,14 @@ name = "ipc_bridge"
 path = "src/bin/ipc_bridge.rs"
 
 [[bin]]
+name = "latency_stable_monitor"
+path = "src/bin/latency_stable_monitor.rs"
+
+[[bin]]
+name = "latency_csv_capture"
+path = "src/bin/latency_csv_capture.rs"
+
+[[bin]]
 name = "demo_qty_alignment"
 path = "src/bin/demo_qty_alignment.rs"
 
@@ -151,12 +159,20 @@ name = "iceoryx_dead_nodes_cleanup"
 path = "src/bin/iceoryx_dead_nodes_cleanup.rs"
 
 [[bin]]
+name = "iceoryx_remove_node_from_service"
+path = "src/bin/iceoryx_remove_node_from_service.rs"
+
+[[bin]]
 name = "inspect_rl_vol"
 path = "src/bin/inspect_rl_vol.rs"
 
 [[bin]]
 name = "inspect_iceoryx_service"
 path = "src/bin/inspect_iceoryx_service.rs"
+
+[[bin]]
+name = "inspect_latency_snapshot"
+path = "src/bin/inspect_latency_snapshot.rs"
 
 [[bin]]
 name = "inspect_model_output"

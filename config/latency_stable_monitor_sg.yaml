@@ -1,0 +1,34 @@
+# SG latency stable monitor.
+# One process, one ZMQ PUB socket, multiple IPC latency snapshot subscriptions.
+# ZMQ publishes multipart messages:
+#   frame 0: topic
+#   frame 1: raw 512B LatencySnapshotMsg payload, unchanged from IPC
+
+zmq:
+  bind: "tcp://0.0.0.0:6370"
+  sndhwm: 10000
+
+poll_ms: 20
+reconnect_ms: 1000
+idle_log_secs: 30
+stats_log_secs: 30
+
+public:
+  spread_pbs:
+    - name: bybit_margin_spread
+      venue: bybit-margin
+      # service default: spread_pbs/bybit-margin/latency
+      # topic default: latency.public.spread_pbs.bybit-margin
+    - name: bybit_futures_spread
+      venue: bybit-futures
+      # service default: spread_pbs/bybit-futures/latency
+      # topic default: latency.public.spread_pbs.bybit-futures
+
+private:
+  trade_engine:
+    - name: bybit_intra_arb01_te
+      namespace: bybit_intra_arb01
+      exchange: bybit
+      # service default: bybit_intra_arb01/te_pubs/bybit/latency
+      # topic default intentionally only includes namespace:
+      #   latency.private.te.bybit_intra_arb01
