@@ -367,9 +367,31 @@ impl BridgeApp {
             });
         }
 
-        tokio::signal::ctrl_c().await?;
-        info!("ipc_bridge shutdown");
+        let shutdown_signal = wait_shutdown_signal().await?;
+        info!("ipc_bridge shutdown: {}", shutdown_signal);
         Ok(())
+    }
+}
+
+async fn wait_shutdown_signal() -> Result<&'static str> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        let mut sigterm = signal(SignalKind::terminate())?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => {
+                result?;
+                Ok("SIGINT")
+            }
+            _ = sigterm.recv() => Ok("SIGTERM"),
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await?;
+        Ok("SIGINT")
     }
 }
 

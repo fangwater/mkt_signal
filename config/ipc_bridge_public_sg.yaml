@@ -1,0 +1,74 @@
+# Standalone public bridge config (SG side).
+#
+# Responsibilities:
+# - Local Bybit market-data fan-out on SG:
+#     dat_pbs/bybit-*/... -> bridge/bybit-*/...
+# - Ingest HK-relayed Binance futures model output:
+#     model_output/binance_futures_direction_model
+#
+# Notes:
+# - This config is intentionally public/global only; it does not use IPC_NAMESPACE.
+# - The model route id must match HK's outgoing route id.
+
+routes:
+  # -----------------------------
+  # Local Bybit market-data fan-out
+  # -----------------------------
+  - id: public_local_bybit_margin_ask_bid
+    from:
+      type: ipc
+      endpoint: "dat_pbs/bybit-margin/ask_bid_spread"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/bybit-margin/ask_bid_spread"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 100
+      subscriber_max_buffer_size: 8192
+
+  - id: public_local_bybit_futures_ask_bid
+    from:
+      type: ipc
+      endpoint: "dat_pbs/bybit-futures/ask_bid_spread"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/bybit-futures/ask_bid_spread"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 100
+      subscriber_max_buffer_size: 8192
+
+  - id: public_local_bybit_futures_derivatives
+    from:
+      type: ipc
+      endpoint: "dat_pbs/bybit-futures/derivatives"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/bybit-futures/derivatives"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 50
+      subscriber_max_buffer_size: 8192
+
+  # ----------------------------------------
+  # HK -> SG model output ingest
+  # ----------------------------------------
+  - id: public_binance_futures_direction_model_output_sg
+    from:
+      type: zmq
+      endpoint: "tcp://0.0.0.0:6360"
+      size: 2048
+    to:
+      type: ipc
+      endpoint: "model_output/binance_futures_direction_model"
+      size: 2048
+      max_publishers: 1
+      max_subscribers: 10
+      history_size: 128
+      subscriber_max_buffer_size: 256

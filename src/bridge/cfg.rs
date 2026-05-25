@@ -279,9 +279,12 @@ routes:
             .expect("load public jp bridge config");
         let hk = BridgeConfig::load_from_file(root.join("config/ipc_bridge_public_hk.yaml"))
             .expect("load public hk bridge config");
+        let sg = BridgeConfig::load_from_file(root.join("config/ipc_bridge_public_sg.yaml"))
+            .expect("load public sg bridge config");
 
         assert!(!jp.routes.is_empty());
         assert!(!hk.routes.is_empty());
+        assert!(!sg.routes.is_empty());
     }
 
     #[test]
@@ -306,5 +309,30 @@ routes:
             .collect();
 
         assert_eq!(jp_outgoing, hk_incoming);
+    }
+
+    #[test]
+    fn public_cross_host_route_ids_match_between_hk_and_sg() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let hk = BridgeConfig::load_from_file(root.join("config/ipc_bridge_public_hk.yaml"))
+            .expect("load public hk bridge config");
+        let sg = BridgeConfig::load_from_file(root.join("config/ipc_bridge_public_sg.yaml"))
+            .expect("load public sg bridge config");
+
+        let hk_to_sg: HashSet<String> = hk
+            .routes
+            .iter()
+            .filter(|r| r.from.kind == EndpointType::Ipc && r.to.kind == EndpointType::Zmq)
+            .filter(|r| r.to.endpoint.contains("47.131.162.78"))
+            .map(|r| r.id.clone())
+            .collect();
+        let sg_incoming: HashSet<String> = sg
+            .routes
+            .iter()
+            .filter(|r| r.from.kind == EndpointType::Zmq && r.to.kind == EndpointType::Ipc)
+            .map(|r| r.id.clone())
+            .collect();
+
+        assert_eq!(hk_to_sg, sg_incoming);
     }
 }

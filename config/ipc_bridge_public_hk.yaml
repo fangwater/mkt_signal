@@ -32,20 +32,6 @@ routes:
       history_size: 100
       subscriber_max_buffer_size: 8192
 
-  - id: public_local_okex_margin_derivatives
-    from:
-      type: ipc
-      endpoint: "dat_pbs/okex-margin/derivatives"
-      size: 128
-    to:
-      type: ipc
-      endpoint: "bridge/okex-margin/derivatives"
-      size: 128
-      max_publishers: 1
-      max_subscribers: 64
-      history_size: 50
-      subscriber_max_buffer_size: 8192
-
   - id: public_local_okex_futures_ask_bid
     from:
       type: ipc
@@ -86,20 +72,6 @@ routes:
       max_publishers: 1
       max_subscribers: 64
       history_size: 100
-      subscriber_max_buffer_size: 8192
-
-  - id: public_local_bybit_margin_derivatives
-    from:
-      type: ipc
-      endpoint: "dat_pbs/bybit-margin/derivatives"
-      size: 128
-    to:
-      type: ipc
-      endpoint: "bridge/bybit-margin/derivatives"
-      size: 128
-      max_publishers: 1
-      max_subscribers: 64
-      history_size: 50
       subscriber_max_buffer_size: 8192
 
   - id: public_local_bybit_futures_ask_bid
@@ -203,3 +175,16 @@ routes:
       max_subscribers: 10
       history_size: 128
       subscriber_max_buffer_size: 256
+
+  # HK -> SG relay: subscribe to locally-republished JP model_output, PUSH to SG.
+  # SG's matching incoming route lives in config/ipc_bridge_public_sg.yaml.
+  - id: public_binance_futures_direction_model_output_sg
+    from:
+      type: ipc
+      endpoint: "model_output/binance_futures_direction_model"
+      size: 2048
+    to:
+      type: zmq
+      endpoint: "tcp://47.131.162.78:6360"
+      size: 2048
+
