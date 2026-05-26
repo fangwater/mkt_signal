@@ -5,15 +5,17 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use axum::body::Body;
-use axum::extract::{Path as AxumPath, State as AxumState};
+use axum::extract::{Path as AxumPath, Query as AxumQuery, State as AxumState};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, TimeZone, Timelike, Utc};
 use clap::Parser;
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use log::{error, info, warn};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::fs as async_fs;
 use tokio::sync::Mutex;
 
@@ -57,6 +59,7 @@ struct Args {
 #[derive(Clone)]
 struct AppState {
     cache_dir: Arc<PathBuf>,
+    persist_dir: Arc<PathBuf>,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -107,12 +110,14 @@ async fn main() -> Result<()> {
 
     let state = AppState {
         cache_dir: cache_dir_arc,
+        persist_dir: Arc::new(persist_dir.clone()),
     };
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/latest", get(get_latest))
         .route("/snapshots", get(list_snapshots))
         .route("/snapshots/:name/:file", get(get_snapshot_file))
+        .route("/export", get(get_export))
         .with_state(state);
 
     let addr: SocketAddr = format!("{}:{}", args.bind, args.port).parse()?;
@@ -163,24 +168,17 @@ async fn run_scheduler(
     }
 }
 
-/// Returns the next firing instant: next minute boundary + 1 second.
+/// Returns the next firing instant: next hour boundary + 1 minute.
 fn next_tick_at(now: DateTime<Utc>) -> DateTime<Utc> {
-    let next_minute_start = Utc
-        .with_ymd_and_hms(
-            now.year(),
-            now.month(),
-            now.day(),
-            now.hour(),
-            now.minute(),
-            0,
-        )
+    let next_hour_start = Utc
+        .with_ymd_and_hms(now.year(), now.month(), now.day(), now.hour(), 0, 0)
         .single()
         .unwrap_or(now)
-        + ChronoDuration::minutes(1);
-    next_minute_start + ChronoDuration::seconds(1)
+        + ChronoDuration::hours(1);
+    next_hour_start + ChronoDuration::minutes(1)
 }
 
-/// Window = [end_minute - 1h, end_minute) where end_minute = current minute floor.
+/// Window = [previous full hour, current full hour). At HH:01 we export the just-ended hour.
 fn window_bounds(fire_ts: DateTime<Utc>) -> (DateTime<Utc>, DateTime<Utc>) {
     let end = Utc
         .with_ymd_and_hms(
@@ -188,7 +186,7 @@ fn window_bounds(fire_ts: DateTime<Utc>) -> (DateTime<Utc>, DateTime<Utc>) {
             fire_ts.month(),
             fire_ts.day(),
             fire_ts.hour(),
-            fire_ts.minute(),
+            0,
             0,
         )
         .single()
@@ -420,4 +418,110 @@ fn is_valid_snapshot_name(name: &str) -> bool {
 fn internal_err(err: anyhow::Error) -> Response {
     error!("internal error: {err:#}");
     (StatusCode::INTERNAL_SERVER_ERROR, format!("{err}")).into_response()
+}
+
+#[derive(Deserialize)]
+struct ExportParams {
+    start: String,
+    end: String,
+}
+
+/// Ad-hoc export: takes start/end (ISO8601 / RFC3339), runs export_window_to_dir against a
+/// temp directory, and returns the three parquet files packaged as a single tar.gz.
+async fn get_export(
+    AxumState(state): AxumState<AppState>,
+    AxumQuery(params): AxumQuery<ExportParams>,
+) -> Response {
+    let start = match DateTime::parse_from_rfc3339(&params.start) {
+        Ok(dt) => dt.with_timezone(&Utc),
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("invalid start: {err} (expect RFC3339, e.g. 2026-05-26T00:00:00Z)"),
+            )
+                .into_response()
+        }
+    };
+    let end = match DateTime::parse_from_rfc3339(&params.end) {
+        Ok(dt) => dt.with_timezone(&Utc),
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("invalid end: {err} (expect RFC3339, e.g. 2026-05-26T01:00:00Z)"),
+            )
+                .into_response()
+        }
+    };
+    if end <= start {
+        return (StatusCode::BAD_REQUEST, "end must be > start").into_response();
+    }
+    let start_us = match u64::try_from(start.timestamp_micros()) {
+        Ok(v) => v,
+        Err(_) => return (StatusCode::BAD_REQUEST, "start before unix epoch").into_response(),
+    };
+    let end_us = match u64::try_from(end.timestamp_micros()) {
+        Ok(v) => v,
+        Err(_) => return (StatusCode::BAD_REQUEST, "end before unix epoch").into_response(),
+    };
+
+    let name = snapshot_dir_name(start, end);
+    let tmp_dir = state
+        .cache_dir
+        .join(format!(".export.{}.{}", std::process::id(), name));
+    // Defensive: ensure tmp dir is fresh.
+    let _ = async_fs::remove_dir_all(&tmp_dir).await;
+
+    let persist_dir = state.persist_dir.as_path().to_path_buf();
+    let tmp_dir_for_blocking = tmp_dir.clone();
+    let name_for_blocking = name.clone();
+    let blocking = tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
+        let cf_names = persist_manager::required_column_families();
+        let tuning = persist_manager::default_tuning();
+        let store = RocksDbStore::open_read_only_with_tuning(
+            &persist_dir.to_string_lossy(),
+            &cf_names,
+            &tuning,
+        )?;
+        export_window_to_dir(&store, &tmp_dir_for_blocking, start_us, end_us)?;
+        pack_tar_gz(&tmp_dir_for_blocking, &name_for_blocking)
+    })
+    .await;
+
+    // Always clean up the tmp dir regardless of outcome.
+    let cleanup_path = tmp_dir.clone();
+    let _ = async_fs::remove_dir_all(&cleanup_path).await;
+
+    let body_bytes = match blocking {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(err)) => return internal_err(err),
+        Err(join_err) => return internal_err(anyhow!("spawn_blocking join: {join_err}")),
+    };
+
+    let filename = format!("order_export_{}.tar.gz", name);
+    let len = body_bytes.len();
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/gzip")
+        .header(header::CONTENT_LENGTH, len)
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{}\"", filename),
+        )
+        .body(Body::from(body_bytes))
+        .unwrap()
+}
+
+/// Build a tar.gz of `src_dir`, placing entries under `top_dir/` inside the archive.
+fn pack_tar_gz(src_dir: &Path, top_dir: &str) -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    {
+        let gz = GzEncoder::new(&mut buf, Compression::default());
+        let mut tar_builder = tar::Builder::new(gz);
+        tar_builder
+            .append_dir_all(top_dir, src_dir)
+            .with_context(|| format!("tar append_dir_all {} -> {}", src_dir.display(), top_dir))?;
+        let gz = tar_builder.into_inner().context("tar finish")?;
+        gz.finish().context("gzip finish")?;
+    }
+    Ok(buf)
 }
