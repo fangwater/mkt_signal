@@ -8,19 +8,22 @@ BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/deploy_latency_stable_monitor.sh --env <sg> [--target-dir <path>] [--scripts-only|--bin-only]
+  scripts/deploy_latency_stable_monitor.sh --env <sg|hk> [--target-dir <path>] [--scripts-only|--bin-only]
 
 Behavior:
   - Deploys one latency_stable_monitor process config for the target env.
-  - Currently supported env: sg
+  - Currently supported env: sg, hk
   - Default target dir:
       sg -> $HOME/latency_stable_monitor_sg
+      hk -> $HOME/latency_stable_monitor_hk
   - Default config template:
       sg -> config/latency_stable_monitor_sg.yaml
+      hk -> config/latency_stable_monitor_hk.yaml
 
 Examples:
   bash scripts/deploy_latency_stable_monitor.sh --env sg
-  bash scripts/deploy_latency_stable_monitor.sh --env sg --target-dir "$HOME/latency_stable_monitor_sg"
+  bash scripts/deploy_latency_stable_monitor.sh --env hk
+  bash scripts/deploy_latency_stable_monitor.sh --env hk --target-dir "$HOME/latency_stable_monitor_hk"
 USAGE
 }
 
@@ -88,10 +91,10 @@ fi
 
 ENV_TAG="$(echo "$ENV_TAG" | tr 'A-Z' 'a-z')"
 case "$ENV_TAG" in
-  sg)
+  sg|hk)
     ;;
   *)
-    echo "[ERROR] unsupported env: $ENV_TAG (currently only sg)" >&2
+    echo "[ERROR] unsupported env: $ENV_TAG (supported: sg, hk)" >&2
     exit 1
     ;;
 esac

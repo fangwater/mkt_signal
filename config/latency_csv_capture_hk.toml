@@ -1,8 +1,11 @@
-# Client-side CSV capture config for HK. Update ip/out_dir before use.
+# Client-side CSV capture config for the HK latency monitor.
+# The start/stop scripts also read instance/pm2_* from this file.
 instance = "hk"
-ip = "127.0.0.1"
+
+# ZMQ source. endpoint takes precedence if set; otherwise endpoint is built as tcp://<ip>:<port>.
+ip = "47.238.128.48"
 port = 6370
-# endpoint = "tcp://127.0.0.1:6370"
+# endpoint = "tcp://47.238.128.48:6370"
 topic = "latency."
 out_dir = "data/latency_csv/hk"
 flush_every = 1

@@ -1,0 +1,34 @@
+# HK latency stable monitor.
+# One process, one ZMQ PUB socket, multiple IPC latency snapshot subscriptions.
+# ZMQ publishes multipart messages:
+#   frame 0: topic
+#   frame 1: raw 512B LatencySnapshotMsg payload, unchanged from IPC
+
+zmq:
+  bind: "tcp://0.0.0.0:6370"
+  sndhwm: 10000
+
+poll_ms: 20
+reconnect_ms: 1000
+idle_log_secs: 30
+stats_log_secs: 30
+
+public:
+  spread_pbs:
+    - name: okex_margin_spread
+      venue: okex-margin
+      # service default: spread_pbs/okex-margin/latency
+      # topic default: latency.public.spread_pbs.okex-margin
+    - name: okex_futures_spread
+      venue: okex-futures
+      # service default: spread_pbs/okex-futures/latency
+      # topic default: latency.public.spread_pbs.okex-futures
+
+private:
+  trade_engine:
+    - name: okex_intra_arb01_te
+      namespace: okex_intra_arb01
+      exchange: okex
+      # service default: okex_intra_arb01/te_pubs/okex/latency
+      # topic default intentionally only includes namespace:
+      #   latency.private.te.okex_intra_arb01
