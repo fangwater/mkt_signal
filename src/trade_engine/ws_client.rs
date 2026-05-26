@@ -1420,32 +1420,42 @@ impl TradeWsClient {
         let req_id = transport_id.to_string();
         let timestamp_ms = chrono::Utc::now().timestamp_millis();
 
-        let payload = match msg.req_type {
+        match msg.req_type {
             TradeRequestType::BybitNewMarginOrder | TradeRequestType::BybitNewUMOrder => {
-                BybitNewOrderRequest {
+                let payload = BybitNewOrderRequest {
                     header,
                     params: msg.params.clone(),
                 }
                 .to_ws_json(&req_id, timestamp_ms)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "failed to build bybit ws payload (req_type={:?}, client_order_id={})",
+                        msg.req_type,
+                        msg.client_order_id
+                    )
+                })?;
+                serde_json::to_string(&payload).with_context(|| "serialize bybit ws payload")
             }
             TradeRequestType::BybitCancelMarginOrder | TradeRequestType::BybitCancelUMOrder => {
                 BybitCancelOrderRequest {
                     header,
                     params: msg.params.clone(),
                 }
-                .to_ws_json(&req_id, timestamp_ms)
+                .to_ws_json_string(&req_id, timestamp_ms)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "failed to build bybit ws payload (req_type={:?}, client_order_id={})",
+                        msg.req_type,
+                        msg.client_order_id
+                    )
+                })
             }
-            _ => None,
-        }
-        .ok_or_else(|| {
-            anyhow!(
+            _ => Err(anyhow!(
                 "failed to build bybit ws payload (req_type={:?}, client_order_id={})",
                 msg.req_type,
                 msg.client_order_id
-            )
-        })?;
-
-        serde_json::to_string(&payload).with_context(|| "serialize bybit ws payload")
+            )),
+        }
     }
 
     async fn build_okex_payload(

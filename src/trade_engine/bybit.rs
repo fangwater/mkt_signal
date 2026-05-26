@@ -1,6 +1,7 @@
 use std::convert::TryFrom;
 
 use bytes::{BufMut, Bytes, BytesMut};
+use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::common::bybit_account_msg::BybitBasicOrderMsg;
@@ -10,6 +11,45 @@ use crate::pre_trade::order_manager::{OrderType, Side};
 use super::trade_request::{TradeRequestHeader, TradeRequestType};
 
 const DEFAULT_RECV_WINDOW_MS: i64 = 5_000;
+
+#[derive(Clone, Copy)]
+struct JsonI64String(i64);
+
+impl Serialize for JsonI64String {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.collect_str(&self.0)
+    }
+}
+
+#[derive(Serialize)]
+struct BybitWsHeaderJson {
+    #[serde(rename = "X-BAPI-TIMESTAMP")]
+    timestamp_ms: JsonI64String,
+    #[serde(rename = "X-BAPI-RECV-WINDOW")]
+    recv_window_ms: JsonI64String,
+}
+
+#[derive(Serialize)]
+struct BybitCancelArgJson<'a> {
+    category: &'static str,
+    symbol: &'a str,
+    #[serde(rename = "orderLinkId")]
+    order_link_id: JsonI64String,
+    #[serde(rename = "orderFilter", skip_serializing_if = "Option::is_none")]
+    order_filter: Option<&'static str>,
+}
+
+#[derive(Serialize)]
+struct BybitCancelPayloadJson<'a> {
+    #[serde(rename = "reqId")]
+    req_id: &'a str,
+    header: BybitWsHeaderJson,
+    op: &'static str,
+    args: [BybitCancelArgJson<'a>; 1],
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BybitCategory {
@@ -122,6 +162,14 @@ impl BybitCancelOrderParams {
     }
 
     pub fn from_bytes(raw: &[u8]) -> Option<Self> {
+        let (order_link_id, symbol) = Self::decode_raw(raw)?;
+        Some(Self {
+            symbol: symbol.to_string(),
+            order_link_id,
+        })
+    }
+
+    fn decode_raw(raw: &[u8]) -> Option<(i64, &str)> {
         if raw.len() < Self::MIN_BIN_LEN {
             return None;
         }
@@ -131,10 +179,7 @@ impl BybitCancelOrderParams {
             return None;
         }
         let symbol = std::str::from_utf8(&raw[9..9 + symbol_len]).ok()?;
-        Some(Self {
-            symbol: symbol.to_string(),
-            order_link_id,
-        })
+        Some((order_link_id, symbol))
     }
 }
 
@@ -323,6 +368,34 @@ impl BybitCancelOrderRequest {
 
     pub fn params_struct(&self) -> Option<BybitCancelOrderParams> {
         BybitCancelOrderParams::from_bytes(&self.params)
+    }
+
+    pub fn to_ws_json_string(&self, req_id: &str, timestamp_ms: i64) -> Option<String> {
+        let req_type = TradeRequestType::try_from(self.header.msg_type).ok()?;
+        let category = bybit_category_for_req(req_type)?;
+        let (order_link_id, symbol) = BybitCancelOrderParams::decode_raw(&self.params)?;
+        let order_filter = if req_type == TradeRequestType::BybitCancelMarginOrder {
+            Some("Order")
+        } else {
+            None
+        };
+        let payload = BybitCancelPayloadJson {
+            req_id,
+            header: BybitWsHeaderJson {
+                timestamp_ms: JsonI64String(timestamp_ms),
+                recv_window_ms: JsonI64String(DEFAULT_RECV_WINDOW_MS),
+            },
+            op: "order.cancel",
+            args: [BybitCancelArgJson {
+                category: category.as_str(),
+                symbol,
+                order_link_id: JsonI64String(order_link_id),
+                order_filter,
+            }],
+        };
+        let mut out = Vec::with_capacity(192 + req_id.len() + symbol.len());
+        serde_json::to_writer(&mut out, &payload).ok()?;
+        String::from_utf8(out).ok()
     }
 }
 
@@ -613,6 +686,49 @@ mod tests {
         assert_eq!(payload["op"], json!("order.cancel"));
         assert_eq!(arg["category"], json!("linear"));
         assert_eq!(arg["orderLinkId"], json!("42"));
+    }
+
+    #[test]
+    fn bybit_cancel_payload_fast_path_matches_json_shape() {
+        let params = BybitCancelOrderParams {
+            symbol: "BTCUSDT".to_string(),
+            order_link_id: 42,
+        };
+        let req = BybitCancelOrderRequest::create_um(1, 100, params).unwrap();
+        let payload: Value =
+            serde_json::from_str(&req.to_ws_json_string("789", 1_711_001_595_207).unwrap())
+                .unwrap();
+        let arg = payload["args"].as_array().unwrap().first().unwrap();
+
+        assert_eq!(payload["reqId"], json!("789"));
+        assert_eq!(payload["op"], json!("order.cancel"));
+        assert_eq!(
+            payload["header"]["X-BAPI-TIMESTAMP"],
+            json!("1711001595207")
+        );
+        assert_eq!(payload["header"]["X-BAPI-RECV-WINDOW"], json!("5000"));
+        assert_eq!(arg["category"], json!("linear"));
+        assert_eq!(arg["symbol"], json!("BTCUSDT"));
+        assert_eq!(arg["orderLinkId"], json!("42"));
+        assert!(arg.get("orderFilter").is_none());
+    }
+
+    #[test]
+    fn bybit_margin_cancel_fast_path_keeps_order_filter() {
+        let params = BybitCancelOrderParams {
+            symbol: "ETHUSDT".to_string(),
+            order_link_id: 43,
+        };
+        let req = BybitCancelOrderRequest::create_margin(1, 101, params).unwrap();
+        let payload: Value =
+            serde_json::from_str(&req.to_ws_json_string("790", 1_711_001_595_208).unwrap())
+                .unwrap();
+        let arg = payload["args"].as_array().unwrap().first().unwrap();
+
+        assert_eq!(arg["category"], json!("spot"));
+        assert_eq!(arg["symbol"], json!("ETHUSDT"));
+        assert_eq!(arg["orderLinkId"], json!("43"));
+        assert_eq!(arg["orderFilter"], json!("Order"));
     }
 
     #[test]
