@@ -9,7 +9,7 @@ use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info, warn};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -34,9 +34,16 @@ const DERIVATIVES_DRAIN_BUDGET: usize = 1024;
 const DECISION_QUOTE_AGE_KLL_CAPACITY: usize = 10_000;
 const DECISION_QUOTE_AGE_KLL_MAX_WINDOW: Duration = Duration::from_secs(60);
 
+/// BBO 触发抑制阈值（µs）：仅在 open/hedge 双腿都是 bybit 的 intra arb 环境下生效。
+/// 老于该阈值的 BBO 仍会更新本地 quote 缓存，但不会 mark_dirty 触发决策。
+const BYBIT_INTRA_BBO_STALE_GATE_US: i64 = 3000;
+
 // Thread-local 单例存储
 thread_local! {
     static MKT_CHANNEL: RefCell<Option<MktChannelInner>> = const { RefCell::new(None) };
+    /// 当前进程对 bybit BBO 应用的 stale gate（µs）。0 = 关闭。
+    /// 由 init_singleton_with_mode 在判断 venue pair 后写入。
+    static BYBIT_BBO_STALE_GATE_US: Cell<i64> = const { Cell::new(0) };
 }
 
 fn build_node_name(slug: &str, suffix: &str) -> String {
@@ -295,6 +302,15 @@ fn process_askbid_payload(
         *stats_total_msgs += 1;
         *stats_last_symbol = sym.clone();
         stats_unique_symbols.insert(sym.clone());
+
+        let gate_us = BYBIT_BBO_STALE_GATE_US.with(|c| c.get());
+        if gate_us > 0 && timestamp > 0 {
+            let age_us = get_timestamp_us().saturating_sub(timestamp);
+            if age_us > gate_us {
+                return;
+            }
+        }
+
         mark_dirty_symbol(&sym, dirty_symbols, dirty_set);
     }
 }
@@ -395,6 +411,18 @@ impl MktChannel {
     ) -> Result<()> {
         let open_slug = open_venue.data_pub_slug();
         let hedge_slug = hedge_venue.data_pub_slug();
+
+        let is_bybit_intra = open_venue.trade_engine_exchange() == "bybit"
+            && hedge_venue.trade_engine_exchange() == "bybit"
+            && open_venue != hedge_venue;
+        let gate_us = if is_bybit_intra { BYBIT_INTRA_BBO_STALE_GATE_US } else { 0 };
+        BYBIT_BBO_STALE_GATE_US.with(|c| c.set(gate_us));
+        if gate_us > 0 {
+            info!(
+                "MktChannel bybit intra BBO stale gate enabled: {}us (open={:?}, hedge={:?})",
+                gate_us, open_venue, hedge_venue
+            );
+        }
 
         // ask_bid_spread 全部走独立的 spread_pbs 通道（MM/Arb/Dashboard 一致）
         let open_service = format!("spread_pbs/{}/ask_bid_spread", open_slug);
