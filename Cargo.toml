@@ -93,6 +93,10 @@ name = "latency_csv_capture"
 path = "src/bin/latency_csv_capture.rs"
 
 [[bin]]
+name = "latency_collector"
+path = "src/bin/latency_collector.rs"
+
+[[bin]]
 name = "demo_qty_alignment"
 path = "src/bin/demo_qty_alignment.rs"
 
