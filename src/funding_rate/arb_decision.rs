@@ -6,6 +6,7 @@ use iceoryx2::service::ipc;
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::OnceLock;
 use std::thread::LocalKey;
 use std::time::{Duration, Instant};
 
@@ -15,7 +16,9 @@ use crate::common::iceoryx_publisher::SignalPublisher;
 use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
 use crate::common::ipc_service_name::build_service_name;
 use crate::common::redis_client::RedisSettings;
-use crate::common::symbol_util::normalize_symbol_for_venue;
+use crate::common::symbol_util::{min_qty_symbol_key, normalize_symbol_for_venue};
+use crate::common::tick_math::QuantizedValue;
+use crate::market_maker::order_align::align_order_for_venue;
 use crate::common::time_util::get_timestamp_us;
 use crate::funding_rate::FundingRatePeriod;
 use crate::pre_trade::order_manager::Side;
@@ -1646,6 +1649,28 @@ fn resolve_arb_hedge_build_params(
     }
 }
 
+/// 全局开关：env `ARB_HEDGE_FORCE_TAKER=1` 时，arb hedge 始终以 taker 报单
+/// （price=0、offset=0、exp_time=0），且跳过 model/factor lookup + offset plan。
+/// 进程启动时读一次，缓存在 OnceLock。
+static ARB_HEDGE_FORCE_TAKER: OnceLock<bool> = OnceLock::new();
+
+fn arb_hedge_force_taker() -> bool {
+    *ARB_HEDGE_FORCE_TAKER.get_or_init(|| {
+        let enabled = std::env::var("ARB_HEDGE_FORCE_TAKER")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "True" | "on" | "ON"))
+            .unwrap_or(false);
+        if enabled {
+            log::warn!(
+                "ARB_HEDGE_FORCE_TAKER=on: arb hedge will always submit as taker \
+                 (price=0, offset=0, exp_time=0); model + offset plan bypassed"
+            );
+        }
+        enabled
+    })
+}
+
 fn should_use_arb_hedge_taker(
     weighted_inventory_price: f64,
     bid: f64,
@@ -1686,6 +1711,130 @@ fn cap_arb_hedge_due_qty_by_amount_u(due_hedge_qty: f64, mid_price: f64, amount_
     }
 }
 
+/// Fast path for `ARB_HEDGE_FORCE_TAKER=on`: skip model/factor lookup and offset
+/// plan entirely, just align qty for the hedge venue and publish a taker ArbHedge
+/// signal (price=0, offset=0, exp_time=0).
+fn emit_arb_taker_hedge_fast(
+    source: &'static str,
+    runtime: &ArbShellRuntime,
+    query: &ArbHedgeSignalQueryMsg,
+    symbol: &str,
+    quote: &Quote,
+    hedge_venue: TradingVenue,
+) {
+    let hedge_side = if query.due_hedge_qty >= 0.0 {
+        Side::Sell
+    } else {
+        Side::Buy
+    };
+    let mid_price = Bbo::new(quote.bid, quote.ask, quote.ts)
+        .get_mid_price()
+        .unwrap_or_else(|| ((quote.bid + quote.ask) * 0.5).max(0.0));
+    if !(mid_price.is_finite() && mid_price > 0.0) {
+        log::warn!(
+            "{source}: ArbHedge force-taker invalid mid_price strategy_id={} symbol={} bid={} ask={}",
+            query.strategy_id, symbol, quote.bid, quote.ask
+        );
+        return;
+    }
+
+    let amount_cap_u = ArbDecision::with_state_mut(|arb| arb.resolve_order_amount_u(symbol))
+        .unwrap_or(f64::INFINITY);
+    let capped_due_hedge_qty =
+        cap_arb_hedge_due_qty_by_amount_u(query.due_hedge_qty, mid_price, amount_cap_u);
+    if capped_due_hedge_qty.abs() <= 1e-12 {
+        log::debug!(
+            "{source}: ArbHedge force-taker capped qty zero strategy_id={} symbol={}",
+            query.strategy_id, symbol
+        );
+        return;
+    }
+
+    let table = if hedge_venue == runtime.venues.0 {
+        &runtime.open_min_qty_table
+    } else {
+        &runtime.hedge_min_qty_table
+    };
+    let trade_symbol = normalize_symbol_for_venue(symbol, hedge_venue);
+    let symbol_key = min_qty_symbol_key(hedge_venue, &trade_symbol);
+    let qty_tick = table.step_size(&symbol_key).unwrap_or(0.0);
+    if !(qty_tick.is_finite() && qty_tick > 0.0) {
+        log::warn!(
+            "{source}: ArbHedge force-taker missing qty_tick strategy_id={} symbol={} venue={:?} symbol_key={}",
+            query.strategy_id, symbol, hedge_venue, symbol_key
+        );
+        return;
+    }
+    let price_for_notional = match hedge_side {
+        Side::Buy => quote.ask,
+        Side::Sell => quote.bid,
+    };
+    let aligned_qty = match align_order_for_venue(
+        hedge_venue,
+        &symbol_key,
+        capped_due_hedge_qty.abs(),
+        price_for_notional.max(mid_price),
+        table,
+    ) {
+        Ok((qty, _)) => qty,
+        Err(err) => {
+            log::warn!(
+                "{source}: ArbHedge force-taker align failed strategy_id={} symbol={} target_qty={:.8} err={}",
+                query.strategy_id, symbol, capped_due_hedge_qty.abs(), err
+            );
+            return;
+        }
+    };
+    if !(aligned_qty.is_finite() && aligned_qty > 0.0) {
+        log::info!(
+            "{source}: ArbHedge force-taker zero aligned_qty strategy_id={} symbol={} target_qty={:.8}",
+            query.strategy_id, symbol, capped_due_hedge_qty.abs()
+        );
+        return;
+    }
+    let Some(amount_qv) = QuantizedValue::encode_floor(aligned_qty, qty_tick) else {
+        log::warn!(
+            "{source}: ArbHedge force-taker amount_qv encode failed strategy_id={} symbol={} qty={:.8} qty_tick={:.8}",
+            query.strategy_id, symbol, aligned_qty, qty_tick
+        );
+        return;
+    };
+
+    let now_us = get_timestamp_us();
+    let mut ctx = ArbHedgeCtx::new();
+    ctx.strategy_id = query.strategy_id;
+    ctx.set_side(hedge_side);
+    ctx.hedging_leg = TradingLeg::new(hedge_venue, quote.bid, quote.ask, quote.ts);
+    ctx.set_hedging_symbol(symbol);
+    ctx.price_qv = QuantizedValue::zero();
+    ctx.amount_qv = amount_qv;
+    ctx.price_offset = 0.0;
+    ctx.signal_ts = now_us;
+    ctx.exp_time = 0;
+    ctx.request_seq = query.request_seq;
+    ctx.set_from_key(build_inventory_hedge_from_key(now_us, None, 0.0));
+
+    let signal = TradeSignal::create(
+        SignalType::ArbHedge,
+        get_timestamp_us(),
+        0.0,
+        ctx.to_bytes(),
+    );
+    if let Err(err) = runtime.signal_pub.publish(&signal.to_bytes()) {
+        log::warn!(
+            "{source}: publish ArbHedge force-taker failed strategy_id={} symbol={} err={:#}",
+            query.strategy_id, symbol, err
+        );
+        return;
+    }
+
+    log::info!(
+        "{source}: ArbHedge force-taker strategy_id={} symbol={} side={:?} aligned_qty={:.8} mid={:.8} request_seq={} due_hedge_qty={:.8} capped_due_hedge_qty={:.8}",
+        query.strategy_id, symbol, hedge_side, aligned_qty, mid_price,
+        query.request_seq, query.due_hedge_qty, capped_due_hedge_qty
+    );
+}
+
 fn drive_shared_arb_hedge_query(
     source: &'static str,
     runtime: &ArbShellRuntime,
@@ -1716,6 +1865,10 @@ fn drive_shared_arb_hedge_query(
         );
         return;
     };
+    if arb_hedge_force_taker() {
+        emit_arb_taker_hedge_fast(source, runtime, &query, &symbol, &quote, hedge_venue);
+        return;
+    }
     let Some(params) = resolve_arb_hedge_build_params(source, &symbol, hedge_venue) else {
         return;
     };
