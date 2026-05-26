@@ -185,6 +185,35 @@ fn format_ws_error(err: &WsError) -> String {
     }
 }
 
+fn tune_tcp_socket(stream: &TcpStream) {
+    if let Err(err) = stream.set_nodelay(true) {
+        warn!("trade ws TCP_NODELAY failed: {}", err);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        let fd = stream.as_raw_fd();
+        let user_timeout_ms: libc::c_int = 30_000;
+        let quickack: libc::c_int = 1;
+        unsafe {
+            libc::setsockopt(
+                fd,
+                libc::IPPROTO_TCP,
+                libc::TCP_USER_TIMEOUT,
+                &user_timeout_ms as *const _ as *const libc::c_void,
+                std::mem::size_of_val(&user_timeout_ms) as libc::socklen_t,
+            );
+            libc::setsockopt(
+                fd,
+                libc::IPPROTO_TCP,
+                libc::TCP_QUICKACK,
+                &quickack as *const _ as *const libc::c_void,
+                std::mem::size_of_val(&quickack) as libc::socklen_t,
+            );
+        }
+    }
+}
+
 fn format_close_frame(frame: Option<&CloseFrame<'_>>) -> String {
     match frame {
         Some(frame) if frame.reason.is_empty() => {
@@ -1151,12 +1180,15 @@ impl TradeWsClient {
                 s
             }
         };
+        let _ = socket.set_send_buffer_size(1 << 20);
+        let _ = socket.set_recv_buffer_size(1 << 20);
 
         let connect_timeout = Duration::from_millis(connect_timeout_ms);
         let stream = tokio::time::timeout(connect_timeout, socket.connect(target))
             .await
             .map_err(|_| anyhow!("connect timeout {}", url_str))?
             .with_context(|| format!("connect {}", target))?;
+        tune_tcp_socket(&stream);
 
         let (ws_stream, _resp) = if url.scheme().eq_ignore_ascii_case("wss") {
             let native = TlsConnector::builder()
