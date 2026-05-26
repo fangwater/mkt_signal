@@ -52,3 +52,6 @@ latency_csv/
 
 # generated deploy/client packages
 dist/
+
+# user-edited runtime config (template lives in config.example.toml)
+scripts/order_export_puller/config.toml
