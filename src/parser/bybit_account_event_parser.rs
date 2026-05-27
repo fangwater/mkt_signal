@@ -3,7 +3,7 @@
 use crate::common::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
     BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
-    BinanceTradeLiteMsg,
+    BasicTradeLiteMsg,
 };
 use crate::common::bybit_account_msg::BybitBasicOrderMsg;
 use crate::parser::default_parser::Parser;
@@ -539,12 +539,6 @@ impl BybitAccountEventParser {
                 continue;
             }
 
-            let order_id_raw = fill_obj
-                .get("orderId")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
             let client_order_id_raw = fill_obj
                 .get("orderLinkId")
                 .and_then(|v| v.as_str())
@@ -558,13 +552,6 @@ impl BybitAccountEventParser {
                 .trim()
                 .to_string();
 
-            let Some(order_id) = parse_i64_str_or_num(fill_obj.get("orderId")) else {
-                warn!(
-                    "Bybit: skip execution.fast with non-i64 orderId symbol={} orderId='{}' payload={}",
-                    symbol, order_id_raw, raw_json
-                );
-                continue;
-            };
             let Some(client_order_id) = parse_i64_str_or_num(fill_obj.get("orderLinkId")) else {
                 warn!(
                     "Bybit: skip execution.fast with non-i64 orderLinkId symbol={} orderLinkId='{}' payload={}",
@@ -572,13 +559,13 @@ impl BybitAccountEventParser {
                 );
                 continue;
             };
-            let Some(trade_id) = parse_i64_str_or_num(fill_obj.get("execId")) else {
+            if exec_id_raw.is_empty() {
                 warn!(
-                    "Bybit: skip execution.fast with non-i64 execId symbol={} execId='{}' payload={}",
-                    symbol, exec_id_raw, raw_json
+                    "Bybit: skip execution.fast with empty execId symbol={} payload={}",
+                    symbol, raw_json
                 );
                 continue;
-            };
+            }
 
             let event_time = parse_i64_str_or_num(fill_obj.get("execTime"))
                 .or_else(|| parse_i64_str_or_num(fill_obj.get("creationTime")))
@@ -599,14 +586,13 @@ impl BybitAccountEventParser {
                 .and_then(parse_boolish)
                 .unwrap_or(false);
 
-            let msg = BinanceTradeLiteMsg::create(
+            let msg = BasicTradeLiteMsg::create(
                 detect_order_venue(fill_obj),
                 event_time,
                 event_time,
                 symbol,
-                order_id,
                 client_order_id,
-                trade_id,
+                &exec_id_raw,
                 side,
                 is_maker,
                 last_executed_price,
@@ -1001,11 +987,10 @@ mod tests {
         assert_eq!(event_type, BasicAccountEventType::TradeUpdateLite);
         assert_eq!(scope, BasicAccountScope::BybitUnified);
 
-        let msg = BinanceTradeLiteMsg::from_bytes(&payload).expect("trade lite payload");
+        let msg = BasicTradeLiteMsg::from_bytes(&payload).expect("trade lite payload");
         assert_eq!(msg.symbol, "BTCUSDT");
-        assert_eq!(msg.order_id, 1001);
         assert_eq!(msg.client_order_id, 12345);
-        assert_eq!(msg.trade_id, 9001);
+        assert_eq!(msg.trade_id_str(), "9001");
         assert_eq!(msg.side, 1);
         assert_eq!(msg.is_maker, 1);
         assert!((msg.last_executed_price - 99998.0).abs() < 1e-9);
@@ -1014,7 +999,7 @@ mod tests {
     }
 
     #[test]
-    fn execution_fast_topic_drops_non_i64_ids() {
+    fn execution_fast_topic_drops_non_i64_order_link_id() {
         let parser = BybitAccountEventParser::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
 

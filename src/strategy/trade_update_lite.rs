@@ -1,3 +1,4 @@
+use crate::common::basic_account_msg::TRADE_ID_LEN;
 use crate::pre_trade::order_manager::Side;
 use crate::signal::common::TradingVenue;
 
@@ -14,14 +15,11 @@ pub trait TradeUpdateLite {
     /// 获取交易对符号
     fn symbol(&self) -> &str;
 
-    /// 获取订单 ID
-    fn order_id(&self) -> i64;
-
     /// 获取客户端订单 ID
     fn client_order_id(&self) -> i64;
 
-    /// 获取成交 ID
-    fn trade_id(&self) -> i64;
+    /// 获取成交 ID（定长 36 字节，短于 36 的 id 右侧补 `\0`）
+    fn trade_id(&self) -> &[u8; TRADE_ID_LEN];
 
     /// 获取成交方向
     fn side(&self) -> Side;

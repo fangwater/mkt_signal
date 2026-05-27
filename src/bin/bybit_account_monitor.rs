@@ -13,7 +13,7 @@ use log::{debug, error, info, warn};
 use mkt_signal::common::basic_account_msg::{
     split_basic_account_event, BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg,
     BasicAccountScope, BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg,
-    BasicUmUnrealizedMsg, BinanceTradeLiteMsg,
+    BasicUmUnrealizedMsg, BasicTradeLiteMsg,
 };
 use mkt_signal::common::bybit_account_msg::BybitBasicOrderMsg;
 use mkt_signal::common::mkt_cfg::load_local_ips_preferring_trade_engine;
@@ -590,17 +590,16 @@ fn log_parsed_event(msg: &Bytes) {
             }
         }
         BasicAccountEventType::TradeUpdateLite => {
-            if let Ok(m) = BinanceTradeLiteMsg::from_bytes(&payload) {
+            if let Ok(m) = BasicTradeLiteMsg::from_bytes(&payload) {
                 info!(
-                    "Bybit TradeUpdateLite: scope={} venue={} ts={} trade_ts={} symbol={} oid={} cloid={} trade_id={} side={} maker={} last_px={} last_qty={}",
+                    "Bybit TradeUpdateLite: scope={} venue={} ts={} trade_ts={} symbol={} cloid={} trade_id={} side={} maker={} last_px={} last_qty={}",
                     account_scope.as_str(),
                     m.venue,
                     m.event_time,
                     m.trade_time,
                     m.symbol,
-                    m.order_id,
                     m.client_order_id,
-                    m.trade_id,
+                    m.trade_id_str(),
                     m.side,
                     m.is_maker,
                     m.last_executed_price,
@@ -667,7 +666,9 @@ impl AccountEventDeduper {
             BasicAccountEventType::AccountRisk => BasicAccountRiskMsg::from_bytes(&payload)
                 .ok()
                 .map(|msg| self.key_account_risk(&msg)),
-            BasicAccountEventType::TradeUpdateLite => return true,
+            BasicAccountEventType::TradeUpdateLite => BasicTradeLiteMsg::from_bytes(&payload)
+                .ok()
+                .map(|msg| self.key_trade_lite(&msg)),
             BasicAccountEventType::Error => return true,
         };
 
@@ -765,6 +766,17 @@ impl AccountEventDeduper {
             msg.execution_type as u64,
             msg.order_status as u64,
             msg.cumulative_filled_quantity.to_bits(),
+        ])
+    }
+
+    fn key_trade_lite(&self, msg: &BasicTradeLiteMsg) -> u64 {
+        self.hash64(&[
+            BasicAccountEventType::TradeUpdateLite as u32 as u64,
+            msg.client_order_id as u64,
+            self.hash_str64(msg.trade_id_str()),
+            msg.event_time as u64,
+            msg.last_executed_price.to_bits(),
+            msg.last_executed_quantity.to_bits(),
         ])
     }
 }

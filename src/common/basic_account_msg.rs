@@ -80,9 +80,14 @@ pub enum BasicAccountScope {
 /// 该事件只携带单笔增量成交信息，不包含 cumulative filled quantity，因此不复用
 /// `BinanceBasicOrderMsg` / `TradeUpdate` 语义。
 ///
-/// 结构名保留历史命名；目前也可用于其他交易所的 trade-lite / fill 增量语义。
+/// 最初为 Binance PM `TRADE_LITE` 引入，现已用于其他 venue 仅提供增量 fill 的频道。
+///
+/// 字段说明：
+/// - `client_order_id`: 我们自己生成的 i64
+/// - `trade_id`: 36 字节定长 ASCII，覆盖 Bybit UUID（恰好 36 字符）与其他 venue 的
+///   数字 id（右侧 `\0` 填充）。venue 原生 order_id 不再保留。
 #[derive(Debug, Clone)]
-pub struct BinanceTradeLiteMsg {
+pub struct BasicTradeLiteMsg {
     pub msg_type: BasicAccountEventType,
     /// 保留 venue 便于下游统一做 venue 判定。
     pub venue: u8,
@@ -90,9 +95,9 @@ pub struct BinanceTradeLiteMsg {
     pub trade_time: i64,
     pub symbol_length: u32,
     pub symbol: String,
-    pub order_id: i64,
     pub client_order_id: i64,
-    pub trade_id: i64,
+    /// 定长 36 字节 ASCII，短于 36 的 id 右侧补 `\0`。
+    pub trade_id: [u8; TRADE_ID_LEN],
     /// Side::to_u8()
     pub side: u8,
     pub is_maker: u8,
@@ -100,16 +105,32 @@ pub struct BinanceTradeLiteMsg {
     pub last_executed_quantity: f64,
 }
 
-impl BinanceTradeLiteMsg {
+pub const TRADE_ID_LEN: usize = 36;
+
+/// 把任意字符串（UUID / 数字 id）转成 36 字节定长，超长会被截断。
+pub fn trade_id_bytes_from_str(s: &str) -> [u8; TRADE_ID_LEN] {
+    let mut buf = [0u8; TRADE_ID_LEN];
+    let bytes = s.as_bytes();
+    let n = bytes.len().min(TRADE_ID_LEN);
+    buf[..n].copy_from_slice(&bytes[..n]);
+    buf
+}
+
+/// 取 trade_id 的 ASCII 视图（首个 `\0` 之前的部分）。
+pub fn trade_id_as_str(id: &[u8; TRADE_ID_LEN]) -> &str {
+    let end = id.iter().position(|&b| b == 0).unwrap_or(TRADE_ID_LEN);
+    std::str::from_utf8(&id[..end]).unwrap_or("")
+}
+
+impl BasicTradeLiteMsg {
     #[allow(clippy::too_many_arguments)]
     pub fn create(
         venue: u8,
         event_time: i64,
         trade_time: i64,
         symbol: String,
-        order_id: i64,
         client_order_id: i64,
-        trade_id: i64,
+        trade_id: &str,
         side: u8,
         is_maker: bool,
         last_executed_price: f64,
@@ -122,9 +143,8 @@ impl BinanceTradeLiteMsg {
             trade_time,
             symbol_length: symbol.len() as u32,
             symbol,
-            order_id,
             client_order_id,
-            trade_id,
+            trade_id: trade_id_bytes_from_str(trade_id),
             side,
             is_maker: if is_maker { 1 } else { 0 },
             last_executed_price,
@@ -132,9 +152,13 @@ impl BinanceTradeLiteMsg {
         }
     }
 
+    pub fn trade_id_str(&self) -> &str {
+        trade_id_as_str(&self.trade_id)
+    }
+
     pub fn to_bytes(&self) -> Bytes {
         let total_size =
-            4 + 1 + 8 + 8 + 4 + self.symbol_length as usize + 8 + 8 + 8 + 1 + 1 + 8 + 8;
+            4 + 1 + 8 + 8 + 4 + self.symbol_length as usize + 8 + TRADE_ID_LEN + 1 + 1 + 8 + 8;
 
         let mut buf = BytesMut::with_capacity(total_size);
         buf.put_u32_le(self.msg_type as u32);
@@ -145,10 +169,9 @@ impl BinanceTradeLiteMsg {
         buf.put_u32_le(self.symbol_length);
         buf.put(self.symbol.as_bytes());
 
-        buf.put_i64_le(self.order_id);
         buf.put_i64_le(self.client_order_id);
 
-        buf.put_i64_le(self.trade_id);
+        buf.put(&self.trade_id[..]);
         buf.put_u8(self.side);
         buf.put_u8(self.is_maker);
         buf.put_f64_le(self.last_executed_price);
@@ -157,15 +180,15 @@ impl BinanceTradeLiteMsg {
     }
 
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        const MIN_FIXED_SIZE: usize = 4 + 1 + 8 + 8 + 4 + 8 + 8 + 8 + 1 + 1 + 8 + 8;
+        const MIN_FIXED_SIZE: usize = 4 + 1 + 8 + 8 + 4 + 8 + TRADE_ID_LEN + 1 + 1 + 8 + 8;
         if data.len() < MIN_FIXED_SIZE {
-            anyhow::bail!("BinanceTradeLiteMsg too short: {}", data.len());
+            anyhow::bail!("BasicTradeLiteMsg too short: {}", data.len());
         }
 
         let mut cursor = Bytes::copy_from_slice(data);
         let msg_type = cursor.get_u32_le();
         if msg_type != BasicAccountEventType::TradeUpdateLite as u32 {
-            anyhow::bail!("invalid BinanceTradeLiteMsg type: {}", msg_type);
+            anyhow::bail!("invalid BasicTradeLiteMsg type: {}", msg_type);
         }
 
         let venue = cursor.get_u8();
@@ -174,18 +197,18 @@ impl BinanceTradeLiteMsg {
 
         let symbol_length = cursor.get_u32_le();
         if cursor.remaining() < symbol_length as usize {
-            anyhow::bail!("BinanceTradeLiteMsg truncated before symbol");
+            anyhow::bail!("BasicTradeLiteMsg truncated before symbol");
         }
         let symbol = String::from_utf8(cursor.copy_to_bytes(symbol_length as usize).to_vec())?;
 
-        if cursor.remaining() < 8 + 8 + 1 + 1 + 8 + 8 {
-            anyhow::bail!("BinanceTradeLiteMsg truncated before client_order_id");
+        if cursor.remaining() < 8 + TRADE_ID_LEN + 1 + 1 + 8 + 8 {
+            anyhow::bail!("BasicTradeLiteMsg truncated after symbol");
         }
 
-        let order_id = cursor.get_i64_le();
         let client_order_id = cursor.get_i64_le();
 
-        let trade_id = cursor.get_i64_le();
+        let mut trade_id = [0u8; TRADE_ID_LEN];
+        cursor.copy_to_slice(&mut trade_id);
         let side = cursor.get_u8();
         let is_maker = cursor.get_u8();
         let last_executed_price = cursor.get_f64_le();
@@ -198,7 +221,6 @@ impl BinanceTradeLiteMsg {
             trade_time,
             symbol_length,
             symbol,
-            order_id,
             client_order_id,
             trade_id,
             side,

@@ -104,7 +104,7 @@
 use crate::common::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
     BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
-    BinanceTradeLiteMsg, GateBasicOrderMsg,
+    BasicTradeLiteMsg, GateBasicOrderMsg,
 };
 use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::parser::default_parser::Parser;
@@ -1028,21 +1028,20 @@ impl GateAccountEventParser {
             };
 
             let side = if raw_size >= 0.0 { 1 } else { 2 };
-            let Some(order_id) = parse_i64_str_or_num(trade.get("order_id")) else {
-                warn!(
-                    "Gate: futures.usertrades missing/invalid order_id, dropping: {}",
-                    trade
-                );
-                incomplete = true;
-                continue;
-            };
-            let Some(trade_id) = parse_i64_str_or_num(trade.get("id")).map(|id| id.max(0)) else {
-                warn!(
-                    "Gate: futures.usertrades missing/invalid id, dropping: {}",
-                    trade
-                );
-                incomplete = true;
-                continue;
+            let trade_id_raw = trade.get("id");
+            let trade_id = match trade_id_raw.and_then(|v| v.as_str().map(|s| s.to_string())) {
+                Some(s) if !s.is_empty() => s,
+                _ => match trade_id_raw.and_then(|v| v.as_i64()) {
+                    Some(n) => n.to_string(),
+                    None => {
+                        warn!(
+                            "Gate: futures.usertrades missing/invalid id, dropping: {}",
+                            trade
+                        );
+                        incomplete = true;
+                        continue;
+                    }
+                },
             };
             let Some(last_executed_price) = parse_f64_str_or_num(trade.get("price")) else {
                 warn!(
@@ -1066,14 +1065,13 @@ impl GateAccountEventParser {
                 continue;
             };
 
-            let msg = BinanceTradeLiteMsg::create(
+            let msg = BasicTradeLiteMsg::create(
                 GateBasicOrderMsg::VENUE_FUTURES,
                 event_time,
                 trade_time,
                 symbol,
-                order_id,
                 client_order_id,
-                trade_id,
+                &trade_id,
                 side,
                 is_maker,
                 last_executed_price,
@@ -1832,14 +1830,13 @@ mod tests {
         assert_eq!(event_type, BasicAccountEventType::TradeUpdateLite);
         assert_eq!(scope, BasicAccountScope::GateUnified);
 
-        let trade = BinanceTradeLiteMsg::from_bytes(body).expect("trade-lite body");
+        let trade = BasicTradeLiteMsg::from_bytes(body).expect("trade-lite body");
         assert_eq!(trade.venue, GateBasicOrderMsg::VENUE_FUTURES);
         assert_eq!(trade.event_time, 1_543_205_083_123);
         assert_eq!(trade.trade_time, 1_628_736_848_321);
         assert_eq!(trade.symbol, "BTC_USD");
-        assert_eq!(trade.order_id, 4_872_460);
         assert_eq!(trade.client_order_id, 123_456);
-        assert_eq!(trade.trade_id, 3_335_259);
+        assert_eq!(trade.trade_id_str(), "3335259");
         assert_eq!(trade.side, 2);
         assert_eq!(trade.is_maker, 1);
         assert!((trade.last_executed_price - 40_000.4).abs() < 1e-9);

@@ -1,6 +1,6 @@
 //! 为 Binance basic 订单消息实现统一的 OrderUpdate / TradeUpdate / TradeUpdateLite 接口
 
-use crate::common::basic_account_msg::{BinanceBasicOrderMsg, BinanceTradeLiteMsg};
+use crate::common::basic_account_msg::{BasicTradeLiteMsg, BinanceBasicOrderMsg, TRADE_ID_LEN};
 use crate::pre_trade::order_manager::{OrderType, Side};
 use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 use crate::strategy::order_update::OrderUpdate;
@@ -122,7 +122,7 @@ impl TradeUpdate for BinanceBasicOrderMsg {
     }
 }
 
-impl TradeUpdateLite for BinanceTradeLiteMsg {
+impl TradeUpdateLite for BasicTradeLiteMsg {
     fn event_time(&self) -> i64 {
         self.event_time.saturating_mul(1_000)
     }
@@ -135,16 +135,12 @@ impl TradeUpdateLite for BinanceTradeLiteMsg {
         &self.symbol
     }
 
-    fn order_id(&self) -> i64 {
-        self.order_id
-    }
-
     fn client_order_id(&self) -> i64 {
         self.client_order_id
     }
 
-    fn trade_id(&self) -> i64 {
-        self.trade_id
+    fn trade_id(&self) -> &[u8; TRADE_ID_LEN] {
+        &self.trade_id
     }
 
     fn side(&self) -> Side {

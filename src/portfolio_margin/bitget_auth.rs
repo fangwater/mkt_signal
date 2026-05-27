@@ -119,3 +119,15 @@ pub fn build_orders_subscribe_message() -> Vec<serde_json::Value> {
         }]
     })]
 }
+
+/// 构建 UTA fast-fill 频道订阅消息（增量成交，仅 UTA 模式推送）
+pub fn build_fast_fill_subscribe_message() -> serde_json::Value {
+    serde_json::json!({
+        "op": "subscribe",
+        "args": [{
+            "instType": "UTA",
+            "topic": "fast-fill",
+            "symbol": "default"
+        }]
+    })
+}

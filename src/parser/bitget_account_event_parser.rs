@@ -3,7 +3,7 @@
 use crate::common::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
     BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
-    BinanceTradeLiteMsg,
+    BasicTradeLiteMsg,
 };
 use crate::common::bitget_account_msg::BitgetBasicOrderMsg;
 use crate::parser::default_parser::Parser;
@@ -447,6 +447,7 @@ impl BitgetAccountEventParser {
         count
     }
 
+    /// 解析 UTA `fill` 频道（详细成交，带 feeDetail / orderType）。字段：`tradeId`。
     fn parse_fill_channel(&self, json_value: &Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
         let mut count = 0;
         let top_timestamp = parse_i64_str_or_num(json_value.get("ts")).unwrap_or(0);
@@ -454,7 +455,6 @@ impl BitgetAccountEventParser {
         for fill_obj in collect_data_objects(json_value) {
             let symbol = fill_obj
                 .get("symbol")
-                .or_else(|| fill_obj.get("instId"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
@@ -462,25 +462,19 @@ impl BitgetAccountEventParser {
                 continue;
             }
 
-            let order_id = parse_i64_str_or_num(fill_obj.get("orderId"))
-                .or_else(|| parse_i64_str_or_num(fill_obj.get("ordId")))
-                .unwrap_or(0);
-            let client_order_id = parse_i64_str_or_num(fill_obj.get("clientOid"))
-                .or_else(|| parse_i64_str_or_num(fill_obj.get("clOrdId")))
-                .unwrap_or(0);
-            if order_id <= 0 || client_order_id <= 0 {
+            let client_order_id = parse_i64_str_or_num(fill_obj.get("clientOid")).unwrap_or(0);
+            if client_order_id <= 0 {
                 continue;
             }
 
             let event_time = parse_i64_str_or_num(fill_obj.get("execTime"))
                 .or_else(|| parse_i64_str_or_num(fill_obj.get("updatedTime")))
-                .or_else(|| parse_i64_str_or_num(fill_obj.get("fillTime")))
                 .unwrap_or(top_timestamp);
-            let trade_id = parse_i64_str_or_num(fill_obj.get("tradeId"))
-                .or_else(|| parse_i64_str_or_num(fill_obj.get("fillId")))
-                .or_else(|| parse_i64_str_or_num(fill_obj.get("execId")))
-                .unwrap_or(0)
-                .max(0);
+            let trade_id = fill_obj
+                .get("tradeId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
 
             let side = BitgetBasicOrderMsg::side_to_u8(
                 fill_obj.get("side").and_then(|v| v.as_str()).unwrap_or(""),
@@ -508,16 +502,102 @@ impl BitgetAccountEventParser {
                 .unwrap_or(0);
 
             let venue = detect_order_venue(fill_obj);
-            let msg = BinanceTradeLiteMsg::create(
+            let msg = BasicTradeLiteMsg::create(
                 venue,
                 event_time,
                 event_time,
                 symbol,
-                order_id,
                 client_order_id,
-                trade_id,
+                &trade_id,
                 side,
                 is_maker != 0,
+                last_executed_price,
+                last_executed_quantity,
+            );
+
+            let payload = msg.to_bytes();
+            let event = BasicAccountEventMsg::create(
+                BasicAccountEventType::TradeUpdateLite,
+                BasicAccountScope::BitgetUnified,
+                payload,
+            );
+            if tx.send(event.to_bytes()).is_ok() {
+                count += 1;
+            }
+        }
+
+        count
+    }
+
+    /// 解析 UTA `fast-fill` 频道（精简成交，仅 UTA 模式推送）。字段：`execId`。
+    /// 参考: https://www.bitget.com/api-doc/uta/websocket/private/Fast-Fill-Channel
+    fn parse_fast_fill_channel(
+        &self,
+        json_value: &Value,
+        tx: &mpsc::UnboundedSender<Bytes>,
+    ) -> usize {
+        let mut count = 0;
+        let top_timestamp = parse_i64_str_or_num(json_value.get("ts")).unwrap_or(0);
+
+        for fill_obj in collect_data_objects(json_value) {
+            let symbol = fill_obj
+                .get("symbol")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if symbol.is_empty() {
+                continue;
+            }
+
+            let client_order_id = parse_i64_str_or_num(fill_obj.get("clientOid")).unwrap_or(0);
+            if client_order_id <= 0 {
+                continue;
+            }
+
+            let exec_id = fill_obj
+                .get("execId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if exec_id.is_empty() {
+                continue;
+            }
+
+            let event_time = parse_i64_str_or_num(fill_obj.get("execTime"))
+                .or_else(|| parse_i64_str_or_num(fill_obj.get("updatedTime")))
+                .unwrap_or(top_timestamp);
+
+            let side = BitgetBasicOrderMsg::side_to_u8(
+                fill_obj.get("side").and_then(|v| v.as_str()).unwrap_or(""),
+            );
+            let last_executed_quantity =
+                parse_f64_str_or_num(fill_obj.get("execQty")).unwrap_or(0.0);
+            if last_executed_quantity <= 0.0 {
+                continue;
+            }
+
+            let last_executed_price =
+                parse_f64_str_or_num(fill_obj.get("execPrice")).unwrap_or(0.0);
+
+            let is_maker = fill_obj
+                .get("tradeScope")
+                .and_then(|v| v.as_str())
+                .map(|s| {
+                    let lower = s.to_ascii_lowercase();
+                    matches!(lower.as_str(), "maker" | "m")
+                })
+                .unwrap_or(false);
+
+            let venue = detect_order_venue(fill_obj);
+            let msg = BasicTradeLiteMsg::create(
+                venue,
+                event_time,
+                event_time,
+                symbol,
+                client_order_id,
+                &exec_id,
+                side,
+                is_maker,
                 last_executed_price,
                 last_executed_quantity,
             );
@@ -575,6 +655,7 @@ impl Parser for BitgetAccountEventParser {
             "position" | "positions" => self.parse_positions_channel(&json_value, tx),
             "order" | "orders" => self.parse_orders_channel(&json_value, tx),
             "fill" | "fills" => self.parse_fill_channel(&json_value, tx),
+            "fast-fill" => self.parse_fast_fill_channel(&json_value, tx),
             _ => {
                 if !route.is_empty() {
                     debug!("Bitget: ignored route={} payload={}", route, json_str);
@@ -859,12 +940,11 @@ mod tests {
         assert_eq!(event_type, BasicAccountEventType::TradeUpdateLite);
         assert_eq!(scope, BasicAccountScope::BitgetUnified);
 
-        let msg = BinanceTradeLiteMsg::from_bytes(payload).expect("trade lite payload");
+        let msg = BasicTradeLiteMsg::from_bytes(payload).expect("trade lite payload");
         assert_eq!(msg.venue, BitgetBasicOrderMsg::VENUE_FUTURES);
         assert_eq!(msg.symbol, "BTCUSDT");
         assert_eq!(msg.client_order_id, 123456);
-        assert_eq!(msg.order_id, 998877);
-        assert_eq!(msg.trade_id, 556677);
+        assert_eq!(msg.trade_id_str(), "556677");
         assert_eq!(msg.side, 1);
         assert_eq!(msg.is_maker, 1);
         assert!((msg.last_executed_price - 64000.5).abs() < 1e-9);
