@@ -13,6 +13,7 @@ pub mod binance;
 pub mod bitget;
 pub mod bybit;
 pub mod gate;
+pub mod gate_sbe;
 pub mod latency;
 pub mod okex;
 pub mod publisher;

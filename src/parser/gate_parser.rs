@@ -6,6 +6,17 @@ use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use tokio::sync::mpsc;
 
+// ─── Gate SBE constants (schemaId=1, littleEndian) ───────────────────────────
+const GATE_SBE_HDR: usize = 8;
+const GATE_SBE_SCHEMA: u16 = 1;
+const GATE_SBE_T_BBO: u16 = 1;
+const GATE_SBE_T_TRADE: u16 = 2;
+const GATE_SBE_T_OBU: u16 = 3;
+const GATE_SBE_T_BOOK: u16 = 4;
+const GATE_SBE_T_BOOK_UPDATE: u16 = 5;
+const GATE_SBE_T_KLINE: u16 = 8;
+const GATE_SBE_T_TICKER: u16 = 9;
+
 fn parse_json_f64(v: &serde_json::Value) -> Option<f64> {
     match v {
         serde_json::Value::Number(n) => n.as_f64(),
@@ -170,6 +181,9 @@ impl GateSignalParser {
 
 impl Parser for GateSignalParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if msg.first() != Some(&b'{') {
+            return self.parse_sbe(&msg, tx);
+        }
         if let Ok(json_str) = std::str::from_utf8(&msg) {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
                 // 检查是否是 ticker 频道的 update 事件
@@ -238,6 +252,9 @@ impl GateTickerParser {
 
 impl Parser for GateTickerParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if msg.first() != Some(&b'{') {
+            return self.parse_sbe(&msg, tx);
+        }
         if let Ok(json_str) = std::str::from_utf8(&msg) {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
                 // 检查是否是 ticker 频道的 update 事件
@@ -353,6 +370,9 @@ impl GateKlineParser {
 
 impl Parser for GateKlineParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if msg.first() != Some(&b'{') {
+            return self.parse_sbe(&msg, tx);
+        }
         if let Ok(json_str) = std::str::from_utf8(&msg) {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
                 // 检查是否是 candlesticks 频道的 update 事件
@@ -544,6 +564,9 @@ impl GateTradeParser {
 
 impl Parser for GateTradeParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if msg.first() != Some(&b'{') {
+            return self.parse_sbe(&msg, tx);
+        }
         if let Ok(json_str) = std::str::from_utf8(&msg) {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
                 let channel = json_value
@@ -713,6 +736,9 @@ impl GateIncParser {
 
 impl Parser for GateIncParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if msg.first() != Some(&b'{') {
+            return self.parse_sbe(&msg, tx);
+        }
         if let Ok(json_str) = std::str::from_utf8(&msg) {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
                 let channel = json_value
@@ -768,6 +794,9 @@ impl GateDerivativesMetricsParser {
 
 impl Parser for GateDerivativesMetricsParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if msg.first() != Some(&b'{') {
+            return self.parse_sbe(&msg, tx);
+        }
         if let Ok(json_str) = std::str::from_utf8(&msg) {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
                 let channel = json_value
@@ -843,6 +872,540 @@ impl Parser for GateDerivativesMetricsParser {
         }
         0
     }
+}
+
+// ─── Gate SBE parser implementations ─────────────────────────────────────────
+
+impl GateSignalParser {
+    fn parse_sbe(&self, buf: &[u8], tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        let (tid, _bl) = match sbe_hdr(buf) {
+            Some(h) => h,
+            None => return 0,
+        };
+        if tid != GATE_SBE_T_TICKER {
+            return 0;
+        }
+        // root.time (µs) @ body+0
+        let time_us = match sbe_i64(buf, GATE_SBE_HDR) {
+            Some(t) => t,
+            None => return 0,
+        };
+        let signal = SignalMsg::create(self.source, time_us / 1000);
+        if tx.send(signal.to_bytes()).is_ok() {
+            1
+        } else {
+            0
+        }
+    }
+}
+
+impl GateTickerParser {
+    fn parse_sbe(&self, buf: &[u8], tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        let (tid, bl) = match sbe_hdr(buf) {
+            Some(h) => h,
+            None => return 0,
+        };
+        if tid != GATE_SBE_T_BBO {
+            return 0;
+        }
+        let b = GATE_SBE_HDR;
+        if buf.len() < b + bl {
+            return 0;
+        }
+        // BBO root layout: time@0 e@8 t@9 u@17 pxExp@25 szExp@26
+        //                  askPxM@27 askSzM@35 bidPxM@43 bidSzM@51
+        let t_us = sbe_i64(buf, b + 9).unwrap_or(0);
+        let px_exp = buf[b + 25] as i8;
+        let sz_exp = buf[b + 26] as i8;
+        let ask_px_m = match sbe_i64(buf, b + 27) {
+            Some(v) => v,
+            None => return 0,
+        };
+        let ask_sz_m = sbe_i64(buf, b + 35).unwrap_or(0);
+        let bid_px_m = match sbe_i64(buf, b + 43) {
+            Some(v) => v,
+            None => return 0,
+        };
+        let bid_sz_m = sbe_i64(buf, b + 51).unwrap_or(0);
+        let bid_price = sbe_m(bid_px_m, px_exp);
+        let ask_price = sbe_m(ask_px_m, px_exp);
+        if bid_price <= 0.0 || ask_price <= 0.0 {
+            return 0;
+        }
+        // varData after root block: channel (skip), s (symbol)
+        let off = match sbe_vs_skip(buf, b + bl) {
+            Some(o) => o,
+            None => return 0,
+        };
+        let (sym, _) = match sbe_vs(buf, off) {
+            Some(s) => s,
+            None => return 0,
+        };
+        let symbol = sym.replace('_', "");
+        let msg = AskBidSpreadMsg::create(
+            symbol,
+            t_us / 1000,
+            bid_price,
+            sbe_m(bid_sz_m, sz_exp),
+            ask_price,
+            sbe_m(ask_sz_m, sz_exp),
+        );
+        if tx.send(msg.to_bytes()).is_ok() {
+            1
+        } else {
+            0
+        }
+    }
+}
+
+impl GateKlineParser {
+    fn parse_sbe(&self, buf: &[u8], tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        let (tid, bl) = match sbe_hdr(buf) {
+            Some(h) => h,
+            None => return 0,
+        };
+        if tid != GATE_SBE_T_KLINE {
+            return 0;
+        }
+        let b = GATE_SBE_HDR;
+        if buf.len() < b + bl {
+            return 0;
+        }
+        // root: time@0 e@8 pxExp@9 szExp@10 amountExp@11
+        let px_exp = buf.get(b + 9).map(|&v| v as i8).unwrap_or(0);
+        let sz_exp = buf.get(b + 10).map(|&v| v as i8).unwrap_or(0);
+
+        let (el, n, mut cur) = match sbe_grp(buf, b + bl) {
+            Some(g) => g,
+            None => return 0,
+        };
+        let mut sent = 0;
+        for _ in 0..n {
+            if buf.len() < cur + el {
+                break;
+            }
+            // entry fixed block: t@0 open@8 high@16 low@24 close@32 vol@40 amount@48 complete@56
+            let t_sec = sbe_i64(buf, cur).unwrap_or(0);
+            let open_m = sbe_i64(buf, cur + 8).unwrap_or(0);
+            let high_m = sbe_i64(buf, cur + 16).unwrap_or(0);
+            let low_m = sbe_i64(buf, cur + 24).unwrap_or(0);
+            let close_m = sbe_i64(buf, cur + 32).unwrap_or(0);
+            let vol_m = sbe_i64(buf, cur + 40).unwrap_or(0);
+            let complete = buf.get(cur + 56).copied().unwrap_or(0);
+            cur += el;
+            // varData within entry: name (e.g. "1m_BTC_USDT")
+            let (name, next_cur) = match sbe_vs(buf, cur) {
+                Some(s) => s,
+                None => break,
+            };
+            cur = next_cur;
+            if self.only_closed && complete != 1 {
+                continue;
+            }
+            // "1m_BTC_USDT" → skip period prefix → "BTC_USDT"
+            let symbol = match name.find('_') {
+                Some(pos) => name[pos + 1..].to_string(),
+                None => name,
+            };
+            let msg = KlineMsg::create(
+                symbol,
+                sbe_m(open_m, px_exp),
+                sbe_m(high_m, px_exp),
+                sbe_m(low_m, px_exp),
+                sbe_m(close_m, px_exp),
+                sbe_m(vol_m, sz_exp),
+                t_sec * 1000,
+            );
+            if tx.send(msg.to_bytes()).is_ok() {
+                sent += 1;
+            }
+        }
+        sent
+    }
+}
+
+impl GateTradeParser {
+    fn parse_sbe(&self, buf: &[u8], tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        let (tid, bl) = match sbe_hdr(buf) {
+            Some(h) => h,
+            None => return 0,
+        };
+        if tid != GATE_SBE_T_TRADE {
+            return 0;
+        }
+        let b = GATE_SBE_HDR;
+        if buf.len() < b + bl {
+            return 0;
+        }
+        // root: time@0 e@8 pxExp@9 szExp@10
+        let px_exp = buf.get(b + 9).map(|&v| v as i8).unwrap_or(0);
+        let sz_exp = buf.get(b + 10).map(|&v| v as i8).unwrap_or(0);
+
+        let (el, n, mut cur) = match sbe_grp(buf, b + bl) {
+            Some(g) => g,
+            None => return 0,
+        };
+        // collect entries; symbol follows group as varData
+        let mut entries: Vec<(i64, u64, i64, i64)> = Vec::with_capacity(n); // t, id, size, price_m
+        for _ in 0..n {
+            if buf.len() < cur + 32 {
+                break;
+            }
+            // entry: t@0 id@8 size@16 price@24
+            let t = sbe_i64(buf, cur).unwrap_or(0);
+            let id = sbe_u64(buf, cur + 8).unwrap_or(0);
+            let size = sbe_i64(buf, cur + 16).unwrap_or(0);
+            let price_m = sbe_i64(buf, cur + 24).unwrap_or(0);
+            entries.push((t, id, size, price_m));
+            cur += el;
+        }
+        // varData: channel (skip), contract (symbol)
+        cur = match sbe_vs_skip(buf, cur) {
+            Some(o) => o,
+            None => return 0,
+        };
+        let (symbol, _) = match sbe_vs(buf, cur) {
+            Some(s) => s,
+            None => return 0,
+        };
+        let mut sent = 0;
+        for (t_us, id, size, price_m) in &entries {
+            let price = sbe_m(*price_m, px_exp);
+            if price <= 0.0 {
+                continue;
+            }
+            let amount = (size.unsigned_abs() as f64) * 10f64.powi(sz_exp as i32);
+            if amount <= 0.0 {
+                continue;
+            }
+            let side = if *size >= 0 { 'B' } else { 'S' };
+            let msg = TradeMsg::create(
+                symbol.clone(),
+                *id as i64,
+                t_us / 1000,
+                side,
+                price,
+                amount,
+            );
+            if tx.send(msg.to_bytes()).is_ok() {
+                sent += 1;
+            }
+        }
+        sent
+    }
+}
+
+impl GateIncParser {
+    fn parse_sbe(&self, buf: &[u8], tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        let (tid, bl) = match sbe_hdr(buf) {
+            Some(h) => h,
+            None => return 0,
+        };
+        match tid {
+            GATE_SBE_T_OBU => self.sbe_obu(buf, bl, tx),
+            GATE_SBE_T_BOOK => self.sbe_book(buf, bl, tx),
+            GATE_SBE_T_BOOK_UPDATE => self.sbe_book_update(buf, bl, tx),
+            _ => 0,
+        }
+    }
+
+    fn sbe_obu(&self, buf: &[u8], bl: usize, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        // root: time@0 e@8 t@9 full@17 firstID@18 lastID@26 pxExp@34 szExp@35
+        let b = GATE_SBE_HDR;
+        if buf.len() < b + bl {
+            return 0;
+        }
+        let t_us = sbe_i64(buf, b + 9).unwrap_or(0);
+        let full = buf.get(b + 17).copied().unwrap_or(0);
+        let first_id = sbe_i64(buf, b + 18).unwrap_or(0);
+        let last_id = sbe_i64(buf, b + 26).unwrap_or(0);
+        let px_exp = buf[b + 34] as i8;
+        let sz_exp = buf[b + 35] as i8;
+        // bids group (id=100) then asks group (id=101)
+        let (el_b, n_b, cur_b) = match sbe_grp(buf, b + bl) {
+            Some(g) => g,
+            None => return 0,
+        };
+        let bids = sbe_levels(buf, cur_b, el_b, n_b, px_exp, sz_exp);
+        let (el_a, n_a, cur_a) = match sbe_grp(buf, cur_b + el_b * n_b) {
+            Some(g) => g,
+            None => return 0,
+        };
+        let asks = sbe_levels(buf, cur_a, el_a, n_a, px_exp, sz_exp);
+        let mut off = cur_a + el_a * n_a;
+        off = match sbe_vs_skip(buf, off) {
+            Some(o) => o,
+            None => return 0,
+        }; // channel
+        let (sym, _) = match sbe_vs(buf, off) {
+            Some(s) => s,
+            None => return 0,
+        };
+        self.emit_inc(sym, first_id, last_id, t_us / 1000, full == 1, bids, asks, tx)
+    }
+
+    fn sbe_book(&self, buf: &[u8], bl: usize, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        // root: time@0 e@8 t@9 id@17 pxExp@25 szExp@26 level@27
+        let b = GATE_SBE_HDR;
+        if buf.len() < b + bl {
+            return 0;
+        }
+        let t_us = sbe_i64(buf, b + 9).unwrap_or(0);
+        let snap_id = sbe_i64(buf, b + 17).unwrap_or(0);
+        let px_exp = buf[b + 25] as i8;
+        let sz_exp = buf[b + 26] as i8;
+        // asks group (id=100) then bids group (id=101)
+        let (el_a, n_a, cur_a) = match sbe_grp(buf, b + bl) {
+            Some(g) => g,
+            None => return 0,
+        };
+        let asks = sbe_levels(buf, cur_a, el_a, n_a, px_exp, sz_exp);
+        let (el_b, n_b, cur_b) = match sbe_grp(buf, cur_a + el_a * n_a) {
+            Some(g) => g,
+            None => return 0,
+        };
+        let bids = sbe_levels(buf, cur_b, el_b, n_b, px_exp, sz_exp);
+        let mut off = cur_b + el_b * n_b;
+        off = match sbe_vs_skip(buf, off) {
+            Some(o) => o,
+            None => return 0,
+        };
+        let (sym, _) = match sbe_vs(buf, off) {
+            Some(s) => s,
+            None => return 0,
+        };
+        self.emit_inc(sym, snap_id, snap_id, t_us / 1000, true, bids, asks, tx)
+    }
+
+    fn sbe_book_update(&self, buf: &[u8], bl: usize, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        // root: time@0 e@8 t@9 firstID@17 lastID@25 pxExp@33 szExp@34 level@35
+        let b = GATE_SBE_HDR;
+        if buf.len() < b + bl {
+            return 0;
+        }
+        let t_us = sbe_i64(buf, b + 9).unwrap_or(0);
+        let first_id = sbe_i64(buf, b + 17).unwrap_or(0);
+        let last_id = sbe_i64(buf, b + 25).unwrap_or(0);
+        let px_exp = buf[b + 33] as i8;
+        let sz_exp = buf[b + 34] as i8;
+        let e_byte = buf.get(b + 8).copied().unwrap_or(2);
+        let is_snapshot = e_byte == 3; // Event::All
+        // asks group (id=100) then bids group (id=101)
+        let (el_a, n_a, cur_a) = match sbe_grp(buf, b + bl) {
+            Some(g) => g,
+            None => return 0,
+        };
+        let asks = sbe_levels(buf, cur_a, el_a, n_a, px_exp, sz_exp);
+        let (el_b, n_b, cur_b) = match sbe_grp(buf, cur_a + el_a * n_a) {
+            Some(g) => g,
+            None => return 0,
+        };
+        let bids = sbe_levels(buf, cur_b, el_b, n_b, px_exp, sz_exp);
+        let mut off = cur_b + el_b * n_b;
+        off = match sbe_vs_skip(buf, off) {
+            Some(o) => o,
+            None => return 0,
+        };
+        let (sym, _) = match sbe_vs(buf, off) {
+            Some(s) => s,
+            None => return 0,
+        };
+        self.emit_inc(sym, first_id, last_id, t_us / 1000, is_snapshot, bids, asks, tx)
+    }
+
+    fn emit_inc(
+        &self,
+        symbol: String,
+        first_id: i64,
+        last_id: i64,
+        ts_ms: i64,
+        is_snapshot: bool,
+        bids: Vec<Level>,
+        asks: Vec<Level>,
+        tx: &mpsc::UnboundedSender<Bytes>,
+    ) -> usize {
+        if bids.is_empty() && asks.is_empty() {
+            return 0;
+        }
+        let chunks = split_levels(bids.len(), asks.len(), self.max_levels);
+        let total = chunks.len();
+        let mut sent = 0;
+        for (idx, (b_start, b_count, a_start, a_count)) in chunks.into_iter().enumerate() {
+            let mut msg = IncMsg::create(
+                symbol.clone(),
+                first_id,
+                last_id,
+                ts_ms,
+                is_snapshot,
+                b_count as u32,
+                a_count as u32,
+            );
+            msg.set_chunk_index(idx as u8);
+            msg.set_is_last(idx == total - 1);
+            fill_levels_with_offset(&bids, &asks, b_start, b_count, a_start, a_count, &mut msg);
+            if tx.send(msg.to_bytes()).is_ok() {
+                sent += 1;
+            }
+        }
+        sent
+    }
+}
+
+impl GateDerivativesMetricsParser {
+    fn parse_sbe(&self, buf: &[u8], tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        let (tid, bl) = match sbe_hdr(buf) {
+            Some(h) => h,
+            None => return 0,
+        };
+        if tid != GATE_SBE_T_TICKER {
+            return 0;
+        }
+        let b = GATE_SBE_HDR;
+        // root: time@0 (µs), e@8; group immediately after root block
+        let time_us = sbe_i64(buf, b).unwrap_or(0);
+        let ts_ms = time_us / 1000;
+
+        let (el, n, mut cur) = match sbe_grp(buf, b + bl) {
+            Some(g) => g,
+            None => return 0,
+        };
+        let mut parsed = 0;
+        for _ in 0..n {
+            if buf.len() < cur + el {
+                break;
+            }
+            // futuresTicker group entry fixed offsets:
+            //   t@0  pxExp@8  last@9  changePx@17  low24h@25  high24h@33
+            //   markPxExp@41  markPx@42  indexPxExp@50  indexPx@51
+            //   changePctExp@59  changePct@60  frExp@68  fr@69
+            //   (szExp@77 totalSize@78 … vol fields … total 122B)
+            let mark_px_exp = buf.get(cur + 41).map(|&v| v as i8).unwrap_or(0);
+            let mark_px_m = sbe_i64(buf, cur + 42).unwrap_or(0);
+            let idx_px_exp = buf.get(cur + 50).map(|&v| v as i8).unwrap_or(0);
+            let idx_px_m = sbe_i64(buf, cur + 51).unwrap_or(0);
+            let fr_exp = buf.get(cur + 68).map(|&v| v as i8).unwrap_or(0);
+            let fr_m = sbe_i64(buf, cur + 69).unwrap_or(0);
+            cur += el;
+            // varData within entry: contract, quantoBaseRate, priceType, changeFrom
+            let (contract, c2) = match sbe_vs(buf, cur) {
+                Some(s) => s,
+                None => break,
+            };
+            let c3 = match sbe_vs_skip(buf, c2) {
+                Some(o) => o,
+                None => break,
+            };
+            let c4 = match sbe_vs_skip(buf, c3) {
+                Some(o) => o,
+                None => break,
+            };
+            cur = match sbe_vs_skip(buf, c4) {
+                Some(o) => o,
+                None => break,
+            };
+            let mark_price = sbe_m(mark_px_m, mark_px_exp);
+            let idx_price = sbe_m(idx_px_m, idx_px_exp);
+            let funding_rate = sbe_m(fr_m, fr_exp);
+            if mark_price > 0.0 {
+                let msg = MarkPriceMsg::create(contract.clone(), mark_price, ts_ms);
+                if tx.send(msg.to_bytes()).is_ok() {
+                    parsed += 1;
+                }
+            }
+            if idx_price > 0.0 {
+                let msg = IndexPriceMsg::create(contract.clone(), idx_price, ts_ms);
+                if tx.send(msg.to_bytes()).is_ok() {
+                    parsed += 1;
+                }
+            }
+            let msg = FundingRateMsg::create(contract, funding_rate, 0, ts_ms);
+            if tx.send(msg.to_bytes()).is_ok() {
+                parsed += 1;
+            }
+        }
+        parsed
+    }
+}
+
+// ─── Gate SBE helpers ─────────────────────────────────────────────────────────
+
+/// Parse SBE header. Returns (template_id, block_length) or None if wrong schema / too short.
+fn sbe_hdr(buf: &[u8]) -> Option<(u16, usize)> {
+    if buf.len() < GATE_SBE_HDR {
+        return None;
+    }
+    let bl = u16::from_le_bytes([buf[0], buf[1]]) as usize;
+    let tid = u16::from_le_bytes([buf[2], buf[3]]);
+    let sid = u16::from_le_bytes([buf[4], buf[5]]);
+    if sid != GATE_SBE_SCHEMA {
+        return None;
+    }
+    Some((tid, bl))
+}
+
+#[inline]
+fn sbe_i64(buf: &[u8], off: usize) -> Option<i64> {
+    buf.get(off..off + 8)
+        .and_then(|s| s.try_into().ok())
+        .map(i64::from_le_bytes)
+}
+
+#[inline]
+fn sbe_u64(buf: &[u8], off: usize) -> Option<u64> {
+    buf.get(off..off + 8)
+        .and_then(|s| s.try_into().ok())
+        .map(u64::from_le_bytes)
+}
+
+#[inline]
+fn sbe_m(m: i64, exp: i8) -> f64 {
+    (m as f64) * 10f64.powi(exp as i32)
+}
+
+/// varString8: 1B length + UTF-8 data. Returns (string, next_offset).
+fn sbe_vs(buf: &[u8], off: usize) -> Option<(String, usize)> {
+    let n = *buf.get(off)? as usize;
+    let s = std::str::from_utf8(buf.get(off + 1..off + 1 + n)?)
+        .ok()?
+        .to_owned();
+    Some((s, off + 1 + n))
+}
+
+/// Skip varString8, return next_offset.
+fn sbe_vs_skip(buf: &[u8], off: usize) -> Option<usize> {
+    let n = *buf.get(off)? as usize;
+    buf.get(off + 1..off + 1 + n)?;
+    Some(off + 1 + n)
+}
+
+/// groupSize16Encoding: (entry_block_len, num_in_group, off_after_header).
+fn sbe_grp(buf: &[u8], off: usize) -> Option<(usize, usize, usize)> {
+    if buf.len() < off + 4 {
+        return None;
+    }
+    let el = u16::from_le_bytes([buf[off], buf[off + 1]]) as usize;
+    let n = u16::from_le_bytes([buf[off + 2], buf[off + 3]]) as usize;
+    Some((el, n, off + 4))
+}
+
+/// Decode `n` orderbook levels starting at `off`, each `el` bytes: pxMantissa i64 + szMantissa i64.
+fn sbe_levels(buf: &[u8], off: usize, el: usize, n: usize, px_exp: i8, sz_exp: i8) -> Vec<Level> {
+    let mut out = Vec::with_capacity(n);
+    let mut cur = off;
+    for _ in 0..n {
+        if buf.len() < cur + 16 {
+            break;
+        }
+        if let (Some(pm), Some(sm)) = (sbe_i64(buf, cur), sbe_i64(buf, cur + 8)) {
+            let price = sbe_m(pm, px_exp);
+            let amount = sbe_m(sm, sz_exp);
+            if price > 0.0 {
+                out.push(Level::from_values(price, amount));
+            }
+        }
+        cur += el;
+    }
+    out
 }
 
 #[cfg(test)]

@@ -475,7 +475,7 @@ pub struct GatePerpsSubscribeMsgs {
 }
 
 impl GatePerpsSubscribeMsgs {
-    pub const WS_URL: &'static str = "wss://fx-ws.gateio.ws/v4/ws/usdt";
+    pub const WS_URL: &'static str = "wss://fx-ws.gateio.ws/v4/ws/usdt/sbe";
     pub const MAX_CHANNELS_PER_CONNECTION: usize = 100;
 
     pub async fn new(cfg: &Config) -> Self {
@@ -815,7 +815,7 @@ impl SubscribeMsgs {
             //Gate.io: 现货与合约分不同 endpoint
             Exchange::Gate => match venue {
                 TradingVenue::GateMargin => "wss://api.gateio.ws/ws/v4/",
-                _ => "wss://fx-ws.gateio.ws/v4/ws/usdt",
+                _ => "wss://fx-ws.gateio.ws/v4/ws/usdt/sbe",
             },
             //Bitget
             Exchange::Bitget => "wss://ws.bitget.com/v2/ws/public",
@@ -845,7 +845,7 @@ impl SubscribeMsgs {
             //Gate.io: 现货与合约分不同 endpoint
             Exchange::Gate => match venue {
                 TradingVenue::GateMargin => "wss://api.gateio.ws/ws/v4/",
-                _ => "wss://fx-ws.gateio.ws/v4/ws/usdt",
+                _ => "wss://fx-ws.gateio.ws/v4/ws/usdt/sbe",
             },
             //Bitget
             Exchange::Bitget => "wss://ws.bitget.com/v2/ws/public",
