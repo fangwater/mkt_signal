@@ -48,8 +48,9 @@ fn main() -> Result<()> {
         512 => inspect_typed::<512>(&local_node, &args.service),
         1024 => inspect_typed::<1024>(&local_node, &args.service),
         2048 => inspect_typed::<2048>(&local_node, &args.service),
+        4096 => inspect_typed::<4096>(&local_node, &args.service),
         other => {
-            bail!("unsupported payload_size={other}; supported: 64, 128, 256, 512, 1024, 2048")
+            bail!("unsupported payload_size={other}; supported: 64, 128, 256, 512, 1024, 2048, 4096")
         }
     }
 }
