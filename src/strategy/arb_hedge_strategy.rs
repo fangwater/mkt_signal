@@ -1,4 +1,5 @@
 use crate::common::symbol_util::normalize_symbol_for_internal;
+use crate::common::tick_math::QuantizedValue;
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::log_throttle::log_order_rate_limit_summary;
 use crate::pre_trade::monitor_channel::MonitorChannel;
@@ -8,7 +9,7 @@ use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::signal_channel::SignalChannel;
 use crate::pre_trade::{PersistChannel, TradeEngHub};
 use crate::signal::arb_signal::ArbBackwardQueryMsg;
-use crate::signal::common::{OrderStatus, SignalBytes, TradingVenue};
+use crate::signal::common::{OrderStatus, SignalBytes, TradingLeg, TradingVenue};
 use crate::signal::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::hedge_order_reconcile::{HedgeOrderReconcileCommon, HedgeOrderReconcileState};
@@ -31,6 +32,7 @@ use crate::strategy::uniform_order_helper::{
 use log::{debug, error, info, warn};
 use std::any::Any;
 use std::collections::{BTreeMap, HashMap};
+use std::sync::OnceLock;
 
 const ARB_HEDGE_QTY_EPS: f64 = 1e-12;
 const ARB_HEDGE_PENDING_QUERY_MIN_USDT: f64 = 25.0;
@@ -40,6 +42,24 @@ const ARB_HEDGE_QUERY_INTERVAL_US: i64 = 1_000_000;
 const ARB_HEDGE_INSUFFICIENT_MARGIN_COOLDOWN_US: i64 = 5_000_000;
 /// 应急每次降杠杆的衰减系数：new = round(current * 0.8, 1)。
 const ARB_HEDGE_LEVERAGE_DAMPING: f64 = 0.8;
+
+static ARB_HEDGE_FORCE_TAKER: OnceLock<bool> = OnceLock::new();
+
+fn arb_hedge_force_taker() -> bool {
+    *ARB_HEDGE_FORCE_TAKER.get_or_init(|| {
+        let enabled = std::env::var("ARB_HEDGE_FORCE_TAKER")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "True" | "on" | "ON"))
+            .unwrap_or(false);
+        if enabled {
+            warn!(
+                "ARB_HEDGE_FORCE_TAKER=on: pre_trade ArbHedge will bypass backward query and submit taker directly"
+            );
+        }
+        enabled
+    })
+}
 
 /// Arb 对冲策略的只读状态快照。
 ///
@@ -378,6 +398,109 @@ impl ArbHedgeStrategy {
         }
     }
 
+    fn send_force_taker_hedge_direct(&mut self, now_ts: i64, due_hedge_qty: f64) -> bool {
+        self.last_hedge_ts_ms = Some(now_ts / 1000);
+        let Some(mark_price) = self.mark_price() else {
+            info!(
+                "ArbHedgeStrategy: strategy_id={} symbol={} skip force-taker direct hedge because mark_price missing due_hedge_qty={:.8}",
+                self.strategy_id, self.symbol, due_hedge_qty
+            );
+            return false;
+        };
+        if !(mark_price.is_finite() && mark_price > 0.0) {
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} symbol={} skip force-taker direct hedge because mark_price invalid mark_price={:.8} due_hedge_qty={:.8}",
+                self.strategy_id, self.symbol, mark_price, due_hedge_qty
+            );
+            return false;
+        }
+
+        let hedge_side = if due_hedge_qty >= 0.0 {
+            Side::Sell
+        } else {
+            Side::Buy
+        };
+        let raw_base_qty = due_hedge_qty.abs();
+        let (qty, _) = match MonitorChannel::instance().align_order_by_venue(
+            self.hedge_venue,
+            &self.symbol,
+            raw_base_qty,
+            mark_price,
+        ) {
+            Ok(aligned) => aligned,
+            Err(err) => {
+                warn!(
+                    "ArbHedgeStrategy: strategy_id={} symbol={} force-taker direct align failed venue={:?} raw_base_qty={:.8} mark_price={:.8} err={}",
+                    self.strategy_id, self.symbol, self.hedge_venue, raw_base_qty, mark_price, err
+                );
+                return false;
+            }
+        };
+        if !(qty.is_finite() && qty > 0.0) {
+            info!(
+                "ArbHedgeStrategy: strategy_id={} symbol={} skip force-taker direct hedge because aligned qty zero raw_base_qty={:.8}",
+                self.strategy_id, self.symbol, raw_base_qty
+            );
+            return false;
+        }
+
+        let qty_tick = MonitorChannel::instance()
+            .try_venue_min_qty_table(self.hedge_venue)
+            .and_then(|table| {
+                let symbol_key =
+                    crate::common::symbol_util::min_qty_symbol_key(self.hedge_venue, &self.symbol);
+                table.step_size(&symbol_key)
+            })
+            .unwrap_or(0.0);
+        let Some(amount_qv) = QuantizedValue::encode_floor(qty, qty_tick) else {
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} symbol={} force-taker direct amount qv invalid qty={:.8} qty_tick={:.8}",
+                self.strategy_id, self.symbol, qty, qty_tick
+            );
+            return false;
+        };
+        if amount_qv.get_count() <= 0 {
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} symbol={} force-taker direct amount qv non-positive qty={:.8} qty_tick={:.8} count={}",
+                self.strategy_id,
+                self.symbol,
+                qty,
+                qty_tick,
+                amount_qv.get_count()
+            );
+            return false;
+        }
+
+        let request_seq = self.next_hedge_request_seq();
+        self.pending_hedge_request_seq = Some(request_seq);
+        let mut ctx = ArbHedgeCtx::new();
+        ctx.strategy_id = self.strategy_id;
+        ctx.set_side(hedge_side);
+        ctx.hedging_leg = TradingLeg::new(self.hedge_venue, mark_price, mark_price, now_ts);
+        ctx.set_hedging_symbol(&self.symbol);
+        ctx.price_qv = QuantizedValue::zero();
+        ctx.amount_qv = amount_qv;
+        ctx.price_offset = 0.0;
+        ctx.signal_ts = now_ts;
+        ctx.exp_time = 0;
+        ctx.request_seq = request_seq;
+        ctx.set_from_key(format!("arb_hedge_force_taker_direct|{}", now_ts).into_bytes());
+
+        info!(
+            "ArbHedgeStrategy: strategy_id={} symbol={} force-taker direct hedge due_hedge_qty={:.8} raw_base_qty={:.8} aligned_qty={:.8} side={:?} mark_price={:.8} request_seq={}",
+            self.strategy_id,
+            self.symbol,
+            due_hedge_qty,
+            raw_base_qty,
+            qty,
+            hedge_side,
+            mark_price,
+            request_seq
+        );
+        self.handle_arb_hedge_signal(ctx);
+        true
+    }
+
     fn send_hedge_query(&mut self, now_ts: i64, due_hedge_qty: f64) {
         self.last_hedge_ts_ms = Some(now_ts / 1000);
         let risk_loader = PreTradeParamsLoader::instance();
@@ -499,6 +622,15 @@ impl ArbHedgeStrategy {
                 ARB_HEDGE_PENDING_QUERY_MIN_USDT,
                 self.next_query_ts_us
             );
+            return false;
+        }
+        if arb_hedge_force_taker() {
+            if self.send_force_taker_hedge_direct(now_ts, due_hedge_qty) {
+                return true;
+            }
+            if throttle_on_skip {
+                self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
+            }
             return false;
         }
         self.send_hedge_query(now_ts, due_hedge_qty);
