@@ -187,10 +187,12 @@ impl BitgetAccountEventParser {
 
         let mut sent = 0;
 
-        let wallet = parse_f64_str(&coin_obj.balance)
+        let net_balance = parse_f64_str(&coin_obj.balance)
             .map(|balance| balance + parse_f64_str(&coin_obj.locked).unwrap_or(0.0))
             .or_else(|| parse_f64_str(&coin_obj.equity))
             .unwrap_or(0.0);
+        let (has_liability_fields, borrowed, interest) = bitget_coin_debt(coin_obj);
+        let wallet = net_balance + borrowed + interest;
         let balance_msg = BasicBalanceMsg::create(timestamp, coin.clone(), wallet);
         let payload = balance_msg.to_bytes();
         let event = BasicAccountEventMsg::create(
@@ -202,17 +204,6 @@ impl BitgetAccountEventParser {
             sent += 1;
         }
 
-        let has_liability_fields = !coin_obj.borrow.trim().is_empty()
-            || !coin_obj.debt.trim().is_empty()
-            || !coin_obj.debts.trim().is_empty();
-        let borrowed = parse_f64_str(&coin_obj.borrow)
-            .or_else(|| parse_f64_str(&coin_obj.debt))
-            .or_else(|| parse_f64_str(&coin_obj.debts))
-            .unwrap_or(0.0);
-        let debt_total = parse_f64_str(&coin_obj.debts)
-            .or_else(|| parse_f64_str(&coin_obj.debt))
-            .unwrap_or(borrowed);
-        let interest = (debt_total - borrowed).max(0.0);
         if borrowed > 0.0 || interest > 0.0 || has_liability_fields {
             let interest_msg = BasicBorrowInterestMsg::create(timestamp, coin, borrowed, interest);
             let payload = interest_msg.to_bytes();
@@ -732,6 +723,21 @@ fn parse_f64_str(v: &str) -> Option<f64> {
     s.parse::<f64>().ok()
 }
 
+fn bitget_coin_debt(coin_obj: &BitgetAccountChannelCoin) -> (bool, f64, f64) {
+    let has_liability_fields = !coin_obj.borrow.trim().is_empty()
+        || !coin_obj.debt.trim().is_empty()
+        || !coin_obj.debts.trim().is_empty();
+    let debt_total = parse_f64_str(&coin_obj.debts)
+        .or_else(|| parse_f64_str(&coin_obj.debt))
+        .unwrap_or(0.0);
+    if let Some(borrowed) = parse_f64_str(&coin_obj.borrow) {
+        let interest = (debt_total - borrowed).max(0.0);
+        (has_liability_fields, borrowed, interest)
+    } else {
+        (has_liability_fields, debt_total, 0.0)
+    }
+}
+
 fn parse_i64_str(v: &str) -> Option<i64> {
     let s = v.trim();
     if s.is_empty() {
@@ -790,7 +796,7 @@ mod tests {
     }
 
     #[test]
-    fn account_channel_prefers_gross_balance_over_equity() {
+    fn account_channel_converts_bitget_net_balance_to_gross_wallet() {
         let parser = BitgetAccountEventParser::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
 
@@ -802,7 +808,7 @@ mod tests {
                     {
                         "uTime":"1710000000123",
                         "coin":[
-                            {"coin":"SOL","equity":"-11.8","balance":"-70.8","debt":"70.8"}
+                            {"coin":"SOL","equity":"-70.8","balance":"-70.8","debt":"70.8"}
                         ]
                     }
                 ]
@@ -817,9 +823,20 @@ mod tests {
             split_basic_account_event(&wrapped_balance).expect("wrapped balance");
         assert_eq!(event_type, BasicAccountEventType::BalanceUpdate);
         assert_eq!(scope, BasicAccountScope::BitgetUnified);
-        let msg = BasicBalanceMsg::from_bytes(payload).expect("balance payload");
-        assert_eq!(msg.symbol, "SOL");
-        assert!((msg.wallet + 70.8).abs() < 1e-12);
+        let balance = BasicBalanceMsg::from_bytes(payload).expect("balance payload");
+        assert_eq!(balance.symbol, "SOL");
+        assert!(balance.wallet.abs() < 1e-12);
+
+        let wrapped_borrow = rx.try_recv().expect("borrow event");
+        let (event_type, scope, payload) =
+            split_basic_account_event(&wrapped_borrow).expect("wrapped borrow");
+        assert_eq!(event_type, BasicAccountEventType::BorrowInterest);
+        assert_eq!(scope, BasicAccountScope::BitgetUnified);
+        let borrow = BasicBorrowInterestMsg::from_bytes(payload).expect("borrow payload");
+        assert_eq!(borrow.symbol, "SOL");
+        assert!((borrow.borrowed - 70.8).abs() < 1e-12);
+        assert_eq!(borrow.interest, 0.0);
+        assert!((balance.wallet - borrow.borrowed - borrow.interest + 70.8).abs() < 1e-12);
     }
 
     #[test]

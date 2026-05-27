@@ -62,6 +62,21 @@ fn parse_f64(v: &str) -> Option<f64> {
     s.parse::<f64>().ok()
 }
 
+fn parse_bitget_debt(row: &BitgetAccountAssetRow) -> (bool, f64, f64) {
+    let has_liability_fields = !row.borrow.trim().is_empty()
+        || !row.debt.trim().is_empty()
+        || !row.debts.trim().is_empty();
+    let debt_total = parse_f64(&row.debts)
+        .or_else(|| parse_f64(&row.debt))
+        .unwrap_or(0.0);
+    if let Some(borrowed) = parse_f64(&row.borrow) {
+        let interest = (debt_total - borrowed).max(0.0);
+        (has_liability_fields, borrowed, interest)
+    } else {
+        (has_liability_fields, debt_total, 0.0)
+    }
+}
+
 pub fn parse_bitget_account_balance_snapshot(json: &str) -> Option<Vec<Bytes>> {
     let resp: BitgetAccountAssetsResponse = serde_json::from_str(json).ok()?;
     if resp.code != "00000" && resp.code != "0" {
@@ -118,23 +133,14 @@ pub fn parse_bitget_account_balance_snapshot(json: &str) -> Option<Vec<Bytes>> {
             continue;
         }
 
-        let wallet = parse_f64(&row.balance)
+        let net_balance = parse_f64(&row.balance)
             .map(|balance| balance + parse_f64(&row.locked).unwrap_or(0.0))
             .or_else(|| parse_f64(&row.equity))
             .unwrap_or(0.0);
+        let (has_liability_fields, borrowed, interest) = parse_bitget_debt(&row);
+        let wallet = net_balance + borrowed + interest;
         out.push(BasicBalanceMsg::create(ts, coin.clone(), wallet).to_bytes());
 
-        let has_liability_fields = !row.borrow.trim().is_empty()
-            || !row.debt.trim().is_empty()
-            || !row.debts.trim().is_empty();
-        let borrowed = parse_f64(&row.borrow)
-            .or_else(|| parse_f64(&row.debt))
-            .or_else(|| parse_f64(&row.debts))
-            .unwrap_or(0.0);
-        let debt_total = parse_f64(&row.debts)
-            .or_else(|| parse_f64(&row.debt))
-            .unwrap_or(borrowed);
-        let interest = (debt_total - borrowed).max(0.0);
         if borrowed > 0.0 || interest > 0.0 || has_liability_fields {
             out.push(BasicBorrowInterestMsg::create(ts, coin, borrowed, interest).to_bytes());
         }
@@ -170,7 +176,7 @@ mod tests {
             BasicAccountEventType::BalanceUpdate as u32
         );
         assert_eq!(bal.symbol, "USDT");
-        assert!((bal.wallet - 1025.0).abs() < 1e-12);
+        assert!((bal.wallet - 1075.0).abs() < 1e-12);
 
         let borrow = BasicBorrowInterestMsg::from_bytes(&msgs[1]).expect("borrow");
         assert_eq!(
@@ -230,5 +236,29 @@ mod tests {
         let bal = BasicBalanceMsg::from_bytes(&msgs[0]).expect("balance");
         assert_eq!(bal.symbol, "USDT");
         assert!((bal.wallet - 115.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn bitget_negative_net_balance_emits_gross_wallet() {
+        let json = r#"{
+            "code":"00000",
+            "data":{
+                "assets":[
+                    {"coin":"ETH","equity":"-5.69401142","balance":"-5.69401142","debt":"5.69401142"}
+                ]
+            }
+        }"#;
+        let msgs = parse_bitget_account_balance_snapshot(json).expect("parse ok");
+        assert_eq!(msgs.len(), 2);
+
+        let bal = BasicBalanceMsg::from_bytes(&msgs[0]).expect("balance");
+        assert_eq!(bal.symbol, "ETH");
+        assert!(bal.wallet.abs() < 1e-12);
+
+        let borrow = BasicBorrowInterestMsg::from_bytes(&msgs[1]).expect("borrow");
+        assert_eq!(borrow.symbol, "ETH");
+        assert!((borrow.borrowed - 5.69401142).abs() < 1e-12);
+        assert_eq!(borrow.interest, 0.0);
+        assert!((bal.wallet - borrow.borrowed - borrow.interest + 5.69401142).abs() < 1e-12);
     }
 }

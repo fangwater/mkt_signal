@@ -13,7 +13,7 @@ Note: Bitget UTA has no documented manual repay REST endpoint. Debt clearing
 relies on Phase B's auto-repay via the BUY back, per user direction.
 
 Modes:
-  align (default) — net_qty = available + futures_position_coins - borrow = 0;
+  align (default) — net_qty = spot_net_balance + futures_position_coins = 0;
                     futures order is allowed to add/flip to match spot exposure
   clear           — close futures to 0 with reduceOnly; B or S to drain asset
 
@@ -311,16 +311,32 @@ def fetch_specs(symbols: List[str]) -> Dict[str, SymbolSpec]:
             # Bitget instruments expose qty step under different keys depending on category;
             # try several common names.
             spot_qty_step=decimal_or(
-                m.get("quantityStep") or m.get("sizeStep") or m.get("baseSizeStep"), "1"
+                m.get("quantityStep")
+                or m.get("quantityMultiplier")
+                or m.get("sizeStep")
+                or m.get("baseSizeStep"),
+                "1",
             ),
             spot_min_qty=decimal_or(
-                m.get("minOrderQuantity") or m.get("minTradeNum") or m.get("minQuantity"), "0"
+                m.get("minOrderQuantity")
+                or m.get("minOrderQty")
+                or m.get("minTradeNum")
+                or m.get("minQuantity"),
+                "0",
             ),
             futures_qty_step=decimal_or(
-                f.get("quantityStep") or f.get("sizeStep") or f.get("baseSizeStep"), "1"
+                f.get("quantityStep")
+                or f.get("quantityMultiplier")
+                or f.get("sizeStep")
+                or f.get("baseSizeStep"),
+                "1",
             ),
             futures_min_qty=decimal_or(
-                f.get("minOrderQuantity") or f.get("minTradeNum") or f.get("minQuantity"), "0"
+                f.get("minOrderQuantity")
+                or f.get("minOrderQty")
+                or f.get("minTradeNum")
+                or f.get("minQuantity"),
+                "0",
             ),
         )
     return out
@@ -349,13 +365,27 @@ def fetch_assets(api_key, api_secret, passphrase) -> Dict[str, Tuple[Decimal, De
         coin = str(item.get("coin", "")).upper()
         if not coin:
             continue
-        avail = decimal_or(item.get("available"))
-        # Bitget exposes both `borrow` (principal) and `debt`/`debts` (with interest);
-        # use `debt` if present, else fall back to `borrow`.
-        debt = decimal_or(item.get("debt") or item.get("debts"))
-        borrow = decimal_or(item.get("borrow"))
-        borrowed = debt if debt > 0 else borrow
-        interest = max(debt - borrow, ZERO)
+        # Bitget UTA `available` is already the net coin amount available to
+        # trade. It can be negative when the account borrowed that coin, so the
+        # planner must not subtract debt from it again.
+        avail_raw = item.get("available")
+        if avail_raw in (None, ""):
+            avail_raw = item.get("equity") if item.get("equity") not in (None, "") else item.get("balance")
+        avail = decimal_or(avail_raw)
+
+        borrow_raw = item.get("borrow")
+        debt_raw = item.get("debts") if item.get("debts") not in (None, "") else item.get("debt")
+        borrow = decimal_or(borrow_raw)
+        debt_total = decimal_or(debt_raw)
+        if borrow_raw not in (None, ""):
+            borrowed = borrow
+            interest = max(debt_total - borrow, ZERO) if debt_raw not in (None, "") else ZERO
+        elif debt_raw not in (None, ""):
+            borrowed = debt_total
+            interest = ZERO
+        else:
+            borrowed = ZERO
+            interest = ZERO
         out[coin] = (avail, borrowed, interest)
     return out
 
@@ -404,9 +434,9 @@ def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
     borrowed = state.borrowed
     interest = state.interest
     pos = state.futures_position
-    # No Phase R; free_after = free, borrow_after = borrowed.
+    # Bitget UTA spot balance is already net of debt. Do not subtract debt again.
     free_after = free
-    net_qty = free - borrowed + pos
+    net_qty = free_after + pos
 
     futures_side: Optional[str] = None
     futures_qty = ZERO
@@ -428,7 +458,14 @@ def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
         futures_side = "buy" if delta > 0 else "sell"
         target = abs(delta)
         futures_qty = floor_to_step(target, spec.futures_qty_step)
-        if futures_qty < spec.futures_min_qty:
+        if futures_qty <= 0:
+            futures_skip = (
+                f"target {format_decimal(target)} floors to 0 with step "
+                f"{format_decimal(spec.futures_qty_step)}"
+            )
+            futures_qty = ZERO
+            futures_side = None
+        elif futures_qty < spec.futures_min_qty:
             futures_skip = (
                 f"qty {format_decimal(futures_qty)} < min "
                 f"{format_decimal(spec.futures_min_qty)}: dust below threshold"
@@ -445,9 +482,9 @@ def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
             futures_side = None
 
     if mode == "clear":
-        # If borrow > free → net BUY needed to extinguish borrow (cross-margin auto-repay)
-        if borrowed > free:
-            owed = (borrowed - free) + interest
+        # Negative spot net means BUY is needed to extinguish borrow (auto-repay).
+        if free_after < 0:
+            owed = -free_after
             buyback_amt = ceil_to_step(owed, spec.spot_qty_step)
             if buyback_amt < spec.spot_min_qty:
                 buyback_skip = (
@@ -455,13 +492,13 @@ def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
                     f"{format_decimal(spec.spot_min_qty)} (owed={format_decimal(owed)})"
                 )
                 buyback_amt = ZERO
-        elif free > borrowed:
-            sell_target = free - borrowed
+        elif free_after > 0:
+            sell_target = free_after
             selldown_amt = floor_to_step(sell_target, spec.spot_qty_step)
             if selldown_amt < spec.spot_min_qty:
                 selldown_skip = (
                     f"selldown qty {format_decimal(selldown_amt)} < min "
-                    f"{format_decimal(spec.spot_min_qty)} (free-borrow={format_decimal(sell_target)})"
+                    f"{format_decimal(spec.spot_min_qty)} (spot_net={format_decimal(sell_target)})"
                 )
                 selldown_amt = ZERO
 
@@ -487,7 +524,7 @@ def print_plan(env_name, mode, plans: List[SymbolPlan], execute: bool) -> None:
     print(f"[info] env={env_name} mode={mode} execute={execute}")
     print()
     header = (
-        f"{'Symbol':<12} {'Asset':<6} {'Avail':>14} {'Borrowed':>14} {'Interest':>10} "
+        f"{'Symbol':<12} {'Asset':<6} {'SpotNet':>14} {'Borrowed':>14} {'Interest':>10} "
         f"{'Pos':>14} {'Net':>12} {'Fut Side':>9} {'Fut Qty':>14} "
         f"{'Fut RO':>6} {'Buyback':>12} {'Selldown':>12} Notes"
     )
@@ -503,7 +540,7 @@ def print_plan(env_name, mode, plans: List[SymbolPlan], execute: bool) -> None:
         if p.selldown_skip_reason:
             notes.append(f"selldown_skip: {p.selldown_skip_reason}")
         if mode != "clear" and s.borrowed > 0:
-            notes.append(f"borrowed={format_decimal(s.borrowed)} (no Phase R; clear mode handles)")
+            notes.append(f"borrowed={format_decimal(s.borrowed)} (metadata; SpotNet already includes it)")
         print(
             f"{s.spec.symbol:<12} {s.spec.asset:<6} "
             f"{format_decimal(s.free):>14} "
