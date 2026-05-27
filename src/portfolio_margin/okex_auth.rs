@@ -140,6 +140,16 @@ pub fn build_account_subscribe_message() -> serde_json::Value {
     })
 }
 
+/// 构建成交频道订阅消息（仅 VIP4+，否则收到 64003）
+pub fn build_fills_subscribe_message() -> serde_json::Value {
+    serde_json::json!({
+        "op": "subscribe",
+        "args": [{
+            "channel": "fills"
+        }]
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

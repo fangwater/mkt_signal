@@ -20,7 +20,7 @@ use bytes::Bytes;
 use log::{debug, error, info, warn};
 use mkt_signal::common::basic_account_msg::{
     split_basic_account_event, BasicAccountEventType, BasicAccountRiskMsg, BasicBalanceMsg,
-    BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg, OkexOrderMsg,
+    BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg, BasicUmUnrealizedMsg, OkexOrderMsg,
 };
 use mkt_signal::common::mkt_cfg::load_local_ips_preferring_trade_engine;
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
@@ -28,7 +28,8 @@ use mkt_signal::parser::default_parser::Parser;
 use mkt_signal::parser::okex_account_event_parser::OkexAccountEventParser;
 use mkt_signal::portfolio_margin::okex_auth::{
     build_account_subscribe_message, build_balance_and_position_subscribe_message,
-    build_orders_subscribe_message, OkexCredentials, OkexPrivateWsUrls,
+    build_fills_subscribe_message, build_orders_subscribe_message, OkexCredentials,
+    OkexPrivateWsUrls,
 };
 use mkt_signal::portfolio_margin::okex_rest::fetch_borrow_interest;
 use mkt_signal::portfolio_margin::okex_user_stream::OkexUserDataConnection;
@@ -37,6 +38,8 @@ use reqwest::Client;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
 use tokio::sync::{broadcast, watch};
@@ -91,15 +94,15 @@ async fn main() -> Result<()> {
         primary_ip, secondary_ip, session_max, ip_source
     );
 
-    // 构建订阅消息。
-    // account 频道提供 eq 余额口径；balance_and_position 提供实时仓位数量。
-    // UPL 保留由 pre_trade 侧的周期性 positions snapshot 补齐/展示，避免与 eq 双计。
-    let subscribe_messages = vec![
+    // 基础订阅消息（不含 fills，fills 在 spawn 内按 VIP 标志动态拼入）。
+    let base_subscribe_messages = vec![
         build_orders_subscribe_message("SPOT"),
         build_orders_subscribe_message("SWAP"),
         build_account_subscribe_message(),
         build_balance_and_position_subscribe_message(),
     ];
+    // fills 频道需要 VIP4+；收到 64003 后永久关闭，避免无效重连循环。
+    let fills_disabled = Arc::new(AtomicBool::new(false));
 
     // 创建事件收集通道
     let (evt_tx, mut evt_rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
@@ -117,7 +120,8 @@ async fn main() -> Result<()> {
         &ws_url,
         primary_ip.clone(),
         credentials.clone(),
-        subscribe_messages.clone(),
+        base_subscribe_messages.clone(),
+        fills_disabled.clone(),
         shutdown_rx.clone(),
         evt_tx.clone(),
         session_max,
@@ -127,7 +131,8 @@ async fn main() -> Result<()> {
         &ws_url,
         secondary_ip.clone(),
         credentials.clone(),
-        subscribe_messages.clone(),
+        base_subscribe_messages.clone(),
+        fills_disabled.clone(),
         shutdown_rx.clone(),
         evt_tx.clone(),
         session_max,
@@ -169,7 +174,8 @@ async fn main() -> Result<()> {
                         &ws_url,
                         primary_ip.clone(),
                         credentials.clone(),
-                        subscribe_messages.clone(),
+                        base_subscribe_messages.clone(),
+                        fills_disabled.clone(),
                         shutdown_rx.clone(),
                         evt_tx.clone(),
                         session_max,
@@ -187,7 +193,8 @@ async fn main() -> Result<()> {
                         &ws_url,
                         secondary_ip.clone(),
                         credentials.clone(),
-                        subscribe_messages.clone(),
+                        base_subscribe_messages.clone(),
+                        fills_disabled.clone(),
                         shutdown_rx.clone(),
                         evt_tx.clone(),
                         session_max,
@@ -255,7 +262,8 @@ fn spawn_okex_stream_path(
     ws_url: &str,
     local_ip: String,
     credentials: OkexCredentials,
-    subscribe_messages: Vec<serde_json::Value>,
+    base_subscribe_messages: Vec<serde_json::Value>,
+    fills_disabled: Arc<AtomicBool>,
     shutdown_rx: watch::Receiver<bool>,
     evt_tx: tokio::sync::mpsc::UnboundedSender<Bytes>,
     session_max: Option<Duration>,
@@ -268,13 +276,17 @@ fn spawn_okex_stream_path(
                 name, ws_url, local_ip
             );
 
-            // 创建原始消息广播通道
             let (raw_tx, mut raw_rx) = broadcast::channel::<Bytes>(8192);
 
-            // 创建 MktConnection（注意：OKEx 不需要在 URL 中传递订阅消息）
+            // 每次重连动态拼 fills（VIP 不足后不再加入）
+            let mut subscribe_messages = base_subscribe_messages.clone();
+            if !fills_disabled.load(Ordering::Relaxed) {
+                subscribe_messages.push(build_fills_subscribe_message());
+            }
+
             let mut conn = MktConnection::new(
                 ws_url.clone(),
-                serde_json::json!({}), // OKEx 在登录后发送订阅消息
+                serde_json::json!({}),
                 raw_tx.clone(),
                 shutdown_rx.clone(),
             );
@@ -282,19 +294,18 @@ fn spawn_okex_stream_path(
                 conn.local_ip = Some(local_ip.clone());
             }
 
-            // 创建 OKEx 用户数据连接
             let mut runner = OkexUserDataConnection::new(
                 conn,
                 credentials.clone(),
-                subscribe_messages.clone(),
+                subscribe_messages,
                 session_max,
             );
 
-            // 启动消费者任务
             let mut consumer_shutdown = shutdown_rx.clone();
             let evt_tx_clone = evt_tx.clone();
             let local_ip_log = local_ip.clone();
             let parser = OkexAccountEventParser::new();
+            let fills_disabled_inner = fills_disabled.clone();
             tokio::spawn(async move {
                 loop {
                     tokio::select! {
@@ -303,10 +314,14 @@ fn spawn_okex_stream_path(
                                 Ok(b) => {
                                     if let Ok(s) = std::str::from_utf8(&b) {
                                         debug!("[{}][ip={}] okex ws json: {}", name, local_ip_log, s);
+                                        // 检测 fills VIP 不足错误（code 64003）
+                                        if is_fills_vip_error(s) {
+                                            warn!("[{}] OKX fills channel requires VIP4+, disabling fills subscription (code 64003)", name);
+                                            fills_disabled_inner.store(true, Ordering::Relaxed);
+                                        }
                                     } else {
                                         debug!("[{}][ip={}] okex ws bin: {} bytes", name, local_ip_log, b.len());
                                     }
-                                    // 解析并通过通道发送解析后的账户事件（二进制）
                                     let _ = parser.parse(b, &evt_tx_clone);
                                 }
                                 Err(broadcast::error::RecvError::Closed) => break,
@@ -322,22 +337,39 @@ fn spawn_okex_stream_path(
                 }
             });
 
-            // 运行连接直到退出（关闭或错误）
             if let Err(e) = runner.start_ws().await {
                 error!("[{}] connection error: {}", name, e);
             }
 
-            // 检查是否需要关闭
             if *shutdown_rx.borrow() {
                 info!("[{}] shutdown signal received, exiting", name);
                 break;
             }
 
-            // 等待2秒后重连
             info!("[{}] connection closed, reconnecting in 2s...", name);
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
     })
+}
+
+/// 判断消息是否为 fills 频道 VIP 不足错误（code 64003）。
+fn is_fills_vip_error(s: &str) -> bool {
+    if !s.contains("64003") {
+        return false;
+    }
+    // 快速路径：检查 event=error + code=64003 + channel=fills
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(s) {
+        let is_error = v.get("event").and_then(|e| e.as_str()) == Some("error");
+        let code_ok = v.get("code").and_then(|c| c.as_str()) == Some("64003");
+        let channel_ok = v
+            .get("arg")
+            .and_then(|a| a.get("channel"))
+            .and_then(|c| c.as_str())
+            .map(|c| c == "fills")
+            .unwrap_or(true); // arg 缺失时保守处理（也认为是 fills 导致）
+        return is_error && code_ok && channel_ok;
+    }
+    false
 }
 
 /// 打印解析后的账户事件
@@ -431,6 +463,23 @@ fn log_parsed_event(msg: &Bytes) {
                 );
             }
         }
+        BasicAccountEventType::TradeUpdateLite => {
+            if let Ok(m) = BasicTradeLiteMsg::from_bytes(&payload) {
+                info!(
+                    "OKEx TradeUpdateLite: scope={} venue={} ts={} symbol={} cloid={} trade_id={} side={} maker={} last_px={} last_qty={}",
+                    account_scope.as_str(),
+                    m.venue,
+                    m.event_time,
+                    m.symbol,
+                    m.client_order_id,
+                    m.trade_id_str(),
+                    m.side,
+                    m.is_maker,
+                    m.last_executed_price,
+                    m.last_executed_quantity
+                );
+            }
+        }
         _ => {
             info!(
                 "OKEx basic msg: scope={} type={:?}",
@@ -487,7 +536,9 @@ impl AccountEventDeduper {
             BasicAccountEventType::AccountRisk => BasicAccountRiskMsg::from_bytes(&payload)
                 .ok()
                 .map(|msg| self.key_okex_account_risk(&msg)),
-            BasicAccountEventType::TradeUpdateLite => return true,
+            BasicAccountEventType::TradeUpdateLite => BasicTradeLiteMsg::from_bytes(&payload)
+                .ok()
+                .map(|msg| self.key_trade_lite(&msg)),
             BasicAccountEventType::Error => return true,
         };
 
@@ -588,6 +639,17 @@ impl AccountEventDeduper {
             msg.update_time as u64,
             order_status as u64,
             msg.cumulative_filled_quantity.to_bits(),
+        ])
+    }
+
+    fn key_trade_lite(&self, msg: &BasicTradeLiteMsg) -> u64 {
+        self.hash64(&[
+            BasicAccountEventType::TradeUpdateLite as u32 as u64,
+            msg.client_order_id as u64,
+            self.hash_str64(msg.trade_id_str()),
+            msg.event_time as u64,
+            msg.last_executed_price.to_bits(),
+            msg.last_executed_quantity.to_bits(),
         ])
     }
 }

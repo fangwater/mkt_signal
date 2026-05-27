@@ -2,7 +2,7 @@
 
 use crate::common::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
-    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, OkexOrderMsg,
+    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg, OkexOrderMsg,
 };
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
@@ -349,6 +349,88 @@ impl OkexAccountEventParser {
     }
 }
 
+impl OkexAccountEventParser {
+    /// 解析 OKX `fills` 频道（VIP4+）。
+    /// 参考字段：instId / clOrdId / tradeId / fillPx / fillSz / side / execType / ts
+    fn parse_fills_channel(
+        &self,
+        json_value: &serde_json::Value,
+        tx: &mpsc::UnboundedSender<Bytes>,
+    ) -> usize {
+        let top_ts = parse_i64_field(json_value.get("ts"));
+        let mut count = 0;
+
+        let data = match json_value.get("data").and_then(|v| v.as_array()) {
+            Some(arr) => arr,
+            None => return 0,
+        };
+
+        for fill in data {
+            let inst_id = fill.get("instId").and_then(|v| v.as_str()).unwrap_or("");
+            if inst_id.is_empty() {
+                continue;
+            }
+
+            let cl_ord_id_str = fill.get("clOrdId").and_then(|v| v.as_str()).unwrap_or("");
+            let client_order_id = match cl_ord_id_str.parse::<i64>() {
+                Ok(id) if id > 0 => id,
+                _ => {
+                    warn!("OKX fills: skip non-i64 clOrdId='{}' instId={}", cl_ord_id_str, inst_id);
+                    continue;
+                }
+            };
+
+            let trade_id = fill.get("tradeId").and_then(|v| v.as_str()).unwrap_or("");
+            if trade_id.is_empty() || trade_id == "0" {
+                continue;
+            }
+
+            let ts = parse_i64_field(fill.get("ts"));
+            let event_time = if ts > 0 { ts } else { top_ts };
+
+            let fill_px = parse_f64_field(fill.get("fillPx"));
+            let fill_sz = parse_f64_field(fill.get("fillSz"));
+            if fill_px <= 0.0 || fill_sz <= 0.0 {
+                continue;
+            }
+
+            let side = parse_side(fill.get("side").and_then(|v| v.as_str()).unwrap_or(""));
+            let is_maker = fill
+                .get("execType")
+                .and_then(|v| v.as_str())
+                .map(|s| s.eq_ignore_ascii_case("M"))
+                .unwrap_or(false);
+
+            // venue: SWAP → 2, 其余 → 0（与 OkexOrderMsg.inst_type 口径一致）
+            let venue: u8 = if inst_id.ends_with("-SWAP") { 2 } else { 0 };
+
+            let msg = BasicTradeLiteMsg::create(
+                venue,
+                event_time,
+                event_time,
+                inst_id.to_string(),
+                client_order_id,
+                trade_id,
+                side,
+                is_maker,
+                fill_px,
+                fill_sz,
+            );
+
+            let event = BasicAccountEventMsg::create(
+                BasicAccountEventType::TradeUpdateLite,
+                BasicAccountScope::OkexUnified,
+                msg.to_bytes(),
+            );
+            if tx.send(event.to_bytes()).is_ok() {
+                count += 1;
+            }
+        }
+
+        count
+    }
+}
+
 impl Parser for OkexAccountEventParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
         let json_str = match std::str::from_utf8(&msg) {
@@ -371,9 +453,8 @@ impl Parser for OkexAccountEventParser {
             "balance_and_position" => self.parse_balance_and_position(&json_value, tx),
             "orders" => self.parse_orders(&json_value, tx),
             "account" => self.parse_account(&json_value, tx),
+            "fills" => self.parse_fills_channel(&json_value, tx),
             "positions" => {
-                // 当前设计不消费 OKX positions 频道：
-                // - positions: 未单独订阅，避免与 balance_and_position 的仓位数量语义重叠
                 debug!("OKX: ignored channel={} payload={}", channel, json_str);
                 0
             }
