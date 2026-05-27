@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use crate::common::basic_account_msg::{
     split_basic_account_event, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
-    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
-    BinanceBasicOrderMsg, GateBasicOrderMsg, OkexOrderMsg,
+    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg,
+    BasicUmUnrealizedMsg, BinanceBasicOrderMsg, GateBasicOrderMsg, OkexOrderMsg,
 };
 use crate::common::bitget_account_msg::BitgetBasicOrderMsg;
 use crate::common::bybit_account_msg::BybitBasicOrderMsg;
@@ -179,6 +179,7 @@ use crate::signal::common::{align_price_ceil, align_price_floor};
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
+use crate::strategy::trade_update_lite::TradeUpdateLite;
 use crate::strategy::OrphanStrategyManager;
 use bytes::Bytes;
 use std::cell::RefCell;
@@ -610,7 +611,16 @@ impl BasicAccountListener {
                 }
                 _ => {}
             },
-            BasicAccountEventType::TradeUpdateLite => {}
+            BasicAccountEventType::TradeUpdateLite => {
+                // 仅 bybit intra（open 和 hedge 均为 Bybit）启用 TradeLite 派发。
+                if exchange_from_venue(self.open_venue) == Exchange::Bybit
+                    && exchange_from_venue(self.hedge_venue) == Exchange::Bybit
+                {
+                    if let Ok(msg) = BasicTradeLiteMsg::from_bytes(data) {
+                        dispatch_trade_update_lite_generic(&self.strategy_mgr, &msg);
+                    }
+                }
+            }
             BasicAccountEventType::AccountRisk => match BasicAccountRiskMsg::from_bytes(data) {
                 Ok(msg) => MonitorChannel::instance().apply_account_risk(account_scope, msg),
                 Err(err) => warn!(
@@ -2992,6 +3002,45 @@ where
 
     fn order_status(&self) -> Option<OrderStatus> {
         TradeUpdate::order_status(self.inner)
+    }
+}
+
+fn dispatch_trade_update_lite_generic<T>(
+    strategy_mgr: &Rc<RefCell<crate::strategy::StrategyManager>>,
+    trade: &T,
+) where
+    T: TradeUpdateLite,
+{
+    MonitorChannel::instance().bump_trade_update_seq();
+
+    let order_id = trade.client_order_id();
+    let strategy_ids: Vec<i32> = strategy_mgr.borrow().iter_ids().cloned().collect();
+    let mut matched = false;
+
+    for strategy_id in strategy_ids {
+        let strategy_opt = {
+            let mut mgr = strategy_mgr.borrow_mut();
+            mgr.take(strategy_id)
+        };
+
+        if let Some(mut strategy) = strategy_opt {
+            if strategy.is_strategy_order(order_id) {
+                matched = true;
+                strategy.apply_trade_update_lite(trade);
+            }
+            if strategy.is_active() {
+                strategy_mgr.borrow_mut().insert(strategy);
+            }
+        }
+    }
+
+    if !matched {
+        debug!(
+            "trade lite unmatched: sym={} cli_id={} trade_id={:?}",
+            trade.symbol(),
+            trade.client_order_id(),
+            trade.trade_id()
+        );
     }
 }
 
