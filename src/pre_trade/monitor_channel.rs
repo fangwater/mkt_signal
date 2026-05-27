@@ -2027,8 +2027,19 @@ impl MonitorChannel {
         // - USDT：按交易所维度单独维护
         // - Binance/Bitget 等 futures UPL 单独来自 BasicUmManager 并叠加
         // - OKX/Gate unified 的 balance/equity 已隐含账户级合约影响，因此只保留 UPL 展示，不再重复叠加
-        let mut total_equity_usdt: f64 = 0.0;
-        for (idx, leg) in [&inner.open_leg, &inner.hedge_leg].iter().enumerate() {
+        let mut scope_equity_usdt: HashMap<BasicAccountScope, f64> = HashMap::new();
+        let binance_mode = if inner.order_manager.borrow().binance_is_standard() {
+            Some(BinanceAccountMode::Standard)
+        } else {
+            Some(BinanceAccountMode::Unified)
+        };
+        for (idx, (venue, leg)) in [
+            (inner.open_venue, &inner.open_leg),
+            (inner.hedge_venue, &inner.hedge_leg),
+        ]
+        .iter()
+        .enumerate()
+        {
             if same_venue && idx == 1 {
                 continue;
             }
@@ -2041,7 +2052,8 @@ impl MonitorChannel {
                     &[],
                 );
                 exposure_mgr.revalue_with_prices(&price_snap);
-                total_equity_usdt += exposure_mgr.total_equity();
+                let scope = scope_for_venue(*venue, binance_mode);
+                *scope_equity_usdt.entry(scope).or_insert(0.0) += exposure_mgr.total_equity();
             }
         }
         // 加上各账户 scope 的 USDT 净头寸（Binance standard 下 margin/futures 分离）
@@ -2051,11 +2063,17 @@ impl MonitorChannel {
                 continue;
             }
             debug!("USDT net position: scope={} net={:.6}", scope.as_str(), net);
-            total_equity_usdt += net;
+            *scope_equity_usdt.entry(*scope).or_insert(0.0) += net;
         }
 
         let mut total_um_unrealized_usdt = 0.0;
-        for (idx, leg) in [&inner.open_leg, &inner.hedge_leg].iter().enumerate() {
+        for (idx, (venue, leg)) in [
+            (inner.open_venue, &inner.open_leg),
+            (inner.hedge_venue, &inner.hedge_leg),
+        ]
+        .iter()
+        .enumerate()
+        {
             if same_venue && idx == 1 {
                 continue;
             }
@@ -2063,10 +2081,21 @@ impl MonitorChannel {
                 let upl = um.borrow().total_unrealized_pnl_usdt();
                 total_um_unrealized_usdt += upl;
                 if !matches!(*exchange, Exchange::Gate | Exchange::Okex) {
-                    total_equity_usdt += upl;
+                    let scope = scope_for_venue(*venue, binance_mode);
+                    *scope_equity_usdt.entry(scope).or_insert(0.0) += upl;
                 }
             }
         }
+
+        // Bybit wallet topic 直接给账户级 totalEquity，优先使用交易所口径替换本地估值。
+        // 只覆盖 Bybit scope，跨交易所组合中其它账户仍保持原计算路径。
+        if let Some(risk) = inner.latest_account_risk.get(&BasicAccountScope::BybitUnified) {
+            if risk.actual_equity_usd.is_finite() && risk.actual_equity_usd.abs() > f64::EPSILON {
+                scope_equity_usdt.insert(BasicAccountScope::BybitUnified, risk.actual_equity_usd);
+            }
+        }
+
+        let total_equity_usdt: f64 = scope_equity_usdt.values().sum();
         let mut total_position_usdt = 0.0;
         let mut abs_total_exposure_usdt = 0.0;
         for (asset, (open_qty, hedge_qty)) in &exposures {
@@ -3572,6 +3601,61 @@ mod tests {
             *mc.borrow_mut() = Some(inner);
         });
         (strategy_mgr, open_bal)
+    }
+
+    #[test]
+    fn bybit_total_equity_uses_wallet_account_risk_actual_equity() {
+        let mut bybit_bal = BasicBalanceManager::new(Exchange::Bybit);
+        bybit_bal.apply_balance(&BasicBalanceMsg::create(0, "BTC".to_string(), 1.0));
+        let open_leg = LegMgr::Margin {
+            exchange: Exchange::Bybit,
+            bal: Rc::new(RefCell::new(bybit_bal)),
+        };
+        let hedge_leg = LegMgr::Futures {
+            exchange: Exchange::Bybit,
+            um: Rc::new(RefCell::new(BasicUmManager::new(Exchange::Bybit))),
+            min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Bybit))),
+        };
+
+        let mut price_table = PriceTable::new();
+        price_table.update_mark_price("BTCUSDT", 50_000.0, 0);
+
+        let mut usdt_mgr = UsdtBalanceManager::new(Exchange::Bybit);
+        usdt_mgr.apply_balance(&BasicBalanceMsg::create(0, "USDT".to_string(), 10_000.0));
+        let mut usdt_mgrs: HashMap<BasicAccountScope, Rc<RefCell<UsdtBalanceManager>>> =
+            HashMap::new();
+        usdt_mgrs.insert(
+            BasicAccountScope::BybitUnified,
+            Rc::new(RefCell::new(usdt_mgr)),
+        );
+
+        let mut latest_account_risk = HashMap::new();
+        latest_account_risk.insert(
+            BasicAccountScope::BybitUnified,
+            BasicAccountRiskMsg::create(0, 59_000.0, 60_000.0, 1_000.0, 2_000.0, 60.0, 0.0, 0.0),
+        );
+
+        let inner = MonitorChannelInner {
+            open_venue: TradingVenue::BybitMargin,
+            hedge_venue: TradingVenue::BybitFutures,
+            open_leg,
+            hedge_leg,
+            usdt_mgrs,
+            price_table: Rc::new(RefCell::new(price_table)),
+            venue_min_qty_tables: HashMap::new(),
+            strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
+            orphan_strategy_mgr: Rc::new(RefCell::new(OrphanStrategyManager::new())),
+            order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
+                BinanceAccountMode::Unified,
+            )))),
+            close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            trade_update_seq: 0,
+            latest_account_risk,
+            arb_startup_net_gate: ArbStartupNetGate::new(false),
+        };
+
+        let state = MonitorChannel::compute_basic_state(&inner);
+        assert!((state.total_equity_usdt - 60_000.0).abs() < 1e-9);
     }
 
     #[test]
