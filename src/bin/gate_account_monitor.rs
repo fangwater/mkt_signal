@@ -20,7 +20,7 @@ use log::{debug, error, info, warn};
 use mkt_signal::common::basic_account_msg::{
     get_basic_event_type, split_basic_account_event, BasicAccountEventMsg, BasicAccountEventType,
     BasicAccountRiskMsg, BasicAccountScope, BasicBalanceMsg, BasicBorrowInterestMsg,
-    BasicPositionMsg, BasicUmUnrealizedMsg, GateBasicOrderMsg,
+    BasicPositionMsg, BasicTradeLiteMsg, BasicUmUnrealizedMsg, GateBasicOrderMsg,
 };
 use mkt_signal::common::mkt_cfg::load_local_ips_preferring_trade_engine;
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
@@ -764,7 +764,10 @@ impl AccountEventDeduper {
             BasicAccountEventType::AccountRisk => BasicAccountRiskMsg::from_bytes(&payload)
                 .ok()
                 .map(|msg| self.key_account_risk(&msg)),
-            _ => return true, // 其他类型直接转发
+            BasicAccountEventType::TradeUpdateLite => BasicTradeLiteMsg::from_bytes(&payload)
+                .ok()
+                .map(|msg| self.key_trade_lite(&msg)),
+            _ => return true,
         };
 
         let Some(key) = key_opt else {
@@ -863,6 +866,17 @@ impl AccountEventDeduper {
             msg.adj_equity_usd.to_bits(),
             msg.maintenance_margin_usd.to_bits(),
             msg.margin_ratio.to_bits(),
+        ])
+    }
+
+    fn key_trade_lite(&self, msg: &BasicTradeLiteMsg) -> u64 {
+        self.hash64(&[
+            BasicAccountEventType::TradeUpdateLite as u32 as u64,
+            msg.client_order_id as u64,
+            self.hash_str64(msg.trade_id_str()),
+            msg.event_time as u64,
+            msg.last_executed_price.to_bits(),
+            msg.last_executed_quantity.to_bits(),
         ])
     }
 }
