@@ -221,22 +221,16 @@ impl GateAccountEventParser {
             };
 
             // 下游以 gross wallet - borrowed - interest 计算净头寸；Gate unified 的
-            // raw balance(b) 在 USDT 上可能不是 equity + liability，优先用 e+tl 保持净值口径。
-            let wallet = if let Some(equity) = parse_f64_str_or_num(details.get("e")) {
-                Some(equity + total_liab.unwrap_or(0.0))
-            } else if let Some(wallet) = parse_f64_str_or_num(details.get("b")) {
-                Some(wallet)
-            } else {
+            // raw balance(b) 不是权威净值口径，必须用 e + tl 生成 gross wallet。
+            let Some(equity) = parse_f64_str_or_num(details.get("e")) else {
                 warn!(
-                    "Gate: unified.asset_detail missing/invalid wallet/equity for symbol={}",
+                    "Gate: unified.asset_detail missing/invalid equity for symbol={}",
                     symbol
                 );
                 incomplete = true;
-                None
-            };
-            let Some(wallet) = wallet else {
                 continue;
             };
+            let wallet = equity + total_liab.unwrap_or(0.0);
 
             let msg = BasicBalanceMsg::create(timestamp, symbol.to_string(), wallet);
             let payload = msg.to_bytes();
@@ -1402,6 +1396,35 @@ mod tests {
         let borrow = BasicBorrowInterestMsg::from_bytes(body).expect("borrow body");
         assert_eq!(borrow.symbol, "USDT");
         assert!((borrow.borrowed - 3112.250826).abs() < 1e-12);
+    }
+
+    #[test]
+    fn unified_asset_detail_requires_equity_and_ignores_raw_balance() {
+        let parser = GateAccountEventParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let payload = Bytes::from_static(
+            br#"{
+                "time": 1775532902,
+                "time_ms": 1775532902286,
+                "channel": "unified.asset_detail",
+                "event": "update",
+                "result": {
+                    "u": 46586604,
+                    "t": 1775532902,
+                    "dts": {
+                        "USDT": {
+                            "tl": "10",
+                            "b": "999"
+                        }
+                    }
+                }
+            }"#,
+        );
+
+        let report = parser.parse_with_report(payload, &tx);
+        assert_eq!(report.emitted, 0);
+        assert!(!report.complete);
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

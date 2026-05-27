@@ -9,10 +9,10 @@ Four-phase pipeline per symbol (no dust convert):
   Phase U — USDT futures MARKET align/close
   Phase B — clear-mode only — spot BUY (account=unified) with auto_repay=true,
             THEN explicit /unified/loans repay (still required per memory)
-  Phase S — clear-mode only — spot SELL for USDT (free>borrow case)
+  Phase S — clear-mode only — spot SELL for USDT (available/free excess case)
 
 Modes:
-  align (default) — net_qty = available + futures_position_coins - borrowed = 0;
+  align (default) — net_qty = spot_net(equity) + futures_position_coins = 0;
                     futures order is allowed to add/flip to match spot exposure
   clear           — close futures fully with reduce_only; then B or S to drain asset
 
@@ -69,8 +69,9 @@ class SymbolSpec:
 @dataclass
 class SymbolState:
     spec: SymbolSpec
-    free: Decimal              # unified available
-    borrowed: Decimal          # unified borrowed
+    available: Decimal         # unified available, only used as repay/sell capacity
+    spot_net: Decimal          # unified per-coin equity, net of liabilities
+    borrowed: Decimal          # unified liability
     interest: Decimal          # interest (treated >=0)
     futures_position_contracts: Decimal  # signed
 
@@ -313,23 +314,31 @@ def fetch_specs(symbols: List[str]) -> Dict[str, SymbolSpec]:
     return out
 
 
-def fetch_unified_balance(api_key, api_secret) -> Dict[str, Tuple[Decimal, Decimal, Decimal]]:
+def fetch_unified_balance(api_key, api_secret) -> Dict[str, Tuple[Decimal, Decimal, Decimal, Decimal]]:
     status, body = gate_private("GET", "/unified/accounts", api_key, api_secret)
     if not (200 <= status < 300):
         sys.exit(f"[ERROR] /unified/accounts status={status} body={body}")
     parsed = json.loads(body)
     balances = parsed.get("balances", {}) or {}
-    out: Dict[str, Tuple[Decimal, Decimal, Decimal]] = {}
+    out: Dict[str, Tuple[Decimal, Decimal, Decimal, Decimal]] = {}
     if not isinstance(balances, dict):
         return out
     for asset, row in balances.items():
         if not isinstance(row, dict):
             continue
-        avail = decimal_or(row.get("available"))
-        borrowed = decimal_or(row.get("borrowed"))
-        # Gate exposes "total_liab" or "interest"; prefer interest when present
+        available = decimal_or(row.get("available"))
+        spot_net = decimal_or(row.get("equity"))
+        total_liab = decimal_or(row.get("total_liab"))
+        if total_liab > 0:
+            borrowed = total_liab
+        else:
+            borrowed = (
+                decimal_or(row.get("borrowed"))
+                + decimal_or(row.get("negative_liab"))
+                + decimal_or(row.get("futures_pos_liab"))
+            )
         interest = decimal_or(row.get("interest"))
-        out[asset.upper()] = (avail, borrowed, interest)
+        out[asset.upper()] = (available, spot_net, borrowed, interest)
     return out
 
 
@@ -362,16 +371,17 @@ def fetch_futures_positions(symbols: List[str], api_key, api_secret) -> Dict[str
 
 def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
     spec = state.spec
-    free = state.free
+    available = state.available
+    spot_net = state.spot_net
     borrowed = state.borrowed
     interest = state.interest
     pos_contracts = state.futures_position_contracts
     pos_coins = pos_contracts * spec.futures_contract_size
 
-    repay_amt = min(free, borrowed) if (free > 0 and borrowed > 0) else ZERO
-    free_after = free - repay_amt
+    repay_amt = min(available, borrowed) if (available > 0 and borrowed > 0) else ZERO
+    available_after = available - repay_amt
     borrow_after = borrowed - repay_amt
-    net_qty = free_after - borrow_after + pos_coins
+    net_qty = spot_net + pos_coins
 
     futures_side: Optional[str] = None
     futures_contracts = ZERO
@@ -419,19 +429,19 @@ def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
                     f"{format_decimal(spec.spot_min_base_amount)} (owed={format_decimal(owed)})"
                 )
                 buyback_amt = ZERO
-        elif free_after > 0:
-            selldown_amt = floor_to_step(free_after, spec.spot_amount_step)
+        elif available_after > 0:
+            selldown_amt = floor_to_step(available_after, spec.spot_amount_step)
             if selldown_amt < spec.spot_min_base_amount:
                 selldown_skip = (
                     f"selldown qty {format_decimal(selldown_amt)} < spot min_base_amount "
-                    f"{format_decimal(spec.spot_min_base_amount)} (free_after={format_decimal(free_after)})"
+                    f"{format_decimal(spec.spot_min_base_amount)} (available_after={format_decimal(available_after)})"
                 )
                 selldown_amt = ZERO
 
     return SymbolPlan(
         state=state,
         repay_amt=repay_amt,
-        free_after=free_after,
+        free_after=available_after,
         borrow_after=borrow_after,
         net_qty=net_qty,
         futures_side=futures_side,
@@ -452,7 +462,7 @@ def print_plan(env_name, mode, plans: List[SymbolPlan], execute: bool) -> None:
     print(f"[info] env={env_name} mode={mode} execute={execute}")
     print()
     header = (
-        f"{'Symbol':<12} {'Asset':<6} {'Free':>14} {'Borrowed':>14} {'Interest':>10} "
+        f"{'Symbol':<12} {'Asset':<6} {'Available':>14} {'SpotNet':>14} {'Borrowed':>14} {'Interest':>10} "
         f"{'PosContracts':>14} {'Repay':>12} {'Net':>12} {'Fut Side':>8} {'Contracts':>12} "
         f"{'Fut RO':>6} {'Buyback':>12} {'Selldown':>12} Notes"
     )
@@ -471,7 +481,8 @@ def print_plan(env_name, mode, plans: List[SymbolPlan], execute: bool) -> None:
             notes.append(f"leftover_borrow={format_decimal(p.borrow_after)}")
         print(
             f"{s.spec.symbol:<12} {s.spec.asset:<6} "
-            f"{format_decimal(s.free):>14} "
+            f"{format_decimal(s.available):>14} "
+            f"{format_decimal(s.spot_net):>14} "
             f"{format_decimal(s.borrowed):>14} "
             f"{format_decimal(s.interest):>10} "
             f"{format_decimal(s.futures_position_contracts):>14} "
@@ -649,10 +660,10 @@ def main() -> None:
     plans: List[SymbolPlan] = []
     for sym in symbols:
         spec = specs[sym]
-        free, borrowed, interest = balances.get(spec.asset, (ZERO, ZERO, ZERO))
+        available, spot_net, borrowed, interest = balances.get(spec.asset, (ZERO, ZERO, ZERO, ZERO))
         pos = futures_positions.get(spec.futures_contract, ZERO)
         state = SymbolState(
-            spec=spec, free=free, borrowed=borrowed, interest=interest,
+            spec=spec, available=available, spot_net=spot_net, borrowed=borrowed, interest=interest,
             futures_position_contracts=pos,
         )
         plans.append(plan_symbol(state, args.mode))

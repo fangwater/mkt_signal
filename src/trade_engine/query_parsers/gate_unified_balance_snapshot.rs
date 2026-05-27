@@ -91,16 +91,6 @@ fn find_time_ms(row: &Value) -> Option<i64> {
     None
 }
 
-fn find_wallet(row: &Value) -> Option<f64> {
-    let keys = ["balance", "b", "wallet", "wallet_balance", "walletBalance"];
-    for key in keys {
-        if let Some(v) = row.get(key).and_then(parse_f64_value) {
-            return Some(v);
-        }
-    }
-    None
-}
-
 fn find_liability(details: &Value) -> f64 {
     let total_liab = find_f64(details, &["total_liab", "tl"]).unwrap_or(0.0);
     if total_liab > 0.0 {
@@ -141,10 +131,8 @@ pub fn parse_gate_unified_balance_snapshot(json: &str) -> Option<Vec<Bytes>> {
     if let Some(rows) = extract_rows(&value) {
         for row in rows {
             let symbol = find_str(row, &["currency", "ccy", "asset", "symbol", "coin"])?;
-            let wallet = find_wallet(row).or_else(|| {
-                let equity = find_f64(row, &["equity", "eq"])?;
-                Some(equity + find_liability(row))
-            })?;
+            let equity = find_f64(row, &["equity", "eq", "e"])?;
+            let wallet = equity + find_liability(row);
             let ts = find_time_ms(row).unwrap_or(now_ts);
             out.push(BasicBalanceMsg::create(ts, symbol.to_ascii_uppercase(), wallet).to_bytes());
             if has_liability_fields(row) {
@@ -168,12 +156,10 @@ pub fn parse_gate_unified_balance_snapshot(json: &str) -> Option<Vec<Bytes>> {
     if let Some(balances) = extract_balance_map(&value) {
         for (symbol, details) in balances {
             let liab = find_liability(details);
-            let wallet = find_wallet(details)
-                .or_else(|| {
-                    let equity = find_f64(details, &["equity", "eq"])?;
-                    Some(equity + liab)
-                })
-                .unwrap_or(0.0);
+            let Some(equity) = find_f64(details, &["equity", "eq", "e"]) else {
+                continue;
+            };
+            let wallet = equity + liab;
 
             let ts = now_ts;
             out.push(BasicBalanceMsg::create(ts, symbol.to_ascii_uppercase(), wallet).to_bytes());
@@ -218,7 +204,7 @@ mod tests {
         let json = r#"{
             "data": [{
                 "asset": "BTC",
-                "b": 0.25,
+                "b": 999.0,
                 "e": 0.20,
                 "tl": 0.05,
                 "update_time_ms": 1716796364000
@@ -241,6 +227,7 @@ mod tests {
             "balances": {
                 "ETH": {
                     "available": "0",
+                    "balance": "999.0",
                     "freeze": "0",
                     "borrowed": "0.075",
                     "negative_liab": "0",
