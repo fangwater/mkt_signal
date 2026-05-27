@@ -4937,6 +4937,10 @@ impl ArbDecision {
         exchange: Option<Exchange>,
     ) -> Result<()> {
         Self::init_mode(mode)?;
+        if arb_hedge_force_taker() {
+            super::spread_factor::SpreadFactor::instance()
+                .set_mode(super::common::FactorMode::MT);
+        }
         ARB_DECISION.with(|cell| {
             if cell.get().is_none() {
                 let _ = cell.set(RefCell::new(ArbDecisionState::new(
