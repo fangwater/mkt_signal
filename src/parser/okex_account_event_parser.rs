@@ -375,7 +375,10 @@ impl OkexAccountEventParser {
             let client_order_id = match cl_ord_id_str.parse::<i64>() {
                 Ok(id) if id > 0 => id,
                 _ => {
-                    warn!("OKX fills: skip non-i64 clOrdId='{}' instId={}", cl_ord_id_str, inst_id);
+                    warn!(
+                        "OKX fills: skip non-i64 clOrdId='{}' instId={}",
+                        cl_ord_id_str, inst_id
+                    );
                     continue;
                 }
             };

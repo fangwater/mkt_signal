@@ -18,9 +18,9 @@ use crate::common::ipc_service_name::build_service_name;
 use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::{min_qty_symbol_key, normalize_symbol_for_venue};
 use crate::common::tick_math::QuantizedValue;
-use crate::market_maker::order_align::align_order_for_venue;
 use crate::common::time_util::get_timestamp_us;
 use crate::funding_rate::FundingRatePeriod;
+use crate::market_maker::order_align::align_order_for_venue;
 use crate::pre_trade::order_manager::Side;
 use crate::signal::arb_signal::{ArbBackwardQueryMsg, ArbCancelCandidateQueryMsg};
 use crate::signal::common::{SignalBytes, TradingLeg, TradingVenue};
@@ -1745,7 +1745,8 @@ fn emit_arb_taker_hedge_fast(
     if capped_due_hedge_qty.abs() <= 1e-12 {
         log::debug!(
             "{source}: ArbHedge force-taker capped qty zero strategy_id={} symbol={}",
-            query.strategy_id, symbol
+            query.strategy_id,
+            symbol
         );
         return;
     }
@@ -1823,7 +1824,9 @@ fn emit_arb_taker_hedge_fast(
     if let Err(err) = runtime.signal_pub.publish(&signal.to_bytes()) {
         log::warn!(
             "{source}: publish ArbHedge force-taker failed strategy_id={} symbol={} err={:#}",
-            query.strategy_id, symbol, err
+            query.strategy_id,
+            symbol,
+            err
         );
         return;
     }

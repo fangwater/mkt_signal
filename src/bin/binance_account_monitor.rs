@@ -5,7 +5,7 @@ use log::{debug, error, info, warn};
 use mkt_signal::common::basic_account_msg::{
     get_basic_event_type, split_basic_account_event, BasicAccountEventMsg, BasicAccountEventType,
     BasicAccountRiskMsg, BasicAccountScope, BasicBalanceMsg, BasicBorrowInterestMsg,
-    BasicPositionMsg, BasicUmUnrealizedMsg, BinanceBasicOrderMsg, BasicTradeLiteMsg,
+    BasicPositionMsg, BasicTradeLiteMsg, BasicUmUnrealizedMsg, BinanceBasicOrderMsg,
 };
 use mkt_signal::common::binance_account_mode::{init_binance_account_mode, BinanceAccountMode};
 use mkt_signal::common::mkt_cfg::load_local_ips_preferring_trade_engine;

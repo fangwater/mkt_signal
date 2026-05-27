@@ -1,4 +1,6 @@
-use crate::common::symbol_util::{extract_assets_from_symbol, normalize_symbol_for_internal};
+use crate::common::symbol_util::{
+    extract_assets_from_symbol, min_qty_symbol_key, normalize_symbol_for_internal,
+};
 use crate::common::tick_math::QuantizedValue;
 use crate::common::time_util::get_timestamp_us;
 use crate::common::trade_error_code::describe_trade_error_code;
@@ -21,6 +23,7 @@ use crate::strategy::order_reconcile::{
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKind};
 use crate::strategy::trade_update::TradeUpdate;
+use crate::strategy::trade_update_lite::TradeUpdateLite;
 use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
     publish_uniform_trade_order_from_order_update, UniformPublishCtx,
@@ -28,7 +31,7 @@ use crate::strategy::uniform_order_helper::{
 use crate::strategy::ws_order_update::prepare_failed_trade_engine_response_for_strategy;
 use log::{debug, error, info, warn};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 const OPEN_BALANCE_EPS: f64 = 1e-12;
 const OPEN_DELEVERAGING_EPS: f64 = 1e-12;
@@ -226,6 +229,9 @@ fn should_promote_open_pending_query_reason(
 #[derive(Debug, Clone, Default)]
 pub struct OpenOrderState {
     pub open_order_id: i64,
+    pub hedge_watermark_base_qty: f64,
+    pub trade_lite_cumulative_venue_qty: f64,
+    pub seen_trade_lite_ids: HashSet<[u8; crate::common::basic_account_msg::TRADE_ID_LEN]>,
     pub open_expire_ts: Option<i64>,
     pub open_side: Option<Side>,
     pub pending_order_query: Option<PendingOrderQueryReason>,
@@ -435,7 +441,24 @@ pub trait OpenStrategyCommon {
         open_client_order_id: i64,
         update_detail: &str,
     ) -> bool {
-        if filled_base_qty <= 1e-12 {
+        let target_base_qty = filled_base_qty.abs().min(order_base_qty.abs());
+        let already_recorded = self.open_order_state().hedge_watermark_base_qty;
+        let delta_base_qty = (target_base_qty - already_recorded).max(0.0);
+        if delta_base_qty <= 1e-12 {
+            debug!(
+                "{}: strategy_id={} skip open hedge record because watermark already covers fill symbol={} side={:?} order_base_qty={:.8} target_base_qty={:.8} watermark_base_qty={:.8} terminal_ts={} price={:.8} open_co_id={} detail={}",
+                self.strategy_name(),
+                self.strategy_id(),
+                symbol,
+                side,
+                order_base_qty,
+                target_base_qty,
+                already_recorded,
+                terminal_ts,
+                price,
+                open_client_order_id,
+                update_detail
+            );
             return false;
         }
         let close_ts = self.open_terminal_close_ts();
@@ -445,21 +468,42 @@ pub trait OpenStrategyCommon {
             symbol,
             side,
             order_base_qty,
-            filled_base_qty,
+            delta_base_qty,
             terminal_ts,
             price,
             close_ts,
             open_client_order_id,
         );
-        if !updated {
-            warn!(
-                "{}: strategy_id={} record open order terminal failed symbol={} side={:?} order_base_qty={:.8} filled_base_qty={:.8} terminal_ts={} price={:.8} close_ts={} open_co_id={} detail={}",
+        drop(strategy_mgr);
+        if updated {
+            self.open_order_state_mut().hedge_watermark_base_qty = target_base_qty;
+            info!(
+                "{}: strategy_id={} open hedge watermark advanced by terminal symbol={} side={:?} order_base_qty={:.8} target_base_qty={:.8} delta_base_qty={:.8} watermark_base_qty={:.8} terminal_ts={} price={:.8} close_ts={} open_co_id={} detail={}",
                 self.strategy_name(),
                 self.strategy_id(),
                 symbol,
                 side,
                 order_base_qty,
-                filled_base_qty,
+                target_base_qty,
+                delta_base_qty,
+                target_base_qty,
+                terminal_ts,
+                price,
+                close_ts,
+                open_client_order_id,
+                update_detail
+            );
+        } else {
+            warn!(
+                "{}: strategy_id={} record open order hedge failed symbol={} side={:?} order_base_qty={:.8} target_base_qty={:.8} delta_base_qty={:.8} watermark_base_qty={:.8} terminal_ts={} price={:.8} close_ts={} open_co_id={} detail={}",
+                self.strategy_name(),
+                self.strategy_id(),
+                symbol,
+                side,
+                order_base_qty,
+                target_base_qty,
+                delta_base_qty,
+                already_recorded,
                 terminal_ts,
                 price,
                 close_ts,
@@ -468,6 +512,184 @@ pub trait OpenStrategyCommon {
             );
         }
         updated
+    }
+
+    fn open_trade_lite_full_fill_eps_base_qty(
+        &self,
+        venue: TradingVenue,
+        symbol: &str,
+        qty_multiplier: f64,
+        order_base_qty: f64,
+    ) -> f64 {
+        let symbol_key = min_qty_symbol_key(venue, symbol);
+        let step_base_qty = MonitorChannel::instance()
+            .try_venue_min_qty_table(venue)
+            .and_then(|table| table.step_size(&symbol_key))
+            .map(|step| step * qty_multiplier)
+            .filter(|step| step.is_finite() && *step > 0.0)
+            .unwrap_or(0.0);
+        let fallback_eps = (order_base_qty.abs() * 1e-9).max(1e-12);
+        if step_base_qty > 0.0 {
+            (step_base_qty * 0.5).max(fallback_eps)
+        } else {
+            fallback_eps
+        }
+    }
+
+    fn apply_trade_update_lite_common(&mut self, trade: &dyn TradeUpdateLite) -> bool {
+        let client_order_id = trade.client_order_id();
+        if client_order_id != self.open_order_id() {
+            debug!(
+                "{}: strategy_id={} ignore trade_lite client_order_id={}",
+                self.strategy_name(),
+                self.strategy_id(),
+                client_order_id
+            );
+            return false;
+        }
+
+        let trade_id = *trade.trade_id();
+        {
+            let state = self.open_order_state_mut();
+            if !state.seen_trade_lite_ids.insert(trade_id) {
+                debug!(
+                    "{}: strategy_id={} duplicate trade_lite ignored client_order_id={} trade_id={:?}",
+                    self.strategy_name(),
+                    self.strategy_id(),
+                    client_order_id,
+                    trade_id
+                );
+                return false;
+            }
+        }
+
+        let order_mgr = MonitorChannel::instance().order_manager();
+        let order = order_mgr.borrow().get(client_order_id);
+        let Some(order) = order else {
+            warn!(
+                "{}: strategy_id={} trade_lite order missing client_order_id={}",
+                self.strategy_name(),
+                self.strategy_id(),
+                client_order_id
+            );
+            return false;
+        };
+
+        if order.status.is_terminal() {
+            debug!(
+                "{}: strategy_id={} drop trade_lite after terminal client_order_id={} symbol={} status={:?}",
+                self.strategy_name(),
+                self.strategy_id(),
+                client_order_id,
+                order.symbol,
+                order.status
+            );
+            return false;
+        }
+        if trade.trading_venue() != order.venue {
+            debug!(
+                "{}: strategy_id={} drop trade_lite venue mismatch client_order_id={} symbol={} lite_venue={:?} order_venue={:?}",
+                self.strategy_name(),
+                self.strategy_id(),
+                client_order_id,
+                order.symbol,
+                trade.trading_venue(),
+                order.venue
+            );
+            return false;
+        }
+        if !trade.symbol().eq_ignore_ascii_case(&order.symbol) {
+            debug!(
+                "{}: strategy_id={} drop trade_lite symbol mismatch client_order_id={} lite_symbol={} order_symbol={}",
+                self.strategy_name(),
+                self.strategy_id(),
+                client_order_id,
+                trade.symbol(),
+                order.symbol
+            );
+            return false;
+        }
+        if trade.side() != order.side {
+            debug!(
+                "{}: strategy_id={} drop trade_lite side mismatch client_order_id={} symbol={} lite_side={:?} order_side={:?}",
+                self.strategy_name(),
+                self.strategy_id(),
+                client_order_id,
+                order.symbol,
+                trade.side(),
+                order.side
+            );
+            return false;
+        }
+
+        let lite_qty = trade.last_filled_quantity();
+        if !lite_qty.is_finite() || lite_qty <= 0.0 {
+            debug!(
+                "{}: strategy_id={} drop trade_lite invalid qty client_order_id={} symbol={} qty={:.12}",
+                self.strategy_name(),
+                self.strategy_id(),
+                client_order_id,
+                order.symbol,
+                lite_qty
+            );
+            return false;
+        }
+
+        let lite_cumulative_venue_qty = {
+            let state = self.open_order_state_mut();
+            state.trade_lite_cumulative_venue_qty += lite_qty;
+            state.trade_lite_cumulative_venue_qty
+        };
+        let order_base_qty = order.quantity * order.qty_multiplier;
+        let lite_cumulative_base_qty = (lite_cumulative_venue_qty * order.qty_multiplier)
+            .max(0.0)
+            .min(order_base_qty);
+        let eps_base_qty = self.open_trade_lite_full_fill_eps_base_qty(
+            order.venue,
+            &order.symbol,
+            order.qty_multiplier,
+            order_base_qty,
+        );
+
+        if lite_cumulative_base_qty + eps_base_qty < order_base_qty {
+            debug!(
+                "{}: strategy_id={} trade_lite cumulative below full hedge threshold client_order_id={} symbol={} lite_cum_base={:.8} order_base_qty={:.8} eps_base_qty={:.12} lite_qty={:.8} trade_id={:?}",
+                self.strategy_name(),
+                self.strategy_id(),
+                client_order_id,
+                order.symbol,
+                lite_cumulative_base_qty,
+                order_base_qty,
+                eps_base_qty,
+                lite_qty,
+                trade_id
+            );
+            return true;
+        }
+
+        let update_detail = format!(
+            "trade_lite_full_fill local_order_symbol={} local_order_qty={:.8} qty_multiplier={:.8} lite_cum_venue_qty={:.8} lite_cum_base_qty={:.8} order_base_qty={:.8} eps_base_qty={:.12} trade_qty={:.8} maker={} trade_id={:?}",
+            order.symbol,
+            order.quantity,
+            order.qty_multiplier,
+            lite_cumulative_venue_qty,
+            lite_cumulative_base_qty,
+            order_base_qty,
+            eps_base_qty,
+            lite_qty,
+            trade.is_maker(),
+            trade_id
+        );
+        self.record_open_order_terminal_base_qty(
+            &order.symbol,
+            order.side,
+            order_base_qty,
+            order_base_qty,
+            trade.trade_time().max(trade.event_time()),
+            trade.price(),
+            order.client_order_id,
+            &update_detail,
+        )
     }
 
     fn apply_inventory_fill_delta(
@@ -1555,7 +1777,7 @@ pub trait OpenStrategyCommon {
                 &order.symbol,
                 order.side,
                 order.quantity * order.qty_multiplier,
-                terminal_base_qty,
+                effective_cumulative_filled_qty * order.qty_multiplier,
                 order_update.event_time(),
                 order.price,
                 order.client_order_id,
@@ -1747,7 +1969,7 @@ pub trait OpenStrategyCommon {
                 &order.symbol,
                 order.side,
                 order.quantity * order.qty_multiplier,
-                terminal_base_qty,
+                cumulative_qty * order.qty_multiplier,
                 event_time,
                 order.price,
                 order.client_order_id,

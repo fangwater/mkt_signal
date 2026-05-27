@@ -103,8 +103,8 @@
 
 use crate::common::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
-    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
-    BasicTradeLiteMsg, GateBasicOrderMsg,
+    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg,
+    BasicUmUnrealizedMsg, GateBasicOrderMsg,
 };
 use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::parser::default_parser::Parser;

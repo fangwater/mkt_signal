@@ -13,6 +13,7 @@ use crate::strategy::open_strategy_common::{
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_engine_response::TradeEngineResponse;
 use crate::strategy::trade_update::TradeUpdate;
+use crate::strategy::trade_update_lite::TradeUpdateLite;
 use crate::strategy::uniform_order_helper::UniformPublishCtx;
 use log::{debug, warn};
 use std::any::Any;
@@ -262,6 +263,10 @@ impl Strategy for ArbOpenStrategy {
         if should_persist {
             PersistChannel::with(|ch| ch.publish_trade_update(trade));
         }
+    }
+
+    fn apply_trade_update_lite(&mut self, trade: &dyn TradeUpdateLite) {
+        let _ = self.apply_trade_update_lite_common(trade);
     }
 
     fn apply_trade_engine_response(&mut self, response: &dyn TradeEngineResponse) {

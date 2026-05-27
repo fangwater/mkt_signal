@@ -5,8 +5,8 @@
 
 use crate::common::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
-    BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg, BinanceBasicOrderMsg,
-    BasicTradeLiteMsg,
+    BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg, BasicUmUnrealizedMsg,
+    BinanceBasicOrderMsg,
 };
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
@@ -602,7 +602,7 @@ mod tests {
     use super::*;
     use crate::common::basic_account_msg::{
         split_basic_account_event, BasicAccountEventType, BasicAccountScope, BasicPositionMsg,
-        BasicUmUnrealizedMsg, BasicTradeLiteMsg,
+        BasicTradeLiteMsg, BasicUmUnrealizedMsg,
     };
     use tokio::sync::mpsc;
 

@@ -105,8 +105,16 @@ fn main() -> Result<()> {
                 let ask_qty = AskBidSpreadMsg::get_ask_amount(&payload);
                 let hour = hour_string_from_us(local_ts_us);
                 if let Err(err) = writers.write_row(
-                    venue, base, &hour, local_ts_us, timestamp, &symbol_up, bid_px, bid_qty,
-                    ask_px, ask_qty,
+                    venue,
+                    base,
+                    &hour,
+                    local_ts_us,
+                    timestamp,
+                    &symbol_up,
+                    bid_px,
+                    bid_qty,
+                    ask_px,
+                    ask_qty,
                 ) {
                     warn!("write_row failed: {:#}", err);
                     continue;

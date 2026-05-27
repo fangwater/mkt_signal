@@ -2,8 +2,8 @@
 
 use crate::common::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
-    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
-    BasicTradeLiteMsg,
+    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg,
+    BasicUmUnrealizedMsg,
 };
 use crate::common::bitget_account_msg::BitgetBasicOrderMsg;
 use crate::parser::default_parser::Parser;

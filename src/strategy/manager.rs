@@ -12,7 +12,7 @@ use crate::strategy::open_strategy_common::{OpenCancelInput, OpenStrategyCommon}
 use crate::strategy::uniform_order_helper::UniformPublishCtx;
 use crate::strategy::{
     order_update::OrderUpdate, trade_engine_response::TradeEngineResponse,
-    trade_update::TradeUpdate,
+    trade_update::TradeUpdate, trade_update_lite::TradeUpdateLite,
 };
 use log::info;
 use std::any::Any;
@@ -120,6 +120,7 @@ pub trait Strategy {
     fn handle_signal(&mut self, signal: &TradeSignal);
     fn apply_order_update(&mut self, update: &dyn OrderUpdate);
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate);
+    fn apply_trade_update_lite(&mut self, _trade: &dyn TradeUpdateLite) {}
     fn apply_trade_engine_response(&mut self, _response: &dyn TradeEngineResponse) {}
     fn handle_period_clock(&mut self, current_tp: i64);
     fn is_active(&self) -> bool;

@@ -415,7 +415,11 @@ impl MktChannel {
         let is_bybit_intra = open_venue.trade_engine_exchange() == "bybit"
             && hedge_venue.trade_engine_exchange() == "bybit"
             && open_venue != hedge_venue;
-        let gate_us = if is_bybit_intra { BYBIT_INTRA_BBO_STALE_GATE_US } else { 0 };
+        let gate_us = if is_bybit_intra {
+            BYBIT_INTRA_BBO_STALE_GATE_US
+        } else {
+            0
+        };
         BYBIT_BBO_STALE_GATE_US.with(|c| c.set(gate_us));
         if gate_us > 0 {
             info!(
