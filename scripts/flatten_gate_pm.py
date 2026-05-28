@@ -121,6 +121,14 @@ def decimal_or(value, default="0"):
         return Decimal(default)
 
 
+def parse_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return bool(value)
+
+
 def floor_to_step(value, step):
     if step <= 0:
         return value
