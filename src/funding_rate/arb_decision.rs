@@ -1141,8 +1141,7 @@ fn drive_funding_decision(
         return Ok(emitted_signal);
     }
 
-    let rate_ready = RateFetcher::is_initial_ready(hedge_venue)
-        && funding_rate_symbol_inputs_ready(hedge_symbol_key.as_str(), hedge_venue);
+    let rate_ready = funding_rate_symbol_inputs_ready(hedge_symbol_key.as_str(), hedge_venue);
     let open_inputs_ready = funding_open_inputs_ready(hedge_symbol_key.as_str(), hedge_venue);
     let fr_signal = evaluate_funding_mode_signal(
         spread_factor,

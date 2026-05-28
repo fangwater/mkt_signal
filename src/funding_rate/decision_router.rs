@@ -117,8 +117,7 @@ pub fn trigger_decision(
         DecisionBranch::Arb => {
             let mode = ArbDecision::mode();
             if matches!(mode, Some(ArbMode::FundingArb))
-                && (!RateFetcher::is_initial_ready(hedge_venue)
-                    || !funding_rate_symbol_inputs_ready(hedge_symbol, hedge_venue))
+                && !funding_rate_symbol_inputs_ready(hedge_symbol, hedge_venue)
             {
                 log_skip_not_ready(open_symbol, hedge_symbol, open_venue, hedge_venue);
             }
