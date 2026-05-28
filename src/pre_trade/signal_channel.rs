@@ -155,7 +155,7 @@ impl SignalListener {
             .max_subscribers(32)
             .history_size(128)
             .subscriber_max_buffer_size(256)
-            .open_or_create()?;
+            .create()?;
 
         let subscriber: Subscriber<ipc::Service, [u8; SIGNAL_PAYLOAD], ()> =
             service.subscriber_builder().create()?;
@@ -311,9 +311,7 @@ impl SignalChannel {
     fn new(channel_name: &str, backward_channel: Option<&str>) -> Result<Self> {
         // 创建反向发布器
         let backward_pub = if let Some(backward_ch) = backward_channel {
-            SignalPublisher::new(backward_ch)
-                .map_err(|e| warn!("SignalChannel backward_pub failed: {e:#}"))
-                .ok()
+            Some(SignalPublisher::create(backward_ch)?)
         } else {
             None
         };

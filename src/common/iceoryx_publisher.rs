@@ -20,6 +20,13 @@ pub const QUERY_RESP_PAYLOAD: usize = 4_096;
 
 static SIGNAL_PUBLISH_DRY_RUN: AtomicBool = AtomicBool::new(false);
 
+#[derive(Debug, Clone, Copy)]
+enum PublisherServiceMode {
+    OpenOrCreate,
+    Create,
+    Open,
+}
+
 pub struct GenericPublisher<const PAYLOAD: usize> {
     publisher: Option<Publisher<ipc::Service, [u8; PAYLOAD], ()>>,
     full_service: String,
@@ -63,7 +70,23 @@ impl<const PAYLOAD: usize> GenericPublisher<PAYLOAD> {
         Self::new_with_prefix("signal_pubs", channel_name)
     }
 
+    pub fn create(channel_name: &str) -> Result<Self> {
+        Self::new_with_prefix_mode("signal_pubs", channel_name, PublisherServiceMode::Create)
+    }
+
+    pub fn open(channel_name: &str) -> Result<Self> {
+        Self::new_with_prefix_mode("signal_pubs", channel_name, PublisherServiceMode::Open)
+    }
+
     pub fn new_with_prefix(prefix: &str, channel_name: &str) -> Result<Self> {
+        Self::new_with_prefix_mode(prefix, channel_name, PublisherServiceMode::OpenOrCreate)
+    }
+
+    fn new_with_prefix_mode(
+        prefix: &str,
+        channel_name: &str,
+        service_mode: PublisherServiceMode,
+    ) -> Result<Self> {
         let full_service = build_service_name(&format!("{}/{}", prefix, channel_name));
         let suppress_trade_signal_publish =
             prefix == "signal_pubs" && channel_name == "trade_signal";
@@ -96,32 +119,49 @@ impl<const PAYLOAD: usize> GenericPublisher<PAYLOAD> {
                 .subscriber_max_buffer_size(256)
         };
 
-        let service = match service_builder().open_or_create() {
-            Ok(service) => service,
-            Err(create_err) => {
-                let create_text = format!("{:?}", create_err);
-                if is_corrupted_service_err(&create_text) {
-                    warn!(
-                        "Signal publisher hit ServiceInCorruptedState, attempting dead-node cleanup: service='{}' err={:?}",
-                        full_service, create_err
-                    );
-                    let cleanup = Node::<ipc::Service>::cleanup_dead_nodes(Config::global_config());
-                    warn!(
-                        "dead-node cleanup completed for signal publisher: service='{}' cleanups={} failed_cleanups={}",
-                        full_service, cleanup.cleanups, cleanup.failed_cleanups
-                    );
-                    service_builder().open_or_create().map_err(|retry_err| {
-                        anyhow!(
-                            "failed to open/create signal publisher service after dead-node cleanup: service='{}', err={:?}, retry_err={:?}",
-                            full_service,
-                            create_err,
-                            retry_err
-                        )
-                    })?
-                } else {
-                    return Err(create_err.into());
+        let service = match service_mode {
+            PublisherServiceMode::OpenOrCreate => match service_builder().open_or_create() {
+                Ok(service) => service,
+                Err(create_err) => {
+                    let create_text = format!("{:?}", create_err);
+                    if is_corrupted_service_err(&create_text) {
+                        warn!(
+                            "Signal publisher hit ServiceInCorruptedState, attempting dead-node cleanup: service='{}' err={:?}",
+                            full_service, create_err
+                        );
+                        let cleanup =
+                            Node::<ipc::Service>::cleanup_dead_nodes(Config::global_config());
+                        warn!(
+                            "dead-node cleanup completed for signal publisher: service='{}' cleanups={} failed_cleanups={}",
+                            full_service, cleanup.cleanups, cleanup.failed_cleanups
+                        );
+                        service_builder().open_or_create().map_err(|retry_err| {
+                            anyhow!(
+                                "failed to open/create signal publisher service after dead-node cleanup: service='{}', err={:?}, retry_err={:?}",
+                                full_service,
+                                create_err,
+                                retry_err
+                            )
+                        })?
+                    } else {
+                        return Err(create_err.into());
+                    }
                 }
-            }
+            },
+            PublisherServiceMode::Create => service_builder().create().map_err(|err| {
+                anyhow!(
+                    "failed to create signal publisher service: service='{}', err={:?}",
+                    full_service,
+                    err
+                )
+            })?,
+            PublisherServiceMode::Open => service_builder().open().map_err(|err| {
+                anyhow!(
+                    "failed to open signal publisher service: service='{}', err={:?}",
+                    full_service,
+                    err
+                )
+            })?,
         };
 
         let publisher = match service.publisher_builder().create() {
@@ -152,7 +192,10 @@ impl<const PAYLOAD: usize> GenericPublisher<PAYLOAD> {
             }
         };
 
-        info!("IceOryx publisher created: {}", full_service);
+        info!(
+            "IceOryx publisher ready: {} mode={:?}",
+            full_service, service_mode
+        );
 
         Ok(Self {
             publisher: Some(publisher),

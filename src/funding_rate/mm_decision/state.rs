@@ -373,7 +373,7 @@ impl MmDecisionState {
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
     ) -> Result<Self> {
-        let signal_pub = SignalPublisher::new(DEFAULT_ARBITRAGE_SIGNAL_CHANNEL)?;
+        let signal_pub = SignalPublisher::open(DEFAULT_ARBITRAGE_SIGNAL_CHANNEL)?;
         let depth_query_client = DepthQueryClient::new(open_venue)?;
         let pnlu_settings = RedisSettings {
             host: DEFAULT_PNLU_REDIS_HOST.to_string(),

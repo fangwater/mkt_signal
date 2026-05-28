@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info, warn};
@@ -235,7 +235,12 @@ impl MmDecision {
             .max_subscribers(32)
             .history_size(128)
             .subscriber_max_buffer_size(256)
-            .open_or_create()?;
+            .open()
+            .with_context(|| {
+                format!(
+                    "MMDecision: failed to open backward signal service={service_name}; start pre_trade first"
+                )
+            })?;
 
         let subscriber = service.subscriber_builder().create()?;
         Ok(GenericSignalSubscriber::Size4K(subscriber))

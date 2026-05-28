@@ -71,10 +71,6 @@ fn arb_close_notional_meets_min(ctx: &ArbOpenCtx) -> bool {
     notional.is_finite() && notional >= ARB_CLOSE_MIN_NOTIONAL_U
 }
 
-fn is_corrupted_service_err(err_text: &str) -> bool {
-    err_text.contains("ServiceInCorruptedState")
-}
-
 fn is_subscriber_capacity_err(err_text: &str) -> bool {
     err_text.contains("ExceedsMaxSupportedSubscribers")
 }
@@ -389,40 +385,11 @@ pub fn create_backward_subscriber(
             .subscriber_max_buffer_size(256)
     };
 
-    let service = match service_builder().open_or_create() {
-        Ok(service) => service,
-        Err(create_err) => {
-            let create_text = format!("{:?}", create_err);
-            if is_corrupted_service_err(&create_text) {
-                log::warn!(
-                    "{source}: backward subscriber hit ServiceInCorruptedState, attempting dead-node cleanup: service={} err={:?}",
-                    service_name,
-                    create_err
-                );
-                let cleanup = Node::<ipc::Service>::cleanup_dead_nodes(Config::global_config());
-                log::warn!(
-                    "{source}: dead-node cleanup completed for backward subscriber: service={} cleanups={} failed_cleanups={}",
-                    service_name,
-                    cleanup.cleanups,
-                    cleanup.failed_cleanups
-                );
-                service_builder().open_or_create().map_err(|retry_err| {
-                    anyhow!(
-                        "{source}: failed to open/create backward signal service after dead-node cleanup: service={}, err={:?}, retry_err={:?}",
-                        service_name,
-                        create_err,
-                        retry_err
-                    )
-                })?
-            } else {
-                return Err(create_err).with_context(|| {
-                    format!(
-                        "{source}: failed to open/create backward signal service={service_name}"
-                    )
-                });
-            }
-        }
-    };
+    let service = service_builder().open().with_context(|| {
+        format!(
+            "{source}: failed to open backward signal service={service_name}; start pre_trade first"
+        )
+    })?;
 
     let subscriber = match service.subscriber_builder().create() {
         Ok(subscriber) => subscriber,
@@ -476,7 +443,7 @@ pub fn create_arb_runtime_components(
     let node = NodeBuilder::new()
         .name(&node_name)
         .create::<ipc::Service>()?;
-    let signal_pub = SignalPublisher::new(signal_channel)?;
+    let signal_pub = SignalPublisher::open(signal_channel)?;
     let backward_sub = create_backward_subscriber(&node, backward_channel, source)?;
     let open_factor_value_hub = FactorValueHub::new(
         &node,

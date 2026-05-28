@@ -398,16 +398,11 @@ async fn main() -> Result<()> {
 
             // 4. 初始化 SignalChannel
             info!("Initializing SignalChannel singleton...");
-            if let Err(err) =
-                SignalChannel::initialize(DEFAULT_SIGNAL_CHANNEL, Some(DEFAULT_BACKWARD_CHANNEL))
-            {
-                warn!("Failed to initialize SignalChannel: {err:#}");
-            } else {
-                info!(
-                    "SignalChannel initialized on channel: {}",
-                    DEFAULT_SIGNAL_CHANNEL
-                );
-            }
+            SignalChannel::initialize(DEFAULT_SIGNAL_CHANNEL, Some(DEFAULT_BACKWARD_CHANNEL))?;
+            info!(
+                "SignalChannel initialized on channel: {} backward_channel: {}",
+                DEFAULT_SIGNAL_CHANNEL, DEFAULT_BACKWARD_CHANNEL
+            );
 
             // 5. 初始化 ResampleChannel
             info!("Initializing ResampleChannel singleton...");
