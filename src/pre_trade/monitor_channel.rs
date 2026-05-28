@@ -2089,7 +2089,10 @@ impl MonitorChannel {
 
         // Bybit wallet topic 直接给账户级 totalEquity，优先使用交易所口径替换本地估值。
         // 只覆盖 Bybit scope，跨交易所组合中其它账户仍保持原计算路径。
-        if let Some(risk) = inner.latest_account_risk.get(&BasicAccountScope::BybitUnified) {
+        if let Some(risk) = inner
+            .latest_account_risk
+            .get(&BasicAccountScope::BybitUnified)
+        {
             if risk.actual_equity_usd.is_finite() && risk.actual_equity_usd.abs() > f64::EPSILON {
                 scope_equity_usdt.insert(BasicAccountScope::BybitUnified, risk.actual_equity_usd);
             }

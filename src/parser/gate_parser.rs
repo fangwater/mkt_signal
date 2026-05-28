@@ -1079,14 +1079,8 @@ impl GateTradeParser {
                 continue;
             }
             let side = if *size >= 0 { 'B' } else { 'S' };
-            let msg = TradeMsg::create(
-                symbol.clone(),
-                *id as i64,
-                t_us / 1000,
-                side,
-                price,
-                amount,
-            );
+            let msg =
+                TradeMsg::create(symbol.clone(), *id as i64, t_us / 1000, side, price, amount);
             if tx.send(msg.to_bytes()).is_ok() {
                 sent += 1;
             }
@@ -1141,7 +1135,16 @@ impl GateIncParser {
             Some(s) => s,
             None => return 0,
         };
-        self.emit_inc(sym, first_id, last_id, t_us / 1000, full == 1, bids, asks, tx)
+        self.emit_inc(
+            sym,
+            first_id,
+            last_id,
+            t_us / 1000,
+            full == 1,
+            bids,
+            asks,
+            tx,
+        )
     }
 
     fn sbe_book(&self, buf: &[u8], bl: usize, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
@@ -1190,7 +1193,7 @@ impl GateIncParser {
         let sz_exp = buf[b + 34] as i8;
         let e_byte = buf.get(b + 8).copied().unwrap_or(2);
         let is_snapshot = e_byte == 3; // Event::All
-        // asks group (id=100) then bids group (id=101)
+                                       // asks group (id=100) then bids group (id=101)
         let (el_a, n_a, cur_a) = match sbe_grp(buf, b + bl) {
             Some(g) => g,
             None => return 0,
@@ -1210,7 +1213,16 @@ impl GateIncParser {
             Some(s) => s,
             None => return 0,
         };
-        self.emit_inc(sym, first_id, last_id, t_us / 1000, is_snapshot, bids, asks, tx)
+        self.emit_inc(
+            sym,
+            first_id,
+            last_id,
+            t_us / 1000,
+            is_snapshot,
+            bids,
+            asks,
+            tx,
+        )
     }
 
     fn emit_inc(

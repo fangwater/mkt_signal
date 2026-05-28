@@ -1,24 +1,13 @@
-use anyhow::{Context, Result};
-use chrono::Utc;
-use log::{debug, info, warn};
-use std::cell::RefCell;
+use log::warn;
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
 
-use crate::common::redis_client::{RedisClient, RedisSettings};
 use crate::signal::common::TradingVenue;
 use crate::symbol_match::normalize_symbol_for_whitelist;
 
 use super::funding_threshold_loader::{FactorDirectionalThresholds, FundingThresholdsResolved};
 use super::spread_factor::SpreadFactor;
 
-const XARB_SPREAD_REDIS_SYNC_SECS: u64 = 1800;
 const QUANTILE_MATCH_EPSILON: f64 = 1e-6;
-
-thread_local! {
-    static XARB_SPREAD_REDIS_SYNC_CACHE: RefCell<HashMap<String, Instant>> =
-        RefCell::new(HashMap::new());
-}
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct StoredXarbMappingConfig {
@@ -152,6 +141,7 @@ pub(crate) fn default_fr_spread_mapping() -> HashMap<String, String> {
     ])
 }
 
+#[cfg(test)]
 fn default_xarb_spread_threshold_order() -> [&'static str; 8] {
     [
         "forward_open_mm",
@@ -667,6 +657,7 @@ pub(crate) fn resolve_funding_thresholds(
     out
 }
 
+#[cfg(test)]
 pub(crate) fn xarb_spread_threshold_order(mapping: &HashMap<String, String>) -> Vec<String> {
     let mut ordered = Vec::new();
     let mut seen = HashSet::new();
@@ -688,6 +679,7 @@ pub(crate) fn xarb_spread_threshold_order(mapping: &HashMap<String, String>) -> 
     ordered
 }
 
+#[cfg(test)]
 pub(crate) fn build_xarb_spread_sync_entries(
     resolved: &HashMap<String, HashMap<String, f64>>,
     threshold_order: &[String],
@@ -713,109 +705,6 @@ pub(crate) fn build_xarb_spread_sync_entries(
     }
 
     entries
-}
-
-pub(crate) async fn sync_xarb_spread_thresholds_to_redis(
-    redis: &RedisSettings,
-    namespace: &str,
-    sync_key: &str,
-    config_key: &str,
-    open_venue: TradingVenue,
-    hedge_venue: TradingVenue,
-    rolling_key: &str,
-    mapping: &HashMap<String, String>,
-    resolved: &HashMap<String, HashMap<String, f64>>,
-) -> Result<()> {
-    let refresh_interval = Duration::from_secs(XARB_SPREAD_REDIS_SYNC_SECS);
-
-    let mut cache_fresh = false;
-    XARB_SPREAD_REDIS_SYNC_CACHE.with(|cell| {
-        let cache = cell.borrow();
-        if let Some(last_sync_at) = cache.get(sync_key) {
-            cache_fresh = last_sync_at.elapsed() < refresh_interval;
-        }
-    });
-    if cache_fresh {
-        debug!(
-            "xarb spread 阈值 Redis sync 命中缓存 (key={} refresh={}s)",
-            sync_key, XARB_SPREAD_REDIS_SYNC_SECS
-        );
-        return Ok(());
-    }
-
-    let threshold_order = xarb_spread_threshold_order(mapping);
-    let entries = build_xarb_spread_sync_entries(resolved, &threshold_order);
-    if entries.is_empty() {
-        warn!(
-            "xarb spread 阈值 Redis sync 跳过：无可写入字段 (key={} rolling_key={} mapping_fields={})",
-            sync_key,
-            rolling_key,
-            mapping.len()
-        );
-        XARB_SPREAD_REDIS_SYNC_CACHE.with(|cell| {
-            cell.borrow_mut()
-                .insert(sync_key.to_string(), Instant::now());
-        });
-        return Ok(());
-    }
-
-    let entry_fields: HashSet<String> = entries.iter().map(|(field, _)| field.clone()).collect();
-    let mut client = RedisClient::connect(redis.clone()).await?;
-    let stale_fields = match client.hgetall_map(sync_key).await {
-        Ok(existing) => existing
-            .keys()
-            .filter(|field| !entry_fields.contains(*field))
-            .cloned()
-            .collect::<Vec<_>>(),
-        Err(err) => {
-            warn!(
-                "读取旧 xarb spread 阈值失败，继续覆盖写入 (key={}): {:?}",
-                sync_key, err
-            );
-            Vec::new()
-        }
-    };
-
-    client
-        .hset_multiple_str(sync_key, &entries)
-        .await
-        .with_context(|| format!("写入 xarb spread 阈值失败 (key={sync_key})"))?;
-    if !stale_fields.is_empty() {
-        client
-            .hdel_fields(sync_key, &stale_fields)
-            .await
-            .with_context(|| format!("清理旧 xarb spread 阈值失败 (key={sync_key})"))?;
-    }
-
-    let payload = serde_json::json!({
-        "schema_version": 1,
-        "namespace": namespace,
-        "open_venue": open_venue.data_pub_slug(),
-        "hedge_venue": hedge_venue.data_pub_slug(),
-        "rolling_key": rolling_key,
-        "mapping": mapping,
-        "threshold_order": threshold_order,
-        "generated_at": Utc::now().to_rfc3339(),
-    });
-    client
-        .set_json(config_key, &payload)
-        .await
-        .with_context(|| format!("写入 xarb spread sync 配置失败 (key={config_key})"))?;
-
-    XARB_SPREAD_REDIS_SYNC_CACHE.with(|cell| {
-        cell.borrow_mut()
-            .insert(sync_key.to_string(), Instant::now());
-    });
-    info!(
-        "xarb spread 阈值已同步到 Redis key={} config_key={} fields={} stale_removed={} interval={}s",
-        sync_key,
-        config_key,
-        entries.len(),
-        stale_fields.len(),
-        XARB_SPREAD_REDIS_SYNC_SECS
-    );
-
-    Ok(())
 }
 
 #[cfg(test)]

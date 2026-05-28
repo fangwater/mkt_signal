@@ -60,6 +60,7 @@ pub const DEFAULT_ENV_MODEL_TRUE_THRESHOLD: f64 = 0.0;
 const TARGET_FACTOR_MAX_AGE_MS: i64 = 30_000;
 const FUNDING_ARB_SHELL_NAME: &str = "ArbDecision(FundingArb)";
 const SPREAD_ARB_SHELL_NAME: &str = "ArbDecision(SpreadArb)";
+const MISSING_TICK_RELOAD_COOLDOWN_US: i64 = 5_000_000;
 const ARB_CLOSE_MIN_NOTIONAL_U: f64 = 25.0;
 // Arb hedge 是 open terminal 触发的高频对冲闭环，不走 MM hedge 的多档拆单模型；
 // 单轮只出一笔，剩余 pending 会由后续触发继续滚动处理。
@@ -169,6 +170,143 @@ pub fn evaluate_funding_signal(
 
 pub fn normalize_arb_symbol_key(symbol: &str) -> String {
     normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures)
+}
+
+#[derive(Debug, Clone, Default)]
+struct MissingTickReloadState {
+    last_reload_by_key: HashMap<String, i64>,
+}
+
+impl MissingTickReloadState {
+    fn should_reload(&mut self, venue: TradingVenue, symbol: &str, now_us: i64) -> bool {
+        let key = format!(
+            "{}:{}",
+            venue.data_pub_slug(),
+            normalize_arb_symbol_key(symbol)
+        );
+        let Some(last_us) = self.last_reload_by_key.get(&key).copied() else {
+            self.last_reload_by_key.insert(key, now_us);
+            return true;
+        };
+        if now_us.saturating_sub(last_us) >= MISSING_TICK_RELOAD_COOLDOWN_US {
+            self.last_reload_by_key.insert(key, now_us);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+fn missing_tick_symbol(err: &str) -> Option<&str> {
+    let rest = err.strip_prefix("missing tick for ")?;
+    rest.split_whitespace()
+        .next()
+        .filter(|symbol| !symbol.is_empty())
+}
+
+fn trigger_missing_tick_table_reload(
+    source: &'static str,
+    runtime: &mut ArbShellRuntime,
+    venue: TradingVenue,
+    symbol: &str,
+    err: &str,
+) -> bool {
+    let now_us = get_timestamp_us();
+    if !runtime
+        .missing_tick_reload_state
+        .should_reload(venue, symbol, now_us)
+    {
+        return true;
+    }
+
+    log::warn!(
+        "{source}: missing tick for symbol={} venue={:?}; suppressing repeats for {}s and refreshing venue filters err={}",
+        symbol,
+        venue,
+        MISSING_TICK_RELOAD_COOLDOWN_US / 1_000_000,
+        err
+    );
+
+    tokio::task::spawn_local(async move {
+        let mut table = VenueMinQtyTable::new(venue);
+        match table.refresh().await {
+            Ok(()) => {
+                let refreshed_venue = table.venue();
+                let applied = apply_missing_tick_table_refresh(source, refreshed_venue, table);
+                log::info!(
+                    "{source}: missing tick refresh completed venue={:?} applied={}",
+                    refreshed_venue,
+                    applied
+                );
+            }
+            Err(refresh_err) => {
+                log::warn!(
+                    "{source}: missing tick refresh failed venue={:?} err={:#}",
+                    venue,
+                    refresh_err
+                );
+            }
+        }
+    });
+
+    true
+}
+
+fn apply_refreshed_table(
+    runtime: &mut ArbShellRuntime,
+    venue: TradingVenue,
+    table: VenueMinQtyTable,
+) -> bool {
+    if venue == runtime.venues.0 {
+        runtime.open_min_qty_table = table;
+        true
+    } else if venue == runtime.venues.1 {
+        runtime.hedge_min_qty_table = table;
+        true
+    } else {
+        false
+    }
+}
+
+fn apply_missing_tick_table_refresh(
+    source: &'static str,
+    venue: TradingVenue,
+    table: VenueMinQtyTable,
+) -> bool {
+    if source == FUNDING_ARB_SHELL_NAME {
+        return FUNDING_ARB_SHELL.with(|cell| {
+            let Some(shell) = cell.get() else {
+                return false;
+            };
+            let mut shell = shell.borrow_mut();
+            apply_refreshed_table(&mut shell.runtime, venue, table)
+        });
+    }
+    if source == SPREAD_ARB_SHELL_NAME {
+        return SPREAD_ARB_SHELL.with(|cell| {
+            let Some(shell) = cell.get() else {
+                return false;
+            };
+            let mut shell = shell.borrow_mut();
+            apply_refreshed_table(&mut shell.runtime, venue, table)
+        });
+    }
+    false
+}
+
+fn handle_quote_plan_error(
+    source: &'static str,
+    runtime: &mut ArbShellRuntime,
+    venue: TradingVenue,
+    symbol: &str,
+    err: &str,
+) -> bool {
+    if let Some(missing_symbol) = missing_tick_symbol(err) {
+        trigger_missing_tick_table_reload(source, runtime, venue, missing_symbol, err)
+    } else {
+        let _ = symbol;
+        false
+    }
 }
 
 pub fn with_thread_local_shell<T, F, R>(
@@ -379,6 +517,7 @@ pub struct ArbShellRuntime {
     pub node: Node<ipc::Service>,
     pub open_min_qty_table: VenueMinQtyTable,
     pub hedge_min_qty_table: VenueMinQtyTable,
+    missing_tick_reload_state: MissingTickReloadState,
     pub venues: VenuePair,
     pub open_depth_query_client: crate::depth_pub::query_client::DepthQueryClient,
     pub hedge_depth_query_client: Option<crate::depth_pub::query_client::DepthQueryClient>,
@@ -444,6 +583,7 @@ pub fn create_arb_shell_runtime(
             node,
             open_min_qty_table,
             hedge_min_qty_table,
+            missing_tick_reload_state: MissingTickReloadState::default(),
             venues,
             open_depth_query_client,
             hedge_depth_query_client,
@@ -2575,7 +2715,7 @@ fn drive_spread_arb_cancel_trigger_interval(decision: &SpreadArbShell) {
 
 #[allow(clippy::too_many_arguments)]
 fn emit_spread_arb_open_signals(
-    decision: &SpreadArbShell,
+    decision: &mut SpreadArbShell,
     open_symbol: &str,
     hedge_symbol: &str,
     open_venue: TradingVenue,
@@ -2654,10 +2794,18 @@ fn emit_spread_arb_open_signals(
     ) {
         Ok(plan) => plan,
         Err(err) => {
-            log::warn!(
-                "{SPREAD_ARB_SHELL_NAME}: build open quote plan failed open={} hedge={} side={:?} err={}",
-                open_symbol, hedge_symbol, side, err
-            );
+            if !handle_quote_plan_error(
+                SPREAD_ARB_SHELL_NAME,
+                &mut decision.runtime,
+                open_venue,
+                open_symbol,
+                &err,
+            ) {
+                log::warn!(
+                    "{SPREAD_ARB_SHELL_NAME}: build open quote plan failed open={} hedge={} side={:?} err={}",
+                    open_symbol, hedge_symbol, side, err
+                );
+            }
             return Ok(());
         }
     };
@@ -2803,7 +2951,7 @@ fn emit_spread_arb_open_signals(
 }
 
 fn emit_spread_arb_close_signals(
-    decision: &SpreadArbShell,
+    decision: &mut SpreadArbShell,
     open_symbol: &str,
     hedge_symbol: &str,
     open_venue: TradingVenue,
@@ -2888,10 +3036,18 @@ fn emit_spread_arb_close_signals(
     ) {
         Ok(plan) => plan,
         Err(err) => {
-            log::warn!(
-                "{SPREAD_ARB_SHELL_NAME}: build close quote plan failed open={} hedge={} side={:?} err={}",
-                open_symbol, hedge_symbol, side, err
-            );
+            if !handle_quote_plan_error(
+                SPREAD_ARB_SHELL_NAME,
+                &mut decision.runtime,
+                open_venue,
+                open_symbol,
+                &err,
+            ) {
+                log::warn!(
+                    "{SPREAD_ARB_SHELL_NAME}: build close quote plan failed open={} hedge={} side={:?} err={}",
+                    open_symbol, hedge_symbol, side, err
+                );
+            }
             return Ok(false);
         }
     };
@@ -2982,7 +3138,7 @@ fn emit_spread_arb_close_signals(
 }
 
 fn emit_funding_open_close_signals(
-    decision: &FundingArbShell,
+    decision: &mut FundingArbShell,
     spot_symbol: &str,
     futures_symbol: &str,
     spot_venue: TradingVenue,
@@ -3147,10 +3303,18 @@ fn emit_funding_open_close_signals(
     ) {
         Ok(plan) => plan,
         Err(err) => {
-            log::warn!(
-                "{FUNDING_ARB_SHELL_NAME}: build quote plan failed open={} hedge={} side={:?} signal={:?} err={}",
-                spot_symbol, futures_symbol, side, signal_type, err
-            );
+            if !handle_quote_plan_error(
+                FUNDING_ARB_SHELL_NAME,
+                &mut decision.runtime,
+                spot_venue,
+                spot_symbol,
+                &err,
+            ) {
+                log::warn!(
+                    "{FUNDING_ARB_SHELL_NAME}: build quote plan failed open={} hedge={} side={:?} signal={:?} err={}",
+                    spot_symbol, futures_symbol, side, signal_type, err
+                );
+            }
             return Ok(false);
         }
     };

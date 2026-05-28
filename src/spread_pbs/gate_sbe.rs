@@ -232,7 +232,7 @@ mod tests {
         buf.extend_from_slice(&SBE_TEMPLATE_BBO.to_le_bytes());
         buf.extend_from_slice(&SBE_SCHEMA_ID.to_le_bytes());
         buf.extend_from_slice(&1u16.to_le_bytes()); // version
-        // root
+                                                    // root
         buf.extend_from_slice(&time_us.to_le_bytes()); // time @0
         buf.push(2u8); // e=Update @8
         buf.extend_from_slice(&t_us.to_le_bytes()); // t @9
@@ -243,7 +243,7 @@ mod tests {
         buf.extend_from_slice(&ask_sz_m.to_le_bytes()); // askSzM @35
         buf.extend_from_slice(&bid_px_m.to_le_bytes()); // bidPxM @43
         buf.extend_from_slice(&bid_sz_m.to_le_bytes()); // bidSzM @51
-        // varString8 channel
+                                                        // varString8 channel
         let ch = channel.as_bytes();
         buf.push(ch.len() as u8);
         buf.extend_from_slice(ch);
