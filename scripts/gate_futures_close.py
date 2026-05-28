@@ -136,7 +136,7 @@ def quantize_down(value: float, step: float) -> float:
 
 def fetch_contract_info(settle: str, contract: str) -> Dict[str, Any]:
     url = f"{HOST}{PREFIX}/futures/{settle}/contracts/{contract}"
-    resp = requests.get(url)
+    resp = requests.get(url, headers={"X-Gate-Size-Decimal": "1"})
     if resp.status_code != 200:
         raise RuntimeError(f"contract info failed: {resp.status_code} {read_json(resp)}")
     data = read_json(resp)
@@ -182,6 +182,8 @@ def main() -> int:
     min_contracts = parse_number(contract_info.get("order_size_min")) or 0.0
     step_contracts = parse_number(contract_info.get("order_size_step")) or 0.0
     enable_decimal = parse_bool(contract_info.get("enable_decimal"))
+    if step_contracts <= 0 and enable_decimal is True and 0.0 < min_contracts < 1.0:
+        step_contracts = min_contracts
 
     position = None
     pos_size = None

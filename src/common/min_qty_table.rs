@@ -257,6 +257,32 @@ mod tests {
     }
 
     #[test]
+    fn gate_decimal_futures_uses_decimal_contract_step() {
+        let provider = GateProvider::new();
+        let body = serde_json::json!([
+            {
+                "name": "LAB_USDT",
+                "order_size_min": "0.1",
+                "order_size_step": "0.1",
+                "order_price_round": "0.00001",
+                "quanto_multiplier": "100",
+                "enable_decimal": true
+            }
+        ])
+        .to_string();
+
+        let (entries, multipliers) = provider
+            .parse_futures_response(&body, "gate_futures")
+            .unwrap();
+        let entry = entries.get("LABUSDT").unwrap();
+
+        assert_eq!(entry.min_qty, 0.1);
+        assert_eq!(entry.step_size, 0.1);
+        assert_eq!(entry.price_tick, Some(0.00001));
+        assert_eq!(multipliers.get("LABUSDT").copied(), Some(100.0));
+    }
+
+    #[test]
     fn okex_swap_contract_multiplier_is_ct_val_times_ct_mult() {
         let provider = OkexProvider::new();
         let instruments = vec![OkexInstrument {
@@ -475,7 +501,13 @@ impl GateProvider {
             MarketType::Futures => "gate_futures",
             MarketType::Margin => "gate_margin",
         };
-        let resp = client.get(url).send().await?;
+        let request = client.get(url);
+        let request = if market_type == MarketType::Futures {
+            request.header("X-Gate-Size-Decimal", "1")
+        } else {
+            request
+        };
+        let resp = request.send().await?;
         let status = resp.status();
         let body = resp.text().await?;
         debug!(
@@ -550,6 +582,19 @@ impl GateProvider {
                 .unwrap_or((&contract.name, "USDT"));
             let price_tick: f64 = contract.order_price_round.parse().unwrap_or(0.0);
             let quanto: f64 = contract.quanto_multiplier.parse().unwrap_or(1.0);
+            let min_qty = value_to_f64(&contract.order_size_min).unwrap_or(0.0);
+            let step_size = contract
+                .order_size_step
+                .as_ref()
+                .and_then(value_to_f64)
+                .filter(|v| *v > 0.0)
+                .unwrap_or_else(|| {
+                    if contract.enable_decimal.unwrap_or(false) && min_qty > 0.0 && min_qty < 1.0 {
+                        min_qty
+                    } else {
+                        1.0
+                    }
+                });
             // Gate futures: 下单 size 使用 contracts。
             // 统一口径：
             // - min_qty / step_size 使用 contracts 单位（与 OKX futures 一致）
@@ -558,8 +603,8 @@ impl GateProvider {
                 symbol: symbol.clone(),
                 base_asset: base.to_uppercase(),
                 quote_asset: quote.to_uppercase(),
-                min_qty: contract.order_size_min as f64,
-                step_size: 1.0,
+                min_qty,
+                step_size,
                 price_tick: if price_tick > 0.0 {
                     Some(price_tick)
                 } else {
@@ -608,10 +653,19 @@ struct GateSpotCurrencyPair {
 
 #[derive(Debug, Deserialize)]
 struct GateFuturesContract {
-    name: String,              // e.g. "ZEC_USDT"
-    order_size_min: i64,       // e.g. 1
+    name: String,                      // e.g. "ZEC_USDT"
+    order_size_min: serde_json::Value, // e.g. 1 or "0.1" with decimal size header
+    order_size_step: Option<serde_json::Value>,
     order_price_round: String, // e.g. "0.01"
     quanto_multiplier: String, // e.g. "0.01"
+    #[serde(default)]
+    enable_decimal: Option<bool>,
+}
+
+fn value_to_f64(value: &serde_json::Value) -> Option<f64> {
+    value
+        .as_f64()
+        .or_else(|| value.as_str().and_then(|v| v.parse::<f64>().ok()))
 }
 
 fn precision_to_step(precision: i32) -> f64 {

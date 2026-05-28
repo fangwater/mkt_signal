@@ -422,7 +422,9 @@ class LotSpecCache:
     def _gate(self, symbol: str, timeout: int) -> Optional[LotSpec]:
         if "gate" not in self._raw:
             url = "https://api.gateio.ws/api/v4/futures/usdt/contracts"
-            status, body, _ = http_json_request("GET", url, timeout=timeout)
+            status, body, _ = http_json_request(
+                "GET", url, headers={"X-Gate-Size-Decimal": "1"}, timeout=timeout
+            )
             if not (200 <= status < 300):
                 return None
             try:
@@ -434,8 +436,11 @@ class LotSpecCache:
                 continue
             quanto = to_float(entry.get("quanto_multiplier"))
             min_sz = to_float(entry.get("order_size_min"))
+            lot = to_float(entry.get("order_size_step"))
+            if lot <= 0 and bool(entry.get("enable_decimal")) and 0 < min_sz < 1:
+                lot = min_sz
             # Gate's `size` is in contracts; contract_size = quanto_multiplier (base coins per contract).
-            return LotSpec("gate", symbol, 1.0, min_sz or 1.0, quanto if quanto > 0 else 1.0)
+            return LotSpec("gate", symbol, lot or 1.0, min_sz or 1.0, quanto if quanto > 0 else 1.0)
         return None
 
     def _bybit(self, symbol: str, timeout: int) -> Optional[LotSpec]:

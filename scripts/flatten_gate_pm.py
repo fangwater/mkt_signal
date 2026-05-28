@@ -274,7 +274,11 @@ def fetch_specs(symbols: List[str]) -> Dict[str, SymbolSpec]:
         spot_specs[asset] = item
 
     # Futures contracts
-    status, body = http_request(f"{GATE_HOST}{GATE_PREFIX}/futures/usdt/contracts", timeout=15)
+    status, body = http_request(
+        f"{GATE_HOST}{GATE_PREFIX}/futures/usdt/contracts",
+        headers={"X-Gate-Size-Decimal": "1"},
+        timeout=15,
+    )
     if not (200 <= status < 300):
         sys.exit(f"[ERROR] futures contracts status={status} body={body}")
     fut_data = json.loads(body)
@@ -300,6 +304,12 @@ def fetch_specs(symbols: List[str]) -> Dict[str, SymbolSpec]:
         # Gate spot: amount_precision is base-asset decimal places. step = 10^-precision.
         amount_prec = int(decimal_or(sp.get("amount_precision"), "0"))
         spot_step = Decimal(10) ** -amount_prec if amount_prec > 0 else Decimal("1")
+        futures_min_contracts = decimal_or(fu.get("order_size_min"), "0")
+        futures_step_contracts = decimal_or(fu.get("order_size_step"), "0")
+        if futures_step_contracts <= 0 and parse_bool(fu.get("enable_decimal")) and ZERO < futures_min_contracts < Decimal("1"):
+            futures_step_contracts = futures_min_contracts
+        if futures_step_contracts <= 0:
+            futures_step_contracts = Decimal("1")
         out[sym] = SymbolSpec(
             symbol=sym,
             asset=asset,
@@ -308,8 +318,8 @@ def fetch_specs(symbols: List[str]) -> Dict[str, SymbolSpec]:
             spot_amount_step=spot_step,
             spot_min_base_amount=decimal_or(sp.get("min_base_amount"), "0"),
             futures_contract_size=decimal_or(fu.get("quanto_multiplier"), "1"),
-            futures_step_contracts=decimal_or(fu.get("order_size_step"), "1"),
-            futures_min_contracts=decimal_or(fu.get("order_size_min"), "0"),
+            futures_step_contracts=futures_step_contracts,
+            futures_min_contracts=futures_min_contracts,
         )
     return out
 
