@@ -1,0 +1,42 @@
+ 没卡死。Gate review 下来有两个明确不一致点：
+
+  1. Rust REST snapshot 口径不稳
+     src/trade_engine/query_parsers/gate_unified_balance_snapshot.rs:144 现在优先用 balance/b/wallet，只有没有这些字段才用 equity + liability。
+
+     但 WS parser 已经明确改成了 wallet = equity + total_liab：
+     src/parser/gate_account_event_parser.rs:223
+
+     下游统一假设是：
+     src/pre_trade/basic_balance_manager.rs:22
+
+     spot_net = wallet - borrowed - interest
+
+     所以 REST snapshot 也应该优先 equity + liability，否则当 Gate 的 b/balance 不是 gross wallet 时，会和 WS 口径打架。
+
+  2. flatten_gate_pm.py 仍是旧口径
+     scripts/flatten_gate_pm.py:15 写的是：
+
+     net_qty = available + futures_position_coins - borrowed
+
+     代码里也是：
+     scripts/flatten_gate_pm.py:371
+
+     repay_amt = min(free, borrowed)
+     net_qty = free_after - borrow_after + pos_coins
+
+     这把 available/free 同时当“可还款余额”和“现货净头寸输入”用，风险比较大。Gate 的 /unified/accounts 更稳的做法应该是拆开：
+
+     spot_net = equity
+     borrowed = total_liab 优先，其次 borrowed + negative_liab + futures_pos_liab
+     repay_capacity = available
+     align: spot_net + futures_pos = 0
+     clear: repay_capacity 只用于决定能还多少
+
+  我看到的 没问题/基本一致：
+
+  - Gate WS account parser 当前是对的：wallet = e + tl，borrowed = tl，所以 wallet - borrowed = e。
+  - 面板下游 manager 本身也是对的：它统一按 wallet - borrowed - interest 算净现货。
+  - scripts/lib/exchange_state.py 用的是 BasicExposureEntry.balance = spot net，不是 BasicBalanceMsg.wallet，所以它直接放 equity 是合理的。
+
+  还有一个需要谨慎的点：gate_account_monitor 同时有 WS 的 tl 和 REST borrow/interest poller。只要两边的 borrowed + interest 总和一致就没事；如果 REST 的 interest 不是当前累计未还利息，而只是最近一条记录，就可能覆盖 WS 的
+  tl 后产生小偏差。这个我建议也加测试或改成明确优先 total_liab 口径。

@@ -524,7 +524,7 @@ impl ArbHedgeStrategy {
         match SignalChannel::with(|ch| ch.publish_backward(&payload)) {
             Ok(true) => {
                 self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
-                debug!(
+                info!(
                     "ArbHedgeStrategy: strategy_id={} symbol={} send hedge state query ok request_seq={} net_qty={:.8} due_hedge_qty={:.8} pending_hedge_qty={:.8} next_query_ts_us={}",
                     self.strategy_id,
                     self.symbol,

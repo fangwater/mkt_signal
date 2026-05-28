@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::hash::Hash;
 
 use crate::signal::common::TradingVenue;
 
@@ -19,12 +20,15 @@ pub fn threshold_key(
     )
 }
 
-pub fn is_cooldown_hit(
-    last_ts_map: &RefCell<HashMap<ThresholdKey, i64>>,
-    key: &ThresholdKey,
+pub fn is_cooldown_hit<K>(
+    last_ts_map: &RefCell<HashMap<K, i64>>,
+    key: &K,
     now: i64,
     signal_cooldown_us: i64,
-) -> bool {
+) -> bool
+where
+    K: Eq + Hash,
+{
     if let Some(&last_ts) = last_ts_map.borrow().get(key) {
         let elapsed = now - last_ts;
         if elapsed < signal_cooldown_us {
@@ -34,10 +38,9 @@ pub fn is_cooldown_hit(
     false
 }
 
-pub fn update_last_ts(
-    last_ts_map: &RefCell<HashMap<ThresholdKey, i64>>,
-    key: ThresholdKey,
-    now: i64,
-) {
+pub fn update_last_ts<K>(last_ts_map: &RefCell<HashMap<K, i64>>, key: K, now: i64)
+where
+    K: Eq + Hash,
+{
     last_ts_map.borrow_mut().insert(key, now);
 }
