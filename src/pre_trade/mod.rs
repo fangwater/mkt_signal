@@ -21,6 +21,7 @@ pub mod resample_channel;
 pub mod response_reconcile;
 mod runner;
 pub mod signal_channel;
+pub mod signal_latency;
 pub mod signal_throttle;
 pub mod symbol_mapper;
 pub mod symbol_util;

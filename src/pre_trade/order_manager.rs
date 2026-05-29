@@ -950,7 +950,10 @@ pub struct OrderTimeStamp {
     pub end_t: i64,    // 交易所时间(完全成交或者被撤单的时间)
     pub local_t: i64, // OrderUpdate/TradeUpdate/查询回报在本地最近一次被实质性接受的时间(µs)，每次覆写
     pub mkt_t: i64,   // 触发该订单动作（open/cancel/close）时所参考的最新盘口时间(µs)；
-                      // 套利场景=max(open_leg.ts, hedge_leg.ts)；MM/Hedge 等无概念路径保持 0
+    // 套利场景=max(open_leg.ts, hedge_leg.ts)；MM/Hedge 等无概念路径保持 0
+    pub signal_t: i64, // 触发该订单动作的信号在 trade_signal 进程的生成时间(µs)；
+    // 用于 egress 单点测度 signal→submit 延迟；无信号上下文(orphan 兜底)保持 0
+    pub signal_kind: u8, // 触发该订单动作的信号类型(SignalType as u8)，0=未知/不计入测度
 }
 
 impl OrderTimeStamp {
@@ -961,6 +964,8 @@ impl OrderTimeStamp {
             end_t: 0,
             local_t: 0,
             mkt_t: 0,
+            signal_t: 0,
+            signal_kind: 0,
         }
     }
 }
@@ -1078,6 +1083,14 @@ impl Order {
     /// 套利策略在 ArbOpen / ArbCancel / ArbClose 信号到达时调用，传入两腿盘口 ts 的较新者。
     pub fn set_mkt_time(&mut self, time: i64) {
         self.timestamp.mkt_t = time;
+    }
+
+    /// 设置触发本次订单动作的信号元数据：signal_t（trade_signal 进程生成信号的时间，µs）
+    /// 与 signal_kind（SignalType as u8）。必须在 egress 发送前调用，供 egress 单点测度
+    /// signal→submit 延迟。无信号上下文（orphan 兜底）保持默认 0，egress 自动跳过。
+    pub fn set_signal_meta(&mut self, signal_t: i64, signal_kind: u8) {
+        self.timestamp.signal_t = signal_t;
+        self.timestamp.signal_kind = signal_kind;
     }
 
     pub fn set_exchange_order_id(&mut self, exchange_order_id: i64) {

@@ -1088,14 +1088,17 @@ impl MarketMakerHedgeStrategy {
                     1.0,
                     false,
                 );
-            if plan.mkt_ts > 0 {
-                let _ = MonitorChannel::instance()
-                    .order_manager()
-                    .borrow_mut()
-                    .update(plan.client_order_id, |order| {
-                        order.set_mkt_time(plan.mkt_ts)
-                    });
-            }
+            // egress 测度：建单即落 signal 元数据，覆盖本单后续 new/cancel 两次 egress（同归 MMHedge 桶）。
+            let signal_ts = self.signal_ts;
+            let _ = MonitorChannel::instance()
+                .order_manager()
+                .borrow_mut()
+                .update(plan.client_order_id, |order| {
+                    order.set_signal_meta(signal_ts, SignalType::MMHedge as u8);
+                    if plan.mkt_ts > 0 {
+                        order.set_mkt_time(plan.mkt_ts);
+                    }
+                });
             self.hedge_order_ids.insert(plan.client_order_id);
             self.log_hedge_order_state("order_created_local", plan.client_order_id);
 

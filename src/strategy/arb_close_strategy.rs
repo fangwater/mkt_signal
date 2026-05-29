@@ -198,6 +198,7 @@ impl ArbCloseStrategy {
             client_order_id: Some(client_order_id),
             close_ts: 0,
             mkt_ts,
+            signal_type_u8: SignalType::ArbClose as u8,
         });
         if init.is_none() {
             MonitorChannel::instance()

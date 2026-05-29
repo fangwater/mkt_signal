@@ -822,6 +822,13 @@ impl ArbHedgeStrategy {
                 qty_multiplier,
                 false,
             );
+        // egress 测度：建单即落 signal 元数据，覆盖本单后续 new/cancel 两次 egress（同归 ArbHedge 桶）。
+        let _ = MonitorChannel::instance()
+            .order_manager()
+            .borrow_mut()
+            .update(client_order_id, |o| {
+                o.set_signal_meta(ctx.signal_ts, SignalType::ArbHedge as u8)
+            });
         self.hedge_order_meta.insert(
             client_order_id,
             ArbHedgeOrderMeta {

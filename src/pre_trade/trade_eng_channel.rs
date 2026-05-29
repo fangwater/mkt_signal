@@ -12,8 +12,10 @@ use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::OrderType;
 use crate::pre_trade::response_reconcile::apply_trade_response_as_update;
+use crate::pre_trade::signal_latency::record_signal_submit_latency;
 use crate::pre_trade::PersistChannel;
 use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
+use crate::signal::trade_signal::SignalType;
 use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
 use crate::strategy::trade_engine_response::{
     TradeEngineResponse, TradeEngineResponseMessage, TradeRequestKind,
@@ -118,9 +120,19 @@ impl TradeEngHub {
         let publish_start_us = get_timestamp_us();
         let create_time_us = trade_request_create_time_us(bytes);
         if let Some(om) = MonitorChannel::try_order_manager() {
+            // egress 单点：刷新 submit_t 的同时取出 signal 元数据，测度 signal→submit 延迟。
+            let mut signal_meta: Option<(i64, u8)> = None;
             om.borrow_mut().update(client_order_id, |order| {
                 order.set_submit_time(publish_start_us);
+                signal_meta = Some((order.timestamp.signal_t, order.timestamp.signal_kind));
             });
+            if let Some((signal_t, kind)) = signal_meta {
+                if signal_t > 0 {
+                    if let Some(st) = SignalType::from_u32(kind as u32) {
+                        record_signal_submit_latency(st.as_str(), publish_start_us, signal_t);
+                    }
+                }
+            }
         }
         let result = Self::publish_order_request(exchange, bytes);
         let publish_done_us = get_timestamp_us();

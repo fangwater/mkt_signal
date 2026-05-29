@@ -77,6 +77,7 @@ impl ArbOpenStrategy {
             client_order_id: None,
             close_ts,
             mkt_ts,
+            signal_type_u8: SignalType::ArbOpen as u8,
         }) else {
             return;
         };
@@ -141,6 +142,10 @@ impl ArbOpenStrategy {
 impl OpenStrategyCommon for ArbOpenStrategy {
     fn strategy_name(&self) -> &'static str {
         "ArbOpenStrategy"
+    }
+
+    fn cancel_signal_type_u8(&self) -> u8 {
+        SignalType::ArbCancel as u8
     }
 
     fn open_state(&self) -> &OpenStrategyState {

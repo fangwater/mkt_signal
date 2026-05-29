@@ -51,6 +51,7 @@ impl MarketMakerOpenStrategy {
             client_order_id: None,
             close_ts: 0,
             mkt_ts: ctx.opening_leg.ts,
+            signal_type_u8: SignalType::MMOpen as u8,
         });
     }
 
@@ -105,6 +106,10 @@ impl MarketMakerOpenStrategy {
 impl OpenStrategyCommon for MarketMakerOpenStrategy {
     fn strategy_name(&self) -> &'static str {
         "MarketMakerOpenStrategy"
+    }
+
+    fn cancel_signal_type_u8(&self) -> u8 {
+        SignalType::MMCancel as u8
     }
 
     fn open_state(&self) -> &OpenStrategyState {

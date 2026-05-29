@@ -485,7 +485,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                     // 推断 MM/MT 的标签也就失效，去掉。
                     let signal_price = open_ctx.price_value();
                     let signal_amount = open_ctx.amount_value();
-                    info!(
+                    debug!(
                         "🔔 收到 ArbOpen 信号: opening={} {:?} side={:?} price={:.6} hedging={} {:?} | amount={:.4} spread_rate={:.6} from_key='{}'",
                         symbol, opening_venue, side, signal_price,
                         hedging_symbol, hedging_venue,
@@ -493,7 +493,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                         open_ctx.spread_rate,
                         from_key
                     );
-                    info!(
+                    debug!(
                         "✅ ArbOpenStrategy: strategy_id={} {} 已创建并激活",
                         strategy_id, symbol
                     );
@@ -594,7 +594,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                     let mut strategy = ArbCloseStrategy::new(strategy_id);
                     strategy.handle_signal(&normalized_signal);
                     if strategy.is_active() {
-                        info!(
+                        debug!(
                             "🔔 收到 ArbClose 信号: opening={} {:?} hedging={} {:?} | side={:?} open_pos={:.4} hedge_pos={:.4} price={:.6}",
                             opening_symbol, opening_venue, hedging_symbol, hedging_venue,
                             close_side, opening_pos, hedging_pos, close_ctx.price_value()
