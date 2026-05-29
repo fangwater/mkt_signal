@@ -445,7 +445,10 @@ impl BasicAccountListener {
                                 "account_balance",
                             );
                             MonitorChannel::instance()
-                                .handle_arb_open_margin_net_risk_after_update(&msg.symbol);
+                                .handle_arb_open_margin_net_risk_after_update(
+                                    &msg.symbol,
+                                    msg.timestamp.max(0).saturating_mul(1000),
+                                );
                         }
                     }
                     if scope_matches_venue(
@@ -510,12 +513,14 @@ impl BasicAccountListener {
                     }
                     let symbol = normalize_symbol_for_internal(&msg.inst_id);
                     if !symbol.is_empty() {
+                        // 交易所侧事件时间 ms→µs（0/负数视作无上下文）
+                        let e_ts = msg.timestamp.max(0).saturating_mul(1000);
                         if self.open_venue == self.hedge_venue {
                             MonitorChannel::instance()
-                                .handle_mm_position_risk_after_update(&symbol);
+                                .handle_mm_position_risk_after_update(&symbol, e_ts);
                         } else {
                             MonitorChannel::instance()
-                                .handle_arb_position_risk_after_update(&symbol);
+                                .handle_arb_position_risk_after_update(&symbol, e_ts);
                         }
                     }
                 }
@@ -564,7 +569,10 @@ impl BasicAccountListener {
                                 "account_borrow_interest",
                             );
                             MonitorChannel::instance()
-                                .handle_arb_open_margin_net_risk_after_update(&msg.symbol);
+                                .handle_arb_open_margin_net_risk_after_update(
+                                    &msg.symbol,
+                                    msg.timestamp.max(0).saturating_mul(1000),
+                                );
                         }
                     }
                     if scope_matches_venue(
@@ -1257,11 +1265,14 @@ impl MonitorChannel {
         Self::with_inner(|inner| inner.hedge_venue)
     }
 
+    /// `e_ts`：见 `cancel_arb_open_strategies_for_symbol_side`，交易所侧事件时间(µs)，
+    /// 经 leg.ts → mkt_ts 落到 order；0 表示无上下文，不覆写已有 mkt_t。
     fn cancel_mm_open_strategies_for_symbol_side(
         &self,
         symbol: &str,
         side: Side,
         trigger_ts: i64,
+        e_ts: i64,
         reason: MmCancelReason,
     ) -> usize {
         let normalized_symbol = normalize_symbol_for_internal(symbol);
@@ -1302,7 +1313,7 @@ impl MonitorChannel {
                 venue: open_venue.to_u8(),
                 bid0: 0.0,
                 ask0: 0.0,
-                ts: trigger_ts,
+                ts: e_ts,
             };
             cancel_ctx.set_opening_symbol(&normalized_symbol);
             cancel_ctx.set_side(side);
@@ -1331,7 +1342,7 @@ impl MonitorChannel {
         cancelled
     }
 
-    fn handle_mm_position_risk_after_update(&self, symbol: &str) {
+    fn handle_mm_position_risk_after_update(&self, symbol: &str, e_ts: i64) {
         let normalized_symbol = normalize_symbol_for_internal(symbol);
         if normalized_symbol.is_empty() {
             return;
@@ -1360,6 +1371,7 @@ impl MonitorChannel {
             &normalized_symbol,
             cancel_side,
             trigger_ts,
+            e_ts,
             MmCancelReason::PositionRisk,
         );
         if cancelled > 0 {
@@ -1370,11 +1382,15 @@ impl MonitorChannel {
         }
     }
 
+    /// `e_ts`：触发本次撤单的账户/头寸事件在交易所侧的事件时间(µs)，0 表示无上下文。
+    /// 它经 leg.ts → `OpenCancelInput.mkt_ts` → `set_mkt_time` 落到 order 的 mkt_t 维度；
+    /// `trigger_ts`（本地墙钟）保留作 signal 生成时间，用于 construct→submit 延迟测度。
     fn cancel_arb_open_strategies_for_symbol_side(
         &self,
         symbol: &str,
         side: Side,
         trigger_ts: i64,
+        e_ts: i64,
         reason: ArbCancelReason,
     ) -> usize {
         let normalized_symbol = normalize_symbol_for_internal(symbol);
@@ -1416,14 +1432,14 @@ impl MonitorChannel {
                 venue: open_venue.to_u8(),
                 bid0: 0.0,
                 ask0: 0.0,
-                ts: trigger_ts,
+                ts: e_ts,
             };
             cancel_ctx.set_opening_symbol(&normalized_symbol);
             cancel_ctx.hedging_leg = TradingLeg {
                 venue: hedge_venue.to_u8(),
                 bid0: 0.0,
                 ask0: 0.0,
-                ts: trigger_ts,
+                ts: e_ts,
             };
             cancel_ctx.set_hedging_symbol(&normalized_symbol);
             cancel_ctx.set_side(side);
@@ -1448,7 +1464,7 @@ impl MonitorChannel {
         cancelled
     }
 
-    fn handle_arb_position_risk_after_update(&self, symbol: &str) {
+    fn handle_arb_position_risk_after_update(&self, symbol: &str, e_ts: i64) {
         let normalized_symbol = normalize_symbol_for_internal(symbol);
         if normalized_symbol.is_empty() {
             return;
@@ -1478,6 +1494,7 @@ impl MonitorChannel {
             &normalized_symbol,
             cancel_side,
             trigger_ts,
+            e_ts,
             ArbCancelReason::PositionRisk,
         );
         if cancelled > 0 {
@@ -1488,7 +1505,7 @@ impl MonitorChannel {
         }
     }
 
-    fn handle_arb_open_margin_net_risk_after_update(&self, asset: &str) {
+    fn handle_arb_open_margin_net_risk_after_update(&self, asset: &str, e_ts: i64) {
         let asset_upper = asset.trim().to_uppercase();
         if asset_upper.is_empty() || asset_upper == "USDT" {
             return;
@@ -1499,7 +1516,7 @@ impl MonitorChannel {
         let mapper = create_symbol_mapper(exchange_from_venue(self.open_venue()));
         let symbol =
             normalize_symbol_for_internal(&mapper.balance_asset_to_um_symbol(&asset_upper));
-        self.handle_arb_position_risk_after_update(&symbol);
+        self.handle_arb_position_risk_after_update(&symbol, e_ts);
     }
 
     pub fn mark_price_exchange(&self) -> Exchange {
@@ -3754,7 +3771,7 @@ mod tests {
         open_bal
             .borrow_mut()
             .apply_balance(&BasicBalanceMsg::create(0, "FIL".to_string(), 20.0));
-        MonitorChannel::instance().handle_arb_open_margin_net_risk_after_update("FIL");
+        MonitorChannel::instance().handle_arb_open_margin_net_risk_after_update("FIL", 0);
 
         let mut mgr = strategy_mgr.borrow_mut();
         let buy = mgr
@@ -3815,7 +3832,7 @@ mod tests {
                 20.0,
                 0.0,
             ));
-        MonitorChannel::instance().handle_arb_open_margin_net_risk_after_update("FIL");
+        MonitorChannel::instance().handle_arb_open_margin_net_risk_after_update("FIL", 0);
 
         let mut mgr = strategy_mgr.borrow_mut();
         let buy = mgr
@@ -3910,7 +3927,7 @@ mod tests {
             *mc.borrow_mut() = Some(inner);
         });
 
-        MonitorChannel::instance().handle_mm_position_risk_after_update("FILUSDT");
+        MonitorChannel::instance().handle_mm_position_risk_after_update("FILUSDT", 0);
 
         let mut mgr = strategy_mgr.borrow_mut();
         let buy = mgr
