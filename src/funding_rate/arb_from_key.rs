@@ -13,7 +13,10 @@ pub fn build_spread_decision_from_key_base(
     vol_band_scale: Option<[f64; 2]>,
     env_score: Option<f64>,
     env_threshold: Option<f64>,
-    spread_rate: f64,
+    open_bid: f64,
+    open_ask: f64,
+    hedge_bid: f64,
+    hedge_ask: f64,
     spread_fr: Option<f64>,
 ) -> String {
     let base = build_open_from_key_base(
@@ -24,7 +27,10 @@ pub fn build_spread_decision_from_key_base(
         vol_band_scale,
         env_score,
         env_threshold,
-        spread_rate,
+        open_bid,
+        open_ask,
+        hedge_bid,
+        hedge_ask,
     );
     append_key_value_fields(
         base,
@@ -41,7 +47,10 @@ pub fn build_funding_decision_from_key_base(
     env_threshold: Option<f64>,
     futures_symbol: &str,
     futures_venue: TradingVenue,
-    spread_rate: f64,
+    open_bid: f64,
+    open_ask: f64,
+    hedge_bid: f64,
+    hedge_ask: f64,
     premium_rate: Option<f64>,
 ) -> String {
     let _ = (futures_symbol, futures_venue);
@@ -53,7 +62,10 @@ pub fn build_funding_decision_from_key_base(
         vol_band_scale,
         env_score,
         env_threshold,
-        spread_rate,
+        open_bid,
+        open_ask,
+        hedge_bid,
+        hedge_ask,
     );
     append_key_value_fields(
         base,
@@ -68,7 +80,10 @@ pub fn build_funding_decision_from_key(
     now: i64,
     futures_symbol: &str,
     futures_venue: TradingVenue,
-    spread_rate: f64,
+    open_bid: f64,
+    open_ask: f64,
+    hedge_bid: f64,
+    hedge_ask: f64,
     premium_rate: Option<f64>,
 ) -> Vec<u8> {
     build_funding_decision_from_key_base(
@@ -81,7 +96,10 @@ pub fn build_funding_decision_from_key(
         None,
         futures_symbol,
         futures_venue,
-        spread_rate,
+        open_bid,
+        open_ask,
+        hedge_bid,
+        hedge_ask,
         premium_rate,
     )
     .into_bytes()
@@ -91,7 +109,10 @@ pub fn build_funding_decision_from_key_with_gate(
     now: i64,
     futures_symbol: &str,
     futures_venue: TradingVenue,
-    spread_rate: f64,
+    open_bid: f64,
+    open_ask: f64,
+    hedge_bid: f64,
+    hedge_ask: f64,
     return_qtl: Option<f64>,
     return_threshold: Option<f64>,
     volatility: Option<f64>,
@@ -110,7 +131,10 @@ pub fn build_funding_decision_from_key_with_gate(
         env_threshold,
         futures_symbol,
         futures_venue,
-        spread_rate,
+        open_bid,
+        open_ask,
+        hedge_bid,
+        hedge_ask,
         premium_rate,
     );
     base.into_bytes()
@@ -124,7 +148,10 @@ pub fn build_spread_arb_cancel_from_key(
     environment_threshold: Option<f64>,
     volatility: Option<f64>,
     vol_band_scale: Option<[f64; 2]>,
-    spread_rate: f64,
+    open_bid: f64,
+    open_ask: f64,
+    hedge_bid: f64,
+    hedge_ask: f64,
     spread_fr: Option<f64>,
 ) -> String {
     build_spread_decision_from_key_base(
@@ -135,7 +162,10 @@ pub fn build_spread_arb_cancel_from_key(
         vol_band_scale,
         Some(environment_score),
         environment_threshold,
-        spread_rate,
+        open_bid,
+        open_ask,
+        hedge_bid,
+        hedge_ask,
         spread_fr,
     )
 }
@@ -148,7 +178,10 @@ pub fn build_spread_arb_tlen_cancel_from_key(
     environment_threshold: Option<f64>,
     volatility: Option<f64>,
     vol_band_scale: Option<[f64; 2]>,
-    spread_rate: f64,
+    open_bid: f64,
+    open_ask: f64,
+    hedge_bid: f64,
+    hedge_ask: f64,
     spread_fr: Option<f64>,
     tlen: f64,
     threshold: f64,
@@ -161,7 +194,10 @@ pub fn build_spread_arb_tlen_cancel_from_key(
         environment_threshold,
         volatility,
         vol_band_scale,
-        spread_rate,
+        open_bid,
+        open_ask,
+        hedge_bid,
+        hedge_ask,
         spread_fr,
     );
     append_tlen_suffix(from_key, tlen, threshold)
@@ -175,7 +211,10 @@ pub fn build_funding_tlen_cancel_from_key(
     vol_band_scale: Option<[f64; 2]>,
     env_score: Option<f64>,
     env_threshold: Option<f64>,
-    spread_rate: f64,
+    open_bid: f64,
+    open_ask: f64,
+    hedge_bid: f64,
+    hedge_ask: f64,
     premium_rate: Option<f64>,
     tlen: f64,
     threshold: f64,
@@ -191,7 +230,10 @@ pub fn build_funding_tlen_cancel_from_key(
             env_threshold,
             "",
             TradingVenue::OkexFutures,
-            spread_rate,
+            open_bid,
+            open_ask,
+            hedge_bid,
+            hedge_ask,
             premium_rate,
         ),
         tlen,

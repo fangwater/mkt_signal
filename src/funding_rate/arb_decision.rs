@@ -2456,7 +2456,6 @@ fn emit_funding_precise_tlen_cancel(
             Some(quotes) => quotes,
             None => return Ok(()),
         };
-    let spread_rate = super::common::compute_spread_rate(&open_quote, &hedge_quote);
     let snapshot = ArbDecision::with_state_mut(|arb| {
         arb.snapshot_open_from_key_fields(
             open_symbol,
@@ -2482,13 +2481,16 @@ fn emit_funding_precise_tlen_cancel(
         snapshot.vol_band_scale,
         snapshot.env_score,
         snapshot.env_threshold,
-        spread_rate,
+        open_quote.bid,
+        open_quote.ask,
+        hedge_quote.bid,
+        hedge_quote.ask,
         premium_rate,
         tlen,
         threshold,
     );
     // tlen 撤单复用现有两个时间维度：mkt_ts 取 trigger 周期时刻 T0（leg.ts→max→order.mkt_t），
-    // signal_ts 仍取回查执行撤单时刻 T2（now_us→trigger_ts）。bid/ask 不动，spread_rate/from_key 不依赖 ts。
+    // signal_ts 仍取回查执行撤单时刻 T2（now_us→trigger_ts）。bid/ask 不动，from_key 不依赖 ts。
     open_quote.ts = trigger_t0;
     hedge_quote.ts = trigger_t0;
     super::arb_cancel_emit::emit_precise_arb_cancel(super::arb_cancel_emit::ArbCancelEmitInput {
@@ -2524,7 +2526,6 @@ fn emit_spread_arb_precise_tlen_cancel(
             Some(quotes) => quotes,
             None => return Ok(()),
         };
-    let spread_rate = super::common::compute_spread_rate(&open_quote, &hedge_quote);
     let return_qtl = ArbDecision::with_state_mut(|arb| {
         arb.lookup_return_model_score_lookup(hedge_symbol, hedge_venue)
             .and_then(|lookup| lookup.score_quantile)
@@ -2551,7 +2552,10 @@ fn emit_spread_arb_precise_tlen_cancel(
         environment_signal.threshold,
         volatility,
         ArbDecision::with_state_mut(|arb| Some(arb.vol_band_scale)).flatten(),
-        spread_rate,
+        open_quote.bid,
+        open_quote.ask,
+        hedge_quote.bid,
+        hedge_quote.ask,
         super::arb_open_filter::lookup_realtime_open_filter_value(
             open_symbol,
             hedge_symbol,
@@ -2563,7 +2567,7 @@ fn emit_spread_arb_precise_tlen_cancel(
         threshold,
     );
     // tlen 撤单复用现有两个时间维度：mkt_ts 取 trigger 周期时刻 T0（leg.ts→max→order.mkt_t），
-    // signal_ts 仍取回查执行撤单时刻 T2（now_us→trigger_ts）。bid/ask 不动，spread_rate/from_key 不依赖 ts。
+    // signal_ts 仍取回查执行撤单时刻 T2（now_us→trigger_ts）。bid/ask 不动，from_key 不依赖 ts。
     open_quote.ts = trigger_t0;
     hedge_quote.ts = trigger_t0;
     super::arb_cancel_emit::emit_precise_arb_cancel(super::arb_cancel_emit::ArbCancelEmitInput {
@@ -2596,7 +2600,6 @@ fn emit_spread_arb_spread_cancel(
             None => return Ok(()),
         };
     let batch_ts = get_timestamp_us();
-    let spread_rate = super::common::compute_spread_rate(&open_quote, &hedge_quote);
     let return_qtl = ArbDecision::with_state_mut(|arb| {
         arb.lookup_return_model_score_lookup(hedge_symbol, hedge_venue)
             .and_then(|lookup| lookup.score_quantile)
@@ -2623,7 +2626,10 @@ fn emit_spread_arb_spread_cancel(
         environment_signal.threshold,
         volatility,
         ArbDecision::with_state_mut(|arb| Some(arb.vol_band_scale)).flatten(),
-        spread_rate,
+        open_quote.bid,
+        open_quote.ask,
+        hedge_quote.bid,
+        hedge_quote.ask,
         super::arb_open_filter::lookup_realtime_open_filter_value(
             open_symbol,
             hedge_symbol,
@@ -2721,7 +2727,6 @@ fn emit_spread_arb_open_signals(
         })
         .unwrap_or(false);
     let batch_ts = get_timestamp_us();
-    let spread_rate = super::common::compute_spread_rate(&open_quote, &hedge_quote);
     let vol_band_scale = ArbDecision::with_state_mut(|arb| arb.vol_band_scale)
         .expect("ArbDecisionState should be initialized");
     let plan_volatility = open_volatility_factor.max(0.0);
@@ -2733,7 +2738,10 @@ fn emit_spread_arb_open_signals(
         Some(vol_band_scale),
         Some(environment_score),
         environment_threshold,
-        spread_rate,
+        open_quote.bid,
+        open_quote.ask,
+        hedge_quote.bid,
+        hedge_quote.ask,
     );
     let from_key = super::common::append_key_value_fields(
         base_from_key,
@@ -2943,7 +2951,6 @@ fn emit_spread_arb_close_signals(
             None => return Ok(false),
         };
     let batch_ts = get_timestamp_us();
-    let spread_rate = super::common::compute_spread_rate(&open_quote, &hedge_quote);
     let snapshot = ArbDecision::with_state_mut(|arb| {
         arb.snapshot_open_from_key_fields(
             open_symbol,
@@ -2970,7 +2977,10 @@ fn emit_spread_arb_close_signals(
             snapshot.vol_band_scale,
             snapshot.env_score,
             snapshot.env_threshold,
-            spread_rate,
+            open_quote.bid,
+            open_quote.ask,
+            hedge_quote.bid,
+            hedge_quote.ask,
         ),
         &[(
             "spread_fr",
@@ -3168,7 +3178,6 @@ fn emit_funding_open_close_signals(
         None => return Ok(false),
     };
     let batch_ts = get_timestamp_us();
-    let spread_rate = super::common::compute_spread_rate(&spot_quote, &futures_quote);
     let vol_band_scale = ArbDecision::with_state_mut(|arb| arb.vol_band_scale)
         .expect("ArbDecisionState should be initialized");
     let premium_rate = if matches!(signal_type, SignalType::ArbOpen) {
@@ -3187,7 +3196,10 @@ fn emit_funding_open_close_signals(
             batch_ts,
             futures_symbol,
             futures_venue,
-            spread_rate,
+            spot_quote.bid,
+            spot_quote.ask,
+            futures_quote.bid,
+            futures_quote.ask,
             gate.and_then(|v| v.return_qtl),
             gate.and_then(|v| v.return_threshold),
             gate.map(|v| v.open_volatility_factor),
@@ -3201,7 +3213,10 @@ fn emit_funding_open_close_signals(
             batch_ts,
             futures_symbol,
             futures_venue,
-            spread_rate,
+            spot_quote.bid,
+            spot_quote.ask,
+            futures_quote.bid,
+            futures_quote.ask,
             premium_rate,
         )
         .to_vec()
@@ -3228,7 +3243,10 @@ fn emit_funding_open_close_signals(
                 snapshot.env_threshold,
                 futures_symbol,
                 futures_venue,
-                spread_rate,
+                spot_quote.bid,
+                spot_quote.ask,
+                futures_quote.bid,
+                futures_quote.ask,
                 premium_rate,
             ),
         )
@@ -3445,7 +3463,6 @@ fn emit_funding_spread_cancel(
         None => return Ok(()),
     };
     let batch_ts = get_timestamp_us();
-    let spread_rate = super::common::compute_spread_rate(&spot_quote, &futures_quote);
     let snapshot = ArbDecision::with_state_mut(|arb| {
         arb.snapshot_open_from_key_fields(
             spot_symbol,
@@ -3473,7 +3490,10 @@ fn emit_funding_spread_cancel(
         snapshot.env_threshold,
         futures_symbol,
         futures_venue,
-        spread_rate,
+        spot_quote.bid,
+        spot_quote.ask,
+        futures_quote.bid,
+        futures_quote.ask,
         premium_rate,
     );
     super::arb_cancel_emit::emit_precise_arb_cancel(super::arb_cancel_emit::ArbCancelEmitInput {
