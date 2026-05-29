@@ -2252,6 +2252,7 @@ fn drive_funding_cancel_candidate_query(
                 tlen,
                 threshold,
                 now_us,
+                query.trigger_ts,
             ) {
                 log::warn!(
                     "{FUNDING_ARB_SHELL_NAME}: emit precise ArbCancel failed symbol={} strategy_id={} err={:#}",
@@ -2385,6 +2386,7 @@ fn drive_spread_arb_cancel_candidate_query(
                 tlen,
                 threshold,
                 now_us,
+                query.trigger_ts,
             ) {
                 log::warn!(
                     "{SPREAD_ARB_SHELL_NAME}: emit precise ArbCancel failed symbol={} strategy_id={} err={:#}",
@@ -2447,8 +2449,9 @@ fn emit_funding_precise_tlen_cancel(
     tlen: f64,
     threshold: f64,
     now_us: i64,
+    trigger_t0: i64,
 ) -> Result<()> {
-    let (open_quote, hedge_quote) =
+    let (mut open_quote, mut hedge_quote) =
         match ArbDecision::load_valid_quotes(open_symbol, hedge_symbol, open_venue, hedge_venue) {
             Some(quotes) => quotes,
             None => return Ok(()),
@@ -2484,6 +2487,10 @@ fn emit_funding_precise_tlen_cancel(
         tlen,
         threshold,
     );
+    // tlen 撤单复用现有两个时间维度：mkt_ts 取 trigger 周期时刻 T0（leg.ts→max→order.mkt_t），
+    // signal_ts 仍取回查执行撤单时刻 T2（now_us→trigger_ts）。bid/ask 不动，spread_rate/from_key 不依赖 ts。
+    open_quote.ts = trigger_t0;
+    hedge_quote.ts = trigger_t0;
     super::arb_cancel_emit::emit_precise_arb_cancel(super::arb_cancel_emit::ArbCancelEmitInput {
         signal_pub: &decision.runtime.signal_pub,
         open_symbol,
@@ -2510,8 +2517,9 @@ fn emit_spread_arb_precise_tlen_cancel(
     tlen: f64,
     threshold: f64,
     now_us: i64,
+    trigger_t0: i64,
 ) -> Result<()> {
-    let (open_quote, hedge_quote) =
+    let (mut open_quote, mut hedge_quote) =
         match ArbDecision::load_valid_quotes(open_symbol, hedge_symbol, open_venue, hedge_venue) {
             Some(quotes) => quotes,
             None => return Ok(()),
@@ -2554,6 +2562,10 @@ fn emit_spread_arb_precise_tlen_cancel(
         tlen,
         threshold,
     );
+    // tlen 撤单复用现有两个时间维度：mkt_ts 取 trigger 周期时刻 T0（leg.ts→max→order.mkt_t），
+    // signal_ts 仍取回查执行撤单时刻 T2（now_us→trigger_ts）。bid/ask 不动，spread_rate/from_key 不依赖 ts。
+    open_quote.ts = trigger_t0;
+    hedge_quote.ts = trigger_t0;
     super::arb_cancel_emit::emit_precise_arb_cancel(super::arb_cancel_emit::ArbCancelEmitInput {
         signal_pub: &decision.runtime.signal_pub,
         open_symbol,
