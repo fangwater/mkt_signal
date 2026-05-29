@@ -186,6 +186,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+/// 合约腿管理器句柄对：(UmManager, MinQtyTable)。
+type UmMgrPair = (Rc<RefCell<BasicUmManager>>, Rc<RefCell<MinQtyTable>>);
+
 // Thread-local 单例存储
 thread_local! {
     static MONITOR_CHANNEL: RefCell<Option<MonitorChannelInner>> = const { RefCell::new(None) };
@@ -219,7 +222,7 @@ impl LegMgr {
         }
     }
 
-    fn as_um_mgr(&self) -> Option<(Rc<RefCell<BasicUmManager>>, Rc<RefCell<MinQtyTable>>)> {
+    fn as_um_mgr(&self) -> Option<UmMgrPair> {
         match self {
             LegMgr::Futures {
                 um, min_qty_table, ..
@@ -1670,12 +1673,12 @@ impl MonitorChannel {
     }
 
     /// 获取开仓腿的基础合约管理器（futures）
-    pub fn open_um_mgr(&self) -> Option<(Rc<RefCell<BasicUmManager>>, Rc<RefCell<MinQtyTable>>)> {
+    pub fn open_um_mgr(&self) -> Option<UmMgrPair> {
         Self::with_inner(|inner| inner.open_leg.as_um_mgr())
     }
 
     /// 获取对冲腿的基础合约管理器（futures）
-    pub fn hedge_um_mgr(&self) -> Option<(Rc<RefCell<BasicUmManager>>, Rc<RefCell<MinQtyTable>>)> {
+    pub fn hedge_um_mgr(&self) -> Option<UmMgrPair> {
         Self::with_inner(|inner| inner.hedge_leg.as_um_mgr())
     }
 
@@ -2641,9 +2644,7 @@ impl MonitorChannel {
             .copied()
             .unwrap_or((0.0, 0.0));
         let current_net_qty = open_qty + hedge_qty;
-        let next_net_qty = if hedge_venue == inner.open_venue {
-            current_net_qty + hedge_signed_base_qty
-        } else if hedge_venue == inner.hedge_venue {
+        let next_net_qty = if hedge_venue == inner.open_venue || hedge_venue == inner.hedge_venue {
             current_net_qty + hedge_signed_base_qty
         } else {
             return Err(format!(
@@ -2740,7 +2741,7 @@ impl MonitorChannel {
         Self::with_inner(|inner| {
             let max_pos_u =
                 PreTradeParamsLoader::instance().max_pos_u_for_symbol(inner.open_venue, symbol);
-            if !(max_pos_u > 0.0) {
+            if max_pos_u.is_nan() || max_pos_u <= 0.0 {
                 panic!("max_pos_u not set!!");
             }
 
