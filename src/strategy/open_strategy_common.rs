@@ -1290,13 +1290,19 @@ pub trait OpenStrategyCommon {
             match order.get_order_cancel_bytes() {
                 Ok(cancel_bytes) => {
                     let exchange = order.venue.trade_engine_exchange();
-                    // 超时撤单由本地定时器触发，无 trade_signal 上下文：signal_t 取当前本地时间，
-                    // signal_kind 用本策略 cancel 类型，避免 egress 沿用开仓 ArbOpen 标签错算。
+                    // 超时撤单由本地定时器触发，无 trade_signal 上下文。两个时间维度分开取：
+                    //   mkt_t   = expire_ts —— 市场意义上该撤单的预定时刻（不受调度抖动影响）；
+                    //   signal_t= now       —— 定时器实际判定/触发撤单的本地时刻。
+                    // 于是 signal_t - mkt_t 即定时器调度延迟。signal_kind 用本策略 cancel 类型，
+                    // 避免 egress 沿用开仓 ArbOpen 标签错算。
                     let cancel_kind = self.cancel_signal_type_u8();
                     let _ = MonitorChannel::instance()
                         .order_manager()
                         .borrow_mut()
-                        .update(client_order_id, |o| o.set_signal_meta(now, cancel_kind));
+                        .update(client_order_id, |o| {
+                            o.set_signal_meta(now, cancel_kind);
+                            o.set_mkt_time(expire_ts);
+                        });
                     if let Err(e) = TradeEngHub::publish_order_request_for(
                         client_order_id,
                         exchange,
@@ -1848,7 +1854,8 @@ pub trait OpenStrategyCommon {
             // 主动撤单引发的 terminal：signal_ts 改用 cancel 本地触发时间（trade_signal
             // 决策撤单的时刻），与 open 的 signal_ts 对称，便于度量撤单链路延迟；
             // Expired/ExpiredInMatch 非主动撤单、无 cancel 信号，保持开仓 signal_ts。
-            // mkt_ts 不动：order.timestamp.mkt_t 已是撤单 max(open_leg, hedge_leg) 盘口时间。
+            // mkt_ts 不动：撤单时 order.timestamp.mkt_t 已在各撤单路径覆写为该撤单的市场时刻——
+            // signal 驱动=撤单信号 max(open_leg, hedge_leg) 盘口时间，timeout=订单 expire_ts。
             let mut term_ctx = ctx.clone();
             if order_update.status() == OrderStatus::Canceled {
                 if let Some(ts) = self
