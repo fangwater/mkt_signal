@@ -1964,8 +1964,20 @@ impl TradeEngine {
                             let endpoint = QueryTypeMapping::get_endpoint(msg.req_type);
                             let qs = std::str::from_utf8(&msg.params).unwrap_or("");
 
-                            match crate::trade_engine::gate_query::gate_rest_get(
-                                &gate_http, creds, endpoint, qs,
+                            let extra_headers = if matches!(
+                                msg.req_type,
+                                crate::trade_engine::query_request::QueryRequestType::GateUnifiedPositionsSnapshot
+                            ) {
+                                &[("X-Gate-Size-Decimal", "1")][..]
+                            } else {
+                                &[][..]
+                            };
+                            match crate::trade_engine::gate_query::gate_rest_get_with_headers(
+                                &gate_http,
+                                creds,
+                                endpoint,
+                                qs,
+                                extra_headers,
                             )
                             .await
                             {

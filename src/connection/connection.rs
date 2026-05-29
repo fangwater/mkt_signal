@@ -391,9 +391,18 @@ impl WsConnector {
 
     /// Connect without sending any subscribe message (for user-data streams that use URL-only auth)
     pub async fn connect_raw(url: &str) -> anyhow::Result<WsConnectionResult> {
+        Self::connect_raw_with_headers(url, &[]).await
+    }
+
+    pub async fn connect_raw_with_headers(
+        url: &str,
+        headers: &[(String, String)],
+    ) -> anyhow::Result<WsConnectionResult> {
         let url = Url::parse(url).with_context(|| "Invalid URL")?;
         for retry in 0..Self::MAX_RETRIES {
-            match connect_async(url.clone()).await {
+            let mut request = url.clone().into_client_request()?;
+            apply_headers(request.headers_mut(), headers)?;
+            match connect_async(request).await {
                 Ok((ws_stream, _)) => {
                     return Ok(WsConnectionResult {
                         ws_stream: Arc::new(Mutex::new(ws_stream)),
@@ -425,8 +434,16 @@ impl WsConnector {
         url: &str,
         local_ip: &str,
     ) -> anyhow::Result<WsConnectionResult> {
+        Self::connect_with_local_ip_raw_and_headers(url, local_ip, &[]).await
+    }
+
+    pub async fn connect_with_local_ip_raw_and_headers(
+        url: &str,
+        local_ip: &str,
+        headers: &[(String, String)],
+    ) -> anyhow::Result<WsConnectionResult> {
         if local_ip == "0.0.0.0" || local_ip.is_empty() {
-            return Self::connect_raw(url).await;
+            return Self::connect_raw_with_headers(url, headers).await;
         }
 
         let local_addr: IpAddr = local_ip
@@ -478,6 +495,9 @@ impl WsConnector {
             .await
             .with_context(|| format!("Failed to connect to {}", target))?;
 
+        let mut request = ws_url.clone().into_client_request()?;
+        apply_headers(request.headers_mut(), headers)?;
+
         let (ws_stream, _resp) = if scheme.eq_ignore_ascii_case("wss") {
             let host = ws_url
                 .host_str()
@@ -491,10 +511,10 @@ impl WsConnector {
                 .await
                 .with_context(|| "TLS handshake failed")?;
             let tls_wrapped = MaybeTlsStream::NativeTls(tls_stream);
-            client_async(ws_url.as_str(), tls_wrapped).await?
+            client_async(request, tls_wrapped).await?
         } else {
             let plain_stream = MaybeTlsStream::Plain(stream);
-            client_async(ws_url.as_str(), plain_stream).await?
+            client_async(request, plain_stream).await?
         };
 
         Ok(WsConnectionResult {

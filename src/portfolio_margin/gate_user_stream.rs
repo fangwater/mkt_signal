@@ -322,10 +322,21 @@ impl MktConnectionHandler for GateUserDataConnection {
             info!("Gate: Connecting to {}", &self.base_connection.url);
 
             // 连接 WebSocket
-            let connect_result = if let Some(ref local_ip) = self.base_connection.local_ip {
-                WsConnector::connect_with_local_ip_raw(&self.base_connection.url, local_ip).await
+            let decimal_headers = if self.ping_channel == "futures.ping" {
+                vec![("X-Gate-Size-Decimal".to_string(), "1".to_string())]
             } else {
-                WsConnector::connect_raw(&self.base_connection.url).await
+                Vec::new()
+            };
+            let connect_result = if let Some(ref local_ip) = self.base_connection.local_ip {
+                WsConnector::connect_with_local_ip_raw_and_headers(
+                    &self.base_connection.url,
+                    local_ip,
+                    &decimal_headers,
+                )
+                .await
+            } else {
+                WsConnector::connect_raw_with_headers(&self.base_connection.url, &decimal_headers)
+                    .await
             };
 
             match connect_result {

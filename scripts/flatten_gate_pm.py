@@ -51,6 +51,7 @@ GATE_PREFIX = "/api/v4"
 ENV_DIR_PATTERN = re.compile(r"^(gate_fr_|gate[-_]intra[-_])")
 AUTHORITATIVE_KEYS = ("GATE_API_KEY", "GATE_API_SECRET")
 ZERO = Decimal("0")
+GATE_SIZE_DECIMAL_HEADERS = {"X-Gate-Size-Decimal": "1"}
 
 
 @dataclass
@@ -167,7 +168,7 @@ def gate_sign(method, path, query, body, secret, timestamp):
     return hmac.new(secret.encode("utf-8"), sign_string.encode("utf-8"), hashlib.sha512).hexdigest()
 
 
-def gate_private(method, path, api_key, api_secret, *, params=None, body=None, timeout=15):
+def gate_private(method, path, api_key, api_secret, *, params=None, body=None, timeout=15, headers=None):
     method = method.upper()
     params = params or {}
     query = urllib.parse.urlencode(sorted(params.items(), key=lambda kv: kv[0]), doseq=True)
@@ -178,15 +179,17 @@ def gate_private(method, path, api_key, api_secret, *, params=None, body=None, t
     url = f"{GATE_HOST}{request_path}"
     if query:
         url = f"{url}?{query}"
+    req_headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "KEY": api_key,
+        "Timestamp": ts,
+        "SIGN": signature,
+    }
+    req_headers.update(headers or {})
     return http_request(
         url, method=method,
-        headers={
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "KEY": api_key,
-            "Timestamp": ts,
-            "SIGN": signature,
-        },
+        headers=req_headers,
         data=None if method == "GET" else body_text.encode("utf-8"),
         timeout=timeout,
     )
@@ -366,7 +369,11 @@ def fetch_futures_positions(symbols: List[str], api_key, api_secret) -> Dict[str
     for sym in symbols:
         contract = f"{split_usdt(sym)}_USDT"
         status, body = gate_private(
-            "GET", f"/futures/usdt/positions/{contract}", api_key, api_secret
+            "GET",
+            f"/futures/usdt/positions/{contract}",
+            api_key,
+            api_secret,
+            headers=GATE_SIZE_DECIMAL_HEADERS,
         )
         if not (200 <= status < 300):
             sys.stderr.write(f"[WARN] positions {contract} status={status} body={body}\n")
@@ -597,7 +604,14 @@ def execute_futures(plan: SymbolPlan, api_key, api_secret) -> PhaseOutcome:
         "reduce_only": plan.futures_reduce_only,
     }
     print(f"\n[futures] {sym} {side} size={body['size']} (contracts) reduce_only={str(plan.futures_reduce_only).lower()}")
-    status, body_resp = gate_private("POST", "/futures/usdt/orders", api_key, api_secret, body=body)
+    status, body_resp = gate_private(
+        "POST",
+        "/futures/usdt/orders",
+        api_key,
+        api_secret,
+        body=body,
+        headers=GATE_SIZE_DECIMAL_HEADERS,
+    )
     ok = 200 <= status < 300
     print(f"  [{'OK' if ok else 'ERR'}] status={status}")
     print(f"  {body_resp}")

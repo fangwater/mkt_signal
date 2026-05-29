@@ -29,7 +29,7 @@ use mkt_signal::portfolio_margin::gate_auth::{GateCredentials, GatePrivateWsUrls
 use mkt_signal::portfolio_margin::gate_rest::fetch_borrow_interest;
 use mkt_signal::portfolio_margin::gate_user_stream::{GateUserDataConnection, SubscribeChannel};
 use mkt_signal::portfolio_margin::pm_forwarder::PmForwarder;
-use mkt_signal::trade_engine::gate_query::gate_rest_get;
+use mkt_signal::trade_engine::gate_query::gate_rest_get_with_headers;
 use mkt_signal::trade_engine::query_parsers::gate_positions_snapshot::{
     parse_gate_positions_snapshot_with_meta, GatePositionsSnapshotParse,
 };
@@ -456,7 +456,15 @@ fn spawn_gate_positions_poll(
                         break;
                     }
 
-                    match gate_rest_get(&client, &credentials, "/api/v4/futures/usdt/positions", "").await {
+                    match gate_rest_get_with_headers(
+                        &client,
+                        &credentials,
+                        "/api/v4/futures/usdt/positions",
+                        "",
+                        &[("X-Gate-Size-Decimal", "1")],
+                    )
+                    .await
+                    {
                         Ok((200, body)) => {
                             match parse_gate_positions_snapshot_with_meta(&body) {
                                 Some(parsed) => {

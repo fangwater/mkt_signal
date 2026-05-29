@@ -50,6 +50,8 @@ use tokio_native_tls::TlsConnector as TokioTlsConnector;
 use tokio_tungstenite::{
     client_async,
     tungstenite::{
+        client::IntoClientRequest,
+        http::{HeaderName, HeaderValue},
         protocol::{frame::coding::CloseCode, CloseFrame},
         Error as WsError, Message,
     },
@@ -877,6 +879,7 @@ impl TradeWsClient {
             let local_ip = self.local_ip;
             let url = self.url.clone();
             let connect_timeout_ms = self.connect_timeout_ms;
+            let ws_headers = self.ws_handshake_headers();
             tokio::select! {
                 biased;
                 _ = self.engine_shutdown.cancelled() => {
@@ -891,7 +894,7 @@ impl TradeWsClient {
                     }
                     continue;
                 }
-                res = Self::establish_connection_with(local_ip, &url, connect_timeout_ms) => {
+                res = Self::establish_connection_with(local_ip, &url, connect_timeout_ms, &ws_headers) => {
                     match res {
                         Ok(mut ws) => {
                             info!(
@@ -1141,10 +1144,21 @@ impl TradeWsClient {
         Ok(())
     }
 
+    fn ws_handshake_headers(&self) -> Vec<(String, String)> {
+        if self.exchange == Exchange::Gate
+            && self.gate_ws_kind == Some(gate_ws::GateWsKind::FuturesUsdt)
+        {
+            vec![("X-Gate-Size-Decimal".to_string(), "1".to_string())]
+        } else {
+            Vec::new()
+        }
+    }
+
     async fn establish_connection_with(
         local_ip: IpAddr,
         url_str: &str,
         connect_timeout_ms: u64,
+        headers: &[(String, String)],
     ) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>> {
         let url = Url::parse(url_str).with_context(|| "invalid websocket url")?;
         let host = url
@@ -1190,6 +1204,15 @@ impl TradeWsClient {
             .with_context(|| format!("connect {}", target))?;
         tune_tcp_socket(&stream);
 
+        let mut request = url.clone().into_client_request()?;
+        for (name, value) in headers {
+            let name = HeaderName::from_bytes(name.as_bytes())
+                .with_context(|| format!("invalid websocket header name {}", name))?;
+            let value = HeaderValue::from_str(value)
+                .with_context(|| format!("invalid websocket header value for {}", name))?;
+            request.headers_mut().insert(name, value);
+        }
+
         let (ws_stream, _resp) = if url.scheme().eq_ignore_ascii_case("wss") {
             let native = TlsConnector::builder()
                 .build()
@@ -1199,11 +1222,11 @@ impl TradeWsClient {
                 .connect(host, stream)
                 .await
                 .with_context(|| "tls handshake failed")?;
-            client_async(url.as_str(), MaybeTlsStream::NativeTls(tls))
+            client_async(request, MaybeTlsStream::NativeTls(tls))
                 .await
                 .map_err(|err| anyhow!("websocket handshake (wss): {}", format_ws_error(&err)))?
         } else {
-            client_async(url.as_str(), MaybeTlsStream::Plain(stream))
+            client_async(request, MaybeTlsStream::Plain(stream))
                 .await
                 .map_err(|err| anyhow!("websocket handshake (ws): {}", format_ws_error(&err)))?
         };
@@ -1799,6 +1822,20 @@ impl TradeWsClient {
                 client_query_id: msg.client_query_id,
             },
         );
+    }
+
+    fn resolve_gate_query_identity(
+        query_inflight: &mut HashMap<i64, QueryInflightMeta>,
+        default_req_type: QueryRequestType,
+        transport_id: i64,
+    ) -> (QueryRequestType, i64) {
+        if transport_id > 0 {
+            if let Some(meta) = query_inflight.remove(&transport_id) {
+                return (meta.req_type, meta.client_query_id);
+            }
+            return (default_req_type, transport_id);
+        }
+        (default_req_type, 0)
     }
 
     fn take_trade_inflight_by_transport_id(
@@ -2712,17 +2749,18 @@ impl TradeWsClient {
             QueryRequestType::GateUnifiedOrderQuery
         };
 
-        let client_query_id = Self::extract_gate_request_id(json_val).unwrap_or(0);
-        let req_type = if client_query_id > 0 {
-            self.query_inflight
-                .remove(&client_query_id)
-                .map(|meta| meta.req_type)
-                .unwrap_or(default_req_type)
-        } else {
-            default_req_type
-        };
+        let transport_id = Self::extract_gate_request_id(json_val).unwrap_or(0);
+        let (req_type, client_query_id) = Self::resolve_gate_query_identity(
+            &mut self.query_inflight,
+            default_req_type,
+            transport_id,
+        );
 
         let status = Self::extract_gate_status(json_val);
+        info!(
+            "trade ws client id={} exchange=gate recv {} response req_type={:?} client_query_id={} transport_id={} status={}",
+            self.id, channel, req_type, client_query_id, transport_id, status
+        );
         if !(200..300).contains(&(status as u32)) {
             self.publish_query_error(req_type, client_query_id);
             return true;
@@ -3120,7 +3158,11 @@ impl TradeWsClient {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_bitget_pong_response, parse_bitget_control_event};
+    use super::{
+        is_bitget_pong_response, parse_bitget_control_event, QueryInflightMeta, TradeWsClient,
+    };
+    use crate::trade_engine::query_request::QueryRequestType;
+    use std::collections::HashMap;
 
     #[test]
     fn parses_bitget_login_failure_control_event() {
@@ -3143,5 +3185,41 @@ mod tests {
         assert!(is_bitget_pong_response("pong"));
         assert!(is_bitget_pong_response(" pong "));
         assert!(!is_bitget_pong_response(r#"{"event":"pong"}"#));
+    }
+
+    #[test]
+    fn gate_order_status_uses_original_client_query_id() {
+        let mut query_inflight = HashMap::new();
+        query_inflight.insert(
+            5303,
+            QueryInflightMeta {
+                req_type: QueryRequestType::GateUnifiedOrderQuery,
+                client_query_id: 7956522848229523457,
+            },
+        );
+
+        let (req_type, client_query_id) = TradeWsClient::resolve_gate_query_identity(
+            &mut query_inflight,
+            QueryRequestType::GateFuturesOrderQuery,
+            5303,
+        );
+
+        assert_eq!(req_type, QueryRequestType::GateUnifiedOrderQuery);
+        assert_eq!(client_query_id, 7956522848229523457);
+        assert!(query_inflight.is_empty());
+    }
+
+    #[test]
+    fn gate_order_status_falls_back_to_transport_id_without_inflight() {
+        let mut query_inflight = HashMap::new();
+
+        let (req_type, client_query_id) = TradeWsClient::resolve_gate_query_identity(
+            &mut query_inflight,
+            QueryRequestType::GateFuturesOrderQuery,
+            281474976710779,
+        );
+
+        assert_eq!(req_type, QueryRequestType::GateFuturesOrderQuery);
+        assert_eq!(client_query_id, 281474976710779);
     }
 }

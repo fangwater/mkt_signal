@@ -37,6 +37,16 @@ pub async fn gate_rest_get(
     path: &str,
     query: &str,
 ) -> Result<(u16, String)> {
+    gate_rest_get_with_headers(client, credentials, path, query, &[]).await
+}
+
+pub async fn gate_rest_get_with_headers(
+    client: &Client,
+    credentials: &GateCredentials,
+    path: &str,
+    query: &str,
+    extra_headers: &[(&str, &str)],
+) -> Result<(u16, String)> {
     let ts = Utc::now().timestamp();
     let sign = sign_gate_request(&credentials.secret_key, "GET", path, query, "", ts);
 
@@ -46,15 +56,18 @@ pub async fn gate_rest_get(
         url.push_str(query);
     }
 
-    let resp = client
+    let mut req = client
         .get(&url)
         .header("Accept", "application/json")
         .header("Content-Type", "application/json")
         .header("KEY", &credentials.api_key)
         .header("Timestamp", ts.to_string())
-        .header("SIGN", sign)
-        .send()
-        .await?;
+        .header("SIGN", sign);
+    for (name, value) in extra_headers {
+        req = req.header(*name, *value);
+    }
+
+    let resp = req.send().await?;
 
     let status = resp.status().as_u16();
     let body = resp.text().await.unwrap_or_default();
