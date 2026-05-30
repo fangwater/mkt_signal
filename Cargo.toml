@@ -21,6 +21,10 @@ name = "trade_signal"
 path = "src/bin/trade_signal.rs"
 
 [[bin]]
+name = "target_pos_exec_signal"
+path = "src/bin/target_pos_exec_signal.rs"
+
+[[bin]]
 name = "binance_account_monitor"
 path = "src/bin/binance_account_monitor.rs"
 

@@ -172,7 +172,7 @@ impl OrphanStrategyManager {
         let symbol = order.symbol.clone();
         drop(order);
         let strategy_id = match role {
-            OrphanStrategyRole::Mm | OrphanStrategyRole::Arb => {
+            OrphanStrategyRole::Mm | OrphanStrategyRole::Arb | OrphanStrategyRole::Exec => {
                 self.ensure_order_orphan_strategy(&symbol)
             }
             OrphanStrategyRole::Hedge => self.ensure_hedge_orphan_strategy(&symbol),
@@ -185,7 +185,7 @@ impl OrphanStrategyManager {
                 .as_any_mut()
                 .downcast_mut::<HedgeOrphanOrderStrategy>()
                 .is_some_and(|strategy| strategy.adopt_orphan_order_id(handoff)),
-            OrphanStrategyRole::Mm | OrphanStrategyRole::Arb => strategy
+            OrphanStrategyRole::Mm | OrphanStrategyRole::Arb | OrphanStrategyRole::Exec => strategy
                 .as_any_mut()
                 .downcast_mut::<OrphanOrderStrategy>()
                 .is_some_and(|strategy| strategy.adopt_orphan_order_id(handoff)),

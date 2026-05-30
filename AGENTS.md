@@ -1,1 +1,0 @@
-sudo cpupower idle-set -d 2

@@ -2,15 +2,18 @@ use bytes::{BufMut, Bytes, BytesMut};
 
 #[derive(Debug, Clone)]
 pub enum SignalType {
-    ArbOpen = 1,          // 套利开仓信号
-    ArbCancel = 3,        // 套利撤单信号
-    ArbClose = 4,         // 套利平仓信号，和开仓信号类似，区别是如果对应方向头寸为0就不执行
-    MMOpen = 5,           // 做市开仓信号
-    MMCancel = 6,         // 做市撤单信号
-    MMHedge = 7,          // 做市对冲信号
-    MMCancelTrigger = 8,  // 做市撤单触发信号
-    ArbCancelTrigger = 9, // 套利撤单触发信号
-    ArbHedge = 10,        // 套利对冲回包信号
+    ArbOpen = 1,             // 套利开仓信号
+    ArbCancel = 3,           // 套利撤单信号
+    ArbClose = 4,            // 套利平仓信号，和开仓信号类似，区别是如果对应方向头寸为0就不执行
+    MMOpen = 5,              // 做市开仓信号
+    MMCancel = 6,            // 做市撤单信号
+    MMHedge = 7,             // 做市对冲信号
+    MMCancelTrigger = 8,     // 做市撤单触发信号
+    ArbCancelTrigger = 9,    // 套利撤单触发信号
+    ArbHedge = 10,           // 套利对冲回包信号
+    ExecRequest = 11,        // 纯执行请求信号
+    Exec = 12,               // 纯执行报价回包信号
+    ExecPositionTarget = 13, // 纯执行目标仓位更新信号（qty/base qty）
 }
 
 impl SignalType {
@@ -25,6 +28,9 @@ impl SignalType {
             SignalType::MMCancelTrigger => "MMCancelTrigger",
             SignalType::ArbCancelTrigger => "ArbCancelTrigger",
             SignalType::ArbHedge => "ArbHedge",
+            SignalType::ExecRequest => "ExecRequest",
+            SignalType::Exec => "Exec",
+            SignalType::ExecPositionTarget => "ExecPositionTarget",
         }
     }
 
@@ -40,6 +46,9 @@ impl SignalType {
             8 => Some(SignalType::MMCancelTrigger),
             9 => Some(SignalType::ArbCancelTrigger),
             10 => Some(SignalType::ArbHedge),
+            11 => Some(SignalType::ExecRequest),
+            12 => Some(SignalType::Exec),
+            13 => Some(SignalType::ExecPositionTarget),
             _ => None,
         }
     }

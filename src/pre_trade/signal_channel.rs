@@ -11,6 +11,7 @@ use crate::signal::arb_signal::{
 };
 use crate::signal::cancel_signal::{ArbCancelCtx, MmCancelCtx};
 use crate::signal::common::{SignalBytes, TradingVenue};
+use crate::signal::exec_signal::{ExecCtx, ExecPositionTargetCtx, ExecRequestCtx};
 use crate::signal::hedge_signal::{ArbHedgeCtx, MmHedgeCtx};
 use crate::signal::mm_signal::{
     MmBackwardQueryMsg, MmCancelCandidateEntry, MmCancelCandidateQueryMsg, MmCancelTriggerCtx,
@@ -1152,5 +1153,144 @@ fn handle_trade_signal(signal: TradeSignal) {
             }
             Err(err) => warn!("failed to decode MMHedge context: {err}"),
         },
+        SignalType::ExecRequest => match ExecRequestCtx::from_bytes(signal.context.clone()) {
+            Ok(mut exec_ctx) => {
+                let symbol = normalize_symbol_for_internal(&exec_ctx.get_exec_symbol());
+                if symbol.is_empty() {
+                    warn!("ExecRequest: empty symbol");
+                    return;
+                }
+                let Some(exec_venue) = TradingVenue::from_u8(exec_ctx.exec_leg.venue) else {
+                    warn!("ExecRequest: invalid venue {}", exec_ctx.exec_leg.venue);
+                    return;
+                };
+                let configured_open_venue = MonitorChannel::instance().open_venue();
+                let configured_hedge_venue = MonitorChannel::instance().hedge_venue();
+                if exec_venue != configured_open_venue && exec_venue != configured_hedge_venue {
+                    warn!(
+                        "ExecRequest: signal venue mismatch, configured_open={:?} configured_hedge={:?} but got {:?}, ignore",
+                        configured_open_venue,
+                        configured_hedge_venue,
+                        exec_venue
+                    );
+                    return;
+                }
+                exec_ctx.set_exec_symbol(&symbol);
+                let normalized_signal = TradeSignal::create(
+                    SignalType::ExecRequest,
+                    signal.generation_time,
+                    signal.handle_time,
+                    exec_ctx.to_bytes(),
+                );
+                let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+                let strategy_id = strategy_mgr
+                    .borrow_mut()
+                    .ensure_exec_strategy(&symbol, exec_venue);
+                let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
+                if let Some(mut strategy) = strategy_opt {
+                    strategy.handle_signal(&normalized_signal);
+                    if strategy.is_active() {
+                        strategy_mgr.borrow_mut().insert(strategy);
+                    } else {
+                        debug!("ExecRequest: strategy inactive id={}", strategy_id);
+                    }
+                }
+            }
+            Err(err) => warn!("failed to decode ExecRequest context: {err}"),
+        },
+        SignalType::Exec => match ExecCtx::from_bytes(signal.context.clone()) {
+            Ok(mut exec_ctx) => {
+                let symbol = normalize_symbol_for_internal(&exec_ctx.get_exec_symbol());
+                if symbol.is_empty() {
+                    warn!("Exec: empty symbol");
+                    return;
+                }
+                let Some(exec_venue) = TradingVenue::from_u8(exec_ctx.exec_leg.venue) else {
+                    warn!("Exec: invalid venue {}", exec_ctx.exec_leg.venue);
+                    return;
+                };
+                exec_ctx.set_exec_symbol(&symbol);
+                let normalized_signal = TradeSignal::create(
+                    SignalType::Exec,
+                    signal.generation_time,
+                    signal.handle_time,
+                    exec_ctx.to_bytes(),
+                );
+                let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+                let strategy_id = if exec_ctx.strategy_id > 0 {
+                    exec_ctx.strategy_id
+                } else {
+                    strategy_mgr
+                        .borrow_mut()
+                        .ensure_exec_strategy(&symbol, exec_venue)
+                };
+                let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
+                if let Some(mut strategy) = strategy_opt {
+                    strategy.handle_signal(&normalized_signal);
+                    if strategy.is_active() {
+                        strategy_mgr.borrow_mut().insert(strategy);
+                    } else {
+                        debug!("Exec: strategy inactive id={}", strategy_id);
+                    }
+                } else {
+                    debug!(
+                        "Exec: target strategy missing id={} symbol={}",
+                        strategy_id, symbol
+                    );
+                }
+            }
+            Err(err) => warn!("failed to decode Exec context: {err}"),
+        },
+        SignalType::ExecPositionTarget => {
+            match ExecPositionTargetCtx::from_bytes(signal.context.clone()) {
+                Ok(mut target_ctx) => {
+                    let symbol = normalize_symbol_for_internal(&target_ctx.get_exec_symbol());
+                    if symbol.is_empty() {
+                        warn!("ExecPositionTarget: empty symbol");
+                        return;
+                    }
+                    let Some(exec_venue) = target_ctx.get_exec_venue() else {
+                        warn!(
+                            "ExecPositionTarget: invalid venue {}",
+                            target_ctx.exec_venue
+                        );
+                        return;
+                    };
+                    let configured_open_venue = MonitorChannel::instance().open_venue();
+                    let configured_hedge_venue = MonitorChannel::instance().hedge_venue();
+                    if exec_venue != configured_open_venue && exec_venue != configured_hedge_venue {
+                        warn!(
+                            "ExecPositionTarget: signal venue mismatch, configured_open={:?} configured_hedge={:?} but got {:?}, ignore",
+                            configured_open_venue, configured_hedge_venue, exec_venue
+                        );
+                        return;
+                    }
+                    target_ctx.set_exec_symbol(&symbol);
+                    if target_ctx.generation_time <= 0 {
+                        target_ctx.generation_time = signal.generation_time;
+                    }
+                    let normalized_signal = TradeSignal::create(
+                        SignalType::ExecPositionTarget,
+                        signal.generation_time,
+                        signal.handle_time,
+                        target_ctx.to_bytes(),
+                    );
+                    let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+                    let strategy_id = strategy_mgr
+                        .borrow_mut()
+                        .ensure_exec_strategy(&symbol, exec_venue);
+                    let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
+                    if let Some(mut strategy) = strategy_opt {
+                        strategy.handle_signal(&normalized_signal);
+                        if strategy.is_active() {
+                            strategy_mgr.borrow_mut().insert(strategy);
+                        } else {
+                            debug!("ExecPositionTarget: strategy inactive id={}", strategy_id);
+                        }
+                    }
+                }
+                Err(err) => warn!("failed to decode ExecPositionTarget context: {err}"),
+            }
+        }
     }
 }
