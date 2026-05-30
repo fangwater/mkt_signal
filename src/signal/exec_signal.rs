@@ -4,6 +4,7 @@ use crate::signal::common::{bytes_helper, SignalBytes, TradingLeg, TradingVenue}
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 const QV_BYTES_LEN: usize = 8 + 4 + 8;
+const EXEC_BACKWARD_QUERY_QUOTE: u8 = 1;
 
 fn fixed_symbol_to_string(symbol: &[u8; 32]) -> String {
     let end = symbol.iter().position(|&b| b == 0).unwrap_or(32);
@@ -83,6 +84,11 @@ pub struct ExecSignalQueryMsg {
     pub symbol_exposure_u: f64,
     pub weighted_exec_price: f64,
     pub request_seq: u64,
+}
+
+#[derive(Debug, Clone)]
+pub enum ExecBackwardQueryMsg {
+    Quote(ExecSignalQueryMsg),
 }
 
 impl Default for ExecRequestCtx {
@@ -322,6 +328,29 @@ impl ExecSignalQueryMsg {
     }
 }
 
+impl ExecBackwardQueryMsg {
+    pub fn to_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::new();
+        match self {
+            Self::Quote(msg) => {
+                buf.put_u8(EXEC_BACKWARD_QUERY_QUOTE);
+                buf.put(msg.to_bytes());
+            }
+        }
+        buf.freeze()
+    }
+
+    pub fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
+        if bytes.remaining() < 1 {
+            return Err("Not enough bytes for ExecBackwardQueryMsg type".to_string());
+        }
+        match bytes.get_u8() {
+            EXEC_BACKWARD_QUERY_QUOTE => Ok(Self::Quote(ExecSignalQueryMsg::from_bytes(bytes)?)),
+            kind => Err(format!("Unknown ExecBackwardQueryMsg kind: {kind}")),
+        }
+    }
+}
+
 impl SignalBytes for ExecPositionTargetCtx {
     fn to_bytes(&self) -> Bytes {
         let mut buf = BytesMut::new();
@@ -514,7 +543,9 @@ impl SignalBytes for ExecCtx {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExecCtx, ExecPositionTargetCtx, ExecRequestCtx, ExecSignalQueryMsg};
+    use super::{
+        ExecBackwardQueryMsg, ExecCtx, ExecPositionTargetCtx, ExecRequestCtx, ExecSignalQueryMsg,
+    };
     use crate::common::tick_math::QuantizedValue;
     use crate::pre_trade::order_manager::Side;
     use crate::signal::common::{SignalBytes, TradingLeg, TradingVenue};
@@ -592,5 +623,27 @@ mod tests {
         assert_eq!(parsed.get_symbol(), "BTCUSDT");
         assert_eq!(parsed.exec_venue, TradingVenue::BinanceFutures as u8);
         assert_eq!(parsed.request_seq, 9);
+    }
+
+    #[test]
+    fn exec_backward_query_wraps_quote_query() {
+        let msg = ExecBackwardQueryMsg::Quote(ExecSignalQueryMsg::new(
+            42,
+            TradingVenue::BinanceFutures,
+            "BTCUSDT",
+            1.5,
+            2.0,
+            1000.0,
+            101.0,
+            9,
+        ));
+        let parsed = ExecBackwardQueryMsg::from_bytes(msg.to_bytes()).unwrap();
+        match parsed {
+            ExecBackwardQueryMsg::Quote(inner) => {
+                assert_eq!(inner.strategy_id, 42);
+                assert_eq!(inner.get_symbol(), "BTCUSDT");
+                assert_eq!(inner.request_seq, 9);
+            }
+        }
     }
 }

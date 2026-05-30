@@ -1,5 +1,4 @@
 use crate::common::tick_math::QuantizedValue;
-use crate::signal::exec_signal::ExecSignalQueryMsg;
 use crate::signal::hedge_signal::ArbHedgeSignalQueryMsg;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
@@ -7,7 +6,6 @@ use super::common::bytes_helper;
 
 const ARB_BACKWARD_QUERY_CANCEL_CANDIDATES: u8 = 2;
 const ARB_BACKWARD_QUERY_HEDGE: u8 = 3;
-const ARB_BACKWARD_QUERY_EXEC: u8 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ArbCancelTriggerCtx {
@@ -140,7 +138,6 @@ impl ArbCancelCandidateQueryMsg {
 pub enum ArbBackwardQueryMsg {
     CancelCandidates(ArbCancelCandidateQueryMsg),
     Hedge(ArbHedgeSignalQueryMsg),
-    Exec(ExecSignalQueryMsg),
 }
 
 impl ArbBackwardQueryMsg {
@@ -165,10 +162,6 @@ impl ArbBackwardQueryMsg {
             }
             Self::Hedge(msg) => {
                 buf.put_u8(ARB_BACKWARD_QUERY_HEDGE);
-                buf.put(msg.to_bytes());
-            }
-            Self::Exec(msg) => {
-                buf.put_u8(ARB_BACKWARD_QUERY_EXEC);
                 buf.put(msg.to_bytes());
             }
         }
@@ -223,7 +216,6 @@ impl ArbBackwardQueryMsg {
                 }))
             }
             ARB_BACKWARD_QUERY_HEDGE => Ok(Self::Hedge(ArbHedgeSignalQueryMsg::from_bytes(bytes)?)),
-            ARB_BACKWARD_QUERY_EXEC => Ok(Self::Exec(ExecSignalQueryMsg::from_bytes(bytes)?)),
             _ => Err(format!("Unknown ArbBackwardQueryMsg kind: {}", kind)),
         }
     }

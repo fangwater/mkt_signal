@@ -676,12 +676,6 @@ impl FundingArbShell {
                                         ArbBackwardQueryMsg::Hedge(query) => {
                                             drive_funding_arb_hedge_query(&mut decision, query)
                                         }
-                                        ArbBackwardQueryMsg::Exec(query) => log::warn!(
-                                            "{FUNDING_ARB_SHELL_NAME}: unexpected Exec query ignored strategy_id={} symbol={} request_seq={}",
-                                            query.strategy_id,
-                                            query.get_symbol(),
-                                            query.request_seq
-                                        ),
                                     }
                                 }
                             }
@@ -764,12 +758,6 @@ impl SpreadArbShell {
                                         ArbBackwardQueryMsg::Hedge(query) => {
                                             drive_spread_arb_hedge_query(&mut decision, query)
                                         }
-                                        ArbBackwardQueryMsg::Exec(query) => log::warn!(
-                                            "{SPREAD_ARB_SHELL_NAME}: unexpected Exec query ignored strategy_id={} symbol={} request_seq={}",
-                                            query.strategy_id,
-                                            query.get_symbol(),
-                                            query.request_seq
-                                        ),
                                     }
                                 }
                             }

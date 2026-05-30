@@ -7,10 +7,9 @@ use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager,
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::signal_channel::SignalChannel;
 use crate::pre_trade::{PersistChannel, TradeEngHub};
-use crate::signal::arb_signal::ArbBackwardQueryMsg;
 use crate::signal::common::{OrderStatus, SignalBytes, TradingVenue};
 use crate::signal::exec_signal::{
-    ExecCtx, ExecPositionTargetCtx, ExecRequestCtx, ExecSignalQueryMsg,
+    ExecBackwardQueryMsg, ExecCtx, ExecPositionTargetCtx, ExecRequestCtx, ExecSignalQueryMsg,
 };
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::hedge_order_reconcile::{HedgeOrderReconcileCommon, HedgeOrderReconcileState};
@@ -166,6 +165,16 @@ impl ExecStrategy {
 
     fn pending_exec_usdt_with_mark_price(pending_exec_qty: f64, mark_price: f64) -> f64 {
         pending_exec_qty.abs() * mark_price.abs()
+    }
+
+    fn exec_request_qty_to_base(venue: TradingVenue, symbol: &str, qty: f64) -> f64 {
+        #[cfg(test)]
+        {
+            if !matches!(venue, TradingVenue::OkexFutures | TradingVenue::GateFutures) {
+                return qty;
+            }
+        }
+        MonitorChannel::instance().qty_to_base(venue, symbol, qty)
     }
 
     fn schedule_exec_order_expiry_check(&mut self, client_order_id: i64, due_ts: i64) {
@@ -517,7 +526,7 @@ impl ExecStrategy {
             );
             return;
         }
-        let order_base_qty = MonitorChannel::instance().qty_to_base(venue, &symbol, qty);
+        let order_base_qty = Self::exec_request_qty_to_base(venue, &symbol, qty);
         if !(order_base_qty.is_finite() && order_base_qty > 0.0) {
             warn!(
                 "ExecStrategy: strategy_id={} ExecRequest base qty invalid symbol={} venue={:?} qty={:.8}",
@@ -575,7 +584,7 @@ impl ExecStrategy {
             self.pending_exec_queue.weighted_avg_price().unwrap_or(0.0),
             request_seq,
         );
-        let payload = ArbBackwardQueryMsg::Exec(query_msg).to_bytes();
+        let payload = ExecBackwardQueryMsg::Quote(query_msg).to_bytes();
         match SignalChannel::with(|ch| ch.publish_backward(&payload)) {
             Ok(true) => {
                 self.next_query_ts_us = now_ts.saturating_add(EXEC_QUERY_INTERVAL_US);
