@@ -1,3 +1,4 @@
+mod bbo_spread;
 pub mod exporter;
 mod iceoryx;
 mod order_update;
@@ -12,6 +13,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use log::info;
 
+use bbo_spread::BboSpreadRuntime;
 use order_update::{OrderUpdatePersistor, OrderUpdateUnmatchedPersistor};
 use trade_update::{TradeUpdatePersistor, TradeUpdateUnmatchedPersistor};
 use uniform_order_persist::UniformOrderPersistor;
@@ -68,6 +70,8 @@ impl PersistManager {
             &tuning,
         )?);
 
+        let bbo_runtime = BboSpreadRuntime::start_from_env().await;
+
         // 启动所有持久化器
         info!("starting trade update persistor");
         let s2 = TradeUpdatePersistor::new(store.clone())?;
@@ -94,7 +98,15 @@ impl PersistManager {
         });
 
         info!("starting uniform order persistor");
-        let s4 = UniformOrderPersistor::new(store.clone())?;
+        let s4 = if let Some(runtime) = bbo_runtime {
+            UniformOrderPersistor::new_with_bbo_spread(
+                store.clone(),
+                runtime.store,
+                runtime.enrich_delay,
+            )?
+        } else {
+            UniformOrderPersistor::new(store.clone())?
+        };
         tokio::task::spawn_local(async move {
             let _ = s4.run().await;
         });

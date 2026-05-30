@@ -239,6 +239,7 @@ pub(crate) fn build_parquet_uniform_orders(
     let mut status_col = Vec::with_capacity(entries.len());
     let mut from_key_col = Vec::with_capacity(entries.len());
     let mut from_key_hex_col = Vec::with_capacity(entries.len());
+    let mut bbo_spread_col = Vec::with_capacity(entries.len());
 
     let mut dropped = 0usize;
     for (key_bytes, value_bytes) in entries {
@@ -293,6 +294,7 @@ pub(crate) fn build_parquet_uniform_orders(
             status,
             from_key,
             from_key_hex,
+            bbo_spread,
         } = record;
 
         key_col.push(key);
@@ -316,6 +318,7 @@ pub(crate) fn build_parquet_uniform_orders(
         status_col.push(status);
         from_key_col.push(from_key);
         from_key_hex_col.push(from_key_hex);
+        bbo_spread_col.push(bbo_spread);
     }
 
     if dropped > 0 {
@@ -344,6 +347,7 @@ pub(crate) fn build_parquet_uniform_orders(
         Series::new("status".into(), status_col),
         Series::new("from_key".into(), from_key_col),
         Series::new("from_key_hex".into(), from_key_hex_col),
+        Series::new("bbo_spread".into(), bbo_spread_col),
     ])?;
 
     let mut buf = Vec::new();
@@ -407,6 +411,7 @@ struct DecodedUniformOrderRecord {
     status: String,
     from_key: String,
     from_key_hex: String,
+    bbo_spread: String,
 }
 
 fn decode_trade_record(bytes: &[u8]) -> Result<DecodedTradeRecord> {
@@ -552,6 +557,13 @@ fn decode_uniform_order_record(bytes: &[u8]) -> Result<DecodedUniformOrderRecord
     let from_key = String::from_utf8_lossy(from_key_bytes.as_ref()).into_owned();
     let from_key_hex = hex::encode(from_key_bytes.as_ref());
 
+    let bbo_spread = if cursor.has_remaining() {
+        let bbo_len = read_u16(&mut cursor, "uniform order bbo_spread_len")? as usize;
+        read_bytes_as_string(&mut cursor, bbo_len, "uniform order bbo_spread")?
+    } else {
+        String::new()
+    };
+
     if cursor.has_remaining() {
         return Err(anyhow!(
             "uniform order payload has {} trailing bytes",
@@ -592,6 +604,7 @@ fn decode_uniform_order_record(bytes: &[u8]) -> Result<DecodedUniformOrderRecord
         status,
         from_key,
         from_key_hex,
+        bbo_spread,
     })
 }
 
