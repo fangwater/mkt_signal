@@ -177,6 +177,22 @@ impl ExecStrategy {
         MonitorChannel::instance().qty_to_base(venue, symbol, qty)
     }
 
+    fn check_exec_max_pos_u(
+        symbol: &str,
+        venue: TradingVenue,
+        side: Side,
+        order_qty: f64,
+        price_hint: f64,
+    ) -> Result<(), String> {
+        let signed_qty = signed_qty_from_side(side, order_qty);
+        MonitorChannel::instance().ensure_max_pos_u_for_venue(
+            symbol,
+            Some(venue),
+            signed_qty,
+            price_hint,
+        )
+    }
+
     fn schedule_exec_order_expiry_check(&mut self, client_order_id: i64, due_ts: i64) {
         if due_ts <= 0 {
             return;
@@ -567,11 +583,9 @@ impl ExecStrategy {
 
     fn send_exec_query(&mut self, now_ts: i64, due_exec_qty: f64) {
         self.last_exec_ts_ms = Some(now_ts / 1000);
-        let risk_loader = PreTradeParamsLoader::instance();
-        let symbol_exposure_u = risk_loader
+        let max_pos_u = PreTradeParamsLoader::instance()
             .max_pos_u_for_symbol(self.exec_venue, &self.symbol)
-            .max(0.0)
-            * risk_loader.max_symbol_exposure_ratio().max(0.0);
+            .max(0.0);
         let request_seq = self.next_exec_request_seq();
         self.pending_exec_request_seq = Some(request_seq);
         let query_msg = ExecSignalQueryMsg::new(
@@ -580,7 +594,7 @@ impl ExecStrategy {
             &self.symbol,
             due_exec_qty,
             self.pending_exec_queue.net_qty(),
-            symbol_exposure_u,
+            max_pos_u,
             self.pending_exec_queue.weighted_avg_price().unwrap_or(0.0),
             request_seq,
         );
@@ -778,7 +792,7 @@ impl ExecStrategy {
         }
         if order_type.is_limit() {
             if let Err(e) =
-                MonitorChannel::instance().check_pending_limit_order_for_arb(&symbol, side)
+                MonitorChannel::instance().check_pending_limit_order_for_exec(&symbol, side)
             {
                 warn!(
                     "ExecStrategy: strategy_id={} pending limit risk reject symbol={} side={:?} err={}",
@@ -797,13 +811,25 @@ impl ExecStrategy {
             return;
         }
         let signed_base_qty = signed_qty_from_side(side, order_base_qty);
-        if let Err(err) = MonitorChannel::instance().check_arb_hedge_exposure_risk(
-            &symbol,
-            venue,
-            signed_base_qty,
-        ) {
+        let price_hint = if price > 0.0 {
+            price
+        } else {
+            (ctx.exec_leg.bid0 + ctx.exec_leg.ask0) * 0.5
+        };
+        let current_base_qty = MonitorChannel::instance().get_position_qty(&symbol, venue);
+        let next_base_qty = current_base_qty + signed_base_qty;
+        if next_base_qty.abs() > current_base_qty.abs() + EXEC_QTY_EPS {
+            if let Err(err) = MonitorChannel::instance().check_leverage() {
+                warn!(
+                    "ExecStrategy: strategy_id={} Exec leverage risk reject symbol={} venue={:?} side={:?} base_qty={:.8} err={}",
+                    self.strategy_id, symbol, venue, side, order_base_qty, err
+                );
+                return;
+            }
+        }
+        if let Err(err) = Self::check_exec_max_pos_u(&symbol, venue, side, qty, price_hint) {
             warn!(
-                "ExecStrategy: strategy_id={} Exec exposure risk reject symbol={} venue={:?} side={:?} base_qty={:.8} err={}",
+                "ExecStrategy: strategy_id={} Exec max_pos_u risk reject symbol={} venue={:?} side={:?} base_qty={:.8} err={}",
                 self.strategy_id, symbol, venue, side, order_base_qty, err
             );
             return;
@@ -1548,15 +1574,15 @@ fn create_and_send_exec_order(
                 let now_us = get_timestamp_us();
                 let params = PreTradeParamsLoader::instance();
                 if let Err(e) = OrderRateLimiter::check_limit(
-                    OrderRateBucket::ArbHedge,
-                    params.arb_hedge_order_rate_limit_per_min(),
-                    params.arb_hedge_order_rate_limit_10s(),
+                    OrderRateBucket::Exec,
+                    params.exec_order_rate_limit_per_min(),
+                    params.exec_order_rate_limit_10s(),
                     now_us,
                 ) {
                     log_order_rate_limit_summary(
                         "ExecStrategy",
                         Some(strategy_id),
-                        OrderRateBucket::ArbHedge,
+                        OrderRateBucket::Exec,
                         symbol,
                         &e,
                     );
@@ -1572,7 +1598,7 @@ fn create_and_send_exec_order(
                     return Err(format!("publish exec order failed: {}", e));
                 }
                 let stats =
-                    OrderRateLimiter::record(OrderRateBucket::ArbHedge, client_order_id, now_us);
+                    OrderRateLimiter::record(OrderRateBucket::Exec, client_order_id, now_us);
                 debug!(
                     "ExecStrategy: strategy_id={} exec order action recorded client_order_id={} count_10s={} count_1m={}",
                     strategy_id, client_order_id, stats.count_10s, stats.count_1m

@@ -2448,6 +2448,15 @@ impl MonitorChannel {
         Self::check_pending_limit_order_with_side_limit(symbol, side, side_limit)
     }
 
+    /// 检查当前 symbol 的限价挂单数量（Exec 路径，仅使用 max_pending_limit_orders）
+    pub fn check_pending_limit_order_for_exec(
+        &self,
+        symbol: &str,
+        side: Side,
+    ) -> Result<(), String> {
+        Self::check_pending_limit_order_with_side_limit(symbol, side, 0)
+    }
+
     fn check_pending_limit_order_with_side_limit(
         symbol: &str,
         side: Side,
@@ -2738,26 +2747,30 @@ impl MonitorChannel {
         additional_qty: f64,
         price_hint: f64,
     ) -> Result<(), String> {
+        self.ensure_max_pos_u_for_venue(symbol, None, additional_qty, price_hint)
+    }
+
+    pub fn ensure_max_pos_u_for_venue(
+        &self,
+        symbol: &str,
+        venue_override: Option<TradingVenue>,
+        additional_qty: f64,
+        price_hint: f64,
+    ) -> Result<(), String> {
         Self::with_inner(|inner| {
-            let max_pos_u =
-                PreTradeParamsLoader::instance().max_pos_u_for_symbol(inner.open_venue, symbol);
+            let venue = venue_override.unwrap_or(inner.open_venue);
+            let max_pos_u = PreTradeParamsLoader::instance().max_pos_u_for_symbol(venue, symbol);
             if max_pos_u.is_nan() || max_pos_u <= 0.0 {
                 panic!("max_pos_u not set!!");
             }
 
-            let open_venue = inner.open_venue;
+            let open_venue = venue;
             let symbol_upper = symbol.to_uppercase();
             let base_asset = extract_base_asset(&symbol_upper).ok_or_else(|| {
                 format!("无法识别 symbol={} 的基础资产，无法校验 max_pos_u", symbol)
             })?;
 
-            let state = Self::compute_basic_state(inner);
-            // 只取 open 腿的持仓量，而非整体敞口 (open + hedge)
-            let current_open_qty = state
-                .exposures
-                .get(&base_asset.to_uppercase())
-                .map(|(open, _hedge)| *open)
-                .unwrap_or(0.0);
+            let current_open_qty = Self::get_position_qty_inner(inner, symbol, open_venue);
 
             let base_upper = base_asset.to_uppercase();
             let price_mapper = create_symbol_mapper(Self::mark_price_exchange_for_venues(

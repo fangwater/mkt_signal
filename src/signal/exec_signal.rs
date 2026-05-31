@@ -81,7 +81,7 @@ pub struct ExecSignalQueryMsg {
     pub symbol: [u8; 32],
     pub due_exec_qty: f64,
     pub pending_exec_qty: f64,
-    pub symbol_exposure_u: f64,
+    pub max_pos_u: f64,
     pub weighted_exec_price: f64,
     pub request_seq: u64,
 }
@@ -260,7 +260,7 @@ impl ExecSignalQueryMsg {
         symbol: &str,
         due_exec_qty: f64,
         pending_exec_qty: f64,
-        symbol_exposure_u: f64,
+        max_pos_u: f64,
         weighted_exec_price: f64,
         request_seq: u64,
     ) -> Self {
@@ -274,7 +274,7 @@ impl ExecSignalQueryMsg {
             symbol: symbol_bytes,
             due_exec_qty,
             pending_exec_qty,
-            symbol_exposure_u,
+            max_pos_u,
             weighted_exec_price,
             request_seq,
         }
@@ -291,7 +291,7 @@ impl ExecSignalQueryMsg {
         bytes_helper::write_fixed_bytes(&mut buf, &self.symbol);
         buf.put_f64_le(self.due_exec_qty);
         buf.put_f64_le(self.pending_exec_qty);
-        buf.put_f64_le(self.symbol_exposure_u);
+        buf.put_f64_le(self.max_pos_u);
         buf.put_f64_le(self.weighted_exec_price);
         buf.put_u64_le(self.request_seq);
         buf.freeze()
@@ -306,13 +306,13 @@ impl ExecSignalQueryMsg {
         let symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
         if bytes.remaining() < 8 * 5 {
             return Err(
-                "insufficient bytes for due/pending/symbol_exposure/weighted_price/request_seq"
+                "insufficient bytes for due/pending/max_pos_u/weighted_price/request_seq"
                     .to_string(),
             );
         }
         let due_exec_qty = bytes.get_f64_le();
         let pending_exec_qty = bytes.get_f64_le();
-        let symbol_exposure_u = bytes.get_f64_le();
+        let max_pos_u = bytes.get_f64_le();
         let weighted_exec_price = bytes.get_f64_le();
         let request_seq = bytes.get_u64_le();
         Ok(Self {
@@ -321,7 +321,7 @@ impl ExecSignalQueryMsg {
             symbol,
             due_exec_qty,
             pending_exec_qty,
-            symbol_exposure_u,
+            max_pos_u,
             weighted_exec_price,
             request_seq,
         })
