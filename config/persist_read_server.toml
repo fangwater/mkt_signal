@@ -30,7 +30,13 @@ secondary_dir = "data/persist_read_server_secondary"
 source_id = "default"
 
 max_concurrent = 8
+
+# Server-side RocksDB scan/decode batch size only.
+# This does not split the HTTP response; each /v1/read request still returns one full Arrow/Parquet body.
 batch_rows = 50000
+
+# Hard per-request time-window limit. For larger analysis ranges, use the Python SDK
+# read_*_range(..., window_sec=...) helpers to split requests by time.
 max_window_sec = 3600
 max_result_rows = 5000000
 request_timeout_sec = 120

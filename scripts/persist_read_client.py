@@ -64,6 +64,14 @@ class ReadWindow:
 
 
 class PersistReadClient:
+    """Client for persist_read_server.
+
+    A single read_* request maps to one /v1/read HTTP response. Server-side
+    batch_rows only controls RocksDB scan/decode batching; it is not HTTP
+    streaming. Use read_*_range(..., window_sec=...) to split large analysis
+    ranges into multiple requests.
+    """
+
     def __init__(self, base_url: str, *, timeout_sec: float = 120.0, tz: str | tzinfo = DEFAULT_TZ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_sec = float(timeout_sec)
@@ -189,6 +197,7 @@ class PersistReadClient:
         timeout_sec: float | None = None,
         tz: str | tzinfo | None = None,
     ):
+        """Read a long range by splitting it into window_sec HTTP requests."""
         pa, _ipc = _require_pyarrow_ipc()
         tables = []
         for window in iter_windows(start, end, window_sec=window_sec, tz=self._call_tz(tz)):
@@ -218,6 +227,7 @@ class PersistReadClient:
         tz: str | tzinfo | None = None,
         to_pandas_kwargs: Mapping[str, Any] | None = None,
     ):
+        """Read a long range by splitting requests, then convert the concatenated Arrow table to pandas."""
         table_obj = self.read_arrow_range(
             table,
             start,
