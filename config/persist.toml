@@ -1,5 +1,5 @@
-# Unified persist config for the central recorder and local read server.
-# The collector consumes the top-level fields. persist_read_server consumes [read_server].
+# Single persist config for the central recorder and local read server.
+# persist_sync_collector consumes the top-level fields; persist_read_server consumes [read_server].
 
 center_db = "data/persist_sync_center"
 batch_records = 1000

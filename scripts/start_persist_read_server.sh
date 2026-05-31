@@ -13,7 +13,23 @@ if [[ -f "${BASE_DIR}/env.sh" ]]; then
   source "${BASE_DIR}/env.sh"
 fi
 
-CONFIG_PATH="${1:-${PERSIST_READ_SERVER_CONFIG:-${PERSIST_CONFIG:-${BASE_DIR}/sync.toml}}}"
+default_config_path() {
+  local candidates=(
+    "${BASE_DIR}/persist.toml"
+    "${BASE_DIR}/config/persist.toml"
+  )
+  local cand
+  for cand in "${candidates[@]}"; do
+    if [[ -f "$cand" ]]; then
+      echo "$cand"
+      return 0
+    fi
+  done
+  echo "${BASE_DIR}/persist.toml"
+}
+
+DEFAULT_CONFIG="$(default_config_path)"
+CONFIG_PATH="${1:-${PERSIST_READ_SERVER_CONFIG:-${PERSIST_CONFIG:-${DEFAULT_CONFIG}}}}"
 if [[ ! -f "$CONFIG_PATH" ]]; then
   echo "[ERROR] config not found: ${CONFIG_PATH}" >&2
   exit 1
@@ -50,7 +66,11 @@ npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
 
 (
   cd "$BASE_DIR"
-  RUST_LOG="${RUST_LOG}" npx pm2 start "$BIN_PATH"     --name "$PROC_NAME"     --namespace "$NAMESPACE"     --     --config "$CONFIG_ABS"
+  RUST_LOG="${RUST_LOG}" npx pm2 start "$BIN_PATH" \
+    --name "$PROC_NAME" \
+    --namespace "$NAMESPACE" \
+    -- \
+    --config "$CONFIG_ABS"
 )
 
 echo ""

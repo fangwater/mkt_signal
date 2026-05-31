@@ -7,27 +7,39 @@
 Use the unified persist config to manage the central recorder and read server together:
 
 ```bash
-./scripts/start_persist_sync_collector.sh config/persist_read_server.toml
+./scripts/start_persist_sync_collector.sh
 ./scripts/stop_persist_sync_collector.sh
 ```
 
-`start_persist_sync_collector.sh` always starts `persist_sync_collector`. If the same TOML contains `[read_server]` and `read_server.enabled` is not `false`, it also starts `persist_read_server` as a second PM2 process in the same namespace.
+`start_persist_sync_collector.sh` always starts `persist_sync_collector`. If the same `persist.toml` contains `[read_server]` and `read_server.enabled` is not `false`, it also starts `persist_read_server` as a second PM2 process in the same namespace.
 
 The read server can still be started alone for debugging:
 
 ```bash
-./scripts/start_persist_read_server.sh config/persist_read_server.toml
+./scripts/start_persist_read_server.sh
 ```
+
+By default the scripts use `persist.toml` next to the deployed binaries, or `config/persist.toml` when run from the source tree. A config path argument still overrides the default, and `PERSIST_CONFIG` can point both processes at the same file.
 
 ## Config
 
 ```toml
+# Single persist config for the central recorder and local read server.
+# persist_sync_collector consumes the top-level fields; persist_read_server consumes [read_server].
+
 center_db = "data/persist_sync_center"
 batch_records = 1000
 batch_bytes = 4194304
 reconnect_delay_ms = 1000
 sync_writes = false
 
+repair_enabled = true
+repair_interval_secs = 1800
+repair_lookback_hours = 24
+repair_bucket_us = 60000000
+
+# Add one source per remote persist manager.
+# If there are multiple sources, read_server.source_id must be set explicitly.
 [[sources]]
 id = "default"
 url = "http://127.0.0.1:50051"
@@ -35,11 +47,22 @@ url = "http://127.0.0.1:50051"
 [read_server]
 enabled = true
 bind = "0.0.0.0:8822"
+
+# Defaults to top-level center_db when omitted.
+# primary_dir = "data/persist_sync_center"
 secondary_dir = "data/persist_read_server_secondary"
+
+# Optional for a single [[sources]] entry; required when multiple sources exist.
 source_id = "default"
 
 max_concurrent = 8
+
+# Server-side RocksDB scan/decode batch size only.
+# This does not split the HTTP response; each /v1/read request still returns one full Arrow/Parquet body.
 batch_rows = 50000
+
+# Hard per-request time-window limit. For larger analysis ranges, use the Python SDK
+# read_*_range(..., window_sec=...) helpers to split requests by time.
 max_window_sec = 3600
 max_result_rows = 5000000
 request_timeout_sec = 120

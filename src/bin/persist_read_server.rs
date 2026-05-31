@@ -10,7 +10,7 @@ use mkt_signal::persist_manager::read_server::{PersistReadServer, PersistReadSer
 #[command(name = "persist_read_server")]
 #[command(about = "Read-only RocksDB Secondary HTTP server for persisted order records")]
 struct Args {
-    #[arg(long, default_value = "config/persist_read_server.toml")]
+    #[arg(long, default_value = "config/persist.toml")]
     config: PathBuf,
 }
 
