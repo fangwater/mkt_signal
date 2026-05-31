@@ -40,6 +40,7 @@ const EXEC_LEVERAGE_DAMPING: f64 = 0.8;
 pub struct ExecSnapshot {
     pub symbol: String,
     pub exec_venue: TradingVenue,
+    pub position_qty: f64,
     pub pending_exec_qty: f64,
     pub due_exec_qty: f64,
     pub borrowed_exec_qty: f64,
@@ -66,6 +67,7 @@ pub struct ExecStrategy {
     alive_flag: bool,
     last_insufficient_margin_action_ts: i64,
     position_target_state: Option<ExecPositionTargetState>,
+    active_position_target: Option<ExecActivePositionTarget>,
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +80,13 @@ struct ExecPositionTargetState {
 }
 
 #[derive(Debug, Clone)]
+struct ExecActivePositionTarget {
+    target_qty: f64,
+    generation_time: i64,
+    target_side: Option<Side>,
+}
+
+#[derive(Debug, Clone)]
 struct ExecOrderMeta {
     signal_ts: i64,
     price_offset: f64,
@@ -87,6 +96,27 @@ struct ExecOrderMeta {
     next_expire_check_ts: i64,
     cancel_requested: bool,
     from_key: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+enum ExecMaxPosUCheckError {
+    Limit { message: String, cancel_side: Side },
+    Invalid(String),
+}
+
+impl ExecMaxPosUCheckError {
+    fn message(&self) -> &str {
+        match self {
+            Self::Limit { message, .. } | Self::Invalid(message) => message,
+        }
+    }
+
+    fn cancel_side(&self) -> Option<Side> {
+        match self {
+            Self::Limit { cancel_side, .. } => Some(*cancel_side),
+            Self::Invalid(_) => None,
+        }
+    }
 }
 
 impl ExecStrategy {
@@ -109,6 +139,7 @@ impl ExecStrategy {
             alive_flag: true,
             last_insufficient_margin_action_ts: 0,
             position_target_state: None,
+            active_position_target: None,
         }
     }
 
@@ -120,6 +151,8 @@ impl ExecStrategy {
         ExecSnapshot {
             symbol: self.symbol.clone(),
             exec_venue: self.exec_venue,
+            position_qty: MonitorChannel::instance()
+                .get_position_qty(&self.symbol, self.exec_venue),
             pending_exec_qty: self.pending_exec_queue.net_qty(),
             due_exec_qty: self.pending_exec_queue.due_qty(now_ts),
             borrowed_exec_qty: self.borrowed_exec_qv(),
@@ -177,19 +210,146 @@ impl ExecStrategy {
         MonitorChannel::instance().qty_to_base(venue, symbol, qty)
     }
 
+    fn price_for_exec_max_pos_u(symbol: &str, price_hint: f64) -> Option<f64> {
+        let monitor = MonitorChannel::instance();
+        if let Some(mark_price_exchange) = monitor.try_mark_price_exchange() {
+            let price_symbol = mark_price_lookup_symbol(symbol, mark_price_exchange);
+            if let Some(price) = monitor
+                .try_price_table()
+                .and_then(|table| table.borrow().mark_price(&price_symbol))
+                .filter(|price| price.is_finite() && *price > 0.0)
+            {
+                return Some(price);
+            }
+        }
+        if price_hint.is_finite() && price_hint > 0.0 {
+            Some(price_hint)
+        } else {
+            None
+        }
+    }
+
+    fn current_position_increase_side(current_base_qty: f64, fallback_side: Side) -> Side {
+        if current_base_qty > EXEC_QTY_EPS {
+            Side::Buy
+        } else if current_base_qty < -EXEC_QTY_EPS {
+            Side::Sell
+        } else {
+            fallback_side
+        }
+    }
+
+    fn side_from_signed_qty_opt(qty: f64) -> Option<Side> {
+        if qty > EXEC_QTY_EPS {
+            Some(Side::Buy)
+        } else if qty < -EXEC_QTY_EPS {
+            Some(Side::Sell)
+        } else {
+            None
+        }
+    }
+
+    fn evaluate_position_target_qty_guard(
+        current_qty: f64,
+        target_qty: f64,
+        side: Side,
+        order_base_qty: f64,
+    ) -> Result<(), String> {
+        let Some(required_side) = Self::side_from_signed_qty_opt(target_qty - current_qty) else {
+            return Err(format!(
+                "position target already reached current_qty={:.8} target_qty={:.8}",
+                current_qty, target_qty
+            ));
+        };
+        if side != required_side {
+            return Err(format!(
+                "order side {:?} moves away from position target current_qty={:.8} target_qty={:.8}",
+                side, current_qty, target_qty
+            ));
+        }
+        let signed_base_qty = signed_qty_from_side(side, order_base_qty);
+        let next_qty = current_qty + signed_base_qty;
+        if (target_qty - current_qty).signum() != (target_qty - next_qty).signum()
+            && (target_qty - next_qty).abs() > EXEC_QTY_EPS
+        {
+            return Err(format!(
+                "order crosses position target current_qty={:.8} order_qty={:.8} next_qty={:.8} target_qty={:.8}",
+                current_qty, signed_base_qty, next_qty, target_qty
+            ));
+        }
+        Ok(())
+    }
+
+    fn evaluate_exec_max_pos_u(
+        symbol: &str,
+        venue: TradingVenue,
+        side: Side,
+        current_base_qty: f64,
+        order_base_qty: f64,
+        price: f64,
+        max_pos_u: f64,
+    ) -> Result<Option<Side>, ExecMaxPosUCheckError> {
+        let signed_base_qty = signed_qty_from_side(side, order_base_qty);
+        let next_base_qty = current_base_qty + signed_base_qty;
+        let current_usdt = current_base_qty.abs() * price;
+        let order_usdt = signed_base_qty.abs() * price;
+        let next_usdt = next_base_qty.abs() * price;
+        let limit_eps = 1e-6_f64;
+        let increase_side = Self::current_position_increase_side(current_base_qty, side);
+
+        if current_usdt > max_pos_u + limit_eps {
+            if next_usdt > current_usdt + limit_eps {
+                return Err(ExecMaxPosUCheckError::Limit {
+                    cancel_side: increase_side,
+                    message: format!(
+                        "symbol={} 当前持仓已超 max_pos_u 且本次订单扩大持仓: venue={:?} side={:?} current_qty={:.8} order_qty(base)={:.8} next_qty={:.8} price={:.8} current_usdt={:.4} order_usdt={:.4} next_usdt={:.4} max_pos_u={:.4}",
+                        symbol, venue, side, current_base_qty, signed_base_qty, next_base_qty, price, current_usdt, order_usdt, next_usdt, max_pos_u
+                    ),
+                });
+            }
+            return Ok(Some(increase_side));
+        }
+
+        if next_usdt > current_usdt + limit_eps && next_usdt > max_pos_u + limit_eps {
+            return Err(ExecMaxPosUCheckError::Limit {
+                cancel_side: side,
+                message: format!(
+                    "symbol={} 下单后持仓超过 max_pos_u: venue={:?} side={:?} current_qty={:.8} order_qty(base)={:.8} next_qty={:.8} price={:.8} current_usdt={:.4} order_usdt={:.4} next_usdt={:.4} max_pos_u={:.4}",
+                    symbol, venue, side, current_base_qty, signed_base_qty, next_base_qty, price, current_usdt, order_usdt, next_usdt, max_pos_u
+                ),
+            });
+        }
+
+        Ok(None)
+    }
+
     fn check_exec_max_pos_u(
         symbol: &str,
         venue: TradingVenue,
         side: Side,
-        order_qty: f64,
+        order_base_qty: f64,
         price_hint: f64,
-    ) -> Result<(), String> {
-        let signed_qty = signed_qty_from_side(side, order_qty);
-        MonitorChannel::instance().ensure_max_pos_u_for_venue(
+    ) -> Result<Option<Side>, ExecMaxPosUCheckError> {
+        let max_pos_u = PreTradeParamsLoader::instance().max_pos_u_for_symbol(venue, symbol);
+        if max_pos_u.is_nan() || max_pos_u <= 0.0 {
+            panic!("max_pos_u not set!!");
+        }
+
+        let Some(price) = Self::price_for_exec_max_pos_u(symbol, price_hint) else {
+            return Err(ExecMaxPosUCheckError::Invalid(format!(
+                "symbol={} 缺少价格信息，无法校验 max_pos_u",
+                symbol
+            )));
+        };
+        let current_base_qty = MonitorChannel::instance().get_position_qty(symbol, venue);
+        Self::evaluate_exec_max_pos_u(
             symbol,
-            Some(venue),
-            signed_qty,
-            price_hint,
+            venue,
+            side,
+            current_base_qty,
+            order_base_qty,
+            price,
+            max_pos_u,
         )
     }
 
@@ -336,6 +496,7 @@ impl ExecStrategy {
         let now_ts = get_timestamp_us();
         let cancel_order_ids = self.collect_live_exec_order_ids_for_position_target();
         self.clear_pending_exec_for_position_target();
+        self.active_position_target = None;
         self.position_target_state = Some(ExecPositionTargetState {
             target_qty: ctx.target_qty,
             generation_time: if ctx.generation_time > 0 {
@@ -466,6 +627,11 @@ impl ExecStrategy {
         let delta_qty = state.target_qty - current_qty;
         self.clear_pending_exec_for_position_target();
         if delta_qty.abs() <= EXEC_QTY_EPS {
+            self.active_position_target = Some(ExecActivePositionTarget {
+                target_qty: state.target_qty,
+                generation_time: state.generation_time,
+                target_side: None,
+            });
             info!(
                 "ExecPositionTarget: strategy_id={} symbol={} venue={:?} already at target target_qty={:.8} current_qty={:.8} generation_time={} ready_ts={} from_key='{}'",
                 self.strategy_id,
@@ -479,6 +645,14 @@ impl ExecStrategy {
             );
             return;
         }
+        let Some(target_side) = Self::side_from_signed_qty_opt(delta_qty) else {
+            return;
+        };
+        self.active_position_target = Some(ExecActivePositionTarget {
+            target_qty: state.target_qty,
+            generation_time: state.generation_time,
+            target_side: Some(target_side),
+        });
         let price = self.mark_price().unwrap_or(0.0);
         self.pending_exec_queue.put(now_ts, 0, delta_qty, price);
         info!(
@@ -586,6 +760,8 @@ impl ExecStrategy {
         let max_pos_u = PreTradeParamsLoader::instance()
             .max_pos_u_for_symbol(self.exec_venue, &self.symbol)
             .max(0.0);
+        let position_qty =
+            MonitorChannel::instance().get_position_qty(&self.symbol, self.exec_venue);
         let request_seq = self.next_exec_request_seq();
         self.pending_exec_request_seq = Some(request_seq);
         let query_msg = ExecSignalQueryMsg::new(
@@ -594,6 +770,7 @@ impl ExecStrategy {
             &self.symbol,
             due_exec_qty,
             self.pending_exec_queue.net_qty(),
+            position_qty,
             max_pos_u,
             self.pending_exec_queue.weighted_avg_price().unwrap_or(0.0),
             request_seq,
@@ -811,6 +988,45 @@ impl ExecStrategy {
             return;
         }
         let signed_base_qty = signed_qty_from_side(side, order_base_qty);
+        if let Some((target_qty, target_side, generation_time)) =
+            self.active_position_target.as_ref().map(|target| {
+                (
+                    target.target_qty,
+                    target.target_side,
+                    target.generation_time,
+                )
+            })
+        {
+            let current_qty = MonitorChannel::instance().get_position_qty(&symbol, venue);
+            if let Err(err) = Self::evaluate_position_target_qty_guard(
+                current_qty,
+                target_qty,
+                side,
+                order_base_qty,
+            ) {
+                self.cancel_exec_limit_orders_by_side(
+                    &symbol,
+                    venue,
+                    side,
+                    get_timestamp_us(),
+                    "exec_position_target_qty_guard",
+                );
+                warn!(
+                    "ExecStrategy: strategy_id={} Exec position target qty risk reject symbol={} venue={:?} side={:?} current_qty={:.8} target_qty={:.8} target_side={:?} generation_time={} base_qty={:.8} err={}",
+                    self.strategy_id,
+                    symbol,
+                    venue,
+                    side,
+                    current_qty,
+                    target_qty,
+                    target_side,
+                    generation_time,
+                    order_base_qty,
+                    err
+                );
+                return;
+            }
+        }
         let price_hint = if price > 0.0 {
             price
         } else {
@@ -827,12 +1043,38 @@ impl ExecStrategy {
                 return;
             }
         }
-        if let Err(err) = Self::check_exec_max_pos_u(&symbol, venue, side, qty, price_hint) {
-            warn!(
-                "ExecStrategy: strategy_id={} Exec max_pos_u risk reject symbol={} venue={:?} side={:?} base_qty={:.8} err={}",
-                self.strategy_id, symbol, venue, side, order_base_qty, err
-            );
-            return;
+        match Self::check_exec_max_pos_u(&symbol, venue, side, order_base_qty, price_hint) {
+            Ok(Some(cancel_side)) => {
+                self.cancel_exec_limit_orders_by_side(
+                    &symbol,
+                    venue,
+                    cancel_side,
+                    get_timestamp_us(),
+                    "exec_max_pos_u_current_over_limit",
+                );
+            }
+            Ok(None) => {}
+            Err(err) => {
+                if let Some(cancel_side) = err.cancel_side() {
+                    self.cancel_exec_limit_orders_by_side(
+                        &symbol,
+                        venue,
+                        cancel_side,
+                        get_timestamp_us(),
+                        "exec_max_pos_u_reject",
+                    );
+                }
+                warn!(
+                    "ExecStrategy: strategy_id={} Exec max_pos_u risk reject symbol={} venue={:?} side={:?} base_qty={:.8} err={}",
+                    self.strategy_id,
+                    symbol,
+                    venue,
+                    side,
+                    order_base_qty,
+                    err.message()
+                );
+                return;
+            }
         }
 
         let now_ts = get_timestamp_us();
@@ -869,7 +1111,7 @@ impl ExecStrategy {
                 price,
                 false,
                 qty_multiplier,
-                false,
+                order_type.is_limit(),
             );
         let _ = MonitorChannel::instance()
             .order_manager()
@@ -1022,6 +1264,121 @@ impl ExecStrategy {
                 continue;
             }
             self.request_cancel_for_expired_exec_order(client_order_id, now_ts);
+        }
+    }
+
+    fn cancel_exec_limit_orders_by_side(
+        &mut self,
+        symbol: &str,
+        venue: TradingVenue,
+        side: Side,
+        now_ts: i64,
+        reason: &str,
+    ) -> usize {
+        let order_ids: Vec<i64> = MonitorChannel::try_order_manager()
+            .map(|order_mgr| {
+                let order_mgr = order_mgr.borrow();
+                self.exec_order_meta
+                    .keys()
+                    .filter_map(|client_order_id| {
+                        let order = order_mgr.get(*client_order_id)?;
+                        if order.venue == venue
+                            && order.symbol.eq_ignore_ascii_case(symbol)
+                            && order.side == side
+                            && order.order_type.is_limit()
+                            && !order.status.is_terminal()
+                        {
+                            Some(*client_order_id)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let mut sent = 0usize;
+        for client_order_id in order_ids {
+            if self.request_cancel_for_exec_order(client_order_id, now_ts, reason) {
+                sent += 1;
+            }
+        }
+        if sent > 0 {
+            warn!(
+                "ExecStrategy: strategy_id={} symbol={} venue={:?} side={:?} cancel live exec limit orders count={} reason={}",
+                self.strategy_id, symbol, venue, side, sent, reason
+            );
+        }
+        sent
+    }
+
+    fn request_cancel_for_exec_order(
+        &mut self,
+        client_order_id: i64,
+        now_ts: i64,
+        reason: &str,
+    ) -> bool {
+        let order_snapshot = MonitorChannel::try_order_manager().and_then(|order_mgr| {
+            order_mgr.borrow().get(client_order_id).map(|order| {
+                (
+                    order.status,
+                    order.price,
+                    order.symbol.clone(),
+                    order.clone(),
+                )
+            })
+        });
+        let Some((status, price, symbol, order)) = order_snapshot else {
+            let retry_ts = now_ts.saturating_add(EXEC_QUERY_INTERVAL_US);
+            if let Some(meta) = self.exec_order_meta.get(&client_order_id) {
+                warn!(
+                    "ExecStrategy: strategy_id={} {} exec order missing locally, keep borrowed pending client_order_id={} borrowed_qv={:.8} retry_ts={}",
+                    self.strategy_id, reason, client_order_id, meta.borrowed_qv, retry_ts
+                );
+            }
+            self.schedule_exec_order_expiry_check(client_order_id, retry_ts);
+            return false;
+        };
+        if status.is_terminal() {
+            self.record_terminal_exec_order(client_order_id, now_ts, price);
+            return false;
+        }
+        let exchange = order.venue.trade_engine_exchange();
+        match order.get_order_cancel_bytes() {
+            Ok(req_bin) => {
+                if let Err(err) =
+                    TradeEngHub::publish_order_request_for(client_order_id, exchange, &req_bin)
+                {
+                    warn!(
+                        "ExecStrategy: strategy_id={} {} exec cancel publish failed, handoff orphan client_order_id={} symbol={} exchange={} err={}",
+                        self.strategy_id, reason, client_order_id, symbol, exchange, err
+                    );
+                    self.handoff_hedge_order_after_query_failure(
+                        client_order_id,
+                        "exec cancel publish failed",
+                    );
+                    return false;
+                }
+                if let Some(meta) = self.exec_order_meta.get_mut(&client_order_id) {
+                    meta.cancel_requested = true;
+                }
+                self.schedule_order_query_watchdog(
+                    client_order_id,
+                    PendingOrderQueryReason::CancelWatchdog,
+                );
+                true
+            }
+            Err(err) => {
+                warn!(
+                    "ExecStrategy: strategy_id={} {} exec cancel build failed, handoff orphan client_order_id={} symbol={} err={}",
+                    self.strategy_id, reason, client_order_id, symbol, err
+                );
+                self.handoff_hedge_order_after_query_failure(
+                    client_order_id,
+                    "exec cancel build failed",
+                );
+                false
+            }
         }
     }
 
@@ -1629,6 +1986,78 @@ mod tests {
     use crate::signal::common::{TradingLeg, TradingVenue};
     use crate::signal::exec_signal::ExecRequestCtx;
     use crate::strategy::Strategy;
+
+    #[test]
+    fn exec_max_pos_u_allows_reducing_when_current_over_limit() {
+        let result = ExecStrategy::evaluate_exec_max_pos_u(
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            Side::Sell,
+            12.0,
+            1.0,
+            100.0,
+            1000.0,
+        )
+        .unwrap();
+        assert_eq!(result, Some(Side::Buy));
+    }
+
+    #[test]
+    fn exec_max_pos_u_rejects_expanding_when_current_over_limit() {
+        let err = ExecStrategy::evaluate_exec_max_pos_u(
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            Side::Buy,
+            12.0,
+            1.0,
+            100.0,
+            1000.0,
+        )
+        .unwrap_err();
+        assert_eq!(err.cancel_side(), Some(Side::Buy));
+    }
+
+    #[test]
+    fn exec_max_pos_u_rejects_order_crossing_limit() {
+        let err = ExecStrategy::evaluate_exec_max_pos_u(
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            Side::Buy,
+            9.0,
+            2.0,
+            100.0,
+            1000.0,
+        )
+        .unwrap_err();
+        assert_eq!(err.cancel_side(), Some(Side::Buy));
+    }
+
+    #[test]
+    fn exec_position_target_qty_guard_rejects_when_target_reached() {
+        let err = ExecStrategy::evaluate_position_target_qty_guard(10.0, 10.0, Side::Buy, 1.0)
+            .unwrap_err();
+        assert!(err.contains("already reached"));
+    }
+
+    #[test]
+    fn exec_position_target_qty_guard_rejects_wrong_direction() {
+        let err = ExecStrategy::evaluate_position_target_qty_guard(5.0, 10.0, Side::Sell, 1.0)
+            .unwrap_err();
+        assert!(err.contains("moves away"));
+    }
+
+    #[test]
+    fn exec_position_target_qty_guard_rejects_crossing_target() {
+        let err = ExecStrategy::evaluate_position_target_qty_guard(9.0, 10.0, Side::Buy, 2.0)
+            .unwrap_err();
+        assert!(err.contains("crosses position target"));
+    }
+
+    #[test]
+    fn exec_position_target_qty_guard_allows_moving_toward_target() {
+        ExecStrategy::evaluate_position_target_qty_guard(9.0, 10.0, Side::Buy, 1.0).unwrap();
+        ExecStrategy::evaluate_position_target_qty_guard(11.0, 10.0, Side::Sell, 1.0).unwrap();
+    }
 
     #[test]
     fn exec_request_records_timed_pending_qty() {

@@ -81,6 +81,7 @@ pub struct ExecSignalQueryMsg {
     pub symbol: [u8; 32],
     pub due_exec_qty: f64,
     pub pending_exec_qty: f64,
+    pub position_qty: f64,
     pub max_pos_u: f64,
     pub weighted_exec_price: f64,
     pub request_seq: u64,
@@ -260,6 +261,7 @@ impl ExecSignalQueryMsg {
         symbol: &str,
         due_exec_qty: f64,
         pending_exec_qty: f64,
+        position_qty: f64,
         max_pos_u: f64,
         weighted_exec_price: f64,
         request_seq: u64,
@@ -274,6 +276,7 @@ impl ExecSignalQueryMsg {
             symbol: symbol_bytes,
             due_exec_qty,
             pending_exec_qty,
+            position_qty,
             max_pos_u,
             weighted_exec_price,
             request_seq,
@@ -291,6 +294,7 @@ impl ExecSignalQueryMsg {
         bytes_helper::write_fixed_bytes(&mut buf, &self.symbol);
         buf.put_f64_le(self.due_exec_qty);
         buf.put_f64_le(self.pending_exec_qty);
+        buf.put_f64_le(self.position_qty);
         buf.put_f64_le(self.max_pos_u);
         buf.put_f64_le(self.weighted_exec_price);
         buf.put_u64_le(self.request_seq);
@@ -304,14 +308,15 @@ impl ExecSignalQueryMsg {
         let strategy_id = bytes.get_i32_le();
         let exec_venue = bytes.get_u8();
         let symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
-        if bytes.remaining() < 8 * 5 {
+        if bytes.remaining() < 8 * 6 {
             return Err(
-                "insufficient bytes for due/pending/max_pos_u/weighted_price/request_seq"
+                "insufficient bytes for due/pending/position/max_pos_u/weighted_price/request_seq"
                     .to_string(),
             );
         }
         let due_exec_qty = bytes.get_f64_le();
         let pending_exec_qty = bytes.get_f64_le();
+        let position_qty = bytes.get_f64_le();
         let max_pos_u = bytes.get_f64_le();
         let weighted_exec_price = bytes.get_f64_le();
         let request_seq = bytes.get_u64_le();
@@ -321,6 +326,7 @@ impl ExecSignalQueryMsg {
             symbol,
             due_exec_qty,
             pending_exec_qty,
+            position_qty,
             max_pos_u,
             weighted_exec_price,
             request_seq,
@@ -614,6 +620,7 @@ mod tests {
             "BTCUSDT",
             1.5,
             2.0,
+            0.75,
             1000.0,
             101.0,
             9,
@@ -633,6 +640,7 @@ mod tests {
             "BTCUSDT",
             1.5,
             2.0,
+            0.75,
             1000.0,
             101.0,
             9,
