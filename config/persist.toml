@@ -1,10 +1,11 @@
-# Single persist config for the central recorder and local read server.
+# Single persist config for the central recorder, local read server, and config UI.
 # persist_sync_collector consumes the top-level fields; persist_read_server consumes [read_server].
 
 center_db = "data/persist_sync_center"
 batch_records = 1000
 batch_bytes = 4194304
 reconnect_delay_ms = 1000
+status_path = "data/persist_sync_status.json"
 sync_writes = false
 
 repair_enabled = true

@@ -1,12 +1,13 @@
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use log::{debug, info, warn};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Channel, Server};
@@ -41,6 +42,8 @@ const DEFAULT_BATCH_BYTES: usize = 4 * 1024 * 1024;
 const DEFAULT_REPAIR_INTERVAL_SECS: u64 = 30 * 60;
 const DEFAULT_REPAIR_LOOKBACK_HOURS: u64 = 24;
 const DEFAULT_REPAIR_BUCKET_US: u64 = 60_000_000;
+const DEFAULT_STATUS_PATH: &str = "data/persist_sync_status.json";
+const MAX_STATUS_EVENTS: usize = 80;
 const STREAM_IDLE_SLEEP_MS: u64 = 50;
 const STREAM_CHANNEL_CAPACITY: usize = 8;
 const CENTER_KEY_SEPARATOR: u8 = b'|';
@@ -212,6 +215,11 @@ pub async fn run_multi_collector(config: MultiCollectorConfig) -> Result<()> {
         }
     }
 
+    let status_path = config
+        .status_path
+        .clone()
+        .unwrap_or_else(|| DEFAULT_STATUS_PATH.to_string());
+    let status = SyncStatusWriter::new(status_path, &sources);
     let center_store = open_center_store_for_config(&center_db, sync_writes, &config)?;
 
     for source in sources.clone() {
@@ -220,6 +228,7 @@ pub async fn run_multi_collector(config: MultiCollectorConfig) -> Result<()> {
             manager_endpoint: source.url,
             batch_records,
             batch_bytes,
+            status: Some(status.clone()),
         };
         let store = center_store.clone();
         tokio::task::spawn_local(async move {
@@ -229,10 +238,13 @@ pub async fn run_multi_collector(config: MultiCollectorConfig) -> Result<()> {
                         "persist sync source stream ended source_id={} endpoint={}",
                         args.source_id, args.manager_endpoint
                     ),
-                    Err(err) => warn!(
-                        "persist sync source failed source_id={} endpoint={}: {err:#}",
-                        args.source_id, args.manager_endpoint
-                    ),
+                    Err(err) => {
+                        args.status_event("stream_error", 0, 0, 0, Some(err.to_string()));
+                        warn!(
+                            "persist sync source failed source_id={} endpoint={}: {err:#}",
+                            args.source_id, args.manager_endpoint
+                        );
+                    }
                 }
                 tokio::time::sleep(reconnect_delay).await;
             }
@@ -240,7 +252,7 @@ pub async fn run_multi_collector(config: MultiCollectorConfig) -> Result<()> {
     }
 
     if repair_config.enabled {
-        spawn_repair_scheduler(center_store.clone(), sources, repair_config);
+        spawn_repair_scheduler(center_store.clone(), sources, repair_config, Some(status));
     }
 
     tokio::signal::ctrl_c()
@@ -253,6 +265,7 @@ fn spawn_repair_scheduler(
     center_store: Arc<RocksDbStore>,
     sources: Vec<MultiCollectorSource>,
     config: RepairSchedulerConfig,
+    status: Option<SyncStatusWriter>,
 ) {
     let jobs = build_repair_jobs(&sources);
     if jobs.is_empty() {
@@ -272,6 +285,7 @@ fn spawn_repair_scheduler(
         let initial_delay = stagger_delay(config.interval, index, total_jobs);
         let store = center_store.clone();
         let job_config = config.clone();
+        let job_status = status.clone();
         info!(
             "persist sync repair job scheduled source_id={} cf={} initial_delay_secs={}",
             source.id,
@@ -284,24 +298,64 @@ fn spawn_repair_scheduler(
             }
             loop {
                 let started_us = get_timestamp_us();
-                match run_scheduled_repair_once(store.as_ref(), &source, cf_name.as_str(), &job_config)
-                    .await
+                match run_scheduled_repair_once(
+                    store.as_ref(),
+                    &source,
+                    cf_name.as_str(),
+                    &job_config,
+                    job_status.as_ref(),
+                )
+                .await
                 {
-                    Ok(report) => info!(
-                        "persist sync repair complete source_id={} cf={} matched_buckets={} mismatched_buckets={} missing_records={} mismatched_records={} repaired_records={} elapsed_ms={}",
-                        source.id,
-                        cf_name,
-                        report.matched_buckets,
-                        report.mismatched_buckets,
-                        report.missing_records,
-                        report.mismatched_records,
-                        report.repaired_records,
-                        elapsed_ms_since(started_us)
-                    ),
-                    Err(err) => warn!(
-                        "persist sync repair failed source_id={} cf={}: {err:#}",
-                        source.id, cf_name
-                    ),
+                    Ok(report) => {
+                        if let Some(status) = &job_status {
+                            status.update_event(HeartbeatEvent {
+                                source_id: source.id.clone(),
+                                endpoint: source.url.clone(),
+                                direction: "response".to_string(),
+                                method: "repair".to_string(),
+                                status: "ok".to_string(),
+                                ts_us: get_timestamp_us(),
+                                first_seq: 0,
+                                last_seq: 0,
+                                records: report.repaired_records,
+                                bytes: 0,
+                                error: None,
+                            });
+                        }
+                        info!(
+                            "persist sync repair complete source_id={} cf={} matched_buckets={} mismatched_buckets={} missing_records={} mismatched_records={} repaired_records={} elapsed_ms={}",
+                            source.id,
+                            cf_name,
+                            report.matched_buckets,
+                            report.mismatched_buckets,
+                            report.missing_records,
+                            report.mismatched_records,
+                            report.repaired_records,
+                            elapsed_ms_since(started_us)
+                        );
+                    }
+                    Err(err) => {
+                        if let Some(status) = &job_status {
+                            status.update_event(HeartbeatEvent {
+                                source_id: source.id.clone(),
+                                endpoint: source.url.clone(),
+                                direction: "response".to_string(),
+                                method: "repair".to_string(),
+                                status: "error".to_string(),
+                                ts_us: get_timestamp_us(),
+                                first_seq: 0,
+                                last_seq: 0,
+                                records: 0,
+                                bytes: 0,
+                                error: Some(err.to_string()),
+                            });
+                        }
+                        warn!(
+                            "persist sync repair failed source_id={} cf={}: {err:#}",
+                            source.id, cf_name
+                        );
+                    }
                 }
                 tokio::time::sleep(job_config.interval).await;
             }
@@ -341,6 +395,7 @@ async fn run_scheduled_repair_once(
     source: &MultiCollectorSource,
     cf_name: &str,
     config: &RepairSchedulerConfig,
+    status: Option<&SyncStatusWriter>,
 ) -> Result<VerifyReport> {
     let end_us = get_timestamp_us() as u64;
     let lookback_us = config.lookback_hours.saturating_mul(3_600_000_000);
@@ -358,6 +413,7 @@ async fn run_scheduled_repair_once(
             repair: true,
             sync_writes: false,
         },
+        status,
     )
     .await
 }
@@ -370,14 +426,22 @@ async fn run_source_collector_once(
     center_store: Arc<RocksDbStore>,
     args: SourceCollectorArgs,
 ) -> Result<()> {
-    let mut client = PersistSyncSourceClient::connect(args.manager_endpoint.clone())
-        .await
-        .with_context(|| {
-            format!(
-                "connect manager sync source failed: {}",
-                args.manager_endpoint
-            )
-        })?;
+    args.status_event("connect", 0, 0, 0, None);
+    let mut client = match PersistSyncSourceClient::connect(args.manager_endpoint.clone()).await {
+        Ok(client) => {
+            args.status_response("connect", 0, 0, 0, 0, None);
+            client
+        }
+        Err(err) => {
+            args.status_response("connect", 0, 0, 0, 0, Some(err.to_string()));
+            return Err(err).with_context(|| {
+                format!(
+                    "connect manager sync source failed: {}",
+                    args.manager_endpoint
+                )
+            });
+        }
+    };
 
     let after_seq = read_center_cursor(&center_store, &args.source_id)?;
     info!(
@@ -391,31 +455,73 @@ async fn run_source_collector_once(
         max_records: args.batch_records as u32,
         max_bytes: args.batch_bytes as u32,
     };
-    let mut stream = client
-        .subscribe_changes(request)
-        .await
-        .context("subscribe changes failed")?
-        .into_inner();
+    args.status_event("subscribe_changes", 0, after_seq, 0, None);
+    let mut stream = match client.subscribe_changes(request).await {
+        Ok(response) => {
+            args.status_response("subscribe_changes", 0, after_seq, 0, 0, None);
+            response.into_inner()
+        }
+        Err(err) => {
+            args.status_response(
+                "subscribe_changes",
+                0,
+                after_seq,
+                0,
+                0,
+                Some(err.to_string()),
+            );
+            return Err(err).context("subscribe changes failed");
+        }
+    };
 
-    while let Some(batch) = stream
-        .message()
-        .await
-        .context("receive sync batch failed")?
-    {
+    loop {
+        let batch = match stream.message().await {
+            Ok(Some(batch)) => batch,
+            Ok(None) => break,
+            Err(err) => {
+                args.status_response("stream_batch", 0, 0, 0, 0, Some(err.to_string()));
+                return Err(err).context("receive sync batch failed");
+            }
+        };
         if batch.records.is_empty() {
             continue;
         }
+        let batch_bytes = record_batch_payload_bytes(&batch);
         let last_seq = apply_record_batch(&center_store, &args.source_id, &batch)?;
         write_center_cursor(&center_store, &args.source_id, last_seq)?;
+        args.status_response(
+            "stream_batch",
+            batch.first_seq,
+            last_seq,
+            batch.records.len() as u64,
+            batch_bytes,
+            None,
+        );
+
         let ack = AckRequest {
             source_id: args.source_id.clone(),
             ack_seq: last_seq,
         };
-        if let Err(err) = client.ack_applied(ack).await {
-            warn!(
-                "ack manager failed source_id={} seq={}: {err:#}",
-                args.source_id, last_seq
-            );
+        args.status_event("ack_applied", last_seq, last_seq, 0, None);
+        match client.ack_applied(ack).await {
+            Ok(resp) => {
+                let deleted = resp.into_inner().deleted_records;
+                args.status_response("ack_applied", last_seq, last_seq, deleted, 0, None);
+            }
+            Err(err) => {
+                args.status_response(
+                    "ack_applied",
+                    last_seq,
+                    last_seq,
+                    0,
+                    0,
+                    Some(err.to_string()),
+                );
+                warn!(
+                    "ack manager failed source_id={} seq={}: {err:#}",
+                    args.source_id, last_seq
+                );
+            }
         }
         debug!(
             "persist sync collector applied source_id={} first_seq={} last_seq={} records={}",
@@ -474,21 +580,58 @@ pub async fn run_verify_recent(args: VerifyArgs) -> Result<VerifyReport> {
         args.sync_writes,
         std::slice::from_ref(&args.source_id),
     )?;
-    verify_recent_with_store(center_store.as_ref(), args).await
+    verify_recent_with_store(center_store.as_ref(), args, None).await
 }
 
 async fn verify_recent_with_store(
     center_store: &RocksDbStore,
     args: VerifyArgs,
+    status: Option<&SyncStatusWriter>,
 ) -> Result<VerifyReport> {
-    let mut client = PersistSyncSourceClient::connect(args.manager_endpoint.clone())
-        .await
-        .with_context(|| {
-            format!(
-                "connect manager sync source failed: {}",
-                args.manager_endpoint
-            )
-        })?;
+    if let Some(status) = status {
+        status.update_event(HeartbeatEvent::request(
+            &args.source_id,
+            &args.manager_endpoint,
+            "connect",
+            0,
+            0,
+            0,
+        ));
+    }
+    let mut client = match PersistSyncSourceClient::connect(args.manager_endpoint.clone()).await {
+        Ok(client) => {
+            if let Some(status) = status {
+                status.update_event(HeartbeatEvent::response(
+                    &args.source_id,
+                    &args.manager_endpoint,
+                    "connect",
+                    0,
+                    0,
+                    0,
+                    0,
+                ));
+            }
+            client
+        }
+        Err(err) => {
+            if let Some(status) = status {
+                status.update_event(HeartbeatEvent::error(
+                    &args.source_id,
+                    &args.manager_endpoint,
+                    "connect",
+                    0,
+                    0,
+                    err.to_string(),
+                ));
+            }
+            return Err(err).with_context(|| {
+                format!(
+                    "connect manager sync source failed: {}",
+                    args.manager_endpoint
+                )
+            });
+        }
+    };
 
     let cf_names = if args.cf_names.is_empty() {
         order_export_sync_column_families()
@@ -506,11 +649,46 @@ async fn verify_recent_with_store(
         end_us: args.end_us,
         bucket_us: args.bucket_us,
     };
-    let remote = client
-        .get_bucket_summary(request)
-        .await
-        .context("get remote bucket summary failed")?
-        .into_inner();
+    if let Some(status) = status {
+        status.update_event(HeartbeatEvent::request(
+            &args.source_id,
+            &args.manager_endpoint,
+            "get_bucket_summary",
+            0,
+            0,
+            0,
+        ));
+    }
+    let remote = match client.get_bucket_summary(request).await {
+        Ok(response) => {
+            let remote = response.into_inner();
+            if let Some(status) = status {
+                status.update_event(HeartbeatEvent::response(
+                    &args.source_id,
+                    &args.manager_endpoint,
+                    "get_bucket_summary",
+                    0,
+                    0,
+                    remote.summaries.len() as u64,
+                    0,
+                ));
+            }
+            remote
+        }
+        Err(err) => {
+            if let Some(status) = status {
+                status.update_event(HeartbeatEvent::error(
+                    &args.source_id,
+                    &args.manager_endpoint,
+                    "get_bucket_summary",
+                    0,
+                    0,
+                    err.to_string(),
+                ));
+            }
+            return Err(err).context("get remote bucket summary failed");
+        }
+    };
     let local = build_center_bucket_summaries(
         center_store,
         &args.source_id,
@@ -538,10 +716,12 @@ async fn verify_recent_with_store(
                     &mut client,
                     center_store,
                     &args.source_id,
+                    &args.manager_endpoint,
                     remote_summary.cf_name.as_str(),
                     remote_summary.bucket_start_us,
                     remote_summary.bucket_end_us,
                     args.repair,
+                    status,
                 )
                 .await?;
                 report.missing_records += repaired.missing_records;
@@ -607,6 +787,7 @@ impl CollectorArgs {
             manager_endpoint: self.manager_endpoint,
             batch_records: self.batch_records,
             batch_bytes: self.batch_bytes,
+            status: None,
         }
     }
 }
@@ -617,6 +798,344 @@ struct SourceCollectorArgs {
     manager_endpoint: String,
     batch_records: usize,
     batch_bytes: usize,
+    status: Option<SyncStatusWriter>,
+}
+
+impl SourceCollectorArgs {
+    fn status_event(
+        &self,
+        method: &str,
+        first_seq: u64,
+        last_seq: u64,
+        records: u64,
+        error: Option<String>,
+    ) {
+        let direction = if error.is_some() {
+            "response"
+        } else {
+            "request"
+        };
+        let status = if error.is_some() { "error" } else { "request" };
+        self.write_status(
+            direction, method, status, first_seq, last_seq, records, 0, error,
+        );
+    }
+
+    fn status_response(
+        &self,
+        method: &str,
+        first_seq: u64,
+        last_seq: u64,
+        records: u64,
+        bytes: u64,
+        error: Option<String>,
+    ) {
+        let status = if error.is_some() { "error" } else { "ok" };
+        self.write_status(
+            "response", method, status, first_seq, last_seq, records, bytes, error,
+        );
+    }
+
+    fn write_status(
+        &self,
+        direction: &str,
+        method: &str,
+        status: &str,
+        first_seq: u64,
+        last_seq: u64,
+        records: u64,
+        bytes: u64,
+        error: Option<String>,
+    ) {
+        if let Some(writer) = &self.status {
+            writer.update_event(HeartbeatEvent {
+                source_id: self.source_id.clone(),
+                endpoint: self.manager_endpoint.clone(),
+                direction: direction.to_string(),
+                method: method.to_string(),
+                status: status.to_string(),
+                ts_us: get_timestamp_us(),
+                first_seq,
+                last_seq,
+                records,
+                bytes,
+                error,
+            });
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct SyncStatusWriter {
+    path: Arc<PathBuf>,
+    inner: Arc<Mutex<SyncStatusFile>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SyncStatusFile {
+    updated_at_us: i64,
+    sources: BTreeMap<String, SourceHeartbeatStatus>,
+    recent_events: Vec<HeartbeatEvent>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SourceHeartbeatStatus {
+    source_id: String,
+    endpoint: String,
+    status: String,
+    last_request_us: Option<i64>,
+    last_response_us: Option<i64>,
+    last_error_us: Option<i64>,
+    last_method: Option<String>,
+    last_first_seq: u64,
+    last_seq: u64,
+    last_records: u64,
+    last_bytes: u64,
+    total_requests: u64,
+    total_responses: u64,
+    total_errors: u64,
+    total_records: u64,
+    total_bytes: u64,
+    last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct HeartbeatEvent {
+    source_id: String,
+    endpoint: String,
+    direction: String,
+    method: String,
+    status: String,
+    ts_us: i64,
+    first_seq: u64,
+    last_seq: u64,
+    records: u64,
+    bytes: u64,
+    error: Option<String>,
+}
+
+impl HeartbeatEvent {
+    fn request(
+        source_id: &str,
+        endpoint: &str,
+        method: &str,
+        first_seq: u64,
+        last_seq: u64,
+        records: u64,
+    ) -> Self {
+        Self::new(
+            source_id, endpoint, "request", method, "request", first_seq, last_seq, records, 0,
+            None,
+        )
+    }
+
+    fn response(
+        source_id: &str,
+        endpoint: &str,
+        method: &str,
+        first_seq: u64,
+        last_seq: u64,
+        records: u64,
+        bytes: u64,
+    ) -> Self {
+        Self::new(
+            source_id, endpoint, "response", method, "ok", first_seq, last_seq, records, bytes,
+            None,
+        )
+    }
+
+    fn error(
+        source_id: &str,
+        endpoint: &str,
+        method: &str,
+        first_seq: u64,
+        last_seq: u64,
+        error: String,
+    ) -> Self {
+        Self::new(
+            source_id,
+            endpoint,
+            "response",
+            method,
+            "error",
+            first_seq,
+            last_seq,
+            0,
+            0,
+            Some(error),
+        )
+    }
+
+    fn new(
+        source_id: &str,
+        endpoint: &str,
+        direction: &str,
+        method: &str,
+        status: &str,
+        first_seq: u64,
+        last_seq: u64,
+        records: u64,
+        bytes: u64,
+        error: Option<String>,
+    ) -> Self {
+        Self {
+            source_id: source_id.to_string(),
+            endpoint: endpoint.to_string(),
+            direction: direction.to_string(),
+            method: method.to_string(),
+            status: status.to_string(),
+            ts_us: get_timestamp_us(),
+            first_seq,
+            last_seq,
+            records,
+            bytes,
+            error,
+        }
+    }
+}
+
+impl SyncStatusWriter {
+    fn new(path: impl Into<PathBuf>, sources: &[MultiCollectorSource]) -> Self {
+        let mut status = SyncStatusFile {
+            updated_at_us: get_timestamp_us(),
+            sources: BTreeMap::new(),
+            recent_events: Vec::new(),
+        };
+        for source in sources {
+            status.sources.insert(
+                source.id.clone(),
+                SourceHeartbeatStatus::new(source.id.clone(), source.url.clone()),
+            );
+        }
+        let writer = Self {
+            path: Arc::new(path.into()),
+            inner: Arc::new(Mutex::new(status)),
+        };
+        writer.flush();
+        writer
+    }
+
+    fn update_event(&self, event: HeartbeatEvent) {
+        {
+            let mut guard = match self.inner.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            guard.updated_at_us = event.ts_us;
+            let source = guard
+                .sources
+                .entry(event.source_id.clone())
+                .or_insert_with(|| {
+                    SourceHeartbeatStatus::new(event.source_id.clone(), event.endpoint.clone())
+                });
+            source.apply(&event);
+            guard.recent_events.push(event);
+            if guard.recent_events.len() > MAX_STATUS_EVENTS {
+                let drain_count = guard.recent_events.len() - MAX_STATUS_EVENTS;
+                guard.recent_events.drain(0..drain_count);
+            }
+        }
+        self.flush();
+    }
+
+    fn flush(&self) {
+        if let Err(err) = self.flush_inner() {
+            warn!(
+                "persist sync status write failed path={}: {err:#}",
+                self.path.display()
+            );
+        }
+    }
+
+    fn flush_inner(&self) -> Result<()> {
+        let snapshot = {
+            let guard = match self.inner.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            guard.clone()
+        };
+        write_json_atomic(self.path.as_ref(), &snapshot)
+    }
+}
+
+impl SourceHeartbeatStatus {
+    fn new(source_id: String, endpoint: String) -> Self {
+        Self {
+            source_id,
+            endpoint,
+            status: "idle".to_string(),
+            last_request_us: None,
+            last_response_us: None,
+            last_error_us: None,
+            last_method: None,
+            last_first_seq: 0,
+            last_seq: 0,
+            last_records: 0,
+            last_bytes: 0,
+            total_requests: 0,
+            total_responses: 0,
+            total_errors: 0,
+            total_records: 0,
+            total_bytes: 0,
+            last_error: None,
+        }
+    }
+
+    fn apply(&mut self, event: &HeartbeatEvent) {
+        self.endpoint = event.endpoint.clone();
+        self.status = event.status.clone();
+        self.last_method = Some(event.method.clone());
+        self.last_first_seq = event.first_seq;
+        self.last_seq = self.last_seq.max(event.last_seq);
+        self.last_records = event.records;
+        self.last_bytes = event.bytes;
+        if event.direction == "request" {
+            self.total_requests = self.total_requests.saturating_add(1);
+            self.last_request_us = Some(event.ts_us);
+        } else {
+            self.total_responses = self.total_responses.saturating_add(1);
+            self.last_response_us = Some(event.ts_us);
+        }
+        if event.status == "error" {
+            self.total_errors = self.total_errors.saturating_add(1);
+            self.last_error_us = Some(event.ts_us);
+            self.last_error = event.error.clone();
+        } else if event.direction == "response" {
+            if event.method == "stream_batch" {
+                self.total_records = self.total_records.saturating_add(event.records);
+                self.total_bytes = self.total_bytes.saturating_add(event.bytes);
+            }
+            self.last_error = None;
+        }
+    }
+}
+
+fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let tmp_path = path.with_extension(format!(
+        "{}.tmp",
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("json")
+    ));
+    let body = serde_json::to_vec_pretty(value).context("serialize persist sync status failed")?;
+    std::fs::write(&tmp_path, body)
+        .with_context(|| format!("failed to write {}", tmp_path.display()))?;
+    std::fs::rename(&tmp_path, path).with_context(|| {
+        format!(
+            "failed to rename {} to {}",
+            tmp_path.display(),
+            path.display()
+        )
+    })?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -625,6 +1144,7 @@ pub struct MultiCollectorConfig {
     pub batch_records: Option<usize>,
     pub batch_bytes: Option<usize>,
     pub reconnect_delay_ms: Option<u64>,
+    pub status_path: Option<String>,
     pub repair_enabled: Option<bool>,
     pub repair_interval_secs: Option<u64>,
     pub repair_lookback_hours: Option<u64>,
@@ -1089,6 +1609,16 @@ fn delete_outbox_through(store: &RocksDbStore, ack_seq: u64) -> Result<usize> {
     store.delete_many(CF_SYNC_OUTBOX, &keys)
 }
 
+fn record_batch_payload_bytes(batch: &RecordBatch) -> u64 {
+    batch
+        .records
+        .iter()
+        .map(|record| {
+            record.key.len() as u64 + record.value.len() as u64 + record.cf_name.len() as u64 + 32
+        })
+        .sum()
+}
+
 fn outbox_to_pb(record: SyncOutboxRecord) -> SyncRecord {
     SyncRecord {
         seq: record.seq,
@@ -1384,12 +1914,24 @@ async fn repair_bucket(
     client: &mut PersistSyncSourceClient<Channel>,
     center_store: &RocksDbStore,
     source_id: &str,
+    endpoint: &str,
     cf_name: &str,
     start_us: u64,
     end_us: u64,
     repair: bool,
+    status: Option<&SyncStatusWriter>,
 ) -> Result<RepairStats> {
-    let mut stream = client
+    if let Some(status) = status {
+        status.update_event(HeartbeatEvent::request(
+            source_id,
+            endpoint,
+            "list_bucket_digests",
+            0,
+            0,
+            0,
+        ));
+    }
+    let mut stream = match client
         .list_bucket_digests(BucketDigestRequest {
             source_id: source_id.to_string(),
             cf_name: cf_name.to_string(),
@@ -1398,16 +1940,43 @@ async fn repair_bucket(
             max_records: DEFAULT_BATCH_RECORDS as u32,
         })
         .await
-        .context("list bucket digests failed")?
-        .into_inner();
+    {
+        Ok(response) => response.into_inner(),
+        Err(err) => {
+            if let Some(status) = status {
+                status.update_event(HeartbeatEvent::error(
+                    source_id,
+                    endpoint,
+                    "list_bucket_digests",
+                    0,
+                    0,
+                    err.to_string(),
+                ));
+            }
+            return Err(err).context("list bucket digests failed");
+        }
+    };
 
     let mut stats = RepairStats::default();
     let mut missing_keys = Vec::new();
-    while let Some(batch) = stream
-        .message()
-        .await
-        .context("receive digest batch failed")?
-    {
+    let mut digest_count = 0u64;
+    while let Some(batch) = match stream.message().await {
+        Ok(batch) => batch,
+        Err(err) => {
+            if let Some(status) = status {
+                status.update_event(HeartbeatEvent::error(
+                    source_id,
+                    endpoint,
+                    "list_bucket_digests",
+                    0,
+                    0,
+                    err.to_string(),
+                ));
+            }
+            return Err(err).context("receive digest batch failed");
+        }
+    } {
+        digest_count = digest_count.saturating_add(batch.digests.len() as u64);
         for digest in batch.digests {
             let center_cf = center_source_cf_name(source_id, cf_name);
             match center_store.get(center_cf.as_str(), &digest.key)? {
@@ -1426,10 +1995,29 @@ async fn repair_bucket(
             }
         }
     }
+    if let Some(status) = status {
+        status.update_event(HeartbeatEvent::response(
+            source_id,
+            endpoint,
+            "list_bucket_digests",
+            0,
+            0,
+            digest_count,
+            0,
+        ));
+    }
 
     if repair && !missing_keys.is_empty() {
-        let repaired =
-            fetch_and_apply_records(client, center_store, source_id, cf_name, missing_keys).await?;
+        let repaired = fetch_and_apply_records(
+            client,
+            center_store,
+            source_id,
+            endpoint,
+            cf_name,
+            missing_keys,
+            status,
+        )
+        .await?;
         stats.repaired_records += repaired as u64;
     }
     Ok(stats)
@@ -1439,12 +2027,24 @@ async fn fetch_and_apply_records(
     client: &mut PersistSyncSourceClient<Channel>,
     center_store: &RocksDbStore,
     source_id: &str,
+    endpoint: &str,
     cf_name: &str,
     keys: Vec<Vec<u8>>,
+    status: Option<&SyncStatusWriter>,
 ) -> Result<usize> {
     let mut repaired = 0usize;
     for chunk in keys.chunks(DEFAULT_BATCH_RECORDS) {
-        let mut stream = client
+        if let Some(status) = status {
+            status.update_event(HeartbeatEvent::request(
+                source_id,
+                endpoint,
+                "fetch_records",
+                0,
+                0,
+                chunk.len() as u64,
+            ));
+        }
+        let mut stream = match client
             .fetch_records(FetchRecordsRequest {
                 source_id: source_id.to_string(),
                 cf_name: cf_name.to_string(),
@@ -1452,13 +2052,39 @@ async fn fetch_and_apply_records(
                 max_records: DEFAULT_BATCH_RECORDS as u32,
             })
             .await
-            .context("fetch records failed")?
-            .into_inner();
-        while let Some(batch) = stream
-            .message()
-            .await
-            .context("receive fetch batch failed")?
         {
+            Ok(response) => response.into_inner(),
+            Err(err) => {
+                if let Some(status) = status {
+                    status.update_event(HeartbeatEvent::error(
+                        source_id,
+                        endpoint,
+                        "fetch_records",
+                        0,
+                        0,
+                        err.to_string(),
+                    ));
+                }
+                return Err(err).context("fetch records failed");
+            }
+        };
+        let mut chunk_repaired = 0usize;
+        while let Some(batch) = match stream.message().await {
+            Ok(batch) => batch,
+            Err(err) => {
+                if let Some(status) = status {
+                    status.update_event(HeartbeatEvent::error(
+                        source_id,
+                        endpoint,
+                        "fetch_records",
+                        0,
+                        0,
+                        err.to_string(),
+                    ));
+                }
+                return Err(err).context("receive fetch batch failed");
+            }
+        } {
             let mut writes = Vec::with_capacity(batch.records.len());
             for record in batch.records {
                 validate_record(&record)?;
@@ -1466,7 +2092,19 @@ async fn fetch_and_apply_records(
                 writes.push((center_cf, record.key, record.value));
             }
             repaired += writes.len();
+            chunk_repaired += writes.len();
             center_store.put_many(&writes)?;
+        }
+        if let Some(status) = status {
+            status.update_event(HeartbeatEvent::response(
+                source_id,
+                endpoint,
+                "fetch_records",
+                0,
+                0,
+                chunk_repaired as u64,
+                0,
+            ));
         }
     }
     Ok(repaired)

@@ -4,11 +4,15 @@
 
 ## Start
 
-Use the unified persist config to manage the central recorder and read server together:
+Use the unified persist config to manage the central recorder, read server, and config UI together:
 
 ```bash
 ./scripts/start_persist_sync_collector.sh
 ./scripts/stop_persist_sync_collector.sh
+
+# Optional local UI for editing persist.toml and viewing per-source gRPC heartbeats.
+./scripts/start_persist_config_server.sh
+./scripts/stop_persist_config_server.sh
 ```
 
 `start_persist_sync_collector.sh` always starts `persist_sync_collector`. If the same `persist.toml` contains `[read_server]` and `read_server.enabled` is not `false`, it also starts `persist_read_server` as a second PM2 process in the same namespace.
@@ -31,6 +35,7 @@ center_db = "data/persist_sync_center"
 batch_records = 1000
 batch_bytes = 4194304
 reconnect_delay_ms = 1000
+status_path = "data/persist_sync_status.json"
 sync_writes = false
 
 repair_enabled = true
@@ -77,7 +82,18 @@ allowed_tables = [
 ]
 ```
 
-`read_server.primary_dir` defaults to top-level `center_db`. `secondary_dir` must be different from `primary_dir`; it stores Secondary instance metadata, not a full data copy. The central DB stores source-specific column families like `source_id__uniform_orders`, so `read_server.source_id` selects which source the API reads. For a single `[[sources]]` entry it can be inferred; for multiple sources it must be set explicitly.
+`status_path` is written by `persist_sync_collector` and read by `scripts/persist_config_server.py` for heartbeat visualization. `read_server.primary_dir` defaults to top-level `center_db`. `secondary_dir` must be different from `primary_dir`; it stores Secondary instance metadata, not a full data copy. The central DB stores source-specific column families like `source_id__uniform_orders`, so `read_server.source_id` selects which source the API reads. For a single `[[sources]]` entry it can be inferred; for multiple sources it must be set explicitly.
+
+## Config UI
+
+Start the local Python UI when you want browser-based config edits and heartbeat status:
+
+```bash
+./scripts/start_persist_config_server.sh
+# open http://127.0.0.1:8830
+```
+
+The UI edits the same `persist.toml` and writes a timestamped `.bak` before saving. Heartbeats are read from `status_path`; each gRPC request or response updates the per-source status and recent event table.
 
 ## API
 
