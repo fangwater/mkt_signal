@@ -927,6 +927,15 @@ struct BasicState {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct ExecGrossPositionProjection {
+    pub symbol_current_position_usdt: f64,
+    pub symbol_next_position_usdt: f64,
+    pub total_current_position_usdt: f64,
+    pub total_next_position_usdt: f64,
+    pub limit_usdt: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
 struct ArbHedgeExposureProjection {
     symbol_current_exposure_usdt: f64,
     symbol_next_exposure_usdt: f64,
@@ -1622,6 +1631,136 @@ impl MonitorChannel {
     /// 读取指定 scope 的最新风险快照；未到货则返回 None。
     pub fn account_risk_snapshot(&self, scope: BasicAccountScope) -> Option<BasicAccountRiskMsg> {
         Self::with_inner(|inner| inner.latest_account_risk.get(&scope).cloned())
+    }
+
+    fn exec_gross_position_projection_inner(
+        inner: &MonitorChannelInner,
+        symbol: &str,
+        venue: TradingVenue,
+        signed_base_qty: f64,
+        limit_usdt: f64,
+    ) -> Result<Option<ExecGrossPositionProjection>, String> {
+        if limit_usdt <= 0.0 {
+            return Ok(None);
+        }
+        if !limit_usdt.is_finite() {
+            return Err(format!("exec_max_gross_position_u 非法: {:.8}", limit_usdt));
+        }
+
+        let symbol_upper = symbol.to_uppercase();
+        let base_asset = extract_base_asset(&symbol_upper).ok_or_else(|| {
+            format!(
+                "无法识别 symbol={} 的基础资产，无法校验 Exec 总持仓",
+                symbol
+            )
+        })?;
+        let base_asset_upper = base_asset.to_uppercase();
+        if base_asset_upper == "USDT" {
+            return Ok(None);
+        }
+
+        let state = Self::compute_basic_state(inner);
+        let price_mapper = create_symbol_mapper(Self::mark_price_exchange_for_venues(
+            inner.open_venue,
+            inner.hedge_venue,
+        ));
+        let mark_symbol = price_mapper.asset_to_price_symbol(&base_asset_upper);
+        let mark = inner
+            .price_table
+            .borrow()
+            .mark_price(&mark_symbol)
+            .ok_or_else(|| format!("symbol={} 缺少 USDT 标记价格，无法校验 Exec 总持仓", symbol))?;
+        if !(mark.is_finite() && mark > 0.0) {
+            return Err(format!(
+                "symbol={} 标记价格无效 mark_symbol={} mark={:.8}",
+                symbol, mark_symbol, mark
+            ));
+        }
+
+        let (open_qty, hedge_qty) = state
+            .exposures
+            .get(&base_asset_upper)
+            .copied()
+            .unwrap_or((0.0, 0.0));
+        let (leg_current_qty, other_qty) = if venue == inner.open_venue {
+            (open_qty, hedge_qty)
+        } else if venue == inner.hedge_venue {
+            (hedge_qty, open_qty)
+        } else {
+            return Err(format!(
+                "Exec venue {:?} 不匹配 open={:?} hedge={:?}",
+                venue, inner.open_venue, inner.hedge_venue
+            ));
+        };
+
+        let leg_next_qty = leg_current_qty + signed_base_qty;
+        let symbol_current_position_usdt = (leg_current_qty.abs() + other_qty.abs()) * mark;
+        let symbol_next_position_usdt = (leg_next_qty.abs() + other_qty.abs()) * mark;
+        let total_next_position_usdt = (state.total_position_usdt - symbol_current_position_usdt
+            + symbol_next_position_usdt)
+            .max(0.0);
+
+        Ok(Some(ExecGrossPositionProjection {
+            symbol_current_position_usdt,
+            symbol_next_position_usdt,
+            total_current_position_usdt: state.total_position_usdt,
+            total_next_position_usdt,
+            limit_usdt,
+        }))
+    }
+
+    fn evaluate_exec_gross_position_projection(
+        symbol: &str,
+        projection: ExecGrossPositionProjection,
+    ) -> Result<(), String> {
+        let eps = 1e-6_f64;
+        if projection.total_next_position_usdt <= projection.total_current_position_usdt + eps {
+            return Ok(());
+        }
+        if projection.total_next_position_usdt > projection.limit_usdt + eps {
+            return Err(format!(
+                "symbol={} Exec 总持仓扩大后超限: current={:.4}USDT next={:.4}USDT limit={:.4}USDT symbol_current={:.4}USDT symbol_next={:.4}USDT",
+                symbol,
+                projection.total_current_position_usdt,
+                projection.total_next_position_usdt,
+                projection.limit_usdt,
+                projection.symbol_current_position_usdt,
+                projection.symbol_next_position_usdt
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn exec_gross_position_projection(
+        &self,
+        symbol: &str,
+        venue: TradingVenue,
+        signed_base_qty: f64,
+    ) -> Result<Option<ExecGrossPositionProjection>, String> {
+        Self::with_inner(|inner| {
+            let limit_usdt = PreTradeParamsLoader::instance().exec_max_gross_position_u();
+            Self::exec_gross_position_projection_inner(
+                inner,
+                symbol,
+                venue,
+                signed_base_qty,
+                limit_usdt,
+            )
+        })
+    }
+
+    pub fn check_exec_gross_position_risk(
+        &self,
+        symbol: &str,
+        venue: TradingVenue,
+        signed_base_qty: f64,
+    ) -> Result<(), String> {
+        let Some(projection) =
+            self.exec_gross_position_projection(symbol, venue, signed_base_qty)?
+        else {
+            return Ok(());
+        };
+        Self::evaluate_exec_gross_position_projection(symbol, projection)
     }
 
     /// 获取当前基础风控口径的快照（用于 resample/viz）
@@ -3690,6 +3829,65 @@ mod tests {
 
         let state = MonitorChannel::compute_basic_state(&inner);
         assert!((state.total_equity_usdt - 60_000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn exec_gross_position_projection_uses_total_abs_positions() {
+        install_binance_arb_hedge_exposure_fixture(2.0, -3.0, false);
+
+        let projection = MonitorChannel::with_inner(|inner| {
+            MonitorChannel::exec_gross_position_projection_inner(
+                inner,
+                "FILUSDT",
+                TradingVenue::BinanceFutures,
+                -1.0,
+                550.0,
+            )
+        })
+        .unwrap()
+        .expect("projection");
+        assert!((projection.symbol_current_position_usdt - 500.0).abs() < 1e-9);
+        assert!((projection.symbol_next_position_usdt - 600.0).abs() < 1e-9);
+        assert!((projection.total_current_position_usdt - 500.0).abs() < 1e-9);
+        assert!((projection.total_next_position_usdt - 600.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn exec_gross_position_risk_rejects_expanding_when_next_over_limit() {
+        install_binance_arb_hedge_exposure_fixture(2.0, -3.0, false);
+
+        let projection = MonitorChannel::with_inner(|inner| {
+            MonitorChannel::exec_gross_position_projection_inner(
+                inner,
+                "FILUSDT",
+                TradingVenue::BinanceFutures,
+                -1.0,
+                550.0,
+            )
+        })
+        .unwrap()
+        .expect("projection");
+        let err = MonitorChannel::evaluate_exec_gross_position_projection("FILUSDT", projection)
+            .unwrap_err();
+        assert!(err.contains("Exec 总持仓扩大后超限"), "err={err}");
+    }
+
+    #[test]
+    fn exec_gross_position_risk_allows_reducing_when_current_over_limit() {
+        install_binance_arb_hedge_exposure_fixture(2.0, -3.0, false);
+
+        let projection = MonitorChannel::with_inner(|inner| {
+            MonitorChannel::exec_gross_position_projection_inner(
+                inner,
+                "FILUSDT",
+                TradingVenue::BinanceFutures,
+                1.0,
+                550.0,
+            )
+        })
+        .unwrap()
+        .expect("projection");
+        MonitorChannel::evaluate_exec_gross_position_projection("FILUSDT", projection).unwrap();
     }
 
     #[test]

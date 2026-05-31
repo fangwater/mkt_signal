@@ -1043,6 +1043,24 @@ impl ExecStrategy {
                 return;
             }
         }
+        if let Err(err) = MonitorChannel::instance().check_exec_gross_position_risk(
+            &symbol,
+            venue,
+            signed_base_qty,
+        ) {
+            self.cancel_exec_limit_orders_by_side(
+                &symbol,
+                venue,
+                side,
+                get_timestamp_us(),
+                "exec_gross_position_risk",
+            );
+            warn!(
+                "ExecStrategy: strategy_id={} Exec gross position risk reject symbol={} venue={:?} side={:?} base_qty={:.8} err={}",
+                self.strategy_id, symbol, venue, side, order_base_qty, err
+            );
+            return;
+        }
         match Self::check_exec_max_pos_u(&symbol, venue, side, order_base_qty, price_hint) {
             Ok(Some(cancel_side)) => {
                 self.cancel_exec_limit_orders_by_side(

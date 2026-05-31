@@ -26,6 +26,7 @@ struct PreTradeParamsData {
     max_symbol_exposure_ratio: f64,
     max_total_exposure_ratio: f64,
     max_leverage: f64,
+    exec_max_gross_position_u: f64,
     unimmr_trigger_line: f64,
     unimmr_recover_line: f64,
     max_pending_limit_orders: i32,
@@ -53,6 +54,7 @@ impl Default for PreTradeParamsData {
             max_symbol_exposure_ratio: 0.8,
             max_total_exposure_ratio: 1.0,
             max_leverage: 3.0,
+            exec_max_gross_position_u: 0.0,
             unimmr_trigger_line: DEFAULT_UNIMMR_TRIGGER_LINE,
             unimmr_recover_line: DEFAULT_UNIMMR_RECOVER_LINE,
             max_pending_limit_orders: 3,
@@ -291,6 +293,14 @@ impl PreTradeParamsLoader {
                 }
             }
 
+            if let Some(v) = parse_f64("exec_max_gross_position_u") {
+                if v.is_finite() && v >= 0.0 {
+                    data.exec_max_gross_position_u = v;
+                } else {
+                    warn!("exec_max_gross_position_u={} 无效，需大于等于 0，忽略更新", v);
+                }
+            }
+
             let raw_unimmr_trigger_line = parse_f64("unimmr_trigger_line")
                 .unwrap_or(data.unimmr_trigger_line);
             let raw_unimmr_recover_line =
@@ -374,12 +384,13 @@ impl PreTradeParamsLoader {
             }
 
             debug!(
-                "风控参数已加载: max_pos_u={:.2} overrides={} sym_ratio={:.4} total_ratio={:.4} max_leverage={:.2} unimmr_trigger={:.2} unimmr_recover={:.2} max_pending={} max_pending_buy={} max_pending_sell={} open_rate_1m={} open_rate_10s={} hedge_rate_1m={} hedge_rate_10s={} arb_max_pending_buy={} arb_max_pending_sell={} arb_open_rate_1m={} arb_open_rate_10s={} arb_hedge_rate_1m={} arb_hedge_rate_10s={} exec_rate_1m={} exec_rate_10s={}",
+                "风控参数已加载: max_pos_u={:.2} overrides={} sym_ratio={:.4} total_ratio={:.4} max_leverage={:.2} exec_gross_position_u={:.2} unimmr_trigger={:.2} unimmr_recover={:.2} max_pending={} max_pending_buy={} max_pending_sell={} open_rate_1m={} open_rate_10s={} hedge_rate_1m={} hedge_rate_10s={} arb_max_pending_buy={} arb_max_pending_sell={} arb_open_rate_1m={} arb_open_rate_10s={} arb_hedge_rate_1m={} arb_hedge_rate_10s={} exec_rate_1m={} exec_rate_10s={}",
                 data.max_pos_u,
                 data.max_pos_u_overrides.len(),
                 data.max_symbol_exposure_ratio,
                 data.max_total_exposure_ratio,
                 data.max_leverage,
+                data.exec_max_gross_position_u,
                 data.unimmr_trigger_line,
                 data.unimmr_recover_line,
                 data.max_pending_limit_orders,
@@ -454,6 +465,10 @@ impl PreTradeParamsLoader {
             "max_total_exposure_ratio", data.max_total_exposure_ratio
         );
         println!("{:<40} {:>18.2}", "max_leverage", data.max_leverage);
+        println!(
+            "{:<40} {:>18.2}",
+            "exec_max_gross_position_u", data.exec_max_gross_position_u
+        );
         println!(
             "{:<40} {:>18.2}",
             "unimmr_trigger_line", data.unimmr_trigger_line
@@ -555,6 +570,10 @@ impl PreTradeParamsLoader {
     /// 获取 max_leverage
     pub fn max_leverage(&self) -> f64 {
         PARAMS_DATA.with(|data| data.borrow().max_leverage)
+    }
+
+    pub fn exec_max_gross_position_u(&self) -> f64 {
+        PARAMS_DATA.with(|data| data.borrow().exec_max_gross_position_u)
     }
 
     /// 获取 UniMMR 算法平仓触发线
@@ -698,6 +717,7 @@ impl PreTradeParamsLoader {
                 max_symbol_exposure_ratio: data.max_symbol_exposure_ratio,
                 max_total_exposure_ratio: data.max_total_exposure_ratio,
                 max_leverage: data.max_leverage,
+                exec_max_gross_position_u: data.exec_max_gross_position_u,
                 unimmr_trigger_line: data.unimmr_trigger_line,
                 unimmr_recover_line: data.unimmr_recover_line,
                 max_pending_limit_orders: data.max_pending_limit_orders,
@@ -727,6 +747,7 @@ pub struct PreTradeParamsSnapshot {
     pub max_symbol_exposure_ratio: f64,
     pub max_total_exposure_ratio: f64,
     pub max_leverage: f64,
+    pub exec_max_gross_position_u: f64,
     pub unimmr_trigger_line: f64,
     pub unimmr_recover_line: f64,
     pub max_pending_limit_orders: i32,
@@ -757,6 +778,7 @@ mod tests {
         assert_eq!(loader.max_symbol_exposure_ratio(), 0.8);
         assert_eq!(loader.max_total_exposure_ratio(), 1.0);
         assert_eq!(loader.max_leverage(), 3.0);
+        assert_eq!(loader.exec_max_gross_position_u(), 0.0);
         assert_eq!(loader.unimmr_trigger_line(), DEFAULT_UNIMMR_TRIGGER_LINE);
         assert_eq!(loader.unimmr_recover_line(), DEFAULT_UNIMMR_RECOVER_LINE);
         assert_eq!(loader.max_pending_limit_orders(), 3);
