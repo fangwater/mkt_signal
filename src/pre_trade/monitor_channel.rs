@@ -927,12 +927,16 @@ struct BasicState {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct ExecGrossPositionProjection {
-    pub symbol_current_position_usdt: f64,
-    pub symbol_next_position_usdt: f64,
-    pub total_current_position_usdt: f64,
-    pub total_next_position_usdt: f64,
-    pub limit_usdt: f64,
+pub struct ExecPositionImbalanceProjection {
+    pub current_long_usdt: f64,
+    pub current_short_usdt: f64,
+    pub next_long_usdt: f64,
+    pub next_short_usdt: f64,
+    pub current_total_usdt: f64,
+    pub next_total_usdt: f64,
+    pub current_imbalance_ratio: f64,
+    pub next_imbalance_ratio: f64,
+    pub limit_ratio: f64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1633,24 +1637,36 @@ impl MonitorChannel {
         Self::with_inner(|inner| inner.latest_account_risk.get(&scope).cloned())
     }
 
-    fn exec_gross_position_projection_inner(
+    fn exec_position_imbalance_ratio(long_usdt: f64, short_usdt: f64) -> f64 {
+        let total_usdt = long_usdt + short_usdt;
+        if total_usdt <= f64::EPSILON {
+            0.0
+        } else {
+            (long_usdt - short_usdt).abs() / total_usdt
+        }
+    }
+
+    fn exec_position_imbalance_projection_inner(
         inner: &MonitorChannelInner,
         symbol: &str,
         venue: TradingVenue,
         signed_base_qty: f64,
-        limit_usdt: f64,
-    ) -> Result<Option<ExecGrossPositionProjection>, String> {
-        if limit_usdt <= 0.0 {
+        limit_ratio: f64,
+    ) -> Result<Option<ExecPositionImbalanceProjection>, String> {
+        if limit_ratio <= 0.0 {
             return Ok(None);
         }
-        if !limit_usdt.is_finite() {
-            return Err(format!("exec_max_gross_position_u 非法: {:.8}", limit_usdt));
+        if !(limit_ratio.is_finite() && limit_ratio <= 1.0) {
+            return Err(format!(
+                "exec_max_position_imbalance_ratio 非法: {:.8}",
+                limit_ratio
+            ));
         }
 
         let symbol_upper = symbol.to_uppercase();
         let base_asset = extract_base_asset(&symbol_upper).ok_or_else(|| {
             format!(
-                "无法识别 symbol={} 的基础资产，无法校验 Exec 总持仓",
+                "无法识别 symbol={} 的基础资产，无法校验 Exec 截面失衡",
                 symbol
             )
         })?;
@@ -1658,18 +1674,57 @@ impl MonitorChannel {
         if base_asset_upper == "USDT" {
             return Ok(None);
         }
+        if venue != inner.open_venue && venue != inner.hedge_venue {
+            return Err(format!(
+                "Exec venue {:?} 不匹配 open={:?} hedge={:?}",
+                venue, inner.open_venue, inner.hedge_venue
+            ));
+        }
 
         let state = Self::compute_basic_state(inner);
         let price_mapper = create_symbol_mapper(Self::mark_price_exchange_for_venues(
             inner.open_venue,
             inner.hedge_venue,
         ));
+        let mut current_long_usdt = 0.0;
+        let mut current_short_usdt = 0.0;
+        let mut current_asset_usdt = 0.0;
+
+        for (asset, (open_qty, hedge_qty)) in &state.exposures {
+            if asset == "USDT" {
+                continue;
+            }
+            let mark_symbol = price_mapper.asset_to_price_symbol(asset);
+            let mark = inner
+                .price_table
+                .borrow()
+                .mark_price(&mark_symbol)
+                .unwrap_or(0.0);
+            if !(mark.is_finite() && mark > 0.0) {
+                continue;
+            }
+            let net_usdt = (open_qty + hedge_qty) * mark;
+            if *asset == base_asset_upper {
+                current_asset_usdt = net_usdt;
+            }
+            if net_usdt > 0.0 {
+                current_long_usdt += net_usdt;
+            } else if net_usdt < 0.0 {
+                current_short_usdt += -net_usdt;
+            }
+        }
+
         let mark_symbol = price_mapper.asset_to_price_symbol(&base_asset_upper);
         let mark = inner
             .price_table
             .borrow()
             .mark_price(&mark_symbol)
-            .ok_or_else(|| format!("symbol={} 缺少 USDT 标记价格，无法校验 Exec 总持仓", symbol))?;
+            .ok_or_else(|| {
+                format!(
+                    "symbol={} 缺少 USDT 标记价格，无法校验 Exec 截面失衡",
+                    symbol
+                )
+            })?;
         if !(mark.is_finite() && mark > 0.0) {
             return Err(format!(
                 "symbol={} 标记价格无效 mark_symbol={} mark={:.8}",
@@ -1677,90 +1732,98 @@ impl MonitorChannel {
             ));
         }
 
-        let (open_qty, hedge_qty) = state
-            .exposures
-            .get(&base_asset_upper)
-            .copied()
-            .unwrap_or((0.0, 0.0));
-        let (leg_current_qty, other_qty) = if venue == inner.open_venue {
-            (open_qty, hedge_qty)
-        } else if venue == inner.hedge_venue {
-            (hedge_qty, open_qty)
-        } else {
-            return Err(format!(
-                "Exec venue {:?} 不匹配 open={:?} hedge={:?}",
-                venue, inner.open_venue, inner.hedge_venue
-            ));
-        };
+        let next_asset_usdt = current_asset_usdt + signed_base_qty * mark;
+        let mut next_long_usdt = current_long_usdt;
+        let mut next_short_usdt = current_short_usdt;
+        if current_asset_usdt > 0.0 {
+            next_long_usdt -= current_asset_usdt;
+        } else if current_asset_usdt < 0.0 {
+            next_short_usdt -= -current_asset_usdt;
+        }
+        if next_asset_usdt > 0.0 {
+            next_long_usdt += next_asset_usdt;
+        } else if next_asset_usdt < 0.0 {
+            next_short_usdt += -next_asset_usdt;
+        }
+        next_long_usdt = next_long_usdt.max(0.0);
+        next_short_usdt = next_short_usdt.max(0.0);
 
-        let leg_next_qty = leg_current_qty + signed_base_qty;
-        let symbol_current_position_usdt = (leg_current_qty.abs() + other_qty.abs()) * mark;
-        let symbol_next_position_usdt = (leg_next_qty.abs() + other_qty.abs()) * mark;
-        let total_next_position_usdt = (state.total_position_usdt - symbol_current_position_usdt
-            + symbol_next_position_usdt)
-            .max(0.0);
+        let current_total_usdt = current_long_usdt + current_short_usdt;
+        let next_total_usdt = next_long_usdt + next_short_usdt;
+        let current_imbalance_ratio =
+            Self::exec_position_imbalance_ratio(current_long_usdt, current_short_usdt);
+        let next_imbalance_ratio =
+            Self::exec_position_imbalance_ratio(next_long_usdt, next_short_usdt);
 
-        Ok(Some(ExecGrossPositionProjection {
-            symbol_current_position_usdt,
-            symbol_next_position_usdt,
-            total_current_position_usdt: state.total_position_usdt,
-            total_next_position_usdt,
-            limit_usdt,
+        Ok(Some(ExecPositionImbalanceProjection {
+            current_long_usdt,
+            current_short_usdt,
+            next_long_usdt,
+            next_short_usdt,
+            current_total_usdt,
+            next_total_usdt,
+            current_imbalance_ratio,
+            next_imbalance_ratio,
+            limit_ratio,
         }))
     }
 
-    fn evaluate_exec_gross_position_projection(
+    fn evaluate_exec_position_imbalance_projection(
         symbol: &str,
-        projection: ExecGrossPositionProjection,
+        projection: ExecPositionImbalanceProjection,
     ) -> Result<(), String> {
-        let eps = 1e-6_f64;
-        if projection.total_next_position_usdt <= projection.total_current_position_usdt + eps {
+        let eps = 1e-9_f64;
+        if projection.next_imbalance_ratio <= projection.current_imbalance_ratio + eps {
             return Ok(());
         }
-        if projection.total_next_position_usdt > projection.limit_usdt + eps {
+        if projection.next_imbalance_ratio > projection.limit_ratio + eps {
             return Err(format!(
-                "symbol={} Exec 总持仓扩大后超限: current={:.4}USDT next={:.4}USDT limit={:.4}USDT symbol_current={:.4}USDT symbol_next={:.4}USDT",
+                "symbol={} Exec 截面持仓失衡比例扩大后超限: current_ratio={:.6} next_ratio={:.6} limit={:.6} current_long={:.4}USDT current_short={:.4}USDT next_long={:.4}USDT next_short={:.4}USDT current_total={:.4}USDT next_total={:.4}USDT",
                 symbol,
-                projection.total_current_position_usdt,
-                projection.total_next_position_usdt,
-                projection.limit_usdt,
-                projection.symbol_current_position_usdt,
-                projection.symbol_next_position_usdt
+                projection.current_imbalance_ratio,
+                projection.next_imbalance_ratio,
+                projection.limit_ratio,
+                projection.current_long_usdt,
+                projection.current_short_usdt,
+                projection.next_long_usdt,
+                projection.next_short_usdt,
+                projection.current_total_usdt,
+                projection.next_total_usdt
             ));
         }
         Ok(())
     }
 
-    pub fn exec_gross_position_projection(
+    pub fn exec_position_imbalance_projection(
         &self,
         symbol: &str,
         venue: TradingVenue,
         signed_base_qty: f64,
-    ) -> Result<Option<ExecGrossPositionProjection>, String> {
+    ) -> Result<Option<ExecPositionImbalanceProjection>, String> {
         Self::with_inner(|inner| {
-            let limit_usdt = PreTradeParamsLoader::instance().exec_max_gross_position_u();
-            Self::exec_gross_position_projection_inner(
+            let limit_ratio = PreTradeParamsLoader::instance().exec_max_position_imbalance_ratio();
+            Self::exec_position_imbalance_projection_inner(
                 inner,
                 symbol,
                 venue,
                 signed_base_qty,
-                limit_usdt,
+                limit_ratio,
             )
         })
     }
 
-    pub fn check_exec_gross_position_risk(
+    pub fn check_exec_position_imbalance_risk(
         &self,
         symbol: &str,
         venue: TradingVenue,
         signed_base_qty: f64,
     ) -> Result<(), String> {
         let Some(projection) =
-            self.exec_gross_position_projection(symbol, venue, signed_base_qty)?
+            self.exec_position_imbalance_projection(symbol, venue, signed_base_qty)?
         else {
             return Ok(());
         };
-        Self::evaluate_exec_gross_position_projection(symbol, projection)
+        Self::evaluate_exec_position_imbalance_projection(symbol, projection)
     }
 
     /// 获取当前基础风控口径的快照（用于 resample/viz）
@@ -3723,6 +3786,69 @@ mod tests {
         strategy_mgr
     }
 
+    fn install_binance_exec_cross_section_fixture() {
+        let mut open_um = BasicUmManager::new(Exchange::Binance);
+        open_um.apply_position(&BasicPositionMsg::create(
+            0,
+            "FILUSDT".to_string(),
+            'L',
+            2.0,
+        ));
+        open_um.apply_position(&BasicPositionMsg::create(
+            0,
+            "ETHUSDT".to_string(),
+            'S',
+            2.0,
+        ));
+
+        let open_leg = LegMgr::Futures {
+            exchange: Exchange::Binance,
+            um: Rc::new(RefCell::new(open_um)),
+            min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Binance))),
+        };
+        let hedge_leg = LegMgr::Futures {
+            exchange: Exchange::Binance,
+            um: Rc::new(RefCell::new(BasicUmManager::new(Exchange::Binance))),
+            min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Binance))),
+        };
+
+        let mut price_table = PriceTable::new();
+        price_table.update_mark_price("FILUSDT", 100.0, 0);
+        price_table.update_mark_price("ETHUSDT", 50.0, 0);
+
+        let mut usdt_mgr = UsdtBalanceManager::new(Exchange::Binance);
+        usdt_mgr.apply_balance(&BasicBalanceMsg::create(0, "USDT".to_string(), 10_000.0));
+        let mut usdt_mgrs: HashMap<BasicAccountScope, Rc<RefCell<UsdtBalanceManager>>> =
+            HashMap::new();
+        usdt_mgrs.insert(
+            BasicAccountScope::BinanceUnified,
+            Rc::new(RefCell::new(usdt_mgr)),
+        );
+
+        let inner = MonitorChannelInner {
+            open_venue: TradingVenue::BinanceFutures,
+            hedge_venue: TradingVenue::BinanceMargin,
+            open_leg,
+            hedge_leg,
+            usdt_mgrs,
+            price_table: Rc::new(RefCell::new(price_table)),
+            venue_min_qty_tables: HashMap::new(),
+            strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
+            orphan_strategy_mgr: Rc::new(RefCell::new(OrphanStrategyManager::new())),
+            order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
+                BinanceAccountMode::Unified,
+            )))),
+            close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            trade_update_seq: 0,
+            latest_account_risk: HashMap::new(),
+            arb_startup_net_gate: ArbStartupNetGate::new(false),
+        };
+
+        MONITOR_CHANNEL.with(|mc| {
+            *mc.borrow_mut() = Some(inner);
+        });
+    }
+
     fn install_binance_arb_margin_open_fixture() -> (
         Rc<RefCell<StrategyManager>>,
         Rc<RefCell<BasicBalanceManager>>,
@@ -3832,62 +3958,65 @@ mod tests {
     }
 
     #[test]
-    fn exec_gross_position_projection_uses_total_abs_positions() {
-        install_binance_arb_hedge_exposure_fixture(2.0, -3.0, false);
+    fn exec_position_imbalance_projection_uses_cross_section_net_values() {
+        install_binance_exec_cross_section_fixture();
 
         let projection = MonitorChannel::with_inner(|inner| {
-            MonitorChannel::exec_gross_position_projection_inner(
+            MonitorChannel::exec_position_imbalance_projection_inner(
                 inner,
                 "FILUSDT",
                 TradingVenue::BinanceFutures,
                 -1.0,
-                550.0,
+                0.1,
             )
         })
         .unwrap()
         .expect("projection");
-        assert!((projection.symbol_current_position_usdt - 500.0).abs() < 1e-9);
-        assert!((projection.symbol_next_position_usdt - 600.0).abs() < 1e-9);
-        assert!((projection.total_current_position_usdt - 500.0).abs() < 1e-9);
-        assert!((projection.total_next_position_usdt - 600.0).abs() < 1e-9);
+        assert!((projection.current_long_usdt - 200.0).abs() < 1e-9);
+        assert!((projection.current_short_usdt - 100.0).abs() < 1e-9);
+        assert!((projection.next_long_usdt - 100.0).abs() < 1e-9);
+        assert!((projection.next_short_usdt - 100.0).abs() < 1e-9);
+        assert!((projection.current_imbalance_ratio - (1.0 / 3.0)).abs() < 1e-9);
+        assert!((projection.next_imbalance_ratio - 0.0).abs() < 1e-9);
     }
 
     #[test]
-    fn exec_gross_position_risk_rejects_expanding_when_next_over_limit() {
-        install_binance_arb_hedge_exposure_fixture(2.0, -3.0, false);
+    fn exec_position_imbalance_risk_rejects_when_ratio_expands_over_limit() {
+        install_binance_arb_hedge_exposure_fixture(1.0, -1.0, false);
 
         let projection = MonitorChannel::with_inner(|inner| {
-            MonitorChannel::exec_gross_position_projection_inner(
+            MonitorChannel::exec_position_imbalance_projection_inner(
                 inner,
                 "FILUSDT",
                 TradingVenue::BinanceFutures,
                 -1.0,
-                550.0,
+                0.5,
             )
         })
         .unwrap()
         .expect("projection");
-        let err = MonitorChannel::evaluate_exec_gross_position_projection("FILUSDT", projection)
-            .unwrap_err();
-        assert!(err.contains("Exec 总持仓扩大后超限"), "err={err}");
+        let err =
+            MonitorChannel::evaluate_exec_position_imbalance_projection("FILUSDT", projection)
+                .unwrap_err();
+        assert!(err.contains("Exec 截面持仓失衡比例扩大后超限"), "err={err}");
     }
 
     #[test]
-    fn exec_gross_position_risk_allows_reducing_when_current_over_limit() {
-        install_binance_arb_hedge_exposure_fixture(2.0, -3.0, false);
+    fn exec_position_imbalance_risk_allows_ratio_reducing_when_current_over_limit() {
+        install_binance_arb_hedge_exposure_fixture(2.0, -1.0, false);
 
         let projection = MonitorChannel::with_inner(|inner| {
-            MonitorChannel::exec_gross_position_projection_inner(
+            MonitorChannel::exec_position_imbalance_projection_inner(
                 inner,
                 "FILUSDT",
                 TradingVenue::BinanceFutures,
-                1.0,
-                550.0,
+                -1.0,
+                0.2,
             )
         })
         .unwrap()
         .expect("projection");
-        MonitorChannel::evaluate_exec_gross_position_projection("FILUSDT", projection).unwrap();
+        MonitorChannel::evaluate_exec_position_imbalance_projection("FILUSDT", projection).unwrap();
     }
 
     #[test]

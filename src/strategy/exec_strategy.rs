@@ -1043,7 +1043,7 @@ impl ExecStrategy {
                 return;
             }
         }
-        if let Err(err) = MonitorChannel::instance().check_exec_gross_position_risk(
+        if let Err(err) = MonitorChannel::instance().check_exec_position_imbalance_risk(
             &symbol,
             venue,
             signed_base_qty,
@@ -1053,10 +1053,10 @@ impl ExecStrategy {
                 venue,
                 side,
                 get_timestamp_us(),
-                "exec_gross_position_risk",
+                "exec_position_imbalance_risk",
             );
             warn!(
-                "ExecStrategy: strategy_id={} Exec gross position risk reject symbol={} venue={:?} side={:?} base_qty={:.8} err={}",
+                "ExecStrategy: strategy_id={} Exec position imbalance risk reject symbol={} venue={:?} side={:?} base_qty={:.8} err={}",
                 self.strategy_id, symbol, venue, side, order_base_qty, err
             );
             return;
