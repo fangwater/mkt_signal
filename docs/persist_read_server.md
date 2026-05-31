@@ -85,31 +85,55 @@ Parameters:
 
 Concurrency uses `try_acquire`; if all permits are in use, the service returns `429 Too Many Requests` immediately and does not queue.
 
-## Python
+## Python SDK
 
-Arrow IPC stream:
+Use `scripts/persist_read_client.py` from notebooks or analysis scripts:
 
 ```python
-import pyarrow as pa
-import pyarrow.ipc as ipc
-import requests
+from scripts.persist_read_client import PersistReadClient
 
-r = requests.get(url, params=params, timeout=120)
-r.raise_for_status()
-table = ipc.open_stream(pa.BufferReader(r.content)).read_all()
-df = table.to_pandas()
+client = PersistReadClient("http://127.0.0.1:8822", timeout_sec=120)
+
+schema = client.schema("uniform_orders")
+print(schema.columns)
+
+df = client.read_pandas(
+    "uniform_orders",
+    start="2026-05-31 09:30:00",
+    end="2026-05-31 10:30:00",
+)
 ```
 
-Parquet:
+For windows longer than the server limit, let the client split requests and concatenate Arrow tables before converting to pandas:
 
 ```python
-from io import BytesIO
-import pandas as pd
-import requests
+df = client.read_pandas_range(
+    "uniform_orders",
+    start="2026-05-31 09:30:00",
+    end="2026-05-31 12:30:00",
+    window_sec=3600,
+)
+```
 
-r = requests.get(url, params={**params, "format": "parquet"}, timeout=120)
-r.raise_for_status()
-df = pd.read_parquet(BytesIO(r.content))
+`columns` is optional; omitted means all columns. Naive time strings are interpreted in `Asia/Shanghai` by default. Set `tz="UTC"` on the client or one request to interpret naive strings as UTC:
+
+```python
+client_utc = PersistReadClient("http://127.0.0.1:8822", tz="UTC")
+df = client.read_pandas("uniform_orders", "2026-05-31 01:30:00", "2026-05-31 02:30:00", tz="UTC")
+```
+
+The SDK uses the Python standard library for HTTP. `pyarrow` is required for Arrow decoding, and `pandas` is required only for DataFrame conversion or Parquet reads.
+
+CLI examples:
+
+```bash
+python3 scripts/persist_read_client.py --base-url http://127.0.0.1:8822 schema --table uniform_orders
+python3 scripts/persist_read_client.py --base-url http://127.0.0.1:8822 read \
+  --table uniform_orders \
+  --start "2026-05-31 09:30:00" \
+  --end "2026-05-31 10:30:00" \
+  --format arrow_ipc \
+  --out orders.arrow
 ```
 
 ## First-Version Notes
