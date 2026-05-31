@@ -2,8 +2,10 @@ mod bbo_spread;
 pub mod exporter;
 mod iceoryx;
 mod order_update;
-mod parquet;
+pub mod parquet;
+pub mod read_server;
 mod storage;
+pub mod sync;
 mod trade_update;
 pub mod unified_order;
 mod uniform_order_persist;
@@ -15,6 +17,7 @@ use log::info;
 
 use bbo_spread::BboSpreadRuntime;
 use order_update::{OrderUpdatePersistor, OrderUpdateUnmatchedPersistor};
+use sync::{serve_sync_source, PersistSyncConfig};
 use trade_update::{TradeUpdatePersistor, TradeUpdateUnmatchedPersistor};
 use uniform_order_persist::UniformOrderPersistor;
 
@@ -59,8 +62,11 @@ impl PersistManager {
     }
 
     pub async fn run(self) -> Result<()> {
-        let cf_names = required_column_families();
+        let mut cf_names = required_column_families();
+        cf_names.extend_from_slice(sync::sync_column_families());
         let tuning = default_tuning();
+        let sync_config = PersistSyncConfig::from_env()?;
+        let sync_enabled = sync_config.as_ref().is_some_and(PersistSyncConfig::enabled);
 
         // 打开 RocksDB
         let store = Arc::new(RocksDbStore::open_with_tuning(
@@ -70,29 +76,42 @@ impl PersistManager {
             &tuning,
         )?);
 
+        if let Some(config) = sync_config.clone() {
+            if let Some(addr) = config.bind_addr {
+                let sync_store = store.clone();
+                tokio::task::spawn_local(async move {
+                    if let Err(err) = serve_sync_source(sync_store, addr, config.source_id).await {
+                        log::error!("persist sync source exited: {err:#}");
+                    }
+                });
+            } else if sync_enabled {
+                info!("persist sync outbox enabled without source server bind");
+            }
+        }
+
         let bbo_runtime = BboSpreadRuntime::start_from_env().await;
 
         // 启动所有持久化器
         info!("starting trade update persistor");
-        let s2 = TradeUpdatePersistor::new(store.clone())?;
+        let s2 = TradeUpdatePersistor::new(store.clone(), sync_enabled)?;
         tokio::task::spawn_local(async move {
             let _ = s2.run().await;
         });
 
         info!("starting trade update unmatched persistor");
-        let s2_unmatched = TradeUpdateUnmatchedPersistor::new(store.clone())?;
+        let s2_unmatched = TradeUpdateUnmatchedPersistor::new(store.clone(), sync_enabled)?;
         tokio::task::spawn_local(async move {
             let _ = s2_unmatched.run().await;
         });
 
         info!("starting order update persistor");
-        let s3 = OrderUpdatePersistor::new(store.clone())?;
+        let s3 = OrderUpdatePersistor::new(store.clone(), sync_enabled)?;
         tokio::task::spawn_local(async move {
             let _ = s3.run().await;
         });
 
         info!("starting order update unmatched persistor");
-        let s3_unmatched = OrderUpdateUnmatchedPersistor::new(store.clone())?;
+        let s3_unmatched = OrderUpdateUnmatchedPersistor::new(store.clone(), sync_enabled)?;
         tokio::task::spawn_local(async move {
             let _ = s3_unmatched.run().await;
         });
@@ -103,9 +122,10 @@ impl PersistManager {
                 store.clone(),
                 runtime.store,
                 runtime.enrich_delay,
+                sync_enabled,
             )?
         } else {
-            UniformOrderPersistor::new(store.clone())?
+            UniformOrderPersistor::new(store.clone(), sync_enabled)?
         };
         tokio::task::spawn_local(async move {
             let _ = s4.run().await;

@@ -12,6 +12,7 @@ use tokio::time::Instant;
 use crate::persist_manager::bbo_spread::BboSpreadStore;
 use crate::persist_manager::iceoryx::{create_record_subscriber, trim_uniform_order_payload};
 use crate::persist_manager::storage::RocksDbStore;
+use crate::persist_manager::sync::persist_with_outbox;
 use crate::pre_trade::UNIFORM_ORDER_RECORD_CHANNEL;
 
 pub(crate) const CF_UNIFORM_ORDER: &str = "uniform_orders";
@@ -26,6 +27,7 @@ pub struct UniformOrderPersistor {
     store: Arc<RocksDbStore>,
     bbo_store: Option<Arc<BboSpreadStore>>,
     bbo_enrich_delay: Duration,
+    sync_enabled: bool,
 }
 
 struct PendingUniformOrder {
@@ -37,13 +39,14 @@ struct PendingUniformOrder {
 }
 
 impl UniformOrderPersistor {
-    pub fn new(store: Arc<RocksDbStore>) -> Result<Self> {
+    pub fn new(store: Arc<RocksDbStore>, sync_enabled: bool) -> Result<Self> {
         let subscriber = create_record_subscriber(UNIFORM_ORDER_RECORD_CHANNEL)?;
         Ok(Self {
             subscriber,
             store,
             bbo_store: None,
             bbo_enrich_delay: Duration::ZERO,
+            sync_enabled,
         })
     }
 
@@ -51,8 +54,9 @@ impl UniformOrderPersistor {
         store: Arc<RocksDbStore>,
         bbo_store: Arc<BboSpreadStore>,
         bbo_enrich_delay: Duration,
+        sync_enabled: bool,
     ) -> Result<Self> {
-        let mut this = Self::new(store)?;
+        let mut this = Self::new(store, sync_enabled)?;
         this.bbo_store = Some(bbo_store);
         this.bbo_enrich_delay = bbo_enrich_delay;
         Ok(this)
@@ -120,10 +124,14 @@ impl UniformOrderPersistor {
                 payload.len(),
                 bbo_spread.len()
             );
-            if let Err(err) =
-                self.store
-                    .put(CF_UNIFORM_ORDER, order.key.as_bytes(), payload.as_ref())
-            {
+            if let Err(err) = persist_with_outbox(
+                &self.store,
+                CF_UNIFORM_ORDER,
+                order.key.as_bytes(),
+                payload.as_ref(),
+                order.update_ts,
+                self.sync_enabled,
+            ) {
                 warn!("persist uniform order failed key={}: {err:#}", order.key);
             }
         }

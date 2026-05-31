@@ -73,6 +73,14 @@ name = "persist_manager"
 path = "src/bin/persist_manager.rs"
 
 [[bin]]
+name = "persist_sync_collector"
+path = "src/bin/persist_sync_collector.rs"
+
+[[bin]]
+name = "persist_read_server"
+path = "src/bin/persist_read_server.rs"
+
+[[bin]]
 name = "order_export"
 path = "src/bin/order_export.rs"
 
@@ -233,6 +241,10 @@ flate2 = "1.0"
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 urlencoding = "2.1"
 axum = { version = "0.7", features = ["ws"] }
+tonic = { version = "0.12", features = ["transport"] }
+prost = "0.13"
+tokio-stream = "0.1"
+crc32fast = "1.4"
 tar = "0.4"
 tower = "0.4"
 tower-http = { version = "0.4", features = ["cors"] }
@@ -249,6 +261,10 @@ indexmap = "2"
 rayon = "1.10"
 arc-swap = "1.7"
 
+[build-dependencies]
+tonic-build = "0.12"
+protoc-bin-vendored = "3"
+
 [features]
 default = []
 model-ort = ["dep:mkt_model_runtime"]
@@ -257,7 +273,7 @@ model-ort = ["dep:mkt_model_runtime"]
 version = "0.43.1"
 optional = false
 default-features = false
-features = ["fmt", "lazy", "parquet", "polars-io", "rolling_window", "rank", "moment", "cov"]
+features = ["fmt", "lazy", "parquet", "ipc_streaming", "polars-io", "rolling_window", "rank", "moment", "cov"]
 
 [profile.release]
 debug = 0

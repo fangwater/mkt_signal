@@ -1,0 +1,90 @@
+syntax = "proto3";
+
+package persist_sync;
+
+service PersistSyncSource {
+  rpc SubscribeChanges(SubscribeRequest) returns (stream RecordBatch);
+  rpc AckApplied(AckRequest) returns (AckResponse);
+  rpc GetBucketSummary(BucketSummaryRequest) returns (BucketSummaryResponse);
+  rpc ListBucketDigests(BucketDigestRequest) returns (stream BucketDigestBatch);
+  rpc FetchRecords(FetchRecordsRequest) returns (stream RecordBatch);
+}
+
+message SubscribeRequest {
+  string source_id = 1;
+  uint64 after_seq = 2;
+  uint32 max_records = 3;
+  uint32 max_bytes = 4;
+}
+
+message AckRequest {
+  string source_id = 1;
+  uint64 ack_seq = 2;
+}
+
+message AckResponse {
+  uint64 deleted_records = 1;
+}
+
+message BucketSummaryRequest {
+  string source_id = 1;
+  repeated string cf_names = 2;
+  uint64 start_us = 3;
+  uint64 end_us = 4;
+  uint64 bucket_us = 5;
+}
+
+message BucketSummaryResponse {
+  repeated BucketSummary summaries = 1;
+}
+
+message BucketSummary {
+  string cf_name = 1;
+  uint64 bucket_start_us = 2;
+  uint64 bucket_end_us = 3;
+  uint64 count = 4;
+  uint64 key_hash = 5;
+  uint64 value_hash = 6;
+}
+
+message BucketDigestRequest {
+  string source_id = 1;
+  string cf_name = 2;
+  uint64 start_us = 3;
+  uint64 end_us = 4;
+  uint32 max_records = 5;
+}
+
+message BucketDigestBatch {
+  string cf_name = 1;
+  repeated RecordDigest digests = 2;
+}
+
+message FetchRecordsRequest {
+  string source_id = 1;
+  string cf_name = 2;
+  repeated bytes keys = 3;
+  uint32 max_records = 4;
+}
+
+message RecordBatch {
+  string source_id = 1;
+  uint64 first_seq = 2;
+  uint64 last_seq = 3;
+  repeated SyncRecord records = 4;
+}
+
+message SyncRecord {
+  uint64 seq = 1;
+  string cf_name = 2;
+  bytes key = 3;
+  bytes value = 4;
+  uint32 value_crc32 = 5;
+  int64 write_ts_us = 6;
+}
+
+message RecordDigest {
+  bytes key = 1;
+  uint32 value_crc32 = 2;
+  uint32 value_len = 3;
+}

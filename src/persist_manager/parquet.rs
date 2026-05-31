@@ -8,20 +8,20 @@ use crate::pre_trade::order_manager::{OrderType, Side};
 use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct RangeFilter {
+pub struct RangeFilter {
     start_ts: Option<u64>,
     end_ts: Option<u64>,
 }
 
 impl RangeFilter {
-    pub(crate) fn all() -> Self {
+    pub fn all() -> Self {
         Self {
             start_ts: None,
             end_ts: None,
         }
     }
 
-    pub(crate) fn from_bounds(start_ts: u64, end_ts_inclusive: u64) -> Self {
+    pub fn from_bounds(start_ts: u64, end_ts_inclusive: u64) -> Self {
         Self {
             start_ts: Some(start_ts),
             end_ts: Some(end_ts_inclusive),
@@ -43,10 +43,10 @@ impl RangeFilter {
     }
 }
 
-pub(crate) fn build_parquet_trade_updates(
+pub fn build_trade_updates_df(
     entries: Vec<(Vec<u8>, Vec<u8>)>,
     range: &RangeFilter,
-) -> Result<Vec<u8>> {
+) -> Result<DataFrame> {
     let mut key_col = Vec::with_capacity(entries.len());
     let mut ts_col = Vec::with_capacity(entries.len());
     let mut event_time_col = Vec::with_capacity(entries.len());
@@ -96,7 +96,7 @@ pub(crate) fn build_parquet_trade_updates(
         status_col.push(order_status.clone());
     }
 
-    let mut df = DataFrame::new(vec![
+    Ok(DataFrame::new(vec![
         Series::new("key".into(), key_col),
         Series::new("ts_us".into(), ts_col),
         Series::new("event_time".into(), event_time_col),
@@ -110,17 +110,21 @@ pub(crate) fn build_parquet_trade_updates(
         Series::new("trading_venue".into(), venue_col),
         Series::new("cumulative_filled_quantity".into(), cumulative_col),
         Series::new("order_status".into(), status_col.as_slice()),
-    ])?;
-
-    let mut buf = Vec::new();
-    ParquetWriter::new(&mut buf).finish(&mut df)?;
-    Ok(buf)
+    ])?)
 }
 
-pub(crate) fn build_parquet_order_updates(
+pub fn build_parquet_trade_updates(
     entries: Vec<(Vec<u8>, Vec<u8>)>,
     range: &RangeFilter,
 ) -> Result<Vec<u8>> {
+    let mut df = build_trade_updates_df(entries, range)?;
+    dataframe_to_parquet_bytes(&mut df)
+}
+
+pub fn build_order_updates_df(
+    entries: Vec<(Vec<u8>, Vec<u8>)>,
+    range: &RangeFilter,
+) -> Result<DataFrame> {
     let mut key_col = Vec::with_capacity(entries.len());
     let mut ts_col = Vec::with_capacity(entries.len());
     let mut event_time_col = Vec::with_capacity(entries.len());
@@ -185,7 +189,7 @@ pub(crate) fn build_parquet_order_updates(
         venue_col.push(trading_venue);
     }
 
-    let mut df = DataFrame::new(vec![
+    Ok(DataFrame::new(vec![
         Series::new("key".into(), key_col),
         Series::new("ts_us".into(), ts_col),
         Series::new("event_time".into(), event_time_col),
@@ -207,17 +211,21 @@ pub(crate) fn build_parquet_order_updates(
         Series::new("execution_type".into(), exec_type_col),
         Series::new("raw_execution_type".into(), raw_exec_type_col),
         Series::new("trading_venue".into(), venue_col),
-    ])?;
-
-    let mut buf = Vec::new();
-    ParquetWriter::new(&mut buf).finish(&mut df)?;
-    Ok(buf)
+    ])?)
 }
 
-pub(crate) fn build_parquet_uniform_orders(
+pub fn build_parquet_order_updates(
     entries: Vec<(Vec<u8>, Vec<u8>)>,
     range: &RangeFilter,
 ) -> Result<Vec<u8>> {
+    let mut df = build_order_updates_df(entries, range)?;
+    dataframe_to_parquet_bytes(&mut df)
+}
+
+pub fn build_uniform_orders_df(
+    entries: Vec<(Vec<u8>, Vec<u8>)>,
+    range: &RangeFilter,
+) -> Result<DataFrame> {
     let mut key_col = Vec::with_capacity(entries.len());
     let mut ts_col = Vec::with_capacity(entries.len());
     let mut recv_ts_col = Vec::with_capacity(entries.len());
@@ -325,7 +333,7 @@ pub(crate) fn build_parquet_uniform_orders(
         warn!("uniform order: dropped {dropped} undecodable records");
     }
 
-    let mut df = DataFrame::new(vec![
+    Ok(DataFrame::new(vec![
         Series::new("key".into(), key_col),
         Series::new("ts_us".into(), ts_col),
         Series::new("recv_ts_us".into(), recv_ts_col),
@@ -348,10 +356,20 @@ pub(crate) fn build_parquet_uniform_orders(
         Series::new("from_key".into(), from_key_col),
         Series::new("from_key_hex".into(), from_key_hex_col),
         Series::new("bbo_spread".into(), bbo_spread_col),
-    ])?;
+    ])?)
+}
 
+pub fn build_parquet_uniform_orders(
+    entries: Vec<(Vec<u8>, Vec<u8>)>,
+    range: &RangeFilter,
+) -> Result<Vec<u8>> {
+    let mut df = build_uniform_orders_df(entries, range)?;
+    dataframe_to_parquet_bytes(&mut df)
+}
+
+fn dataframe_to_parquet_bytes(df: &mut DataFrame) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
-    ParquetWriter::new(&mut buf).finish(&mut df)?;
+    ParquetWriter::new(&mut buf).finish(df)?;
     Ok(buf)
 }
 

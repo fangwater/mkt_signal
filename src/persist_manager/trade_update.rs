@@ -9,6 +9,7 @@ use log::{info, warn};
 
 use crate::persist_manager::iceoryx::{create_record_subscriber, trim_trade_update_payload};
 use crate::persist_manager::storage::RocksDbStore;
+use crate::persist_manager::sync::persist_with_outbox;
 use crate::pre_trade::{TRADE_UPDATE_RECORD_CHANNEL, TRADE_UPDATE_UNMATCHED_RECORD_CHANNEL};
 
 pub(crate) const CF_TRADE_UPDATE: &str = "trade_updates";
@@ -22,12 +23,17 @@ pub struct TradeUpdatePersistor {
     subscriber:
         Subscriber<ipc::Service, [u8; crate::common::iceoryx_publisher::SIGNAL_PAYLOAD], ()>,
     store: Arc<RocksDbStore>,
+    sync_enabled: bool,
 }
 
 impl TradeUpdatePersistor {
-    pub fn new(store: Arc<RocksDbStore>) -> Result<Self> {
+    pub fn new(store: Arc<RocksDbStore>, sync_enabled: bool) -> Result<Self> {
         let subscriber = create_record_subscriber(TRADE_UPDATE_RECORD_CHANNEL)?;
-        Ok(Self { subscriber, store })
+        Ok(Self {
+            subscriber,
+            store,
+            sync_enabled,
+        })
     }
 
     pub async fn run(self) -> Result<()> {
@@ -53,9 +59,14 @@ impl TradeUpdatePersistor {
                             key,
                             payload.len()
                         );
-                        let _ = self
-                            .store
-                            .put(CF_TRADE_UPDATE, key.as_bytes(), payload.as_ref());
+                        let _ = persist_with_outbox(
+                            &self.store,
+                            CF_TRADE_UPDATE,
+                            key.as_bytes(),
+                            payload.as_ref(),
+                            ts as i64,
+                            self.sync_enabled,
+                        );
                     }
                 }
                 Ok(None) => tokio::task::yield_now().await,
@@ -72,12 +83,17 @@ pub struct TradeUpdateUnmatchedPersistor {
     subscriber:
         Subscriber<ipc::Service, [u8; crate::common::iceoryx_publisher::SIGNAL_PAYLOAD], ()>,
     store: Arc<RocksDbStore>,
+    sync_enabled: bool,
 }
 
 impl TradeUpdateUnmatchedPersistor {
-    pub fn new(store: Arc<RocksDbStore>) -> Result<Self> {
+    pub fn new(store: Arc<RocksDbStore>, sync_enabled: bool) -> Result<Self> {
         let subscriber = create_record_subscriber(TRADE_UPDATE_UNMATCHED_RECORD_CHANNEL)?;
-        Ok(Self { subscriber, store })
+        Ok(Self {
+            subscriber,
+            store,
+            sync_enabled,
+        })
     }
 
     pub async fn run(self) -> Result<()> {
@@ -105,10 +121,13 @@ impl TradeUpdateUnmatchedPersistor {
                             key,
                             payload.len()
                         );
-                        let _ = self.store.put(
+                        let _ = persist_with_outbox(
+                            &self.store,
                             CF_TRADE_UPDATE_UNMATCHED,
                             key.as_bytes(),
                             payload.as_ref(),
+                            ts as i64,
+                            self.sync_enabled,
                         );
                     }
                 }
