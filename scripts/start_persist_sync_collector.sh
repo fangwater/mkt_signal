@@ -69,6 +69,14 @@ READ_PROC_NAME="${PERSIST_READ_PM2_NAME:-${ENV_NAME}_persist_read_server}"
 RUST_LOG="${RUST_LOG:-info}"
 ENABLE_READ_SERVER="${PERSIST_READ_SERVER_ENABLE:-auto}"
 
+if [[ -n "${PM2_BIN:-}" ]]; then
+  PM2_CMD=( $PM2_BIN )
+elif command -v pm2 >/dev/null 2>&1; then
+  PM2_CMD=( pm2 )
+else
+  PM2_CMD=( npx pm2 )
+fi
+
 config_has_read_server() {
   grep -Eq '^\[read_server\]' "$CONFIG_ABS"
 }
@@ -108,10 +116,10 @@ start_pm2() {
   shift 2
 
   echo "[INFO] Restarting ${proc_name} (namespace=${NAMESPACE})"
-  npx pm2 delete "$proc_name" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+  "${PM2_CMD[@]}" delete "$proc_name" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
   (
     cd "$BASE_DIR"
-    RUST_LOG="${RUST_LOG}" npx pm2 start "$bin_path" \
+    RUST_LOG="${RUST_LOG}" "${PM2_CMD[@]}" start "$bin_path" \
       --name "$proc_name" \
       --namespace "$NAMESPACE" \
       -- \
@@ -139,5 +147,5 @@ echo "Collector: ${SYNC_PROC_NAME}"
 if read_server_enabled; then
   echo "Read:      ${READ_PROC_NAME}"
 fi
-echo "Logs: npx pm2 logs --namespace ${NAMESPACE}"
-echo "Status: npx pm2 status --namespace ${NAMESPACE}"
+echo "Logs: ${PM2_CMD[*]} logs --namespace ${NAMESPACE}"
+echo "Status: ${PM2_CMD[*]} status --namespace ${NAMESPACE}"

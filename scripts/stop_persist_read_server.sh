@@ -17,11 +17,19 @@ ENV_NAME="$(basename "${BASE_DIR}")"
 NAMESPACE="${PM2_NAMESPACE:-${ENV_NAME}}"
 PROC_NAME="${PERSIST_READ_PM2_NAME:-${ENV_NAME}_persist_read_server}"
 
-if npx pm2 describe "$PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1; then
+if [[ -n "${PM2_BIN:-}" ]]; then
+  PM2_CMD=( $PM2_BIN )
+elif command -v pm2 >/dev/null 2>&1; then
+  PM2_CMD=( pm2 )
+else
+  PM2_CMD=( npx pm2 )
+fi
+
+if "${PM2_CMD[@]}" describe "$PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1; then
   echo "[INFO] Stopping ${PROC_NAME} (namespace=${NAMESPACE})"
-  npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE"
+  "${PM2_CMD[@]}" delete "$PROC_NAME" --namespace "$NAMESPACE"
 else
   echo "[INFO] ${PROC_NAME} not running in namespace ${NAMESPACE}"
 fi
 
-echo "[INFO] Remaining processes: npx pm2 status --namespace ${NAMESPACE}"
+echo "[INFO] Remaining processes: ${PM2_CMD[*]} status --namespace ${NAMESPACE}"

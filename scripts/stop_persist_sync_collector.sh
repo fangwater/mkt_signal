@@ -18,11 +18,19 @@ NAMESPACE="${PM2_NAMESPACE:-${ENV_NAME}}"
 SYNC_PROC_NAME="${PERSIST_SYNC_PM2_NAME:-${PM2_NAME:-${ENV_NAME}_persist_sync_collector}}"
 READ_PROC_NAME="${PERSIST_READ_PM2_NAME:-${ENV_NAME}_persist_read_server}"
 
+if [[ -n "${PM2_BIN:-}" ]]; then
+  PM2_CMD=( $PM2_BIN )
+elif command -v pm2 >/dev/null 2>&1; then
+  PM2_CMD=( pm2 )
+else
+  PM2_CMD=( npx pm2 )
+fi
+
 stop_proc() {
   local proc_name="$1"
-  if npx pm2 describe "$proc_name" --namespace "$NAMESPACE" >/dev/null 2>&1; then
+  if "${PM2_CMD[@]}" describe "$proc_name" --namespace "$NAMESPACE" >/dev/null 2>&1; then
     echo "[INFO] Stopping ${proc_name} (namespace=${NAMESPACE})"
-    npx pm2 delete "$proc_name" --namespace "$NAMESPACE"
+    "${PM2_CMD[@]}" delete "$proc_name" --namespace "$NAMESPACE"
   else
     echo "[INFO] ${proc_name} not running in namespace ${NAMESPACE}"
   fi
@@ -31,4 +39,4 @@ stop_proc() {
 stop_proc "$READ_PROC_NAME"
 stop_proc "$SYNC_PROC_NAME"
 
-echo "[INFO] Remaining processes: npx pm2 status --namespace ${NAMESPACE}"
+echo "[INFO] Remaining processes: ${PM2_CMD[*]} status --namespace ${NAMESPACE}"

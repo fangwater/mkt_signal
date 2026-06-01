@@ -1251,7 +1251,7 @@ impl PersistSyncSource for SyncSourceService {
         let max_bytes = clamp_batch_bytes(req.max_bytes);
         let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
 
-        tokio::task::spawn_local(async move {
+        tokio::spawn(async move {
             let mut after_seq = req.after_seq;
             loop {
                 match load_outbox_batch(&store, after_seq, max_records, max_bytes) {
@@ -1333,7 +1333,7 @@ impl PersistSyncSource for SyncSourceService {
         self.validate_source_id(req.source_id.as_str())?;
         let store = Arc::clone(&self.store);
         let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
-        tokio::task::spawn_local(async move {
+        tokio::spawn(async move {
             let start_key = format_time_key(req.start_us);
             let end_key = end_time_key(req.end_us);
             let limit = max_limit(req.max_records);
@@ -1389,7 +1389,7 @@ impl PersistSyncSource for SyncSourceService {
         let store = Arc::clone(&self.store);
         let source_id = self.source_id.clone();
         let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
-        tokio::task::spawn_local(async move {
+        tokio::spawn(async move {
             let limit = max_limit(req.max_records);
             let mut records = Vec::with_capacity(limit.min(req.keys.len()));
             for key in req.keys {

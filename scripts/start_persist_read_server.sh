@@ -61,12 +61,20 @@ NAMESPACE="${PM2_NAMESPACE:-${ENV_NAME}}"
 PROC_NAME="${PERSIST_READ_PM2_NAME:-${ENV_NAME}_persist_read_server}"
 RUST_LOG="${RUST_LOG:-info}"
 
+if [[ -n "${PM2_BIN:-}" ]]; then
+  PM2_CMD=( $PM2_BIN )
+elif command -v pm2 >/dev/null 2>&1; then
+  PM2_CMD=( pm2 )
+else
+  PM2_CMD=( npx pm2 )
+fi
+
 echo "[INFO] Restarting ${PROC_NAME} (namespace=${NAMESPACE}, config=${CONFIG_ABS})"
-npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+"${PM2_CMD[@]}" delete "$PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
 
 (
   cd "$BASE_DIR"
-  RUST_LOG="${RUST_LOG}" npx pm2 start "$BIN_PATH" \
+  RUST_LOG="${RUST_LOG}" "${PM2_CMD[@]}" start "$BIN_PATH" \
     --name "$PROC_NAME" \
     --namespace "$NAMESPACE" \
     -- \
@@ -77,5 +85,5 @@ echo ""
 echo "[INFO] Started persist_read_server"
 echo "Namespace: ${NAMESPACE}"
 echo "Process: ${PROC_NAME}"
-echo "Logs: npx pm2 logs --namespace ${NAMESPACE} ${PROC_NAME}"
-echo "Status: npx pm2 status --namespace ${NAMESPACE}"
+echo "Logs: ${PM2_CMD[*]} logs --namespace ${NAMESPACE} ${PROC_NAME}"
+echo "Status: ${PM2_CMD[*]} status --namespace ${NAMESPACE}"

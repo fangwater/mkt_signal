@@ -66,17 +66,25 @@ BIND="${PERSIST_CONFIG_BIND:-127.0.0.1}"
 PORT="${PERSIST_CONFIG_PORT:-8830}"
 PYTHON="${PYTHON:-python3}"
 
+if [[ -n "${PM2_BIN:-}" ]]; then
+  PM2_CMD=( $PM2_BIN )
+elif command -v pm2 >/dev/null 2>&1; then
+  PM2_CMD=( pm2 )
+else
+  PM2_CMD=( npx pm2 )
+fi
+
 EXTRA_ARGS=()
 if [[ -n "${PERSIST_SYNC_STATUS_PATH:-}" ]]; then
   EXTRA_ARGS+=(--status "${PERSIST_SYNC_STATUS_PATH}")
 fi
 
 echo "[INFO] Restarting ${PROC_NAME} (namespace=${NAMESPACE}, config=${CONFIG_ABS})"
-npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+"${PM2_CMD[@]}" delete "$PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
 
 (
   cd "$BASE_DIR"
-  npx pm2 start "$PYTHON" \
+  "${PM2_CMD[@]}" start "$PYTHON" \
     --name "$PROC_NAME" \
     --namespace "$NAMESPACE" \
     -- \
@@ -92,5 +100,5 @@ echo "[INFO] Started persist_config_server"
 echo "URL: http://${BIND}:${PORT}"
 echo "Namespace: ${NAMESPACE}"
 echo "Process: ${PROC_NAME}"
-echo "Logs: npx pm2 logs --namespace ${NAMESPACE} ${PROC_NAME}"
-echo "Status: npx pm2 status --namespace ${NAMESPACE}"
+echo "Logs: ${PM2_CMD[*]} logs --namespace ${NAMESPACE} ${PROC_NAME}"
+echo "Status: ${PM2_CMD[*]} status --namespace ${NAMESPACE}"
