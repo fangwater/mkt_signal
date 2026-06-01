@@ -345,7 +345,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         </div>
       </div>
       <div class="hint">
-        `enable_tlen_cancel` 控制基于 tlen 的 open 撤单 trigger/query/cancel 链路；`tlen_cancel_freq_ms` 控制 trigger 频率(ms)；`spread_cancel_cooldown_ms` 控制 spread cancel 的去抖冷却(ms，默认 100，可设 0 关闭)。`open_volatility_limit` 的 rolling 挂靠按真实 venue 解析：会读取该 venue 所属交易所的 `margin-futures` rolling params，并按 venue 类型选择 `open_vol` 或 `hedge_vol`。
+        `enable_tlen_cancel` 控制基于 tlen 的 open 撤单 trigger/query/cancel 链路；`tlen_cancel_freq_ms` 控制 trigger 频率(ms)；`spread_cancel_cooldown_ms` 控制 spread cancel 的去抖冷却(ms，默认 100，可设 0 关闭)。`open_volatility_limit` 使用 trade_signal 进程内 inline volatility 采样，不再依赖 rolling_metrics 配置。
       </div>
       <div id="strategy-table" class="kv-table"></div>
       <div id="strategy-vol-preview" class="status"></div>
@@ -602,21 +602,19 @@ __PER_SYMBOL_PANELS_HTML__
 
       const raw = String(input.value || '').trim();
       if (!raw) {
-        setStatus('strategy-vol-preview', '未填写 open_volatility_limit，无法预判挂靠的 rolling vol 配置。', 'warn');
+        setStatus('strategy-vol-preview', '未填写 open_volatility_limit，无法校验 inline volatility percentile。', 'warn');
         return;
       }
 
       try {
         const data = await fetchJson(`${apiUrl('open-volatility-preview')}?exchange=${encodeURIComponent(normalizeExchange(exchangeSelect.value))}&open_venue=${encodeURIComponent(openVenueInput.value.trim())}&hedge_venue=${encodeURIComponent(hedgeVenueInput.value.trim())}&percentile=${encodeURIComponent(raw)}`);
-        const factorRef = `${data.factor}_${data.percentile_text}`;
-        const prefix = `挂靠检查: ${data.source_key} / ${factorRef} (venue=${data.venue})`;
-        if (data.will_modify) {
-          setStatus('strategy-vol-preview', `${prefix}，当前未就绪，运行时会自动补配置${data.modification_detail ? `（${data.modification_detail}）` : ''}`, 'warn');
-        } else {
-          setStatus('strategy-vol-preview', `${prefix}，当前已存在，不会额外改 rolling 配置`, 'ok');
-        }
+        setStatus(
+          'strategy-vol-preview',
+          `Inline volatility gate: percentile=${data.percentile_text}，按 open symbol 在 trade_signal 内采样；窗口 ${data.window_capacity}，至少 ${data.min_samples} 个样本后生效，不读取/写入 rolling_metrics_params。`,
+          'ok'
+        );
       } catch (err) {
-        setStatus('strategy-vol-preview', `挂靠检查失败: ${err}`, 'err');
+        setStatus('strategy-vol-preview', `Inline volatility 参数校验失败: ${err}`, 'err');
       }
     }
 
@@ -1006,16 +1004,6 @@ def normalize_exchange(exchange: str) -> str:
     return "okex" if ex == "okx" else ex
 
 
-def attached_vol_source_key_for_venue(venue: str) -> str:
-    exchange = normalize_exchange((venue or "").split("-", 1)[0])
-    return f"rolling_metrics_params_{exchange}-margin_{exchange}-futures"
-
-
-def attached_vol_factor_name_for_venue(venue: str) -> str:
-    normalized = (venue or "").strip().lower()
-    return "hedge_vol" if normalized.endswith("-futures") else "open_vol"
-
-
 def normalize_percentile_text(raw: Any) -> Tuple[float, str]:
     text = str(raw).strip()
     if not text:
@@ -1035,93 +1023,15 @@ def normalize_percentile_text(raw: Any) -> Tuple[float, str]:
 
 
 def preview_open_volatility_source(rds, venue: str, percentile_raw: Any) -> Dict[str, Any]:
+    del rds
     percentile_value, percentile_text = normalize_percentile_text(percentile_raw)
-    source_key = attached_vol_source_key_for_venue(venue)
-    factor_name = attached_vol_factor_name_for_venue(venue)
-    raw_values = read_hash(rds, source_key)
-    if not raw_values:
-        return {
-            "venue": venue,
-            "source_key": source_key,
-            "factor": factor_name,
-            "percentile": percentile_value,
-            "percentile_text": percentile_text,
-            "exists": False,
-            "will_modify": True,
-            "modification_detail": "source hash missing",
-            "current_quantiles": [],
-        }
-
-    factors_raw = raw_values.get("factors", "").strip()
-    if not factors_raw:
-        return {
-            "venue": venue,
-            "source_key": source_key,
-            "factor": factor_name,
-            "percentile": percentile_value,
-            "percentile_text": percentile_text,
-            "exists": False,
-            "will_modify": True,
-            "modification_detail": "factors missing",
-            "current_quantiles": [],
-        }
-
-    try:
-        factors = json.loads(factors_raw)
-    except Exception as exc:
-        raise ValueError(f"invalid factors json in {source_key}: {exc}") from exc
-    if not isinstance(factors, dict):
-        raise ValueError(f"invalid factors object in {source_key}")
-
-    factor_cfg = factors.get(factor_name)
-    if not isinstance(factor_cfg, dict):
-        return {
-            "venue": venue,
-            "source_key": source_key,
-            "factor": factor_name,
-            "percentile": percentile_value,
-            "percentile_text": percentile_text,
-            "exists": False,
-            "will_modify": True,
-            "modification_detail": f"{factor_name} missing",
-            "current_quantiles": [],
-        }
-
-    quantiles_raw = factor_cfg.get("quantiles")
-    quantiles_list = quantiles_raw if isinstance(quantiles_raw, list) else []
-    normalized_quantiles: List[str] = []
-    requested_exists = False
-    for item in quantiles_list:
-        try:
-            value = float(item)
-        except Exception:
-            continue
-        text = str(int(round(value))) if abs(value - round(value)) < 1e-9 else f"{value:.12g}"
-        normalized_quantiles.append(text)
-        if abs(value - percentile_value) < 1e-9:
-            requested_exists = True
-
-    will_trim = len(quantiles_list) > 8
-    will_modify = (not requested_exists) or will_trim
-    if not requested_exists:
-        modification_detail = f"{factor_name}_{percentile_text} missing"
-        if len(quantiles_list) >= 8:
-            modification_detail += ", append then trim oldest"
-    elif will_trim:
-        modification_detail = "quantiles exceed limit, will trim oldest"
-    else:
-        modification_detail = ""
-
     return {
         "venue": venue,
-        "source_key": source_key,
-        "factor": factor_name,
+        "mode": "inline",
         "percentile": percentile_value,
         "percentile_text": percentile_text,
-        "exists": requested_exists,
-        "will_modify": will_modify,
-        "modification_detail": modification_detail,
-        "current_quantiles": normalized_quantiles,
+        "window_capacity": 720,
+        "min_samples": 10,
     }
 
 
