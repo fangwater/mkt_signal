@@ -280,9 +280,12 @@ fn spawn_repair_scheduler(
         config.bucket_us
     );
 
-    let total_jobs = jobs.len();
-    for (index, (source, cf_name)) in jobs.into_iter().enumerate() {
-        let initial_delay = stagger_delay(config.interval, index, total_jobs);
+    let source_delays = repair_source_initial_delays(&sources, config.interval);
+    for (source, cf_name) in jobs.into_iter() {
+        let initial_delay = source_delays
+            .get(source.id.as_str())
+            .copied()
+            .unwrap_or(Duration::ZERO);
         let store = center_store.clone();
         let job_config = config.clone();
         let job_status = status.clone();
@@ -370,16 +373,40 @@ fn build_repair_jobs(sources: &[MultiCollectorSource]) -> Vec<(MultiCollectorSou
             jobs.push((source.clone(), (*cf_name).to_string()));
         }
     }
-    jobs.sort_by_key(|(source, cf_name)| repair_job_hash(source.id.as_str(), cf_name.as_str()));
+    jobs.sort_by(|(left_source, left_cf), (right_source, right_cf)| {
+        repair_source_hash(left_source.id.as_str())
+            .cmp(&repair_source_hash(right_source.id.as_str()))
+            .then_with(|| left_source.id.cmp(&right_source.id))
+            .then_with(|| left_cf.cmp(right_cf))
+    });
     jobs
 }
 
-fn repair_job_hash(source_id: &str, cf_name: &str) -> u32 {
-    let mut input = Vec::with_capacity(source_id.len() + cf_name.len() + 1);
-    input.extend_from_slice(source_id.as_bytes());
-    input.push(b'|');
-    input.extend_from_slice(cf_name.as_bytes());
-    crc32(&input)
+fn repair_source_initial_delays(
+    sources: &[MultiCollectorSource],
+    interval: Duration,
+) -> HashMap<String, Duration> {
+    let mut source_ids = sources
+        .iter()
+        .map(|source| source.id.clone())
+        .collect::<Vec<_>>();
+    source_ids.sort_by(|left, right| {
+        repair_source_hash(left.as_str())
+            .cmp(&repair_source_hash(right.as_str()))
+            .then_with(|| left.cmp(right))
+    });
+    source_ids.dedup();
+
+    let total_sources = source_ids.len();
+    source_ids
+        .into_iter()
+        .enumerate()
+        .map(|(index, source_id)| (source_id, stagger_delay(interval, index, total_sources)))
+        .collect()
+}
+
+fn repair_source_hash(source_id: &str) -> u32 {
+    crc32(source_id.as_bytes())
 }
 
 fn stagger_delay(interval: Duration, index: usize, total_jobs: usize) -> Duration {
@@ -1251,7 +1278,7 @@ impl PersistSyncSource for SyncSourceService {
         let max_bytes = clamp_batch_bytes(req.max_bytes);
         let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
 
-        tokio::task::spawn_local(async move {
+        tokio::spawn(async move {
             let mut after_seq = req.after_seq;
             loop {
                 match load_outbox_batch(&store, after_seq, max_records, max_bytes) {
@@ -1333,7 +1360,7 @@ impl PersistSyncSource for SyncSourceService {
         self.validate_source_id(req.source_id.as_str())?;
         let store = Arc::clone(&self.store);
         let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
-        tokio::task::spawn_local(async move {
+        tokio::spawn(async move {
             let start_key = format_time_key(req.start_us);
             let end_key = end_time_key(req.end_us);
             let limit = max_limit(req.max_records);
@@ -1389,7 +1416,7 @@ impl PersistSyncSource for SyncSourceService {
         let store = Arc::clone(&self.store);
         let source_id = self.source_id.clone();
         let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
-        tokio::task::spawn_local(async move {
+        tokio::spawn(async move {
             let limit = max_limit(req.max_records);
             let mut records = Vec::with_capacity(limit.min(req.keys.len()));
             for key in req.keys {

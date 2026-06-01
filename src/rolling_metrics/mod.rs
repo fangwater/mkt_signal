@@ -1,3 +1,4 @@
+pub mod arb_open_latency;
 pub mod config;
 pub mod kll_quantile;
 pub mod latency_kll;

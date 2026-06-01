@@ -422,12 +422,13 @@ pub fn append_tlen_suffix(base: String, tlen: f64, threshold: f64) -> String {
     )
 }
 
-/// Funding Rate 数据（维护60条 + rolling sum/mean）
+/// Funding Rate 数据（默认维护60条 + rolling sum/mean）
 #[derive(Debug, Clone)]
 pub struct FundingRateData {
     series: VecDeque<f64>,
     sum: f64,
     mean: Option<f64>,
+    max_series_len: usize,
 }
 
 impl Default for FundingRateData {
@@ -438,17 +439,23 @@ impl Default for FundingRateData {
 
 impl FundingRateData {
     pub fn new() -> Self {
+        Self::with_max_series_len(MAX_SERIES_LEN)
+    }
+
+    pub fn with_max_series_len(max_series_len: usize) -> Self {
+        let max_series_len = max_series_len.max(1);
         Self {
-            series: VecDeque::with_capacity(MAX_SERIES_LEN),
+            series: VecDeque::with_capacity(max_series_len),
             sum: 0.0,
             mean: None,
+            max_series_len,
         }
     }
 
     /// 更新 Funding Rate（立刻重算均值）
     pub fn push(&mut self, funding_rate: f64) {
         // 如果队列满了，移除最旧的值
-        if self.series.len() >= MAX_SERIES_LEN {
+        if self.series.len() >= self.max_series_len {
             if let Some(oldest) = self.series.pop_front() {
                 self.sum -= oldest;
             }
@@ -556,6 +563,19 @@ mod tests {
         assert!(approx_equal_slice(&[1.0, 2.0], &[1.0 + 1e-13, 2.0 - 1e-13]));
         assert!(!approx_equal_slice(&[1.0, 2.0], &[1.0, 2.1]));
         assert!(!approx_equal_slice(&[1.0], &[1.0, 2.0]));
+    }
+
+    #[test]
+    fn funding_rate_data_respects_custom_window_len() {
+        let mut data = FundingRateData::with_max_series_len(3);
+        data.push(1.0);
+        data.push(2.0);
+        data.push(3.0);
+        assert_eq!(data.get_mean(), Some(2.0));
+
+        data.push(4.0);
+        assert_eq!(data.get_mean(), Some(3.0));
+        assert_eq!(data.get_latest(), Some(4.0));
     }
 
     #[test]

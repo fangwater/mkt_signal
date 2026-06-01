@@ -50,6 +50,8 @@ pub struct PersistReadServerConfig {
     pub enable_parquet: Option<bool>,
     pub allowed_tables: Option<Vec<String>>,
     pub source_id: Option<String>,
+    #[serde(default)]
+    pub source_ids: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -73,6 +75,7 @@ struct ResolvedConfig {
     enable_parquet: bool,
     allowed_tables: HashSet<TableKind>,
     source_id: Option<String>,
+    source_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -94,6 +97,7 @@ enum OutputFormat {
 #[derive(Debug, Deserialize)]
 struct ReadParams {
     table: String,
+    source_id: Option<String>,
     start_us: u64,
     end_us: u64,
     columns: Option<String>,
@@ -103,6 +107,7 @@ struct ReadParams {
 #[derive(Debug, Deserialize)]
 struct SchemaParams {
     table: String,
+    source_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -150,11 +155,12 @@ impl PersistReadServer {
     pub async fn run(self) -> Result<()> {
         let bind = self.config.bind;
         info!(
-            "persist_read_server init bind={} primary={} secondary={} source_id={} max_concurrent={} batch_rows={} max_window_sec={} max_result_rows={} timeout_sec={} enable_parquet={}",
+            "persist_read_server init bind={} primary={} secondary={} default_source_id={} source_ids={} max_concurrent={} batch_rows={} max_window_sec={} max_result_rows={} timeout_sec={} enable_parquet={}",
             bind,
             self.config.primary_dir.display(),
             self.config.secondary_dir.display(),
-            self.config.source_id.as_deref().unwrap_or("<base-cf>"),
+            self.config.source_id.as_deref().unwrap_or("<required>"),
+            self.config.source_ids_display(),
             self.config.max_concurrent,
             self.config.batch_rows,
             self.config.max_window_sec,
@@ -235,6 +241,17 @@ impl ResolvedConfig {
             .source_id
             .map(|source_id| source_id.trim().to_string())
             .filter(|source_id| !source_id.is_empty());
+        let mut source_ids = config
+            .source_ids
+            .into_iter()
+            .map(|source_id| source_id.trim().to_string())
+            .filter(|source_id| !source_id.is_empty())
+            .collect::<Vec<_>>();
+        if let Some(source_id) = source_id.as_ref() {
+            source_ids.push(source_id.clone());
+        }
+        source_ids.sort();
+        source_ids.dedup();
 
         Ok(Self {
             bind,
@@ -249,27 +266,58 @@ impl ResolvedConfig {
             enable_parquet,
             allowed_tables,
             source_id,
+            source_ids,
         })
     }
 
-    fn cf_name(&self, table: TableKind) -> String {
-        match self.source_id.as_deref() {
-            Some(source_id) => center_source_cf_name(source_id, table.cf_name()),
-            None => table.cf_name().to_string(),
+    fn resolve_source_id(&self, requested: Option<&str>) -> Result<String> {
+        let requested = match requested {
+            Some(raw) => {
+                let trimmed = raw.trim();
+                if trimmed.is_empty() {
+                    return Err(anyhow!("source_id must not be empty"));
+                }
+                Some(trimmed.to_string())
+            }
+            None => None,
+        };
+        let source_id = requested
+            .or_else(|| self.source_id.clone())
+            .ok_or_else(|| {
+                anyhow!("source_id is required; pass source_id or set read_server.source_id")
+            })?;
+        if !self.source_ids.is_empty() && !self.source_ids.iter().any(|id| id == &source_id) {
+            return Err(anyhow!("source_id not configured: {}", source_id));
         }
+        Ok(source_id)
+    }
+
+    fn cf_name(&self, source_id: &str, table: TableKind) -> String {
+        center_source_cf_name(source_id, table.cf_name())
     }
 
     fn read_column_families(&self) -> Vec<String> {
-        match self.source_id.as_deref() {
-            Some(source_id) => self
-                .allowed_tables
-                .iter()
-                .map(|table| center_source_cf_name(source_id, table.cf_name()))
-                .collect(),
-            None => crate::persist_manager::required_column_families()
+        if self.source_ids.is_empty() {
+            return crate::persist_manager::required_column_families()
                 .into_iter()
                 .map(str::to_string)
-                .collect(),
+                .collect();
+        }
+        self.source_ids
+            .iter()
+            .flat_map(|source_id| {
+                self.allowed_tables
+                    .iter()
+                    .map(|table| center_source_cf_name(source_id, table.cf_name()))
+            })
+            .collect()
+    }
+
+    fn source_ids_display(&self) -> String {
+        if self.source_ids.is_empty() {
+            "<unrestricted>".to_string()
+        } else {
+            self.source_ids.join(",")
         }
     }
 }
@@ -410,6 +458,10 @@ async fn get_schema(
     if !state.config.allowed_tables.contains(&table) {
         return bad_request(anyhow!("table not allowed: {}", params.table));
     }
+    let source_id = match state.config.resolve_source_id(params.source_id.as_deref()) {
+        Ok(source_id) => source_id,
+        Err(err) => return bad_request(err),
+    };
     let mut formats = vec!["arrow_ipc".to_string()];
     if state.config.enable_parquet {
         formats.push("parquet".to_string());
@@ -418,7 +470,7 @@ async fn get_schema(
         table: table.cf_name().to_string(),
         columns: table.columns().iter().map(|s| (*s).to_string()).collect(),
         formats,
-        source_id: state.config.source_id.clone(),
+        source_id: Some(source_id),
     })
     .into_response()
 }
@@ -508,12 +560,16 @@ fn handle_read_blocking(state: &PersistReadServer, params: ReadParams) -> Result
         Ok(columns) => columns,
         Err(err) => return Ok(bad_request(err)),
     };
+    let source_id = match state.config.resolve_source_id(params.source_id.as_deref()) {
+        Ok(source_id) => source_id,
+        Err(err) => return Ok(bad_request(err)),
+    };
 
     state.store.try_catch_up_with_primary()?;
     let start_key = format_time_key(params.start_us);
     let end_key = format_time_key(params.end_us);
     let range = RangeFilter::from_bounds(params.start_us, params.end_us.saturating_sub(1));
-    let cf_name = state.config.cf_name(table);
+    let cf_name = state.config.cf_name(&source_id, table);
     let (df, row_count) = match read_dataframe_batched(
         &state.store,
         cf_name.as_str(),
@@ -535,7 +591,7 @@ fn handle_read_blocking(state: &PersistReadServer, params: ReadParams) -> Result
         "persist_read table={} cf={} source_id={} start_us={} end_us={} rows={} format={:?} bytes={}",
         table.cf_name(),
         cf_name,
-        state.config.source_id.as_deref().unwrap_or("<base-cf>"),
+        source_id,
         params.start_us,
         params.end_us,
         row_count,
@@ -543,10 +599,7 @@ fn handle_read_blocking(state: &PersistReadServer, params: ReadParams) -> Result
         body.len()
     );
 
-    let filename_prefix = match state.config.source_id.as_deref() {
-        Some(source_id) => format!("{}_{}", source_id, table.cf_name()),
-        None => table.cf_name().to_string(),
-    };
+    let filename_prefix = format!("{}_{}", source_id, table.cf_name());
     let filename = format!(
         "{}_{}_{}.{}",
         filename_prefix,

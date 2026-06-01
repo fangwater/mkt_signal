@@ -1,4 +1,4 @@
-//! Gate-only REST 补丁：每分钟拉 `/futures/usdt/contracts` 把 `funding_rate` 灌进 MktChannel。
+//! Gate-only REST 补丁：每 5 秒拉 `/futures/usdt/contracts` 把 `funding_rate` 灌进 MktChannel。
 //!
 //! 背景：Gate 的 `futures.tickers` 是事件驱动；冷门 symbol 长时间无推送，TS 的
 //! `current_fr_ma` 一直拿不到，整个 DecisionRouter 卡在 degraded mode。
@@ -18,8 +18,8 @@ use crate::signal::common::TradingVenue;
 const GATE_FUTURES_CONTRACTS_URL: &str = "https://api.gateio.ws/api/v4/futures/usdt/contracts";
 const REQ_TIMEOUT_SECS: u64 = 10;
 
-/// 默认补丁周期：每 60 秒拉一次 + seed 一次。
-pub const SEED_INTERVAL_SECS: u64 = 60;
+/// 默认补丁周期：每 5 秒拉一次 + seed 一次。
+pub const SEED_INTERVAL_SECS: u64 = 5;
 
 #[derive(Deserialize)]
 struct GateContract {
@@ -32,11 +32,7 @@ struct GateContract {
 }
 
 /// 拉一次 contracts 列表，返回 (symbol, funding_rate) 列表（仅 trading 且 funding_rate 合法）。
-async fn fetch_gate_current_funding_rates() -> Result<Vec<(String, f64)>> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(REQ_TIMEOUT_SECS))
-        .build()
-        .context("build reqwest client")?;
+async fn fetch_gate_current_funding_rates(client: &reqwest::Client) -> Result<Vec<(String, f64)>> {
     let resp = client
         .get(GATE_FUTURES_CONTRACTS_URL)
         .send()
@@ -71,7 +67,7 @@ async fn fetch_gate_current_funding_rates() -> Result<Vec<(String, f64)>> {
     Ok(out)
 }
 
-/// 启动 Gate 专用 REST 补丁循环：首 tick 立即执行（暖启动），之后每 60s 一次。
+/// 启动 Gate 专用 REST 补丁循环：首 tick 立即执行（暖启动），之后每 5s 一次。
 /// 必须在 `spawn_local` 上下文里调用（依赖 MktChannel 的 thread-local）。
 /// `hedge_venue` 不是 `GateFutures` 时直接返回，不挂任务。
 pub fn spawn_gate_current_fr_seeder(hedge_venue: TradingVenue) {
@@ -83,11 +79,22 @@ pub fn spawn_gate_current_fr_seeder(hedge_venue: TradingVenue) {
             "Gate current FR REST seeder: interval={}s venue={:?}",
             SEED_INTERVAL_SECS, hedge_venue
         );
+        let client = match reqwest::Client::builder()
+            .timeout(Duration::from_secs(REQ_TIMEOUT_SECS))
+            .build()
+            .context("build reqwest client")
+        {
+            Ok(client) => client,
+            Err(e) => {
+                warn!("Gate FR seed client build failed: {:#}", e);
+                return;
+            }
+        };
         let mut tick = tokio::time::interval(Duration::from_secs(SEED_INTERVAL_SECS));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tick.tick().await;
-            match fetch_gate_current_funding_rates().await {
+            match fetch_gate_current_funding_rates(&client).await {
                 Ok(list) => {
                     let mc = MktChannel::instance();
                     let mut seeded = 0usize;

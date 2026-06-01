@@ -36,6 +36,7 @@ use std::sync::OnceLock;
 
 const ARB_HEDGE_QTY_EPS: f64 = 1e-12;
 const ARB_HEDGE_PENDING_QUERY_MIN_USDT: f64 = 25.0;
+const ARB_HEDGE_BORROW_SHORTFALL_MAX_USDT: f64 = 1.0;
 const ARB_HEDGE_QUERY_INTERVAL_US: i64 = 1_000_000;
 /// 51008（保证金不足）应急动作的冷却时间。同一 strategy 在窗口内的连续 51008
 /// 只触发一次撤单 + 杠杆下调。避免一秒万次拒单情况下重复执行。
@@ -287,6 +288,39 @@ impl ArbHedgeStrategy {
 
     fn pending_hedge_usdt_with_mark_price(pending_hedge_qty: f64, mark_price: f64) -> f64 {
         pending_hedge_qty.abs() * mark_price.abs()
+    }
+
+    fn hedge_leg_reference_price(price: f64, leg: TradingLeg) -> Option<f64> {
+        if price.is_finite() && price > 0.0 {
+            return Some(price);
+        }
+        let bid = leg.bid0;
+        let ask = leg.ask0;
+        if bid.is_finite() && bid > 0.0 && ask.is_finite() && ask > 0.0 {
+            return Some((bid + ask) * 0.5);
+        }
+        if bid.is_finite() && bid > 0.0 {
+            return Some(bid);
+        }
+        if ask.is_finite() && ask > 0.0 {
+            return Some(ask);
+        }
+        None
+    }
+
+    fn borrow_shortfall_usdt(shortfall_qty: f64, price: f64, leg: TradingLeg) -> Option<f64> {
+        if !(shortfall_qty.is_finite() && shortfall_qty > 0.0) {
+            return Some(0.0);
+        }
+        Self::hedge_leg_reference_price(price, leg).map(|ref_price| shortfall_qty * ref_price)
+    }
+
+    fn borrow_shortfall_within_eps(shortfall_qty: f64, price: f64, leg: TradingLeg) -> bool {
+        Self::borrow_shortfall_usdt(shortfall_qty, price, leg)
+            .map(|shortfall_usdt| {
+                shortfall_usdt <= ARB_HEDGE_BORROW_SHORTFALL_MAX_USDT + f64::EPSILON
+            })
+            .unwrap_or(false)
     }
 
     fn schedule_hedge_order_expiry_check(&mut self, client_order_id: i64, due_ts: i64) {
@@ -784,32 +818,52 @@ impl ArbHedgeStrategy {
         // 找不到（lot 全是 None / borrow 没拿到任何东西）时按约定用 0 兜底。
         let bound_open_client_order_id = pick_main_component_open_id(&borrowed.lots);
         if borrowed.qty + ARB_HEDGE_QTY_EPS < order_base_qty {
-            if borrowed.qv.abs() > ARB_HEDGE_QTY_EPS {
-                if bound_open_client_order_id != 0 {
-                    self.pending_hedge_queue.release_with_id(
-                        now_ts,
-                        borrowed.qv,
-                        price.max(ctx.hedging_leg.bid0),
-                        bound_open_client_order_id,
-                    );
-                } else {
-                    self.pending_hedge_queue.release(
-                        now_ts,
-                        borrowed.qv,
-                        price.max(ctx.hedging_leg.bid0),
-                    );
+            let shortfall_qty = (order_base_qty - borrowed.qty).max(0.0);
+            let shortfall_usdt = Self::borrow_shortfall_usdt(shortfall_qty, price, ctx.hedging_leg);
+            let allow_shortfall = borrowed.qv.abs() > ARB_HEDGE_QTY_EPS
+                && Self::borrow_shortfall_within_eps(shortfall_qty, price, ctx.hedging_leg);
+            if !allow_shortfall {
+                if borrowed.qv.abs() > ARB_HEDGE_QTY_EPS {
+                    let release_price =
+                        Self::hedge_leg_reference_price(price, ctx.hedging_leg).unwrap_or(0.0);
+                    if bound_open_client_order_id != 0 {
+                        self.pending_hedge_queue.release_with_id(
+                            now_ts,
+                            borrowed.qv,
+                            release_price,
+                            bound_open_client_order_id,
+                        );
+                    } else {
+                        self.pending_hedge_queue
+                            .release(now_ts, borrowed.qv, release_price);
+                    }
                 }
+                warn!(
+                    "ArbHedgeStrategy: strategy_id={} ArbHedge borrow insufficient symbol={} request_seq={} want_qv={:.8} borrowed_qv={:.8} shortfall_qty={:.8} shortfall_usdt={:.8} max_shortfall_usdt={:.8} pending_after={:.8}",
+                    self.strategy_id,
+                    symbol,
+                    ctx.request_seq,
+                    pending_qv,
+                    borrowed.qv,
+                    shortfall_qty,
+                    shortfall_usdt.unwrap_or(f64::NAN),
+                    ARB_HEDGE_BORROW_SHORTFALL_MAX_USDT,
+                    self.pending_hedge_queue.net_qty()
+                );
+                return;
             }
             warn!(
-                "ArbHedgeStrategy: strategy_id={} ArbHedge borrow insufficient symbol={} request_seq={} want_qv={:.8} borrowed_qv={:.8} pending_after={:.8}",
+                "ArbHedgeStrategy: strategy_id={} ArbHedge borrow shortfall tolerated symbol={} request_seq={} want_qv={:.8} borrowed_qv={:.8} shortfall_qty={:.8} shortfall_usdt={:.8} max_shortfall_usdt={:.8} pending_after={:.8}",
                 self.strategy_id,
                 symbol,
                 ctx.request_seq,
                 pending_qv,
                 borrowed.qv,
+                shortfall_qty,
+                shortfall_usdt.unwrap_or(f64::NAN),
+                ARB_HEDGE_BORROW_SHORTFALL_MAX_USDT,
                 self.pending_hedge_queue.net_qty()
             );
-            return;
         }
 
         let client_order_id = self.next_order_id();
@@ -1113,12 +1167,13 @@ impl ArbHedgeStrategy {
         } else {
             order_price
         };
-        self.record_hedge_order_terminal(
+        self.record_hedge_order_terminal_with_borrowed(
             terminal_ts,
             side,
             meta.order_base_qty,
             filled_base_qty,
             terminal_price,
+            meta.borrowed_qv,
             meta.bound_open_client_order_id,
         );
         if status != OrderExecutionStatus::Filled {
@@ -1285,6 +1340,63 @@ impl ArbHedgeStrategy {
                 "trade_update_partial_fill",
             );
         }
+        true
+    }
+
+    fn record_hedge_order_terminal_with_borrowed(
+        &mut self,
+        terminal_ts: i64,
+        side: Side,
+        order_base_qty: f64,
+        filled_base_qty: f64,
+        price: f64,
+        borrowed_qv: f64,
+        bound_open_client_order_id: i64,
+    ) -> bool {
+        let order_base_qty = order_base_qty.abs();
+        let filled_base_qty = filled_base_qty.abs();
+        let borrowed_base_qty = borrowed_qv.abs().min(order_base_qty);
+        if order_base_qty <= TERMINAL_QTY_EPS && filled_base_qty <= TERMINAL_QTY_EPS {
+            return false;
+        }
+        let signed_base_qty = signed_qty_from_side(side, filled_base_qty);
+        let unfilled_base_qty = (order_base_qty - filled_base_qty).max(0.0);
+        let uncovered_borrowed_qty =
+            (borrowed_base_qty - filled_base_qty.min(borrowed_base_qty)).max(0.0);
+        let pending_release_qv = if borrowed_qv < -TERMINAL_QTY_EPS {
+            -uncovered_borrowed_qty
+        } else if borrowed_qv > TERMINAL_QTY_EPS {
+            uncovered_borrowed_qty
+        } else {
+            Self::hedge_pending_qv_from_order(side, uncovered_borrowed_qty)
+        };
+        let released_qv = self.release_borrowed_with_bound_id(
+            terminal_ts,
+            pending_release_qv,
+            price,
+            bound_open_client_order_id,
+        );
+        if filled_base_qty > TERMINAL_QTY_EPS {
+            self.net_qty_queue
+                .apply_fill(terminal_ts, signed_base_qty, price);
+        }
+        info!(
+            "ArbHedgeRecord: strategy_id={} symbol={} leg=hedge side={:?} order_base_qty={:.8} filled_base_qty={:.8} unfilled_base_qty={:.8} borrowed_qv={:.8} released_pending={:.8} qv={:.8} price={:.8} terminal_ts={} bound_open_co_id={} net={:.8} pending_hedge={:.8}",
+            self.strategy_id,
+            self.symbol,
+            side,
+            order_base_qty,
+            filled_base_qty,
+            unfilled_base_qty,
+            borrowed_qv,
+            released_qv,
+            signed_base_qty,
+            price,
+            terminal_ts,
+            bound_open_client_order_id,
+            self.net_qty_queue.net_qty(),
+            self.pending_hedge_queue.net_qty()
+        );
         true
     }
 
@@ -1638,45 +1750,16 @@ impl OrderTerminalRecorder for ArbHedgeStrategy {
         price: f64,
         bound_open_client_order_id: i64,
     ) -> bool {
-        let order_base_qty = order_base_qty.abs();
-        let filled_base_qty = filled_base_qty.abs();
-        if order_base_qty <= TERMINAL_QTY_EPS && filled_base_qty <= TERMINAL_QTY_EPS {
-            return false;
-        }
-        let signed_base_qty = signed_qty_from_side(side, filled_base_qty);
-        let unfilled_base_qty = (order_base_qty - filled_base_qty).max(0.0);
-        // arb下单时会按照挂单量borrow待对冲量，在terminal的时候根据实际成交量释放
-        let pending_release_qv = match side {
-            Side::Buy => -unfilled_base_qty,
-            Side::Sell => unfilled_base_qty,
-        };
-        let released_qv = self.release_borrowed_with_bound_id(
+        let borrowed_qv = Self::hedge_pending_qv_from_order(side, order_base_qty);
+        self.record_hedge_order_terminal_with_borrowed(
             terminal_ts,
-            pending_release_qv,
-            price,
-            bound_open_client_order_id,
-        );
-        if filled_base_qty > TERMINAL_QTY_EPS {
-            self.net_qty_queue
-                .apply_fill(terminal_ts, signed_base_qty, price);
-        }
-        info!(
-            "ArbHedgeRecord: strategy_id={} symbol={} leg=hedge side={:?} order_base_qty={:.8} filled_base_qty={:.8} unfilled_base_qty={:.8} released_pending={:.8} qv={:.8} price={:.8} terminal_ts={} bound_open_co_id={} net={:.8} pending_hedge={:.8}",
-            self.strategy_id,
-            self.symbol,
             side,
             order_base_qty,
             filled_base_qty,
-            unfilled_base_qty,
-            released_qv,
-            signed_base_qty,
             price,
-            terminal_ts,
+            borrowed_qv,
             bound_open_client_order_id,
-            self.net_qty_queue.net_qty(),
-            self.pending_hedge_queue.net_qty()
-        );
-        true
+        )
     }
 }
 
@@ -1903,6 +1986,57 @@ mod tests {
 
         assert!(below < super::ARB_HEDGE_PENDING_QUERY_MIN_USDT);
         assert!(above > super::ARB_HEDGE_PENDING_QUERY_MIN_USDT);
+    }
+
+    #[test]
+    fn borrow_shortfall_threshold_uses_one_usdt_eps() {
+        let leg = crate::signal::common::TradingLeg::new(
+            TradingVenue::BinanceFutures,
+            99_900.0,
+            100_100.0,
+            10,
+        );
+
+        assert!(ArbHedgeStrategy::borrow_shortfall_within_eps(
+            0.000001, 0.0, leg
+        ));
+        assert!(!ArbHedgeStrategy::borrow_shortfall_within_eps(
+            0.00002, 0.0, leg
+        ));
+    }
+
+    #[test]
+    fn hedge_terminal_release_uses_actual_borrowed_qty_for_shortfall_tolerance() {
+        let mut strategy = ArbHedgeStrategy::new(
+            1,
+            "BTCUSDT",
+            TradingVenue::BinanceMargin,
+            TradingVenue::BinanceFutures,
+        );
+
+        strategy
+            .pending_hedge_queue
+            .put_with_id(10, 0, 0.000999, 100_000.0, OPEN_ID_A);
+        let borrowed = strategy.pending_hedge_queue.borrow(20, 0.001);
+        assert!((borrowed.qv - 0.000999).abs() < 1e-12);
+        assert_eq!(strategy.pending_hedge_qty(), 0.0);
+
+        strategy.record_hedge_order_terminal_with_borrowed(
+            30,
+            Side::Sell,
+            0.001,
+            0.0005,
+            100_000.0,
+            borrowed.qv,
+            OPEN_ID_A,
+        );
+
+        assert!((strategy.pending_hedge_qty() - 0.000499).abs() < 1e-12);
+        let lot = strategy
+            .pending_hedge_queue
+            .find_lot_by_open_id(OPEN_ID_A)
+            .expect("partial unfilled borrowed qty released under bound id");
+        assert!((lot.qty - 0.000499).abs() < 1e-12);
     }
 
     fn lot_for(open_id: Option<i64>, qty: f64, close_ts: i64) -> TimedNetQtyLot {

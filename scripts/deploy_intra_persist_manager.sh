@@ -77,6 +77,8 @@ mkdir -p "$TARGET_DIR" "$TARGET_DIR/data/persist_manager"
 EXTRA_FILES=(
   "intra_scripts/start_intra_persist_manager.sh"
   "intra_scripts/stop_intra_persist_manager.sh"
+  "intra_scripts/configure_intra_persist_sync_source.sh"
+  "scripts/setup_nginx_stream_4190.sh"
 )
 echo "[INFO] 同步 intra_scripts 到 $TARGET_DIR"
 for file in "${EXTRA_FILES[@]}"; do
@@ -94,5 +96,6 @@ if ! intra_atomic_install "$BIN_PATH" "$TARGET_DIR/$BIN_NAME"; then
 fi
 
 echo "[INFO] $BIN_NAME 部署完成到 $TARGET_DIR"
+echo "[INFO] 配置 gRPC 同步源: cd $TARGET_DIR && ./intra_scripts/configure_intra_persist_sync_source.sh"
 echo "[INFO] 启动: cd $TARGET_DIR && ./intra_scripts/start_intra_persist_manager.sh"
 echo "[INFO] 停止: cd $TARGET_DIR && ./intra_scripts/stop_intra_persist_manager.sh"
