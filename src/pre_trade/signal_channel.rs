@@ -6,6 +6,7 @@ use crate::pre_trade::log_throttle::log_pending_limit_summary;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{OrderType, Side};
 use crate::pre_trade::signal_throttle::check_signal_throttle;
+use crate::rolling_metrics::arb_open_latency::record_arb_open_latency;
 use crate::signal::arb_signal::{
     ArbBackwardQueryMsg, ArbCancelCandidateEntry, ArbCancelCandidateQueryMsg, ArbCancelTriggerCtx,
 };
@@ -204,6 +205,7 @@ impl SignalListener {
             match self.subscriber.receive() {
                 Ok(Some(sample)) => {
                     has_message = true;
+                    let receive_us = get_timestamp_us();
                     let payload = Bytes::copy_from_slice(sample.payload());
                     if payload.is_empty() {
                         continue;
@@ -237,7 +239,15 @@ impl SignalListener {
                                 self.dropped_startup_buffered = 0;
                             }
                             record_signal_count(&signal.signal_type);
-                            handle_trade_signal(signal);
+                            if matches!(signal.signal_type, SignalType::ArbOpen)
+                                && signal.generation_time > 0
+                            {
+                                record_arb_open_latency(
+                                    "pt_receive_minus_generation",
+                                    receive_us.saturating_sub(signal.generation_time),
+                                );
+                            }
+                            handle_trade_signal(signal, receive_us);
                         }
                         Err(err) => warn!(
                             "failed to decode trade signal from channel {}: {}",
@@ -398,7 +408,7 @@ mod tests {
     }
 }
 
-fn handle_trade_signal(signal: TradeSignal) {
+fn handle_trade_signal(signal: TradeSignal, receive_us: i64) {
     if should_block_arb_signal_for_startup_net_gate(&signal.signal_type) {
         return;
     }
@@ -411,6 +421,13 @@ fn handle_trade_signal(signal: TradeSignal) {
     match signal.signal_type {
         SignalType::ArbOpen => match ArbOpenCtx::from_bytes(signal.context.clone()) {
             Ok(mut open_ctx) => {
+                let handle_start_us = get_timestamp_us();
+                if receive_us > 0 {
+                    record_arb_open_latency(
+                        "pt_dispatch_delay_after_receive",
+                        handle_start_us.saturating_sub(receive_us),
+                    );
+                }
                 let symbol = normalize_symbol_for_internal(&open_ctx.get_opening_symbol());
                 if symbol.is_empty() {
                     warn!("ArbOpen: empty symbol");
@@ -481,6 +498,10 @@ fn handle_trade_signal(signal: TradeSignal) {
                 let strategy_id = StrategyManager::generate_strategy_id();
                 let mut strategy = ArbOpenStrategy::new(strategy_id);
                 strategy.handle_signal(&normalized_signal);
+                record_arb_open_latency(
+                    "pt_handle_strategy_total",
+                    get_timestamp_us().saturating_sub(handle_start_us),
+                );
                 if strategy.is_active() {
                     // hedge_timeout 已不再做 close_ts 延迟（强制 0），原本根据这个字段
                     // 推断 MM/MT 的标签也就失效，去掉。

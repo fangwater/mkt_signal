@@ -14,6 +14,7 @@ use crate::pre_trade::order_manager::OrderType;
 use crate::pre_trade::response_reconcile::apply_trade_response_as_update;
 use crate::pre_trade::signal_latency::record_signal_submit_latency;
 use crate::pre_trade::PersistChannel;
+use crate::rolling_metrics::arb_open_latency::record_arb_open_latency;
 use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 use crate::signal::trade_signal::SignalType;
 use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
@@ -131,12 +132,25 @@ impl TradeEngHub {
                     if let Some(st) = SignalType::from_u32(kind as u32) {
                         record_signal_submit_latency(st.as_str(), publish_start_us, signal_t);
                     }
+                    if kind == SignalType::ArbOpen as u8 {
+                        record_arb_open_latency(
+                            "pt_publish_start_minus_generation",
+                            publish_start_us.saturating_sub(signal_t),
+                        );
+                    }
                 }
             }
         }
         let result = Self::publish_order_request(exchange, bytes);
         let publish_done_us = get_timestamp_us();
         let publish_cost_us = publish_done_us.saturating_sub(publish_start_us);
+        if let Some(om) = MonitorChannel::try_order_manager() {
+            if let Some(order) = om.borrow().get(client_order_id) {
+                if order.timestamp.signal_kind == SignalType::ArbOpen as u8 {
+                    record_arb_open_latency("pt_trade_req_publish_cost", publish_cost_us);
+                }
+            }
+        }
         let build_to_publish_done_us = create_time_us
             .filter(|create_time_us| *create_time_us > 0)
             .map(|create_time_us| publish_done_us.saturating_sub(create_time_us));
