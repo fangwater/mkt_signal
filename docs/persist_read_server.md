@@ -44,7 +44,7 @@ repair_lookback_hours = 24
 repair_bucket_us = 60000000
 
 # Add one source per remote persist manager.
-# If there are multiple sources, read_server.source_id must be set explicitly.
+# read_server.source_id is the default source when requests omit source_id.
 [[sources]]
 id = "default"
 url = "http://127.0.0.1:50051"
@@ -57,7 +57,8 @@ bind = "0.0.0.0:8822"
 # primary_dir = "data/persist_sync_center"
 secondary_dir = "data/persist_read_server_secondary"
 
-# Optional for a single [[sources]] entry; required when multiple sources exist.
+# Optional for a single [[sources]] entry. Requests can override this with source_id.
+# If omitted and the request also omits source_id, /v1/schema and /v1/read return 400.
 source_id = "default"
 
 max_concurrent = 8
@@ -82,7 +83,7 @@ allowed_tables = [
 ]
 ```
 
-`status_path` is written by `persist_sync_collector` and read by `scripts/persist_config_server.py` for heartbeat visualization. `read_server.primary_dir` defaults to top-level `center_db`. `secondary_dir` must be different from `primary_dir`; it stores Secondary instance metadata, not a full data copy. The central DB stores source-specific column families like `source_id__uniform_orders`, so `read_server.source_id` selects which source the API reads. For a single `[[sources]]` entry it can be inferred; for multiple sources it must be set explicitly.
+`status_path` is written by `persist_sync_collector` and read by `scripts/persist_config_server.py` for heartbeat visualization. `read_server.primary_dir` defaults to top-level `center_db`. `secondary_dir` must be different from `primary_dir`; it stores Secondary instance metadata, not a full data copy. The central DB stores source-specific column families like `source_id__uniform_orders`. Requests may pass `source_id`; if they omit it, `read_server.source_id` is used as the fallback. For a single `[[sources]]` entry the fallback can be inferred. With multiple sources, either set `read_server.source_id` as the default or pass `source_id` on each schema/read request.
 
 ## Config UI
 
@@ -101,9 +102,9 @@ The UI edits the same `persist.toml` and writes a timestamped `.bak` before savi
 
 Returns `{"ok": true}`.
 
-### `GET /v1/schema?table=uniform_orders`
+### `GET /v1/schema?table=uniform_orders&source_id=default`
 
-Returns allowed columns and output formats for a table.
+Returns allowed columns and output formats for a table. `source_id` is optional when `read_server.source_id` is configured.
 
 ### `GET /v1/read`
 
@@ -111,12 +112,13 @@ Example:
 
 ```bash
 curl -o orders.arrow \
-  'http://127.0.0.1:8822/v1/read?table=uniform_orders&start_us=1770000000000000&end_us=1770003600000000&columns=ts_us,symbol,client_order_id,status,price&format=arrow_ipc'
+  'http://127.0.0.1:8822/v1/read?table=uniform_orders&source_id=default&start_us=1770000000000000&end_us=1770003600000000&columns=ts_us,symbol,client_order_id,status,price&format=arrow_ipc'
 ```
 
 Parameters:
 
 - `table`: `uniform_orders`, `order_updates_unmatched`, or `trade_updates_unmatched` by default.
+- `source_id`: optional source id. Falls back to `read_server.source_id`; if neither is set, the request returns 400.
 - `start_us`: inclusive lower bound, microseconds.
 - `end_us`: exclusive upper bound, microseconds.
 - `columns`: optional comma-separated column list.
@@ -133,13 +135,14 @@ from scripts.persist_read_client import PersistReadClient
 
 client = PersistReadClient("http://127.0.0.1:8822", timeout_sec=120)
 
-schema = client.schema("uniform_orders")
+schema = client.schema("uniform_orders", source_id="bybit-intra-arb01")
 print(schema.columns)
 
 df = client.read_pandas(
     "uniform_orders",
     start="2026-05-31 09:30:00",
     end="2026-05-31 10:30:00",
+    source_id="bybit-intra-arb01",
 )
 ```
 
@@ -150,6 +153,7 @@ df = client.read_pandas_range(
     "uniform_orders",
     start="2026-05-31 09:30:00",
     end="2026-05-31 12:30:00",
+    source_id="bybit-intra-arb01",
     window_sec=3600,
 )
 ```
@@ -166,11 +170,12 @@ The SDK uses the Python standard library for HTTP. `pyarrow` is required for Arr
 CLI examples:
 
 ```bash
-python3 scripts/persist_read_client.py --base-url http://127.0.0.1:8822 schema --table uniform_orders
+python3 scripts/persist_read_client.py --base-url http://127.0.0.1:8822 schema --table uniform_orders --source-id bybit-intra-arb01
 python3 scripts/persist_read_client.py --base-url http://127.0.0.1:8822 read \
   --table uniform_orders \
   --start "2026-05-31 09:30:00" \
   --end "2026-05-31 10:30:00" \
+  --source-id bybit-intra-arb01 \
   --format arrow_ipc \
   --out orders.arrow
 ```

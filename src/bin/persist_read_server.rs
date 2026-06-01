@@ -70,23 +70,17 @@ fn load_config(path: &Path) -> Result<PersistReadServerConfig> {
         config.primary_dir = envelope.center_db;
     }
 
-    if config.source_id.is_none() {
-        if let Some(sources) = envelope.sources {
-            let mut ids = sources
-                .into_iter()
-                .map(|source| source.id.trim().to_string())
-                .filter(|id| !id.is_empty())
-                .collect::<Vec<_>>();
-            ids.sort();
-            ids.dedup();
-            if ids.len() == 1 {
-                config.source_id = ids.pop();
-            } else if ids.len() > 1 {
-                bail!(
-                    "unified persist config {} has multiple sources; set read_server.source_id explicitly",
-                    path.display()
-                );
-            }
+    if let Some(sources) = envelope.sources {
+        let mut ids = sources
+            .into_iter()
+            .map(|source| source.id.trim().to_string())
+            .filter(|id| !id.is_empty())
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids.dedup();
+        config.source_ids = ids.clone();
+        if config.source_id.is_none() && ids.len() == 1 {
+            config.source_id = ids.first().cloned();
         }
     }
 

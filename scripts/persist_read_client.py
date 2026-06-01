@@ -82,8 +82,12 @@ class PersistReadClient:
     def health(self) -> Mapping[str, Any]:
         return self._get_json("/healthz", {})
 
-    def schema(self, table: str) -> SchemaInfo:
-        raw = self._get_json("/v1/schema", {"table": table})
+    def schema(self, table: str, *, source_id: str | None = None) -> SchemaInfo:
+        params = {"table": table}
+        normalized_source_id = normalize_source_id(source_id)
+        if normalized_source_id is not None:
+            params["source_id"] = normalized_source_id
+        raw = self._get_json("/v1/schema", params)
         return SchemaInfo(
             table=str(raw["table"]),
             columns=tuple(str(v) for v in raw.get("columns", ())),
@@ -100,6 +104,7 @@ class PersistReadClient:
         start_us: int | None = None,
         end_us: int | None = None,
         columns: Sequence[str] | str | None = None,
+        source_id: str | None = None,
         format: OutputFormat = "arrow_ipc",
         timeout_sec: float | None = None,
         tz: str | tzinfo | None = None,
@@ -111,6 +116,7 @@ class PersistReadClient:
             start_us=start_us,
             end_us=end_us,
             columns=columns,
+            source_id=source_id,
             format=format,
             tz=tz,
         )
@@ -125,6 +131,7 @@ class PersistReadClient:
         start_us: int | None = None,
         end_us: int | None = None,
         columns: Sequence[str] | str | None = None,
+        source_id: str | None = None,
         timeout_sec: float | None = None,
         tz: str | tzinfo | None = None,
     ):
@@ -136,6 +143,7 @@ class PersistReadClient:
             start_us=start_us,
             end_us=end_us,
             columns=columns,
+            source_id=source_id,
             format="arrow_ipc",
             timeout_sec=timeout_sec,
             tz=tz,
@@ -151,6 +159,7 @@ class PersistReadClient:
         start_us: int | None = None,
         end_us: int | None = None,
         columns: Sequence[str] | str | None = None,
+        source_id: str | None = None,
         format: OutputFormat = "arrow_ipc",
         timeout_sec: float | None = None,
         tz: str | tzinfo | None = None,
@@ -164,6 +173,7 @@ class PersistReadClient:
                 start_us=start_us,
                 end_us=end_us,
                 columns=columns,
+                source_id=source_id,
                 timeout_sec=timeout_sec,
                 tz=tz,
             )
@@ -178,6 +188,7 @@ class PersistReadClient:
                 start_us=start_us,
                 end_us=end_us,
                 columns=columns,
+                source_id=source_id,
                 format="parquet",
                 timeout_sec=timeout_sec,
                 tz=tz,
@@ -193,6 +204,7 @@ class PersistReadClient:
         end: TimeValue,
         *,
         columns: Sequence[str] | str | None = None,
+        source_id: str | None = None,
         window_sec: int = 3600,
         timeout_sec: float | None = None,
         tz: str | tzinfo | None = None,
@@ -207,6 +219,7 @@ class PersistReadClient:
                     start_us=window.start_us,
                     end_us=window.end_us,
                     columns=columns,
+                    source_id=source_id,
                     timeout_sec=timeout_sec,
                 )
             )
@@ -222,6 +235,7 @@ class PersistReadClient:
         end: TimeValue,
         *,
         columns: Sequence[str] | str | None = None,
+        source_id: str | None = None,
         window_sec: int = 3600,
         timeout_sec: float | None = None,
         tz: str | tzinfo | None = None,
@@ -233,6 +247,7 @@ class PersistReadClient:
             start,
             end,
             columns=columns,
+            source_id=source_id,
             window_sec=window_sec,
             timeout_sec=timeout_sec,
             tz=tz,
@@ -248,6 +263,7 @@ class PersistReadClient:
         start_us: int | None,
         end_us: int | None,
         columns: Sequence[str] | str | None,
+        source_id: str | None,
         format: str,
         tz: str | tzinfo | None,
     ) -> dict[str, str]:
@@ -263,6 +279,9 @@ class PersistReadClient:
         columns_csv = normalize_columns(columns)
         if columns_csv:
             params["columns"] = columns_csv
+        normalized_source_id = normalize_source_id(source_id)
+        if normalized_source_id is not None:
+            params["source_id"] = normalized_source_id
         return params
 
     def _resolve_window(
@@ -324,6 +343,15 @@ class PersistReadClient:
 def build_url(base_url: str, path: str, params: Mapping[str, str]) -> str:
     query = urllib.parse.urlencode(params)
     return f"{base_url.rstrip('/')}{path}?{query}" if query else f"{base_url.rstrip('/')}{path}"
+
+
+def normalize_source_id(source_id: str | None) -> str | None:
+    if source_id is None:
+        return None
+    normalized = source_id.strip()
+    if not normalized:
+        raise ValueError("source_id must not be empty")
+    return normalized
 
 
 def normalize_columns(columns: Sequence[str] | str | None) -> str | None:
@@ -457,6 +485,7 @@ def main(argv: list[str] | None = None) -> int:
 
     schema_cmd = sub.add_parser("schema", help="show schema for a table")
     schema_cmd.add_argument("--table", required=True)
+    schema_cmd.add_argument("--source-id", help="source id to read; defaults to server read_server.source_id")
 
     read_cmd = sub.add_parser("read", help="pull one window and write bytes to a file")
     read_cmd.add_argument("--table", required=True)
@@ -465,6 +494,7 @@ def main(argv: list[str] | None = None) -> int:
     read_cmd.add_argument("--start-us", type=int, help="legacy unix microsecond start")
     read_cmd.add_argument("--end-us", type=int, help="legacy unix microsecond end")
     read_cmd.add_argument("--columns", help="comma-separated columns; omitted means all columns")
+    read_cmd.add_argument("--source-id", help="source id to read; defaults to server read_server.source_id")
     read_cmd.add_argument("--format", choices=("arrow_ipc", "parquet"), default="arrow_ipc")
     read_cmd.add_argument("--out", type=Path, required=True)
 
@@ -472,7 +502,7 @@ def main(argv: list[str] | None = None) -> int:
     client = PersistReadClient(args.base_url, timeout_sec=args.timeout_sec, tz=args.tz)
 
     if args.command == "schema":
-        schema = client.schema(args.table)
+        schema = client.schema(args.table, source_id=args.source_id)
         print(json.dumps(schema.__dict__, ensure_ascii=False, indent=2))
         return 0
 
@@ -484,6 +514,7 @@ def main(argv: list[str] | None = None) -> int:
             start_us=args.start_us,
             end_us=args.end_us,
             columns=_parse_columns(args.columns),
+            source_id=args.source_id,
             format=args.format,
         )
         args.out.parent.mkdir(parents=True, exist_ok=True)

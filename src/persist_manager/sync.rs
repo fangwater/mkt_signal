@@ -401,12 +401,7 @@ fn repair_source_initial_delays(
     source_ids
         .into_iter()
         .enumerate()
-        .map(|(index, source_id)| {
-            (
-                source_id,
-                stagger_delay(interval, index, total_sources),
-            )
-        })
+        .map(|(index, source_id)| (source_id, stagger_delay(interval, index, total_sources)))
         .collect()
 }
 
