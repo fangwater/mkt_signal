@@ -33,6 +33,7 @@ const DERIVATIVES_SUBSCRIBER_MAX_BUFFER: usize = 8192;
 const DERIVATIVES_DRAIN_BUDGET: usize = 1024;
 const DECISION_QUOTE_AGE_KLL_CAPACITY: usize = 10_000;
 const DECISION_QUOTE_AGE_KLL_MAX_WINDOW: Duration = Duration::from_secs(60);
+const GATE_FUNDING_RATE_SMOOTHING_SAMPLES: usize = 12;
 
 /// BBO 触发抑制阈值（µs）：仅在 open/hedge 双腿都是 bybit 的 intra arb 环境下生效。
 /// 老于该阈值的 BBO 仍会更新本地 quote 缓存，但不会 mark_dirty 触发决策。
@@ -76,6 +77,14 @@ fn should_trigger_decision(symbol: &str) -> bool {
     symbol_list.is_in_dump_list(symbol)
         || symbol_list.is_in_fwd_trade_list(symbol)
         || symbol_list.is_in_bwd_trade_list(symbol)
+}
+
+fn funding_rate_data_for_venue(venue: TradingVenue) -> FundingRateData {
+    if matches!(venue, TradingVenue::GateFutures) {
+        FundingRateData::with_max_series_len(GATE_FUNDING_RATE_SMOOTHING_SAMPLES)
+    } else {
+        FundingRateData::new()
+    }
 }
 
 fn mark_dirty_symbol(
@@ -623,7 +632,7 @@ impl MktChannel {
     /// REST 补丁注入：把外部拉到的 funding rate 当作一条样本推进 rolling buffer。
     /// 与 WS 路径共用同一个 push，WS 后续到达会通过 rolling window 自然顶替这条样本。
     /// 目前仅 Gate venue 调用：futures.tickers 是事件驱动，冷门 symbol 长时间无推送，
-    /// 用 `/futures/usdt/contracts` 的 funding_rate（与 WS 同字段）每分钟兜底。
+    /// 用 `/futures/usdt/contracts` 的 funding_rate（与 WS 同字段）每 5 秒兜底。
     /// 返回是否真的写入（false=venue 未初始化或值非有限）。
     pub fn seed_funding_rate(&self, symbol: &str, venue: TradingVenue, rate: f64) -> bool {
         if !rate.is_finite() {
@@ -635,7 +644,7 @@ impl MktChannel {
             if let Some(venue_rates) = map.get_mut(&venue) {
                 let rate_data = venue_rates
                     .entry(symbol_upper)
-                    .or_insert_with(FundingRateData::new);
+                    .or_insert_with(|| funding_rate_data_for_venue(venue));
                 rate_data.push(rate);
                 true
             } else {
@@ -1002,7 +1011,7 @@ impl MktChannel {
                                         {
                                             let rate_data = venue_rates
                                                 .entry(symbol.clone())
-                                                .or_insert_with(FundingRateData::new);
+                                                .or_insert_with(|| funding_rate_data_for_venue(feed_venue));
 
                                             // 立刻更新均值
                                             rate_data.push(funding_rate);

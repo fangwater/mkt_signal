@@ -402,7 +402,7 @@ async fn run(
     info!("所有单例初始化完成");
 
     // Gate 特化：futures.tickers 是事件驱动，冷门 symbol 长时间无推送 → current_fr_ma 一直空。
-    // 用 REST `/futures/usdt/contracts`（与 WS 同字段）每 60s 兜底 seed 一次，WS 到达会通过
+    // 用 REST `/futures/usdt/contracts`（与 WS 同字段）每 5s 兜底 seed 一次，WS 到达会通过
     // VecDeque rolling buffer 自然顶替。其它 venue 不调用，零影响。
     mkt_signal::funding_rate::gate_fr_supplement::spawn_gate_current_fr_seeder(hedge_venue);
 
