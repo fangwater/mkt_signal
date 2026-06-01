@@ -1171,14 +1171,65 @@ impl MonitorChannel {
     ) -> CloseReservationGrant {
         Self::with_inner(|inner| {
             let snapshot_pos_base = Self::get_position_qty_inner(inner, symbol, venue);
-            inner.close_inventory.borrow_mut().reserve_close(
+            let first_grant = inner.close_inventory.borrow_mut().reserve_close(
                 venue,
                 symbol,
                 side,
                 requested_base_qty,
                 client_order_id,
                 snapshot_pos_base,
-            )
+            );
+            if first_grant.granted_base_qty > 1e-12 {
+                return first_grant;
+            }
+
+            let snapshot_can_close = match side {
+                Side::Sell => snapshot_pos_base > 1e-12,
+                Side::Buy => snapshot_pos_base < -1e-12,
+            };
+            if !snapshot_can_close {
+                return first_grant;
+            }
+
+            let symbol = normalize_symbol_for_internal(symbol);
+            let pending_limit_count = inner
+                .order_manager
+                .borrow()
+                .get_symbol_pending_limit_order_count(&symbol);
+            if pending_limit_count != 0 {
+                return first_grant;
+            }
+
+            let mut close_inventory = inner.close_inventory.borrow_mut();
+            close_inventory.force_sync_from_snapshot(
+                venue,
+                &symbol,
+                snapshot_pos_base,
+                "close_reserve_fallback_no_pending_limit",
+            );
+            let retry_grant = close_inventory.reserve_close(
+                venue,
+                &symbol,
+                side,
+                requested_base_qty,
+                client_order_id,
+                snapshot_pos_base,
+            );
+            info!(
+                "CloseInventory: reserve retry after force sync symbol={} venue={:?} side={:?} client_order_id={} requested={:.8} snapshot_pos={:.8} first_available={:.8} first_inventory={:.8} retry_granted={:.8} retry_available={:.8} retry_inventory={:.8}",
+                symbol,
+                venue,
+                side,
+                client_order_id,
+                requested_base_qty,
+                snapshot_pos_base,
+                first_grant.available_before_base,
+                first_grant.closable_inventory_base,
+                retry_grant.granted_base_qty,
+                retry_grant.available_before_base,
+                retry_grant.closable_inventory_base
+            );
+            retry_grant
         })
     }
 

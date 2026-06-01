@@ -59,6 +59,35 @@ impl CloseInventoryLedger {
         );
     }
 
+    pub fn force_sync_from_snapshot(
+        &mut self,
+        venue: TradingVenue,
+        symbol: &str,
+        snapshot_pos_base: f64,
+        reason: &str,
+    ) -> Option<(f64, f64)> {
+        let symbol = normalize_symbol_for_internal(symbol);
+        if symbol.is_empty() {
+            return None;
+        }
+        let entry = self.entries.entry((venue, symbol.clone())).or_default();
+        let old_inventory = entry.closable_inventory_base;
+        let new_inventory = finite_or_zero(snapshot_pos_base);
+        entry.seeded = true;
+        entry.closable_inventory_base = new_inventory;
+        info!(
+            "CloseInventory: force sync symbol={} venue={:?} reason={} old_inventory={:.8} new_inventory={:.8} reserved_sell={:.8} reserved_buy={:.8}",
+            symbol,
+            venue,
+            reason,
+            old_inventory,
+            new_inventory,
+            entry.reserved_sell_close_base,
+            entry.reserved_buy_close_base
+        );
+        Some((old_inventory, new_inventory))
+    }
+
     pub fn reserve_close(
         &mut self,
         venue: TradingVenue,
@@ -400,5 +429,26 @@ mod tests {
             ledger.closable_inventory_base(venue, "COTIUSDT"),
             Some(70.0)
         );
+    }
+
+    #[test]
+    fn force_sync_from_snapshot_allows_close_after_stale_zero_seed() {
+        let mut ledger = CloseInventoryLedger::new();
+        let venue = TradingVenue::GateMargin;
+
+        ledger.seed_if_absent(venue, "LABUSDT", 0.0);
+
+        let denied = ledger.reserve_close(venue, "LABUSDT", Side::Sell, 10.0, 1, 800.0);
+        assert_eq!(denied.granted_base_qty, 0.0);
+        assert_eq!(denied.closable_inventory_base, 0.0);
+
+        assert_eq!(
+            ledger.force_sync_from_snapshot(venue, "LABUSDT", 800.0, "test"),
+            Some((0.0, 800.0))
+        );
+
+        let granted = ledger.reserve_close(venue, "LABUSDT", Side::Sell, 10.0, 2, 800.0);
+        assert_eq!(granted.granted_base_qty, 10.0);
+        assert_eq!(granted.available_before_base, 800.0);
     }
 }
