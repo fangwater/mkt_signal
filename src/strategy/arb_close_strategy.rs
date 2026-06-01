@@ -114,18 +114,20 @@ impl ArbCloseStrategy {
             client_order_id,
         );
         if grant.granted_base_qty <= ARB_CLOSE_QTY_EPS {
-            info!(
-                "ArbCloseStrategy: strategy_id={} skip because close inventory unavailable symbol={} venue={:?} side={:?} open_pos={:.8} signal_qty={:.8} requested_base={:.8} available_before={:.8} inventory={:.8}",
-                self.open_state.strategy_id,
-                symbol,
-                venue,
-                side,
-                open_pos,
-                ctx.amount_value(),
-                requested_base_qty,
-                grant.available_before_base,
-                grant.closable_inventory_base
-            );
+            if !close_residual_is_effectively_done(open_pos, requested_base_qty) {
+                info!(
+                    "ArbCloseStrategy: strategy_id={} skip because close inventory unavailable symbol={} venue={:?} side={:?} open_pos={:.8} signal_qty={:.8} requested_base={:.8} available_before={:.8} inventory={:.8}",
+                    self.open_state.strategy_id,
+                    symbol,
+                    venue,
+                    side,
+                    open_pos,
+                    ctx.amount_value(),
+                    requested_base_qty,
+                    grant.available_before_base,
+                    grant.closable_inventory_base
+                );
+            }
             self.open_state.alive = false;
             return;
         }
@@ -343,5 +345,27 @@ impl Strategy for ArbCloseStrategy {
 impl Drop for ArbCloseStrategy {
     fn drop(&mut self) {
         self.cleanup_strategy_orders();
+    }
+}
+
+fn close_residual_is_effectively_done(open_pos: f64, requested_base_qty: f64) -> bool {
+    requested_base_qty.abs() > ARB_CLOSE_QTY_EPS && open_pos.abs() < requested_base_qty.abs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn close_residual_silences_open_pos_below_request() {
+        assert!(close_residual_is_effectively_done(7.984725, 640.0));
+        assert!(close_residual_is_effectively_done(80.0, 640.0));
+    }
+
+    #[test]
+    fn close_residual_keeps_logs_at_or_above_request() {
+        assert!(!close_residual_is_effectively_done(640.0, 640.0));
+        assert!(!close_residual_is_effectively_done(700.0, 640.0));
+        assert!(!close_residual_is_effectively_done(1.0, 0.0));
     }
 }
