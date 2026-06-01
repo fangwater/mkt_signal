@@ -124,6 +124,9 @@ struct ArbHedgeOrderMeta {
     /// release/cleanup/失败回写都使用这个 id 把未成交量送回原 open 身份；
     /// 借不到任何带 id 的 lot 时为 0（兜底，按用户约定）。
     bound_open_client_order_id: i64,
+    /// 本对冲单收到的 rich from_key（开仓信号上下文），用于 uniform 发布时
+    /// 以 "{id}|{rich}" 形式带上整条 from_key（保留 JOIN 前缀，同时携带信号字段）。
+    from_key: Vec<u8>,
 }
 
 impl ArbHedgeStrategy {
@@ -657,12 +660,16 @@ impl ArbHedgeStrategy {
         let meta = self.hedge_order_meta.get(&client_order_id);
         let signal_ts = meta.map(|m| m.signal_ts).unwrap_or(0);
         let price_offset = meta.map(|m| m.price_offset).unwrap_or(0.0);
-        // arb hedge 的 from_key = 主成分绑定的 open client_order_id（i64 字符串）；
-        // 没有绑定（borrow 全 None / 没拿到）按用户约定写 "0" 兜底。
+        // arb hedge 的 from_key = "{绑定的 open client_order_id}|{rich from_key}"：
+        // 前缀 id 与 open 腿一致（下游按第一个 '|' 切分取 id 做 JOIN），后缀带上整条 rich；
+        // 没有绑定（borrow 全 None / 没拿到）按用户约定 id 写 "0" 兜底。
         let bound_open_client_order_id = meta.map(|m| m.bound_open_client_order_id).unwrap_or(0);
+        let rich = meta
+            .map(|m| String::from_utf8_lossy(&m.from_key).into_owned())
+            .unwrap_or_default();
         UniformPublishCtx {
             signal_ts,
-            from_key: bound_open_client_order_id.to_string().into_bytes(),
+            from_key: format!("{bound_open_client_order_id}|{rich}").into_bytes(),
             price_offset,
         }
     }
@@ -840,6 +847,7 @@ impl ArbHedgeStrategy {
                 next_expire_check_ts: ctx.exp_time,
                 cancel_requested: false,
                 bound_open_client_order_id,
+                from_key: ctx.from_key.clone(),
             },
         );
 
@@ -1846,6 +1854,7 @@ mod tests {
                 next_expire_check_ts: 0,
                 cancel_requested: false,
                 bound_open_client_order_id: OPEN_ID_A,
+                from_key: Vec::new(),
             },
         );
 

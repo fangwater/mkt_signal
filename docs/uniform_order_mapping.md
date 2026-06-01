@@ -56,7 +56,10 @@
 
 - 不使用 `String` 作为持久化记录字段，文本用 bytes。
 - `venue/ttype/side/status` 均为 `u8` 枚举编码。
-- `from_key` 以 `from_key_len(u32) + from_key(bytes)` 存放在结构尾部。
+- `from_key` 以 `from_key_len(u32) + from_key(bytes)` 存放在生产者记录尾部。
+- `persist_manager` 可在入库前追加可选 `bbo_spread_len(u16) + bbo_spread(bytes)`。旧记录没有该尾部字段，导出时为空字符串。
+- `bbo_spread` 是 10 个逗号分隔数字：`open_tp,open_bid,open_bid_qty,open_ask,open_ask_qty,hedge_tp,hedge_bid,hedge_bid_qty,hedge_ask,hedge_ask_qty`。
+- `bbo_spread` 的查询索引使用 uniform order 的 `update_ts`；NEW 对应挂单回报时间，TRADE 对应成交更新时间。
 - `price_offset` 必须来自信号上下文，禁止盘口反推。
 
 ## 当前策略映射

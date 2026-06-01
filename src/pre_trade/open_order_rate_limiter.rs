@@ -17,6 +17,7 @@ struct OrderRateState {
     arb_open_orders: HashMap<i64, i64>,
     hedge_orders: HashMap<i64, i64>,
     arb_hedge_orders: HashMap<i64, i64>,
+    exec_orders: HashMap<i64, i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -29,6 +30,7 @@ pub enum OrderRateBucket {
     // ArbHedgeStrategy hedge orders. Tracked separately from MmHedge so arbitrage
     // can be throttled with its own thresholds.
     ArbHedge,
+    Exec,
 }
 
 impl OrderRateBucket {
@@ -38,6 +40,7 @@ impl OrderRateBucket {
             Self::ArbOpen => "arb_open",
             Self::MmHedge => "mm_hedge",
             Self::ArbHedge => "arb_hedge",
+            Self::Exec => "exec",
         }
     }
 }
@@ -104,6 +107,7 @@ impl OrderRateLimiter {
                 OrderRateBucket::ArbOpen,
                 OrderRateBucket::MmHedge,
                 OrderRateBucket::ArbHedge,
+                OrderRateBucket::Exec,
             ] {
                 let bucket_map = Self::bucket_map_mut(&mut state, bucket);
                 let before = bucket_map.len();
@@ -146,6 +150,7 @@ impl OrderRateLimiter {
             state.arb_open_orders.clear();
             state.hedge_orders.clear();
             state.arb_hedge_orders.clear();
+            state.exec_orders.clear();
         });
     }
 
@@ -155,6 +160,7 @@ impl OrderRateLimiter {
             OrderRateBucket::ArbOpen => &state.arb_open_orders,
             OrderRateBucket::MmHedge => &state.hedge_orders,
             OrderRateBucket::ArbHedge => &state.arb_hedge_orders,
+            OrderRateBucket::Exec => &state.exec_orders,
         }
     }
 
@@ -167,6 +173,7 @@ impl OrderRateLimiter {
             OrderRateBucket::ArbOpen => &mut state.arb_open_orders,
             OrderRateBucket::MmHedge => &mut state.hedge_orders,
             OrderRateBucket::ArbHedge => &mut state.arb_hedge_orders,
+            OrderRateBucket::Exec => &mut state.exec_orders,
         }
     }
 }
@@ -208,13 +215,17 @@ mod tests {
         OrderRateLimiter::clear();
         OrderRateLimiter::record(OrderRateBucket::MmHedge, 1, 51_000_000);
         OrderRateLimiter::record(OrderRateBucket::ArbHedge, 2, 52_000_000);
+        OrderRateLimiter::record(OrderRateBucket::Exec, 3, 53_000_000);
 
         let mm_stats =
             OrderRateLimiter::check_limit(OrderRateBucket::MmHedge, 10, 10, 60_000_000).unwrap();
         let arb_stats =
             OrderRateLimiter::check_limit(OrderRateBucket::ArbHedge, 10, 10, 60_000_000).unwrap();
+        let exec_stats =
+            OrderRateLimiter::check_limit(OrderRateBucket::Exec, 10, 10, 60_000_000).unwrap();
         assert_eq!(mm_stats.count_10s, 1);
         assert_eq!(arb_stats.count_10s, 1);
+        assert_eq!(exec_stats.count_10s, 1);
 
         OrderRateLimiter::clear();
     }

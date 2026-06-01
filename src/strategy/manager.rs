@@ -7,6 +7,7 @@ use crate::signal::common::TradingVenue;
 use crate::signal::trade_signal::TradeSignal;
 use crate::strategy::arb_hedge_strategy::{ArbHedgeSnapshot, ArbHedgeStrategy};
 use crate::strategy::arb_open_strategy::ArbOpenStrategy;
+use crate::strategy::exec_strategy::{ExecSnapshot, ExecStrategy};
 use crate::strategy::mm_hedge_strategy::{MarketMakerHedgeStrategy, MmHedgeSnapshot};
 use crate::strategy::open_strategy_common::{OpenCancelInput, OpenStrategyCommon};
 use crate::strategy::uniform_order_helper::UniformPublishCtx;
@@ -173,6 +174,7 @@ pub enum OrphanStrategyRole {
     Mm,
     Hedge,
     Arb,
+    Exec,
 }
 
 impl OrphanStrategyRole {
@@ -181,6 +183,7 @@ impl OrphanStrategyRole {
             Self::Mm => "mm_orphan",
             Self::Hedge => "hedge_orphan",
             Self::Arb => "arb_orphan",
+            Self::Exec => "exec_orphan",
         }
     }
 }
@@ -704,6 +707,46 @@ impl StrategyManager {
     }
 
     /// 查询指定 symbol 的 Arb 对冲状态策略 id（symbol 不区分大小写）
+    pub fn find_exec_strategy_id(&self, symbol: &str, exec_venue: TradingVenue) -> Option<i32> {
+        let symbol_upper = normalize_symbol_for_internal(symbol);
+        let ids = self.symbol_index.get(&symbol_upper)?;
+        for id in ids {
+            if let Some(strategy) = self.strategies.get(id) {
+                if let Some(exec) = strategy.as_any().downcast_ref::<ExecStrategy>() {
+                    if exec.exec_venue() == exec_venue {
+                        return Some(*id);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    pub fn ensure_exec_strategy(&mut self, symbol: &str, exec_venue: TradingVenue) -> i32 {
+        let symbol_upper = normalize_symbol_for_internal(symbol);
+        if let Some(id) = self.find_exec_strategy_id(&symbol_upper, exec_venue) {
+            return id;
+        }
+        let strategy_id = StrategyManager::generate_strategy_id();
+        let strategy = ExecStrategy::new(strategy_id, symbol_upper.clone(), exec_venue);
+        info!(
+            "ExecStrategy init: symbol={} exec_venue={:?} strategy_id={}",
+            symbol_upper, exec_venue, strategy_id
+        );
+        self.insert(Box::new(strategy));
+        strategy_id
+    }
+
+    pub fn exec_snapshots(&self, now_ts: i64) -> Vec<ExecSnapshot> {
+        let mut snapshots = Vec::new();
+        for strategy in self.strategies.values() {
+            if let Some(exec) = strategy.as_any().downcast_ref::<ExecStrategy>() {
+                snapshots.push(exec.snapshot(now_ts));
+            }
+        }
+        snapshots
+    }
+
     pub fn find_arb_hedge_id(&self, symbol: &str) -> Option<i32> {
         let symbol_upper = normalize_symbol_for_internal(symbol);
         let ids = self.symbol_index.get(&symbol_upper)?;

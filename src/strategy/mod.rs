@@ -4,6 +4,7 @@ pub mod arb_open_strategy;
 pub mod binance_basic_impl;
 pub mod bitget_basic_impl;
 pub mod bybit_basic_impl;
+pub mod exec_strategy;
 pub mod gate_basic_impl;
 pub mod hedge_order_reconcile;
 pub mod hedge_orphan_order_strategy;

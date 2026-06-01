@@ -215,13 +215,16 @@ impl OpenStrategyCommon for ArbOpenStrategy {
         self.handoff_open_order_to_orphan(client_order_id, marker);
     }
 
-    /// arb open 用自身 client_order_id 作为 uniform from_key；
-    /// 配对的 hedge 单回写时也用同一个 id —— 下游可直接按 from_key 字符串 JOIN open/hedge。
+    /// arb open 的 uniform from_key = "{open client_order_id}|{开仓信号 rich from_key}"：
+    /// 前缀 id 与配对 hedge 单一致 —— 下游按第一个 '|' 切分取 id 即可 JOIN open/hedge；
+    /// 后缀带上整条 rich from_key（含开仓四档盘口价 open_bid/open_ask/hedge_bid/hedge_ask），
+    /// 便于事后用信号时刻盘口和成交对齐分析。
     fn uniform_open_publish_ctx(&self) -> UniformPublishCtx {
         let open_state = self.open_state();
         UniformPublishCtx {
             signal_ts: open_state.signal_ts,
-            from_key: open_state.order.open_order_id.to_string().into_bytes(),
+            from_key: format!("{}|{}", open_state.order.open_order_id, open_state.from_key)
+                .into_bytes(),
             price_offset: open_state.price_offset,
         }
     }

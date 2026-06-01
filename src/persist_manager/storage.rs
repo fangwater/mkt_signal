@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context, Result};
 use rocksdb::{
     BlockBasedOptions, Cache, ColumnFamilyDescriptor, DBCompressionType, Direction, IteratorMode,
-    Options, WriteOptions, DB,
+    Options, WriteBatch, WriteOptions, DB,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -48,6 +48,7 @@ pub struct RocksDbStore {
     db: Arc<DB>,
     sync_writes: bool,
     read_only: bool,
+    secondary: bool,
 }
 
 impl RocksDbStore {
@@ -97,6 +98,7 @@ impl RocksDbStore {
             db: Arc::new(db),
             sync_writes,
             read_only: false,
+            secondary: false,
         })
     }
 
@@ -138,7 +140,77 @@ impl RocksDbStore {
             db: Arc::new(db),
             sync_writes: false,
             read_only: true,
+            secondary: false,
         })
+    }
+
+    pub fn open_secondary_with_tuning(
+        primary_path: &str,
+        secondary_path: &str,
+        cf_names: &[&str],
+        tuning: &RocksDbTuning,
+    ) -> Result<Self> {
+        let primary_ref = Path::new(primary_path);
+        if !primary_ref.exists() {
+            return Err(anyhow!(
+                "rocksdb primary path does not exist: {}",
+                primary_path
+            ));
+        }
+
+        let secondary_ref = Path::new(secondary_path);
+        if let Some(parent) = secondary_ref.parent() {
+            if !parent.exists() {
+                std::fs::create_dir_all(parent).with_context(|| {
+                    format!("failed to create secondary parent directory {:?}", parent)
+                })?;
+            }
+        }
+
+        let mut db_opts = Options::default();
+        db_opts.create_if_missing(false);
+        db_opts.create_missing_column_families(false);
+        db_opts.set_compression_type(DBCompressionType::Lz4);
+        db_opts.set_max_open_files(-1);
+        tuning.apply_db_options(&mut db_opts);
+
+        let mut cf_opts = Options::default();
+        tuning.apply_cf_options(&mut cf_opts);
+
+        let mut cf_names_to_open = DB::list_cf(&db_opts, primary_ref)
+            .with_context(|| format!("failed to list column families for {}", primary_path))?;
+        cf_names_to_open.push("default".to_string());
+        cf_names_to_open.extend(cf_names.iter().map(|name| (*name).to_string()));
+        cf_names_to_open.sort();
+        cf_names_to_open.dedup();
+
+        let descriptors = cf_names_to_open
+            .into_iter()
+            .map(|name| ColumnFamilyDescriptor::new(name, cf_opts.clone()))
+            .collect::<Vec<_>>();
+
+        let db = DB::open_cf_descriptors_as_secondary(
+            &db_opts,
+            primary_ref,
+            secondary_ref,
+            descriptors,
+        )?;
+
+        Ok(Self {
+            db: Arc::new(db),
+            sync_writes: false,
+            read_only: true,
+            secondary: true,
+        })
+    }
+
+    pub fn try_catch_up_with_primary(&self) -> Result<()> {
+        if !self.secondary {
+            return Ok(());
+        }
+        self.db
+            .try_catch_up_with_primary()
+            .with_context(|| "rocksdb secondary failed to catch up with primary")
     }
 
     pub fn put(&self, cf_name: &str, key: &[u8], value: &[u8]) -> Result<()> {
@@ -154,6 +226,54 @@ impl RocksDbStore {
         self.db
             .put_cf_opt(cf, key, value, &write_opts)
             .with_context(|| format!("failed to write to column family {}", cf_name))
+    }
+
+    pub fn put_many(&self, writes: &[(String, Vec<u8>, Vec<u8>)]) -> Result<()> {
+        if self.read_only {
+            return Err(anyhow!("rocksdb store is read-only"));
+        }
+        if writes.is_empty() {
+            return Ok(());
+        }
+        let mut batch = WriteBatch::default();
+        for (cf_name, key, value) in writes {
+            let cf = self
+                .db
+                .cf_handle(cf_name.as_str())
+                .ok_or_else(|| anyhow!("column family {} not found", cf_name))?;
+            batch.put_cf(cf, key, value);
+        }
+        let mut write_opts = WriteOptions::default();
+        write_opts.set_sync(self.sync_writes);
+        self.db
+            .write_opt(batch, &write_opts)
+            .with_context(|| "failed to write rocksdb batch")
+    }
+
+    pub fn delete_many(&self, cf_name: &str, keys: &[Vec<u8>]) -> Result<usize> {
+        if self.read_only {
+            return Err(anyhow!("rocksdb store is read-only"));
+        }
+        if keys.is_empty() {
+            return Ok(0);
+        }
+        let cf = self
+            .db
+            .cf_handle(cf_name)
+            .ok_or_else(|| anyhow!("column family {} not found", cf_name))?;
+        let mut batch = WriteBatch::default();
+        for key in keys {
+            batch.delete_cf(cf, key);
+        }
+        let mut write_opts = WriteOptions::default();
+        write_opts.set_sync(self.sync_writes);
+        self.db.write_opt(batch, &write_opts).with_context(|| {
+            format!(
+                "failed to delete rocksdb batch from column family {}",
+                cf_name
+            )
+        })?;
+        Ok(keys.len())
     }
 
     pub fn get(&self, cf_name: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
@@ -251,5 +371,53 @@ impl RocksDbStore {
         }
 
         Ok(entries)
+    }
+
+    pub fn scan_range_batches<F>(
+        &self,
+        cf_name: &str,
+        start_key: &[u8],
+        end_key_exclusive: &[u8],
+        batch_size: usize,
+        mut on_batch: F,
+    ) -> Result<usize>
+    where
+        F: FnMut(Vec<(Vec<u8>, Vec<u8>)>) -> Result<()>,
+    {
+        if start_key >= end_key_exclusive {
+            return Ok(0);
+        }
+
+        let cf = self
+            .db
+            .cf_handle(cf_name)
+            .ok_or_else(|| anyhow!("column family {} not found", cf_name))?;
+
+        let iter = self
+            .db
+            .iterator_cf(cf, IteratorMode::From(start_key, Direction::Forward));
+        let batch_size = batch_size.max(1);
+        let mut entries = Vec::with_capacity(batch_size);
+        let mut total = 0usize;
+
+        for item in iter {
+            let (key, value) = item?;
+            if key.as_ref() >= end_key_exclusive {
+                break;
+            }
+
+            entries.push((key.as_ref().to_vec(), value.as_ref().to_vec()));
+            total += 1;
+            if entries.len() >= batch_size {
+                let batch = std::mem::replace(&mut entries, Vec::with_capacity(batch_size));
+                on_batch(batch)?;
+            }
+        }
+
+        if !entries.is_empty() {
+            on_batch(entries)?;
+        }
+
+        Ok(total)
     }
 }
