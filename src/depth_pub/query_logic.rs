@@ -6,16 +6,26 @@ use super::orderbook::price_to_key;
 use super::query_msg::{
     resp_status_name, tick_index_to_price, DepthQueryHeader, DepthQueryLoadTlenBatchReq,
     DepthQueryLoadTlenBatchResp, DepthQueryLoadTlenSingleReq, DepthQueryLoadTlenSingleResp,
-    DepthQueryTop5PriceTlenReq, DepthQueryTop5PriceTlenResp, DepthQueryType, DEPTH_QUERY_PAYLOAD,
-    RESP_STATUS_BAD_REQUEST, RESP_STATUS_BOOK_INVALID, RESP_STATUS_OK,
+    DepthQueryOrderQueuePositionReq, DepthQueryOrderQueuePositionResp, DepthQueryTop5PriceTlenReq,
+    DepthQueryTop5PriceTlenResp, DepthQueryType, DEPTH_QUERY_PAYLOAD, RESP_STATUS_BAD_REQUEST,
+    RESP_STATUS_BOOK_INVALID, RESP_STATUS_OK, RESP_STATUS_ORDER_MISSING,
     RESP_STATUS_PAYLOAD_TOO_LARGE, RESP_STATUS_SYMBOL_MISSING, RESP_STATUS_UNSUPPORTED_TYPE,
     TLEN_QUERY_AMOUNT_INVALID,
 };
 use super::query_snapshot::SymbolQuerySnapshot;
+use super::queue_position::QueuePositionSnapshot;
+use queue_position_engine::Side;
 
 pub trait DepthQuerySource {
     fn venue_slug(&self) -> &str;
     fn resolve_snapshot(&self, symbol: &str) -> Option<Arc<SymbolQuerySnapshot>>;
+    fn resolve_order_queue_position(
+        &self,
+        _account_id: Option<&str>,
+        _client_order_id: i64,
+    ) -> Option<QueuePositionSnapshot> {
+        None
+    }
 }
 
 pub fn build_query_response<S: DepthQuerySource>(
@@ -64,6 +74,13 @@ pub fn build_query_response<S: DepthQuerySource>(
             let resp_payload = &mut resp[payload_offset..];
             let (st, written) =
                 handle_top5_price_tlen_query(source, &header.symbol, req_payload, resp_payload);
+            status = st;
+            body_len = written;
+        }
+        Some(DepthQueryType::OrderQueuePosition) => {
+            let resp_payload = &mut resp[payload_offset..];
+            let (st, written) =
+                handle_order_queue_position_query(source, req_payload, resp_payload);
             status = st;
             body_len = written;
         }
@@ -235,4 +252,58 @@ fn query_tlen_amount_by_tick_index(snapshot: Option<&SymbolQuerySnapshot>, tick_
     let price_key = price_to_key(price);
 
     snapshot.amount_at_price_key(price_key).unwrap_or(0.0)
+}
+
+fn handle_order_queue_position_query<S: DepthQuerySource>(
+    source: &S,
+    req_payload: &[u8],
+    resp_payload: &mut [u8],
+) -> (u8, usize) {
+    if resp_payload.len() < 1 + DepthQueryOrderQueuePositionResp::RESP_LEN {
+        return (RESP_STATUS_PAYLOAD_TOO_LARGE, 0);
+    }
+
+    let req = match DepthQueryOrderQueuePositionReq::from_payload(req_payload) {
+        Ok(req) => req,
+        Err(err) => {
+            warn!("Depth query order queue position req parse failed: {err:#}");
+            return (RESP_STATUS_BAD_REQUEST, 1);
+        }
+    };
+
+    let Some(snapshot) =
+        source.resolve_order_queue_position(req.account_id.as_deref(), req.client_order_id)
+    else {
+        resp_payload[0] = RESP_STATUS_ORDER_MISSING;
+        return (RESP_STATUS_ORDER_MISSING, 1);
+    };
+
+    let resp = DepthQueryOrderQueuePositionResp {
+        timestamp_us: req.timestamp_us,
+        client_order_id: snapshot.order_id,
+        side: match snapshot.side {
+            Side::Buy => 1,
+            Side::Sell => 2,
+        },
+        price_key: snapshot.price_key,
+        initial_qty: snapshot.initial_qty,
+        remaining_qty: snapshot.remaining_qty,
+        queue_remaining_qty: snapshot.queue_remaining_qty,
+        public_consumed_own_qty: snapshot.public_consumed_own_qty,
+        inpos: snapshot.inpos,
+        backlen: snapshot.backlen,
+        tlen: snapshot.tlen,
+    };
+
+    match resp.write_to(&mut resp_payload[1..]) {
+        Ok(written) => {
+            resp_payload[0] = RESP_STATUS_OK;
+            (RESP_STATUS_OK, 1 + written)
+        }
+        Err(err) => {
+            warn!("Depth query order queue position resp write failed: {err:#}");
+            resp_payload[0] = RESP_STATUS_PAYLOAD_TOO_LARGE;
+            (RESP_STATUS_PAYLOAD_TOO_LARGE, 1)
+        }
+    }
 }

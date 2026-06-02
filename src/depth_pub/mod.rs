@@ -6,6 +6,7 @@
 pub mod app;
 pub mod cfg;
 pub mod depth_msg;
+pub mod order_queue_msg;
 pub mod orderbook;
 pub mod publisher;
 pub mod query_client;
@@ -13,3 +14,4 @@ pub mod query_logic;
 pub mod query_msg;
 pub mod query_server;
 pub mod query_snapshot;
+pub mod queue_position;

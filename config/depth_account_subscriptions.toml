@@ -1,0 +1,22 @@
+# Depth pub private account monitor subscriptions.
+#
+# depth_pub is a public market-data process. Account monitor services are private
+# and include deployment namespaces, so list full IPC service names here.
+
+[runtime]
+enabled = true
+reload_interval_secs = 1800
+order_ttl_secs = 1800
+
+# Example:
+# Keep account_id stable for one deployed account. Normal terminal OrderUpdate
+# and TradeUpdate messages clear tracked orders. order_ttl_secs is only a
+# fallback for stale tracked orders after missed account events.
+#
+# [[accounts]]
+# account_id = "gate_fr_arb01"
+# service_name = "gate_fr_arb01/account_pubs/gate_pm"
+# order pos pub is derived from service_name:
+# "gate_fr_arb01/order_pos_pub/gate-futures"
+# venue = "gate_futures"
+# amount_scale = 1.0

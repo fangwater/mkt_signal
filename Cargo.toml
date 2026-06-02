@@ -204,7 +204,7 @@ path = "src/bin/inspect_model_input.rs"
 
 [dependencies]
 factor_engine = { path = "crates/factor_engine" }
-inpos_engine = { path = "crates/inpos_engine" }
+queue_position_engine = { path = "crates/inpos_engine" }
 local-ip-address = "0.6"
 serde_yaml = "0.9"
 tokio = { version = "1.0", features = ["full"] }

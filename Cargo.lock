@@ -1846,10 +1846,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "inpos_engine"
-version = "0.1.0"
-
-[[package]]
 name = "io-uring"
 version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2174,7 +2170,6 @@ dependencies = [
  "hmac",
  "iceoryx2",
  "indexmap 2.11.4",
- "inpos_engine",
  "lazy_static",
  "libc",
  "local-ip-address",
@@ -2188,6 +2183,7 @@ dependencies = [
  "prettytable",
  "prost",
  "protoc-bin-vendored",
+ "queue_position_engine",
  "rayon",
  "redis",
  "reqwest",
@@ -3270,6 +3266,10 @@ dependencies = [
  "quote",
  "syn 2.0.106",
 ]
+
+[[package]]
+name = "queue_position_engine"
+version = "0.1.0"
 
 [[package]]
 name = "quote"

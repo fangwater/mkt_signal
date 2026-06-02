@@ -10,6 +10,7 @@ const BATCH_FIXED_LEN: usize = 12;
 const TOP5_MAX_LEVELS: usize = 5;
 const TOP5_LEVEL_BYTES: usize = 16; // tick_index(i64) + tlen(f64)
 const TOP5_FIXED_LEN: usize = 12; // ts(i64) + bid_count(u8) + ask_count(u8) + reserved(u16)
+const ORDER_QUEUE_POSITION_RESP_LEN: usize = 88;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,6 +19,7 @@ pub enum DepthQueryType {
     LoadTlenBatch = 2,
     Top5PriceTlen = 3,
     Stats = 4,
+    OrderQueuePosition = 5,
 }
 
 impl DepthQueryType {
@@ -27,6 +29,7 @@ impl DepthQueryType {
             2 => Some(Self::LoadTlenBatch),
             3 => Some(Self::Top5PriceTlen),
             4 => Some(Self::Stats),
+            5 => Some(Self::OrderQueuePosition),
             _ => None,
         }
     }
@@ -39,6 +42,7 @@ pub const RESP_STATUS_BOOK_INVALID: u8 = 3;
 pub const RESP_STATUS_UNSUPPORTED_TYPE: u8 = 4;
 pub const RESP_STATUS_PAYLOAD_TOO_LARGE: u8 = 5;
 pub const RESP_STATUS_DEPTH_DISABLED: u8 = 6;
+pub const RESP_STATUS_ORDER_MISSING: u8 = 7;
 
 /// tlen 查询返回值语义（适用于单价与批量查询）
 /// - `-1.0`: 查询输入非法或上下文非法（例如 symbol 无效、tick_index 无效、订单簿不可用）
@@ -56,6 +60,7 @@ pub fn resp_status_name(status: u8) -> &'static str {
         RESP_STATUS_UNSUPPORTED_TYPE => "unsupported_type",
         RESP_STATUS_PAYLOAD_TOO_LARGE => "payload_too_large",
         RESP_STATUS_DEPTH_DISABLED => "depth_disabled",
+        RESP_STATUS_ORDER_MISSING => "order_missing",
         _ => "unknown",
     }
 }
@@ -567,6 +572,158 @@ impl DepthQueryTop5PriceTlenResp {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct DepthQueryOrderQueuePositionReq {
+    pub timestamp_us: i64,
+    pub client_order_id: i64,
+    pub account_id: Option<String>,
+}
+
+impl DepthQueryOrderQueuePositionReq {
+    pub const REQ_LEN: usize = 16;
+
+    pub fn from_payload(payload: &[u8]) -> Result<Self> {
+        if payload.len() < Self::REQ_LEN {
+            return Err(anyhow!(
+                "depth query order queue position req too short: {} < {}",
+                payload.len(),
+                Self::REQ_LEN
+            ));
+        }
+
+        let account_id = if payload.len() > Self::REQ_LEN {
+            let account_id_len = payload[Self::REQ_LEN] as usize;
+            if account_id_len == 0 {
+                None
+            } else {
+                let account_id_start = Self::REQ_LEN + 1;
+                let account_id_end = account_id_start + account_id_len;
+                if payload.len() < account_id_end {
+                    return Err(anyhow!(
+                        "depth query order queue position req truncated account_id: {} < {}",
+                        payload.len(),
+                        account_id_end
+                    ));
+                }
+                Some(
+                    std::str::from_utf8(&payload[account_id_start..account_id_end])
+                        .map_err(|err| {
+                            anyhow!("depth query order queue position account_id not utf8: {err}")
+                        })?
+                        .to_string(),
+                )
+            }
+        } else {
+            None
+        };
+
+        Ok(Self {
+            timestamp_us: i64::from_le_bytes(payload[0..8].try_into()?),
+            client_order_id: i64::from_le_bytes(payload[8..16].try_into()?),
+            account_id,
+        })
+    }
+
+    pub fn write_to(&self, payload: &mut [u8]) -> Result<usize> {
+        let account_id_len = self.account_id.as_ref().map(|v| v.len()).unwrap_or(0);
+        if account_id_len > u8::MAX as usize {
+            return Err(anyhow!(
+                "depth query order queue position account_id too long: {}",
+                account_id_len
+            ));
+        }
+        let required = Self::REQ_LEN
+            + if account_id_len > 0 {
+                1 + account_id_len
+            } else {
+                0
+            };
+        if payload.len() < required {
+            return Err(anyhow!(
+                "depth query order queue position req write overflow: {} < {}",
+                payload.len(),
+                required
+            ));
+        }
+        payload[0..8].copy_from_slice(&self.timestamp_us.to_le_bytes());
+        payload[8..16].copy_from_slice(&self.client_order_id.to_le_bytes());
+        if let Some(account_id) = self.account_id.as_ref() {
+            if !account_id.is_empty() {
+                payload[Self::REQ_LEN] = account_id_len as u8;
+                payload[Self::REQ_LEN + 1..required].copy_from_slice(account_id.as_bytes());
+            }
+        }
+        Ok(required)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DepthQueryOrderQueuePositionResp {
+    pub timestamp_us: i64,
+    pub client_order_id: i64,
+    pub side: u8,
+    pub price_key: i64,
+    pub initial_qty: f64,
+    pub remaining_qty: f64,
+    pub queue_remaining_qty: f64,
+    pub public_consumed_own_qty: f64,
+    pub inpos: f64,
+    pub backlen: f64,
+    pub tlen: f64,
+}
+
+impl DepthQueryOrderQueuePositionResp {
+    pub const RESP_LEN: usize = ORDER_QUEUE_POSITION_RESP_LEN;
+
+    pub fn from_payload(payload: &[u8]) -> Result<Self> {
+        if payload.len() < Self::RESP_LEN {
+            return Err(anyhow!(
+                "depth query order queue position resp too short: {} < {}",
+                payload.len(),
+                Self::RESP_LEN
+            ));
+        }
+
+        Ok(Self {
+            timestamp_us: i64::from_le_bytes(payload[0..8].try_into()?),
+            client_order_id: i64::from_le_bytes(payload[8..16].try_into()?),
+            side: payload[16],
+            price_key: i64::from_le_bytes(payload[24..32].try_into()?),
+            initial_qty: f64::from_le_bytes(payload[32..40].try_into()?),
+            remaining_qty: f64::from_le_bytes(payload[40..48].try_into()?),
+            queue_remaining_qty: f64::from_le_bytes(payload[48..56].try_into()?),
+            public_consumed_own_qty: f64::from_le_bytes(payload[56..64].try_into()?),
+            inpos: f64::from_le_bytes(payload[64..72].try_into()?),
+            backlen: f64::from_le_bytes(payload[72..80].try_into()?),
+            tlen: f64::from_le_bytes(payload[80..88].try_into()?),
+        })
+    }
+
+    pub fn write_to(&self, payload: &mut [u8]) -> Result<usize> {
+        if payload.len() < Self::RESP_LEN {
+            return Err(anyhow!(
+                "depth query order queue position resp write overflow: {} < {}",
+                payload.len(),
+                Self::RESP_LEN
+            ));
+        }
+
+        payload[0..8].copy_from_slice(&self.timestamp_us.to_le_bytes());
+        payload[8..16].copy_from_slice(&self.client_order_id.to_le_bytes());
+        payload[16] = self.side;
+        payload[17..24].fill(0);
+        payload[24..32].copy_from_slice(&self.price_key.to_le_bytes());
+        payload[32..40].copy_from_slice(&self.initial_qty.to_le_bytes());
+        payload[40..48].copy_from_slice(&self.remaining_qty.to_le_bytes());
+        payload[48..56].copy_from_slice(&self.queue_remaining_qty.to_le_bytes());
+        payload[56..64].copy_from_slice(&self.public_consumed_own_qty.to_le_bytes());
+        payload[64..72].copy_from_slice(&self.inpos.to_le_bytes());
+        payload[72..80].copy_from_slice(&self.backlen.to_le_bytes());
+        payload[80..88].copy_from_slice(&self.tlen.to_le_bytes());
+        Ok(Self::RESP_LEN)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -660,5 +817,53 @@ mod tests {
         assert_eq!(parsed_resp.timestamp_us, 999);
         assert_eq!(parsed_resp.bids, vec![(1010, 1.2), (1005, 2.3)]);
         assert_eq!(parsed_resp.asks, vec![(1015, 1.1)]);
+    }
+
+    #[test]
+    fn order_queue_position_req_resp_roundtrip() {
+        let mut req_buf = [0u8; DepthQueryOrderQueuePositionReq::REQ_LEN];
+        let req = DepthQueryOrderQueuePositionReq {
+            timestamp_us: 1234,
+            client_order_id: 42,
+            account_id: None,
+        };
+        req.write_to(&mut req_buf).unwrap();
+        let parsed_req = DepthQueryOrderQueuePositionReq::from_payload(&req_buf).unwrap();
+        assert_eq!(parsed_req.timestamp_us, 1234);
+        assert_eq!(parsed_req.client_order_id, 42);
+        assert_eq!(parsed_req.account_id, None);
+
+        let mut account_req_buf = [0u8; 64];
+        let account_req = DepthQueryOrderQueuePositionReq {
+            timestamp_us: 1234,
+            client_order_id: 42,
+            account_id: Some("gate_fr_arb01".to_string()),
+        };
+        let account_req_len = account_req.write_to(&mut account_req_buf).unwrap();
+        let parsed_account_req =
+            DepthQueryOrderQueuePositionReq::from_payload(&account_req_buf[..account_req_len])
+                .unwrap();
+        assert_eq!(
+            parsed_account_req.account_id.as_deref(),
+            Some("gate_fr_arb01")
+        );
+
+        let mut resp_buf = [0u8; DepthQueryOrderQueuePositionResp::RESP_LEN];
+        let resp = DepthQueryOrderQueuePositionResp {
+            timestamp_us: 5678,
+            client_order_id: 42,
+            side: 1,
+            price_key: 123_000,
+            initial_qty: 10.0,
+            remaining_qty: 8.0,
+            queue_remaining_qty: 7.0,
+            public_consumed_own_qty: 1.0,
+            inpos: 2.0,
+            backlen: 3.0,
+            tlen: 12.0,
+        };
+        resp.write_to(&mut resp_buf).unwrap();
+        let parsed_resp = DepthQueryOrderQueuePositionResp::from_payload(&resp_buf).unwrap();
+        assert_eq!(parsed_resp, resp);
     }
 }

@@ -164,20 +164,20 @@ pub struct LevelSummary {
 }
 
 #[derive(Debug, Clone)]
-pub struct InposEngine {
+pub struct QueuePositionEngine {
     orders: HashMap<OrderId, TrackedOrder>,
     level_orders: HashMap<LevelKey, VecDeque<OrderId>>,
     level_qty: HashMap<LevelKey, Qty>,
     eps: Qty,
 }
 
-impl Default for InposEngine {
+impl Default for QueuePositionEngine {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl InposEngine {
+impl QueuePositionEngine {
     pub fn new() -> Self {
         Self {
             orders: HashMap::new(),
@@ -235,6 +235,13 @@ impl InposEngine {
             backlen: order.backlen(tlen),
             tlen,
         })
+    }
+
+    pub fn order_snapshots(&self) -> Vec<OrderSnapshot> {
+        self.orders
+            .keys()
+            .filter_map(|order_id| self.order_snapshot(*order_id))
+            .collect()
     }
 
     pub fn level_summary(&self, level: &LevelKey) -> LevelSummary {
@@ -452,7 +459,7 @@ fn non_negative(value: Qty) -> Qty {
 mod tests {
     use super::*;
 
-    fn add_sell(engine: &mut InposEngine, order_id: OrderId, qty: Qty, visible: Qty) {
+    fn add_sell(engine: &mut QueuePositionEngine, order_id: OrderId, qty: Qty, visible: Qty) {
         assert!(engine.add_order(AddOrder {
             order_id,
             symbol: "btcusdt".to_string(),
@@ -466,7 +473,7 @@ mod tests {
 
     #[test]
     fn add_order_initializes_inpos_from_visible_level() {
-        let mut engine = InposEngine::new();
+        let mut engine = QueuePositionEngine::new();
         add_sell(&mut engine, 1, 2.0, 10.0);
 
         let snapshot = engine.order_snapshot(1).unwrap();
@@ -478,7 +485,7 @@ mod tests {
 
     #[test]
     fn add_order_can_subtract_own_qty_when_level_already_includes_it() {
-        let mut engine = InposEngine::new();
+        let mut engine = QueuePositionEngine::new();
         assert!(engine.add_order(AddOrder {
             order_id: 1,
             symbol: "BTCUSDT".to_string(),
@@ -496,7 +503,7 @@ mod tests {
 
     #[test]
     fn public_trade_consumes_front_before_own_order() {
-        let mut engine = InposEngine::new();
+        let mut engine = QueuePositionEngine::new();
         add_sell(&mut engine, 1, 2.0, 10.0);
 
         engine.apply_public_trade(PublicTrade {
@@ -521,7 +528,7 @@ mod tests {
 
     #[test]
     fn public_trade_does_not_remove_without_account_update() {
-        let mut engine = InposEngine::new();
+        let mut engine = QueuePositionEngine::new();
         add_sell(&mut engine, 1, 2.0, 1.0);
 
         engine.apply_public_trade(PublicTrade {
@@ -539,7 +546,7 @@ mod tests {
 
     #[test]
     fn public_trade_crosses_prior_own_queue_for_later_order() {
-        let mut engine = InposEngine::new();
+        let mut engine = QueuePositionEngine::new();
         add_sell(&mut engine, 1, 2.0, 1.0);
         add_sell(&mut engine, 2, 1.5, 3.0);
 
@@ -560,7 +567,7 @@ mod tests {
 
     #[test]
     fn level_increase_only_updates_tlen_and_backlen() {
-        let mut engine = InposEngine::new();
+        let mut engine = QueuePositionEngine::new();
         add_sell(&mut engine, 1, 2.0, 10.0);
 
         engine.apply_level_update(LevelUpdate {
@@ -578,7 +585,7 @@ mod tests {
 
     #[test]
     fn level_decrease_allocates_cancel_between_front_and_back() {
-        let mut engine = InposEngine::new();
+        let mut engine = QueuePositionEngine::new();
         add_sell(&mut engine, 1, 2.0, 12.0);
         engine.apply_level_update(LevelUpdate {
             symbol: "BTCUSDT".to_string(),
@@ -603,7 +610,7 @@ mod tests {
 
     #[test]
     fn fill_update_changes_remaining_and_terminal_fill_removes() {
-        let mut engine = InposEngine::new();
+        let mut engine = QueuePositionEngine::new();
         add_sell(&mut engine, 1, 2.0, 10.0);
 
         assert!(engine
@@ -624,7 +631,7 @@ mod tests {
 
     #[test]
     fn remove_order_cleans_level_index() {
-        let mut engine = InposEngine::new();
+        let mut engine = QueuePositionEngine::new();
         add_sell(&mut engine, 1, 2.0, 10.0);
 
         let level = LevelKey::new("BTCUSDT", BookSide::Ask, 100);

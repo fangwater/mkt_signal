@@ -21,10 +21,10 @@ use super::cfg::{PersistenceConfig, RlFactorConfig, RuntimeConfig, TradeFlowFeat
 use super::publisher::{RlFactorPublisher, TradeFlowFeaturePublisher};
 use super::vol_state::{SealedBar, VolState};
 use crate::common::amount_threshold::{is_online_amount_threshold, AmountThreshold};
-use crate::common::mkt_msg::MktMsgType;
 use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::trade_flow_feature_msg::{TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_DIM};
+use crate::common::trade_msg_parser::{parse_trade, TradeSide, TradeTick};
 use crate::depth_pub::depth_msg::{DepthMsgType, DEPTH25_MAX_BYTES, DEPTH50_MAX_BYTES};
 use crate::signal::common::TradingVenue;
 
@@ -65,22 +65,6 @@ impl RlReturnVolatilityRuntimeConfig {
             scale_factor: cfg.scale_factor,
         })
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-enum TradeSide {
-    Buy,
-    Sell,
-}
-
-#[derive(Debug)]
-struct TradeTick {
-    symbol: String,
-    trade_id: i64,
-    timestamp_ms: i64,
-    side: TradeSide,
-    price: f64,
-    amount: f64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1977,98 +1961,6 @@ fn is_trade_flow_feature_cf_for_venue(cf_name: &str, venue_slug: &str) -> bool {
 fn encode_ts_key(ts_ms: i64) -> [u8; 8] {
     let ts_u64 = if ts_ms <= 0 { 0u64 } else { ts_ms as u64 };
     ts_u64.to_be_bytes()
-}
-
-fn parse_trade(data: &[u8], venue: TradingVenue) -> Option<TradeTick> {
-    if data.len() < 8 {
-        return None;
-    }
-
-    let msg_type = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-    if msg_type != MktMsgType::TradeInfo as u32 {
-        return None;
-    }
-
-    let symbol_len = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
-    let min_len = 8 + symbol_len + 8 + 8 + 8 + 8;
-    if data.len() < min_len {
-        return None;
-    }
-
-    let symbol_raw = std::str::from_utf8(&data[8..8 + symbol_len]).ok()?;
-    let symbol = normalize_symbol_for_venue(symbol_raw, venue);
-    let mut offset = 8 + symbol_len;
-
-    let trade_id = i64::from_le_bytes([
-        data[offset],
-        data[offset + 1],
-        data[offset + 2],
-        data[offset + 3],
-        data[offset + 4],
-        data[offset + 5],
-        data[offset + 6],
-        data[offset + 7],
-    ]);
-    offset += 8;
-    let timestamp_ms = i64::from_le_bytes([
-        data[offset],
-        data[offset + 1],
-        data[offset + 2],
-        data[offset + 3],
-        data[offset + 4],
-        data[offset + 5],
-        data[offset + 6],
-        data[offset + 7],
-    ]);
-    offset += 8;
-
-    let side = match data[offset] as char {
-        'B' | 'b' => TradeSide::Buy,
-        'S' | 's' => TradeSide::Sell,
-        _ => return None,
-    };
-    offset += 8; // side + padding
-
-    let price = f64::from_le_bytes([
-        data[offset],
-        data[offset + 1],
-        data[offset + 2],
-        data[offset + 3],
-        data[offset + 4],
-        data[offset + 5],
-        data[offset + 6],
-        data[offset + 7],
-    ]);
-    offset += 8;
-
-    let amount = f64::from_le_bytes([
-        data[offset],
-        data[offset + 1],
-        data[offset + 2],
-        data[offset + 3],
-        data[offset + 4],
-        data[offset + 5],
-        data[offset + 6],
-        data[offset + 7],
-    ]);
-
-    if !price.is_finite()
-        || !amount.is_finite()
-        || price <= 0.0
-        || amount <= 0.0
-        || timestamp_ms <= 0
-    {
-        return None;
-    }
-
-    Some(TradeTick {
-        symbol,
-        trade_id,
-        timestamp_ms,
-        side,
-        price,
-        amount,
-    })
 }
 
 fn parse_depth_snapshot(
