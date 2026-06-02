@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 use crate::pre_trade::order_manager::{OrderType, Side};
+use crate::signal::common::TradingVenue;
 use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce};
 
 #[derive(Clone)]
@@ -358,7 +359,7 @@ impl BinanceBasicAccountEventParser {
             .unwrap_or(0.0);
 
         let bytes = BasicTradeLiteMsg::create(
-            BinanceBasicOrderMsg::VENUE_UM,
+            TradingVenue::BinanceFutures as u8,
             event_time,
             trade_time,
             symbol,
@@ -676,6 +677,7 @@ mod tests {
         assert_eq!(scope, BasicAccountScope::BinanceStdUm);
 
         let msg = BasicTradeLiteMsg::from_bytes(payload).expect("trade lite payload");
+        assert_eq!(msg.venue, TradingVenue::BinanceFutures as u8);
         assert_eq!(msg.symbol, "BTCUSDT");
         assert_eq!(msg.client_order_id, 123456);
         assert_eq!(msg.trade_id_str(), "556677");

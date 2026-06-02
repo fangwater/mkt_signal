@@ -22,6 +22,10 @@ fn map_trading_venue(code: u8) -> TradingVenue {
     }
 }
 
+fn map_trade_lite_trading_venue(code: u8) -> TradingVenue {
+    TradingVenue::from_u8(code).unwrap_or(TradingVenue::BinanceMargin)
+}
+
 impl OrderUpdate for BinanceBasicOrderMsg {
     fn event_time(&self) -> i64 {
         self.event_time.saturating_mul(1_000)
@@ -160,6 +164,6 @@ impl TradeUpdateLite for BasicTradeLiteMsg {
     }
 
     fn trading_venue(&self) -> TradingVenue {
-        map_trading_venue(self.venue)
+        map_trade_lite_trading_venue(self.venue)
     }
 }

@@ -145,6 +145,15 @@ fn exchange_scoped_total_equity_scope(
     }
 }
 
+fn trade_update_lite_enabled_for_venues(
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+) -> bool {
+    let open_exchange = exchange_from_venue(open_venue);
+    let hedge_exchange = exchange_from_venue(hedge_venue);
+    open_exchange == hedge_exchange && matches!(open_exchange, Exchange::Bybit | Exchange::Okex)
+}
+
 // ==================== Deduplication Cache ====================
 
 /// 简单的去重缓存（固定容量，FIFO 淘汰）
@@ -642,10 +651,8 @@ impl BasicAccountListener {
                 _ => {}
             },
             BasicAccountEventType::TradeUpdateLite => {
-                // 仅 bybit intra（open 和 hedge 均为 Bybit）启用 TradeLite 派发。
-                if exchange_from_venue(self.open_venue) == Exchange::Bybit
-                    && exchange_from_venue(self.hedge_venue) == Exchange::Bybit
-                {
+                // 仅在已验证轻量成交频道的同所路径启用 TradeLite 派发。
+                if trade_update_lite_enabled_for_venues(self.open_venue, self.hedge_venue) {
                     if let Ok(msg) = BasicTradeLiteMsg::from_bytes(data) {
                         dispatch_trade_update_lite_generic(&self.strategy_mgr, &msg);
                     }
@@ -4585,6 +4592,26 @@ mod tests {
             ),
             BYBIT_DERIVATIVES_SERVICE
         );
+    }
+
+    #[test]
+    fn trade_update_lite_enabled_for_bybit_and_okex_intra_only() {
+        assert!(trade_update_lite_enabled_for_venues(
+            TradingVenue::BybitMargin,
+            TradingVenue::BybitFutures,
+        ));
+        assert!(trade_update_lite_enabled_for_venues(
+            TradingVenue::OkexMargin,
+            TradingVenue::OkexFutures,
+        ));
+        assert!(!trade_update_lite_enabled_for_venues(
+            TradingVenue::OkexMargin,
+            TradingVenue::BybitFutures,
+        ));
+        assert!(!trade_update_lite_enabled_for_venues(
+            TradingVenue::GateMargin,
+            TradingVenue::GateFutures,
+        ));
     }
 
     #[test]

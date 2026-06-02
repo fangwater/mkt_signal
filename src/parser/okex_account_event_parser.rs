@@ -5,6 +5,7 @@ use crate::common::basic_account_msg::{
     BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg, OkexOrderMsg,
 };
 use crate::parser::default_parser::Parser;
+use crate::signal::common::TradingVenue;
 use bytes::Bytes;
 use log::{debug, info, warn};
 use tokio::sync::mpsc;
@@ -404,8 +405,11 @@ impl OkexAccountEventParser {
                 .map(|s| s.eq_ignore_ascii_case("M"))
                 .unwrap_or(false);
 
-            // venue: SWAP → 2, 其余 → 0（与 OkexOrderMsg.inst_type 口径一致）
-            let venue: u8 = if inst_id.ends_with("-SWAP") { 2 } else { 0 };
+            let venue: u8 = if inst_id.ends_with("-SWAP") {
+                TradingVenue::OkexFutures as u8
+            } else {
+                TradingVenue::OkexMargin as u8
+            };
 
             let msg = BasicTradeLiteMsg::create(
                 venue,
@@ -686,6 +690,45 @@ mod tests {
         assert!((risk.margin_ratio - 66.7489666667).abs() < 1e-12);
         assert!((risk.borrowed_usd - 100.0).abs() < 1e-12);
         assert!((risk.notional_usd - 300_000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn fills_channel_emits_trade_update_lite() {
+        let parser = OkexAccountEventParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let json = r#"{
+            "arg": {"channel": "fills", "instId": "BTC-USDT-SWAP"},
+            "data": [{
+                "instId": "BTC-USDT-SWAP",
+                "fillSz": "100",
+                "fillPx": "70000",
+                "side": "buy",
+                "ts": "1705449605015",
+                "ordId": "680800019749904384",
+                "clOrdId": "1234567890",
+                "tradeId": "12345",
+                "execType": "T",
+                "count": "10"
+            }]
+        }"#;
+
+        assert_eq!(parser.parse(Bytes::from(json), &tx), 1);
+
+        let wrapped = rx.try_recv().expect("trade lite event");
+        let (event_type, scope, payload) =
+            split_basic_account_event(&wrapped).expect("wrapped event");
+        assert_eq!(event_type, BasicAccountEventType::TradeUpdateLite);
+        assert_eq!(scope, BasicAccountScope::OkexUnified);
+
+        let msg = BasicTradeLiteMsg::from_bytes(payload).expect("trade lite payload");
+        assert_eq!(msg.venue, TradingVenue::OkexFutures as u8);
+        assert_eq!(msg.symbol, "BTC-USDT-SWAP");
+        assert_eq!(msg.client_order_id, 1_234_567_890);
+        assert_eq!(msg.trade_id_str(), "12345");
+        assert_eq!(msg.side, 1);
+        assert_eq!(msg.is_maker, 0);
+        assert!((msg.last_executed_price - 70_000.0).abs() < 1e-9);
+        assert!((msg.last_executed_quantity - 100.0).abs() < 1e-9);
     }
 
     #[test]
