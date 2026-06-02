@@ -59,7 +59,6 @@ impl DepthMsgPublisher {
         } else {
             None
         };
-
         info!(
             "DepthMsgPublisher created for {}: depth25={}, depth50={}",
             venue_slug, enable_depth25, enable_depth50
