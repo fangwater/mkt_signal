@@ -629,7 +629,7 @@ async fn main() -> Result<()> {
                                 QueryRequestType::BybitPositionsSnapshot,
                                 now,
                                 now,
-                                Bytes::from_static(b"category=linear&settleCoin=USDT"),
+                                Bytes::from_static(b"category=linear&settleCoin=USDT&limit=200"),
                             );
                             let _ = QueryEngHub::publish_query_request("bybit", &req.to_bytes());
                             info!("snapshot query sent: bybit linear positions snapshot");

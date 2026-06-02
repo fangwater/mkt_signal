@@ -25,7 +25,7 @@ use crate::trade_engine::query_parsers::bybit_account_balance_snapshot::parse_by
 use crate::trade_engine::query_parsers::bybit_order::{
     parse_bybit_order_query_json, BybitOrderQueryParseErrorKind, BybitOrderQueryParseResult,
 };
-use crate::trade_engine::query_parsers::bybit_positions_snapshot::parse_bybit_positions_snapshot;
+use crate::trade_engine::query_parsers::bybit_positions_snapshot::parse_bybit_positions_snapshot_pages;
 use crate::trade_engine::query_parsers::compact_order::ORDER_QUERY_NOT_FOUND_MARKER;
 use crate::trade_engine::query_parsers::gate_positions_snapshot::parse_gate_positions_snapshot_with_meta;
 use crate::trade_engine::query_parsers::gate_unified_balance_snapshot::parse_gate_unified_balance_snapshot;
@@ -2127,6 +2127,94 @@ impl TradeEngine {
                                 );
                             }
 
+                            if matches!(
+                                msg.req_type,
+                                crate::trade_engine::query_request::QueryRequestType::BybitPositionsSnapshot
+                            ) {
+                                match crate::trade_engine::bybit_query::bybit_rest_get_position_list_pages(
+                                    &bybit_http,
+                                    creds,
+                                    endpoint,
+                                    qs,
+                                )
+                                .await
+                                {
+                                    Ok(pages) => {
+                                        let page_refs: Vec<&str> =
+                                            pages.iter().map(String::as_str).collect();
+                                        if let Some(msgs) =
+                                            parse_bybit_positions_snapshot_pages(page_refs)
+                                        {
+                                            if msgs.is_empty() {
+                                                debug!(
+                                                    "trade_engine bybit positions snapshot returned empty list req_type={:?} client_query_id={} pages={}",
+                                                    msg.req_type,
+                                                    msg.client_query_id,
+                                                    pages.len()
+                                                );
+                                                let _ = query_resp_sink.send(QueryExecOutcome {
+                                                    req_type: msg.req_type,
+                                                    client_query_id: msg.client_query_id,
+                                                    status: 200,
+                                                    body: bytes::Bytes::new(),
+                                                    exchange: exchange_copy,
+                                                    ip_used_weight_1m: None,
+                                                    query_count_1m: None,
+                                                });
+                                            } else {
+                                                for payload in msgs {
+                                                    let _ = query_resp_sink.send(QueryExecOutcome {
+                                                        req_type: msg.req_type,
+                                                        client_query_id: msg.client_query_id,
+                                                        status: 200,
+                                                        body: payload,
+                                                        exchange: exchange_copy,
+                                                        ip_used_weight_1m: None,
+                                                        query_count_1m: None,
+                                                    });
+                                                }
+                                            }
+                                        } else {
+                                            warn!(
+                                                "trade_engine bybit positions snapshot parse failed req_type={:?} client_query_id={} pages={}",
+                                                msg.req_type,
+                                                msg.client_query_id,
+                                                pages.len()
+                                            );
+                                            let _ = query_resp_sink.send(QueryExecOutcome {
+                                                req_type: msg.req_type,
+                                                client_query_id: msg.client_query_id,
+                                                status: 200,
+                                                body: bytes::Bytes::from_static(b"E"),
+                                                exchange: exchange_copy,
+                                                ip_used_weight_1m: None,
+                                                query_count_1m: None,
+                                            });
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            "trade_engine bybit positions snapshot failed req_type={:?} client_query_id={} endpoint={} qs={} err={:#}",
+                                            msg.req_type,
+                                            msg.client_query_id,
+                                            endpoint,
+                                            qs,
+                                            e
+                                        );
+                                        let _ = query_resp_sink.send(QueryExecOutcome {
+                                            req_type: msg.req_type,
+                                            client_query_id: msg.client_query_id,
+                                            status: 0,
+                                            body: bytes::Bytes::from(e.to_string()),
+                                            exchange: exchange_copy,
+                                            ip_used_weight_1m: None,
+                                            query_count_1m: None,
+                                        });
+                                    }
+                                }
+                                continue;
+                            }
+
                             match crate::trade_engine::bybit_query::bybit_rest_get(
                                 &bybit_http,
                                 creds,
@@ -2192,47 +2280,6 @@ impl TradeEngine {
                                                 truncate_for_log(&body, 512)
                                             );
                                             bytes::Bytes::new()
-                                        }
-                                        crate::trade_engine::query_request::QueryRequestType::BybitPositionsSnapshot
-                                            if status == 200 =>
-                                        {
-                                            if let Some(msgs) =
-                                                parse_bybit_positions_snapshot(&body)
-                                            {
-                                                if msgs.is_empty() {
-                                                    debug!(
-                                                        "trade_engine bybit positions snapshot returned empty list req_type={:?} client_query_id={} status={} {}",
-                                                        msg.req_type,
-                                                        msg.client_query_id,
-                                                        status,
-                                                        bybit_summary
-                                                    );
-                                                    bytes::Bytes::new()
-                                                } else {
-                                                    for payload in msgs {
-                                                        let _ = query_resp_sink.send(QueryExecOutcome {
-                                                            req_type: msg.req_type,
-                                                            client_query_id: msg.client_query_id,
-                                                            status,
-                                                            body: payload,
-                                                            exchange: exchange_copy,
-                                                            ip_used_weight_1m: None,
-                                                            query_count_1m: None,
-                                                        });
-                                                    }
-                                                    continue;
-                                                }
-                                            } else {
-                                                debug!(
-                                                    "trade_engine bybit positions snapshot parse produced no basic msgs req_type={:?} client_query_id={} status={} {} body={}",
-                                                    msg.req_type,
-                                                    msg.client_query_id,
-                                                    status,
-                                                    bybit_summary,
-                                                    truncate_for_log(&body, 512)
-                                                );
-                                                bytes::Bytes::from_static(b"E")
-                                            }
                                         }
                                         _ => bytes::Bytes::from(body),
                                     };

@@ -434,34 +434,47 @@ def _fetch_bybit_state(
         print(f"[bybit] balances: {len(balances)} in-scope assets")
 
     # ---- Position (linear, USDT) ----
-    ok, status, body, err, _ = signed_get_bybit(
-        base_url, "/v5/position/list", {"category": "linear", "settleCoin": "USDT"},
-        api_key, api_secret, recv_window, timeout,
-    )
-    if not ok or status >= 300:
-        raise SystemExit(f"Bybit position list fetch failed: status={status} err={err} body={body[:300]}")
-    pos_payload = parse_json_any(body)
-    if not isinstance(pos_payload, dict) or pos_payload.get("retCode") != 0:
-        raise SystemExit(f"Bybit position list API error: retCode={pos_payload.get('retCode') if isinstance(pos_payload, dict) else 'N/A'} body={body[:300]}")
-    pos_result = pos_payload.get("result") or {}
     positions: Dict[str, Decimal] = {}
-    for item in pos_result.get("list") or []:
-        if not isinstance(item, dict):
-            continue
-        symbol = str(item.get("symbol") or "").strip().upper()
-        if not symbol.endswith("USDT"):
-            continue
-        asset = symbol[: -len("USDT")]
-        if asset not in in_scope:
-            continue
-        size = _dec(item.get("size"))
-        side = str(item.get("side") or "").strip()
-        # Bybit one-way mode: side is 'Buy' (long) / 'Sell' (short) / '' (no position).
-        # Hedge mode would have positionIdx 1/2 with separate rows.
-        signed_size = size if side != "Sell" else -size
-        positions[asset] = positions.get(asset, Decimal(0)) + signed_size
+    cursor = ""
+    position_pages = 0
+    while True:
+        query = {"category": "linear", "settleCoin": "USDT", "limit": "200"}
+        if cursor:
+            query["cursor"] = cursor
+        ok, status, body, err, _ = signed_get_bybit(
+            base_url, "/v5/position/list", query,
+            api_key, api_secret, recv_window, timeout,
+        )
+        if not ok or status >= 300:
+            raise SystemExit(f"Bybit position list fetch failed: status={status} err={err} body={body[:300]}")
+        pos_payload = parse_json_any(body)
+        if not isinstance(pos_payload, dict) or pos_payload.get("retCode") != 0:
+            raise SystemExit(f"Bybit position list API error: retCode={pos_payload.get('retCode') if isinstance(pos_payload, dict) else 'N/A'} body={body[:300]}")
+        pos_result = pos_payload.get("result") or {}
+        position_pages += 1
+        for item in pos_result.get("list") or []:
+            if not isinstance(item, dict):
+                continue
+            symbol = str(item.get("symbol") or "").strip().upper()
+            if not symbol.endswith("USDT"):
+                continue
+            asset = symbol[: -len("USDT")]
+            if asset not in in_scope:
+                continue
+            size = _dec(item.get("size"))
+            side = str(item.get("side") or "").strip()
+            # Bybit one-way mode: side is 'Buy' (long) / 'Sell' (short) / '' (no position).
+            # Hedge mode would have positionIdx 1/2 with separate rows.
+            signed_size = size if side != "Sell" else -size
+            positions[asset] = positions.get(asset, Decimal(0)) + signed_size
+        next_cursor = str(pos_result.get("nextPageCursor") or "").strip()
+        if not next_cursor:
+            break
+        if next_cursor == cursor:
+            raise SystemExit(f"Bybit position list cursor did not advance: cursor={cursor}")
+        cursor = next_cursor
     if verbose:
-        print(f"[bybit] positions: {len(positions)} in-scope assets with non-zero pos")
+        print(f"[bybit] positions: {len(positions)} in-scope assets with non-zero pos pages={position_pages}")
 
     # ---- Marks (spot tickers in bulk) ----
     marks: Dict[str, Decimal] = {"USDT": Decimal(1)}

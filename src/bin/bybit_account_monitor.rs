@@ -27,9 +27,9 @@ use mkt_signal::portfolio_margin::bybit_auth::{
 };
 use mkt_signal::portfolio_margin::bybit_user_stream::BybitUserDataConnection;
 use mkt_signal::portfolio_margin::pm_forwarder::PmForwarder;
-use mkt_signal::trade_engine::bybit_query::bybit_rest_get;
+use mkt_signal::trade_engine::bybit_query::{bybit_rest_get, bybit_rest_get_position_list_pages};
 use mkt_signal::trade_engine::query_parsers::bybit_account_balance_snapshot::parse_bybit_account_balance_snapshot;
-use mkt_signal::trade_engine::query_parsers::bybit_positions_snapshot::parse_bybit_positions_snapshot;
+use mkt_signal::trade_engine::query_parsers::bybit_positions_snapshot::parse_bybit_positions_snapshot_pages;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
@@ -361,14 +361,15 @@ fn spawn_bybit_position_poll(
                     if *shutdown_rx.borrow() {
                         break;
                     }
-                    match bybit_rest_get(
+                    match bybit_rest_get_position_list_pages(
                         &client,
                         &credentials,
                         "/v5/position/list",
                         "category=linear&settleCoin=USDT",
                     ).await {
-                        Ok((status, body)) if status == 200 => {
-                            if let Some(msgs) = parse_bybit_positions_snapshot(&body) {
+                        Ok(pages) => {
+                            let page_refs: Vec<&str> = pages.iter().map(String::as_str).collect();
+                            if let Some(msgs) = parse_bybit_positions_snapshot_pages(page_refs) {
                                 let mut current_positions: HashSet<(String, char)> = HashSet::new();
                                 for payload in msgs {
                                     let event_type =
@@ -413,13 +414,12 @@ fn spawn_bybit_position_poll(
                                     );
                                 }
                                 previous_positions = current_positions;
+                            } else {
+                                warn!(
+                                    "Bybit position poll parse failed across {} page(s); keeping previous snapshot state",
+                                    pages.len()
+                                );
                             }
-                        }
-                        Ok((status, body)) => {
-                            warn!(
-                                "Bybit position poll returned non-200: status={} body={}",
-                                status, body
-                            );
                         }
                         Err(e) => {
                             warn!("Bybit position poll failed: {:?}", e);

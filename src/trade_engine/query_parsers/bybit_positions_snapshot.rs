@@ -64,8 +64,7 @@ fn side_char(raw: &str) -> char {
     }
 }
 
-pub fn parse_bybit_positions_snapshot(json: &str) -> Option<Vec<Bytes>> {
-    let resp: BybitPositionListResponse = serde_json::from_str(json).ok()?;
+fn parse_bybit_positions_response(resp: BybitPositionListResponse) -> Option<Vec<Bytes>> {
     if resp.ret_code != 0 {
         return None;
     }
@@ -86,6 +85,23 @@ pub fn parse_bybit_positions_snapshot(json: &str) -> Option<Vec<Bytes>> {
             .or_else(|| parse_f64(&row.unrealized_pnl))
             .unwrap_or(0.0);
         out.push(BasicUmUnrealizedMsg::create(ts, row.symbol, side, pnl).to_bytes());
+    }
+    Some(out)
+}
+
+pub fn parse_bybit_positions_snapshot(json: &str) -> Option<Vec<Bytes>> {
+    let resp: BybitPositionListResponse = serde_json::from_str(json).ok()?;
+    parse_bybit_positions_response(resp)
+}
+
+pub fn parse_bybit_positions_snapshot_pages<'a, I>(pages: I) -> Option<Vec<Bytes>>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let mut out = Vec::new();
+    for page in pages {
+        let resp: BybitPositionListResponse = serde_json::from_str(page).ok()?;
+        out.extend(parse_bybit_positions_response(resp)?);
     }
     Some(out)
 }
@@ -162,5 +178,30 @@ mod tests {
         assert_eq!(long_pos.inst_id, "ETHUSDT");
         assert_eq!(long_pos.position_side, 'L');
         assert!((long_pos.position_amount - 40.33).abs() < 1e-5);
+    }
+
+    #[test]
+    fn parses_bybit_positions_snapshot_pages() {
+        let page1 = r#"{
+            "retCode":0,
+            "result":{"list":[{"symbol":"BTCUSDT","side":"Buy","size":"0.5","updatedTime":"1724742632153"}],"nextPageCursor":"cursor"}
+        }"#;
+        let page2 = r#"{
+            "retCode":0,
+            "result":{"list":[{"symbol":"ETHUSDT","side":"Sell","size":"1.25","updatedTime":"1724742633153"}],"nextPageCursor":""}
+        }"#;
+
+        let msgs = parse_bybit_positions_snapshot_pages([page1, page2]).expect("parse pages");
+        assert_eq!(msgs.len(), 4);
+
+        let first = BasicPositionMsg::from_bytes(&msgs[0]).expect("first pos");
+        assert_eq!(first.inst_id, "BTCUSDT");
+        assert_eq!(first.position_side, 'L');
+        assert!((first.position_amount - 0.5).abs() < 1e-6);
+
+        let second = BasicPositionMsg::from_bytes(&msgs[2]).expect("second pos");
+        assert_eq!(second.inst_id, "ETHUSDT");
+        assert_eq!(second.position_side, 'S');
+        assert!((second.position_amount - 1.25).abs() < 1e-6);
     }
 }
