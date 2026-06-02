@@ -126,6 +126,23 @@ fn scope_matches_venue(
     incoming_scope == scope_for_venue(venue, binance_account_mode)
 }
 
+fn exchange_scoped_total_equity_scope(
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+) -> Option<BasicAccountScope> {
+    let open_exchange = exchange_from_venue(open_venue);
+    let hedge_exchange = exchange_from_venue(hedge_venue);
+    if open_exchange != hedge_exchange {
+        return None;
+    }
+
+    match open_exchange {
+        Exchange::Okex => Some(BasicAccountScope::OkexUnified),
+        Exchange::Bybit => Some(BasicAccountScope::BybitUnified),
+        _ => None,
+    }
+}
+
 // ==================== Deduplication Cache ====================
 
 /// 简单的去重缓存（固定容量，FIFO 淘汰）
@@ -2377,14 +2394,15 @@ impl MonitorChannel {
             }
         }
 
-        // Bybit wallet topic 直接给账户级 totalEquity，优先使用交易所口径替换本地估值。
-        // 只覆盖 Bybit scope，跨交易所组合中其它账户仍保持原计算路径。
-        if let Some(risk) = inner
-            .latest_account_risk
-            .get(&BasicAccountScope::BybitUnified)
+        // 同交易所 unified intra 场景优先使用交易所账户级总权益，避免本地估值遗漏
+        // unified 账户中的合约、期权或折算细节。跨交易所组合仍保留各 scope 的本地路径。
+        if let Some(scope) = exchange_scoped_total_equity_scope(inner.open_venue, inner.hedge_venue)
         {
-            if risk.actual_equity_usd.is_finite() && risk.actual_equity_usd.abs() > f64::EPSILON {
-                scope_equity_usdt.insert(BasicAccountScope::BybitUnified, risk.actual_equity_usd);
+            if let Some(risk) = inner.latest_account_risk.get(&scope) {
+                if risk.actual_equity_usd.is_finite() && risk.actual_equity_usd.abs() > f64::EPSILON
+                {
+                    scope_equity_usdt.insert(scope, risk.actual_equity_usd);
+                }
             }
         }
 
@@ -4023,6 +4041,61 @@ mod tests {
 
         let state = MonitorChannel::compute_basic_state(&inner);
         assert!((state.total_equity_usdt - 60_000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn okex_intra_total_equity_uses_account_risk_actual_equity() {
+        let mut okex_bal = BasicBalanceManager::new(Exchange::Okex);
+        okex_bal.apply_balance(&BasicBalanceMsg::create(0, "BTC".to_string(), 1.0));
+        let open_leg = LegMgr::Margin {
+            exchange: Exchange::Okex,
+            bal: Rc::new(RefCell::new(okex_bal)),
+        };
+        let hedge_leg = LegMgr::Futures {
+            exchange: Exchange::Okex,
+            um: Rc::new(RefCell::new(BasicUmManager::new(Exchange::Okex))),
+            min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Okex))),
+        };
+
+        let mut price_table = PriceTable::new();
+        price_table.update_mark_price("BTCUSDT", 50_000.0, 0);
+
+        let mut usdt_mgr = UsdtBalanceManager::new(Exchange::Okex);
+        usdt_mgr.apply_balance(&BasicBalanceMsg::create(0, "USDT".to_string(), 10_000.0));
+        let mut usdt_mgrs: HashMap<BasicAccountScope, Rc<RefCell<UsdtBalanceManager>>> =
+            HashMap::new();
+        usdt_mgrs.insert(
+            BasicAccountScope::OkexUnified,
+            Rc::new(RefCell::new(usdt_mgr)),
+        );
+
+        let mut latest_account_risk = HashMap::new();
+        latest_account_risk.insert(
+            BasicAccountScope::OkexUnified,
+            BasicAccountRiskMsg::create(0, 58_000.0, 61_000.0, 1_000.0, 2_000.0, 61.0, 0.0, 0.0),
+        );
+
+        let inner = MonitorChannelInner {
+            open_venue: TradingVenue::OkexMargin,
+            hedge_venue: TradingVenue::OkexFutures,
+            open_leg,
+            hedge_leg,
+            usdt_mgrs,
+            price_table: Rc::new(RefCell::new(price_table)),
+            venue_min_qty_tables: HashMap::new(),
+            strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
+            orphan_strategy_mgr: Rc::new(RefCell::new(OrphanStrategyManager::new())),
+            order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
+                BinanceAccountMode::Unified,
+            )))),
+            close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            trade_update_seq: 0,
+            latest_account_risk,
+            arb_startup_net_gate: ArbStartupNetGate::new(false),
+        };
+
+        let state = MonitorChannel::compute_basic_state(&inner);
+        assert!((state.total_equity_usdt - 61_000.0).abs() < 1e-9);
     }
 
     #[test]
