@@ -12,6 +12,8 @@ pub const SIGNAL_THROTTLE_ERROR_CODE_UM_COLLATERAL_LIMIT: i32 = 51169;
 pub const SIGNAL_THROTTLE_ERROR_CODE_MARGIN_INSUFFICIENT: i32 = -2019;
 pub const SIGNAL_THROTTLE_ERROR_CODE_MAX_BORROWABLE_EXCEEDED: i32 = 51006;
 pub const SIGNAL_THROTTLE_ERROR_CODE_BITGET_LENDING_LIMIT: i32 = 25116;
+pub const SIGNAL_THROTTLE_ERROR_CODE_BYBIT_MARGIN_UNSUPPORTED: i32 = 170344;
+pub const SIGNAL_THROTTLE_ERROR_CODE_BYBIT_COLLATERAL_NOT_ENABLED: i32 = 170037;
 // 51061: 借币池可借资产不足（Binance/OKX 都可能返回该 code）
 pub const SIGNAL_THROTTLE_ERROR_CODE_LOANABLE_ASSET_UNAVAILABLE: i32 = 51061;
 
@@ -70,6 +72,10 @@ pub fn is_throttle_error_code(exchange: Option<Exchange>, error_code: i32) -> bo
         }
         SIGNAL_THROTTLE_ERROR_CODE_BITGET_LENDING_LIMIT => {
             matches!(exchange, Some(Exchange::Bitget))
+        }
+        SIGNAL_THROTTLE_ERROR_CODE_BYBIT_MARGIN_UNSUPPORTED
+        | SIGNAL_THROTTLE_ERROR_CODE_BYBIT_COLLATERAL_NOT_ENABLED => {
+            matches!(exchange, Some(Exchange::Bybit))
         }
         gate::BALANCE_NOT_ENOUGH
         | gate::MARGIN_NOT_ENOUGH
@@ -309,6 +315,8 @@ mod tests {
         assert!(is_throttle_error_code(Some(Exchange::Binance), 51006));
         assert!(is_throttle_error_code(Some(Exchange::Binance), 51061));
         assert!(is_throttle_error_code(Some(Exchange::Bitget), 25116));
+        assert!(is_throttle_error_code(Some(Exchange::Bybit), 170344));
+        assert!(is_throttle_error_code(Some(Exchange::Bybit), 170037));
         assert!(is_throttle_error_code(
             Some(Exchange::Gate),
             gate::AUTO_BORROW_TOO_MUCH
@@ -330,6 +338,10 @@ mod tests {
             gate::AUTO_BORROW_TOO_MUCH
         ));
         assert!(!is_throttle_error_code(Some(Exchange::Binance), 25116));
+        assert!(!is_throttle_error_code(Some(Exchange::Binance), 170344));
+        assert!(!is_throttle_error_code(Some(Exchange::Binance), 170037));
+        assert!(!is_throttle_error_code(Some(Exchange::Okex), 170344));
+        assert!(!is_throttle_error_code(Some(Exchange::Okex), 170037));
         assert!(!is_throttle_error_code(Some(Exchange::Okex), 25116));
         assert!(!is_throttle_error_code(
             Some(Exchange::Binance),
