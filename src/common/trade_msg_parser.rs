@@ -12,6 +12,7 @@ pub enum TradeSide {
 pub struct TradeTick {
     pub symbol: String,
     pub trade_id: i64,
+    pub timestamp_us: i64,
     pub timestamp_ms: i64,
     pub side: TradeSide,
     pub price: f64,
@@ -40,7 +41,9 @@ pub fn parse_trade(data: &[u8], venue: TradingVenue) -> Option<TradeTick> {
 
     let trade_id = i64::from_le_bytes(data[offset..offset + 8].try_into().ok()?);
     offset += 8;
-    let timestamp_ms = i64::from_le_bytes(data[offset..offset + 8].try_into().ok()?);
+    let raw_timestamp = i64::from_le_bytes(data[offset..offset + 8].try_into().ok()?);
+    let timestamp_us = normalize_trade_timestamp_to_us(raw_timestamp);
+    let timestamp_ms = timestamp_us / 1_000;
     offset += 8;
 
     let side = match data[offset] as char {
@@ -58,7 +61,7 @@ pub fn parse_trade(data: &[u8], venue: TradingVenue) -> Option<TradeTick> {
         || !amount.is_finite()
         || price <= 0.0
         || amount <= 0.0
-        || timestamp_ms <= 0
+        || timestamp_us <= 0
     {
         return None;
     }
@@ -66,9 +69,23 @@ pub fn parse_trade(data: &[u8], venue: TradingVenue) -> Option<TradeTick> {
     Some(TradeTick {
         symbol,
         trade_id,
+        timestamp_us,
         timestamp_ms,
         side,
         price,
         amount,
     })
+}
+
+fn normalize_trade_timestamp_to_us(timestamp: i64) -> i64 {
+    if timestamp <= 0 {
+        return timestamp;
+    }
+    if timestamp >= 1_000_000_000_000_000 {
+        timestamp
+    } else if timestamp >= 1_000_000_000_000 {
+        timestamp.saturating_mul(1_000)
+    } else {
+        timestamp
+    }
 }

@@ -136,9 +136,6 @@ path = "src/bin/market_maker.rs"
 name = "depth_pub"
 path = "src/bin/depth_pub.rs"
 
-[[bin]]
-name = "kline_pub"
-path = "src/bin/kline_pub.rs"
 
 [[bin]]
 name = "trade_flow_feature_pub"

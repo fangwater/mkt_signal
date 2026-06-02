@@ -6,7 +6,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, Instant};
 
-use crate::common::mkt_msg::AskBidSpreadMsg;
+use crate::common::mkt_msg::{AskBidSpreadMsg, IncMsg, TradeMsg};
 use crate::common::time_util::get_timestamp_us;
 use crate::mkt_pub::cfg::Config;
 use crate::rolling_metrics::latency_kll::LatencyStats;
@@ -15,15 +15,48 @@ use crate::rolling_metrics::latency_snapshot::{
     METRIC_ID_SPREAD_NET,
 };
 
-use crate::spread_pbs::adapter::{create_adapter, BboFrame, VenueAdapter};
+use crate::spread_pbs::adapter::{
+    create_adapter, BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
+};
 use crate::spread_pbs::latency::LatencyKll;
-use crate::spread_pbs::publisher::{SpreadLatencyPublisher, SpreadPublisher};
+use crate::spread_pbs::okex::fetch_books_sbe_snapshot_bytes;
+use crate::spread_pbs::okex_derivatives::{
+    build_okex_derivatives_subscribe_msgs, parse_okex_derivatives_frame, OKEX_PUBLIC_WS_URL,
+};
+use crate::spread_pbs::publisher::{
+    SpreadDerivativesPublisher, SpreadIncrementalPublisher, SpreadLatencyPublisher,
+    SpreadPublisher, SpreadTradePublisher,
+};
 use crate::spread_pbs::ws::{run_public_ws, FrameHandler, WsLoopParams};
 
 const DEDUP_RESET_INTERVAL_US: i64 = 5 * 60 * 1_000_000;
 
 pub struct SpreadPbsApp {
     config: Config,
+}
+
+fn is_okex_venue(venue: crate::signal::common::TradingVenue) -> bool {
+    matches!(
+        venue,
+        crate::signal::common::TradingVenue::OkexMargin
+            | crate::signal::common::TradingVenue::OkexFutures
+    )
+}
+
+fn is_okex_derivatives_venue(venue: crate::signal::common::TradingVenue) -> bool {
+    matches!(venue, crate::signal::common::TradingVenue::OkexFutures)
+}
+
+fn build_market_subscribe(
+    adapter: &Rc<dyn VenueAdapter>,
+    symbols: &[String],
+    include_incremental: bool,
+) -> Vec<serde_json::Value> {
+    let mut out = adapter.build_subscribe(symbols);
+    if include_incremental {
+        out.extend(adapter.build_incremental_subscribe(symbols));
+    }
+    out
 }
 
 /// 一条 ws 连接的运行态：shutdown 通道 + JoinHandle，外加重启用得上的 local_ip。
@@ -38,6 +71,9 @@ struct WsLeg {
 struct LegCtx {
     adapter: Rc<dyn VenueAdapter>,
     publisher: Rc<SpreadPublisher>,
+    trade_publisher: Option<Rc<SpreadTradePublisher>>,
+    incremental_publisher: Option<Rc<SpreadIncrementalPublisher>>,
+    incremental_max_levels: Option<usize>,
     state: Rc<RefCell<SharedState>>,
     url: String,
 }
@@ -72,7 +108,10 @@ impl SpreadPbsApp {
         // spread_pbs 不归 pm2 管，启动期 REST 抖动不能直接退出；用退避循环等到拿到非空列表
         let initial_symbols = self.config.wait_for_symbols().await;
         let mut current_symbols: HashSet<String> = initial_symbols.iter().cloned().collect();
-        let initial_subs = adapter.build_subscribe(&initial_symbols);
+        let okex_incremental_enabled =
+            is_okex_venue(venue) && self.config.data_types.enable_incremental;
+        let initial_subs =
+            build_market_subscribe(&adapter, &initial_symbols, okex_incremental_enabled);
         if initial_subs.is_empty() {
             bail!(
                 "adapter.build_subscribe 返回空（{} symbols 数={}）",
@@ -92,6 +131,44 @@ impl SpreadPbsApp {
             SpreadPublisher::new(venue_slug)
                 .with_context(|| format!("create iceoryx publisher for {}", venue_slug))?,
         );
+        let trade_publisher = if is_okex_venue(venue) {
+            Some(Rc::new(
+                SpreadTradePublisher::new_create_only(venue_slug).unwrap_or_else(|e| {
+                    panic!(
+                        "spread_pbs[{}] failed to create replacement trade ipc channel dat_pbs/{}/trade: {:#}",
+                        venue_slug, venue_slug, e
+                    )
+                }),
+            ))
+        } else {
+            None
+        };
+        let incremental_publisher = if okex_incremental_enabled {
+            Some(Rc::new(
+                SpreadIncrementalPublisher::new_create_only(venue_slug).unwrap_or_else(|e| {
+                    panic!(
+                        "spread_pbs[{}] failed to create replacement incremental ipc channel dat_pbs/{}/incremental: {:#}",
+                        venue_slug, venue_slug, e
+                    )
+                }),
+            ))
+        } else {
+            None
+        };
+        let derivatives_publisher = if is_okex_derivatives_venue(venue)
+            && self.config.data_types.enable_derivatives
+        {
+            Some(Rc::new(
+                SpreadDerivativesPublisher::new_create_only(venue_slug).unwrap_or_else(|e| {
+                    panic!(
+                        "spread_pbs[{}] failed to create replacement derivatives ipc channel dat_pbs/{}/derivatives: {:#}",
+                        venue_slug, venue_slug, e
+                    )
+                }),
+            ))
+        } else {
+            None
+        };
         let latency_publisher = Rc::new(
             SpreadLatencyPublisher::new(venue_slug)
                 .with_context(|| format!("create iceoryx latency publisher for {}", venue_slug))?,
@@ -101,21 +178,60 @@ impl SpreadPbsApp {
         let ipc_e2e_label = format!("{}-ipc", venue_slug);
         let state: Rc<RefCell<SharedState>> = Rc::new(RefCell::new(SharedState {
             dedup: HashMap::with_capacity(2048),
+            trade_dedup: HashMap::with_capacity(2048),
+            incremental_seq: HashMap::with_capacity(2048),
             latency_e2e: LatencyKll::new(venue_slug),
             latency_net: LatencyKll::new(net_label),
             latency_ipc_e2e: LatencyKll::new(ipc_e2e_label),
             latency_ipc_net: LatencyKll::new(ipc_net_label),
             published: 0,
+            trades_published: 0,
+            incremental_published: 0,
+            incremental_dropped_by_seq: 0,
+            incremental_gap_warnings: 0,
+            derivatives_published: 0,
             dropped_by_seq: 0,
+            trades_dropped_by_seq: 0,
             last_dedup_reset_us: get_timestamp_us(),
         }));
 
         let ctx = LegCtx {
             adapter: adapter.clone(),
             publisher: publisher.clone(),
+            trade_publisher: trade_publisher.clone(),
+            incremental_publisher: incremental_publisher.clone(),
+            incremental_max_levels: self.config.data_types.max_levels_per_msg,
             state: state.clone(),
             url: adapter.ws_url(),
         };
+
+        if let Some(incremental_publisher) = incremental_publisher.as_ref() {
+            bootstrap_okex_incremental_symbols(
+                venue_slug,
+                &adapter,
+                incremental_publisher,
+                &state,
+                &initial_symbols,
+                self.config.data_types.max_levels_per_msg,
+                "initial",
+            )
+            .await;
+        }
+
+        let derivatives_symbols: Rc<RefCell<HashSet<String>>> =
+            Rc::new(RefCell::new(initial_symbols.iter().cloned().collect()));
+        let mut derivatives_leg = derivatives_publisher.as_ref().map(|publisher| {
+            spawn_derivatives_leg(
+                self.config.primary_local_ip.clone(),
+                build_okex_derivatives_subscribe_msgs(
+                    &initial_symbols,
+                    self.config.get_batch_size(),
+                ),
+                publisher.clone(),
+                derivatives_symbols.clone(),
+                state.clone(),
+            )
+        });
 
         // ---- 起两条 leg：primary / secondary，独立 shutdown 通道 ----
         let mut primary = spawn_leg(
@@ -146,15 +262,20 @@ impl SpreadPbsApp {
         let mut stats_ticker = tokio::time::interval(Duration::from_secs(30));
         stats_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         stats_ticker.tick().await;
-
         loop {
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => {
                     log::info!("spread_pbs[{}] SIGINT received, shutting down", venue_slug);
                     let _ = primary.shutdown_tx.send(true);
                     let _ = secondary.shutdown_tx.send(true);
+                    if let Some(leg) = derivatives_leg.as_mut() {
+                        let _ = leg.shutdown_tx.send(true);
+                    }
                     let _ = (&mut primary.handle).await;
                     let _ = (&mut secondary.handle).await;
+                    if let Some(leg) = derivatives_leg.as_mut() {
+                        let _ = (&mut leg.handle).await;
+                    }
                     break;
                 }
                 _ = stats_ticker.tick() => {
@@ -165,8 +286,19 @@ impl SpreadPbsApp {
                         }
                     }
                     log::info!(
-                        "spread_pbs[{}] stats published={} dropped_by_seq={} symbols_seen={}",
-                        venue_slug, s.published, s.dropped_by_seq, s.dedup.len()
+                        "spread_pbs[{}] stats published={} trades_published={} incremental_published={} derivatives_published={} dropped_by_seq={} trades_dropped_by_seq={} incremental_dropped_by_seq={} incremental_gap_warnings={} symbols_seen={} trade_symbols_seen={} incremental_symbols_seen={}",
+                        venue_slug,
+                        s.published,
+                        s.trades_published,
+                        s.incremental_published,
+                        s.derivatives_published,
+                        s.dropped_by_seq,
+                        s.trades_dropped_by_seq,
+                        s.incremental_dropped_by_seq,
+                        s.incremental_gap_warnings,
+                        s.dedup.len(),
+                        s.trade_dedup.len(),
+                        s.incremental_seq.len()
                     );
                 }
                 _ = tokio::time::sleep_until(next_primary_restart) => {
@@ -207,6 +339,9 @@ fn spawn_leg(
         label,
         ctx.adapter.clone(),
         ctx.publisher.clone(),
+        ctx.trade_publisher.clone(),
+        ctx.incremental_publisher.clone(),
+        ctx.incremental_max_levels,
         ctx.state.clone(),
     );
     let handle = tokio::task::spawn_local(run_public_ws(
@@ -227,6 +362,125 @@ fn spawn_leg(
         shutdown_tx: tx,
         handle,
     }
+}
+
+async fn bootstrap_okex_incremental_symbols(
+    venue_slug: &'static str,
+    adapter: &Rc<dyn VenueAdapter>,
+    publisher: &Rc<SpreadIncrementalPublisher>,
+    state: &Rc<RefCell<SharedState>>,
+    symbols: &[String],
+    max_levels: Option<usize>,
+    reason: &str,
+) {
+    let mut bootstrapped = 0usize;
+    for symbol in symbols {
+        let Some(inst_id_code) = adapter.inst_id_code(symbol) else {
+            log::warn!(
+                "spread_pbs[{}] OKX books bootstrap skipped: symbol={} missing instIdCode",
+                venue_slug,
+                symbol
+            );
+            continue;
+        };
+        let raw = match fetch_books_sbe_snapshot_bytes(inst_id_code).await {
+            Ok(raw) => raw,
+            Err(e) => {
+                log::warn!(
+                    "spread_pbs[{}] OKX books bootstrap snapshot failed symbol={} instIdCode={} reason={} err={:#}",
+                    venue_slug,
+                    symbol,
+                    inst_id_code,
+                    reason,
+                    e
+                );
+                continue;
+            }
+        };
+        let frames = match adapter.parse_incremental_binary_frame(&raw) {
+            Ok(frames) => frames,
+            Err(e) => {
+                log::warn!(
+                    "spread_pbs[{}] OKX books bootstrap decode failed symbol={} instIdCode={} reason={} err={:#}",
+                    venue_slug,
+                    symbol,
+                    inst_id_code,
+                    reason,
+                    e
+                );
+                continue;
+            }
+        };
+        let mut s = state.borrow_mut();
+        for frame in frames {
+            process_incremental_frame(&mut s, publisher, frame, max_levels);
+            bootstrapped += 1;
+        }
+    }
+    log::info!(
+        "spread_pbs[{}] OKX books bootstrap done symbols={} frames={} reason={}",
+        venue_slug,
+        symbols.len(),
+        bootstrapped,
+        reason
+    );
+}
+
+fn spawn_derivatives_leg(
+    local_ip: String,
+    subscribe_msgs: Vec<serde_json::Value>,
+    publisher: Rc<SpreadDerivativesPublisher>,
+    active_symbols: Rc<RefCell<HashSet<String>>>,
+    state: Rc<RefCell<SharedState>>,
+) -> WsLeg {
+    let (tx, rx) = watch::channel(false);
+    let handler = make_derivatives_handler(publisher, active_symbols, state);
+    let handle = tokio::task::spawn_local(run_public_ws(
+        WsLoopParams {
+            label: "okex-derivatives",
+            url: OKEX_PUBLIC_WS_URL.to_string(),
+            local_ip: local_ip.clone(),
+            headers: Vec::new(),
+            subscribe_msgs,
+            keepalive: Some(KeepaliveSpec::text(Duration::from_secs(25), "ping")),
+        },
+        handler,
+        rx,
+    ));
+    WsLeg {
+        label: "okex-derivatives",
+        local_ip,
+        shutdown_tx: tx,
+        handle,
+    }
+}
+
+fn make_derivatives_handler(
+    publisher: Rc<SpreadDerivativesPublisher>,
+    active_symbols: Rc<RefCell<HashSet<String>>>,
+    state: Rc<RefCell<SharedState>>,
+) -> FrameHandler {
+    Rc::new(move |_recv_us: i64, raw: &[u8]| {
+        let value = match serde_json::from_slice::<serde_json::Value>(raw) {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        let bytes = {
+            let symbols = active_symbols.borrow();
+            parse_okex_derivatives_frame(&value, &symbols)
+        };
+        if bytes.is_empty() {
+            return;
+        }
+        let mut s = state.borrow_mut();
+        for msg in bytes {
+            if let Err(e) = publisher.publish(&msg) {
+                log::warn!("spread_pbs derivatives publish failed: {:#}", e);
+                continue;
+            }
+            s.derivatives_published += 1;
+        }
+    })
 }
 
 async fn restart_leg(
@@ -259,7 +513,11 @@ async fn restart_leg(
             return;
         }
     };
-    let new_subs = ctx.adapter.build_subscribe(&new_symbols);
+    let new_subs = build_market_subscribe(
+        &ctx.adapter,
+        &new_symbols,
+        ctx.incremental_publisher.is_some(),
+    );
     if new_subs.is_empty() {
         log::error!(
             "spread_pbs[{}] leg={} restart skipped: adapter.build_subscribe empty (symbols={})",
@@ -297,6 +555,8 @@ async fn restart_leg(
 
 struct SharedState {
     dedup: HashMap<String, i64>,
+    trade_dedup: HashMap<String, i64>,
+    incremental_seq: HashMap<String, i64>,
     /// 被采纳消息：`accepted_us - ts_ms*1000`（u 最新判断通过后立刻采样）。
     latency_e2e: LatencyKll,
     /// 同上，保留 `-net` 标签便于与旧日志兼容。
@@ -305,7 +565,13 @@ struct SharedState {
     latency_ipc_e2e: LatencyKll,
     latency_ipc_net: LatencyKll,
     published: u64,
+    trades_published: u64,
+    incremental_published: u64,
+    incremental_dropped_by_seq: u64,
+    incremental_gap_warnings: u64,
+    derivatives_published: u64,
     dropped_by_seq: u64,
+    trades_dropped_by_seq: u64,
     last_dedup_reset_us: i64,
 }
 
@@ -313,37 +579,77 @@ fn make_handler(
     label: &'static str,
     adapter: Rc<dyn VenueAdapter>,
     publisher: Rc<SpreadPublisher>,
+    trade_publisher: Option<Rc<SpreadTradePublisher>>,
+    incremental_publisher: Option<Rc<SpreadIncrementalPublisher>>,
+    incremental_max_levels: Option<usize>,
     state: Rc<RefCell<SharedState>>,
 ) -> FrameHandler {
     Rc::new(move |recv_us: i64, raw: &[u8]| {
         // 上层只 from_slice 一次，把同一份 &Value 给 adapter；非 JSON 文本帧
         // （如 Bitget "pong"）静默丢弃。dedup 统一在 process_frame 用 BboFrame.seq_id 完成。
-        let frames = match serde_json::from_slice::<serde_json::Value>(raw) {
-            Ok(value) => match adapter.parse_frame(&value) {
-                Ok(v) => v,
-                Err(e) => {
-                    log::error!(
-                        "spread_pbs[{}] adapter.parse_frame failed: {:#} payload={}",
-                        label,
-                        e,
-                        value
-                    );
-                    return;
-                }
-            },
-            Err(_) => match adapter.parse_binary_frame(raw) {
-                Ok(v) => v,
-                Err(e) => {
-                    log::error!(
-                        "spread_pbs[{}] adapter.parse_binary_frame failed: {:#}",
-                        label,
-                        e
-                    );
-                    return;
-                }
-            },
+        let (frames, trades, incrementals) = match serde_json::from_slice::<serde_json::Value>(raw)
+        {
+            Ok(value) => {
+                let frames = match adapter.parse_frame(&value) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        log::error!(
+                            "spread_pbs[{}] adapter.parse_frame failed: {:#} payload={}",
+                            label,
+                            e,
+                            value
+                        );
+                        return;
+                    }
+                };
+                (frames, Vec::new(), Vec::new())
+            }
+            Err(_) => {
+                let frames = match adapter.parse_binary_frame(raw) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        log::error!(
+                            "spread_pbs[{}] adapter.parse_binary_frame failed: {:#}",
+                            label,
+                            e
+                        );
+                        Vec::new()
+                    }
+                };
+                let trades = if trade_publisher.is_some() {
+                    match adapter.parse_trade_binary_frame(raw) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            log::error!(
+                                "spread_pbs[{}] adapter.parse_trade_binary_frame failed: {:#}",
+                                label,
+                                e
+                            );
+                            Vec::new()
+                        }
+                    }
+                } else {
+                    Vec::new()
+                };
+                let incrementals = if incremental_publisher.is_some() {
+                    match adapter.parse_incremental_binary_frame(raw) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            log::error!(
+                                "spread_pbs[{}] adapter.parse_incremental_binary_frame failed: {:#}",
+                                label,
+                                e
+                            );
+                            Vec::new()
+                        }
+                    }
+                } else {
+                    Vec::new()
+                };
+                (frames, trades, incrementals)
+            }
         };
-        if frames.is_empty() {
+        if frames.is_empty() && trades.is_empty() && incrementals.is_empty() {
             return;
         }
         let accepted_us = get_timestamp_us();
@@ -351,7 +657,207 @@ fn make_handler(
         for f in frames {
             process_frame(&mut s, &publisher, recv_us, accepted_us, f);
         }
+        if let Some(trade_publisher) = trade_publisher.as_ref() {
+            for trade in trades {
+                process_trade_frame(&mut s, trade_publisher, trade);
+            }
+        }
+        if let Some(incremental_publisher) = incremental_publisher.as_ref() {
+            for incremental in incrementals {
+                process_incremental_frame(
+                    &mut s,
+                    incremental_publisher,
+                    incremental,
+                    incremental_max_levels,
+                );
+            }
+        }
     })
+}
+
+fn process_trade_frame(
+    state: &mut SharedState,
+    publisher: &Rc<SpreadTradePublisher>,
+    f: TradeFrame,
+) {
+    let prev = state
+        .trade_dedup
+        .get(&f.symbol)
+        .copied()
+        .unwrap_or(i64::MIN);
+    if f.seq_id <= prev {
+        state.trades_dropped_by_seq += 1;
+        return;
+    }
+    state.trade_dedup.insert(f.symbol.clone(), f.seq_id);
+
+    let msg = TradeMsg::create(
+        f.symbol,
+        f.trade_id,
+        f.timestamp_us,
+        f.side,
+        f.price,
+        f.amount,
+    );
+    let bytes = msg.to_bytes();
+    if let Err(e) = publisher.publish(&bytes) {
+        log::warn!("spread_pbs trade publish failed: {:#}", e);
+        return;
+    }
+    state.trades_published += 1;
+}
+
+fn process_incremental_frame(
+    state: &mut SharedState,
+    publisher: &Rc<SpreadIncrementalPublisher>,
+    frame: IncrementalFrame,
+    max_levels: Option<usize>,
+) {
+    let (symbol, timestamp, seq_id, prev_seq_id, is_snapshot, bids, asks) = match frame {
+        IncrementalFrame::Book {
+            symbol,
+            timestamp,
+            seq_id,
+            prev_seq_id,
+            is_snapshot,
+            bids,
+            asks,
+        } => (
+            symbol,
+            timestamp,
+            seq_id,
+            prev_seq_id,
+            is_snapshot,
+            bids,
+            asks,
+        ),
+        IncrementalFrame::SequenceOnly {
+            symbol,
+            timestamp,
+            seq_id,
+            prev_seq_id,
+        } => {
+            warn_incremental_gap_if_needed(state, &symbol, seq_id, prev_seq_id, false);
+            state.incremental_seq.insert(symbol, seq_id);
+            let _ = timestamp;
+            return;
+        }
+    };
+
+    warn_incremental_gap_if_needed(state, &symbol, seq_id, prev_seq_id, is_snapshot);
+
+    let prev = state
+        .incremental_seq
+        .get(&symbol)
+        .copied()
+        .unwrap_or(i64::MIN);
+    if !is_snapshot && seq_id <= prev && seq_id != prev_seq_id {
+        state.incremental_dropped_by_seq += 1;
+        return;
+    }
+
+    let chunks = split_levels(bids.len(), asks.len(), max_levels);
+    let total_chunks = chunks.len();
+    for (chunk_idx, (bids_start, bids_count, asks_start, asks_count)) in
+        chunks.into_iter().enumerate()
+    {
+        let mut inc_msg = IncMsg::create(
+            symbol.clone(),
+            seq_id,
+            prev_seq_id,
+            timestamp,
+            is_snapshot,
+            bids_count as u32,
+            asks_count as u32,
+        );
+        inc_msg.set_chunk_index(chunk_idx as u8);
+        inc_msg.set_is_last(chunk_idx == total_chunks - 1);
+        for (idx, level) in bids[bids_start..bids_start + bids_count].iter().enumerate() {
+            inc_msg.set_bid_level(idx, *level);
+        }
+        for (idx, level) in asks[asks_start..asks_start + asks_count].iter().enumerate() {
+            inc_msg.set_ask_level(idx, *level);
+        }
+        let bytes = inc_msg.to_bytes();
+        if let Err(e) = publisher.publish(&bytes) {
+            log::warn!("spread_pbs incremental publish failed: {:#}", e);
+            return;
+        }
+        state.incremental_published += 1;
+    }
+    state.incremental_seq.insert(symbol, seq_id);
+}
+
+fn warn_incremental_gap_if_needed(
+    state: &mut SharedState,
+    symbol: &str,
+    seq_id: i64,
+    prev_seq_id: i64,
+    is_snapshot: bool,
+) {
+    if is_snapshot {
+        return;
+    }
+    let prev = state.incremental_seq.get(symbol).copied();
+    if seq_id < prev_seq_id {
+        state.incremental_gap_warnings += 1;
+        log::warn!(
+            "spread_pbs OKX books sequence reset observed symbol={} prevSeqId={} seqId={}; not resyncing",
+            symbol,
+            prev_seq_id,
+            seq_id
+        );
+        return;
+    }
+    if seq_id == prev_seq_id {
+        return;
+    }
+    if let Some(last_seq) = prev {
+        if prev_seq_id != last_seq {
+            state.incremental_gap_warnings += 1;
+            log::warn!(
+                "spread_pbs OKX books gap observed symbol={} local_seq={} prevSeqId={} seqId={}; not resyncing",
+                symbol,
+                last_seq,
+                prev_seq_id,
+                seq_id
+            );
+        }
+    }
+}
+
+fn split_levels(
+    total_bids: usize,
+    total_asks: usize,
+    max_levels: Option<usize>,
+) -> Vec<(usize, usize, usize, usize)> {
+    let total = total_bids + total_asks;
+    match max_levels {
+        Some(max) if total > max && max > 0 => {
+            let mut chunks = Vec::new();
+            let mut bids_sent = 0;
+            let mut asks_sent = 0;
+            while bids_sent < total_bids || asks_sent < total_asks {
+                let bids_remaining = total_bids - bids_sent;
+                let asks_remaining = total_asks - asks_sent;
+                let remaining = bids_remaining + asks_remaining;
+                let chunk_bids = if remaining <= max {
+                    bids_remaining
+                } else {
+                    let ratio = bids_remaining as f64 / remaining as f64;
+                    ((max as f64 * ratio).round() as usize)
+                        .max(1)
+                        .min(bids_remaining)
+                };
+                let chunk_asks = (max - chunk_bids).min(asks_remaining);
+                chunks.push((bids_sent, chunk_bids, asks_sent, chunk_asks));
+                bids_sent += chunk_bids;
+                asks_sent += chunk_asks;
+            }
+            chunks
+        }
+        _ => vec![(0, total_bids, 0, total_asks)],
+    }
 }
 
 fn process_frame(
@@ -479,12 +985,20 @@ mod tests {
     fn test_state(now_us: i64) -> SharedState {
         SharedState {
             dedup: HashMap::new(),
+            trade_dedup: HashMap::new(),
+            incremental_seq: HashMap::new(),
             latency_e2e: LatencyKll::new("test-e2e"),
             latency_net: LatencyKll::new("test-net"),
             latency_ipc_e2e: LatencyKll::new("test-ipc-e2e"),
             latency_ipc_net: LatencyKll::new("test-ipc-net"),
             published: 0,
+            trades_published: 0,
+            incremental_published: 0,
+            incremental_dropped_by_seq: 0,
+            incremental_gap_warnings: 0,
+            derivatives_published: 0,
             dropped_by_seq: 0,
+            trades_dropped_by_seq: 0,
             last_dedup_reset_us: now_us,
         }
     }

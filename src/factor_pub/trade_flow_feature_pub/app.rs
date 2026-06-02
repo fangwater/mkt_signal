@@ -1182,6 +1182,7 @@ impl TradeFlowFeaturePubApp {
             side,
             price,
             amount,
+            ..
         } = trade;
 
         // Vol 通道:无 Redis 白名单,venue 全 symbol 都喂。在 threshold gate 之前。

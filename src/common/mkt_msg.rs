@@ -539,6 +539,7 @@ pub struct TradeMsg {
     pub symbol_length: u32,
     pub symbol: String,
     pub id: i64,
+    /// Exchange timestamp. Legacy JSON producers may write milliseconds; SBE producers write microseconds.
     pub timestamp: i64,
     // 8字节对齐的字段
     pub side: char,

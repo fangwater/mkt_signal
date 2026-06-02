@@ -16,8 +16,11 @@ pub mod gate;
 pub mod gate_sbe;
 pub mod latency;
 pub mod okex;
+pub mod okex_derivatives;
 pub mod publisher;
 pub mod ws;
 
-pub use adapter::{create_adapter, BboFrame, KeepaliveSpec, VenueAdapter};
+pub use adapter::{
+    create_adapter, BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
+};
 pub use app::SpreadPbsApp;

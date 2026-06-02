@@ -1,5 +1,7 @@
 use anyhow::Result;
 use serde_json::Value;
+
+use crate::common::mkt_msg::Level;
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -28,6 +30,40 @@ pub struct BboFrame {
     pub bid_amount: f64,
     pub ask_price: f64,
     pub ask_amount: f64,
+}
+
+/// 各家逐笔成交解析后的统一中间表示。
+#[derive(Debug, Clone)]
+pub struct TradeFrame {
+    /// 归一化后的 symbol（去 `-`/`-SWAP`、统一大写，例如 `BTCUSDT`）。
+    pub symbol: String,
+    /// 交易所时间戳，微秒（us）。OKX SBE 使用 outTime 原样填入。
+    pub timestamp_us: i64,
+    pub seq_id: i64,
+    pub trade_id: i64,
+    pub side: char,
+    pub price: f64,
+    pub amount: f64,
+}
+
+/// SBE incremental orderbook event decoded to the existing dat_pbs IncMsg semantics.
+#[derive(Debug, Clone)]
+pub enum IncrementalFrame {
+    Book {
+        symbol: String,
+        timestamp: i64,
+        seq_id: i64,
+        prev_seq_id: i64,
+        is_snapshot: bool,
+        bids: Vec<Level>,
+        asks: Vec<Level>,
+    },
+    SequenceOnly {
+        symbol: String,
+        timestamp: i64,
+        seq_id: i64,
+        prev_seq_id: i64,
+    },
 }
 
 /// 心跳策略。`ws.rs` 按 `interval` 周期触发 `build()`，None 表示不主动 keepalive。
@@ -68,8 +104,20 @@ pub trait VenueAdapter {
         Vec::new()
     }
     fn build_subscribe(&self, symbols: &[String]) -> Vec<Value>;
+    fn build_incremental_subscribe(&self, _symbols: &[String]) -> Vec<Value> {
+        Vec::new()
+    }
+    fn inst_id_code(&self, _symbol: &str) -> Option<i64> {
+        None
+    }
     fn parse_frame(&self, value: &Value) -> Result<Vec<BboFrame>>;
     fn parse_binary_frame(&self, _raw: &[u8]) -> Result<Vec<BboFrame>> {
+        Ok(Vec::new())
+    }
+    fn parse_trade_binary_frame(&self, _raw: &[u8]) -> Result<Vec<TradeFrame>> {
+        Ok(Vec::new())
+    }
+    fn parse_incremental_binary_frame(&self, _raw: &[u8]) -> Result<Vec<IncrementalFrame>> {
         Ok(Vec::new())
     }
     /// 返回 None 表示完全依赖服务端 ws-Ping/Pong；返回 Some 表示主动按 interval 发心跳。

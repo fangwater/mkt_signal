@@ -3,7 +3,6 @@
 pub mod factor_index;
 pub mod factor_test;
 pub mod fusion_factor_pub;
-pub mod kline_factor_pub;
 pub(crate) mod kline_factors;
 #[cfg(feature = "model-ort")]
 pub mod model_pub;

@@ -1083,7 +1083,7 @@ impl DepthPubApp {
                             side,
                             price_to_key(trade.price),
                             trade.amount,
-                            timestamp_to_us(trade.timestamp_ms),
+                            trade.timestamp_us,
                             local_tp,
                         ));
                     }
