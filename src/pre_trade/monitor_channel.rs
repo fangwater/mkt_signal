@@ -139,6 +139,8 @@ fn exchange_scoped_total_equity_scope(
     match open_exchange {
         Exchange::Okex => Some(BasicAccountScope::OkexUnified),
         Exchange::Bybit => Some(BasicAccountScope::BybitUnified),
+        Exchange::Bitget => Some(BasicAccountScope::BitgetUnified),
+        Exchange::Gate => Some(BasicAccountScope::GateUnified),
         _ => None,
     }
 }
@@ -4096,6 +4098,116 @@ mod tests {
 
         let state = MonitorChannel::compute_basic_state(&inner);
         assert!((state.total_equity_usdt - 61_000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn bitget_intra_total_equity_uses_account_risk_actual_equity() {
+        let mut bitget_bal = BasicBalanceManager::new(Exchange::Bitget);
+        bitget_bal.apply_balance(&BasicBalanceMsg::create(0, "BTC".to_string(), 1.0));
+        let open_leg = LegMgr::Margin {
+            exchange: Exchange::Bitget,
+            bal: Rc::new(RefCell::new(bitget_bal)),
+        };
+        let hedge_leg = LegMgr::Futures {
+            exchange: Exchange::Bitget,
+            um: Rc::new(RefCell::new(BasicUmManager::new(Exchange::Bitget))),
+            min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Bitget))),
+        };
+
+        let mut price_table = PriceTable::new();
+        price_table.update_mark_price("BTCUSDT", 50_000.0, 0);
+
+        let mut usdt_mgr = UsdtBalanceManager::new(Exchange::Bitget);
+        usdt_mgr.apply_balance(&BasicBalanceMsg::create(0, "USDT".to_string(), 10_000.0));
+        let mut usdt_mgrs: HashMap<BasicAccountScope, Rc<RefCell<UsdtBalanceManager>>> =
+            HashMap::new();
+        usdt_mgrs.insert(
+            BasicAccountScope::BitgetUnified,
+            Rc::new(RefCell::new(usdt_mgr)),
+        );
+
+        let mut latest_account_risk = HashMap::new();
+        latest_account_risk.insert(
+            BasicAccountScope::BitgetUnified,
+            BasicAccountRiskMsg::create(0, 57_000.0, 62_000.0, 1_000.0, 2_000.0, 62.0, 0.0, 0.0),
+        );
+
+        let inner = MonitorChannelInner {
+            open_venue: TradingVenue::BitgetMargin,
+            hedge_venue: TradingVenue::BitgetFutures,
+            open_leg,
+            hedge_leg,
+            usdt_mgrs,
+            price_table: Rc::new(RefCell::new(price_table)),
+            venue_min_qty_tables: HashMap::new(),
+            strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
+            orphan_strategy_mgr: Rc::new(RefCell::new(OrphanStrategyManager::new())),
+            order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
+                BinanceAccountMode::Unified,
+            )))),
+            close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            trade_update_seq: 0,
+            latest_account_risk,
+            arb_startup_net_gate: ArbStartupNetGate::new(false),
+        };
+
+        let state = MonitorChannel::compute_basic_state(&inner);
+        assert!((state.total_equity_usdt - 62_000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn gate_intra_total_equity_uses_account_risk_actual_equity() {
+        let mut gate_bal = BasicBalanceManager::new(Exchange::Gate);
+        gate_bal.apply_balance(&BasicBalanceMsg::create(0, "BTC".to_string(), 1.0));
+        let open_leg = LegMgr::Margin {
+            exchange: Exchange::Gate,
+            bal: Rc::new(RefCell::new(gate_bal)),
+        };
+        let hedge_leg = LegMgr::Futures {
+            exchange: Exchange::Gate,
+            um: Rc::new(RefCell::new(BasicUmManager::new(Exchange::Gate))),
+            min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Gate))),
+        };
+
+        let mut price_table = PriceTable::new();
+        price_table.update_mark_price("BTC_USDT", 50_000.0, 0);
+
+        let mut usdt_mgr = UsdtBalanceManager::new(Exchange::Gate);
+        usdt_mgr.apply_balance(&BasicBalanceMsg::create(0, "USDT".to_string(), 10_000.0));
+        let mut usdt_mgrs: HashMap<BasicAccountScope, Rc<RefCell<UsdtBalanceManager>>> =
+            HashMap::new();
+        usdt_mgrs.insert(
+            BasicAccountScope::GateUnified,
+            Rc::new(RefCell::new(usdt_mgr)),
+        );
+
+        let mut latest_account_risk = HashMap::new();
+        latest_account_risk.insert(
+            BasicAccountScope::GateUnified,
+            BasicAccountRiskMsg::create(0, 56_000.0, 63_000.0, 1_000.0, 2_000.0, 63.0, 0.0, 0.0),
+        );
+
+        let inner = MonitorChannelInner {
+            open_venue: TradingVenue::GateMargin,
+            hedge_venue: TradingVenue::GateFutures,
+            open_leg,
+            hedge_leg,
+            usdt_mgrs,
+            price_table: Rc::new(RefCell::new(price_table)),
+            venue_min_qty_tables: HashMap::new(),
+            strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
+            orphan_strategy_mgr: Rc::new(RefCell::new(OrphanStrategyManager::new())),
+            order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
+                BinanceAccountMode::Unified,
+            )))),
+            close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            trade_update_seq: 0,
+            latest_account_risk,
+            arb_startup_net_gate: ArbStartupNetGate::new(false),
+        };
+
+        let state = MonitorChannel::compute_basic_state(&inner);
+        assert!((state.total_equity_usdt - 63_000.0).abs() < 1e-9);
     }
 
     #[test]
