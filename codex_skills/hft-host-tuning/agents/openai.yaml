@@ -1,0 +1,4 @@
+interface:
+  display_name: "HFT Host Tuning"
+  short_description: "Deploy and verify low-latency host tuning"
+  default_prompt: "Use $hft-host-tuning to audit, configure, and verify CPU isolation on a low-latency trading host."

@@ -13,7 +13,8 @@ Usage:
 
 Behavior:
   - 必须在单 venue 部署目录下执行（如 ~/spread_pbs/okex-futures）。
-  - 由当前目录名推断 venue，并查表得到固定 CPU 核（0–9）。
+  - 由当前目录名推断 venue，并查表得到默认 CPU 核（0-9）。
+  - 若 env.sh 设置 SPREAD_PBS_CORE，则优先使用该覆盖值。
   - 启动方式：taskset -c <core> + pmdaemon，进程名 spp_<ex>_<market>。
 USAGE
 }
@@ -28,7 +29,8 @@ if [[ $# -gt 0 ]]; then
   exit 1
 fi
 
-# core 映射（必须与 deploy 脚本里的字母序一致）
+# 默认 core 映射（必须与 deploy 脚本里的字母序一致）。
+# Per-host 覆盖优先使用 env.sh 中的 SPREAD_PBS_CORE。
 core_for_venue() {
   case "${1,,}" in
     binance-margin)   echo 0 ;;

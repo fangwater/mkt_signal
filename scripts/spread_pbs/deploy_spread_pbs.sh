@@ -5,7 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BIN_NAME="spread_pbs"
 BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 
-# 5 个 CEX × 2 market = 10 venue，core 0–9 字母序固定映射
+# 5 个 CEX × 2 market = 10 venue，默认 core 0-9 字母序映射。
+# HK el-cc-okx-srv01 的 OKEX venue 会写入 SPREAD_PBS_CORE 覆盖到 12/14。
 KNOWN_VENUES=(
   "binance-margin"
   "binance-futures"
@@ -47,6 +48,47 @@ is_known_venue() {
   return 1
 }
 
+hk_okex_spread_core_for_venue() {
+  case "${1,,}" in
+    okex-margin)  echo 12 ;;
+    okex-futures) echo 14 ;;
+    *) return 1 ;;
+  esac
+}
+
+upsert_env_exports_block() {
+  local env_file="$1"
+  local marker="$2"
+  local comment="$3"
+  shift 3
+
+  mkdir -p "$(dirname "$env_file")"
+  touch "$env_file"
+
+  local tmp
+  tmp="$(mktemp)"
+  awk -v begin="# BEGIN ${marker}" -v end="# END ${marker}" '
+    $0 == begin { skip = 1; next }
+    $0 == end { skip = 0; next }
+    !skip { print }
+  ' "$env_file" > "$tmp"
+
+  {
+    cat "$tmp"
+    if [[ -s "$tmp" ]]; then
+      echo
+    fi
+    echo "# BEGIN ${marker}"
+    [[ -n "$comment" ]] && echo "# ${comment}"
+    local line
+    for line in "$@"; do
+      echo "export ${line}"
+    done
+    echo "# END ${marker}"
+  } > "$env_file"
+  rm -f "$tmp"
+}
+
 usage() {
   cat <<'USAGE'
 Usage:
@@ -61,12 +103,15 @@ Notes:
   - 当前仅 OKex 的解析路径打通（okex-margin / okex-futures）。
     其他 venue 启动会立即 bail（"only supports okex venues for now"），
     但目录、脚本、core 映射都会一并铺好，等其他 venue parser 接入后即可启动。
-  - core 映射写死在 start_spread_pbs.sh 里，按字母序：
+  - 默认 core 映射在 start_spread_pbs.sh 里，按字母序：
       binance-margin=0  binance-futures=1
       bitget-margin=2   bitget-futures=3
       bybit-margin=4    bybit-futures=5
       gate-margin=6     gate-futures=7
       okex-margin=8     okex-futures=9
+  - HK el-cc-okx-srv01 上，OKEX venue 会在 env.sh 写入覆盖：
+      okex-margin SPREAD_PBS_CORE=12
+      okex-futures SPREAD_PBS_CORE=14
 USAGE
 }
 
@@ -150,6 +195,15 @@ for venue in "${VENUES[@]}"; do
       chmod +x "$TARGET_DIR/scripts/$script"
     fi
   done
+
+  if core_override="$(hk_okex_spread_core_for_venue "$venue")"; then
+    upsert_env_exports_block \
+      "$TARGET_DIR/env.sh" \
+      "managed HK isolated-core layout" \
+      "HK el-cc-okx-srv01: OKEX spread_pbs uses isolated physical cores; okex-intra hot cores=4,6,8,10; keep sibling CPUs 5,7,9,11,13,15 unused/offline." \
+      "SPREAD_PBS_CORE='${core_override}'"
+    echo "[INFO] HK OKEX spread_pbs core override written: $venue -> core $core_override"
+  fi
 done
 
 # 共享配置（mkt_cfg.yaml + iceoryx2.toml）部署到根目录
