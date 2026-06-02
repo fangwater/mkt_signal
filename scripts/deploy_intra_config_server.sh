@@ -198,6 +198,7 @@ FILES=(
   "intra_scripts/sync_intra_funding_thresholds.py"
   "intra_scripts/sync_intra_spread_thresholds.py"
   "scripts/set_online_futures_leverage.py"
+  "scripts/set_bybit_online_collateral.py"
   "scripts/rolling_metrics/sync_rolling_metrics_params.py"
 )
 

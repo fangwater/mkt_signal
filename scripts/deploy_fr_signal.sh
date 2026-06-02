@@ -160,6 +160,7 @@ SCRIPTS_TO_SYNC=(
   "cancel_gate_pm_orders.py"
   "flatten_bybit_pm.py"
   "cancel_bybit_pm_orders.py"
+  "set_bybit_online_collateral.py"
   "flatten_bitget_pm.py"
   "cancel_bitget_pm_orders.py"
   "set_online_futures_leverage.py"

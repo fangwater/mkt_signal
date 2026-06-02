@@ -1195,16 +1195,64 @@ impl MonitorChannel {
         requested_base_qty: f64,
         client_order_id: i64,
     ) -> CloseReservationGrant {
+        self.reserve_close_inventory_inner(
+            venue,
+            symbol,
+            side,
+            requested_base_qty,
+            client_order_id,
+            true,
+        )
+    }
+
+    pub fn reserve_close_inventory_silent(
+        &self,
+        venue: TradingVenue,
+        symbol: &str,
+        side: Side,
+        requested_base_qty: f64,
+        client_order_id: i64,
+    ) -> CloseReservationGrant {
+        self.reserve_close_inventory_inner(
+            venue,
+            symbol,
+            side,
+            requested_base_qty,
+            client_order_id,
+            false,
+        )
+    }
+
+    fn reserve_close_inventory_inner(
+        &self,
+        venue: TradingVenue,
+        symbol: &str,
+        side: Side,
+        requested_base_qty: f64,
+        client_order_id: i64,
+        log_reserve: bool,
+    ) -> CloseReservationGrant {
         Self::with_inner(|inner| {
             let snapshot_pos_base = Self::get_position_qty_inner(inner, symbol, venue);
-            let first_grant = inner.close_inventory.borrow_mut().reserve_close(
-                venue,
-                symbol,
-                side,
-                requested_base_qty,
-                client_order_id,
-                snapshot_pos_base,
-            );
+            let first_grant = if log_reserve {
+                inner.close_inventory.borrow_mut().reserve_close(
+                    venue,
+                    symbol,
+                    side,
+                    requested_base_qty,
+                    client_order_id,
+                    snapshot_pos_base,
+                )
+            } else {
+                inner.close_inventory.borrow_mut().reserve_close_silent(
+                    venue,
+                    symbol,
+                    side,
+                    requested_base_qty,
+                    client_order_id,
+                    snapshot_pos_base,
+                )
+            };
             if first_grant.granted_base_qty > 1e-12 {
                 return first_grant;
             }
@@ -1233,44 +1281,57 @@ impl MonitorChannel {
                 snapshot_pos_base,
                 "close_reserve_fallback_no_pending_limit",
             );
-            let retry_grant = close_inventory.reserve_close(
-                venue,
-                &symbol,
-                side,
-                requested_base_qty,
-                client_order_id,
-                snapshot_pos_base,
-            );
-            if retry_grant.granted_base_qty > 1e-12 {
-                info!(
-                    "CloseInventory: reserve retry after force sync symbol={} venue={:?} side={:?} client_order_id={} requested={:.8} snapshot_pos={:.8} first_available={:.8} first_inventory={:.8} retry_granted={:.8} retry_available={:.8} retry_inventory={:.8}",
-                    symbol,
+            let retry_grant = if log_reserve {
+                close_inventory.reserve_close(
                     venue,
+                    &symbol,
                     side,
-                    client_order_id,
                     requested_base_qty,
+                    client_order_id,
                     snapshot_pos_base,
-                    first_grant.available_before_base,
-                    first_grant.closable_inventory_base,
-                    retry_grant.granted_base_qty,
-                    retry_grant.available_before_base,
-                    retry_grant.closable_inventory_base
-                );
+                )
             } else {
-                debug!(
-                    "CloseInventory: reserve retry after force sync symbol={} venue={:?} side={:?} client_order_id={} requested={:.8} snapshot_pos={:.8} first_available={:.8} first_inventory={:.8} retry_granted={:.8} retry_available={:.8} retry_inventory={:.8}",
-                    symbol,
+                close_inventory.reserve_close_silent(
                     venue,
+                    &symbol,
                     side,
-                    client_order_id,
                     requested_base_qty,
+                    client_order_id,
                     snapshot_pos_base,
-                    first_grant.available_before_base,
-                    first_grant.closable_inventory_base,
-                    retry_grant.granted_base_qty,
-                    retry_grant.available_before_base,
-                    retry_grant.closable_inventory_base
-                );
+                )
+            };
+            if log_reserve {
+                if retry_grant.granted_base_qty > 1e-12 {
+                    info!(
+                        "CloseInventory: reserve retry after force sync symbol={} venue={:?} side={:?} client_order_id={} requested={:.8} snapshot_pos={:.8} first_available={:.8} first_inventory={:.8} retry_granted={:.8} retry_available={:.8} retry_inventory={:.8}",
+                        symbol,
+                        venue,
+                        side,
+                        client_order_id,
+                        requested_base_qty,
+                        snapshot_pos_base,
+                        first_grant.available_before_base,
+                        first_grant.closable_inventory_base,
+                        retry_grant.granted_base_qty,
+                        retry_grant.available_before_base,
+                        retry_grant.closable_inventory_base
+                    );
+                } else {
+                    debug!(
+                        "CloseInventory: reserve retry after force sync symbol={} venue={:?} side={:?} client_order_id={} requested={:.8} snapshot_pos={:.8} first_available={:.8} first_inventory={:.8} retry_granted={:.8} retry_available={:.8} retry_inventory={:.8}",
+                        symbol,
+                        venue,
+                        side,
+                        client_order_id,
+                        requested_base_qty,
+                        snapshot_pos_base,
+                        first_grant.available_before_base,
+                        first_grant.closable_inventory_base,
+                        retry_grant.granted_base_qty,
+                        retry_grant.available_before_base,
+                        retry_grant.closable_inventory_base
+                    );
+                }
             }
             retry_grant
         })
@@ -1318,6 +1379,15 @@ impl MonitorChannel {
                 .close_inventory
                 .borrow_mut()
                 .release_close_unfilled(client_order_id, reason);
+        });
+    }
+
+    pub fn release_close_inventory_unfilled_silent(&self, client_order_id: i64, reason: &str) {
+        Self::with_inner(|inner| {
+            inner
+                .close_inventory
+                .borrow_mut()
+                .release_close_unfilled_silent(client_order_id, reason);
         });
     }
 
@@ -2541,6 +2611,63 @@ impl MonitorChannel {
         }
 
         Ok((qty, price))
+    }
+
+    pub fn align_close_order_by_venue(
+        &self,
+        venue: TradingVenue,
+        symbol: &str,
+        raw_qty: f64,
+        raw_price: f64,
+    ) -> Result<Option<(f64, f64)>, String> {
+        Self::with_inner(|inner| {
+            let symbol_key = min_qty_symbol_key(venue, symbol);
+            let Some(table) = inner.venue_min_qty_tables.get(&venue) else {
+                return Err(format!(
+                    "未初始化 {:?} 的最小下单量表，请检查启动参数",
+                    venue
+                ));
+            };
+            if raw_qty <= 0.0 {
+                return Ok(None);
+            }
+            if raw_price <= 0.0 {
+                return Err(format!(
+                    "symbol={} close 原始价格无效 raw_price={}",
+                    symbol_key, raw_price
+                ));
+            }
+
+            let price_tick = table.price_tick(&symbol_key).unwrap_or(0.0);
+            let price = if price_tick > 0.0 {
+                align_price_floor(raw_price, price_tick)
+            } else {
+                raw_price
+            };
+            if price <= 0.0 {
+                return Err(format!(
+                    "symbol={} close 对齐后价格无效 price={}",
+                    symbol_key, price
+                ));
+            }
+
+            let step = table.step_size(&symbol_key).unwrap_or(0.0);
+            let qty = if step > 0.0 {
+                align_price_floor(raw_qty, step)
+            } else {
+                raw_qty
+            };
+            if qty <= 0.0 {
+                return Ok(None);
+            }
+
+            let min_qty = table.min_qty(&symbol_key).unwrap_or(0.0);
+            if min_qty > 0.0 && qty + 1e-12 < min_qty {
+                return Ok(None);
+            }
+
+            Ok(Some((qty, price)))
+        })
     }
 
     /// 根据交易场所对齐订单量和价格

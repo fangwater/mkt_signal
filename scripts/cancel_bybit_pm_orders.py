@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cancel Bybit UTA open orders (linear perpetual + spot).
+"""Cancel Bybit UTA open orders (linear perpetual + margin spot).
 
 Self-contained: no imports from other scripts in this repo.
 
@@ -35,6 +35,13 @@ RECV_WINDOW_MS = "5000"
 
 ENV_DIR_PATTERN = re.compile(r"^(bybit_fr_|bybit[-_]intra[-_])")
 AUTHORITATIVE_KEYS = ("BYBIT_API_KEY", "BYBIT_API_SECRET")
+CLOSED_ORDER_STATUSES = {
+    "Cancelled",
+    "Filled",
+    "Rejected",
+    "PartiallyFilledCanceled",
+    "Deactivated",
+}
 
 
 def http_request(url, *, method="GET", headers=None, data=None, timeout=15):
@@ -160,10 +167,10 @@ def fetch_open(api_key, api_secret, category: str) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     cursor = ""
     while True:
-        q: Dict[str, Any] = {"category": category, "limit": "50"}
-        # bybit /v5/order/realtime requires settleCoin/symbol/baseCoin or openOnly=1 for category
-        # Use openOnly=1 to fetch all open orders without specifying symbol
-        q["openOnly"] = "1"
+        q: Dict[str, Any] = {"category": category, "limit": "50", "openOnly": "0"}
+        # openOnly=0 returns active orders. openOnly=1 returns recent terminal records.
+        if category == "linear":
+            q["settleCoin"] = "USDT"
         if cursor:
             q["cursor"] = cursor
         status, body = bybit_private("GET", "/v5/order/realtime", api_key, api_secret, query=q)
@@ -176,7 +183,11 @@ def fetch_open(api_key, api_secret, category: str) -> List[Dict[str, Any]]:
             return out
         result = parsed.get("result", {})
         rows = result.get("list", []) or []
-        out.extend(rows)
+        for row in rows:
+            status_text = str(row.get("orderStatus") or "")
+            if status_text in CLOSED_ORDER_STATUSES:
+                continue
+            out.append(row)
         cursor = result.get("nextPageCursor", "") or ""
         if not cursor:
             break

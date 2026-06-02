@@ -144,7 +144,7 @@ if [[ "$SYNC_SCRIPTS" == "1" ]]; then
       OPS_FLATTEN_CMD="./scripts/flatten_gate_pm.py"
       ;;
     bybit)
-      OPS_TO_SYNC=("flatten_bybit_pm.py" "cancel_bybit_pm_orders.py" "set_online_futures_leverage.py")
+      OPS_TO_SYNC=("flatten_bybit_pm.py" "cancel_bybit_pm_orders.py" "set_online_futures_leverage.py" "set_bybit_online_collateral.py")
       OPS_CANCEL_CMD="./scripts/cancel_bybit_pm_orders.py"
       OPS_FLATTEN_CMD="./scripts/flatten_bybit_pm.py"
       ;;

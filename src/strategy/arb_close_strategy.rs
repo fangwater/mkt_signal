@@ -106,7 +106,7 @@ impl ArbCloseStrategy {
             }
         };
         let requested_base_qty = ctx.amount_value() * qty_multiplier;
-        let grant = MonitorChannel::instance().reserve_close_inventory(
+        let grant = MonitorChannel::instance().reserve_close_inventory_silent(
             venue,
             &symbol,
             side,
@@ -131,33 +131,46 @@ impl ArbCloseStrategy {
             self.open_state.alive = false;
             return;
         }
-        let order_qty = grant.granted_base_qty / qty_multiplier;
-        if order_qty + ARB_CLOSE_QTY_EPS < ctx.amount_value() {
-            info!(
-                "ArbCloseStrategy: strategy_id={} clip close qty by close inventory symbol={} venue={:?} side={:?} signal_qty={:.8} order_qty={:.8} requested_base={:.8} granted_base={:.8} inventory={:.8}",
-                self.open_state.strategy_id,
-                symbol,
-                venue,
-                side,
-                ctx.amount_value(),
-                order_qty,
-                requested_base_qty,
-                grant.granted_base_qty,
-                grant.closable_inventory_base
-            );
-        }
+        let raw_order_qty = grant.granted_base_qty / qty_multiplier;
 
-        // 方向 & net 都通过后，再做 min_qty / min_notional 检查。
-        // close 不像 open 那样"凑齐到 min"——残余仓位本来就少，凑齐会过头去开反向仓位。
-        // 因此这里只查不补：低于最小要求 → info! 打印具体原因并跳过整张单。
-        let price_hint = {
-            let p = ctx.price_value();
-            if p > 0.0 {
-                Some(p)
-            } else {
-                None
+        // Close must never round up: topping up a dust close can open the opposite side.
+        // If the capped quantity is below venue step/min, release the reservation silently.
+        let (order_qty, order_price) = match MonitorChannel::instance().align_close_order_by_venue(
+            venue,
+            &symbol,
+            raw_order_qty,
+            ctx.price_value(),
+        ) {
+            Ok(Some(aligned)) => aligned,
+            Ok(None) => {
+                MonitorChannel::instance().release_close_inventory_unfilled_silent(
+                    client_order_id,
+                    "close_qty_below_step_or_min",
+                );
+                self.open_state.alive = false;
+                return;
+            }
+            Err(reason) => {
+                MonitorChannel::instance().release_close_inventory_unfilled(
+                    client_order_id,
+                    "close_qty_alignment_failed",
+                );
+                info!(
+                    "ArbCloseStrategy: strategy_id={} skip close qty alignment failed symbol={} venue={:?} open_pos={:.8} signal_qty={:.8} raw_order_qty={:.12} price={:.8} reason={}",
+                    self.open_state.strategy_id,
+                    symbol,
+                    venue,
+                    open_pos,
+                    ctx.amount_value(),
+                    raw_order_qty,
+                    ctx.price_value(),
+                    reason
+                );
+                self.open_state.alive = false;
+                return;
             }
         };
+        let price_hint = Some(order_price);
         if let Err(reason) = MonitorChannel::instance()
             .check_min_trading_requirements(venue, &symbol, order_qty, price_hint)
         {
@@ -187,7 +200,7 @@ impl ArbCloseStrategy {
             side_u8: ctx.side,
             order_type_u8: ctx.order_type,
             qty: order_qty,
-            price: ctx.price_value(),
+            price: order_price,
             price_count: ctx.price_count(),
             amount_count: ctx.amount_count(),
             exp_time: ctx.exp_time,
