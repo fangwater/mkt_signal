@@ -139,6 +139,8 @@ json_bin="$(json_escape "$BIN_PATH")"
 json_base="$(json_escape "$BASE_DIR")"
 json_rust_log="$(json_escape "$RUST_LOG")"
 json_ipc_ns="$(json_escape "$IPC_NAMESPACE")"
+json_persist_sync_source_id="$(json_escape "${PERSIST_SYNC_SOURCE_ID:-}")"
+json_persist_sync_bind="$(json_escape "${PERSIST_SYNC_BIND:-}")"
 
 cat >"$cfg_file" <<JSON
 {
@@ -150,7 +152,9 @@ cat >"$cfg_file" <<JSON
       "cwd": "${json_base}",
       "env": {
         "RUST_LOG": "${json_rust_log}",
-        "IPC_NAMESPACE": "${json_ipc_ns}"
+        "IPC_NAMESPACE": "${json_ipc_ns}",
+        "PERSIST_SYNC_SOURCE_ID": "${json_persist_sync_source_id}",
+        "PERSIST_SYNC_BIND": "${json_persist_sync_bind}"
       }
     }
   ]

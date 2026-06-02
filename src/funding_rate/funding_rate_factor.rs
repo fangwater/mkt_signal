@@ -84,6 +84,43 @@ impl FundingRateFactor {
         *self.current_mode.borrow()
     }
 
+    fn scaled_from_4h(
+        period: FundingRatePeriod,
+        mode: FactorMode,
+        operation: OperationType,
+        direction: ArbDirection,
+        base: &FrThresholdConfig,
+    ) -> FrThresholdConfig {
+        let scale = period.hours() as f64 / FundingRatePeriod::Hours4.hours() as f64;
+        FrThresholdConfig {
+            compare_op: base.compare_op,
+            arb_direction: direction,
+            operation,
+            period,
+            mode,
+            threshold: base.threshold * scale,
+        }
+    }
+
+    fn resolve_threshold_config(
+        &self,
+        period: FundingRatePeriod,
+        mode: FactorMode,
+        operation: OperationType,
+        direction: ArbDirection,
+    ) -> Option<FrThresholdConfig> {
+        let thresholds = self.thresholds.borrow();
+        let key = (period, mode, operation, direction);
+        if let Some(config) = thresholds.get(&key) {
+            return Some(config.clone());
+        }
+
+        let base_key = (FundingRatePeriod::Hours4, mode, operation, direction);
+        thresholds
+            .get(&base_key)
+            .map(|base| Self::scaled_from_4h(period, mode, operation, direction, base))
+    }
+
     /// 获取指定方向和操作的阈值配置
     pub fn get_threshold_config(
         &self,
@@ -92,8 +129,7 @@ impl FundingRateFactor {
         operation: OperationType,
     ) -> Option<FrThresholdConfig> {
         let mode = self.get_mode();
-        let key = (period, mode, operation, direction);
-        self.thresholds.borrow().get(&key).cloned()
+        self.resolve_threshold_config(period, mode, operation, direction)
     }
 
     // ===== 4个 update 函数 =====
@@ -265,15 +301,13 @@ impl FundingRateFactor {
         venue: TradingVenue,
     ) -> bool {
         let current_mode = self.get_mode();
-        let key = (
+        let config = self.resolve_threshold_config(
             period,
             current_mode,
             OperationType::Open,
             ArbDirection::Forward,
         );
-
-        let thresholds = self.thresholds.borrow();
-        let config = thresholds.get(&key);
+        let has_config = config.is_some();
         let mut ok = false;
         let mut reason = "missing_threshold";
         let mut compare_op = None;
@@ -300,7 +334,7 @@ impl FundingRateFactor {
                 venue,
                 period,
                 current_mode,
-                config.is_some(),
+                has_config,
                 compare_op,
                 threshold,
                 predict_fr,
@@ -323,15 +357,13 @@ impl FundingRateFactor {
         venue: TradingVenue,
     ) -> bool {
         let current_mode = self.get_mode();
-        let key = (
+        let config = self.resolve_threshold_config(
             period,
             current_mode,
             OperationType::Open,
             ArbDirection::Backward,
         );
-
-        let thresholds = self.thresholds.borrow();
-        let config = thresholds.get(&key);
+        let has_config = config.is_some();
         let mut ok = false;
         let mut reason = "missing_threshold";
         let mut compare_op = None;
@@ -366,7 +398,7 @@ impl FundingRateFactor {
                 venue,
                 period,
                 current_mode,
-                config.is_some(),
+                has_config,
                 compare_op,
                 threshold,
                 predict_fr,
@@ -390,15 +422,13 @@ impl FundingRateFactor {
         venue: TradingVenue,
     ) -> bool {
         let current_mode = self.get_mode();
-        let key = (
+        let config = self.resolve_threshold_config(
             period,
             current_mode,
             OperationType::Close,
             ArbDirection::Forward,
         );
-
-        let thresholds = self.thresholds.borrow();
-        let config = thresholds.get(&key);
+        let has_config = config.is_some();
         let mut ok = false;
         let mut reason = "missing_threshold";
         let mut compare_op = None;
@@ -425,7 +455,7 @@ impl FundingRateFactor {
                 venue,
                 period,
                 current_mode,
-                config.is_some(),
+                has_config,
                 compare_op,
                 threshold,
                 current_fr_ma,
@@ -447,15 +477,13 @@ impl FundingRateFactor {
         venue: TradingVenue,
     ) -> bool {
         let current_mode = self.get_mode();
-        let key = (
+        let config = self.resolve_threshold_config(
             period,
             current_mode,
             OperationType::Close,
             ArbDirection::Backward,
         );
-
-        let thresholds = self.thresholds.borrow();
-        let config = thresholds.get(&key);
+        let has_config = config.is_some();
         let mut ok = false;
         let mut reason = "missing_threshold";
         let mut compare_op = None;
@@ -490,7 +518,7 @@ impl FundingRateFactor {
                 venue,
                 period,
                 current_mode,
-                config.is_some(),
+                has_config,
                 compare_op,
                 threshold,
                 current_fr_ma,
@@ -502,5 +530,48 @@ impl FundingRateFactor {
         }
 
         ok
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn threshold_config_falls_back_to_4h_scaled_by_period_hours() {
+        let factor = FundingRateFactor::new();
+        factor.set_mode(FactorMode::MM);
+        factor.update_forward_close_threshold(FundingRatePeriod::Hours4, FactorMode::MM, -0.0004);
+
+        let cfg = factor
+            .get_threshold_config(
+                FundingRatePeriod::Hours1,
+                ArbDirection::Forward,
+                OperationType::Close,
+            )
+            .expect("1h threshold should be derived from 4h");
+
+        assert_eq!(cfg.period, FundingRatePeriod::Hours1);
+        assert_eq!(cfg.mode, FactorMode::MM);
+        assert_eq!(cfg.compare_op, CompareOp::LessThan);
+        assert!((cfg.threshold - -0.0001).abs() < 1e-12);
+    }
+
+    #[test]
+    fn exact_threshold_overrides_scaled_4h_fallback() {
+        let factor = FundingRateFactor::new();
+        factor.set_mode(FactorMode::MM);
+        factor.update_forward_close_threshold(FundingRatePeriod::Hours4, FactorMode::MM, -0.0004);
+        factor.update_forward_close_threshold(FundingRatePeriod::Hours1, FactorMode::MM, -0.00025);
+
+        let cfg = factor
+            .get_threshold_config(
+                FundingRatePeriod::Hours1,
+                ArbDirection::Forward,
+                OperationType::Close,
+            )
+            .expect("explicit 1h threshold should be loaded");
+
+        assert!((cfg.threshold - -0.00025).abs() < 1e-12);
     }
 }

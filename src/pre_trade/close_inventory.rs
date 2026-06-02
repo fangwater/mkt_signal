@@ -75,7 +75,7 @@ impl CloseInventoryLedger {
         let new_inventory = finite_or_zero(snapshot_pos_base);
         entry.seeded = true;
         entry.closable_inventory_base = new_inventory;
-        info!(
+        debug!(
             "CloseInventory: force sync symbol={} venue={:?} reason={} old_inventory={:.8} new_inventory={:.8} reserved_sell={:.8} reserved_buy={:.8}",
             symbol,
             venue,

@@ -142,6 +142,17 @@ pub enum FundingRatePeriod {
 }
 
 impl FundingRatePeriod {
+    /// 返回周期小时数
+    pub fn hours(&self) -> u32 {
+        match self {
+            FundingRatePeriod::Hours1 => 1,
+            FundingRatePeriod::Hours2 => 2,
+            FundingRatePeriod::Hours4 => 4,
+            FundingRatePeriod::Hours6 => 6,
+            FundingRatePeriod::Hours8 => 8,
+        }
+    }
+
     /// 返回每天收取次数
     pub fn times_per_day(&self) -> u32 {
         match self {

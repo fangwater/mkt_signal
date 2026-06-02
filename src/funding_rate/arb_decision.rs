@@ -86,7 +86,7 @@ pub fn default_pnlu_redis_settings() -> RedisSettings {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum ArbSignalKind {
     ForwardOpen,
     ForwardClose,
@@ -102,6 +102,16 @@ impl ArbSignalKind {
             Self::BackwardOpen => "BwdOpen",
             Self::BackwardClose => "BwdClose",
         }
+    }
+}
+
+fn funding_signal_sequence_label(signals: &[ArbSignalKind]) -> &'static str {
+    match signals {
+        [] => "-",
+        [signal] => signal.as_str(),
+        [ArbSignalKind::ForwardClose, ArbSignalKind::BackwardOpen] => "FwdClose+BwdOpen",
+        [ArbSignalKind::BackwardClose, ArbSignalKind::ForwardOpen] => "BwdClose+FwdOpen",
+        _ => "Multi",
     }
 }
 
@@ -130,38 +140,56 @@ pub fn evaluate_funding_signal_flags(
     }
 }
 
+pub fn resolve_funding_signals_from_flags(
+    forward_open: bool,
+    forward_close: bool,
+    backward_open: bool,
+    backward_close: bool,
+) -> Vec<ArbSignalKind> {
+    if forward_close && backward_open {
+        return vec![ArbSignalKind::ForwardClose, ArbSignalKind::BackwardOpen];
+    }
+    if backward_close && forward_open {
+        return vec![ArbSignalKind::BackwardClose, ArbSignalKind::ForwardOpen];
+    }
+    if forward_close {
+        return vec![ArbSignalKind::ForwardClose];
+    }
+    if backward_close {
+        return vec![ArbSignalKind::BackwardClose];
+    }
+    if forward_open {
+        return vec![ArbSignalKind::ForwardOpen];
+    }
+    if backward_open {
+        return vec![ArbSignalKind::BackwardOpen];
+    }
+    Vec::new()
+}
+
 pub fn resolve_funding_signal_from_flags(
     forward_open: bool,
     forward_close: bool,
     backward_open: bool,
     backward_close: bool,
 ) -> Option<ArbSignalKind> {
-    if forward_close && backward_open {
-        return Some(ArbSignalKind::BackwardOpen);
-    }
-    if backward_close && forward_open {
-        return Some(ArbSignalKind::ForwardOpen);
-    }
-    if forward_close {
-        return Some(ArbSignalKind::ForwardClose);
-    }
-    if backward_close {
-        return Some(ArbSignalKind::BackwardClose);
-    }
-    if forward_open {
-        return Some(ArbSignalKind::ForwardOpen);
-    }
-    if backward_open {
-        return Some(ArbSignalKind::BackwardOpen);
-    }
-    None
+    resolve_funding_signals_from_flags(forward_open, forward_close, backward_open, backward_close)
+        .into_iter()
+        .next()
+}
+
+pub fn evaluate_funding_signals(
+    hedge_symbol: &str,
+    hedge_venue: TradingVenue,
+) -> Result<Vec<ArbSignalKind>> {
+    ArbDecision::evaluate_funding_rate_signals(hedge_symbol, hedge_venue)
 }
 
 pub fn evaluate_funding_signal(
     hedge_symbol: &str,
     hedge_venue: TradingVenue,
 ) -> Result<Option<ArbSignalKind>> {
-    ArbDecision::evaluate_funding_rate_signal(hedge_symbol, hedge_venue)
+    evaluate_funding_signals(hedge_symbol, hedge_venue).map(|signals| signals.into_iter().next())
 }
 
 pub fn normalize_arb_symbol_key(symbol: &str) -> String {
@@ -1040,7 +1068,7 @@ pub fn dispatch_arb_backward_query(source: &str, data: Bytes) -> Option<ArbBackw
     }
 }
 
-pub fn evaluate_funding_mode_signal(
+pub fn evaluate_funding_mode_signals(
     spread_factor: &super::spread_factor::SpreadFactor,
     open_symbol_key: &str,
     hedge_symbol_key: &str,
@@ -1049,7 +1077,7 @@ pub fn evaluate_funding_mode_signal(
     hedge_venue: TradingVenue,
     in_dump: bool,
     rate_ready: bool,
-) -> Result<Option<ArbSignalKind>> {
+) -> Result<Vec<ArbSignalKind>> {
     let spread_close_signal = || {
         ArbDecisionState::evaluate_close_side(
             spread_factor,
@@ -1075,7 +1103,7 @@ pub fn evaluate_funding_mode_signal(
                 hedge_venue
             );
         }
-        return Ok(signal);
+        return Ok(signal.into_iter().collect());
     }
 
     if !rate_ready {
@@ -1086,9 +1114,32 @@ pub fn evaluate_funding_mode_signal(
             open_venue,
             hedge_venue
         );
-        return Ok(None);
+        return Ok(Vec::new());
     }
-    evaluate_funding_signal(hedge_venue_symbol, hedge_venue)
+    evaluate_funding_signals(hedge_venue_symbol, hedge_venue)
+}
+
+pub fn evaluate_funding_mode_signal(
+    spread_factor: &super::spread_factor::SpreadFactor,
+    open_symbol_key: &str,
+    hedge_symbol_key: &str,
+    hedge_venue_symbol: &str,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+    in_dump: bool,
+    rate_ready: bool,
+) -> Result<Option<ArbSignalKind>> {
+    evaluate_funding_mode_signals(
+        spread_factor,
+        open_symbol_key,
+        hedge_symbol_key,
+        hedge_venue_symbol,
+        open_venue,
+        hedge_venue,
+        in_dump,
+        rate_ready,
+    )
+    .map(|signals| signals.into_iter().next())
 }
 
 fn drive_funding_decision(
@@ -1250,7 +1301,7 @@ fn drive_funding_decision(
 
     let rate_ready = funding_rate_symbol_inputs_ready(hedge_symbol_key.as_str(), hedge_venue);
     let open_inputs_ready = funding_open_inputs_ready(hedge_symbol_key.as_str(), hedge_venue);
-    let fr_signal = evaluate_funding_mode_signal(
+    let fr_signals = evaluate_funding_mode_signals(
         spread_factor,
         open_symbol_key.as_str(),
         hedge_symbol_key.as_str(),
@@ -1295,31 +1346,35 @@ fn drive_funding_decision(
                 {
                     arb.record_intercept_summary("fr_no_threshold_hit");
                 }
-                if fr_signal.is_none() {
+                if fr_signals.is_empty() {
                     arb.record_intercept_summary("fr_no_signal");
                 }
             });
         }
     }
 
-    let fr_signal = match fr_signal {
-        Some(signal) => signal,
-        None => {
-            log::debug!(
-                "{FUNDING_ARB_SHELL_NAME} no effective signal open={} hedge={} open_venue={:?} hedge_venue={:?}",
-                open_symbol_key,
-                hedge_symbol_key,
-                open_venue,
-                hedge_venue
-            );
-            return Ok(emitted_signal);
-        }
-    };
+    if fr_signals.is_empty() {
+        log::debug!(
+            "{FUNDING_ARB_SHELL_NAME} no effective signal open={} hedge={} open_venue={:?} hedge_venue={:?}",
+            open_symbol_key,
+            hedge_symbol_key,
+            open_venue,
+            hedge_venue
+        );
+        return Ok(emitted_signal);
+    }
 
-    // 此处 fr_signal 已是 Some(ArbSignalKind)。evaluate_funding_final_signal 还会过
-    // open_inputs_ready / in_dump / spread / in_trade_list 四关。把每一关的拦截原因
-    // 计数到 summary 里，方便定位是哪一关在挡 signal。
-    {
+    log::debug!(
+        "{FUNDING_ARB_SHELL_NAME} effective funding sequence={} open={} hedge={} open_venue={:?} hedge_venue={:?}",
+        funding_signal_sequence_label(&fr_signals),
+        open_symbol_key,
+        hedge_symbol_key,
+        open_venue,
+        hedge_venue
+    );
+
+    for fr_signal in fr_signals {
+        // Each candidate still passes the existing final gates independently.
         let reason: Option<&'static str> = match fr_signal {
             ArbSignalKind::ForwardOpen => {
                 if !open_inputs_ready {
@@ -1364,6 +1419,21 @@ fn drive_funding_decision(
                     hedge_venue,
                     hedge_symbol_key.as_str(),
                 ) {
+                    let detail = spread_factor.get_spread_check_detail(
+                        open_venue,
+                        open_symbol_key.as_str(),
+                        hedge_venue,
+                        hedge_symbol_key.as_str(),
+                        ArbDirection::Backward,
+                        OperationType::Open,
+                    );
+                    let _ = ArbDecision::with_state_mut(|arb| {
+                        arb.record_funding_close_spread_block(
+                            open_symbol_key.as_str(),
+                            fr_signal,
+                            detail,
+                        );
+                    });
                     Some("final_fwd_close_spread_miss")
                 } else {
                     None
@@ -1376,6 +1446,21 @@ fn drive_funding_decision(
                     hedge_venue,
                     hedge_symbol_key.as_str(),
                 ) {
+                    let detail = spread_factor.get_spread_check_detail(
+                        open_venue,
+                        open_symbol_key.as_str(),
+                        hedge_venue,
+                        hedge_symbol_key.as_str(),
+                        ArbDirection::Forward,
+                        OperationType::Open,
+                    );
+                    let _ = ArbDecision::with_state_mut(|arb| {
+                        arb.record_funding_close_spread_block(
+                            open_symbol_key.as_str(),
+                            fr_signal,
+                            detail,
+                        );
+                    });
                     Some("final_bwd_close_spread_miss")
                 } else {
                     None
@@ -1386,44 +1471,46 @@ fn drive_funding_decision(
             Some(r) => arb.record_intercept_summary(r),
             None => arb.record_intercept_summary("final_pass"),
         });
-    }
 
-    let Some(control) = ArbDecision::with_state_mut(|arb| {
-        arb.evaluate_funding_control(
-            fr_signal,
-            spread_factor,
-            &symbol_list,
+        let Some(control) = ArbDecision::with_state_mut(|arb| {
+            arb.evaluate_funding_control(
+                fr_signal,
+                spread_factor,
+                &symbol_list,
+                open_symbol_key.as_str(),
+                hedge_symbol_key.as_str(),
+                open_venue,
+                hedge_venue,
+                open_inputs_ready,
+                in_dump,
+                now,
+            )
+        })
+        .flatten() else {
+            continue;
+        };
+
+        let final_signal = control.final_signal.clone();
+        let emit_allowed = emit_funding_open_close_signals(
+            decision,
             open_symbol_key.as_str(),
             hedge_symbol_key.as_str(),
             open_venue,
             hedge_venue,
-            open_inputs_ready,
-            in_dump,
-            now,
-        )
-    })
-    .flatten() else {
-        return Ok(emitted_signal);
-    };
-
-    let emit_allowed = emit_funding_open_close_signals(
-        decision,
-        open_symbol_key.as_str(),
-        hedge_symbol_key.as_str(),
-        open_venue,
-        hedge_venue,
-        control.final_signal.clone(),
-        control.side,
-        control.gate.as_ref(),
-    )?;
-    if !emit_allowed {
-        return Ok(emitted_signal);
+            final_signal.clone(),
+            control.side,
+            control.gate.as_ref(),
+        )?;
+        if !emit_allowed {
+            continue;
+        }
+        let _ = ArbDecision::with_state_mut(|arb| {
+            arb.mark_signal_triggered(&final_signal, control.key, control.side, now);
+        });
+        emitted_signal = Some(final_signal);
     }
-    let _ = ArbDecision::with_state_mut(|arb| {
-        arb.mark_signal_triggered(&control.final_signal, control.key, control.side, now);
-    });
 
-    Ok(Some(control.final_signal))
+    Ok(emitted_signal)
 }
 
 fn drive_spread_arb_decision(
@@ -3747,6 +3834,8 @@ pub(crate) struct ArbDecisionState {
     pub last_intercept_log: Instant,
     pub tlen_cancel_summaries: HashMap<(String, String), TlenCancelSummary>,
     pub last_tlen_cancel_log: Instant,
+    /// 30s 窗口内资费 close 已命中、但 close spread gate 未通过的 symbol 级统计。
+    pub funding_close_spread_blocks: HashMap<(String, ArbSignalKind), FundingCloseSpreadBlock>,
     /// 30s 窗口内的 spread 观测：每个 symbol 记录 forward/backward 两个方向的
     /// 实际 spread 值 min/max，并保留最新看到的 open 阈值，便于在 summary 后打表
     /// 直观判断"信号设计是否合理（区间能否覆盖阈值）"。
@@ -3761,6 +3850,57 @@ pub(crate) struct SpreadObservation {
     pub bwd_min: Option<f64>,
     pub bwd_max: Option<f64>,
     pub bwd_threshold: Option<f64>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct FundingCloseSpreadBlock {
+    pub count: u64,
+    pub min_value: Option<f64>,
+    pub max_value: Option<f64>,
+    pub last_value: Option<f64>,
+    pub threshold: Option<f64>,
+    pub compare_op: Option<super::common::CompareOp>,
+    pub spread_type: Option<super::spread_factor::SpreadType>,
+}
+
+impl Default for FundingCloseSpreadBlock {
+    fn default() -> Self {
+        Self {
+            count: 0,
+            min_value: None,
+            max_value: None,
+            last_value: None,
+            threshold: None,
+            compare_op: None,
+            spread_type: None,
+        }
+    }
+}
+
+impl FundingCloseSpreadBlock {
+    fn record(
+        &mut self,
+        detail: Option<(
+            f64,
+            f64,
+            super::common::CompareOp,
+            super::spread_factor::SpreadType,
+        )>,
+    ) {
+        self.count += 1;
+        if let Some((value, threshold, compare_op, spread_type)) = detail {
+            if value.is_finite() {
+                self.min_value = Some(self.min_value.map_or(value, |prev| prev.min(value)));
+                self.max_value = Some(self.max_value.map_or(value, |prev| prev.max(value)));
+                self.last_value = Some(value);
+            }
+            if threshold.is_finite() {
+                self.threshold = Some(threshold);
+            }
+            self.compare_op = Some(compare_op);
+            self.spread_type = Some(spread_type);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -3837,8 +3977,26 @@ impl ArbDecisionState {
             last_intercept_log: Instant::now(),
             tlen_cancel_summaries: HashMap::new(),
             last_tlen_cancel_log: Instant::now(),
+            funding_close_spread_blocks: HashMap::new(),
             spread_observation: HashMap::new(),
         }
+    }
+
+    pub fn record_funding_close_spread_block(
+        &mut self,
+        symbol: &str,
+        signal: ArbSignalKind,
+        detail: Option<(
+            f64,
+            f64,
+            super::common::CompareOp,
+            super::spread_factor::SpreadType,
+        )>,
+    ) {
+        self.funding_close_spread_blocks
+            .entry((symbol.to_string(), signal))
+            .or_default()
+            .record(detail);
     }
 
     pub fn record_spread_observation_fwd(&mut self, symbol: &str, value: f64, threshold: f64) {
@@ -4680,10 +4838,97 @@ impl ArbDecisionState {
         self.log_vol_coverage(source);
         self.log_xarb_open_blocker_table(source);
         self.log_spread_observation_table(source);
+        self.log_funding_close_spread_block_table(source);
 
         self.intercept_counts.clear();
         self.spread_observation.clear();
+        self.funding_close_spread_blocks.clear();
         self.last_intercept_log = Instant::now();
+    }
+
+    fn log_funding_close_spread_block_table(&mut self, source: &str) {
+        if self.funding_close_spread_blocks.is_empty() {
+            return;
+        }
+
+        let fmt_opt = |v: Option<f64>| -> String {
+            match v {
+                Some(value) if value.is_finite() => format!("{value:.6}"),
+                _ => "-".to_string(),
+            }
+        };
+        let op_text = |op: Option<super::common::CompareOp>| -> &'static str {
+            match op {
+                Some(super::common::CompareOp::GreaterThan) => ">",
+                Some(super::common::CompareOp::LessThan) => "<",
+                None => "?",
+            }
+        };
+        let spread_text = |ty: Option<super::spread_factor::SpreadType>| -> &'static str {
+            ty.map(|item| item.as_str()).unwrap_or("?")
+        };
+
+        let mut rows: Vec<[String; 9]> = self
+            .funding_close_spread_blocks
+            .iter()
+            .map(|((symbol, signal), block)| {
+                [
+                    symbol.clone(),
+                    signal.as_str().to_string(),
+                    block.count.to_string(),
+                    spread_text(block.spread_type).to_string(),
+                    fmt_opt(block.last_value),
+                    fmt_opt(block.min_value),
+                    fmt_opt(block.max_value),
+                    op_text(block.compare_op).to_string(),
+                    fmt_opt(block.threshold),
+                ]
+            })
+            .collect();
+        rows.sort_by(|a, b| {
+            b[2].parse::<u64>()
+                .unwrap_or(0)
+                .cmp(&a[2].parse::<u64>().unwrap_or(0))
+                .then_with(|| a[0].cmp(&b[0]))
+                .then_with(|| a[1].cmp(&b[1]))
+        });
+
+        let headers = [
+            "symbol",
+            "signal",
+            "count",
+            "spread",
+            "last",
+            "min",
+            "max",
+            "op",
+            "threshold",
+        ];
+        let mut widths = headers.iter().map(|h| h.len()).collect::<Vec<_>>();
+        for row in &rows {
+            for (i, cell) in row.iter().enumerate() {
+                widths[i] = widths[i].max(cell.len());
+            }
+        }
+        let fmt_row = |cells: &[String; 9]| -> String {
+            (0..9)
+                .map(|i| format!("{:<width$}", cells[i], width = widths[i]))
+                .collect::<Vec<_>>()
+                .join("  ")
+        };
+        let header_cells: [String; 9] = std::array::from_fn(|i| headers[i].to_string());
+        let header = fmt_row(&header_cells);
+        let rule = "=".repeat(header.len());
+        let mid = "-".repeat(header.len());
+
+        log::info!("{source}: funding close spread blocks (last 30s)");
+        log::info!("{rule}");
+        log::info!("{header}");
+        log::info!("{mid}");
+        for row in &rows {
+            log::info!("{}", fmt_row(row));
+        }
+        log::info!("{rule}");
     }
 
     /// 直接从 open 端 FactorValueHub 缓存里数：fresh / total_seen / stale 名单。
@@ -5214,10 +5459,10 @@ impl ArbDecision {
         }
     }
 
-    pub fn evaluate_funding_rate_signal(
+    pub fn evaluate_funding_rate_signals(
         hedge_symbol: &str,
         hedge_venue: TradingVenue,
-    ) -> Result<Option<ArbSignalKind>> {
+    ) -> Result<Vec<ArbSignalKind>> {
         let flags = evaluate_funding_signal_flags(hedge_symbol, hedge_venue);
         if log::log_enabled!(log::Level::Debug) {
             log::debug!(
@@ -5232,27 +5477,35 @@ impl ArbDecision {
             );
         }
 
-        let signal = resolve_funding_signal_from_flags(
+        let signals = resolve_funding_signals_from_flags(
             flags.forward_open,
             flags.forward_close,
             flags.backward_open,
             flags.backward_close,
         );
-        if let Some(signal) = signal {
-            log::debug!(
-                "ArbDecision funding-rate signal={} hedge={} venue={:?}",
-                signal.as_str(),
-                hedge_symbol,
-                hedge_venue
-            );
-        } else {
+        if signals.is_empty() {
             log::debug!(
                 "ArbDecision no funding-rate condition met hedge={} venue={:?}",
                 hedge_symbol,
                 hedge_venue
             );
+        } else {
+            log::debug!(
+                "ArbDecision funding-rate signal_sequence={} hedge={} venue={:?}",
+                funding_signal_sequence_label(&signals),
+                hedge_symbol,
+                hedge_venue
+            );
         }
-        Ok(signal)
+        Ok(signals)
+    }
+
+    pub fn evaluate_funding_rate_signal(
+        hedge_symbol: &str,
+        hedge_venue: TradingVenue,
+    ) -> Result<Option<ArbSignalKind>> {
+        Self::evaluate_funding_rate_signals(hedge_symbol, hedge_venue)
+            .map(|signals| signals.into_iter().next())
     }
 
     pub fn print_signal_table(symbols: &[String]) {
@@ -5387,13 +5640,13 @@ impl ArbDecision {
                 let fr_predict_loan = fr + predict_loan * 1.2;
                 let fr_ma_cur_loan = fr_ma + current_loan;
                 let flags = evaluate_funding_signal_flags(symbol, hedge_venue);
-                let fr_signal = resolve_funding_signal_from_flags(
+                let fr_signals = resolve_funding_signals_from_flags(
                     flags.forward_open,
                     flags.forward_close,
                     flags.backward_open,
                     flags.backward_close,
                 );
-                let fr_signal_label = fr_signal.map(|signal| signal.as_str()).unwrap_or("-");
+                let fr_signal_label = funding_signal_sequence_label(&fr_signals);
 
                 let spread_fwd_open =
                     spread_factor.satisfy_forward_open(open_venue, symbol, hedge_venue, symbol);
@@ -5421,8 +5674,10 @@ impl ArbDecision {
                 } else if spread_bwd_cancel {
                     "BwdCancel"
                 } else {
-                    fr_signal
-                        .and_then(|signal| {
+                    fr_signals
+                        .iter()
+                        .copied()
+                        .find_map(|signal| {
                             ArbDecisionState::evaluate_funding_final_signal(
                                 signal,
                                 spread_factor,
@@ -5493,6 +5748,36 @@ mod funding_mode_signal_tests {
         )
         .is_some());
         spread_factor
+    }
+
+    #[test]
+    fn conflicting_forward_close_backward_open_emits_close_then_open() {
+        assert_eq!(
+            resolve_funding_signals_from_flags(false, true, true, false),
+            vec![ArbSignalKind::ForwardClose, ArbSignalKind::BackwardOpen]
+        );
+        assert_eq!(
+            funding_signal_sequence_label(&[
+                ArbSignalKind::ForwardClose,
+                ArbSignalKind::BackwardOpen
+            ]),
+            "FwdClose+BwdOpen"
+        );
+    }
+
+    #[test]
+    fn conflicting_backward_close_forward_open_emits_close_then_open() {
+        assert_eq!(
+            resolve_funding_signals_from_flags(true, false, false, true),
+            vec![ArbSignalKind::BackwardClose, ArbSignalKind::ForwardOpen]
+        );
+        assert_eq!(
+            funding_signal_sequence_label(&[
+                ArbSignalKind::BackwardClose,
+                ArbSignalKind::ForwardOpen
+            ]),
+            "BwdClose+FwdOpen"
+        );
     }
 
     #[test]

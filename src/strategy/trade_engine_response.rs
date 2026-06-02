@@ -170,6 +170,7 @@ pub trait TradeEngineResponse {
                     | gate::POSITION_MARGIN_TOO_LOW
                     | gate::LIQUIDITY_NOT_ENOUGH
                     | gate::AUTO_BORROW_TOO_MUCH
+                    | gate::INITIAL_MARGIN_TOO_LOW
             ),
             _ => false,
         }
@@ -318,6 +319,22 @@ mod tests {
         assert!(max_borrowable_exceeded.is_insufficient_margin());
         assert!(loanable_unavailable.is_insufficient_margin());
         assert!(collateral_cap.is_insufficient_margin());
+    }
+
+    #[test]
+    fn detects_gate_initial_margin_low_as_insufficient_margin() {
+        let gate_ex = crate::common::exchange::Exchange::Gate as u32;
+        let resp = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::GateUnifiedNewOrder as u32,
+            gate_ex,
+            123,
+            gate::INITIAL_MARGIN_TOO_LOW,
+        );
+
+        assert!(resp.is_open_request());
+        assert!(resp.is_open_rejected());
+        assert!(resp.is_insufficient_margin());
     }
 
     #[test]

@@ -1,0 +1,76 @@
+# Global persist_manager gRPC sync source distribution table.
+#
+# Public endpoints stay inside 6300-6400. The 30 public ports reserved for
+# persist sync are: 6340-6359 and 6380-6389.
+#
+# Only sources explicitly requested by the operator are allocated here. Scripts
+# must fail closed for envs that are not listed.
+
+[strategy]
+public_range = "6300-6400"
+reserved_public_ports = "6340-6359,6380-6389"
+reserved_public_port_count = 30
+protocol = "plaintext gRPC over HTTP/2"
+source_id_rule = "env directory basename unless an allocation explicitly says otherwise"
+bind_rule = "127.0.0.1:(50000 + public_port - 6300)"
+nginx_mapping_rule = "<public_port> <bind_host>:<bind_port>"
+fail_closed = true
+notes = [
+  "Bybit intra arb01 is fixed on SG 6351 and should not be moved.",
+  "Unmentioned strategies/envs must not receive concrete allocations.",
+]
+
+[regions.jp]
+host = "54.64.147.69"
+base_url = "http://54.64.147.69"
+
+[regions.hk]
+host = "47.238.128.48"
+base_url = "http://47.238.128.48"
+
+[regions.sg]
+host = "47.131.162.78"
+base_url = "http://47.131.162.78"
+
+# Requested FR sources on JP.
+[[allocations]]
+port = 6340
+region = "jp"
+strategy = "fr"
+env = "gate_fr_arb01"
+source_id = "gate_fr_arb01"
+public_url = "http://54.64.147.69:6340"
+bind = "127.0.0.1:50040"
+status = "planned"
+
+[[allocations]]
+port = 6341
+region = "jp"
+strategy = "fr"
+env = "bitget_fr_arb02"
+source_id = "bitget_fr_arb02"
+public_url = "http://54.64.147.69:6341"
+bind = "127.0.0.1:50041"
+status = "planned"
+
+# Fixed Bybit intra source on SG.
+[[allocations]]
+port = 6351
+region = "sg"
+strategy = "intra"
+env = "bybit-intra-arb01"
+source_id = "bybit-intra-arb01"
+public_url = "http://47.131.162.78:6351"
+bind = "127.0.0.1:50051"
+status = "fixed"
+
+# Requested OKEX intra source on HK.
+[[allocations]]
+port = 6354
+region = "hk"
+strategy = "intra"
+env = "okex-intra-arb01"
+source_id = "okex-intra-arb01"
+public_url = "http://47.238.128.48:6354"
+bind = "127.0.0.1:50054"
+status = "planned"

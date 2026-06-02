@@ -78,7 +78,9 @@ EXTRA_FILES=(
   "intra_scripts/start_intra_persist_manager.sh"
   "intra_scripts/stop_intra_persist_manager.sh"
   "intra_scripts/configure_intra_persist_sync_source.sh"
+  "scripts/configure_persist_sync_source.sh"
   "scripts/setup_nginx_stream_4190.sh"
+  "config/persist_sync_distribution.toml"
 )
 echo "[INFO] 同步 intra_scripts 到 $TARGET_DIR"
 for file in "${EXTRA_FILES[@]}"; do

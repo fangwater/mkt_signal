@@ -5,7 +5,7 @@ use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::log_throttle::log_pending_limit_summary;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{OrderType, Side};
-use crate::pre_trade::signal_throttle::check_signal_throttle;
+use crate::pre_trade::signal_throttle::{check_account_signal_throttle, check_signal_throttle};
 use crate::rolling_metrics::arb_open_latency::record_arb_open_latency;
 use crate::signal::arb_signal::{
     ArbBackwardQueryMsg, ArbCancelCandidateEntry, ArbCancelCandidateQueryMsg, ArbCancelTriggerCtx,
@@ -56,6 +56,61 @@ fn arb_close_side_matches_open_position(close_side: Side, opening_pos: f64) -> b
 fn arb_close_notional_meets_min(ctx: &ArbOpenCtx) -> bool {
     let notional = ctx.amount_value() * ctx.price_value();
     notional.is_finite() && notional >= ARB_CLOSE_MIN_NOTIONAL_U
+}
+
+fn signed_qty_from_side(side: Side, qty: f64) -> f64 {
+    match side {
+        Side::Buy => qty.abs(),
+        Side::Sell => -qty.abs(),
+    }
+}
+
+fn is_position_reducing(current_qty: f64, add_qty: f64) -> bool {
+    const EPS: f64 = 1e-12;
+    if current_qty.abs() <= EPS || add_qty.abs() <= EPS {
+        return false;
+    }
+    current_qty.signum() != add_qty.signum() && add_qty.abs() <= current_qty.abs() + EPS
+}
+
+fn arb_open_is_account_throttle_reducing(
+    opening_symbol: &str,
+    opening_venue: TradingVenue,
+    hedging_symbol: &str,
+    hedging_venue: TradingVenue,
+    side: Side,
+    qty: f64,
+) -> bool {
+    if !(qty.is_finite() && qty > 0.0) {
+        return false;
+    }
+
+    let monitor = MonitorChannel::instance();
+    let open_order_base_qty = monitor
+        .qty_to_base(opening_venue, opening_symbol, qty)
+        .abs();
+    let hedge_order_base_qty = monitor
+        .qty_to_base(hedging_venue, hedging_symbol, qty)
+        .abs();
+    if !(open_order_base_qty.is_finite()
+        && open_order_base_qty > 0.0
+        && hedge_order_base_qty.is_finite()
+        && hedge_order_base_qty > 0.0)
+    {
+        return false;
+    }
+
+    let open_add_qty = signed_qty_from_side(side, open_order_base_qty);
+    let hedge_side = match side {
+        Side::Buy => Side::Sell,
+        Side::Sell => Side::Buy,
+    };
+    let hedge_add_qty = signed_qty_from_side(hedge_side, hedge_order_base_qty);
+
+    let open_pos = monitor.get_position_qty(opening_symbol, opening_venue);
+    let hedge_pos = monitor.get_position_qty(hedging_symbol, hedging_venue);
+
+    is_position_reducing(open_pos, open_add_qty) && is_position_reducing(hedge_pos, hedge_add_qty)
 }
 
 fn should_drop_startup_buffered_signal(signal: &TradeSignal, listener_start_us: i64) -> bool {
@@ -374,9 +429,27 @@ impl SignalChannel {
 
 #[cfg(test)]
 mod tests {
-    use super::{should_drop_startup_buffered_signal, should_suppress_arb_open_inactive_warning};
+    use super::{
+        is_position_reducing, should_drop_startup_buffered_signal,
+        should_suppress_arb_open_inactive_warning,
+    };
     use crate::signal::trade_signal::{SignalType, TradeSignal};
     use bytes::Bytes;
+
+    #[test]
+    fn position_reducing_allows_smaller_abs_position() {
+        assert!(is_position_reducing(10.0, -2.0));
+        assert!(is_position_reducing(-10.0, 2.0));
+        assert!(is_position_reducing(10.0, -10.0));
+    }
+
+    #[test]
+    fn position_reducing_rejects_larger_or_reversing_position() {
+        assert!(!is_position_reducing(10.0, 2.0));
+        assert!(!is_position_reducing(-10.0, -2.0));
+        assert!(!is_position_reducing(1.0, -2.0));
+        assert!(!is_position_reducing(0.0, 1.0));
+    }
 
     #[test]
     fn startup_filter_drops_older_signals() {
@@ -439,16 +512,20 @@ fn handle_trade_signal(signal: TradeSignal, receive_us: i64) {
                     return;
                 };
                 let from_key = String::from_utf8_lossy(&open_ctx.from_key).to_string();
-                if let Some(hit) = check_signal_throttle(&symbol, side) {
-                    debug!(
-                        "ArbOpen: throttled by pre_trade block, symbol={} side={} remain_us={} last_code={} until_us={}, skip strategy construction",
-                        symbol,
-                        side.as_str(),
-                        hit.remaining_us,
-                        hit.last_error_code,
-                        hit.until_us
-                    );
-                    return;
+                let symbol_throttle_hit = check_signal_throttle(&symbol, side);
+                let account_throttle_hit = check_account_signal_throttle();
+                if account_throttle_hit.is_none() {
+                    if let Some(hit) = symbol_throttle_hit.as_ref() {
+                        debug!(
+                            "ArbOpen: throttled by pre_trade block, symbol={} side={} remain_us={} last_code={} until_us={}, skip strategy construction",
+                            symbol,
+                            side.as_str(),
+                            hit.remaining_us,
+                            hit.last_error_code,
+                            hit.until_us
+                        );
+                        return;
+                    }
                 }
                 let opening_venue = TradingVenue::from_u8(open_ctx.opening_leg.venue)
                     .unwrap_or(TradingVenue::BinanceMargin);
@@ -467,6 +544,41 @@ fn handle_trade_signal(signal: TradeSignal, receive_us: i64) {
                         hedging_venue
                     );
                     return;
+                }
+
+                if let Some(hit) = account_throttle_hit.as_ref() {
+                    let reducing = arb_open_is_account_throttle_reducing(
+                        &symbol,
+                        opening_venue,
+                        &hedging_symbol,
+                        hedging_venue,
+                        side,
+                        open_ctx.amount_value(),
+                    );
+                    if !reducing {
+                        debug!(
+                            "ArbOpen: account-wide reduce-only throttle, symbol={} side={} open_venue={:?} hedge_venue={:?} qty={:.8} remain_us={} last_code={} until_us={}, skip strategy construction",
+                            symbol,
+                            side.as_str(),
+                            opening_venue,
+                            hedging_venue,
+                            open_ctx.amount_value(),
+                            hit.remaining_us,
+                            hit.last_error_code,
+                            hit.until_us
+                        );
+                        return;
+                    }
+                    debug!(
+                        "ArbOpen: account-wide throttle active but signal is reducing, symbol={} side={} open_venue={:?} hedge_venue={:?} qty={:.8} remain_us={} last_code={}",
+                        symbol,
+                        side.as_str(),
+                        opening_venue,
+                        hedging_venue,
+                        open_ctx.amount_value(),
+                        hit.remaining_us,
+                        hit.last_error_code
+                    );
                 }
 
                 match open_ctx.get_order_type() {

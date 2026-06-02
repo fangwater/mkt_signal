@@ -46,6 +46,8 @@ pub struct ActiveSignalThrottle {
 
 static SIGNAL_THROTTLE_MAP: Lazy<Mutex<HashMap<SignalThrottleKey, SignalThrottleEntry>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+static ACCOUNT_SIGNAL_THROTTLE: Lazy<Mutex<Option<SignalThrottleEntry>>> =
+    Lazy::new(|| Mutex::new(None));
 
 impl SignalThrottleKey {
     fn new(symbol: &str, dir: Side) -> Self {
@@ -73,9 +75,20 @@ pub fn is_throttle_error_code(exchange: Option<Exchange>, error_code: i32) -> bo
         | gate::MARGIN_NOT_ENOUGH
         | gate::POSITION_MARGIN_TOO_LOW
         | gate::LIQUIDITY_NOT_ENOUGH
-        | gate::AUTO_BORROW_TOO_MUCH => matches!(exchange, Some(Exchange::Gate)),
+        | gate::AUTO_BORROW_TOO_MUCH
+        | gate::INITIAL_MARGIN_TOO_LOW => matches!(exchange, Some(Exchange::Gate)),
         _ => false,
     }
+}
+
+fn is_account_wide_reduce_only_error_code(exchange: Option<Exchange>, error_code: i32) -> bool {
+    matches!(
+        (exchange, error_code),
+        (
+            Some(Exchange::Gate),
+            gate::INITIAL_MARGIN_TOO_LOW | gate::MARGIN_NOT_ENOUGH | gate::POSITION_MARGIN_TOO_LOW
+        )
+    )
 }
 
 pub fn register_signal_throttle(
@@ -98,6 +111,11 @@ pub fn register_signal_throttle(
 pub fn check_signal_throttle(symbol: &str, dir: Side) -> Option<SignalThrottleHit> {
     let now_us = get_timestamp_us();
     check_signal_throttle_at(symbol, dir, now_us)
+}
+
+pub fn check_account_signal_throttle() -> Option<SignalThrottleHit> {
+    let now_us = get_timestamp_us();
+    check_account_signal_throttle_at(now_us)
 }
 
 pub fn snapshot_active_signal_throttles() -> Vec<ActiveSignalThrottle> {
@@ -172,6 +190,28 @@ fn register_signal_throttle_at(
 
     let ttl_us = ttl_us.max(0);
     let ban_until_us = now_us.saturating_add(ttl_us);
+    let registered_account_block = if is_account_wide_reduce_only_error_code(exchange, error_code) {
+        let mut account_guard = ACCOUNT_SIGNAL_THROTTLE.lock();
+        cleanup_account_expired(&mut account_guard, now_us);
+        match account_guard.as_mut() {
+            Some(entry) => {
+                entry.ban_until_us = entry.ban_until_us.max(ban_until_us);
+                entry.last_error_code = error_code;
+                entry.updated_at_us = now_us;
+            }
+            None => {
+                *account_guard = Some(SignalThrottleEntry {
+                    ban_until_us,
+                    last_error_code: error_code,
+                    updated_at_us: now_us,
+                });
+            }
+        }
+        true
+    } else {
+        false
+    };
+
     let mut guard = SIGNAL_THROTTLE_MAP.lock();
     cleanup_expired(&mut guard, now_us);
 
@@ -197,6 +237,14 @@ fn register_signal_throttle_at(
         ttl_us / 1_000_000,
         ban_until_us
     );
+    if registered_account_block {
+        warn!(
+            "SignalThrottle: register account-wide reduce-only block code={} block_for={}s until_us={}",
+            error_code,
+            ttl_us / 1_000_000,
+            ban_until_us
+        );
+    }
     true
 }
 
@@ -212,8 +260,28 @@ fn check_signal_throttle_at(symbol: &str, dir: Side, now_us: i64) -> Option<Sign
     })
 }
 
+fn check_account_signal_throttle_at(now_us: i64) -> Option<SignalThrottleHit> {
+    let mut guard = ACCOUNT_SIGNAL_THROTTLE.lock();
+    cleanup_account_expired(&mut guard, now_us);
+    let entry = guard.as_ref()?;
+    Some(SignalThrottleHit {
+        remaining_us: entry.ban_until_us.saturating_sub(now_us),
+        until_us: entry.ban_until_us,
+        last_error_code: entry.last_error_code,
+    })
+}
+
 fn cleanup_expired(map: &mut HashMap<SignalThrottleKey, SignalThrottleEntry>, now_us: i64) {
     map.retain(|_, entry| entry.ban_until_us > now_us);
+}
+
+fn cleanup_account_expired(entry: &mut Option<SignalThrottleEntry>, now_us: i64) {
+    if entry
+        .as_ref()
+        .is_some_and(|entry| entry.ban_until_us <= now_us)
+    {
+        *entry = None;
+    }
 }
 
 fn side_label_from_u8(value: u8) -> &'static str {
@@ -226,12 +294,16 @@ fn side_label_from_u8(value: u8) -> &'static str {
 mod tests {
     use super::*;
 
+    static TEST_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
     fn clear_all() {
         SIGNAL_THROTTLE_MAP.lock().clear();
+        *ACCOUNT_SIGNAL_THROTTLE.lock() = None;
     }
 
     #[test]
     fn detects_throttle_error_code() {
+        let _guard = TEST_LOCK.lock();
         assert!(is_throttle_error_code(Some(Exchange::Binance), 51169));
         assert!(is_throttle_error_code(Some(Exchange::Binance), -2019));
         assert!(is_throttle_error_code(Some(Exchange::Binance), 51006));
@@ -244,6 +316,18 @@ mod tests {
         assert!(is_throttle_error_code(
             Some(Exchange::Gate),
             gate::BALANCE_NOT_ENOUGH
+        ));
+        assert!(is_throttle_error_code(
+            Some(Exchange::Gate),
+            gate::INITIAL_MARGIN_TOO_LOW
+        ));
+        assert!(is_account_wide_reduce_only_error_code(
+            Some(Exchange::Gate),
+            gate::INITIAL_MARGIN_TOO_LOW
+        ));
+        assert!(!is_account_wide_reduce_only_error_code(
+            Some(Exchange::Gate),
+            gate::AUTO_BORROW_TOO_MUCH
         ));
         assert!(!is_throttle_error_code(Some(Exchange::Binance), 25116));
         assert!(!is_throttle_error_code(Some(Exchange::Okex), 25116));
@@ -259,7 +343,30 @@ mod tests {
     }
 
     #[test]
+    fn registers_account_throttle_for_gate_initial_margin_low() {
+        let _guard = TEST_LOCK.lock();
+        clear_all();
+        let now_us = 2_000_000;
+        let ttl_us = 50;
+
+        assert!(register_signal_throttle_at(
+            "ethusdt",
+            Side::Sell,
+            Some(Exchange::Gate),
+            gate::INITIAL_MARGIN_TOO_LOW,
+            now_us,
+            ttl_us
+        ));
+
+        let account_hit =
+            check_account_signal_throttle_at(now_us + 1).expect("account throttle must be hit");
+        assert_eq!(account_hit.last_error_code, gate::INITIAL_MARGIN_TOO_LOW);
+        assert!(check_account_signal_throttle_at(now_us + ttl_us).is_none());
+    }
+
+    #[test]
     fn registers_and_expires_throttle() {
+        let _guard = TEST_LOCK.lock();
         clear_all();
         let symbol = "btcusdt";
         let now_us = 1_000_000;
@@ -277,6 +384,7 @@ mod tests {
         let hit1 = check_signal_throttle_at("BTCUSDT", Side::Buy, now_us + 1)
             .expect("throttle must be hit");
         assert_eq!(hit1.last_error_code, 51169);
+        assert!(check_account_signal_throttle_at(now_us + 1).is_none());
 
         let hit2 = check_signal_throttle_at("BTCUSDT", Side::Buy, now_us + ttl_us - 1);
         assert!(hit2.is_some());

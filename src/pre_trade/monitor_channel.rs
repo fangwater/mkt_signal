@@ -1215,20 +1215,37 @@ impl MonitorChannel {
                 client_order_id,
                 snapshot_pos_base,
             );
-            info!(
-                "CloseInventory: reserve retry after force sync symbol={} venue={:?} side={:?} client_order_id={} requested={:.8} snapshot_pos={:.8} first_available={:.8} first_inventory={:.8} retry_granted={:.8} retry_available={:.8} retry_inventory={:.8}",
-                symbol,
-                venue,
-                side,
-                client_order_id,
-                requested_base_qty,
-                snapshot_pos_base,
-                first_grant.available_before_base,
-                first_grant.closable_inventory_base,
-                retry_grant.granted_base_qty,
-                retry_grant.available_before_base,
-                retry_grant.closable_inventory_base
-            );
+            if retry_grant.granted_base_qty > 1e-12 {
+                info!(
+                    "CloseInventory: reserve retry after force sync symbol={} venue={:?} side={:?} client_order_id={} requested={:.8} snapshot_pos={:.8} first_available={:.8} first_inventory={:.8} retry_granted={:.8} retry_available={:.8} retry_inventory={:.8}",
+                    symbol,
+                    venue,
+                    side,
+                    client_order_id,
+                    requested_base_qty,
+                    snapshot_pos_base,
+                    first_grant.available_before_base,
+                    first_grant.closable_inventory_base,
+                    retry_grant.granted_base_qty,
+                    retry_grant.available_before_base,
+                    retry_grant.closable_inventory_base
+                );
+            } else {
+                debug!(
+                    "CloseInventory: reserve retry after force sync symbol={} venue={:?} side={:?} client_order_id={} requested={:.8} snapshot_pos={:.8} first_available={:.8} first_inventory={:.8} retry_granted={:.8} retry_available={:.8} retry_inventory={:.8}",
+                    symbol,
+                    venue,
+                    side,
+                    client_order_id,
+                    requested_base_qty,
+                    snapshot_pos_base,
+                    first_grant.available_before_base,
+                    first_grant.closable_inventory_base,
+                    retry_grant.granted_base_qty,
+                    retry_grant.available_before_base,
+                    retry_grant.closable_inventory_base
+                );
+            }
             retry_grant
         })
     }

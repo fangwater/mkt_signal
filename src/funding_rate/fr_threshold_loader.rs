@@ -3,15 +3,12 @@
 //! 从 Redis 加载资金费率阈值并更新到 FundingRateFactor 单例。
 //! Redis Hash 格式：
 //! - Key: `funding_rate_thresholds`
-//! - Fields (8 个阈值，不区分 MM/MT):
-//!   - `8h_forward_open`: 8h 正套开仓阈值
-//!   - `8h_forward_close`: 8h 正套平仓阈值
-//!   - `8h_backward_open`: 8h 反套开仓阈值
-//!   - `8h_backward_close`: 8h 反套平仓阈值
-//!   - `4h_forward_open`: 4h 正套开仓阈值
-//!   - `4h_forward_close`: 4h 正套平仓阈值
-//!   - `4h_backward_open`: 4h 反套开仓阈值
-//!   - `4h_backward_close`: 4h 反套平仓阈值
+//! - Fields (不区分 MM/MT):
+//!   - `{period}_forward_open`: 正套开仓阈值
+//!   - `{period}_forward_close`: 正套平仓阈值
+//!   - `{period}_backward_open`: 反套开仓阈值
+//!   - `{period}_backward_close`: 反套平仓阈值
+//! - `period` 支持 `1h`/`2h`/`4h`/`6h`/`8h`；未显式配置的周期按 4h 阈值线性折算。
 
 use anyhow::Result;
 use log::{info, warn};
@@ -50,8 +47,11 @@ pub fn load_from_redis(hash_map: HashMap<String, String>) -> Result<()> {
 
         // 解析周期
         let period = match period_str {
-            "8h" => FundingRatePeriod::Hours8,
+            "1h" => FundingRatePeriod::Hours1,
+            "2h" => FundingRatePeriod::Hours2,
             "4h" => FundingRatePeriod::Hours4,
+            "6h" => FundingRatePeriod::Hours6,
+            "8h" => FundingRatePeriod::Hours8,
             _ => {
                 warn!("未知的资金费率周期: {} (key: {})", period_str, key);
                 continue;
@@ -113,6 +113,7 @@ mod tests {
         hash_map.insert("8h_forward_close".to_string(), "-0.0001".to_string());
         hash_map.insert("4h_forward_open".to_string(), "0.00005".to_string());
         hash_map.insert("4h_backward_open".to_string(), "-0.00005".to_string());
+        hash_map.insert("1h_forward_close".to_string(), "-0.000025".to_string());
 
         let result = load_from_redis(hash_map);
         assert!(result.is_ok());
@@ -140,7 +141,7 @@ mod tests {
     #[test]
     fn test_load_unknown_period() {
         let mut hash_map = HashMap::new();
-        hash_map.insert("1h_forward_open".to_string(), "0.0001".to_string());
+        hash_map.insert("3h_forward_open".to_string(), "0.0001".to_string());
 
         let result = load_from_redis(hash_map);
         assert!(result.is_ok()); // 应该跳过未知周期但不报错
