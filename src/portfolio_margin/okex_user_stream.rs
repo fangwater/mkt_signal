@@ -8,6 +8,7 @@
 use crate::connection::connection::{
     MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector,
 };
+use crate::connection::okex_notice::parse_okex_notice;
 use crate::portfolio_margin::okex_auth::OkexCredentials;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -160,6 +161,21 @@ impl MktConnectionRunner for OkexUserDataConnection {
                         Ok(Some(msg)) => {
                             match msg {
                                 Message::Text(text) => {
+                                    if let Some(notice) = parse_okex_notice(&text) {
+                                        warn!(
+                                            "OKX: received notice code={} msg={} conn_id={:?}",
+                                            notice.code, notice.msg, notice.conn_id
+                                        );
+                                        if notice.is_service_upgrade() {
+                                            warn!(
+                                                "OKX: service upgrade notice 64008 received; reconnecting before forced close"
+                                            );
+                                            ws_stream.close(None).await?;
+                                            break;
+                                        }
+                                        continue;
+                                    }
+
                                     // 检查错误
                                     if let Some(err_msg) = Self::is_error_message(&text) {
                                         error!("OKX: Received error: {}", err_msg);

@@ -7,3 +7,4 @@ pub mod gate_conn;
 pub mod hyperliquid_conn;
 pub mod mkt_manager;
 pub mod okex_conn;
+pub mod okex_notice;

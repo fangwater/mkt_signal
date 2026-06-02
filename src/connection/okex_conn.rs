@@ -1,6 +1,7 @@
 use crate::connection::connection::{
     MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector,
 };
+use crate::connection::okex_notice::parse_okex_notice;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::{SinkExt, TryStreamExt};
@@ -111,6 +112,20 @@ impl MktConnectionRunner for OkexConnection {
                                         reset_timer = Instant::now() + Duration::from_secs(25);
                                     } else {
                                         debug!("Receive business text while waiting for pong frame");
+                                    }
+                                    if let Some(notice) = parse_okex_notice(&text) {
+                                        warn!(
+                                            "Okex: received notice code={} msg={} conn_id={:?}",
+                                            notice.code, notice.msg, notice.conn_id
+                                        );
+                                        if notice.is_service_upgrade() {
+                                            warn!(
+                                                "Okex: service upgrade notice 64008 received; reconnecting before forced close"
+                                            );
+                                            ws_stream.close(None).await?;
+                                            break;
+                                        }
+                                        continue;
                                     }
                                     let bytes = Bytes::from(text.into_bytes());
                                     if let Err(e) = self.base_connection.tx.send(bytes.clone()) {

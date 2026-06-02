@@ -25,6 +25,7 @@ use tokio_tungstenite::{client_async, MaybeTlsStream, WebSocketStream};
 use url::Url;
 
 use crate::common::time_util::get_timestamp_us;
+use crate::connection::okex_notice::parse_okex_notice;
 use crate::spread_pbs::adapter::KeepaliveSpec;
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -247,6 +248,24 @@ async fn run_session(
                 let recv_us = get_timestamp_us();
                 match next {
                     Some(Ok(Message::Text(text))) => {
+                        if let Some(notice) = parse_okex_notice(&text) {
+                            log::warn!(
+                                "spread_pbs ws[{}] received OKX notice code={} msg={} conn_id={:?}",
+                                label,
+                                notice.code,
+                                notice.msg,
+                                notice.conn_id
+                            );
+                            if notice.is_service_upgrade() {
+                                log::warn!(
+                                    "spread_pbs ws[{}] OKX service upgrade notice 64008 received; reconnecting before forced close",
+                                    label
+                                );
+                                let _ = sink.close().await;
+                                return;
+                            }
+                            continue;
+                        }
                         if is_keepalive_response(&text) {
                             continue;
                         }
