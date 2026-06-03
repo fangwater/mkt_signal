@@ -210,17 +210,36 @@ use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::trade_update_lite::TradeUpdateLite;
 use crate::strategy::OrphanStrategyManager;
 use bytes::Bytes;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
 /// 合约腿管理器句柄对：(UmManager, MinQtyTable)。
 type UmMgrPair = (Rc<RefCell<BasicUmManager>>, Rc<RefCell<MinQtyTable>>);
 
+#[derive(Default)]
+struct PendingRiskChecks {
+    mm_position_symbols: HashMap<String, i64>,
+    arb_position_symbols: HashMap<String, i64>,
+    arb_margin_assets: HashMap<String, i64>,
+    arb_startup_ready_ts: i64,
+}
+
+impl PendingRiskChecks {
+    fn insert_latest(map: &mut HashMap<String, i64>, key: String, e_ts: i64) {
+        map.entry(key)
+            .and_modify(|current| *current = (*current).max(e_ts))
+            .or_insert(e_ts);
+    }
+}
+
 // Thread-local 单例存储
 thread_local! {
     static MONITOR_CHANNEL: RefCell<Option<MonitorChannelInner>> = const { RefCell::new(None) };
     static MONITOR_STATE_LISTENERS: RefCell<Option<MonitorStateListeners>> = const { RefCell::new(None) };
+    static BASIC_STATE_CACHE: RefCell<Option<(usize, BasicState)>> = const { RefCell::new(None) };
+    static BASIC_STATE_DIRTY: Cell<bool> = const { Cell::new(true) };
+    static PENDING_RISK_CHECKS: RefCell<PendingRiskChecks> = RefCell::new(PendingRiskChecks::default());
 }
 
 /// MonitorChannel 单例访问器（零大小类型）
@@ -475,11 +494,10 @@ impl BasicAccountListener {
                                 self.open_venue,
                                 "account_balance",
                             );
-                            MonitorChannel::instance()
-                                .handle_arb_open_margin_net_risk_after_update(
-                                    &msg.symbol,
-                                    msg.timestamp.max(0).saturating_mul(1000),
-                                );
+                            MonitorChannel::queue_arb_margin_net_risk_check(
+                                &msg.symbol,
+                                msg.timestamp.max(0).saturating_mul(1000),
+                            );
                         }
                     }
                     if scope_matches_venue(
@@ -496,6 +514,7 @@ impl BasicAccountListener {
                             );
                         }
                     }
+                    MonitorChannel::mark_basic_state_dirty();
                 }
             }
             BasicAccountEventType::PositionUpdate => {
@@ -547,13 +566,12 @@ impl BasicAccountListener {
                         // 交易所侧事件时间 ms→µs（0/负数视作无上下文）
                         let e_ts = msg.timestamp.max(0).saturating_mul(1000);
                         if self.open_venue == self.hedge_venue {
-                            MonitorChannel::instance()
-                                .handle_mm_position_risk_after_update(&symbol, e_ts);
+                            MonitorChannel::queue_mm_position_risk_check(&symbol, e_ts);
                         } else {
-                            MonitorChannel::instance()
-                                .handle_arb_position_risk_after_update(&symbol, e_ts);
+                            MonitorChannel::queue_arb_position_risk_check(&symbol, e_ts);
                         }
                     }
+                    MonitorChannel::mark_basic_state_dirty();
                 }
             }
             BasicAccountEventType::UnrealizedPnlUpdate => {
@@ -578,6 +596,7 @@ impl BasicAccountListener {
                             um.borrow_mut().apply_unrealized_pnl(&msg);
                         }
                     }
+                    MonitorChannel::mark_basic_state_dirty();
                 }
             }
             BasicAccountEventType::BorrowInterest => {
@@ -599,11 +618,10 @@ impl BasicAccountListener {
                                 self.open_venue,
                                 "account_borrow_interest",
                             );
-                            MonitorChannel::instance()
-                                .handle_arb_open_margin_net_risk_after_update(
-                                    &msg.symbol,
-                                    msg.timestamp.max(0).saturating_mul(1000),
-                                );
+                            MonitorChannel::queue_arb_margin_net_risk_check(
+                                &msg.symbol,
+                                msg.timestamp.max(0).saturating_mul(1000),
+                            );
                         }
                     }
                     if scope_matches_venue(
@@ -620,6 +638,7 @@ impl BasicAccountListener {
                             );
                         }
                     }
+                    MonitorChannel::mark_basic_state_dirty();
                 }
             }
             BasicAccountEventType::OrderUpdate => match self.exchange {
@@ -659,7 +678,10 @@ impl BasicAccountListener {
                 }
             }
             BasicAccountEventType::AccountRisk => match BasicAccountRiskMsg::from_bytes(data) {
-                Ok(msg) => MonitorChannel::instance().apply_account_risk(account_scope, msg),
+                Ok(msg) => {
+                    MonitorChannel::instance().apply_account_risk(account_scope, msg);
+                    MonitorChannel::mark_basic_state_dirty();
+                }
                 Err(err) => warn!(
                     "AccountRisk decode failed: scope={} err={err:#}",
                     account_scope.as_str()
@@ -851,6 +873,7 @@ impl DerivativesPriceListener {
 
                     let mut table = self.price_table.borrow_mut();
                     table.update_mark_price(&msg.symbol, msg.mark_price, msg.timestamp);
+                    MonitorChannel::mark_basic_state_dirty();
                 }
                 Err(err) => warn!("parse mark price failed: {err:?}"),
             },
@@ -858,6 +881,7 @@ impl DerivativesPriceListener {
                 Ok(msg) => {
                     let mut table = self.price_table.borrow_mut();
                     table.update_index_price(&msg.symbol, msg.index_price, msg.timestamp);
+                    MonitorChannel::mark_basic_state_dirty();
                 }
                 Err(err) => warn!("parse index price failed: {err:?}"),
             },
@@ -943,6 +967,7 @@ impl ArbStartupNetGate {
     }
 }
 
+#[derive(Clone)]
 struct BasicState {
     // asset -> (open_qty, hedge_qty), both in base units
     exposures: HashMap<String, (f64, f64)>,
@@ -982,13 +1007,144 @@ impl MonitorChannel {
     }
 
     pub fn drain_pending_state_updates() -> bool {
-        MONITOR_STATE_LISTENERS.with(|listeners| {
+        let has_message = MONITOR_STATE_LISTENERS.with(|listeners| {
             let mut listeners = listeners.borrow_mut();
             match listeners.as_mut() {
                 Some(listeners) => listeners.drain_pending(),
                 None => false,
             }
+        });
+        let state_dirty = BASIC_STATE_DIRTY.with(|dirty| dirty.get());
+        if has_message && state_dirty {
+            Self::refresh_basic_state_cache();
+            Self::drain_pending_risk_checks_after_refresh();
+        }
+        has_message
+    }
+
+    fn mark_basic_state_dirty() {
+        BASIC_STATE_DIRTY.with(|dirty| dirty.set(true));
+    }
+
+    fn clear_basic_state_runtime_cache() {
+        BASIC_STATE_CACHE.with(|cache| {
+            *cache.borrow_mut() = None;
+        });
+        BASIC_STATE_DIRTY.with(|dirty| dirty.set(true));
+        PENDING_RISK_CHECKS.with(|pending| {
+            *pending.borrow_mut() = PendingRiskChecks::default();
+        });
+    }
+
+    fn leg_cache_key(leg: &LegMgr) -> usize {
+        match leg {
+            LegMgr::Margin { bal, .. } => Rc::as_ptr(bal) as usize,
+            LegMgr::Futures {
+                um, min_qty_table, ..
+            } => (Rc::as_ptr(um) as usize) ^ (Rc::as_ptr(min_qty_table) as usize).rotate_left(17),
+        }
+    }
+
+    fn basic_state_cache_key(inner: &MonitorChannelInner) -> usize {
+        (inner.open_venue.to_u8() as usize)
+            ^ ((inner.hedge_venue.to_u8() as usize) << 8)
+            ^ (Rc::as_ptr(&inner.price_table) as usize).rotate_left(3)
+            ^ (Rc::as_ptr(&inner.order_manager) as usize).rotate_left(7)
+            ^ Self::leg_cache_key(&inner.open_leg).rotate_left(11)
+            ^ Self::leg_cache_key(&inner.hedge_leg).rotate_left(19)
+    }
+
+    fn refresh_basic_state_cache() {
+        let (key, state) = Self::with_inner(|inner| {
+            (
+                Self::basic_state_cache_key(inner),
+                Self::compute_basic_state(inner),
+            )
+        });
+        BASIC_STATE_CACHE.with(|cache| {
+            *cache.borrow_mut() = Some((key, state));
+        });
+        BASIC_STATE_DIRTY.with(|dirty| dirty.set(false));
+    }
+
+    fn basic_state_cached() -> BasicState {
+        let key = Self::with_inner(Self::basic_state_cache_key);
+        BASIC_STATE_CACHE.with(|cache| {
+            cache
+                .borrow()
+                .as_ref()
+                .and_then(|(cached_key, state)| (*cached_key == key).then(|| state.clone()))
+                .expect("BasicState cache missing; refresh_basic_state_cache must run after init/drain before risk checks")
         })
+    }
+
+    fn queue_mm_position_risk_check(symbol: &str, e_ts: i64) {
+        let symbol = normalize_symbol_for_internal(symbol);
+        if symbol.is_empty() {
+            return;
+        }
+        PENDING_RISK_CHECKS.with(|pending| {
+            let mut pending = pending.borrow_mut();
+            PendingRiskChecks::insert_latest(&mut pending.mm_position_symbols, symbol, e_ts);
+        });
+    }
+
+    fn queue_arb_position_risk_check(symbol: &str, e_ts: i64) {
+        let symbol = normalize_symbol_for_internal(symbol);
+        if symbol.is_empty() {
+            return;
+        }
+        PENDING_RISK_CHECKS.with(|pending| {
+            let mut pending = pending.borrow_mut();
+            PendingRiskChecks::insert_latest(&mut pending.arb_position_symbols, symbol, e_ts);
+        });
+    }
+
+    fn queue_arb_margin_net_risk_check(asset: &str, e_ts: i64) {
+        let asset = asset.trim().to_uppercase();
+        if asset.is_empty() || asset == "USDT" {
+            return;
+        }
+        PENDING_RISK_CHECKS.with(|pending| {
+            let mut pending = pending.borrow_mut();
+            PendingRiskChecks::insert_latest(&mut pending.arb_margin_assets, asset, e_ts);
+        });
+    }
+
+    fn queue_arb_startup_net_check(ready_ts: i64) {
+        PENDING_RISK_CHECKS.with(|pending| {
+            let mut pending = pending.borrow_mut();
+            pending.arb_startup_ready_ts = pending.arb_startup_ready_ts.max(ready_ts);
+        });
+    }
+
+    fn drain_pending_risk_checks_after_refresh() {
+        let pending =
+            PENDING_RISK_CHECKS.with(|pending| std::mem::take(&mut *pending.borrow_mut()));
+
+        if pending.arb_startup_ready_ts > 0 {
+            let checked = Self::with_inner(|inner| {
+                Self::initialize_arb_startup_stable_net_pending_inner(
+                    inner,
+                    pending.arb_startup_ready_ts,
+                )
+            });
+            info!(
+                "Arb startup stable net post-refresh check completed: checked_symbols={}",
+                checked
+            );
+        }
+
+        let mon = Self::instance();
+        for (symbol, e_ts) in pending.mm_position_symbols {
+            mon.handle_mm_position_risk_after_update(&symbol, e_ts);
+        }
+        for (symbol, e_ts) in pending.arb_position_symbols {
+            mon.handle_arb_position_risk_after_update(&symbol, e_ts);
+        }
+        for (asset, e_ts) in pending.arb_margin_assets {
+            mon.handle_arb_open_margin_net_risk_after_update(&asset, e_ts);
+        }
     }
 
     /// 访问内部状态的辅助方法（内部使用）
@@ -1058,15 +1214,14 @@ impl MonitorChannel {
         }
 
         if changed && inner.arb_startup_net_gate.ready() {
-            let checked = Self::initialize_arb_startup_stable_net_pending_inner(inner, now);
+            Self::queue_arb_startup_net_check(now);
             info!(
-                "Arb startup net gate released: 双边net已初始化 open_venue={:?} hedge_venue={:?} open_ts_us={} hedge_ts_us={} dropped_signals={} startup_net_checked_symbols={} pending_write=false",
+                "Arb startup net gate released: 双边net已初始化 open_venue={:?} hedge_venue={:?} open_ts_us={} hedge_ts_us={} dropped_signals={} startup_net_check_queued=true pending_write=false",
                 inner.open_venue,
                 inner.hedge_venue,
                 inner.arb_startup_net_gate.open_ts_us,
                 inner.arb_startup_net_gate.hedge_ts_us,
-                inner.arb_startup_net_gate.dropped_signals,
-                checked
+                inner.arb_startup_net_gate.dropped_signals
             );
         }
     }
@@ -1093,7 +1248,7 @@ impl MonitorChannel {
         inner: &MonitorChannelInner,
         ready_ts: i64,
     ) -> usize {
-        let state = Self::compute_basic_state(inner);
+        let state = Self::basic_state_cached();
         if state.exposures.is_empty() {
             return 0;
         }
@@ -1845,7 +2000,7 @@ impl MonitorChannel {
             ));
         }
 
-        let state = Self::compute_basic_state(inner);
+        let state = Self::basic_state_cached();
         let price_mapper = create_symbol_mapper(Self::mark_price_exchange_for_venues(
             inner.open_venue,
             inner.hedge_venue,
@@ -1999,8 +2154,8 @@ impl MonitorChannel {
     /// - `total_position_usdt`: 各资产现货/合约头寸按 USDT 估值后取绝对值求和
     /// - `total_um_unrealized_usdt`: 合约未实现盈亏（USDT 计价）
     pub fn basic_state_snapshot(&self) -> (HashMap<String, (f64, f64)>, f64, f64, f64, f64) {
-        Self::with_inner(|inner| {
-            let state = Self::compute_basic_state(inner);
+        Self::with_inner(|_inner| {
+            let state = Self::basic_state_cached();
             (
                 state.exposures,
                 state.total_equity_usdt,
@@ -2242,9 +2397,11 @@ impl MonitorChannel {
             arb_startup_net_gate: ArbStartupNetGate::new(open_venue != hedge_venue),
         };
 
+        Self::clear_basic_state_runtime_cache();
         MONITOR_CHANNEL.with(|mc| {
             *mc.borrow_mut() = Some(inner);
         });
+        Self::refresh_basic_state_cache();
         MONITOR_STATE_LISTENERS.with(|listeners| {
             *listeners.borrow_mut() = Some(MonitorStateListeners {
                 account_listeners,
@@ -2511,13 +2668,13 @@ impl MonitorChannel {
 
     // 检查杠杆率是否超过配置阈值
     pub fn check_leverage(&self) -> Result<(), String> {
-        Self::with_inner(|inner| {
+        Self::with_inner(|_inner| {
             let limit = PreTradeParamsLoader::instance().max_leverage();
             if limit <= 0.0 {
                 return Ok(());
             }
 
-            let state = Self::compute_basic_state(inner);
+            let state = Self::basic_state_cached();
             let total_equity = state.total_equity_usdt;
             let um_unrealized = state.total_um_unrealized_usdt;
             let total_position = state.total_position_usdt;
@@ -2942,7 +3099,7 @@ impl MonitorChannel {
                 ));
             };
 
-            let state = Self::compute_basic_state(inner);
+            let state = Self::basic_state_cached();
             let net_exposure = state
                 .exposures
                 .get(&base_asset.to_uppercase())
@@ -2998,13 +3155,13 @@ impl MonitorChannel {
 
     /// 检查总敞口是否超过配置阈值（分母为 eq，若涉及合约 venue 则含 UPL）
     pub fn check_total_exposure(&self) -> Result<(), String> {
-        Self::with_inner(|inner| {
+        Self::with_inner(|_inner| {
             let limit = PreTradeParamsLoader::instance().max_total_exposure_ratio();
             if limit <= 0.0 {
                 return Ok(());
             }
 
-            let state = Self::compute_basic_state(inner);
+            let state = Self::basic_state_cached();
             let total_equity = state.total_equity_usdt;
             let abs_total_usdt = state.abs_total_exposure_usdt;
 
@@ -3049,7 +3206,7 @@ impl MonitorChannel {
             )
         })?;
         let base_asset_upper = base_asset.to_uppercase();
-        let state = Self::compute_basic_state(inner);
+        let state = Self::basic_state_cached();
         let price_mapper = create_symbol_mapper(Self::mark_price_exchange_for_venues(
             inner.open_venue,
             inner.hedge_venue,
@@ -3774,9 +3931,11 @@ mod tests {
             arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
 
+        MonitorChannel::clear_basic_state_runtime_cache();
         MONITOR_CHANNEL.with(|mc| {
             *mc.borrow_mut() = Some(inner);
         });
+        MonitorChannel::refresh_basic_state_cache();
 
         let base_qty =
             MonitorChannel::instance().qty_to_base(TradingVenue::OkexFutures, "FIL-USDT-SWAP", 1.0);
@@ -3824,9 +3983,11 @@ mod tests {
             arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
 
+        MonitorChannel::clear_basic_state_runtime_cache();
         MONITOR_CHANNEL.with(|mc| {
             *mc.borrow_mut() = Some(inner);
         });
+        MonitorChannel::refresh_basic_state_cache();
 
         let err = MonitorChannel::instance()
             .ensure_max_pos_u("FIL-USDT-SWAP", 2.0, 100.0)
@@ -3874,9 +4035,11 @@ mod tests {
             arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
 
+        MonitorChannel::clear_basic_state_runtime_cache();
         MONITOR_CHANNEL.with(|mc| {
             *mc.borrow_mut() = Some(inner);
         });
+        MonitorChannel::refresh_basic_state_cache();
 
         // max_pos_u default = 1000.0 (PreTradeParamsLoader::default)
         // FIL mark = 100.0, contracts=2, mult=10 => base=20 => notional=2000 > 1000
@@ -3923,9 +4086,11 @@ mod tests {
             arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
 
+        MonitorChannel::clear_basic_state_runtime_cache();
         MONITOR_CHANNEL.with(|mc| {
             *mc.borrow_mut() = Some(inner);
         });
+        MonitorChannel::refresh_basic_state_cache();
 
         // 当前持仓 20 * 100 = 2000 > max_pos_u(1000)，但减少仓位应放行。
         assert!(MonitorChannel::instance()
@@ -4002,9 +4167,11 @@ mod tests {
             arb_startup_net_gate: ArbStartupNetGate::new(startup_gate_enabled),
         };
 
+        MonitorChannel::clear_basic_state_runtime_cache();
         MONITOR_CHANNEL.with(|mc| {
             *mc.borrow_mut() = Some(inner);
         });
+        MonitorChannel::refresh_basic_state_cache();
         strategy_mgr
     }
 
@@ -4066,9 +4233,11 @@ mod tests {
             arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
 
+        MonitorChannel::clear_basic_state_runtime_cache();
         MONITOR_CHANNEL.with(|mc| {
             *mc.borrow_mut() = Some(inner);
         });
+        MonitorChannel::refresh_basic_state_cache();
     }
 
     fn install_binance_arb_margin_open_fixture() -> (
@@ -4118,9 +4287,11 @@ mod tests {
             arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
 
+        MonitorChannel::clear_basic_state_runtime_cache();
         MONITOR_CHANNEL.with(|mc| {
             *mc.borrow_mut() = Some(inner);
         });
+        MonitorChannel::refresh_basic_state_cache();
         (strategy_mgr, open_bal)
     }
 
@@ -4469,6 +4640,32 @@ mod tests {
     }
 
     #[test]
+    fn symbol_exposure_risk_reads_cached_basic_state_until_refresh() {
+        let (strategy_mgr, open_bal) = install_binance_arb_margin_open_fixture();
+        assert_eq!(strategy_mgr.borrow().len(), 0);
+
+        MonitorChannel::refresh_basic_state_cache();
+        assert!(MonitorChannel::instance()
+            .check_symbol_exposure("FILUSDT")
+            .is_ok());
+
+        open_bal
+            .borrow_mut()
+            .apply_balance(&BasicBalanceMsg::create(0, "FIL".to_string(), 20.0));
+        MonitorChannel::mark_basic_state_dirty();
+
+        assert!(MonitorChannel::instance()
+            .check_symbol_exposure("FILUSDT")
+            .is_ok());
+
+        MonitorChannel::refresh_basic_state_cache();
+        let err = MonitorChannel::instance()
+            .check_symbol_exposure("FILUSDT")
+            .unwrap_err();
+        assert!(err.contains("敞口比例超过限制"), "err={err}");
+    }
+
+    #[test]
     fn arb_open_margin_net_risk_cancel_targets_same_direction_open_strategies() {
         let (strategy_mgr, open_bal) = install_binance_arb_margin_open_fixture();
         strategy_mgr
@@ -4499,6 +4696,7 @@ mod tests {
         open_bal
             .borrow_mut()
             .apply_balance(&BasicBalanceMsg::create(0, "FIL".to_string(), 20.0));
+        MonitorChannel::refresh_basic_state_cache();
         MonitorChannel::instance().handle_arb_open_margin_net_risk_after_update("FIL", 0);
 
         let mut mgr = strategy_mgr.borrow_mut();
@@ -4560,6 +4758,7 @@ mod tests {
                 20.0,
                 0.0,
             ));
+        MonitorChannel::refresh_basic_state_cache();
         MonitorChannel::instance().handle_arb_open_margin_net_risk_after_update("FIL", 0);
 
         let mut mgr = strategy_mgr.borrow_mut();
@@ -4651,9 +4850,11 @@ mod tests {
             arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
 
+        MonitorChannel::clear_basic_state_runtime_cache();
         MONITOR_CHANNEL.with(|mc| {
             *mc.borrow_mut() = Some(inner);
         });
+        MonitorChannel::refresh_basic_state_cache();
 
         MonitorChannel::instance().handle_mm_position_risk_after_update("FILUSDT", 0);
 
