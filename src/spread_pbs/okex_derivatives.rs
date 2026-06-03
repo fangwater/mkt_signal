@@ -107,8 +107,14 @@ fn parse_liquidation(value: &Value, active_symbols: &HashSet<String>) -> Vec<Byt
                 _ => continue,
             };
             out.push(
-                LiquidationMsg::create(symbol.clone(), liquidation_side, size, price, timestamp)
-                    .to_bytes(),
+                LiquidationMsg::create(
+                    symbol.clone(),
+                    liquidation_side,
+                    size,
+                    price,
+                    normalize_ts_to_us(timestamp),
+                )
+                .to_bytes(),
             );
         }
     }
@@ -132,7 +138,12 @@ fn parse_mark_price(value: &Value) -> Vec<Bytes> {
             continue;
         };
         out.push(
-            MarkPriceMsg::create(normalize_okex_symbol(inst_id), mark_price, timestamp).to_bytes(),
+            MarkPriceMsg::create(
+                normalize_okex_symbol(inst_id),
+                mark_price,
+                normalize_ts_to_us(timestamp),
+            )
+            .to_bytes(),
         );
     }
     out
@@ -163,8 +174,8 @@ fn parse_funding_rate(value: &Value) -> Vec<Bytes> {
             FundingRateMsg::create(
                 normalize_okex_symbol(inst_id),
                 funding_rate,
-                next_funding_time,
-                timestamp,
+                normalize_ts_to_us(next_funding_time),
+                normalize_ts_to_us(timestamp),
             )
             .to_bytes(),
         );
@@ -189,11 +200,28 @@ fn parse_index_price(value: &Value) -> Vec<Bytes> {
             continue;
         };
         out.push(
-            IndexPriceMsg::create(normalize_okex_symbol(inst_id), index_price, timestamp)
-                .to_bytes(),
+            IndexPriceMsg::create(
+                normalize_okex_symbol(inst_id),
+                index_price,
+                normalize_ts_to_us(timestamp),
+            )
+            .to_bytes(),
         );
     }
     out
+}
+
+fn normalize_ts_to_us(timestamp: i64) -> i64 {
+    let abs = timestamp.abs();
+    if abs >= 1_000_000_000_000_000_000 {
+        timestamp / 1000
+    } else if abs >= 1_000_000_000_000_000 {
+        timestamp
+    } else if abs >= 1_000_000_000_000 {
+        timestamp.saturating_mul(1000)
+    } else {
+        timestamp.saturating_mul(1_000_000)
+    }
 }
 
 #[cfg(test)]
@@ -223,7 +251,7 @@ mod tests {
         let out = parse_okex_derivatives_frame(&mark, &active);
         assert_eq!(out.len(), 1);
         assert_eq!(MarkPriceMsg::get_symbol(&out[0]), "BTCUSDT");
-        assert_eq!(MarkPriceMsg::get_timestamp(&out[0]), 1_700_000_000_000);
+        assert_eq!(MarkPriceMsg::get_timestamp(&out[0]), 1_700_000_000_000_000);
 
         let funding = serde_json::json!({
             "arg": {"channel": "funding-rate", "instId": "BTC-USDT-SWAP"},
@@ -234,7 +262,11 @@ mod tests {
         assert_eq!(FundingRateMsg::get_symbol(&out[0]), "BTCUSDT");
         assert_eq!(
             FundingRateMsg::get_next_funding_time(&out[0]),
-            1_700_003_600_000
+            1_700_003_600_000_000
+        );
+        assert_eq!(
+            FundingRateMsg::get_timestamp(&out[0]),
+            1_700_000_000_000_000
         );
     }
 }

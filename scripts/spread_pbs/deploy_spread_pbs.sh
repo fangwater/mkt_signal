@@ -5,19 +5,31 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BIN_NAME="spread_pbs"
 BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 
-# 5 个 CEX × 2 market = 10 venue，默认 core 0-9 字母序映射。
+# 5 个 CEX × 2 market = 10 单边 venue；*-both 由一个进程同时启动 margin/futures。
 # HK el-cc-okx-srv01 的 OKEX venue 会写入 SPREAD_PBS_CORE 覆盖到 12/14。
 KNOWN_VENUES=(
   "binance-margin"
   "binance-futures"
+  "binance-both"
   "bitget-margin"
   "bitget-futures"
+  "bitget-both"
   "bybit-margin"
   "bybit-futures"
+  "bybit-both"
   "gate-margin"
   "gate-futures"
+  "gate-both"
   "okex-margin"
   "okex-futures"
+  "okex-both"
+)
+ALL_BOTH_VENUES=(
+  "binance-both"
+  "bitget-both"
+  "bybit-both"
+  "gate-both"
+  "okex-both"
 )
 KNOWN_EXCHANGES=("binance" "bitget" "bybit" "gate" "okex")
 
@@ -29,13 +41,13 @@ is_known_exchange() {
   return 1
 }
 
-default_venues_for_exchange() {
+both_venue_for_exchange() {
   case "${1,,}" in
-    binance) echo "binance-margin binance-futures" ;;
-    bitget)  echo "bitget-margin bitget-futures"  ;;
-    bybit)   echo "bybit-margin bybit-futures"    ;;
-    gate)    echo "gate-margin gate-futures"      ;;
-    okex)    echo "okex-margin okex-futures"      ;;
+    binance) echo "binance-both" ;;
+    bitget)  echo "bitget-both"  ;;
+    bybit)   echo "bybit-both"   ;;
+    gate)    echo "gate-both"    ;;
+    okex)    echo "okex-both"    ;;
     *) echo ""; return 1 ;;
   esac
 }
@@ -52,6 +64,7 @@ hk_okex_spread_core_for_venue() {
   case "${1,,}" in
     okex-margin)  echo 12 ;;
     okex-futures) echo 14 ;;
+    okex-both)    echo 12 ;;
     *) return 1 ;;
   esac
 }
@@ -93,25 +106,29 @@ usage() {
   cat <<'USAGE'
 Usage:
   deploy_spread_pbs.sh (--exchange <exchange> | --venue <venue>...) [--root <path>]
-  deploy_spread_pbs.sh --all          # 一次铺所有 5 CEX × 2 market
+  deploy_spread_pbs.sh --all          # 一次铺所有 5 个 <exchange>-both
 
 Defaults:
   固定部署根目录 -> $HOME/spread_pbs
   目录结构       -> $HOME/spread_pbs/<venue>/
 
 Notes:
-  - 当前仅 OKex 的解析路径打通（okex-margin / okex-futures）。
-    其他 venue 启动会立即 bail（"only supports okex venues for now"），
-    但目录、脚本、core 映射都会一并铺好，等其他 venue parser 接入后即可启动。
+  - --exchange <exchange> 自动部署 <exchange>-both。
+  - --venue <exchange>-margin / --venue <exchange>-futures 只部署对应单边。
+  - <exchange>-both 会在一个 spread_pbs 进程内同时启动该 exchange 的 margin/futures。
+    IPC topic 仍按单 venue 分开，例如 spread_pbs/gate-margin/ask_bid_spread 与
+    spread_pbs/gate-futures/ask_bid_spread。
   - 默认 core 映射在 start_spread_pbs.sh 里，按字母序：
       binance-margin=0  binance-futures=1
       bitget-margin=2   bitget-futures=3
       bybit-margin=4    bybit-futures=5
       gate-margin=6     gate-futures=7
       okex-margin=8     okex-futures=9
+    <exchange>-both 默认复用该 exchange 的 margin core；env.sh 可用 SPREAD_PBS_CORE 覆盖。
   - HK el-cc-okx-srv01 上，OKEX venue 会在 env.sh 写入覆盖：
       okex-margin SPREAD_PBS_CORE=12
       okex-futures SPREAD_PBS_CORE=14
+      okex-both SPREAD_PBS_CORE=12
 USAGE
 }
 
@@ -156,7 +173,7 @@ done
 
 VENUES=()
 if [[ $DEPLOY_ALL -eq 1 ]]; then
-  VENUES=("${KNOWN_VENUES[@]}")
+  VENUES=("${ALL_BOTH_VENUES[@]}")
 elif [[ ${#VENUES_FROM_ARG[@]} -gt 0 ]]; then
   for v in "${VENUES_FROM_ARG[@]}"; do
     is_known_venue "$v" || { echo "[ERROR] 不支持的 venue: $v" >&2; exit 1; }
@@ -165,7 +182,7 @@ elif [[ ${#VENUES_FROM_ARG[@]} -gt 0 ]]; then
 else
   [[ -z "$EXCHANGE" ]] && { echo "[ERROR] 必须提供 --exchange / --venue / --all" >&2; usage >&2; exit 1; }
   is_known_exchange "$EXCHANGE" || { echo "[ERROR] 不支持的 exchange: $EXCHANGE" >&2; exit 1; }
-  read -r -a VENUES <<<"$(default_venues_for_exchange "$EXCHANGE")"
+  read -r -a VENUES <<<"$(both_venue_for_exchange "$EXCHANGE")"
 fi
 
 echo "[INFO] 构建 $BIN_NAME (release)"
@@ -216,7 +233,7 @@ if [[ -f "$ROOT_DIR/config/iceoryx2.toml" ]]; then
 fi
 
 # 远端分流：binance/bitget/gate 的 venue 推到 AWS 远端主机
-REMOTE_VENUE_REGEX='^(binance|bitget|gate)-(futures|margin)$'
+REMOTE_VENUE_REGEX='^(binance|bitget|gate)-(futures|margin|both)$'
 REMOTE_VENUES=()
 LOCAL_VENUES=()
 for v in "${VENUES[@]}"; do

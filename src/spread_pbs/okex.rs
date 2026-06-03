@@ -415,6 +415,9 @@ fn parse_sbe_books_l2_tbt(
         timestamp: ts_us,
         seq_id,
         prev_seq_id,
+        first_update_id: seq_id,
+        final_update_id: prev_seq_id,
+        gap_check: true,
         is_snapshot: false,
         bids,
         asks,
@@ -500,6 +503,9 @@ fn parse_sbe_books_snapshot(
         timestamp: ts_us,
         seq_id,
         prev_seq_id: -1,
+        first_update_id: seq_id,
+        final_update_id: -1,
+        gap_check: false,
         is_snapshot: true,
         bids,
         asks,
@@ -1030,6 +1036,7 @@ mod tests {
                 is_snapshot,
                 bids,
                 asks,
+                ..
             } => {
                 assert_eq!(symbol, "BTCUSDT");
                 assert_eq!(*timestamp, 1_779_419_555_777_000);

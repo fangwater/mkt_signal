@@ -732,8 +732,6 @@ impl Parser for BitgetTradeParser {
             let size_m = read_i64_le(raw, off + 24);
             let side_raw = raw[off + 32];
 
-            // 跟 v2 JSON 时代的口径一致：TradeMsg.timestamp 用 ms (downstream 假设)
-            let ts_ms = ts_us / 1000;
             let side_char = match side_raw {
                 0 => 'B',
                 1 => 'S',
@@ -746,7 +744,7 @@ impl Parser for BitgetTradeParser {
             }
 
             let trade_msg =
-                TradeMsg::create(symbol.clone(), exec_id, ts_ms, side_char, price, amount);
+                TradeMsg::create(symbol.clone(), exec_id, ts_us, side_char, price, amount);
             if tx.send(trade_msg.to_bytes()).is_ok() {
                 count += 1;
             }

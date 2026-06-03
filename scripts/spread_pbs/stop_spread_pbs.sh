@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-VENUE_DIR_REGEX='^[a-z0-9]+-(futures|margin)$'
+VENUE_DIR_REGEX='^[a-z0-9]+-(futures|margin|both)$'
 
 if [[ "${1:-}" =~ ^(-h|--help)$ ]]; then
   cat <<'USAGE'
@@ -11,7 +11,7 @@ Usage:
   stop_spread_pbs.sh
 
 Behavior:
-  - 必须在单 venue 部署目录下执行（如 ~/spread_pbs/okex-futures）。
+  - 必须在 venue 部署目录下执行（如 ~/spread_pbs/okex-futures 或 ~/spread_pbs/gate-both）。
   - pmdaemon delete + 兜底 kill 残留进程。
 USAGE
   exit 0
@@ -31,6 +31,7 @@ short_market() {
   case "${1,,}" in
     futures) echo "fu" ;;
     margin)  echo "mg" ;;
+    both)    echo "bo" ;;
     *)       echo "${1,,}" | sed -E 's/[^a-z0-9]+//g' | cut -c1-2 ;;
   esac
 }

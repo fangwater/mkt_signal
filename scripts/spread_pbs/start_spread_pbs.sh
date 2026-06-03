@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ROOT_DIR="$(cd "${BASE_DIR}/.." && pwd)"
-VENUE_DIR_REGEX='^[a-z0-9]+-(futures|margin)$'
+VENUE_DIR_REGEX='^[a-z0-9]+-(futures|margin|both)$'
 
 usage() {
   cat <<'USAGE'
@@ -12,9 +12,11 @@ Usage:
   start_spread_pbs.sh
 
 Behavior:
-  - 必须在单 venue 部署目录下执行（如 ~/spread_pbs/okex-futures）。
+  - 必须在 venue 部署目录下执行（如 ~/spread_pbs/okex-futures 或 ~/spread_pbs/gate-both）。
   - 由当前目录名推断 venue，并查表得到默认 CPU 核（0-9）。
   - 若 env.sh 设置 SPREAD_PBS_CORE，则优先使用该覆盖值。
+  - <exchange>-both 会在一个 spread_pbs 进程内同时启动 margin/futures 两套 publisher。
+    启动 both 前需要先停止同 exchange 的单独 margin/futures spread_pbs 进程。
   - 启动方式：taskset -c <core> + pmdaemon，进程名 spp_<ex>_<market>。
 USAGE
 }
@@ -35,14 +37,19 @@ core_for_venue() {
   case "${1,,}" in
     binance-margin)   echo 0 ;;
     binance-futures)  echo 1 ;;
+    binance-both)     echo 0 ;;
     bitget-margin)    echo 2 ;;
     bitget-futures)   echo 3 ;;
+    bitget-both)      echo 2 ;;
     bybit-margin)     echo 4 ;;
     bybit-futures)    echo 5 ;;
+    bybit-both)       echo 4 ;;
     gate-margin)      echo 6 ;;
     gate-futures)     echo 7 ;;
+    gate-both)        echo 6 ;;
     okex-margin)      echo 8 ;;
     okex-futures)     echo 9 ;;
+    okex-both)        echo 8 ;;
     *) return 1 ;;
   esac
 }
@@ -61,6 +68,7 @@ short_market() {
   case "${1,,}" in
     futures) echo "fu" ;;
     margin)  echo "mg" ;;
+    both)    echo "bo" ;;
     *)       echo "${1,,}" | sed -E 's/[^a-z0-9]+//g' | cut -c1-2 ;;
   esac
 }
@@ -133,8 +141,9 @@ KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 cfg_file="$(mktemp)"
 trap 'rm -f "$cfg_file" >/dev/null 2>&1 || true' EXIT
 
-find_running_pids() {
-  local venue_arg="--venue ${venue}"
+find_running_pids_for_venue() {
+  local target_venue="${1,,}"
+  local venue_arg="--venue ${target_venue}"
   local pids=()
   while IFS= read -r pid; do
     if [[ -n "$pid" && "$pid" != "$$" && "$pid" != "$PPID" ]]; then
@@ -156,6 +165,38 @@ find_running_pids() {
   fi
 }
 
+find_running_pids() {
+  find_running_pids_for_venue "$venue"
+}
+
+check_conflicting_spread_pbs_processes() {
+  local exchange=""
+  local conflict_venues=()
+  if [[ "$venue" =~ ^([a-z0-9]+)-both$ ]]; then
+    exchange="${BASH_REMATCH[1]}"
+    conflict_venues=("${exchange}-margin" "${exchange}-futures")
+  elif [[ "$venue" =~ ^([a-z0-9]+)-(margin|futures)$ ]]; then
+    exchange="${BASH_REMATCH[1]}"
+    conflict_venues=("${exchange}-both")
+  else
+    return 0
+  fi
+
+  local found=()
+  local target pid
+  for target in "${conflict_venues[@]}"; do
+    while IFS= read -r pid; do
+      [[ -n "$pid" ]] && found+=("${target}:${pid}")
+    done < <(find_running_pids_for_venue "$target" || true)
+  done
+
+  if [[ ${#found[@]} -gt 0 ]]; then
+    echo "[ERROR] Conflicting spread_pbs process(es) already running: ${found[*]}" >&2
+    echo "        Stop the old single/both deployment first; they publish the same IPC services." >&2
+    exit 1
+  fi
+}
+
 json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 
 json_name="$(json_escape "$name")"
@@ -165,7 +206,7 @@ json_venue="$(json_escape "$venue")"
 json_rust_log="$(json_escape "$rust_log")"
 json_inner_bin="$(json_escape "$BIN_PATH")"
 binance_sbe_env_line=""
-if [[ "$venue" == "binance-margin" ]]; then
+if [[ "$venue" == "binance-margin" || "$venue" == "binance-both" ]]; then
   BINANCE_SBE_API_KEY_HARDCODED="nk1AebIPBgDpTNDl186QeD2imHSuyPm4t2yzIGEul1SmmU0QXFroGVEHI18pVAO4"
   json_binance_sbe_api_key="$(json_escape "$BINANCE_SBE_API_KEY_HARDCODED")"
   binance_sbe_env_line=",
@@ -173,7 +214,7 @@ if [[ "$venue" == "binance-margin" ]]; then
 fi
 
 okex_sbe_env_line=""
-if [[ "$venue" == "okex-margin" || "$venue" == "okex-futures" ]]; then
+if [[ "$venue" == "okex-margin" || "$venue" == "okex-futures" || "$venue" == "okex-both" ]]; then
   for v in OKX_API_KEY OKX_API_SECRET OKX_PASSPHRASE; do
     if [[ -z "${!v:-}" ]]; then
       echo "[ERROR] ${v} 未设置；OKEx SBE handshake 需要这三个变量。" >&2
@@ -221,6 +262,7 @@ JSON
 
 echo "[INFO] Restarting ${name} (venue=${venue}, core=${CORE})"
 "${PMDAEMON[@]}" delete "$name" >/dev/null 2>&1 || true
+check_conflicting_spread_pbs_processes
 
 mapfile -t leaked_pids < <(find_running_pids || true)
 if [[ ${#leaked_pids[@]} -gt 0 ]]; then

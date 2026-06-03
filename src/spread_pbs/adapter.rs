@@ -1,4 +1,5 @@
 use anyhow::Result;
+use bytes::Bytes;
 use serde_json::Value;
 
 use crate::common::mkt_msg::Level;
@@ -54,6 +55,9 @@ pub enum IncrementalFrame {
         timestamp: i64,
         seq_id: i64,
         prev_seq_id: i64,
+        first_update_id: i64,
+        final_update_id: i64,
+        gap_check: bool,
         is_snapshot: bool,
         bids: Vec<Level>,
         asks: Vec<Level>,
@@ -104,13 +108,38 @@ pub trait VenueAdapter {
         Vec::new()
     }
     fn build_subscribe(&self, symbols: &[String]) -> Vec<Value>;
+    fn build_trade_subscribe(&self, _symbols: &[String]) -> Vec<Value> {
+        Vec::new()
+    }
     fn build_incremental_subscribe(&self, _symbols: &[String]) -> Vec<Value> {
         Vec::new()
+    }
+    fn build_derivatives_subscribe(&self, _symbols: &[String]) -> Vec<Value> {
+        Vec::new()
+    }
+    /// Optional symbol-table hook for adapters that keep per-symbol hot-path state.
+    fn seed_symbols(&self, _symbols: &[String]) {}
+    /// Some replacement channels live on a different public endpoint from BBO/trade.
+    /// None means use `ws_url()` and the main dual legs.
+    fn incremental_ws_url(&self) -> Option<String> {
+        None
+    }
+    fn derivatives_ws_url(&self) -> Option<String> {
+        None
     }
     fn inst_id_code(&self, _symbol: &str) -> Option<i64> {
         None
     }
     fn parse_frame(&self, value: &Value) -> Result<Vec<BboFrame>>;
+    fn parse_trade_frame(&self, _value: &Value) -> Result<Vec<TradeFrame>> {
+        Ok(Vec::new())
+    }
+    fn parse_incremental_frame(&self, _value: &Value) -> Result<Vec<IncrementalFrame>> {
+        Ok(Vec::new())
+    }
+    fn parse_derivatives_frame(&self, _value: &Value) -> Result<Vec<Bytes>> {
+        Ok(Vec::new())
+    }
     fn parse_binary_frame(&self, _raw: &[u8]) -> Result<Vec<BboFrame>> {
         Ok(Vec::new())
     }
@@ -118,6 +147,9 @@ pub trait VenueAdapter {
         Ok(Vec::new())
     }
     fn parse_incremental_binary_frame(&self, _raw: &[u8]) -> Result<Vec<IncrementalFrame>> {
+        Ok(Vec::new())
+    }
+    fn parse_derivatives_binary_frame(&self, _raw: &[u8]) -> Result<Vec<Bytes>> {
         Ok(Vec::new())
     }
     /// 返回 None 表示完全依赖服务端 ws-Ping/Pong；返回 Some 表示主动按 interval 发心跳。

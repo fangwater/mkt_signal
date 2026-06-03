@@ -1079,8 +1079,7 @@ impl GateTradeParser {
                 continue;
             }
             let side = if *size >= 0 { 'B' } else { 'S' };
-            let msg =
-                TradeMsg::create(symbol.clone(), *id as i64, t_us / 1000, side, price, amount);
+            let msg = TradeMsg::create(symbol.clone(), *id as i64, *t_us, side, price, amount);
             if tx.send(msg.to_bytes()).is_ok() {
                 sent += 1;
             }
