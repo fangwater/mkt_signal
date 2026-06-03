@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-VENUE_DIR_REGEX='^[a-z0-9]+-(futures|margin)$'
+VENUE_DIR_REGEX='^[a-z0-9]+-(futures|margin|both)$'
 
 usage() {
   cat <<'USAGE'
@@ -11,13 +11,15 @@ Usage:
   start_depth_pub.sh
 
 Behavior:
-  - 必须在单个 venue 部署目录下执行（例如 ~/depth_pub/binance-futures）。
-  - venue 由当前目录名自动推断。
+  - 必须在 venue 部署目录下执行（例如 ~/depth_pub/binance-futures 或 ~/depth_pub/okex-both）。
+  - venue 由当前目录名自动推断；<exchange>-both 会展开为 margin+futures。
   - 使用 pmdaemon 启动进程名: dp_<ex>_<market>（兼容删除旧名 depth_pub_<venue>）
   - 可用 PMDAEMON_BIN 覆盖二进制名（默认 pmdaemon）
 
 Examples:
   cd ~/depth_pub/binance-futures
+  ./scripts/start_depth_pub.sh
+  cd ~/depth_pub/okex-both
   ./scripts/start_depth_pub.sh
 USAGE
 }
@@ -53,6 +55,7 @@ short_market() {
   case "${1,,}" in
     futures) echo "fu" ;;
     margin) echo "mg" ;;
+    both) echo "both" ;;
     *)
       echo "${1,,}" | sed -E 's/[^a-z0-9]+//g' | cut -c1-2
       ;;
@@ -71,9 +74,18 @@ venue_short_tag() {
 venue="$(basename "${BASE_DIR}" | tr '[:upper:]' '[:lower:]')"
 if [[ ! "$venue" =~ $VENUE_DIR_REGEX ]]; then
   echo "[ERROR] 当前目录无法推断 venue: ${BASE_DIR}" >&2
-  echo "[ERROR] 期望目录名形如 <exchange>-<market>，例如 binance-futures" >&2
+  echo "[ERROR] 期望目录名形如 <exchange>-<market>，例如 binance-futures 或 okex-both" >&2
   exit 1
 fi
+
+expanded_venues() {
+  local raw_venue="${1,,}"
+  if [[ "$raw_venue" =~ ^([a-z0-9]+)-both$ ]]; then
+    echo "${BASH_REMATCH[1]}-margin ${BASH_REMATCH[1]}-futures"
+    return 0
+  fi
+  echo "$raw_venue"
+}
 
 PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
 PMDAEMON=("$PMDAEMON_BIN")
@@ -133,8 +145,16 @@ json_escape() {
 json_name="$(json_escape "$name")"
 json_bin="$(json_escape "$BIN_PATH")"
 json_base="$(json_escape "$BASE_DIR")"
-json_venue="$(json_escape "$venue")"
 json_rust_log="$(json_escape "$rust_log")"
+
+venue_args_json=""
+for expanded_venue in $(expanded_venues "$venue"); do
+  json_expanded_venue="$(json_escape "$expanded_venue")"
+  if [[ -n "$venue_args_json" ]]; then
+    venue_args_json+=", "
+  fi
+  venue_args_json+="\"--venue\", \"${json_expanded_venue}\""
+done
 
 cat >"$cfg_file" <<JSON
 {
@@ -142,7 +162,7 @@ cat >"$cfg_file" <<JSON
     {
       "name": "${json_name}",
       "script": "${json_bin}",
-      "args": ["--venue", "${json_venue}"${extra_args_json}],
+      "args": [${venue_args_json}${extra_args_json}],
       "cwd": "${json_base}",
       "env": {
         "RUST_LOG": "${json_rust_log}"

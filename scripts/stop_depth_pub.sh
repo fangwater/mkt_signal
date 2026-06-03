@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-VENUE_DIR_REGEX='^[a-z0-9]+-(futures|margin)$'
+VENUE_DIR_REGEX='^[a-z0-9]+-(futures|margin|both)$'
 PROCESS_MATCH_LIB="${SCRIPT_DIR}/process_match_lib.sh"
 
 if [[ -f "$PROCESS_MATCH_LIB" ]]; then
@@ -17,8 +17,8 @@ Usage:
   stop_depth_pub.sh
 
 Behavior:
-  - 必须在单个 venue 部署目录下执行（例如 ~/depth_pub/binance-futures）。
-  - venue 由当前目录名自动推断。
+  - 必须在 venue 部署目录下执行（例如 ~/depth_pub/binance-futures 或 ~/depth_pub/okex-both）。
+  - venue 由当前目录名自动推断；<exchange>-both 会匹配 margin+futures 参数。
   - 删除 pmdaemon 进程名: dp_<ex>_<market>（兼容旧名 depth_pub_<venue>）
   - 可用 PMDAEMON_BIN 覆盖二进制名（默认 pmdaemon）
 
@@ -59,6 +59,7 @@ short_market() {
   case "${1,,}" in
     futures) echo "fu" ;;
     margin) echo "mg" ;;
+    both) echo "both" ;;
     *)
       echo "${1,,}" | sed -E 's/[^a-z0-9]+//g' | cut -c1-2
       ;;
@@ -77,9 +78,18 @@ venue_short_tag() {
 venue="$(basename "${BASE_DIR}" | tr '[:upper:]' '[:lower:]')"
 if [[ ! "$venue" =~ $VENUE_DIR_REGEX ]]; then
   echo "[ERROR] 当前目录无法推断 venue: ${BASE_DIR}" >&2
-  echo "[ERROR] 期望目录名形如 <exchange>-<market>，例如 binance-futures" >&2
+  echo "[ERROR] 期望目录名形如 <exchange>-<market>，例如 binance-futures 或 okex-both" >&2
   exit 1
 fi
+
+expanded_venues() {
+  local raw_venue="${1,,}"
+  if [[ "$raw_venue" =~ ^([a-z0-9]+)-both$ ]]; then
+    echo "${BASH_REMATCH[1]}-margin ${BASH_REMATCH[1]}-futures"
+    return 0
+  fi
+  echo "$raw_venue"
+}
 
 PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
 PMDAEMON=("$PMDAEMON_BIN")
@@ -94,8 +104,12 @@ legacy_name="depth_pub_${venue}"
 KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 
 find_running_pids() {
-  local venue_arg="--venue ${venue}"
-  safe_find_running_pids "depth_pub" "$BASE_DIR" "$venue_arg"
+  local needles=("$BASE_DIR")
+  local expanded_venue
+  for expanded_venue in $(expanded_venues "$venue"); do
+    needles+=("--venue ${expanded_venue}")
+  done
+  safe_find_running_pids "depth_pub" "${needles[@]}"
 }
 
 echo "[INFO] Stopping ${name}"

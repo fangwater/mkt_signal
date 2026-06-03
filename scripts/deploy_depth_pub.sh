@@ -11,11 +11,11 @@ DEPLOY_ROOT_NAME="depth_pub"
 
 KNOWN_EXCHANGES=("okex" "binance" "bybit" "bitget" "gate")
 KNOWN_VENUES=(
-  "okex-futures" "okex-margin"
-  "binance-futures" "binance-margin"
-  "bybit-futures" "bybit-margin"
-  "bitget-futures" "bitget-margin"
-  "gate-futures" "gate-margin"
+  "okex-futures" "okex-margin" "okex-both"
+  "binance-futures" "binance-margin" "binance-both"
+  "bybit-futures" "bybit-margin" "bybit-both"
+  "bitget-futures" "bitget-margin" "bitget-both"
+  "gate-futures" "gate-margin" "gate-both"
 )
 # 与 deploy_mm_{binance,gate,bitget}.sh 对齐：这三所走远端，其余本地。
 REMOTE_EXCHANGES=("binance" "gate" "bitget")
@@ -33,11 +33,11 @@ is_known_exchange() {
 default_venues_for_exchange() {
   local exchange="${1,,}"
   case "$exchange" in
-    okex) echo "okex-futures okex-margin" ;;
-    binance) echo "binance-futures binance-margin" ;;
-    bybit) echo "bybit-futures bybit-margin" ;;
-    bitget) echo "bitget-futures bitget-margin" ;;
-    gate) echo "gate-futures gate-margin" ;;
+    okex) echo "okex-both" ;;
+    binance) echo "binance-both" ;;
+    bybit) echo "bybit-both" ;;
+    bitget) echo "bitget-both" ;;
+    gate) echo "gate-both" ;;
     *)
       echo ""
       return 1
@@ -94,11 +94,12 @@ Examples:
 
 Notes:
   - Exchange expands to default venues:
-      okex    -> okex-futures okex-margin
-      binance -> binance-futures binance-margin
-      bybit   -> bybit-futures bybit-margin
-      bitget  -> bitget-futures bitget-margin
-      gate    -> gate-futures gate-margin
+      okex    -> okex-both
+      binance -> binance-both
+      bybit   -> bybit-both
+      bitget  -> bitget-both
+      gate    -> gate-both
+  - <exchange>-both 部署目录由 start_depth_pub.sh 展开为 margin+futures。
   - 远端模式下 cargo build 仍在本机完成，再 rsync 到远端。
   - --bin-only / --runtime-only 互斥；远端模式下分别走 fr_remote_sync_binaries
     （只同步顶层二进制）和 fr_remote_sync_path（同步整个 venue 目录）。
