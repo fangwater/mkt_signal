@@ -17,6 +17,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine;
 use bytes::Bytes;
 use hmac::{Hmac, Mac};
+use mkt_parsers::okex as okex_codec;
 use serde_json::Value;
 use sha2::Sha256;
 use std::collections::HashMap;
@@ -33,34 +34,9 @@ const OKEX_INSTRUMENTS_URL: &str = "https://www.okx.com/api/v5/public/instrument
 const OKEX_BOOKS_SBE_URL: &str = "https://openapi.okx.com/api/v5/market/books-sbe";
 const OKEX_SUBSCRIBE_CHUNK: usize = 240;
 
-// SBE schema constants (okx_sbe_1_0.xml)
-const SBE_HEADER_SIZE: usize = 8;
-const SBE_SCHEMA_ID: u16 = 1;
-const SBE_TEMPLATE_BBO_TBT: u16 = 1000;
-const SBE_TEMPLATE_BOOKS_L2_TBT: u16 = 1001;
-const SBE_TEMPLATE_BOOKS_L2_TBT_EXPONENT: u16 = 1002;
-const SBE_TEMPLATE_TRADES: u16 = 1005;
-const SBE_TEMPLATE_BOOKS_SNAPSHOT: u16 = 1006;
-/// `BboTbtChannelEvent` root size = 8*i64 + 2*i32 + 2*i8 = 74。
-const SBE_BBO_TBT_BLOCK_LENGTH: usize = 74;
-/// `BooksL2TbtChannelEvent` root size = 5*i64 + 2*i8 = 42。
-const SBE_BOOKS_L2_TBT_BLOCK_LENGTH: usize = 42;
-/// `BooksL2TbtExponentUpdateEvent` root size = 5*i64 + 2*i8 = 42。
-const SBE_BOOKS_EXPONENT_BLOCK_LENGTH: usize = 42;
-/// `TradesChannelEvent` root size = 7*i64 + i16 + side/source/exponents = 62。
-const SBE_TRADES_BLOCK_LENGTH: usize = 62;
-/// `SnapshotDepthResponseEvent` root size = 3*i64 + 2*i8 = 26。
-const SBE_BOOKS_SNAPSHOT_BLOCK_LENGTH: usize = 26;
-const SBE_BOOK_LEVEL_MIN_BLOCK_LENGTH: usize = 20;
-
 /// 把 OKex `BTC-USDT-SWAP` / `BTC-USDT` 归一化成 `BTCUSDT`。
 pub fn normalize_okex_symbol(symbol: &str) -> String {
-    let mut upper = symbol.to_ascii_uppercase();
-    if upper.ends_with("-SWAP") && upper.len() > 5 {
-        upper.truncate(upper.len() - 5);
-    }
-    upper.retain(|ch| ch != '-');
-    upper
+    okex_codec::normalize_okex_symbol(symbol)
 }
 
 pub struct OkexAdapter {
@@ -277,386 +253,127 @@ fn build_sbe_channel_subscribe_messages(
 
 /// 解一帧 SBE 二进制 bbo-tbt (templateId=1000)。其他 template 返回空 Vec。
 fn parse_sbe_bbo_tbt(raw: &[u8], code_to_norm: &HashMap<i64, String>) -> Result<Vec<BboFrame>> {
-    let (block_length, template_id) = read_sbe_header(raw)?;
-    if template_id != SBE_TEMPLATE_BBO_TBT {
+    let Some(bbo) = okex_codec::parse_sbe_bbo_tbt(raw)? else {
         return Ok(Vec::new());
-    }
-    let body_off = SBE_HEADER_SIZE;
-    if block_length < SBE_BBO_TBT_BLOCK_LENGTH {
-        bail!(
-            "OKEx SBE bbo blockLength {} < expected {}",
-            block_length,
-            SBE_BBO_TBT_BLOCK_LENGTH
-        );
-    }
-
-    // 按 schema 顺序读，offset 基于 body_off
-    let inst_id_code = read_i64_le(raw, body_off)?;
-    // tsUs 是撮合时刻 (= binance T)，暂时不用
-    let _ts_us = read_i64_le(raw, body_off + 8)?;
-    // outTime 是 gateway 发出时刻 (= binance E, = JSON 时代 ts*1000), 走 BboFrame.ts_us
-    let out_time_us = read_i64_le(raw, body_off + 16)?;
-    let seq_id = read_i64_le(raw, body_off + 24)?;
-    let ask_px_m = read_i64_le(raw, body_off + 32)?;
-    let ask_sz_m = read_i64_le(raw, body_off + 40)?;
-    let bid_px_m = read_i64_le(raw, body_off + 48)?;
-    let bid_sz_m = read_i64_le(raw, body_off + 56)?;
-    // ask/bidOrdCount @ +64/+68, 单档不用
-    let px_exp = raw[body_off + 72] as i8;
-    let sz_exp = raw[body_off + 73] as i8;
-
-    let symbol = match code_to_norm.get(&inst_id_code) {
-        Some(s) => s.clone(),
-        None => {
-            // 映射缺失：该 code 没在启动期拉到（新上市 inst？mkt cache 没刷新？）
-            // 不构造帧 — 让上层 dedup 不受影响
-            log::warn!("OKEx SBE: unknown instIdCode={}; dropped", inst_id_code);
-            return Ok(Vec::new());
-        }
     };
-
-    let bid_price = mantissa_to_f64(bid_px_m, px_exp);
-    let ask_price = mantissa_to_f64(ask_px_m, px_exp);
-    let bid_amount = mantissa_to_f64(bid_sz_m, sz_exp);
-    let ask_amount = mantissa_to_f64(ask_sz_m, sz_exp);
-    if bid_price <= 0.0 || ask_price <= 0.0 || bid_amount <= 0.0 || ask_amount <= 0.0 {
+    let Some(symbol) = code_to_norm.get(&bbo.inst_id_code).cloned() else {
+        log::warn!("OKEx SBE: unknown instIdCode={}; dropped", bbo.inst_id_code);
         return Ok(Vec::new());
-    }
-
+    };
     Ok(vec![BboFrame {
         symbol,
-        ts_us: out_time_us,
-        seq_id,
+        ts_us: bbo.timestamp_us,
+        seq_id: bbo.seq_id,
         reset_seq: false,
-        bid_price,
-        bid_amount,
-        ask_price,
-        ask_amount,
+        bid_price: bbo.bid_price,
+        bid_amount: bbo.bid_amount,
+        ask_price: bbo.ask_price,
+        ask_amount: bbo.ask_amount,
     }])
-}
-
-fn read_sbe_header(raw: &[u8]) -> Result<(usize, u16)> {
-    if raw.len() < SBE_HEADER_SIZE {
-        bail!("OKEx SBE frame too short: {} bytes", raw.len());
-    }
-    let block_length = u16::from_le_bytes([raw[0], raw[1]]) as usize;
-    let template_id = u16::from_le_bytes([raw[2], raw[3]]);
-    let schema_id = u16::from_le_bytes([raw[4], raw[5]]);
-    if schema_id != SBE_SCHEMA_ID {
-        bail!(
-            "OKEx SBE unexpected schemaId={} (want {})",
-            schema_id,
-            SBE_SCHEMA_ID
-        );
-    }
-    if raw.len() < SBE_HEADER_SIZE + block_length {
-        bail!(
-            "OKEx SBE frame truncated: have {} bytes, header says blockLength={}",
-            raw.len(),
-            block_length
-        );
-    }
-    Ok((block_length, template_id))
 }
 
 fn parse_sbe_books(
     raw: &[u8],
     code_to_norm: &HashMap<i64, String>,
 ) -> Result<Vec<IncrementalFrame>> {
-    let (block_length, template_id) = read_sbe_header(raw)?;
-    match template_id {
-        SBE_TEMPLATE_BOOKS_L2_TBT => parse_sbe_books_l2_tbt(raw, block_length, code_to_norm),
-        SBE_TEMPLATE_BOOKS_L2_TBT_EXPONENT => {
-            parse_sbe_books_exponent_update(raw, block_length, code_to_norm)
+    let mut out = Vec::new();
+    for book in okex_codec::parse_sbe_books(raw)? {
+        if let Some(frame) = sbe_book_to_incremental(book, code_to_norm) {
+            out.push(frame);
         }
-        SBE_TEMPLATE_BOOKS_SNAPSHOT => parse_sbe_books_snapshot(raw, block_length, code_to_norm),
-        _ => Ok(Vec::new()),
     }
-}
-
-fn parse_sbe_books_l2_tbt(
-    raw: &[u8],
-    block_length: usize,
-    code_to_norm: &HashMap<i64, String>,
-) -> Result<Vec<IncrementalFrame>> {
-    if block_length < SBE_BOOKS_L2_TBT_BLOCK_LENGTH {
-        bail!(
-            "OKEx SBE books blockLength {} < expected {}",
-            block_length,
-            SBE_BOOKS_L2_TBT_BLOCK_LENGTH
-        );
-    }
-    let body_off = SBE_HEADER_SIZE;
-    let inst_id_code = read_i64_le(raw, body_off)?;
-    let ts_us = read_i64_le(raw, body_off + 8)?;
-    let _out_time_us = read_i64_le(raw, body_off + 16)?;
-    let seq_id = read_i64_le(raw, body_off + 24)?;
-    let prev_seq_id = read_i64_le(raw, body_off + 32)?;
-    let px_exp = raw[body_off + 40] as i8;
-    let sz_exp = raw[body_off + 41] as i8;
-
-    let symbol = match code_to_norm.get(&inst_id_code) {
-        Some(s) => s.clone(),
-        None => {
-            log::warn!(
-                "OKEx SBE books: unknown instIdCode={}; dropped",
-                inst_id_code
-            );
-            return Ok(Vec::new());
-        }
-    };
-
-    let groups_off = SBE_HEADER_SIZE + block_length;
-    let (asks, off) = parse_sbe_level_group(raw, groups_off, px_exp, sz_exp)?;
-    let (bids, _off) = parse_sbe_level_group(raw, off, px_exp, sz_exp)?;
-
-    Ok(vec![IncrementalFrame::Book {
-        symbol,
-        timestamp: ts_us,
-        seq_id,
-        prev_seq_id,
-        first_update_id: seq_id,
-        final_update_id: prev_seq_id,
-        gap_check: true,
-        is_snapshot: false,
-        bids,
-        asks,
-    }])
-}
-
-fn parse_sbe_books_exponent_update(
-    raw: &[u8],
-    block_length: usize,
-    code_to_norm: &HashMap<i64, String>,
-) -> Result<Vec<IncrementalFrame>> {
-    if block_length < SBE_BOOKS_EXPONENT_BLOCK_LENGTH {
-        bail!(
-            "OKEx SBE books exponent blockLength {} < expected {}",
-            block_length,
-            SBE_BOOKS_EXPONENT_BLOCK_LENGTH
-        );
-    }
-    let body_off = SBE_HEADER_SIZE;
-    let inst_id_code = read_i64_le(raw, body_off)?;
-    let ts_us = read_i64_le(raw, body_off + 8)?;
-    let _out_time_us = read_i64_le(raw, body_off + 16)?;
-    let seq_id = read_i64_le(raw, body_off + 24)?;
-    let prev_seq_id = read_i64_le(raw, body_off + 32)?;
-    let _px_exp = raw[body_off + 40] as i8;
-    let _sz_exp = raw[body_off + 41] as i8;
-
-    let symbol = match code_to_norm.get(&inst_id_code) {
-        Some(s) => s.clone(),
-        None => {
-            log::warn!(
-                "OKEx SBE books exponent: unknown instIdCode={}; dropped",
-                inst_id_code
-            );
-            return Ok(Vec::new());
-        }
-    };
-
-    Ok(vec![IncrementalFrame::SequenceOnly {
-        symbol,
-        timestamp: ts_us,
-        seq_id,
-        prev_seq_id,
-    }])
-}
-
-fn parse_sbe_books_snapshot(
-    raw: &[u8],
-    block_length: usize,
-    code_to_norm: &HashMap<i64, String>,
-) -> Result<Vec<IncrementalFrame>> {
-    if block_length < SBE_BOOKS_SNAPSHOT_BLOCK_LENGTH {
-        bail!(
-            "OKEx SBE books snapshot blockLength {} < expected {}",
-            block_length,
-            SBE_BOOKS_SNAPSHOT_BLOCK_LENGTH
-        );
-    }
-    let body_off = SBE_HEADER_SIZE;
-    let inst_id_code = read_i64_le(raw, body_off)?;
-    let ts_us = read_i64_le(raw, body_off + 8)?;
-    let seq_id = read_i64_le(raw, body_off + 16)?;
-    let px_exp = raw[body_off + 24] as i8;
-    let sz_exp = raw[body_off + 25] as i8;
-
-    let symbol = match code_to_norm.get(&inst_id_code) {
-        Some(s) => s.clone(),
-        None => {
-            log::warn!(
-                "OKEx SBE books snapshot: unknown instIdCode={}; dropped",
-                inst_id_code
-            );
-            return Ok(Vec::new());
-        }
-    };
-
-    let groups_off = SBE_HEADER_SIZE + block_length;
-    let (asks, off) = parse_sbe_level_group(raw, groups_off, px_exp, sz_exp)?;
-    let (bids, _off) = parse_sbe_level_group(raw, off, px_exp, sz_exp)?;
-
-    Ok(vec![IncrementalFrame::Book {
-        symbol,
-        timestamp: ts_us,
-        seq_id,
-        prev_seq_id: -1,
-        first_update_id: seq_id,
-        final_update_id: -1,
-        gap_check: false,
-        is_snapshot: true,
-        bids,
-        asks,
-    }])
-}
-
-fn parse_sbe_level_group(
-    raw: &[u8],
-    off: usize,
-    px_exp: i8,
-    sz_exp: i8,
-) -> Result<(Vec<Level>, usize)> {
-    let block_length = read_u16_le(raw, off)? as usize;
-    let num_in_group = read_u16_le(raw, off + 2)? as usize;
-    if block_length < SBE_BOOK_LEVEL_MIN_BLOCK_LENGTH {
-        bail!(
-            "OKEx SBE level group blockLength {} < expected {}",
-            block_length,
-            SBE_BOOK_LEVEL_MIN_BLOCK_LENGTH
-        );
-    }
-    let mut cur = off + 4;
-    let mut levels = Vec::with_capacity(num_in_group);
-    for _ in 0..num_in_group {
-        if raw.len() < cur + block_length {
-            bail!(
-                "OKEx SBE level group truncated: have {} need {}",
-                raw.len(),
-                cur + block_length
-            );
-        }
-        let px_m = read_i64_le(raw, cur)?;
-        let sz_m = read_i64_le(raw, cur + 8)?;
-        let _ord_count = read_i32_le(raw, cur + 16)?;
-        let price = mantissa_to_f64(px_m, px_exp);
-        let amount = mantissa_to_f64(sz_m, sz_exp);
-        if price > 0.0 {
-            levels.push(Level::from_values(price, amount));
-        }
-        cur += block_length;
-    }
-    Ok((levels, cur))
+    Ok(out)
 }
 
 /// 解一帧 SBE 二进制 trades (templateId=1005)。其他 template 返回空 Vec。
 fn parse_sbe_trades(raw: &[u8], code_to_norm: &HashMap<i64, String>) -> Result<Vec<TradeFrame>> {
-    let (block_length, template_id) = read_sbe_header(raw)?;
-    if template_id != SBE_TEMPLATE_TRADES {
-        return Ok(Vec::new());
-    }
-    if block_length < SBE_TRADES_BLOCK_LENGTH {
-        bail!(
-            "OKEx SBE trades blockLength {} < expected {}",
-            block_length,
-            SBE_TRADES_BLOCK_LENGTH
-        );
-    }
-
-    let body_off = SBE_HEADER_SIZE;
-    let inst_id_code = read_i64_le(raw, body_off)?;
-    let _ts_us = read_i64_le(raw, body_off + 8)?;
-    let out_time_us = read_i64_le(raw, body_off + 16)?;
-    let seq_id = read_i64_le(raw, body_off + 24)?;
-    let px_m = read_i64_le(raw, body_off + 32)?;
-    let sz_m = read_i64_le(raw, body_off + 40)?;
-    let trade_id = read_i64_le(raw, body_off + 48)?;
-    let _count = read_i16_le(raw, body_off + 56)?;
-    let side = match raw[body_off + 58] as i8 {
-        0 => 'S',
-        1 => 'B',
-        other => {
-            log::warn!("OKEx SBE trade unknown side={} dropped", other);
-            return Ok(Vec::new());
-        }
-    };
-    let px_exp = raw[body_off + 59] as i8;
-    let sz_exp = raw[body_off + 60] as i8;
-    let _source = raw[body_off + 61] as i8;
-
-    let symbol = match code_to_norm.get(&inst_id_code) {
-        Some(s) => s.clone(),
-        None => {
+    let mut out = Vec::new();
+    for trade in okex_codec::parse_sbe_trades(raw)? {
+        let Some(symbol) = code_to_norm.get(&trade.inst_id_code).cloned() else {
             log::warn!(
                 "OKEx SBE trade: unknown instIdCode={}; dropped",
-                inst_id_code
+                trade.inst_id_code
             );
-            return Ok(Vec::new());
+            continue;
+        };
+        out.push(TradeFrame {
+            symbol,
+            timestamp_us: trade.timestamp_us,
+            seq_id: trade.seq_id,
+            trade_id: trade.trade_id,
+            side: trade.side,
+            price: trade.price,
+            amount: trade.amount,
+        });
+    }
+    Ok(out)
+}
+
+fn sbe_book_to_incremental(
+    book: okex_codec::SbeBook,
+    code_to_norm: &HashMap<i64, String>,
+) -> Option<IncrementalFrame> {
+    match book {
+        okex_codec::SbeBook::Book {
+            inst_id_code,
+            timestamp_us,
+            seq_id,
+            prev_seq_id,
+            first_update_id,
+            final_update_id,
+            gap_check,
+            is_snapshot,
+            bids,
+            asks,
+        } => {
+            let Some(symbol) = code_to_norm.get(&inst_id_code).cloned() else {
+                log::warn!(
+                    "OKEx SBE books: unknown instIdCode={}; dropped",
+                    inst_id_code
+                );
+                return None;
+            };
+            Some(IncrementalFrame::Book {
+                symbol,
+                timestamp: timestamp_us,
+                seq_id,
+                prev_seq_id,
+                first_update_id,
+                final_update_id,
+                gap_check,
+                is_snapshot,
+                bids: book_levels_to_msg(bids),
+                asks: book_levels_to_msg(asks),
+            })
         }
-    };
-
-    let price = mantissa_to_f64(px_m, px_exp);
-    let amount = mantissa_to_f64(sz_m, sz_exp);
-    if price <= 0.0 || amount <= 0.0 || out_time_us <= 0 {
-        return Ok(Vec::new());
+        okex_codec::SbeBook::SequenceOnly {
+            inst_id_code,
+            timestamp_us,
+            seq_id,
+            prev_seq_id,
+        } => {
+            let Some(symbol) = code_to_norm.get(&inst_id_code).cloned() else {
+                log::warn!(
+                    "OKEx SBE books exponent: unknown instIdCode={}; dropped",
+                    inst_id_code
+                );
+                return None;
+            };
+            Some(IncrementalFrame::SequenceOnly {
+                symbol,
+                timestamp: timestamp_us,
+                seq_id,
+                prev_seq_id,
+            })
+        }
     }
-
-    Ok(vec![TradeFrame {
-        symbol,
-        timestamp_us: out_time_us,
-        seq_id,
-        trade_id,
-        side,
-        price,
-        amount,
-    }])
 }
 
-fn read_u16_le(buf: &[u8], off: usize) -> Result<u16> {
-    if buf.len() < off + 2 {
-        bail!("OKEx SBE OOB read at offset {}", off);
-    }
-    Ok(u16::from_le_bytes([buf[off], buf[off + 1]]))
-}
-
-fn read_i32_le(buf: &[u8], off: usize) -> Result<i32> {
-    if buf.len() < off + 4 {
-        bail!("OKEx SBE OOB read at offset {}", off);
-    }
-    Ok(i32::from_le_bytes([
-        buf[off],
-        buf[off + 1],
-        buf[off + 2],
-        buf[off + 3],
-    ]))
-}
-
-fn read_i64_le(buf: &[u8], off: usize) -> Result<i64> {
-    if buf.len() < off + 8 {
-        bail!("OKEx SBE OOB read at offset {}", off);
-    }
-    Ok(i64::from_le_bytes([
-        buf[off],
-        buf[off + 1],
-        buf[off + 2],
-        buf[off + 3],
-        buf[off + 4],
-        buf[off + 5],
-        buf[off + 6],
-        buf[off + 7],
-    ]))
-}
-
-fn read_i16_le(buf: &[u8], off: usize) -> Result<i16> {
-    if buf.len() < off + 2 {
-        bail!("OKEx SBE OOB read at offset {}", off);
-    }
-    Ok(i16::from_le_bytes([buf[off], buf[off + 1]]))
-}
-
-fn mantissa_to_f64(mantissa: i64, exponent: i8) -> f64 {
-    (mantissa as f64) * 10_f64.powi(exponent as i32)
+fn book_levels_to_msg(levels: Vec<okex_codec::Level>) -> Vec<Level> {
+    levels
+        .into_iter()
+        .map(|level| Level::from_values(level.price, level.amount))
+        .collect()
 }
 
 impl VenueAdapter for OkexAdapter {
@@ -726,6 +443,13 @@ impl VenueAdapter for OkexAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use okex_codec::{
+        SBE_BBO_TBT_BLOCK_LENGTH, SBE_BOOKS_EXPONENT_BLOCK_LENGTH, SBE_BOOKS_L2_TBT_BLOCK_LENGTH,
+        SBE_BOOKS_SNAPSHOT_BLOCK_LENGTH, SBE_BOOK_LEVEL_MIN_BLOCK_LENGTH, SBE_HEADER_SIZE,
+        SBE_SCHEMA_ID, SBE_TEMPLATE_BBO_TBT, SBE_TEMPLATE_BOOKS_L2_TBT,
+        SBE_TEMPLATE_BOOKS_L2_TBT_EXPONENT, SBE_TEMPLATE_BOOKS_SNAPSHOT, SBE_TEMPLATE_TRADES,
+        SBE_TRADES_BLOCK_LENGTH,
+    };
 
     fn make_adapter() -> OkexAdapter {
         let mut sym_to_code = HashMap::new();

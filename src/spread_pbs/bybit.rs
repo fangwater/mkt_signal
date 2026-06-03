@@ -11,6 +11,7 @@
 
 use anyhow::{anyhow, Result};
 use bytes::Bytes;
+use mkt_parsers::bybit as bybit_codec;
 use serde_json::Value;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -180,53 +181,40 @@ fn build_bybit_subscribe(venue: TradingVenue, symbols: &[String], channel: &str)
 
 fn parse_bbo_frame(value: &Value, cache: &RefCell<BybitBboCache>) -> Result<Vec<BboFrame>> {
     let topic = match value.get("topic").and_then(|v| v.as_str()) {
-        Some(t) if t.starts_with("orderbook.1.") => t,
+        Some(topic) if topic.starts_with("orderbook.1.") => topic,
         _ => return Ok(Vec::new()),
     };
-    let push_type = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
     let data = value
         .get("data")
         .and_then(|v| v.as_object())
         .ok_or_else(|| anyhow!("bybit {} missing data object", topic))?;
-    let symbol = data
-        .get("s")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_ascii_uppercase())
-        .ok_or_else(|| anyhow!("bybit {} missing data.s", topic))?;
-    let seq_id = data
-        .get("u")
-        .and_then(parse_i64_loose)
-        .ok_or_else(|| anyhow!("bybit {} missing data.u (updateId)", topic))?;
-    let ts_us = value
-        .get("ts")
-        .and_then(parse_i64_loose)
-        .map(normalize_ts_to_us)
-        .unwrap_or(0);
-
-    let bid_levels = data.get("b").and_then(|v| v.as_array());
-    let ask_levels = data.get("a").and_then(|v| v.as_array());
+    if !data.contains_key("u") {
+        return Err(anyhow!("bybit {} missing data.u (updateId)", topic));
+    }
+    let Some(update) = bybit_codec::parse_bbo_update_json(value) else {
+        return Ok(Vec::new());
+    };
+    if update.seq_id == 0 {
+        return Ok(Vec::new());
+    }
 
     let mut cache = cache.borrow_mut();
-    let entry = cache.entry_mut(&symbol);
+    let entry = cache.entry_mut(&update.symbol);
 
-    if push_type == "snapshot" {
+    if update.reset_seq {
         *entry = BboCacheEntry::default();
     }
 
-    if let Some(arr) = bid_levels {
-        if let Some((p, a)) = pick_top_level(arr, &symbol, "b")? {
-            entry.bid_price = p;
-            entry.bid_amount = a;
-        }
+    if let Some(bid) = update.bid {
+        entry.bid_price = bid.price;
+        entry.bid_amount = bid.amount;
     }
-    if let Some(arr) = ask_levels {
-        if let Some((p, a)) = pick_top_level(arr, &symbol, "a")? {
-            entry.ask_price = p;
-            entry.ask_amount = a;
-        }
+    if let Some(ask) = update.ask {
+        entry.ask_price = ask.price;
+        entry.ask_amount = ask.amount;
     }
 
-    if push_type == "snapshot" {
+    if update.reset_seq {
         // snapshot 必须同时给齐两侧
         if entry.bid_price > 0.0 && entry.ask_price > 0.0 {
             entry.seeded = true;
@@ -245,10 +233,10 @@ fn parse_bbo_frame(value: &Value, cache: &RefCell<BybitBboCache>) -> Result<Vec<
     }
 
     Ok(vec![BboFrame {
-        symbol,
-        ts_us,
-        seq_id,
-        reset_seq: push_type == "snapshot",
+        symbol: update.symbol,
+        ts_us: update.timestamp_us,
+        seq_id: update.seq_id,
+        reset_seq: update.reset_seq,
         bid_price: entry.bid_price,
         bid_amount: entry.bid_amount,
         ask_price: entry.ask_price,
@@ -256,326 +244,81 @@ fn parse_bbo_frame(value: &Value, cache: &RefCell<BybitBboCache>) -> Result<Vec<
     }])
 }
 
-/// 取 `[[price, size], ...]` 形式数组的 top 一档；空数组返回 None；解析失败返回 Err。
-fn pick_top_level(arr: &[Value], symbol: &str, side: &str) -> Result<Option<(f64, f64)>> {
-    let Some(level) = arr.first() else {
-        return Ok(None);
-    };
-    let level = level
-        .as_array()
-        .ok_or_else(|| anyhow!("bybit {} {} top level is not an array", symbol, side))?;
-    if level.len() < 2 {
-        return Err(anyhow!(
-            "bybit {} {} top level needs [price,size]",
-            symbol,
-            side
-        ));
-    }
-    let price = level[0]
-        .as_str()
-        .and_then(|s| s.parse::<f64>().ok())
-        .ok_or_else(|| anyhow!("bybit {} {} top price invalid", symbol, side))?;
-    let amount = level[1]
-        .as_str()
-        .and_then(|s| s.parse::<f64>().ok())
-        .ok_or_else(|| anyhow!("bybit {} {} top amount invalid", symbol, side))?;
-    Ok(Some((price, amount)))
-}
-
 fn parse_trade_frame(value: &Value) -> Result<Vec<TradeFrame>> {
-    let topic = match value.get("topic").and_then(|v| v.as_str()) {
-        Some(topic) if topic.starts_with("publicTrade.") => topic,
-        _ => return Ok(Vec::new()),
-    };
-    let data = match value.get("data").and_then(|v| v.as_array()) {
-        Some(data) => data,
-        None => return Ok(Vec::new()),
-    };
-
-    let mut out = Vec::with_capacity(data.len());
-    for (idx, item) in data.iter().enumerate() {
-        let Some(obj) = item.as_object() else {
-            continue;
-        };
-        let symbol = obj
-            .get("s")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_ascii_uppercase())
-            .unwrap_or_else(|| topic.rsplit('.').next().unwrap_or("").to_ascii_uppercase());
-        if symbol.is_empty() {
-            continue;
-        }
-        let side = match obj.get("S").and_then(|v| v.as_str()).unwrap_or("") {
-            "Buy" => 'B',
-            "Sell" => 'S',
-            _ => continue,
-        };
-        let Some(price) = obj.get("p").and_then(parse_f64_loose) else {
-            continue;
-        };
-        let Some(amount) = obj.get("v").and_then(parse_f64_loose) else {
-            continue;
-        };
-        if price <= 0.0 || amount <= 0.0 {
-            continue;
-        }
-        let Some(raw_ts) = obj.get("T").and_then(parse_i64_loose) else {
-            continue;
-        };
-        let Some(id_raw) = obj.get("i").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        let Some(trade_id) = parse_trade_id(id_raw) else {
-            continue;
-        };
-        let seq_base = obj.get("seq").and_then(parse_i64_loose).unwrap_or(trade_id);
-        let seq_id = seq_base
-            .saturating_mul(1_000_000)
-            .saturating_add(idx as i64);
-        out.push(TradeFrame {
-            symbol,
-            timestamp_us: normalize_ts_to_us(raw_ts),
-            seq_id,
-            trade_id,
-            side,
-            price,
-            amount,
-        });
-    }
-    Ok(out)
+    Ok(bybit_codec::parse_trades_json(value)
+        .into_iter()
+        .map(|t| TradeFrame {
+            symbol: t.symbol,
+            timestamp_us: t.timestamp_us,
+            seq_id: t.seq_id,
+            trade_id: t.trade_id,
+            side: t.side,
+            price: t.price,
+            amount: t.amount,
+        })
+        .collect())
 }
 
 fn parse_incremental_frame(value: &Value) -> Result<Vec<IncrementalFrame>> {
-    let topic = match value.get("topic").and_then(|v| v.as_str()) {
-        Some(topic) if topic.starts_with("orderbook.") && !topic.starts_with("orderbook.1.") => {
-            topic
-        }
-        _ => return Ok(Vec::new()),
-    };
-    let push_type = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
-    let is_snapshot = match push_type {
-        "snapshot" => true,
-        "delta" => false,
-        _ => return Ok(Vec::new()),
-    };
-    let data = match value.get("data").and_then(|v| v.as_object()) {
-        Some(data) => data,
-        None => return Ok(Vec::new()),
-    };
-    let symbol = data
-        .get("s")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_ascii_uppercase())
-        .unwrap_or_else(|| topic.rsplit('.').next().unwrap_or("").to_ascii_uppercase());
-    if symbol.is_empty() {
+    let Some(book) = bybit_codec::parse_incremental_json(value) else {
         return Ok(Vec::new());
-    }
-    let seq_id = data
-        .get("u")
-        .and_then(parse_i64_loose)
-        .ok_or_else(|| anyhow!("bybit {} missing data.u", topic))?;
-    let timestamp = value
-        .get("cts")
-        .and_then(parse_i64_loose)
-        .or_else(|| value.get("ts").and_then(parse_i64_loose))
-        .map(normalize_ts_to_us)
-        .unwrap_or(0);
-    let bids = data
-        .get("b")
-        .and_then(|v| v.as_array())
-        .map(|levels| parse_level_array(levels))
-        .unwrap_or_default();
-    let asks = data
-        .get("a")
-        .and_then(|v| v.as_array())
-        .map(|levels| parse_level_array(levels))
-        .unwrap_or_default();
-    if bids.is_empty() && asks.is_empty() {
-        return Ok(Vec::new());
-    }
+    };
     Ok(vec![IncrementalFrame::Book {
-        symbol,
-        timestamp,
-        seq_id,
-        prev_seq_id: i64::MIN,
-        first_update_id: seq_id,
-        final_update_id: seq_id,
-        gap_check: false,
-        is_snapshot,
-        bids,
-        asks,
+        symbol: book.symbol,
+        timestamp: book.timestamp_us,
+        seq_id: book.seq_id,
+        prev_seq_id: book.prev_seq_id,
+        first_update_id: book.first_update_id,
+        final_update_id: book.final_update_id,
+        gap_check: book.gap_check,
+        is_snapshot: book.is_snapshot,
+        bids: book_levels_to_msg(book.bids),
+        asks: book_levels_to_msg(book.asks),
     }])
 }
 
 fn parse_derivatives_frame(value: &Value) -> Result<Vec<Bytes>> {
-    let topic = match value.get("topic").and_then(|v| v.as_str()) {
-        Some(topic) => topic,
-        None => return Ok(Vec::new()),
-    };
-    if topic.starts_with("tickers.") {
-        return parse_ticker_derivatives(value);
-    }
-    if topic.starts_with("allLiquidation.") {
-        return parse_liquidation_derivatives(value);
-    }
-    Ok(Vec::new())
-}
-
-fn parse_ticker_derivatives(value: &Value) -> Result<Vec<Bytes>> {
-    let data = match value.get("data").and_then(|v| v.as_object()) {
-        Some(data) => data,
-        None => return Ok(Vec::new()),
-    };
-    let symbol = match data.get("symbol").and_then(|v| v.as_str()) {
-        Some(symbol) => symbol.to_ascii_uppercase(),
-        None => return Ok(Vec::new()),
-    };
-    let timestamp = value
-        .get("ts")
-        .and_then(parse_i64_loose)
-        .map(normalize_ts_to_us)
-        .unwrap_or(0);
     let mut out = Vec::new();
-    if let Some(mark_price) = data.get("markPrice").and_then(parse_f64_loose) {
-        if mark_price > 0.0 {
-            out.push(MarkPriceMsg::create(symbol.clone(), mark_price, timestamp).to_bytes());
-        }
-    }
-    if let Some(index_price) = data.get("indexPrice").and_then(parse_f64_loose) {
-        if index_price > 0.0 {
-            out.push(IndexPriceMsg::create(symbol.clone(), index_price, timestamp).to_bytes());
-        }
-    }
-    if let (Some(funding_rate), Some(next_funding_time)) = (
-        data.get("fundingRate").and_then(parse_f64_loose),
-        data.get("nextFundingTime")
-            .and_then(parse_i64_loose)
-            .map(normalize_ts_to_us),
-    ) {
-        out.push(
-            FundingRateMsg::create(symbol, funding_rate, next_funding_time, timestamp).to_bytes(),
-        );
+    for derivative in bybit_codec::parse_derivatives_json(value) {
+        out.push(derivative_to_bytes(derivative));
     }
     Ok(out)
 }
 
-fn parse_liquidation_derivatives(value: &Value) -> Result<Vec<Bytes>> {
-    let data = match value.get("data").and_then(|v| v.as_array()) {
-        Some(data) => data,
-        None => return Ok(Vec::new()),
-    };
-    let mut out = Vec::new();
-    for item in data {
-        let Some(obj) = item.as_object() else {
-            continue;
-        };
-        let Some(symbol) = obj
-            .get("s")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_ascii_uppercase())
-        else {
-            continue;
-        };
-        let side = match obj.get("S").and_then(|v| v.as_str()).unwrap_or("") {
-            "Buy" => 'B',
-            "Sell" => 'S',
-            _ => continue,
-        };
-        let Some(volume) = obj.get("v").and_then(parse_f64_loose) else {
-            continue;
-        };
-        let Some(price) = obj.get("p").and_then(parse_f64_loose) else {
-            continue;
-        };
-        let Some(timestamp) = obj
-            .get("T")
-            .and_then(parse_i64_loose)
-            .map(normalize_ts_to_us)
-        else {
-            continue;
-        };
-        out.push(LiquidationMsg::create(symbol, side, volume, price, timestamp).to_bytes());
-    }
-    Ok(out)
-}
-
-fn parse_level_array(levels: &[Value]) -> Vec<Level> {
-    levels.iter().filter_map(parse_level).collect()
-}
-
-fn parse_level(value: &Value) -> Option<Level> {
-    let arr = value.as_array()?;
-    if arr.len() < 2 {
-        return None;
-    }
-    let price = parse_f64_loose(&arr[0])?;
-    let amount = parse_f64_loose(&arr[1])?;
-    if price > 0.0 {
-        Some(Level::from_values(price, amount))
-    } else {
-        None
+fn derivative_to_bytes(derivative: bybit_codec::Derivative) -> Bytes {
+    match derivative {
+        bybit_codec::Derivative::MarkPrice {
+            symbol,
+            price,
+            timestamp_us,
+        } => MarkPriceMsg::create(symbol, price, timestamp_us).to_bytes(),
+        bybit_codec::Derivative::IndexPrice {
+            symbol,
+            price,
+            timestamp_us,
+        } => IndexPriceMsg::create(symbol, price, timestamp_us).to_bytes(),
+        bybit_codec::Derivative::FundingRate {
+            symbol,
+            funding_rate,
+            next_funding_time_us,
+            timestamp_us,
+        } => FundingRateMsg::create(symbol, funding_rate, next_funding_time_us, timestamp_us)
+            .to_bytes(),
+        bybit_codec::Derivative::Liquidation {
+            symbol,
+            side,
+            amount,
+            price,
+            timestamp_us,
+        } => LiquidationMsg::create(symbol, side, amount, price, timestamp_us).to_bytes(),
     }
 }
 
-fn parse_f64_loose(v: &Value) -> Option<f64> {
-    if let Some(n) = v.as_f64() {
-        return Some(n);
-    }
-    v.as_str().and_then(|s| s.parse::<f64>().ok())
-}
-
-fn parse_i64_loose(v: &Value) -> Option<i64> {
-    if let Some(n) = v.as_i64() {
-        return Some(n);
-    }
-    if let Some(n) = v.as_u64() {
-        return i64::try_from(n).ok();
-    }
-    if let Some(f) = v.as_f64() {
-        return Some(f as i64);
-    }
-    v.as_str().and_then(|s| {
-        s.parse::<i64>()
-            .ok()
-            .or_else(|| s.parse::<f64>().ok().map(|f| f as i64))
-    })
-}
-
-fn normalize_ts_to_us(timestamp: i64) -> i64 {
-    let abs = timestamp.abs();
-    if abs >= 1_000_000_000_000_000_000 {
-        timestamp / 1000
-    } else if abs >= 1_000_000_000_000_000 {
-        timestamp
-    } else if abs >= 1_000_000_000_000 {
-        timestamp.saturating_mul(1000)
-    } else {
-        timestamp.saturating_mul(1_000_000)
-    }
-}
-
-fn parse_trade_id(id: &str) -> Option<i64> {
-    if is_uuid_fast(id) {
-        uuid_to_int64_mixed(id).ok()
-    } else if id.chars().all(|c| c.is_ascii_digit()) {
-        id.parse::<i64>().ok()
-    } else {
-        None
-    }
-}
-
-fn is_uuid_fast(s: &str) -> bool {
-    s.len() == 36
-        && s.as_bytes().get(8) == Some(&b'-')
-        && s.as_bytes().get(13) == Some(&b'-')
-        && s.as_bytes().get(18) == Some(&b'-')
-        && s.as_bytes().get(23) == Some(&b'-')
-}
-
-fn uuid_to_int64_mixed(uuid: &str) -> Result<i64> {
-    let high = i64::from_str_radix(&uuid[0..8], 16)?;
-    let low = i64::from_str_radix(&uuid[24..32], 16)?;
-    Ok(high ^ low)
+fn book_levels_to_msg(levels: Vec<bybit_codec::Level>) -> Vec<Level> {
+    levels
+        .into_iter()
+        .map(|level| Level::from_values(level.price, level.amount))
+        .collect()
 }
 
 #[cfg(test)]

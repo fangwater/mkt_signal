@@ -1,9 +1,9 @@
 use bytes::Bytes;
+use mkt_parsers::okex as okex_codec;
 use serde_json::Value;
 use std::collections::HashSet;
 
 use crate::common::mkt_msg::{FundingRateMsg, IndexPriceMsg, LiquidationMsg, MarkPriceMsg};
-use crate::spread_pbs::okex::normalize_okex_symbol;
 
 pub const OKEX_PUBLIC_WS_URL: &str = "wss://ws.okx.com:8443/ws/v5/public";
 
@@ -54,173 +54,39 @@ pub fn build_okex_derivatives_subscribe_msgs(symbols: &[String], batch_size: usi
 }
 
 pub fn parse_okex_derivatives_frame(value: &Value, active_symbols: &HashSet<String>) -> Vec<Bytes> {
-    let Some(channel) = value
-        .get("arg")
-        .and_then(|arg| arg.get("channel"))
-        .and_then(|v| v.as_str())
-    else {
-        return Vec::new();
-    };
-
-    match channel {
-        "liquidation-orders" => parse_liquidation(value, active_symbols),
-        "mark-price" => parse_mark_price(value),
-        "funding-rate" => parse_funding_rate(value),
-        "index-tickers" => parse_index_price(value),
-        _ => Vec::new(),
-    }
-}
-
-fn parse_liquidation(value: &Value, active_symbols: &HashSet<String>) -> Vec<Bytes> {
-    let Some(data_array) = value.get("data").and_then(|v| v.as_array()) else {
-        return Vec::new();
-    };
     let mut out = Vec::new();
-    for item in data_array {
-        let Some(inst_id) = item.get("instId").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        if !active_symbols.contains(inst_id) {
-            continue;
-        }
-        let symbol = normalize_okex_symbol(inst_id);
-        let Some(details) = item.get("details").and_then(|v| v.as_array()) else {
-            continue;
-        };
-        for detail in details {
-            let (Some(side), Some(sz), Some(px), Some(ts)) = (
-                detail.get("side").and_then(|v| v.as_str()),
-                detail.get("sz").and_then(|v| v.as_str()),
-                detail.get("bkPx").and_then(|v| v.as_str()),
-                detail.get("ts").and_then(|v| v.as_str()),
-            ) else {
-                continue;
-            };
-            let (Ok(size), Ok(price), Ok(timestamp)) =
-                (sz.parse::<f64>(), px.parse::<f64>(), ts.parse::<i64>())
-            else {
-                continue;
-            };
-            let liquidation_side = match side {
-                "buy" => 'B',
-                "sell" => 'S',
-                _ => continue,
-            };
-            out.push(
-                LiquidationMsg::create(
-                    symbol.clone(),
-                    liquidation_side,
-                    size,
-                    price,
-                    normalize_ts_to_us(timestamp),
-                )
-                .to_bytes(),
-            );
-        }
+    for derivative in okex_codec::parse_derivatives_json(value, Some(active_symbols)) {
+        out.push(derivative_to_bytes(derivative));
     }
     out
 }
 
-fn parse_mark_price(value: &Value) -> Vec<Bytes> {
-    let Some(data_array) = value.get("data").and_then(|v| v.as_array()) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for item in data_array {
-        let (Some(inst_id), Some(mark_px), Some(ts)) = (
-            item.get("instId").and_then(|v| v.as_str()),
-            item.get("markPx").and_then(|v| v.as_str()),
-            item.get("ts").and_then(|v| v.as_str()),
-        ) else {
-            continue;
-        };
-        let (Ok(mark_price), Ok(timestamp)) = (mark_px.parse::<f64>(), ts.parse::<i64>()) else {
-            continue;
-        };
-        out.push(
-            MarkPriceMsg::create(
-                normalize_okex_symbol(inst_id),
-                mark_price,
-                normalize_ts_to_us(timestamp),
-            )
+fn derivative_to_bytes(derivative: okex_codec::Derivative) -> Bytes {
+    match derivative {
+        okex_codec::Derivative::MarkPrice {
+            symbol,
+            price,
+            timestamp_us,
+        } => MarkPriceMsg::create(symbol, price, timestamp_us).to_bytes(),
+        okex_codec::Derivative::IndexPrice {
+            symbol,
+            price,
+            timestamp_us,
+        } => IndexPriceMsg::create(symbol, price, timestamp_us).to_bytes(),
+        okex_codec::Derivative::FundingRate {
+            symbol,
+            funding_rate,
+            next_funding_time_us,
+            timestamp_us,
+        } => FundingRateMsg::create(symbol, funding_rate, next_funding_time_us, timestamp_us)
             .to_bytes(),
-        );
-    }
-    out
-}
-
-fn parse_funding_rate(value: &Value) -> Vec<Bytes> {
-    let Some(data_array) = value.get("data").and_then(|v| v.as_array()) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for item in data_array {
-        let (Some(inst_id), Some(rate), Some(next_time), Some(ts)) = (
-            item.get("instId").and_then(|v| v.as_str()),
-            item.get("fundingRate").and_then(|v| v.as_str()),
-            item.get("nextFundingTime").and_then(|v| v.as_str()),
-            item.get("ts").and_then(|v| v.as_str()),
-        ) else {
-            continue;
-        };
-        let (Ok(funding_rate), Ok(next_funding_time), Ok(timestamp)) = (
-            rate.parse::<f64>(),
-            next_time.parse::<i64>(),
-            ts.parse::<i64>(),
-        ) else {
-            continue;
-        };
-        out.push(
-            FundingRateMsg::create(
-                normalize_okex_symbol(inst_id),
-                funding_rate,
-                normalize_ts_to_us(next_funding_time),
-                normalize_ts_to_us(timestamp),
-            )
-            .to_bytes(),
-        );
-    }
-    out
-}
-
-fn parse_index_price(value: &Value) -> Vec<Bytes> {
-    let Some(data_array) = value.get("data").and_then(|v| v.as_array()) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for item in data_array {
-        let (Some(inst_id), Some(idx_px), Some(ts)) = (
-            item.get("instId").and_then(|v| v.as_str()),
-            item.get("idxPx").and_then(|v| v.as_str()),
-            item.get("ts").and_then(|v| v.as_str()),
-        ) else {
-            continue;
-        };
-        let (Ok(index_price), Ok(timestamp)) = (idx_px.parse::<f64>(), ts.parse::<i64>()) else {
-            continue;
-        };
-        out.push(
-            IndexPriceMsg::create(
-                normalize_okex_symbol(inst_id),
-                index_price,
-                normalize_ts_to_us(timestamp),
-            )
-            .to_bytes(),
-        );
-    }
-    out
-}
-
-fn normalize_ts_to_us(timestamp: i64) -> i64 {
-    let abs = timestamp.abs();
-    if abs >= 1_000_000_000_000_000_000 {
-        timestamp / 1000
-    } else if abs >= 1_000_000_000_000_000 {
-        timestamp
-    } else if abs >= 1_000_000_000_000 {
-        timestamp.saturating_mul(1000)
-    } else {
-        timestamp.saturating_mul(1_000_000)
+        okex_codec::Derivative::Liquidation {
+            symbol,
+            side,
+            amount,
+            price,
+            timestamp_us,
+        } => LiquidationMsg::create(symbol, side, amount, price, timestamp_us).to_bytes(),
     }
 }
 
