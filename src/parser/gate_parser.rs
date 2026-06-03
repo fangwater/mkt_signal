@@ -4,97 +4,17 @@ use crate::common::mkt_msg::{
 };
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
+use mkt_parsers::gate as gate_codec;
 use tokio::sync::mpsc;
 
 // ─── Gate SBE constants (schemaId=1, littleEndian) ───────────────────────────
 const GATE_SBE_HDR: usize = 8;
 const GATE_SBE_SCHEMA: u16 = 1;
-const GATE_SBE_T_BBO: u16 = 1;
-const GATE_SBE_T_TRADE: u16 = 2;
 const GATE_SBE_T_OBU: u16 = 3;
 const GATE_SBE_T_BOOK: u16 = 4;
 const GATE_SBE_T_BOOK_UPDATE: u16 = 5;
 const GATE_SBE_T_KLINE: u16 = 8;
 const GATE_SBE_T_TICKER: u16 = 9;
-
-fn parse_json_f64(v: &serde_json::Value) -> Option<f64> {
-    match v {
-        serde_json::Value::Number(n) => n.as_f64(),
-        serde_json::Value::String(s) => s.parse::<f64>().ok(),
-        _ => None,
-    }
-}
-
-fn parse_json_i64(v: &serde_json::Value) -> Option<i64> {
-    match v {
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Some(i)
-            } else if let Some(u) = n.as_u64() {
-                i64::try_from(u).ok()
-            } else {
-                n.as_f64().map(|f| f as i64)
-            }
-        }
-        serde_json::Value::String(s) => s
-            .parse::<i64>()
-            .ok()
-            .or_else(|| s.parse::<f64>().ok().map(|f| f as i64)),
-        _ => None,
-    }
-}
-
-fn normalize_timestamp_to_ms(ts: i64) -> i64 {
-    if ts <= 0 {
-        return 0;
-    }
-    if ts < 1_000_000_000_000 {
-        ts * 1000
-    } else {
-        ts
-    }
-}
-
-fn parse_gate_ts_ms(v: &serde_json::Value) -> Option<i64> {
-    parse_json_i64(v).map(normalize_timestamp_to_ms)
-}
-
-fn parse_gate_level(level: &serde_json::Value) -> Option<Level> {
-    if let Some(arr) = level.as_array() {
-        if arr.len() >= 2 {
-            let price = parse_json_f64(&arr[0])?;
-            let amount = parse_json_f64(&arr[1])?;
-            if price > 0.0 {
-                return Some(Level::from_values(price, amount));
-            }
-        }
-        return None;
-    }
-
-    if let Some(obj) = level.as_object() {
-        let price = obj
-            .get("p")
-            .and_then(parse_json_f64)
-            .or_else(|| obj.get("price").and_then(parse_json_f64))?;
-        let amount = obj
-            .get("s")
-            .and_then(parse_json_f64)
-            .or_else(|| obj.get("size").and_then(parse_json_f64))
-            .or_else(|| obj.get("amount").and_then(parse_json_f64))
-            .unwrap_or(0.0);
-        if price > 0.0 {
-            return Some(Level::from_values(price, amount));
-        }
-    }
-
-    None
-}
-
-fn parse_gate_levels(raw: &serde_json::Value) -> Vec<Level> {
-    raw.as_array()
-        .map(|arr| arr.iter().filter_map(parse_gate_level).collect())
-        .unwrap_or_default()
-}
 
 fn split_levels(
     total_bids: usize,
@@ -159,6 +79,160 @@ fn fill_levels_with_offset(
         }
         inc_msg.set_ask_level(i, asks[src_idx]);
     }
+}
+
+#[inline]
+fn us_to_ms(timestamp_us: i64) -> i64 {
+    if timestamp_us == 0 {
+        0
+    } else {
+        timestamp_us / 1000
+    }
+}
+
+#[inline]
+fn codec_level_to_msg(level: gate_codec::Level) -> Level {
+    Level::from_values(level.price, level.amount)
+}
+
+fn publish_gate_trades(
+    trades: Vec<gate_codec::Trade>,
+    timestamp_ms: bool,
+    tx: &mpsc::UnboundedSender<Bytes>,
+) -> usize {
+    let mut sent = 0;
+    for trade in trades {
+        let timestamp = if timestamp_ms {
+            us_to_ms(trade.timestamp_us)
+        } else {
+            trade.timestamp_us
+        };
+        let msg = TradeMsg::create(
+            trade.symbol,
+            trade.trade_id,
+            timestamp,
+            trade.side,
+            trade.price,
+            trade.amount,
+        );
+        if tx.send(msg.to_bytes()).is_ok() {
+            sent += 1;
+        }
+    }
+    sent
+}
+
+fn publish_gate_book(
+    book: &gate_codec::Book,
+    max_levels: Option<usize>,
+    timestamp_ms: bool,
+    tx: &mpsc::UnboundedSender<Bytes>,
+) -> usize {
+    if book.bids.is_empty() && book.asks.is_empty() {
+        return 0;
+    }
+    let bids: Vec<Level> = book.bids.iter().copied().map(codec_level_to_msg).collect();
+    let asks: Vec<Level> = book.asks.iter().copied().map(codec_level_to_msg).collect();
+    let timestamp = if timestamp_ms {
+        us_to_ms(book.timestamp_us)
+    } else {
+        book.timestamp_us
+    };
+    let chunks = split_levels(bids.len(), asks.len(), max_levels);
+    let total_chunks = chunks.len();
+    let mut sent = 0;
+    for (chunk_idx, (bids_start, bids_count, asks_start, asks_count)) in
+        chunks.into_iter().enumerate()
+    {
+        let mut inc_msg = IncMsg::create(
+            book.symbol.clone(),
+            book.first_update_id,
+            book.final_update_id,
+            timestamp,
+            book.is_snapshot,
+            bids_count as u32,
+            asks_count as u32,
+        );
+        inc_msg.set_chunk_index(chunk_idx as u8);
+        inc_msg.set_is_last(chunk_idx == total_chunks - 1);
+        fill_levels_with_offset(
+            &bids,
+            &asks,
+            bids_start,
+            bids_count,
+            asks_start,
+            asks_count,
+            &mut inc_msg,
+        );
+        if tx.send(inc_msg.to_bytes()).is_ok() {
+            sent += 1;
+        }
+    }
+    sent
+}
+
+fn publish_gate_derivatives(
+    derivatives: Vec<gate_codec::Derivative>,
+    timestamp_ms: bool,
+    tx: &mpsc::UnboundedSender<Bytes>,
+) -> usize {
+    let mut sent = 0;
+    for derivative in derivatives {
+        let msg = match derivative {
+            gate_codec::Derivative::MarkPrice {
+                symbol,
+                price,
+                timestamp_us,
+            } => MarkPriceMsg::create(
+                symbol,
+                price,
+                if timestamp_ms {
+                    us_to_ms(timestamp_us)
+                } else {
+                    timestamp_us
+                },
+            )
+            .to_bytes(),
+            gate_codec::Derivative::IndexPrice {
+                symbol,
+                price,
+                timestamp_us,
+            } => IndexPriceMsg::create(
+                symbol,
+                price,
+                if timestamp_ms {
+                    us_to_ms(timestamp_us)
+                } else {
+                    timestamp_us
+                },
+            )
+            .to_bytes(),
+            gate_codec::Derivative::FundingRate {
+                symbol,
+                funding_rate,
+                next_funding_time_us,
+                timestamp_us,
+            } => FundingRateMsg::create(
+                symbol,
+                funding_rate,
+                if timestamp_ms {
+                    us_to_ms(next_funding_time_us)
+                } else {
+                    next_funding_time_us
+                },
+                if timestamp_ms {
+                    us_to_ms(timestamp_us)
+                } else {
+                    timestamp_us
+                },
+            )
+            .to_bytes(),
+        };
+        if tx.send(msg).is_ok() {
+            sent += 1;
+        }
+    }
+    sent
 }
 
 /// Gate.io Signal Parser - 从 ticker 消息中提取时间戳作为信号
@@ -255,83 +329,25 @@ impl Parser for GateTickerParser {
         if msg.first() != Some(&b'{') {
             return self.parse_sbe(&msg, tx);
         }
-        if let Ok(json_str) = std::str::from_utf8(&msg) {
-            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
-                // 检查是否是 ticker 频道的 update 事件
-                let channel = json_value
-                    .get("channel")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let event = json_value
-                    .get("event")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-
-                if event != "update"
-                    || !(channel.ends_with(".book_ticker") || channel.ends_with(".tickers"))
-                {
-                    return 0;
-                }
-
-                let result = json_value.get("result");
-
-                // futures.book_ticker：字段 s/b/B/a/A
-                // spot.tickers：字段 currency_pair/highest_bid/lowest_ask
-                if let Some(res) = result.and_then(|v| v.as_object()) {
-                    let symbol = match res
-                        .get("s")
-                        .and_then(|v| v.as_str())
-                        .or_else(|| res.get("contract").and_then(|v| v.as_str()))
-                        .or_else(|| res.get("currency_pair").and_then(|v| v.as_str()))
-                    {
-                        Some(s) => s,
-                        None => return 0,
-                    };
-                    let ts = res
-                        .get("t")
-                        .and_then(parse_gate_ts_ms)
-                        .or_else(|| res.get("time_ms").and_then(parse_gate_ts_ms))
-                        .or_else(|| json_value.get("time_ms").and_then(parse_gate_ts_ms))
-                        .or_else(|| json_value.get("time").and_then(parse_gate_ts_ms))
-                        .unwrap_or(0);
-                    let bid_price = res
-                        .get("b")
-                        .and_then(parse_json_f64)
-                        .or_else(|| res.get("highest_bid").and_then(parse_json_f64));
-                    let ask_price = res
-                        .get("a")
-                        .and_then(parse_json_f64)
-                        .or_else(|| res.get("lowest_ask").and_then(parse_json_f64));
-                    let bid_amount = res
-                        .get("B")
-                        .and_then(parse_json_f64)
-                        .or_else(|| res.get("best_bid_size").and_then(parse_json_f64))
-                        .unwrap_or(0.0);
-                    let ask_amount = res
-                        .get("A")
-                        .and_then(parse_json_f64)
-                        .or_else(|| res.get("best_ask_size").and_then(parse_json_f64))
-                        .unwrap_or(0.0);
-
-                    if let (Some(bp), Some(ap)) = (bid_price, ask_price) {
-                        if bp > 0.0 && ap > 0.0 {
-                            let spread_msg = AskBidSpreadMsg::create(
-                                symbol.to_string(),
-                                ts,
-                                bp,
-                                bid_amount,
-                                ap,
-                                ask_amount,
-                            );
-                            if tx.send(spread_msg.to_bytes()).is_ok() {
-                                return 1;
-                            }
-                        }
-                    }
-                }
-            }
+        let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&msg) else {
+            return 0;
+        };
+        let Some(bbo) = gate_codec::parse_bbo_json(&json_value) else {
+            return 0;
+        };
+        let spread_msg = AskBidSpreadMsg::create(
+            bbo.symbol,
+            us_to_ms(bbo.timestamp_us),
+            bbo.bid_price,
+            bbo.bid_amount,
+            bbo.ask_price,
+            bbo.ask_amount,
+        );
+        if tx.send(spread_msg.to_bytes()).is_ok() {
+            1
+        } else {
+            0
         }
-        0
     }
 }
 
@@ -484,82 +500,6 @@ impl GateTradeParser {
     pub fn new() -> Self {
         Self
     }
-
-    fn parse_trade_item(
-        &self,
-        trade: &serde_json::Value,
-        fallback_timestamp_ms: i64,
-        tx: &mpsc::UnboundedSender<Bytes>,
-    ) -> usize {
-        let symbol = match trade
-            .get("contract")
-            .and_then(|v| v.as_str())
-            .or_else(|| trade.get("s").and_then(|v| v.as_str()))
-            .or_else(|| trade.get("symbol").and_then(|v| v.as_str()))
-            .or_else(|| trade.get("currency_pair").and_then(|v| v.as_str()))
-        {
-            Some(s) => s,
-            None => return 0,
-        };
-
-        let price = match trade
-            .get("price")
-            .and_then(parse_json_f64)
-            .or_else(|| trade.get("p").and_then(parse_json_f64))
-            .or_else(|| trade.get("last").and_then(parse_json_f64))
-        {
-            Some(v) if v > 0.0 => v,
-            _ => return 0,
-        };
-
-        let raw_size = trade
-            .get("size")
-            .and_then(parse_json_f64)
-            .or_else(|| trade.get("amount").and_then(parse_json_f64))
-            .or_else(|| trade.get("qty").and_then(parse_json_f64));
-
-        let side = trade
-            .get("side")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_ascii_lowercase())
-            .and_then(|s| match s.as_str() {
-                "buy" | "bid" => Some('B'),
-                "sell" | "ask" => Some('S'),
-                _ => None,
-            })
-            .or_else(|| raw_size.map(|sz| if sz >= 0.0 { 'B' } else { 'S' }))
-            .unwrap_or('B');
-
-        let amount = raw_size
-            .map(|v| v.abs())
-            .or_else(|| trade.get("q").and_then(parse_json_f64))
-            .unwrap_or(0.0);
-        if amount <= 0.0 {
-            return 0;
-        }
-
-        let timestamp = trade
-            .get("create_time_ms")
-            .and_then(parse_gate_ts_ms)
-            .or_else(|| trade.get("timestamp_ms").and_then(parse_gate_ts_ms))
-            .or_else(|| trade.get("create_time").and_then(parse_gate_ts_ms))
-            .or_else(|| trade.get("t").and_then(parse_gate_ts_ms))
-            .unwrap_or(fallback_timestamp_ms);
-
-        let trade_id = trade
-            .get("id")
-            .and_then(parse_json_i64)
-            .or_else(|| trade.get("trade_id").and_then(parse_json_i64))
-            .or_else(|| trade.get("i").and_then(parse_json_i64))
-            .unwrap_or(0);
-
-        let trade_msg =
-            TradeMsg::create(symbol.to_string(), trade_id, timestamp, side, price, amount);
-        if tx.send(trade_msg.to_bytes()).is_ok() {
-            return 1;
-        }
-        0
-    }
 }
 
 impl Parser for GateTradeParser {
@@ -567,43 +507,10 @@ impl Parser for GateTradeParser {
         if msg.first() != Some(&b'{') {
             return self.parse_sbe(&msg, tx);
         }
-        if let Ok(json_str) = std::str::from_utf8(&msg) {
-            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
-                let channel = json_value
-                    .get("channel")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let event = json_value
-                    .get("event")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-
-                if !channel.ends_with(".trades") || event != "update" {
-                    return 0;
-                }
-
-                let fallback_timestamp_ms = json_value
-                    .get("time_ms")
-                    .and_then(parse_gate_ts_ms)
-                    .or_else(|| json_value.get("time").and_then(parse_gate_ts_ms))
-                    .unwrap_or(0);
-
-                let mut sent = 0;
-                match json_value.get("result") {
-                    Some(serde_json::Value::Array(arr)) => {
-                        for item in arr {
-                            sent += self.parse_trade_item(item, fallback_timestamp_ms, tx);
-                        }
-                    }
-                    Some(item @ serde_json::Value::Object(_)) => {
-                        sent += self.parse_trade_item(item, fallback_timestamp_ms, tx);
-                    }
-                    _ => {}
-                }
-                return sent;
-            }
-        }
-        0
+        let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&msg) else {
+            return 0;
+        };
+        publish_gate_trades(gate_codec::parse_trades_json(&json_value), true, tx)
     }
 }
 
@@ -626,112 +533,6 @@ impl GateIncParser {
     pub fn with_max_levels(max_levels: Option<usize>) -> Self {
         Self { max_levels }
     }
-
-    fn parse_inc_item(
-        &self,
-        root: &serde_json::Value,
-        item: &serde_json::Value,
-        channel: &str,
-        event: &str,
-        tx: &mpsc::UnboundedSender<Bytes>,
-    ) -> usize {
-        let symbol = match item
-            .get("s")
-            .and_then(|v| v.as_str())
-            .or_else(|| item.get("contract").and_then(|v| v.as_str()))
-            .or_else(|| item.get("symbol").and_then(|v| v.as_str()))
-            .or_else(|| item.get("currency_pair").and_then(|v| v.as_str()))
-        {
-            Some(s) => s,
-            None => return 0,
-        };
-
-        let bids = item
-            .get("b")
-            .map(parse_gate_levels)
-            .or_else(|| item.get("bids").map(parse_gate_levels))
-            .unwrap_or_default();
-        let asks = item
-            .get("a")
-            .map(parse_gate_levels)
-            .or_else(|| item.get("asks").map(parse_gate_levels))
-            .unwrap_or_default();
-
-        if bids.is_empty() && asks.is_empty() {
-            return 0;
-        }
-
-        let final_update_id = item
-            .get("u")
-            .and_then(parse_json_i64)
-            .or_else(|| item.get("last_update_id").and_then(parse_json_i64))
-            .or_else(|| item.get("seq").and_then(parse_json_i64))
-            .or_else(|| item.get("id").and_then(parse_json_i64))
-            .unwrap_or(0);
-        let first_update_id = item
-            .get("U")
-            .and_then(parse_json_i64)
-            .or_else(|| item.get("first_update_id").and_then(parse_json_i64))
-            .unwrap_or(final_update_id);
-
-        let timestamp = item
-            .get("t")
-            .and_then(parse_gate_ts_ms)
-            .or_else(|| item.get("timestamp").and_then(parse_gate_ts_ms))
-            .or_else(|| item.get("time_ms").and_then(parse_gate_ts_ms))
-            .or_else(|| root.get("time_ms").and_then(parse_gate_ts_ms))
-            .or_else(|| root.get("time").and_then(parse_gate_ts_ms))
-            .unwrap_or(0);
-
-        let is_snapshot = item
-            .get("is_snapshot")
-            .and_then(|v| v.as_bool())
-            .or_else(|| {
-                item.get("type")
-                    .and_then(|v| v.as_str())
-                    .map(|tp| tp.eq_ignore_ascii_case("snapshot"))
-            })
-            .unwrap_or_else(|| {
-                channel.ends_with(".order_book")
-                    || event.eq_ignore_ascii_case("snapshot")
-                    || event.eq_ignore_ascii_case("all")
-            });
-
-        let chunks = split_levels(bids.len(), asks.len(), self.max_levels);
-        let total_chunks = chunks.len();
-        let mut sent_count = 0;
-
-        for (chunk_idx, (bids_start, bids_count, asks_start, asks_count)) in
-            chunks.into_iter().enumerate()
-        {
-            let mut inc_msg = IncMsg::create(
-                symbol.to_string(),
-                first_update_id,
-                final_update_id,
-                timestamp,
-                is_snapshot,
-                bids_count as u32,
-                asks_count as u32,
-            );
-            inc_msg.set_chunk_index(chunk_idx as u8);
-            inc_msg.set_is_last(chunk_idx == total_chunks - 1);
-
-            fill_levels_with_offset(
-                &bids,
-                &asks,
-                bids_start,
-                bids_count,
-                asks_start,
-                asks_count,
-                &mut inc_msg,
-            );
-
-            if tx.send(inc_msg.to_bytes()).is_ok() {
-                sent_count += 1;
-            }
-        }
-        sent_count
-    }
 }
 
 impl Parser for GateIncParser {
@@ -739,40 +540,13 @@ impl Parser for GateIncParser {
         if msg.first() != Some(&b'{') {
             return self.parse_sbe(&msg, tx);
         }
-        if let Ok(json_str) = std::str::from_utf8(&msg) {
-            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
-                let channel = json_value
-                    .get("channel")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let event = json_value
-                    .get("event")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-
-                if !(channel.ends_with(".order_book_update") || channel.ends_with(".order_book")) {
-                    return 0;
-                }
-                if event == "subscribe" || event == "unsubscribe" {
-                    return 0;
-                }
-
-                let mut sent = 0;
-                match json_value.get("result") {
-                    Some(serde_json::Value::Array(arr)) => {
-                        for item in arr {
-                            sent += self.parse_inc_item(&json_value, item, channel, event, tx);
-                        }
-                    }
-                    Some(item @ serde_json::Value::Object(_)) => {
-                        sent += self.parse_inc_item(&json_value, item, channel, event, tx);
-                    }
-                    _ => {}
-                }
-                return sent;
-            }
-        }
-        0
+        let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&msg) else {
+            return 0;
+        };
+        gate_codec::parse_incremental_json(&json_value)
+            .iter()
+            .map(|book| publish_gate_book(book, self.max_levels, true, tx))
+            .sum()
     }
 }
 
@@ -797,80 +571,10 @@ impl Parser for GateDerivativesMetricsParser {
         if msg.first() != Some(&b'{') {
             return self.parse_sbe(&msg, tx);
         }
-        if let Ok(json_str) = std::str::from_utf8(&msg) {
-            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
-                let channel = json_value
-                    .get("channel")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let event = json_value
-                    .get("event")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-
-                if !channel.ends_with(".tickers") || event != "update" {
-                    return 0;
-                }
-
-                let timestamp = json_value
-                    .get("time_ms")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0);
-
-                let mut parsed = 0;
-                let results = json_value.get("result");
-
-                // result 可能是数组或单个对象
-                let items: Vec<&serde_json::Value> = match results {
-                    Some(serde_json::Value::Array(arr)) => arr.iter().collect(),
-                    Some(obj @ serde_json::Value::Object(_)) => vec![obj],
-                    _ => Vec::new(),
-                };
-
-                for item in items {
-                    let Some(symbol) = item.get("contract").and_then(|v| v.as_str()) else {
-                        continue;
-                    };
-
-                    if let Some(mark_px) = item
-                        .get("mark_price")
-                        .and_then(|v| v.as_str())
-                        .and_then(|s| s.parse::<f64>().ok())
-                    {
-                        let msg = MarkPriceMsg::create(symbol.to_string(), mark_px, timestamp);
-                        if tx.send(msg.to_bytes()).is_ok() {
-                            parsed += 1;
-                        }
-                    }
-
-                    if let Some(index_px) = item
-                        .get("index_price")
-                        .and_then(|v| v.as_str())
-                        .and_then(|s| s.parse::<f64>().ok())
-                    {
-                        let msg = IndexPriceMsg::create(symbol.to_string(), index_px, timestamp);
-                        if tx.send(msg.to_bytes()).is_ok() {
-                            parsed += 1;
-                        }
-                    }
-
-                    if let Some(fr) = item
-                        .get("funding_rate")
-                        .and_then(|v| v.as_str())
-                        .and_then(|s| s.parse::<f64>().ok())
-                    {
-                        // Gate futures.tickers 未提供 next funding time，填 0 作为占位
-                        let msg = FundingRateMsg::create(symbol.to_string(), fr, 0, timestamp);
-                        if tx.send(msg.to_bytes()).is_ok() {
-                            parsed += 1;
-                        }
-                    }
-                }
-
-                return parsed;
-            }
-        }
-        0
+        let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&msg) else {
+            return 0;
+        };
+        publish_gate_derivatives(gate_codec::parse_derivatives_json(&json_value), true, tx)
     }
 }
 
@@ -901,54 +605,16 @@ impl GateSignalParser {
 
 impl GateTickerParser {
     fn parse_sbe(&self, buf: &[u8], tx: &mpsc::UnboundedSender<Bytes>) -> usize {
-        let (tid, bl) = match sbe_hdr(buf) {
-            Some(h) => h,
-            None => return 0,
-        };
-        if tid != GATE_SBE_T_BBO {
+        let Some(bbo) = gate_codec::parse_sbe_bbo(buf) else {
             return 0;
-        }
-        let b = GATE_SBE_HDR;
-        if buf.len() < b + bl {
-            return 0;
-        }
-        // BBO root layout: time@0 e@8 t@9 u@17 pxExp@25 szExp@26
-        //                  askPxM@27 askSzM@35 bidPxM@43 bidSzM@51
-        let t_us = sbe_i64(buf, b + 9).unwrap_or(0);
-        let px_exp = buf[b + 25] as i8;
-        let sz_exp = buf[b + 26] as i8;
-        let ask_px_m = match sbe_i64(buf, b + 27) {
-            Some(v) => v,
-            None => return 0,
         };
-        let ask_sz_m = sbe_i64(buf, b + 35).unwrap_or(0);
-        let bid_px_m = match sbe_i64(buf, b + 43) {
-            Some(v) => v,
-            None => return 0,
-        };
-        let bid_sz_m = sbe_i64(buf, b + 51).unwrap_or(0);
-        let bid_price = sbe_m(bid_px_m, px_exp);
-        let ask_price = sbe_m(ask_px_m, px_exp);
-        if bid_price <= 0.0 || ask_price <= 0.0 {
-            return 0;
-        }
-        // varData after root block: channel (skip), s (symbol)
-        let off = match sbe_vs_skip(buf, b + bl) {
-            Some(o) => o,
-            None => return 0,
-        };
-        let (sym, _) = match sbe_vs(buf, off) {
-            Some(s) => s,
-            None => return 0,
-        };
-        let symbol = sym.replace('_', "");
         let msg = AskBidSpreadMsg::create(
-            symbol,
-            t_us / 1000,
-            bid_price,
-            sbe_m(bid_sz_m, sz_exp),
-            ask_price,
-            sbe_m(ask_sz_m, sz_exp),
+            bbo.symbol,
+            us_to_ms(bbo.timestamp_us),
+            bbo.bid_price,
+            bbo.bid_amount,
+            bbo.ask_price,
+            bbo.ask_amount,
         );
         if tx.send(msg.to_bytes()).is_ok() {
             1
@@ -1026,65 +692,7 @@ impl GateKlineParser {
 
 impl GateTradeParser {
     fn parse_sbe(&self, buf: &[u8], tx: &mpsc::UnboundedSender<Bytes>) -> usize {
-        let (tid, bl) = match sbe_hdr(buf) {
-            Some(h) => h,
-            None => return 0,
-        };
-        if tid != GATE_SBE_T_TRADE {
-            return 0;
-        }
-        let b = GATE_SBE_HDR;
-        if buf.len() < b + bl {
-            return 0;
-        }
-        // root: time@0 e@8 pxExp@9 szExp@10
-        let px_exp = buf.get(b + 9).map(|&v| v as i8).unwrap_or(0);
-        let sz_exp = buf.get(b + 10).map(|&v| v as i8).unwrap_or(0);
-
-        let (el, n, mut cur) = match sbe_grp(buf, b + bl) {
-            Some(g) => g,
-            None => return 0,
-        };
-        // collect entries; symbol follows group as varData
-        let mut entries: Vec<(i64, u64, i64, i64)> = Vec::with_capacity(n); // t, id, size, price_m
-        for _ in 0..n {
-            if buf.len() < cur + 32 {
-                break;
-            }
-            // entry: t@0 id@8 size@16 price@24
-            let t = sbe_i64(buf, cur).unwrap_or(0);
-            let id = sbe_u64(buf, cur + 8).unwrap_or(0);
-            let size = sbe_i64(buf, cur + 16).unwrap_or(0);
-            let price_m = sbe_i64(buf, cur + 24).unwrap_or(0);
-            entries.push((t, id, size, price_m));
-            cur += el;
-        }
-        // varData: channel (skip), contract (symbol)
-        cur = match sbe_vs_skip(buf, cur) {
-            Some(o) => o,
-            None => return 0,
-        };
-        let (symbol, _) = match sbe_vs(buf, cur) {
-            Some(s) => s,
-            None => return 0,
-        };
-        let mut sent = 0;
-        for (t_us, id, size, price_m) in &entries {
-            let price = sbe_m(*price_m, px_exp);
-            if price <= 0.0 {
-                continue;
-            }
-            let amount = (size.unsigned_abs() as f64) * 10f64.powi(sz_exp as i32);
-            if amount <= 0.0 {
-                continue;
-            }
-            let side = if *size >= 0 { 'B' } else { 'S' };
-            let msg = TradeMsg::create(symbol.clone(), *id as i64, *t_us, side, price, amount);
-            if tx.send(msg.to_bytes()).is_ok() {
-                sent += 1;
-            }
-        }
-        sent
+        publish_gate_trades(gate_codec::parse_sbe_trades(buf), false, tx)
     }
 }
 
@@ -1264,77 +872,7 @@ impl GateIncParser {
 
 impl GateDerivativesMetricsParser {
     fn parse_sbe(&self, buf: &[u8], tx: &mpsc::UnboundedSender<Bytes>) -> usize {
-        let (tid, bl) = match sbe_hdr(buf) {
-            Some(h) => h,
-            None => return 0,
-        };
-        if tid != GATE_SBE_T_TICKER {
-            return 0;
-        }
-        let b = GATE_SBE_HDR;
-        // root: time@0 (µs), e@8; group immediately after root block
-        let time_us = sbe_i64(buf, b).unwrap_or(0);
-        let ts_ms = time_us / 1000;
-
-        let (el, n, mut cur) = match sbe_grp(buf, b + bl) {
-            Some(g) => g,
-            None => return 0,
-        };
-        let mut parsed = 0;
-        for _ in 0..n {
-            if buf.len() < cur + el {
-                break;
-            }
-            // futuresTicker group entry fixed offsets:
-            //   t@0  pxExp@8  last@9  changePx@17  low24h@25  high24h@33
-            //   markPxExp@41  markPx@42  indexPxExp@50  indexPx@51
-            //   changePctExp@59  changePct@60  frExp@68  fr@69
-            //   (szExp@77 totalSize@78 … vol fields … total 122B)
-            let mark_px_exp = buf.get(cur + 41).map(|&v| v as i8).unwrap_or(0);
-            let mark_px_m = sbe_i64(buf, cur + 42).unwrap_or(0);
-            let idx_px_exp = buf.get(cur + 50).map(|&v| v as i8).unwrap_or(0);
-            let idx_px_m = sbe_i64(buf, cur + 51).unwrap_or(0);
-            let fr_exp = buf.get(cur + 68).map(|&v| v as i8).unwrap_or(0);
-            let fr_m = sbe_i64(buf, cur + 69).unwrap_or(0);
-            cur += el;
-            // varData within entry: contract, quantoBaseRate, priceType, changeFrom
-            let (contract, c2) = match sbe_vs(buf, cur) {
-                Some(s) => s,
-                None => break,
-            };
-            let c3 = match sbe_vs_skip(buf, c2) {
-                Some(o) => o,
-                None => break,
-            };
-            let c4 = match sbe_vs_skip(buf, c3) {
-                Some(o) => o,
-                None => break,
-            };
-            cur = match sbe_vs_skip(buf, c4) {
-                Some(o) => o,
-                None => break,
-            };
-            let mark_price = sbe_m(mark_px_m, mark_px_exp);
-            let idx_price = sbe_m(idx_px_m, idx_px_exp);
-            let funding_rate = sbe_m(fr_m, fr_exp);
-            if mark_price > 0.0 {
-                let msg = MarkPriceMsg::create(contract.clone(), mark_price, ts_ms);
-                if tx.send(msg.to_bytes()).is_ok() {
-                    parsed += 1;
-                }
-            }
-            if idx_price > 0.0 {
-                let msg = IndexPriceMsg::create(contract.clone(), idx_price, ts_ms);
-                if tx.send(msg.to_bytes()).is_ok() {
-                    parsed += 1;
-                }
-            }
-            let msg = FundingRateMsg::create(contract, funding_rate, 0, ts_ms);
-            if tx.send(msg.to_bytes()).is_ok() {
-                parsed += 1;
-            }
-        }
-        parsed
+        publish_gate_derivatives(gate_codec::parse_sbe_derivatives(buf), true, tx)
     }
 }
 
@@ -1359,13 +897,6 @@ fn sbe_i64(buf: &[u8], off: usize) -> Option<i64> {
     buf.get(off..off + 8)
         .and_then(|s| s.try_into().ok())
         .map(i64::from_le_bytes)
-}
-
-#[inline]
-fn sbe_u64(buf: &[u8], off: usize) -> Option<u64> {
-    buf.get(off..off + 8)
-        .and_then(|s| s.try_into().ok())
-        .map(u64::from_le_bytes)
 }
 
 #[inline]

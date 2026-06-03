@@ -10,13 +10,13 @@
 //! - ts_us: 取 `t`（撮合引擎时间戳，µs），与 JSON 端 `result.t*1000` 同语义
 //! - 心跳: 每 15s 发 `{"time":<unix>,"channel":"futures.ping"}`
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::Result;
 use bytes::Bytes;
+use mkt_parsers::gate as gate_codec;
 use serde_json::Value;
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::common::mkt_msg::{FundingRateMsg, IndexPriceMsg, MarkPriceMsg};
 use crate::spread_pbs::adapter::{
     BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
 };
@@ -24,14 +24,6 @@ use crate::spread_pbs::adapter::{
 const GATE_SBE_FUTURES_WS_URL: &str = "wss://fx-ws.gateio.ws/v4/ws/usdt/sbe";
 const GATE_JSON_FUTURES_WS_URL: &str = "wss://fx-ws.gateio.ws/v4/ws/usdt";
 const GATE_SUBSCRIBE_CHUNK: usize = 100;
-
-const SBE_HEADER_SIZE: usize = 8;
-const SBE_SCHEMA_ID: u16 = 1;
-const SBE_TEMPLATE_BBO: u16 = 1;
-const SBE_TEMPLATE_TRADE: u16 = 2;
-const SBE_TEMPLATE_TICKER: u16 = 9;
-// BBO root: 8+1+8+8+1+1+8+8+8+8 = 59 bytes
-const SBE_BBO_ROOT_MIN: usize = 59;
 
 pub struct GateSbeAdapter;
 
@@ -85,19 +77,31 @@ impl VenueAdapter for GateSbeAdapter {
     }
 
     fn parse_incremental_frame(&self, value: &Value) -> Result<Vec<IncrementalFrame>> {
-        crate::spread_pbs::gate::parse_incremental_frame(value)
+        Ok(gate_codec::parse_incremental_json(value)
+            .into_iter()
+            .map(crate::spread_pbs::gate::book_to_incremental)
+            .collect())
     }
 
     fn parse_binary_frame(&self, raw: &[u8]) -> Result<Vec<BboFrame>> {
-        parse_sbe_bbo(raw)
+        Ok(gate_codec::parse_sbe_bbo(raw)
+            .map(crate::spread_pbs::gate::bbo_to_frame)
+            .into_iter()
+            .collect())
     }
 
     fn parse_trade_binary_frame(&self, raw: &[u8]) -> Result<Vec<TradeFrame>> {
-        parse_sbe_trade(raw)
+        Ok(gate_codec::parse_sbe_trades(raw)
+            .into_iter()
+            .map(crate::spread_pbs::gate::trade_to_frame)
+            .collect())
     }
 
     fn parse_derivatives_binary_frame(&self, raw: &[u8]) -> Result<Vec<Bytes>> {
-        parse_sbe_derivatives(raw)
+        Ok(gate_codec::parse_sbe_derivatives(raw)
+            .into_iter()
+            .map(crate::spread_pbs::gate::derivative_to_bytes)
+            .collect())
     }
 
     fn keepalive(&self) -> Option<KeepaliveSpec> {
@@ -131,270 +135,6 @@ fn build_channel_subscribe(symbols: &[String], channel: &str) -> Vec<Value> {
     out
 }
 
-/// Gate SBE BBO (templateId=1, schemaId=1) 解码。其他 template 返回空 Vec。
-fn parse_sbe_bbo(raw: &[u8]) -> Result<Vec<BboFrame>> {
-    let (template_id, block_length) = sbe_header(raw)?;
-    if template_id != SBE_TEMPLATE_BBO {
-        return Ok(Vec::new());
-    }
-
-    let body_off = SBE_HEADER_SIZE;
-    if raw.len() < body_off + block_length {
-        bail!(
-            "Gate SBE BBO frame truncated: have {} bytes, blockLength={}",
-            raw.len(),
-            block_length
-        );
-    }
-    if block_length < SBE_BBO_ROOT_MIN {
-        bail!(
-            "Gate SBE BBO blockLength {} < expected {}",
-            block_length,
-            SBE_BBO_ROOT_MIN
-        );
-    }
-
-    // Root block layout (offsets relative to body_off):
-    //  0: time  i64 - µs when WS server sent
-    //  8: e     i8  - Event type (ignore)
-    //  9: t     i64 - orderbook update timestamp µs (engine time) → ts_us
-    // 17: u     i64 - orderbook id → seq_id
-    // 25: pxExp i8
-    // 26: szExp i8
-    // 27: askPxM i64
-    // 35: askSzM i64
-    // 43: bidPxM i64
-    // 51: bidSzM i64
-    let t_us = read_i64_le(raw, body_off + 9)?;
-    let seq_id = read_i64_le(raw, body_off + 17)?;
-    let px_exp = raw[body_off + 25] as i8;
-    let sz_exp = raw[body_off + 26] as i8;
-    let ask_px_m = read_i64_le(raw, body_off + 27)?;
-    let ask_sz_m = read_i64_le(raw, body_off + 35)?;
-    let bid_px_m = read_i64_le(raw, body_off + 43)?;
-    let bid_sz_m = read_i64_le(raw, body_off + 51)?;
-
-    // VarData after root block: channel (skip) then symbol
-    let mut off = body_off + block_length;
-    if raw.len() <= off {
-        bail!("Gate SBE BBO missing channel varString8");
-    }
-    let chan_len = raw[off] as usize;
-    off += 1 + chan_len;
-
-    if raw.len() <= off {
-        bail!("Gate SBE BBO missing symbol varString8");
-    }
-    let sym_len = raw[off] as usize;
-    off += 1;
-    if raw.len() < off + sym_len {
-        bail!(
-            "Gate SBE BBO truncated symbol: need {} have {}",
-            off + sym_len,
-            raw.len()
-        );
-    }
-    let symbol = std::str::from_utf8(&raw[off..off + sym_len])
-        .map_err(|e| anyhow!("Gate SBE BBO symbol not utf-8: {}", e))?
-        .replace('_', "")
-        .to_ascii_uppercase();
-
-    let bid_price = mantissa_to_f64(bid_px_m, px_exp);
-    let ask_price = mantissa_to_f64(ask_px_m, px_exp);
-    let bid_amount = mantissa_to_f64(bid_sz_m, sz_exp);
-    let ask_amount = mantissa_to_f64(ask_sz_m, sz_exp);
-
-    if bid_price <= 0.0 || ask_price <= 0.0 || bid_amount <= 0.0 || ask_amount <= 0.0 {
-        return Ok(Vec::new());
-    }
-
-    Ok(vec![BboFrame {
-        symbol,
-        ts_us: t_us,
-        seq_id,
-        reset_seq: false,
-        bid_price,
-        bid_amount,
-        ask_price,
-        ask_amount,
-    }])
-}
-
-fn parse_sbe_trade(raw: &[u8]) -> Result<Vec<TradeFrame>> {
-    let (template_id, block_length) = sbe_header(raw)?;
-    if template_id != SBE_TEMPLATE_TRADE {
-        return Ok(Vec::new());
-    }
-    let body_off = SBE_HEADER_SIZE;
-    if raw.len() < body_off + block_length {
-        bail!(
-            "Gate SBE trade frame truncated: have {} bytes, blockLength={}",
-            raw.len(),
-            block_length
-        );
-    }
-    let px_exp = raw.get(body_off + 9).copied().unwrap_or(0) as i8;
-    let sz_exp = raw.get(body_off + 10).copied().unwrap_or(0) as i8;
-    let (entry_len, num_entries, mut off) = sbe_group(raw, body_off + block_length)?;
-    let mut entries = Vec::with_capacity(num_entries);
-    for _ in 0..num_entries {
-        if raw.len() < off + entry_len || raw.len() < off + 32 {
-            break;
-        }
-        let t_us = read_i64_le(raw, off)?;
-        let trade_id = read_u64_le(raw, off + 8)? as i64;
-        let size_m = read_i64_le(raw, off + 16)?;
-        let price_m = read_i64_le(raw, off + 24)?;
-        entries.push((t_us, trade_id, size_m, price_m));
-        off += entry_len;
-    }
-
-    let off = sbe_var_string_skip(raw, off)?;
-    let (symbol, _) = sbe_var_string(raw, off)?;
-    let mut out = Vec::with_capacity(entries.len());
-    for (timestamp_us, trade_id, size_m, price_m) in entries {
-        let price = mantissa_to_f64(price_m, px_exp);
-        let amount = (size_m.unsigned_abs() as f64) * 10_f64.powi(sz_exp as i32);
-        if price <= 0.0 || amount <= 0.0 {
-            continue;
-        }
-        out.push(TradeFrame {
-            symbol: symbol.clone(),
-            timestamp_us,
-            seq_id: trade_id,
-            trade_id,
-            side: if size_m >= 0 { 'B' } else { 'S' },
-            price,
-            amount,
-        });
-    }
-    Ok(out)
-}
-
-fn parse_sbe_derivatives(raw: &[u8]) -> Result<Vec<Bytes>> {
-    let (template_id, block_length) = sbe_header(raw)?;
-    if template_id != SBE_TEMPLATE_TICKER {
-        return Ok(Vec::new());
-    }
-    let body_off = SBE_HEADER_SIZE;
-    if raw.len() < body_off + block_length {
-        bail!("Gate SBE ticker truncated");
-    }
-    let timestamp_us = read_i64_le(raw, body_off)?;
-    let (entry_len, entry_count, mut off) = sbe_group(raw, body_off + block_length)?;
-    let mut out = Vec::new();
-    for _ in 0..entry_count {
-        if raw.len() < off + entry_len || raw.len() < off + 77 {
-            break;
-        }
-        let mark_px_exp = raw.get(off + 41).copied().unwrap_or(0) as i8;
-        let mark_px_m = read_i64_le(raw, off + 42).unwrap_or(0);
-        let idx_px_exp = raw.get(off + 50).copied().unwrap_or(0) as i8;
-        let idx_px_m = read_i64_le(raw, off + 51).unwrap_or(0);
-        let funding_exp = raw.get(off + 68).copied().unwrap_or(0) as i8;
-        let funding_m = read_i64_le(raw, off + 69).unwrap_or(0);
-        off += entry_len;
-
-        let (contract, next) = sbe_var_string(raw, off)?;
-        off = sbe_var_string_skip(raw, next)?;
-        off = sbe_var_string_skip(raw, off)?;
-        off = sbe_var_string_skip(raw, off)?;
-
-        let mark_price = mantissa_to_f64(mark_px_m, mark_px_exp);
-        if mark_price > 0.0 {
-            out.push(MarkPriceMsg::create(contract.clone(), mark_price, timestamp_us).to_bytes());
-        }
-        let index_price = mantissa_to_f64(idx_px_m, idx_px_exp);
-        if index_price > 0.0 {
-            out.push(IndexPriceMsg::create(contract.clone(), index_price, timestamp_us).to_bytes());
-        }
-        let funding_rate = mantissa_to_f64(funding_m, funding_exp);
-        out.push(FundingRateMsg::create(contract, funding_rate, 0, timestamp_us).to_bytes());
-    }
-    Ok(out)
-}
-
-fn sbe_header(raw: &[u8]) -> Result<(u16, usize)> {
-    if raw.len() < SBE_HEADER_SIZE {
-        bail!("Gate SBE frame too short: {} bytes", raw.len());
-    }
-    let block_length = u16::from_le_bytes([raw[0], raw[1]]) as usize;
-    let template_id = u16::from_le_bytes([raw[2], raw[3]]);
-    let schema_id = u16::from_le_bytes([raw[4], raw[5]]);
-    if schema_id != SBE_SCHEMA_ID {
-        bail!(
-            "Gate SBE unexpected schemaId={} (want {})",
-            schema_id,
-            SBE_SCHEMA_ID
-        );
-    }
-    Ok((template_id, block_length))
-}
-
-fn read_i64_le(buf: &[u8], off: usize) -> Result<i64> {
-    if buf.len() < off + 8 {
-        bail!("Gate SBE OOB read at offset {}", off);
-    }
-    Ok(i64::from_le_bytes([
-        buf[off],
-        buf[off + 1],
-        buf[off + 2],
-        buf[off + 3],
-        buf[off + 4],
-        buf[off + 5],
-        buf[off + 6],
-        buf[off + 7],
-    ]))
-}
-
-fn read_u64_le(buf: &[u8], off: usize) -> Result<u64> {
-    if buf.len() < off + 8 {
-        bail!("Gate SBE OOB read at offset {}", off);
-    }
-    Ok(u64::from_le_bytes([
-        buf[off],
-        buf[off + 1],
-        buf[off + 2],
-        buf[off + 3],
-        buf[off + 4],
-        buf[off + 5],
-        buf[off + 6],
-        buf[off + 7],
-    ]))
-}
-
-fn mantissa_to_f64(mantissa: i64, exponent: i8) -> f64 {
-    (mantissa as f64) * 10_f64.powi(exponent as i32)
-}
-
-fn sbe_group(buf: &[u8], off: usize) -> Result<(usize, usize, usize)> {
-    if buf.len() < off + 4 {
-        bail!("Gate SBE missing group header at offset {}", off);
-    }
-    let entry_len = u16::from_le_bytes([buf[off], buf[off + 1]]) as usize;
-    let entry_count = u16::from_le_bytes([buf[off + 2], buf[off + 3]]) as usize;
-    Ok((entry_len, entry_count, off + 4))
-}
-
-fn sbe_var_string(buf: &[u8], off: usize) -> Result<(String, usize)> {
-    if buf.len() <= off {
-        bail!("Gate SBE missing varString8 at offset {}", off);
-    }
-    let len = buf[off] as usize;
-    if buf.len() < off + 1 + len {
-        bail!("Gate SBE truncated varString8 at offset {}", off);
-    }
-    let value = std::str::from_utf8(&buf[off + 1..off + 1 + len])
-        .map_err(|e| anyhow!("Gate SBE varString8 not utf-8: {}", e))?
-        .to_string();
-    Ok((value, off + 1 + len))
-}
-
-fn sbe_var_string_skip(buf: &[u8], off: usize) -> Result<usize> {
-    let (_, next) = sbe_var_string(buf, off)?;
-    Ok(next)
-}
-
 fn now_unix_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -405,6 +145,7 @@ fn now_unix_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::mkt_msg::{FundingRateMsg, IndexPriceMsg, MarkPriceMsg};
 
     fn build_bbo_frame(
         time_us: i64,
@@ -423,8 +164,8 @@ mod tests {
         let mut buf = Vec::with_capacity(128);
         // header
         buf.extend_from_slice(&block_length.to_le_bytes());
-        buf.extend_from_slice(&SBE_TEMPLATE_BBO.to_le_bytes());
-        buf.extend_from_slice(&SBE_SCHEMA_ID.to_le_bytes());
+        buf.extend_from_slice(&gate_codec::SBE_TEMPLATE_BBO.to_le_bytes());
+        buf.extend_from_slice(&gate_codec::SBE_SCHEMA_ID.to_le_bytes());
         buf.extend_from_slice(&1u16.to_le_bytes()); // version
                                                     // root
         buf.extend_from_slice(&time_us.to_le_bytes()); // time @0
@@ -463,8 +204,8 @@ mod tests {
         let entry_length: u16 = 32;
         let mut buf = Vec::new();
         buf.extend_from_slice(&block_length.to_le_bytes());
-        buf.extend_from_slice(&SBE_TEMPLATE_TRADE.to_le_bytes());
-        buf.extend_from_slice(&SBE_SCHEMA_ID.to_le_bytes());
+        buf.extend_from_slice(&gate_codec::SBE_TEMPLATE_TRADE.to_le_bytes());
+        buf.extend_from_slice(&gate_codec::SBE_SCHEMA_ID.to_le_bytes());
         buf.extend_from_slice(&1u16.to_le_bytes());
         buf.extend_from_slice(&1_748_000_000_000_000i64.to_le_bytes());
         buf.push(2);
@@ -494,8 +235,8 @@ mod tests {
         let entry_length: u16 = 122;
         let mut buf = Vec::new();
         buf.extend_from_slice(&block_length.to_le_bytes());
-        buf.extend_from_slice(&SBE_TEMPLATE_TICKER.to_le_bytes());
-        buf.extend_from_slice(&SBE_SCHEMA_ID.to_le_bytes());
+        buf.extend_from_slice(&gate_codec::SBE_TEMPLATE_TICKER.to_le_bytes());
+        buf.extend_from_slice(&gate_codec::SBE_SCHEMA_ID.to_le_bytes());
         buf.extend_from_slice(&1u16.to_le_bytes());
         buf.extend_from_slice(&time_us.to_le_bytes());
         buf.push(2);
@@ -531,7 +272,9 @@ mod tests {
             "futures.book_ticker",
             "BTC_USDT",
         );
-        let frames = parse_sbe_bbo(&raw).expect("decode ok");
+        let frames = GateSbeAdapter::new()
+            .parse_binary_frame(&raw)
+            .expect("decode ok");
         assert_eq!(frames.len(), 1);
         let f = &frames[0];
         assert_eq!(f.symbol, "BTCUSDT");
@@ -551,7 +294,9 @@ mod tests {
             &[(1_748_000_000_001_234, 9001, -93_708, 677_357)],
             "BTC_USDT",
         );
-        let frames = parse_sbe_trade(&raw).expect("decode trade ok");
+        let frames = GateSbeAdapter::new()
+            .parse_trade_binary_frame(&raw)
+            .expect("decode trade ok");
         assert_eq!(frames.len(), 1);
         let f = &frames[0];
         assert_eq!(f.symbol, "BTC_USDT");
@@ -566,7 +311,9 @@ mod tests {
     fn decodes_derivatives_ticker_bytes() {
         let ts_us = 1_748_000_000_001_000;
         let raw = build_ticker_frame(ts_us, 677_357, 677_300, 12, "BTC_USDT");
-        let bytes = parse_sbe_derivatives(&raw).expect("decode derivatives ok");
+        let bytes = GateSbeAdapter::new()
+            .parse_derivatives_binary_frame(&raw)
+            .expect("decode derivatives ok");
         assert_eq!(bytes.len(), 3);
         assert!(!bytes.iter().any(|b| b.is_empty()));
         assert_eq!(MarkPriceMsg::get_timestamp(&bytes[0]), ts_us);
@@ -580,7 +327,10 @@ mod tests {
         let mut patched = raw.clone();
         patched[2] = 2; // templateId=2 (publicTrade)
         patched[3] = 0;
-        assert!(parse_sbe_bbo(&patched).unwrap().is_empty());
+        assert!(GateSbeAdapter::new()
+            .parse_binary_frame(&patched)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -589,14 +339,19 @@ mod tests {
         let mut patched = raw.clone();
         patched[4] = 9; // schemaId=9
         patched[5] = 0;
-        let err = parse_sbe_bbo(&patched).unwrap_err();
-        assert!(err.to_string().contains("schemaId"));
+        assert!(GateSbeAdapter::new()
+            .parse_binary_frame(&patched)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
     fn rejects_zero_price() {
         let raw = build_bbo_frame(0, 0, 1, 0, 0, 0, 1, 1, 1, "futures.book_ticker", "BTC_USDT");
-        assert!(parse_sbe_bbo(&raw).unwrap().is_empty());
+        assert!(GateSbeAdapter::new()
+            .parse_binary_frame(&raw)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

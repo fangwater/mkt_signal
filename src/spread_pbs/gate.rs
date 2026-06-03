@@ -9,11 +9,13 @@
 //! - 心跳: 每 15s 发 `{"time":<unix>,"channel":"<prefix>.ping"}`，否则 25s 后被服务端断开。
 
 use anyhow::{anyhow, Result};
+use bytes::Bytes;
+use mkt_parsers::gate as gate_codec;
 use serde_json::Value;
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::common::mkt_msg::Level;
+use crate::common::mkt_msg::{FundingRateMsg, IndexPriceMsg, MarkPriceMsg};
 use crate::signal::common::TradingVenue;
 use crate::spread_pbs::adapter::{
     BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
@@ -69,82 +71,51 @@ impl VenueAdapter for GateAdapter {
     fn parse_frame(&self, value: &Value) -> Result<Vec<BboFrame>> {
         let channel = value.get("channel").and_then(|v| v.as_str()).unwrap_or("");
         let event = value.get("event").and_then(|v| v.as_str()).unwrap_or("");
+        if event == "update" && channel.ends_with(".book_ticker") {
+            if let Some(result) = value.get("result").and_then(|v| v.as_object()) {
+                if result.get("u").is_none() {
+                    return Err(anyhow!("gate {} missing result.u (updateId)", channel));
+                }
+            }
+        }
+
+        if let Some(bbo) = gate_codec::parse_bbo_json(value) {
+            return Ok(vec![bbo_to_frame(bbo)]);
+        }
+
         if event != "update" || !channel.ends_with(".book_ticker") {
             return Ok(Vec::new());
         }
-
-        let res = value
-            .get("result")
-            .and_then(|v| v.as_object())
-            .ok_or_else(|| anyhow!("gate {} missing result object", channel))?;
-
-        // spot: `s`，futures: `s` 也有；个别老接口用 `contract`/`currency_pair`，做兜底
-        let symbol = res
-            .get("s")
-            .and_then(|v| v.as_str())
-            .or_else(|| res.get("contract").and_then(|v| v.as_str()))
-            .or_else(|| res.get("currency_pair").and_then(|v| v.as_str()))
-            .map(|s| s.replace('_', "").to_ascii_uppercase())
-            .ok_or_else(|| anyhow!("gate {} missing result.s", channel))?;
-
-        let seq_id = res
-            .get("u")
-            .and_then(parse_i64_loose)
-            .ok_or_else(|| anyhow!("gate {} missing result.u (updateId)", channel))?;
-
-        // result.t / time_ms 都是 ms；time 是秒。统一升精度到 µs（time 升 *1_000_000）
-        let ts_us = res
-            .get("t")
-            .and_then(parse_i64_loose)
-            .or_else(|| value.get("time_ms").and_then(parse_i64_loose))
-            .map(|ms| ms.saturating_mul(1000))
-            .or_else(|| {
-                value
-                    .get("time")
-                    .and_then(parse_i64_loose)
-                    .map(|s| s.saturating_mul(1_000_000))
-            })
-            .unwrap_or(0);
-
-        let bid_price = res
-            .get("b")
-            .and_then(parse_f64_loose)
-            .ok_or_else(|| anyhow!("gate {} {} missing/invalid b", channel, symbol))?;
-        let bid_amount = res
-            .get("B")
-            .and_then(parse_f64_loose)
-            .ok_or_else(|| anyhow!("gate {} {} missing/invalid B", channel, symbol))?;
-        let ask_price = res
-            .get("a")
-            .and_then(parse_f64_loose)
-            .ok_or_else(|| anyhow!("gate {} {} missing/invalid a", channel, symbol))?;
-        let ask_amount = res
-            .get("A")
-            .and_then(parse_f64_loose)
-            .ok_or_else(|| anyhow!("gate {} {} missing/invalid A", channel, symbol))?;
-
-        if bid_price <= 0.0 || ask_price <= 0.0 || bid_amount <= 0.0 || ask_amount <= 0.0 {
-            return Ok(Vec::new());
+        if let Some(result) = value.get("result").and_then(|v| v.as_object()) {
+            if result.get("u").is_none() {
+                return Err(anyhow!("gate {} missing result.u (updateId)", channel));
+            }
         }
-
-        Ok(vec![BboFrame {
-            symbol,
-            ts_us,
-            seq_id,
-            reset_seq: false,
-            bid_price,
-            bid_amount,
-            ask_price,
-            ask_amount,
-        }])
+        Ok(Vec::new())
     }
 
     fn parse_trade_frame(&self, value: &Value) -> Result<Vec<TradeFrame>> {
-        parse_trade_frame(value)
+        Ok(gate_codec::parse_trades_json(value)
+            .into_iter()
+            .map(trade_to_frame)
+            .collect())
     }
 
     fn parse_incremental_frame(&self, value: &Value) -> Result<Vec<IncrementalFrame>> {
-        parse_incremental_frame(value)
+        Ok(gate_codec::parse_incremental_json(value)
+            .into_iter()
+            .map(book_to_incremental)
+            .collect())
+    }
+
+    fn parse_derivatives_frame(&self, value: &Value) -> Result<Vec<Bytes>> {
+        if self.venue != TradingVenue::GateFutures {
+            return Ok(Vec::new());
+        }
+        Ok(gate_codec::parse_derivatives_json(value)
+            .into_iter()
+            .map(derivative_to_bytes)
+            .collect())
     }
 
     fn keepalive(&self) -> Option<KeepaliveSpec> {
@@ -202,193 +173,6 @@ impl GateAdapter {
     }
 }
 
-fn parse_trade_frame(value: &Value) -> Result<Vec<TradeFrame>> {
-    let channel = value.get("channel").and_then(|v| v.as_str()).unwrap_or("");
-    let event = value.get("event").and_then(|v| v.as_str()).unwrap_or("");
-    if event != "update" || !channel.ends_with(".trades") {
-        return Ok(Vec::new());
-    }
-
-    let timestamp_fallback_us = value
-        .get("time_ms")
-        .and_then(parse_i64_loose)
-        .map(|ms| ms.saturating_mul(1000))
-        .or_else(|| {
-            value
-                .get("time")
-                .and_then(parse_i64_loose)
-                .map(|s| s.saturating_mul(1_000_000))
-        })
-        .unwrap_or(0);
-    let items: Vec<&Value> = match value.get("result") {
-        Some(Value::Array(arr)) => arr.iter().collect(),
-        Some(obj @ Value::Object(_)) => vec![obj],
-        _ => Vec::new(),
-    };
-
-    let mut out = Vec::with_capacity(items.len());
-    for item in items {
-        let Some(obj) = item.as_object() else {
-            continue;
-        };
-        let symbol = obj
-            .get("contract")
-            .and_then(|v| v.as_str())
-            .or_else(|| obj.get("currency_pair").and_then(|v| v.as_str()))
-            .map(|s| s.to_ascii_uppercase())
-            .unwrap_or_default();
-        if symbol.is_empty() {
-            continue;
-        }
-        let trade_id = obj.get("id").and_then(parse_i64_loose).unwrap_or(0);
-        let timestamp_us = obj
-            .get("create_time_ms")
-            .and_then(parse_i64_loose)
-            .map(|ms| ms.saturating_mul(1000))
-            .or_else(|| {
-                obj.get("create_time")
-                    .and_then(parse_i64_loose)
-                    .map(|s| s.saturating_mul(1_000_000))
-            })
-            .unwrap_or(timestamp_fallback_us);
-        let price = obj.get("price").and_then(parse_f64_loose).unwrap_or(0.0);
-        let (side, amount) = if let Some(size) = obj.get("size").and_then(parse_f64_loose) {
-            (if size >= 0.0 { 'B' } else { 'S' }, size.abs())
-        } else {
-            let amount = obj.get("amount").and_then(parse_f64_loose).unwrap_or(0.0);
-            let side = match obj.get("side").and_then(|v| v.as_str()) {
-                Some("buy") => 'B',
-                Some("sell") => 'S',
-                _ => continue,
-            };
-            (side, amount)
-        };
-        if price <= 0.0 || amount <= 0.0 {
-            continue;
-        }
-        out.push(TradeFrame {
-            symbol,
-            timestamp_us,
-            seq_id: trade_id,
-            trade_id,
-            side,
-            price,
-            amount,
-        });
-    }
-    Ok(out)
-}
-
-pub(crate) fn parse_incremental_frame(value: &Value) -> Result<Vec<IncrementalFrame>> {
-    let channel = value.get("channel").and_then(|v| v.as_str()).unwrap_or("");
-    let event = value.get("event").and_then(|v| v.as_str()).unwrap_or("");
-    if event != "update"
-        || !(channel.ends_with(".order_book_update") || channel.ends_with(".order_book"))
-    {
-        return Ok(Vec::new());
-    }
-
-    let items: Vec<&Value> = match value.get("result") {
-        Some(Value::Array(arr)) => arr.iter().collect(),
-        Some(obj @ Value::Object(_)) => vec![obj],
-        _ => Vec::new(),
-    };
-    let mut out = Vec::with_capacity(items.len());
-    for item in items {
-        let Some(obj) = item.as_object() else {
-            continue;
-        };
-        let symbol = obj
-            .get("s")
-            .and_then(|v| v.as_str())
-            .or_else(|| obj.get("contract").and_then(|v| v.as_str()))
-            .or_else(|| obj.get("currency_pair").and_then(|v| v.as_str()))
-            .map(|s| s.to_ascii_uppercase())
-            .unwrap_or_default();
-        if symbol.is_empty() {
-            continue;
-        }
-        let first_id = obj
-            .get("U")
-            .and_then(parse_i64_loose)
-            .or_else(|| obj.get("id").and_then(parse_i64_loose))
-            .unwrap_or(0);
-        let last_id = obj
-            .get("u")
-            .and_then(parse_i64_loose)
-            .or_else(|| obj.get("last_id").and_then(parse_i64_loose))
-            .unwrap_or(first_id);
-        let timestamp = obj
-            .get("t")
-            .and_then(parse_i64_loose)
-            .or_else(|| value.get("time_ms").and_then(parse_i64_loose))
-            .map(normalize_ts_to_us)
-            .unwrap_or(0);
-        let bids = obj
-            .get("b")
-            .or_else(|| obj.get("bids"))
-            .map(parse_gate_levels)
-            .unwrap_or_default();
-        let asks = obj
-            .get("a")
-            .or_else(|| obj.get("asks"))
-            .map(parse_gate_levels)
-            .unwrap_or_default();
-        if bids.is_empty() && asks.is_empty() {
-            continue;
-        }
-        out.push(IncrementalFrame::Book {
-            symbol,
-            timestamp,
-            seq_id: last_id,
-            prev_seq_id: i64::MIN,
-            first_update_id: first_id,
-            final_update_id: last_id,
-            gap_check: false,
-            is_snapshot: channel.ends_with(".order_book"),
-            bids,
-            asks,
-        });
-    }
-    Ok(out)
-}
-
-fn parse_gate_levels(raw: &Value) -> Vec<Level> {
-    raw.as_array()
-        .map(|arr| arr.iter().filter_map(parse_gate_level).collect())
-        .unwrap_or_default()
-}
-
-fn parse_gate_level(value: &Value) -> Option<Level> {
-    if let Some(arr) = value.as_array() {
-        if arr.len() < 2 {
-            return None;
-        }
-        let price = parse_f64_loose(&arr[0])?;
-        let amount = parse_f64_loose(&arr[1])?;
-        if price > 0.0 {
-            return Some(Level::from_values(price, amount));
-        }
-        return None;
-    }
-    let obj = value.as_object()?;
-    let price = obj
-        .get("p")
-        .and_then(parse_f64_loose)
-        .or_else(|| obj.get("price").and_then(parse_f64_loose))?;
-    let amount = obj
-        .get("s")
-        .and_then(parse_f64_loose)
-        .or_else(|| obj.get("size").and_then(parse_f64_loose))
-        .or_else(|| obj.get("amount").and_then(parse_f64_loose))
-        .unwrap_or(0.0);
-    if price > 0.0 {
-        Some(Level::from_values(price, amount))
-    } else {
-        None
-    }
-}
-
 fn now_unix_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -396,40 +180,74 @@ fn now_unix_secs() -> u64 {
         .unwrap_or(0)
 }
 
-fn parse_i64_loose(v: &Value) -> Option<i64> {
-    if let Some(n) = v.as_i64() {
-        return Some(n);
-    }
-    if let Some(n) = v.as_u64() {
-        return Some(n as i64);
-    }
-    if let Some(s) = v.as_str() {
-        return s.parse::<i64>().ok();
-    }
-    None
-}
-
-fn normalize_ts_to_us(timestamp: i64) -> i64 {
-    let abs = timestamp.abs();
-    if abs >= 1_000_000_000_000_000_000 {
-        timestamp / 1000
-    } else if abs >= 1_000_000_000_000_000 {
-        timestamp
-    } else if abs >= 1_000_000_000_000 {
-        timestamp.saturating_mul(1000)
-    } else {
-        timestamp.saturating_mul(1_000_000)
+pub(crate) fn bbo_to_frame(bbo: gate_codec::Bbo) -> BboFrame {
+    BboFrame {
+        symbol: bbo.symbol,
+        ts_us: bbo.timestamp_us,
+        seq_id: bbo.seq_id,
+        reset_seq: false,
+        bid_price: bbo.bid_price,
+        bid_amount: bbo.bid_amount,
+        ask_price: bbo.ask_price,
+        ask_amount: bbo.ask_amount,
     }
 }
 
-fn parse_f64_loose(v: &Value) -> Option<f64> {
-    if let Some(n) = v.as_f64() {
-        return Some(n);
+pub(crate) fn trade_to_frame(trade: gate_codec::Trade) -> TradeFrame {
+    TradeFrame {
+        symbol: trade.symbol,
+        timestamp_us: trade.timestamp_us,
+        seq_id: trade.seq_id,
+        trade_id: trade.trade_id,
+        side: trade.side,
+        price: trade.price,
+        amount: trade.amount,
     }
-    if let Some(s) = v.as_str() {
-        return s.parse::<f64>().ok();
+}
+
+pub(crate) fn book_to_incremental(book: gate_codec::Book) -> IncrementalFrame {
+    IncrementalFrame::Book {
+        symbol: book.symbol,
+        timestamp: book.timestamp_us,
+        seq_id: book.seq_id,
+        prev_seq_id: book.prev_seq_id,
+        first_update_id: book.first_update_id,
+        final_update_id: book.final_update_id,
+        gap_check: book.gap_check,
+        is_snapshot: book.is_snapshot,
+        bids: book
+            .bids
+            .into_iter()
+            .map(|level| crate::common::mkt_msg::Level::from_values(level.price, level.amount))
+            .collect(),
+        asks: book
+            .asks
+            .into_iter()
+            .map(|level| crate::common::mkt_msg::Level::from_values(level.price, level.amount))
+            .collect(),
     }
-    None
+}
+
+pub(crate) fn derivative_to_bytes(derivative: gate_codec::Derivative) -> Bytes {
+    match derivative {
+        gate_codec::Derivative::MarkPrice {
+            symbol,
+            price,
+            timestamp_us,
+        } => MarkPriceMsg::create(symbol, price, timestamp_us).to_bytes(),
+        gate_codec::Derivative::IndexPrice {
+            symbol,
+            price,
+            timestamp_us,
+        } => IndexPriceMsg::create(symbol, price, timestamp_us).to_bytes(),
+        gate_codec::Derivative::FundingRate {
+            symbol,
+            funding_rate,
+            next_funding_time_us,
+            timestamp_us,
+        } => FundingRateMsg::create(symbol, funding_rate, next_funding_time_us, timestamp_us)
+            .to_bytes(),
+    }
 }
 
 #[cfg(test)]
