@@ -9,22 +9,6 @@ pub const DEFAULT_ACCOUNT_SUBSCRIPTIONS_PATH: &str = "config/depth_account_subsc
 pub const DEFAULT_ACCOUNT_RELOAD_INTERVAL_SECS: u64 = 30 * 60;
 pub const DEFAULT_ORDER_TTL_SECS: u64 = 30 * 60;
 
-/// 深度档位开关配置
-#[derive(Debug, Deserialize, Clone)]
-pub struct DepthLevelsConfig {
-    pub enable_depth25: bool,
-    pub enable_depth50: bool,
-}
-
-impl Default for DepthLevelsConfig {
-    fn default() -> Self {
-        Self {
-            enable_depth25: true,
-            enable_depth50: true,
-        }
-    }
-}
-
 /// 推送配置
 #[derive(Debug, Deserialize, Clone)]
 pub struct PushConfig {
@@ -43,15 +27,12 @@ impl Default for PushConfig {
 #[derive(Debug, Deserialize)]
 struct ConfigFile {
     #[serde(default)]
-    depth_levels: DepthLevelsConfig,
-    #[serde(default)]
     push_config: PushConfig,
 }
 
 /// Depth Publisher 配置
 #[derive(Debug, Clone)]
 pub struct DepthPubConfig {
-    pub depth_levels: DepthLevelsConfig,
     pub push_config: PushConfig,
 }
 
@@ -62,7 +43,6 @@ impl DepthPubConfig {
         let config_file: ConfigFile = serde_yaml::from_str(&content)?;
 
         Ok(Self {
-            depth_levels: config_file.depth_levels,
             push_config: config_file.push_config,
         })
     }

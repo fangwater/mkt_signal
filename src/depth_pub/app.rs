@@ -15,7 +15,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::cfg::{
-    DepthAccountSubscriptionConfig, DepthAccountSubscriptionsConfig, DepthPubConfig,
+    DepthAccountSubscriptionConfig, DepthAccountSubscriptionsConfig,
     DEFAULT_ACCOUNT_SUBSCRIPTIONS_PATH,
 };
 use super::depth_msg::DepthMsg;
@@ -238,7 +238,6 @@ impl QueuePositionAccounts {
 
 /// Depth Publisher 应用
 pub struct DepthPubApp {
-    config: DepthPubConfig,
     venue: TradingVenue,
     venue_slug: String,
     publisher: DepthMsgPublisher,
@@ -302,7 +301,7 @@ impl DepthQuerySource for DepthQueryAppSource {
 impl DepthPubApp {
     /// 创建应用实例
     /// venue: 例如 TradingVenue::BinanceFutures
-    pub async fn new(config: DepthPubConfig, venue: TradingVenue) -> Result<Self> {
+    pub async fn new(venue: TradingVenue) -> Result<Self> {
         let venue_slug = venue.data_pub_slug();
         let push_interval = Duration::from_millis(KEEPALIVE_PUSH_INTERVAL_MS);
         let idle_check_every = std::cmp::max(
@@ -314,11 +313,7 @@ impl DepthPubApp {
         min_qty_table.refresh().await?;
 
         // 创建发布器
-        let publisher = DepthMsgPublisher::new(
-            venue_slug,
-            config.depth_levels.enable_depth25,
-            config.depth_levels.enable_depth50,
-        )?;
+        let publisher = DepthMsgPublisher::new(venue_slug)?;
 
         // 创建订阅器
         let subscriber = Self::create_subscriber(publisher.node(), venue_slug)?;
@@ -357,15 +352,11 @@ impl DepthPubApp {
         let query_snapshots = Arc::new(QuerySnapshotStore::new(venue_slug));
 
         info!(
-            "DepthPubApp created for {}: keepalive_push_interval={}ms, depth25={}, depth50={}",
-            venue_slug,
-            KEEPALIVE_PUSH_INTERVAL_MS,
-            config.depth_levels.enable_depth25,
-            config.depth_levels.enable_depth50
+            "DepthPubApp created for {}: keepalive_push_interval={}ms, depth25=true",
+            venue_slug, KEEPALIVE_PUSH_INTERVAL_MS
         );
 
         Ok(Self {
-            config,
             venue,
             venue_slug: venue_slug.to_string(),
             publisher,
@@ -1160,7 +1151,6 @@ impl DepthPubApp {
         let amount_scale = self.depth_amount_scale(symbol);
         let mut snapshot_to_publish = None;
         let mut depth25_msg = None;
-        let mut depth50_msg = None;
         let mut attempted_channels = 0u8;
         let mut should_return_early = false;
 
@@ -1203,19 +1193,9 @@ impl DepthPubApp {
             if !should_return_early {
                 let timestamp = state.orderbook.timestamp;
 
-                if self.config.depth_levels.enable_depth25 {
-                    attempted_channels = attempted_channels.saturating_add(1);
-                    let (bids, asks) = scaled_depth_levels(&state.orderbook, 25, amount_scale);
-                    depth25_msg =
-                        Some(DepthMsg::depth25(symbol.to_string(), timestamp, bids, asks));
-                }
-
-                if self.config.depth_levels.enable_depth50 {
-                    attempted_channels = attempted_channels.saturating_add(1);
-                    let (bids, asks) = scaled_depth_levels(&state.orderbook, 50, amount_scale);
-                    depth50_msg =
-                        Some(DepthMsg::depth50(symbol.to_string(), timestamp, bids, asks));
-                }
+                attempted_channels = attempted_channels.saturating_add(1);
+                let (bids, asks) = scaled_depth_levels(&state.orderbook, 25, amount_scale);
+                depth25_msg = Some(DepthMsg::depth25(symbol.to_string(), timestamp, bids, asks));
 
                 state.last_push_time = Instant::now();
             }
@@ -1232,11 +1212,6 @@ impl DepthPubApp {
         let mut sent_channels = 0u8;
         if let Some(msg) = depth25_msg.as_ref() {
             if self.publisher.publish_depth25(msg) {
-                sent_channels = sent_channels.saturating_add(1);
-            }
-        }
-        if let Some(msg) = depth50_msg.as_ref() {
-            if self.publisher.publish_depth50(msg) {
                 sent_channels = sent_channels.saturating_add(1);
             }
         }

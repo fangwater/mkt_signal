@@ -39,12 +39,10 @@ async fn main() -> Result<()> {
 
     let config = DepthPubConfig::load(config_path).await?;
     info!(
-        "Config loaded: depth25={}, depth50={}, push_interval={}ms",
-        config.depth_levels.enable_depth25,
-        config.depth_levels.enable_depth50,
+        "Config loaded: push_interval={}ms",
         config.push_config.min_push_interval_ms
     );
 
-    let mut app = DepthPubApp::new(config, args.venue).await?;
+    let mut app = DepthPubApp::new(args.venue).await?;
     app.run()
 }
