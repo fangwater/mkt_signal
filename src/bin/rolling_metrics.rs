@@ -56,10 +56,10 @@ struct Args {
     log_filter: String,
     #[arg(long, default_value_t = 1800)]
     symbol_refresh_sec: u64,
-    /// open 侧 dat_pbs 前缀（必填，如 binance-spot，可与 hedge 任意组合）
+    /// open 侧 venue 前缀（必填，如 binance-margin，可与 hedge 任意组合）
     #[arg(long)]
     open_venue: String,
-    /// hedge 侧 dat_pbs 前缀（必填，如 binance-futures，可与 open 任意组合）
+    /// hedge 侧 venue 前缀（必填，如 binance-futures，可与 open 任意组合）
     #[arg(long)]
     hedge_venue: String,
 }
@@ -492,24 +492,27 @@ async fn run_reader_loop(
     config: Arc<RwLock<RollingConfig>>,
 ) -> Result<()> {
     let mut subscriber = MultiChannelSubscriber::new(iceoryx_node)?;
+    const SPREAD_ROOT: &str = "spread_pbs";
+    const DERIVATIVES_ROOT: &str = "dat_pbs";
+
     subscriber.subscribe_channels(vec![
         SubscribeParams {
-            service_root: Some("bridge".to_string()),
+            service_root: Some(SPREAD_ROOT.to_string()),
             topic_prefix: open_topic.to_string(),
             channel: ChannelType::AskBidSpread,
         },
         SubscribeParams {
-            service_root: Some("bridge".to_string()),
+            service_root: Some(SPREAD_ROOT.to_string()),
             topic_prefix: hedge_topic.to_string(),
             channel: ChannelType::AskBidSpread,
         },
         SubscribeParams {
-            service_root: Some("bridge".to_string()),
+            service_root: Some(DERIVATIVES_ROOT.to_string()),
             topic_prefix: open_topic.to_string(),
             channel: ChannelType::Derivatives,
         },
         SubscribeParams {
-            service_root: Some("bridge".to_string()),
+            service_root: Some(DERIVATIVES_ROOT.to_string()),
             topic_prefix: hedge_topic.to_string(),
             channel: ChannelType::Derivatives,
         },
@@ -522,11 +525,13 @@ async fn run_reader_loop(
     setup_signal_handlers(&shutdown)?;
 
     info!(
-        "{}: reader loop started (prefix={}, open={}, hedge={})",
+        "{}: reader loop started (prefix={}, open={}, hedge={}, spread_root={}, derivatives_root={})",
         log_prefix(),
         prefix,
         open_topic,
-        hedge_topic
+        hedge_topic,
+        SPREAD_ROOT,
+        DERIVATIVES_ROOT
     );
 
     let mut next_log = Instant::now() + Duration::from_secs(30);
@@ -537,7 +542,12 @@ async fn run_reader_loop(
             break;
         }
 
-        for msg in subscriber.poll_channel(open_topic, &ChannelType::AskBidSpread, Some(64)) {
+        for msg in subscriber.poll_channel_from(
+            SPREAD_ROOT,
+            open_topic,
+            &ChannelType::AskBidSpread,
+            Some(64),
+        ) {
             process_quote_msg(
                 &msg,
                 &prefix,
@@ -550,7 +560,12 @@ async fn run_reader_loop(
             );
         }
 
-        for msg in subscriber.poll_channel(hedge_topic, &ChannelType::AskBidSpread, Some(64)) {
+        for msg in subscriber.poll_channel_from(
+            SPREAD_ROOT,
+            hedge_topic,
+            &ChannelType::AskBidSpread,
+            Some(64),
+        ) {
             process_quote_msg(
                 &msg,
                 &prefix,
@@ -563,7 +578,12 @@ async fn run_reader_loop(
             );
         }
 
-        for msg in subscriber.poll_channel(open_topic, &ChannelType::Derivatives, Some(64)) {
+        for msg in subscriber.poll_channel_from(
+            DERIVATIVES_ROOT,
+            open_topic,
+            &ChannelType::Derivatives,
+            Some(64),
+        ) {
             process_derivatives_msg(
                 &msg,
                 &prefix,
@@ -576,7 +596,12 @@ async fn run_reader_loop(
             );
         }
 
-        for msg in subscriber.poll_channel(hedge_topic, &ChannelType::Derivatives, Some(64)) {
+        for msg in subscriber.poll_channel_from(
+            DERIVATIVES_ROOT,
+            hedge_topic,
+            &ChannelType::Derivatives,
+            Some(64),
+        ) {
             process_derivatives_msg(
                 &msg,
                 &prefix,

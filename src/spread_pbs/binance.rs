@@ -1,23 +1,19 @@
 //! Binance spread 适配器。
 //!
-//! - spot:   `wss://stream.binance.com:9443/stream`
-//! - futures: `wss://fstream.binance.com/public/stream`
-//! - spot SBE spread_pbs: `wss://stream-sbe.binance.com:9443/ws`
-//! - spot subscribe: `{"method":"SUBSCRIBE","params":["<sym>@bookTicker", ...],"id":1}`
-//! - spot SBE subscribe: `{"method":"SUBSCRIBE","params":["<sym>@bestBidAsk", ...],"id":1}`
-//! - futures subscribe: `{"method":"SUBSCRIBE","params":["<sym>@depth5@0ms", ...],"id":1}`
-//! - spot frame: `{"stream":"<sym>@bookTicker","data":{u,s,b,B,a,A[,T,E]}}`
-//! - spot SBE frame: BestBidAskStreamEvent(templateId=10001), timestamps already in us
-//! - futures frame: `{"stream":"<sym>@depth5@0ms","data":{u,s,b:[[px,qty],...],a:[[px,qty],...],E,T}}`
-//! - seq_id 字段: `u`（order book updateId，单 symbol 内单调递增）
-//! - timestamp:  futures 优先用 `E`（事件推送时间）统计延迟；没有 `E` 才回退 `T`
-//! - 心跳: 服务端主动 Ping，客户端只需 Pong（已在 ws.rs 通用处理）。
+//! Binance 是 spread_pbs 里唯一不支持 `both` 的交易所；单边 margin/futures 仍支持完整
+//! BBO/trade/incremental/derivatives replacement。协议字段解码集中在 `mkt_parsers`，本文件只做
+//! 订阅、venue gating 和 spread_pbs 内部 frame/bytes 转换。
 
 use anyhow::{anyhow, Result};
+use bytes::Bytes;
+use mkt_parsers::binance as binance_codec;
 use serde_json::Value;
 
+use crate::common::mkt_msg::{FundingRateMsg, IndexPriceMsg, LiquidationMsg, MarkPriceMsg};
 use crate::signal::common::TradingVenue;
-use crate::spread_pbs::adapter::{BboFrame, KeepaliveSpec, VenueAdapter};
+use crate::spread_pbs::adapter::{
+    BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
+};
 
 const BINANCE_SPOT_SBE_WS_URL: &str = "wss://stream-sbe.binance.com:9443/ws";
 const BINANCE_FUTURES_WS_URL: &str = "wss://fstream.binance.com/public/stream";
@@ -58,89 +54,123 @@ impl VenueAdapter for BinanceAdapter {
     }
 
     fn build_subscribe(&self, symbols: &[String]) -> Vec<Value> {
-        let chunk_size = BINANCE_SUBSCRIBE_CHUNK.max(1);
-        let mut out = Vec::new();
-        for (i, chunk) in symbols.chunks(chunk_size).enumerate() {
-            let params: Vec<String> = chunk
-                .iter()
-                .map(|sym| {
-                    let stream = match self.venue {
-                        TradingVenue::BinanceFutures => "depth5@0ms",
-                        TradingVenue::BinanceMargin => "bestBidAsk",
-                        other => {
-                            unreachable!(
-                                "BinanceAdapter created with non-binance venue: {:?}",
-                                other
-                            )
-                        }
-                    };
-                    format!("{}@{}", sym.to_ascii_lowercase(), stream)
-                })
-                .collect();
-            out.push(serde_json::json!({
-                "method": "SUBSCRIBE",
-                "params": params,
-                "id": (i as u64) + 1,
-            }));
+        let channel = match self.venue {
+            TradingVenue::BinanceFutures => "depth5@0ms",
+            TradingVenue::BinanceMargin => "bestBidAsk",
+            other => unreachable!("BinanceAdapter created with non-binance venue: {:?}", other),
+        };
+        build_stream_subscribe(symbols, channel)
+    }
+
+    fn build_trade_subscribe(&self, symbols: &[String]) -> Vec<Value> {
+        build_stream_subscribe(symbols, "trade")
+    }
+
+    fn build_incremental_subscribe(&self, symbols: &[String]) -> Vec<Value> {
+        match self.venue {
+            TradingVenue::BinanceMargin => build_stream_subscribe(symbols, "depth"),
+            TradingVenue::BinanceFutures => build_stream_subscribe(symbols, "depth@0ms"),
+            other => unreachable!("BinanceAdapter created with non-binance venue: {:?}", other),
         }
-        out
+    }
+
+    fn build_derivatives_subscribe(&self, symbols: &[String]) -> Vec<Value> {
+        if self.venue != TradingVenue::BinanceFutures {
+            return Vec::new();
+        }
+        build_multi_stream_subscribe(symbols.iter().flat_map(|symbol| {
+            let symbol = symbol.to_ascii_lowercase();
+            [
+                format!("{symbol}@markPrice@1s"),
+                format!("{symbol}@forceOrder"),
+            ]
+        }))
+    }
+
+    fn trade_ws_url(&self) -> Option<String> {
+        Some(self.ws_url())
+    }
+
+    fn incremental_ws_url(&self) -> Option<String> {
+        Some(self.ws_url())
+    }
+
+    fn derivatives_ws_url(&self) -> Option<String> {
+        if self.venue == TradingVenue::BinanceFutures {
+            Some(self.ws_url())
+        } else {
+            None
+        }
     }
 
     fn parse_frame(&self, value: &Value) -> Result<Vec<BboFrame>> {
-        // combined stream 把 payload 包在 `data` 下；裸 stream 直接是 payload
-        let payload = value.get("data").unwrap_or(value);
-        if !payload.is_object() {
-            return Ok(Vec::new());
+        if let Some(bbo) = binance_codec::parse_bbo_json(value) {
+            return Ok(vec![bbo_to_frame(bbo)]);
         }
 
-        let symbol = match payload.get("s").and_then(|v| v.as_str()) {
-            Some(s) => s.to_ascii_uppercase(),
-            None => return Ok(Vec::new()),
-        };
-        let seq_id = parse_seq_id(payload, &symbol)?;
+        let payload = binance_codec::payload(value);
+        if looks_like_bbo(payload)
+            && payload.get("u").is_none()
+            && payload.get("lastUpdateId").is_none()
+        {
+            let symbol = payload.get("s").and_then(|v| v.as_str()).unwrap_or("?");
+            return Err(anyhow!("binance spread {} missing u/lastUpdateId", symbol));
+        }
+        Ok(Vec::new())
+    }
 
-        let ts_us = payload
-            .get("E")
-            .and_then(|v| v.as_i64())
-            .or_else(|| payload.get("T").and_then(|v| v.as_i64()))
-            .unwrap_or(0)
-            .saturating_mul(1000);
+    fn parse_trade_frame(&self, value: &Value) -> Result<Vec<TradeFrame>> {
+        Ok(binance_codec::parse_trade_json(value)
+            .map(trade_to_frame)
+            .into_iter()
+            .collect())
+    }
 
-        let (bid_price, bid_amount, ask_price, ask_amount) =
-            if payload.get("b").and_then(|v| v.as_array()).is_some()
-                || payload.get("a").and_then(|v| v.as_array()).is_some()
-            {
-                parse_depth5_top(payload, &symbol)?
-            } else {
-                (
-                    parse_obj_str_f64(payload, "b", &symbol)?,
-                    parse_obj_str_f64(payload, "B", &symbol)?,
-                    parse_obj_str_f64(payload, "a", &symbol)?,
-                    parse_obj_str_f64(payload, "A", &symbol)?,
-                )
-            };
+    fn parse_incremental_frame(&self, value: &Value) -> Result<Vec<IncrementalFrame>> {
+        Ok(binance_codec::parse_incremental_json(value)
+            .map(book_to_incremental)
+            .into_iter()
+            .collect())
+    }
 
-        if bid_price <= 0.0 || ask_price <= 0.0 || bid_amount <= 0.0 || ask_amount <= 0.0 {
+    fn parse_derivatives_frame(&self, value: &Value) -> Result<Vec<Bytes>> {
+        if self.venue != TradingVenue::BinanceFutures {
             return Ok(Vec::new());
         }
-
-        Ok(vec![BboFrame {
-            symbol,
-            ts_us,
-            seq_id,
-            reset_seq: false,
-            bid_price,
-            bid_amount,
-            ask_price,
-            ask_amount,
-        }])
+        Ok(binance_codec::parse_derivatives_json(value)
+            .into_iter()
+            .map(derivative_to_bytes)
+            .collect())
     }
 
     fn parse_binary_frame(&self, raw: &[u8]) -> Result<Vec<BboFrame>> {
         if self.venue != TradingVenue::BinanceMargin {
             return Ok(Vec::new());
         }
-        parse_sbe_best_bid_ask(raw)
+        Ok(binance_codec::parse_sbe_bbo(raw)
+            .map(bbo_to_frame)
+            .into_iter()
+            .collect())
+    }
+
+    fn parse_trade_binary_frame(&self, raw: &[u8]) -> Result<Vec<TradeFrame>> {
+        if self.venue != TradingVenue::BinanceMargin {
+            return Ok(Vec::new());
+        }
+        Ok(binance_codec::parse_sbe_trades(raw)
+            .into_iter()
+            .map(trade_to_frame)
+            .collect())
+    }
+
+    fn parse_incremental_binary_frame(&self, raw: &[u8]) -> Result<Vec<IncrementalFrame>> {
+        if self.venue != TradingVenue::BinanceMargin {
+            return Ok(Vec::new());
+        }
+        Ok(binance_codec::parse_sbe_incremental(raw)
+            .map(book_to_incremental)
+            .into_iter()
+            .collect())
     }
 
     fn keepalive(&self) -> Option<KeepaliveSpec> {
@@ -148,164 +178,113 @@ impl VenueAdapter for BinanceAdapter {
     }
 }
 
-fn parse_sbe_best_bid_ask(msg: &[u8]) -> Result<Vec<BboFrame>> {
-    let Some(header) = read_sbe_header(msg) else {
-        return Ok(Vec::new());
-    };
-    if header.template_id != 10001 {
-        return Ok(Vec::new());
+fn build_stream_subscribe(symbols: &[String], channel: &str) -> Vec<Value> {
+    build_multi_stream_subscribe(
+        symbols
+            .iter()
+            .map(|sym| format!("{}@{}", sym.to_ascii_lowercase(), channel)),
+    )
+}
+
+fn build_multi_stream_subscribe(streams: impl IntoIterator<Item = String>) -> Vec<Value> {
+    let streams: Vec<String> = streams.into_iter().collect();
+    let chunk_size = BINANCE_SUBSCRIBE_CHUNK.max(1);
+    let mut out = Vec::new();
+    for (i, chunk) in streams.chunks(chunk_size).enumerate() {
+        out.push(serde_json::json!({
+            "method": "SUBSCRIBE",
+            "params": chunk,
+            "id": (i as u64) + 1,
+        }));
     }
+    out
+}
 
-    let base = header.body_offset;
-    if msg.len() < base + header.block_length {
-        return Ok(Vec::new());
-    }
+fn looks_like_bbo(payload: &Value) -> bool {
+    payload.get("s").is_some() && (payload.get("b").is_some() || payload.get("a").is_some())
+}
 
-    let event_time = read_i64_le(msg, base).ok_or_else(|| anyhow!("binance sbe bbo missing E"))?;
-    let book_update_id =
-        read_i64_le(msg, base + 8).ok_or_else(|| anyhow!("binance sbe bbo missing u"))?;
-    let price_exponent =
-        read_i8(msg, base + 16).ok_or_else(|| anyhow!("binance sbe bbo missing priceExponent"))?;
-    let qty_exponent =
-        read_i8(msg, base + 17).ok_or_else(|| anyhow!("binance sbe bbo missing qtyExponent"))?;
-    let bid_price =
-        read_i64_le(msg, base + 18).ok_or_else(|| anyhow!("binance sbe bbo missing bidPrice"))?;
-    let bid_qty =
-        read_i64_le(msg, base + 26).ok_or_else(|| anyhow!("binance sbe bbo missing bidQty"))?;
-    let ask_price =
-        read_i64_le(msg, base + 34).ok_or_else(|| anyhow!("binance sbe bbo missing askPrice"))?;
-    let ask_qty =
-        read_i64_le(msg, base + 42).ok_or_else(|| anyhow!("binance sbe bbo missing askQty"))?;
-    let (symbol, _) = read_var_string8(msg, base + header.block_length)
-        .ok_or_else(|| anyhow!("binance sbe bbo missing symbol"))?;
-
-    let bid_price = scale_mantissa(bid_price, price_exponent);
-    let bid_amount = scale_mantissa(bid_qty, qty_exponent);
-    let ask_price = scale_mantissa(ask_price, price_exponent);
-    let ask_amount = scale_mantissa(ask_qty, qty_exponent);
-
-    if bid_price <= 0.0 || ask_price <= 0.0 || bid_amount <= 0.0 || ask_amount <= 0.0 {
-        return Ok(Vec::new());
-    }
-
-    Ok(vec![BboFrame {
-        symbol: symbol.to_ascii_uppercase(),
-        ts_us: event_time,
-        seq_id: book_update_id,
+fn bbo_to_frame(bbo: binance_codec::Bbo) -> BboFrame {
+    BboFrame {
+        symbol: bbo.symbol,
+        ts_us: bbo.timestamp_us,
+        seq_id: bbo.seq_id,
         reset_seq: false,
-        bid_price,
-        bid_amount,
-        ask_price,
-        ask_amount,
-    }])
-}
-
-struct SbeHeader {
-    block_length: usize,
-    template_id: u16,
-    body_offset: usize,
-}
-
-fn read_sbe_header(msg: &[u8]) -> Option<SbeHeader> {
-    if msg.len() < 8 {
-        return None;
+        bid_price: bbo.bid_price,
+        bid_amount: bbo.bid_amount,
+        ask_price: bbo.ask_price,
+        ask_amount: bbo.ask_amount,
     }
-    Some(SbeHeader {
-        block_length: read_u16_le(msg, 0)? as usize,
-        template_id: read_u16_le(msg, 2)?,
-        body_offset: 8,
-    })
 }
 
-fn read_u16_le(msg: &[u8], offset: usize) -> Option<u16> {
-    if msg.len() < offset + 2 {
-        return None;
+fn trade_to_frame(trade: binance_codec::Trade) -> TradeFrame {
+    TradeFrame {
+        symbol: trade.symbol,
+        timestamp_us: trade.timestamp_us,
+        seq_id: trade.seq_id,
+        trade_id: trade.trade_id,
+        side: trade.side,
+        price: trade.price,
+        amount: trade.amount,
     }
-    Some(u16::from_le_bytes([msg[offset], msg[offset + 1]]))
 }
 
-fn read_i64_le(msg: &[u8], offset: usize) -> Option<i64> {
-    if msg.len() < offset + 8 {
-        return None;
+fn book_to_incremental(book: binance_codec::Book) -> IncrementalFrame {
+    IncrementalFrame::Book {
+        symbol: book.symbol,
+        timestamp: book.timestamp_us,
+        seq_id: book.seq_id,
+        prev_seq_id: book.prev_seq_id,
+        first_update_id: book.first_update_id,
+        final_update_id: book.final_update_id,
+        gap_check: book.gap_check,
+        is_snapshot: book.is_snapshot,
+        bids: book
+            .bids
+            .into_iter()
+            .map(|level| crate::common::mkt_msg::Level::from_values(level.price, level.amount))
+            .collect(),
+        asks: book
+            .asks
+            .into_iter()
+            .map(|level| crate::common::mkt_msg::Level::from_values(level.price, level.amount))
+            .collect(),
     }
-    Some(i64::from_le_bytes([
-        msg[offset],
-        msg[offset + 1],
-        msg[offset + 2],
-        msg[offset + 3],
-        msg[offset + 4],
-        msg[offset + 5],
-        msg[offset + 6],
-        msg[offset + 7],
-    ]))
 }
 
-fn read_i8(msg: &[u8], offset: usize) -> Option<i8> {
-    msg.get(offset).map(|v| *v as i8)
-}
-
-fn scale_mantissa(mantissa: i64, exponent: i8) -> f64 {
-    (mantissa as f64) * 10_f64.powi(exponent as i32)
-}
-
-fn read_var_string8(msg: &[u8], offset: usize) -> Option<(String, usize)> {
-    let len = msg.get(offset).copied()? as usize;
-    let start = offset + 1;
-    if msg.len() < start + len {
-        return None;
+fn derivative_to_bytes(derivative: binance_codec::Derivative) -> Bytes {
+    match derivative {
+        binance_codec::Derivative::MarkPrice {
+            symbol,
+            price,
+            timestamp_us,
+        } => MarkPriceMsg::create(symbol, price, timestamp_us).to_bytes(),
+        binance_codec::Derivative::IndexPrice {
+            symbol,
+            price,
+            timestamp_us,
+        } => IndexPriceMsg::create(symbol, price, timestamp_us).to_bytes(),
+        binance_codec::Derivative::FundingRate {
+            symbol,
+            funding_rate,
+            next_funding_time_us,
+            timestamp_us,
+        } => FundingRateMsg::create(symbol, funding_rate, next_funding_time_us, timestamp_us)
+            .to_bytes(),
+        binance_codec::Derivative::Liquidation {
+            symbol,
+            side,
+            amount,
+            price,
+            timestamp_us,
+        } => LiquidationMsg::create(symbol, side, amount, price, timestamp_us).to_bytes(),
     }
-    let symbol = std::str::from_utf8(&msg[start..start + len])
-        .ok()?
-        .to_string();
-    Some((symbol, start + len))
-}
-
-fn parse_seq_id(payload: &Value, symbol: &str) -> Result<i64> {
-    payload
-        .get("u")
-        .and_then(|v| v.as_i64())
-        .or_else(|| payload.get("lastUpdateId").and_then(|v| v.as_i64()))
-        .ok_or_else(|| anyhow!("binance spread {} missing u/lastUpdateId", symbol))
-}
-
-fn parse_depth5_top(payload: &Value, symbol: &str) -> Result<(f64, f64, f64, f64)> {
-    let bid = payload
-        .get("b")
-        .and_then(|v| v.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| anyhow!("binance depth5 {} missing b[0]", symbol))?;
-    let ask = payload
-        .get("a")
-        .and_then(|v| v.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| anyhow!("binance depth5 {} missing a[0]", symbol))?;
-
-    Ok((
-        parse_level_str_f64(bid.first(), "bid price", symbol)?,
-        parse_level_str_f64(bid.get(1), "bid amount", symbol)?,
-        parse_level_str_f64(ask.first(), "ask price", symbol)?,
-        parse_level_str_f64(ask.get(1), "ask amount", symbol)?,
-    ))
-}
-
-fn parse_obj_str_f64(obj: &Value, key: &str, symbol: &str) -> Result<f64> {
-    obj.get(key)
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<f64>().ok())
-        .ok_or_else(|| anyhow!("binance spread {} missing/invalid {}", symbol, key))
-}
-
-fn parse_level_str_f64(v: Option<&Value>, field: &str, symbol: &str) -> Result<f64> {
-    v.and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<f64>().ok())
-        .ok_or_else(|| anyhow!("binance depth5 {} missing/invalid {}", symbol, field))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::mkt_msg::{get_msg_type, MktMsgType};
 
     fn v(raw: &str) -> Value {
         serde_json::from_str(raw).expect("test fixture must be valid JSON")
@@ -330,76 +309,70 @@ mod tests {
         msg
     }
 
+    fn sbe_trade_frame() -> Vec<u8> {
+        let mut msg = Vec::new();
+        msg.extend_from_slice(&18u16.to_le_bytes());
+        msg.extend_from_slice(&10000u16.to_le_bytes());
+        msg.extend_from_slice(&1u16.to_le_bytes());
+        msg.extend_from_slice(&0u16.to_le_bytes());
+        msg.extend_from_slice(&1_700_000_000_001_002i64.to_le_bytes());
+        msg.extend_from_slice(&1_700_000_000_001_000i64.to_le_bytes());
+        msg.push(-2i8 as u8);
+        msg.push(-3i8 as u8);
+        msg.extend_from_slice(&25u16.to_le_bytes());
+        msg.extend_from_slice(&2u32.to_le_bytes());
+        msg.extend_from_slice(&1001i64.to_le_bytes());
+        msg.extend_from_slice(&2500i64.to_le_bytes());
+        msg.extend_from_slice(&100_000i64.to_le_bytes());
+        msg.push(1);
+        msg.extend_from_slice(&1002i64.to_le_bytes());
+        msg.extend_from_slice(&2510i64.to_le_bytes());
+        msg.extend_from_slice(&50_000i64.to_le_bytes());
+        msg.push(0);
+        msg.push(7);
+        msg.extend_from_slice(b"btcusdt");
+        msg
+    }
+
+    fn sbe_depth_diff_frame() -> Vec<u8> {
+        let mut msg = Vec::new();
+        msg.extend_from_slice(&26u16.to_le_bytes());
+        msg.extend_from_slice(&10003u16.to_le_bytes());
+        msg.extend_from_slice(&1u16.to_le_bytes());
+        msg.extend_from_slice(&0u16.to_le_bytes());
+        msg.extend_from_slice(&1_700_000_000_001_002i64.to_le_bytes());
+        msg.extend_from_slice(&101i64.to_le_bytes());
+        msg.extend_from_slice(&103i64.to_le_bytes());
+        msg.push(-2i8 as u8);
+        msg.push(-3i8 as u8);
+        msg.extend_from_slice(&16u16.to_le_bytes());
+        msg.extend_from_slice(&1u16.to_le_bytes());
+        msg.extend_from_slice(&2500i64.to_le_bytes());
+        msg.extend_from_slice(&100_000i64.to_le_bytes());
+        msg.extend_from_slice(&16u16.to_le_bytes());
+        msg.extend_from_slice(&1u16.to_le_bytes());
+        msg.extend_from_slice(&2510i64.to_le_bytes());
+        msg.extend_from_slice(&50_000i64.to_le_bytes());
+        msg.push(7);
+        msg.extend_from_slice(b"btcusdt");
+        msg
+    }
+
     #[test]
     fn parses_depth5_top_of_book_prefers_e_field() {
         let raw = r#"{
             "stream":"btcusdt@depth5@0ms",
-            "data":{
-                "e":"depthUpdate","E":1700000000001,"T":1700000000000,
-                "s":"BTCUSDT","U":12300,"u":12345,
-                "b":[["25.0","100"],["24.9","2"]],
-                "a":[["25.1","50"],["25.2","3"]]
-            }
+            "data":{"e":"depthUpdate","E":1700000000001,"T":1700000000000,"s":"BTCUSDT","U":12300,"u":12345,
+                "b":[["25.0","100"],["24.9","2"]],"a":[["25.1","50"],["25.2","3"]]}
         }"#;
         let a = BinanceAdapter::new(TradingVenue::BinanceFutures);
         let frames = a.parse_frame(&v(raw)).unwrap();
         assert_eq!(frames.len(), 1);
-        let f = &frames[0];
-        assert_eq!(f.symbol, "BTCUSDT");
-        assert_eq!(f.seq_id, 12345);
-        assert_eq!(f.ts_us, 1700000000001 * 1000);
-        assert!((f.bid_price - 25.0).abs() < 1e-9);
-        assert!((f.bid_amount - 100.0).abs() < 1e-9);
-        assert!((f.ask_price - 25.1).abs() < 1e-9);
-        assert!((f.ask_amount - 50.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn parses_bookticker_prefers_e_field() {
-        let raw = r#"{
-            "stream":"btcusdt@bookTicker",
-            "data":{
-                "e":"bookTicker","u":12345,"s":"BTCUSDT",
-                "b":"25.0","B":"100","a":"25.1","A":"50",
-                "T":1700000000000,"E":1700000000001
-            }
-        }"#;
-        let a = BinanceAdapter::new(TradingVenue::BinanceFutures);
-        let frames = a.parse_frame(&v(raw)).unwrap();
-        assert_eq!(frames.len(), 1);
-        let f = &frames[0];
-        assert_eq!(f.symbol, "BTCUSDT");
-        assert_eq!(f.seq_id, 12345);
-        assert_eq!(f.ts_us, 1700000000001 * 1000); // 优先 E，用于延迟统计
-        assert!((f.bid_price - 25.0).abs() < 1e-9);
-        assert!((f.ask_price - 25.1).abs() < 1e-9);
-    }
-
-    #[test]
-    fn parses_depth5_falls_back_to_t_field() {
-        let raw = r#"{"data":{"u":12345,"s":"BTCUSDT","b":[["25.0","1"]],"a":[["25.1","2"]],"T":1700000000000}}"#;
-        let a = BinanceAdapter::new(TradingVenue::BinanceFutures);
-        let frames = a.parse_frame(&v(raw)).unwrap();
-        assert_eq!(frames.len(), 1);
-        assert_eq!(frames[0].ts_us, 1700000000000 * 1000);
-    }
-
-    #[test]
-    fn parses_bookticker_falls_back_to_t_field() {
-        let raw = r#"{"data":{"u":12345,"s":"BTCUSDT","b":"25.0","B":"1","a":"25.1","A":"2","T":1700000000000}}"#;
-        let a = BinanceAdapter::new(TradingVenue::BinanceFutures);
-        let frames = a.parse_frame(&v(raw)).unwrap();
-        assert_eq!(frames.len(), 1);
-        assert_eq!(frames[0].ts_us, 1700000000000 * 1000);
-    }
-
-    #[test]
-    fn parses_spot_bookticker_without_ts_field() {
-        let raw = r#"{"data":{"u":12345,"s":"BTCUSDT","b":"25.0","B":"1","a":"25.1","A":"2"}}"#;
-        let a = BinanceAdapter::new(TradingVenue::BinanceMargin);
-        let frames = a.parse_frame(&v(raw)).unwrap();
-        assert_eq!(frames.len(), 1);
-        assert_eq!(frames[0].ts_us, 0);
+        assert_eq!(frames[0].symbol, "BTCUSDT");
+        assert_eq!(frames[0].seq_id, 12345);
+        assert_eq!(frames[0].ts_us, 1_700_000_000_001_000);
+        assert!((frames[0].bid_price - 25.0).abs() < 1e-9);
+        assert!((frames[0].ask_amount - 50.0).abs() < 1e-9);
     }
 
     #[test]
@@ -421,17 +394,50 @@ mod tests {
     }
 
     #[test]
-    fn spot_subscribes_bookticker() {
-        let a = BinanceAdapter::new(TradingVenue::BinanceMargin);
-        let msgs = a.build_subscribe(&["BTCUSDT".to_string()]);
-        assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0]["params"][0], "btcusdt@bestBidAsk");
-    }
+    fn full_replacement_subscriptions_are_single_direct_url() {
+        let futures = BinanceAdapter::new(TradingVenue::BinanceFutures);
+        assert_eq!(
+            futures.trade_ws_url().as_deref(),
+            Some(BINANCE_FUTURES_WS_URL)
+        );
+        assert_eq!(
+            futures.incremental_ws_url().as_deref(),
+            Some(BINANCE_FUTURES_WS_URL)
+        );
+        assert_eq!(
+            futures.derivatives_ws_url().as_deref(),
+            Some(BINANCE_FUTURES_WS_URL)
+        );
+        assert_eq!(
+            futures.build_trade_subscribe(&["BTCUSDT".to_string()])[0]["params"][0],
+            "btcusdt@trade"
+        );
+        assert_eq!(
+            futures.build_incremental_subscribe(&["BTCUSDT".to_string()])[0]["params"][0],
+            "btcusdt@depth@0ms"
+        );
+        let derivatives = futures.build_derivatives_subscribe(&["BTCUSDT".to_string()]);
+        assert_eq!(derivatives[0]["params"][0], "btcusdt@markPrice@1s");
+        assert_eq!(derivatives[0]["params"][1], "btcusdt@forceOrder");
 
-    #[test]
-    fn spot_uses_sbe_url() {
-        let a = BinanceAdapter::new(TradingVenue::BinanceMargin);
-        assert_eq!(a.ws_url(), BINANCE_SPOT_SBE_WS_URL);
+        let spot = BinanceAdapter::new(TradingVenue::BinanceMargin);
+        assert_eq!(
+            spot.trade_ws_url().as_deref(),
+            Some(BINANCE_SPOT_SBE_WS_URL)
+        );
+        assert_eq!(
+            spot.incremental_ws_url().as_deref(),
+            Some(BINANCE_SPOT_SBE_WS_URL)
+        );
+        assert!(spot.derivatives_ws_url().is_none());
+        assert_eq!(
+            spot.build_subscribe(&["BTCUSDT".to_string()])[0]["params"][0],
+            "btcusdt@bestBidAsk"
+        );
+        assert_eq!(
+            spot.build_incremental_subscribe(&["BTCUSDT".to_string()])[0]["params"][0],
+            "btcusdt@depth"
+        );
     }
 
     #[test]
@@ -439,13 +445,91 @@ mod tests {
         let a = BinanceAdapter::new(TradingVenue::BinanceMargin);
         let frames = a.parse_binary_frame(&sbe_bbo_frame()).unwrap();
         assert_eq!(frames.len(), 1);
-        let f = &frames[0];
-        assert_eq!(f.symbol, "BTCUSDT");
-        assert_eq!(f.ts_us, 1_700_000_000_001_002);
-        assert_eq!(f.seq_id, 12345);
-        assert!((f.bid_price - 25.0).abs() < 1e-9);
-        assert!((f.bid_amount - 100.0).abs() < 1e-9);
-        assert!((f.ask_price - 25.1).abs() < 1e-9);
-        assert!((f.ask_amount - 50.0).abs() < 1e-9);
+        assert_eq!(frames[0].symbol, "BTCUSDT");
+        assert_eq!(frames[0].ts_us, 1_700_000_000_001_002);
+        assert_eq!(frames[0].seq_id, 12345);
+        assert!((frames[0].bid_amount - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parses_json_trade_incremental_and_derivatives_as_us() {
+        let a = BinanceAdapter::new(TradingVenue::BinanceFutures);
+        let trade = r#"{"data":{"e":"trade","E":1700000000001,"s":"BTCUSDT","t":1001,"p":"25.0","q":"100","m":true}}"#;
+        let trades = a.parse_trade_frame(&v(trade)).unwrap();
+        assert_eq!(trades[0].timestamp_us, 1_700_000_000_001_000);
+        assert_eq!(trades[0].side, 'S');
+
+        let inc = r#"{"data":{"e":"depthUpdate","E":1700000000001,"s":"BTCUSDT","U":101,"u":103,
+            "b":[["25.0","100"]],"a":[["25.1","50"]]}}"#;
+        let inc = a.parse_incremental_frame(&v(inc)).unwrap();
+        let IncrementalFrame::Book {
+            timestamp,
+            seq_id,
+            prev_seq_id,
+            bids,
+            asks,
+            ..
+        } = &inc[0]
+        else {
+            panic!("expected book incremental");
+        };
+        assert_eq!(*timestamp, 1_700_000_000_001_000);
+        assert_eq!(*seq_id, 103);
+        assert_eq!(*prev_seq_id, 100);
+        assert!((bids[0].price - 25.0).abs() < 1e-9);
+        assert!((asks[0].amount - 50.0).abs() < 1e-9);
+
+        let mark = r#"{"data":{"e":"markPriceUpdate","E":1700000000001,"s":"BTCUSDT","p":"25.0","i":"24.9","r":"0.0001","T":1700003600000}}"#;
+        let bytes = a.parse_derivatives_frame(&v(mark)).unwrap();
+        assert_eq!(bytes.len(), 3);
+        assert_eq!(
+            MarkPriceMsg::get_timestamp(&bytes[0]),
+            1_700_000_000_001_000
+        );
+        assert_eq!(
+            IndexPriceMsg::get_timestamp(&bytes[1]),
+            1_700_000_000_001_000
+        );
+        assert_eq!(
+            FundingRateMsg::get_next_funding_time(&bytes[2]),
+            1_700_003_600_000_000
+        );
+
+        let liquidation = r#"{"data":{"e":"forceOrder","E":1700000000001,
+            "o":{"s":"BTCUSDT","S":"SELL","z":"10","ap":"25.2","T":1700000000000}}}"#;
+        let liq = a.parse_derivatives_frame(&v(liquidation)).unwrap();
+        assert_eq!(liq.len(), 1);
+        assert_eq!(get_msg_type(&liq[0]), MktMsgType::LiquidationOrder);
+    }
+
+    #[test]
+    fn parses_sbe_trade_and_depth_as_us() {
+        let a = BinanceAdapter::new(TradingVenue::BinanceMargin);
+        let trades = a.parse_trade_binary_frame(&sbe_trade_frame()).unwrap();
+        assert_eq!(trades.len(), 2);
+        assert_eq!(trades[0].timestamp_us, 1_700_000_000_001_002);
+        assert_eq!(trades[0].trade_id, 1001);
+        assert_eq!(trades[0].side, 'S');
+        assert!((trades[1].amount - 50.0).abs() < 1e-9);
+
+        let inc = a
+            .parse_incremental_binary_frame(&sbe_depth_diff_frame())
+            .unwrap();
+        let IncrementalFrame::Book {
+            timestamp,
+            seq_id,
+            prev_seq_id,
+            bids,
+            asks,
+            ..
+        } = &inc[0]
+        else {
+            panic!("expected book incremental");
+        };
+        assert_eq!(*timestamp, 1_700_000_000_001_002);
+        assert_eq!(*seq_id, 103);
+        assert_eq!(*prev_seq_id, 100);
+        assert!((bids[0].amount - 100.0).abs() < 1e-9);
+        assert!((asks[0].price - 25.1).abs() < 1e-9);
     }
 }

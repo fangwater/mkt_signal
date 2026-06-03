@@ -16,7 +16,9 @@ Description:
   - Build rolling_metrics and deploy to:
       $HOME/rolling_metrics/<open-venue>-<hedge-venue>
     (or to --dir if specified)
-  - Pair placement (--target auto, default) follows the public market-data topology:
+  - rolling_metrics reads BBO from spread_pbs/<venue>/ask_bid_spread.
+    Derivatives read the dat_pbs/<venue>/derivatives service that spread_pbs can replace.
+  - Pair placement (--target auto, default) follows the spread_pbs market-data topology:
       local HK : okex/bybit pairs, plus pairs with binance-futures mirrored to HK
       remote JP: binance/bitget/gate pairs
   - --target sg: force remote SG deploy (ubuntu@47.131.162.78 + aws-sg.pem).
@@ -85,7 +87,7 @@ is_jp_available_venue() {
   return 1
 }
 
-# SG bridge currently fans out bybit-{margin,futures} + binance-futures locally.
+# SG spread_pbs/bridge topology currently covers bybit-{margin,futures} + binance-futures locally.
 is_sg_available_venue() {
   local venue="${1,,}"
   local exchange

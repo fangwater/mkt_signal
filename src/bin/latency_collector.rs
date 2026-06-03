@@ -83,7 +83,12 @@ fn main() -> Result<()> {
         let mut got_any = false;
 
         for &venue in VENUES {
-            let msgs = sub.poll_channel(venue, &ChannelType::AskBidSpread, Some(POLL_BATCH));
+            let msgs = sub.poll_channel_from(
+                "spread_pbs",
+                venue,
+                &ChannelType::AskBidSpread,
+                Some(POLL_BATCH),
+            );
             for payload in msgs {
                 got_any = true;
                 total_msgs += 1;

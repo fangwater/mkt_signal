@@ -119,8 +119,11 @@ pub trait VenueAdapter {
     }
     /// Optional symbol-table hook for adapters that keep per-symbol hot-path state.
     fn seed_symbols(&self, _symbols: &[String]) {}
-    /// Some replacement channels live on a different public endpoint from BBO/trade.
+    /// Some replacement channels live on a different public endpoint from BBO.
     /// None means use `ws_url()` and the main dual legs.
+    fn trade_ws_url(&self) -> Option<String> {
+        None
+    }
     fn incremental_ws_url(&self) -> Option<String> {
         None
     }

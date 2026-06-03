@@ -2145,6 +2145,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mkt_parsers"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "mkt_signal"
 version = "0.1.0"
 dependencies = [
@@ -2175,6 +2182,7 @@ dependencies = [
  "local-ip-address",
  "log",
  "mkt_model_runtime",
+ "mkt_parsers",
  "native-tls",
  "once_cell",
  "parking_lot",

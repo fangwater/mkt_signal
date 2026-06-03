@@ -57,6 +57,13 @@ fn is_bybit_venue(venue: TradingVenue) -> bool {
     )
 }
 
+fn is_binance_venue(venue: TradingVenue) -> bool {
+    matches!(
+        venue,
+        TradingVenue::BinanceMargin | TradingVenue::BinanceFutures
+    )
+}
+
 fn is_okex_derivatives_venue(venue: TradingVenue) -> bool {
     matches!(venue, crate::signal::common::TradingVenue::OkexFutures)
 }
@@ -65,6 +72,7 @@ fn direct_trade_replacement_enabled(venue: TradingVenue) -> bool {
     is_okex_venue(venue)
         || is_bitget_venue(venue)
         || is_bybit_venue(venue)
+        || is_binance_venue(venue)
         || matches!(venue, TradingVenue::GateMargin | TradingVenue::GateFutures)
 }
 
@@ -72,6 +80,7 @@ fn direct_incremental_replacement_enabled(venue: TradingVenue) -> bool {
     is_okex_venue(venue)
         || is_bitget_venue(venue)
         || is_bybit_venue(venue)
+        || is_binance_venue(venue)
         || matches!(venue, TradingVenue::GateMargin | TradingVenue::GateFutures)
 }
 
@@ -79,6 +88,7 @@ fn direct_derivatives_replacement_enabled(venue: TradingVenue) -> bool {
     matches!(
         venue,
         TradingVenue::OkexFutures
+            | TradingVenue::BinanceFutures
             | TradingVenue::BitgetFutures
             | TradingVenue::GateFutures
             | TradingVenue::BybitFutures
@@ -93,7 +103,7 @@ fn build_market_subscribe(
     include_derivatives: bool,
 ) -> Vec<serde_json::Value> {
     let mut out = adapter.build_subscribe(symbols);
-    if include_trade {
+    if include_trade && adapter.trade_ws_url().is_none() {
         out.extend(adapter.build_trade_subscribe(symbols));
     }
     if include_incremental && adapter.incremental_ws_url().is_none() {
@@ -268,12 +278,29 @@ impl SpreadPbsApp {
             last_dedup_reset_us: get_timestamp_us(),
         }));
 
+        let main_trade_publisher = if adapter.trade_ws_url().is_none() {
+            trade_publisher.clone()
+        } else {
+            None
+        };
+        let main_incremental_publisher = if adapter.incremental_ws_url().is_none() {
+            incremental_publisher.clone()
+        } else {
+            None
+        };
+        let main_derivatives_publisher =
+            if !is_okex_derivatives_venue(venue) && adapter.derivatives_ws_url().is_none() {
+                derivatives_publisher.clone()
+            } else {
+                None
+            };
+
         let ctx = LegCtx {
             adapter: adapter.clone(),
             publisher: publisher.clone(),
-            trade_publisher: trade_publisher.clone(),
-            incremental_publisher: incremental_publisher.clone(),
-            derivatives_publisher: derivatives_publisher.clone(),
+            trade_publisher: main_trade_publisher,
+            incremental_publisher: main_incremental_publisher,
+            derivatives_publisher: main_derivatives_publisher,
             incremental_max_levels: self.config.data_types.max_levels_per_msg,
             state: state.clone(),
             url: adapter.ws_url(),
@@ -556,84 +583,119 @@ fn spawn_okex_derivatives_leg(
     }
 }
 
+struct DirectExtraGroup {
+    label: &'static str,
+    url: String,
+    subs: Vec<serde_json::Value>,
+    trade_publisher: Option<Rc<SpreadTradePublisher>>,
+    incremental_publisher: Option<Rc<SpreadIncrementalPublisher>>,
+    derivatives_publisher: Option<Rc<SpreadDerivativesPublisher>>,
+}
+
+fn merge_direct_extra_group(
+    groups: &mut Vec<DirectExtraGroup>,
+    label: &'static str,
+    url: String,
+    mut subs: Vec<serde_json::Value>,
+    trade_publisher: Option<Rc<SpreadTradePublisher>>,
+    incremental_publisher: Option<Rc<SpreadIncrementalPublisher>>,
+    derivatives_publisher: Option<Rc<SpreadDerivativesPublisher>>,
+) {
+    if subs.is_empty() {
+        return;
+    }
+
+    if let Some(group) = groups.iter_mut().find(|group| group.url == url) {
+        group.label = "direct-extra";
+        group.subs.append(&mut subs);
+        if trade_publisher.is_some() {
+            group.trade_publisher = trade_publisher;
+        }
+        if incremental_publisher.is_some() {
+            group.incremental_publisher = incremental_publisher;
+        }
+        if derivatives_publisher.is_some() {
+            group.derivatives_publisher = derivatives_publisher;
+        }
+        return;
+    }
+
+    groups.push(DirectExtraGroup {
+        label,
+        url,
+        subs,
+        trade_publisher,
+        incremental_publisher,
+        derivatives_publisher,
+    });
+}
+
 fn spawn_direct_extra_legs(
     adapter: &Rc<dyn VenueAdapter>,
     symbols: &[String],
     config: &Config,
-    _trade_publisher: Option<Rc<SpreadTradePublisher>>,
+    trade_publisher: Option<Rc<SpreadTradePublisher>>,
     incremental_publisher: Option<Rc<SpreadIncrementalPublisher>>,
     derivatives_publisher: Option<Rc<SpreadDerivativesPublisher>>,
     state: Rc<RefCell<SharedState>>,
 ) -> Vec<WsLeg> {
-    let incremental_url = if incremental_publisher.is_some() {
-        adapter.incremental_ws_url()
-    } else {
-        None
-    };
-    let derivatives_url = if derivatives_publisher.is_some() {
-        adapter.derivatives_ws_url()
-    } else {
-        None
-    };
+    let mut groups = Vec::new();
 
-    let mut out = Vec::new();
-    match (incremental_url, derivatives_url) {
-        (Some(inc_url), Some(deriv_url)) if inc_url == deriv_url => {
-            let mut subs = adapter.build_incremental_subscribe(symbols);
-            subs.extend(adapter.build_derivatives_subscribe(symbols));
-            if !subs.is_empty() {
-                out.push(spawn_direct_replacement_leg(
-                    "direct-extra",
-                    inc_url,
-                    config.primary_local_ip.clone(),
-                    subs,
-                    adapter.clone(),
-                    None,
-                    incremental_publisher,
-                    derivatives_publisher,
-                    config.data_types.max_levels_per_msg,
-                    state,
-                ));
-            }
-        }
-        (inc_url, deriv_url) => {
-            if let (Some(url), Some(publisher)) = (inc_url, incremental_publisher) {
-                let subs = adapter.build_incremental_subscribe(symbols);
-                if !subs.is_empty() {
-                    out.push(spawn_direct_replacement_leg(
-                        "direct-incremental",
-                        url,
-                        config.primary_local_ip.clone(),
-                        subs,
-                        adapter.clone(),
-                        None,
-                        Some(publisher),
-                        None,
-                        config.data_types.max_levels_per_msg,
-                        state.clone(),
-                    ));
-                }
-            }
-            if let (Some(url), Some(publisher)) = (deriv_url, derivatives_publisher) {
-                let subs = adapter.build_derivatives_subscribe(symbols);
-                if !subs.is_empty() {
-                    out.push(spawn_direct_replacement_leg(
-                        "direct-derivatives",
-                        url,
-                        config.primary_local_ip.clone(),
-                        subs,
-                        adapter.clone(),
-                        None,
-                        None,
-                        Some(publisher),
-                        config.data_types.max_levels_per_msg,
-                        state,
-                    ));
-                }
-            }
-        }
+    if let (Some(url), Some(publisher)) = (adapter.trade_ws_url(), trade_publisher.clone()) {
+        merge_direct_extra_group(
+            &mut groups,
+            "direct-trade",
+            url,
+            adapter.build_trade_subscribe(symbols),
+            Some(publisher),
+            None,
+            None,
+        );
     }
-    out
+    if let (Some(url), Some(publisher)) =
+        (adapter.incremental_ws_url(), incremental_publisher.clone())
+    {
+        merge_direct_extra_group(
+            &mut groups,
+            "direct-incremental",
+            url,
+            adapter.build_incremental_subscribe(symbols),
+            None,
+            Some(publisher),
+            None,
+        );
+    }
+    if let (Some(url), Some(publisher)) =
+        (adapter.derivatives_ws_url(), derivatives_publisher.clone())
+    {
+        merge_direct_extra_group(
+            &mut groups,
+            "direct-derivatives",
+            url,
+            adapter.build_derivatives_subscribe(symbols),
+            None,
+            None,
+            Some(publisher),
+        );
+    }
+
+    groups
+        .into_iter()
+        .map(|group| {
+            spawn_direct_replacement_leg(
+                group.label,
+                group.url,
+                config.primary_local_ip.clone(),
+                group.subs,
+                adapter.clone(),
+                group.trade_publisher,
+                group.incremental_publisher,
+                group.derivatives_publisher,
+                config.data_types.max_levels_per_msg,
+                state.clone(),
+            )
+        })
+        .collect()
 }
 
 fn spawn_direct_replacement_leg(

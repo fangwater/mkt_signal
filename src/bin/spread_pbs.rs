@@ -13,7 +13,7 @@ use mkt_signal::spread_pbs::SpreadPbsApp;
 #[command(name = "spread_pbs")]
 #[command(about = "Dedicated high-speed askbidspread publisher (pinned core).")]
 struct Args {
-    /// Trading venue. Also accepts <exchange>-both to run margin+futures in one process.
+    /// Trading venue. Also accepts <exchange>-both except binance, which must run single-sided.
     #[arg(short, long, value_parser = parse_venue_selection)]
     venue: SpreadVenueSelection,
 
@@ -73,7 +73,7 @@ fn parse_venue_selection(raw: &str) -> std::result::Result<SpreadVenueSelection,
     if let Some(exchange) = normalized.strip_suffix("-both") {
         return both_selection_for_exchange(exchange).ok_or_else(|| {
             format!(
-                "unsupported spread_pbs both venue '{raw}', expected one of binance-both/okex-both/bybit-both/bitget-both/gate-both"
+                "unsupported spread_pbs both venue '{raw}', expected one of okex-both/bybit-both/bitget-both/gate-both; binance must run as binance-margin or binance-futures"
             )
         });
     }
@@ -84,11 +84,6 @@ fn parse_venue_selection(raw: &str) -> std::result::Result<SpreadVenueSelection,
 
 fn both_selection_for_exchange(exchange: &str) -> Option<SpreadVenueSelection> {
     let (exchange, margin, futures) = match exchange {
-        "binance" => (
-            "binance",
-            TradingVenue::BinanceMargin,
-            TradingVenue::BinanceFutures,
-        ),
         "okex" | "okx" => ("okex", TradingVenue::OkexMargin, TradingVenue::OkexFutures),
         "bybit" => (
             "bybit",
@@ -252,6 +247,11 @@ mod tests {
             selection.venues(),
             vec![TradingVenue::GateMargin, TradingVenue::GateFutures]
         );
+    }
+
+    #[test]
+    fn rejects_binance_both() {
+        assert!(parse_venue_selection("binance-both").is_err());
     }
 
     #[test]

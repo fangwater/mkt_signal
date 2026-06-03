@@ -45,6 +45,38 @@ impl ChannelType {
     }
 }
 
+fn subscription_key(service_root: &str, topic_prefix: &str, channel: &ChannelType) -> String {
+    format!("{}/{}/{}", service_root, topic_prefix, channel.as_str())
+}
+
+fn service_attrs(service_root: &str, channel: &ChannelType) -> (usize, usize, Option<usize>) {
+    if service_root == "spread_pbs" && *channel == ChannelType::AskBidSpread {
+        return (64, 100, Some(8192));
+    }
+
+    match channel {
+        ChannelType::Incremental => (10, 100, Some(8192)),
+        ChannelType::Trade => (10, 100, Some(8192)),
+        ChannelType::Kline => (10, 50, Some(8192)),
+        ChannelType::Derivatives => {
+            if service_root == "bridge" {
+                (64, 50, Some(8192))
+            } else {
+                (10, 50, Some(8192))
+            }
+        }
+        ChannelType::AskBidSpread => {
+            if service_root == "bridge" {
+                (64, 100, Some(8192))
+            } else {
+                (10, 100, Some(8192))
+            }
+        }
+        ChannelType::RlReturnVolatility => (10, 128, None),
+        ChannelType::Signal => (10, 50, Some(8192)),
+    }
+}
+
 /// 订阅参数
 #[derive(Debug, Clone)]
 pub struct SubscribeParams {
@@ -140,7 +172,7 @@ impl MultiChannelSubscriber {
             param.channel.as_str()
         );
 
-        let key = format!("{}_{}", param.topic_prefix, param.channel.as_str());
+        let key = subscription_key(service_root, &param.topic_prefix, &param.channel);
 
         // 如果已经订阅，跳过
         if self.subscribers.contains_key(&key) {
@@ -148,45 +180,59 @@ impl MultiChannelSubscriber {
             return Ok(());
         }
 
+        let (max_subscribers, history_size, subscriber_max_buffer_size) =
+            service_attrs(service_root, &param.channel);
+
         // 根据频道类型创建对应大小的订阅器
         // 注意：max_publishers/max_subscribers 必须与 publisher 端一致，否则 open_or_create 会失败
         let subscriber_enum = match param.channel {
             ChannelType::Incremental => {
-                let service = self
+                let mut builder = self
                     .node
                     .service_builder(&ServiceName::new(&service_name)?)
                     .publish_subscribe::<[u8; 2048]>()
                     .max_publishers(1)
-                    .max_subscribers(10)
-                    .open_or_create()?;
+                    .max_subscribers(max_subscribers)
+                    .history_size(history_size);
+                if let Some(buffer) = subscriber_max_buffer_size {
+                    builder = builder.subscriber_max_buffer_size(buffer);
+                }
+                let service = builder.open_or_create()?;
                 let subscriber = service.subscriber_builder().create()?;
                 SubscriberEnum::Size2048(subscriber)
             }
             ChannelType::Signal => {
-                let service = self
+                let mut builder = self
                     .node
                     .service_builder(&ServiceName::new(&service_name)?)
                     .publish_subscribe::<[u8; 64]>()
                     .max_publishers(1)
-                    .max_subscribers(10)
-                    .open_or_create()?;
+                    .max_subscribers(max_subscribers)
+                    .history_size(history_size);
+                if let Some(buffer) = subscriber_max_buffer_size {
+                    builder = builder.subscriber_max_buffer_size(buffer);
+                }
+                let service = builder.open_or_create()?;
                 let subscriber = service.subscriber_builder().create()?;
                 SubscriberEnum::Size64(subscriber)
             }
             ChannelType::RlReturnVolatility => {
-                let service = self
+                let mut builder = self
                     .node
                     .service_builder(&ServiceName::new(&service_name)?)
                     .publish_subscribe::<[u8; 256]>()
                     .max_publishers(1)
-                    .max_subscribers(10)
-                    .open()
-                    .with_context(|| {
-                        format!(
-                            "failed to open rl_vol service={} hint=trade_flow_feature_pub must start first",
-                            service_name
-                        )
-                    })?;
+                    .max_subscribers(max_subscribers)
+                    .history_size(history_size);
+                if let Some(buffer) = subscriber_max_buffer_size {
+                    builder = builder.subscriber_max_buffer_size(buffer);
+                }
+                let service = builder.open().with_context(|| {
+                    format!(
+                        "failed to open rl_vol service={} hint=trade_flow_feature_pub must start first",
+                        service_name
+                    )
+                })?;
                 let subscriber = service.subscriber_builder().create()?;
                 SubscriberEnum::Size256(subscriber)
             }
@@ -194,13 +240,17 @@ impl MultiChannelSubscriber {
             | ChannelType::AskBidSpread
             | ChannelType::Kline
             | ChannelType::Derivatives => {
-                let service = self
+                let mut builder = self
                     .node
                     .service_builder(&ServiceName::new(&service_name)?)
                     .publish_subscribe::<[u8; 128]>()
                     .max_publishers(1)
-                    .max_subscribers(10)
-                    .open_or_create()?;
+                    .max_subscribers(max_subscribers)
+                    .history_size(history_size);
+                if let Some(buffer) = subscriber_max_buffer_size {
+                    builder = builder.subscriber_max_buffer_size(buffer);
+                }
+                let service = builder.open_or_create()?;
                 let subscriber = service.subscriber_builder().create()?;
                 SubscriberEnum::Size128(subscriber)
             }
@@ -273,8 +323,19 @@ impl MultiChannelSubscriber {
         channel: &ChannelType,
         max_msgs: Option<usize>,
     ) -> Vec<Bytes> {
+        self.poll_channel_from("dat_pbs", topic_prefix, channel, max_msgs)
+    }
+
+    /// 轮询指定服务根下单个频道的消息，最多返回max_msgs条消息
+    pub fn poll_channel_from(
+        &mut self,
+        service_root: &str,
+        topic_prefix: &str,
+        channel: &ChannelType,
+        max_msgs: Option<usize>,
+    ) -> Vec<Bytes> {
         let max_msgs = max_msgs.unwrap_or(16);
-        let key = format!("{}_{}", topic_prefix, channel.as_str());
+        let key = subscription_key(service_root, topic_prefix, channel);
         let mut messages = Vec::new();
 
         if let Some(subscriber) = self.subscribers.get(&key) {
