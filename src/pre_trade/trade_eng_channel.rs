@@ -102,9 +102,16 @@ impl TradeEngHub {
     }
 
     fn drain_pending_responses_inner(&self) -> bool {
-        let mut any = false;
-        for channel in self.channels.borrow_mut().values_mut() {
-            any |= channel.drain_trade_responses();
+        let mut responses = Vec::new();
+        {
+            let mut channels = self.channels.borrow_mut();
+            for channel in channels.values_mut() {
+                channel.drain_trade_responses_into(&mut responses);
+            }
+        }
+        let any = !responses.is_empty();
+        for response in responses {
+            dispatch_trade_engine_response(&response);
         }
         any
     }
@@ -308,12 +315,10 @@ impl TradeEngChannel {
         Ok((node, subscriber))
     }
 
-    fn drain_trade_responses(&mut self) -> bool {
-        let mut has_message = false;
+    fn drain_trade_responses_into(&mut self, responses: &mut Vec<TradeEngineResponseMessage>) {
         loop {
             match self.resp_subscriber.receive() {
                 Ok(Some(sample)) => {
-                    has_message = true;
                     let payload = sample.payload();
 
                     if payload.len() < TRADE_RESP_HEADER_LEN {
@@ -403,7 +408,7 @@ impl TradeEngChannel {
                         response_price,
                     );
 
-                    Self::handle_trade_engine_response(&response);
+                    responses.push(response);
                 }
                 Ok(None) => break,
                 Err(err) => {
@@ -415,11 +420,6 @@ impl TradeEngChannel {
                 }
             }
         }
-        has_message
-    }
-
-    fn handle_trade_engine_response(response: &TradeEngineResponseMessage) {
-        dispatch_trade_engine_response(response);
     }
 }
 
