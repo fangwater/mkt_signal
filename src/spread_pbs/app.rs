@@ -1301,27 +1301,27 @@ fn process_incremental_frame(
             seq_id,
             prev_seq_id,
         } => {
-            warn_incremental_gap_if_needed(state, &symbol, seq_id, prev_seq_id, false);
             let slot = state.symbol_state.incremental_slot(&symbol);
+            if seq_id <= slot.prev {
+                state.incremental_dropped_by_seq += 1;
+                let _ = timestamp;
+                return;
+            }
+            warn_incremental_gap_if_needed(state, &symbol, seq_id, prev_seq_id, false);
             state.symbol_state.set_incremental_slot(slot, seq_id);
             let _ = timestamp;
             return;
         }
     };
 
-    if gap_check {
-        warn_incremental_gap_if_needed(state, &symbol, seq_id, prev_seq_id, is_snapshot);
-    }
-
     let slot = state.symbol_state.incremental_slot(&symbol);
-    let stale_incremental = if gap_check {
-        !is_snapshot && seq_id <= slot.prev && seq_id != prev_seq_id
-    } else {
-        !is_snapshot && seq_id <= slot.prev
-    };
-    if stale_incremental {
+    if !is_snapshot && seq_id <= slot.prev {
         state.incremental_dropped_by_seq += 1;
         return;
+    }
+
+    if gap_check {
+        warn_incremental_gap_if_needed(state, &symbol, seq_id, prev_seq_id, is_snapshot);
     }
 
     let total_levels = bids.len() + asks.len();
