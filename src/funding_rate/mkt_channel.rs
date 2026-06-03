@@ -28,7 +28,7 @@ use crate::symbol_match::{normalize_symbol_for_premium_pair, normalize_symbol_fo
 const ASKBID_PAYLOAD: usize = 128;
 const DERIVATIVES_PAYLOAD: usize = 128;
 const DERIVATIVES_HISTORY_SIZE: usize = 50;
-const DERIVATIVES_MAX_SUBSCRIBERS: usize = 10;
+const DERIVATIVES_MAX_SUBSCRIBERS: usize = 64;
 const DERIVATIVES_SUBSCRIBER_MAX_BUFFER: usize = 8192;
 const DERIVATIVES_DRAIN_BUDGET: usize = 1024;
 const DECISION_QUOTE_AGE_KLL_CAPACITY: usize = 10_000;
@@ -68,8 +68,8 @@ fn normalize_symbol_key(symbol: &str) -> String {
 }
 
 fn build_market_service(slug: &str, channel: &str) -> String {
-    // bridge 用于 derivatives（funding/mark/index）；askbid 走 askbid_service_root
-    format!("bridge/{}/{}", slug, channel)
+    // derivatives 直连 dat_pbs；askbid 走 spread_pbs
+    format!("dat_pbs/{}/{}", slug, channel)
 }
 
 fn should_trigger_decision(symbol: &str) -> bool {
@@ -464,7 +464,7 @@ impl MktChannel {
         }
 
         info!(
-            "MktChannel 初始化完成: askbid_root=spread_pbs derivatives_root=bridge trigger_decisions={}",
+            "MktChannel 初始化完成: askbid_root=spread_pbs derivatives_root=dat_pbs trigger_decisions={}",
             trigger_decisions
         );
 

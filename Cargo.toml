@@ -113,6 +113,10 @@ name = "bybit_am_latency_probe"
 path = "src/bin/bybit_am_latency_probe.rs"
 
 [[bin]]
+name = "okex_am_latency_probe"
+path = "src/bin/okex_am_latency_probe.rs"
+
+[[bin]]
 name = "demo_qty_alignment"
 path = "src/bin/demo_qty_alignment.rs"
 

@@ -58,13 +58,7 @@ fn service_attrs(service_root: &str, channel: &ChannelType) -> (usize, usize, Op
         ChannelType::Incremental => (10, 100, Some(8192)),
         ChannelType::Trade => (10, 100, Some(8192)),
         ChannelType::Kline => (10, 50, Some(8192)),
-        ChannelType::Derivatives => {
-            if service_root == "bridge" {
-                (64, 50, Some(8192))
-            } else {
-                (10, 50, Some(8192))
-            }
-        }
+        ChannelType::Derivatives => (64, 50, Some(8192)),
         ChannelType::AskBidSpread => {
             if service_root == "bridge" {
                 (64, 100, Some(8192))

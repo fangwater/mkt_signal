@@ -474,7 +474,7 @@ impl SpreadDerivativesPublisher {
             .service_builder(&ServiceName::new(&service_name)?)
             .publish_subscribe::<[u8; DERIVATIVES_PAYLOAD_BYTES]>()
             .max_publishers(1)
-            .max_subscribers(10)
+            .max_subscribers(64)
             .history_size(50)
             .subscriber_max_buffer_size(SUBSCRIBER_MAX_BUFFER)
             .open_or_create()?;
@@ -482,7 +482,7 @@ impl SpreadDerivativesPublisher {
         let publisher = service.publisher_builder().create()?;
 
         log::info!(
-            "spread_pbs derivatives publisher ready: service={} mode=open-or-create max_publishers=1 max_subscribers=10 payload={}B",
+            "spread_pbs derivatives publisher ready: service={} mode=open-or-create max_publishers=1 max_subscribers=64 payload={}B",
             service_name,
             DERIVATIVES_PAYLOAD_BYTES
         );

@@ -1,167 +1,16 @@
 # Standalone public bridge config (HK side).
 #
 # Responsibilities:
-# - Local OKEX/Bybit market-data fan-out:
-#     dat_pbs/okex-*/... -> bridge/okex-*/...
-#     dat_pbs/bybit-*/... -> bridge/bybit-*/...
-# - Ingest JP public streams over one shared ZMQ port:
-#     bridge/binance-futures/{ask_bid_spread,derivatives}
-#     bridge/binance-futures/incremental (currently commented out)
-#     factor_pub/binance-futures/rl_vol
-#     model_output/binance_futures_direction_model
+# - Ingest JP public model output over the shared ZMQ port.
+# - Relay the locally-republished model output to SG.
 #
 # Notes:
+# - OKEX/Bybit market data consumers subscribe directly to spread_pbs/dat_pbs.
 # - This config is intentionally public/global only; it does not use IPC_NAMESPACE.
-# - The cross-host route ids must exactly match the JP config.
+# - Cross-host route ids must exactly match the JP/SG public bridge configs.
 
 routes:
-  # -----------------------------
-  # Local OKEX/Bybit market-data fan-out
-  # -----------------------------
-  - id: public_local_okex_margin_ask_bid
-    from:
-      type: ipc
-      endpoint: "dat_pbs/okex-margin/ask_bid_spread"
-      size: 128
-    to:
-      type: ipc
-      endpoint: "bridge/okex-margin/ask_bid_spread"
-      size: 128
-      max_publishers: 1
-      max_subscribers: 64
-      history_size: 100
-      subscriber_max_buffer_size: 8192
-
-  - id: public_local_okex_futures_ask_bid
-    from:
-      type: ipc
-      endpoint: "dat_pbs/okex-futures/ask_bid_spread"
-      size: 128
-    to:
-      type: ipc
-      endpoint: "bridge/okex-futures/ask_bid_spread"
-      size: 128
-      max_publishers: 1
-      max_subscribers: 64
-      history_size: 100
-      subscriber_max_buffer_size: 8192
-
-  - id: public_local_okex_futures_derivatives
-    from:
-      type: ipc
-      endpoint: "dat_pbs/okex-futures/derivatives"
-      size: 128
-    to:
-      type: ipc
-      endpoint: "bridge/okex-futures/derivatives"
-      size: 128
-      max_publishers: 1
-      max_subscribers: 64
-      history_size: 50
-      subscriber_max_buffer_size: 8192
-
-  - id: public_local_bybit_margin_ask_bid
-    from:
-      type: ipc
-      endpoint: "dat_pbs/bybit-margin/ask_bid_spread"
-      size: 128
-    to:
-      type: ipc
-      endpoint: "bridge/bybit-margin/ask_bid_spread"
-      size: 128
-      max_publishers: 1
-      max_subscribers: 64
-      history_size: 100
-      subscriber_max_buffer_size: 8192
-
-  - id: public_local_bybit_futures_ask_bid
-    from:
-      type: ipc
-      endpoint: "dat_pbs/bybit-futures/ask_bid_spread"
-      size: 128
-    to:
-      type: ipc
-      endpoint: "bridge/bybit-futures/ask_bid_spread"
-      size: 128
-      max_publishers: 1
-      max_subscribers: 64
-      history_size: 100
-      subscriber_max_buffer_size: 8192
-
-  - id: public_local_bybit_futures_derivatives
-    from:
-      type: ipc
-      endpoint: "dat_pbs/bybit-futures/derivatives"
-      size: 128
-    to:
-      type: ipc
-      endpoint: "bridge/bybit-futures/derivatives"
-      size: 128
-      max_publishers: 1
-      max_subscribers: 64
-      history_size: 50
-      subscriber_max_buffer_size: 8192
-
-  # ----------------------------------------
-  # JP -> HK public ingest
-  # ----------------------------------------
-  #
-  # Multiple routes share one ZMQ bind address; route id disambiguates them.
-  # - id: public_binance_futures_incremental
-  #   from:
-  #     type: zmq
-  #     endpoint: "tcp://0.0.0.0:6360"
-  #     size: 2048
-  #   to:
-  #     type: ipc
-  #     endpoint: "bridge/binance-futures/incremental"
-  #     size: 2048
-  #     max_publishers: 1
-  #     max_subscribers: 64
-  #     history_size: 100
-  #     subscriber_max_buffer_size: 8192
-
-  - id: public_binance_futures_ask_bid
-    from:
-      type: zmq
-      endpoint: "tcp://0.0.0.0:6360"
-      size: 128
-    to:
-      type: ipc
-      endpoint: "bridge/binance-futures/ask_bid_spread"
-      size: 128
-      max_publishers: 1
-      max_subscribers: 64
-      history_size: 100
-      subscriber_max_buffer_size: 8192
-
-  - id: public_binance_futures_derivatives
-    from:
-      type: zmq
-      endpoint: "tcp://0.0.0.0:6360"
-      size: 128
-    to:
-      type: ipc
-      endpoint: "bridge/binance-futures/derivatives"
-      size: 128
-      max_publishers: 1
-      max_subscribers: 64
-      history_size: 50
-      subscriber_max_buffer_size: 8192
-
-  - id: public_binance_futures_rl_return_volatility
-    from:
-      type: zmq
-      endpoint: "tcp://0.0.0.0:6360"
-      size: 256
-    to:
-      type: ipc
-      endpoint: "factor_pub/binance-futures/rl_vol"
-      size: 256
-      max_publishers: 1
-      max_subscribers: 10
-      history_size: 128
-
+  # JP -> HK public model ingest.
   - id: public_binance_futures_direction_model_output
     from:
       type: zmq
@@ -177,7 +26,6 @@ routes:
       subscriber_max_buffer_size: 256
 
   # HK -> SG relay: subscribe to locally-republished JP model_output, PUSH to SG.
-  # SG's matching incoming route lives in config/ipc_bridge_public_sg.yaml.
   - id: public_binance_futures_direction_model_output_sg
     from:
       type: ipc
@@ -187,4 +35,3 @@ routes:
       type: zmq
       endpoint: "tcp://47.131.162.78:6360"
       size: 2048
-

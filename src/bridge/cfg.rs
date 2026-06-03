@@ -308,7 +308,14 @@ routes:
             .map(|r| r.id.clone())
             .collect();
 
-        assert_eq!(jp_outgoing, hk_incoming);
+        assert!(
+            hk_incoming.is_subset(&jp_outgoing),
+            "HK incoming routes must be a subset of JP outgoing routes"
+        );
+        assert_eq!(
+            hk_incoming,
+            HashSet::from(["public_binance_futures_direction_model_output".to_string()])
+        );
     }
 
     #[test]

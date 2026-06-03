@@ -42,11 +42,11 @@ const DERIVATIVES_PAYLOAD: usize = 128;
 const DERIVATIVES_HISTORY_SIZE: usize = 50;
 const DERIVATIVES_MAX_SUBSCRIBERS: usize = 64;
 const DERIVATIVES_SUBSCRIBER_MAX_BUFFER: usize = 8192;
-const BINANCE_DERIVATIVES_SERVICE: &str = "bridge/binance-futures/derivatives";
-const OKEX_DERIVATIVES_SERVICE: &str = "bridge/okex-futures/derivatives";
-const BYBIT_DERIVATIVES_SERVICE: &str = "bridge/bybit-futures/derivatives";
-const BITGET_DERIVATIVES_SERVICE: &str = "bridge/bitget-futures/derivatives";
-const GATE_DERIVATIVES_SERVICE: &str = "bridge/gate-futures/derivatives";
+const BINANCE_DERIVATIVES_SERVICE: &str = "dat_pbs/binance-futures/derivatives";
+const OKEX_DERIVATIVES_SERVICE: &str = "dat_pbs/okex-futures/derivatives";
+const BYBIT_DERIVATIVES_SERVICE: &str = "dat_pbs/bybit-futures/derivatives";
+const BITGET_DERIVATIVES_SERVICE: &str = "dat_pbs/bitget-futures/derivatives";
+const GATE_DERIVATIVES_SERVICE: &str = "dat_pbs/gate-futures/derivatives";
 const DEFAULT_NODE_PRE_TRADE_DERIVATIVES: &str = "pre_trade_derivatives";
 const ARB_STARTUP_NET_EXPOSURE_WARN_USDT: f64 = 500.0;
 
