@@ -205,6 +205,46 @@ impl Config {
         }
     }
 
+    fn collect_matched_symbols<F>(
+        futures_symbols: &[String],
+        spot_symbols: &[String],
+        mut is_pair: F,
+    ) -> (Vec<String>, Vec<String>, Vec<(String, String)>)
+    where
+        F: FnMut(&str, &str) -> bool,
+    {
+        let mut matched_futures = Vec::new();
+        let mut matched_pairs = Vec::new();
+        for futures_symbol in futures_symbols {
+            if let Some(spot_symbol) = spot_symbols
+                .iter()
+                .find(|spot_symbol| is_pair(spot_symbol, futures_symbol))
+            {
+                matched_futures.push(futures_symbol.clone());
+                matched_pairs.push((futures_symbol.clone(), (*spot_symbol).clone()));
+            }
+        }
+
+        let matched_spots: Vec<String> = spot_symbols
+            .iter()
+            .filter(|spot_symbol| {
+                futures_symbols
+                    .iter()
+                    .any(|futures_symbol| is_pair(spot_symbol, futures_symbol))
+            })
+            .cloned()
+            .collect();
+
+        (matched_futures, matched_spots, matched_pairs)
+    }
+
+    fn is_okex_spot_symbol_related_to_swap(spot_symbol: &str, swap_symbol: &str) -> bool {
+        use crate::symbol_match::normalize_symbol_for_pairing;
+
+        normalize_symbol_for_pairing(spot_symbol, "okex-spot")
+            == normalize_symbol_for_pairing(swap_symbol, "okex-futures")
+    }
+
     async fn fetch_binance_exchange_info(url: &str) -> Result<BinanceExchangeInfoResponse> {
         info!("Fetching Binance exchangeInfo from: {}", url);
         let client = reqwest::Client::builder()
@@ -252,6 +292,24 @@ impl Config {
             symbols.len()
         );
         Ok(symbols)
+    }
+
+    async fn get_futures_symbols_related_to_binance_spot() -> Result<Vec<String>> {
+        let futures_symbols = Self::get_symbol_for_binance_futures().await?;
+        let spot_symbols = Self::get_spot_symbols_from_binance_api().await?;
+        let (matched_futures, _, matched_pairs) = Self::collect_matched_symbols(
+            &futures_symbols,
+            &spot_symbols,
+            |spot_symbol, futures_symbol| {
+                Self::is_spot_symbol_related_to_futures(spot_symbol, futures_symbol)
+            },
+        );
+        info!(
+            "Binance futures symbols related to spot {:?}",
+            matched_futures.len()
+        );
+        print_matched_pairs("Futures", "Spot", &matched_pairs);
+        Ok(matched_futures)
     }
 
     async fn get_spot_symbols_from_binance_api() -> Result<Vec<String>> {
@@ -379,6 +437,24 @@ impl Config {
             symbols.len()
         );
         Ok(symbols)
+    }
+
+    async fn get_futures_symbols_related_to_aster_spot() -> Result<Vec<String>> {
+        let futures_symbols = Self::get_symbol_for_aster_futures().await?;
+        let spot_symbols = Self::get_spot_symbols_from_aster_api().await?;
+        let (matched_futures, _, matched_pairs) = Self::collect_matched_symbols(
+            &futures_symbols,
+            &spot_symbols,
+            |spot_symbol, futures_symbol| {
+                Self::is_spot_symbol_related_to_futures(spot_symbol, futures_symbol)
+            },
+        );
+        info!(
+            "Aster futures symbols related to spot {:?}",
+            matched_futures.len()
+        );
+        print_matched_pairs("Futures", "Spot", &matched_pairs);
+        Ok(matched_futures)
     }
 
     async fn get_spot_symbols_from_aster_api() -> Result<Vec<String>> {
@@ -519,6 +595,20 @@ impl Config {
         Ok(symbols)
     }
 
+    /// 获取 OKEx SWAP 交易对（只返回与 SPOT 有关联的；返回 SWAP 原始格式）
+    async fn get_swap_symbols_related_to_okex_spot() -> Result<Vec<String>> {
+        let swap_symbols = Self::get_symbol_for_okex_swap().await?;
+        let spot_symbols = Self::get_spot_symbols_from_okex_api().await?;
+        let (matched_swaps, _, matched_pairs) = Self::collect_matched_symbols(
+            &swap_symbols,
+            &spot_symbols,
+            Self::is_okex_spot_symbol_related_to_swap,
+        );
+        info!("OKEx swap symbols related to spot: {}", matched_swaps.len());
+        print_matched_pairs("Futures", "Spot", &matched_pairs);
+        Ok(matched_swaps)
+    }
+
     /// 获取 OKEx 现货交易对（只返回与 SWAP 有关联的；兼容无 -SWAP 后缀）
     async fn get_spot_symbols_related_to_okex_swap() -> Result<Vec<String>> {
         use crate::symbol_match::normalize_symbol_for_pairing;
@@ -566,6 +656,34 @@ impl Config {
             symbols.len()
         );
         Ok(symbols)
+    }
+
+    async fn get_bybit_linear_symbols_related_to_spot() -> Result<Vec<String>> {
+        let linear_contract_symbols = Self::get_symbol_for_bybit_linear().await?;
+        let spot_instruments = Self::fetch_bybit_instruments("spot").await?;
+        let spot_symbols: Vec<String> = spot_instruments
+            .into_iter()
+            .filter(|item| item.status == "Trading")
+            .filter(|item| item.quote_coin.as_deref() == Some("USDT"))
+            .map(|item| item.symbol)
+            .collect();
+        info!(
+            "Bybit spot USDT-denominated symbol count {:?}",
+            spot_symbols.len()
+        );
+        let (matched_linear, _, matched_pairs) = Self::collect_matched_symbols(
+            &linear_contract_symbols,
+            &spot_symbols,
+            |spot_symbol, linear_symbol| {
+                Self::is_spot_symbol_related_to_futures(spot_symbol, linear_symbol)
+            },
+        );
+        info!(
+            "Bybit linear symbols related to spot {:?}",
+            matched_linear.len()
+        );
+        print_matched_pairs("Futures", "Spot", &matched_pairs);
+        Ok(matched_linear)
     }
 
     async fn get_spot_symbols_related_to_bybit() -> Result<Vec<String>> {
@@ -659,6 +777,25 @@ impl Config {
         Self::get_symbols_from_bitget_api("USDT-FUTURES").await
     }
 
+    /// 获取 Bitget Futures (USDT-FUTURES) 交易对（只返回与 Margin 有关联的）
+    async fn get_bitget_futures_symbols_related_to_margin() -> Result<Vec<String>> {
+        let futures_symbols = Self::get_symbol_for_bitget_futures().await?;
+        let margin_symbols = Self::get_symbols_from_bitget_api("MARGIN").await?;
+        let (matched_futures, _, matched_pairs) = Self::collect_matched_symbols(
+            &futures_symbols,
+            &margin_symbols,
+            |margin_symbol, futures_symbol| {
+                Self::is_spot_symbol_related_to_futures(margin_symbol, futures_symbol)
+            },
+        );
+        info!(
+            "Bitget futures symbols related to margin: {}",
+            matched_futures.len()
+        );
+        print_matched_pairs("Futures", "Margin", &matched_pairs);
+        Ok(matched_futures)
+    }
+
     /// 获取 Bitget Margin 交易对（只返回与 Futures 有关联的）
     async fn get_margin_symbols_related_to_bitget_futures() -> Result<Vec<String>> {
         let margin_symbols = Self::get_symbols_from_bitget_api("MARGIN").await?;
@@ -715,6 +852,25 @@ impl Config {
             .collect();
         info!("Gate futures USDT symbol count: {}", symbols.len());
         Ok(symbols)
+    }
+
+    /// 获取 Gate Futures 交易对（只返回与 Spot 有关联的）
+    async fn get_gate_futures_symbols_related_to_spot() -> Result<Vec<String>> {
+        let futures_symbols = Self::get_symbol_for_gate_futures().await?;
+        let spot_symbols = Self::get_spot_symbols_from_gate_api().await?;
+        let (matched_futures, _, matched_pairs) = Self::collect_matched_symbols(
+            &futures_symbols,
+            &spot_symbols,
+            |spot_symbol, futures_symbol| {
+                Self::is_spot_symbol_related_to_futures(spot_symbol, futures_symbol)
+            },
+        );
+        info!(
+            "Gate futures symbols related to spot: {}",
+            matched_futures.len()
+        );
+        print_matched_pairs("Futures", "Spot", &matched_pairs);
+        Ok(matched_futures)
     }
 
     /// 从 Gate HTTP API 获取现货交易对列表
@@ -847,35 +1003,81 @@ impl Config {
         Ok(symbols)
     }
 
+    async fn get_hyperliquid_futures_symbols_related_to_spot() -> Result<Vec<String>> {
+        let futures_symbols = Self::get_symbol_for_hyperliquid_futures().await?;
+        let spot_symbols = Self::get_symbol_for_hyperliquid_spot().await?;
+        let (matched_futures, _, matched_pairs) = Self::collect_matched_symbols(
+            &futures_symbols,
+            &spot_symbols,
+            |spot_symbol, futures_symbol| {
+                Self::normalize_hyperliquid_perp_symbol(spot_symbol)
+                    == Self::normalize_hyperliquid_perp_symbol(futures_symbol)
+            },
+        );
+        info!(
+            "Hyperliquid futures symbols related to spot: {}",
+            matched_futures.len()
+        );
+        print_matched_pairs("Futures", "Spot", &matched_pairs);
+        Ok(matched_futures)
+    }
+
+    async fn get_hyperliquid_spot_symbols_related_to_futures() -> Result<Vec<String>> {
+        let spot_symbols = Self::get_symbol_for_hyperliquid_spot().await?;
+        let futures_symbols = Self::get_symbol_for_hyperliquid_futures().await?;
+        let (_, matched_spots, matched_pairs) = Self::collect_matched_symbols(
+            &futures_symbols,
+            &spot_symbols,
+            |spot_symbol, futures_symbol| {
+                Self::normalize_hyperliquid_perp_symbol(spot_symbol)
+                    == Self::normalize_hyperliquid_perp_symbol(futures_symbol)
+            },
+        );
+        info!(
+            "Hyperliquid spot symbols related to futures: {}",
+            matched_spots.len()
+        );
+        print_matched_pairs("Futures", "Spot", &matched_pairs);
+        Ok(matched_spots)
+    }
+
     async fn fetch_symbols_uncached(venue: TradingVenue) -> Result<Vec<String>> {
         match venue {
             //币安u本位期货合约
-            TradingVenue::BinanceFutures => Self::get_symbol_for_binance_futures().await,
+            TradingVenue::BinanceFutures => {
+                Self::get_futures_symbols_related_to_binance_spot().await
+            }
             TradingVenue::BinanceMargin => {
                 Self::get_spot_symbols_related_to_binance_futures().await
             }
             //OKEXu本位期货合约
-            TradingVenue::OkexFutures => Self::get_symbol_for_okex_swap().await,
+            TradingVenue::OkexFutures => Self::get_swap_symbols_related_to_okex_spot().await,
             //OKEXu本位期货合约对应的现货
             TradingVenue::OkexMargin => Self::get_spot_symbols_related_to_okex_swap().await,
             //Bybitu本位期货合约
-            TradingVenue::BybitFutures => Self::get_symbol_for_bybit_linear().await,
+            TradingVenue::BybitFutures => Self::get_bybit_linear_symbols_related_to_spot().await,
             //Bybitu本位期货合约对应的现货
             TradingVenue::BybitMargin => Self::get_spot_symbols_related_to_bybit().await,
             //Bitget USDT永续合约
-            TradingVenue::BitgetFutures => Self::get_symbol_for_bitget_futures().await,
+            TradingVenue::BitgetFutures => {
+                Self::get_bitget_futures_symbols_related_to_margin().await
+            }
             //Bitget杠杆交易（与Futures关联的）
             TradingVenue::BitgetMargin => {
                 Self::get_margin_symbols_related_to_bitget_futures().await
             }
             //Gate USDT永续合约
-            TradingVenue::GateFutures => Self::get_symbol_for_gate_futures().await,
+            TradingVenue::GateFutures => Self::get_gate_futures_symbols_related_to_spot().await,
             //Gate现货（与Futures关联的）
             TradingVenue::GateMargin => Self::get_spot_symbols_related_to_gate_futures().await,
-            TradingVenue::HyperliquidFutures => Self::get_symbol_for_hyperliquid_futures().await,
-            TradingVenue::HyperliquidMargin => Self::get_symbol_for_hyperliquid_spot().await,
+            TradingVenue::HyperliquidFutures => {
+                Self::get_hyperliquid_futures_symbols_related_to_spot().await
+            }
+            TradingVenue::HyperliquidMargin => {
+                Self::get_hyperliquid_spot_symbols_related_to_futures().await
+            }
             //Aster USDT永续合约
-            TradingVenue::AsterFutures => Self::get_symbol_for_aster_futures().await,
+            TradingVenue::AsterFutures => Self::get_futures_symbols_related_to_aster_spot().await,
             //Aster现货（与 futures 关联）
             TradingVenue::AsterMargin => Self::get_spot_symbols_related_to_aster_futures().await,
         }

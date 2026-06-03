@@ -19,7 +19,6 @@ use crate::spread_pbs::adapter::{
     create_adapter, BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
 };
 use crate::spread_pbs::latency::LatencyKll;
-use crate::spread_pbs::okex::fetch_books_sbe_snapshot_bytes;
 use crate::spread_pbs::okex_derivatives::{
     build_okex_derivatives_subscribe_msgs, parse_okex_derivatives_frame, OKEX_PUBLIC_WS_URL,
 };
@@ -306,21 +305,6 @@ impl SpreadPbsApp {
             url: adapter.ws_url(),
         };
 
-        if is_okex_venue(venue) {
-            if let Some(incremental_publisher) = incremental_publisher.as_ref() {
-                bootstrap_okex_incremental_symbols(
-                    venue_slug,
-                    &adapter,
-                    incremental_publisher,
-                    &state,
-                    &initial_symbols,
-                    self.config.data_types.max_levels_per_msg,
-                    "initial",
-                )
-                .await;
-            }
-        }
-
         let derivatives_symbols: Rc<RefCell<HashSet<String>>> =
             Rc::new(RefCell::new(initial_symbols.iter().cloned().collect()));
         let derivatives_leg = derivatives_publisher.as_ref().map(|publisher| {
@@ -490,68 +474,6 @@ fn spawn_leg(
         shutdown_tx: tx,
         handle,
     }
-}
-
-async fn bootstrap_okex_incremental_symbols(
-    venue_slug: &'static str,
-    adapter: &Rc<dyn VenueAdapter>,
-    publisher: &Rc<SpreadIncrementalPublisher>,
-    state: &Rc<RefCell<SharedState>>,
-    symbols: &[String],
-    max_levels: Option<usize>,
-    reason: &str,
-) {
-    let mut bootstrapped = 0usize;
-    for symbol in symbols {
-        let Some(inst_id_code) = adapter.inst_id_code(symbol) else {
-            log::warn!(
-                "spread_pbs[{}] OKX books bootstrap skipped: symbol={} missing instIdCode",
-                venue_slug,
-                symbol
-            );
-            continue;
-        };
-        let raw = match fetch_books_sbe_snapshot_bytes(inst_id_code).await {
-            Ok(raw) => raw,
-            Err(e) => {
-                log::warn!(
-                    "spread_pbs[{}] OKX books bootstrap snapshot failed symbol={} instIdCode={} reason={} err={:#}",
-                    venue_slug,
-                    symbol,
-                    inst_id_code,
-                    reason,
-                    e
-                );
-                continue;
-            }
-        };
-        let frames = match adapter.parse_incremental_binary_frame(&raw) {
-            Ok(frames) => frames,
-            Err(e) => {
-                log::warn!(
-                    "spread_pbs[{}] OKX books bootstrap decode failed symbol={} instIdCode={} reason={} err={:#}",
-                    venue_slug,
-                    symbol,
-                    inst_id_code,
-                    reason,
-                    e
-                );
-                continue;
-            }
-        };
-        let mut s = state.borrow_mut();
-        for frame in frames {
-            process_incremental_frame(&mut s, publisher, frame, max_levels);
-            bootstrapped += 1;
-        }
-    }
-    log::info!(
-        "spread_pbs[{}] OKX books bootstrap done symbols={} frames={} reason={}",
-        venue_slug,
-        symbols.len(),
-        bootstrapped,
-        reason
-    );
 }
 
 fn spawn_okex_derivatives_leg(

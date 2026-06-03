@@ -15,7 +15,6 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine;
-use bytes::Bytes;
 use hmac::{Hmac, Mac};
 use mkt_parsers::okex as okex_codec;
 use serde_json::Value;
@@ -31,7 +30,6 @@ use crate::spread_pbs::adapter::{
 
 const OKEX_PUBLIC_SBE_WS_URL: &str = "wss://ws.okx.com:8443/ws/v5/public-sbe";
 const OKEX_INSTRUMENTS_URL: &str = "https://www.okx.com/api/v5/public/instruments";
-const OKEX_BOOKS_SBE_URL: &str = "https://openapi.okx.com/api/v5/market/books-sbe";
 const OKEX_SUBSCRIBE_CHUNK: usize = 240;
 
 /// 把 OKex `BTC-USDT-SWAP` / `BTC-USDT` 归一化成 `BTCUSDT`。
@@ -82,42 +80,6 @@ impl OkexAdapter {
             code_to_norm,
         })
     }
-}
-
-/// REST：`GET /api/v5/market/books-sbe?instIdCode=...&source=0` → SBE binary snapshot。
-pub async fn fetch_books_sbe_snapshot_bytes(inst_id_code: i64) -> Result<Bytes> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()
-        .context("build reqwest client for OKEx books-sbe snapshot")?;
-    let resp = client
-        .get(OKEX_BOOKS_SBE_URL)
-        .query(&[
-            ("instIdCode", inst_id_code.to_string()),
-            ("source", "0".to_string()),
-        ])
-        .send()
-        .await
-        .with_context(|| format!("OKEx books-sbe GET instIdCode={}", inst_id_code))?;
-    let status = resp.status();
-    let body = resp
-        .bytes()
-        .await
-        .context("OKEx books-sbe read response body")?;
-    if !status.is_success() {
-        bail!(
-            "OKEx books-sbe returned status={} body={}",
-            status,
-            String::from_utf8_lossy(&body[..body.len().min(256)])
-        );
-    }
-    if body.first() == Some(&b'{') {
-        bail!(
-            "OKEx books-sbe returned JSON error body={}",
-            String::from_utf8_lossy(&body[..body.len().min(512)])
-        );
-    }
-    Ok(body)
 }
 
 /// REST：`GET /api/v5/public/instruments?instType={SWAP|SPOT}` → `{instId → instIdCode}`。
