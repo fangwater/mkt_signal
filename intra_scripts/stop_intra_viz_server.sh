@@ -43,16 +43,30 @@ KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 # 还会霸占着监听端口，重启时新进程 bind 报 `Address already in use`。
 find_running_pids() {
   local pids=()
+  local expected_bin="${BASE_DIR}/viz_server"
+  local expected_real=""
+  if [[ -e "$expected_bin" ]]; then
+    expected_real="$(readlink -f "$expected_bin" 2>/dev/null || true)"
+  fi
   while IFS= read -r pid; do
-    if [[ -n "$pid" ]]; then
+    if [[ -z "$pid" || "$pid" == "$$" || "$pid" == "${BASHPID:-}" ]]; then
+      continue
+    fi
+    local exe_link="" exe_path="" cmdline=""
+    exe_link="$(readlink "/proc/${pid}/exe" 2>/dev/null || true)"
+    exe_path="$(readlink -f "/proc/${pid}/exe" 2>/dev/null || true)"
+    cmdline="$(tr '\0' ' ' <"/proc/${pid}/cmdline" 2>/dev/null || true)"
+    if [[ -n "$expected_real" && "$exe_path" == "$expected_real" ]]; then
+      pids+=("$pid")
+    elif [[ "$exe_link" == "${BASE_DIR}/viz_server" || "$exe_link" == "${BASE_DIR}/viz_server (deleted)" ]]; then
+      pids+=("$pid")
+    elif [[ "$exe_path" == "${SCRIPT_DIR}/viz_server" || "$exe_path" == "${BASE_DIR}/target/release/viz_server" ]]; then
+      pids+=("$pid")
+    elif [[ "$cmdline" == "${BASE_DIR}/viz_server"* || "$cmdline" == "${SCRIPT_DIR}/viz_server"* || "$cmdline" == "${BASE_DIR}/target/release/viz_server"* ]]; then
       pids+=("$pid")
     fi
   done < <(
-    ps -eo pid=,args= | awk -v base_dir="$BASE_DIR" '
-      index($0, base_dir "/") > 0 && index($0, "viz_server") > 0 {
-        print $1
-      }
-    '
+    ps -eo pid=,comm= | awk '$2 == "viz_server" { print $1 }'
   )
   if [[ ${#pids[@]} -gt 0 ]]; then
     printf '%s\n' "${pids[@]}"
