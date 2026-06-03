@@ -51,9 +51,12 @@ impl UsdtBalanceManager {
         if !msg.symbol.eq_ignore_ascii_case("USDT") {
             return;
         }
+        if msg.timestamp < self.state.last_timestamp {
+            return;
+        }
         self.state.borrowed = msg.borrowed;
         self.state.cumulative_interest = msg.interest;
-        self.state.last_timestamp = self.state.last_timestamp.max(msg.timestamp);
+        self.state.last_timestamp = msg.timestamp;
     }
 
     /// 返回 USDT 的“净头寸”（与 BasicBalanceManager::balance_position_of 语义保持一致）。
@@ -81,6 +84,27 @@ mod tests {
         ));
 
         assert!((mgr.net_usdt_position() - 48.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn stale_usdt_borrow_interest_does_not_override_newer_state() {
+        let mut mgr = UsdtBalanceManager::new(Exchange::Okex);
+        mgr.apply_balance(&BasicBalanceMsg::create(20, "USDT".to_string(), 100.0));
+        mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
+            20,
+            "USDT".to_string(),
+            30.0,
+            2.0,
+        ));
+        assert!((mgr.net_usdt_position() - 68.0).abs() < 1e-12);
+
+        mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
+            10,
+            "USDT".to_string(),
+            90.0,
+            5.0,
+        ));
+        assert!((mgr.net_usdt_position() - 68.0).abs() < 1e-12);
     }
 
     #[test]

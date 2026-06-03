@@ -81,14 +81,17 @@ impl BasicBalanceManager {
                 exchange: self.exchange,
                 symbol: symbol.clone(),
                 wallet: 0.0,
-                borrowed: msg.borrowed,
+                borrowed: 0.0,
                 cumulative_interest: 0.0,
                 last_timestamp: msg.timestamp,
             });
+        if msg.timestamp < entry.last_timestamp {
+            return;
+        }
         entry.borrowed = msg.borrowed;
         // interest 字段为“当前应计利息总额”，按最新值覆盖即可。
         entry.cumulative_interest = msg.interest;
-        entry.last_timestamp = entry.last_timestamp.max(msg.timestamp);
+        entry.last_timestamp = msg.timestamp;
     }
 
     /// 获取某个 symbol 的余额视图。
@@ -141,6 +144,52 @@ mod tests {
         ));
 
         assert!((mgr.balance_position_of("BTC") - 68.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn stale_borrow_interest_does_not_override_newer_balance_state() {
+        let mut mgr = BasicBalanceManager::new(Exchange::Okex);
+        mgr.apply_balance(&BasicBalanceMsg::create(
+            1_780_495_229_000,
+            "BTC".to_string(),
+            0.0,
+        ));
+        mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
+            1_780_495_229_000,
+            "BTC".to_string(),
+            0.2728088547403847,
+            0.0,
+        ));
+        assert!((mgr.balance_position_of("BTC") + 0.2728088547403847).abs() < 1e-12);
+
+        mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
+            1_780_484_400_000,
+            "BTC".to_string(),
+            0.3711443959357258,
+            0.0000002152637497,
+        ));
+        assert!((mgr.balance_position_of("BTC") + 0.2728088547403847).abs() < 1e-12);
+    }
+
+    #[test]
+    fn same_timestamp_borrow_interest_can_clear_current_liability() {
+        let mut mgr = BasicBalanceManager::new(Exchange::Gate);
+        mgr.apply_balance(&BasicBalanceMsg::create(10, "ETH".to_string(), 5.0));
+        mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
+            10,
+            "ETH".to_string(),
+            2.0,
+            0.5,
+        ));
+        assert!((mgr.balance_position_of("ETH") - 2.5).abs() < 1e-12);
+
+        mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
+            10,
+            "ETH".to_string(),
+            0.0,
+            0.0,
+        ));
+        assert!((mgr.balance_position_of("ETH") - 5.0).abs() < 1e-12);
     }
 
     #[test]
