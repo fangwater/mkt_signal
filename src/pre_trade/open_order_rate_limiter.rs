@@ -1,6 +1,6 @@
 use log::debug;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::VecDeque;
 
 const ORDER_RATE_WINDOW_10S_US: i64 = 10_000_000;
 const ORDER_RATE_WINDOW_1M_US: i64 = 60_000_000;
@@ -12,12 +12,73 @@ pub struct OrderRateStats {
 }
 
 #[derive(Default)]
+struct RollingRateWindow {
+    orders_10s: VecDeque<i64>,
+    orders_1m: VecDeque<i64>,
+    last_seen_us: i64,
+}
+
+impl RollingRateWindow {
+    fn normalize_now(&mut self, now_us: i64) -> i64 {
+        let now_us = now_us.max(self.last_seen_us);
+        self.last_seen_us = now_us;
+        now_us
+    }
+
+    fn prune(&mut self, now_us: i64) -> usize {
+        let now_us = self.normalize_now(now_us);
+        let before_1m = self.orders_1m.len();
+        while self
+            .orders_10s
+            .front()
+            .is_some_and(|ts| now_us.saturating_sub(*ts) >= ORDER_RATE_WINDOW_10S_US)
+        {
+            self.orders_10s.pop_front();
+        }
+        while self
+            .orders_1m
+            .front()
+            .is_some_and(|ts| now_us.saturating_sub(*ts) >= ORDER_RATE_WINDOW_1M_US)
+        {
+            self.orders_1m.pop_front();
+        }
+        before_1m.saturating_sub(self.orders_1m.len())
+    }
+
+    fn stats(&mut self, now_us: i64) -> OrderRateStats {
+        self.prune(now_us);
+        OrderRateStats {
+            count_10s: self.orders_10s.len(),
+            count_1m: self.orders_1m.len(),
+        }
+    }
+
+    fn record(&mut self, now_us: i64) -> OrderRateStats {
+        let now_us = self.normalize_now(now_us);
+        self.prune(now_us);
+        self.orders_10s.push_back(now_us);
+        self.orders_1m.push_back(now_us);
+        OrderRateStats {
+            count_10s: self.orders_10s.len(),
+            count_1m: self.orders_1m.len(),
+        }
+    }
+
+    #[cfg(test)]
+    fn clear(&mut self) {
+        self.orders_10s.clear();
+        self.orders_1m.clear();
+        self.last_seen_us = 0;
+    }
+}
+
+#[derive(Default)]
 struct OrderRateState {
-    open_orders: HashMap<i64, i64>,
-    arb_open_orders: HashMap<i64, i64>,
-    hedge_orders: HashMap<i64, i64>,
-    arb_hedge_orders: HashMap<i64, i64>,
-    exec_orders: HashMap<i64, i64>,
+    open_orders: RollingRateWindow,
+    arb_open_orders: RollingRateWindow,
+    hedge_orders: RollingRateWindow,
+    arb_hedge_orders: RollingRateWindow,
+    exec_orders: RollingRateWindow,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -83,11 +144,10 @@ impl OrderRateLimiter {
     }
 
     pub fn record(bucket: OrderRateBucket, client_order_id: i64, now_us: i64) -> OrderRateStats {
-        ORDER_RATE_STATE.with(|state| {
+        let stats = ORDER_RATE_STATE.with(|state| {
             let mut state = state.borrow_mut();
-            Self::bucket_map_mut(&mut state, bucket).insert(client_order_id, now_us);
+            Self::bucket_window_mut(&mut state, bucket).record(now_us)
         });
-        let stats = Self::stats_at(bucket, now_us);
         debug!(
             "order rate recorded: bucket={} client_order_id={} count_10s={} count_1m={}",
             bucket.as_str(),
@@ -109,12 +169,7 @@ impl OrderRateLimiter {
                 OrderRateBucket::ArbHedge,
                 OrderRateBucket::Exec,
             ] {
-                let bucket_map = Self::bucket_map_mut(&mut state, bucket);
-                let before = bucket_map.len();
-                bucket_map.retain(|_, submit_ts_us| {
-                    now_us.saturating_sub(*submit_ts_us) < ORDER_RATE_WINDOW_1M_US
-                });
-                removed_total += before.saturating_sub(bucket_map.len());
+                removed_total += Self::bucket_window_mut(&mut state, bucket).prune(now_us);
             }
             removed_total
         })
@@ -122,23 +177,8 @@ impl OrderRateLimiter {
 
     fn stats_at(bucket: OrderRateBucket, now_us: i64) -> OrderRateStats {
         ORDER_RATE_STATE.with(|state| {
-            let state = state.borrow();
-            let orders = Self::bucket_map(&state, bucket);
-            let mut count_10s = 0usize;
-            let mut count_1m = 0usize;
-            for submit_ts_us in orders.values() {
-                let age_us = now_us.saturating_sub(*submit_ts_us);
-                if age_us < ORDER_RATE_WINDOW_1M_US {
-                    count_1m += 1;
-                }
-                if age_us < ORDER_RATE_WINDOW_10S_US {
-                    count_10s += 1;
-                }
-            }
-            OrderRateStats {
-                count_10s,
-                count_1m,
-            }
+            let mut state = state.borrow_mut();
+            Self::bucket_window_mut(&mut state, bucket).stats(now_us)
         })
     }
 
@@ -154,20 +194,10 @@ impl OrderRateLimiter {
         });
     }
 
-    fn bucket_map(state: &OrderRateState, bucket: OrderRateBucket) -> &HashMap<i64, i64> {
-        match bucket {
-            OrderRateBucket::MmOpen => &state.open_orders,
-            OrderRateBucket::ArbOpen => &state.arb_open_orders,
-            OrderRateBucket::MmHedge => &state.hedge_orders,
-            OrderRateBucket::ArbHedge => &state.arb_hedge_orders,
-            OrderRateBucket::Exec => &state.exec_orders,
-        }
-    }
-
-    fn bucket_map_mut(
+    fn bucket_window_mut(
         state: &mut OrderRateState,
         bucket: OrderRateBucket,
-    ) -> &mut HashMap<i64, i64> {
+    ) -> &mut RollingRateWindow {
         match bucket {
             OrderRateBucket::MmOpen => &mut state.open_orders,
             OrderRateBucket::ArbOpen => &mut state.arb_open_orders,

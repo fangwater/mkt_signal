@@ -408,6 +408,8 @@ impl OrderType {
 pub struct OrderManager {
     orders: HashMap<i64, Order>,                     //映射order id到order
     pending_limit_order_count: HashMap<String, i32>, //单个交易品种当前有多少待成交的maker单
+    pending_limit_buy_order_count: HashMap<String, i32>,
+    pending_limit_sell_order_count: HashMap<String, i32>,
     binance_account_mode: Option<BinanceAccountMode>,
 }
 
@@ -422,6 +424,8 @@ impl OrderManager {
         Self {
             orders: HashMap::new(),
             pending_limit_order_count: HashMap::new(),
+            pending_limit_buy_order_count: HashMap::new(),
+            pending_limit_sell_order_count: HashMap::new(),
             binance_account_mode,
         }
     }
@@ -745,66 +749,35 @@ impl OrderManager {
 
     pub fn get_symbol_pending_limit_order_count(&self, symbol: &str) -> i32 {
         let symbol = normalize_symbol_for_internal(symbol);
-        let actual = self
-            .orders
-            .values()
-            .filter(|order| {
-                order.order_type.is_limit()
-                    && order.count_pending_limit
-                    && !order.status.is_terminal()
-                    && order.symbol.eq_ignore_ascii_case(&symbol)
-            })
-            .count() as i32;
-
-        if let Some(stored) = self.pending_limit_order_count.get(&symbol) {
-            if *stored != actual {
-                debug!(
-                    "OrderManager: symbol={} pending_limit_count inconsistent cached={} actual={} (using actual)",
-                    symbol,
-                    stored,
-                    actual
-                );
-            }
-        }
-
-        actual
+        self.pending_limit_order_count
+            .get(&symbol)
+            .copied()
+            .unwrap_or(0)
     }
 
     pub fn get_symbol_pending_limit_order_count_by_side(&self, symbol: &str, side: Side) -> i32 {
         let symbol = normalize_symbol_for_internal(symbol);
-        self.orders
-            .values()
-            .filter(|order| {
-                order.order_type.is_limit()
-                    && order.count_pending_limit
-                    && !order.status.is_terminal()
-                    && order.side == side
-                    && order.symbol.eq_ignore_ascii_case(&symbol)
-            })
-            .count() as i32
+        self.pending_limit_side_count_map(side)
+            .get(&symbol)
+            .copied()
+            .unwrap_or(0)
     }
 
     /// 添加订单
     pub fn insert(&mut self, order: Order) {
-        let is_limit = order.order_type.is_limit();
-        let count_pending_limit = order.count_pending_limit;
-        let symbol = if is_limit && count_pending_limit {
-            Some(order.symbol.clone())
-        } else {
-            None
-        };
+        let pending_key = Self::pending_limit_key(&order).map(|(symbol, side)| (symbol, side));
 
         let order_id = order.client_order_id;
         let prev = self.orders.insert(order_id, order);
 
-        if let Some(symbol) = symbol {
-            self.increment_pending_limit_count(&symbol);
+        if let Some(prev_order) = prev {
+            if let Some((symbol, side)) = Self::pending_limit_key(&prev_order) {
+                self.decrement_pending_limit_count(&symbol, side);
+            }
         }
 
-        if let Some(prev_order) = prev {
-            if prev_order.order_type.is_limit() && prev_order.count_pending_limit {
-                self.decrement_pending_limit_count(&prev_order.symbol);
-            }
+        if let Some((symbol, side)) = pending_key {
+            self.increment_pending_limit_count(&symbol, side);
         }
 
         // 持久化
@@ -854,13 +827,24 @@ impl OrderManager {
     where
         F: FnOnce(&mut Order),
     {
-        if let Some(order) = self.orders.get_mut(&order_id) {
-            // 直接修改订单
+        let Some((before_key, after_key)) = self.orders.get_mut(&order_id).map(|order| {
+            let before_key = Self::pending_limit_key(order);
             f(order);
-            true
-        } else {
-            false
+            let after_key = Self::pending_limit_key(order);
+            (before_key, after_key)
+        }) else {
+            return false;
+        };
+
+        if before_key != after_key {
+            if let Some((symbol, side)) = before_key {
+                self.decrement_pending_limit_count(&symbol, side);
+            }
+            if let Some((symbol, side)) = after_key {
+                self.increment_pending_limit_count(&symbol, side);
+            }
         }
+        true
     }
 
     /// 应用一次远端来的订单更新（OrderUpdate / TradeUpdate / 查询回报），
@@ -885,8 +869,8 @@ impl OrderManager {
 
         if let Some(ref order) = removed {
             // 如果是限价单，减少计数
-            if order.order_type.is_limit() && order.count_pending_limit {
-                self.decrement_pending_limit_count(&order.symbol);
+            if let Some((symbol, side)) = Self::pending_limit_key(order) {
+                self.decrement_pending_limit_count(&symbol, side);
             }
         }
 
@@ -907,38 +891,72 @@ impl OrderManager {
     pub fn clear(&mut self) {
         self.orders.clear();
         self.pending_limit_order_count.clear();
+        self.pending_limit_buy_order_count.clear();
+        self.pending_limit_sell_order_count.clear();
     }
 
-    fn increment_pending_limit_count(&mut self, symbol: &str) {
-        let symbol = normalize_symbol_for_internal(symbol);
-        let entry = self.pending_limit_order_count.entry(symbol).or_insert(0);
-        *entry += 1;
+    fn pending_limit_key(order: &Order) -> Option<(String, Side)> {
+        (order.order_type.is_limit() && order.count_pending_limit && !order.status.is_terminal())
+            .then(|| (normalize_symbol_for_internal(&order.symbol), order.side))
     }
 
-    fn decrement_pending_limit_count(&mut self, symbol: &str) {
+    fn pending_limit_side_count_map(&self, side: Side) -> &HashMap<String, i32> {
+        match side {
+            Side::Buy => &self.pending_limit_buy_order_count,
+            Side::Sell => &self.pending_limit_sell_order_count,
+        }
+    }
+
+    fn pending_limit_side_count_map_mut(&mut self, side: Side) -> &mut HashMap<String, i32> {
+        match side {
+            Side::Buy => &mut self.pending_limit_buy_order_count,
+            Side::Sell => &mut self.pending_limit_sell_order_count,
+        }
+    }
+
+    fn increment_pending_limit_count(&mut self, symbol: &str, side: Side) {
         let symbol = normalize_symbol_for_internal(symbol);
+        *self
+            .pending_limit_order_count
+            .entry(symbol.clone())
+            .or_insert(0) += 1;
+        *self
+            .pending_limit_side_count_map_mut(side)
+            .entry(symbol)
+            .or_insert(0) += 1;
+    }
+
+    fn decrement_count(map: &mut HashMap<String, i32>, symbol: &str) -> i32 {
         let mut should_remove = false;
-        let mut remaining = None;
-
-        if let Some(entry) = self.pending_limit_order_count.get_mut(&symbol) {
-            if *entry > 1 {
+        let remaining = match map.get_mut(symbol) {
+            Some(entry) if *entry > 1 => {
                 *entry -= 1;
-                remaining = Some(*entry);
-            } else {
-                should_remove = true;
+                *entry
             }
-        } else {
-            return;
-        }
-
+            Some(_) => {
+                should_remove = true;
+                0
+            }
+            None => 0,
+        };
         if should_remove {
-            self.pending_limit_order_count.remove(&symbol);
+            map.remove(symbol);
         }
+        remaining
+    }
+
+    fn decrement_pending_limit_count(&mut self, symbol: &str, side: Side) {
+        let symbol = normalize_symbol_for_internal(symbol);
+        let remaining_total = Self::decrement_count(&mut self.pending_limit_order_count, &symbol);
+        let remaining_side =
+            Self::decrement_count(self.pending_limit_side_count_map_mut(side), &symbol);
 
         debug!(
-            "OrderManager: symbol={} pending_limit_count dec -> {}",
+            "OrderManager: symbol={} side={} pending_limit_count dec -> total={} side={}",
             symbol,
-            remaining.unwrap_or(0)
+            side.as_str(),
+            remaining_total,
+            remaining_side
         );
     }
 }
@@ -1672,6 +1690,115 @@ mod tests {
 
     fn extract_request_json(bytes: &[u8]) -> Value {
         serde_json::from_slice(&bytes[24..]).expect("gate request params should be valid json")
+    }
+
+    #[test]
+    fn pending_limit_counts_are_cached_by_symbol_and_side() {
+        let mut mgr = OrderManager::new(None);
+        mgr.create_order(
+            TradingVenue::OkexMargin,
+            1,
+            OrderType::Limit,
+            "FIL-USDT".to_string(),
+            Side::Buy,
+            1.0,
+            100.0,
+            false,
+            1.0,
+        );
+        mgr.create_order(
+            TradingVenue::OkexMargin,
+            2,
+            OrderType::Limit,
+            "FILUSDT".to_string(),
+            Side::Sell,
+            1.0,
+            101.0,
+            false,
+            1.0,
+        );
+        mgr.create_order(
+            TradingVenue::OkexMargin,
+            3,
+            OrderType::Market,
+            "FILUSDT".to_string(),
+            Side::Buy,
+            1.0,
+            0.0,
+            false,
+            1.0,
+        );
+        mgr.create_order_with_pending_limit_flag(
+            TradingVenue::OkexMargin,
+            4,
+            OrderType::Limit,
+            "FILUSDT".to_string(),
+            Side::Buy,
+            1.0,
+            99.0,
+            false,
+            1.0,
+            false,
+        );
+
+        assert_eq!(mgr.get_symbol_pending_limit_order_count("FILUSDT"), 2);
+        assert_eq!(
+            mgr.get_symbol_pending_limit_order_count_by_side("FILUSDT", Side::Buy),
+            1
+        );
+        assert_eq!(
+            mgr.get_symbol_pending_limit_order_count_by_side("FILUSDT", Side::Sell),
+            1
+        );
+
+        mgr.remove(1);
+        assert_eq!(mgr.get_symbol_pending_limit_order_count("FILUSDT"), 1);
+        assert_eq!(
+            mgr.get_symbol_pending_limit_order_count_by_side("FILUSDT", Side::Buy),
+            0
+        );
+        assert_eq!(
+            mgr.get_symbol_pending_limit_order_count_by_side("FILUSDT", Side::Sell),
+            1
+        );
+
+        let replacement = Order::new(
+            TradingVenue::OkexMargin,
+            2,
+            OrderType::Limit,
+            "FILUSDT".to_string(),
+            Side::Buy,
+            1.0,
+            102.0,
+            false,
+            1.0,
+            None,
+            true,
+        );
+        mgr.insert(replacement);
+        assert_eq!(mgr.get_symbol_pending_limit_order_count("FILUSDT"), 1);
+        assert_eq!(
+            mgr.get_symbol_pending_limit_order_count_by_side("FILUSDT", Side::Buy),
+            1
+        );
+        assert_eq!(
+            mgr.get_symbol_pending_limit_order_count_by_side("FILUSDT", Side::Sell),
+            0
+        );
+
+        mgr.update(2, |order| order.status = OrderExecutionStatus::Cancelled);
+        assert_eq!(mgr.get_symbol_pending_limit_order_count("FILUSDT"), 0);
+        assert_eq!(
+            mgr.get_symbol_pending_limit_order_count_by_side("FILUSDT", Side::Buy),
+            0
+        );
+
+        mgr.clear();
+        assert_eq!(mgr.get_symbol_pending_limit_order_count("FILUSDT"), 0);
+        assert_eq!(
+            mgr.get_symbol_pending_limit_order_count_by_side("FILUSDT", Side::Buy),
+            0
+        );
     }
 
     #[test]

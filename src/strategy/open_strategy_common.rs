@@ -918,10 +918,12 @@ pub trait OpenStrategyCommon {
             );
         }
 
+        let monitor = MonitorChannel::instance();
+        let order_manager = monitor.order_manager();
         let skip_position_risk_checks = self.skip_open_position_risk_checks();
-        let current_open_base_qty = MonitorChannel::instance().get_position_qty(&symbol, venue);
+        let current_open_base_qty = monitor.get_position_qty(&symbol, venue);
         if !skip_position_risk_checks {
-            if let Err(e) = MonitorChannel::instance().check_symbol_exposure(&symbol) {
+            if let Err(e) = monitor.check_symbol_exposure(&symbol) {
                 self.log_open_deleveraging_risk_reject(
                     "单品种敞口风控",
                     &e,
@@ -941,7 +943,7 @@ pub trait OpenStrategyCommon {
                 self.mark_open_strategy_inactive(format!("symbol exposure risk failed: {}", e));
                 return None;
             }
-            if let Err(e) = MonitorChannel::instance().check_total_exposure() {
+            if let Err(e) = monitor.check_total_exposure() {
                 self.log_open_deleveraging_risk_reject(
                     "总敞口风控",
                     &e,
@@ -962,7 +964,6 @@ pub trait OpenStrategyCommon {
             }
         }
         if order_type == OrderType::Limit {
-            let monitor = MonitorChannel::instance();
             let limit_check = match input.order_rate_bucket {
                 OrderRateBucket::ArbOpen => {
                     monitor.check_pending_limit_order_for_arb(&symbol, side)
@@ -1010,11 +1011,12 @@ pub trait OpenStrategyCommon {
                     rate_params.open_order_rate_limit_10s(),
                 ),
             };
+            let now_us = get_timestamp_us();
             if let Err(e) = OrderRateLimiter::check_limit(
                 input.order_rate_bucket,
                 rate_per_min,
                 rate_10s,
-                get_timestamp_us(),
+                now_us,
             ) {
                 summarize_open_order_rate_limit(
                     self.strategy_name(),
@@ -1022,7 +1024,7 @@ pub trait OpenStrategyCommon {
                     input.order_rate_bucket,
                     &symbol,
                     &e,
-                    get_timestamp_us(),
+                    now_us,
                 );
                 self.mark_open_strategy_inactive(format!("open order rate limit triggered: {}", e));
                 return None;
@@ -1063,8 +1065,7 @@ pub trait OpenStrategyCommon {
         //   * 其它交易所 margin 默认即视为 UNIFIED
         // - Binance STANDARD 在 FR / Cross arb 等非 intra 场景仍独立兜底。
         // - FR / Cross arb（非 intra）下不受此白名单影响。
-        let monitor = MonitorChannel::instance();
-        let binance_is_standard = monitor.order_manager().borrow().binance_is_standard();
+        let binance_is_standard = order_manager.borrow().binance_is_standard();
         let venue_is_margin = matches!(
             venue,
             TradingVenue::BinanceMargin
@@ -1154,10 +1155,10 @@ pub trait OpenStrategyCommon {
                 return None;
             }
         };
-        let current_base_qty = MonitorChannel::instance().get_position_qty(&symbol, venue);
+        let current_base_qty = monitor.get_position_qty(&symbol, venue);
         let next_base_qty = current_base_qty + add_base_qty;
         if !skip_position_risk_checks && next_base_qty.abs() > current_base_qty.abs() + 1e-12_f64 {
-            if let Err(e) = MonitorChannel::instance().check_leverage() {
+            if let Err(e) = monitor.check_leverage() {
                 self.log_open_deleveraging_risk_reject(
                     "杠杆风控",
                     &e,
@@ -1178,9 +1179,7 @@ pub trait OpenStrategyCommon {
             }
         }
         if !skip_position_risk_checks {
-            if let Err(e) =
-                MonitorChannel::instance().ensure_max_pos_u(&symbol, signed_qty, order_price)
-            {
+            if let Err(e) = monitor.ensure_max_pos_u(&symbol, signed_qty, order_price) {
                 self.log_open_deleveraging_risk_reject(
                     "仓位限制风控",
                     &e,
@@ -1225,20 +1224,17 @@ pub trait OpenStrategyCommon {
         self.open_order_state_mut().open_order_id = client_order_id;
 
         let create_order_start_us = get_timestamp_us();
-        MonitorChannel::instance()
-            .order_manager()
-            .borrow_mut()
-            .create_order(
-                venue,
-                client_order_id,
-                order_type,
-                symbol.clone(),
-                side,
-                order_qty,
-                order_price,
-                input.reduce_only,
-                qty_multiplier,
-            );
+        order_manager.borrow_mut().create_order(
+            venue,
+            client_order_id,
+            order_type,
+            symbol.clone(),
+            side,
+            order_qty,
+            order_price,
+            input.reduce_only,
+            qty_multiplier,
+        );
         if is_arb_open {
             record_arb_open_latency(
                 "pt_create_order",
@@ -1249,15 +1245,12 @@ pub trait OpenStrategyCommon {
         // egress 测度需要：在发单前把 signal 元数据落到 order（signal_t=create_ts）；
         // mkt_ts 仍按原条件覆写。合并到一次 update。
         let update_meta_start_us = get_timestamp_us();
-        let _ = MonitorChannel::instance()
-            .order_manager()
-            .borrow_mut()
-            .update(client_order_id, |order| {
-                order.set_signal_meta(input.create_ts, input.signal_type_u8);
-                if input.mkt_ts > 0 {
-                    order.set_mkt_time(input.mkt_ts);
-                }
-            });
+        let _ = order_manager.borrow_mut().update(client_order_id, |order| {
+            order.set_signal_meta(input.create_ts, input.signal_type_u8);
+            if input.mkt_ts > 0 {
+                order.set_mkt_time(input.mkt_ts);
+            }
+        });
         if is_arb_open {
             record_arb_open_latency(
                 "pt_update_order_meta",
