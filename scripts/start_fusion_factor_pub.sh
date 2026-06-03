@@ -15,6 +15,7 @@ Behavior:
   - venue 由当前目录名自动推断。
   - 优先使用 venue 专属二进制: fusion_factor_pub_<venue>
   - 使用 pmdaemon 启动进程名: fusion_factor_pub_<venue>
+  - 若 env.sh 设置 FUSION_FACTOR_CORE=<N>，则传给 binary 做主线程绑核。
   - 可用 PMDAEMON_BIN 覆盖二进制名（默认 pmdaemon）
 
 Examples:
@@ -79,6 +80,22 @@ if [[ ! -f "${BASE_DIR}/config/fusion_factor_pub.toml" ]]; then
   exit 1
 fi
 
+ENV_FILE="${BASE_DIR}/env.sh"
+if [[ -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+fi
+
+extra_args_json=""
+if [[ -n "${FUSION_FACTOR_CORE:-}" ]]; then
+  if [[ ! "$FUSION_FACTOR_CORE" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR] FUSION_FACTOR_CORE 必须为单个整数 (got: $FUSION_FACTOR_CORE)" >&2
+    exit 1
+  fi
+  extra_args_json=", \"--core\", \"${FUSION_FACTOR_CORE}\""
+  echo "[INFO] core bind ${FUSION_FACTOR_CORE} (from $ENV_FILE:FUSION_FACTOR_CORE)"
+fi
+
 name="fusion_factor_pub_${venue}"
 rust_log="${RUST_LOG:-info}"
 cfg_file="$(mktemp)"
@@ -101,7 +118,7 @@ cat >"$cfg_file" <<JSON
     {
       "name": "${json_name}",
       "script": "${json_bin}",
-      "args": ["--venue", "${json_venue}", "--config", "${json_cfg}"],
+      "args": ["--venue", "${json_venue}", "--config", "${json_cfg}"${extra_args_json}],
       "cwd": "${json_base}",
       "env": {
         "RUST_LOG": "${json_rust_log}"

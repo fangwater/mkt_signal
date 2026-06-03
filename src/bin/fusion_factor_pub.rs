@@ -7,6 +7,7 @@ use anyhow::Result;
 use clap::Parser;
 use log::info;
 
+use mkt_signal::common::affinity::maybe_pin_current_thread;
 use mkt_signal::factor_pub::fusion_factor_pub::app::FusionFactorPubApp;
 use mkt_signal::signal::common::TradingVenue;
 
@@ -21,6 +22,10 @@ struct Args {
     /// Config path
     #[arg(short, long, default_value = "config/fusion_factor_pub.toml")]
     config: String,
+
+    /// Bind main runtime thread to a CPU core. Falls back to FUSION_FACTOR_CORE.
+    #[arg(long)]
+    core: Option<usize>,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -28,6 +33,7 @@ async fn main() -> Result<()> {
     env_logger::init();
 
     let args = Args::parse();
+    maybe_pin_current_thread(args.core, "FUSION_FACTOR_CORE")?;
     info!(
         "Starting fusion_factor_pub: venue={} config={}",
         args.venue.data_pub_slug(),
