@@ -5,11 +5,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BIN_NAME="spread_pbs"
 BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 
-# 5 个 CEX × 2 market = 10 单边 venue；除 binance 外，*-both 由一个进程同时启动 margin/futures。
+# 5 个 CEX × 2 market = 10 单边 venue；*-both 由一个进程同时启动 margin/futures。
 # HK el-cc-okx-srv01 的 OKEX venue 会写入 SPREAD_PBS_CORE 覆盖到 12/14。
 KNOWN_VENUES=(
   "binance-margin"
   "binance-futures"
+  "binance-both"
   "bitget-margin"
   "bitget-futures"
   "bitget-both"
@@ -24,8 +25,7 @@ KNOWN_VENUES=(
   "okex-both"
 )
 ALL_BOTH_VENUES=(
-  "binance-margin"
-  "binance-futures"
+  "binance-both"
   "bitget-both"
   "bybit-both"
   "gate-both"
@@ -43,7 +43,7 @@ is_known_exchange() {
 
 both_venue_for_exchange() {
   case "${1,,}" in
-    binance) echo "binance-margin binance-futures" ;;
+    binance) echo "binance-both" ;;
     bitget)  echo "bitget-both"  ;;
     bybit)   echo "bybit-both"   ;;
     gate)    echo "gate-both"    ;;
@@ -106,21 +106,20 @@ usage() {
   cat <<'USAGE'
 Usage:
   deploy_spread_pbs.sh (--exchange <exchange> | --venue <venue>...) [--root <path>]
-  deploy_spread_pbs.sh --all          # binance 铺两个单边，其余铺 <exchange>-both
+  deploy_spread_pbs.sh --all          # 每个 exchange 铺 <exchange>-both
 
 Defaults:
   固定部署根目录 -> $HOME/spread_pbs
   目录结构       -> $HOME/spread_pbs/<venue>/
 
 Notes:
-  - --exchange <exchange> 自动部署 <exchange>-both；binance 例外，会部署 binance-margin + binance-futures。
+  - --exchange <exchange> 自动部署 <exchange>-both。
   - --venue <exchange>-margin / --venue <exchange>-futures 只部署对应单边。
-  - 除 binance 外，<exchange>-both 会在一个 spread_pbs 进程内同时启动该 exchange 的 margin/futures。
+  - <exchange>-both 会在一个 spread_pbs 进程内同时启动该 exchange 的 margin/futures。
     IPC topic 仍按单 venue 分开，例如 spread_pbs/gate-margin/ask_bid_spread 与
     spread_pbs/gate-futures/ask_bid_spread。
-  - binance 行情量大，spread_pbs 不支持 binance-both；请分别部署/启动 binance-margin 与 binance-futures。
   - 默认 core 映射在 start_spread_pbs.sh 里，按字母序：
-      binance-margin=0  binance-futures=1
+      binance-margin=0  binance-futures=1  binance-both=0
       bitget-margin=2   bitget-futures=3
       bybit-margin=4    bybit-futures=5
       gate-margin=6     gate-futures=7
@@ -234,7 +233,7 @@ if [[ -f "$ROOT_DIR/config/iceoryx2.toml" ]]; then
 fi
 
 # 远端分流：binance/bitget/gate 的 venue 推到 AWS 远端主机
-REMOTE_VENUE_REGEX='^(binance-(futures|margin)|(bitget|gate)-(futures|margin|both))$'
+REMOTE_VENUE_REGEX='^(binance-(futures|margin|both)|(bitget|gate)-(futures|margin|both))$'
 REMOTE_VENUES=()
 LOCAL_VENUES=()
 for v in "${VENUES[@]}"; do

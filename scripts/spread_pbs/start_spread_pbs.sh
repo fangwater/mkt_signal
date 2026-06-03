@@ -15,9 +15,8 @@ Behavior:
   - 必须在 venue 部署目录下执行（如 ~/spread_pbs/okex-futures 或 ~/spread_pbs/gate-both）。
   - 由当前目录名推断 venue，并查表得到默认 CPU 核（0-9）。
   - 若 env.sh 设置 SPREAD_PBS_CORE，则优先使用该覆盖值。
-  - 除 binance 外，<exchange>-both 会在一个 spread_pbs 进程内同时启动 margin/futures 两套 publisher。
+  - <exchange>-both 会在一个 spread_pbs 进程内同时启动 margin/futures 两套 publisher。
     启动 both 前需要先停止同 exchange 的单独 margin/futures spread_pbs 进程。
-  - binance 行情量大，不支持 binance-both；请分别运行 binance-margin / binance-futures。
   - 启动方式：taskset -c <core> + pmdaemon，进程名 spp_<ex>_<market>。
 USAGE
 }
@@ -38,6 +37,7 @@ core_for_venue() {
   case "${1,,}" in
     binance-margin)   echo 0 ;;
     binance-futures)  echo 1 ;;
+    binance-both)     echo 0 ;;
     bitget-margin)    echo 2 ;;
     bitget-futures)   echo 3 ;;
     bitget-both)      echo 2 ;;
@@ -86,11 +86,6 @@ if [[ ! "$venue" =~ $VENUE_DIR_REGEX ]]; then
   echo "[ERROR] 当前目录无法推断 venue: ${BASE_DIR}" >&2
   exit 1
 fi
-if [[ "$venue" == "binance-both" ]]; then
-  echo "[ERROR] spread_pbs 不支持 binance-both；请分别使用 binance-margin 和 binance-futures。" >&2
-  exit 1
-fi
-
 # 单一 env.sh 来源：每个 venue 部署目录下放一份 (与 fr/intra 一致)。
 # 提前 source 以便 SPREAD_PBS_CORE 等 per-host override 在 core 解析前可见；
 # okex-* 的 SBE handshake 也依赖 OKX_API_KEY/SECRET/PASSPHRASE。
@@ -210,7 +205,7 @@ json_venue="$(json_escape "$venue")"
 json_rust_log="$(json_escape "$rust_log")"
 json_inner_bin="$(json_escape "$BIN_PATH")"
 binance_sbe_env_line=""
-if [[ "$venue" == "binance-margin" ]]; then
+if [[ "$venue" == "binance-margin" || "$venue" == "binance-both" ]]; then
   BINANCE_SBE_API_KEY_HARDCODED="nk1AebIPBgDpTNDl186QeD2imHSuyPm4t2yzIGEul1SmmU0QXFroGVEHI18pVAO4"
   json_binance_sbe_api_key="$(json_escape "$BINANCE_SBE_API_KEY_HARDCODED")"
   binance_sbe_env_line=",

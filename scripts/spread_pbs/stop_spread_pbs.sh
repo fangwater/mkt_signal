@@ -49,11 +49,6 @@ if [[ ! "$venue" =~ $VENUE_DIR_REGEX ]]; then
   echo "[ERROR] 当前目录无法推断 venue: ${BASE_DIR}" >&2
   exit 1
 fi
-if [[ "$venue" == "binance-both" ]]; then
-  echo "[ERROR] spread_pbs 不支持 binance-both；无需停止该模式。" >&2
-  exit 1
-fi
-
 PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
 PMDAEMON=("$PMDAEMON_BIN")
 

@@ -1,6 +1,6 @@
 //! Binance spread 适配器。
 //!
-//! Binance 是 spread_pbs 里唯一不支持 `both` 的交易所；单边 margin/futures 仍支持完整
+//! Binance margin/futures 支持单边或 `binance-both` 运行，都会发布完整
 //! BBO/trade/incremental/derivatives replacement。协议字段解码集中在 `mkt_parsers`，本文件只做
 //! 订阅、venue gating 和 spread_pbs 内部 frame/bytes 转换。
 
