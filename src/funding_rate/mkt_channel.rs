@@ -26,6 +26,9 @@ use crate::symbol_match::{normalize_symbol_for_premium_pair, normalize_symbol_fo
 
 // 常量定义
 const ASKBID_PAYLOAD: usize = 128;
+const ASKBID_HISTORY_SIZE: usize = 100;
+const ASKBID_MAX_SUBSCRIBERS: usize = 64;
+const ASKBID_SUBSCRIBER_MAX_BUFFER: usize = 8192;
 const DERIVATIVES_PAYLOAD: usize = 128;
 const DERIVATIVES_HISTORY_SIZE: usize = 50;
 const DERIVATIVES_MAX_SUBSCRIBERS: usize = 64;
@@ -67,9 +70,48 @@ fn normalize_symbol_key(symbol: &str) -> String {
     normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures)
 }
 
-fn build_market_service(slug: &str, channel: &str) -> String {
-    // derivatives 直连 dat_pbs；askbid 走 spread_pbs
-    format!("dat_pbs/{}/{}", slug, channel)
+fn bridge_compat_market_data(venue: TradingVenue) -> bool {
+    matches!(
+        venue,
+        TradingVenue::BinanceMargin
+            | TradingVenue::BinanceFutures
+            | TradingVenue::GateMargin
+            | TradingVenue::GateFutures
+            | TradingVenue::BitgetMargin
+            | TradingVenue::BitgetFutures
+    )
+}
+
+fn askbid_service_root(venue: TradingVenue) -> &'static str {
+    if bridge_compat_market_data(venue) {
+        "bridge"
+    } else {
+        "spread_pbs"
+    }
+}
+
+fn derivatives_service_root(venue: TradingVenue) -> &'static str {
+    if bridge_compat_market_data(venue) {
+        "bridge"
+    } else {
+        "dat_pbs"
+    }
+}
+
+fn askbid_service_name(venue: TradingVenue) -> String {
+    format!(
+        "{}/{}/ask_bid_spread",
+        askbid_service_root(venue),
+        venue.data_pub_slug()
+    )
+}
+
+fn derivatives_service_name(venue: TradingVenue) -> String {
+    format!(
+        "{}/{}/derivatives",
+        derivatives_service_root(venue),
+        venue.data_pub_slug()
+    )
 }
 
 fn should_trigger_decision(symbol: &str) -> bool {
@@ -443,9 +485,9 @@ impl MktChannel {
             );
         }
 
-        // ask_bid_spread 全部走独立的 spread_pbs 通道（MM/Arb/Dashboard 一致）
-        let open_service = format!("spread_pbs/{}/ask_bid_spread", open_slug);
-        let hedge_service = format!("spread_pbs/{}/ask_bid_spread", hedge_slug);
+        // Binance/Gate/Bitget 保持 bridge 兼容；OKX/Bybit 继续直连 spread_pbs。
+        let open_service = askbid_service_name(open_venue);
+        let hedge_service = askbid_service_name(hedge_venue);
 
         let open_node = build_node_name(open_slug, "askbid");
         let hedge_node = build_node_name(hedge_slug, "askbid");
@@ -470,7 +512,15 @@ impl MktChannel {
         }
 
         info!(
-            "MktChannel 初始化完成: askbid_root=spread_pbs derivatives_root=dat_pbs trigger_decisions={}",
+            "MktChannel 初始化完成: askbid_roots={}:{} {}:{} derivatives_roots={}:{} {}:{} trigger_decisions={}",
+            open_slug,
+            askbid_service_root(open_venue),
+            hedge_slug,
+            askbid_service_root(hedge_venue),
+            open_slug,
+            derivatives_service_root(open_venue),
+            hedge_slug,
+            derivatives_service_root(hedge_venue),
             trigger_decisions
         );
 
@@ -518,7 +568,7 @@ impl MktChannel {
         }
 
         if is_futures(open_venue) {
-            let derivatives_service = build_market_service(open_slug, "derivatives");
+            let derivatives_service = derivatives_service_name(open_venue);
             let derivatives_node = build_node_name(open_slug, "derivatives");
             Self::spawn_derivatives_listener(
                 derivatives_node,
@@ -533,7 +583,7 @@ impl MktChannel {
             );
         }
         if hedge_venue != open_venue && is_futures(hedge_venue) {
-            let derivatives_service = build_market_service(hedge_slug, "derivatives");
+            let derivatives_service = derivatives_service_name(hedge_venue);
             let derivatives_node = build_node_name(hedge_slug, "derivatives");
             Self::spawn_derivatives_listener(
                 derivatives_node,
@@ -696,6 +746,10 @@ impl MktChannel {
                 let service = node
                     .service_builder(&ServiceName::new(&service_name)?)
                     .publish_subscribe::<[u8; ASKBID_PAYLOAD]>()
+                    .max_publishers(1)
+                    .max_subscribers(ASKBID_MAX_SUBSCRIBERS)
+                    .history_size(ASKBID_HISTORY_SIZE)
+                    .subscriber_max_buffer_size(ASKBID_SUBSCRIBER_MAX_BUFFER)
                     .open_or_create()?;
 
                 let subscriber: Subscriber<ipc::Service, [u8; ASKBID_PAYLOAD], ()> =
@@ -802,10 +856,18 @@ impl MktChannel {
                 let open_service = open_node
                     .service_builder(&ServiceName::new(&open_service_name)?)
                     .publish_subscribe::<[u8; ASKBID_PAYLOAD]>()
+                    .max_publishers(1)
+                    .max_subscribers(ASKBID_MAX_SUBSCRIBERS)
+                    .history_size(ASKBID_HISTORY_SIZE)
+                    .subscriber_max_buffer_size(ASKBID_SUBSCRIBER_MAX_BUFFER)
                     .open_or_create()?;
                 let hedge_service = hedge_node
                     .service_builder(&ServiceName::new(&hedge_service_name)?)
                     .publish_subscribe::<[u8; ASKBID_PAYLOAD]>()
+                    .max_publishers(1)
+                    .max_subscribers(ASKBID_MAX_SUBSCRIBERS)
+                    .history_size(ASKBID_HISTORY_SIZE)
+                    .subscriber_max_buffer_size(ASKBID_SUBSCRIBER_MAX_BUFFER)
                     .open_or_create()?;
 
                 let open_subscriber: Subscriber<ipc::Service, [u8; ASKBID_PAYLOAD], ()> =
@@ -1136,5 +1198,58 @@ impl MktChannel {
                 warn!("衍生品数据监听退出: {:?}", err);
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bridge_compat_venues_use_bridge_services() {
+        assert_eq!(
+            askbid_service_name(TradingVenue::BinanceFutures),
+            "bridge/binance-futures/ask_bid_spread"
+        );
+        assert_eq!(
+            derivatives_service_name(TradingVenue::BinanceFutures),
+            "bridge/binance-futures/derivatives"
+        );
+        assert_eq!(
+            askbid_service_name(TradingVenue::GateMargin),
+            "bridge/gate-margin/ask_bid_spread"
+        );
+        assert_eq!(
+            derivatives_service_name(TradingVenue::GateFutures),
+            "bridge/gate-futures/derivatives"
+        );
+        assert_eq!(
+            askbid_service_name(TradingVenue::BitgetMargin),
+            "bridge/bitget-margin/ask_bid_spread"
+        );
+        assert_eq!(
+            derivatives_service_name(TradingVenue::BitgetFutures),
+            "bridge/bitget-futures/derivatives"
+        );
+    }
+
+    #[test]
+    fn direct_venues_keep_direct_services() {
+        assert_eq!(
+            askbid_service_name(TradingVenue::OkexFutures),
+            "spread_pbs/okex-futures/ask_bid_spread"
+        );
+        assert_eq!(
+            derivatives_service_name(TradingVenue::OkexFutures),
+            "dat_pbs/okex-futures/derivatives"
+        );
+        assert_eq!(
+            askbid_service_name(TradingVenue::BybitMargin),
+            "spread_pbs/bybit-margin/ask_bid_spread"
+        );
+        assert_eq!(
+            derivatives_service_name(TradingVenue::BybitFutures),
+            "dat_pbs/bybit-futures/derivatives"
+        );
     }
 }
