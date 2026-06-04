@@ -722,7 +722,6 @@ pub trait OpenStrategyCommon {
     }
 
     fn send_open_order_common(&mut self, client_order_id: i64, symbol: &str) -> Result<(), String> {
-        let send_start_us = get_timestamp_us();
         let order = MonitorChannel::instance()
             .order_manager()
             .borrow()
@@ -735,15 +734,8 @@ pub trait OpenStrategyCommon {
         };
 
         let exchange = order.venue.trade_engine_exchange();
-        let signal_kind = order.timestamp.signal_kind;
         match order.get_order_request_bytes() {
             Ok(req_bin) => {
-                if signal_kind == SignalType::ArbOpen as u8 {
-                    record_arb_open_latency(
-                        "pt_get_order_request_bytes",
-                        get_timestamp_us().saturating_sub(send_start_us),
-                    );
-                }
                 if self.enable_open_order_rate_limit() {
                     let stats = OrderRateLimiter::record(
                         self.open_order_rate_bucket(),
@@ -767,12 +759,6 @@ pub trait OpenStrategyCommon {
                         "publish order request failed: symbol={} exchange={} err={}",
                         symbol, exchange, e
                     ));
-                }
-                if signal_kind == SignalType::ArbOpen as u8 {
-                    record_arb_open_latency(
-                        "pt_send_open_order_common",
-                        get_timestamp_us().saturating_sub(send_start_us),
-                    );
                 }
                 self.schedule_order_query_watchdog(client_order_id);
                 Ok(())
@@ -1223,7 +1209,6 @@ pub trait OpenStrategyCommon {
             .unwrap_or_else(|| Self::compose_order_id(self.strategy_id()));
         self.open_order_state_mut().open_order_id = client_order_id;
 
-        let create_order_start_us = get_timestamp_us();
         order_manager.borrow_mut().create_order(
             venue,
             client_order_id,
@@ -1235,29 +1220,14 @@ pub trait OpenStrategyCommon {
             input.reduce_only,
             qty_multiplier,
         );
-        if is_arb_open {
-            record_arb_open_latency(
-                "pt_create_order",
-                get_timestamp_us().saturating_sub(create_order_start_us),
-            );
-        }
-
         // egress 测度需要：在发单前把 signal 元数据落到 order（signal_t=create_ts）；
         // mkt_ts 仍按原条件覆写。合并到一次 update。
-        let update_meta_start_us = get_timestamp_us();
         let _ = order_manager.borrow_mut().update(client_order_id, |order| {
             order.set_signal_meta(input.create_ts, input.signal_type_u8);
             if input.mkt_ts > 0 {
                 order.set_mkt_time(input.mkt_ts);
             }
         });
-        if is_arb_open {
-            record_arb_open_latency(
-                "pt_update_order_meta",
-                get_timestamp_us().saturating_sub(update_meta_start_us),
-            );
-        }
-
         info!(
             "📤 {}订单已创建: strategy_id={} client_order_id={} symbol={} {:?} side={:?} qty={} price={} qty_multiplier={:.8} from_key_len={}",
             input.order_log_name,
@@ -1272,7 +1242,6 @@ pub trait OpenStrategyCommon {
             input.from_key_len
         );
 
-        let send_order_start_us = get_timestamp_us();
         if let Err(err) = self.send_open_order_common(client_order_id, &symbol) {
             error!(
                 "{}: strategy_id={} open order send failed: {}",
@@ -1292,10 +1261,6 @@ pub trait OpenStrategyCommon {
             );
         }
         if is_arb_open {
-            record_arb_open_latency(
-                "pt_send_order",
-                get_timestamp_us().saturating_sub(send_order_start_us),
-            );
             record_arb_open_latency(
                 "pt_open_total_until_sent",
                 get_timestamp_us().saturating_sub(total_start_us),

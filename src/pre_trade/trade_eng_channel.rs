@@ -151,13 +151,6 @@ impl TradeEngHub {
         let result = Self::publish_order_request(exchange, bytes);
         let publish_done_us = get_timestamp_us();
         let publish_cost_us = publish_done_us.saturating_sub(publish_start_us);
-        if let Some(om) = MonitorChannel::try_order_manager() {
-            if let Some(order) = om.borrow().get(client_order_id) {
-                if order.timestamp.signal_kind == SignalType::ArbOpen as u8 {
-                    record_arb_open_latency("pt_trade_req_publish_cost", publish_cost_us);
-                }
-            }
-        }
         let build_to_publish_done_us = create_time_us
             .filter(|create_time_us| *create_time_us > 0)
             .map(|create_time_us| publish_done_us.saturating_sub(create_time_us));

@@ -22,6 +22,7 @@ use crate::common::time_util::get_timestamp_us;
 use crate::funding_rate::FundingRatePeriod;
 use crate::market_maker::order_align::align_order_for_venue;
 use crate::pre_trade::order_manager::Side;
+use crate::rolling_metrics::arb_open_latency::record_arb_open_latency;
 use crate::signal::arb_signal::{ArbBackwardQueryMsg, ArbCancelCandidateQueryMsg};
 use crate::signal::common::{SignalBytes, TradingLeg, TradingVenue};
 use crate::signal::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
@@ -2936,6 +2937,11 @@ fn emit_spread_arb_open_signals(
             }
         })
         .flatten();
+        let tlen_start_us = get_timestamp_us();
+        record_arb_open_latency(
+            "ts_open_before_tlen",
+            tlen_start_us.saturating_sub(batch_ts),
+        );
         let (from_keys, filtered_levels) = super::common::apply_open_tlen_gate_and_build_from_keys(
             SPREAD_ARB_SHELL_NAME,
             open_depth_query_client,
@@ -2949,6 +2955,10 @@ fn emit_spread_arb_open_signals(
             &tick_indices,
             &from_key,
             tlen_gate,
+        );
+        record_arb_open_latency(
+            "ts_open_tlen_query_gate",
+            get_timestamp_us().saturating_sub(tlen_start_us),
         );
         contexts = from_keys
             .into_iter()
@@ -3456,6 +3466,11 @@ fn emit_funding_open_close_signals(
         })
         .flatten();
         let from_key_str = std::str::from_utf8(&from_key).unwrap_or("");
+        let tlen_start_us = get_timestamp_us();
+        record_arb_open_latency(
+            "ts_open_before_tlen",
+            tlen_start_us.saturating_sub(batch_ts),
+        );
         let (from_keys, filtered_levels) = super::common::apply_open_tlen_gate_and_build_from_keys(
             FUNDING_ARB_SHELL_NAME,
             open_depth_query_client,
@@ -3469,6 +3484,10 @@ fn emit_funding_open_close_signals(
             &tick_indices,
             from_key_str,
             tlen_gate,
+        );
+        record_arb_open_latency(
+            "ts_open_tlen_query_gate",
+            get_timestamp_us().saturating_sub(tlen_start_us),
         );
         contexts = from_keys
             .into_iter()
