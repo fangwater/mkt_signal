@@ -19,6 +19,7 @@ use crate::common::ipc_service_name::build_service_name;
 use crate::common::min_qty_table::MinQtyTable;
 use crate::common::symbol_util::{min_qty_symbol_key, normalize_symbol_for_internal};
 use crate::common::time_util::get_timestamp_us;
+use crate::funding_rate::ArbMode;
 use crate::portfolio_margin::pm_forwarder::{
     PM_HISTORY_SIZE, PM_MAX_SUBSCRIBERS, PM_SUBSCRIBER_MAX_BUFFER_SIZE,
 };
@@ -894,6 +895,7 @@ impl DerivativesPriceListener {
 struct MonitorChannelInner {
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
+    arb_mode: ArbMode,
     open_leg: LegMgr,
     hedge_leg: LegMgr,
     /// USDT 单独维护：account_scope -> manager（Binance standard 下 margin/futures 分离）
@@ -1600,6 +1602,10 @@ impl MonitorChannel {
         Self::with_inner(|inner| inner.hedge_venue)
     }
 
+    pub fn arb_mode(&self) -> ArbMode {
+        Self::with_inner(|inner| inner.arb_mode)
+    }
+
     /// `e_ts`：见 `cancel_arb_open_strategies_for_symbol_side`，交易所侧事件时间(µs)，
     /// 经 leg.ts → mkt_ts 落到 order；0 表示无上下文，不覆写已有 mkt_t。
     fn cancel_mm_open_strategies_for_symbol_side(
@@ -2242,6 +2248,7 @@ impl MonitorChannel {
         strategy_mgr: Rc<RefCell<crate::strategy::StrategyManager>>,
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
+        arb_mode: ArbMode,
         binance_account_mode: Option<BinanceAccountMode>,
     ) -> Result<()> {
         // 仅支持当前已接入 pre_trade 的交易所
@@ -2383,6 +2390,7 @@ impl MonitorChannel {
         let inner = MonitorChannelInner {
             open_venue,
             hedge_venue,
+            arb_mode,
             open_leg,
             hedge_leg,
             usdt_mgrs,
@@ -3915,6 +3923,7 @@ mod tests {
         let inner = MonitorChannelInner {
             open_venue: TradingVenue::OkexFutures,
             hedge_venue: TradingVenue::BinanceFutures,
+            arb_mode: ArbMode::CrossArb,
             open_leg,
             hedge_leg,
             usdt_mgrs,
@@ -3967,6 +3976,7 @@ mod tests {
         let inner = MonitorChannelInner {
             open_venue: TradingVenue::OkexFutures,
             hedge_venue: TradingVenue::BinanceFutures,
+            arb_mode: ArbMode::CrossArb,
             open_leg,
             hedge_leg,
             usdt_mgrs: HashMap::new(),
@@ -4019,6 +4029,7 @@ mod tests {
         let inner = MonitorChannelInner {
             open_venue: TradingVenue::OkexFutures,
             hedge_venue: TradingVenue::BinanceFutures,
+            arb_mode: ArbMode::CrossArb,
             open_leg,
             hedge_leg,
             usdt_mgrs: HashMap::new(),
@@ -4070,6 +4081,7 @@ mod tests {
         let inner = MonitorChannelInner {
             open_venue: TradingVenue::BinanceFutures,
             hedge_venue: TradingVenue::BinanceFutures,
+            arb_mode: ArbMode::CrossArb,
             open_leg,
             hedge_leg,
             usdt_mgrs: HashMap::new(),
@@ -4151,6 +4163,7 @@ mod tests {
         let inner = MonitorChannelInner {
             open_venue: TradingVenue::BinanceMargin,
             hedge_venue: TradingVenue::BinanceFutures,
+            arb_mode: ArbMode::FundingArb,
             open_leg,
             hedge_leg,
             usdt_mgrs,
@@ -4217,6 +4230,7 @@ mod tests {
         let inner = MonitorChannelInner {
             open_venue: TradingVenue::BinanceFutures,
             hedge_venue: TradingVenue::BinanceMargin,
+            arb_mode: ArbMode::CrossArb,
             open_leg,
             hedge_leg,
             usdt_mgrs,
@@ -4271,6 +4285,7 @@ mod tests {
         let inner = MonitorChannelInner {
             open_venue: TradingVenue::BinanceMargin,
             hedge_venue: TradingVenue::BinanceFutures,
+            arb_mode: ArbMode::FundingArb,
             open_leg,
             hedge_leg,
             usdt_mgrs,
@@ -4330,6 +4345,7 @@ mod tests {
         let inner = MonitorChannelInner {
             open_venue: TradingVenue::BybitMargin,
             hedge_venue: TradingVenue::BybitFutures,
+            arb_mode: ArbMode::IntraArb,
             open_leg,
             hedge_leg,
             usdt_mgrs,
@@ -4385,6 +4401,7 @@ mod tests {
         let inner = MonitorChannelInner {
             open_venue: TradingVenue::OkexMargin,
             hedge_venue: TradingVenue::OkexFutures,
+            arb_mode: ArbMode::IntraArb,
             open_leg,
             hedge_leg,
             usdt_mgrs,
@@ -4440,6 +4457,7 @@ mod tests {
         let inner = MonitorChannelInner {
             open_venue: TradingVenue::BitgetMargin,
             hedge_venue: TradingVenue::BitgetFutures,
+            arb_mode: ArbMode::IntraArb,
             open_leg,
             hedge_leg,
             usdt_mgrs,
@@ -4495,6 +4513,7 @@ mod tests {
         let inner = MonitorChannelInner {
             open_venue: TradingVenue::GateMargin,
             hedge_venue: TradingVenue::GateFutures,
+            arb_mode: ArbMode::IntraArb,
             open_leg,
             hedge_leg,
             usdt_mgrs,
@@ -4834,6 +4853,7 @@ mod tests {
         let inner = MonitorChannelInner {
             open_venue: TradingVenue::BinanceFutures,
             hedge_venue: TradingVenue::BinanceFutures,
+            arb_mode: ArbMode::CrossArb,
             open_leg,
             hedge_leg,
             usdt_mgrs: HashMap::new(),

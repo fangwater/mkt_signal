@@ -10,6 +10,7 @@ pub const POSITION_MARGIN_TOO_LOW: i32 = -100_505;
 pub const LIQUIDITY_NOT_ENOUGH: i32 = -100_506;
 pub const AUTO_BORROW_TOO_MUCH: i32 = -100_507;
 pub const INITIAL_MARGIN_TOO_LOW: i32 = -100_508;
+pub const INVALID_PARAM_VALUE: i32 = -100_509;
 
 /// Gate trade/rest/ws error codes to short descriptions.
 pub fn describe_trade_error_code(code: i32) -> Option<&'static str> {
@@ -23,6 +24,7 @@ pub fn describe_trade_error_code(code: i32) -> Option<&'static str> {
         LIQUIDITY_NOT_ENOUGH => Some("Liquidity insufficient"),
         AUTO_BORROW_TOO_MUCH => Some("Auto borrow too much"),
         INITIAL_MARGIN_TOO_LOW => Some("Initial margin too low"),
+        INVALID_PARAM_VALUE => Some("Invalid parameter value"),
         _ => None,
     }
 }
@@ -41,6 +43,7 @@ pub fn parse_error_label(label: &str) -> Option<i32> {
         "INITIAL_MARGIN_TOO_LOW" => Some(INITIAL_MARGIN_TOO_LOW),
         "LIQUIDITY_NOT_ENOUGH" => Some(LIQUIDITY_NOT_ENOUGH),
         "AUTO_BORROW_TOO_MUCH" => Some(AUTO_BORROW_TOO_MUCH),
+        "INVALID_PARAM_VALUE" => Some(INVALID_PARAM_VALUE),
         _ if is_poc_fill_immediately => Some(ORDER_POC),
         _ => None,
     }
@@ -70,6 +73,10 @@ mod tests {
         assert_eq!(
             parse_error_label("INITIAL_MARGIN_TOO_LOW"),
             Some(INITIAL_MARGIN_TOO_LOW)
+        );
+        assert_eq!(
+            parse_error_label("INVALID_PARAM_VALUE"),
+            Some(INVALID_PARAM_VALUE)
         );
         assert_eq!(parse_error_label("UNKNOWN_LABEL"), None);
     }

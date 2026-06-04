@@ -50,62 +50,94 @@ struct Args {
     core: Option<usize>,
 }
 
-fn infer_venues_from_cwd() -> Option<(TradingVenue, TradingVenue)> {
-    let cwd = std::env::current_dir().ok()?;
-    let leaf = cwd.file_name()?.to_string_lossy().to_string();
-    let normalized = leaf.to_lowercase().replace('_', "-");
-
-    fn normalize_exchange(ex: &str) -> &str {
-        match ex {
-            "okx" => "okex",
-            _ => ex,
-        }
+fn normalize_exchange(ex: &str) -> &str {
+    match ex {
+        "okx" => "okex",
+        _ => ex,
     }
+}
 
-    fn futures_venue(ex: &str) -> Option<TradingVenue> {
-        match ex {
-            "binance" => Some(TradingVenue::BinanceFutures),
-            "okex" => Some(TradingVenue::OkexFutures),
-            "gate" => Some(TradingVenue::GateFutures),
-            "bybit" => Some(TradingVenue::BybitFutures),
-            "bitget" => Some(TradingVenue::BitgetFutures),
-            _ => None,
-        }
+fn futures_venue(ex: &str) -> Option<TradingVenue> {
+    match ex {
+        "binance" => Some(TradingVenue::BinanceFutures),
+        "okex" => Some(TradingVenue::OkexFutures),
+        "gate" => Some(TradingVenue::GateFutures),
+        "bybit" => Some(TradingVenue::BybitFutures),
+        "bitget" => Some(TradingVenue::BitgetFutures),
+        _ => None,
     }
+}
 
-    fn margin_venue(ex: &str) -> Option<TradingVenue> {
-        match ex {
-            "binance" => Some(TradingVenue::BinanceMargin),
-            "okex" => Some(TradingVenue::OkexMargin),
-            "gate" => Some(TradingVenue::GateMargin),
-            "bybit" => Some(TradingVenue::BybitMargin),
-            "bitget" => Some(TradingVenue::BitgetMargin),
-            _ => None,
-        }
+fn margin_venue(ex: &str) -> Option<TradingVenue> {
+    match ex {
+        "binance" => Some(TradingVenue::BinanceMargin),
+        "okex" => Some(TradingVenue::OkexMargin),
+        "gate" => Some(TradingVenue::GateMargin),
+        "bybit" => Some(TradingVenue::BybitMargin),
+        "bitget" => Some(TradingVenue::BitgetMargin),
+        _ => None,
     }
+}
 
-    let parts: Vec<&str> = normalized.split('-').filter(|s| !s.is_empty()).collect();
+fn normalized_dir_parts(dir_name: &str) -> Vec<String> {
+    dir_name
+        .to_lowercase()
+        .replace('_', "-")
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn infer_venues_from_dir_name(dir_name: &str) -> Option<(TradingVenue, TradingVenue)> {
+    let parts = normalized_dir_parts(dir_name);
 
     // intra: <exchange>-intra-<trade|test|...> → margin × futures (same exchange)
     if parts.len() >= 2 && parts[1] == "intra" {
-        let ex = normalize_exchange(parts[0]);
+        let ex = normalize_exchange(&parts[0]);
         return Some((margin_venue(ex)?, futures_venue(ex)?));
     }
 
     // cross: <open>-<hedge>-cross-<trade|test|...> → futures × futures (different exchanges)
     if parts.len() >= 3 && parts[2] == "cross" {
-        let open_ex = normalize_exchange(parts[0]);
-        let hedge_ex = normalize_exchange(parts[1]);
+        let open_ex = normalize_exchange(&parts[0]);
+        let hedge_ex = normalize_exchange(&parts[1]);
         return Some((futures_venue(open_ex)?, futures_venue(hedge_ex)?));
     }
 
     // fr: <exchange>-fr-<trade|test|...> → margin × futures (cross-exchange funding-rate arb)
     if parts.len() >= 2 && parts[1] == "fr" {
-        let ex = normalize_exchange(parts[0]);
+        let ex = normalize_exchange(&parts[0]);
         return Some((margin_venue(ex)?, futures_venue(ex)?));
     }
 
     None
+}
+
+fn infer_venues_from_cwd() -> Option<(TradingVenue, TradingVenue)> {
+    let cwd = std::env::current_dir().ok()?;
+    let leaf = cwd.file_name()?.to_string_lossy().to_string();
+    infer_venues_from_dir_name(&leaf)
+}
+
+fn infer_arb_mode_from_dir_name(dir_name: &str) -> Option<ArbMode> {
+    let parts = normalized_dir_parts(dir_name);
+    if parts.len() >= 2 && parts[1] == "intra" {
+        return Some(ArbMode::IntraArb);
+    }
+    if parts.len() >= 3 && parts[2] == "cross" {
+        return Some(ArbMode::CrossArb);
+    }
+    if parts.len() >= 2 && parts[1] == "fr" {
+        return Some(ArbMode::FundingArb);
+    }
+    None
+}
+
+fn infer_arb_mode_from_cwd() -> Option<ArbMode> {
+    let cwd = std::env::current_dir().ok()?;
+    let leaf = cwd.file_name()?.to_string_lossy().to_string();
+    infer_arb_mode_from_dir_name(&leaf)
 }
 
 fn infer_dir_prefix_from_cwd() -> Option<String> {
@@ -151,9 +183,15 @@ async fn main() -> Result<()> {
             ));
         }
     };
+    let venue_arb_mode = ArbMode::from_venues(open_venue, hedge_venue);
+    let cwd_arb_mode = infer_arb_mode_from_cwd();
+    let arb_mode = cwd_arb_mode.unwrap_or(venue_arb_mode);
     info!(
-        "pre_trade starting, open_venue={:?}, hedge_venue={:?}",
-        open_venue, hedge_venue
+        "pre_trade starting, open_venue={:?}, hedge_venue={:?}, arb_mode={} (venue_derived={})",
+        open_venue,
+        hedge_venue,
+        arb_mode.as_str(),
+        venue_arb_mode.as_str()
     );
     let need_binance = open_venue.trade_engine_exchange() == "binance"
         || hedge_venue.trade_engine_exchange() == "binance";
@@ -244,7 +282,7 @@ async fn main() -> Result<()> {
             // 启动时同步加载一次，避免首个开仓信号到来时白名单还是空的；
             // 之后由后台任务按 60s 周期 reload。
             // 与 trade_signal 共用同一份 Redis key（无 prefix）以保证两侧视图一致。
-            if ArbMode::from_venues(open_venue, hedge_venue) == ArbMode::IntraArb {
+            if arb_mode == ArbMode::IntraArb {
                 let bwd_key_suffix = open_venue.trade_engine_exchange().to_string();
                 let bwd_redis = RedisSettings::default();
                 if let Err(err) =
@@ -276,6 +314,7 @@ async fn main() -> Result<()> {
                     strategy_mgr.clone(),
                     open_venue,
                     hedge_venue,
+                    arb_mode,
                     binance_account_mode,
                 )
                 .await
@@ -685,4 +724,29 @@ async fn main() -> Result<()> {
             pre_trade.run().await
         })
         .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn infer_arb_mode_uses_dir_namespace_before_venue_shape() {
+        assert_eq!(
+            infer_arb_mode_from_dir_name("binance_fr_arb03"),
+            Some(ArbMode::FundingArb)
+        );
+        assert_eq!(
+            infer_venues_from_dir_name("binance_fr_arb03"),
+            Some((TradingVenue::BinanceMargin, TradingVenue::BinanceFutures))
+        );
+        assert_eq!(
+            ArbMode::from_venues(TradingVenue::BinanceMargin, TradingVenue::BinanceFutures),
+            ArbMode::IntraArb
+        );
+        assert_eq!(
+            infer_arb_mode_from_dir_name("binance-intra-arb03"),
+            Some(ArbMode::IntraArb)
+        );
+    }
 }

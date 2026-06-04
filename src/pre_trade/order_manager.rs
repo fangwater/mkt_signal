@@ -1515,11 +1515,13 @@ impl Order {
                 req_param.insert("currency_pair".to_string(), json!(currency_pair));
                 req_param.insert("type".to_string(), json!(order_type));
                 req_param.insert("account".to_string(), json!("unified"));
-                req_param.insert("auto_borrow".to_string(), json!(true));
-                // 仅 unified/cross-margin 单支持 order 级 auto_repay；成交所得用于偿还本单借入。
-                req_param.insert("auto_repay".to_string(), json!(true));
                 req_param.insert("side".to_string(), json!(self.side.as_str_lower()));
                 req_param.insert("amount".to_string(), json!(format_quantity(self.quantity)));
+                if self.side == Side::Buy {
+                    req_param.insert("auto_borrow".to_string(), json!(true));
+                    // 仅 unified/cross-margin 买入单可能触发本单借款；成交所得用于偿还本单借入。
+                    req_param.insert("auto_repay".to_string(), json!(true));
+                }
                 if self.order_type.is_limit() {
                     req_param.insert("price".to_string(), json!(format_price(self.price)));
                 }
@@ -1957,6 +1959,72 @@ mod tests {
             payload.get("reduce_only").and_then(Value::as_bool),
             Some(true)
         );
+    }
+
+    #[test]
+    fn gate_margin_buy_order_serializes_auto_borrow_and_repay() {
+        let order = Order::new(
+            TradingVenue::GateMargin,
+            43,
+            OrderType::Limit,
+            "CCUSDT".to_string(),
+            Side::Buy,
+            7.0,
+            0.15309,
+            false,
+            1.0,
+            None,
+            true,
+        );
+
+        let bytes = order
+            .get_order_request_bytes()
+            .expect("gate margin buy request should build");
+        let payload = extract_request_json(bytes.as_ref());
+
+        assert_eq!(
+            payload.get("currency_pair").and_then(Value::as_str),
+            Some("CC_USDT")
+        );
+        assert_eq!(payload.get("side").and_then(Value::as_str), Some("buy"));
+        assert_eq!(
+            payload.get("auto_borrow").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            payload.get("auto_repay").and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn gate_margin_sell_order_omits_auto_borrow_and_repay() {
+        let order = Order::new(
+            TradingVenue::GateMargin,
+            44,
+            OrderType::Limit,
+            "CCUSDT".to_string(),
+            Side::Sell,
+            7.0,
+            0.15309,
+            false,
+            1.0,
+            None,
+            true,
+        );
+
+        let bytes = order
+            .get_order_request_bytes()
+            .expect("gate margin sell request should build");
+        let payload = extract_request_json(bytes.as_ref());
+
+        assert_eq!(
+            payload.get("currency_pair").and_then(Value::as_str),
+            Some("CC_USDT")
+        );
+        assert_eq!(payload.get("side").and_then(Value::as_str), Some("sell"));
+        assert!(payload.get("auto_borrow").is_none());
+        assert!(payload.get("auto_repay").is_none());
     }
 
     #[test]

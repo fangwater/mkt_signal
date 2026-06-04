@@ -4,7 +4,6 @@ use crate::common::symbol_util::{
 use crate::common::tick_math::QuantizedValue;
 use crate::common::time_util::get_timestamp_us;
 use crate::common::trade_error_code::describe_trade_error_code;
-use crate::funding_rate::ArbMode;
 use crate::pre_trade::intra_bwd_symbol_list::IntraBwdSymbolList;
 use crate::pre_trade::log_throttle::log_pending_limit_summary;
 use crate::pre_trade::monitor_channel::MonitorChannel;
@@ -1044,7 +1043,7 @@ pub trait OpenStrategyCommon {
         };
 
         // 现货/保证金开仓腿借币规则：
-        // - Intra arb（任意同交易所 margin+futures）：默认所有 margin 都禁用借币；
+        // - Intra arb（由运行目录/启动参数确定）：默认所有 margin 都禁用借币；
         //   仅当账户处于 UNIFIED 模式 且 symbol 命中 intra_bwd 借贷白名单
         //   （Redis key `intra_bwd_trade_symbols:<exchange>`，由 trade_signal 维护）时放行。
         //   * Binance UNIFIED ≡ 非 STANDARD（STANDARD 模式交易所不会自动借币）
@@ -1060,9 +1059,7 @@ pub trait OpenStrategyCommon {
                 | TradingVenue::BitgetMargin
                 | TradingVenue::GateMargin
         );
-        let intra = venue_is_margin
-            && ArbMode::from_venues(monitor.open_venue(), monitor.hedge_venue())
-                == ArbMode::IntraArb;
+        let intra = venue_is_margin && monitor.arb_mode() == crate::funding_rate::ArbMode::IntraArb;
         let venue_is_uniform = match venue {
             TradingVenue::BinanceMargin => !binance_is_standard,
             _ => true,
