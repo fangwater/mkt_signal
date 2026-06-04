@@ -8,6 +8,7 @@ use parking_lot::Mutex;
 use std::collections::{BTreeSet, HashMap};
 
 pub const SIGNAL_THROTTLE_TTL_US: i64 = 2 * 60 * 60 * 1_000_000;
+pub const GATE_SIGNAL_THROTTLE_TTL_US: i64 = 30 * 60 * 1_000_000;
 pub const SIGNAL_THROTTLE_ERROR_CODE_UM_COLLATERAL_LIMIT: i32 = 51169;
 pub const SIGNAL_THROTTLE_ERROR_CODE_MARGIN_INSUFFICIENT: i32 = -2019;
 pub const SIGNAL_THROTTLE_ERROR_CODE_MAX_BORROWABLE_EXCEEDED: i32 = 51006;
@@ -97,6 +98,14 @@ fn is_account_wide_reduce_only_error_code(exchange: Option<Exchange>, error_code
     )
 }
 
+fn signal_throttle_ttl_us(exchange: Option<Exchange>) -> i64 {
+    if matches!(exchange, Some(Exchange::Gate)) {
+        GATE_SIGNAL_THROTTLE_TTL_US
+    } else {
+        SIGNAL_THROTTLE_TTL_US
+    }
+}
+
 pub fn register_signal_throttle(
     symbol: &str,
     dir: Side,
@@ -110,7 +119,7 @@ pub fn register_signal_throttle(
         exchange,
         error_code,
         now_us,
-        SIGNAL_THROTTLE_TTL_US,
+        signal_throttle_ttl_us(exchange),
     )
 }
 
@@ -305,6 +314,25 @@ mod tests {
     fn clear_all() {
         SIGNAL_THROTTLE_MAP.lock().clear();
         *ACCOUNT_SIGNAL_THROTTLE.lock() = None;
+    }
+
+    #[test]
+    fn gate_throttle_ttl_is_shorter_than_default() {
+        let _guard = TEST_LOCK.lock();
+        assert_eq!(
+            signal_throttle_ttl_us(Some(Exchange::Gate)),
+            GATE_SIGNAL_THROTTLE_TTL_US
+        );
+        assert_eq!(GATE_SIGNAL_THROTTLE_TTL_US, 30 * 60 * 1_000_000);
+        assert_eq!(
+            signal_throttle_ttl_us(Some(Exchange::Binance)),
+            SIGNAL_THROTTLE_TTL_US
+        );
+        assert_eq!(
+            signal_throttle_ttl_us(Some(Exchange::Okex)),
+            SIGNAL_THROTTLE_TTL_US
+        );
+        assert_eq!(signal_throttle_ttl_us(None), SIGNAL_THROTTLE_TTL_US);
     }
 
     #[test]
