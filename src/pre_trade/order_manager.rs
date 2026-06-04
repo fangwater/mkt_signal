@@ -91,6 +91,10 @@ fn binance_ws_um_new_order_resp_type() -> &'static str {
     "RESULT"
 }
 
+fn binance_margin_should_use_margin_buy(use_binance_ws_margin: bool, reduce_only: bool) -> bool {
+    !use_binance_ws_margin && !reduce_only
+}
+
 /// 从交易对符号中提取 base asset 和 quote asset
 /// 例如: "BTCUSDT" -> ("BTC", "USDT")
 fn extract_assets_from_symbol(symbol: &str) -> (String, String) {
@@ -1322,7 +1326,9 @@ impl Order {
                 let available_balance =
                     MonitorChannel::instance().balance_position_for_venue(self.venue, &check_asset);
 
-                // 余额判断：记录余额不足场景。STANDARD 模式走 spot ws-api，不传 sideEffectType。
+                // 余额判断：保留 reduce-only 防护和日志。
+                // PM REST 的 crossMarginFree 无 websocket 推送，本地净钱包余额不能可靠判断是否需要借币；
+                // 非 reduce-only PM 下单统一带 MARGIN_BUY，避免 free 被挂单占用时误走 NO_SIDE_EFFECT。
                 if available_balance < required_amount {
                     let borrow_amount = required_amount - available_balance;
                     if self.reduce_only {
@@ -1348,9 +1354,7 @@ impl Order {
                             format_order_price(self.price)
                         );
                     }
-                    if !use_binance_ws_margin {
-                        params_parts.push("sideEffectType=MARGIN_BUY".to_string());
-                    } else {
+                    if use_binance_ws_margin {
                         info!(
                             "BinanceMargin STANDARD mode: omit sideEffectType for symbol={} side={:?}",
                             self.symbol, self.side
@@ -1361,7 +1365,10 @@ impl Order {
                         "✅ 余额充足: 资产={} 需要={:.8} 可用={:.8} symbol={} side={:?}",
                         check_asset, required_amount, available_balance, self.symbol, self.side
                     );
-                    // 余额充足，不添加 sideEffectType（默认 NO_SIDE_EFFECT）
+                    // 本地余额充足只代表净钱包口径充足；PM REST 仍可能需要自动借币。
+                }
+                if binance_margin_should_use_margin_buy(use_binance_ws_margin, self.reduce_only) {
+                    params_parts.push("sideEffectType=MARGIN_BUY".to_string());
                 }
                 // ===== 余额检查结束 =====/
 
@@ -1682,14 +1689,25 @@ impl Order {
 #[cfg(test)]
 mod tests {
     use super::{
-        Order, OrderExecutionStatus, OrderManager, OrderStatus, OrderType, Side,
-        TradeUpdateSkipReason,
+        binance_margin_should_use_margin_buy, Order, OrderExecutionStatus, OrderManager,
+        OrderStatus, OrderType, Side, TradeUpdateSkipReason,
     };
     use crate::signal::common::TradingVenue;
     use serde_json::Value;
 
     fn extract_request_json(bytes: &[u8]) -> Value {
         serde_json::from_slice(&bytes[24..]).expect("gate request params should be valid json")
+    }
+
+    #[test]
+    fn binance_pm_margin_open_uses_margin_buy() {
+        assert!(binance_margin_should_use_margin_buy(false, false));
+    }
+
+    #[test]
+    fn binance_standard_or_reduce_only_margin_open_omits_margin_buy() {
+        assert!(!binance_margin_should_use_margin_buy(true, false));
+        assert!(!binance_margin_should_use_margin_buy(false, true));
     }
 
     #[test]
