@@ -35,6 +35,15 @@ pub fn query_batch_tlens_or_zero(
         return Vec::new();
     }
 
+    if let Some(tlens) = super::local_tlen::query_batch_or_remote(
+        source,
+        depth_query_client.venue_slug(),
+        symbol,
+        tick_indices,
+    ) {
+        return tlens;
+    }
+
     match depth_query_client.query_batch_tick_indices(symbol, tick_indices) {
         Ok(mut tlens) => {
             if tlens.len() < tick_indices.len() {

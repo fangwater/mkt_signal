@@ -393,6 +393,9 @@ async fn run(
         log::warn!("配置加载失败: {:?}，将使用默认值", err);
     }
 
+    let force_remote_tlen = matches!(arb_mode, Some(ArbMode::FundingArb));
+    mkt_signal::funding_rate::local_tlen::init_for_trade_signal(open_venue, force_remote_tlen)
+        .await?;
     MktChannel::init_singleton(open_venue, hedge_venue)?;
     RateFetcher::init_for_venues(open_venue, hedge_venue)?;
 

@@ -291,8 +291,14 @@ fn process_askbid_payload(
     let symbol_raw = AskBidSpreadMsg::get_symbol(payload);
     let symbol = normalize_symbol_key(symbol_raw);
     let bid_price = AskBidSpreadMsg::get_bid_price(payload);
+    let bid_amount = AskBidSpreadMsg::get_bid_amount(payload);
     let ask_price = AskBidSpreadMsg::get_ask_price(payload);
+    let ask_amount = AskBidSpreadMsg::get_ask_amount(payload);
     let timestamp = AskBidSpreadMsg::get_timestamp(payload);
+
+    super::local_tlen::update_bbo(
+        feed_venue, &symbol, timestamp, bid_price, bid_amount, ask_price, ask_amount,
+    );
 
     let symbol_for_decision = {
         let mut quotes_map = quotes.borrow_mut();
