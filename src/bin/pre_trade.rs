@@ -13,6 +13,7 @@ use mkt_signal::pre_trade::auto_collection_service::AutoCollectionService;
 use mkt_signal::pre_trade::auto_repay::{BinanceRepayer, BybitRepayer, GateRepayer};
 use mkt_signal::pre_trade::auto_repay_service::AutoRepayService;
 use mkt_signal::pre_trade::intra_bwd_symbol_list::IntraBwdSymbolList;
+use mkt_signal::pre_trade::leverage_guard::LeverageGuard;
 use mkt_signal::pre_trade::monitor_channel::MonitorChannel;
 use mkt_signal::pre_trade::params_load::PreTradeParamsLoader;
 use mkt_signal::pre_trade::persist_channel::PersistChannel;
@@ -435,7 +436,22 @@ async fn main() -> Result<()> {
                 }
             }
 
-            // 4. 初始化 SignalChannel
+            // 4. 启动前杠杆保护：读取当前 online symbols，并阻塞完成 5/4/3 杠杆设置。
+            //    运行期只做内存同步检查；未知 symbol 会触发全局 ArbOpen 阻断。
+            info!("Initializing ArbOpen leverage guard...");
+            let leverage_guard_redis = RedisSettings::default();
+            LeverageGuard::initialize(
+                &leverage_guard_redis,
+                dir_prefix.clone(),
+                arb_mode,
+                open_venue,
+                hedge_venue,
+                binance_account_mode,
+            )
+            .await?;
+            info!("ArbOpen leverage guard initialized");
+
+            // 5. 初始化 SignalChannel
             info!("Initializing SignalChannel singleton...");
             SignalChannel::initialize(DEFAULT_SIGNAL_CHANNEL, Some(DEFAULT_BACKWARD_CHANNEL))?;
             info!(
@@ -443,7 +459,7 @@ async fn main() -> Result<()> {
                 DEFAULT_SIGNAL_CHANNEL, DEFAULT_BACKWARD_CHANNEL
             );
 
-            // 5. 初始化 ResampleChannel
+            // 6. 初始化 ResampleChannel
             info!("Initializing ResampleChannel singleton...");
             let exposure_ch = "pre_trade_exposure".to_string();
             let risk_ch = "pre_trade_risk".to_string();
@@ -458,7 +474,7 @@ async fn main() -> Result<()> {
 
             ResampleChannel::start_exposure_table_printer(Duration::from_secs(10));
 
-            // 6. 初始化 TradeEngHub（按 open/hedge 需求注册交易所）
+            // 7. 初始化 TradeEngHub（按 open/hedge 需求注册交易所）
             use std::collections::BTreeSet;
             let mut trade_eng_set = BTreeSet::new();
             trade_eng_set.insert(open_venue.trade_engine_exchange().to_string());
@@ -477,7 +493,7 @@ async fn main() -> Result<()> {
                 );
             }
 
-            // 6.1 初始化 QueryEngHub（查询请求/响应通道）
+            // 7.1 初始化 QueryEngHub（查询请求/响应通道）
             info!(
                 "Initializing QueryEngHub singleton (query_exchanges={})",
                 trade_eng_list.join(", ")
@@ -491,7 +507,7 @@ async fn main() -> Result<()> {
                 );
             }
 
-            // 6.2 启动时执行一次账户快照查询（用于补齐/初始化本地风控状态）
+            // 7.2 启动时执行一次账户快照查询（用于补齐/初始化本地风控状态）
             {
                     let open_venue = open_venue;
                     let hedge_venue = hedge_venue;
