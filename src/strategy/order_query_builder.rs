@@ -102,7 +102,7 @@ pub fn build_order_query_request(
             let req_param = serde_json::json!({
                 "order_id": order_id,
                 "currency_pair": currency_pair,
-                "account": "cross_margin",
+                "account": "unified",
             });
             bytes::Bytes::from(req_param.to_string())
         }
@@ -124,4 +124,53 @@ pub fn build_order_query_request(
 
     let req = GenericQueryRequest::create(req_type, get_timestamp_us(), request_query_id, params);
     Ok((exchange, req.to_bytes()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pre_trade::order_manager::{OrderManager, OrderType, Side};
+    use crate::trade_engine::query_request::{QueryRequestMsg, QueryRequestType};
+    use serde_json::Value;
+
+    #[test]
+    fn gate_margin_order_query_uses_unified_account() {
+        let mut order_manager = OrderManager::new(None);
+        let client_order_id = 1133736985207242753;
+        order_manager.create_order(
+            TradingVenue::GateMargin,
+            client_order_id,
+            OrderType::Limit,
+            "CCUSDT".to_string(),
+            Side::Sell,
+            7.0,
+            0.14653,
+            false,
+            1.0,
+        );
+        let order = order_manager
+            .get(client_order_id)
+            .expect("test order should exist");
+
+        let (exchange, bytes) = build_order_query_request(&order, client_order_id, client_order_id)
+            .expect("gate margin order query should build");
+        let msg = QueryRequestMsg::parse(bytes.as_ref()).expect("query request should parse");
+        let params: Value =
+            serde_json::from_slice(msg.params.as_ref()).expect("params should be json");
+
+        assert_eq!(exchange, "gate");
+        assert_eq!(msg.req_type, QueryRequestType::GateUnifiedOrderQuery);
+        assert_eq!(
+            params.get("currency_pair").and_then(Value::as_str),
+            Some("CC_USDT")
+        );
+        assert_eq!(
+            params.get("order_id").and_then(Value::as_str),
+            Some("t-1133736985207242753")
+        );
+        assert_eq!(
+            params.get("account").and_then(Value::as_str),
+            Some("unified")
+        );
+    }
 }

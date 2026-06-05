@@ -175,7 +175,7 @@ impl CapacityVenue {
         match self {
             Self::BinancePm => Bytes::from_static(b"asset=USDT"),
             Self::OkexUnified => Bytes::from_static(b"ccy=USDT"),
-            Self::GateUnified => Bytes::new(),
+            Self::GateUnified => Bytes::from_static(b"currency=USDT"),
             Self::BitgetUnified => Bytes::new(),
         }
     }
@@ -867,6 +867,14 @@ mod tests {
         *OKEX_UNIFIED_CAPACITY_POLL.lock() = CapacityPollState::default();
         *GATE_UNIFIED_CAPACITY_POLL.lock() = CapacityPollState::default();
         *BITGET_UNIFIED_CAPACITY_POLL.lock() = CapacityPollState::default();
+    }
+
+    #[test]
+    fn gate_unified_available_query_is_scoped_to_usdt() {
+        assert_eq!(
+            CapacityVenue::GateUnified.available_params().as_ref(),
+            b"currency=USDT"
+        );
     }
 
     fn seed_poll_state(

@@ -2970,13 +2970,19 @@ impl MonitorChannel {
                 return Err(format!("交易量 {:.8} 小于最小下单量 {:.8}", qty, min_qty));
             }
 
-            // 2. 检查最小名义金额（仅对 UM 合约）
+            // 2. 检查最小名义金额。Margin 现货 close 不能向上补数量，否则可能反向开仓；
+            // 因此这里对表里提供 min_notional 的 venue 直接拒绝小额订单。
             if matches!(
                 venue,
-                TradingVenue::BinanceFutures
+                TradingVenue::BinanceMargin
+                    | TradingVenue::BinanceFutures
+                    | TradingVenue::OkexMargin
                     | TradingVenue::OkexFutures
+                    | TradingVenue::BitgetMargin
                     | TradingVenue::BitgetFutures
+                    | TradingVenue::BybitMargin
                     | TradingVenue::BybitFutures
+                    | TradingVenue::GateMargin
                     | TradingVenue::GateFutures
             ) {
                 let min_notional = table.min_notional(&symbol_key).unwrap_or(0.0);
@@ -3792,7 +3798,7 @@ fn dispatch_order_update_generic<T>(
 mod tests {
     use super::*;
     use crate::common::basic_account_msg::{BasicBalanceMsg, BasicPositionMsg};
-    use crate::common::min_qty_table::MinQtyTable;
+    use crate::common::min_qty_table::{MinQtyEntry, MinQtyTable};
     use crate::common::tick_math::QuantizedValue;
     use crate::pre_trade::price_table::PriceTable;
     use crate::pre_trade::usdt_balance_manager::UsdtBalanceManager;
@@ -4107,6 +4113,68 @@ mod tests {
         // 当前持仓 20 * 100 = 2000 > max_pos_u(1000)，但减少仓位应放行。
         assert!(MonitorChannel::instance()
             .ensure_max_pos_u("FILUSDT", -5.0, 100.0)
+            .is_ok());
+    }
+
+    #[test]
+    fn gate_margin_min_notional_rejects_dust_close_qty() {
+        let mut gate_table = VenueMinQtyTable::new(TradingVenue::GateMargin);
+        gate_table.set_entry_for_test(MinQtyEntry {
+            symbol: "CCUSDT".to_string(),
+            base_asset: "CC".to_string(),
+            quote_asset: "USDT".to_string(),
+            min_qty: 1.0,
+            step_size: 1.0,
+            price_tick: Some(0.00001),
+            min_notional: Some(5.0),
+        });
+
+        let open_leg = LegMgr::Margin {
+            exchange: Exchange::Gate,
+            bal: Rc::new(RefCell::new(BasicBalanceManager::new(Exchange::Gate))),
+        };
+        let hedge_leg = LegMgr::Futures {
+            exchange: Exchange::Gate,
+            um: Rc::new(RefCell::new(BasicUmManager::new(Exchange::Gate))),
+            min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Gate))),
+        };
+
+        let mut venue_min_qty_tables: HashMap<TradingVenue, Rc<VenueMinQtyTable>> = HashMap::new();
+        venue_min_qty_tables.insert(TradingVenue::GateMargin, Rc::new(gate_table));
+
+        let inner = MonitorChannelInner {
+            open_venue: TradingVenue::GateMargin,
+            hedge_venue: TradingVenue::GateFutures,
+            arb_mode: ArbMode::FundingArb,
+            open_leg,
+            hedge_leg,
+            usdt_mgrs: HashMap::new(),
+            price_table: Rc::new(RefCell::new(PriceTable::new())),
+            venue_min_qty_tables,
+            strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
+            orphan_strategy_mgr: Rc::new(RefCell::new(OrphanStrategyManager::new())),
+            order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
+                BinanceAccountMode::Unified,
+            )))),
+            close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            trade_update_seq: 0,
+            latest_account_risk: HashMap::new(),
+            arb_startup_net_gate: ArbStartupNetGate::new(false),
+        };
+
+        MonitorChannel::clear_basic_state_runtime_cache();
+        MONITOR_CHANNEL.with(|mc| {
+            *mc.borrow_mut() = Some(inner);
+        });
+        MonitorChannel::refresh_basic_state_cache();
+
+        let err = MonitorChannel::instance()
+            .check_min_trading_requirements(TradingVenue::GateMargin, "CCUSDT", 7.0, Some(0.14653))
+            .unwrap_err();
+        assert!(err.contains("名义金额"), "err={err}");
+
+        assert!(MonitorChannel::instance()
+            .check_min_trading_requirements(TradingVenue::GateMargin, "CCUSDT", 40.0, Some(0.14653))
             .is_ok());
     }
 
