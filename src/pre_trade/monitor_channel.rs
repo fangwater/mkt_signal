@@ -1602,6 +1602,10 @@ impl MonitorChannel {
         Self::with_inner(|inner| inner.hedge_venue)
     }
 
+    pub fn try_venues() -> Option<(TradingVenue, TradingVenue)> {
+        Self::try_with_inner(|inner| (inner.open_venue, inner.hedge_venue))
+    }
+
     pub fn arb_mode(&self) -> ArbMode {
         Self::with_inner(|inner| inner.arb_mode)
     }

@@ -469,13 +469,18 @@ fn bitget_unified_capacity_poll_enabled() -> bool {
 }
 
 fn capacity_venue_for_monitor() -> Option<CapacityVenue> {
+    let Some((open_venue, hedge_venue)) = MonitorChannel::try_venues() else {
+        return None;
+    };
+
     if binance_pm_capacity_poll_enabled() {
         Some(CapacityVenue::BinancePm)
-    } else if okex_unified_capacity_poll_enabled() {
+    } else if open_venue == TradingVenue::OkexMargin && hedge_venue == TradingVenue::OkexFutures {
         Some(CapacityVenue::OkexUnified)
-    } else if gate_unified_capacity_poll_enabled() {
+    } else if open_venue == TradingVenue::GateMargin && hedge_venue == TradingVenue::GateFutures {
         Some(CapacityVenue::GateUnified)
-    } else if bitget_unified_capacity_poll_enabled() {
+    } else if open_venue == TradingVenue::BitgetMargin && hedge_venue == TradingVenue::BitgetFutures
+    {
         Some(CapacityVenue::BitgetUnified)
     } else {
         None
@@ -875,6 +880,14 @@ mod tests {
             CapacityVenue::GateUnified.available_params().as_ref(),
             b"currency=USDT"
         );
+    }
+
+    #[test]
+    fn latest_capacity_snapshot_is_none_without_monitor_channel() {
+        let _guard = TEST_LOCK.lock();
+        clear_all();
+
+        assert!(latest_usdt_max_available_margin_snapshot().is_none());
     }
 
     fn seed_poll_state(
