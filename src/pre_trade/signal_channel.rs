@@ -7,6 +7,9 @@ use crate::pre_trade::log_throttle::log_pending_limit_summary;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{OrderType, Side};
 use crate::pre_trade::signal_throttle::{check_account_signal_throttle, check_signal_throttle};
+use crate::pre_trade::taker_decision_model::{
+    PreTradeTakerDecisionModel, TakerDecisionOpenGateSnapshot,
+};
 use crate::rolling_metrics::arb_open_latency::record_arb_open_latency;
 use crate::signal::arb_signal::{
     ArbBackwardQueryMsg, ArbCancelCandidateEntry, ArbCancelCandidateQueryMsg, ArbCancelTriggerCtx,
@@ -46,6 +49,21 @@ pub const DEFAULT_SIGNAL_CHANNEL: &str = "trade_signal";
 pub const DEFAULT_BACKWARD_CHANNEL: &str = "trade_query";
 
 const ARB_CLOSE_MIN_NOTIONAL_U: f64 = 25.0;
+const TAKER_DECISION_MODEL_OPEN_GATE_LOG_INTERVAL_US: i64 = 20_000_000;
+
+#[derive(Debug, Clone)]
+struct TakerDecisionOpenGateLogState {
+    last_log_ts_us: i64,
+    suppressed: usize,
+    last_snapshot: TakerDecisionOpenGateSnapshot,
+    last_side: Side,
+    last_qty: f64,
+}
+
+thread_local! {
+    static TAKER_DECISION_OPEN_GATE_LOGS: RefCell<HashMap<String, TakerDecisionOpenGateLogState>> =
+        RefCell::new(HashMap::new());
+}
 
 fn arb_close_side_matches_open_position(close_side: Side, opening_pos: f64) -> bool {
     match close_side {
@@ -116,6 +134,50 @@ fn arb_open_is_account_throttle_reducing(
 
 fn should_drop_startup_buffered_signal(signal: &TradeSignal, listener_start_us: i64) -> bool {
     signal.generation_time > 0 && signal.generation_time < listener_start_us
+}
+
+fn log_taker_decision_open_gate_block(
+    snapshot: TakerDecisionOpenGateSnapshot,
+    side: Side,
+    qty: f64,
+) {
+    let now_us = get_timestamp_us();
+    let key = format!("{}|{}", snapshot.symbol, snapshot.note);
+    TAKER_DECISION_OPEN_GATE_LOGS.with(|logs| {
+        let mut logs = logs.borrow_mut();
+        let state = logs
+            .entry(key)
+            .or_insert_with(|| TakerDecisionOpenGateLogState {
+                last_log_ts_us: 0,
+                suppressed: 0,
+                last_snapshot: snapshot.clone(),
+                last_side: side,
+                last_qty: qty,
+            });
+        state.suppressed += 1;
+        state.last_snapshot = snapshot;
+        state.last_side = side;
+        state.last_qty = qty;
+        if state.last_log_ts_us == 0
+            || now_us.saturating_sub(state.last_log_ts_us)
+                >= TAKER_DECISION_MODEL_OPEN_GATE_LOG_INTERVAL_US
+        {
+            info!(
+                "ArbOpen blocked by taker decision model gate: symbol={} side={} qty={:.8} note={} samples={}/{} score={:?} q={:?} suppressed={}",
+                state.last_snapshot.symbol,
+                state.last_side.as_str(),
+                state.last_qty,
+                state.last_snapshot.note,
+                state.last_snapshot.sample_size,
+                state.last_snapshot.rolling_n,
+                state.last_snapshot.score,
+                state.last_snapshot.percentile,
+                state.suppressed
+            );
+            state.last_log_ts_us = now_us;
+            state.suppressed = 0;
+        }
+    });
 }
 
 fn should_suppress_arb_open_inactive_warning(reason: &str) -> bool {
@@ -554,6 +616,13 @@ fn handle_trade_signal(signal: TradeSignal, receive_us: i64) {
                     hedging_venue,
                 ) {
                     return;
+                }
+
+                if let Some(gate) = PreTradeTakerDecisionModel::arb_open_gate_global(&symbol) {
+                    if !gate.allowed {
+                        log_taker_decision_open_gate_block(gate, side, open_ctx.amount_value());
+                        return;
+                    }
                 }
 
                 if let Some(hit) = account_throttle_hit.as_ref() {

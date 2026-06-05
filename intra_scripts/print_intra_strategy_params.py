@@ -103,6 +103,11 @@ PARAM_COMMENTS: Dict[str, str] = {
     "enable_environment_model": "是否启用 env 开仓限制（false=继续读取 env / pnlu 并写入 from_key，但不阻拦开仓）",
     "return_model_service": "收益率模型输出通道名（'-' 表示不读取；配置通道名时仅读取并记录到 from_key，不拦截开仓）",
     "environment_model_service": "环境模型输出通道名（'-' 表示禁用）",
+    "enable_taker_decsion_model": "是否启用 taker decision 模型（默认 false；启用时要求 ARB_HEDGE_LAZY_TAKER=on，且不能同时开启 ARB_HEDGE_FORCE_TAKER）",
+    "taker_decsion_model_service": "taker decision 模型输出通道名（'-' 表示禁用；裸通道名会由 Rust 侧归一到 model_output/<name>）",
+    "taker_decsion_model_rolling_n": "taker decision 模型分位判断 rolling 条数 N，默认 30",
+    "taker_decsion_model_keep_long_percentile": "模型分位 > 该阈值时 keep long：保留现货多头，不对冲",
+    "taker_decsion_model_keep_short_percentile": "模型分位 < 该阈值时 keep short：模型看空，保留现货空头，不对冲",
     "max_hedge_price_pct_change": "对冲价格最大变动阈值(%)，范围>0且<=99，可为小数，超过则强制 taker",
     "signal_cooldown": "信号冷却时间(秒)",
 }
@@ -124,6 +129,11 @@ PARAM_PRINT_ORDER = [
     "enable_environment_model",
     "return_model_service",
     "environment_model_service",
+    "enable_taker_decsion_model",
+    "taker_decsion_model_service",
+    "taker_decsion_model_rolling_n",
+    "taker_decsion_model_keep_long_percentile",
+    "taker_decsion_model_keep_short_percentile",
     "max_hedge_price_pct_change",
     "signal_cooldown",
 ]

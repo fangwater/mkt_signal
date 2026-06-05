@@ -1849,20 +1849,31 @@ fn resolve_arb_hedge_build_params(
 /// 进程启动时读一次，缓存在 OnceLock。
 static ARB_HEDGE_FORCE_TAKER: OnceLock<bool> = OnceLock::new();
 
+fn env_flag_enabled(names: &[&str]) -> bool {
+    names.iter().any(|name| {
+        std::env::var(name)
+            .ok()
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "True" | "on" | "ON"))
+            .unwrap_or(false)
+    })
+}
+
 fn arb_hedge_force_taker() -> bool {
     *ARB_HEDGE_FORCE_TAKER.get_or_init(|| {
-        let enabled = std::env::var("ARB_HEDGE_FORCE_TAKER")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "True" | "on" | "ON"))
-            .unwrap_or(false);
-        if enabled {
+        let force_taker = env_flag_enabled(&["ARB_HEDGE_FORCE_TAKER"]);
+        let lazy_taker = env_flag_enabled(&["ARB_HEDGE_LAZY_TAKER", "ARB_HEDGE_lazy_TAKER"]);
+        if force_taker && lazy_taker {
+            panic!(
+                "ARB_HEDGE_FORCE_TAKER 与 ARB_HEDGE_LAZY_TAKER/ARB_HEDGE_lazy_TAKER 互斥，只能有一个为 true"
+            );
+        }
+        if force_taker {
             log::warn!(
                 "ARB_HEDGE_FORCE_TAKER=on: arb hedge will always submit as taker \
                  (price=0, offset=0, exp_time=0); model + offset plan bypassed"
             );
         }
-        enabled
+        force_taker
     })
 }
 

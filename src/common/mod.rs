@@ -6,6 +6,7 @@ pub mod binance_account_mode;
 pub mod bitget_account_msg;
 pub mod bybit_account_msg;
 pub mod delist_schedule;
+pub mod exact_rolling_window;
 pub mod exchange;
 pub mod iceoryx_publisher;
 pub mod iceoryx_subscriber;

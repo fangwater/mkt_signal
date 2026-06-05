@@ -21,6 +21,7 @@ use mkt_signal::pre_trade::resample_channel::ResampleChannel;
 use mkt_signal::pre_trade::signal_channel::{
     SignalChannel, DEFAULT_BACKWARD_CHANNEL, DEFAULT_SIGNAL_CHANNEL,
 };
+use mkt_signal::pre_trade::taker_decision_model::PreTradeTakerDecisionModel;
 use mkt_signal::pre_trade::PreTrade;
 use mkt_signal::pre_trade::QueryEngHub;
 use mkt_signal::pre_trade::TradeEngHub;
@@ -295,6 +296,25 @@ async fn main() -> Result<()> {
                     );
                 }
                 IntraBwdSymbolList::start_background_refresh(bwd_redis, bwd_key_suffix);
+
+                let strategy_redis = RedisSettings::default();
+                match PreTradeTakerDecisionModel::load_config_from_redis(
+                    &strategy_redis,
+                    dir_prefix.as_deref(),
+                    open_venue,
+                    hedge_venue,
+                )
+                .await
+                {
+                    Ok(cfg) => {
+                        if let Err(err) = PreTradeTakerDecisionModel::initialize(cfg) {
+                            panic!("Failed to initialize pre_trade taker decision model: {err:#}");
+                        }
+                    }
+                    Err(err) => {
+                        panic!("Failed to load pre_trade taker decision model config: {err:#}");
+                    }
+                }
             }
 
             info!(

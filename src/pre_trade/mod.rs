@@ -26,6 +26,7 @@ pub mod signal_latency;
 pub mod signal_throttle;
 pub mod symbol_mapper;
 pub mod symbol_util;
+pub mod taker_decision_model;
 pub mod trade_eng_channel;
 pub mod unimmr_close_symbol_list;
 pub mod usdt_balance_manager;

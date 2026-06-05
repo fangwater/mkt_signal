@@ -7,6 +7,7 @@ use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimite
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::signal_channel::SignalChannel;
+use crate::pre_trade::taker_decision_model::{LazyHedgeDecision, PreTradeTakerDecisionModel};
 use crate::pre_trade::{PersistChannel, TradeEngHub};
 use crate::signal::arb_signal::ArbBackwardQueryMsg;
 use crate::signal::common::{OrderStatus, SignalBytes, TradingLeg, TradingVenue};
@@ -46,19 +47,30 @@ const ARB_HEDGE_LEVERAGE_DAMPING: f64 = 0.8;
 
 static ARB_HEDGE_FORCE_TAKER: OnceLock<bool> = OnceLock::new();
 
+fn env_flag_enabled(names: &[&str]) -> bool {
+    names.iter().any(|name| {
+        std::env::var(name)
+            .ok()
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "True" | "on" | "ON"))
+            .unwrap_or(false)
+    })
+}
+
 fn arb_hedge_force_taker() -> bool {
     *ARB_HEDGE_FORCE_TAKER.get_or_init(|| {
-        let enabled = std::env::var("ARB_HEDGE_FORCE_TAKER")
-            .ok()
-            .filter(|value| !value.is_empty())
-            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "True" | "on" | "ON"))
-            .unwrap_or(false);
-        if enabled {
+        let force_taker = env_flag_enabled(&["ARB_HEDGE_FORCE_TAKER"]);
+        let lazy_taker = env_flag_enabled(&["ARB_HEDGE_LAZY_TAKER", "ARB_HEDGE_lazy_TAKER"]);
+        if force_taker && lazy_taker {
+            panic!(
+                "ARB_HEDGE_FORCE_TAKER 与 ARB_HEDGE_LAZY_TAKER/ARB_HEDGE_lazy_TAKER 互斥，只能有一个为 true"
+            );
+        }
+        if force_taker {
             warn!(
                 "ARB_HEDGE_FORCE_TAKER=on: pre_trade ArbHedge will bypass backward query and submit taker directly"
             );
         }
-        enabled
+        force_taker
     })
 }
 
@@ -436,18 +448,26 @@ impl ArbHedgeStrategy {
     }
 
     fn send_force_taker_hedge_direct(&mut self, now_ts: i64, due_hedge_qty: f64) -> bool {
+        self.send_taker_hedge_direct(now_ts, due_hedge_qty, "force_taker")
+    }
+
+    fn send_lazy_model_taker_hedge_direct(&mut self, now_ts: i64, due_hedge_qty: f64) -> bool {
+        self.send_taker_hedge_direct(now_ts, due_hedge_qty, "lazy_model")
+    }
+
+    fn send_taker_hedge_direct(&mut self, now_ts: i64, due_hedge_qty: f64, source: &str) -> bool {
         self.last_hedge_ts_ms = Some(now_ts / 1000);
         let Some(mark_price) = self.mark_price() else {
             info!(
-                "ArbHedgeStrategy: strategy_id={} symbol={} skip force-taker direct hedge because mark_price missing due_hedge_qty={:.8}",
-                self.strategy_id, self.symbol, due_hedge_qty
+                "ArbHedgeStrategy: strategy_id={} symbol={} skip {} direct hedge because mark_price missing due_hedge_qty={:.8}",
+                self.strategy_id, self.symbol, source, due_hedge_qty
             );
             return false;
         };
         if !(mark_price.is_finite() && mark_price > 0.0) {
             warn!(
-                "ArbHedgeStrategy: strategy_id={} symbol={} skip force-taker direct hedge because mark_price invalid mark_price={:.8} due_hedge_qty={:.8}",
-                self.strategy_id, self.symbol, mark_price, due_hedge_qty
+                "ArbHedgeStrategy: strategy_id={} symbol={} skip {} direct hedge because mark_price invalid mark_price={:.8} due_hedge_qty={:.8}",
+                self.strategy_id, self.symbol, source, mark_price, due_hedge_qty
             );
             return false;
         }
@@ -467,16 +487,16 @@ impl ArbHedgeStrategy {
             Ok(aligned) => aligned,
             Err(err) => {
                 warn!(
-                    "ArbHedgeStrategy: strategy_id={} symbol={} force-taker direct align failed venue={:?} raw_base_qty={:.8} mark_price={:.8} err={}",
-                    self.strategy_id, self.symbol, self.hedge_venue, raw_base_qty, mark_price, err
+                    "ArbHedgeStrategy: strategy_id={} symbol={} {} direct align failed venue={:?} raw_base_qty={:.8} mark_price={:.8} err={}",
+                    self.strategy_id, self.symbol, source, self.hedge_venue, raw_base_qty, mark_price, err
                 );
                 return false;
             }
         };
         if !(qty.is_finite() && qty > 0.0) {
             info!(
-                "ArbHedgeStrategy: strategy_id={} symbol={} skip force-taker direct hedge because aligned qty zero raw_base_qty={:.8}",
-                self.strategy_id, self.symbol, raw_base_qty
+                "ArbHedgeStrategy: strategy_id={} symbol={} skip {} direct hedge because aligned qty zero raw_base_qty={:.8}",
+                self.strategy_id, self.symbol, source, raw_base_qty
             );
             return false;
         }
@@ -491,16 +511,17 @@ impl ArbHedgeStrategy {
             .unwrap_or(0.0);
         let Some(amount_qv) = QuantizedValue::encode_floor(qty, qty_tick) else {
             warn!(
-                "ArbHedgeStrategy: strategy_id={} symbol={} force-taker direct amount qv invalid qty={:.8} qty_tick={:.8}",
-                self.strategy_id, self.symbol, qty, qty_tick
+                "ArbHedgeStrategy: strategy_id={} symbol={} {} direct amount qv invalid qty={:.8} qty_tick={:.8}",
+                self.strategy_id, self.symbol, source, qty, qty_tick
             );
             return false;
         };
         if amount_qv.get_count() <= 0 {
             warn!(
-                "ArbHedgeStrategy: strategy_id={} symbol={} force-taker direct amount qv non-positive qty={:.8} qty_tick={:.8} count={}",
+                "ArbHedgeStrategy: strategy_id={} symbol={} {} direct amount qv non-positive qty={:.8} qty_tick={:.8} count={}",
                 self.strategy_id,
                 self.symbol,
+                source,
                 qty,
                 qty_tick,
                 amount_qv.get_count()
@@ -521,12 +542,13 @@ impl ArbHedgeStrategy {
         ctx.signal_ts = now_ts;
         ctx.exp_time = 0;
         ctx.request_seq = request_seq;
-        ctx.set_from_key(format!("arb_hedge_force_taker_direct|{}", now_ts).into_bytes());
+        ctx.set_from_key(format!("arb_hedge_{}_direct|{}", source, now_ts).into_bytes());
 
         info!(
-            "ArbHedgeStrategy: strategy_id={} symbol={} force-taker direct hedge due_hedge_qty={:.8} raw_base_qty={:.8} aligned_qty={:.8} side={:?} mark_price={:.8} request_seq={}",
+            "ArbHedgeStrategy: strategy_id={} symbol={} {} direct hedge due_hedge_qty={:.8} raw_base_qty={:.8} aligned_qty={:.8} side={:?} mark_price={:.8} request_seq={}",
             self.strategy_id,
             self.symbol,
+            source,
             due_hedge_qty,
             raw_base_qty,
             qty,
@@ -602,6 +624,72 @@ impl ArbHedgeStrategy {
         self.try_send_due_hedge_query(now_ts, "trigger", false)
     }
 
+    pub(super) fn trigger_lazy_taker_on_model_update(
+        &mut self,
+        now_ts: i64,
+        model_percentile: Option<f64>,
+    ) -> bool {
+        if !self.is_active() {
+            return false;
+        }
+        let pending_hedge_qty = self.pending_hedge_queue.net_qty();
+        if pending_hedge_qty.abs() <= ARB_HEDGE_QTY_EPS {
+            return false;
+        }
+        let due_hedge_qty = self.pending_hedge_queue.due_qty(now_ts);
+        if due_hedge_qty.abs() <= ARB_HEDGE_QTY_EPS {
+            return false;
+        }
+        let Some(mark_price) = self.mark_price() else {
+            return false;
+        };
+        let due_hedge_usdt = Self::pending_hedge_usdt_with_mark_price(due_hedge_qty, mark_price);
+        if due_hedge_usdt < ARB_HEDGE_PENDING_QUERY_MIN_USDT {
+            return false;
+        }
+        let Some(snapshot) =
+            PreTradeTakerDecisionModel::evaluate_global(&self.symbol, due_hedge_qty)
+        else {
+            return false;
+        };
+        if !snapshot.ready {
+            debug!(
+                "ArbHedgeStrategy: strategy_id={} symbol={} lazy model update skipped because model not ready due_hedge_qty={:.8} due_hedge_usdt={:.8} score={:?} q={:?} samples={} note={}",
+                self.strategy_id,
+                self.symbol,
+                due_hedge_qty,
+                due_hedge_usdt,
+                snapshot.score,
+                snapshot.percentile.or(model_percentile),
+                snapshot.sample_size,
+                snapshot.note
+            );
+            return false;
+        }
+        if snapshot.decision != LazyHedgeDecision::Hedge {
+            debug!(
+                "ArbHedgeStrategy: strategy_id={} symbol={} lazy model update remains keep decision={:?} due_hedge_qty={:.8} due_hedge_usdt={:.8} q={:?}",
+                self.strategy_id,
+                self.symbol,
+                snapshot.decision,
+                due_hedge_qty,
+                due_hedge_usdt,
+                snapshot.percentile.or(model_percentile)
+            );
+            return false;
+        }
+        info!(
+            "ArbHedgeStrategy: strategy_id={} symbol={} lazy model update triggers taker hedge due_hedge_qty={:.8} due_hedge_usdt={:.8} q={:?} note={}",
+            self.strategy_id,
+            self.symbol,
+            due_hedge_qty,
+            due_hedge_usdt,
+            snapshot.percentile.or(model_percentile),
+            snapshot.note
+        );
+        self.send_lazy_model_taker_hedge_direct(now_ts, due_hedge_qty)
+    }
+
     fn try_send_due_hedge_query(
         &mut self,
         now_ts: i64,
@@ -669,6 +757,28 @@ impl ArbHedgeStrategy {
                 self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
             }
             return false;
+        }
+        if let Some(snapshot) =
+            PreTradeTakerDecisionModel::evaluate_global(&self.symbol, due_hedge_qty)
+        {
+            if snapshot.decision != LazyHedgeDecision::Hedge {
+                if throttle_on_skip {
+                    self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
+                }
+                info!(
+                    "ArbHedgeStrategy: strategy_id={} symbol={} lazy model keeps exposure decision={:?} due_hedge_qty={:.8} pending_hedge_usdt={:.8} score={:?} q={:?} samples={} note={}",
+                    self.strategy_id,
+                    self.symbol,
+                    snapshot.decision,
+                    due_hedge_qty,
+                    pending_hedge_usdt,
+                    snapshot.score,
+                    snapshot.percentile,
+                    snapshot.sample_size,
+                    snapshot.note
+                );
+                return false;
+            }
         }
         self.send_hedge_query(now_ts, due_hedge_qty);
         true

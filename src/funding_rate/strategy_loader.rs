@@ -764,7 +764,6 @@ fn default_return_model_service() -> String {
 fn default_environment_model_service() -> String {
     "environment_model".to_string()
 }
-
 impl Default for StrategyParams {
     fn default() -> Self {
         Self {
@@ -1580,6 +1579,7 @@ impl StrategyParams {
                 }
             }
         };
+
         Ok(Self {
             order_amount,
             mm_amount_u_overrides,
@@ -1679,7 +1679,6 @@ impl StrategyParams {
         } else {
             Some(env_trimmed.to_string())
         };
-
         let arb_vol_band_scale =
             self.parse_required_vol_scale_range(&self.vol_band_scale, "vol_band_scale");
         let arb_state_applied = ArbDecision::with_state_mut(|arb| {

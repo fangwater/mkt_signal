@@ -5,6 +5,7 @@ use crate::pre_trade::query_eng_channel::QueryEngHub;
 use crate::pre_trade::resample_channel::ResampleChannel;
 use crate::pre_trade::signal_channel::SignalChannel;
 use crate::pre_trade::signal_throttle::log_active_signal_throttles;
+use crate::pre_trade::taker_decision_model::PreTradeTakerDecisionModel;
 use crate::pre_trade::trade_eng_channel::TradeEngHub;
 use crate::strategy::{OrphanStrategyManager, StrategyManager};
 use anyhow::Result;
@@ -120,6 +121,20 @@ impl PreTrade {
             has_work |= MonitorChannel::drain_pending_state_updates();
             has_work |= QueryEngHub::drain_pending_responses();
             has_work |= SignalChannel::drain_pending();
+            let model_updates = PreTradeTakerDecisionModel::poll_updates_global();
+            if !model_updates.is_empty() {
+                has_work = true;
+                let now = get_timestamp_us();
+                let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+                let mut mgr = strategy_mgr.borrow_mut();
+                for update in model_updates {
+                    let _ = mgr.trigger_arb_hedge_lazy_taker_on_model_update(
+                        &update.symbol,
+                        now,
+                        update.percentile,
+                    );
+                }
+            }
 
             let instant_now = Instant::now();
             let mut ran_periodic = false;

@@ -1,5 +1,7 @@
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
+
+use crate::common::exact_rolling_window::ExactRollingWindow;
 
 pub(crate) const INLINE_VOLATILITY_WINDOW_CAPACITY: usize = 720;
 pub(crate) const INLINE_VOLATILITY_MIN_SAMPLES: usize = 10;
@@ -16,16 +18,14 @@ pub(crate) struct InlineVolatilitySnapshot {
 
 #[derive(Debug)]
 struct InlineQuantileWindow {
-    arrival_order: VecDeque<f64>,
-    sorted_samples: Vec<f64>,
+    window: ExactRollingWindow,
     last_update_tp_ms: i64,
 }
 
 impl Default for InlineQuantileWindow {
     fn default() -> Self {
         Self {
-            arrival_order: VecDeque::with_capacity(INLINE_VOLATILITY_WINDOW_CAPACITY),
-            sorted_samples: Vec::with_capacity(INLINE_VOLATILITY_WINDOW_CAPACITY),
+            window: ExactRollingWindow::new(INLINE_VOLATILITY_WINDOW_CAPACITY),
             last_update_tp_ms: 0,
         }
     }
@@ -34,18 +34,11 @@ impl Default for InlineQuantileWindow {
 impl InlineQuantileWindow {
     fn observe(&mut self, current: f64, percentile: f64, now_ms: i64) -> InlineVolatilitySnapshot {
         let normalized_percentile = percentile.clamp(0.0, 100.0);
-        if self.arrival_order.len() == INLINE_VOLATILITY_WINDOW_CAPACITY {
-            if let Some(expired) = self.arrival_order.pop_front() {
-                self.remove_sorted(expired);
-            }
-        }
+        let _ = self.window.observe(current);
 
-        self.arrival_order.push_back(current);
-        self.insert_sorted(current);
-
-        let sample_count = self.arrival_order.len();
+        let sample_count = self.window.len();
         let threshold = if sample_count >= INLINE_VOLATILITY_MIN_SAMPLES {
-            self.threshold_at_percentile(normalized_percentile)
+            self.window.quantile_floor(normalized_percentile)
         } else {
             None
         };
@@ -64,50 +57,11 @@ impl InlineQuantileWindow {
         }
     }
 
-    fn insert_sorted(&mut self, value: f64) {
-        let idx = self
-            .sorted_samples
-            .binary_search_by(|probe| probe.total_cmp(&value))
-            .unwrap_or_else(|idx| idx);
-        self.sorted_samples.insert(idx, value);
-    }
-
-    fn remove_sorted(&mut self, value: f64) {
-        let Ok(mut idx) = self
-            .sorted_samples
-            .binary_search_by(|probe| probe.total_cmp(&value))
-        else {
-            return;
-        };
-        while idx > 0 && self.sorted_samples[idx - 1].to_bits() == value.to_bits() {
-            idx -= 1;
-        }
-        while idx < self.sorted_samples.len() {
-            if self.sorted_samples[idx].to_bits() == value.to_bits() {
-                self.sorted_samples.remove(idx);
-                return;
-            }
-            if self.sorted_samples[idx].total_cmp(&value).is_gt() {
-                return;
-            }
-            idx += 1;
-        }
-    }
-
-    fn threshold_at_percentile(&self, percentile: f64) -> Option<f64> {
-        if self.sorted_samples.len() < INLINE_VOLATILITY_MIN_SAMPLES {
-            return None;
-        }
-        let idx = ((self.sorted_samples.len().saturating_sub(1)) as f64 * (percentile / 100.0))
-            .floor() as usize;
-        self.sorted_samples.get(idx).copied()
-    }
-
     fn snapshot(&self, current: f64, percentile: f64) -> InlineVolatilitySnapshot {
         let normalized_percentile = percentile.clamp(0.0, 100.0);
-        let sample_count = self.arrival_order.len();
+        let sample_count = self.window.len();
         let threshold = if sample_count >= INLINE_VOLATILITY_MIN_SAMPLES {
-            self.threshold_at_percentile(normalized_percentile)
+            self.window.quantile_floor(normalized_percentile)
         } else {
             None
         };

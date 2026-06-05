@@ -6,6 +6,7 @@
 
 - amount_u                : `<env>:<open>:<hedge>:amount_u_overrides`
 - max_pos_u               : `<env>:<open>:<hedge>:max_pos_u_overrides`
+- taker_decsion_model      : `<env>:<open>:<hedge>:taker_decsion_model_overrides`
 - hedge_price_offset_limits : 合并 STRING `<env>:<open>:<hedge>:hedge_price_offset_limits`
                               JSON {symbol: {hedge_price_offset_limit_lower,
                                              hedge_price_offset_limit_upper}}
@@ -31,6 +32,10 @@ def make_amount_u_key(env_name: str, open_venue: str, hedge_venue: str) -> str:
 
 def make_max_pos_u_key(env_name: str, open_venue: str, hedge_venue: str) -> str:
     return f"{env_name}:{open_venue}:{hedge_venue}:max_pos_u_overrides"
+
+
+def make_taker_decision_model_key(env_name: str, open_venue: str, hedge_venue: str) -> str:
+    return f"{env_name}:{open_venue}:{hedge_venue}:taker_decsion_model_overrides"
 
 
 def make_hedge_offset_limits_key(env_name: str, open_venue: str, hedge_venue: str) -> str:
@@ -125,6 +130,101 @@ def normalize_open_offset_lower_mapping(values: Any) -> Dict[str, float]:
 
 def dumps_open_offset_lower_mapping(values: Dict[str, float]) -> str:
     ordered = {symbol: float(f"{values[symbol]:.12g}") for symbol in sorted(values.keys())}
+    return json.dumps(ordered, ensure_ascii=False, separators=(",", ":"))
+
+
+def _coerce_positive_int(raw_value: Any, field_name: str, symbol: str) -> int:
+    if isinstance(raw_value, bool):
+        raise ValueError(f"{field_name} must be a positive integer for {symbol}: {raw_value}")
+    try:
+        if isinstance(raw_value, float) and not raw_value.is_integer():
+            raise ValueError
+        value = int(raw_value)
+    except Exception as exc:
+        raise ValueError(f"{field_name} must be a positive integer for {symbol}: {raw_value}") from exc
+    if value <= 0:
+        raise ValueError(f"{field_name} must be > 0 for {symbol}: {raw_value}")
+    return value
+
+
+def _coerce_percentile(raw_value: Any, field_name: str, symbol: str) -> float:
+    try:
+        value = float(raw_value)
+    except Exception as exc:
+        raise ValueError(f"{field_name} must be a percentile for {symbol}: {raw_value}") from exc
+    if not (math.isfinite(value) and 0.0 <= value <= 100.0):
+        raise ValueError(f"{field_name} must be in [0,100] for {symbol}: {raw_value}")
+    return value
+
+
+def normalize_taker_decision_model_mapping(values: Any) -> Dict[str, Dict[str, Any]]:
+    if values is None:
+        return {}
+    if not isinstance(values, dict):
+        raise ValueError("taker_decision_model values must be an object")
+    normalized: Dict[str, Dict[str, Any]] = {}
+    allowed_fields = {
+        "rolling_n",
+        "rolling_window",
+        "window",
+        "keep_long_percentile",
+        "keep_long",
+        "keep_short_percentile",
+        "keep_short",
+    }
+    for raw_symbol, raw_cfg in values.items():
+        symbol = normalize_amount_u_symbol(raw_symbol)
+        if raw_cfg is None:
+            raw_cfg = {}
+        if not isinstance(raw_cfg, dict):
+            raise ValueError(f"taker_decision_model config for {symbol} must be an object")
+        unknown = sorted(str(field) for field in raw_cfg.keys() if str(field) not in allowed_fields)
+        if unknown:
+            raise ValueError(f"taker_decision_model config for {symbol} has unknown fields: {', '.join(unknown)}")
+        cfg: Dict[str, Any] = {}
+        rolling_raw = None
+        for field in ("rolling_n", "rolling_window", "window"):
+            if field in raw_cfg:
+                rolling_raw = raw_cfg[field]
+                break
+        if rolling_raw is not None:
+            cfg["rolling_n"] = _coerce_positive_int(rolling_raw, "rolling_n", symbol)
+
+        keep_long_raw = raw_cfg.get("keep_long_percentile", raw_cfg.get("keep_long"))
+        keep_short_raw = raw_cfg.get("keep_short_percentile", raw_cfg.get("keep_short"))
+        if keep_long_raw is not None:
+            cfg["keep_long_percentile"] = _coerce_percentile(
+                keep_long_raw, "keep_long_percentile", symbol
+            )
+        if keep_short_raw is not None:
+            cfg["keep_short_percentile"] = _coerce_percentile(
+                keep_short_raw, "keep_short_percentile", symbol
+            )
+        if (
+            "keep_long_percentile" in cfg
+            and "keep_short_percentile" in cfg
+            and cfg["keep_short_percentile"] > cfg["keep_long_percentile"]
+        ):
+            raise ValueError(
+                f"keep_short_percentile must be <= keep_long_percentile for {symbol}: "
+                f"short={cfg['keep_short_percentile']}, long={cfg['keep_long_percentile']}"
+            )
+        normalized[symbol] = cfg
+    return dict(sorted(normalized.items()))
+
+
+def dumps_taker_decision_model_mapping(values: Dict[str, Dict[str, Any]]) -> str:
+    ordered: Dict[str, Dict[str, Any]] = {}
+    for symbol in sorted(values.keys()):
+        raw_cfg = values[symbol]
+        cfg: Dict[str, Any] = {}
+        if "rolling_n" in raw_cfg:
+            cfg["rolling_n"] = int(raw_cfg["rolling_n"])
+        if "keep_long_percentile" in raw_cfg:
+            cfg["keep_long_percentile"] = float(f"{float(raw_cfg['keep_long_percentile']):.12g}")
+        if "keep_short_percentile" in raw_cfg:
+            cfg["keep_short_percentile"] = float(f"{float(raw_cfg['keep_short_percentile']):.12g}")
+        ordered[symbol] = cfg
     return json.dumps(ordered, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -276,6 +376,31 @@ def write_max_pos_u(
     key = make_max_pos_u_key(env_name, open_venue, hedge_venue)
     normalized = normalize_max_pos_u_mapping(values)
     rds.set(key, dumps_max_pos_u_mapping(normalized))
+    return {"key": key, "values": normalized, "count": len(normalized)}
+
+
+def read_taker_decision_model(
+    rds, env_name: str, open_venue: str, hedge_venue: str
+) -> Dict[str, Any]:
+    key = make_taker_decision_model_key(env_name, open_venue, hedge_venue)
+    raw = rds.get(key)
+    if raw is None:
+        values: Dict[str, Dict[str, Any]] = {}
+    else:
+        try:
+            decoded = json.loads(_decode_redis_str(raw))
+        except Exception as exc:
+            raise ValueError(f"invalid JSON in {key}: {exc}") from exc
+        values = normalize_taker_decision_model_mapping(decoded)
+    return {"key": key, "values": values, "count": len(values)}
+
+
+def write_taker_decision_model(
+    rds, env_name: str, open_venue: str, hedge_venue: str, values: Any
+) -> Dict[str, Any]:
+    key = make_taker_decision_model_key(env_name, open_venue, hedge_venue)
+    normalized = normalize_taker_decision_model_mapping(values)
+    rds.set(key, dumps_taker_decision_model_mapping(normalized))
     return {"key": key, "values": normalized, "count": len(normalized)}
 
 
@@ -742,4 +867,95 @@ def render_per_symbol_panels_js() -> str:
       const exO = document.getElementById('open-offset-lower-example');
       if (exO) exO.textContent = JSON.stringify(PER_SYMBOL_PANEL_EXAMPLES.open_offset_lower || {{}}, null, 2);
     }}
+"""
+
+
+def render_taker_decision_model_panel_html() -> str:
+    """intra 专用：per-symbol lazy taker model rolling/threshold overrides。"""
+    return """
+    <section class="panel">
+      <div class="section-header">
+        <h2>Per-Symbol Taker Decision Model Overrides</h2>
+        <div class="actions">
+          <button id="load-taker-decision-model" class="secondary">读取</button>
+          <button id="reset-taker-decision-model" class="ghost">示例</button>
+          <button id="save-taker-decision-model">保存</button>
+        </div>
+      </div>
+      <div class="hint">
+        JSON 结构
+        <code>{"SYMBOL":{"rolling_n":30,"keep_long_percentile":80,"keep_short_percentile":20}}</code>。
+        Redis String <code>&lt;env_name&gt;:&lt;open_venue&gt;:&lt;hedge_venue&gt;:taker_decsion_model_overrides</code>。
+        收到 model value msg 的 symbol 会使用 lazy taker decision model；这个 JSON 只覆盖对应 symbol 的 rolling/阈值。
+        未覆盖字段使用 strategy params 里的全局默认值。未收到 model msg 的 symbol 继续走正常 MT。
+      </div>
+      <div class="hint">示例：</div>
+      <pre id="taker-decision-model-example" class="mono"></pre>
+      <textarea id="taker-decision-model-text" class="mono" spellcheck="false"></textarea>
+      <div id="taker-decision-model-status" class="status"></div>
+    </section>
+"""
+
+
+def render_taker_decision_model_panel_js() -> str:
+    return r"""
+    const TAKER_DECISION_MODEL_PANEL_EXAMPLE = {
+      "BTCUSDT": {"rolling_n": 30, "keep_long_percentile": 80, "keep_short_percentile": 20},
+      "ETHUSDT": {"rolling_n": 50, "keep_long_percentile": 85, "keep_short_percentile": 15}
+    };
+
+    async function loadTakerDecisionModel() {
+      _psSetStatus('taker-decision-model-status', '读取中...');
+      try {
+        const data = await _psFetch('taker-decision-model');
+        document.getElementById('taker-decision-model-text').value =
+          JSON.stringify(data.values || {}, null, 2);
+        _psSetStatus('taker-decision-model-status',
+          '已读取 ' + (data.count || 0) + ' 个 symbol ' + (data.key || ''), 'ok');
+      } catch (err) {
+        _psSetStatus('taker-decision-model-status', '读取失败: ' + _psFormatError(err), 'err');
+      }
+    }
+
+    async function saveTakerDecisionModel() {
+      _psSetStatus('taker-decision-model-status', '保存中...');
+      let values;
+      try { values = JSON.parse(document.getElementById('taker-decision-model-text').value || '{}'); }
+      catch (err) { _psSetStatus('taker-decision-model-status', 'JSON 解析失败: ' + err.message, 'err'); return; }
+      try {
+        const data = await _psFetch('taker-decision-model', {method: 'POST', body: _psBody(values)});
+        document.getElementById('taker-decision-model-text').value =
+          JSON.stringify(data.values || {}, null, 2);
+        _psSetStatus('taker-decision-model-status',
+          '已保存 ' + (data.count || 0) + ' 个 symbol ' + (data.key || ''), 'ok');
+      } catch (err) {
+        _psSetStatus('taker-decision-model-status', '保存失败: ' + _psFormatError(err), 'err');
+      }
+    }
+
+    function resetTakerDecisionModel() {
+      document.getElementById('taker-decision-model-text').value =
+        JSON.stringify(TAKER_DECISION_MODEL_PANEL_EXAMPLE, null, 2);
+      _psSetStatus('taker-decision-model-status', '已填入示例，尚未写入 Redis', 'warn');
+    }
+
+    function bindTakerDecisionModelPanel() {
+      const map = [
+        ['load-taker-decision-model', loadTakerDecisionModel],
+        ['save-taker-decision-model', saveTakerDecisionModel],
+        ['reset-taker-decision-model', resetTakerDecisionModel],
+      ];
+      for (const [id, fn] of map) {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('click', fn);
+      }
+      const ex = document.getElementById('taker-decision-model-example');
+      if (ex) ex.textContent = JSON.stringify(TAKER_DECISION_MODEL_PANEL_EXAMPLE, null, 2);
+    }
+
+    const _psBaseBindPerSymbolPanelsForTakerDecisionModel = bindPerSymbolPanels;
+    bindPerSymbolPanels = function() {
+      _psBaseBindPerSymbolPanelsForTakerDecisionModel();
+      bindTakerDecisionModelPanel();
+    };
 """

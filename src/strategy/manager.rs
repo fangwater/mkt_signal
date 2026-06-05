@@ -922,6 +922,25 @@ impl StrategyManager {
         snapshots
     }
 
+    pub fn trigger_arb_hedge_lazy_taker_on_model_update(
+        &mut self,
+        symbol: &str,
+        now_ts: i64,
+        model_percentile: Option<f64>,
+    ) -> bool {
+        let symbol = normalize_symbol_for_internal(symbol);
+        let Some(id) = self.find_order_terminal_recorder_id(&symbol) else {
+            return false;
+        };
+        let Some(strategy) = self.strategies.get_mut(&id) else {
+            return false;
+        };
+        let Some(arb_hedge) = strategy.as_any_mut().downcast_mut::<ArbHedgeStrategy>() else {
+            return false;
+        };
+        arb_hedge.trigger_lazy_taker_on_model_update(now_ts, model_percentile)
+    }
+
     /// 触发全部策略的周期检查，返回本次检查到的策略数量
     pub fn handle_period_clock(&mut self, current_tp: i64) -> usize {
         let iterations = self.strategy_queue.len();
