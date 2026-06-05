@@ -8,7 +8,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::Instant;
 
-use crate::common::exact_rolling_window::ExactRollingWindow;
 use crate::common::mkt_msg::{ModelMsg, MODEL_STATUS_OK};
 use crate::common::model_ipc::MODEL_PAYLOAD_MAX_BYTES;
 use crate::common::redis_client::{RedisClient, RedisSettings};
@@ -28,7 +27,6 @@ thread_local! {
 pub struct TakerDecisionConfig {
     pub enabled: bool,
     pub service: String,
-    pub rolling_n: usize,
     pub keep_long_percentile: f64,
     pub keep_short_percentile: f64,
     pub symbol_configs: HashMap<String, TakerDecisionSymbolConfig>,
@@ -36,15 +34,12 @@ pub struct TakerDecisionConfig {
 
 #[derive(Debug, Clone)]
 pub struct TakerDecisionSymbolConfig {
-    pub rolling_n: usize,
     pub keep_long_percentile: f64,
     pub keep_short_percentile: f64,
 }
 
 #[derive(Debug, Deserialize)]
 struct RawTakerDecisionSymbolConfig {
-    #[serde(default, alias = "rolling_window", alias = "window")]
-    rolling_n: Option<usize>,
     #[serde(default, alias = "keep_long")]
     keep_long_percentile: Option<f64>,
     #[serde(default, alias = "keep_short")]
@@ -57,7 +52,6 @@ impl TakerDecisionConfig {
             .get(symbol)
             .cloned()
             .unwrap_or_else(|| TakerDecisionSymbolConfig {
-                rolling_n: self.rolling_n,
                 keep_long_percentile: self.keep_long_percentile,
                 keep_short_percentile: self.keep_short_percentile,
             })
@@ -78,7 +72,7 @@ pub struct LazyHedgeDecisionSnapshot {
     pub symbol: String,
     pub score: Option<f64>,
     pub percentile: Option<f64>,
-    pub sample_size: usize,
+    pub update_count: usize,
     pub note: String,
 }
 
@@ -87,7 +81,7 @@ pub struct ModelUpdateEvent {
     pub symbol: String,
     pub score: f64,
     pub percentile: Option<f64>,
-    pub sample_size: usize,
+    pub update_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -96,45 +90,34 @@ pub struct TakerDecisionOpenGateSnapshot {
     pub symbol: String,
     pub score: Option<f64>,
     pub percentile: Option<f64>,
-    pub sample_size: usize,
-    pub rolling_n: usize,
+    pub update_count: usize,
     pub note: String,
 }
 
 struct SymbolScoreState {
-    window: ExactRollingWindow,
     latest_score: Option<f64>,
     latest_percentile: Option<f64>,
+    update_count: usize,
 }
 
 impl SymbolScoreState {
-    fn new(rolling_n: usize) -> Self {
+    fn new() -> Self {
         Self {
-            window: ExactRollingWindow::new(rolling_n),
             latest_score: None,
             latest_percentile: None,
+            update_count: 0,
         }
     }
 
-    fn reconfigure(&mut self, rolling_n: usize) {
-        if self.window.capacity() != rolling_n {
-            self.window.reconfigure(rolling_n);
-            self.latest_percentile = self.window.percentile_rank_last().map(|v| v * 100.0);
-        }
-    }
-
-    fn push(&mut self, score: f64, rolling_n: usize) -> Option<f64> {
-        self.reconfigure(rolling_n);
-        if !self.window.observe(score) {
-            return self.latest_percentile;
-        }
+    fn observe(&mut self, score: f64, score_quantile: Option<f64>) -> Option<f64> {
         self.latest_score = Some(score);
-        self.latest_percentile = self.window.percentile_rank_last().map(|v| v * 100.0);
+        self.latest_percentile = score_quantile.map(|value| value * 100.0);
+        self.update_count = self.update_count.saturating_add(1);
         self.latest_percentile
     }
 
-    fn sample_size(&self) -> usize {
-        self.window.len()
+    fn update_count(&self) -> usize {
+        self.update_count
     }
 }
 
@@ -168,10 +151,6 @@ impl PreTradeTakerDecisionModel {
             .get("taker_decsion_model_service")
             .map(|raw| raw.trim().to_string())
             .unwrap_or_else(|| "-".to_string());
-        let rolling_n = map
-            .get("taker_decsion_model_rolling_n")
-            .map(|raw| parse_positive_usize(&key, "taker_decsion_model_rolling_n", raw))
-            .unwrap_or(30);
         let keep_long_percentile = map
             .get("taker_decsion_model_keep_long_percentile")
             .map(|raw| parse_percentile(&key, "taker_decsion_model_keep_long_percentile", raw))
@@ -194,7 +173,6 @@ impl PreTradeTakerDecisionModel {
                     Some(raw) => parse_symbol_configs(
                         &raw,
                         &overrides_key,
-                        rolling_n,
                         keep_long_percentile,
                         keep_short_percentile,
                     )?,
@@ -229,7 +207,6 @@ impl PreTradeTakerDecisionModel {
         Ok(TakerDecisionConfig {
             enabled,
             service,
-            rolling_n,
             keep_long_percentile,
             keep_short_percentile,
             symbol_configs,
@@ -279,7 +256,6 @@ impl PreTradeTakerDecisionModel {
             parse_err_count: 0,
             last_log: Instant::now(),
         };
-        let rolling_n = model.cfg.rolling_n;
         let keep_long = model.cfg.keep_long_percentile;
         let keep_short = model.cfg.keep_short_percentile;
         let symbol_config_count = model.cfg.symbol_configs.len();
@@ -287,8 +263,8 @@ impl PreTradeTakerDecisionModel {
             *cell.borrow_mut() = Some(model);
         });
         info!(
-            "pre_trade taker decision model enabled service={} default_rolling_n={} default_keep_long={} default_keep_short={} override_symbols={}",
-            service_name, rolling_n, keep_long, keep_short, symbol_config_count
+            "pre_trade taker decision model enabled service={} default_keep_long={} default_keep_short={} override_symbols={}",
+            service_name, keep_long, keep_short, symbol_config_count
         );
         Ok(true)
     }
@@ -348,19 +324,17 @@ impl PreTradeTakerDecisionModel {
                     if symbol.is_empty() {
                         continue;
                     }
-                    let symbol_cfg = self.cfg.symbol_config(&symbol);
-                    let rolling_n = symbol_cfg.rolling_n;
                     let state = self
                         .states
                         .entry(symbol.clone())
-                        .or_insert_with(|| SymbolScoreState::new(rolling_n));
-                    let percentile = state.push(msg.score, rolling_n);
+                        .or_insert_with(SymbolScoreState::new);
+                    let percentile = state.observe(msg.score, msg.score_quantile);
                     self.recv_count = self.recv_count.saturating_add(1);
                     events.push(ModelUpdateEvent {
                         symbol,
                         score: msg.score,
                         percentile,
-                        sample_size: state.sample_size(),
+                        update_count: state.update_count(),
                     });
                 }
                 Ok(None) => break,
@@ -391,30 +365,17 @@ impl PreTradeTakerDecisionModel {
 
     fn arb_open_gate(&self, symbol: &str) -> Option<TakerDecisionOpenGateSnapshot> {
         let symbol_key = normalize_symbol_for_internal(symbol);
-        let symbol_cfg = self.cfg.symbol_config(&symbol_key);
         let state = self.states.get(&symbol_key)?;
         let score = state.latest_score;
         let percentile = state.latest_percentile;
-        let sample_size = state.sample_size();
-        if sample_size < symbol_cfg.rolling_n {
-            return Some(TakerDecisionOpenGateSnapshot {
-                allowed: false,
-                symbol: symbol_key,
-                score,
-                percentile,
-                sample_size,
-                rolling_n: symbol_cfg.rolling_n,
-                note: "warming".to_string(),
-            });
-        }
+        let update_count = state.update_count();
         if percentile.filter(|value| value.is_finite()).is_none() {
             return Some(TakerDecisionOpenGateSnapshot {
                 allowed: false,
                 symbol: symbol_key,
                 score,
                 percentile,
-                sample_size,
-                rolling_n: symbol_cfg.rolling_n,
+                update_count,
                 note: "missing_percentile".to_string(),
             });
         }
@@ -423,8 +384,7 @@ impl PreTradeTakerDecisionModel {
             symbol: symbol_key,
             score,
             percentile,
-            sample_size,
-            rolling_n: symbol_cfg.rolling_n,
+            update_count,
             note: "ready".to_string(),
         })
     }
@@ -435,18 +395,7 @@ impl PreTradeTakerDecisionModel {
         let state = self.states.get(&symbol_key)?;
         let score = state.latest_score;
         let percentile = state.latest_percentile;
-        let sample_size = state.sample_size();
-        if sample_size < symbol_cfg.rolling_n {
-            return Some(LazyHedgeDecisionSnapshot {
-                decision: LazyHedgeDecision::Hedge,
-                ready: false,
-                symbol: symbol_key,
-                score,
-                percentile,
-                sample_size,
-                note: "warming".to_string(),
-            });
-        }
+        let update_count = state.update_count();
         let Some(q) = percentile.filter(|value| value.is_finite()) else {
             return Some(LazyHedgeDecisionSnapshot {
                 decision: LazyHedgeDecision::Hedge,
@@ -454,7 +403,7 @@ impl PreTradeTakerDecisionModel {
                 symbol: symbol_key,
                 score,
                 percentile,
-                sample_size,
+                update_count,
                 note: "missing_percentile".to_string(),
             });
         };
@@ -476,7 +425,7 @@ impl PreTradeTakerDecisionModel {
             symbol: symbol_key,
             score,
             percentile,
-            sample_size,
+            update_count,
             note,
         })
     }
@@ -510,7 +459,6 @@ fn taker_decision_model_overrides_key(
 fn parse_symbol_configs(
     raw: &str,
     redis_key: &str,
-    default_rolling_n: usize,
     default_keep_long_percentile: f64,
     default_keep_short_percentile: f64,
 ) -> Result<HashMap<String, TakerDecisionSymbolConfig>> {
@@ -521,10 +469,6 @@ fn parse_symbol_configs(
         let symbol = normalize_symbol_for_internal(&raw_symbol);
         if symbol.is_empty() {
             anyhow::bail!("Redis key '{redis_key}' contains empty symbol: {raw_symbol:?}");
-        }
-        let rolling_n = raw_cfg.rolling_n.unwrap_or(default_rolling_n);
-        if rolling_n == 0 {
-            anyhow::bail!("Redis key '{redis_key}' symbol={symbol} rolling_n must be > 0");
         }
         let keep_long_percentile = raw_cfg
             .keep_long_percentile
@@ -554,7 +498,6 @@ fn parse_symbol_configs(
         out.insert(
             symbol,
             TakerDecisionSymbolConfig {
-                rolling_n,
                 keep_long_percentile,
                 keep_short_percentile,
             },
@@ -631,19 +574,6 @@ fn parse_bool(redis_key: &str, field: &str, raw: &str) -> bool {
         "false" | "0" | "no" | "off" | "" => false,
         _ => panic!("Redis hash '{}' {} invalid bool: {}", redis_key, field, raw),
     }
-}
-
-fn parse_positive_usize(redis_key: &str, field: &str, raw: &str) -> usize {
-    let value = raw.trim().parse::<usize>().unwrap_or_else(|_| {
-        panic!(
-            "Redis hash '{}' {} invalid positive integer: {}",
-            redis_key, field, raw
-        )
-    });
-    if value == 0 {
-        panic!("Redis hash '{}' {} must be > 0", redis_key, field);
-    }
-    value
 }
 
 fn parse_percentile(redis_key: &str, field: &str, raw: &str) -> f64 {

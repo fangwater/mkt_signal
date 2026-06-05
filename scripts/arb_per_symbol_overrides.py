@@ -163,10 +163,8 @@ def normalize_taker_decision_model_mapping(values: Any) -> Dict[str, Dict[str, A
     if not isinstance(values, dict):
         raise ValueError("taker_decision_model values must be an object")
     normalized: Dict[str, Dict[str, Any]] = {}
+    disallowed_rolling_fields = {"rolling_n", "rolling_window", "window"}
     allowed_fields = {
-        "rolling_n",
-        "rolling_window",
-        "window",
         "keep_long_percentile",
         "keep_long",
         "keep_short_percentile",
@@ -178,17 +176,16 @@ def normalize_taker_decision_model_mapping(values: Any) -> Dict[str, Dict[str, A
             raw_cfg = {}
         if not isinstance(raw_cfg, dict):
             raise ValueError(f"taker_decision_model config for {symbol} must be an object")
+        rolling_fields = sorted(str(field) for field in raw_cfg.keys() if str(field) in disallowed_rolling_fields)
+        if rolling_fields:
+            raise ValueError(
+                f"taker_decision_model config for {symbol} no longer accepts rolling fields: "
+                f"{', '.join(rolling_fields)}; configure model_pub score_rolling instead"
+            )
         unknown = sorted(str(field) for field in raw_cfg.keys() if str(field) not in allowed_fields)
         if unknown:
             raise ValueError(f"taker_decision_model config for {symbol} has unknown fields: {', '.join(unknown)}")
         cfg: Dict[str, Any] = {}
-        rolling_raw = None
-        for field in ("rolling_n", "rolling_window", "window"):
-            if field in raw_cfg:
-                rolling_raw = raw_cfg[field]
-                break
-        if rolling_raw is not None:
-            cfg["rolling_n"] = _coerce_positive_int(rolling_raw, "rolling_n", symbol)
 
         keep_long_raw = raw_cfg.get("keep_long_percentile", raw_cfg.get("keep_long"))
         keep_short_raw = raw_cfg.get("keep_short_percentile", raw_cfg.get("keep_short"))
@@ -218,8 +215,6 @@ def dumps_taker_decision_model_mapping(values: Dict[str, Dict[str, Any]]) -> str
     for symbol in sorted(values.keys()):
         raw_cfg = values[symbol]
         cfg: Dict[str, Any] = {}
-        if "rolling_n" in raw_cfg:
-            cfg["rolling_n"] = int(raw_cfg["rolling_n"])
         if "keep_long_percentile" in raw_cfg:
             cfg["keep_long_percentile"] = float(f"{float(raw_cfg['keep_long_percentile']):.12g}")
         if "keep_short_percentile" in raw_cfg:
@@ -884,10 +879,10 @@ def render_taker_decision_model_panel_html() -> str:
       </div>
       <div class="hint">
         JSON 结构
-        <code>{"SYMBOL":{"rolling_n":30,"keep_long_percentile":80,"keep_short_percentile":20}}</code>。
+        <code>{"SYMBOL":{"keep_long_percentile":80,"keep_short_percentile":20}}</code>。
         Redis String <code>&lt;env_name&gt;:&lt;open_venue&gt;:&lt;hedge_venue&gt;:taker_decsion_model_overrides</code>。
-        收到 model value msg 的 symbol 会使用 lazy taker decision model；这个 JSON 只覆盖对应 symbol 的 rolling/阈值。
-        未覆盖字段使用 strategy params 里的全局默认值。未收到 model msg 的 symbol 继续走正常 MT。
+        收到 model value msg 的 symbol 会使用 lazy taker decision model；这个 JSON 只覆盖对应 symbol 的阈值。
+        rolling/score_quantile 由 model_pub score_rolling 维护。未覆盖字段使用 strategy params 里的全局默认值。未收到 model msg 的 symbol 继续走正常 MT。
       </div>
       <div class="hint">示例：</div>
       <pre id="taker-decision-model-example" class="mono"></pre>
@@ -900,8 +895,8 @@ def render_taker_decision_model_panel_html() -> str:
 def render_taker_decision_model_panel_js() -> str:
     return r"""
     const TAKER_DECISION_MODEL_PANEL_EXAMPLE = {
-      "BTCUSDT": {"rolling_n": 30, "keep_long_percentile": 80, "keep_short_percentile": 20},
-      "ETHUSDT": {"rolling_n": 50, "keep_long_percentile": 85, "keep_short_percentile": 15}
+      "BTCUSDT": {"keep_long_percentile": 80, "keep_short_percentile": 20},
+      "ETHUSDT": {"keep_long_percentile": 85, "keep_short_percentile": 15}
     };
 
     async function loadTakerDecisionModel() {

@@ -1610,9 +1610,9 @@ def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, st
         raise ValueError("enable_taker_decsion_model=true requires taker_decsion_model_service")
 
     if "taker_decsion_model_rolling_n" in normalized:
-        normalized["taker_decsion_model_rolling_n"] = normalize_positive_int_text(
-            normalized["taker_decsion_model_rolling_n"],
-            "taker_decsion_model_rolling_n",
+        raise ValueError(
+            "taker_decsion_model_rolling_n is no longer supported; "
+            "configure model_pub score_rolling instead"
         )
     keep_long_key = "taker_decsion_model_keep_long_percentile"
     keep_short_key = "taker_decsion_model_keep_short_percentile"

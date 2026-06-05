@@ -686,14 +686,14 @@ impl ArbHedgeStrategy {
         };
         if !snapshot.ready {
             debug!(
-                "ArbHedgeStrategy: strategy_id={} symbol={} lazy model update skipped because model not ready due_hedge_qty={:.8} due_hedge_usdt={:.8} score={:?} q={:?} samples={} note={}",
+                "ArbHedgeStrategy: strategy_id={} symbol={} lazy model update skipped because model not ready due_hedge_qty={:.8} due_hedge_usdt={:.8} score={:?} q={:?} updates={} note={}",
                 self.strategy_id,
                 self.symbol,
                 due_hedge_qty,
                 due_hedge_usdt,
                 snapshot.score,
                 snapshot.percentile.or(model_percentile),
-                snapshot.sample_size,
+                snapshot.update_count,
                 snapshot.note
             );
             return false;
@@ -802,7 +802,7 @@ impl ArbHedgeStrategy {
                     self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
                 }
                 info!(
-                    "ArbHedgeStrategy: strategy_id={} symbol={} lazy model keeps exposure decision={:?} due_hedge_qty={:.8} pending_hedge_usdt={:.8} score={:?} q={:?} samples={} note={}",
+                    "ArbHedgeStrategy: strategy_id={} symbol={} lazy model keeps exposure decision={:?} due_hedge_qty={:.8} pending_hedge_usdt={:.8} score={:?} q={:?} updates={} note={}",
                     self.strategy_id,
                     self.symbol,
                     snapshot.decision,
@@ -810,7 +810,7 @@ impl ArbHedgeStrategy {
                     pending_hedge_usdt,
                     snapshot.score,
                     snapshot.percentile,
-                    snapshot.sample_size,
+                    snapshot.update_count,
                     snapshot.note
                 );
                 return false;

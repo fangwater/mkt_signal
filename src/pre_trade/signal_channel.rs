@@ -164,13 +164,12 @@ fn log_taker_decision_open_gate_block(
                 >= TAKER_DECISION_MODEL_OPEN_GATE_LOG_INTERVAL_US
         {
             info!(
-                "ArbOpen blocked by taker decision model gate: symbol={} side={} qty={:.8} note={} samples={}/{} score={:?} q={:?} suppressed={}",
+                "ArbOpen blocked by taker decision model gate: symbol={} side={} qty={:.8} note={} updates={} score={:?} q={:?} suppressed={}",
                 state.last_snapshot.symbol,
                 state.last_side.as_str(),
                 state.last_qty,
                 state.last_snapshot.note,
-                state.last_snapshot.sample_size,
-                state.last_snapshot.rolling_n,
+                state.last_snapshot.update_count,
                 state.last_snapshot.score,
                 state.last_snapshot.percentile,
                 state.suppressed
