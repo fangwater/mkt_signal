@@ -81,6 +81,7 @@ pub struct ModelUpdateEvent {
     pub symbol: String,
     pub score: f64,
     pub percentile: Option<f64>,
+    pub score_ready: bool,
     pub update_count: usize,
 }
 
@@ -97,6 +98,7 @@ pub struct TakerDecisionOpenGateSnapshot {
 struct SymbolScoreState {
     latest_score: Option<f64>,
     latest_percentile: Option<f64>,
+    latest_score_ready: bool,
     update_count: usize,
 }
 
@@ -105,15 +107,26 @@ impl SymbolScoreState {
         Self {
             latest_score: None,
             latest_percentile: None,
+            latest_score_ready: false,
             update_count: 0,
         }
     }
 
-    fn observe(&mut self, score: f64, score_quantile: Option<f64>) -> Option<f64> {
+    fn observe(
+        &mut self,
+        score: f64,
+        score_quantile: Option<f64>,
+        score_ready: bool,
+    ) -> Option<f64> {
         self.latest_score = Some(score);
         self.latest_percentile = score_quantile.map(|value| value * 100.0);
+        self.latest_score_ready = score_ready;
         self.update_count = self.update_count.saturating_add(1);
         self.latest_percentile
+    }
+
+    fn score_ready(&self) -> bool {
+        self.latest_score_ready
     }
 
     fn update_count(&self) -> usize {
@@ -328,12 +341,13 @@ impl PreTradeTakerDecisionModel {
                         .states
                         .entry(symbol.clone())
                         .or_insert_with(SymbolScoreState::new);
-                    let percentile = state.observe(msg.score, msg.score_quantile);
+                    let percentile = state.observe(msg.score, msg.score_quantile, msg.score_ready);
                     self.recv_count = self.recv_count.saturating_add(1);
                     events.push(ModelUpdateEvent {
                         symbol,
                         score: msg.score,
                         percentile,
+                        score_ready: msg.score_ready,
                         update_count: state.update_count(),
                     });
                 }
@@ -369,6 +383,16 @@ impl PreTradeTakerDecisionModel {
         let score = state.latest_score;
         let percentile = state.latest_percentile;
         let update_count = state.update_count();
+        if !state.score_ready() {
+            return Some(TakerDecisionOpenGateSnapshot {
+                allowed: true,
+                symbol: symbol_key,
+                score,
+                percentile,
+                update_count,
+                note: "score_not_ready".to_string(),
+            });
+        }
         if percentile.filter(|value| value.is_finite()).is_none() {
             return Some(TakerDecisionOpenGateSnapshot {
                 allowed: false,
@@ -396,6 +420,17 @@ impl PreTradeTakerDecisionModel {
         let score = state.latest_score;
         let percentile = state.latest_percentile;
         let update_count = state.update_count();
+        if !state.score_ready() {
+            return Some(LazyHedgeDecisionSnapshot {
+                decision: LazyHedgeDecision::Hedge,
+                ready: false,
+                symbol: symbol_key,
+                score,
+                percentile,
+                update_count,
+                note: "score_not_ready".to_string(),
+            });
+        }
         let Some(q) = percentile.filter(|value| value.is_finite()) else {
             return Some(LazyHedgeDecisionSnapshot {
                 decision: LazyHedgeDecision::Hedge,

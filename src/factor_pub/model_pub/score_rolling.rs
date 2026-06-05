@@ -426,14 +426,18 @@ impl InlineScoreRolling {
         Ok(score_quantile)
     }
 
-    pub fn preview_score_quantile(&mut self, symbol: &str, score: f64) -> Option<f64> {
+    pub fn preview_score_quantile_and_ready(
+        &mut self,
+        symbol: &str,
+        score: f64,
+    ) -> (Option<f64>, bool) {
         if !score.is_finite() {
-            return None;
+            return (None, false);
         }
 
         let symbol = normalize_symbol(symbol);
         if symbol.is_empty() {
-            return None;
+            return (None, false);
         }
 
         let capacity = self.runtime_cfg.max_length;
@@ -449,7 +453,14 @@ impl InlineScoreRolling {
             state.window.reconfigure(capacity, rolling_window);
         }
 
-        state.window.percentile_rank_if_pushed_f64(score)
+        let score_quantile = state.window.percentile_rank_if_pushed_f64(score);
+        let next_sample_size = state
+            .window
+            .sample_size()
+            .saturating_add(1)
+            .min(self.runtime_cfg.rolling_window);
+        let ready = score_quantile.is_some() && next_sample_size >= self.runtime_cfg.min_periods;
+        (score_quantile, ready)
     }
 
     async fn maybe_reload_and_flush(&mut self) {

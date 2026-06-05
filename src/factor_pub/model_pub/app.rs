@@ -503,6 +503,7 @@ impl ModelPubApp {
             ts_in_ms,
             0.0,
             Some(NEUTRAL_SCORE_QUANTILE),
+            false,
             MODEL_STATUS_OK,
             &[],
             &[],
@@ -520,12 +521,15 @@ impl ModelPubApp {
         factor_indices: &[u16],
         factor_values: &[f32],
     ) -> Result<()> {
-        let score_quantile = self.score_rolling.preview_score_quantile(symbol, score);
+        let (score_quantile, score_ready) = self
+            .score_rolling
+            .preview_score_quantile_and_ready(symbol, score);
         self.publish_result(
             symbol,
             ts_in_ms,
             score,
             score_quantile,
+            score_ready,
             status,
             factor_indices,
             factor_values,
@@ -540,6 +544,7 @@ impl ModelPubApp {
         ts_in_ms: i64,
         score: f64,
         score_quantile: Option<f64>,
+        score_ready: bool,
         status: u8,
         factor_indices: &[u16],
         factor_values: &[f32],
@@ -553,6 +558,7 @@ impl ModelPubApp {
             0,
             score,
             score_quantile,
+            score_ready,
             status,
             factor_indices.to_vec(),
             factor_values.to_vec(),

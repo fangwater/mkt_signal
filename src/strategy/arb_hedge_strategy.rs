@@ -664,6 +664,7 @@ impl ArbHedgeStrategy {
         if !self.is_active() {
             return false;
         }
+        self.last_ret_qtl = model_percentile_to_ret_qtl(model_percentile);
         let pending_hedge_qty = self.pending_hedge_queue.net_qty();
         if pending_hedge_qty.abs() <= ARB_HEDGE_QTY_EPS {
             return false;
