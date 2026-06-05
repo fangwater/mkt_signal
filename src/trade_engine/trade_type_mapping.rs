@@ -300,7 +300,7 @@ mod tests {
         assert_eq!(
             TradeTypeMapping::get_endpoint(TradeRequestType::BinanceUniversalTransfer),
             "/sapi/v1/asset/transfer"
-        );
+        ); 
         assert_eq!(
             TradeTypeMapping::get_method(TradeRequestType::BinanceUniversalTransfer),
             "POST"
