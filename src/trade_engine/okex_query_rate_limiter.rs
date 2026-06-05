@@ -84,7 +84,9 @@ fn limit_for_req_type(req_type: QueryRequestType) -> Option<OkexQueryLimit> {
             max_requests: OKEX_ORDER_QUERY_LIMIT_PER_WINDOW,
             window: OKEX_QUERY_WINDOW,
         }),
-        QueryRequestType::OkexAccountBalanceSnapshot => Some(OkexQueryLimit {
+        QueryRequestType::OkexAccountBalanceSnapshot
+        | QueryRequestType::OkexUsdtAvailableSnapshot
+        | QueryRequestType::OkexUsdtMaxLoan => Some(OkexQueryLimit {
             max_requests: OKEX_ACCOUNT_BALANCE_QUERY_LIMIT_PER_WINDOW,
             window: OKEX_QUERY_WINDOW,
         }),

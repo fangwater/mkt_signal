@@ -26,6 +26,8 @@ impl QueryTypeMapping {
                 | QueryRequestType::OkexUMQuery
                 | QueryRequestType::OkexAccountBalanceSnapshot
                 | QueryRequestType::OkexPositionsSnapshot
+                | QueryRequestType::OkexUsdtAvailableSnapshot
+                | QueryRequestType::OkexUsdtMaxLoan
         )
     }
 
@@ -34,6 +36,8 @@ impl QueryTypeMapping {
             request_type,
             QueryRequestType::GateUnifiedBalanceSnapshot
                 | QueryRequestType::GateUnifiedPositionsSnapshot
+                | QueryRequestType::GateUnifiedUsdtAvailableSnapshot
+                | QueryRequestType::GateUnifiedUsdtMaxBorrowable
         )
     }
 
@@ -54,6 +58,8 @@ impl QueryTypeMapping {
                 | QueryRequestType::BitgetUMQuery
                 | QueryRequestType::BitgetAccountBalanceSnapshot
                 | QueryRequestType::BitgetPositionsSnapshot
+                | QueryRequestType::BitgetUsdtAvailableSnapshot
+                | QueryRequestType::BitgetUsdtMaxTransferable
         )
     }
 
@@ -76,8 +82,12 @@ impl QueryTypeMapping {
             }
             QueryRequestType::OkexAccountBalanceSnapshot => "/api/v5/account/balance",
             QueryRequestType::OkexPositionsSnapshot => "/api/v5/account/positions",
+            QueryRequestType::OkexUsdtAvailableSnapshot => "/api/v5/account/balance",
+            QueryRequestType::OkexUsdtMaxLoan => "/api/v5/account/max-loan",
             QueryRequestType::GateUnifiedBalanceSnapshot => "/api/v4/unified/accounts",
             QueryRequestType::GateUnifiedPositionsSnapshot => "/api/v4/futures/usdt/positions",
+            QueryRequestType::GateUnifiedUsdtAvailableSnapshot => "/api/v4/unified/accounts",
+            QueryRequestType::GateUnifiedUsdtMaxBorrowable => "/api/v4/unified/borrowable",
             QueryRequestType::GateUnifiedOrderQuery | QueryRequestType::GateFuturesOrderQuery => {
                 unreachable!("Gate order queries run via websocket; REST mapping not used")
             }
@@ -91,6 +101,8 @@ impl QueryTypeMapping {
             }
             QueryRequestType::BitgetAccountBalanceSnapshot => "/api/v3/account/assets",
             QueryRequestType::BitgetPositionsSnapshot => "/api/v3/position/current-position",
+            QueryRequestType::BitgetUsdtAvailableSnapshot => "/api/v3/account/assets",
+            QueryRequestType::BitgetUsdtMaxTransferable => "/api/v3/account/max-transferable",
         }
     }
 
@@ -109,8 +121,12 @@ impl QueryTypeMapping {
             | QueryRequestType::OkexUMQuery
             | QueryRequestType::OkexAccountBalanceSnapshot
             | QueryRequestType::OkexPositionsSnapshot
+            | QueryRequestType::OkexUsdtAvailableSnapshot
+            | QueryRequestType::OkexUsdtMaxLoan
             | QueryRequestType::GateUnifiedBalanceSnapshot
             | QueryRequestType::GateUnifiedPositionsSnapshot
+            | QueryRequestType::GateUnifiedUsdtAvailableSnapshot
+            | QueryRequestType::GateUnifiedUsdtMaxBorrowable
             | QueryRequestType::BybitMarginQuery
             | QueryRequestType::BybitUMQuery
             | QueryRequestType::BybitAccountBalanceSnapshot
@@ -118,7 +134,9 @@ impl QueryTypeMapping {
             | QueryRequestType::BitgetMarginQuery
             | QueryRequestType::BitgetUMQuery
             | QueryRequestType::BitgetAccountBalanceSnapshot
-            | QueryRequestType::BitgetPositionsSnapshot => "GET",
+            | QueryRequestType::BitgetPositionsSnapshot
+            | QueryRequestType::BitgetUsdtAvailableSnapshot
+            | QueryRequestType::BitgetUsdtMaxTransferable => "GET",
             QueryRequestType::BinanceWsUMQuery | QueryRequestType::BinanceWsMarginQuery => {
                 unreachable!("Binance ws queries run via websocket; REST mapping not used")
             }
@@ -143,10 +161,14 @@ impl QueryTypeMapping {
             QueryRequestType::BinancePmUsdtFreeSnapshot => 1,
             QueryRequestType::BinancePmUsdtMaxBorrowable => 1,
             QueryRequestType::OkexMarginQuery | QueryRequestType::OkexUMQuery => 1,
-            QueryRequestType::OkexAccountBalanceSnapshot => 1,
-            QueryRequestType::OkexPositionsSnapshot => 1,
+            QueryRequestType::OkexAccountBalanceSnapshot
+            | QueryRequestType::OkexPositionsSnapshot
+            | QueryRequestType::OkexUsdtAvailableSnapshot
+            | QueryRequestType::OkexUsdtMaxLoan => 1,
             QueryRequestType::GateUnifiedBalanceSnapshot => 1,
             QueryRequestType::GateUnifiedPositionsSnapshot => 1,
+            QueryRequestType::GateUnifiedUsdtAvailableSnapshot => 1,
+            QueryRequestType::GateUnifiedUsdtMaxBorrowable => 1,
             QueryRequestType::BybitMarginQuery => 1,
             QueryRequestType::BybitUMQuery => 1,
             QueryRequestType::BybitAccountBalanceSnapshot => 1,
@@ -154,7 +176,9 @@ impl QueryTypeMapping {
             QueryRequestType::BitgetMarginQuery
             | QueryRequestType::BitgetUMQuery
             | QueryRequestType::BitgetAccountBalanceSnapshot
-            | QueryRequestType::BitgetPositionsSnapshot => 1,
+            | QueryRequestType::BitgetPositionsSnapshot
+            | QueryRequestType::BitgetUsdtAvailableSnapshot
+            | QueryRequestType::BitgetUsdtMaxTransferable => 1,
             QueryRequestType::GateUnifiedOrderQuery | QueryRequestType::GateFuturesOrderQuery => {
                 unreachable!("Gate order queries run via websocket; REST mapping not used")
             }

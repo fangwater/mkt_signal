@@ -21,10 +21,14 @@ pub enum QueryRequestType {
     OkexUMQuery = 7002,
     OkexAccountBalanceSnapshot = 7101,
     OkexPositionsSnapshot = 7102,
+    OkexUsdtAvailableSnapshot = 7103,
+    OkexUsdtMaxLoan = 7104,
     GateUnifiedOrderQuery = 8001,
     GateFuturesOrderQuery = 8002,
     GateUnifiedBalanceSnapshot = 8101,
     GateUnifiedPositionsSnapshot = 8102,
+    GateUnifiedUsdtAvailableSnapshot = 8103,
+    GateUnifiedUsdtMaxBorrowable = 8104,
     BybitMarginQuery = 9001,
     BybitUMQuery = 9002,
     BybitAccountBalanceSnapshot = 9101,
@@ -33,6 +37,8 @@ pub enum QueryRequestType {
     BitgetUMQuery = 9202,
     BitgetAccountBalanceSnapshot = 9203,
     BitgetPositionsSnapshot = 9204,
+    BitgetUsdtAvailableSnapshot = 9205,
+    BitgetUsdtMaxTransferable = 9206,
 }
 
 #[repr(C, align(8))]
@@ -71,10 +77,14 @@ impl TryFrom<u32> for QueryRequestType {
             7002 => Ok(QueryRequestType::OkexUMQuery),
             7101 => Ok(QueryRequestType::OkexAccountBalanceSnapshot),
             7102 => Ok(QueryRequestType::OkexPositionsSnapshot),
+            7103 => Ok(QueryRequestType::OkexUsdtAvailableSnapshot),
+            7104 => Ok(QueryRequestType::OkexUsdtMaxLoan),
             8001 => Ok(QueryRequestType::GateUnifiedOrderQuery),
             8002 => Ok(QueryRequestType::GateFuturesOrderQuery),
             8101 => Ok(QueryRequestType::GateUnifiedBalanceSnapshot),
             8102 => Ok(QueryRequestType::GateUnifiedPositionsSnapshot),
+            8103 => Ok(QueryRequestType::GateUnifiedUsdtAvailableSnapshot),
+            8104 => Ok(QueryRequestType::GateUnifiedUsdtMaxBorrowable),
             9001 => Ok(QueryRequestType::BybitMarginQuery),
             9002 => Ok(QueryRequestType::BybitUMQuery),
             9101 => Ok(QueryRequestType::BybitAccountBalanceSnapshot),
@@ -83,6 +93,8 @@ impl TryFrom<u32> for QueryRequestType {
             9202 => Ok(QueryRequestType::BitgetUMQuery),
             9203 => Ok(QueryRequestType::BitgetAccountBalanceSnapshot),
             9204 => Ok(QueryRequestType::BitgetPositionsSnapshot),
+            9205 => Ok(QueryRequestType::BitgetUsdtAvailableSnapshot),
+            9206 => Ok(QueryRequestType::BitgetUsdtMaxTransferable),
             _ => Err(()),
         }
     }

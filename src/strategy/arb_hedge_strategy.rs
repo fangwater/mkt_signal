@@ -1,6 +1,7 @@
 use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::common::tick_math::QuantizedValue;
 use crate::common::time_util::get_timestamp_us;
+use crate::common::trade_error_code::gate;
 use crate::pre_trade::account_open_block::{register_account_open_block, AccountOpenBlockReason};
 use crate::pre_trade::log_throttle::log_order_rate_limit_summary;
 use crate::pre_trade::monitor_channel::MonitorChannel;
@@ -1508,8 +1509,8 @@ impl ArbHedgeStrategy {
         true
     }
 
-    /// Binance PM/FR hedge 保证金不足应急动作：账户级锁住新增 ArbOpen，并撤掉当前
-    /// 全部 ArbOpen 挂单；不再自动下调 max_leverage。
+    /// 账户级保证金不足应急动作：锁住新增 ArbOpen，并撤掉当前全部 ArbOpen 挂单；
+    /// 不再自动下调 max_leverage。
     /// 进入这里前调用方已经做了冷却节流（5s）。
     fn handle_insufficient_margin_emergency(
         &mut self,
@@ -1534,6 +1535,20 @@ impl ArbHedgeStrategy {
             && self.hedge_venue == TradingVenue::BinanceFutures
             && MonitorChannel::try_order_manager()
                 .is_some_and(|mgr| !mgr.borrow().binance_is_standard());
+        let is_okex_unified_fr = self.open_venue == TradingVenue::OkexMargin
+            && self.hedge_venue == TradingVenue::OkexFutures
+            && error_code == 51008;
+        let is_gate_unified_fr = self.open_venue == TradingVenue::GateMargin
+            && self.hedge_venue == TradingVenue::GateFutures
+            && matches!(
+                error_code,
+                gate::INITIAL_MARGIN_TOO_LOW
+                    | gate::MARGIN_NOT_ENOUGH
+                    | gate::POSITION_MARGIN_TOO_LOW
+            );
+        let is_bitget_unified_fr = self.open_venue == TradingVenue::BitgetMargin
+            && self.hedge_venue == TradingVenue::BitgetFutures
+            && error_code == 40800;
         let account_open_block = if is_binance_pm_fr {
             register_account_open_block(
                 AccountOpenBlockReason::BinancePmInsufficientMargin,
@@ -1541,6 +1556,30 @@ impl ArbHedgeStrategy {
             );
             self.cancel_all_arb_open_orders(now_ts, "insufficient_margin_account_open_block");
             "binance_pm_insufficient_margin"
+        } else if is_okex_unified_fr {
+            register_account_open_block(
+                AccountOpenBlockReason::OkexUnifiedInsufficientMargin,
+                error_code,
+            );
+            self.cancel_all_arb_open_orders(now_ts, "okex_insufficient_margin_account_open_block");
+            "okex_unified_insufficient_margin"
+        } else if is_gate_unified_fr {
+            register_account_open_block(
+                AccountOpenBlockReason::GateUnifiedInsufficientMargin,
+                error_code,
+            );
+            self.cancel_all_arb_open_orders(now_ts, "gate_insufficient_margin_account_open_block");
+            "gate_unified_insufficient_margin"
+        } else if is_bitget_unified_fr {
+            register_account_open_block(
+                AccountOpenBlockReason::BitgetUnifiedInsufficientMargin,
+                error_code,
+            );
+            self.cancel_all_arb_open_orders(
+                now_ts,
+                "bitget_insufficient_margin_account_open_block",
+            );
+            "bitget_unified_insufficient_margin"
         } else {
             warn!(
                 "ArbHedgeStrategy: strategy_id={} symbol={} INSUFFICIENT_MARGIN emergency has no account block for open_venue={:?} hedge_venue={:?}",
