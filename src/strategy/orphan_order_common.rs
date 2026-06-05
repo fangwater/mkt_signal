@@ -20,6 +20,8 @@ pub(crate) const ORPHAN_QUERY_LOG_THRESHOLD: u8 = 25;
 pub(crate) const COMMIT_QUERY_MAX_ATTEMPTS: u8 = 3;
 pub(crate) const COMMIT_QUERY_BASE_TICKS: u32 = 50;
 pub(crate) const BINANCE_PM_ORPHAN_INITIAL_QUERY_TICKS: u32 = 100;
+pub(crate) const BINANCE_PM_COMMIT_QUERY_MAX_ATTEMPTS: u8 = 6;
+pub(crate) const BINANCE_PM_COMMIT_QUERY_BASE_TICKS: u32 = 500;
 
 pub(crate) fn orphan_initial_query_ticks_for(
     venue: TradingVenue,
@@ -34,6 +36,40 @@ pub(crate) fn orphan_initial_query_ticks_for(
         BINANCE_PM_ORPHAN_INITIAL_QUERY_TICKS
     } else {
         default_ticks
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CommitQueryPolicy {
+    pub base_ticks: u32,
+    pub max_attempts: u8,
+}
+
+pub(crate) fn commit_query_policy_for(
+    venue: TradingVenue,
+    binance_is_standard: bool,
+) -> CommitQueryPolicy {
+    if matches!(
+        venue,
+        TradingVenue::BinanceMargin | TradingVenue::BinanceFutures
+    ) && !binance_is_standard
+    {
+        CommitQueryPolicy {
+            base_ticks: BINANCE_PM_COMMIT_QUERY_BASE_TICKS,
+            max_attempts: BINANCE_PM_COMMIT_QUERY_MAX_ATTEMPTS,
+        }
+    } else {
+        CommitQueryPolicy {
+            base_ticks: COMMIT_QUERY_BASE_TICKS,
+            max_attempts: COMMIT_QUERY_MAX_ATTEMPTS,
+        }
+    }
+}
+
+pub(crate) const fn standard_commit_query_policy() -> CommitQueryPolicy {
+    CommitQueryPolicy {
+        base_ticks: COMMIT_QUERY_BASE_TICKS,
+        max_attempts: COMMIT_QUERY_MAX_ATTEMPTS,
     }
 }
 
@@ -105,14 +141,22 @@ impl OrphanOrderTracker {
         let Some(order) = mgr.get(client_order_id) else {
             return self.initial_query_ticks;
         };
+        let binance_is_standard = mgr.binance_is_standard();
         if order.status == OrderExecutionStatus::Commit {
-            return COMMIT_QUERY_BASE_TICKS;
+            return commit_query_policy_for(order.venue, binance_is_standard).base_ticks;
         }
-        orphan_initial_query_ticks_for(
-            order.venue,
-            mgr.binance_is_standard(),
-            self.initial_query_ticks,
-        )
+        orphan_initial_query_ticks_for(order.venue, binance_is_standard, self.initial_query_ticks)
+    }
+
+    fn commit_query_policy_for_order(&self, client_order_id: i64) -> CommitQueryPolicy {
+        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
+            return standard_commit_query_policy();
+        };
+        let mgr = order_mgr.borrow();
+        let Some(order) = mgr.get(client_order_id) else {
+            return standard_commit_query_policy();
+        };
+        commit_query_policy_for(order.venue, mgr.binance_is_standard())
     }
 
     fn track_order_id(&mut self, client_order_id: i64) {
@@ -174,29 +218,26 @@ impl OrphanOrderTracker {
     }
 
     fn commit_query_due_now(&mut self, client_order_id: i64) -> Option<CommitQueryAction> {
+        let policy = self.commit_query_policy_for_order(client_order_id);
         let query_max_ticks = self.query_max_ticks;
         let Some(query_state) = self.query_states.get_mut(&client_order_id) else {
             return None;
         };
         if query_state.query_count == 0 {
-            query_state.ticks_until_next_query = query_state
-                .ticks_until_next_query
-                .min(COMMIT_QUERY_BASE_TICKS);
+            query_state.ticks_until_next_query =
+                query_state.ticks_until_next_query.min(policy.base_ticks);
         }
         if query_state.ticks_until_next_query > 0 {
             query_state.ticks_until_next_query -= 1;
             return None;
         }
-        if query_state.query_count >= COMMIT_QUERY_MAX_ATTEMPTS {
+        if query_state.query_count >= policy.max_attempts {
             return Some(CommitQueryAction::Close);
         }
 
         query_state.query_count = query_state.query_count.saturating_add(1);
-        query_state.ticks_until_next_query = Self::next_query_ticks(
-            COMMIT_QUERY_BASE_TICKS,
-            query_max_ticks,
-            query_state.query_count,
-        );
+        query_state.ticks_until_next_query =
+            Self::next_query_ticks(policy.base_ticks, query_max_ticks, query_state.query_count);
         Some(CommitQueryAction::Query {
             query_count: query_state.query_count,
         })
@@ -931,9 +972,10 @@ fn normalize_epoch_to_us(ts: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_orphan_query_table, orphan_initial_query_ticks_for, CommitQueryAction,
-        OrphanOrderTracker, BINANCE_PM_ORPHAN_INITIAL_QUERY_TICKS, COMMIT_QUERY_BASE_TICKS,
-        COMMIT_QUERY_MAX_ATTEMPTS,
+        commit_query_policy_for, format_orphan_query_table, orphan_initial_query_ticks_for,
+        CommitQueryAction, OrphanOrderTracker, BINANCE_PM_COMMIT_QUERY_BASE_TICKS,
+        BINANCE_PM_COMMIT_QUERY_MAX_ATTEMPTS, BINANCE_PM_ORPHAN_INITIAL_QUERY_TICKS,
+        COMMIT_QUERY_BASE_TICKS, COMMIT_QUERY_MAX_ATTEMPTS,
     };
     use crate::signal::common::TradingVenue;
 
@@ -1027,5 +1069,22 @@ mod tests {
             orphan_initial_query_ticks_for(TradingVenue::GateFutures, false, 25),
             25
         );
+    }
+
+    #[test]
+    fn binance_pm_commit_query_uses_longer_budget() {
+        let pm_policy = commit_query_policy_for(TradingVenue::BinanceFutures, false);
+        assert_eq!(pm_policy.base_ticks, BINANCE_PM_COMMIT_QUERY_BASE_TICKS);
+        assert_eq!(pm_policy.max_attempts, BINANCE_PM_COMMIT_QUERY_MAX_ATTEMPTS);
+        assert_eq!(pm_policy.base_ticks, 500);
+        assert_eq!(pm_policy.max_attempts, 6);
+
+        let standard_policy = commit_query_policy_for(TradingVenue::BinanceFutures, true);
+        assert_eq!(standard_policy.base_ticks, COMMIT_QUERY_BASE_TICKS);
+        assert_eq!(standard_policy.max_attempts, COMMIT_QUERY_MAX_ATTEMPTS);
+
+        let non_binance_policy = commit_query_policy_for(TradingVenue::GateFutures, false);
+        assert_eq!(non_binance_policy.base_ticks, COMMIT_QUERY_BASE_TICKS);
+        assert_eq!(non_binance_policy.max_attempts, COMMIT_QUERY_MAX_ATTEMPTS);
     }
 }
