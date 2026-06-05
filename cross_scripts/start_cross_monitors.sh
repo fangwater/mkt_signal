@@ -231,7 +231,12 @@ start_one() {
 JSON
 
   echo "[INFO] Restarting $proc_name (exchange=$ex namespace=$IPC_NAMESPACE)"
-  "${PMDAEMON[@]}" delete "$proc_name" >/dev/null 2>&1 || true
+  STOP_SCRIPT="${SCRIPT_DIR}/stop_cross_monitors.sh"
+  if [[ ! -x "$STOP_SCRIPT" ]]; then
+    echo "[ERROR] stop script not found or not executable: $STOP_SCRIPT" >&2
+    exit 1
+  fi
+  "$STOP_SCRIPT" "$side"
   "${PMDAEMON[@]}" --config "$cfg_file" start --name "$proc_name"
 }
 

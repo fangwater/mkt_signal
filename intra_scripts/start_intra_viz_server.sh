@@ -117,7 +117,12 @@ cat >"$cfg_file" <<CFG
 CFG
 
 echo "[INFO] Restarting ${PROC_NAME} (cfg=${CFG_PATH})"
-"${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1 || true
+STOP_SCRIPT="${SCRIPT_DIR}/stop_intra_viz_server.sh"
+if [[ ! -x "$STOP_SCRIPT" ]]; then
+  echo "[ERROR] stop script not found or not executable: $STOP_SCRIPT" >&2
+  exit 1
+fi
+"$STOP_SCRIPT"
 "${PMDAEMON[@]}" --config "$cfg_file" start --name "$PROC_NAME"
 
 echo "[INFO] Started viz_server (${PROC_NAME})"

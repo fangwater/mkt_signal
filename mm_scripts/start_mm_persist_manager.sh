@@ -111,10 +111,12 @@ cat >"$CFG_FILE" <<EOF
 EOF
 
 echo "[INFO] Restarting ${PROC_NAME} (ipc_namespace=${IPC_NS})"
-if [[ "$LEGACY_PROC_NAME" != "$PROC_NAME" ]]; then
-  "${PMDAEMON[@]}" delete "$LEGACY_PROC_NAME" >/dev/null 2>&1 || true
+STOP_SCRIPT="${SCRIPT_DIR}/stop_mm_persist_manager.sh"
+if [[ ! -x "$STOP_SCRIPT" ]]; then
+  echo "[ERROR] stop script not found or not executable: $STOP_SCRIPT" >&2
+  exit 1
 fi
-"${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1 || true
+"$STOP_SCRIPT"
 "${PMDAEMON[@]}" --config "$CFG_FILE" start --name "$PROC_NAME"
 
 echo "[INFO] Started ${PROC_NAME} (ipc_namespace=${IPC_NS})"

@@ -10,6 +10,10 @@ if [[ -f "$PROCESS_MATCH_LIB" ]]; then
   # shellcheck disable=SC1090
   source "$PROCESS_MATCH_LIB"
 fi
+if ! declare -F safe_find_running_pids >/dev/null 2>&1; then
+  echo "[ERROR] missing required helper: ${PROCESS_MATCH_LIB}" >&2
+  exit 1
+fi
 
 usage() {
   cat <<'USAGE'

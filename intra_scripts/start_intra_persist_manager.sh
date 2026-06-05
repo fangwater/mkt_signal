@@ -121,7 +121,12 @@ cat >"$cfg_file" <<JSON
 JSON
 
 echo "[INFO] Restarting ${PROC_NAME}"
-"${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1 || true
+STOP_SCRIPT="${SCRIPT_DIR}/stop_intra_persist_manager.sh"
+if [[ ! -x "$STOP_SCRIPT" ]]; then
+  echo "[ERROR] stop script not found or not executable: $STOP_SCRIPT" >&2
+  exit 1
+fi
+"$STOP_SCRIPT"
 "${PMDAEMON[@]}" --config "$cfg_file" start --name "$PROC_NAME"
 
 echo "[INFO] Started persist_manager (${PROC_NAME})"

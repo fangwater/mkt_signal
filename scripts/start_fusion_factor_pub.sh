@@ -129,7 +129,12 @@ cat >"$cfg_file" <<JSON
 JSON
 
 echo "[INFO] Restarting ${name}"
-"${PMDAEMON[@]}" delete "$name" >/dev/null 2>&1 || true
+STOP_SCRIPT="${SCRIPT_DIR}/stop_fusion_factor_pub.sh"
+if [[ ! -x "$STOP_SCRIPT" ]]; then
+  echo "[ERROR] stop script not found or not executable: $STOP_SCRIPT" >&2
+  exit 1
+fi
+"$STOP_SCRIPT"
 "${PMDAEMON[@]}" --config "$cfg_file" start --name "$name"
 
 echo ""

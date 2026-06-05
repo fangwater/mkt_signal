@@ -446,6 +446,7 @@ if [[ "$DO_SCRIPTS" -eq 1 ]]; then
     "mm_scripts/stop_mm_viz_server.sh"
     "mm_scripts/print_mm_tlen_threshold.py"
     "scripts/mm_process_name.sh"
+    "scripts/process_match_lib.sh"
     "scripts/setup_nginx_4191.sh"
   )
   for file in "${EXTRA_FILES[@]}"; do

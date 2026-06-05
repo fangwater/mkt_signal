@@ -192,10 +192,12 @@ if [[ "$DO_SCRIPTS" -eq 1 ]]; then
     fi
   done
   mkdir -p "$TARGET_DIR/scripts"
-  if [[ -f "$ROOT_DIR/scripts/mm_process_name.sh" ]]; then
-    rsync -a "$ROOT_DIR/scripts/mm_process_name.sh" "$TARGET_DIR/scripts/"
-    chmod +x "$TARGET_DIR/scripts/mm_process_name.sh"
-  fi
+  for script in mm_process_name.sh process_match_lib.sh; do
+    if [[ -f "$ROOT_DIR/scripts/$script" ]]; then
+      rsync -a "$ROOT_DIR/scripts/$script" "$TARGET_DIR/scripts/"
+      chmod +x "$TARGET_DIR/scripts/$script"
+    fi
+  done
 fi
 
 echo "[INFO] $BIN_NAME deployed to $TARGET_DIR"

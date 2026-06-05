@@ -144,14 +144,12 @@ cat >"$cfg_file" <<JSON
 JSON
 
 echo "[INFO] 启动 ${PROC_NAME} (exchange=${EXCHANGE})"
-"${PMDAEMON[@]}" delete "$LEGACY_PROC_NAME" >/dev/null 2>&1 || true
-if [[ -n "$LEGACY_FR_PROC_NAME" && "$LEGACY_FR_PROC_NAME" != "$PROC_NAME" ]]; then
-  "${PMDAEMON[@]}" delete "$LEGACY_FR_PROC_NAME" >/dev/null 2>&1 || true
+STOP_SCRIPT="${SCRIPT_DIR}/stop_account_monitor.sh"
+if [[ ! -x "$STOP_SCRIPT" ]]; then
+  echo "[ERROR] stop script not found or not executable: $STOP_SCRIPT" >&2
+  exit 1
 fi
-if [[ -n "$BUGGY_MM_PROC_NAME" ]]; then
-  "${PMDAEMON[@]}" delete "$BUGGY_MM_PROC_NAME" >/dev/null 2>&1 || true
-fi
-"${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1 || true
+"$STOP_SCRIPT"
 "${PMDAEMON[@]}" --config "$cfg_file" start --name "$PROC_NAME"
 
 echo "[INFO] ${PROC_NAME} 已启动"
