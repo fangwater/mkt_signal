@@ -73,6 +73,23 @@ fn arb_hedge_force_taker() -> bool {
     })
 }
 
+fn model_percentile_to_ret_qtl(percentile_pct: Option<f64>) -> Option<f64> {
+    let percentile_pct = percentile_pct.filter(|value| value.is_finite())?;
+    if !(0.0..=100.0).contains(&percentile_pct) {
+        return None;
+    }
+    Some(percentile_pct / 100.0)
+}
+
+fn build_direct_taker_from_key(source: &str, now_ts: i64, ret_qtl: Option<f64>) -> Vec<u8> {
+    let mut from_key = format!("arb_hedge_{}_direct|{}", source, now_ts);
+    if let Some(ret_qtl) = ret_qtl.filter(|value| value.is_finite() && (0.0..=1.0).contains(value))
+    {
+        from_key.push_str(&format!(":ret_qtl={ret_qtl:.8}"));
+    }
+    from_key.into_bytes()
+}
+
 /// Arb 对冲策略的只读状态快照。
 ///
 /// 调用方可以通过它观察双 venue 合并后的净敞口和待对冲数量。
@@ -447,14 +464,30 @@ impl ArbHedgeStrategy {
     }
 
     fn send_force_taker_hedge_direct(&mut self, now_ts: i64, due_hedge_qty: f64) -> bool {
-        self.send_taker_hedge_direct(now_ts, due_hedge_qty, "force_taker")
+        self.send_taker_hedge_direct(now_ts, due_hedge_qty, "force_taker", None)
     }
 
-    fn send_lazy_model_taker_hedge_direct(&mut self, now_ts: i64, due_hedge_qty: f64) -> bool {
-        self.send_taker_hedge_direct(now_ts, due_hedge_qty, "lazy_model")
+    fn send_lazy_model_taker_hedge_direct(
+        &mut self,
+        now_ts: i64,
+        due_hedge_qty: f64,
+        model_percentile: Option<f64>,
+    ) -> bool {
+        self.send_taker_hedge_direct(
+            now_ts,
+            due_hedge_qty,
+            "lazy_model",
+            model_percentile_to_ret_qtl(model_percentile),
+        )
     }
 
-    fn send_taker_hedge_direct(&mut self, now_ts: i64, due_hedge_qty: f64, source: &str) -> bool {
+    fn send_taker_hedge_direct(
+        &mut self,
+        now_ts: i64,
+        due_hedge_qty: f64,
+        source: &str,
+        ret_qtl: Option<f64>,
+    ) -> bool {
         self.last_hedge_ts_ms = Some(now_ts / 1000);
         let Some(mark_price) = self.mark_price() else {
             info!(
@@ -541,7 +574,7 @@ impl ArbHedgeStrategy {
         ctx.signal_ts = now_ts;
         ctx.exp_time = 0;
         ctx.request_seq = request_seq;
-        ctx.set_from_key(format!("arb_hedge_{}_direct|{}", source, now_ts).into_bytes());
+        ctx.set_from_key(build_direct_taker_from_key(source, now_ts, ret_qtl));
 
         info!(
             "ArbHedgeStrategy: strategy_id={} symbol={} {} direct hedge due_hedge_qty={:.8} raw_base_qty={:.8} aligned_qty={:.8} side={:?} mark_price={:.8} request_seq={}",
@@ -686,7 +719,11 @@ impl ArbHedgeStrategy {
             snapshot.percentile.or(model_percentile),
             snapshot.note
         );
-        self.send_lazy_model_taker_hedge_direct(now_ts, due_hedge_qty)
+        self.send_lazy_model_taker_hedge_direct(
+            now_ts,
+            due_hedge_qty,
+            snapshot.percentile.or(model_percentile),
+        )
     }
 
     fn try_send_due_hedge_query(
@@ -2012,8 +2049,8 @@ fn create_and_send_order(
 #[cfg(test)]
 mod tests {
     use super::{
-        pick_main_component_open_id, ArbHedgeOrderMeta, ArbHedgeStrategy,
-        ARB_HEDGE_QUERY_INTERVAL_US,
+        build_direct_taker_from_key, model_percentile_to_ret_qtl, pick_main_component_open_id,
+        ArbHedgeOrderMeta, ArbHedgeStrategy, ARB_HEDGE_QUERY_INTERVAL_US,
     };
     use crate::pre_trade::order_manager::Side;
     use crate::signal::common::TradingVenue;
@@ -2022,6 +2059,35 @@ mod tests {
 
     const OPEN_ID_A: i64 = 1001;
     const OPEN_ID_B: i64 = 1002;
+
+    #[test]
+    fn direct_taker_from_key_carries_lazy_ret_qtl_in_zero_one_units() {
+        let from_key =
+            build_direct_taker_from_key("lazy_model", 123, model_percentile_to_ret_qtl(Some(42.5)));
+
+        assert_eq!(
+            String::from_utf8(from_key.clone()).expect("utf8 from_key"),
+            "arb_hedge_lazy_model_direct|123:ret_qtl=0.42500000"
+        );
+        assert_eq!(
+            super::parse_return_qtl_from_from_key(&from_key),
+            Some(0.425)
+        );
+    }
+
+    #[test]
+    fn direct_taker_from_key_omits_force_ret_qtl_when_missing() {
+        let from_key = build_direct_taker_from_key("force_taker", 123, None);
+
+        assert_eq!(
+            String::from_utf8(from_key.clone()).expect("utf8 from_key"),
+            "arb_hedge_force_taker_direct|123"
+        );
+        assert_eq!(super::parse_return_qtl_from_from_key(&from_key), None);
+        assert_eq!(model_percentile_to_ret_qtl(Some(0.0)), Some(0.0));
+        assert_eq!(model_percentile_to_ret_qtl(Some(100.0)), Some(1.0));
+        assert_eq!(model_percentile_to_ret_qtl(Some(101.0)), None);
+    }
 
     #[test]
     fn open_fill_records_net_and_pending_hedge() {
