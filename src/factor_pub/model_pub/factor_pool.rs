@@ -63,11 +63,56 @@ pub(crate) async fn load_symbol_factor_names_from_tlen_server(
         if key.is_empty() || key == TLEN_SHARED_CONFIG_FIELD || item.factors.is_empty() {
             continue;
         }
-        let normalized_symbol = key.to_uppercase();
-        validate_factor_names(&normalized_symbol, &item.factors)?;
-        plans.insert(normalized_symbol, item.factors);
+        let venue_symbol = key.to_uppercase();
+        validate_factor_names(&venue_symbol, &item.factors)?;
+        insert_symbol_plan_alias(&mut plans, &venue_symbol, &item.factors)?;
+
+        let model_symbol = normalize_symbol_key(&venue_symbol);
+        if model_symbol != venue_symbol {
+            insert_symbol_plan_alias(&mut plans, &model_symbol, &item.factors)?;
+        }
     }
     Ok(plans)
+}
+
+pub(crate) fn normalize_symbol_key(raw: &str) -> String {
+    let normalized = raw
+        .trim()
+        .to_uppercase()
+        .chars()
+        .filter(|ch| !matches!(ch, '-' | '_' | '/' | ':'))
+        .collect::<String>();
+
+    for suffix in ["PERPETUAL", "SWAP", "PERP"] {
+        if normalized.len() > suffix.len() && normalized.ends_with(suffix) {
+            return normalized[..normalized.len() - suffix.len()].to_string();
+        }
+    }
+
+    normalized
+}
+
+fn insert_symbol_plan_alias(
+    plans: &mut HashMap<String, Vec<String>>,
+    symbol: &str,
+    factors: &[String],
+) -> Result<()> {
+    if symbol.trim().is_empty() {
+        return Ok(());
+    }
+    if let Some(existing) = plans.get(symbol) {
+        if existing != factors {
+            anyhow::bail!(
+                "conflicting factor plan aliases for symbol={} existing={} incoming={}",
+                symbol,
+                existing.len(),
+                factors.len()
+            );
+        }
+        return Ok(());
+    }
+    plans.insert(symbol.to_string(), factors.to_vec());
+    Ok(())
 }
 
 fn factor_name_to_index(name: &str) -> Option<u16> {
@@ -161,5 +206,14 @@ mod tests {
         )
         .expect_err("duplicate factor should fail");
         assert!(err.to_string().contains("duplicate factor"));
+    }
+
+    #[test]
+    fn normalize_symbol_key_handles_okex_swap_symbols() {
+        assert_eq!(normalize_symbol_key("BTCUSDT"), "BTCUSDT");
+        assert_eq!(normalize_symbol_key("BTC-USDT-SWAP"), "BTCUSDT");
+        assert_eq!(normalize_symbol_key("bnb-usdt-swap"), "BNBUSDT");
+        assert_eq!(normalize_symbol_key("BTC_USDT_PERP"), "BTCUSDT");
+        assert_eq!(normalize_symbol_key("ETH/USDT:SWAP"), "ETHUSDT");
     }
 }

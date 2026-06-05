@@ -15,7 +15,8 @@ use std::time::{Duration, Instant};
 use super::cfg::ModelPubConfig;
 use super::factor_pool::{
     build_extract_indices, build_factor_indices, build_factor_position_map,
-    load_symbol_factor_names_from_tlen_server, parse_venue_slug_from_input_service,
+    load_symbol_factor_names_from_tlen_server, normalize_symbol_key,
+    parse_venue_slug_from_input_service,
 };
 use super::model::OnnxModel;
 use super::publisher::ModelPublisher;
@@ -765,10 +766,6 @@ fn normalize_model_name(raw: &str) -> Result<String> {
         anyhow::bail!("model_name must not be empty");
     }
     Ok(normalized.to_string())
-}
-
-fn normalize_symbol_key(raw: &str) -> String {
-    raw.trim().to_uppercase()
 }
 
 fn sanitize_node_suffix(raw: &str) -> String {
