@@ -4,6 +4,7 @@ use crate::common::iceoryx_publisher::{ResamplePublisher, RESAMPLE_PAYLOAD};
 use crate::common::min_qty_table::MinQtyTable;
 use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::common::time_util::get_timestamp_us;
+use crate::pre_trade::account_open_block::latest_usdt_max_available_margin_snapshot;
 use crate::pre_trade::basic_balance_manager::BasicBalanceManager;
 use crate::pre_trade::basic_exposure_manager::BasicExposureManager;
 use crate::pre_trade::basic_um_manager::BasicUmManager;
@@ -836,6 +837,8 @@ impl ResampleChannel {
             let max_leverage = params.max_leverage();
             let unimmr_trigger_line = params.unimmr_trigger_line();
             let unimmr_recover_line = params.unimmr_recover_line();
+            let usdt_max_available_margin = latest_usdt_max_available_margin_snapshot()
+                .map(|snapshot| snapshot.usdt_max_available_margin);
             // total_equity 口径：若涉及合约 venue，已包含 UPL。
             let leverage = if total_equity.abs() <= f64::EPSILON {
                 0.0
@@ -870,6 +873,7 @@ impl ResampleChannel {
                 um_unrealized_usd,
                 leverage,
                 max_leverage,
+                usdt_max_available_margin,
                 open_leg,
                 hedge_leg,
                 unimmr_trigger_line,

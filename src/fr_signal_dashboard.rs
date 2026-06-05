@@ -25,6 +25,7 @@ use crate::funding_rate::{
     load_all_once_with_namespace, spawn_config_loader_with_namespace, ArbDecision, ArbSignalKind,
     FundingRateFactor, MktChannel, RateFetcher, SymbolList,
 };
+use crate::pre_trade::account_open_block::latest_usdt_max_available_margin_snapshot;
 use crate::signal::common::TradingVenue;
 
 #[derive(Debug, Clone)]
@@ -62,6 +63,7 @@ pub struct FrDashboardSnapshot {
     pub symbol_key_suffix: String,
     pub open_venue: String,
     pub hedge_venue: String,
+    pub usdt_max_available_margin: Option<f64>,
     pub summary: FrDashboardSummary,
     pub thresholds: Vec<FrDashboardThresholdLegend>,
     pub rows: Vec<FrDashboardRow>,
@@ -260,6 +262,8 @@ fn build_snapshot(cfg: &FrDashboardConfig) -> FrDashboardSnapshot {
         symbol_key_suffix: cfg.symbol_key_suffix.clone(),
         open_venue: cfg.open_venue.data_pub_slug().to_string(),
         hedge_venue: cfg.hedge_venue.data_pub_slug().to_string(),
+        usdt_max_available_margin: latest_usdt_max_available_margin_snapshot()
+            .map(|snapshot| snapshot.usdt_max_available_margin),
         summary,
         thresholds,
         rows,
@@ -1001,6 +1005,10 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             <span>Backward Open</span>
             <strong id="bwdOpenCount">0</strong>
           </div>
+          <div class="metric-card">
+            <span>USDT可用最大保证金</span>
+            <strong id="usdtMaxAvailableMargin">--</strong>
+          </div>
         </div>
       </article>
     </section>
@@ -1074,6 +1082,11 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 
     function formatPct(value) {
       return value === null || value === undefined ? "--" : value.toFixed(4);
+    }
+
+    function formatUsd(value) {
+      if (value === null || value === undefined || !Number.isFinite(value)) return "--";
+      return value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
 
     function formatTs(tsMs) {
@@ -1160,6 +1173,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
       document.getElementById("factorMode").textContent = snapshot.factor_mode;
       document.getElementById("fwdOpenCount").textContent = snapshot.summary.forward_open;
       document.getElementById("bwdOpenCount").textContent = snapshot.summary.backward_open;
+      document.getElementById("usdtMaxAvailableMargin").textContent = formatUsd(snapshot.usdt_max_available_margin);
       renderMeta(snapshot);
       renderThresholds(snapshot);
       renderRows(snapshot);

@@ -494,6 +494,10 @@
               <h3>Max Leverage</h3>
               <div class="value" id="risk-max-leverage">--</div>
             </div>
+            <div class="metric-card">
+              <h3>USDT可用最大保证金</h3>
+              <div class="value" id="risk-usdt-max-margin">--</div>
+            </div>
           </div>
           <div class="account-risks-grid" id="account-risks"></div>
           <div class="chips">
@@ -658,6 +662,7 @@
           signalSummary: $("signal-summary"),
           riskEquity: $("risk-equity"), riskExposure: $("risk-exposure"), riskPosition: $("risk-position"),
           riskLeverage: $("risk-leverage"), riskMaxLeverage: $("risk-max-leverage"),
+          riskUsdtMaxMargin: $("risk-usdt-max-margin"),
           metricLeverage: $("metric-leverage"),
           riskBorrowed: $("risk-borrowed"), riskInterest: $("risk-interest"),
           riskUmUpl: $("risk-um-upl"), riskSpotEquity: $("risk-spot-equity"),
@@ -759,6 +764,7 @@
           el.riskPosition.textContent = e ? fmt(e.total_position, fmtUsd) : "--";
           el.riskLeverage.textContent = fmt(lev, fmtLev);
           el.riskMaxLeverage.textContent = e ? fmt(e.max_leverage, fmtLev) : "--";
+          el.riskUsdtMaxMargin.textContent = e ? fmt(e.usdt_max_available_margin, fmtUsd) : "--";
           if (e && isNum(lev) && isNum(e.max_leverage) && e.max_leverage > 0 && lev > e.max_leverage) {
             el.metricLeverage.classList.add("warn");
           } else {

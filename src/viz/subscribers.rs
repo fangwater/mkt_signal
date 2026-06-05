@@ -172,6 +172,7 @@ fn spawn_pre_trade_risk_listener(
                     "um_unrealized_usd": entry.um_unrealized_usd,
                     "leverage": entry.leverage,
                     "max_leverage": entry.max_leverage,
+                    "usdt_max_available_margin": entry.usdt_max_available_margin,
                     "open_leg": entry.open_leg,
                     "hedge_leg": entry.hedge_leg,
                     "unimmr_trigger_line": entry.unimmr_trigger_line,

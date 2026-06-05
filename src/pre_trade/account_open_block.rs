@@ -57,6 +57,17 @@ pub struct AccountOpenBlockHit {
     pub last_error_code: i32,
 }
 
+#[derive(Debug, Clone)]
+pub struct UsdtMaxAvailableMarginSnapshot {
+    pub venue: &'static str,
+    pub available_label: &'static str,
+    pub available: f64,
+    pub max_borrowable: f64,
+    pub usdt_max_available_margin: f64,
+    pub threshold: f64,
+    pub ts_us: i64,
+}
+
 #[derive(Debug, Clone, Default)]
 struct CapacityPollState {
     last_query_sent_us: i64,
@@ -65,6 +76,9 @@ struct CapacityPollState {
     last_usdt_available: Option<f64>,
     last_usdt_max_borrowable: Option<f64>,
     last_capacity_check_us: i64,
+    last_completed_usdt_available: Option<f64>,
+    last_completed_usdt_max_borrowable: Option<f64>,
+    last_usdt_max_available_margin: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,6 +214,10 @@ pub fn clear_account_open_block(reason: AccountOpenBlockReason) -> bool {
     ACCOUNT_OPEN_BLOCKS.lock().remove(&reason).is_some()
 }
 
+pub fn latest_usdt_max_available_margin_snapshot() -> Option<UsdtMaxAvailableMarginSnapshot> {
+    capacity_venue_for_monitor().and_then(latest_usdt_max_available_margin_snapshot_for_venue)
+}
+
 pub fn drive_account_open_block_capacity_poll(now_us: i64) {
     if binance_pm_capacity_poll_enabled() {
         drive_capacity_poll(CapacityVenue::BinancePm, now_us);
@@ -225,14 +243,11 @@ fn drive_capacity_poll(venue: CapacityVenue, now_us: i64) {
         }
         let available_query_id = next_capacity_query_id();
         let max_borrowable_query_id = next_capacity_query_id();
-        *state = CapacityPollState {
-            last_query_sent_us: now_us,
-            available_query_id: Some(available_query_id),
-            max_borrowable_query_id: Some(max_borrowable_query_id),
-            last_usdt_available: None,
-            last_usdt_max_borrowable: None,
-            last_capacity_check_us: 0,
-        };
+        state.last_query_sent_us = now_us;
+        state.available_query_id = Some(available_query_id);
+        state.max_borrowable_query_id = Some(max_borrowable_query_id);
+        state.last_usdt_available = None;
+        state.last_usdt_max_borrowable = None;
         (available_query_id, max_borrowable_query_id)
     };
 
@@ -453,6 +468,20 @@ fn bitget_unified_capacity_poll_enabled() -> bool {
         && monitor.hedge_venue() == TradingVenue::BitgetFutures
 }
 
+fn capacity_venue_for_monitor() -> Option<CapacityVenue> {
+    if binance_pm_capacity_poll_enabled() {
+        Some(CapacityVenue::BinancePm)
+    } else if okex_unified_capacity_poll_enabled() {
+        Some(CapacityVenue::OkexUnified)
+    } else if gate_unified_capacity_poll_enabled() {
+        Some(CapacityVenue::GateUnified)
+    } else if bitget_unified_capacity_poll_enabled() {
+        Some(CapacityVenue::BitgetUnified)
+    } else {
+        None
+    }
+}
+
 fn register_account_open_block_at(reason: AccountOpenBlockReason, error_code: i32, now_us: i64) {
     let mut guard = ACCOUNT_OPEN_BLOCKS.lock();
     guard
@@ -518,6 +547,27 @@ fn capacity_poll_state(venue: CapacityVenue) -> &'static Mutex<CapacityPollState
     }
 }
 
+fn latest_usdt_max_available_margin_snapshot_for_venue(
+    venue: CapacityVenue,
+) -> Option<UsdtMaxAvailableMarginSnapshot> {
+    let state = capacity_poll_state(venue).lock();
+    let available = state.last_completed_usdt_available?;
+    let max_borrowable = state.last_completed_usdt_max_borrowable?;
+    let usdt_max_available_margin = state.last_usdt_max_available_margin?;
+    if state.last_capacity_check_us <= 0 {
+        return None;
+    }
+    Some(UsdtMaxAvailableMarginSnapshot {
+        venue: venue.label(),
+        available_label: venue.available_label(),
+        available,
+        max_borrowable,
+        usdt_max_available_margin,
+        threshold: venue.threshold(),
+        ts_us: state.last_capacity_check_us,
+    })
+}
+
 fn update_capacity_snapshot(
     venue: CapacityVenue,
     req_type: QueryRequestType,
@@ -569,7 +619,11 @@ fn update_capacity_snapshot(
             );
             return;
         };
+        let capacity = available + max_borrowable;
         state.last_capacity_check_us = now_us;
+        state.last_completed_usdt_available = Some(available);
+        state.last_completed_usdt_max_borrowable = Some(max_borrowable);
+        state.last_usdt_max_available_margin = Some(capacity);
         (available, max_borrowable, poll_sent_us)
     };
 
@@ -827,6 +881,7 @@ mod tests {
             last_usdt_available: None,
             last_usdt_max_borrowable: None,
             last_capacity_check_us: 0,
+            ..CapacityPollState::default()
         };
     }
 
@@ -988,6 +1043,42 @@ mod tests {
             &Bytes::from_static(br#"{"code":"0","data":[{"ccy":"USDT","maxLoan":"2000.0"}]}"#),
         ));
         assert!(check_account_open_block().is_none());
+    }
+
+    #[test]
+    fn completed_capacity_snapshot_survives_next_pending_poll() {
+        let _guard = TEST_LOCK.lock();
+        clear_all();
+        seed_poll_state(CapacityVenue::GateUnified, -19, -20);
+
+        assert!(handle_account_open_block_query_response(
+            QueryRequestType::GateUnifiedUsdtAvailableSnapshot,
+            -19,
+            &Bytes::from_static(br#"{"balances":{"USDT":{"available":"100.0","equity":"100.0"}}}"#,),
+        ));
+        assert!(handle_account_open_block_query_response(
+            QueryRequestType::GateUnifiedUsdtMaxBorrowable,
+            -20,
+            &Bytes::from_static(br#"{"amount":"2000.0"}"#),
+        ));
+        let completed =
+            latest_usdt_max_available_margin_snapshot_for_venue(CapacityVenue::GateUnified)
+                .expect("completed snapshot");
+        assert_eq!(completed.usdt_max_available_margin, 2100.0);
+
+        {
+            let mut state = capacity_poll_state(CapacityVenue::GateUnified).lock();
+            state.last_query_sent_us = 4_000_000;
+            state.available_query_id = Some(-21);
+            state.max_borrowable_query_id = Some(-22);
+            state.last_usdt_available = None;
+            state.last_usdt_max_borrowable = None;
+        }
+
+        let still_completed =
+            latest_usdt_max_available_margin_snapshot_for_venue(CapacityVenue::GateUnified)
+                .expect("completed snapshot survives pending poll");
+        assert_eq!(still_completed.usdt_max_available_margin, 2100.0);
     }
 
     #[test]

@@ -111,6 +111,7 @@ pub struct PreTradeRiskResampleEntry {
     pub um_unrealized_usd: f64,
     pub leverage: f64,
     pub max_leverage: f64,
+    pub usdt_max_available_margin: Option<f64>,
     pub open_leg: PreTradeVenueRiskResampleEntry,
     pub hedge_leg: PreTradeVenueRiskResampleEntry,
     pub unimmr_trigger_line: f64,
