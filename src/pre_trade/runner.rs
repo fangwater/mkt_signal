@@ -1,4 +1,5 @@
 use crate::common::time_util::get_timestamp_us;
+use crate::pre_trade::account_open_block::drive_account_open_block_capacity_poll;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::OrderRateLimiter;
 use crate::pre_trade::query_eng_channel::QueryEngHub;
@@ -95,6 +96,9 @@ impl PreTrade {
         let mut next_order_rate_cleanup = std::time::Instant::now() + order_rate_cleanup_interval;
         let arb_startup_net_log_interval = std::time::Duration::from_secs(30);
         let mut next_arb_startup_net_log = std::time::Instant::now() + arb_startup_net_log_interval;
+        let account_open_block_poll_interval = std::time::Duration::from_secs(60);
+        let mut next_account_open_block_poll =
+            std::time::Instant::now() + account_open_block_poll_interval;
         info!(
             "pre_trade signal throttle log started (interval={}s)",
             throttle_log_interval_secs
@@ -166,6 +170,11 @@ impl PreTrade {
                 while instant_now >= next_order_rate_cleanup {
                     OrderRateLimiter::cleanup_expired(now);
                     next_order_rate_cleanup += order_rate_cleanup_interval;
+                }
+
+                while instant_now >= next_account_open_block_poll {
+                    drive_account_open_block_capacity_poll(now);
+                    next_account_open_block_poll += account_open_block_poll_interval;
                 }
 
                 while instant_now >= next_arb_startup_net_log {

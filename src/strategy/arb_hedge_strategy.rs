@@ -1,6 +1,7 @@
 use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::common::tick_math::QuantizedValue;
 use crate::common::time_util::get_timestamp_us;
+use crate::pre_trade::account_open_block::{register_account_open_block, AccountOpenBlockReason};
 use crate::pre_trade::log_throttle::log_order_rate_limit_summary;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
@@ -39,12 +40,9 @@ const ARB_HEDGE_QTY_EPS: f64 = 1e-12;
 const ARB_HEDGE_PENDING_QUERY_MIN_USDT: f64 = 25.0;
 const ARB_HEDGE_BORROW_SHORTFALL_MAX_USDT: f64 = 1.0;
 const ARB_HEDGE_QUERY_INTERVAL_US: i64 = 1_000_000;
-/// 51008（保证金不足）应急动作的冷却时间。同一 strategy 在窗口内的连续 51008
-/// 只触发一次撤单 + 杠杆下调。避免一秒万次拒单情况下重复执行。
+/// 保证金不足应急动作的冷却时间。同一 strategy 在窗口内的连续拒单
+/// 只触发一次账户级 open block/撤单，避免一秒万次拒单情况下重复执行。
 const ARB_HEDGE_INSUFFICIENT_MARGIN_COOLDOWN_US: i64 = 5_000_000;
-/// 应急每次降杠杆的衰减系数：new = round(current * 0.8, 1)。
-const ARB_HEDGE_LEVERAGE_DAMPING: f64 = 0.8;
-
 static ARB_HEDGE_FORCE_TAKER: OnceLock<bool> = OnceLock::new();
 
 fn env_flag_enabled(names: &[&str]) -> bool {
@@ -1510,10 +1508,15 @@ impl ArbHedgeStrategy {
         true
     }
 
-    /// 51008 应急动作：撤同 symbol、对应 open 方向（=hedge 反向）的 open 挂单，
-    /// 并把 max_leverage 下调一档（current * 0.8 取 1 位小数）写回 Redis。
+    /// Binance PM/FR hedge 保证金不足应急动作：账户级锁住新增 ArbOpen，并撤掉当前
+    /// 全部 ArbOpen 挂单；不再自动下调 max_leverage。
     /// 进入这里前调用方已经做了冷却节流（5s）。
-    fn handle_insufficient_margin_emergency(&mut self, now_ts: i64, hedge_side: Option<Side>) {
+    fn handle_insufficient_margin_emergency(
+        &mut self,
+        now_ts: i64,
+        hedge_side: Option<Side>,
+        error_code: i32,
+    ) {
         let Some(hedge_side) = hedge_side else {
             warn!(
                 "ArbHedgeStrategy: strategy_id={} symbol={} INSUFFICIENT_MARGIN emergency skipped: hedge_side unknown (order missing)",
@@ -1527,45 +1530,52 @@ impl ArbHedgeStrategy {
             Side::Sell => Side::Buy,
         };
 
-        // 1) 撤同 symbol、同 open 方向的 open 单（最小爆破：不影响相反方向 arb 的策略）。
-        self.cancel_same_symbol_open_orders(open_side, now_ts);
-
-        // 2) 杠杆下调：current * 0.8，取 1 位小数；不设下限。
-        let loader = PreTradeParamsLoader::instance();
-        let current = loader.max_leverage();
-        let new_lev = ((current * ARB_HEDGE_LEVERAGE_DAMPING) * 10.0).round() / 10.0;
-        if new_lev > 0.0 && (new_lev - current).abs() > f64::EPSILON {
-            loader.set_max_leverage_async(new_lev);
-        }
+        let is_binance_pm_fr = self.open_venue == TradingVenue::BinanceMargin
+            && self.hedge_venue == TradingVenue::BinanceFutures
+            && MonitorChannel::try_order_manager()
+                .is_some_and(|mgr| !mgr.borrow().binance_is_standard());
+        let account_open_block = if is_binance_pm_fr {
+            register_account_open_block(
+                AccountOpenBlockReason::BinancePmInsufficientMargin,
+                error_code,
+            );
+            self.cancel_all_arb_open_orders(now_ts, "insufficient_margin_account_open_block");
+            "binance_pm_insufficient_margin"
+        } else {
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} symbol={} INSUFFICIENT_MARGIN emergency has no account block for open_venue={:?} hedge_venue={:?}",
+                self.strategy_id, self.symbol, self.open_venue, self.hedge_venue
+            );
+            "none"
+        };
 
         warn!(
-            "ArbHedgeStrategy: strategy_id={} symbol={} INSUFFICIENT_MARGIN emergency triggered: hedge_side={:?} open_side={:?} leverage {:.2} -> {:.1}",
-            self.strategy_id, self.symbol, hedge_side, open_side, current, new_lev
+            "ArbHedgeStrategy: strategy_id={} symbol={} INSUFFICIENT_MARGIN emergency triggered: hedge_side={:?} open_side={:?} code={} account_open_block={}",
+            self.strategy_id, self.symbol, hedge_side, open_side, error_code, account_open_block
         );
     }
 
-    fn cancel_same_symbol_open_orders(&mut self, open_side: Side, now_ts: i64) {
+    fn cancel_all_arb_open_orders(&mut self, now_ts: i64, reason: &'static str) {
         let strategy_mgr_handle = MonitorChannel::instance().strategy_mgr();
-        let ids: Vec<i32> = strategy_mgr_handle
+        let ids_and_sides: Vec<(i32, Side)> = strategy_mgr_handle
             .borrow()
-            .arb_open_strategy_ids_by_symbol_and_side(&self.symbol, open_side);
-        if ids.is_empty() {
+            .all_arb_open_strategy_ids_and_sides();
+        if ids_and_sides.is_empty() {
             debug!(
-                "ArbHedgeStrategy: strategy_id={} symbol={} no live ArbOpen with side={:?} to cancel",
-                self.strategy_id, self.symbol, open_side
+                "ArbHedgeStrategy: strategy_id={} symbol={} no live ArbOpen to cancel for account open block",
+                self.strategy_id, self.symbol
             );
             return;
         }
-        for sid in &ids {
+        for (sid, side) in &ids_and_sides {
             let mut mgr = strategy_mgr_handle.borrow_mut();
-            mgr.cancel_arb_open_by_id(*sid, open_side, "insufficient_margin_emergency", now_ts);
+            mgr.cancel_arb_open_by_id(*sid, *side, reason, now_ts);
         }
         info!(
-            "ArbHedgeStrategy: strategy_id={} symbol={} INSUFFICIENT_MARGIN cancel dispatched count={} side={:?}",
+            "ArbHedgeStrategy: strategy_id={} symbol={} INSUFFICIENT_MARGIN account open block cancel dispatched count={}",
             self.strategy_id,
             self.symbol,
-            ids.len(),
-            open_side
+            ids_and_sides.len()
         );
     }
 }
@@ -1661,8 +1671,8 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
                 release_price,
                 meta.bound_open_client_order_id,
             );
-            // 51008 / 51061：保证金已经被打满，立刻重发等同于扔进死循环；
-            // 走应急路径（撤同方向 open 单 + 降杠杆），并跳过普通的 trigger 重发。
+            // 保证金已经被打满时，立刻重发等同于扔进死循环；
+            // Binance PM/FR 走账户级 open block + 撤全部 ArbOpen，并跳过普通 trigger 重发。
             // 1Hz period_clock 兜底保证 pending 不会永远卡住。
             if is_insufficient_margin {
                 if now_ts.saturating_sub(self.last_insufficient_margin_action_ts)
@@ -1670,7 +1680,11 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
                 {
                     self.last_insufficient_margin_action_ts = now_ts;
                     let hedge_side = order_snapshot.as_ref().map(|(side, _, _)| *side);
-                    self.handle_insufficient_margin_emergency(now_ts, hedge_side);
+                    self.handle_insufficient_margin_emergency(
+                        now_ts,
+                        hedge_side,
+                        response.error_code(),
+                    );
                 }
             } else {
                 self.trigger_hedge_query_after_pending_release(now_ts, "hedge_open_failed");

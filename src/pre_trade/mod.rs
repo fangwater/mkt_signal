@@ -1,3 +1,4 @@
+pub mod account_open_block;
 pub mod auto_collection_service;
 pub mod auto_repay;
 pub mod auto_repay_service;

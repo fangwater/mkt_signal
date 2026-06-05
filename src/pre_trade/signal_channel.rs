@@ -2,6 +2,7 @@ use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
 use crate::common::ipc_service_name::build_service_name;
 use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::common::time_util::get_timestamp_us;
+use crate::pre_trade::account_open_block::check_account_open_block;
 use crate::pre_trade::leverage_guard::LeverageGuard;
 use crate::pre_trade::log_throttle::log_pending_limit_summary;
 use crate::pre_trade::monitor_channel::MonitorChannel;
@@ -577,7 +578,8 @@ fn handle_trade_signal(signal: TradeSignal, receive_us: i64) {
                 let from_key = String::from_utf8_lossy(&open_ctx.from_key).to_string();
                 let symbol_throttle_hit = check_signal_throttle(&symbol, side);
                 let account_throttle_hit = check_account_signal_throttle();
-                if account_throttle_hit.is_none() {
+                let account_open_block_hit = check_account_open_block();
+                if account_throttle_hit.is_none() && account_open_block_hit.is_none() {
                     if let Some(hit) = symbol_throttle_hit.as_ref() {
                         debug!(
                             "ArbOpen: throttled by pre_trade block, symbol={} side={} remain_us={} last_code={} until_us={}, skip strategy construction",
@@ -618,11 +620,40 @@ fn handle_trade_signal(signal: TradeSignal, receive_us: i64) {
                     return;
                 }
 
-                if let Some(gate) = PreTradeTakerDecisionModel::arb_open_gate_global(&symbol) {
-                    if !gate.allowed {
-                        log_taker_decision_open_gate_block(gate, side, open_ctx.amount_value());
+                if let Some(hit) = account_open_block_hit.as_ref() {
+                    let reducing = arb_open_is_account_throttle_reducing(
+                        &symbol,
+                        opening_venue,
+                        &hedging_symbol,
+                        hedging_venue,
+                        side,
+                        open_ctx.amount_value(),
+                    );
+                    if !reducing {
+                        debug!(
+                            "ArbOpen: account-wide open block, reason={} symbol={} side={} open_venue={:?} hedge_venue={:?} qty={:.8} first_seen_us={} updated_at_us={} last_code={}, skip strategy construction",
+                            hit.reason.as_str(),
+                            symbol,
+                            side.as_str(),
+                            opening_venue,
+                            hedging_venue,
+                            open_ctx.amount_value(),
+                            hit.first_seen_us,
+                            hit.updated_at_us,
+                            hit.last_error_code
+                        );
                         return;
                     }
+                    debug!(
+                        "ArbOpen: account-wide open block active but signal is reducing, reason={} symbol={} side={} open_venue={:?} hedge_venue={:?} qty={:.8} last_code={}",
+                        hit.reason.as_str(),
+                        symbol,
+                        side.as_str(),
+                        opening_venue,
+                        hedging_venue,
+                        open_ctx.amount_value(),
+                        hit.last_error_code
+                    );
                 }
 
                 if let Some(hit) = account_throttle_hit.as_ref() {
@@ -658,6 +689,13 @@ fn handle_trade_signal(signal: TradeSignal, receive_us: i64) {
                         hit.remaining_us,
                         hit.last_error_code
                     );
+                }
+
+                if let Some(gate) = PreTradeTakerDecisionModel::arb_open_gate_global(&symbol) {
+                    if !gate.allowed {
+                        log_taker_decision_open_gate_block(gate, side, open_ctx.amount_value());
+                        return;
+                    }
                 }
 
                 match open_ctx.get_order_type() {

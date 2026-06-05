@@ -607,6 +607,15 @@ impl StrategyManager {
             .collect()
     }
 
+    /// 查找所有 ArbOpen 策略 id 及其 open side。
+    /// 账户级保证金不足时使用：撤掉当前所有仍在扩张风险的开仓挂单。
+    pub fn all_arb_open_strategy_ids_and_sides(&self) -> Vec<(i32, Side)> {
+        self.arb_open_strategy_index
+            .iter()
+            .map(|(id, entry)| (*id, entry.side))
+            .collect()
+    }
+
     /// 应急撤单入口：给指定 ArbOpen 策略走一次 handle_open_cancel_signal_common。
     /// 调用方需保证 strategy_id 对应 ArbOpenStrategy；不是的话返回 false。
     pub fn cancel_arb_open_by_id(

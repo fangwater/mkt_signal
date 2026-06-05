@@ -14,6 +14,8 @@ impl QueryTypeMapping {
                 | QueryRequestType::BinanceUmBalanceSnapshotStd
                 | QueryRequestType::BinanceUmAccountSnapshotStd
                 | QueryRequestType::BinanceSpotAccountSnapshotStd
+                | QueryRequestType::BinancePmUsdtFreeSnapshot
+                | QueryRequestType::BinancePmUsdtMaxBorrowable
         )
     }
 
@@ -67,6 +69,8 @@ impl QueryTypeMapping {
             QueryRequestType::BinanceUmBalanceSnapshotStd => "/fapi/v2/balance",
             QueryRequestType::BinanceUmAccountSnapshotStd => "/fapi/v2/account",
             QueryRequestType::BinanceSpotAccountSnapshotStd => "/api/v3/account",
+            QueryRequestType::BinancePmUsdtFreeSnapshot => "/papi/v1/balance",
+            QueryRequestType::BinancePmUsdtMaxBorrowable => "/papi/v1/margin/maxBorrowable",
             QueryRequestType::OkexMarginQuery | QueryRequestType::OkexUMQuery => {
                 "/api/v5/trade/order"
             }
@@ -99,6 +103,8 @@ impl QueryTypeMapping {
             | QueryRequestType::BinanceUmBalanceSnapshotStd
             | QueryRequestType::BinanceUmAccountSnapshotStd
             | QueryRequestType::BinanceSpotAccountSnapshotStd
+            | QueryRequestType::BinancePmUsdtFreeSnapshot
+            | QueryRequestType::BinancePmUsdtMaxBorrowable
             | QueryRequestType::OkexMarginQuery
             | QueryRequestType::OkexUMQuery
             | QueryRequestType::OkexAccountBalanceSnapshot
@@ -134,6 +140,8 @@ impl QueryTypeMapping {
             QueryRequestType::BinanceUmBalanceSnapshotStd => 5,
             QueryRequestType::BinanceUmAccountSnapshotStd => 5,
             QueryRequestType::BinanceSpotAccountSnapshotStd => 20,
+            QueryRequestType::BinancePmUsdtFreeSnapshot => 1,
+            QueryRequestType::BinancePmUsdtMaxBorrowable => 1,
             QueryRequestType::OkexMarginQuery | QueryRequestType::OkexUMQuery => 1,
             QueryRequestType::OkexAccountBalanceSnapshot => 1,
             QueryRequestType::OkexPositionsSnapshot => 1,

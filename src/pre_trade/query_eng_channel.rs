@@ -16,6 +16,7 @@ use crate::common::exchange::Exchange;
 use crate::common::iceoryx_publisher::{QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD};
 use crate::common::ipc_service_name::build_service_name;
 use crate::common::time_util::get_timestamp_us;
+use crate::pre_trade::account_open_block::handle_account_open_block_query_response;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::OrderExecutionStatus;
 use crate::pre_trade::response_reconcile::apply_query_response_as_updates;
@@ -349,6 +350,15 @@ impl QueryEngChannel {
                     match QueryEngineResponseMessage::from_payload(payload) {
                         Ok(resp) => {
                             let req_type = QueryRequestType::try_from(resp.req_type()).ok();
+                            if let Some(req_type) = req_type {
+                                if handle_account_open_block_query_response(
+                                    req_type,
+                                    resp.client_query_id(),
+                                    resp.body_bytes(),
+                                ) {
+                                    continue;
+                                }
+                            }
 
                             // Snapshot queries return basic account messages (no huge JSON body).
                             if matches!(
