@@ -9,21 +9,22 @@
 
 JSON 格式:
   {
-    "BTCUSDT": {"rolling_n": 30, "keep_long_percentile": 80, "keep_short_percentile": 20},
-    "ETH-USDT": {"rolling_window": 50, "keep_long": 85, "keep_short": 15}
+    "BTCUSDT": {"keep_long_percentile": 80, "keep_short_percentile": 20},
+    "ETH-USDT": {"keep_long": 85, "keep_short": 15}
   }
 
 说明:
   - 收到 model value msg 的 symbol 会使用 pre_trade lazy taker decision model。
-  - 该 JSON 只覆盖对应 symbol 的 rolling/阈值；未配置 symbol 使用 strategy params 全局默认值。
+  - 该 JSON 只覆盖对应 symbol 的阈值；未配置 symbol 使用 strategy params 全局默认值。
+  - rolling 由 model_pub 维护，本脚本不再接受 rolling_n / rolling_window / window。
   - 未收到 model msg 的 symbol 继续走正常 MT。
   - 每个字段可省略；Rust 侧会使用 strategy params 里的全局默认值。
   - symbol 自动规范化为 alphanumeric uppercase。
-  - rolling_n 必须 >0；分位阈值必须在 [0,100]，且 short <= long。
+  - 分位阈值必须在 [0,100]，且 short <= long。
 
 示例:
   cd ~/bybit-intra-arb01
-  python intra_scripts/sync_intra_taker_decision_model.py --json '{"BTCUSDT":{"rolling_n":30,"keep_long_percentile":80,"keep_short_percentile":20}}'
+  python intra_scripts/sync_intra_taker_decision_model.py --json '{"BTCUSDT":{"keep_long_percentile":80,"keep_short_percentile":20}}'
 """
 
 from __future__ import annotations
@@ -83,20 +84,6 @@ def normalize_symbol(raw: str) -> str:
     return text
 
 
-def coerce_positive_int(raw_value: Any, field_name: str, symbol: str) -> int:
-    if isinstance(raw_value, bool):
-        raise ValueError(f"{field_name} must be a positive integer for {symbol}: {raw_value}")
-    try:
-        if isinstance(raw_value, float) and not raw_value.is_integer():
-            raise ValueError
-        value = int(raw_value)
-    except Exception as exc:
-        raise ValueError(f"{field_name} must be a positive integer for {symbol}: {raw_value}") from exc
-    if value <= 0:
-        raise ValueError(f"{field_name} must be > 0 for {symbol}: {raw_value}")
-    return value
-
-
 def coerce_percentile(raw_value: Any, field_name: str, symbol: str) -> float:
     try:
         value = float(raw_value)
@@ -115,15 +102,8 @@ def normalize_mapping(raw_json: str) -> Dict[str, Dict[str, Any]]:
     if not isinstance(payload, dict):
         raise ValueError("JSON must be an object: {symbol: config}")
 
-    allowed_fields = {
-        "rolling_n",
-        "rolling_window",
-        "window",
-        "keep_long_percentile",
-        "keep_long",
-        "keep_short_percentile",
-        "keep_short",
-    }
+    allowed_fields = {"keep_long_percentile", "keep_long", "keep_short_percentile", "keep_short"}
+    disallowed_rolling_fields = {"rolling_n", "rolling_window", "window"}
     normalized: Dict[str, Dict[str, Any]] = {}
     for raw_symbol, raw_cfg in payload.items():
         symbol = normalize_symbol(str(raw_symbol))
@@ -131,14 +111,16 @@ def normalize_mapping(raw_json: str) -> Dict[str, Dict[str, Any]]:
             raw_cfg = {}
         if not isinstance(raw_cfg, dict):
             raise ValueError(f"config for {symbol} must be an object")
+        rolling_fields = sorted(str(field) for field in raw_cfg.keys() if str(field) in disallowed_rolling_fields)
+        if rolling_fields:
+            raise ValueError(
+                f"config for {symbol} no longer accepts rolling fields: "
+                f"{', '.join(rolling_fields)}; configure model_pub score rolling instead"
+            )
         unknown = sorted(str(field) for field in raw_cfg.keys() if str(field) not in allowed_fields)
         if unknown:
             raise ValueError(f"config for {symbol} has unknown fields: {', '.join(unknown)}")
         cfg: Dict[str, Any] = {}
-        for field in ("rolling_n", "rolling_window", "window"):
-            if field in raw_cfg:
-                cfg["rolling_n"] = coerce_positive_int(raw_cfg[field], "rolling_n", symbol)
-                break
         keep_long_raw = raw_cfg.get("keep_long_percentile", raw_cfg.get("keep_long"))
         keep_short_raw = raw_cfg.get("keep_short_percentile", raw_cfg.get("keep_short"))
         if keep_long_raw is not None:
@@ -167,8 +149,6 @@ def dumps_mapping(mapping: Dict[str, Dict[str, Any]]) -> str:
     for symbol in sorted(mapping.keys()):
         cfg = mapping[symbol]
         out: Dict[str, Any] = {}
-        if "rolling_n" in cfg:
-            out["rolling_n"] = int(cfg["rolling_n"])
         if "keep_long_percentile" in cfg:
             out["keep_long_percentile"] = float(f"{float(cfg['keep_long_percentile']):.12g}")
         if "keep_short_percentile" in cfg:
@@ -185,7 +165,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--open-venue", default=os.environ.get("OPEN_VENUE"))
     p.add_argument("--hedge-venue", default=os.environ.get("HEDGE_VENUE"))
     p.add_argument("--env-name", help="环境目录名（默认取 CWD basename）")
-    p.add_argument("--json", default="{}", help='JSON mapping, e.g. \'{"BTCUSDT":{"rolling_n":30,"keep_long_percentile":80,"keep_short_percentile":20}}\'')
+    p.add_argument("--json", default="{}", help='JSON mapping, e.g. \'{"BTCUSDT":{"keep_long_percentile":80,"keep_short_percentile":20}}\'')
     args = p.parse_args()
 
     exchange = args.exchange
@@ -241,7 +221,6 @@ def print_value(rds, key: str) -> None:
         cfg = mapping[symbol]
         print(
             f"  {symbol:24} "
-            f"rolling_n={cfg.get('rolling_n', '-'):>5} "
             f"keep_long={cfg.get('keep_long_percentile', '-'):>6} "
             f"keep_short={cfg.get('keep_short_percentile', '-'):>6}"
         )

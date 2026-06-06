@@ -112,7 +112,6 @@ STRATEGY_PARAMS = {
     "environment_model_service": "-",
     "enable_taker_decsion_model": "false",
     "taker_decsion_model_service": "-",
-    "taker_decsion_model_rolling_n": "30",
     "taker_decsion_model_keep_long_percentile": "80",
     "taker_decsion_model_keep_short_percentile": "20",
     "signal_cooldown": "5",
@@ -141,9 +140,8 @@ PARAM_COMMENTS: Dict[str, str] = {
     "environment_model_service": "环境模型输出通道名（'-' 表示禁用）",
     "enable_taker_decsion_model": "是否启用 taker decision 模型（默认 false；启用时要求 ARB_HEDGE_LAZY_TAKER=on，且不能同时开启 ARB_HEDGE_FORCE_TAKER）",
     "taker_decsion_model_service": "taker decision 模型输出通道名（'-' 表示禁用；裸通道名会由 Rust 侧归一到 model_output/<name>）",
-    "taker_decsion_model_rolling_n": "taker decision 模型分位判断 rolling 条数 N，默认 30",
-    "taker_decsion_model_keep_long_percentile": "模型分位 > 该阈值时 keep long：保留现货多头，不对冲",
-    "taker_decsion_model_keep_short_percentile": "模型分位 < 该阈值时 keep short：模型看空，保留现货空头，不对冲",
+    "taker_decsion_model_keep_long_percentile": "模型分位 > 该阈值时 keep long；rolling 由 model_pub 维护",
+    "taker_decsion_model_keep_short_percentile": "模型分位 < 该阈值时 keep short；rolling 由 model_pub 维护",
     "max_hedge_price_pct_change": "对冲价格最大变动阈值(%)，范围>0且<=99，可为小数，超过则强制 taker",
     "signal_cooldown": "信号冷却时间(秒)",
 }
@@ -170,7 +168,6 @@ PARAM_PRINT_ORDER = [
     "environment_model_service",
     "enable_taker_decsion_model",
     "taker_decsion_model_service",
-    "taker_decsion_model_rolling_n",
     "taker_decsion_model_keep_long_percentile",
     "taker_decsion_model_keep_short_percentile",
     "max_hedge_price_pct_change",
@@ -189,6 +186,7 @@ def sync_strategy_params(rds, key: str) -> int:
         "hedge_price_offset",
         "hedge_window_scale_low",
         "hedge_window_scale_high",
+        "taker_decsion_model_rolling_n",
     ):
         rds.hdel(key, stale_field)
     rds.hset(key, mapping=STRATEGY_PARAMS)

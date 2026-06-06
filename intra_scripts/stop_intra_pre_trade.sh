@@ -67,6 +67,7 @@ PROC_NAME="${PMDAEMON_NAME:-${PM2_NAME:-$DEFAULT_PROC_NAME}}"
 KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 
 find_running_pids() {
+  local bin_path="${BASE_DIR}/pre_trade"
   local open_arg="--open-venue ${OPEN_VENUE}"
   local hedge_arg="--hedge-venue ${HEDGE_VENUE}"
   local pids=()
@@ -75,8 +76,8 @@ find_running_pids() {
       pids+=("$pid")
     fi
   done < <(
-    ps -eo pid=,args= | awk -v base_dir="$BASE_DIR" -v open_arg="$open_arg" -v hedge_arg="$hedge_arg" '
-      index($0, "pre_trade") > 0 && index($0, base_dir) > 0 && index($0, open_arg) > 0 && index($0, hedge_arg) > 0 {
+    ps -eo pid=,comm=,args= | awk -v bin_path="$bin_path" -v open_arg="$open_arg" -v hedge_arg="$hedge_arg" '
+      $2 == "pre_trade" && index($0, bin_path) > 0 && index($0, open_arg) > 0 && index($0, hedge_arg) > 0 {
         print $1
       }
     '

@@ -115,7 +115,6 @@ def print_value(rds, key: str) -> None:
         cfg = raw_cfg if isinstance(raw_cfg, dict) else {}
         print(
             f"  {str(symbol):24} "
-            f"rolling_n={cfg.get('rolling_n', cfg.get('rolling_window', cfg.get('window', '-'))):>5} "
             f"keep_long={cfg.get('keep_long_percentile', cfg.get('keep_long', '-')):>6} "
             f"keep_short={cfg.get('keep_short_percentile', cfg.get('keep_short', '-')):>6}"
         )
