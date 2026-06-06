@@ -1,3 +1,21 @@
+[workspace]
+members = [
+    ".",
+    "crates/factor_engine",
+    "crates/inpos_engine",
+    "crates/mkt_model_runtime",
+    "crates/mkt_parsers",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+
+[workspace.dependencies]
+anyhow = "1.0"
+serde_json = "1.0"
+
 [package]
 name = "mkt_signal"
 version = "0.1.0"
