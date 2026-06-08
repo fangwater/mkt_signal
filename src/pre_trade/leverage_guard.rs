@@ -27,6 +27,7 @@ const DEFAULT_HTTP_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_REQUEST_SLEEP_MS: u64 = 120;
 const DEFAULT_LEVERAGE_GUARD_REFRESH_SECS: u64 = 60;
 const ON_DEMAND_REFRESH_DEBOUNCE_US: i64 = 2_000_000;
+const BYBIT_ACCOUNT_INFO_PATH: &str = "/v5/account/info";
 
 thread_local! {
     static LEVERAGE_GUARD: RefCell<Option<LeverageGuardState>> = const { RefCell::new(None) };
@@ -242,11 +243,12 @@ impl LeverageGuard {
             );
         };
 
-        let target_venues = target_futures_venues(arb_mode, open_venue, hedge_venue);
+        let target_venues =
+            resolve_target_futures_venues(arb_mode, open_venue, hedge_venue).await?;
         if target_venues.is_empty() {
             install_guard_state(LeverageGuardState::disabled());
             info!(
-                "ArbOpen leverage guard disabled: no futures venue in open={:?} hedge={:?}",
+                "ArbOpen leverage guard disabled: no applicable futures venue requiring exchange-side leverage set in open={:?} hedge={:?}",
                 open_venue, hedge_venue
             );
             return Ok(());
@@ -352,10 +354,12 @@ impl LeverageGuard {
 
     async fn run_refresh(refresh_ctx: GuardRefreshContext, source: &'static str) -> Result<()> {
         let had_global_block = LEVERAGE_GUARD.with(|guard| {
-            guard
-                .borrow()
-                .as_ref()
-                .and_then(|state| state.global_block.as_ref().map(|block| block.trigger.label()))
+            guard.borrow().as_ref().and_then(|state| {
+                state
+                    .global_block
+                    .as_ref()
+                    .map(|block| block.trigger.label())
+            })
         });
         let refresh_result = refresh_guard_targets(&refresh_ctx).await?;
         let confirmed = refresh_result
@@ -389,8 +393,7 @@ impl LeverageGuard {
         if let Some(trigger) = cleared_global.as_deref() {
             info!(
                 "ArbOpen leverage guard global block cleared: source={} trigger={}",
-                source,
-                trigger
+                source, trigger
             );
         }
 
@@ -511,7 +514,6 @@ impl LeverageGuard {
 
         blocked
     }
-
 }
 
 fn install_guard_state(state: LeverageGuardState) {
@@ -541,7 +543,10 @@ async fn refresh_guard_targets(refresh_ctx: &GuardRefreshContext) -> Result<Guar
         };
         (
             state.targets.clone(),
-            state.global_block.as_ref().map(|block| block.trigger.clone()),
+            state
+                .global_block
+                .as_ref()
+                .map(|block| block.trigger.clone()),
         )
     });
 
@@ -596,6 +601,29 @@ async fn refresh_guard_targets(refresh_ctx: &GuardRefreshContext) -> Result<Guar
     })
 }
 
+async fn resolve_target_futures_venues(
+    arb_mode: ArbMode,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+) -> Result<Vec<TradingVenue>> {
+    let mut venues = target_futures_venues(arb_mode, open_venue, hedge_venue);
+    if venues.contains(&TradingVenue::BybitFutures) {
+        match bybit_account_is_pm().await {
+            Ok(true) => {
+                info!(
+                    "ArbOpen leverage guard skips BybitFutures set-leverage: account is Portfolio Margin"
+                );
+                venues.retain(|venue| *venue != TradingVenue::BybitFutures);
+            }
+            Ok(false) => {}
+            Err(err) => warn!(
+                "ArbOpen leverage guard failed to detect Bybit account margin mode; retaining BybitFutures leverage guard: {err:#}"
+            ),
+        }
+    }
+    Ok(venues)
+}
+
 fn target_futures_venues(
     _arb_mode: ArbMode,
     open_venue: TradingVenue,
@@ -609,6 +637,76 @@ fn target_futures_venues(
         }
     }
     venues
+}
+
+async fn bybit_account_is_pm() -> Result<bool> {
+    let credentials = BybitCredentials::from_env()?;
+    let client = Client::builder()
+        .timeout(Duration::from_secs(DEFAULT_HTTP_TIMEOUT_SECS))
+        .build()
+        .context("build bybit account info http client")?;
+    let base = env_or("BYBIT_API_BASE", "https://api.bybit.com");
+    let timestamp = Utc::now().timestamp_millis().to_string();
+    let recv_window = "5000";
+    let signature = hmac_sha256_hex(
+        &credentials.secret_key,
+        &format!("{}{}{}", timestamp, credentials.api_key, recv_window),
+    );
+    let resp = client
+        .get(format!(
+            "{}{}",
+            base.trim_end_matches('/'),
+            BYBIT_ACCOUNT_INFO_PATH
+        ))
+        .header("X-BAPI-API-KEY", credentials.api_key)
+        .header("X-BAPI-SIGN", signature)
+        .header("X-BAPI-SIGN-TYPE", "2")
+        .header("X-BAPI-TIMESTAMP", timestamp)
+        .header("X-BAPI-RECV-WINDOW", recv_window)
+        .send()
+        .await
+        .with_context(|| format!("GET {BYBIT_ACCOUNT_INFO_PATH} failed"))?;
+    let status = resp.status().as_u16();
+    let body = resp.text().await.unwrap_or_default();
+    if status != 200 {
+        bail!(
+            "GET {BYBIT_ACCOUNT_INFO_PATH} http_status={} body={}",
+            status,
+            truncate(&body, 500)
+        );
+    }
+    let value: Value = serde_json::from_str(&body).with_context(|| {
+        format!(
+            "GET {BYBIT_ACCOUNT_INFO_PATH} response not JSON: {}",
+            truncate(&body, 500)
+        )
+    })?;
+    let ret_code = value.get("retCode");
+    let ok = matches!(ret_code, Some(Value::Number(num)) if num.as_i64() == Some(0))
+        || matches!(ret_code, Some(Value::String(code)) if code == "0");
+    if !ok {
+        let ret_msg = value
+            .get("retMsg")
+            .and_then(Value::as_str)
+            .unwrap_or("<missing>");
+        bail!("GET {BYBIT_ACCOUNT_INFO_PATH} retCode={ret_code:?} retMsg={ret_msg}");
+    }
+
+    let result = value.get("result").unwrap_or(&Value::Null);
+    let unified_status = result
+        .get("unifiedMarginStatus")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+    let margin_mode = result
+        .get("marginMode")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let is_pm = unified_status == 6 || margin_mode.eq_ignore_ascii_case("PORTFOLIO_MARGIN");
+    info!(
+        "ArbOpen leverage guard Bybit account mode: unifiedMarginStatus={} marginMode={} portfolio_margin={}",
+        unified_status, margin_mode, is_pm
+    );
+    Ok(is_pm)
 }
 
 fn online_symbol_keys(config: &GuardStartupConfig) -> Vec<String> {
