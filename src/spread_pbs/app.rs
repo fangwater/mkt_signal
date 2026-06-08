@@ -861,6 +861,14 @@ impl SymbolSeqState {
         self.incremental_seen
     }
 
+    #[cfg(test)]
+    fn bbo_prev(&self, symbol: &str) -> i64 {
+        self.index_by_symbol
+            .get(symbol)
+            .map(|&idx| self.bbo_seq[idx])
+            .unwrap_or(i64::MIN)
+    }
+
     fn bbo_slot(&mut self, symbol: &str) -> SymbolSlot {
         let idx = self.ensure_symbol(symbol);
         SymbolSlot {

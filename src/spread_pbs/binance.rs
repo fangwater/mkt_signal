@@ -8,6 +8,8 @@ use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use mkt_parsers::binance as binance_codec;
 use serde_json::Value;
+use std::cell::RefCell;
+use std::collections::HashSet;
 
 use crate::common::mkt_msg::{FundingRateMsg, IndexPriceMsg, LiquidationMsg, MarkPriceMsg};
 use crate::signal::common::TradingVenue;
@@ -17,15 +19,20 @@ use crate::spread_pbs::adapter::{
 
 const BINANCE_SPOT_SBE_WS_URL: &str = "wss://stream-sbe.binance.com:9443/ws";
 const BINANCE_FUTURES_WS_URL: &str = "wss://fstream.binance.com/public/stream";
+const BINANCE_FUTURES_DERIVATIVES_WS_URL: &str = "wss://fstream.binance.com/market/ws";
 const BINANCE_SUBSCRIBE_CHUNK: usize = 200;
 
 pub struct BinanceAdapter {
     venue: TradingVenue,
+    derivatives_symbols: RefCell<HashSet<String>>,
 }
 
 impl BinanceAdapter {
     pub fn new(venue: TradingVenue) -> Self {
-        Self { venue }
+        Self {
+            venue,
+            derivatives_symbols: RefCell::new(HashSet::new()),
+        }
     }
 }
 
@@ -74,17 +81,22 @@ impl VenueAdapter for BinanceAdapter {
         }
     }
 
-    fn build_derivatives_subscribe(&self, symbols: &[String]) -> Vec<Value> {
+    fn build_derivatives_subscribe(&self, _symbols: &[String]) -> Vec<Value> {
         if self.venue != TradingVenue::BinanceFutures {
             return Vec::new();
         }
-        build_multi_stream_subscribe(symbols.iter().flat_map(|symbol| {
-            let symbol = symbol.to_ascii_lowercase();
-            [
-                format!("{symbol}@markPrice@1s"),
-                format!("{symbol}@forceOrder"),
-            ]
-        }))
+        vec![
+            serde_json::json!({
+                "method": "SUBSCRIBE",
+                "params": ["!markPrice@arr@1s"],
+                "id": 1,
+            }),
+            serde_json::json!({
+                "method": "SUBSCRIBE",
+                "params": ["!forceOrder@arr"],
+                "id": 2,
+            }),
+        ]
     }
 
     fn trade_ws_url(&self) -> Option<String> {
@@ -97,10 +109,16 @@ impl VenueAdapter for BinanceAdapter {
 
     fn derivatives_ws_url(&self) -> Option<String> {
         if self.venue == TradingVenue::BinanceFutures {
-            Some(self.ws_url())
+            Some(BINANCE_FUTURES_DERIVATIVES_WS_URL.to_string())
         } else {
             None
         }
+    }
+
+    fn seed_symbols(&self, symbols: &[String]) {
+        let mut active = self.derivatives_symbols.borrow_mut();
+        active.clear();
+        active.extend(symbols.iter().map(|symbol| symbol.to_ascii_uppercase()));
     }
 
     fn parse_frame(&self, value: &Value) -> Result<Vec<BboFrame>> {
@@ -137,8 +155,12 @@ impl VenueAdapter for BinanceAdapter {
         if self.venue != TradingVenue::BinanceFutures {
             return Ok(Vec::new());
         }
+        let active = self.derivatives_symbols.borrow();
         Ok(binance_codec::parse_derivatives_json(value)
             .into_iter()
+            .filter(|derivative| {
+                active.is_empty() || active.contains(derivative_symbol(derivative))
+            })
             .map(derivative_to_bytes)
             .collect())
     }
@@ -249,6 +271,15 @@ fn book_to_incremental(book: binance_codec::Book) -> IncrementalFrame {
             .into_iter()
             .map(|level| crate::common::mkt_msg::Level::from_values(level.price, level.amount))
             .collect(),
+    }
+}
+
+fn derivative_symbol(derivative: &binance_codec::Derivative) -> &str {
+    match derivative {
+        binance_codec::Derivative::MarkPrice { symbol, .. }
+        | binance_codec::Derivative::IndexPrice { symbol, .. }
+        | binance_codec::Derivative::FundingRate { symbol, .. }
+        | binance_codec::Derivative::Liquidation { symbol, .. } => symbol.as_str(),
     }
 }
 
@@ -394,7 +425,7 @@ mod tests {
     }
 
     #[test]
-    fn full_replacement_subscriptions_are_single_direct_url() {
+    fn full_replacement_subscriptions_use_derivatives_market_url() {
         let futures = BinanceAdapter::new(TradingVenue::BinanceFutures);
         assert_eq!(
             futures.trade_ws_url().as_deref(),
@@ -406,7 +437,7 @@ mod tests {
         );
         assert_eq!(
             futures.derivatives_ws_url().as_deref(),
-            Some(BINANCE_FUTURES_WS_URL)
+            Some(BINANCE_FUTURES_DERIVATIVES_WS_URL)
         );
         assert_eq!(
             futures.build_trade_subscribe(&["BTCUSDT".to_string()])[0]["params"][0],
@@ -417,8 +448,9 @@ mod tests {
             "btcusdt@depth@0ms"
         );
         let derivatives = futures.build_derivatives_subscribe(&["BTCUSDT".to_string()]);
-        assert_eq!(derivatives[0]["params"][0], "btcusdt@markPrice@1s");
-        assert_eq!(derivatives[0]["params"][1], "btcusdt@forceOrder");
+        assert_eq!(derivatives.len(), 2);
+        assert_eq!(derivatives[0]["params"][0], "!markPrice@arr@1s");
+        assert_eq!(derivatives[1]["params"][0], "!forceOrder@arr");
 
         let spot = BinanceAdapter::new(TradingVenue::BinanceMargin);
         assert_eq!(
@@ -454,6 +486,7 @@ mod tests {
     #[test]
     fn parses_json_trade_incremental_and_derivatives_as_us() {
         let a = BinanceAdapter::new(TradingVenue::BinanceFutures);
+        a.seed_symbols(&["BTCUSDT".to_string()]);
         let trade = r#"{"data":{"e":"trade","E":1700000000001,"s":"BTCUSDT","t":1001,"p":"25.0","q":"100","m":true}}"#;
         let trades = a.parse_trade_frame(&v(trade)).unwrap();
         assert_eq!(trades[0].timestamp_us, 1_700_000_000_001_000);
@@ -494,6 +527,12 @@ mod tests {
             FundingRateMsg::get_next_funding_time(&bytes[2]),
             1_700_003_600_000_000
         );
+
+        let mark_arr = r#"{"data":[
+            {"e":"markPriceUpdate","E":1700000000001,"s":"BTCUSDT","p":"25.0","i":"24.9","r":"0.0001","T":1700003600000},
+            {"e":"markPriceUpdate","E":1700000000001,"s":"ETHUSDT","p":"26.0","i":"25.9","r":"0.0002","T":1700003600000}
+        ]}"#;
+        assert_eq!(a.parse_derivatives_frame(&v(mark_arr)).unwrap().len(), 3);
 
         let liquidation = r#"{"data":{"e":"forceOrder","E":1700000000001,
             "o":{"s":"BTCUSDT","S":"SELL","z":"10","ap":"25.2","T":1700000000000}}}"#;
