@@ -107,6 +107,8 @@ PARAM_COMMENTS: Dict[str, str] = {
     "taker_decsion_model_service": "taker decision 模型输出通道名（'-' 表示禁用；裸通道名会由 Rust 侧归一到 model_output/<name>）",
     "taker_decsion_model_keep_long_percentile": "模型分位 > 该阈值时 keep long；rolling 由 model_pub 维护",
     "taker_decsion_model_keep_short_percentile": "模型分位 < 该阈值时 keep short；rolling 由 model_pub 维护",
+    "taker_decsion_model_open_cancel_long_percentile": "模型分位 < 该阈值时，撤掉开仓多单（现货 buy / 对冲 sell）",
+    "taker_decsion_model_open_cancel_short_percentile": "模型分位 > 该阈值时，撤掉开仓空单（现货 sell / 对冲 buy）",
     "max_hedge_price_pct_change": "对冲价格最大变动阈值(%)，范围>0且<=99，可为小数，超过则强制 taker",
     "signal_cooldown": "信号冷却时间(秒)",
 }
@@ -132,6 +134,8 @@ PARAM_PRINT_ORDER = [
     "taker_decsion_model_service",
     "taker_decsion_model_keep_long_percentile",
     "taker_decsion_model_keep_short_percentile",
+    "taker_decsion_model_open_cancel_long_percentile",
+    "taker_decsion_model_open_cancel_short_percentile",
     "max_hedge_price_pct_change",
     "signal_cooldown",
 ]

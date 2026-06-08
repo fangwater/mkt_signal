@@ -116,7 +116,9 @@ def print_value(rds, key: str) -> None:
         print(
             f"  {str(symbol):24} "
             f"keep_long={cfg.get('keep_long_percentile', cfg.get('keep_long', '-')):>6} "
-            f"keep_short={cfg.get('keep_short_percentile', cfg.get('keep_short', '-')):>6}"
+            f"keep_short={cfg.get('keep_short_percentile', cfg.get('keep_short', '-')):>6} "
+            f"open_cancel_long={cfg.get('open_cancel_long_percentile', cfg.get('open_cancel_long', '-')):>6} "
+            f"open_cancel_short={cfg.get('open_cancel_short_percentile', cfg.get('open_cancel_short', '-')):>6}"
         )
 
 

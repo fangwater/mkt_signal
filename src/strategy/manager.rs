@@ -3,6 +3,7 @@ use crate::common::tick_math::QuantizedValue;
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::Side;
+use crate::pre_trade::taker_decision_model::{PreTradeTakerDecisionModel, TakerDecisionOpenCancel};
 use crate::signal::common::TradingVenue;
 use crate::signal::trade_signal::TradeSignal;
 use crate::strategy::arb_hedge_strategy::{ArbHedgeSnapshot, ArbHedgeStrategy};
@@ -626,6 +627,23 @@ impl StrategyManager {
         cancel_reason: &'static str,
         trigger_ts: i64,
     ) -> bool {
+        self.cancel_arb_open_by_id_with_signal(
+            strategy_id,
+            cancel_side,
+            cancel_reason,
+            trigger_ts,
+            "EmergencyInsufficientMargin",
+        )
+    }
+
+    fn cancel_arb_open_by_id_with_signal(
+        &mut self,
+        strategy_id: i32,
+        cancel_side: Side,
+        cancel_reason: &'static str,
+        trigger_ts: i64,
+        signal_name: &'static str,
+    ) -> bool {
         let Some(strategy) = self.strategies.get_mut(&strategy_id) else {
             return false;
         };
@@ -633,7 +651,7 @@ impl StrategyManager {
             return false;
         };
         arb_open.handle_open_cancel_signal_common(OpenCancelInput {
-            signal_name: "EmergencyInsufficientMargin",
+            signal_name,
             target_strategy_id: strategy_id,
             target_client_order_id: 0,
             cancel_side,
@@ -951,6 +969,60 @@ impl StrategyManager {
             return false;
         };
         arb_hedge.trigger_lazy_taker_on_model_update(now_ts, model_percentile)
+    }
+
+    pub fn trigger_arb_open_cancel_on_model_update(&mut self, symbol: &str, now_ts: i64) -> usize {
+        let cancel_specs = [
+            (
+                Side::Buy,
+                TakerDecisionOpenCancel::CancelLong,
+                "taker_model_open_long_cancel",
+            ),
+            (
+                Side::Sell,
+                TakerDecisionOpenCancel::CancelShort,
+                "taker_model_open_short_cancel",
+            ),
+        ];
+        let mut canceled = 0usize;
+        for (side, expected_decision, reason) in cancel_specs {
+            let Some(snapshot) = PreTradeTakerDecisionModel::arb_open_cancel_global(symbol, side)
+            else {
+                continue;
+            };
+            if snapshot.decision != expected_decision {
+                continue;
+            }
+            let strategy_ids =
+                self.arb_open_strategy_ids_by_symbol_and_side(&snapshot.symbol, side);
+            if strategy_ids.is_empty() {
+                continue;
+            }
+            for strategy_id in strategy_ids {
+                if self.cancel_arb_open_by_id_with_signal(
+                    strategy_id,
+                    side,
+                    reason,
+                    now_ts,
+                    "TakerDecisionModel",
+                ) {
+                    canceled = canceled.saturating_add(1);
+                }
+            }
+            info!(
+                "taker decision model open cancel symbol={} side={:?} reason={} percentile={:?} score={:?} ready={} update_count={} note={} canceled_so_far={}",
+                snapshot.symbol,
+                side,
+                reason,
+                snapshot.percentile,
+                snapshot.score,
+                snapshot.ready,
+                snapshot.update_count,
+                snapshot.note,
+                canceled
+            );
+        }
+        canceled
     }
 
     /// 触发全部策略的周期检查，返回本次检查到的策略数量

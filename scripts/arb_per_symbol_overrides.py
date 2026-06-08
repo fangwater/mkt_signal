@@ -169,6 +169,10 @@ def normalize_taker_decision_model_mapping(values: Any) -> Dict[str, Dict[str, A
         "keep_long",
         "keep_short_percentile",
         "keep_short",
+        "open_cancel_long_percentile",
+        "open_cancel_long",
+        "open_cancel_short_percentile",
+        "open_cancel_short",
     }
     for raw_symbol, raw_cfg in values.items():
         symbol = normalize_amount_u_symbol(raw_symbol)
@@ -189,6 +193,12 @@ def normalize_taker_decision_model_mapping(values: Any) -> Dict[str, Dict[str, A
 
         keep_long_raw = raw_cfg.get("keep_long_percentile", raw_cfg.get("keep_long"))
         keep_short_raw = raw_cfg.get("keep_short_percentile", raw_cfg.get("keep_short"))
+        open_cancel_long_raw = raw_cfg.get(
+            "open_cancel_long_percentile", raw_cfg.get("open_cancel_long")
+        )
+        open_cancel_short_raw = raw_cfg.get(
+            "open_cancel_short_percentile", raw_cfg.get("open_cancel_short")
+        )
         if keep_long_raw is not None:
             cfg["keep_long_percentile"] = _coerce_percentile(
                 keep_long_raw, "keep_long_percentile", symbol
@@ -196,6 +206,14 @@ def normalize_taker_decision_model_mapping(values: Any) -> Dict[str, Dict[str, A
         if keep_short_raw is not None:
             cfg["keep_short_percentile"] = _coerce_percentile(
                 keep_short_raw, "keep_short_percentile", symbol
+            )
+        if open_cancel_long_raw is not None:
+            cfg["open_cancel_long_percentile"] = _coerce_percentile(
+                open_cancel_long_raw, "open_cancel_long_percentile", symbol
+            )
+        if open_cancel_short_raw is not None:
+            cfg["open_cancel_short_percentile"] = _coerce_percentile(
+                open_cancel_short_raw, "open_cancel_short_percentile", symbol
             )
         if (
             "keep_long_percentile" in cfg
@@ -205,6 +223,15 @@ def normalize_taker_decision_model_mapping(values: Any) -> Dict[str, Dict[str, A
             raise ValueError(
                 f"keep_short_percentile must be <= keep_long_percentile for {symbol}: "
                 f"short={cfg['keep_short_percentile']}, long={cfg['keep_long_percentile']}"
+            )
+        if (
+            "open_cancel_long_percentile" in cfg
+            and "open_cancel_short_percentile" in cfg
+            and cfg["open_cancel_short_percentile"] > cfg["open_cancel_long_percentile"]
+        ):
+            raise ValueError(
+                f"open_cancel_short_percentile must be <= open_cancel_long_percentile for {symbol}: "
+                f"short={cfg['open_cancel_short_percentile']}, long={cfg['open_cancel_long_percentile']}"
             )
         normalized[symbol] = cfg
     return dict(sorted(normalized.items()))
@@ -219,6 +246,14 @@ def dumps_taker_decision_model_mapping(values: Dict[str, Dict[str, Any]]) -> str
             cfg["keep_long_percentile"] = float(f"{float(raw_cfg['keep_long_percentile']):.12g}")
         if "keep_short_percentile" in raw_cfg:
             cfg["keep_short_percentile"] = float(f"{float(raw_cfg['keep_short_percentile']):.12g}")
+        if "open_cancel_long_percentile" in raw_cfg:
+            cfg["open_cancel_long_percentile"] = float(
+                f"{float(raw_cfg['open_cancel_long_percentile']):.12g}"
+            )
+        if "open_cancel_short_percentile" in raw_cfg:
+            cfg["open_cancel_short_percentile"] = float(
+                f"{float(raw_cfg['open_cancel_short_percentile']):.12g}"
+            )
         ordered[symbol] = cfg
     return json.dumps(ordered, ensure_ascii=False, separators=(",", ":"))
 
@@ -879,9 +914,11 @@ def render_taker_decision_model_panel_html() -> str:
       </div>
       <div class="hint">
         JSON 结构
-        <code>{"SYMBOL":{"keep_long_percentile":80,"keep_short_percentile":20}}</code>。
+        <code>{"SYMBOL":{"keep_long_percentile":80,"keep_short_percentile":20,"open_cancel_long_percentile":80,"open_cancel_short_percentile":20}}</code>。
         Redis String <code>&lt;env_name&gt;:&lt;open_venue&gt;:&lt;hedge_venue&gt;:taker_decsion_model_overrides</code>。
         收到 model value msg 的 symbol 会使用 lazy taker decision model；这个 JSON 只覆盖对应 symbol 的阈值。
+        <code>open_cancel_long_percentile</code> 表示模型分位 &lt; 阈值时撤掉开仓多单；
+        <code>open_cancel_short_percentile</code> 表示模型分位 &gt; 阈值时撤掉开仓空单。
         rolling/score_quantile 由 model_pub score_rolling 维护。未覆盖字段使用 strategy params 里的全局默认值。未收到 model msg 的 symbol 继续走正常 MT。
       </div>
       <div class="hint">示例：</div>
@@ -895,8 +932,18 @@ def render_taker_decision_model_panel_html() -> str:
 def render_taker_decision_model_panel_js() -> str:
     return r"""
     const TAKER_DECISION_MODEL_PANEL_EXAMPLE = {
-      "BTCUSDT": {"keep_long_percentile": 80, "keep_short_percentile": 20},
-      "ETHUSDT": {"keep_long_percentile": 85, "keep_short_percentile": 15}
+      "BTCUSDT": {
+        "keep_long_percentile": 80,
+        "keep_short_percentile": 20,
+        "open_cancel_long_percentile": 80,
+        "open_cancel_short_percentile": 20
+      },
+      "ETHUSDT": {
+        "keep_long_percentile": 85,
+        "keep_short_percentile": 15,
+        "open_cancel_long_percentile": 82,
+        "open_cancel_short_percentile": 18
+      }
     };
 
     async function loadTakerDecisionModel() {

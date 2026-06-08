@@ -9,8 +9,18 @@
 
 JSON 格式:
   {
-    "BTCUSDT": {"keep_long_percentile": 80, "keep_short_percentile": 20},
-    "ETH-USDT": {"keep_long": 85, "keep_short": 15}
+    "BTCUSDT": {
+      "keep_long_percentile": 80,
+      "keep_short_percentile": 20,
+      "open_cancel_long_percentile": 80,
+      "open_cancel_short_percentile": 20
+    },
+    "ETH-USDT": {
+      "keep_long": 85,
+      "keep_short": 15,
+      "open_cancel_long": 82,
+      "open_cancel_short": 18
+    }
   }
 
 说明:
@@ -20,11 +30,12 @@ JSON 格式:
   - 未收到 model msg 的 symbol 继续走正常 MT。
   - 每个字段可省略；Rust 侧会使用 strategy params 里的全局默认值。
   - symbol 自动规范化为 alphanumeric uppercase。
-  - 分位阈值必须在 [0,100]，且 short <= long。
+  - keep 阈值必须满足 short <= long。
+  - open cancel 阈值必须满足 short <= long，其中 long 表示“小于该阈值撤多单”，short 表示“大于该阈值撤空单”。
 
 示例:
   cd ~/bybit-intra-arb01
-  python intra_scripts/sync_intra_taker_decision_model.py --json '{"BTCUSDT":{"keep_long_percentile":80,"keep_short_percentile":20}}'
+  python intra_scripts/sync_intra_taker_decision_model.py --json '{"BTCUSDT":{"keep_long_percentile":80,"keep_short_percentile":20,"open_cancel_long_percentile":80,"open_cancel_short_percentile":20}}'
 """
 
 from __future__ import annotations
@@ -102,7 +113,16 @@ def normalize_mapping(raw_json: str) -> Dict[str, Dict[str, Any]]:
     if not isinstance(payload, dict):
         raise ValueError("JSON must be an object: {symbol: config}")
 
-    allowed_fields = {"keep_long_percentile", "keep_long", "keep_short_percentile", "keep_short"}
+    allowed_fields = {
+        "keep_long_percentile",
+        "keep_long",
+        "keep_short_percentile",
+        "keep_short",
+        "open_cancel_long_percentile",
+        "open_cancel_long",
+        "open_cancel_short_percentile",
+        "open_cancel_short",
+    }
     disallowed_rolling_fields = {"rolling_n", "rolling_window", "window"}
     normalized: Dict[str, Dict[str, Any]] = {}
     for raw_symbol, raw_cfg in payload.items():
@@ -123,6 +143,12 @@ def normalize_mapping(raw_json: str) -> Dict[str, Dict[str, Any]]:
         cfg: Dict[str, Any] = {}
         keep_long_raw = raw_cfg.get("keep_long_percentile", raw_cfg.get("keep_long"))
         keep_short_raw = raw_cfg.get("keep_short_percentile", raw_cfg.get("keep_short"))
+        open_cancel_long_raw = raw_cfg.get(
+            "open_cancel_long_percentile", raw_cfg.get("open_cancel_long")
+        )
+        open_cancel_short_raw = raw_cfg.get(
+            "open_cancel_short_percentile", raw_cfg.get("open_cancel_short")
+        )
         if keep_long_raw is not None:
             cfg["keep_long_percentile"] = coerce_percentile(
                 keep_long_raw, "keep_long_percentile", symbol
@@ -130,6 +156,14 @@ def normalize_mapping(raw_json: str) -> Dict[str, Dict[str, Any]]:
         if keep_short_raw is not None:
             cfg["keep_short_percentile"] = coerce_percentile(
                 keep_short_raw, "keep_short_percentile", symbol
+            )
+        if open_cancel_long_raw is not None:
+            cfg["open_cancel_long_percentile"] = coerce_percentile(
+                open_cancel_long_raw, "open_cancel_long_percentile", symbol
+            )
+        if open_cancel_short_raw is not None:
+            cfg["open_cancel_short_percentile"] = coerce_percentile(
+                open_cancel_short_raw, "open_cancel_short_percentile", symbol
             )
         if (
             "keep_long_percentile" in cfg
@@ -139,6 +173,15 @@ def normalize_mapping(raw_json: str) -> Dict[str, Dict[str, Any]]:
             raise ValueError(
                 f"keep_short_percentile must be <= keep_long_percentile for {symbol}: "
                 f"short={cfg['keep_short_percentile']}, long={cfg['keep_long_percentile']}"
+            )
+        if (
+            "open_cancel_long_percentile" in cfg
+            and "open_cancel_short_percentile" in cfg
+            and cfg["open_cancel_short_percentile"] > cfg["open_cancel_long_percentile"]
+        ):
+            raise ValueError(
+                f"open_cancel_short_percentile must be <= open_cancel_long_percentile for {symbol}: "
+                f"short={cfg['open_cancel_short_percentile']}, long={cfg['open_cancel_long_percentile']}"
             )
         normalized[symbol] = cfg
     return normalized
@@ -153,6 +196,14 @@ def dumps_mapping(mapping: Dict[str, Dict[str, Any]]) -> str:
             out["keep_long_percentile"] = float(f"{float(cfg['keep_long_percentile']):.12g}")
         if "keep_short_percentile" in cfg:
             out["keep_short_percentile"] = float(f"{float(cfg['keep_short_percentile']):.12g}")
+        if "open_cancel_long_percentile" in cfg:
+            out["open_cancel_long_percentile"] = float(
+                f"{float(cfg['open_cancel_long_percentile']):.12g}"
+            )
+        if "open_cancel_short_percentile" in cfg:
+            out["open_cancel_short_percentile"] = float(
+                f"{float(cfg['open_cancel_short_percentile']):.12g}"
+            )
         ordered[symbol] = out
     return json.dumps(ordered, ensure_ascii=False, separators=(",", ":"))
 
@@ -165,7 +216,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--open-venue", default=os.environ.get("OPEN_VENUE"))
     p.add_argument("--hedge-venue", default=os.environ.get("HEDGE_VENUE"))
     p.add_argument("--env-name", help="环境目录名（默认取 CWD basename）")
-    p.add_argument("--json", default="{}", help='JSON mapping, e.g. \'{"BTCUSDT":{"keep_long_percentile":80,"keep_short_percentile":20}}\'')
+    p.add_argument("--json", default="{}", help='JSON mapping, e.g. \'{"BTCUSDT":{"keep_long_percentile":80,"keep_short_percentile":20,"open_cancel_long_percentile":80,"open_cancel_short_percentile":20}}\'')
     args = p.parse_args()
 
     exchange = args.exchange
@@ -222,7 +273,9 @@ def print_value(rds, key: str) -> None:
         print(
             f"  {symbol:24} "
             f"keep_long={cfg.get('keep_long_percentile', '-'):>6} "
-            f"keep_short={cfg.get('keep_short_percentile', '-'):>6}"
+            f"keep_short={cfg.get('keep_short_percentile', '-'):>6} "
+            f"open_cancel_long={cfg.get('open_cancel_long_percentile', '-'):>6} "
+            f"open_cancel_short={cfg.get('open_cancel_short_percentile', '-'):>6}"
         )
 
 

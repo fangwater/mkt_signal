@@ -12,6 +12,7 @@ use crate::common::mkt_msg::{ModelMsg, MODEL_STATUS_OK};
 use crate::common::model_ipc::MODEL_PAYLOAD_MAX_BYTES;
 use crate::common::redis_client::{RedisClient, RedisSettings};
 use crate::common::symbol_util::normalize_symbol_for_internal;
+use crate::pre_trade::order_manager::Side;
 use crate::signal::common::TradingVenue;
 
 const MODEL_OUTPUT_HISTORY_SIZE: usize = 128;
@@ -29,6 +30,8 @@ pub struct TakerDecisionConfig {
     pub service: String,
     pub keep_long_percentile: f64,
     pub keep_short_percentile: f64,
+    pub open_cancel_long_percentile: f64,
+    pub open_cancel_short_percentile: f64,
     pub symbol_configs: HashMap<String, TakerDecisionSymbolConfig>,
 }
 
@@ -36,6 +39,8 @@ pub struct TakerDecisionConfig {
 pub struct TakerDecisionSymbolConfig {
     pub keep_long_percentile: f64,
     pub keep_short_percentile: f64,
+    pub open_cancel_long_percentile: f64,
+    pub open_cancel_short_percentile: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -44,6 +49,10 @@ struct RawTakerDecisionSymbolConfig {
     keep_long_percentile: Option<f64>,
     #[serde(default, alias = "keep_short")]
     keep_short_percentile: Option<f64>,
+    #[serde(default, alias = "open_cancel_long")]
+    open_cancel_long_percentile: Option<f64>,
+    #[serde(default, alias = "open_cancel_short")]
+    open_cancel_short_percentile: Option<f64>,
 }
 
 impl TakerDecisionConfig {
@@ -54,6 +63,8 @@ impl TakerDecisionConfig {
             .unwrap_or_else(|| TakerDecisionSymbolConfig {
                 keep_long_percentile: self.keep_long_percentile,
                 keep_short_percentile: self.keep_short_percentile,
+                open_cancel_long_percentile: self.open_cancel_long_percentile,
+                open_cancel_short_percentile: self.open_cancel_short_percentile,
             })
     }
 }
@@ -88,6 +99,24 @@ pub struct ModelUpdateEvent {
 #[derive(Debug, Clone)]
 pub struct TakerDecisionOpenGateSnapshot {
     pub allowed: bool,
+    pub symbol: String,
+    pub score: Option<f64>,
+    pub percentile: Option<f64>,
+    pub update_count: usize,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TakerDecisionOpenCancel {
+    CancelLong,
+    CancelShort,
+    KeepOpen,
+}
+
+#[derive(Debug, Clone)]
+pub struct TakerDecisionOpenCancelSnapshot {
+    pub decision: TakerDecisionOpenCancel,
+    pub ready: bool,
     pub symbol: String,
     pub score: Option<f64>,
     pub percentile: Option<f64>,
@@ -172,12 +201,36 @@ impl PreTradeTakerDecisionModel {
             .get("taker_decsion_model_keep_short_percentile")
             .map(|raw| parse_percentile(&key, "taker_decsion_model_keep_short_percentile", raw))
             .unwrap_or(20.0);
+        let open_cancel_long_percentile = map
+            .get("taker_decsion_model_open_cancel_long_percentile")
+            .map(|raw| {
+                parse_percentile(&key, "taker_decsion_model_open_cancel_long_percentile", raw)
+            })
+            .unwrap_or(keep_long_percentile);
+        let open_cancel_short_percentile = map
+            .get("taker_decsion_model_open_cancel_short_percentile")
+            .map(|raw| {
+                parse_percentile(
+                    &key,
+                    "taker_decsion_model_open_cancel_short_percentile",
+                    raw,
+                )
+            })
+            .unwrap_or(keep_short_percentile);
         if keep_short_percentile > keep_long_percentile {
             anyhow::bail!(
                 "Redis hash '{}' taker_decsion_model_keep_short_percentile must be <= keep_long: short={} long={}",
                 key,
                 keep_short_percentile,
                 keep_long_percentile
+            );
+        }
+        if open_cancel_short_percentile > open_cancel_long_percentile {
+            anyhow::bail!(
+                "Redis hash '{}' taker_decsion_model_open_cancel_short_percentile must be <= open_cancel_long: short={} long={}",
+                key,
+                open_cancel_short_percentile,
+                open_cancel_long_percentile
             );
         }
         let symbol_configs = if enabled {
@@ -188,6 +241,8 @@ impl PreTradeTakerDecisionModel {
                         &overrides_key,
                         keep_long_percentile,
                         keep_short_percentile,
+                        open_cancel_long_percentile,
+                        open_cancel_short_percentile,
                     )?,
                     None => HashMap::new(),
                 },
@@ -222,6 +277,8 @@ impl PreTradeTakerDecisionModel {
             service,
             keep_long_percentile,
             keep_short_percentile,
+            open_cancel_long_percentile,
+            open_cancel_short_percentile,
             symbol_configs,
         })
     }
@@ -271,13 +328,20 @@ impl PreTradeTakerDecisionModel {
         };
         let keep_long = model.cfg.keep_long_percentile;
         let keep_short = model.cfg.keep_short_percentile;
+        let open_cancel_long = model.cfg.open_cancel_long_percentile;
+        let open_cancel_short = model.cfg.open_cancel_short_percentile;
         let symbol_config_count = model.cfg.symbol_configs.len();
         TAKER_DECISION_MODEL.with(|cell| {
             *cell.borrow_mut() = Some(model);
         });
         info!(
-            "pre_trade taker decision model enabled service={} default_keep_long={} default_keep_short={} override_symbols={}",
-            service_name, keep_long, keep_short, symbol_config_count
+            "pre_trade taker decision model enabled service={} default_keep_long={} default_keep_short={} default_open_cancel_long={} default_open_cancel_short={} override_symbols={}",
+            service_name,
+            keep_long,
+            keep_short,
+            open_cancel_long,
+            open_cancel_short,
+            symbol_config_count
         );
         Ok(true)
     }
@@ -305,6 +369,17 @@ impl PreTradeTakerDecisionModel {
             let guard = cell.borrow();
             let model = guard.as_ref()?;
             model.arb_open_gate(symbol)
+        })
+    }
+
+    pub fn arb_open_cancel_global(
+        symbol: &str,
+        open_side: Side,
+    ) -> Option<TakerDecisionOpenCancelSnapshot> {
+        TAKER_DECISION_MODEL.with(|cell| {
+            let guard = cell.borrow();
+            let model = guard.as_ref()?;
+            model.arb_open_cancel(symbol, open_side)
         })
     }
 
@@ -464,6 +539,56 @@ impl PreTradeTakerDecisionModel {
             note,
         })
     }
+
+    fn arb_open_cancel(
+        &self,
+        symbol: &str,
+        open_side: Side,
+    ) -> Option<TakerDecisionOpenCancelSnapshot> {
+        let symbol_key = normalize_symbol_for_internal(symbol);
+        let symbol_cfg = self.cfg.symbol_config(&symbol_key);
+        let state = self.states.get(&symbol_key)?;
+        let score = state.latest_score;
+        let percentile = state.latest_percentile;
+        let update_count = state.update_count();
+        if !state.score_ready() {
+            return Some(TakerDecisionOpenCancelSnapshot {
+                decision: TakerDecisionOpenCancel::KeepOpen,
+                ready: false,
+                symbol: symbol_key,
+                score,
+                percentile,
+                update_count,
+                note: "score_not_ready".to_string(),
+            });
+        }
+        let Some(q) = percentile.filter(|value| value.is_finite()) else {
+            return Some(TakerDecisionOpenCancelSnapshot {
+                decision: TakerDecisionOpenCancel::KeepOpen,
+                ready: false,
+                symbol: symbol_key,
+                score,
+                percentile,
+                update_count,
+                note: "missing_percentile".to_string(),
+            });
+        };
+        let decision = decide_arb_open_cancel(open_side, q, &symbol_cfg);
+        let note = match decision {
+            TakerDecisionOpenCancel::CancelLong => "cancel_open_long".to_string(),
+            TakerDecisionOpenCancel::CancelShort => "cancel_open_short".to_string(),
+            TakerDecisionOpenCancel::KeepOpen => "keep_open".to_string(),
+        };
+        Some(TakerDecisionOpenCancelSnapshot {
+            decision,
+            ready: true,
+            symbol: symbol_key,
+            score,
+            percentile,
+            update_count,
+            note,
+        })
+    }
 }
 
 fn normalize_env_name(namespace: Option<&str>) -> Option<String> {
@@ -496,6 +621,8 @@ fn parse_symbol_configs(
     redis_key: &str,
     default_keep_long_percentile: f64,
     default_keep_short_percentile: f64,
+    default_open_cancel_long_percentile: f64,
+    default_open_cancel_short_percentile: f64,
 ) -> Result<HashMap<String, TakerDecisionSymbolConfig>> {
     let decoded: HashMap<String, RawTakerDecisionSymbolConfig> = serde_json::from_str(raw)
         .with_context(|| format!("parse Redis JSON failed: key={redis_key}"))?;
@@ -511,6 +638,14 @@ fn parse_symbol_configs(
         let keep_short_percentile = raw_cfg
             .keep_short_percentile
             .unwrap_or(default_keep_short_percentile);
+        let open_cancel_long_percentile = raw_cfg
+            .open_cancel_long_percentile
+            .or(raw_cfg.keep_long_percentile)
+            .unwrap_or(default_open_cancel_long_percentile);
+        let open_cancel_short_percentile = raw_cfg
+            .open_cancel_short_percentile
+            .or(raw_cfg.keep_short_percentile)
+            .unwrap_or(default_open_cancel_short_percentile);
         validate_percentile_value(
             redis_key,
             &symbol,
@@ -523,6 +658,18 @@ fn parse_symbol_configs(
             "keep_short_percentile",
             keep_short_percentile,
         )?;
+        validate_percentile_value(
+            redis_key,
+            &symbol,
+            "open_cancel_long_percentile",
+            open_cancel_long_percentile,
+        )?;
+        validate_percentile_value(
+            redis_key,
+            &symbol,
+            "open_cancel_short_percentile",
+            open_cancel_short_percentile,
+        )?;
         if keep_short_percentile > keep_long_percentile {
             anyhow::bail!(
                 "Redis key '{redis_key}' symbol={symbol} keep_short_percentile must be <= keep_long_percentile: short={} long={}",
@@ -530,11 +677,20 @@ fn parse_symbol_configs(
                 keep_long_percentile
             );
         }
+        if open_cancel_short_percentile > open_cancel_long_percentile {
+            anyhow::bail!(
+                "Redis key '{redis_key}' symbol={symbol} open_cancel_short_percentile must be <= open_cancel_long_percentile: short={} long={}",
+                open_cancel_short_percentile,
+                open_cancel_long_percentile
+            );
+        }
         out.insert(
             symbol,
             TakerDecisionSymbolConfig {
                 keep_long_percentile,
                 keep_short_percentile,
+                open_cancel_long_percentile,
+                open_cancel_short_percentile,
             },
         );
     }
@@ -548,6 +704,22 @@ fn validate_percentile_value(redis_key: &str, symbol: &str, field: &str, value: 
         );
     }
     Ok(())
+}
+
+fn decide_arb_open_cancel(
+    open_side: Side,
+    percentile: f64,
+    symbol_cfg: &TakerDecisionSymbolConfig,
+) -> TakerDecisionOpenCancel {
+    match open_side {
+        Side::Buy if percentile < symbol_cfg.open_cancel_long_percentile => {
+            TakerDecisionOpenCancel::CancelLong
+        }
+        Side::Sell if percentile > symbol_cfg.open_cancel_short_percentile => {
+            TakerDecisionOpenCancel::CancelShort
+        }
+        _ => TakerDecisionOpenCancel::KeepOpen,
+    }
 }
 
 fn strategy_namespace_from_env(namespace: Option<&str>) -> String {
@@ -676,5 +848,85 @@ fn sanitize_node_suffix(raw: &str) -> String {
         "model".to_string()
     } else {
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        decide_arb_open_cancel, parse_symbol_configs, TakerDecisionOpenCancel,
+        TakerDecisionSymbolConfig,
+    };
+    use crate::pre_trade::order_manager::Side;
+
+    #[test]
+    fn parse_symbol_configs_supports_open_cancel_threshold_overrides() {
+        let raw = r#"{
+            "BTCUSDT": {
+                "keep_long_percentile": 81,
+                "keep_short_percentile": 19,
+                "open_cancel_long_percentile": 77,
+                "open_cancel_short_percentile": 23
+            },
+            "ETH-USDT": {
+                "keep_long_percentile": 88,
+                "keep_short_percentile": 12
+            }
+        }"#;
+        let cfg = parse_symbol_configs(raw, "redis:test", 80.0, 20.0, 75.0, 25.0)
+            .expect("parse symbol configs");
+
+        let btc = cfg.get("BTCUSDT").expect("btc config");
+        assert_eq!(btc.keep_long_percentile, 81.0);
+        assert_eq!(btc.keep_short_percentile, 19.0);
+        assert_eq!(btc.open_cancel_long_percentile, 77.0);
+        assert_eq!(btc.open_cancel_short_percentile, 23.0);
+
+        let eth = cfg.get("ETHUSDT").expect("eth config");
+        assert_eq!(eth.keep_long_percentile, 88.0);
+        assert_eq!(eth.keep_short_percentile, 12.0);
+        assert_eq!(eth.open_cancel_long_percentile, 88.0);
+        assert_eq!(eth.open_cancel_short_percentile, 12.0);
+    }
+
+    #[test]
+    fn parse_symbol_configs_rejects_invalid_open_cancel_threshold_order() {
+        let raw = r#"{
+            "BTCUSDT": {
+                "open_cancel_long_percentile": 20,
+                "open_cancel_short_percentile": 80
+            }
+        }"#;
+        let err = parse_symbol_configs(raw, "redis:test", 80.0, 20.0, 80.0, 20.0)
+            .expect_err("should reject invalid open cancel threshold ordering");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("open_cancel_short_percentile must be <= open_cancel_long_percentile"));
+    }
+
+    #[test]
+    fn decide_arb_open_cancel_is_side_specific() {
+        let cfg = TakerDecisionSymbolConfig {
+            keep_long_percentile: 80.0,
+            keep_short_percentile: 20.0,
+            open_cancel_long_percentile: 80.0,
+            open_cancel_short_percentile: 20.0,
+        };
+
+        assert_eq!(
+            decide_arb_open_cancel(Side::Buy, 50.0, &cfg),
+            TakerDecisionOpenCancel::CancelLong
+        );
+        assert_eq!(
+            decide_arb_open_cancel(Side::Sell, 50.0, &cfg),
+            TakerDecisionOpenCancel::CancelShort
+        );
+        assert_eq!(
+            decide_arb_open_cancel(Side::Sell, 10.0, &cfg),
+            TakerDecisionOpenCancel::KeepOpen
+        );
+        assert_eq!(
+            decide_arb_open_cancel(Side::Buy, 90.0, &cfg),
+            TakerDecisionOpenCancel::KeepOpen
+        );
     }
 }

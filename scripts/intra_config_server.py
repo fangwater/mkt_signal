@@ -1616,6 +1616,8 @@ def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, st
         )
     keep_long_key = "taker_decsion_model_keep_long_percentile"
     keep_short_key = "taker_decsion_model_keep_short_percentile"
+    open_cancel_long_key = "taker_decsion_model_open_cancel_long_percentile"
+    open_cancel_short_key = "taker_decsion_model_open_cancel_short_percentile"
     if keep_long_key in normalized:
         normalized[keep_long_key] = normalize_percentile_param_text(
             normalized[keep_long_key], keep_long_key
@@ -1624,6 +1626,14 @@ def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, st
         normalized[keep_short_key] = normalize_percentile_param_text(
             normalized[keep_short_key], keep_short_key
         )
+    if open_cancel_long_key in normalized:
+        normalized[open_cancel_long_key] = normalize_percentile_param_text(
+            normalized[open_cancel_long_key], open_cancel_long_key
+        )
+    if open_cancel_short_key in normalized:
+        normalized[open_cancel_short_key] = normalize_percentile_param_text(
+            normalized[open_cancel_short_key], open_cancel_short_key
+        )
     if keep_long_key in normalized and keep_short_key in normalized:
         keep_long = float(normalized[keep_long_key])
         keep_short = float(normalized[keep_short_key])
@@ -1631,6 +1641,14 @@ def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, st
             raise ValueError(
                 "taker_decsion_model_keep_short_percentile must be <= "
                 "taker_decsion_model_keep_long_percentile"
+            )
+    if open_cancel_long_key in normalized and open_cancel_short_key in normalized:
+        open_cancel_long = float(normalized[open_cancel_long_key])
+        open_cancel_short = float(normalized[open_cancel_short_key])
+        if open_cancel_short > open_cancel_long:
+            raise ValueError(
+                "taker_decsion_model_open_cancel_short_percentile must be <= "
+                "taker_decsion_model_open_cancel_long_percentile"
             )
     return normalized
 

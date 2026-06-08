@@ -137,6 +137,7 @@ impl PreTrade {
                         now,
                         update.percentile,
                     );
+                    let _ = mgr.trigger_arb_open_cancel_on_model_update(&update.symbol, now);
                 }
             }
 
