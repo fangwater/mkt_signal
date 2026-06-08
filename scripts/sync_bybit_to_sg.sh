@@ -7,8 +7,8 @@
 #
 # 典型流程:
 #   1) bash scripts/dat_pbs/deploy_dat_pbs.sh --exchange bybit
-#      bash scripts/deploy_depth_pub.sh --exchange bybit
-#      bash scripts/spread_pbs/deploy_spread_pbs.sh --exchange bybit
+#      bash scripts/deploy_depth_pub.sh --exchange bybit          # bybit-both
+#      bash scripts/spread_pbs/deploy_spread_pbs.sh --exchange bybit # bybit-both
 #      bash scripts/deploy_trade_flow_feature_pub.sh --exchange bybit
 #   2) bash scripts/sync_bybit_to_sg.sh
 #
@@ -38,8 +38,8 @@ Usage:
 
 默认同步:
   ~/dat_pbs/{bybit-futures,bybit-margin,config}
-  ~/depth_pub/{bybit-futures,bybit-margin,config}
-  ~/spread_pbs/{bybit-futures,bybit-margin,config}
+  ~/depth_pub/{bybit-both,config}
+  ~/spread_pbs/{bybit-both,config}
   ~/trade_flow_feature/{bybit-futures,bybit-margin}
 
 可选:
@@ -75,11 +75,9 @@ PATHS=(
   "dat_pbs/bybit-futures"
   "dat_pbs/bybit-margin"
   "dat_pbs/config"
-  "depth_pub/bybit-futures"
-  "depth_pub/bybit-margin"
+  "depth_pub/bybit-both"
   "depth_pub/config"
-  "spread_pbs/bybit-futures"
-  "spread_pbs/bybit-margin"
+  "spread_pbs/bybit-both"
   "spread_pbs/config"
   "trade_flow_feature/bybit-futures"
   "trade_flow_feature/bybit-margin"

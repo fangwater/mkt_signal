@@ -9,7 +9,9 @@ use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimite
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::signal_channel::SignalChannel;
-use crate::pre_trade::taker_decision_model::{LazyHedgeDecision, PreTradeTakerDecisionModel};
+use crate::pre_trade::taker_decision_model::{
+    LazyHedgeDecision, LazyHedgeDecisionSnapshot, PreTradeTakerDecisionModel,
+};
 use crate::pre_trade::{PersistChannel, TradeEngHub};
 use crate::signal::arb_signal::ArbBackwardQueryMsg;
 use crate::signal::common::{OrderStatus, SignalBytes, TradingLeg, TradingVenue};
@@ -45,6 +47,7 @@ const ARB_HEDGE_QUERY_INTERVAL_US: i64 = 1_000_000;
 /// 只触发一次账户级 open block/撤单，避免一秒万次拒单情况下重复执行。
 const ARB_HEDGE_INSUFFICIENT_MARGIN_COOLDOWN_US: i64 = 5_000_000;
 static ARB_HEDGE_FORCE_TAKER: OnceLock<bool> = OnceLock::new();
+static ARB_HEDGE_LAZY_TAKER: OnceLock<bool> = OnceLock::new();
 
 fn env_flag_enabled(names: &[&str]) -> bool {
     names.iter().any(|name| {
@@ -71,6 +74,47 @@ fn arb_hedge_force_taker() -> bool {
         }
         force_taker
     })
+}
+
+fn arb_hedge_lazy_taker() -> bool {
+    *ARB_HEDGE_LAZY_TAKER.get_or_init(|| {
+        let lazy_taker = env_flag_enabled(&["ARB_HEDGE_LAZY_TAKER", "ARB_HEDGE_lazy_TAKER"]);
+        if lazy_taker {
+            info!(
+                "ARB_HEDGE_LAZY_TAKER=on: pre_trade ArbHedge will bypass backward query; ready model can temporarily keep exposure"
+            );
+        }
+        lazy_taker
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DueHedgeRoute {
+    Query,
+    DirectTaker,
+    Hold,
+}
+
+fn decide_due_hedge_route(
+    force_taker: bool,
+    lazy_taker: bool,
+    snapshot: Option<&LazyHedgeDecisionSnapshot>,
+) -> DueHedgeRoute {
+    if force_taker {
+        return DueHedgeRoute::DirectTaker;
+    }
+    if !lazy_taker {
+        return DueHedgeRoute::Query;
+    }
+    if matches!(
+        snapshot,
+        Some(snapshot)
+            if snapshot.ready && snapshot.decision != LazyHedgeDecision::Hedge
+    ) {
+        DueHedgeRoute::Hold
+    } else {
+        DueHedgeRoute::DirectTaker
+    }
 }
 
 fn model_percentile_to_ret_qtl(percentile_pct: Option<f64>) -> Option<f64> {
@@ -661,6 +705,9 @@ impl ArbHedgeStrategy {
         now_ts: i64,
         model_percentile: Option<f64>,
     ) -> bool {
+        if !arb_hedge_lazy_taker() {
+            return false;
+        }
         if !self.is_active() {
             return false;
         }
@@ -680,50 +727,65 @@ impl ArbHedgeStrategy {
         if due_hedge_usdt < ARB_HEDGE_PENDING_QUERY_MIN_USDT {
             return false;
         }
-        let Some(snapshot) =
-            PreTradeTakerDecisionModel::evaluate_global(&self.symbol, due_hedge_qty)
-        else {
-            return false;
-        };
-        if !snapshot.ready {
-            debug!(
-                "ArbHedgeStrategy: strategy_id={} symbol={} lazy model update skipped because model not ready due_hedge_qty={:.8} due_hedge_usdt={:.8} score={:?} q={:?} updates={} note={}",
-                self.strategy_id,
-                self.symbol,
-                due_hedge_qty,
-                due_hedge_usdt,
-                snapshot.score,
-                snapshot.percentile.or(model_percentile),
-                snapshot.update_count,
-                snapshot.note
-            );
-            return false;
+        let snapshot = PreTradeTakerDecisionModel::evaluate_global(&self.symbol, due_hedge_qty);
+        match decide_due_hedge_route(false, true, snapshot.as_ref()) {
+            DueHedgeRoute::Hold => {
+                if let Some(snapshot) = snapshot.as_ref() {
+                    debug!(
+                        "ArbHedgeStrategy: strategy_id={} symbol={} lazy model update remains keep decision={:?} due_hedge_qty={:.8} due_hedge_usdt={:.8} q={:?}",
+                        self.strategy_id,
+                        self.symbol,
+                        snapshot.decision,
+                        due_hedge_qty,
+                        due_hedge_usdt,
+                        snapshot.percentile.or(model_percentile)
+                    );
+                }
+                return false;
+            }
+            DueHedgeRoute::Query => return false,
+            DueHedgeRoute::DirectTaker => {}
         }
-        if snapshot.decision != LazyHedgeDecision::Hedge {
-            debug!(
-                "ArbHedgeStrategy: strategy_id={} symbol={} lazy model update remains keep decision={:?} due_hedge_qty={:.8} due_hedge_usdt={:.8} q={:?}",
-                self.strategy_id,
-                self.symbol,
-                snapshot.decision,
-                due_hedge_qty,
-                due_hedge_usdt,
-                snapshot.percentile.or(model_percentile)
-            );
-            return false;
+
+        match snapshot.as_ref() {
+            Some(snapshot) if snapshot.ready => {
+                info!(
+                    "ArbHedgeStrategy: strategy_id={} symbol={} lazy model update triggers taker hedge due_hedge_qty={:.8} due_hedge_usdt={:.8} q={:?} note={}",
+                    self.strategy_id,
+                    self.symbol,
+                    due_hedge_qty,
+                    due_hedge_usdt,
+                    snapshot.percentile.or(model_percentile),
+                    snapshot.note
+                );
+            }
+            Some(snapshot) => {
+                info!(
+                    "ArbHedgeStrategy: strategy_id={} symbol={} lazy model update falls back to direct taker because model not ready due_hedge_qty={:.8} due_hedge_usdt={:.8} score={:?} q={:?} updates={} note={}",
+                    self.strategy_id,
+                    self.symbol,
+                    due_hedge_qty,
+                    due_hedge_usdt,
+                    snapshot.score,
+                    snapshot.percentile.or(model_percentile),
+                    snapshot.update_count,
+                    snapshot.note
+                );
+            }
+            None => {
+                info!(
+                    "ArbHedgeStrategy: strategy_id={} symbol={} lazy model update falls back to direct taker because model state missing due_hedge_qty={:.8} due_hedge_usdt={:.8}",
+                    self.strategy_id,
+                    self.symbol,
+                    due_hedge_qty,
+                    due_hedge_usdt
+                );
+            }
         }
-        info!(
-            "ArbHedgeStrategy: strategy_id={} symbol={} lazy model update triggers taker hedge due_hedge_qty={:.8} due_hedge_usdt={:.8} q={:?} note={}",
-            self.strategy_id,
-            self.symbol,
-            due_hedge_qty,
-            due_hedge_usdt,
-            snapshot.percentile.or(model_percentile),
-            snapshot.note
-        );
         self.send_lazy_model_taker_hedge_direct(
             now_ts,
             due_hedge_qty,
-            snapshot.percentile.or(model_percentile),
+            snapshot.and_then(|snapshot| snapshot.percentile.or(model_percentile)),
         )
     }
 
@@ -786,39 +848,94 @@ impl ArbHedgeStrategy {
             );
             return false;
         }
-        if arb_hedge_force_taker() {
-            if self.send_force_taker_hedge_direct(now_ts, due_hedge_qty) {
-                return true;
-            }
-            if throttle_on_skip {
-                self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
-            }
-            return false;
-        }
-        if let Some(snapshot) =
+        let force_taker = arb_hedge_force_taker();
+        let lazy_taker = arb_hedge_lazy_taker();
+        let snapshot = if lazy_taker && !force_taker {
             PreTradeTakerDecisionModel::evaluate_global(&self.symbol, due_hedge_qty)
-        {
-            if snapshot.decision != LazyHedgeDecision::Hedge {
+        } else {
+            None
+        };
+
+        match decide_due_hedge_route(force_taker, lazy_taker, snapshot.as_ref()) {
+            DueHedgeRoute::Hold => {
                 if throttle_on_skip {
                     self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
                 }
-                info!(
-                    "ArbHedgeStrategy: strategy_id={} symbol={} lazy model keeps exposure decision={:?} due_hedge_qty={:.8} pending_hedge_usdt={:.8} score={:?} q={:?} updates={} note={}",
-                    self.strategy_id,
-                    self.symbol,
-                    snapshot.decision,
-                    due_hedge_qty,
-                    pending_hedge_usdt,
-                    snapshot.score,
-                    snapshot.percentile,
-                    snapshot.update_count,
-                    snapshot.note
-                );
-                return false;
+                if let Some(snapshot) = snapshot.as_ref() {
+                    info!(
+                        "ArbHedgeStrategy: strategy_id={} symbol={} lazy model keeps exposure decision={:?} due_hedge_qty={:.8} pending_hedge_usdt={:.8} score={:?} q={:?} updates={} note={}",
+                        self.strategy_id,
+                        self.symbol,
+                        snapshot.decision,
+                        due_hedge_qty,
+                        pending_hedge_usdt,
+                        snapshot.score,
+                        snapshot.percentile,
+                        snapshot.update_count,
+                        snapshot.note
+                    );
+                }
+                false
+            }
+            DueHedgeRoute::DirectTaker => {
+                let sent = if force_taker {
+                    self.send_force_taker_hedge_direct(now_ts, due_hedge_qty)
+                } else {
+                    match snapshot.as_ref() {
+                        Some(snapshot) if snapshot.ready => {
+                            info!(
+                                "ArbHedgeStrategy: strategy_id={} symbol={} lazy taker direct hedge due_hedge_qty={:.8} pending_hedge_usdt={:.8} q={:?} note={}",
+                                self.strategy_id,
+                                self.symbol,
+                                due_hedge_qty,
+                                pending_hedge_usdt,
+                                snapshot.percentile,
+                                snapshot.note
+                            );
+                        }
+                        Some(snapshot) => {
+                            info!(
+                                "ArbHedgeStrategy: strategy_id={} symbol={} lazy taker bypasses query because model not ready due_hedge_qty={:.8} pending_hedge_usdt={:.8} score={:?} q={:?} updates={} note={}",
+                                self.strategy_id,
+                                self.symbol,
+                                due_hedge_qty,
+                                pending_hedge_usdt,
+                                snapshot.score,
+                                snapshot.percentile,
+                                snapshot.update_count,
+                                snapshot.note
+                            );
+                        }
+                        None => {
+                            info!(
+                                "ArbHedgeStrategy: strategy_id={} symbol={} lazy taker bypasses query because model state missing due_hedge_qty={:.8} pending_hedge_usdt={:.8}",
+                                self.strategy_id,
+                                self.symbol,
+                                due_hedge_qty,
+                                pending_hedge_usdt
+                            );
+                        }
+                    }
+                    self.send_taker_hedge_direct(
+                        now_ts,
+                        due_hedge_qty,
+                        "lazy_taker",
+                        snapshot.and_then(|snapshot| model_percentile_to_ret_qtl(snapshot.percentile)),
+                    )
+                };
+                if sent {
+                    return true;
+                }
+                if throttle_on_skip {
+                    self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
+                }
+                false
+            }
+            DueHedgeRoute::Query => {
+                self.send_hedge_query(now_ts, due_hedge_qty);
+                true
             }
         }
-        self.send_hedge_query(now_ts, due_hedge_qty);
-        true
     }
 
     fn compose_order_id(strategy_id: i32, seq: u32) -> i64 {

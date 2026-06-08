@@ -25,6 +25,8 @@ const TARGET_LEVERAGES: [u8; 3] = [5, 4, 3];
 const BLOCK_SUMMARY_INTERVAL_US: i64 = 60_000_000;
 const DEFAULT_HTTP_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_REQUEST_SLEEP_MS: u64 = 120;
+const DEFAULT_LEVERAGE_GUARD_REFRESH_SECS: u64 = 60;
+const ON_DEMAND_REFRESH_DEBOUNCE_US: i64 = 2_000_000;
 
 thread_local! {
     static LEVERAGE_GUARD: RefCell<Option<LeverageGuardState>> = const { RefCell::new(None) };
@@ -153,6 +155,9 @@ struct LeverageGuardState {
     enabled: bool,
     targets: HashMap<LeverageTarget, TargetStatus>,
     global_block: Option<GlobalBlock>,
+    refresh_ctx: Option<GuardRefreshContext>,
+    refresh_in_flight: bool,
+    last_refresh_request_us: i64,
     stats: BlockStats,
 }
 
@@ -162,15 +167,24 @@ impl LeverageGuardState {
             enabled: false,
             targets: HashMap::new(),
             global_block: None,
+            refresh_ctx: None,
+            refresh_in_flight: false,
+            last_refresh_request_us: 0,
             stats: BlockStats::new(get_timestamp_us()),
         }
     }
 
-    fn enabled(targets: HashMap<LeverageTarget, TargetStatus>) -> Self {
+    fn enabled(
+        targets: HashMap<LeverageTarget, TargetStatus>,
+        refresh_ctx: GuardRefreshContext,
+    ) -> Self {
         Self {
             enabled: true,
             targets,
             global_block: None,
+            refresh_ctx: Some(refresh_ctx),
+            refresh_in_flight: false,
+            last_refresh_request_us: 0,
             stats: BlockStats::new(get_timestamp_us()),
         }
     }
@@ -185,6 +199,20 @@ struct GuardStartupConfig {
     binance_account_mode: Option<BinanceAccountMode>,
     target_venues: Vec<TradingVenue>,
     request_sleep_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+struct GuardRefreshContext {
+    redis: RedisSettings,
+    config: GuardStartupConfig,
+}
+
+#[derive(Debug)]
+struct GuardRefreshResult {
+    statuses: HashMap<LeverageTarget, TargetStatus>,
+    online_symbols: usize,
+    desired_targets: usize,
+    retried_targets: usize,
 }
 
 pub struct LeverageGuard;
@@ -234,37 +262,176 @@ impl LeverageGuard {
             request_sleep_ms: request_sleep_ms(),
         };
 
-        let keys = online_symbol_keys(&config);
-        let symbols = load_online_symbols(redis, &keys)
-            .await
-            .with_context(|| "load online symbols for ArbOpen leverage guard")?;
-        let targets = build_targets(&symbols, &config.target_venues);
+        let refresh_ctx = GuardRefreshContext {
+            redis: redis.clone(),
+            config: config.clone(),
+        };
+
+        let refresh_result = refresh_guard_targets(&refresh_ctx).await?;
         info!(
             "ArbOpen leverage guard startup: env={} mode={} online_symbols={} targets={} target_venues={:?} levels={:?}",
             config.env_name,
             config.arb_mode.as_str(),
-            symbols.len(),
-            targets.len(),
+            refresh_result.online_symbols,
+            refresh_result.desired_targets,
             config.target_venues,
             TARGET_LEVERAGES
         );
 
-        let client = Client::builder()
-            .timeout(Duration::from_secs(DEFAULT_HTTP_TIMEOUT_SECS))
-            .build()
-            .context("build leverage guard http client")?;
+        log_startup_summary(&refresh_result.statuses);
+        install_guard_state(LeverageGuardState::enabled(
+            refresh_result.statuses,
+            refresh_ctx,
+        ));
+        Self::start_background_refresh_task();
+        Ok(())
+    }
 
-        let mut statuses = HashMap::new();
-        for (idx, target) in targets.iter().enumerate() {
-            let status = set_target_with_fallback(&client, &config, target).await;
-            statuses.insert(target.clone(), status);
-            if idx + 1 < targets.len() && config.request_sleep_ms > 0 {
-                tokio::time::sleep(Duration::from_millis(config.request_sleep_ms)).await;
+    fn start_background_refresh_task() {
+        let interval_secs = refresh_interval_secs();
+        tokio::task::spawn_local(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                Self::request_refresh("background_interval");
             }
+        });
+        info!(
+            "ArbOpen leverage guard background refresh task started (interval: {}s)",
+            interval_secs
+        );
+    }
+
+    fn request_refresh(source: &'static str) {
+        let now_us = get_timestamp_us();
+        let refresh_ctx = LEVERAGE_GUARD.with(|guard| {
+            let mut guard_ref = guard.borrow_mut();
+            let Some(state) = guard_ref.as_mut() else {
+                return None;
+            };
+            if !state.enabled {
+                return None;
+            }
+            let Some(refresh_ctx) = state.refresh_ctx.clone() else {
+                return None;
+            };
+            if state.refresh_in_flight {
+                return None;
+            }
+            if source != "background_interval"
+                && state.last_refresh_request_us > 0
+                && now_us.saturating_sub(state.last_refresh_request_us)
+                    < ON_DEMAND_REFRESH_DEBOUNCE_US
+            {
+                return None;
+            }
+            state.refresh_in_flight = true;
+            state.last_refresh_request_us = now_us;
+            Some(refresh_ctx)
+        });
+
+        let Some(refresh_ctx) = refresh_ctx else {
+            return;
+        };
+
+        tokio::task::spawn_local(async move {
+            if let Err(err) = Self::run_refresh(refresh_ctx, source).await {
+                warn!(
+                    "ArbOpen leverage guard refresh failed source={}: {err:#}",
+                    source
+                );
+            }
+            LEVERAGE_GUARD.with(|guard| {
+                if let Some(state) = guard.borrow_mut().as_mut() {
+                    state.refresh_in_flight = false;
+                }
+            });
+        });
+    }
+
+    async fn run_refresh(refresh_ctx: GuardRefreshContext, source: &'static str) -> Result<()> {
+        let had_global_block = LEVERAGE_GUARD.with(|guard| {
+            guard
+                .borrow()
+                .as_ref()
+                .and_then(|state| state.global_block.as_ref().map(|block| block.trigger.label()))
+        });
+        let refresh_result = refresh_guard_targets(&refresh_ctx).await?;
+        let confirmed = refresh_result
+            .statuses
+            .values()
+            .filter(|status| status.is_confirmed())
+            .count();
+        let failed = refresh_result.statuses.len().saturating_sub(confirmed);
+        let mut cleared_global = None::<String>;
+
+        LEVERAGE_GUARD.with(|guard| {
+            let mut guard_ref = guard.borrow_mut();
+            let Some(state) = guard_ref.as_mut() else {
+                return;
+            };
+            if !state.enabled {
+                return;
+            }
+            state.targets = refresh_result.statuses.clone();
+            if let Some(global) = state.global_block.clone() {
+                if matches!(
+                    state.targets.get(&global.trigger),
+                    Some(status) if status.is_confirmed()
+                ) {
+                    cleared_global = Some(global.trigger.label());
+                    state.global_block = None;
+                }
+            }
+        });
+
+        if let Some(trigger) = cleared_global.as_deref() {
+            info!(
+                "ArbOpen leverage guard global block cleared: source={} trigger={}",
+                source,
+                trigger
+            );
         }
 
-        log_startup_summary(&statuses);
-        install_guard_state(LeverageGuardState::enabled(statuses));
+        if source != "background_interval"
+            || refresh_result.retried_targets > 0
+            || had_global_block.is_some()
+            || cleared_global.is_some()
+        {
+            info!(
+                "ArbOpen leverage guard refresh applied: source={} online_symbols={} desired_targets={} retried_targets={} confirmed={} failed={}",
+                source,
+                refresh_result.online_symbols,
+                refresh_result.desired_targets,
+                refresh_result.retried_targets,
+                confirmed,
+                failed
+            );
+        }
+
+        if failed > 0 && (source != "background_interval" || refresh_result.retried_targets > 0) {
+            let mut failed_samples = Vec::new();
+            for (target, status) in &refresh_result.statuses {
+                if let TargetStatus::Failed { last_error } = status {
+                    if failed_samples.len() >= 12 {
+                        break;
+                    }
+                    failed_samples.push(format!(
+                        "{} err={}",
+                        target.label(),
+                        truncate(last_error, 180)
+                    ));
+                }
+            }
+            warn!(
+                "ArbOpen leverage guard unresolved targets: source={} failed={} samples=[{}]",
+                source,
+                failed,
+                failed_samples.join("; ")
+            );
+        }
+
         Ok(())
     }
 
@@ -280,7 +447,8 @@ impl LeverageGuard {
             return false;
         }
 
-        LEVERAGE_GUARD.with(|guard| {
+        let mut request_refresh = false;
+        let blocked = LEVERAGE_GUARD.with(|guard| {
             let mut guard_ref = guard.borrow_mut();
             let Some(state) = guard_ref.as_mut() else {
                 return false;
@@ -295,6 +463,7 @@ impl LeverageGuard {
                     .stats
                     .record("global_open_block".to_string(), global.reason.clone());
                 state.stats.maybe_log(state.global_block.as_ref(), now_us);
+                request_refresh = true;
                 return true;
             }
 
@@ -311,8 +480,15 @@ impl LeverageGuard {
                         };
                         state.stats.record(target.label(), reason);
                         blocked = true;
+                        request_refresh = true;
                     }
                     None => {
+                        state.targets.insert(
+                            target.clone(),
+                            TargetStatus::Failed {
+                                last_error: "unknown_symbol_or_venue".to_string(),
+                            },
+                        );
                         state.global_block = Some(GlobalBlock {
                             trigger: target.clone(),
                             reason: "unknown_symbol_or_venue".to_string(),
@@ -321,19 +497,103 @@ impl LeverageGuard {
                             .stats
                             .record(target.label(), "unknown_symbol_or_venue".to_string());
                         blocked = true;
+                        request_refresh = true;
                     }
                 }
             }
             state.stats.maybe_log(state.global_block.as_ref(), now_us);
             blocked
-        })
+        });
+
+        if request_refresh {
+            Self::request_refresh("arb_open_blocked");
+        }
+
+        blocked
     }
+
 }
 
 fn install_guard_state(state: LeverageGuardState) {
     LEVERAGE_GUARD.with(|guard| {
         *guard.borrow_mut() = Some(state);
     });
+}
+
+fn refresh_interval_secs() -> u64 {
+    std::env::var("PRE_TRADE_LEVERAGE_GUARD_REFRESH_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_LEVERAGE_GUARD_REFRESH_SECS)
+}
+
+async fn refresh_guard_targets(refresh_ctx: &GuardRefreshContext) -> Result<GuardRefreshResult> {
+    let keys = online_symbol_keys(&refresh_ctx.config);
+    let symbols = load_online_symbols(&refresh_ctx.redis, &keys)
+        .await
+        .with_context(|| "load online symbols for ArbOpen leverage guard refresh")?;
+    let discovered_targets = build_targets(&symbols, &refresh_ctx.config.target_venues);
+    let (existing_targets, global_trigger) = LEVERAGE_GUARD.with(|guard| {
+        let guard_ref = guard.borrow();
+        let Some(state) = guard_ref.as_ref() else {
+            return (HashMap::new(), None);
+        };
+        (
+            state.targets.clone(),
+            state.global_block.as_ref().map(|block| block.trigger.clone()),
+        )
+    });
+
+    let mut desired_targets_map: BTreeMap<String, LeverageTarget> = discovered_targets
+        .into_iter()
+        .map(|target| (target.label(), target))
+        .collect();
+    for (target, status) in &existing_targets {
+        if !status.is_confirmed() {
+            desired_targets_map.insert(target.label(), target.clone());
+        }
+    }
+    if let Some(trigger) = global_trigger {
+        desired_targets_map.insert(trigger.label(), trigger);
+    }
+    let desired_targets: Vec<LeverageTarget> = desired_targets_map.into_values().collect();
+
+    let client = Client::builder()
+        .timeout(Duration::from_secs(DEFAULT_HTTP_TIMEOUT_SECS))
+        .build()
+        .context("build leverage guard http client")?;
+
+    let mut statuses: HashMap<LeverageTarget, TargetStatus> = existing_targets
+        .iter()
+        .filter_map(|(target, status)| match status {
+            TargetStatus::Confirmed(level) => {
+                Some((target.clone(), TargetStatus::Confirmed(*level)))
+            }
+            TargetStatus::Failed { .. } => None,
+        })
+        .collect();
+
+    let mut retried_targets = 0usize;
+    let desired_targets_len = desired_targets.len();
+    for (idx, target) in desired_targets.iter().enumerate() {
+        if statuses.contains_key(target) {
+            continue;
+        }
+        retried_targets += 1;
+        let status = set_target_with_fallback(&client, &refresh_ctx.config, target).await;
+        statuses.insert(target.clone(), status);
+        if idx + 1 < desired_targets_len && refresh_ctx.config.request_sleep_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(refresh_ctx.config.request_sleep_ms)).await;
+        }
+    }
+
+    Ok(GuardRefreshResult {
+        statuses,
+        online_symbols: symbols.len(),
+        desired_targets: desired_targets_len,
+        retried_targets,
+    })
 }
 
 fn target_futures_venues(
