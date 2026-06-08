@@ -160,6 +160,7 @@ pub trait OrderTerminalRecorder {
         filled_base_qty: f64,
         price: f64,
         bound_open_client_order_id: i64,
+        hedge_client_order_id: i64,
     ) -> bool;
 }
 
@@ -901,6 +902,7 @@ impl StrategyManager {
         terminal_ts: i64,
         price: f64,
         bound_open_client_order_id: i64,
+        hedge_client_order_id: i64,
     ) -> bool {
         let Some(id) = self.find_order_terminal_recorder_id(symbol) else {
             return false;
@@ -918,6 +920,7 @@ impl StrategyManager {
             filled_base_qty,
             price,
             bound_open_client_order_id,
+            hedge_client_order_id,
         )
     }
 

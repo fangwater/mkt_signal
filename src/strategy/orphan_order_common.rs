@@ -698,6 +698,7 @@ impl OrphanOrderTracker {
                         event_time,
                         price,
                         0,
+                        client_order_id,
                     ),
                 };
                 if !recorded {

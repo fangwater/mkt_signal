@@ -177,6 +177,7 @@ pub struct ArbHedgeStrategy {
     next_query_ts_us: i64,
     order_seq: u32,
     hedge_order_meta: HashMap<i64, ArbHedgeOrderMeta>,
+    orphaned_hedge_order_meta: HashMap<i64, ArbHedgeOrderMeta>,
     hedge_order_expiry_wheel: BTreeMap<i64, Vec<i64>>,
     order_reconcile_state: HedgeOrderReconcileState,
     alive_flag: bool,
@@ -226,6 +227,7 @@ impl ArbHedgeStrategy {
             next_query_ts_us: 0,
             order_seq: 0,
             hedge_order_meta: HashMap::new(),
+            orphaned_hedge_order_meta: HashMap::new(),
             hedge_order_expiry_wheel: BTreeMap::new(),
             order_reconcile_state: HedgeOrderReconcileState::default(),
             alive_flag: true,
@@ -346,6 +348,7 @@ impl ArbHedgeStrategy {
     fn borrowed_hedge_qv(&self) -> f64 {
         self.hedge_order_meta
             .values()
+            .chain(self.orphaned_hedge_order_meta.values())
             .map(|meta| meta.borrowed_qv)
             .sum()
     }
@@ -1831,7 +1834,14 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
             return false;
         }
         self.clear_order_query_state(client_order_id);
-        self.hedge_order_meta.remove(&client_order_id);
+        if let Some(meta) = self.hedge_order_meta.remove(&client_order_id) {
+            self.orphaned_hedge_order_meta.insert(client_order_id, meta);
+        } else {
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} orphan handoff adopted but hedge meta missing client_order_id={} reason={}",
+                self.strategy_id, client_order_id, reason
+            );
+        }
         warn!(
             "ArbHedgeStrategy: strategy_id={} handoff hedge order to arb orphan adopted: client_order_id={} reason={}",
             self.strategy_id, client_order_id, reason
@@ -2067,7 +2077,30 @@ impl OrderTerminalRecorder for ArbHedgeStrategy {
         filled_base_qty: f64,
         price: f64,
         bound_open_client_order_id: i64,
+        hedge_client_order_id: i64,
     ) -> bool {
+        if hedge_client_order_id > 0 {
+            if let Some(meta) = self
+                .orphaned_hedge_order_meta
+                .remove(&hedge_client_order_id)
+            {
+                return self.record_hedge_order_terminal_with_borrowed(
+                    terminal_ts,
+                    side,
+                    meta.order_base_qty,
+                    filled_base_qty,
+                    price,
+                    meta.borrowed_qv,
+                    meta.bound_open_client_order_id,
+                );
+            }
+            if self.hedge_order_meta.contains_key(&hedge_client_order_id) {
+                warn!(
+                    "ArbHedgeStrategy: strategy_id={} hedge terminal recorder received live hedge order via orphan path client_order_id={}",
+                    self.strategy_id, hedge_client_order_id
+                );
+            }
+        }
         let borrowed_qv = Self::hedge_pending_qv_from_order(side, order_base_qty);
         self.record_hedge_order_terminal_with_borrowed(
             terminal_ts,
@@ -2244,7 +2277,7 @@ mod tests {
         let borrowed = strategy.pending_hedge_queue.borrow(1_000, 2.0);
         assert_eq!(borrowed.qv, 2.0);
         // hedge terminal 把未成交 0.75 release 回 OPEN_ID_A 的身份下
-        strategy.record_hedge_order_terminal(1_000, Side::Sell, 2.0, 1.25, 101.0, OPEN_ID_A);
+        strategy.record_hedge_order_terminal(1_000, Side::Sell, 2.0, 1.25, 101.0, OPEN_ID_A, 0);
 
         assert_eq!(strategy.net_qty(), 0.75);
         assert_eq!(strategy.pending_hedge_qty(), 0.75);
@@ -2299,6 +2332,92 @@ mod tests {
             .find_lot_by_open_id(OPEN_ID_A)
             .expect("cleanup release goes back under bound id");
         assert_eq!(lot.qty, 5.0);
+    }
+
+    #[test]
+    fn orphan_handoff_keeps_borrowed_work_in_outstanding() {
+        let mut strategy = ArbHedgeStrategy::new(
+            1,
+            "GENIUSUSDT",
+            TradingVenue::BinanceMargin,
+            TradingVenue::BinanceFutures,
+        );
+        strategy.record_open_order_terminal(10, Side::Sell, 100.0, 100.0, 0.43, 0, OPEN_ID_A);
+        let borrowed = strategy.pending_hedge_queue.borrow(20, -100.0);
+        let client_order_id = 456;
+        strategy.hedge_order_meta.insert(
+            client_order_id,
+            ArbHedgeOrderMeta {
+                signal_ts: 10,
+                price_offset: 0.0,
+                borrowed_qv: borrowed.qv,
+                order_base_qty: borrowed.qty,
+                expire_ts: 0,
+                next_expire_check_ts: 0,
+                cancel_requested: false,
+                bound_open_client_order_id: OPEN_ID_A,
+                from_key: Vec::new(),
+            },
+        );
+
+        let meta = strategy
+            .hedge_order_meta
+            .remove(&client_order_id)
+            .expect("live meta");
+        strategy
+            .orphaned_hedge_order_meta
+            .insert(client_order_id, meta);
+        strategy.record_open_order_terminal(30, Side::Sell, 10.0, 10.0, 0.431, 0, OPEN_ID_B);
+
+        assert_eq!(strategy.pending_hedge_qty(), -10.0);
+        assert_eq!(strategy.borrowed_hedge_qv(), -100.0);
+        assert_eq!(strategy.outstanding_hedge_work_qv(), -110.0);
+        let lot = strategy
+            .pending_hedge_queue
+            .find_lot_by_open_id(OPEN_ID_B)
+            .expect("new open id only gets its own delta");
+        assert_eq!(lot.qty, 10.0);
+    }
+
+    #[test]
+    fn orphan_terminal_uses_original_borrowed_meta_and_bound_open_id() {
+        let mut strategy = ArbHedgeStrategy::new(
+            1,
+            "GENIUSUSDT",
+            TradingVenue::BinanceMargin,
+            TradingVenue::BinanceFutures,
+        );
+        strategy.record_open_order_terminal(10, Side::Sell, 100.0, 100.0, 0.43, 0, OPEN_ID_A);
+        let borrowed = strategy.pending_hedge_queue.borrow(20, -100.0);
+        let client_order_id = 789;
+        strategy.orphaned_hedge_order_meta.insert(
+            client_order_id,
+            ArbHedgeOrderMeta {
+                signal_ts: 10,
+                price_offset: 0.0,
+                borrowed_qv: borrowed.qv,
+                order_base_qty: borrowed.qty,
+                expire_ts: 0,
+                next_expire_check_ts: 0,
+                cancel_requested: false,
+                bound_open_client_order_id: OPEN_ID_A,
+                from_key: Vec::new(),
+            },
+        );
+
+        strategy.record_hedge_order_terminal(30, Side::Buy, 100.0, 40.0, 0.429, 0, client_order_id);
+
+        assert!(!strategy
+            .orphaned_hedge_order_meta
+            .contains_key(&client_order_id));
+        assert_eq!(strategy.net_qty(), -60.0);
+        assert_eq!(strategy.pending_hedge_qty(), -60.0);
+        assert_eq!(strategy.borrowed_hedge_qv(), 0.0);
+        let lot = strategy
+            .pending_hedge_queue
+            .find_lot_by_open_id(OPEN_ID_A)
+            .expect("unfilled orphan release keeps original open id");
+        assert_eq!(lot.qty, 60.0);
     }
 
     #[test]
