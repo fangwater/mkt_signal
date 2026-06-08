@@ -42,6 +42,13 @@ CLOSED_ORDER_STATUSES = {
     "PartiallyFilledCanceled",
     "Deactivated",
 }
+SPOT_ORDER_FILTERS = (
+    "Order",
+    "StopOrder",
+    "tpslOrder",
+    "OcoOrder",
+    "BidirectionalTpslOrder",
+)
 
 
 def http_request(url, *, method="GET", headers=None, data=None, timeout=15):
@@ -163,7 +170,13 @@ def parse_symbols(raw: Optional[str]) -> Optional[List[str]]:
     return out or None
 
 
-def fetch_open(api_key, api_secret, category: str) -> List[Dict[str, Any]]:
+def fetch_open(
+    api_key,
+    api_secret,
+    category: str,
+    *,
+    order_filter: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     cursor = ""
     while True:
@@ -171,6 +184,8 @@ def fetch_open(api_key, api_secret, category: str) -> List[Dict[str, Any]]:
         # openOnly=0 returns active orders. openOnly=1 returns recent terminal records.
         if category == "linear":
             q["settleCoin"] = "USDT"
+        if order_filter:
+            q["orderFilter"] = order_filter
         if cursor:
             q["cursor"] = cursor
         status, body = bybit_private("GET", "/v5/order/realtime", api_key, api_secret, query=q)
@@ -194,6 +209,83 @@ def fetch_open(api_key, api_secret, category: str) -> List[Dict[str, Any]]:
     return out
 
 
+def parse_spot_order_filters(raw: str) -> List[str]:
+    value = raw.strip()
+    if not value or value.lower() == "order":
+        return ["Order"]
+    if value.lower() == "all":
+        return list(SPOT_ORDER_FILTERS)
+
+    allowed = {item.lower(): item for item in SPOT_ORDER_FILTERS}
+    out: List[str] = []
+    for tok in value.split(","):
+        key = tok.strip().lower()
+        if not key:
+            continue
+        canonical = allowed.get(key)
+        if not canonical:
+            sys.stderr.write(
+                f"[ERROR] unsupported spot orderFilter={tok!r}; "
+                f"allowed: Order, StopOrder, tpslOrder, OcoOrder, BidirectionalTpslOrder, all\n"
+            )
+            sys.exit(2)
+        if canonical not in out:
+            out.append(canonical)
+    return out or ["Order"]
+
+
+def collect_open_counts(
+    api_key,
+    api_secret,
+    scope: str,
+    wanted_set: Optional[set],
+    spot_filters: List[str],
+) -> Tuple[Dict[str, int], Dict[Tuple[str, str], int]]:
+    linear_count: Dict[str, int] = {}
+    spot_count: Dict[Tuple[str, str], int] = {}
+
+    if scope in ("um", "both"):
+        for o in fetch_open(api_key, api_secret, "linear"):
+            sym = str(o.get("symbol", ""))
+            if not sym:
+                continue
+            if wanted_set is not None and sym not in wanted_set:
+                continue
+            linear_count[sym] = linear_count.get(sym, 0) + 1
+    if scope in ("margin", "both"):
+        for order_filter in spot_filters:
+            for o in fetch_open(api_key, api_secret, "spot", order_filter=order_filter):
+                sym = str(o.get("symbol", ""))
+                if not sym:
+                    continue
+                if wanted_set is not None and sym not in wanted_set:
+                    continue
+                key = (sym, order_filter)
+                spot_count[key] = spot_count.get(key, 0) + 1
+    return linear_count, spot_count
+
+
+def spot_totals_by_symbol(spot_count: Dict[Tuple[str, str], int]) -> Dict[str, int]:
+    out: Dict[str, int] = {}
+    for (sym, _order_filter), count in spot_count.items():
+        out[sym] = out.get(sym, 0) + count
+    return out
+
+
+def print_plan(linear_count: Dict[str, int], spot_count: Dict[Tuple[str, str], int]) -> None:
+    spot_total = spot_totals_by_symbol(spot_count)
+    all_syms = sorted(set(linear_count) | set(spot_total))
+    if not all_syms:
+        return
+
+    print()
+    print(f"{'Symbol':<14} {'Linear':>8} {'Spot':>8}")
+    print("-" * 32)
+    for s in all_syms:
+        print(f"{s:<14} {linear_count.get(s, 0):>8} {spot_total.get(s, 0):>8}")
+    print("-" * 32)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Cancel Bybit UTA open orders (linear + spot)",
@@ -202,7 +294,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--symbols", help="Comma-separated symbol whitelist; omit = all")
     parser.add_argument("--scope", choices=["um", "margin", "both"], default="both",
                         help="um→linear, margin→spot")
+    parser.add_argument(
+        "--spot-order-filters",
+        default="Order",
+        help="Spot orderFilter list to query/cancel, or 'all'. Default cancels normal spot orders only.",
+    )
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument(
+        "--verify-delay-sec",
+        type=float,
+        default=1.0,
+        help="After --execute, wait this many seconds and re-query active orders.",
+    )
     return parser.parse_args()
 
 
@@ -213,40 +316,24 @@ def main() -> None:
     api_key, api_secret = load_credentials()
     wanted = parse_symbols(args.symbols)
     wanted_set = set(wanted) if wanted else None
+    spot_filters = parse_spot_order_filters(args.spot_order_filters)
 
-    print(f"[info] env={env_name} scope={args.scope} execute={args.execute}")
+    print(
+        f"[info] env={env_name} scope={args.scope} execute={args.execute} "
+        f"spot_order_filters={','.join(spot_filters)}"
+    )
 
-    linear_count: Dict[str, int] = {}
-    spot_count: Dict[str, int] = {}
+    linear_count, spot_count = collect_open_counts(
+        api_key, api_secret, args.scope, wanted_set, spot_filters
+    )
+    spot_total = spot_totals_by_symbol(spot_count)
 
-    if args.scope in ("um", "both"):
-        for o in fetch_open(api_key, api_secret, "linear"):
-            sym = str(o.get("symbol", ""))
-            if not sym:
-                continue
-            if wanted_set is not None and sym not in wanted_set:
-                continue
-            linear_count[sym] = linear_count.get(sym, 0) + 1
-    if args.scope in ("margin", "both"):
-        for o in fetch_open(api_key, api_secret, "spot"):
-            sym = str(o.get("symbol", ""))
-            if not sym:
-                continue
-            if wanted_set is not None and sym not in wanted_set:
-                continue
-            spot_count[sym] = spot_count.get(sym, 0) + 1
-
-    all_syms = sorted(set(linear_count) | set(spot_count))
+    all_syms = sorted(set(linear_count) | set(spot_total))
     if not all_syms:
         print("[plan] no open orders in scope. Nothing to do.")
         return
 
-    print()
-    print(f"{'Symbol':<14} {'Linear':>8} {'Spot':>8}")
-    print("-" * 32)
-    for s in all_syms:
-        print(f"{s:<14} {linear_count.get(s, 0):>8} {spot_count.get(s, 0):>8}")
-    print("-" * 32)
+    print_plan(linear_count, spot_count)
 
     if not args.execute:
         print("\nDry-run. Pass --execute to actually cancel.")
@@ -271,15 +358,20 @@ def main() -> None:
             if not ok:
                 failures += 1
                 print(f"    {body}")
-        if spot_count.get(sym, 0) > 0:
+        for order_filter in spot_filters:
+            if spot_count.get((sym, order_filter), 0) <= 0:
+                continue
             total += 1
             status, body = bybit_private(
                 "POST", "/v5/order/cancel-all", api_key, api_secret,
-                body={"category": "spot", "symbol": sym},
+                body={"category": "spot", "symbol": sym, "orderFilter": order_filter},
             )
             ok_ret, brief = bybit_ok(body)
             ok = (200 <= status < 300) and ok_ret
-            print(f"  [{'OK' if ok else 'ERR'}] spot cancel-all {sym} status={status} {brief}")
+            print(
+                f"  [{'OK' if ok else 'ERR'}] spot cancel-all {sym} "
+                f"orderFilter={order_filter} status={status} {brief}"
+            )
             if not ok:
                 failures += 1
                 print(f"    {body}")
@@ -289,6 +381,17 @@ def main() -> None:
         print(f"WARN: {failures}/{total} cancels failed", file=sys.stderr)
         sys.exit(1)
     print(f"All {total} cancel requests succeeded.")
+
+    if args.verify_delay_sec > 0:
+        time.sleep(args.verify_delay_sec)
+    verify_linear, verify_spot = collect_open_counts(
+        api_key, api_secret, args.scope, wanted_set, spot_filters
+    )
+    if verify_linear or verify_spot:
+        print("\nWARN: residual active orders after cancel-all verification:", file=sys.stderr)
+        print_plan(verify_linear, verify_spot)
+        sys.exit(1)
+    print("Verification passed: no residual active orders in scope.")
 
 
 if __name__ == "__main__":
