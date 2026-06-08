@@ -37,7 +37,7 @@ impl ArbOpenStrategy {
         }
     }
 
-    fn handle_arb_open_signal(&mut self, ctx: ArbOpenCtx) {
+    pub fn handle_arb_open_ctx(&mut self, ctx: ArbOpenCtx) {
         let close_ts = if ctx.hedge_timeout_us > 0 {
             let base_ts = if ctx.create_ts > 0 {
                 ctx.create_ts
@@ -88,6 +88,10 @@ impl ArbOpenStrategy {
         };
         self.cumulative_open_qty = 0.0;
         self.open_qty_multiplier = init.qty_multiplier;
+    }
+
+    fn handle_arb_open_signal(&mut self, ctx: ArbOpenCtx) {
+        self.handle_arb_open_ctx(ctx);
     }
 
     fn apply_order_update(&mut self, order_update: &dyn OrderUpdate) -> bool {

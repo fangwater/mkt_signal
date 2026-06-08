@@ -715,17 +715,14 @@ fn handle_trade_signal(signal: TradeSignal, receive_us: i64) {
                 }
                 open_ctx.set_opening_symbol(&symbol);
                 open_ctx.set_hedging_symbol(&hedging_symbol);
-                let normalized_signal = TradeSignal::create(
-                    SignalType::ArbOpen,
-                    signal.generation_time,
-                    signal.handle_time,
-                    open_ctx.to_bytes(),
-                );
+                let signal_price = open_ctx.price_value();
+                let signal_amount = open_ctx.amount_value();
+                let signal_spread_rate = open_ctx.spread_rate;
                 let strategy_mgr = MonitorChannel::instance().strategy_mgr();
                 let _ = strategy_mgr.borrow_mut().ensure_arb_hedge_strategy(&symbol);
                 let strategy_id = StrategyManager::generate_strategy_id();
                 let mut strategy = ArbOpenStrategy::new(strategy_id);
-                strategy.handle_signal(&normalized_signal);
+                strategy.handle_arb_open_ctx(open_ctx);
                 record_arb_open_latency(
                     "pt_handle_strategy_total",
                     get_timestamp_us().saturating_sub(handle_start_us),
@@ -733,14 +730,12 @@ fn handle_trade_signal(signal: TradeSignal, receive_us: i64) {
                 if strategy.is_active() {
                     // hedge_timeout 已不再做 close_ts 延迟（强制 0），原本根据这个字段
                     // 推断 MM/MT 的标签也就失效，去掉。
-                    let signal_price = open_ctx.price_value();
-                    let signal_amount = open_ctx.amount_value();
                     debug!(
                         "🔔 收到 ArbOpen 信号: opening={} {:?} side={:?} price={:.6} hedging={} {:?} | amount={:.4} spread_rate={:.6} from_key='{}'",
                         symbol, opening_venue, side, signal_price,
                         hedging_symbol, hedging_venue,
                         signal_amount,
-                        open_ctx.spread_rate,
+                        signal_spread_rate,
                         from_key
                     );
                     debug!(
