@@ -806,6 +806,7 @@ async fn restart_leg(
 struct SymbolSeqState {
     index_by_symbol: HashMap<String, usize>,
     bbo_seq: Vec<i64>,
+    bbo_ts_us: Vec<i64>,
     trade_seq: Vec<i64>,
     incremental_seq: Vec<i64>,
     bbo_seen: usize,
@@ -818,6 +819,7 @@ impl SymbolSeqState {
         let mut state = Self {
             index_by_symbol: HashMap::with_capacity(symbols.len().max(2048)),
             bbo_seq: Vec::with_capacity(symbols.len()),
+            bbo_ts_us: Vec::with_capacity(symbols.len()),
             trade_seq: Vec::with_capacity(symbols.len()),
             incremental_seq: Vec::with_capacity(symbols.len()),
             bbo_seen: 0,
@@ -841,6 +843,7 @@ impl SymbolSeqState {
         let idx = self.bbo_seq.len();
         self.index_by_symbol.insert(symbol.to_string(), idx);
         self.bbo_seq.push(i64::MIN);
+        self.bbo_ts_us.push(0);
         self.trade_seq.push(i64::MIN);
         self.incremental_seq.push(i64::MIN);
         idx
@@ -868,14 +871,18 @@ impl SymbolSeqState {
         SymbolSlot {
             idx,
             prev: self.bbo_seq[idx],
+            prev_ts_us: self.bbo_ts_us[idx],
         }
     }
 
-    fn set_bbo_slot(&mut self, slot: SymbolSlot, seq_id: i64) {
+    fn set_bbo_slot(&mut self, slot: SymbolSlot, seq_id: i64, ts_us: i64) {
         if slot.prev == i64::MIN {
             self.bbo_seen += 1;
         }
         self.bbo_seq[slot.idx] = seq_id;
+        if ts_us > 0 {
+            self.bbo_ts_us[slot.idx] = ts_us;
+        }
     }
 
     fn trade_slot(&mut self, symbol: &str) -> SymbolSlot {
@@ -883,6 +890,7 @@ impl SymbolSeqState {
         SymbolSlot {
             idx,
             prev: self.trade_seq[idx],
+            prev_ts_us: 0,
         }
     }
 
@@ -898,6 +906,7 @@ impl SymbolSeqState {
         SymbolSlot {
             idx,
             prev: self.incremental_seq[idx],
+            prev_ts_us: 0,
         }
     }
 
@@ -916,6 +925,7 @@ impl SymbolSeqState {
     fn clear_bbo(&mut self) -> usize {
         let cleared = self.bbo_seen;
         self.bbo_seq.fill(i64::MIN);
+        self.bbo_ts_us.fill(0);
         self.bbo_seen = 0;
         cleared
     }
@@ -925,6 +935,7 @@ impl SymbolSeqState {
 struct SymbolSlot {
     idx: usize,
     prev: i64,
+    prev_ts_us: i64,
 }
 
 struct SharedState {
@@ -1542,14 +1553,14 @@ fn process_frame(
     accepted_us: i64,
     f: BboFrame,
 ) {
-    reset_dedup_high_water_if_needed(state, accepted_us, &f);
+    reset_dedup_high_water_if_needed(state, accepted_us);
 
     let slot = state.symbol_state.bbo_slot(&f.symbol);
-    if f.seq_id <= slot.prev {
+    if should_drop_bbo_frame(&slot, &f) {
         state.dropped_by_seq += 1;
         return;
     }
-    state.symbol_state.set_bbo_slot(slot, f.seq_id);
+    state.symbol_state.set_bbo_slot(slot, f.seq_id, f.ts_us);
 
     if f.ts_us > 0 {
         let net_us = (recv_us - f.ts_us) as f64;
@@ -1624,7 +1635,7 @@ fn snap_latency_bucket(
     *idx += 1;
 }
 
-fn reset_dedup_high_water_if_needed(state: &mut SharedState, accepted_us: i64, f: &BboFrame) {
+fn reset_dedup_high_water_if_needed(state: &mut SharedState, accepted_us: i64) {
     if accepted_us.saturating_sub(state.last_dedup_reset_us) >= DEDUP_RESET_INTERVAL_US {
         let cleared = state.symbol_state.clear_bbo();
         state.last_dedup_reset_us = accepted_us;
@@ -1634,19 +1645,22 @@ fn reset_dedup_high_water_if_needed(state: &mut SharedState, accepted_us: i64, f
             DEDUP_RESET_INTERVAL_US
         );
     }
+}
 
-    let prev = state.symbol_state.bbo_prev(&f.symbol);
-    if f.reset_seq && f.seq_id < prev {
-        let cleared = state.symbol_state.clear_bbo();
-        state.last_dedup_reset_us = accepted_us;
-        log::warn!(
-            "spread_pbs dedup high-water reset by snapshot symbol={} snapshot_u={} prev_u={} cleared_symbols={}",
-            f.symbol,
-            f.seq_id,
-            prev,
-            cleared
-        );
+fn should_drop_bbo_frame(slot: &SymbolSlot, f: &BboFrame) -> bool {
+    if slot.prev == i64::MIN {
+        return false;
     }
+
+    if f.ts_us > 0 && slot.prev_ts_us > 0 && f.ts_us < slot.prev_ts_us {
+        return true;
+    }
+
+    if f.reset_seq && f.seq_id == 1 && slot.prev > f.seq_id && f.ts_us > slot.prev_ts_us {
+        return false;
+    }
+
+    f.seq_id <= slot.prev
 }
 
 #[cfg(test)]
@@ -1673,9 +1687,13 @@ mod tests {
     }
 
     fn frame(symbol: &str, seq_id: i64, reset_seq: bool) -> BboFrame {
+        frame_at(symbol, seq_id, reset_seq, 0)
+    }
+
+    fn frame_at(symbol: &str, seq_id: i64, reset_seq: bool, ts_us: i64) -> BboFrame {
         BboFrame {
             symbol: symbol.to_string(),
-            ts_us: 0,
+            ts_us,
             seq_id,
             reset_seq,
             bid_price: 1.0,
@@ -1689,7 +1707,7 @@ mod tests {
     fn symbol_seq_state_reuses_symbol_slot_across_streams() {
         let mut state = SymbolSeqState::with_symbols(&["BTCUSDT".to_string()]);
         let bbo = state.bbo_slot("BTCUSDT");
-        state.set_bbo_slot(bbo, 10);
+        state.set_bbo_slot(bbo, 10, 1_000);
         let trade = state.trade_slot("BTCUSDT");
         state.set_trade_slot(trade, 20);
         let inc = state.incremental_slot("BTCUSDT");
@@ -1789,34 +1807,66 @@ mod tests {
     }
 
     #[test]
-    fn bybit_snapshot_lower_u_resets_all_high_water_marks() {
+    fn bybit_forced_snapshot_same_u_is_dropped_without_resetting_high_water() {
         let now_us = 1_000_000;
         let mut state = test_state(now_us);
         let btc = state.symbol_state.bbo_slot("BTCUSDT");
-        state.symbol_state.set_bbo_slot(btc, 100);
+        state.symbol_state.set_bbo_slot(btc, 100, 1_000);
         let eth = state.symbol_state.bbo_slot("ETHUSDT");
-        state.symbol_state.set_bbo_slot(eth, 200);
+        state.symbol_state.set_bbo_slot(eth, 200, 1_000);
 
-        reset_dedup_high_water_if_needed(&mut state, now_us + 1, &frame("BTCUSDT", 1, true));
+        reset_dedup_high_water_if_needed(&mut state, now_us + 1);
+        let slot = state.symbol_state.bbo_slot("BTCUSDT");
 
-        assert_eq!(state.symbol_state.bbo_seen(), 0);
-        assert_eq!(state.last_dedup_reset_us, now_us + 1);
-    }
-
-    #[test]
-    fn bybit_forced_snapshot_same_u_does_not_reset_high_water_marks() {
-        let now_us = 1_000_000;
-        let mut state = test_state(now_us);
-        let btc = state.symbol_state.bbo_slot("BTCUSDT");
-        state.symbol_state.set_bbo_slot(btc, 100);
-        let eth = state.symbol_state.bbo_slot("ETHUSDT");
-        state.symbol_state.set_bbo_slot(eth, 200);
-
-        reset_dedup_high_water_if_needed(&mut state, now_us + 1, &frame("BTCUSDT", 100, true));
-
+        assert!(should_drop_bbo_frame(
+            &slot,
+            &frame_at("BTCUSDT", 100, true, 2_000)
+        ));
         assert_eq!(state.symbol_state.bbo_prev("BTCUSDT"), 100);
         assert_eq!(state.symbol_state.bbo_prev("ETHUSDT"), 200);
         assert_eq!(state.last_dedup_reset_us, now_us);
+    }
+
+    #[test]
+    fn bybit_restart_snapshot_u_one_with_new_ts_is_accepted() {
+        let mut state = test_state(1_000_000);
+        let btc = state.symbol_state.bbo_slot("BTCUSDT");
+        state.symbol_state.set_bbo_slot(btc, 100, 1_000);
+
+        let slot = state.symbol_state.bbo_slot("BTCUSDT");
+
+        assert!(!should_drop_bbo_frame(
+            &slot,
+            &frame_at("BTCUSDT", 1, true, 2_000)
+        ));
+    }
+
+    #[test]
+    fn bybit_restart_u_one_forced_snapshot_same_u_is_dropped() {
+        let mut state = test_state(1_000_000);
+        let btc = state.symbol_state.bbo_slot("BTCUSDT");
+        state.symbol_state.set_bbo_slot(btc, 1, 2_000);
+
+        let slot = state.symbol_state.bbo_slot("BTCUSDT");
+
+        assert!(should_drop_bbo_frame(
+            &slot,
+            &frame_at("BTCUSDT", 1, true, 5_000)
+        ));
+    }
+
+    #[test]
+    fn bybit_stale_high_u_after_restart_is_dropped_by_ts() {
+        let mut state = test_state(1_000_000);
+        let btc = state.symbol_state.bbo_slot("BTCUSDT");
+        state.symbol_state.set_bbo_slot(btc, 1, 2_000);
+
+        let slot = state.symbol_state.bbo_slot("BTCUSDT");
+
+        assert!(should_drop_bbo_frame(
+            &slot,
+            &frame_at("BTCUSDT", 101, false, 1_000)
+        ));
     }
 
     #[test]
@@ -1824,15 +1874,11 @@ mod tests {
         let now_us = 1_000_000;
         let mut state = test_state(now_us);
         let btc = state.symbol_state.bbo_slot("BTCUSDT");
-        state.symbol_state.set_bbo_slot(btc, 100);
+        state.symbol_state.set_bbo_slot(btc, 100, 1_000);
         let eth = state.symbol_state.bbo_slot("ETHUSDT");
-        state.symbol_state.set_bbo_slot(eth, 200);
+        state.symbol_state.set_bbo_slot(eth, 200, 1_000);
 
-        reset_dedup_high_water_if_needed(
-            &mut state,
-            now_us + DEDUP_RESET_INTERVAL_US,
-            &frame("BTCUSDT", 100, false),
-        );
+        reset_dedup_high_water_if_needed(&mut state, now_us + DEDUP_RESET_INTERVAL_US);
 
         assert_eq!(state.symbol_state.bbo_seen(), 0);
         assert_eq!(state.last_dedup_reset_us, now_us + DEDUP_RESET_INTERVAL_US);

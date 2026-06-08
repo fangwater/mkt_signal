@@ -99,11 +99,9 @@ pub fn parse_bbo_update_json(value: &Value) -> Option<BboUpdate> {
         .and_then(parse_i64_loose)
         .or_else(|| data.get("t").and_then(parse_i64_loose))
         .unwrap_or(0);
-    let timestamp_us = data
-        .get("t")
+    let timestamp_us = value
+        .get("ts")
         .and_then(parse_i64_loose)
-        .or_else(|| value.get("cts").and_then(parse_i64_loose))
-        .or_else(|| value.get("ts").and_then(parse_i64_loose))
         .map(normalize_ts_to_us)
         .unwrap_or(0);
     let bid = data
@@ -619,6 +617,16 @@ mod tests {
     }
 
     #[test]
+    fn parses_bbo_update_json_prefers_top_level_ts_over_cts() {
+        let raw = r#"{
+            "topic":"orderbook.1.BTCUSDT","type":"snapshot","ts":1700000000999,"cts":1700000000123,
+            "data":{"s":"BTCUSDT","b":[["100","1"]],"a":[["101","2"]],"u":1}
+        }"#;
+        let bbo = parse_bbo_json(&v(raw)).expect("bbo");
+        assert_eq!(bbo.timestamp_us, 1_700_000_000_999_000);
+    }
+
+    #[test]
     fn parses_trade_json_with_uuid_id_as_us() {
         let raw = r#"{
             "topic":"publicTrade.BTCUSDT",
@@ -676,10 +684,10 @@ mod tests {
     fn parses_sbe_bbo_binary_as_us() {
         let raw = vec![
             98, 0, 32, 78, 1, 0, 0, 0, 198, 28, 26, 229, 152, 1, 0, 0, 111, 0, 0, 0, 0, 0, 0, 0,
-            154, 28, 26, 229, 152, 1, 0, 0, 112, 0, 0, 0, 0, 0, 0, 0, 169, 63, 55, 67, 0, 0, 0,
-            0, 16, 39, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            168, 63, 55, 67, 0, 0, 0, 0, 32, 78, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 254, 255, 7, 66, 84, 67, 85, 83, 68, 84,
+            154, 28, 26, 229, 152, 1, 0, 0, 112, 0, 0, 0, 0, 0, 0, 0, 169, 63, 55, 67, 0, 0, 0, 0,
+            16, 39, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 168, 63, 55,
+            67, 0, 0, 0, 0, 32, 78, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 254, 255, 7, 66, 84, 67, 85, 83, 68, 84,
         ];
         let bbo = parse_sbe_bbo(&raw).expect("sbe bbo");
         assert_eq!(bbo.symbol, "BTCUSDT");
