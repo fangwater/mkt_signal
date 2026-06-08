@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -11,23 +11,23 @@ use crate::common::time_util::get_timestamp_us;
 use crate::mkt_pub::cfg::Config;
 use crate::rolling_metrics::latency_kll::LatencyStats;
 use crate::rolling_metrics::latency_snapshot::{
-    ACTION_ID_MARKET_DATA, LatencyBucketStat, LatencySnapshotMsg, METRIC_ID_SPREAD_E2E,
+    LatencyBucketStat, LatencySnapshotMsg, ACTION_ID_MARKET_DATA, METRIC_ID_SPREAD_E2E,
     METRIC_ID_SPREAD_NET,
 };
 use crate::signal::common::TradingVenue;
 
 use crate::spread_pbs::adapter::{
-    BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter, create_adapter,
+    create_adapter, BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
 };
 use crate::spread_pbs::latency::LatencyKll;
 use crate::spread_pbs::okex_derivatives::{
-    OKEX_PUBLIC_WS_URL, build_okex_derivatives_subscribe_msgs, parse_okex_derivatives_frame,
+    build_okex_derivatives_subscribe_msgs, parse_okex_derivatives_frame, OKEX_PUBLIC_WS_URL,
 };
 use crate::spread_pbs::publisher::{
     SpreadDerivativesPublisher, SpreadIncrementalPublisher, SpreadLatencyPublisher,
     SpreadPublisher, SpreadTradePublisher,
 };
-use crate::spread_pbs::ws::{FrameHandler, WsLoopParams, run_public_ws};
+use crate::spread_pbs::ws::{run_public_ws, FrameHandler, WsLoopParams};
 
 const DEDUP_RESET_INTERVAL_US: i64 = 5 * 60 * 1_000_000;
 const ENV_ENABLE_TRADE: &str = "SPREAD_PBS_ENABLE_TRADE";
@@ -1562,14 +1562,7 @@ fn process_frame(
     }
     state.symbol_state.set_bbo_slot(slot, f.seq_id, f.ts_us);
 
-    if f.ts_us > 0 {
-        let net_us = (recv_us - f.ts_us) as f64;
-        let e2e_us = (accepted_us - f.ts_us) as f64;
-        state.latency_net.push(net_us);
-        state.latency_e2e.push(e2e_us);
-        state.latency_ipc_net.push(net_us);
-        state.latency_ipc_e2e.push(e2e_us);
-    }
+    record_latency_measurement_if_needed(state, &f.symbol, recv_us, accepted_us, f.ts_us);
 
     if let Err(e) = publisher.publish_bbo(
         &f.symbol,
@@ -1583,6 +1576,38 @@ fn process_frame(
         return;
     }
     state.published += 1;
+}
+
+fn record_latency_measurement_if_needed(
+    state: &mut SharedState,
+    symbol: &str,
+    recv_us: i64,
+    accepted_us: i64,
+    event_ts_us: i64,
+) {
+    if event_ts_us <= 0 || !is_latency_measurement_symbol(symbol) {
+        return;
+    }
+    let net_us = (recv_us - event_ts_us) as f64;
+    let e2e_us = (accepted_us - event_ts_us) as f64;
+    state.latency_net.push(net_us);
+    state.latency_e2e.push(e2e_us);
+    state.latency_ipc_net.push(net_us);
+    state.latency_ipc_e2e.push(e2e_us);
+}
+
+fn is_latency_measurement_symbol(symbol: &str) -> bool {
+    let upper = symbol.trim().to_ascii_uppercase();
+    if upper.is_empty() {
+        return false;
+    }
+    let without_swap = upper.strip_suffix("-SWAP").unwrap_or(&upper);
+    let base = without_swap
+        .strip_suffix("_USDT")
+        .or_else(|| without_swap.strip_suffix("-USDT"))
+        .or_else(|| without_swap.strip_suffix("USDT"))
+        .unwrap_or(without_swap);
+    matches!(base, "BTC" | "ETH" | "SOL")
 }
 
 fn take_latency_snapshot(state: &mut SharedState, venue_id: u32) -> Option<LatencySnapshotMsg> {
@@ -1701,6 +1726,45 @@ mod tests {
             ask_price: 2.0,
             ask_amount: 1.0,
         }
+    }
+
+    #[test]
+    fn latency_measurement_symbols_are_limited_to_major_assets() {
+        for symbol in [
+            "BTCUSDT",
+            "ETHUSDT",
+            "SOLUSDT",
+            "btc_usdt",
+            "ETH-USDT",
+            "SOL-USDT-SWAP",
+        ] {
+            assert!(
+                is_latency_measurement_symbol(symbol),
+                "expected {symbol} to be measured"
+            );
+        }
+
+        for symbol in ["XRPUSDT", "DOGE_USDT", "BNB-USDT", "BTCUSDC", ""] {
+            assert!(
+                !is_latency_measurement_symbol(symbol),
+                "expected {symbol} to be skipped"
+            );
+        }
+    }
+
+    #[test]
+    fn latency_measurements_skip_non_major_assets_for_both_buckets() {
+        let mut state = test_state(1_000_000);
+        record_latency_measurement_if_needed(&mut state, "XRPUSDT", 120, 130, 100);
+        assert!(take_latency_snapshot(&mut state, 7).is_none());
+
+        record_latency_measurement_if_needed(&mut state, "BTCUSDT", 120, 130, 100);
+        let msg = take_latency_snapshot(&mut state, 7).expect("snapshot");
+        assert_eq!(msg.n_buckets, 2);
+        assert_eq!(msg.buckets[0].metric_id, METRIC_ID_SPREAD_NET);
+        assert_eq!(msg.buckets[0].n, 1);
+        assert_eq!(msg.buckets[1].metric_id, METRIC_ID_SPREAD_E2E);
+        assert_eq!(msg.buckets[1].n, 1);
     }
 
     #[test]
