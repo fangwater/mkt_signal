@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::common::iceoryx_publisher::SignalPublisher;
+use crate::common::iceoryx_publisher::TradeSignalPublisher;
 use crate::pre_trade::order_manager::Side;
 use crate::signal::cancel_signal::{ArbCancelCtx, ArbCancelReason};
 use crate::signal::common::SignalBytes;
@@ -11,7 +11,7 @@ use super::common::Quote;
 use crate::signal::common::TradingVenue;
 
 pub struct ArbCancelEmitInput<'a> {
-    pub signal_pub: &'a SignalPublisher,
+    pub signal_pub: &'a TradeSignalPublisher,
     pub open_symbol: &'a str,
     pub hedge_symbol: &'a str,
     pub open_venue: TradingVenue,

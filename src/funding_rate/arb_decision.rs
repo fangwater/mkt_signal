@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use crate::common::bbo::Bbo;
 use crate::common::exchange::Exchange;
-use crate::common::iceoryx_publisher::SignalPublisher;
+use crate::common::iceoryx_publisher::TradeSignalPublisher;
 use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
 use crate::common::ipc_service_name::build_service_name;
 use crate::common::redis_client::RedisSettings;
@@ -463,7 +463,7 @@ pub fn create_arb_runtime_components(
     pnlu_key_suffix: String,
 ) -> Result<(
     Node<ipc::Service>,
-    SignalPublisher,
+    TradeSignalPublisher,
     GenericSignalSubscriber,
     FactorValueHub,
     FactorValueHub,
@@ -472,7 +472,7 @@ pub fn create_arb_runtime_components(
     let node = NodeBuilder::new()
         .name(&node_name)
         .create::<ipc::Service>()?;
-    let signal_pub = SignalPublisher::open(signal_channel)?;
+    let signal_pub = TradeSignalPublisher::open(signal_channel)?;
     let backward_sub = create_backward_subscriber(&node, backward_channel, source)?;
     let open_factor_value_hub = FactorValueHub::new(
         &node,
@@ -508,7 +508,7 @@ pub fn create_arb_runtime_components(
 }
 
 pub struct ArbShellRuntime {
-    pub signal_pub: SignalPublisher,
+    pub signal_pub: TradeSignalPublisher,
     pub backward_sub: GenericSignalSubscriber,
     pub node: Node<ipc::Service>,
     pub open_min_qty_table: VenueMinQtyTable,
@@ -2754,7 +2754,7 @@ fn emit_spread_arb_spread_cancel(
 }
 
 pub fn publish_arb_cancel_trigger(
-    signal_pub: &crate::common::iceoryx_publisher::SignalPublisher,
+    signal_pub: &crate::common::iceoryx_publisher::TradeSignalPublisher,
     now_us: i64,
 ) -> Result<u64> {
     let freq_ms = ArbDecision::with_state_mut(|arb| arb.tlen_cancel_freq_ms)
@@ -2773,7 +2773,7 @@ pub fn publish_arb_cancel_trigger(
     Ok(freq_ms)
 }
 
-fn drive_cancel_trigger_interval(source: &str, signal_pub: &SignalPublisher) {
+fn drive_cancel_trigger_interval(source: &str, signal_pub: &TradeSignalPublisher) {
     let now_us = get_timestamp_us();
     if !ArbDecision::with_state_mut(|arb| arb.should_emit_cancel_trigger(now_us)).unwrap_or(false) {
         return;

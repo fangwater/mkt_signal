@@ -10,6 +10,7 @@ use crate::common::ipc_service_name::build_service_name;
 use crate::signal::trade_signal::TradeSignal;
 
 pub const SIGNAL_PAYLOAD: usize = 4_096;
+pub const TRADE_SIGNAL_PAYLOAD: usize = 1_024;
 pub const RESAMPLE_PAYLOAD: usize = 32 * 1024;
 pub const BINANCE_MARGIN_UPDATE_PAYLOAD: usize = SIGNAL_PAYLOAD;
 pub const BINANCE_UM_UPDATE_PAYLOAD: usize = SIGNAL_PAYLOAD;
@@ -245,6 +246,7 @@ impl<const PAYLOAD: usize> GenericPublisher<PAYLOAD> {
 }
 
 pub type SignalPublisher = GenericPublisher<SIGNAL_PAYLOAD>;
+pub type TradeSignalPublisher = GenericPublisher<TRADE_SIGNAL_PAYLOAD>;
 pub type ResamplePublisher = GenericPublisher<RESAMPLE_PAYLOAD>;
 // 通用持久化发布器（支持所有交易所）
 pub type TradeUpdatePublisher = GenericPublisher<SIGNAL_PAYLOAD>;

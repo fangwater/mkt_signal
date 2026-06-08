@@ -1,4 +1,4 @@
-use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
+use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD, TRADE_SIGNAL_PAYLOAD};
 use crate::common::ipc_service_name::build_service_name;
 use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::common::time_util::get_timestamp_us;
@@ -30,7 +30,6 @@ use crate::strategy::mm_open_strategy::MarketMakerOpenStrategy;
 use crate::strategy::open_strategy_common::OpenStrategyCommon;
 use crate::strategy::{Strategy, StrategyManager};
 use anyhow::Result;
-use bytes::Bytes;
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
@@ -255,7 +254,7 @@ struct SignalListener {
     listener_start_us: i64,
     dropped_startup_buffered: usize,
     _node: Node<ipc::Service>,
-    subscriber: Subscriber<ipc::Service, [u8; SIGNAL_PAYLOAD], ()>,
+    subscriber: Subscriber<ipc::Service, [u8; TRADE_SIGNAL_PAYLOAD], ()>,
 }
 
 impl SignalListener {
@@ -270,14 +269,14 @@ impl SignalListener {
 
         let service = node
             .service_builder(&ServiceName::new(&service_path)?)
-            .publish_subscribe::<[u8; SIGNAL_PAYLOAD]>()
+            .publish_subscribe::<[u8; TRADE_SIGNAL_PAYLOAD]>()
             .max_publishers(1)
             .max_subscribers(32)
             .history_size(128)
             .subscriber_max_buffer_size(256)
             .create()?;
 
-        let subscriber: Subscriber<ipc::Service, [u8; SIGNAL_PAYLOAD], ()> =
+        let subscriber: Subscriber<ipc::Service, [u8; TRADE_SIGNAL_PAYLOAD], ()> =
             service.subscriber_builder().create()?;
 
         info!(
@@ -324,11 +323,20 @@ impl SignalListener {
                 Ok(Some(sample)) => {
                     has_message = true;
                     let receive_us = get_timestamp_us();
-                    let payload = Bytes::copy_from_slice(sample.payload());
-                    if payload.is_empty() {
+                    let payload = sample.payload();
+                    let Some(encoded_len) = TradeSignal::encoded_len(payload) else {
+                        if payload.iter().all(|&b| b == 0) {
+                            continue;
+                        }
+                        warn!(
+                            "failed to decode trade signal from channel {}: invalid payload length={} context_length={:?}",
+                            self.channel_name,
+                            payload.len(),
+                            TradeSignal::get_context_length(payload)
+                        );
                         continue;
-                    }
-                    match TradeSignal::from_bytes(&payload) {
+                    };
+                    match TradeSignal::from_bytes(&payload[..encoded_len]) {
                         Ok(signal) => {
                             if should_drop_startup_buffered_signal(&signal, self.listener_start_us)
                             {

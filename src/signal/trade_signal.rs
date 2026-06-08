@@ -187,6 +187,12 @@ impl TradeSignal {
 
     /// 获取context长度（零拷贝）
     #[inline]
+    pub fn encoded_len(data: &[u8]) -> Option<usize> {
+        let context_length = Self::get_context_length(data)? as usize;
+        let total_len = 24usize.checked_add(context_length)?;
+        (data.len() >= total_len).then_some(total_len)
+    }
+
     pub fn get_context_length(data: &[u8]) -> Option<u32> {
         if data.len() < 24 {
             return None;

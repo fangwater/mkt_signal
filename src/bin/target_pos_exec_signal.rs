@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use clap::{ArgGroup, Parser};
 use log::info;
-use mkt_signal::common::iceoryx_publisher::SignalPublisher;
+use mkt_signal::common::iceoryx_publisher::TradeSignalPublisher;
 use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::signal::common::{SignalBytes, TradingVenue};
 use mkt_signal::signal::exec_signal::ExecPositionTargetCtx;
@@ -88,7 +88,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let publisher = SignalPublisher::new(&args.channel)
+    let publisher = TradeSignalPublisher::new(&args.channel)
         .with_context(|| format!("failed to create signal publisher channel={}", args.channel))?;
     let mut published = 0usize;
     let mut total_bytes = 0usize;

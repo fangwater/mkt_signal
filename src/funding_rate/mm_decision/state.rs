@@ -11,7 +11,7 @@ use super::super::inline_volatility::{
     snapshot_inline_tradecount, snapshot_inline_volatility, InlineVolatilitySnapshot,
 };
 use super::super::model_output_hub::ModelOutputHub;
-use crate::common::iceoryx_publisher::SignalPublisher;
+use crate::common::iceoryx_publisher::TradeSignalPublisher;
 use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::time_util::get_timestamp_us;
@@ -166,7 +166,7 @@ impl Default for MmOpenTimeBlock {
 }
 
 pub(crate) struct MmDecisionState {
-    pub(crate) signal_pub: SignalPublisher,
+    pub(crate) signal_pub: TradeSignalPublisher,
     pub(crate) depth_query_client: DepthQueryClient,
     pub(crate) open_venue: TradingVenue,
     pub(crate) hedge_venue: TradingVenue,
@@ -373,7 +373,7 @@ impl MmDecisionState {
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
     ) -> Result<Self> {
-        let signal_pub = SignalPublisher::open(DEFAULT_ARBITRAGE_SIGNAL_CHANNEL)?;
+        let signal_pub = TradeSignalPublisher::open(DEFAULT_ARBITRAGE_SIGNAL_CHANNEL)?;
         let depth_query_client = DepthQueryClient::new(open_venue)?;
         let pnlu_settings = RedisSettings {
             host: DEFAULT_PNLU_REDIS_HOST.to_string(),

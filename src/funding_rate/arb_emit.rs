@@ -1,12 +1,12 @@
 use anyhow::Result;
 
-use crate::common::iceoryx_publisher::SignalPublisher;
+use crate::common::iceoryx_publisher::TradeSignalPublisher;
 use crate::common::time_util::get_timestamp_us;
 use crate::rolling_metrics::arb_open_latency::record_arb_open_latency;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 
 pub fn emit_levels_as_signals<TCtx>(
-    signal_pub: &SignalPublisher,
+    signal_pub: &TradeSignalPublisher,
     signal_type: SignalType,
     generation_time: i64,
     contexts: impl IntoIterator<Item = TCtx>,
