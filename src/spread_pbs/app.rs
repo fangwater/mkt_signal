@@ -1,6 +1,7 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::env;
 use std::rc::Rc;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -10,25 +11,28 @@ use crate::common::time_util::get_timestamp_us;
 use crate::mkt_pub::cfg::Config;
 use crate::rolling_metrics::latency_kll::LatencyStats;
 use crate::rolling_metrics::latency_snapshot::{
-    LatencyBucketStat, LatencySnapshotMsg, ACTION_ID_MARKET_DATA, METRIC_ID_SPREAD_E2E,
+    ACTION_ID_MARKET_DATA, LatencyBucketStat, LatencySnapshotMsg, METRIC_ID_SPREAD_E2E,
     METRIC_ID_SPREAD_NET,
 };
 use crate::signal::common::TradingVenue;
 
 use crate::spread_pbs::adapter::{
-    create_adapter, BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
+    BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter, create_adapter,
 };
 use crate::spread_pbs::latency::LatencyKll;
 use crate::spread_pbs::okex_derivatives::{
-    build_okex_derivatives_subscribe_msgs, parse_okex_derivatives_frame, OKEX_PUBLIC_WS_URL,
+    OKEX_PUBLIC_WS_URL, build_okex_derivatives_subscribe_msgs, parse_okex_derivatives_frame,
 };
 use crate::spread_pbs::publisher::{
     SpreadDerivativesPublisher, SpreadIncrementalPublisher, SpreadLatencyPublisher,
     SpreadPublisher, SpreadTradePublisher,
 };
-use crate::spread_pbs::ws::{run_public_ws, FrameHandler, WsLoopParams};
+use crate::spread_pbs::ws::{FrameHandler, WsLoopParams, run_public_ws};
 
 const DEDUP_RESET_INTERVAL_US: i64 = 5 * 60 * 1_000_000;
+const ENV_ENABLE_TRADE: &str = "SPREAD_PBS_ENABLE_TRADE";
+const ENV_ENABLE_INCREMENTAL: &str = "SPREAD_PBS_ENABLE_INCREMENTAL";
+const ENV_ENABLE_DERIVATIVES: &str = "SPREAD_PBS_ENABLE_DERIVATIVES";
 
 pub struct SpreadPbsApp {
     config: Config,
@@ -92,6 +96,29 @@ fn direct_derivatives_replacement_enabled(venue: TradingVenue) -> bool {
             | TradingVenue::GateFutures
             | TradingVenue::BybitFutures
     )
+}
+
+fn env_enabled_or(name: &str, default: bool) -> bool {
+    match env::var(name) {
+        Ok(raw) => parse_env_bool(&raw).unwrap_or_else(|| {
+            log::warn!(
+                "spread_pbs ignoring invalid boolean env {}={:?}; using default={}",
+                name,
+                raw,
+                default
+            );
+            default
+        }),
+        Err(_) => default,
+    }
+}
+
+fn parse_env_bool(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "t" | "yes" | "y" | "on" | "enable" | "enabled" => Some(true),
+        "0" | "false" | "f" | "no" | "n" | "off" | "disable" | "disabled" => Some(false),
+        _ => None,
+    }
 }
 
 fn build_market_subscribe(
@@ -178,19 +205,40 @@ impl SpreadPbsApp {
         let initial_symbols = self.config.wait_for_symbols().await;
         adapter.seed_symbols(&initial_symbols);
         let mut current_symbols: HashSet<String> = initial_symbols.iter().cloned().collect();
-        let direct_trade_enabled =
-            self.config.data_types.enable_trade && direct_trade_replacement_enabled(venue);
-        let direct_incremental_enabled = self.config.data_types.enable_incremental
+        let enable_trade = env_enabled_or(ENV_ENABLE_TRADE, self.config.data_types.enable_trade);
+        let enable_incremental = env_enabled_or(
+            ENV_ENABLE_INCREMENTAL,
+            self.config.data_types.enable_incremental,
+        );
+        let enable_derivatives = env_enabled_or(
+            ENV_ENABLE_DERIVATIVES,
+            self.config.data_types.enable_derivatives,
+        );
+        let direct_trade_enabled = enable_trade && direct_trade_replacement_enabled(venue);
+        let direct_incremental_enabled = enable_incremental
             && direct_incremental_replacement_enabled(venue)
             && !adapter
                 .build_incremental_subscribe(&initial_symbols)
                 .is_empty();
-        let direct_derivatives_enabled = self.config.data_types.enable_derivatives
+        let direct_derivatives_enabled = enable_derivatives
             && direct_derivatives_replacement_enabled(venue)
             && (is_okex_derivatives_venue(venue)
                 || !adapter
                     .build_derivatives_subscribe(&initial_symbols)
                     .is_empty());
+        log::info!(
+            "spread_pbs[{}] data_types askbid=true trade={} incremental={} derivatives={} env_overrides {}={:?} {}={:?} {}={:?}",
+            venue_slug,
+            direct_trade_enabled,
+            direct_incremental_enabled,
+            direct_derivatives_enabled,
+            ENV_ENABLE_TRADE,
+            env::var(ENV_ENABLE_TRADE).ok(),
+            ENV_ENABLE_INCREMENTAL,
+            env::var(ENV_ENABLE_INCREMENTAL).ok(),
+            ENV_ENABLE_DERIVATIVES,
+            env::var(ENV_ENABLE_DERIVATIVES).ok(),
+        );
         let initial_subs = build_market_subscribe(
             &adapter,
             &initial_symbols,
@@ -505,53 +553,6 @@ fn spawn_okex_derivatives_leg(
     }
 }
 
-struct DirectExtraGroup {
-    label: &'static str,
-    url: String,
-    subs: Vec<serde_json::Value>,
-    trade_publisher: Option<Rc<SpreadTradePublisher>>,
-    incremental_publisher: Option<Rc<SpreadIncrementalPublisher>>,
-    derivatives_publisher: Option<Rc<SpreadDerivativesPublisher>>,
-}
-
-fn merge_direct_extra_group(
-    groups: &mut Vec<DirectExtraGroup>,
-    label: &'static str,
-    url: String,
-    mut subs: Vec<serde_json::Value>,
-    trade_publisher: Option<Rc<SpreadTradePublisher>>,
-    incremental_publisher: Option<Rc<SpreadIncrementalPublisher>>,
-    derivatives_publisher: Option<Rc<SpreadDerivativesPublisher>>,
-) {
-    if subs.is_empty() {
-        return;
-    }
-
-    if let Some(group) = groups.iter_mut().find(|group| group.url == url) {
-        group.label = "direct-extra";
-        group.subs.append(&mut subs);
-        if trade_publisher.is_some() {
-            group.trade_publisher = trade_publisher;
-        }
-        if incremental_publisher.is_some() {
-            group.incremental_publisher = incremental_publisher;
-        }
-        if derivatives_publisher.is_some() {
-            group.derivatives_publisher = derivatives_publisher;
-        }
-        return;
-    }
-
-    groups.push(DirectExtraGroup {
-        label,
-        url,
-        subs,
-        trade_publisher,
-        incremental_publisher,
-        derivatives_publisher,
-    });
-}
-
 fn spawn_direct_extra_legs(
     adapter: &Rc<dyn VenueAdapter>,
     symbols: &[String],
@@ -561,63 +562,98 @@ fn spawn_direct_extra_legs(
     derivatives_publisher: Option<Rc<SpreadDerivativesPublisher>>,
     state: Rc<RefCell<SharedState>>,
 ) -> Vec<WsLeg> {
-    let mut groups = Vec::new();
+    let mut legs = Vec::new();
 
     if let (Some(url), Some(publisher)) = (adapter.trade_ws_url(), trade_publisher.clone()) {
-        merge_direct_extra_group(
-            &mut groups,
+        spawn_direct_replacement_batch_legs(
+            &mut legs,
             "direct-trade",
             url,
+            config.primary_local_ip.clone(),
             adapter.build_trade_subscribe(symbols),
+            adapter,
             Some(publisher),
             None,
             None,
+            config.data_types.max_levels_per_msg,
+            state.clone(),
         );
     }
     if let (Some(url), Some(publisher)) =
         (adapter.incremental_ws_url(), incremental_publisher.clone())
     {
-        merge_direct_extra_group(
-            &mut groups,
+        spawn_direct_replacement_batch_legs(
+            &mut legs,
             "direct-incremental",
             url,
+            config.primary_local_ip.clone(),
             adapter.build_incremental_subscribe(symbols),
+            adapter,
             None,
             Some(publisher),
             None,
+            config.data_types.max_levels_per_msg,
+            state.clone(),
         );
     }
     if let (Some(url), Some(publisher)) =
         (adapter.derivatives_ws_url(), derivatives_publisher.clone())
     {
-        merge_direct_extra_group(
-            &mut groups,
+        spawn_direct_replacement_batch_legs(
+            &mut legs,
             "direct-derivatives",
             url,
+            config.primary_local_ip.clone(),
             adapter.build_derivatives_subscribe(symbols),
+            adapter,
             None,
             None,
             Some(publisher),
+            config.data_types.max_levels_per_msg,
+            state.clone(),
         );
     }
 
-    groups
-        .into_iter()
-        .map(|group| {
-            spawn_direct_replacement_leg(
-                group.label,
-                group.url,
-                config.primary_local_ip.clone(),
-                group.subs,
-                adapter.clone(),
-                group.trade_publisher,
-                group.incremental_publisher,
-                group.derivatives_publisher,
-                config.data_types.max_levels_per_msg,
-                state.clone(),
-            )
-        })
-        .collect()
+    legs
+}
+
+fn spawn_direct_replacement_batch_legs(
+    legs: &mut Vec<WsLeg>,
+    label: &'static str,
+    url: String,
+    local_ip: String,
+    subscribe_msgs: Vec<serde_json::Value>,
+    adapter: &Rc<dyn VenueAdapter>,
+    trade_publisher: Option<Rc<SpreadTradePublisher>>,
+    incremental_publisher: Option<Rc<SpreadIncrementalPublisher>>,
+    derivatives_publisher: Option<Rc<SpreadDerivativesPublisher>>,
+    incremental_max_levels: Option<usize>,
+    state: Rc<RefCell<SharedState>>,
+) {
+    if subscribe_msgs.is_empty() {
+        return;
+    }
+
+    log::info!(
+        "spread_pbs {} spawning {} direct replacement ws batches url={}",
+        label,
+        subscribe_msgs.len(),
+        url
+    );
+    for subscribe_msg in subscribe_msgs {
+        legs.push(spawn_direct_replacement_leg(
+            label,
+            url.clone(),
+            local_ip.clone(),
+            vec![subscribe_msg],
+            adapter.clone(),
+            trade_publisher.clone(),
+            incremental_publisher.clone(),
+            derivatives_publisher.clone(),
+            incremental_max_levels,
+            state.clone(),
+        ));
+    }
 }
 
 fn spawn_direct_replacement_leg(
@@ -1676,6 +1712,80 @@ mod tests {
         assert!(!looks_like_json(&[64, 0, 1, 0, 1, 0, 3, 0]));
         assert!(!looks_like_json(b"pong"));
         assert!(!looks_like_json(b""));
+    }
+
+    #[test]
+    fn parse_env_bool_accepts_common_on_off_values() {
+        assert_eq!(parse_env_bool("1"), Some(true));
+        assert_eq!(parse_env_bool("true"), Some(true));
+        assert_eq!(parse_env_bool("on"), Some(true));
+        assert_eq!(parse_env_bool("0"), Some(false));
+        assert_eq!(parse_env_bool("false"), Some(false));
+        assert_eq!(parse_env_bool("off"), Some(false));
+        assert_eq!(parse_env_bool("maybe"), None);
+    }
+
+    #[test]
+    fn spawn_direct_replacement_batch_legs_keeps_one_subscribe_batch_per_ws() {
+        struct NoopAdapter;
+
+        impl VenueAdapter for NoopAdapter {
+            fn name(&self) -> &'static str {
+                "noop"
+            }
+
+            fn ws_url(&self) -> String {
+                "wss://example.invalid/ws".to_string()
+            }
+
+            fn build_subscribe(&self, _symbols: &[String]) -> Vec<serde_json::Value> {
+                Vec::new()
+            }
+
+            fn parse_frame(&self, _value: &serde_json::Value) -> Result<Vec<BboFrame>> {
+                Ok(Vec::new())
+            }
+
+            fn keepalive(&self) -> Option<KeepaliveSpec> {
+                None
+            }
+        }
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let adapter: Rc<dyn VenueAdapter> = Rc::new(NoopAdapter);
+            let state = Rc::new(RefCell::new(test_state(0)));
+            let mut legs = Vec::new();
+            let subscribe_msgs = vec![
+                serde_json::json!({"method":"SUBSCRIBE","params":["a@trade"],"id":1}),
+                serde_json::json!({"method":"SUBSCRIBE","params":["b@trade"],"id":2}),
+                serde_json::json!({"method":"SUBSCRIBE","params":["c@trade"],"id":3}),
+            ];
+
+            spawn_direct_replacement_batch_legs(
+                &mut legs,
+                "direct-test",
+                "wss://example.invalid/ws".to_string(),
+                "0.0.0.0".to_string(),
+                subscribe_msgs,
+                &adapter,
+                None,
+                None,
+                None,
+                None,
+                state,
+            );
+
+            assert_eq!(legs.len(), 3);
+            for leg in legs {
+                let _ = leg.shutdown_tx.send(true);
+                leg.handle.abort();
+            }
+        });
     }
 
     #[test]
