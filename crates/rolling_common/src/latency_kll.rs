@@ -1,4 +1,4 @@
-use crate::rolling_metrics::kll_quantile::segmented_quantiles_linear;
+use crate::kll_quantile::segmented_quantiles_linear;
 use std::time::{Duration, Instant};
 
 /// 累积延迟样本（µs），按样本数或时间窗口 flush。

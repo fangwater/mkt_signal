@@ -10,7 +10,7 @@ use tokio::signal::unix::{signal as unix_signal, SignalKind};
 use tokio::time::{self, Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
-use mkt_signal::common::iceoryx_publisher::configure_signal_publish_dry_run;
+use ipc_common::iceoryx_publisher::configure_signal_publish_dry_run;
 use order_common::TradingVenue;
 use runtime_common::affinity::maybe_pin_current_thread;
 use runtime_common::exchange::Exchange;

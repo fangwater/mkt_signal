@@ -6,4 +6,5 @@ edition = "2021"
 [dependencies]
 anyhow = { workspace = true }
 bytes = { version = "1.0", features = ["serde"] }
+order_common = { path = "../order_common" }
 serde_json = "1.0"

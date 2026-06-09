@@ -2,8 +2,8 @@
 
 use anyhow::{Context, Result};
 use clap::{ArgGroup, Parser};
+use ipc_common::iceoryx_publisher::TradeSignalPublisher;
 use log::info;
-use mkt_signal::common::iceoryx_publisher::TradeSignalPublisher;
 use order_common::TradingVenue;
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::common::SignalBytes;

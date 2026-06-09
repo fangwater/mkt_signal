@@ -239,7 +239,7 @@ impl Config {
     }
 
     fn is_okex_spot_symbol_related_to_swap(spot_symbol: &str, swap_symbol: &str) -> bool {
-        use crate::symbol_match::normalize_symbol_for_pairing;
+        use mkt_parsers::symbol_match::normalize_symbol_for_pairing;
 
         normalize_symbol_for_pairing(spot_symbol, "okex-spot")
             == normalize_symbol_for_pairing(swap_symbol, "okex-futures")
@@ -611,7 +611,7 @@ impl Config {
 
     /// 获取 OKEx 现货交易对（只返回与 SWAP 有关联的；兼容无 -SWAP 后缀）
     async fn get_spot_symbols_related_to_okex_swap() -> Result<Vec<String>> {
-        use crate::symbol_match::normalize_symbol_for_pairing;
+        use mkt_parsers::symbol_match::normalize_symbol_for_pairing;
         use std::collections::HashMap;
 
         let spot_symbols = Self::get_spot_symbols_from_okex_api().await?;

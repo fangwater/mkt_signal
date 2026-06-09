@@ -11,10 +11,10 @@ use super::common::normalize_tlens_for_compare;
 use super::mkt_channel::MktChannel;
 use super::tlen_threshold_loader;
 use crate::common::bbo::Bbo;
-use crate::common::iceoryx_publisher::SIGNAL_PAYLOAD;
-use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
 use crate::funding_rate::inventory_hedge_inputs::resolve_inventory_hedge_signal_inputs;
-use crate::symbol_match::normalize_symbol_for_whitelist;
+use ipc_common::iceoryx_publisher::SIGNAL_PAYLOAD;
+use ipc_common::iceoryx_subscriber::GenericSignalSubscriber;
+use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
 use order_common::TradingVenue;
 use quote_plan::inventory_hedge::{
     build_inventory_hedge_from_key, build_inventory_hedge_quote_plan, InventoryHedgeBuildInput,

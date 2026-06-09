@@ -1866,6 +1866,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ipc_common"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "iceoryx2",
+ "log",
+ "runtime_common",
+ "signal_common",
+]
+
+[[package]]
 name = "ipnet"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2159,6 +2171,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytes",
+ "order_common",
  "serde_json",
 ]
 
@@ -2189,6 +2202,7 @@ dependencies = [
  "hmac",
  "iceoryx2",
  "indexmap 2.11.4",
+ "ipc_common",
  "lazy_static",
  "libc",
  "local-ip-address",
@@ -2208,6 +2222,7 @@ dependencies = [
  "redis",
  "reqwest",
  "rocksdb",
+ "rolling_common",
  "rtrb",
  "runtime_common",
  "serde",
@@ -3660,6 +3675,13 @@ checksum = "bb6f170a4041d50a0ce04b0d2e14916d6ca863ea2e422689a5b694395d299ffe"
 dependencies = [
  "libc",
  "librocksdb-sys",
+]
+
+[[package]]
+name = "rolling_common"
+version = "0.1.0"
+dependencies = [
+ "log",
 ]
 
 [[package]]

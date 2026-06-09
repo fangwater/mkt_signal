@@ -1,7 +1,7 @@
 use anyhow::Result;
 
-use crate::common::iceoryx_publisher::TradeSignalPublisher;
-use crate::rolling_metrics::arb_open_latency::record_arb_open_latency;
+use ipc_common::iceoryx_publisher::TradeSignalPublisher;
+use rolling_common::arb_open_latency::record_arb_open_latency;
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::trade_signal::{SignalType, TradeSignal};
 

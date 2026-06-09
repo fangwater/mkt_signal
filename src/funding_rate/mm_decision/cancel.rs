@@ -6,7 +6,7 @@ use super::super::mkt_channel::MktChannel;
 use super::super::symbol_list::SymbolList;
 use super::from_key::build_mm_cancel_from_key;
 use super::state::MmDecisionState;
-use crate::symbol_match::normalize_symbol_for_whitelist;
+use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
 use order_common::Side;
 use order_common::TradingVenue;
 use runtime_common::time_util::get_timestamp_us;

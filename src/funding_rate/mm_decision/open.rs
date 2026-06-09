@@ -7,7 +7,7 @@ use super::super::mkt_channel::MktChannel;
 use super::super::symbol_list::SymbolList;
 use super::from_key::build_from_key;
 use super::state::{MmDecisionState, MmOpenPublishStats};
-use crate::symbol_match::normalize_symbol_for_whitelist;
+use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
 use order_common::TradingVenue;
 use quote_plan::open_quote_plan::build_mm_open_quote_plan;
 use runtime_common::symbol_util::normalize_symbol_for_venue;
@@ -605,7 +605,7 @@ mod tests {
     };
     use crate::funding_rate::factor_value_hub::{EnvironmentSignalResult, EnvironmentSignalSource};
     use crate::funding_rate::mm_decision::state::MmOpenPublishStats;
-    use crate::symbol_match::normalize_symbol_for_whitelist;
+    use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
     use order_common::TradingVenue;
 
     fn sample_environment_signal(allow_open: bool) -> EnvironmentSignalResult {

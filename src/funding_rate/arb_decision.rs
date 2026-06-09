@@ -11,18 +11,18 @@ use std::thread::LocalKey;
 use std::time::{Duration, Instant};
 
 use crate::common::bbo::Bbo;
-use crate::common::iceoryx_publisher::TradeSignalPublisher;
-use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
 use crate::funding_rate::inventory_hedge_inputs::resolve_inventory_hedge_signal_inputs;
 use crate::funding_rate::FundingRatePeriod;
-use crate::rolling_metrics::arb_open_latency::record_arb_open_latency;
-use crate::symbol_match::normalize_symbol_for_whitelist;
+use ipc_common::iceoryx_publisher::TradeSignalPublisher;
+use ipc_common::iceoryx_subscriber::GenericSignalSubscriber;
+use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
 use order_common::Side;
 use order_common::TradingVenue;
 use quote_plan::inventory_hedge::{
     build_inventory_hedge_from_key, build_inventory_hedge_quote_plan, InventoryHedgeBuildInput,
 };
 use quote_plan::order_align::align_order_for_venue;
+use rolling_common::arb_open_latency::record_arb_open_latency;
 use runtime_common::exchange::Exchange;
 use runtime_common::ipc_service_name::build_service_name;
 use runtime_common::redis_client::RedisSettings;
@@ -408,7 +408,7 @@ pub fn create_backward_subscriber(
     let service_name_obj = ServiceName::new(&service_name)?;
     let service_builder = || {
         node.service_builder(&service_name_obj)
-            .publish_subscribe::<[u8; crate::common::iceoryx_publisher::SIGNAL_PAYLOAD]>()
+            .publish_subscribe::<[u8; ipc_common::iceoryx_publisher::SIGNAL_PAYLOAD]>()
             .max_publishers(1)
             .max_subscribers(32)
             .history_size(128)
@@ -2843,7 +2843,7 @@ fn emit_spread_arb_spread_cancel(
 }
 
 pub fn publish_arb_cancel_trigger(
-    signal_pub: &crate::common::iceoryx_publisher::TradeSignalPublisher,
+    signal_pub: &ipc_common::iceoryx_publisher::TradeSignalPublisher,
     now_us: i64,
 ) -> Result<u64> {
     let freq_ms = ArbDecision::with_state_mut(|arb| arb.tlen_cancel_freq_ms)

@@ -19,7 +19,6 @@ pub mod pre_trade;
 pub mod rolling_metrics;
 pub mod spread_pbs;
 pub mod strategy;
-pub mod symbol_match;
 pub mod trade_engine;
 pub mod viz;
 

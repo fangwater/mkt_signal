@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::common::iceoryx_publisher::TradeSignalPublisher;
+use ipc_common::iceoryx_publisher::TradeSignalPublisher;
 use order_common::Side;
 use signal_common::cancel_signal::{ArbCancelCtx, ArbCancelReason};
 use signal_common::common::SignalBytes;

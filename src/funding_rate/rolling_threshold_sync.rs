@@ -1,7 +1,7 @@
 use log::warn;
 use std::collections::{HashMap, HashSet};
 
-use crate::symbol_match::normalize_symbol_for_whitelist;
+use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
 use order_common::TradingVenue;
 
 use super::funding_threshold_loader::{FactorDirectionalThresholds, FundingThresholdsResolved};

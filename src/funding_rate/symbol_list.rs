@@ -14,7 +14,7 @@ use serde_json;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
-use crate::symbol_match::normalize_symbol_for_whitelist;
+use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
 use order_common::TradingVenue;
 use runtime_common::exchange::Exchange;
 use runtime_common::redis_client::RedisClient;

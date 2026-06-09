@@ -8,7 +8,6 @@ use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::common::iceoryx_publisher::{QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD};
 use crate::pre_trade::account_open_block::handle_account_open_block_query_response;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::OrderExecutionStatus;
@@ -19,6 +18,7 @@ use crate::strategy::query_engine_response::{QueryEngineResponse, QueryEngineRes
 use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
 use crate::strategy::{OrphanStrategyManager, StrategyManager};
 use crate::trade_engine::query_request::QueryRequestType;
+use ipc_common::iceoryx_publisher::{QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD};
 use mkt_parsers::msg::basic_account_msg::{
     get_basic_event_type, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
     BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,

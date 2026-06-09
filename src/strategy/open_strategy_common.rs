@@ -7,7 +7,6 @@ use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderManager, OrderT
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::signal_throttle::register_signal_throttle;
 use crate::pre_trade::{QueryEngHub, TradeEngHub};
-use crate::rolling_metrics::arb_open_latency::record_arb_open_latency;
 use crate::strategy::manager::{OpenPriceMapEntry, OrphanHandoff, OrphanStrategyRole, Strategy};
 use crate::strategy::order_query_builder::build_order_query_request;
 pub use crate::strategy::order_reconcile::PendingOrderQueryReason;
@@ -25,6 +24,7 @@ use crate::strategy::uniform_order_helper::{
 use crate::strategy::ws_order_update::prepare_failed_trade_engine_response_for_strategy;
 use log::{debug, error, info, warn};
 use order_common::{OrderStatus, TradingVenue};
+use rolling_common::arb_open_latency::record_arb_open_latency;
 use runtime_common::symbol_util::{
     extract_assets_from_symbol, min_qty_symbol_key, normalize_symbol_for_internal,
 };

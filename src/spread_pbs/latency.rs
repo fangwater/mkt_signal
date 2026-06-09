@@ -1,5 +1,5 @@
-use crate::rolling_metrics::kll_quantile::segmented_quantiles_linear;
-use crate::rolling_metrics::latency_kll::LatencyStats;
+use rolling_common::kll_quantile::segmented_quantiles_linear;
+use rolling_common::latency_kll::LatencyStats;
 use std::time::{Duration, Instant};
 
 /// 累积被采纳消息的本地接收延迟（µs），按样本数或时间窗口 flush。

@@ -11,8 +11,8 @@ use super::super::inline_volatility::{
     snapshot_inline_tradecount, snapshot_inline_volatility, InlineVolatilitySnapshot,
 };
 use super::super::model_output_hub::ModelOutputHub;
-use crate::common::iceoryx_publisher::TradeSignalPublisher;
 use depth_pub_common::query_client::DepthQueryClient;
+use ipc_common::iceoryx_publisher::TradeSignalPublisher;
 use order_common::TradingVenue;
 use order_common::{OrderType, Side};
 use quote_plan::open_quote_plan::MmOpenQuotePlan;
@@ -1349,7 +1349,7 @@ impl MmDecisionState {
 mod tests {
     use super::*;
     use crate::funding_rate::inline_volatility::observe_inline_volatility;
-    use crate::symbol_match::normalize_symbol_for_whitelist;
+    use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
 
     #[test]
     fn test_resolve_mm_order_amount_u_uses_symbol_override() {

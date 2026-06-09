@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use crate::rolling_metrics::kll_quantile::segmented_quantiles_linear;
+use rolling_common::kll_quantile::segmented_quantiles_linear;
 
 /// 单生产者、多读者友好的定长环形缓冲，使用连续内存存储 f32 值。
 /// 内部通过自增计数 + 取模定位，写入覆盖最旧元素。

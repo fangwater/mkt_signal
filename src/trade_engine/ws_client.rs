@@ -2,7 +2,6 @@ use crate::portfolio_margin::bitget_auth::BitgetCredentials;
 use crate::portfolio_margin::bybit_auth::BybitCredentials;
 use crate::portfolio_margin::gate_auth::GateCredentials;
 use crate::portfolio_margin::okex_auth::OkexCredentials;
-use crate::rolling_metrics::latency_kll::LatencyKll;
 use crate::rolling_metrics::latency_snapshot::{
     LatencyBucketStat, LatencySnapshotMsg, ACTION_ID_CANCEL, ACTION_ID_NEW, METRIC_ID_DOWNLINK,
     METRIC_ID_IPC_TO_WS, METRIC_ID_RTT, METRIC_ID_SERVER, METRIC_ID_UPLINK,
@@ -35,6 +34,7 @@ use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use log::{debug, info, warn};
 use native_tls::TlsConnector;
+use rolling_common::latency_kll::LatencyKll;
 use runtime_common::exchange::Exchange;
 use runtime_common::time_util::get_timestamp_us;
 use serde::Deserialize;

@@ -9,11 +9,11 @@ use std::rc::Rc;
 use std::time::Duration;
 use tokio::time::Instant;
 
-use crate::common::iceoryx_publisher::RESAMPLE_PAYLOAD as ICEORYX_RESAMPLE_PAYLOAD;
 use crate::pre_trade::resample_channel::{DEFAULT_EXPOSURE_CHANNEL, DEFAULT_RISK_CHANNEL};
 use crate::viz::config::{PreTradeSrcCfg, VizServerCfg};
 use crate::viz::resample::{PreTradeExposureResampleEntry, PreTradeRiskResampleEntry};
 use crate::viz::server::WsHub;
+use ipc_common::iceoryx_publisher::RESAMPLE_PAYLOAD as ICEORYX_RESAMPLE_PAYLOAD;
 use runtime_common::time_util::get_timestamp_us;
 
 const PRE_TRADE_EXPOSURE_CHANNEL: &str = DEFAULT_EXPOSURE_CHANNEL;

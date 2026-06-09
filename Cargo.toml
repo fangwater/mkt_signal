@@ -4,12 +4,14 @@ members = [
     "crates/depth_pub",
     "crates/factor_engine",
     "crates/inpos_engine",
+    "crates/ipc_common",
     "crates/mkt_model_runtime",
     "crates/mkt_parsers",
     "crates/order_common",
     "crates/persist_manager",
     "crates/persist_common",
     "crates/quote_plan",
+    "crates/rolling_common",
     "crates/runtime_common",
     "crates/signal_common",
 ]
@@ -217,10 +219,12 @@ quote_plan = { path = "crates/quote_plan" }
 order_common = { path = "crates/order_common" }
 signal_common = { path = "crates/signal_common" }
 runtime_common = { path = "crates/runtime_common" }
+ipc_common = { path = "crates/ipc_common" }
 depth_pub_common = { package = "depth_pub", path = "crates/depth_pub" }
 factor_engine = { path = "crates/factor_engine" }
 queue_position_engine = { path = "crates/inpos_engine" }
 mkt_parsers = { path = "crates/mkt_parsers" }
+rolling_common = { path = "crates/rolling_common" }
 local-ip-address = "0.6"
 serde_yaml = "0.9"
 tokio = { version = "1.0", features = ["full"] }

@@ -1,4 +1,3 @@
-use crate::common::iceoryx_publisher::{ResamplePublisher, RESAMPLE_PAYLOAD};
 use crate::common::min_qty_table::MinQtyTable;
 use crate::pre_trade::account_open_block::latest_usdt_max_available_margin_snapshot;
 use crate::pre_trade::basic_balance_manager::BasicBalanceManager;
@@ -15,6 +14,7 @@ use crate::viz::resample::{
     PreTradeRiskResampleEntry, PreTradeVenueRiskResampleEntry,
 };
 use anyhow::Result;
+use ipc_common::iceoryx_publisher::{ResamplePublisher, RESAMPLE_PAYLOAD};
 use log::{debug, info, trace, warn};
 use mkt_parsers::msg::basic_account_msg::{AccountRiskLevelProvider, BasicAccountRiskMsg};
 use order_common::TradingVenue;

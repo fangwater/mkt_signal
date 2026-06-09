@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use crate::common::exact_rolling_window::ExactRollingWindow;
+use rolling_common::exact_rolling_window::ExactRollingWindow;
 
 pub(crate) const INLINE_VOLATILITY_WINDOW_CAPACITY: usize = 720;
 pub(crate) const INLINE_VOLATILITY_MIN_SAMPLES: usize = 10;

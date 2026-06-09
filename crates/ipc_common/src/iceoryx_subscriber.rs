@@ -394,7 +394,7 @@ pub fn create_subscriber(
 
 // ========== 通用信号订阅器 ==========
 
-use crate::common::iceoryx_publisher::SIGNAL_PAYLOAD;
+use crate::iceoryx_publisher::SIGNAL_PAYLOAD;
 
 /// 通用信号订阅器（支持不同大小的 payload）
 pub enum GenericSignalSubscriber {

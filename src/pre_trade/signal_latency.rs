@@ -7,7 +7,7 @@
 //! 桶按需创建：同一进程只跑一个 mode（arb 或 mm），跑 arb 时只会出现 `Arb*` 桶，
 //! mm 桶永不创建，零冗余。空桶不存在、不打日志。
 
-use crate::rolling_metrics::latency_kll::LatencyKll;
+use rolling_common::latency_kll::LatencyKll;
 use std::cell::RefCell;
 use std::collections::HashMap;
 

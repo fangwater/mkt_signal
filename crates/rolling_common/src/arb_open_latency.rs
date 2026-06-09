@@ -1,4 +1,4 @@
-use crate::rolling_metrics::latency_kll::LatencyKll;
+use crate::latency_kll::LatencyKll;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
