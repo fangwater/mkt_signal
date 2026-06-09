@@ -16,7 +16,7 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{info, warn};
 
-use crate::common::ipc_service_name::build_service_name;
+use runtime_common::ipc_service_name::build_service_name;
 
 pub const PM_MAX_BYTES: usize = 16384;
 pub const PM_HISTORY_SIZE: usize = 4096;

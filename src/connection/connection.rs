@@ -13,7 +13,7 @@ use tokio::{
 };
 use tokio_native_tls::TlsConnector as TokioTlsConnector;
 
-use crate::common::exchange::Exchange;
+use runtime_common::exchange::Exchange;
 use tokio_tungstenite::{
     client_async, connect_async,
     tungstenite::{

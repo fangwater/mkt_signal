@@ -12,7 +12,7 @@ use log::info;
 use serde::Serialize;
 use tokio::sync::broadcast;
 
-use crate::common::time_util::get_timestamp_us;
+use runtime_common::time_util::get_timestamp_us;
 
 use super::config::HttpCfg;
 

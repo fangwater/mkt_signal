@@ -1,5 +1,3 @@
-use crate::common::symbol_util::normalize_symbol_for_internal;
-use crate::common::time_util::get_timestamp_us;
 use crate::common::trade_error_code::gate;
 use crate::pre_trade::account_open_block::{register_account_open_block, AccountOpenBlockReason};
 use crate::pre_trade::log_throttle::log_order_rate_limit_summary;
@@ -31,6 +29,8 @@ use crate::strategy::uniform_order_helper::{
 };
 use log::{debug, error, info, warn};
 use order_common::{OrderStatus, TradingVenue};
+use runtime_common::symbol_util::normalize_symbol_for_internal;
+use runtime_common::time_util::get_timestamp_us;
 use signal_common::arb_signal::ArbBackwardQueryMsg;
 use signal_common::common::{SignalBytes, TradingLeg};
 use signal_common::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
@@ -585,7 +585,7 @@ impl ArbHedgeStrategy {
             .try_venue_min_qty_table(self.hedge_venue)
             .and_then(|table| {
                 let symbol_key =
-                    crate::common::symbol_util::min_qty_symbol_key(self.hedge_venue, &self.symbol);
+                    runtime_common::symbol_util::min_qty_symbol_key(self.hedge_venue, &self.symbol);
                 table.step_size(&symbol_key)
             })
             .unwrap_or(0.0);

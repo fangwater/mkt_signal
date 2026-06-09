@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
-use crate::common::{exchange::Exchange, min_qty_table::MinQtyTable};
+use crate::common::min_qty_table::MinQtyTable;
 use crate::pre_trade::net_position::NetPosition;
 use mkt_parsers::msg::basic_account_msg::{BasicBalanceMsg, BasicBorrowInterestMsg};
+use runtime_common::exchange::Exchange;
 
 /// 最小化的余额管理器：维护 symbol、钱包余额、借币本金、累计利息。
 #[derive(Debug, Clone)]

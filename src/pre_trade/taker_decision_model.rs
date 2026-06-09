@@ -8,12 +8,12 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::Instant;
 
-use crate::common::redis_client::{RedisClient, RedisSettings};
-use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::pre_trade::order_manager::Side;
 use mkt_parsers::msg::mkt_msg::{ModelMsg, MODEL_STATUS_OK};
 use mkt_parsers::msg::model_ipc::MODEL_PAYLOAD_MAX_BYTES;
 use order_common::TradingVenue;
+use runtime_common::redis_client::{RedisClient, RedisSettings};
+use runtime_common::symbol_util::normalize_symbol_for_internal;
 
 const MODEL_OUTPUT_HISTORY_SIZE: usize = 128;
 const MODEL_OUTPUT_SUBSCRIBER_BUFFER_SIZE: usize = 256;

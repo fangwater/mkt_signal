@@ -16,13 +16,13 @@ use std::time::{Duration, Instant};
 
 use super::common::{FundingRateData, Quote};
 use super::symbol_list::SymbolList;
-use crate::common::time_util::get_timestamp_us;
 use crate::rolling_metrics::kll_quantile::segmented_quantiles_linear;
 use crate::symbol_match::{normalize_symbol_for_premium_pair, normalize_symbol_for_whitelist};
 use mkt_parsers::msg::mkt_msg::{
     get_msg_type, AskBidSpreadMsg, FundingRateMsg, IndexPriceMsg, MarkPriceMsg, MktMsgType,
 };
 use order_common::TradingVenue;
+use runtime_common::time_util::get_timestamp_us;
 
 // 常量定义
 const ASKBID_PAYLOAD: usize = 128;

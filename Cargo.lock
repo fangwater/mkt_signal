@@ -2209,6 +2209,7 @@ dependencies = [
  "reqwest",
  "rocksdb",
  "rtrb",
+ "runtime_common",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -3668,6 +3669,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ade083ccbb4bf536df69d1f6432cc23deb7acccff86b183f3923a6fd56a1153"
 
 [[package]]
+name = "runtime_common"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "libc",
+ "log",
+ "order_common",
+ "redis",
+ "serde",
+ "serde_json",
+ "urlencoding",
+]
+
+[[package]]
 name = "rustc-demangle"
 version = "0.1.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3942,6 +3958,7 @@ dependencies = [
  "order_common",
  "quote_plan",
  "reqwest",
+ "runtime_common",
  "serde",
  "serde_json",
 ]

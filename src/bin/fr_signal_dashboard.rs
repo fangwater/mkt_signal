@@ -5,9 +5,9 @@ use log::info;
 use tokio::signal::unix::{signal as unix_signal, SignalKind};
 use tokio_util::sync::CancellationToken;
 
-use mkt_signal::common::exchange::Exchange;
 use mkt_signal::fr_signal_dashboard::{run, FrDashboardConfig};
 use order_common::TradingVenue;
+use runtime_common::exchange::Exchange;
 
 const PROCESS_NAME: &str = "fr_signal_dashboard";
 

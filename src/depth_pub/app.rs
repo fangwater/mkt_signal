@@ -751,7 +751,7 @@ impl DepthPubApp {
             return;
         };
         let ttl_ms = self.order_ttl.as_millis() as i64;
-        let now_ms = crate::common::time_util::get_timestamp_us() / 1_000;
+        let now_ms = runtime_common::time_util::get_timestamp_us() / 1_000;
         if let Ok(mut accounts) = queue_positions.lock() {
             let expired = accounts.clear_orders_older_than_ms(now_ms, ttl_ms);
             if expired > 0 {
@@ -1076,7 +1076,7 @@ impl DepthPubApp {
             if (old_qty - new_qty).abs() <= f64::EPSILON {
                 continue;
             }
-            let local_tp = crate::common::time_util::get_timestamp_us();
+            let local_tp = runtime_common::time_util::get_timestamp_us();
             events.extend(
                 state.apply_level_qty_all(symbol, side, price_key, new_qty, update_tp, local_tp),
             );
@@ -1109,7 +1109,7 @@ impl DepthPubApp {
                 };
                 if let Some(queue_positions) = self.queue_positions.as_ref() {
                     if let Ok(mut state) = queue_positions.lock() {
-                        let local_tp = crate::common::time_util::get_timestamp_us();
+                        let local_tp = runtime_common::time_util::get_timestamp_us();
                         events.extend(state.apply_public_trade_all(
                             &trade.symbol,
                             side,
@@ -1139,7 +1139,7 @@ impl DepthPubApp {
                 drained += 1;
                 if let Some(queue_positions) = self.queue_positions.as_ref() {
                     if let Ok(mut state) = queue_positions.lock() {
-                        let local_tp = crate::common::time_util::get_timestamp_us();
+                        let local_tp = runtime_common::time_util::get_timestamp_us();
                         let now_ms = local_tp / 1_000;
                         events.extend(state.process_account_payload(
                             &subscription.account_id,
@@ -1427,7 +1427,7 @@ fn derive_order_pos_service_name(cfg: &DepthAccountSubscriptionConfig) -> Result
 
 fn timestamp_to_us(timestamp: i64) -> i64 {
     if timestamp <= 0 {
-        return crate::common::time_util::get_timestamp_us();
+        return runtime_common::time_util::get_timestamp_us();
     }
     if timestamp >= 1_000_000_000_000_000 {
         timestamp

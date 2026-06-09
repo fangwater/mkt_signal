@@ -2,11 +2,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use log::debug;
 
-use crate::common::{exchange::Exchange, min_qty_table::MinQtyTable};
+use crate::common::min_qty_table::MinQtyTable;
 use crate::pre_trade::{
     basic_balance_manager::BasicBalanceManager, basic_um_manager::BasicUmManager,
     net_position::NetPosition, price_table::PriceEntry, symbol_mapper::SymbolMapper,
 };
+use runtime_common::exchange::Exchange;
 
 /// 单个资产维度的敞口信息（简化版）
 #[derive(Debug, Clone)]

@@ -1,4 +1,3 @@
-use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::query_eng_channel::QueryEngHub;
 use crate::trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
@@ -7,6 +6,7 @@ use log::{info, warn};
 use once_cell::sync::Lazy;
 use order_common::TradingVenue;
 use parking_lot::Mutex;
+use runtime_common::time_util::get_timestamp_us;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 

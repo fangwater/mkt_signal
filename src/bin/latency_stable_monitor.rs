@@ -1,9 +1,9 @@
 use anyhow::Result;
 use clap::Parser;
 use log::{error, info};
-use mkt_signal::common::affinity::maybe_pin_current_thread;
 use mkt_signal::latency_stable_monitor::cfg::LatencyStableMonitorConfig;
 use mkt_signal::latency_stable_monitor::LatencyStableMonitorApp;
+use runtime_common::affinity::maybe_pin_current_thread;
 use tokio::signal;
 use tokio_util::sync::CancellationToken;
 

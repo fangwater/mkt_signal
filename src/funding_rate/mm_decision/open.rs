@@ -7,11 +7,11 @@ use super::super::mkt_channel::MktChannel;
 use super::super::symbol_list::SymbolList;
 use super::from_key::build_from_key;
 use super::state::{MmDecisionState, MmOpenPublishStats};
-use crate::common::symbol_util::normalize_symbol_for_venue;
-use crate::common::time_util::get_timestamp_us;
 use crate::symbol_match::normalize_symbol_for_whitelist;
 use order_common::TradingVenue;
 use quote_plan::open_quote_plan::build_mm_open_quote_plan;
+use runtime_common::symbol_util::normalize_symbol_for_venue;
+use runtime_common::time_util::get_timestamp_us;
 use signal_common::trade_signal::SignalType;
 
 const MM_NEUTRAL_RETURN_SCORE: f64 = 0.0;

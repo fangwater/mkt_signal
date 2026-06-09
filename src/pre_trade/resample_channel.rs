@@ -1,8 +1,5 @@
-use crate::common::exchange::Exchange;
 use crate::common::iceoryx_publisher::{ResamplePublisher, RESAMPLE_PAYLOAD};
 use crate::common::min_qty_table::MinQtyTable;
-use crate::common::symbol_util::normalize_symbol_for_internal;
-use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::account_open_block::latest_usdt_max_available_margin_snapshot;
 use crate::pre_trade::basic_balance_manager::BasicBalanceManager;
 use crate::pre_trade::basic_exposure_manager::BasicExposureManager;
@@ -21,6 +18,9 @@ use anyhow::Result;
 use log::{debug, info, trace, warn};
 use mkt_parsers::msg::basic_account_msg::{AccountRiskLevelProvider, BasicAccountRiskMsg};
 use order_common::TradingVenue;
+use runtime_common::exchange::Exchange;
+use runtime_common::symbol_util::normalize_symbol_for_internal;
+use runtime_common::time_util::get_timestamp_us;
 use std::cell::OnceCell;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
@@ -914,9 +914,10 @@ impl ResampleChannel {
 #[cfg(test)]
 mod tests {
     use super::{arb_hedge_snapshot_asset_key, hedge_snapshot_symbol_key, sum_position_usd};
-    use crate::common::{exchange::Exchange, min_qty_table::MinQtyTable};
+    use crate::common::min_qty_table::MinQtyTable;
     use crate::pre_trade::{basic_um_manager::BasicUmManager, price_table::PriceTable};
     use mkt_parsers::msg::basic_account_msg::BasicPositionMsg;
+    use runtime_common::exchange::Exchange;
 
     #[test]
     fn hedge_snapshot_symbol_key_normalizes_internal_and_price_symbols() {

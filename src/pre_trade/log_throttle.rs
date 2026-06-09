@@ -1,7 +1,7 @@
-use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::open_order_rate_limiter::OrderRateBucket;
 use crate::pre_trade::order_manager::Side;
 use log::{info, warn};
+use runtime_common::time_util::get_timestamp_us;
 use std::cell::RefCell;
 use std::collections::HashMap;
 

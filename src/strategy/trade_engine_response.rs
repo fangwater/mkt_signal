@@ -1,7 +1,7 @@
-/// TradeEngineResponse trait 提供 trade engine 返回结果的通用访问接口
-use crate::common::exchange::Exchange;
 use crate::common::trade_error_code::gate;
 use crate::trade_engine::trade_request::TradeRequestType;
+/// TradeEngineResponse trait 提供 trade engine 返回结果的通用访问接口
+use runtime_common::exchange::Exchange;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TradeRequestKind {
@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn detects_binance_cancel_rejected() {
-        let binance_ex = crate::common::exchange::Exchange::Binance as u32;
+        let binance_ex = runtime_common::exchange::Exchange::Binance as u32;
         let resp = TradeEngineResponseMessage::new(200, 1, binance_ex, 123, -2011);
         assert!(resp.is_cancel_rejected());
         assert!(resp.is_cancel_not_cancellable());
@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn detects_okx_cancel_rejected() {
-        let okx_ex = crate::common::exchange::Exchange::Okex as u32;
+        let okx_ex = runtime_common::exchange::Exchange::Okex as u32;
         let resp = TradeEngineResponseMessage::new(200, 1, okx_ex, 123, 51400);
         assert!(resp.is_cancel_rejected());
         assert!(resp.is_cancel_not_cancellable());
@@ -274,7 +274,7 @@ mod tests {
 
     #[test]
     fn detects_okx_canceling_or_settling() {
-        let okx_ex = crate::common::exchange::Exchange::Okex as u32;
+        let okx_ex = runtime_common::exchange::Exchange::Okex as u32;
         let resp = TradeEngineResponseMessage::new(200, 1, okx_ex, 123, 51410);
         assert!(resp.is_cancel_rejected());
         assert!(resp.is_cancel_not_cancellable());
@@ -282,7 +282,7 @@ mod tests {
 
     #[test]
     fn detects_okx_cancel_timeout() {
-        let okx_ex = crate::common::exchange::Exchange::Okex as u32;
+        let okx_ex = runtime_common::exchange::Exchange::Okex as u32;
         let resp = TradeEngineResponseMessage::new(200, 1, okx_ex, 123, 51412);
         assert!(resp.is_cancel_rejected());
         assert!(!resp.is_cancel_not_cancellable());
@@ -290,7 +290,7 @@ mod tests {
 
     #[test]
     fn detects_okx_cancel_not_supported_triggered() {
-        let okx_ex = crate::common::exchange::Exchange::Okex as u32;
+        let okx_ex = runtime_common::exchange::Exchange::Okex as u32;
         let resp = TradeEngineResponseMessage::new(200, 1, okx_ex, 123, 51416);
         assert!(resp.is_cancel_rejected());
         assert!(resp.is_cancel_not_cancellable());
@@ -298,7 +298,7 @@ mod tests {
 
     #[test]
     fn detects_gate_order_not_found_cancel() {
-        let gate_ex = crate::common::exchange::Exchange::Gate as u32;
+        let gate_ex = runtime_common::exchange::Exchange::Gate as u32;
         let resp = TradeEngineResponseMessage::new(400, 1, gate_ex, 123, gate::ORDER_NOT_FOUND);
         assert!(resp.is_cancel_rejected());
         assert!(resp.is_cancel_not_cancellable());
@@ -306,7 +306,7 @@ mod tests {
 
     #[test]
     fn detects_binance_insufficient_margin_like_codes() {
-        let binance_ex = crate::common::exchange::Exchange::Binance as u32;
+        let binance_ex = runtime_common::exchange::Exchange::Binance as u32;
         let balance_insufficient = TradeEngineResponseMessage::new(400, 1, binance_ex, 123, -2018);
         let margin_insufficient = TradeEngineResponseMessage::new(400, 1, binance_ex, 123, -2019);
         let max_borrowable_exceeded =
@@ -323,7 +323,7 @@ mod tests {
 
     #[test]
     fn detects_gate_initial_margin_low_as_insufficient_margin() {
-        let gate_ex = crate::common::exchange::Exchange::Gate as u32;
+        let gate_ex = runtime_common::exchange::Exchange::Gate as u32;
         let resp = TradeEngineResponseMessage::new(
             400,
             TradeRequestType::GateUnifiedNewOrder as u32,
@@ -339,7 +339,7 @@ mod tests {
 
     #[test]
     fn detects_bitget_lending_limit_as_insufficient_margin() {
-        let bitget_ex = crate::common::exchange::Exchange::Bitget as u32;
+        let bitget_ex = runtime_common::exchange::Exchange::Bitget as u32;
         let lending_limit = TradeEngineResponseMessage::new(
             400,
             TradeRequestType::BitgetNewMarginOrder as u32,
@@ -358,7 +358,7 @@ mod tests {
         let okx_new = TradeEngineResponseMessage::new(
             200,
             TradeRequestType::OkexNewUMOrder as u32,
-            crate::common::exchange::Exchange::Okex as u32,
+            runtime_common::exchange::Exchange::Okex as u32,
             123,
             51511,
         );
@@ -368,7 +368,7 @@ mod tests {
         let okx_cancel = TradeEngineResponseMessage::new(
             200,
             TradeRequestType::OkexCancelUMOrder as u32,
-            crate::common::exchange::Exchange::Okex as u32,
+            runtime_common::exchange::Exchange::Okex as u32,
             123,
             51400,
         );
@@ -378,7 +378,7 @@ mod tests {
 
     #[test]
     fn detects_bitget_order_placement_failed_as_open_fail() {
-        let bitget_ex = crate::common::exchange::Exchange::Bitget as u32;
+        let bitget_ex = runtime_common::exchange::Exchange::Bitget as u32;
         for code in [43002, 43003] {
             let resp = TradeEngineResponseMessage::new(
                 400,
@@ -405,7 +405,7 @@ mod tests {
 
     #[test]
     fn detects_bybit_post_only_rejected_by_venue_and_code() {
-        let bybit_ex = crate::common::exchange::Exchange::Bybit as u32;
+        let bybit_ex = runtime_common::exchange::Exchange::Bybit as u32;
         for code in [170217, 170218] {
             let resp = TradeEngineResponseMessage::new(
                 400,
@@ -423,7 +423,7 @@ mod tests {
         let same_code_on_bitget = TradeEngineResponseMessage::new(
             400,
             TradeRequestType::BitgetNewUMOrder as u32,
-            crate::common::exchange::Exchange::Bitget as u32,
+            runtime_common::exchange::Exchange::Bitget as u32,
             123,
             170217,
         );
@@ -435,7 +435,7 @@ mod tests {
         let resp = TradeEngineResponseMessage::new(
             400,
             TradeRequestType::GateFuturesNewOrder as u32,
-            crate::common::exchange::Exchange::Gate as u32,
+            runtime_common::exchange::Exchange::Gate as u32,
             123,
             gate::ORDER_POC,
         );
@@ -447,7 +447,7 @@ mod tests {
         let same_code_on_bitget = TradeEngineResponseMessage::new(
             400,
             TradeRequestType::BitgetNewUMOrder as u32,
-            crate::common::exchange::Exchange::Bitget as u32,
+            runtime_common::exchange::Exchange::Bitget as u32,
             123,
             gate::ORDER_POC,
         );
@@ -459,7 +459,7 @@ mod tests {
         let resp = TradeEngineResponseMessage::new(
             400,
             TradeRequestType::GateUnifiedNewOrder as u32,
-            crate::common::exchange::Exchange::Gate as u32,
+            runtime_common::exchange::Exchange::Gate as u32,
             123,
             gate::AUTO_BORROW_TOO_MUCH,
         );

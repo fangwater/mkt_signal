@@ -1,10 +1,10 @@
-use crate::common::exchange::Exchange;
 use crate::common::trade_error_code::gate;
 use crate::trade_engine::trade_request::TradeRequestType;
 use bytes::{BufMut, BytesMut};
 use iceoryx2::port::publisher::Publisher;
 use iceoryx2::service::ipc;
 use log::{debug, warn};
+use runtime_common::exchange::Exchange;
 use serde_json::Value;
 use tokio::sync::mpsc;
 

@@ -1,4 +1,3 @@
-use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::account_open_block::drive_account_open_block_capacity_poll;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::OrderRateLimiter;
@@ -11,6 +10,7 @@ use crate::pre_trade::trade_eng_channel::TradeEngHub;
 use crate::strategy::{OrphanStrategyManager, StrategyManager};
 use anyhow::Result;
 use log::{info, warn};
+use runtime_common::time_util::get_timestamp_us;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};

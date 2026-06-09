@@ -12,10 +12,10 @@
 
 use anyhow::Result;
 use log::info;
-use mkt_signal::common::exchange::Exchange;
 use mkt_signal::funding_rate::common::{venue_pair_for_exchange, FundingRatePeriod};
 use mkt_signal::funding_rate::{MktChannel, RateFetcher, SymbolList};
 use order_common::TradingVenue;
+use runtime_common::exchange::Exchange;
 use tokio::time::{sleep, Duration};
 
 #[tokio::main(flavor = "current_thread")]

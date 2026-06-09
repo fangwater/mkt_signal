@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
-use crate::common::{exchange::Exchange, min_qty_table::MinQtyTable};
+use crate::common::min_qty_table::MinQtyTable;
 use crate::pre_trade::net_position::NetPosition;
 use mkt_parsers::msg::basic_account_msg::{BasicPositionMsg, BasicUmUnrealizedMsg};
+use runtime_common::exchange::Exchange;
 
 /// 最小化的 U 本位持仓管理器：仅维护 inst_id、side、持仓量、时间戳。
 #[derive(Debug, Clone)]
@@ -206,8 +207,8 @@ impl NetPosition for BasicUmManager {
 #[cfg(test)]
 mod tests {
     use super::BasicUmManager;
-    use crate::common::exchange::Exchange;
     use mkt_parsers::msg::basic_account_msg::{BasicPositionMsg, BasicUmUnrealizedMsg};
+    use runtime_common::exchange::Exchange;
 
     #[test]
     fn removes_entry_after_zero_position_and_zero_pnl() {

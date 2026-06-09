@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 
-use crate::common::exchange::Exchange;
 use crate::pre_trade::symbol_util::extract_base_asset;
+use runtime_common::exchange::Exchange;
 
 /// Symbol 映射 trait，处理不同交易所的 symbol 格式转换
 ///

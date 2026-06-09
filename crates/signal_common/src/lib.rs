@@ -1,7 +1,6 @@
 pub mod arb_signal;
 pub mod cancel_signal;
 pub mod common;
-pub mod exchange;
 pub mod exec_signal;
 pub mod hedge_signal;
 pub mod min_qty_table;

@@ -1,6 +1,4 @@
 use crate::common::binance_account_mode::BinanceAccountMode;
-use crate::common::redis_client::{RedisClient, RedisSettings};
-use crate::common::time_util::get_timestamp_us;
 use crate::funding_rate::ArbMode;
 use crate::portfolio_margin::bybit_auth::BybitCredentials;
 use crate::portfolio_margin::gate_auth::GateCredentials;
@@ -12,6 +10,8 @@ use hmac::{Hmac, Mac};
 use log::{info, warn};
 use order_common::TradingVenue;
 use reqwest::Client;
+use runtime_common::redis_client::{RedisClient, RedisSettings};
+use runtime_common::time_util::get_timestamp_us;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256, Sha512};
 use std::cell::RefCell;

@@ -1,7 +1,7 @@
-use crate::common::symbol_util::normalize_symbol_for_venue;
 use order_common::TradingVenue;
 use order_common::{OrderType, Side};
 use quote_plan::quote_plan_levels::QuotePlanLevel;
+use runtime_common::symbol_util::normalize_symbol_for_venue;
 use signal_common::common::TradingLeg;
 use signal_common::open_signal::ArbOpenCtx;
 use signal_common::venue_min_qty_table::VenueMinQtyTable;

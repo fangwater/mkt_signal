@@ -5,9 +5,9 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use crate::common::redis_client::{RedisClient, RedisSettings};
-use crate::common::symbol_util::normalize_symbol_for_venue;
 use order_common::TradingVenue;
+use runtime_common::redis_client::{RedisClient, RedisSettings};
+use runtime_common::symbol_util::normalize_symbol_for_venue;
 
 /// Redis Key 配置
 const REDIS_KEY_RISK_PARAMS: &str = "pre_trade_risk_params";

@@ -6,8 +6,8 @@ use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use crate::common::redis_client::{RedisClient, RedisSettings};
 use crate::common::sliding_quantile::SlidingQuantileWindow;
+use runtime_common::redis_client::{RedisClient, RedisSettings};
 
 const MODEL_PUB_SCORE_QUANTILE_SCALE: f64 = 100_000_000.0;
 const DEFAULT_ROLLING_WINDOW: usize = 17_800 * 5;

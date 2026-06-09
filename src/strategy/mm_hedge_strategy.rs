@@ -1,5 +1,3 @@
-use crate::common::symbol_util::normalize_symbol_for_internal;
-use crate::common::time_util::get_timestamp_us;
 use crate::funding_rate::mm_decision::from_key::append_mm_hedge_tlen_to_from_key;
 use crate::pre_trade::log_throttle::log_order_rate_limit_summary;
 use crate::pre_trade::monitor_channel::MonitorChannel;
@@ -30,6 +28,8 @@ use log::{debug, info, warn};
 use order_common::{OrderStatus, TradingVenue};
 use quote_plan::hedge_split::{split_hedge_orders_round_robin, HedgeLevel, HedgeSplitOrder};
 use quote_plan::order_align::{align_final_order_qty, contract_qty_multiplier, min_qty_symbol_key};
+use runtime_common::symbol_util::normalize_symbol_for_internal;
+use runtime_common::time_util::get_timestamp_us;
 use signal_common::common::SignalBytes;
 use signal_common::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
 use signal_common::mm_signal::MmBackwardQueryMsg;
@@ -1563,13 +1563,13 @@ impl MarketMakerHedgeStrategy {
 #[cfg(test)]
 mod tests {
     use super::{HedgeOrderMeta, MarketMakerHedgeStrategy};
-    use crate::common::exchange::Exchange;
     use crate::pre_trade::order_manager::Side;
     use crate::strategy::hedge_order_reconcile::{
         HedgeOrderReconcileCommon, HedgeOrderReconcileState,
     };
     use crate::strategy::hedge_strategy_common::{mark_price_lookup_symbol, NET_EXPOSURE_EPS_USDT};
     use crate::strategy::order_reconcile::{monotonic_cumulative_fill, PendingOrderQueryReason};
+    use runtime_common::exchange::Exchange;
 
     #[test]
     fn zero_net_exposure_does_not_send_hedge_query() {

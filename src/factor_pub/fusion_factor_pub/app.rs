@@ -42,13 +42,13 @@ use super::zscore::{
 use crate::common::amount_threshold::is_online_amount_threshold;
 use crate::common::msg_parser::parse_trade_flow_feature;
 use crate::common::rolling_welford::RollingWelfordCovariance;
-use crate::common::symbol_util::normalize_symbol_for_venue;
 use mkt_parsers::msg::mkt_msg::{FeatureMsg, FeatureStatus};
 use mkt_parsers::msg::trade_flow_feature_msg::{
     TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_DIM, TRADE_FLOW_FEATURE_HISTORY_SIZE,
     TRADE_FLOW_FEATURE_MAX_BYTES, TRADE_FLOW_FEATURE_MSG_TYPE,
 };
 use order_common::TradingVenue;
+use runtime_common::symbol_util::normalize_symbol_for_venue;
 
 const IDLE_SLEEP_MICROS: u64 = 200;
 const STATS_LOG_INTERVAL_SECS: u64 = 60;

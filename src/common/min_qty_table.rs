@@ -5,7 +5,7 @@ use log::{debug, info};
 use reqwest::Client;
 use serde::Deserialize;
 
-use super::exchange::Exchange;
+use runtime_common::exchange::Exchange;
 
 // ============================================================================
 // Core Data Structures

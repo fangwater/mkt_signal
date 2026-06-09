@@ -8,10 +8,10 @@ use log::{info, warn};
 use std::collections::HashMap;
 use std::time::Instant;
 
-use crate::common::symbol_util::normalize_symbol_for_venue;
 use mkt_parsers::msg::mkt_msg::{ModelMsg, MODEL_STATUS_OK};
 use mkt_parsers::msg::model_ipc::MODEL_PAYLOAD_MAX_BYTES;
 use order_common::TradingVenue;
+use runtime_common::symbol_util::normalize_symbol_for_venue;
 
 const MODEL_OUTPUT_HISTORY_SIZE: usize = 128;
 const MODEL_OUTPUT_SUBSCRIBER_BUFFER_SIZE: usize = 256;

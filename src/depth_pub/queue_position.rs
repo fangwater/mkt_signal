@@ -7,8 +7,6 @@ use queue_position_engine::{
     QueuePositionEngine, Side,
 };
 
-use crate::common::exchange::Exchange;
-use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::depth_pub::order_queue_msg::{OrderQueuePositionAction, OrderQueuePositionMsg};
 use crate::pre_trade::order_manager::{OrderType, Side as OrderSide};
 use crate::strategy::order_update::OrderUpdate;
@@ -20,6 +18,8 @@ use mkt_parsers::msg::basic_account_msg::{
 use mkt_parsers::msg::bitget_account_msg::BitgetBasicOrderMsg;
 use mkt_parsers::msg::bybit_account_msg::BybitBasicOrderMsg;
 use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
+use runtime_common::exchange::Exchange;
+use runtime_common::symbol_util::normalize_symbol_for_internal;
 
 const DEDUP_CAPACITY: usize = 8192;
 

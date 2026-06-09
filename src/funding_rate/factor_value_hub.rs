@@ -10,9 +10,6 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::time::{Duration, Instant};
 
-use crate::common::redis_client::RedisSettings;
-use crate::common::symbol_util::normalize_symbol_for_venue;
-use crate::common::time_util::get_timestamp_us;
 use crate::factor_pub::factor_index::{factor_name_to_channel, factor_name_to_index};
 use crate::funding_rate::inline_volatility::{
     observe_inline_tradecount, observe_inline_volatility, InlineVolatilitySnapshot,
@@ -23,6 +20,9 @@ use mkt_parsers::msg::trade_flow_feature_msg::{
     TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_HISTORY_SIZE, TRADE_FLOW_FEATURE_MAX_BYTES,
 };
 use order_common::TradingVenue;
+use runtime_common::redis_client::RedisSettings;
+use runtime_common::symbol_util::normalize_symbol_for_venue;
+use runtime_common::time_util::get_timestamp_us;
 
 const FACTOR_VALUE_PAYLOAD_MAX_BYTES: usize = 256;
 const FACTOR_VALUE_SUBSCRIBER_BUFFER_SIZE: usize = 8192;

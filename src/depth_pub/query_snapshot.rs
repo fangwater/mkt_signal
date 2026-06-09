@@ -4,7 +4,7 @@ use dashmap::DashMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::common::symbol_util::normalize_symbol_for_internal;
+use runtime_common::symbol_util::normalize_symbol_for_internal;
 
 use super::orderbook::{key_to_price, OrderBook};
 use super::query_logic::DepthQuerySource;

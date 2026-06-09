@@ -5,8 +5,6 @@ use std::cell::OnceCell;
 use crate::common::iceoryx_publisher::{
     OrderUpdatePublisher, TradeUpdatePublisher, UniformOrderPublisher,
 };
-use crate::common::symbol_util::normalize_symbol_for_internal;
-use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
@@ -16,6 +14,8 @@ use persist_common::{
     TRADE_UPDATE_RECORD_CHANNEL, TRADE_UPDATE_UNMATCHED_RECORD_CHANNEL,
     UNIFORM_ORDER_RECORD_CHANNEL,
 };
+use runtime_common::symbol_util::normalize_symbol_for_internal;
+use runtime_common::time_util::get_timestamp_us;
 
 thread_local! {
     static PERSIST_CHANNEL: OnceCell<PersistChannel> = const { OnceCell::new() };

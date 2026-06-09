@@ -5,9 +5,9 @@ use std::path::PathBuf;
 use tokio::sync::watch;
 
 use mkt_signal::cfg::Config;
-use mkt_signal::common::affinity::pin_to_core;
 use mkt_signal::spread_pbs::SpreadPbsApp;
 use order_common::TradingVenue;
+use runtime_common::affinity::pin_to_core;
 
 #[derive(Parser)]
 #[command(name = "spread_pbs")]

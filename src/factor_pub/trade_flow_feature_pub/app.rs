@@ -21,12 +21,12 @@ use super::cfg::{PersistenceConfig, RlFactorConfig, RuntimeConfig, TradeFlowFeat
 use super::publisher::{RlFactorPublisher, TradeFlowFeaturePublisher};
 use super::vol_state::{SealedBar, VolState};
 use crate::common::amount_threshold::{is_online_amount_threshold, AmountThreshold};
-use crate::common::redis_client::RedisSettings;
-use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::trade_msg_parser::{parse_trade, TradeSide, TradeTick};
 use crate::depth_pub::depth_msg::{DepthMsgType, DEPTH25_MAX_BYTES, DEPTH50_MAX_BYTES};
 use mkt_parsers::msg::trade_flow_feature_msg::{TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_DIM};
 use order_common::TradingVenue;
+use runtime_common::redis_client::RedisSettings;
+use runtime_common::symbol_util::normalize_symbol_for_venue;
 
 const TRADE_MAX_BYTES: usize = 128;
 const IDLE_SLEEP_MICROS: u64 = 200;

@@ -1,5 +1,4 @@
 use crate::cfg::Config;
-use crate::common::exchange::Exchange;
 use crate::connection::connection::construct_connection_with_ip;
 use crate::parser::binance_parser::{
     BinanceAskBidSpreadParser, BinanceDerivativesMetricsParser, BinanceIncParser,
@@ -30,6 +29,7 @@ use crate::sub_msg::{BinanceFuturesStreamKind, DerivativesMetricsSubscribeMsgs, 
 use bytes::Bytes;
 use log::{debug, error, info};
 use order_common::TradingVenue;
+use runtime_common::exchange::Exchange;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, watch, Notify};
 use tokio::task::JoinSet;

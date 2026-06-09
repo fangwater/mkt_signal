@@ -12,9 +12,9 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::time::Duration;
 
-use crate::common::redis_client::{RedisClient, RedisSettings};
 use crate::symbol_match::normalize_symbol_for_whitelist;
 use order_common::TradingVenue;
+use runtime_common::redis_client::{RedisClient, RedisSettings};
 
 const REFRESH_INTERVAL_SECS: u64 = 60;
 

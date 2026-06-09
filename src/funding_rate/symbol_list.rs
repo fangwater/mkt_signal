@@ -14,10 +14,10 @@ use serde_json;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
-use crate::common::exchange::Exchange;
-use crate::common::redis_client::RedisClient;
 use crate::symbol_match::normalize_symbol_for_whitelist;
 use order_common::TradingVenue;
+use runtime_common::exchange::Exchange;
+use runtime_common::redis_client::RedisClient;
 
 const DEFAULT_SYMBOL_NAMESPACE: &str = "fr";
 

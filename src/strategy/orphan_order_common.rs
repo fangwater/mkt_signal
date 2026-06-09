@@ -1,5 +1,3 @@
-use crate::common::symbol_util::normalize_symbol_for_internal;
-use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus};
 use crate::pre_trade::{QueryEngHub, TradeEngHub};
@@ -14,6 +12,8 @@ use crate::strategy::uniform_order_helper::{
 };
 use log::{info, warn};
 use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
+use runtime_common::symbol_util::normalize_symbol_for_internal;
+use runtime_common::time_util::get_timestamp_us;
 use std::collections::{HashMap, HashSet};
 
 pub(crate) const ORPHAN_QUERY_LOG_THRESHOLD: u8 = 25;

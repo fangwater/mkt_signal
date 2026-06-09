@@ -1,4 +1,3 @@
-use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::OrderRateBucket;
 use crate::pre_trade::PersistChannel;
@@ -13,6 +12,7 @@ use crate::strategy::trade_update_lite::TradeUpdateLite;
 use crate::strategy::uniform_order_helper::UniformPublishCtx;
 use log::{debug, warn};
 use order_common::TradingVenue;
+use runtime_common::time_util::get_timestamp_us;
 use signal_common::cancel_signal::ArbCancelCtx;
 use signal_common::common::SignalBytes;
 use signal_common::open_signal::ArbOpenCtx;

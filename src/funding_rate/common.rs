@@ -7,10 +7,10 @@
 
 use std::collections::VecDeque;
 
-use crate::common::exchange::Exchange;
 use depth_pub_common::query_client::DepthQueryClient;
 use log::warn;
 use order_common::TradingVenue;
+use runtime_common::exchange::Exchange;
 use signal_common::venue_min_qty_table::VenueMinQtyTable;
 
 pub fn format_tlen_value(value: f64) -> String {

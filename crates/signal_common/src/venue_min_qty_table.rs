@@ -5,12 +5,12 @@ use async_trait::async_trait;
 use log::info;
 use reqwest::Client;
 
-use crate::exchange::Exchange;
 use crate::min_qty_table::{
     BinanceProvider, BitgetProvider, BybitProvider, GateProvider, MarketType, MinQtyEntry,
     OkexProvider,
 };
 use order_common::TradingVenue;
+use runtime_common::exchange::Exchange;
 
 type EntryMap = HashMap<String, MinQtyEntry>;
 type MultiplierMap = HashMap<String, f64>;

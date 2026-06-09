@@ -1,10 +1,10 @@
-use crate::common::exchange::Exchange;
 use crate::common::iceoryx_publisher::QUERY_RESP_PAYLOAD;
 use crate::trade_engine::query_request::QueryRequestType;
 use bytes::{BufMut, Bytes, BytesMut};
 use iceoryx2::port::publisher::Publisher;
 use iceoryx2::service::ipc;
 use log::{debug, warn};
+use runtime_common::exchange::Exchange;
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone)]

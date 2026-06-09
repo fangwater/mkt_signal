@@ -1,4 +1,3 @@
-use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderType, Side};
 use crate::strategy::manager::Strategy;
@@ -7,6 +6,7 @@ use crate::strategy::trade_engine_response::TradeEngineResponse;
 use crate::trade_engine::trade_request::TradeRequestType;
 use log::{info, warn};
 use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
+use runtime_common::time_util::get_timestamp_us;
 
 #[derive(Debug, Clone)]
 pub struct WsOrderUpdate {

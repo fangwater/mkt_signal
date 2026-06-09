@@ -8,10 +8,10 @@ use anyhow::{anyhow, Result};
 use clap::{Parser, ValueEnum};
 use log::info;
 
-use mkt_signal::common::affinity::maybe_pin_current_thread;
 use mkt_signal::depth_pub::app::DepthPubRunner;
 use mkt_signal::depth_pub::cfg::DepthPubConfig;
 use order_common::TradingVenue;
+use runtime_common::affinity::maybe_pin_current_thread;
 
 #[derive(Parser)]
 #[command(name = "depth_pub")]

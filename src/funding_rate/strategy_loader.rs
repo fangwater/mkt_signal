@@ -8,8 +8,8 @@ use log::{info, warn};
 use serde::Deserialize;
 use std::collections::HashMap;
 
-use crate::common::redis_client::{RedisClient, RedisSettings};
-use crate::common::symbol_util::normalize_symbol_for_venue;
+use runtime_common::redis_client::{RedisClient, RedisSettings};
+use runtime_common::symbol_util::normalize_symbol_for_venue;
 
 use super::arb_decision::ArbDecision;
 use super::mm_decision::MmDecision;

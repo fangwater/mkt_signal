@@ -6,7 +6,7 @@ use iceoryx2::service::ipc;
 use log::{info, warn};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use crate::common::ipc_service_name::build_service_name;
+use runtime_common::ipc_service_name::build_service_name;
 use signal_common::trade_signal::TradeSignal;
 
 pub const SIGNAL_PAYLOAD: usize = 4_096;

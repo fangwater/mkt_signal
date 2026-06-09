@@ -1,4 +1,3 @@
-use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::pre_trade::log_throttle::log_pending_limit_summary;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::OrderRateBucket;
@@ -13,6 +12,7 @@ use crate::strategy::trade_engine_response::TradeEngineResponse;
 use crate::strategy::trade_update::TradeUpdate;
 use log::{debug, info, warn};
 use order_common::TradingVenue;
+use runtime_common::symbol_util::normalize_symbol_for_internal;
 use signal_common::common::SignalBytes;
 use signal_common::open_signal::ArbOpenCtx;
 use signal_common::trade_signal::{SignalType, TradeSignal};

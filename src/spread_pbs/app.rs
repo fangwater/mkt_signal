@@ -7,7 +7,6 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, Instant};
 
-use crate::common::time_util::get_timestamp_us;
 use crate::mkt_pub::cfg::Config;
 use crate::rolling_metrics::latency_kll::LatencyStats;
 use crate::rolling_metrics::latency_snapshot::{
@@ -15,6 +14,7 @@ use crate::rolling_metrics::latency_snapshot::{
     METRIC_ID_SPREAD_NET,
 };
 use order_common::TradingVenue;
+use runtime_common::time_util::get_timestamp_us;
 
 use crate::spread_pbs::adapter::{
     create_adapter, BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,

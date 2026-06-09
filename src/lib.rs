@@ -24,6 +24,5 @@ pub mod trade_engine;
 pub mod viz;
 
 // Re-export frequently used modules for backward compatibility
-pub use common::exchange;
 pub use mkt_pub::{app, cfg, iceoryx_forwarder, proxy, sub_msg};
 pub use trade_engine::{config::ApiKey, TradeEngine};

@@ -1,8 +1,8 @@
-use crate::exchange::Exchange;
 use anyhow::{Context, Result};
 use log::{error, info, warn};
 use order_common::TradingVenue;
 use prettytable::{format, Cell, Row, Table};
+use runtime_common::exchange::Exchange;
 use serde::Deserialize;
 use serde_yaml;
 use std::collections::HashMap;

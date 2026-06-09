@@ -10,6 +10,7 @@ members = [
     "crates/persist_manager",
     "crates/persist_common",
     "crates/quote_plan",
+    "crates/runtime_common",
     "crates/signal_common",
 ]
 resolver = "2"
@@ -215,6 +216,7 @@ persist_common = { path = "crates/persist_common" }
 quote_plan = { path = "crates/quote_plan" }
 order_common = { path = "crates/order_common" }
 signal_common = { path = "crates/signal_common" }
+runtime_common = { path = "crates/runtime_common" }
 depth_pub_common = { package = "depth_pub", path = "crates/depth_pub" }
 factor_engine = { path = "crates/factor_engine" }
 queue_position_engine = { path = "crates/inpos_engine" }

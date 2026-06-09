@@ -1,6 +1,6 @@
-use crate::common::symbol_util::normalize_symbol_for_venue;
 use mkt_parsers::msg::mkt_msg::MktMsgType;
 use order_common::TradingVenue;
+use runtime_common::symbol_util::normalize_symbol_for_venue;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TradeSide {

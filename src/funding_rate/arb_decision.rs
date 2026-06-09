@@ -11,13 +11,8 @@ use std::thread::LocalKey;
 use std::time::{Duration, Instant};
 
 use crate::common::bbo::Bbo;
-use crate::common::exchange::Exchange;
 use crate::common::iceoryx_publisher::TradeSignalPublisher;
 use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
-use crate::common::ipc_service_name::build_service_name;
-use crate::common::redis_client::RedisSettings;
-use crate::common::symbol_util::{min_qty_symbol_key, normalize_symbol_for_venue};
-use crate::common::time_util::get_timestamp_us;
 use crate::funding_rate::inventory_hedge_inputs::resolve_inventory_hedge_signal_inputs;
 use crate::funding_rate::FundingRatePeriod;
 use crate::rolling_metrics::arb_open_latency::record_arb_open_latency;
@@ -28,6 +23,11 @@ use quote_plan::inventory_hedge::{
     build_inventory_hedge_from_key, build_inventory_hedge_quote_plan, InventoryHedgeBuildInput,
 };
 use quote_plan::order_align::align_order_for_venue;
+use runtime_common::exchange::Exchange;
+use runtime_common::ipc_service_name::build_service_name;
+use runtime_common::redis_client::RedisSettings;
+use runtime_common::symbol_util::{min_qty_symbol_key, normalize_symbol_for_venue};
+use runtime_common::time_util::get_timestamp_us;
 use signal_common::arb_signal::{ArbBackwardQueryMsg, ArbCancelCandidateQueryMsg};
 use signal_common::common::{SignalBytes, TradingLeg};
 use signal_common::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
@@ -850,7 +850,7 @@ pub fn spawn_tlen_threshold_reload_loop<FGet, FSet>(
     FSet: FnMut(HashMap<String, f64>, i64) + 'static,
 {
     tokio::task::spawn_local(async move {
-        let redis = crate::common::redis_client::RedisSettings::default();
+        let redis = runtime_common::redis_client::RedisSettings::default();
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
         loop {
             interval.tick().await;
@@ -2415,7 +2415,7 @@ fn drive_funding_cancel_candidate_query(
         };
         let preview = super::arb_tlen_cancel::build_group_eval_preview(&group, threshold, &tlens);
         let hedge_symbol =
-            crate::common::symbol_util::normalize_symbol_for_venue(&open_symbol, venues.1)
+            runtime_common::symbol_util::normalize_symbol_for_venue(&open_symbol, venues.1)
                 .to_ascii_uppercase();
         let mut matched_preview: Vec<String> = Vec::new();
         let mut group_cancel_sent = 0usize;
@@ -2549,7 +2549,7 @@ fn drive_spread_arb_cancel_candidate_query(
         };
         let preview = super::arb_tlen_cancel::build_group_eval_preview(&group, threshold, &tlens);
         let hedge_symbol =
-            crate::common::symbol_util::normalize_symbol_for_venue(&open_symbol, venues.1)
+            runtime_common::symbol_util::normalize_symbol_for_venue(&open_symbol, venues.1)
                 .to_ascii_uppercase();
         let mut matched_preview: Vec<String> = Vec::new();
         let mut group_cancel_sent = 0usize;

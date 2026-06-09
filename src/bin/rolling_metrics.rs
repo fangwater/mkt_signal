@@ -23,8 +23,6 @@ use mkt_parsers::msg::mkt_msg::{
 use mkt_signal::common::iceoryx_subscriber::{
     ChannelType, MultiChannelSubscriber, SubscribeParams,
 };
-use mkt_signal::common::redis_client::{RedisClient, RedisSettings};
-use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::rolling_metrics::config::{
     load_config_from_redis, FactorConfig, RollingConfig, DEFAULT_CONFIG_HASH_KEY,
     DEFAULT_OUTPUT_HASH_KEY, FACTOR_ASKBID, FACTOR_BIDASK, FACTOR_HEDGE_PREMIUM_RATE,
@@ -36,6 +34,8 @@ use mkt_signal::rolling_metrics::service::{
     ComputeResult, SeriesMap, SymbolSeries,
 };
 use mkt_signal::symbol_match::{normalize_symbol_for_pairing, normalize_symbol_for_premium_pair};
+use runtime_common::redis_client::{RedisClient, RedisSettings};
+use runtime_common::time_util::get_timestamp_us;
 
 #[derive(Parser, Debug)]
 #[command(

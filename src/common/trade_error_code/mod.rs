@@ -1,4 +1,4 @@
-use crate::common::exchange::Exchange;
+use runtime_common::exchange::Exchange;
 
 pub mod binance;
 pub mod bitget;
