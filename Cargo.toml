@@ -9,6 +9,7 @@ members = [
     "crates/persist_manager",
     "crates/persist_common",
     "crates/quote_plan",
+    "crates/signal_common",
 ]
 resolver = "2"
 
@@ -212,6 +213,7 @@ path = "src/bin/inspect_model_input.rs"
 persist_common = { path = "crates/persist_common" }
 quote_plan = { path = "crates/quote_plan" }
 order_common = { path = "crates/order_common" }
+signal_common = { path = "crates/signal_common" }
 factor_engine = { path = "crates/factor_engine" }
 queue_position_engine = { path = "crates/inpos_engine" }
 mkt_parsers = { path = "crates/mkt_parsers" }

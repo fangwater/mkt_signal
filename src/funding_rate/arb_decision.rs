@@ -17,17 +17,10 @@ use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
 use crate::common::ipc_service_name::build_service_name;
 use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::{min_qty_symbol_key, normalize_symbol_for_venue};
-use crate::common::tick_math::QuantizedValue;
 use crate::common::time_util::get_timestamp_us;
 use crate::funding_rate::inventory_hedge_inputs::resolve_inventory_hedge_signal_inputs;
 use crate::funding_rate::FundingRatePeriod;
 use crate::rolling_metrics::arb_open_latency::record_arb_open_latency;
-use crate::signal::arb_signal::{ArbBackwardQueryMsg, ArbCancelCandidateQueryMsg};
-use crate::signal::common::{SignalBytes, TradingLeg};
-use crate::signal::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
-use crate::signal::open_signal::ArbOpenCtx;
-use crate::signal::trade_signal::{SignalType, TradeSignal};
-use crate::signal::venue_min_qty_table::VenueMinQtyTable;
 use crate::symbol_match::normalize_symbol_for_whitelist;
 use order_common::Side;
 use order_common::TradingVenue;
@@ -35,6 +28,13 @@ use quote_plan::inventory_hedge::{
     build_inventory_hedge_from_key, build_inventory_hedge_quote_plan, InventoryHedgeBuildInput,
 };
 use quote_plan::order_align::align_order_for_venue;
+use signal_common::arb_signal::{ArbBackwardQueryMsg, ArbCancelCandidateQueryMsg};
+use signal_common::common::{SignalBytes, TradingLeg};
+use signal_common::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
+use signal_common::open_signal::ArbOpenCtx;
+use signal_common::tick_math::QuantizedValue;
+use signal_common::trade_signal::{SignalType, TradeSignal};
+use signal_common::venue_min_qty_table::VenueMinQtyTable;
 
 use super::arb_cooldown::is_cooldown_hit;
 use super::arb_cooldown::threshold_key;
@@ -2266,7 +2266,7 @@ fn drive_shared_arb_hedge_query(
         return;
     };
     let Some(amount_qv) =
-        crate::common::tick_math::QuantizedValue::encode_floor(level.aligned_qty, plan.qty_tick)
+        signal_common::tick_math::QuantizedValue::encode_floor(level.aligned_qty, plan.qty_tick)
     else {
         log::warn!(
             "{source}: ArbHedge amount qv invalid strategy_id={} symbol={} request_seq={} qty={:.8} qty_tick={:.8}",
@@ -2278,7 +2278,7 @@ fn drive_shared_arb_hedge_query(
         );
         return;
     };
-    let Some(price_qv) = crate::common::tick_math::QuantizedValue::encode_floor(
+    let Some(price_qv) = signal_common::tick_math::QuantizedValue::encode_floor(
         level.aligned_price,
         plan.price_tick,
     ) else {
@@ -2308,7 +2308,7 @@ fn drive_shared_arb_hedge_query(
     ctx.hedging_leg = TradingLeg::new(hedge_venue, quote.bid, quote.ask, quote.ts);
     ctx.set_hedging_symbol(&symbol);
     ctx.price_qv = if use_taker {
-        crate::common::tick_math::QuantizedValue::zero()
+        signal_common::tick_math::QuantizedValue::zero()
     } else {
         price_qv
     };
@@ -2691,7 +2691,7 @@ fn emit_funding_precise_tlen_cancel(
         hedge_quote: &hedge_quote,
         now: now_us,
         from_key: &from_key,
-        reason: crate::signal::cancel_signal::ArbCancelReason::Tlen,
+        reason: signal_common::cancel_signal::ArbCancelReason::Tlen,
         side: Side::Buy,
         strategy_id,
     })
@@ -2768,7 +2768,7 @@ fn emit_spread_arb_precise_tlen_cancel(
         hedge_quote: &hedge_quote,
         now: now_us,
         from_key: &from_key,
-        reason: crate::signal::cancel_signal::ArbCancelReason::Tlen,
+        reason: signal_common::cancel_signal::ArbCancelReason::Tlen,
         side: Side::Buy,
         strategy_id,
     })
@@ -2836,7 +2836,7 @@ fn emit_spread_arb_spread_cancel(
         hedge_quote: &hedge_quote,
         now: batch_ts,
         from_key: &from_key,
-        reason: crate::signal::cancel_signal::ArbCancelReason::Spread,
+        reason: signal_common::cancel_signal::ArbCancelReason::Spread,
         side,
         strategy_id: 0,
     })
@@ -2848,11 +2848,11 @@ pub fn publish_arb_cancel_trigger(
 ) -> Result<u64> {
     let freq_ms = ArbDecision::with_state_mut(|arb| arb.tlen_cancel_freq_ms)
         .expect("ArbDecisionState should be initialized");
-    let ctx = crate::signal::arb_signal::ArbCancelTriggerCtx {
+    let ctx = signal_common::arb_signal::ArbCancelTriggerCtx {
         trigger_ts: now_us,
         freq_ms,
     };
-    let signal = crate::signal::trade_signal::TradeSignal::create(
+    let signal = signal_common::trade_signal::TradeSignal::create(
         SignalType::ArbCancelTrigger,
         now_us,
         0.0,
@@ -3712,7 +3712,7 @@ fn emit_funding_spread_cancel(
         hedge_quote: &futures_quote,
         now: batch_ts,
         from_key: &from_key,
-        reason: crate::signal::cancel_signal::ArbCancelReason::Spread,
+        reason: signal_common::cancel_signal::ArbCancelReason::Spread,
         side,
         strategy_id: 0,
     })
@@ -4512,7 +4512,7 @@ impl ArbDecisionState {
         hedge_venue: TradingVenue,
         open_inputs_ready: bool,
         in_dump: bool,
-    ) -> Option<crate::signal::trade_signal::SignalType> {
+    ) -> Option<signal_common::trade_signal::SignalType> {
         match fr_signal {
             ArbSignalKind::ForwardOpen => {
                 if !open_inputs_ready || in_dump {
@@ -4526,14 +4526,14 @@ impl ArbDecisionState {
                 );
                 let in_trade_list = symbol_list.is_in_fwd_trade_list(open_symbol_key);
                 if spread_ok && in_trade_list {
-                    Some(crate::signal::trade_signal::SignalType::ArbOpen)
+                    Some(signal_common::trade_signal::SignalType::ArbOpen)
                 } else {
                     None
                 }
             }
             ArbSignalKind::ForwardClose => spread_factor
                 .satisfy_forward_close(open_venue, open_symbol_key, hedge_venue, hedge_symbol_key)
-                .then_some(crate::signal::trade_signal::SignalType::ArbClose),
+                .then_some(signal_common::trade_signal::SignalType::ArbClose),
             ArbSignalKind::BackwardOpen => {
                 if !open_inputs_ready || in_dump {
                     return None;
@@ -4546,14 +4546,14 @@ impl ArbDecisionState {
                 );
                 let in_trade_list = symbol_list.is_in_bwd_trade_list(open_symbol_key);
                 if spread_ok && in_trade_list {
-                    Some(crate::signal::trade_signal::SignalType::ArbOpen)
+                    Some(signal_common::trade_signal::SignalType::ArbOpen)
                 } else {
                     None
                 }
             }
             ArbSignalKind::BackwardClose => spread_factor
                 .satisfy_backward_close(open_venue, open_symbol_key, hedge_venue, hedge_symbol_key)
-                .then_some(crate::signal::trade_signal::SignalType::ArbClose),
+                .then_some(signal_common::trade_signal::SignalType::ArbClose),
         }
     }
 

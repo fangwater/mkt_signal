@@ -1,3 +1,5 @@
+use crate::common::symbol_util::normalize_symbol_for_internal;
+use crate::common::time_util::get_timestamp_us;
 use crate::trade_engine::bybit::{
     BybitCancelOrderParams, BybitCancelOrderRequest, BybitNewOrderParams, BybitNewOrderRequest,
 };
@@ -15,13 +17,10 @@ use crate::trade_engine::trade_request::{
     GateFuturesCancelOrderRequest, GateFuturesNewOrderRequest, GateUnifiedCancelOrderRequest,
     GateUnifiedNewOrderRequest,
 };
-use crate::{
-    common::symbol_util::normalize_symbol_for_internal, common::tick_math::QuantizedValue,
-    common::time_util::get_timestamp_us,
-};
 use bytes::Bytes;
 use log::{debug, info, warn};
 use order_common::{OrderStatus, TradingVenue};
+use signal_common::tick_math::QuantizedValue;
 use std::collections::HashMap;
 fn format_decimal(value: f64) -> String {
     QuantizedValue::from_decimal(value)

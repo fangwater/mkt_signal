@@ -4,9 +4,6 @@ use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::OrderRateBucket;
 use crate::pre_trade::order_manager::Side;
 use crate::pre_trade::PersistChannel;
-use crate::signal::common::SignalBytes;
-use crate::signal::open_signal::ArbOpenCtx;
-use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::manager::{OrphanStrategyRole, Strategy};
 use crate::strategy::open_strategy_common::{
     OpenSignalInput, OpenStrategyCommon, OpenStrategyState,
@@ -16,6 +13,9 @@ use crate::strategy::trade_engine_response::TradeEngineResponse;
 use crate::strategy::trade_update::TradeUpdate;
 use log::{debug, info, warn};
 use order_common::TradingVenue;
+use signal_common::common::SignalBytes;
+use signal_common::open_signal::ArbOpenCtx;
+use signal_common::trade_signal::{SignalType, TradeSignal};
 use std::any::Any;
 
 const ARB_CLOSE_QTY_EPS: f64 = 1e-12;

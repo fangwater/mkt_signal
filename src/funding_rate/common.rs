@@ -9,9 +9,9 @@ use std::collections::VecDeque;
 
 use crate::common::exchange::Exchange;
 use crate::depth_pub::query_client::DepthQueryClient;
-use crate::signal::venue_min_qty_table::VenueMinQtyTable;
 use log::warn;
 use order_common::TradingVenue;
+use signal_common::venue_min_qty_table::VenueMinQtyTable;
 
 pub fn format_tlen_value(value: f64) -> String {
     if value.is_finite() {
@@ -549,8 +549,8 @@ pub fn parse_numeric_list(raw: &str) -> Result<Vec<f64>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::signal::venue_min_qty_table::VenueMinQtyTable;
     use order_common::TradingVenue;
+    use signal_common::venue_min_qty_table::VenueMinQtyTable;
 
     #[test]
     fn test_approx_equal() {

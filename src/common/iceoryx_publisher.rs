@@ -7,7 +7,7 @@ use log::{info, warn};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::common::ipc_service_name::build_service_name;
-use crate::signal::trade_signal::TradeSignal;
+use signal_common::trade_signal::TradeSignal;
 
 pub const SIGNAL_PAYLOAD: usize = 4_096;
 pub const TRADE_SIGNAL_PAYLOAD: usize = 1_024;

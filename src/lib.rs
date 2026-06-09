@@ -17,7 +17,6 @@ pub mod parser;
 pub mod portfolio_margin;
 pub mod pre_trade;
 pub mod rolling_metrics;
-pub mod signal;
 pub mod spread_pbs;
 pub mod strategy;
 pub mod symbol_match;

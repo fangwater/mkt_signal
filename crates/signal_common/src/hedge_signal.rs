@@ -1,5 +1,5 @@
-use crate::common::tick_math::QuantizedValue;
-use crate::signal::common::{bytes_helper, SignalBytes, TradingLeg};
+use crate::common::{bytes_helper, SignalBytes, TradingLeg};
+use crate::tick_math::QuantizedValue;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use order_common::Side;
 
@@ -775,8 +775,8 @@ impl ArbHedgeSignalQueryMsg {
 #[cfg(test)]
 mod tests {
     use super::{ArbHedgeCtx, MmHedgeCtx, MmHedgeSignalQueryMsg};
-    use crate::common::tick_math::QuantizedValue;
-    use crate::signal::common::{SignalBytes, TradingLeg};
+    use crate::common::{SignalBytes, TradingLeg};
+    use crate::tick_math::QuantizedValue;
     use order_common::Side;
     use order_common::TradingVenue;
 

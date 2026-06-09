@@ -220,10 +220,10 @@ impl PreTrade {
 #[cfg(test)]
 mod tests {
     use super::{drive_orphan_manager_period_clock_rc, drive_strategy_manager_period_clock_rc};
-    use crate::signal::trade_signal::TradeSignal;
     use crate::strategy::orphan_order_strategy::OrphanOrderStrategy;
     use crate::strategy::{order_update::OrderUpdate, trade_update::TradeUpdate};
     use crate::strategy::{OrphanStrategyManager, Strategy, StrategyManager};
+    use signal_common::trade_signal::TradeSignal;
     use std::any::Any;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;

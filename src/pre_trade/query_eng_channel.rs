@@ -780,11 +780,11 @@ mod tests {
     use super::{
         dispatch_query_response_to_orphan_manager, dispatch_query_response_to_strategy_manager,
     };
-    use crate::signal::trade_signal::TradeSignal;
     use crate::strategy::query_engine_response::QueryEngineResponseMessage;
     use crate::strategy::{order_update::OrderUpdate, trade_update::TradeUpdate};
     use crate::strategy::{OrphanStrategyManager, Strategy, StrategyManager};
     use bytes::Bytes;
+    use signal_common::trade_signal::TradeSignal;
     use std::any::Any;
     use std::cell::RefCell;
     use std::rc::Rc;

@@ -3,7 +3,6 @@ use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::OrderExecutionStatus;
 use crate::pre_trade::{QueryEngHub, TradeEngHub};
-use crate::signal::trade_signal::TradeSignal;
 use crate::strategy::manager::{OrphanHandoff, OrphanSourceKind, Strategy};
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::order_update::OrderUpdate;
@@ -20,6 +19,7 @@ use crate::strategy::uniform_order_helper::{
 };
 use log::{info, warn};
 use order_common::{ExecutionType, OrderStatus};
+use signal_common::trade_signal::TradeSignal;
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 

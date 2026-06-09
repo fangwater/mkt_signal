@@ -1,8 +1,8 @@
 use crate::common::symbol_util::normalize_symbol_for_venue;
-use crate::signal::cancel_signal::{ArbCancelCtx, ArbCancelReason};
-use crate::signal::common::TradingLeg;
 use order_common::Side;
 use order_common::TradingVenue;
+use signal_common::cancel_signal::{ArbCancelCtx, ArbCancelReason};
+use signal_common::common::TradingLeg;
 
 use super::common::Quote;
 

@@ -1,9 +1,10 @@
 /// 测试 VenueMinQtyTable，展示主流币的合约信息（重点：合约乘数）
 use anyhow::{bail, Result};
 use clap::Parser;
-use mkt_signal::signal::{common::TradingVenue, venue_min_qty_table::VenueMinQtyTable};
+use order_common::TradingVenue;
 use serde::Deserialize;
 use serde_json::Value;
+use signal_common::venue_min_qty_table::VenueMinQtyTable;
 
 #[derive(Debug, Deserialize)]
 struct OkexResponse {

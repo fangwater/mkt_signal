@@ -1,8 +1,9 @@
 /// Gate futures min-qty demo using VenueMinQtyTable and raw contract info.
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
-use mkt_signal::signal::{common::TradingVenue, venue_min_qty_table::VenueMinQtyTable};
+use order_common::TradingVenue;
 use serde_json::Value;
+use signal_common::venue_min_qty_table::VenueMinQtyTable;
 
 #[derive(Debug, Parser)]
 #[command(

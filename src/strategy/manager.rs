@@ -1,10 +1,8 @@
 use crate::common::symbol_util::normalize_symbol_for_internal;
-use crate::common::tick_math::QuantizedValue;
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::Side;
 use crate::pre_trade::taker_decision_model::{PreTradeTakerDecisionModel, TakerDecisionOpenCancel};
-use crate::signal::trade_signal::TradeSignal;
 use crate::strategy::arb_hedge_strategy::{ArbHedgeSnapshot, ArbHedgeStrategy};
 use crate::strategy::arb_open_strategy::ArbOpenStrategy;
 use crate::strategy::exec_strategy::{ExecSnapshot, ExecStrategy};
@@ -17,6 +15,8 @@ use crate::strategy::{
 };
 use log::info;
 use order_common::TradingVenue;
+use signal_common::tick_math::QuantizedValue;
+use signal_common::trade_signal::TradeSignal;
 use std::any::Any;
 use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
@@ -1068,10 +1068,10 @@ mod tests {
         next_strategy_id_state, OpenPriceMapEntry, OpenPriceMapKey, QuantizedValueKey, Strategy,
         StrategyManager, STRATEGY_ID_MASK,
     };
-    use crate::common::tick_math::QuantizedValue;
     use crate::pre_trade::order_manager::Side;
-    use crate::signal::trade_signal::TradeSignal;
     use crate::strategy::{order_update::OrderUpdate, trade_update::TradeUpdate};
+    use signal_common::tick_math::QuantizedValue;
+    use signal_common::trade_signal::TradeSignal;
     use std::any::Any;
 
     struct DummyOpenStrategy {

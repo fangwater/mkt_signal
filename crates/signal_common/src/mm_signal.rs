@@ -1,6 +1,6 @@
-use crate::common::tick_math::QuantizedValue;
-use crate::signal::common::{bytes_helper, SignalBytes};
-use crate::signal::hedge_signal::MmHedgeSignalQueryMsg;
+use crate::common::{bytes_helper, SignalBytes};
+use crate::hedge_signal::MmHedgeSignalQueryMsg;
+use crate::tick_math::QuantizedValue;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 const MM_BACKWARD_QUERY_HEDGE: u8 = 1;
@@ -238,9 +238,9 @@ mod tests {
     use super::{
         MmBackwardQueryMsg, MmCancelCandidateEntry, MmCancelCandidateQueryMsg, MmCancelTriggerCtx,
     };
-    use crate::common::tick_math::QuantizedValue;
-    use crate::signal::common::SignalBytes;
-    use crate::signal::hedge_signal::MmHedgeSignalQueryMsg;
+    use crate::common::SignalBytes;
+    use crate::hedge_signal::MmHedgeSignalQueryMsg;
+    use crate::tick_math::QuantizedValue;
 
     #[test]
     fn mm_cancel_trigger_ctx_roundtrip() {

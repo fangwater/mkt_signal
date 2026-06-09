@@ -19,7 +19,7 @@ fn to_fraction(value: f64) -> Option<(i64, i64)> {
     None
 }
 
-pub(crate) fn align_price_floor(price: f64, tick: f64) -> f64 {
+pub fn align_price_floor(price: f64, tick: f64) -> f64 {
     if tick <= 0.0 {
         return price;
     }
@@ -37,7 +37,7 @@ pub(crate) fn align_price_floor(price: f64, tick: f64) -> f64 {
     scaled * tick
 }
 
-pub(crate) fn align_price_ceil(price: f64, tick: f64) -> f64 {
+pub fn align_price_ceil(price: f64, tick: f64) -> f64 {
     if tick <= 0.0 {
         return price;
     }

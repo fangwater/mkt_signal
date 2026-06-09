@@ -7,11 +7,6 @@ use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager,
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::signal_channel::SignalChannel;
 use crate::pre_trade::{PersistChannel, TradeEngHub};
-use crate::signal::common::SignalBytes;
-use crate::signal::exec_signal::{
-    ExecBackwardQueryMsg, ExecCtx, ExecPositionTargetCtx, ExecRequestCtx, ExecSignalQueryMsg,
-};
-use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::hedge_order_reconcile::{HedgeOrderReconcileCommon, HedgeOrderReconcileState};
 use crate::strategy::hedge_strategy_common::{
     mark_price_lookup_symbol, signed_qty_from_side, CANCEL_RESEND_THROTTLE_US,
@@ -28,6 +23,11 @@ use crate::strategy::uniform_order_helper::{
 };
 use log::{debug, error, info, warn};
 use order_common::{OrderStatus, TradingVenue};
+use signal_common::common::SignalBytes;
+use signal_common::exec_signal::{
+    ExecBackwardQueryMsg, ExecCtx, ExecPositionTargetCtx, ExecRequestCtx, ExecSignalQueryMsg,
+};
+use signal_common::trade_signal::{SignalType, TradeSignal};
 use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -2002,10 +2002,10 @@ fn create_and_send_exec_order(
 mod tests {
     use super::ExecStrategy;
     use crate::pre_trade::order_manager::Side;
-    use crate::signal::common::TradingLeg;
-    use crate::signal::exec_signal::ExecRequestCtx;
     use crate::strategy::Strategy;
     use order_common::TradingVenue;
+    use signal_common::common::TradingLeg;
+    use signal_common::exec_signal::ExecRequestCtx;
 
     #[test]
     fn exec_max_pos_u_allows_reducing_when_current_over_limit() {
@@ -2086,7 +2086,7 @@ mod tests {
         ctx.exec_leg = TradingLeg::new(TradingVenue::BinanceFutures, 100.0, 101.0, 1);
         ctx.set_exec_symbol("BTCUSDT");
         ctx.set_side(Side::Buy);
-        ctx.amount_qv = crate::common::tick_math::QuantizedValue::from_parts(1, 0, 2);
+        ctx.amount_qv = signal_common::tick_math::QuantizedValue::from_parts(1, 0, 2);
         ctx.close_ts = 1_000;
         ctx.create_ts = 10;
         ctx.price_hint = 100.0;

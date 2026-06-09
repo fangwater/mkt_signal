@@ -5,8 +5,8 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::common::bybit_account_msg::BybitBasicOrderMsg;
-use crate::common::tick_math::QuantizedValue;
 use crate::pre_trade::order_manager::{OrderType, Side};
+use signal_common::tick_math::QuantizedValue;
 
 use super::trade_request::{TradeRequestHeader, TradeRequestType};
 

@@ -5,8 +5,8 @@ use async_trait::async_trait;
 use log::info;
 use reqwest::Client;
 
-use crate::common::exchange::Exchange;
-use crate::common::min_qty_table::{
+use crate::exchange::Exchange;
+use crate::min_qty_table::{
     BinanceProvider, BitgetProvider, BybitProvider, GateProvider, MarketType, MinQtyEntry,
     OkexProvider,
 };

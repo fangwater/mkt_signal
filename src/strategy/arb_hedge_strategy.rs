@@ -1,5 +1,4 @@
 use crate::common::symbol_util::normalize_symbol_for_internal;
-use crate::common::tick_math::QuantizedValue;
 use crate::common::time_util::get_timestamp_us;
 use crate::common::trade_error_code::gate;
 use crate::pre_trade::account_open_block::{register_account_open_block, AccountOpenBlockReason};
@@ -13,10 +12,6 @@ use crate::pre_trade::taker_decision_model::{
     LazyHedgeDecision, LazyHedgeDecisionSnapshot, PreTradeTakerDecisionModel,
 };
 use crate::pre_trade::{PersistChannel, TradeEngHub};
-use crate::signal::arb_signal::ArbBackwardQueryMsg;
-use crate::signal::common::{SignalBytes, TradingLeg};
-use crate::signal::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
-use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::hedge_order_reconcile::{HedgeOrderReconcileCommon, HedgeOrderReconcileState};
 use crate::strategy::hedge_strategy_common::{
     mark_price_lookup_symbol, parse_return_qtl_from_from_key, signed_qty_from_side,
@@ -36,6 +31,11 @@ use crate::strategy::uniform_order_helper::{
 };
 use log::{debug, error, info, warn};
 use order_common::{OrderStatus, TradingVenue};
+use signal_common::arb_signal::ArbBackwardQueryMsg;
+use signal_common::common::{SignalBytes, TradingLeg};
+use signal_common::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
+use signal_common::tick_math::QuantizedValue;
+use signal_common::trade_signal::{SignalType, TradeSignal};
 use std::any::Any;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::OnceLock;
@@ -2458,7 +2458,7 @@ mod tests {
 
     #[test]
     fn borrow_shortfall_threshold_uses_one_usdt_eps() {
-        let leg = crate::signal::common::TradingLeg::new(
+        let leg = signal_common::common::TradingLeg::new(
             TradingVenue::BinanceFutures,
             99_900.0,
             100_100.0,

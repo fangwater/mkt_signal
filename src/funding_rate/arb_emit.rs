@@ -3,7 +3,7 @@ use anyhow::Result;
 use crate::common::iceoryx_publisher::TradeSignalPublisher;
 use crate::common::time_util::get_timestamp_us;
 use crate::rolling_metrics::arb_open_latency::record_arb_open_latency;
-use crate::signal::trade_signal::{SignalType, TradeSignal};
+use signal_common::trade_signal::{SignalType, TradeSignal};
 
 pub fn emit_levels_as_signals<TCtx>(
     signal_pub: &TradeSignalPublisher,

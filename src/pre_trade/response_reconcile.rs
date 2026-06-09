@@ -277,7 +277,6 @@ pub fn apply_compact_order_query_updates(
 #[cfg(test)]
 mod tests {
     use super::apply_query_response_as_updates;
-    use crate::signal::trade_signal::TradeSignal;
     use crate::strategy::order_update::OrderUpdate;
     use crate::strategy::query_engine_response::QueryEngineResponseMessage;
     use crate::strategy::trade_engine_response::TradeEngineResponse;
@@ -285,6 +284,7 @@ mod tests {
     use crate::strategy::Strategy;
     use crate::trade_engine::query_parsers::compact_order::ORDER_QUERY_NOT_FOUND_MARKER;
     use bytes::Bytes;
+    use signal_common::trade_signal::TradeSignal;
     use std::any::Any;
 
     struct RecordingStrategy {

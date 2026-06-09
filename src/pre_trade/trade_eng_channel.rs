@@ -15,13 +15,13 @@ use crate::pre_trade::response_reconcile::apply_trade_response_as_update;
 use crate::pre_trade::signal_latency::record_signal_submit_latency;
 use crate::pre_trade::PersistChannel;
 use crate::rolling_metrics::arb_open_latency::record_arb_open_latency;
-use crate::signal::trade_signal::SignalType;
 use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
 use crate::strategy::trade_engine_response::{
     TradeEngineResponse, TradeEngineResponseMessage, TradeRequestKind,
 };
 use crate::trade_engine::trade_request::TradeRequestType;
 use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
+use signal_common::trade_signal::SignalType;
 
 thread_local! {
     static TRADE_ENG_HUB: OnceCell<TradeEngHub> = const { OnceCell::new() };

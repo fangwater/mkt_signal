@@ -1,7 +1,7 @@
-use crate::signal::venue_min_qty_table::VenueMinQtyTable;
 use order_common::Side;
 use order_common::TradingVenue;
 use quote_plan::quote_plan_levels::{build_quote_plan_levels, QuotePlanLevel, QuotePlanLevelSpec};
+use signal_common::venue_min_qty_table::VenueMinQtyTable;
 
 use super::common::Quote;
 

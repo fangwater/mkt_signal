@@ -1,5 +1,5 @@
-use crate::common::tick_math::QuantizedValue;
-use crate::signal::common::{bytes_helper, SignalBytes, TradingLeg};
+use crate::common::{bytes_helper, SignalBytes, TradingLeg};
+use crate::tick_math::QuantizedValue;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use order_common::Side;
 use order_common::TradingVenue;
@@ -553,8 +553,8 @@ mod tests {
     use super::{
         ExecBackwardQueryMsg, ExecCtx, ExecPositionTargetCtx, ExecRequestCtx, ExecSignalQueryMsg,
     };
-    use crate::common::tick_math::QuantizedValue;
-    use crate::signal::common::{SignalBytes, TradingLeg};
+    use crate::common::{SignalBytes, TradingLeg};
+    use crate::tick_math::QuantizedValue;
     use order_common::Side;
     use order_common::TradingVenue;
 

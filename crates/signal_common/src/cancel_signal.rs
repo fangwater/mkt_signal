@@ -1,4 +1,4 @@
-use crate::signal::common::{bytes_helper, SignalBytes, TradingLeg};
+use crate::common::{bytes_helper, SignalBytes, TradingLeg};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use order_common::Side;
 
@@ -460,7 +460,7 @@ impl SignalBytes for MmCancelCtx {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::signal::common::TradingLeg;
+    use crate::common::TradingLeg;
     use order_common::TradingVenue;
 
     #[test]

@@ -1,10 +1,10 @@
 use anyhow::Result;
 
 use crate::common::iceoryx_publisher::TradeSignalPublisher;
-use crate::signal::cancel_signal::{ArbCancelCtx, ArbCancelReason};
-use crate::signal::common::SignalBytes;
-use crate::signal::trade_signal::{SignalType, TradeSignal};
 use order_common::Side;
+use signal_common::cancel_signal::{ArbCancelCtx, ArbCancelReason};
+use signal_common::common::SignalBytes;
+use signal_common::trade_signal::{SignalType, TradeSignal};
 
 use super::arb_cancel_context::{build_arb_cancel_context, ArbCancelContextInput};
 use super::common::Quote;

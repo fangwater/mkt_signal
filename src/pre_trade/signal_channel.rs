@@ -12,18 +12,6 @@ use crate::pre_trade::taker_decision_model::{
     PreTradeTakerDecisionModel, TakerDecisionOpenGateSnapshot,
 };
 use crate::rolling_metrics::arb_open_latency::record_arb_open_latency;
-use crate::signal::arb_signal::{
-    ArbBackwardQueryMsg, ArbCancelCandidateEntry, ArbCancelCandidateQueryMsg, ArbCancelTriggerCtx,
-};
-use crate::signal::cancel_signal::{ArbCancelCtx, MmCancelCtx};
-use crate::signal::common::SignalBytes;
-use crate::signal::exec_signal::{ExecCtx, ExecPositionTargetCtx, ExecRequestCtx};
-use crate::signal::hedge_signal::{ArbHedgeCtx, MmHedgeCtx};
-use crate::signal::mm_signal::{
-    MmBackwardQueryMsg, MmCancelCandidateEntry, MmCancelCandidateQueryMsg, MmCancelTriggerCtx,
-};
-use crate::signal::open_signal::{ArbOpenCtx, MmOpenCtx};
-use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::arb_close_strategy::ArbCloseStrategy;
 use crate::strategy::arb_open_strategy::ArbOpenStrategy;
 use crate::strategy::mm_open_strategy::MarketMakerOpenStrategy;
@@ -35,6 +23,18 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info, warn};
 use order_common::TradingVenue;
+use signal_common::arb_signal::{
+    ArbBackwardQueryMsg, ArbCancelCandidateEntry, ArbCancelCandidateQueryMsg, ArbCancelTriggerCtx,
+};
+use signal_common::cancel_signal::{ArbCancelCtx, MmCancelCtx};
+use signal_common::common::SignalBytes;
+use signal_common::exec_signal::{ExecCtx, ExecPositionTargetCtx, ExecRequestCtx};
+use signal_common::hedge_signal::{ArbHedgeCtx, MmHedgeCtx};
+use signal_common::mm_signal::{
+    MmBackwardQueryMsg, MmCancelCandidateEntry, MmCancelCandidateQueryMsg, MmCancelTriggerCtx,
+};
+use signal_common::open_signal::{ArbOpenCtx, MmOpenCtx};
+use signal_common::trade_signal::{SignalType, TradeSignal};
 use std::cell::{OnceCell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 
@@ -505,8 +505,8 @@ mod tests {
         is_position_reducing, should_drop_startup_buffered_signal,
         should_suppress_arb_open_inactive_warning,
     };
-    use crate::signal::trade_signal::{SignalType, TradeSignal};
     use bytes::Bytes;
+    use signal_common::trade_signal::{SignalType, TradeSignal};
 
     #[test]
     fn position_reducing_allows_smaller_abs_position() {
@@ -869,7 +869,7 @@ fn handle_trade_signal(signal: TradeSignal, receive_us: i64) {
                 let cancel_reason = cancel_ctx.get_reason();
                 let require_direction_match = matches!(
                     cancel_reason,
-                    crate::signal::cancel_signal::ArbCancelReason::Spread
+                    signal_common::cancel_signal::ArbCancelReason::Spread
                 ) && cancel_ctx.strategy_id <= 0;
                 let opening_venue = TradingVenue::from_u8(cancel_ctx.opening_leg.venue)
                     .unwrap_or(TradingVenue::BinanceMargin);

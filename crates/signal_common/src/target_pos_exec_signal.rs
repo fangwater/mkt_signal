@@ -1,5 +1,5 @@
-use crate::common::symbol_util::normalize_symbol_for_internal;
-use crate::signal::common::{bytes_helper, SignalBytes};
+use crate::common::{bytes_helper, SignalBytes};
+use crate::symbol_util::normalize_symbol_for_internal;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use serde_json::{Map, Value};
 

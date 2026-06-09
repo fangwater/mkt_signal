@@ -1,6 +1,6 @@
-use crate::common::tick_math::QuantizedValue;
-use crate::signal::common::TradingLeg;
-use crate::signal::common::{bytes_helper, SignalBytes};
+use crate::common::TradingLeg;
+use crate::common::{bytes_helper, SignalBytes};
+use crate::tick_math::QuantizedValue;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use order_common::{OrderType, Side};
 

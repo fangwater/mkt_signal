@@ -1,5 +1,5 @@
-use crate::common::tick_math::QuantizedValue;
-use crate::signal::hedge_signal::ArbHedgeSignalQueryMsg;
+use crate::hedge_signal::ArbHedgeSignalQueryMsg;
+use crate::tick_math::QuantizedValue;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use super::common::bytes_helper;
@@ -224,7 +224,7 @@ impl ArbBackwardQueryMsg {
 #[cfg(test)]
 mod tests {
     use super::ArbBackwardQueryMsg;
-    use crate::signal::hedge_signal::ArbHedgeSignalQueryMsg;
+    use crate::hedge_signal::ArbHedgeSignalQueryMsg;
 
     #[test]
     fn arb_backward_query_wraps_hedge_query() {

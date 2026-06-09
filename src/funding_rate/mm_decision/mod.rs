@@ -17,16 +17,16 @@ use crate::common::ipc_service_name::build_service_name;
 use crate::common::redis_client::RedisSettings;
 use crate::common::time_util::get_timestamp_us;
 use crate::funding_rate::inventory_hedge_inputs::resolve_inventory_hedge_signal_inputs;
-use crate::signal::common::{SignalBytes, TradingLeg};
-use crate::signal::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
-use crate::signal::mm_signal::{MmBackwardQueryMsg, MmCancelCandidateQueryMsg};
-use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::symbol_match::normalize_symbol_for_whitelist;
 use order_common::TradingVenue;
 use quote_plan::inventory_hedge::{
     build_inventory_hedge_from_key, build_inventory_hedge_quote_plan, InventoryHedgeBuildInput,
     InventoryHedgeQuotePlan,
 };
+use signal_common::common::{SignalBytes, TradingLeg};
+use signal_common::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
+use signal_common::mm_signal::{MmBackwardQueryMsg, MmCancelCandidateQueryMsg};
+use signal_common::trade_signal::{SignalType, TradeSignal};
 
 mod cancel;
 pub mod from_key;
@@ -67,13 +67,13 @@ fn build_mm_hedge_ctx_from_plan(plan: InventoryHedgeQuotePlan) -> MmHedgeCtx {
     );
     ctx.set_opening_symbol(&plan.symbol);
     for level in &plan.levels {
-        let Some(price_qv) = crate::common::tick_math::QuantizedValue::encode_floor(
+        let Some(price_qv) = signal_common::tick_math::QuantizedValue::encode_floor(
             level.aligned_price,
             plan.price_tick,
         ) else {
             continue;
         };
-        let Some(amount_qv) = crate::common::tick_math::QuantizedValue::encode_floor(
+        let Some(amount_qv) = signal_common::tick_math::QuantizedValue::encode_floor(
             level.aligned_qty,
             plan.qty_tick,
         ) else {
@@ -254,7 +254,7 @@ impl MmDecision {
     }
 
     async fn refresh_min_qty_async(open_venue: TradingVenue) {
-        let mut open_table = crate::signal::venue_min_qty_table::VenueMinQtyTable::new(open_venue);
+        let mut open_table = signal_common::venue_min_qty_table::VenueMinQtyTable::new(open_venue);
         let open_res = open_table.refresh().await;
 
         Self::with_mut(|decision| {

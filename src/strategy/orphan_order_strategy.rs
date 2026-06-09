@@ -1,11 +1,11 @@
 use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use crate::signal::trade_signal::TradeSignal;
 use crate::strategy::manager::{OrphanHandoff, Strategy};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::orphan_order_common::{OrphanOrderOwner, OrphanOrderTracker};
 use crate::strategy::trade_update::TradeUpdate;
 use log::{info, warn};
+use signal_common::trade_signal::TradeSignal;
 use std::any::Any;
 
 const ORPHAN_QUERY_BASE_TICKS: u32 = 25;

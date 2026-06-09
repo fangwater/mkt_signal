@@ -11,7 +11,7 @@ pub struct ArbCancelGroupEval {
 }
 
 pub fn build_group_eval_preview(
-    group: &crate::signal::arb_signal::ArbCancelCandidateSymbolGroup,
+    group: &signal_common::arb_signal::ArbCancelCandidateSymbolGroup,
     threshold: f64,
     tlens: &[f64],
 ) -> ArbCancelGroupEval {
