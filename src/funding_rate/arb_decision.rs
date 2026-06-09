@@ -10,7 +10,6 @@ use std::sync::OnceLock;
 use std::thread::LocalKey;
 use std::time::{Duration, Instant};
 
-use crate::common::bbo::Bbo;
 use crate::funding_rate::inventory_hedge_inputs::resolve_inventory_hedge_signal_inputs;
 use crate::funding_rate::FundingRatePeriod;
 use ipc_common::iceoryx_publisher::TradeSignalPublisher;
@@ -29,6 +28,7 @@ use runtime_common::redis_client::RedisSettings;
 use runtime_common::symbol_util::{min_qty_symbol_key, normalize_symbol_for_venue};
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::arb_signal::{ArbBackwardQueryMsg, ArbCancelCandidateQueryMsg};
+use signal_common::bbo::Bbo;
 use signal_common::common::{SignalBytes, TradingLeg};
 use signal_common::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
 use signal_common::open_signal::ArbOpenCtx;

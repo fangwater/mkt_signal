@@ -9,7 +9,7 @@ use log::{error, info, warn};
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::factor_pub::factor_index::{factor_name_to_channel, factor_name_to_index};
+use factor_engine::factor_index::{factor_name_to_channel, factor_name_to_index};
 use mkt_parsers::msg::mkt_msg::FactorValueMsg;
 use mkt_parsers::msg::trade_flow_feature_msg::{
     TRADE_FLOW_FEATURE_HISTORY_SIZE, TRADE_FLOW_FEATURE_MAX_BYTES,

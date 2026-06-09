@@ -1,6 +1,5 @@
 //! Factor Publisher 模块
 
-pub mod factor_index;
 #[cfg(feature = "factor-rocksdb")]
 pub mod factor_test;
 #[cfg(feature = "factor-rocksdb")]
