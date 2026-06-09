@@ -3,8 +3,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use crate::funding_rate::factor_value_hub::FactorValueHub;
-use crate::funding_rate::model_output_hub::ModelOutputHub;
+use crate::factor_value_hub::FactorValueHub;
+use crate::model_output_hub::ModelOutputHub;
 use order_common::TradingVenue;
 
 const INVENTORY_HEDGE_NEUTRAL_SIGNAL: f64 = 0.0;

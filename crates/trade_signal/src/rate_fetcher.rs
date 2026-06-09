@@ -25,10 +25,10 @@ type HmacSha512 = Hmac<Sha512>;
 
 use super::common::{FundingRatePeriod, RateFetcherTrait};
 use super::symbol_list::SymbolList;
-use crate::common::mkt_cfg::load_primary_local_ip_from_trade_engine_sync;
 use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
 use order_common::TradingVenue;
 use runtime_common::exchange::Exchange;
+use runtime_common::mkt_cfg::load_primary_local_ip_from_trade_engine_sync;
 
 // ==================== API 响应结构 ====================
 

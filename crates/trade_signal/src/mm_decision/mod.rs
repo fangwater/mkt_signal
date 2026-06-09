@@ -10,7 +10,7 @@ use super::arb_decision::DEFAULT_ARBITRAGE_BACKWARD_CHANNEL;
 use super::common::normalize_tlens_for_compare;
 use super::mkt_channel::MktChannel;
 use super::tlen_threshold_loader;
-use crate::funding_rate::inventory_hedge_inputs::resolve_inventory_hedge_signal_inputs;
+use crate::inventory_hedge_inputs::resolve_inventory_hedge_signal_inputs;
 use ipc_common::iceoryx_publisher::SIGNAL_PAYLOAD;
 use ipc_common::iceoryx_subscriber::GenericSignalSubscriber;
 use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;

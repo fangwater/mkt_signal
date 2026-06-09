@@ -51,7 +51,7 @@ mod tests {
         append_mm_hedge_tlen_to_from_key, append_mm_open_tlens_to_from_key,
         build_mm_cancel_from_key,
     };
-    use crate::funding_rate::factor_value_hub::{EnvironmentSignalResult, EnvironmentSignalSource};
+    use crate::factor_value_hub::{EnvironmentSignalResult, EnvironmentSignalSource};
 
     #[test]
     fn mm_open_from_key_appends_only_single_tlen() {

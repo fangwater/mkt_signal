@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use log::{info, warn};
 use serde::Deserialize;
 
-use crate::funding_rate::mkt_channel::MktChannel;
+use crate::mkt_channel::MktChannel;
 use order_common::TradingVenue;
 
 const GATE_FUTURES_CONTRACTS_URL: &str = "https://api.gateio.ws/api/v4/futures/usdt/contracts";

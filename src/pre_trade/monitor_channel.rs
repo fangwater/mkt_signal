@@ -8,10 +8,6 @@ use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
 use crate::common::min_qty_table::MinQtyTable;
-use crate::funding_rate::ArbMode;
-use crate::portfolio_margin::pm_forwarder::{
-    PM_HISTORY_SIZE, PM_MAX_SUBSCRIBERS, PM_SUBSCRIBER_MAX_BUFFER_SIZE,
-};
 use crate::pre_trade::basic_balance_manager::BasicBalanceManager;
 use crate::pre_trade::basic_exposure_manager::{BasicExposureEntry, BasicExposureManager};
 use crate::pre_trade::basic_um_manager::BasicUmManager;
@@ -23,6 +19,7 @@ use crate::pre_trade::symbol_mapper::create_symbol_mapper;
 use crate::pre_trade::symbol_util::extract_base_asset;
 use crate::pre_trade::usdt_balance_manager::{UsdtBalanceManager, UsdtBalanceSnapshot};
 use crate::pre_trade::PersistChannel;
+use account_common::pm_ipc::{PM_HISTORY_SIZE, PM_MAX_SUBSCRIBERS, PM_SUBSCRIBER_MAX_BUFFER_SIZE};
 use mkt_parsers::msg::basic_account_msg::{
     split_basic_account_event, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
     BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg,
@@ -38,6 +35,7 @@ use runtime_common::time_util::get_timestamp_us;
 use signal_common::cancel_signal::{ArbCancelCtx, ArbCancelReason, MmCancelCtx, MmCancelReason};
 use signal_common::common::{SignalBytes, TradingLeg};
 use signal_common::trade_signal::{SignalType, TradeSignal};
+use trade_signal::ArbMode;
 
 const ACCOUNT_PAYLOAD: usize = 16_384;
 const DERIVATIVES_PAYLOAD: usize = 128;

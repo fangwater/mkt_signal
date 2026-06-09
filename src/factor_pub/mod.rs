@@ -10,5 +10,4 @@ pub(crate) mod kline_factors;
 pub mod model_pub;
 pub mod pairmm_resample;
 pub mod rl_vol;
-#[cfg(feature = "factor-rocksdb")]
 pub mod trade_flow_feature_pub;

@@ -142,7 +142,7 @@ fn resolve_config(args: Args) -> Result<FrDashboardConfig> {
                             )
                         })?;
                         let (open_venue, hedge_venue) =
-                            mkt_signal::funding_rate::common::venue_pair_for_exchange(inferred);
+                            trade_signal::common::venue_pair_for_exchange(inferred);
                         (open_venue, hedge_venue, inferred)
                     };
                 if let Some(cli_ex) = args.exchange {
@@ -167,7 +167,7 @@ fn resolve_config(args: Args) -> Result<FrDashboardConfig> {
                     "missing --exchange and failed to infer FR namespace from CWD".to_string()
                 })?;
                 let (open_venue, hedge_venue) =
-                    mkt_signal::funding_rate::common::venue_pair_for_exchange(exchange);
+                    trade_signal::common::venue_pair_for_exchange(exchange);
                 (
                     "fr".to_string(),
                     fr_symbol_key_suffix(open_venue, hedge_venue),

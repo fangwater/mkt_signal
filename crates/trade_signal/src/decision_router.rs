@@ -10,9 +10,9 @@ use log::{info, warn};
 use std::cell::{OnceCell, RefCell};
 use std::time::{Duration, Instant};
 
-use crate::funding_rate::arb_decision::funding_rate_symbol_inputs_ready;
-use crate::funding_rate::RateFetcher;
-use crate::funding_rate::{ArbDecision, ArbMode};
+use crate::arb_decision::funding_rate_symbol_inputs_ready;
+use crate::RateFetcher;
+use crate::{ArbDecision, ArbMode};
 use order_common::TradingVenue;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

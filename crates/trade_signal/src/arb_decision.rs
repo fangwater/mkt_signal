@@ -10,8 +10,8 @@ use std::sync::OnceLock;
 use std::thread::LocalKey;
 use std::time::{Duration, Instant};
 
-use crate::funding_rate::inventory_hedge_inputs::resolve_inventory_hedge_signal_inputs;
-use crate::funding_rate::FundingRatePeriod;
+use crate::inventory_hedge_inputs::resolve_inventory_hedge_signal_inputs;
+use crate::FundingRatePeriod;
 use ipc_common::iceoryx_publisher::TradeSignalPublisher;
 use ipc_common::iceoryx_subscriber::GenericSignalSubscriber;
 use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
@@ -5873,8 +5873,8 @@ impl ArbDecision {
 #[cfg(test)]
 mod funding_mode_signal_tests {
     use super::*;
-    use crate::funding_rate::common::FactorMode;
-    use crate::funding_rate::spread_factor::SpreadFactor;
+    use crate::common::FactorMode;
+    use crate::spread_factor::SpreadFactor;
 
     fn setup_spread_factor_with_forward_close(symbol: &str) -> &'static SpreadFactor {
         let spread_factor = SpreadFactor::instance();

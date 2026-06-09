@@ -1,4 +1,3 @@
-use crate::funding_rate::mm_decision::from_key::append_mm_hedge_tlen_to_from_key;
 use crate::pre_trade::log_throttle::log_order_rate_limit_summary;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
@@ -36,6 +35,7 @@ use signal_common::mm_signal::MmBackwardQueryMsg;
 use signal_common::trade_signal::{SignalType, TradeSignal};
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
+use trade_signal::mm_decision::from_key::append_mm_hedge_tlen_to_from_key;
 
 #[derive(Debug, Clone)]
 pub struct MmHedgeSnapshot {

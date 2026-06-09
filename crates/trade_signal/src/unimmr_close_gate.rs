@@ -27,7 +27,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::portfolio_margin::pm_forwarder::{
+use account_common::pm_ipc::{
     PM_HISTORY_SIZE, PM_MAX_BYTES, PM_MAX_SUBSCRIBERS, PM_SUBSCRIBER_MAX_BUFFER_SIZE,
 };
 use mkt_parsers::msg::basic_account_msg::{

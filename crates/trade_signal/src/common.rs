@@ -502,7 +502,7 @@ pub fn approx_equal_slice(a: &[f64], b: &[f64]) -> bool {
 ///
 /// # Examples
 /// ```
-/// use mkt_signal::funding_rate::common::parse_numeric_list;
+/// use trade_signal::common::parse_numeric_list;
 ///
 /// // JSON 数组
 /// assert_eq!(parse_numeric_list("[1.0, 2.0, 3.0]").unwrap(), vec![1.0, 2.0, 3.0]);

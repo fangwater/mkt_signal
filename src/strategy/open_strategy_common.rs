@@ -1059,7 +1059,7 @@ pub trait OpenStrategyCommon {
                 | TradingVenue::BitgetMargin
                 | TradingVenue::GateMargin
         );
-        let intra = venue_is_margin && monitor.arb_mode() == crate::funding_rate::ArbMode::IntraArb;
+        let intra = venue_is_margin && monitor.arb_mode() == trade_signal::ArbMode::IntraArb;
         let venue_is_uniform = match venue {
             TradingVenue::BinanceMargin => !binance_is_standard,
             _ => true,

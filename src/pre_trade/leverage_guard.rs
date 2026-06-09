@@ -1,5 +1,4 @@
 use crate::common::binance_account_mode::BinanceAccountMode;
-use crate::funding_rate::ArbMode;
 use crate::portfolio_margin::bybit_auth::BybitCredentials;
 use crate::portfolio_margin::gate_auth::GateCredentials;
 use crate::portfolio_margin::okex_auth::OkexCredentials;
@@ -17,6 +16,7 @@ use sha2::{Digest, Sha256, Sha512};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::Duration;
+use trade_signal::ArbMode;
 
 type HmacSha256 = Hmac<Sha256>;
 type HmacSha512 = Hmac<Sha512>;

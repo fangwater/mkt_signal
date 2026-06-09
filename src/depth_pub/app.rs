@@ -29,9 +29,7 @@ use super::queue_position::{
     QueuePositionStats,
 };
 use crate::common::trade_msg_parser::{parse_trade, TradeSide};
-use crate::portfolio_margin::pm_forwarder::{
-    PM_HISTORY_SIZE, PM_MAX_SUBSCRIBERS, PM_SUBSCRIBER_MAX_BUFFER_SIZE,
-};
+use account_common::pm_ipc::{PM_HISTORY_SIZE, PM_MAX_SUBSCRIBERS, PM_SUBSCRIBER_MAX_BUFFER_SIZE};
 use depth_pub_common::query_server::{DepthQueryConnection, DepthQuerySocketServer};
 use order_common::TradingVenue;
 use signal_common::venue_min_qty_table::VenueMinQtyTable;

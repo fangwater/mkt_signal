@@ -9,7 +9,6 @@ pub mod connection;
 pub mod depth_pub;
 pub mod factor_pub;
 pub mod fr_signal_dashboard;
-pub mod funding_rate;
 pub mod latency_stable_monitor;
 pub mod market_maker;
 pub mod mkt_pub;

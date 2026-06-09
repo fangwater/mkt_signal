@@ -2,7 +2,7 @@ use anyhow::bail;
 use clap::Parser;
 use mkt_signal::app::MktSignalApp;
 use mkt_signal::cfg::Config;
-use mkt_signal::common::mkt_cfg::home_mkt_cfg_path;
+use runtime_common::mkt_cfg::home_mkt_cfg_path;
 use order_common::TradingVenue;
 use std::path::PathBuf;
 

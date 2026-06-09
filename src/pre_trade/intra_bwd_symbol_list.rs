@@ -46,7 +46,7 @@ impl IntraBwdSymbolList {
     }
 
     fn normalize(symbol: &str) -> String {
-        // 与 funding_rate::SymbolList 共用同一套 whitelist 归一化策略。
+        // 与 trade_signal::SymbolList 共用同一套 whitelist 归一化策略。
         normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures)
     }
 

@@ -10,10 +10,10 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::time::{Duration, Instant};
 
-use crate::funding_rate::inline_volatility::{
+use crate::inline_volatility::{
     observe_inline_tradecount, observe_inline_volatility, InlineVolatilitySnapshot,
 };
-use crate::funding_rate::model_output_hub::ModelOutputHub;
+use crate::model_output_hub::ModelOutputHub;
 use factor_engine::factor_index::{factor_name_to_channel, factor_name_to_index};
 use mkt_parsers::msg::mkt_msg::FactorValueMsg;
 use mkt_parsers::msg::trade_flow_feature_msg::{

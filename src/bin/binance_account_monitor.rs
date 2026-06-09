@@ -8,7 +8,6 @@ use mkt_parsers::msg::basic_account_msg::{
     BasicPositionMsg, BasicTradeLiteMsg, BasicUmUnrealizedMsg, BinanceBasicOrderMsg,
 };
 use mkt_signal::common::binance_account_mode::{init_binance_account_mode, BinanceAccountMode};
-use mkt_signal::common::mkt_cfg::load_local_ips_preferring_trade_engine;
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::binance_basic_account_event_parser::BinanceBasicAccountEventParser;
 use mkt_signal::parser::default_parser::Parser;
@@ -25,6 +24,7 @@ use mkt_signal::trade_engine::query_parsers::binance_um_account_snapshot::parse_
 use mkt_signal::trade_engine::query_parsers::binance_um_balance_snapshot_std::parse_binance_um_balance_snapshot_std;
 use order_common::{ExecutionType, OrderStatus};
 use reqwest::Client;
+use runtime_common::mkt_cfg::load_local_ips_preferring_trade_engine;
 use sha2::Sha256;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;

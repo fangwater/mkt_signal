@@ -603,8 +603,8 @@ mod tests {
     use super::{
         mm_open_blocked_by_environment, publish_failure_reason, tradecount_threshold_symbol_key,
     };
-    use crate::funding_rate::factor_value_hub::{EnvironmentSignalResult, EnvironmentSignalSource};
-    use crate::funding_rate::mm_decision::state::MmOpenPublishStats;
+    use crate::factor_value_hub::{EnvironmentSignalResult, EnvironmentSignalSource};
+    use crate::mm_decision::state::MmOpenPublishStats;
     use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
     use order_common::TradingVenue;
 

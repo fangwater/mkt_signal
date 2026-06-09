@@ -22,7 +22,6 @@ use mkt_parsers::msg::basic_account_msg::{
     BasicAccountRiskMsg, BasicAccountScope, BasicBalanceMsg, BasicBorrowInterestMsg,
     BasicPositionMsg, BasicTradeLiteMsg, BasicUmUnrealizedMsg, GateBasicOrderMsg,
 };
-use mkt_signal::common::mkt_cfg::load_local_ips_preferring_trade_engine;
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::gate_account_event_parser::GateAccountEventParser;
 use mkt_signal::portfolio_margin::gate_auth::{GateCredentials, GatePrivateWsUrls};
@@ -34,6 +33,7 @@ use mkt_signal::trade_engine::query_parsers::gate_positions_snapshot::{
     parse_gate_positions_snapshot_with_meta, GatePositionsSnapshotParse,
 };
 use reqwest::Client;
+use runtime_common::mkt_cfg::load_local_ips_preferring_trade_engine;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};

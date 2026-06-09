@@ -16,7 +16,6 @@ use mkt_parsers::msg::basic_account_msg::{
     BasicTradeLiteMsg, BasicUmUnrealizedMsg,
 };
 use mkt_parsers::msg::bitget_account_msg::BitgetBasicOrderMsg;
-use mkt_signal::common::mkt_cfg::load_local_ips_preferring_trade_engine;
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::bitget_account_event_parser::BitgetAccountEventParser;
 use mkt_signal::parser::default_parser::Parser;
@@ -29,6 +28,7 @@ use mkt_signal::portfolio_margin::bitget_user_stream::BitgetUserDataConnection;
 use mkt_signal::portfolio_margin::pm_forwarder::PmForwarder;
 use mkt_signal::trade_engine::query_parsers::bitget_account_balance_snapshot::parse_bitget_account_balance_snapshot;
 use mkt_signal::trade_engine::query_parsers::bitget_positions_snapshot::parse_bitget_positions_snapshot;
+use runtime_common::mkt_cfg::load_local_ips_preferring_trade_engine;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};

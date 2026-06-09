@@ -3,7 +3,6 @@ use bytes::Bytes;
 use clap::Parser;
 use log::{info, warn};
 use mkt_signal::common::binance_account_mode::{init_binance_account_mode, BinanceAccountMode};
-use mkt_signal::funding_rate::ArbMode;
 use mkt_signal::portfolio_margin::bybit_auth::BybitCredentials;
 use mkt_signal::portfolio_margin::gate_auth::GateCredentials;
 use mkt_signal::pre_trade::auto_collection_service::AutoCollectionService;
@@ -32,6 +31,7 @@ use runtime_common::time_util::get_timestamp_us;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
+use trade_signal::ArbMode;
 
 #[derive(Parser, Debug)]
 #[command(name = "pre_trade")]

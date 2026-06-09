@@ -1,3 +1,4 @@
+use account_common::pm_ipc::{PM_HISTORY_SIZE, PM_MAX_SUBSCRIBERS, PM_SUBSCRIBER_MAX_BUFFER_SIZE};
 use anyhow::{Context, Result};
 use clap::Parser;
 use iceoryx2::port::subscriber::Subscriber;
@@ -6,9 +7,6 @@ use iceoryx2::service::ipc;
 use mkt_parsers::msg::basic_account_msg::{
     split_basic_account_event, BasicAccountEventType, BasicAccountScope, BasicTradeLiteMsg,
     OkexOrderMsg,
-};
-use mkt_signal::portfolio_margin::pm_forwarder::{
-    PM_HISTORY_SIZE, PM_MAX_SUBSCRIBERS, PM_SUBSCRIBER_MAX_BUFFER_SIZE,
 };
 use order_common::TradingVenue;
 use runtime_common::ipc_service_name::build_service_name;

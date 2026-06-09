@@ -16,7 +16,6 @@ use mkt_parsers::msg::basic_account_msg::{
     BasicTradeLiteMsg, BasicUmUnrealizedMsg,
 };
 use mkt_parsers::msg::bybit_account_msg::BybitBasicOrderMsg;
-use mkt_signal::common::mkt_cfg::load_local_ips_preferring_trade_engine;
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::bybit_account_event_parser::BybitAccountEventParser;
 use mkt_signal::parser::default_parser::Parser;
@@ -30,6 +29,7 @@ use mkt_signal::portfolio_margin::pm_forwarder::PmForwarder;
 use mkt_signal::trade_engine::bybit_query::{bybit_rest_get, bybit_rest_get_position_list_pages};
 use mkt_signal::trade_engine::query_parsers::bybit_account_balance_snapshot::parse_bybit_account_balance_snapshot;
 use mkt_signal::trade_engine::query_parsers::bybit_positions_snapshot::parse_bybit_positions_snapshot_pages;
+use runtime_common::mkt_cfg::load_local_ips_preferring_trade_engine;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};

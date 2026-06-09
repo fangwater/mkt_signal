@@ -1,6 +1,7 @@
 [workspace]
 members = [
     ".",
+    "crates/account_common",
     "crates/depth_pub",
     "crates/factor_engine",
     "crates/inpos_engine",
@@ -14,6 +15,7 @@ members = [
     "crates/rolling_common",
     "crates/runtime_common",
     "crates/signal_common",
+    "crates/trade_signal",
 ]
 resolver = "2"
 
@@ -214,8 +216,10 @@ name = "inspect_model_input"
 path = "src/bin/inspect_model_input.rs"
 
 [dependencies]
+account_common = { path = "crates/account_common" }
 persist_common = { path = "crates/persist_common" }
 quote_plan = { path = "crates/quote_plan" }
+trade_signal = { path = "crates/trade_signal" }
 order_common = { path = "crates/order_common" }
 signal_common = { path = "crates/signal_common" }
 runtime_common = { path = "crates/runtime_common" }

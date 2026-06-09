@@ -2,7 +2,6 @@ pub mod amount_threshold;
 pub mod binance_account_mode;
 pub mod delist_schedule;
 pub mod min_qty_table;
-pub mod mkt_cfg;
 pub mod msg_parser;
 pub mod rolling_welford;
 pub mod sliding_quantile;

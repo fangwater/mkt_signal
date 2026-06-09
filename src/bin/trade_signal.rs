@@ -18,8 +18,8 @@ use runtime_common::redis_client::RedisSettings;
 use runtime_common::symbol_util::normalize_symbol_for_venue;
 use runtime_common::time_util::get_timestamp_us;
 
-// 使用模块化的 funding_rate
-use mkt_signal::funding_rate::{
+// 使用独立 trade_signal crate
+use trade_signal::{
     init_decision_branch, load_all_once_with_namespace, load_unimmr_thresholds_from_redis,
     spawn_account_risk_listener, spawn_config_loader_with_namespace,
     start_unimmr_threshold_refresh, trigger_decision, ArbDecision, ArbMode, DecisionBranch,
@@ -394,8 +394,7 @@ async fn run(
     }
 
     let force_remote_tlen = matches!(arb_mode, Some(ArbMode::FundingArb));
-    mkt_signal::funding_rate::local_tlen::init_for_trade_signal(open_venue, force_remote_tlen)
-        .await?;
+    trade_signal::local_tlen::init_for_trade_signal(open_venue, force_remote_tlen).await?;
     MktChannel::init_singleton(open_venue, hedge_venue)?;
     RateFetcher::init_for_venues(open_venue, hedge_venue)?;
 
@@ -407,7 +406,7 @@ async fn run(
     // Gate 特化：futures.tickers 是事件驱动，冷门 symbol 长时间无推送 → current_fr_ma 一直空。
     // 用 REST `/futures/usdt/contracts`（与 WS 同字段）每 5s 兜底 seed 一次，WS 到达会通过
     // VecDeque rolling buffer 自然顶替。其它 venue 不调用，零影响。
-    mkt_signal::funding_rate::gate_fr_supplement::spawn_gate_current_fr_seeder(hedge_venue);
+    trade_signal::gate_fr_supplement::spawn_gate_current_fr_seeder(hedge_venue);
 
     // 调试：延迟2秒后打印价差数据（等待盘口数据）
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
@@ -596,7 +595,7 @@ async fn main() -> Result<()> {
                             )
                         })?;
                         let (open_venue, hedge_venue) =
-                            mkt_signal::funding_rate::common::venue_pair_for_exchange(inferred);
+                            trade_signal::common::venue_pair_for_exchange(inferred);
                         (open_venue, hedge_venue, inferred)
                     };
                 if let Some(cli_ex) = args.exchange {
@@ -652,7 +651,7 @@ async fn main() -> Result<()> {
                         .to_string()
                 })?;
                 let (open_venue, hedge_venue) =
-                    mkt_signal::funding_rate::common::venue_pair_for_exchange(exchange);
+                    trade_signal::common::venue_pair_for_exchange(exchange);
                 (
                     DecisionBranch::Arb,
                     Some(ArbMode::FundingArb),

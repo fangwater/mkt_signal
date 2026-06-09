@@ -1085,7 +1085,7 @@ impl MmDecisionState {
         &mut self,
         open_symbol: &str,
         side: Side,
-        open_quote: crate::funding_rate::common::Quote,
+        open_quote: crate::common::Quote,
         now_us: i64,
         from_key: &str,
     ) -> Result<()> {
@@ -1111,7 +1111,7 @@ impl MmDecisionState {
     pub(crate) fn emit_mm_cancel_signal_precise(
         &mut self,
         open_symbol: &str,
-        open_quote: crate::funding_rate::common::Quote,
+        open_quote: crate::common::Quote,
         now_us: i64,
         from_key: &str,
         strategy_id: i32,
@@ -1348,7 +1348,7 @@ impl MmDecisionState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::funding_rate::inline_volatility::observe_inline_volatility;
+    use crate::inline_volatility::observe_inline_volatility;
     use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
 
     #[test]

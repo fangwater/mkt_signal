@@ -12,11 +12,11 @@
 
 use anyhow::Result;
 use log::info;
-use mkt_signal::funding_rate::common::{venue_pair_for_exchange, FundingRatePeriod};
-use mkt_signal::funding_rate::{MktChannel, RateFetcher, SymbolList};
 use order_common::TradingVenue;
 use runtime_common::exchange::Exchange;
 use tokio::time::{sleep, Duration};
+use trade_signal::common::{venue_pair_for_exchange, FundingRatePeriod};
+use trade_signal::{MktChannel, RateFetcher, SymbolList};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
