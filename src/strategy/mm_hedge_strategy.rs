@@ -1,10 +1,6 @@
 use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::common::time_util::get_timestamp_us;
 use crate::funding_rate::mm_decision::from_key::append_mm_hedge_tlen_to_from_key;
-use quote_plan::hedge_split::{
-    split_hedge_orders_round_robin, HedgeLevel, HedgeSplitOrder,
-};
-use quote_plan::order_align::{align_final_order_qty, contract_qty_multiplier, min_qty_symbol_key};
 use crate::pre_trade::log_throttle::log_order_rate_limit_summary;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
@@ -35,6 +31,8 @@ use crate::strategy::uniform_order_helper::{
     publish_uniform_trade_order_from_order_update, UniformPublishCtx,
 };
 use log::{debug, info, warn};
+use quote_plan::hedge_split::{split_hedge_orders_round_robin, HedgeLevel, HedgeSplitOrder};
+use quote_plan::order_align::{align_final_order_qty, contract_qty_multiplier, min_qty_symbol_key};
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 
@@ -454,7 +452,7 @@ impl MarketMakerHedgeStrategy {
         let symbol_key = min_qty_symbol_key(venue, &symbol);
         let qty_multiplier = MonitorChannel::instance()
             .venue_min_qty_table(venue)
-            .and_then(|table| contract_qty_multiplier(&table, venue, &symbol_key))
+            .and_then(|table| contract_qty_multiplier(table.as_ref(), venue, &symbol_key))
             .unwrap_or(1.0);
 
         let levels: Vec<HedgeLevel> = ctx
