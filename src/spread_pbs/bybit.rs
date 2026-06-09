@@ -18,10 +18,10 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::common::mkt_msg::{FundingRateMsg, IndexPriceMsg, Level, LiquidationMsg, MarkPriceMsg};
-use order_common::TradingVenue;
 use crate::spread_pbs::adapter::{
     BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
 };
+use order_common::TradingVenue;
 
 const BYBIT_SPOT_WS_URL: &str = "wss://stream.bybit.com/v5/public/spot";
 const BYBIT_LINEAR_WS_URL: &str = "wss://stream.bybit.com/v5/public/linear";

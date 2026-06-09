@@ -19,22 +19,22 @@ use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::{min_qty_symbol_key, normalize_symbol_for_venue};
 use crate::common::tick_math::QuantizedValue;
 use crate::common::time_util::get_timestamp_us;
+use crate::funding_rate::inventory_hedge_inputs::resolve_inventory_hedge_signal_inputs;
 use crate::funding_rate::FundingRatePeriod;
-use quote_plan::order_align::align_order_for_venue;
 use crate::rolling_metrics::arb_open_latency::record_arb_open_latency;
 use crate::signal::arb_signal::{ArbBackwardQueryMsg, ArbCancelCandidateQueryMsg};
 use crate::signal::common::{SignalBytes, TradingLeg};
-use order_common::TradingVenue;
 use crate::signal::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
-use crate::funding_rate::inventory_hedge_inputs::resolve_inventory_hedge_signal_inputs;
+use crate::symbol_match::normalize_symbol_for_whitelist;
+use order_common::Side;
+use order_common::TradingVenue;
 use quote_plan::inventory_hedge::{
     build_inventory_hedge_from_key, build_inventory_hedge_quote_plan, InventoryHedgeBuildInput,
 };
-use crate::symbol_match::normalize_symbol_for_whitelist;
-use order_common::Side;
+use quote_plan::order_align::align_order_for_venue;
 
 use super::arb_cooldown::is_cooldown_hit;
 use super::arb_cooldown::threshold_key;
@@ -1590,6 +1590,94 @@ fn drive_spread_arb_decision(
             let _ = ArbDecision::with_state_mut(|arb| {
                 arb.record_intercept_summary("spread_close");
             });
+            let emit_allowed = emit_spread_arb_close_signals(
+                decision,
+                open_symbol_key.as_str(),
+                hedge_symbol_key.as_str(),
+                open_venue,
+                hedge_venue,
+                close_gate.side,
+            )?;
+            if !emit_allowed {
+                return Ok(None);
+            }
+            let _ = ArbDecision::with_state_mut(|arb| {
+                arb.mark_close_triggered(close_gate.key, close_gate.side, now);
+            });
+            return Ok(Some(SignalType::ArbClose));
+        }
+    }
+
+    let enable_intra_funding_close = ArbDecision::with_state_mut(|arb| {
+        arb.enable_intra_funding_close_signal
+            && matches!(ArbDecision::mode(), Some(ArbMode::IntraArb))
+    })
+    .unwrap_or(false);
+    if !in_dump && enable_intra_funding_close {
+        let flags = evaluate_funding_signal_flags(hedge_symbol_key.as_str(), hedge_venue);
+        let close_candidates = [
+            (
+                ArbSignalKind::ForwardClose,
+                flags.forward_close,
+                Side::Sell,
+                ArbDirection::Backward,
+                "intra_fr_fwd_close_hit",
+            ),
+            (
+                ArbSignalKind::BackwardClose,
+                flags.backward_close,
+                Side::Buy,
+                ArbDirection::Forward,
+                "intra_fr_bwd_close_hit",
+            ),
+        ];
+        for (fr_signal, funding_close_hit, side, spread_detail_direction, hit_summary) in
+            close_candidates
+        {
+            if !funding_close_hit {
+                continue;
+            }
+            let outcome = ArbDecision::with_state_mut(|arb| {
+                arb.record_intercept_summary(hit_summary);
+                let outcome = arb.evaluate_close_gate_for_side(
+                    spread_factor,
+                    open_symbol_key.as_str(),
+                    hedge_symbol_key.as_str(),
+                    open_venue,
+                    hedge_venue,
+                    side,
+                    now,
+                );
+                match outcome {
+                    CloseGateOutcome::NoSide => {
+                        let detail = spread_factor.get_spread_check_detail(
+                            open_venue,
+                            open_symbol_key.as_str(),
+                            hedge_venue,
+                            hedge_symbol_key.as_str(),
+                            spread_detail_direction,
+                            OperationType::Open,
+                        );
+                        arb.record_funding_close_spread_block(
+                            open_symbol_key.as_str(),
+                            fr_signal,
+                            detail,
+                        );
+                        arb.record_intercept_summary("intra_fr_close_spread_miss");
+                    }
+                    CloseGateOutcome::Cooldown => {
+                        arb.record_intercept_summary("intra_fr_close_cooldown");
+                    }
+                    CloseGateOutcome::Pass(_) => {
+                        arb.record_intercept_summary("intra_fr_close_pass");
+                    }
+                }
+                outcome
+            })
+            .unwrap_or(CloseGateOutcome::NoSide);
+            let CloseGateOutcome::Pass(close_gate) = outcome else {
+                continue;
+            };
             let emit_allowed = emit_spread_arb_close_signals(
                 decision,
                 open_symbol_key.as_str(),
@@ -3839,6 +3927,7 @@ pub(crate) struct ArbDecisionState {
     pub enable_tlen_cancel: bool,
     pub tlen_cancel_freq_ms: u64,
     pub enable_funding_open_filter: bool,
+    pub enable_intra_funding_close_signal: bool,
     pub enable_environment_model: bool,
     /// 是否启用 open vol 阈值 gate；与 mm 同语义：开仓时若 inline vol percentile 阈值
     /// 已 warm up 且当前 vol 超阈值，则拦截开仓。
@@ -3988,6 +4077,7 @@ impl ArbDecisionState {
             enable_tlen_cancel: false,
             tlen_cancel_freq_ms: 3_000,
             enable_funding_open_filter: true,
+            enable_intra_funding_close_signal: false,
             enable_environment_model: true,
             enable_volatility_limit: true,
             open_volatility_limit: 70.0,
@@ -4136,6 +4226,44 @@ impl ArbDecisionState {
         ) else {
             return CloseGateOutcome::NoSide;
         };
+        self.evaluate_close_gate_for_side(
+            spread_factor,
+            open_symbol_key,
+            hedge_symbol_key,
+            open_venue,
+            hedge_venue,
+            side,
+            now,
+        )
+    }
+
+    pub fn evaluate_close_gate_for_side(
+        &self,
+        spread_factor: &super::spread_factor::SpreadFactor,
+        open_symbol_key: &str,
+        hedge_symbol_key: &str,
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
+        side: Side,
+        now: i64,
+    ) -> CloseGateOutcome {
+        let spread_ok = match side {
+            Side::Sell => spread_factor.satisfy_forward_close(
+                open_venue,
+                open_symbol_key,
+                hedge_venue,
+                hedge_symbol_key,
+            ),
+            Side::Buy => spread_factor.satisfy_backward_close(
+                open_venue,
+                open_symbol_key,
+                hedge_venue,
+                hedge_symbol_key,
+            ),
+        };
+        if !spread_ok {
+            return CloseGateOutcome::NoSide;
+        }
         let key =
             Self::build_threshold_key(open_symbol_key, hedge_symbol_key, open_venue, hedge_venue);
         if self.is_close_cooldown_hit(&key, side, now) {

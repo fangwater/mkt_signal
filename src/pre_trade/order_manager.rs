@@ -16,8 +16,7 @@ use crate::trade_engine::trade_request::{
     GateUnifiedNewOrderRequest,
 };
 use crate::{
-    common::symbol_util::normalize_symbol_for_internal,
-    common::tick_math::QuantizedValue,
+    common::symbol_util::normalize_symbol_for_internal, common::tick_math::QuantizedValue,
     common::time_util::get_timestamp_us,
 };
 use bytes::Bytes;

@@ -1,8 +1,8 @@
-use order_common::TradingVenue;
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Duration as ChronoDuration, TimeZone, Utc};
 use hmac::{Hmac, Mac};
+use order_common::TradingVenue;
 use reqwest::Client;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};

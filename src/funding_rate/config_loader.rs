@@ -200,7 +200,7 @@ async fn reload_symbol_list(
             let symbol_list = SymbolList::instance();
             let ns = normalize_namespace(namespace);
             let env_dir = if ns == "fr" {
-                Some(fr_env_dir_or_panic())
+                Some(funding_env_dir_or_panic())
             } else {
                 None
             };
@@ -267,11 +267,14 @@ async fn reload_fr_thresholds(
     hedge_venue: TradingVenue,
 ) -> Result<()> {
     let ns = normalize_namespace(namespace);
-    if ns != "fr" {
+    let load_for_intra = ns == "intra"
+        && ArbDecision::with_state_mut(|arb| arb.enable_intra_funding_close_signal)
+            .unwrap_or(false);
+    if ns != "fr" && !load_for_intra {
         return Ok(());
     }
 
-    let env_dir = fr_env_dir_or_panic();
+    let env_dir = funding_env_dir_or_panic();
     let redis_key = funding_thresholds_key(&env_dir, open_venue, hedge_venue);
 
     match RedisClient::connect(redis.clone()).await {
@@ -280,28 +283,28 @@ async fn reload_fr_thresholds(
                 Ok(map) => map,
                 Err(err) => {
                     panic!(
-                        "读取 Redis Hash '{}' 失败，无法加载资金费率阈值 (env_dir={}): {:?}",
-                        redis_key, env_dir, err
+                        "读取 Redis Hash '{}' 失败，无法加载资金费率阈值 (ns={}, env_dir={}): {:?}",
+                        redis_key, ns, env_dir, err
                     );
                 }
             };
             if funding_map.is_empty() {
                 panic!(
-                    "Redis hash '{}' 为空或不存在，无法加载资金费率阈值 (env_dir={})",
-                    redis_key, env_dir
+                    "Redis hash '{}' 为空或不存在，无法加载资金费率阈值 (ns={}, env_dir={})",
+                    redis_key, ns, env_dir
                 );
             }
             load_fr_thresholds(funding_map)
                 .with_context(|| format!("解析资金费率阈值失败 (key: {})", redis_key))?;
             info!(
-                "资金费率阈值重载成功 (key: {}, env_dir: {})",
-                redis_key, env_dir
+                "资金费率阈值重载成功 (ns={}, key: {}, env_dir: {})",
+                ns, redis_key, env_dir
             );
         }
         Err(err) => {
             panic!(
-                "连接 Redis 失败，无法加载资金费率阈值 (key: {}, env_dir: {}): {:?}",
-                redis_key, env_dir, err
+                "连接 Redis 失败，无法加载资金费率阈值 (ns={}, key: {}, env_dir: {}): {:?}",
+                ns, redis_key, env_dir, err
             );
         }
     }
@@ -497,9 +500,9 @@ fn funding_thresholds_key(
     )
 }
 
-/// 从 CWD basename 推断 FR 部署 env 名（如 `binance_fr_arb01`）。
+/// 从 CWD basename 推断部署 env 名（如 `binance_fr_arb01` / `binance-intra-trade`）。
 /// 用于构造 env-aware 的资金费率阈值 Redis key（与 `pre_trade.rs` 的 `infer_dir_prefix_from_cwd` 一致）。
-fn fr_env_dir_or_panic() -> String {
+fn funding_env_dir_or_panic() -> String {
     std::env::current_dir()
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
@@ -507,7 +510,7 @@ fn fr_env_dir_or_panic() -> String {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| {
             panic!(
-                "FR static thresholds require running under <exchange>_fr_<env> CWD; \
+                "funding static thresholds require running under an env CWD; \
                  could not infer env_dir from current_dir()"
             )
         })

@@ -6,8 +6,8 @@ use tokio::sync::watch;
 
 use mkt_signal::cfg::Config;
 use mkt_signal::common::affinity::pin_to_core;
-use order_common::TradingVenue;
 use mkt_signal::spread_pbs::SpreadPbsApp;
+use order_common::TradingVenue;
 
 #[derive(Parser)]
 #[command(name = "spread_pbs")]

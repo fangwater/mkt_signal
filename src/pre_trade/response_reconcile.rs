@@ -3,7 +3,6 @@ use log::debug;
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus};
-use order_common::{TradingVenue, TimeInForce, ExecutionType, OrderStatus};
 use crate::strategy::order_query_parser::parse_compact_order_query_resp;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::query_engine_response::QueryEngineResponse;
@@ -14,6 +13,7 @@ use crate::strategy::Strategy;
 use crate::trade_engine::query_parsers::compact_order::{
     is_order_query_not_found_marker, CompactOrderQueryResp,
 };
+use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 
 const DEFAULT_FILL_EPSILON: f64 = 1e-12;
 

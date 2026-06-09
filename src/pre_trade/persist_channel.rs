@@ -7,20 +7,19 @@ use crate::common::iceoryx_publisher::{
 };
 use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::common::time_util::get_timestamp_us;
-use persist_common::{
-    UnifiedOrderRecord, ORDER_UPDATE_RECORD_CHANNEL, ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL,
-    TRADE_UPDATE_RECORD_CHANNEL, TRADE_UPDATE_UNMATCHED_RECORD_CHANNEL, UNIFORM_ORDER_RECORD_CHANNEL,
-};
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use order_common::TradingVenue;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
+use order_common::TradingVenue;
+use persist_common::{
+    UnifiedOrderRecord, ORDER_UPDATE_RECORD_CHANNEL, ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL,
+    TRADE_UPDATE_RECORD_CHANNEL, TRADE_UPDATE_UNMATCHED_RECORD_CHANNEL,
+    UNIFORM_ORDER_RECORD_CHANNEL,
+};
 
 thread_local! {
     static PERSIST_CHANNEL: OnceCell<PersistChannel> = const { OnceCell::new() };
 }
-
-
 
 /// 持久化通道：负责将交易更新和订单更新通过 IceOryx 发布到下游持久化服务
 ///

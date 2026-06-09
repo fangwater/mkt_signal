@@ -1,5 +1,5 @@
-use order_common::TradingVenue;
 use order_common::Side;
+use order_common::TradingVenue;
 
 use super::funding_threshold_loader::FactorDirectionalThresholds;
 use super::mkt_channel::MktChannel;

@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 
 use crate::common::mkt_msg::{get_msg_type, MktMsgType};
 use crate::depth_pub::query_msg::{price_to_tick_index, TLEN_QUERY_AMOUNT_EMPTY};
-use order_common::TradingVenue;
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
 use crate::symbol_match::normalize_symbol_for_whitelist;
+use order_common::TradingVenue;
 
 use super::symbol_list::SymbolList;
 

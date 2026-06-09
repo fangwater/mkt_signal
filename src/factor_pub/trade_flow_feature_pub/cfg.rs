@@ -109,10 +109,10 @@ impl TradeFlowFeaturePubConfig {
 
     pub fn validate(&self) -> Result<()> {
         match self.data_source.depth_channel.as_str() {
-            "depth25" | "depth50" => {}
+            "depth25" | "depth50" | "none" => {}
             other => {
                 anyhow::bail!(
-                    "data_source.depth_channel must be one of depth25/depth50, got '{}'",
+                    "data_source.depth_channel must be one of depth25/depth50/none, got '{}'",
                     other
                 );
             }

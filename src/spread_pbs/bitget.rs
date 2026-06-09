@@ -20,10 +20,10 @@ use serde_json::Value;
 use std::time::Duration;
 
 use crate::common::mkt_msg::{FundingRateMsg, IndexPriceMsg, Level, MarkPriceMsg};
-use order_common::TradingVenue;
 use crate::spread_pbs::adapter::{
     BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
 };
+use order_common::TradingVenue;
 
 const BITGET_SBE_WS_URL: &str = "wss://ws.bitget.com/v3/ws/public/sbe";
 const BITGET_V2_WS_URL: &str = "wss://ws.bitget.com/v2/ws/public";

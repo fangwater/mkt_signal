@@ -283,6 +283,13 @@ INTRA_FACTOR_CHAIN: List[Dict[str, Any]] = [
     {"factor": "hedge_premium_rate", "enabled": True, "forward_open": 50, "backward_open": 50},
 ]
 
+# Intra funding close 只暴露 4h 基准阈值；Rust FundingRateFactor 会按 symbol period
+# 用 period_hours / 4h 做线性折算，和 FR 语义一致。
+INTRA_STATIC_FUNDING_CLOSE_DEFAULTS: Dict[str, str] = {
+    "4h_forward_close": "-0.0004",
+    "4h_backward_close": "0.0004",
+}
+
 
 def percentile_text_from_value(value: float) -> str:
     rounded = round(value)
@@ -292,11 +299,12 @@ def percentile_text_from_value(value: float) -> str:
 
 
 def _funding_dashboard_keys() -> List[str]:
-    """按因子链顺序展开 dashboard 平铺 key:`<factor>.enabled` / `.forward_open` / `.backward_open`。"""
+    """按因子链顺序展开 dashboard key，并追加 4h close 止损阈值。"""
     keys: List[str] = []
     for entry in INTRA_FACTOR_CHAIN:
         f = entry["factor"]
         keys.extend([f"{f}.enabled", f"{f}.forward_open", f"{f}.backward_open"])
+    keys.extend(INTRA_STATIC_FUNDING_CLOSE_DEFAULTS.keys())
     return keys
 
 
@@ -309,6 +317,7 @@ def default_funding_threshold_config(
         out[f"{f}.enabled"] = "true" if entry.get("enabled", True) else "false"
         out[f"{f}.forward_open"] = str(entry.get("forward_open", 50))
         out[f"{f}.backward_open"] = str(entry.get("backward_open", 50))
+    out.update(INTRA_STATIC_FUNDING_CLOSE_DEFAULTS)
     return out
 
 
@@ -319,6 +328,8 @@ def default_funding_threshold_comments() -> Dict[str, str]:
         out[f"{f}.enabled"] = f"[{f}] 是否启用 (链上 enabled=false 的因子在评估时跳过)"
         out[f"{f}.forward_open"] = f"[{f}] 正向开仓分位数 (0,99]"
         out[f"{f}.backward_open"] = f"[{f}] 反向开仓分位数 (0,99]"
+    out["4h_forward_close"] = "4h 基准正套强平阈值：current_fr_ma < threshold 后，再过 forward close spread gate"
+    out["4h_backward_close"] = "4h 基准反套强平阈值：current_fr_ma + current_loan_rate > threshold 后，再过 backward close spread gate"
     return out
 
 
@@ -349,38 +360,85 @@ def arb_hedge_lazy_taker_env_enabled() -> bool:
     return env_flag_enabled("ARB_HEDGE_LAZY_TAKER", "ARB_HEDGE_lazy_TAKER")
 
 
-def read_funding_threshold_config(
+def static_funding_thresholds_key(env_name: str, open_venue: str, hedge_venue: str) -> str:
+    env = (env_name or "").strip().lower()
+    if not env:
+        raise ValueError("env_name unavailable (no cwd prefix)")
+    return f"{env}:funding_rate_thresholds_{open_venue}_{hedge_venue}"
+
+
+def normalize_float_text(raw: Any, field_name: str) -> str:
+    text = str(raw).strip()
+    if not text:
+        raise ValueError(f"{field_name} is required")
+    try:
+        value = float(text)
+    except Exception as exc:
+        raise ValueError(f"{field_name} must be a number: {text}") from exc
+    if not math.isfinite(value):
+        raise ValueError(f"{field_name} must be finite: {text}")
+    return f"{value:.12g}"
+
+
+def read_static_funding_close_thresholds(
     rds, open_venue: str, hedge_venue: str
-) -> Dict[str, str]:
-    """从 Redis 读 factor_chain JSON,展平成 dashboard 用的 `<factor>.<key>` flat dict。"""
+) -> Tuple[str, Dict[str, str]]:
+    key = static_funding_thresholds_key(infer_dir_prefix_from_cwd() or "", open_venue, hedge_venue)
+    raw = read_hash(rds, key)
+    values = {
+        field: raw.get(field, default)
+        for field, default in INTRA_STATIC_FUNDING_CLOSE_DEFAULTS.items()
+    }
+    return key, values
+
+
+def write_static_funding_close_thresholds(
+    rds,
+    open_venue: str,
+    hedge_venue: str,
+    values: Dict[str, Any],
+) -> Dict[str, Any]:
+    key = static_funding_thresholds_key(infer_dir_prefix_from_cwd() or "", open_venue, hedge_venue)
+    mapping = {
+        field: normalize_float_text(values.get(field, default), field)
+        for field, default in INTRA_STATIC_FUNDING_CLOSE_DEFAULTS.items()
+    }
+    write_hash(rds, key, mapping)
+    return {"key": key, "count": len(mapping), "values": mapping}
+
+
+def read_funding_threshold_config(rds, open_venue: str, hedge_venue: str) -> Dict[str, str]:
+    """从 Redis 读 factor_chain JSON + 4h close 阈值，展平成 dashboard flat dict。"""
     defaults = default_funding_threshold_config(open_venue, hedge_venue)
+    out = dict(defaults)
     key = threshold_mapping_key("funding", open_venue, hedge_venue)
     raw = rds.get(key)
-    if not raw:
-        return defaults
+    if raw:
+        try:
+            decoded = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
+            parsed = json.loads(decoded)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict):
+            chain = parsed.get("factor_chain")
+            if isinstance(chain, list):
+                for entry in chain:
+                    if not isinstance(entry, dict):
+                        continue
+                    f = str(entry.get("factor") or "").strip()
+                    if not f:
+                        continue
+                    if "enabled" in entry:
+                        out[f"{f}.enabled"] = "true" if bool(entry["enabled"]) else "false"
+                    if "forward_open" in entry:
+                        out[f"{f}.forward_open"] = str(entry["forward_open"])
+                    if "backward_open" in entry:
+                        out[f"{f}.backward_open"] = str(entry["backward_open"])
     try:
-        decoded = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
-        parsed = json.loads(decoded)
+        _, close_values = read_static_funding_close_thresholds(rds, open_venue, hedge_venue)
+        out.update(close_values)
     except Exception:
-        return defaults
-    if not isinstance(parsed, dict):
-        return defaults
-    chain = parsed.get("factor_chain")
-    if not isinstance(chain, list):
-        return defaults
-    out = dict(defaults)  # 用 default 填底,Redis 有的覆盖
-    for entry in chain:
-        if not isinstance(entry, dict):
-            continue
-        f = str(entry.get("factor") or "").strip()
-        if not f:
-            continue
-        if "enabled" in entry:
-            out[f"{f}.enabled"] = "true" if bool(entry["enabled"]) else "false"
-        if "forward_open" in entry:
-            out[f"{f}.forward_open"] = str(entry["forward_open"])
-        if "backward_open" in entry:
-            out[f"{f}.backward_open"] = str(entry["backward_open"])
+        pass
     return out
 
 
@@ -427,8 +485,11 @@ def write_funding_threshold_config(
         "rolling_key": f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}",
     }
     rds.set(key, json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    close_result = write_static_funding_close_thresholds(rds, open_venue, hedge_venue, values)
+    flat_out.update(close_result["values"])
     return {
         "key": key,
+        "static_close_key": close_result["key"],
         "count": len(flat_out),
         "values": flat_out,
     }
@@ -781,7 +842,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
           <button id="funding-default" class="ghost">默认</button>
         </div>
       </div>
-      <div class="hint" style="margin-bottom: 10px;">只配置 enable 与 forward/backward 两个分位数。固定使用 hedge_premium_rate；trade_signal 会自动读取 rolling quantiles，不需要手工同步阈值。</div>
+      <div class="hint" style="margin-bottom: 10px;">前半段配置 hedge_premium_rate open filter 的 enable 与 forward/backward 分位数；`4h_forward_close` / `4h_backward_close` 是 intra funding close 止损阈值，trade_signal 会按 symbol funding period 基于 4h 比例折算。</div>
       <div id="funding-table" class="kv-table"></div>
       <div id="funding-status" class="status"></div>
     </section>
@@ -948,8 +1009,8 @@ __PER_SYMBOL_PANELS_HTML__
         const rawValue = values[key] ?? defaults[key] ?? '';
         const useBooleanSelect =
           ((containerId === 'strategy-table' &&
-            ['enable_tlen_cancel', 'enable_environment_model', 'enable_volatility_limit', 'enable_taker_decsion_model'].includes(key)) ||
-           (containerId === 'funding-table' && ['enabled'].includes(key))) &&
+            ['enable_tlen_cancel', 'enable_intra_funding_close_signal', 'enable_environment_model', 'enable_volatility_limit', 'enable_taker_decsion_model'].includes(key)) ||
+           (containerId === 'funding-table' && key.endsWith('.enabled'))) &&
           isBooleanParamValue(rawValue);
         let input;
         if (useBooleanSelect) {

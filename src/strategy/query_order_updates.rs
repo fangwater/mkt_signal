@@ -1,7 +1,7 @@
 use crate::pre_trade::order_manager::{Order, OrderType, Side};
-use order_common::{TradingVenue, TimeInForce, ExecutionType, OrderStatus};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
+use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 
 pub struct OrderQueryOrderUpdate {
     event_time_us: i64,

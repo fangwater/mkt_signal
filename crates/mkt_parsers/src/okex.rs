@@ -482,10 +482,7 @@ pub fn us_to_ms(timestamp_us: i64) -> i64 {
     timestamp_us / 1000
 }
 
-fn parse_sbe_books_l2_tbt(
-    raw: &[u8],
-    block_length: usize,
-) -> Result<Vec<SbeBook>, DecodeError> {
+fn parse_sbe_books_l2_tbt(raw: &[u8], block_length: usize) -> Result<Vec<SbeBook>, DecodeError> {
     if block_length < SBE_BOOKS_L2_TBT_BLOCK_LENGTH {
         return Err(DecodeError::new(format!(
             "OKEx SBE books blockLength {} < expected {}",
@@ -543,10 +540,7 @@ fn parse_sbe_books_exponent_update(
     }])
 }
 
-fn parse_sbe_books_snapshot(
-    raw: &[u8],
-    block_length: usize,
-) -> Result<Vec<SbeBook>, DecodeError> {
+fn parse_sbe_books_snapshot(raw: &[u8], block_length: usize) -> Result<Vec<SbeBook>, DecodeError> {
     if block_length < SBE_BOOKS_SNAPSHOT_BLOCK_LENGTH {
         return Err(DecodeError::new(format!(
             "OKEx SBE books snapshot blockLength {} < expected {}",
@@ -784,21 +778,30 @@ fn read_sbe_header(raw: &[u8]) -> Result<(usize, u16), DecodeError> {
 
 fn read_u16_le(buf: &[u8], off: usize) -> Result<u16, DecodeError> {
     if buf.len() < off + 2 {
-        return Err(DecodeError::new(format!("OKEx SBE OOB read at offset {}", off)));
+        return Err(DecodeError::new(format!(
+            "OKEx SBE OOB read at offset {}",
+            off
+        )));
     }
     Ok(u16::from_le_bytes([buf[off], buf[off + 1]]))
 }
 
 fn read_i16_le(buf: &[u8], off: usize) -> Result<i16, DecodeError> {
     if buf.len() < off + 2 {
-        return Err(DecodeError::new(format!("OKEx SBE OOB read at offset {}", off)));
+        return Err(DecodeError::new(format!(
+            "OKEx SBE OOB read at offset {}",
+            off
+        )));
     }
     Ok(i16::from_le_bytes([buf[off], buf[off + 1]]))
 }
 
 fn read_i32_le(buf: &[u8], off: usize) -> Result<i32, DecodeError> {
     if buf.len() < off + 4 {
-        return Err(DecodeError::new(format!("OKEx SBE OOB read at offset {}", off)));
+        return Err(DecodeError::new(format!(
+            "OKEx SBE OOB read at offset {}",
+            off
+        )));
     }
     Ok(i32::from_le_bytes([
         buf[off],
@@ -810,7 +813,10 @@ fn read_i32_le(buf: &[u8], off: usize) -> Result<i32, DecodeError> {
 
 fn read_i64_le(buf: &[u8], off: usize) -> Result<i64, DecodeError> {
     if buf.len() < off + 8 {
-        return Err(DecodeError::new(format!("OKEx SBE OOB read at offset {}", off)));
+        return Err(DecodeError::new(format!(
+            "OKEx SBE OOB read at offset {}",
+            off
+        )));
     }
     Ok(i64::from_le_bytes([
         buf[off],

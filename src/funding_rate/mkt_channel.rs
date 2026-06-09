@@ -21,8 +21,8 @@ use crate::common::mkt_msg::{
 };
 use crate::common::time_util::get_timestamp_us;
 use crate::rolling_metrics::kll_quantile::segmented_quantiles_linear;
-use order_common::TradingVenue;
 use crate::symbol_match::{normalize_symbol_for_premium_pair, normalize_symbol_for_whitelist};
+use order_common::TradingVenue;
 
 // 常量定义
 const ASKBID_PAYLOAD: usize = 128;

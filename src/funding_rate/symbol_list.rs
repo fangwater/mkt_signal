@@ -16,8 +16,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::common::exchange::Exchange;
 use crate::common::redis_client::RedisClient;
-use order_common::TradingVenue;
 use crate::symbol_match::normalize_symbol_for_whitelist;
+use order_common::TradingVenue;
 
 const DEFAULT_SYMBOL_NAMESPACE: &str = "fr";
 

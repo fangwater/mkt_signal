@@ -17,7 +17,7 @@ use tokio::sync::mpsc;
 
 use crate::pre_trade::order_manager::{OrderType, Side};
 use order_common::TradingVenue;
-use order_common::{TimeInForce, ExecutionType, OrderStatus};
+use order_common::{ExecutionType, OrderStatus, TimeInForce};
 
 #[derive(Clone)]
 pub struct BinanceBasicAccountEventParser {

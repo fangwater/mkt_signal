@@ -17,7 +17,6 @@ use crate::signal::arb_signal::{
 };
 use crate::signal::cancel_signal::{ArbCancelCtx, MmCancelCtx};
 use crate::signal::common::SignalBytes;
-use order_common::TradingVenue;
 use crate::signal::exec_signal::{ExecCtx, ExecPositionTargetCtx, ExecRequestCtx};
 use crate::signal::hedge_signal::{ArbHedgeCtx, MmHedgeCtx};
 use crate::signal::mm_signal::{
@@ -35,6 +34,7 @@ use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info, warn};
+use order_common::TradingVenue;
 use std::cell::{OnceCell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 

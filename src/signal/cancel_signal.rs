@@ -461,7 +461,7 @@ impl SignalBytes for MmCancelCtx {
 mod tests {
     use super::*;
     use crate::signal::common::TradingLeg;
-use order_common::TradingVenue;
+    use order_common::TradingVenue;
 
     #[test]
     fn arb_cancel_ctx_roundtrip_with_from_key() {

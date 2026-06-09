@@ -9,7 +9,6 @@ use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::signal_channel::SignalChannel;
 use crate::pre_trade::{PersistChannel, TradeEngHub};
 use crate::signal::common::SignalBytes;
-use order_common::{TradingVenue, OrderStatus};
 use crate::signal::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
 use crate::signal::mm_signal::MmBackwardQueryMsg;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
@@ -32,6 +31,7 @@ use crate::strategy::uniform_order_helper::{
     publish_uniform_trade_order_from_order_update, UniformPublishCtx,
 };
 use log::{debug, info, warn};
+use order_common::{OrderStatus, TradingVenue};
 use quote_plan::hedge_split::{split_hedge_orders_round_robin, HedgeLevel, HedgeSplitOrder};
 use quote_plan::order_align::{align_final_order_qty, contract_qty_multiplier, min_qty_symbol_key};
 use std::any::Any;

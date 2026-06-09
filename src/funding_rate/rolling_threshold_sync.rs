@@ -1,8 +1,8 @@
 use log::warn;
 use std::collections::{HashMap, HashSet};
 
-use order_common::TradingVenue;
 use crate::symbol_match::normalize_symbol_for_whitelist;
+use order_common::TradingVenue;
 
 use super::funding_threshold_loader::{FactorDirectionalThresholds, FundingThresholdsResolved};
 use super::spread_factor::SpreadFactor;

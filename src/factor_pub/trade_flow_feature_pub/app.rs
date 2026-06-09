@@ -67,8 +67,9 @@ impl RlReturnVolatilityRuntimeConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DepthChannel {
+    None,
     Depth25,
     Depth50,
 }
@@ -76,6 +77,7 @@ enum DepthChannel {
 impl DepthChannel {
     fn as_str(self) -> &'static str {
         match self {
+            Self::None => "none",
             Self::Depth25 => "depth25",
             Self::Depth50 => "depth50",
         }
@@ -83,14 +85,20 @@ impl DepthChannel {
 
     fn from_cfg(value: &str) -> Result<Self> {
         match value {
+            "none" => Ok(Self::None),
             "depth25" => Ok(Self::Depth25),
             "depth50" => Ok(Self::Depth50),
             other => anyhow::bail!("unsupported depth channel: {}", other),
         }
     }
 
+    fn feature_enabled(self) -> bool {
+        self != Self::None
+    }
+
     fn expected_msg_type(self) -> u32 {
         match self {
+            Self::None => 0,
             Self::Depth25 => DepthMsgType::Depth25 as u32,
             Self::Depth50 => DepthMsgType::Depth50 as u32,
         }
@@ -98,6 +106,7 @@ impl DepthChannel {
 
     fn level_count(self) -> usize {
         match self {
+            Self::None => 0,
             Self::Depth25 => 25,
             Self::Depth50 => 50,
         }
@@ -949,8 +958,8 @@ pub struct TradeFlowFeaturePubApp {
     config: TradeFlowFeaturePubConfig,
     depth_channel: DepthChannel,
     trade_subscriber: Subscriber<ipc::Service, [u8; TRADE_MAX_BYTES], ()>,
-    depth_subscriber: DepthSubscriber,
-    publisher: TradeFlowFeaturePublisher,
+    depth_subscriber: Option<DepthSubscriber>,
+    publisher: Option<TradeFlowFeaturePublisher>,
     rl_config: RlReturnVolatilityRuntimeConfig,
     rl_publisher: RlFactorPublisher,
     /// Per-symbol vol pipeline,与 Redis 白名单解耦,服务于 venue 全 symbol 集合。
@@ -1003,8 +1012,16 @@ impl TradeFlowFeaturePubApp {
         let rl_config = RlReturnVolatilityRuntimeConfig::from_config(&config.rl_factor)?;
 
         let trade_subscriber = Self::create_trade_subscriber(venue_slug)?;
-        let depth_subscriber = Self::create_depth_subscriber(venue_slug, depth_channel)?;
-        let publisher = TradeFlowFeaturePublisher::new(venue_slug)?;
+        let depth_subscriber = if depth_channel.feature_enabled() {
+            Some(Self::create_depth_subscriber(venue_slug, depth_channel)?)
+        } else {
+            None
+        };
+        let publisher = if depth_channel.feature_enabled() {
+            Some(TradeFlowFeaturePublisher::new(venue_slug)?)
+        } else {
+            None
+        };
         let rl_publisher = RlFactorPublisher::new(venue_slug)?;
         let threshold_store = AmountThresholdRedisStore::new(fixed_redis_settings())?;
         let threshold_reload_interval = Duration::from_secs(config.runtime.threshold_reload_secs);
@@ -1063,8 +1080,15 @@ impl TradeFlowFeaturePubApp {
             trade_dedup_lru: TradeDedupLru::new(TRADE_DEDUP_WINDOW_MS),
             next_due_close_ms: None,
         };
-        app.ensure_persistence_ready(true);
-        app.reload_thresholds(true);
+        if app.depth_channel.feature_enabled() {
+            app.ensure_persistence_ready(true);
+            app.reload_thresholds(true);
+        } else {
+            info!(
+                "trade_flow_feature vol-only mode: venue={} depth_channel=none full_feature_publish=false",
+                app.venue_slug
+            );
+        }
         Ok(app)
     }
 
@@ -1102,6 +1126,7 @@ impl TradeFlowFeaturePubApp {
 
         let service_name = format!("depth_pubs/{}/{}", venue, channel.as_str());
         let depth_subscriber = match channel {
+            DepthChannel::None => anyhow::bail!("depth subscriber disabled for depth_channel=none"),
             DepthChannel::Depth25 => {
                 let service = node
                     .service_builder(&ServiceName::new(&service_name)?)
@@ -1145,12 +1170,14 @@ impl TradeFlowFeaturePubApp {
             self.maybe_reload_runtime();
             let mut has_message = false;
 
-            while let Some((symbol, depth)) = self.depth_subscriber.receive_snapshot(self.venue)? {
-                has_message = true;
-                if !self.online_symbols.contains(&symbol) {
-                    continue;
+            if let Some(depth_subscriber) = self.depth_subscriber.as_ref() {
+                while let Some((symbol, depth)) = depth_subscriber.receive_snapshot(self.venue)? {
+                    has_message = true;
+                    if !self.online_symbols.contains(&symbol) {
+                        continue;
+                    }
+                    self.latest_depth_by_symbol.insert(symbol, depth);
                 }
-                self.latest_depth_by_symbol.insert(symbol, depth);
             }
 
             while let Some(sample) = self.trade_subscriber.receive()? {
@@ -1166,7 +1193,11 @@ impl TradeFlowFeaturePubApp {
                 }
             }
 
-            self.maybe_close_due_bars()?;
+            if self.depth_channel.feature_enabled() {
+                self.maybe_close_due_bars()?;
+            } else {
+                self.log_publish_outcome_10s();
+            }
             self.maybe_close_due_vol_bars();
             if !has_message {
                 std::thread::sleep(Duration::from_micros(IDLE_SLEEP_MICROS));
@@ -1187,6 +1218,10 @@ impl TradeFlowFeaturePubApp {
 
         // Vol 通道:无 Redis 白名单,venue 全 symbol 都喂。在 threshold gate 之前。
         self.feed_vol_state(&symbol, timestamp_ms, price);
+
+        if !self.depth_channel.feature_enabled() {
+            return;
+        }
 
         let Some(threshold) = self.thresholds.get(symbol.as_str()).copied() else {
             self.trade_filtered_offline_count = self.trade_filtered_offline_count.saturating_add(1);
@@ -1330,7 +1365,10 @@ impl TradeFlowFeaturePubApp {
 
             self.maybe_persist_feature_payload(symbol, bar.start_ms, payload.as_ref());
 
-            if !self.publisher.publish(payload.as_ref(), symbol) {
+            let Some(publisher) = self.publisher.as_mut() else {
+                continue;
+            };
+            if !publisher.publish(payload.as_ref(), symbol) {
                 self.publish_fail_send_count = self.publish_fail_send_count.saturating_add(1);
                 warn!(
                     "failed to publish trade_flow_feature: venue={} symbol={} ts={}",
@@ -1424,8 +1462,10 @@ impl TradeFlowFeaturePubApp {
         }
         self.last_threshold_reload = Instant::now();
         self.reload_runtime_config();
-        self.reload_thresholds(false);
-        self.maybe_cleanup_persistence();
+        if self.depth_channel.feature_enabled() {
+            self.reload_thresholds(false);
+            self.maybe_cleanup_persistence();
+        }
     }
 
     fn reload_runtime_config(&mut self) {
@@ -1483,7 +1523,9 @@ impl TradeFlowFeaturePubApp {
             );
         }
 
-        self.apply_persistence_config(&loaded.persistence, false);
+        if self.depth_channel.feature_enabled() {
+            self.apply_persistence_config(&loaded.persistence, false);
+        }
     }
 
     fn apply_persistence_config(&mut self, cfg: &PersistenceConfig, init: bool) {

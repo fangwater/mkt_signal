@@ -3,7 +3,6 @@ use crate::pre_trade::open_order_rate_limiter::OrderRateBucket;
 use crate::pre_trade::PersistChannel;
 use crate::signal::cancel_signal::MmCancelCtx;
 use crate::signal::common::SignalBytes;
-use order_common::TradingVenue;
 use crate::signal::open_signal::MmOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::manager::OpenPriceMapEntry;
@@ -15,6 +14,7 @@ use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_engine_response::TradeEngineResponse;
 use crate::strategy::trade_update::TradeUpdate;
 use log::{debug, warn};
+use order_common::TradingVenue;
 use std::any::Any;
 
 /// 做市开仓策略：仅处理开仓，不涉及对冲/强平/模式切换

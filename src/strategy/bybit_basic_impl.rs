@@ -2,9 +2,9 @@
 
 use crate::common::bybit_account_msg::BybitBasicOrderMsg;
 use crate::pre_trade::order_manager::{OrderType, Side};
-use order_common::{TradingVenue, TimeInForce, ExecutionType, OrderStatus};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
+use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 
 fn map_execution_type(code: u8) -> ExecutionType {
     ExecutionType::from_u8(code).unwrap_or(ExecutionType::New)

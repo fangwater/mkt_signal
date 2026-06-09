@@ -16,15 +16,15 @@ use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::time_util::get_timestamp_us;
 use crate::depth_pub::query_client::DepthQueryClient;
-use quote_plan::open_quote_plan::MmOpenQuotePlan;
 use crate::signal::cancel_signal::{MmCancelCtx, MmCancelReason};
 use crate::signal::common::{SignalBytes, TradingLeg};
-use order_common::TradingVenue;
 use crate::signal::mm_signal::MmCancelTriggerCtx;
 use crate::signal::open_signal::MmOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
+use order_common::TradingVenue;
 use order_common::{OrderType, Side};
+use quote_plan::open_quote_plan::MmOpenQuotePlan;
 
 pub(crate) const DEFAULT_PNLU_REDIS_HOST: &str = "127.0.0.1";
 pub(crate) const DEFAULT_PNLU_REDIS_PORT: u16 = 6379;

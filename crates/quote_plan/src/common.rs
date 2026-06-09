@@ -20,7 +20,6 @@ pub enum Venue {
     HyperliquidFutures,
 }
 
-
 impl From<TradingVenue> for Venue {
     fn from(value: TradingVenue) -> Self {
         match value {

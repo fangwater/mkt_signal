@@ -15,7 +15,6 @@ use crate::pre_trade::taker_decision_model::{
 use crate::pre_trade::{PersistChannel, TradeEngHub};
 use crate::signal::arb_signal::ArbBackwardQueryMsg;
 use crate::signal::common::{SignalBytes, TradingLeg};
-use order_common::{TradingVenue, OrderStatus};
 use crate::signal::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::hedge_order_reconcile::{HedgeOrderReconcileCommon, HedgeOrderReconcileState};
@@ -36,6 +35,7 @@ use crate::strategy::uniform_order_helper::{
     publish_uniform_trade_order_from_order_update, UniformPublishCtx,
 };
 use log::{debug, error, info, warn};
+use order_common::{OrderStatus, TradingVenue};
 use std::any::Any;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::OnceLock;
@@ -924,7 +924,8 @@ impl ArbHedgeStrategy {
                         now_ts,
                         due_hedge_qty,
                         "lazy_taker",
-                        snapshot.and_then(|snapshot| model_percentile_to_ret_qtl(snapshot.percentile)),
+                        snapshot
+                            .and_then(|snapshot| model_percentile_to_ret_qtl(snapshot.percentile)),
                     )
                 };
                 if sent {
@@ -2205,9 +2206,9 @@ mod tests {
         ArbHedgeOrderMeta, ArbHedgeStrategy, ARB_HEDGE_QUERY_INTERVAL_US,
     };
     use crate::pre_trade::order_manager::Side;
-    use order_common::TradingVenue;
     use crate::strategy::manager::{OrderTerminalRecorder, Strategy};
     use crate::strategy::net_qty_queue::TimedNetQtyLot;
+    use order_common::TradingVenue;
 
     const OPEN_ID_A: i64 = 1001;
     const OPEN_ID_B: i64 = 1002;

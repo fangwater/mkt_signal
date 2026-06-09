@@ -5,6 +5,7 @@ pub mod factor_index;
 pub mod factor_test;
 #[cfg(feature = "factor-rocksdb")]
 pub mod fusion_factor_pub;
+#[cfg(feature = "factor-rocksdb")]
 pub(crate) mod kline_factors;
 #[cfg(feature = "model-ort")]
 pub mod model_pub;

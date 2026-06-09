@@ -26,10 +26,10 @@ use crate::parser::okex_parser::{
     OkexAskBidSpreadParser, OkexDerivativesMetricsParser, OkexIncParser, OkexKlineParser,
     OkexSignalParser, OkexTradeParser,
 };
-use order_common::TradingVenue;
 use crate::sub_msg::{BinanceFuturesStreamKind, DerivativesMetricsSubscribeMsgs, SubscribeMsgs};
 use bytes::Bytes;
 use log::{debug, error, info};
+use order_common::TradingVenue;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, watch, Notify};
 use tokio::task::JoinSet;

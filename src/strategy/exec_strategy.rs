@@ -8,7 +8,6 @@ use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::signal_channel::SignalChannel;
 use crate::pre_trade::{PersistChannel, TradeEngHub};
 use crate::signal::common::SignalBytes;
-use order_common::{TradingVenue, OrderStatus};
 use crate::signal::exec_signal::{
     ExecBackwardQueryMsg, ExecCtx, ExecPositionTargetCtx, ExecRequestCtx, ExecSignalQueryMsg,
 };
@@ -28,6 +27,7 @@ use crate::strategy::uniform_order_helper::{
     publish_uniform_trade_order_from_order_update, UniformPublishCtx,
 };
 use log::{debug, error, info, warn};
+use order_common::{OrderStatus, TradingVenue};
 use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -2003,9 +2003,9 @@ mod tests {
     use super::ExecStrategy;
     use crate::pre_trade::order_manager::Side;
     use crate::signal::common::TradingLeg;
-use order_common::TradingVenue;
     use crate::signal::exec_signal::ExecRequestCtx;
     use crate::strategy::Strategy;
+    use order_common::TradingVenue;
 
     #[test]
     fn exec_max_pos_u_allows_reducing_when_current_over_limit() {

@@ -3,7 +3,6 @@ use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus};
 use crate::pre_trade::{QueryEngHub, TradeEngHub};
-use order_common::{TradingVenue, TimeInForce, ExecutionType, OrderStatus};
 use crate::strategy::manager::OrphanSourceKind;
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::order_update::OrderUpdate;
@@ -14,6 +13,7 @@ use crate::strategy::uniform_order_helper::{
     publish_uniform_trade_order_from_order_update, UniformPublishCtx,
 };
 use log::{info, warn};
+use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 use std::collections::{HashMap, HashSet};
 
 pub(crate) const ORPHAN_QUERY_LOG_THRESHOLD: u8 = 25;

@@ -36,8 +36,8 @@ use std::time::Duration;
 
 use crate::common::redis_client::{RedisClient, RedisSettings};
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use order_common::TradingVenue;
 use crate::symbol_match::normalize_symbol_for_whitelist;
+use order_common::TradingVenue;
 
 const POSITION_EPSILON: f64 = 1e-12;
 

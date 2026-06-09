@@ -7,9 +7,9 @@ use mkt_signal::common::iceoryx_publisher::TradeSignalPublisher;
 use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::signal::common::SignalBytes;
 use mkt_signal::signal::exec_signal::ExecPositionTargetCtx;
-use order_common::TradingVenue;
 use mkt_signal::signal::target_pos_exec_signal::{TargetPosExecSignal, TargetPosMode};
 use mkt_signal::signal::trade_signal::{SignalType, TradeSignal};
+use order_common::TradingVenue;
 use std::io::Read;
 use std::path::PathBuf;
 

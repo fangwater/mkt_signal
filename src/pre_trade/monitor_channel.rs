@@ -36,8 +36,8 @@ use crate::pre_trade::usdt_balance_manager::{UsdtBalanceManager, UsdtBalanceSnap
 use crate::pre_trade::PersistChannel;
 use crate::signal::cancel_signal::{ArbCancelCtx, ArbCancelReason, MmCancelCtx, MmCancelReason};
 use crate::signal::common::{SignalBytes, TradingLeg};
-use order_common::{TradingVenue, ExecutionType, OrderStatus};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
+use order_common::{ExecutionType, OrderStatus, TradingVenue};
 
 const ACCOUNT_PAYLOAD: usize = 16_384;
 const DERIVATIVES_PAYLOAD: usize = 128;

@@ -41,8 +41,7 @@ pub struct SpreadPbsApp {
 fn is_okex_venue(venue: order_common::TradingVenue) -> bool {
     matches!(
         venue,
-        order_common::TradingVenue::OkexMargin
-            | order_common::TradingVenue::OkexFutures
+        order_common::TradingVenue::OkexMargin | order_common::TradingVenue::OkexFutures
     )
 }
 

@@ -3,9 +3,9 @@
 use crate::common::basic_account_msg::OkexOrderMsg;
 use crate::pre_trade::order_manager::OrderType;
 use crate::pre_trade::order_manager::Side;
-use order_common::{TradingVenue, TimeInForce, ExecutionType, OrderStatus};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
+use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 
 /// OKX 订单状态 -> 通用 OrderStatus（Binance 语义）
 /// - 1: canceled/mmp_canceled => CANCELED

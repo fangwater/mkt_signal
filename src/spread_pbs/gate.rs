@@ -16,10 +16,10 @@ use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::common::mkt_msg::{FundingRateMsg, IndexPriceMsg, MarkPriceMsg};
-use order_common::TradingVenue;
 use crate::spread_pbs::adapter::{
     BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
 };
+use order_common::TradingVenue;
 
 const GATE_SPOT_WS_URL: &str = "wss://api.gateio.ws/ws/v4/";
 const GATE_FUTURES_WS_URL: &str = "wss://fx-ws.gateio.ws/v4/ws/usdt";

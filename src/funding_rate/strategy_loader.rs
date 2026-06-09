@@ -611,6 +611,10 @@ pub struct StrategyParams {
     #[serde(default = "default_spread_cancel_cooldown_ms")]
     pub spread_cancel_cooldown_ms: u64,
 
+    /// Intra 是否启用 funding close 信号；命中后仍需通过 spread close gate。
+    #[serde(default = "default_enable_intra_funding_close_signal")]
+    pub enable_intra_funding_close_signal: bool,
+
     /// MM hedge 是否允许 return score 调整 hedge offset（false=使用中性 score 计算）
     #[serde(default = "default_enable_return_score_adjust_hedge")]
     pub enable_return_score_adjust_hedge: bool,
@@ -734,6 +738,9 @@ fn default_tlen_cancel_freq_ms() -> u64 {
 fn default_spread_cancel_cooldown_ms() -> u64 {
     100
 }
+fn default_enable_intra_funding_close_signal() -> bool {
+    false
+}
 fn default_enable_return_score_adjust_hedge() -> bool {
     true
 }
@@ -801,6 +808,7 @@ impl Default for StrategyParams {
             enable_tlen_cancel: default_enable_tlen_cancel(),
             tlen_cancel_freq_ms: default_tlen_cancel_freq_ms(),
             spread_cancel_cooldown_ms: default_spread_cancel_cooldown_ms(),
+            enable_intra_funding_close_signal: default_enable_intra_funding_close_signal(),
             enable_return_score_adjust_hedge: default_enable_return_score_adjust_hedge(),
             enable_environment_model: default_enable_environment_model(),
             enable_volatility_limit: default_enable_volatility_limit(),
@@ -1403,6 +1411,10 @@ impl StrategyParams {
             }
             None => default_spread_cancel_cooldown_ms(),
         };
+        let enable_intra_funding_close_signal = hash_map
+            .get("enable_intra_funding_close_signal")
+            .map(|raw| parse_bool_param(&redis_key, "enable_intra_funding_close_signal", raw))
+            .unwrap_or_else(default_enable_intra_funding_close_signal);
         let enable_return_score_adjust_hedge = match hash_map
             .get("enable_return_score_adjust_hegde")
             .or_else(|| hash_map.get("enable_return_score_adjust_hedge"))
@@ -1615,6 +1627,7 @@ impl StrategyParams {
             enable_tlen_cancel,
             tlen_cancel_freq_ms,
             spread_cancel_cooldown_ms,
+            enable_intra_funding_close_signal,
             enable_return_score_adjust_hedge,
             enable_environment_model,
             enable_volatility_limit,
@@ -1709,6 +1722,7 @@ impl StrategyParams {
             arb.hedge_aggressive_seq_threshold = self.hedge_aggressive_seq_threshold;
             arb.enable_tlen_cancel = self.enable_tlen_cancel;
             arb.tlen_cancel_freq_ms = self.tlen_cancel_freq_ms;
+            arb.enable_intra_funding_close_signal = self.enable_intra_funding_close_signal;
             arb.signal_cooldown_us = self
                 .signal_cooldown
                 .saturating_mul(1_000_000)
@@ -1804,7 +1818,7 @@ impl StrategyParams {
         );
 
         info!(
-            "✅ 策略参数已更新: amount={:.2}, arb_vol_band_scale={}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, hedge_window_scale_low={:.4}, hedge_window_scale_high={:.4}, order_interval_ms={}, enable_clock_shift_ms={}, open_orders_per_round={}, cooldown={}s, enable_return_score_cancel={}, return_score_buy_cancel_quantile={}, return_score_sell_cancel_quantile={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, spread_cancel_cooldown_ms={}, enable_return_score_adjust_hedge={}, enable_environment_model={}, enable_volatility_limit={}, open_volatility_limit={}, enable_tradecount_limit={}, open_tradecount_limit={}, enable_open_time_block={}, open_block_utc_time_range={}, return_model_service={}, environment_model_service={}",
+            "✅ 策略参数已更新: amount={:.2}, arb_vol_band_scale={}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, hedge_window_scale_low={:.4}, hedge_window_scale_high={:.4}, order_interval_ms={}, enable_clock_shift_ms={}, open_orders_per_round={}, cooldown={}s, enable_return_score_cancel={}, return_score_buy_cancel_quantile={}, return_score_sell_cancel_quantile={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, spread_cancel_cooldown_ms={}, enable_intra_funding_close_signal={}, enable_return_score_adjust_hedge={}, enable_environment_model={}, enable_volatility_limit={}, open_volatility_limit={}, enable_tradecount_limit={}, open_tradecount_limit={}, enable_open_time_block={}, open_block_utc_time_range={}, return_model_service={}, environment_model_service={}",
             self.order_amount,
             self.vol_band_scale,
             self.open_buy_vol_scale,
@@ -1821,6 +1835,7 @@ impl StrategyParams {
             self.enable_tlen_cancel,
             self.tlen_cancel_freq_ms,
             self.spread_cancel_cooldown_ms,
+            self.enable_intra_funding_close_signal,
             self.enable_return_score_adjust_hedge,
             self.enable_environment_model,
             self.enable_volatility_limit,

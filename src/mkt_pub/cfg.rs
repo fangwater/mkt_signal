@@ -1,7 +1,7 @@
 use crate::exchange::Exchange;
-use order_common::TradingVenue;
 use anyhow::{Context, Result};
 use log::{error, info, warn};
+use order_common::TradingVenue;
 use prettytable::{format, Cell, Row, Table};
 use serde::Deserialize;
 use serde_yaml;

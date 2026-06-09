@@ -4,7 +4,6 @@ use crate::pre_trade::open_order_rate_limiter::OrderRateBucket;
 use crate::pre_trade::PersistChannel;
 use crate::signal::cancel_signal::ArbCancelCtx;
 use crate::signal::common::SignalBytes;
-use order_common::TradingVenue;
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::manager::{OpenPriceMapEntry, OrphanStrategyRole, Strategy};
@@ -17,6 +16,7 @@ use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::trade_update_lite::TradeUpdateLite;
 use crate::strategy::uniform_order_helper::UniformPublishCtx;
 use log::{debug, warn};
+use order_common::TradingVenue;
 use std::any::Any;
 
 /// 单腿套利开仓策略：只负责 open leg 生命周期，不保存 hedge leg 或双腿盘口。

@@ -1,6 +1,9 @@
 use order_common::Side;
 
-use crate::common::{align_price_ceil, align_price_floor, normalize_symbol_for_venue, QuantizedValue, Venue, MinQtyLookup};
+use crate::common::{
+    align_price_ceil, align_price_floor, normalize_symbol_for_venue, MinQtyLookup, QuantizedValue,
+    Venue,
+};
 use crate::order_align::{align_order_for_venue, min_qty_symbol_key};
 
 #[derive(Debug, Clone, Copy)]
@@ -71,11 +74,17 @@ where
         return Err("symbol is empty".to_string());
     }
     if target_base_qty.is_none() && !(order_amount_u.is_finite() && order_amount_u > 0.0) {
-        return Err(format!("invalid order_amount_u={} (must be finite and >0)", order_amount_u));
+        return Err(format!(
+            "invalid order_amount_u={} (must be finite and >0)",
+            order_amount_u
+        ));
     }
     if let Some(qty) = target_base_qty {
         if !(qty.is_finite() && qty > 0.0) {
-            return Err(format!("invalid target_base_qty={} (must be finite and >0)", qty));
+            return Err(format!(
+                "invalid target_base_qty={} (must be finite and >0)",
+                qty
+            ));
         }
     }
     if specs.is_empty() {

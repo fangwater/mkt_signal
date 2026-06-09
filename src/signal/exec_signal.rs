@@ -1,8 +1,8 @@
 use crate::common::tick_math::QuantizedValue;
 use crate::signal::common::{bytes_helper, SignalBytes, TradingLeg};
-use order_common::TradingVenue;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use order_common::Side;
+use order_common::TradingVenue;
 
 const QV_BYTES_LEN: usize = 8 + 4 + 8;
 const EXEC_BACKWARD_QUERY_QUOTE: u8 = 1;
@@ -555,8 +555,8 @@ mod tests {
     };
     use crate::common::tick_math::QuantizedValue;
     use crate::signal::common::{SignalBytes, TradingLeg};
-use order_common::TradingVenue;
     use order_common::Side;
+    use order_common::TradingVenue;
 
     #[test]
     fn exec_request_roundtrip() {

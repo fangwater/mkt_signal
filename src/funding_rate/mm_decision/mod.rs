@@ -16,17 +16,17 @@ use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
 use crate::common::ipc_service_name::build_service_name;
 use crate::common::redis_client::RedisSettings;
 use crate::common::time_util::get_timestamp_us;
+use crate::funding_rate::inventory_hedge_inputs::resolve_inventory_hedge_signal_inputs;
 use crate::signal::common::{SignalBytes, TradingLeg};
-use order_common::TradingVenue;
 use crate::signal::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
 use crate::signal::mm_signal::{MmBackwardQueryMsg, MmCancelCandidateQueryMsg};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
-use crate::funding_rate::inventory_hedge_inputs::resolve_inventory_hedge_signal_inputs;
+use crate::symbol_match::normalize_symbol_for_whitelist;
+use order_common::TradingVenue;
 use quote_plan::inventory_hedge::{
     build_inventory_hedge_from_key, build_inventory_hedge_quote_plan, InventoryHedgeBuildInput,
     InventoryHedgeQuotePlan,
 };
-use crate::symbol_match::normalize_symbol_for_whitelist;
 
 mod cancel;
 pub mod from_key;

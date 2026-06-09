@@ -128,4 +128,3 @@ fn resolve_inventory_hedge_signal_quantile(
     }
     score_quantile.filter(|v| v.is_finite())
 }
-

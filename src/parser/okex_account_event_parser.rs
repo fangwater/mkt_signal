@@ -5,9 +5,9 @@ use crate::common::basic_account_msg::{
     BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg, OkexOrderMsg,
 };
 use crate::parser::default_parser::Parser;
-use order_common::TradingVenue;
 use bytes::Bytes;
 use log::{debug, info, warn};
+use order_common::TradingVenue;
 use tokio::sync::mpsc;
 
 #[derive(Clone)]

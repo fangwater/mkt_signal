@@ -2,10 +2,10 @@
 
 use crate::common::basic_account_msg::{BasicTradeLiteMsg, BinanceBasicOrderMsg, TRADE_ID_LEN};
 use crate::pre_trade::order_manager::{OrderType, Side};
-use order_common::{TradingVenue, TimeInForce, ExecutionType, OrderStatus};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::trade_update_lite::TradeUpdateLite;
+use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 
 fn map_execution_type(code: u8) -> ExecutionType {
     ExecutionType::from_u8(code).unwrap_or(ExecutionType::New)

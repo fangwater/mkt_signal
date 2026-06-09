@@ -33,8 +33,8 @@ use crate::common::trade_msg_parser::{parse_trade, TradeSide};
 use crate::portfolio_margin::pm_forwarder::{
     PM_HISTORY_SIZE, PM_MAX_SUBSCRIBERS, PM_SUBSCRIBER_MAX_BUFFER_SIZE,
 };
-use order_common::TradingVenue;
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
+use order_common::TradingVenue;
 
 /// IceOryx 增量消息缓冲区大小 (与 mkt_pub 一致)
 const INC_MAX_BYTES: usize = 2048;
