@@ -1,5 +1,5 @@
-use crate::common::basic_account_msg::{BasicBalanceMsg, BasicBorrowInterestMsg};
 use bytes::Bytes;
+use mkt_parsers::msg::basic_account_msg::{BasicBalanceMsg, BasicBorrowInterestMsg};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -84,7 +84,7 @@ pub fn parse_bybit_account_balance_snapshot(json: &str) -> Option<Vec<Bytes>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::basic_account_msg::{
+    use mkt_parsers::msg::basic_account_msg::{
         get_basic_event_type, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
     };
 

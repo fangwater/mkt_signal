@@ -101,15 +101,15 @@
 //!   - `price`（委托价；市价单常为 0）
 //!   - `finish_as`（终态原因，用于映射 execution_type / order_status）
 
-use crate::common::basic_account_msg::{
-    BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
-    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg,
-    BasicUmUnrealizedMsg, GateBasicOrderMsg,
-};
 use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use log::{debug, warn};
+use mkt_parsers::msg::basic_account_msg::{
+    BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
+    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg,
+    BasicUmUnrealizedMsg, GateBasicOrderMsg,
+};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
@@ -1342,13 +1342,13 @@ impl Parser for GateAccountEventParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::basic_account_msg::{
+    use crate::common::exchange::Exchange;
+    use crate::pre_trade::usdt_balance_manager::UsdtBalanceManager;
+    use mkt_parsers::msg::basic_account_msg::{
         split_basic_account_event, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
         BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
         GateBasicOrderMsg,
     };
-    use crate::common::exchange::Exchange;
-    use crate::pre_trade::usdt_balance_manager::UsdtBalanceManager;
 
     #[test]
     fn unified_asset_detail_prefers_equity_plus_liability_over_raw_balance() {

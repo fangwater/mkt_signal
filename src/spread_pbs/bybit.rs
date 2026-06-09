@@ -17,9 +17,11 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::common::mkt_msg::{FundingRateMsg, IndexPriceMsg, Level, LiquidationMsg, MarkPriceMsg};
 use crate::spread_pbs::adapter::{
     BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
+};
+use mkt_parsers::msg::mkt_msg::{
+    FundingRateMsg, IndexPriceMsg, Level, LiquidationMsg, MarkPriceMsg,
 };
 use order_common::TradingVenue;
 
@@ -324,7 +326,7 @@ fn book_levels_to_msg(levels: Vec<bybit_codec::Level>) -> Vec<Level> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::mkt_msg::{get_msg_type, MktMsgType};
+    use mkt_parsers::msg::mkt_msg::{get_msg_type, MktMsgType};
 
     fn v(raw: &str) -> Value {
         serde_json::from_str(raw).expect("test fixture must be valid JSON")

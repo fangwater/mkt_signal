@@ -21,8 +21,8 @@ use super::factor_pool::{
 use super::model::OnnxModel;
 use super::publisher::ModelPublisher;
 use super::score_rolling::InlineScoreRolling;
-use crate::common::mkt_msg::{FeatureMsg, FeatureStatus, ModelMsg, MODEL_STATUS_OK};
 use crate::factor_pub::fusion_factor_pub::publisher::FUSION_FACTOR_PAYLOAD_MAX_BYTES;
+use mkt_parsers::msg::mkt_msg::{FeatureMsg, FeatureStatus, ModelMsg, MODEL_STATUS_OK};
 
 const INPUT_MAX_BYTES: usize = FUSION_FACTOR_PAYLOAD_MAX_BYTES;
 const IDLE_SLEEP_MICROS: u64 = 200;

@@ -3,7 +3,7 @@ use clap::Parser;
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use mkt_signal::common::basic_account_msg::{
+use mkt_parsers::msg::basic_account_msg::{
     split_basic_account_event, BasicAccountEventType, BasicAccountScope, BasicTradeLiteMsg,
     OkexOrderMsg,
 };

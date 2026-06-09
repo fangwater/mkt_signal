@@ -6,7 +6,7 @@ use iceoryx2::service::ipc;
 use log::{info, warn};
 
 use super::cfg::PairMmResampleConfig;
-use crate::common::mkt_msg::PairMmResampleMsg;
+use mkt_parsers::msg::mkt_msg::PairMmResampleMsg;
 
 const FACTOR_MAX_BYTES: usize = 256;
 const BUFFER_SIZE: usize = 8192;

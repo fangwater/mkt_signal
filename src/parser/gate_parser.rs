@@ -1,10 +1,10 @@
-use crate::common::mkt_msg::{
-    AskBidSpreadMsg, FundingRateMsg, IncMsg, IndexPriceMsg, KlineMsg, Level, MarkPriceMsg,
-    SignalMsg, SignalSource, TradeMsg,
-};
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use mkt_parsers::gate as gate_codec;
+use mkt_parsers::msg::mkt_msg::{
+    AskBidSpreadMsg, FundingRateMsg, IncMsg, IndexPriceMsg, KlineMsg, Level, MarkPriceMsg,
+    SignalMsg, SignalSource, TradeMsg,
+};
 use tokio::sync::mpsc;
 
 // ─── Gate SBE constants (schemaId=1, littleEndian) ───────────────────────────

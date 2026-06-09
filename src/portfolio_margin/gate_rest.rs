@@ -1,10 +1,10 @@
 //! Gate REST helpers for unified-account borrowing and interest state.
 
-use crate::common::basic_account_msg::BasicBorrowInterestMsg;
 use crate::portfolio_margin::gate_auth::GateCredentials;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use hmac::{Hmac, Mac};
+use mkt_parsers::msg::basic_account_msg::BasicBorrowInterestMsg;
 use reqwest::Client;
 use serde_json::Value;
 use sha2::{Digest, Sha512};

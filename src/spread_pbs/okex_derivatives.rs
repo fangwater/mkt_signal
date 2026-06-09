@@ -3,7 +3,7 @@ use mkt_parsers::okex as okex_codec;
 use serde_json::Value;
 use std::collections::HashSet;
 
-use crate::common::mkt_msg::{FundingRateMsg, IndexPriceMsg, LiquidationMsg, MarkPriceMsg};
+use mkt_parsers::msg::mkt_msg::{FundingRateMsg, IndexPriceMsg, LiquidationMsg, MarkPriceMsg};
 
 pub const OKEX_PUBLIC_WS_URL: &str = "wss://ws.okx.com:8443/ws/v5/public";
 
@@ -93,7 +93,7 @@ fn derivative_to_bytes(derivative: okex_codec::Derivative) -> Bytes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::mkt_msg::{FundingRateMsg, MarkPriceMsg};
+    use mkt_parsers::msg::mkt_msg::{FundingRateMsg, MarkPriceMsg};
 
     #[test]
     fn builds_mark_index_funding_and_liquidation_subs() {

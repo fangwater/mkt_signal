@@ -17,11 +17,11 @@ use tokio::signal;
 use tokio::time::{interval, sleep, Instant};
 use tokio_util::sync::CancellationToken;
 
+use mkt_parsers::msg::mkt_msg::{
+    get_msg_type, AskBidSpreadMsg, FundingRateMsg, IndexPriceMsg, MarkPriceMsg, MktMsgType,
+};
 use mkt_signal::common::iceoryx_subscriber::{
     ChannelType, MultiChannelSubscriber, SubscribeParams,
-};
-use mkt_signal::common::mkt_msg::{
-    get_msg_type, AskBidSpreadMsg, FundingRateMsg, IndexPriceMsg, MarkPriceMsg, MktMsgType,
 };
 use mkt_signal::common::redis_client::{RedisClient, RedisSettings};
 use mkt_signal::common::time_util::get_timestamp_us;

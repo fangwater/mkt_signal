@@ -1,5 +1,5 @@
-use crate::common::basic_account_msg::TRADE_ID_LEN;
 use crate::pre_trade::order_manager::Side;
+use mkt_parsers::msg::basic_account_msg::TRADE_ID_LEN;
 use order_common::TradingVenue;
 
 /// 轻量成交更新 trait。

@@ -3,11 +3,11 @@ use clap::Parser;
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use mkt_signal::common::redis_client::RedisSettings;
-use mkt_signal::common::symbol_util::normalize_symbol_for_venue;
-use mkt_signal::common::trade_flow_feature_msg::{
+use mkt_parsers::msg::trade_flow_feature_msg::{
     TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_HISTORY_SIZE, TRADE_FLOW_FEATURE_MAX_BYTES,
 };
+use mkt_signal::common::redis_client::RedisSettings;
+use mkt_signal::common::symbol_util::normalize_symbol_for_venue;
 use mkt_signal::factor_pub::factor_index::factor_name_to_channel;
 use mkt_signal::factor_pub::rl_vol::compute_rl_return_volatility;
 use mkt_signal::factor_pub::trade_flow_feature_pub::cfg::TradeFlowFeaturePubConfig;

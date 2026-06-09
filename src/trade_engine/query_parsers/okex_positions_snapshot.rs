@@ -1,5 +1,5 @@
-use crate::common::basic_account_msg::{BasicPositionMsg, BasicUmUnrealizedMsg};
 use bytes::Bytes;
+use mkt_parsers::msg::basic_account_msg::{BasicPositionMsg, BasicUmUnrealizedMsg};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -80,7 +80,7 @@ pub fn parse_okex_positions_snapshot(json: &str) -> Option<Vec<Bytes>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::basic_account_msg::{BasicAccountEventType, BasicUmUnrealizedMsg};
+    use mkt_parsers::msg::basic_account_msg::{BasicAccountEventType, BasicUmUnrealizedMsg};
 
     #[test]
     fn parses_okex_positions_snapshot_to_basic_position_msgs() {

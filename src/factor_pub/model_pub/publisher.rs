@@ -3,7 +3,7 @@ use iceoryx2::port::publisher::Publisher;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 
-use crate::common::model_ipc::MODEL_PAYLOAD_MAX_BYTES;
+use mkt_parsers::msg::model_ipc::MODEL_PAYLOAD_MAX_BYTES;
 
 const MODEL_OUTPUT_SUBSCRIBER_MAX_BUFFER_SIZE: usize = 256;
 

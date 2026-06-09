@@ -1,9 +1,9 @@
 //! 为 Bybit basic 订单消息实现统一的 OrderUpdate / TradeUpdate 接口
 
-use crate::common::bybit_account_msg::BybitBasicOrderMsg;
 use crate::pre_trade::order_manager::{OrderType, Side};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
+use mkt_parsers::msg::bybit_account_msg::BybitBasicOrderMsg;
 use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 
 fn map_execution_type(code: u8) -> ExecutionType {

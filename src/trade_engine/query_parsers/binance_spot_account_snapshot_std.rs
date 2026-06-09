@@ -1,5 +1,5 @@
-use crate::common::basic_account_msg::{BasicBalanceMsg, BasicBorrowInterestMsg};
 use bytes::Bytes;
+use mkt_parsers::msg::basic_account_msg::{BasicBalanceMsg, BasicBorrowInterestMsg};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -44,7 +44,7 @@ pub fn parse_binance_spot_account_snapshot_std(json: &str) -> Option<Vec<Bytes>>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::basic_account_msg::{BasicBalanceMsg, BasicBorrowInterestMsg};
+    use mkt_parsers::msg::basic_account_msg::{BasicBalanceMsg, BasicBorrowInterestMsg};
 
     #[test]
     fn parse_spot_snapshot_to_basic_msgs() {

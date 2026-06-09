@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use mkt_signal::common::mkt_msg::FeatureMsg;
+use mkt_parsers::msg::mkt_msg::FeatureMsg;
 use mkt_signal::factor_pub::fusion_factor_pub::publisher::FUSION_FACTOR_PAYLOAD_MAX_BYTES;
 use std::thread;
 use std::time::{Duration, Instant};

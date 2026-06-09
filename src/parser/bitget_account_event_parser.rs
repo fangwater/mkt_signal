@@ -1,14 +1,14 @@
 //! Bitget UTA 账户事件解析器（余额 / 持仓 / 订单）
 
-use crate::common::basic_account_msg::{
+use crate::parser::default_parser::Parser;
+use bytes::Bytes;
+use log::{debug, warn};
+use mkt_parsers::msg::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
     BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg,
     BasicUmUnrealizedMsg,
 };
-use crate::common::bitget_account_msg::BitgetBasicOrderMsg;
-use crate::parser::default_parser::Parser;
-use bytes::Bytes;
-use log::{debug, warn};
+use mkt_parsers::msg::bitget_account_msg::BitgetBasicOrderMsg;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use tokio::sync::mpsc;
@@ -749,11 +749,11 @@ fn parse_i64_str(v: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::basic_account_msg::{
+    use crate::strategy::trade_update::TradeUpdate;
+    use mkt_parsers::msg::basic_account_msg::{
         split_basic_account_event, BasicAccountRiskMsg, BasicBalanceMsg, BasicBorrowInterestMsg,
     };
-    use crate::common::bitget_account_msg::BitgetBasicOrderMsg;
-    use crate::strategy::trade_update::TradeUpdate;
+    use mkt_parsers::msg::bitget_account_msg::BitgetBasicOrderMsg;
 
     #[test]
     fn account_channel_emits_zero_borrow_when_liability_fields_are_present() {

@@ -1,10 +1,10 @@
 //! 为 OKX basic 订单消息实现统一的 OrderUpdate / TradeUpdate 接口
 
-use crate::common::basic_account_msg::OkexOrderMsg;
 use crate::pre_trade::order_manager::OrderType;
 use crate::pre_trade::order_manager::Side;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
+use mkt_parsers::msg::basic_account_msg::OkexOrderMsg;
 use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 
 /// OKX 订单状态 -> 通用 OrderStatus（Binance 语义）

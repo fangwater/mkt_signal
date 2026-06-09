@@ -18,7 +18,7 @@
 use anyhow::Result;
 use bytes::Bytes;
 use log::{debug, error, info, warn};
-use mkt_signal::common::basic_account_msg::{
+use mkt_parsers::msg::basic_account_msg::{
     split_basic_account_event, BasicAccountEventType, BasicAccountRiskMsg, BasicBalanceMsg,
     BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg, BasicUmUnrealizedMsg,
     OkexOrderMsg,
@@ -237,9 +237,9 @@ fn spawn_borrow_interest_poll(
                         Ok(items) => {
                             for msg in items {
                                 let payload = msg.to_bytes();
-                                let event = mkt_signal::common::basic_account_msg::BasicAccountEventMsg::create(
+                                let event = mkt_parsers::msg::basic_account_msg::BasicAccountEventMsg::create(
                                     msg.msg_type,
-                                    mkt_signal::common::basic_account_msg::BasicAccountScope::OkexUnified,
+                                    mkt_parsers::msg::basic_account_msg::BasicAccountScope::OkexUnified,
                                     payload,
                                 );
                                 if let Err(e) = evt_tx.send(event.to_bytes()) {

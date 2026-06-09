@@ -1,6 +1,6 @@
-use crate::common::trade_flow_feature_msg::TradeFlowFeatureMsg;
 use anyhow::{bail, Result};
 use bytes::{Buf, Bytes};
+use mkt_parsers::msg::trade_flow_feature_msg::TradeFlowFeatureMsg;
 
 /// 消息类型枚举（与mkt_signal保持一致）
 #[repr(u32)]

@@ -8,10 +8,6 @@ use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::common::basic_account_msg::{
-    get_basic_event_type, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
-    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
-};
 use crate::common::exchange::Exchange;
 use crate::common::iceoryx_publisher::{QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD};
 use crate::common::ipc_service_name::build_service_name;
@@ -26,6 +22,10 @@ use crate::strategy::query_engine_response::{QueryEngineResponse, QueryEngineRes
 use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
 use crate::strategy::{OrphanStrategyManager, StrategyManager};
 use crate::trade_engine::query_request::QueryRequestType;
+use mkt_parsers::msg::basic_account_msg::{
+    get_basic_event_type, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
+    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
+};
 use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 
 thread_local! {

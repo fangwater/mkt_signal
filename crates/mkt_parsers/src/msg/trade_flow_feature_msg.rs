@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 use bytes::{BufMut, Bytes, BytesMut};
 
-use crate::common::mkt_msg::MktMsgType;
+use super::mkt_msg::MktMsgType;
 
 pub const TRADE_FLOW_FEATURE_MSG_TYPE: u32 = MktMsgType::TradeFlowFeature as u32;
 pub const TRADE_FLOW_FEATURE_DIM: usize = 32;

@@ -1,13 +1,13 @@
 use crate::cfg::Config;
-use crate::mkt_msg::FundingRateMsg;
-use crate::mkt_msg::MktMsg;
-use crate::mkt_msg::MktMsgType;
 use anyhow::Result;
 use bytes::Bytes;
 use iceoryx2::port::publisher::Publisher;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info, warn, Level};
+use mkt_parsers::msg::mkt_msg::FundingRateMsg;
+use mkt_parsers::msg::mkt_msg::MktMsg;
+use mkt_parsers::msg::mkt_msg::MktMsgType;
 use std::time::{Duration, Instant};
 
 const TRADE_MAX_BYTES: usize = 128;
@@ -243,7 +243,7 @@ impl IceOryxForwarder {
 
         // 根据消息类型选择合适的publisher
         let result = match msg_type {
-            t if t == crate::mkt_msg::MktMsgType::OrderBookInc as u32 => {
+            t if t == mkt_parsers::msg::mkt_msg::MktMsgType::OrderBookInc as u32 => {
                 let len = msg.len();
                 if len > self.inc_max_seen {
                     self.inc_max_seen = len;
@@ -259,7 +259,7 @@ impl IceOryxForwarder {
                     false
                 }
             }
-            t if t == crate::mkt_msg::MktMsgType::TradeInfo as u32 => {
+            t if t == mkt_parsers::msg::mkt_msg::MktMsgType::TradeInfo as u32 => {
                 let len = msg.len();
                 if len > self.trade_max_seen {
                     self.trade_max_seen = len;
@@ -270,7 +270,7 @@ impl IceOryxForwarder {
                     false
                 }
             }
-            t if t == crate::mkt_msg::MktMsgType::Kline as u32 => {
+            t if t == mkt_parsers::msg::mkt_msg::MktMsgType::Kline as u32 => {
                 let len = msg.len();
                 if len > self.kline_max_seen {
                     self.kline_max_seen = len;
@@ -282,10 +282,10 @@ impl IceOryxForwarder {
                     false
                 }
             }
-            t if t == crate::mkt_msg::MktMsgType::LiquidationOrder as u32
-                || t == crate::mkt_msg::MktMsgType::MarkPrice as u32
-                || t == crate::mkt_msg::MktMsgType::IndexPrice as u32
-                || t == crate::mkt_msg::MktMsgType::FundingRate as u32 =>
+            t if t == mkt_parsers::msg::mkt_msg::MktMsgType::LiquidationOrder as u32
+                || t == mkt_parsers::msg::mkt_msg::MktMsgType::MarkPrice as u32
+                || t == mkt_parsers::msg::mkt_msg::MktMsgType::IndexPrice as u32
+                || t == mkt_parsers::msg::mkt_msg::MktMsgType::FundingRate as u32 =>
             {
                 let len = msg.len();
                 if len > self.der_max_seen {
@@ -297,7 +297,7 @@ impl IceOryxForwarder {
                     false
                 }
             }
-            t if t == crate::mkt_msg::MktMsgType::AskBidSpread as u32 => {
+            t if t == mkt_parsers::msg::mkt_msg::MktMsgType::AskBidSpread as u32 => {
                 let len = msg.len();
                 if len > self.spread_max_seen {
                     self.spread_max_seen = len;
@@ -308,7 +308,7 @@ impl IceOryxForwarder {
                     false
                 }
             }
-            t if t == crate::mkt_msg::MktMsgType::TimeSignal as u32 => {
+            t if t == mkt_parsers::msg::mkt_msg::MktMsgType::TimeSignal as u32 => {
                 let len = msg.len();
                 if len > self.signal_max_seen {
                     self.signal_max_seen = len;
@@ -326,11 +326,13 @@ impl IceOryxForwarder {
             self.message_count += 1;
             // 更新具体类型的计数
             match msg_type {
-                t if t == crate::mkt_msg::MktMsgType::OrderBookInc as u32 => {
+                t if t == mkt_parsers::msg::mkt_msg::MktMsgType::OrderBookInc as u32 => {
                     self.incremental_count += 1
                 }
-                t if t == crate::mkt_msg::MktMsgType::TradeInfo as u32 => self.trade_count += 1,
-                t if t == crate::mkt_msg::MktMsgType::Kline as u32 => {
+                t if t == mkt_parsers::msg::mkt_msg::MktMsgType::TradeInfo as u32 => {
+                    self.trade_count += 1
+                }
+                t if t == mkt_parsers::msg::mkt_msg::MktMsgType::Kline as u32 => {
                     self.kline_count += 1;
                     // 检查是否是BTCUSDT的K线消息（用于调试）
                     if msg.len() >= 132 {
@@ -346,18 +348,20 @@ impl IceOryxForwarder {
                         }
                     }
                 }
-                t if t == crate::mkt_msg::MktMsgType::LiquidationOrder as u32
-                    || t == crate::mkt_msg::MktMsgType::MarkPrice as u32
-                    || t == crate::mkt_msg::MktMsgType::IndexPrice as u32
-                    || t == crate::mkt_msg::MktMsgType::FundingRate as u32 =>
+                t if t == mkt_parsers::msg::mkt_msg::MktMsgType::LiquidationOrder as u32
+                    || t == mkt_parsers::msg::mkt_msg::MktMsgType::MarkPrice as u32
+                    || t == mkt_parsers::msg::mkt_msg::MktMsgType::IndexPrice as u32
+                    || t == mkt_parsers::msg::mkt_msg::MktMsgType::FundingRate as u32 =>
                 {
                     self.derivatives_count += 1;
                     self.log_derivatives_debug(msg_type, msg.as_ref());
                 }
-                t if t == crate::mkt_msg::MktMsgType::AskBidSpread as u32 => {
+                t if t == mkt_parsers::msg::mkt_msg::MktMsgType::AskBidSpread as u32 => {
                     self.ask_bid_spread_count += 1;
                 }
-                t if t == crate::mkt_msg::MktMsgType::TimeSignal as u32 => self.signal_count += 1,
+                t if t == mkt_parsers::msg::mkt_msg::MktMsgType::TimeSignal as u32 => {
+                    self.signal_count += 1
+                }
                 _ => {}
             }
         } else {

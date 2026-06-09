@@ -2,7 +2,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use serde_json::Value;
 
-use crate::common::mkt_msg::Level;
+use mkt_parsers::msg::mkt_msg::Level;
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 

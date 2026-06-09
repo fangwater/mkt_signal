@@ -1,5 +1,5 @@
-use crate::common::basic_account_msg::{BasicPositionMsg, BasicUmUnrealizedMsg};
 use bytes::Bytes;
+use mkt_parsers::msg::basic_account_msg::{BasicPositionMsg, BasicUmUnrealizedMsg};
 use serde_json::Value;
 
 fn parse_i64_value(v: Option<&Value>) -> Option<i64> {
@@ -113,7 +113,7 @@ pub fn parse_bitget_positions_snapshot(json: &str) -> Option<Vec<Bytes>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::basic_account_msg::{
+    use mkt_parsers::msg::basic_account_msg::{
         BasicAccountEventType, BasicPositionMsg, BasicUmUnrealizedMsg,
     };
 

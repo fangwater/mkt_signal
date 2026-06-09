@@ -1,7 +1,7 @@
 use anyhow::Result;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-use crate::common::basic_account_msg::BasicAccountEventType;
+use super::basic_account_msg::BasicAccountEventType;
 
 /// Bitget 订单更新消息（紧凑版，结构参考 GateBasicOrderMsg）
 #[derive(Debug, Clone)]

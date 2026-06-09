@@ -4,4 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+anyhow = { workspace = true }
+bytes = { version = "1.0", features = ["serde"] }
 serde_json = "1.0"

@@ -1,11 +1,11 @@
 // use crate::exchange::Exchange;
-use crate::mkt_msg::{
-    AskBidSpreadMsg, FundingRateMsg, IncMsg, IndexPriceMsg, KlineMsg, Level, LiquidationMsg,
-    MarkPriceMsg, SignalMsg, SignalSource, TradeMsg,
-};
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use log::info;
+use mkt_parsers::msg::mkt_msg::{
+    AskBidSpreadMsg, FundingRateMsg, IncMsg, IndexPriceMsg, KlineMsg, Level, LiquidationMsg,
+    MarkPriceMsg, SignalMsg, SignalSource, TradeMsg,
+};
 use mkt_parsers::okex as okex_codec;
 use std::collections::HashSet;
 use tokio::sync::mpsc;

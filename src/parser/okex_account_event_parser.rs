@@ -1,12 +1,12 @@
 //! OKX 账户事件解析器（余额 / 持仓 / 订单）
 
-use crate::common::basic_account_msg::{
-    BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
-    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg, OkexOrderMsg,
-};
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use log::{debug, info, warn};
+use mkt_parsers::msg::basic_account_msg::{
+    BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
+    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg, OkexOrderMsg,
+};
 use order_common::TradingVenue;
 use tokio::sync::mpsc;
 
@@ -570,7 +570,7 @@ fn parse_okex_order_price_by_state(order: &serde_json::Value, state_u8: u8) -> f
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::basic_account_msg::{
+    use mkt_parsers::msg::basic_account_msg::{
         split_basic_account_event, BasicAccountEventType, BasicAccountRiskMsg, BasicBalanceMsg,
         BasicBorrowInterestMsg,
     };

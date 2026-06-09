@@ -1,10 +1,10 @@
 //! OKEx REST 辅助（签名、借贷利息拉取）
 
-use crate::common::basic_account_msg::BasicBorrowInterestMsg;
 use anyhow::Result;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use chrono::{SecondsFormat, Utc};
 use hmac::{Hmac, Mac};
+use mkt_parsers::msg::basic_account_msg::BasicBorrowInterestMsg;
 use reqwest::Client;
 use serde::Deserialize;
 use sha2::Sha256;

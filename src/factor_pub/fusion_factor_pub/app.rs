@@ -40,11 +40,11 @@ use super::zscore::{
     ZscoreRuntimeConfig,
 };
 use crate::common::amount_threshold::is_online_amount_threshold;
-use crate::common::mkt_msg::{FeatureMsg, FeatureStatus};
 use crate::common::msg_parser::parse_trade_flow_feature;
 use crate::common::rolling_welford::RollingWelfordCovariance;
 use crate::common::symbol_util::normalize_symbol_for_venue;
-use crate::common::trade_flow_feature_msg::{
+use mkt_parsers::msg::mkt_msg::{FeatureMsg, FeatureStatus};
+use mkt_parsers::msg::trade_flow_feature_msg::{
     TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_DIM, TRADE_FLOW_FEATURE_HISTORY_SIZE,
     TRADE_FLOW_FEATURE_MAX_BYTES, TRADE_FLOW_FEATURE_MSG_TYPE,
 };
@@ -1675,7 +1675,7 @@ impl FusionFactorPubApp {
     fn on_trade_flow(
         &mut self,
         symbol: String,
-        msg: crate::common::trade_flow_feature_msg::TradeFlowFeatureMsg,
+        msg: mkt_parsers::msg::trade_flow_feature_msg::TradeFlowFeatureMsg,
     ) {
         let _ = self.apply_trade_flow_msg(symbol, msg, true);
     }
@@ -1683,7 +1683,7 @@ impl FusionFactorPubApp {
     fn apply_trade_flow_msg(
         &mut self,
         symbol: String,
-        mut msg: crate::common::trade_flow_feature_msg::TradeFlowFeatureMsg,
+        mut msg: mkt_parsers::msg::trade_flow_feature_msg::TradeFlowFeatureMsg,
         emit_output: bool,
     ) -> Option<ReplayEvalSummary> {
         let corrected = match Self::validate_and_fix_trade_flow(&self.venue_slug, &symbol, &mut msg)

@@ -1,5 +1,5 @@
-use crate::common::basic_account_msg::BasicAccountRiskMsg;
 use bytes::Bytes;
+use mkt_parsers::msg::basic_account_msg::BasicAccountRiskMsg;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]

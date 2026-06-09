@@ -1,6 +1,6 @@
-use crate::common::basic_account_msg::GateBasicOrderMsg;
 use crate::pre_trade::order_manager::OrderExecutionStatus;
 use crate::trade_engine::query_parsers::compact_order::CompactOrderQueryResp;
+use mkt_parsers::msg::basic_account_msg::GateBasicOrderMsg;
 use serde_json::Value;
 
 fn parse_f64_value(v: Option<&Value>) -> Option<f64> {

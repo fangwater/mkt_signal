@@ -3,8 +3,8 @@ use iceoryx2::port::publisher::Publisher;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 
-use crate::common::mkt_msg::{Level, MktMsgType};
 use crate::rolling_metrics::latency_snapshot::LATENCY_SNAPSHOT_PAYLOAD_LEN;
+use mkt_parsers::msg::mkt_msg::{Level, MktMsgType};
 
 /// AskBidSpreadMsg wire format 实测占用：4B msg_type + 4B symbol_len + N(symbol)
 /// + 8B ts + 4×8B = 至多 ~80 字节。预留到 128 与 dat_pbs 对齐，便于
@@ -504,7 +504,7 @@ impl SpreadDerivativesPublisher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::mkt_msg::{AskBidSpreadMsg, IncMsg, TradeMsg};
+    use mkt_parsers::msg::mkt_msg::{AskBidSpreadMsg, IncMsg, TradeMsg};
 
     #[test]
     fn direct_bbo_writer_matches_ask_bid_spread_msg_bytes() {

@@ -1,5 +1,5 @@
-use crate::common::basic_account_msg::{BasicPositionMsg, BasicUmUnrealizedMsg};
 use bytes::Bytes;
+use mkt_parsers::msg::basic_account_msg::{BasicPositionMsg, BasicUmUnrealizedMsg};
 use serde_json::Value;
 
 fn parse_f32_value(v: &Value) -> Option<f32> {
@@ -235,7 +235,7 @@ pub fn parse_gate_positions_snapshot(json: &str) -> Option<Vec<Bytes>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::basic_account_msg::{
+    use mkt_parsers::msg::basic_account_msg::{
         get_basic_event_type, BasicAccountEventType, BasicPositionMsg, BasicUmUnrealizedMsg,
     };
 

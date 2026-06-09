@@ -294,8 +294,8 @@ impl BasicExposureManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::basic_account_msg::{BasicBalanceMsg, BasicBorrowInterestMsg};
     use crate::pre_trade::basic_balance_manager::BasicBalanceManager;
+    use mkt_parsers::msg::basic_account_msg::{BasicBalanceMsg, BasicBorrowInterestMsg};
 
     #[test]
     fn revalue_uses_net_balance_directly() {

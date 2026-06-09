@@ -1,5 +1,5 @@
-use crate::common::basic_account_msg::{BasicBalanceMsg, BasicBorrowInterestMsg};
 use crate::common::exchange::Exchange;
+use mkt_parsers::msg::basic_account_msg::{BasicBalanceMsg, BasicBorrowInterestMsg};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct UsdtBalanceSnapshot {

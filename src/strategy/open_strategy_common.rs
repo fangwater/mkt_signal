@@ -232,7 +232,7 @@ pub struct OpenOrderState {
     pub open_order_id: i64,
     pub hedge_watermark_base_qty: f64,
     pub trade_lite_cumulative_venue_qty: f64,
-    pub seen_trade_lite_ids: HashSet<[u8; crate::common::basic_account_msg::TRADE_ID_LEN]>,
+    pub seen_trade_lite_ids: HashSet<[u8; mkt_parsers::msg::basic_account_msg::TRADE_ID_LEN]>,
     pub open_expire_ts: Option<i64>,
     pub open_side: Option<Side>,
     pub pending_order_query: Option<PendingOrderQueryReason>,

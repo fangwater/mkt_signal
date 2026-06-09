@@ -1,5 +1,5 @@
-use crate::common::basic_account_msg::{BasicPositionMsg, BasicUmUnrealizedMsg};
 use bytes::Bytes;
+use mkt_parsers::msg::basic_account_msg::{BasicPositionMsg, BasicUmUnrealizedMsg};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -66,7 +66,7 @@ pub fn parse_binance_um_account_snapshot(json: &str) -> Option<Vec<Bytes>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::basic_account_msg::{BasicPositionMsg, BasicUmUnrealizedMsg};
+    use mkt_parsers::msg::basic_account_msg::{BasicPositionMsg, BasicUmUnrealizedMsg};
 
     #[test]
     fn parse_um_snapshot_positions() {

@@ -3,10 +3,10 @@ use clap::Parser;
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use mkt_signal::common::basic_account_msg::{
+use mkt_parsers::msg::basic_account_msg::{
     split_basic_account_event, BasicAccountEventType, BasicAccountScope, BasicTradeLiteMsg,
 };
-use mkt_signal::common::bybit_account_msg::BybitBasicOrderMsg;
+use mkt_parsers::msg::bybit_account_msg::BybitBasicOrderMsg;
 use mkt_signal::common::ipc_service_name::build_service_name;
 use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::portfolio_margin::pm_forwarder::{

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-use crate::common::basic_account_msg::BasicAccountEventType;
+use super::basic_account_msg::BasicAccountEventType;
 
 /// Bybit 订单更新消息（保留字符串 ID，便于 unified 接口兼容 Bybit 的字符串订单号）
 #[derive(Debug, Clone)]

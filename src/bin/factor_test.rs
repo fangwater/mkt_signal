@@ -7,7 +7,7 @@ use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::fs;
 
-use mkt_signal::common::trade_flow_feature_msg::TRADE_FLOW_FEATURE_FIELD_NAMES;
+use mkt_parsers::msg::trade_flow_feature_msg::TRADE_FLOW_FEATURE_FIELD_NAMES;
 use mkt_signal::factor_pub::factor_test::runner::run_scenario;
 use mkt_signal::factor_pub::factor_test::synthetic::generate_all_scenarios;
 

@@ -1,14 +1,14 @@
 //! Bybit V5 私有账户事件解析器（wallet / position / order）
 
-use crate::common::basic_account_msg::{
+use crate::parser::default_parser::Parser;
+use bytes::Bytes;
+use log::{debug, warn};
+use mkt_parsers::msg::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
     BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg,
     BasicUmUnrealizedMsg,
 };
-use crate::common::bybit_account_msg::BybitBasicOrderMsg;
-use crate::parser::default_parser::Parser;
-use bytes::Bytes;
-use log::{debug, warn};
+use mkt_parsers::msg::bybit_account_msg::BybitBasicOrderMsg;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use tokio::sync::mpsc;
@@ -798,10 +798,10 @@ fn parse_boolish(value: &Value) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::basic_account_msg::{
+    use crate::strategy::trade_update::TradeUpdate;
+    use mkt_parsers::msg::basic_account_msg::{
         split_basic_account_event, BasicAccountRiskMsg, BasicBalanceMsg, BasicBorrowInterestMsg,
     };
-    use crate::strategy::trade_update::TradeUpdate;
 
     #[test]
     fn wallet_channel_emits_zero_borrow_when_liability_fields_are_present() {
@@ -1023,7 +1023,7 @@ mod tests {
         assert_eq!(parser.parse(order, &tx), 1);
         let msg = rx.try_recv().expect("one event");
         let (ty, _, body) =
-            crate::common::basic_account_msg::split_basic_account_event(&msg).expect("split");
+            mkt_parsers::msg::basic_account_msg::split_basic_account_event(&msg).expect("split");
         assert_eq!(ty, BasicAccountEventType::OrderUpdate);
         let order = BybitBasicOrderMsg::from_bytes(body).expect("decode");
         assert_eq!(order.execution_type, 1);
@@ -1056,7 +1056,7 @@ mod tests {
         assert_eq!(parser.parse(order, &tx), 1);
         let msg = rx.try_recv().expect("one event");
         let (ty, _, body) =
-            crate::common::basic_account_msg::split_basic_account_event(&msg).expect("split");
+            mkt_parsers::msg::basic_account_msg::split_basic_account_event(&msg).expect("split");
         assert_eq!(ty, BasicAccountEventType::OrderUpdate);
         let order = BybitBasicOrderMsg::from_bytes(body).expect("decode");
         assert_eq!(order.execution_type, 2);

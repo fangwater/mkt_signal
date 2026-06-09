@@ -22,10 +22,10 @@ use sha2::Sha256;
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::common::mkt_msg::Level;
 use crate::spread_pbs::adapter::{
     BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
 };
+use mkt_parsers::msg::mkt_msg::Level;
 use order_common::TradingVenue;
 
 const OKEX_PUBLIC_SBE_WS_URL: &str = "wss://ws.okx.com:8443/ws/v5/public-sbe";

@@ -4,10 +4,10 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use log::{info, warn};
+use mkt_parsers::msg::mkt_msg::AskBidSpreadMsg;
 use mkt_signal::common::iceoryx_subscriber::{
     ChannelType, MultiChannelSubscriber, SubscribeParams,
 };
-use mkt_signal::common::mkt_msg::AskBidSpreadMsg;
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};

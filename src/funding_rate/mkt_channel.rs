@@ -16,12 +16,12 @@ use std::time::{Duration, Instant};
 
 use super::common::{FundingRateData, Quote};
 use super::symbol_list::SymbolList;
-use crate::common::mkt_msg::{
-    get_msg_type, AskBidSpreadMsg, FundingRateMsg, IndexPriceMsg, MarkPriceMsg, MktMsgType,
-};
 use crate::common::time_util::get_timestamp_us;
 use crate::rolling_metrics::kll_quantile::segmented_quantiles_linear;
 use crate::symbol_match::{normalize_symbol_for_premium_pair, normalize_symbol_for_whitelist};
+use mkt_parsers::msg::mkt_msg::{
+    get_msg_type, AskBidSpreadMsg, FundingRateMsg, IndexPriceMsg, MarkPriceMsg, MktMsgType,
+};
 use order_common::TradingVenue;
 
 // 常量定义
@@ -38,16 +38,17 @@ const DECISION_QUOTE_AGE_KLL_CAPACITY: usize = 10_000;
 const DECISION_QUOTE_AGE_KLL_MAX_WINDOW: Duration = Duration::from_secs(60);
 const GATE_FUNDING_RATE_SMOOTHING_SAMPLES: usize = 12;
 
-/// BBO 触发抑制阈值（µs）：仅在 open/hedge 双腿都是 bybit 的 intra arb 环境下生效。
-/// 老于该阈值的 BBO 仍会更新本地 quote 缓存，但不会 mark_dirty 触发决策。
+/// Intra BBO 触发抑制阈值（µs）。
+/// 老于该阈值的 BBO 仍会更新本地 quote 缓存，但不会触发决策。
 const BYBIT_INTRA_BBO_STALE_GATE_US: i64 = 3000;
+const BINANCE_INTRA_BBO_STALE_GATE_US: i64 = 2000;
 
 // Thread-local 单例存储
 thread_local! {
     static MKT_CHANNEL: RefCell<Option<MktChannelInner>> = const { RefCell::new(None) };
-    /// 当前进程对 bybit BBO 应用的 stale gate（µs）。0 = 关闭。
+    /// 当前进程对 intra BBO 触发应用的 stale gate（µs）。0 = 关闭。
     /// 由 init_singleton_with_mode 在判断 venue pair 后写入。
-    static BYBIT_BBO_STALE_GATE_US: Cell<i64> = const { Cell::new(0) };
+    static INTRA_BBO_STALE_GATE_US: Cell<i64> = const { Cell::new(0) };
 }
 
 fn build_node_name(slug: &str, suffix: &str) -> String {
@@ -139,6 +140,24 @@ fn mark_dirty_symbol(
     }
 }
 
+fn mark_dirty_askbid_symbol(
+    symbol: &str,
+    trigger_ts: i64,
+    dirty_symbols: &mut Vec<String>,
+    dirty_set: &mut HashSet<String>,
+    dirty_trigger_ts: &mut HashMap<String, i64>,
+) {
+    mark_dirty_symbol(symbol, dirty_symbols, dirty_set);
+    dirty_trigger_ts
+        .entry(symbol.to_string())
+        .and_modify(|ts| {
+            if trigger_ts > *ts {
+                *ts = trigger_ts;
+            }
+        })
+        .or_insert(trigger_ts);
+}
+
 struct DecisionQuoteAgeKll {
     label: String,
     buffer: Vec<f64>,
@@ -201,6 +220,7 @@ impl DecisionQuoteAgeKll {
 fn flush_askbid_dirty_symbols(
     dirty_symbols: &mut Vec<String>,
     dirty_set: &mut HashSet<String>,
+    dirty_trigger_ts: &mut HashMap<String, i64>,
     trigger_decisions: bool,
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
@@ -210,6 +230,7 @@ fn flush_askbid_dirty_symbols(
     decision_quote_age: &mut DecisionQuoteAgeKll,
 ) {
     if dirty_symbols.is_empty() {
+        dirty_trigger_ts.clear();
         decision_quote_age.maybe_flush();
         return;
     }
@@ -217,10 +238,31 @@ fn flush_askbid_dirty_symbols(
     if open_venue == hedge_venue {
         dirty_symbols.clear();
         dirty_set.clear();
+        dirty_trigger_ts.clear();
         return;
     }
 
     for sym in dirty_symbols.iter() {
+        let now_us = get_timestamp_us();
+        let trigger_age_us = if trigger_decisions {
+            let gate_us = INTRA_BBO_STALE_GATE_US.with(|c| c.get());
+            if gate_us > 0 {
+                let trigger_ts = dirty_trigger_ts.get(sym).copied().unwrap_or_default();
+                if trigger_ts <= 0 {
+                    continue;
+                }
+                let age_us = now_us.saturating_sub(trigger_ts);
+                if age_us > gate_us {
+                    continue;
+                }
+                Some(age_us)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let decision_quote_ts = {
             use super::spread_factor::SpreadFactor;
 
@@ -258,10 +300,12 @@ fn flush_askbid_dirty_symbols(
         if trigger_decisions {
             let can_trigger = should_trigger_decision(sym);
             if can_trigger {
-                *stats_triggerable_msgs += 1;
-                if let Some(quote_ts) = decision_quote_ts.filter(|ts| *ts > 0) {
-                    decision_quote_age.push(get_timestamp_us().saturating_sub(quote_ts));
+                if let Some(age_us) = trigger_age_us {
+                    decision_quote_age.push(age_us);
+                } else if let Some(quote_ts) = decision_quote_ts.filter(|ts| *ts > 0) {
+                    decision_quote_age.push(now_us.saturating_sub(quote_ts));
                 }
+                *stats_triggerable_msgs += 1;
                 super::decision_router::trigger_decision(sym, sym, open_venue, hedge_venue);
             } else if stats_unlisted_sample.len() < 10 {
                 stats_unlisted_sample.insert(sym.clone());
@@ -273,6 +317,7 @@ fn flush_askbid_dirty_symbols(
 
     dirty_symbols.clear();
     dirty_set.clear();
+    dirty_trigger_ts.clear();
 }
 
 fn flush_derivatives_dirty_symbols(
@@ -316,6 +361,7 @@ fn process_askbid_payload(
     quotes: &Rc<RefCell<HashMap<TradingVenue, HashMap<String, Quote>>>>,
     dirty_symbols: &mut Vec<String>,
     dirty_set: &mut HashSet<String>,
+    dirty_trigger_ts: &mut HashMap<String, i64>,
     stats_total_msgs: &mut u64,
     stats_unique_symbols: &mut HashSet<String>,
     stats_last_symbol: &mut String,
@@ -360,15 +406,7 @@ fn process_askbid_payload(
         *stats_last_symbol = sym.clone();
         stats_unique_symbols.insert(sym.clone());
 
-        let gate_us = BYBIT_BBO_STALE_GATE_US.with(|c| c.get());
-        if gate_us > 0 && timestamp > 0 {
-            let age_us = get_timestamp_us().saturating_sub(timestamp);
-            if age_us > gate_us {
-                return;
-            }
-        }
-
-        mark_dirty_symbol(&sym, dirty_symbols, dirty_set);
+        mark_dirty_askbid_symbol(&sym, timestamp, dirty_symbols, dirty_set, dirty_trigger_ts);
     }
 }
 
@@ -469,19 +507,31 @@ impl MktChannel {
         let open_slug = open_venue.data_pub_slug();
         let hedge_slug = hedge_venue.data_pub_slug();
 
-        let is_bybit_intra = open_venue.trade_engine_exchange() == "bybit"
-            && hedge_venue.trade_engine_exchange() == "bybit"
+        let is_intra_pair = open_venue.trade_engine_exchange()
+            == hedge_venue.trade_engine_exchange()
             && open_venue != hedge_venue;
-        let gate_us = if is_bybit_intra {
-            BYBIT_INTRA_BBO_STALE_GATE_US
+        let intra_exchange = if is_intra_pair {
+            Some(open_venue.trade_engine_exchange())
         } else {
-            0
+            None
         };
-        BYBIT_BBO_STALE_GATE_US.with(|c| c.set(gate_us));
+        let derivatives_trigger_decisions = trigger_decisions && !is_intra_pair;
+        let gate_us = match intra_exchange {
+            Some("bybit") => BYBIT_INTRA_BBO_STALE_GATE_US,
+            Some("binance") => BINANCE_INTRA_BBO_STALE_GATE_US,
+            _ => 0,
+        };
+        INTRA_BBO_STALE_GATE_US.with(|c| c.set(gate_us));
         if gate_us > 0 {
             info!(
-                "MktChannel bybit intra BBO stale gate enabled: {}us (open={:?}, hedge={:?})",
-                gate_us, open_venue, hedge_venue
+                "MktChannel intra BBO stale gate enabled: {}us exchange={:?} open={:?} hedge={:?}",
+                gate_us, intra_exchange, open_venue, hedge_venue
+            );
+        }
+        if is_intra_pair && trigger_decisions {
+            info!(
+                "MktChannel intra derivatives decision trigger disabled (open={:?}, hedge={:?})",
+                open_venue, hedge_venue
             );
         }
 
@@ -573,7 +623,7 @@ impl MktChannel {
             Self::spawn_derivatives_listener(
                 derivatives_node,
                 derivatives_service,
-                trigger_decisions,
+                derivatives_trigger_decisions,
                 open_venue,
                 open_venue,
                 hedge_venue,
@@ -588,7 +638,7 @@ impl MktChannel {
             Self::spawn_derivatives_listener(
                 derivatives_node,
                 derivatives_service,
-                trigger_decisions,
+                derivatives_trigger_decisions,
                 hedge_venue,
                 open_venue,
                 hedge_venue,
@@ -765,6 +815,7 @@ impl MktChannel {
                 let mut stats_last_symbol: String = String::new();
                 let mut dirty_symbols: Vec<String> = Vec::new();
                 let mut dirty_set: HashSet<String> = HashSet::new();
+                let mut dirty_trigger_ts: HashMap<String, i64> = HashMap::new();
                 let mut decision_quote_age = DecisionQuoteAgeKll::new(this_venue.data_pub_slug());
 
                 loop {
@@ -776,6 +827,7 @@ impl MktChannel {
                                 &quotes,
                                 &mut dirty_symbols,
                                 &mut dirty_set,
+                                &mut dirty_trigger_ts,
                                 &mut stats_total_msgs,
                                 &mut stats_unique_symbols,
                                 &mut stats_last_symbol,
@@ -794,6 +846,7 @@ impl MktChannel {
                             flush_askbid_dirty_symbols(
                                 &mut dirty_symbols,
                                 &mut dirty_set,
+                                &mut dirty_trigger_ts,
                                 trigger_decisions,
                                 open_venue,
                                 hedge_venue,
@@ -808,6 +861,7 @@ impl MktChannel {
                             flush_askbid_dirty_symbols(
                                 &mut dirty_symbols,
                                 &mut dirty_set,
+                                &mut dirty_trigger_ts,
                                 trigger_decisions,
                                 open_venue,
                                 hedge_venue,
@@ -888,6 +942,7 @@ impl MktChannel {
                 let mut stats_last_symbol: String = String::new();
                 let mut dirty_symbols: Vec<String> = Vec::new();
                 let mut dirty_set: HashSet<String> = HashSet::new();
+                let mut dirty_trigger_ts: HashMap<String, i64> = HashMap::new();
                 let stats_label = format!(
                     "{}<->{}",
                     open_venue.data_pub_slug(),
@@ -905,6 +960,7 @@ impl MktChannel {
                                     &quotes,
                                     &mut dirty_symbols,
                                     &mut dirty_set,
+                                    &mut dirty_trigger_ts,
                                     &mut stats_total_msgs,
                                     &mut stats_unique_symbols,
                                     &mut stats_last_symbol,
@@ -915,6 +971,7 @@ impl MktChannel {
                                 flush_askbid_dirty_symbols(
                                     &mut dirty_symbols,
                                     &mut dirty_set,
+                                    &mut dirty_trigger_ts,
                                     trigger_decisions,
                                     open_venue,
                                     hedge_venue,
@@ -939,6 +996,7 @@ impl MktChannel {
                                     &quotes,
                                     &mut dirty_symbols,
                                     &mut dirty_set,
+                                    &mut dirty_trigger_ts,
                                     &mut stats_total_msgs,
                                     &mut stats_unique_symbols,
                                     &mut stats_last_symbol,
@@ -949,6 +1007,7 @@ impl MktChannel {
                                 flush_askbid_dirty_symbols(
                                     &mut dirty_symbols,
                                     &mut dirty_set,
+                                    &mut dirty_trigger_ts,
                                     trigger_decisions,
                                     open_venue,
                                     hedge_venue,
@@ -977,6 +1036,7 @@ impl MktChannel {
                     flush_askbid_dirty_symbols(
                         &mut dirty_symbols,
                         &mut dirty_set,
+                        &mut dirty_trigger_ts,
                         trigger_decisions,
                         open_venue,
                         hedge_venue,

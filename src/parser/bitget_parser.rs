@@ -1,10 +1,10 @@
-use crate::common::mkt_msg::{
-    AskBidSpreadMsg, FundingRateMsg, IncMsg, IndexPriceMsg, KlineMsg, Level, MarkPriceMsg, TradeMsg,
-};
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use log::debug;
 use mkt_parsers::bitget as bitget_codec;
+use mkt_parsers::msg::mkt_msg::{
+    AskBidSpreadMsg, FundingRateMsg, IncMsg, IndexPriceMsg, KlineMsg, Level, MarkPriceMsg, TradeMsg,
+};
 use tokio::sync::mpsc;
 
 /// Bitget 价差解析器：支持 ticker 和 books1
@@ -82,8 +82,8 @@ impl Parser for BitgetSignalParser {
                     .unwrap_or(0);
 
                 if ts > 0 {
-                    let signal_msg = crate::common::mkt_msg::SignalMsg::create(
-                        crate::common::mkt_msg::SignalSource::Tcp,
+                    let signal_msg = mkt_parsers::msg::mkt_msg::SignalMsg::create(
+                        mkt_parsers::msg::mkt_msg::SignalSource::Tcp,
                         ts,
                     );
                     if tx.send(signal_msg.to_bytes()).is_ok() {

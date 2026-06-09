@@ -1,4 +1,3 @@
-use crate::common::basic_account_msg::{AccountRiskLevelProvider, BasicAccountRiskMsg};
 use crate::common::exchange::Exchange;
 use crate::common::iceoryx_publisher::{ResamplePublisher, RESAMPLE_PAYLOAD};
 use crate::common::min_qty_table::MinQtyTable;
@@ -20,6 +19,7 @@ use crate::viz::resample::{
 };
 use anyhow::Result;
 use log::{debug, info, trace, warn};
+use mkt_parsers::msg::basic_account_msg::{AccountRiskLevelProvider, BasicAccountRiskMsg};
 use order_common::TradingVenue;
 use std::cell::OnceCell;
 use std::collections::{BTreeMap, HashMap};
@@ -225,7 +225,7 @@ fn hedge_snapshot_symbol_key(symbol: &str) -> String {
 }
 
 fn build_account_risk_view(
-    scope: crate::common::basic_account_msg::BasicAccountScope,
+    scope: mkt_parsers::msg::basic_account_msg::BasicAccountScope,
     msg: &BasicAccountRiskMsg,
 ) -> PreTradeAccountRiskView {
     let state = msg
@@ -914,10 +914,9 @@ impl ResampleChannel {
 #[cfg(test)]
 mod tests {
     use super::{arb_hedge_snapshot_asset_key, hedge_snapshot_symbol_key, sum_position_usd};
-    use crate::common::{
-        basic_account_msg::BasicPositionMsg, exchange::Exchange, min_qty_table::MinQtyTable,
-    };
+    use crate::common::{exchange::Exchange, min_qty_table::MinQtyTable};
     use crate::pre_trade::{basic_um_manager::BasicUmManager, price_table::PriceTable};
+    use mkt_parsers::msg::basic_account_msg::BasicPositionMsg;
 
     #[test]
     fn hedge_snapshot_symbol_key_normalizes_internal_and_price_symbols() {

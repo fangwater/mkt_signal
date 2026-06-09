@@ -3,14 +3,14 @@
 //! - 余额 / 持仓 / 订单 / 负债 统一封装为 `BasicAccountEventMsg`
 //! - OrderUpdate 的 payload 使用 basic 层统一 schema：`BinanceBasicOrderMsg`
 
-use crate::common::basic_account_msg::{
+use crate::parser::default_parser::Parser;
+use bytes::Bytes;
+use log::{debug, warn};
+use mkt_parsers::msg::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
     BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg, BasicUmUnrealizedMsg,
     BinanceBasicOrderMsg,
 };
-use crate::parser::default_parser::Parser;
-use bytes::Bytes;
-use log::{debug, warn};
 use serde_json::Value;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
@@ -601,7 +601,7 @@ impl Parser for BinanceBasicAccountEventParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::basic_account_msg::{
+    use mkt_parsers::msg::basic_account_msg::{
         split_basic_account_event, BasicAccountEventType, BasicAccountScope, BasicPositionMsg,
         BasicTradeLiteMsg, BasicUmUnrealizedMsg,
     };

@@ -312,7 +312,7 @@ pub(crate) async fn load_symbol_factor_plans_from_tlen_server(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::trade_flow_feature_msg::TRADE_FLOW_FEATURE_FIELD_NAMES;
+    use mkt_parsers::msg::trade_flow_feature_msg::TRADE_FLOW_FEATURE_FIELD_NAMES;
 
     fn factor_item(factors: &[&str]) -> FactorPlanItem {
         FactorPlanItem {

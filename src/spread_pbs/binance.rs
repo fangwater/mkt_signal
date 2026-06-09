@@ -11,10 +11,10 @@ use serde_json::Value;
 use std::cell::RefCell;
 use std::collections::HashSet;
 
-use crate::common::mkt_msg::{FundingRateMsg, IndexPriceMsg, LiquidationMsg, MarkPriceMsg};
 use crate::spread_pbs::adapter::{
     BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
 };
+use mkt_parsers::msg::mkt_msg::{FundingRateMsg, IndexPriceMsg, LiquidationMsg, MarkPriceMsg};
 use order_common::TradingVenue;
 
 const BINANCE_SPOT_SBE_WS_URL: &str = "wss://stream-sbe.binance.com:9443/ws";
@@ -264,12 +264,12 @@ fn book_to_incremental(book: binance_codec::Book) -> IncrementalFrame {
         bids: book
             .bids
             .into_iter()
-            .map(|level| crate::common::mkt_msg::Level::from_values(level.price, level.amount))
+            .map(|level| mkt_parsers::msg::mkt_msg::Level::from_values(level.price, level.amount))
             .collect(),
         asks: book
             .asks
             .into_iter()
-            .map(|level| crate::common::mkt_msg::Level::from_values(level.price, level.amount))
+            .map(|level| mkt_parsers::msg::mkt_msg::Level::from_values(level.price, level.amount))
             .collect(),
     }
 }
@@ -315,7 +315,7 @@ fn derivative_to_bytes(derivative: binance_codec::Derivative) -> Bytes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::mkt_msg::{get_msg_type, MktMsgType};
+    use mkt_parsers::msg::mkt_msg::{get_msg_type, MktMsgType};
 
     fn v(raw: &str) -> Value {
         serde_json::from_str(raw).expect("test fixture must be valid JSON")

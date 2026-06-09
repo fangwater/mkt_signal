@@ -145,7 +145,7 @@ fn now_unix_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::mkt_msg::{FundingRateMsg, IndexPriceMsg, MarkPriceMsg};
+    use mkt_parsers::msg::mkt_msg::{FundingRateMsg, IndexPriceMsg, MarkPriceMsg};
 
     fn build_bbo_frame(
         time_us: i64,

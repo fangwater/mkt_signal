@@ -10,12 +10,12 @@
 use anyhow::Result;
 use bytes::Bytes;
 use log::{debug, error, info, warn};
-use mkt_signal::common::basic_account_msg::{
+use mkt_parsers::msg::basic_account_msg::{
     split_basic_account_event, BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg,
     BasicAccountScope, BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg,
     BasicTradeLiteMsg, BasicUmUnrealizedMsg,
 };
-use mkt_signal::common::bybit_account_msg::BybitBasicOrderMsg;
+use mkt_parsers::msg::bybit_account_msg::BybitBasicOrderMsg;
 use mkt_signal::common::mkt_cfg::load_local_ips_preferring_trade_engine;
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::bybit_account_event_parser::BybitAccountEventParser;
@@ -239,7 +239,7 @@ fn build_bybit_rest_client(local_ip: Option<&str>, timeout: Duration) -> Result<
 }
 
 fn wrap_basic_payload(account_scope: BasicAccountScope, payload: Bytes) -> Option<Bytes> {
-    let event_type = mkt_signal::common::basic_account_msg::get_basic_event_type(&payload);
+    let event_type = mkt_parsers::msg::basic_account_msg::get_basic_event_type(&payload);
     if matches!(event_type, BasicAccountEventType::Error) {
         return None;
     }
@@ -373,7 +373,7 @@ fn spawn_bybit_position_poll(
                                 let mut current_positions: HashSet<(String, char)> = HashSet::new();
                                 for payload in msgs {
                                     let event_type =
-                                        mkt_signal::common::basic_account_msg::get_basic_event_type(&payload);
+                                        mkt_parsers::msg::basic_account_msg::get_basic_event_type(&payload);
                                     if matches!(event_type, BasicAccountEventType::PositionUpdate) {
                                         if let Ok(msg) = BasicPositionMsg::from_bytes(&payload) {
                                             current_positions.insert((

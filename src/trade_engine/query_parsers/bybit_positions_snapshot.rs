@@ -1,5 +1,5 @@
-use crate::common::basic_account_msg::{BasicPositionMsg, BasicUmUnrealizedMsg};
 use bytes::Bytes;
+use mkt_parsers::msg::basic_account_msg::{BasicPositionMsg, BasicUmUnrealizedMsg};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -109,7 +109,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::basic_account_msg::{
+    use mkt_parsers::msg::basic_account_msg::{
         BasicAccountEventType, BasicPositionMsg, BasicUmUnrealizedMsg,
     };
 

@@ -7,13 +7,6 @@ use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
-use crate::common::basic_account_msg::{
-    split_basic_account_event, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
-    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg,
-    BasicUmUnrealizedMsg, BinanceBasicOrderMsg, GateBasicOrderMsg, OkexOrderMsg,
-};
-use crate::common::bitget_account_msg::BitgetBasicOrderMsg;
-use crate::common::bybit_account_msg::BybitBasicOrderMsg;
 use crate::common::exchange::Exchange;
 use crate::common::ipc_service_name::build_service_name;
 use crate::common::min_qty_table::MinQtyTable;
@@ -34,6 +27,13 @@ use crate::pre_trade::symbol_mapper::create_symbol_mapper;
 use crate::pre_trade::symbol_util::extract_base_asset;
 use crate::pre_trade::usdt_balance_manager::{UsdtBalanceManager, UsdtBalanceSnapshot};
 use crate::pre_trade::PersistChannel;
+use mkt_parsers::msg::basic_account_msg::{
+    split_basic_account_event, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
+    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg,
+    BasicUmUnrealizedMsg, BinanceBasicOrderMsg, GateBasicOrderMsg, OkexOrderMsg,
+};
+use mkt_parsers::msg::bitget_account_msg::BitgetBasicOrderMsg;
+use mkt_parsers::msg::bybit_account_msg::BybitBasicOrderMsg;
 use order_common::{ExecutionType, OrderStatus, TradingVenue};
 use signal_common::cancel_signal::{ArbCancelCtx, ArbCancelReason, MmCancelCtx, MmCancelReason};
 use signal_common::common::{SignalBytes, TradingLeg};
@@ -3802,12 +3802,12 @@ fn dispatch_order_update_generic<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::basic_account_msg::{BasicBalanceMsg, BasicPositionMsg};
     use crate::common::min_qty_table::{MinQtyEntry, MinQtyTable};
     use crate::pre_trade::price_table::PriceTable;
     use crate::pre_trade::usdt_balance_manager::UsdtBalanceManager;
     use crate::strategy::manager::OpenPriceMapEntry;
     use crate::strategy::{Strategy, StrategyManager};
+    use mkt_parsers::msg::basic_account_msg::{BasicBalanceMsg, BasicPositionMsg};
     use signal_common::cancel_signal::{ArbCancelCtx, MmCancelCtx};
     use signal_common::common::SignalBytes;
     use signal_common::tick_math::QuantizedValue;

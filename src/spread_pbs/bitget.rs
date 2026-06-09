@@ -19,10 +19,10 @@ use mkt_parsers::bitget as bitget_codec;
 use serde_json::Value;
 use std::time::Duration;
 
-use crate::common::mkt_msg::{FundingRateMsg, IndexPriceMsg, Level, MarkPriceMsg};
 use crate::spread_pbs::adapter::{
     BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
 };
+use mkt_parsers::msg::mkt_msg::{FundingRateMsg, IndexPriceMsg, Level, MarkPriceMsg};
 use order_common::TradingVenue;
 
 const BITGET_SBE_WS_URL: &str = "wss://ws.bitget.com/v3/ws/public/sbe";

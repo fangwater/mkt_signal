@@ -1,10 +1,10 @@
-use crate::mkt_msg::{
-    AskBidSpreadMsg, FundingRateMsg, IncMsg, IndexPriceMsg, KlineMsg, Level, LiquidationMsg,
-    MarkPriceMsg, SignalMsg, SignalSource, TradeMsg,
-};
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use mkt_parsers::bybit as bybit_codec;
+use mkt_parsers::msg::mkt_msg::{
+    AskBidSpreadMsg, FundingRateMsg, IncMsg, IndexPriceMsg, KlineMsg, Level, LiquidationMsg,
+    MarkPriceMsg, SignalMsg, SignalSource, TradeMsg,
+};
 use tokio::sync::mpsc;
 
 #[derive(Clone)]
