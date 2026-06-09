@@ -34,6 +34,89 @@ Existing SG host pattern:
   - `/sys/devices/system/cpu/nohz_full` -> `8-15`
   - `/proc/irq/default_smp_affinity` -> mask for housekeeping CPUs, e.g. `00ff` for `0-7`
 
+## Known JP2 8-CPU HFQ Pattern
+
+For JP2 host `ubuntu@52.68.224.23` / `ip-172-31-33-150`, verified on 2026-06-09:
+
+- Public IPs:
+  - primary: `52.68.224.23`
+  - secondary: `52.69.78.134`
+- Private IPs:
+  - primary: `172.31.33.150`
+  - secondary: `172.31.33.151`
+- NIC: `ens5`
+- Gateway: `172.31.32.1`
+- Subnet: `172.31.32.0/20`
+- CPU: `Intel(R) Xeon(R) Platinum 8275CL CPU @ 3.00GHz`
+- Logical CPUs: `0-7`
+- Physical cores exposed: `8`
+- NUMA: one node, `0-7`
+- SMT runtime state: not exposed / not supported (`Thread(s) per core: 1`, `/sys/devices/system/cpu/smt/control -> notsupported`)
+
+This host is not a "disable half the sibling threads" case. The running kernel
+already exposes one thread per core. Still stage `nosmt=force` in GRUB so the
+boot policy remains explicit and future instance-shape changes do not silently
+re-enable sibling threads.
+
+Target split:
+
+- Housekeeping CPUs: `0-1`
+- Isolated CPUs: `2-7`
+
+Persistent files:
+
+- GRUB drop-in: `/etc/default/grub.d/99-cpu-isolation.cfg`
+- irqbalance config: `/etc/default/irqbalance`
+- netplan source-routing config: `/etc/netplan/50-cloud-init.yaml`
+
+Configured kernel args:
+
+- `nosmt=force`
+- `isolcpus=nohz,domain,managed_irq,2-7`
+- `nohz_full=2-7`
+- `rcu_nocbs=2-7`
+- `irqaffinity=0-1`
+
+irqbalance policy:
+
+- Keep `irqbalance` active.
+- Set `IRQBALANCE_BANNED_CPULIST=2-7` so IRQs stay on housekeeping CPUs.
+
+Verified post-reboot runtime on 2026-06-09:
+
+- `/proc/cmdline` contains `nosmt=force isolcpus=nohz,domain,managed_irq,2-7 nohz_full=2-7 rcu_nocbs=2-7 irqaffinity=0-1`
+- `/sys/devices/system/cpu/isolated` -> `2-7`
+- `/sys/devices/system/cpu/nohz_full` -> `2-7`
+- `/proc/irq/default_smp_affinity` -> `03`
+
+Source-routing verification:
+
+- `curl -4 --interface 172.31.33.150 ifconfig.me/ip` -> `52.68.224.23`
+- `curl -4 --interface 172.31.33.151 ifconfig.me/ip` -> `52.69.78.134`
+
+Base services verified on 2026-06-09:
+
+- `redis-server` active on local `127.0.0.1:6379`.
+- `nginx` active.
+- `libnginx-mod-stream` installed.
+- Public `4191` is the HTTP/WebSocket reverse-proxy port driven by `/home/ubuntu/nginx_locations.txt`.
+- Public `4190` is the TCP stream proxy driven by `/home/ubuntu/nginx_streams.txt`; current mapping forwards `4190 -> redis://127.0.0.1:6379/0`.
+- `redis-cli -h 127.0.0.1 -p 6379 ping` and `redis-cli -h 127.0.0.1 -p 4190 ping` both returned `PONG`.
+- Both public IPs accepted TCP connections on `4190` and `4191`.
+
+JP2 Binance intra arb01 local 6-core binding suggestion:
+
+- `2`: `spread_pbs` for `binance-margin`
+- `3`: `spread_pbs` for `binance-futures`
+- `4`: `trade_signal`
+- `5`: `pre_trade`
+- `6`: `trade_engine` main (`TRADE_ENGINE_CORE`)
+- `7`: `trade_engine` IPC thread (`TRADE_ENGINE_IPC_CORE`)
+
+This local Binance intra layout intentionally does not run `depth_pub`; deploy
+single-sided `spread_pbs` processes for margin and futures rather than one
+`binance-both` process when dedicating one core to each market side.
+
 ## Known HK 32-CPU Pattern
 
 For a 32-vCPU HK trading host where only 6 CPUs are public/housekeeping:
@@ -120,6 +203,11 @@ For the HK 32-vCPU host requested by the operator:
 - Housekeeping: `0-5`
 - Isolated: `6-31`
 
+For the JP2 8-vCPU HFQ host:
+
+- Housekeeping: `0-1`
+- Isolated: `2-7`
+
 For the current HK 16-vCPU OKEX intra plus OKEX spread_pbs case requiring 6 independent physical cores:
 
 - Housekeeping: `0-3`
@@ -150,6 +238,12 @@ HK 32-vCPU dry-run:
 bash scripts/render_grub_cpu_isolation.sh --housekeeping 0-5 --isolated 6-31
 ```
 
+JP2 8-vCPU HFQ dry-run:
+
+```bash
+bash scripts/render_grub_cpu_isolation.sh --housekeeping 0-1 --isolated 2-7
+```
+
 HK 16-vCPU OKEX intra/spread dry-run:
 
 ```bash
@@ -168,6 +262,12 @@ HK 32-vCPU apply:
 sudo bash scripts/render_grub_cpu_isolation.sh --housekeeping 0-5 --isolated 6-31 --apply --update-grub
 ```
 
+JP2 8-vCPU HFQ apply:
+
+```bash
+sudo bash scripts/render_grub_cpu_isolation.sh --housekeeping 0-1 --isolated 2-7 --apply --update-grub
+```
+
 HK 16-vCPU OKEX intra/spread apply:
 
 ```bash
@@ -184,6 +284,12 @@ HK 32-vCPU expected drop-in:
 
 ```bash
 GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT isolcpus=nohz,domain,managed_irq,6-31 nohz_full=6-31 rcu_nocbs=6-31 irqaffinity=0-5"
+```
+
+JP2 8-vCPU HFQ expected drop-in:
+
+```bash
+GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT isolcpus=nohz,domain,managed_irq,2-7 nohz_full=2-7 rcu_nocbs=2-7 irqaffinity=0-1 nosmt=force"
 ```
 
 HK 16-vCPU OKEX intra/spread expected drop-in:
