@@ -3,8 +3,8 @@ use clap::Parser;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use mkt_signal::depth_pub::query_client::DepthQueryClient;
-use mkt_signal::depth_pub::query_msg::{price_to_tick_index, tick_index_to_price};
+use depth_pub_common::query_client::DepthQueryClient;
+use depth_pub_common::query_msg::{price_to_tick_index, tick_index_to_price};
 use order_common::TradingVenue;
 
 #[derive(Parser, Debug)]

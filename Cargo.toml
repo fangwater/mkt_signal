@@ -1,6 +1,7 @@
 [workspace]
 members = [
     ".",
+    "crates/depth_pub",
     "crates/factor_engine",
     "crates/inpos_engine",
     "crates/mkt_model_runtime",
@@ -214,6 +215,7 @@ persist_common = { path = "crates/persist_common" }
 quote_plan = { path = "crates/quote_plan" }
 order_common = { path = "crates/order_common" }
 signal_common = { path = "crates/signal_common" }
+depth_pub_common = { package = "depth_pub", path = "crates/depth_pub" }
 factor_engine = { path = "crates/factor_engine" }
 queue_position_engine = { path = "crates/inpos_engine" }
 mkt_parsers = { path = "crates/mkt_parsers" }

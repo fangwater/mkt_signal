@@ -8,7 +8,7 @@ use crate::common::symbol_util::normalize_symbol_for_internal;
 
 use super::orderbook::{key_to_price, OrderBook};
 use super::query_logic::DepthQuerySource;
-use super::query_msg::price_to_tick_index;
+use depth_pub_common::query_msg::price_to_tick_index;
 
 #[derive(Debug, Clone)]
 pub struct SymbolQuerySnapshot {

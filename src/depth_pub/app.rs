@@ -23,7 +23,6 @@ use super::order_queue_msg::{OrderQueuePositionMsg, ORDER_QUEUE_POSITION_MAX_BYT
 use super::orderbook::{price_to_key, OrderBook};
 use super::publisher::DepthMsgPublisher;
 use super::query_logic::{build_query_response, DepthQuerySource};
-use super::query_server::{DepthQueryConnection, DepthQuerySocketServer};
 use super::query_snapshot::{QuerySnapshotStore, SymbolQuerySnapshot};
 use super::queue_position::{
     book_side_from_orderbook, QueuePositionPublishEvent, QueuePositionSnapshot, QueuePositionState,
@@ -33,6 +32,7 @@ use crate::common::trade_msg_parser::{parse_trade, TradeSide};
 use crate::portfolio_margin::pm_forwarder::{
     PM_HISTORY_SIZE, PM_MAX_SUBSCRIBERS, PM_SUBSCRIBER_MAX_BUFFER_SIZE,
 };
+use depth_pub_common::query_server::{DepthQueryConnection, DepthQuerySocketServer};
 use order_common::TradingVenue;
 use signal_common::venue_min_qty_table::VenueMinQtyTable;
 

@@ -795,6 +795,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a2330da5de22e8a3cb63252ce2abb30116bf5265e89c0e01bc17015ce30a476"
 
 [[package]]
+name = "depth_pub"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "log",
+ "order_common",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2168,6 +2177,7 @@ dependencies = [
  "crc32fast",
  "crossbeam-channel",
  "dashmap",
+ "depth_pub",
  "env_logger",
  "factor_engine",
  "flate2",

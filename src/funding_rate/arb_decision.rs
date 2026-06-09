@@ -516,8 +516,8 @@ pub struct ArbShellRuntime {
     pub hedge_min_qty_table: VenueMinQtyTable,
     missing_tick_reload_state: MissingTickReloadState,
     pub venues: VenuePair,
-    pub open_depth_query_client: crate::depth_pub::query_client::DepthQueryClient,
-    pub hedge_depth_query_client: Option<crate::depth_pub::query_client::DepthQueryClient>,
+    pub open_depth_query_client: depth_pub_common::query_client::DepthQueryClient,
+    pub hedge_depth_query_client: Option<depth_pub_common::query_client::DepthQueryClient>,
 }
 
 pub fn create_shell_venue_resources(
@@ -526,14 +526,14 @@ pub fn create_shell_venue_resources(
 ) -> Result<(
     VenueMinQtyTable,
     VenueMinQtyTable,
-    crate::depth_pub::query_client::DepthQueryClient,
-    Option<crate::depth_pub::query_client::DepthQueryClient>,
+    depth_pub_common::query_client::DepthQueryClient,
+    Option<depth_pub_common::query_client::DepthQueryClient>,
 )> {
     let open_min_qty_table = VenueMinQtyTable::new(venues.0);
     let hedge_min_qty_table = VenueMinQtyTable::new(venues.1);
-    let open_depth_query_client = crate::depth_pub::query_client::DepthQueryClient::new(venues.0)?;
+    let open_depth_query_client = depth_pub_common::query_client::DepthQueryClient::new(venues.0)?;
     let hedge_depth_query_client = if include_hedge_depth {
-        Some(crate::depth_pub::query_client::DepthQueryClient::new(
+        Some(depth_pub_common::query_client::DepthQueryClient::new(
             venues.1,
         )?)
     } else {

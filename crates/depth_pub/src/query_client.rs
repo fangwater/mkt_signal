@@ -83,7 +83,7 @@ impl DepthQueryClient {
             DepthQueryHeader::write(&mut req_buf, DepthQueryType::LoadTlenSingle as u8, symbol)
                 .map_err(|err| anyhow!(err.to_string()))?;
         let req = DepthQueryLoadTlenSingleReq {
-            timestamp_us: crate::common::time_util::get_timestamp_us(),
+            timestamp_us: crate::time_util::get_timestamp_us(),
             tick_index,
         };
         let payload_len = req
@@ -109,7 +109,7 @@ impl DepthQueryClient {
                 .map_err(|err| anyhow!(err.to_string()))?;
         let payload_len = DepthQueryLoadTlenBatchReq::write_to(
             &mut req_buf[header_len..],
-            crate::common::time_util::get_timestamp_us(),
+            crate::time_util::get_timestamp_us(),
             tick_indices,
         )
         .map_err(|err| anyhow!(err.to_string()))?;
@@ -171,7 +171,7 @@ impl DepthQueryClient {
             DepthQueryHeader::write(&mut req_buf, DepthQueryType::Top5PriceTlen as u8, symbol)
                 .map_err(|err| anyhow!(err.to_string()))?;
         let req = DepthQueryTop5PriceTlenReq {
-            timestamp_us: crate::common::time_util::get_timestamp_us(),
+            timestamp_us: crate::time_util::get_timestamp_us(),
         };
         let payload_len = req
             .write_to(&mut req_buf[header_len..])
@@ -200,7 +200,7 @@ impl DepthQueryClient {
             DepthQueryHeader::write(&mut req_buf, DepthQueryType::OrderQueuePosition as u8, "_")
                 .map_err(|err| anyhow!(err.to_string()))?;
         let req = DepthQueryOrderQueuePositionReq {
-            timestamp_us: crate::common::time_util::get_timestamp_us(),
+            timestamp_us: crate::time_util::get_timestamp_us(),
             client_order_id,
             account_id: account_id.map(str::to_string),
         };

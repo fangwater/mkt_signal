@@ -15,7 +15,7 @@ use crate::common::iceoryx_publisher::TradeSignalPublisher;
 use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::time_util::get_timestamp_us;
-use crate::depth_pub::query_client::DepthQueryClient;
+use depth_pub_common::query_client::DepthQueryClient;
 use order_common::TradingVenue;
 use order_common::{OrderType, Side};
 use quote_plan::open_quote_plan::MmOpenQuotePlan;

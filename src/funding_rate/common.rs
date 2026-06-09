@@ -8,7 +8,7 @@
 use std::collections::VecDeque;
 
 use crate::common::exchange::Exchange;
-use crate::depth_pub::query_client::DepthQueryClient;
+use depth_pub_common::query_client::DepthQueryClient;
 use log::warn;
 use order_common::TradingVenue;
 use signal_common::venue_min_qty_table::VenueMinQtyTable;
