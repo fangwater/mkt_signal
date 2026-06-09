@@ -181,6 +181,28 @@ impl VenueMinQtyTable {
     }
 }
 
+impl quote_plan::MinQtyLookup for VenueMinQtyTable {
+    fn min_qty(&self, symbol: &str) -> Option<f64> {
+        VenueMinQtyTable::min_qty(self, symbol)
+    }
+
+    fn step_size(&self, symbol: &str) -> Option<f64> {
+        VenueMinQtyTable::step_size(self, symbol)
+    }
+
+    fn price_tick(&self, symbol: &str) -> Option<f64> {
+        VenueMinQtyTable::price_tick(self, symbol)
+    }
+
+    fn min_notional(&self, symbol: &str) -> Option<f64> {
+        VenueMinQtyTable::min_notional(self, symbol)
+    }
+
+    fn contract_multiplier_opt(&self, symbol: &str) -> Option<f64> {
+        VenueMinQtyTable::contract_multiplier_opt(self, symbol)
+    }
+}
+
 #[cfg(test)]
 impl VenueMinQtyTable {
     pub fn set_entry_for_test(&mut self, entry: MinQtyEntry) {

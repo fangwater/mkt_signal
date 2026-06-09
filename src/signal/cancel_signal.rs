@@ -1,6 +1,6 @@
-use crate::pre_trade::order_manager::Side;
 use crate::signal::common::{bytes_helper, SignalBytes, TradingLeg};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use order_common::Side;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]

@@ -1,8 +1,8 @@
 use crate::common::tick_math::QuantizedValue;
-use crate::pre_trade::order_manager::{OrderType, Side};
 use crate::signal::common::TradingLeg;
 use crate::signal::common::{bytes_helper, SignalBytes};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use order_common::{OrderType, Side};
 
 /// Generic arbitrage open signal context
 #[derive(Debug, Clone)]

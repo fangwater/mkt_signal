@@ -5,6 +5,8 @@ members = [
     "crates/inpos_engine",
     "crates/mkt_model_runtime",
     "crates/mkt_parsers",
+    "crates/order_common",
+    "crates/quote_plan",
 ]
 resolver = "2"
 
@@ -222,6 +224,8 @@ name = "inspect_model_input"
 path = "src/bin/inspect_model_input.rs"
 
 [dependencies]
+quote_plan = { path = "crates/quote_plan" }
+order_common = { path = "crates/order_common" }
 factor_engine = { path = "crates/factor_engine" }
 queue_position_engine = { path = "crates/inpos_engine" }
 mkt_parsers = { path = "crates/mkt_parsers" }

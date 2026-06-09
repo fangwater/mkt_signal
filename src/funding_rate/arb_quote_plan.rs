@@ -1,9 +1,9 @@
-use crate::market_maker::quote_plan_levels::{
+use quote_plan::quote_plan_levels::{
     build_quote_plan_levels, QuotePlanLevel, QuotePlanLevelSpec,
 };
-use crate::pre_trade::order_manager::Side;
 use crate::signal::common::TradingVenue;
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
+use order_common::Side;
 
 use super::common::Quote;
 

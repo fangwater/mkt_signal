@@ -1,11 +1,7 @@
-use crate::common::symbol_util::normalize_symbol_for_internal;
-use crate::funding_rate::common::Quote;
-use crate::market_maker::quote_plan_levels::{
-    build_quote_plan_levels, QuotePlanLevel, QuotePlanLevelSpec,
-};
-use crate::pre_trade::order_manager::Side;
-use crate::signal::common::TradingVenue;
-use crate::signal::venue_min_qty_table::VenueMinQtyTable;
+use crate::common::normalize_symbol_for_internal;
+use crate::common::{MinQtyLookup, Quote, Venue};
+use crate::quote_plan_levels::{build_quote_plan_levels, QuotePlanLevel, QuotePlanLevelSpec};
+use order_common::Side;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MmVolatilityBand {
@@ -119,8 +115,8 @@ pub fn build_default_hedge_offsets(orders_per_round: u32) -> Vec<f64> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn build_mm_open_quote_plan(
-    venue: TradingVenue,
+pub fn build_mm_open_quote_plan<T>(
+    venue: Venue,
     symbol: &str,
     quote: Quote,
     order_amount_u: f64,
@@ -131,8 +127,11 @@ pub fn build_mm_open_quote_plan(
     open_sell_vol_scale: [f64; 2],
     open_offset_lower: f64,
     now_us: i64,
-    table: &VenueMinQtyTable,
-) -> Result<MmOpenQuotePlan, String> {
+    table: &T,
+) -> Result<MmOpenQuotePlan, String>
+where
+    T: MinQtyLookup + ?Sized,
+{
     if symbol.trim().is_empty() {
         return Err("symbol is empty".to_string());
     }

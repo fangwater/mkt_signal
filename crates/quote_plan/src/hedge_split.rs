@@ -1,4 +1,4 @@
-use crate::pre_trade::order_manager::Side;
+use order_common::Side;
 
 const MIN_TAIL_NOTIONAL_USDT: f64 = 25.0;
 

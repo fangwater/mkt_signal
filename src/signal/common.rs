@@ -26,6 +26,48 @@ pub enum TradingVenue {
     HyperliquidFutures = 13,
 }
 
+impl From<TradingVenue> for quote_plan::Venue {
+    fn from(value: TradingVenue) -> Self {
+        match value {
+            TradingVenue::BinanceMargin => quote_plan::Venue::BinanceMargin,
+            TradingVenue::BinanceFutures => quote_plan::Venue::BinanceFutures,
+            TradingVenue::OkexMargin => quote_plan::Venue::OkexMargin,
+            TradingVenue::OkexFutures => quote_plan::Venue::OkexFutures,
+            TradingVenue::BybitMargin => quote_plan::Venue::BybitMargin,
+            TradingVenue::BybitFutures => quote_plan::Venue::BybitFutures,
+            TradingVenue::BitgetMargin => quote_plan::Venue::BitgetMargin,
+            TradingVenue::BitgetFutures => quote_plan::Venue::BitgetFutures,
+            TradingVenue::GateMargin => quote_plan::Venue::GateMargin,
+            TradingVenue::GateFutures => quote_plan::Venue::GateFutures,
+            TradingVenue::AsterMargin => quote_plan::Venue::AsterMargin,
+            TradingVenue::AsterFutures => quote_plan::Venue::AsterFutures,
+            TradingVenue::HyperliquidMargin => quote_plan::Venue::HyperliquidMargin,
+            TradingVenue::HyperliquidFutures => quote_plan::Venue::HyperliquidFutures,
+        }
+    }
+}
+
+impl From<quote_plan::Venue> for TradingVenue {
+    fn from(value: quote_plan::Venue) -> Self {
+        match value {
+            quote_plan::Venue::BinanceMargin => TradingVenue::BinanceMargin,
+            quote_plan::Venue::BinanceFutures => TradingVenue::BinanceFutures,
+            quote_plan::Venue::OkexMargin => TradingVenue::OkexMargin,
+            quote_plan::Venue::OkexFutures => TradingVenue::OkexFutures,
+            quote_plan::Venue::BybitMargin => TradingVenue::BybitMargin,
+            quote_plan::Venue::BybitFutures => TradingVenue::BybitFutures,
+            quote_plan::Venue::BitgetMargin => TradingVenue::BitgetMargin,
+            quote_plan::Venue::BitgetFutures => TradingVenue::BitgetFutures,
+            quote_plan::Venue::GateMargin => TradingVenue::GateMargin,
+            quote_plan::Venue::GateFutures => TradingVenue::GateFutures,
+            quote_plan::Venue::AsterMargin => TradingVenue::AsterMargin,
+            quote_plan::Venue::AsterFutures => TradingVenue::AsterFutures,
+            quote_plan::Venue::HyperliquidMargin => TradingVenue::HyperliquidMargin,
+            quote_plan::Venue::HyperliquidFutures => TradingVenue::HyperliquidFutures,
+        }
+    }
+}
+
 impl TradingVenue {
     /// 返回与该交易场所对应的 trade engine exchange 标识（Iceoryx 服务名的一部分）
     pub fn trade_engine_exchange(&self) -> &'static str {

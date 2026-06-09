@@ -1,5 +1,5 @@
-use crate::pre_trade::order_manager::Side;
 use crate::signal::common::TradingVenue;
+use order_common::Side;
 
 use super::funding_threshold_loader::FactorDirectionalThresholds;
 use super::mkt_channel::MktChannel;

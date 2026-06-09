@@ -1069,6 +1069,7 @@
             ws.addEventListener("open", () => {
               state.wsConnected = true;
               state.wsFailCount = 0;
+              fetchSnapshot();
               stopPolling();
               setStatus("ok", "WS 已连接");
             });

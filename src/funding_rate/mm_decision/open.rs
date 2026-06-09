@@ -9,7 +9,7 @@ use super::from_key::build_from_key;
 use super::state::{MmDecisionState, MmOpenPublishStats};
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::time_util::get_timestamp_us;
-use crate::market_maker::open_quote_plan::build_mm_open_quote_plan;
+use quote_plan::open_quote_plan::build_mm_open_quote_plan;
 use crate::signal::common::TradingVenue;
 use crate::signal::trade_signal::SignalType;
 use crate::symbol_match::normalize_symbol_for_whitelist;
@@ -206,7 +206,7 @@ impl MmOpenDecision {
         );
 
         let plan = match build_mm_open_quote_plan(
-            state.open_venue,
+            state.open_venue.into(),
             symbol,
             open_quote,
             state.resolve_order_amount_u(symbol),

@@ -20,8 +20,7 @@ use crate::common::symbol_util::{min_qty_symbol_key, normalize_symbol_for_venue}
 use crate::common::tick_math::QuantizedValue;
 use crate::common::time_util::get_timestamp_us;
 use crate::funding_rate::FundingRatePeriod;
-use crate::market_maker::order_align::align_order_for_venue;
-use crate::pre_trade::order_manager::Side;
+use quote_plan::order_align::align_order_for_venue;
 use crate::rolling_metrics::arb_open_latency::record_arb_open_latency;
 use crate::signal::arb_signal::{ArbBackwardQueryMsg, ArbCancelCandidateQueryMsg};
 use crate::signal::common::{SignalBytes, TradingLeg, TradingVenue};
@@ -29,11 +28,12 @@ use crate::signal::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
-use crate::strategy::inventory_hedge_quote_plan::{
-    build_inventory_hedge_from_key, build_inventory_hedge_quote_plan,
-    resolve_inventory_hedge_signal_inputs, InventoryHedgeBuildInput,
+use crate::funding_rate::inventory_hedge_inputs::resolve_inventory_hedge_signal_inputs;
+use quote_plan::inventory_hedge::{
+    build_inventory_hedge_from_key, build_inventory_hedge_quote_plan, InventoryHedgeBuildInput,
 };
 use crate::symbol_match::normalize_symbol_for_whitelist;
+use order_common::Side;
 
 use super::arb_cooldown::is_cooldown_hit;
 use super::arb_cooldown::threshold_key;
@@ -2119,7 +2119,7 @@ fn drive_shared_arb_hedge_query(
         &runtime.hedge_min_qty_table
     };
     let input = InventoryHedgeBuildInput {
-        venue: hedge_venue,
+        venue: hedge_venue.into(),
         symbol: &symbol,
         quote,
         volatility: params.volatility,
@@ -2896,7 +2896,7 @@ fn emit_spread_arb_open_signals(
         }
     };
 
-    let build_ctx = |level: &crate::market_maker::quote_plan_levels::QuotePlanLevel| {
+    let build_ctx = |level: &quote_plan::quote_plan_levels::QuotePlanLevel| {
         super::arb_open_context::build_arb_open_context_from_level_with_tables(
             super::arb_open_context::ArbOpenContextTablesInput {
                 open_symbol,
@@ -4625,7 +4625,7 @@ impl ArbDecisionState {
                 note: open_lookup.note,
             },
             hedge: VenueVolatilityReadiness {
-                venue: hedge_venue,
+                venue: hedge_venue.into(),
                 symbol_key: hedge_lookup.symbol_key,
                 key: hedge_lookup.key,
                 value: hedge_lookup.target_factor_value,

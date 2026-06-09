@@ -52,7 +52,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 SUPPORTED_EXCHANGES = {"binance", "okex", "gate", "bybit", "bitget"}
-PLACE_ORDER_SUPPORTED = {"bitget", "gate"}
+PLACE_ORDER_SUPPORTED = {"bitget", "gate", "binance", "bybit"}
 NAMESPACE = "cross"
 
 
@@ -315,7 +315,8 @@ def to_float(value: Any) -> float:
 
 
 def format_decimal(value: float) -> str:
-    text = f"{value:.12f}".rstrip("0").rstrip(".")
+    dec = Decimal(str(value)).normalize()
+    text = format(dec, "f").rstrip("0").rstrip(".")
     return text if text else "0"
 
 
@@ -393,10 +394,15 @@ class LotSpecCache:
                 continue
             step = 0.0
             min_qty = 0.0
-            for f in entry.get("filters", []):
-                if f.get("filterType") == "LOT_SIZE":
-                    step = to_float(f.get("stepSize"))
-                    min_qty = to_float(f.get("minQty"))
+            lot_filters = entry.get("filters", []) or []
+            for want in ("MARKET_LOT_SIZE", "LOT_SIZE"):
+                for f in lot_filters:
+                    if f.get("filterType") == want:
+                        step = to_float(f.get("stepSize"))
+                        min_qty = to_float(f.get("minQty"))
+                        if step > 0:
+                            break
+                if step > 0:
                     break
             return LotSpec("binance", symbol, step or 0.001, min_qty, 1.0)
         return None
@@ -705,8 +711,176 @@ def fetch_positions(exchange: str, timeout: int) -> Dict[str, float]:
 
 
 # ----------------------------------------------------------------------------
-# Reduce-only market order placement (bitget + gate only)
+# Reduce-only market order placement
 # ----------------------------------------------------------------------------
+
+
+def _binance_sign(query: str, secret: str) -> str:
+    return hmac.new(secret.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _binance_should_send_reduce_only(position_side: str) -> bool:
+    return (position_side or "BOTH").strip().upper() == "BOTH"
+
+
+def _binance_live_position(symbol: str, timeout: int) -> Optional[Dict[str, Any]]:
+    key, secret = load_required(("BINANCE_API_KEY", "BINANCE_API_SECRET"))
+    base = os.environ.get("BINANCE_FAPI_URL", "https://fapi.binance.com").rstrip("/")
+    params = {"symbol": symbol, "recvWindow": "5000", "timestamp": str(now_ms())}
+    query = urllib.parse.urlencode(sorted(params.items()), safe="-_.~")
+    sig = _binance_sign(query, secret)
+    url = f"{base}/fapi/v2/positionRisk?{query}&signature={sig}"
+    status, body, _ = http_json_request("GET", url, headers={"X-MBX-APIKEY": key}, timeout=timeout)
+    if not (200 <= status < 300):
+        return None
+    try:
+        rows = json.loads(body)
+    except Exception:
+        return None
+    if not isinstance(rows, list):
+        return None
+    candidates = []
+    for row in rows:
+        if str(row.get("symbol") or "").upper() != symbol.upper():
+            continue
+        amt = to_float(row.get("positionAmt"))
+        if amt == 0:
+            continue
+        candidates.append(row)
+    if not candidates:
+        return None
+    for row in candidates:
+        ps = str(row.get("positionSide") or "BOTH").strip().upper() or "BOTH"
+        amt = to_float(row.get("positionAmt"))
+        if (amt > 0 and ps in ("BOTH", "LONG")) or (amt < 0 and ps in ("BOTH", "SHORT")):
+            return row
+    return candidates[0]
+
+
+def submit_reduce_binance(symbol: str, side: str, qty: float, timeout: int) -> Tuple[bool, str]:
+    key, secret = load_required(("BINANCE_API_KEY", "BINANCE_API_SECRET"))
+    base = os.environ.get("BINANCE_FAPI_URL", "https://fapi.binance.com").rstrip("/")
+    live = _binance_live_position(symbol, timeout)
+    params = {
+        "symbol": symbol,
+        "side": side.upper(),
+        "type": "MARKET",
+        "quantity": format_decimal(qty),
+        "recvWindow": "5000",
+        "timestamp": str(now_ms()),
+    }
+    if live is not None:
+        position_side = str(live.get("positionSide") or "BOTH").strip().upper() or "BOTH"
+        params["positionSide"] = position_side
+        if _binance_should_send_reduce_only(position_side):
+            params["reduceOnly"] = "true"
+    query = urllib.parse.urlencode(sorted(params.items()), safe="-_.~")
+    sig = _binance_sign(query, secret)
+    url = f"{base}/fapi/v1/order?{query}&signature={sig}"
+    status, body, headers = http_json_request("POST", url, headers={"X-MBX-APIKEY": key}, timeout=timeout)
+    ok = 200 <= status < 300
+    brief = body[:300]
+    try:
+        data = json.loads(body)
+        if ok:
+            brief = json.dumps({
+                "symbol": data.get("symbol"),
+                "side": data.get("side"),
+                "status": data.get("status"),
+                "orderId": data.get("orderId"),
+                "positionSide": data.get("positionSide"),
+                "avgPrice": data.get("avgPrice"),
+            }, ensure_ascii=True)
+        else:
+            brief = f"code={data.get('code')} msg={data.get('msg')}"
+    except Exception:
+        pass
+    weight = headers.get("x-mbx-used-weight-1m") or headers.get("x-mbx-used-weight") or ""
+    if weight:
+        brief = f"{brief} used_weight={weight}"
+    return ok, brief
+
+
+def _bybit_sign(api_key: str, api_secret: str, timestamp_ms: str, recv_window: str, payload: str) -> str:
+    raw = f"{timestamp_ms}{api_key}{recv_window}{payload}"
+    return hmac.new(api_secret.encode("utf-8"), raw.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _bybit_request(api_key: str, api_secret: str, method: str, path: str, *, query: str = "", body: str = "", timeout: int = 10) -> Tuple[int, str]:
+    base = os.environ.get("BYBIT_API_BASE", "https://api.bybit.com").rstrip("/")
+    recv_window = "5000"
+    timestamp_ms = str(now_ms())
+    payload = body if method.upper() != "GET" else query
+    signature = _bybit_sign(api_key, api_secret, timestamp_ms, recv_window, payload)
+    url = f"{base}{path}"
+    if query:
+        url = f"{url}?{query}"
+    headers = {
+        "X-BAPI-API-KEY": api_key,
+        "X-BAPI-SIGN": signature,
+        "X-BAPI-SIGN-TYPE": "2",
+        "X-BAPI-TIMESTAMP": timestamp_ms,
+        "X-BAPI-RECV-WINDOW": recv_window,
+        "Content-Type": "application/json",
+    }
+    status, resp_body, _ = http_json_request(method.upper(), url, headers=headers, body=body or None, timeout=timeout)
+    return status, resp_body
+
+
+def _bybit_live_position(symbol: str, side: str, timeout: int) -> Optional[Dict[str, Any]]:
+    api_key, api_secret = load_required(("BYBIT_API_KEY", "BYBIT_API_SECRET"))
+    query = urllib.parse.urlencode({"category": "linear", "symbol": symbol})
+    status, body = _bybit_request(api_key, api_secret, "GET", "/v5/position/list", query=query, timeout=timeout)
+    if not (200 <= status < 300):
+        return None
+    try:
+        data = json.loads(body)
+    except Exception:
+        return None
+    rows = (data.get("result") or {}).get("list") or []
+    wanted = side.strip().lower()
+    for row in rows:
+        qty = to_float(row.get("size"))
+        if qty <= 0:
+            continue
+        row_side = str(row.get("side") or "").strip().lower()
+        if row_side == wanted:
+            return row
+    for row in rows:
+        qty = to_float(row.get("size"))
+        if qty > 0:
+            return row
+    return None
+
+
+def submit_reduce_bybit(symbol: str, side: str, qty: float, timeout: int) -> Tuple[bool, str]:
+    api_key, api_secret = load_required(("BYBIT_API_KEY", "BYBIT_API_SECRET"))
+    live = _bybit_live_position(symbol, "buy" if side.lower() == "sell" else "sell", timeout)
+    payload: Dict[str, Any] = {
+        "category": "linear",
+        "symbol": symbol,
+        "side": side.capitalize(),
+        "orderType": "Market",
+        "qty": format_decimal(qty),
+        "reduceOnly": True,
+        "orderLinkId": f"align{now_ms()}",
+    }
+    if live is not None and "positionIdx" in live:
+        payload["positionIdx"] = int(live.get("positionIdx") or 0)
+    body = json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
+    status, resp_body = _bybit_request(api_key, api_secret, "POST", "/v5/order/create", body=body, timeout=timeout)
+    ok = False
+    brief = resp_body[:300]
+    try:
+        data = json.loads(resp_body)
+        ok = (200 <= status < 300) and str(data.get("retCode", "")) in ("0", "")
+        if ok:
+            brief = json.dumps(data.get("result"), ensure_ascii=True)
+        else:
+            brief = f"retCode={data.get('retCode')} retMsg={data.get('retMsg')}"
+    except Exception:
+        ok = 200 <= status < 300
+    return ok, brief
 
 
 def submit_reduce_bitget(symbol: str, side: str, qty: float, timeout: int) -> Tuple[bool, str]:
@@ -948,6 +1122,10 @@ def execute_plans(plans: List[AlignPlan], *, sleep: float, timeout: int) -> int:
             # Gate uses signed size on a single endpoint.
             signed = -plan.rounded_qty if plan.side == "sell" else plan.rounded_qty
             ok, brief = submit_reduce_gate(plan.reduce_native_symbol, signed, timeout)
+        elif plan.reduce_ex == "binance":
+            ok, brief = submit_reduce_binance(plan.reduce_native_symbol, plan.side, plan.rounded_qty, timeout)
+        elif plan.reduce_ex == "bybit":
+            ok, brief = submit_reduce_bybit(plan.reduce_native_symbol, plan.side, plan.rounded_qty, timeout)
         else:
             ok, brief = False, "unreachable"
         tag = "OK" if ok else "ERR"

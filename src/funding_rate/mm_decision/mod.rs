@@ -20,9 +20,10 @@ use crate::signal::common::{SignalBytes, TradingLeg, TradingVenue};
 use crate::signal::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
 use crate::signal::mm_signal::{MmBackwardQueryMsg, MmCancelCandidateQueryMsg};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
-use crate::strategy::inventory_hedge_quote_plan::{
-    build_inventory_hedge_from_key, build_inventory_hedge_quote_plan,
-    resolve_inventory_hedge_signal_inputs, InventoryHedgeBuildInput, InventoryHedgeQuotePlan,
+use crate::funding_rate::inventory_hedge_inputs::resolve_inventory_hedge_signal_inputs;
+use quote_plan::inventory_hedge::{
+    build_inventory_hedge_from_key, build_inventory_hedge_quote_plan, InventoryHedgeBuildInput,
+    InventoryHedgeQuotePlan,
 };
 use crate::symbol_match::normalize_symbol_for_whitelist;
 
@@ -57,7 +58,12 @@ fn compute_next_open_deadline_us(now_us: i64, interval_ms: u64) -> i64 {
 
 fn build_mm_hedge_ctx_from_plan(plan: InventoryHedgeQuotePlan) -> MmHedgeCtx {
     let mut ctx = MmHedgeCtx::new();
-    ctx.opening_leg = TradingLeg::new(plan.venue, plan.quote.bid, plan.quote.ask, plan.quote.ts);
+    ctx.opening_leg = TradingLeg::new(
+        TradingVenue::from(plan.venue),
+        plan.quote.bid,
+        plan.quote.ask,
+        plan.quote.ts,
+    );
     ctx.set_opening_symbol(&plan.symbol);
     for level in &plan.levels {
         let Some(price_qv) = crate::common::tick_math::QuantizedValue::encode_floor(
@@ -545,7 +551,7 @@ impl MmDecision {
         };
         let (offset_low, offset_high_limit) = self.state.resolve_hedge_price_offset_limits(&symbol);
         let input = InventoryHedgeBuildInput {
-            venue: self.state.hedge_venue,
+            venue: self.state.hedge_venue.into(),
             symbol: &symbol,
             quote,
             volatility,

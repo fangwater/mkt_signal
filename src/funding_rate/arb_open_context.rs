@@ -1,9 +1,9 @@
 use crate::common::symbol_util::normalize_symbol_for_venue;
-use crate::market_maker::quote_plan_levels::QuotePlanLevel;
-use crate::pre_trade::order_manager::{OrderType, Side};
+use quote_plan::quote_plan_levels::QuotePlanLevel;
 use crate::signal::common::{TradingLeg, TradingVenue};
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
+use order_common::{OrderType, Side};
 
 use super::arb_qty_align::{
     convert_aligned_base_qty_to_open_venue_qty, convert_order_amount_to_aligned_base_qty,

@@ -301,25 +301,7 @@ pub fn venue_pair_for_exchange(exchange: Exchange) -> (TradingVenue, TradingVenu
 
 const MAX_SERIES_LEN: usize = 60;
 
-/// 行情报价
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Quote {
-    pub bid: f64,
-    pub ask: f64,
-    pub ts: i64, // µs，源自 spread_pbs `AskBidSpreadMsg.timestamp`
-}
-
-impl Quote {
-    pub fn update(&mut self, bid: f64, ask: f64, ts: i64) {
-        self.bid = bid;
-        self.ask = ask;
-        self.ts = ts;
-    }
-
-    pub fn is_valid(&self) -> bool {
-        self.bid > 0.0 && self.ask > 0.0
-    }
-}
+pub use quote_plan::Quote;
 
 /// 计算开仓腿与对冲腿的中间价价差率
 /// spread_rate = (mid_open - mid_hedge) / mid_open

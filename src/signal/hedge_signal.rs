@@ -1,7 +1,7 @@
 use crate::common::tick_math::QuantizedValue;
-use crate::pre_trade::order_manager::Side;
 use crate::signal::common::{bytes_helper, SignalBytes, TradingLeg};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use order_common::Side;
 
 const QV_BYTES_LEN: usize = 8 + 4 + 8;
 
@@ -776,8 +776,8 @@ impl ArbHedgeSignalQueryMsg {
 mod tests {
     use super::{ArbHedgeCtx, MmHedgeCtx, MmHedgeSignalQueryMsg};
     use crate::common::tick_math::QuantizedValue;
-    use crate::pre_trade::order_manager::Side;
     use crate::signal::common::{SignalBytes, TradingLeg, TradingVenue};
+    use order_common::Side;
 
     #[test]
     fn mm_hedge_query_roundtrip() {

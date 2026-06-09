@@ -1,7 +1,7 @@
-use crate::pre_trade::order_manager::Side;
 use crate::signal::common::TradingVenue;
 use crate::signal::common::{align_price_ceil, align_price_floor};
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
+use order_common::Side;
 
 use super::common::Quote;
 

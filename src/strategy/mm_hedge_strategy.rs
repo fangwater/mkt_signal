@@ -1,12 +1,10 @@
 use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::common::time_util::get_timestamp_us;
 use crate::funding_rate::mm_decision::from_key::append_mm_hedge_tlen_to_from_key;
-use crate::market_maker::hedge_split::{
+use quote_plan::hedge_split::{
     split_hedge_orders_round_robin, HedgeLevel, HedgeSplitOrder,
 };
-use crate::market_maker::order_align::{
-    align_final_order_qty, contract_qty_multiplier, min_qty_symbol_key,
-};
+use quote_plan::order_align::{align_final_order_qty, contract_qty_multiplier, min_qty_symbol_key};
 use crate::pre_trade::log_throttle::log_order_rate_limit_summary;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
