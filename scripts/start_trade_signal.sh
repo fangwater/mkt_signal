@@ -37,7 +37,7 @@ for cand in "${BIN_CANDIDATES[@]}"; do
 done
 
 if [[ -z "$BIN_PATH" ]]; then
-  echo "[ERROR] trade_signal binary not found. Build first with: cargo build --release --bin trade_signal"
+  echo "[ERROR] trade_signal binary not found. Build first with: cargo build --release -p trade_signal --bin trade_signal"
   exit 1
 fi
 

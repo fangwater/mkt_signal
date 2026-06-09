@@ -8,7 +8,9 @@ account_common = { path = "../account_common" }
 anyhow.workspace = true
 bytes = { version = "1.0", features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.0", features = ["derive"] }
 depth_pub_common = { package = "depth_pub", path = "../depth_pub" }
+env_logger = "0.10"
 factor_engine = { path = "../factor_engine" }
 hex = "0.4"
 hmac = "0.12"
@@ -27,4 +29,5 @@ serde_json.workspace = true
 sha2 = "0.10"
 signal_common = { path = "../signal_common" }
 tokio = { version = "1.0", features = ["full"] }
+tokio-util = "0.7.15"
 urlencoding = "2.1"

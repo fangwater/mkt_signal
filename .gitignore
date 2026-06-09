@@ -55,3 +55,6 @@ dist/
 
 # user-edited runtime config (template lives in config.example.toml)
 scripts/order_export_puller/config.toml
+
+# local order export dumps
+order_exports/

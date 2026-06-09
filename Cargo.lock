@@ -4739,7 +4739,9 @@ dependencies = [
  "anyhow",
  "bytes",
  "chrono",
+ "clap",
  "depth_pub",
+ "env_logger",
  "factor_engine",
  "hex",
  "hmac",
@@ -4758,6 +4760,7 @@ dependencies = [
  "sha2",
  "signal_common",
  "tokio",
+ "tokio-util",
  "urlencoding",
 ]
 
