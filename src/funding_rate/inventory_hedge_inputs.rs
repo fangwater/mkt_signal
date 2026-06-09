@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use crate::funding_rate::factor_value_hub::FactorValueHub;
 use crate::funding_rate::model_output_hub::ModelOutputHub;
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 
 const INVENTORY_HEDGE_NEUTRAL_SIGNAL: f64 = 0.0;
 const INVENTORY_HEDGE_NEUTRAL_SIGNAL_QUANTILE: f64 = 0.5;

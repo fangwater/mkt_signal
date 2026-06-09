@@ -11,7 +11,7 @@ use log::info;
 use mkt_signal::common::affinity::maybe_pin_current_thread;
 use mkt_signal::depth_pub::app::DepthPubRunner;
 use mkt_signal::depth_pub::cfg::DepthPubConfig;
-use mkt_signal::signal::common::TradingVenue;
+use order_common::TradingVenue;
 
 #[derive(Parser)]
 #[command(name = "depth_pub")]

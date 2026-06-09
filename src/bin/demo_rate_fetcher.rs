@@ -15,7 +15,7 @@ use log::info;
 use mkt_signal::common::exchange::Exchange;
 use mkt_signal::funding_rate::common::{venue_pair_for_exchange, FundingRatePeriod};
 use mkt_signal::funding_rate::{MktChannel, RateFetcher, SymbolList};
-use mkt_signal::signal::common::TradingVenue;
+use order_common::TradingVenue;
 use tokio::time::{sleep, Duration};
 
 #[tokio::main(flavor = "current_thread")]

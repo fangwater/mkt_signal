@@ -15,7 +15,7 @@ use crate::pre_trade::response_reconcile::apply_trade_response_as_update;
 use crate::pre_trade::signal_latency::record_signal_submit_latency;
 use crate::pre_trade::PersistChannel;
 use crate::rolling_metrics::arb_open_latency::record_arb_open_latency;
-use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
+use order_common::{TradingVenue, TimeInForce, ExecutionType, OrderStatus};
 use crate::signal::trade_signal::SignalType;
 use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
 use crate::strategy::trade_engine_response::{

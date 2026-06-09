@@ -1,4 +1,4 @@
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArbMode {

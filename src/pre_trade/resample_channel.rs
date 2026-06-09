@@ -14,7 +14,7 @@ use crate::pre_trade::price_table::PriceEntry;
 use crate::pre_trade::signal_channel::take_signal_counts;
 use crate::pre_trade::symbol_mapper::create_symbol_mapper;
 use crate::pre_trade::symbol_util::extract_base_asset;
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 use crate::viz::resample::{
     PreTradeAccountRiskView, PreTradeExposureResampleEntry, PreTradeExposureRow,
     PreTradeRiskResampleEntry, PreTradeVenueRiskResampleEntry,

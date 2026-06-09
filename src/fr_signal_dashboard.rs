@@ -26,7 +26,7 @@ use crate::funding_rate::{
     FundingRateFactor, MktChannel, RateFetcher, SymbolList,
 };
 use crate::pre_trade::account_open_block::latest_usdt_max_available_margin_snapshot;
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 
 #[derive(Debug, Clone)]
 pub struct FrDashboardConfig {

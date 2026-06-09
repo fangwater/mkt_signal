@@ -22,7 +22,7 @@ use crate::funding_rate::inline_volatility::{
     observe_inline_tradecount, observe_inline_volatility, InlineVolatilitySnapshot,
 };
 use crate::funding_rate::model_output_hub::ModelOutputHub;
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 
 const FACTOR_VALUE_PAYLOAD_MAX_BYTES: usize = 256;
 const FACTOR_VALUE_SUBSCRIBER_BUFFER_SIZE: usize = 8192;
@@ -918,7 +918,7 @@ impl FactorValueHub {
 #[cfg(test)]
 mod tests {
     use super::{FactorValueHub, FactorValueSnapshot};
-    use crate::signal::common::TradingVenue;
+    use order_common::TradingVenue;
 
     #[test]
     fn builds_profile_from_open_and_hedge_venues() {

@@ -1,4 +1,4 @@
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 use order_common::Side;
 
 use super::funding_threshold_loader::FactorDirectionalThresholds;

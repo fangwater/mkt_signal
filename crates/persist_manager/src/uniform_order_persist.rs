@@ -9,11 +9,11 @@ use iceoryx2::service::ipc;
 use log::{info, warn};
 use tokio::time::Instant;
 
-use crate::persist_manager::bbo_spread::BboSpreadStore;
-use crate::persist_manager::iceoryx::{create_record_subscriber, trim_uniform_order_payload};
-use crate::persist_manager::storage::RocksDbStore;
-use crate::persist_manager::sync::persist_with_outbox;
-use crate::pre_trade::UNIFORM_ORDER_RECORD_CHANNEL;
+use crate::bbo_spread::BboSpreadStore;
+use crate::iceoryx::{create_record_subscriber, trim_uniform_order_payload};
+use crate::storage::RocksDbStore;
+use crate::sync::persist_with_outbox;
+use persist_common::UNIFORM_ORDER_RECORD_CHANNEL;
 
 pub(crate) const CF_UNIFORM_ORDER: &str = "uniform_orders";
 
@@ -22,8 +22,7 @@ pub fn required_column_families() -> &'static [&'static str] {
 }
 
 pub struct UniformOrderPersistor {
-    subscriber:
-        Subscriber<ipc::Service, [u8; crate::common::iceoryx_publisher::SIGNAL_PAYLOAD], ()>,
+    subscriber: Subscriber<ipc::Service, [u8; crate::runtime_common::SIGNAL_PAYLOAD], ()>,
     store: Arc<RocksDbStore>,
     bbo_store: Option<Arc<BboSpreadStore>>,
     bbo_enrich_delay: Duration,

@@ -1,3 +1,5 @@
+use order_common::TradingVenue;
+
 const EPS: f64 = 1e-12;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -16,6 +18,49 @@ pub enum Venue {
     AsterFutures,
     HyperliquidMargin,
     HyperliquidFutures,
+}
+
+
+impl From<TradingVenue> for Venue {
+    fn from(value: TradingVenue) -> Self {
+        match value {
+            TradingVenue::BinanceMargin => Venue::BinanceMargin,
+            TradingVenue::BinanceFutures => Venue::BinanceFutures,
+            TradingVenue::OkexMargin => Venue::OkexMargin,
+            TradingVenue::OkexFutures => Venue::OkexFutures,
+            TradingVenue::BybitMargin => Venue::BybitMargin,
+            TradingVenue::BybitFutures => Venue::BybitFutures,
+            TradingVenue::BitgetMargin => Venue::BitgetMargin,
+            TradingVenue::BitgetFutures => Venue::BitgetFutures,
+            TradingVenue::GateMargin => Venue::GateMargin,
+            TradingVenue::GateFutures => Venue::GateFutures,
+            TradingVenue::AsterMargin => Venue::AsterMargin,
+            TradingVenue::AsterFutures => Venue::AsterFutures,
+            TradingVenue::HyperliquidMargin => Venue::HyperliquidMargin,
+            TradingVenue::HyperliquidFutures => Venue::HyperliquidFutures,
+        }
+    }
+}
+
+impl From<Venue> for TradingVenue {
+    fn from(value: Venue) -> Self {
+        match value {
+            Venue::BinanceMargin => TradingVenue::BinanceMargin,
+            Venue::BinanceFutures => TradingVenue::BinanceFutures,
+            Venue::OkexMargin => TradingVenue::OkexMargin,
+            Venue::OkexFutures => TradingVenue::OkexFutures,
+            Venue::BybitMargin => TradingVenue::BybitMargin,
+            Venue::BybitFutures => TradingVenue::BybitFutures,
+            Venue::BitgetMargin => TradingVenue::BitgetMargin,
+            Venue::BitgetFutures => TradingVenue::BitgetFutures,
+            Venue::GateMargin => TradingVenue::GateMargin,
+            Venue::GateFutures => TradingVenue::GateFutures,
+            Venue::AsterMargin => TradingVenue::AsterMargin,
+            Venue::AsterFutures => TradingVenue::AsterFutures,
+            Venue::HyperliquidMargin => TradingVenue::HyperliquidMargin,
+            Venue::HyperliquidFutures => TradingVenue::HyperliquidFutures,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]

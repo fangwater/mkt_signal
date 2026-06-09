@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use tokio::fs as async_fs;
 use tokio::sync::Mutex;
 
-use mkt_signal::persist_manager::{self, exporter::export_window_to_dir, RocksDbStore};
+use persist_manager::{self, exporter::export_window_to_dir, RocksDbStore};
 
 const SNAPSHOT_FILES: [&str; 3] = [
     "order_updates_unmatched.parquet",

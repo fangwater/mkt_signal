@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::common::mkt_msg::{FundingRateMsg, IndexPriceMsg, Level, LiquidationMsg, MarkPriceMsg};
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 use crate::spread_pbs::adapter::{
     BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
 };

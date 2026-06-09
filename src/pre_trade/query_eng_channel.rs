@@ -21,7 +21,7 @@ use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::OrderExecutionStatus;
 use crate::pre_trade::response_reconcile::apply_query_response_as_updates;
 use crate::pre_trade::PersistChannel;
-use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
+use order_common::{TradingVenue, TimeInForce, ExecutionType, OrderStatus};
 use crate::strategy::order_query_parser::parse_compact_order_query_resp;
 use crate::strategy::query_engine_response::{QueryEngineResponse, QueryEngineResponseMessage};
 use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};

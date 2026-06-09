@@ -14,7 +14,6 @@ pub mod latency_stable_monitor;
 pub mod market_maker;
 pub mod mkt_pub;
 pub mod parser;
-pub mod persist_manager;
 pub mod portfolio_margin;
 pub mod pre_trade;
 pub mod rolling_metrics;

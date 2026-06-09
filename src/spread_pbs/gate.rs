@@ -16,7 +16,7 @@ use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::common::mkt_msg::{FundingRateMsg, IndexPriceMsg, MarkPriceMsg};
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 use crate::spread_pbs::adapter::{
     BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
 };

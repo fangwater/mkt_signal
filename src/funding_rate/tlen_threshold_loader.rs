@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 use crate::common::redis_client::{RedisClient, RedisSettings};
 use crate::common::symbol_util::normalize_symbol_for_internal;
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 
 fn venue_key_part(venue: TradingVenue) -> String {
     venue.data_pub_slug().replace('-', "_")
@@ -46,7 +46,7 @@ pub async fn load_from_redis(
 #[cfg(test)]
 mod tests {
     use super::{normalize_threshold_symbol, tlen_threshold_key};
-    use crate::signal::common::TradingVenue;
+    use order_common::TradingVenue;
 
     #[test]
     fn builds_tlen_key_from_open_venue() {

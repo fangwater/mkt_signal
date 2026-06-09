@@ -16,7 +16,8 @@ use crate::signal::arb_signal::{
     ArbBackwardQueryMsg, ArbCancelCandidateEntry, ArbCancelCandidateQueryMsg, ArbCancelTriggerCtx,
 };
 use crate::signal::cancel_signal::{ArbCancelCtx, MmCancelCtx};
-use crate::signal::common::{SignalBytes, TradingVenue};
+use crate::signal::common::SignalBytes;
+use order_common::TradingVenue;
 use crate::signal::exec_signal::{ExecCtx, ExecPositionTargetCtx, ExecRequestCtx};
 use crate::signal::hedge_signal::{ArbHedgeCtx, MmHedgeCtx};
 use crate::signal::mm_signal::{

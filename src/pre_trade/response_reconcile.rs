@@ -3,7 +3,7 @@ use log::debug;
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus};
-use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
+use order_common::{TradingVenue, TimeInForce, ExecutionType, OrderStatus};
 use crate::strategy::order_query_parser::parse_compact_order_query_resp;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::query_engine_response::QueryEngineResponse;

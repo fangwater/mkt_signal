@@ -10,7 +10,7 @@ use crate::common::min_qty_table::{
     BinanceProvider, BitgetProvider, BybitProvider, GateProvider, MarketType, MinQtyEntry,
     OkexProvider,
 };
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 
 type EntryMap = HashMap<String, MinQtyEntry>;
 type MultiplierMap = HashMap<String, f64>;

@@ -16,7 +16,7 @@ use mkt_signal::common::iceoryx_publisher::configure_signal_publish_dry_run;
 use mkt_signal::common::redis_client::RedisSettings;
 use mkt_signal::common::symbol_util::normalize_symbol_for_venue;
 use mkt_signal::common::time_util::get_timestamp_us;
-use mkt_signal::signal::common::TradingVenue;
+use order_common::TradingVenue;
 
 // 使用模块化的 funding_rate
 use mkt_signal::funding_rate::{
@@ -696,7 +696,7 @@ mod tests {
         infer_cross_venues_from_key_suffix, infer_intra_venues_from_key_suffix,
         parse_namespace_and_key_suffix,
     };
-    use mkt_signal::signal::common::TradingVenue;
+    use order_common::TradingVenue;
 
     #[test]
     fn parse_intra_dir_with_numeric_env_tag() {

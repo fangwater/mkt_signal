@@ -7,7 +7,7 @@ use super::super::symbol_list::SymbolList;
 use super::from_key::build_mm_cancel_from_key;
 use super::state::MmDecisionState;
 use crate::common::time_util::get_timestamp_us;
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 use crate::signal::trade_signal::SignalType;
 use crate::symbol_match::normalize_symbol_for_whitelist;
 use order_common::Side;

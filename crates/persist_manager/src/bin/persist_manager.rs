@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use mkt_signal::persist_manager::PersistManager;
+use persist_manager::PersistManager;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {

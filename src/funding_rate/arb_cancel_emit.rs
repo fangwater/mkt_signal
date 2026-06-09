@@ -8,7 +8,7 @@ use order_common::Side;
 
 use super::arb_cancel_context::{build_arb_cancel_context, ArbCancelContextInput};
 use super::common::Quote;
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 
 pub struct ArbCancelEmitInput<'a> {
     pub signal_pub: &'a TradeSignalPublisher,

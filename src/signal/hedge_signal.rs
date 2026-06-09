@@ -776,7 +776,8 @@ impl ArbHedgeSignalQueryMsg {
 mod tests {
     use super::{ArbHedgeCtx, MmHedgeCtx, MmHedgeSignalQueryMsg};
     use crate::common::tick_math::QuantizedValue;
-    use crate::signal::common::{SignalBytes, TradingLeg, TradingVenue};
+    use crate::signal::common::{SignalBytes, TradingLeg};
+use order_common::TradingVenue;
     use order_common::Side;
 
     #[test]

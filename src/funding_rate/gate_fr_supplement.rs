@@ -13,7 +13,7 @@ use log::{info, warn};
 use serde::Deserialize;
 
 use crate::funding_rate::mkt_channel::MktChannel;
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 
 const GATE_FUTURES_CONTRACTS_URL: &str = "https://api.gateio.ws/api/v4/futures/usdt/contracts";
 const REQ_TIMEOUT_SECS: u64 = 10;

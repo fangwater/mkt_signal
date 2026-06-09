@@ -26,7 +26,7 @@ use crate::parser::okex_parser::{
     OkexAskBidSpreadParser, OkexDerivativesMetricsParser, OkexIncParser, OkexKlineParser,
     OkexSignalParser, OkexTradeParser,
 };
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 use crate::sub_msg::{BinanceFuturesStreamKind, DerivativesMetricsSubscribeMsgs, SubscribeMsgs};
 use bytes::Bytes;
 use log::{debug, error, info};

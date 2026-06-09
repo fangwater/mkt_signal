@@ -1,7 +1,7 @@
-use crate::persist_manager::unified_order::UnifiedOrderRecord;
+use persist_common::UnifiedOrderRecord;
 use crate::pre_trade::order_manager::{Order, OrderManager};
 use crate::pre_trade::PersistChannel;
-use crate::signal::common::OrderStatus;
+use order_common::OrderStatus;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
 use log::warn;

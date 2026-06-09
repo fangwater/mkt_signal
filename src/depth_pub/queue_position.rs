@@ -17,7 +17,7 @@ use crate::common::exchange::Exchange;
 use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::depth_pub::order_queue_msg::{OrderQueuePositionAction, OrderQueuePositionMsg};
 use crate::pre_trade::order_manager::{OrderType, Side as OrderSide};
-use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
+use order_common::{TradingVenue, TimeInForce, ExecutionType, OrderStatus};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
 

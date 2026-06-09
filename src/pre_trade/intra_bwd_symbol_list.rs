@@ -13,7 +13,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use crate::common::redis_client::{RedisClient, RedisSettings};
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 use crate::symbol_match::normalize_symbol_for_whitelist;
 
 const REFRESH_INTERVAL_SECS: u64 = 60;

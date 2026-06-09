@@ -35,7 +35,8 @@ use crate::pre_trade::symbol_util::extract_base_asset;
 use crate::pre_trade::usdt_balance_manager::{UsdtBalanceManager, UsdtBalanceSnapshot};
 use crate::pre_trade::PersistChannel;
 use crate::signal::cancel_signal::{ArbCancelCtx, ArbCancelReason, MmCancelCtx, MmCancelReason};
-use crate::signal::common::{ExecutionType, OrderStatus, SignalBytes, TradingLeg, TradingVenue};
+use crate::signal::common::{SignalBytes, TradingLeg};
+use order_common::{TradingVenue, ExecutionType, OrderStatus};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 
 const ACCOUNT_PAYLOAD: usize = 16_384;
@@ -3577,7 +3578,7 @@ where
         OrderUpdate::order_type(self.inner)
     }
 
-    fn time_in_force(&self) -> crate::signal::common::TimeInForce {
+    fn time_in_force(&self) -> order_common::TimeInForce {
         OrderUpdate::time_in_force(self.inner)
     }
 

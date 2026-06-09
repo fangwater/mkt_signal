@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use mkt_signal::depth_pub::query_client::DepthQueryClient;
 use mkt_signal::depth_pub::query_msg::{price_to_tick_index, tick_index_to_price};
-use mkt_signal::signal::common::TradingVenue;
+use order_common::TradingVenue;
 
 #[derive(Parser, Debug)]
 #[command(name = "demo_depth_query_tlen")]

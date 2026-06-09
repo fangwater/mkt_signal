@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use mkt_signal::common::exchange::Exchange;
 use mkt_signal::fr_signal_dashboard::{run, FrDashboardConfig};
-use mkt_signal::signal::common::TradingVenue;
+use order_common::TradingVenue;
 
 const PROCESS_NAME: &str = "fr_signal_dashboard";
 

@@ -7,9 +7,12 @@ use crate::common::iceoryx_publisher::{
 };
 use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::common::time_util::get_timestamp_us;
-use crate::persist_manager::unified_order::UnifiedOrderRecord;
+use persist_common::{
+    UnifiedOrderRecord, ORDER_UPDATE_RECORD_CHANNEL, ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL,
+    TRADE_UPDATE_RECORD_CHANNEL, TRADE_UPDATE_UNMATCHED_RECORD_CHANNEL, UNIFORM_ORDER_RECORD_CHANNEL,
+};
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
 
@@ -17,17 +20,7 @@ thread_local! {
     static PERSIST_CHANNEL: OnceCell<PersistChannel> = const { OnceCell::new() };
 }
 
-/// 通用交易更新记录频道（支持所有交易所）
-pub const TRADE_UPDATE_RECORD_CHANNEL: &str = "trade_update_record";
-/// 未匹配到策略的交易更新记录频道
-pub const TRADE_UPDATE_UNMATCHED_RECORD_CHANNEL: &str = "trade_update_unmatched_record";
 
-/// 通用订单更新记录频道（支持所有交易所）
-pub const ORDER_UPDATE_RECORD_CHANNEL: &str = "order_update_record";
-/// 未匹配到策略的订单更新记录频道
-pub const ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL: &str = "order_update_unmatched_record";
-/// 统一订单记录频道
-pub const UNIFORM_ORDER_RECORD_CHANNEL: &str = "uniform_order_record";
 
 /// 持久化通道：负责将交易更新和订单更新通过 IceOryx 发布到下游持久化服务
 ///

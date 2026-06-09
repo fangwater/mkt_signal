@@ -12,7 +12,7 @@ use mkt_signal::factor_pub::factor_index::factor_name_to_channel;
 use mkt_signal::factor_pub::rl_vol::compute_rl_return_volatility;
 use mkt_signal::factor_pub::trade_flow_feature_pub::cfg::TradeFlowFeaturePubConfig;
 use mkt_signal::funding_rate::factor_value_hub::FactorValueHub;
-use mkt_signal::signal::common::TradingVenue;
+use order_common::TradingVenue;
 use std::collections::VecDeque;
 use std::thread;
 use std::time::Duration;

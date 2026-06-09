@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use clap::Parser;
 use log::info;
 
-use mkt_signal::signal::common::TradingVenue;
+use order_common::TradingVenue;
 use mkt_signal::signal::venue_min_qty_table::VenueMinQtyTable;
 
 #[derive(Debug, Parser)]

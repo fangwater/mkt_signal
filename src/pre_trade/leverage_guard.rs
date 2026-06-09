@@ -5,7 +5,7 @@ use crate::funding_rate::ArbMode;
 use crate::portfolio_margin::bybit_auth::BybitCredentials;
 use crate::portfolio_margin::gate_auth::GateCredentials;
 use crate::portfolio_margin::okex_auth::OkexCredentials;
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 use anyhow::{anyhow, bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use chrono::{SecondsFormat, Utc};

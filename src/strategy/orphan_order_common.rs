@@ -3,7 +3,7 @@ use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus};
 use crate::pre_trade::{QueryEngHub, TradeEngHub};
-use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
+use order_common::{TradingVenue, TimeInForce, ExecutionType, OrderStatus};
 use crate::strategy::manager::OrphanSourceKind;
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::order_update::OrderUpdate;
@@ -978,7 +978,7 @@ mod tests {
         BINANCE_PM_COMMIT_QUERY_MAX_ATTEMPTS, BINANCE_PM_ORPHAN_INITIAL_QUERY_TICKS,
         COMMIT_QUERY_BASE_TICKS, COMMIT_QUERY_MAX_ATTEMPTS,
     };
-    use crate::signal::common::TradingVenue;
+    use order_common::TradingVenue;
 
     #[test]
     fn orphan_query_table_uses_three_lines() {

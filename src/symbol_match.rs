@@ -1,5 +1,5 @@
 use crate::common::mkt_msg::MktMsgType;
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 
 /// 符号标准化工具，用于跨 venue 对齐
 ///

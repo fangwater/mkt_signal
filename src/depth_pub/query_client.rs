@@ -13,7 +13,7 @@ use super::query_msg::{
     DepthQueryOrderQueuePositionReq, DepthQueryOrderQueuePositionResp, DepthQueryTop5PriceTlenReq,
     DepthQueryTop5PriceTlenResp, DepthQueryType, DEPTH_QUERY_PAYLOAD, RESP_STATUS_OK,
 };
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 
 const DEPTH_QUERY_SOCKET_TIMEOUT_MS: u64 = 200;
 const DEPTH_QUERY_BATCH_FAST_TIMEOUT_US: u64 = 100_000;

@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use crate::funding_rate::arb_decision::funding_rate_symbol_inputs_ready;
 use crate::funding_rate::RateFetcher;
 use crate::funding_rate::{ArbDecision, ArbMode};
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecisionBranch {

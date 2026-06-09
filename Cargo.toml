@@ -6,6 +6,8 @@ members = [
     "crates/mkt_model_runtime",
     "crates/mkt_parsers",
     "crates/order_common",
+    "crates/persist_manager",
+    "crates/persist_common",
     "crates/quote_plan",
 ]
 resolver = "2"
@@ -89,26 +91,6 @@ name = "rolling_metrics"
 path = "src/bin/rolling_metrics.rs"
 
 [[bin]]
-name = "persist_manager"
-path = "src/bin/persist_manager.rs"
-
-[[bin]]
-name = "persist_sync_collector"
-path = "src/bin/persist_sync_collector.rs"
-
-[[bin]]
-name = "persist_read_server"
-path = "src/bin/persist_read_server.rs"
-
-[[bin]]
-name = "order_export"
-path = "src/bin/order_export.rs"
-
-[[bin]]
-name = "order_export_server"
-path = "src/bin/order_export_server.rs"
-
-[[bin]]
 name = "test_minqty"
 path = "src/bin/test_minqty.rs"
 
@@ -164,6 +146,7 @@ path = "src/bin/depth_pub.rs"
 [[bin]]
 name = "trade_flow_feature_pub"
 path = "src/bin/trade_flow_feature_pub.rs"
+required-features = ["factor-rocksdb"]
 
 [[bin]]
 name = "pairmm_resample"
@@ -182,10 +165,12 @@ required-features = ["model-ort"]
 [[bin]]
 name = "fusion_factor_pub"
 path = "src/bin/fusion_factor_pub.rs"
+required-features = ["factor-rocksdb"]
 
 [[bin]]
 name = "factor_test"
 path = "src/bin/factor_test.rs"
+required-features = ["factor-rocksdb"]
 
 [[bin]]
 name = "demo_bridge_pub"
@@ -224,6 +209,7 @@ name = "inspect_model_input"
 path = "src/bin/inspect_model_input.rs"
 
 [dependencies]
+persist_common = { path = "crates/persist_common" }
 quote_plan = { path = "crates/quote_plan" }
 order_common = { path = "crates/order_common" }
 factor_engine = { path = "crates/factor_engine" }
@@ -273,8 +259,7 @@ crc32fast = "1.4"
 tar = "0.4"
 tower = "0.4"
 tower-http = { version = "0.4", features = ["cors"] }
-rocksdb = { version = "0.21", default-features = false, features = ["lz4"] }
-polars-time = "0.43.1"
+rocksdb = { version = "0.21", default-features = false, features = ["lz4"], optional = true }
 dashmap = "5.5"
 parking_lot = "0.12"
 crossbeam-channel = "0.5"
@@ -286,19 +271,12 @@ indexmap = "2"
 rayon = "1.10"
 arc-swap = "1.7"
 
-[build-dependencies]
-tonic-build = "0.12"
-protoc-bin-vendored = "3"
 
 [features]
 default = []
 model-ort = ["dep:mkt_model_runtime"]
+factor-rocksdb = ["dep:rocksdb"]
 
-[dependencies.polars]
-version = "0.43.1"
-optional = false
-default-features = false
-features = ["fmt", "lazy", "parquet", "ipc_streaming", "polars-io", "rolling_window", "rank", "moment", "cov"]
 
 [profile.release]
 debug = 0

@@ -2,7 +2,7 @@
 //!
 //! 提供不同交易所间的符号格式转换功能
 
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 
 /// 从交易对符号中提取 base asset 和 quote asset
 ///

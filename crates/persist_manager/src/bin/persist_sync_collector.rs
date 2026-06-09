@@ -1,16 +1,23 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use mkt_signal::common::time_util::get_timestamp_us;
-use mkt_signal::persist_manager::sync::{
+use persist_manager::sync::{
     run_collector, run_multi_collector, run_verify_config, run_verify_recent, CollectorArgs,
     MultiCollectorConfig, VerifyArgs, VerifyConfigArgs,
 };
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_CENTER_DB_PATH: &str = "data/persist_sync_center";
 const DEFAULT_BATCH_RECORDS: usize = 1_000;
 const DEFAULT_BATCH_BYTES: usize = 4 * 1024 * 1024;
 const DEFAULT_BUCKET_US: u64 = 60_000_000;
+
+fn get_timestamp_us() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_micros() as i64)
+        .unwrap_or_default()
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "persist_sync_collector")]

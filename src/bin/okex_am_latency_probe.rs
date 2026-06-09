@@ -12,7 +12,7 @@ use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::portfolio_margin::pm_forwarder::{
     PM_HISTORY_SIZE, PM_MAX_SUBSCRIBERS, PM_SUBSCRIBER_MAX_BUFFER_SIZE,
 };
-use mkt_signal::signal::common::TradingVenue;
+use order_common::TradingVenue;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;

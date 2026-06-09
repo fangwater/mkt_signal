@@ -16,8 +16,8 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 use crate::pre_trade::order_manager::{OrderType, Side};
-use crate::signal::common::TradingVenue;
-use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce};
+use order_common::TradingVenue;
+use order_common::{TimeInForce, ExecutionType, OrderStatus};
 
 #[derive(Clone)]
 pub struct BinanceBasicAccountEventParser {

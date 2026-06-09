@@ -1,6 +1,6 @@
 use crate::cfg::Config;
 use crate::common::exchange::Exchange;
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 use log::warn;
 use serde_json::Value;
 use std::collections::HashSet;

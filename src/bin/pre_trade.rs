@@ -25,7 +25,7 @@ use mkt_signal::pre_trade::taker_decision_model::PreTradeTakerDecisionModel;
 use mkt_signal::pre_trade::PreTrade;
 use mkt_signal::pre_trade::QueryEngHub;
 use mkt_signal::pre_trade::TradeEngHub;
-use mkt_signal::signal::common::TradingVenue;
+use order_common::TradingVenue;
 use mkt_signal::strategy::StrategyManager;
 use mkt_signal::trade_engine::config::RestConstants;
 use mkt_signal::trade_engine::query_request::{GenericQueryRequest, QueryRequestType};

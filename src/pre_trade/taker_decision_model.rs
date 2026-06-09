@@ -13,7 +13,7 @@ use crate::common::model_ipc::MODEL_PAYLOAD_MAX_BYTES;
 use crate::common::redis_client::{RedisClient, RedisSettings};
 use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::pre_trade::order_manager::Side;
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 
 const MODEL_OUTPUT_HISTORY_SIZE: usize = 128;
 const MODEL_OUTPUT_SUBSCRIBER_BUFFER_SIZE: usize = 256;

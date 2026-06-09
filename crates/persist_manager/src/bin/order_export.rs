@@ -6,7 +6,7 @@ use chrono::{
 };
 use clap::Parser;
 use log::info;
-use mkt_signal::persist_manager::{self, exporter, RocksDbStore};
+use persist_manager::{self, exporter, RocksDbStore};
 
 fn main() -> Result<()> {
     if std::env::var("RUST_LOG").is_err() {

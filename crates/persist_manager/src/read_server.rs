@@ -137,7 +137,7 @@ impl PersistReadServer {
         cf_names.sort_unstable();
         cf_names.dedup();
         let cf_refs = cf_names.iter().map(String::as_str).collect::<Vec<_>>();
-        let tuning = crate::persist_manager::default_tuning();
+        let tuning = crate::default_tuning();
         let store = Arc::new(RocksDbStore::open_secondary_with_tuning(
             &resolved.primary_dir.to_string_lossy(),
             &resolved.secondary_dir.to_string_lossy(),
@@ -298,7 +298,7 @@ impl ResolvedConfig {
 
     fn read_column_families(&self) -> Vec<String> {
         if self.source_ids.is_empty() {
-            return crate::persist_manager::required_column_families()
+            return crate::required_column_families()
                 .into_iter()
                 .map(str::to_string)
                 .collect();

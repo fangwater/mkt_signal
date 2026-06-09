@@ -10,7 +10,7 @@ use super::state::{MmDecisionState, MmOpenPublishStats};
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::time_util::get_timestamp_us;
 use quote_plan::open_quote_plan::build_mm_open_quote_plan;
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 use crate::signal::trade_signal::SignalType;
 use crate::symbol_match::normalize_symbol_for_whitelist;
 
@@ -605,7 +605,7 @@ mod tests {
     };
     use crate::funding_rate::factor_value_hub::{EnvironmentSignalResult, EnvironmentSignalSource};
     use crate::funding_rate::mm_decision::state::MmOpenPublishStats;
-    use crate::signal::common::TradingVenue;
+    use order_common::TradingVenue;
     use crate::symbol_match::normalize_symbol_for_whitelist;
 
     fn sample_environment_signal(allow_open: bool) -> EnvironmentSignalResult {

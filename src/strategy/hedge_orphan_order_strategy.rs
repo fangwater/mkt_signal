@@ -3,7 +3,7 @@ use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::OrderExecutionStatus;
 use crate::pre_trade::{QueryEngHub, TradeEngHub};
-use crate::signal::common::{ExecutionType, OrderStatus};
+use order_common::{ExecutionType, OrderStatus};
 use crate::signal::trade_signal::TradeSignal;
 use crate::strategy::manager::{OrphanHandoff, OrphanSourceKind, Strategy};
 use crate::strategy::order_query_builder::build_order_query_request;

@@ -2187,11 +2187,9 @@ dependencies = [
  "once_cell",
  "order_common",
  "parking_lot",
- "polars",
- "polars-time",
+ "persist_common",
  "prettytable",
  "prost",
- "protoc-bin-vendored",
  "queue_position_engine",
  "quote_plan",
  "rayon",
@@ -2212,7 +2210,6 @@ dependencies = [
  "tokio-util",
  "toml 0.8.23",
  "tonic",
- "tonic-build",
  "tower 0.4.13",
  "tower-http 0.4.4",
  "url",
@@ -2461,6 +2458,7 @@ dependencies = [
 name = "order_common"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "serde",
 ]
 
@@ -2535,6 +2533,45 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
+
+[[package]]
+name = "persist_common"
+version = "0.1.0"
+
+[[package]]
+name = "persist_manager"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "bytes",
+ "chrono",
+ "clap",
+ "crc32fast",
+ "env_logger",
+ "flate2",
+ "hex",
+ "iceoryx2",
+ "log",
+ "order_common",
+ "parking_lot",
+ "persist_common",
+ "polars",
+ "prost",
+ "protoc-bin-vendored",
+ "redis",
+ "rocksdb",
+ "serde",
+ "serde_json",
+ "tar",
+ "tokio",
+ "tokio-stream",
+ "toml 0.8.23",
+ "tonic",
+ "tonic-build",
+ "tower-http 0.4.4",
+ "urlencoding",
+]
 
 [[package]]
 name = "petgraph"

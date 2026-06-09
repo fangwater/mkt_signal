@@ -14,7 +14,7 @@ use crate::rolling_metrics::latency_snapshot::{
     LatencyBucketStat, LatencySnapshotMsg, ACTION_ID_MARKET_DATA, METRIC_ID_SPREAD_E2E,
     METRIC_ID_SPREAD_NET,
 };
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 
 use crate::spread_pbs::adapter::{
     create_adapter, BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
@@ -38,11 +38,11 @@ pub struct SpreadPbsApp {
     config: Config,
 }
 
-fn is_okex_venue(venue: crate::signal::common::TradingVenue) -> bool {
+fn is_okex_venue(venue: order_common::TradingVenue) -> bool {
     matches!(
         venue,
-        crate::signal::common::TradingVenue::OkexMargin
-            | crate::signal::common::TradingVenue::OkexFutures
+        order_common::TradingVenue::OkexMargin
+            | order_common::TradingVenue::OkexFutures
     )
 }
 
@@ -68,7 +68,7 @@ fn is_binance_venue(venue: TradingVenue) -> bool {
 }
 
 fn is_okex_derivatives_venue(venue: TradingVenue) -> bool {
-    matches!(venue, crate::signal::common::TradingVenue::OkexFutures)
+    matches!(venue, order_common::TradingVenue::OkexFutures)
 }
 
 fn direct_trade_replacement_enabled(venue: TradingVenue) -> bool {

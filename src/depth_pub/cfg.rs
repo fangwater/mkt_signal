@@ -75,7 +75,7 @@ pub struct DepthAccountSubscriptionConfig {
     /// Full iceoryx service name, including private namespace prefix.
     pub service_name: String,
     /// Venue carried by the account monitor payloads this subscriber should accept.
-    pub venue: crate::signal::common::TradingVenue,
+    pub venue: order_common::TradingVenue,
     #[serde(default = "default_amount_scale")]
     pub amount_scale: f64,
 }
@@ -211,7 +211,7 @@ mod tests {
         );
         assert_eq!(
             cfg.accounts[0].venue,
-            crate::signal::common::TradingVenue::GateFutures
+            order_common::TradingVenue::GateFutures
         );
     }
 }

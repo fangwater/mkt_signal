@@ -1,5 +1,5 @@
 use crate::exchange::Exchange;
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 use anyhow::{Context, Result};
 use log::{error, info, warn};
 use prettytable::{format, Cell, Row, Table};

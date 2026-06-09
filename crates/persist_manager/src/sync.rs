@@ -13,7 +13,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Channel, Server};
 use tonic::{Request, Response, Status};
 
-use crate::common::time_util::get_timestamp_us;
+use crate::runtime_common::get_timestamp_us;
 
 use super::order_update::CF_ORDER_UPDATE_UNMATCHED;
 use super::storage::RocksDbStore;
@@ -569,7 +569,7 @@ fn open_center_store_for_config(
 ) -> Result<Arc<RocksDbStore>> {
     let cf_names = required_multi_center_column_families(&config.sources);
     let refs = cf_names.iter().map(String::as_str).collect::<Vec<_>>();
-    let tuning = crate::persist_manager::default_tuning();
+    let tuning = crate::default_tuning();
     Ok(Arc::new(RocksDbStore::open_with_tuning(
         center_db_path,
         refs.as_slice(),
@@ -592,7 +592,7 @@ fn open_center_store_for_sources(
         .collect::<Vec<_>>();
     let cf_names = required_multi_center_column_families(&sources);
     let refs = cf_names.iter().map(String::as_str).collect::<Vec<_>>();
-    let tuning = crate::persist_manager::default_tuning();
+    let tuning = crate::default_tuning();
     Ok(Arc::new(RocksDbStore::open_with_tuning(
         center_db_path,
         refs.as_slice(),

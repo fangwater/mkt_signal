@@ -13,7 +13,7 @@ use crate::common::symbol_util::normalize_symbol_for_venue;
 
 use super::arb_decision::ArbDecision;
 use super::mm_decision::MmDecision;
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 
 /// Redis Key 配置
 const DEFAULT_NAMESPACE: &str = "fr";

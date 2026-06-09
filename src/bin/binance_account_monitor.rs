@@ -19,8 +19,8 @@ use mkt_signal::portfolio_margin::binance_user_stream::{
 use mkt_signal::portfolio_margin::listen_key::BinanceListenKeyService;
 use mkt_signal::portfolio_margin::pm_forwarder::PmForwarder;
 use mkt_signal::pre_trade::order_manager::Side;
-use mkt_signal::signal::common::{ExecutionType, OrderStatus};
 use mkt_signal::trade_engine::query_parsers::binance_pm_account_risk::parse_binance_pm_account_risk;
+use order_common::{ExecutionType, OrderStatus};
 use mkt_signal::trade_engine::query_parsers::binance_spot_account_snapshot_std::parse_binance_spot_account_snapshot_std;
 use mkt_signal::trade_engine::query_parsers::binance_um_account_snapshot::parse_binance_um_account_snapshot;
 use mkt_signal::trade_engine::query_parsers::binance_um_balance_snapshot_std::parse_binance_um_balance_snapshot_std;

@@ -166,9 +166,9 @@ pub trait VenueAdapter {
 ///
 /// OKex 必须 await：SBE 端订阅要先 REST 拉 instIdCode 映射；其他 venue 同步构造。
 pub async fn create_adapter(
-    venue: crate::signal::common::TradingVenue,
+    venue: order_common::TradingVenue,
 ) -> Result<Option<Box<dyn VenueAdapter>>> {
-    use crate::signal::common::TradingVenue;
+    use order_common::TradingVenue;
     let adapter: Box<dyn VenueAdapter> = match venue {
         TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
             Box::new(crate::spread_pbs::okex::OkexAdapter::new(venue).await?)

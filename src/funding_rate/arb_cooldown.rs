@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::Hash;
 
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 
 use super::common::ThresholdKey;
 

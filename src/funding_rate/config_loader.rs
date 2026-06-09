@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use crate::common::redis_client::{RedisClient, RedisSettings};
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 
 use super::arb_decision::ArbDecision;
 use super::fr_threshold_loader::load_from_redis as load_fr_thresholds;

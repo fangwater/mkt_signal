@@ -23,7 +23,8 @@ use crate::funding_rate::FundingRatePeriod;
 use quote_plan::order_align::align_order_for_venue;
 use crate::rolling_metrics::arb_open_latency::record_arb_open_latency;
 use crate::signal::arb_signal::{ArbBackwardQueryMsg, ArbCancelCandidateQueryMsg};
-use crate::signal::common::{SignalBytes, TradingLeg, TradingVenue};
+use crate::signal::common::{SignalBytes, TradingLeg};
+use order_common::TradingVenue;
 use crate::signal::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
@@ -5854,7 +5855,7 @@ mod funding_mode_signal_tests {
 #[cfg(test)]
 mod hedge_offset_overrides_tests {
     use super::*;
-    use crate::signal::common::TradingVenue;
+    use order_common::TradingVenue;
 
     fn fresh_state() -> ArbDecisionState {
         ArbDecisionState::new(

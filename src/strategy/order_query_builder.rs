@@ -2,7 +2,7 @@ use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::Order;
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 use crate::trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
 
 pub fn build_order_query_request(

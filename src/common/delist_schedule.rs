@@ -1,4 +1,4 @@
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Duration as ChronoDuration, TimeZone, Utc};

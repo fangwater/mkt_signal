@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::pre_trade::order_manager::Side;
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 use log::{debug, info, warn};
 
 const CLOSE_INVENTORY_EPS: f64 = 1e-12;

@@ -7,7 +7,8 @@ use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager,
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::signal_channel::SignalChannel;
 use crate::pre_trade::{PersistChannel, TradeEngHub};
-use crate::signal::common::{OrderStatus, SignalBytes, TradingVenue};
+use crate::signal::common::SignalBytes;
+use order_common::{TradingVenue, OrderStatus};
 use crate::signal::exec_signal::{
     ExecBackwardQueryMsg, ExecCtx, ExecPositionTargetCtx, ExecRequestCtx, ExecSignalQueryMsg,
 };
@@ -2001,7 +2002,8 @@ fn create_and_send_exec_order(
 mod tests {
     use super::ExecStrategy;
     use crate::pre_trade::order_manager::Side;
-    use crate::signal::common::{TradingLeg, TradingVenue};
+    use crate::signal::common::TradingLeg;
+use order_common::TradingVenue;
     use crate::signal::exec_signal::ExecRequestCtx;
     use crate::strategy::Strategy;
 

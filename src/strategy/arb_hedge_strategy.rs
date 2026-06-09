@@ -14,7 +14,8 @@ use crate::pre_trade::taker_decision_model::{
 };
 use crate::pre_trade::{PersistChannel, TradeEngHub};
 use crate::signal::arb_signal::ArbBackwardQueryMsg;
-use crate::signal::common::{OrderStatus, SignalBytes, TradingLeg, TradingVenue};
+use crate::signal::common::{SignalBytes, TradingLeg};
+use order_common::{TradingVenue, OrderStatus};
 use crate::signal::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::hedge_order_reconcile::{HedgeOrderReconcileCommon, HedgeOrderReconcileState};
@@ -2204,7 +2205,7 @@ mod tests {
         ArbHedgeOrderMeta, ArbHedgeStrategy, ARB_HEDGE_QUERY_INTERVAL_US,
     };
     use crate::pre_trade::order_manager::Side;
-    use crate::signal::common::TradingVenue;
+    use order_common::TradingVenue;
     use crate::strategy::manager::{OrderTerminalRecorder, Strategy};
     use crate::strategy::net_qty_queue::TimedNetQtyLot;
 

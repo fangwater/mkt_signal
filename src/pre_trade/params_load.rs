@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use crate::common::redis_client::{RedisClient, RedisSettings};
 use crate::common::symbol_util::normalize_symbol_for_venue;
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 
 /// Redis Key 配置
 const REDIS_KEY_RISK_PARAMS: &str = "pre_trade_risk_params";

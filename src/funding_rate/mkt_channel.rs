@@ -21,7 +21,7 @@ use crate::common::mkt_msg::{
 };
 use crate::common::time_util::get_timestamp_us;
 use crate::rolling_metrics::kll_quantile::segmented_quantiles_linear;
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 use crate::symbol_match::{normalize_symbol_for_premium_pair, normalize_symbol_for_whitelist};
 
 // 常量定义

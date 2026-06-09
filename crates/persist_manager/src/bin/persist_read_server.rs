@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use clap::Parser;
 use serde::Deserialize;
 
-use mkt_signal::persist_manager::read_server::{PersistReadServer, PersistReadServerConfig};
+use persist_manager::read_server::{PersistReadServer, PersistReadServerConfig};
 
 #[derive(Parser, Debug)]
 #[command(name = "persist_read_server")]

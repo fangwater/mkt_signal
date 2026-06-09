@@ -21,7 +21,7 @@ use log::{info, warn};
 use std::collections::HashMap;
 
 use super::spread_factor::SpreadFactor;
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 
 /// 阈值缓存：用于收集同一 symbol 的 mm 和 mt 阈值
 struct ThresholdCache {

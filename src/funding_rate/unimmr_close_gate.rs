@@ -36,7 +36,7 @@ use crate::common::redis_client::{RedisClient, RedisSettings};
 use crate::portfolio_margin::pm_forwarder::{
     PM_HISTORY_SIZE, PM_MAX_BYTES, PM_MAX_SUBSCRIBERS, PM_SUBSCRIBER_MAX_BUFFER_SIZE,
 };
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 
 const REDIS_KEY_RISK_PARAMS: &str = "pre_trade_risk_params";
 const REFRESH_INTERVAL_SECS: u64 = 60;

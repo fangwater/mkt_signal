@@ -1,6 +1,6 @@
 use crate::common::bybit_account_msg::BybitBasicOrderMsg;
 use crate::pre_trade::order_manager::OrderExecutionStatus;
-use crate::signal::common::TimeInForce;
+use order_common::TimeInForce;
 use serde::Deserialize;
 
 use super::binance_um_order::BinanceUmOrderQueryResp;

@@ -1,7 +1,7 @@
 use log::warn;
 use std::collections::{HashMap, HashSet};
 
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 use crate::symbol_match::normalize_symbol_for_whitelist;
 
 use super::funding_threshold_loader::{FactorDirectionalThresholds, FundingThresholdsResolved};
@@ -717,7 +717,7 @@ mod tests {
         resolve_symbol_quantile_thresholds, resolve_threshold_value, xarb_spread_threshold_order,
         StoredFactorChainEntry,
     };
-    use crate::signal::common::TradingVenue;
+    use order_common::TradingVenue;
     use std::collections::HashMap;
 
     #[test]

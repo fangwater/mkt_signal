@@ -9,7 +9,7 @@ use log::info;
 
 use mkt_signal::common::affinity::maybe_pin_current_thread;
 use mkt_signal::factor_pub::fusion_factor_pub::app::FusionFactorPubApp;
-use mkt_signal::signal::common::TradingVenue;
+use order_common::TradingVenue;
 
 #[derive(Parser)]
 #[command(name = "fusion_factor_pub")]

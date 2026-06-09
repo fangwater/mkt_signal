@@ -20,7 +20,7 @@ use serde_json::Value;
 use std::time::Duration;
 
 use crate::common::mkt_msg::{FundingRateMsg, IndexPriceMsg, Level, MarkPriceMsg};
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 use crate::spread_pbs::adapter::{
     BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
 };

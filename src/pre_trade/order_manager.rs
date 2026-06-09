@@ -19,10 +19,10 @@ use crate::{
     common::symbol_util::normalize_symbol_for_internal,
     common::tick_math::QuantizedValue,
     common::time_util::get_timestamp_us,
-    signal::common::{OrderStatus, TradingVenue},
 };
 use bytes::Bytes;
 use log::{debug, info, warn};
+use order_common::{OrderStatus, TradingVenue};
 use std::collections::HashMap;
 fn format_decimal(value: f64) -> String {
     QuantizedValue::from_decimal(value)
@@ -1483,7 +1483,7 @@ mod tests {
         binance_margin_should_use_margin_buy, Order, OrderExecutionStatus, OrderManager,
         OrderStatus, OrderType, Side, TradeUpdateSkipReason,
     };
-    use crate::signal::common::TradingVenue;
+    use order_common::TradingVenue;
     use serde_json::Value;
 
     fn extract_request_json(bytes: &[u8]) -> Value {

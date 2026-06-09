@@ -7,7 +7,7 @@
 use super::common::{ArbDirection, CompareOp, FactorMode, FundingRatePeriod, OperationType};
 use super::mkt_channel::MktChannel;
 use super::rate_fetcher::RateFetcher;
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 use std::cell::RefCell;
 use std::collections::HashMap;
 

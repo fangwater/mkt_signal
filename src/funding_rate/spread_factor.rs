@@ -6,7 +6,7 @@
 use super::common::{
     ArbDirection, CompareOp, FactorMode, OperationType, SymbolPair, ThresholdKey, VenuePair,
 };
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 use crate::symbol_match::normalize_symbol_for_whitelist;
 use std::cell::RefCell;
 use std::collections::HashMap;

@@ -1,5 +1,5 @@
 use crate::pre_trade::order_manager::OrderExecutionStatus;
-use crate::signal::common::TimeInForce;
+use order_common::TimeInForce;
 use serde::Deserialize;
 
 use super::binance_um_order::BinanceUmOrderQueryResp;

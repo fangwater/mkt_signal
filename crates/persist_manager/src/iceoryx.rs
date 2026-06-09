@@ -4,8 +4,7 @@ use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 
-use crate::common::iceoryx_publisher::SIGNAL_PAYLOAD;
-use crate::common::ipc_service_name::build_service_name;
+use crate::runtime_common::{build_service_name, SIGNAL_PAYLOAD};
 
 const NODE_PREFIX: &str = "persist_record_";
 

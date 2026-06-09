@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::common::mkt_msg::Level;
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 use crate::spread_pbs::adapter::{
     BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
 };

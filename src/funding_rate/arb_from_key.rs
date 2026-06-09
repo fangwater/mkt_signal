@@ -1,4 +1,4 @@
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 
 use super::common::{
     append_key_value_fields, append_tlen_suffix, build_open_from_key_base,

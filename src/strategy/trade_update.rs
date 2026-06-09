@@ -1,5 +1,5 @@
 use crate::pre_trade::order_manager::Side;
-use crate::signal::common::{OrderStatus, TradingVenue};
+use order_common::{TradingVenue, OrderStatus};
 
 /// 成交更新trait - 提供成交信息的通用接口
 ///

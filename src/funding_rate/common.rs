@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 
 use crate::common::exchange::Exchange;
 use crate::depth_pub::query_client::DepthQueryClient;
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
 use log::warn;
 
@@ -549,7 +549,7 @@ pub fn parse_numeric_list(raw: &str) -> Result<Vec<f64>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::signal::common::TradingVenue;
+    use order_common::TradingVenue;
     use crate::signal::venue_min_qty_table::VenueMinQtyTable;
 
     #[test]

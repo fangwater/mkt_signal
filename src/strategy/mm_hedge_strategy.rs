@@ -8,7 +8,8 @@ use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager,
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::signal_channel::SignalChannel;
 use crate::pre_trade::{PersistChannel, TradeEngHub};
-use crate::signal::common::{OrderStatus, SignalBytes, TradingVenue};
+use crate::signal::common::SignalBytes;
+use order_common::{TradingVenue, OrderStatus};
 use crate::signal::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
 use crate::signal::mm_signal::MmBackwardQueryMsg;
 use crate::signal::trade_signal::{SignalType, TradeSignal};

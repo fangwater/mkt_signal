@@ -1,0 +1,6 @@
+[package]
+name = "persist_common"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

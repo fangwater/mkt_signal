@@ -12,11 +12,11 @@ use iceoryx2::service::ipc;
 use log::{debug, info, warn};
 use parking_lot::RwLock;
 
-use crate::common::mkt_msg::{AskBidSpreadMsg, MktMsgType};
-use crate::common::redis_client::{RedisClient, RedisSettings};
-use crate::signal::common::TradingVenue;
-use crate::spread_pbs::publisher::SPREAD_PAYLOAD_BYTES;
-use crate::symbol_match::normalize_symbol_for_whitelist;
+use crate::runtime_common::{
+    normalize_symbol_for_whitelist, spread_f64, spread_symbol, spread_timestamp, RedisClient,
+    RedisSettings, ASK_BID_SPREAD_MSG_TYPE, SPREAD_PAYLOAD_BYTES,
+};
+use order_common::TradingVenue;
 
 const DEFAULT_RING_LEN: usize = 8192;
 const DEFAULT_ENRICH_DELAY_MS: u64 = 500;
@@ -497,7 +497,7 @@ fn decode_bbo_payload(payload: &[u8]) -> Option<(String, BboSample)> {
         return None;
     }
     let msg_type = u32::from_le_bytes(payload.get(0..4)?.try_into().ok()?);
-    if msg_type != MktMsgType::AskBidSpread as u32 {
+    if msg_type != ASK_BID_SPREAD_MSG_TYPE {
         return None;
     }
     let symbol_len = u32::from_le_bytes(payload.get(4..8)?.try_into().ok()?) as usize;
@@ -509,15 +509,15 @@ fn decode_bbo_payload(payload: &[u8]) -> Option<(String, BboSample)> {
         return None;
     }
 
-    let symbol = AskBidSpreadMsg::get_symbol(payload).to_string();
+    let symbol = spread_symbol(payload)?.to_string();
     Some((
         symbol,
         BboSample {
-            tp_us: AskBidSpreadMsg::get_timestamp(payload),
-            bid_px: AskBidSpreadMsg::get_bid_price(payload),
-            bid_qty: AskBidSpreadMsg::get_bid_amount(payload),
-            ask_px: AskBidSpreadMsg::get_ask_price(payload),
-            ask_qty: AskBidSpreadMsg::get_ask_amount(payload),
+            tp_us: spread_timestamp(payload)?,
+            bid_px: spread_f64(payload, 0)?,
+            bid_qty: spread_f64(payload, 1)?,
+            ask_px: spread_f64(payload, 2)?,
+            ask_qty: spread_f64(payload, 3)?,
         },
     ))
 }

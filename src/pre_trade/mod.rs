@@ -31,10 +31,10 @@ pub mod taker_decision_model;
 pub mod trade_eng_channel;
 pub mod unimmr_close_symbol_list;
 pub mod usdt_balance_manager;
-pub use persist_channel::{
-    PersistChannel, ORDER_UPDATE_RECORD_CHANNEL, ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL,
-    TRADE_UPDATE_RECORD_CHANNEL, TRADE_UPDATE_UNMATCHED_RECORD_CHANNEL,
-    UNIFORM_ORDER_RECORD_CHANNEL,
+pub use persist_channel::PersistChannel;
+pub use persist_common::{
+    ORDER_UPDATE_RECORD_CHANNEL, ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL, TRADE_UPDATE_RECORD_CHANNEL,
+    TRADE_UPDATE_UNMATCHED_RECORD_CHANNEL, UNIFORM_ORDER_RECORD_CHANNEL,
 };
 pub use query_eng_channel::QueryEngHub;
 pub use resample_channel::{ResampleChannel, DEFAULT_EXPOSURE_CHANNEL, DEFAULT_RISK_CHANNEL};

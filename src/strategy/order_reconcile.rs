@@ -1,7 +1,7 @@
 use crate::common::tick_math::QuantizedValue;
 pub use crate::pre_trade::order_manager::CUMULATIVE_FILL_ROLLBACK_EPS;
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus};
-use crate::signal::common::{TimeInForce, TradingVenue};
+use order_common::{TradingVenue, TimeInForce};
 use crate::strategy::order_query_parser::parse_compact_order_query_resp as parse_compact_order_query_resp_common;
 use crate::trade_engine::query_parsers::compact_order::CompactOrderQueryResp;
 
@@ -88,7 +88,7 @@ mod tests {
         monotonic_cumulative_fill, order_query_watchdog_delay_us_for_venue, qv_decimal_or_fallback,
         BINANCE_PM_ORDER_QUERY_WATCHDOG_DELAY_US, ORDER_QUERY_WATCHDOG_DELAY_US,
     };
-    use crate::signal::common::TradingVenue;
+    use order_common::TradingVenue;
 
     #[test]
     fn monotonic_cumulative_fill_keeps_local_value_on_rollback() {

@@ -1,7 +1,7 @@
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderType, Side};
-use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
+use order_common::{TradingVenue, TimeInForce, ExecutionType, OrderStatus};
 use crate::strategy::manager::Strategy;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_engine_response::TradeEngineResponse;

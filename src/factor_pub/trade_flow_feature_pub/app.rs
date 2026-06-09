@@ -26,7 +26,7 @@ use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::trade_flow_feature_msg::{TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_DIM};
 use crate::common::trade_msg_parser::{parse_trade, TradeSide, TradeTick};
 use crate::depth_pub::depth_msg::{DepthMsgType, DEPTH25_MAX_BYTES, DEPTH50_MAX_BYTES};
-use crate::signal::common::TradingVenue;
+use order_common::TradingVenue;
 
 const TRADE_MAX_BYTES: usize = 128;
 const IDLE_SLEEP_MICROS: u64 = 200;
@@ -1880,7 +1880,7 @@ mod symbol_state_tests {
 mod parser_tests {
     use super::{parse_depth_snapshot, DepthChannel, APPENDED_DEPTH_DIM, MAX_DEPTH_LEVELS_CACHE};
     use crate::depth_pub::depth_msg::DepthMsg;
-    use crate::signal::common::TradingVenue;
+    use order_common::TradingVenue;
 
     #[test]
     fn parse_depth_snapshot_flattens_top_20_levels_into_fixed_array() {

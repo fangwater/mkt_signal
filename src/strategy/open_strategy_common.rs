@@ -13,7 +13,7 @@ use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::signal_throttle::register_signal_throttle;
 use crate::pre_trade::{QueryEngHub, TradeEngHub};
 use crate::rolling_metrics::arb_open_latency::record_arb_open_latency;
-use crate::signal::common::{OrderStatus, TradingVenue};
+use order_common::{TradingVenue, OrderStatus};
 use crate::signal::trade_signal::SignalType;
 use crate::strategy::manager::{OpenPriceMapEntry, OrphanHandoff, OrphanStrategyRole, Strategy};
 use crate::strategy::order_query_builder::build_order_query_request;
@@ -2583,7 +2583,7 @@ mod tests {
         PendingOrderQueryReason, QueryWatchdog,
     };
     use crate::pre_trade::open_order_rate_limiter::OrderRateBucket;
-    use crate::signal::common::TradingVenue;
+    use order_common::TradingVenue;
     use crate::strategy::manager::OrphanStrategyRole;
 
     struct TestOpenStrategy {
