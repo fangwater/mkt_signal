@@ -112,16 +112,33 @@ fi
 find_running_pids() {
   local exchange_arg="--exchange ${EXCHANGE}"
   local pids=()
+  local expected_bin="${BASE_DIR}/trade_engine"
+  local expected_real=""
+  if [[ -e "$expected_bin" ]]; then
+    expected_real="$(readlink -f "$expected_bin" 2>/dev/null || true)"
+  fi
   while IFS= read -r pid; do
-    if [[ -n "$pid" ]]; then
+    if [[ -z "$pid" || "$pid" == "$$" || "$pid" == "${BASHPID:-}" ]]; then
+      continue
+    fi
+    local exe_link="" exe_path="" cmdline=""
+    exe_link="$(readlink "/proc/${pid}/exe" 2>/dev/null || true)"
+    exe_path="$(readlink -f "/proc/${pid}/exe" 2>/dev/null || true)"
+    cmdline="$(tr '\0' ' ' <"/proc/${pid}/cmdline" 2>/dev/null || true)"
+    if [[ "$cmdline" != *"$exchange_arg"* ]]; then
+      continue
+    fi
+    if [[ -n "$expected_real" && "$exe_path" == "$expected_real" ]]; then
+      pids+=("$pid")
+    elif [[ "$exe_link" == "${BASE_DIR}/trade_engine" || "$exe_link" == "${BASE_DIR}/trade_engine (deleted)" ]]; then
+      pids+=("$pid")
+    elif [[ "$exe_path" == "${SCRIPT_DIR}/trade_engine" || "$exe_path" == "${BASE_DIR}/target/release/trade_engine" ]]; then
+      pids+=("$pid")
+    elif [[ "$cmdline" == "${BASE_DIR}/trade_engine"* || "$cmdline" == "${SCRIPT_DIR}/trade_engine"* || "$cmdline" == "${BASE_DIR}/target/release/trade_engine"* ]]; then
       pids+=("$pid")
     fi
   done < <(
-    ps -eo pid=,args= | awk -v base_dir="$BASE_DIR" -v exchange_arg="$exchange_arg" '
-      index($0, base_dir "/") > 0 && index($0, "trade_engine") > 0 && index($0, exchange_arg) > 0 {
-        print $1
-      }
-    '
+    ps -eo pid=,comm= | awk '$2 == "trade_engine" { print $1 }'
   )
   if [[ ${#pids[@]} -gt 0 ]]; then
     printf '%s\n' "${pids[@]}"

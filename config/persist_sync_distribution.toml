@@ -53,6 +53,17 @@ public_url = "http://54.64.147.69:6341"
 bind = "127.0.0.1:50041"
 status = "planned"
 
+# Requested Binance intra source on JP2.
+[[allocations]]
+port = 6342
+region = "jp"
+strategy = "intra"
+env = "binance-intra-arb01"
+source_id = "binance-intra-arb01"
+public_url = "http://52.68.224.23:6342"
+bind = "127.0.0.1:50042"
+status = "planned"
+
 # Fixed Bybit intra source on SG.
 [[allocations]]
 port = 6351

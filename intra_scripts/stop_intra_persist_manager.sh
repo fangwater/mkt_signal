@@ -49,16 +49,30 @@ KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 # 还活着会一直攥着 RocksDB 的 LOCK，重启时报 `Resource temporarily unavailable`。
 find_running_pids() {
   local pids=()
+  local expected_bin="${BASE_DIR}/persist_manager"
+  local expected_real=""
+  if [[ -e "$expected_bin" ]]; then
+    expected_real="$(readlink -f "$expected_bin" 2>/dev/null || true)"
+  fi
   while IFS= read -r pid; do
-    if [[ -n "$pid" ]]; then
+    if [[ -z "$pid" || "$pid" == "$$" || "$pid" == "${BASHPID:-}" ]]; then
+      continue
+    fi
+    local exe_link="" exe_path="" cmdline=""
+    exe_link="$(readlink "/proc/${pid}/exe" 2>/dev/null || true)"
+    exe_path="$(readlink -f "/proc/${pid}/exe" 2>/dev/null || true)"
+    cmdline="$(tr '\0' ' ' <"/proc/${pid}/cmdline" 2>/dev/null || true)"
+    if [[ -n "$expected_real" && "$exe_path" == "$expected_real" ]]; then
+      pids+=("$pid")
+    elif [[ "$exe_link" == "${BASE_DIR}/persist_manager" || "$exe_link" == "${BASE_DIR}/persist_manager (deleted)" ]]; then
+      pids+=("$pid")
+    elif [[ "$exe_path" == "${SCRIPT_DIR}/persist_manager" || "$exe_path" == "${BASE_DIR}/target/release/persist_manager" ]]; then
+      pids+=("$pid")
+    elif [[ "$cmdline" == "${BASE_DIR}/persist_manager"* || "$cmdline" == "${SCRIPT_DIR}/persist_manager"* || "$cmdline" == "${BASE_DIR}/target/release/persist_manager"* ]]; then
       pids+=("$pid")
     fi
   done < <(
-    ps -eo pid=,args= | awk -v base_dir="$BASE_DIR" '
-      index($0, base_dir "/") > 0 && index($0, "persist_manager") > 0 {
-        print $1
-      }
-    '
+    ps -eo pid=,comm= | awk '$2 == "persist_manager" { print $1 }'
   )
   if [[ ${#pids[@]} -gt 0 ]]; then
     printf '%s\n' "${pids[@]}"
