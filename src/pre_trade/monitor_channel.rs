@@ -203,11 +203,9 @@ use crate::common::binance_account_mode::BinanceAccountMode;
 use crate::common::msg_parser::{get_msg_type, parse_index_price, parse_mark_price, MktMsgType};
 use crate::pre_trade::order_manager::OrderManager;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
-use crate::strategy::order_update::OrderUpdate;
-use crate::strategy::trade_update::TradeUpdate;
-use crate::strategy::trade_update_lite::TradeUpdateLite;
 use crate::strategy::OrphanStrategyManager;
 use bytes::Bytes;
+use order_common::{OrderUpdate, TradeUpdate, TradeUpdateLite};
 use signal_common::common::{align_price_ceil, align_price_floor};
 use signal_common::venue_min_qty_table::VenueMinQtyTable;
 use std::cell::{Cell, RefCell};
@@ -3870,10 +3868,9 @@ mod tests {
             }
         }
 
-        fn apply_order_update(&mut self, _update: &dyn crate::strategy::order_update::OrderUpdate) {
-        }
+        fn apply_order_update(&mut self, _update: &dyn order_common::OrderUpdate) {}
 
-        fn apply_trade_update(&mut self, _trade: &dyn crate::strategy::trade_update::TradeUpdate) {}
+        fn apply_trade_update(&mut self, _trade: &dyn order_common::TradeUpdate) {}
 
         fn handle_period_clock(&mut self, _current_tp: i64) {}
 

@@ -1,19 +1,5 @@
+pub use order_common::BinanceAccountMode;
 use std::sync::OnceLock;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BinanceAccountMode {
-    Unified,
-    Standard,
-}
-
-impl BinanceAccountMode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Unified => "UNIFIED",
-            Self::Standard => "STANDARD",
-        }
-    }
-}
 
 static BINANCE_ACCOUNT_MODE: OnceLock<BinanceAccountMode> = OnceLock::new();
 

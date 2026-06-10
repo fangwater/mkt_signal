@@ -3,7 +3,7 @@ use std::convert::TryFrom;
 use bytes::{BufMut, Bytes, BytesMut};
 use serde_json::{json, Value};
 
-use crate::pre_trade::order_manager::Side;
+use order_common::Side;
 use signal_common::tick_math::QuantizedValue;
 
 use super::trade_request::{TradeRequestHeader, TradeRequestType};

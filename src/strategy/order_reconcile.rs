@@ -1,7 +1,7 @@
-pub use crate::pre_trade::order_manager::CUMULATIVE_FILL_ROLLBACK_EPS;
-use crate::pre_trade::order_manager::{Order, OrderExecutionStatus};
 use crate::strategy::order_query_parser::parse_compact_order_query_resp as parse_compact_order_query_resp_common;
 use crate::trade_engine::query_parsers::compact_order::CompactOrderQueryResp;
+pub use order_common::CUMULATIVE_FILL_ROLLBACK_EPS;
+use order_common::{Order, OrderExecutionStatus};
 use order_common::{TimeInForce, TradingVenue};
 use signal_common::tick_math::QuantizedValue;
 

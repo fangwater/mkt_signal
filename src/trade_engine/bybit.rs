@@ -4,8 +4,8 @@ use bytes::{BufMut, Bytes, BytesMut};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::pre_trade::order_manager::{OrderType, Side};
 use mkt_parsers::msg::bybit_account_msg::BybitBasicOrderMsg;
+use order_common::{OrderType, Side};
 use signal_common::tick_math::QuantizedValue;
 
 use super::trade_request::{TradeRequestHeader, TradeRequestType};

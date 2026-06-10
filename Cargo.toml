@@ -15,6 +15,7 @@ members = [
     "crates/rolling_common",
     "crates/runtime_common",
     "crates/signal_common",
+    "crates/symbol_utils",
     "crates/trade_signal",
 ]
 resolver = "2"
@@ -219,6 +220,7 @@ trade_signal = { path = "crates/trade_signal" }
 order_common = { path = "crates/order_common" }
 signal_common = { path = "crates/signal_common" }
 runtime_common = { path = "crates/runtime_common" }
+symbol_utils = { path = "crates/symbol_utils" }
 ipc_common = { path = "crates/ipc_common" }
 depth_pub_common = { package = "depth_pub", path = "crates/depth_pub" }
 factor_engine = { path = "crates/factor_engine" }

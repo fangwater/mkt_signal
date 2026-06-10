@@ -1,7 +1,7 @@
 use crate::pre_trade::log_throttle::log_order_rate_limit_summary;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
-use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
+use crate::pre_trade::order_manager::PreTradeOrderRequestExt;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::signal_channel::SignalChannel;
 use crate::pre_trade::{PersistChannel, TradeEngHub};
@@ -12,14 +12,15 @@ use crate::strategy::hedge_strategy_common::{
 use crate::strategy::manager::{OrphanHandoff, OrphanSourceKind, OrphanStrategyRole, Strategy};
 use crate::strategy::net_qty_queue::TimedNetQtyQueue;
 use crate::strategy::order_reconcile::PendingOrderQueryReason;
-use crate::strategy::order_update::OrderUpdate;
-use crate::strategy::trade_engine_response::TradeEngineResponse;
-use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
     publish_uniform_trade_order_from_order_update, UniformPublishCtx,
 };
 use log::{debug, error, info, warn};
+use order_common::OrderUpdate;
+use order_common::TradeEngineResponse;
+use order_common::TradeUpdate;
+use order_common::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
 use order_common::{OrderStatus, TradingVenue};
 use runtime_common::symbol_util::normalize_symbol_for_internal;
 use runtime_common::time_util::get_timestamp_us;
@@ -2001,8 +2002,8 @@ fn create_and_send_exec_order(
 #[cfg(test)]
 mod tests {
     use super::ExecStrategy;
-    use crate::pre_trade::order_manager::Side;
     use crate::strategy::Strategy;
+    use order_common::Side;
     use order_common::TradingVenue;
     use signal_common::common::TradingLeg;
     use signal_common::exec_signal::ExecRequestCtx;

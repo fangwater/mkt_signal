@@ -5,12 +5,12 @@ use crate::strategy::manager::{OpenPriceMapEntry, OrphanStrategyRole, Strategy};
 use crate::strategy::open_strategy_common::{
     OpenCancelInput, OpenSignalInput, OpenStrategyCommon, OpenStrategyState,
 };
-use crate::strategy::order_update::OrderUpdate;
-use crate::strategy::trade_engine_response::TradeEngineResponse;
-use crate::strategy::trade_update::TradeUpdate;
-use crate::strategy::trade_update_lite::TradeUpdateLite;
 use crate::strategy::uniform_order_helper::UniformPublishCtx;
 use log::{debug, warn};
+use order_common::OrderUpdate;
+use order_common::TradeEngineResponse;
+use order_common::TradeUpdate;
+use order_common::TradeUpdateLite;
 use order_common::TradingVenue;
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::cancel_signal::ArbCancelCtx;
@@ -189,7 +189,7 @@ impl OpenStrategyCommon for ArbOpenStrategy {
         &self,
         venue: TradingVenue,
         symbol: &str,
-        side: crate::pre_trade::order_manager::Side,
+        side: order_common::Side,
         filled_base_delta: f64,
     ) {
         MonitorChannel::instance().apply_open_inventory_fill_delta(

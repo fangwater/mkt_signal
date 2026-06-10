@@ -749,11 +749,11 @@ fn parse_i64_str(v: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::strategy::trade_update::TradeUpdate;
     use mkt_parsers::msg::basic_account_msg::{
         split_basic_account_event, BasicAccountRiskMsg, BasicBalanceMsg, BasicBorrowInterestMsg,
     };
     use mkt_parsers::msg::bitget_account_msg::BitgetBasicOrderMsg;
+    use order_common::TradeUpdate;
 
     #[test]
     fn account_channel_emits_zero_borrow_when_liability_fields_are_present() {

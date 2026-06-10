@@ -1,5 +1,5 @@
-use crate::pre_trade::order_manager::OrderExecutionStatus;
 use mkt_parsers::msg::bybit_account_msg::BybitBasicOrderMsg;
+use order_common::OrderExecutionStatus;
 use order_common::TimeInForce;
 use serde::Deserialize;
 

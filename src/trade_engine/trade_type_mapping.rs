@@ -290,7 +290,7 @@ impl TradeTypeMapping {
 #[cfg(test)]
 mod tests {
     use super::TradeTypeMapping;
-    use crate::trade_engine::trade_request::TradeRequestType;
+    use order_common::TradeRequestType;
 
     #[test]
     fn binance_universal_transfer_maps_to_sapi() {

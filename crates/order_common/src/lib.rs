@@ -1,201 +1,52 @@
-use clap::ValueEnum;
+use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
-use std::convert::TryFrom;
+use std::collections::HashMap;
+use symbol_utils::symbol_util::normalize_symbol_for_internal;
+use symbol_utils::time_util::get_timestamp_us;
 
-/// Trading venue across exchange and market type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ValueEnum)]
-#[repr(u8)]
-#[serde(rename_all = "snake_case")]
-pub enum TradingVenue {
-    BinanceMargin = 0,
-    BinanceFutures = 1,
-    OkexMargin = 2,
-    OkexFutures = 3,
-    BybitMargin = 4,
-    BybitFutures = 5,
-    BitgetMargin = 6,
-    BitgetFutures = 7,
-    GateMargin = 8,
-    GateFutures = 9,
-    AsterMargin = 10,
-    AsterFutures = 11,
-    HyperliquidMargin = 12,
-    HyperliquidFutures = 13,
+pub use symbol_utils::TradingVenue;
+
+pub mod binance_basic_impl;
+pub mod bitget_basic_impl;
+pub mod bybit_basic_impl;
+pub mod gate_basic_impl;
+pub mod okex_basic_impl;
+pub mod order_update;
+pub mod query_engine_response;
+pub mod query_order_updates;
+pub mod trade_engine_response;
+pub mod trade_error_code;
+pub mod trade_request_type;
+pub mod trade_update;
+pub mod trade_update_lite;
+
+pub use order_update::OrderUpdate;
+pub use query_engine_response::{QueryEngineResponse, QueryEngineResponseMessage};
+pub use query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
+pub use trade_engine_response::{
+    TradeEngineResponse, TradeEngineResponseMessage, TradeRequestKind,
+};
+pub use trade_request_type::TradeRequestType;
+pub use trade_update::TradeUpdate;
+pub use trade_update_lite::TradeUpdateLite;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinanceAccountMode {
+    Unified,
+    Standard,
 }
 
-impl TradingVenue {
-    pub fn trade_engine_exchange(&self) -> &'static str {
+impl BinanceAccountMode {
+    pub fn as_str(self) -> &'static str {
         match self {
-            TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => "binance",
-            TradingVenue::OkexMargin | TradingVenue::OkexFutures => "okex",
-            TradingVenue::BybitMargin | TradingVenue::BybitFutures => "bybit",
-            TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => "bitget",
-            TradingVenue::GateMargin | TradingVenue::GateFutures => "gate",
-            TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures => "hyperliquid",
-            TradingVenue::AsterMargin | TradingVenue::AsterFutures => "aster",
+            Self::Unified => "UNIFIED",
+            Self::Standard => "STANDARD",
         }
-    }
-
-    pub fn data_pub_slug(&self) -> &'static str {
-        match self {
-            TradingVenue::BinanceMargin => "binance-margin",
-            TradingVenue::BinanceFutures => "binance-futures",
-            TradingVenue::OkexMargin => "okex-margin",
-            TradingVenue::OkexFutures => "okex-futures",
-            TradingVenue::BybitMargin => "bybit-margin",
-            TradingVenue::BybitFutures => "bybit-futures",
-            TradingVenue::BitgetMargin => "bitget-margin",
-            TradingVenue::BitgetFutures => "bitget-futures",
-            TradingVenue::GateMargin => "gate-margin",
-            TradingVenue::GateFutures => "gate-futures",
-            TradingVenue::AsterMargin => "aster-margin",
-            TradingVenue::AsterFutures => "aster-futures",
-            TradingVenue::HyperliquidMargin => "hyperliquid-margin",
-            TradingVenue::HyperliquidFutures => "hyperliquid-futures",
-        }
-    }
-
-    pub fn describe_u8(value: u8) -> String {
-        Self::from_u8(value)
-            .map(|venue| format!("{:?}", venue))
-            .unwrap_or_else(|| format!("Unknown({})", value))
-    }
-
-    pub fn to_u8(self) -> u8 {
-        self as u8
-    }
-
-    pub fn from_u8(value: u8) -> Option<Self> {
-        match value {
-            0 => Some(TradingVenue::BinanceMargin),
-            1 => Some(TradingVenue::BinanceFutures),
-            2 => Some(TradingVenue::OkexMargin),
-            3 => Some(TradingVenue::OkexFutures),
-            4 => Some(TradingVenue::BybitMargin),
-            5 => Some(TradingVenue::BybitFutures),
-            6 => Some(TradingVenue::BitgetMargin),
-            7 => Some(TradingVenue::BitgetFutures),
-            8 => Some(TradingVenue::GateMargin),
-            9 => Some(TradingVenue::GateFutures),
-            10 => Some(TradingVenue::AsterMargin),
-            11 => Some(TradingVenue::AsterFutures),
-            12 => Some(TradingVenue::HyperliquidMargin),
-            13 => Some(TradingVenue::HyperliquidFutures),
-            _ => None,
-        }
-    }
-
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            TradingVenue::BinanceMargin => "BinanceMargin",
-            TradingVenue::BinanceFutures => "BinanceFutures",
-            TradingVenue::OkexMargin => "OkexMargin",
-            TradingVenue::OkexFutures => "OkexFutures",
-            TradingVenue::BybitMargin => "BybitMargin",
-            TradingVenue::BybitFutures => "BybitFutures",
-            TradingVenue::BitgetMargin => "BitgetMargin",
-            TradingVenue::BitgetFutures => "BitgetFutures",
-            TradingVenue::GateMargin => "GateMargin",
-            TradingVenue::GateFutures => "GateFutures",
-            TradingVenue::AsterMargin => "AsterMargin",
-            TradingVenue::AsterFutures => "AsterFutures",
-            TradingVenue::HyperliquidMargin => "HyperliquidMargin",
-            TradingVenue::HyperliquidFutures => "HyperliquidFutures",
-        }
-    }
-
-    pub fn exchange_name(&self) -> &'static str {
-        match self {
-            TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => "binance",
-            TradingVenue::OkexFutures => "okex_futures",
-            TradingVenue::OkexMargin => "okex_margin",
-            TradingVenue::BybitMargin => "bybit_margin",
-            TradingVenue::BybitFutures => "bybit_futures",
-            TradingVenue::BitgetMargin => "bitget_margin",
-            TradingVenue::BitgetFutures => "bitget_futures",
-            TradingVenue::GateMargin => "gate_margin",
-            TradingVenue::GateFutures => "gate_futures",
-            TradingVenue::AsterMargin => "aster_margin",
-            TradingVenue::AsterFutures => "aster_futures",
-            TradingVenue::HyperliquidMargin => "hyperliquid_margin",
-            TradingVenue::HyperliquidFutures => "hyperliquid_futures",
-        }
-    }
-
-    pub fn venue_type(&self) -> &'static str {
-        match self {
-            TradingVenue::BinanceMargin => "margin",
-            TradingVenue::BinanceFutures => "futures",
-            TradingVenue::OkexFutures => "futures",
-            TradingVenue::OkexMargin => "margin",
-            TradingVenue::BybitMargin => "margin",
-            TradingVenue::BitgetMargin => "margin",
-            TradingVenue::BybitFutures => "futures",
-            TradingVenue::BitgetFutures => "futures",
-            TradingVenue::GateMargin => "margin",
-            TradingVenue::GateFutures => "futures",
-            TradingVenue::AsterMargin => "margin",
-            TradingVenue::AsterFutures => "futures",
-            TradingVenue::HyperliquidMargin => "margin",
-            TradingVenue::HyperliquidFutures => "futures",
-        }
-    }
-
-    pub fn is_futures(&self) -> bool {
-        matches!(
-            self,
-            TradingVenue::BinanceFutures
-                | TradingVenue::OkexFutures
-                | TradingVenue::BitgetFutures
-                | TradingVenue::BybitFutures
-                | TradingVenue::GateFutures
-                | TradingVenue::AsterFutures
-                | TradingVenue::HyperliquidFutures
-        )
-    }
-
-    pub fn is_spot(&self) -> bool {
-        matches!(
-            self,
-            TradingVenue::BinanceMargin
-                | TradingVenue::OkexMargin
-                | TradingVenue::BitgetMargin
-                | TradingVenue::BybitMargin
-                | TradingVenue::GateMargin
-                | TradingVenue::AsterMargin
-                | TradingVenue::HyperliquidMargin
-        )
-    }
-
-    pub fn supports_pre_trade_stack(&self) -> bool {
-        matches!(
-            self,
-            TradingVenue::BinanceMargin
-                | TradingVenue::BinanceFutures
-                | TradingVenue::OkexMargin
-                | TradingVenue::OkexFutures
-                | TradingVenue::BybitMargin
-                | TradingVenue::BybitFutures
-                | TradingVenue::BitgetMargin
-                | TradingVenue::BitgetFutures
-                | TradingVenue::GateMargin
-                | TradingVenue::GateFutures
-        )
     }
 }
 
-impl TryFrom<u8> for TradingVenue {
-    type Error = String;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        Self::from_u8(value).ok_or_else(|| format!("Invalid TradingVenue value: {}", value))
-    }
-}
-
-impl From<TradingVenue> for u8 {
-    fn from(venue: TradingVenue) -> Self {
-        venue.to_u8()
-    }
+pub fn gate_text_from_client_order_id(client_order_id: i64) -> String {
+    format!("t-{client_order_id}")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -590,5 +441,713 @@ impl OrderType {
 
     pub fn is_conditional(&self) -> bool {
         !matches!(self, Self::Limit | Self::Market)
+    }
+}
+
+fn format_order_value(value: f64) -> String {
+    if !value.is_finite() {
+        return value.to_string();
+    }
+    let mut out = format!("{value:.12}");
+    while out.contains('.') && out.ends_with('0') {
+        out.pop();
+    }
+    if out.ends_with('.') {
+        out.pop();
+    }
+    if out == "-0" {
+        "0".to_string()
+    } else {
+        out
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderUpdateSkipReason {
+    DuplicateStatus,
+    TerminalToTerminal,
+    StaleNewOnTerminal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TradeUpdateSkipReason {
+    DuplicateFilled,
+    StaleOrDuplicatePartial,
+}
+
+pub const CUMULATIVE_FILL_ROLLBACK_EPS: f64 = 1e-9;
+const TRADE_UPDATE_QTY_EPS: f64 = CUMULATIVE_FILL_ROLLBACK_EPS;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ProtectedCumulativeFill {
+    pub effective_cum: f64,
+    pub rollback_detected: bool,
+}
+
+/// 订单管理器
+pub struct OrderManager {
+    orders: HashMap<i64, Order>,                     //映射order id到order
+    pending_limit_order_count: HashMap<String, i32>, //单个交易品种当前有多少待成交的maker单
+    pending_limit_buy_order_count: HashMap<String, i32>,
+    pending_limit_sell_order_count: HashMap<String, i32>,
+    binance_account_mode: Option<BinanceAccountMode>,
+}
+
+impl OrderManager {
+    pub fn new(binance_account_mode: Option<BinanceAccountMode>) -> Self {
+        if let Some(mode) = binance_account_mode {
+            info!(
+                "OrderManager: BINANCE_ACCOUNT_MODE={} (Binance UM account mode)",
+                mode.as_str()
+            );
+        }
+        Self {
+            orders: HashMap::new(),
+            pending_limit_order_count: HashMap::new(),
+            pending_limit_buy_order_count: HashMap::new(),
+            pending_limit_sell_order_count: HashMap::new(),
+            binance_account_mode,
+        }
+    }
+
+    pub fn binance_is_standard(&self) -> bool {
+        self.binance_account_mode == Some(BinanceAccountMode::Standard)
+    }
+
+    pub fn map_update_status(status: OrderStatus) -> Option<OrderExecutionStatus> {
+        match status {
+            OrderStatus::New => Some(OrderExecutionStatus::Create),
+            OrderStatus::Canceled => Some(OrderExecutionStatus::Cancelled),
+            OrderStatus::Expired | OrderStatus::ExpiredInMatch => {
+                Some(OrderExecutionStatus::Rejected)
+            }
+            _ => None,
+        }
+    }
+
+    fn validate_duplicate_order_update_fields(
+        order: &Order,
+        incoming_status: OrderStatus,
+        incoming_order_id: i64,
+        incoming_cum_qty: f64,
+        log_owner: &str,
+        strategy_id: i32,
+    ) {
+        if incoming_order_id > 0 {
+            if let Some(existing_order_id) = order.exchange_order_id {
+                if existing_order_id != incoming_order_id {
+                    warn!(
+                        "{}: strategy_id={} duplicate order update has mismatched exchange_order_id: client_order_id={} local={} incoming={}",
+                        log_owner,
+                        strategy_id,
+                        order.client_order_id,
+                        existing_order_id,
+                        incoming_order_id
+                    );
+                }
+            }
+        }
+
+        if matches!(
+            incoming_status,
+            OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::ExpiredInMatch
+        ) && (order.cumulative_filled_quantity - incoming_cum_qty).abs() > 1e-8
+        {
+            warn!(
+                "{}: strategy_id={} duplicate terminal update has mismatched cumulative qty: client_order_id={} local={:.8} incoming={:.8}",
+                log_owner,
+                strategy_id,
+                order.client_order_id,
+                order.cumulative_filled_quantity,
+                incoming_cum_qty
+            );
+        }
+    }
+
+    pub fn should_skip_idempotent_order_update(
+        order: &Order,
+        incoming_status: OrderStatus,
+        incoming_order_id: i64,
+        incoming_cum_qty: f64,
+        log_owner: &str,
+        strategy_id: i32,
+    ) -> Option<OrderUpdateSkipReason> {
+        let incoming_exec_status = Self::map_update_status(incoming_status)?;
+
+        if order.status == incoming_exec_status {
+            Self::validate_duplicate_order_update_fields(
+                order,
+                incoming_status,
+                incoming_order_id,
+                incoming_cum_qty,
+                log_owner,
+                strategy_id,
+            );
+            debug!(
+                "{}: strategy_id={} skip duplicate order update: client_order_id={} status={:?}",
+                log_owner, strategy_id, order.client_order_id, incoming_status
+            );
+            return Some(OrderUpdateSkipReason::DuplicateStatus);
+        }
+
+        if order.status.is_terminal() && incoming_exec_status.is_terminal() {
+            Self::validate_duplicate_order_update_fields(
+                order,
+                incoming_status,
+                incoming_order_id,
+                incoming_cum_qty,
+                log_owner,
+                strategy_id,
+            );
+            warn!(
+                "{}: strategy_id={} skip terminal->terminal order update: client_order_id={} local={:?} incoming={:?}",
+                log_owner,
+                strategy_id,
+                order.client_order_id,
+                order.status,
+                incoming_status
+            );
+            return Some(OrderUpdateSkipReason::TerminalToTerminal);
+        }
+
+        if order.status.is_terminal() && incoming_exec_status == OrderExecutionStatus::Create {
+            Self::validate_duplicate_order_update_fields(
+                order,
+                incoming_status,
+                incoming_order_id,
+                incoming_cum_qty,
+                log_owner,
+                strategy_id,
+            );
+            warn!(
+                "{}: strategy_id={} skip stale NEW update on terminal order: client_order_id={} local={:?}",
+                log_owner, strategy_id, order.client_order_id, order.status
+            );
+            return Some(OrderUpdateSkipReason::StaleNewOnTerminal);
+        }
+
+        None
+    }
+
+    pub fn should_skip_idempotent_trade_update(
+        order: &Order,
+        incoming_status: OrderStatus,
+        incoming_cum_qty: f64,
+        _incoming_update_ts: i64,
+        log_owner: &str,
+        strategy_id: i32,
+    ) -> Option<TradeUpdateSkipReason> {
+        let prev_cum = order.cumulative_filled_quantity;
+        let same_cum_qty = (incoming_cum_qty - prev_cum).abs() <= TRADE_UPDATE_QTY_EPS;
+
+        if incoming_status == OrderStatus::Filled && order.status == OrderExecutionStatus::Filled {
+            debug!(
+                "{}: strategy_id={} skip duplicate filled trade update: client_order_id={} prev_cum={:.8} incoming_cum={:.8}",
+                log_owner,
+                strategy_id,
+                order.client_order_id,
+                prev_cum,
+                incoming_cum_qty
+            );
+            return Some(TradeUpdateSkipReason::DuplicateFilled);
+        }
+
+        // Gate futures may emit a terminal FILLED update after a PARTIALLY_FILLED
+        // update without increasing cumulative fill quantity. Allow that status
+        // promotion so the local order can move to a terminal state.
+        if incoming_status == OrderStatus::Filled
+            && order.status != OrderExecutionStatus::Filled
+            && same_cum_qty
+        {
+            debug!(
+                "{}: strategy_id={} accept terminal filled trade update with unchanged cumulative qty: client_order_id={} prev_cum={:.8} incoming_cum={:.8} local_status={:?}",
+                log_owner,
+                strategy_id,
+                order.client_order_id,
+                prev_cum,
+                incoming_cum_qty,
+                order.status
+            );
+            return None;
+        }
+
+        if incoming_cum_qty < prev_cum - TRADE_UPDATE_QTY_EPS || same_cum_qty {
+            debug!(
+                "{}: strategy_id={} skip stale/duplicate trade update by cumulative qty: client_order_id={} prev_cum={:.8} incoming_cum={:.8} local_status={:?} incoming_status={:?}",
+                log_owner,
+                strategy_id,
+                order.client_order_id,
+                prev_cum,
+                incoming_cum_qty,
+                order.status,
+                incoming_status
+            );
+            return Some(TradeUpdateSkipReason::StaleOrDuplicatePartial);
+        }
+
+        None
+    }
+
+    pub fn compute_uniform_amount_update_from_cumulative(
+        prev_cumulative_filled_qty: f64,
+        incoming_cum_qty: f64,
+    ) -> Option<f64> {
+        if incoming_cum_qty + TRADE_UPDATE_QTY_EPS >= prev_cumulative_filled_qty {
+            Some(incoming_cum_qty - prev_cumulative_filled_qty)
+        } else {
+            None
+        }
+    }
+
+    pub fn create_order(
+        &mut self,
+        venue: TradingVenue,
+        id: i64,
+        order_type: OrderType,
+        symbol: String,
+        side: Side,
+        quantity: f64,
+        price: f64,
+        reduce_only: bool,
+        qty_multiplier: f64,
+    ) -> i64 {
+        self.create_order_with_pending_limit_flag(
+            venue,
+            id,
+            order_type,
+            symbol,
+            side,
+            quantity,
+            price,
+            reduce_only,
+            qty_multiplier,
+            true,
+        )
+    }
+
+    pub fn create_order_with_pending_limit_flag(
+        &mut self,
+        venue: TradingVenue,
+        id: i64,
+        order_type: OrderType,
+        symbol: String,
+        side: Side,
+        quantity: f64,
+        price: f64,
+        reduce_only: bool,
+        qty_multiplier: f64,
+        count_pending_limit: bool,
+    ) -> i64 {
+        let qty_multiplier = if qty_multiplier.is_finite() && qty_multiplier > 0.0 {
+            qty_multiplier
+        } else {
+            warn!(
+                "OrderManager: invalid qty_multiplier={}, fallback to 1.0 client_order_id={} symbol={} venue={:?}",
+                qty_multiplier,
+                id,
+                symbol,
+                venue
+            );
+            1.0
+        };
+        let symbol = normalize_symbol_for_internal(&symbol);
+        let order = Order::new(
+            venue,
+            id,
+            order_type,
+            symbol.clone(),
+            side,
+            quantity,
+            price,
+            reduce_only,
+            qty_multiplier,
+            self.binance_account_mode,
+            count_pending_limit,
+        );
+        self.insert(order);
+        id
+    }
+
+    pub fn get_symbol_pending_limit_order_count(&self, symbol: &str) -> i32 {
+        let symbol = normalize_symbol_for_internal(symbol);
+        self.pending_limit_order_count
+            .get(&symbol)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    pub fn get_symbol_pending_limit_order_count_by_side(&self, symbol: &str, side: Side) -> i32 {
+        let symbol = normalize_symbol_for_internal(symbol);
+        self.pending_limit_side_count_map(side)
+            .get(&symbol)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// 添加订单
+    pub fn insert(&mut self, order: Order) {
+        let pending_key = Self::pending_limit_key(&order).map(|(symbol, side)| (symbol, side));
+
+        let order_id = order.client_order_id;
+        let prev = self.orders.insert(order_id, order);
+
+        if let Some(prev_order) = prev {
+            if let Some((symbol, side)) = Self::pending_limit_key(&prev_order) {
+                self.decrement_pending_limit_count(&symbol, side);
+            }
+        }
+
+        if let Some((symbol, side)) = pending_key {
+            self.increment_pending_limit_count(&symbol, side);
+        }
+
+        // 持久化
+    }
+
+    /// 根据订单ID获取订单
+    pub fn get(&self, order_id: i64) -> Option<Order> {
+        self.orders.get(&order_id).cloned()
+    }
+
+    /// 获取订单数量乘数（venue qty -> base qty）
+    pub fn get_qty_multiplier(&self, order_id: i64) -> Option<f64> {
+        self.orders.get(&order_id).map(|order| order.qty_multiplier)
+    }
+
+    /// 基于订单记录的数量乘数，将 venue qty 转为 base qty
+    pub fn venue_qty_to_base_by_order(&self, order_id: i64, venue_qty: f64) -> Option<f64> {
+        self.get_qty_multiplier(order_id)
+            .map(|qty_multiplier| venue_qty * qty_multiplier)
+    }
+
+    /// 打印订单详细信息的三线表日志
+    pub fn log_order_details(&self, order: &Order, title: &str, strategy_id: i32) {
+        warn!("═══════════════════════════════════════════════════════════════");
+        warn!("{} - Strategy ID: {}", title, strategy_id);
+        warn!("───────────────────────────────────────────────────────────────");
+        warn!("订单ID:       {}", order.client_order_id);
+        warn!("交易场所:     {:?}", order.venue);
+        warn!("交易对:       {}", order.symbol);
+        warn!("订单类型:     {:?}", order.order_type);
+        warn!("方向:         {:?}", order.side);
+        warn!("价格:         {}", format_order_value(order.price));
+        warn!("数量:         {}", format_order_value(order.quantity));
+        warn!("数量乘数:     {:.8}", order.qty_multiplier);
+        warn!("只减仓:       {}", order.reduce_only);
+        warn!("成交量:       {:.8}", order.cumulative_filled_quantity);
+        warn!("订单状态:     {:?}", order.status);
+        warn!("提交时间:     {}", order.timestamp.submit_t);
+        warn!("创建时间:     {}", order.timestamp.create_t);
+        warn!("结束时间:     {}", order.timestamp.end_t);
+        warn!("本地更新:     {}", order.timestamp.local_t);
+        warn!("═══════════════════════════════════════════════════════════════");
+    }
+
+    /// 根据订单ID获取订单的可变引用并执行操作
+    pub fn update<F>(&mut self, order_id: i64, f: F) -> bool
+    where
+        F: FnOnce(&mut Order),
+    {
+        let Some((before_key, after_key)) = self.orders.get_mut(&order_id).map(|order| {
+            let before_key = Self::pending_limit_key(order);
+            f(order);
+            let after_key = Self::pending_limit_key(order);
+            (before_key, after_key)
+        }) else {
+            return false;
+        };
+
+        if before_key != after_key {
+            if let Some((symbol, side)) = before_key {
+                self.decrement_pending_limit_count(&symbol, side);
+            }
+            if let Some((symbol, side)) = after_key {
+                self.increment_pending_limit_count(&symbol, side);
+            }
+        }
+        true
+    }
+
+    /// 应用一次远端来的订单更新（OrderUpdate / TradeUpdate / 查询回报），
+    /// 在闭包执行之前先把 `Order.timestamp.local_t` 覆写为当前本地时间(µs)。
+    ///
+    /// 仅用于"实质性接受"的远端事件；本地内部状态调整（例如 cleanup 阶段
+    /// 的 terminalize）请继续使用 [`OrderManager::update`]。
+    pub fn apply_remote_update<F>(&mut self, order_id: i64, f: F) -> bool
+    where
+        F: FnOnce(&mut Order),
+    {
+        let now = get_timestamp_us();
+        self.update(order_id, |order| {
+            order.timestamp.local_t = now;
+            f(order);
+        })
+    }
+
+    /// 移除订单
+    pub fn remove(&mut self, order_id: i64) -> Option<Order> {
+        let removed = self.orders.remove(&order_id);
+
+        if let Some(ref order) = removed {
+            // 如果是限价单，减少计数
+            if let Some((symbol, side)) = Self::pending_limit_key(order) {
+                self.decrement_pending_limit_count(&symbol, side);
+            }
+        }
+
+        removed
+    }
+
+    /// 获取所有订单ID
+    pub fn get_all_ids(&self) -> Vec<i64> {
+        self.orders.keys().cloned().collect()
+    }
+
+    /// 获取订单数量
+    pub fn count(&self) -> usize {
+        self.orders.len()
+    }
+
+    /// 清空所有订单
+    pub fn clear(&mut self) {
+        self.orders.clear();
+        self.pending_limit_order_count.clear();
+        self.pending_limit_buy_order_count.clear();
+        self.pending_limit_sell_order_count.clear();
+    }
+
+    fn pending_limit_key(order: &Order) -> Option<(String, Side)> {
+        (order.order_type.is_limit() && order.count_pending_limit && !order.status.is_terminal())
+            .then(|| (normalize_symbol_for_internal(&order.symbol), order.side))
+    }
+
+    fn pending_limit_side_count_map(&self, side: Side) -> &HashMap<String, i32> {
+        match side {
+            Side::Buy => &self.pending_limit_buy_order_count,
+            Side::Sell => &self.pending_limit_sell_order_count,
+        }
+    }
+
+    fn pending_limit_side_count_map_mut(&mut self, side: Side) -> &mut HashMap<String, i32> {
+        match side {
+            Side::Buy => &mut self.pending_limit_buy_order_count,
+            Side::Sell => &mut self.pending_limit_sell_order_count,
+        }
+    }
+
+    fn increment_pending_limit_count(&mut self, symbol: &str, side: Side) {
+        let symbol = normalize_symbol_for_internal(symbol);
+        *self
+            .pending_limit_order_count
+            .entry(symbol.clone())
+            .or_insert(0) += 1;
+        *self
+            .pending_limit_side_count_map_mut(side)
+            .entry(symbol)
+            .or_insert(0) += 1;
+    }
+
+    fn decrement_count(map: &mut HashMap<String, i32>, symbol: &str) -> i32 {
+        let mut should_remove = false;
+        let remaining = match map.get_mut(symbol) {
+            Some(entry) if *entry > 1 => {
+                *entry -= 1;
+                *entry
+            }
+            Some(_) => {
+                should_remove = true;
+                0
+            }
+            None => 0,
+        };
+        if should_remove {
+            map.remove(symbol);
+        }
+        remaining
+    }
+
+    fn decrement_pending_limit_count(&mut self, symbol: &str, side: Side) {
+        let symbol = normalize_symbol_for_internal(symbol);
+        let remaining_total = Self::decrement_count(&mut self.pending_limit_order_count, &symbol);
+        let remaining_side =
+            Self::decrement_count(self.pending_limit_side_count_map_mut(side), &symbol);
+
+        debug!(
+            "OrderManager: symbol={} side={} pending_limit_count dec -> total={} side={}",
+            symbol,
+            side.as_str(),
+            remaining_total,
+            remaining_side
+        );
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct OrderTimeStamp {
+    pub submit_t: i64, // 最近一次给 trade engine / query engine 发送请求的本地时间(µs)
+    pub create_t: i64, // 交易所订单创建时间(交易所时间)
+    pub end_t: i64,    // 交易所时间(完全成交或者被撤单的时间)
+    pub local_t: i64, // OrderUpdate/TradeUpdate/查询回报在本地最近一次被实质性接受的时间(µs)，每次覆写
+    pub mkt_t: i64,   // 触发该订单动作（open/cancel/close）时所参考的最新盘口时间(µs)；
+    // 套利场景=max(open_leg.ts, hedge_leg.ts)；MM/Hedge 等无概念路径保持 0
+    pub signal_t: i64, // 触发该订单动作的信号在 trade_signal 进程的生成时间(µs)；
+    // 用于 egress 单点测度 signal→submit 延迟；无信号上下文(orphan 兜底)保持 0
+    pub signal_kind: u8, // 触发该订单动作的信号类型(SignalType as u8)，0=未知/不计入测度
+}
+
+impl OrderTimeStamp {
+    fn new() -> Self {
+        OrderTimeStamp {
+            submit_t: 0,
+            create_t: 0,
+            end_t: 0,
+            local_t: 0,
+            mkt_t: 0,
+            signal_t: 0,
+            signal_kind: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Order {
+    pub venue: TradingVenue,             // 订单对应的交易标的
+    pub client_order_id: i64,            // 订单ID
+    pub order_type: OrderType,           // 订单类型
+    pub symbol: String,                  // 交易对
+    pub side: Side,                      // 买卖方向
+    pub price: f64,                      // 限价单价格, 市价单没有意义
+    pub quantity: f64,                   // 数量
+    pub qty_multiplier: f64,             // 数量乘数（venue qty -> base qty）
+    pub reduce_only: bool,               // 是否只减仓
+    pub cumulative_filled_quantity: f64, // 成交量
+    pub exchange_order_id: Option<i64>,  // 交易所返回的 orderId
+    pub status: OrderExecutionStatus,    // 订单执行状态
+    pub timestamp: OrderTimeStamp,
+    pub count_pending_limit: bool, // 是否计入 pending-limit 风控统计
+    binance_account_mode: Option<BinanceAccountMode>,
+}
+
+impl Order {
+    /// 获取策略ID - 策略ID是订单ID的前32位
+    pub fn get_strategy_id(&self) -> i32 {
+        (self.client_order_id >> 32) as i32
+    }
+
+    /// 创建新订单
+    pub fn new(
+        venue: TradingVenue,
+        client_order_id: i64,
+        order_type: OrderType,
+        symbol: String,
+        side: Side,
+        quantity: f64,
+        price: f64,
+        reduce_only: bool,
+        qty_multiplier: f64,
+        binance_account_mode: Option<BinanceAccountMode>,
+        count_pending_limit: bool,
+    ) -> Self {
+        Order {
+            venue,
+            client_order_id,
+            order_type,
+            symbol,
+            side,
+            price,
+            quantity,
+            qty_multiplier,
+            reduce_only,
+            status: OrderExecutionStatus::Commit,
+            cumulative_filled_quantity: 0.0,
+            exchange_order_id: None,
+            timestamp: OrderTimeStamp::new(),
+            count_pending_limit,
+            binance_account_mode,
+        }
+    }
+
+    pub fn require_binance_account_mode(&self) -> BinanceAccountMode {
+        self.binance_account_mode.unwrap_or_else(|| {
+            panic!("BINANCE_ACCOUNT_MODE must be set to 'UNIFIED' or 'STANDARD' when using binance-futures");
+        })
+    }
+
+    /// 更新订单状态
+    pub fn update_status(&mut self, status: OrderExecutionStatus) {
+        // 增加订单状态检查
+        if status == OrderExecutionStatus::Create && self.status != OrderExecutionStatus::Commit {
+            //出现非正常的状态切换，打印日志
+            warn!("unexpected OrderExecutionStatus");
+        }
+        self.status = status;
+    }
+
+    pub fn protected_cumulative_fill(&self, incoming_cum: f64) -> ProtectedCumulativeFill {
+        Self::protect_cumulative_fill_value(self.cumulative_filled_quantity, incoming_cum)
+    }
+
+    pub fn protect_cumulative_fill_value(
+        prev_cum: f64,
+        incoming_cum: f64,
+    ) -> ProtectedCumulativeFill {
+        let rollback_detected = incoming_cum + CUMULATIVE_FILL_ROLLBACK_EPS < prev_cum;
+        let effective_cum = if rollback_detected {
+            prev_cum
+        } else {
+            incoming_cum
+        };
+        ProtectedCumulativeFill {
+            effective_cum,
+            rollback_detected,
+        }
+    }
+
+    /// 设置最近一次给 trade engine / query engine 发送请求的时间（每次 send 都覆写）
+    pub fn set_submit_time(&mut self, time: i64) {
+        self.timestamp.submit_t = time;
+    }
+
+    /// 设置执行时间
+    pub fn set_create_time(&mut self, time: i64) {
+        self.timestamp.create_t = time;
+    }
+
+    /// 设置结束时间
+    pub fn set_end_time(&mut self, time: i64) {
+        self.timestamp.end_t = time;
+    }
+
+    /// 设置触发该订单动作时所参考的最新盘口时间（µs）。
+    /// 套利策略在 ArbOpen / ArbCancel / ArbClose 信号到达时调用，传入两腿盘口 ts 的较新者。
+    pub fn set_mkt_time(&mut self, time: i64) {
+        self.timestamp.mkt_t = time;
+    }
+
+    /// 设置触发本次订单动作的信号元数据：signal_t（trade_signal 进程生成信号的时间，µs）
+    /// 与 signal_kind（SignalType as u8）。必须在 egress 发送前调用，供 egress 单点测度
+    /// signal→submit 延迟。无信号上下文（orphan 兜底）保持默认 0，egress 自动跳过。
+    pub fn set_signal_meta(&mut self, signal_t: i64, signal_kind: u8) {
+        self.timestamp.signal_t = signal_t;
+        self.timestamp.signal_kind = signal_kind;
+    }
+
+    pub fn set_exchange_order_id(&mut self, exchange_order_id: i64) {
+        if exchange_order_id <= 0 {
+            return;
+        }
+
+        match self.exchange_order_id {
+            None => {
+                self.exchange_order_id = Some(exchange_order_id);
+            }
+            Some(existing_order_id) if existing_order_id == exchange_order_id => {}
+            Some(existing_order_id) => {
+                warn!(
+                    "ignore mismatched exchange_order_id update: client_order_id={} local={} incoming={}",
+                    self.client_order_id, existing_order_id, exchange_order_id
+                );
+            }
+        }
     }
 }

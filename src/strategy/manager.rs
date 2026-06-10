@@ -1,5 +1,4 @@
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use crate::pre_trade::order_manager::Side;
 use crate::pre_trade::taker_decision_model::{PreTradeTakerDecisionModel, TakerDecisionOpenCancel};
 use crate::strategy::arb_hedge_strategy::{ArbHedgeSnapshot, ArbHedgeStrategy};
 use crate::strategy::arb_open_strategy::ArbOpenStrategy;
@@ -7,12 +6,11 @@ use crate::strategy::exec_strategy::{ExecSnapshot, ExecStrategy};
 use crate::strategy::mm_hedge_strategy::{MarketMakerHedgeStrategy, MmHedgeSnapshot};
 use crate::strategy::open_strategy_common::{OpenCancelInput, OpenStrategyCommon};
 use crate::strategy::uniform_order_helper::UniformPublishCtx;
-use crate::strategy::{
-    order_update::OrderUpdate, trade_engine_response::TradeEngineResponse,
-    trade_update::TradeUpdate, trade_update_lite::TradeUpdateLite,
-};
 use log::info;
+use order_common::Side;
+use order_common::TradeEngineResponse;
 use order_common::TradingVenue;
+use order_common::{OrderUpdate, TradeUpdate, TradeUpdateLite};
 use runtime_common::symbol_util::normalize_symbol_for_internal;
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::tick_math::QuantizedValue;
@@ -1068,8 +1066,8 @@ mod tests {
         next_strategy_id_state, OpenPriceMapEntry, OpenPriceMapKey, QuantizedValueKey, Strategy,
         StrategyManager, STRATEGY_ID_MASK,
     };
-    use crate::pre_trade::order_manager::Side;
-    use crate::strategy::{order_update::OrderUpdate, trade_update::TradeUpdate};
+    use order_common::Side;
+    use order_common::{OrderUpdate, TradeUpdate};
     use signal_common::tick_math::QuantizedValue;
     use signal_common::trade_signal::TradeSignal;
     use std::any::Any;

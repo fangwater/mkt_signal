@@ -3,12 +3,11 @@ use log::warn;
 use std::cell::OnceCell;
 
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use crate::strategy::order_update::OrderUpdate;
-use crate::strategy::trade_update::TradeUpdate;
 use ipc_common::iceoryx_publisher::{
     OrderUpdatePublisher, TradeUpdatePublisher, UniformOrderPublisher,
 };
 use order_common::TradingVenue;
+use order_common::{OrderUpdate, TradeUpdate};
 use persist_common::{
     UnifiedOrderRecord, ORDER_UPDATE_RECORD_CHANNEL, ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL,
     TRADE_UPDATE_RECORD_CHANNEL, TRADE_UPDATE_UNMATCHED_RECORD_CHANNEL,

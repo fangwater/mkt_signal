@@ -12,12 +12,10 @@ use crate::pre_trade::order_manager::OrderType;
 use crate::pre_trade::response_reconcile::apply_trade_response_as_update;
 use crate::pre_trade::signal_latency::record_signal_submit_latency;
 use crate::pre_trade::PersistChannel;
-use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
-use crate::strategy::trade_engine_response::{
-    TradeEngineResponse, TradeEngineResponseMessage, TradeRequestKind,
-};
-use crate::trade_engine::trade_request::TradeRequestType;
+use order_common::TradeRequestType;
 use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
+use order_common::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
+use order_common::{TradeEngineResponse, TradeEngineResponseMessage, TradeRequestKind};
 use rolling_common::arb_open_latency::record_arb_open_latency;
 use runtime_common::ipc_service_name::build_service_name;
 use runtime_common::time_util::get_timestamp_us;

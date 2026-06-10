@@ -1,7 +1,7 @@
 use crate::pre_trade::log_throttle::log_order_rate_limit_summary;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
-use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
+use crate::pre_trade::order_manager::PreTradeOrderRequestExt;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::signal_channel::SignalChannel;
 use crate::pre_trade::{PersistChannel, TradeEngHub};
@@ -16,14 +16,15 @@ use crate::strategy::manager::{
 };
 use crate::strategy::net_qty_queue::NetQtyQueue;
 use crate::strategy::order_reconcile::{qv_decimal_or_fallback, PendingOrderQueryReason};
-use crate::strategy::order_update::OrderUpdate;
-use crate::strategy::trade_engine_response::TradeEngineResponse;
-use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
     publish_uniform_trade_order_from_order_update, UniformPublishCtx,
 };
 use log::{debug, info, warn};
+use order_common::OrderUpdate;
+use order_common::TradeEngineResponse;
+use order_common::TradeUpdate;
+use order_common::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
 use order_common::{OrderStatus, TradingVenue};
 use quote_plan::hedge_split::{split_hedge_orders_round_robin, HedgeLevel, HedgeSplitOrder};
 use quote_plan::order_align::{align_final_order_qty, contract_qty_multiplier, min_qty_symbol_key};
@@ -1563,12 +1564,12 @@ impl MarketMakerHedgeStrategy {
 #[cfg(test)]
 mod tests {
     use super::{HedgeOrderMeta, MarketMakerHedgeStrategy};
-    use crate::pre_trade::order_manager::Side;
     use crate::strategy::hedge_order_reconcile::{
         HedgeOrderReconcileCommon, HedgeOrderReconcileState,
     };
     use crate::strategy::hedge_strategy_common::{mark_price_lookup_symbol, NET_EXPOSURE_EPS_USDT};
     use crate::strategy::order_reconcile::{monotonic_cumulative_fill, PendingOrderQueryReason};
+    use order_common::Side;
     use runtime_common::exchange::Exchange;
 
     #[test]

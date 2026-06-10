@@ -798,10 +798,10 @@ fn parse_boolish(value: &Value) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::strategy::trade_update::TradeUpdate;
     use mkt_parsers::msg::basic_account_msg::{
         split_basic_account_event, BasicAccountRiskMsg, BasicBalanceMsg, BasicBorrowInterestMsg,
     };
+    use order_common::TradeUpdate;
 
     #[test]
     fn wallet_channel_emits_zero_borrow_when_liability_fields_are_present() {

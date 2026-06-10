@@ -1,9 +1,8 @@
-use crate::common::trade_error_code::describe_trade_error_code;
 use crate::pre_trade::intra_bwd_symbol_list::IntraBwdSymbolList;
 use crate::pre_trade::log_throttle::log_pending_limit_summary;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
-use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderManager, OrderType, Side};
+use crate::pre_trade::order_manager::PreTradeOrderRequestExt;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::signal_throttle::register_signal_throttle;
 use crate::pre_trade::{QueryEngHub, TradeEngHub};
@@ -13,17 +12,19 @@ pub use crate::strategy::order_reconcile::PendingOrderQueryReason;
 use crate::strategy::order_reconcile::{
     order_query_watchdog_delay_us, qv_decimal_or_fallback, ORDER_QUERY_WATCHDOG_DELAY_US,
 };
-use crate::strategy::order_update::OrderUpdate;
-use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKind};
-use crate::strategy::trade_update::TradeUpdate;
-use crate::strategy::trade_update_lite::TradeUpdateLite;
 use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
     publish_uniform_trade_order_from_order_update, UniformPublishCtx,
 };
 use crate::strategy::ws_order_update::prepare_failed_trade_engine_response_for_strategy;
 use log::{debug, error, info, warn};
+use order_common::trade_error_code::describe_trade_error_code;
+use order_common::OrderUpdate;
+use order_common::TradeUpdate;
+use order_common::TradeUpdateLite;
+use order_common::{OrderExecutionStatus, OrderManager, OrderType, Side};
 use order_common::{OrderStatus, TradingVenue};
+use order_common::{TradeEngineResponse, TradeRequestKind};
 use rolling_common::arb_open_latency::record_arb_open_latency;
 use runtime_common::symbol_util::{
     extract_assets_from_symbol, min_qty_symbol_key, normalize_symbol_for_internal,

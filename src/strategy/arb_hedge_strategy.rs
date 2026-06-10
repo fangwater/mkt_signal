@@ -1,9 +1,8 @@
-use crate::common::trade_error_code::gate;
 use crate::pre_trade::account_open_block::{register_account_open_block, AccountOpenBlockReason};
 use crate::pre_trade::log_throttle::log_order_rate_limit_summary;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
-use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
+use crate::pre_trade::order_manager::PreTradeOrderRequestExt;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::signal_channel::SignalChannel;
 use crate::pre_trade::taker_decision_model::{
@@ -20,14 +19,16 @@ use crate::strategy::manager::{
 };
 use crate::strategy::net_qty_queue::{NetQtyQueue, TimedNetQtyLot, TimedNetQtyQueue};
 use crate::strategy::order_reconcile::PendingOrderQueryReason;
-use crate::strategy::order_update::OrderUpdate;
-use crate::strategy::trade_engine_response::TradeEngineResponse;
-use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
     publish_uniform_trade_order_from_order_update, UniformPublishCtx,
 };
 use log::{debug, error, info, warn};
+use order_common::trade_error_code::gate;
+use order_common::OrderUpdate;
+use order_common::TradeEngineResponse;
+use order_common::TradeUpdate;
+use order_common::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
 use order_common::{OrderStatus, TradingVenue};
 use runtime_common::symbol_util::normalize_symbol_for_internal;
 use runtime_common::time_util::get_timestamp_us;
@@ -2205,9 +2206,9 @@ mod tests {
         build_direct_taker_from_key, model_percentile_to_ret_qtl, pick_main_component_open_id,
         ArbHedgeOrderMeta, ArbHedgeStrategy, ARB_HEDGE_QUERY_INTERVAL_US,
     };
-    use crate::pre_trade::order_manager::Side;
     use crate::strategy::manager::{OrderTerminalRecorder, Strategy};
     use crate::strategy::net_qty_queue::TimedNetQtyLot;
+    use order_common::Side;
     use order_common::TradingVenue;
 
     const OPEN_ID_A: i64 = 1001;

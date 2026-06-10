@@ -15,9 +15,9 @@ use serde_json::Value;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
-use crate::pre_trade::order_manager::{OrderType, Side};
 use order_common::TradingVenue;
 use order_common::{ExecutionType, OrderStatus, TimeInForce};
+use order_common::{OrderType, Side};
 
 #[derive(Clone)]
 pub struct BinanceBasicAccountEventParser {

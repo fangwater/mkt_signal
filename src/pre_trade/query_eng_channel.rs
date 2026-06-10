@@ -14,8 +14,6 @@ use crate::pre_trade::order_manager::OrderExecutionStatus;
 use crate::pre_trade::response_reconcile::apply_query_response_as_updates;
 use crate::pre_trade::PersistChannel;
 use crate::strategy::order_query_parser::parse_compact_order_query_resp;
-use crate::strategy::query_engine_response::{QueryEngineResponse, QueryEngineResponseMessage};
-use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
 use crate::strategy::{OrphanStrategyManager, StrategyManager};
 use crate::trade_engine::query_request::QueryRequestType;
 use ipc_common::iceoryx_publisher::{QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD};
@@ -24,6 +22,8 @@ use mkt_parsers::msg::basic_account_msg::{
     BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
 };
 use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
+use order_common::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
+use order_common::{QueryEngineResponse, QueryEngineResponseMessage};
 use runtime_common::exchange::Exchange;
 use runtime_common::ipc_service_name::build_service_name;
 use runtime_common::time_util::get_timestamp_us;
@@ -780,10 +780,10 @@ mod tests {
     use super::{
         dispatch_query_response_to_orphan_manager, dispatch_query_response_to_strategy_manager,
     };
-    use crate::strategy::query_engine_response::QueryEngineResponseMessage;
-    use crate::strategy::{order_update::OrderUpdate, trade_update::TradeUpdate};
     use crate::strategy::{OrphanStrategyManager, Strategy, StrategyManager};
     use bytes::Bytes;
+    use order_common::QueryEngineResponseMessage;
+    use order_common::{OrderUpdate, TradeUpdate};
     use signal_common::trade_signal::TradeSignal;
     use std::any::Any;
     use std::cell::RefCell;

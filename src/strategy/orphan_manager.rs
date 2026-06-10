@@ -1,10 +1,10 @@
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::strategy::hedge_orphan_order_strategy::HedgeOrphanOrderStrategy;
 use crate::strategy::manager::{OrphanHandoff, OrphanStrategyRole, Strategy, StrategyManager};
-use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::orphan_order_strategy::{OrphanOrderSnapshot, OrphanOrderStrategy};
-use crate::strategy::trade_update::TradeUpdate;
 use log::info;
+use order_common::OrderUpdate;
+use order_common::TradeUpdate;
 use runtime_common::symbol_util::normalize_symbol_for_internal;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 

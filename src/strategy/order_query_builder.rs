@@ -1,9 +1,10 @@
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use crate::pre_trade::order_manager::Order;
 use crate::trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
-use order_common::TradingVenue;
-use runtime_common::symbol_util::normalize_symbol_for_internal;
+use order_common::{gate_text_from_client_order_id, Order, TradingVenue};
 use runtime_common::time_util::get_timestamp_us;
+use symbol_utils::symbol_util::{
+    gate_currency_pair_from_symbol, normalize_symbol_for_internal, okex_inst_id_from_symbol,
+};
 
 pub fn build_order_query_request(
     order: &Order,
@@ -59,10 +60,7 @@ pub fn build_order_query_request(
             }
         }
         TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
-            let inst_id = crate::pre_trade::order_manager::okex_inst_id_from_symbol(
-                &order.symbol,
-                order.venue,
-            )?;
+            let inst_id = okex_inst_id_from_symbol(&order.symbol, order.venue)?;
             if let Some(order_id) = exchange_order_id {
                 bytes::Bytes::from(format!("instId={}&ordId={}", inst_id, order_id))
             } else {
@@ -90,15 +88,10 @@ pub fn build_order_query_request(
             }
         }
         TradingVenue::GateMargin => {
-            let currency_pair =
-                crate::pre_trade::order_manager::gate_currency_pair_from_symbol(&order.symbol);
+            let currency_pair = gate_currency_pair_from_symbol(&order.symbol);
             let order_id = exchange_order_id
                 .map(|id| id.to_string())
-                .unwrap_or_else(|| {
-                    crate::pre_trade::order_manager::gate_text_from_client_order_id(
-                        lookup_client_order_id,
-                    )
-                });
+                .unwrap_or_else(|| gate_text_from_client_order_id(lookup_client_order_id));
             let req_param = serde_json::json!({
                 "order_id": order_id,
                 "currency_pair": currency_pair,
@@ -109,11 +102,7 @@ pub fn build_order_query_request(
         TradingVenue::GateFutures => {
             let order_id = exchange_order_id
                 .map(|id| id.to_string())
-                .unwrap_or_else(|| {
-                    crate::pre_trade::order_manager::gate_text_from_client_order_id(
-                        lookup_client_order_id,
-                    )
-                });
+                .unwrap_or_else(|| gate_text_from_client_order_id(lookup_client_order_id));
             let req_param = serde_json::json!({
                 "order_id": order_id,
             });
@@ -129,8 +118,8 @@ pub fn build_order_query_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pre_trade::order_manager::{OrderManager, OrderType, Side};
     use crate::trade_engine::query_request::{QueryRequestMsg, QueryRequestType};
+    use order_common::{OrderManager, OrderType, Side};
     use serde_json::Value;
 
     #[test]

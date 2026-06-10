@@ -1,7 +1,7 @@
-use crate::common::trade_error_code::gate;
 use crate::pre_trade::order_manager::Side;
 use log::{debug, info, warn};
 use once_cell::sync::Lazy;
+use order_common::trade_error_code::gate;
 use parking_lot::Mutex;
 use runtime_common::exchange::Exchange;
 use runtime_common::time_util::get_timestamp_us;
