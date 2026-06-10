@@ -42,7 +42,8 @@ const DERIVATIVES_PAYLOAD: usize = 128;
 const DERIVATIVES_HISTORY_SIZE: usize = 50;
 const DERIVATIVES_MAX_SUBSCRIBERS: usize = 64;
 const DERIVATIVES_SUBSCRIBER_MAX_BUFFER: usize = 8192;
-const BINANCE_DERIVATIVES_SERVICE: &str = "bridge/binance-futures/derivatives";
+const BINANCE_BRIDGE_DERIVATIVES_SERVICE: &str = "bridge/binance-futures/derivatives";
+const BINANCE_DIRECT_DERIVATIVES_SERVICE: &str = "dat_pbs/binance-futures/derivatives";
 const OKEX_DERIVATIVES_SERVICE: &str = "dat_pbs/okex-futures/derivatives";
 const BYBIT_DERIVATIVES_SERVICE: &str = "dat_pbs/bybit-futures/derivatives";
 const BITGET_DERIVATIVES_SERVICE: &str = "bridge/bitget-futures/derivatives";
@@ -1899,13 +1900,17 @@ impl MonitorChannel {
     fn derivatives_service_for_mark_price_source(
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
+        arb_mode: ArbMode,
     ) -> &'static str {
         match Self::mark_price_exchange_for_venues(open_venue, hedge_venue) {
             Exchange::Okex => OKEX_DERIVATIVES_SERVICE,
             Exchange::Bybit => BYBIT_DERIVATIVES_SERVICE,
             Exchange::Bitget => BITGET_DERIVATIVES_SERVICE,
             Exchange::Gate => GATE_DERIVATIVES_SERVICE,
-            _ => BINANCE_DERIVATIVES_SERVICE,
+            _ => match arb_mode {
+                ArbMode::IntraArb => BINANCE_DIRECT_DERIVATIVES_SERVICE,
+                ArbMode::FundingArb | ArbMode::CrossArb => BINANCE_BRIDGE_DERIVATIVES_SERVICE,
+            },
         }
     }
 
@@ -2379,11 +2384,13 @@ impl MonitorChannel {
         // 创建衍生品价格 listener（mark_price, index_price），由 pre_trade reactor 统一 drain。
         //
         // 约定：默认使用 Binance Futures 的衍生品指标；当 open/hedge 两腿都属于 OKX 时，
-        // 切换到对应 venue 的 mark/index price。Binance/Gate/Bitget 走 bridge 兼容；
+        // 切换到对应 venue 的 mark/index price。Binance funding/cross、Gate/Bitget 走 bridge 兼容；
+        // Binance intra 直连 dat_pbs；
         // OKX/Bybit 继续直连 dat_pbs。
         let node_name = DEFAULT_NODE_PRE_TRADE_DERIVATIVES.to_string();
         let service_name =
-            Self::derivatives_service_for_mark_price_source(open_venue, hedge_venue).to_string();
+            Self::derivatives_service_for_mark_price_source(open_venue, hedge_venue, arb_mode)
+                .to_string();
         let derivatives_listener =
             DerivativesPriceListener::new(price_table.clone(), node_name, service_name)?;
 
@@ -4975,18 +4982,40 @@ mod tests {
     }
 
     #[test]
-    fn pre_trade_derivatives_services_keep_bridge_compat_for_selected_exchanges() {
+    fn binance_intra_derivatives_service_uses_direct_dat_pbs() {
         assert_eq!(
             MonitorChannel::derivatives_service_for_mark_price_source(
                 TradingVenue::BinanceMargin,
                 TradingVenue::BinanceFutures,
+                ArbMode::IntraArb,
+            ),
+            "dat_pbs/binance-futures/derivatives"
+        );
+    }
+
+    #[test]
+    fn pre_trade_derivatives_services_keep_bridge_compat_for_selected_modes() {
+        assert_eq!(
+            MonitorChannel::derivatives_service_for_mark_price_source(
+                TradingVenue::BinanceMargin,
+                TradingVenue::BinanceFutures,
+                ArbMode::FundingArb,
             ),
             "bridge/binance-futures/derivatives"
         );
         assert_eq!(
             MonitorChannel::derivatives_service_for_mark_price_source(
+                TradingVenue::BinanceFutures,
+                TradingVenue::GateFutures,
+                ArbMode::CrossArb,
+            ),
+            "bridge/gate-futures/derivatives"
+        );
+        assert_eq!(
+            MonitorChannel::derivatives_service_for_mark_price_source(
                 TradingVenue::GateMargin,
                 TradingVenue::GateFutures,
+                ArbMode::IntraArb,
             ),
             "bridge/gate-futures/derivatives"
         );
@@ -4994,6 +5023,7 @@ mod tests {
             MonitorChannel::derivatives_service_for_mark_price_source(
                 TradingVenue::BitgetMargin,
                 TradingVenue::BitgetFutures,
+                ArbMode::IntraArb,
             ),
             "bridge/bitget-futures/derivatives"
         );
@@ -5012,6 +5042,7 @@ mod tests {
             MonitorChannel::derivatives_service_for_mark_price_source(
                 TradingVenue::OkexMargin,
                 TradingVenue::OkexFutures,
+                ArbMode::IntraArb,
             ),
             OKEX_DERIVATIVES_SERVICE
         );
@@ -5030,6 +5061,7 @@ mod tests {
             MonitorChannel::derivatives_service_for_mark_price_source(
                 TradingVenue::BybitMargin,
                 TradingVenue::BybitFutures,
+                ArbMode::IntraArb,
             ),
             BYBIT_DERIVATIVES_SERVICE
         );
@@ -5068,6 +5100,7 @@ mod tests {
             MonitorChannel::derivatives_service_for_mark_price_source(
                 TradingVenue::GateMargin,
                 TradingVenue::GateFutures,
+                ArbMode::IntraArb,
             ),
             GATE_DERIVATIVES_SERVICE
         );
@@ -5086,6 +5119,7 @@ mod tests {
             MonitorChannel::derivatives_service_for_mark_price_source(
                 TradingVenue::BitgetMargin,
                 TradingVenue::BitgetFutures,
+                ArbMode::IntraArb,
             ),
             BITGET_DERIVATIVES_SERVICE
         );
@@ -5104,6 +5138,7 @@ mod tests {
             MonitorChannel::derivatives_service_for_mark_price_source(
                 TradingVenue::BitgetFutures,
                 TradingVenue::GateFutures,
+                ArbMode::CrossArb,
             ),
             GATE_DERIVATIVES_SERVICE
         );
@@ -5122,6 +5157,7 @@ mod tests {
             MonitorChannel::derivatives_service_for_mark_price_source(
                 TradingVenue::GateFutures,
                 TradingVenue::BitgetFutures,
+                ArbMode::CrossArb,
             ),
             BITGET_DERIVATIVES_SERVICE
         );

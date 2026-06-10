@@ -31,6 +31,7 @@ use super::rolling_threshold_sync::{
 };
 use super::strategy_loader::StrategyParams;
 use super::symbol_list::SymbolList;
+use super::FundingRatePeriod;
 
 const DEFAULT_NAMESPACE: &str = "fr";
 const OPEN_VOL_THRESHOLD_REDIS_REFRESH_SECS: u64 = 180;
@@ -294,6 +295,11 @@ async fn reload_fr_thresholds(
                     redis_key, ns, env_dir
                 );
             }
+            let funding_map = if ns == "intra" {
+                expand_intra_fixed_close_thresholds(funding_map)
+            } else {
+                funding_map
+            };
             load_fr_thresholds(funding_map)
                 .with_context(|| format!("解析资金费率阈值失败 (key: {})", redis_key))?;
             info!(
@@ -309,6 +315,36 @@ async fn reload_fr_thresholds(
         }
     }
     Ok(())
+}
+
+fn expand_intra_fixed_close_thresholds(
+    mut funding_map: HashMap<String, String>,
+) -> HashMap<String, String> {
+    const PERIODS: [FundingRatePeriod; 5] = [
+        FundingRatePeriod::Hours1,
+        FundingRatePeriod::Hours2,
+        FundingRatePeriod::Hours4,
+        FundingRatePeriod::Hours6,
+        FundingRatePeriod::Hours8,
+    ];
+    for (fixed_key, legacy_key) in [
+        ("forward_close", "4h_forward_close"),
+        ("backward_close", "4h_backward_close"),
+    ] {
+        let Some(value) = funding_map
+            .get(fixed_key)
+            .or_else(|| funding_map.get(legacy_key))
+            .cloned()
+        else {
+            continue;
+        };
+        for period in PERIODS {
+            funding_map.insert(format!("{}_{}", period.as_str(), fixed_key), value.clone());
+        }
+        funding_map.remove(fixed_key);
+        funding_map.remove(legacy_key);
+    }
+    funding_map
 }
 
 async fn reload_open_volatility_thresholds(

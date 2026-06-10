@@ -70,4 +70,37 @@ ssh -i aws-jp-srv-1.pem ubuntu@54.64.147.69 'chmod 400 ~/.ssh/aws-sg.pem'
 ssh -i aws-jp-srv-1.pem ubuntu@54.64.147.69 'ssh -i ~/.ssh/aws-sg.pem -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 ubuntu@47.131.162.78 hostname'
 ```
 
+## JP2 Nginx Static Dashboard 403
+
+JP2 serves HTTP/WebSocket dashboards on public `4191` from
+`/home/ubuntu/nginx_locations.txt`. Static dashboard mappings look like:
+
+```text
+/intra/binance-intra-arb01/ static:$HOME/binance-intra-arb01/www/
+```
+
+If `http://52.68.224.23:4191/intra/binance-intra-arb01/` returns nginx
+`403 Forbidden` while direct `viz_server` access on `127.0.0.1:10180` returns
+`404 Not Found`, the 403 is from nginx static file access, not from
+`viz_server`.
+
+Check the path:
+
+```bash
+namei -l /home/ubuntu/binance-intra-arb01/www/index.html
+```
+
+On JP2, `/home/ubuntu` may be mode `750` (`drwxr-x--- ubuntu ubuntu ubuntu`).
+The nginx worker user cannot traverse it, even though `www/index.html` exists
+and is world-readable. Fix by granting execute-only traversal on the home dir:
+
+```bash
+chmod o+x /home/ubuntu
+sudo nginx -t && sudo systemctl reload nginx
+curl -I http://127.0.0.1:4191/intra/binance-intra-arb01/
+```
+
+Expected result is `HTTP/1.1 200 OK`. This grants directory traversal only; it
+does not grant world read on `/home/ubuntu`.
+
 Main reference: `docs/mkt_signal_host_access.md`.

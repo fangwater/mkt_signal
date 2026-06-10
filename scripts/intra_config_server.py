@@ -283,11 +283,15 @@ INTRA_FACTOR_CHAIN: List[Dict[str, Any]] = [
     {"factor": "hedge_premium_rate", "enabled": True, "forward_open": 50, "backward_open": 50},
 ]
 
-# Intra funding close 只暴露 4h 基准阈值；Rust FundingRateFactor 会按 symbol period
-# 用 period_hours / 4h 做线性折算，和 FR 语义一致。
+# Intra funding close 使用固定阈值，不按 symbol funding period 做折算。
 INTRA_STATIC_FUNDING_CLOSE_DEFAULTS: Dict[str, str] = {
-    "4h_forward_close": "-0.0004",
-    "4h_backward_close": "0.0004",
+    "forward_close": "-0.0004",
+    "backward_close": "0.0004",
+}
+
+INTRA_STATIC_FUNDING_CLOSE_LEGACY_FIELDS: Dict[str, str] = {
+    "forward_close": "4h_forward_close",
+    "backward_close": "4h_backward_close",
 }
 
 
@@ -299,7 +303,7 @@ def percentile_text_from_value(value: float) -> str:
 
 
 def _funding_dashboard_keys() -> List[str]:
-    """按因子链顺序展开 dashboard key，并追加 4h close 止损阈值。"""
+    """按因子链顺序展开 dashboard key，并追加 fixed close 止损阈值。"""
     keys: List[str] = []
     for entry in INTRA_FACTOR_CHAIN:
         f = entry["factor"]
@@ -328,8 +332,8 @@ def default_funding_threshold_comments() -> Dict[str, str]:
         out[f"{f}.enabled"] = f"[{f}] 是否启用 (链上 enabled=false 的因子在评估时跳过)"
         out[f"{f}.forward_open"] = f"[{f}] 正向开仓分位数 (0,99]"
         out[f"{f}.backward_open"] = f"[{f}] 反向开仓分位数 (0,99]"
-    out["4h_forward_close"] = "4h 基准正套强平阈值：current_fr_ma < threshold 后，再过 forward close spread gate"
-    out["4h_backward_close"] = "4h 基准反套强平阈值：current_fr_ma + current_loan_rate > threshold 后，再过 backward close spread gate"
+    out["forward_close"] = "固定正套强平阈值：current_fr_ma < threshold 后，再过 forward close spread gate"
+    out["backward_close"] = "固定反套强平阈值：current_fr_ma + current_loan_rate > threshold 后，再过 backward close spread gate"
     return out
 
 
@@ -385,10 +389,10 @@ def read_static_funding_close_thresholds(
 ) -> Tuple[str, Dict[str, str]]:
     key = static_funding_thresholds_key(infer_dir_prefix_from_cwd() or "", open_venue, hedge_venue)
     raw = read_hash(rds, key)
-    values = {
-        field: raw.get(field, default)
-        for field, default in INTRA_STATIC_FUNDING_CLOSE_DEFAULTS.items()
-    }
+    values = {}
+    for field, default in INTRA_STATIC_FUNDING_CLOSE_DEFAULTS.items():
+        legacy_field = INTRA_STATIC_FUNDING_CLOSE_LEGACY_FIELDS.get(field)
+        values[field] = raw.get(field, raw.get(legacy_field, default) if legacy_field else default)
     return key, values
 
 
@@ -399,16 +403,17 @@ def write_static_funding_close_thresholds(
     values: Dict[str, Any],
 ) -> Dict[str, Any]:
     key = static_funding_thresholds_key(infer_dir_prefix_from_cwd() or "", open_venue, hedge_venue)
-    mapping = {
-        field: normalize_float_text(values.get(field, default), field)
-        for field, default in INTRA_STATIC_FUNDING_CLOSE_DEFAULTS.items()
-    }
+    mapping = {}
+    for field, default in INTRA_STATIC_FUNDING_CLOSE_DEFAULTS.items():
+        legacy_field = INTRA_STATIC_FUNDING_CLOSE_LEGACY_FIELDS.get(field)
+        raw_value = values.get(field, values.get(legacy_field, default) if legacy_field else default)
+        mapping[field] = normalize_float_text(raw_value, field)
     write_hash(rds, key, mapping)
     return {"key": key, "count": len(mapping), "values": mapping}
 
 
 def read_funding_threshold_config(rds, open_venue: str, hedge_venue: str) -> Dict[str, str]:
-    """从 Redis 读 factor_chain JSON + 4h close 阈值，展平成 dashboard flat dict。"""
+    """从 Redis 读 factor_chain JSON + fixed close 阈值，展平成 dashboard flat dict。"""
     defaults = default_funding_threshold_config(open_venue, hedge_venue)
     out = dict(defaults)
     key = threshold_mapping_key("funding", open_venue, hedge_venue)
@@ -842,7 +847,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
           <button id="funding-default" class="ghost">默认</button>
         </div>
       </div>
-      <div class="hint" style="margin-bottom: 10px;">前半段配置 hedge_premium_rate open filter 的 enable 与 forward/backward 分位数；`4h_forward_close` / `4h_backward_close` 是 intra funding close 止损阈值，trade_signal 会按 symbol funding period 基于 4h 比例折算。</div>
+      <div class="hint" style="margin-bottom: 10px;">前半段配置 hedge_premium_rate open filter 的 enable 与 forward/backward 分位数；`forward_close` / `backward_close` 是 intra funding close 固定止损阈值，trade_signal 不按 symbol funding period 折算。</div>
       <div id="funding-table" class="kv-table"></div>
       <div id="funding-status" class="status"></div>
     </section>
