@@ -1,6 +1,6 @@
-use crate::portfolio_margin::gate_auth::GateCredentials;
-use crate::trade_engine::query_request::{QueryRequestMsg, QueryRequestType};
-use crate::trade_engine::trade_request::{TradeRequestMsg, TradeRequestType};
+use crate::query_request::{QueryRequestMsg, QueryRequestType};
+use crate::trade_request::{TradeRequestMsg, TradeRequestType};
+use account_common::gate_auth::GateCredentials;
 use anyhow::{anyhow, Context, Result};
 use hmac::{Hmac, Mac};
 use serde_json::{json, Value};

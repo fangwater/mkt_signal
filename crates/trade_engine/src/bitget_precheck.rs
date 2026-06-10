@@ -14,8 +14,8 @@ use log::{info, warn};
 use reqwest::Client;
 use serde_json::Value;
 
-use crate::portfolio_margin::bitget_auth::BitgetCredentials;
-use crate::trade_engine::bitget_query::bitget_rest_get;
+use crate::bitget_query::bitget_rest_get;
+use account_common::bitget_auth::BitgetCredentials;
 
 const ACCOUNT_SETTINGS_PATH: &str = "/api/v3/account/settings";
 const REQUIRED_MARGIN_ACCOUNT_LEVEL: &str = "advanced";

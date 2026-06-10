@@ -1,44 +1,44 @@
-use crate::common::binance_account_mode::{binance_account_mode, BinanceAccountMode};
-use crate::rolling_metrics::latency_snapshot::LATENCY_SNAPSHOT_PAYLOAD_LEN;
-use crate::trade_engine::bitget_query_rate_limiter::BitgetQueryRateLimiter;
-use crate::trade_engine::config::{ApiKey, WsConstants};
-use crate::trade_engine::dispatcher::Dispatcher;
-use crate::trade_engine::okex_query_rate_limiter::OkexQueryRateLimiter;
-use crate::trade_engine::query_parsers::binance_margin_order::parse_binance_margin_order_query_json;
-use crate::trade_engine::query_parsers::binance_pm_balance_snapshot::parse_binance_pm_balance_snapshot;
-use crate::trade_engine::query_parsers::binance_spot_account_snapshot_std::parse_binance_spot_account_snapshot_std;
-use crate::trade_engine::query_parsers::binance_um_account_snapshot::parse_binance_um_account_snapshot;
-use crate::trade_engine::query_parsers::binance_um_balance_snapshot_std::parse_binance_um_balance_snapshot_std;
-use crate::trade_engine::query_parsers::binance_um_order::parse_binance_um_order_query_json;
-use crate::trade_engine::query_parsers::bitget_account_balance_snapshot::parse_bitget_account_balance_snapshot;
-use crate::trade_engine::query_parsers::bitget_order::{
+use crate::bitget_query_rate_limiter::BitgetQueryRateLimiter;
+use crate::config::WsConstants;
+use crate::dispatcher::Dispatcher;
+use crate::okex_query_rate_limiter::OkexQueryRateLimiter;
+use crate::query_parsers::binance_margin_order::parse_binance_margin_order_query_json;
+use crate::query_parsers::binance_pm_balance_snapshot::parse_binance_pm_balance_snapshot;
+use crate::query_parsers::binance_spot_account_snapshot_std::parse_binance_spot_account_snapshot_std;
+use crate::query_parsers::binance_um_account_snapshot::parse_binance_um_account_snapshot;
+use crate::query_parsers::binance_um_balance_snapshot_std::parse_binance_um_balance_snapshot_std;
+use crate::query_parsers::binance_um_order::parse_binance_um_order_query_json;
+use crate::query_parsers::bitget_account_balance_snapshot::parse_bitget_account_balance_snapshot;
+use crate::query_parsers::bitget_order::{
     parse_bitget_order_query_json, BitgetOrderQueryParseErrorKind, BitgetOrderQueryParseResult,
 };
-use crate::trade_engine::query_parsers::bitget_positions_snapshot::parse_bitget_positions_snapshot;
-use crate::trade_engine::query_parsers::bybit_account_balance_snapshot::parse_bybit_account_balance_snapshot;
-use crate::trade_engine::query_parsers::bybit_order::{
+use crate::query_parsers::bitget_positions_snapshot::parse_bitget_positions_snapshot;
+use crate::query_parsers::bybit_account_balance_snapshot::parse_bybit_account_balance_snapshot;
+use crate::query_parsers::bybit_order::{
     parse_bybit_order_query_json, BybitOrderQueryParseErrorKind, BybitOrderQueryParseResult,
 };
-use crate::trade_engine::query_parsers::bybit_positions_snapshot::parse_bybit_positions_snapshot_pages;
-use crate::trade_engine::query_parsers::compact_order::ORDER_QUERY_NOT_FOUND_MARKER;
-use crate::trade_engine::query_parsers::gate_positions_snapshot::parse_gate_positions_snapshot_with_meta;
-use crate::trade_engine::query_parsers::gate_unified_balance_snapshot::parse_gate_unified_balance_snapshot;
-use crate::trade_engine::query_parsers::okex_account_balance_snapshot::parse_okex_account_balance_snapshot;
-use crate::trade_engine::query_parsers::okex_order::{
+use crate::query_parsers::bybit_positions_snapshot::parse_bybit_positions_snapshot_pages;
+use crate::query_parsers::compact_order::ORDER_QUERY_NOT_FOUND_MARKER;
+use crate::query_parsers::gate_positions_snapshot::parse_gate_positions_snapshot_with_meta;
+use crate::query_parsers::gate_unified_balance_snapshot::parse_gate_unified_balance_snapshot;
+use crate::query_parsers::okex_account_balance_snapshot::parse_okex_account_balance_snapshot;
+use crate::query_parsers::okex_order::{
     parse_okex_order_query_json, OkexOrderQueryParseErrorKind, OkexOrderQueryParseResult,
 };
-use crate::trade_engine::query_parsers::okex_positions_snapshot::parse_okex_positions_snapshot;
-use crate::trade_engine::query_request::{QueryRequestMsg, QueryRequestType};
-use crate::trade_engine::query_response_handle::{publish_query_response, QueryExecOutcome};
-use crate::trade_engine::query_type_mapping::QueryTypeMapping;
-use crate::trade_engine::response_sink::{QueryResponseSink, TradeResponseSink};
-use crate::trade_engine::trade_request::{TradeRequestMsg, TradeRequestType};
-use crate::trade_engine::trade_response_handle::{publish_trade_response, TradeExecOutcome};
-use crate::trade_engine::trade_type_mapping::TradeTypeMapping;
-use crate::trade_engine::ws_client::{
+use crate::query_parsers::okex_positions_snapshot::parse_okex_positions_snapshot;
+use crate::query_request::{QueryRequestMsg, QueryRequestType};
+use crate::query_response_handle::{publish_query_response, QueryExecOutcome};
+use crate::query_type_mapping::QueryTypeMapping;
+use crate::response_sink::{QueryResponseSink, TradeResponseSink};
+use crate::trade_request::{TradeRequestMsg, TradeRequestType};
+use crate::trade_response_handle::{publish_trade_response, TradeExecOutcome};
+use crate::trade_type_mapping::TradeTypeMapping;
+use crate::ws_client::{
     RespLatencyBuckets, TradeWsClient, WsCommand, WsCommandQueue, WsEndpointHandle,
     WsLatencyBuckets,
 };
+use account_common::ApiKey;
+use account_common::{binance_account_mode, BinanceAccountMode};
 use anyhow::{anyhow, Context, Result};
 use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
 use iceoryx2::prelude::*;
@@ -46,6 +46,7 @@ use iceoryx2::service::ipc;
 use ipc_common::iceoryx_publisher::{QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD};
 use log::{debug, info, warn};
 use rolling_common::latency_kll::LatencyKll;
+use rolling_common::latency_snapshot::LATENCY_SNAPSHOT_PAYLOAD_LEN;
 use rtrb::{Consumer, PopError, Producer, PushError, RingBuffer};
 use runtime_common::affinity::pin_to_core;
 use runtime_common::exchange::Exchange;
@@ -136,14 +137,13 @@ fn parse_trade_request_payload(payload: &[u8]) -> Option<TradeRequestMsg> {
         );
         return None;
     };
-    let mut msg =
-        match crate::trade_engine::trade_request::TradeRequestMsg::parse(&payload[..actual_len]) {
-            Some(msg) => msg,
-            None => {
-                warn!("invalid trade request binary payload (len={})", actual_len);
-                return None;
-            }
-        };
+    let mut msg = match crate::trade_request::TradeRequestMsg::parse(&payload[..actual_len]) {
+        Some(msg) => msg,
+        None => {
+            warn!("invalid trade request binary payload (len={})", actual_len);
+            return None;
+        }
+    };
     let ipc_recv = Instant::now();
     let ipc_recv_us = get_timestamp_us();
     let create_to_ipc_recv_us = ipc_recv_us.saturating_sub(msg.create_time);
@@ -170,14 +170,13 @@ fn parse_query_request_payload(payload: &[u8]) -> Option<QueryRequestMsg> {
         );
         return None;
     };
-    let msg =
-        match crate::trade_engine::query_request::QueryRequestMsg::parse(&payload[..actual_len]) {
-            Some(msg) => msg,
-            None => {
-                warn!("invalid query request binary payload (len={})", actual_len);
-                return None;
-            }
-        };
+    let msg = match crate::query_request::QueryRequestMsg::parse(&payload[..actual_len]) {
+        Some(msg) => msg,
+        None => {
+            warn!("invalid query request binary payload (len={})", actual_len);
+            return None;
+        }
+    };
     Some(msg)
 }
 
@@ -709,12 +708,12 @@ impl TradeEngine {
         let ws_endpoints = if exchange == Exchange::Bitget {
             // 前置校验：Bitget 必须是 UTA + one-way 持仓模式；margin 路径还要求 Advanced。
             // 这里直接 panic，避免配置错误时 trade_engine 继续运行并反复拒单。
-            let bitget_precheck_creds =
-                crate::portfolio_margin::bitget_auth::BitgetCredentials::from_env().context(
+            let bitget_precheck_creds = account_common::bitget_auth::BitgetCredentials::from_env()
+                .context(
                     "bitget precheck: BITGET_API_KEY/BITGET_API_SECRET/BITGET_PASSPHRASE not set",
                 )?;
             let bitget_precheck_http = reqwest::Client::new();
-            if let Err(err) = crate::trade_engine::bitget_precheck::ensure_unified_account(
+            if let Err(err) = crate::bitget_precheck::ensure_unified_account(
                 &bitget_precheck_http,
                 &bitget_precheck_creds,
             )
@@ -771,11 +770,10 @@ impl TradeEngine {
             Some(endpoints)
         } else if exchange == Exchange::Bybit {
             // 前置校验：账号必须升级到 UTA 且开启 spot margin，否则 isLeverage=1 的现货单会被交易所直接拒
-            let bybit_precheck_creds =
-                crate::portfolio_margin::bybit_auth::BybitCredentials::from_env()
-                    .context("bybit precheck: BYBIT_API_KEY/BYBIT_API_SECRET not set")?;
+            let bybit_precheck_creds = account_common::bybit_auth::BybitCredentials::from_env()
+                .context("bybit precheck: BYBIT_API_KEY/BYBIT_API_SECRET not set")?;
             let bybit_precheck_http = reqwest::Client::new();
-            crate::trade_engine::bybit_precheck::ensure_uta_and_spot_margin(
+            crate::bybit_precheck::ensure_uta_and_spot_margin(
                 &bybit_precheck_http,
                 &bybit_precheck_creds,
             )
@@ -830,11 +828,10 @@ impl TradeEngine {
         } else if exchange == Exchange::Okex {
             // 前置校验：账户必须处于 Multi-currency margin (acctLv=3) 或 Portfolio margin (acctLv=4)，
             // 否则 tdMode=cross 的现货/合约单会被拒
-            let okex_precheck_creds =
-                crate::portfolio_margin::okex_auth::OkexCredentials::from_env()
-                    .context("okex precheck: OKX_API_KEY/OKX_API_SECRET/OKX_PASSPHRASE not set")?;
+            let okex_precheck_creds = account_common::okex_auth::OkexCredentials::from_env()
+                .context("okex precheck: OKX_API_KEY/OKX_API_SECRET/OKX_PASSPHRASE not set")?;
             let okex_precheck_http = reqwest::Client::new();
-            crate::trade_engine::okex_precheck::ensure_unified_margin_mode(
+            crate::okex_precheck::ensure_unified_margin_mode(
                 &okex_precheck_http,
                 &okex_precheck_creds,
             )
@@ -906,15 +903,11 @@ impl TradeEngine {
             Some(endpoints)
         } else if exchange == Exchange::Gate {
             // 前置校验：账户必须升级到统一账户（mode != classic），否则 account=unified+auto_borrow 会被拒
-            let gate_precheck_creds =
-                crate::portfolio_margin::gate_auth::GateCredentials::from_env()
-                    .context("gate precheck: GATE_API_KEY/GATE_API_SECRET not set")?;
+            let gate_precheck_creds = account_common::gate_auth::GateCredentials::from_env()
+                .context("gate precheck: GATE_API_KEY/GATE_API_SECRET not set")?;
             let gate_precheck_http = reqwest::Client::new();
-            crate::trade_engine::gate_precheck::ensure_unified_account(
-                &gate_precheck_http,
-                &gate_precheck_creds,
-            )
-            .await?;
+            crate::gate_precheck::ensure_unified_account(&gate_precheck_http, &gate_precheck_creds)
+                .await?;
 
             let mut local_ips = self.local_ips.clone();
             if local_ips.is_empty() {
@@ -942,7 +935,7 @@ impl TradeEngine {
                     max_inflight,
                     None,
                     None,
-                    Some(crate::trade_engine::gate_ws::GateWsKind::SpotUnified),
+                    Some(crate::gate_ws::GateWsKind::SpotUnified),
                     Some(query_resp_sink.clone()),
                     spot_cmd_queue.clone(),
                     trade_resp_sink.clone(),
@@ -975,7 +968,7 @@ impl TradeEngine {
                     max_inflight,
                     None,
                     None,
-                    Some(crate::trade_engine::gate_ws::GateWsKind::FuturesUsdt),
+                    Some(crate::gate_ws::GateWsKind::FuturesUsdt),
                     Some(query_resp_sink.clone()),
                     fut_cmd_queue.clone(),
                     trade_resp_sink.clone(),
@@ -1212,7 +1205,7 @@ impl TradeEngine {
                                 Err(_) => std::collections::BTreeMap::new(),
                             };
 
-                        let evt = crate::trade_engine::order_event::OrderRequestEvent {
+                        let evt = crate::order_event::OrderRequestEvent {
                             req_type: Some(format!("{:?}", msg.req_type)),
                             endpoint,
                             method,
@@ -1301,17 +1294,13 @@ impl TradeEngine {
             let shutdown_for_query_router = shutdown.clone();
             let query_router = tokio::task::spawn_local(async move {
                 let okex_http = reqwest::Client::new();
-                let okex_creds =
-                    crate::portfolio_margin::okex_auth::OkexCredentials::from_env().ok();
+                let okex_creds = account_common::okex_auth::OkexCredentials::from_env().ok();
                 let bybit_http = reqwest::Client::new();
-                let bybit_creds =
-                    crate::portfolio_margin::bybit_auth::BybitCredentials::from_env().ok();
+                let bybit_creds = account_common::bybit_auth::BybitCredentials::from_env().ok();
                 let bitget_http = reqwest::Client::new();
-                let bitget_creds =
-                    crate::portfolio_margin::bitget_auth::BitgetCredentials::from_env().ok();
+                let bitget_creds = account_common::bitget_auth::BitgetCredentials::from_env().ok();
                 let gate_http = reqwest::Client::new();
-                let gate_creds =
-                    crate::portfolio_margin::gate_auth::GateCredentials::from_env().ok();
+                let gate_creds = account_common::gate_auth::GateCredentials::from_env().ok();
                 let mut binance_query_rr = 0usize;
                 let mut gate_query_rr = 0usize;
                 let mut gate_futures_query_rr = 0usize;
@@ -1444,7 +1433,7 @@ impl TradeEngine {
                                     Err(_) => std::collections::BTreeMap::new(),
                                 };
 
-                            let evt = crate::trade_engine::order_event::OrderRequestEvent {
+                            let evt = crate::order_event::OrderRequestEvent {
                                 req_type: Some(format!("{:?}", msg.req_type)),
                                 endpoint,
                                 method,
@@ -1462,7 +1451,7 @@ impl TradeEngine {
                             match outcome {
                                 Ok(outcome) => {
                                     match msg.req_type {
-                                        crate::trade_engine::query_request::QueryRequestType::BinanceUMQuery
+                                        crate::query_request::QueryRequestType::BinanceUMQuery
                                             if outcome.status == 200 =>
                                         {
                                             if let Some(v) = parse_binance_um_order_query_json(&outcome.body) {
@@ -1492,7 +1481,7 @@ impl TradeEngine {
                                                 });
                                             }
                                         }
-                                        crate::trade_engine::query_request::QueryRequestType::BinanceMarginQuery
+                                        crate::query_request::QueryRequestType::BinanceMarginQuery
                                             if outcome.status == 200 =>
                                         {
                                             if let Some(v) = parse_binance_margin_order_query_json(&outcome.body) {
@@ -1522,7 +1511,7 @@ impl TradeEngine {
                                                 });
                                             }
                                         }
-                                        crate::trade_engine::query_request::QueryRequestType::BinancePmBalanceSnapshot
+                                        crate::query_request::QueryRequestType::BinancePmBalanceSnapshot
                                             if outcome.status == 200 =>
                                         {
                                             if let Some(msgs) = parse_binance_pm_balance_snapshot(&outcome.body) {
@@ -1539,7 +1528,7 @@ impl TradeEngine {
                                                 }
                                             }
                                         }
-                                        crate::trade_engine::query_request::QueryRequestType::BinanceUmBalanceSnapshotStd
+                                        crate::query_request::QueryRequestType::BinanceUmBalanceSnapshotStd
                                             if outcome.status == 200 =>
                                         {
                                             if let Some(msgs) =
@@ -1558,7 +1547,7 @@ impl TradeEngine {
                                                 }
                                             }
                                         }
-                                        crate::trade_engine::query_request::QueryRequestType::BinanceUmAccountSnapshot
+                                        crate::query_request::QueryRequestType::BinanceUmAccountSnapshot
                                             if outcome.status == 200 =>
                                         {
                                             if let Some(msgs) = parse_binance_um_account_snapshot(&outcome.body) {
@@ -1587,7 +1576,7 @@ impl TradeEngine {
                                                 }
                                             }
                                         }
-                                        crate::trade_engine::query_request::QueryRequestType::BinanceUmAccountSnapshotStd
+                                        crate::query_request::QueryRequestType::BinanceUmAccountSnapshotStd
                                             if outcome.status == 200 =>
                                         {
                                             if let Some(msgs) = parse_binance_um_account_snapshot(&outcome.body) {
@@ -1616,7 +1605,7 @@ impl TradeEngine {
                                                 }
                                             }
                                         }
-                                        crate::trade_engine::query_request::QueryRequestType::BinanceSpotAccountSnapshotStd
+                                        crate::query_request::QueryRequestType::BinanceSpotAccountSnapshotStd
                                             if outcome.status == 200 =>
                                         {
                                             if let Some(msgs) =
@@ -1730,7 +1719,7 @@ impl TradeEngine {
                                 );
                             }
 
-                            match crate::trade_engine::okex_query::okex_rest_get(
+                            match crate::okex_query::okex_rest_get(
                                 &okex_http,
                                 creds,
                                 &path_with_query,
@@ -1739,8 +1728,8 @@ impl TradeEngine {
                             {
                                 Ok((status, body)) => {
                                     let body_bytes = match msg.req_type {
-                                        crate::trade_engine::query_request::QueryRequestType::OkexMarginQuery
-                                            | crate::trade_engine::query_request::QueryRequestType::OkexUMQuery
+                                        crate::query_request::QueryRequestType::OkexMarginQuery
+                                            | crate::query_request::QueryRequestType::OkexUMQuery
                                             if status == 200 =>
                                         {
                                             match parse_okex_order_query_json(&body) {
@@ -1774,7 +1763,7 @@ impl TradeEngine {
                                                 }
                                             }
                                         }
-                                        crate::trade_engine::query_request::QueryRequestType::OkexAccountBalanceSnapshot
+                                        crate::query_request::QueryRequestType::OkexAccountBalanceSnapshot
                                             if status == 200 =>
                                         {
                                             if let Some(msgs) =
@@ -1798,7 +1787,7 @@ impl TradeEngine {
                                             warn!("okex account balance snapshot parse produced no basic msgs; skipping response body");
                                             bytes::Bytes::new()
                                         }
-                                        crate::trade_engine::query_request::QueryRequestType::OkexPositionsSnapshot
+                                        crate::query_request::QueryRequestType::OkexPositionsSnapshot
                                             if status == 200 =>
                                         {
                                             if let Some(msgs) = parse_okex_positions_snapshot(&body) {
@@ -1848,12 +1837,12 @@ impl TradeEngine {
                         Exchange::Gate => {
                             if matches!(
                                 msg.req_type,
-                                crate::trade_engine::query_request::QueryRequestType::GateUnifiedOrderQuery
-                                    | crate::trade_engine::query_request::QueryRequestType::GateFuturesOrderQuery
+                                crate::query_request::QueryRequestType::GateUnifiedOrderQuery
+                                    | crate::query_request::QueryRequestType::GateFuturesOrderQuery
                             ) {
                                 let target_endpoints = if matches!(
                                     msg.req_type,
-                                    crate::trade_engine::query_request::QueryRequestType::GateFuturesOrderQuery
+                                    crate::query_request::QueryRequestType::GateFuturesOrderQuery
                                 ) {
                                     gate_futures_ws_endpoints.as_ref()
                                 } else {
@@ -1891,7 +1880,7 @@ impl TradeEngine {
 
                                 let (cursor, len) = if matches!(
                                     msg.req_type,
-                                    crate::trade_engine::query_request::QueryRequestType::GateFuturesOrderQuery
+                                    crate::query_request::QueryRequestType::GateFuturesOrderQuery
                                 ) {
                                     let len = endpoints.len();
                                     let start = gate_futures_query_rr;
@@ -1966,13 +1955,13 @@ impl TradeEngine {
 
                             let extra_headers = if matches!(
                                 msg.req_type,
-                                crate::trade_engine::query_request::QueryRequestType::GateUnifiedPositionsSnapshot
+                                crate::query_request::QueryRequestType::GateUnifiedPositionsSnapshot
                             ) {
                                 &[("X-Gate-Size-Decimal", "1")][..]
                             } else {
                                 &[][..]
                             };
-                            match crate::trade_engine::gate_query::gate_rest_get_with_headers(
+                            match crate::gate_query::gate_rest_get_with_headers(
                                 &gate_http,
                                 creds,
                                 endpoint,
@@ -1983,7 +1972,7 @@ impl TradeEngine {
                             {
                                 Ok((status, body)) => {
                                     let body_bytes = match msg.req_type {
-                                        crate::trade_engine::query_request::QueryRequestType::GateUnifiedBalanceSnapshot
+                                        crate::query_request::QueryRequestType::GateUnifiedBalanceSnapshot
                                             if status == 200 =>
                                         {
                                             if let Some(msgs) =
@@ -2007,7 +1996,7 @@ impl TradeEngine {
                                             warn!("gate unified balance snapshot parse produced no basic msgs; skipping response body");
                                             bytes::Bytes::new()
                                         }
-                                        crate::trade_engine::query_request::QueryRequestType::GateUnifiedPositionsSnapshot
+                                        crate::query_request::QueryRequestType::GateUnifiedPositionsSnapshot
                                             if status == 200 =>
                                         {
                                             if let Some(parsed) =
@@ -2117,8 +2106,8 @@ impl TradeEngine {
                             let qs = std::str::from_utf8(&msg.params).unwrap_or("");
                             let is_bybit_snapshot = matches!(
                                 msg.req_type,
-                                crate::trade_engine::query_request::QueryRequestType::BybitAccountBalanceSnapshot
-                                    | crate::trade_engine::query_request::QueryRequestType::BybitPositionsSnapshot
+                                crate::query_request::QueryRequestType::BybitAccountBalanceSnapshot
+                                    | crate::query_request::QueryRequestType::BybitPositionsSnapshot
                             );
                             if !is_bybit_snapshot {
                                 debug!(
@@ -2129,9 +2118,9 @@ impl TradeEngine {
 
                             if matches!(
                                 msg.req_type,
-                                crate::trade_engine::query_request::QueryRequestType::BybitPositionsSnapshot
+                                crate::query_request::QueryRequestType::BybitPositionsSnapshot
                             ) {
-                                match crate::trade_engine::bybit_query::bybit_rest_get_position_list_pages(
+                                match crate::bybit_query::bybit_rest_get_position_list_pages(
                                     &bybit_http,
                                     creds,
                                     endpoint,
@@ -2163,15 +2152,16 @@ impl TradeEngine {
                                                 });
                                             } else {
                                                 for payload in msgs {
-                                                    let _ = query_resp_sink.send(QueryExecOutcome {
-                                                        req_type: msg.req_type,
-                                                        client_query_id: msg.client_query_id,
-                                                        status: 200,
-                                                        body: payload,
-                                                        exchange: exchange_copy,
-                                                        ip_used_weight_1m: None,
-                                                        query_count_1m: None,
-                                                    });
+                                                    let _ =
+                                                        query_resp_sink.send(QueryExecOutcome {
+                                                            req_type: msg.req_type,
+                                                            client_query_id: msg.client_query_id,
+                                                            status: 200,
+                                                            body: payload,
+                                                            exchange: exchange_copy,
+                                                            ip_used_weight_1m: None,
+                                                            query_count_1m: None,
+                                                        });
                                                 }
                                             }
                                         } else {
@@ -2215,7 +2205,7 @@ impl TradeEngine {
                                 continue;
                             }
 
-                            match crate::trade_engine::bybit_query::bybit_rest_get(
+                            match crate::bybit_query::bybit_rest_get(
                                 &bybit_http,
                                 creds,
                                 endpoint,
@@ -2235,8 +2225,8 @@ impl TradeEngine {
                                         );
                                     }
                                     let body_bytes = match msg.req_type {
-                                        crate::trade_engine::query_request::QueryRequestType::BybitMarginQuery
-                                        | crate::trade_engine::query_request::QueryRequestType::BybitUMQuery
+                                        crate::query_request::QueryRequestType::BybitMarginQuery
+                                        | crate::query_request::QueryRequestType::BybitUMQuery
                                             if status == 200 =>
                                         {
                                             match parse_bybit_order_query_json(&body) {
@@ -2250,7 +2240,7 @@ impl TradeEngine {
                                                 }
                                             }
                                         }
-                                        crate::trade_engine::query_request::QueryRequestType::BybitAccountBalanceSnapshot
+                                        crate::query_request::QueryRequestType::BybitAccountBalanceSnapshot
                                             if status == 200 =>
                                         {
                                             if let Some(msgs) =
@@ -2365,7 +2355,7 @@ impl TradeEngine {
 
                             let endpoint = QueryTypeMapping::get_endpoint(msg.req_type);
                             let qs = std::str::from_utf8(&msg.params).unwrap_or("");
-                            match crate::trade_engine::bitget_query::bitget_rest_get(
+                            match crate::bitget_query::bitget_rest_get(
                                 &bitget_http,
                                 creds,
                                 endpoint,
@@ -2375,8 +2365,8 @@ impl TradeEngine {
                             {
                                 Ok((status, body)) => {
                                     let body_bytes = match msg.req_type {
-                                        crate::trade_engine::query_request::QueryRequestType::BitgetMarginQuery
-                                        | crate::trade_engine::query_request::QueryRequestType::BitgetUMQuery
+                                        crate::query_request::QueryRequestType::BitgetMarginQuery
+                                        | crate::query_request::QueryRequestType::BitgetUMQuery
                                             if status == 200 =>
                                         {
                                             match parse_bitget_order_query_json(&body) {
@@ -2390,7 +2380,7 @@ impl TradeEngine {
                                                 }
                                             }
                                         }
-                                        crate::trade_engine::query_request::QueryRequestType::BitgetAccountBalanceSnapshot
+                                        crate::query_request::QueryRequestType::BitgetAccountBalanceSnapshot
                                             if status == 200 =>
                                         {
                                             if let Some(msgs) =
@@ -2417,7 +2407,7 @@ impl TradeEngine {
                                             );
                                             bytes::Bytes::new()
                                         }
-                                        crate::trade_engine::query_request::QueryRequestType::BitgetPositionsSnapshot
+                                        crate::query_request::QueryRequestType::BitgetPositionsSnapshot
                                             if status == 200 =>
                                         {
                                             if let Some(msgs) = parse_bitget_positions_snapshot(&body)

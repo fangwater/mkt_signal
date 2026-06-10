@@ -14,6 +14,7 @@
 //! cargo run --bin gate_account_monitor
 //! ```
 
+use account_common::gate_auth::{GateCredentials, GatePrivateWsUrls};
 use anyhow::Result;
 use bytes::Bytes;
 use log::{debug, error, info, warn};
@@ -24,14 +25,9 @@ use mkt_parsers::msg::basic_account_msg::{
 };
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::gate_account_event_parser::GateAccountEventParser;
-use mkt_signal::portfolio_margin::gate_auth::{GateCredentials, GatePrivateWsUrls};
 use mkt_signal::portfolio_margin::gate_rest::fetch_borrow_interest;
 use mkt_signal::portfolio_margin::gate_user_stream::{GateUserDataConnection, SubscribeChannel};
 use mkt_signal::portfolio_margin::pm_forwarder::PmForwarder;
-use mkt_signal::trade_engine::gate_query::gate_rest_get_with_headers;
-use mkt_signal::trade_engine::query_parsers::gate_positions_snapshot::{
-    parse_gate_positions_snapshot_with_meta, GatePositionsSnapshotParse,
-};
 use reqwest::Client;
 use runtime_common::mkt_cfg::load_local_ips_preferring_trade_engine;
 use std::collections::hash_map::DefaultHasher;
@@ -40,6 +36,10 @@ use std::hash::{Hash, Hasher};
 use std::time::Duration;
 use tokio::signal;
 use tokio::sync::{broadcast, watch};
+use trade_engine::gate_query::gate_rest_get_with_headers;
+use trade_engine::query_parsers::gate_positions_snapshot::{
+    parse_gate_positions_snapshot_with_meta, GatePositionsSnapshotParse,
+};
 
 fn credential_edges(value: &str) -> (String, String, usize) {
     let trimmed = value.trim();

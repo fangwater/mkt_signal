@@ -9,7 +9,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use sha2::Sha256;
 
-use crate::portfolio_margin::okex_auth::OkexCredentials;
+use account_common::okex_auth::OkexCredentials;
 
 type HmacSha256 = Hmac<Sha256>;
 

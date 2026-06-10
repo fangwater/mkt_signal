@@ -1,10 +1,10 @@
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use crate::trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
 use order_common::{gate_text_from_client_order_id, Order, TradingVenue};
 use runtime_common::time_util::get_timestamp_us;
 use symbol_utils::symbol_util::{
     gate_currency_pair_from_symbol, normalize_symbol_for_internal, okex_inst_id_from_symbol,
 };
+use trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
 
 pub fn build_order_query_request(
     order: &Order,
@@ -118,9 +118,9 @@ pub fn build_order_query_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trade_engine::query_request::{QueryRequestMsg, QueryRequestType};
     use order_common::{OrderManager, OrderType, Side};
     use serde_json::Value;
+    use trade_engine::query_request::{QueryRequestMsg, QueryRequestType};
 
     #[test]
     fn gate_margin_order_query_uses_unified_account() {

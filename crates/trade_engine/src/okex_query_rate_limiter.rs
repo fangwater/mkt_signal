@@ -1,4 +1,4 @@
-use crate::trade_engine::query_request::QueryRequestType;
+use crate::query_request::QueryRequestType;
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
@@ -111,7 +111,7 @@ fn prune_expired(queue: &mut VecDeque<Instant>, now: Instant, window: Duration) 
 #[cfg(test)]
 mod tests {
     use super::OkexQueryRateLimiter;
-    use crate::trade_engine::query_request::QueryRequestType;
+    use crate::query_request::QueryRequestType;
     use std::time::{Duration, Instant};
 
     #[test]

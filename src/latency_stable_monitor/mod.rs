@@ -12,7 +12,7 @@ use crate::latency_stable_monitor::cfg::{
     default_trade_engine_topic, LatencyStableMonitorConfig, SpreadPbsSourceConfig,
     TradeEngineSourceConfig,
 };
-use crate::rolling_metrics::latency_snapshot::LATENCY_SNAPSHOT_PAYLOAD_LEN;
+use rolling_common::latency_snapshot::LATENCY_SNAPSHOT_PAYLOAD_LEN;
 
 const SOURCE_PUBLIC: &str = "public";
 const SOURCE_PRIVATE: &str = "private";

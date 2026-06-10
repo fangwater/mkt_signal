@@ -15,7 +15,6 @@ use crate::pre_trade::response_reconcile::apply_query_response_as_updates;
 use crate::pre_trade::PersistChannel;
 use crate::strategy::order_query_parser::parse_compact_order_query_resp;
 use crate::strategy::{OrphanStrategyManager, StrategyManager};
-use crate::trade_engine::query_request::QueryRequestType;
 use ipc_common::iceoryx_publisher::{QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD};
 use mkt_parsers::msg::basic_account_msg::{
     get_basic_event_type, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
@@ -27,6 +26,7 @@ use order_common::{QueryEngineResponse, QueryEngineResponseMessage};
 use runtime_common::exchange::Exchange;
 use runtime_common::ipc_service_name::build_service_name;
 use runtime_common::time_util::get_timestamp_us;
+use trade_engine::query_request::QueryRequestType;
 
 thread_local! {
     static QUERY_ENG_HUB: OnceCell<QueryEngHub> = const { OnceCell::new() };

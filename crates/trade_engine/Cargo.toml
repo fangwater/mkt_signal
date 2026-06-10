@@ -1,0 +1,39 @@
+[package]
+name = "trade_engine"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+account_common = { path = "../account_common" }
+anyhow.workspace = true
+async-trait = "0.1"
+base64 = "0.21"
+bytes = { version = "1.0", features = ["serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+futures = "0.3"
+futures-util = "0.3"
+hex = "0.4"
+hmac = "0.12"
+iceoryx2 = "0.8.1"
+log = "0.4"
+order_common = { path = "../order_common" }
+rolling_common = { path = "../rolling_common" }
+runtime_common = { path = "../runtime_common" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json.workspace = true
+sha2 = "0.10"
+sonic-rs = "0.5.1"
+symbol_utils = { path = "../symbol_utils" }
+tokio = { version = "1.0", features = ["full"] }
+tokio-tungstenite = { version = "0.20", features = ["native-tls"] }
+tokio-util = "0.7.15"
+url = "2.4"
+uuid = { version = "1.17.0", features = ["v4"] }
+reqwest = { version = "0.12.19", features = ["json", "blocking"] }
+ipc_common = { path = "../ipc_common" }
+mkt_parsers = { path = "../mkt_parsers" }
+signal_common = { path = "../signal_common" }
+tokio-native-tls = "0.3"
+libc = "0.2"
+rtrb = "0.3"
+native-tls = "0.2"

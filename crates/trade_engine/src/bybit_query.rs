@@ -1,4 +1,4 @@
-use crate::portfolio_margin::bybit_auth::BybitCredentials;
+use account_common::bybit_auth::BybitCredentials;
 use anyhow::Result;
 use chrono::Utc;
 use hmac::{Hmac, Mac};

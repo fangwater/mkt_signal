@@ -1,5 +1,5 @@
-use crate::trade_engine::query_response_handle::QueryExecOutcome;
-use crate::trade_engine::trade_response_handle::TradeExecOutcome;
+use crate::query_response_handle::QueryExecOutcome;
+use crate::trade_response_handle::TradeExecOutcome;
 use log::warn;
 use rtrb::{Producer, PushError};
 use std::cell::{Cell, RefCell};

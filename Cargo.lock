@@ -5,6 +5,16 @@ version = 4
 [[package]]
 name = "account_common"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.21.7",
+ "hex",
+ "hmac",
+ "order_common",
+ "serde",
+ "serde_json",
+ "sha2",
+]
 
 [[package]]
 name = "addr2line"
@@ -2247,6 +2257,7 @@ dependencies = [
  "tonic",
  "tower 0.4.13",
  "tower-http 0.4.4",
+ "trade_engine",
  "trade_signal",
  "url",
  "urlencoding",
@@ -4744,6 +4755,45 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9d12581f227e93f094d3af2ae690a574abb8a2b9b7a96e7cfe9647b2b617678"
 dependencies = [
  "once_cell",
+]
+
+[[package]]
+name = "trade_engine"
+version = "0.1.0"
+dependencies = [
+ "account_common",
+ "anyhow",
+ "async-trait",
+ "base64 0.21.7",
+ "bytes",
+ "chrono",
+ "futures",
+ "futures-util",
+ "hex",
+ "hmac",
+ "iceoryx2",
+ "ipc_common",
+ "libc",
+ "log",
+ "mkt_parsers",
+ "native-tls",
+ "order_common",
+ "reqwest",
+ "rolling_common",
+ "rtrb",
+ "runtime_common",
+ "serde",
+ "serde_json",
+ "sha2",
+ "signal_common",
+ "sonic-rs",
+ "symbol_utils",
+ "tokio",
+ "tokio-native-tls",
+ "tokio-tungstenite 0.20.1",
+ "tokio-util",
+ "url",
+ "uuid",
 ]
 
 [[package]]

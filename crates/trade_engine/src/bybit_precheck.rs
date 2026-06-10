@@ -13,8 +13,8 @@ use log::info;
 use reqwest::Client;
 use serde_json::Value;
 
-use crate::portfolio_margin::bybit_auth::BybitCredentials;
-use crate::trade_engine::bybit_query::bybit_rest_get;
+use crate::bybit_query::bybit_rest_get;
+use account_common::bybit_auth::BybitCredentials;
 
 const ACCOUNT_INFO_PATH: &str = "/v5/account/info";
 const SPOT_MARGIN_STATE_PATH: &str = "/v5/spot-margin-trade/state";

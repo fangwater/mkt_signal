@@ -1,4 +1,4 @@
-use crate::trade_engine::query_request::QueryRequestType;
+use crate::query_request::QueryRequestType;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 

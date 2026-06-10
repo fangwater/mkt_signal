@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
-use mkt_signal::rolling_metrics::latency_snapshot::{
+use rolling_common::latency_snapshot::{
     ACTION_ID_CANCEL, ACTION_ID_MARKET_DATA, ACTION_ID_NEW, LATENCY_SNAPSHOT_MAX_BUCKETS,
     LATENCY_SNAPSHOT_MSG_TYPE, LATENCY_SNAPSHOT_PAYLOAD_LEN, LATENCY_SNAPSHOT_SCHEMA_VER,
     METRIC_ID_DOWNLINK, METRIC_ID_IPC_TO_WS, METRIC_ID_RTT, METRIC_ID_SERVER, METRIC_ID_SPREAD_E2E,

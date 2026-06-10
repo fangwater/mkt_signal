@@ -7,6 +7,11 @@
 //! - 解析账户事件并通过 Iceoryx 转发
 //! - 支持主备双路连接
 
+use account_common::bitget_auth::{
+    build_account_subscribe_message, build_fast_fill_subscribe_message,
+    build_orders_subscribe_message, build_positions_subscribe_message, BitgetCredentials,
+    BitgetPrivateWsUrls,
+};
 use anyhow::Result;
 use bytes::Bytes;
 use log::{debug, error, info, warn};
@@ -19,15 +24,8 @@ use mkt_parsers::msg::bitget_account_msg::BitgetBasicOrderMsg;
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::bitget_account_event_parser::BitgetAccountEventParser;
 use mkt_signal::parser::default_parser::Parser;
-use mkt_signal::portfolio_margin::bitget_auth::{
-    build_account_subscribe_message, build_fast_fill_subscribe_message,
-    build_orders_subscribe_message, build_positions_subscribe_message, BitgetCredentials,
-    BitgetPrivateWsUrls,
-};
 use mkt_signal::portfolio_margin::bitget_user_stream::BitgetUserDataConnection;
 use mkt_signal::portfolio_margin::pm_forwarder::PmForwarder;
-use mkt_signal::trade_engine::query_parsers::bitget_account_balance_snapshot::parse_bitget_account_balance_snapshot;
-use mkt_signal::trade_engine::query_parsers::bitget_positions_snapshot::parse_bitget_positions_snapshot;
 use runtime_common::mkt_cfg::load_local_ips_preferring_trade_engine;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashSet, VecDeque};
@@ -36,6 +34,8 @@ use std::net::IpAddr;
 use std::time::Duration;
 use tokio::signal;
 use tokio::sync::{broadcast, watch};
+use trade_engine::query_parsers::bitget_account_balance_snapshot::parse_bitget_account_balance_snapshot;
+use trade_engine::query_parsers::bitget_positions_snapshot::parse_bitget_positions_snapshot;
 
 fn credential_edges(value: &str) -> (String, String, usize) {
     let trimmed = value.trim();

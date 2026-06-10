@@ -8,7 +8,7 @@
 use crate::connection::connection::{
     MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector,
 };
-use crate::portfolio_margin::bitget_auth::BitgetCredentials;
+use account_common::bitget_auth::BitgetCredentials;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::{SinkExt, TryStreamExt};

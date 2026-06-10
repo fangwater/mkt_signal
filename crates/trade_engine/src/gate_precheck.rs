@@ -15,8 +15,8 @@ use log::info;
 use reqwest::Client;
 use serde_json::Value;
 
-use crate::portfolio_margin::gate_auth::GateCredentials;
-use crate::trade_engine::gate_query::gate_rest_get;
+use crate::gate_query::gate_rest_get;
+use account_common::gate_auth::GateCredentials;
 
 const UNIFIED_ACCOUNTS_PATH: &str = "/api/v4/unified/accounts";
 

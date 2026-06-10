@@ -1,32 +1,29 @@
-use crate::portfolio_margin::bitget_auth::BitgetCredentials;
-use crate::portfolio_margin::bybit_auth::BybitCredentials;
-use crate::portfolio_margin::gate_auth::GateCredentials;
-use crate::portfolio_margin::okex_auth::OkexCredentials;
-use crate::rolling_metrics::latency_snapshot::{
-    LatencyBucketStat, LatencySnapshotMsg, ACTION_ID_CANCEL, ACTION_ID_NEW, METRIC_ID_DOWNLINK,
-    METRIC_ID_IPC_TO_WS, METRIC_ID_RTT, METRIC_ID_SERVER, METRIC_ID_UPLINK,
-};
-use crate::trade_engine::binance_ws;
-use crate::trade_engine::bitget_ws;
-use crate::trade_engine::bybit::{
+use crate::binance_ws;
+use crate::bitget_ws;
+use crate::bybit::{
     BybitCancelOrderRequest, BybitNewOrderParams, BybitNewOrderRequest, BybitWsOrderResponse,
     ToBybitWsJson,
 };
-use crate::trade_engine::config::{ApiKey, LimitConstants};
-use crate::trade_engine::gate_ws;
-use crate::trade_engine::okex::{
+use crate::config::LimitConstants;
+use crate::gate_ws;
+use crate::okex::{
     OkexCancelOrderRequest, OkexNewOrderParams, OkexNewOrderRequest, OkexWsOrderResponse,
 };
-use crate::trade_engine::query_parsers::binance_um_order::parse_binance_um_order_query_json;
-use crate::trade_engine::query_parsers::compact_order::ORDER_QUERY_NOT_FOUND_MARKER;
-use crate::trade_engine::query_parsers::gate_order_status::{
+use crate::query_parsers::binance_um_order::parse_binance_um_order_query_json;
+use crate::query_parsers::compact_order::ORDER_QUERY_NOT_FOUND_MARKER;
+use crate::query_parsers::gate_order_status::{
     parse_gate_futures_order_status_json, parse_gate_spot_order_status_json,
 };
-use crate::trade_engine::query_request::{QueryRequestMsg, QueryRequestType};
-use crate::trade_engine::query_response_handle::QueryExecOutcome;
-use crate::trade_engine::response_sink::{QueryResponseSink, TradeResponseSink};
-use crate::trade_engine::trade_request::{TradeRequestMsg, TradeRequestType};
-use crate::trade_engine::trade_response_handle::TradeExecOutcome;
+use crate::query_request::{QueryRequestMsg, QueryRequestType};
+use crate::query_response_handle::QueryExecOutcome;
+use crate::response_sink::{QueryResponseSink, TradeResponseSink};
+use crate::trade_request::{TradeRequestMsg, TradeRequestType};
+use crate::trade_response_handle::TradeExecOutcome;
+use account_common::bitget_auth::BitgetCredentials;
+use account_common::bybit_auth::BybitCredentials;
+use account_common::gate_auth::GateCredentials;
+use account_common::okex_auth::OkexCredentials;
+use account_common::ApiKey;
 use anyhow::{anyhow, Context, Result};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
@@ -35,6 +32,10 @@ use futures_util::{SinkExt, StreamExt};
 use log::{debug, info, warn};
 use native_tls::TlsConnector;
 use rolling_common::latency_kll::LatencyKll;
+use rolling_common::latency_snapshot::{
+    LatencyBucketStat, LatencySnapshotMsg, ACTION_ID_CANCEL, ACTION_ID_NEW, METRIC_ID_DOWNLINK,
+    METRIC_ID_IPC_TO_WS, METRIC_ID_RTT, METRIC_ID_SERVER, METRIC_ID_UPLINK,
+};
 use runtime_common::exchange::Exchange;
 use runtime_common::time_util::get_timestamp_us;
 use serde::Deserialize;
@@ -294,7 +295,7 @@ pub(crate) struct WsLatencyBuckets {
 /// `WsLatencyBuckets::take_snapshot` 用：把单桶 KLL 快照写进消息槽位。
 fn snap_into(
     buckets: &mut [LatencyBucketStat;
-             crate::rolling_metrics::latency_snapshot::LATENCY_SNAPSHOT_MAX_BUCKETS],
+             rolling_common::latency_snapshot::LATENCY_SNAPSHOT_MAX_BUCKETS],
     idx: &mut usize,
     kll: &Rc<RefCell<LatencyKll>>,
     metric_id: u8,
@@ -1432,7 +1433,7 @@ impl TradeWsClient {
     }
 
     fn build_bybit_payload(&self, msg: &TradeRequestMsg, transport_id: i64) -> Result<String> {
-        use crate::trade_engine::trade_request::TradeRequestHeader;
+        use crate::trade_request::TradeRequestHeader;
 
         let header = TradeRequestHeader {
             msg_type: msg.req_type as u32,
@@ -1486,8 +1487,8 @@ impl TradeWsClient {
         msg: &TradeRequestMsg,
         transport_id: i64,
     ) -> Result<String> {
-        use crate::trade_engine::okex::ToOkexWsJson;
-        use crate::trade_engine::trade_request::TradeRequestHeader;
+        use crate::okex::ToOkexWsJson;
+        use crate::trade_request::TradeRequestHeader;
 
         let header = TradeRequestHeader {
             msg_type: msg.req_type as u32,
@@ -1534,7 +1535,7 @@ impl TradeWsClient {
         &mut self,
         msg: &TradeRequestMsg,
     ) -> Result<i64> {
-        use crate::trade_engine::trade_request::TradeRequestHeader;
+        use crate::trade_request::TradeRequestHeader;
 
         let header = TradeRequestHeader {
             msg_type: msg.req_type as u32,
@@ -1768,8 +1769,8 @@ impl TradeWsClient {
                     .map(|params| {
                         matches!(
                             params.order_type,
-                            crate::trade_engine::okex::OkexOrderType::PostOnly
-                                | crate::trade_engine::okex::OkexOrderType::MmpAndPostOnly
+                            crate::okex::OkexOrderType::PostOnly
+                                | crate::okex::OkexOrderType::MmpAndPostOnly
                         )
                     })
                     .unwrap_or(false)
@@ -3161,7 +3162,7 @@ mod tests {
     use super::{
         is_bitget_pong_response, parse_bitget_control_event, QueryInflightMeta, TradeWsClient,
     };
-    use crate::trade_engine::query_request::QueryRequestType;
+    use crate::query_request::QueryRequestType;
     use std::collections::HashMap;
 
     #[test]

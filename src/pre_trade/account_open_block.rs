@@ -1,6 +1,5 @@
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::query_eng_channel::QueryEngHub;
-use crate::trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
 use bytes::Bytes;
 use log::{info, warn};
 use once_cell::sync::Lazy;
@@ -9,6 +8,7 @@ use parking_lot::Mutex;
 use runtime_common::time_util::get_timestamp_us;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
+use trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
 
 const BINANCE_PM_USDT_OPEN_BLOCK_THRESHOLD: f64 = 2_000.0;
 const BINANCE_PM_CAPACITY_POLL_INTERVAL_US: i64 = 60_000_000;

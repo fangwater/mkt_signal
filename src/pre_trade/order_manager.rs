@@ -1,20 +1,3 @@
-use crate::trade_engine::bybit::{
-    BybitCancelOrderParams, BybitCancelOrderRequest, BybitNewOrderParams, BybitNewOrderRequest,
-};
-use crate::trade_engine::okex::{
-    OkexCancelOrderParams, OkexCancelOrderRequest, OkexNewOrderParams, OkexNewOrderRequest,
-    OkexOrderType,
-};
-use crate::trade_engine::trade_request::BinanceNewMarginOrderRequest;
-use crate::trade_engine::trade_request::BinanceNewUMOrderRequest;
-use crate::trade_engine::trade_request::{
-    BinanceCancelMarginOrderRequest, BinanceCancelUMOrderRequest,
-    BinanceWsCancelMarginOrderRequest, BinanceWsCancelUMOrderRequest,
-    BinanceWsNewMarginOrderRequest, BinanceWsNewUMOrderRequest, BitgetMarginCancelOrderRequest,
-    BitgetMarginNewOrderRequest, BitgetUmCancelOrderRequest, BitgetUmNewOrderRequest,
-    GateFuturesCancelOrderRequest, GateFuturesNewOrderRequest, GateUnifiedCancelOrderRequest,
-    GateUnifiedNewOrderRequest,
-};
 use bytes::Bytes;
 use log::{info, warn};
 pub use order_common::{
@@ -27,6 +10,23 @@ use signal_common::tick_math::QuantizedValue;
 pub use symbol_utils::symbol_util::gate_currency_pair_from_symbol;
 use symbol_utils::symbol_util::{
     extract_assets_from_symbol, normalize_symbol_for_internal, okex_inst_id_from_symbol,
+};
+use trade_engine::bybit::{
+    BybitCancelOrderParams, BybitCancelOrderRequest, BybitNewOrderParams, BybitNewOrderRequest,
+};
+use trade_engine::okex::{
+    OkexCancelOrderParams, OkexCancelOrderRequest, OkexNewOrderParams, OkexNewOrderRequest,
+    OkexOrderType,
+};
+use trade_engine::trade_request::BinanceNewMarginOrderRequest;
+use trade_engine::trade_request::BinanceNewUMOrderRequest;
+use trade_engine::trade_request::{
+    BinanceCancelMarginOrderRequest, BinanceCancelUMOrderRequest,
+    BinanceWsCancelMarginOrderRequest, BinanceWsCancelUMOrderRequest,
+    BinanceWsNewMarginOrderRequest, BinanceWsNewUMOrderRequest, BitgetMarginCancelOrderRequest,
+    BitgetMarginNewOrderRequest, BitgetUmCancelOrderRequest, BitgetUmNewOrderRequest,
+    GateFuturesCancelOrderRequest, GateFuturesNewOrderRequest, GateUnifiedCancelOrderRequest,
+    GateUnifiedNewOrderRequest,
 };
 fn format_decimal(value: f64) -> String {
     QuantizedValue::from_decimal(value)

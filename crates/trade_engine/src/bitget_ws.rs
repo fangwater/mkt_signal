@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 
-use crate::portfolio_margin::bitget_auth::BitgetCredentials;
-use crate::trade_engine::trade_request::{TradeRequestMsg, TradeRequestType};
+use crate::trade_request::{TradeRequestMsg, TradeRequestType};
+use account_common::bitget_auth::BitgetCredentials;
 
 pub fn build_login_payload(creds: &BitgetCredentials) -> Result<String> {
     serde_json::to_string(&creds.build_login_message())
@@ -228,7 +228,7 @@ fn parse_i64_value(v: &Value) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::{build_order_payload, BitgetWsOrderResponse};
-    use crate::trade_engine::trade_request::{TradeRequestMsg, TradeRequestType};
+    use crate::trade_request::{TradeRequestMsg, TradeRequestType};
     use bytes::Bytes;
     use serde_json::{json, Value};
 

@@ -1,6 +1,6 @@
 //! Gate REST helpers for unified-account borrowing and interest state.
 
-use crate::portfolio_margin::gate_auth::GateCredentials;
+use account_common::gate_auth::GateCredentials;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use hmac::{Hmac, Mac};

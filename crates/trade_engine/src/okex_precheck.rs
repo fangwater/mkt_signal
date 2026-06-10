@@ -12,8 +12,8 @@ use log::info;
 use reqwest::Client;
 use serde_json::Value;
 
-use crate::portfolio_margin::okex_auth::OkexCredentials;
-use crate::trade_engine::okex_query::okex_rest_get;
+use crate::okex_query::okex_rest_get;
+use account_common::okex_auth::OkexCredentials;
 
 const ACCOUNT_CONFIG_PATH: &str = "/api/v5/account/config";
 

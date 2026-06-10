@@ -1,4 +1,4 @@
-use crate::portfolio_margin::gate_auth::GateCredentials;
+use account_common::gate_auth::GateCredentials;
 use anyhow::Result;
 use chrono::Utc;
 use hmac::{Hmac, Mac};

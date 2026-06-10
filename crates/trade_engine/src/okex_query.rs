@@ -1,4 +1,4 @@
-use crate::portfolio_margin::okex_auth::OkexCredentials;
+use account_common::okex_auth::OkexCredentials;
 use anyhow::Result;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use chrono::{SecondsFormat, Utc};

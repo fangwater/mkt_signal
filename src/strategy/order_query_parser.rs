@@ -1,7 +1,7 @@
-use crate::trade_engine::query_parsers::compact_order::{
+use runtime_common::time_util::get_timestamp_us;
+use trade_engine::query_parsers::compact_order::{
     CompactOrderQueryResp, COMPACT_ORDER_QUERY_RESP_LEN,
 };
-use runtime_common::time_util::get_timestamp_us;
 
 pub fn parse_compact_order_query_resp(body: &bytes::Bytes) -> Option<CompactOrderQueryResp> {
     if body.len() < COMPACT_ORDER_QUERY_RESP_LEN {

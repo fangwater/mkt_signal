@@ -1,4 +1,4 @@
-use crate::trade_engine::query_parsers::compact_order::CompactOrderQueryResp;
+use crate::query_parsers::compact_order::CompactOrderQueryResp;
 use mkt_parsers::msg::basic_account_msg::GateBasicOrderMsg;
 use order_common::OrderExecutionStatus;
 use serde_json::Value;

@@ -1,7 +1,7 @@
-use crate::common::binance_account_mode::BinanceAccountMode;
-use crate::portfolio_margin::bybit_auth::BybitCredentials;
-use crate::portfolio_margin::gate_auth::GateCredentials;
-use crate::portfolio_margin::okex_auth::OkexCredentials;
+use account_common::bybit_auth::BybitCredentials;
+use account_common::gate_auth::GateCredentials;
+use account_common::okex_auth::OkexCredentials;
+use account_common::BinanceAccountMode;
 use anyhow::{anyhow, bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use chrono::{SecondsFormat, Utc};

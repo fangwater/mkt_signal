@@ -5,15 +5,15 @@ use crate::pre_trade::order_manager::{Order, OrderExecutionStatus};
 use crate::strategy::order_query_parser::parse_compact_order_query_resp;
 use crate::strategy::ws_order_update::WsOrderUpdate;
 use crate::strategy::Strategy;
-use crate::trade_engine::query_parsers::compact_order::{
-    is_order_query_not_found_marker, CompactOrderQueryResp,
-};
 use order_common::OrderUpdate;
 use order_common::QueryEngineResponse;
 use order_common::TradeEngineResponse;
 use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 use order_common::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
 use runtime_common::time_util::get_timestamp_us;
+use trade_engine::query_parsers::compact_order::{
+    is_order_query_not_found_marker, CompactOrderQueryResp,
+};
 
 const DEFAULT_FILL_EPSILON: f64 = 1e-12;
 
@@ -278,7 +278,6 @@ pub fn apply_compact_order_query_updates(
 mod tests {
     use super::apply_query_response_as_updates;
     use crate::strategy::Strategy;
-    use crate::trade_engine::query_parsers::compact_order::ORDER_QUERY_NOT_FOUND_MARKER;
     use bytes::Bytes;
     use order_common::OrderUpdate;
     use order_common::QueryEngineResponseMessage;
@@ -286,6 +285,7 @@ mod tests {
     use order_common::TradeUpdate;
     use signal_common::trade_signal::TradeSignal;
     use std::any::Any;
+    use trade_engine::query_parsers::compact_order::ORDER_QUERY_NOT_FOUND_MARKER;
 
     struct RecordingStrategy {
         strategy_id: i32,

@@ -1,9 +1,9 @@
 use crate::strategy::order_query_parser::parse_compact_order_query_resp as parse_compact_order_query_resp_common;
-use crate::trade_engine::query_parsers::compact_order::CompactOrderQueryResp;
 pub use order_common::CUMULATIVE_FILL_ROLLBACK_EPS;
 use order_common::{Order, OrderExecutionStatus};
 use order_common::{TimeInForce, TradingVenue};
 use signal_common::tick_math::QuantizedValue;
+use trade_engine::query_parsers::compact_order::CompactOrderQueryResp;
 
 pub const ORDER_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
 pub const BINANCE_PM_ORDER_QUERY_WATCHDOG_DELAY_US: i64 = 6_000_000;

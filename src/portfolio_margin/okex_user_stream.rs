@@ -9,7 +9,7 @@ use crate::connection::connection::{
     MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector,
 };
 use crate::connection::okex_notice::parse_okex_notice;
-use crate::portfolio_margin::okex_auth::OkexCredentials;
+use account_common::okex_auth::OkexCredentials;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::{SinkExt, TryStreamExt};

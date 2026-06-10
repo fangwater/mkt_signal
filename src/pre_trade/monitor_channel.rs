@@ -199,11 +199,11 @@ pub fn hash64(parts: &[u64]) -> u64 {
 
 // ==================== Monitor Channel ====================
 
-use crate::common::binance_account_mode::BinanceAccountMode;
 use crate::common::msg_parser::{get_msg_type, parse_index_price, parse_mark_price, MktMsgType};
 use crate::pre_trade::order_manager::OrderManager;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::strategy::OrphanStrategyManager;
+use account_common::BinanceAccountMode;
 use bytes::Bytes;
 use order_common::{OrderUpdate, TradeUpdate, TradeUpdateLite};
 use signal_common::common::{align_price_ceil, align_price_floor};

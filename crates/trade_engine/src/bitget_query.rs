@@ -1,4 +1,4 @@
-use crate::portfolio_margin::bitget_auth::BitgetCredentials;
+use account_common::bitget_auth::BitgetCredentials;
 use anyhow::Result;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use chrono::Utc;

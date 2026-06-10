@@ -1,4 +1,4 @@
-use crate::trade_engine::query_request::QueryRequestType;
+use crate::query_request::QueryRequestType;
 use bytes::{BufMut, Bytes, BytesMut};
 use iceoryx2::port::publisher::Publisher;
 use iceoryx2::service::ipc;

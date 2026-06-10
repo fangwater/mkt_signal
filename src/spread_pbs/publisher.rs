@@ -3,8 +3,8 @@ use iceoryx2::port::publisher::Publisher;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 
-use crate::rolling_metrics::latency_snapshot::LATENCY_SNAPSHOT_PAYLOAD_LEN;
 use mkt_parsers::msg::mkt_msg::{Level, MktMsgType};
+use rolling_common::latency_snapshot::LATENCY_SNAPSHOT_PAYLOAD_LEN;
 
 /// AskBidSpreadMsg wire format 实测占用：4B msg_type + 4B symbol_len + N(symbol)
 /// + 8B ts + 4×8B = 至多 ~80 字节。预留到 128 与 dat_pbs 对齐，便于

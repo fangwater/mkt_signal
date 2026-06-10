@@ -1,12 +1,4 @@
-use serde::Deserialize;
-
-/// Binance API 密钥配置
-#[derive(Debug, Clone, Deserialize)]
-pub struct ApiKey {
-    pub name: String,
-    pub key: String,
-    pub secret: String,
-}
+pub use account_common::ApiKey;
 
 /// 硬编码的 REST 配置常量
 pub struct RestConstants;

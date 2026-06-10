@@ -18,9 +18,7 @@ pub mod pre_trade;
 pub mod rolling_metrics;
 pub mod spread_pbs;
 pub mod strategy;
-pub mod trade_engine;
 pub mod viz;
 
 // Re-export frequently used modules for backward compatibility
 pub use mkt_pub::{app, cfg, iceoryx_forwarder, proxy, sub_msg};
-pub use trade_engine::{config::ApiKey, TradeEngine};
