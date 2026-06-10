@@ -14,6 +14,13 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json.workspace = true
 symbol_utils = { path = "../symbol_utils" }
 serde_yaml = "0.9"
-tokio = { version = "1.0", features = ["fs"] }
+tokio = { version = "1.0", features = ["fs", "net", "sync", "time"] }
+async-trait = "0.1"
+bytes = { version = "1.0", features = ["serde"] }
+futures-util = "0.3"
+native-tls = "0.2"
+tokio-native-tls = "0.3"
+tokio-tungstenite = { version = "0.20", features = ["native-tls"] }
+url = "2.4"
 toml = "0.8"
 urlencoding = "2.1"

@@ -5,14 +5,14 @@
 //! 2. 鉴权成功后订阅 wallet / position / order / execution
 //! 3. 每 20 秒发送一次应用层 ping，等待 JSON pong
 
-use crate::connection::connection::{
-    MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector,
-};
 use account_common::bybit_auth::BybitCredentials;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::{SinkExt, TryStreamExt};
 use log::{debug, error, info, warn};
+use runtime_common::ws_connection::{
+    MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector,
+};
 use std::time::Duration;
 use tokio::time::{self, Instant};
 use tokio_tungstenite::tungstenite::Message;

@@ -1,12 +1,12 @@
-use crate::connection::connection::{
-    MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector,
-};
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::{SinkExt, TryStreamExt};
 use hmac::{Hmac, Mac};
 use log::{debug, error, info, warn};
+use runtime_common::ws_connection::{
+    MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector,
+};
 use serde_json::json;
 use sha2::Sha256;
 use std::collections::BTreeMap;

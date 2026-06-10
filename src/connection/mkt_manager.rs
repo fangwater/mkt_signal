@@ -1,5 +1,5 @@
 use crate::cfg::Config;
-use crate::connection::connection::construct_connection_with_ip;
+use crate::connection::factory::construct_connection_with_ip;
 use crate::parser::binance_parser::{
     BinanceAskBidSpreadParser, BinanceDerivativesMetricsParser, BinanceIncParser,
     BinanceKlineParser, BinanceSignalParser, BinanceTradeParser,

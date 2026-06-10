@@ -12,21 +12,21 @@ use account_common::bitget_auth::{
     build_orders_subscribe_message, build_positions_subscribe_message, BitgetCredentials,
     BitgetPrivateWsUrls,
 };
+use account_monitor_common::bitget_user_stream::BitgetUserDataConnection;
+use account_monitor_common::pm_forwarder::PmForwarder;
 use anyhow::Result;
 use bytes::Bytes;
 use log::{debug, error, info, warn};
+use mkt_parsers::account_event::bitget_account_event_parser::BitgetAccountEventParser;
+use mkt_parsers::account_event::Parser;
 use mkt_parsers::msg::basic_account_msg::{
     split_basic_account_event, BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg,
     BasicAccountScope, BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg,
     BasicTradeLiteMsg, BasicUmUnrealizedMsg,
 };
 use mkt_parsers::msg::bitget_account_msg::BitgetBasicOrderMsg;
-use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
-use mkt_signal::parser::bitget_account_event_parser::BitgetAccountEventParser;
-use mkt_signal::parser::default_parser::Parser;
-use mkt_signal::portfolio_margin::bitget_user_stream::BitgetUserDataConnection;
-use mkt_signal::portfolio_margin::pm_forwarder::PmForwarder;
 use runtime_common::mkt_cfg::load_local_ips_preferring_trade_engine;
+use runtime_common::ws_connection::{MktConnection, MktConnectionHandler};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};

@@ -6,14 +6,14 @@
 //! 3. 如果客户端想主动检测连接状态，可以发送应用层 ping 消息
 //!    对于统一账户，使用 "unified.ping" 频道
 
-use crate::connection::connection::{
-    MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector,
-};
 use account_common::gate_auth::GateCredentials;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::{SinkExt, TryStreamExt};
 use log::{debug, error, info, warn};
+use runtime_common::ws_connection::{
+    MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector,
+};
 use std::time::Duration;
 use tokio::time::{self, Instant};
 use tokio_tungstenite::tungstenite::Message;

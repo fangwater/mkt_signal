@@ -1,10 +1,10 @@
-use crate::connection::connection::{
-    MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector,
-};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::{SinkExt, TryStreamExt};
 use log::{debug, error, info, warn};
+use runtime_common::ws_connection::{
+    MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector,
+};
 use tokio::time::{self, Duration, Instant};
 use tokio_tungstenite::tungstenite::Message;
 

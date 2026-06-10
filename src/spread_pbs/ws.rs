@@ -24,8 +24,8 @@ use tokio_tungstenite::tungstenite::{
 use tokio_tungstenite::{client_async, MaybeTlsStream, WebSocketStream};
 use url::Url;
 
-use crate::connection::okex_notice::parse_okex_notice;
 use crate::spread_pbs::adapter::KeepaliveSpec;
+use runtime_common::okex_notice::parse_okex_notice;
 use runtime_common::time_util::get_timestamp_us;
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;

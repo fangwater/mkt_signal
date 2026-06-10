@@ -17,6 +17,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "account_monitor_common"
+version = "0.1.0"
+dependencies = [
+ "account_common",
+ "anyhow",
+ "async-trait",
+ "base64 0.21.7",
+ "bytes",
+ "chrono",
+ "futures-util",
+ "hex",
+ "hmac",
+ "iceoryx2",
+ "log",
+ "mkt_parsers",
+ "reqwest",
+ "runtime_common",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tokio-tungstenite 0.20.1",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "addr2line"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2197,6 +2224,7 @@ name = "mkt_signal"
 version = "0.1.0"
 dependencies = [
  "account_common",
+ "account_monitor_common",
  "anyhow",
  "arc-swap",
  "async-trait",
@@ -3721,9 +3749,13 @@ name = "runtime_common"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "bytes",
  "clap",
+ "futures-util",
  "libc",
  "log",
+ "native-tls",
  "order_common",
  "redis",
  "serde",
@@ -3731,7 +3763,10 @@ dependencies = [
  "serde_yaml",
  "symbol_utils",
  "tokio",
+ "tokio-native-tls",
+ "tokio-tungstenite 0.20.1",
  "toml 0.8.23",
+ "url",
  "urlencoding",
 ]
 

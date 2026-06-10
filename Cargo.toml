@@ -2,6 +2,7 @@
 members = [
     ".",
     "crates/account_common",
+    "crates/account_monitor_common",
     "crates/depth_pub",
     "crates/factor_engine",
     "crates/inpos_engine",
@@ -213,6 +214,7 @@ path = "src/bin/inspect_model_input.rs"
 
 [dependencies]
 account_common = { path = "crates/account_common" }
+account_monitor_common = { path = "crates/account_monitor_common" }
 persist_common = { path = "crates/persist_common" }
 quote_plan = { path = "crates/quote_plan" }
 trade_signal = { path = "crates/trade_signal" }

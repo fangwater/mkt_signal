@@ -5,15 +5,15 @@
 //! 2. 登录成功后订阅所需频道
 //! 3. 通过 WebSocket ping/pong frame 保持连接 (每 25 秒)
 
-use crate::connection::connection::{
-    MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector,
-};
-use crate::connection::okex_notice::parse_okex_notice;
 use account_common::okex_auth::OkexCredentials;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::{SinkExt, TryStreamExt};
 use log::{debug, error, info, warn};
+use runtime_common::okex_notice::parse_okex_notice;
+use runtime_common::ws_connection::{
+    MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector,
+};
 use std::time::Duration;
 use tokio::time::{self, Instant};
 use tokio_tungstenite::tungstenite::Message;

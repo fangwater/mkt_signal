@@ -8,14 +8,14 @@
 //!
 //! 使用：创建 `MktConnection` 时将 `url` 设置为 `.../pm/ws/<listenKey>`，再用
 //! `BinanceUserDataConnection::new(connection, restart_policy)` 启动连接。
-use crate::connection::connection::{
-    MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector,
-};
 use anyhow::Result;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::{SinkExt, TryStreamExt};
 use log::{debug, error, warn};
+use runtime_common::ws_connection::{
+    MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector,
+};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{self, Duration, Instant};
 use tokio_tungstenite::tungstenite::Message;
