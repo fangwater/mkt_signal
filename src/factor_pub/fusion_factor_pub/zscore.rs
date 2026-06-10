@@ -1,3 +1,4 @@
+#![cfg_attr(not(feature = "factor-rocksdb"), allow(dead_code))]
 use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::Deserialize;
