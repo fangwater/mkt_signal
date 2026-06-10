@@ -2251,6 +2251,7 @@ dependencies = [
  "url",
  "urlencoding",
  "uuid",
+ "viz_common",
  "zmq",
 ]
 
@@ -4931,6 +4932,34 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "viz_common"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "serde",
+]
+
+[[package]]
+name = "viz_server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "bincode",
+ "env_logger",
+ "iceoryx2",
+ "ipc_common",
+ "log",
+ "runtime_common",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml 0.8.23",
+ "viz_common",
+]
 
 [[package]]
 name = "walkdir"

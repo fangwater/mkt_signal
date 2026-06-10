@@ -1,8 +1,8 @@
 use anyhow::Result;
 use log::{info, warn};
-use mkt_signal::viz::config::VizCfg;
-use mkt_signal::viz::server::{serve_http, WsHub};
-use mkt_signal::viz::subscribers::spawn_pre_trade_resample_listeners_with_cfg;
+use viz_server::config::VizCfg;
+use viz_server::server::{serve_http, WsHub};
+use viz_server::subscribers::spawn_pre_trade_resample_listeners_with_cfg;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {

@@ -239,7 +239,7 @@ CARGO_TARGET_DIR_EFFECTIVE="$(intra_effective_cargo_target_dir "$ROOT_DIR" "$CAR
 (
   cd "$ROOT_DIR"
   CARGO_TARGET_DIR="$CARGO_TARGET_DIR_EFFECTIVE" \
-    cargo build --release --bin "$BIN_NAME" ${BUILD_JOBS:+--jobs "$BUILD_JOBS"}
+    cargo build --release -p viz_server --bin "$BIN_NAME" ${BUILD_JOBS:+--jobs "$BUILD_JOBS"}
 )
 BIN_PATH="$(intra_bin_path_release "$CARGO_TARGET_DIR_EFFECTIVE" "$BIN_NAME")"
 

@@ -17,6 +17,8 @@ members = [
     "crates/signal_common",
     "crates/symbol_utils",
     "crates/trade_signal",
+    "crates/viz_common",
+    "crates/viz_server",
 ]
 resolver = "2"
 
@@ -81,10 +83,6 @@ path = "src/bin/demo_rate_fetcher.rs"
 [[bin]]
 name = "pre_trade"
 path = "src/bin/pre_trade.rs"
-
-[[bin]]
-name = "viz_server"
-path = "src/bin/viz_server.rs"
 
 [[bin]]
 name = "fr_signal_dashboard"
@@ -227,6 +225,7 @@ factor_engine = { path = "crates/factor_engine" }
 queue_position_engine = { path = "crates/inpos_engine" }
 mkt_parsers = { path = "crates/mkt_parsers" }
 rolling_common = { path = "crates/rolling_common" }
+viz_common = { path = "crates/viz_common" }
 local-ip-address = "0.6"
 serde_yaml = "0.9"
 tokio = { version = "1.0", features = ["full"] }

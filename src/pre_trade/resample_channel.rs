@@ -9,10 +9,6 @@ use crate::pre_trade::price_table::PriceEntry;
 use crate::pre_trade::signal_channel::take_signal_counts;
 use crate::pre_trade::symbol_mapper::create_symbol_mapper;
 use crate::pre_trade::symbol_util::extract_base_asset;
-use crate::viz::resample::{
-    PreTradeAccountRiskView, PreTradeExposureResampleEntry, PreTradeExposureRow,
-    PreTradeRiskResampleEntry, PreTradeVenueRiskResampleEntry,
-};
 use anyhow::Result;
 use ipc_common::iceoryx_publisher::{ResamplePublisher, RESAMPLE_PAYLOAD};
 use log::{debug, info, trace, warn};
@@ -25,6 +21,10 @@ use std::cell::OnceCell;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use std::time::Duration;
+use viz_common::resample::{
+    PreTradeAccountRiskView, PreTradeExposureResampleEntry, PreTradeExposureRow,
+    PreTradeRiskResampleEntry, PreTradeVenueRiskResampleEntry,
+};
 
 fn print_exposure_table(
     ts_ms: i64,
@@ -413,11 +413,7 @@ thread_local! {
     static RESAMPLE_CHANNEL: OnceCell<ResampleChannel> = const { OnceCell::new() };
 }
 
-/// 默认敞口采样频道名称
-pub const DEFAULT_EXPOSURE_CHANNEL: &str = "pre_trade_exposure";
-
-/// 默认风险采样频道名称
-pub const DEFAULT_RISK_CHANNEL: &str = "pre_trade_risk";
+pub use viz_common::{DEFAULT_EXPOSURE_CHANNEL, DEFAULT_RISK_CHANNEL};
 
 /// 前端展示采样频道 - 负责发布敞口、风险采样数据
 ///
