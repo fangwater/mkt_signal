@@ -84,52 +84,23 @@ impl BitgetBasicOrderMsg {
     }
 
     pub fn side_to_u8(side: &str) -> u8 {
-        match side.to_ascii_lowercase().as_str() {
-            "buy" => 1,
-            "sell" => 2,
-            _ => 0,
-        }
+        super::order_codes::side_to_u8(side)
     }
 
     pub fn order_type_to_u8(order_type: &str) -> u8 {
-        match order_type.to_ascii_lowercase().as_str() {
-            "limit" | "post_only" | "post-only" => 1,
-            "market" => 3,
-            _ => 0,
-        }
+        super::order_codes::order_type_to_u8(order_type)
     }
 
     pub fn time_in_force_to_u8(tif: &str) -> u8 {
-        match tif.to_ascii_lowercase().as_str() {
-            "gtc" => 0,
-            "ioc" => 1,
-            "fok" => 2,
-            "post_only" | "post-only" | "gtx" => 3,
-            _ => 0,
-        }
+        super::order_codes::time_in_force_to_u8(tif)
     }
 
     pub fn status_to_order_status(status: &str) -> u8 {
-        match status.to_ascii_lowercase().as_str() {
-            "new" | "live" | "init" => 1,
-            "partially_filled" | "partially-filled" | "partial-fill" => 2,
-            "filled" | "full-fill" => 3,
-            "cancelled" | "canceled" => 4,
-            "expired" | "rejected" | "rejected_maker" => 5,
-            _ => 1,
-        }
+        super::order_codes::bitget_status_to_order_status(status)
     }
 
     pub fn status_to_execution_type(status: &str) -> u8 {
-        match status.to_ascii_lowercase().as_str() {
-            "new" | "live" | "init" => 1,
-            "partially_filled" | "partially-filled" | "partial-fill" => 5,
-            "filled" | "full-fill" => 5,
-            "cancelled" | "canceled" => 2,
-            "expired" => 6,
-            "rejected" | "rejected_maker" => 8,
-            _ => 1,
-        }
+        super::order_codes::bitget_status_to_execution_type(status)
     }
 
     pub fn to_bytes(&self) -> Bytes {

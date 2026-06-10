@@ -865,20 +865,12 @@ impl GateBasicOrderMsg {
 
     /// Gate.io side 字符串转 u8
     pub fn side_to_u8(side: &str) -> u8 {
-        match side.to_lowercase().as_str() {
-            "buy" => 1,
-            "sell" => 2,
-            _ => 0,
-        }
+        super::order_codes::side_to_u8(side)
     }
 
     /// Gate.io order type 字符串转 u8
     pub fn order_type_to_u8(order_type: &str) -> u8 {
-        match order_type.to_lowercase().as_str() {
-            "limit" => 1,
-            "market" => 3,
-            _ => 0,
-        }
+        super::order_codes::order_type_to_u8(order_type)
     }
 
     /// Gate.io time_in_force 字符串转 u8
@@ -887,13 +879,7 @@ impl GateBasicOrderMsg {
     /// - fok: Fill Or Kill (2)
     /// - poc: Pending Or Cancelled / PostOnly (3) - 被动委托，只挂单不吃单
     pub fn time_in_force_to_u8(tif: &str) -> u8 {
-        match tif.to_lowercase().as_str() {
-            "gtc" => 0,
-            "ioc" => 1,
-            "fok" => 2,
-            "poc" => 3, // Pending Or Cancelled (PostOnly/GTX) - 被动委托
-            _ => 0,
-        }
+        super::order_codes::time_in_force_to_u8(tif)
     }
 
     /// Gate.io event + finish_as 转 (execution_type, order_status)
@@ -915,50 +901,7 @@ impl GateBasicOrderMsg {
     /// - reduce_out: 只减仓被排除的不容易成交的挂单
     /// - poc: POC/PostOnly 条件不满足，未挂上即取消
     pub fn event_to_execution_and_status(event: &str, finish_as: &str) -> (u8, u8) {
-        let event_lower = event.to_lowercase();
-        let finish_as_lower = finish_as.to_lowercase();
-
-        match event_lower.as_str() {
-            // spot.orders_v2 的事件
-            "put" => (1, 1),    // New, New
-            "update" => (5, 2), // Trade, PartiallyFilled
-
-            // futures.orders 的 status
-            "open" => {
-                // futures 订单还在挂单中
-                match finish_as_lower.as_str() {
-                    "_new" => (1, 1),    // New, New
-                    "_update" => (5, 2), // Trade, PartiallyFilled
-                    _ => (1, 1),         // 默认 New
-                }
-            }
-
-            // 共用: spot 的 "finish" 或 futures 的 "finished"
-            "finish" | "finished" => {
-                match finish_as_lower.as_str() {
-                    // 成交完成
-                    "filled" => (5, 3), // Trade, Filled
-
-                    // 各种取消原因 -> Canceled
-                    "cancelled" | "canceled" => (2, 4), // Canceled, Canceled
-                    "liquidated" => (2, 4),             // 清算取消
-                    "reduce_only" => (2, 4),            // 减仓设置取消
-                    "position_close" => (2, 4),         // 平仓取消
-                    "reduce_out" => (2, 4),             // 只减仓排除
-                    "poc" => (2, 4),                    // POC/PostOnly 条件不满足
-                    "stp" => (7, 4),                    // TradePrevention, Canceled
-
-                    // IOC/ADL 特殊完成
-                    "ioc" => (5, 3),               // IOC 立即完成视为 Trade, Filled
-                    "auto_deleveraging" => (5, 3), // ADL 完成视为 Trade, Filled
-
-                    // 其他未知情况
-                    _ => (6, 5), // Expired, Expired
-                }
-            }
-
-            _ => (1, 1), // 默认 New
-        }
+        super::order_codes::gate_event_to_execution_and_status(event, finish_as)
     }
 
     pub fn to_bytes(&self) -> Bytes {

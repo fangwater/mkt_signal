@@ -1,3 +1,4 @@
+pub mod account_event;
 pub mod binance;
 pub mod bitget;
 pub mod bybit;
