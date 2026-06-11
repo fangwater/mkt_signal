@@ -1978,6 +1978,7 @@ fn resolve_arb_hedge_build_params(
 /// （price=0、offset=0、exp_time=0），且跳过 model/factor lookup + offset plan。
 /// 进程启动时读一次，缓存在 OnceLock。
 static ARB_HEDGE_FORCE_TAKER: OnceLock<bool> = OnceLock::new();
+static PANIC_ON_FIRST_OPEN_DRY_RUN: OnceLock<bool> = OnceLock::new();
 
 fn env_flag_enabled(names: &[&str]) -> bool {
     names.iter().any(|name| {
@@ -2004,6 +2005,19 @@ fn arb_hedge_force_taker() -> bool {
             );
         }
         force_taker
+    })
+}
+
+fn panic_on_first_open_dry_run() -> bool {
+    *PANIC_ON_FIRST_OPEN_DRY_RUN.get_or_init(|| {
+        std::env::var("TRADE_SIGNAL_PANIC_ON_FIRST_OPEN_DRY_RUN")
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false)
     })
 }
 
@@ -2958,14 +2972,7 @@ fn emit_spread_arb_open_signals(
             Some(quotes) => quotes,
             None => return Ok(()),
         };
-    let panic_on_first_open_dry_run = std::env::var("TRADE_SIGNAL_PANIC_ON_FIRST_OPEN_DRY_RUN")
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false);
+    let panic_on_first_open_dry_run = panic_on_first_open_dry_run();
     let batch_ts = get_timestamp_us();
     let vol_band_scale = ArbDecision::with_state_mut(|arb| arb.vol_band_scale)
         .expect("ArbDecisionState should be initialized");
