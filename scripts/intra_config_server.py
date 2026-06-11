@@ -48,6 +48,26 @@ EXCHANGE_DEFAULTS = {
     "gate": ("gate-margin", "gate-futures"),
 }
 
+STRATEGY_BOOL_PARAM_KEYS = [
+    "enable_tlen_cancel",
+    "enable_intra_funding_close_signal",
+    "enable_environment_model",
+    "enable_volatility_limit",
+    "enable_taker_decsion_model",
+]
+
+REQUIRED_STRATEGY_PARAMS = {
+    "enable_intra_funding_close_signal": "false",
+}
+
+REQUIRED_STRATEGY_PARAM_COMMENTS = {
+    "enable_intra_funding_close_signal": "是否启用 intra funding close 信号（命中 current FR MA close 后仍需通过 spread close gate）",
+}
+
+REQUIRED_STRATEGY_PARAM_AFTER = {
+    "enable_intra_funding_close_signal": "spread_cancel_cooldown_ms",
+}
+
 ROLLING_METRICS_SCRIPT_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "rolling_metrics",
@@ -268,6 +288,20 @@ except Exception:
     STRATEGY_PARAM_COMMENTS = {}
     STRATEGY_PARAM_ORDER = []
 
+for key, value in REQUIRED_STRATEGY_PARAMS.items():
+    DEFAULT_STRATEGY_PARAMS.setdefault(key, value)
+for key, value in REQUIRED_STRATEGY_PARAM_COMMENTS.items():
+    STRATEGY_PARAM_COMMENTS.setdefault(key, value)
+for key, previous_key in REQUIRED_STRATEGY_PARAM_AFTER.items():
+    if key in STRATEGY_PARAM_ORDER:
+        continue
+    try:
+        insert_at = STRATEGY_PARAM_ORDER.index(previous_key) + 1
+    except ValueError:
+        STRATEGY_PARAM_ORDER.append(key)
+    else:
+        STRATEGY_PARAM_ORDER.insert(insert_at, key)
+
 try:
     import sync_intra_funding_thresholds as funding_defaults
 
@@ -346,6 +380,15 @@ def parse_bool_text(raw: Any, default: bool = True) -> bool:
     if normalized in ("0", "false", "no", "off"):
         return False
     return default
+
+
+def normalize_bool_param_text(raw: Any, field_name: str) -> str:
+    normalized = str(raw if raw is not None else "").strip().lower()
+    if normalized in ("1", "true", "yes", "on"):
+        return "true"
+    if normalized in ("0", "false", "no", "off", ""):
+        return "false"
+    raise ValueError(f"{field_name} must be true/false: {raw}")
 
 
 def env_flag_enabled(*names: str) -> bool:
@@ -818,7 +861,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         </div>
       </div>
       <div class="hint">
-        `enable_tlen_cancel` 控制基于 tlen 的 open 撤单 trigger/query/cancel 链路；`tlen_cancel_freq_ms` 控制 trigger 频率(ms)；`spread_cancel_cooldown_ms` 控制 spread cancel 的去抖冷却(ms，默认 100，可设 0 关闭)。
+        `enable_tlen_cancel` 控制基于 tlen 的 open 撤单 trigger/query/cancel 链路；`enable_intra_funding_close_signal` 控制 current FR MA funding close 强平信号（仍需通过 spread close gate）；`spread_cancel_cooldown_ms` 控制 spread cancel 的去抖冷却(ms，默认 100，可设 0 关闭)。
       </div>
       <div id="strategy-table" class="kv-table"></div>
       <div id="strategy-vol-preview" class="status"></div>
@@ -982,6 +1025,14 @@ __PER_SYMBOL_PANELS_HTML__
       return ['true', 'false', '1', '0', 'yes', 'no', 'on', 'off', ''].includes(normalized);
     }
 
+    function booleanParamKeys(containerId) {
+      const schema = BOOTSTRAP.param_schema || {};
+      if (containerId === 'strategy-table') {
+        return new Set(schema.strategy_bool_params || []);
+      }
+      return new Set();
+    }
+
     async function fetchJson(url, opts = {}) {
       const resp = await fetch(url, opts);
       if (!resp.ok) {
@@ -1001,6 +1052,7 @@ __PER_SYMBOL_PANELS_HTML__
       Object.keys(values).forEach(key => {
         if (!ordered.includes(key)) ordered.push(key);
       });
+      const boolKeys = booleanParamKeys(containerId);
       ordered.forEach(key => {
         const row = document.createElement('div');
         row.className = 'kv-row';
@@ -1013,8 +1065,7 @@ __PER_SYMBOL_PANELS_HTML__
         inputCell.className = 'kv-input';
         const rawValue = values[key] ?? defaults[key] ?? '';
         const useBooleanSelect =
-          ((containerId === 'strategy-table' &&
-            ['enable_tlen_cancel', 'enable_intra_funding_close_signal', 'enable_environment_model', 'enable_volatility_limit', 'enable_taker_decsion_model'].includes(key)) ||
+          ((containerId === 'strategy-table' && boolKeys.has(key)) ||
            (containerId === 'funding-table' && key.endsWith('.enabled'))) &&
           isBooleanParamValue(rawValue);
         let input;
@@ -1637,6 +1688,10 @@ def normalize_percentile_param_text(raw: Any, field_name: str) -> str:
 
 def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, str]:
     normalized = dict(mapping)
+    for key in STRATEGY_BOOL_PARAM_KEYS:
+        if key in normalized:
+            normalized[key] = normalize_bool_param_text(normalized[key], key)
+
     if "tlen_cancel_freq_ms" in normalized:
         normalized["tlen_cancel_freq_ms"] = normalize_positive_int_text(
             normalized["tlen_cancel_freq_ms"], "tlen_cancel_freq_ms"
@@ -2167,6 +2222,9 @@ def render_index_html(
             "funding_thresholds": funding_thresholds_applicable(
                 default_open_venue, default_hedge_venue
             ),
+        },
+        "param_schema": {
+            "strategy_bool_params": STRATEGY_BOOL_PARAM_KEYS,
         },
         "exchange_defaults": EXCHANGE_DEFAULTS,
         "defaults": {

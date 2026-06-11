@@ -1,0 +1,4 @@
+interface:
+  display_name: "Order Parquet Backfill"
+  short_description: "Import order parquet backfills into RocksDB"
+  default_prompt: "Use $order-parquet-backfill to import order_export parquet files into a persist sync center RocksDB."

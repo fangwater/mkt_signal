@@ -106,6 +106,59 @@ impl RocksDbStore {
         Self::open_read_only_with_tuning(path, cf_names, &RocksDbTuning::default())
     }
 
+    pub fn open_with_existing_cfs_and_tuning(
+        path: &str,
+        cf_names: &[String],
+        sync_writes: bool,
+        tuning: &RocksDbTuning,
+    ) -> Result<Self> {
+        let path_ref = Path::new(path);
+        if let Some(parent) = path_ref.parent() {
+            if !parent.exists() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("failed to create parent directory {:?}", parent))?;
+            }
+        }
+
+        let mut db_opts = Options::default();
+        db_opts.create_if_missing(true);
+        db_opts.create_missing_column_families(true);
+        db_opts.set_compression_type(DBCompressionType::Lz4);
+        tuning.apply_db_options(&mut db_opts);
+
+        let mut cf_opts = Options::default();
+        tuning.apply_cf_options(&mut cf_opts);
+
+        let mut names = Vec::new();
+        if path_ref.exists() {
+            match DB::list_cf(&db_opts, path_ref) {
+                Ok(existing) => names.extend(existing),
+                Err(err) => {
+                    return Err(err)
+                        .with_context(|| format!("failed to list column families for {}", path));
+                }
+            }
+        }
+        names.push("default".to_string());
+        names.extend(cf_names.iter().cloned());
+        names.sort();
+        names.dedup();
+
+        let descriptors = names
+            .into_iter()
+            .map(|name| ColumnFamilyDescriptor::new(name, cf_opts.clone()))
+            .collect::<Vec<_>>();
+
+        let db = DB::open_cf_descriptors(&db_opts, path_ref, descriptors)?;
+
+        Ok(Self {
+            db: Arc::new(db),
+            sync_writes,
+            read_only: false,
+            secondary: false,
+        })
+    }
+
     pub fn open_read_only_with_tuning(
         path: &str,
         cf_names: &[&str],

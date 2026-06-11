@@ -33,6 +33,11 @@ name = "order_export_server"
 path = "src/bin/order_export_server.rs"
 required-features = ["runtime"]
 
+[[bin]]
+name = "order_parquet_backfill"
+path = "src/bin/order_parquet_backfill.rs"
+required-features = ["runtime"]
+
 [dependencies]
 anyhow = "1.0"
 axum = { version = "0.7", features = ["ws"], optional = true }
