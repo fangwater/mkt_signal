@@ -31,3 +31,6 @@ signal_common = { path = "../signal_common" }
 tokio = { version = "1.0", features = ["full"] }
 tokio-util = "0.7.15"
 urlencoding = "2.1"
+
+[dev-dependencies]
+signal_common = { path = "../signal_common", features = ["test-utils"] }

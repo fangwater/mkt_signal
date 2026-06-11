@@ -11,6 +11,7 @@ use crate::min_qty_table::{
 };
 use order_common::TradingVenue;
 use runtime_common::exchange::Exchange;
+use runtime_common::symbol_util::min_qty_symbol_key;
 
 type EntryMap = HashMap<String, MinQtyEntry>;
 type MultiplierMap = HashMap<String, f64>;
@@ -146,6 +147,19 @@ impl VenueMinQtyTable {
         self.filters.get(&key)
     }
 
+    pub fn contains_symbol(&self, symbol: &str) -> bool {
+        self.get_entry(symbol).is_some()
+    }
+
+    /// Returns true when the current venue filter snapshot contains the symbol.
+    ///
+    /// For Bybit, the underlying instruments parser only inserts `status=Trading`
+    /// USDT spot/linear perpetual rows, so false means trade_signal should not
+    /// emit new open orders for that leg until filters refresh.
+    pub fn is_tradable_symbol(&self, symbol: &str) -> bool {
+        self.contains_symbol(&min_qty_symbol_key(self.venue, symbol))
+    }
+
     pub fn min_qty(&self, symbol: &str) -> Option<f64> {
         self.get_entry(symbol).map(|e| e.min_qty)
     }
@@ -203,7 +217,7 @@ impl quote_plan::MinQtyLookup for VenueMinQtyTable {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 impl VenueMinQtyTable {
     pub fn set_entry_for_test(&mut self, entry: MinQtyEntry) {
         self.filters.insert(entry.symbol.to_uppercase(), entry);

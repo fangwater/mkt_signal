@@ -59,3 +59,6 @@ scripts/order_export_puller/config.toml
 
 # local order export dumps
 order_exports/
+
+# local notebook analysis outputs
+analysis_outputs/

@@ -1,7 +1,7 @@
 use crate::pre_trade::order_manager::Side;
 use log::{debug, info, warn};
 use once_cell::sync::Lazy;
-use order_common::trade_error_code::gate;
+use order_common::trade_error_code::{bybit, gate};
 use parking_lot::Mutex;
 use runtime_common::exchange::Exchange;
 use runtime_common::time_util::get_timestamp_us;
@@ -15,6 +15,7 @@ pub const SIGNAL_THROTTLE_ERROR_CODE_MAX_BORROWABLE_EXCEEDED: i32 = 51006;
 pub const SIGNAL_THROTTLE_ERROR_CODE_BITGET_LENDING_LIMIT: i32 = 25116;
 pub const SIGNAL_THROTTLE_ERROR_CODE_BYBIT_MARGIN_UNSUPPORTED: i32 = 170344;
 pub const SIGNAL_THROTTLE_ERROR_CODE_BYBIT_COLLATERAL_NOT_ENABLED: i32 = 170037;
+pub const SIGNAL_THROTTLE_ERROR_CODE_BYBIT_CONTRACT_NOT_LIVE: i32 = bybit::CONTRACT_NOT_LIVE;
 // 51061: 借币池可借资产不足（Binance/OKX 都可能返回该 code）
 pub const SIGNAL_THROTTLE_ERROR_CODE_LOANABLE_ASSET_UNAVAILABLE: i32 = 51061;
 
@@ -75,7 +76,8 @@ pub fn is_throttle_error_code(exchange: Option<Exchange>, error_code: i32) -> bo
             matches!(exchange, Some(Exchange::Bitget))
         }
         SIGNAL_THROTTLE_ERROR_CODE_BYBIT_MARGIN_UNSUPPORTED
-        | SIGNAL_THROTTLE_ERROR_CODE_BYBIT_COLLATERAL_NOT_ENABLED => {
+        | SIGNAL_THROTTLE_ERROR_CODE_BYBIT_COLLATERAL_NOT_ENABLED
+        | SIGNAL_THROTTLE_ERROR_CODE_BYBIT_CONTRACT_NOT_LIVE => {
             matches!(exchange, Some(Exchange::Bybit))
         }
         gate::BALANCE_NOT_ENOUGH
@@ -346,6 +348,10 @@ mod tests {
         assert!(is_throttle_error_code(Some(Exchange::Bybit), 170344));
         assert!(is_throttle_error_code(Some(Exchange::Bybit), 170037));
         assert!(is_throttle_error_code(
+            Some(Exchange::Bybit),
+            bybit::CONTRACT_NOT_LIVE
+        ));
+        assert!(is_throttle_error_code(
             Some(Exchange::Gate),
             gate::AUTO_BORROW_TOO_MUCH
         ));
@@ -370,6 +376,10 @@ mod tests {
         assert!(!is_throttle_error_code(Some(Exchange::Binance), 170037));
         assert!(!is_throttle_error_code(Some(Exchange::Okex), 170344));
         assert!(!is_throttle_error_code(Some(Exchange::Okex), 170037));
+        assert!(!is_throttle_error_code(
+            Some(Exchange::Okex),
+            bybit::CONTRACT_NOT_LIVE
+        ));
         assert!(!is_throttle_error_code(Some(Exchange::Okex), 25116));
         assert!(!is_throttle_error_code(
             Some(Exchange::Binance),

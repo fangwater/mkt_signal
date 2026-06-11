@@ -292,6 +292,8 @@ default = []
 model-ort = ["dep:mkt_model_runtime"]
 factor-rocksdb = ["dep:rocksdb"]
 
+[dev-dependencies]
+signal_common = { path = "crates/signal_common", features = ["test-utils"] }
 
 [profile.release]
 debug = 0

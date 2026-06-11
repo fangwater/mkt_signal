@@ -269,6 +269,7 @@ fn main() -> Result<()> {
             &last_raw_seen,
         )?;
 
+        hub.poll_factor_value_updates();
         let snapshot = hub.lookup_factor_value(&args.symbol, args.hedge_venue);
         let factor_current = (
             snapshot.ts_ms,

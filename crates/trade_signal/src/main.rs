@@ -323,6 +323,7 @@ fn process_arb_cooldown_sweep(open_venue: TradingVenue, hedge_venue: TradingVenu
     symbols.sort_unstable();
     symbols.dedup();
 
+    ArbDecision::poll_input_updates();
     for symbol in symbols {
         let open_symbol = normalize_symbol_for_venue(&symbol, open_venue);
         let hedge_symbol = normalize_symbol_for_venue(&symbol, hedge_venue);

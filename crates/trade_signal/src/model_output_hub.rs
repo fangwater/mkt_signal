@@ -209,7 +209,6 @@ impl ModelOutputHub {
         hedge_symbol: &str,
         hedge_venue: TradingVenue,
     ) -> ModelOutputScoreLookupResult {
-        let _ = self.poll_updates();
         self.cached_score(model_service, hedge_symbol, hedge_venue)
     }
 

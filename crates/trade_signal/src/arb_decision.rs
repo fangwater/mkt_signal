@@ -335,6 +335,79 @@ fn handle_quote_plan_error(
     }
 }
 
+fn table_for_venue<'a>(
+    runtime: &'a ArbShellRuntime,
+    venue: TradingVenue,
+) -> Option<&'a VenueMinQtyTable> {
+    if venue == runtime.venues.0 {
+        Some(&runtime.open_min_qty_table)
+    } else if venue == runtime.venues.1 {
+        Some(&runtime.hedge_min_qty_table)
+    } else {
+        None
+    }
+}
+
+fn arb_open_legs_tradable(
+    source: &'static str,
+    runtime: &mut ArbShellRuntime,
+    open_venue: TradingVenue,
+    open_symbol: &str,
+    hedge_venue: TradingVenue,
+    hedge_symbol: &str,
+) -> bool {
+    let open_trade_symbol = normalize_symbol_for_venue(open_symbol, open_venue);
+    let hedge_trade_symbol = normalize_symbol_for_venue(hedge_symbol, hedge_venue);
+    let open_ok = table_for_venue(runtime, open_venue)
+        .map(|table| table.is_tradable_symbol(&open_trade_symbol))
+        .unwrap_or(false);
+    let hedge_ok = table_for_venue(runtime, hedge_venue)
+        .map(|table| table.is_tradable_symbol(&hedge_trade_symbol))
+        .unwrap_or(false);
+
+    if open_ok && hedge_ok {
+        return true;
+    }
+
+    let reason = if !open_ok && !hedge_ok {
+        "symbol_not_tradable_both_legs"
+    } else if !open_ok {
+        "symbol_not_tradable_open_leg"
+    } else {
+        "symbol_not_tradable_hedge_leg"
+    };
+    let _ = ArbDecision::with_state_mut(|arb| arb.record_intercept_summary(reason));
+    if !open_ok {
+        let _ = trigger_missing_tick_table_reload(
+            source,
+            runtime,
+            open_venue,
+            &open_trade_symbol,
+            reason,
+        );
+    }
+    if !hedge_ok {
+        let _ = trigger_missing_tick_table_reload(
+            source,
+            runtime,
+            hedge_venue,
+            &hedge_trade_symbol,
+            reason,
+        );
+    }
+    log::warn!(
+        "{source}: suppress ArbOpen because venue filter table has non-tradable/missing symbol reason={} open={} open_trade={} open_venue={:?} hedge={} hedge_trade={} hedge_venue={:?}",
+        reason,
+        open_symbol,
+        open_trade_symbol,
+        open_venue,
+        hedge_symbol,
+        hedge_trade_symbol,
+        hedge_venue
+    );
+    false
+}
+
 pub fn with_thread_local_shell<T, F, R>(
     cell: &'static LocalKey<OnceCell<RefCell<T>>>,
     name: &str,
@@ -692,6 +765,7 @@ impl FundingArbShell {
                     let mut decision = decision_ref.unwrap().borrow_mut();
                     let mut has_message = false;
                     loop {
+                        ArbDecision::poll_input_updates();
                         match decision.runtime.backward_sub.receive_msg() {
                             Ok(Some(data)) => {
                                 has_message = true;
@@ -773,7 +847,7 @@ impl SpreadArbShell {
                     let mut decision = decision_ref.unwrap().borrow_mut();
                     let mut has_message = false;
                     loop {
-                        let _ = ArbDecision::with_state_mut(|arb| arb.poll_model_output_updates());
+                        ArbDecision::poll_input_updates();
                         match decision.runtime.backward_sub.receive_msg() {
                             Ok(Some(data)) => {
                                 has_message = true;
@@ -1527,7 +1601,6 @@ fn drive_spread_arb_decision(
     let _ = ArbDecision::with_state_mut(|arb| {
         arb.maybe_log_intercept_summary(SPREAD_ARB_SHELL_NAME);
     });
-    let _ = ArbDecision::with_state_mut(|arb| arb.poll_model_output_updates());
     let spread_factor = super::spread_factor::SpreadFactor::instance();
     let now = get_timestamp_us();
     let symbol_list = super::symbol_list::SymbolList::instance();
@@ -2869,6 +2942,17 @@ fn emit_spread_arb_open_signals(
     environment_threshold: Option<f64>,
     open_volatility_factor: f64,
 ) -> Result<()> {
+    if !arb_open_legs_tradable(
+        SPREAD_ARB_SHELL_NAME,
+        &mut decision.runtime,
+        open_venue,
+        open_symbol,
+        hedge_venue,
+        hedge_symbol,
+    ) {
+        return Ok(());
+    }
+
     let (open_quote, hedge_quote) =
         match ArbDecision::load_valid_quotes(open_symbol, hedge_symbol, open_venue, hedge_venue) {
             Some(quotes) => quotes,
@@ -3301,6 +3385,19 @@ fn emit_funding_open_close_signals(
     side: Side,
     gate: Option<&ArbOpenGatePassed>,
 ) -> Result<bool> {
+    if matches!(signal_type, SignalType::ArbOpen)
+        && !arb_open_legs_tradable(
+            FUNDING_ARB_SHELL_NAME,
+            &mut decision.runtime,
+            spot_venue,
+            spot_symbol,
+            futures_venue,
+            futures_symbol,
+        )
+    {
+        return Ok(false);
+    }
+
     if matches!(signal_type, SignalType::ArbOpen | SignalType::ArbClose) {
         let readiness = ArbDecision::with_state_mut(|arb| {
             arb.lookup_dual_venue_volatility_readiness(
@@ -4751,7 +4848,7 @@ impl ArbDecisionState {
         open_symbol_key: &str,
         hedge_symbol: &str,
         hedge_venue: TradingVenue,
-        now_us: i64,
+        _now_us: i64,
     ) -> EnvironmentSignalResult {
         let env_service = self.environment_model_service.clone();
         let threshold = self.environment_model_true_threshold;
@@ -4761,16 +4858,15 @@ impl ArbDecisionState {
             .expect("ArbDecisionState.model_output_hub must be initialized");
         let hedge_hub = self
             .hedge_factor_value_hub
-            .as_mut()
+            .as_ref()
             .expect("ArbDecisionState.hedge_factor_value_hub must be initialized");
-        hedge_hub.evaluate_environment_signal(
+        hedge_hub.evaluate_environment_signal_cached(
             model_hub,
             env_service.as_deref(),
             hedge_symbol,
             hedge_venue,
             threshold,
             open_symbol_key,
-            now_us,
         )
     }
 
@@ -5378,6 +5474,13 @@ impl ArbDecision {
         })
     }
 
+    pub fn poll_input_updates() {
+        let _ = Self::with_state_mut(|arb| {
+            arb.poll_factor_value_updates();
+            arb.poll_model_output_updates();
+        });
+    }
+
     fn backend_for_mode(mode: ArbMode) -> ArbBackend {
         match mode {
             ArbMode::FundingArb => ArbBackend::Funding,
@@ -5459,7 +5562,7 @@ impl ArbDecision {
         let Some(mode) = Self::mode() else {
             return;
         };
-        let _ = Self::with_state_mut(|arb| arb.poll_factor_value_updates());
+        Self::poll_input_updates();
         match Self::backend_for_mode(mode) {
             ArbBackend::Funding => {
                 with_thread_local_shell_mut(

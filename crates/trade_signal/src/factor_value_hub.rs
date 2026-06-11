@@ -91,6 +91,7 @@ impl PnluCheckResult {
 pub enum EnvironmentSignalSource {
     ModelOutput,
     PnluFallback,
+    Disabled,
 }
 
 #[derive(Debug, Clone)]
@@ -421,7 +422,7 @@ impl FactorValueHub {
         );
     }
 
-    fn poll_factor_value_updates(&mut self) {
+    pub fn poll_factor_value_updates(&mut self) {
         loop {
             match self.factor_value_sub.receive() {
                 Ok(Some(sample)) => {
@@ -499,8 +500,6 @@ impl FactorValueHub {
         hedge_symbol: &str,
         hedge_venue: TradingVenue,
     ) -> FactorValueLookupResult {
-        self.poll_factor_value_updates();
-
         let symbol_key = normalize_symbol_for_venue(hedge_symbol, hedge_venue);
         let cache_key = (self.target_factor_index, symbol_key.clone());
         let key = format!(
@@ -910,6 +909,59 @@ impl FactorValueHub {
             score_quantile: None,
             threshold: pnlu_check.threshold,
             note: format!("pnlu_fallback:{}", pnlu_check.reason),
+        }
+    }
+
+    pub fn evaluate_environment_signal_cached(
+        &self,
+        model_output_hub: &ModelOutputHub,
+        environment_model_service: Option<&str>,
+        hedge_symbol: &str,
+        hedge_venue: TradingVenue,
+        model_true_threshold: f64,
+        symbol_key: &str,
+    ) -> EnvironmentSignalResult {
+        if let Some(env_service) = environment_model_service {
+            let lookup = model_output_hub.cached_score(env_service, hedge_symbol, hedge_venue);
+            if !matches!(lookup.note.as_str(), "service_disabled") {
+                let (allow_open, note) = match (lookup.score, lookup.note.as_str()) {
+                    (Some(score), _) if score.is_finite() => {
+                        let allow = score >= model_true_threshold;
+                        (
+                            allow,
+                            if allow {
+                                "model_score_ge_threshold".to_string()
+                            } else {
+                                "model_score_lt_threshold".to_string()
+                            },
+                        )
+                    }
+                    _ => (false, lookup.note.clone()),
+                };
+                return EnvironmentSignalResult {
+                    source: EnvironmentSignalSource::ModelOutput,
+                    allow_open,
+                    class_label: if allow_open { 1 } else { 0 },
+                    service_name: Some(lookup.service_name),
+                    symbol_key: lookup.symbol_key,
+                    score: lookup.score,
+                    score_quantile: lookup.score_quantile,
+                    threshold: Some(model_true_threshold),
+                    note,
+                };
+            }
+        }
+
+        EnvironmentSignalResult {
+            source: EnvironmentSignalSource::Disabled,
+            allow_open: true,
+            class_label: 1,
+            service_name: None,
+            symbol_key: symbol_key.to_string(),
+            score: None,
+            score_quantile: None,
+            threshold: None,
+            note: "environment_signal_disabled".to_string(),
         }
     }
 

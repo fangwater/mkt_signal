@@ -3805,7 +3805,7 @@ fn dispatch_order_update_generic<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::min_qty_table::{MinQtyEntry, MinQtyTable};
+    use crate::common::min_qty_table::MinQtyTable;
     use crate::pre_trade::price_table::PriceTable;
     use crate::pre_trade::usdt_balance_manager::UsdtBalanceManager;
     use crate::strategy::manager::OpenPriceMapEntry;
@@ -3813,6 +3813,7 @@ mod tests {
     use mkt_parsers::msg::basic_account_msg::{BasicBalanceMsg, BasicPositionMsg};
     use signal_common::cancel_signal::{ArbCancelCtx, MmCancelCtx};
     use signal_common::common::SignalBytes;
+    use signal_common::min_qty_table::MinQtyEntry as VenueMinQtyEntry;
     use signal_common::tick_math::QuantizedValue;
     use signal_common::trade_signal::{SignalType, TradeSignal};
     use std::any::Any;
@@ -4126,7 +4127,7 @@ mod tests {
     #[test]
     fn gate_margin_min_notional_rejects_dust_close_qty() {
         let mut gate_table = VenueMinQtyTable::new(TradingVenue::GateMargin);
-        gate_table.set_entry_for_test(MinQtyEntry {
+        gate_table.set_entry_for_test(VenueMinQtyEntry {
             symbol: "CCUSDT".to_string(),
             base_asset: "CC".to_string(),
             quote_asset: "USDT".to_string(),

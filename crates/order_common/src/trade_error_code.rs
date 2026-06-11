@@ -27,6 +27,7 @@ pub fn describe_trade_error_code(exchange: Exchange, code: i32) -> Option<&'stat
 pub fn describe_non_retryable_order_error(exchange: Exchange, code: i32) -> Option<&'static str> {
     match exchange {
         Exchange::Binance => binance::describe_non_retryable_order_error(code),
+        Exchange::Bybit => bybit::describe_non_retryable_order_error(code),
         _ => None,
     }
 }
@@ -199,6 +200,10 @@ mod tests {
             Some("WS trade service restarting; new requests rejected")
         );
         assert_eq!(
+            describe_trade_error_code(Exchange::Bybit, bybit::CONTRACT_NOT_LIVE),
+            Some("Contract is not live")
+        );
+        assert_eq!(
             describe_trade_error_code(Exchange::Okex, 1),
             Some("Request failed")
         );
@@ -259,6 +264,10 @@ mod tests {
         assert_eq!(
             describe_non_retryable_order_error(Exchange::Binance, 51169),
             Some("PLEDGED_COLLATERAL_LIMIT_REACHED/抵押上限已达")
+        );
+        assert_eq!(
+            describe_non_retryable_order_error(Exchange::Bybit, bybit::CONTRACT_NOT_LIVE),
+            Some("CONTRACT_NOT_LIVE/合约未上线或不可交易")
         );
         assert_eq!(
             describe_non_retryable_order_error(Exchange::Okex, -4004),

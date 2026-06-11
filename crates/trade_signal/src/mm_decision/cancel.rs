@@ -6,6 +6,7 @@ use super::super::mkt_channel::MktChannel;
 use super::super::symbol_list::SymbolList;
 use super::from_key::build_mm_cancel_from_key;
 use super::state::MmDecisionState;
+use crate::model_output_hub::ModelOutputUpdateEvent;
 use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
 use order_common::Side;
 use order_common::TradingVenue;
@@ -162,9 +163,12 @@ impl MmCancelDecision {
         }
     }
 
-    pub(crate) fn process_return_score_updates(&mut self, state: &mut MmDecisionState) {
+    pub(crate) fn process_return_score_updates(
+        &mut self,
+        state: &mut MmDecisionState,
+        events: Vec<ModelOutputUpdateEvent>,
+    ) {
         if !state.enable_return_score_cancel {
-            let _ = state.model_output_hub.poll_updates();
             return;
         }
 
@@ -174,7 +178,6 @@ impl MmCancelDecision {
 
         let online_symbols = SymbolList::instance().get_online_symbols();
         if online_symbols.is_empty() {
-            let _ = state.model_output_hub.poll_updates();
             return;
         }
 
@@ -189,7 +192,7 @@ impl MmCancelDecision {
             .collect();
 
         let now_us = get_timestamp_us();
-        for event in state.model_output_hub.poll_updates() {
+        for event in events {
             if event.service_name != service_name || !event.score.is_finite() {
                 continue;
             }

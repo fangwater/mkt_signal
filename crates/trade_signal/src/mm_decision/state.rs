@@ -1069,16 +1069,15 @@ impl MmDecisionState {
         &mut self,
         open_symbol_key: &str,
         hedge_symbol: &str,
-        now_us: i64,
+        _now_us: i64,
     ) -> EnvironmentSignalResult {
-        self.factor_value_hub.evaluate_environment_signal(
+        self.factor_value_hub.evaluate_environment_signal_cached(
             &self.model_output_hub,
             self.environment_model_service.as_deref(),
             hedge_symbol,
             self.hedge_venue,
             self.environment_model_true_threshold,
             open_symbol_key,
-            now_us,
         )
     }
 

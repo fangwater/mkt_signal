@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 
 use super::common::{FundingRateData, Quote};
 use super::symbol_list::SymbolList;
+use super::ArbDecision;
 use mkt_parsers::msg::mkt_msg::{
     get_msg_type, AskBidSpreadMsg, FundingRateMsg, IndexPriceMsg, MarkPriceMsg, MktMsgType,
 };
@@ -257,6 +258,10 @@ fn flush_askbid_dirty_symbols(
         return;
     }
 
+    if trigger_decisions {
+        ArbDecision::poll_input_updates();
+    }
+
     for sym in dirty_symbols.iter() {
         let now_us = get_timestamp_us();
 
@@ -353,6 +358,7 @@ fn flush_derivatives_dirty_symbols(
     }
 
     if trigger_decisions {
+        ArbDecision::poll_input_updates();
         for sym in dirty_symbols.iter() {
             let can_trigger = should_trigger_decision(sym);
             if can_trigger {

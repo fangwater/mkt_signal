@@ -454,10 +454,11 @@ impl MmDecision {
     }
 
     pub fn process_open_interval(&mut self) {
+        self.poll_input_updates();
         self.open_decision.process_interval(&mut self.state);
     }
 
-    pub fn process_return_score_updates(&mut self) {
+    fn poll_input_updates(&mut self) -> Vec<crate::model_output_hub::ModelOutputUpdateEvent> {
         for (symbol_key, snapshot) in self
             .state
             .factor_value_hub
@@ -490,8 +491,13 @@ impl MmDecision {
                 );
             }
         }
+        self.state.model_output_hub.poll_updates()
+    }
+
+    pub fn process_return_score_updates(&mut self) {
+        let model_events = self.poll_input_updates();
         self.cancel_decision
-            .process_return_score_updates(&mut self.state);
+            .process_return_score_updates(&mut self.state, model_events);
     }
 
     fn handle_mm_hedge_query(&mut self, query: MmHedgeSignalQueryMsg) {
@@ -499,6 +505,7 @@ impl MmDecision {
             warn!("MmDecision: MMHedge query skipped because MktChannel is not initialized yet");
             return;
         }
+        self.poll_input_updates();
 
         let symbol = query.get_symbol().to_uppercase();
         if symbol.is_empty() {
@@ -677,6 +684,7 @@ impl MmDecision {
             warn!("MmDecision: MMCancel candidate query skipped because MktChannel is not initialized yet");
             return;
         }
+        self.poll_input_updates();
 
         let now_us = get_timestamp_us();
         let mut cancel_sent = 0usize;
