@@ -395,6 +395,7 @@ impl MmDecisionState {
             DEFAULT_PNLU_KEY_SUFFIX.to_string(),
             PNLU_MAX_AGE_SECS,
             TARGET_FACTOR_MAX_AGE_MS,
+            true,
         )?;
 
         Ok(Self {

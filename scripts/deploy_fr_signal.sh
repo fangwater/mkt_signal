@@ -134,7 +134,7 @@ TARGET_DIR="$HOME/${ENV_NAME}"
 
 if [[ "$DO_BUILD" -eq 1 ]]; then
   echo "[INFO] 构建 $BIN_NAME (release)"
-  cargo build --release --bin "$BIN_NAME"
+  cargo build --release -p trade_signal --bin "$BIN_NAME"
 fi
 
 mkdir -p "$TARGET_DIR"

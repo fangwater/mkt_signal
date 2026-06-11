@@ -46,6 +46,35 @@ pub struct SpreadThresholdConfig {
     pub threshold: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpreadCheckStatus {
+    Pass,
+    Blocked,
+    MissingThreshold,
+    MissingValue,
+}
+
+impl SpreadCheckStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Blocked => "blocked",
+            Self::MissingThreshold => "miss_threshold",
+            Self::MissingValue => "miss_value",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SpreadCheckDiagnostic {
+    pub threshold_key: ThresholdKey,
+    pub value: Option<f64>,
+    pub threshold: Option<f64>,
+    pub compare_op: Option<CompareOp>,
+    pub spread_type: Option<SpreadType>,
+    pub status: SpreadCheckStatus,
+}
+
 /// 价差因子单例
 pub struct SpreadFactor {
     /// askbid 价差因子: (venue1, venue2) -> { (symbol1, symbol2) -> value }
@@ -763,6 +792,62 @@ impl SpreadFactor {
         }
 
         None
+    }
+
+    pub fn get_spread_check_diagnostic(
+        &self,
+        venue1: TradingVenue,
+        symbol1: &str,
+        venue2: TradingVenue,
+        symbol2: &str,
+        arb_direction: ArbDirection,
+        operation: OperationType,
+    ) -> SpreadCheckDiagnostic {
+        let query_venue1 = venue1;
+        let threshold_key = Self::threshold_pair_key(query_venue1, symbol1, venue2, symbol2);
+        let key = (threshold_key.clone(), arb_direction, operation);
+
+        let current_mode = self.get_mode();
+        let config = {
+            let thresholds = match current_mode {
+                FactorMode::MM => self.mm_thresholds.borrow(),
+                FactorMode::MT => self.mt_thresholds.borrow(),
+            };
+            thresholds.get(&key).cloned()
+        };
+
+        let Some(config) = config else {
+            return SpreadCheckDiagnostic {
+                threshold_key,
+                value: None,
+                threshold: None,
+                compare_op: None,
+                spread_type: None,
+                status: SpreadCheckStatus::MissingThreshold,
+            };
+        };
+
+        let value = match config.spread_type {
+            SpreadType::BidAsk => self.get_bidask(venue1, symbol1, venue2, symbol2),
+            SpreadType::AskBid => self.get_askbid(venue1, symbol1, venue2, symbol2),
+            SpreadType::SpreadRate => self.get_spread_rate(venue1, symbol1, venue2, symbol2),
+        };
+        let status = match value {
+            Some(value) if config.compare_op.check(value, config.threshold) => {
+                SpreadCheckStatus::Pass
+            }
+            Some(_) => SpreadCheckStatus::Blocked,
+            None => SpreadCheckStatus::MissingValue,
+        };
+
+        SpreadCheckDiagnostic {
+            threshold_key,
+            value,
+            threshold: Some(config.threshold),
+            compare_op: Some(config.compare_op),
+            spread_type: Some(config.spread_type),
+            status,
+        }
     }
 
     /// 调试：打印所有存储的价差数据

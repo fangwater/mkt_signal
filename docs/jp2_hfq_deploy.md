@@ -216,6 +216,66 @@ bash scripts/deploy_intra_binance_std.sh arb01
 These wrappers still build locally, create `$HOME/<env-name>/`, and rsync to
 the remote host. They do not start processes remotely.
 
+## Shared TLEN Server On JP2
+
+JP2 also needs the shared `tlen_config_server` deployment. This service is
+host-level, not tied to one FR/intra/MM env, and `model_pub` defaults to
+querying it via `http://127.0.0.1:6322` from
+[`config/model_pub.toml`](/home/ubuntu/crypto_mkt/mkt_signal/config/model_pub.toml:3).
+
+Recommended shared env name:
+
+```bash
+tlen_config_shared
+```
+
+Deploy scripts into the shared env directory:
+
+```bash
+bash scripts/deploy_tlen_config_server.sh \
+  --env-name tlen_config_shared \
+  --default-venue binance-futures
+```
+
+If JP2 nginx should expose it externally on `4191`, also apply nginx mapping:
+
+```bash
+bash scripts/deploy_tlen_config_server.sh \
+  --env-name tlen_config_shared \
+  --default-venue binance-futures \
+  --apply-nginx
+```
+
+That writes:
+
+```text
+/home/ubuntu/tlen_config_shared/config/tlen_config_server.env
+```
+
+Start and stop on JP2:
+
+```bash
+cd ~/tlen_config_shared
+./scripts/start_tlen_config_server.sh
+./scripts/stop_tlen_config_server.sh
+```
+
+Default runtime values:
+
+```text
+listen: 0.0.0.0:6322
+redis : 127.0.0.1:6379 db 0
+pm2   : namespace=tlen_config_shared name=tlen_config_server_shared
+```
+
+Basic verification on JP2:
+
+```bash
+curl http://127.0.0.1:6322/healthz
+curl 'http://127.0.0.1:6322/api/thresholds?venue=binance-futures&config_type=tlen'
+npx pm2 status --namespace tlen_config_shared
+```
+
 ## Binance Intra Arb01 Local Core Allocation
 
 Use the two housekeeping CPUs for OS work only. Bind hot services explicitly

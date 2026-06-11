@@ -178,7 +178,8 @@ pub struct FactorValueHub {
     factor_value_service_name: String,
     factor_value_max_age_ms: i64,
     factor_value_sub: Subscriber<ipc::Service, [u8; FACTOR_VALUE_PAYLOAD_MAX_BYTES], ()>,
-    trade_flow_feature_sub: Subscriber<ipc::Service, [u8; TRADE_FLOW_FEATURE_MAX_BYTES], ()>,
+    trade_flow_feature_sub:
+        Option<Subscriber<ipc::Service, [u8; TRADE_FLOW_FEATURE_MAX_BYTES], ()>>,
     factor_value_cache: HashMap<(u16, String), FactorValueSnapshot>,
     last_valid_factor_value_cache: HashMap<(u16, String), FactorValueSnapshot>,
     tradecount_windows: HashMap<String, VecDeque<f64>>,
@@ -201,6 +202,7 @@ impl FactorValueHub {
         pnlu_key_suffix: String,
         pnlu_max_age_secs: i64,
         factor_value_max_age_ms: i64,
+        enable_trade_flow_feature: bool,
     ) -> Result<Self> {
         let factor_value_sub =
             Self::create_factor_value_subscriber(node, hedge_venue, target_factor_name)?;
@@ -208,7 +210,14 @@ impl FactorValueHub {
             anyhow::anyhow!("missing factor index mapping for {target_factor_name}")
         })?;
         let pnlu_redis = PnluRedis::new(pnlu_settings)?;
-        let trade_flow_feature_sub = Self::create_trade_flow_feature_subscriber(node, hedge_venue)?;
+        let trade_flow_feature_sub = if enable_trade_flow_feature {
+            Some(Self::create_trade_flow_feature_subscriber(
+                node,
+                hedge_venue,
+            )?)
+        } else {
+            None
+        };
         let pnlu_max_age_secs = if pnlu_max_age_secs > 0 {
             pnlu_max_age_secs
         } else {
@@ -631,9 +640,12 @@ impl FactorValueHub {
         let Some(percentile) = percentile.filter(|v| v.is_finite()) else {
             return sampled;
         };
+        let Some(trade_flow_feature_sub) = self.trade_flow_feature_sub.as_mut() else {
+            return sampled;
+        };
 
         loop {
-            match self.trade_flow_feature_sub.receive() {
+            match trade_flow_feature_sub.receive() {
                 Ok(Some(sample)) => {
                     let payload = sample.payload();
                     if payload.iter().all(|&b| b == 0) {

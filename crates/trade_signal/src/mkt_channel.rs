@@ -101,10 +101,23 @@ fn derivatives_service_root(venue: TradingVenue) -> &'static str {
     }
 }
 
-fn askbid_service_name(venue: TradingVenue) -> String {
+fn askbid_service_root_for_pair(venue: TradingVenue, binance_intra_direct: bool) -> &'static str {
+    if binance_intra_direct
+        && matches!(
+            venue,
+            TradingVenue::BinanceMargin | TradingVenue::BinanceFutures
+        )
+    {
+        "spread_pbs"
+    } else {
+        askbid_service_root(venue)
+    }
+}
+
+fn askbid_service_name_for_pair(venue: TradingVenue, binance_intra_direct: bool) -> String {
     format!(
         "{}/{}/ask_bid_spread",
-        askbid_service_root(venue),
+        askbid_service_root_for_pair(venue, binance_intra_direct),
         venue.data_pub_slug()
     )
 }
@@ -246,24 +259,6 @@ fn flush_askbid_dirty_symbols(
 
     for sym in dirty_symbols.iter() {
         let now_us = get_timestamp_us();
-        let trigger_age_us = if trigger_decisions {
-            let gate_us = INTRA_BBO_STALE_GATE_US.with(|c| c.get());
-            if gate_us > 0 {
-                let trigger_ts = dirty_trigger_ts.get(sym).copied().unwrap_or_default();
-                if trigger_ts <= 0 {
-                    continue;
-                }
-                let age_us = now_us.saturating_sub(trigger_ts);
-                if age_us > gate_us {
-                    continue;
-                }
-                Some(age_us)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
 
         let decision_quote_ts = {
             use super::spread_factor::SpreadFactor;
@@ -302,6 +297,22 @@ fn flush_askbid_dirty_symbols(
         if trigger_decisions {
             let can_trigger = should_trigger_decision(sym);
             if can_trigger {
+                let trigger_age_us = {
+                    let gate_us = INTRA_BBO_STALE_GATE_US.with(|c| c.get());
+                    if gate_us > 0 {
+                        let trigger_ts = dirty_trigger_ts.get(sym).copied().unwrap_or_default();
+                        if trigger_ts <= 0 {
+                            continue;
+                        }
+                        let age_us = now_us.saturating_sub(trigger_ts);
+                        if age_us > gate_us {
+                            continue;
+                        }
+                        Some(age_us)
+                    } else {
+                        None
+                    }
+                };
                 if let Some(age_us) = trigger_age_us {
                     decision_quote_age.push(age_us);
                 } else if let Some(quote_ts) = decision_quote_ts.filter(|ts| *ts > 0) {
@@ -537,9 +548,10 @@ impl MktChannel {
             );
         }
 
-        // Binance/Gate/Bitget 保持 bridge 兼容；OKX/Bybit 继续直连 spread_pbs。
-        let open_service = askbid_service_name(open_venue);
-        let hedge_service = askbid_service_name(hedge_venue);
+        // Binance intra 本地直接订阅 spread_pbs；Gate/Bitget 仍保持 bridge 兼容。
+        let binance_intra_direct = is_intra_pair && matches!(intra_exchange, Some("binance"));
+        let open_service = askbid_service_name_for_pair(open_venue, binance_intra_direct);
+        let hedge_service = askbid_service_name_for_pair(hedge_venue, binance_intra_direct);
 
         let open_node = build_node_name(open_slug, "askbid");
         let hedge_node = build_node_name(hedge_slug, "askbid");
@@ -566,9 +578,9 @@ impl MktChannel {
         info!(
             "MktChannel 初始化完成: askbid_roots={}:{} {}:{} derivatives_roots={}:{} {}:{} trigger_decisions={}",
             open_slug,
-            askbid_service_root(open_venue),
+            askbid_service_root_for_pair(open_venue, binance_intra_direct),
             hedge_slug,
-            askbid_service_root(hedge_venue),
+            askbid_service_root_for_pair(hedge_venue, binance_intra_direct),
             open_slug,
             derivatives_service_root(open_venue),
             hedge_slug,
@@ -1270,7 +1282,7 @@ mod tests {
     #[test]
     fn bridge_compat_venues_use_bridge_services() {
         assert_eq!(
-            askbid_service_name(TradingVenue::BinanceFutures),
+            askbid_service_name_for_pair(TradingVenue::BinanceFutures, false),
             "bridge/binance-futures/ask_bid_spread"
         );
         assert_eq!(
@@ -1278,7 +1290,7 @@ mod tests {
             "bridge/binance-futures/derivatives"
         );
         assert_eq!(
-            askbid_service_name(TradingVenue::GateMargin),
+            askbid_service_name_for_pair(TradingVenue::GateMargin, false),
             "bridge/gate-margin/ask_bid_spread"
         );
         assert_eq!(
@@ -1286,7 +1298,7 @@ mod tests {
             "bridge/gate-futures/derivatives"
         );
         assert_eq!(
-            askbid_service_name(TradingVenue::BitgetMargin),
+            askbid_service_name_for_pair(TradingVenue::BitgetMargin, false),
             "bridge/bitget-margin/ask_bid_spread"
         );
         assert_eq!(
@@ -1298,7 +1310,7 @@ mod tests {
     #[test]
     fn direct_venues_keep_direct_services() {
         assert_eq!(
-            askbid_service_name(TradingVenue::OkexFutures),
+            askbid_service_name_for_pair(TradingVenue::OkexFutures, false),
             "spread_pbs/okex-futures/ask_bid_spread"
         );
         assert_eq!(
@@ -1306,12 +1318,44 @@ mod tests {
             "dat_pbs/okex-futures/derivatives"
         );
         assert_eq!(
-            askbid_service_name(TradingVenue::BybitMargin),
+            askbid_service_name_for_pair(TradingVenue::BybitMargin, false),
             "spread_pbs/bybit-margin/ask_bid_spread"
         );
         assert_eq!(
             derivatives_service_name(TradingVenue::BybitFutures),
             "dat_pbs/bybit-futures/derivatives"
+        );
+    }
+
+    #[test]
+    fn binance_intra_pair_uses_direct_spread_pbs() {
+        assert_eq!(
+            askbid_service_name_for_pair(TradingVenue::BinanceMargin, true),
+            "spread_pbs/binance-margin/ask_bid_spread"
+        );
+        assert_eq!(
+            askbid_service_name_for_pair(TradingVenue::BinanceFutures, true),
+            "spread_pbs/binance-futures/ask_bid_spread"
+        );
+    }
+
+    #[test]
+    fn gate_bitget_intra_pairs_keep_bridge_services() {
+        assert_eq!(
+            askbid_service_name_for_pair(TradingVenue::GateMargin, false),
+            "bridge/gate-margin/ask_bid_spread"
+        );
+        assert_eq!(
+            askbid_service_name_for_pair(TradingVenue::GateFutures, false),
+            "bridge/gate-futures/ask_bid_spread"
+        );
+        assert_eq!(
+            askbid_service_name_for_pair(TradingVenue::BitgetMargin, false),
+            "bridge/bitget-margin/ask_bid_spread"
+        );
+        assert_eq!(
+            askbid_service_name_for_pair(TradingVenue::BitgetFutures, false),
+            "bridge/bitget-futures/ask_bid_spread"
         );
     }
 }
