@@ -14,10 +14,18 @@ repair_lookback_hours = 24
 repair_bucket_us = 60000000
 
 # Add one source per remote persist manager.
-# If there are multiple sources, read_server.source_id must be set explicitly.
+# These endpoints are allocated in config/persist_sync_distribution.toml.
 [[sources]]
-id = "default"
-url = "http://127.0.0.1:50051"
+id = "okex-intra-arb01"
+url = "http://47.238.128.48:6354"
+
+[[sources]]
+id = "binance-intra-arb01"
+url = "http://52.68.224.23:6342"
+
+[[sources]]
+id = "bybit-intra-arb01"
+url = "http://47.131.162.78:6351"
 
 [read_server]
 enabled = true
@@ -27,8 +35,8 @@ bind = "0.0.0.0:8822"
 # primary_dir = "data/persist_sync_center"
 secondary_dir = "data/persist_read_server_secondary"
 
-# Optional for a single [[sources]] entry; required when multiple sources exist.
-source_id = "default"
+# Optional default source. With multiple sources, leave unset and pass source_id per request.
+# source_id = "okex-intra-arb01"
 
 max_concurrent = 8
 
