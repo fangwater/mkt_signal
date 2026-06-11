@@ -429,10 +429,13 @@ async fn run(
         debug!("MM workers started open=interval cancel=return_score_update");
     } else if matches!(branch, DecisionBranch::Arb) {
         spawn_arb_cancel_trigger_worker(token.clone());
-        spawn_arb_cooldown_sweep_worker(token.clone(), open_venue, hedge_venue);
+        let cooldown_sweep_enabled = matches!(arb_mode, Some(ArbMode::FundingArb));
+        if cooldown_sweep_enabled {
+            spawn_arb_cooldown_sweep_worker(token.clone(), open_venue, hedge_venue);
+        }
         debug!(
-            "ARB workers started cancel_trigger=tlen cooldown_sweep=true mode={:?}",
-            arb_mode
+            "ARB workers started cancel_trigger=tlen cooldown_sweep={} mode={:?}",
+            cooldown_sweep_enabled, arb_mode
         );
 
         // UniMMR 算法平仓状态机（仅 arb 分支 fr/intra/cross）：
