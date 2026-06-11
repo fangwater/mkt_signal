@@ -26,9 +26,11 @@ use runtime_common::time_util::get_timestamp_us;
 
 const FACTOR_VALUE_PAYLOAD_MAX_BYTES: usize = 256;
 const FACTOR_VALUE_SUBSCRIBER_BUFFER_SIZE: usize = 8192;
+const FACTOR_VALUE_POLL_MAX_PER_CALL: usize = 512;
 const DEFAULT_PNLU_MAX_AGE_SECS: i64 = 30 * 60;
 const FACTOR_VALUE_ISSUE_LOG_INTERVAL_SECS: u64 = 10;
 const TRADE_FLOW_FEATURE_SUBSCRIBER_BUFFER_SIZE: usize = 1024;
+const TRADE_FLOW_FEATURE_POLL_MAX_PER_CALL: usize = 256;
 const TRADE_FLOW_FEATURE_COUNT_INDEX: usize = 7;
 const TRADECOUNT_ROLLING_MEAN_WINDOW: usize = 30;
 const TRADECOUNT_ROLLING_MEAN_MIN_PERIODS: usize = 25;
@@ -423,9 +425,11 @@ impl FactorValueHub {
     }
 
     pub fn poll_factor_value_updates(&mut self) {
-        loop {
+        let mut polled = 0usize;
+        while polled < FACTOR_VALUE_POLL_MAX_PER_CALL {
             match self.factor_value_sub.receive() {
                 Ok(Some(sample)) => {
+                    polled += 1;
                     let payload = sample.payload();
                     if payload.iter().all(|&b| b == 0) {
                         continue;
@@ -562,9 +566,11 @@ impl FactorValueHub {
             return sampled;
         };
 
-        loop {
+        let mut polled = 0usize;
+        while polled < FACTOR_VALUE_POLL_MAX_PER_CALL {
             match self.factor_value_sub.receive() {
                 Ok(Some(sample)) => {
+                    polled += 1;
                     let payload = sample.payload();
                     if payload.iter().all(|&b| b == 0) {
                         continue;
@@ -643,9 +649,11 @@ impl FactorValueHub {
             return sampled;
         };
 
-        loop {
+        let mut polled = 0usize;
+        while polled < TRADE_FLOW_FEATURE_POLL_MAX_PER_CALL {
             match trade_flow_feature_sub.receive() {
                 Ok(Some(sample)) => {
+                    polled += 1;
                     let payload = sample.payload();
                     if payload.iter().all(|&b| b == 0) {
                         continue;
