@@ -99,6 +99,10 @@ fn binance_margin_should_use_margin_buy(use_binance_ws_margin: bool, reduce_only
     !use_binance_ws_margin && !reduce_only
 }
 
+fn bybit_margin_should_use_leverage(reduce_only: bool) -> bool {
+    !reduce_only
+}
+
 fn bybit_symbol_from_symbol(symbol: &str) -> String {
     normalize_symbol_for_internal(symbol)
 }
@@ -652,7 +656,8 @@ impl PreTradeOrderRequestExt for Order {
                     side: self.side,
                     order_type: self.order_type,
                     reduce_only: self.reduce_only,
-                    is_leverage: matches!(self.venue, TradingVenue::BybitMargin),
+                    is_leverage: matches!(self.venue, TradingVenue::BybitMargin)
+                        && bybit_margin_should_use_leverage(self.reduce_only),
                     quantity_qv,
                     price_qv,
                     symbol,
@@ -746,8 +751,9 @@ impl PreTradeOrderRequestExt for Order {
 #[cfg(test)]
 mod tests {
     use super::{
-        binance_margin_should_use_margin_buy, Order, OrderExecutionStatus, OrderManager,
-        OrderStatus, OrderType, PreTradeOrderRequestExt, Side, TradeUpdateSkipReason,
+        binance_margin_should_use_margin_buy, bybit_margin_should_use_leverage,
+        BybitNewOrderRequest, Order, OrderExecutionStatus, OrderManager, OrderStatus, OrderType,
+        PreTradeOrderRequestExt, Side, TradeUpdateSkipReason,
     };
     use order_common::TradingVenue;
     use serde_json::Value;
@@ -765,6 +771,60 @@ mod tests {
     fn binance_standard_or_reduce_only_margin_open_omits_margin_buy() {
         assert!(!binance_margin_should_use_margin_buy(true, false));
         assert!(!binance_margin_should_use_margin_buy(false, true));
+    }
+
+    #[test]
+    fn bybit_margin_reduce_only_omits_leverage() {
+        assert!(bybit_margin_should_use_leverage(false));
+        assert!(!bybit_margin_should_use_leverage(true));
+    }
+
+    #[test]
+    fn bybit_margin_order_sets_leverage_only_for_non_reduce_only() {
+        let open_order = Order::new(
+            TradingVenue::BybitMargin,
+            41,
+            OrderType::Market,
+            "CCUSDT".to_string(),
+            Side::Buy,
+            10.0,
+            0.0,
+            false,
+            1.0,
+            None,
+            true,
+        );
+        let close_order = Order::new(
+            TradingVenue::BybitMargin,
+            42,
+            OrderType::Market,
+            "CCUSDT".to_string(),
+            Side::Sell,
+            10.0,
+            0.0,
+            true,
+            1.0,
+            None,
+            true,
+        );
+
+        let open_request = BybitNewOrderRequest::from_bytes(
+            open_order
+                .get_order_request_bytes()
+                .expect("bybit margin open request should build")
+                .as_ref(),
+        )
+        .expect("bybit margin open request should parse");
+        let close_request = BybitNewOrderRequest::from_bytes(
+            close_order
+                .get_order_request_bytes()
+                .expect("bybit margin close request should build")
+                .as_ref(),
+        )
+        .expect("bybit margin close request should parse");
+
+        assert!(open_request.params_struct().unwrap().is_leverage);
+        assert!(!close_request.params_struct().unwrap().is_leverage);
     }
 
     #[test]
