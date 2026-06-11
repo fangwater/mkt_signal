@@ -143,6 +143,12 @@ pub trait TradeEngineResponse {
         }
     }
 
+    fn is_bybit_open_interest_position_limit(&self) -> bool {
+        matches!(self.exchange_enum(), Some(Exchange::Bybit))
+            && self.is_open_request()
+            && self.error_code() == bybit::OPEN_INTEREST_POSITION_LIMIT_EXCEEDED
+    }
+
     /// OKX: insufficient margin / loanable assets.
     /// Gate uses string labels for errors; mapping happens in
     /// `trade_response_handle::normalize_trade_error`, which converts the
@@ -375,6 +381,22 @@ mod tests {
         assert!(resp.is_open_request());
         assert!(resp.is_open_rejected());
         assert!(resp.is_insufficient_margin());
+    }
+
+    #[test]
+    fn detects_bybit_open_interest_position_limit() {
+        let resp = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::BybitNewUMOrder as u32,
+            symbol_utils::Exchange::Bybit as u32,
+            123,
+            bybit::OPEN_INTEREST_POSITION_LIMIT_EXCEEDED,
+        );
+
+        assert!(resp.is_open_request());
+        assert!(resp.is_open_rejected());
+        assert!(resp.is_bybit_open_interest_position_limit());
+        assert!(!resp.is_insufficient_margin());
     }
 
     #[test]

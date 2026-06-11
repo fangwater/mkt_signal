@@ -19,6 +19,8 @@ pub const SIGNAL_THROTTLE_ERROR_CODE_BYBIT_COLLATERAL_NOT_ENABLED: i32 =
 pub const SIGNAL_THROTTLE_ERROR_CODE_BYBIT_CONTRACT_NOT_LIVE: i32 = bybit::CONTRACT_NOT_LIVE;
 pub const SIGNAL_THROTTLE_ERROR_CODE_BYBIT_PLATFORM_LOAN_NOT_ENOUGH: i32 =
     bybit::PLATFORM_LOAN_AMOUNT_NOT_ENOUGH;
+pub const SIGNAL_THROTTLE_ERROR_CODE_BYBIT_OPEN_INTEREST_POSITION_LIMIT: i32 =
+    bybit::OPEN_INTEREST_POSITION_LIMIT_EXCEEDED;
 // 51061: 借币池可借资产不足（Binance/OKX 都可能返回该 code）
 pub const SIGNAL_THROTTLE_ERROR_CODE_LOANABLE_ASSET_UNAVAILABLE: i32 = 51061;
 
@@ -81,7 +83,8 @@ pub fn is_throttle_error_code(exchange: Option<Exchange>, error_code: i32) -> bo
         SIGNAL_THROTTLE_ERROR_CODE_BYBIT_MARGIN_UNSUPPORTED
         | SIGNAL_THROTTLE_ERROR_CODE_BYBIT_COLLATERAL_NOT_ENABLED
         | SIGNAL_THROTTLE_ERROR_CODE_BYBIT_CONTRACT_NOT_LIVE
-        | SIGNAL_THROTTLE_ERROR_CODE_BYBIT_PLATFORM_LOAN_NOT_ENOUGH => {
+        | SIGNAL_THROTTLE_ERROR_CODE_BYBIT_PLATFORM_LOAN_NOT_ENOUGH
+        | SIGNAL_THROTTLE_ERROR_CODE_BYBIT_OPEN_INTEREST_POSITION_LIMIT => {
             matches!(exchange, Some(Exchange::Bybit))
         }
         gate::BALANCE_NOT_ENOUGH
@@ -360,6 +363,10 @@ mod tests {
             bybit::CONTRACT_NOT_LIVE
         ));
         assert!(is_throttle_error_code(
+            Some(Exchange::Bybit),
+            bybit::OPEN_INTEREST_POSITION_LIMIT_EXCEEDED
+        ));
+        assert!(is_throttle_error_code(
             Some(Exchange::Gate),
             gate::AUTO_BORROW_TOO_MUCH
         ));
@@ -395,6 +402,10 @@ mod tests {
         assert!(!is_throttle_error_code(
             Some(Exchange::Okex),
             bybit::CONTRACT_NOT_LIVE
+        ));
+        assert!(!is_throttle_error_code(
+            Some(Exchange::Okex),
+            bybit::OPEN_INTEREST_POSITION_LIMIT_EXCEEDED
         ));
         assert!(!is_throttle_error_code(Some(Exchange::Okex), 25116));
         assert!(!is_throttle_error_code(
