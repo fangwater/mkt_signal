@@ -122,39 +122,14 @@ impl PreTrade {
 
         loop {
             let mut has_work = false;
-            let stage_start_us = get_timestamp_us();
             has_work |= TradeEngHub::drain_pending_responses();
-            record_stage_latency(
-                ReactorStage::TradeRespDrain,
-                stage_start_us,
-                get_timestamp_us(),
-            );
 
-            let stage_start_us = get_timestamp_us();
             has_work |= MonitorChannel::drain_pending_state_updates();
-            record_stage_latency(
-                ReactorStage::MonitorDrain,
-                stage_start_us,
-                get_timestamp_us(),
-            );
 
-            let stage_start_us = get_timestamp_us();
             has_work |= QueryEngHub::drain_pending_responses();
-            record_stage_latency(
-                ReactorStage::QueryRespDrain,
-                stage_start_us,
-                get_timestamp_us(),
-            );
 
-            let stage_start_us = get_timestamp_us();
             has_work |= SignalChannel::drain_pending();
-            record_stage_latency(
-                ReactorStage::SignalDrain,
-                stage_start_us,
-                get_timestamp_us(),
-            );
 
-            let stage_start_us = get_timestamp_us();
             let model_updates = PreTradeTakerDecisionModel::poll_updates_global();
             if !model_updates.is_empty() {
                 has_work = true;
@@ -170,11 +145,6 @@ impl PreTrade {
                     let _ = mgr.trigger_arb_open_cancel_on_model_update(&update.symbol, now);
                 }
             }
-            record_stage_latency(
-                ReactorStage::TakerModelPoll,
-                stage_start_us,
-                get_timestamp_us(),
-            );
 
             let instant_now = Instant::now();
             let mut ran_periodic = false;

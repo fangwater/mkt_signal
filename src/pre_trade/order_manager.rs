@@ -124,6 +124,22 @@ pub trait PreTradeOrderManagerRequestExt {
         symbol: &str,
         client_order_id: i64,
     ) -> Result<Bytes, String>;
+    #[allow(clippy::too_many_arguments)]
+    fn create_open_order_request_bytes(
+        &mut self,
+        venue: TradingVenue,
+        client_order_id: i64,
+        order_type: OrderType,
+        symbol: String,
+        side: Side,
+        quantity: f64,
+        price: f64,
+        reduce_only: bool,
+        qty_multiplier: f64,
+        signal_t: i64,
+        signal_kind: u8,
+        mkt_t: i64,
+    ) -> Result<(&'static str, Bytes), String>;
 }
 
 impl PreTradeOrderManagerRequestExt for OrderManager {
@@ -184,6 +200,51 @@ impl PreTradeOrderManagerRequestExt for OrderManager {
                 venue
             )),
         }
+    }
+
+    fn create_open_order_request_bytes(
+        &mut self,
+        venue: TradingVenue,
+        client_order_id: i64,
+        order_type: OrderType,
+        symbol: String,
+        side: Side,
+        quantity: f64,
+        price: f64,
+        reduce_only: bool,
+        qty_multiplier: f64,
+        signal_t: i64,
+        signal_kind: u8,
+        mkt_t: i64,
+    ) -> Result<(&'static str, Bytes), String> {
+        let Some(result) = self.create_order_with_mut(
+            venue,
+            client_order_id,
+            order_type,
+            symbol,
+            side,
+            quantity,
+            price,
+            reduce_only,
+            qty_multiplier,
+            true,
+            |order| {
+                order.set_signal_meta(signal_t, signal_kind);
+                if mkt_t > 0 {
+                    order.set_mkt_time(mkt_t);
+                }
+                let exchange = order.venue.trade_engine_exchange();
+                order
+                    .get_order_request_bytes()
+                    .map(|req_bin| (exchange, req_bin))
+            },
+        ) else {
+            return Err(format!(
+                "order not found after create: client_order_id={}",
+                client_order_id
+            ));
+        };
+        result
     }
 }
 
@@ -753,7 +814,7 @@ mod tests {
     use super::{
         binance_margin_should_use_margin_buy, bybit_margin_should_use_leverage,
         BybitNewOrderRequest, Order, OrderExecutionStatus, OrderManager, OrderStatus, OrderType,
-        PreTradeOrderRequestExt, Side, TradeUpdateSkipReason,
+        PreTradeOrderManagerRequestExt, PreTradeOrderRequestExt, Side, TradeUpdateSkipReason,
     };
     use order_common::TradingVenue;
     use serde_json::Value;
@@ -825,6 +886,40 @@ mod tests {
 
         assert!(open_request.params_struct().unwrap().is_leverage);
         assert!(!close_request.params_struct().unwrap().is_leverage);
+    }
+
+    #[test]
+    fn create_open_order_request_bytes_sets_meta_and_builds_request() {
+        let mut mgr = OrderManager::new(None);
+        let (exchange, req_bin) = mgr
+            .create_open_order_request_bytes(
+                TradingVenue::BybitMargin,
+                43,
+                OrderType::Market,
+                "CCUSDT".to_string(),
+                Side::Buy,
+                10.0,
+                0.0,
+                false,
+                1.0,
+                123456,
+                7,
+                654321,
+            )
+            .expect("bybit margin open request should build");
+
+        assert_eq!(exchange, "bybit");
+        let order = mgr.get(43).expect("order should be inserted");
+        assert_eq!(order.timestamp.signal_t, 123456);
+        assert_eq!(order.timestamp.signal_kind, 7);
+        assert_eq!(order.timestamp.mkt_t, 654321);
+
+        let request = BybitNewOrderRequest::from_bytes(req_bin.as_ref())
+            .expect("bybit margin open request should parse");
+        let params = request.params_struct().unwrap();
+        assert_eq!(params.symbol, "CCUSDT");
+        assert_eq!(params.side, Side::Buy);
+        assert!(params.is_leverage);
     }
 
     #[test]

@@ -768,6 +768,38 @@ impl OrderManager {
         id
     }
 
+    pub fn create_order_with_mut<F, R>(
+        &mut self,
+        venue: TradingVenue,
+        id: i64,
+        order_type: OrderType,
+        symbol: String,
+        side: Side,
+        quantity: f64,
+        price: f64,
+        reduce_only: bool,
+        qty_multiplier: f64,
+        count_pending_limit: bool,
+        f: F,
+    ) -> Option<R>
+    where
+        F: FnOnce(&mut Order) -> R,
+    {
+        self.create_order_with_pending_limit_flag(
+            venue,
+            id,
+            order_type,
+            symbol,
+            side,
+            quantity,
+            price,
+            reduce_only,
+            qty_multiplier,
+            count_pending_limit,
+        );
+        self.orders.get_mut(&id).map(f)
+    }
+
     pub fn get_symbol_pending_limit_order_count(&self, symbol: &str) -> i32 {
         let symbol = normalize_symbol_for_internal(symbol);
         self.pending_limit_order_count
@@ -881,6 +913,17 @@ impl OrderManager {
         self.update(order_id, |order| {
             order.timestamp.local_t = now;
             f(order);
+        })
+    }
+
+    pub fn set_submit_time_and_signal_meta(
+        &mut self,
+        order_id: i64,
+        submit_time: i64,
+    ) -> Option<(i64, u8)> {
+        self.orders.get_mut(&order_id).map(|order| {
+            order.set_submit_time(submit_time);
+            (order.timestamp.signal_t, order.timestamp.signal_kind)
         })
     }
 

@@ -36,6 +36,10 @@ impl IntraBwdSymbolList {
         SYMBOLS.with(|s| s.borrow().contains(&target))
     }
 
+    pub fn contains_normalized(&self, symbol: &str) -> bool {
+        SYMBOLS.with(|s| s.borrow().contains(symbol))
+    }
+
     /// 当前缓存大小（调试 / 监控用）
     pub fn len(&self) -> usize {
         SYMBOLS.with(|s| s.borrow().len())

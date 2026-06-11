@@ -4,6 +4,7 @@ use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info, warn};
+use std::borrow::Cow;
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 
@@ -127,11 +128,9 @@ impl TradeEngHub {
         let create_time_us = trade_request_create_time_us(bytes);
         if let Some(om) = MonitorChannel::try_order_manager() {
             // egress 单点：刷新 submit_t 的同时取出 signal 元数据，测度 signal→submit 延迟。
-            let mut signal_meta: Option<(i64, u8)> = None;
-            om.borrow_mut().update(client_order_id, |order| {
-                order.set_submit_time(publish_start_us);
-                signal_meta = Some((order.timestamp.signal_t, order.timestamp.signal_kind));
-            });
+            let signal_meta = om
+                .borrow_mut()
+                .set_submit_time_and_signal_meta(client_order_id, publish_start_us);
             if let Some((signal_t, kind)) = signal_meta {
                 if signal_t > 0 {
                     if let Some(st) = SignalType::from_u32(kind as u32) {
@@ -180,10 +179,16 @@ impl TradeEngHub {
     }
 
     fn publish_to_exchange(&self, exchange: &str, bytes: &Bytes) -> Result<()> {
-        self.ensure_exchange(exchange)?;
         let key = Self::normalize_exchange(exchange);
+        {
+            let channels = self.channels.borrow();
+            if let Some(channel) = channels.get(key.as_ref()) {
+                return channel.publish_order_request(bytes);
+            }
+        }
+        self.ensure_exchange_key(key.as_ref())?;
         let channels = self.channels.borrow();
-        let Some(channel) = channels.get(&key) else {
+        let Some(channel) = channels.get(key.as_ref()) else {
             return Err(anyhow!("TradeEngHub: exchange '{}' not registered", key));
         };
         channel.publish_order_request(bytes)
@@ -191,7 +196,11 @@ impl TradeEngHub {
 
     fn ensure_exchange(&self, exchange: &str) -> Result<()> {
         let key = Self::normalize_exchange(exchange);
-        if self.channels.borrow().contains_key(&key) {
+        self.ensure_exchange_key(key.as_ref())
+    }
+
+    fn ensure_exchange_key(&self, key: &str) -> Result<()> {
+        if self.channels.borrow().contains_key(key) {
             return Ok(());
         }
 
@@ -199,13 +208,18 @@ impl TradeEngHub {
             "TradeEngHub: registering trade engine channel for exchange '{}'",
             key
         );
-        let channel = TradeEngChannel::new(&key)?;
-        self.channels.borrow_mut().insert(key, channel);
+        let channel = TradeEngChannel::new(key)?;
+        self.channels.borrow_mut().insert(key.to_string(), channel);
         Ok(())
     }
 
-    fn normalize_exchange(exchange: &str) -> String {
-        exchange.trim().to_ascii_lowercase()
+    fn normalize_exchange(exchange: &str) -> Cow<'_, str> {
+        let trimmed = exchange.trim();
+        if trimmed.bytes().all(|b| !b.is_ascii_uppercase()) {
+            Cow::Borrowed(trimmed)
+        } else {
+            Cow::Owned(trimmed.to_ascii_lowercase())
+        }
     }
 }
 

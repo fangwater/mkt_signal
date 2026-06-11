@@ -205,6 +205,11 @@ pub fn extract_assets_from_symbol(symbol: &str) -> (String, String) {
     (base.to_string(), quote.to_string())
 }
 
+/// 从已经归一化的内部 symbol key 中借用提取 base/quote，避免正常路径分配。
+pub fn extract_assets_from_internal_symbol(symbol_upper: &str) -> (&str, &str) {
+    split_internal_symbol_assets(symbol_upper)
+}
+
 /// 规范化为 pre_trade 内部统一使用的 symbol key。
 pub fn normalize_symbol_for_internal(symbol: &str) -> String {
     let mut out = String::with_capacity(symbol.len());
@@ -293,7 +298,7 @@ pub fn min_qty_symbol_key(venue: TradingVenue, symbol: &str) -> String {
     }
 }
 
-fn extract_assets_from_internal_symbol(symbol_upper: &str) -> (&str, &str) {
+fn split_internal_symbol_assets(symbol_upper: &str) -> (&str, &str) {
     const QUOTE_ASSETS: [&str; 7] = ["USDT", "USDC", "BUSD", "FDUSD", "BIDR", "TRY", "USD"];
 
     for quote in QUOTE_ASSETS {

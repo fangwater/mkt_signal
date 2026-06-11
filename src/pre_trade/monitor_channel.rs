@@ -899,6 +899,7 @@ struct MonitorChannelInner {
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
     arb_mode: ArbMode,
+    binance_account_mode: Option<BinanceAccountMode>,
     open_leg: LegMgr,
     hedge_leg: LegMgr,
     /// USDT 单独维护：account_scope -> manager（Binance standard 下 margin/futures 分离）
@@ -2288,32 +2289,33 @@ impl MonitorChannel {
 
     /// 查询指定 venue+asset 的现货/保证金净头寸（base qty），非 margin venue 返回 0
     pub fn balance_position_for_venue(&self, venue: TradingVenue, asset: &str) -> f64 {
-        Self::with_inner(|inner| {
-            let leg = if venue == inner.open_venue {
-                &inner.open_leg
-            } else if venue == inner.hedge_venue {
-                &inner.hedge_leg
-            } else {
-                return 0.0;
-            };
-            if asset.eq_ignore_ascii_case("USDT") {
-                let binance_mode = if inner.order_manager.borrow().binance_is_standard() {
-                    Some(BinanceAccountMode::Standard)
-                } else {
-                    Some(BinanceAccountMode::Unified)
-                };
-                let scope = scope_for_venue(venue, binance_mode);
-                return inner
-                    .usdt_mgrs
-                    .get(&scope)
-                    .map(|m| m.borrow().net_usdt_position())
-                    .unwrap_or(0.0);
-            }
-            match leg {
-                LegMgr::Margin { bal, .. } => bal.borrow().net_position(asset, None),
-                _ => 0.0,
-            }
-        })
+        Self::with_inner(|inner| Self::balance_position_for_venue_inner(inner, venue, asset))
+    }
+
+    fn balance_position_for_venue_inner(
+        inner: &MonitorChannelInner,
+        venue: TradingVenue,
+        asset: &str,
+    ) -> f64 {
+        let leg = if venue == inner.open_venue {
+            &inner.open_leg
+        } else if venue == inner.hedge_venue {
+            &inner.hedge_leg
+        } else {
+            return 0.0;
+        };
+        if asset.eq_ignore_ascii_case("USDT") {
+            let scope = scope_for_venue(venue, inner.binance_account_mode);
+            return inner
+                .usdt_mgrs
+                .get(&scope)
+                .map(|m| m.borrow().net_usdt_position())
+                .unwrap_or(0.0);
+        }
+        match leg {
+            LegMgr::Margin { bal, .. } => bal.borrow().net_position(asset, None),
+            _ => 0.0,
+        }
     }
 
     /// 初始化 pre-trade 的账户与风控管理器（仅 open/hedge 两条腿）
@@ -2470,6 +2472,7 @@ impl MonitorChannel {
             open_venue,
             hedge_venue,
             arb_mode,
+            binance_account_mode,
             open_leg,
             hedge_leg,
             usdt_mgrs,
@@ -4185,6 +4188,7 @@ mod tests {
             open_venue: TradingVenue::OkexFutures,
             hedge_venue: TradingVenue::BinanceFutures,
             arb_mode: ArbMode::CrossArb,
+            binance_account_mode: Some(BinanceAccountMode::Unified),
             open_leg,
             hedge_leg,
             usdt_mgrs,
@@ -4238,6 +4242,7 @@ mod tests {
             open_venue: TradingVenue::OkexFutures,
             hedge_venue: TradingVenue::BinanceFutures,
             arb_mode: ArbMode::CrossArb,
+            binance_account_mode: Some(BinanceAccountMode::Unified),
             open_leg,
             hedge_leg,
             usdt_mgrs: HashMap::new(),
@@ -4291,6 +4296,7 @@ mod tests {
             open_venue: TradingVenue::OkexFutures,
             hedge_venue: TradingVenue::BinanceFutures,
             arb_mode: ArbMode::CrossArb,
+            binance_account_mode: Some(BinanceAccountMode::Unified),
             open_leg,
             hedge_leg,
             usdt_mgrs: HashMap::new(),
@@ -4339,6 +4345,7 @@ mod tests {
             open_venue: TradingVenue::BinanceFutures,
             hedge_venue: TradingVenue::BinanceFutures,
             arb_mode: ArbMode::CrossArb,
+            binance_account_mode: Some(BinanceAccountMode::Unified),
             open_leg,
             hedge_leg,
             usdt_mgrs: HashMap::new(),
@@ -4419,6 +4426,7 @@ mod tests {
             open_venue: TradingVenue::BinanceFutures,
             hedge_venue: TradingVenue::BinanceFutures,
             arb_mode: ArbMode::CrossArb,
+            binance_account_mode: Some(BinanceAccountMode::Unified),
             open_leg,
             hedge_leg,
             usdt_mgrs: HashMap::new(),
@@ -4477,6 +4485,7 @@ mod tests {
             open_venue: TradingVenue::GateMargin,
             hedge_venue: TradingVenue::GateFutures,
             arb_mode: ArbMode::FundingArb,
+            binance_account_mode: Some(BinanceAccountMode::Unified),
             open_leg,
             hedge_leg,
             usdt_mgrs: HashMap::new(),
@@ -4563,6 +4572,7 @@ mod tests {
             open_venue: TradingVenue::BinanceMargin,
             hedge_venue: TradingVenue::BinanceFutures,
             arb_mode: ArbMode::FundingArb,
+            binance_account_mode: Some(BinanceAccountMode::Unified),
             open_leg,
             hedge_leg,
             usdt_mgrs,
@@ -4630,6 +4640,7 @@ mod tests {
             open_venue: TradingVenue::BinanceFutures,
             hedge_venue: TradingVenue::BinanceMargin,
             arb_mode: ArbMode::CrossArb,
+            binance_account_mode: Some(BinanceAccountMode::Unified),
             open_leg,
             hedge_leg,
             usdt_mgrs,
@@ -4685,6 +4696,7 @@ mod tests {
             open_venue: TradingVenue::BinanceMargin,
             hedge_venue: TradingVenue::BinanceFutures,
             arb_mode: ArbMode::FundingArb,
+            binance_account_mode: Some(BinanceAccountMode::Unified),
             open_leg,
             hedge_leg,
             usdt_mgrs,
@@ -4745,6 +4757,7 @@ mod tests {
             open_venue: TradingVenue::BybitMargin,
             hedge_venue: TradingVenue::BybitFutures,
             arb_mode: ArbMode::IntraArb,
+            binance_account_mode: Some(BinanceAccountMode::Unified),
             open_leg,
             hedge_leg,
             usdt_mgrs,
@@ -4801,6 +4814,7 @@ mod tests {
             open_venue: TradingVenue::OkexMargin,
             hedge_venue: TradingVenue::OkexFutures,
             arb_mode: ArbMode::IntraArb,
+            binance_account_mode: Some(BinanceAccountMode::Unified),
             open_leg,
             hedge_leg,
             usdt_mgrs,
@@ -4857,6 +4871,7 @@ mod tests {
             open_venue: TradingVenue::BitgetMargin,
             hedge_venue: TradingVenue::BitgetFutures,
             arb_mode: ArbMode::IntraArb,
+            binance_account_mode: Some(BinanceAccountMode::Unified),
             open_leg,
             hedge_leg,
             usdt_mgrs,
@@ -4913,6 +4928,7 @@ mod tests {
             open_venue: TradingVenue::GateMargin,
             hedge_venue: TradingVenue::GateFutures,
             arb_mode: ArbMode::IntraArb,
+            binance_account_mode: Some(BinanceAccountMode::Unified),
             open_leg,
             hedge_leg,
             usdt_mgrs,
@@ -5284,6 +5300,7 @@ mod tests {
             open_venue: TradingVenue::BinanceFutures,
             hedge_venue: TradingVenue::BinanceFutures,
             arb_mode: ArbMode::CrossArb,
+            binance_account_mode: Some(BinanceAccountMode::Unified),
             open_leg,
             hedge_leg,
             usdt_mgrs: HashMap::new(),

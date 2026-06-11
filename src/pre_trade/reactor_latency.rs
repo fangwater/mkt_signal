@@ -57,11 +57,6 @@ impl StageLatency {
 
 #[derive(Clone, Copy, Debug)]
 pub enum ReactorStage {
-    TradeRespDrain,
-    MonitorDrain,
-    QueryRespDrain,
-    SignalDrain,
-    TakerModelPoll,
     Periodic,
     MonitorRefreshBasicState,
     MonitorPendingRisk,
@@ -70,11 +65,6 @@ pub enum ReactorStage {
 impl ReactorStage {
     fn label(self) -> &'static str {
         match self {
-            Self::TradeRespDrain => "trade_resp_drain",
-            Self::MonitorDrain => "monitor_drain",
-            Self::QueryRespDrain => "query_resp_drain",
-            Self::SignalDrain => "signal_drain",
-            Self::TakerModelPoll => "taker_model_poll",
             Self::Periodic => "periodic",
             Self::MonitorRefreshBasicState => "monitor_refresh_basic_state",
             Self::MonitorPendingRisk => "monitor_pending_risk",
@@ -83,11 +73,6 @@ impl ReactorStage {
 }
 
 struct ReactorLatencies {
-    trade_resp_drain: StageLatency,
-    monitor_drain: StageLatency,
-    query_resp_drain: StageLatency,
-    signal_drain: StageLatency,
-    taker_model_poll: StageLatency,
     periodic: StageLatency,
     monitor_refresh_basic_state: StageLatency,
     monitor_pending_risk: StageLatency,
@@ -96,11 +81,6 @@ struct ReactorLatencies {
 impl ReactorLatencies {
     fn new() -> Self {
         Self {
-            trade_resp_drain: StageLatency::new(ReactorStage::TradeRespDrain),
-            monitor_drain: StageLatency::new(ReactorStage::MonitorDrain),
-            query_resp_drain: StageLatency::new(ReactorStage::QueryRespDrain),
-            signal_drain: StageLatency::new(ReactorStage::SignalDrain),
-            taker_model_poll: StageLatency::new(ReactorStage::TakerModelPoll),
             periodic: StageLatency::new(ReactorStage::Periodic),
             monitor_refresh_basic_state: StageLatency::new(ReactorStage::MonitorRefreshBasicState),
             monitor_pending_risk: StageLatency::new(ReactorStage::MonitorPendingRisk),
@@ -109,11 +89,6 @@ impl ReactorLatencies {
 
     fn get_mut(&mut self, stage: ReactorStage) -> &mut StageLatency {
         match stage {
-            ReactorStage::TradeRespDrain => &mut self.trade_resp_drain,
-            ReactorStage::MonitorDrain => &mut self.monitor_drain,
-            ReactorStage::QueryRespDrain => &mut self.query_resp_drain,
-            ReactorStage::SignalDrain => &mut self.signal_drain,
-            ReactorStage::TakerModelPoll => &mut self.taker_model_poll,
             ReactorStage::Periodic => &mut self.periodic,
             ReactorStage::MonitorRefreshBasicState => &mut self.monitor_refresh_basic_state,
             ReactorStage::MonitorPendingRisk => &mut self.monitor_pending_risk,
