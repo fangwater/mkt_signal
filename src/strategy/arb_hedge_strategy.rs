@@ -42,7 +42,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::OnceLock;
 
 const ARB_HEDGE_QTY_EPS: f64 = 1e-12;
-const ARB_HEDGE_PENDING_QUERY_MIN_USDT: f64 = 25.0;
+const ARB_HEDGE_PENDING_QUERY_MIN_USDT: f64 = 10.0;
 const ARB_HEDGE_BORROW_SHORTFALL_MAX_USDT: f64 = 1.0;
 const ARB_HEDGE_QUERY_INTERVAL_US: i64 = 1_000_000;
 /// 保证金不足应急动作的冷却时间。同一 strategy 在窗口内的连续拒单
@@ -2450,8 +2450,8 @@ mod tests {
 
     #[test]
     fn pending_hedge_query_threshold_uses_mark_price_usdt_value() {
-        let below = ArbHedgeStrategy::pending_hedge_usdt_with_mark_price(0.1, 200.0);
-        let above = ArbHedgeStrategy::pending_hedge_usdt_with_mark_price(-0.2, 200.0);
+        let below = ArbHedgeStrategy::pending_hedge_usdt_with_mark_price(0.04, 200.0);
+        let above = ArbHedgeStrategy::pending_hedge_usdt_with_mark_price(-0.06, 200.0);
 
         assert!(below < super::ARB_HEDGE_PENDING_QUERY_MIN_USDT);
         assert!(above > super::ARB_HEDGE_PENDING_QUERY_MIN_USDT);

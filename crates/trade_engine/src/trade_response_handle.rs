@@ -2,7 +2,7 @@ use bytes::{BufMut, BytesMut};
 use iceoryx2::port::publisher::Publisher;
 use iceoryx2::service::ipc;
 use log::{debug, warn};
-use order_common::trade_error_code::gate;
+use order_common::trade_error_code::{bybit, gate};
 use order_common::TradeRequestType;
 use runtime_common::exchange::Exchange;
 use serde_json::Value;
@@ -235,7 +235,16 @@ fn is_cancel_not_cancellable(exchange: Exchange, error_code: i32) -> bool {
         Exchange::Gate => error_code == gate::ORDER_NOT_FOUND,
         Exchange::Bybit => matches!(
             error_code,
-            110001 | 110008 | 110010 | 170139 | 170142 | 170143 | 170145 | 170190 | 170191
+            110001
+                | 110008
+                | 110010
+                | 170139
+                | 170142
+                | 170143
+                | 170145
+                | 170190
+                | 170191
+                | bybit::ORDER_NOT_FOUND
         ),
         _ => false,
     }
@@ -335,6 +344,15 @@ mod tests {
         assert!(should_downgrade_trade_resp_error(&out, 51410));
         assert!(should_downgrade_trade_resp_error(&out, 51416));
         assert!(!should_downgrade_trade_resp_error(&out, 51412));
+    }
+
+    #[test]
+    fn downgrades_bybit_order_not_found_cancel_error() {
+        let out = sample_outcome(TradeRequestType::BybitCancelMarginOrder, Exchange::Bybit);
+        assert!(should_downgrade_trade_resp_error(
+            &out,
+            bybit::ORDER_NOT_FOUND
+        ));
     }
 
     #[test]

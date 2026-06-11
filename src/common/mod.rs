@@ -6,6 +6,5 @@ pub mod msg_parser;
 pub mod rolling_welford;
 pub mod sliding_quantile;
 pub mod tick_math;
-pub mod trade_error_code;
 pub mod trade_msg_parser;
 pub mod window_primitives;

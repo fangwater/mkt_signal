@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::common::min_qty_table::MinQtyTable;
 use crate::pre_trade::net_position::NetPosition;
@@ -21,6 +21,7 @@ pub struct BasicUmPosition {
 pub struct BasicUmManager {
     exchange: Exchange,
     positions: HashMap<String, BasicUmPosition>, // key: inst_id|side
+    net_contracts_by_symbol: HashMap<String, f32>,
 }
 
 impl BasicUmManager {
@@ -28,6 +29,7 @@ impl BasicUmManager {
         Self {
             exchange,
             positions: HashMap::new(),
+            net_contracts_by_symbol: HashMap::new(),
         }
     }
 
@@ -50,6 +52,7 @@ impl BasicUmManager {
             if should_remove {
                 self.positions.remove(&key);
             }
+            self.refresh_net_contracts_for_inst(&inst);
             return;
         }
 
@@ -66,10 +69,11 @@ impl BasicUmManager {
             });
 
         entry.exchange = self.exchange;
-        entry.inst_id = inst;
+        entry.inst_id = inst.clone();
         entry.side = side;
         entry.amount = msg.position_amount;
         entry.timestamp = msg.timestamp();
+        self.refresh_net_contracts_for_inst(&inst);
     }
 
     /// 应用未实现盈亏消息：按 inst_id+side 覆盖当前值。
@@ -127,6 +131,7 @@ impl BasicUmManager {
     /// 清空当前维护的全部 UM 持仓状态。
     pub fn clear(&mut self) {
         self.positions.clear();
+        self.net_contracts_by_symbol.clear();
     }
 
     /// 汇总合约未实现盈亏（USDT 计价）。
@@ -163,36 +168,52 @@ impl BasicUmManager {
             net_amount
         }
     }
+
+    fn normalized_symbol_for_inst(&self, inst_id: &str) -> String {
+        match self.exchange {
+            Exchange::Okex => inst_id
+                .replace("-SWAP", "")
+                .replace('-', "")
+                .to_ascii_uppercase(),
+            _ => inst_id.to_ascii_uppercase(),
+        }
+    }
+
+    fn normalized_symbol(symbol: &str) -> String {
+        symbol
+            .to_ascii_uppercase()
+            .replace("-SWAP", "")
+            .replace('-', "")
+    }
+
+    fn refresh_net_contracts_for_inst(&mut self, inst_id: &str) {
+        let symbol = self.normalized_symbol_for_inst(inst_id);
+        let mut inst_ids = HashSet::new();
+        for pos in self.positions.values() {
+            if self.normalized_symbol_for_inst(&pos.inst_id) == symbol {
+                inst_ids.insert(pos.inst_id.clone());
+            }
+        }
+        let net_contracts = inst_ids
+            .iter()
+            .map(|inst_id| self.net_contracts(inst_id))
+            .sum::<f32>();
+        if net_contracts == 0.0 {
+            self.net_contracts_by_symbol.remove(&symbol);
+        } else {
+            self.net_contracts_by_symbol.insert(symbol, net_contracts);
+        }
+    }
 }
 
 impl NetPosition for BasicUmManager {
     fn net_position(&self, symbol: &str, min_qty_table: Option<&MinQtyTable>) -> f64 {
-        let symbol_normalized = symbol.to_uppercase().replace("-SWAP", "").replace('-', "");
-
-        // 对于 OKX，需要将 symbol 映射回 inst_id 进行查找
-        // 这里我们遍历所有持仓，找到匹配的 inst_id
-        let mut net_contracts = 0.0f32;
-
-        // 收集所有唯一的 inst_id
-        let mut inst_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for pos in self.positions.values() {
-            inst_ids.insert(pos.inst_id.clone());
-        }
-
-        // 查找匹配 symbol 的 inst_id
-        for inst_id in inst_ids {
-            let pos_symbol = match self.exchange {
-                Exchange::Okex => {
-                    // BTC-USDT-SWAP -> BTCUSDT
-                    inst_id.replace("-SWAP", "").replace('-', "")
-                }
-                _ => inst_id.clone(),
-            };
-
-            if pos_symbol.to_uppercase() == symbol_normalized {
-                net_contracts += self.net_contracts(&inst_id);
-            }
-        }
+        let symbol_normalized = Self::normalized_symbol(symbol);
+        let net_contracts = self
+            .net_contracts_by_symbol
+            .get(&symbol_normalized)
+            .copied()
+            .unwrap_or(0.0);
 
         // 获取合约乘数
         let ct_mult = min_qty_table
@@ -274,5 +295,41 @@ mod tests {
         mgr.clear();
 
         assert!(mgr.snapshot().is_empty());
+    }
+
+    #[test]
+    fn net_position_cache_updates_with_position_changes() {
+        use crate::pre_trade::net_position::NetPosition;
+
+        let mut mgr = BasicUmManager::new(Exchange::Bybit);
+        mgr.apply_position(&BasicPositionMsg::create(
+            1,
+            "BTCUSDT".to_string(),
+            'L',
+            2.5,
+        ));
+        mgr.apply_position(&BasicPositionMsg::create(
+            2,
+            "BTCUSDT".to_string(),
+            'S',
+            1.0,
+        ));
+        assert_eq!(mgr.net_position("BTCUSDT", None), 1.5);
+
+        mgr.apply_position(&BasicPositionMsg::create(
+            3,
+            "BTCUSDT".to_string(),
+            'L',
+            0.0,
+        ));
+        assert_eq!(mgr.net_position("BTCUSDT", None), -1.0);
+
+        mgr.apply_position(&BasicPositionMsg::create(
+            4,
+            "BTCUSDT".to_string(),
+            'S',
+            0.0,
+        ));
+        assert_eq!(mgr.net_position("BTCUSDT", None), 0.0);
     }
 }

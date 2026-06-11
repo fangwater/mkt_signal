@@ -50,6 +50,7 @@ const BITGET_DERIVATIVES_SERVICE: &str = "bridge/bitget-futures/derivatives";
 const GATE_DERIVATIVES_SERVICE: &str = "bridge/gate-futures/derivatives";
 const DEFAULT_NODE_PRE_TRADE_DERIVATIVES: &str = "pre_trade_derivatives";
 const ARB_STARTUP_NET_EXPOSURE_WARN_USDT: f64 = 500.0;
+const BASIC_STATE_REFRESH_MIN_INTERVAL_US: i64 = 100_000;
 
 // ==================== Helper Functions ====================
 
@@ -152,7 +153,11 @@ fn trade_update_lite_enabled_for_venues(
 ) -> bool {
     let open_exchange = exchange_from_venue(open_venue);
     let hedge_exchange = exchange_from_venue(hedge_venue);
-    open_exchange == hedge_exchange && matches!(open_exchange, Exchange::Bybit | Exchange::Okex)
+    open_exchange == hedge_exchange
+        && matches!(
+            open_exchange,
+            Exchange::Binance | Exchange::Bybit | Exchange::Okex
+        )
 }
 
 // ==================== Deduplication Cache ====================
@@ -203,9 +208,9 @@ pub fn hash64(parts: &[u64]) -> u64 {
 use crate::common::msg_parser::{get_msg_type, parse_index_price, parse_mark_price, MktMsgType};
 use crate::pre_trade::order_manager::OrderManager;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
+use crate::pre_trade::reactor_latency::{record_stage_latency, ReactorStage};
 use crate::strategy::OrphanStrategyManager;
 use account_common::BinanceAccountMode;
-use bytes::Bytes;
 use order_common::{OrderUpdate, TradeUpdate, TradeUpdateLite};
 use signal_common::common::{align_price_ceil, align_price_floor};
 use signal_common::venue_min_qty_table::VenueMinQtyTable;
@@ -238,6 +243,7 @@ thread_local! {
     static MONITOR_STATE_LISTENERS: RefCell<Option<MonitorStateListeners>> = const { RefCell::new(None) };
     static BASIC_STATE_CACHE: RefCell<Option<(usize, BasicState)>> = const { RefCell::new(None) };
     static BASIC_STATE_DIRTY: Cell<bool> = const { Cell::new(true) };
+    static BASIC_STATE_LAST_REFRESH_US: Cell<i64> = const { Cell::new(0) };
     static PENDING_RISK_CHECKS: RefCell<PendingRiskChecks> = RefCell::new(PendingRiskChecks::default());
 }
 
@@ -808,8 +814,7 @@ impl DerivativesPriceListener {
             match receive_result {
                 Ok(Some(sample)) => {
                     has_message = true;
-                    let payload = Bytes::copy_from_slice(sample.payload());
-                    self.process_payload(&payload);
+                    self.process_payload(sample.payload());
                 }
                 Ok(None) => break,
                 Err(err) => {
@@ -826,7 +831,7 @@ impl DerivativesPriceListener {
         has_message
     }
 
-    fn process_payload(&mut self, payload: &Bytes) {
+    fn process_payload(&mut self, payload: &[u8]) {
         if payload.is_empty() {
             return;
         }
@@ -1007,7 +1012,7 @@ impl MonitorChannel {
     }
 
     pub fn drain_pending_state_updates() -> bool {
-        let has_message = MONITOR_STATE_LISTENERS.with(|listeners| {
+        let mut has_message = MONITOR_STATE_LISTENERS.with(|listeners| {
             let mut listeners = listeners.borrow_mut();
             match listeners.as_mut() {
                 Some(listeners) => listeners.drain_pending(),
@@ -1015,9 +1020,18 @@ impl MonitorChannel {
             }
         });
         let state_dirty = BASIC_STATE_DIRTY.with(|dirty| dirty.get());
-        if has_message && state_dirty {
-            Self::refresh_basic_state_cache();
-            Self::drain_pending_risk_checks_after_refresh();
+        if state_dirty && (has_message || Self::basic_state_cache_present()) {
+            let refreshed = Self::refresh_basic_state_cache_if_due(false);
+            if refreshed {
+                has_message = true;
+                let risk_start_us = get_timestamp_us();
+                Self::drain_pending_risk_checks_after_refresh();
+                record_stage_latency(
+                    ReactorStage::MonitorPendingRisk,
+                    risk_start_us,
+                    get_timestamp_us(),
+                );
+            }
         }
         has_message
     }
@@ -1030,6 +1044,7 @@ impl MonitorChannel {
         BASIC_STATE_CACHE.with(|cache| {
             *cache.borrow_mut() = None;
         });
+        BASIC_STATE_LAST_REFRESH_US.with(|last| last.set(0));
         BASIC_STATE_DIRTY.with(|dirty| dirty.set(true));
         PENDING_RISK_CHECKS.with(|pending| {
             *pending.borrow_mut() = PendingRiskChecks::default();
@@ -1055,6 +1070,7 @@ impl MonitorChannel {
     }
 
     fn refresh_basic_state_cache() {
+        let refresh_start_us = get_timestamp_us();
         let (key, state) = Self::with_inner(|inner| {
             (
                 Self::basic_state_cache_key(inner),
@@ -1065,6 +1081,28 @@ impl MonitorChannel {
             *cache.borrow_mut() = Some((key, state));
         });
         BASIC_STATE_DIRTY.with(|dirty| dirty.set(false));
+        BASIC_STATE_LAST_REFRESH_US.with(|last| last.set(get_timestamp_us()));
+        record_stage_latency(
+            ReactorStage::MonitorRefreshBasicState,
+            refresh_start_us,
+            get_timestamp_us(),
+        );
+    }
+
+    fn basic_state_cache_present() -> bool {
+        BASIC_STATE_CACHE.with(|cache| cache.borrow().is_some())
+    }
+
+    fn refresh_basic_state_cache_if_due(force: bool) -> bool {
+        if !force && Self::basic_state_cache_present() {
+            let now_us = get_timestamp_us();
+            let last_us = BASIC_STATE_LAST_REFRESH_US.with(|last| last.get());
+            if last_us > 0 && now_us.saturating_sub(last_us) < BASIC_STATE_REFRESH_MIN_INTERVAL_US {
+                return false;
+            }
+        }
+        Self::refresh_basic_state_cache();
+        true
     }
 
     fn basic_state_cached() -> BasicState {
@@ -1075,6 +1113,18 @@ impl MonitorChannel {
                 .as_ref()
                 .and_then(|(cached_key, state)| (*cached_key == key).then(|| state.clone()))
                 .expect("BasicState cache missing; refresh_basic_state_cache must run after init/drain before risk checks")
+        })
+    }
+
+    fn with_basic_state_cached<R>(f: impl FnOnce(&BasicState) -> R) -> R {
+        let key = Self::with_inner(Self::basic_state_cache_key);
+        BASIC_STATE_CACHE.with(|cache| {
+            let cache = cache.borrow();
+            let state = cache
+                .as_ref()
+                .and_then(|(cached_key, state)| (*cached_key == key).then_some(state))
+                .expect("BasicState cache missing; refresh_basic_state_cache must run after init/drain before risk checks");
+            f(state)
         })
     }
 
@@ -2690,10 +2740,14 @@ impl MonitorChannel {
                 return Ok(());
             }
 
-            let state = Self::basic_state_cached();
-            let total_equity = state.total_equity_usdt;
-            let um_unrealized = state.total_um_unrealized_usdt;
-            let total_position = state.total_position_usdt;
+            let (total_equity, um_unrealized, total_position) =
+                Self::with_basic_state_cached(|state| {
+                    (
+                        state.total_equity_usdt,
+                        state.total_um_unrealized_usdt,
+                        state.total_position_usdt,
+                    )
+                });
 
             if total_equity <= f64::EPSILON {
                 return Err("账户总权益(eq，含UPL如有合约)近似为 0，无法计算杠杆率".to_string());
@@ -3121,12 +3175,14 @@ impl MonitorChannel {
                 ));
             };
 
-            let state = Self::basic_state_cached();
-            let net_exposure = state
-                .exposures
-                .get(&base_asset.to_uppercase())
-                .map(|(open, hedge)| open + hedge)
-                .unwrap_or(0.0);
+            let base_asset_upper = base_asset.to_uppercase();
+            let net_exposure = Self::with_basic_state_cached(|state| {
+                state
+                    .exposures
+                    .get(&base_asset_upper)
+                    .map(|(open, hedge)| open + hedge)
+                    .unwrap_or(0.0)
+            });
 
             let price_mapper = create_symbol_mapper(Self::mark_price_exchange_for_venues(
                 inner.open_venue,
@@ -3183,9 +3239,9 @@ impl MonitorChannel {
                 return Ok(());
             }
 
-            let state = Self::basic_state_cached();
-            let total_equity = state.total_equity_usdt;
-            let abs_total_usdt = state.abs_total_exposure_usdt;
+            let (total_equity, abs_total_usdt) = Self::with_basic_state_cached(|state| {
+                (state.total_equity_usdt, state.abs_total_exposure_usdt)
+            });
 
             if total_equity <= f64::EPSILON {
                 return Err("账户总权益(eq，含UPL如有合约)近似为 0，无法计算总敞口占比".to_string());
@@ -5069,7 +5125,11 @@ mod tests {
     }
 
     #[test]
-    fn trade_update_lite_enabled_for_bybit_and_okex_intra_only() {
+    fn trade_update_lite_enabled_for_binance_bybit_and_okex_intra_only() {
+        assert!(trade_update_lite_enabled_for_venues(
+            TradingVenue::BinanceMargin,
+            TradingVenue::BinanceFutures,
+        ));
         assert!(trade_update_lite_enabled_for_venues(
             TradingVenue::BybitMargin,
             TradingVenue::BybitFutures,

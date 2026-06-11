@@ -85,6 +85,56 @@ struct WeightedSample {
     weight: usize,
 }
 
+/// Incremental KLL sketch for streaming windows.
+///
+/// Callers can push samples continuously and snapshot quantiles without storing
+/// every raw value. `reset` starts a fresh window.
+#[derive(Clone)]
+pub struct StreamingKllSketch {
+    sketch: KllSketch,
+}
+
+impl Default for StreamingKllSketch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StreamingKllSketch {
+    pub fn new() -> Self {
+        Self {
+            sketch: new_streaming_sketch(),
+        }
+    }
+
+    pub fn insert(&mut self, value: f64) {
+        if value.is_finite() {
+            self.sketch.insert(value);
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.sketch.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.sketch.is_empty()
+    }
+
+    pub fn quantiles(&self, qs: &[f32]) -> Vec<Option<f64>> {
+        let mut samples = Vec::new();
+        self.sketch.append_weighted_samples(&mut samples);
+        samples.sort_by(|a, b| a.value.total_cmp(&b.value));
+        qs.iter()
+            .map(|&q| quantile_from_weighted(&samples, q))
+            .collect()
+    }
+
+    pub fn reset(&mut self) {
+        self.sketch = new_streaming_sketch();
+    }
+}
+
 pub fn segmented_quantiles_linear<I>(
     values: I,
     sample_size: usize,
@@ -134,6 +184,11 @@ where
 
 fn new_sketch(seed_state: &mut u64) -> KllSketch {
     KllSketch::new(KLL_LEVEL_CAPACITY, next_random(seed_state))
+}
+
+fn new_streaming_sketch() -> KllSketch {
+    let mut seed_state = RNG_SEED;
+    new_sketch(&mut seed_state)
 }
 
 fn quantile_from_weighted(samples: &[WeightedSample], q: f32) -> Option<f64> {
@@ -190,7 +245,7 @@ fn next_random(state: &mut u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::segmented_quantiles_linear;
+    use super::{segmented_quantiles_linear, StreamingKllSketch};
 
     #[test]
     fn small_windows_remain_exact() {
@@ -224,5 +279,21 @@ mod tests {
         let (count, quantiles) = segmented_quantiles_linear(values, values.len(), &[0.5]);
         assert_eq!(count, 2);
         assert_eq!(quantiles, vec![Some(2.0)]);
+    }
+
+    #[test]
+    fn streaming_sketch_tracks_and_resets_window() {
+        let mut sketch = StreamingKllSketch::new();
+        sketch.insert(1.0);
+        sketch.insert(2.0);
+        sketch.insert(f64::NAN);
+        sketch.insert(3.0);
+
+        assert_eq!(sketch.len(), 3);
+        let quantiles = sketch.quantiles(&[0.0, 0.5, 1.0]);
+        assert_eq!(quantiles, vec![Some(1.0), Some(2.0), Some(3.0)]);
+
+        sketch.reset();
+        assert!(sketch.is_empty());
     }
 }

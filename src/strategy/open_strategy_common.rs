@@ -814,6 +814,12 @@ pub trait OpenStrategyCommon {
     ) -> Option<OpenSignalInitResult> {
         let total_start_us = get_timestamp_us();
         let is_arb_open = input.signal_type_u8 == SignalType::ArbOpen as u8;
+        let mut precreate_stage_start_us = total_start_us;
+        let pre_symbol_position_us: i64;
+        let pre_exposure_us: i64;
+        let pre_order_gate_us: i64;
+        let pre_balance_gate_us: i64;
+        let pre_position_risk_us: i64;
         let symbol = normalize_symbol_for_internal(&input.opening_symbol);
         if symbol.is_empty() {
             warn!(
@@ -908,6 +914,9 @@ pub trait OpenStrategyCommon {
         let order_manager = monitor.order_manager();
         let skip_position_risk_checks = self.skip_open_position_risk_checks();
         let current_open_base_qty = monitor.get_position_qty(&symbol, venue);
+        let stage_done_us = get_timestamp_us();
+        pre_symbol_position_us = stage_done_us.saturating_sub(precreate_stage_start_us);
+        precreate_stage_start_us = stage_done_us;
         if !skip_position_risk_checks {
             if let Err(e) = monitor.check_symbol_exposure(&symbol) {
                 self.log_open_deleveraging_risk_reject(
@@ -949,6 +958,9 @@ pub trait OpenStrategyCommon {
                 return None;
             }
         }
+        let stage_done_us = get_timestamp_us();
+        pre_exposure_us = stage_done_us.saturating_sub(precreate_stage_start_us);
+        precreate_stage_start_us = stage_done_us;
         if order_type == OrderType::Limit {
             let limit_check = match input.order_rate_bucket {
                 OrderRateBucket::ArbOpen => {
@@ -1035,6 +1047,9 @@ pub trait OpenStrategyCommon {
                 return None;
             }
         };
+        let stage_done_us = get_timestamp_us();
+        pre_order_gate_us = stage_done_us.saturating_sub(precreate_stage_start_us);
+        precreate_stage_start_us = stage_done_us;
 
         let order_qty = input.qty;
         let order_price = input.price;
@@ -1120,6 +1135,9 @@ pub trait OpenStrategyCommon {
                 side
             );
         }
+        let stage_done_us = get_timestamp_us();
+        pre_balance_gate_us = stage_done_us.saturating_sub(precreate_stage_start_us);
+        precreate_stage_start_us = stage_done_us;
 
         let add_base_qty = match self.open_order_qty_to_base(signed_qty, qty_multiplier) {
             Ok(base_qty) => base_qty,
@@ -1183,8 +1201,19 @@ pub trait OpenStrategyCommon {
                 return None;
             }
         }
+        let stage_done_us = get_timestamp_us();
+        pre_position_risk_us = stage_done_us.saturating_sub(precreate_stage_start_us);
 
         if is_arb_open {
+            record_arb_open_latency(
+                "pt_open_pre_snapshot_exposure",
+                pre_symbol_position_us.saturating_add(pre_exposure_us),
+            );
+            record_arb_open_latency(
+                "pt_open_pre_order_balance_gate",
+                pre_order_gate_us.saturating_add(pre_balance_gate_us),
+            );
+            record_arb_open_latency("pt_open_pre_position_risk", pre_position_risk_us);
             record_arb_open_latency(
                 "pt_open_precreate_checks",
                 get_timestamp_us().saturating_sub(total_start_us),

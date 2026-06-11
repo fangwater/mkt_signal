@@ -2,6 +2,7 @@ use crate::pre_trade::account_open_block::drive_account_open_block_capacity_poll
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::OrderRateLimiter;
 use crate::pre_trade::query_eng_channel::QueryEngHub;
+use crate::pre_trade::reactor_latency::{record_stage_latency, ReactorStage};
 use crate::pre_trade::resample_channel::ResampleChannel;
 use crate::pre_trade::signal_channel::SignalChannel;
 use crate::pre_trade::signal_throttle::log_active_signal_throttles;
@@ -121,10 +122,39 @@ impl PreTrade {
 
         loop {
             let mut has_work = false;
+            let stage_start_us = get_timestamp_us();
             has_work |= TradeEngHub::drain_pending_responses();
+            record_stage_latency(
+                ReactorStage::TradeRespDrain,
+                stage_start_us,
+                get_timestamp_us(),
+            );
+
+            let stage_start_us = get_timestamp_us();
             has_work |= MonitorChannel::drain_pending_state_updates();
+            record_stage_latency(
+                ReactorStage::MonitorDrain,
+                stage_start_us,
+                get_timestamp_us(),
+            );
+
+            let stage_start_us = get_timestamp_us();
             has_work |= QueryEngHub::drain_pending_responses();
+            record_stage_latency(
+                ReactorStage::QueryRespDrain,
+                stage_start_us,
+                get_timestamp_us(),
+            );
+
+            let stage_start_us = get_timestamp_us();
             has_work |= SignalChannel::drain_pending();
+            record_stage_latency(
+                ReactorStage::SignalDrain,
+                stage_start_us,
+                get_timestamp_us(),
+            );
+
+            let stage_start_us = get_timestamp_us();
             let model_updates = PreTradeTakerDecisionModel::poll_updates_global();
             if !model_updates.is_empty() {
                 has_work = true;
@@ -140,11 +170,17 @@ impl PreTrade {
                     let _ = mgr.trigger_arb_open_cancel_on_model_update(&update.symbol, now);
                 }
             }
+            record_stage_latency(
+                ReactorStage::TakerModelPoll,
+                stage_start_us,
+                get_timestamp_us(),
+            );
 
             let instant_now = Instant::now();
             let mut ran_periodic = false;
             if instant_now >= next_period_clock {
                 ran_periodic = true;
+                let periodic_start_us = get_timestamp_us();
                 let now = get_timestamp_us();
                 drive_strategy_manager_period_clock(now);
                 drive_orphan_manager_period_clock(now);
@@ -177,6 +213,11 @@ impl PreTrade {
                     drive_account_open_block_capacity_poll(now);
                     next_account_open_block_poll += account_open_block_poll_interval;
                 }
+                record_stage_latency(
+                    ReactorStage::Periodic,
+                    periodic_start_us,
+                    get_timestamp_us(),
+                );
 
                 while instant_now >= next_arb_startup_net_log {
                     let status = MonitorChannel::instance().arb_startup_net_gate_status();

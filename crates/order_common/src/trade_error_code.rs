@@ -204,6 +204,18 @@ mod tests {
             Some("Contract is not live")
         );
         assert_eq!(
+            describe_trade_error_code(Exchange::Bybit, bybit::COLLATERAL_NOT_ENABLED),
+            Some("Collateral not enabled")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Bybit, bybit::PLATFORM_LOAN_AMOUNT_NOT_ENOUGH),
+            Some("Platform loan amount not enough")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Bybit, bybit::ORDER_NOT_FOUND),
+            Some("Order does not exist")
+        );
+        assert_eq!(
             describe_trade_error_code(Exchange::Okex, 1),
             Some("Request failed")
         );

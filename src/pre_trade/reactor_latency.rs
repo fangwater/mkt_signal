@@ -1,0 +1,134 @@
+use rolling_common::kll_quantile::StreamingKllSketch;
+use std::cell::RefCell;
+use std::time::{Duration, Instant};
+
+const REACTOR_LATENCY_WINDOW: Duration = Duration::from_secs(30);
+
+struct StageLatency {
+    stage: ReactorStage,
+    samples: StreamingKllSketch,
+    window_start: Instant,
+}
+
+impl StageLatency {
+    fn new(stage: ReactorStage) -> Self {
+        Self {
+            stage,
+            samples: StreamingKllSketch::new(),
+            window_start: Instant::now(),
+        }
+    }
+
+    fn push(&mut self, delta_us: i64) {
+        if self.window_start.elapsed() >= REACTOR_LATENCY_WINDOW {
+            self.flush();
+        }
+        if delta_us < 0 {
+            return;
+        }
+        self.samples.insert(delta_us as f64);
+    }
+
+    fn flush(&mut self) {
+        if self.samples.is_empty() {
+            self.window_start = Instant::now();
+            return;
+        }
+        let qs = [0.50_f32, 0.90, 0.95, 0.99];
+        let n = self.samples.len();
+        let results = self.samples.quantiles(&qs);
+        let p50 = results.first().and_then(|v| *v).unwrap_or(f64::NAN);
+        let p90 = results.get(1).and_then(|v| *v).unwrap_or(f64::NAN);
+        let p95 = results.get(2).and_then(|v| *v).unwrap_or(f64::NAN);
+        let p99 = results.get(3).and_then(|v| *v).unwrap_or(f64::NAN);
+        log::info!(
+            "pre_trade_reactor[{}] latency_us n={} p50={:.0} p90={:.0} p95={:.0} p99={:.0}",
+            self.stage.label(),
+            n,
+            p50,
+            p90,
+            p95,
+            p99
+        );
+        self.samples.reset();
+        self.window_start = Instant::now();
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ReactorStage {
+    TradeRespDrain,
+    MonitorDrain,
+    QueryRespDrain,
+    SignalDrain,
+    TakerModelPoll,
+    Periodic,
+    MonitorRefreshBasicState,
+    MonitorPendingRisk,
+}
+
+impl ReactorStage {
+    fn label(self) -> &'static str {
+        match self {
+            Self::TradeRespDrain => "trade_resp_drain",
+            Self::MonitorDrain => "monitor_drain",
+            Self::QueryRespDrain => "query_resp_drain",
+            Self::SignalDrain => "signal_drain",
+            Self::TakerModelPoll => "taker_model_poll",
+            Self::Periodic => "periodic",
+            Self::MonitorRefreshBasicState => "monitor_refresh_basic_state",
+            Self::MonitorPendingRisk => "monitor_pending_risk",
+        }
+    }
+}
+
+struct ReactorLatencies {
+    trade_resp_drain: StageLatency,
+    monitor_drain: StageLatency,
+    query_resp_drain: StageLatency,
+    signal_drain: StageLatency,
+    taker_model_poll: StageLatency,
+    periodic: StageLatency,
+    monitor_refresh_basic_state: StageLatency,
+    monitor_pending_risk: StageLatency,
+}
+
+impl ReactorLatencies {
+    fn new() -> Self {
+        Self {
+            trade_resp_drain: StageLatency::new(ReactorStage::TradeRespDrain),
+            monitor_drain: StageLatency::new(ReactorStage::MonitorDrain),
+            query_resp_drain: StageLatency::new(ReactorStage::QueryRespDrain),
+            signal_drain: StageLatency::new(ReactorStage::SignalDrain),
+            taker_model_poll: StageLatency::new(ReactorStage::TakerModelPoll),
+            periodic: StageLatency::new(ReactorStage::Periodic),
+            monitor_refresh_basic_state: StageLatency::new(ReactorStage::MonitorRefreshBasicState),
+            monitor_pending_risk: StageLatency::new(ReactorStage::MonitorPendingRisk),
+        }
+    }
+
+    fn get_mut(&mut self, stage: ReactorStage) -> &mut StageLatency {
+        match stage {
+            ReactorStage::TradeRespDrain => &mut self.trade_resp_drain,
+            ReactorStage::MonitorDrain => &mut self.monitor_drain,
+            ReactorStage::QueryRespDrain => &mut self.query_resp_drain,
+            ReactorStage::SignalDrain => &mut self.signal_drain,
+            ReactorStage::TakerModelPoll => &mut self.taker_model_poll,
+            ReactorStage::Periodic => &mut self.periodic,
+            ReactorStage::MonitorRefreshBasicState => &mut self.monitor_refresh_basic_state,
+            ReactorStage::MonitorPendingRisk => &mut self.monitor_pending_risk,
+        }
+    }
+}
+
+thread_local! {
+    static REACTOR_LATENCIES: RefCell<ReactorLatencies> =
+        RefCell::new(ReactorLatencies::new());
+}
+
+pub fn record_stage_latency(stage: ReactorStage, start_us: i64, end_us: i64) {
+    let delta_us = end_us.saturating_sub(start_us);
+    REACTOR_LATENCIES.with(|latencies| {
+        latencies.borrow_mut().get_mut(stage).push(delta_us);
+    });
+}

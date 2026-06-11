@@ -2234,15 +2234,27 @@ impl TradeWsClient {
                 };
                 let client_order_id = resp.client_order_id().unwrap_or(meta.client_order_id);
                 if resp.order_link_id.is_empty() {
-                    warn!(
-                        "trade ws client id={} bybit response missing orderLinkId: req_type={:?} req_id={} client_order_id={} ret_code={} ret_msg={}",
-                        self.id,
-                        meta.req_type,
-                        resp.req_id,
-                        client_order_id,
-                        resp.ret_code,
-                        resp.ret_msg
-                    );
+                    if resp.ret_code == 0 {
+                        warn!(
+                            "trade ws client id={} bybit response missing orderLinkId: req_type={:?} req_id={} client_order_id={} ret_code={} ret_msg={}",
+                            self.id,
+                            meta.req_type,
+                            resp.req_id,
+                            client_order_id,
+                            resp.ret_code,
+                            resp.ret_msg
+                        );
+                    } else {
+                        debug!(
+                            "trade ws client id={} bybit error response missing orderLinkId: req_type={:?} req_id={} client_order_id={} ret_code={} ret_msg={}",
+                            self.id,
+                            meta.req_type,
+                            resp.req_id,
+                            client_order_id,
+                            resp.ret_code,
+                            resp.ret_msg
+                        );
+                    }
                 }
                 // Bybit 仅暴露一个服务端时间戳（顶层 `time` ms 或 header.Timenow ms），
                 // 退化为 T2=T3。仅 ret_code==0 时采样。

@@ -1,4 +1,4 @@
-use crate::trade_error_code::gate;
+use crate::trade_error_code::{bybit, gate};
 use crate::TradeRequestType;
 /// TradeEngineResponse trait 提供 trade engine 返回结果的通用访问接口
 use symbol_utils::Exchange;
@@ -155,7 +155,15 @@ pub trait TradeEngineResponse {
             Some(Exchange::Okex) => matches!(self.error_code(), 51008 | 51061),
             Some(Exchange::Bybit) => matches!(
                 self.error_code(),
-                110004 | 110006 | 110007 | 110012 | 110014 | 110044 | 110045 | 170131
+                110004
+                    | 110006
+                    | 110007
+                    | 110012
+                    | 110014
+                    | 110044
+                    | 110045
+                    | 170131
+                    | bybit::PLATFORM_LOAN_AMOUNT_NOT_ENOUGH
             ),
             Some(Exchange::Bitget) => {
                 matches!(
@@ -187,7 +195,16 @@ pub trait TradeEngineResponse {
             Some(Exchange::Gate) => self.error_code() == gate::ORDER_NOT_FOUND,
             Some(Exchange::Bybit) => matches!(
                 self.error_code(),
-                110001 | 110008 | 110010 | 170139 | 170142 | 170143 | 170145 | 170190 | 170191
+                110001
+                    | 110008
+                    | 110010
+                    | 170139
+                    | 170142
+                    | 170143
+                    | 170145
+                    | 170190
+                    | 170191
+                    | bybit::ORDER_NOT_FOUND
             ),
             Some(Exchange::Bitget) => {
                 matches!(
@@ -215,7 +232,16 @@ pub trait TradeEngineResponse {
             Some(Exchange::Gate) => self.error_code() == gate::ORDER_NOT_FOUND,
             Some(Exchange::Bybit) => matches!(
                 self.error_code(),
-                110001 | 110008 | 110010 | 170139 | 170142 | 170143 | 170145 | 170190 | 170191
+                110001
+                    | 110008
+                    | 110010
+                    | 170139
+                    | 170142
+                    | 170143
+                    | 170145
+                    | 170190
+                    | 170191
+                    | bybit::ORDER_NOT_FOUND
             ),
             Some(Exchange::Bitget) => {
                 matches!(
@@ -305,6 +331,21 @@ mod tests {
     }
 
     #[test]
+    fn detects_bybit_order_not_found_cancel() {
+        let bybit_ex = symbol_utils::Exchange::Bybit as u32;
+        let resp = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::BybitCancelMarginOrder as u32,
+            bybit_ex,
+            123,
+            bybit::ORDER_NOT_FOUND,
+        );
+        assert!(resp.is_cancel_request());
+        assert!(resp.is_cancel_rejected());
+        assert!(resp.is_cancel_not_cancellable());
+    }
+
+    #[test]
     fn detects_binance_insufficient_margin_like_codes() {
         let binance_ex = symbol_utils::Exchange::Binance as u32;
         let balance_insufficient = TradeEngineResponseMessage::new(400, 1, binance_ex, 123, -2018);
@@ -319,6 +360,21 @@ mod tests {
         assert!(max_borrowable_exceeded.is_insufficient_margin());
         assert!(loanable_unavailable.is_insufficient_margin());
         assert!(collateral_cap.is_insufficient_margin());
+    }
+
+    #[test]
+    fn detects_bybit_platform_loan_amount_not_enough_as_insufficient_margin() {
+        let resp = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::BybitNewMarginOrder as u32,
+            symbol_utils::Exchange::Bybit as u32,
+            123,
+            bybit::PLATFORM_LOAN_AMOUNT_NOT_ENOUGH,
+        );
+
+        assert!(resp.is_open_request());
+        assert!(resp.is_open_rejected());
+        assert!(resp.is_insufficient_margin());
     }
 
     #[test]
