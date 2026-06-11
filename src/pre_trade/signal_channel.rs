@@ -706,6 +706,7 @@ fn handle_trade_signal(signal: TradeSignal, receive_us: i64) {
                     }
                 }
 
+                let mut pending_limit_prechecked = false;
                 match open_ctx.get_order_type() {
                     Some(order_type) => {
                         if order_type.is_limit() {
@@ -715,6 +716,7 @@ fn handle_trade_signal(signal: TradeSignal, receive_us: i64) {
                                 log_pending_limit_summary("ArbOpen", None, &symbol, side, &e);
                                 return;
                             }
+                            pending_limit_prechecked = true;
                         }
                     }
                     None => {
@@ -731,7 +733,7 @@ fn handle_trade_signal(signal: TradeSignal, receive_us: i64) {
                 let _ = strategy_mgr.borrow_mut().ensure_arb_hedge_strategy(&symbol);
                 let strategy_id = StrategyManager::generate_strategy_id();
                 let mut strategy = ArbOpenStrategy::new(strategy_id);
-                strategy.handle_arb_open_ctx(open_ctx);
+                strategy.handle_arb_open_ctx(open_ctx, pending_limit_prechecked);
                 record_arb_open_latency(
                     "pt_handle_strategy_total",
                     get_timestamp_us().saturating_sub(handle_start_us),

@@ -212,6 +212,7 @@ impl ArbCloseStrategy {
             price_offset: ctx.price_offset,
             reduce_only: true,
             client_order_id: Some(client_order_id),
+            pending_limit_prechecked: false,
             close_ts: 0,
             mkt_ts,
             signal_type_u8: SignalType::ArbClose as u8,

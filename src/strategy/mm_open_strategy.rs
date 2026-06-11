@@ -50,6 +50,7 @@ impl MarketMakerOpenStrategy {
             price_offset: ctx.price_offset,
             reduce_only: false,
             client_order_id: None,
+            pending_limit_prechecked: false,
             close_ts: 0,
             mkt_ts: ctx.opening_leg.ts,
             signal_type_u8: SignalType::MMOpen as u8,

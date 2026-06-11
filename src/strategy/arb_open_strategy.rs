@@ -38,7 +38,7 @@ impl ArbOpenStrategy {
         }
     }
 
-    pub fn handle_arb_open_ctx(&mut self, ctx: ArbOpenCtx) {
+    pub fn handle_arb_open_ctx(&mut self, ctx: ArbOpenCtx, pending_limit_prechecked: bool) {
         let close_ts = if ctx.hedge_timeout_us > 0 {
             let base_ts = if ctx.create_ts > 0 {
                 ctx.create_ts
@@ -76,6 +76,7 @@ impl ArbOpenStrategy {
             price_offset: ctx.price_offset,
             reduce_only: false,
             client_order_id: None,
+            pending_limit_prechecked,
             close_ts,
             mkt_ts,
             signal_type_u8: SignalType::ArbOpen as u8,
@@ -92,7 +93,7 @@ impl ArbOpenStrategy {
     }
 
     fn handle_arb_open_signal(&mut self, ctx: ArbOpenCtx) {
-        self.handle_arb_open_ctx(ctx);
+        self.handle_arb_open_ctx(ctx, false);
     }
 
     fn apply_order_update(&mut self, order_update: &dyn OrderUpdate) -> bool {

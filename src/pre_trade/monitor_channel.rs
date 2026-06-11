@@ -976,6 +976,10 @@ impl ArbStartupNetGate {
 struct BasicState {
     // asset -> (open_qty, hedge_qty), both in base units
     exposures: HashMap<String, (f64, f64)>,
+    // asset -> net exposure valued in USDT at cache-refresh time.
+    exposure_usdt_by_asset: HashMap<String, f64>,
+    // asset -> mark price in USDT at cache-refresh time.
+    mark_usdt_by_asset: HashMap<String, f64>,
     total_equity_usdt: f64,
     abs_total_exposure_usdt: f64,
     total_position_usdt: f64,
@@ -1003,6 +1007,28 @@ struct ArbHedgeExposureProjection {
     total_current_exposure_usdt: f64,
     total_next_exposure_usdt: f64,
     total_limit_usdt: f64,
+}
+
+#[derive(Debug, Clone)]
+pub enum OpenExposureRiskError {
+    Symbol(String),
+    Total(String),
+}
+
+struct MaxPosUCheckCtx<'a> {
+    symbol: &'a str,
+    base_asset: &'a str,
+    venue: TradingVenue,
+    price_source: &'static str,
+    mark_symbol: &'a str,
+    price: f64,
+    qty_unit: &'static str,
+    raw_qty: f64,
+    fut_symbol_key: Option<&'a str>,
+    qty_multiplier: Option<f64>,
+    current_open_qty: f64,
+    add_base_qty: f64,
+    max_pos_u: f64,
 }
 
 impl MonitorChannel {
@@ -2075,12 +2101,7 @@ impl MonitorChannel {
             if asset == "USDT" {
                 continue;
             }
-            let mark_symbol = price_mapper.asset_to_price_symbol(asset);
-            let mark = inner
-                .price_table
-                .borrow()
-                .mark_price(&mark_symbol)
-                .unwrap_or(0.0);
+            let mark = state.mark_usdt_by_asset.get(asset).copied().unwrap_or(0.0);
             if !(mark.is_finite() && mark > 0.0) {
                 continue;
             }
@@ -2096,10 +2117,10 @@ impl MonitorChannel {
         }
 
         let mark_symbol = price_mapper.asset_to_price_symbol(&base_asset_upper);
-        let mark = inner
-            .price_table
-            .borrow()
-            .mark_price(&mark_symbol)
+        let mark = state
+            .mark_usdt_by_asset
+            .get(&base_asset_upper)
+            .copied()
             .ok_or_else(|| {
                 format!(
                     "symbol={} 缺少 USDT 标记价格，无法校验 Exec 截面失衡",
@@ -2709,6 +2730,16 @@ impl MonitorChannel {
         }
 
         let total_equity_usdt: f64 = scope_equity_usdt.values().sum();
+        let mut exposure_usdt_by_asset = HashMap::new();
+        let mut mark_usdt_by_asset = HashMap::new();
+        for (symbol, price) in &price_snap {
+            if !(price.mark_price.is_finite() && price.mark_price > 0.0) {
+                continue;
+            }
+            if let Some(asset) = extract_base_asset(symbol) {
+                mark_usdt_by_asset.insert(asset.to_uppercase(), price.mark_price);
+            }
+        }
         let mut total_position_usdt = 0.0;
         let mut abs_total_exposure_usdt = 0.0;
         for (asset, (open_qty, hedge_qty)) in &exposures {
@@ -2719,12 +2750,17 @@ impl MonitorChannel {
             if mark <= 0.0 {
                 continue;
             }
+            let net_exposure_usdt = (open_qty + hedge_qty) * mark;
+            mark_usdt_by_asset.insert(asset.clone(), mark);
+            exposure_usdt_by_asset.insert(asset.clone(), net_exposure_usdt);
             total_position_usdt += (open_qty.abs() + hedge_qty.abs()) * mark;
-            abs_total_exposure_usdt += ((open_qty + hedge_qty) * mark).abs();
+            abs_total_exposure_usdt += net_exposure_usdt.abs();
         }
 
         BasicState {
             exposures,
+            exposure_usdt_by_asset,
+            mark_usdt_by_asset,
             total_equity_usdt,
             abs_total_exposure_usdt,
             total_position_usdt,
@@ -3157,77 +3193,11 @@ impl MonitorChannel {
     /// 检查当前symbol的敞口是否超过总资产比例限制
     pub fn check_symbol_exposure(&self, symbol: &str) -> Result<(), String> {
         Self::with_inner(|inner| {
-            let loader = PreTradeParamsLoader::instance();
-            let limit = loader.max_symbol_exposure_ratio();
-            if limit <= 0.0 {
-                return Ok(());
-            }
-            let max_pos_u = loader.max_pos_u_for_symbol(inner.open_venue, symbol);
-            if max_pos_u <= f64::EPSILON {
-                return Err("max_pos_u 配置无效，无法校验敞口比例".to_string());
-            }
-
-            let symbol_upper = symbol.to_uppercase();
-            let Some(base_asset) = extract_base_asset(&symbol_upper) else {
-                return Err(format!(
-                    "无法识别 symbol={} 的基础资产，无法校验敞口比例",
-                    symbol
-                ));
-            };
-
-            let base_asset_upper = base_asset.to_uppercase();
-            let net_exposure = Self::with_basic_state_cached(|state| {
-                state
-                    .exposures
-                    .get(&base_asset_upper)
-                    .map(|(open, hedge)| open + hedge)
-                    .unwrap_or(0.0)
-            });
-
-            let price_mapper = create_symbol_mapper(Self::mark_price_exchange_for_venues(
+            Self::check_symbol_exposure_cached_inner(
                 inner.open_venue,
-                inner.hedge_venue,
-            ));
-            let mark = if base_asset.eq_ignore_ascii_case("USDT") {
-                1.0
-            } else {
-                let sym = price_mapper.asset_to_price_symbol(&base_asset);
-                let snap = inner.price_table.borrow().snapshot();
-                snap.get(&sym).map(|e| e.mark_price).unwrap_or(0.0)
-            };
-
-            let exposure_usdt = if mark > 0.0 { net_exposure * mark } else { 0.0 };
-
-            if mark == 0.0 && net_exposure != 0.0 {
-                let ratio = net_exposure.abs() / max_pos_u;
-                if ratio > limit {
-                    debug!(
-                        "资产 {} 敞口占比(数量) {:.4}% 超过阈值 {:.2}% (敞口qty={:.6}, max_pos_u={:.6})",
-                        base_asset,
-                        ratio * 100.0,
-                        limit * 100.0,
-                        net_exposure,
-                        max_pos_u
-                    );
-                    return Err(format!("symbol={} 敞口比例超过限制 {}", symbol, limit));
-                }
-                return Ok(());
-            }
-
-            let ratio = exposure_usdt.abs() / max_pos_u;
-            if ratio > limit {
-                debug!(
-                    "资产 {} 敞口占比 {:.4}% 超过阈值 {:.2}% (敞口USDT={:.6}, max_pos_u={:.6})",
-                    base_asset,
-                    ratio * 100.0,
-                    limit * 100.0,
-                    exposure_usdt,
-                    max_pos_u
-                );
-                return Err(format!("symbol={} 敞口比例超过限制 {}", symbol, limit));
-            }
-
-            Ok(())
+                symbol,
+                PreTradeParamsLoader::instance().max_symbol_exposure_ratio(),
+            )
         })
     }
 
@@ -3235,36 +3205,176 @@ impl MonitorChannel {
     pub fn check_total_exposure(&self) -> Result<(), String> {
         Self::with_inner(|_inner| {
             let limit = PreTradeParamsLoader::instance().max_total_exposure_ratio();
-            if limit <= 0.0 {
-                return Ok(());
-            }
+            Self::with_basic_state_cached(|state| {
+                Self::check_total_exposure_from_state(limit, state)
+            })
+        })
+    }
 
-            let (total_equity, abs_total_usdt) = Self::with_basic_state_cached(|state| {
-                (state.total_equity_usdt, state.abs_total_exposure_usdt)
-            });
+    /// 检查 open 热路径所需的 symbol/total exposure。只读取一次 BasicState cache。
+    pub fn check_open_exposure(&self, symbol: &str) -> Result<(), OpenExposureRiskError> {
+        Self::with_inner(|inner| {
+            let loader = PreTradeParamsLoader::instance();
+            let symbol_limit = loader.max_symbol_exposure_ratio();
+            let total_limit = loader.max_total_exposure_ratio();
+            let max_pos_u = if symbol_limit > 0.0 {
+                let max_pos_u = loader.max_pos_u_for_symbol(inner.open_venue, symbol);
+                if max_pos_u <= f64::EPSILON {
+                    return Err(OpenExposureRiskError::Symbol(
+                        "max_pos_u 配置无效，无法校验敞口比例".to_string(),
+                    ));
+                }
+                Some(max_pos_u)
+            } else {
+                None
+            };
+            let symbol_upper = symbol.to_uppercase();
+            let base_asset = if symbol_limit > 0.0 {
+                Some(extract_base_asset(&symbol_upper).ok_or_else(|| {
+                    OpenExposureRiskError::Symbol(format!(
+                        "无法识别 symbol={} 的基础资产，无法校验敞口比例",
+                        symbol
+                    ))
+                })?)
+            } else {
+                None
+            };
+            let base_asset_upper = base_asset.as_ref().map(|asset| asset.to_uppercase());
 
-            if total_equity <= f64::EPSILON {
-                return Err("账户总权益(eq，含UPL如有合约)近似为 0，无法计算总敞口占比".to_string());
-            }
+            Self::with_basic_state_cached(|state| {
+                if let (Some(base_asset), Some(base_asset_upper), Some(max_pos_u)) =
+                    (base_asset.as_ref(), base_asset_upper.as_ref(), max_pos_u)
+                {
+                    Self::check_symbol_exposure_from_state(
+                        symbol,
+                        base_asset,
+                        base_asset_upper,
+                        symbol_limit,
+                        max_pos_u,
+                        state,
+                    )
+                    .map_err(OpenExposureRiskError::Symbol)?;
+                }
+                Self::check_total_exposure_from_state(total_limit, state)
+                    .map_err(OpenExposureRiskError::Total)
+            })
+        })
+    }
 
-            let ratio = abs_total_usdt / total_equity;
+    fn check_symbol_exposure_cached_inner(
+        open_venue: TradingVenue,
+        symbol: &str,
+        limit: f64,
+    ) -> Result<(), String> {
+        if limit <= 0.0 {
+            return Ok(());
+        }
+        let max_pos_u = PreTradeParamsLoader::instance().max_pos_u_for_symbol(open_venue, symbol);
+        if max_pos_u <= f64::EPSILON {
+            return Err("max_pos_u 配置无效，无法校验敞口比例".to_string());
+        }
+
+        let symbol_upper = symbol.to_uppercase();
+        let Some(base_asset) = extract_base_asset(&symbol_upper) else {
+            return Err(format!(
+                "无法识别 symbol={} 的基础资产，无法校验敞口比例",
+                symbol
+            ));
+        };
+
+        let base_asset_upper = base_asset.to_uppercase();
+        Self::with_basic_state_cached(|state| {
+            Self::check_symbol_exposure_from_state(
+                symbol,
+                &base_asset,
+                &base_asset_upper,
+                limit,
+                max_pos_u,
+                state,
+            )
+        })
+    }
+
+    fn check_symbol_exposure_from_state(
+        symbol: &str,
+        base_asset: &str,
+        base_asset_upper: &str,
+        limit: f64,
+        max_pos_u: f64,
+        state: &BasicState,
+    ) -> Result<(), String> {
+        let net_exposure = state
+            .exposures
+            .get(base_asset_upper)
+            .map(|(open, hedge)| open + hedge)
+            .unwrap_or(0.0);
+        let exposure_usdt = if base_asset.eq_ignore_ascii_case("USDT") {
+            Some(net_exposure)
+        } else {
+            state.exposure_usdt_by_asset.get(base_asset_upper).copied()
+        };
+
+        let Some(exposure_usdt) = exposure_usdt else {
+            let ratio = net_exposure.abs() / max_pos_u;
             if ratio > limit {
                 debug!(
-                    "总敞口占比 {:.4}% 超过阈值 {:.2}% (总敞口USDT={:.6}, 权益eq={:.6})",
+                    "资产 {} 敞口占比(数量) {:.4}% 超过阈值 {:.2}% (敞口qty={:.6}, max_pos_u={:.6})",
+                    base_asset,
                     ratio * 100.0,
                     limit * 100.0,
-                    abs_total_usdt,
-                    total_equity
+                    net_exposure,
+                    max_pos_u
                 );
-                return Err(format!(
-                    "总敞口比例 {:.2}% 超过限制 {:.2}%",
-                    ratio * 100.0,
-                    limit * 100.0
-                ));
+                return Err(format!("symbol={} 敞口比例超过限制 {}", symbol, limit));
             }
+            return Ok(());
+        };
 
-            Ok(())
-        })
+        let ratio = exposure_usdt.abs() / max_pos_u;
+        if ratio > limit {
+            debug!(
+                "资产 {} 敞口占比 {:.4}% 超过阈值 {:.2}% (敞口USDT={:.6}, max_pos_u={:.6})",
+                base_asset,
+                ratio * 100.0,
+                limit * 100.0,
+                exposure_usdt,
+                max_pos_u
+            );
+            return Err(format!("symbol={} 敞口比例超过限制 {}", symbol, limit));
+        }
+
+        Ok(())
+    }
+
+    fn check_total_exposure_from_state(limit: f64, state: &BasicState) -> Result<(), String> {
+        if limit <= 0.0 {
+            return Ok(());
+        }
+
+        let total_equity = state.total_equity_usdt;
+        let abs_total_usdt = state.abs_total_exposure_usdt;
+
+        if total_equity <= f64::EPSILON {
+            return Err("账户总权益(eq，含UPL如有合约)近似为 0，无法计算总敞口占比".to_string());
+        }
+
+        let ratio = abs_total_usdt / total_equity;
+        if ratio > limit {
+            debug!(
+                "总敞口占比 {:.4}% 超过阈值 {:.2}% (总敞口USDT={:.6}, 权益eq={:.6})",
+                ratio * 100.0,
+                limit * 100.0,
+                abs_total_usdt,
+                total_equity
+            );
+            return Err(format!(
+                "总敞口比例 {:.2}% 超过限制 {:.2}%",
+                ratio * 100.0,
+                limit * 100.0
+            ));
+        }
+
+        Ok(())
     }
 
     fn arb_hedge_exposure_projection_inner(
@@ -3285,18 +3395,13 @@ impl MonitorChannel {
         })?;
         let base_asset_upper = base_asset.to_uppercase();
         let state = Self::basic_state_cached();
-        let price_mapper = create_symbol_mapper(Self::mark_price_exchange_for_venues(
-            inner.open_venue,
-            inner.hedge_venue,
-        ));
         let mark = if base_asset.eq_ignore_ascii_case("USDT") {
             1.0
         } else {
-            let mark_symbol = price_mapper.asset_to_price_symbol(&base_asset);
-            let price = inner
-                .price_table
-                .borrow()
-                .mark_price(&mark_symbol)
+            let price = state
+                .mark_usdt_by_asset
+                .get(&base_asset_upper)
+                .copied()
                 .unwrap_or(0.0);
             if price <= 0.0 {
                 return Err(format!(
@@ -3418,59 +3523,19 @@ impl MonitorChannel {
     ) -> Result<(), String> {
         Self::with_inner(|inner| {
             let venue = venue_override.unwrap_or(inner.open_venue);
-            let max_pos_u = PreTradeParamsLoader::instance().max_pos_u_for_symbol(venue, symbol);
-            if max_pos_u.is_nan() || max_pos_u <= 0.0 {
-                panic!("max_pos_u not set!!");
-            }
-
-            let open_venue = venue;
             let symbol_upper = symbol.to_uppercase();
             let base_asset = extract_base_asset(&symbol_upper).ok_or_else(|| {
                 format!("无法识别 symbol={} 的基础资产，无法校验 max_pos_u", symbol)
             })?;
-
-            let current_open_qty = Self::get_position_qty_inner(inner, symbol, open_venue);
-
-            let base_upper = base_asset.to_uppercase();
-            let price_mapper = create_symbol_mapper(Self::mark_price_exchange_for_venues(
-                inner.open_venue,
-                inner.hedge_venue,
-            ));
-            let mark_symbol = price_mapper.asset_to_price_symbol(&base_upper);
-            let price_from_table = {
-                let table = inner.price_table.borrow();
-                table.mark_price(&mark_symbol)
-            };
-            let price = price_from_table.or({
-                if price_hint > 0.0 {
-                    Some(price_hint)
-                } else {
-                    None
-                }
-            });
-
-            let Some(price) = price else {
-                warn!("symbol={} 缺少 USDT 标记价格，无法校验 max_pos_u", symbol);
-                return Err(format!(
-                    "symbol={} 缺少价格信息，无法校验 max_pos_u",
-                    symbol
-                ));
-            };
-
-            let price_source = if price_from_table.is_some() {
-                "mark_price_table"
-            } else {
-                "price_hint"
-            };
-            let (qty_unit, fut_symbol_key, qty_multiplier) = match open_venue {
+            let (qty_unit, fut_symbol_key, qty_multiplier) = match venue {
                 TradingVenue::BinanceFutures => {
                     ("contracts(mult=1)", Some(symbol_upper.clone()), Some(1.0))
                 }
                 TradingVenue::OkexFutures | TradingVenue::GateFutures => {
-                    let symbol_key = min_qty_symbol_key(open_venue, &symbol_upper);
+                    let symbol_key = min_qty_symbol_key(venue, &symbol_upper);
                     let mult = inner
                         .venue_min_qty_tables
-                        .get(&open_venue)
+                        .get(&venue)
                         .and_then(|t| t.contract_multiplier_opt(&symbol_key));
                     ("contracts", Some(symbol_key), mult)
                 }
@@ -3479,7 +3544,7 @@ impl MonitorChannel {
 
             let add_base_qty = match Self::order_qty_to_base_checked(
                 inner,
-                open_venue,
+                venue,
                 symbol,
                 additional_qty,
             ) {
@@ -3489,7 +3554,7 @@ impl MonitorChannel {
                             "max_pos_u check qty convert failed: symbol={} base_asset={} venue={:?} qty_unit={} raw_qty={:.8} fut_symbol_key={:?} qty_multiplier={:?} err={}",
                             symbol,
                             base_asset,
-                            open_venue,
+                            venue,
                             qty_unit,
                             additional_qty,
                             fut_symbol_key,
@@ -3499,55 +3564,181 @@ impl MonitorChannel {
                     return Err(e);
                 }
             };
-            let next_qty = current_open_qty + add_base_qty;
-            let current_usdt = current_open_qty.abs() * price;
-            let order_usdt = add_base_qty.abs() * price;
-            let next_usdt = next_qty.abs() * price;
-            let limit_eps = 1e-6_f64;
-
-            if next_usdt <= current_usdt + limit_eps {
-                return Ok(());
-            }
-
-            if next_usdt > max_pos_u + limit_eps {
-                info!(
-                    "max_pos_u check reject detail: symbol={} base_asset={} venue={:?} price_source={} mark_symbol={} price={:.8} qty_unit={} raw_qty={:.8} fut_symbol_key={:?} qty_multiplier={:?} current_open_qty(base)={:.8} add_base_qty={:.8} next_qty(base)={:.8} current_usdt={:.4} order_usdt={:.4} next_usdt={:.4} max_pos_u={:.4}",
-                    symbol,
-                    base_asset,
-                    open_venue,
-                    price_source,
-                    mark_symbol,
-                    price,
-                    qty_unit,
-                    additional_qty,
-                    fut_symbol_key,
-                    qty_multiplier,
-                    current_open_qty,
-                    add_base_qty,
-                    next_qty,
-                    current_usdt,
-                    order_usdt,
-                    next_usdt,
-                    max_pos_u
-                );
-                warn!(
-                    "symbol={} 当前持仓={:.6}({:.4}USDT) 下单数量={:.6}({:.4}USDT) 下单后持仓={:.4}USDT 超过阈值 {:.4}USDT",
-                    symbol,
-                    current_open_qty,
-                    current_usdt,
-                    add_base_qty,
-                    order_usdt,
-                    next_usdt,
-                    max_pos_u
-                );
-                return Err(format!(
-                    "symbol={} 下单后持仓 {:.4}USDT 超过阈值 {:.4}USDT",
-                    symbol, next_usdt, max_pos_u
-                ));
-            }
-
-            Ok(())
+            let current_open_qty = Self::get_position_qty_inner(inner, symbol, venue);
+            Self::ensure_max_pos_u_base_delta_inner(
+                inner,
+                symbol,
+                venue,
+                current_open_qty,
+                add_base_qty,
+                price_hint,
+                qty_unit,
+                additional_qty,
+                fut_symbol_key.as_deref(),
+                qty_multiplier,
+            )
         })
+    }
+
+    pub fn ensure_max_pos_u_for_base_delta(
+        &self,
+        symbol: &str,
+        venue: TradingVenue,
+        current_open_qty: f64,
+        add_base_qty: f64,
+        price_hint: f64,
+        raw_qty: f64,
+        qty_multiplier: f64,
+    ) -> Result<(), String> {
+        Self::with_inner(|inner| {
+            let symbol_upper = symbol.to_uppercase();
+            let fut_symbol_key = match venue {
+                TradingVenue::BinanceFutures => Some(symbol_upper.clone()),
+                TradingVenue::OkexFutures | TradingVenue::GateFutures => {
+                    Some(min_qty_symbol_key(venue, &symbol_upper))
+                }
+                _ => None,
+            };
+            let qty_unit = match venue {
+                TradingVenue::BinanceFutures => "contracts(mult=1)",
+                TradingVenue::OkexFutures | TradingVenue::GateFutures => "contracts",
+                _ => "base_qty",
+            };
+            Self::ensure_max_pos_u_base_delta_inner(
+                inner,
+                symbol,
+                venue,
+                current_open_qty,
+                add_base_qty,
+                price_hint,
+                qty_unit,
+                raw_qty,
+                fut_symbol_key.as_deref(),
+                Some(qty_multiplier),
+            )
+        })
+    }
+
+    fn ensure_max_pos_u_base_delta_inner(
+        inner: &MonitorChannelInner,
+        symbol: &str,
+        venue: TradingVenue,
+        current_open_qty: f64,
+        add_base_qty: f64,
+        price_hint: f64,
+        qty_unit: &'static str,
+        raw_qty: f64,
+        fut_symbol_key: Option<&str>,
+        qty_multiplier: Option<f64>,
+    ) -> Result<(), String> {
+        let max_pos_u = PreTradeParamsLoader::instance().max_pos_u_for_symbol(venue, symbol);
+        if max_pos_u.is_nan() || max_pos_u <= 0.0 {
+            panic!("max_pos_u not set!!");
+        }
+
+        let symbol_upper = symbol.to_uppercase();
+        let base_asset = extract_base_asset(&symbol_upper)
+            .ok_or_else(|| format!("无法识别 symbol={} 的基础资产，无法校验 max_pos_u", symbol))?;
+        let base_upper = base_asset.to_uppercase();
+        let price_mapper = create_symbol_mapper(Self::mark_price_exchange_for_venues(
+            inner.open_venue,
+            inner.hedge_venue,
+        ));
+        let mark_symbol = price_mapper.asset_to_price_symbol(&base_upper);
+        let price_from_table = if base_upper == "USDT" {
+            Some(1.0)
+        } else {
+            Self::with_basic_state_cached(|state| {
+                state.mark_usdt_by_asset.get(&base_upper).copied()
+            })
+        };
+        let price = price_from_table.or({
+            if price_hint > 0.0 {
+                Some(price_hint)
+            } else {
+                None
+            }
+        });
+
+        let Some(price) = price else {
+            warn!("symbol={} 缺少 USDT 标记价格，无法校验 max_pos_u", symbol);
+            return Err(format!(
+                "symbol={} 缺少价格信息，无法校验 max_pos_u",
+                symbol
+            ));
+        };
+
+        let price_source = if price_from_table.is_some() {
+            "mark_price_table"
+        } else {
+            "price_hint"
+        };
+        Self::ensure_max_pos_u_projected(MaxPosUCheckCtx {
+            symbol,
+            base_asset: &base_asset,
+            venue,
+            price_source,
+            mark_symbol: &mark_symbol,
+            price,
+            qty_unit,
+            raw_qty,
+            fut_symbol_key,
+            qty_multiplier,
+            current_open_qty,
+            add_base_qty,
+            max_pos_u,
+        })
+    }
+
+    fn ensure_max_pos_u_projected(ctx: MaxPosUCheckCtx<'_>) -> Result<(), String> {
+        let next_qty = ctx.current_open_qty + ctx.add_base_qty;
+        let current_usdt = ctx.current_open_qty.abs() * ctx.price;
+        let order_usdt = ctx.add_base_qty.abs() * ctx.price;
+        let next_usdt = next_qty.abs() * ctx.price;
+        let limit_eps = 1e-6_f64;
+
+        if next_usdt <= current_usdt + limit_eps {
+            return Ok(());
+        }
+
+        if next_usdt > ctx.max_pos_u + limit_eps {
+            info!(
+                "max_pos_u check reject detail: symbol={} base_asset={} venue={:?} price_source={} mark_symbol={} price={:.8} qty_unit={} raw_qty={:.8} fut_symbol_key={:?} qty_multiplier={:?} current_open_qty(base)={:.8} add_base_qty={:.8} next_qty(base)={:.8} current_usdt={:.4} order_usdt={:.4} next_usdt={:.4} max_pos_u={:.4}",
+                ctx.symbol,
+                ctx.base_asset,
+                ctx.venue,
+                ctx.price_source,
+                ctx.mark_symbol,
+                ctx.price,
+                ctx.qty_unit,
+                ctx.raw_qty,
+                ctx.fut_symbol_key,
+                ctx.qty_multiplier,
+                ctx.current_open_qty,
+                ctx.add_base_qty,
+                next_qty,
+                current_usdt,
+                order_usdt,
+                next_usdt,
+                ctx.max_pos_u
+            );
+            warn!(
+                "symbol={} 当前持仓={:.6}({:.4}USDT) 下单数量={:.6}({:.4}USDT) 下单后持仓={:.4}USDT 超过阈值 {:.4}USDT",
+                ctx.symbol,
+                ctx.current_open_qty,
+                current_usdt,
+                ctx.add_base_qty,
+                order_usdt,
+                next_usdt,
+                ctx.max_pos_u
+            );
+            return Err(format!(
+                "symbol={} 下单后持仓 {:.4}USDT 超过阈值 {:.4}USDT",
+                ctx.symbol, next_usdt, ctx.max_pos_u
+            ));
+        }
+
+        Ok(())
     }
 
     /// 获取指定交易对和交易场所的持仓数量（带符号）
@@ -4127,6 +4318,82 @@ mod tests {
         assert!(MonitorChannel::instance()
             .ensure_max_pos_u("FIL-USDT-SWAP", 2.0, 100.0)
             .is_err());
+    }
+
+    #[test]
+    fn ensure_max_pos_u_base_delta_uses_cached_mark_until_refresh() {
+        let open_leg = LegMgr::Futures {
+            exchange: Exchange::Binance,
+            um: Rc::new(RefCell::new(BasicUmManager::new(Exchange::Binance))),
+            min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Binance))),
+        };
+        let hedge_leg = LegMgr::Margin {
+            exchange: Exchange::Binance,
+            bal: Rc::new(RefCell::new(BasicBalanceManager::new(Exchange::Binance))),
+        };
+
+        let mut price_table = PriceTable::new();
+        price_table.update_mark_price("FILUSDT", 100.0, 0);
+
+        let inner = MonitorChannelInner {
+            open_venue: TradingVenue::BinanceFutures,
+            hedge_venue: TradingVenue::BinanceFutures,
+            arb_mode: ArbMode::CrossArb,
+            open_leg,
+            hedge_leg,
+            usdt_mgrs: HashMap::new(),
+            price_table: Rc::new(RefCell::new(price_table)),
+            venue_min_qty_tables: HashMap::new(),
+            strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
+            orphan_strategy_mgr: Rc::new(RefCell::new(OrphanStrategyManager::new())),
+            order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
+                BinanceAccountMode::Unified,
+            )))),
+            close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            trade_update_seq: 0,
+            latest_account_risk: HashMap::new(),
+            arb_startup_net_gate: ArbStartupNetGate::new(false),
+        };
+
+        MonitorChannel::clear_basic_state_runtime_cache();
+        MONITOR_CHANNEL.with(|mc| {
+            *mc.borrow_mut() = Some(inner);
+        });
+        MonitorChannel::refresh_basic_state_cache();
+
+        MonitorChannel::with_inner(|inner| {
+            inner
+                .price_table
+                .borrow_mut()
+                .update_mark_price("FILUSDT", 1_000.0, 1);
+        });
+        MonitorChannel::mark_basic_state_dirty();
+
+        assert!(MonitorChannel::instance()
+            .ensure_max_pos_u_for_base_delta(
+                "FILUSDT",
+                TradingVenue::BinanceFutures,
+                0.0,
+                2.0,
+                100.0,
+                2.0,
+                1.0,
+            )
+            .is_ok());
+
+        MonitorChannel::refresh_basic_state_cache();
+        let err = MonitorChannel::instance()
+            .ensure_max_pos_u_for_base_delta(
+                "FILUSDT",
+                TradingVenue::BinanceFutures,
+                0.0,
+                2.0,
+                100.0,
+                2.0,
+                1.0,
+            )
+            .unwrap_err();
+        assert!(err.contains("下单后持仓"), "err={err}");
     }
 
     #[test]
@@ -4803,6 +5070,37 @@ mod tests {
         open_bal
             .borrow_mut()
             .apply_balance(&BasicBalanceMsg::create(0, "FIL".to_string(), 20.0));
+        MonitorChannel::mark_basic_state_dirty();
+
+        assert!(MonitorChannel::instance()
+            .check_symbol_exposure("FILUSDT")
+            .is_ok());
+
+        MonitorChannel::refresh_basic_state_cache();
+        let err = MonitorChannel::instance()
+            .check_symbol_exposure("FILUSDT")
+            .unwrap_err();
+        assert!(err.contains("敞口比例超过限制"), "err={err}");
+    }
+
+    #[test]
+    fn symbol_exposure_risk_uses_cached_usdt_value_until_refresh() {
+        let (_, open_bal) = install_binance_arb_margin_open_fixture();
+        open_bal
+            .borrow_mut()
+            .apply_balance(&BasicBalanceMsg::create(0, "FIL".to_string(), 1.0));
+
+        MonitorChannel::refresh_basic_state_cache();
+        assert!(MonitorChannel::instance()
+            .check_symbol_exposure("FILUSDT")
+            .is_ok());
+
+        MonitorChannel::with_inner(|inner| {
+            inner
+                .price_table
+                .borrow_mut()
+                .update_mark_price("FILUSDT", 1_000.0, 1);
+        });
         MonitorChannel::mark_basic_state_dirty();
 
         assert!(MonitorChannel::instance()

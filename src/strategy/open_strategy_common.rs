@@ -1,6 +1,6 @@
 use crate::pre_trade::intra_bwd_symbol_list::IntraBwdSymbolList;
 use crate::pre_trade::log_throttle::log_pending_limit_summary;
-use crate::pre_trade::monitor_channel::MonitorChannel;
+use crate::pre_trade::monitor_channel::{MonitorChannel, OpenExposureRiskError};
 use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
 use crate::pre_trade::order_manager::PreTradeOrderRequestExt;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
@@ -277,6 +277,7 @@ pub struct OpenSignalInput {
     pub price_offset: f64,
     pub reduce_only: bool,
     pub client_order_id: Option<i64>,
+    pub pending_limit_prechecked: bool,
     // 绝对 close_ts。0 表示不设置藏仓窗口；>0 表示这笔 ArbOpen 不追求立刻对冲，
     // 而是先藏一段时间，到 close_ts 后才进入可对冲/可关闭的 due 数量。
     pub close_ts: i64,
@@ -918,55 +919,69 @@ pub trait OpenStrategyCommon {
         pre_symbol_position_us = stage_done_us.saturating_sub(precreate_stage_start_us);
         precreate_stage_start_us = stage_done_us;
         if !skip_position_risk_checks {
-            if let Err(e) = monitor.check_symbol_exposure(&symbol) {
-                self.log_open_deleveraging_risk_reject(
-                    "单品种敞口风控",
-                    &e,
-                    &symbol,
-                    venue,
-                    side,
-                    current_open_base_qty,
-                    input.qty,
-                );
-                error!(
-                    "{}: strategy_id={} symbol={} 单品种敞口风控检查失败: {}，标记策略为不活跃",
-                    self.strategy_name(),
-                    self.strategy_id(),
-                    symbol,
-                    e
-                );
-                self.mark_open_strategy_inactive(format!("symbol exposure risk failed: {}", e));
-                return None;
-            }
-            if let Err(e) = monitor.check_total_exposure() {
-                self.log_open_deleveraging_risk_reject(
-                    "总敞口风控",
-                    &e,
-                    &symbol,
-                    venue,
-                    side,
-                    current_open_base_qty,
-                    input.qty,
-                );
-                error!(
-                    "{}: strategy_id={} 总敞口风控检查失败: {}，标记策略为不活跃",
-                    self.strategy_name(),
-                    self.strategy_id(),
-                    e
-                );
-                self.mark_open_strategy_inactive(format!("total exposure risk failed: {}", e));
-                return None;
+            if let Err(err) = monitor.check_open_exposure(&symbol) {
+                match err {
+                    OpenExposureRiskError::Symbol(e) => {
+                        self.log_open_deleveraging_risk_reject(
+                            "单品种敞口风控",
+                            &e,
+                            &symbol,
+                            venue,
+                            side,
+                            current_open_base_qty,
+                            input.qty,
+                        );
+                        error!(
+                            "{}: strategy_id={} symbol={} 单品种敞口风控检查失败: {}，标记策略为不活跃",
+                            self.strategy_name(),
+                            self.strategy_id(),
+                            symbol,
+                            e
+                        );
+                        self.mark_open_strategy_inactive(format!(
+                            "symbol exposure risk failed: {}",
+                            e
+                        ));
+                        return None;
+                    }
+                    OpenExposureRiskError::Total(e) => {
+                        self.log_open_deleveraging_risk_reject(
+                            "总敞口风控",
+                            &e,
+                            &symbol,
+                            venue,
+                            side,
+                            current_open_base_qty,
+                            input.qty,
+                        );
+                        error!(
+                            "{}: strategy_id={} 总敞口风控检查失败: {}，标记策略为不活跃",
+                            self.strategy_name(),
+                            self.strategy_id(),
+                            e
+                        );
+                        self.mark_open_strategy_inactive(format!(
+                            "total exposure risk failed: {}",
+                            e
+                        ));
+                        return None;
+                    }
+                }
             }
         }
         let stage_done_us = get_timestamp_us();
         pre_exposure_us = stage_done_us.saturating_sub(precreate_stage_start_us);
         precreate_stage_start_us = stage_done_us;
         if order_type == OrderType::Limit {
-            let limit_check = match input.order_rate_bucket {
-                OrderRateBucket::ArbOpen => {
-                    monitor.check_pending_limit_order_for_arb(&symbol, side)
+            let limit_check = if input.pending_limit_prechecked {
+                Ok(())
+            } else {
+                match input.order_rate_bucket {
+                    OrderRateBucket::ArbOpen => {
+                        monitor.check_pending_limit_order_for_arb(&symbol, side)
+                    }
+                    _ => monitor.check_pending_limit_order(&symbol, side),
                 }
-                _ => monitor.check_pending_limit_order(&symbol, side),
             };
             if let Err(e) = limit_check {
                 log_pending_limit_summary(
@@ -1157,9 +1172,10 @@ pub trait OpenStrategyCommon {
                 return None;
             }
         };
-        let current_base_qty = monitor.get_position_qty(&symbol, venue);
-        let next_base_qty = current_base_qty + add_base_qty;
-        if !skip_position_risk_checks && next_base_qty.abs() > current_base_qty.abs() + 1e-12_f64 {
+        let next_base_qty = current_open_base_qty + add_base_qty;
+        if !skip_position_risk_checks
+            && next_base_qty.abs() > current_open_base_qty.abs() + 1e-12_f64
+        {
             if let Err(e) = monitor.check_leverage() {
                 self.log_open_deleveraging_risk_reject(
                     "杠杆风控",
@@ -1181,7 +1197,15 @@ pub trait OpenStrategyCommon {
             }
         }
         if !skip_position_risk_checks {
-            if let Err(e) = monitor.ensure_max_pos_u(&symbol, signed_qty, order_price) {
+            if let Err(e) = monitor.ensure_max_pos_u_for_base_delta(
+                &symbol,
+                venue,
+                current_open_base_qty,
+                add_base_qty,
+                order_price,
+                signed_qty,
+                qty_multiplier,
+            ) {
                 self.log_open_deleveraging_risk_reject(
                     "仓位限制风控",
                     &e,
