@@ -10,7 +10,7 @@ usage() {
   cat <<'EOF'
 Usage:
   scripts/rolling_metrics/deploy_rolling_metrics.sh --open-venue <venue> --hedge-venue <venue>
-                                                   [--target auto|sg|hk|jp] [--dir <path>]
+                                                   [--target auto|local|sg|hk|jp] [--dir <path>]
 
 Description:
   - Build rolling_metrics and deploy to:
@@ -21,6 +21,7 @@ Description:
   - Pair placement (--target auto, default) follows the spread_pbs market-data topology:
       local HK : okex/bybit pairs, plus pairs with binance-futures mirrored to HK
       remote JP: binance/bitget/gate pairs
+  - --target local: force local deploy to this host.
   - --target sg: force remote SG deploy (ubuntu@47.131.162.78 + aws-sg.pem).
                  Use for pairs whose data is fanned out by the SG bridge
                  (bybit-margin/futures, binance-futures).
@@ -157,9 +158,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "${TARGET_HOST,,}" in
-  auto|sg|hk|jp) TARGET_HOST="${TARGET_HOST,,}" ;;
+  auto|local|sg|hk|jp) TARGET_HOST="${TARGET_HOST,,}" ;;
   *)
-    echo "[ERROR] --target must be one of: auto, sg, hk, jp (got: $TARGET_HOST)" >&2
+    echo "[ERROR] --target must be one of: auto, local, sg, hk, jp (got: $TARGET_HOST)" >&2
     exit 1 ;;
 esac
 
@@ -182,6 +183,8 @@ if [[ "$TARGET_HOST" == "auto" ]]; then
   DEPLOY_LOCATION="$(deploy_location_for_pair "$OPEN_VENUE" "$HEDGE_VENUE" || true)"
 else
   case "$TARGET_HOST" in
+    local)
+      DEPLOY_LOCATION="local" ;;
     sg)
       if ! is_sg_available_venue "$OPEN_VENUE" || ! is_sg_available_venue "$HEDGE_VENUE"; then
         echo "[ERROR] --target sg requires both venues to be in SG bridge fan-out (bybit-*, binance-futures)" >&2

@@ -23,7 +23,7 @@ usage() {
   - 适用于 model_pub / fusion_factor_pub 共用的阈值/amount/factor_plan/zscore 服务。
   - 默认监听 6322，对应 config/model_pub.toml 里的 tlen_server_base_url=http://127.0.0.1:6322。
   - 可选写入 nginx mapping（默认 /shared/<env-name>/tlen）。
-  - env-name 仅要求是非空目录名，用于 JP2 这类主机级共享服务。
+  - env-name 仅要求是非空目录名，用于主机级共享服务。
 
 示例:
   scripts/deploy_tlen_config_server.sh --env-name tlen_config_shared

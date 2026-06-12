@@ -23,12 +23,16 @@ Usage:
 Sources:
   okex-intra-arb01
   binance-intra-arb01
+  gate-intra-arb01
+  bitget-intra-arb01
+  bitget-gate-cross-arb01
   bybit-intra-arb01
 
 Description:
-  Builds the latest order_export binary locally, copies it to each selected
-  intra host, runs a read-only export against the remote persist_manager DB,
-  and fetches selected parquet files back to this machine.
+  Builds the latest order_export binary locally, runs it for each selected
+  source, and fetches selected parquet files back to this machine. Local
+  sources run without SSH; remote sources copy the binary and run read-only
+  against the remote persist_manager DB.
 
   Bad-format uniform order records are dropped by order_export's parquet
   decoder. The currently running persist sync/read services are not touched.
@@ -54,12 +58,18 @@ Options:
 Per-source SSH overrides:
   OKEX_SSH_TARGET, OKEX_SSH_KEY, OKEX_REMOTE_HOME
   BINANCE_SSH_TARGET, BINANCE_SSH_KEY, BINANCE_REMOTE_HOME
+  GATE_SSH_TARGET, GATE_SSH_KEY, GATE_REMOTE_HOME
+  BITGET_SSH_TARGET, BITGET_SSH_KEY, BITGET_REMOTE_HOME
+  BITGET_GATE_CROSS_SSH_TARGET, BITGET_GATE_CROSS_SSH_KEY, BITGET_GATE_CROSS_REMOTE_HOME
   BYBIT_SSH_TARGET, BYBIT_SSH_KEY, BYBIT_REMOTE_HOME
 
 Defaults:
-  okex:    fanghaizhou@47.238.128.48, key aws-jp-aws-hfq.pem, home /home/fanghaizhou
-  binance: ubuntu@52.68.224.23,      key aws-jp-srv-1.pem,    home /home/ubuntu
-  bybit:   ubuntu@47.131.162.78,     key aws-sg.pem,          home /home/ubuntu
+  binance:        local, home /home/ubuntu
+  gate:           local, home /home/ubuntu
+  bitget:         local, home /home/ubuntu
+  bitget-gate:    local, home /home/ubuntu
+  okex:           fanghaizhou@47.238.128.48, key from OKEX_SSH_KEY, home /home/fanghaizhou
+  bybit:          ubuntu@47.131.162.78, key aws-sg.pem, home /home/ubuntu
 EOF
 }
 
@@ -110,7 +120,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ ${#SOURCES[@]} -eq 0 ]]; then
-  SOURCES=(okex-intra-arb01 binance-intra-arb01 bybit-intra-arb01)
+  SOURCES=(binance-intra-arb01 gate-intra-arb01 bitget-intra-arb01 bitget-gate-cross-arb01)
 fi
 
 if [[ -z "$START_TS" ]]; then
@@ -150,7 +160,13 @@ source_target() {
     okex-intra-arb01)
       echo "${OKEX_SSH_TARGET:-fanghaizhou@47.238.128.48}" ;;
     binance-intra-arb01)
-      echo "${BINANCE_SSH_TARGET:-ubuntu@52.68.224.23}" ;;
+      echo "${BINANCE_SSH_TARGET:-local}" ;;
+    gate-intra-arb01)
+      echo "${GATE_SSH_TARGET:-local}" ;;
+    bitget-intra-arb01)
+      echo "${BITGET_SSH_TARGET:-local}" ;;
+    bitget-gate-cross-arb01)
+      echo "${BITGET_GATE_CROSS_SSH_TARGET:-local}" ;;
     bybit-intra-arb01)
       echo "${BYBIT_SSH_TARGET:-ubuntu@47.131.162.78}" ;;
     *)
@@ -163,9 +179,15 @@ source_key() {
   local source="$1"
   case "$source" in
     okex-intra-arb01)
-      echo "${OKEX_SSH_KEY:-${ROOT_DIR}/aws-jp-aws-hfq.pem}" ;;
+      echo "${OKEX_SSH_KEY:-}" ;;
     binance-intra-arb01)
-      echo "${BINANCE_SSH_KEY:-${ROOT_DIR}/aws-jp-srv-1.pem}" ;;
+      echo "${BINANCE_SSH_KEY:-}" ;;
+    gate-intra-arb01)
+      echo "${GATE_SSH_KEY:-}" ;;
+    bitget-intra-arb01)
+      echo "${BITGET_SSH_KEY:-}" ;;
+    bitget-gate-cross-arb01)
+      echo "${BITGET_GATE_CROSS_SSH_KEY:-}" ;;
     bybit-intra-arb01)
       echo "${BYBIT_SSH_KEY:-${ROOT_DIR}/aws-sg.pem}" ;;
     *)
@@ -181,6 +203,12 @@ source_home() {
       echo "${OKEX_REMOTE_HOME:-/home/fanghaizhou}" ;;
     binance-intra-arb01)
       echo "${BINANCE_REMOTE_HOME:-/home/ubuntu}" ;;
+    gate-intra-arb01)
+      echo "${GATE_REMOTE_HOME:-/home/ubuntu}" ;;
+    bitget-intra-arb01)
+      echo "${BITGET_REMOTE_HOME:-/home/ubuntu}" ;;
+    bitget-gate-cross-arb01)
+      echo "${BITGET_GATE_CROSS_REMOTE_HOME:-/home/ubuntu}" ;;
     bybit-intra-arb01)
       echo "${BYBIT_REMOTE_HOME:-/home/ubuntu}" ;;
     *)
@@ -210,6 +238,15 @@ remote_quote() {
   printf "'%s'" "${1//\'/\'\\\'\'}"
 }
 
+is_local_target() {
+  case "$1" in
+    ""|local|localhost|127.0.0.1|ubuntu@localhost|ubuntu@127.0.0.1)
+      return 0 ;;
+    *)
+      return 1 ;;
+  esac
+}
+
 if [[ "$SKIP_BUILD" -eq 0 ]]; then
   echo "[INFO] building latest order_export"
   cargo build --release -p persist_manager --features runtime --bin order_export
@@ -229,13 +266,96 @@ for source in "${SOURCES[@]}"; do
   target="$(source_target "$source")" || exit 1
   key="$(source_key "$source")" || exit 1
   remote_home="$(source_home "$source")" || exit 1
-  require_file "$key" "ssh key for ${source}"
-  chmod 400 "$key" 2>/dev/null || true
 
   remote_env_dir="${remote_home}/${source}"
   remote_run_dir="${REMOTE_TMP_ROOT}/${RUN_ID}/${source}"
   remote_bin="${remote_run_dir}/order_export"
   remote_out_root="${remote_run_dir}/out"
+
+  if is_local_target "$target"; then
+    echo "[INFO] [${source}] target=local env=${remote_env_dir}"
+    if [[ ! -d "$remote_env_dir" ]]; then
+      echo "[ERROR] [${source}] local env dir not found: ${remote_env_dir}" >&2
+      failed=$((failed + 1))
+      continue
+    fi
+
+    mkdir -p "$remote_run_dir" "$remote_out_root"
+    cp "$LOCAL_BIN" "$remote_bin"
+    chmod +x "$remote_bin"
+
+    local_end_ts="$END_TS"
+    if [[ -z "$local_end_ts" ]]; then
+      local_end_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    fi
+
+    echo "[INFO] [${source}] local export started"
+    if ! (
+      cd "$remote_env_dir"
+      "$remote_bin" \
+        --base-dir "$remote_home" \
+        --env-name "$source" \
+        --start "$START_TS" \
+        --end "$local_end_ts" \
+        --output-root "$remote_out_root"
+    ); then
+      echo "[ERROR] [${source}] local export failed" >&2
+      failed=$((failed + 1))
+      continue
+    fi
+
+    source_failed=0
+    for table in "${REQUESTED_TABLES[@]}"; do
+      parquet_name="$(parquet_name_for_table "$table")" || exit 1
+      local_source_dir="${OUT_ROOT}/${RUN_ID}/${source}"
+      mkdir -p "$local_source_dir"
+      local_parquet="${local_source_dir}/${parquet_name}"
+      if [[ "$SKIP_EXISTING" -eq 1 && -s "$local_parquet" ]]; then
+        echo "[INFO] [${source}] skip existing ${local_parquet}"
+        continue
+      fi
+
+      remote_parquet="$(find "$remote_out_root" -mindepth 2 -maxdepth 2 -name "$parquet_name" -type f | sort | tail -n 1)"
+      if [[ -z "$remote_parquet" ]]; then
+        echo "[ERROR] [${source}] local ${parquet_name} not found" >&2
+        source_failed=1
+        continue
+      fi
+
+      echo "[INFO] [${source}] copying ${remote_parquet}"
+      if ! cp "$remote_parquet" "$local_parquet"; then
+        echo "[ERROR] [${source}] failed to copy ${parquet_name}" >&2
+        source_failed=1
+        continue
+      fi
+
+      if [[ ! -s "$local_parquet" ]]; then
+        echo "[ERROR] [${source}] fetched parquet is empty: ${local_parquet}" >&2
+        source_failed=1
+        continue
+      fi
+
+      size_bytes="$(wc -c < "$local_parquet" | tr -d ' ')"
+      echo "[INFO] [${source}] done ${local_parquet} (${size_bytes} bytes)"
+    done
+
+    if [[ "$source_failed" -ne 0 ]]; then
+      failed=$((failed + 1))
+    fi
+
+    if [[ "$KEEP_REMOTE" -eq 0 ]]; then
+      rm -rf "$remote_run_dir"
+    fi
+    continue
+  fi
+
+  if [[ -z "$key" ]]; then
+    echo "[ERROR] [${source}] SSH key is required for remote target ${target}" >&2
+    failed=$((failed + 1))
+    continue
+  fi
+  require_file "$key" "ssh key for ${source}"
+  chmod 400 "$key" 2>/dev/null || true
 
   ssh_opts=()
   while IFS= read -r opt; do ssh_opts+=("$opt"); done < <(ssh_base_opts "$key")

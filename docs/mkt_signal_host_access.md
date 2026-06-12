@@ -10,7 +10,6 @@ printed, committed, or copied into docs.
 | --- | --- | --- | --- |
 | SG | `ubuntu@47.131.162.78` | `aws-sg.pem` | Bybit intra / SG runtime host |
 | JP | `ubuntu@54.64.147.69` | `aws-jp-srv-1.pem` | Default FR/intra/MM remote deploy target |
-| JP2 HFQ | `ubuntu@52.68.224.23` | `aws-jp-aws-hfq.pem` | 8-vCPU HFQ host; see `docs/jp2_hfq_deploy.md` |
 
 ## Local SSH Commands
 
@@ -33,14 +32,6 @@ ssh -i aws-jp-srv-1.pem \
   ubuntu@54.64.147.69 'hostname'
 ```
 
-```bash
-ssh -i aws-jp-aws-hfq.pem \
-  -o BatchMode=yes \
-  -o StrictHostKeyChecking=accept-new \
-  -o ConnectTimeout=12 \
-  ubuntu@52.68.224.23 'hostname'
-```
-
 ## Deploy Defaults
 
 Most deploy helpers use the old JP host by default:
@@ -48,20 +39,6 @@ Most deploy helpers use the old JP host by default:
 ```bash
 FR_DEPLOY_HOST=ubuntu@54.64.147.69
 FR_DEPLOY_KEY=$PWD/aws-jp-srv-1.pem
-```
-
-To target JP2/HFQ explicitly:
-
-```bash
-export FR_DEPLOY_HOST=ubuntu@52.68.224.23
-export FR_DEPLOY_KEY=$PWD/aws-jp-aws-hfq.pem
-```
-
-Then run the normal deploy wrapper, for example:
-
-```bash
-bash scripts/deploy_fr_binance.sh arb01
-bash scripts/deploy_intra_binance_std.sh arb01
 ```
 
 Deploy wrappers build and sync files. They should not be treated as process

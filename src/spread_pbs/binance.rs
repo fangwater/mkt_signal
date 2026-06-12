@@ -21,6 +21,8 @@ const BINANCE_SPOT_SBE_WS_URL: &str = "wss://stream-sbe.binance.com:9443/ws";
 const BINANCE_FUTURES_WS_URL: &str = "wss://fstream.binance.com/public/stream";
 const BINANCE_FUTURES_DERIVATIVES_WS_URL: &str = "wss://fstream.binance.com/market/ws";
 const BINANCE_SUBSCRIBE_CHUNK: usize = 200;
+const ENV_BINANCE_FUTURES_BBO_MODE: &str = "SPREAD_PBS_BINANCE_FUTURES_BBO_MODE";
+const ENV_BINANCE_FUTURES_BOOK_TICKER: &str = "SPREAD_PBS_BINANCE_FUTURES_BOOK_TICKER";
 
 pub struct BinanceAdapter {
     venue: TradingVenue,
@@ -62,12 +64,16 @@ impl VenueAdapter for BinanceAdapter {
 
     fn build_subscribe(&self, symbols: &[String]) -> Vec<Value> {
         match self.venue {
-            TradingVenue::BinanceFutures => {
-                build_multi_stream_subscribe(symbols.iter().flat_map(|sym| {
-                    let sym = sym.to_ascii_lowercase();
-                    [format!("{}@bookTicker", sym), format!("{}@depth5@0ms", sym)]
-                }))
-            }
+            TradingVenue::BinanceFutures => match binance_futures_bbo_mode() {
+                BinanceFuturesBboMode::Race => {
+                    build_multi_stream_subscribe(symbols.iter().flat_map(|sym| {
+                        let sym = sym.to_ascii_lowercase();
+                        [format!("{}@bookTicker", sym), format!("{}@depth5@0ms", sym)]
+                    }))
+                }
+                BinanceFuturesBboMode::BookTicker => build_stream_subscribe(symbols, "bookTicker"),
+                BinanceFuturesBboMode::Depth5 => build_stream_subscribe(symbols, "depth5@0ms"),
+            },
             TradingVenue::BinanceMargin => build_stream_subscribe(symbols, "bestBidAsk"),
             other => unreachable!("BinanceAdapter created with non-binance venue: {:?}", other),
         }
@@ -221,6 +227,50 @@ fn build_stream_subscribe(symbols: &[String], channel: &str) -> Vec<Value> {
     )
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BinanceFuturesBboMode {
+    Race,
+    BookTicker,
+    Depth5,
+}
+
+fn binance_futures_bbo_mode() -> BinanceFuturesBboMode {
+    if let Ok(raw) = std::env::var(ENV_BINANCE_FUTURES_BBO_MODE) {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "race" | "both" | "bookticker+depth5" | "book_ticker+depth5" => {
+                return BinanceFuturesBboMode::Race
+            }
+            "bookticker" | "book_ticker" | "ticker" => return BinanceFuturesBboMode::BookTicker,
+            "depth5" | "book" | "books" => return BinanceFuturesBboMode::Depth5,
+            other => log::warn!(
+                "invalid {}={:?}; using race mode",
+                ENV_BINANCE_FUTURES_BBO_MODE,
+                other
+            ),
+        }
+    }
+    if binance_futures_book_ticker_enabled() {
+        BinanceFuturesBboMode::Race
+    } else {
+        BinanceFuturesBboMode::Depth5
+    }
+}
+
+fn binance_futures_book_ticker_enabled() -> bool {
+    match std::env::var(ENV_BINANCE_FUTURES_BOOK_TICKER) {
+        Ok(raw) => parse_env_bool(&raw).unwrap_or(true),
+        Err(_) => true,
+    }
+}
+
+fn parse_env_bool(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "t" | "yes" | "y" | "on" | "enable" | "enabled" => Some(true),
+        "0" | "false" | "f" | "no" | "n" | "off" | "disable" | "disabled" => Some(false),
+        _ => None,
+    }
+}
+
 fn build_multi_stream_subscribe(streams: impl IntoIterator<Item = String>) -> Vec<Value> {
     let streams: Vec<String> = streams.into_iter().collect();
     let chunk_size = BINANCE_SUBSCRIBE_CHUNK.max(1);
@@ -329,6 +379,12 @@ fn derivative_to_bytes(derivative: binance_codec::Derivative) -> Bytes {
 mod tests {
     use super::*;
     use mkt_parsers::msg::mkt_msg::{get_msg_type, MktMsgType};
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     fn v(raw: &str) -> Value {
         serde_json::from_str(raw).expect("test fixture must be valid JSON")
@@ -444,6 +500,9 @@ mod tests {
 
     #[test]
     fn subscribe_chunks() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::remove_var(ENV_BINANCE_FUTURES_BBO_MODE);
+        std::env::remove_var(ENV_BINANCE_FUTURES_BOOK_TICKER);
         let a = BinanceAdapter::new(TradingVenue::BinanceFutures);
         let symbols: Vec<String> = (0..450).map(|i| format!("SYM{}USDT", i)).collect();
         let msgs = a.build_subscribe(&symbols);
@@ -453,6 +512,39 @@ mod tests {
         assert_eq!(msgs[0]["params"][0], "sym0usdt@bookTicker");
         assert_eq!(msgs[0]["params"][1], "sym0usdt@depth5@0ms");
         assert_eq!(msgs[0]["params"][2], "sym1usdt@bookTicker");
+    }
+
+    #[test]
+    fn binance_futures_book_ticker_can_be_disabled_by_env() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::remove_var(ENV_BINANCE_FUTURES_BBO_MODE);
+        std::env::set_var(ENV_BINANCE_FUTURES_BOOK_TICKER, "0");
+        let a = BinanceAdapter::new(TradingVenue::BinanceFutures);
+        let symbols: Vec<String> = (0..450).map(|i| format!("SYM{}USDT", i)).collect();
+        let msgs = a.build_subscribe(&symbols);
+        std::env::remove_var(ENV_BINANCE_FUTURES_BOOK_TICKER);
+
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0]["params"].as_array().unwrap().len(), 200);
+        assert_eq!(msgs[2]["params"].as_array().unwrap().len(), 50);
+        assert_eq!(msgs[0]["params"][0], "sym0usdt@depth5@0ms");
+        assert_eq!(msgs[0]["params"][1], "sym1usdt@depth5@0ms");
+    }
+
+    #[test]
+    fn binance_futures_bbo_mode_can_select_bookticker_only() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var(ENV_BINANCE_FUTURES_BBO_MODE, "bookticker");
+        let a = BinanceAdapter::new(TradingVenue::BinanceFutures);
+        let symbols: Vec<String> = (0..450).map(|i| format!("SYM{}USDT", i)).collect();
+        let msgs = a.build_subscribe(&symbols);
+        std::env::remove_var(ENV_BINANCE_FUTURES_BBO_MODE);
+
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0]["params"].as_array().unwrap().len(), 200);
+        assert_eq!(msgs[2]["params"].as_array().unwrap().len(), 50);
+        assert_eq!(msgs[0]["params"][0], "sym0usdt@bookTicker");
+        assert_eq!(msgs[0]["params"][1], "sym1usdt@bookTicker");
     }
 
     #[test]

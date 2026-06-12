@@ -145,7 +145,7 @@ else
 fi
 
 echo "[INFO] 构建 $BIN_NAME (release)"
-cargo build --release --bin "$BIN_NAME"
+cargo build --release --features factor-rocksdb --bin "$BIN_NAME"
 
 SCRIPT_DIR_SRC="$ROOT_DIR/scripts"
 SCRIPTS_TO_DEPLOY=(

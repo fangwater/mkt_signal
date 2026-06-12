@@ -67,7 +67,7 @@ CARGO_TARGET_DIR_EFFECTIVE="$(intra_effective_cargo_target_dir "$ROOT_DIR" "$CAR
 (
   cd "$ROOT_DIR"
   CARGO_TARGET_DIR="$CARGO_TARGET_DIR_EFFECTIVE" \
-    cargo build --release --bin "$BIN_NAME" ${BUILD_JOBS:+--jobs "$BUILD_JOBS"}
+    cargo build --release --package persist_manager --features runtime --bin "$BIN_NAME" ${BUILD_JOBS:+--jobs "$BUILD_JOBS"}
 )
 BIN_PATH="$(intra_bin_path_release "$CARGO_TARGET_DIR_EFFECTIVE" "$BIN_NAME")"
 
@@ -95,6 +95,20 @@ done
 
 if ! intra_atomic_install "$BIN_PATH" "$TARGET_DIR/$BIN_NAME"; then
   exit 2
+fi
+
+echo "[INFO] 配置 persist sync source（按 config/persist_sync_distribution.toml 固定端口）"
+set +e
+"$TARGET_DIR/intra_scripts/configure_intra_persist_sync_source.sh" \
+  --env-name "$ENV_NAME" \
+  --env-file "$TARGET_DIR/env.sh" \
+  --mapping-file "$HOME/nginx_streams.txt"
+CONFIG_STATUS=$?
+set -e
+if [[ "$CONFIG_STATUS" -eq 2 ]]; then
+  echo "[WARN] ${ENV_NAME} 未在 persist_sync_distribution.toml 分配端口，跳过 sync source 配置"
+elif [[ "$CONFIG_STATUS" -ne 0 ]]; then
+  exit "$CONFIG_STATUS"
 fi
 
 echo "[INFO] $BIN_NAME 部署完成到 $TARGET_DIR"

@@ -93,6 +93,7 @@ lookup_output="$("$pybin" - "$TABLE_FILE" "$ENV_NAME" <<'PY'
 import shlex
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 try:
     import tomllib
 except ModuleNotFoundError:
@@ -107,11 +108,16 @@ env_name = sys.argv[2]
 data = tomllib.loads(table_path.read_text())
 for row in data.get('allocations', []):
     if str(row.get('env', '')).lower() == env_name or str(row.get('source_id', '')).lower() == env_name:
+        public_url = str(row.get('public_url', ''))
+        public_host = urlparse(public_url).hostname or ''
+        port = str(row['port'])
+        listen = f'{public_host}:{port}' if public_host in {'127.0.0.1', 'localhost'} else port
         fields = {
             'SOURCE_ID': row['source_id'],
             'BIND': row['bind'],
-            'LISTEN': str(row['port']),
-            'PUBLIC_URL': row.get('public_url', ''),
+            'LISTEN': listen,
+            'LISTEN_PORT': port,
+            'PUBLIC_URL': public_url,
             'REGION': row.get('region', ''),
             'STRATEGY': row.get('strategy', ''),
             'STATUS': row.get('status', ''),
@@ -179,6 +185,7 @@ MAP
   awk -v begin="$begin" \
       -v end="$end" \
       -v listen="$LISTEN" \
+      -v listen_port="$LISTEN_PORT" \
       -v upstream="$BIND" '
     BEGIN { in_block = 0; replaced = 0 }
     $0 == begin { in_block = 1; replaced = 1; next }
@@ -194,6 +201,10 @@ MAP
     {
       first = $1
       if (first == listen) { next }
+      if (first == listen_port) { next }
+      if (first == "0.0.0.0:" listen_port) { next }
+      if (first == "127.0.0.1:" listen_port) { next }
+      if (first == "localhost:" listen_port) { next }
       print
     }
     END {

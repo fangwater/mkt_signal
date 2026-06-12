@@ -69,6 +69,17 @@ hk_okex_spread_core_for_venue() {
   esac
 }
 
+aws_marketdata_spread_core_for_venue() {
+  case "${1,,}" in
+    binance-margin)  echo 8 ;;
+    binance-futures) echo 9 ;;
+    gate-both)       echo 10 ;;
+    okex-both)       echo 11 ;;
+    bitget-both)     echo 12 ;;
+    *) return 1 ;;
+  esac
+}
+
 upsert_env_exports_block() {
   local env_file="$1"
   local marker="$2"
@@ -105,7 +116,7 @@ upsert_env_exports_block() {
 usage() {
   cat <<'USAGE'
 Usage:
-  deploy_spread_pbs.sh (--exchange <exchange> | --venue <venue>...) [--root <path>]
+  deploy_spread_pbs.sh (--exchange <exchange> | --venue <venue>...) [--root <path>] [--local-only] [--aws-marketdata-core-layout]
   deploy_spread_pbs.sh --all          # 每个 exchange 铺 <exchange>-both
 
 Defaults:
@@ -129,6 +140,9 @@ Notes:
       okex-margin SPREAD_PBS_CORE=12
       okex-futures SPREAD_PBS_CORE=14
       okex-both SPREAD_PBS_CORE=12
+  - --local-only 强制所有 venue 只部署到本机，不做远端 rsync。
+  - --aws-marketdata-core-layout 按 AWS 行情机 CPU8-15 布局写入 env.sh：
+      binance-margin=8 binance-futures=9 gate-both=10 okex-both=11 bitget-both=12
 USAGE
 }
 
@@ -136,6 +150,8 @@ TARGET_ROOT="$HOME/spread_pbs"
 EXCHANGE=""
 VENUES_FROM_ARG=()
 DEPLOY_ALL=0
+LOCAL_ONLY=0
+AWS_MARKETDATA_CORE_LAYOUT=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -157,6 +173,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --all)
       DEPLOY_ALL=1
+      shift
+      ;;
+    --local-only)
+      LOCAL_ONLY=1
+      shift
+      ;;
+    --aws-marketdata-core-layout)
+      AWS_MARKETDATA_CORE_LAYOUT=1
       shift
       ;;
     -h|--help)
@@ -213,7 +237,14 @@ for venue in "${VENUES[@]}"; do
     fi
   done
 
-  if core_override="$(hk_okex_spread_core_for_venue "$venue")"; then
+  if [[ "$AWS_MARKETDATA_CORE_LAYOUT" == "1" ]] && core_override="$(aws_marketdata_spread_core_for_venue "$venue")"; then
+    upsert_env_exports_block \
+      "$TARGET_DIR/env.sh" \
+      "managed AWS marketdata core layout" \
+      "AWS market-data host: pin spread_pbs to the second L3 CPU group, CPU8-12." \
+      "SPREAD_PBS_CORE='${core_override}'"
+    echo "[INFO] AWS marketdata spread_pbs core override written: $venue -> core $core_override"
+  elif core_override="$(hk_okex_spread_core_for_venue "$venue")"; then
     upsert_env_exports_block \
       "$TARGET_DIR/env.sh" \
       "managed HK isolated-core layout" \
@@ -237,7 +268,7 @@ REMOTE_VENUE_REGEX='^(binance-(futures|margin|both)|(bitget|gate)-(futures|margi
 REMOTE_VENUES=()
 LOCAL_VENUES=()
 for v in "${VENUES[@]}"; do
-  if [[ "$v" =~ $REMOTE_VENUE_REGEX ]]; then
+  if [[ "$LOCAL_ONLY" == "0" && "$v" =~ $REMOTE_VENUE_REGEX ]]; then
     REMOTE_VENUES+=("$v")
   else
     LOCAL_VENUES+=("$v")

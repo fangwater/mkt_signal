@@ -69,13 +69,58 @@ is_remote_exchange() {
   return 1
 }
 
+aws_marketdata_depth_core_for_venue() {
+  case "${1,,}" in
+    bitget-both)  echo 13 ;;
+    gate-both)    echo 14 ;;
+    binance-both) echo 15 ;;
+    *) return 1 ;;
+  esac
+}
+
+upsert_env_exports_block() {
+  local env_file="$1"
+  local marker="$2"
+  local comment="$3"
+  shift 3
+
+  mkdir -p "$(dirname "$env_file")"
+  touch "$env_file"
+
+  local tmp
+  tmp="$(mktemp)"
+  awk -v begin="# BEGIN ${marker}" -v end="# END ${marker}" '
+    $0 == begin { skip = 1; next }
+    $0 == end { skip = 0; next }
+    !skip { print }
+  ' "$env_file" > "$tmp"
+
+  {
+    cat "$tmp"
+    if [[ -s "$tmp" ]]; then
+      echo
+    fi
+    echo "# BEGIN ${marker}"
+    [[ -n "$comment" ]] && echo "# ${comment}"
+    local line
+    for line in "$@"; do
+      echo "export ${line}"
+    done
+    echo "# END ${marker}"
+  } > "$env_file"
+  rm -f "$tmp"
+}
+
 usage() {
   cat <<USAGE
 Usage:
   deploy_depth_pub.sh (--exchange <exchange> | --venue <venue>...) [options]
 
 Options:
-  --root <path>      （仅本地交易所有效）覆盖部署根目录，默认 \$HOME/depth_pub
+  --root <path>      （仅本地交易所有效，或配合 --local-only）覆盖部署根目录，默认 \$HOME/depth_pub
+  --local-only       强制所有 venue 只部署到本机，不做远端 rsync
+  --aws-marketdata-core-layout
+                     按 AWS 行情机 CPU13-15 布局写入 DEPTH_PUB_CORE
   --bin-only         仅替换二进制（跳过 scripts/config）
   --runtime-only     替换二进制 + scripts（跳过 config）
   -h, --help         显示帮助
@@ -103,6 +148,8 @@ Notes:
   - 远端模式下 cargo build 仍在本机完成，再 rsync 到远端。
   - --bin-only / --runtime-only 互斥；远端模式下分别走 fr_remote_sync_binaries
     （只同步顶层二进制）和 fr_remote_sync_path（同步整个 venue 目录）。
+  - --aws-marketdata-core-layout 当前映射：
+      bitget-both=13 gate-both=14 binance-both=15
 USAGE
 }
 
@@ -112,6 +159,8 @@ VENUES_FROM_ARG=()
 BIN_MODE="0"
 RUNTIME_ONLY="0"
 ROOT_OVERRIDE="0"
+LOCAL_ONLY="0"
+AWS_MARKETDATA_CORE_LAYOUT="0"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -160,6 +209,14 @@ while [[ $# -gt 0 ]]; do
       RUNTIME_ONLY="1"
       shift
       ;;
+    --local-only)
+      LOCAL_ONLY="1"
+      shift
+      ;;
+    --aws-marketdata-core-layout)
+      AWS_MARKETDATA_CORE_LAYOUT="1"
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -202,7 +259,7 @@ fi
 LOCAL_VENUES=()
 REMOTE_VENUES=()
 for venue in "${VENUES[@]}"; do
-  if is_remote_exchange "$(exchange_of_venue "$venue")"; then
+  if [[ "$LOCAL_ONLY" == "0" ]] && is_remote_exchange "$(exchange_of_venue "$venue")"; then
     REMOTE_VENUES+=("$venue")
   else
     LOCAL_VENUES+=("$venue")
@@ -225,6 +282,7 @@ SCRIPTS_TO_DEPLOY=(
 
 write_venue_layout() {
   local stage_dir="$1"
+  local venue="$2"
   mkdir -p "$stage_dir"
 
   # 直接覆盖二进制：若文件被运行中进程占用，会触发 Text file busy 并中断部署。
@@ -255,12 +313,21 @@ write_venue_layout() {
   if [[ -f "$ROOT_DIR/config/iceoryx2.toml" ]]; then
     rsync -a "$ROOT_DIR/config/iceoryx2.toml" "$stage_dir/config/"
   fi
+
+  if [[ "$AWS_MARKETDATA_CORE_LAYOUT" == "1" ]] && core_override="$(aws_marketdata_depth_core_for_venue "$venue")"; then
+    upsert_env_exports_block \
+      "$stage_dir/env.sh" \
+      "managed AWS marketdata core layout" \
+      "AWS market-data host: pin depth_pub to the second L3 CPU group, CPU13-15." \
+      "DEPTH_PUB_CORE='${core_override}'"
+    echo "[INFO] AWS marketdata depth_pub core override written: $venue -> core $core_override"
+  fi
 }
 
 for venue in "${LOCAL_VENUES[@]}"; do
   TARGET_DIR="${TARGET_ROOT%/}/${venue}"
   echo "[INFO] [local] 部署 $BIN_NAME -> $TARGET_DIR"
-  write_venue_layout "$TARGET_DIR"
+  write_venue_layout "$TARGET_DIR" "$venue"
 done
 
 if [[ ${#REMOTE_VENUES[@]} -gt 0 ]]; then
@@ -269,7 +336,7 @@ if [[ ${#REMOTE_VENUES[@]} -gt 0 ]]; then
     REMOTE_REL="${DEPLOY_ROOT_NAME}/${venue}"
     LOCAL_STAGE="$HOME/$REMOTE_REL"
     echo "[INFO] [remote] staging $BIN_NAME -> $LOCAL_STAGE"
-    write_venue_layout "$LOCAL_STAGE"
+    write_venue_layout "$LOCAL_STAGE" "$venue"
     if [[ "$BIN_MODE" == "1" ]]; then
       fr_remote_sync_binaries "$REMOTE_REL"
     else

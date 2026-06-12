@@ -212,6 +212,27 @@ if [[ "$venue" == "binance-margin" || "$venue" == "binance-both" ]]; then
         \"BINANCE_SBE_API_KEY\": \"${json_binance_sbe_api_key}\""
 fi
 
+binance_futures_book_ticker_env_line=""
+if [[ -n "${SPREAD_PBS_BINANCE_FUTURES_BOOK_TICKER:-}" ]]; then
+  json_binance_futures_book_ticker="$(json_escape "$SPREAD_PBS_BINANCE_FUTURES_BOOK_TICKER")"
+  binance_futures_book_ticker_env_line=",
+        \"SPREAD_PBS_BINANCE_FUTURES_BOOK_TICKER\": \"${json_binance_futures_book_ticker}\""
+fi
+
+binance_futures_bbo_mode_env_line=""
+if [[ -n "${SPREAD_PBS_BINANCE_FUTURES_BBO_MODE:-}" ]]; then
+  json_binance_futures_bbo_mode="$(json_escape "$SPREAD_PBS_BINANCE_FUTURES_BBO_MODE")"
+  binance_futures_bbo_mode_env_line=",
+        \"SPREAD_PBS_BINANCE_FUTURES_BBO_MODE\": \"${json_binance_futures_bbo_mode}\""
+fi
+
+spread_pbs_symbols_env_line=""
+if [[ -n "${SPREAD_PBS_SYMBOLS:-}" ]]; then
+  json_spread_pbs_symbols="$(json_escape "$SPREAD_PBS_SYMBOLS")"
+  spread_pbs_symbols_env_line=",
+        \"SPREAD_PBS_SYMBOLS\": \"${json_spread_pbs_symbols}\""
+fi
+
 okex_sbe_env_line=""
 if [[ "$venue" == "okex-margin" || "$venue" == "okex-futures" || "$venue" == "okex-both" ]]; then
   for v in OKX_API_KEY OKX_API_SECRET OKX_PASSPHRASE; do
@@ -252,7 +273,7 @@ cat >"$cfg_file" <<JSON
       ],
       "cwd": "${json_base}",
       "env": {
-        "RUST_LOG": "${json_rust_log}"${binance_sbe_env_line}${okex_sbe_env_line}
+        "RUST_LOG": "${json_rust_log}"${binance_sbe_env_line}${binance_futures_book_ticker_env_line}${binance_futures_bbo_mode_env_line}${spread_pbs_symbols_env_line}${okex_sbe_env_line}
       }
     }
   ]

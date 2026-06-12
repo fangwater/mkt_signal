@@ -15,8 +15,9 @@ This layout pins 8 market-data processes to the second L3 CPU group, `CPU8-15`, 
   - Binance split into 2 processes: `binance-margin` and `binance-futures`.
   - Gate, OKEx, and Bitget each run as one `*-both` process.
 - 3 `depth_pub` processes:
-  - Bitget and OKEx each run as one `*-both` process.
+  - Bitget and Gate each run as one `*-both` process.
   - Binance runs one `binance-both` depth publisher.
+  - OKEx depth is intentionally not started in this layout.
 
 ## Core Map
 
@@ -25,10 +26,10 @@ This layout pins 8 market-data processes to the second L3 CPU group, `CPU8-15`, 
 | 8 | `spread_pbs` | `~/spread_pbs/binance-margin` | `SPREAD_PBS_CORE=8` | `spp_bn_mg` |
 | 9 | `spread_pbs` | `~/spread_pbs/binance-futures` | `SPREAD_PBS_CORE=9` | `spp_bn_fu` |
 | 10 | `spread_pbs` | `~/spread_pbs/gate-both` | `SPREAD_PBS_CORE=10` | `spp_gt_bo` |
-| 11 | `spread_pbs` | `~/spread_pbs/okex-both` | `SPREAD_PBS_CORE=11` | `spp_ok_bo` |
+| 11 | reserved | `~/spread_pbs/okex-both` | `SPREAD_PBS_CORE=11` | `spp_ok_bo` |
 | 12 | `spread_pbs` | `~/spread_pbs/bitget-both` | `SPREAD_PBS_CORE=12` | `spp_bg_bo` |
 | 13 | `depth_pub` | `~/depth_pub/bitget-both` | `DEPTH_PUB_CORE=13` | `dp_bg_both` |
-| 14 | `depth_pub` | `~/depth_pub/okex-both` | `DEPTH_PUB_CORE=14` | `dp_ok_both` |
+| 14 | `depth_pub` | `~/depth_pub/gate-both` | `DEPTH_PUB_CORE=14` | `dp_gt_both` |
 | 15 | `depth_pub` | `~/depth_pub/binance-both` | `DEPTH_PUB_CORE=15` | `dp_bn_both` |
 
 Treat the table as authoritative for this AWS host unless the user explicitly updates the topology.
@@ -54,7 +55,7 @@ bash scripts/spread_pbs/deploy_spread_pbs.sh \
 
 bash scripts/deploy_depth_pub.sh \
   --venue bitget-both \
-  --venue okex-both \
+  --venue gate-both \
   --venue binance-both
 ```
 
@@ -73,11 +74,10 @@ Start each process from its deployed venue directory:
 cd ~/spread_pbs/binance-margin && ./scripts/start_spread_pbs.sh
 cd ~/spread_pbs/binance-futures && ./scripts/start_spread_pbs.sh
 cd ~/spread_pbs/gate-both && ./scripts/start_spread_pbs.sh
-cd ~/spread_pbs/okex-both && ./scripts/start_spread_pbs.sh
 cd ~/spread_pbs/bitget-both && ./scripts/start_spread_pbs.sh
 
 cd ~/depth_pub/bitget-both && ./scripts/start_depth_pub.sh
-cd ~/depth_pub/okex-both && ./scripts/start_depth_pub.sh
+cd ~/depth_pub/gate-both && ./scripts/start_depth_pub.sh
 cd ~/depth_pub/binance-both && ./scripts/start_depth_pub.sh
 ```
 
@@ -97,10 +97,9 @@ Expected process names:
 - `spp_bn_mg`
 - `spp_bn_fu`
 - `spp_gt_bo`
-- `spp_ok_bo`
 - `spp_bg_bo`
 - `dp_bg_both`
-- `dp_ok_both`
+- `dp_gt_both`
 - `dp_bn_both`
 
 If a process is missing or on a different CPU, inspect that venue's `env.sh` first, then restart only that venue.

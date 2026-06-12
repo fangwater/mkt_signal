@@ -33,6 +33,7 @@ const DEDUP_RESET_INTERVAL_US: i64 = 5 * 60 * 1_000_000;
 const ENV_ENABLE_TRADE: &str = "SPREAD_PBS_ENABLE_TRADE";
 const ENV_ENABLE_INCREMENTAL: &str = "SPREAD_PBS_ENABLE_INCREMENTAL";
 const ENV_ENABLE_DERIVATIVES: &str = "SPREAD_PBS_ENABLE_DERIVATIVES";
+const ENV_SYMBOLS: &str = "SPREAD_PBS_SYMBOLS";
 
 pub struct SpreadPbsApp {
     config: Config,
@@ -120,6 +121,39 @@ fn parse_env_bool(raw: &str) -> Option<bool> {
     }
 }
 
+fn apply_symbol_filter(mut symbols: Vec<String>, venue_slug: &str) -> Vec<String> {
+    let Ok(raw) = env::var(ENV_SYMBOLS) else {
+        return symbols;
+    };
+    let wanted: HashSet<String> = raw
+        .split(',')
+        .map(|s| s.trim().to_ascii_uppercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if wanted.is_empty() {
+        log::warn!(
+            "spread_pbs[{}] ignoring empty {}={:?}; keeping {} symbols",
+            venue_slug,
+            ENV_SYMBOLS,
+            raw,
+            symbols.len()
+        );
+        return symbols;
+    }
+    let before = symbols.len();
+    symbols.retain(|symbol| wanted.contains(&symbol.to_ascii_uppercase()));
+    log::info!(
+        "spread_pbs[{}] {} filter applied: requested={} before={} after={} raw={:?}",
+        venue_slug,
+        ENV_SYMBOLS,
+        wanted.len(),
+        before,
+        symbols.len(),
+        raw
+    );
+    symbols
+}
+
 fn build_market_subscribe(
     adapter: &Rc<dyn VenueAdapter>,
     symbols: &[String],
@@ -201,7 +235,14 @@ impl SpreadPbsApp {
 
         // ---- 首次拉 symbol（含 BinanceFutures，无硬编码） ----
         // spread_pbs 不归 pm2 管，启动期 REST 抖动不能直接退出；用退避循环等到拿到非空列表
-        let initial_symbols = self.config.wait_for_symbols().await;
+        let initial_symbols = apply_symbol_filter(self.config.wait_for_symbols().await, venue_slug);
+        if initial_symbols.is_empty() {
+            bail!(
+                "spread_pbs[{}] no symbols left after {} filter",
+                venue_slug,
+                ENV_SYMBOLS
+            );
+        }
         adapter.seed_symbols(&initial_symbols);
         let mut current_symbols: HashSet<String> = initial_symbols.iter().cloned().collect();
         let enable_trade = env_enabled_or(ENV_ENABLE_TRADE, self.config.data_types.enable_trade);
@@ -736,7 +777,7 @@ async fn restart_leg(
 
     // 先拉新 symbol；失败/空一律保留旧 leg，不重启。
     let new_symbols = match config.get_symbols().await {
-        Ok(v) if !v.is_empty() => v,
+        Ok(v) if !v.is_empty() => apply_symbol_filter(v, venue_slug),
         Ok(_) => {
             log::error!(
                 "spread_pbs[{}] leg={} restart skipped: get_symbols() returned empty",
@@ -755,6 +796,15 @@ async fn restart_leg(
             return;
         }
     };
+    if new_symbols.is_empty() {
+        log::error!(
+            "spread_pbs[{}] leg={} restart skipped: no symbols left after {} filter",
+            venue_slug,
+            leg.label,
+            ENV_SYMBOLS
+        );
+        return;
+    }
     let new_subs = build_market_subscribe(
         &ctx.adapter,
         &new_symbols,

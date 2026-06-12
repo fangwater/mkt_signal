@@ -98,7 +98,7 @@ fi
 read -r -a VENUES <<<"$(default_venues_for_exchange "$EXCHANGE")"
 
 echo "[INFO] 构建 $BIN_NAME (release)"
-cargo build --release --bin "$BIN_NAME"
+cargo build --release --features factor-rocksdb --bin "$BIN_NAME"
 
 SCRIPT_DIR_SRC="$ROOT_DIR/scripts"
 SCRIPTS_TO_SYNC=(

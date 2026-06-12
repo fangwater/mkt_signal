@@ -13,10 +13,11 @@ reserved_public_port_count = 30
 protocol = "plaintext gRPC over HTTP/2"
 source_id_rule = "env directory basename unless an allocation explicitly says otherwise"
 bind_rule = "127.0.0.1:(50000 + public_port - 6300)"
-nginx_mapping_rule = "<public_port> <bind_host>:<bind_port>"
+nginx_mapping_rule = "local public_url sources use 127.0.0.1:<public_port> <bind_host>:<bind_port>; remote-public sources use <public_port> <bind_host>:<bind_port>"
 fail_closed = true
 notes = [
   "Bybit intra arb01 is fixed on SG 6351 and should not be moved.",
+  "Local arb01 sources on this machine use 127.0.0.1 with fixed ports 6342-6345.",
   "Unmentioned strategies/envs must not receive concrete allocations.",
 ]
 
@@ -53,16 +54,46 @@ public_url = "http://54.64.147.69:6341"
 bind = "127.0.0.1:50041"
 status = "planned"
 
-# Requested Binance intra source on JP2.
+# Local intra/cross arb01 sources on this machine.
 [[allocations]]
 port = 6342
-region = "jp"
+region = "local"
 strategy = "intra"
 env = "binance-intra-arb01"
 source_id = "binance-intra-arb01"
-public_url = "http://52.68.224.23:6342"
+public_url = "http://127.0.0.1:6342"
 bind = "127.0.0.1:50042"
-status = "planned"
+status = "fixed"
+
+[[allocations]]
+port = 6343
+region = "local"
+strategy = "intra"
+env = "gate-intra-arb01"
+source_id = "gate-intra-arb01"
+public_url = "http://127.0.0.1:6343"
+bind = "127.0.0.1:50043"
+status = "fixed"
+
+[[allocations]]
+port = 6344
+region = "local"
+strategy = "intra"
+env = "bitget-intra-arb01"
+source_id = "bitget-intra-arb01"
+public_url = "http://127.0.0.1:6344"
+bind = "127.0.0.1:50044"
+status = "fixed"
+
+[[allocations]]
+port = 6345
+region = "local"
+strategy = "cross"
+env = "bitget-gate-cross-arb01"
+source_id = "bitget-gate-cross-arb01"
+public_url = "http://127.0.0.1:6345"
+bind = "127.0.0.1:50045"
+status = "fixed"
 
 # Fixed Bybit intra source on SG.
 [[allocations]]
