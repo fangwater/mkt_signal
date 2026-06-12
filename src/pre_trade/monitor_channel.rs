@@ -155,7 +155,7 @@ fn trade_update_lite_enabled_for_venues(
     open_exchange == hedge_exchange
         && matches!(
             open_exchange,
-            Exchange::Binance | Exchange::Bybit | Exchange::Okex
+            Exchange::Binance | Exchange::Bybit | Exchange::Okex | Exchange::Bitget
         )
 }
 
@@ -3005,9 +3005,20 @@ impl MonitorChannel {
                         true,
                     )
                 }
-                TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => {
-                    Err("尚未实现 Bitget 的订单对齐".to_string())
-                }
+                TradingVenue::BitgetMargin => Self::align_order_with_table(
+                    &symbol_key,
+                    raw_qty,
+                    raw_price,
+                    table.as_ref(),
+                    false,
+                ),
+                TradingVenue::BitgetFutures => Self::align_order_with_table(
+                    &symbol_key,
+                    raw_qty,
+                    raw_price,
+                    table.as_ref(),
+                    true,
+                ),
                 TradingVenue::BybitMargin => Self::align_order_with_table(
                     &symbol_key,
                     raw_qty,
@@ -4062,6 +4073,7 @@ mod tests {
     use mkt_parsers::msg::basic_account_msg::{BasicBalanceMsg, BasicPositionMsg};
     use signal_common::cancel_signal::{ArbCancelCtx, MmCancelCtx};
     use signal_common::common::SignalBytes;
+    use signal_common::min_qty_table::MinQtyEntry;
     use signal_common::min_qty_table::MinQtyEntry as VenueMinQtyEntry;
     use signal_common::tick_math::QuantizedValue;
     use signal_common::trade_signal::{SignalType, TradeSignal};
@@ -5439,7 +5451,7 @@ mod tests {
     }
 
     #[test]
-    fn trade_update_lite_enabled_for_binance_bybit_and_okex_intra_only() {
+    fn trade_update_lite_enabled_for_binance_bybit_okex_and_bitget_intra_only() {
         assert!(trade_update_lite_enabled_for_venues(
             TradingVenue::BinanceMargin,
             TradingVenue::BinanceFutures,
@@ -5451,6 +5463,10 @@ mod tests {
         assert!(trade_update_lite_enabled_for_venues(
             TradingVenue::OkexMargin,
             TradingVenue::OkexFutures,
+        ));
+        assert!(trade_update_lite_enabled_for_venues(
+            TradingVenue::BitgetMargin,
+            TradingVenue::BitgetFutures,
         ));
         assert!(!trade_update_lite_enabled_for_venues(
             TradingVenue::OkexMargin,
@@ -5535,6 +5551,128 @@ mod tests {
                 ArbMode::CrossArb,
             ),
             BITGET_DERIVATIVES_SERVICE
+        );
+    }
+
+    #[test]
+    fn bitget_margin_align_order_by_venue_uses_base_qty_filters() {
+        let mut bitget_table = VenueMinQtyTable::new(TradingVenue::BitgetMargin);
+        bitget_table.set_entry_for_test(MinQtyEntry {
+            symbol: "XRPUSDT".to_string(),
+            base_asset: "XRP".to_string(),
+            quote_asset: "USDT".to_string(),
+            min_qty: 10.0,
+            step_size: 0.1,
+            price_tick: Some(0.0001),
+            min_notional: Some(5.0),
+        });
+
+        let mut venue_min_qty_tables: HashMap<TradingVenue, Rc<VenueMinQtyTable>> = HashMap::new();
+        venue_min_qty_tables.insert(TradingVenue::BitgetMargin, Rc::new(bitget_table));
+
+        let inner = MonitorChannelInner {
+            open_venue: TradingVenue::BitgetMargin,
+            hedge_venue: TradingVenue::BitgetFutures,
+            arb_mode: ArbMode::IntraArb,
+            binance_account_mode: Some(BinanceAccountMode::Unified),
+            open_leg: LegMgr::Margin {
+                exchange: Exchange::Bitget,
+                bal: Rc::new(RefCell::new(BasicBalanceManager::new(Exchange::Bitget))),
+            },
+            hedge_leg: LegMgr::Futures {
+                exchange: Exchange::Bitget,
+                um: Rc::new(RefCell::new(BasicUmManager::new(Exchange::Bitget))),
+                min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Bitget))),
+            },
+            usdt_mgrs: HashMap::new(),
+            price_table: Rc::new(RefCell::new(PriceTable::new())),
+            venue_min_qty_tables,
+            strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
+            orphan_strategy_mgr: Rc::new(RefCell::new(OrphanStrategyManager::new())),
+            order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
+                BinanceAccountMode::Unified,
+            )))),
+            close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            trade_update_seq: 0,
+            latest_account_risk: HashMap::new(),
+            arb_startup_net_gate: ArbStartupNetGate::new(false),
+        };
+
+        MonitorChannel::clear_basic_state_runtime_cache();
+        MONITOR_CHANNEL.with(|mc| {
+            *mc.borrow_mut() = Some(inner);
+        });
+
+        let (qty, price) = MonitorChannel::instance()
+            .align_order_by_venue(TradingVenue::BitgetMargin, "XRPUSDT", 44.37, 1.13087)
+            .expect("bitget margin align");
+        assert!((qty - 44.3).abs() < 1e-9, "qty={qty}");
+        assert!((price - 1.1308).abs() < 1e-9, "price={price}");
+    }
+
+    #[test]
+    fn bitget_futures_align_order_by_venue_enforces_min_notional() {
+        let mut bitget_table = VenueMinQtyTable::new(TradingVenue::BitgetFutures);
+        bitget_table.set_entry_for_test(MinQtyEntry {
+            symbol: "XRPUSDT".to_string(),
+            base_asset: "XRP".to_string(),
+            quote_asset: "USDT".to_string(),
+            min_qty: 10.0,
+            step_size: 0.1,
+            price_tick: Some(0.0001),
+            min_notional: Some(50.0),
+        });
+        bitget_table.set_contract_multiplier_for_test("XRPUSDT", 1.0);
+
+        let mut venue_min_qty_tables: HashMap<TradingVenue, Rc<VenueMinQtyTable>> = HashMap::new();
+        venue_min_qty_tables.insert(TradingVenue::BitgetFutures, Rc::new(bitget_table));
+
+        let inner = MonitorChannelInner {
+            open_venue: TradingVenue::BitgetMargin,
+            hedge_venue: TradingVenue::BitgetFutures,
+            arb_mode: ArbMode::IntraArb,
+            binance_account_mode: Some(BinanceAccountMode::Unified),
+            open_leg: LegMgr::Margin {
+                exchange: Exchange::Bitget,
+                bal: Rc::new(RefCell::new(BasicBalanceManager::new(Exchange::Bitget))),
+            },
+            hedge_leg: LegMgr::Futures {
+                exchange: Exchange::Bitget,
+                um: Rc::new(RefCell::new(BasicUmManager::new(Exchange::Bitget))),
+                min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Bitget))),
+            },
+            usdt_mgrs: HashMap::new(),
+            price_table: Rc::new(RefCell::new(PriceTable::new())),
+            venue_min_qty_tables,
+            strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
+            orphan_strategy_mgr: Rc::new(RefCell::new(OrphanStrategyManager::new())),
+            order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
+                BinanceAccountMode::Unified,
+            )))),
+            close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            trade_update_seq: 0,
+            latest_account_risk: HashMap::new(),
+            arb_startup_net_gate: ArbStartupNetGate::new(false),
+        };
+
+        MonitorChannel::clear_basic_state_runtime_cache();
+        MONITOR_CHANNEL.with(|mc| {
+            *mc.borrow_mut() = Some(inner);
+        });
+
+        let (qty, price) = MonitorChannel::instance()
+            .align_order_by_venue(TradingVenue::BitgetFutures, "XRPUSDT", 44.37, 1.13087)
+            .expect("bitget futures align");
+        assert!((qty - 44.3).abs() < 1e-9, "qty={qty}");
+        assert!((price - 1.1308).abs() < 1e-9, "price={price}");
+
+        let (qty_bumped, price_bumped) = MonitorChannel::instance()
+            .align_order_by_venue(TradingVenue::BitgetFutures, "XRPUSDT", 10.0, 1.13087)
+            .expect("bitget futures min notional align");
+        assert!((qty_bumped - 44.3).abs() < 1e-9, "qty_bumped={qty_bumped}");
+        assert!(
+            (price_bumped - 1.1308).abs() < 1e-9,
+            "price_bumped={price_bumped}"
         );
     }
 }
