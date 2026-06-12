@@ -1,6 +1,6 @@
 //! Bitget UTA 账户事件解析器（余额 / 持仓 / 订单）
 
-use super::{AccountEventSink, Parser};
+use super::{bitget_order_dedup_key, trade_lite_dedup_key, AccountEventSink, Parser};
 use crate::msg::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
     BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg,
@@ -421,7 +421,10 @@ impl BitgetAccountEventParser {
                 BasicAccountScope::BitgetUnified,
                 payload,
             );
-            if tx.emit(event.to_bytes()) {
+            if tx.emit_with_dedup_key(
+                event.to_bytes(),
+                bitget_order_dedup_key(BasicAccountScope::BitgetUnified, &msg),
+            ) {
                 count += 1;
             }
         }
@@ -503,7 +506,10 @@ impl BitgetAccountEventParser {
                 BasicAccountScope::BitgetUnified,
                 payload,
             );
-            if tx.emit(event.to_bytes()) {
+            if tx.emit_with_dedup_key(
+                event.to_bytes(),
+                trade_lite_dedup_key(BasicAccountScope::BitgetUnified, &msg),
+            ) {
                 count += 1;
             }
         }
@@ -586,7 +592,10 @@ impl BitgetAccountEventParser {
                 BasicAccountScope::BitgetUnified,
                 payload,
             );
-            if tx.emit(event.to_bytes()) {
+            if tx.emit_with_dedup_key(
+                event.to_bytes(),
+                trade_lite_dedup_key(BasicAccountScope::BitgetUnified, &msg),
+            ) {
                 count += 1;
             }
         }

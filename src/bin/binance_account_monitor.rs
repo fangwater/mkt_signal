@@ -65,19 +65,32 @@ struct DirectAccountEventSink;
 
 impl AccountEventSink for DirectAccountEventSink {
     fn emit(&self, msg: Bytes) -> bool {
-        DIRECT_FORWARDER.with(|cell| {
-            let mut state = cell.borrow_mut();
-            let Some(state) = state.as_mut() else {
-                return false;
-            };
-            if state.deduper.should_forward(&msg) {
-                log_parsed_event(&msg);
-                state.forwarder.send_raw(&msg)
-            } else {
-                true
-            }
-        })
+        emit_direct_account_event(msg, None)
     }
+
+    fn emit_with_dedup_key(&self, msg: Bytes, dedup_key: u64) -> bool {
+        emit_direct_account_event(msg, Some(dedup_key))
+    }
+}
+
+fn emit_direct_account_event(msg: Bytes, dedup_key: Option<u64>) -> bool {
+    DIRECT_FORWARDER.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let Some(state) = state.as_mut() else {
+            return false;
+        };
+        let should_forward = match dedup_key {
+            Some(key) => state.deduper.should_forward_key(key),
+            None => state.deduper.should_forward(&msg),
+        };
+        if should_forward {
+            let sent = state.forwarder.send_raw(&msg);
+            log_parsed_event(&msg);
+            sent
+        } else {
+            true
+        }
+    })
 }
 
 fn init_direct_forwarder(exchange: &str) -> Result<()> {
@@ -923,6 +936,10 @@ impl AccountEventDeduper {
         }
     }
 
+    fn should_forward_key(&mut self, key: u64) -> bool {
+        self.remember_key(key)
+    }
+
     /// 检查是否应该转发此消息（返回 true 表示应该转发，false 表示重复消息）
     fn should_forward(&mut self, msg: &Bytes) -> bool {
         let Some((event_type, account_scope, payload)) = split_basic_account_event(msg.as_ref())
@@ -963,6 +980,10 @@ impl AccountEventDeduper {
 
         let key = self.hash64(&[account_scope as u32 as u64, key]);
 
+        self.remember_key(key)
+    }
+
+    fn remember_key(&mut self, key: u64) -> bool {
         if self.seen.contains(&key) {
             return false;
         }

@@ -1,6 +1,6 @@
 //! Bybit V5 私有账户事件解析器（wallet / position / order）
 
-use super::{AccountEventSink, Parser};
+use super::{bybit_order_dedup_key, trade_lite_dedup_key, AccountEventSink, Parser};
 use crate::msg::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
     BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg,
@@ -263,7 +263,10 @@ impl BybitAccountEventParser {
                         BasicAccountScope::BybitUnified,
                         msg.to_bytes(),
                     );
-                    if tx.emit(event.to_bytes()) {
+                    if tx.emit_with_dedup_key(
+                        event.to_bytes(),
+                        bybit_order_dedup_key(BasicAccountScope::BybitUnified, &msg),
+                    ) {
                         count += 1;
                     }
                 }
@@ -278,7 +281,10 @@ impl BybitAccountEventParser {
                         BasicAccountScope::BybitUnified,
                         msg.to_bytes(),
                     );
-                    if tx.emit(event.to_bytes()) {
+                    if tx.emit_with_dedup_key(
+                        event.to_bytes(),
+                        bybit_order_dedup_key(BasicAccountScope::BybitUnified, &msg),
+                    ) {
                         count += 1;
                     }
                 }
@@ -591,7 +597,10 @@ impl BybitAccountEventParser {
                 BasicAccountScope::BybitUnified,
                 msg.to_bytes(),
             );
-            if tx.emit(event.to_bytes()) {
+            if tx.emit_with_dedup_key(
+                event.to_bytes(),
+                trade_lite_dedup_key(BasicAccountScope::BybitUnified, &msg),
+            ) {
                 count += 1;
             }
         }

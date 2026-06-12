@@ -3,7 +3,7 @@
 //! - 余额 / 持仓 / 订单 / 负债 统一封装为 `BasicAccountEventMsg`
 //! - OrderUpdate 的 payload 使用 basic 层统一 schema：`BinanceBasicOrderMsg`
 
-use super::{AccountEventSink, Parser};
+use super::{binance_order_dedup_key, trade_lite_dedup_key, AccountEventSink, Parser};
 use crate::msg::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
     BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg, BasicUmUnrealizedMsg,
@@ -116,7 +116,7 @@ impl BinanceBasicAccountEventParser {
             0.0
         };
 
-        let bytes = BinanceBasicOrderMsg::create(
+        let msg = BinanceBasicOrderMsg::create(
             BinanceBasicOrderMsg::VENUE_MARGIN,
             event_time,
             transaction_time,
@@ -139,8 +139,7 @@ impl BinanceBasicAccountEventParser {
             commission_amount,
             0.0,
             commission_asset,
-        )
-        .to_bytes();
+        );
 
         debug!(
             "parser: executionReport parsed sym={} c_raw={:?} cli_id_i64={} x={} X={} qty={} last_qty={} last_px={}",
@@ -157,9 +156,12 @@ impl BinanceBasicAccountEventParser {
         let event = BasicAccountEventMsg::create(
             BasicAccountEventType::OrderUpdate,
             self.account_scope,
-            bytes,
+            msg.to_bytes(),
         );
-        if !tx.emit(event.to_bytes()) {
+        if !tx.emit_with_dedup_key(
+            event.to_bytes(),
+            binance_order_dedup_key(self.account_scope, &msg),
+        ) {
             return 0;
         }
         1
@@ -251,7 +253,7 @@ impl BinanceBasicAccountEventParser {
             .unwrap_or("")
             .to_string();
 
-        let bytes = BinanceBasicOrderMsg::create(
+        let msg = BinanceBasicOrderMsg::create(
             BinanceBasicOrderMsg::VENUE_UM,
             event_time,
             transaction_time,
@@ -274,8 +276,7 @@ impl BinanceBasicAccountEventParser {
             commission_amount,
             realized_profit,
             commission_asset,
-        )
-        .to_bytes();
+        );
 
         debug!(
             "parser: orderTradeUpdate parsed sym={} c_raw={:?} cli_id_i64={} x={} X={} qty={} last_qty={} last_px={}",
@@ -292,9 +293,12 @@ impl BinanceBasicAccountEventParser {
         let event = BasicAccountEventMsg::create(
             BasicAccountEventType::OrderUpdate,
             self.account_scope,
-            bytes,
+            msg.to_bytes(),
         );
-        if !tx.emit(event.to_bytes()) {
+        if !tx.emit_with_dedup_key(
+            event.to_bytes(),
+            binance_order_dedup_key(self.account_scope, &msg),
+        ) {
             return 0;
         }
         1
@@ -337,7 +341,7 @@ impl BinanceBasicAccountEventParser {
             .and_then(|s| s.parse::<f64>().ok())
             .unwrap_or(0.0);
 
-        let bytes = BasicTradeLiteMsg::create(
+        let msg = BasicTradeLiteMsg::create(
             TradingVenue::BinanceFutures as u8,
             event_time,
             trade_time,
@@ -348,8 +352,7 @@ impl BinanceBasicAccountEventParser {
             is_maker,
             last_executed_price,
             last_executed_quantity,
-        )
-        .to_bytes();
+        );
 
         debug!(
             "parser: tradeLite parsed sym={} c={} trade_id={} side={} last_qty={} last_px={}",
@@ -364,9 +367,12 @@ impl BinanceBasicAccountEventParser {
         let event = BasicAccountEventMsg::create(
             BasicAccountEventType::TradeUpdateLite,
             self.account_scope,
-            bytes,
+            msg.to_bytes(),
         );
-        if !tx.emit(event.to_bytes()) {
+        if !tx.emit_with_dedup_key(
+            event.to_bytes(),
+            trade_lite_dedup_key(self.account_scope, &msg),
+        ) {
             return 0;
         }
         1

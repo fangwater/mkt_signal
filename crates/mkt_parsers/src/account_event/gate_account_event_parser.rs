@@ -101,7 +101,7 @@
 //!   - `price`（委托价；市价单常为 0）
 //!   - `finish_as`（终态原因，用于映射 execution_type / order_status）
 
-use super::{AccountEventSink, Parser};
+use super::{gate_order_dedup_key, trade_lite_dedup_key, AccountEventSink, Parser};
 use crate::msg::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
     BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg,
@@ -556,7 +556,10 @@ impl GateAccountEventParser {
                 BasicAccountScope::GateUnified,
                 payload,
             );
-            if tx.emit(event_msg.to_bytes()) {
+            if tx.emit_with_dedup_key(
+                event_msg.to_bytes(),
+                gate_order_dedup_key(BasicAccountScope::GateUnified, &msg),
+            ) {
                 count += 1;
             }
         }
@@ -789,7 +792,10 @@ impl GateAccountEventParser {
                 BasicAccountScope::GateUnified,
                 payload,
             );
-            if tx.emit(event_msg.to_bytes()) {
+            if tx.emit_with_dedup_key(
+                event_msg.to_bytes(),
+                gate_order_dedup_key(BasicAccountScope::GateUnified, &msg),
+            ) {
                 count += 1;
             }
         }
@@ -1078,7 +1084,10 @@ impl GateAccountEventParser {
                 BasicAccountScope::GateUnified,
                 msg.to_bytes(),
             );
-            if tx.emit(event.to_bytes()) {
+            if tx.emit_with_dedup_key(
+                event.to_bytes(),
+                trade_lite_dedup_key(BasicAccountScope::GateUnified, &msg),
+            ) {
                 count += 1;
             }
         }
