@@ -969,7 +969,6 @@ struct SharedState {
 }
 
 struct ReplacementBatch {
-    frames: Vec<BboFrame>,
     trades: Vec<TradeFrame>,
     incrementals: Vec<IncrementalFrame>,
     derivatives: Vec<bytes::Bytes>,
@@ -977,10 +976,7 @@ struct ReplacementBatch {
 
 impl ReplacementBatch {
     fn is_empty(&self) -> bool {
-        self.frames.is_empty()
-            && self.trades.is_empty()
-            && self.incrementals.is_empty()
-            && self.derivatives.is_empty()
+        self.trades.is_empty() && self.incrementals.is_empty() && self.derivatives.is_empty()
     }
 }
 
@@ -992,6 +988,7 @@ fn parse_replacement_batch(
     include_trade: bool,
     include_incremental: bool,
     include_derivatives: bool,
+    emit_bbo: &mut dyn FnMut(BboFrame) -> Result<()>,
 ) -> ReplacementBatch {
     if looks_like_json(raw) {
         if let Ok(value) = serde_json::from_slice::<serde_json::Value>(raw) {
@@ -1003,6 +1000,7 @@ fn parse_replacement_batch(
                 include_trade,
                 include_incremental,
                 include_derivatives,
+                emit_bbo,
             );
         }
     }
@@ -1014,6 +1012,7 @@ fn parse_replacement_batch(
         include_trade,
         include_incremental,
         include_derivatives,
+        emit_bbo,
     )
 }
 
@@ -1032,10 +1031,11 @@ fn parse_json_replacement_batch(
     include_trade: bool,
     include_incremental: bool,
     include_derivatives: bool,
+    emit_bbo: &mut dyn FnMut(BboFrame) -> Result<()>,
 ) -> ReplacementBatch {
-    let frames = if include_bbo {
-        match adapter.parse_frame(value) {
-            Ok(v) => v,
+    if include_bbo {
+        match adapter.parse_frame(value, emit_bbo) {
+            Ok(()) => {}
             Err(e) => {
                 log::error!(
                     "spread_pbs[{}] adapter.parse_frame failed: {:#} payload={}",
@@ -1043,12 +1043,9 @@ fn parse_json_replacement_batch(
                     e,
                     value
                 );
-                Vec::new()
             }
         }
-    } else {
-        Vec::new()
-    };
+    }
     let trades = if include_trade {
         match adapter.parse_trade_frame(value) {
             Ok(v) => v,
@@ -1099,7 +1096,6 @@ fn parse_json_replacement_batch(
     };
 
     ReplacementBatch {
-        frames,
         trades,
         incrementals,
         derivatives,
@@ -1114,22 +1110,20 @@ fn parse_binary_replacement_batch(
     include_trade: bool,
     include_incremental: bool,
     include_derivatives: bool,
+    emit_bbo: &mut dyn FnMut(BboFrame) -> Result<()>,
 ) -> ReplacementBatch {
-    let frames = if include_bbo {
-        match adapter.parse_binary_frame(raw) {
-            Ok(v) => v,
+    if include_bbo {
+        match adapter.parse_binary_frame(raw, emit_bbo) {
+            Ok(()) => {}
             Err(e) => {
                 log::error!(
                     "spread_pbs[{}] adapter.parse_binary_frame failed: {:#}",
                     label,
                     e
                 );
-                Vec::new()
             }
         }
-    } else {
-        Vec::new()
-    };
+    }
     let trades = if include_trade {
         match adapter.parse_trade_binary_frame(raw) {
             Ok(v) => v,
@@ -1177,7 +1171,6 @@ fn parse_binary_replacement_batch(
     };
 
     ReplacementBatch {
-        frames,
         trades,
         incrementals,
         derivatives,
@@ -1194,6 +1187,7 @@ fn make_replacement_handler(
     state: Rc<RefCell<SharedState>>,
 ) -> FrameHandler {
     Rc::new(move |_recv_us: i64, raw: &[u8]| {
+        let mut emit_noop = |_frame: BboFrame| Ok(());
         let batch = parse_replacement_batch(
             label,
             adapter.as_ref(),
@@ -1202,6 +1196,7 @@ fn make_replacement_handler(
             trade_publisher.is_some(),
             incremental_publisher.is_some(),
             derivatives_publisher.is_some(),
+            &mut emit_noop,
         );
         if batch.is_empty() {
             return;
@@ -1241,6 +1236,17 @@ fn make_handler(
     state: Rc<RefCell<SharedState>>,
 ) -> FrameHandler {
     Rc::new(move |recv_us: i64, raw: &[u8]| {
+        let mut accepted_us = 0;
+        let mut bbo_count = 0usize;
+        let mut s = state.borrow_mut();
+        let mut emit_bbo = |frame: BboFrame| {
+            if accepted_us == 0 {
+                accepted_us = get_timestamp_us();
+            }
+            bbo_count += 1;
+            process_frame(&mut s, &publisher, recv_us, accepted_us, frame);
+            Ok(())
+        };
         let batch = parse_replacement_batch(
             label,
             adapter.as_ref(),
@@ -1249,18 +1255,11 @@ fn make_handler(
             trade_publisher.is_some(),
             incremental_publisher.is_some(),
             derivatives_publisher.is_some(),
+            &mut emit_bbo,
         );
-        if batch.is_empty() {
+        drop(emit_bbo);
+        if bbo_count == 0 && batch.is_empty() {
             return;
-        }
-        let accepted_us = if batch.frames.is_empty() {
-            0
-        } else {
-            get_timestamp_us()
-        };
-        let mut s = state.borrow_mut();
-        for f in batch.frames {
-            process_frame(&mut s, &publisher, recv_us, accepted_us, f);
         }
         if let Some(trade_publisher) = trade_publisher.as_ref() {
             for trade in batch.trades {
@@ -1836,8 +1835,12 @@ mod tests {
                 Vec::new()
             }
 
-            fn parse_frame(&self, _value: &serde_json::Value) -> Result<Vec<BboFrame>> {
-                Ok(Vec::new())
+            fn parse_frame(
+                &self,
+                _value: &serde_json::Value,
+                _emit: &mut dyn FnMut(BboFrame) -> Result<()>,
+            ) -> Result<()> {
+                Ok(())
             }
 
             fn keepalive(&self) -> Option<KeepaliveSpec> {

@@ -121,9 +121,14 @@ impl VenueAdapter for BinanceAdapter {
         active.extend(symbols.iter().map(|symbol| symbol.to_ascii_uppercase()));
     }
 
-    fn parse_frame(&self, value: &Value) -> Result<Vec<BboFrame>> {
+    fn parse_frame(
+        &self,
+        value: &Value,
+        emit: &mut dyn FnMut(BboFrame) -> Result<()>,
+    ) -> Result<()> {
         if let Some(bbo) = binance_codec::parse_bbo_json(value) {
-            return Ok(vec![bbo_to_frame(bbo)]);
+            emit(bbo_to_frame(bbo))?;
+            return Ok(());
         }
 
         let payload = binance_codec::payload(value);
@@ -134,7 +139,7 @@ impl VenueAdapter for BinanceAdapter {
             let symbol = payload.get("s").and_then(|v| v.as_str()).unwrap_or("?");
             return Err(anyhow!("binance spread {} missing u/lastUpdateId", symbol));
         }
-        Ok(Vec::new())
+        Ok(())
     }
 
     fn parse_trade_frame(&self, value: &Value) -> Result<Vec<TradeFrame>> {
@@ -165,14 +170,18 @@ impl VenueAdapter for BinanceAdapter {
             .collect())
     }
 
-    fn parse_binary_frame(&self, raw: &[u8]) -> Result<Vec<BboFrame>> {
+    fn parse_binary_frame(
+        &self,
+        raw: &[u8],
+        emit: &mut dyn FnMut(BboFrame) -> Result<()>,
+    ) -> Result<()> {
         if self.venue != TradingVenue::BinanceMargin {
-            return Ok(Vec::new());
+            return Ok(());
         }
-        Ok(binance_codec::parse_sbe_bbo(raw)
-            .map(bbo_to_frame)
-            .into_iter()
-            .collect())
+        if let Some(bbo) = binance_codec::parse_sbe_bbo(raw) {
+            emit(bbo_to_frame(bbo))?;
+        }
+        Ok(())
     }
 
     fn parse_trade_binary_frame(&self, raw: &[u8]) -> Result<Vec<TradeFrame>> {
@@ -397,7 +406,7 @@ mod tests {
                 "b":[["25.0","100"],["24.9","2"]],"a":[["25.1","50"],["25.2","3"]]}
         }"#;
         let a = BinanceAdapter::new(TradingVenue::BinanceFutures);
-        let frames = a.parse_frame(&v(raw)).unwrap();
+        let frames = a.collect_frame(&v(raw)).unwrap();
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].symbol, "BTCUSDT");
         assert_eq!(frames[0].seq_id, 12345);
@@ -410,7 +419,7 @@ mod tests {
     fn missing_u_field_is_an_error() {
         let raw = r#"{"data":{"s":"BTCUSDT","b":"25","B":"1","a":"25.1","A":"1"}}"#;
         let a = BinanceAdapter::new(TradingVenue::BinanceFutures);
-        assert!(a.parse_frame(&v(raw)).is_err());
+        assert!(a.collect_frame(&v(raw)).is_err());
     }
 
     #[test]
@@ -475,7 +484,7 @@ mod tests {
     #[test]
     fn parses_sbe_best_bid_ask() {
         let a = BinanceAdapter::new(TradingVenue::BinanceMargin);
-        let frames = a.parse_binary_frame(&sbe_bbo_frame()).unwrap();
+        let frames = a.collect_binary_frame(&sbe_bbo_frame()).unwrap();
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].symbol, "BTCUSDT");
         assert_eq!(frames[0].ts_us, 1_700_000_000_001_002);

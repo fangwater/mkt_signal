@@ -71,9 +71,13 @@ impl VenueAdapter for GateSbeAdapter {
         Some(GATE_JSON_FUTURES_WS_URL.to_string())
     }
 
-    fn parse_frame(&self, _value: &Value) -> Result<Vec<BboFrame>> {
+    fn parse_frame(
+        &self,
+        _value: &Value,
+        _emit: &mut dyn FnMut(BboFrame) -> Result<()>,
+    ) -> Result<()> {
         // SBE 端的文本帧只有 subscribe ack / pong；静默忽略
-        Ok(Vec::new())
+        Ok(())
     }
 
     fn parse_incremental_frame(&self, value: &Value) -> Result<Vec<IncrementalFrame>> {
@@ -83,11 +87,15 @@ impl VenueAdapter for GateSbeAdapter {
             .collect())
     }
 
-    fn parse_binary_frame(&self, raw: &[u8]) -> Result<Vec<BboFrame>> {
-        Ok(gate_codec::parse_sbe_bbo(raw)
-            .map(crate::spread_pbs::gate::bbo_to_frame)
-            .into_iter()
-            .collect())
+    fn parse_binary_frame(
+        &self,
+        raw: &[u8],
+        emit: &mut dyn FnMut(BboFrame) -> Result<()>,
+    ) -> Result<()> {
+        if let Some(bbo) = gate_codec::parse_sbe_bbo(raw) {
+            emit(crate::spread_pbs::gate::bbo_to_frame(bbo))?;
+        }
+        Ok(())
     }
 
     fn parse_trade_binary_frame(&self, raw: &[u8]) -> Result<Vec<TradeFrame>> {
@@ -273,7 +281,7 @@ mod tests {
             "BTC_USDT",
         );
         let frames = GateSbeAdapter::new()
-            .parse_binary_frame(&raw)
+            .collect_binary_frame(&raw)
             .expect("decode ok");
         assert_eq!(frames.len(), 1);
         let f = &frames[0];
@@ -328,7 +336,7 @@ mod tests {
         patched[2] = 2; // templateId=2 (publicTrade)
         patched[3] = 0;
         assert!(GateSbeAdapter::new()
-            .parse_binary_frame(&patched)
+            .collect_binary_frame(&patched)
             .unwrap()
             .is_empty());
     }
@@ -340,7 +348,7 @@ mod tests {
         patched[4] = 9; // schemaId=9
         patched[5] = 0;
         assert!(GateSbeAdapter::new()
-            .parse_binary_frame(&patched)
+            .collect_binary_frame(&patched)
             .unwrap()
             .is_empty());
     }
@@ -349,7 +357,7 @@ mod tests {
     fn rejects_zero_price() {
         let raw = build_bbo_frame(0, 0, 1, 0, 0, 0, 1, 1, 1, "futures.book_ticker", "BTC_USDT");
         assert!(GateSbeAdapter::new()
-            .parse_binary_frame(&raw)
+            .collect_binary_frame(&raw)
             .unwrap()
             .is_empty());
     }

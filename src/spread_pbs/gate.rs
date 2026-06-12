@@ -68,7 +68,11 @@ impl VenueAdapter for GateAdapter {
         self.build_order_book_update_subscribe(symbols)
     }
 
-    fn parse_frame(&self, value: &Value) -> Result<Vec<BboFrame>> {
+    fn parse_frame(
+        &self,
+        value: &Value,
+        emit: &mut dyn FnMut(BboFrame) -> Result<()>,
+    ) -> Result<()> {
         let channel = value.get("channel").and_then(|v| v.as_str()).unwrap_or("");
         let event = value.get("event").and_then(|v| v.as_str()).unwrap_or("");
         if event == "update" && channel.ends_with(".book_ticker") {
@@ -80,18 +84,19 @@ impl VenueAdapter for GateAdapter {
         }
 
         if let Some(bbo) = gate_codec::parse_bbo_json(value) {
-            return Ok(vec![bbo_to_frame(bbo)]);
+            emit(bbo_to_frame(bbo))?;
+            return Ok(());
         }
 
         if event != "update" || !channel.ends_with(".book_ticker") {
-            return Ok(Vec::new());
+            return Ok(());
         }
         if let Some(result) = value.get("result").and_then(|v| v.as_object()) {
             if result.get("u").is_none() {
                 return Err(anyhow!("gate {} missing result.u (updateId)", channel));
             }
         }
-        Ok(Vec::new())
+        Ok(())
     }
 
     fn parse_trade_frame(&self, value: &Value) -> Result<Vec<TradeFrame>> {
@@ -267,7 +272,7 @@ mod tests {
                       "b":"19177.79","B":"11","a":"19178.4","A":"1"}
         }"#;
         let a = GateAdapter::new(TradingVenue::GateFutures);
-        let frames = a.parse_frame(&v(raw)).unwrap();
+        let frames = a.collect_frame(&v(raw)).unwrap();
         assert_eq!(frames.len(), 1);
         let f = &frames[0];
         assert_eq!(f.symbol, "BTCUSDT");
@@ -286,7 +291,7 @@ mod tests {
                       "b":"3000","B":"0.5","a":"3001","A":"1.0"}
         }"#;
         let a = GateAdapter::new(TradingVenue::GateMargin);
-        let frames = a.parse_frame(&v(raw)).unwrap();
+        let frames = a.collect_frame(&v(raw)).unwrap();
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].symbol, "ETHUSDT");
         assert_eq!(frames[0].seq_id, 111);
@@ -299,7 +304,7 @@ mod tests {
             "result":{"t":1,"s":"BTC_USDT","b":"1","B":"1","a":"2","A":"1"}
         }"#;
         let a = GateAdapter::new(TradingVenue::GateFutures);
-        assert!(a.parse_frame(&v(raw)).is_err());
+        assert!(a.collect_frame(&v(raw)).is_err());
     }
 
     #[test]
@@ -308,7 +313,7 @@ mod tests {
             "channel":"futures.book_ticker","event":"subscribe","result":{"status":"success"}
         }"#;
         let a = GateAdapter::new(TradingVenue::GateFutures);
-        assert!(a.parse_frame(&v(raw)).unwrap().is_empty());
+        assert!(a.collect_frame(&v(raw)).unwrap().is_empty());
     }
 
     #[test]

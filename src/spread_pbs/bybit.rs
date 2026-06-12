@@ -148,8 +148,12 @@ impl VenueAdapter for BybitAdapter {
         parse_derivatives_frame(value)
     }
 
-    fn parse_frame(&self, value: &Value) -> Result<Vec<BboFrame>> {
-        parse_bbo_frame(value, &self.cache)
+    fn parse_frame(
+        &self,
+        value: &Value,
+        emit: &mut dyn FnMut(BboFrame) -> Result<()>,
+    ) -> Result<()> {
+        parse_bbo_frame(value, &self.cache, emit)
     }
 
     fn keepalive(&self) -> Option<KeepaliveSpec> {
@@ -181,10 +185,14 @@ fn build_bybit_subscribe(venue: TradingVenue, symbols: &[String], channel: &str)
     out
 }
 
-fn parse_bbo_frame(value: &Value, cache: &RefCell<BybitBboCache>) -> Result<Vec<BboFrame>> {
+fn parse_bbo_frame(
+    value: &Value,
+    cache: &RefCell<BybitBboCache>,
+    emit: &mut dyn FnMut(BboFrame) -> Result<()>,
+) -> Result<()> {
     let topic = match value.get("topic").and_then(|v| v.as_str()) {
         Some(topic) if topic.starts_with("orderbook.1.") => topic,
-        _ => return Ok(Vec::new()),
+        _ => return Ok(()),
     };
     let data = value
         .get("data")
@@ -194,10 +202,10 @@ fn parse_bbo_frame(value: &Value, cache: &RefCell<BybitBboCache>) -> Result<Vec<
         return Err(anyhow!("bybit {} missing data.u (updateId)", topic));
     }
     let Some(update) = bybit_codec::parse_bbo_update_json(value) else {
-        return Ok(Vec::new());
+        return Ok(());
     };
     if update.seq_id == 0 {
-        return Ok(Vec::new());
+        return Ok(());
     }
 
     let mut cache = cache.borrow_mut();
@@ -224,17 +232,17 @@ fn parse_bbo_frame(value: &Value, cache: &RefCell<BybitBboCache>) -> Result<Vec<
     }
 
     if !entry.seeded {
-        return Ok(Vec::new());
+        return Ok(());
     }
     if entry.bid_price <= 0.0
         || entry.ask_price <= 0.0
         || entry.bid_amount <= 0.0
         || entry.ask_amount <= 0.0
     {
-        return Ok(Vec::new());
+        return Ok(());
     }
 
-    Ok(vec![BboFrame {
+    emit(BboFrame {
         symbol: update.symbol,
         ts_us: update.timestamp_us,
         seq_id: update.seq_id,
@@ -243,7 +251,8 @@ fn parse_bbo_frame(value: &Value, cache: &RefCell<BybitBboCache>) -> Result<Vec<
         bid_amount: entry.bid_amount,
         ask_price: entry.ask_price,
         ask_amount: entry.ask_amount,
-    }])
+    })?;
+    Ok(())
 }
 
 fn parse_trade_frame(value: &Value) -> Result<Vec<TradeFrame>> {
@@ -345,7 +354,7 @@ mod tests {
             "data":{"s":"BTCUSDT","b":[["100","1"]],"a":[["101","2"]],"u":1}
         }"#;
         let a = BybitAdapter::new(TradingVenue::BybitFutures);
-        let frames = a.parse_frame(&v(raw)).unwrap();
+        let frames = a.collect_frame(&v(raw)).unwrap();
         assert_eq!(frames.len(), 1);
         let f = &frames[0];
         assert_eq!(f.symbol, "BTCUSDT");
@@ -362,7 +371,7 @@ mod tests {
             "data":{"s":"BTCUSDT","b":[["100","1"]],"a":[],"u":1}
         }"#;
         let a = BybitAdapter::new(TradingVenue::BybitFutures);
-        assert!(a.parse_frame(&v(raw)).unwrap().is_empty());
+        assert!(a.collect_frame(&v(raw)).unwrap().is_empty());
     }
 
     #[test]
@@ -372,13 +381,13 @@ mod tests {
             "topic":"orderbook.1.BTCUSDT","type":"snapshot","ts":1,
             "data":{"s":"BTCUSDT","b":[["100","1"]],"a":[["101","2"]],"u":1}
         }"#;
-        a.parse_frame(&v(snap)).unwrap();
+        a.collect_frame(&v(snap)).unwrap();
         // 只更新 ask 一侧
         let delta = r#"{
             "topic":"orderbook.1.BTCUSDT","type":"delta","ts":2,
             "data":{"s":"BTCUSDT","b":[],"a":[["101.5","3"]],"u":2}
         }"#;
-        let frames = a.parse_frame(&v(delta)).unwrap();
+        let frames = a.collect_frame(&v(delta)).unwrap();
         assert_eq!(frames.len(), 1);
         let f = &frames[0];
         assert_eq!(f.seq_id, 2);
@@ -394,7 +403,7 @@ mod tests {
             "data":{"s":"BTCUSDT","b":[["100","1"]],"a":[["101","2"]]}
         }"#;
         let a = BybitAdapter::new(TradingVenue::BybitFutures);
-        assert!(a.parse_frame(&v(raw)).is_err());
+        assert!(a.collect_frame(&v(raw)).is_err());
     }
 
     #[test]

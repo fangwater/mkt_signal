@@ -2,6 +2,8 @@ use anyhow::Result;
 use iceoryx2::port::publisher::Publisher;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 use mkt_parsers::msg::mkt_msg::{Level, MktMsgType};
 use rolling_common::latency_snapshot::LATENCY_SNAPSHOT_PAYLOAD_LEN;
@@ -92,6 +94,7 @@ fn bbo_payload_len(symbol: &str) -> usize {
     4 + 4 + symbol.len() + 8 + 32
 }
 
+#[cfg(test)]
 fn write_bbo_payload(
     buf: &mut [u8],
     symbol: &str,
@@ -110,6 +113,54 @@ fn write_bbo_payload(
     write_f64_le(buf, &mut off, ask_price);
     write_f64_le(buf, &mut off, ask_amount);
     Ok(off)
+}
+
+#[derive(Clone)]
+struct BboPayloadPrefix {
+    bytes: [u8; SPREAD_PAYLOAD_BYTES],
+    len: usize,
+    total_len: usize,
+}
+
+impl BboPayloadPrefix {
+    fn new(symbol: &str) -> Result<Self> {
+        let len = 4 + 4 + symbol.len();
+        let total_len = bbo_payload_len(symbol);
+        anyhow::ensure!(
+            total_len <= SPREAD_PAYLOAD_BYTES,
+            "spread payload {} exceeds {}",
+            total_len,
+            SPREAD_PAYLOAD_BYTES
+        );
+        let mut bytes = [0u8; SPREAD_PAYLOAD_BYTES];
+        let mut off = 0usize;
+        write_u32_le(&mut bytes, &mut off, MktMsgType::AskBidSpread as u32);
+        write_symbol(&mut bytes, &mut off, symbol)?;
+        Ok(Self {
+            bytes,
+            len,
+            total_len,
+        })
+    }
+}
+
+fn write_bbo_payload_with_prefix(
+    buf: &mut [u8],
+    prefix: &BboPayloadPrefix,
+    timestamp_us: i64,
+    bid_price: f64,
+    bid_amount: f64,
+    ask_price: f64,
+    ask_amount: f64,
+) -> usize {
+    buf[..prefix.len].copy_from_slice(&prefix.bytes[..prefix.len]);
+    let mut off = prefix.len;
+    write_i64_le(buf, &mut off, timestamp_us);
+    write_f64_le(buf, &mut off, bid_price);
+    write_f64_le(buf, &mut off, bid_amount);
+    write_f64_le(buf, &mut off, ask_price);
+    write_f64_le(buf, &mut off, ask_amount);
+    off
 }
 
 #[inline]
@@ -190,6 +241,7 @@ fn write_incremental_payload(
 pub struct SpreadPublisher {
     publisher: Publisher<ipc::Service, [u8; SPREAD_PAYLOAD_BYTES], ()>,
     service_name: String,
+    bbo_prefix_by_symbol: RefCell<HashMap<String, BboPayloadPrefix>>,
 }
 
 /// `spread_pbs/<venue>/latency` 服务的 publisher。这个 service 不经过
@@ -251,6 +303,7 @@ impl SpreadPublisher {
         Ok(Self {
             publisher,
             service_name,
+            bbo_prefix_by_symbol: RefCell::new(HashMap::new()),
         })
     }
 
@@ -272,17 +325,53 @@ impl SpreadPublisher {
         ask_price: f64,
         ask_amount: f64,
     ) -> Result<()> {
-        let min_len = bbo_payload_len(symbol);
-        publish_write(&self.publisher, min_len, "spread", |buf| {
-            write_bbo_payload(
-                buf,
-                symbol,
+        let cache = self.bbo_prefix_by_symbol.borrow();
+        if let Some(prefix) = cache.get(symbol) {
+            return self.publish_bbo_with_prefix(
+                prefix,
                 timestamp_us,
                 bid_price,
                 bid_amount,
                 ask_price,
                 ask_amount,
-            )
+            );
+        }
+        drop(cache);
+
+        let mut cache = self.bbo_prefix_by_symbol.borrow_mut();
+        if !cache.contains_key(symbol) {
+            cache.insert(symbol.to_string(), BboPayloadPrefix::new(symbol)?);
+        }
+        let prefix = cache.get(symbol).expect("prefix inserted");
+        self.publish_bbo_with_prefix(
+            prefix,
+            timestamp_us,
+            bid_price,
+            bid_amount,
+            ask_price,
+            ask_amount,
+        )
+    }
+
+    fn publish_bbo_with_prefix(
+        &self,
+        prefix: &BboPayloadPrefix,
+        timestamp_us: i64,
+        bid_price: f64,
+        bid_amount: f64,
+        ask_price: f64,
+        ask_amount: f64,
+    ) -> Result<()> {
+        publish_write(&self.publisher, prefix.total_len, "spread", |buf| {
+            Ok(write_bbo_payload_with_prefix(
+                buf,
+                prefix,
+                timestamp_us,
+                bid_price,
+                bid_amount,
+                ask_price,
+                ask_amount,
+            ))
         })
     }
 }
@@ -528,6 +617,33 @@ mod tests {
             3.4,
         )
         .unwrap();
+        assert_eq!(written, expected.len());
+        assert_eq!(&buf[..written], &expected[..]);
+        assert!(buf[written..].iter().all(|b| *b == 0));
+    }
+
+    #[test]
+    fn cached_bbo_prefix_writer_matches_ask_bid_spread_msg_bytes() {
+        let expected = AskBidSpreadMsg::create(
+            "ETHUSDT".to_string(),
+            1_700_000_000_654_321,
+            2000.1,
+            5.6,
+            2000.2,
+            7.8,
+        )
+        .to_bytes();
+        let prefix = BboPayloadPrefix::new("ETHUSDT").unwrap();
+        let mut buf = [0u8; SPREAD_PAYLOAD_BYTES];
+        let written = write_bbo_payload_with_prefix(
+            &mut buf,
+            &prefix,
+            1_700_000_000_654_321,
+            2000.1,
+            5.6,
+            2000.2,
+            7.8,
+        );
         assert_eq!(written, expected.len());
         assert_eq!(&buf[..written], &expected[..]);
         assert!(buf[written..].iter().all(|b| *b == 0));

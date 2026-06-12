@@ -88,9 +88,13 @@ impl VenueAdapter for BitgetAdapter {
         }
     }
 
-    fn parse_frame(&self, _value: &Value) -> Result<Vec<BboFrame>> {
+    fn parse_frame(
+        &self,
+        _value: &Value,
+        _emit: &mut dyn FnMut(BboFrame) -> Result<()>,
+    ) -> Result<()> {
         // SBE 端的 text 帧只有 subscribe ack / error event; 静默忽略
-        Ok(Vec::new())
+        Ok(())
     }
 
     fn parse_incremental_frame(&self, value: &Value) -> Result<Vec<IncrementalFrame>> {
@@ -101,8 +105,12 @@ impl VenueAdapter for BitgetAdapter {
         parse_v2_derivatives(value)
     }
 
-    fn parse_binary_frame(&self, raw: &[u8]) -> Result<Vec<BboFrame>> {
-        parse_sbe_books1(raw)
+    fn parse_binary_frame(
+        &self,
+        raw: &[u8],
+        emit: &mut dyn FnMut(BboFrame) -> Result<()>,
+    ) -> Result<()> {
+        parse_sbe_books1(raw, emit)
     }
 
     fn parse_trade_binary_frame(&self, raw: &[u8]) -> Result<Vec<TradeFrame>> {
@@ -186,10 +194,11 @@ fn parse_v2_derivatives(value: &Value) -> Result<Vec<Bytes>> {
 }
 
 /// SBE books1 (templateId=1002) 解码。其他 template 直接返回空 Vec。
-fn parse_sbe_books1(raw: &[u8]) -> Result<Vec<BboFrame>> {
-    bitget_codec::parse_sbe_books1(raw)
-        .map(|frames| frames.into_iter().map(bbo_to_frame).collect())
-        .map_err(Into::into)
+fn parse_sbe_books1(raw: &[u8], emit: &mut dyn FnMut(BboFrame) -> Result<()>) -> Result<()> {
+    for bbo in bitget_codec::parse_sbe_books1(raw)? {
+        emit(bbo_to_frame(bbo))?;
+    }
+    Ok(())
 }
 
 /// SBE publicTrade (templateId=1003) 解码。其他 template 直接返回空 Vec。
@@ -339,6 +348,15 @@ mod tests {
         buf
     }
 
+    fn collect_sbe_books1(raw: &[u8]) -> Result<Vec<BboFrame>> {
+        let mut out = Vec::new();
+        parse_sbe_books1(raw, &mut |frame| {
+            out.push(frame);
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
     #[test]
     fn decode_books1_with_negative_exponents() {
         // BTC: bid=77635.7, ask=77635.8; size 9.3708 / 3.3373
@@ -354,7 +372,7 @@ mod tests {
             1_700_000_000_001_500,
             "BTCUSDT",
         );
-        let frames = parse_sbe_books1(&raw).expect("decode ok");
+        let frames = collect_sbe_books1(&raw).expect("decode ok");
         assert_eq!(frames.len(), 1);
         let f = &frames[0];
         assert_eq!(f.symbol, "BTCUSDT");
@@ -370,7 +388,7 @@ mod tests {
     fn rejects_unknown_schema() {
         let mut raw = build_sbe_bbo_frame(0, 1, 1, 1, 1, 0, 0, 1, 0, "BTCUSDT");
         raw[4] = 9; // schemaId
-        let err = parse_sbe_books1(&raw).unwrap_err();
+        let err = collect_sbe_books1(&raw).unwrap_err();
         assert!(err.to_string().contains("schemaId"));
     }
 
@@ -379,7 +397,7 @@ mod tests {
         let mut raw = build_sbe_bbo_frame(0, 1, 1, 1, 1, 0, 0, 1, 0, "BTCUSDT");
         raw[2] = 0xE9;
         raw[3] = 0x03; // → 1001 (Depth50)
-        assert!(parse_sbe_books1(&raw).unwrap().is_empty());
+        assert!(collect_sbe_books1(&raw).unwrap().is_empty());
     }
 
     #[test]

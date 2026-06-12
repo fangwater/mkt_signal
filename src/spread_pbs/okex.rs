@@ -213,16 +213,20 @@ fn build_sbe_channel_subscribe_messages(
     out
 }
 
-/// 解一帧 SBE 二进制 bbo-tbt (templateId=1000)。其他 template 返回空 Vec。
-fn parse_sbe_bbo_tbt(raw: &[u8], code_to_norm: &HashMap<i64, String>) -> Result<Vec<BboFrame>> {
+/// 解一帧 SBE 二进制 bbo-tbt (templateId=1000)。其他 template 直接返回 Ok。
+fn parse_sbe_bbo_tbt(
+    raw: &[u8],
+    code_to_norm: &HashMap<i64, String>,
+    emit: &mut dyn FnMut(BboFrame) -> Result<()>,
+) -> Result<()> {
     let Some(bbo) = okex_codec::parse_sbe_bbo_tbt(raw)? else {
-        return Ok(Vec::new());
+        return Ok(());
     };
     let Some(symbol) = code_to_norm.get(&bbo.inst_id_code).cloned() else {
         log::warn!("OKEx SBE: unknown instIdCode={}; dropped", bbo.inst_id_code);
-        return Ok(Vec::new());
+        return Ok(());
     };
-    Ok(vec![BboFrame {
+    emit(BboFrame {
         symbol,
         ts_us: bbo.timestamp_us,
         seq_id: bbo.seq_id,
@@ -231,7 +235,8 @@ fn parse_sbe_bbo_tbt(raw: &[u8], code_to_norm: &HashMap<i64, String>) -> Result<
         bid_amount: bbo.bid_amount,
         ask_price: bbo.ask_price,
         ask_amount: bbo.ask_amount,
-    }])
+    })?;
+    Ok(())
 }
 
 fn parse_sbe_books(
@@ -374,17 +379,25 @@ impl VenueAdapter for OkexAdapter {
         self.sym_to_code.get(symbol).copied()
     }
 
-    fn parse_frame(&self, value: &Value) -> Result<Vec<BboFrame>> {
+    fn parse_frame(
+        &self,
+        value: &Value,
+        _emit: &mut dyn FnMut(BboFrame) -> Result<()>,
+    ) -> Result<()> {
         if let Some(event) = value.get("event").and_then(|v| v.as_str()) {
             if event == "error" || value.get("code").is_some() {
                 log::error!("OKEx SBE control event: {}", value);
             }
         }
-        Ok(Vec::new())
+        Ok(())
     }
 
-    fn parse_binary_frame(&self, raw: &[u8]) -> Result<Vec<BboFrame>> {
-        parse_sbe_bbo_tbt(raw, &self.code_to_norm)
+    fn parse_binary_frame(
+        &self,
+        raw: &[u8],
+        emit: &mut dyn FnMut(BboFrame) -> Result<()>,
+    ) -> Result<()> {
+        parse_sbe_bbo_tbt(raw, &self.code_to_norm, emit)
     }
 
     fn parse_trade_binary_frame(&self, raw: &[u8]) -> Result<Vec<TradeFrame>> {
@@ -652,7 +665,7 @@ mod tests {
             -1,
             -2,
         );
-        let frames = adapter.parse_binary_frame(&raw).expect("decode ok");
+        let frames = adapter.collect_binary_frame(&raw).expect("decode ok");
         assert_eq!(frames.len(), 1);
         let f = &frames[0];
         assert_eq!(f.symbol, "BTCUSDT");
@@ -814,7 +827,7 @@ mod tests {
         // overwrite schemaId (bytes [4..6])
         raw[4] = 9;
         raw[5] = 0;
-        let err = adapter.parse_binary_frame(&raw).unwrap_err();
+        let err = adapter.collect_binary_frame(&raw).unwrap_err();
         assert!(err.to_string().contains("schemaId"));
     }
 
@@ -825,13 +838,13 @@ mod tests {
         // template 1001 (books-l2-tbt) — 不在我们订阅范围, drop
         raw[2] = (1001u16 & 0xff) as u8;
         raw[3] = (1001u16 >> 8) as u8;
-        assert!(adapter.parse_binary_frame(&raw).unwrap().is_empty());
+        assert!(adapter.collect_binary_frame(&raw).unwrap().is_empty());
     }
 
     #[test]
     fn unknown_instid_code_is_dropped_not_errored() {
         let adapter = make_adapter();
         let raw = build_sbe_bbo_frame(99999, 0, 1, 1, 100, 1, 100, 1, 0, 0);
-        assert!(adapter.parse_binary_frame(&raw).unwrap().is_empty());
+        assert!(adapter.collect_binary_frame(&raw).unwrap().is_empty());
     }
 }

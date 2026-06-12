@@ -99,7 +99,8 @@ impl KeepaliveSpec {
 /// 因此 trait 不要求 `Send`/`Sync`。
 ///
 /// `parse_frame` 接收 `app.rs` 已经 `serde_json` 解析过的 `&Value`，
-/// 避免双路竞速场景下同一帧被重复 `from_str`。
+/// 避免双路竞速场景下同一帧被重复 `from_str`。BBO 走 emit callback，
+/// 避免热路径为单条 frame 构造 `Vec<BboFrame>`。
 /// 双路去重统一基于 `BboFrame.seq_id` 在 `process_frame` 内完成。
 pub trait VenueAdapter {
     fn name(&self) -> &'static str;
@@ -133,7 +134,11 @@ pub trait VenueAdapter {
     fn inst_id_code(&self, _symbol: &str) -> Option<i64> {
         None
     }
-    fn parse_frame(&self, value: &Value) -> Result<Vec<BboFrame>>;
+    fn parse_frame(
+        &self,
+        value: &Value,
+        emit: &mut dyn FnMut(BboFrame) -> Result<()>,
+    ) -> Result<()>;
     fn parse_trade_frame(&self, _value: &Value) -> Result<Vec<TradeFrame>> {
         Ok(Vec::new())
     }
@@ -143,8 +148,12 @@ pub trait VenueAdapter {
     fn parse_derivatives_frame(&self, _value: &Value) -> Result<Vec<Bytes>> {
         Ok(Vec::new())
     }
-    fn parse_binary_frame(&self, _raw: &[u8]) -> Result<Vec<BboFrame>> {
-        Ok(Vec::new())
+    fn parse_binary_frame(
+        &self,
+        _raw: &[u8],
+        _emit: &mut dyn FnMut(BboFrame) -> Result<()>,
+    ) -> Result<()> {
+        Ok(())
     }
     fn parse_trade_binary_frame(&self, _raw: &[u8]) -> Result<Vec<TradeFrame>> {
         Ok(Vec::new())
@@ -157,6 +166,32 @@ pub trait VenueAdapter {
     }
     /// 返回 None 表示完全依赖服务端 ws-Ping/Pong；返回 Some 表示主动按 interval 发心跳。
     fn keepalive(&self) -> Option<KeepaliveSpec>;
+
+    #[cfg(test)]
+    fn collect_frame(&self, value: &Value) -> Result<Vec<BboFrame>>
+    where
+        Self: Sized,
+    {
+        let mut out = Vec::new();
+        self.parse_frame(value, &mut |frame| {
+            out.push(frame);
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
+    #[cfg(test)]
+    fn collect_binary_frame(&self, raw: &[u8]) -> Result<Vec<BboFrame>>
+    where
+        Self: Sized,
+    {
+        let mut out = Vec::new();
+        self.parse_binary_frame(raw, &mut |frame| {
+            out.push(frame);
+            Ok(())
+        })?;
+        Ok(out)
+    }
 }
 
 /// 按 venue 创建对应 adapter；非支持的 venue 返回 Ok(None)。
