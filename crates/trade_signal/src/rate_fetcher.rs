@@ -114,9 +114,9 @@ struct BitgetMarginLoansResponse {
 #[serde(rename_all = "camelCase")]
 struct BitgetMarginLoansData {
     #[serde(default)]
-    daily_interest: String,
+    daily_interest: Option<String>,
     #[serde(default)]
-    limit: String,
+    limit: Option<String>,
 }
 
 /// Bybit v5 资金费率历史响应
@@ -1331,7 +1331,7 @@ impl RateFetcher {
         let mut fail = 0;
         for asset in &assets {
             match Self::fetch_bitget_lending_rate_for_asset(asset).await {
-                Ok(rate) => {
+                Ok(Some(rate)) => {
                     Self::with_inner_mut(|inner| {
                         inner
                             .lending_rates
@@ -1348,6 +1348,14 @@ impl RateFetcher {
                     });
                     success += 1;
                 }
+                Ok(None) => {
+                    Self::with_inner_mut(|inner| {
+                        if let Some(venue_rates) = inner.lending_rates.get_mut(&BITGET_CONFIG.venue)
+                        {
+                            venue_rates.remove(&asset.to_uppercase());
+                        }
+                    });
+                }
                 Err(err) => {
                     warn!("Bitget {} 借贷利率失败: {:?}", asset, err);
                     fail += 1;
@@ -1362,7 +1370,7 @@ impl RateFetcher {
         Ok(())
     }
 
-    async fn fetch_bitget_lending_rate_for_asset(asset: &str) -> Result<f64> {
+    async fn fetch_bitget_lending_rate_for_asset(asset: &str) -> Result<Option<f64>> {
         let client = Self::with_inner(|inner| inner.http_client.clone());
         let query = format!(
             "coin={}&category=MARGIN",
@@ -1388,16 +1396,35 @@ impl RateFetcher {
         Self::parse_bitget_lending_rate(data, asset)
     }
 
-    fn parse_bitget_lending_rate(data: BitgetMarginLoansResponse, asset: &str) -> Result<f64> {
-        data.data
+    fn parse_bitget_lending_rate(
+        data: BitgetMarginLoansResponse,
+        asset: &str,
+    ) -> Result<Option<f64>> {
+        let rate = data
+            .data
             .daily_interest
-            .parse::<f64>()
-            .ok()
-            .zip(data.data.limit.parse::<f64>().ok())
-            .and_then(|(rate, limit)| {
-                (rate.is_finite() && limit.is_finite() && rate > 0.0 && limit > 0.0).then_some(rate)
-            })
-            .ok_or_else(|| anyhow!("Bitget lending missing rate asset={}", asset))
+            .as_deref()
+            .and_then(|value| value.parse::<f64>().ok());
+        let limit = data
+            .data
+            .limit
+            .as_deref()
+            .and_then(|value| value.parse::<f64>().ok());
+
+        match (rate, limit) {
+            (Some(rate), Some(limit))
+                if rate.is_finite() && limit.is_finite() && rate > 0.0 && limit > 0.0 =>
+            {
+                Ok(Some(rate))
+            }
+            (None, None) => Ok(None),
+            (Some(rate), Some(limit))
+                if rate.is_finite() && limit.is_finite() && (rate <= 0.0 || limit <= 0.0) =>
+            {
+                Ok(None)
+            }
+            _ => Err(anyhow!("Bitget lending malformed payload asset={}", asset)),
+        }
     }
 
     /// 从 Bitget API 获取资金费率历史，同时推断周期
@@ -2660,18 +2687,58 @@ mod tests {
         )
         .unwrap();
 
-        let rate = RateFetcher::parse_bitget_lending_rate(response, "BTC").unwrap();
+        let rate = RateFetcher::parse_bitget_lending_rate(response, "BTC")
+            .unwrap()
+            .unwrap();
         assert_eq!(rate, 0.00001296);
     }
 
     #[test]
-    fn parse_bitget_lending_rate_rejects_zero_limit() {
+    fn parse_bitget_lending_rate_treats_zero_limit_as_unavailable() {
         let response: BitgetMarginLoansResponse = serde_json::from_str(
             r#"{
                 "code": "00000",
                 "data": {
                     "dailyInterest": "0.00001296",
                     "limit": "0"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            RateFetcher::parse_bitget_lending_rate(response, "BTC").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_bitget_lending_rate_accepts_null_fields_as_unavailable() {
+        let response: BitgetMarginLoansResponse = serde_json::from_str(
+            r#"{
+                "code": "00000",
+                "data": {
+                    "dailyInterest": null,
+                    "limit": null
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            RateFetcher::parse_bitget_lending_rate(response, "LAB").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_bitget_lending_rate_rejects_partially_null_payload() {
+        let response: BitgetMarginLoansResponse = serde_json::from_str(
+            r#"{
+                "code": "00000",
+                "data": {
+                    "dailyInterest": "0.00001296",
+                    "limit": null
                 }
             }"#,
         )
