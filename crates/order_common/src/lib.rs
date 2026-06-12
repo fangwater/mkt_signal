@@ -478,6 +478,27 @@ pub enum TradeUpdateSkipReason {
 pub const CUMULATIVE_FILL_ROLLBACK_EPS: f64 = 1e-9;
 const TRADE_UPDATE_QTY_EPS: f64 = CUMULATIVE_FILL_ROLLBACK_EPS;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OrderQuantizedValue {
+    pub tick_i64: i64,
+    pub tick_exp: i32,
+    pub count: i64,
+}
+
+impl OrderQuantizedValue {
+    pub fn new(tick_i64: i64, tick_exp: i32, count: i64) -> Self {
+        Self {
+            tick_i64,
+            tick_exp,
+            count,
+        }
+    }
+
+    pub fn zero() -> Self {
+        Self::new(0, 0, 0)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ProtectedCumulativeFill {
     pub effective_cum: f64,
@@ -1054,18 +1075,20 @@ impl OrderTimeStamp {
 
 #[derive(Debug, Clone)]
 pub struct Order {
-    pub venue: TradingVenue,             // 订单对应的交易标的
-    pub client_order_id: i64,            // 订单ID
-    pub order_type: OrderType,           // 订单类型
-    pub symbol: String,                  // 交易对
-    pub side: Side,                      // 买卖方向
-    pub price: f64,                      // 限价单价格, 市价单没有意义
-    pub quantity: f64,                   // 数量
-    pub qty_multiplier: f64,             // 数量乘数（venue qty -> base qty）
-    pub reduce_only: bool,               // 是否只减仓
-    pub cumulative_filled_quantity: f64, // 成交量
-    pub exchange_order_id: Option<i64>,  // 交易所返回的 orderId
-    pub status: OrderExecutionStatus,    // 订单执行状态
+    pub venue: TradingVenue,                      // 订单对应的交易标的
+    pub client_order_id: i64,                     // 订单ID
+    pub order_type: OrderType,                    // 订单类型
+    pub symbol: String,                           // 交易对
+    pub side: Side,                               // 买卖方向
+    pub price: f64,                               // 限价单价格, 市价单没有意义
+    pub quantity: f64,                            // 数量
+    pub quantity_qv: Option<OrderQuantizedValue>, // 已对齐/量化的数量缓存
+    pub price_qv: Option<OrderQuantizedValue>,    // 已对齐/量化的价格缓存
+    pub qty_multiplier: f64,                      // 数量乘数（venue qty -> base qty）
+    pub reduce_only: bool,                        // 是否只减仓
+    pub cumulative_filled_quantity: f64,          // 成交量
+    pub exchange_order_id: Option<i64>,           // 交易所返回的 orderId
+    pub status: OrderExecutionStatus,             // 订单执行状态
     pub timestamp: OrderTimeStamp,
     pub count_pending_limit: bool, // 是否计入 pending-limit 风控统计
     binance_account_mode: Option<BinanceAccountMode>,
@@ -1099,6 +1122,8 @@ impl Order {
             side,
             price,
             quantity,
+            quantity_qv: None,
+            price_qv: None,
             qty_multiplier,
             reduce_only,
             status: OrderExecutionStatus::Commit,
@@ -1114,6 +1139,25 @@ impl Order {
         self.binance_account_mode.unwrap_or_else(|| {
             panic!("BINANCE_ACCOUNT_MODE must be set to 'UNIFIED' or 'STANDARD' when using binance-futures");
         })
+    }
+
+    pub fn set_quantity_qv(&mut self, qv: OrderQuantizedValue) {
+        self.quantity_qv = Some(qv);
+    }
+
+    pub fn set_price_qv(&mut self, qv: OrderQuantizedValue) {
+        self.price_qv = Some(qv);
+    }
+
+    pub fn set_quantized_values(
+        &mut self,
+        quantity_qv: OrderQuantizedValue,
+        price_qv: Option<OrderQuantizedValue>,
+    ) {
+        self.set_quantity_qv(quantity_qv);
+        if let Some(price_qv) = price_qv {
+            self.set_price_qv(price_qv);
+        }
     }
 
     /// 更新订单状态

@@ -162,6 +162,26 @@ fn parse_trade_request_payload(payload: &[u8]) -> Option<TradeRequestMsg> {
     Some(msg)
 }
 
+fn trade_request_params_query_string(msg: &TradeRequestMsg) -> Option<String> {
+    match msg.req_type {
+        TradeRequestType::BinanceNewUMOrder
+        | TradeRequestType::BinanceNewMarginOrder
+        | TradeRequestType::BinanceWsNewUMOrder
+        | TradeRequestType::BinanceWsNewMarginOrder => {
+            crate::trade_request::BinanceNewOrderParams::from_bytes(&msg.params)
+                .map(|params| params.to_query_string(msg.req_type, msg.client_order_id))
+        }
+        TradeRequestType::BinanceCancelUMOrder
+        | TradeRequestType::BinanceCancelMarginOrder
+        | TradeRequestType::BinanceWsCancelUMOrder
+        | TradeRequestType::BinanceWsCancelMarginOrder => {
+            crate::trade_request::BinanceCancelOrderParams::from_bytes(&msg.params)
+                .map(|params| params.to_query_string())
+        }
+        _ => None,
+    }
+}
+
 fn parse_query_request_payload(payload: &[u8]) -> Option<QueryRequestMsg> {
     let Some(actual_len) = request_payload_len(payload) else {
         warn!(
@@ -1197,12 +1217,19 @@ impl TradeEngine {
                             msg.req_type, method, endpoint, weight
                         );
 
+                        let params_source = trade_request_params_query_string(&msg);
                         let params: std::collections::BTreeMap<String, String> =
-                            match std::str::from_utf8(&msg.params) {
-                                Ok(s) => url::form_urlencoded::parse(s.as_bytes())
+                            if let Some(s) = params_source.as_deref() {
+                                url::form_urlencoded::parse(s.as_bytes())
                                     .into_owned()
-                                    .collect(),
-                                Err(_) => std::collections::BTreeMap::new(),
+                                    .collect()
+                            } else {
+                                match std::str::from_utf8(&msg.params) {
+                                    Ok(s) => url::form_urlencoded::parse(s.as_bytes())
+                                        .into_owned()
+                                        .collect(),
+                                    Err(_) => std::collections::BTreeMap::new(),
+                                }
                             };
 
                         let evt = crate::order_event::OrderRequestEvent {

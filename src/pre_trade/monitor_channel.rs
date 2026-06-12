@@ -3382,6 +3382,7 @@ impl MonitorChannel {
 
     fn arb_hedge_exposure_projection_inner(
         inner: &MonitorChannelInner,
+        state: &BasicState,
         symbol: &str,
         hedge_venue: TradingVenue,
         hedge_signed_base_qty: f64,
@@ -3397,7 +3398,6 @@ impl MonitorChannel {
             )
         })?;
         let base_asset_upper = base_asset.to_uppercase();
-        let state = Self::basic_state_cached();
         let mark = if base_asset.eq_ignore_ascii_case("USDT") {
             1.0
         } else {
@@ -3474,36 +3474,41 @@ impl MonitorChannel {
         hedge_signed_base_qty: f64,
     ) -> Result<(), String> {
         Self::with_inner(|inner| {
-            let projection = Self::arb_hedge_exposure_projection_inner(
-                inner,
-                symbol,
-                hedge_venue,
-                hedge_signed_base_qty,
-            )?;
-            let eps = 1e-6_f64;
-            if projection.symbol_next_exposure_usdt > projection.symbol_current_exposure_usdt + eps
-                && projection.symbol_current_exposure_usdt > projection.symbol_limit_usdt + eps
-            {
-                return Err(format!(
-                    "symbol={} ArbHedge 单币敞口扩大且当前已超限: current={:.4}USDT next={:.4}USDT limit={:.4}USDT",
+            Self::with_basic_state_cached(|state| {
+                let projection = Self::arb_hedge_exposure_projection_inner(
+                    inner,
+                    state,
                     symbol,
-                    projection.symbol_current_exposure_usdt,
-                    projection.symbol_next_exposure_usdt,
-                    projection.symbol_limit_usdt
-                ));
-            }
-            if projection.total_next_exposure_usdt > projection.total_current_exposure_usdt + eps
-                && projection.total_current_exposure_usdt > projection.total_limit_usdt + eps
-            {
-                return Err(format!(
-                    "symbol={} ArbHedge 总敞口扩大且当前已超限: current={:.4}USDT next={:.4}USDT limit={:.4}USDT",
-                    symbol,
-                    projection.total_current_exposure_usdt,
-                    projection.total_next_exposure_usdt,
-                    projection.total_limit_usdt
-                ));
-            }
-            Ok(())
+                    hedge_venue,
+                    hedge_signed_base_qty,
+                )?;
+                let eps = 1e-6_f64;
+                if projection.symbol_next_exposure_usdt
+                    > projection.symbol_current_exposure_usdt + eps
+                    && projection.symbol_current_exposure_usdt > projection.symbol_limit_usdt + eps
+                {
+                    return Err(format!(
+                        "symbol={} ArbHedge 单币敞口扩大且当前已超限: current={:.4}USDT next={:.4}USDT limit={:.4}USDT",
+                        symbol,
+                        projection.symbol_current_exposure_usdt,
+                        projection.symbol_next_exposure_usdt,
+                        projection.symbol_limit_usdt
+                    ));
+                }
+                if projection.total_next_exposure_usdt
+                    > projection.total_current_exposure_usdt + eps
+                    && projection.total_current_exposure_usdt > projection.total_limit_usdt + eps
+                {
+                    return Err(format!(
+                        "symbol={} ArbHedge 总敞口扩大且当前已超限: current={:.4}USDT next={:.4}USDT limit={:.4}USDT",
+                        symbol,
+                        projection.total_current_exposure_usdt,
+                        projection.total_next_exposure_usdt,
+                        projection.total_limit_usdt
+                    ));
+                }
+                Ok(())
+            })
         })
     }
 

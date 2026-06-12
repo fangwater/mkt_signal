@@ -531,10 +531,10 @@ impl Strategy for HedgeOrphanOrderStrategy {
                 });
         }
 
-        if let Some(ctx) = uniform_ctx.as_ref() {
+        let terminal_publish_snapshot = if let Some(ctx) = uniform_ctx.as_ref() {
             let updated_order = MonitorChannel::try_order_manager()
                 .and_then(|order_mgr| order_mgr.borrow().get(client_order_id));
-            if let Some(order) = updated_order {
+            if let Some(order) = updated_order.as_ref() {
                 if update.status() == OrderStatus::New {
                     publish_uniform_new_order(
                         update,
@@ -545,23 +545,12 @@ impl Strategy for HedgeOrphanOrderStrategy {
                         self.strategy_id,
                     );
                 }
-                if matches!(
-                    update.status(),
-                    OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::ExpiredInMatch
-                ) {
-                    publish_uniform_terminal_order(
-                        update,
-                        &order,
-                        prev_cumulative_filled_qty,
-                        ctx,
-                        "HedgeOrphanOrderStrategy",
-                        self.strategy_id,
-                    );
-                }
-                if matches!(
-                    update.status(),
-                    OrderStatus::PartiallyFilled | OrderStatus::Filled
-                ) {
+                if !update.status().is_finished()
+                    && matches!(
+                        update.status(),
+                        OrderStatus::PartiallyFilled | OrderStatus::Filled
+                    )
+                {
                     publish_uniform_trade_order_from_order_update(
                         update,
                         &order,
@@ -572,7 +561,10 @@ impl Strategy for HedgeOrphanOrderStrategy {
                     );
                 }
             }
-        }
+            updated_order.map(|order| (order, ctx.clone()))
+        } else {
+            None
+        };
 
         if matches!(
             update.status(),
@@ -588,6 +580,30 @@ impl Strategy for HedgeOrphanOrderStrategy {
             );
         } else {
             self.request_cancel_if_needed(update);
+        }
+        if let Some((order, ctx)) = terminal_publish_snapshot.as_ref() {
+            if matches!(
+                update.status(),
+                OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::ExpiredInMatch
+            ) {
+                publish_uniform_terminal_order(
+                    update,
+                    order,
+                    prev_cumulative_filled_qty,
+                    ctx,
+                    "HedgeOrphanOrderStrategy",
+                    self.strategy_id,
+                );
+            } else if update.status() == OrderStatus::Filled {
+                publish_uniform_trade_order_from_order_update(
+                    update,
+                    order,
+                    prev_cumulative_filled_qty,
+                    ctx,
+                    "HedgeOrphanOrderStrategy",
+                    self.strategy_id,
+                );
+            }
         }
         info!(
             "HedgeOrphanOrderStrategy: strategy_role=hedge_orphan strategy_id={} adopted order_update symbol={} client_order_id={} order_id={} x={:?} X={:?}",
@@ -660,15 +676,21 @@ impl Strategy for HedgeOrphanOrderStrategy {
                 });
         }
 
-        if let (Some(ctx), Some(status)) = (uniform_ctx.as_ref(), trade.order_status()) {
-            let updated_order = MonitorChannel::try_order_manager()
-                .and_then(|order_mgr| order_mgr.borrow().get(client_order_id));
-            if let Some(order) = updated_order {
+        let trade_publish_snapshot =
+            if let (Some(ctx), Some(status)) = (uniform_ctx.as_ref(), trade.order_status()) {
+                MonitorChannel::try_order_manager()
+                    .and_then(|order_mgr| order_mgr.borrow().get(client_order_id))
+                    .map(|order| (order, ctx.clone(), status))
+            } else {
+                None
+            };
+        if let Some((order, ctx, status)) = trade_publish_snapshot.as_ref() {
+            if !status.is_finished() {
                 publish_uniform_trade_order(
                     trade,
-                    &order,
+                    order,
                     prev_cumulative_filled_qty,
-                    status,
+                    *status,
                     ctx,
                     "HedgeOrphanOrderStrategy",
                     self.strategy_id,
@@ -690,6 +712,19 @@ impl Strategy for HedgeOrphanOrderStrategy {
                 trade.event_time(),
                 "terminal trade update",
             );
+        }
+        if let Some((order, ctx, status)) = trade_publish_snapshot.as_ref() {
+            if status.is_finished() {
+                publish_uniform_trade_order(
+                    trade,
+                    order,
+                    prev_cumulative_filled_qty,
+                    *status,
+                    ctx,
+                    "HedgeOrphanOrderStrategy",
+                    self.strategy_id,
+                );
+            }
         }
         info!(
             "HedgeOrphanOrderStrategy: strategy_role=hedge_orphan strategy_id={} adopted trade_update symbol={} client_order_id={} order_id={} cumulative_qty={:.8} status={:?}",

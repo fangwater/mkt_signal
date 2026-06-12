@@ -29,7 +29,9 @@ use order_common::trade_error_code::gate;
 use order_common::OrderUpdate;
 use order_common::TradeEngineResponse;
 use order_common::TradeUpdate;
-use order_common::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
+use order_common::{
+    Order, OrderExecutionStatus, OrderManager, OrderQuantizedValue, OrderType, Side,
+};
 use order_common::{OrderStatus, TradingVenue};
 use runtime_common::exchange::Exchange;
 use runtime_common::symbol_util::normalize_symbol_for_internal;
@@ -136,6 +138,16 @@ fn build_direct_taker_from_key(source: &str, now_ts: i64, ret_qtl: Option<f64>) 
         from_key.push_str(&format!(":ret_qtl={ret_qtl:.8}"));
     }
     from_key.into_bytes()
+}
+
+fn is_direct_taker_from_key(from_key: &[u8]) -> bool {
+    from_key.starts_with(b"arb_hedge_force_taker_direct|")
+        || from_key.starts_with(b"arb_hedge_lazy_model_direct|")
+}
+
+fn order_qv_from_quantized_value(qv: QuantizedValue) -> OrderQuantizedValue {
+    let (tick_i64, tick_exp) = qv.get_tick_parts();
+    OrderQuantizedValue::new(tick_i64, tick_exp, qv.get_count())
 }
 
 /// Arb 对冲策略的只读状态快照。
@@ -644,14 +656,17 @@ impl ArbHedgeStrategy {
         ctx.set_from_key(build_direct_taker_from_key(source, now_ts, ret_qtl));
 
         info!(
-            "ArbHedgeStrategy: strategy_id={} symbol={} {} direct hedge due_hedge_qty={:.8} raw_base_qty={:.8} aligned_qty={:.8} side={:?} mark_price={:.8} request_seq={}",
+            "ArbHedgeStrategy: strategy_id={} symbol={} {} direct hedge qty={:.8} side={:?} request_seq={}",
+            self.strategy_id, self.symbol, source, qty, hedge_side, request_seq
+        );
+        debug!(
+            "ArbHedgeStrategy: strategy_id={} symbol={} {} direct hedge detail due_hedge_qty={:.8} raw_base_qty={:.8} aligned_qty={:.8} mark_price={:.8} request_seq={}",
             self.strategy_id,
             self.symbol,
             source,
             due_hedge_qty,
             raw_base_qty,
             qty,
-            hedge_side,
             mark_price,
             request_seq
         );
@@ -1096,21 +1111,23 @@ impl ArbHedgeStrategy {
             return;
         }
         let signed_base_qty = signed_qty_from_side(side, order_base_qty);
-        if let Err(err) = MonitorChannel::instance().check_arb_hedge_exposure_risk(
-            &symbol,
-            venue,
-            signed_base_qty,
-        ) {
-            warn!(
-                "ArbHedgeStrategy: strategy_id={} ArbHedge exposure risk reject symbol={} venue={:?} side={:?} base_qty={:.8} err={}",
-                self.strategy_id,
-                symbol,
+        if !is_direct_taker_from_key(&ctx.from_key) {
+            if let Err(err) = MonitorChannel::instance().check_arb_hedge_exposure_risk(
+                &symbol,
                 venue,
-                side,
-                order_base_qty,
-                err
-            );
-            return;
+                signed_base_qty,
+            ) {
+                warn!(
+                    "ArbHedgeStrategy: strategy_id={} ArbHedge exposure risk reject symbol={} venue={:?} side={:?} base_qty={:.8} err={}",
+                    self.strategy_id,
+                    symbol,
+                    venue,
+                    side,
+                    order_base_qty,
+                    err
+                );
+                return;
+            }
         }
         let pending_qv = Self::hedge_pending_qv_from_order(side, order_base_qty);
         let borrowed = self.pending_hedge_queue.borrow(now_ts, pending_qv);
@@ -1188,6 +1205,10 @@ impl ArbHedgeStrategy {
             .order_manager()
             .borrow_mut()
             .update(client_order_id, |o| {
+                o.set_quantity_qv(order_qv_from_quantized_value(ctx.amount_qv));
+                if !is_taker {
+                    o.set_price_qv(order_qv_from_quantized_value(ctx.price_qv));
+                }
                 o.set_signal_meta(ctx.signal_ts, SignalType::ArbHedge as u8)
             });
         self.hedge_order_meta.insert(
@@ -1206,7 +1227,18 @@ impl ArbHedgeStrategy {
         );
 
         info!(
-            "📤 ArbHedge订单已创建: strategy_id={} client_order_id={} symbol={} {:?} side={:?} type={:?} qty={:.8} base_qty={:.8} price={:.8} mode={} request_seq={} expire_ts={}",
+            "ArbHedge订单已创建: strategy_id={} client_order_id={} symbol={} side={:?} type={:?} qty={:.8} mode={} request_seq={}",
+            self.strategy_id,
+            client_order_id,
+            symbol,
+            side,
+            order_type,
+            qty,
+            if is_taker { "taker" } else { "maker" },
+            ctx.request_seq
+        );
+        debug!(
+            "ArbHedge订单已创建 detail: strategy_id={} client_order_id={} symbol={} venue={:?} side={:?} type={:?} qty={:.8} base_qty={:.8} price={:.8} mode={} request_seq={} expire_ts={}",
             self.strategy_id,
             client_order_id,
             symbol,
@@ -1265,18 +1297,18 @@ impl ArbHedgeStrategy {
         );
     }
 
-    fn publish_uniform_terminal_order(
+    fn publish_uniform_terminal_order_with_ctx(
         &self,
         order_update: &dyn OrderUpdate,
         order: &Order,
         prev_cumulative_filled_qty: f64,
+        ctx: &UniformPublishCtx,
     ) {
-        let ctx = self.uniform_hedge_publish_ctx(order.client_order_id);
         publish_uniform_terminal_order(
             order_update,
             order,
             prev_cumulative_filled_qty,
-            &ctx,
+            ctx,
             "ArbHedgeStrategy",
             self.strategy_id,
         );
@@ -1299,20 +1331,37 @@ impl ArbHedgeStrategy {
         );
     }
 
-    fn publish_uniform_trade_order(
+    fn publish_uniform_trade_order_from_order_update_with_ctx(
+        &self,
+        order_update: &dyn OrderUpdate,
+        order: &Order,
+        prev_cumulative_filled_qty: f64,
+        ctx: &UniformPublishCtx,
+    ) {
+        publish_uniform_trade_order_from_order_update(
+            order_update,
+            order,
+            prev_cumulative_filled_qty,
+            ctx,
+            "ArbHedgeStrategy",
+            self.strategy_id,
+        );
+    }
+
+    fn publish_uniform_trade_order_with_ctx(
         &self,
         trade: &dyn TradeUpdate,
         order: &Order,
         prev_cumulative_filled_qty: f64,
         status: OrderStatus,
+        ctx: &UniformPublishCtx,
     ) {
-        let ctx = self.uniform_hedge_publish_ctx(order.client_order_id);
         publish_uniform_trade_order(
             trade,
             order,
             prev_cumulative_filled_qty,
             status,
-            &ctx,
+            ctx,
             "ArbHedgeStrategy",
             self.strategy_id,
         );
@@ -1539,23 +1588,17 @@ impl ArbHedgeStrategy {
         if !updated {
             return false;
         }
-        if let Some(order) = MonitorChannel::instance()
+        let order_snapshot = MonitorChannel::instance()
             .order_manager()
             .borrow()
             .get(client_order_id)
-        {
+            .map(|order| (order, self.uniform_hedge_publish_ctx(client_order_id)));
+        if let Some((order, _)) = order_snapshot.as_ref() {
             if status == OrderStatus::New {
                 self.publish_uniform_new_order(order_update, &order, prev_cumulative_filled_qty);
-            } else if matches!(
-                status,
-                OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::ExpiredInMatch
-            ) {
-                self.publish_uniform_terminal_order(
-                    order_update,
-                    &order,
-                    prev_cumulative_filled_qty,
-                );
-            } else if matches!(status, OrderStatus::PartiallyFilled | OrderStatus::Filled) {
+            } else if !status.is_finished()
+                && matches!(status, OrderStatus::PartiallyFilled | OrderStatus::Filled)
+            {
                 self.publish_uniform_trade_order_from_order_update(
                     order_update,
                     &order,
@@ -1577,6 +1620,26 @@ impl ArbHedgeStrategy {
                 order_update.event_time(),
                 "order_update_non_terminal",
             );
+        }
+        if let Some((order, uniform_ctx)) = order_snapshot.as_ref() {
+            if matches!(
+                status,
+                OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::ExpiredInMatch
+            ) {
+                self.publish_uniform_terminal_order_with_ctx(
+                    order_update,
+                    &order,
+                    prev_cumulative_filled_qty,
+                    uniform_ctx,
+                );
+            } else if status == OrderStatus::Filled {
+                self.publish_uniform_trade_order_from_order_update_with_ctx(
+                    order_update,
+                    &order,
+                    prev_cumulative_filled_qty,
+                    uniform_ctx,
+                );
+            }
         }
         true
     }
@@ -1625,9 +1688,9 @@ impl ArbHedgeStrategy {
         if !updated {
             return false;
         }
-        if let Some(order) = order_manager.get(client_order_id) {
-            self.publish_uniform_trade_order(trade, &order, prev_cumulative_filled_qty, status);
-        }
+        let order_snapshot = order_manager
+            .get(client_order_id)
+            .map(|order| (order, self.uniform_hedge_publish_ctx(client_order_id)));
         drop(order_manager);
         if status == OrderStatus::Filled {
             self.clear_order_query_state(client_order_id);
@@ -1638,6 +1701,15 @@ impl ArbHedgeStrategy {
                 client_order_id,
                 trade.event_time(),
                 "trade_update_partial_fill",
+            );
+        }
+        if let Some((order, uniform_ctx)) = order_snapshot.as_ref() {
+            self.publish_uniform_trade_order_with_ctx(
+                trade,
+                &order,
+                prev_cumulative_filled_qty,
+                status,
+                uniform_ctx,
             );
         }
         true

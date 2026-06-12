@@ -1,6 +1,8 @@
 use crate::config::RestConstants;
 use crate::query_request::{QueryRequestMsg, QueryRequestType};
-use crate::trade_request::{TradeRequestMsg, TradeRequestType};
+use crate::trade_request::{
+    BinanceCancelOrderParams, BinanceNewOrderParams, TradeRequestMsg, TradeRequestType,
+};
 use account_common::ApiKey;
 use anyhow::{anyhow, Context, Result};
 use hmac::{Hmac, Mac};
@@ -101,6 +103,25 @@ fn build_signed_params(raw: &[u8], creds: &ApiKey) -> Result<BTreeMap<String, St
     Ok(params)
 }
 
+fn binance_trade_query(msg: &TradeRequestMsg) -> Option<String> {
+    match msg.req_type {
+        TradeRequestType::BinanceNewUMOrder
+        | TradeRequestType::BinanceNewMarginOrder
+        | TradeRequestType::BinanceWsNewUMOrder
+        | TradeRequestType::BinanceWsNewMarginOrder => {
+            BinanceNewOrderParams::from_bytes(&msg.params)
+                .map(|params| params.to_query_string(msg.req_type, msg.client_order_id))
+        }
+        TradeRequestType::BinanceCancelUMOrder
+        | TradeRequestType::BinanceCancelMarginOrder
+        | TradeRequestType::BinanceWsCancelUMOrder
+        | TradeRequestType::BinanceWsCancelMarginOrder => {
+            BinanceCancelOrderParams::from_bytes(&msg.params).map(|params| params.to_query_string())
+        }
+        _ => None,
+    }
+}
+
 pub fn build_order_payload(
     msg: &TradeRequestMsg,
     transport_id: i64,
@@ -121,7 +142,12 @@ pub fn build_order_payload(
         }
     };
 
-    let params = build_signed_params(&msg.params, creds)?;
+    let query = binance_trade_query(msg);
+    let params = if let Some(query) = query {
+        build_signed_params(query.as_bytes(), creds)?
+    } else {
+        build_signed_params(&msg.params, creds)?
+    };
     let payload = json!({
         "id": transport_id,
         "method": method,

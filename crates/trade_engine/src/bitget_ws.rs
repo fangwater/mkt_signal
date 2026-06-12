@@ -1,7 +1,9 @@
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 
-use crate::trade_request::{TradeRequestMsg, TradeRequestType};
+use crate::trade_request::{
+    BitgetCancelOrderParams, BitgetNewOrderParams, TradeRequestMsg, TradeRequestType,
+};
 use account_common::bitget_auth::BitgetCredentials;
 
 pub fn build_login_payload(creds: &BitgetCredentials) -> Result<String> {
@@ -25,8 +27,24 @@ pub fn build_order_payload(msg: &TradeRequestMsg, transport_id: i64) -> Result<S
             ))
         }
     };
-    let args: Value =
-        serde_json::from_slice(&msg.params).with_context(|| "invalid bitget req_param json")?;
+    let args: Value = match req_type {
+        TradeRequestType::BitgetNewMarginOrder | TradeRequestType::BitgetNewUMOrder => {
+            BitgetNewOrderParams::from_bytes(&msg.params)
+                .map(|params| params.to_bitget_ws_arg(req_type, msg.client_order_id))
+                .unwrap_or_else(|| serde_json::from_slice(&msg.params).unwrap_or(Value::Null))
+        }
+        TradeRequestType::BitgetCancelMarginOrder | TradeRequestType::BitgetCancelUMOrder => {
+            BitgetCancelOrderParams::from_bytes(&msg.params)
+                .map(|params| params.to_bitget_ws_arg(req_type))
+                .unwrap_or_else(|| serde_json::from_slice(&msg.params).unwrap_or(Value::Null))
+        }
+        _ => {
+            serde_json::from_slice(&msg.params).with_context(|| "invalid bitget req_param json")?
+        }
+    };
+    if args.is_null() {
+        return Err(anyhow!("invalid bitget req_param json"));
+    }
     let (category, args) = match args {
         Value::Object(obj) => {
             let (category, arg) = normalize_bitget_trade_arg(obj, req_type)?;
@@ -228,9 +246,13 @@ fn parse_i64_value(v: &Value) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::{build_order_payload, BitgetWsOrderResponse};
-    use crate::trade_request::{TradeRequestMsg, TradeRequestType};
+    use crate::trade_request::{
+        BitgetCancelOrderParams, BitgetNewOrderParams, TradeRequestMsg, TradeRequestType,
+    };
     use bytes::Bytes;
+    use order_common::{OrderType, Side};
     use serde_json::{json, Value};
+    use signal_common::tick_math::QuantizedValue;
 
     #[test]
     fn parses_bitget_trade_order_response() {
@@ -285,6 +307,35 @@ mod tests {
         assert_eq!(val["topic"], json!("place-order"));
         assert_eq!(val["args"][0]["side"], json!("buy"));
         assert_eq!(val["args"][0]["qty"], json!("0.01"));
+        assert_eq!(val["args"][0]["timeInForce"], json!("post_only"));
+        assert!(val["args"][0].get("category").is_none());
+        assert!(val["args"][0].get("size").is_none());
+        assert!(val["args"][0].get("force").is_none());
+    }
+
+    #[test]
+    fn builds_bitget_um_order_payload_from_typed_params() {
+        let params = BitgetNewOrderParams {
+            symbol: "BTCUSDT".to_string(),
+            side: Side::Buy,
+            order_type: OrderType::Limit,
+            quantity_qv: QuantizedValue::from_parts(1, -3, 10),
+            price_qv: QuantizedValue::from_parts(1, 0, 100000),
+            reduce_only: false,
+        };
+        let msg = TradeRequestMsg {
+            req_type: TradeRequestType::BitgetNewUMOrder,
+            create_time: 0,
+            client_order_id: 123,
+            params: params.to_bytes().expect("typed params"),
+            ipc_recv: None,
+        };
+        let payload = build_order_payload(&msg, 999).expect("payload");
+        let val: Value = serde_json::from_str(&payload).expect("json");
+        assert_eq!(val["category"], json!("usdt-futures"));
+        assert_eq!(val["topic"], json!("place-order"));
+        assert_eq!(val["args"][0]["symbol"], json!("BTCUSDT"));
+        assert_eq!(val["args"][0]["qty"], json!("0.010"));
         assert_eq!(val["args"][0]["timeInForce"], json!("post_only"));
         assert!(val["args"][0].get("category").is_none());
         assert!(val["args"][0].get("size").is_none());
@@ -354,6 +405,28 @@ mod tests {
         let payload = build_order_payload(&msg, 999).expect("payload");
         let val: Value = serde_json::from_str(&payload).expect("json");
         assert_eq!(val["op"], json!("trade"));
+        assert_eq!(val["topic"], json!("cancel-order"));
+        assert_eq!(val["category"], json!("usdt-futures"));
+        assert_eq!(val["args"][0]["orderId"], json!("abc"));
+        assert_eq!(val["args"][0]["clientOid"], json!("123"));
+        assert!(val["args"][0].get("category").is_none());
+    }
+
+    #[test]
+    fn builds_bitget_um_cancel_payload_from_typed_params() {
+        let params = BitgetCancelOrderParams {
+            order_id: Some("abc".to_string()),
+            client_order_id: "123".to_string(),
+        };
+        let msg = TradeRequestMsg {
+            req_type: TradeRequestType::BitgetCancelUMOrder,
+            create_time: 0,
+            client_order_id: 123,
+            params: params.to_bytes().expect("typed cancel params"),
+            ipc_recv: None,
+        };
+        let payload = build_order_payload(&msg, 999).expect("payload");
+        let val: Value = serde_json::from_str(&payload).expect("json");
         assert_eq!(val["topic"], json!("cancel-order"));
         assert_eq!(val["category"], json!("usdt-futures"));
         assert_eq!(val["args"][0]["orderId"], json!("abc"));

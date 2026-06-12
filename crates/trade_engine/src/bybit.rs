@@ -80,7 +80,15 @@ pub struct BybitNewOrderParams {
 impl BybitNewOrderParams {
     const MIN_BIN_LEN: usize = 1 + 1 + 1 + 1 + 8 + 4 + 8 + 8 + 4 + 8 + 1;
 
-    pub fn to_bytes(&self) -> Option<Bytes> {
+    fn encoded_len(&self) -> Option<usize> {
+        let symbol_len = self.symbol.len();
+        if symbol_len > u8::MAX as usize {
+            return None;
+        }
+        Some(Self::MIN_BIN_LEN + symbol_len)
+    }
+
+    fn write_to_buf(&self, buf: &mut BytesMut) -> Option<()> {
         let symbol_bytes = self.symbol.as_bytes();
         if symbol_bytes.len() > u8::MAX as usize {
             return None;
@@ -89,7 +97,6 @@ impl BybitNewOrderParams {
         let (qty_tick_i64, qty_tick_exp) = self.quantity_qv.get_tick_parts();
         let (price_tick_i64, price_tick_exp) = self.price_qv.get_tick_parts();
 
-        let mut buf = BytesMut::with_capacity(Self::MIN_BIN_LEN + symbol_bytes.len());
         buf.put_u8(self.side.to_u8());
         buf.put_u8(self.order_type.to_u8());
         buf.put_u8(self.reduce_only as u8);
@@ -102,6 +109,12 @@ impl BybitNewOrderParams {
         buf.put_i64_le(self.price_qv.get_count());
         buf.put_u8(symbol_bytes.len() as u8);
         buf.put_slice(symbol_bytes);
+        Some(())
+    }
+
+    pub fn to_bytes(&self) -> Option<Bytes> {
+        let mut buf = BytesMut::with_capacity(self.encoded_len()?);
+        self.write_to_buf(&mut buf)?;
         Some(buf.freeze())
     }
 
@@ -241,6 +254,49 @@ impl BybitNewOrderRequest {
             client_order_id,
             params.to_bytes()?,
         ))
+    }
+
+    fn to_bytes_with_type(
+        req_type: TradeRequestType,
+        create_time: i64,
+        client_order_id: i64,
+        params: &BybitNewOrderParams,
+    ) -> Option<Bytes> {
+        let params_len = params.encoded_len()?;
+        let total_size = 4 + 4 + 8 + 8 + params_len;
+        let mut buf = BytesMut::with_capacity(total_size);
+        buf.put_u32_le(req_type as u32);
+        buf.put_u32_le(params_len as u32);
+        buf.put_i64_le(create_time);
+        buf.put_i64_le(client_order_id);
+        params.write_to_buf(&mut buf)?;
+        Some(buf.freeze())
+    }
+
+    pub fn margin_order_bytes(
+        create_time: i64,
+        client_order_id: i64,
+        params: &BybitNewOrderParams,
+    ) -> Option<Bytes> {
+        Self::to_bytes_with_type(
+            TradeRequestType::BybitNewMarginOrder,
+            create_time,
+            client_order_id,
+            params,
+        )
+    }
+
+    pub fn um_order_bytes(
+        create_time: i64,
+        client_order_id: i64,
+        params: &BybitNewOrderParams,
+    ) -> Option<Bytes> {
+        Self::to_bytes_with_type(
+            TradeRequestType::BybitNewUMOrder,
+            create_time,
+            client_order_id,
+            params,
+        )
     }
 
     pub fn to_bytes(&self) -> Bytes {

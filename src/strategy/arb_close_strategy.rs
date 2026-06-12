@@ -214,6 +214,8 @@ impl ArbCloseStrategy {
             from_key_len: ctx.from_key_len,
             from_key: ctx.from_key,
             price_qv: ctx.price_qv,
+            order_qty_qv: None,
+            order_price_qv: None,
             price_offset: ctx.price_offset,
             reduce_only: true,
             client_order_id: Some(client_order_id),

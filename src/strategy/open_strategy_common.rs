@@ -24,7 +24,7 @@ use order_common::trade_error_code::describe_trade_error_code;
 use order_common::OrderUpdate;
 use order_common::TradeUpdate;
 use order_common::TradeUpdateLite;
-use order_common::{OrderExecutionStatus, OrderManager, OrderType, Side};
+use order_common::{OrderExecutionStatus, OrderManager, OrderQuantizedValue, OrderType, Side};
 use order_common::{OrderStatus, TradingVenue};
 use order_common::{TradeEngineResponse, TradeRequestKind};
 use rolling_common::arb_open_latency::record_arb_open_latency;
@@ -230,6 +230,11 @@ fn should_promote_open_pending_query_reason(
     )
 }
 
+fn order_qv_from_quantized_value(qv: QuantizedValue) -> OrderQuantizedValue {
+    let (tick_i64, tick_exp) = qv.get_tick_parts();
+    OrderQuantizedValue::new(tick_i64, tick_exp, qv.get_count())
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct OpenOrderState {
     pub open_order_id: i64,
@@ -276,6 +281,8 @@ pub struct OpenSignalInput {
     pub from_key_len: u32,
     pub from_key: Vec<u8>,
     pub price_qv: QuantizedValue,
+    pub order_qty_qv: Option<QuantizedValue>,
+    pub order_price_qv: Option<QuantizedValue>,
     pub price_offset: f64,
     pub reduce_only: bool,
     pub client_order_id: Option<i64>,
@@ -1233,6 +1240,12 @@ pub trait OpenStrategyCommon {
         self.open_order_state_mut().open_order_id = client_order_id;
 
         let request_build_start_us = get_timestamp_us();
+        let quantity_qv = input.order_qty_qv.map(order_qv_from_quantized_value);
+        let price_qv = if order_type.is_limit() {
+            input.order_price_qv.map(order_qv_from_quantized_value)
+        } else {
+            None
+        };
         let (exchange, req_bin) = match order_manager.borrow_mut().create_open_order_request_bytes(
             venue,
             client_order_id,
@@ -1241,6 +1254,8 @@ pub trait OpenStrategyCommon {
             side,
             order_qty,
             order_price,
+            quantity_qv,
+            price_qv,
             input.reduce_only,
             qty_multiplier,
             input.create_ts,
@@ -2046,17 +2061,6 @@ pub trait OpenStrategyCommon {
             self.clear_live_order_query_state(client_order_id);
         }
 
-        let ctx = self.uniform_open_publish_ctx();
-        publish_uniform_trade_order(
-            trade,
-            &order,
-            prev_cumulative_filled_qty,
-            status,
-            &ctx,
-            self.strategy_name(),
-            self.strategy_id(),
-        );
-
         let fill_delta_venue_qty = (cumulative_qty - prev_cumulative_filled_qty).max(0.0);
         let fill_delta_base_qty = fill_delta_venue_qty * order.qty_multiplier;
         self.apply_inventory_fill_delta(
@@ -2108,6 +2112,17 @@ pub trait OpenStrategyCommon {
             }
             self.open_state_mut().alive = false;
         }
+
+        let ctx = self.uniform_open_publish_ctx();
+        publish_uniform_trade_order(
+            trade,
+            &order,
+            prev_cumulative_filled_qty,
+            status,
+            &ctx,
+            self.strategy_name(),
+            self.strategy_id(),
+        );
 
         true
     }

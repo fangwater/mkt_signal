@@ -806,6 +806,7 @@ struct SymbolSeqState {
     index_by_symbol: HashMap<String, usize>,
     bbo_seq: Vec<i64>,
     bbo_ts_us: Vec<i64>,
+    latency_measurement_symbol: Vec<bool>,
     trade_seq: Vec<i64>,
     incremental_seq: Vec<i64>,
     bbo_seen: usize,
@@ -819,6 +820,7 @@ impl SymbolSeqState {
             index_by_symbol: HashMap::with_capacity(symbols.len().max(2048)),
             bbo_seq: Vec::with_capacity(symbols.len()),
             bbo_ts_us: Vec::with_capacity(symbols.len()),
+            latency_measurement_symbol: Vec::with_capacity(symbols.len()),
             trade_seq: Vec::with_capacity(symbols.len()),
             incremental_seq: Vec::with_capacity(symbols.len()),
             bbo_seen: 0,
@@ -843,6 +845,8 @@ impl SymbolSeqState {
         self.index_by_symbol.insert(symbol.to_string(), idx);
         self.bbo_seq.push(i64::MIN);
         self.bbo_ts_us.push(0);
+        self.latency_measurement_symbol
+            .push(is_latency_measurement_symbol(symbol));
         self.trade_seq.push(i64::MIN);
         self.incremental_seq.push(i64::MIN);
         idx
@@ -874,6 +878,7 @@ impl SymbolSeqState {
             idx,
             prev: self.bbo_seq[idx],
             prev_ts_us: self.bbo_ts_us[idx],
+            latency_measurement_symbol: self.latency_measurement_symbol[idx],
         }
     }
 
@@ -893,6 +898,7 @@ impl SymbolSeqState {
             idx,
             prev: self.trade_seq[idx],
             prev_ts_us: 0,
+            latency_measurement_symbol: false,
         }
     }
 
@@ -909,6 +915,7 @@ impl SymbolSeqState {
             idx,
             prev: self.incremental_seq[idx],
             prev_ts_us: 0,
+            latency_measurement_symbol: false,
         }
     }
 
@@ -938,6 +945,7 @@ struct SymbolSlot {
     idx: usize,
     prev: i64,
     prev_ts_us: i64,
+    latency_measurement_symbol: bool,
 }
 
 struct SharedState {
@@ -1564,7 +1572,13 @@ fn process_frame(
     }
     state.symbol_state.set_bbo_slot(slot, f.seq_id, f.ts_us);
 
-    record_latency_measurement_if_needed(state, &f.symbol, recv_us, accepted_us, f.ts_us);
+    record_latency_measurement_if_needed(
+        state,
+        slot.latency_measurement_symbol,
+        recv_us,
+        accepted_us,
+        f.ts_us,
+    );
 
     if let Err(e) = publisher.publish_bbo(
         &f.symbol,
@@ -1582,12 +1596,12 @@ fn process_frame(
 
 fn record_latency_measurement_if_needed(
     state: &mut SharedState,
-    symbol: &str,
+    latency_measurement_symbol: bool,
     recv_us: i64,
     accepted_us: i64,
     event_ts_us: i64,
 ) {
-    if event_ts_us <= 0 || !is_latency_measurement_symbol(symbol) {
+    if event_ts_us <= 0 || !latency_measurement_symbol {
         return;
     }
     let net_us = (recv_us - event_ts_us) as f64;
@@ -1713,10 +1727,6 @@ mod tests {
         }
     }
 
-    fn frame(symbol: &str, seq_id: i64, reset_seq: bool) -> BboFrame {
-        frame_at(symbol, seq_id, reset_seq, 0)
-    }
-
     fn frame_at(symbol: &str, seq_id: i64, reset_seq: bool, ts_us: i64) -> BboFrame {
         BboFrame {
             symbol: symbol.to_string(),
@@ -1757,10 +1767,10 @@ mod tests {
     #[test]
     fn latency_measurements_skip_non_major_assets_for_both_buckets() {
         let mut state = test_state(1_000_000);
-        record_latency_measurement_if_needed(&mut state, "XRPUSDT", 120, 130, 100);
+        record_latency_measurement_if_needed(&mut state, false, 120, 130, 100);
         assert!(take_latency_snapshot(&mut state, 7).is_none());
 
-        record_latency_measurement_if_needed(&mut state, "BTCUSDT", 120, 130, 100);
+        record_latency_measurement_if_needed(&mut state, true, 120, 130, 100);
         let msg = take_latency_snapshot(&mut state, 7).expect("snapshot");
         assert_eq!(msg.n_buckets, 2);
         assert_eq!(msg.buckets[0].metric_id, METRIC_ID_SPREAD_NET);

@@ -2,8 +2,8 @@ use bytes::Bytes;
 use log::{info, warn};
 pub use order_common::{
     gate_text_from_client_order_id, BinanceAccountMode, Order, OrderExecutionStatus, OrderManager,
-    OrderStatus, OrderType, OrderUpdateSkipReason, ProtectedCumulativeFill, Side,
-    TradeUpdateSkipReason, TradingVenue, CUMULATIVE_FILL_ROLLBACK_EPS,
+    OrderQuantizedValue, OrderStatus, OrderType, OrderUpdateSkipReason, ProtectedCumulativeFill,
+    Side, TradeUpdateSkipReason, TradingVenue, CUMULATIVE_FILL_ROLLBACK_EPS,
 };
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::tick_math::QuantizedValue;
@@ -21,52 +21,14 @@ use trade_engine::okex::{
 use trade_engine::trade_request::BinanceNewMarginOrderRequest;
 use trade_engine::trade_request::BinanceNewUMOrderRequest;
 use trade_engine::trade_request::{
-    BinanceCancelMarginOrderRequest, BinanceCancelUMOrderRequest,
-    BinanceWsCancelMarginOrderRequest, BinanceWsCancelUMOrderRequest,
-    BinanceWsNewMarginOrderRequest, BinanceWsNewUMOrderRequest, BitgetMarginCancelOrderRequest,
-    BitgetMarginNewOrderRequest, BitgetUmCancelOrderRequest, BitgetUmNewOrderRequest,
-    GateFuturesCancelOrderRequest, GateFuturesNewOrderRequest, GateUnifiedCancelOrderRequest,
-    GateUnifiedNewOrderRequest,
+    BinanceCancelMarginOrderRequest, BinanceCancelOrderParams, BinanceCancelUMOrderRequest,
+    BinanceNewOrderParams, BinanceWsCancelMarginOrderRequest, BinanceWsCancelUMOrderRequest,
+    BinanceWsNewMarginOrderRequest, BinanceWsNewUMOrderRequest, BitgetCancelOrderParams,
+    BitgetMarginCancelOrderRequest, BitgetMarginNewOrderRequest, BitgetNewOrderParams,
+    BitgetUmCancelOrderRequest, BitgetUmNewOrderRequest, GateCancelOrderParams,
+    GateFuturesCancelOrderRequest, GateFuturesNewOrderRequest, GateNewOrderParams,
+    GateUnifiedCancelOrderRequest, GateUnifiedNewOrderRequest,
 };
-fn format_decimal(value: f64) -> String {
-    QuantizedValue::from_decimal(value)
-        .map(|qv| qv.decimal_string())
-        .unwrap_or_else(|| "0".to_string())
-}
-
-fn format_quantity(quantity: f64) -> String {
-    format_decimal(quantity)
-}
-
-fn format_signed_quantity(quantity: f64) -> String {
-    if quantity < 0.0 {
-        let abs = format_decimal(-quantity);
-        if abs == "0" {
-            abs
-        } else {
-            format!("-{abs}")
-        }
-    } else {
-        format_decimal(quantity)
-    }
-}
-
-fn format_price(price: f64) -> String {
-    format_decimal(price)
-}
-
-fn format_order_quantity(quantity: f64) -> String {
-    QuantizedValue::from_decimal(quantity)
-        .map(|qv| qv.decimal_string())
-        .unwrap_or_else(|| format_quantity(quantity))
-}
-
-fn format_order_price(price: f64) -> String {
-    QuantizedValue::from_decimal(price)
-        .map(|qv| qv.decimal_string())
-        .unwrap_or_else(|| format_price(price))
-}
-
 fn quantize_order_decimal(value: f64) -> Option<QuantizedValue> {
     if let Some(qv) = QuantizedValue::from_decimal(value) {
         return Some(qv);
@@ -91,8 +53,80 @@ fn quantize_order_decimal(value: f64) -> Option<QuantizedValue> {
     (int_value > 0).then(|| QuantizedValue::from_parts(int_value, int_exp, 1))
 }
 
-fn binance_ws_um_new_order_resp_type() -> &'static str {
-    "RESULT"
+fn qv_from_order_cache(qv: OrderQuantizedValue) -> QuantizedValue {
+    QuantizedValue::from_parts(qv.tick_i64, qv.tick_exp, qv.count)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ResolvedOrderQuantities {
+    quantity_qv: Option<QuantizedValue>,
+    price_qv: Option<QuantizedValue>,
+}
+
+impl ResolvedOrderQuantities {
+    fn from_order(order: &Order) -> Self {
+        Self {
+            quantity_qv: order_quantity_qv(order),
+            price_qv: order_price_qv(order),
+        }
+    }
+
+    fn quantity_text(self) -> String {
+        qv_text_or_zero(self.quantity_qv)
+    }
+
+    fn price_text(self) -> String {
+        qv_text_or_zero(self.price_qv)
+    }
+
+    fn require_quantity_qv(
+        self,
+        order: &Order,
+        venue_name: &str,
+    ) -> Result<QuantizedValue, String> {
+        self.quantity_qv.ok_or_else(|| {
+            format!(
+                "failed to quantize {venue_name} quantity: qty={:.12} symbol={} client_order_id={}",
+                order.quantity, order.symbol, order.client_order_id
+            )
+        })
+    }
+
+    fn limit_price_qv_or_zero(
+        self,
+        order: &Order,
+        venue_name: &str,
+    ) -> Result<QuantizedValue, String> {
+        if order.order_type.is_limit() {
+            self.price_qv.ok_or_else(|| {
+                format!(
+                    "failed to quantize {venue_name} price: price={:.12} symbol={} client_order_id={}",
+                    order.price, order.symbol, order.client_order_id
+                )
+            })
+        } else {
+            Ok(QuantizedValue::zero())
+        }
+    }
+}
+
+fn order_quantity_qv(order: &Order) -> Option<QuantizedValue> {
+    order
+        .quantity_qv
+        .map(qv_from_order_cache)
+        .or_else(|| quantize_order_decimal(order.quantity))
+}
+
+fn order_price_qv(order: &Order) -> Option<QuantizedValue> {
+    order
+        .price_qv
+        .map(qv_from_order_cache)
+        .or_else(|| quantize_order_decimal(order.price))
+}
+
+fn qv_text_or_zero(qv: Option<QuantizedValue>) -> String {
+    qv.map(|qv| qv.decimal_string())
+        .unwrap_or_else(|| "0".to_string())
 }
 
 fn binance_margin_should_use_margin_buy(use_binance_ws_margin: bool, reduce_only: bool) -> bool {
@@ -115,8 +149,6 @@ fn okex_order_type_from_order_type(order_type: OrderType) -> Result<OkexOrderTyp
     }
 }
 
-use serde_json::{json, Value};
-
 pub trait PreTradeOrderManagerRequestExt {
     fn build_unmatched_cancel_bytes(
         &self,
@@ -134,6 +166,8 @@ pub trait PreTradeOrderManagerRequestExt {
         side: Side,
         quantity: f64,
         price: f64,
+        quantity_qv: Option<OrderQuantizedValue>,
+        price_qv: Option<OrderQuantizedValue>,
         reduce_only: bool,
         qty_multiplier: f64,
         signal_t: i64,
@@ -156,42 +190,46 @@ impl PreTradeOrderManagerRequestExt for OrderManager {
             ));
         }
 
-        let params = Bytes::from(format!(
-            "symbol={}&origClientOrderId={}",
-            symbol, client_order_id
-        ));
+        let params = BinanceCancelOrderParams {
+            symbol: symbol.to_string(),
+            orig_client_order_id: client_order_id,
+        };
         match venue {
             TradingVenue::BinanceMargin => {
                 if self.binance_is_standard() {
-                    let request = BinanceWsCancelMarginOrderRequest::create(
+                    let request = BinanceWsCancelMarginOrderRequest::create_typed(
                         get_timestamp_us(),
                         client_order_id,
                         params,
-                    );
+                    )
+                    .ok_or_else(|| "failed to build binance ws margin cancel params".to_string())?;
                     Ok(request.to_bytes())
                 } else {
-                    let request = BinanceCancelMarginOrderRequest::create(
+                    let request = BinanceCancelMarginOrderRequest::create_typed(
                         get_timestamp_us(),
                         client_order_id,
                         params,
-                    );
+                    )
+                    .ok_or_else(|| "failed to build binance margin cancel params".to_string())?;
                     Ok(request.to_bytes())
                 }
             }
             TradingVenue::BinanceFutures => {
                 if self.binance_is_standard() {
-                    let request = BinanceWsCancelUMOrderRequest::create(
+                    let request = BinanceWsCancelUMOrderRequest::create_typed(
                         get_timestamp_us(),
                         client_order_id,
                         params,
-                    );
+                    )
+                    .ok_or_else(|| "failed to build binance ws um cancel params".to_string())?;
                     Ok(request.to_bytes())
                 } else {
-                    let request = BinanceCancelUMOrderRequest::create(
+                    let request = BinanceCancelUMOrderRequest::create_typed(
                         get_timestamp_us(),
                         client_order_id,
                         params,
-                    );
+                    )
+                    .ok_or_else(|| "failed to build binance um cancel params".to_string())?;
                     Ok(request.to_bytes())
                 }
             }
@@ -211,6 +249,8 @@ impl PreTradeOrderManagerRequestExt for OrderManager {
         side: Side,
         quantity: f64,
         price: f64,
+        quantity_qv: Option<OrderQuantizedValue>,
+        price_qv: Option<OrderQuantizedValue>,
         reduce_only: bool,
         qty_multiplier: f64,
         signal_t: i64,
@@ -229,6 +269,12 @@ impl PreTradeOrderManagerRequestExt for OrderManager {
             qty_multiplier,
             true,
             |order| {
+                if let Some(quantity_qv) = quantity_qv {
+                    order.set_quantity_qv(quantity_qv);
+                }
+                if let Some(price_qv) = price_qv {
+                    order.set_price_qv(price_qv);
+                }
                 order.set_signal_meta(signal_t, signal_kind);
                 if mkt_t > 0 {
                     order.set_mkt_time(mkt_t);
@@ -259,35 +305,49 @@ impl PreTradeOrderRequestExt for Order {
         match self.venue {
             TradingVenue::BinanceMargin => {
                 // 使用 origClientOrderId 以客户端订单ID撤单；当前未保存交易所 orderId
-                let params = Bytes::from(format!(
-                    "symbol={}&origClientOrderId={}",
-                    self.symbol, self.client_order_id
-                ));
+                let params = BinanceCancelOrderParams {
+                    symbol: self.symbol.clone(),
+                    orig_client_order_id: self.client_order_id,
+                };
                 if self.require_binance_account_mode() == BinanceAccountMode::Standard {
                     let request: BinanceWsCancelMarginOrderRequest =
-                        BinanceWsCancelMarginOrderRequest::create(
+                        BinanceWsCancelMarginOrderRequest::create_typed(
                             now,
                             self.client_order_id,
                             params,
-                        );
+                        )
+                        .ok_or_else(|| {
+                            "failed to build binance ws margin cancel params".to_string()
+                        })?;
                     return Ok(request.to_bytes());
                 }
                 let request: BinanceCancelMarginOrderRequest =
-                    BinanceCancelMarginOrderRequest::create(now, self.client_order_id, params);
+                    BinanceCancelMarginOrderRequest::create_typed(
+                        now,
+                        self.client_order_id,
+                        params,
+                    )
+                    .ok_or_else(|| "failed to build binance margin cancel params".to_string())?;
                 Ok(request.to_bytes())
             }
             TradingVenue::BinanceFutures => {
-                let params = Bytes::from(format!(
-                    "symbol={}&origClientOrderId={}",
-                    self.symbol, self.client_order_id
-                ));
+                let params = BinanceCancelOrderParams {
+                    symbol: self.symbol.clone(),
+                    orig_client_order_id: self.client_order_id,
+                };
                 if self.require_binance_account_mode() == BinanceAccountMode::Standard {
                     let request: BinanceWsCancelUMOrderRequest =
-                        BinanceWsCancelUMOrderRequest::create(now, self.client_order_id, params);
+                        BinanceWsCancelUMOrderRequest::create_typed(
+                            now,
+                            self.client_order_id,
+                            params,
+                        )
+                        .ok_or_else(|| "failed to build binance ws um cancel params".to_string())?;
                     return Ok(request.to_bytes());
                 }
                 let request: BinanceCancelUMOrderRequest =
-                    BinanceCancelUMOrderRequest::create(now, self.client_order_id, params);
+                    BinanceCancelUMOrderRequest::create_typed(now, self.client_order_id, params)
+                        .ok_or_else(|| "failed to build binance um cancel params".to_string())?;
                 Ok(request.to_bytes())
             }
             TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
@@ -320,14 +380,13 @@ impl PreTradeOrderRequestExt for Order {
                     .exchange_order_id
                     .map(|id| id.to_string())
                     .unwrap_or_else(|| gate_text_from_client_order_id(self.client_order_id));
-                let req_param = json!({
-                    "order_id": order_id,
-                    "currency_pair": currency_pair,
-                    "account": "unified",
-                });
-                let params = Bytes::from(req_param.to_string());
+                let params = GateCancelOrderParams {
+                    symbol: currency_pair,
+                    order_id,
+                };
                 let request =
-                    GateUnifiedCancelOrderRequest::create(now, self.client_order_id, params);
+                    GateUnifiedCancelOrderRequest::create_typed(now, self.client_order_id, params)
+                        .ok_or_else(|| "failed to build gate unified cancel params".to_string())?;
                 Ok(request.to_bytes())
             }
             TradingVenue::GateFutures => {
@@ -336,13 +395,13 @@ impl PreTradeOrderRequestExt for Order {
                     .exchange_order_id
                     .map(|id| id.to_string())
                     .unwrap_or_else(|| gate_text_from_client_order_id(self.client_order_id));
-                let req_param = json!({
-                    "order_id": order_id,
-                    "contract": contract,
-                });
-                let params = Bytes::from(req_param.to_string());
+                let params = GateCancelOrderParams {
+                    symbol: contract,
+                    order_id,
+                };
                 let request =
-                    GateFuturesCancelOrderRequest::create(now, self.client_order_id, params);
+                    GateFuturesCancelOrderRequest::create_typed(now, self.client_order_id, params)
+                        .ok_or_else(|| "failed to build gate futures cancel params".to_string())?;
                 Ok(request.to_bytes())
             }
             TradingVenue::BybitMargin | TradingVenue::BybitFutures => {
@@ -364,27 +423,30 @@ impl PreTradeOrderRequestExt for Order {
                 Ok(request.to_bytes())
             }
             TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => {
-                let mut req_param = serde_json::Map::new();
-                if let Some(order_id) = self.exchange_order_id.filter(|&id| id > 0) {
-                    req_param.insert("orderId".to_string(), json!(order_id.to_string()));
-                }
-                req_param.insert(
-                    "clientOid".to_string(),
-                    json!(self.client_order_id.to_string()),
-                );
-                let params = Bytes::from(Value::Object(req_param).to_string());
+                let params = BitgetCancelOrderParams {
+                    order_id: self
+                        .exchange_order_id
+                        .filter(|&id| id > 0)
+                        .map(|id| id.to_string()),
+                    client_order_id: self.client_order_id.to_string(),
+                };
                 match self.venue {
                     TradingVenue::BitgetMargin => {
-                        let request = BitgetMarginCancelOrderRequest::create(
+                        let request = BitgetMarginCancelOrderRequest::create_typed(
                             now,
                             self.client_order_id,
                             params,
-                        );
+                        )
+                        .ok_or_else(|| "failed to build bitget margin cancel params".to_string())?;
                         Ok(request.to_bytes())
                     }
                     TradingVenue::BitgetFutures => {
-                        let request =
-                            BitgetUmCancelOrderRequest::create(now, self.client_order_id, params);
+                        let request = BitgetUmCancelOrderRequest::create_typed(
+                            now,
+                            self.client_order_id,
+                            params,
+                        )
+                        .ok_or_else(|| "failed to build bitget um cancel params".to_string())?;
                         Ok(request.to_bytes())
                     }
                     _ => unreachable!(),
@@ -401,28 +463,13 @@ impl PreTradeOrderRequestExt for Order {
                 self.price, self.order_type, self.symbol, self.client_order_id
             ));
         }
+        let resolved = ResolvedOrderQuantities::from_order(self);
 
         match self.venue {
             //币安的杠杆账户下单
             TradingVenue::BinanceMargin => {
                 let use_binance_ws_margin =
                     self.require_binance_account_mode() == BinanceAccountMode::Standard;
-                let binance_margin_type = if use_binance_ws_margin && self.order_type.is_limit() {
-                    "LIMIT_MAKER"
-                } else {
-                    self.order_type.as_str()
-                };
-
-                let mut params_parts = vec![
-                    format!("symbol={}", self.symbol),
-                    format!("side={}", self.side.as_str()), //下单方向确定就可以
-                    format!("type={}", binance_margin_type),
-                    format!("quantity={}", format_quantity(self.quantity)),
-                    format!("newClientOrderId={}", self.client_order_id),
-                ];
-                if use_binance_ws_margin {
-                    params_parts.push("newOrderRespType=FULL".to_string());
-                }
                 let local_create_ts = get_timestamp_us();
                 // ===== 余额检查和日志记录 =====
                 // 提取 base asset 和 quote asset
@@ -460,8 +507,8 @@ impl PreTradeOrderRequestExt for Order {
                             borrow_amount,
                             self.symbol,
                             self.side,
-                            format_order_quantity(self.quantity),
-                            format_order_price(self.price)
+                            resolved.quantity_text(),
+                            resolved.price_text()
                         ));
                     }
                     if !(use_binance_ws_margin && self.side == Side::Sell) {
@@ -470,8 +517,8 @@ impl PreTradeOrderRequestExt for Order {
                             check_asset, required_amount, available_balance, borrow_amount,
                             self.symbol,
                             self.side,
-                            format_order_quantity(self.quantity),
-                            format_order_price(self.price)
+                            resolved.quantity_text(),
+                            resolved.price_text()
                         );
                     }
                     if use_binance_ws_margin {
@@ -487,84 +534,89 @@ impl PreTradeOrderRequestExt for Order {
                     );
                     // 本地余额充足只代表净钱包口径充足；PM REST 仍可能需要自动借币。
                 }
-                if binance_margin_should_use_margin_buy(use_binance_ws_margin, self.reduce_only) {
-                    params_parts.push("sideEffectType=MARGIN_BUY".to_string());
-                }
+                let margin_buy =
+                    binance_margin_should_use_margin_buy(use_binance_ws_margin, self.reduce_only);
                 // ===== 余额检查结束 =====/
 
-                // WS margin: LIMIT_MAKER 作为 post-only，不传 tif。
-                // REST margin: 保持原逻辑（LIMIT + GTC）。
-                if self.order_type.is_limit() {
-                    if !use_binance_ws_margin {
-                        params_parts.push("timeInForce=GTC".to_string());
-                    }
-                    params_parts.push(format!("price={}", format_price(self.price)));
-                }
-                //如果是市价单，不需要价格和tif参数
-                let params_plain = params_parts.join("&");
+                let params = BinanceNewOrderParams {
+                    symbol: self.symbol.clone(),
+                    side: self.side,
+                    order_type: self.order_type,
+                    quantity_qv: resolved.require_quantity_qv(self, "binance")?,
+                    price_qv: resolved.limit_price_qv_or_zero(self, "binance")?,
+                    reduce_only: self.reduce_only,
+                    margin_buy,
+                    ws_response_full: use_binance_ws_margin,
+                    ws_um_response_result: false,
+                    ws_margin_limit_maker: use_binance_ws_margin,
+                };
                 info!(
-                    "OrderManager: venue={:?} client_order_id={} params={}",
-                    self.venue, self.client_order_id, params_plain
+                    "OrderManager: venue={:?} client_order_id={} symbol={} side={:?} type={:?} reduce_only={} typed_params=binance_new_order",
+                    self.venue,
+                    self.client_order_id,
+                    self.symbol,
+                    self.side,
+                    self.order_type,
+                    self.reduce_only
                 );
-                let params = Bytes::from(params_plain);
                 if use_binance_ws_margin {
-                    let request = BinanceWsNewMarginOrderRequest::create(
+                    let request = BinanceWsNewMarginOrderRequest::create_typed(
                         local_create_ts,
                         self.client_order_id,
                         params,
-                    );
+                    )
+                    .ok_or_else(|| "failed to build binance ws margin order params".to_string())?;
                     Ok(request.to_bytes())
                 } else {
-                    let request = BinanceNewMarginOrderRequest::create(
+                    let request = BinanceNewMarginOrderRequest::create_typed(
                         local_create_ts,
                         self.client_order_id,
                         params,
-                    );
+                    )
+                    .ok_or_else(|| "failed to build binance margin order params".to_string())?;
                     Ok(request.to_bytes())
                 }
             }
             TradingVenue::BinanceFutures => {
                 let use_binance_ws_um =
                     self.require_binance_account_mode() == BinanceAccountMode::Standard;
-                let mut params_parts = vec![
-                    format!("symbol={}", self.symbol),
-                    format!("side={}", self.side.as_str()), //下单方向确定就可以
-                    format!("type={}", self.order_type.as_str()),
-                    format!("quantity={}", format_quantity(self.quantity)),
-                    format!("reduceOnly={}", self.reduce_only),
-                    format!("newClientOrderId={}", self.client_order_id),
-                ];
-                if use_binance_ws_um {
-                    params_parts.push(format!(
-                        "newOrderRespType={}",
-                        binance_ws_um_new_order_resp_type()
-                    ));
-                }
                 let local_create_ts = get_timestamp_us();
-                //UM合约下单
-                if self.order_type.is_limit() {
-                    params_parts.push("timeInForce=GTX".to_string());
-                    params_parts.push(format!("price={}", format_price(self.price)));
-                }
-                let params_plain = params_parts.join("&");
+                let params = BinanceNewOrderParams {
+                    symbol: self.symbol.clone(),
+                    side: self.side,
+                    order_type: self.order_type,
+                    quantity_qv: resolved.require_quantity_qv(self, "binance")?,
+                    price_qv: resolved.limit_price_qv_or_zero(self, "binance")?,
+                    reduce_only: self.reduce_only,
+                    margin_buy: false,
+                    ws_response_full: false,
+                    ws_um_response_result: use_binance_ws_um,
+                    ws_margin_limit_maker: false,
+                };
                 info!(
-                    "OrderManager: venue={:?} client_order_id={} params={}",
-                    self.venue, self.client_order_id, params_plain
+                    "OrderManager: venue={:?} client_order_id={} symbol={} side={:?} type={:?} reduce_only={} typed_params=binance_new_order",
+                    self.venue,
+                    self.client_order_id,
+                    self.symbol,
+                    self.side,
+                    self.order_type,
+                    self.reduce_only
                 );
-                let params = Bytes::from(params_plain);
                 if use_binance_ws_um {
-                    let request = BinanceWsNewUMOrderRequest::create(
+                    let request = BinanceWsNewUMOrderRequest::create_typed(
                         local_create_ts,
                         self.client_order_id,
                         params,
-                    );
+                    )
+                    .ok_or_else(|| "failed to build binance ws um order params".to_string())?;
                     Ok(request.to_bytes())
                 } else {
-                    let request = BinanceNewUMOrderRequest::create(
+                    let request = BinanceNewUMOrderRequest::create_typed(
                         local_create_ts,
                         self.client_order_id,
                         params,
-                    );
+                    )
+                    .ok_or_else(|| "failed to build binance um order params".to_string())?;
                     Ok(request.to_bytes())
                 }
             }
@@ -572,22 +624,8 @@ impl PreTradeOrderRequestExt for Order {
                 let create_ts = get_timestamp_us();
                 let inst_id = okex_inst_id_from_symbol(&self.symbol, self.venue)?;
                 let okex_order_type = okex_order_type_from_order_type(self.order_type)?;
-                let quantity_qv = quantize_order_decimal(self.quantity).ok_or_else(|| {
-                    format!(
-                        "failed to quantize okex quantity: qty={:.12} symbol={} client_order_id={}",
-                        self.quantity, self.symbol, self.client_order_id
-                    )
-                })?;
-                let price_qv = if self.order_type.is_limit() {
-                    quantize_order_decimal(self.price).ok_or_else(|| {
-                        format!(
-                            "failed to quantize okex price: price={:.12} symbol={} client_order_id={}",
-                            self.price, self.symbol, self.client_order_id
-                        )
-                    })?
-                } else {
-                    QuantizedValue::zero()
-                };
+                let quantity_qv = resolved.require_quantity_qv(self, "okex")?;
+                let price_qv = resolved.limit_price_qv_or_zero(self, "okex")?;
 
                 let params = OkexNewOrderParams {
                     side: self.side,
@@ -614,105 +652,61 @@ impl PreTradeOrderRequestExt for Order {
             TradingVenue::GateMargin => {
                 let create_ts = get_timestamp_us();
                 let currency_pair = gate_currency_pair_from_symbol(&self.symbol);
-                let order_type = match self.order_type {
-                    OrderType::Limit => "limit",
-                    OrderType::Market => "market",
-                    _ => {
-                        return Err(format!(
-                            "unsupported gate order type: {:?}",
-                            self.order_type
-                        ));
-                    }
-                };
-                let time_in_force = match self.order_type {
-                    OrderType::Limit => Some("poc"),
-                    OrderType::Market => None,
-                    _ => None,
-                };
-
-                let mut req_param = serde_json::Map::new();
-                req_param.insert("text".to_string(), json!(self.client_order_id.to_string()));
-                req_param.insert("currency_pair".to_string(), json!(currency_pair));
-                req_param.insert("type".to_string(), json!(order_type));
-                req_param.insert("account".to_string(), json!("unified"));
-                req_param.insert("side".to_string(), json!(self.side.as_str_lower()));
-                req_param.insert("amount".to_string(), json!(format_quantity(self.quantity)));
-                if self.side == Side::Buy {
-                    req_param.insert("auto_borrow".to_string(), json!(true));
+                if !matches!(self.order_type, OrderType::Limit | OrderType::Market) {
+                    return Err(format!(
+                        "unsupported gate order type: {:?}",
+                        self.order_type
+                    ));
+                }
+                let params = GateNewOrderParams {
+                    symbol: currency_pair,
+                    side: self.side,
+                    order_type: self.order_type,
+                    quantity_qv: resolved.require_quantity_qv(self, "gate")?,
+                    price_qv: resolved.limit_price_qv_or_zero(self, "gate")?,
+                    reduce_only: self.reduce_only,
                     // 仅 unified/cross-margin 买入单可能触发本单借款；成交所得用于偿还本单借入。
-                    req_param.insert("auto_repay".to_string(), json!(true));
-                }
-                if self.order_type.is_limit() {
-                    req_param.insert("price".to_string(), json!(format_price(self.price)));
-                }
-                if let Some(tif) = time_in_force {
-                    req_param.insert("time_in_force".to_string(), json!(tif));
-                }
-
-                let params = Bytes::from(Value::Object(req_param).to_string());
-                let request =
-                    GateUnifiedNewOrderRequest::create(create_ts, self.client_order_id, params);
+                    auto_borrow_repay: self.side == Side::Buy,
+                };
+                let request = GateUnifiedNewOrderRequest::create_typed(
+                    create_ts,
+                    self.client_order_id,
+                    params,
+                )
+                .ok_or_else(|| "failed to build gate unified order params".to_string())?;
                 Ok(request.to_bytes())
             }
             TradingVenue::GateFutures => {
                 let create_ts = get_timestamp_us();
                 let contract = gate_currency_pair_from_symbol(&self.symbol);
-                let time_in_force = match self.order_type {
-                    OrderType::Limit => Some("poc"),
-                    OrderType::Market => Some("ioc"),
-                    _ => None,
+                if !matches!(self.order_type, OrderType::Limit | OrderType::Market) {
+                    return Err(format!(
+                        "unsupported gate order type: {:?}",
+                        self.order_type
+                    ));
+                }
+                let params = GateNewOrderParams {
+                    symbol: contract,
+                    side: self.side,
+                    order_type: self.order_type,
+                    quantity_qv: resolved.require_quantity_qv(self, "gate")?,
+                    price_qv: resolved.limit_price_qv_or_zero(self, "gate")?,
+                    reduce_only: self.reduce_only,
+                    auto_borrow_repay: false,
                 };
-
-                let signed_size = match self.side {
-                    Side::Buy => self.quantity,
-                    Side::Sell => -self.quantity,
-                };
-
-                let mut req_param = serde_json::Map::new();
-                req_param.insert("text".to_string(), json!(self.client_order_id.to_string()));
-                req_param.insert("contract".to_string(), json!(contract));
-                req_param.insert("account".to_string(), json!("unified"));
-                req_param.insert(
-                    "size".to_string(),
-                    json!(format_signed_quantity(signed_size)),
-                );
-
-                if self.order_type.is_limit() {
-                    req_param.insert("price".to_string(), json!(format_price(self.price)));
-                } else {
-                    req_param.insert("price".to_string(), json!("0"));
-                }
-                if let Some(tif) = time_in_force {
-                    req_param.insert("tif".to_string(), json!(tif));
-                }
-                if self.reduce_only {
-                    req_param.insert("reduce_only".to_string(), json!(true));
-                }
-
-                let params = Bytes::from(Value::Object(req_param).to_string());
-                let request =
-                    GateFuturesNewOrderRequest::create(create_ts, self.client_order_id, params);
+                let request = GateFuturesNewOrderRequest::create_typed(
+                    create_ts,
+                    self.client_order_id,
+                    params,
+                )
+                .ok_or_else(|| "failed to build gate futures order params".to_string())?;
                 Ok(request.to_bytes())
             }
             TradingVenue::BybitMargin | TradingVenue::BybitFutures => {
                 let create_ts = get_timestamp_us();
                 let symbol = bybit_symbol_from_symbol(&self.symbol);
-                let quantity_qv = quantize_order_decimal(self.quantity).ok_or_else(|| {
-                    format!(
-                        "failed to quantize bybit quantity: qty={:.12} symbol={} client_order_id={}",
-                        self.quantity, self.symbol, self.client_order_id
-                    )
-                })?;
-                let price_qv = if self.order_type.is_limit() {
-                    quantize_order_decimal(self.price).ok_or_else(|| {
-                        format!(
-                            "failed to quantize bybit price: price={:.12} symbol={} client_order_id={}",
-                            self.price, self.symbol, self.client_order_id
-                        )
-                    })?
-                } else {
-                    QuantizedValue::zero()
-                };
+                let quantity_qv = resolved.require_quantity_qv(self, "bybit")?;
+                let price_qv = resolved.limit_price_qv_or_zero(self, "bybit")?;
                 let params = BybitNewOrderParams {
                     side: self.side,
                     order_type: self.order_type,
@@ -723,84 +717,54 @@ impl PreTradeOrderRequestExt for Order {
                     price_qv,
                     symbol,
                 };
-                let request = match self.venue {
-                    TradingVenue::BybitMargin => {
-                        BybitNewOrderRequest::create_margin(create_ts, self.client_order_id, params)
-                    }
-                    TradingVenue::BybitFutures => {
-                        BybitNewOrderRequest::create_um(create_ts, self.client_order_id, params)
-                    }
+                match self.venue {
+                    TradingVenue::BybitMargin => BybitNewOrderRequest::margin_order_bytes(
+                        create_ts,
+                        self.client_order_id,
+                        &params,
+                    ),
+                    TradingVenue::BybitFutures => BybitNewOrderRequest::um_order_bytes(
+                        create_ts,
+                        self.client_order_id,
+                        &params,
+                    ),
                     _ => None,
                 }
-                .ok_or_else(|| "failed to build bybit new order request".to_string())?;
-                Ok(request.to_bytes())
+                .ok_or_else(|| "failed to build bybit new order request".to_string())
             }
             TradingVenue::BitgetMargin => {
                 let create_ts = get_timestamp_us();
-                let mut req_param = serde_json::Map::new();
-                // Bitget UTA v3：category=margin 走 cross-margin 现货并自动借币；category=spot 不会借币。
-                req_param.insert("category".to_string(), json!("margin"));
-                req_param.insert(
-                    "symbol".to_string(),
-                    json!(self.symbol.to_ascii_uppercase()),
-                );
-                req_param.insert("side".to_string(), json!(self.side.as_str_lower()));
-                req_param.insert(
-                    "orderType".to_string(),
-                    json!(if self.order_type.is_limit() {
-                        "limit"
-                    } else {
-                        "market"
-                    }),
-                );
-                if self.order_type.is_limit() {
-                    req_param.insert("force".to_string(), json!("post_only"));
-                    req_param.insert("price".to_string(), json!(format_price(self.price)));
-                }
-                req_param.insert("size".to_string(), json!(format_quantity(self.quantity)));
-                req_param.insert(
-                    "clientOid".to_string(),
-                    json!(self.client_order_id.to_string()),
-                );
-                let params = Bytes::from(Value::Object(req_param).to_string());
-                let request =
-                    BitgetMarginNewOrderRequest::create(create_ts, self.client_order_id, params);
+                let params = BitgetNewOrderParams {
+                    symbol: self.symbol.clone(),
+                    side: self.side,
+                    order_type: self.order_type,
+                    quantity_qv: resolved.require_quantity_qv(self, "bitget")?,
+                    price_qv: resolved.limit_price_qv_or_zero(self, "bitget")?,
+                    reduce_only: self.reduce_only,
+                };
+                let request = BitgetMarginNewOrderRequest::create_typed(
+                    create_ts,
+                    self.client_order_id,
+                    params,
+                )
+                .ok_or_else(|| "failed to build bitget margin order params".to_string())?;
                 Ok(request.to_bytes())
             }
             TradingVenue::BitgetFutures => {
                 let create_ts = get_timestamp_us();
-                let mut req_param = serde_json::Map::new();
                 // trade_engine precheck 强制 Bitget UTA futures 为 one_way_mode。
                 // one-way 模式下开/平仓由 side + reduceOnly 表达，不传 hedge-mode 的 posSide。
-                req_param.insert("category".to_string(), json!("usdt-futures"));
-                req_param.insert(
-                    "symbol".to_string(),
-                    json!(self.symbol.to_ascii_uppercase()),
-                );
-                req_param.insert("side".to_string(), json!(self.side.as_str_lower()));
-                req_param.insert(
-                    "orderType".to_string(),
-                    json!(if self.order_type.is_limit() {
-                        "limit"
-                    } else {
-                        "market"
-                    }),
-                );
-                if self.order_type.is_limit() {
-                    req_param.insert("force".to_string(), json!("post_only"));
-                    req_param.insert("price".to_string(), json!(format_price(self.price)));
-                }
-                req_param.insert("size".to_string(), json!(format_quantity(self.quantity)));
-                req_param.insert(
-                    "clientOid".to_string(),
-                    json!(self.client_order_id.to_string()),
-                );
-                if self.reduce_only {
-                    req_param.insert("reduceOnly".to_string(), json!("YES"));
-                }
-                let params = Bytes::from(Value::Object(req_param).to_string());
+                let params = BitgetNewOrderParams {
+                    symbol: self.symbol.clone(),
+                    side: self.side,
+                    order_type: self.order_type,
+                    quantity_qv: resolved.require_quantity_qv(self, "bitget")?,
+                    price_qv: resolved.limit_price_qv_or_zero(self, "bitget")?,
+                    reduce_only: self.reduce_only,
+                };
                 let request =
-                    BitgetUmNewOrderRequest::create(create_ts, self.client_order_id, params);
+                    BitgetUmNewOrderRequest::create_typed(create_ts, self.client_order_id, params)
+                        .ok_or_else(|| "failed to build bitget um order params".to_string())?;
                 Ok(request.to_bytes())
             }
             //之后在这支持别的类型下单，根据资产类型决定下单的request，统一序列化为bytes
@@ -813,14 +777,67 @@ impl PreTradeOrderRequestExt for Order {
 mod tests {
     use super::{
         binance_margin_should_use_margin_buy, bybit_margin_should_use_leverage,
-        BybitNewOrderRequest, Order, OrderExecutionStatus, OrderManager, OrderStatus, OrderType,
-        PreTradeOrderManagerRequestExt, PreTradeOrderRequestExt, Side, TradeUpdateSkipReason,
+        BybitNewOrderRequest, Order, OrderExecutionStatus, OrderManager, OrderQuantizedValue,
+        OrderStatus, OrderType, PreTradeOrderManagerRequestExt, PreTradeOrderRequestExt, Side,
+        TradeUpdateSkipReason,
     };
     use order_common::TradingVenue;
     use serde_json::Value;
+    use trade_engine::trade_request::{
+        BitgetCancelOrderParams, BitgetNewOrderParams, GateFuturesCancelOrderRequest,
+        GateFuturesNewOrderRequest, GateUnifiedCancelOrderRequest, GateUnifiedNewOrderRequest,
+        TradeRequestHeader, TradeRequestMsg, TradeRequestType,
+    };
 
     fn extract_request_json(bytes: &[u8]) -> Value {
-        serde_json::from_slice(&bytes[24..]).expect("gate request params should be valid json")
+        let msg = TradeRequestMsg::parse(bytes).expect("trade request should parse");
+        let header = TradeRequestHeader {
+            msg_type: msg.req_type as u32,
+            params_length: msg.params.len() as u32,
+            create_time: msg.create_time,
+            client_order_id: msg.client_order_id,
+        };
+        match msg.req_type {
+            TradeRequestType::GateUnifiedNewOrder => GateUnifiedNewOrderRequest {
+                header,
+                params: msg.params,
+            }
+            .params_struct()
+            .map(|params| params.to_gate_unified_json(msg.client_order_id))
+            .expect("gate unified typed params should parse"),
+            TradeRequestType::GateFuturesNewOrder => GateFuturesNewOrderRequest {
+                header,
+                params: msg.params,
+            }
+            .params_struct()
+            .map(|params| params.to_gate_futures_json(msg.client_order_id))
+            .expect("gate futures typed params should parse"),
+            TradeRequestType::GateUnifiedCancelOrder => GateUnifiedCancelOrderRequest {
+                header,
+                params: msg.params,
+            }
+            .params_struct()
+            .map(|params| params.to_gate_unified_json())
+            .expect("gate unified cancel typed params should parse"),
+            TradeRequestType::GateFuturesCancelOrder => GateFuturesCancelOrderRequest {
+                header,
+                params: msg.params,
+            }
+            .params_struct()
+            .map(|params| params.to_gate_futures_json())
+            .expect("gate futures cancel typed params should parse"),
+            TradeRequestType::BitgetNewMarginOrder | TradeRequestType::BitgetNewUMOrder => {
+                BitgetNewOrderParams::from_bytes(&msg.params)
+                    .map(|params| params.to_bitget_ws_arg(msg.req_type, msg.client_order_id))
+                    .expect("bitget typed params should parse")
+            }
+            TradeRequestType::BitgetCancelMarginOrder | TradeRequestType::BitgetCancelUMOrder => {
+                BitgetCancelOrderParams::from_bytes(&msg.params)
+                    .map(|params| params.to_bitget_ws_arg(msg.req_type))
+                    .expect("bitget cancel typed params should parse")
+            }
+            _ => serde_json::from_slice(&msg.params).expect("request params should be valid json"),
+        }
     }
 
     #[test]
@@ -900,6 +917,8 @@ mod tests {
                 Side::Buy,
                 10.0,
                 0.0,
+                Some(OrderQuantizedValue::new(1, 0, 10)),
+                None,
                 false,
                 1.0,
                 123456,
@@ -920,6 +939,37 @@ mod tests {
         assert_eq!(params.symbol, "CCUSDT");
         assert_eq!(params.side, Side::Buy);
         assert!(params.is_leverage);
+    }
+
+    #[test]
+    fn bybit_request_prefers_cached_quantized_values() {
+        let mut order = Order::new(
+            TradingVenue::BybitFutures,
+            44,
+            OrderType::Limit,
+            "BTCUSDT".to_string(),
+            Side::Sell,
+            0.30000000000000004,
+            123.45000000000002,
+            false,
+            1.0,
+            None,
+            false,
+        );
+        order.set_quantity_qv(OrderQuantizedValue::new(1, -3, 300));
+        order.set_price_qv(OrderQuantizedValue::new(1, -2, 12345));
+
+        let request = BybitNewOrderRequest::from_bytes(
+            order
+                .get_order_request_bytes()
+                .expect("bybit futures request should build")
+                .as_ref(),
+        )
+        .expect("bybit futures request should parse");
+        let params = request.params_struct().unwrap();
+
+        assert_eq!(params.quantity_qv.decimal_string(), "0.300");
+        assert_eq!(params.price_qv.decimal_string(), "123.45");
     }
 
     #[test]
@@ -1172,6 +1222,33 @@ mod tests {
     }
 
     #[test]
+    fn gate_futures_request_prefers_cached_quantized_values() {
+        let mut order = Order::new(
+            TradingVenue::GateFutures,
+            45,
+            OrderType::Limit,
+            "SOLUSDT".to_string(),
+            Side::Sell,
+            3.0000000000000004,
+            88.56000000000002,
+            false,
+            1.0,
+            None,
+            true,
+        );
+        order.set_quantity_qv(OrderQuantizedValue::new(1, -2, 300));
+        order.set_price_qv(OrderQuantizedValue::new(1, -3, 88560));
+
+        let bytes = order
+            .get_order_request_bytes()
+            .expect("gate futures request should build");
+        let payload = extract_request_json(bytes.as_ref());
+
+        assert_eq!(payload.get("size").and_then(Value::as_str), Some("-3.00"));
+        assert_eq!(payload.get("price").and_then(Value::as_str), Some("88.560"));
+    }
+
+    #[test]
     fn gate_margin_buy_order_serializes_auto_borrow_and_repay() {
         let order = Order::new(
             TradingVenue::GateMargin,
@@ -1272,14 +1349,14 @@ mod tests {
             Some("limit")
         );
         assert_eq!(
-            payload.get("force").and_then(Value::as_str),
+            payload.get("timeInForce").and_then(Value::as_str),
             Some("post_only")
         );
         assert_eq!(
             payload.get("price").and_then(Value::as_str),
             Some("2363.73")
         );
-        assert_eq!(payload.get("size").and_then(Value::as_str), Some("0.21"));
+        assert_eq!(payload.get("qty").and_then(Value::as_str), Some("0.21"));
         assert_eq!(payload.get("clientOid").and_then(Value::as_str), Some("77"));
         assert!(payload.get("reduceOnly").is_none());
         assert!(payload.get("posSide").is_none());
@@ -1315,5 +1392,65 @@ mod tests {
             Some("YES")
         );
         assert!(payload.get("posSide").is_none());
+    }
+
+    #[test]
+    fn gate_futures_cancel_uses_typed_params_and_renders_contract() {
+        let order = Order::new(
+            TradingVenue::GateFutures,
+            79,
+            OrderType::Limit,
+            "SOLUSDT".to_string(),
+            Side::Sell,
+            1.0,
+            88.0,
+            true,
+            1.0,
+            None,
+            true,
+        );
+
+        let bytes = order
+            .get_order_cancel_bytes()
+            .expect("gate futures cancel should build");
+        let payload = extract_request_json(bytes.as_ref());
+
+        assert_eq!(
+            payload.get("contract").and_then(Value::as_str),
+            Some("SOL_USDT")
+        );
+        assert_eq!(
+            payload.get("order_id").and_then(Value::as_str),
+            Some("t-79")
+        );
+    }
+
+    #[test]
+    fn bitget_futures_cancel_uses_typed_params() {
+        let order = Order::new(
+            TradingVenue::BitgetFutures,
+            80,
+            OrderType::Limit,
+            "ETHUSDT".to_string(),
+            Side::Buy,
+            1.0,
+            100.0,
+            true,
+            1.0,
+            None,
+            true,
+        );
+
+        let bytes = order
+            .get_order_cancel_bytes()
+            .expect("bitget futures cancel should build");
+        let payload = extract_request_json(bytes.as_ref());
+
+        assert_eq!(
+            payload.get("category").and_then(Value::as_str),
+            Some("usdt-futures")
+        );
+        assert_eq!(payload.get("clientOid").and_then(Value::as_str), Some("80"));
+        assert!(payload.get("orderId").is_none());
     }
 }

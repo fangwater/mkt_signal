@@ -73,6 +73,8 @@ impl ArbOpenStrategy {
             from_key_len: ctx.from_key_len,
             from_key: ctx.from_key,
             price_qv: ctx.price_qv,
+            order_qty_qv: Some(ctx.amount_qv),
+            order_price_qv: Some(ctx.price_qv),
             price_offset: ctx.price_offset,
             reduce_only: false,
             client_order_id: None,

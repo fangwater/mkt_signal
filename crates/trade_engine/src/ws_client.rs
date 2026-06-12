@@ -1751,14 +1751,26 @@ impl TradeWsClient {
 
     fn ws_open_update_enabled_for_request(&self, msg: &TradeRequestMsg) -> bool {
         match msg.req_type {
-            TradeRequestType::BinanceWsNewUMOrder => std::str::from_utf8(&msg.params)
-                .ok()
-                .map(|raw| raw.contains("timeInForce=GTX"))
-                .unwrap_or(false),
-            TradeRequestType::BinanceWsNewMarginOrder => std::str::from_utf8(&msg.params)
-                .ok()
-                .map(|raw| raw.contains("price=") && !raw.contains("timeInForce="))
-                .unwrap_or(false),
+            TradeRequestType::BinanceWsNewUMOrder => {
+                crate::trade_request::BinanceNewOrderParams::from_bytes(&msg.params)
+                    .map(|params| params.order_type.is_limit())
+                    .or_else(|| {
+                        std::str::from_utf8(&msg.params)
+                            .ok()
+                            .map(|raw| raw.contains("timeInForce=GTX"))
+                    })
+                    .unwrap_or(false)
+            }
+            TradeRequestType::BinanceWsNewMarginOrder => {
+                crate::trade_request::BinanceNewOrderParams::from_bytes(&msg.params)
+                    .map(|params| params.ws_margin_limit_maker && params.order_type.is_limit())
+                    .or_else(|| {
+                        std::str::from_utf8(&msg.params)
+                            .ok()
+                            .map(|raw| raw.contains("price=") && !raw.contains("timeInForce="))
+                    })
+                    .unwrap_or(false)
+            }
             TradeRequestType::BybitNewMarginOrder | TradeRequestType::BybitNewUMOrder => {
                 BybitNewOrderParams::from_bytes(&msg.params)
                     .map(|params| params.order_type.is_limit() && params.price_qv.get_count() > 0)
@@ -1776,24 +1788,58 @@ impl TradeWsClient {
                     .unwrap_or(false)
             }
             TradeRequestType::GateUnifiedNewOrder | TradeRequestType::GateFuturesNewOrder => {
-                serde_json::from_slice::<Value>(&msg.params)
-                    .ok()
-                    .and_then(|v| {
-                        v.get("time_in_force")
-                            .or_else(|| v.get("tif"))
-                            .and_then(|x| x.as_str())
-                            .map(|s| s.to_string())
-                    })
-                    .map(|tif| tif.eq_ignore_ascii_case("poc"))
-                    .unwrap_or(false)
+                match msg.req_type {
+                    TradeRequestType::GateUnifiedNewOrder => {
+                        crate::trade_request::GateUnifiedNewOrderRequest {
+                            header: crate::trade_request::TradeRequestHeader {
+                                msg_type: msg.req_type as u32,
+                                params_length: msg.params.len() as u32,
+                                create_time: msg.create_time,
+                                client_order_id: msg.client_order_id,
+                            },
+                            params: msg.params.clone(),
+                        }
+                        .params_struct()
+                    }
+                    TradeRequestType::GateFuturesNewOrder => {
+                        crate::trade_request::GateFuturesNewOrderRequest {
+                            header: crate::trade_request::TradeRequestHeader {
+                                msg_type: msg.req_type as u32,
+                                params_length: msg.params.len() as u32,
+                                create_time: msg.create_time,
+                                client_order_id: msg.client_order_id,
+                            },
+                            params: msg.params.clone(),
+                        }
+                        .params_struct()
+                    }
+                    _ => None,
+                }
+                .map(|params| params.order_type.is_limit())
+                .or_else(|| {
+                    serde_json::from_slice::<Value>(&msg.params)
+                        .ok()
+                        .and_then(|v| {
+                            v.get("time_in_force")
+                                .or_else(|| v.get("tif"))
+                                .and_then(|x| x.as_str())
+                                .map(|s| s.to_string())
+                        })
+                        .map(|tif| tif.eq_ignore_ascii_case("poc"))
+                })
+                .unwrap_or(false)
             }
             TradeRequestType::BitgetNewMarginOrder | TradeRequestType::BitgetNewUMOrder => {
-                serde_json::from_slice::<Value>(&msg.params)
-                    .ok()
-                    .and_then(|v| {
-                        v.get("orderType")
-                            .and_then(|x| x.as_str())
-                            .map(|s| s.eq_ignore_ascii_case("limit"))
+                crate::trade_request::BitgetNewOrderParams::from_bytes(&msg.params)
+                    .map(|params| params.order_type.is_limit())
+                    .or_else(|| {
+                        serde_json::from_slice::<Value>(&msg.params)
+                            .ok()
+                            .and_then(|v| {
+                                v.get("orderType")
+                                    .and_then(|x| x.as_str())
+                                    .map(|s| s.eq_ignore_ascii_case("limit"))
+                            })
                     })
                     .unwrap_or(false)
             }

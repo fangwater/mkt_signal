@@ -1,5 +1,8 @@
 use crate::query_request::{QueryRequestMsg, QueryRequestType};
-use crate::trade_request::{TradeRequestMsg, TradeRequestType};
+use crate::trade_request::{
+    GateFuturesCancelOrderRequest, GateFuturesNewOrderRequest, GateUnifiedCancelOrderRequest,
+    GateUnifiedNewOrderRequest, TradeRequestHeader, TradeRequestMsg, TradeRequestType,
+};
 use account_common::gate_auth::GateCredentials;
 use anyhow::{anyhow, Context, Result};
 use hmac::{Hmac, Mac};
@@ -110,8 +113,46 @@ pub fn build_api_payload(msg: &TradeRequestMsg, transport_id: i64) -> Result<Str
         _ => return Err(anyhow!("unsupported gate request type: {:?}", msg.req_type)),
     };
 
-    let mut req_param: Value =
-        serde_json::from_slice(&msg.params).with_context(|| "invalid gate req_param json")?;
+    let header = TradeRequestHeader {
+        msg_type: msg.req_type as u32,
+        params_length: msg.params.len() as u32,
+        create_time: msg.create_time,
+        client_order_id: msg.client_order_id,
+    };
+    let mut req_param: Value = match msg.req_type {
+        TradeRequestType::GateUnifiedNewOrder => GateUnifiedNewOrderRequest {
+            header,
+            params: msg.params.clone(),
+        }
+        .params_struct()
+        .map(|params| params.to_gate_unified_json(msg.client_order_id))
+        .unwrap_or_else(|| serde_json::from_slice(&msg.params).unwrap_or(Value::Null)),
+        TradeRequestType::GateFuturesNewOrder => GateFuturesNewOrderRequest {
+            header,
+            params: msg.params.clone(),
+        }
+        .params_struct()
+        .map(|params| params.to_gate_futures_json(msg.client_order_id))
+        .unwrap_or_else(|| serde_json::from_slice(&msg.params).unwrap_or(Value::Null)),
+        TradeRequestType::GateUnifiedCancelOrder => GateUnifiedCancelOrderRequest {
+            header,
+            params: msg.params.clone(),
+        }
+        .params_struct()
+        .map(|params| params.to_gate_unified_json())
+        .unwrap_or_else(|| serde_json::from_slice(&msg.params).unwrap_or(Value::Null)),
+        TradeRequestType::GateFuturesCancelOrder => GateFuturesCancelOrderRequest {
+            header,
+            params: msg.params.clone(),
+        }
+        .params_struct()
+        .map(|params| params.to_gate_futures_json())
+        .unwrap_or_else(|| serde_json::from_slice(&msg.params).unwrap_or(Value::Null)),
+        _ => serde_json::from_slice(&msg.params).with_context(|| "invalid gate req_param json")?,
+    };
+    if req_param.is_null() {
+        return Err(anyhow!("invalid gate req_param json"));
+    }
     if matches!(
         msg.req_type,
         TradeRequestType::GateUnifiedNewOrder | TradeRequestType::GateFuturesNewOrder

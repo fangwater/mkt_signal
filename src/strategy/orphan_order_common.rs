@@ -394,23 +394,12 @@ impl OrphanOrderTracker {
                     strategy_id,
                 );
             }
-            if matches!(
-                update.status(),
-                OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::ExpiredInMatch
-            ) {
-                publish_uniform_terminal_order(
-                    update,
-                    &order,
-                    prev_cumulative_filled_qty,
-                    &ctx,
-                    strategy_role,
-                    strategy_id,
-                );
-            }
-            if matches!(
-                update.status(),
-                OrderStatus::PartiallyFilled | OrderStatus::Filled
-            ) {
+            if !update.status().is_finished()
+                && matches!(
+                    update.status(),
+                    OrderStatus::PartiallyFilled | OrderStatus::Filled
+                )
+            {
                 publish_uniform_trade_order_from_order_update(
                     update,
                     &order,
@@ -421,6 +410,9 @@ impl OrphanOrderTracker {
                 );
             }
         }
+        let terminal_publish_snapshot = MonitorChannel::try_order_manager()
+            .and_then(|order_mgr| order_mgr.borrow().get(client_order_id))
+            .map(|order| (order, ctx.clone()));
 
         if matches!(
             update.status(),
@@ -439,6 +431,30 @@ impl OrphanOrderTracker {
             );
         } else {
             let _ = self.request_cancel_from_order_update(strategy_role, strategy_id, update);
+        }
+        if let Some((order, ctx)) = terminal_publish_snapshot.as_ref() {
+            if matches!(
+                update.status(),
+                OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::ExpiredInMatch
+            ) {
+                publish_uniform_terminal_order(
+                    update,
+                    order,
+                    prev_cumulative_filled_qty,
+                    ctx,
+                    strategy_role,
+                    strategy_id,
+                );
+            } else if matches!(update.status(), OrderStatus::Filled) {
+                publish_uniform_trade_order_from_order_update(
+                    update,
+                    order,
+                    prev_cumulative_filled_qty,
+                    ctx,
+                    strategy_role,
+                    strategy_id,
+                );
+            }
         }
         info!(
             "{}: strategy_id={} adopted order_update symbol={} client_order_id={} order_id={} venue={:?} x={:?} X={:?}",
@@ -517,16 +533,19 @@ impl OrphanOrderTracker {
                 });
         }
 
-        if let Some(status) = trade.order_status() {
-            let updated_order = MonitorChannel::try_order_manager()
-                .and_then(|order_mgr| order_mgr.borrow().get(client_order_id));
-            if let Some(order) = updated_order {
+        let trade_publish_snapshot = trade.order_status().and_then(|status| {
+            MonitorChannel::try_order_manager()
+                .and_then(|order_mgr| order_mgr.borrow().get(client_order_id))
+                .map(|order| (order, ctx.clone(), status))
+        });
+        if let Some((order, ctx, status)) = trade_publish_snapshot.as_ref() {
+            if !status.is_finished() {
                 publish_uniform_trade_order(
                     trade,
-                    &order,
+                    order,
                     prev_cumulative_filled_qty,
-                    status,
-                    &ctx,
+                    *status,
+                    ctx,
                     strategy_role,
                     strategy_id,
                 );
@@ -549,6 +568,19 @@ impl OrphanOrderTracker {
                 "terminal trade update",
                 0.0,
             );
+        }
+        if let Some((order, ctx, status)) = trade_publish_snapshot.as_ref() {
+            if status.is_finished() {
+                publish_uniform_trade_order(
+                    trade,
+                    order,
+                    prev_cumulative_filled_qty,
+                    *status,
+                    ctx,
+                    strategy_role,
+                    strategy_id,
+                );
+            }
         }
         info!(
             "{}: strategy_id={} adopted trade_update symbol={} client_order_id={} order_id={} venue={:?} cumulative_qty={:.8} status={:?}",

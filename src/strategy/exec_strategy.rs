@@ -1204,18 +1204,18 @@ impl ExecStrategy {
         );
     }
 
-    fn publish_uniform_terminal_order(
+    fn publish_uniform_terminal_order_with_ctx(
         &self,
         order_update: &dyn OrderUpdate,
         order: &Order,
         prev_cumulative_filled_qty: f64,
+        ctx: &UniformPublishCtx,
     ) {
-        let ctx = self.uniform_exec_publish_ctx(order.client_order_id);
         publish_uniform_terminal_order(
             order_update,
             order,
             prev_cumulative_filled_qty,
-            &ctx,
+            ctx,
             "ExecStrategy",
             self.strategy_id,
         );
@@ -1238,20 +1238,37 @@ impl ExecStrategy {
         );
     }
 
-    fn publish_uniform_trade_order(
+    fn publish_uniform_trade_order_from_order_update_with_ctx(
+        &self,
+        order_update: &dyn OrderUpdate,
+        order: &Order,
+        prev_cumulative_filled_qty: f64,
+        ctx: &UniformPublishCtx,
+    ) {
+        publish_uniform_trade_order_from_order_update(
+            order_update,
+            order,
+            prev_cumulative_filled_qty,
+            ctx,
+            "ExecStrategy",
+            self.strategy_id,
+        );
+    }
+
+    fn publish_uniform_trade_order_with_ctx(
         &self,
         trade: &dyn TradeUpdate,
         order: &Order,
         prev_cumulative_filled_qty: f64,
         status: OrderStatus,
+        ctx: &UniformPublishCtx,
     ) {
-        let ctx = self.uniform_exec_publish_ctx(order.client_order_id);
         publish_uniform_trade_order(
             trade,
             order,
             prev_cumulative_filled_qty,
             status,
-            &ctx,
+            ctx,
             "ExecStrategy",
             self.strategy_id,
         );
@@ -1572,23 +1589,17 @@ impl ExecStrategy {
         if !updated {
             return false;
         }
-        if let Some(order) = MonitorChannel::instance()
+        let order_snapshot = MonitorChannel::instance()
             .order_manager()
             .borrow()
             .get(client_order_id)
-        {
+            .map(|order| (order, self.uniform_exec_publish_ctx(client_order_id)));
+        if let Some((order, _)) = order_snapshot.as_ref() {
             if status == OrderStatus::New {
                 self.publish_uniform_new_order(order_update, &order, prev_cumulative_filled_qty);
-            } else if matches!(
-                status,
-                OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::ExpiredInMatch
-            ) {
-                self.publish_uniform_terminal_order(
-                    order_update,
-                    &order,
-                    prev_cumulative_filled_qty,
-                );
-            } else if matches!(status, OrderStatus::PartiallyFilled | OrderStatus::Filled) {
+            } else if !status.is_finished()
+                && matches!(status, OrderStatus::PartiallyFilled | OrderStatus::Filled)
+            {
                 self.publish_uniform_trade_order_from_order_update(
                     order_update,
                     &order,
@@ -1610,6 +1621,26 @@ impl ExecStrategy {
                 order_update.event_time(),
                 "order_update_non_terminal",
             );
+        }
+        if let Some((order, uniform_ctx)) = order_snapshot.as_ref() {
+            if matches!(
+                status,
+                OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::ExpiredInMatch
+            ) {
+                self.publish_uniform_terminal_order_with_ctx(
+                    order_update,
+                    order,
+                    prev_cumulative_filled_qty,
+                    uniform_ctx,
+                );
+            } else if status == OrderStatus::Filled {
+                self.publish_uniform_trade_order_from_order_update_with_ctx(
+                    order_update,
+                    order,
+                    prev_cumulative_filled_qty,
+                    uniform_ctx,
+                );
+            }
         }
         true
     }
@@ -1658,9 +1689,9 @@ impl ExecStrategy {
         if !updated {
             return false;
         }
-        if let Some(order) = order_manager.get(client_order_id) {
-            self.publish_uniform_trade_order(trade, &order, prev_cumulative_filled_qty, status);
-        }
+        let order_snapshot = order_manager
+            .get(client_order_id)
+            .map(|order| (order, self.uniform_exec_publish_ctx(client_order_id)));
         drop(order_manager);
         if status == OrderStatus::Filled {
             self.clear_order_query_state(client_order_id);
@@ -1671,6 +1702,15 @@ impl ExecStrategy {
                 client_order_id,
                 trade.event_time(),
                 "trade_update_partial_fill",
+            );
+        }
+        if let Some((order, uniform_ctx)) = order_snapshot.as_ref() {
+            self.publish_uniform_trade_order_with_ctx(
+                trade,
+                order,
+                prev_cumulative_filled_qty,
+                status,
+                uniform_ctx,
             );
         }
         true
