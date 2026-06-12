@@ -227,7 +227,7 @@ pub trait TradeEngineResponse {
             Some(Exchange::Bitget) => {
                 matches!(
                     self.error_code(),
-                    22001 | 43001 | 43004 | 45031 | 45055 | 45057
+                    22001 | 25204 | 43001 | 43004 | 45031 | 45055 | 45057
                 )
             }
             _ => false,
@@ -264,7 +264,7 @@ pub trait TradeEngineResponse {
             Some(Exchange::Bitget) => {
                 matches!(
                     self.error_code(),
-                    22001 | 43001 | 43004 | 45031 | 45055 | 45057
+                    22001 | 25204 | 43001 | 43004 | 45031 | 45055 | 45057
                 )
             }
             _ => false,
@@ -473,6 +473,22 @@ mod tests {
         assert!(lending_limit.is_open_request());
         assert!(lending_limit.is_open_rejected());
         assert!(lending_limit.is_insufficient_margin());
+    }
+
+    #[test]
+    fn detects_bitget_order_not_exist_cancel_as_terminal() {
+        let bitget_ex = symbol_utils::Exchange::Bitget as u32;
+        let resp = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::BitgetCancelMarginOrder as u32,
+            bitget_ex,
+            123,
+            25204,
+        );
+
+        assert!(resp.is_cancel_request());
+        assert!(resp.is_cancel_rejected());
+        assert!(resp.is_cancel_not_cancellable());
     }
 
     #[test]

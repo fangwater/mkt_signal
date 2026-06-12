@@ -246,6 +246,10 @@ fn is_cancel_not_cancellable(exchange: Exchange, error_code: i32) -> bool {
                 | 170191
                 | bybit::ORDER_NOT_FOUND
         ),
+        Exchange::Bitget => matches!(
+            error_code,
+            22001 | 25204 | 43001 | 43004 | 45031 | 45055 | 45057
+        ),
         _ => false,
     }
 }
@@ -353,6 +357,12 @@ mod tests {
             &out,
             bybit::ORDER_NOT_FOUND
         ));
+    }
+
+    #[test]
+    fn downgrades_bitget_order_not_exist_cancel_error() {
+        let out = sample_outcome(TradeRequestType::BitgetCancelMarginOrder, Exchange::Bitget);
+        assert!(should_downgrade_trade_resp_error(&out, 25204));
     }
 
     #[test]
