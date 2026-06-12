@@ -61,12 +61,16 @@ impl VenueAdapter for BinanceAdapter {
     }
 
     fn build_subscribe(&self, symbols: &[String]) -> Vec<Value> {
-        let channel = match self.venue {
-            TradingVenue::BinanceFutures => "depth5@0ms",
-            TradingVenue::BinanceMargin => "bestBidAsk",
+        match self.venue {
+            TradingVenue::BinanceFutures => {
+                build_multi_stream_subscribe(symbols.iter().flat_map(|sym| {
+                    let sym = sym.to_ascii_lowercase();
+                    [format!("{}@bookTicker", sym), format!("{}@depth5@0ms", sym)]
+                }))
+            }
+            TradingVenue::BinanceMargin => build_stream_subscribe(symbols, "bestBidAsk"),
             other => unreachable!("BinanceAdapter created with non-binance venue: {:?}", other),
-        };
-        build_stream_subscribe(symbols, channel)
+        }
     }
 
     fn build_trade_subscribe(&self, symbols: &[String]) -> Vec<Value> {
@@ -416,6 +420,22 @@ mod tests {
     }
 
     #[test]
+    fn parses_book_ticker_top_of_book() {
+        let raw = r#"{
+            "stream":"btcusdt@bookTicker",
+            "data":{"e":"bookTicker","u":22345,"s":"BTCUSDT","b":"25.0","B":"100","a":"25.1","A":"50","E":1700000000002}
+        }"#;
+        let a = BinanceAdapter::new(TradingVenue::BinanceFutures);
+        let frames = a.collect_frame(&v(raw)).unwrap();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].symbol, "BTCUSDT");
+        assert_eq!(frames[0].seq_id, 22345);
+        assert_eq!(frames[0].ts_us, 1_700_000_000_002_000);
+        assert!((frames[0].bid_price - 25.0).abs() < 1e-9);
+        assert!((frames[0].ask_amount - 50.0).abs() < 1e-9);
+    }
+
+    #[test]
     fn missing_u_field_is_an_error() {
         let raw = r#"{"data":{"s":"BTCUSDT","b":"25","B":"1","a":"25.1","A":"1"}}"#;
         let a = BinanceAdapter::new(TradingVenue::BinanceFutures);
@@ -427,10 +447,12 @@ mod tests {
         let a = BinanceAdapter::new(TradingVenue::BinanceFutures);
         let symbols: Vec<String> = (0..450).map(|i| format!("SYM{}USDT", i)).collect();
         let msgs = a.build_subscribe(&symbols);
-        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs.len(), 5);
         assert_eq!(msgs[0]["params"].as_array().unwrap().len(), 200);
-        assert_eq!(msgs[2]["params"].as_array().unwrap().len(), 50);
-        assert_eq!(msgs[0]["params"][0], "sym0usdt@depth5@0ms");
+        assert_eq!(msgs[4]["params"].as_array().unwrap().len(), 100);
+        assert_eq!(msgs[0]["params"][0], "sym0usdt@bookTicker");
+        assert_eq!(msgs[0]["params"][1], "sym0usdt@depth5@0ms");
+        assert_eq!(msgs[0]["params"][2], "sym1usdt@bookTicker");
     }
 
     #[test]
