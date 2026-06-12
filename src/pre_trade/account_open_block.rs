@@ -16,6 +16,7 @@ const BINANCE_PM_CAPACITY_LOW_ERROR_CODE: i32 = 0;
 const OKEX_UNIFIED_USDT_OPEN_BLOCK_THRESHOLD: f64 = 2_000.0;
 const OKEX_UNIFIED_CAPACITY_POLL_INTERVAL_US: i64 = 60_000_000;
 const OKEX_UNIFIED_CAPACITY_LOW_ERROR_CODE: i32 = 0;
+const OKEX_USDT_MAX_LOAN_PARAMS: &[u8] = b"instId=BTC-USDT&mgnMode=cross&mgnCcy=USDT";
 const GATE_UNIFIED_USDT_OPEN_BLOCK_THRESHOLD: f64 = 2_000.0;
 const GATE_UNIFIED_CAPACITY_POLL_INTERVAL_US: i64 = 60_000_000;
 const GATE_UNIFIED_CAPACITY_LOW_ERROR_CODE: i32 = 0;
@@ -183,7 +184,7 @@ impl CapacityVenue {
     fn max_borrowable_params(self) -> Bytes {
         match self {
             Self::BinancePm => Bytes::from_static(b"asset=USDT"),
-            Self::OkexUnified => Bytes::from_static(b"ccy=USDT&mgnMode=cross"),
+            Self::OkexUnified => Bytes::from_static(OKEX_USDT_MAX_LOAN_PARAMS),
             Self::GateUnified => Bytes::from_static(b"currency=USDT"),
             Self::BitgetUnified => Bytes::from_static(b"coin=USDT"),
         }
@@ -612,7 +613,7 @@ fn update_capacity_snapshot(
         let available = state.last_usdt_available;
         let max_borrowable = state.last_usdt_max_borrowable;
         let poll_sent_us = state.last_query_sent_us;
-        let (Some(available), Some(max_borrowable)) = (available, max_borrowable) else {
+        let Some(available) = available else {
             info!(
                 "AccountOpenBlock: {} capacity pending {}={:?} max_borrowable={:?} available_query_id={:?} max_borrowable_query_id={:?} state=pending",
                 venue.label(),
@@ -623,6 +624,31 @@ fn update_capacity_snapshot(
                 state.max_borrowable_query_id
             );
             return;
+        };
+        let max_borrowable = match max_borrowable {
+            Some(max_borrowable) => max_borrowable,
+            None if available > venue.threshold() => {
+                info!(
+                    "AccountOpenBlock: {} capacity {}={:.8} exceeds threshold={:.8}; evaluate without pending max_borrowable",
+                    venue.label(),
+                    venue.available_label(),
+                    available,
+                    venue.threshold()
+                );
+                0.0
+            }
+            None => {
+                info!(
+                    "AccountOpenBlock: {} capacity pending {}={:?} max_borrowable={:?} available_query_id={:?} max_borrowable_query_id={:?} state=pending",
+                    venue.label(),
+                    venue.available_label(),
+                    Some(available),
+                    max_borrowable,
+                    state.available_query_id,
+                    state.max_borrowable_query_id
+                );
+                return;
+            }
         };
         let capacity = available + max_borrowable;
         state.last_capacity_check_us = now_us;
@@ -883,6 +909,18 @@ mod tests {
     }
 
     #[test]
+    fn okex_unified_max_loan_query_has_instrument_context() {
+        assert_eq!(
+            CapacityVenue::OkexUnified.max_borrowable_params().as_ref(),
+            OKEX_USDT_MAX_LOAN_PARAMS
+        );
+        let params = std::str::from_utf8(OKEX_USDT_MAX_LOAN_PARAMS).unwrap();
+        assert!(params.contains("instId=BTC-USDT"));
+        assert!(params.contains("mgnMode=cross"));
+        assert!(params.contains("mgnCcy=USDT"));
+    }
+
+    #[test]
     fn latest_capacity_snapshot_is_none_without_monitor_channel() {
         let _guard = TEST_LOCK.lock();
         clear_all();
@@ -1064,6 +1102,33 @@ mod tests {
             &Bytes::from_static(br#"{"code":"0","data":[{"ccy":"USDT","maxLoan":"2000.0"}]}"#),
         ));
         assert!(check_account_open_block().is_none());
+    }
+
+    #[test]
+    fn unlocks_okex_when_available_alone_exceeds_threshold() {
+        let _guard = TEST_LOCK.lock();
+        clear_all();
+        register_account_open_block_at(
+            AccountOpenBlockReason::OkexUnifiedInsufficientMargin,
+            51008,
+            3_000_000,
+        );
+        seed_poll_state(CapacityVenue::OkexUnified, -31, -32);
+
+        assert!(handle_account_open_block_query_response(
+            QueryRequestType::OkexUsdtAvailableSnapshot,
+            -31,
+            &Bytes::from_static(
+                br#"{"code":"0","data":[{"details":[{"ccy":"USDT","availEq":"62334.69548106461","availBal":"62334.69548106461"}]}]}"#,
+            ),
+        ));
+        assert!(check_account_open_block().is_none());
+        let snapshot =
+            latest_usdt_max_available_margin_snapshot_for_venue(CapacityVenue::OkexUnified)
+                .expect("OKX available-only snapshot");
+        assert_eq!(snapshot.available, 62334.69548106461);
+        assert_eq!(snapshot.max_borrowable, 0.0);
+        assert_eq!(snapshot.usdt_max_available_margin, 62334.69548106461);
     }
 
     #[test]
