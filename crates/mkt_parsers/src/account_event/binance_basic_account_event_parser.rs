@@ -3,7 +3,7 @@
 //! - 余额 / 持仓 / 订单 / 负债 统一封装为 `BasicAccountEventMsg`
 //! - OrderUpdate 的 payload 使用 basic 层统一 schema：`BinanceBasicOrderMsg`
 
-use super::Parser;
+use super::{AccountEventSink, Parser};
 use crate::msg::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
     BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg, BasicUmUnrealizedMsg,
@@ -13,7 +13,6 @@ use bytes::Bytes;
 use log::{debug, warn};
 use serde_json::Value;
 use std::collections::HashMap;
-use tokio::sync::mpsc;
 
 use crate::msg::order_codes;
 use symbol_utils::TradingVenue;
@@ -32,7 +31,7 @@ impl BinanceBasicAccountEventParser {
         }
     }
 
-    fn parse_execution_report(&self, json: &Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+    fn parse_execution_report<S: AccountEventSink>(&self, json: &Value, tx: &S) -> usize {
         let event_time = json.get("E").and_then(|v| v.as_i64()).unwrap_or(0);
         let transaction_time = json.get("T").and_then(|v| v.as_i64()).unwrap_or(0);
         let order_id = json.get("i").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -160,13 +159,13 @@ impl BinanceBasicAccountEventParser {
             self.account_scope,
             bytes,
         );
-        if tx.send(event.to_bytes()).is_err() {
+        if !tx.emit(event.to_bytes()) {
             return 0;
         }
         1
     }
 
-    fn parse_order_trade_update(&self, json: &Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+    fn parse_order_trade_update<S: AccountEventSink>(&self, json: &Value, tx: &S) -> usize {
         let event_time = json.get("E").and_then(|v| v.as_i64()).unwrap_or(0);
         let transaction_time = json.get("T").and_then(|v| v.as_i64()).unwrap_or(0);
 
@@ -295,13 +294,13 @@ impl BinanceBasicAccountEventParser {
             self.account_scope,
             bytes,
         );
-        if tx.send(event.to_bytes()).is_err() {
+        if !tx.emit(event.to_bytes()) {
             return 0;
         }
         1
     }
 
-    fn parse_trade_lite(&self, json: &Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+    fn parse_trade_lite<S: AccountEventSink>(&self, json: &Value, tx: &S) -> usize {
         let event_time = json.get("E").and_then(|v| v.as_i64()).unwrap_or(0);
         let trade_time = json.get("T").and_then(|v| v.as_i64()).unwrap_or(0);
         let trade_id_num = json.get("t").and_then(|v| v.as_i64()).unwrap_or(0).max(0);
@@ -367,13 +366,13 @@ impl BinanceBasicAccountEventParser {
             self.account_scope,
             bytes,
         );
-        if tx.send(event.to_bytes()).is_err() {
+        if !tx.emit(event.to_bytes()) {
             return 0;
         }
         1
     }
 
-    fn parse_liability_change(&self, json: &Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+    fn parse_liability_change<S: AccountEventSink>(&self, json: &Value, tx: &S) -> usize {
         let event_time = json.get("E").and_then(|v| v.as_i64()).unwrap_or(0);
         let asset = json
             .get("a")
@@ -390,17 +389,13 @@ impl BinanceBasicAccountEventParser {
         let msg = BasicBorrowInterestMsg::create(event_time, asset, principal, interest);
         let payload = msg.to_bytes();
         let event = BasicAccountEventMsg::create(msg.msg_type, self.account_scope, payload);
-        if tx.send(event.to_bytes()).is_err() {
+        if !tx.emit(event.to_bytes()) {
             return 0;
         }
         1
     }
 
-    fn parse_outbound_account_position(
-        &self,
-        json: &Value,
-        tx: &mpsc::UnboundedSender<Bytes>,
-    ) -> usize {
+    fn parse_outbound_account_position<S: AccountEventSink>(&self, json: &Value, tx: &S) -> usize {
         let event_time = json.get("E").and_then(|v| v.as_i64()).unwrap_or(0);
         let Some(balances) = json.get("B").and_then(|v| v.as_array()) else {
             return 0;
@@ -432,7 +427,7 @@ impl BinanceBasicAccountEventParser {
             let msg = BasicBalanceMsg::create(event_time, asset, free_balance + locked_balance);
             let payload = msg.to_bytes();
             let event = BasicAccountEventMsg::create(msg.msg_type, self.account_scope, payload);
-            if tx.send(event.to_bytes()).is_err() {
+            if !tx.emit(event.to_bytes()) {
                 return count;
             }
             count += 1;
@@ -441,7 +436,7 @@ impl BinanceBasicAccountEventParser {
         count
     }
 
-    fn parse_account_update(&self, json: &Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+    fn parse_account_update<S: AccountEventSink>(&self, json: &Value, tx: &S) -> usize {
         let event_time = json.get("E").and_then(|v| v.as_i64()).unwrap_or(0);
 
         let mut count = 0;
@@ -477,7 +472,7 @@ impl BinanceBasicAccountEventParser {
                     let payload = msg.to_bytes();
                     let event =
                         BasicAccountEventMsg::create(msg.msg_type, self.account_scope, payload);
-                    if tx.send(event.to_bytes()).is_err() {
+                    if !tx.emit(event.to_bytes()) {
                         return count;
                     }
                     count += 1;
@@ -517,7 +512,7 @@ impl BinanceBasicAccountEventParser {
                     BasicPositionMsg::create(event_time, symbol, position_side, position_amount);
                 let payload = msg.to_bytes();
                 let event = BasicAccountEventMsg::create(msg.msg_type, self.account_scope, payload);
-                if tx.send(event.to_bytes()).is_err() {
+                if !tx.emit(event.to_bytes()) {
                     return count;
                 }
                 count += 1;
@@ -535,7 +530,7 @@ impl BinanceBasicAccountEventParser {
                         self.account_scope,
                         pnl_payload,
                     );
-                    if tx.send(pnl_event.to_bytes()).is_err() {
+                    if !tx.emit(pnl_event.to_bytes()) {
                         return count;
                     }
                     count += 1;
@@ -548,7 +543,7 @@ impl BinanceBasicAccountEventParser {
 }
 
 impl Parser for BinanceBasicAccountEventParser {
-    fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+    fn parse<S: AccountEventSink>(&self, msg: Bytes, tx: &S) -> usize {
         let json_str = match std::str::from_utf8(&msg) {
             Ok(s) => s,
             Err(_) => return 0,
@@ -581,16 +576,16 @@ impl Parser for BinanceBasicAccountEventParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::account_event::test_sink::TestAccountEventSink;
     use crate::msg::basic_account_msg::{
         split_basic_account_event, BasicAccountEventType, BasicAccountScope, BasicPositionMsg,
         BasicTradeLiteMsg, BasicUmUnrealizedMsg,
     };
-    use tokio::sync::mpsc;
 
     #[test]
     fn account_update_emits_scope_and_unrealized_pnl() {
         let parser = BinanceBasicAccountEventParser::new(true, BasicAccountScope::BinanceStdUm);
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
         let json = Bytes::from(
             r#"{
                 "e":"ACCOUNT_UPDATE",
@@ -602,21 +597,21 @@ mod tests {
             }"#,
         );
 
-        let emitted = parser.parse(json, &tx);
+        let emitted = parser.parse(json, &sink);
         assert_eq!(emitted, 3);
 
-        let wrapped_balance = rx.try_recv().expect("balance event");
+        let wrapped_balance = sink.recv().expect("balance event");
         let (_, scope, _) = split_basic_account_event(&wrapped_balance).expect("wrapped balance");
         assert_eq!(scope, BasicAccountScope::BinanceStdUm);
 
-        let wrapped_position = rx.try_recv().expect("position event");
+        let wrapped_position = sink.recv().expect("position event");
         let (_, _, position_payload) =
             split_basic_account_event(&wrapped_position).expect("wrapped position");
         let position = BasicPositionMsg::from_bytes(position_payload).expect("position payload");
         assert_eq!(position.inst_id, "BTCUSDT");
         assert_eq!(position.position_side, 'L');
 
-        let wrapped_pnl = rx.try_recv().expect("pnl event");
+        let wrapped_pnl = sink.recv().expect("pnl event");
         let (_, pnl_scope, pnl_payload) =
             split_basic_account_event(&wrapped_pnl).expect("wrapped pnl");
         assert_eq!(pnl_scope, BasicAccountScope::BinanceStdUm);
@@ -628,7 +623,7 @@ mod tests {
     #[test]
     fn trade_lite_emits_trade_update_lite_event() {
         let parser = BinanceBasicAccountEventParser::new(true, BasicAccountScope::BinanceStdUm);
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
         let json = Bytes::from(
             r#"{
                 "e":"TRADE_LITE",
@@ -647,10 +642,10 @@ mod tests {
             }"#,
         );
 
-        let emitted = parser.parse(json, &tx);
+        let emitted = parser.parse(json, &sink);
         assert_eq!(emitted, 1);
 
-        let wrapped = rx.try_recv().expect("trade lite event");
+        let wrapped = sink.recv().expect("trade lite event");
         let (event_type, scope, payload) =
             split_basic_account_event(&wrapped).expect("wrapped trade lite");
         assert_eq!(event_type, BasicAccountEventType::TradeUpdateLite);

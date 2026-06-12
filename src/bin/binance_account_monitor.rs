@@ -11,7 +11,7 @@ use clap::Parser;
 use hmac::{Hmac, Mac};
 use log::{debug, error, info, warn};
 use mkt_parsers::account_event::binance_basic_account_event_parser::BinanceBasicAccountEventParser;
-use mkt_parsers::account_event::Parser as AccountEventParser;
+use mkt_parsers::account_event::{AccountEventSink, Parser as AccountEventParser};
 use mkt_parsers::msg::basic_account_msg::{
     get_basic_event_type, split_basic_account_event, BasicAccountEventMsg, BasicAccountEventType,
     BasicAccountRiskMsg, BasicAccountScope, BasicBalanceMsg, BasicBorrowInterestMsg,
@@ -24,6 +24,7 @@ use runtime_common::affinity::maybe_pin_current_thread;
 use runtime_common::mkt_cfg::load_local_ips_preferring_trade_engine;
 use runtime_common::ws_connection::{MktConnection, MktConnectionHandler};
 use sha2::Sha256;
+use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
 use std::collections::{HashSet, VecDeque};
@@ -48,6 +49,58 @@ struct Args {
     /// Bind the main runtime thread to a CPU core. Falls back to ACCOUNT_MONITOR_CORE.
     #[arg(long)]
     core: Option<usize>,
+}
+
+struct DirectAccountForwarder {
+    forwarder: PmForwarder,
+    deduper: AccountEventDeduper,
+}
+
+thread_local! {
+    static DIRECT_FORWARDER: RefCell<Option<DirectAccountForwarder>> = RefCell::new(None);
+}
+
+#[derive(Clone, Copy)]
+struct DirectAccountEventSink;
+
+impl AccountEventSink for DirectAccountEventSink {
+    fn emit(&self, msg: Bytes) -> bool {
+        DIRECT_FORWARDER.with(|cell| {
+            let mut state = cell.borrow_mut();
+            let Some(state) = state.as_mut() else {
+                return false;
+            };
+            if state.deduper.should_forward(&msg) {
+                log_parsed_event(&msg);
+                state.forwarder.send_raw(&msg)
+            } else {
+                true
+            }
+        })
+    }
+}
+
+fn init_direct_forwarder(exchange: &str) -> Result<()> {
+    let state = DirectAccountForwarder {
+        forwarder: PmForwarder::new(exchange)?,
+        deduper: AccountEventDeduper::new(8192),
+    };
+    DIRECT_FORWARDER.with(|cell| {
+        *cell.borrow_mut() = Some(state);
+    });
+    Ok(())
+}
+
+fn forward_account_event(msg: Bytes) -> bool {
+    DirectAccountEventSink.emit(msg)
+}
+
+fn log_forwarder_stats() {
+    DIRECT_FORWARDER.with(|cell| {
+        if let Some(state) = cell.borrow_mut().as_mut() {
+            state.forwarder.log_stats();
+        }
+    });
 }
 
 /// 构造最终的用户数据 WS URL。
@@ -172,7 +225,6 @@ async fn bootstrap_standard_snapshots(
     api_key: &str,
     api_secret: &str,
     local_ip: Option<&str>,
-    evt_tx: &tokio::sync::mpsc::UnboundedSender<Bytes>,
 ) -> Result<()> {
     let client = build_binance_rest_client(local_ip, Duration::from_secs(10))?;
     let mut emitted = 0usize;
@@ -192,7 +244,7 @@ async fn bootstrap_standard_snapshots(
     if let Some(msgs) = parse_binance_um_balance_snapshot_std(&um_balance_body) {
         for payload in msgs {
             if let Some(wrapped) = wrap_basic_payload(BasicAccountScope::BinanceStdUm, payload) {
-                let _ = evt_tx.send(wrapped);
+                let _ = forward_account_event(wrapped);
                 emitted += 1;
             }
         }
@@ -209,7 +261,7 @@ async fn bootstrap_standard_snapshots(
     if let Some(msgs) = parse_binance_um_account_snapshot(&um_account_body) {
         for payload in msgs {
             if let Some(wrapped) = wrap_basic_payload(BasicAccountScope::BinanceStdUm, payload) {
-                let _ = evt_tx.send(wrapped);
+                let _ = forward_account_event(wrapped);
                 emitted += 1;
             }
         }
@@ -226,7 +278,7 @@ async fn bootstrap_standard_snapshots(
     if let Some(msgs) = parse_binance_spot_account_snapshot_std(&spot_account_body) {
         for payload in msgs {
             if let Some(wrapped) = wrap_basic_payload(BasicAccountScope::BinanceStdSpot, payload) {
-                let _ = evt_tx.send(wrapped);
+                let _ = forward_account_event(wrapped);
                 emitted += 1;
             }
         }
@@ -243,7 +295,6 @@ async fn bootstrap_unified_snapshots(
     api_key: &str,
     api_secret: &str,
     local_ip: Option<&str>,
-    evt_tx: &tokio::sync::mpsc::UnboundedSender<Bytes>,
 ) -> Result<()> {
     let client = build_binance_rest_client(local_ip, Duration::from_secs(10))?;
     let mut emitted = 0usize;
@@ -263,7 +314,7 @@ async fn bootstrap_unified_snapshots(
     if let Some(msgs) = parse_binance_um_account_snapshot(&um_account_body) {
         for payload in msgs {
             if let Some(wrapped) = wrap_basic_payload(BasicAccountScope::BinanceUnified, payload) {
-                let _ = evt_tx.send(wrapped);
+                let _ = forward_account_event(wrapped);
                 emitted += 1;
             }
         }
@@ -281,7 +332,6 @@ fn spawn_pm_risk_poller(
     api_secret: String,
     local_ip: Option<String>,
     interval_secs: u64,
-    evt_tx: tokio::sync::mpsc::UnboundedSender<Bytes>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
     tokio::spawn(async move {
@@ -327,9 +377,8 @@ fn spawn_pm_risk_poller(
                                     BasicAccountScope::BinanceUnified,
                                     payload,
                                 );
-                                if evt_tx.send(event.to_bytes()).is_err() {
-                                    warn!("pm_risk_poller: account event channel closed");
-                                    break;
+                                if !forward_account_event(event.to_bytes()) {
+                                    warn!("pm_risk_poller: failed to forward account event");
                                 }
                             } else {
                                 warn!("pm_risk_poller: parse failed body_len={}", body.len());
@@ -473,17 +522,15 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Channel to collect events from both paths and forward via Iceoryx
-    let (evt_tx, mut evt_rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
+    init_direct_forwarder("binance")?;
 
     if binance_is_standard {
-        match bootstrap_standard_snapshots(&api_key, &api_secret, Some(&primary_ip), &evt_tx).await
-        {
+        match bootstrap_standard_snapshots(&api_key, &api_secret, Some(&primary_ip)).await {
             Ok(()) => info!("bootstrap standard snapshots completed"),
             Err(err) => warn!("bootstrap standard snapshots failed: {err:#}"),
         }
     } else {
-        match bootstrap_unified_snapshots(&api_key, &api_secret, Some(&primary_ip), &evt_tx).await {
+        match bootstrap_unified_snapshots(&api_key, &api_secret, Some(&primary_ip)).await {
             Ok(()) => info!("bootstrap unified snapshots completed"),
             Err(err) => warn!("bootstrap unified snapshots failed: {err:#}"),
         }
@@ -497,14 +544,10 @@ async fn main() -> Result<()> {
             api_secret.clone(),
             Some(primary_ip.clone()),
             interval_secs,
-            evt_tx.clone(),
             shutdown_rx.clone(),
         );
     }
 
-    // Create PM forwarder (account_pubs/binance/pm)
-    let mut forwarder = PmForwarder::new("binance")?;
-    let mut deduper = AccountEventDeduper::new(8192);
     let mut stats = tokio::time::interval(Duration::from_secs(30));
 
     // Spawn primary and secondary paths for each enabled stream.
@@ -516,7 +559,6 @@ async fn main() -> Result<()> {
             primary_ip.clone(),
             cfg.primary_listen_key_rx.clone(),
             shutdown_rx.clone(),
-            evt_tx.clone(),
             Some(SessionRestartPolicy::OddTwoHourBoundary),
             cfg.parse_balances_from_account_update,
             cfg.account_scope,
@@ -530,7 +572,6 @@ async fn main() -> Result<()> {
             secondary_ip.clone(),
             cfg.secondary_listen_key_rx,
             shutdown_rx.clone(),
-            evt_tx.clone(),
             Some(SessionRestartPolicy::EvenTwoHourBoundary),
             cfg.parse_balances_from_account_update,
             cfg.account_scope,
@@ -542,16 +583,8 @@ async fn main() -> Result<()> {
 
     loop {
         tokio::select! {
-            Some(msg) = evt_rx.recv() => {
-                // 统一去重后再发送
-                if deduper.should_forward(&msg) {
-                    // 打印解析后的消息
-                    log_parsed_event(&msg);
-                    forwarder.send_raw(&msg);
-                }
-            }
             _ = stats.tick() => {
-                forwarder.log_stats();
+                log_forwarder_stats();
             }
             _ = shutdown_rx.changed() => { break; }
         }
@@ -626,7 +659,6 @@ fn spawn_user_stream_path(
     local_ip: String,
     mut listen_key_rx: Option<watch::Receiver<String>>,
     shutdown_rx: watch::Receiver<bool>,
-    evt_tx: tokio::sync::mpsc::UnboundedSender<Bytes>,
     restart_policy: Option<SessionRestartPolicy>,
     parse_balances_from_account_update: bool,
     account_scope: BasicAccountScope,
@@ -687,7 +719,6 @@ fn spawn_user_stream_path(
 
             // consumer
             let mut consumer_shutdown = shutdown_rx.clone();
-            let evt_tx_clone = evt_tx.clone();
             let local_ip_log = local_ip.clone();
             let consumer_name = name.clone();
             let parser = BinanceBasicAccountEventParser::new(
@@ -711,8 +742,7 @@ fn spawn_user_stream_path(
                                     } else {
                                         debug!("[{}][ip={}] ws bin: {} bytes", consumer_name, local_ip_log, b.len());
                                     }
-                                    // 解析并通过通道发送解析后的账户事件（二进制）
-                                    let _ = parser.parse(b, &evt_tx_clone);
+                                    let _ = parser.parse(b, &DirectAccountEventSink);
                                 }
                                 Err(broadcast::error::RecvError::Closed) => break,
                                 Err(broadcast::error::RecvError::Lagged(skipped)) => { warn!("[{}] lagged: skipped {} msgs", consumer_name, skipped); }

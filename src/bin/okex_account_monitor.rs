@@ -28,7 +28,7 @@ use bytes::Bytes;
 use clap::Parser;
 use log::{debug, error, info, warn};
 use mkt_parsers::account_event::okex_account_event_parser::OkexAccountEventParser;
-use mkt_parsers::account_event::Parser as AccountEventParser;
+use mkt_parsers::account_event::{AccountEventSink, Parser as AccountEventParser};
 use mkt_parsers::msg::basic_account_msg::{
     split_basic_account_event, BasicAccountEventType, BasicAccountRiskMsg, BasicBalanceMsg,
     BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg, BasicUmUnrealizedMsg,
@@ -38,6 +38,7 @@ use reqwest::Client;
 use runtime_common::affinity::maybe_pin_current_thread;
 use runtime_common::mkt_cfg::load_local_ips_preferring_trade_engine;
 use runtime_common::ws_connection::{MktConnection, MktConnectionHandler};
+use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
@@ -82,6 +83,58 @@ struct Args {
     core: Option<usize>,
 }
 
+struct DirectAccountForwarder {
+    forwarder: PmForwarder,
+    deduper: AccountEventDeduper,
+}
+
+thread_local! {
+    static DIRECT_FORWARDER: RefCell<Option<DirectAccountForwarder>> = RefCell::new(None);
+}
+
+#[derive(Clone, Copy)]
+struct DirectAccountEventSink;
+
+impl AccountEventSink for DirectAccountEventSink {
+    fn emit(&self, msg: Bytes) -> bool {
+        DIRECT_FORWARDER.with(|cell| {
+            let mut state = cell.borrow_mut();
+            let Some(state) = state.as_mut() else {
+                return false;
+            };
+            if state.deduper.should_forward(&msg) {
+                log_parsed_event(&msg);
+                state.forwarder.send_raw(&msg)
+            } else {
+                true
+            }
+        })
+    }
+}
+
+fn init_direct_forwarder(exchange: &str) -> Result<()> {
+    let state = DirectAccountForwarder {
+        forwarder: PmForwarder::new(exchange)?,
+        deduper: AccountEventDeduper::new(8192),
+    };
+    DIRECT_FORWARDER.with(|cell| {
+        *cell.borrow_mut() = Some(state);
+    });
+    Ok(())
+}
+
+fn forward_account_event(msg: Bytes) -> bool {
+    DirectAccountEventSink.emit(msg)
+}
+
+fn log_forwarder_stats() {
+    DIRECT_FORWARDER.with(|cell| {
+        if let Some(state) = cell.borrow_mut().as_mut() {
+            state.forwarder.log_stats();
+        }
+    });
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     env_logger::init();
@@ -119,15 +172,10 @@ async fn main() -> Result<()> {
     // fills 频道需要 VIP4+；收到 64003 后永久关闭，避免无效重连循环。
     let fills_disabled = Arc::new(AtomicBool::new(false));
 
-    // 创建事件收集通道
-    let (evt_tx, mut evt_rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
-
     // 创建 PM 转发器 (account_pubs/okex/pm)
-    let mut forwarder = PmForwarder::new("okex")?;
-    let mut deduper = AccountEventDeduper::new(8192);
+    init_direct_forwarder("okex")?;
     let mut stats = tokio::time::interval(Duration::from_secs(30));
-    let mut interest_poll =
-        spawn_borrow_interest_poll(credentials.clone(), evt_tx.clone(), shutdown_rx.clone());
+    let mut interest_poll = spawn_borrow_interest_poll(credentials.clone(), shutdown_rx.clone());
 
     // 启动主备双路连接
     let mut primary = spawn_okex_stream_path(
@@ -138,7 +186,6 @@ async fn main() -> Result<()> {
         base_subscribe_messages.clone(),
         fills_disabled.clone(),
         shutdown_rx.clone(),
-        evt_tx.clone(),
         session_max,
     );
     let mut secondary = spawn_okex_stream_path(
@@ -149,7 +196,6 @@ async fn main() -> Result<()> {
         base_subscribe_messages.clone(),
         fills_disabled.clone(),
         shutdown_rx.clone(),
-        evt_tx.clone(),
         session_max,
     );
 
@@ -158,16 +204,8 @@ async fn main() -> Result<()> {
         tokio::select! {
             biased;
             _ = shutdown_rx.changed() => { break; }
-            Some(msg) = evt_rx.recv() => {
-                // 统一去重后再发送
-                if deduper.should_forward(&msg) {
-                    // 打印解析后的消息
-                    log_parsed_event(&msg);
-                    forwarder.send_raw(&msg);
-                }
-            }
             _ = stats.tick() => {
-                forwarder.log_stats();
+                log_forwarder_stats();
             }
             res = &mut interest_poll => {
                 match res {
@@ -175,7 +213,7 @@ async fn main() -> Result<()> {
                     Err(e) => warn!("interest poll task join error: {}; restarting", e),
                 }
                 if !*shutdown_rx.borrow() {
-                    interest_poll = spawn_borrow_interest_poll(credentials.clone(), evt_tx.clone(), shutdown_rx.clone());
+                    interest_poll = spawn_borrow_interest_poll(credentials.clone(), shutdown_rx.clone());
                 }
             }
             res = &mut primary => {
@@ -192,7 +230,6 @@ async fn main() -> Result<()> {
                         base_subscribe_messages.clone(),
                         fills_disabled.clone(),
                         shutdown_rx.clone(),
-                        evt_tx.clone(),
                         session_max,
                     );
                 }
@@ -211,7 +248,6 @@ async fn main() -> Result<()> {
                         base_subscribe_messages.clone(),
                         fills_disabled.clone(),
                         shutdown_rx.clone(),
-                        evt_tx.clone(),
                         session_max,
                     );
                 }
@@ -234,7 +270,6 @@ fn setup_signals(shutdown_tx: watch::Sender<bool>) {
 
 fn spawn_borrow_interest_poll(
     credentials: OkexCredentials,
-    evt_tx: tokio::sync::mpsc::UnboundedSender<Bytes>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -256,8 +291,8 @@ fn spawn_borrow_interest_poll(
                                     mkt_parsers::msg::basic_account_msg::BasicAccountScope::OkexUnified,
                                     payload,
                                 );
-                                if let Err(e) = evt_tx.send(event.to_bytes()) {
-                                    warn!("failed to send borrow interest msg: {}", e);
+                                if !forward_account_event(event.to_bytes()) {
+                                    warn!("failed to forward borrow interest msg");
                                 }
                             }
                         }
@@ -280,7 +315,6 @@ fn spawn_okex_stream_path(
     base_subscribe_messages: Vec<serde_json::Value>,
     fills_disabled: Arc<AtomicBool>,
     shutdown_rx: watch::Receiver<bool>,
-    evt_tx: tokio::sync::mpsc::UnboundedSender<Bytes>,
     session_max: Option<Duration>,
 ) -> tokio::task::JoinHandle<()> {
     let ws_url = ws_url.to_string();
@@ -317,7 +351,6 @@ fn spawn_okex_stream_path(
             );
 
             let mut consumer_shutdown = shutdown_rx.clone();
-            let evt_tx_clone = evt_tx.clone();
             let local_ip_log = local_ip.clone();
             let parser = OkexAccountEventParser::new();
             let fills_disabled_inner = fills_disabled.clone();
@@ -337,7 +370,7 @@ fn spawn_okex_stream_path(
                                     } else {
                                         debug!("[{}][ip={}] okex ws bin: {} bytes", name, local_ip_log, b.len());
                                     }
-                                    let _ = parser.parse(b, &evt_tx_clone);
+                                    let _ = parser.parse(b, &DirectAccountEventSink);
                                 }
                                 Err(broadcast::error::RecvError::Closed) => break,
                                 Err(broadcast::error::RecvError::Lagged(skipped)) => {

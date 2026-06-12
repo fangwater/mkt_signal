@@ -1,6 +1,6 @@
 //! Bybit V5 私有账户事件解析器（wallet / position / order）
 
-use super::Parser;
+use super::{AccountEventSink, Parser};
 use crate::msg::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
     BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg,
@@ -12,7 +12,6 @@ use bytes::Bytes;
 use log::{debug, warn};
 use serde::Deserialize;
 use serde_json::{Map, Value};
-use tokio::sync::mpsc;
 
 #[derive(Clone)]
 pub struct BybitAccountEventParser;
@@ -66,7 +65,7 @@ impl BybitAccountEventParser {
         Self
     }
 
-    fn parse_wallet_channel(&self, json_value: &Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+    fn parse_wallet_channel<S: AccountEventSink>(&self, json_value: &Value, tx: &S) -> usize {
         let mut count = 0;
         let top_timestamp = parse_i64_str_or_num(json_value.get("creationTime"))
             .or_else(|| parse_i64_str_or_num(json_value.get("ts")))
@@ -120,7 +119,7 @@ impl BybitAccountEventParser {
                     BasicAccountScope::BybitUnified,
                     msg.to_bytes(),
                 );
-                if tx.send(event.to_bytes()).is_ok() {
+                if tx.emit(event.to_bytes()) {
                     count += 1;
                 }
             }
@@ -148,7 +147,7 @@ impl BybitAccountEventParser {
                     BasicAccountScope::BybitUnified,
                     balance_msg.to_bytes(),
                 );
-                if tx.send(balance_event.to_bytes()).is_ok() {
+                if tx.emit(balance_event.to_bytes()) {
                     count += 1;
                 }
 
@@ -160,7 +159,7 @@ impl BybitAccountEventParser {
                         BasicAccountScope::BybitUnified,
                         interest_msg.to_bytes(),
                     );
-                    if tx.send(interest_event.to_bytes()).is_ok() {
+                    if tx.emit(interest_event.to_bytes()) {
                         count += 1;
                     }
                 }
@@ -170,11 +169,7 @@ impl BybitAccountEventParser {
         count
     }
 
-    fn parse_position_channel(
-        &self,
-        json_value: &Value,
-        tx: &mpsc::UnboundedSender<Bytes>,
-    ) -> usize {
+    fn parse_position_channel<S: AccountEventSink>(&self, json_value: &Value, tx: &S) -> usize {
         let mut count = 0;
         let top_timestamp = parse_i64_str_or_num(json_value.get("creationTime"))
             .or_else(|| parse_i64_str_or_num(json_value.get("ts")))
@@ -217,7 +212,7 @@ impl BybitAccountEventParser {
                 BasicAccountScope::BybitUnified,
                 position_msg.to_bytes(),
             );
-            if tx.send(position_event.to_bytes()).is_ok() {
+            if tx.emit(position_event.to_bytes()) {
                 count += 1;
             }
 
@@ -230,7 +225,7 @@ impl BybitAccountEventParser {
                     BasicAccountScope::BybitUnified,
                     pnl_msg.to_bytes(),
                 );
-                if tx.send(pnl_event.to_bytes()).is_ok() {
+                if tx.emit(pnl_event.to_bytes()) {
                     count += 1;
                 }
             }
@@ -239,7 +234,7 @@ impl BybitAccountEventParser {
         count
     }
 
-    fn parse_order_channel(&self, json_value: &Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+    fn parse_order_channel<S: AccountEventSink>(&self, json_value: &Value, tx: &S) -> usize {
         let mut count = 0;
         let top_timestamp = parse_i64_str_or_num(json_value.get("creationTime"))
             .or_else(|| parse_i64_str_or_num(json_value.get("ts")))
@@ -268,7 +263,7 @@ impl BybitAccountEventParser {
                         BasicAccountScope::BybitUnified,
                         msg.to_bytes(),
                     );
-                    if tx.send(event.to_bytes()).is_ok() {
+                    if tx.emit(event.to_bytes()) {
                         count += 1;
                     }
                 }
@@ -283,7 +278,7 @@ impl BybitAccountEventParser {
                         BasicAccountScope::BybitUnified,
                         msg.to_bytes(),
                     );
-                    if tx.send(event.to_bytes()).is_ok() {
+                    if tx.emit(event.to_bytes()) {
                         count += 1;
                     }
                 }
@@ -502,10 +497,10 @@ impl BybitAccountEventParser {
         ))
     }
 
-    fn parse_execution_fast_channel(
+    fn parse_execution_fast_channel<S: AccountEventSink>(
         &self,
         json_value: &Value,
-        tx: &mpsc::UnboundedSender<Bytes>,
+        tx: &S,
     ) -> usize {
         let mut count = 0;
         let top_timestamp = parse_i64_str_or_num(json_value.get("creationTime"))
@@ -596,7 +591,7 @@ impl BybitAccountEventParser {
                 BasicAccountScope::BybitUnified,
                 msg.to_bytes(),
             );
-            if tx.send(event.to_bytes()).is_ok() {
+            if tx.emit(event.to_bytes()) {
                 count += 1;
             }
         }
@@ -606,7 +601,7 @@ impl BybitAccountEventParser {
 }
 
 impl Parser for BybitAccountEventParser {
-    fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+    fn parse<S: AccountEventSink>(&self, msg: Bytes, tx: &S) -> usize {
         let json_str = match std::str::from_utf8(&msg) {
             Ok(s) => s,
             Err(_) => return 0,
@@ -753,6 +748,7 @@ fn parse_boolish(value: &Value) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::account_event::test_sink::TestAccountEventSink;
     use crate::msg::basic_account_msg::{
         split_basic_account_event, BasicAccountRiskMsg, BasicBalanceMsg, BasicBorrowInterestMsg,
     };
@@ -760,7 +756,7 @@ mod tests {
     #[test]
     fn wallet_channel_emits_zero_borrow_when_liability_fields_are_present() {
         let parser = BybitAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
 
         let wallet = Bytes::from_static(
             br#"{
@@ -782,15 +778,15 @@ mod tests {
             }"#,
         );
 
-        assert_eq!(parser.parse(wallet, &tx), 2);
+        assert_eq!(parser.parse(wallet, &sink), 2);
 
-        let wrapped_balance = rx.try_recv().expect("balance event");
+        let wrapped_balance = sink.recv().expect("balance event");
         let (event_type, scope, _) =
             split_basic_account_event(&wrapped_balance).expect("wrapped balance");
         assert_eq!(event_type, BasicAccountEventType::BalanceUpdate);
         assert_eq!(scope, BasicAccountScope::BybitUnified);
 
-        let wrapped_borrow = rx.try_recv().expect("zero borrow event");
+        let wrapped_borrow = sink.recv().expect("zero borrow event");
         let (event_type, scope, payload) =
             split_basic_account_event(&wrapped_borrow).expect("wrapped borrow");
         assert_eq!(event_type, BasicAccountEventType::BorrowInterest);
@@ -806,7 +802,7 @@ mod tests {
         // Bybit UNIFIED 真实场景：借币卖出后 walletBalance 接近 0/为负，borrow 仍挂着。
         // BasicBalanceMsg.wallet 直接输出 walletBalance，净额由 manager 读取时计算。
         let parser = BybitAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
 
         let wallet = Bytes::from_static(
             br#"{
@@ -828,9 +824,9 @@ mod tests {
             }"#,
         );
 
-        assert_eq!(parser.parse(wallet, &tx), 2);
+        assert_eq!(parser.parse(wallet, &sink), 2);
 
-        let wrapped_balance = rx.try_recv().expect("balance event");
+        let wrapped_balance = sink.recv().expect("balance event");
         let (event_type, _, payload) =
             split_basic_account_event(&wrapped_balance).expect("wrapped balance");
         assert_eq!(event_type, BasicAccountEventType::BalanceUpdate);
@@ -842,7 +838,7 @@ mod tests {
             bal.wallet
         );
 
-        let wrapped_borrow = rx.try_recv().expect("borrow event");
+        let wrapped_borrow = sink.recv().expect("borrow event");
         let (event_type, _, payload) =
             split_basic_account_event(&wrapped_borrow).expect("wrapped borrow");
         assert_eq!(event_type, BasicAccountEventType::BorrowInterest);
@@ -854,7 +850,7 @@ mod tests {
     #[test]
     fn account_risk_parses_wallet_channel_account_metrics() {
         let parser = BybitAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
 
         let wallet = Bytes::from_static(
             br#"{
@@ -883,9 +879,9 @@ mod tests {
             }"#,
         );
 
-        assert_eq!(parser.parse(wallet, &tx), 3);
+        assert_eq!(parser.parse(wallet, &sink), 3);
 
-        let wrapped_risk = rx.try_recv().expect("risk event");
+        let wrapped_risk = sink.recv().expect("risk event");
         let (event_type, scope, payload) =
             split_basic_account_event(&wrapped_risk).expect("wrapped risk");
         assert_eq!(event_type, BasicAccountEventType::AccountRisk);
@@ -903,40 +899,40 @@ mod tests {
     #[test]
     fn drops_order_when_order_link_id_is_not_i64() {
         let parser = BybitAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
 
         let order = Bytes::from_static(
             br#"{"id":"3","topic":"order","creationTime":1710000000200,"data":[{"category":"linear","symbol":"BTCUSDT","orderId":"abcdef","orderLinkId":"not-i64","side":"Buy","orderType":"Limit","timeInForce":"GTC","orderStatus":"New","price":"100000","qty":"0.5","updatedTime":"1710000000002"}]}"#,
         );
 
-        assert_eq!(parser.parse(order, &tx), 0);
-        assert!(rx.try_recv().is_err());
+        assert_eq!(parser.parse(order, &sink), 0);
+        assert!(sink.recv().is_none());
     }
 
     #[test]
     fn execution_topic_is_ignored() {
         let parser = BybitAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
 
         let execution = Bytes::from_static(
             br#"{"id":"4","topic":"execution","creationTime":1710000000300,"data":[{"category":"linear","symbol":"BTCUSDT","orderId":"1001","orderLinkId":"12345","side":"Buy","orderType":"Limit","execType":"Trade","isMaker":true,"execPrice":"99998","execQty":"0.1","orderQty":"0.5","execTime":"1710000000003","feeCurrency":"USDT"}]}"#,
         );
 
-        assert_eq!(parser.parse(execution, &tx), 0);
-        assert!(rx.try_recv().is_err());
+        assert_eq!(parser.parse(execution, &sink), 0);
+        assert!(sink.recv().is_none());
     }
 
     #[test]
     fn execution_fast_topic_emits_trade_update_lite() {
         let parser = BybitAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
 
         let execution = Bytes::from_static(
             br#"{"id":"4","topic":"execution.fast","creationTime":1710000000300,"data":[{"category":"linear","symbol":"BTCUSDT","orderId":"1001","orderLinkId":"12345","execId":"9001","side":"Buy","execType":"Trade","isMaker":true,"execPrice":"99998","execQty":"0.1","execTime":"1710000000003"}]}"#,
         );
 
-        assert_eq!(parser.parse(execution, &tx), 1);
-        let wrapped = rx.try_recv().expect("trade lite event");
+        assert_eq!(parser.parse(execution, &sink), 1);
+        let wrapped = sink.recv().expect("trade lite event");
         let (event_type, scope, payload) = split_basic_account_event(&wrapped).expect("wrapped");
         assert_eq!(event_type, BasicAccountEventType::TradeUpdateLite);
         assert_eq!(scope, BasicAccountScope::BybitUnified);
@@ -949,66 +945,66 @@ mod tests {
         assert_eq!(msg.is_maker, 1);
         assert!((msg.last_executed_price - 99998.0).abs() < 1e-9);
         assert!((msg.last_executed_quantity - 0.1).abs() < 1e-9);
-        assert!(rx.try_recv().is_err());
+        assert!(sink.recv().is_none());
     }
 
     #[test]
     fn execution_fast_topic_drops_non_i64_order_link_id() {
         let parser = BybitAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
 
         let execution = Bytes::from_static(
             br#"{"topic":"execution.fast","creationTime":1716800399338,"data":[{"category":"linear","symbol":"ICPUSDT","execId":"3510f361-0add-5c7b-a2e7-9679810944fc","execPrice":"12.015","execQty":"3000","orderId":"443d63fa-b4c3-4297-b7b1-23bca88b04dc","isMaker":false,"orderLinkId":"test-00001","side":"Sell","execTime":"1716800399334","seq":34771365464}]}"#,
         );
 
-        assert_eq!(parser.parse(execution, &tx), 0);
-        assert!(rx.try_recv().is_err());
+        assert_eq!(parser.parse(execution, &sink), 0);
+        assert!(sink.recv().is_none());
     }
 
     #[test]
     fn order_new_emits_order_update_only() {
         let parser = BybitAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
 
         let order = Bytes::from_static(
             br#"{"id":"3","topic":"order","creationTime":1710000000200,"data":[{"category":"linear","symbol":"BTCUSDT","orderId":"1001","orderLinkId":"12345","side":"Buy","orderType":"Limit","timeInForce":"GTC","orderStatus":"New","price":"100000","qty":"0.5","cumExecQty":"0","updatedTime":"1710000000002"}]}"#,
         );
 
-        assert_eq!(parser.parse(order, &tx), 1);
-        let msg = rx.try_recv().expect("one event");
+        assert_eq!(parser.parse(order, &sink), 1);
+        let msg = sink.recv().expect("one event");
         let (ty, _, body) =
             crate::msg::basic_account_msg::split_basic_account_event(&msg).expect("split");
         assert_eq!(ty, BasicAccountEventType::OrderUpdate);
         let order = BybitBasicOrderMsg::from_bytes(body).expect("decode");
         assert_eq!(order.execution_type, 1);
         assert_eq!(order.order_status, 1);
-        assert!(rx.try_recv().is_err());
+        assert!(sink.recv().is_none());
     }
 
     #[test]
     fn order_triggered_is_ignored() {
         let parser = BybitAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
 
         let order = Bytes::from_static(
             br#"{"id":"3","topic":"order","creationTime":1710000000200,"data":[{"category":"linear","symbol":"BTCUSDT","orderId":"1001","orderLinkId":"12345","side":"Buy","orderType":"Limit","timeInForce":"GTC","orderStatus":"Triggered","price":"100000","qty":"0.5","cumExecQty":"0","updatedTime":"1710000000002"}]}"#,
         );
 
-        assert_eq!(parser.parse(order, &tx), 0);
-        assert!(rx.try_recv().is_err());
+        assert_eq!(parser.parse(order, &sink), 0);
+        assert!(sink.recv().is_none());
     }
 
     #[test]
     fn order_partially_filled_canceled_emits_canceled_order_update() {
         let parser = BybitAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
 
         let order = Bytes::from_static(
             br#"{"id":"3","topic":"order","creationTime":1710000000200,"data":[{"category":"spot","symbol":"BTCUSDT","orderId":"1001","orderLinkId":"12345","side":"Buy","orderType":"Limit","timeInForce":"GTC","orderStatus":"PartiallyFilledCanceled","price":"100000","qty":"0.5","cumExecQty":"0.1","updatedTime":"1710000000002"}]}"#,
         );
 
-        assert_eq!(parser.parse(order, &tx), 1);
-        let msg = rx.try_recv().expect("one event");
+        assert_eq!(parser.parse(order, &sink), 1);
+        let msg = sink.recv().expect("one event");
         let (ty, _, body) =
             crate::msg::basic_account_msg::split_basic_account_event(&msg).expect("split");
         assert_eq!(ty, BasicAccountEventType::OrderUpdate);
@@ -1016,13 +1012,13 @@ mod tests {
         assert_eq!(order.execution_type, 2);
         assert_eq!(order.order_status, 4);
         assert_eq!(order.raw_status, "PartiallyFilledCanceled");
-        assert!(rx.try_recv().is_err());
+        assert!(sink.recv().is_none());
     }
 
     #[test]
     fn order_topic_keeps_taker_trade_update_using_avg_price() {
         let parser = BybitAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
 
         let order = Bytes::from_static(
             br#"{
@@ -1052,8 +1048,8 @@ mod tests {
             }"#,
         );
 
-        assert_eq!(parser.parse(order, &tx), 1);
-        let wrapped = rx.try_recv().expect("order trade supplement");
+        assert_eq!(parser.parse(order, &sink), 1);
+        let wrapped = sink.recv().expect("order trade supplement");
         let (_, _, payload) = split_basic_account_event(&wrapped).expect("wrapped event");
         let msg = BybitBasicOrderMsg::from_bytes(payload).expect("bybit order payload");
 

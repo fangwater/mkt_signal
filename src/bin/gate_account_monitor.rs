@@ -23,6 +23,7 @@ use bytes::Bytes;
 use clap::Parser;
 use log::{debug, error, info, warn};
 use mkt_parsers::account_event::gate_account_event_parser::GateAccountEventParser;
+use mkt_parsers::account_event::AccountEventSink;
 use mkt_parsers::msg::basic_account_msg::{
     get_basic_event_type, split_basic_account_event, BasicAccountEventMsg, BasicAccountEventType,
     BasicAccountRiskMsg, BasicAccountScope, BasicBalanceMsg, BasicBorrowInterestMsg,
@@ -32,6 +33,7 @@ use reqwest::Client;
 use runtime_common::affinity::maybe_pin_current_thread;
 use runtime_common::mkt_cfg::load_local_ips_preferring_trade_engine;
 use runtime_common::ws_connection::{MktConnection, MktConnectionHandler};
+use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
@@ -80,6 +82,58 @@ struct Args {
     /// Bind the main runtime thread to a CPU core. Falls back to ACCOUNT_MONITOR_CORE.
     #[arg(long)]
     core: Option<usize>,
+}
+
+struct DirectAccountForwarder {
+    forwarder: PmForwarder,
+    deduper: AccountEventDeduper,
+}
+
+thread_local! {
+    static DIRECT_FORWARDER: RefCell<Option<DirectAccountForwarder>> = RefCell::new(None);
+}
+
+#[derive(Clone, Copy)]
+struct DirectAccountEventSink;
+
+impl AccountEventSink for DirectAccountEventSink {
+    fn emit(&self, msg: Bytes) -> bool {
+        DIRECT_FORWARDER.with(|cell| {
+            let mut state = cell.borrow_mut();
+            let Some(state) = state.as_mut() else {
+                return false;
+            };
+            if state.deduper.should_forward(&msg) {
+                log_parsed_event(&msg);
+                state.forwarder.send_raw(&msg)
+            } else {
+                true
+            }
+        })
+    }
+}
+
+fn init_direct_forwarder(exchange: &str) -> Result<()> {
+    let state = DirectAccountForwarder {
+        forwarder: PmForwarder::new(exchange)?,
+        deduper: AccountEventDeduper::new(8192),
+    };
+    DIRECT_FORWARDER.with(|cell| {
+        *cell.borrow_mut() = Some(state);
+    });
+    Ok(())
+}
+
+fn forward_account_event(msg: Bytes) -> bool {
+    DirectAccountEventSink.emit(msg)
+}
+
+fn log_forwarder_stats() {
+    DIRECT_FORWARDER.with(|cell| {
+        if let Some(state) = cell.borrow_mut().as_mut() {
+            state.forwarder.log_stats();
+        }
+    });
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -139,17 +193,12 @@ async fn main() -> Result<()> {
         },
     ];
 
-    // 创建事件收集通道
-    let (evt_tx, mut evt_rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
-
     // 创建 PM 转发器 (account_pubs/gate/pm)
-    let mut forwarder = PmForwarder::new("gate")?;
-    let mut deduper = AccountEventDeduper::new(8192);
+    init_direct_forwarder("gate")?;
     let mut stats = tokio::time::interval(Duration::from_secs(30));
     let mut interest_poll =
-        spawn_gate_borrow_interest_poll(credentials.clone(), evt_tx.clone(), shutdown_rx.clone());
-    let mut positions_poll =
-        spawn_gate_positions_poll(credentials.clone(), evt_tx.clone(), shutdown_rx.clone());
+        spawn_gate_borrow_interest_poll(credentials.clone(), shutdown_rx.clone());
+    let mut positions_poll = spawn_gate_positions_poll(credentials.clone(), shutdown_rx.clone());
 
     // 启动统一账户主备双路连接 (unified.asset_detail)
     let mut unified_primary = spawn_gate_stream_path(
@@ -159,7 +208,6 @@ async fn main() -> Result<()> {
         credentials.clone(),
         unified_channels.clone(),
         shutdown_rx.clone(),
-        evt_tx.clone(),
         session_max,
     );
     let mut unified_secondary = spawn_gate_stream_path(
@@ -169,7 +217,6 @@ async fn main() -> Result<()> {
         credentials.clone(),
         unified_channels.clone(),
         shutdown_rx.clone(),
-        evt_tx.clone(),
         session_max,
     );
 
@@ -181,7 +228,6 @@ async fn main() -> Result<()> {
         credentials.clone(),
         spot_channels.clone(),
         shutdown_rx.clone(),
-        evt_tx.clone(),
         session_max,
     );
     let mut spot_secondary = spawn_gate_stream_path(
@@ -191,7 +237,6 @@ async fn main() -> Result<()> {
         credentials.clone(),
         spot_channels.clone(),
         shutdown_rx.clone(),
-        evt_tx.clone(),
         session_max,
     );
 
@@ -203,7 +248,6 @@ async fn main() -> Result<()> {
         credentials.clone(),
         futures_channels.clone(),
         shutdown_rx.clone(),
-        evt_tx.clone(),
         session_max,
     );
     let mut futures_secondary = spawn_gate_stream_path(
@@ -213,7 +257,6 @@ async fn main() -> Result<()> {
         credentials.clone(),
         futures_channels.clone(),
         shutdown_rx.clone(),
-        evt_tx.clone(),
         session_max,
     );
 
@@ -222,16 +265,8 @@ async fn main() -> Result<()> {
         tokio::select! {
             biased;
             _ = shutdown_rx.changed() => { break; }
-            Some(msg) = evt_rx.recv() => {
-                // 统一去重后再发送
-                if deduper.should_forward(&msg) {
-                    // 打印解析后的消息
-                    log_parsed_event(&msg);
-                    forwarder.send_raw(&msg);
-                }
-            }
             _ = stats.tick() => {
-                forwarder.log_stats();
+                log_forwarder_stats();
             }
             res = &mut interest_poll => {
                 match res {
@@ -241,7 +276,6 @@ async fn main() -> Result<()> {
                 if !*shutdown_rx.borrow() {
                     interest_poll = spawn_gate_borrow_interest_poll(
                         credentials.clone(),
-                        evt_tx.clone(),
                         shutdown_rx.clone(),
                     );
                 }
@@ -254,7 +288,6 @@ async fn main() -> Result<()> {
                 if !*shutdown_rx.borrow() {
                     positions_poll = spawn_gate_positions_poll(
                         credentials.clone(),
-                        evt_tx.clone(),
                         shutdown_rx.clone(),
                     );
                 }
@@ -273,7 +306,6 @@ async fn main() -> Result<()> {
                         credentials.clone(),
                         unified_channels.clone(),
                         shutdown_rx.clone(),
-                        evt_tx.clone(),
                         session_max,
                     );
                 }
@@ -291,7 +323,6 @@ async fn main() -> Result<()> {
                         credentials.clone(),
                         unified_channels.clone(),
                         shutdown_rx.clone(),
-                        evt_tx.clone(),
                         session_max,
                     );
                 }
@@ -310,7 +341,6 @@ async fn main() -> Result<()> {
                         credentials.clone(),
                         spot_channels.clone(),
                         shutdown_rx.clone(),
-                        evt_tx.clone(),
                         session_max,
                     );
                 }
@@ -328,7 +358,6 @@ async fn main() -> Result<()> {
                         credentials.clone(),
                         spot_channels.clone(),
                         shutdown_rx.clone(),
-                        evt_tx.clone(),
                         session_max,
                     );
                 }
@@ -347,7 +376,6 @@ async fn main() -> Result<()> {
                         credentials.clone(),
                         futures_channels.clone(),
                         shutdown_rx.clone(),
-                        evt_tx.clone(),
                         session_max,
                     );
                 }
@@ -365,7 +393,6 @@ async fn main() -> Result<()> {
                         credentials.clone(),
                         futures_channels.clone(),
                         shutdown_rx.clone(),
-                        evt_tx.clone(),
                         session_max,
                     );
                 }
@@ -388,7 +415,6 @@ fn setup_signals(shutdown_tx: watch::Sender<bool>) {
 
 fn spawn_gate_borrow_interest_poll(
     credentials: GateCredentials,
-    evt_tx: tokio::sync::mpsc::UnboundedSender<Bytes>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -415,8 +441,8 @@ fn spawn_gate_borrow_interest_poll(
                                     BasicAccountScope::GateUnified,
                                     payload,
                                 );
-                                if let Err(err) = evt_tx.send(event.to_bytes()) {
-                                    warn!("failed to send gate borrow interest msg: {}", err);
+                                if !forward_account_event(event.to_bytes()) {
+                                    warn!("failed to forward gate borrow interest msg");
                                 }
                             }
 
@@ -433,8 +459,8 @@ fn spawn_gate_borrow_interest_poll(
                                     BasicAccountScope::GateUnified,
                                     clear_msg.to_bytes(),
                                 );
-                                if let Err(err) = evt_tx.send(event.to_bytes()) {
-                                    warn!("failed to send cleared gate borrow interest msg: {}", err);
+                                if !forward_account_event(event.to_bytes()) {
+                                    warn!("failed to forward cleared gate borrow interest msg");
                                 }
                             }
 
@@ -453,7 +479,6 @@ fn spawn_gate_borrow_interest_poll(
 
 fn spawn_gate_positions_poll(
     credentials: GateCredentials,
-    evt_tx: tokio::sync::mpsc::UnboundedSender<Bytes>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -484,7 +509,6 @@ fn spawn_gate_positions_poll(
                                     let mut current_positions: HashSet<(String, char)> = HashSet::new();
                                     forward_gate_position_snapshot(
                                         &parsed,
-                                        &evt_tx,
                                         &mut current_positions,
                                     );
 
@@ -501,7 +525,7 @@ fn spawn_gate_positions_poll(
                                             BasicAccountScope::GateUnified,
                                             zero_position.to_bytes(),
                                         );
-                                        let _ = evt_tx.send(zero_position_event.to_bytes());
+                                        let _ = forward_account_event(zero_position_event.to_bytes());
 
                                         let zero_pnl = BasicUmUnrealizedMsg::create(
                                             now_ms,
@@ -514,7 +538,7 @@ fn spawn_gate_positions_poll(
                                             BasicAccountScope::GateUnified,
                                             zero_pnl.to_bytes(),
                                         );
-                                        let _ = evt_tx.send(zero_pnl_event.to_bytes());
+                                        let _ = forward_account_event(zero_pnl_event.to_bytes());
                                     }
 
                                     previous_positions = current_positions;
@@ -538,7 +562,6 @@ fn spawn_gate_positions_poll(
 
 fn forward_gate_position_snapshot(
     parsed: &GatePositionsSnapshotParse,
-    evt_tx: &tokio::sync::mpsc::UnboundedSender<Bytes>,
     current_positions: &mut HashSet<(String, char)>,
 ) {
     for payload in parsed.msgs.iter().cloned() {
@@ -550,7 +573,7 @@ fn forward_gate_position_snapshot(
         }
         let wrapped =
             BasicAccountEventMsg::create(event_type, BasicAccountScope::GateUnified, payload);
-        let _ = evt_tx.send(wrapped.to_bytes());
+        let _ = forward_account_event(wrapped.to_bytes());
     }
 }
 
@@ -561,7 +584,6 @@ fn spawn_gate_stream_path(
     credentials: GateCredentials,
     channels: Vec<SubscribeChannel>,
     shutdown_rx: watch::Receiver<bool>,
-    evt_tx: tokio::sync::mpsc::UnboundedSender<Bytes>,
     session_max: Option<Duration>,
 ) -> tokio::task::JoinHandle<()> {
     let ws_url = ws_url.to_string();
@@ -596,30 +618,29 @@ fn spawn_gate_stream_path(
 
             // 启动消费者任务
             let mut consumer_shutdown = shutdown_rx.clone();
-            let evt_tx_clone = evt_tx.clone();
             let local_ip_log = local_ip.clone();
             let parser = GateAccountEventParser::new();
             tokio::spawn(async move {
                 loop {
                     tokio::select! {
                         msg = raw_rx.recv() => {
-                            match msg {
-                                Ok(b) => {
-                                    if let Ok(s) = std::str::from_utf8(&b) {
-                                        let report = parser.parse_with_report(b.clone(), &evt_tx_clone);
-                                        if should_log_gate_ws_text(s) && !report.complete {
-                                            info!("[{}][ip={}] gate ws json: {}", name, local_ip_log, s);
-                                        }
-                                    } else {
+                                match msg {
+                                    Ok(b) => {
+                                        if let Ok(s) = std::str::from_utf8(&b) {
+                                            let report = parser.parse_with_report(b.clone(), &DirectAccountEventSink);
+                                            if should_log_gate_ws_text(s) && !report.complete {
+                                                info!("[{}][ip={}] gate ws json: {}", name, local_ip_log, s);
+                                            }
+                                        } else {
                                         info!(
                                             "[{}][ip={}] gate ws bin: {} bytes",
                                             name,
                                             local_ip_log,
-                                            b.len()
-                                        );
-                                        let _ = parser.parse_with_report(b.clone(), &evt_tx_clone);
+                                                b.len()
+                                            );
+                                            let _ = parser.parse_with_report(b.clone(), &DirectAccountEventSink);
+                                        }
                                     }
-                                }
                                 Err(broadcast::error::RecvError::Closed) => break,
                                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
                                     warn!("[{}] lagged: skipped {} msgs", name, skipped);

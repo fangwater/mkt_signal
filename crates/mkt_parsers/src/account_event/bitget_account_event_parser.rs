@@ -1,6 +1,6 @@
 //! Bitget UTA 账户事件解析器（余额 / 持仓 / 订单）
 
-use super::Parser;
+use super::{AccountEventSink, Parser};
 use crate::msg::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
     BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg,
@@ -11,7 +11,6 @@ use bytes::Bytes;
 use log::{debug, warn};
 use serde::Deserialize;
 use serde_json::{Map, Value};
-use tokio::sync::mpsc;
 
 #[derive(Clone)]
 pub struct BitgetAccountEventParser;
@@ -87,11 +86,7 @@ impl BitgetAccountEventParser {
         Self
     }
 
-    fn parse_account_channel(
-        &self,
-        json_value: &Value,
-        tx: &mpsc::UnboundedSender<Bytes>,
-    ) -> usize {
+    fn parse_account_channel<S: AccountEventSink>(&self, json_value: &Value, tx: &S) -> usize {
         let mut count = 0;
 
         let top_timestamp = parse_i64_str_or_num(json_value.get("ts"))
@@ -165,7 +160,7 @@ impl BitgetAccountEventParser {
                     BasicAccountScope::BitgetUnified,
                     msg.to_bytes(),
                 );
-                if tx.send(event.to_bytes()).is_ok() {
+                if tx.emit(event.to_bytes()) {
                     count += 1;
                 }
             }
@@ -174,11 +169,11 @@ impl BitgetAccountEventParser {
         count
     }
 
-    fn emit_account_coin(
+    fn emit_account_coin<S: AccountEventSink>(
         &self,
         coin_obj: &BitgetAccountChannelCoin,
         timestamp: i64,
-        tx: &mpsc::UnboundedSender<Bytes>,
+        tx: &S,
     ) -> usize {
         let coin = coin_obj.coin.clone();
         if coin.is_empty() {
@@ -200,7 +195,7 @@ impl BitgetAccountEventParser {
             BasicAccountScope::BitgetUnified,
             payload,
         );
-        if tx.send(event.to_bytes()).is_ok() {
+        if tx.emit(event.to_bytes()) {
             sent += 1;
         }
 
@@ -212,7 +207,7 @@ impl BitgetAccountEventParser {
                 BasicAccountScope::BitgetUnified,
                 payload,
             );
-            if tx.send(event.to_bytes()).is_ok() {
+            if tx.emit(event.to_bytes()) {
                 sent += 1;
             }
         }
@@ -220,11 +215,7 @@ impl BitgetAccountEventParser {
         sent
     }
 
-    fn parse_positions_channel(
-        &self,
-        json_value: &Value,
-        tx: &mpsc::UnboundedSender<Bytes>,
-    ) -> usize {
+    fn parse_positions_channel<S: AccountEventSink>(&self, json_value: &Value, tx: &S) -> usize {
         let mut count = 0;
 
         let top_timestamp = parse_i64_str_or_num(json_value.get("ts")).unwrap_or(0);
@@ -273,7 +264,7 @@ impl BitgetAccountEventParser {
                 BasicAccountScope::BitgetUnified,
                 pos_payload,
             );
-            if tx.send(pos_event.to_bytes()).is_ok() {
+            if tx.emit(pos_event.to_bytes()) {
                 count += 1;
             }
 
@@ -288,7 +279,7 @@ impl BitgetAccountEventParser {
                     BasicAccountScope::BitgetUnified,
                     pnl_payload,
                 );
-                if tx.send(pnl_event.to_bytes()).is_ok() {
+                if tx.emit(pnl_event.to_bytes()) {
                     count += 1;
                 }
             }
@@ -297,7 +288,7 @@ impl BitgetAccountEventParser {
         count
     }
 
-    fn parse_orders_channel(&self, json_value: &Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+    fn parse_orders_channel<S: AccountEventSink>(&self, json_value: &Value, tx: &S) -> usize {
         let mut count = 0;
 
         let top_timestamp = parse_i64_str_or_num(json_value.get("ts")).unwrap_or(0);
@@ -430,7 +421,7 @@ impl BitgetAccountEventParser {
                 BasicAccountScope::BitgetUnified,
                 payload,
             );
-            if tx.send(event.to_bytes()).is_ok() {
+            if tx.emit(event.to_bytes()) {
                 count += 1;
             }
         }
@@ -439,7 +430,7 @@ impl BitgetAccountEventParser {
     }
 
     /// 解析 UTA `fill` 频道（详细成交，带 feeDetail / orderType）。字段：`tradeId`。
-    fn parse_fill_channel(&self, json_value: &Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+    fn parse_fill_channel<S: AccountEventSink>(&self, json_value: &Value, tx: &S) -> usize {
         let mut count = 0;
         let top_timestamp = parse_i64_str_or_num(json_value.get("ts")).unwrap_or(0);
 
@@ -512,7 +503,7 @@ impl BitgetAccountEventParser {
                 BasicAccountScope::BitgetUnified,
                 payload,
             );
-            if tx.send(event.to_bytes()).is_ok() {
+            if tx.emit(event.to_bytes()) {
                 count += 1;
             }
         }
@@ -522,11 +513,7 @@ impl BitgetAccountEventParser {
 
     /// 解析 UTA `fast-fill` 频道（精简成交，仅 UTA 模式推送）。字段：`execId`。
     /// 参考: https://www.bitget.com/api-doc/uta/websocket/private/Fast-Fill-Channel
-    fn parse_fast_fill_channel(
-        &self,
-        json_value: &Value,
-        tx: &mpsc::UnboundedSender<Bytes>,
-    ) -> usize {
+    fn parse_fast_fill_channel<S: AccountEventSink>(&self, json_value: &Value, tx: &S) -> usize {
         let mut count = 0;
         let top_timestamp = parse_i64_str_or_num(json_value.get("ts")).unwrap_or(0);
 
@@ -599,7 +586,7 @@ impl BitgetAccountEventParser {
                 BasicAccountScope::BitgetUnified,
                 payload,
             );
-            if tx.send(event.to_bytes()).is_ok() {
+            if tx.emit(event.to_bytes()) {
                 count += 1;
             }
         }
@@ -609,7 +596,7 @@ impl BitgetAccountEventParser {
 }
 
 impl Parser for BitgetAccountEventParser {
-    fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+    fn parse<S: AccountEventSink>(&self, msg: Bytes, tx: &S) -> usize {
         let json_str = match std::str::from_utf8(&msg) {
             Ok(s) => s,
             Err(_) => return 0,
@@ -749,6 +736,7 @@ fn parse_i64_str(v: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::account_event::test_sink::TestAccountEventSink;
     use crate::msg::basic_account_msg::{
         split_basic_account_event, BasicAccountRiskMsg, BasicBalanceMsg, BasicBorrowInterestMsg,
     };
@@ -757,7 +745,7 @@ mod tests {
     #[test]
     fn account_channel_emits_zero_borrow_when_liability_fields_are_present() {
         let parser = BitgetAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
 
         let account = Bytes::from_static(
             br#"{
@@ -774,16 +762,16 @@ mod tests {
             }"#,
         );
 
-        let emitted = parser.parse(account, &tx);
+        let emitted = parser.parse(account, &sink);
         assert_eq!(emitted, 2);
 
-        let wrapped_balance = rx.try_recv().expect("balance event");
+        let wrapped_balance = sink.recv().expect("balance event");
         let (event_type, scope, _) =
             split_basic_account_event(&wrapped_balance).expect("wrapped balance");
         assert_eq!(event_type, BasicAccountEventType::BalanceUpdate);
         assert_eq!(scope, BasicAccountScope::BitgetUnified);
 
-        let wrapped_borrow = rx.try_recv().expect("zero borrow event");
+        let wrapped_borrow = sink.recv().expect("zero borrow event");
         let (event_type, scope, payload) =
             split_basic_account_event(&wrapped_borrow).expect("wrapped borrow");
         assert_eq!(event_type, BasicAccountEventType::BorrowInterest);
@@ -797,7 +785,7 @@ mod tests {
     #[test]
     fn account_channel_converts_bitget_net_balance_to_gross_wallet() {
         let parser = BitgetAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
 
         let account = Bytes::from_static(
             br#"{
@@ -814,10 +802,10 @@ mod tests {
             }"#,
         );
 
-        let emitted = parser.parse(account, &tx);
+        let emitted = parser.parse(account, &sink);
         assert_eq!(emitted, 2);
 
-        let wrapped_balance = rx.try_recv().expect("balance event");
+        let wrapped_balance = sink.recv().expect("balance event");
         let (event_type, scope, payload) =
             split_basic_account_event(&wrapped_balance).expect("wrapped balance");
         assert_eq!(event_type, BasicAccountEventType::BalanceUpdate);
@@ -826,7 +814,7 @@ mod tests {
         assert_eq!(balance.symbol, "SOL");
         assert!(balance.wallet.abs() < 1e-12);
 
-        let wrapped_borrow = rx.try_recv().expect("borrow event");
+        let wrapped_borrow = sink.recv().expect("borrow event");
         let (event_type, scope, payload) =
             split_basic_account_event(&wrapped_borrow).expect("wrapped borrow");
         assert_eq!(event_type, BasicAccountEventType::BorrowInterest);
@@ -841,7 +829,7 @@ mod tests {
     #[test]
     fn account_channel_adds_locked_to_balance_wallet() {
         let parser = BitgetAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
 
         let account = Bytes::from_static(
             br#"{
@@ -858,10 +846,10 @@ mod tests {
             }"#,
         );
 
-        let emitted = parser.parse(account, &tx);
+        let emitted = parser.parse(account, &sink);
         assert_eq!(emitted, 2);
 
-        let wrapped_balance = rx.try_recv().expect("balance event");
+        let wrapped_balance = sink.recv().expect("balance event");
         let (event_type, scope, payload) =
             split_basic_account_event(&wrapped_balance).expect("wrapped balance");
         assert_eq!(event_type, BasicAccountEventType::BalanceUpdate);
@@ -874,7 +862,7 @@ mod tests {
     #[test]
     fn account_risk_parses_account_channel_top_level_metrics() {
         let parser = BitgetAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
 
         let account = Bytes::from_static(
             br#"{
@@ -898,12 +886,12 @@ mod tests {
             }"#,
         );
 
-        let emitted = parser.parse(account, &tx);
+        let emitted = parser.parse(account, &sink);
         assert_eq!(emitted, 3);
 
-        let _balance = rx.try_recv().expect("balance event");
-        let _borrow = rx.try_recv().expect("borrow event");
-        let wrapped_risk = rx.try_recv().expect("risk event");
+        let _balance = sink.recv().expect("balance event");
+        let _borrow = sink.recv().expect("borrow event");
+        let wrapped_risk = sink.recv().expect("risk event");
         let (event_type, scope, payload) =
             split_basic_account_event(&wrapped_risk).expect("wrapped risk");
         assert_eq!(event_type, BasicAccountEventType::AccountRisk);
@@ -922,7 +910,7 @@ mod tests {
     #[test]
     fn fill_channel_emits_trade_update_lite_event() {
         let parser = BitgetAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
 
         let fill = Bytes::from_static(
             br#"{
@@ -947,10 +935,10 @@ mod tests {
             }"#,
         );
 
-        let emitted = parser.parse(fill, &tx);
+        let emitted = parser.parse(fill, &sink);
         assert_eq!(emitted, 1);
 
-        let wrapped = rx.try_recv().expect("trade lite event");
+        let wrapped = sink.recv().expect("trade lite event");
         let (event_type, scope, payload) =
             split_basic_account_event(&wrapped).expect("wrapped trade lite");
         assert_eq!(event_type, BasicAccountEventType::TradeUpdateLite);
@@ -970,7 +958,7 @@ mod tests {
     #[test]
     fn order_channel_emits_trade_like_update_for_taker_market_fill_using_avg_price() {
         let parser = BitgetAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
 
         let order = Bytes::from_static(
             br#"{
@@ -1000,10 +988,10 @@ mod tests {
             }"#,
         );
 
-        let emitted = parser.parse(order, &tx);
+        let emitted = parser.parse(order, &sink);
         assert_eq!(emitted, 1);
 
-        let wrapped = rx.try_recv().expect("order event");
+        let wrapped = sink.recv().expect("order event");
         let (event_type, scope, payload) =
             split_basic_account_event(&wrapped).expect("wrapped order event");
         assert_eq!(event_type, BasicAccountEventType::OrderUpdate);

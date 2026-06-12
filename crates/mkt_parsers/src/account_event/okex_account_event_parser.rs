@@ -1,6 +1,6 @@
 //! OKX 账户事件解析器（余额 / 持仓 / 订单）
 
-use super::Parser;
+use super::{AccountEventSink, Parser};
 use crate::msg::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
     BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg, OkexOrderMsg,
@@ -8,7 +8,6 @@ use crate::msg::basic_account_msg::{
 use bytes::Bytes;
 use log::{debug, info, warn};
 use symbol_utils::TradingVenue;
-use tokio::sync::mpsc;
 
 #[derive(Clone)]
 pub struct OkexAccountEventParser;
@@ -24,8 +23,8 @@ impl OkexAccountEventParser {
         Self
     }
 
-    fn emit_balance(
-        tx: &mpsc::UnboundedSender<Bytes>,
+    fn emit_balance<S: AccountEventSink>(
+        tx: &S,
         timestamp: i64,
         symbol: String,
         balance: f64,
@@ -34,13 +33,13 @@ impl OkexAccountEventParser {
         let payload = msg.to_bytes();
         let event =
             BasicAccountEventMsg::create(msg.msg_type, BasicAccountScope::OkexUnified, payload);
-        tx.send(event.to_bytes()).is_ok()
+        tx.emit(event.to_bytes())
     }
 
-    fn parse_balance_and_position(
+    fn parse_balance_and_position<S: AccountEventSink>(
         &self,
         json_value: &serde_json::Value,
-        tx: &mpsc::UnboundedSender<Bytes>,
+        tx: &S,
     ) -> usize {
         let mut count = 0;
 
@@ -129,7 +128,7 @@ impl OkexAccountEventParser {
                     BasicAccountScope::OkexUnified,
                     payload,
                 );
-                if tx.send(event.to_bytes()).is_ok() {
+                if tx.emit(event.to_bytes()) {
                     count += 1;
                 }
             }
@@ -138,11 +137,7 @@ impl OkexAccountEventParser {
         count
     }
 
-    fn parse_account(
-        &self,
-        json_value: &serde_json::Value,
-        tx: &mpsc::UnboundedSender<Bytes>,
-    ) -> usize {
+    fn parse_account<S: AccountEventSink>(&self, json_value: &serde_json::Value, tx: &S) -> usize {
         let mut count = 0;
         let Some(account) = json_value.get("data").and_then(|d| d.get(0)) else {
             return 0;
@@ -190,7 +185,7 @@ impl OkexAccountEventParser {
                 BasicAccountScope::OkexUnified,
                 payload,
             );
-            if tx.send(event.to_bytes()).is_ok() {
+            if tx.emit(event.to_bytes()) {
                 count += 1;
             }
         }
@@ -243,7 +238,7 @@ impl OkexAccountEventParser {
                 BasicAccountScope::OkexUnified,
                 payload,
             );
-            if tx.send(event.to_bytes()).is_ok() {
+            if tx.emit(event.to_bytes()) {
                 count += 1;
             }
         }
@@ -251,11 +246,7 @@ impl OkexAccountEventParser {
         count
     }
 
-    fn parse_orders(
-        &self,
-        json_value: &serde_json::Value,
-        tx: &mpsc::UnboundedSender<Bytes>,
-    ) -> usize {
+    fn parse_orders<S: AccountEventSink>(&self, json_value: &serde_json::Value, tx: &S) -> usize {
         let mut count = 0;
         let Some(arr) = json_value.get("data").and_then(|d| d.as_array()) else {
             return 0;
@@ -341,7 +332,7 @@ impl OkexAccountEventParser {
             let payload = msg.to_bytes();
             let event =
                 BasicAccountEventMsg::create(msg.msg_type, BasicAccountScope::OkexUnified, payload);
-            if tx.send(event.to_bytes()).is_ok() {
+            if tx.emit(event.to_bytes()) {
                 count += 1;
             }
         }
@@ -353,10 +344,10 @@ impl OkexAccountEventParser {
 impl OkexAccountEventParser {
     /// 解析 OKX `fills` 频道（VIP4+）。
     /// 参考字段：instId / clOrdId / tradeId / fillPx / fillSz / side / execType / ts
-    fn parse_fills_channel(
+    fn parse_fills_channel<S: AccountEventSink>(
         &self,
         json_value: &serde_json::Value,
-        tx: &mpsc::UnboundedSender<Bytes>,
+        tx: &S,
     ) -> usize {
         let top_ts = parse_i64_field(json_value.get("ts"));
         let mut count = 0;
@@ -429,7 +420,7 @@ impl OkexAccountEventParser {
                 BasicAccountScope::OkexUnified,
                 msg.to_bytes(),
             );
-            if tx.send(event.to_bytes()).is_ok() {
+            if tx.emit(event.to_bytes()) {
                 count += 1;
             }
         }
@@ -439,7 +430,7 @@ impl OkexAccountEventParser {
 }
 
 impl Parser for OkexAccountEventParser {
-    fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+    fn parse<S: AccountEventSink>(&self, msg: Bytes, tx: &S) -> usize {
         let json_str = match std::str::from_utf8(&msg) {
             Ok(s) => s,
             Err(_) => return 0,
@@ -570,6 +561,7 @@ fn parse_okex_order_price_by_state(order: &serde_json::Value, state_u8: u8) -> f
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::account_event::test_sink::TestAccountEventSink;
     use crate::msg::basic_account_msg::{
         split_basic_account_event, BasicAccountEventType, BasicAccountRiskMsg, BasicBalanceMsg,
         BasicBorrowInterestMsg,
@@ -578,7 +570,7 @@ mod tests {
     #[test]
     fn balance_and_position_ignores_cashbal_and_ws_upl() {
         let parser = OkexAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
         let json = r#"{
             "arg": {"channel": "balance_and_position"},
             "data": [{
@@ -597,10 +589,10 @@ mod tests {
             }]
         }"#;
 
-        assert_eq!(parser.parse(Bytes::from(json), &tx), 1);
+        assert_eq!(parser.parse(Bytes::from(json), &sink), 1);
 
         let mut event_types = Vec::new();
-        while let Ok(msg) = rx.try_recv() {
+        while let Some(msg) = sink.recv() {
             let (event_type, scope, _payload) =
                 split_basic_account_event(&msg).expect("wrapped event");
             assert_eq!(scope, BasicAccountScope::OkexUnified);
@@ -613,7 +605,7 @@ mod tests {
     #[test]
     fn account_channel_emits_gross_wallet_and_borrow() {
         let parser = OkexAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
         let json = r#"{
             "arg": {"channel": "account"},
             "data": [{
@@ -630,8 +622,8 @@ mod tests {
             }]
         }"#;
 
-        assert_eq!(parser.parse(Bytes::from(json), &tx), 2);
-        let msg = rx.try_recv().expect("one balance event");
+        assert_eq!(parser.parse(Bytes::from(json), &sink), 2);
+        let msg = sink.recv().expect("one balance event");
         let (event_type, scope, payload) = split_basic_account_event(&msg).expect("wrapped event");
         assert_eq!(event_type, BasicAccountEventType::BalanceUpdate);
         assert_eq!(scope, BasicAccountScope::OkexUnified);
@@ -639,7 +631,7 @@ mod tests {
         assert_eq!(balance.symbol, "USDT");
         assert!((balance.wallet - 53493.666831427916).abs() < 1e-10);
 
-        let msg = rx.try_recv().expect("borrow event");
+        let msg = sink.recv().expect("borrow event");
         let (event_type, scope, payload) = split_basic_account_event(&msg).expect("wrapped event");
         assert_eq!(event_type, BasicAccountEventType::BorrowInterest);
         assert_eq!(scope, BasicAccountScope::OkexUnified);
@@ -647,13 +639,13 @@ mod tests {
         assert_eq!(borrow.symbol, "USDT");
         assert!((borrow.borrowed - 50.0).abs() < 1e-10);
         assert!((borrow.interest - 0.5).abs() < 1e-10);
-        assert!(rx.try_recv().is_err());
+        assert!(sink.recv().is_none());
     }
 
     #[test]
     fn account_risk_parses_account_channel_top_level_metrics() {
         let parser = OkexAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
         let json = r#"{
             "arg": {"channel": "account"},
             "data": [{
@@ -675,9 +667,9 @@ mod tests {
             }]
         }"#;
 
-        assert_eq!(parser.parse(Bytes::from(json), &tx), 3);
+        assert_eq!(parser.parse(Bytes::from(json), &sink), 3);
 
-        let msg = rx.try_recv().expect("risk event");
+        let msg = sink.recv().expect("risk event");
         let (event_type, scope, payload) = split_basic_account_event(&msg).expect("wrapped event");
         assert_eq!(event_type, BasicAccountEventType::AccountRisk);
         assert_eq!(scope, BasicAccountScope::OkexUnified);
@@ -695,7 +687,7 @@ mod tests {
     #[test]
     fn fills_channel_emits_trade_update_lite() {
         let parser = OkexAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
         let json = r#"{
             "arg": {"channel": "fills", "instId": "BTC-USDT-SWAP"},
             "data": [{
@@ -712,9 +704,9 @@ mod tests {
             }]
         }"#;
 
-        assert_eq!(parser.parse(Bytes::from(json), &tx), 1);
+        assert_eq!(parser.parse(Bytes::from(json), &sink), 1);
 
-        let wrapped = rx.try_recv().expect("trade lite event");
+        let wrapped = sink.recv().expect("trade lite event");
         let (event_type, scope, payload) =
             split_basic_account_event(&wrapped).expect("wrapped event");
         assert_eq!(event_type, BasicAccountEventType::TradeUpdateLite);
@@ -734,7 +726,7 @@ mod tests {
     #[test]
     fn account_channel_skips_balance_when_liab_missing() {
         let parser = OkexAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
         let json = r#"{
             "arg": {"channel": "account"},
             "data": [{
@@ -747,7 +739,7 @@ mod tests {
             }]
         }"#;
 
-        assert_eq!(parser.parse(Bytes::from(json), &tx), 0);
-        assert!(rx.try_recv().is_err());
+        assert_eq!(parser.parse(Bytes::from(json), &sink), 0);
+        assert!(sink.recv().is_none());
     }
 }

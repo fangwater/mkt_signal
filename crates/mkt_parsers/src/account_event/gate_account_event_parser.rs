@@ -101,7 +101,7 @@
 //!   - `price`（委托价；市价单常为 0）
 //!   - `finish_as`（终态原因，用于映射 execution_type / order_status）
 
-use super::Parser;
+use super::{AccountEventSink, Parser};
 use crate::msg::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
     BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg,
@@ -112,7 +112,6 @@ use bytes::Bytes;
 use log::{debug, warn};
 use serde_json::Value;
 use symbol_utils::symbol_util::normalize_symbol_for_internal;
-use tokio::sync::mpsc;
 
 #[derive(Clone)]
 pub struct GateAccountEventParser;
@@ -167,10 +166,10 @@ impl GateAccountEventParser {
     }
 
     /// 解析统一账户资产详情
-    fn parse_unified_asset_detail(
+    fn parse_unified_asset_detail<S: AccountEventSink>(
         &self,
         json_value: &serde_json::Value,
-        tx: &mpsc::UnboundedSender<Bytes>,
+        tx: &S,
     ) -> GateParseReport {
         let mut count = 0;
         let mut incomplete = false;
@@ -240,7 +239,7 @@ impl GateAccountEventParser {
                 BasicAccountScope::GateUnified,
                 payload,
             );
-            if tx.send(event.to_bytes()).is_ok() {
+            if tx.emit(event.to_bytes()) {
                 count += 1;
             }
 
@@ -259,7 +258,7 @@ impl GateAccountEventParser {
                     BasicAccountScope::GateUnified,
                     payload,
                 );
-                if tx.send(event.to_bytes()).is_ok() {
+                if tx.emit(event.to_bytes()) {
                     count += 1;
                 }
             }
@@ -273,10 +272,10 @@ impl GateAccountEventParser {
     }
 
     /// 解析 unified.assets 账户级聚合风险。
-    fn parse_unified_assets(
+    fn parse_unified_assets<S: AccountEventSink>(
         &self,
         json_value: &serde_json::Value,
-        tx: &mpsc::UnboundedSender<Bytes>,
+        tx: &S,
     ) -> GateParseReport {
         let Some(raw_result) = json_value.get("result") else {
             warn!("Gate: unified.assets missing result");
@@ -325,7 +324,7 @@ impl GateAccountEventParser {
             BasicAccountScope::GateUnified,
             msg.to_bytes(),
         );
-        if tx.send(event.to_bytes()).is_ok() {
+        if tx.emit(event.to_bytes()) {
             GateParseReport::complete(1)
         } else {
             GateParseReport::incomplete(0)
@@ -333,10 +332,10 @@ impl GateAccountEventParser {
     }
 
     /// 解析现货订单更新 (spot.orders_v2 / spot.orders)
-    fn parse_spot_orders_v2(
+    fn parse_spot_orders_v2<S: AccountEventSink>(
         &self,
         json_value: &serde_json::Value,
-        tx: &mpsc::UnboundedSender<Bytes>,
+        tx: &S,
     ) -> GateParseReport {
         let mut count = 0;
         let mut incomplete = false;
@@ -557,7 +556,7 @@ impl GateAccountEventParser {
                 BasicAccountScope::GateUnified,
                 payload,
             );
-            if tx.send(event_msg.to_bytes()).is_ok() {
+            if tx.emit(event_msg.to_bytes()) {
                 count += 1;
             }
         }
@@ -581,10 +580,10 @@ impl GateAccountEventParser {
     ///
     /// 注意：这里的 quantity/cumulative_filled_quantity 保持交易所 contracts 口径；
     /// 策略层统一通过 `MonitorChannel::qty_to_base(...)` 转为 base qty 口径。
-    fn parse_futures_orders(
+    fn parse_futures_orders<S: AccountEventSink>(
         &self,
         json_value: &serde_json::Value,
-        tx: &mpsc::UnboundedSender<Bytes>,
+        tx: &S,
     ) -> GateParseReport {
         let mut count = 0;
         let mut incomplete = false;
@@ -790,7 +789,7 @@ impl GateAccountEventParser {
                 BasicAccountScope::GateUnified,
                 payload,
             );
-            if tx.send(event_msg.to_bytes()).is_ok() {
+            if tx.emit(event_msg.to_bytes()) {
                 count += 1;
             }
         }
@@ -802,10 +801,10 @@ impl GateAccountEventParser {
         }
     }
 
-    fn parse_futures_positions(
+    fn parse_futures_positions<S: AccountEventSink>(
         &self,
         json_value: &serde_json::Value,
-        tx: &mpsc::UnboundedSender<Bytes>,
+        tx: &S,
     ) -> GateParseReport {
         let mut count = 0;
         let mut incomplete = false;
@@ -899,7 +898,7 @@ impl GateAccountEventParser {
                 BasicAccountScope::GateUnified,
                 position_msg.to_bytes(),
             );
-            if tx.send(position_event.to_bytes()).is_ok() {
+            if tx.emit(position_event.to_bytes()) {
                 count += 1;
             }
 
@@ -916,7 +915,7 @@ impl GateAccountEventParser {
                     BasicAccountScope::GateUnified,
                     pnl_msg.to_bytes(),
                 );
-                if tx.send(pnl_event.to_bytes()).is_ok() {
+                if tx.emit(pnl_event.to_bytes()) {
                     count += 1;
                 }
             }
@@ -942,10 +941,10 @@ impl GateAccountEventParser {
     /// - `size` 正负 -> side
     /// - `role` -> is_maker
     /// - `price` -> last_executed_price
-    fn parse_futures_usertrades(
+    fn parse_futures_usertrades<S: AccountEventSink>(
         &self,
         json_value: &serde_json::Value,
-        tx: &mpsc::UnboundedSender<Bytes>,
+        tx: &S,
     ) -> GateParseReport {
         let mut count = 0;
         let mut incomplete = false;
@@ -1079,7 +1078,7 @@ impl GateAccountEventParser {
                 BasicAccountScope::GateUnified,
                 msg.to_bytes(),
             );
-            if tx.send(event.to_bytes()).is_ok() {
+            if tx.emit(event.to_bytes()) {
                 count += 1;
             }
         }
@@ -1091,11 +1090,7 @@ impl GateAccountEventParser {
         }
     }
 
-    pub fn parse_with_report(
-        &self,
-        msg: Bytes,
-        tx: &mpsc::UnboundedSender<Bytes>,
-    ) -> GateParseReport {
+    pub fn parse_with_report<S: AccountEventSink>(&self, msg: Bytes, tx: &S) -> GateParseReport {
         let json_str = match std::str::from_utf8(&msg) {
             Ok(s) => s,
             Err(_) => return GateParseReport::incomplete(0),
@@ -1290,7 +1285,7 @@ fn select_gate_futures_price_by_finish_as(
 }
 
 impl Parser for GateAccountEventParser {
-    fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+    fn parse<S: AccountEventSink>(&self, msg: Bytes, tx: &S) -> usize {
         self.parse_with_report(msg, tx).emitted
     }
 }
@@ -1298,6 +1293,7 @@ impl Parser for GateAccountEventParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::account_event::test_sink::TestAccountEventSink;
     use crate::msg::basic_account_msg::{
         split_basic_account_event, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
         BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
@@ -1307,7 +1303,7 @@ mod tests {
     #[test]
     fn unified_asset_detail_prefers_equity_plus_liability_over_raw_balance() {
         let parser = GateAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
         let payload = Bytes::from_static(
             br#"{
                 "time": 1775532902,
@@ -1330,10 +1326,10 @@ mod tests {
             }"#,
         );
 
-        let count = parser.parse(payload, &tx);
+        let count = parser.parse(payload, &sink);
         assert_eq!(count, 2);
 
-        let wrapped_balance = rx.try_recv().expect("balance event");
+        let wrapped_balance = sink.recv().expect("balance event");
         let (event_type, scope, body) =
             split_basic_account_event(&wrapped_balance).expect("wrapped balance");
         assert_eq!(event_type, BasicAccountEventType::BalanceUpdate);
@@ -1342,7 +1338,7 @@ mod tests {
         assert_eq!(balance.symbol, "USDT");
         assert!((balance.wallet - 2_083.22864721).abs() < 1e-9);
 
-        let wrapped_borrow = rx.try_recv().expect("borrow event");
+        let wrapped_borrow = sink.recv().expect("borrow event");
         let (event_type, scope, body) =
             split_basic_account_event(&wrapped_borrow).expect("wrapped borrow");
         assert_eq!(event_type, BasicAccountEventType::BorrowInterest);
@@ -1355,7 +1351,7 @@ mod tests {
     #[test]
     fn unified_asset_detail_requires_equity_and_ignores_raw_balance() {
         let parser = GateAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
         let payload = Bytes::from_static(
             br#"{
                 "time": 1775532902,
@@ -1375,16 +1371,16 @@ mod tests {
             }"#,
         );
 
-        let report = parser.parse_with_report(payload, &tx);
+        let report = parser.parse_with_report(payload, &sink);
         assert_eq!(report.emitted, 0);
         assert!(!report.complete);
-        assert!(rx.try_recv().is_err());
+        assert!(sink.recv().is_none());
     }
 
     #[test]
     fn gate_usdt_asset_detail_net_position_matches_equity() {
         let parser = GateAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
         let payload = Bytes::from_static(
             br#"{
                 "time": 1775532902,
@@ -1405,16 +1401,16 @@ mod tests {
             }"#,
         );
 
-        let count = parser.parse(payload, &tx);
+        let count = parser.parse(payload, &sink);
         assert_eq!(count, 2);
 
-        let wrapped_balance = rx.try_recv().expect("balance event");
+        let wrapped_balance = sink.recv().expect("balance event");
         let (event_type, _, body) =
             split_basic_account_event(&wrapped_balance).expect("wrapped balance");
         assert_eq!(event_type, BasicAccountEventType::BalanceUpdate);
         let balance = BasicBalanceMsg::from_bytes(body).expect("balance body");
 
-        let wrapped_borrow = rx.try_recv().expect("borrow event");
+        let wrapped_borrow = sink.recv().expect("borrow event");
         let (event_type, _, body) =
             split_basic_account_event(&wrapped_borrow).expect("wrapped borrow");
         assert_eq!(event_type, BasicAccountEventType::BorrowInterest);
@@ -1430,7 +1426,7 @@ mod tests {
     #[test]
     fn account_risk_parses_unified_assets_rates() {
         let parser = GateAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
         let payload = Bytes::from_static(
             br#"{
                 "time": 1700625194,
@@ -1450,11 +1446,11 @@ mod tests {
             }"#,
         );
 
-        let report = parser.parse_with_report(payload, &tx);
+        let report = parser.parse_with_report(payload, &sink);
         assert_eq!(report.emitted, 1);
         assert!(report.complete);
 
-        let wrapped = rx.try_recv().expect("risk event");
+        let wrapped = sink.recv().expect("risk event");
         let (event_type, scope, body) = split_basic_account_event(&wrapped).expect("wrapped risk");
         assert_eq!(event_type, BasicAccountEventType::AccountRisk);
         assert_eq!(scope, BasicAccountScope::GateUnified);
@@ -1470,7 +1466,7 @@ mod tests {
     #[test]
     fn futures_positions_emits_position_and_upl() {
         let parser = GateAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
         let payload = Bytes::from_static(
             br#"{
                 "time": 1716796362,
@@ -1486,10 +1482,10 @@ mod tests {
             }"#,
         );
 
-        let count = parser.parse(payload, &tx);
+        let count = parser.parse(payload, &sink);
         assert_eq!(count, 2);
 
-        let wrapped_position = rx.try_recv().expect("position event");
+        let wrapped_position = sink.recv().expect("position event");
         let (event_type, scope, body) =
             split_basic_account_event(&wrapped_position).expect("wrapped position");
         assert_eq!(event_type, BasicAccountEventType::PositionUpdate);
@@ -1499,7 +1495,7 @@ mod tests {
         assert_eq!(position.position_side, 'S');
         assert!((position.position_amount - 2.0).abs() < 1e-6);
 
-        let wrapped_pnl = rx.try_recv().expect("upl event");
+        let wrapped_pnl = sink.recv().expect("upl event");
         let (event_type, scope, body) =
             split_basic_account_event(&wrapped_pnl).expect("wrapped pnl");
         assert_eq!(event_type, BasicAccountEventType::UnrealizedPnlUpdate);
@@ -1513,7 +1509,7 @@ mod tests {
     #[test]
     fn futures_positions_missing_time_ms_is_incomplete() {
         let parser = GateAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
         let payload = Bytes::from_static(
             br#"{
                 "channel": "futures.positions",
@@ -1527,10 +1523,10 @@ mod tests {
             }"#,
         );
 
-        let report = parser.parse_with_report(payload, &tx);
+        let report = parser.parse_with_report(payload, &sink);
         assert_eq!(report.emitted, 0);
         assert!(!report.complete);
-        assert!(rx.try_recv().is_err());
+        assert!(sink.recv().is_none());
     }
 
     #[test]
@@ -1588,11 +1584,11 @@ mod tests {
         ];
 
         for (finish_as, status, exec, ord_status) in cases {
-            let (tx, mut rx) = mpsc::unbounded_channel();
-            let count = parser.parse(mk_payload(finish_as, status), &tx);
+            let sink = TestAccountEventSink::new();
+            let count = parser.parse(mk_payload(finish_as, status), &sink);
             assert_eq!(count, 1, "finish_as={finish_as}");
 
-            let wrapped = rx.try_recv().expect("order event");
+            let wrapped = sink.recv().expect("order event");
             let (event_type, scope, body) =
                 split_basic_account_event(&wrapped).expect("wrapped order");
             assert_eq!(event_type, BasicAccountEventType::OrderUpdate);
@@ -1606,7 +1602,7 @@ mod tests {
     #[test]
     fn gate_futures_unknown_finish_as_is_dropped() {
         let parser = GateAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
         let payload = Bytes::from_static(
             br#"{
                 "channel":"futures.orders",
@@ -1631,15 +1627,15 @@ mod tests {
             }"#,
         );
 
-        let count = parser.parse(payload, &tx);
+        let count = parser.parse(payload, &sink);
         assert_eq!(count, 0);
-        assert!(rx.try_recv().is_err());
+        assert!(sink.recv().is_none());
     }
 
     #[test]
     fn gate_futures_orders_accept_numeric_size_and_left() {
         let parser = GateAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
         let payload = Bytes::from_static(
             br#"{
                 "time":1776921360,
@@ -1665,10 +1661,10 @@ mod tests {
             }"#,
         );
 
-        let count = parser.parse(payload, &tx);
+        let count = parser.parse(payload, &sink);
         assert_eq!(count, 1);
 
-        let wrapped = rx.try_recv().expect("order event");
+        let wrapped = sink.recv().expect("order event");
         let (event_type, scope, body) = split_basic_account_event(&wrapped).expect("wrapped order");
         assert_eq!(event_type, BasicAccountEventType::OrderUpdate);
         assert_eq!(scope, BasicAccountScope::GateUnified);
@@ -1687,7 +1683,7 @@ mod tests {
     #[test]
     fn gate_futures_orders_missing_update_time_is_incomplete() {
         let parser = GateAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
         let payload = Bytes::from_static(
             br#"{
                 "channel":"futures.orders",
@@ -1708,16 +1704,16 @@ mod tests {
             }"#,
         );
 
-        let report = parser.parse_with_report(payload, &tx);
+        let report = parser.parse_with_report(payload, &sink);
         assert_eq!(report.emitted, 0);
         assert!(!report.complete);
-        assert!(rx.try_recv().is_err());
+        assert!(sink.recv().is_none());
     }
 
     #[test]
     fn gate_spot_orders_accept_margin_types() {
         let parser = GateAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
         let payload = Bytes::from_static(
             br#"{
                 "channel":"spot.orders_v2",
@@ -1755,11 +1751,11 @@ mod tests {
             }"#,
         );
 
-        let report = parser.parse_with_report(payload, &tx);
+        let report = parser.parse_with_report(payload, &sink);
         assert_eq!(report.emitted, 1);
         assert!(report.complete);
 
-        let wrapped = rx.try_recv().expect("order event");
+        let wrapped = sink.recv().expect("order event");
         let (event_type, scope, body) = split_basic_account_event(&wrapped).expect("wrapped order");
         assert_eq!(event_type, BasicAccountEventType::OrderUpdate);
         assert_eq!(scope, BasicAccountScope::GateUnified);
@@ -1775,7 +1771,7 @@ mod tests {
     #[test]
     fn futures_usertrades_emits_trade_lite_for_t_prefixed_client_order_id() {
         let parser = GateAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
         let payload = Bytes::from_static(
             br#"{
                 "time": 1543205083,
@@ -1798,10 +1794,10 @@ mod tests {
             }"#,
         );
 
-        let count = parser.parse(payload, &tx);
+        let count = parser.parse(payload, &sink);
         assert_eq!(count, 1);
 
-        let wrapped_trade = rx.try_recv().expect("trade-lite event");
+        let wrapped_trade = sink.recv().expect("trade-lite event");
         let (event_type, scope, body) =
             split_basic_account_event(&wrapped_trade).expect("wrapped trade-lite");
         assert_eq!(event_type, BasicAccountEventType::TradeUpdateLite);
@@ -1823,7 +1819,7 @@ mod tests {
     #[test]
     fn futures_usertrades_drops_non_numeric_client_order_id() {
         let parser = GateAccountEventParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = TestAccountEventSink::new();
         let payload = Bytes::from_static(
             br#"{
                 "time": 1543205083,
@@ -1844,8 +1840,8 @@ mod tests {
             }"#,
         );
 
-        let count = parser.parse(payload, &tx);
+        let count = parser.parse(payload, &sink);
         assert_eq!(count, 0);
-        assert!(rx.try_recv().is_err());
+        assert!(sink.recv().is_none());
     }
 }
