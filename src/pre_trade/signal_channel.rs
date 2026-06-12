@@ -623,14 +623,15 @@ fn handle_trade_signal(signal: TradeSignal) {
                 }
 
                 if let Some(hit) = account_open_block_hit.as_ref() {
-                    let reducing = arb_open_is_account_throttle_reducing(
-                        &symbol,
-                        opening_venue,
-                        &hedging_symbol,
-                        hedging_venue,
-                        side,
-                        open_ctx.amount_value(),
-                    );
+                    let reducing = hit.allows_reducing_open()
+                        && arb_open_is_account_throttle_reducing(
+                            &symbol,
+                            opening_venue,
+                            &hedging_symbol,
+                            hedging_venue,
+                            side,
+                            open_ctx.amount_value(),
+                        );
                     if !reducing {
                         debug!(
                             "ArbOpen: account-wide open block, reason={} symbol={} side={} open_venue={:?} hedge_venue={:?} qty={:.8} first_seen_us={} updated_at_us={} last_code={}, skip strategy construction",

@@ -1,4 +1,7 @@
-use crate::pre_trade::account_open_block::{register_account_open_block, AccountOpenBlockReason};
+use crate::pre_trade::account_open_block::{
+    register_account_open_block, register_bybit_internal_system_open_block, AccountOpenBlockReason,
+    BYBIT_INTERNAL_SYSTEM_OPEN_BLOCK_TTL_US,
+};
 use crate::pre_trade::log_throttle::log_order_rate_limit_summary;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
@@ -1896,10 +1899,42 @@ impl ArbHedgeStrategy {
         hedge_side: Option<Side>,
         error_code: i32,
     ) {
+        self.register_bybit_hedge_open_failure_throttle(
+            now_ts,
+            hedge_side,
+            error_code,
+            "Bybit OI/position-limit",
+            "bybit_open_interest_position_limit",
+        );
+    }
+
+    fn register_bybit_collateral_not_enabled_throttle(
+        &mut self,
+        now_ts: i64,
+        hedge_side: Option<Side>,
+        error_code: i32,
+    ) {
+        self.register_bybit_hedge_open_failure_throttle(
+            now_ts,
+            hedge_side,
+            error_code,
+            "Bybit collateral-not-enabled",
+            "bybit_collateral_not_enabled",
+        );
+    }
+
+    fn register_bybit_hedge_open_failure_throttle(
+        &mut self,
+        now_ts: i64,
+        hedge_side: Option<Side>,
+        error_code: i32,
+        log_label: &'static str,
+        cancel_reason: &'static str,
+    ) {
         let Some(hedge_side) = hedge_side else {
             warn!(
-                "ArbHedgeStrategy: strategy_id={} symbol={} Bybit OI/position-limit throttle skipped: hedge_side unknown",
-                self.strategy_id, self.symbol
+                "ArbHedgeStrategy: strategy_id={} symbol={} {} throttle skipped: hedge_side unknown",
+                self.strategy_id, self.symbol, log_label
             );
             return;
         };
@@ -1920,17 +1955,13 @@ impl ArbHedgeStrategy {
             .arb_open_strategy_ids_by_symbol_and_side(&self.symbol, open_side);
         for sid in &ids {
             let mut mgr = strategy_mgr_handle.borrow_mut();
-            mgr.cancel_arb_open_by_id(
-                *sid,
-                open_side,
-                "bybit_open_interest_position_limit",
-                now_ts,
-            );
+            mgr.cancel_arb_open_by_id(*sid, open_side, cancel_reason, now_ts);
         }
         warn!(
-            "ArbHedgeStrategy: strategy_id={} symbol={} Bybit OI/position-limit throttle registered hedge_side={:?} open_side={:?} code={} open_registered={} hedge_block_until_us={} cancel_open_count={}",
+            "ArbHedgeStrategy: strategy_id={} symbol={} {} throttle registered hedge_side={:?} open_side={:?} code={} open_registered={} hedge_block_until_us={} cancel_open_count={}",
             self.strategy_id,
             self.symbol,
+            log_label,
             hedge_side,
             open_side,
             error_code,
@@ -2029,11 +2060,31 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
         let is_insufficient_margin = response.is_insufficient_margin();
         let is_bybit_open_interest_position_limit =
             response.is_bybit_open_interest_position_limit();
+        let is_bybit_collateral_not_enabled = response.is_bybit_collateral_not_enabled();
+        let is_bybit_internal_system_error = response.is_bybit_internal_system_error();
         if is_bybit_open_interest_position_limit {
             self.register_bybit_open_interest_position_limit_throttle(
                 now_ts,
                 order_snapshot.as_ref().map(|(side, _, _)| *side),
                 response.error_code(),
+            );
+        }
+        if is_bybit_collateral_not_enabled {
+            self.register_bybit_collateral_not_enabled_throttle(
+                now_ts,
+                order_snapshot.as_ref().map(|(side, _, _)| *side),
+                response.error_code(),
+            );
+        }
+        if is_bybit_internal_system_error {
+            register_bybit_internal_system_open_block(response.error_code());
+            self.cancel_all_arb_open_orders(now_ts, "bybit_internal_system_account_open_block");
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} symbol={} Bybit internal system error account-wide open block registered code={} block_for_s={}",
+                self.strategy_id,
+                self.symbol,
+                response.error_code(),
+                BYBIT_INTERNAL_SYSTEM_OPEN_BLOCK_TTL_US / 1_000_000
             );
         }
         if let Some(meta) = self.hedge_order_meta.remove(&client_order_id) {
@@ -2063,8 +2114,11 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
                         response.error_code(),
                     );
                 }
-            } else if is_bybit_open_interest_position_limit {
+            } else if is_bybit_open_interest_position_limit || is_bybit_collateral_not_enabled {
                 self.next_query_ts_us = self.bybit_oi_limit_block_until_us;
+            } else if is_bybit_internal_system_error {
+                self.next_query_ts_us =
+                    now_ts.saturating_add(BYBIT_INTERNAL_SYSTEM_OPEN_BLOCK_TTL_US);
             } else {
                 self.trigger_hedge_query_after_pending_release(now_ts, "hedge_open_failed");
             }
@@ -2089,6 +2143,10 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
                 " [INSUFFICIENT_MARGIN]"
             } else if is_bybit_open_interest_position_limit {
                 " [BYBIT_OPEN_INTEREST_POSITION_LIMIT]"
+            } else if is_bybit_collateral_not_enabled {
+                " [BYBIT_COLLATERAL_NOT_ENABLED]"
+            } else if is_bybit_internal_system_error {
+                " [BYBIT_INTERNAL_SYSTEM_OPEN_BLOCK]"
             } else {
                 ""
             }

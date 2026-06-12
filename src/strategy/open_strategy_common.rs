@@ -1,3 +1,6 @@
+use crate::pre_trade::account_open_block::{
+    register_bybit_internal_system_open_block, BYBIT_INTERNAL_SYSTEM_OPEN_BLOCK_TTL_US,
+};
 use crate::pre_trade::intra_bwd_symbol_list::IntraBwdSymbolList;
 use crate::pre_trade::log_throttle::log_pending_limit_summary;
 use crate::pre_trade::monitor_channel::{MonitorChannel, OpenExposureRiskError};
@@ -2293,7 +2296,23 @@ pub trait OpenStrategyCommon {
         response: &dyn TradeEngineResponse,
         client_order_id: i64,
     ) {
-        if !response.is_open_rejected() || self.skip_open_position_risk_checks() {
+        if !response.is_open_rejected() {
+            return;
+        }
+
+        if response.is_bybit_internal_system_error() {
+            register_bybit_internal_system_open_block(response.error_code());
+            warn!(
+                "{}: strategy_id={} registered Bybit account-wide open block after open_failed code={} client_order_id={} block_for_s={}",
+                self.strategy_name(),
+                self.strategy_id(),
+                response.error_code(),
+                client_order_id,
+                BYBIT_INTERNAL_SYSTEM_OPEN_BLOCK_TTL_US / 1_000_000
+            );
+        }
+
+        if self.skip_open_position_risk_checks() {
             return;
         }
 

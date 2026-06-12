@@ -23,6 +23,7 @@ const GATE_UNIFIED_CAPACITY_LOW_ERROR_CODE: i32 = 0;
 const BITGET_UNIFIED_USDT_OPEN_BLOCK_THRESHOLD: f64 = 2_000.0;
 const BITGET_UNIFIED_CAPACITY_POLL_INTERVAL_US: i64 = 60_000_000;
 const BITGET_UNIFIED_CAPACITY_LOW_ERROR_CODE: i32 = 0;
+pub const BYBIT_INTERNAL_SYSTEM_OPEN_BLOCK_TTL_US: i64 = 30 * 60 * 1_000_000;
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum AccountOpenBlockReason {
@@ -30,6 +31,7 @@ pub enum AccountOpenBlockReason {
     OkexUnifiedInsufficientMargin,
     GateUnifiedInsufficientMargin,
     BitgetUnifiedInsufficientMargin,
+    BybitInternalSystemError,
 }
 
 impl AccountOpenBlockReason {
@@ -39,6 +41,7 @@ impl AccountOpenBlockReason {
             Self::OkexUnifiedInsufficientMargin => "okex_unified_insufficient_margin",
             Self::GateUnifiedInsufficientMargin => "gate_unified_insufficient_margin",
             Self::BitgetUnifiedInsufficientMargin => "bitget_unified_insufficient_margin",
+            Self::BybitInternalSystemError => "bybit_internal_system_error",
         }
     }
 }
@@ -48,6 +51,7 @@ struct AccountOpenBlockEntry {
     first_seen_us: i64,
     updated_at_us: i64,
     last_error_code: i32,
+    expires_at_us: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +60,15 @@ pub struct AccountOpenBlockHit {
     pub first_seen_us: i64,
     pub updated_at_us: i64,
     pub last_error_code: i32,
+}
+
+impl AccountOpenBlockHit {
+    pub fn allows_reducing_open(&self) -> bool {
+        !matches!(
+            self.reason,
+            AccountOpenBlockReason::BybitInternalSystemError
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -205,6 +218,15 @@ static NEXT_CAPACITY_QUERY_ID: AtomicI64 = AtomicI64::new(-9_100_000);
 
 pub fn register_account_open_block(reason: AccountOpenBlockReason, error_code: i32) {
     register_account_open_block_at(reason, error_code, get_timestamp_us());
+}
+
+pub fn register_bybit_internal_system_open_block(error_code: i32) {
+    register_account_open_block_with_ttl_at(
+        AccountOpenBlockReason::BybitInternalSystemError,
+        error_code,
+        get_timestamp_us(),
+        BYBIT_INTERNAL_SYSTEM_OPEN_BLOCK_TTL_US,
+    );
 }
 
 pub fn check_account_open_block() -> Option<AccountOpenBlockHit> {
@@ -489,27 +511,53 @@ fn capacity_venue_for_monitor() -> Option<CapacityVenue> {
 }
 
 fn register_account_open_block_at(reason: AccountOpenBlockReason, error_code: i32, now_us: i64) {
+    register_account_open_block_entry_at(reason, error_code, now_us, None);
+}
+
+fn register_account_open_block_with_ttl_at(
+    reason: AccountOpenBlockReason,
+    error_code: i32,
+    now_us: i64,
+    ttl_us: i64,
+) {
+    let expires_at_us = now_us.saturating_add(ttl_us.max(0));
+    register_account_open_block_entry_at(reason, error_code, now_us, Some(expires_at_us));
+}
+
+fn register_account_open_block_entry_at(
+    reason: AccountOpenBlockReason,
+    error_code: i32,
+    now_us: i64,
+    expires_at_us: Option<i64>,
+) {
     let mut guard = ACCOUNT_OPEN_BLOCKS.lock();
+    cleanup_expired_account_open_blocks(&mut guard, now_us);
     guard
         .entry(reason)
         .and_modify(|entry| {
             entry.updated_at_us = now_us;
             entry.last_error_code = error_code;
+            entry.expires_at_us = match (entry.expires_at_us, expires_at_us) {
+                (None, _) | (_, None) => None,
+                (Some(existing), Some(incoming)) => Some(existing.max(incoming)),
+            };
         })
         .or_insert(AccountOpenBlockEntry {
             first_seen_us: now_us,
             updated_at_us: now_us,
             last_error_code: error_code,
+            expires_at_us,
         });
     warn!(
-        "AccountOpenBlock: register reason={} code={} first_seen_us={} updated_at_us={}",
+        "AccountOpenBlock: register reason={} code={} first_seen_us={} updated_at_us={} expires_at_us={:?}",
         reason.as_str(),
         error_code,
         guard
             .get(&reason)
             .map(|entry| entry.first_seen_us)
             .unwrap_or(now_us),
-        now_us
+        now_us,
+        guard.get(&reason).and_then(|entry| entry.expires_at_us)
     );
 }
 
@@ -526,13 +574,19 @@ fn ensure_account_open_block_from_capacity_low(venue: CapacityVenue, now_us: i64
             first_seen_us: now_us,
             updated_at_us: now_us,
             last_error_code: venue.low_error_code(),
+            expires_at_us: None,
         },
     );
     true
 }
 
 fn check_account_open_block_at() -> Option<AccountOpenBlockHit> {
-    let guard = ACCOUNT_OPEN_BLOCKS.lock();
+    check_account_open_block_at_ts(get_timestamp_us())
+}
+
+fn check_account_open_block_at_ts(now_us: i64) -> Option<AccountOpenBlockHit> {
+    let mut guard = ACCOUNT_OPEN_BLOCKS.lock();
+    cleanup_expired_account_open_blocks(&mut guard, now_us);
     guard
         .iter()
         .min_by_key(|(reason, entry)| (entry.first_seen_us, reason.as_str()))
@@ -542,6 +596,17 @@ fn check_account_open_block_at() -> Option<AccountOpenBlockHit> {
             updated_at_us: entry.updated_at_us,
             last_error_code: entry.last_error_code,
         })
+}
+
+fn cleanup_expired_account_open_blocks(
+    map: &mut HashMap<AccountOpenBlockReason, AccountOpenBlockEntry>,
+    now_us: i64,
+) {
+    map.retain(|_, entry| {
+        entry
+            .expires_at_us
+            .is_none_or(|expires_at_us| expires_at_us > now_us)
+    });
 }
 
 fn capacity_poll_state(venue: CapacityVenue) -> &'static Mutex<CapacityPollState> {
@@ -969,6 +1034,49 @@ mod tests {
         assert_eq!(hit.first_seen_us, now_us);
         assert_eq!(hit.updated_at_us, now_us + 10);
         assert_eq!(hit.last_error_code, -2018);
+    }
+
+    #[test]
+    fn bybit_internal_system_block_expires_after_ttl() {
+        let _guard = TEST_LOCK.lock();
+        clear_all();
+        let now_us = 3_000_000;
+
+        register_account_open_block_with_ttl_at(
+            AccountOpenBlockReason::BybitInternalSystemError,
+            10016,
+            now_us,
+            BYBIT_INTERNAL_SYSTEM_OPEN_BLOCK_TTL_US,
+        );
+
+        let hit =
+            check_account_open_block_at_ts(now_us + BYBIT_INTERNAL_SYSTEM_OPEN_BLOCK_TTL_US - 1)
+                .expect("Bybit internal system block must remain active before ttl");
+        assert_eq!(hit.reason, AccountOpenBlockReason::BybitInternalSystemError);
+        assert_eq!(hit.last_error_code, 10016);
+        assert!(
+            check_account_open_block_at_ts(now_us + BYBIT_INTERNAL_SYSTEM_OPEN_BLOCK_TTL_US)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn bybit_internal_system_block_does_not_allow_reducing_open() {
+        let hit = AccountOpenBlockHit {
+            reason: AccountOpenBlockReason::BybitInternalSystemError,
+            first_seen_us: 1,
+            updated_at_us: 2,
+            last_error_code: 10016,
+        };
+        assert!(!hit.allows_reducing_open());
+
+        let margin_hit = AccountOpenBlockHit {
+            reason: AccountOpenBlockReason::BinancePmInsufficientMargin,
+            first_seen_us: 1,
+            updated_at_us: 2,
+            last_error_code: -2019,
+        };
+        assert!(margin_hit.allows_reducing_open());
     }
 
     #[test]

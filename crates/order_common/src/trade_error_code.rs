@@ -282,6 +282,17 @@ mod tests {
             Some("CONTRACT_NOT_LIVE/合约未上线或不可交易")
         );
         assert_eq!(
+            describe_non_retryable_order_error(Exchange::Bybit, bybit::COLLATERAL_NOT_ENABLED),
+            Some("COLLATERAL_NOT_ENABLED/抵押品未启用")
+        );
+        assert_eq!(
+            describe_non_retryable_order_error(
+                Exchange::Bybit,
+                bybit::PLATFORM_LOAN_AMOUNT_NOT_ENOUGH
+            ),
+            Some("PLATFORM_LOAN_AMOUNT_NOT_ENOUGH/平台可借数量不足")
+        );
+        assert_eq!(
             describe_non_retryable_order_error(Exchange::Okex, -4004),
             None
         );

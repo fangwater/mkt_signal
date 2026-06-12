@@ -149,6 +149,18 @@ pub trait TradeEngineResponse {
             && self.error_code() == bybit::OPEN_INTEREST_POSITION_LIMIT_EXCEEDED
     }
 
+    fn is_bybit_collateral_not_enabled(&self) -> bool {
+        matches!(self.exchange_enum(), Some(Exchange::Bybit))
+            && self.is_open_request()
+            && self.error_code() == bybit::COLLATERAL_NOT_ENABLED
+    }
+
+    fn is_bybit_internal_system_error(&self) -> bool {
+        matches!(self.exchange_enum(), Some(Exchange::Bybit))
+            && self.is_open_request()
+            && self.error_code() == bybit::INTERNAL_SYSTEM_ERROR
+    }
+
     /// OKX: insufficient margin / loanable assets.
     /// Gate uses string labels for errors; mapping happens in
     /// `trade_response_handle::normalize_trade_error`, which converts the
@@ -396,6 +408,38 @@ mod tests {
         assert!(resp.is_open_request());
         assert!(resp.is_open_rejected());
         assert!(resp.is_bybit_open_interest_position_limit());
+        assert!(!resp.is_insufficient_margin());
+    }
+
+    #[test]
+    fn detects_bybit_collateral_not_enabled() {
+        let resp = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::BybitNewMarginOrder as u32,
+            symbol_utils::Exchange::Bybit as u32,
+            123,
+            bybit::COLLATERAL_NOT_ENABLED,
+        );
+
+        assert!(resp.is_open_request());
+        assert!(resp.is_open_rejected());
+        assert!(resp.is_bybit_collateral_not_enabled());
+        assert!(!resp.is_insufficient_margin());
+    }
+
+    #[test]
+    fn detects_bybit_internal_system_error() {
+        let resp = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::BybitNewMarginOrder as u32,
+            symbol_utils::Exchange::Bybit as u32,
+            123,
+            bybit::INTERNAL_SYSTEM_ERROR,
+        );
+
+        assert!(resp.is_open_request());
+        assert!(resp.is_open_rejected());
+        assert!(resp.is_bybit_internal_system_error());
         assert!(!resp.is_insufficient_margin());
     }
 

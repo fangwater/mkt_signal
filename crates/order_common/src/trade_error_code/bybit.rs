@@ -1,4 +1,5 @@
 /// Bybit trade/rest/ws error codes to short descriptions.
+pub const INTERNAL_SYSTEM_ERROR: i32 = 10016;
 pub const OPEN_INTEREST_POSITION_LIMIT_EXCEEDED: i32 = 110021;
 pub const CONTRACT_NOT_LIVE: i32 = 110074;
 pub const COLLATERAL_NOT_ENABLED: i32 = 170037;
@@ -12,7 +13,7 @@ pub fn describe_trade_error_code(code: i32) -> Option<&'static str> {
         10404 => Some("Unsupported op or category"),
         10429 => Some("System-level frequency protection triggered"),
         20006 => Some("Duplicated reqId"),
-        10016 => Some("Internal error or service restarting"),
+        INTERNAL_SYSTEM_ERROR => Some("Internal error or service restarting"),
         10019 => Some("WS trade service restarting; new requests rejected"),
         OPEN_INTEREST_POSITION_LIMIT_EXCEEDED => Some("Open interest or position limit exceeded"),
         CONTRACT_NOT_LIVE => Some("Contract is not live"),
@@ -29,6 +30,8 @@ pub fn describe_non_retryable_order_error(code: i32) -> Option<&'static str> {
             Some("OPEN_INTEREST_POSITION_LIMIT_EXCEEDED/OI或持仓限制")
         }
         CONTRACT_NOT_LIVE => Some("CONTRACT_NOT_LIVE/合约未上线或不可交易"),
+        COLLATERAL_NOT_ENABLED => Some("COLLATERAL_NOT_ENABLED/抵押品未启用"),
+        PLATFORM_LOAN_AMOUNT_NOT_ENOUGH => Some("PLATFORM_LOAN_AMOUNT_NOT_ENOUGH/平台可借数量不足"),
         _ => None,
     }
 }
