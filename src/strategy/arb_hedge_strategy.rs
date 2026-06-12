@@ -655,7 +655,7 @@ impl ArbHedgeStrategy {
         ctx.request_seq = request_seq;
         ctx.set_from_key(build_direct_taker_from_key(source, now_ts, ret_qtl));
 
-        info!(
+        debug!(
             "ArbHedgeStrategy: strategy_id={} symbol={} {} direct hedge qty={:.8} side={:?} request_seq={}",
             self.strategy_id, self.symbol, source, qty, hedge_side, request_seq
         );
@@ -1185,10 +1185,17 @@ impl ArbHedgeStrategy {
 
         let client_order_id = self.next_order_id();
         let qty_multiplier = (order_base_qty / qty).max(1e-12);
+        // egress 测度：建单即落 signal 元数据，覆盖本单后续 new/cancel 两次 egress（同归 ArbHedge 桶）。
+        let quantity_qv = order_qv_from_quantized_value(ctx.amount_qv);
+        let price_qv = if is_taker {
+            None
+        } else {
+            Some(order_qv_from_quantized_value(ctx.price_qv))
+        };
         MonitorChannel::instance()
             .order_manager()
             .borrow_mut()
-            .create_order_with_pending_limit_flag(
+            .create_order_with_mut(
                 venue,
                 client_order_id,
                 order_type,
@@ -1199,18 +1206,14 @@ impl ArbHedgeStrategy {
                 false,
                 qty_multiplier,
                 false,
+                |order| {
+                    order.set_quantity_qv(quantity_qv);
+                    if let Some(price_qv) = price_qv {
+                        order.set_price_qv(price_qv);
+                    }
+                    order.set_signal_meta(ctx.signal_ts, SignalType::ArbHedge as u8);
+                },
             );
-        // egress 测度：建单即落 signal 元数据，覆盖本单后续 new/cancel 两次 egress（同归 ArbHedge 桶）。
-        let _ = MonitorChannel::instance()
-            .order_manager()
-            .borrow_mut()
-            .update(client_order_id, |o| {
-                o.set_quantity_qv(order_qv_from_quantized_value(ctx.amount_qv));
-                if !is_taker {
-                    o.set_price_qv(order_qv_from_quantized_value(ctx.price_qv));
-                }
-                o.set_signal_meta(ctx.signal_ts, SignalType::ArbHedge as u8)
-            });
         self.hedge_order_meta.insert(
             client_order_id,
             ArbHedgeOrderMeta {
@@ -1226,7 +1229,7 @@ impl ArbHedgeStrategy {
             },
         );
 
-        info!(
+        debug!(
             "ArbHedge订单已创建: strategy_id={} client_order_id={} symbol={} side={:?} type={:?} qty={:.8} mode={} request_seq={}",
             self.strategy_id,
             client_order_id,
@@ -2188,13 +2191,12 @@ impl OrderTerminalRecorder for ArbHedgeStrategy {
         &mut self,
         terminal_ts: i64,
         side: Side,
-        order_base_qty: f64,
+        _order_base_qty: f64,
         filled_base_qty: f64,
         price: f64,
         close_ts: i64,
         open_client_order_id: i64,
     ) -> bool {
-        let order_base_qty = order_base_qty.abs();
         let filled_base_qty = filled_base_qty.abs();
         if filled_base_qty <= TERMINAL_QTY_EPS {
             return false;
@@ -2216,29 +2218,23 @@ impl OrderTerminalRecorder for ArbHedgeStrategy {
                 open_client_order_id,
             );
         }
-        let pending_after = self.pending_hedge_queue.net_qty();
-        let borrowed_after = self.borrowed_hedge_qv();
-
-        info!(
-            "ArbHedgeRecord: strategy_id={} symbol={} leg=opening side={:?} order_base_qty={:.8} filled_base_qty={:.8} fill_qv={:.8} hedge_work_delta={:.8} price={:.8} terminal_ts={} close_ts={} open_co_id={} outstanding_before={:.8} outstanding_after={:.8} net={:.8} hedge_work_baseline={:.8} pending_hedge={:.8} borrowed_hedge={:.8}",
-            self.strategy_id,
-            self.symbol,
-            side,
-            order_base_qty,
-            filled_base_qty,
-            signed_base_qty,
-            hedge_work_delta,
-            price,
-            terminal_ts,
-            close_ts,
-            open_client_order_id,
-            outstanding_before,
-            pending_after + borrowed_after,
-            self.net_qty_queue.net_qty(),
-            self.hedge_work_baseline_qv,
-            pending_after,
-            borrowed_after
-        );
+        if log::log_enabled!(log::Level::Debug) {
+            let pending_after = self.pending_hedge_queue.net_qty();
+            let borrowed_after = self.borrowed_hedge_qv();
+            debug!(
+                "ArbHedgeRecord: strategy_id={} symbol={} leg=opening side={:?} filled_base_qty={:.8} hedge_work_delta={:.8} terminal_ts={} close_ts={} open_co_id={} pending_hedge={:.8} borrowed_hedge={:.8}",
+                self.strategy_id,
+                self.symbol,
+                side,
+                filled_base_qty,
+                hedge_work_delta,
+                terminal_ts,
+                close_ts,
+                open_client_order_id,
+                pending_after,
+                borrowed_after
+            );
+        }
 
         // opening-leg terminal 会尝试立即触发一次状态查询，但它只负责"已经 due 的量"。
         // 如果 close_ts 还没到，trigger 会跳过，后续由 ArbHedgeStrategy::handle_period_clock

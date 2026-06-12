@@ -806,7 +806,20 @@ impl OrderManager {
     where
         F: FnOnce(&mut Order) -> R,
     {
-        self.create_order_with_pending_limit_flag(
+        let qty_multiplier = if qty_multiplier.is_finite() && qty_multiplier > 0.0 {
+            qty_multiplier
+        } else {
+            warn!(
+                "OrderManager: invalid qty_multiplier={}, fallback to 1.0 client_order_id={} symbol={} venue={:?}",
+                qty_multiplier,
+                id,
+                symbol,
+                venue
+            );
+            1.0
+        };
+        let symbol = normalize_symbol_for_internal(&symbol);
+        let mut order = Order::new(
             venue,
             id,
             order_type,
@@ -816,9 +829,12 @@ impl OrderManager {
             price,
             reduce_only,
             qty_multiplier,
+            self.binance_account_mode,
             count_pending_limit,
         );
-        self.orders.get_mut(&id).map(f)
+        let result = f(&mut order);
+        self.insert(order);
+        Some(result)
     }
 
     pub fn get_symbol_pending_limit_order_count(&self, symbol: &str) -> i32 {

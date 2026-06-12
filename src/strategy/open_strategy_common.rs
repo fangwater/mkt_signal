@@ -498,7 +498,7 @@ pub trait OpenStrategyCommon {
         drop(strategy_mgr);
         if updated {
             self.open_order_state_mut().hedge_watermark_base_qty = target_base_qty;
-            info!(
+            debug!(
                 "{}: strategy_id={} open hedge watermark advanced by terminal symbol={} side={:?} order_base_qty={:.8} target_base_qty={:.8} delta_base_qty={:.8} watermark_base_qty={:.8} terminal_ts={} price={:.8} close_ts={} open_co_id={} detail={}",
                 self.strategy_name(),
                 self.strategy_id(),
@@ -1716,7 +1716,6 @@ pub trait OpenStrategyCommon {
         }
 
         let prev_cumulative_filled_qty = current_order.cumulative_filled_quantity;
-        let prev_order_terminal = current_order.status.is_terminal();
         let incoming_cumulative_filled_qty = order_update.cumulative_filled_quantity();
         let protected_cumulative_fill =
             current_order.protected_cumulative_fill(incoming_cumulative_filled_qty);
@@ -1876,22 +1875,7 @@ pub trait OpenStrategyCommon {
             order_update.status(),
             OrderStatus::Canceled | OrderStatus::Filled
         ) {
-            let terminal_venue_qty = if prev_order_terminal {
-                effective_cumulative_filled_qty - prev_cumulative_filled_qty
-            } else {
-                effective_cumulative_filled_qty
-            };
-            let terminal_base_qty = terminal_venue_qty * order.qty_multiplier;
-            let update_detail = format!(
-                "{} local_order_symbol={} local_order_qty={:.8} qty_multiplier={:.8} terminal_venue_qty={:.8} terminal_base_qty={:.8} local_order_status={:?}",
-                order_update.debug_summary(),
-                order.symbol,
-                order.quantity,
-                order.qty_multiplier,
-                terminal_venue_qty,
-                terminal_base_qty,
-                order.status
-            );
+            let update_detail = "order_update_terminal";
             self.record_open_order_terminal_base_qty(
                 &order.symbol,
                 order.side,
@@ -2019,7 +2003,6 @@ pub trait OpenStrategyCommon {
         }
 
         let prev_cumulative_filled_qty = current_order.cumulative_filled_quantity;
-        let prev_order_terminal = current_order.status.is_terminal();
         let cumulative_qty = trade.cumulative_filled_quantity();
         let event_time = trade.event_time();
         let updated = order_manager.apply_remote_update(client_order_id, |order| {
@@ -2072,22 +2055,7 @@ pub trait OpenStrategyCommon {
         );
 
         if status == OrderStatus::Filled {
-            let terminal_venue_qty = if prev_order_terminal {
-                cumulative_qty - prev_cumulative_filled_qty
-            } else {
-                cumulative_qty
-            };
-            let terminal_base_qty = terminal_venue_qty * order.qty_multiplier;
-            let update_detail = format!(
-                "{} local_order_symbol={} local_order_qty={:.8} qty_multiplier={:.8} terminal_venue_qty={:.8} terminal_base_qty={:.8} local_order_status={:?}",
-                trade.debug_summary(),
-                order.symbol,
-                order.quantity,
-                order.qty_multiplier,
-                terminal_venue_qty,
-                terminal_base_qty,
-                order.status
-            );
+            let update_detail = "trade_update_filled";
             self.record_open_order_terminal_base_qty(
                 &order.symbol,
                 order.side,
