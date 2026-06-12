@@ -46,8 +46,8 @@ const BINANCE_BRIDGE_DERIVATIVES_SERVICE: &str = "bridge/binance-futures/derivat
 const BINANCE_DIRECT_DERIVATIVES_SERVICE: &str = "dat_pbs/binance-futures/derivatives";
 const OKEX_DERIVATIVES_SERVICE: &str = "dat_pbs/okex-futures/derivatives";
 const BYBIT_DERIVATIVES_SERVICE: &str = "dat_pbs/bybit-futures/derivatives";
-const BITGET_DERIVATIVES_SERVICE: &str = "bridge/bitget-futures/derivatives";
-const GATE_DERIVATIVES_SERVICE: &str = "bridge/gate-futures/derivatives";
+const BITGET_DERIVATIVES_SERVICE: &str = "dat_pbs/bitget-futures/derivatives";
+const GATE_DERIVATIVES_SERVICE: &str = "dat_pbs/gate-futures/derivatives";
 const DEFAULT_NODE_PRE_TRADE_DERIVATIVES: &str = "pre_trade_derivatives";
 const ARB_STARTUP_NET_EXPOSURE_WARN_USDT: f64 = 500.0;
 const BASIC_STATE_REFRESH_MIN_INTERVAL_US: i64 = 100_000;
@@ -5381,7 +5381,7 @@ mod tests {
                 TradingVenue::GateFutures,
                 ArbMode::CrossArb,
             ),
-            "bridge/gate-futures/derivatives"
+            "dat_pbs/gate-futures/derivatives"
         );
         assert_eq!(
             MonitorChannel::derivatives_service_for_mark_price_source(
@@ -5389,7 +5389,7 @@ mod tests {
                 TradingVenue::GateFutures,
                 ArbMode::IntraArb,
             ),
-            "bridge/gate-futures/derivatives"
+            "dat_pbs/gate-futures/derivatives"
         );
         assert_eq!(
             MonitorChannel::derivatives_service_for_mark_price_source(
@@ -5397,7 +5397,7 @@ mod tests {
                 TradingVenue::BitgetFutures,
                 ArbMode::IntraArb,
             ),
-            "bridge/bitget-futures/derivatives"
+            "dat_pbs/bitget-futures/derivatives"
         );
     }
 

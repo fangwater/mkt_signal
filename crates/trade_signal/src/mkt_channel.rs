@@ -77,12 +77,7 @@ fn normalize_symbol_key(symbol: &str) -> String {
 fn bridge_compat_market_data(venue: TradingVenue) -> bool {
     matches!(
         venue,
-        TradingVenue::BinanceMargin
-            | TradingVenue::BinanceFutures
-            | TradingVenue::GateMargin
-            | TradingVenue::GateFutures
-            | TradingVenue::BitgetMargin
-            | TradingVenue::BitgetFutures
+        TradingVenue::BinanceMargin | TradingVenue::BinanceFutures
     )
 }
 
@@ -1286,7 +1281,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bridge_compat_venues_use_bridge_services() {
+    fn binance_venues_use_bridge_services() {
         assert_eq!(
             askbid_service_name_for_pair(TradingVenue::BinanceFutures, false),
             "bridge/binance-futures/ask_bid_spread"
@@ -1294,22 +1289,6 @@ mod tests {
         assert_eq!(
             derivatives_service_name(TradingVenue::BinanceFutures),
             "bridge/binance-futures/derivatives"
-        );
-        assert_eq!(
-            askbid_service_name_for_pair(TradingVenue::GateMargin, false),
-            "bridge/gate-margin/ask_bid_spread"
-        );
-        assert_eq!(
-            derivatives_service_name(TradingVenue::GateFutures),
-            "bridge/gate-futures/derivatives"
-        );
-        assert_eq!(
-            askbid_service_name_for_pair(TradingVenue::BitgetMargin, false),
-            "bridge/bitget-margin/ask_bid_spread"
-        );
-        assert_eq!(
-            derivatives_service_name(TradingVenue::BitgetFutures),
-            "bridge/bitget-futures/derivatives"
         );
     }
 
@@ -1331,6 +1310,22 @@ mod tests {
             derivatives_service_name(TradingVenue::BybitFutures),
             "dat_pbs/bybit-futures/derivatives"
         );
+        assert_eq!(
+            askbid_service_name_for_pair(TradingVenue::GateMargin, false),
+            "spread_pbs/gate-margin/ask_bid_spread"
+        );
+        assert_eq!(
+            derivatives_service_name(TradingVenue::GateFutures),
+            "dat_pbs/gate-futures/derivatives"
+        );
+        assert_eq!(
+            askbid_service_name_for_pair(TradingVenue::BitgetMargin, false),
+            "spread_pbs/bitget-margin/ask_bid_spread"
+        );
+        assert_eq!(
+            derivatives_service_name(TradingVenue::BitgetFutures),
+            "dat_pbs/bitget-futures/derivatives"
+        );
     }
 
     #[test]
@@ -1346,22 +1341,22 @@ mod tests {
     }
 
     #[test]
-    fn gate_bitget_intra_pairs_keep_bridge_services() {
+    fn gate_bitget_intra_pairs_use_direct_services() {
         assert_eq!(
             askbid_service_name_for_pair(TradingVenue::GateMargin, false),
-            "bridge/gate-margin/ask_bid_spread"
+            "spread_pbs/gate-margin/ask_bid_spread"
         );
         assert_eq!(
             askbid_service_name_for_pair(TradingVenue::GateFutures, false),
-            "bridge/gate-futures/ask_bid_spread"
+            "spread_pbs/gate-futures/ask_bid_spread"
         );
         assert_eq!(
             askbid_service_name_for_pair(TradingVenue::BitgetMargin, false),
-            "bridge/bitget-margin/ask_bid_spread"
+            "spread_pbs/bitget-margin/ask_bid_spread"
         );
         assert_eq!(
             askbid_service_name_for_pair(TradingVenue::BitgetFutures, false),
-            "bridge/bitget-futures/ask_bid_spread"
+            "spread_pbs/bitget-futures/ask_bid_spread"
         );
     }
 }

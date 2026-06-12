@@ -1,4 +1,6 @@
-use crate::pre_trade::log_throttle::log_pending_limit_summary;
+use crate::pre_trade::log_throttle::{
+    log_close_below_min_trade_summary, log_pending_limit_summary,
+};
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::OrderRateBucket;
 use crate::pre_trade::PersistChannel;
@@ -175,17 +177,20 @@ impl ArbCloseStrategy {
         if let Err(reason) = MonitorChannel::instance()
             .check_min_trading_requirements(venue, &symbol, order_qty, price_hint)
         {
-            MonitorChannel::instance()
-                .release_close_inventory_unfilled(client_order_id, "below_min_trade_requirement");
-            info!(
-                "ArbCloseStrategy: strategy_id={} skip below min trade requirements symbol={} venue={:?} open_pos={:.8} signal_qty={:.8} price_hint={:?} reason={}",
-                self.open_state.strategy_id,
-                symbol,
+            MonitorChannel::instance().release_close_inventory_unfilled_silent(
+                client_order_id,
+                "below_min_trade_requirement",
+            );
+            log_close_below_min_trade_summary(
+                "ArbCloseStrategy",
+                Some(self.open_state.strategy_id),
                 venue,
+                &symbol,
+                side,
                 open_pos,
                 order_qty,
                 price_hint,
-                reason
+                &reason,
             );
             self.open_state.alive = false;
             return;
