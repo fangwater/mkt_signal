@@ -232,6 +232,7 @@ fn main() -> Result<()> {
         "inspect".to_string(),
         30 * 60,
         10_000,
+        false,
     )?;
     let trade_flow_subscriber = create_trade_flow_subscriber(&node, hedge_venue_slug)?;
 
