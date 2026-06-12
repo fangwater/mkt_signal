@@ -20,6 +20,7 @@ use account_monitor_common::gate_user_stream::{GateUserDataConnection, Subscribe
 use account_monitor_common::pm_forwarder::PmForwarder;
 use anyhow::Result;
 use bytes::Bytes;
+use clap::Parser;
 use log::{debug, error, info, warn};
 use mkt_parsers::account_event::gate_account_event_parser::GateAccountEventParser;
 use mkt_parsers::msg::basic_account_msg::{
@@ -28,6 +29,7 @@ use mkt_parsers::msg::basic_account_msg::{
     BasicPositionMsg, BasicTradeLiteMsg, BasicUmUnrealizedMsg, GateBasicOrderMsg,
 };
 use reqwest::Client;
+use runtime_common::affinity::maybe_pin_current_thread;
 use runtime_common::mkt_cfg::load_local_ips_preferring_trade_engine;
 use runtime_common::ws_connection::{MktConnection, MktConnectionHandler};
 use std::collections::hash_map::DefaultHasher;
@@ -71,9 +73,20 @@ fn should_log_gate_ws_text(msg: &str) -> bool {
     !msg.contains(r#""channel":"unified.asset_detail""#)
 }
 
+#[derive(Parser, Debug)]
+#[command(name = "gate_account_monitor")]
+#[command(about = "Gate account monitor")]
+struct Args {
+    /// Bind the main runtime thread to a CPU core. Falls back to ACCOUNT_MONITOR_CORE.
+    #[arg(long)]
+    core: Option<usize>,
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     env_logger::init();
+    let args = Args::parse();
+    maybe_pin_current_thread(args.core, "ACCOUNT_MONITOR_CORE")?;
 
     // 从环境变量加载 Gate.io 凭证
     let credentials = GateCredentials::from_env()?;

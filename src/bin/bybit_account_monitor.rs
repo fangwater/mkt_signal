@@ -16,15 +16,17 @@ use account_monitor_common::bybit_user_stream::BybitUserDataConnection;
 use account_monitor_common::pm_forwarder::PmForwarder;
 use anyhow::Result;
 use bytes::Bytes;
+use clap::Parser;
 use log::{debug, error, info, warn};
 use mkt_parsers::account_event::bybit_account_event_parser::BybitAccountEventParser;
-use mkt_parsers::account_event::Parser;
+use mkt_parsers::account_event::Parser as AccountEventParser;
 use mkt_parsers::msg::basic_account_msg::{
     split_basic_account_event, BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg,
     BasicAccountScope, BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg,
     BasicTradeLiteMsg, BasicUmUnrealizedMsg,
 };
 use mkt_parsers::msg::bybit_account_msg::BybitBasicOrderMsg;
+use runtime_common::affinity::maybe_pin_current_thread;
 use runtime_common::mkt_cfg::load_local_ips_preferring_trade_engine;
 use runtime_common::ws_connection::{MktConnection, MktConnectionHandler};
 use std::collections::hash_map::DefaultHasher;
@@ -63,9 +65,20 @@ fn log_credential_preview(label: &str, value: &str) {
     }
 }
 
+#[derive(Parser, Debug)]
+#[command(name = "bybit_account_monitor")]
+#[command(about = "Bybit account monitor")]
+struct Args {
+    /// Bind the main runtime thread to a CPU core. Falls back to ACCOUNT_MONITOR_CORE.
+    #[arg(long)]
+    core: Option<usize>,
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     env_logger::init();
+    let args = Args::parse();
+    maybe_pin_current_thread(args.core, "ACCOUNT_MONITOR_CORE")?;
 
     let credentials = BybitCredentials::from_env()?;
     log_credential_preview("BYBIT_API_KEY", &credentials.api_key);

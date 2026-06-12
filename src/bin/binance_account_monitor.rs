@@ -7,10 +7,11 @@ use account_monitor_common::listen_key::BinanceListenKeyService;
 use account_monitor_common::pm_forwarder::PmForwarder;
 use anyhow::{Context, Result};
 use bytes::Bytes;
+use clap::Parser;
 use hmac::{Hmac, Mac};
 use log::{debug, error, info, warn};
 use mkt_parsers::account_event::binance_basic_account_event_parser::BinanceBasicAccountEventParser;
-use mkt_parsers::account_event::Parser;
+use mkt_parsers::account_event::Parser as AccountEventParser;
 use mkt_parsers::msg::basic_account_msg::{
     get_basic_event_type, split_basic_account_event, BasicAccountEventMsg, BasicAccountEventType,
     BasicAccountRiskMsg, BasicAccountScope, BasicBalanceMsg, BasicBorrowInterestMsg,
@@ -19,6 +20,7 @@ use mkt_parsers::msg::basic_account_msg::{
 use order_common::Side;
 use order_common::{ExecutionType, OrderStatus};
 use reqwest::Client;
+use runtime_common::affinity::maybe_pin_current_thread;
 use runtime_common::mkt_cfg::load_local_ips_preferring_trade_engine;
 use runtime_common::ws_connection::{MktConnection, MktConnectionHandler};
 use sha2::Sha256;
@@ -38,6 +40,15 @@ use trade_engine::query_parsers::binance_um_balance_snapshot_std::parse_binance_
 use url::form_urlencoded;
 
 type HmacSha256 = Hmac<Sha256>;
+
+#[derive(Parser, Debug)]
+#[command(name = "binance_account_monitor")]
+#[command(about = "Binance account monitor")]
+struct Args {
+    /// Bind the main runtime thread to a CPU core. Falls back to ACCOUNT_MONITOR_CORE.
+    #[arg(long)]
+    core: Option<usize>,
+}
 
 /// 构造最终的用户数据 WS URL。
 /// - 新版 private 入口优先使用 `.../private/ws?listenKey=...`
@@ -338,6 +349,9 @@ async fn main() -> Result<()> {
         std::env::set_var("RUST_LOG", "debug");
     }
     env_logger::init();
+    let args = Args::parse();
+    maybe_pin_current_thread(args.core, "ACCOUNT_MONITOR_CORE")?;
+
     let binance_account_mode = init_binance_account_mode("binance_account_monitor");
     info!("BINANCE_ACCOUNT_MODE={}", binance_account_mode.as_str());
     let api_key_raw = std::env::var("BINANCE_API_KEY").map_err(|_| {

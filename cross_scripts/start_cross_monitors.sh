@@ -167,6 +167,24 @@ shell_quote() {
   printf '%q' "$1"
 }
 
+DUAL_CROSS_START=0
+if [[ -z "$SIDE_TAG" && "$OPEN_EXCHANGE" != "$HEDGE_EXCHANGE" ]]; then
+  DUAL_CROSS_START=1
+fi
+
+if [[ "$DUAL_CROSS_START" == "1" && -n "${ACCOUNT_MONITOR_CORE:-}" ]]; then
+  echo "[WARN] ACCOUNT_MONITOR_CORE is ignored for dual cross monitor start; use ACCOUNT_MONITOR_OPEN_CORE and ACCOUNT_MONITOR_HEDGE_CORE"
+fi
+
+validate_core_value() {
+  local var_name="$1"
+  local value="$2"
+  if [[ ! "$value" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR] ${var_name} 必须为单个整数 (got: $value)" >&2
+    exit 1
+  fi
+}
+
 proc_base_name() {
   if [[ "$OPEN_EXCHANGE" == "$HEDGE_EXCHANGE" ]]; then
     echo "cross_am_${OPEN_EXCHANGE}_${ENV_TAG}"
@@ -204,6 +222,26 @@ start_one() {
   cfg_file="$(mktemp)"
   TMP_CFGS+=("$cfg_file")
 
+  local core_args=()
+  local core_value=""
+  local core_var=""
+  if [[ "$side" == "open" && -n "${ACCOUNT_MONITOR_OPEN_CORE:-}" ]]; then
+    core_value="$ACCOUNT_MONITOR_OPEN_CORE"
+    core_var="ACCOUNT_MONITOR_OPEN_CORE"
+  elif [[ "$side" == "hedge" && -n "${ACCOUNT_MONITOR_HEDGE_CORE:-}" ]]; then
+    core_value="$ACCOUNT_MONITOR_HEDGE_CORE"
+    core_var="ACCOUNT_MONITOR_HEDGE_CORE"
+  elif [[ "$DUAL_CROSS_START" != "1" && -n "${ACCOUNT_MONITOR_CORE:-}" ]]; then
+    core_value="$ACCOUNT_MONITOR_CORE"
+    core_var="ACCOUNT_MONITOR_CORE"
+  fi
+
+  if [[ -n "$core_value" ]]; then
+    validate_core_value "$core_var" "$core_value"
+    core_args=(--core "$core_value")
+    echo "[INFO] core bind ${core_value} for ${side} monitor (from $ENV_FILE:${core_var})"
+  fi
+
   local json_name json_base json_rust_log json_ipc_ns json_shell json_cmd cmd
   json_name="$(json_escape "$proc_name")"
   json_shell="$(json_escape "/bin/bash")"
@@ -211,6 +249,12 @@ start_one() {
   json_rust_log="$(json_escape "${RUST_LOG:-info}")"
   json_ipc_ns="$(json_escape "$IPC_NAMESPACE")"
   cmd="if [[ -f $(shell_quote "$ENV_FILE") ]]; then source $(shell_quote "$ENV_FILE"); fi; exec $(shell_quote "$bin")"
+  if [[ "$DUAL_CROSS_START" == "1" ]]; then
+    cmd="if [[ -f $(shell_quote "$ENV_FILE") ]]; then source $(shell_quote "$ENV_FILE"); fi; unset ACCOUNT_MONITOR_CORE; exec $(shell_quote "$bin")"
+  fi
+  for arg in "${core_args[@]}"; do
+    cmd+=" $(shell_quote "$arg")"
+  done
   json_cmd="$(json_escape "$cmd")"
 
   cat >"$cfg_file" <<JSON

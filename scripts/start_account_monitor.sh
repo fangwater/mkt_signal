@@ -117,6 +117,16 @@ shell_quote() {
   printf '%q' "$1"
 }
 
+core_args=()
+if [[ -n "${ACCOUNT_MONITOR_CORE:-}" ]]; then
+  if [[ ! "$ACCOUNT_MONITOR_CORE" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR] ACCOUNT_MONITOR_CORE 必须为单个整数 (got: $ACCOUNT_MONITOR_CORE)" >&2
+    exit 1
+  fi
+  core_args=(--core "$ACCOUNT_MONITOR_CORE")
+  echo "[INFO] core bind ${ACCOUNT_MONITOR_CORE} (from $ENV_FILE:ACCOUNT_MONITOR_CORE)"
+fi
+
 cfg_file="$(mktemp)"
 trap 'rm -f "$cfg_file" >/dev/null 2>&1 || true' EXIT
 
@@ -125,6 +135,9 @@ json_shell="$(json_escape "/bin/bash")"
 json_base="$(json_escape "$BASE_DIR")"
 json_rust_log="$(json_escape "$RUST_LOG")"
 cmd="if [[ -f $(shell_quote "$ENV_FILE") ]]; then source $(shell_quote "$ENV_FILE"); fi; exec $(shell_quote "$BIN_PATH")"
+for arg in "${core_args[@]}"; do
+  cmd+=" $(shell_quote "$arg")"
+done
 json_cmd="$(json_escape "$cmd")"
 
 cat >"$cfg_file" <<JSON
