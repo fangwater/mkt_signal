@@ -101,7 +101,10 @@
 //!   - `price`（委托价；市价单常为 0）
 //!   - `finish_as`（终态原因，用于映射 execution_type / order_status）
 
-use super::{gate_order_dedup_key, trade_lite_dedup_key, AccountEventSink, Parser};
+use super::{
+    account_risk_dedup_key, balance_dedup_key, borrow_interest_dedup_key, gate_order_dedup_key,
+    position_dedup_key, trade_lite_dedup_key, unrealized_pnl_dedup_key, AccountEventSink, Parser,
+};
 use crate::msg::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
     BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg,
@@ -239,7 +242,10 @@ impl GateAccountEventParser {
                 BasicAccountScope::GateUnified,
                 payload,
             );
-            if tx.emit(event.to_bytes()) {
+            if tx.emit_with_dedup_key(
+                event.to_bytes(),
+                balance_dedup_key(BasicAccountScope::GateUnified, &msg),
+            ) {
                 count += 1;
             }
 
@@ -258,7 +264,10 @@ impl GateAccountEventParser {
                     BasicAccountScope::GateUnified,
                     payload,
                 );
-                if tx.emit(event.to_bytes()) {
+                if tx.emit_with_dedup_key(
+                    event.to_bytes(),
+                    borrow_interest_dedup_key(BasicAccountScope::GateUnified, &msg),
+                ) {
                     count += 1;
                 }
             }
@@ -324,7 +333,10 @@ impl GateAccountEventParser {
             BasicAccountScope::GateUnified,
             msg.to_bytes(),
         );
-        if tx.emit(event.to_bytes()) {
+        if tx.emit_with_dedup_key(
+            event.to_bytes(),
+            account_risk_dedup_key(BasicAccountScope::GateUnified, &msg),
+        ) {
             GateParseReport::complete(1)
         } else {
             GateParseReport::incomplete(0)
@@ -904,7 +916,10 @@ impl GateAccountEventParser {
                 BasicAccountScope::GateUnified,
                 position_msg.to_bytes(),
             );
-            if tx.emit(position_event.to_bytes()) {
+            if tx.emit_with_dedup_key(
+                position_event.to_bytes(),
+                position_dedup_key(BasicAccountScope::GateUnified, &position_msg),
+            ) {
                 count += 1;
             }
 
@@ -921,7 +936,10 @@ impl GateAccountEventParser {
                     BasicAccountScope::GateUnified,
                     pnl_msg.to_bytes(),
                 );
-                if tx.emit(pnl_event.to_bytes()) {
+                if tx.emit_with_dedup_key(
+                    pnl_event.to_bytes(),
+                    unrealized_pnl_dedup_key(BasicAccountScope::GateUnified, &pnl_msg),
+                ) {
                     count += 1;
                 }
             }

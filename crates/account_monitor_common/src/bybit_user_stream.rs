@@ -5,6 +5,7 @@
 //! 2. 鉴权成功后订阅 wallet / position / order / execution
 //! 3. 每 20 秒发送一次应用层 ping，等待 JSON pong
 
+use crate::raw_handler::{forward_raw_account_message, RawAccountMessageHandler};
 use account_common::bybit_auth::BybitCredentials;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -32,6 +33,7 @@ pub struct BybitUserDataConnection {
     subscribe_messages: Vec<serde_json::Value>,
     session_max: Option<Duration>,
     restart_count: u32,
+    raw_handler: Option<RawAccountMessageHandler>,
 }
 
 impl BybitUserDataConnection {
@@ -49,7 +51,12 @@ impl BybitUserDataConnection {
             subscribe_messages,
             session_max,
             restart_count: 0,
+            raw_handler: None,
         }
+    }
+
+    pub fn set_raw_handler(&mut self, handler: RawAccountMessageHandler) {
+        self.raw_handler = Some(handler);
     }
 
     fn is_auth_response(text: &str) -> Option<bool> {
@@ -191,8 +198,12 @@ impl MktConnectionRunner for BybitUserDataConnection {
 
                                             // Bybit 可能在订阅确认前就开始推送数据。
                                             let bytes = Bytes::from(text.into_bytes());
-                                            if let Err(e) = self.base_connection.tx.send(bytes) {
-                                                error!("{} Bybit: failed to broadcast message: {}", self.log_prefix, e);
+                                            if !forward_raw_account_message(
+                                                &self.base_connection.tx,
+                                                self.raw_handler.as_mut(),
+                                                bytes,
+                                                "Bybit: failed to broadcast message",
+                                            ) {
                                                 break;
                                             }
                                         }
@@ -202,8 +213,12 @@ impl MktConnectionRunner for BybitUserDataConnection {
                                             }
 
                                             let bytes = Bytes::from(text.into_bytes());
-                                            if let Err(e) = self.base_connection.tx.send(bytes) {
-                                                error!("{} Bybit: failed to broadcast message: {}", self.log_prefix, e);
+                                            if !forward_raw_account_message(
+                                                &self.base_connection.tx,
+                                                self.raw_handler.as_mut(),
+                                                bytes,
+                                                "Bybit: failed to broadcast message",
+                                            ) {
                                                 break;
                                             }
                                         }

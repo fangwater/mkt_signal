@@ -36,7 +36,7 @@ use std::hash::{Hash, Hasher};
 use std::net::IpAddr;
 use std::time::Duration;
 use tokio::signal;
-use tokio::sync::{broadcast, watch};
+use tokio::sync::watch;
 use trade_engine::query_parsers::bitget_account_balance_snapshot::parse_bitget_account_balance_snapshot;
 use trade_engine::query_parsers::bitget_positions_snapshot::parse_bitget_positions_snapshot;
 
@@ -563,7 +563,7 @@ fn spawn_bitget_stream_path(
                 name, ws_url, local_ip
             );
 
-            let (raw_tx, mut raw_rx) = broadcast::channel::<Bytes>(8192);
+            let (raw_tx, _) = tokio::sync::broadcast::channel::<Bytes>(1);
 
             let mut conn = MktConnection::new(
                 ws_url.clone(),
@@ -581,35 +581,25 @@ fn spawn_bitget_stream_path(
                 subscribe_messages.clone(),
                 session_max,
             );
-
-            let mut consumer_shutdown = shutdown_rx.clone();
-            let local_ip_log = local_ip.clone();
             let parser = BitgetAccountEventParser::new();
-            tokio::spawn(async move {
-                loop {
-                    tokio::select! {
-                        msg = raw_rx.recv() => {
-                            match msg {
-                                Ok(b) => {
-                                    if let Ok(s) = std::str::from_utf8(&b) {
-                                        debug!("[{}][ip={}] bitget ws json: {}", name, local_ip_log, s);
-                                    } else {
-                                        debug!("[{}][ip={}] bitget ws bin: {} bytes", name, local_ip_log, b.len());
-                                    }
-                                    let _ = parser.parse(b, &DirectAccountEventSink);
-                                }
-                                Err(broadcast::error::RecvError::Closed) => break,
-                                Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                                    warn!("[{}] lagged: skipped {} msgs", name, skipped);
-                                }
-                            }
-                        }
-                        _ = consumer_shutdown.changed() => {
-                            if *consumer_shutdown.borrow() { break; }
-                        }
-                    }
+            let handler_name = name;
+            let handler_local_ip = local_ip.clone();
+            runner.set_raw_handler(Box::new(move |b: Bytes| {
+                if let Ok(s) = std::str::from_utf8(&b) {
+                    debug!(
+                        "[{}][ip={}] bitget ws json: {}",
+                        handler_name, handler_local_ip, s
+                    );
+                } else {
+                    debug!(
+                        "[{}][ip={}] bitget ws bin: {} bytes",
+                        handler_name,
+                        handler_local_ip,
+                        b.len()
+                    );
                 }
-            });
+                let _ = parser.parse(b, &DirectAccountEventSink);
+            }));
 
             if let Err(e) = runner.start_ws().await {
                 error!("[{}] connection error: {}", name, e);

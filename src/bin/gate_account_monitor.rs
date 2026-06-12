@@ -39,7 +39,7 @@ use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
 use tokio::signal;
-use tokio::sync::{broadcast, watch};
+use tokio::sync::watch;
 use trade_engine::gate_query::gate_rest_get_with_headers;
 use trade_engine::query_parsers::gate_positions_snapshot::{
     parse_gate_positions_snapshot_with_meta, GatePositionsSnapshotParse,
@@ -607,8 +607,7 @@ fn spawn_gate_stream_path(
                 name, ws_url, local_ip
             );
 
-            // 创建原始消息广播通道
-            let (raw_tx, mut raw_rx) = broadcast::channel::<Bytes>(8192);
+            let (raw_tx, _) = tokio::sync::broadcast::channel::<Bytes>(1);
 
             // 创建 MktConnection
             let mut conn = MktConnection::new(
@@ -629,43 +628,28 @@ fn spawn_gate_stream_path(
                 session_max,
             );
 
-            // 启动消费者任务
-            let mut consumer_shutdown = shutdown_rx.clone();
-            let local_ip_log = local_ip.clone();
             let parser = GateAccountEventParser::new();
-            tokio::spawn(async move {
-                loop {
-                    tokio::select! {
-                        msg = raw_rx.recv() => {
-                                match msg {
-                                    Ok(b) => {
-                                        if let Ok(s) = std::str::from_utf8(&b) {
-                                            let report = parser.parse_with_report(b.clone(), &DirectAccountEventSink);
-                                            if should_log_gate_ws_text(s) && !report.complete {
-                                                info!("[{}][ip={}] gate ws json: {}", name, local_ip_log, s);
-                                            }
-                                        } else {
-                                        info!(
-                                            "[{}][ip={}] gate ws bin: {} bytes",
-                                            name,
-                                            local_ip_log,
-                                                b.len()
-                                            );
-                                            let _ = parser.parse_with_report(b.clone(), &DirectAccountEventSink);
-                                        }
-                                    }
-                                Err(broadcast::error::RecvError::Closed) => break,
-                                Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                                    warn!("[{}] lagged: skipped {} msgs", name, skipped);
-                                }
-                            }
-                        }
-                        _ = consumer_shutdown.changed() => {
-                            if *consumer_shutdown.borrow() { break; }
-                        }
+            let handler_name = name;
+            let handler_local_ip = local_ip.clone();
+            runner.set_raw_handler(Box::new(move |b: Bytes| {
+                if let Ok(s) = std::str::from_utf8(&b) {
+                    let report = parser.parse_with_report(b.clone(), &DirectAccountEventSink);
+                    if should_log_gate_ws_text(s) && !report.complete {
+                        info!(
+                            "[{}][ip={}] gate ws json: {}",
+                            handler_name, handler_local_ip, s
+                        );
                     }
+                } else {
+                    info!(
+                        "[{}][ip={}] gate ws bin: {} bytes",
+                        handler_name,
+                        handler_local_ip,
+                        b.len()
+                    );
+                    let _ = parser.parse_with_report(b.clone(), &DirectAccountEventSink);
                 }
-            });
+            }));
 
             // 运行连接直到退出（关闭或错误）
             if let Err(e) = runner.start_ws().await {

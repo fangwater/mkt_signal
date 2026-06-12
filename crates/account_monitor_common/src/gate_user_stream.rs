@@ -6,6 +6,7 @@
 //! 3. 如果客户端想主动检测连接状态，可以发送应用层 ping 消息
 //!    对于统一账户，使用 "unified.ping" 频道
 
+use crate::raw_handler::{forward_raw_account_message, RawAccountMessageHandler};
 use account_common::gate_auth::GateCredentials;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -42,6 +43,7 @@ pub struct GateUserDataConnection {
     restart_count: u32,
     /// ping 频道名称 (unified.ping / futures.ping / spot.ping)
     ping_channel: String,
+    raw_handler: Option<RawAccountMessageHandler>,
 }
 
 impl GateUserDataConnection {
@@ -60,7 +62,12 @@ impl GateUserDataConnection {
             session_max,
             restart_count: 0,
             ping_channel,
+            raw_handler: None,
         }
+    }
+
+    pub fn set_raw_handler(&mut self, handler: RawAccountMessageHandler) {
+        self.raw_handler = Some(handler);
     }
 
     /// 根据订阅的频道推断应该使用的 ping channel
@@ -248,8 +255,12 @@ impl MktConnectionRunner for GateUserDataConnection {
                                                 debug!("Gate: Received data while subscribing: {}", text);
                                                 // 广播消息
                                                 let bytes = Bytes::from(text.into_bytes());
-                                                if let Err(e) = self.base_connection.tx.send(bytes) {
-                                                    error!("Gate: Failed to broadcast message: {}", e);
+                                                if !forward_raw_account_message(
+                                                    &self.base_connection.tx,
+                                                    self.raw_handler.as_mut(),
+                                                    bytes,
+                                                    "Gate: Failed to broadcast message",
+                                                ) {
                                                     break;
                                                 }
                                             }
@@ -262,8 +273,12 @@ impl MktConnectionRunner for GateUserDataConnection {
 
                                             // 广播消息
                                             let bytes = Bytes::from(text.into_bytes());
-                                            if let Err(e) = self.base_connection.tx.send(bytes) {
-                                                error!("Gate: Failed to broadcast message: {}", e);
+                                            if !forward_raw_account_message(
+                                                &self.base_connection.tx,
+                                                self.raw_handler.as_mut(),
+                                                bytes,
+                                                "Gate: Failed to broadcast message",
+                                            ) {
                                                 break;
                                             }
                                         }
@@ -288,8 +303,12 @@ impl MktConnectionRunner for GateUserDataConnection {
                                 Message::Binary(data) => {
                                     // Gate 也可能发送二进制消息
                                     let bytes = Bytes::from(data);
-                                    if let Err(e) = self.base_connection.tx.send(bytes) {
-                                        error!("Gate: Failed to broadcast binary message: {}", e);
+                                    if !forward_raw_account_message(
+                                        &self.base_connection.tx,
+                                        self.raw_handler.as_mut(),
+                                        bytes,
+                                        "Gate: Failed to broadcast binary message",
+                                    ) {
                                         break;
                                     }
                                 }

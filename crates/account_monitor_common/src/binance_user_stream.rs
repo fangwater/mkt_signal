@@ -8,6 +8,7 @@
 //!
 //! 使用：创建 `MktConnection` 时将 `url` 设置为 `.../pm/ws/<listenKey>`，再用
 //! `BinanceUserDataConnection::new(connection, restart_policy)` 启动连接。
+use crate::raw_handler::{forward_raw_account_message, RawAccountMessageHandler};
 use anyhow::Result;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -57,6 +58,7 @@ pub struct BinanceUserDataConnection {
     delay_interval: Duration,
     ping_interval: Duration,
     restart_policy: Option<SessionRestartPolicy>,
+    raw_handler: Option<RawAccountMessageHandler>,
 }
 
 impl BinanceUserDataConnection {
@@ -66,7 +68,12 @@ impl BinanceUserDataConnection {
             delay_interval: Duration::from_secs(5),
             ping_interval: Duration::from_secs(180),
             restart_policy,
+            raw_handler: None,
         }
+    }
+
+    pub fn set_raw_handler(&mut self, handler: RawAccountMessageHandler) {
+        self.raw_handler = Some(handler);
     }
 }
 
@@ -123,15 +130,23 @@ impl MktConnectionRunner for BinanceUserDataConnection {
                                 }
                                 Message::Text(text) => {
                                     let bytes = Bytes::from(text.into_bytes());
-                                    if let Err(e) = self.base_connection.tx.send(bytes) {
-                                        error!("Broadcast user-data text failed: {}", e);
+                                    if !forward_raw_account_message(
+                                        &self.base_connection.tx,
+                                        self.raw_handler.as_mut(),
+                                        bytes,
+                                        "Broadcast user-data text failed",
+                                    ) {
                                         break;
                                     }
                                 }
                                 Message::Binary(data) => {
                                     let bytes = Bytes::from(data);
-                                    if let Err(e) = self.base_connection.tx.send(bytes) {
-                                        error!("Broadcast user-data bin failed: {}", e);
+                                    if !forward_raw_account_message(
+                                        &self.base_connection.tx,
+                                        self.raw_handler.as_mut(),
+                                        bytes,
+                                        "Broadcast user-data bin failed",
+                                    ) {
                                         break;
                                     }
                                 }

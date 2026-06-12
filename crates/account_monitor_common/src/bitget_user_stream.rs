@@ -5,6 +5,7 @@
 //! 2. 登录成功后发送订阅消息
 //! 3. 每 25 秒发送应用层 ping（字符串 "ping"）并等待 "pong"
 
+use crate::raw_handler::{forward_raw_account_message, RawAccountMessageHandler};
 use account_common::bitget_auth::BitgetCredentials;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -30,6 +31,7 @@ pub struct BitgetUserDataConnection {
     subscribe_messages: Vec<serde_json::Value>,
     session_max: Option<Duration>,
     restart_count: u32,
+    raw_handler: Option<RawAccountMessageHandler>,
 }
 
 const BITGET_PRIVATE_PING_INTERVAL: Duration = Duration::from_secs(25);
@@ -54,7 +56,12 @@ impl BitgetUserDataConnection {
             subscribe_messages,
             session_max,
             restart_count: 0,
+            raw_handler: None,
         }
+    }
+
+    pub fn set_raw_handler(&mut self, handler: RawAccountMessageHandler) {
+        self.raw_handler = Some(handler);
     }
 
     fn ws_code_is_success(v: Option<&serde_json::Value>) -> bool {
@@ -187,8 +194,12 @@ impl MktConnectionRunner for BitgetUserDataConnection {
                                         }
                                         ConnectionState::Running => {
                                             let bytes = Bytes::from(text.into_bytes());
-                                            if let Err(e) = self.base_connection.tx.send(bytes) {
-                                                error!("Bitget: failed to broadcast message: {}", e);
+                                            if !forward_raw_account_message(
+                                                &self.base_connection.tx,
+                                                self.raw_handler.as_mut(),
+                                                bytes,
+                                                "Bitget: failed to broadcast message",
+                                            ) {
                                                 break;
                                             }
                                         }

@@ -42,11 +42,9 @@ use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
-use tokio::sync::{broadcast, watch};
+use tokio::sync::watch;
 
 fn credential_edges(value: &str) -> (String, String, usize) {
     let trimmed = value.trim();
@@ -183,7 +181,7 @@ async fn main() -> Result<()> {
         build_balance_and_position_subscribe_message(),
     ];
     // fills 频道需要 VIP4+；收到 64003 后永久关闭，避免无效重连循环。
-    let fills_disabled = Arc::new(AtomicBool::new(false));
+    let (fills_disabled_tx, fills_disabled_rx) = watch::channel(false);
 
     // 创建 PM 转发器 (account_pubs/okex/pm)
     init_direct_forwarder("okex")?;
@@ -197,7 +195,8 @@ async fn main() -> Result<()> {
         primary_ip.clone(),
         credentials.clone(),
         base_subscribe_messages.clone(),
-        fills_disabled.clone(),
+        fills_disabled_rx.clone(),
+        fills_disabled_tx.clone(),
         shutdown_rx.clone(),
         session_max,
     );
@@ -207,7 +206,8 @@ async fn main() -> Result<()> {
         secondary_ip.clone(),
         credentials.clone(),
         base_subscribe_messages.clone(),
-        fills_disabled.clone(),
+        fills_disabled_rx.clone(),
+        fills_disabled_tx.clone(),
         shutdown_rx.clone(),
         session_max,
     );
@@ -241,7 +241,8 @@ async fn main() -> Result<()> {
                         primary_ip.clone(),
                         credentials.clone(),
                         base_subscribe_messages.clone(),
-                        fills_disabled.clone(),
+                        fills_disabled_rx.clone(),
+                        fills_disabled_tx.clone(),
                         shutdown_rx.clone(),
                         session_max,
                     );
@@ -259,7 +260,8 @@ async fn main() -> Result<()> {
                         secondary_ip.clone(),
                         credentials.clone(),
                         base_subscribe_messages.clone(),
-                        fills_disabled.clone(),
+                        fills_disabled_rx.clone(),
+                        fills_disabled_tx.clone(),
                         shutdown_rx.clone(),
                         session_max,
                     );
@@ -326,7 +328,8 @@ fn spawn_okex_stream_path(
     local_ip: String,
     credentials: OkexCredentials,
     base_subscribe_messages: Vec<serde_json::Value>,
-    fills_disabled: Arc<AtomicBool>,
+    fills_disabled_rx: watch::Receiver<bool>,
+    fills_disabled_tx: watch::Sender<bool>,
     shutdown_rx: watch::Receiver<bool>,
     session_max: Option<Duration>,
 ) -> tokio::task::JoinHandle<()> {
@@ -338,11 +341,11 @@ fn spawn_okex_stream_path(
                 name, ws_url, local_ip
             );
 
-            let (raw_tx, mut raw_rx) = broadcast::channel::<Bytes>(8192);
+            let (raw_tx, _) = tokio::sync::broadcast::channel::<Bytes>(1);
 
             // 每次重连动态拼 fills（VIP 不足后不再加入）
             let mut subscribe_messages = base_subscribe_messages.clone();
-            if !fills_disabled.load(Ordering::Relaxed) {
+            if !*fills_disabled_rx.borrow() {
                 subscribe_messages.push(build_fills_subscribe_message());
             }
 
@@ -363,40 +366,30 @@ fn spawn_okex_stream_path(
                 session_max,
             );
 
-            let mut consumer_shutdown = shutdown_rx.clone();
-            let local_ip_log = local_ip.clone();
             let parser = OkexAccountEventParser::new();
-            let fills_disabled_inner = fills_disabled.clone();
-            tokio::spawn(async move {
-                loop {
-                    tokio::select! {
-                        msg = raw_rx.recv() => {
-                            match msg {
-                                Ok(b) => {
-                                    if let Ok(s) = std::str::from_utf8(&b) {
-                                        debug!("[{}][ip={}] okex ws json: {}", name, local_ip_log, s);
-                                        // 检测 fills VIP 不足错误（code 64003）
-                                        if is_fills_vip_error(s) {
-                                            warn!("[{}] OKX fills channel requires VIP4+, disabling fills subscription (code 64003)", name);
-                                            fills_disabled_inner.store(true, Ordering::Relaxed);
-                                        }
-                                    } else {
-                                        debug!("[{}][ip={}] okex ws bin: {} bytes", name, local_ip_log, b.len());
-                                    }
-                                    let _ = parser.parse(b, &DirectAccountEventSink);
-                                }
-                                Err(broadcast::error::RecvError::Closed) => break,
-                                Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                                    warn!("[{}] lagged: skipped {} msgs", name, skipped);
-                                }
-                            }
-                        }
-                        _ = consumer_shutdown.changed() => {
-                            if *consumer_shutdown.borrow() { break; }
-                        }
+            let handler_name = name;
+            let handler_local_ip = local_ip.clone();
+            let handler_fills_disabled_tx = fills_disabled_tx.clone();
+            runner.set_raw_handler(Box::new(move |b: Bytes| {
+                if let Ok(s) = std::str::from_utf8(&b) {
+                    debug!(
+                        "[{}][ip={}] okex ws json: {}",
+                        handler_name, handler_local_ip, s
+                    );
+                    if is_fills_vip_error(s) {
+                        warn!("[{}] OKX fills channel requires VIP4+, disabling fills subscription (code 64003)", handler_name);
+                        let _ = handler_fills_disabled_tx.send(true);
                     }
+                } else {
+                    debug!(
+                        "[{}][ip={}] okex ws bin: {} bytes",
+                        handler_name,
+                        handler_local_ip,
+                        b.len()
+                    );
                 }
-            });
+                let _ = parser.parse(b, &DirectAccountEventSink);
+            }));
 
             if let Err(e) = runner.start_ws().await {
                 error!("[{}] connection error: {}", name, e);

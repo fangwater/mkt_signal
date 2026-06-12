@@ -1,3 +1,4 @@
+use crate::raw_handler::{forward_raw_account_message, RawAccountMessageHandler};
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -27,6 +28,7 @@ pub struct BinanceSpotWsApiUserDataConnection {
     delay_interval: Duration,
     ping_interval: Duration,
     recv_window_ms: u64,
+    raw_handler: Option<RawAccountMessageHandler>,
 }
 
 impl BinanceSpotWsApiUserDataConnection {
@@ -42,7 +44,12 @@ impl BinanceSpotWsApiUserDataConnection {
             delay_interval: Duration::from_secs(5),
             ping_interval: Duration::from_secs(180),
             recv_window_ms: 5000,
+            raw_handler: None,
         }
+    }
+
+    pub fn set_raw_handler(&mut self, handler: RawAccountMessageHandler) {
+        self.raw_handler = Some(handler);
     }
 
     fn serialize_params(params: &BTreeMap<String, String>) -> String {
@@ -166,14 +173,22 @@ impl MktConnectionRunner for BinanceSpotWsApiUserDataConnection {
                                 Message::Text(text) => {
                                     let text = text.to_string();
                                     Self::log_control_message(&text);
-                                    if let Err(err) = self.base_connection.tx.send(Bytes::from(text.into_bytes())) {
-                                        error!("spot ws-api broadcast text failed: {}", err);
+                                    if !forward_raw_account_message(
+                                        &self.base_connection.tx,
+                                        self.raw_handler.as_mut(),
+                                        Bytes::from(text.into_bytes()),
+                                        "spot ws-api broadcast text failed",
+                                    ) {
                                         break;
                                     }
                                 }
                                 Message::Binary(data) => {
-                                    if let Err(err) = self.base_connection.tx.send(Bytes::from(data)) {
-                                        error!("spot ws-api broadcast binary failed: {}", err);
+                                    if !forward_raw_account_message(
+                                        &self.base_connection.tx,
+                                        self.raw_handler.as_mut(),
+                                        Bytes::from(data),
+                                        "spot ws-api broadcast binary failed",
+                                    ) {
                                         break;
                                     }
                                 }

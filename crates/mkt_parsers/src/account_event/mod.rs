@@ -30,6 +30,11 @@ pub trait Parser: Send {
 }
 
 #[inline]
+pub fn emit_with_key<S: AccountEventSink>(sink: &S, msg: Bytes, key: u64) -> bool {
+    sink.emit_with_dedup_key(msg, key)
+}
+
+#[inline]
 pub fn hash64(parts: &[u64]) -> u64 {
     let mut hasher = DefaultHasher::new();
     for p in parts {

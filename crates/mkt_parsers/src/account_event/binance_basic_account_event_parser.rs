@@ -3,7 +3,10 @@
 //! - 余额 / 持仓 / 订单 / 负债 统一封装为 `BasicAccountEventMsg`
 //! - OrderUpdate 的 payload 使用 basic 层统一 schema：`BinanceBasicOrderMsg`
 
-use super::{binance_order_dedup_key, trade_lite_dedup_key, AccountEventSink, Parser};
+use super::{
+    balance_dedup_key, binance_order_dedup_key, borrow_interest_dedup_key, position_dedup_key,
+    trade_lite_dedup_key, unrealized_pnl_dedup_key, AccountEventSink, Parser,
+};
 use crate::msg::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
     BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg, BasicUmUnrealizedMsg,
@@ -395,7 +398,10 @@ impl BinanceBasicAccountEventParser {
         let msg = BasicBorrowInterestMsg::create(event_time, asset, principal, interest);
         let payload = msg.to_bytes();
         let event = BasicAccountEventMsg::create(msg.msg_type, self.account_scope, payload);
-        if !tx.emit(event.to_bytes()) {
+        if !tx.emit_with_dedup_key(
+            event.to_bytes(),
+            borrow_interest_dedup_key(self.account_scope, &msg),
+        ) {
             return 0;
         }
         1
@@ -433,7 +439,10 @@ impl BinanceBasicAccountEventParser {
             let msg = BasicBalanceMsg::create(event_time, asset, free_balance + locked_balance);
             let payload = msg.to_bytes();
             let event = BasicAccountEventMsg::create(msg.msg_type, self.account_scope, payload);
-            if !tx.emit(event.to_bytes()) {
+            if !tx.emit_with_dedup_key(
+                event.to_bytes(),
+                balance_dedup_key(self.account_scope, &msg),
+            ) {
                 return count;
             }
             count += 1;
@@ -478,7 +487,10 @@ impl BinanceBasicAccountEventParser {
                     let payload = msg.to_bytes();
                     let event =
                         BasicAccountEventMsg::create(msg.msg_type, self.account_scope, payload);
-                    if !tx.emit(event.to_bytes()) {
+                    if !tx.emit_with_dedup_key(
+                        event.to_bytes(),
+                        balance_dedup_key(self.account_scope, &msg),
+                    ) {
                         return count;
                     }
                     count += 1;
@@ -518,7 +530,10 @@ impl BinanceBasicAccountEventParser {
                     BasicPositionMsg::create(event_time, symbol, position_side, position_amount);
                 let payload = msg.to_bytes();
                 let event = BasicAccountEventMsg::create(msg.msg_type, self.account_scope, payload);
-                if !tx.emit(event.to_bytes()) {
+                if !tx.emit_with_dedup_key(
+                    event.to_bytes(),
+                    position_dedup_key(self.account_scope, &msg),
+                ) {
                     return count;
                 }
                 count += 1;
@@ -536,7 +551,10 @@ impl BinanceBasicAccountEventParser {
                         self.account_scope,
                         pnl_payload,
                     );
-                    if !tx.emit(pnl_event.to_bytes()) {
+                    if !tx.emit_with_dedup_key(
+                        pnl_event.to_bytes(),
+                        unrealized_pnl_dedup_key(self.account_scope, &pnl_msg),
+                    ) {
                         return count;
                     }
                     count += 1;

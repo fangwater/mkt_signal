@@ -1,6 +1,9 @@
 //! OKX 账户事件解析器（余额 / 持仓 / 订单）
 
-use super::{okex_order_dedup_key, trade_lite_dedup_key, AccountEventSink, Parser};
+use super::{
+    account_risk_dedup_key, balance_dedup_key, borrow_interest_dedup_key, okex_order_dedup_key,
+    position_dedup_key, trade_lite_dedup_key, AccountEventSink, Parser,
+};
 use crate::msg::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
     BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg, OkexOrderMsg,
@@ -33,7 +36,10 @@ impl OkexAccountEventParser {
         let payload = msg.to_bytes();
         let event =
             BasicAccountEventMsg::create(msg.msg_type, BasicAccountScope::OkexUnified, payload);
-        tx.emit(event.to_bytes())
+        tx.emit_with_dedup_key(
+            event.to_bytes(),
+            balance_dedup_key(BasicAccountScope::OkexUnified, &msg),
+        )
     }
 
     fn parse_balance_and_position<S: AccountEventSink>(
@@ -128,7 +134,10 @@ impl OkexAccountEventParser {
                     BasicAccountScope::OkexUnified,
                     payload,
                 );
-                if tx.emit(event.to_bytes()) {
+                if tx.emit_with_dedup_key(
+                    event.to_bytes(),
+                    position_dedup_key(BasicAccountScope::OkexUnified, &msg),
+                ) {
                     count += 1;
                 }
             }
@@ -185,7 +194,10 @@ impl OkexAccountEventParser {
                 BasicAccountScope::OkexUnified,
                 payload,
             );
-            if tx.emit(event.to_bytes()) {
+            if tx.emit_with_dedup_key(
+                event.to_bytes(),
+                account_risk_dedup_key(BasicAccountScope::OkexUnified, &msg),
+            ) {
                 count += 1;
             }
         }
@@ -238,7 +250,10 @@ impl OkexAccountEventParser {
                 BasicAccountScope::OkexUnified,
                 payload,
             );
-            if tx.emit(event.to_bytes()) {
+            if tx.emit_with_dedup_key(
+                event.to_bytes(),
+                borrow_interest_dedup_key(BasicAccountScope::OkexUnified, &msg),
+            ) {
                 count += 1;
             }
         }

@@ -32,7 +32,7 @@ use std::hash::{Hash, Hasher};
 use std::net::IpAddr;
 use std::time::Duration;
 use tokio::signal;
-use tokio::sync::{broadcast, watch};
+use tokio::sync::watch;
 use tokio::time::MissedTickBehavior;
 use trade_engine::query_parsers::binance_pm_account_risk::parse_binance_pm_account_risk;
 use trade_engine::query_parsers::binance_spot_account_snapshot_std::parse_binance_spot_account_snapshot_std;
@@ -706,7 +706,7 @@ fn spawn_user_stream_path(
                 UserStreamKind::SpotWsApiSignature { .. } => ws_base.clone(),
             };
             info!("[{}] connecting to {} (local_ip='{}')", name, url, local_ip);
-            let (raw_tx, mut raw_rx) = broadcast::channel::<Bytes>(8192);
+            let (raw_tx, _) = tokio::sync::broadcast::channel::<Bytes>(1);
             let mut conn = MktConnection::new(
                 url,
                 serde_json::json!({}),
@@ -716,57 +716,45 @@ fn spawn_user_stream_path(
             if !local_ip.is_empty() {
                 conn.local_ip = Some(local_ip.clone());
             }
-            let mut runner: Box<dyn MktConnectionHandler> = match &stream_kind {
-                UserStreamKind::ListenKeyUrl => {
-                    Box::new(BinanceUserDataConnection::new(conn, restart_policy))
-                }
-                UserStreamKind::SpotWsApiSignature {
-                    api_key,
-                    api_secret,
-                } => Box::new(BinanceSpotWsApiUserDataConnection::new(
-                    conn,
-                    api_key.clone(),
-                    api_secret.clone(),
-                )),
-            };
-
-            // consumer
-            let mut consumer_shutdown = shutdown_rx.clone();
-            let local_ip_log = local_ip.clone();
-            let consumer_name = name.clone();
             let parser = BinanceBasicAccountEventParser::new(
                 parse_balances_from_account_update,
                 account_scope,
             );
-            tokio::spawn(async move {
-                loop {
-                    tokio::select! {
-                        msg = raw_rx.recv() => {
-                            match msg {
-                                Ok(b) => {
-                                    if let Ok(s) = std::str::from_utf8(&b) {
-                                        debug!("[{}][ip={}] ws json: {}", consumer_name, local_ip_log, s);
-                                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(s) {
-                                            let event = value.get("event").filter(|v| v.is_object()).unwrap_or(&value);
-                                            if event.get("e").and_then(|v| v.as_str()) == Some("outboundAccountPosition") {
-                                                info!("[{}][ip={}] outboundAccountPosition raw: {}", consumer_name, local_ip_log, s);
-                                            }
-                                        }
-                                    } else {
-                                        debug!("[{}][ip={}] ws bin: {} bytes", consumer_name, local_ip_log, b.len());
-                                    }
-                                    let _ = parser.parse(b, &DirectAccountEventSink);
-                                }
-                                Err(broadcast::error::RecvError::Closed) => break,
-                                Err(broadcast::error::RecvError::Lagged(skipped)) => { warn!("[{}] lagged: skipped {} msgs", consumer_name, skipped); }
-                            }
-                        }
-                        _ = consumer_shutdown.changed() => {
-                            if *consumer_shutdown.borrow() { break; }
-                        }
-                    }
+            let handler_name = name.clone();
+            let handler_local_ip = local_ip.clone();
+            let raw_handler = Box::new(move |b: Bytes| {
+                if let Ok(s) = std::str::from_utf8(&b) {
+                    debug!("[{}][ip={}] ws json: {}", handler_name, handler_local_ip, s);
+                } else {
+                    debug!(
+                        "[{}][ip={}] ws bin: {} bytes",
+                        handler_name,
+                        handler_local_ip,
+                        b.len()
+                    );
                 }
+                let _ = parser.parse(b, &DirectAccountEventSink);
             });
+
+            let mut runner: Box<dyn MktConnectionHandler> = match &stream_kind {
+                UserStreamKind::ListenKeyUrl => {
+                    let mut runner = BinanceUserDataConnection::new(conn, restart_policy);
+                    runner.set_raw_handler(raw_handler);
+                    Box::new(runner)
+                }
+                UserStreamKind::SpotWsApiSignature {
+                    api_key,
+                    api_secret,
+                } => {
+                    let mut runner = BinanceSpotWsApiUserDataConnection::new(
+                        conn,
+                        api_key.clone(),
+                        api_secret.clone(),
+                    );
+                    runner.set_raw_handler(raw_handler);
+                    Box::new(runner)
+                }
+            };
 
             // run connection until it exits (closed or error)
             if let Err(e) = runner.start_ws().await {

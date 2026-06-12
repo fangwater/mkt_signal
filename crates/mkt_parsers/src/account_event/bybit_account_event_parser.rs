@@ -1,6 +1,9 @@
 //! Bybit V5 私有账户事件解析器（wallet / position / order）
 
-use super::{bybit_order_dedup_key, trade_lite_dedup_key, AccountEventSink, Parser};
+use super::{
+    account_risk_dedup_key, balance_dedup_key, borrow_interest_dedup_key, bybit_order_dedup_key,
+    position_dedup_key, trade_lite_dedup_key, unrealized_pnl_dedup_key, AccountEventSink, Parser,
+};
 use crate::msg::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
     BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg,
@@ -119,7 +122,10 @@ impl BybitAccountEventParser {
                     BasicAccountScope::BybitUnified,
                     msg.to_bytes(),
                 );
-                if tx.emit(event.to_bytes()) {
+                if tx.emit_with_dedup_key(
+                    event.to_bytes(),
+                    account_risk_dedup_key(BasicAccountScope::BybitUnified, &msg),
+                ) {
                     count += 1;
                 }
             }
@@ -147,7 +153,10 @@ impl BybitAccountEventParser {
                     BasicAccountScope::BybitUnified,
                     balance_msg.to_bytes(),
                 );
-                if tx.emit(balance_event.to_bytes()) {
+                if tx.emit_with_dedup_key(
+                    balance_event.to_bytes(),
+                    balance_dedup_key(BasicAccountScope::BybitUnified, &balance_msg),
+                ) {
                     count += 1;
                 }
 
@@ -159,7 +168,10 @@ impl BybitAccountEventParser {
                         BasicAccountScope::BybitUnified,
                         interest_msg.to_bytes(),
                     );
-                    if tx.emit(interest_event.to_bytes()) {
+                    if tx.emit_with_dedup_key(
+                        interest_event.to_bytes(),
+                        borrow_interest_dedup_key(BasicAccountScope::BybitUnified, &interest_msg),
+                    ) {
                         count += 1;
                     }
                 }
@@ -212,7 +224,10 @@ impl BybitAccountEventParser {
                 BasicAccountScope::BybitUnified,
                 position_msg.to_bytes(),
             );
-            if tx.emit(position_event.to_bytes()) {
+            if tx.emit_with_dedup_key(
+                position_event.to_bytes(),
+                position_dedup_key(BasicAccountScope::BybitUnified, &position_msg),
+            ) {
                 count += 1;
             }
 
@@ -225,7 +240,10 @@ impl BybitAccountEventParser {
                     BasicAccountScope::BybitUnified,
                     pnl_msg.to_bytes(),
                 );
-                if tx.emit(pnl_event.to_bytes()) {
+                if tx.emit_with_dedup_key(
+                    pnl_event.to_bytes(),
+                    unrealized_pnl_dedup_key(BasicAccountScope::BybitUnified, &pnl_msg),
+                ) {
                     count += 1;
                 }
             }

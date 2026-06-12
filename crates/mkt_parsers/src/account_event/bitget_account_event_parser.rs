@@ -1,6 +1,9 @@
 //! Bitget UTA 账户事件解析器（余额 / 持仓 / 订单）
 
-use super::{bitget_order_dedup_key, trade_lite_dedup_key, AccountEventSink, Parser};
+use super::{
+    account_risk_dedup_key, balance_dedup_key, bitget_order_dedup_key, borrow_interest_dedup_key,
+    position_dedup_key, trade_lite_dedup_key, unrealized_pnl_dedup_key, AccountEventSink, Parser,
+};
 use crate::msg::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
     BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg,
@@ -160,7 +163,10 @@ impl BitgetAccountEventParser {
                     BasicAccountScope::BitgetUnified,
                     msg.to_bytes(),
                 );
-                if tx.emit(event.to_bytes()) {
+                if tx.emit_with_dedup_key(
+                    event.to_bytes(),
+                    account_risk_dedup_key(BasicAccountScope::BitgetUnified, &msg),
+                ) {
                     count += 1;
                 }
             }
@@ -195,7 +201,10 @@ impl BitgetAccountEventParser {
             BasicAccountScope::BitgetUnified,
             payload,
         );
-        if tx.emit(event.to_bytes()) {
+        if tx.emit_with_dedup_key(
+            event.to_bytes(),
+            balance_dedup_key(BasicAccountScope::BitgetUnified, &balance_msg),
+        ) {
             sent += 1;
         }
 
@@ -207,7 +216,10 @@ impl BitgetAccountEventParser {
                 BasicAccountScope::BitgetUnified,
                 payload,
             );
-            if tx.emit(event.to_bytes()) {
+            if tx.emit_with_dedup_key(
+                event.to_bytes(),
+                borrow_interest_dedup_key(BasicAccountScope::BitgetUnified, &interest_msg),
+            ) {
                 sent += 1;
             }
         }
@@ -264,7 +276,10 @@ impl BitgetAccountEventParser {
                 BasicAccountScope::BitgetUnified,
                 pos_payload,
             );
-            if tx.emit(pos_event.to_bytes()) {
+            if tx.emit_with_dedup_key(
+                pos_event.to_bytes(),
+                position_dedup_key(BasicAccountScope::BitgetUnified, &position_msg),
+            ) {
                 count += 1;
             }
 
@@ -279,7 +294,10 @@ impl BitgetAccountEventParser {
                     BasicAccountScope::BitgetUnified,
                     pnl_payload,
                 );
-                if tx.emit(pnl_event.to_bytes()) {
+                if tx.emit_with_dedup_key(
+                    pnl_event.to_bytes(),
+                    unrealized_pnl_dedup_key(BasicAccountScope::BitgetUnified, &pnl_msg),
+                ) {
                     count += 1;
                 }
             }

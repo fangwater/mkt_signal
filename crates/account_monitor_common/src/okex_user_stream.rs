@@ -5,6 +5,7 @@
 //! 2. 登录成功后订阅所需频道
 //! 3. 通过 WebSocket ping/pong frame 保持连接 (每 25 秒)
 
+use crate::raw_handler::{forward_raw_account_message, RawAccountMessageHandler};
 use account_common::okex_auth::OkexCredentials;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -33,6 +34,7 @@ pub struct OkexUserDataConnection {
     subscribe_messages: Vec<serde_json::Value>,
     session_max: Option<Duration>,
     restart_count: u32,
+    raw_handler: Option<RawAccountMessageHandler>,
 }
 
 impl OkexUserDataConnection {
@@ -48,7 +50,12 @@ impl OkexUserDataConnection {
             subscribe_messages,
             session_max,
             restart_count: 0,
+            raw_handler: None,
         }
+    }
+
+    pub fn set_raw_handler(&mut self, handler: RawAccountMessageHandler) {
+        self.raw_handler = Some(handler);
     }
 
     /// 检查消息是否为登录响应
@@ -239,8 +246,12 @@ impl MktConnectionRunner for OkexUserDataConnection {
 
                                             // 广播消息
                                             let bytes = Bytes::from(text.into_bytes());
-                                            if let Err(e) = self.base_connection.tx.send(bytes) {
-                                                error!("OKX: Failed to broadcast message: {}", e);
+                                            if !forward_raw_account_message(
+                                                &self.base_connection.tx,
+                                                self.raw_handler.as_mut(),
+                                                bytes,
+                                                "OKX: Failed to broadcast message",
+                                            ) {
                                                 break;
                                             }
                                         }
