@@ -24,16 +24,8 @@ id = "binance-intra-arb01"
 url = "http://127.0.0.1:6342"
 
 [[sources]]
-id = "gate-intra-arb01"
-url = "http://127.0.0.1:6343"
-
-[[sources]]
 id = "bitget-intra-arb01"
 url = "http://127.0.0.1:6344"
-
-[[sources]]
-id = "bitget-gate-cross-arb01"
-url = "http://127.0.0.1:6345"
 
 [[sources]]
 id = "bybit-intra-arb01"

@@ -18,6 +18,30 @@ use std::time::{Duration, Instant};
 
 pub struct PreTrade {}
 
+fn parse_bool_env(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "y" | "on" => Some(true),
+        "0" | "false" | "no" | "n" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn enable_ipc_fast_poll() -> bool {
+    for name in ["enable_ipc_fast_poll", "ENABLE_IPC_FAST_POLL"] {
+        if let Ok(value) = std::env::var(name) {
+            if let Some(enabled) = parse_bool_env(&value) {
+                return enabled;
+            }
+            warn!(
+                "invalid {}='{}', treating enable_ipc_fast_poll as disabled",
+                name, value
+            );
+            return false;
+        }
+    }
+    false
+}
+
 fn drive_strategy_manager_period_clock_rc(
     strategy_mgr: &Rc<RefCell<StrategyManager>>,
     now: i64,
@@ -110,14 +134,19 @@ impl PreTrade {
         // IPC hot path 不等待这个 tick；空闲时先做 bounded busy-poll，超过预算才 yield。
         let period_clock_interval = Duration::from_millis(20);
         let mut next_period_clock = Instant::now();
-        let idle_spin_iters = std::env::var("PRE_TRADE_REACTOR_IDLE_SPIN_ITERS")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(64);
+        let fast_poll = enable_ipc_fast_poll();
+        let idle_spin_iters = if fast_poll {
+            std::env::var("PRE_TRADE_REACTOR_IDLE_SPIN_ITERS")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(64)
+        } else {
+            0
+        };
         let mut idle_spin_count = 0usize;
         info!(
-            "pre_trade reactor idle spin configured (iters={})",
-            idle_spin_iters
+            "pre_trade reactor idle spin configured (enable_ipc_fast_poll={} iters={})",
+            fast_poll, idle_spin_iters
         );
 
         loop {
@@ -230,7 +259,10 @@ impl PreTrade {
 
 #[cfg(test)]
 mod tests {
-    use super::{drive_orphan_manager_period_clock_rc, drive_strategy_manager_period_clock_rc};
+    use super::{
+        drive_orphan_manager_period_clock_rc, drive_strategy_manager_period_clock_rc,
+        enable_ipc_fast_poll, parse_bool_env,
+    };
     use crate::strategy::orphan_order_strategy::OrphanOrderStrategy;
     use crate::strategy::{OrphanStrategyManager, Strategy, StrategyManager};
     use order_common::{OrderUpdate, TradeUpdate};
@@ -379,5 +411,34 @@ mod tests {
         assert_eq!(inspected, 1);
         assert!(!manager.borrow().contains(303));
         assert!(manager.borrow().is_empty());
+    }
+
+    #[test]
+    fn parse_bool_env_accepts_common_values() {
+        assert_eq!(parse_bool_env("1"), Some(true));
+        assert_eq!(parse_bool_env("true"), Some(true));
+        assert_eq!(parse_bool_env("on"), Some(true));
+        assert_eq!(parse_bool_env("0"), Some(false));
+        assert_eq!(parse_bool_env("false"), Some(false));
+        assert_eq!(parse_bool_env("off"), Some(false));
+        assert_eq!(parse_bool_env("maybe"), None);
+    }
+
+    #[test]
+    fn enable_ipc_fast_poll_defaults_off() {
+        std::env::remove_var("ENABLE_IPC_FAST_POLL");
+        std::env::remove_var("enable_ipc_fast_poll");
+        assert!(!enable_ipc_fast_poll());
+    }
+
+    #[test]
+    fn enable_ipc_fast_poll_honors_upper_and_lower_case_env_names() {
+        std::env::set_var("ENABLE_IPC_FAST_POLL", "1");
+        assert!(enable_ipc_fast_poll());
+        std::env::remove_var("ENABLE_IPC_FAST_POLL");
+
+        std::env::set_var("enable_ipc_fast_poll", "yes");
+        assert!(enable_ipc_fast_poll());
+        std::env::remove_var("enable_ipc_fast_poll");
     }
 }
