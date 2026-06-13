@@ -76,6 +76,16 @@ struct AsyncThreadQueues {
     query_req_consumer: Consumer<QueryRequestMsg>,
 }
 
+enum OrderReqIngress {
+    Spsc(Consumer<TradeRequestMsg>),
+    Ipc(Subscriber<ipc::Service, [u8; 4096], ()>),
+}
+
+enum QueryReqIngress {
+    Spsc(Consumer<QueryRequestMsg>),
+    Ipc(Subscriber<ipc::Service, [u8; QUERY_REQ_PAYLOAD], ()>),
+}
+
 fn env_usize_or(name: &str, default: usize) -> usize {
     match std::env::var(name) {
         Ok(value) => match value.trim().parse::<usize>() {
@@ -105,11 +115,19 @@ fn parse_bool_env(value: &str) -> Option<bool> {
 }
 
 fn enable_ipc_fast_poll() -> bool {
-    std::env::var("ENABLE_IPC_FAST_POLL")
-        .ok()
-        .as_deref()
-        .and_then(parse_bool_env)
-        .unwrap_or(false)
+    for name in ["enable_ipc_fast_poll", "ENABLE_IPC_FAST_POLL"] {
+        if let Ok(value) = std::env::var(name) {
+            if let Some(enabled) = parse_bool_env(&value) {
+                return enabled;
+            }
+            warn!(
+                "invalid {}='{}', treating enable_ipc_fast_poll as disabled",
+                name, value
+            );
+            return false;
+        }
+    }
+    false
 }
 
 fn new_ipc_spsc_queues() -> (IpcThreadQueues, AsyncThreadQueues) {
@@ -231,6 +249,58 @@ fn pop_query_req_for_async(consumer: &mut Consumer<QueryRequestMsg>) -> Option<Q
     match consumer.pop() {
         Ok(msg) => Some(msg),
         Err(PopError::Empty) => None,
+    }
+}
+
+fn recv_trade_req_from_ipc(
+    subscriber: &Subscriber<ipc::Service, [u8; 4096], ()>,
+) -> Option<TradeRequestMsg> {
+    match subscriber.receive() {
+        Ok(Some(sample)) => {
+            let msg = parse_trade_request_payload(sample.payload());
+            drop(sample);
+            msg
+        }
+        Ok(None) => None,
+        Err(err) => {
+            warn!("trade request receive error: {err}");
+            None
+        }
+    }
+}
+
+fn recv_query_req_from_ipc(
+    subscriber: &Subscriber<ipc::Service, [u8; QUERY_REQ_PAYLOAD], ()>,
+) -> Option<QueryRequestMsg> {
+    match subscriber.receive() {
+        Ok(Some(sample)) => {
+            let msg = parse_query_request_payload(sample.payload());
+            drop(sample);
+            msg
+        }
+        Ok(None) => None,
+        Err(err) => {
+            warn!("query request receive error: {err}");
+            None
+        }
+    }
+}
+
+impl OrderReqIngress {
+    fn try_recv(&mut self) -> Option<TradeRequestMsg> {
+        match self {
+            Self::Spsc(consumer) => pop_trade_req_for_async(consumer),
+            Self::Ipc(subscriber) => recv_trade_req_from_ipc(subscriber),
+        }
+    }
+}
+
+impl QueryReqIngress {
+    fn try_recv(&mut self) -> Option<QueryRequestMsg> {
+        match self {
+            Self::Spsc(consumer) => pop_query_req_for_async(consumer),
+            Self::Ipc(subscriber) => recv_query_req_from_ipc(subscriber),
+        }
     }
 }
 
@@ -572,17 +642,6 @@ impl TradeEngine {
             canonical_exchange, order_req_service, order_resp_service, query_req_service, query_resp_service, fast_poll
         );
 
-        let (ipc_queues, async_queues) = new_ipc_spsc_queues();
-        let ipc_thread_handle = spawn_te_ipc_thread(
-            canonical_exchange.to_string(),
-            order_req_service.clone(),
-            query_req_service.clone(),
-            ipc_queues,
-            shutdown.clone(),
-            self.ipc_core,
-            fast_poll,
-        )?;
-
         // Async thread owns outbound publishers and other network-facing IPC publications.
         let node_name = format!("trade_engine_{}_async", canonical_exchange);
         let node = NodeBuilder::new()
@@ -627,6 +686,55 @@ impl TradeEngine {
         if exchange == Exchange::Binance && self.accounts.is_empty() {
             return Err(anyhow!("Binance requires API keys in config"));
         }
+
+        let (order_req_ingress, query_req_ingress, ipc_thread_handle) = if fast_poll {
+            let (ipc_queues, async_queues) = new_ipc_spsc_queues();
+            let ipc_thread_handle = spawn_te_ipc_thread(
+                canonical_exchange.to_string(),
+                order_req_service.clone(),
+                query_req_service.clone(),
+                ipc_queues,
+                shutdown.clone(),
+                self.ipc_core,
+                fast_poll,
+            )?;
+            let AsyncThreadQueues {
+                order_req_consumer,
+                query_req_consumer,
+            } = async_queues;
+            (
+                OrderReqIngress::Spsc(order_req_consumer),
+                QueryReqIngress::Spsc(query_req_consumer),
+                Some(ipc_thread_handle),
+            )
+        } else {
+            let order_service = node
+                .service_builder(&ServiceName::new(&order_req_service)?)
+                .publish_subscribe::<[u8; 4096]>()
+                .subscriber_max_buffer_size(256)
+                .open_or_create()?;
+            let order_subscriber: Subscriber<ipc::Service, [u8; 4096], ()> =
+                order_service.subscriber_builder().create()?;
+
+            let query_service = node
+                .service_builder(&ServiceName::new(&query_req_service)?)
+                .publish_subscribe::<[u8; QUERY_REQ_PAYLOAD]>()
+                .subscriber_max_buffer_size(256)
+                .open_or_create()?;
+            let query_subscriber: Subscriber<ipc::Service, [u8; QUERY_REQ_PAYLOAD], ()> =
+                query_service.subscriber_builder().create()?;
+
+            info!(
+                "trade_engine ingress running on async thread; order_req='{}' query_req='{}'",
+                order_req_service, query_req_service
+            );
+
+            (
+                OrderReqIngress::Ipc(order_subscriber),
+                QueryReqIngress::Ipc(query_subscriber),
+                None,
+            )
+        };
 
         // 跨 endpoint 共享的延迟分桶。capacity 10000。
         // - new/cancel: T1−T0（IPC→WS 端到端），所有 venue 通用。
@@ -682,10 +790,6 @@ impl TradeEngine {
         }
         let mut worker_handles: Vec<(&'static str, tokio::task::JoinHandle<()>)> = Vec::new();
 
-        let AsyncThreadQueues {
-            mut order_req_consumer,
-            mut query_req_consumer,
-        } = async_queues;
         let trade_resp_sink = TradeResponseSink::new(order_resp_publisher);
         let query_resp_sink = QueryResponseSink::new(query_resp_publisher);
 
@@ -1113,12 +1217,13 @@ impl TradeEngine {
             let mut binance_spot_ws_endpoints = binance_spot_ws_endpoints_for_req_worker;
             let mut ws_rr_cursor = 0usize; // 轮询计数器
             let rest_dispatcher = rest_dispatcher_for_orders;
+            let mut order_req_ingress = order_req_ingress;
 
             loop {
                 if shutdown_for_req_worker.is_cancelled() {
                     break;
                 }
-                let Some(msg) = pop_trade_req_for_async(&mut order_req_consumer) else {
+                let Some(msg) = order_req_ingress.try_recv() else {
                     tokio::task::yield_now().await;
                     continue;
                 };
@@ -1332,12 +1437,13 @@ impl TradeEngine {
                 let mut gate_futures_query_rr = 0usize;
                 let mut okex_query_rate_limiter = OkexQueryRateLimiter::default();
                 let mut bitget_query_rate_limiter = BitgetQueryRateLimiter::default();
+                let mut query_req_ingress = query_req_ingress;
 
                 'query_router: loop {
                     if shutdown_for_query_router.is_cancelled() {
                         break;
                     }
-                    let Some(msg) = pop_query_req_for_async(&mut query_req_consumer) else {
+                    let Some(msg) = query_req_ingress.try_recv() else {
                         tokio::task::yield_now().await;
                         continue;
                     };
@@ -2523,8 +2629,10 @@ impl TradeEngine {
         }
         drop(ws_endpoints);
 
-        if let Err(err) = ipc_thread_handle.join() {
-            warn!("trade_engine IPC thread join failed: {:?}", err);
+        if let Some(ipc_thread_handle) = ipc_thread_handle {
+            if let Err(err) = ipc_thread_handle.join() {
+                warn!("trade_engine IPC thread join failed: {:?}", err);
+            }
         }
 
         for (name, handle) in worker_handles {
@@ -2564,5 +2672,12 @@ mod tests {
         std::env::set_var("ENABLE_IPC_FAST_POLL", "off");
         assert!(!enable_ipc_fast_poll());
         std::env::remove_var("ENABLE_IPC_FAST_POLL");
+    }
+
+    #[test]
+    fn enable_ipc_fast_poll_accepts_lowercase_env_name() {
+        std::env::set_var("enable_ipc_fast_poll", "yes");
+        assert!(enable_ipc_fast_poll());
+        std::env::remove_var("enable_ipc_fast_poll");
     }
 }
