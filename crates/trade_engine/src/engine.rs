@@ -27,11 +27,11 @@ use crate::query_parsers::okex_order::{
 };
 use crate::query_parsers::okex_positions_snapshot::parse_okex_positions_snapshot;
 use crate::query_request::{QueryRequestMsg, QueryRequestType};
-use crate::query_response_handle::{publish_query_response, QueryExecOutcome};
+use crate::query_response_handle::QueryExecOutcome;
 use crate::query_type_mapping::QueryTypeMapping;
 use crate::response_sink::{QueryResponseSink, TradeResponseSink};
 use crate::trade_request::{TradeRequestMsg, TradeRequestType};
-use crate::trade_response_handle::{publish_trade_response, TradeExecOutcome};
+use crate::trade_response_handle::TradeExecOutcome;
 use crate::trade_type_mapping::TradeTypeMapping;
 use crate::ws_client::{
     RespLatencyBuckets, TradeWsClient, WsCommand, WsCommandQueue, WsEndpointHandle,
@@ -62,22 +62,18 @@ use tokio_util::sync::CancellationToken;
 
 const TRADE_REQ_IPC_RECV_SLOW_WARN_US: i64 = 50_000;
 const DEFAULT_TE_IPC_REQ_QUEUE_CAP: usize = 4096;
-const DEFAULT_TE_IPC_RESP_QUEUE_CAP: usize = 4096;
 const SPSC_QUEUE_FULL_WARN_INTERVAL: u64 = 100_000;
 const IPC_THREAD_DRAIN_BUDGET: usize = 64;
+const TE_IPC_IDLE_SLEEP_MICROS: u64 = 100;
 
 struct IpcThreadQueues {
     order_req_producer: Producer<TradeRequestMsg>,
     query_req_producer: Producer<QueryRequestMsg>,
-    trade_resp_consumer: Consumer<TradeExecOutcome>,
-    query_resp_consumer: Consumer<QueryExecOutcome>,
 }
 
 struct AsyncThreadQueues {
     order_req_consumer: Consumer<TradeRequestMsg>,
     query_req_consumer: Consumer<QueryRequestMsg>,
-    trade_resp_producer: Producer<TradeExecOutcome>,
-    query_resp_producer: Producer<QueryExecOutcome>,
 }
 
 fn env_usize_or(name: &str, default: usize) -> usize {
@@ -100,31 +96,37 @@ fn env_usize_or(name: &str, default: usize) -> usize {
     }
 }
 
+fn parse_bool_env(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "y" | "on" => Some(true),
+        "0" | "false" | "no" | "n" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn enable_ipc_fast_poll() -> bool {
+    std::env::var("ENABLE_IPC_FAST_POLL")
+        .ok()
+        .as_deref()
+        .and_then(parse_bool_env)
+        .unwrap_or(false)
+}
+
 fn new_ipc_spsc_queues() -> (IpcThreadQueues, AsyncThreadQueues) {
     let req_cap = env_usize_or("TE_IPC_REQ_QUEUE_CAP", DEFAULT_TE_IPC_REQ_QUEUE_CAP);
-    let resp_cap = env_usize_or("TE_IPC_RESP_QUEUE_CAP", DEFAULT_TE_IPC_RESP_QUEUE_CAP);
-    info!(
-        "trade_engine ipc spsc queues: req_cap={} resp_cap={}",
-        req_cap, resp_cap
-    );
+    info!("trade_engine ipc spsc queues: req_cap={}", req_cap);
 
     let (order_req_producer, order_req_consumer) = RingBuffer::new(req_cap);
     let (query_req_producer, query_req_consumer) = RingBuffer::new(req_cap);
-    let (trade_resp_producer, trade_resp_consumer) = RingBuffer::new(resp_cap);
-    let (query_resp_producer, query_resp_consumer) = RingBuffer::new(resp_cap);
 
     (
         IpcThreadQueues {
             order_req_producer,
             query_req_producer,
-            trade_resp_consumer,
-            query_resp_consumer,
         },
         AsyncThreadQueues {
             order_req_consumer,
             query_req_consumer,
-            trade_resp_producer,
-            query_resp_producer,
         },
     )
 }
@@ -285,12 +287,11 @@ fn push_query_req_or_pending(
 fn spawn_te_ipc_thread(
     exchange_name: String,
     order_req_service: String,
-    order_resp_service: String,
     query_req_service: String,
-    query_resp_service: String,
     mut queues: IpcThreadQueues,
     shutdown: CancellationToken,
     ipc_core: Option<usize>,
+    fast_poll: bool,
 ) -> Result<thread::JoinHandle<()>> {
     let handle = thread::Builder::new()
         .name("te-ipc".to_string())
@@ -306,11 +307,10 @@ fn spawn_te_ipc_thread(
             if let Err(err) = run_te_ipc_thread(
                 &exchange_name,
                 &order_req_service,
-                &order_resp_service,
                 &query_req_service,
-                &query_resp_service,
                 &mut queues,
                 shutdown.clone(),
+                fast_poll,
             ) {
                 warn!("trade_engine IPC thread exited with error: {:#}", err);
                 shutdown.cancel();
@@ -323,11 +323,10 @@ fn spawn_te_ipc_thread(
 fn run_te_ipc_thread(
     exchange_name: &str,
     order_req_service: &str,
-    order_resp_service: &str,
     query_req_service: &str,
-    query_resp_service: &str,
     queues: &mut IpcThreadQueues,
     shutdown: CancellationToken,
+    fast_poll: bool,
 ) -> Result<()> {
     let node_name = format!("trade_engine_{}_ipc", exchange_name);
     let node = NodeBuilder::new()
@@ -342,14 +341,6 @@ fn run_te_ipc_thread(
     let order_subscriber: Subscriber<ipc::Service, [u8; 4096], ()> =
         order_service.subscriber_builder().create()?;
 
-    let order_resp_service_obj = node
-        .service_builder(&ServiceName::new(order_resp_service)?)
-        .publish_subscribe::<[u8; 64]>()
-        .subscriber_max_buffer_size(256)
-        .open_or_create()?;
-    let order_resp_publisher: Publisher<ipc::Service, [u8; 64], ()> =
-        order_resp_service_obj.publisher_builder().create()?;
-
     let query_service = node
         .service_builder(&ServiceName::new(query_req_service)?)
         .publish_subscribe::<[u8; QUERY_REQ_PAYLOAD]>()
@@ -358,17 +349,12 @@ fn run_te_ipc_thread(
     let query_subscriber: Subscriber<ipc::Service, [u8; QUERY_REQ_PAYLOAD], ()> =
         query_service.subscriber_builder().create()?;
 
-    let query_resp_service_obj = node
-        .service_builder(&ServiceName::new(query_resp_service)?)
-        .publish_subscribe::<[u8; QUERY_RESP_PAYLOAD]>()
-        .subscriber_max_buffer_size(256)
-        .open_or_create()?;
-    let query_resp_publisher: Publisher<ipc::Service, [u8; QUERY_RESP_PAYLOAD], ()> =
-        query_resp_service_obj.publisher_builder().create()?;
-
     info!(
-        "trade_engine IPC thread started; order_req='{}' order_resp='{}' query_req='{}' query_resp='{}'",
-        order_req_service, order_resp_service, query_req_service, query_resp_service
+        "trade_engine IPC thread started; order_req='{}' query_req='{}' fast_poll={} idle_sleep_us={}",
+        order_req_service,
+        query_req_service,
+        fast_poll,
+        TE_IPC_IDLE_SLEEP_MICROS
     );
 
     let mut pending_order_req: Option<TradeRequestMsg> = None;
@@ -377,7 +363,10 @@ fn run_te_ipc_thread(
     let mut query_req_full_count = 0u64;
 
     while !shutdown.is_cancelled() {
+        let mut did_work = false;
+
         if let Some(msg) = pending_order_req.take() {
+            did_work = true;
             push_trade_req_or_pending(
                 &mut queues.order_req_producer,
                 msg,
@@ -386,6 +375,7 @@ fn run_te_ipc_thread(
             );
         }
         if let Some(msg) = pending_query_req.take() {
+            did_work = true;
             push_query_req_or_pending(
                 &mut queues.query_req_producer,
                 msg,
@@ -398,6 +388,7 @@ fn run_te_ipc_thread(
             loop {
                 match order_subscriber.receive() {
                     Ok(Some(sample)) => {
+                        did_work = true;
                         let msg = parse_trade_request_payload(sample.payload());
                         drop(sample);
                         if let Some(msg) = msg {
@@ -424,6 +415,7 @@ fn run_te_ipc_thread(
             for _ in 0..IPC_THREAD_DRAIN_BUDGET {
                 match query_subscriber.receive() {
                     Ok(Some(sample)) => {
+                        did_work = true;
                         let msg = parse_query_request_payload(sample.payload());
                         drop(sample);
                         if let Some(msg) = msg {
@@ -446,20 +438,13 @@ fn run_te_ipc_thread(
             }
         }
 
-        for _ in 0..IPC_THREAD_DRAIN_BUDGET {
-            match queues.trade_resp_consumer.pop() {
-                Ok(out) => publish_trade_response(&order_resp_publisher, out),
-                Err(PopError::Empty) => break,
-            }
+        if fast_poll {
+            std::hint::spin_loop();
+        } else if !did_work {
+            thread::sleep(Duration::from_micros(TE_IPC_IDLE_SLEEP_MICROS));
+        } else {
+            thread::yield_now();
         }
-        for _ in 0..IPC_THREAD_DRAIN_BUDGET {
-            match queues.query_resp_consumer.pop() {
-                Ok(out) => publish_query_response(&query_resp_publisher, out),
-                Err(PopError::Empty) => break,
-            }
-        }
-
-        std::hint::spin_loop();
     }
 
     info!("trade_engine IPC thread exiting");
@@ -574,6 +559,7 @@ impl TradeEngine {
         }
 
         let canonical_exchange = exchange.as_str();
+        let fast_poll = enable_ipc_fast_poll();
 
         // 构建带命名空间的服务名
         let order_req_service = build_service_name(&format!("order_reqs/{}", canonical_exchange));
@@ -582,27 +568,42 @@ impl TradeEngine {
         let query_resp_service = build_service_name(&format!("query_resps/{}", canonical_exchange));
 
         info!(
-            "trade_engine starting; exchange={}, order_req='{}', order_resp='{}', query_req='{}', query_resp='{}'",
-            canonical_exchange, order_req_service, order_resp_service, query_req_service, query_resp_service
+            "trade_engine starting; exchange={}, order_req='{}', order_resp='{}', query_req='{}', query_resp='{}', enable_ipc_fast_poll={}",
+            canonical_exchange, order_req_service, order_resp_service, query_req_service, query_resp_service, fast_poll
         );
 
         let (ipc_queues, async_queues) = new_ipc_spsc_queues();
         let ipc_thread_handle = spawn_te_ipc_thread(
             canonical_exchange.to_string(),
             order_req_service.clone(),
-            order_resp_service.clone(),
             query_req_service.clone(),
-            query_resp_service.clone(),
             ipc_queues,
             shutdown.clone(),
             self.ipc_core,
+            fast_poll,
         )?;
 
-        // Async thread keeps only async/network-facing IPC publications, such as latency snapshots.
+        // Async thread owns outbound publishers and other network-facing IPC publications.
         let node_name = format!("trade_engine_{}_async", canonical_exchange);
         let node = NodeBuilder::new()
             .name(&NodeName::new(&node_name)?)
             .create::<ipc::Service>()?;
+
+        let order_resp_service_obj = node
+            .service_builder(&ServiceName::new(&order_resp_service)?)
+            .publish_subscribe::<[u8; 64]>()
+            .subscriber_max_buffer_size(256)
+            .open_or_create()?;
+        let order_resp_publisher: Publisher<ipc::Service, [u8; 64], ()> =
+            order_resp_service_obj.publisher_builder().create()?;
+
+        let query_resp_service_obj = node
+            .service_builder(&ServiceName::new(&query_resp_service)?)
+            .publish_subscribe::<[u8; QUERY_RESP_PAYLOAD]>()
+            .subscriber_max_buffer_size(256)
+            .open_or_create()?;
+        let query_resp_publisher: Publisher<ipc::Service, [u8; QUERY_RESP_PAYLOAD], ()> =
+            query_resp_service_obj.publisher_builder().create()?;
 
         // Latency snapshot publisher（每 30s venue 级 IPC 推送，512B 定长载荷）。
         // service name: `<IPC_NAMESPACE>/te_pubs/<venue>/latency`——
@@ -621,7 +622,7 @@ impl TradeEngine {
 
         // 直接使用传入的 exchange 枚举
 
-        // Async-thread response sinks write directly to rtrb SPSC; inbound requests also come from SPSC.
+        // Async thread publishes responses directly to iceoryx; inbound requests still come from SPSC.
 
         if exchange == Exchange::Binance && self.accounts.is_empty() {
             return Err(anyhow!("Binance requires API keys in config"));
@@ -684,11 +685,9 @@ impl TradeEngine {
         let AsyncThreadQueues {
             mut order_req_consumer,
             mut query_req_consumer,
-            trade_resp_producer,
-            query_resp_producer,
         } = async_queues;
-        let trade_resp_sink = TradeResponseSink::new(trade_resp_producer, shutdown.clone());
-        let query_resp_sink = QueryResponseSink::new(query_resp_producer, shutdown.clone());
+        let trade_resp_sink = TradeResponseSink::new(order_resp_publisher);
+        let query_resp_sink = QueryResponseSink::new(query_resp_publisher);
 
         // 周期 publisher：每 30s 把所有非空桶的 KLL 快照打包成 LatencySnapshotMsg
         // 推到 IPC（service: <IPC_NAMESPACE>/te_pubs/<venue>/latency）。
@@ -2524,7 +2523,6 @@ impl TradeEngine {
         }
         drop(ws_endpoints);
 
-        // Close response channels after request paths are down; workers will exit when all senders drop.
         if let Err(err) = ipc_thread_handle.join() {
             warn!("trade_engine IPC thread join failed: {:?}", err);
         }
@@ -2535,5 +2533,36 @@ impl TradeEngine {
 
         info!("trade_engine shutdown complete");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{enable_ipc_fast_poll, parse_bool_env};
+
+    #[test]
+    fn parse_bool_env_accepts_common_values() {
+        assert_eq!(parse_bool_env("1"), Some(true));
+        assert_eq!(parse_bool_env("true"), Some(true));
+        assert_eq!(parse_bool_env("on"), Some(true));
+        assert_eq!(parse_bool_env("0"), Some(false));
+        assert_eq!(parse_bool_env("false"), Some(false));
+        assert_eq!(parse_bool_env("off"), Some(false));
+        assert_eq!(parse_bool_env("maybe"), None);
+    }
+
+    #[test]
+    fn enable_ipc_fast_poll_defaults_off() {
+        std::env::remove_var("ENABLE_IPC_FAST_POLL");
+        assert!(!enable_ipc_fast_poll());
+    }
+
+    #[test]
+    fn enable_ipc_fast_poll_honors_env() {
+        std::env::set_var("ENABLE_IPC_FAST_POLL", "1");
+        assert!(enable_ipc_fast_poll());
+        std::env::set_var("ENABLE_IPC_FAST_POLL", "off");
+        assert!(!enable_ipc_fast_poll());
+        std::env::remove_var("ENABLE_IPC_FAST_POLL");
     }
 }
