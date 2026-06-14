@@ -264,6 +264,51 @@ where
     aligned_qty_venue + 1e-12 < min_qty
 }
 
+fn target_base_qty_below_min<T>(
+    venue: Venue,
+    symbol_key: &str,
+    target_base_qty: f64,
+    price: f64,
+    table: &T,
+) -> bool
+where
+    T: MinQtyLookup + ?Sized,
+{
+    if !(target_base_qty.is_finite() && target_base_qty > 0.0 && price.is_finite() && price > 0.0) {
+        return false;
+    }
+    let multiplier = contract_qty_multiplier(table, venue, symbol_key).unwrap_or(1.0);
+    if !(multiplier.is_finite() && multiplier > 0.0) {
+        return false;
+    }
+
+    let raw_qty_venue = target_base_qty / multiplier;
+    let step = table.step_size(symbol_key).unwrap_or(0.0);
+    let aligned_qty_venue = if step.is_finite() && step > 0.0 {
+        align_price_floor(raw_qty_venue, step)
+    } else {
+        raw_qty_venue
+    };
+
+    let min_qty = table.min_qty(symbol_key).unwrap_or(0.0);
+    if min_qty.is_finite() && min_qty > 0.0 && aligned_qty_venue + 1e-12 < min_qty {
+        return true;
+    }
+
+    if crate::common::is_futures_venue(venue) {
+        if let Some(min_notional) = table.min_notional(symbol_key) {
+            if min_notional.is_finite() && min_notional > 0.0 {
+                let target_notional = price * target_base_qty;
+                if target_notional + 1e-8 < min_notional {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
 fn build_quantile_offset_plan(
     side: Side,
     signal: f64,
@@ -499,15 +544,21 @@ where
             base_price,
             table,
         );
-    let (price_tick, qty_tick, levels) = if one_hand_below_min {
+    let target_below_min = use_target_base_qty
+        .map(|target_base_qty| {
+            target_base_qty_below_min(input.venue, &symbol_key, target_base_qty, base_price, table)
+        })
+        .unwrap_or(false);
+    let (price_tick, qty_tick, levels) = if one_hand_below_min || target_below_min {
         warn!(
-            "InventoryHedge: skip hedge levels because one-hand qty is below min_qty symbol={} venue={:?} order_amount_u={:.8} base_price={:.8} hedge_target_qty_base={:.8} inventory_net_qty_base={:.8}",
+            "InventoryHedge: skip hedge levels because requested hedge qty is below venue minimum symbol={} venue={:?} order_amount_u={:.8} base_price={:.8} hedge_target_qty_base={:.8} inventory_net_qty_base={:.8} target_base_qty={:?}",
             symbol,
             input.venue,
             input.order_amount_u,
             base_price,
             hedge_target_qty,
-            inventory_net_qty
+            inventory_net_qty,
+            use_target_base_qty
         );
         (
             table.price_tick(&symbol_key).unwrap_or(0.0),
@@ -638,4 +689,87 @@ where
         qty_tick,
         levels,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::QuantizedValue;
+
+    struct TestMinQtyTable {
+        min_qty: f64,
+        step_size: f64,
+        price_tick: f64,
+        min_notional: Option<f64>,
+        contract_multiplier: Option<f64>,
+    }
+
+    impl MinQtyLookup for TestMinQtyTable {
+        fn min_qty(&self, _symbol: &str) -> Option<f64> {
+            Some(self.min_qty)
+        }
+
+        fn step_size(&self, _symbol: &str) -> Option<f64> {
+            Some(self.step_size)
+        }
+
+        fn price_tick(&self, _symbol: &str) -> Option<f64> {
+            Some(self.price_tick)
+        }
+
+        fn min_notional(&self, _symbol: &str) -> Option<f64> {
+            self.min_notional
+        }
+
+        fn contract_multiplier_opt(&self, _symbol: &str) -> Option<f64> {
+            self.contract_multiplier
+        }
+    }
+
+    #[test]
+    fn target_base_qty_below_min_returns_empty_levels_for_futures() {
+        let table = TestMinQtyTable {
+            min_qty: 10.0,
+            step_size: 1.0,
+            price_tick: 0.0001,
+            min_notional: Some(5.0),
+            contract_multiplier: Some(1.0),
+        };
+        let input = InventoryHedgeBuildInput {
+            venue: Venue::BinanceFutures,
+            symbol: "BEATUSDT",
+            quote: Quote {
+                bid: 5.45,
+                ask: 5.46,
+                ts: 1,
+            },
+            volatility: 0.01,
+            signal: 0.0,
+            signal_qtl: Some(0.5),
+            enable_return_score_adjust_hedge: false,
+            hedge_vol_multiplier: 1.0,
+            hedge_offset_ratio: 1.0,
+            order_amount_u: 20.495,
+            hedge_target_qty: -3.75772,
+            target_base_qty: Some(-3.75772),
+            inventory_net_qty: -2.95526814,
+            symbol_exposure_u: 1000.0,
+            hedge_orders_per_round: 1,
+            offset_low: 0.0,
+            offset_high_limit: 0.01,
+            hedge_window_scale_low: 1.0,
+            hedge_window_scale_high: 1.0,
+            next_query_delay_ms: 60_000,
+            clock_shift_ms: 0,
+        };
+
+        let plan = build_inventory_hedge_quote_plan(input, &table).expect("plan");
+
+        assert_eq!(plan.levels.len(), 0);
+        assert_eq!(plan.qty_tick, 1.0);
+        assert_eq!(plan.price_tick, 0.0001);
+
+        let zero_qv = QuantizedValue::encode_floor(0.0, plan.qty_tick);
+        assert!(zero_qv.is_none());
+    }
 }

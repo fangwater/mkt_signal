@@ -132,11 +132,11 @@ pub fn parse_gate_spot_order_status_json(json: &str) -> Option<CompactOrderQuery
 
     let order_id =
         parse_i64_value(result.get("id")).or_else(|| parse_i64_value(result.get("order_id")))?;
-    let filled_total = parse_f64_value(result.get("filled_total")).unwrap_or(0.0);
+    let filled_amount = parse_f64_value(result.get("filled_amount")).unwrap_or(0.0);
     let amount = parse_f64_value(result.get("amount")).unwrap_or(0.0);
     let left = parse_f64_value(result.get("left")).unwrap_or(0.0);
-    let executed_qty = if filled_total > 0.0 {
-        filled_total
+    let executed_qty = if filled_amount > 0.0 {
+        filled_amount
     } else if amount > 0.0 {
         (amount - left).max(0.0)
     } else {
@@ -177,6 +177,72 @@ pub fn parse_gate_spot_order_status_json(json: &str) -> Option<CompactOrderQuery
         time_in_force_u8: tif_u8,
         response_price,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gate_spot_order_status_uses_filled_amount_not_quote_total() {
+        let json = r#"{
+            "result": {
+                "account": "unified",
+                "amount": "10.0",
+                "avg_deal_price": "9.428",
+                "create_time": "1781353962",
+                "create_time_ms": 1781353962442,
+                "currency_pair": "LAB_USDT",
+                "fill_price": "89.75456",
+                "filled_amount": "9.52",
+                "filled_total": "89.75456",
+                "finish_as": "cancelled",
+                "id": "1081870018924",
+                "left": "0.48",
+                "price": "9.428",
+                "side": "buy",
+                "status": "cancelled",
+                "text": "t-5306820840287895553",
+                "time_in_force": "poc",
+                "type": "limit",
+                "update_time": "1781353963",
+                "update_time_ms": 1781353963283
+            }
+        }"#;
+
+        let resp = parse_gate_spot_order_status_json(json).expect("gate spot order query");
+
+        assert!((resp.executed_qty - 9.52).abs() < 1e-12);
+        assert_ne!(resp.executed_qty, 89.75456);
+        assert_eq!(resp.order_id, 1081870018924);
+        assert_eq!(resp.status_u8, OrderExecutionStatus::Cancelled.to_u8());
+        assert_eq!(
+            resp.time_in_force_u8,
+            GateBasicOrderMsg::time_in_force_to_u8("poc")
+        );
+    }
+
+    #[test]
+    fn gate_spot_order_status_falls_back_to_amount_minus_left() {
+        let json = r#"{
+            "result": {
+                "amount": "10.0",
+                "avg_deal_price": "9.428",
+                "currency_pair": "LAB_USDT",
+                "finish_as": "cancelled",
+                "id": "1081870018924",
+                "left": "0.48",
+                "price": "9.428",
+                "status": "cancelled",
+                "time_in_force": "poc",
+                "update_time_ms": 1781353963283
+            }
+        }"#;
+
+        let resp = parse_gate_spot_order_status_json(json).expect("gate spot order query");
+
+        assert!((resp.executed_qty - 9.52).abs() < 1e-12);
+    }
 }
 
 pub fn parse_gate_futures_order_status_json(json: &str) -> Option<CompactOrderQueryResp> {
