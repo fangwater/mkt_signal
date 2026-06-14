@@ -21,6 +21,9 @@ const PRE_TRADE_RISK_CHANNEL: &str = DEFAULT_RISK_CHANNEL;
 
 pub const RESAMPLE_PAYLOAD: usize = ICEORYX_RESAMPLE_PAYLOAD;
 
+const MAX_SAMPLES_BEFORE_YIELD: usize = 64;
+const IDLE_POLL_SLEEP: Duration = Duration::from_millis(100);
+
 fn resolve_default_namespaces(server: &VizServerCfg) -> Result<Vec<String>> {
     if server.namespaces.is_empty() {
         return Err(anyhow::anyhow!("viz: missing required config `namespaces`"));
@@ -235,46 +238,60 @@ where
                 node_name
             );
 
+            let mut samples_before_yield = 0usize;
             loop {
                 match subscriber.receive() {
                     Ok(Some(sample)) => {
+                        samples_before_yield += 1;
                         let payload = sample.payload();
                         if payload.len() < 4 {
                             stats.borrow_mut().dropped += 1;
-                            continue;
-                        }
-                        let mut len_bytes = [0u8; 4];
-                        len_bytes.copy_from_slice(&payload[..4]);
-                        let data_len = u32::from_le_bytes(len_bytes) as usize;
-                        if data_len == 0 || 4 + data_len > payload.len() {
-                            stats.borrow_mut().dropped += 1;
-                            continue;
-                        }
-                        let data = &payload[4..4 + data_len];
-                        match bincode::deserialize::<T>(data) {
-                            Ok(entry) => {
-                                on_entry(entry.clone(), hub.clone());
+                        } else {
+                            let mut len_bytes = [0u8; 4];
+                            len_bytes.copy_from_slice(&payload[..4]);
+                            let data_len = u32::from_le_bytes(len_bytes) as usize;
+                            if data_len == 0 || 4 + data_len > payload.len() {
+                                stats.borrow_mut().dropped += 1;
+                            } else {
+                                let data = &payload[4..4 + data_len];
+                                match bincode::deserialize::<T>(data) {
+                                    Ok(entry) => {
+                                        on_entry(entry.clone(), hub.clone());
 
-                                let mut st = stats.borrow_mut();
-                                st.count += 1;
-                                if st.window_start.elapsed() >= Duration::from_secs(3) {
-                                    info!(
-                                        "viz resample relay {} received count={} dropped={}",
-                                        channel_label, st.count, st.dropped
-                                    );
-                                    st.window_start = Instant::now();
-                                    st.count = 0;
-                                    st.dropped = 0;
+                                        let mut st = stats.borrow_mut();
+                                        st.count += 1;
+                                        if st.window_start.elapsed() >= Duration::from_secs(3) {
+                                            info!(
+                                                "viz resample relay {} received count={} dropped={}",
+                                                channel_label, st.count, st.dropped
+                                            );
+                                            st.window_start = Instant::now();
+                                            st.count = 0;
+                                            st.dropped = 0;
+                                        }
+                                    }
+                                    Err(err) => {
+                                        stats.borrow_mut().dropped += 1;
+                                        warn!(
+                                            "viz resample decode failed ({}): {err:#}",
+                                            channel_label
+                                        );
+                                    }
                                 }
                             }
-                            Err(err) => {
-                                stats.borrow_mut().dropped += 1;
-                                warn!("viz resample decode failed ({}): {err:#}", channel_label);
-                            }
+                        }
+
+                        if samples_before_yield >= MAX_SAMPLES_BEFORE_YIELD {
+                            samples_before_yield = 0;
+                            tokio::task::yield_now().await;
                         }
                     }
-                    Ok(None) => tokio::task::yield_now().await,
+                    Ok(None) => {
+                        samples_before_yield = 0;
+                        tokio::time::sleep(IDLE_POLL_SLEEP).await;
+                    }
                     Err(err) => {
+                        samples_before_yield = 0;
                         warn!("viz resample receive error ({}): {err}", channel_label);
                         tokio::time::sleep(Duration::from_millis(200)).await;
                     }
