@@ -1,0 +1,4 @@
+interface:
+  display_name: "Intra Arb Latency Analysis"
+  short_description: "Analyze intra-arb order latency"
+  default_prompt: "Use $intra-arb-latency-analysis to analyze intra-arb uniform_orders latency from local parquet snapshots."
