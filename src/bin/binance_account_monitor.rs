@@ -1,4 +1,4 @@
-use account_common::{init_binance_account_mode, BinanceAccountMode};
+use account_common::{BinanceAccountMode, init_binance_account_mode};
 use account_monitor_common::binance_spot_ws_api_user_stream::BinanceSpotWsApiUserDataConnection;
 use account_monitor_common::binance_user_stream::{
     BinanceUserDataConnection, SessionRestartPolicy,
@@ -13,9 +13,9 @@ use log::{debug, error, info, warn};
 use mkt_parsers::account_event::binance_basic_account_event_parser::BinanceBasicAccountEventParser;
 use mkt_parsers::account_event::{AccountEventSink, Parser as AccountEventParser};
 use mkt_parsers::msg::basic_account_msg::{
-    get_basic_event_type, split_basic_account_event, BasicAccountEventMsg, BasicAccountEventType,
-    BasicAccountRiskMsg, BasicAccountScope, BasicBalanceMsg, BasicBorrowInterestMsg,
-    BasicPositionMsg, BasicTradeLiteMsg, BasicUmUnrealizedMsg, BinanceBasicOrderMsg,
+    BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
+    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg,
+    BasicUmUnrealizedMsg, BinanceBasicOrderMsg, get_basic_event_type, split_basic_account_event,
 };
 use order_common::Side;
 use order_common::{ExecutionType, OrderStatus};
@@ -29,8 +29,8 @@ use runtime_common::mkt_cfg::{
 use runtime_common::ws_connection::{MktConnection, MktConnectionHandler};
 use sha2::Sha256;
 use std::cell::RefCell;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::net::IpAddr;
@@ -241,18 +241,20 @@ fn wrap_basic_payload(account_scope: BasicAccountScope, payload: Bytes) -> Optio
 async fn bootstrap_standard_snapshots(
     api_key: &str,
     api_secret: &str,
+    fapi_rest_base: &str,
     local_ip: Option<&str>,
 ) -> Result<()> {
     let client = build_binance_rest_client(local_ip, Duration::from_secs(10))?;
     let mut emitted = 0usize;
     info!(
-        "bootstrap standard snapshots via local_ip={}",
+        "bootstrap standard snapshots via fapi_rest_base={} local_ip={}",
+        fapi_rest_base,
         local_ip.unwrap_or("system-default")
     );
 
     let um_balance_body = signed_get_binance(
         &client,
-        "https://fapi.binance.com",
+        fapi_rest_base,
         "/fapi/v2/balance",
         api_key,
         api_secret,
@@ -269,7 +271,7 @@ async fn bootstrap_standard_snapshots(
 
     let um_account_body = signed_get_binance(
         &client,
-        "https://fapi.binance.com",
+        fapi_rest_base,
         "/fapi/v2/account",
         api_key,
         api_secret,
@@ -446,15 +448,34 @@ async fn main() -> Result<()> {
     const BINANCE_PM_REST: &str = "https://papi.binance.com";
     const BINANCE_STD_FAPI_WS: &str = "wss://fstream.binance.com/private";
     const BINANCE_STD_FAPI_REST: &str = "https://fapi.binance.com";
+    const BINANCE_STD_FAPI_MM_WS: &str = "wss://fstream-mm.binance.com/private";
+    const BINANCE_STD_FAPI_MM_REST: &str = "https://fapi-mm.binance.com";
     const BINANCE_STD_SPOT_WS_API: &str = "wss://ws-api.binance.com:443/ws-api/v3";
     const BINANCE_STD_SPOT_REST: &str = "https://api.binance.com";
     let binance_is_standard = binance_account_mode == BinanceAccountMode::Standard;
+    let binance_um_ip_whitelist_mode = binance_um_ip_whitelist_mode_enabled();
+    let std_fapi_ws = if binance_um_ip_whitelist_mode {
+        BINANCE_STD_FAPI_MM_WS
+    } else {
+        BINANCE_STD_FAPI_WS
+    };
+    let std_fapi_rest = if binance_um_ip_whitelist_mode {
+        BINANCE_STD_FAPI_MM_REST
+    } else {
+        BINANCE_STD_FAPI_REST
+    };
+    if binance_is_standard && binance_um_ip_whitelist_mode {
+        info!(
+            "binance UM IP whitelist mode enabled; standard FAPI ws_base={} rest_base={}",
+            std_fapi_ws, std_fapi_rest
+        );
+    }
     let mut stream_cfgs: Vec<UserStreamConfig> = if binance_is_standard {
         vec![
             UserStreamConfig {
                 stream_label: "fapi",
-                ws_base: BINANCE_STD_FAPI_WS.to_string(),
-                rest_base: BINANCE_STD_FAPI_REST.to_string(),
+                ws_base: std_fapi_ws.to_string(),
+                rest_base: std_fapi_rest.to_string(),
                 listen_key_path: "/fapi/v1/listenKey".to_string(),
                 parse_balances_from_account_update: true,
                 account_scope: BasicAccountScope::BinanceStdUm,
@@ -517,7 +538,6 @@ async fn main() -> Result<()> {
             ip_source
         ));
     }
-    let binance_um_ip_whitelist_mode = binance_um_ip_whitelist_mode_enabled();
     validate_binance_um_whitelist_ip_config(
         &local_ip_cfg.local_ips,
         local_ip_cfg.binance_um_whitelist_ip.as_deref(),
@@ -559,7 +579,9 @@ async fn main() -> Result<()> {
     init_direct_forwarder("binance")?;
 
     if binance_is_standard {
-        match bootstrap_standard_snapshots(&api_key, &api_secret, Some(&primary_ip)).await {
+        match bootstrap_standard_snapshots(&api_key, &api_secret, std_fapi_rest, Some(&primary_ip))
+            .await
+        {
             Ok(()) => info!("bootstrap standard snapshots completed"),
             Err(err) => warn!("bootstrap standard snapshots failed: {err:#}"),
         }
