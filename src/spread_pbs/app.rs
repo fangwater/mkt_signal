@@ -12,7 +12,6 @@ use order_common::TradingVenue;
 use rolling_common::latency_kll::LatencyStats;
 use rolling_common::latency_snapshot::{
     LatencyBucketStat, LatencySnapshotMsg, ACTION_ID_MARKET_DATA, METRIC_ID_SPREAD_E2E,
-    METRIC_ID_SPREAD_NET,
 };
 use runtime_common::time_util::get_timestamp_us;
 
@@ -20,8 +19,8 @@ use crate::spread_pbs::adapter::{
     create_adapter, BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
 };
 use crate::spread_pbs::binance::{
-    binance_futures_mm_ws_enabled, ENV_BINANCE_FUTURES_MM_WS_LOCAL_IP,
-    ENV_BINANCE_FUTURES_MM_WS_MODE,
+    binance_futures_mm_ws_enabled, binance_futures_standard_ws_url,
+    ENV_BINANCE_FUTURES_MM_WS_LOCAL_IP, ENV_BINANCE_FUTURES_MM_WS_MODE,
 };
 use crate::spread_pbs::latency::LatencyKll;
 use crate::spread_pbs::okex_derivatives::{
@@ -120,12 +119,16 @@ fn binance_futures_mm_ws_local_ip_override(venue: TradingVenue) -> Option<String
         })
         .to_string();
     log::info!(
-        "spread_pbs[binance-futures] {}=on; using {}={} for both primary/secondary legs",
+        "spread_pbs[binance-futures] {}=on; using {}={} for whitelist leg",
         ENV_BINANCE_FUTURES_MM_WS_MODE,
         ENV_BINANCE_FUTURES_MM_WS_LOCAL_IP,
         whitelist_ip
     );
     Some(whitelist_ip)
+}
+
+fn binance_futures_mm_ws_race_enabled(venue: TradingVenue) -> bool {
+    venue == TradingVenue::BinanceFutures && binance_futures_mm_ws_enabled()
 }
 
 fn env_enabled_or(name: &str, default: bool) -> bool {
@@ -208,6 +211,8 @@ fn build_market_subscribe(
 struct WsLeg {
     label: &'static str,
     local_ip: String,
+    url: String,
+    source: MarketSource,
     shutdown_tx: watch::Sender<bool>,
     handle: JoinHandle<()>,
 }
@@ -222,6 +227,23 @@ struct LegCtx {
     incremental_max_levels: Option<usize>,
     state: Rc<RefCell<SharedState>>,
     url: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MarketSource {
+    Whitelist,
+    Normal,
+    Other,
+}
+
+impl MarketSource {
+    fn label(self) -> &'static str {
+        match self {
+            MarketSource::Whitelist => "whitelist",
+            MarketSource::Normal => "normal",
+            MarketSource::Other => "other",
+        }
+    }
 }
 
 impl SpreadPbsApp {
@@ -266,9 +288,13 @@ impl SpreadPbsApp {
         let primary_local_ip = local_ip_override
             .clone()
             .unwrap_or_else(|| self.config.primary_local_ip.clone());
-        let secondary_local_ip = local_ip_override
-            .clone()
-            .unwrap_or_else(|| self.config.secondary_local_ip.clone());
+        let secondary_local_ip = if binance_futures_mm_ws_race_enabled(venue) {
+            self.config.secondary_local_ip.clone()
+        } else {
+            local_ip_override
+                .clone()
+                .unwrap_or_else(|| self.config.secondary_local_ip.clone())
+        };
 
         // ---- 首次拉 symbol（含 BinanceFutures，无硬编码） ----
         // spread_pbs 不归 pm2 管，启动期 REST 抖动不能直接退出；用退避循环等到拿到非空列表
@@ -382,21 +408,20 @@ impl SpreadPbsApp {
             SpreadLatencyPublisher::new(venue_slug)
                 .with_context(|| format!("create iceoryx latency publisher for {}", venue_slug))?,
         );
-        let net_label = format!("{}-net", venue_slug);
-        let ipc_net_label = format!("{}-ipc-net", venue_slug);
-        let ipc_e2e_label = format!("{}-ipc", venue_slug);
+        let ipc_label = format!("{}-ipc", venue_slug);
         let state: Rc<RefCell<SharedState>> = Rc::new(RefCell::new(SharedState {
             symbol_state: SymbolSeqState::with_symbols(&initial_symbols),
             latency_e2e: LatencyKll::new(venue_slug),
-            latency_net: LatencyKll::new(net_label),
-            latency_ipc_e2e: LatencyKll::new(ipc_e2e_label),
-            latency_ipc_net: LatencyKll::new(ipc_net_label),
+            latency_ipc: LatencyKll::new(ipc_label),
             published: 0,
             trades_published: 0,
             incremental_published: 0,
             incremental_dropped_by_seq: 0,
             incremental_gap_warnings: 0,
             derivatives_published: 0,
+            selected_whitelist: 0,
+            selected_normal: 0,
+            selected_other: 0,
             dropped_by_seq: 0,
             trades_dropped_by_seq: 0,
             last_dedup_reset_us: get_timestamp_us(),
@@ -429,6 +454,33 @@ impl SpreadPbsApp {
             state: state.clone(),
             url: adapter.ws_url(),
         };
+        let primary_url = ctx.url.clone();
+        let secondary_url = if binance_futures_mm_ws_race_enabled(venue) {
+            binance_futures_standard_ws_url().to_string()
+        } else {
+            ctx.url.clone()
+        };
+        let primary_source = if binance_futures_mm_ws_race_enabled(venue) {
+            MarketSource::Whitelist
+        } else {
+            MarketSource::Other
+        };
+        let secondary_source = if binance_futures_mm_ws_race_enabled(venue) {
+            MarketSource::Normal
+        } else {
+            MarketSource::Other
+        };
+        if binance_futures_mm_ws_race_enabled(venue) {
+            log::info!(
+                "spread_pbs[binance-futures] BBO source race enabled: primary {} ip={} url={} secondary {} ip={} url={}",
+                primary_source.label(),
+                primary_local_ip,
+                primary_url,
+                secondary_source.label(),
+                secondary_local_ip,
+                secondary_url,
+            );
+        }
 
         let derivatives_symbols: Rc<RefCell<HashSet<String>>> =
             Rc::new(RefCell::new(initial_symbols.iter().cloned().collect()));
@@ -461,8 +513,22 @@ impl SpreadPbsApp {
         );
 
         // ---- 起两条 leg：primary / secondary，独立 shutdown 通道 ----
-        let mut primary = spawn_leg("primary", primary_local_ip, initial_subs.clone(), &ctx);
-        let mut secondary = spawn_leg("secondary", secondary_local_ip, initial_subs, &ctx);
+        let mut primary = spawn_leg(
+            "primary",
+            primary_local_ip,
+            primary_url,
+            primary_source,
+            initial_subs.clone(),
+            &ctx,
+        );
+        let mut secondary = spawn_leg(
+            "secondary",
+            secondary_local_ip,
+            secondary_url,
+            secondary_source,
+            initial_subs,
+            &ctx,
+        );
 
         // ---- 错开半周期：primary t+T，secondary t+T/2，与 src/mkt_pub/app.rs 一致 ----
         let restart_duration = Duration::from_secs(self.config.restart_duration_secs);
@@ -527,6 +593,7 @@ impl SpreadPbsApp {
                         s.symbol_state.trade_seen(),
                         s.symbol_state.incremental_seen()
                     );
+                    s.log_and_reset_selected_source_stats(venue_slug);
                 }
                 _ = tokio::time::sleep_until(next_primary_restart) => {
                     restart_leg(
@@ -558,6 +625,8 @@ impl SpreadPbsApp {
 fn spawn_leg(
     label: &'static str,
     local_ip: String,
+    url: String,
+    source: MarketSource,
     subs: Vec<serde_json::Value>,
     ctx: &LegCtx,
 ) -> WsLeg {
@@ -571,11 +640,12 @@ fn spawn_leg(
         ctx.derivatives_publisher.clone(),
         ctx.incremental_max_levels,
         ctx.state.clone(),
+        source,
     );
     let handle = tokio::task::spawn_local(run_public_ws(
         WsLoopParams {
             label,
-            url: ctx.url.clone(),
+            url: url.clone(),
             local_ip: local_ip.clone(),
             headers: ctx.adapter.ws_headers(),
             subscribe_msgs: subs,
@@ -587,6 +657,8 @@ fn spawn_leg(
     WsLeg {
         label,
         local_ip,
+        url,
+        source,
         shutdown_tx: tx,
         handle,
     }
@@ -616,6 +688,8 @@ fn spawn_okex_derivatives_leg(
     WsLeg {
         label: "okex-derivatives",
         local_ip,
+        url: OKEX_PUBLIC_WS_URL.to_string(),
+        source: MarketSource::Other,
         shutdown_tx: tx,
         handle,
     }
@@ -750,7 +824,7 @@ fn spawn_direct_replacement_leg(
     let handle = tokio::task::spawn_local(run_public_ws(
         WsLoopParams {
             label,
-            url,
+            url: url.clone(),
             local_ip: local_ip.clone(),
             headers: adapter.ws_headers(),
             subscribe_msgs,
@@ -762,6 +836,8 @@ fn spawn_direct_replacement_leg(
     WsLeg {
         label,
         local_ip,
+        url,
+        source: MarketSource::Other,
         shutdown_tx: tx,
         handle,
     }
@@ -866,7 +942,14 @@ async fn restart_leg(
     let _ = leg.shutdown_tx.send(true);
     let _ = (&mut leg.handle).await;
 
-    let new_leg = spawn_leg(leg.label, leg.local_ip.clone(), new_subs, ctx);
+    let new_leg = spawn_leg(
+        leg.label,
+        leg.local_ip.clone(),
+        leg.url.clone(),
+        leg.source,
+        new_subs,
+        ctx,
+    );
     leg.shutdown_tx = new_leg.shutdown_tx;
     leg.handle = new_leg.handle;
 
@@ -1031,20 +1114,50 @@ struct SharedState {
     symbol_state: SymbolSeqState,
     /// 被采纳消息：`accepted_us - event_ts_us`（u 最新判断通过后立刻采样）。
     latency_e2e: LatencyKll,
-    /// 同上，保留 `-net` 标签便于与旧日志兼容。
-    latency_net: LatencyKll,
     /// IPC latency snapshot buckets. Kept separate so periodic IPC snapshots do not reset log KLLs.
-    latency_ipc_e2e: LatencyKll,
-    latency_ipc_net: LatencyKll,
+    latency_ipc: LatencyKll,
     published: u64,
     trades_published: u64,
     incremental_published: u64,
     incremental_dropped_by_seq: u64,
     incremental_gap_warnings: u64,
     derivatives_published: u64,
+    selected_whitelist: u64,
+    selected_normal: u64,
+    selected_other: u64,
     dropped_by_seq: u64,
     trades_dropped_by_seq: u64,
     last_dedup_reset_us: i64,
+}
+
+impl SharedState {
+    fn record_selected_source(&mut self, source: MarketSource) {
+        match source {
+            MarketSource::Whitelist => self.selected_whitelist += 1,
+            MarketSource::Normal => self.selected_normal += 1,
+            MarketSource::Other => self.selected_other += 1,
+        }
+    }
+
+    fn log_and_reset_selected_source_stats(&mut self, venue_slug: &str) {
+        let total = self.selected_whitelist + self.selected_normal;
+        if total == 0 {
+            return;
+        }
+        let whitelist_pct = self.selected_whitelist as f64 * 100.0 / total as f64;
+        let normal_pct = self.selected_normal as f64 * 100.0 / total as f64;
+        log::info!(
+            "spread_pbs[{}] selected_source whitelist={} normal={} whitelist_pct={:.2} normal_pct={:.2}",
+            venue_slug,
+            self.selected_whitelist,
+            self.selected_normal,
+            whitelist_pct,
+            normal_pct,
+        );
+        self.selected_whitelist = 0;
+        self.selected_normal = 0;
+        self.selected_other = 0;
+    }
 }
 
 struct ReplacementBatch {
@@ -1313,6 +1426,7 @@ fn make_handler(
     derivatives_publisher: Option<Rc<SpreadDerivativesPublisher>>,
     incremental_max_levels: Option<usize>,
     state: Rc<RefCell<SharedState>>,
+    source: MarketSource,
 ) -> FrameHandler {
     Rc::new(move |recv_us: i64, raw: &[u8]| {
         let mut accepted_us = 0;
@@ -1323,7 +1437,7 @@ fn make_handler(
                 accepted_us = get_timestamp_us();
             }
             bbo_count += 1;
-            process_frame(&mut s, &publisher, recv_us, accepted_us, frame);
+            process_frame(&mut s, &publisher, recv_us, accepted_us, frame, source);
             Ok(())
         };
         let batch = parse_replacement_batch(
@@ -1640,6 +1754,7 @@ fn process_frame(
     recv_us: i64,
     accepted_us: i64,
     f: BboFrame,
+    source: MarketSource,
 ) {
     reset_dedup_high_water_if_needed(state, accepted_us);
 
@@ -1649,6 +1764,7 @@ fn process_frame(
         return;
     }
     state.symbol_state.set_bbo_slot(slot, f.seq_id, f.ts_us);
+    state.record_selected_source(source);
 
     record_latency_measurement_if_needed(
         state,
@@ -1682,12 +1798,10 @@ fn record_latency_measurement_if_needed(
     if event_ts_us <= 0 || !latency_measurement_symbol {
         return;
     }
-    let net_us = (recv_us - event_ts_us) as f64;
     let e2e_us = (accepted_us - event_ts_us) as f64;
-    state.latency_net.push(net_us);
+    let _ = recv_us;
     state.latency_e2e.push(e2e_us);
-    state.latency_ipc_net.push(net_us);
-    state.latency_ipc_e2e.push(e2e_us);
+    state.latency_ipc.push(e2e_us);
 }
 
 fn is_latency_measurement_symbol(symbol: &str) -> bool {
@@ -1711,14 +1825,8 @@ fn take_latency_snapshot(state: &mut SharedState, venue_id: u32) -> Option<Laten
     snap_latency_bucket(
         &mut msg,
         &mut idx,
-        METRIC_ID_SPREAD_NET,
-        state.latency_ipc_net.snapshot_and_reset(),
-    );
-    snap_latency_bucket(
-        &mut msg,
-        &mut idx,
         METRIC_ID_SPREAD_E2E,
-        state.latency_ipc_e2e.snapshot_and_reset(),
+        state.latency_ipc.snapshot_and_reset(),
     );
 
     if idx == 0 {
@@ -1790,15 +1898,16 @@ mod tests {
         SharedState {
             symbol_state: SymbolSeqState::with_symbols(&[]),
             latency_e2e: LatencyKll::new("test-e2e"),
-            latency_net: LatencyKll::new("test-net"),
-            latency_ipc_e2e: LatencyKll::new("test-ipc-e2e"),
-            latency_ipc_net: LatencyKll::new("test-ipc-net"),
+            latency_ipc: LatencyKll::new("test-ipc"),
             published: 0,
             trades_published: 0,
             incremental_published: 0,
             incremental_dropped_by_seq: 0,
             incremental_gap_warnings: 0,
             derivatives_published: 0,
+            selected_whitelist: 0,
+            selected_normal: 0,
+            selected_other: 0,
             dropped_by_seq: 0,
             trades_dropped_by_seq: 0,
             last_dedup_reset_us: now_us,
@@ -1850,11 +1959,9 @@ mod tests {
 
         record_latency_measurement_if_needed(&mut state, true, 120, 130, 100);
         let msg = take_latency_snapshot(&mut state, 7).expect("snapshot");
-        assert_eq!(msg.n_buckets, 2);
-        assert_eq!(msg.buckets[0].metric_id, METRIC_ID_SPREAD_NET);
+        assert_eq!(msg.n_buckets, 1);
+        assert_eq!(msg.buckets[0].metric_id, METRIC_ID_SPREAD_E2E);
         assert_eq!(msg.buckets[0].n, 1);
-        assert_eq!(msg.buckets[1].metric_id, METRIC_ID_SPREAD_E2E);
-        assert_eq!(msg.buckets[1].n, 1);
     }
 
     #[test]
@@ -2043,22 +2150,17 @@ mod tests {
     }
 
     #[test]
-    fn latency_snapshot_contains_spread_net_and_e2e_buckets() {
+    fn latency_snapshot_contains_single_spread_e2e_bucket() {
         let mut state = test_state(1_000_000);
-        state.latency_ipc_net.push(10.0);
-        state.latency_ipc_net.push(20.0);
-        state.latency_ipc_e2e.push(12.0);
-        state.latency_ipc_e2e.push(22.0);
+        state.latency_ipc.push(12.0);
+        state.latency_ipc.push(22.0);
 
         let msg = take_latency_snapshot(&mut state, 7).expect("snapshot");
         assert_eq!(msg.venue_id, 7);
-        assert_eq!(msg.n_buckets, 2);
-        assert_eq!(msg.buckets[0].metric_id, METRIC_ID_SPREAD_NET);
+        assert_eq!(msg.n_buckets, 1);
+        assert_eq!(msg.buckets[0].metric_id, METRIC_ID_SPREAD_E2E);
         assert_eq!(msg.buckets[0].action_id, ACTION_ID_MARKET_DATA);
         assert_eq!(msg.buckets[0].n, 2);
-        assert_eq!(msg.buckets[1].metric_id, METRIC_ID_SPREAD_E2E);
-        assert_eq!(msg.buckets[1].action_id, ACTION_ID_MARKET_DATA);
-        assert_eq!(msg.buckets[1].n, 2);
         assert!(take_latency_snapshot(&mut state, 7).is_none());
     }
 }

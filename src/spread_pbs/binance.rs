@@ -29,6 +29,10 @@ pub(crate) const ENV_BINANCE_FUTURES_MM_WS_MODE: &str = "SPREAD_PBS_BINANCE_FUTU
 pub(crate) const ENV_BINANCE_FUTURES_MM_WS_LOCAL_IP: &str =
     "SPREAD_PBS_BINANCE_FUTURES_MM_WS_LOCAL_IP";
 
+pub(crate) fn binance_futures_standard_ws_url() -> &'static str {
+    BINANCE_FUTURES_WS_URL
+}
+
 pub struct BinanceAdapter {
     venue: TradingVenue,
     derivatives_symbols: RefCell<HashSet<String>>,
