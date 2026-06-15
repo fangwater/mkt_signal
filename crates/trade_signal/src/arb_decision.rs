@@ -3966,6 +3966,7 @@ pub(crate) struct ArbSharedBootstrap {
 }
 
 pub(crate) struct ArbDecisionState {
+    pub mode: ArbMode,
     pub venues: VenuePair,
     pub open_factor_value_hub: Option<FactorValueHub>,
     pub hedge_factor_value_hub: Option<FactorValueHub>,
@@ -4001,8 +4002,8 @@ pub(crate) struct ArbDecisionState {
     pub enable_funding_open_filter: bool,
     pub enable_intra_funding_close_signal: bool,
     pub enable_environment_model: bool,
-    /// 是否启用 open vol 阈值 gate；与 mm 同语义：开仓时若 inline vol percentile 阈值
-    /// 已 warm up 且当前 vol 超阈值，则拦截开仓。
+    /// 是否启用 open vol 阈值 gate；默认语义：开仓时若 inline vol percentile 阈值
+    /// 已 warm up 且当前 vol 超阈值，则拦截开仓。okex-intra 反向，要求 vol > threshold 才放行。
     pub enable_volatility_limit: bool,
     /// open vol 阈值采样使用的分位数（0-100）。
     pub open_volatility_limit: f64,
@@ -4094,8 +4095,9 @@ pub(crate) struct TlenCancelSummary {
 }
 
 impl ArbDecisionState {
-    pub fn new(_mode: ArbMode, venues: VenuePair) -> Self {
+    pub fn new(mode: ArbMode, venues: VenuePair) -> Self {
         Self {
+            mode,
             venues,
             open_factor_value_hub: None,
             hedge_factor_value_hub: None,
@@ -4207,6 +4209,22 @@ impl ArbDecisionState {
             "ArbDecision: open_volatility_limit updated percentile={}",
             self.open_volatility_limit
         );
+    }
+
+    pub(crate) fn uses_okex_intra_volatility_open_rule(&self) -> bool {
+        self.mode == ArbMode::IntraArb
+            && matches!(
+                self.venues,
+                (TradingVenue::OkexMargin, TradingVenue::OkexFutures)
+            )
+    }
+
+    pub(crate) fn is_open_volatility_limited(&self, current: f64, threshold: f64) -> bool {
+        if self.uses_okex_intra_volatility_open_rule() {
+            current <= threshold
+        } else {
+            current > threshold
+        }
     }
 
     pub fn evaluate_close_side(
@@ -5403,9 +5421,9 @@ impl ArbDecisionState {
             }
         };
 
-        // Inline vol gate（与 mm_decision/open.rs 同语义）：threshold 来源是 thread_local
-        // store 里同 symbol、同 percentile 的 rolling sample；warming up 时直接拦截，
-        // 阈值就绪后只放行 vol <= threshold 的开仓。
+        // Inline vol gate：threshold 来源是 thread_local store 里同 symbol、同 percentile
+        // 的 rolling sample。warming up 时直接拦截。默认只放行 vol <= threshold；
+        // okex-intra 反向，只放行 vol > threshold。
         if self.enable_volatility_limit {
             let snapshot = snapshot_inline_volatility(
                 &vol_lookup.symbol_key,
@@ -5423,8 +5441,13 @@ impl ArbDecisionState {
                 self.record_intercept_summary("vol_warming_up");
                 return None;
             };
-            if open_volatility_factor > threshold {
-                self.record_intercept_summary("vol_limited");
+            if self.is_open_volatility_limited(open_volatility_factor, threshold) {
+                let reason = if self.uses_okex_intra_volatility_open_rule() {
+                    "vol_below_threshold"
+                } else {
+                    "vol_limited"
+                };
+                self.record_intercept_summary(reason);
                 return None;
             }
         }
@@ -5996,6 +6019,27 @@ mod hedge_offset_overrides_tests {
         let state = fresh_state();
         assert!(state.enable_volatility_limit);
         assert!((state.open_volatility_limit - 70.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn okex_intra_volatility_gate_requires_vol_above_threshold() {
+        let state = fresh_state();
+        assert!(state.uses_okex_intra_volatility_open_rule());
+        assert!(state.is_open_volatility_limited(0.9, 1.0));
+        assert!(state.is_open_volatility_limited(1.0, 1.0));
+        assert!(!state.is_open_volatility_limited(1.1, 1.0));
+    }
+
+    #[test]
+    fn non_okex_intra_volatility_gate_keeps_default_upper_limit() {
+        let state = ArbDecisionState::new(
+            ArbMode::IntraArb,
+            (TradingVenue::BinanceMargin, TradingVenue::BinanceFutures),
+        );
+        assert!(!state.uses_okex_intra_volatility_open_rule());
+        assert!(!state.is_open_volatility_limited(0.9, 1.0));
+        assert!(!state.is_open_volatility_limited(1.0, 1.0));
+        assert!(state.is_open_volatility_limited(1.1, 1.0));
     }
 
     #[test]

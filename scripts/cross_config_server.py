@@ -129,6 +129,19 @@ def normalize_percentile_text(raw: Any) -> Tuple[float, str]:
     return value, f"{value:.12g}"
 
 
+def preview_open_volatility_source(rds, venue: str, percentile_raw: Any) -> Dict[str, Any]:
+    del rds
+    percentile_value, percentile_text = normalize_percentile_text(percentile_raw)
+    return {
+        "venue": venue,
+        "mode": "inline",
+        "percentile": percentile_value,
+        "percentile_text": percentile_text,
+        "window_capacity": 720,
+        "min_samples": 10,
+    }
+
+
 def funding_thresholds_applicable(open_venue: Optional[str], hedge_venue: Optional[str]) -> bool:
     return True
 
@@ -628,6 +641,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         `enable_tlen_cancel` 控制基于 tlen 的 open 撤单 trigger/query/cancel 链路；`tlen_cancel_freq_ms` 控制 trigger 频率(ms)；`spread_cancel_cooldown_ms` 控制 spread cancel 的去抖冷却(ms，默认 100，可设 0 关闭)。`open_volatility_limit` 直接在 trade_signal 进程内做 inline 滚窗采样（720 条），不再挂 rolling_metrics。
       </div>
       <div id="strategy-table" class="kv-table"></div>
+      <div id="strategy-vol-preview" class="status"></div>
       <div id="strategy-status" class="status"></div>
     </section>
 
@@ -870,6 +884,43 @@ __PER_SYMBOL_PANELS_HTML__
       );
     }
 
+    async function refreshStrategyVolPreview() {
+      const input = findStrategyInput('open_volatility_limit');
+      if (!input) {
+        setStatus('strategy-vol-preview', '', '');
+        return;
+      }
+
+      const raw = String(input.value || '').trim();
+      if (!raw) {
+        setStatus('strategy-vol-preview', '未填写 open_volatility_limit，无法校验 inline volatility percentile。', 'warn');
+        return;
+      }
+
+      try {
+        const data = await fetchJson(`${apiUrl('open-volatility-preview')}?${queryParams({ percentile: raw })}`);
+        setStatus(
+          'strategy-vol-preview',
+          `Inline volatility gate: percentile=${data.percentile_text}，按 open symbol 在 trade_signal 内采样；窗口 ${data.window_capacity}，至少 ${data.min_samples} 个样本后生效，不读取/写入 rolling_metrics_params。`,
+          'ok'
+        );
+      } catch (err) {
+        setStatus('strategy-vol-preview', `Inline volatility 参数校验失败: ${err}`, 'err');
+      }
+    }
+
+    function bindStrategyVolPreview() {
+      const input = findStrategyInput('open_volatility_limit');
+      if (!input) {
+        setStatus('strategy-vol-preview', '', '');
+        return;
+      }
+      if (input.dataset.previewBound === '1') return;
+      input.dataset.previewBound = '1';
+      input.addEventListener('input', () => refreshStrategyVolPreview().catch(console.error));
+      input.addEventListener('change', () => refreshStrategyVolPreview().catch(console.error));
+    }
+
     async function loadSymbolLists() {
       setStatus('sym-status', '读取中...');
       try {
@@ -957,6 +1008,8 @@ __PER_SYMBOL_PANELS_HTML__
       try {
         const data = await fetchJson(`${apiUrl('strategy-params')}?${queryParams()}`);
         buildParamRows('strategy-table', BOOTSTRAP.defaults.strategy_params || {}, BOOTSTRAP.comments.strategy_params || {}, BOOTSTRAP.order.strategy || [], data.values || {});
+        bindStrategyVolPreview();
+        await refreshStrategyVolPreview();
         setStatus('strategy-status', '读取完成');
       } catch (err) {
         setStatus('strategy-status', `读取失败: ${err}`, false);
@@ -984,6 +1037,8 @@ __PER_SYMBOL_PANELS_HTML__
 
     function applyStrategyDefaults() {
       buildParamRows('strategy-table', BOOTSTRAP.defaults.strategy_params || {}, BOOTSTRAP.comments.strategy_params || {}, BOOTSTRAP.order.strategy || [], {});
+      bindStrategyVolPreview();
+      refreshStrategyVolPreview().catch(console.error);
       setStatus('strategy-status', '已载入默认参数');
     }
 
@@ -1431,6 +1486,10 @@ def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, st
     if "spread_cancel_cooldown_ms" in normalized:
         normalized["spread_cancel_cooldown_ms"] = normalize_nonnegative_int_text(
             normalized["spread_cancel_cooldown_ms"], "spread_cancel_cooldown_ms"
+        )
+    if "open_volatility_limit" in normalized:
+        _, normalized["open_volatility_limit"] = normalize_percentile_text(
+            normalized["open_volatility_limit"]
         )
     return normalized
 
@@ -2127,6 +2186,24 @@ class RequestHandler(BaseHTTPRequestHandler):
                     "stale_values": stale_values,
                 },
             )
+            return
+
+        if parsed.path == "/api/open-volatility-preview":
+            try:
+                _, open_venue, _, _ = self._resolve_request_context(params)
+                percentile = (params.get("percentile") or [None])[0]
+                if percentile is None:
+                    self._send_error(400, "missing percentile")
+                    return
+                data = preview_open_volatility_source(
+                    self.server.context.redis_client,
+                    open_venue,
+                    percentile,
+                )
+            except Exception as exc:
+                self._send_error(400, str(exc))
+                return
+            self._send_json(200, data)
             return
 
         if parsed.path == "/api/funding-thresholds":

@@ -142,16 +142,6 @@ def venue_kind(venue: str) -> str:
     return raw.split("-", 1)[1]
 
 
-def attached_vol_source_key_for_venue(venue: str) -> str:
-    exchange = normalize_exchange((venue or "").split("-", 1)[0])
-    return f"rolling_metrics_params_{exchange}-margin_{exchange}-futures"
-
-
-def attached_vol_factor_name_for_venue(venue: str) -> str:
-    normalized = (venue or "").strip().lower()
-    return "hedge_vol" if normalized.endswith("-futures") else "open_vol"
-
-
 def normalize_percentile_text(raw: Any) -> Tuple[float, str]:
     text = str(raw).strip()
     if not text:
@@ -171,93 +161,15 @@ def normalize_percentile_text(raw: Any) -> Tuple[float, str]:
 
 
 def preview_open_volatility_source(rds, venue: str, percentile_raw: Any) -> Dict[str, Any]:
+    del rds
     percentile_value, percentile_text = normalize_percentile_text(percentile_raw)
-    source_key = attached_vol_source_key_for_venue(venue)
-    factor_name = attached_vol_factor_name_for_venue(venue)
-    raw_values = read_hash(rds, source_key)
-    if not raw_values:
-        return {
-            "venue": venue,
-            "source_key": source_key,
-            "factor": factor_name,
-            "percentile": percentile_value,
-            "percentile_text": percentile_text,
-            "exists": False,
-            "will_modify": True,
-            "modification_detail": "source hash missing",
-            "current_quantiles": [],
-        }
-
-    factors_raw = raw_values.get("factors", "").strip()
-    if not factors_raw:
-        return {
-            "venue": venue,
-            "source_key": source_key,
-            "factor": factor_name,
-            "percentile": percentile_value,
-            "percentile_text": percentile_text,
-            "exists": False,
-            "will_modify": True,
-            "modification_detail": "factors missing",
-            "current_quantiles": [],
-        }
-
-    try:
-        factors = json.loads(factors_raw)
-    except Exception as exc:
-        raise ValueError(f"invalid factors json in {source_key}: {exc}") from exc
-    if not isinstance(factors, dict):
-        raise ValueError(f"invalid factors object in {source_key}")
-
-    factor_cfg = factors.get(factor_name)
-    if not isinstance(factor_cfg, dict):
-        return {
-            "venue": venue,
-            "source_key": source_key,
-            "factor": factor_name,
-            "percentile": percentile_value,
-            "percentile_text": percentile_text,
-            "exists": False,
-            "will_modify": True,
-            "modification_detail": f"{factor_name} missing",
-            "current_quantiles": [],
-        }
-
-    quantiles_raw = factor_cfg.get("quantiles")
-    quantiles_list = quantiles_raw if isinstance(quantiles_raw, list) else []
-    normalized_quantiles: List[str] = []
-    requested_exists = False
-    for item in quantiles_list:
-        try:
-            value = float(item)
-        except Exception:
-            continue
-        text = str(int(round(value))) if abs(value - round(value)) < 1e-9 else f"{value:.12g}"
-        normalized_quantiles.append(text)
-        if abs(value - percentile_value) < 1e-9:
-            requested_exists = True
-
-    will_trim = len(quantiles_list) > 8
-    will_modify = (not requested_exists) or will_trim
-    if not requested_exists:
-        modification_detail = f"{factor_name}_{percentile_text} missing"
-        if len(quantiles_list) >= 8:
-            modification_detail += ", append then trim oldest"
-    elif will_trim:
-        modification_detail = "quantiles exceed limit, will trim oldest"
-    else:
-        modification_detail = ""
-
     return {
         "venue": venue,
-        "source_key": source_key,
-        "factor": factor_name,
+        "mode": "inline",
         "percentile": percentile_value,
         "percentile_text": percentile_text,
-        "exists": requested_exists,
-        "will_modify": will_modify,
-        "modification_detail": modification_detail,
-        "current_quantiles": normalized_quantiles,
+        "window_capacity": 720,
+        "min_samples": 10,
     }
 
 
@@ -861,7 +773,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         </div>
       </div>
       <div class="hint">
-        `enable_tlen_cancel` 控制基于 tlen 的 open 撤单 trigger/query/cancel 链路；`enable_intra_funding_close_signal` 控制 current FR MA funding close 强平信号（仍需通过 spread close gate）；`spread_cancel_cooldown_ms` 控制 spread cancel 的去抖冷却(ms，默认 100，可设 0 关闭)。
+        `enable_tlen_cancel` 控制基于 tlen 的 open 撤单 trigger/query/cancel 链路；`enable_intra_funding_close_signal` 控制 current FR MA funding close 强平信号（仍需通过 spread close gate）；`spread_cancel_cooldown_ms` 控制 spread cancel 的去抖冷却(ms，默认 100，可设 0 关闭)。`enable_volatility_limit` 启用后，`open_volatility_limit` 使用 trade_signal 进程内 inline volatility 采样限制开仓；普通 intra 要求 vol <= threshold，okex-intra 反向，要求 vol > threshold。
       </div>
       <div id="strategy-table" class="kv-table"></div>
       <div id="strategy-vol-preview" class="status"></div>
@@ -1116,11 +1028,40 @@ __PER_SYMBOL_PANELS_HTML__
     }
 
     async function refreshStrategyVolPreview() {
-      setStatus('strategy-vol-preview', '', '');
+      const input = findStrategyInput('open_volatility_limit');
+      if (!input) {
+        setStatus('strategy-vol-preview', '', '');
+        return;
+      }
+
+      const raw = String(input.value || '').trim();
+      if (!raw) {
+        setStatus('strategy-vol-preview', '未填写 open_volatility_limit，无法校验 inline volatility percentile。', 'warn');
+        return;
+      }
+
+      try {
+        const data = await fetchJson(`${apiUrl('open-volatility-preview')}?${queryParams({ percentile: raw })}`);
+        setStatus(
+          'strategy-vol-preview',
+          `Inline volatility gate: percentile=${data.percentile_text}，按 open symbol 在 trade_signal 内采样；窗口 ${data.window_capacity}，至少 ${data.min_samples} 个样本后生效。普通 intra 要求 vol <= threshold，okex-intra 反向要求 vol > threshold，不读取/写入 rolling_metrics_params。`,
+          'ok'
+        );
+      } catch (err) {
+        setStatus('strategy-vol-preview', `Inline volatility 参数校验失败: ${err}`, 'err');
+      }
     }
 
     function bindStrategyVolPreview() {
-      setStatus('strategy-vol-preview', '', '');
+      const input = findStrategyInput('open_volatility_limit');
+      if (!input) {
+        setStatus('strategy-vol-preview', '', '');
+        return;
+      }
+      if (input.dataset.previewBound === '1') return;
+      input.dataset.previewBound = '1';
+      input.addEventListener('input', () => refreshStrategyVolPreview().catch(console.error));
+      input.addEventListener('change', () => refreshStrategyVolPreview().catch(console.error));
     }
 
     async function loadSymbolLists() {
@@ -1699,6 +1640,10 @@ def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, st
     if "spread_cancel_cooldown_ms" in normalized:
         normalized["spread_cancel_cooldown_ms"] = normalize_nonnegative_int_text(
             normalized["spread_cancel_cooldown_ms"], "spread_cancel_cooldown_ms"
+        )
+    if "open_volatility_limit" in normalized:
+        normalized["open_volatility_limit"] = normalize_percentile_param_text(
+            normalized["open_volatility_limit"], "open_volatility_limit"
         )
 
     force_taker = arb_hedge_force_taker_env_enabled()

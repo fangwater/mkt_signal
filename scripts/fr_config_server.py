@@ -1219,6 +1219,11 @@ def normalize_nonnegative_int_text(raw: Any, field_name: str) -> str:
     return str(value)
 
 
+def normalize_percentile_param_text(raw: Any, field_name: str) -> str:
+    _, text = normalize_percentile_text(raw)
+    return text
+
+
 def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, str]:
     normalized = dict(mapping)
     if "tlen_cancel_freq_ms" in normalized:
@@ -1228,6 +1233,10 @@ def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, st
     if "spread_cancel_cooldown_ms" in normalized:
         normalized["spread_cancel_cooldown_ms"] = normalize_nonnegative_int_text(
             normalized["spread_cancel_cooldown_ms"], "spread_cancel_cooldown_ms"
+        )
+    if "open_volatility_limit" in normalized:
+        normalized["open_volatility_limit"] = normalize_percentile_param_text(
+            normalized["open_volatility_limit"], "open_volatility_limit"
         )
     return normalized
 

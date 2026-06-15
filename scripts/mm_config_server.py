@@ -1664,6 +1664,24 @@ def normalize_nonnegative_int_text(raw: Any, field_name: str) -> str:
     return str(value)
 
 
+def normalize_percentile_text(raw: Any, field_name: str) -> str:
+    text = str(raw).strip()
+    if not text:
+        raise ValueError(f"{field_name} is required")
+    try:
+        value = float(text)
+    except Exception as exc:
+        raise ValueError(f"{field_name} must be a percentile number: {text}") from exc
+    if 0.0 <= value <= 1.0:
+        value *= 100.0
+    if not (0.0 <= value <= 100.0):
+        raise ValueError(f"{field_name} must be in [0,100]: {text}")
+    rounded = round(value)
+    if abs(value - rounded) < 1e-9:
+        return str(int(rounded))
+    return f"{value:.12g}"
+
+
 def normalize_open_block_utc_time_range(raw: Any) -> str:
     text = str(raw or "").strip()
     matched = re.fullmatch(
@@ -1715,6 +1733,9 @@ def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, st
             if not (0.0 < value < 99.0):
                 raise ValueError(f"{key} must be within (0,99): {value}")
             normalized[key] = f"{value:g}"
+    for key in ("open_volatility_limit", "open_tradecount_limit"):
+        if key in normalized:
+            normalized[key] = normalize_percentile_text(normalized[key], key)
     if "open_block_utc_time_range" in normalized:
         normalized["open_block_utc_time_range"] = normalize_open_block_utc_time_range(
             normalized["open_block_utc_time_range"]
