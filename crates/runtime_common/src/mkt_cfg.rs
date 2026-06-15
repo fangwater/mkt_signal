@@ -2,6 +2,8 @@ use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
+pub const BINANCE_UM_IP_WHITELIST_MODE_ENV: &str = "BINANCE_UM_IP_WHITELIST_MODE";
+
 #[derive(Debug, Deserialize)]
 struct LocalIpConfig {
     primary_local_ip: String,
@@ -14,6 +16,14 @@ struct TradeEngineTomlConfig {
     local_ips: Vec<String>,
     primary_local_ip: Option<String>,
     secondary_local_ip: Option<String>,
+    #[serde(alias = "binance_um_ip_whitelist_ip")]
+    binance_um_whitelist_ip: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TradeEngineLocalIpConfig {
+    pub local_ips: Vec<String>,
+    pub binance_um_whitelist_ip: Option<String>,
 }
 
 pub fn home_mkt_cfg_path() -> Result<PathBuf> {
@@ -54,26 +64,90 @@ pub async fn load_local_ips_from_path(path: &Path) -> Result<(String, String)> {
 }
 
 pub async fn load_local_ips_preferring_trade_engine() -> Result<((String, String), String)> {
-    if let Some(path) = find_trade_engine_local_cfg_path()? {
-        let local_ips = load_trade_engine_local_ips_from_toml_path(&path).await?;
-        if local_ips.len() < 2 {
-            return Err(anyhow!(
-                "trade_engine config {} must provide at least 2 local IPs for account monitors",
-                path.display()
-            ));
-        }
-        return Ok((
-            (local_ips[0].clone(), local_ips[1].clone()),
-            path.display().to_string(),
+    let (cfg, source) = load_trade_engine_local_ip_config_preferring_trade_engine().await?;
+    if cfg.local_ips.len() < 2 {
+        return Err(anyhow!(
+            "trade_engine config {} must provide at least 2 local IPs for account monitors",
+            source
         ));
     }
 
+    Ok(((cfg.local_ips[0].clone(), cfg.local_ips[1].clone()), source))
+}
+
+pub async fn load_trade_engine_local_ip_config_preferring_trade_engine(
+) -> Result<(TradeEngineLocalIpConfig, String)> {
+    if let Some(path) = find_trade_engine_local_cfg_path()? {
+        let cfg = load_trade_engine_local_ip_config_from_toml_path(&path).await?;
+        return Ok((cfg, path.display().to_string()));
+    }
+
     let cfg_path = home_mkt_cfg_path()?;
-    let ips = load_local_ips_from_path(&cfg_path).await?;
+    let (primary_ip, secondary_ip) = load_local_ips_from_path(&cfg_path).await?;
     Ok((
-        ips,
+        TradeEngineLocalIpConfig {
+            local_ips: vec![primary_ip, secondary_ip],
+            binance_um_whitelist_ip: None,
+        },
         format!("{} (fallback mkt_cfg.yaml)", cfg_path.display()),
     ))
+}
+
+pub fn binance_um_ip_whitelist_mode_enabled() -> bool {
+    match std::env::var(BINANCE_UM_IP_WHITELIST_MODE_ENV) {
+        Ok(raw) => {
+            let value = raw.trim().to_ascii_lowercase();
+            match value.as_str() {
+                "" | "off" => false,
+                "on" => true,
+                _ => panic!(
+                    "{} must be 'on' or 'off' when set; got '{}'",
+                    BINANCE_UM_IP_WHITELIST_MODE_ENV,
+                    raw.trim()
+                ),
+            }
+        }
+        Err(_) => false,
+    }
+}
+
+pub fn validate_binance_um_whitelist_ip_config(
+    local_ips: &[String],
+    whitelist_ip: Option<&str>,
+    whitelist_mode_enabled: bool,
+    source: &str,
+    context: &str,
+) {
+    if let Some(ip) = whitelist_ip {
+        let trimmed = ip.trim();
+        if !local_ips.iter().any(|local_ip| local_ip.trim() == trimmed) {
+            panic!(
+                "{}: binance_um_whitelist_ip={} from {} must also be present in local_ips",
+                context, trimmed, source
+            );
+        }
+        log::info!(
+            "{}: binance UM whitelist IP configured: {}",
+            context,
+            trimmed
+        );
+    }
+
+    if whitelist_mode_enabled {
+        let ip = whitelist_ip.map(str::trim).filter(|ip| !ip.is_empty());
+        let Some(ip) = ip else {
+            panic!(
+                "{}: {}=on requires binance_um_whitelist_ip in local trade_engine.toml",
+                context, BINANCE_UM_IP_WHITELIST_MODE_ENV
+            )
+        };
+        log::info!(
+            "{}: {}=on; binance UM whitelist IP is {}",
+            context,
+            BINANCE_UM_IP_WHITELIST_MODE_ENV,
+            ip
+        );
+    }
 }
 
 pub fn load_primary_local_ip_preferring_trade_engine_sync() -> Result<(String, String)> {
@@ -152,6 +226,24 @@ fn push_trimmed_ip(
 }
 
 fn parse_trade_engine_local_ips_toml(content: &str, path: &Path) -> Result<Vec<String>> {
+    Ok(parse_trade_engine_local_ip_config_toml(content, path)?.local_ips)
+}
+
+fn trim_optional_empty_ok(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+fn parse_trade_engine_local_ip_config_toml(
+    content: &str,
+    path: &Path,
+) -> Result<TradeEngineLocalIpConfig> {
     let cfg: TradeEngineTomlConfig = toml::from_str(content)
         .with_context(|| format!("parse trade_engine toml: {}", path.display()))?;
 
@@ -182,7 +274,19 @@ fn parse_trade_engine_local_ips_toml(content: &str, path: &Path) -> Result<Vec<S
             path.display()
         ));
     }
-    Ok(local_ips)
+    Ok(TradeEngineLocalIpConfig {
+        local_ips,
+        binance_um_whitelist_ip: trim_optional_empty_ok(cfg.binance_um_whitelist_ip),
+    })
+}
+
+pub async fn load_trade_engine_local_ip_config_from_toml_path(
+    path: &Path,
+) -> Result<TradeEngineLocalIpConfig> {
+    let content = tokio::fs::read_to_string(path)
+        .await
+        .with_context(|| format!("read trade_engine toml: {}", path.display()))?;
+    parse_trade_engine_local_ip_config_toml(&content, path)
 }
 
 pub async fn load_trade_engine_local_ips_from_toml_path(path: &Path) -> Result<Vec<String>> {

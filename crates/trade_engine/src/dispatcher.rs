@@ -3,7 +3,7 @@ use crate::order_event::OrderRequestEvent;
 use account_common::ApiKey;
 use anyhow::{anyhow, Result};
 use hmac::{Hmac, Mac};
-use log::{debug, warn};
+use log::{debug, info, warn};
 use reqwest::{header::HeaderMap, Client};
 use serde_json::Value;
 use sha2::Sha256;
@@ -120,6 +120,7 @@ impl Dispatcher {
         local_ips: &[IpAddr],
         account_keys: &[ApiKey],
         shutdown: CancellationToken,
+        binance_um_ip_whitelist_mode: bool,
     ) -> Result<Self> {
         // Build clients per IP
         let mut ip_clients = Vec::new();
@@ -157,10 +158,21 @@ impl Dispatcher {
             .ok()
             .filter(|v| !v.trim().is_empty())
             .unwrap_or_else(|| RestConstants::BINANCE_BASE_URL.to_string());
+        let default_fapi_base_url = if binance_um_ip_whitelist_mode {
+            RestConstants::BINANCE_FAPI_MM_BASE_URL
+        } else {
+            RestConstants::BINANCE_FAPI_BASE_URL
+        };
         let base_url_fapi = std::env::var("BINANCE_FAPI_URL")
             .ok()
             .filter(|v| !v.trim().is_empty())
-            .unwrap_or_else(|| RestConstants::BINANCE_FAPI_BASE_URL.to_string());
+            .unwrap_or_else(|| default_fapi_base_url.to_string());
+        if binance_um_ip_whitelist_mode {
+            info!(
+                "binance UM IP whitelist mode enabled; Binance FAPI REST base_url={}",
+                base_url_fapi
+            );
+        }
         let base_url_sapi = std::env::var("BINANCE_SAPI_URL")
             .ok()
             .filter(|v| !v.trim().is_empty())
@@ -674,6 +686,7 @@ mod tests {
                 secret: "secret".to_string(),
             }],
             CancellationToken::new(),
+            false,
         )
         .expect("dispatcher")
     }
@@ -690,6 +703,7 @@ mod tests {
                 secret: "secret".to_string(),
             }],
             CancellationToken::new(),
+            false,
         )
         .expect("dispatcher")
     }

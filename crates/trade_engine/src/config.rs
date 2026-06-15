@@ -6,6 +6,7 @@ pub struct RestConstants;
 impl RestConstants {
     pub const BINANCE_BASE_URL: &'static str = "https://papi.binance.com";
     pub const BINANCE_FAPI_BASE_URL: &'static str = "https://fapi.binance.com";
+    pub const BINANCE_FAPI_MM_BASE_URL: &'static str = "https://fapi-mm.binance.com";
     pub const BINANCE_SAPI_BASE_URL: &'static str = "https://api.binance.com";
     pub const TIMEOUT_MS: u64 = 10_000;
     pub const RECV_WINDOW_MS: u64 = 5_000;
@@ -47,6 +48,7 @@ impl WsConstants {
 
     /// Binance UM WebSocket API URL
     pub const BINANCE_UM_WS_URL: &'static str = "wss://ws-fapi.binance.com/ws-fapi/v1";
+    pub const BINANCE_UM_MM_WS_URL: &'static str = "wss://ws-fapi-mm.binance.com/ws-fapi/v1";
 
     /// Binance Spot WebSocket API URL
     pub const BINANCE_SPOT_WS_URL: &'static str = "wss://ws-api.binance.com:443/ws-api/v3";

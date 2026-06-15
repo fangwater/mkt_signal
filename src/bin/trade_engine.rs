@@ -7,8 +7,9 @@ use log::{error, info};
 use runtime_common::affinity::{maybe_pin_current_thread, resolve_core};
 use runtime_common::exchange::Exchange;
 use runtime_common::mkt_cfg::{
-    find_trade_engine_local_cfg_path, home_mkt_cfg_path, load_local_ips_from_path,
-    load_trade_engine_local_ips_from_toml_path,
+    binance_um_ip_whitelist_mode_enabled, find_trade_engine_local_cfg_path, home_mkt_cfg_path,
+    load_local_ips_from_path, load_trade_engine_local_ip_config_from_toml_path,
+    validate_binance_um_whitelist_ip_config, BINANCE_UM_IP_WHITELIST_MODE_ENV,
 };
 use sha2::Sha256;
 use std::collections::BTreeMap;
@@ -113,11 +114,20 @@ fn setup_signal_handlers(token: &CancellationToken) {
 
 type HmacSha256 = Hmac<Sha256>;
 
-async fn load_trade_engine_local_ips() -> Result<(Vec<IpAddr>, String)> {
+#[derive(Debug)]
+struct TradeEngineLocalIpRuntimeConfig {
+    local_ips: Vec<IpAddr>,
+    local_ip_values: Vec<String>,
+    binance_um_whitelist_ip_value: Option<String>,
+    source: String,
+}
+
+async fn load_trade_engine_local_ip_config() -> Result<TradeEngineLocalIpRuntimeConfig> {
     if let Some(path) = find_trade_engine_local_cfg_path()? {
-        let ip_values = load_trade_engine_local_ips_from_toml_path(&path).await?;
-        let local_ips = ip_values
-            .into_iter()
+        let cfg = load_trade_engine_local_ip_config_from_toml_path(&path).await?;
+        let local_ip_values = cfg.local_ips;
+        let local_ips = local_ip_values
+            .iter()
             .enumerate()
             .map(|(idx, ip)| {
                 ip.parse().with_context(|| {
@@ -130,7 +140,25 @@ async fn load_trade_engine_local_ips() -> Result<(Vec<IpAddr>, String)> {
                 })
             })
             .collect::<Result<Vec<IpAddr>>>()?;
-        return Ok((local_ips, path.display().to_string()));
+        let binance_um_whitelist_ip_value = cfg.binance_um_whitelist_ip;
+        let _binance_um_whitelist_ip: Option<IpAddr> = binance_um_whitelist_ip_value
+            .as_ref()
+            .map(|ip| {
+                ip.parse().with_context(|| {
+                    format!(
+                        "invalid binance_um_whitelist_ip in trade_engine config {}: {}",
+                        path.display(),
+                        ip
+                    )
+                })
+            })
+            .transpose()?;
+        return Ok(TradeEngineLocalIpRuntimeConfig {
+            local_ips,
+            local_ip_values,
+            binance_um_whitelist_ip_value,
+            source: path.display().to_string(),
+        });
     }
 
     let cfg_path = home_mkt_cfg_path()?;
@@ -141,10 +169,12 @@ async fn load_trade_engine_local_ips() -> Result<(Vec<IpAddr>, String)> {
     let secondary_ip: IpAddr = secondary_ip_raw
         .parse()
         .with_context(|| format!("invalid secondary_local_ip: {}", secondary_ip_raw))?;
-    Ok((
-        vec![primary_ip, secondary_ip],
-        format!("{} (fallback mkt_cfg.yaml)", cfg_path.display()),
-    ))
+    Ok(TradeEngineLocalIpRuntimeConfig {
+        local_ips: vec![primary_ip, secondary_ip],
+        local_ip_values: vec![primary_ip_raw, secondary_ip_raw],
+        binance_um_whitelist_ip_value: None,
+        source: format!("{} (fallback mkt_cfg.yaml)", cfg_path.display()),
+    })
 }
 
 fn sign_binance_query(params: &BTreeMap<String, String>, api_secret: &str) -> Result<String> {
@@ -319,10 +349,19 @@ async fn main() -> Result<()> {
         None
     };
 
-    let (local_ips, local_ip_source) = load_trade_engine_local_ips().await?;
+    let local_ip_cfg = load_trade_engine_local_ip_config().await?;
+    let local_ips = local_ip_cfg.local_ips;
+    let binance_um_ip_whitelist_mode = binance_um_ip_whitelist_mode_enabled();
+    validate_binance_um_whitelist_ip_config(
+        &local_ip_cfg.local_ip_values,
+        local_ip_cfg.binance_um_whitelist_ip_value.as_deref(),
+        exchange_name == "binance" && binance_um_ip_whitelist_mode,
+        &local_ip_cfg.source,
+        "trade_engine",
+    );
     info!(
         "using local IPs from {}: {}",
-        local_ip_source,
+        local_ip_cfg.source,
         local_ips
             .iter()
             .map(|ip| ip.to_string())
@@ -357,9 +396,17 @@ async fn main() -> Result<()> {
             required_env.push("BINANCE_ACCOUNT_MODE".to_string());
         }
         info!("Required env vars: {}", required_env.join(", "));
+        let optional_env = if exchange_name == "binance" {
+            format!(
+                "{}, {} (on/off, default=off)",
+                api_name_var, BINANCE_UM_IP_WHITELIST_MODE_ENV
+            )
+        } else {
+            format!("{} (default=\"default\")", api_name_var)
+        };
         info!(
-            "Optional local config: ./trade_engine.toml or ./trade engine.toml; optional env vars: {} (default=\"default\")",
-            api_name_var
+            "Optional local config: ./trade_engine.toml or ./trade engine.toml; optional env vars: {}",
+            optional_env
         );
 
         // 从环境变量读取账户配置（必须）
@@ -388,10 +435,15 @@ async fn main() -> Result<()> {
         if exchange_name == "binance"
             && matches!(binance_account_mode, Some(BinanceAccountMode::Standard))
         {
+            let default_fapi_base_url = if binance_um_ip_whitelist_mode {
+                RestConstants::BINANCE_FAPI_MM_BASE_URL
+            } else {
+                RestConstants::BINANCE_FAPI_BASE_URL
+            };
             let base_url = std::env::var("BINANCE_FAPI_URL")
                 .ok()
                 .filter(|v| !v.trim().is_empty())
-                .unwrap_or_else(|| "https://fapi.binance.com".to_string());
+                .unwrap_or_else(|| default_fapi_base_url.to_string());
             let fee_burn_local_ip = local_ips.first().copied();
             info!(
                 "checking binance feeBurn (STANDARD mode) base_url={} local_ip={}",

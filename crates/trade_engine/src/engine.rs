@@ -51,6 +51,7 @@ use rtrb::{Consumer, PopError, Producer, PushError, RingBuffer};
 use runtime_common::affinity::pin_to_core;
 use runtime_common::exchange::Exchange;
 use runtime_common::ipc_service_name::build_service_name;
+use runtime_common::mkt_cfg::binance_um_ip_whitelist_mode_enabled;
 use runtime_common::time_util::get_timestamp_us;
 use serde_json::Value;
 use std::net::IpAddr;
@@ -772,11 +773,14 @@ impl TradeEngine {
         };
 
         // 初始化 REST dispatcher（用于 Binance）
+        let binance_um_ip_whitelist_mode =
+            exchange == Exchange::Binance && binance_um_ip_whitelist_mode_enabled();
         let rest_dispatcher = if exchange == Exchange::Binance {
             Some(Rc::new(tokio::sync::Mutex::new(Dispatcher::new(
                 &self.local_ips,
                 &self.accounts,
                 shutdown.clone(),
+                binance_um_ip_whitelist_mode,
             )?)))
         } else {
             None
@@ -1126,6 +1130,17 @@ impl TradeEngine {
             let ping_interval_ms = WsConstants::PING_INTERVAL_MS;
             let max_inflight = WsConstants::MAX_INFLIGHT;
             let binance_creds = self.accounts.first().cloned();
+            let binance_um_ws_url = if binance_um_ip_whitelist_mode {
+                WsConstants::BINANCE_UM_MM_WS_URL
+            } else {
+                WsConstants::BINANCE_UM_WS_URL
+            };
+            if binance_um_ip_whitelist_mode {
+                info!(
+                    "binance UM IP whitelist mode enabled; Binance UM WS url={}",
+                    binance_um_ws_url
+                );
+            }
 
             let shutdown_on_rate_limit = local_ips.len() <= 1;
             let mut um_endpoints = Vec::with_capacity(local_ips.len());
@@ -1137,7 +1152,7 @@ impl TradeEngine {
                     idx,
                     exchange,
                     ip,
-                    WsConstants::BINANCE_UM_WS_URL.to_string(),
+                    binance_um_ws_url.to_string(),
                     connect_timeout_ms,
                     ping_interval_ms,
                     max_inflight,

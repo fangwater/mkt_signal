@@ -21,7 +21,11 @@ use order_common::Side;
 use order_common::{ExecutionType, OrderStatus};
 use reqwest::Client;
 use runtime_common::affinity::maybe_pin_current_thread;
-use runtime_common::mkt_cfg::load_local_ips_preferring_trade_engine;
+use runtime_common::mkt_cfg::{
+    binance_um_ip_whitelist_mode_enabled,
+    load_trade_engine_local_ip_config_preferring_trade_engine,
+    validate_binance_um_whitelist_ip_config,
+};
 use runtime_common::ws_connection::{MktConnection, MktConnectionHandler};
 use sha2::Sha256;
 use std::cell::RefCell;
@@ -505,7 +509,24 @@ async fn main() -> Result<()> {
     }
 
     // IP and session settings
-    let ((primary_ip, secondary_ip), ip_source) = load_local_ips_preferring_trade_engine().await?;
+    let (local_ip_cfg, ip_source) =
+        load_trade_engine_local_ip_config_preferring_trade_engine().await?;
+    if local_ip_cfg.local_ips.len() < 2 {
+        return Err(anyhow::anyhow!(
+            "trade_engine config {} must provide at least 2 local IPs for account monitors",
+            ip_source
+        ));
+    }
+    let binance_um_ip_whitelist_mode = binance_um_ip_whitelist_mode_enabled();
+    validate_binance_um_whitelist_ip_config(
+        &local_ip_cfg.local_ips,
+        local_ip_cfg.binance_um_whitelist_ip.as_deref(),
+        binance_um_ip_whitelist_mode,
+        &ip_source,
+        "binance_account_monitor",
+    );
+    let primary_ip = local_ip_cfg.local_ips[0].clone();
+    let secondary_ip = local_ip_cfg.local_ips[1].clone();
     info!(
         "Primary IP='{}', Secondary IP='{}', session_restart=primary_odd_2h_boundary_secondary_even_2h_boundary (local_ip_source: {})",
         primary_ip, secondary_ip, ip_source
