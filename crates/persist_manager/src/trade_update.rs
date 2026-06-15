@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Result;
 use bytes::Buf;
@@ -8,6 +7,7 @@ use iceoryx2::service::ipc;
 use log::{info, warn};
 
 use crate::iceoryx::{create_record_subscriber, trim_trade_update_payload};
+use crate::polling::{PollStats, MAX_DRAIN_PER_CHANNEL};
 use crate::storage::RocksDbStore;
 use crate::sync::persist_with_outbox;
 use persist_common::{TRADE_UPDATE_RECORD_CHANNEL, TRADE_UPDATE_UNMATCHED_RECORD_CHANNEL};
@@ -35,14 +35,12 @@ impl TradeUpdatePersistor {
         })
     }
 
-    pub async fn run(self) -> Result<()> {
-        info!(
-            "trade update persistor started on channel {}",
-            TRADE_UPDATE_RECORD_CHANNEL
-        );
-        loop {
+    pub(crate) fn poll_available(&self) -> PollStats {
+        let mut stats = PollStats::default();
+        for _ in 0..MAX_DRAIN_PER_CHANNEL {
             match self.subscriber.receive() {
                 Ok(Some(sample)) => {
+                    stats.record_received();
                     let payload = trim_trade_update_payload(sample.payload());
                     if !payload.is_empty() {
                         // 从消息头部读取接收时间戳（前8字节）
@@ -68,13 +66,15 @@ impl TradeUpdatePersistor {
                         );
                     }
                 }
-                Ok(None) => tokio::task::yield_now().await,
+                Ok(None) => break,
                 Err(err) => {
                     warn!("trade update receive error: {err}");
-                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    stats.record_error();
+                    break;
                 }
             }
         }
+        stats
     }
 }
 
@@ -94,14 +94,12 @@ impl TradeUpdateUnmatchedPersistor {
         })
     }
 
-    pub async fn run(self) -> Result<()> {
-        info!(
-            "trade update unmatched persistor started on channel {}",
-            TRADE_UPDATE_UNMATCHED_RECORD_CHANNEL
-        );
-        loop {
+    pub(crate) fn poll_available(&self) -> PollStats {
+        let mut stats = PollStats::default();
+        for _ in 0..MAX_DRAIN_PER_CHANNEL {
             match self.subscriber.receive() {
                 Ok(Some(sample)) => {
+                    stats.record_received();
                     let payload = trim_trade_update_payload(sample.payload());
                     if !payload.is_empty() {
                         if payload.len() < 8 {
@@ -129,12 +127,14 @@ impl TradeUpdateUnmatchedPersistor {
                         );
                     }
                 }
-                Ok(None) => tokio::task::yield_now().await,
+                Ok(None) => break,
                 Err(err) => {
                     warn!("trade update unmatched receive error: {err}");
-                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    stats.record_error();
+                    break;
                 }
             }
         }
+        stats
     }
 }

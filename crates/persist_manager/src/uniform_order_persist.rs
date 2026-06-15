@@ -11,6 +11,7 @@ use tokio::time::Instant;
 
 use crate::bbo_spread::BboSpreadStore;
 use crate::iceoryx::{create_record_subscriber, trim_uniform_order_payload};
+use crate::polling::{PollStats, MAX_DRAIN_PER_CHANNEL};
 use crate::storage::RocksDbStore;
 use crate::sync::persist_with_outbox;
 use persist_common::UNIFORM_ORDER_RECORD_CHANNEL;
@@ -29,7 +30,7 @@ pub struct UniformOrderPersistor {
     sync_enabled: bool,
 }
 
-struct PendingUniformOrder {
+pub(crate) struct PendingUniformOrder {
     key: String,
     payload: Bytes,
     symbol: String,
@@ -61,47 +62,30 @@ impl UniformOrderPersistor {
         Ok(this)
     }
 
-    pub async fn run(self) -> Result<()> {
-        info!(
-            "uniform order persistor started on channel {}",
-            UNIFORM_ORDER_RECORD_CHANNEL
-        );
-        let mut pending = VecDeque::new();
-
-        loop {
-            let mut received = 0usize;
-            let mut receive_error = false;
-
-            for _ in 0..256 {
-                match self.subscriber.receive() {
-                    Ok(Some(sample)) => {
-                        received += 1;
-                        let payload = trim_uniform_order_payload(sample.payload());
-                        match PendingUniformOrder::new(payload, self.bbo_enrich_delay) {
-                            Ok(Some(order)) => pending.push_back(order),
-                            Ok(None) => {}
-                            Err(err) => warn!("uniform order payload decode failed: {err:#}"),
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(err) => {
-                        warn!("uniform order receive error: {err}");
-                        receive_error = true;
-                        break;
+    pub(crate) fn poll_available(&self, pending: &mut VecDeque<PendingUniformOrder>) -> PollStats {
+        let mut stats = PollStats::default();
+        for _ in 0..MAX_DRAIN_PER_CHANNEL {
+            match self.subscriber.receive() {
+                Ok(Some(sample)) => {
+                    stats.record_received();
+                    let payload = trim_uniform_order_payload(sample.payload());
+                    match PendingUniformOrder::new(payload, self.bbo_enrich_delay) {
+                        Ok(Some(order)) => pending.push_back(order),
+                        Ok(None) => {}
+                        Err(err) => warn!("uniform order payload decode failed: {err:#}"),
                     }
                 }
-            }
-
-            self.flush_due(&mut pending);
-
-            if receive_error {
-                tokio::time::sleep(Duration::from_millis(200)).await;
-            } else if received == 0 {
-                tokio::time::sleep(next_idle_sleep(&pending)).await;
-            } else {
-                tokio::task::yield_now().await;
+                Ok(None) => break,
+                Err(err) => {
+                    warn!("uniform order receive error: {err}");
+                    stats.record_error();
+                    break;
+                }
             }
         }
+
+        self.flush_due(pending);
+        stats
     }
 
     fn flush_due(&self, pending: &mut VecDeque<PendingUniformOrder>) {
@@ -163,8 +147,8 @@ impl PendingUniformOrder {
     }
 }
 
-fn next_idle_sleep(pending: &VecDeque<PendingUniformOrder>) -> Duration {
-    let max_sleep = Duration::from_millis(10);
+pub(crate) fn next_idle_sleep(pending: &VecDeque<PendingUniformOrder>) -> Duration {
+    let max_sleep = crate::polling::idle_sleep();
     match pending.front() {
         Some(order) => {
             let now = Instant::now();
@@ -174,7 +158,7 @@ fn next_idle_sleep(pending: &VecDeque<PendingUniformOrder>) -> Duration {
                 (order.due_at - now).min(max_sleep)
             }
         }
-        None => Duration::from_millis(2),
+        None => max_sleep,
     }
 }
 
