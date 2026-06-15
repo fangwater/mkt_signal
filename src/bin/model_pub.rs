@@ -9,6 +9,7 @@ use std::env;
 use std::path::PathBuf;
 
 use mkt_signal::factor_pub::model_pub::app::ModelPubApp;
+use runtime_common::affinity::maybe_pin_current_thread;
 
 const DEFAULT_CONFIG_PATH: &str = "config/model_pub.toml";
 
@@ -23,14 +24,19 @@ struct Args {
     /// Optional directory containing warming samples like btcusdt-ylabel.txt
     #[arg(long)]
     warming_dir: Option<PathBuf>,
+
+    /// Bind main runtime thread to a CPU core. Falls back to MODEL_PUB_CORE.
+    #[arg(long)]
+    core: Option<usize>,
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     env_logger::init();
-    set_onnx_env_fixed();
 
     let args = Args::parse();
+    maybe_pin_current_thread(args.core, "MODEL_PUB_CORE")?;
+    set_onnx_env_fixed();
     info!(
         "Starting model_pub: model_name={} config={} backend=ort warming_dir={}",
         args.model_name,

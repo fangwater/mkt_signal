@@ -14,6 +14,7 @@ Behavior:
   - model_name 由当前目录名自动推断
   - 默认 warming 目录: ./history_ylabel（必须已存在）
   - 使用 pmdaemon 启动进程名: model_pub_<model_name>
+  - 若 env.sh 设置 MODEL_PUB_CORE=<N>，则传给 binary 做主线程绑核。
   - 可用 PMDAEMON_BIN 覆盖二进制名（默认 pmdaemon）
 
 Examples:
@@ -97,6 +98,22 @@ if [[ -z "$ONNX_LIB_DIR" ]]; then
   exit 1
 fi
 
+ENV_FILE="${BASE_DIR}/env.sh"
+if [[ -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+fi
+
+extra_args_json=""
+if [[ -n "${MODEL_PUB_CORE:-}" ]]; then
+  if [[ ! "$MODEL_PUB_CORE" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR] MODEL_PUB_CORE 必须为单个整数 (got: $MODEL_PUB_CORE)" >&2
+    exit 1
+  fi
+  extra_args_json=", \"--core\", \"${MODEL_PUB_CORE}\""
+  echo "[INFO] core bind ${MODEL_PUB_CORE} (from $ENV_FILE:MODEL_PUB_CORE)"
+fi
+
 name="model_pub_${MODEL_NAME}"
 rust_log="${RUST_LOG:-info}"
 cfg_file="$(mktemp)"
@@ -120,7 +137,7 @@ cat >"$cfg_file" <<JSON
     {
       "name": "${json_name}",
       "script": "${json_bin}",
-      "args": ["${json_model}", "--warming-dir", "${json_warming_dir}"],
+      "args": ["${json_model}", "--warming-dir", "${json_warming_dir}"${extra_args_json}],
       "cwd": "${json_base}",
       "env": {
         "RUST_LOG": "${json_rust_log}",
