@@ -75,6 +75,12 @@ fi
 
 ensure_pmdaemon
 
+ENV_FILE="${BASE_DIR}/env.sh"
+if [[ -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+fi
+
 short_exchange() {
   case "${1,,}" in
     binance) echo "bn" ;;
@@ -99,6 +105,10 @@ fi
 PROC_NAME="${PMDAEMON_NAME:-fr_pm_$(short_exchange "$EXCHANGE")_${env_tag}}"
 LEGACY_PROC_NAME="persist_manager_${dir_tag}"
 KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
+
+if [[ -n "${PERSIST_MANAGER_CORE:-}" ]]; then
+  echo "[INFO] Persist manager core config: PERSIST_MANAGER_CORE=${PERSIST_MANAGER_CORE}"
+fi
 
 find_running_pids() {
   safe_find_running_pids "persist_manager" "$BASE_DIR"

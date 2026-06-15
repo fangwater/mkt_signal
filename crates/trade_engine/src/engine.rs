@@ -1160,22 +1160,11 @@ impl TradeEngine {
                         whitelist_ip
                     ));
                 }
-                let spot_local_ips: Vec<IpAddr> = local_ips
-                    .iter()
-                    .copied()
-                    .filter(|ip| *ip != whitelist_ip)
-                    .collect();
-                if spot_local_ips.is_empty() {
-                    return Err(anyhow!(
-                        "BINANCE_UM_IP_WHITELIST_MODE=on leaves no non-whitelist local IPs for Binance spot WS after excluding {}",
-                        whitelist_ip
-                    ));
-                }
                 info!(
-                    "binance UM IP whitelist mode enabled; excluding local_ip={} from Binance non-UM WS endpoints",
-                    whitelist_ip
+                    "binance UM IP whitelist mode enabled; Binance UM WS pinned to local_ip={}, Binance spot WS keeps all local_ips={:?}",
+                    whitelist_ip, local_ips
                 );
-                (vec![whitelist_ip], spot_local_ips)
+                (vec![whitelist_ip], local_ips.clone())
             } else {
                 (local_ips.clone(), local_ips.clone())
             };

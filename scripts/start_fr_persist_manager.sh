@@ -49,6 +49,9 @@ usage() {
   cat <<'USAGE'
 Usage:
   scripts/start_fr_persist_manager.sh [--exchange <binance|okex|bybit|bitget|gate>]
+
+Notes:
+  - 可选：env.sh 设置 PERSIST_MANAGER_CORE=<N> 绑定 persist_manager 单线程 runtime。
 USAGE
 }
 
@@ -127,28 +130,47 @@ RUST_LOG="${RUST_LOG:-info}"
 
 mkdir -p "${BASE_DIR}/data/persist_manager" >/dev/null 2>&1 || true
 
+core_args=()
+if [[ -n "${PERSIST_MANAGER_CORE:-}" ]]; then
+  if [[ ! "$PERSIST_MANAGER_CORE" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR] PERSIST_MANAGER_CORE 必须为单个整数 (got: $PERSIST_MANAGER_CORE)" >&2
+    exit 1
+  fi
+  core_args=(--core "$PERSIST_MANAGER_CORE")
+  echo "[INFO] core bind ${PERSIST_MANAGER_CORE} (from $ENV_FILE:PERSIST_MANAGER_CORE)"
+fi
+
 json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+shell_quote() {
+  printf '%q' "$1"
 }
 
 cfg_file="$(mktemp)"
 trap 'rm -f "$cfg_file" >/dev/null 2>&1 || true' EXIT
 
 json_name="$(json_escape "$PROC_NAME")"
-json_bin="$(json_escape "$BIN_PATH")"
+json_shell="$(json_escape "/bin/bash")"
 json_base="$(json_escape "$BASE_DIR")"
 json_rust_log="$(json_escape "$RUST_LOG")"
 json_ipc_ns="$(json_escape "$IPC_NAMESPACE")"
 json_persist_sync_source_id="$(json_escape "${PERSIST_SYNC_SOURCE_ID:-}")"
 json_persist_sync_bind="$(json_escape "${PERSIST_SYNC_BIND:-}")"
+cmd="if [[ -f $(shell_quote "$ENV_FILE") ]]; then source $(shell_quote "$ENV_FILE"); fi; exec $(shell_quote "$BIN_PATH")"
+for arg in "${core_args[@]}"; do
+  cmd+=" $(shell_quote "$arg")"
+done
+json_cmd="$(json_escape "$cmd")"
 
 cat >"$cfg_file" <<JSON
 {
   "apps": [
     {
       "name": "${json_name}",
-      "script": "${json_bin}",
-      "args": [],
+      "script": "${json_shell}",
+      "args": ["-lc", "${json_cmd}"],
       "cwd": "${json_base}",
       "env": {
         "RUST_LOG": "${json_rust_log}",

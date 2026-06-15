@@ -467,10 +467,15 @@ async fn main() -> Result<()> {
     } else {
         BINANCE_STD_FAPI_REST
     };
+    let std_fapi_secondary_ws = binance_um_ip_whitelist_mode.then_some(BINANCE_STD_FAPI_WS);
+    let std_fapi_secondary_rest = binance_um_ip_whitelist_mode.then_some(BINANCE_STD_FAPI_REST);
     if binance_is_standard && binance_um_ip_whitelist_mode {
         info!(
-            "binance UM IP whitelist mode enabled; standard FAPI ws_base={} rest_base={}",
-            std_fapi_ws, std_fapi_rest
+            "binance UM IP whitelist mode enabled; standard FAPI primary ws_base={} rest_base={} secondary ws_base={} rest_base={}",
+            std_fapi_ws,
+            std_fapi_rest,
+            std_fapi_secondary_ws.unwrap_or(std_fapi_ws),
+            std_fapi_secondary_rest.unwrap_or(std_fapi_rest)
         );
     }
     let mut stream_cfgs: Vec<UserStreamConfig> = if binance_is_standard {
@@ -479,6 +484,8 @@ async fn main() -> Result<()> {
                 stream_label: "fapi",
                 ws_base: std_fapi_ws.to_string(),
                 rest_base: std_fapi_rest.to_string(),
+                secondary_ws_base: std_fapi_secondary_ws.map(str::to_string),
+                secondary_rest_base: std_fapi_secondary_rest.map(str::to_string),
                 listen_key_path: "/fapi/v1/listenKey".to_string(),
                 parse_balances_from_account_update: true,
                 account_scope: BasicAccountScope::BinanceStdUm,
@@ -490,6 +497,8 @@ async fn main() -> Result<()> {
                 stream_label: "spot-ws-api",
                 ws_base: BINANCE_STD_SPOT_WS_API.to_string(),
                 rest_base: BINANCE_STD_SPOT_REST.to_string(),
+                secondary_ws_base: None,
+                secondary_rest_base: None,
                 listen_key_path: "/api/v3/userDataStream".to_string(),
                 parse_balances_from_account_update: false,
                 account_scope: BasicAccountScope::BinanceStdSpot,
@@ -506,6 +515,8 @@ async fn main() -> Result<()> {
             stream_label: "papi",
             ws_base: BINANCE_PM_WS.to_string(),
             rest_base: BINANCE_PM_REST.to_string(),
+            secondary_ws_base: None,
+            secondary_rest_base: None,
             listen_key_path: "/papi/v1/listenKey".to_string(),
             parse_balances_from_account_update: false,
             account_scope: BasicAccountScope::BinanceUnified,
@@ -568,33 +579,18 @@ async fn main() -> Result<()> {
     );
     if let Some(ip) = binance_um_whitelist_ip.as_deref() {
         info!(
-            "binance UM IP whitelist mode enabled; standard FAPI listenKey/user-stream pinned to local_ip={}",
-            ip
+            "binance UM IP whitelist mode enabled; standard FAPI primary listenKey/user-stream pinned to whitelist local_ip={}, secondary keeps normal local_ip={}",
+            ip, secondary_ip
         );
     }
     let (non_um_primary_ip, non_um_secondary_ip) = if let Some(whitelist_ip) =
         binance_um_whitelist_ip.as_deref()
     {
-        let mut ips: Vec<String> = local_ip_cfg
-            .local_ips
-            .iter()
-            .filter(|ip| ip.trim() != whitelist_ip)
-            .cloned()
-            .collect();
-        if ips.is_empty() {
-            return Err(anyhow::anyhow!(
-                "BINANCE_UM_IP_WHITELIST_MODE=on leaves no non-whitelist local IPs for Binance non-UM account streams after excluding {}",
-                whitelist_ip
-            ));
-        }
-        if ips.len() == 1 {
-            ips.push(ips[0].clone());
-        }
         info!(
-            "binance UM IP whitelist mode enabled; standard non-UM account streams use local_ip primary={} secondary={} after excluding {}",
-            ips[0], ips[1], whitelist_ip
+            "binance UM IP whitelist mode enabled; standard non-UM account streams keep primary={} secondary={} while FAPI is pinned to {}",
+            primary_ip, secondary_ip, whitelist_ip
         );
-        (ips[0].clone(), ips[1].clone())
+        (primary_ip.clone(), secondary_ip.clone())
     } else {
         (primary_ip.clone(), secondary_ip.clone())
     };
@@ -608,6 +604,10 @@ async fn main() -> Result<()> {
             binance_um_whitelist_ip.as_deref(),
         );
         if matches!(cfg.stream_kind, UserStreamKind::ListenKeyUrl) {
+            let secondary_rest_base = cfg
+                .secondary_rest_base
+                .clone()
+                .unwrap_or_else(|| cfg.rest_base.clone());
             let primary_listen_key_rx = BinanceListenKeyService::new(
                 cfg.rest_base.clone(),
                 api_key.clone(),
@@ -617,7 +617,7 @@ async fn main() -> Result<()> {
             .start(shutdown_rx.clone())
             .await?;
             let secondary_listen_key_rx = BinanceListenKeyService::new(
-                cfg.rest_base.clone(),
+                secondary_rest_base,
                 api_key.clone(),
                 cfg.listen_key_path.clone(),
                 Some(cfg_secondary_ip.clone()),
@@ -675,6 +675,10 @@ async fn main() -> Result<()> {
             binance_um_whitelist_ip.as_deref(),
         );
         let primary_name = format!("{}-primary", cfg.stream_label);
+        let secondary_ws_base = cfg
+            .secondary_ws_base
+            .clone()
+            .unwrap_or_else(|| cfg.ws_base.clone());
         spawn_user_stream_path(
             primary_name,
             cfg.ws_base.clone(),
@@ -690,7 +694,7 @@ async fn main() -> Result<()> {
         let secondary_name = format!("{}-secondary", cfg.stream_label);
         spawn_user_stream_path(
             secondary_name,
-            cfg.ws_base,
+            secondary_ws_base,
             cfg_secondary_ip,
             cfg.secondary_listen_key_rx,
             shutdown_rx.clone(),
@@ -767,6 +771,8 @@ struct UserStreamConfig {
     stream_label: &'static str,
     ws_base: String,
     rest_base: String,
+    secondary_ws_base: Option<String>,
+    secondary_rest_base: Option<String>,
     listen_key_path: String,
     parse_balances_from_account_update: bool,
     account_scope: BasicAccountScope,
@@ -783,8 +789,7 @@ fn stream_local_ips(
 ) -> (String, String) {
     if stream_label == "fapi" {
         if let Some(ip) = binance_um_whitelist_ip {
-            let ip = ip.to_string();
-            return (ip.clone(), ip);
+            return (ip.to_string(), non_um_secondary_ip.to_string());
         }
     }
     (
