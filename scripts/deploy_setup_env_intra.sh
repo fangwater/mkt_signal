@@ -187,6 +187,9 @@ $(emit_creds_block "$EXCHANGE")
 
 # RUST_LOG 配置
 export RUST_LOG="\${RUST_LOG:-info,funding_rate_signal=info,mkt_signal=info,hyper=warn,hyper_util=warn,h2=warn,reqwest=warn}"
+
+# Core binding overrides (optional)
+export PERSIST_MANAGER_CORE="\${PERSIST_MANAGER_CORE:-}"
 EOF
   chmod +x "$ENV_FILE"
   echo "[INFO] 环境配置已部署到 $TARGET_DIR"

@@ -2644,6 +2644,7 @@ dependencies = [
  "protoc-bin-vendored",
  "redis",
  "rocksdb",
+ "runtime_common",
  "serde",
  "serde_json",
  "tar",

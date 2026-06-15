@@ -132,12 +132,13 @@ configure_binance_arb01_core_layout() {
   intra_upsert_env_exports_block \
     "$ENV_FILE" \
     "managed binance-intra-arb01 core layout" \
-    "Local binance intra arb01 core layout: account monitor on housekeeping core 1; hot path on cores 4-7." \
-    "ACCOUNT_MONITOR_CORE='1'" \
-    "TRADE_SIGNAL_CORE='4'" \
-    "PRE_TRADE_CORE='5'" \
-    "TRADE_ENGINE_CORE='6'" \
-    "TRADE_ENGINE_IPC_CORE='7'"
+    "Local binance intra arb01 core layout: hot path on cores 16-20; persist_manager helper on overflow core 26." \
+    "ACCOUNT_MONITOR_CORE='16'" \
+    "TRADE_SIGNAL_CORE='17'" \
+    "PRE_TRADE_CORE='18'" \
+    "TRADE_ENGINE_CORE='19'" \
+    "TRADE_ENGINE_IPC_CORE='20'" \
+    "PERSIST_MANAGER_CORE='26'"
   echo "[INFO] binance-intra-arb01 core layout written to $ENV_FILE"
 }
 

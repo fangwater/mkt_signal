@@ -45,6 +45,10 @@ fi
 PROC_NAME="${PMDAEMON_NAME:-intra_pm_${EXCHANGE}_${ENV_TAG}}"
 KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 
+if [[ -n "${PERSIST_MANAGER_CORE:-}" ]]; then
+  echo "[INFO] Persist manager core config: PERSIST_MANAGER_CORE=${PERSIST_MANAGER_CORE}"
+fi
+
 # pmdaemon delete 只会清掉它自己的注册条目，不保证 OS 进程被信号；如果进程
 # 还活着会一直攥着 RocksDB 的 LOCK，重启时报 `Resource temporarily unavailable`。
 find_running_pids() {

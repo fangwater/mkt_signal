@@ -48,6 +48,7 @@ usage() {
   - 同所期现：从目录名 <exchange>-intra-<tag> 推断 exchange / env_tag
   - 启动 1 个 pmdaemon 进程：intra_pm_<exchange>_<env>
   - 需要 env.sh 提供 IPC_NAMESPACE
+  - 可选：env.sh 设置 PERSIST_MANAGER_CORE=<N> 绑定 persist_manager 单线程 runtime
 USAGE
 }
 
@@ -89,6 +90,16 @@ RUST_LOG="${RUST_LOG:-info}"
 
 mkdir -p "${BASE_DIR}/data/persist_manager" >/dev/null 2>&1 || true
 
+core_args=()
+if [[ -n "${PERSIST_MANAGER_CORE:-}" ]]; then
+  if [[ ! "$PERSIST_MANAGER_CORE" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR] PERSIST_MANAGER_CORE 必须为单个整数 (got: $PERSIST_MANAGER_CORE)" >&2
+    exit 1
+  fi
+  core_args=(--core "$PERSIST_MANAGER_CORE")
+  echo "[INFO] core bind ${PERSIST_MANAGER_CORE} (from $ENV_FILE:PERSIST_MANAGER_CORE)"
+fi
+
 cfg_file="$(mktemp)"
 trap 'rm -f "$cfg_file" >/dev/null 2>&1 || true' EXIT
 
@@ -101,6 +112,9 @@ json_base="$(json_escape "$BASE_DIR")"
 json_rust_log="$(json_escape "$RUST_LOG")"
 json_ipc_ns="$(json_escape "$IPC_NAMESPACE")"
 cmd="if [[ -f $(shell_quote "$ENV_FILE") ]]; then source $(shell_quote "$ENV_FILE"); fi; exec $(shell_quote "$BIN_PATH")"
+for arg in "${core_args[@]}"; do
+  cmd+=" $(shell_quote "$arg")"
+done
 json_cmd="$(json_escape "$cmd")"
 
 cat >"$cfg_file" <<JSON
