@@ -1510,6 +1510,10 @@ impl TradeEngine {
                                 }
 
                                 if !sent {
+                                    warn!(
+                                        "binance ws query endpoints unavailable req_type={:?} client_query_id={}",
+                                        msg.req_type, msg.client_query_id
+                                    );
                                     let _ = query_resp_sink.send(QueryExecOutcome {
                                         req_type: msg.req_type,
                                         client_query_id: msg.client_query_id,

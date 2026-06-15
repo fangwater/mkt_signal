@@ -350,6 +350,40 @@ impl QueryEngChannel {
                     match QueryEngineResponseMessage::from_payload(payload) {
                         Ok(resp) => {
                             let req_type = QueryRequestType::try_from(resp.req_type()).ok();
+                            let body = resp.body_bytes().as_ref();
+                            let actual_len = body
+                                .iter()
+                                .rposition(|&b| b != 0)
+                                .map(|pos| pos + 1)
+                                .unwrap_or(0);
+                            if matches!(
+                                req_type,
+                                Some(
+                                    QueryRequestType::BinanceWsMarginQuery
+                                        | QueryRequestType::BinanceWsUMQuery
+                                        | QueryRequestType::BinanceMarginQuery
+                                        | QueryRequestType::BinanceUMQuery
+                                )
+                            ) {
+                                let body_kind = if actual_len == 0 {
+                                    "empty"
+                                } else if actual_len == 1 && body[0] == b'E' {
+                                    "error_marker"
+                                } else if actual_len == 1 && body[0] == b'N' {
+                                    "not_found_marker"
+                                } else if parse_compact_order_query_resp(resp.body_bytes()).is_some() {
+                                    "compact_order"
+                                } else {
+                                    "opaque"
+                                };
+                                info!(
+                                    "QueryEngHub: recv binance query response req_type={:?} client_query_id={} body_kind={} body_len={}",
+                                    req_type,
+                                    resp.client_query_id(),
+                                    body_kind,
+                                    actual_len
+                                );
+                            }
                             if let Some(req_type) = req_type {
                                 if handle_account_open_block_query_response(
                                     req_type,
