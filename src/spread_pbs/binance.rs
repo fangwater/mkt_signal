@@ -19,10 +19,13 @@ use order_common::TradingVenue;
 
 const BINANCE_SPOT_SBE_WS_URL: &str = "wss://stream-sbe.binance.com:9443/ws";
 const BINANCE_FUTURES_WS_URL: &str = "wss://fstream.binance.com/public/stream";
+const BINANCE_FUTURES_MM_WS_URL: &str = "wss://fstream-mm.binance.com/public/stream";
 const BINANCE_FUTURES_DERIVATIVES_WS_URL: &str = "wss://fstream.binance.com/market/ws";
+const BINANCE_FUTURES_MM_DERIVATIVES_WS_URL: &str = "wss://fstream-mm.binance.com/market/ws";
 const BINANCE_SUBSCRIBE_CHUNK: usize = 200;
 const ENV_BINANCE_FUTURES_BBO_MODE: &str = "SPREAD_PBS_BINANCE_FUTURES_BBO_MODE";
 const ENV_BINANCE_FUTURES_BOOK_TICKER: &str = "SPREAD_PBS_BINANCE_FUTURES_BOOK_TICKER";
+pub(crate) const ENV_BINANCE_FUTURES_MM_WS_MODE: &str = "SPREAD_PBS_BINANCE_FUTURES_MM_WS_MODE";
 
 pub struct BinanceAdapter {
     venue: TradingVenue,
@@ -46,7 +49,7 @@ impl VenueAdapter for BinanceAdapter {
     fn ws_url(&self) -> String {
         match self.venue {
             TradingVenue::BinanceMargin => BINANCE_SPOT_SBE_WS_URL.to_string(),
-            TradingVenue::BinanceFutures => BINANCE_FUTURES_WS_URL.to_string(),
+            TradingVenue::BinanceFutures => binance_futures_ws_url().to_string(),
             other => unreachable!("BinanceAdapter created with non-binance venue: {:?}", other),
         }
     }
@@ -119,7 +122,7 @@ impl VenueAdapter for BinanceAdapter {
 
     fn derivatives_ws_url(&self) -> Option<String> {
         if self.venue == TradingVenue::BinanceFutures {
-            Some(BINANCE_FUTURES_DERIVATIVES_WS_URL.to_string())
+            Some(binance_futures_derivatives_ws_url().to_string())
         } else {
             None
         }
@@ -260,6 +263,37 @@ fn binance_futures_book_ticker_enabled() -> bool {
     match std::env::var(ENV_BINANCE_FUTURES_BOOK_TICKER) {
         Ok(raw) => parse_env_bool(&raw).unwrap_or(true),
         Err(_) => true,
+    }
+}
+
+pub(crate) fn binance_futures_mm_ws_enabled() -> bool {
+    match std::env::var(ENV_BINANCE_FUTURES_MM_WS_MODE) {
+        Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+            "" | "off" => false,
+            "on" => true,
+            _ => panic!(
+                "{} must be 'on' or 'off' when set; got '{}'",
+                ENV_BINANCE_FUTURES_MM_WS_MODE,
+                raw.trim()
+            ),
+        },
+        Err(_) => false,
+    }
+}
+
+fn binance_futures_ws_url() -> &'static str {
+    if binance_futures_mm_ws_enabled() {
+        BINANCE_FUTURES_MM_WS_URL
+    } else {
+        BINANCE_FUTURES_WS_URL
+    }
+}
+
+fn binance_futures_derivatives_ws_url() -> &'static str {
+    if binance_futures_mm_ws_enabled() {
+        BINANCE_FUTURES_MM_DERIVATIVES_WS_URL
+    } else {
+        BINANCE_FUTURES_DERIVATIVES_WS_URL
     }
 }
 
@@ -549,6 +583,8 @@ mod tests {
 
     #[test]
     fn full_replacement_subscriptions_use_derivatives_market_url() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::remove_var(ENV_BINANCE_FUTURES_MM_WS_MODE);
         let futures = BinanceAdapter::new(TradingVenue::BinanceFutures);
         assert_eq!(
             futures.trade_ws_url().as_deref(),
@@ -593,6 +629,33 @@ mod tests {
             spot.build_incremental_subscribe(&["BTCUSDT".to_string()])[0]["params"][0],
             "btcusdt@depth"
         );
+    }
+
+    #[test]
+    fn binance_futures_mm_ws_mode_switches_futures_urls() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var(ENV_BINANCE_FUTURES_MM_WS_MODE, "on");
+        let futures = BinanceAdapter::new(TradingVenue::BinanceFutures);
+
+        assert_eq!(
+            futures.trade_ws_url().as_deref(),
+            Some(BINANCE_FUTURES_MM_WS_URL)
+        );
+        assert_eq!(
+            futures.incremental_ws_url().as_deref(),
+            Some(BINANCE_FUTURES_MM_WS_URL)
+        );
+        assert_eq!(
+            futures.derivatives_ws_url().as_deref(),
+            Some(BINANCE_FUTURES_MM_DERIVATIVES_WS_URL)
+        );
+
+        let spot = BinanceAdapter::new(TradingVenue::BinanceMargin);
+        assert_eq!(
+            spot.trade_ws_url().as_deref(),
+            Some(BINANCE_SPOT_SBE_WS_URL)
+        );
+        std::env::remove_var(ENV_BINANCE_FUTURES_MM_WS_MODE);
     }
 
     #[test]

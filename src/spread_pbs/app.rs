@@ -19,6 +19,7 @@ use runtime_common::time_util::get_timestamp_us;
 use crate::spread_pbs::adapter::{
     create_adapter, BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
 };
+use crate::spread_pbs::binance::{binance_futures_mm_ws_enabled, ENV_BINANCE_FUTURES_MM_WS_MODE};
 use crate::spread_pbs::latency::LatencyKll;
 use crate::spread_pbs::okex_derivatives::{
     build_okex_derivatives_subscribe_msgs, parse_okex_derivatives_frame, OKEX_PUBLIC_WS_URL,
@@ -28,6 +29,10 @@ use crate::spread_pbs::publisher::{
     SpreadPublisher, SpreadTradePublisher,
 };
 use crate::spread_pbs::ws::{run_public_ws, FrameHandler, WsLoopParams};
+use runtime_common::mkt_cfg::{
+    load_trade_engine_local_ip_config_preferring_trade_engine,
+    validate_binance_um_whitelist_ip_config,
+};
 
 const DEDUP_RESET_INTERVAL_US: i64 = 5 * 60 * 1_000_000;
 const ENV_ENABLE_TRADE: &str = "SPREAD_PBS_ENABLE_TRADE";
@@ -96,6 +101,42 @@ fn direct_derivatives_replacement_enabled(venue: TradingVenue) -> bool {
             | TradingVenue::GateFutures
             | TradingVenue::BybitFutures
     )
+}
+
+async fn binance_futures_mm_ws_local_ip_override(venue: TradingVenue) -> Result<Option<String>> {
+    if venue != TradingVenue::BinanceFutures || !binance_futures_mm_ws_enabled() {
+        return Ok(None);
+    }
+
+    let (local_ip_cfg, source) = load_trade_engine_local_ip_config_preferring_trade_engine()
+        .await
+        .context("load trade_engine local IP config for spread_pbs Binance futures MM WS mode")?;
+    validate_binance_um_whitelist_ip_config(
+        &local_ip_cfg.local_ips,
+        local_ip_cfg.binance_um_whitelist_ip.as_deref(),
+        false,
+        &source,
+        "spread_pbs",
+    );
+    let whitelist_ip = local_ip_cfg
+        .binance_um_whitelist_ip
+        .as_deref()
+        .map(str::trim)
+        .filter(|ip| !ip.is_empty())
+        .unwrap_or_else(|| {
+            panic!(
+                "spread_pbs: {}=on requires binance_um_whitelist_ip in local trade_engine.toml",
+                ENV_BINANCE_FUTURES_MM_WS_MODE
+            )
+        })
+        .to_string();
+    log::info!(
+        "spread_pbs[binance-futures] {}=on; using whitelist local_ip={} for both primary/secondary legs from {}",
+        ENV_BINANCE_FUTURES_MM_WS_MODE,
+        whitelist_ip,
+        source
+    );
+    Ok(Some(whitelist_ip))
 }
 
 fn env_enabled_or(name: &str, default: bool) -> bool {
@@ -232,6 +273,13 @@ impl SpreadPbsApp {
             venue_slug,
             adapter.name()
         );
+        let local_ip_override = binance_futures_mm_ws_local_ip_override(venue).await?;
+        let primary_local_ip = local_ip_override
+            .clone()
+            .unwrap_or_else(|| self.config.primary_local_ip.clone());
+        let secondary_local_ip = local_ip_override
+            .clone()
+            .unwrap_or_else(|| self.config.secondary_local_ip.clone());
 
         // ---- 首次拉 symbol（含 BinanceFutures，无硬编码） ----
         // spread_pbs 不归 pm2 管，启动期 REST 抖动不能直接退出；用退避循环等到拿到非空列表
@@ -398,7 +446,7 @@ impl SpreadPbsApp {
         let derivatives_leg = derivatives_publisher.as_ref().map(|publisher| {
             if is_okex_derivatives_venue(venue) {
                 Some(spawn_okex_derivatives_leg(
-                    self.config.primary_local_ip.clone(),
+                    primary_local_ip.clone(),
                     build_okex_derivatives_subscribe_msgs(
                         &initial_symbols,
                         self.config.get_batch_size(),
@@ -416,6 +464,7 @@ impl SpreadPbsApp {
             &adapter,
             &initial_symbols,
             &self.config,
+            &primary_local_ip,
             trade_publisher.clone(),
             incremental_publisher.clone(),
             derivatives_publisher.clone(),
@@ -423,18 +472,8 @@ impl SpreadPbsApp {
         );
 
         // ---- 起两条 leg：primary / secondary，独立 shutdown 通道 ----
-        let mut primary = spawn_leg(
-            "primary",
-            self.config.primary_local_ip.clone(),
-            initial_subs.clone(),
-            &ctx,
-        );
-        let mut secondary = spawn_leg(
-            "secondary",
-            self.config.secondary_local_ip.clone(),
-            initial_subs,
-            &ctx,
-        );
+        let mut primary = spawn_leg("primary", primary_local_ip, initial_subs.clone(), &ctx);
+        let mut secondary = spawn_leg("secondary", secondary_local_ip, initial_subs, &ctx);
 
         // ---- 错开半周期：primary t+T，secondary t+T/2，与 src/mkt_pub/app.rs 一致 ----
         let restart_duration = Duration::from_secs(self.config.restart_duration_secs);
@@ -597,6 +636,7 @@ fn spawn_direct_extra_legs(
     adapter: &Rc<dyn VenueAdapter>,
     symbols: &[String],
     config: &Config,
+    local_ip: &str,
     trade_publisher: Option<Rc<SpreadTradePublisher>>,
     incremental_publisher: Option<Rc<SpreadIncrementalPublisher>>,
     derivatives_publisher: Option<Rc<SpreadDerivativesPublisher>>,
@@ -609,7 +649,7 @@ fn spawn_direct_extra_legs(
             &mut legs,
             "direct-trade",
             url,
-            config.primary_local_ip.clone(),
+            local_ip.to_string(),
             adapter.build_trade_subscribe(symbols),
             adapter,
             Some(publisher),
@@ -626,7 +666,7 @@ fn spawn_direct_extra_legs(
             &mut legs,
             "direct-incremental",
             url,
-            config.primary_local_ip.clone(),
+            local_ip.to_string(),
             adapter.build_incremental_subscribe(symbols),
             adapter,
             None,
@@ -643,7 +683,7 @@ fn spawn_direct_extra_legs(
             &mut legs,
             "direct-derivatives",
             url,
-            config.primary_local_ip.clone(),
+            local_ip.to_string(),
             adapter.build_derivatives_subscribe(symbols),
             adapter,
             None,
