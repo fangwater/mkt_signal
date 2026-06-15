@@ -72,6 +72,7 @@ pub struct Dispatcher {
     base_url_fapi: String,
     base_url_sapi: String,
     ip_clients: Vec<IpClient>,
+    binance_um_whitelist_ip: Option<IpAddr>,
     accounts: Vec<AccountState>,
     rest_hot_window_started_at: Instant,
     rest_hot_stats: HashMap<RestHotKey, RestHotStat>,
@@ -121,6 +122,7 @@ impl Dispatcher {
         account_keys: &[ApiKey],
         shutdown: CancellationToken,
         binance_um_ip_whitelist_mode: bool,
+        binance_um_whitelist_ip: Option<IpAddr>,
     ) -> Result<Self> {
         // Build clients per IP
         let mut ip_clients = Vec::new();
@@ -173,6 +175,20 @@ impl Dispatcher {
                 base_url_fapi
             );
         }
+        if binance_um_ip_whitelist_mode {
+            let whitelist_ip = binance_um_whitelist_ip
+                .ok_or_else(|| anyhow!("BINANCE_UM_IP_WHITELIST_MODE=on requires Binance UM whitelist IP for REST dispatch"))?;
+            if !ip_clients.iter().any(|client| client.ip == whitelist_ip) {
+                return Err(anyhow!(
+                    "Binance UM whitelist IP {} is not present in dispatcher local IP clients",
+                    whitelist_ip
+                ));
+            }
+            info!(
+                "binance UM IP whitelist mode enabled; Binance FAPI REST dispatch pinned to local_ip={}",
+                whitelist_ip
+            );
+        }
         let base_url_sapi = std::env::var("BINANCE_SAPI_URL")
             .ok()
             .filter(|v| !v.trim().is_empty())
@@ -183,6 +199,7 @@ impl Dispatcher {
             base_url_fapi,
             base_url_sapi,
             ip_clients,
+            binance_um_whitelist_ip,
             accounts,
             rest_hot_window_started_at: Instant::now(),
             rest_hot_stats: HashMap::new(),
@@ -218,6 +235,18 @@ impl Dispatcher {
             }
         }
         best.map(|(i, _)| i)
+    }
+
+    fn select_specific_ip(&self, ip: IpAddr, req_weight: u32) -> Option<usize> {
+        let idx = self.ip_clients.iter().position(|client| client.ip == ip)?;
+        let client = &self.ip_clients[idx];
+        if !client.is_available() {
+            return None;
+        }
+        if client.used_weight_1m.saturating_add(req_weight) > LimitConstants::IP_WEIGHT_PER_MIN {
+            return None;
+        }
+        Some(idx)
     }
 
     fn select_account(&self, hint: Option<&str>, enforce_order_limit: bool) -> Option<usize> {
@@ -378,9 +407,23 @@ impl Dispatcher {
     pub async fn dispatch(&mut self, evt: OrderRequestEvent) -> Result<DispatchResponse> {
         self.maybe_log_rest_hot_stats();
         self.refresh_limit_windows();
-        let ip_idx = self
-            .select_ip(evt.weight())
-            .ok_or_else(|| anyhow!("no available IP client (cooldown/banned or all saturated)"))?;
+        let fapi_whitelist_ip = evt
+            .endpoint
+            .starts_with("/fapi/")
+            .then_some(self.binance_um_whitelist_ip)
+            .flatten();
+        let ip_idx = if let Some(ip) = fapi_whitelist_ip {
+            self.select_specific_ip(ip, evt.weight()).ok_or_else(|| {
+                anyhow!(
+                    "no available Binance UM whitelist IP client {} (cooldown/banned/saturated)",
+                    ip
+                )
+            })?
+        } else {
+            self.select_ip(evt.weight()).ok_or_else(|| {
+                anyhow!("no available IP client (cooldown/banned or all saturated)")
+            })?
+        };
         let acc_idx = self
             .select_account(evt.account.as_deref(), evt.counts_toward_order_limit)
             .ok_or_else(|| anyhow!("no available account key (all saturated)"))?;
@@ -687,6 +730,7 @@ mod tests {
             }],
             CancellationToken::new(),
             false,
+            None,
         )
         .expect("dispatcher")
     }
@@ -704,6 +748,7 @@ mod tests {
             }],
             CancellationToken::new(),
             false,
+            None,
         )
         .expect("dispatcher")
     }

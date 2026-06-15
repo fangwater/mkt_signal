@@ -594,14 +594,21 @@ pub struct TradeEngine {
     local_ips: Vec<IpAddr>,
     accounts: Vec<ApiKey>,
     ipc_core: Option<usize>,
+    binance_um_whitelist_ip: Option<IpAddr>,
 }
 
 impl TradeEngine {
-    pub fn new(local_ips: Vec<IpAddr>, accounts: Vec<ApiKey>, ipc_core: Option<usize>) -> Self {
+    pub fn new(
+        local_ips: Vec<IpAddr>,
+        accounts: Vec<ApiKey>,
+        ipc_core: Option<usize>,
+        binance_um_whitelist_ip: Option<IpAddr>,
+    ) -> Self {
         Self {
             local_ips,
             accounts,
             ipc_core,
+            binance_um_whitelist_ip,
         }
     }
 
@@ -781,6 +788,7 @@ impl TradeEngine {
                 &self.accounts,
                 shutdown.clone(),
                 binance_um_ip_whitelist_mode,
+                self.binance_um_whitelist_ip,
             )?)))
         } else {
             None
@@ -1137,15 +1145,46 @@ impl TradeEngine {
             };
             if binance_um_ip_whitelist_mode {
                 info!(
-                    "binance UM IP whitelist mode enabled; Binance UM WS url={}",
-                    binance_um_ws_url
+                    "binance UM IP whitelist mode enabled; Binance UM WS url={} local_ip={:?}",
+                    binance_um_ws_url, self.binance_um_whitelist_ip
                 );
             }
 
-            let shutdown_on_rate_limit = local_ips.len() <= 1;
-            let mut um_endpoints = Vec::with_capacity(local_ips.len());
-            let mut spot_endpoints = Vec::with_capacity(local_ips.len());
-            for (idx, ip) in local_ips.into_iter().enumerate() {
+            let (um_local_ips, spot_local_ips) = if binance_um_ip_whitelist_mode {
+                let whitelist_ip = self.binance_um_whitelist_ip.ok_or_else(|| {
+                    anyhow!("BINANCE_UM_IP_WHITELIST_MODE=on requires Binance UM whitelist IP for WS dispatch")
+                })?;
+                if !local_ips.contains(&whitelist_ip) {
+                    return Err(anyhow!(
+                        "Binance UM whitelist IP {} is not present in trade_engine local IPs",
+                        whitelist_ip
+                    ));
+                }
+                let spot_local_ips: Vec<IpAddr> = local_ips
+                    .iter()
+                    .copied()
+                    .filter(|ip| *ip != whitelist_ip)
+                    .collect();
+                if spot_local_ips.is_empty() {
+                    return Err(anyhow!(
+                        "BINANCE_UM_IP_WHITELIST_MODE=on leaves no non-whitelist local IPs for Binance spot WS after excluding {}",
+                        whitelist_ip
+                    ));
+                }
+                info!(
+                    "binance UM IP whitelist mode enabled; excluding local_ip={} from Binance non-UM WS endpoints",
+                    whitelist_ip
+                );
+                (vec![whitelist_ip], spot_local_ips)
+            } else {
+                (local_ips.clone(), local_ips.clone())
+            };
+
+            let um_shutdown_on_rate_limit = um_local_ips.len() <= 1;
+            let spot_shutdown_on_rate_limit = spot_local_ips.len() <= 1;
+            let mut um_endpoints = Vec::with_capacity(um_local_ips.len());
+            let mut spot_endpoints = Vec::with_capacity(spot_local_ips.len());
+            for (idx, ip) in um_local_ips.into_iter().enumerate() {
                 let um_cmd_queue = WsCommandQueue::new();
                 let um_state = StdRc::new(RefCell::new(Default::default()));
                 let um_client = TradeWsClient::new(
@@ -1164,7 +1203,7 @@ impl TradeEngine {
                     trade_resp_sink.clone(),
                     shutdown.clone(),
                     um_state.clone(),
-                    shutdown_on_rate_limit,
+                    um_shutdown_on_rate_limit,
                     lat_buckets.clone(),
                 );
                 info!(
@@ -1178,7 +1217,9 @@ impl TradeEngine {
                 });
                 worker_handles.push(("binance_um_ws_client", handle));
                 um_endpoints.push(WsEndpointHandle::new(um_cmd_queue, um_state));
+            }
 
+            for (idx, ip) in spot_local_ips.into_iter().enumerate() {
                 let spot_cmd_queue = WsCommandQueue::new();
                 let spot_state = StdRc::new(RefCell::new(Default::default()));
                 let spot_client = TradeWsClient::new(
@@ -1197,7 +1238,7 @@ impl TradeEngine {
                     trade_resp_sink.clone(),
                     shutdown.clone(),
                     spot_state.clone(),
-                    shutdown_on_rate_limit,
+                    spot_shutdown_on_rate_limit,
                     lat_buckets.clone(),
                 );
                 info!(

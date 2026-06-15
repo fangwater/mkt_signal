@@ -1,4 +1,4 @@
-use account_common::{BinanceAccountMode, init_binance_account_mode};
+use account_common::{init_binance_account_mode, BinanceAccountMode};
 use account_monitor_common::binance_spot_ws_api_user_stream::BinanceSpotWsApiUserDataConnection;
 use account_monitor_common::binance_user_stream::{
     BinanceUserDataConnection, SessionRestartPolicy,
@@ -13,9 +13,9 @@ use log::{debug, error, info, warn};
 use mkt_parsers::account_event::binance_basic_account_event_parser::BinanceBasicAccountEventParser;
 use mkt_parsers::account_event::{AccountEventSink, Parser as AccountEventParser};
 use mkt_parsers::msg::basic_account_msg::{
-    BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
-    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg,
-    BasicUmUnrealizedMsg, BinanceBasicOrderMsg, get_basic_event_type, split_basic_account_event,
+    get_basic_event_type, split_basic_account_event, BasicAccountEventMsg, BasicAccountEventType,
+    BasicAccountRiskMsg, BasicAccountScope, BasicBalanceMsg, BasicBorrowInterestMsg,
+    BasicPositionMsg, BasicTradeLiteMsg, BasicUmUnrealizedMsg, BinanceBasicOrderMsg,
 };
 use order_common::Side;
 use order_common::{ExecutionType, OrderStatus};
@@ -29,8 +29,8 @@ use runtime_common::mkt_cfg::{
 use runtime_common::ws_connection::{MktConnection, MktConnectionHandler};
 use sha2::Sha256;
 use std::cell::RefCell;
-use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::BTreeMap;
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::net::IpAddr;
@@ -242,18 +242,21 @@ async fn bootstrap_standard_snapshots(
     api_key: &str,
     api_secret: &str,
     fapi_rest_base: &str,
-    local_ip: Option<&str>,
+    fapi_local_ip: Option<&str>,
+    spot_local_ip: Option<&str>,
 ) -> Result<()> {
-    let client = build_binance_rest_client(local_ip, Duration::from_secs(10))?;
+    let fapi_client = build_binance_rest_client(fapi_local_ip, Duration::from_secs(10))?;
+    let spot_client = build_binance_rest_client(spot_local_ip, Duration::from_secs(10))?;
     let mut emitted = 0usize;
     info!(
-        "bootstrap standard snapshots via fapi_rest_base={} local_ip={}",
+        "bootstrap standard snapshots via fapi_rest_base={} fapi_local_ip={} spot_local_ip={}",
         fapi_rest_base,
-        local_ip.unwrap_or("system-default")
+        fapi_local_ip.unwrap_or("system-default"),
+        spot_local_ip.unwrap_or("system-default")
     );
 
     let um_balance_body = signed_get_binance(
-        &client,
+        &fapi_client,
         fapi_rest_base,
         "/fapi/v2/balance",
         api_key,
@@ -270,7 +273,7 @@ async fn bootstrap_standard_snapshots(
     }
 
     let um_account_body = signed_get_binance(
-        &client,
+        &fapi_client,
         fapi_rest_base,
         "/fapi/v2/account",
         api_key,
@@ -287,7 +290,7 @@ async fn bootstrap_standard_snapshots(
     }
 
     let spot_account_body = signed_get_binance(
-        &client,
+        &spot_client,
         "https://api.binance.com",
         "/api/v3/account",
         api_key,
@@ -547,19 +550,69 @@ async fn main() -> Result<()> {
     );
     let primary_ip = local_ip_cfg.local_ips[0].clone();
     let secondary_ip = local_ip_cfg.local_ips[1].clone();
+    let binance_um_whitelist_ip = if binance_is_standard && binance_um_ip_whitelist_mode {
+        Some(
+            local_ip_cfg
+                .binance_um_whitelist_ip
+                .as_deref()
+                .expect("validate_binance_um_whitelist_ip_config must require whitelist ip")
+                .trim()
+                .to_string(),
+        )
+    } else {
+        None
+    };
     info!(
         "Primary IP='{}', Secondary IP='{}', session_restart=primary_odd_2h_boundary_secondary_even_2h_boundary (local_ip_source: {})",
         primary_ip, secondary_ip, ip_source
     );
+    if let Some(ip) = binance_um_whitelist_ip.as_deref() {
+        info!(
+            "binance UM IP whitelist mode enabled; standard FAPI listenKey/user-stream pinned to local_ip={}",
+            ip
+        );
+    }
+    let (non_um_primary_ip, non_um_secondary_ip) = if let Some(whitelist_ip) =
+        binance_um_whitelist_ip.as_deref()
+    {
+        let mut ips: Vec<String> = local_ip_cfg
+            .local_ips
+            .iter()
+            .filter(|ip| ip.trim() != whitelist_ip)
+            .cloned()
+            .collect();
+        if ips.is_empty() {
+            return Err(anyhow::anyhow!(
+                "BINANCE_UM_IP_WHITELIST_MODE=on leaves no non-whitelist local IPs for Binance non-UM account streams after excluding {}",
+                whitelist_ip
+            ));
+        }
+        if ips.len() == 1 {
+            ips.push(ips[0].clone());
+        }
+        info!(
+            "binance UM IP whitelist mode enabled; standard non-UM account streams use local_ip primary={} secondary={} after excluding {}",
+            ips[0], ips[1], whitelist_ip
+        );
+        (ips[0].clone(), ips[1].clone())
+    } else {
+        (primary_ip.clone(), secondary_ip.clone())
+    };
 
     // Start listenKey services
     for cfg in stream_cfgs.iter_mut() {
+        let (cfg_primary_ip, cfg_secondary_ip) = stream_local_ips(
+            cfg.stream_label,
+            &non_um_primary_ip,
+            &non_um_secondary_ip,
+            binance_um_whitelist_ip.as_deref(),
+        );
         if matches!(cfg.stream_kind, UserStreamKind::ListenKeyUrl) {
             let primary_listen_key_rx = BinanceListenKeyService::new(
                 cfg.rest_base.clone(),
                 api_key.clone(),
                 cfg.listen_key_path.clone(),
-                Some(primary_ip.clone()),
+                Some(cfg_primary_ip.clone()),
             )?
             .start(shutdown_rx.clone())
             .await?;
@@ -567,7 +620,7 @@ async fn main() -> Result<()> {
                 cfg.rest_base.clone(),
                 api_key.clone(),
                 cfg.listen_key_path.clone(),
-                Some(secondary_ip.clone()),
+                Some(cfg_secondary_ip.clone()),
             )?
             .start(shutdown_rx.clone())
             .await?;
@@ -579,8 +632,15 @@ async fn main() -> Result<()> {
     init_direct_forwarder("binance")?;
 
     if binance_is_standard {
-        match bootstrap_standard_snapshots(&api_key, &api_secret, std_fapi_rest, Some(&primary_ip))
-            .await
+        let fapi_snapshot_ip = binance_um_whitelist_ip.as_deref().unwrap_or(&primary_ip);
+        match bootstrap_standard_snapshots(
+            &api_key,
+            &api_secret,
+            std_fapi_rest,
+            Some(fapi_snapshot_ip),
+            Some(&non_um_primary_ip),
+        )
+        .await
         {
             Ok(()) => info!("bootstrap standard snapshots completed"),
             Err(err) => warn!("bootstrap standard snapshots failed: {err:#}"),
@@ -608,11 +668,17 @@ async fn main() -> Result<()> {
 
     // Spawn primary and secondary paths for each enabled stream.
     for cfg in stream_cfgs {
+        let (cfg_primary_ip, cfg_secondary_ip) = stream_local_ips(
+            cfg.stream_label,
+            &non_um_primary_ip,
+            &non_um_secondary_ip,
+            binance_um_whitelist_ip.as_deref(),
+        );
         let primary_name = format!("{}-primary", cfg.stream_label);
         spawn_user_stream_path(
             primary_name,
             cfg.ws_base.clone(),
-            primary_ip.clone(),
+            cfg_primary_ip,
             cfg.primary_listen_key_rx.clone(),
             shutdown_rx.clone(),
             Some(SessionRestartPolicy::OddTwoHourBoundary),
@@ -625,7 +691,7 @@ async fn main() -> Result<()> {
         spawn_user_stream_path(
             secondary_name,
             cfg.ws_base,
-            secondary_ip.clone(),
+            cfg_secondary_ip,
             cfg.secondary_listen_key_rx,
             shutdown_rx.clone(),
             Some(SessionRestartPolicy::EvenTwoHourBoundary),
@@ -707,6 +773,24 @@ struct UserStreamConfig {
     stream_kind: UserStreamKind,
     primary_listen_key_rx: Option<watch::Receiver<String>>,
     secondary_listen_key_rx: Option<watch::Receiver<String>>,
+}
+
+fn stream_local_ips(
+    stream_label: &str,
+    non_um_primary_ip: &str,
+    non_um_secondary_ip: &str,
+    binance_um_whitelist_ip: Option<&str>,
+) -> (String, String) {
+    if stream_label == "fapi" {
+        if let Some(ip) = binance_um_whitelist_ip {
+            let ip = ip.to_string();
+            return (ip.clone(), ip);
+        }
+    }
+    (
+        non_um_primary_ip.to_string(),
+        non_um_secondary_ip.to_string(),
+    )
 }
 
 fn spawn_user_stream_path(

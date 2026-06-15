@@ -359,6 +359,19 @@ async fn main() -> Result<()> {
         &local_ip_cfg.source,
         "trade_engine",
     );
+    let binance_um_whitelist_ip = if exchange_name == "binance" && binance_um_ip_whitelist_mode {
+        Some(
+            local_ip_cfg
+                .binance_um_whitelist_ip_value
+                .as_deref()
+                .expect("validate_binance_um_whitelist_ip_config must require whitelist ip")
+                .trim()
+                .parse::<IpAddr>()
+                .with_context(|| "parse binance_um_whitelist_ip for trade_engine dispatch")?,
+        )
+    } else {
+        None
+    };
     info!(
         "using local IPs from {}: {}",
         local_ip_cfg.source,
@@ -468,7 +481,7 @@ async fn main() -> Result<()> {
     };
 
     info!("trade_engine initialized");
-    let engine = TradeEngine::new(local_ips, accounts, ipc_core);
+    let engine = TradeEngine::new(local_ips, accounts, ipc_core, binance_um_whitelist_ip);
 
     // Convert exchange_name to Exchange enum
     let exchange = Exchange::from_str(exchange_name)
