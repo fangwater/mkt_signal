@@ -46,6 +46,9 @@ struct SymbolListInner {
     /// UniMMR 算法平仓 symbol list（仅 fr / intra / cross 加载；mm 跳过）。
     /// 参与 `collect_online` 并集，确保下游阈值/订阅会覆盖这些 symbol。
     unimmr_close_symbols: HashSet<String>,
+
+    /// Intra 专用：只有命中该列表的 symbol 才应用 inline volatility open gate。
+    vol_gate_symbols: HashSet<String>,
 }
 
 impl SymbolList {
@@ -86,6 +89,7 @@ impl SymbolList {
             fwd_trade_symbols: HashSet::new(),
             bwd_trade_symbols: HashSet::new(),
             unimmr_close_symbols: HashSet::new(),
+            vol_gate_symbols: HashSet::new(),
         };
 
         SYMBOL_LIST.with(|sl| {
@@ -260,6 +264,44 @@ impl SymbolList {
             }
         }
 
+        if ns == "intra" {
+            let vol_gate_key =
+                symbol_list_redis_key(key_prefix.as_deref(), &ns, "vol_gate_symbols", &key_suffix);
+            match client.get_string(&vol_gate_key).await {
+                Ok(Some(value)) => match serde_json::from_str::<Vec<String>>(&value) {
+                    Ok(symbols) => {
+                        Self::with_inner_mut(|inner| {
+                            inner.vol_gate_symbols =
+                                symbols.iter().map(|s| s.to_uppercase()).collect();
+                            info!(
+                                "更新 intra vol gate 列表 key='{}': {} 个交易对",
+                                vol_gate_key,
+                                inner.vol_gate_symbols.len()
+                            );
+                        });
+                    }
+                    Err(err) => {
+                        Self::with_inner_mut(|inner| inner.vol_gate_symbols.clear());
+                        warn!(
+                            "intra vol gate 列表 key='{}' 解析失败 raw={} err={:#}，清空本地缓存",
+                            vol_gate_key, value, err
+                        );
+                    }
+                },
+                Ok(None) => {
+                    Self::with_inner_mut(|inner| inner.vol_gate_symbols.clear());
+                }
+                Err(err) => {
+                    warn!(
+                        "intra vol gate 列表 key='{}' 读取失败: {:#}（保留旧缓存）",
+                        vol_gate_key, err
+                    );
+                }
+            }
+        } else {
+            Self::with_inner_mut(|inner| inner.vol_gate_symbols.clear());
+        }
+
         // intra: 同所期现没有正反开方向限制，fwd ∪ bwd 视为单一 online 列表，
         // 让 is_in_fwd_trade_list / is_in_bwd_trade_list 对任一方向都放行
         if ns == "intra" {
@@ -319,6 +361,11 @@ impl SymbolList {
         Self::with_inner(|inner| Self::contains_normalized(&inner.bwd_trade_symbols, symbol))
     }
 
+    /// 判断交易对是否在 intra vol gate 列表中。
+    pub fn is_in_vol_gate_list(&self, symbol: &str) -> bool {
+        Self::with_inner(|inner| Self::contains_normalized(&inner.vol_gate_symbols, symbol))
+    }
+
     /// 获取平仓列表
     pub fn get_dump_symbols(&self) -> Vec<String> {
         Self::with_inner(|inner| inner.dump_symbols.iter().cloned().collect())
@@ -337,6 +384,11 @@ impl SymbolList {
     /// 获取 UniMMR 算法平仓列表（fr/intra/cross 加载；mm 始终为空）
     pub fn get_unimmr_close_symbols(&self) -> Vec<String> {
         Self::with_inner(|inner| inner.unimmr_close_symbols.iter().cloned().collect())
+    }
+
+    /// 获取 intra vol gate 列表。
+    pub fn get_vol_gate_symbols(&self) -> Vec<String> {
+        Self::with_inner(|inner| inner.vol_gate_symbols.iter().cloned().collect())
     }
 
     /// 获取 online symbols（平仓 ∪ 正套/反套建仓列表）

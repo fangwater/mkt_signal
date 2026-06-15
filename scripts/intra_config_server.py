@@ -58,14 +58,17 @@ STRATEGY_BOOL_PARAM_KEYS = [
 
 REQUIRED_STRATEGY_PARAMS = {
     "enable_intra_funding_close_signal": "false",
+    "vol_gate_compare": "lt",
 }
 
 REQUIRED_STRATEGY_PARAM_COMMENTS = {
     "enable_intra_funding_close_signal": "是否启用 intra funding close 信号（命中 current FR MA close 后仍需通过 spread close gate）",
+    "vol_gate_compare": "vol gate symbol 的放行方向：lt 表示 vol < threshold 才允许开仓；gt 表示 vol > threshold 才允许开仓",
 }
 
 REQUIRED_STRATEGY_PARAM_AFTER = {
     "enable_intra_funding_close_signal": "spread_cancel_cooldown_ms",
+    "vol_gate_compare": "open_volatility_limit",
 }
 
 ROLLING_METRICS_SCRIPT_DIR = os.path.join(
@@ -757,7 +760,11 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
           <textarea id="sym-bwd" class="mono" placeholder="每行一个 symbol"></textarea>
         </div>
         <div>
-      <div class="hint">说明：intra 统一按基础 symbol 管理；支持逗号/空格/换行分隔，保存时会做大写和基础归一化。</div>
+          <h3>Vol Gate <span class="hint">intra_vol_gate_symbols</span></h3>
+          <textarea id="sym-vol-gate" class="mono" placeholder="每行一个 symbol"></textarea>
+        </div>
+        <div>
+      <div class="hint">说明：intra 统一按基础 symbol 管理；支持逗号/空格/换行分隔，保存时会做大写和基础归一化。只有 Vol Gate 列表内的 symbol 会应用 inline volatility gate。</div>
         </div>
       </div>
       <div id="sym-status" class="status"></div>
@@ -773,7 +780,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         </div>
       </div>
       <div class="hint">
-        `enable_tlen_cancel` 控制基于 tlen 的 open 撤单 trigger/query/cancel 链路；`enable_intra_funding_close_signal` 控制 current FR MA funding close 强平信号（仍需通过 spread close gate）；`spread_cancel_cooldown_ms` 控制 spread cancel 的去抖冷却(ms，默认 100，可设 0 关闭)。`enable_volatility_limit` 启用后，`open_volatility_limit` 使用 trade_signal 进程内 inline volatility 采样限制开仓；普通 intra 要求 vol <= threshold，okex-intra 反向，要求 vol > threshold。
+        `enable_tlen_cancel` 控制基于 tlen 的 open 撤单 trigger/query/cancel 链路；`enable_intra_funding_close_signal` 控制 current FR MA close 信号（仍需通过 spread close gate）；`spread_cancel_cooldown_ms` 控制 spread cancel 的去抖冷却(ms，默认 100，可设 0 关闭)。`enable_volatility_limit` 启用后，仅 Vol Gate symbol list 内的 symbol 会用 `open_volatility_limit` 做 inline volatility gate；`vol_gate_compare=lt` 表示 vol &lt; threshold 才允许开仓，`gt` 表示 vol &gt; threshold 才允许开仓。
       </div>
       <div id="strategy-table" class="kv-table"></div>
       <div id="strategy-vol-preview" class="status"></div>
@@ -1044,7 +1051,7 @@ __PER_SYMBOL_PANELS_HTML__
         const data = await fetchJson(`${apiUrl('open-volatility-preview')}?${queryParams({ percentile: raw })}`);
         setStatus(
           'strategy-vol-preview',
-          `Inline volatility gate: percentile=${data.percentile_text}，按 open symbol 在 trade_signal 内采样；窗口 ${data.window_capacity}，至少 ${data.min_samples} 个样本后生效。普通 intra 要求 vol <= threshold，okex-intra 反向要求 vol > threshold，不读取/写入 rolling_metrics_params。`,
+          `Inline volatility gate: percentile=${data.percentile_text}，按 open symbol 在 trade_signal 内采样；窗口 ${data.window_capacity}，至少 ${data.min_samples} 个样本后生效。仅 Vol Gate symbol list 内的 symbol 生效；比较方向由 vol_gate_compare 控制，不读取/写入 rolling_metrics_params。`,
           'ok'
         );
       } catch (err) {
@@ -1072,6 +1079,7 @@ __PER_SYMBOL_PANELS_HTML__
         document.getElementById('sym-unimmr-close').value = fromList(data.unimmr_close_symbols || []);
         document.getElementById('sym-fwd').value = fromList(data.fwd_trade_symbols || []);
         document.getElementById('sym-bwd').value = fromList(data.bwd_trade_symbols || []);
+        document.getElementById('sym-vol-gate').value = fromList(data.vol_gate_symbols || []);
         setStatus('sym-status', '读取完成');
       } catch (err) {
         setStatus('sym-status', `读取失败: ${err}`, false);
@@ -1088,6 +1096,7 @@ __PER_SYMBOL_PANELS_HTML__
           unimmr_close_symbols: toList(document.getElementById('sym-unimmr-close').value),
           fwd_trade_symbols: toList(document.getElementById('sym-fwd').value),
           bwd_trade_symbols: toList(document.getElementById('sym-bwd').value),
+          vol_gate_symbols: toList(document.getElementById('sym-vol-gate').value),
         };
         await fetchJson(apiUrl('symbol-lists'), {
           method: 'POST',
@@ -1107,6 +1116,7 @@ __PER_SYMBOL_PANELS_HTML__
       document.getElementById('sym-unimmr-close').value = fromList(defaults.unimmr_close_symbols || []);
       document.getElementById('sym-fwd').value = fromList(defaults.fwd_trade_symbols || []);
       document.getElementById('sym-bwd').value = fromList(defaults.bwd_trade_symbols || []);
+      document.getElementById('sym-vol-gate').value = fromList(defaults.vol_gate_symbols || []);
       setStatus('sym-status', '已载入默认列表');
     }
 
@@ -1506,7 +1516,7 @@ def read_symbol_list(rds, key: str) -> List[str]:
         decoded = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
         data = json.loads(decoded)
         if isinstance(data, list):
-            return normalize_symbol_list(data)
+            return normalize_symbol_list_for_intra(data)
     except Exception:
         pass
     return []
@@ -1645,6 +1655,10 @@ def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, st
         normalized["open_volatility_limit"] = normalize_percentile_param_text(
             normalized["open_volatility_limit"], "open_volatility_limit"
         )
+    if "vol_gate_compare" in normalized:
+        normalized["vol_gate_compare"] = normalize_vol_gate_compare_text(
+            normalized["vol_gate_compare"]
+        )
 
     force_taker = arb_hedge_force_taker_env_enabled()
     lazy_taker = arb_hedge_lazy_taker_env_enabled()
@@ -1719,6 +1733,25 @@ def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, st
     return normalized
 
 
+def normalize_vol_gate_compare_text(raw: Any) -> str:
+    text = str(raw).strip().lower()
+    aliases = {
+        "gt": "gt",
+        ">": "gt",
+        "greater": "gt",
+        "greater_than": "gt",
+        "above": "gt",
+        "lt": "lt",
+        "<": "lt",
+        "less": "lt",
+        "less_than": "lt",
+        "below": "lt",
+    }
+    if text in aliases:
+        return aliases[text]
+    raise ValueError(f"vol_gate_compare must be gt or lt: {raw}")
+
+
 def normalize_unimmr_control_lines(mapping: Dict[str, str]) -> Dict[str, str]:
     normalized = dict(mapping)
     if "unimmr_trigger_line" not in normalized or "unimmr_recover_line" not in normalized:
@@ -1773,6 +1806,10 @@ def build_unimmr_close_symbol_list_key(open_venue: str, hedge_venue: str) -> str
     return f"{env_name}:{base}" if env_name else base
 
 
+def build_vol_gate_symbol_list_key(open_venue: str, hedge_venue: str) -> str:
+    return f"intra_vol_gate_symbols:{make_unimmr_close_key_suffix(open_venue, hedge_venue)}"
+
+
 def resolve_venues(
     exchange: str,
     open_venue: Optional[str],
@@ -1811,12 +1848,16 @@ def get_symbol_defaults() -> Dict[str, Dict[str, List[str]]]:
     bwd_symbols = (
         list(getattr(SYMBOL_DEFAULTS_SRC, "BWD_SYMBOLS", [])) if SYMBOL_DEFAULTS_SRC else []
     )
+    vol_gate_symbols = (
+        list(getattr(SYMBOL_DEFAULTS_SRC, "VOL_GATE_SYMBOLS", [])) if SYMBOL_DEFAULTS_SRC else []
+    )
     for ex in SUPPORTED_EXCHANGES:
         defaults[ex] = {
             "dump_symbols": dump_symbols,
             "unimmr_close_symbols": [],
             "fwd_trade_symbols": fwd_symbols,
             "bwd_trade_symbols": bwd_symbols,
+            "vol_gate_symbols": vol_gate_symbols,
         }
     return defaults
 
@@ -2337,6 +2378,9 @@ class RequestHandler(BaseHTTPRequestHandler):
                 ),
                 "fwd_trade_symbols": read_symbol_list(rds, f"intra_fwd_trade_symbols:{key_suffix}"),
                 "bwd_trade_symbols": read_symbol_list(rds, f"intra_bwd_trade_symbols:{key_suffix}"),
+                "vol_gate_symbols": read_symbol_list(
+                    rds, build_vol_gate_symbol_list_key(open_venue, hedge_venue)
+                ),
             }
             self._send_json(200, data)
             return
@@ -2539,14 +2583,17 @@ class RequestHandler(BaseHTTPRequestHandler):
             raw_unimmr_close = payload.get("unimmr_close_symbols") or []
             raw_fwd = payload.get("fwd_trade_symbols") or []
             raw_bwd = payload.get("bwd_trade_symbols") or []
+            raw_vol_gate = payload.get("vol_gate_symbols") or []
             dump_symbols = normalize_symbol_list_for_intra(raw_dump)
             unimmr_close_symbols = normalize_symbol_list_for_intra(raw_unimmr_close)
             fwd_symbols = normalize_symbol_list_for_intra(raw_fwd)
             bwd_symbols = normalize_symbol_list_for_intra(raw_bwd)
+            vol_gate_symbols = normalize_symbol_list_for_intra(raw_vol_gate)
             raw_dump_len, raw_dump_sample = summarize_symbol_payload(raw_dump)
             raw_unimmr_close_len, raw_unimmr_close_sample = summarize_symbol_payload(raw_unimmr_close)
             raw_fwd_len, raw_fwd_sample = summarize_symbol_payload(raw_fwd)
             raw_bwd_len, raw_bwd_sample = summarize_symbol_payload(raw_bwd)
+            raw_vol_gate_len, raw_vol_gate_sample = summarize_symbol_payload(raw_vol_gate)
             print(
                 "[symbol-lists] exchange={} open={} hedge={} key_suffix={}".format(
                     exchange, open_v, hedge_v, key_suffix
@@ -2575,6 +2622,14 @@ class RequestHandler(BaseHTTPRequestHandler):
                     raw_bwd_len, len(bwd_symbols), raw_bwd_sample, bwd_symbols[:5]
                 )
             )
+            print(
+                "[symbol-lists] vol_gate raw={} norm={} sample_raw={} sample_norm={}".format(
+                    raw_vol_gate_len,
+                    len(vol_gate_symbols),
+                    raw_vol_gate_sample,
+                    vol_gate_symbols[:5],
+                )
+            )
             sys.stdout.flush()
 
             rds = self.server.context.redis_client
@@ -2595,6 +2650,10 @@ class RequestHandler(BaseHTTPRequestHandler):
                     f"intra_bwd_trade_symbols:{key_suffix}",
                     json.dumps(bwd_symbols, ensure_ascii=False),
                 )
+                rds.set(
+                    build_vol_gate_symbol_list_key(open_v, hedge_v),
+                    json.dumps(vol_gate_symbols, ensure_ascii=False),
+                )
             except Exception as exc:
                 self._send_error(500, f"redis write failed: {exc}")
                 return
@@ -2608,6 +2667,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                     "unimmr_close_count": len(unimmr_close_symbols),
                     "fwd_count": len(fwd_symbols),
                     "bwd_count": len(bwd_symbols),
+                    "vol_gate_count": len(vol_gate_symbols),
                 },
             )
             return

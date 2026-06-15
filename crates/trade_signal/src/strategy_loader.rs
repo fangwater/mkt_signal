@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use runtime_common::redis_client::{RedisClient, RedisSettings};
 use runtime_common::symbol_util::normalize_symbol_for_venue;
 
-use super::arb_decision::ArbDecision;
+use super::arb_decision::{ArbDecision, VolGateCompare};
 use super::mm_decision::MmDecision;
 use order_common::TradingVenue;
 
@@ -631,6 +631,10 @@ pub struct StrategyParams {
     #[serde(default = "default_open_volatility_limit")]
     pub open_volatility_limit: f64,
 
+    /// Intra vol gate symbol 的放行比较方向：gt 表示 vol > threshold，lt 表示 vol < threshold。
+    #[serde(default = "default_vol_gate_compare")]
+    pub vol_gate_compare: String,
+
     /// 是否启用 tradecount 限制下单（仅 MM；count.rolling(30,min_periods=25).mean() > threshold 才允许 open）
     #[serde(default = "default_enable_tradecount_limit")]
     pub enable_tradecount_limit: bool,
@@ -753,6 +757,9 @@ fn default_enable_volatility_limit() -> bool {
 fn default_open_volatility_limit() -> f64 {
     70.0
 }
+fn default_vol_gate_compare() -> String {
+    "lt".to_string()
+}
 fn default_enable_tradecount_limit() -> bool {
     false
 }
@@ -813,6 +820,7 @@ impl Default for StrategyParams {
             enable_environment_model: default_enable_environment_model(),
             enable_volatility_limit: default_enable_volatility_limit(),
             open_volatility_limit: default_open_volatility_limit(),
+            vol_gate_compare: default_vol_gate_compare(),
             enable_tradecount_limit: default_enable_tradecount_limit(),
             open_tradecount_limit: default_open_tradecount_limit(),
             enable_open_time_block: default_enable_open_time_block(),
@@ -1462,6 +1470,20 @@ impl StrategyParams {
             .and_then(|s| s.parse::<f64>().ok())
             .filter(|v| v.is_finite() && *v >= 0.0 && *v <= 100.0)
             .unwrap_or_else(default_open_volatility_limit);
+        let vol_gate_compare = hash_map
+            .get("vol_gate_compare")
+            .map(|raw| {
+                VolGateCompare::parse(raw)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "Redis hash '{}' vol_gate_compare 非法（仅支持 gt/lt）: {}",
+                            redis_key, raw
+                        )
+                    })
+                    .as_str()
+                    .to_string()
+            })
+            .unwrap_or_else(default_vol_gate_compare);
         let enable_tradecount_limit = match hash_map.get("enable_tradecount_limit") {
             Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
                 "true" | "1" | "yes" | "on" => true,
@@ -1632,6 +1654,7 @@ impl StrategyParams {
             enable_environment_model,
             enable_volatility_limit,
             open_volatility_limit,
+            vol_gate_compare,
             enable_tradecount_limit,
             open_tradecount_limit,
             enable_open_time_block,
@@ -1736,6 +1759,8 @@ impl StrategyParams {
             arb.enable_environment_model = self.enable_environment_model;
             arb.update_enable_volatility_limit(self.enable_volatility_limit);
             arb.update_open_volatility_limit(self.open_volatility_limit);
+            let compare = VolGateCompare::parse(&self.vol_gate_compare).unwrap_or_default();
+            arb.update_vol_gate_compare(compare);
             arb.return_model_service = return_model_service.clone();
             arb.environment_model_service = environment_model_service.clone();
             arb.environment_model_true_threshold = 0.0;
@@ -1818,7 +1843,7 @@ impl StrategyParams {
         );
 
         info!(
-            "✅ 策略参数已更新: amount={:.2}, arb_vol_band_scale={}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, hedge_window_scale_low={:.4}, hedge_window_scale_high={:.4}, order_interval_ms={}, enable_clock_shift_ms={}, open_orders_per_round={}, cooldown={}s, enable_return_score_cancel={}, return_score_buy_cancel_quantile={}, return_score_sell_cancel_quantile={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, spread_cancel_cooldown_ms={}, enable_intra_funding_close_signal={}, enable_return_score_adjust_hedge={}, enable_environment_model={}, enable_volatility_limit={}, open_volatility_limit={}, enable_tradecount_limit={}, open_tradecount_limit={}, enable_open_time_block={}, open_block_utc_time_range={}, return_model_service={}, environment_model_service={}",
+            "✅ 策略参数已更新: amount={:.2}, arb_vol_band_scale={}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, hedge_window_scale_low={:.4}, hedge_window_scale_high={:.4}, order_interval_ms={}, enable_clock_shift_ms={}, open_orders_per_round={}, cooldown={}s, enable_return_score_cancel={}, return_score_buy_cancel_quantile={}, return_score_sell_cancel_quantile={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, spread_cancel_cooldown_ms={}, enable_intra_funding_close_signal={}, enable_return_score_adjust_hedge={}, enable_environment_model={}, enable_volatility_limit={}, open_volatility_limit={}, vol_gate_compare={}, enable_tradecount_limit={}, open_tradecount_limit={}, enable_open_time_block={}, open_block_utc_time_range={}, return_model_service={}, environment_model_service={}",
             self.order_amount,
             self.vol_band_scale,
             self.open_buy_vol_scale,
@@ -1840,6 +1865,7 @@ impl StrategyParams {
             self.enable_environment_model,
             self.enable_volatility_limit,
             self.open_volatility_limit,
+            self.vol_gate_compare,
             self.enable_tradecount_limit,
             self.open_tradecount_limit,
             self.enable_open_time_block,
@@ -1901,6 +1927,12 @@ mod tests {
     fn test_open_volatility_limit_default_is_70() {
         let params = StrategyParams::default();
         assert!((params.open_volatility_limit - 70.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_vol_gate_compare_default_is_lt() {
+        let params = StrategyParams::default();
+        assert_eq!(params.vol_gate_compare, "lt");
     }
 
     #[test]

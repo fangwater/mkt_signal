@@ -31,6 +31,11 @@ class TestStrategyParamsSchema(unittest.TestCase):
             intra_cfg.STRATEGY_BOOL_PARAM_KEYS,
         )
 
+    def test_vol_gate_compare_is_required_strategy_param(self):
+        self.assertIn("vol_gate_compare", intra_cfg.DEFAULT_STRATEGY_PARAMS)
+        self.assertIn("vol_gate_compare", intra_cfg.STRATEGY_PARAM_COMMENTS)
+        self.assertIn("vol_gate_compare", intra_cfg.STRATEGY_PARAM_ORDER)
+
     def test_strategy_bool_params_normalize_on_save(self):
         normalized = intra_cfg.normalize_strategy_params_by_schema(
             {
@@ -38,18 +43,24 @@ class TestStrategyParamsSchema(unittest.TestCase):
                 "enable_tlen_cancel": "0",
                 "enable_environment_model": "yes",
                 "enable_volatility_limit": "",
+                "vol_gate_compare": ">",
             }
         )
         self.assertEqual(normalized["enable_intra_funding_close_signal"], "true")
         self.assertEqual(normalized["enable_tlen_cancel"], "false")
         self.assertEqual(normalized["enable_environment_model"], "true")
         self.assertEqual(normalized["enable_volatility_limit"], "false")
+        self.assertEqual(normalized["vol_gate_compare"], "gt")
 
     def test_strategy_bool_params_reject_invalid_text(self):
         with self.assertRaises(ValueError):
             intra_cfg.normalize_strategy_params_by_schema(
                 {"enable_intra_funding_close_signal": "maybe"}
             )
+
+    def test_vol_gate_compare_rejects_invalid_text(self):
+        with self.assertRaises(ValueError):
+            intra_cfg.normalize_strategy_params_by_schema({"vol_gate_compare": "eq"})
 
 
 if __name__ == "__main__":

@@ -4,10 +4,11 @@
 """
 将 intra（同所期现）交易对列表同步到 Redis 并打印（按 exchange 维度）。
 
-写入 4 个 Redis key（String 类型，JSON 数组）：
+写入 5 个 Redis key（String 类型，JSON 数组）：
   - intra_dump_symbols:{exchange}        - 平仓列表
   - intra_fwd_trade_symbols:{exchange}   - 正套建仓列表
   - intra_bwd_trade_symbols:{exchange}   - 反套建仓列表
+  - intra_vol_gate_symbols:{open}_{hedge} - 需要应用 inline vol gate 的建仓列表
   - {env_name}:intra_unimmr_close_symbols:{open_venue}_{hedge_venue}
                                             - UniMMR 算法平仓候选列表
 
@@ -82,6 +83,7 @@ def parse_args() -> argparse.Namespace:
 
 DUMP_SYMBOLS: List[str] = []
 UNIMMR_CLOSE_SYMBOLS: List[str] = []
+VOL_GATE_SYMBOLS: List[str] = []
 FWD_SYMBOLS: List[str] = [
     "BTCUSDT",
     "ETHUSDT",
@@ -167,6 +169,11 @@ def unimmr_close_key(env_name: str, open_venue: str, hedge_venue: str) -> str:
     return f"{env_name}:intra_unimmr_close_symbols:{suffix}" if env_name else f"intra_unimmr_close_symbols:{suffix}"
 
 
+def vol_gate_key(open_venue: str, hedge_venue: str) -> str:
+    suffix = f"{open_venue.strip().lower()}_{hedge_venue.strip().lower()}"
+    return f"{NAMESPACE}_vol_gate_symbols:{suffix}"
+
+
 def print_symbol_list(rds, key: str, title: str) -> None:
     print(f"\n{title} ({key}):")
     data = rds.get(key)
@@ -196,6 +203,7 @@ def validate_symbol_partition() -> bool:
     dump_set = {normalize_symbol(s) for s in DUMP_SYMBOLS if normalize_symbol(s)}
     fwd_set = {normalize_symbol(s) for s in FWD_SYMBOLS if normalize_symbol(s)}
     bwd_set = {normalize_symbol(s) for s in BWD_SYMBOLS if normalize_symbol(s)}
+    vol_gate_set = {normalize_symbol(s) for s in VOL_GATE_SYMBOLS if normalize_symbol(s)}
 
     conflicts = sorted(dump_set & (fwd_set | bwd_set))
     if conflicts:
@@ -205,6 +213,14 @@ def validate_symbol_partition() -> bool:
         )
         print("   " + ", ".join(conflicts), file=sys.stderr)
         return False
+    unknown_vol_gate = sorted(vol_gate_set - (fwd_set | bwd_set))
+    if unknown_vol_gate:
+        print(
+            "❌ 配置错误：以下交易对在 vol gate 列表中，但不在 fwd/bwd 建仓列表中:",
+            file=sys.stderr,
+        )
+        print("   " + ", ".join(unknown_vol_gate), file=sys.stderr)
+        return False
     return True
 
 
@@ -213,6 +229,7 @@ def sync_symbol_lists(rds, exchange: str, env_name: str, open_venue: str, hedge_
     fwd_key = f"{NAMESPACE}_fwd_trade_symbols:{exchange}"
     bwd_key = f"{NAMESPACE}_bwd_trade_symbols:{exchange}"
     unimmr_key = unimmr_close_key(env_name, open_venue, hedge_venue)
+    vol_key = vol_gate_key(open_venue, hedge_venue)
 
     rds.set(dump_key, json.dumps(DUMP_SYMBOLS, ensure_ascii=False))
     print(f"✅ 已写入 {len(DUMP_SYMBOLS)} 个交易对到 '{dump_key}'（平仓列表）")
@@ -228,7 +245,16 @@ def sync_symbol_lists(rds, exchange: str, env_name: str, open_venue: str, hedge_
         f"✅ 已写入 {len(UNIMMR_CLOSE_SYMBOLS)} 个交易对到 '{unimmr_key}'（UniMMR 平仓候选）"
     )
 
-    return len(DUMP_SYMBOLS) + len(FWD_SYMBOLS) + len(BWD_SYMBOLS) + len(UNIMMR_CLOSE_SYMBOLS)
+    rds.set(vol_key, json.dumps(VOL_GATE_SYMBOLS, ensure_ascii=False))
+    print(f"✅ 已写入 {len(VOL_GATE_SYMBOLS)} 个交易对到 '{vol_key}'（Vol Gate）")
+
+    return (
+        len(DUMP_SYMBOLS)
+        + len(FWD_SYMBOLS)
+        + len(BWD_SYMBOLS)
+        + len(UNIMMR_CLOSE_SYMBOLS)
+        + len(VOL_GATE_SYMBOLS)
+    )
 
 
 def main() -> int:
@@ -267,6 +293,7 @@ def main() -> int:
     print_symbol_list(rds, f"{NAMESPACE}_fwd_trade_symbols:{exchange}", "🟢 fwd_trade_symbols")
     print_symbol_list(rds, f"{NAMESPACE}_bwd_trade_symbols:{exchange}", "🔴 bwd_trade_symbols")
     print_symbol_list(rds, unimmr_close_key(env_name, open_venue, hedge_venue), "🟠 unimmr_close_symbols")
+    print_symbol_list(rds, vol_gate_key(open_venue, hedge_venue), "🟣 vol_gate_symbols")
     print()
     return 0
 

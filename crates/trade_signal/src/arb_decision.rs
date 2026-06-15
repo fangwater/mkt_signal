@@ -107,6 +107,42 @@ impl ArbSignalKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VolGateCompare {
+    GreaterThan,
+    LessThan,
+}
+
+impl VolGateCompare {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "gt" | ">" | "greater" | "greater_than" | "above" => Some(Self::GreaterThan),
+            "lt" | "<" | "less" | "less_than" | "below" => Some(Self::LessThan),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::GreaterThan => "gt",
+            Self::LessThan => "lt",
+        }
+    }
+
+    fn allows(self, current: f64, threshold: f64) -> bool {
+        match self {
+            Self::GreaterThan => current > threshold,
+            Self::LessThan => current < threshold,
+        }
+    }
+}
+
+impl Default for VolGateCompare {
+    fn default() -> Self {
+        Self::LessThan
+    }
+}
+
 fn funding_signal_sequence_label(signals: &[ArbSignalKind]) -> &'static str {
     match signals {
         [] => "-",
@@ -3966,7 +4002,6 @@ pub(crate) struct ArbSharedBootstrap {
 }
 
 pub(crate) struct ArbDecisionState {
-    pub mode: ArbMode,
     pub venues: VenuePair,
     pub open_factor_value_hub: Option<FactorValueHub>,
     pub hedge_factor_value_hub: Option<FactorValueHub>,
@@ -4002,11 +4037,12 @@ pub(crate) struct ArbDecisionState {
     pub enable_funding_open_filter: bool,
     pub enable_intra_funding_close_signal: bool,
     pub enable_environment_model: bool,
-    /// 是否启用 open vol 阈值 gate；默认语义：开仓时若 inline vol percentile 阈值
-    /// 已 warm up 且当前 vol 超阈值，则拦截开仓。okex-intra 反向，要求 vol > threshold 才放行。
+    /// 是否启用 open vol 阈值 gate；intra 只对 vol gate symbol list 内的 symbol 生效。
     pub enable_volatility_limit: bool,
     /// open vol 阈值采样使用的分位数（0-100）。
     pub open_volatility_limit: f64,
+    /// vol gate symbol 的放行比较方向。
+    pub vol_gate_compare: VolGateCompare,
     pub return_model_service: Option<String>,
     pub environment_model_service: Option<String>,
     pub environment_model_true_threshold: f64,
@@ -4095,9 +4131,8 @@ pub(crate) struct TlenCancelSummary {
 }
 
 impl ArbDecisionState {
-    pub fn new(mode: ArbMode, venues: VenuePair) -> Self {
+    pub fn new(_mode: ArbMode, venues: VenuePair) -> Self {
         Self {
-            mode,
             venues,
             open_factor_value_hub: None,
             hedge_factor_value_hub: None,
@@ -4127,6 +4162,7 @@ impl ArbDecisionState {
             enable_environment_model: true,
             enable_volatility_limit: true,
             open_volatility_limit: 70.0,
+            vol_gate_compare: VolGateCompare::default(),
             return_model_service: None,
             environment_model_service: None,
             environment_model_true_threshold: 0.0,
@@ -4211,20 +4247,16 @@ impl ArbDecisionState {
         );
     }
 
-    pub(crate) fn uses_okex_intra_volatility_open_rule(&self) -> bool {
-        self.mode == ArbMode::IntraArb
-            && matches!(
-                self.venues,
-                (TradingVenue::OkexMargin, TradingVenue::OkexFutures)
-            )
+    pub fn update_vol_gate_compare(&mut self, compare: VolGateCompare) {
+        self.vol_gate_compare = compare;
+        log::debug!(
+            "ArbDecision: vol_gate_compare updated compare={}",
+            self.vol_gate_compare.as_str()
+        );
     }
 
-    pub(crate) fn is_open_volatility_limited(&self, current: f64, threshold: f64) -> bool {
-        if self.uses_okex_intra_volatility_open_rule() {
-            current <= threshold
-        } else {
-            current > threshold
-        }
+    pub(crate) fn is_open_volatility_allowed(&self, current: f64, threshold: f64) -> bool {
+        self.vol_gate_compare.allows(current, threshold)
     }
 
     pub fn evaluate_close_side(
@@ -5421,10 +5453,12 @@ impl ArbDecisionState {
             }
         };
 
-        // Inline vol gate：threshold 来源是 thread_local store 里同 symbol、同 percentile
-        // 的 rolling sample。warming up 时直接拦截。默认只放行 vol <= threshold；
-        // okex-intra 反向，只放行 vol > threshold。
-        if self.enable_volatility_limit {
+        // Inline vol gate：仅对 intra_vol_gate_symbols 命中的 symbol 生效。
+        // threshold 来源是 thread_local store 里同 symbol、同 percentile 的 rolling sample；
+        // warming up 时直接拦截，比较方向由 vol_gate_compare 控制。
+        let apply_vol_gate = self.enable_volatility_limit
+            && super::symbol_list::SymbolList::instance().is_in_vol_gate_list(open_symbol_key);
+        if apply_vol_gate {
             let snapshot = snapshot_inline_volatility(
                 &vol_lookup.symbol_key,
                 open_volatility_factor,
@@ -5441,11 +5475,10 @@ impl ArbDecisionState {
                 self.record_intercept_summary("vol_warming_up");
                 return None;
             };
-            if self.is_open_volatility_limited(open_volatility_factor, threshold) {
-                let reason = if self.uses_okex_intra_volatility_open_rule() {
-                    "vol_below_threshold"
-                } else {
-                    "vol_limited"
+            if !self.is_open_volatility_allowed(open_volatility_factor, threshold) {
+                let reason = match self.vol_gate_compare {
+                    VolGateCompare::GreaterThan => "vol_not_above_threshold",
+                    VolGateCompare::LessThan => "vol_limited",
                 };
                 self.record_intercept_summary(reason);
                 return None;
@@ -6022,24 +6055,17 @@ mod hedge_offset_overrides_tests {
     }
 
     #[test]
-    fn okex_intra_volatility_gate_requires_vol_above_threshold() {
-        let state = fresh_state();
-        assert!(state.uses_okex_intra_volatility_open_rule());
-        assert!(state.is_open_volatility_limited(0.9, 1.0));
-        assert!(state.is_open_volatility_limited(1.0, 1.0));
-        assert!(!state.is_open_volatility_limited(1.1, 1.0));
-    }
+    fn volatility_gate_compare_controls_allowed_side() {
+        let mut state = fresh_state();
+        assert_eq!(state.vol_gate_compare, VolGateCompare::LessThan);
+        assert!(state.is_open_volatility_allowed(0.9, 1.0));
+        assert!(!state.is_open_volatility_allowed(1.0, 1.0));
+        assert!(!state.is_open_volatility_allowed(1.1, 1.0));
 
-    #[test]
-    fn non_okex_intra_volatility_gate_keeps_default_upper_limit() {
-        let state = ArbDecisionState::new(
-            ArbMode::IntraArb,
-            (TradingVenue::BinanceMargin, TradingVenue::BinanceFutures),
-        );
-        assert!(!state.uses_okex_intra_volatility_open_rule());
-        assert!(!state.is_open_volatility_limited(0.9, 1.0));
-        assert!(!state.is_open_volatility_limited(1.0, 1.0));
-        assert!(state.is_open_volatility_limited(1.1, 1.0));
+        state.update_vol_gate_compare(VolGateCompare::GreaterThan);
+        assert!(!state.is_open_volatility_allowed(0.9, 1.0));
+        assert!(!state.is_open_volatility_allowed(1.0, 1.0));
+        assert!(state.is_open_volatility_allowed(1.1, 1.0));
     }
 
     #[test]
