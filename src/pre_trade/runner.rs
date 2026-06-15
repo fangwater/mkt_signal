@@ -143,10 +143,13 @@ impl PreTrade {
         } else {
             0
         };
+        let idle_sleep = Duration::from_micros(500);
         let mut idle_spin_count = 0usize;
         info!(
-            "pre_trade reactor idle spin configured (enable_ipc_fast_poll={} iters={})",
-            fast_poll, idle_spin_iters
+            "pre_trade reactor idle spin configured (enable_ipc_fast_poll={} iters={} idle_sleep_us={})",
+            fast_poll,
+            idle_spin_iters,
+            idle_sleep.as_micros()
         );
 
         loop {
@@ -248,7 +251,8 @@ impl PreTrade {
 
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => break,
-                _ = tokio::task::yield_now() => {}
+                _ = tokio::task::yield_now(), if fast_poll => {}
+                _ = tokio::time::sleep(idle_sleep), if !fast_poll => {}
             }
         }
 
