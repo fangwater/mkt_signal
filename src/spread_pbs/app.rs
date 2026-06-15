@@ -19,7 +19,10 @@ use runtime_common::time_util::get_timestamp_us;
 use crate::spread_pbs::adapter::{
     create_adapter, BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
 };
-use crate::spread_pbs::binance::{binance_futures_mm_ws_enabled, ENV_BINANCE_FUTURES_MM_WS_MODE};
+use crate::spread_pbs::binance::{
+    binance_futures_mm_ws_enabled, ENV_BINANCE_FUTURES_MM_WS_LOCAL_IP,
+    ENV_BINANCE_FUTURES_MM_WS_MODE,
+};
 use crate::spread_pbs::latency::LatencyKll;
 use crate::spread_pbs::okex_derivatives::{
     build_okex_derivatives_subscribe_msgs, parse_okex_derivatives_frame, OKEX_PUBLIC_WS_URL,
@@ -29,10 +32,6 @@ use crate::spread_pbs::publisher::{
     SpreadPublisher, SpreadTradePublisher,
 };
 use crate::spread_pbs::ws::{run_public_ws, FrameHandler, WsLoopParams};
-use runtime_common::mkt_cfg::{
-    load_trade_engine_local_ip_config_preferring_trade_engine,
-    validate_binance_um_whitelist_ip_config,
-};
 
 const DEDUP_RESET_INTERVAL_US: i64 = 5 * 60 * 1_000_000;
 const ENV_ENABLE_TRADE: &str = "SPREAD_PBS_ENABLE_TRADE";
@@ -103,40 +102,30 @@ fn direct_derivatives_replacement_enabled(venue: TradingVenue) -> bool {
     )
 }
 
-async fn binance_futures_mm_ws_local_ip_override(venue: TradingVenue) -> Result<Option<String>> {
+fn binance_futures_mm_ws_local_ip_override(venue: TradingVenue) -> Option<String> {
     if venue != TradingVenue::BinanceFutures || !binance_futures_mm_ws_enabled() {
-        return Ok(None);
+        return None;
     }
 
-    let (local_ip_cfg, source) = load_trade_engine_local_ip_config_preferring_trade_engine()
-        .await
-        .context("load trade_engine local IP config for spread_pbs Binance futures MM WS mode")?;
-    validate_binance_um_whitelist_ip_config(
-        &local_ip_cfg.local_ips,
-        local_ip_cfg.binance_um_whitelist_ip.as_deref(),
-        false,
-        &source,
-        "spread_pbs",
-    );
-    let whitelist_ip = local_ip_cfg
-        .binance_um_whitelist_ip
+    let whitelist_ip = env::var(ENV_BINANCE_FUTURES_MM_WS_LOCAL_IP)
+        .ok()
         .as_deref()
         .map(str::trim)
         .filter(|ip| !ip.is_empty())
         .unwrap_or_else(|| {
             panic!(
-                "spread_pbs: {}=on requires binance_um_whitelist_ip in local trade_engine.toml",
-                ENV_BINANCE_FUTURES_MM_WS_MODE
+                "spread_pbs: {}=on requires {}",
+                ENV_BINANCE_FUTURES_MM_WS_MODE, ENV_BINANCE_FUTURES_MM_WS_LOCAL_IP
             )
         })
         .to_string();
     log::info!(
-        "spread_pbs[binance-futures] {}=on; using whitelist local_ip={} for both primary/secondary legs from {}",
+        "spread_pbs[binance-futures] {}=on; using {}={} for both primary/secondary legs",
         ENV_BINANCE_FUTURES_MM_WS_MODE,
-        whitelist_ip,
-        source
+        ENV_BINANCE_FUTURES_MM_WS_LOCAL_IP,
+        whitelist_ip
     );
-    Ok(Some(whitelist_ip))
+    Some(whitelist_ip)
 }
 
 fn env_enabled_or(name: &str, default: bool) -> bool {
@@ -273,7 +262,7 @@ impl SpreadPbsApp {
             venue_slug,
             adapter.name()
         );
-        let local_ip_override = binance_futures_mm_ws_local_ip_override(venue).await?;
+        let local_ip_override = binance_futures_mm_ws_local_ip_override(venue);
         let primary_local_ip = local_ip_override
             .clone()
             .unwrap_or_else(|| self.config.primary_local_ip.clone());
