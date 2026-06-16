@@ -15,7 +15,7 @@ use crate::pre_trade::signal_latency::record_signal_submit_latency;
 use crate::pre_trade::PersistChannel;
 use order_common::TradeRequestType;
 use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
-use order_common::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
+use order_common::{OrderQueryOrderUpdate, OrderQueryTradeUpdate, OrderSubmitSignalMeta};
 use order_common::{TradeEngineResponse, TradeEngineResponseMessage, TradeRequestKind};
 use rolling_common::arb_open_latency::record_arb_open_latency;
 use runtime_common::ipc_service_name::build_service_name;
@@ -32,12 +32,73 @@ const TRADE_RESP_HEADER_LEN: usize = 22;
 const TRADE_RESP_TAIL_LEN: usize = 33;
 const TRADE_ENG_SUBSCRIBER_MAX_BUFFER_SIZE: usize = 256;
 const TRADE_REQ_PUBLISH_SLOW_WARN_US: i64 = 50_000;
+const OPEN_ORDER_SLOW_TRACE_US: i64 = 500;
 
 fn trade_request_create_time_us(bytes: &Bytes) -> Option<i64> {
     if bytes.len() < 16 {
         return None;
     }
     Some(i64::from_le_bytes(bytes[8..16].try_into().ok()?))
+}
+
+fn log_open_order_slow_trace(
+    client_order_id: i64,
+    exchange: &str,
+    bytes_len: usize,
+    meta: &OrderSubmitSignalMeta,
+    publish_start_us: i64,
+    publish_done_us: i64,
+    result_status: &str,
+) {
+    if meta.signal_t <= 0 {
+        return;
+    }
+    let Some(signal_type) = SignalType::from_u32(meta.signal_kind as u32) else {
+        return;
+    };
+    if !matches!(signal_type, SignalType::ArbOpen) {
+        return;
+    }
+    let signal_to_submit_us = publish_start_us.saturating_sub(meta.signal_t);
+    if signal_to_submit_us < OPEN_ORDER_SLOW_TRACE_US {
+        return;
+    }
+    let signal_to_recv_us =
+        (meta.pre_trade_recv_t > 0).then(|| meta.pre_trade_recv_t.saturating_sub(meta.signal_t));
+    let recv_to_handle_us = (meta.pre_trade_recv_t > 0 && meta.pre_trade_handle_t > 0).then(|| {
+        meta.pre_trade_handle_t
+            .saturating_sub(meta.pre_trade_recv_t)
+    });
+    let handle_to_publish_start_us = (meta.pre_trade_handle_t > 0)
+        .then(|| publish_start_us.saturating_sub(meta.pre_trade_handle_t));
+    let mkt_to_signal_us = (meta.mkt_t > 0).then(|| meta.signal_t.saturating_sub(meta.mkt_t));
+    let mkt_to_submit_us = (meta.mkt_t > 0).then(|| publish_start_us.saturating_sub(meta.mkt_t));
+    info!(
+        "OpenOrderSlowTrace: signal_type={} client_order_id={} exchange={} venue={:?} symbol={} side={} order_type={:?} bytes_len={} threshold_us={} signal_ts={} pre_trade_recv_us={} pre_trade_handle_us={} publish_start_us={} publish_done_us={} signal_to_submit_us={} signal_to_recv_us={:?} recv_to_handle_us={:?} handle_to_publish_start_us={:?} publish_start_to_done_us={} mkt_ts={} mkt_to_signal_us={:?} mkt_to_submit_us={:?} result={}",
+        signal_type.as_str(),
+        client_order_id,
+        exchange,
+        meta.venue,
+        meta.symbol,
+        meta.side.as_str(),
+        meta.order_type,
+        bytes_len,
+        OPEN_ORDER_SLOW_TRACE_US,
+        meta.signal_t,
+        meta.pre_trade_recv_t,
+        meta.pre_trade_handle_t,
+        publish_start_us,
+        publish_done_us,
+        signal_to_submit_us,
+        signal_to_recv_us,
+        recv_to_handle_us,
+        handle_to_publish_start_us,
+        publish_done_us.saturating_sub(publish_start_us),
+        meta.mkt_t,
+        mkt_to_signal_us,
+        mkt_to_submit_us,
+        result_status
+    );
 }
 
 /// TradeEngHub 负责与多个 trade engine 进程进行双向通信
@@ -138,28 +199,42 @@ impl TradeEngHub {
     ) -> Result<()> {
         let publish_start_us = get_timestamp_us();
         let create_time_us = trade_request_create_time_us(bytes);
+        let mut submit_meta = None;
         if let Some(om) = MonitorChannel::try_order_manager() {
             // egress 单点：刷新 submit_t 的同时取出 signal 元数据，测度 signal→submit 延迟。
             let signal_meta = om
                 .borrow_mut()
                 .set_submit_time_and_signal_meta(client_order_id, publish_start_us);
-            if let Some((signal_t, kind)) = signal_meta {
-                if signal_t > 0 {
-                    if let Some(st) = SignalType::from_u32(kind as u32) {
-                        record_signal_submit_latency(st.as_str(), publish_start_us, signal_t);
+            if let Some(meta) = signal_meta {
+                if meta.signal_t > 0 {
+                    if let Some(st) = SignalType::from_u32(meta.signal_kind as u32) {
+                        record_signal_submit_latency(st.as_str(), publish_start_us, meta.signal_t);
                     }
-                    if kind == SignalType::ArbOpen as u8 {
+                    if meta.signal_kind == SignalType::ArbOpen as u8 {
                         record_arb_open_latency(
                             "pt_publish_start_minus_generation",
-                            publish_start_us.saturating_sub(signal_t),
+                            publish_start_us.saturating_sub(meta.signal_t),
                         );
                     }
                 }
+                submit_meta = Some(meta);
             }
         }
         let result = Self::publish_order_request(exchange, bytes);
         let publish_done_us = get_timestamp_us();
         let publish_cost_us = publish_done_us.saturating_sub(publish_start_us);
+        let result_status = if result.is_ok() { "ok" } else { "err" };
+        if let Some(meta) = submit_meta.as_ref() {
+            log_open_order_slow_trace(
+                client_order_id,
+                exchange,
+                bytes.len(),
+                meta,
+                publish_start_us,
+                publish_done_us,
+                result_status,
+            );
+        }
         let build_to_publish_done_us = create_time_us
             .filter(|create_time_us| *create_time_us > 0)
             .map(|create_time_us| publish_done_us.saturating_sub(create_time_us));
@@ -167,7 +242,6 @@ impl TradeEngHub {
             .map(|latency_us| latency_us >= TRADE_REQ_PUBLISH_SLOW_WARN_US)
             .unwrap_or(false);
         if publish_cost_us >= TRADE_REQ_PUBLISH_SLOW_WARN_US || build_to_publish_slow {
-            let result_status = if result.is_ok() { "ok" } else { "err" };
             warn!(
                 "TradeReqLatency: publish_slow client_order_id={} exchange={} bytes_len={} create_time_us={:?} publish_start_us={} publish_done_us={} publish_cost_us={} build_to_publish_done_us={:?} result={}",
                 client_order_id,

@@ -470,7 +470,7 @@ impl SignalListener {
                                     receive_us.saturating_sub(signal.generation_time),
                                 );
                             }
-                            handle_trade_signal(signal);
+                            handle_trade_signal(signal, receive_us);
                         }
                         Err(err) => warn!(
                             "failed to decode trade signal from channel {}: {}",
@@ -690,7 +690,7 @@ mod tests {
     }
 }
 
-fn handle_trade_signal(signal: TradeSignal) {
+fn handle_trade_signal(signal: TradeSignal, receive_us: i64) {
     if should_block_arb_signal_for_startup_net_gate(&signal.signal_type) {
         return;
     }
@@ -869,6 +869,8 @@ fn handle_trade_signal(signal: TradeSignal) {
                     open_ctx,
                     symbol,
                     pending_limit_prechecked,
+                    receive_us,
+                    handle_start_us,
                 );
                 record_arb_open_latency(
                     "pt_handle_strategy_total",

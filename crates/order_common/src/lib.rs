@@ -49,6 +49,19 @@ pub fn gate_text_from_client_order_id(client_order_id: i64) -> String {
     format!("t-{client_order_id}")
 }
 
+#[derive(Debug, Clone)]
+pub struct OrderSubmitSignalMeta {
+    pub signal_t: i64,
+    pub signal_kind: u8,
+    pub pre_trade_recv_t: i64,
+    pub pre_trade_handle_t: i64,
+    pub mkt_t: i64,
+    pub venue: TradingVenue,
+    pub symbol: String,
+    pub side: Side,
+    pub order_type: OrderType,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TimeInForce {
     GTC,
@@ -957,10 +970,20 @@ impl OrderManager {
         &mut self,
         order_id: i64,
         submit_time: i64,
-    ) -> Option<(i64, u8)> {
+    ) -> Option<OrderSubmitSignalMeta> {
         self.orders.get_mut(&order_id).map(|order| {
             order.set_submit_time(submit_time);
-            (order.timestamp.signal_t, order.timestamp.signal_kind)
+            OrderSubmitSignalMeta {
+                signal_t: order.timestamp.signal_t,
+                signal_kind: order.timestamp.signal_kind,
+                pre_trade_recv_t: order.timestamp.pre_trade_recv_t,
+                pre_trade_handle_t: order.timestamp.pre_trade_handle_t,
+                mkt_t: order.timestamp.mkt_t,
+                venue: order.venue,
+                symbol: order.symbol.clone(),
+                side: order.side,
+                order_type: order.order_type,
+            }
         })
     }
 
@@ -1073,6 +1096,8 @@ pub struct OrderTimeStamp {
     pub signal_t: i64, // 触发该订单动作的信号在 trade_signal 进程的生成时间(µs)；
     // 用于 egress 单点测度 signal→submit 延迟；无信号上下文(orphan 兜底)保持 0
     pub signal_kind: u8, // 触发该订单动作的信号类型(SignalType as u8)，0=未知/不计入测度
+    pub pre_trade_recv_t: i64, // pre_trade 从 signal IPC 收到该 open 信号的本地时间(µs)，0=未知
+    pub pre_trade_handle_t: i64, // pre_trade 开始处理该 open 信号的本地时间(µs)，0=未知
 }
 
 impl OrderTimeStamp {
@@ -1085,6 +1110,8 @@ impl OrderTimeStamp {
             mkt_t: 0,
             signal_t: 0,
             signal_kind: 0,
+            pre_trade_recv_t: 0,
+            pre_trade_handle_t: 0,
         }
     }
 }
@@ -1233,6 +1260,11 @@ impl Order {
     pub fn set_signal_meta(&mut self, signal_t: i64, signal_kind: u8) {
         self.timestamp.signal_t = signal_t;
         self.timestamp.signal_kind = signal_kind;
+    }
+
+    pub fn set_pre_trade_open_trace(&mut self, receive_t: i64, handle_t: i64) {
+        self.timestamp.pre_trade_recv_t = receive_t;
+        self.timestamp.pre_trade_handle_t = handle_t;
     }
 
     pub fn set_exchange_order_id(&mut self, exchange_order_id: i64) {

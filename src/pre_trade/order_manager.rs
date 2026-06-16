@@ -174,6 +174,8 @@ pub trait PreTradeOrderManagerRequestExt {
         signal_t: i64,
         signal_kind: u8,
         mkt_t: i64,
+        pre_trade_recv_t: i64,
+        pre_trade_handle_t: i64,
     ) -> Result<(&'static str, Bytes), String>;
 }
 
@@ -257,6 +259,8 @@ impl PreTradeOrderManagerRequestExt for OrderManager {
         signal_t: i64,
         signal_kind: u8,
         mkt_t: i64,
+        pre_trade_recv_t: i64,
+        pre_trade_handle_t: i64,
     ) -> Result<(&'static str, Bytes), String> {
         let Some(result) = self.create_order_with_mut(
             venue,
@@ -279,6 +283,9 @@ impl PreTradeOrderManagerRequestExt for OrderManager {
                 order.set_signal_meta(signal_t, signal_kind);
                 if mkt_t > 0 {
                     order.set_mkt_time(mkt_t);
+                }
+                if pre_trade_recv_t > 0 || pre_trade_handle_t > 0 {
+                    order.set_pre_trade_open_trace(pre_trade_recv_t, pre_trade_handle_t);
                 }
                 let exchange = order.venue.trade_engine_exchange();
                 order
@@ -931,6 +938,8 @@ mod tests {
                 123456,
                 7,
                 654321,
+                0,
+                0,
             )
             .expect("bybit margin open request should build");
 

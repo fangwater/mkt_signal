@@ -302,6 +302,9 @@ pub struct OpenSignalInput {
     pub mkt_ts: i64,
     // 触发该 open 动作的信号类型(SignalType as u8)，供 egress 测度 signal→submit 延迟分桶
     pub signal_type_u8: u8,
+    // pre_trade 本地收到/开始处理该 open 信号的时间(µs)，用于慢 open 分段日志。
+    pub pre_trade_recv_ts: i64,
+    pub pre_trade_handle_ts: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1277,6 +1280,8 @@ pub trait OpenStrategyCommon {
             input.create_ts,
             input.signal_type_u8,
             input.mkt_ts,
+            input.pre_trade_recv_ts,
+            input.pre_trade_handle_ts,
         ) {
             Ok(request) => request,
             Err(err) => {

@@ -40,7 +40,7 @@ impl ArbOpenStrategy {
 
     pub fn handle_arb_open_ctx(&mut self, ctx: ArbOpenCtx, pending_limit_prechecked: bool) {
         let symbol = ctx.get_opening_symbol();
-        self.handle_arb_open_ctx_with_symbol(ctx, symbol, pending_limit_prechecked);
+        self.handle_arb_open_ctx_with_symbol(ctx, symbol, pending_limit_prechecked, 0, 0);
     }
 
     pub fn handle_arb_open_ctx_with_symbol(
@@ -48,6 +48,8 @@ impl ArbOpenStrategy {
         ctx: ArbOpenCtx,
         symbol: String,
         pending_limit_prechecked: bool,
+        pre_trade_recv_ts: i64,
+        pre_trade_handle_ts: i64,
     ) {
         let close_ts = if ctx.hedge_timeout_us > 0 {
             let base_ts = if ctx.create_ts > 0 {
@@ -92,6 +94,8 @@ impl ArbOpenStrategy {
             close_ts,
             mkt_ts,
             signal_type_u8: SignalType::ArbOpen as u8,
+            pre_trade_recv_ts,
+            pre_trade_handle_ts,
         }) else {
             return;
         };

@@ -47,13 +47,13 @@ struct FastPollDispatchBudgets {
 impl FastPollDispatchBudgets {
     fn from_env() -> Self {
         Self {
-            signal: fast_poll_budget("PRE_TRADE_FAST_SIGNAL_BUDGET", 16),
-            trade_resp: fast_poll_budget("PRE_TRADE_FAST_TRADE_RESP_BUDGET", 16),
-            monitor_state: fast_poll_budget("PRE_TRADE_FAST_MONITOR_STATE_BUDGET", 16),
-            query_resp: fast_poll_budget("PRE_TRADE_FAST_QUERY_RESP_BUDGET", 16),
-            model_update: fast_poll_budget("PRE_TRADE_FAST_MODEL_UPDATE_BUDGET", 16),
-            period_strategy: fast_poll_budget("PRE_TRADE_FAST_PERIOD_STRATEGY_BUDGET", 16),
-            period_orphan: fast_poll_budget("PRE_TRADE_FAST_PERIOD_ORPHAN_BUDGET", 16),
+            signal: fast_poll_budget("PRE_TRADE_FAST_SIGNAL_BUDGET", 8),
+            trade_resp: fast_poll_budget("PRE_TRADE_FAST_TRADE_RESP_BUDGET", 8),
+            monitor_state: fast_poll_budget("PRE_TRADE_FAST_MONITOR_STATE_BUDGET", 8),
+            query_resp: fast_poll_budget("PRE_TRADE_FAST_QUERY_RESP_BUDGET", 8),
+            model_update: fast_poll_budget("PRE_TRADE_FAST_MODEL_UPDATE_BUDGET", 8),
+            period_strategy: fast_poll_budget("PRE_TRADE_FAST_PERIOD_STRATEGY_BUDGET", 8),
+            period_orphan: fast_poll_budget("PRE_TRADE_FAST_PERIOD_ORPHAN_BUDGET", 8),
         }
     }
 }

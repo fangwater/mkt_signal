@@ -224,6 +224,8 @@ impl ArbCloseStrategy {
             close_ts: 0,
             mkt_ts,
             signal_type_u8: SignalType::ArbClose as u8,
+            pre_trade_recv_ts: 0,
+            pre_trade_handle_ts: 0,
         });
         if init.is_none() {
             MonitorChannel::instance()

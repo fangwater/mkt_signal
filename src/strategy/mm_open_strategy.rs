@@ -57,6 +57,8 @@ impl MarketMakerOpenStrategy {
             close_ts: 0,
             mkt_ts: ctx.opening_leg.ts,
             signal_type_u8: SignalType::MMOpen as u8,
+            pre_trade_recv_ts: 0,
+            pre_trade_handle_ts: 0,
         });
     }
 
