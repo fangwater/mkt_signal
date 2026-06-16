@@ -29,12 +29,13 @@ impl MarketMakerOpenStrategy {
         }
     }
 
-    fn handle_mm_open_signal(&mut self, ctx: MmOpenCtx) {
+    pub fn handle_mm_open_ctx(&mut self, ctx: MmOpenCtx) {
         let _ = self.handle_open_signal_common(OpenSignalInput {
             signal_kind: "MMOpen",
             order_log_name: "MM开仓",
             order_rate_bucket: OrderRateBucket::MmOpen,
             opening_symbol: ctx.get_opening_symbol(),
+            opening_symbol_normalized: true,
             venue_u8: ctx.opening_leg.venue,
             side_u8: ctx.side,
             order_type_u8: ctx.order_type,
@@ -70,7 +71,7 @@ impl MarketMakerOpenStrategy {
     fn handle_signal(&mut self, signal: &TradeSignal) {
         match &signal.signal_type {
             SignalType::MMOpen => match MmOpenCtx::from_bytes(signal.context.clone()) {
-                Ok(ctx) => self.handle_mm_open_signal(ctx),
+                Ok(ctx) => self.handle_mm_open_ctx(ctx),
                 Err(err) => {
                     warn!(
                         "MarketMakerOpenStrategy: strategy_id={} decode MMOpen failed: {}",

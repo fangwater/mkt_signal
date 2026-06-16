@@ -48,7 +48,7 @@ const BITGET_DERIVATIVES_SERVICE: &str = "dat_pbs/bitget-futures/derivatives";
 const GATE_DERIVATIVES_SERVICE: &str = "dat_pbs/gate-futures/derivatives";
 const DEFAULT_NODE_PRE_TRADE_DERIVATIVES: &str = "pre_trade_derivatives";
 const ARB_STARTUP_NET_EXPOSURE_WARN_USDT: f64 = 500.0;
-const BASIC_STATE_REFRESH_MIN_INTERVAL_US: i64 = 100_000;
+const BASIC_STATE_REFRESH_MIN_INTERVAL_US: i64 = 5_000_000;
 
 // ==================== Helper Functions ====================
 
@@ -1062,6 +1062,10 @@ impl MonitorChannel {
     }
 
     pub fn drain_pending_state_updates() -> bool {
+        Self::drain_pending_state_updates_with_refresh().0
+    }
+
+    pub fn drain_pending_state_updates_with_refresh() -> (bool, bool) {
         let mut has_message = MONITOR_STATE_LISTENERS.with(|listeners| {
             let mut listeners = listeners.borrow_mut();
             match listeners.as_mut() {
@@ -1069,9 +1073,10 @@ impl MonitorChannel {
                 None => false,
             }
         });
+        let mut refreshed = false;
         let state_dirty = Self::basic_state_any_dirty();
         if state_dirty && (has_message || Self::basic_state_cache_present()) {
-            let refreshed = Self::refresh_basic_state_cache_if_due(false);
+            refreshed = Self::refresh_basic_state_cache_if_due(false);
             if refreshed {
                 has_message = true;
                 let risk_start_us = get_timestamp_us();
@@ -1083,7 +1088,7 @@ impl MonitorChannel {
                 );
             }
         }
-        has_message
+        (has_message, refreshed)
     }
 
     fn mark_basic_state_dirty() {

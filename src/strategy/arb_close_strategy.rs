@@ -202,6 +202,7 @@ impl ArbCloseStrategy {
             order_log_name: "ArbClose",
             order_rate_bucket: OrderRateBucket::ArbOpen,
             opening_symbol: symbol,
+            opening_symbol_normalized: true,
             venue_u8: ctx.opening_leg.venue,
             side_u8: ctx.side,
             order_type_u8: ctx.order_type,

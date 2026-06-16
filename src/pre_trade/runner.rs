@@ -32,7 +32,6 @@ const INTRA_BWD_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 const LEVERAGE_GUARD_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 const SNAPSHOT_QUERY_INTERVAL: Duration = Duration::from_secs(60);
 const EXPOSURE_TABLE_PRINT_INTERVAL: Duration = Duration::from_secs(10);
-const DEFAULT_DROP_OPEN_AFTER_SLOW_ROUND_US: i64 = 2_000;
 
 #[derive(Clone)]
 pub struct ParamRefreshConfig {
@@ -275,21 +274,6 @@ pub fn publish_snapshot_queries(config: &SnapshotQueryConfig) -> bool {
     published
 }
 
-fn open_drop_reason_from_elapsed(
-    source: &'static str,
-    elapsed_us: i64,
-    threshold_us: i64,
-) -> Option<OpenSignalDropReason> {
-    if threshold_us <= 0 || elapsed_us < threshold_us {
-        return None;
-    }
-    Some(OpenSignalDropReason {
-        source,
-        elapsed_us,
-        threshold_us,
-    })
-}
-
 fn select_slower_open_drop_reason(
     lhs: Option<OpenSignalDropReason>,
     rhs: Option<OpenSignalDropReason>,
@@ -400,34 +384,24 @@ impl PreTrade {
                 auto_collection.start_startup_and_daily_task();
             }
         }
-        let open_drop_threshold_us = if fast_poll {
-            std::env::var("PRE_TRADE_DROP_OPEN_AFTER_SLOW_ROUND_US")
-                .ok()
-                .and_then(|value| value.parse::<i64>().ok())
-                .filter(|value| *value >= 0)
-                .unwrap_or(DEFAULT_DROP_OPEN_AFTER_SLOW_ROUND_US)
-        } else {
-            0
-        };
         let mut next_param_refresh = Instant::now() + PARAM_REFRESH_INTERVAL;
         let mut next_intra_bwd_refresh = Instant::now() + INTRA_BWD_REFRESH_INTERVAL;
         let mut next_leverage_guard_refresh = Instant::now() + LEVERAGE_GUARD_REFRESH_INTERVAL;
         let mut next_snapshot_query = Instant::now();
         let mut next_auto_repay = Instant::now();
         let mut next_auto_collection = Instant::now();
-        let mut slow_previous_loop: Option<OpenSignalDropReason> = None;
         let mut last_loop_end_us = get_timestamp_us();
+        let mut pending_maintenance_open_drop_reason: Option<OpenSignalDropReason> = None;
         info!(
             "pre_trade signal throttle log started (interval={}s)",
             throttle_log_interval_secs
         );
         info!("pre_trade MM open order rate cleanup started (interval=10s window=60s)");
         info!(
-            "pre_trade param refresh configured (enable_ipc_fast_poll={} blocking_refresh={} async_background_refresh={} open_drop_threshold_us={} interval_s={})",
+            "pre_trade param refresh configured (enable_ipc_fast_poll={} blocking_refresh={} async_background_refresh={} interval_s={})",
             fast_poll,
             fast_poll && param_refresh.is_some(),
             !fast_poll && param_refresh.is_some(),
-            open_drop_threshold_us,
             PARAM_REFRESH_INTERVAL.as_secs()
         );
 
@@ -454,21 +428,28 @@ impl PreTrade {
 
         loop {
             let loop_start_us = get_timestamp_us();
-            let mut open_drop_reason = slow_previous_loop.take();
+            let mut open_drop_reason = pending_maintenance_open_drop_reason.take();
             let mut next_loop_open_drop_reason = None;
-            open_drop_reason = select_slower_open_drop_reason(
-                open_drop_reason,
-                open_drop_reason_from_elapsed(
-                    "reactor_gap",
-                    loop_start_us.saturating_sub(last_loop_end_us),
-                    open_drop_threshold_us,
-                ),
-            );
 
             let mut has_work = false;
             has_work |= TradeEngHub::drain_pending_responses();
 
-            has_work |= MonitorChannel::drain_pending_state_updates();
+            let monitor_refresh_start_us = get_timestamp_us();
+            let (monitor_has_work, basic_state_refreshed) =
+                MonitorChannel::drain_pending_state_updates_with_refresh();
+            has_work |= monitor_has_work;
+            if fast_poll && basic_state_refreshed {
+                let refresh_elapsed_us =
+                    get_timestamp_us().saturating_sub(monitor_refresh_start_us);
+                open_drop_reason = select_slower_open_drop_reason(
+                    open_drop_reason,
+                    Some(OpenSignalDropReason {
+                        source: "basic_state_refresh",
+                        elapsed_us: refresh_elapsed_us,
+                        threshold_us: 0,
+                    }),
+                );
+            }
 
             has_work |= QueryEngHub::drain_pending_responses();
 
@@ -662,15 +643,17 @@ impl PreTrade {
             }
 
             if fast_poll {
-                open_drop_reason = select_slower_open_drop_reason(
-                    open_drop_reason,
-                    open_drop_reason_from_elapsed(
-                        "before_signal",
-                        get_timestamp_us().saturating_sub(loop_start_us),
-                        open_drop_threshold_us,
-                    ),
-                );
-                has_work |= SignalChannel::drain_pending_with_open_drop(open_drop_reason);
+                let before_signal_us = get_timestamp_us();
+                let signal_has_work = SignalChannel::drain_pending_with_open_drop(open_drop_reason);
+                if signal_has_work {
+                    record_stage_latency(ReactorStage::ReactorGap, last_loop_end_us, loop_start_us);
+                    record_stage_latency(
+                        ReactorStage::BeforeSignal,
+                        loop_start_us,
+                        before_signal_us,
+                    );
+                }
+                has_work |= signal_has_work;
             } else {
                 has_work |= SignalChannel::drain_pending();
             }
@@ -776,14 +759,8 @@ impl PreTrade {
                 idle_spin_count = 0;
                 let loop_end_us = get_timestamp_us();
                 if fast_poll {
-                    slow_previous_loop = select_slower_open_drop_reason(
-                        next_loop_open_drop_reason,
-                        open_drop_reason_from_elapsed(
-                            "previous_loop",
-                            loop_end_us.saturating_sub(loop_start_us),
-                            open_drop_threshold_us,
-                        ),
-                    );
+                    record_stage_latency(ReactorStage::PreviousLoop, loop_start_us, loop_end_us);
+                    pending_maintenance_open_drop_reason = next_loop_open_drop_reason;
                 }
                 last_loop_end_us = loop_end_us;
                 continue;

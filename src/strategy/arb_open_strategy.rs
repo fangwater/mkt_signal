@@ -39,6 +39,16 @@ impl ArbOpenStrategy {
     }
 
     pub fn handle_arb_open_ctx(&mut self, ctx: ArbOpenCtx, pending_limit_prechecked: bool) {
+        let symbol = ctx.get_opening_symbol();
+        self.handle_arb_open_ctx_with_symbol(ctx, symbol, pending_limit_prechecked);
+    }
+
+    pub fn handle_arb_open_ctx_with_symbol(
+        &mut self,
+        ctx: ArbOpenCtx,
+        symbol: String,
+        pending_limit_prechecked: bool,
+    ) {
         let close_ts = if ctx.hedge_timeout_us > 0 {
             let base_ts = if ctx.create_ts > 0 {
                 ctx.create_ts
@@ -50,7 +60,6 @@ impl ArbOpenStrategy {
             0
         };
 
-        let symbol = ctx.get_opening_symbol();
         if let Some(venue) = TradingVenue::from_u8(ctx.opening_leg.venue) {
             MonitorChannel::instance().seed_close_inventory_if_absent(venue, &symbol);
         }
@@ -61,6 +70,7 @@ impl ArbOpenStrategy {
             order_log_name: "ArbOpen",
             order_rate_bucket: OrderRateBucket::ArbOpen,
             opening_symbol: symbol,
+            opening_symbol_normalized: true,
             venue_u8: ctx.opening_leg.venue,
             side_u8: ctx.side,
             order_type_u8: ctx.order_type,

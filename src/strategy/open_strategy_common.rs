@@ -273,6 +273,7 @@ pub struct OpenSignalInput {
     pub order_log_name: &'static str,
     pub order_rate_bucket: OrderRateBucket,
     pub opening_symbol: String,
+    pub opening_symbol_normalized: bool,
     pub venue_u8: u8,
     pub side_u8: u8,
     pub order_type_u8: u8,
@@ -824,7 +825,11 @@ pub trait OpenStrategyCommon {
         let mut precreate_stage_start_us: i64;
         let pre_order_gate_us: i64;
         let pre_balance_gate_us: i64;
-        let symbol = normalize_symbol_for_internal(&input.opening_symbol);
+        let symbol = if input.opening_symbol_normalized {
+            input.opening_symbol
+        } else {
+            normalize_symbol_for_internal(&input.opening_symbol)
+        };
         if symbol.is_empty() {
             warn!(
                 "{}: strategy_id={} empty symbol",

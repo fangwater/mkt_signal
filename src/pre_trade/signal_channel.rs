@@ -40,7 +40,7 @@ use std::collections::{BTreeMap, HashMap};
 
 thread_local! {
     static SIGNAL_CHANNEL: OnceCell<SignalChannel> = const { OnceCell::new() };
-    static SIGNAL_COUNTS: RefCell<HashMap<String, u64>> = RefCell::new(HashMap::new());
+    static SIGNAL_COUNTS: RefCell<[u64; SIGNAL_COUNT_BUCKETS]> = const { RefCell::new([0; SIGNAL_COUNT_BUCKETS]) };
 }
 
 /// 默认信号频道名称（与 trade_signal 的发布频道一致）
@@ -51,6 +51,7 @@ pub const DEFAULT_BACKWARD_CHANNEL: &str = "trade_query";
 
 const ARB_CLOSE_MIN_NOTIONAL_U: f64 = 25.0;
 const TAKER_DECISION_MODEL_OPEN_GATE_LOG_INTERVAL_US: i64 = 20_000_000;
+const SIGNAL_COUNT_BUCKETS: usize = 14;
 
 #[derive(Clone, Copy, Debug)]
 pub struct OpenSignalDropReason {
@@ -206,14 +207,55 @@ fn should_suppress_arb_open_inactive_warning(reason: &str) -> bool {
 }
 
 pub fn take_signal_counts() -> HashMap<String, u64> {
-    SIGNAL_COUNTS.with(|counts| std::mem::take(&mut *counts.borrow_mut()))
+    SIGNAL_COUNTS.with(|counts| {
+        let mut counts = counts.borrow_mut();
+        let mut snapshot = HashMap::new();
+        for signal_type in [
+            SignalType::ArbOpen,
+            SignalType::ArbCancel,
+            SignalType::ArbClose,
+            SignalType::MMOpen,
+            SignalType::MMCancel,
+            SignalType::MMHedge,
+            SignalType::MMCancelTrigger,
+            SignalType::ArbCancelTrigger,
+            SignalType::ArbHedge,
+            SignalType::ExecRequest,
+            SignalType::Exec,
+            SignalType::ExecPositionTarget,
+        ] {
+            let idx = signal_count_index(&signal_type);
+            let count = counts[idx];
+            if count > 0 {
+                snapshot.insert(signal_type.as_str().to_string(), count);
+                counts[idx] = 0;
+            }
+        }
+        snapshot
+    })
 }
 
 fn record_signal_count(signal_type: &SignalType) {
     SIGNAL_COUNTS.with(|counts| {
-        let mut counts = counts.borrow_mut();
-        *counts.entry(signal_type.as_str().to_string()).or_insert(0) += 1;
+        counts.borrow_mut()[signal_count_index(signal_type)] += 1;
     });
+}
+
+fn signal_count_index(signal_type: &SignalType) -> usize {
+    match signal_type {
+        SignalType::ArbOpen => 1,
+        SignalType::ArbCancel => 3,
+        SignalType::ArbClose => 4,
+        SignalType::MMOpen => 5,
+        SignalType::MMCancel => 6,
+        SignalType::MMHedge => 7,
+        SignalType::MMCancelTrigger => 8,
+        SignalType::ArbCancelTrigger => 9,
+        SignalType::ArbHedge => 10,
+        SignalType::ExecRequest => 11,
+        SignalType::Exec => 12,
+        SignalType::ExecPositionTarget => 13,
+    }
 }
 
 fn is_arb_signal_type(signal_type: &SignalType) -> bool {
@@ -632,13 +674,13 @@ fn handle_trade_signal(signal: TradeSignal) {
         return;
     }
 
-    let is_mm_mode = {
+    let current_is_mm_mode = || {
         let monitor = MonitorChannel::instance();
         monitor.open_venue() == monitor.hedge_venue()
     };
 
     match signal.signal_type {
-        SignalType::ArbOpen => match ArbOpenCtx::from_bytes(signal.context.clone()) {
+        SignalType::ArbOpen => match ArbOpenCtx::from_bytes(signal.context) {
             Ok(mut open_ctx) => {
                 let handle_start_us = get_timestamp_us();
                 let symbol = normalize_symbol_for_internal(&open_ctx.get_opening_symbol());
@@ -798,10 +840,18 @@ fn handle_trade_signal(signal: TradeSignal) {
                 let signal_amount = open_ctx.amount_value();
                 let signal_spread_rate = open_ctx.spread_rate;
                 let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-                let _ = strategy_mgr.borrow_mut().ensure_arb_hedge_strategy(&symbol);
+                {
+                    let mut mgr = strategy_mgr.borrow_mut();
+                    let _ = mgr.ensure_arb_hedge_strategy(&symbol);
+                }
                 let strategy_id = StrategyManager::generate_strategy_id();
                 let mut strategy = ArbOpenStrategy::new(strategy_id);
-                strategy.handle_arb_open_ctx(open_ctx, pending_limit_prechecked);
+                let log_symbol = symbol.clone();
+                strategy.handle_arb_open_ctx_with_symbol(
+                    open_ctx,
+                    symbol,
+                    pending_limit_prechecked,
+                );
                 record_arb_open_latency(
                     "pt_handle_strategy_total",
                     get_timestamp_us().saturating_sub(handle_start_us),
@@ -813,7 +863,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                         let from_key = String::from_utf8_lossy(&strategy.open_state().from_key);
                         debug!(
                             "🔔 收到 ArbOpen 信号: opening={} {:?} side={:?} price={:.6} hedging={} {:?} | amount={:.4} spread_rate={:.6} from_key='{}'",
-                            symbol, opening_venue, side, signal_price,
+                            log_symbol, opening_venue, side, signal_price,
                             hedging_symbol, hedging_venue,
                             signal_amount,
                             signal_spread_rate,
@@ -822,7 +872,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                     }
                     debug!(
                         "✅ ArbOpenStrategy: strategy_id={} {} 已创建并激活",
-                        strategy_id, symbol
+                        strategy_id, log_symbol
                     );
                     strategy_mgr.borrow_mut().insert(Box::new(strategy));
                 } else {
@@ -832,7 +882,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                     if !should_suppress_arb_open_inactive_warning(reason) {
                         warn!(
                             "⚠️ ArbOpen: strategy_id={} {} 未激活 reason={}",
-                            strategy_id, symbol, reason
+                            strategy_id, log_symbol, reason
                         );
                     }
                 }
@@ -1047,7 +1097,7 @@ fn handle_trade_signal(signal: TradeSignal) {
         SignalType::ArbCancelTrigger => {
             match ArbCancelTriggerCtx::from_bytes(signal.context.clone()) {
                 Ok(trigger_ctx) => {
-                    if is_mm_mode {
+                    if current_is_mm_mode() {
                         debug!("ArbCancelTrigger ignored: pre_trade is in MM mode");
                         return;
                     }
@@ -1205,11 +1255,11 @@ fn handle_trade_signal(signal: TradeSignal) {
             Err(err) => warn!("failed to decode ArbHedge context: {err}"),
         },
         SignalType::MMOpen => {
-            if !is_mm_mode {
+            if !current_is_mm_mode() {
                 debug!("MMOpen ignored: pre_trade is not in MM mode");
                 return;
             }
-            let Ok(mut open_ctx) = MmOpenCtx::from_bytes(signal.context.clone()) else {
+            let Ok(mut open_ctx) = MmOpenCtx::from_bytes(signal.context) else {
                 warn!("failed to decode MMOpen context");
                 return;
             };
@@ -1237,18 +1287,12 @@ fn handle_trade_signal(signal: TradeSignal) {
             }
 
             open_ctx.set_opening_symbol(&symbol);
-            let normalized_signal = TradeSignal::create(
-                SignalType::MMOpen,
-                signal.generation_time,
-                signal.handle_time,
-                open_ctx.to_bytes(),
-            );
             let strategy_mgr = MonitorChannel::instance().strategy_mgr();
             let _ = strategy_mgr.borrow_mut().ensure_mm_hedge_strategy(&symbol);
 
             let strategy_id = StrategyManager::generate_strategy_id();
             let mut strategy = MarketMakerOpenStrategy::new(strategy_id);
-            strategy.handle_signal(&normalized_signal);
+            strategy.handle_mm_open_ctx(open_ctx);
             if strategy.is_active() {
                 debug!("MMOpen: strategy activated id={}", strategy_id);
                 strategy_mgr.borrow_mut().insert(Box::new(strategy));
@@ -1259,7 +1303,7 @@ fn handle_trade_signal(signal: TradeSignal) {
         SignalType::MMCancelTrigger => match MmCancelTriggerCtx::from_bytes(signal.context.clone())
         {
             Ok(trigger_ctx) => {
-                if !is_mm_mode {
+                if !current_is_mm_mode() {
                     debug!("MMCancelTrigger ignored: pre_trade is not in MM mode");
                     return;
                 }
@@ -1364,7 +1408,7 @@ fn handle_trade_signal(signal: TradeSignal) {
         },
         SignalType::MMCancel => match MmCancelCtx::from_bytes(signal.context.clone()) {
             Ok(mut cancel_ctx) => {
-                if !is_mm_mode {
+                if !current_is_mm_mode() {
                     debug!("MMCancel ignored: pre_trade is not in MM mode");
                     return;
                 }
@@ -1441,7 +1485,7 @@ fn handle_trade_signal(signal: TradeSignal) {
         },
         SignalType::MMHedge => match MmHedgeCtx::from_bytes(signal.context.clone()) {
             Ok(mut hedge_ctx) => {
-                if !is_mm_mode {
+                if !current_is_mm_mode() {
                     debug!("MMHedge ignored: pre_trade is not in MM mode");
                     return;
                 }

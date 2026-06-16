@@ -58,6 +58,9 @@ impl StageLatency {
 #[derive(Clone, Copy, Debug)]
 pub enum ReactorStage {
     Periodic,
+    ReactorGap,
+    BeforeSignal,
+    PreviousLoop,
     MonitorRefreshBasicState,
     MonitorPendingRisk,
 }
@@ -66,6 +69,9 @@ impl ReactorStage {
     fn label(self) -> &'static str {
         match self {
             Self::Periodic => "periodic",
+            Self::ReactorGap => "reactor_gap",
+            Self::BeforeSignal => "before_signal",
+            Self::PreviousLoop => "previous_loop",
             Self::MonitorRefreshBasicState => "monitor_refresh_basic_state",
             Self::MonitorPendingRisk => "monitor_pending_risk",
         }
@@ -74,6 +80,9 @@ impl ReactorStage {
 
 struct ReactorLatencies {
     periodic: StageLatency,
+    reactor_gap: StageLatency,
+    before_signal: StageLatency,
+    previous_loop: StageLatency,
     monitor_refresh_basic_state: StageLatency,
     monitor_pending_risk: StageLatency,
 }
@@ -82,6 +91,9 @@ impl ReactorLatencies {
     fn new() -> Self {
         Self {
             periodic: StageLatency::new(ReactorStage::Periodic),
+            reactor_gap: StageLatency::new(ReactorStage::ReactorGap),
+            before_signal: StageLatency::new(ReactorStage::BeforeSignal),
+            previous_loop: StageLatency::new(ReactorStage::PreviousLoop),
             monitor_refresh_basic_state: StageLatency::new(ReactorStage::MonitorRefreshBasicState),
             monitor_pending_risk: StageLatency::new(ReactorStage::MonitorPendingRisk),
         }
@@ -90,6 +102,9 @@ impl ReactorLatencies {
     fn get_mut(&mut self, stage: ReactorStage) -> &mut StageLatency {
         match stage {
             ReactorStage::Periodic => &mut self.periodic,
+            ReactorStage::ReactorGap => &mut self.reactor_gap,
+            ReactorStage::BeforeSignal => &mut self.before_signal,
+            ReactorStage::PreviousLoop => &mut self.previous_loop,
             ReactorStage::MonitorRefreshBasicState => &mut self.monitor_refresh_basic_state,
             ReactorStage::MonitorPendingRisk => &mut self.monitor_pending_risk,
         }
