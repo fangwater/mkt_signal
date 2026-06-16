@@ -17,7 +17,7 @@ use crate::query_parsers::gate_order_status::{
 use crate::query_request::{QueryRequestMsg, QueryRequestType};
 use crate::query_response_handle::QueryExecOutcome;
 use crate::response_sink::{QueryResponseSink, TradeResponseSink};
-use crate::trade_request::{TradeRequestMsg, TradeRequestType};
+use crate::trade_request::{BinanceNewOrderParams, TradeRequestMsg, TradeRequestType};
 use crate::trade_response_handle::TradeExecOutcome;
 use account_common::bitget_auth::BitgetCredentials;
 use account_common::bybit_auth::BybitCredentials;
@@ -526,11 +526,25 @@ impl WsEndpointHandle {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
+struct TakerTraceMeta {
+    symbol: String,
+    side: &'static str,
+    order_type: &'static str,
+    quantity: String,
+    reduce_only: bool,
+    create_time_us: i64,
+    create_to_ipc_recv_us: Option<i64>,
+    ipc_recv_to_ws_send_done_us: Option<i64>,
+    create_to_ws_send_done_us: Option<i64>,
+}
+
+#[derive(Clone, Debug)]
 struct TradeInflightMeta {
     req_type: TradeRequestType,
     client_order_id: i64,
     ws_open_update_enabled: bool,
+    taker_trace: Option<TakerTraceMeta>,
     /// 单调时钟，`track_inflight`（即 `ws.send` 之后）时打点；用于本地 RTT。
     sent_at: std::time::Instant,
     /// 墙钟 epoch μs，与 `sent_at` 同时打点；用于跨时钟差值（uplink / downlink）。
@@ -563,6 +577,7 @@ pub struct TradeWsClient {
     exchange: Exchange,
     local_ip: IpAddr,
     url: String,
+    current_remote_addr: Option<SocketAddr>,
     connect_timeout_ms: u64,
     ping_interval_ms: u64,
     max_inflight: usize,
@@ -690,6 +705,7 @@ impl TradeWsClient {
             exchange,
             local_ip,
             url,
+            current_remote_addr: None,
             connect_timeout_ms,
             ping_interval_ms,
             max_inflight,
@@ -897,10 +913,11 @@ impl TradeWsClient {
                 }
                 res = Self::establish_connection_with(local_ip, &url, connect_timeout_ms, &ws_headers) => {
                     match res {
-                        Ok(mut ws) => {
+                        Ok((mut ws, remote_addr)) => {
+                            self.current_remote_addr = Some(remote_addr);
                             info!(
-                                "trade ws client id={} established connection to {} via {}",
-                                self.id, self.url, self.local_ip
+                                "trade ws client id={} established connection to {} via {} remote_addr={}",
+                                self.id, self.url, self.local_ip, remote_addr
                             );
 
                             let login_payload = if self.exchange == Exchange::Bitget {
@@ -997,6 +1014,7 @@ impl TradeWsClient {
                                         self.id, err
                                     );
                                     let _ = ws.close(None).await;
+                                    self.current_remote_addr = None;
                                     continue;
                                 }
                             }
@@ -1011,8 +1029,10 @@ impl TradeWsClient {
                                     format_error_chain(&err)
                                 );
                             }
+                            self.current_remote_addr = None;
                         }
                         Err(err) => {
+                            self.current_remote_addr = None;
                             let err_text = format_error_chain(&err);
                             self.trigger_engine_shutdown_on_binance_rate_limit(
                                 None,
@@ -1160,7 +1180,7 @@ impl TradeWsClient {
         url_str: &str,
         connect_timeout_ms: u64,
         headers: &[(String, String)],
-    ) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>> {
+    ) -> Result<(WebSocketStream<MaybeTlsStream<TcpStream>>, SocketAddr)> {
         let url = Url::parse(url_str).with_context(|| "invalid websocket url")?;
         let host = url
             .host_str()
@@ -1232,7 +1252,7 @@ impl TradeWsClient {
                 .map_err(|err| anyhow!("websocket handshake (ws): {}", format_ws_error(&err)))?
         };
 
-        Ok(ws_stream)
+        Ok((ws_stream, target))
     }
 
     async fn handle_send(
@@ -1334,16 +1354,26 @@ impl TradeWsClient {
                 payload.len()
             );
         }
-        if let Some(t0) = msg.ipc_recv {
-            let us = t0.elapsed().as_micros() as f64;
+        ws.send(Message::Text(payload)).await?;
+        let sent_at = std::time::Instant::now();
+        let sent_at_us = get_timestamp_us();
+        let ipc_recv_to_ws_send_done_us = msg
+            .ipc_recv
+            .map(|t0| sent_at.saturating_duration_since(t0).as_micros() as i64);
+        if let Some(us) = ipc_recv_to_ws_send_done_us {
             match classify_ws_action(msg.req_type) {
-                WsAction::New => self.lat_buckets.new.borrow_mut().push(us),
-                WsAction::Cancel => self.lat_buckets.cancel.borrow_mut().push(us),
+                WsAction::New => self.lat_buckets.new.borrow_mut().push(us as f64),
+                WsAction::Cancel => self.lat_buckets.cancel.borrow_mut().push(us as f64),
                 WsAction::Other => {}
             }
         }
-        ws.send(Message::Text(payload)).await?;
-        self.track_inflight(msg, transport_id);
+        self.track_inflight(
+            msg,
+            transport_id,
+            sent_at,
+            sent_at_us,
+            ipc_recv_to_ws_send_done_us,
+        );
         Ok(())
     }
 
@@ -1721,18 +1751,64 @@ impl TradeWsClient {
         id
     }
 
-    fn track_inflight(&mut self, msg: &TradeRequestMsg, transport_id: i64) {
+    fn track_inflight(
+        &mut self,
+        msg: &TradeRequestMsg,
+        transport_id: i64,
+        sent_at: std::time::Instant,
+        sent_at_us: i64,
+        ipc_recv_to_ws_send_done_us: Option<i64>,
+    ) {
         let ws_open_update_enabled = self.ws_open_update_enabled_for_request(msg);
+        let taker_trace =
+            Self::build_binance_um_taker_trace(msg, sent_at_us, ipc_recv_to_ws_send_done_us);
         self.inflight.insert(
             transport_id,
             TradeInflightMeta {
                 req_type: msg.req_type,
                 client_order_id: msg.client_order_id,
                 ws_open_update_enabled,
-                sent_at: std::time::Instant::now(),
-                sent_at_us: get_timestamp_us(),
+                taker_trace,
+                sent_at,
+                sent_at_us,
             },
         );
+    }
+
+    fn build_binance_um_taker_trace(
+        msg: &TradeRequestMsg,
+        sent_at_us: i64,
+        ipc_recv_to_ws_send_done_us: Option<i64>,
+    ) -> Option<TakerTraceMeta> {
+        if msg.req_type != TradeRequestType::BinanceWsNewUMOrder {
+            return None;
+        }
+        let params = BinanceNewOrderParams::from_bytes(&msg.params)?;
+        if !params.order_type.is_market() {
+            return None;
+        }
+        let create_to_ws_send_done_us = Self::wall_diff_us(sent_at_us, msg.create_time);
+        let create_to_ipc_recv_us = ipc_recv_to_ws_send_done_us
+            .and_then(|delta| Self::wall_diff_us(sent_at_us - delta, msg.create_time));
+        Some(TakerTraceMeta {
+            symbol: params.symbol,
+            side: params.side.as_str(),
+            order_type: params.order_type.as_str(),
+            quantity: params.quantity_qv.decimal_string(),
+            reduce_only: params.reduce_only,
+            create_time_us: msg.create_time,
+            create_to_ipc_recv_us,
+            ipc_recv_to_ws_send_done_us,
+            create_to_ws_send_done_us,
+        })
+    }
+
+    fn wall_diff_us(later_us: i64, earlier_us: i64) -> Option<i64> {
+        if later_us > 0 && earlier_us > 0 {
+            Some(later_us - earlier_us)
+        } else {
+            None
+        }
     }
 
     fn is_supported_ws_open_update_req_type(req_type: TradeRequestType) -> bool {
@@ -2654,8 +2730,9 @@ impl TradeWsClient {
             TradeRequestType::BinanceWsNewMarginOrder
                 | TradeRequestType::BinanceWsCancelMarginOrder
         );
+        let (order_id, order_status_u8, update_time_ms, executed_qty, response_price) =
+            binance_ws::extract_order_info(&resp);
         if resp.status == Some(200) && !is_binance_margin {
-            let (_, _, update_time_ms, _, _) = binance_ws::extract_order_info(&resp);
             if update_time_ms > 0 {
                 let ts_us = update_time_ms.saturating_mul(1000);
                 self.lat_buckets.record_resp(
@@ -2667,6 +2744,16 @@ impl TradeWsClient {
                 );
             }
         }
+        self.log_binance_taker_trace(
+            id,
+            &meta,
+            &resp,
+            order_id,
+            order_status_u8,
+            update_time_ms,
+            executed_qty,
+            response_price,
+        );
         self.publish_binance_ws_response(
             meta.client_order_id,
             meta.req_type,
@@ -2674,6 +2761,67 @@ impl TradeWsClient {
             &resp,
         );
         true
+    }
+
+    fn log_binance_taker_trace(
+        &self,
+        transport_id: i64,
+        meta: &TradeInflightMeta,
+        resp: &binance_ws::BinanceWsResponse,
+        order_id: i64,
+        order_status_u8: u8,
+        update_time_ms: i64,
+        executed_qty: f64,
+        response_price: f64,
+    ) {
+        let Some(trace) = meta.taker_trace.as_ref() else {
+            return;
+        };
+        let local_recv_us = get_timestamp_us();
+        let ws_rtt_us = meta.sent_at.elapsed().as_micros() as i64;
+        let exchange_update_us = (update_time_ms > 0).then(|| update_time_ms.saturating_mul(1000));
+        let ws_send_done_to_exchange_update_us =
+            exchange_update_us.and_then(|ts| Self::wall_diff_us(ts, meta.sent_at_us));
+        let exchange_update_to_local_recv_us =
+            exchange_update_us.and_then(|ts| Self::wall_diff_us(local_recv_us, ts));
+        let create_to_local_recv_us = Self::wall_diff_us(local_recv_us, trace.create_time_us);
+        let remote_addr = self
+            .current_remote_addr
+            .map(|addr| addr.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        info!(
+            "TakerOrderTrace: exchange=binance venue=um_ws endpoint_id={} local_ip={} remote_addr={} ws_url={} req_type={:?} client_order_id={} transport_id={} symbol={} side={} order_type={} quantity={} reduce_only={} status={} code={} order_id={} order_status_u8={} executed_qty={:.12} response_price={:.12} create_time_us={} ws_send_done_us={} response_local_us={} exchange_update_time_ms={} create_to_ipc_recv_us={:?} ipc_recv_to_ws_send_done_us={:?} create_to_ws_send_done_us={:?} ws_send_done_to_exchange_update_us={:?} exchange_update_to_local_recv_us={:?} ws_rtt_us={} create_to_local_recv_us={:?} error_msg={}",
+            self.id,
+            self.local_ip,
+            remote_addr,
+            self.url,
+            meta.req_type,
+            meta.client_order_id,
+            transport_id,
+            trace.symbol,
+            trace.side,
+            trace.order_type,
+            trace.quantity,
+            trace.reduce_only,
+            Self::binance_status(resp),
+            resp.error_code.unwrap_or(0),
+            order_id,
+            order_status_u8,
+            executed_qty,
+            response_price,
+            trace.create_time_us,
+            meta.sent_at_us,
+            local_recv_us,
+            update_time_ms,
+            trace.create_to_ipc_recv_us,
+            trace.ipc_recv_to_ws_send_done_us,
+            trace.create_to_ws_send_done_us,
+            ws_send_done_to_exchange_update_us,
+            exchange_update_to_local_recv_us,
+            ws_rtt_us,
+            create_to_local_recv_us,
+            resp.error_msg.as_deref().unwrap_or("")
+        );
     }
 
     fn binance_status(resp: &binance_ws::BinanceWsResponse) -> u16 {
