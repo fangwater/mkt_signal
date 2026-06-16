@@ -533,6 +533,7 @@ struct TakerTraceMeta {
     order_type: &'static str,
     quantity: String,
     reduce_only: bool,
+    ws_response_mode: &'static str,
     create_time_us: i64,
     create_to_ipc_recv_us: Option<i64>,
     ipc_recv_to_ws_send_done_us: Option<i64>,
@@ -1796,6 +1797,13 @@ impl TradeWsClient {
             order_type: params.order_type.as_str(),
             quantity: params.quantity_qv.decimal_string(),
             reduce_only: params.reduce_only,
+            ws_response_mode: if params.ws_response_full {
+                "FULL"
+            } else if params.ws_um_response_result {
+                "RESULT"
+            } else {
+                "ACK"
+            },
             create_time_us: msg.create_time,
             create_to_ipc_recv_us,
             ipc_recv_to_ws_send_done_us,
@@ -2790,7 +2798,7 @@ impl TradeWsClient {
             .map(|addr| addr.to_string())
             .unwrap_or_else(|| "unknown".to_string());
         info!(
-            "TakerOrderTrace: exchange=binance venue=um_ws endpoint_id={} local_ip={} remote_addr={} ws_url={} req_type={:?} client_order_id={} transport_id={} symbol={} side={} order_type={} quantity={} reduce_only={} status={} code={} order_id={} order_status_u8={} executed_qty={:.12} response_price={:.12} create_time_us={} ws_send_done_us={} response_local_us={} exchange_update_time_ms={} create_to_ipc_recv_us={:?} ipc_recv_to_ws_send_done_us={:?} create_to_ws_send_done_us={:?} ws_send_done_to_exchange_update_us={:?} exchange_update_to_local_recv_us={:?} ws_rtt_us={} create_to_local_recv_us={:?} error_msg={}",
+            "TakerOrderTrace: exchange=binance venue=um_ws endpoint_id={} local_ip={} remote_addr={} ws_url={} req_type={:?} client_order_id={} transport_id={} symbol={} side={} order_type={} quantity={} reduce_only={} ws_response_mode={} status={} code={} order_id={} order_status_u8={} executed_qty={:.12} response_price={:.12} create_time_us={} ws_send_done_us={} response_local_us={} exchange_update_time_ms={} create_to_ipc_recv_us={:?} ipc_recv_to_ws_send_done_us={:?} create_to_ws_send_done_us={:?} ws_send_done_to_exchange_update_us={:?} exchange_update_to_local_recv_us={:?} ws_rtt_us={} create_to_local_recv_us={:?} error_msg={}",
             self.id,
             self.local_ip,
             remote_addr,
@@ -2803,6 +2811,7 @@ impl TradeWsClient {
             trace.order_type,
             trace.quantity,
             trace.reduce_only,
+            trace.ws_response_mode,
             Self::binance_status(resp),
             resp.error_code.unwrap_or(0),
             order_id,

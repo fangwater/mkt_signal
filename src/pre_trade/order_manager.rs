@@ -595,7 +595,7 @@ impl PreTradeOrderRequestExt for Order {
                     reduce_only: self.reduce_only,
                     margin_buy: false,
                     ws_response_full: false,
-                    ws_um_response_result: use_binance_ws_um,
+                    ws_um_response_result: use_binance_ws_um && !self.order_type.is_market(),
                     ws_margin_limit_maker: false,
                 };
                 if !suppress_pre_submit_hot_path_logs() {
