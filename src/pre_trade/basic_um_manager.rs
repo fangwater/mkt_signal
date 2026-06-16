@@ -125,7 +125,19 @@ impl BasicUmManager {
 
     /// 返回当前全部持仓的快照副本。
     pub fn snapshot(&self) -> Vec<BasicUmPosition> {
-        self.positions.values().cloned().collect()
+        self.positions_iter().cloned().collect()
+    }
+
+    /// 返回当前全部持仓的只读迭代器，避免只读汇总路径 clone 整张表。
+    pub fn positions_iter(&self) -> impl Iterator<Item = &BasicUmPosition> {
+        self.positions.values()
+    }
+
+    /// 返回已缓存的 symbol 净张数，用于只读汇总路径避免按资产反查和重复归一化。
+    pub fn net_contracts_iter(&self) -> impl Iterator<Item = (&str, f32)> {
+        self.net_contracts_by_symbol
+            .iter()
+            .map(|(symbol, contracts)| (symbol.as_str(), *contracts))
     }
 
     /// 清空当前维护的全部 UM 持仓状态。

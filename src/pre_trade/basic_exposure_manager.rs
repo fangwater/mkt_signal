@@ -1,11 +1,11 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::HashMap;
 
 use log::debug;
 
 use crate::common::min_qty_table::MinQtyTable;
 use crate::pre_trade::{
     basic_balance_manager::BasicBalanceManager, basic_um_manager::BasicUmManager,
-    net_position::NetPosition, price_table::PriceEntry, symbol_mapper::SymbolMapper,
+    price_table::PriceEntry, symbol_mapper::SymbolMapper,
 };
 use runtime_common::exchange::Exchange;
 
@@ -44,57 +44,57 @@ impl BasicExposureManager {
     ) -> Vec<BasicExposureEntry> {
         let symbol_mapper = crate::pre_trade::symbol_mapper::create_symbol_mapper(exchange);
 
-        // 收集所有资产（balance 和 um）
-        let mut assets: BTreeSet<String> = BTreeSet::new();
-
+        let mut entries: HashMap<String, BasicExposureEntry> =
+            HashMap::with_capacity(balance_mgrs.iter().map(|mgr| mgr.len()).sum());
         for mgr in balance_mgrs {
-            for bal in mgr.snapshot() {
-                assets.insert(bal.symbol.to_uppercase());
+            for bal in mgr.balances_iter() {
+                let entry = entries
+                    .entry(bal.symbol.clone())
+                    .or_insert_with_key(|asset| BasicExposureEntry {
+                        asset: asset.clone(),
+                        balance: 0.0,
+                        borrowed: 0.0,
+                        interest: 0.0,
+                        um_position: 0.0,
+                        exposure: 0.0,
+                    });
+                entry.balance += bal.net();
+                entry.borrowed += bal.borrowed;
+                entry.interest += bal.cumulative_interest;
             }
         }
 
-        for (mgr, _) in um_mgrs {
-            for pos in mgr.snapshot() {
-                if let Some(base_asset) = symbol_mapper.inst_id_to_base_asset(&pos.inst_id) {
-                    assets.insert(base_asset);
+        for (mgr, min_qty) in um_mgrs {
+            for (symbol, net_contracts) in mgr.net_contracts_iter() {
+                if net_contracts == 0.0 {
+                    continue;
                 }
+                let Some(base_asset) = symbol_mapper.inst_id_to_base_asset(symbol) else {
+                    continue;
+                };
+                let ct_mult = min_qty.contract_multiplier(symbol);
+                let entry = entries
+                    .entry(base_asset.clone())
+                    .or_insert_with_key(|asset| BasicExposureEntry {
+                        asset: asset.clone(),
+                        balance: 0.0,
+                        borrowed: 0.0,
+                        interest: 0.0,
+                        um_position: 0.0,
+                        exposure: 0.0,
+                    });
+                entry.um_position += net_contracts as f64 * ct_mult;
             }
         }
 
-        let mut exposures: Vec<BasicExposureEntry> = assets
-            .into_iter()
-            .map(|asset| {
-                // 现货：净头寸（base qty）+ 借币/利息
-                let mut balance_pos = 0.0_f64;
-                let mut borrowed = 0.0_f64;
-                let mut interest = 0.0_f64;
-                for mgr in balance_mgrs {
-                    balance_pos += mgr.net_position(&asset, None);
-                    if let Some(b) = mgr.get(&asset) {
-                        borrowed += b.borrowed;
-                        interest += b.cumulative_interest;
-                    }
-                }
-
-                // 合约：折算成标的数量（base qty）
-                let um_symbol = symbol_mapper.balance_asset_to_um_symbol(&asset);
-                let mut um_position = 0.0_f64;
-                for (mgr, min_qty) in um_mgrs {
-                    um_position += mgr.net_position(&um_symbol, Some(min_qty));
-                }
-
-                BasicExposureEntry {
-                    asset,
-                    balance: balance_pos,
-                    borrowed,
-                    interest,
-                    um_position,
-                    exposure: balance_pos + um_position,
-                }
+        let mut exposures: Vec<BasicExposureEntry> = entries
+            .into_values()
+            .map(|mut entry| {
+                entry.exposure = entry.balance + entry.um_position;
+                entry
             })
             .collect();
-
-        exposures.sort_by(|a, b| a.asset.cmp(&b.asset));
+        exposures.sort_unstable_by(|lhs, rhs| lhs.asset.cmp(&rhs.asset));
         exposures
     }
 
@@ -169,7 +169,7 @@ impl BasicExposureManager {
     }
 
     /// 基于标记价格重新估值，更新总权益等 USDT 计价字段
-    pub fn revalue_with_prices(&mut self, price_map: &BTreeMap<String, PriceEntry>) {
+    pub fn revalue_with_price_lookup(&mut self, mut mark_price: impl FnMut(&str) -> Option<f64>) {
         let mut total_spot_value = 0.0;
         let mut total_borrowed_value = 0.0;
         let mut total_interest_value = 0.0;
@@ -181,7 +181,7 @@ impl BasicExposureManager {
             let mark = if asset == "USDT" {
                 1.0
             } else {
-                price_map.get(&symbol).map(|p| p.mark_price).unwrap_or(0.0)
+                mark_price(&symbol).unwrap_or(0.0)
             };
 
             if mark == 0.0 {
@@ -204,6 +204,11 @@ impl BasicExposureManager {
             "BasicExposureManager 重估完成: equity={:.2} borrowed={:.2} interest={:.2}",
             self.total_equity, self.total_borrowed_usd, self.total_interest_usd
         );
+    }
+
+    /// 基于标记价格重新估值，更新总权益等 USDT 计价字段
+    pub fn revalue_with_prices(&mut self, price_map: &HashMap<String, PriceEntry>) {
+        self.revalue_with_price_lookup(|symbol| price_map.get(symbol).map(|p| p.mark_price));
     }
 
     /// 根据资产名称查找敞口信息
@@ -296,7 +301,11 @@ impl BasicExposureManager {
 mod tests {
     use super::*;
     use crate::pre_trade::basic_balance_manager::BasicBalanceManager;
-    use mkt_parsers::msg::basic_account_msg::{BasicBalanceMsg, BasicBorrowInterestMsg};
+    use mkt_parsers::msg::basic_account_msg::{
+        BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg,
+    };
+    use std::hint::black_box;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn revalue_uses_net_balance_directly() {
@@ -311,7 +320,7 @@ mod tests {
 
         let mut exposure_mgr =
             BasicExposureManager::new_from_sources(Exchange::Binance, &[&balance_mgr], &[]);
-        let mut price_map = BTreeMap::new();
+        let mut price_map = HashMap::new();
         price_map.insert(
             "BTCUSDT".to_string(),
             PriceEntry {
@@ -327,5 +336,100 @@ mod tests {
         assert!((exposure_mgr.total_equity() - 680.0).abs() < 1e-12);
         assert!((exposure_mgr.total_borrowed_usd() - 300.0).abs() < 1e-12);
         assert!((exposure_mgr.total_interest_usd() - 20.0).abs() < 1e-12);
+    }
+
+    fn install_fake_exposure_sources(
+        assets: usize,
+    ) -> (BasicBalanceManager, BasicUmManager, MinQtyTable) {
+        let mut balance_mgr = BasicBalanceManager::new(Exchange::Binance);
+        let mut um_mgr = BasicUmManager::new(Exchange::Binance);
+        let min_qty_table = MinQtyTable::new(Exchange::Binance);
+
+        for idx in 0..assets {
+            let asset = format!("T{idx:04}");
+            let symbol = format!("{asset}USDT");
+            balance_mgr.apply_balance(&BasicBalanceMsg::create(
+                idx as i64,
+                asset.clone(),
+                1.0 + (idx % 17) as f64,
+            ));
+            if idx % 5 == 0 {
+                balance_mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
+                    idx as i64,
+                    asset.clone(),
+                    0.1,
+                    0.01,
+                ));
+            }
+
+            let side = if idx % 2 == 0 { 'L' } else { 'S' };
+            um_mgr.apply_position(&BasicPositionMsg::create(
+                idx as i64,
+                symbol,
+                side,
+                0.5 + (idx % 11) as f32,
+            ));
+        }
+
+        (balance_mgr, um_mgr, min_qty_table)
+    }
+
+    fn exposure_compute_bench_once(assets: usize, iterations: usize) {
+        let (balance_mgr, um_mgr, min_qty_table) = install_fake_exposure_sources(assets);
+        let balance_mgrs = [&balance_mgr];
+        let um_mgrs = [(&um_mgr, &min_qty_table)];
+
+        for _ in 0..100 {
+            let exposures = BasicExposureManager::compute_exposures_for_exchange(
+                Exchange::Binance,
+                &balance_mgrs,
+                &um_mgrs,
+            );
+            black_box(exposures);
+        }
+
+        let mut samples = Vec::with_capacity(iterations);
+        let mut total = Duration::ZERO;
+        let mut exposure_count = 0usize;
+        for _ in 0..iterations {
+            let start = Instant::now();
+            let exposures = BasicExposureManager::compute_exposures_for_exchange(
+                Exchange::Binance,
+                &balance_mgrs,
+                &um_mgrs,
+            );
+            let elapsed = start.elapsed();
+            exposure_count = exposures.len();
+            black_box(exposures);
+            total += elapsed;
+            samples.push(elapsed.as_nanos());
+        }
+        samples.sort_unstable();
+
+        let percentile = |pct: usize| -> u128 {
+            let idx = ((samples.len() - 1) * pct) / 100;
+            samples[idx]
+        };
+        let avg_ns = total.as_nanos() / iterations as u128;
+        println!(
+            "exposure_compute_bench assets={} exposures={} iterations={} avg={}ns p50={}ns p95={}ns p99={}ns min={}ns max={}ns",
+            assets,
+            exposure_count,
+            iterations,
+            avg_ns,
+            percentile(50),
+            percentile(95),
+            percentile(99),
+            samples[0],
+            samples[samples.len() - 1],
+        );
+    }
+
+    #[test]
+    #[ignore = "micro-benchmark; run with --ignored --nocapture"]
+    fn bench_compute_exposures_fake_data() {
+        for (assets, iterations) in [(20, 20_000), (100, 10_000), (300, 5_000), (1_000, 1_000)] {
+            exposure_compute_bench_once(assets, iterations);
+        }
     }
 }

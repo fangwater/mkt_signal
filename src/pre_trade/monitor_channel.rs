@@ -242,6 +242,7 @@ thread_local! {
     static MONITOR_STATE_LISTENERS: RefCell<Option<MonitorStateListeners>> = const { RefCell::new(None) };
     static BASIC_STATE_CACHE: RefCell<Option<(usize, BasicState)>> = const { RefCell::new(None) };
     static BASIC_STATE_DIRTY: Cell<bool> = const { Cell::new(true) };
+    static BASIC_STATE_PRICE_DIRTY: Cell<bool> = const { Cell::new(false) };
     static BASIC_STATE_LAST_REFRESH_US: Cell<i64> = const { Cell::new(0) };
     static PENDING_RISK_CHECKS: RefCell<PendingRiskChecks> = RefCell::new(PendingRiskChecks::default());
 }
@@ -876,7 +877,7 @@ impl DerivativesPriceListener {
 
                     let mut table = self.price_table.borrow_mut();
                     table.update_mark_price(&msg.symbol, msg.mark_price, msg.timestamp);
-                    MonitorChannel::mark_basic_state_dirty();
+                    MonitorChannel::mark_basic_state_price_dirty();
                 }
                 Err(err) => warn!("parse mark price failed: {err:?}"),
             },
@@ -884,7 +885,6 @@ impl DerivativesPriceListener {
                 Ok(msg) => {
                     let mut table = self.price_table.borrow_mut();
                     table.update_index_price(&msg.symbol, msg.index_price, msg.timestamp);
-                    MonitorChannel::mark_basic_state_dirty();
                 }
                 Err(err) => warn!("parse index price failed: {err:?}"),
             },
@@ -976,6 +976,14 @@ impl ArbStartupNetGate {
 struct BasicState {
     // asset -> (open_qty, hedge_qty), both in base units
     exposures: HashMap<String, (f64, f64)>,
+    // account scope -> non-USDT margin net balances by asset, in base units.
+    margin_balances_by_scope: HashMap<BasicAccountScope, HashMap<String, f64>>,
+    // account scope -> USDT net position.
+    usdt_equity_by_scope: HashMap<BasicAccountScope, f64>,
+    // account scope -> futures UPL that should be included in eq.
+    um_unrealized_equity_by_scope: HashMap<BasicAccountScope, f64>,
+    // AccountRisk actual equity overrides local mark-to-market eq for same-exchange unified paths.
+    account_risk_equity_override: Option<(BasicAccountScope, f64)>,
     // asset -> net exposure valued in USDT at cache-refresh time.
     exposure_usdt_by_asset: HashMap<String, f64>,
     // asset -> mark price in USDT at cache-refresh time.
@@ -984,6 +992,24 @@ struct BasicState {
     abs_total_exposure_usdt: f64,
     total_position_usdt: f64,
     total_um_unrealized_usdt: f64,
+}
+
+struct BasicStatePriceUpdate {
+    exposure_usdt_by_asset: HashMap<String, f64>,
+    mark_usdt_by_asset: HashMap<String, f64>,
+    total_equity_usdt: f64,
+    abs_total_exposure_usdt: f64,
+    total_position_usdt: f64,
+}
+
+impl BasicState {
+    fn apply_price_update(&mut self, update: BasicStatePriceUpdate) {
+        self.exposure_usdt_by_asset = update.exposure_usdt_by_asset;
+        self.mark_usdt_by_asset = update.mark_usdt_by_asset;
+        self.total_equity_usdt = update.total_equity_usdt;
+        self.abs_total_exposure_usdt = update.abs_total_exposure_usdt;
+        self.total_position_usdt = update.total_position_usdt;
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1045,7 +1071,7 @@ impl MonitorChannel {
                 None => false,
             }
         });
-        let state_dirty = BASIC_STATE_DIRTY.with(|dirty| dirty.get());
+        let state_dirty = Self::basic_state_any_dirty();
         if state_dirty && (has_message || Self::basic_state_cache_present()) {
             let refreshed = Self::refresh_basic_state_cache_if_due(false);
             if refreshed {
@@ -1064,6 +1090,19 @@ impl MonitorChannel {
 
     fn mark_basic_state_dirty() {
         BASIC_STATE_DIRTY.with(|dirty| dirty.set(true));
+        BASIC_STATE_PRICE_DIRTY.with(|dirty| dirty.set(false));
+    }
+
+    fn mark_basic_state_price_dirty() {
+        if BASIC_STATE_DIRTY.with(|dirty| dirty.get()) {
+            return;
+        }
+        BASIC_STATE_PRICE_DIRTY.with(|dirty| dirty.set(true));
+    }
+
+    fn basic_state_any_dirty() -> bool {
+        BASIC_STATE_DIRTY.with(|dirty| dirty.get())
+            || BASIC_STATE_PRICE_DIRTY.with(|dirty| dirty.get())
     }
 
     fn clear_basic_state_runtime_cache() {
@@ -1072,6 +1111,7 @@ impl MonitorChannel {
         });
         BASIC_STATE_LAST_REFRESH_US.with(|last| last.set(0));
         BASIC_STATE_DIRTY.with(|dirty| dirty.set(true));
+        BASIC_STATE_PRICE_DIRTY.with(|dirty| dirty.set(false));
         PENDING_RISK_CHECKS.with(|pending| {
             *pending.borrow_mut() = PendingRiskChecks::default();
         });
@@ -1107,6 +1147,7 @@ impl MonitorChannel {
             *cache.borrow_mut() = Some((key, state));
         });
         BASIC_STATE_DIRTY.with(|dirty| dirty.set(false));
+        BASIC_STATE_PRICE_DIRTY.with(|dirty| dirty.set(false));
         BASIC_STATE_LAST_REFRESH_US.with(|last| last.set(get_timestamp_us()));
         record_stage_latency(
             ReactorStage::MonitorRefreshBasicState,
@@ -1119,12 +1160,64 @@ impl MonitorChannel {
         BASIC_STATE_CACHE.with(|cache| cache.borrow().is_some())
     }
 
+    fn refresh_basic_state_price_cache() -> bool {
+        let refresh_start_us = get_timestamp_us();
+        let updated = Self::with_inner(|inner| {
+            let key = Self::basic_state_cache_key(inner);
+            let price_table = inner.price_table.borrow();
+            BASIC_STATE_CACHE.with(|cache| {
+                let mut cache = cache.borrow_mut();
+                let Some((cached_key, state)) = cache.as_mut() else {
+                    return false;
+                };
+                if *cached_key != key {
+                    return false;
+                }
+                let price_update = Self::compute_basic_state_price_update_from_parts(
+                    inner,
+                    &price_table,
+                    &state.exposures,
+                    &state.margin_balances_by_scope,
+                    &state.usdt_equity_by_scope,
+                    &state.um_unrealized_equity_by_scope,
+                    state.account_risk_equity_override,
+                );
+                state.apply_price_update(price_update);
+                true
+            })
+        });
+        if updated {
+            BASIC_STATE_PRICE_DIRTY.with(|dirty| dirty.set(false));
+            BASIC_STATE_LAST_REFRESH_US.with(|last| last.set(get_timestamp_us()));
+            record_stage_latency(
+                ReactorStage::MonitorRefreshBasicState,
+                refresh_start_us,
+                get_timestamp_us(),
+            );
+        }
+        updated
+    }
+
     fn refresh_basic_state_cache_if_due(force: bool) -> bool {
-        if !force && Self::basic_state_cache_present() {
+        if force {
+            Self::refresh_basic_state_cache();
+            return true;
+        }
+        if Self::basic_state_cache_present() {
             let now_us = get_timestamp_us();
             let last_us = BASIC_STATE_LAST_REFRESH_US.with(|last| last.get());
             if last_us > 0 && now_us.saturating_sub(last_us) < BASIC_STATE_REFRESH_MIN_INTERVAL_US {
                 return false;
+            }
+        }
+        let full_dirty = BASIC_STATE_DIRTY.with(|dirty| dirty.get());
+        let price_dirty = BASIC_STATE_PRICE_DIRTY.with(|dirty| dirty.get());
+        if !full_dirty {
+            if !price_dirty {
+                return false;
+            }
+            if Self::refresh_basic_state_price_cache() {
+                return true;
             }
         }
         Self::refresh_basic_state_cache();
@@ -1333,7 +1426,7 @@ impl MonitorChannel {
             inner.open_venue,
             inner.hedge_venue,
         ));
-        let price_snap = inner.price_table.borrow().snapshot();
+        let price_table = inner.price_table.borrow();
         let mut checked = 0usize;
         let mut rows: Vec<(String, f64, f64, f64)> = state
             .exposures
@@ -1357,11 +1450,7 @@ impl MonitorChannel {
                 continue;
             }
             let price_symbol = price_mapper.asset_to_price_symbol(&asset);
-            let price = price_snap
-                .get(&price_symbol)
-                .map(|entry| entry.mark_price)
-                .filter(|price| price.is_finite() && *price > 0.0)
-                .unwrap_or(0.0);
+            let price = price_table.mark_price(&price_symbol).unwrap_or(0.0);
             if price <= 0.0 {
                 warn!(
                     "Arb startup stable net check skipped: symbol={} asset={} open_qty={:.8} hedge_qty={:.8} net_qty={:.8} missing mark price, threshold_usdt={:.2} ready_ts={}",
@@ -2580,7 +2669,7 @@ impl MonitorChannel {
 
     /// 基于 open/hedge 两腿的基础管理器计算敞口与总量指标
     fn compute_basic_state(inner: &MonitorChannelInner) -> BasicState {
-        let price_snap = inner.price_table.borrow().snapshot();
+        let price_table = inner.price_table.borrow();
         // MM 模式下 open_venue == hedge_venue 时，两条腿实际指向同一账户数据，
         // 若同时统计会造成敞口翻倍；此时仅以 open 单边为准。
         let same_venue = inner.open_venue == inner.hedge_venue;
@@ -2620,19 +2709,6 @@ impl MonitorChannel {
             collect_leg_entries(&inner.hedge_leg)
         };
 
-        let price_mapper = create_symbol_mapper(Self::mark_price_exchange_for_venues(
-            inner.open_venue,
-            inner.hedge_venue,
-        ));
-        let mark_price_usdt = |asset: &str| -> f64 {
-            if asset.eq_ignore_ascii_case("USDT") {
-                1.0
-            } else {
-                let symbol = price_mapper.asset_to_price_symbol(asset);
-                price_snap.get(&symbol).map(|p| p.mark_price).unwrap_or(0.0)
-            }
-        };
-
         let mut exposures: HashMap<String, (f64, f64)> = HashMap::new();
         for entry in open_entries {
             if entry.exposure.abs() <= 1e-12 {
@@ -2649,17 +2725,13 @@ impl MonitorChannel {
             exposures.entry(asset).or_insert((0.0, 0.0)).1 += entry.exposure;
         }
 
-        // total_equity(eq) 口径：
-        // - 非 USDT 资产：从 balance manager 统计净资产估值
-        // - USDT：按交易所维度单独维护
-        // - Binance/Bitget 等 futures UPL 单独来自 BasicUmManager 并叠加
-        // - OKX/Gate unified 的 balance/equity 已隐含账户级合约影响，因此只保留 UPL 展示，不再重复叠加
-        let mut scope_equity_usdt: HashMap<BasicAccountScope, f64> = HashMap::new();
         let binance_mode = if inner.order_manager.borrow().binance_is_standard() {
             Some(BinanceAccountMode::Standard)
         } else {
             Some(BinanceAccountMode::Unified)
         };
+        let mut margin_balances_by_scope: HashMap<BasicAccountScope, HashMap<String, f64>> =
+            HashMap::new();
         for (idx, (venue, leg)) in [
             (inner.open_venue, &inner.open_leg),
             (inner.hedge_venue, &inner.hedge_leg),
@@ -2670,19 +2742,28 @@ impl MonitorChannel {
             if same_venue && idx == 1 {
                 continue;
             }
-            if let LegMgr::Margin { exchange, bal } = leg {
+            if let LegMgr::Margin { bal, .. } = leg {
                 let mgr = bal.borrow();
-                let mgr_ref: &BasicBalanceManager = &mgr;
-                let mut exposure_mgr = BasicExposureManager::new_from_sources(
-                    *exchange,
-                    std::slice::from_ref(&mgr_ref),
-                    &[],
-                );
-                exposure_mgr.revalue_with_prices(&price_snap);
                 let scope = scope_for_venue(*venue, binance_mode);
-                *scope_equity_usdt.entry(scope).or_insert(0.0) += exposure_mgr.total_equity();
+                let scope_balances = margin_balances_by_scope.entry(scope).or_default();
+                for bal in mgr.balances_iter() {
+                    let net = bal.net();
+                    if net.abs() <= 1e-12 {
+                        continue;
+                    }
+                    *scope_balances
+                        .entry(bal.symbol.to_ascii_uppercase())
+                        .or_insert(0.0) += net;
+                }
             }
         }
+
+        // total_equity(eq) 口径：
+        // - 非 USDT 资产：从 balance manager 统计净资产估值
+        // - USDT：按交易所维度单独维护
+        // - Binance/Bitget 等 futures UPL 单独来自 BasicUmManager 并叠加
+        // - OKX/Gate unified 的 balance/equity 已隐含账户级合约影响，因此只保留 UPL 展示，不再重复叠加
+        let mut usdt_equity_by_scope: HashMap<BasicAccountScope, f64> = HashMap::new();
         // 加上各账户 scope 的 USDT 净头寸（Binance standard 下 margin/futures 分离）
         for (scope, mgr) in &inner.usdt_mgrs {
             let net = mgr.borrow().net_usdt_position();
@@ -2690,10 +2771,11 @@ impl MonitorChannel {
                 continue;
             }
             debug!("USDT net position: scope={} net={:.6}", scope.as_str(), net);
-            *scope_equity_usdt.entry(*scope).or_insert(0.0) += net;
+            *usdt_equity_by_scope.entry(*scope).or_insert(0.0) += net;
         }
 
         let mut total_um_unrealized_usdt = 0.0;
+        let mut um_unrealized_equity_by_scope: HashMap<BasicAccountScope, f64> = HashMap::new();
         for (idx, (venue, leg)) in [
             (inner.open_venue, &inner.open_leg),
             (inner.hedge_venue, &inner.hedge_leg),
@@ -2709,27 +2791,100 @@ impl MonitorChannel {
                 total_um_unrealized_usdt += upl;
                 if !matches!(*exchange, Exchange::Gate | Exchange::Okex) {
                     let scope = scope_for_venue(*venue, binance_mode);
-                    *scope_equity_usdt.entry(scope).or_insert(0.0) += upl;
+                    *um_unrealized_equity_by_scope.entry(scope).or_insert(0.0) += upl;
                 }
             }
         }
 
         // 同交易所 unified intra 场景优先使用交易所账户级总权益，避免本地估值遗漏
         // unified 账户中的合约、期权或折算细节。跨交易所组合仍保留各 scope 的本地路径。
-        if let Some(scope) = exchange_scoped_total_equity_scope(inner.open_venue, inner.hedge_venue)
-        {
-            if let Some(risk) = inner.latest_account_risk.get(&scope) {
-                if risk.actual_equity_usd.is_finite() && risk.actual_equity_usd.abs() > f64::EPSILON
-                {
-                    scope_equity_usdt.insert(scope, risk.actual_equity_usd);
+        let account_risk_equity_override = Self::account_risk_equity_override_for_inner(inner);
+
+        let price_update = Self::compute_basic_state_price_update_from_parts(
+            inner,
+            &price_table,
+            &exposures,
+            &margin_balances_by_scope,
+            &usdt_equity_by_scope,
+            &um_unrealized_equity_by_scope,
+            account_risk_equity_override,
+        );
+
+        BasicState {
+            exposures,
+            margin_balances_by_scope,
+            usdt_equity_by_scope,
+            um_unrealized_equity_by_scope,
+            account_risk_equity_override,
+            exposure_usdt_by_asset: price_update.exposure_usdt_by_asset,
+            mark_usdt_by_asset: price_update.mark_usdt_by_asset,
+            total_equity_usdt: price_update.total_equity_usdt,
+            abs_total_exposure_usdt: price_update.abs_total_exposure_usdt,
+            total_position_usdt: price_update.total_position_usdt,
+            total_um_unrealized_usdt,
+        }
+    }
+
+    fn account_risk_equity_override_for_inner(
+        inner: &MonitorChannelInner,
+    ) -> Option<(BasicAccountScope, f64)> {
+        let scope = exchange_scoped_total_equity_scope(inner.open_venue, inner.hedge_venue)?;
+        let risk = inner.latest_account_risk.get(&scope)?;
+        (risk.actual_equity_usd.is_finite() && risk.actual_equity_usd.abs() > f64::EPSILON)
+            .then_some((scope, risk.actual_equity_usd))
+    }
+
+    fn mark_price_for_asset(
+        price_mapper: &dyn crate::pre_trade::symbol_mapper::SymbolMapper,
+        price_table: &PriceTable,
+        asset: &str,
+    ) -> f64 {
+        if asset.eq_ignore_ascii_case("USDT") {
+            1.0
+        } else {
+            let symbol = price_mapper.asset_to_price_symbol(asset);
+            price_table.mark_price(&symbol).unwrap_or(0.0)
+        }
+    }
+
+    fn compute_basic_state_price_update_from_parts(
+        inner: &MonitorChannelInner,
+        price_table: &PriceTable,
+        exposures: &HashMap<String, (f64, f64)>,
+        margin_balances_by_scope: &HashMap<BasicAccountScope, HashMap<String, f64>>,
+        usdt_equity_by_scope: &HashMap<BasicAccountScope, f64>,
+        um_unrealized_equity_by_scope: &HashMap<BasicAccountScope, f64>,
+        account_risk_equity_override: Option<(BasicAccountScope, f64)>,
+    ) -> BasicStatePriceUpdate {
+        let price_mapper = create_symbol_mapper(Self::mark_price_exchange_for_venues(
+            inner.open_venue,
+            inner.hedge_venue,
+        ));
+
+        let mut scope_equity_usdt: HashMap<BasicAccountScope, f64> = HashMap::new();
+        for (scope, balances) in margin_balances_by_scope {
+            for (asset, qty) in balances {
+                let mark = Self::mark_price_for_asset(&*price_mapper, price_table, asset);
+                if mark <= 0.0 {
+                    continue;
                 }
+                *scope_equity_usdt.entry(*scope).or_insert(0.0) += qty * mark;
             }
+        }
+        for (scope, usdt) in usdt_equity_by_scope {
+            *scope_equity_usdt.entry(*scope).or_insert(0.0) += *usdt;
+        }
+        for (scope, upl) in um_unrealized_equity_by_scope {
+            *scope_equity_usdt.entry(*scope).or_insert(0.0) += *upl;
+        }
+        if let Some((scope, actual_equity_usd)) = account_risk_equity_override {
+            scope_equity_usdt.insert(scope, actual_equity_usd);
         }
 
         let total_equity_usdt: f64 = scope_equity_usdt.values().sum();
         let mut exposure_usdt_by_asset = HashMap::new();
         let mut mark_usdt_by_asset = HashMap::new();
-        for (symbol, price) in &price_snap {
+        for (symbol, price) in price_table.iter() {
             if !(price.mark_price.is_finite() && price.mark_price > 0.0) {
                 continue;
             }
@@ -2737,13 +2892,14 @@ impl MonitorChannel {
                 mark_usdt_by_asset.insert(asset.to_uppercase(), price.mark_price);
             }
         }
+
         let mut total_position_usdt = 0.0;
         let mut abs_total_exposure_usdt = 0.0;
-        for (asset, (open_qty, hedge_qty)) in &exposures {
+        for (asset, (open_qty, hedge_qty)) in exposures {
             if asset == "USDT" {
                 continue;
             }
-            let mark = mark_price_usdt(asset);
+            let mark = Self::mark_price_for_asset(&*price_mapper, price_table, asset);
             if mark <= 0.0 {
                 continue;
             }
@@ -2754,14 +2910,12 @@ impl MonitorChannel {
             abs_total_exposure_usdt += net_exposure_usdt.abs();
         }
 
-        BasicState {
-            exposures,
+        BasicStatePriceUpdate {
             exposure_usdt_by_asset,
             mark_usdt_by_asset,
             total_equity_usdt,
             abs_total_exposure_usdt,
             total_position_usdt,
-            total_um_unrealized_usdt,
         }
     }
 
@@ -5139,6 +5293,33 @@ mod tests {
             .check_symbol_exposure("FILUSDT")
             .unwrap_err();
         assert!(err.contains("敞口比例超过限制"), "err={err}");
+    }
+
+    #[test]
+    fn price_dirty_refresh_revalues_cached_exposure_without_full_recompute() {
+        let (_, open_bal) = install_binance_arb_margin_open_fixture();
+        open_bal
+            .borrow_mut()
+            .apply_balance(&BasicBalanceMsg::create(0, "FIL".to_string(), 1.0));
+        MonitorChannel::refresh_basic_state_cache();
+
+        open_bal
+            .borrow_mut()
+            .apply_balance(&BasicBalanceMsg::create(1, "FIL".to_string(), 20.0));
+        MonitorChannel::with_inner(|inner| {
+            inner
+                .price_table
+                .borrow_mut()
+                .update_mark_price("FILUSDT", 200.0, 1);
+        });
+        MonitorChannel::mark_basic_state_price_dirty();
+
+        assert!(MonitorChannel::refresh_basic_state_price_cache());
+        let (exposures, _equity, abs_total_exposure, _position, _upl) =
+            MonitorChannel::instance().basic_state_snapshot();
+
+        assert_eq!(exposures.get("FIL").copied(), Some((1.0, 0.0)));
+        assert!((abs_total_exposure - 200.0).abs() < 1e-12);
     }
 
     #[test]

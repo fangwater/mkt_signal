@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 
 use anyhow::{anyhow, Context, Result};
 use log::{info, warn};
@@ -38,14 +38,14 @@ impl Default for PriceEntry {
 #[derive(Debug, Default)]
 pub struct PriceTable {
     client: Client,
-    entries: BTreeMap<String, PriceEntry>,
+    entries: HashMap<String, PriceEntry>,
 }
 
 impl PriceTable {
     pub fn new() -> Self {
         Self {
             client: Client::new(),
-            entries: BTreeMap::new(),
+            entries: HashMap::new(),
         }
     }
 
@@ -90,7 +90,7 @@ impl PriceTable {
             map.insert(symbol, entry);
         }
 
-        let mut entries: BTreeMap<String, PriceEntry> = interested
+        let mut entries: HashMap<String, PriceEntry> = interested
             .iter()
             .map(|sym| (sym.clone(), PriceEntry::new(sym.clone())))
             .collect();
@@ -145,7 +145,15 @@ impl PriceTable {
             .filter(|price| *price > 0.0)
     }
 
-    pub fn snapshot(&self) -> BTreeMap<String, PriceEntry> {
+    pub fn get(&self, symbol: &str) -> Option<&PriceEntry> {
+        self.entries.get(symbol)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &PriceEntry)> {
+        self.entries.iter()
+    }
+
+    pub fn snapshot(&self) -> HashMap<String, PriceEntry> {
         self.entries.clone()
     }
 }

@@ -18,7 +18,7 @@ use runtime_common::exchange::Exchange;
 use runtime_common::symbol_util::normalize_symbol_for_internal;
 use runtime_common::time_util::get_timestamp_us;
 use std::cell::OnceCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 use viz_common::resample::{
@@ -132,7 +132,7 @@ fn sum_position_usd(
     mark_price_exchange: Exchange,
     balance_mgrs: &[&BasicBalanceManager],
     um_mgrs: &[(&BasicUmManager, &MinQtyTable)],
-    price_snapshot: &BTreeMap<String, PriceEntry>,
+    price_snapshot: &HashMap<String, PriceEntry>,
 ) -> f64 {
     let price_mapper = create_symbol_mapper(mark_price_exchange);
     BasicExposureManager::compute_exposures_for_exchange(exchange, balance_mgrs, um_mgrs)
@@ -156,7 +156,7 @@ fn sum_position_usd(
 fn sum_spot_equity_usd(
     balance_mgr: &BasicBalanceManager,
     mark_price_exchange: Exchange,
-    price_snapshot: &BTreeMap<String, PriceEntry>,
+    price_snapshot: &HashMap<String, PriceEntry>,
 ) -> f64 {
     let exchange = balance_mgr.exchange();
     let price_mapper = create_symbol_mapper(mark_price_exchange);
@@ -189,7 +189,7 @@ fn sum_spot_equity_usd(
 fn sum_borrow_interest_usd(
     balance_mgr: &BasicBalanceManager,
     mark_price_exchange: Exchange,
-    price_snapshot: &BTreeMap<String, PriceEntry>,
+    price_snapshot: &HashMap<String, PriceEntry>,
 ) -> (f64, f64) {
     let exchange = balance_mgr.exchange();
     let price_mapper = create_symbol_mapper(mark_price_exchange);
@@ -257,7 +257,7 @@ fn compute_leg_risk_entry(
     venue: TradingVenue,
     mark_price_exchange: Exchange,
     include_usdt_scope: bool,
-    price_snapshot: &BTreeMap<String, PriceEntry>,
+    price_snapshot: &HashMap<String, PriceEntry>,
 ) -> PreTradeVenueRiskResampleEntry {
     let exchange = Exchange::from_str(venue.trade_engine_exchange()).unwrap_or(Exchange::Binance);
     let mut total_equity = 0.0_f64;

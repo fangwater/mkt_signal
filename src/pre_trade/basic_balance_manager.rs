@@ -94,14 +94,28 @@ impl BasicBalanceManager {
 
     /// 获取某个 symbol 的余额视图。
     pub fn get(&self, symbol: &str) -> Option<&BasicBalance> {
+        if symbol.bytes().all(|b| !b.is_ascii_lowercase()) {
+            return self.balances.get(symbol);
+        }
+
+        let upper = symbol.to_ascii_uppercase();
         self.balances
-            .get(&symbol.to_string().to_ascii_uppercase())
+            .get(&upper)
             .or_else(|| self.balances.get(symbol))
+    }
+
+    /// 返回当前全部余额的只读迭代器，避免只读汇总路径 clone 整张表。
+    pub fn balances_iter(&self) -> impl Iterator<Item = &BasicBalance> {
+        self.balances.values()
+    }
+
+    pub fn len(&self) -> usize {
+        self.balances.len()
     }
 
     /// 返回当前全部余额的快照副本。
     pub fn snapshot(&self) -> Vec<BasicBalance> {
-        self.balances.values().cloned().collect()
+        self.balances_iter().cloned().collect()
     }
 
     /// 获取指定币种的净余额头寸（base qty）。
@@ -109,13 +123,7 @@ impl BasicBalanceManager {
     /// 全交易所统一口径：BasicBalanceMsg.wallet 是 gross 钱包余额，借款/利息由
     /// BasicBorrowInterestMsg 维护，读取时统一计算净额。
     pub fn balance_position_of(&self, symbol: &str) -> f64 {
-        let mapped = symbol.to_ascii_uppercase();
-        let entry = self
-            .balances
-            .get(&mapped)
-            .or_else(|| self.balances.get(symbol));
-
-        entry.map(|b| b.net()).unwrap_or(0.0)
+        self.get(symbol).map(|b| b.net()).unwrap_or(0.0)
     }
 }
 
