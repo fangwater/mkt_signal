@@ -511,7 +511,7 @@ impl ResampleChannel {
         );
     }
 
-    fn print_exposure_table_snapshot(&self) {
+    pub fn print_exposure_table_snapshot(&self) {
         let mon = MonitorChannel::instance();
         let price_snapshot = mon.price_table().borrow().snapshot();
         let ts_ms = get_timestamp_us() / 1000;

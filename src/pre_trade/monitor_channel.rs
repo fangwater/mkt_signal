@@ -254,7 +254,6 @@ pub struct MonitorChannel;
 enum LegMgr {
     /// 现货/保证金腿，sz=标的资产数量
     Margin {
-        exchange: Exchange,
         bal: Rc<RefCell<BasicBalanceManager>>,
     },
     /// U 本位合约腿：Binance 按 contracts(mult=1) 处理，OKX/Gate 按 contracts(需合约乘数)处理
@@ -2489,7 +2488,6 @@ impl MonitorChannel {
         // 初始化开仓腿基础管理器
         let open_leg = if is_margin_venue(open_venue) {
             LegMgr::Margin {
-                exchange: open_exchange,
                 bal: Rc::new(RefCell::new(BasicBalanceManager::new(open_exchange))),
             }
         } else if is_futures_venue(open_venue) {
@@ -2512,7 +2510,6 @@ impl MonitorChannel {
         // 初始化对冲腿基础管理器
         let hedge_leg = if is_margin_venue(hedge_venue) {
             LegMgr::Margin {
-                exchange: hedge_exchange,
                 bal: Rc::new(RefCell::new(BasicBalanceManager::new(hedge_exchange))),
             }
         } else if is_futures_venue(hedge_venue) {
@@ -4464,7 +4461,6 @@ mod tests {
             min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Okex))),
         };
         let hedge_leg = LegMgr::Margin {
-            exchange: Exchange::Binance,
             bal: Rc::new(RefCell::new(BasicBalanceManager::new(Exchange::Binance))),
         };
 
@@ -4522,7 +4518,6 @@ mod tests {
             min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Okex))),
         };
         let hedge_leg = LegMgr::Margin {
-            exchange: Exchange::Binance,
             bal: Rc::new(RefCell::new(BasicBalanceManager::new(Exchange::Binance))),
         };
 
@@ -4576,7 +4571,6 @@ mod tests {
             min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Okex))),
         };
         let hedge_leg = LegMgr::Margin {
-            exchange: Exchange::Binance,
             bal: Rc::new(RefCell::new(BasicBalanceManager::new(Exchange::Binance))),
         };
 
@@ -4630,7 +4624,6 @@ mod tests {
             min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Binance))),
         };
         let hedge_leg = LegMgr::Margin {
-            exchange: Exchange::Binance,
             bal: Rc::new(RefCell::new(BasicBalanceManager::new(Exchange::Binance))),
         };
 
@@ -4713,7 +4706,6 @@ mod tests {
             min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Binance))),
         };
         let hedge_leg = LegMgr::Margin {
-            exchange: Exchange::Binance,
             bal: Rc::new(RefCell::new(BasicBalanceManager::new(Exchange::Binance))),
         };
 
@@ -4769,7 +4761,6 @@ mod tests {
         });
 
         let open_leg = LegMgr::Margin {
-            exchange: Exchange::Gate,
             bal: Rc::new(RefCell::new(BasicBalanceManager::new(Exchange::Gate))),
         };
         let hedge_leg = LegMgr::Futures {
@@ -4977,7 +4968,6 @@ mod tests {
     ) {
         let open_bal = Rc::new(RefCell::new(BasicBalanceManager::new(Exchange::Binance)));
         let open_leg = LegMgr::Margin {
-            exchange: Exchange::Binance,
             bal: open_bal.clone(),
         };
         let hedge_leg = LegMgr::Futures {
@@ -5038,10 +5028,7 @@ mod tests {
             .borrow_mut()
             .apply_balance(&BasicBalanceMsg::create(0, "FIL".to_string(), 1.0));
 
-        let open_leg = LegMgr::Margin {
-            exchange: Exchange::Binance,
-            bal: open_bal,
-        };
+        let open_leg = LegMgr::Margin { bal: open_bal };
         let hedge_leg = LegMgr::Futures {
             exchange: Exchange::Binance,
             um: Rc::new(RefCell::new(BasicUmManager::new(Exchange::Binance))),
@@ -5092,10 +5079,7 @@ mod tests {
             .borrow_mut()
             .apply_balance(&BasicBalanceMsg::create(0, "DOGE".to_string(), 10.0));
 
-        let open_leg = LegMgr::Margin {
-            exchange: Exchange::Binance,
-            bal: open_bal,
-        };
+        let open_leg = LegMgr::Margin { bal: open_bal };
         let hedge_leg = LegMgr::Futures {
             exchange: Exchange::Binance,
             um: Rc::new(RefCell::new(BasicUmManager::new(Exchange::Binance))),
@@ -5146,7 +5130,6 @@ mod tests {
         let mut bybit_bal = BasicBalanceManager::new(Exchange::Bybit);
         bybit_bal.apply_balance(&BasicBalanceMsg::create(0, "BTC".to_string(), 1.0));
         let open_leg = LegMgr::Margin {
-            exchange: Exchange::Bybit,
             bal: Rc::new(RefCell::new(bybit_bal)),
         };
         let hedge_leg = LegMgr::Futures {
@@ -5203,7 +5186,6 @@ mod tests {
         let mut okex_bal = BasicBalanceManager::new(Exchange::Okex);
         okex_bal.apply_balance(&BasicBalanceMsg::create(0, "BTC".to_string(), 1.0));
         let open_leg = LegMgr::Margin {
-            exchange: Exchange::Okex,
             bal: Rc::new(RefCell::new(okex_bal)),
         };
         let hedge_leg = LegMgr::Futures {
@@ -5260,7 +5242,6 @@ mod tests {
         let mut bitget_bal = BasicBalanceManager::new(Exchange::Bitget);
         bitget_bal.apply_balance(&BasicBalanceMsg::create(0, "BTC".to_string(), 1.0));
         let open_leg = LegMgr::Margin {
-            exchange: Exchange::Bitget,
             bal: Rc::new(RefCell::new(bitget_bal)),
         };
         let hedge_leg = LegMgr::Futures {
@@ -5317,7 +5298,6 @@ mod tests {
         let mut gate_bal = BasicBalanceManager::new(Exchange::Gate);
         gate_bal.apply_balance(&BasicBalanceMsg::create(0, "BTC".to_string(), 1.0));
         let open_leg = LegMgr::Margin {
-            exchange: Exchange::Gate,
             bal: Rc::new(RefCell::new(gate_bal)),
         };
         let hedge_leg = LegMgr::Futures {
@@ -6024,7 +6004,6 @@ mod tests {
             arb_mode: ArbMode::IntraArb,
             binance_account_mode: Some(BinanceAccountMode::Unified),
             open_leg: LegMgr::Margin {
-                exchange: Exchange::Bitget,
                 bal: Rc::new(RefCell::new(BasicBalanceManager::new(Exchange::Bitget))),
             },
             hedge_leg: LegMgr::Futures {
@@ -6081,7 +6060,6 @@ mod tests {
             arb_mode: ArbMode::IntraArb,
             binance_account_mode: Some(BinanceAccountMode::Unified),
             open_leg: LegMgr::Margin {
-                exchange: Exchange::Bitget,
                 bal: Rc::new(RefCell::new(BasicBalanceManager::new(Exchange::Bitget))),
             },
             hedge_leg: LegMgr::Futures {

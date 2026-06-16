@@ -23,7 +23,7 @@ pub mod reactor_latency;
 pub mod resample_channel;
 pub mod response_reconcile;
 mod runner;
-pub(crate) mod runtime_flags;
+pub mod runtime_flags;
 pub mod signal_channel;
 pub mod signal_latency;
 pub mod signal_throttle;
@@ -41,6 +41,9 @@ pub use persist_common::{
 };
 pub use query_eng_channel::QueryEngHub;
 pub use resample_channel::{ResampleChannel, DEFAULT_EXPOSURE_CHANNEL, DEFAULT_RISK_CHANNEL};
-pub use runner::PreTrade;
+pub use runner::{
+    publish_snapshot_queries, IntraBwdRefreshConfig, ParamRefreshConfig, PreTrade,
+    SnapshotQueryConfig,
+};
 pub use signal_channel::{SignalChannel, DEFAULT_BACKWARD_CHANNEL, DEFAULT_SIGNAL_CHANNEL};
 pub use trade_eng_channel::TradeEngHub;

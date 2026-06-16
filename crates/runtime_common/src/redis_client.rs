@@ -3,7 +3,7 @@ use std::fmt;
 use anyhow::{Context, Result};
 use log::info;
 use redis::aio::ConnectionManager;
-use redis::AsyncCommands;
+use redis::{AsyncCommands, Commands};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde::Serialize;
@@ -75,6 +75,11 @@ fn encode(raw: &str) -> String {
 pub struct RedisClient {
     settings: RedisSettings,
     manager: ConnectionManager,
+}
+
+pub struct BlockingRedisClient {
+    settings: RedisSettings,
+    connection: redis::Connection,
 }
 
 impl fmt::Debug for RedisClient {
@@ -182,5 +187,51 @@ impl RedisClient {
         // redis::AsyncCommands 的 hdel 可接受切片；忽略返回值
         let _: () = self.manager.hdel(full_key, fields).await?;
         Ok(())
+    }
+}
+
+impl fmt::Debug for BlockingRedisClient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BlockingRedisClient")
+            .field("host", &self.settings.host)
+            .field("port", &self.settings.port)
+            .field("db", &self.settings.db)
+            .finish()
+    }
+}
+
+impl BlockingRedisClient {
+    pub fn connect(settings: RedisSettings) -> Result<Self> {
+        let url = settings.connection_url();
+        let client = redis::Client::open(url.clone())?;
+        let connection = client
+            .get_connection()
+            .with_context(|| format!("连接 Redis 失败: {}", url))?;
+
+        info!(
+            "Redis blocking connected host={} port={} db={} prefix={:?}",
+            settings.host, settings.port, settings.db, settings.prefix
+        );
+
+        Ok(Self {
+            settings,
+            connection,
+        })
+    }
+
+    fn key(&self, key: &str) -> String {
+        self.settings.prefixed_key(key)
+    }
+
+    pub fn get_string(&mut self, key: &str) -> Result<Option<String>> {
+        let full_key = self.key(key);
+        let value: Option<String> = self.connection.get(full_key)?;
+        Ok(value)
+    }
+
+    pub fn hgetall_map(&mut self, key: &str) -> Result<HashMap<String, String>> {
+        let full_key = self.key(key);
+        let map: HashMap<String, String> = self.connection.hgetall(full_key)?;
+        Ok(map)
     }
 }

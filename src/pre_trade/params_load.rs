@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use order_common::TradingVenue;
-use runtime_common::redis_client::{RedisClient, RedisSettings};
+use runtime_common::redis_client::{BlockingRedisClient, RedisClient, RedisSettings};
 use runtime_common::symbol_util::normalize_symbol_for_venue;
 
 /// Redis Key 配置
@@ -101,6 +101,12 @@ fn risk_params_full_key(redis: &RedisSettings) -> String {
         Some(prefix) if !prefix.is_empty() => format!("{prefix}{REDIS_KEY_RISK_PARAMS}"),
         _ => REDIS_KEY_RISK_PARAMS.to_string(),
     }
+}
+
+fn raw_redis_settings_for_full_key(redis: &RedisSettings) -> RedisSettings {
+    let mut raw_settings = redis.clone();
+    raw_settings.prefix = None;
+    raw_settings
 }
 
 fn mm_max_pos_u_override_key(env_name: Option<&str>, open_venue: TradingVenue) -> Option<String> {
@@ -204,9 +210,7 @@ impl PreTradeParamsLoader {
         hedge_venue: TradingVenue,
     ) -> Result<()> {
         let risk_key = risk_params_full_key(redis);
-        let mut raw_settings = redis.clone();
-        raw_settings.prefix = None;
-        // 首次加载成功后缓存 settings + 完整 key，供后续应急写回（idempotent，set 失败忽略）。
+        let raw_settings = raw_redis_settings_for_full_key(redis);
         let _ = REDIS_WRITEBACK.set(RedisWritebackContext {
             settings: raw_settings.clone(),
             risk_params_full_key: risk_key.clone(),
@@ -227,9 +231,6 @@ impl PreTradeParamsLoader {
             redis.prefix.as_deref()
         );
 
-        // 同时尝试 MM、Exec 与 arb 的 per-symbol max_pos_u override key；
-        // MM: `<env>:<venue>:mm:max_pos_u`，Exec: `<env>:<venue>:exec:max_pos_u`，
-        // arb: `<env>:<open>:<hedge>:max_pos_u_overrides`。合并到同一个 overrides map。
         let mut max_pos_u_overrides: HashMap<(TradingVenue, String), f64> = HashMap::new();
         if let Some(override_key) = mm_max_pos_u_override_key(env_name, open_venue) {
             if let Some(raw) = client.get_string(&override_key).await? {
@@ -267,6 +268,85 @@ impl PreTradeParamsLoader {
             }
         }
 
+        self.apply_loaded_params(hash_map, max_pos_u_overrides);
+        Ok(())
+    }
+
+    pub fn load_from_redis_blocking(
+        &self,
+        redis: &RedisSettings,
+        env_name: Option<&str>,
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
+    ) -> Result<()> {
+        let risk_key = risk_params_full_key(redis);
+        let raw_settings = raw_redis_settings_for_full_key(redis);
+        let _ = REDIS_WRITEBACK.set(RedisWritebackContext {
+            settings: raw_settings.clone(),
+            risk_params_full_key: risk_key.clone(),
+        });
+        let mut client = BlockingRedisClient::connect(raw_settings)?;
+        let hash_map = client.hgetall_map(&risk_key)?;
+        if hash_map.is_empty() {
+            anyhow::bail!(
+                "risk params hash not found or empty: key='{}' (prefix={:?})",
+                risk_key,
+                redis.prefix.as_deref()
+            );
+        }
+
+        debug!(
+            "risk params loaded from redis key='{}' (prefix={:?})",
+            risk_key,
+            redis.prefix.as_deref()
+        );
+
+        let mut max_pos_u_overrides: HashMap<(TradingVenue, String), f64> = HashMap::new();
+        if let Some(override_key) = mm_max_pos_u_override_key(env_name, open_venue) {
+            if let Some(raw) = client.get_string(&override_key)? {
+                let parsed = parse_max_pos_u_overrides(&raw, open_venue, &override_key);
+                debug!(
+                    "max_pos_u overrides loaded key='{}' symbols={}",
+                    override_key,
+                    parsed.len()
+                );
+                max_pos_u_overrides.extend(parsed);
+            }
+        }
+        for venue in [open_venue, hedge_venue] {
+            if let Some(override_key) = exec_max_pos_u_override_key(env_name, venue) {
+                if let Some(raw) = client.get_string(&override_key)? {
+                    let parsed = parse_max_pos_u_overrides(&raw, venue, &override_key);
+                    debug!(
+                        "exec max_pos_u overrides loaded key='{}' symbols={}",
+                        override_key,
+                        parsed.len()
+                    );
+                    max_pos_u_overrides.extend(parsed);
+                }
+            }
+        }
+        if let Some(override_key) = arb_max_pos_u_override_key(env_name, open_venue, hedge_venue) {
+            if let Some(raw) = client.get_string(&override_key)? {
+                let parsed = parse_max_pos_u_overrides(&raw, open_venue, &override_key);
+                debug!(
+                    "arb max_pos_u overrides loaded key='{}' symbols={}",
+                    override_key,
+                    parsed.len()
+                );
+                max_pos_u_overrides.extend(parsed);
+            }
+        }
+
+        self.apply_loaded_params(hash_map, max_pos_u_overrides);
+        Ok(())
+    }
+
+    fn apply_loaded_params(
+        &self,
+        hash_map: HashMap<String, String>,
+        max_pos_u_overrides: HashMap<(TradingVenue, String), f64>,
+    ) {
         let parse_f64 =
             |k: &str| -> Option<f64> { hash_map.get(k).and_then(|v| v.parse::<f64>().ok()) };
         let parse_i64 =
@@ -425,8 +505,6 @@ impl PreTradeParamsLoader {
                 data.exec_order_rate_limit_10s
             );
         });
-
-        Ok(())
     }
 
     /// 启动后台刷新任务（固定 60 秒间隔）

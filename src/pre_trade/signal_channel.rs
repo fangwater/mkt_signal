@@ -52,6 +52,13 @@ pub const DEFAULT_BACKWARD_CHANNEL: &str = "trade_query";
 const ARB_CLOSE_MIN_NOTIONAL_U: f64 = 25.0;
 const TAKER_DECISION_MODEL_OPEN_GATE_LOG_INTERVAL_US: i64 = 20_000_000;
 
+#[derive(Clone, Copy, Debug)]
+pub struct OpenSignalDropReason {
+    pub source: &'static str,
+    pub elapsed_us: i64,
+    pub threshold_us: i64,
+}
+
 #[derive(Debug, Clone)]
 struct TakerDecisionOpenGateLogState {
     last_log_ts_us: i64,
@@ -135,6 +142,17 @@ fn arb_open_is_account_throttle_reducing(
 
 fn should_drop_startup_buffered_signal(signal: &TradeSignal, listener_start_us: i64) -> bool {
     signal.generation_time > 0 && signal.generation_time < listener_start_us
+}
+
+fn is_open_signal_type(signal_type: &SignalType) -> bool {
+    matches!(signal_type, SignalType::ArbOpen | SignalType::MMOpen)
+}
+
+fn should_drop_open_signal_for_slow_round(
+    signal_type: &SignalType,
+    reason: Option<OpenSignalDropReason>,
+) -> bool {
+    reason.is_some() && is_open_signal_type(signal_type)
 }
 
 fn log_taker_decision_open_gate_block(
@@ -254,6 +272,7 @@ struct SignalListener {
     channel_name: String,
     listener_start_us: i64,
     dropped_startup_buffered: usize,
+    dropped_slow_round_open: usize,
     _node: Node<ipc::Service>,
     subscriber: Subscriber<ipc::Service, [u8; TRADE_SIGNAL_PAYLOAD], ()>,
 }
@@ -312,12 +331,13 @@ impl SignalListener {
             channel_name: channel_name.to_string(),
             listener_start_us,
             dropped_startup_buffered: 0,
+            dropped_slow_round_open: 0,
             _node: node,
             subscriber,
         })
     }
 
-    fn drain_pending(&mut self) -> bool {
+    fn drain_pending(&mut self, open_drop_reason: Option<OpenSignalDropReason>) -> bool {
         let mut has_message = false;
         loop {
             match self.subscriber.receive() {
@@ -364,6 +384,30 @@ impl SignalListener {
                                     signal.generation_time
                                 );
                                 self.dropped_startup_buffered = 0;
+                            }
+                            if should_drop_open_signal_for_slow_round(
+                                &signal.signal_type,
+                                open_drop_reason,
+                            ) {
+                                self.dropped_slow_round_open += 1;
+                                if self.dropped_slow_round_open <= 5
+                                    || self.dropped_slow_round_open.is_multiple_of(100)
+                                {
+                                    if let Some(reason) = open_drop_reason {
+                                        warn!(
+                                            "signal channel {} dropped slow-round open signal count={} type={} generation_time={} receive_lag_us={} source={} elapsed_us={} threshold_us={}",
+                                            self.channel_name,
+                                            self.dropped_slow_round_open,
+                                            signal.signal_type.as_str(),
+                                            signal.generation_time,
+                                            receive_us.saturating_sub(signal.generation_time),
+                                            reason.source,
+                                            reason.elapsed_us,
+                                            reason.threshold_us
+                                        );
+                                    }
+                                }
+                                continue;
                             }
                             record_signal_count(&signal.signal_type);
                             if matches!(signal.signal_type, SignalType::ArbOpen)
@@ -490,7 +534,11 @@ impl SignalChannel {
     }
 
     pub fn drain_pending() -> bool {
-        Self::with(|ch| ch.listener.borrow_mut().drain_pending())
+        Self::drain_pending_with_open_drop(None)
+    }
+
+    pub fn drain_pending_with_open_drop(reason: Option<OpenSignalDropReason>) -> bool {
+        Self::with(|ch| ch.listener.borrow_mut().drain_pending(reason))
     }
 
     /// 生成信号节点名称
@@ -502,8 +550,9 @@ impl SignalChannel {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_position_reducing, should_drop_startup_buffered_signal,
-        should_suppress_arb_open_inactive_warning,
+        is_position_reducing, should_drop_open_signal_for_slow_round,
+        should_drop_startup_buffered_signal, should_suppress_arb_open_inactive_warning,
+        OpenSignalDropReason,
     };
     use bytes::Bytes;
     use signal_common::trade_signal::{SignalType, TradeSignal};
@@ -537,6 +586,31 @@ mod tests {
         assert!(!should_drop_startup_buffered_signal(&fresh, 1_000));
         assert!(!should_drop_startup_buffered_signal(&newer, 1_000));
         assert!(!should_drop_startup_buffered_signal(&missing_ts, 1_000));
+    }
+
+    #[test]
+    fn slow_round_filter_only_drops_open_signals() {
+        let reason = Some(OpenSignalDropReason {
+            source: "test",
+            elapsed_us: 2_000,
+            threshold_us: 1_000,
+        });
+        assert!(should_drop_open_signal_for_slow_round(
+            &SignalType::ArbOpen,
+            reason
+        ));
+        assert!(should_drop_open_signal_for_slow_round(
+            &SignalType::MMOpen,
+            reason
+        ));
+        assert!(!should_drop_open_signal_for_slow_round(
+            &SignalType::ArbClose,
+            reason
+        ));
+        assert!(!should_drop_open_signal_for_slow_round(
+            &SignalType::ArbCancel,
+            None
+        ));
     }
 
     #[test]

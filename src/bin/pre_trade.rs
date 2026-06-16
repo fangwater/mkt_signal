@@ -2,7 +2,6 @@ use account_common::bybit_auth::BybitCredentials;
 use account_common::gate_auth::GateCredentials;
 use account_common::{init_binance_account_mode, BinanceAccountMode};
 use anyhow::Result;
-use bytes::Bytes;
 use clap::Parser;
 use log::{info, warn};
 use mkt_signal::pre_trade::auto_collection_service::AutoCollectionService;
@@ -13,24 +12,26 @@ use mkt_signal::pre_trade::leverage_guard::LeverageGuard;
 use mkt_signal::pre_trade::monitor_channel::MonitorChannel;
 use mkt_signal::pre_trade::params_load::PreTradeParamsLoader;
 use mkt_signal::pre_trade::persist_channel::PersistChannel;
+use mkt_signal::pre_trade::publish_snapshot_queries;
 use mkt_signal::pre_trade::resample_channel::ResampleChannel;
+use mkt_signal::pre_trade::runtime_flags::enable_ipc_fast_poll;
 use mkt_signal::pre_trade::signal_channel::{
     SignalChannel, DEFAULT_BACKWARD_CHANNEL, DEFAULT_SIGNAL_CHANNEL,
 };
 use mkt_signal::pre_trade::taker_decision_model::PreTradeTakerDecisionModel;
-use mkt_signal::pre_trade::PreTrade;
 use mkt_signal::pre_trade::QueryEngHub;
 use mkt_signal::pre_trade::TradeEngHub;
+use mkt_signal::pre_trade::{
+    IntraBwdRefreshConfig, ParamRefreshConfig, PreTrade, SnapshotQueryConfig,
+};
 use mkt_signal::strategy::StrategyManager;
 use order_common::TradingVenue;
 use runtime_common::affinity::maybe_pin_current_thread;
 use runtime_common::redis_client::RedisSettings;
-use runtime_common::time_util::get_timestamp_us;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 use trade_engine::config::RestConstants;
-use trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
 use trade_signal::ArbMode;
 
 #[derive(Parser, Debug)]
@@ -224,6 +225,7 @@ async fn main() -> Result<()> {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
+            let fast_poll = enable_ipc_fast_poll();
             // 1. 初始化 PreTradeParamsLoader（从 Redis 加载风控参数）
             info!("Initializing PreTradeParamsLoader singleton...");
 
@@ -270,20 +272,20 @@ async fn main() -> Result<()> {
             // 打印风控参数三线表
             loader.print_params_table();
 
-            // 启动后台刷新任务（60s 间隔）
-            PreTradeParamsLoader::start_background_refresh(
-                redis_settings,
+            let param_refresh = ParamRefreshConfig::new(
+                redis_settings.clone(),
                 dir_prefix.clone(),
                 open_venue,
                 hedge_venue,
             );
-            info!("Background refresh task started (interval: 60s)");
+            info!("Risk parameter refresh configured (interval: 60s)");
 
             // IntraArb 部署：拉取 trade_signal 维护的 intra_bwd_trade_symbols 作为
             // PM 借贷白名单（仅在 UNIFIED 账户下生效，详见 open_strategy_common）。
             // 启动时同步加载一次，避免首个开仓信号到来时白名单还是空的；
             // 之后由后台任务按 60s 周期 reload。
             // 与 trade_signal 共用同一份 Redis key（无 prefix）以保证两侧视图一致。
+            let mut intra_bwd_refresh = None;
             if arb_mode == ArbMode::IntraArb {
                 let bwd_key_suffix = open_venue.trade_engine_exchange().to_string();
                 let bwd_redis = RedisSettings::default();
@@ -295,7 +297,12 @@ async fn main() -> Result<()> {
                         bwd_key_suffix, err
                     );
                 }
-                IntraBwdSymbolList::start_background_refresh(bwd_redis, bwd_key_suffix);
+                if fast_poll {
+                    intra_bwd_refresh =
+                        Some(IntraBwdRefreshConfig::new(bwd_redis, bwd_key_suffix));
+                } else {
+                    IntraBwdSymbolList::start_background_refresh(bwd_redis, bwd_key_suffix);
+                }
 
                 let strategy_redis = RedisSettings::default();
                 match PreTradeTakerDecisionModel::load_config_from_redis(
@@ -349,6 +356,7 @@ async fn main() -> Result<()> {
             //     - Gate   ：UNIFIED 账户，端点 POST /api/v4/unified/loans (type=repay)
             //     - Bybit  ：UNIFIED 账户，端点 POST /v5/account/quick-repayment（占位实现，
             //               已知近期返回 "no liability" 但 borrowAmount 不归零，待端点确认）
+            let mut auto_repay_service = None;
             {
                 let mut repay_svc = AutoRepayService::new();
 
@@ -408,13 +416,14 @@ async fn main() -> Result<()> {
                 }
 
                 if !repay_svc.is_empty() {
-                    repay_svc.start();
+                    auto_repay_service = Some(repay_svc);
                 }
             }
 
             // 3.2 启动 Binance PM 自动资金归集任务：
             // - pre_trade 重启后立即执行一次；
             // - 每天 UTC+8 12:00 执行一次；
+            let mut auto_collection_service = None;
             if matches!(open_venue, TradingVenue::BinanceMargin)
                 || matches!(hedge_venue, TradingVenue::BinanceMargin)
             {
@@ -440,13 +449,12 @@ async fn main() -> Result<()> {
                             "auto collection enabled (binance-margin detected, account_mode={:?}, rest_base={})",
                             binance_account_mode, rest_base
                         );
-                        AutoCollectionService::new(
+                        auto_collection_service = Some(AutoCollectionService::new(
                             rest_base,
                             binance_api_key,
                             binance_api_secret,
                             RestConstants::RECV_WINDOW_MS,
-                        )
-                        .start_startup_and_daily_task();
+                        ));
                     }
                 } else {
                     info!(
@@ -492,7 +500,9 @@ async fn main() -> Result<()> {
                 );
             }
 
-            ResampleChannel::start_exposure_table_printer(Duration::from_secs(10));
+            if !fast_poll {
+                ResampleChannel::start_exposure_table_printer(Duration::from_secs(10));
+            }
 
             // 7. 初始化 TradeEngHub（按 open/hedge 需求注册交易所）
             use std::collections::BTreeSet;
@@ -528,213 +538,18 @@ async fn main() -> Result<()> {
             }
 
             // 7.2 启动时执行一次账户快照查询（用于补齐/初始化本地风控状态）
-            {
-                    let open_venue = open_venue;
-                    let hedge_venue = hedge_venue;
-                    let binance_account_mode = binance_account_mode;
-                    tokio::task::spawn_local(async move {
-                    // 定时快照查询：balance 与 position 都要 query。
-                    // 目的：
-                    // - futures-only 场景也需要 balance（特别是 USDT）用于风控/可用资金判断
-                    // - margin-only 场景也需要 position（部分交易所/模式下持仓会通过不同通道补齐）
-                    // - 对 OKX，实时仓位数量来自 account stream 的 balance_and_position；
-                    //   positions snapshot 主要承担初始化/校准，以及补齐 UPL
-                    let need_binance = open_venue.trade_engine_exchange() == "binance"
-                        || hedge_venue.trade_engine_exchange() == "binance";
-                    let need_okex = open_venue.trade_engine_exchange() == "okex"
-                        || hedge_venue.trade_engine_exchange() == "okex";
-                    let need_gate = open_venue.trade_engine_exchange() == "gate"
-                        || hedge_venue.trade_engine_exchange() == "gate";
-                    let need_bybit = open_venue.trade_engine_exchange() == "bybit"
-                        || hedge_venue.trade_engine_exchange() == "bybit";
-                    let need_bitget = open_venue.trade_engine_exchange() == "bitget"
-                        || hedge_venue.trade_engine_exchange() == "bitget";
-
-                    let need_binance_balance = need_binance;
-                    let need_binance_um = need_binance;
-                    let need_okex_balance = need_okex;
-                    let need_okex_swap_positions = need_okex;
-                    let need_gate_balance = need_gate;
-                    let need_gate_positions = need_gate;
-                    let need_bybit_balance = need_bybit;
-                    let need_bybit_positions = need_bybit;
-                    let need_bitget_balance = need_bitget;
-                    let need_bitget_positions = need_bitget;
-
-                    if !need_binance_balance
-                        && !need_binance_um
-                        && !need_okex_balance
-                        && !need_okex_swap_positions
-                        && !need_gate_balance
-                        && !need_gate_positions
-                        && !need_bybit_balance
-                        && !need_bybit_positions
-                        && !need_bitget_balance
-                        && !need_bitget_positions
-                    {
-                        info!(
-                            "snapshot query skipped: venues are {:?}/{:?}; relying on account stream",
-                            open_venue, hedge_venue
-                        );
-                        return;
-                    }
-
+            let snapshot_query = SnapshotQueryConfig::new(
+                open_venue,
+                hedge_venue,
+                binance_account_mode,
+            );
+            if !fast_poll {
+                let snapshot_query = snapshot_query.clone();
+                tokio::task::spawn_local(async move {
                     let mut interval = tokio::time::interval(Duration::from_secs(60));
 
-                    let binance_is_standard =
-                        matches!(binance_account_mode, Some(BinanceAccountMode::Standard));
-                    let send_snapshot_queries = || {
-                        if need_binance_balance {
-                            let now = get_timestamp_us();
-                            if binance_is_standard {
-                                let spot_req = GenericQueryRequest::create(
-                                    QueryRequestType::BinanceSpotAccountSnapshotStd,
-                                    now,
-                                    now,
-                                    Bytes::new(),
-                                );
-                                let _ = QueryEngHub::publish_query_request(
-                                    "binance",
-                                    &spot_req.to_bytes(),
-                                );
-                                info!("snapshot query sent: binance spot account snapshot (standard)");
-
-                                let um_req = GenericQueryRequest::create(
-                                    QueryRequestType::BinanceUmBalanceSnapshotStd,
-                                    now,
-                                    now,
-                                    Bytes::new(),
-                                );
-                                let _ = QueryEngHub::publish_query_request(
-                                    "binance",
-                                    &um_req.to_bytes(),
-                                );
-                                info!("snapshot query sent: binance UM balance snapshot (standard)");
-                            } else {
-                                let req = GenericQueryRequest::create(
-                                    QueryRequestType::BinancePmBalanceSnapshot,
-                                    now,
-                                    now,
-                                    Bytes::new(),
-                                );
-                                let _ = QueryEngHub::publish_query_request(
-                                    "binance",
-                                    &req.to_bytes(),
-                                );
-                                info!("snapshot query sent: binance PM balance snapshot");
-                            }
-                        }
-                        if need_binance_um {
-                            let now = get_timestamp_us();
-                            let req = GenericQueryRequest::create(
-                                if binance_is_standard {
-                                    QueryRequestType::BinanceUmAccountSnapshotStd
-                                } else {
-                                    QueryRequestType::BinanceUmAccountSnapshot
-                                },
-                                now,
-                                now,
-                                Bytes::new(),
-                            );
-                            let _ = QueryEngHub::publish_query_request("binance", &req.to_bytes());
-                            if binance_is_standard {
-                                info!("snapshot query sent: binance UM account snapshot (standard)");
-                            } else {
-                                info!("snapshot query sent: binance UM account snapshot");
-                            }
-                        }
-                        if need_okex_balance {
-                            let now = get_timestamp_us();
-                            let req = GenericQueryRequest::create(
-                                QueryRequestType::OkexAccountBalanceSnapshot,
-                                now,
-                                now,
-                                Bytes::new(),
-                            );
-                            let _ = QueryEngHub::publish_query_request("okex", &req.to_bytes());
-                            info!("snapshot query sent: okex account balance snapshot");
-                        }
-                        if need_okex_swap_positions {
-                            let now = get_timestamp_us();
-                            let req = GenericQueryRequest::create(
-                                QueryRequestType::OkexPositionsSnapshot,
-                                now,
-                                now,
-                                Bytes::from_static(b"instType=SWAP"),
-                            );
-                            let _ = QueryEngHub::publish_query_request("okex", &req.to_bytes());
-                            info!("snapshot query sent: okex positions snapshot (instType=SWAP)");
-                        }
-                        if need_gate_balance {
-                            let now = get_timestamp_us();
-                            let req = GenericQueryRequest::create(
-                                QueryRequestType::GateUnifiedBalanceSnapshot,
-                                now,
-                                now,
-                                Bytes::new(),
-                            );
-                            let _ = QueryEngHub::publish_query_request("gate", &req.to_bytes());
-                            info!("snapshot query sent: gate unified balance snapshot");
-                        }
-                        if need_gate_positions {
-                            let now = get_timestamp_us();
-                            let req = GenericQueryRequest::create(
-                                QueryRequestType::GateUnifiedPositionsSnapshot,
-                                now,
-                                now,
-                                Bytes::new(),
-                            );
-                            let _ = QueryEngHub::publish_query_request("gate", &req.to_bytes());
-                            info!("snapshot query sent: gate futures positions snapshot (includes upl)");
-                        }
-                        if need_bybit_balance {
-                            let now = get_timestamp_us();
-                            let req = GenericQueryRequest::create(
-                                QueryRequestType::BybitAccountBalanceSnapshot,
-                                now,
-                                now,
-                                Bytes::from_static(b"accountType=UNIFIED"),
-                            );
-                            let _ = QueryEngHub::publish_query_request("bybit", &req.to_bytes());
-                            info!("snapshot query sent: bybit unified wallet balance snapshot");
-                        }
-                        if need_bybit_positions {
-                            let now = get_timestamp_us();
-                            let req = GenericQueryRequest::create(
-                                QueryRequestType::BybitPositionsSnapshot,
-                                now,
-                                now,
-                                Bytes::from_static(b"category=linear&settleCoin=USDT&limit=200"),
-                            );
-                            let _ = QueryEngHub::publish_query_request("bybit", &req.to_bytes());
-                            info!("snapshot query sent: bybit linear positions snapshot");
-                        }
-                        if need_bitget_balance {
-                            let now = get_timestamp_us();
-                            let req = GenericQueryRequest::create(
-                                QueryRequestType::BitgetAccountBalanceSnapshot,
-                                now,
-                                now,
-                                Bytes::new(),
-                            );
-                            let _ = QueryEngHub::publish_query_request("bitget", &req.to_bytes());
-                            info!("snapshot query sent: bitget unified account balance snapshot");
-                        }
-                        if need_bitget_positions {
-                            let now = get_timestamp_us();
-                            let req = GenericQueryRequest::create(
-                                QueryRequestType::BitgetPositionsSnapshot,
-                                now,
-                                now,
-                                Bytes::from_static(b"category=USDT-FUTURES"),
-                            );
-                            let _ = QueryEngHub::publish_query_request("bitget", &req.to_bytes());
-                            info!("snapshot query sent: bitget UTA current positions snapshot");
-                        }
-                    };
-
                     // Run once at startup.
-                    send_snapshot_queries();
+                    publish_snapshot_queries(&snapshot_query);
 
                     // interval.tick() returns immediately on first call; consume it to avoid a duplicate send.
                     interval.tick().await;
@@ -742,7 +557,7 @@ async fn main() -> Result<()> {
                     // Re-run every 1 minute.
                     loop {
                         interval.tick().await;
-                        send_snapshot_queries();
+                        publish_snapshot_queries(&snapshot_query);
                     }
                 });
             }
@@ -756,7 +571,18 @@ async fn main() -> Result<()> {
             info!("All singletons initialized, starting pre_trade main loop...");
 
             // 8. 运行主循环
-            let pre_trade = PreTrade::new();
+            let mut pre_trade = PreTrade::new()
+                .with_param_refresh(param_refresh)
+                .with_snapshot_query(snapshot_query);
+            if let Some(config) = intra_bwd_refresh {
+                pre_trade = pre_trade.with_intra_bwd_refresh(config);
+            }
+            if let Some(service) = auto_repay_service {
+                pre_trade = pre_trade.with_auto_repay(service);
+            }
+            if let Some(service) = auto_collection_service {
+                pre_trade = pre_trade.with_auto_collection(service);
+            }
             pre_trade.run().await
         })
         .await

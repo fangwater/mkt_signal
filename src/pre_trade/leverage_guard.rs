@@ -1,3 +1,4 @@
+use crate::pre_trade::runtime_flags::enable_ipc_fast_poll;
 use account_common::bybit_auth::BybitCredentials;
 use account_common::gate_auth::GateCredentials;
 use account_common::okex_auth::OkexCredentials;
@@ -158,6 +159,7 @@ struct LeverageGuardState {
     global_block: Option<GlobalBlock>,
     refresh_ctx: Option<GuardRefreshContext>,
     refresh_in_flight: bool,
+    pending_fast_poll_refresh_source: Option<&'static str>,
     last_refresh_request_us: i64,
     stats: BlockStats,
 }
@@ -170,6 +172,7 @@ impl LeverageGuardState {
             global_block: None,
             refresh_ctx: None,
             refresh_in_flight: false,
+            pending_fast_poll_refresh_source: None,
             last_refresh_request_us: 0,
             stats: BlockStats::new(get_timestamp_us()),
         }
@@ -185,6 +188,7 @@ impl LeverageGuardState {
             global_block: None,
             refresh_ctx: Some(refresh_ctx),
             refresh_in_flight: false,
+            pending_fast_poll_refresh_source: None,
             last_refresh_request_us: 0,
             stats: BlockStats::new(get_timestamp_us()),
         }
@@ -214,6 +218,29 @@ struct GuardRefreshResult {
     online_symbols: usize,
     desired_targets: usize,
     retried_targets: usize,
+}
+
+#[derive(Debug)]
+struct GuardRefreshSnapshot {
+    existing_targets: HashMap<LeverageTarget, TargetStatus>,
+    global_trigger: Option<LeverageTarget>,
+    global_block_label: Option<String>,
+}
+
+impl GuardRefreshSnapshot {
+    fn from_state(state: &LeverageGuardState) -> Self {
+        Self {
+            existing_targets: state.targets.clone(),
+            global_trigger: state
+                .global_block
+                .as_ref()
+                .map(|block| block.trigger.clone()),
+            global_block_label: state
+                .global_block
+                .as_ref()
+                .map(|block| block.trigger.label()),
+        }
+    }
 }
 
 pub struct LeverageGuard;
@@ -285,7 +312,11 @@ impl LeverageGuard {
             refresh_result.statuses,
             refresh_ctx,
         ));
-        Self::start_background_refresh_task();
+        if enable_ipc_fast_poll() {
+            info!("ArbOpen leverage guard background refresh disabled in fast-poll mode");
+        } else {
+            Self::start_background_refresh_task();
+        }
         Ok(())
     }
 
@@ -306,6 +337,11 @@ impl LeverageGuard {
     }
 
     fn request_refresh(source: &'static str) {
+        if enable_ipc_fast_poll() {
+            Self::mark_refresh_requested(source);
+            return;
+        }
+
         let now_us = get_timestamp_us();
         let refresh_ctx = LEVERAGE_GUARD.with(|guard| {
             let mut guard_ref = guard.borrow_mut();
@@ -352,16 +388,45 @@ impl LeverageGuard {
         });
     }
 
-    async fn run_refresh(refresh_ctx: GuardRefreshContext, source: &'static str) -> Result<()> {
-        let had_global_block = LEVERAGE_GUARD.with(|guard| {
-            guard.borrow().as_ref().and_then(|state| {
-                state
-                    .global_block
-                    .as_ref()
-                    .map(|block| block.trigger.label())
-            })
+    fn mark_refresh_requested(source: &'static str) {
+        let now_us = get_timestamp_us();
+        LEVERAGE_GUARD.with(|guard| {
+            let mut guard_ref = guard.borrow_mut();
+            let Some(state) = guard_ref.as_mut() else {
+                return;
+            };
+            if !state.enabled {
+                return;
+            }
+            if source != "background_interval"
+                && state.last_refresh_request_us > 0
+                && now_us.saturating_sub(state.last_refresh_request_us)
+                    < ON_DEMAND_REFRESH_DEBOUNCE_US
+            {
+                return;
+            }
+            state.last_refresh_request_us = now_us;
+            state.pending_fast_poll_refresh_source = Some(source);
         });
-        let refresh_result = refresh_guard_targets(&refresh_ctx).await?;
+    }
+
+    async fn run_refresh(refresh_ctx: GuardRefreshContext, source: &'static str) -> Result<()> {
+        let snapshot = current_refresh_snapshot();
+        let refresh_result = refresh_guard_targets_with_state(
+            &refresh_ctx,
+            snapshot.existing_targets,
+            snapshot.global_trigger,
+        )
+        .await?;
+        Self::apply_refresh_result(source, snapshot.global_block_label, refresh_result);
+        Ok(())
+    }
+
+    fn apply_refresh_result(
+        source: &'static str,
+        had_global_block: Option<String>,
+        refresh_result: GuardRefreshResult,
+    ) {
         let confirmed = refresh_result
             .statuses
             .values()
@@ -434,8 +499,6 @@ impl LeverageGuard {
                 failed_samples.join("; ")
             );
         }
-
-        Ok(())
     }
 
     pub fn should_block_arb_open(
@@ -514,6 +577,50 @@ impl LeverageGuard {
 
         blocked
     }
+
+    pub fn refresh_blocking_for_fast_poll(source: &'static str) -> Result<bool> {
+        let Some((refresh_ctx, snapshot)) = LEVERAGE_GUARD.with(|guard| {
+            let guard_ref = guard.borrow();
+            let state = guard_ref.as_ref().filter(|state| state.enabled)?;
+            let refresh_ctx = state.refresh_ctx.clone()?;
+            Some((refresh_ctx, GuardRefreshSnapshot::from_state(state)))
+        }) else {
+            return Ok(false);
+        };
+
+        let existing_targets = snapshot.existing_targets.clone();
+        let global_trigger = snapshot.global_trigger.clone();
+        let handle = std::thread::Builder::new()
+            .name("pre_trade_leverage_guard_blocking_refresh".to_string())
+            .spawn(move || -> Result<GuardRefreshResult> {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .context("build blocking leverage guard runtime")?;
+                runtime.block_on(refresh_guard_targets_with_state(
+                    &refresh_ctx,
+                    existing_targets,
+                    global_trigger,
+                ))
+            })
+            .context("spawn blocking leverage guard refresh thread")?;
+        let refresh_result = handle
+            .join()
+            .map_err(|_| anyhow!("blocking leverage guard refresh thread panicked"))??;
+        Self::apply_refresh_result(source, snapshot.global_block_label, refresh_result);
+        Ok(true)
+    }
+
+    pub fn take_fast_poll_refresh_request() -> Option<&'static str> {
+        LEVERAGE_GUARD.with(|guard| {
+            let mut guard_ref = guard.borrow_mut();
+            let state = guard_ref.as_mut()?;
+            if !state.enabled {
+                return None;
+            }
+            state.pending_fast_poll_refresh_source.take()
+        })
+    }
 }
 
 fn install_guard_state(state: LeverageGuardState) {
@@ -531,24 +638,25 @@ fn refresh_interval_secs() -> u64 {
 }
 
 async fn refresh_guard_targets(refresh_ctx: &GuardRefreshContext) -> Result<GuardRefreshResult> {
+    let snapshot = current_refresh_snapshot();
+    refresh_guard_targets_with_state(
+        refresh_ctx,
+        snapshot.existing_targets,
+        snapshot.global_trigger,
+    )
+    .await
+}
+
+async fn refresh_guard_targets_with_state(
+    refresh_ctx: &GuardRefreshContext,
+    existing_targets: HashMap<LeverageTarget, TargetStatus>,
+    global_trigger: Option<LeverageTarget>,
+) -> Result<GuardRefreshResult> {
     let keys = online_symbol_keys(&refresh_ctx.config);
     let symbols = load_online_symbols(&refresh_ctx.redis, &keys)
         .await
         .with_context(|| "load online symbols for ArbOpen leverage guard refresh")?;
     let discovered_targets = build_targets(&symbols, &refresh_ctx.config.target_venues);
-    let (existing_targets, global_trigger) = LEVERAGE_GUARD.with(|guard| {
-        let guard_ref = guard.borrow();
-        let Some(state) = guard_ref.as_ref() else {
-            return (HashMap::new(), None);
-        };
-        (
-            state.targets.clone(),
-            state
-                .global_block
-                .as_ref()
-                .map(|block| block.trigger.clone()),
-        )
-    });
 
     let mut desired_targets_map: BTreeMap<String, LeverageTarget> = discovered_targets
         .into_iter()
@@ -598,6 +706,20 @@ async fn refresh_guard_targets(refresh_ctx: &GuardRefreshContext) -> Result<Guar
         online_symbols: symbols.len(),
         desired_targets: desired_targets_len,
         retried_targets,
+    })
+}
+
+fn current_refresh_snapshot() -> GuardRefreshSnapshot {
+    LEVERAGE_GUARD.with(|guard| {
+        guard
+            .borrow()
+            .as_ref()
+            .map(GuardRefreshSnapshot::from_state)
+            .unwrap_or_else(|| GuardRefreshSnapshot {
+                existing_targets: HashMap::new(),
+                global_trigger: None,
+                global_block_label: None,
+            })
     })
 }
 
@@ -1556,5 +1678,31 @@ mod tests {
             targets,
             vec![LeverageTarget::new(TradingVenue::GateFutures, "HNTUSDT")]
         );
+    }
+
+    #[test]
+    fn fast_poll_refresh_request_is_taken_once() {
+        install_guard_state(LeverageGuardState::enabled(
+            std::collections::HashMap::new(),
+            GuardRefreshContext {
+                redis: RedisSettings::default(),
+                config: cfg(
+                    "gate-intra-arb01",
+                    ArbMode::IntraArb,
+                    TradingVenue::GateMargin,
+                    TradingVenue::GateFutures,
+                ),
+            },
+        ));
+
+        LeverageGuard::mark_refresh_requested("arb_open_blocked");
+
+        assert_eq!(
+            LeverageGuard::take_fast_poll_refresh_request(),
+            Some("arb_open_blocked")
+        );
+        assert_eq!(LeverageGuard::take_fast_poll_refresh_request(), None);
+
+        install_guard_state(LeverageGuardState::disabled());
     }
 }

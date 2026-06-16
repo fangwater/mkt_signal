@@ -9,7 +9,7 @@ pub(crate) fn parse_bool_env(value: &str) -> Option<bool> {
     }
 }
 
-pub(crate) fn enable_ipc_fast_poll() -> bool {
+pub fn enable_ipc_fast_poll() -> bool {
     for name in ["enable_ipc_fast_poll", "ENABLE_IPC_FAST_POLL"] {
         if let Ok(value) = std::env::var(name) {
             if let Some(enabled) = parse_bool_env(&value) {

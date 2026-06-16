@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
 use order_common::TradingVenue;
-use runtime_common::redis_client::{RedisClient, RedisSettings};
+use runtime_common::redis_client::{BlockingRedisClient, RedisClient, RedisSettings};
 
 const REFRESH_INTERVAL_SECS: u64 = 60;
 
@@ -62,7 +62,19 @@ impl IntraBwdSymbolList {
         let mut client = RedisClient::connect(redis.clone())
             .await
             .context("connect redis for intra_bwd_trade_symbols")?;
-        match client.get_string(&key).await? {
+        Self::apply_raw_redis_value(&key, client.get_string(&key).await?)
+    }
+
+    pub fn load_from_redis_blocking(redis: &RedisSettings, key_suffix: &str) -> Result<()> {
+        let key_suffix = key_suffix.trim().to_ascii_lowercase();
+        let key = format!("intra_bwd_trade_symbols:{key_suffix}");
+        let mut client = BlockingRedisClient::connect(redis.clone())
+            .context("connect redis for intra_bwd_trade_symbols")?;
+        Self::apply_raw_redis_value(&key, client.get_string(&key)?)
+    }
+
+    fn apply_raw_redis_value(key: &str, raw: Option<String>) -> Result<()> {
+        match raw {
             Some(raw) => {
                 let parsed: Vec<String> = serde_json::from_str(&raw).with_context(|| {
                     format!("Redis string '{}' 不是合法 JSON(Vec<String>): {}", key, raw)
