@@ -1,4 +1,5 @@
 use crate::pre_trade::monitor_channel::MonitorChannel;
+use crate::pre_trade::runtime_flags::suppress_pre_submit_hot_path_logs;
 use crate::pre_trade::taker_decision_model::{PreTradeTakerDecisionModel, TakerDecisionOpenCancel};
 use crate::strategy::arb_hedge_strategy::{ArbHedgeSnapshot, ArbHedgeStrategy};
 use crate::strategy::arb_open_strategy::ArbOpenStrategy;
@@ -455,18 +456,22 @@ impl StrategyManager {
         }
         if !is_known {
             self.known_ids.insert(id);
-            info!(
-                "策略管理器: 新增策略 id={}，当前活跃策略数={}",
-                id,
-                self.strategies.len()
-            );
+            if !suppress_pre_submit_hot_path_logs() {
+                info!(
+                    "策略管理器: 新增策略 id={}，当前活跃策略数={}",
+                    id,
+                    self.strategies.len()
+                );
+            }
         }
         if old.is_some() {
-            info!(
-                "策略管理器: 替换已有策略 id={}，当前活跃策略数={}",
-                id,
-                self.strategies.len()
-            );
+            if !suppress_pre_submit_hot_path_logs() {
+                info!(
+                    "策略管理器: 替换已有策略 id={}，当前活跃策略数={}",
+                    id,
+                    self.strategies.len()
+                );
+            }
         }
         old
     }
@@ -807,15 +812,19 @@ impl StrategyManager {
                 .mark_price(&symbol_upper)
                 .unwrap_or(0.0);
             strategy.seed_net_position(get_timestamp_us(), net_qty, seed_price, "position_seed");
-            info!(
-                "ArbHedge init: symbol={} open_venue={:?} hedge_venue={:?} open_pos={:.8} hedge_pos={:.8} net={:.8} seed_price={:.8} (seed from positions)",
-                symbol_upper, open_venue, hedge_venue, open_pos, hedge_pos, net_qty, seed_price
-            );
+            if !suppress_pre_submit_hot_path_logs() {
+                info!(
+                    "ArbHedge init: symbol={} open_venue={:?} hedge_venue={:?} open_pos={:.8} hedge_pos={:.8} net={:.8} seed_price={:.8} (seed from positions)",
+                    symbol_upper, open_venue, hedge_venue, open_pos, hedge_pos, net_qty, seed_price
+                );
+            }
         } else {
-            info!(
-                "ArbHedge init: symbol={} open_venue={:?} hedge_venue={:?} open_pos={:.8} hedge_pos={:.8} net=0.0 (no seed)",
-                symbol_upper, open_venue, hedge_venue, open_pos, hedge_pos
-            );
+            if !suppress_pre_submit_hot_path_logs() {
+                info!(
+                    "ArbHedge init: symbol={} open_venue={:?} hedge_venue={:?} open_pos={:.8} hedge_pos={:.8} net=0.0 (no seed)",
+                    symbol_upper, open_venue, hedge_venue, open_pos, hedge_pos
+                );
+            }
         }
         self.insert(Box::new(strategy));
         strategy_id
@@ -834,10 +843,12 @@ impl StrategyManager {
         let strategy_id = StrategyManager::generate_strategy_id();
         let strategy =
             ArbHedgeStrategy::new(strategy_id, symbol_upper.clone(), open_venue, hedge_venue);
-        info!(
-            "ArbHedge startup init: symbol={} open_venue={:?} hedge_venue={:?} create empty hedge state before stable net pending",
-            symbol_upper, open_venue, hedge_venue
-        );
+        if !suppress_pre_submit_hot_path_logs() {
+            info!(
+                "ArbHedge startup init: symbol={} open_venue={:?} hedge_venue={:?} create empty hedge state before stable net pending",
+                symbol_upper, open_venue, hedge_venue
+            );
+        }
         self.insert(Box::new(strategy));
         strategy_id
     }

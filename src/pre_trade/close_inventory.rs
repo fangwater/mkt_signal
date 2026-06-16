@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::pre_trade::order_manager::Side;
+use crate::pre_trade::runtime_flags::suppress_pre_submit_hot_path_logs;
 use log::{debug, info, warn};
 use order_common::TradingVenue;
 use runtime_common::symbol_util::normalize_symbol_for_internal;
@@ -72,7 +73,7 @@ impl CloseInventoryLedger {
         }
         entry.seeded = true;
         entry.closable_inventory_base = finite_or_zero(snapshot_pos_base);
-        if log_seed {
+        if log_seed && !suppress_pre_submit_hot_path_logs() {
             info!(
                 "CloseInventory: seed symbol={} venue={:?} closable_inventory_base={:.8}",
                 symbol, venue, entry.closable_inventory_base
@@ -226,7 +227,7 @@ impl CloseInventoryLedger {
                 filled_base_qty: 0.0,
             },
         );
-        if log_reserve {
+        if log_reserve && !suppress_pre_submit_hot_path_logs() {
             info!(
                 "CloseInventory: reserve symbol={} venue={:?} side={:?} client_order_id={} requested={:.8} granted={:.8} available_before={:.8} inventory={:.8}",
                 symbol,
@@ -269,10 +270,12 @@ impl CloseInventoryLedger {
             Side::Buy => entry.closable_inventory_base += filled_base_delta,
             Side::Sell => entry.closable_inventory_base -= filled_base_delta,
         }
-        info!(
-            "CloseInventory: open fill symbol={} venue={:?} side={:?} delta={:.8} inventory={:.8}",
-            symbol, venue, side, filled_base_delta, entry.closable_inventory_base
-        );
+        if !suppress_pre_submit_hot_path_logs() {
+            info!(
+                "CloseInventory: open fill symbol={} venue={:?} side={:?} delta={:.8} inventory={:.8}",
+                symbol, venue, side, filled_base_delta, entry.closable_inventory_base
+            );
+        }
     }
 
     pub fn apply_close_fill_delta(&mut self, client_order_id: i64, filled_base_delta: f64) -> bool {
@@ -309,18 +312,20 @@ impl CloseInventoryLedger {
                     (entry.reserved_buy_close_base - applied_delta).max(0.0);
             }
         }
-        info!(
-            "CloseInventory: close fill symbol={} venue={:?} side={:?} client_order_id={} delta={:.8} applied={:.8} filled={:.8}/{:.8} inventory={:.8}",
-            symbol,
-            venue,
-            reservation.side,
-            client_order_id,
-            filled_base_delta,
-            applied_delta,
-            reservation.filled_base_qty,
-            reservation.reserved_base_qty,
-            entry.closable_inventory_base
-        );
+        if !suppress_pre_submit_hot_path_logs() {
+            info!(
+                "CloseInventory: close fill symbol={} venue={:?} side={:?} client_order_id={} delta={:.8} applied={:.8} filled={:.8}/{:.8} inventory={:.8}",
+                symbol,
+                venue,
+                reservation.side,
+                client_order_id,
+                filled_base_delta,
+                applied_delta,
+                reservation.filled_base_qty,
+                reservation.reserved_base_qty,
+                entry.closable_inventory_base
+            );
+        }
         true
     }
 
@@ -357,7 +362,7 @@ impl CloseInventoryLedger {
                 }
             }
         }
-        if log_release {
+        if log_release && !suppress_pre_submit_hot_path_logs() {
             info!(
                 "CloseInventory: release symbol={} venue={:?} side={:?} client_order_id={} reason={} unfilled={:.8} filled={:.8}/{:.8} inventory={:.8}",
                 symbol,

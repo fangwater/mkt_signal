@@ -17,11 +17,11 @@ host used by the active Binance/Bitget intra and model/factor pipeline.
 13     depth_pub bitget-both
 14     depth_pub gate-both
 15     persist_manager only
-16     binance-intra-arb02 account_monitor
-17     binance-intra-arb02 trade_signal
-18     binance-intra-arb02 pre_trade
-19     binance-intra-arb02 trade_engine main
-20     binance-intra-arb02 trade_engine IPC/other threads
+16     binance-intra-arb01 account_monitor
+17     binance-intra-arb01 trade_signal
+18     binance-intra-arb01 pre_trade
+19     binance-intra-arb01 trade_engine main
+20     binance-intra-arb01 trade_engine IPC/other threads
 21     bitget-intra-arb01 account_monitor
 22     bitget-intra-arb01 trade_signal
 23     bitget-intra-arb01 pre_trade
@@ -45,7 +45,7 @@ export FUSION_FACTOR_CORE=6
 export MODEL_PUB_CORE=7
 ```
 
-`/home/ubuntu/binance-intra-arb02/env.sh`:
+`/home/ubuntu/binance-intra-arb01/env.sh`:
 
 ```bash
 export ACCOUNT_MONITOR_CORE='16'
@@ -53,7 +53,6 @@ export TRADE_SIGNAL_CORE='17'
 export PRE_TRADE_CORE='18'
 export TRADE_ENGINE_CORE='19'
 export TRADE_ENGINE_IPC_CORE='20'
-export PERSIST_MANAGER_CORE='15'
 ```
 
 `/home/ubuntu/bitget-intra-arb01/env.sh`:
@@ -85,8 +84,9 @@ export PERSIST_MANAGER_CORE='15'
 
 ## Operational Notes
 
-- `binance-intra-arb01` hot path is not assigned in this layout. It may still
-  have lightweight config/viz processes on housekeeping cores.
+- `binance-intra-arb02` hot path is not assigned in this layout.
+- `binance-intra-arb01` lightweight config/viz processes should stay on
+  housekeeping cores.
 - Core 15 is reserved for persist managers. Helper/overflow cpusets should use
   `26-31` or another explicitly approved range, not `15`.
 - Live `taskset` changes do not update process argv. Trust
@@ -98,7 +98,7 @@ export PERSIST_MANAGER_CORE='15'
 Check single-core pinned business processes:
 
 ```bash
-for pid in $(pgrep -f '/home/ubuntu/(fusion_factor|model_pub|binance-intra-arb02|bitget-intra-arb01)' || true); do
+for pid in $(pgrep -f '/home/ubuntu/(fusion_factor|model_pub|binance-intra-arb01|bitget-intra-arb01)' || true); do
   comm=$(cat /proc/$pid/comm 2>/dev/null || true)
   cpus=$(awk '/^Cpus_allowed_list:/{print $2}' /proc/$pid/status 2>/dev/null || true)
   psr=$(ps -p "$pid" -o psr= 2>/dev/null | tr -d ' ')

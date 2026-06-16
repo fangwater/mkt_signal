@@ -7,6 +7,7 @@ use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
 use crate::pre_trade::order_manager::PreTradeOrderRequestExt;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
+use crate::pre_trade::runtime_flags::suppress_pre_submit_hot_path_logs;
 use crate::pre_trade::signal_channel::SignalChannel;
 use crate::pre_trade::signal_throttle::{register_signal_throttle, SIGNAL_THROTTLE_TTL_US};
 use crate::pre_trade::taker_decision_model::{
@@ -295,17 +296,19 @@ impl ArbHedgeStrategy {
         self.net_qty_queue
             .apply_fill(seed_ts, signed_base_qty, seed_price);
         self.hedge_work_baseline_qv = self.net_qty_queue.net_qty();
-        info!(
-            "ArbHedgeSeed: strategy_id={} symbol={} source={} qv={:.8} price={:.8} seed_ts={} net={:.8} hedge_work_baseline={:.8}",
-            self.strategy_id,
-            self.symbol,
-            source,
-            signed_base_qty,
-            seed_price,
-            seed_ts,
-            self.net_qty_queue.net_qty(),
-            self.hedge_work_baseline_qv
-        );
+        if !suppress_pre_submit_hot_path_logs() {
+            info!(
+                "ArbHedgeSeed: strategy_id={} symbol={} source={} qv={:.8} price={:.8} seed_ts={} net={:.8} hedge_work_baseline={:.8}",
+                self.strategy_id,
+                self.symbol,
+                source,
+                signed_base_qty,
+                seed_price,
+                seed_ts,
+                self.net_qty_queue.net_qty(),
+                self.hedge_work_baseline_qv
+            );
+        }
         true
     }
 
@@ -327,16 +330,18 @@ impl ArbHedgeStrategy {
             .apply_fill(ready_ts, signed_base_qty, price);
         self.pending_hedge_queue
             .put(ready_ts, 0, signed_base_qty, price);
-        info!(
-            "ArbHedgeStartupNet: strategy_id={} symbol={} qv={:.8} price={:.8} ready_ts={} net={:.8} pending_hedge={:.8}",
-            self.strategy_id,
-            self.symbol,
-            signed_base_qty,
-            price,
-            ready_ts,
-            self.net_qty_queue.net_qty(),
-            self.pending_hedge_queue.net_qty()
-        );
+        if !suppress_pre_submit_hot_path_logs() {
+            info!(
+                "ArbHedgeStartupNet: strategy_id={} symbol={} qv={:.8} price={:.8} ready_ts={} net={:.8} pending_hedge={:.8}",
+                self.strategy_id,
+                self.symbol,
+                signed_base_qty,
+                price,
+                ready_ts,
+                self.net_qty_queue.net_qty(),
+                self.pending_hedge_queue.net_qty()
+            );
+        }
         true
     }
 
@@ -560,10 +565,12 @@ impl ArbHedgeStrategy {
     ) -> bool {
         self.last_hedge_ts_ms = Some(now_ts / 1000);
         let Some(mark_price) = self.mark_price() else {
-            info!(
-                "ArbHedgeStrategy: strategy_id={} symbol={} skip {} direct hedge because mark_price missing due_hedge_qty={:.8}",
-                self.strategy_id, self.symbol, source, due_hedge_qty
-            );
+            if !suppress_pre_submit_hot_path_logs() {
+                info!(
+                    "ArbHedgeStrategy: strategy_id={} symbol={} skip {} direct hedge because mark_price missing due_hedge_qty={:.8}",
+                    self.strategy_id, self.symbol, source, due_hedge_qty
+                );
+            }
             return false;
         };
         if !(mark_price.is_finite() && mark_price > 0.0) {
@@ -608,10 +615,12 @@ impl ArbHedgeStrategy {
             }
         };
         if !(qty.is_finite() && qty > 0.0) {
-            info!(
-                "ArbHedgeStrategy: strategy_id={} symbol={} skip {} direct hedge because aligned qty zero raw_base_qty={:.8}",
-                self.strategy_id, self.symbol, source, raw_base_qty
-            );
+            if !suppress_pre_submit_hot_path_logs() {
+                info!(
+                    "ArbHedgeStrategy: strategy_id={} symbol={} skip {} direct hedge because aligned qty zero raw_base_qty={:.8}",
+                    self.strategy_id, self.symbol, source, raw_base_qty
+                );
+            }
             return false;
         }
 
@@ -700,16 +709,18 @@ impl ArbHedgeStrategy {
         match SignalChannel::with(|ch| ch.publish_backward(&payload)) {
             Ok(true) => {
                 self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
-                info!(
-                    "ArbHedgeStrategy: strategy_id={} symbol={} send hedge state query ok request_seq={} net_qty={:.8} due_hedge_qty={:.8} pending_hedge_qty={:.8} next_query_ts_us={}",
-                    self.strategy_id,
-                    self.symbol,
-                    request_seq,
-                    self.net_qty_queue.net_qty(),
-                    due_hedge_qty,
-                    self.pending_hedge_queue.net_qty(),
-                    self.next_query_ts_us
-                );
+                if !suppress_pre_submit_hot_path_logs() {
+                    info!(
+                        "ArbHedgeStrategy: strategy_id={} symbol={} send hedge state query ok request_seq={} net_qty={:.8} due_hedge_qty={:.8} pending_hedge_qty={:.8} next_query_ts_us={}",
+                        self.strategy_id,
+                        self.symbol,
+                        request_seq,
+                        self.net_qty_queue.net_qty(),
+                        due_hedge_qty,
+                        self.pending_hedge_queue.net_qty(),
+                        self.next_query_ts_us
+                    );
+                }
             }
             Ok(false) => {
                 warn!(
@@ -790,37 +801,43 @@ impl ArbHedgeStrategy {
 
         match snapshot.as_ref() {
             Some(snapshot) if snapshot.ready => {
-                info!(
-                    "ArbHedgeStrategy: strategy_id={} symbol={} lazy model update triggers taker hedge due_hedge_qty={:.8} due_hedge_usdt={:.8} q={:?} note={}",
-                    self.strategy_id,
-                    self.symbol,
-                    due_hedge_qty,
-                    due_hedge_usdt,
-                    snapshot.percentile.or(model_percentile),
-                    snapshot.note
-                );
+                if !suppress_pre_submit_hot_path_logs() {
+                    info!(
+                        "ArbHedgeStrategy: strategy_id={} symbol={} lazy model update triggers taker hedge due_hedge_qty={:.8} due_hedge_usdt={:.8} q={:?} note={}",
+                        self.strategy_id,
+                        self.symbol,
+                        due_hedge_qty,
+                        due_hedge_usdt,
+                        snapshot.percentile.or(model_percentile),
+                        snapshot.note
+                    );
+                }
             }
             Some(snapshot) => {
-                info!(
-                    "ArbHedgeStrategy: strategy_id={} symbol={} lazy model update falls back to direct taker because model not ready due_hedge_qty={:.8} due_hedge_usdt={:.8} score={:?} q={:?} updates={} note={}",
-                    self.strategy_id,
-                    self.symbol,
-                    due_hedge_qty,
-                    due_hedge_usdt,
-                    snapshot.score,
-                    snapshot.percentile.or(model_percentile),
-                    snapshot.update_count,
-                    snapshot.note
-                );
+                if !suppress_pre_submit_hot_path_logs() {
+                    info!(
+                        "ArbHedgeStrategy: strategy_id={} symbol={} lazy model update falls back to direct taker because model not ready due_hedge_qty={:.8} due_hedge_usdt={:.8} score={:?} q={:?} updates={} note={}",
+                        self.strategy_id,
+                        self.symbol,
+                        due_hedge_qty,
+                        due_hedge_usdt,
+                        snapshot.score,
+                        snapshot.percentile.or(model_percentile),
+                        snapshot.update_count,
+                        snapshot.note
+                    );
+                }
             }
             None => {
-                info!(
-                    "ArbHedgeStrategy: strategy_id={} symbol={} lazy model update falls back to direct taker because model state missing due_hedge_qty={:.8} due_hedge_usdt={:.8}",
-                    self.strategy_id,
-                    self.symbol,
-                    due_hedge_qty,
-                    due_hedge_usdt
-                );
+                if !suppress_pre_submit_hot_path_logs() {
+                    info!(
+                        "ArbHedgeStrategy: strategy_id={} symbol={} lazy model update falls back to direct taker because model state missing due_hedge_qty={:.8} due_hedge_usdt={:.8}",
+                        self.strategy_id,
+                        self.symbol,
+                        due_hedge_qty,
+                        due_hedge_usdt
+                    );
+                }
             }
         }
         self.send_lazy_model_taker_hedge_direct(
@@ -857,16 +874,18 @@ impl ArbHedgeStrategy {
             if throttle_on_skip {
                 self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
             }
-            info!(
-                "ArbHedgeStrategy: strategy_id={} symbol={} skip {} hedge query because mark_price missing pending_hedge_qty={:.8} due_hedge_qty={:.8} threshold_usdt={:.8} next_query_ts_us={}",
-                self.strategy_id,
-                self.symbol,
-                reason,
-                pending_hedge_qty,
-                due_hedge_qty,
-                ARB_HEDGE_PENDING_QUERY_MIN_USDT,
-                self.next_query_ts_us
-            );
+            if !suppress_pre_submit_hot_path_logs() {
+                info!(
+                    "ArbHedgeStrategy: strategy_id={} symbol={} skip {} hedge query because mark_price missing pending_hedge_qty={:.8} due_hedge_qty={:.8} threshold_usdt={:.8} next_query_ts_us={}",
+                    self.strategy_id,
+                    self.symbol,
+                    reason,
+                    pending_hedge_qty,
+                    due_hedge_qty,
+                    ARB_HEDGE_PENDING_QUERY_MIN_USDT,
+                    self.next_query_ts_us
+                );
+            }
             return false;
         };
         let pending_hedge_usdt =
@@ -903,18 +922,20 @@ impl ArbHedgeStrategy {
                     self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
                 }
                 if let Some(snapshot) = snapshot.as_ref() {
-                    info!(
-                        "ArbHedgeStrategy: strategy_id={} symbol={} lazy model keeps exposure decision={:?} due_hedge_qty={:.8} pending_hedge_usdt={:.8} score={:?} q={:?} updates={} note={}",
-                        self.strategy_id,
-                        self.symbol,
-                        snapshot.decision,
-                        due_hedge_qty,
-                        pending_hedge_usdt,
-                        snapshot.score,
-                        snapshot.percentile,
-                        snapshot.update_count,
-                        snapshot.note
-                    );
+                    if !suppress_pre_submit_hot_path_logs() {
+                        info!(
+                            "ArbHedgeStrategy: strategy_id={} symbol={} lazy model keeps exposure decision={:?} due_hedge_qty={:.8} pending_hedge_usdt={:.8} score={:?} q={:?} updates={} note={}",
+                            self.strategy_id,
+                            self.symbol,
+                            snapshot.decision,
+                            due_hedge_qty,
+                            pending_hedge_usdt,
+                            snapshot.score,
+                            snapshot.percentile,
+                            snapshot.update_count,
+                            snapshot.note
+                        );
+                    }
                 }
                 false
             }
@@ -924,37 +945,43 @@ impl ArbHedgeStrategy {
                 } else {
                     match snapshot.as_ref() {
                         Some(snapshot) if snapshot.ready => {
-                            info!(
-                                "ArbHedgeStrategy: strategy_id={} symbol={} lazy taker direct hedge due_hedge_qty={:.8} pending_hedge_usdt={:.8} q={:?} note={}",
-                                self.strategy_id,
-                                self.symbol,
-                                due_hedge_qty,
-                                pending_hedge_usdt,
-                                snapshot.percentile,
-                                snapshot.note
-                            );
+                            if !suppress_pre_submit_hot_path_logs() {
+                                info!(
+                                    "ArbHedgeStrategy: strategy_id={} symbol={} lazy taker direct hedge due_hedge_qty={:.8} pending_hedge_usdt={:.8} q={:?} note={}",
+                                    self.strategy_id,
+                                    self.symbol,
+                                    due_hedge_qty,
+                                    pending_hedge_usdt,
+                                    snapshot.percentile,
+                                    snapshot.note
+                                );
+                            }
                         }
                         Some(snapshot) => {
-                            info!(
-                                "ArbHedgeStrategy: strategy_id={} symbol={} lazy taker bypasses query because model not ready due_hedge_qty={:.8} pending_hedge_usdt={:.8} score={:?} q={:?} updates={} note={}",
-                                self.strategy_id,
-                                self.symbol,
-                                due_hedge_qty,
-                                pending_hedge_usdt,
-                                snapshot.score,
-                                snapshot.percentile,
-                                snapshot.update_count,
-                                snapshot.note
-                            );
+                            if !suppress_pre_submit_hot_path_logs() {
+                                info!(
+                                    "ArbHedgeStrategy: strategy_id={} symbol={} lazy taker bypasses query because model not ready due_hedge_qty={:.8} pending_hedge_usdt={:.8} score={:?} q={:?} updates={} note={}",
+                                    self.strategy_id,
+                                    self.symbol,
+                                    due_hedge_qty,
+                                    pending_hedge_usdt,
+                                    snapshot.score,
+                                    snapshot.percentile,
+                                    snapshot.update_count,
+                                    snapshot.note
+                                );
+                            }
                         }
                         None => {
-                            info!(
-                                "ArbHedgeStrategy: strategy_id={} symbol={} lazy taker bypasses query because model state missing due_hedge_qty={:.8} pending_hedge_usdt={:.8}",
-                                self.strategy_id,
-                                self.symbol,
-                                due_hedge_qty,
-                                pending_hedge_usdt
-                            );
+                            if !suppress_pre_submit_hot_path_logs() {
+                                info!(
+                                    "ArbHedgeStrategy: strategy_id={} symbol={} lazy taker bypasses query because model state missing due_hedge_qty={:.8} pending_hedge_usdt={:.8}",
+                                    self.strategy_id,
+                                    self.symbol,
+                                    due_hedge_qty,
+                                    pending_hedge_usdt
+                                );
+                            }
                         }
                     }
                     self.send_taker_hedge_direct(
@@ -1279,10 +1306,12 @@ impl ArbHedgeStrategy {
             // 下一轮状态查询，避免旧挂单无限占用 borrowed pending。
             self.schedule_hedge_order_expiry_check(client_order_id, ctx.exp_time);
         }
-        info!(
-            "✅ ArbHedge订单已发送: strategy_id={} client_order_id={}",
-            self.strategy_id, client_order_id
-        );
+        if !suppress_pre_submit_hot_path_logs() {
+            info!(
+                "✅ ArbHedge订单已发送: strategy_id={} client_order_id={}",
+                self.strategy_id, client_order_id
+            );
+        }
         self.schedule_order_query_watchdog(client_order_id, PendingOrderQueryReason::OrderWatchdog);
     }
 
@@ -1758,23 +1787,25 @@ impl ArbHedgeStrategy {
             self.net_qty_queue
                 .apply_fill(terminal_ts, signed_base_qty, price);
         }
-        info!(
-            "ArbHedgeRecord: strategy_id={} symbol={} leg=hedge side={:?} order_base_qty={:.8} filled_base_qty={:.8} unfilled_base_qty={:.8} borrowed_qv={:.8} released_pending={:.8} qv={:.8} price={:.8} terminal_ts={} bound_open_co_id={} net={:.8} pending_hedge={:.8}",
-            self.strategy_id,
-            self.symbol,
-            side,
-            order_base_qty,
-            filled_base_qty,
-            unfilled_base_qty,
-            borrowed_qv,
-            released_qv,
-            signed_base_qty,
-            price,
-            terminal_ts,
-            bound_open_client_order_id,
-            self.net_qty_queue.net_qty(),
-            self.pending_hedge_queue.net_qty()
-        );
+        if !suppress_pre_submit_hot_path_logs() {
+            info!(
+                "ArbHedgeRecord: strategy_id={} symbol={} leg=hedge side={:?} order_base_qty={:.8} filled_base_qty={:.8} unfilled_base_qty={:.8} borrowed_qv={:.8} released_pending={:.8} qv={:.8} price={:.8} terminal_ts={} bound_open_co_id={} net={:.8} pending_hedge={:.8}",
+                self.strategy_id,
+                self.symbol,
+                side,
+                order_base_qty,
+                filled_base_qty,
+                unfilled_base_qty,
+                borrowed_qv,
+                released_qv,
+                signed_base_qty,
+                price,
+                terminal_ts,
+                bound_open_client_order_id,
+                self.net_qty_queue.net_qty(),
+                self.pending_hedge_queue.net_qty()
+            );
+        }
         true
     }
 
@@ -1879,12 +1910,14 @@ impl ArbHedgeStrategy {
             let mut mgr = strategy_mgr_handle.borrow_mut();
             mgr.cancel_arb_open_by_id(*sid, *side, reason, now_ts);
         }
-        info!(
-            "ArbHedgeStrategy: strategy_id={} symbol={} INSUFFICIENT_MARGIN account open block cancel dispatched count={}",
-            self.strategy_id,
-            self.symbol,
-            ids_and_sides.len()
-        );
+        if !suppress_pre_submit_hot_path_logs() {
+            info!(
+                "ArbHedgeStrategy: strategy_id={} symbol={} INSUFFICIENT_MARGIN account open block cancel dispatched count={}",
+                self.strategy_id,
+                self.symbol,
+                ids_and_sides.len()
+            );
+        }
     }
 
     fn is_bybit_oi_limit_blocked(&self, hedge_side: Side, now_ts: i64) -> bool {

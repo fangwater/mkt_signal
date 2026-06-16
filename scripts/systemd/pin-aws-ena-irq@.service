@@ -1,0 +1,15 @@
+[Unit]
+Description=Pin AWS ENA IRQ affinity for %i
+After=network-online.target
+Wants=network-online.target
+Conflicts=irqbalance.service
+
+[Service]
+Type=oneshot
+Environment=IRQ_CPUS=28
+EnvironmentFile=-/etc/default/pin-aws-ena-irq@%i
+ExecStart=/home/ubuntu/crypto_mkt/mkt_signal/scripts/pin_aws_ena_irq_affinity.sh --iface %i --cpus ${IRQ_CPUS} --stop-irqbalance --execute
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

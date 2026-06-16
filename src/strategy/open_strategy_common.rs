@@ -128,19 +128,21 @@ fn summarize_open_balance_reject(input: OpenBalanceRejectSummaryInput<'_>) {
             || input.now_us.saturating_sub(state.last_log_ts_us)
                 >= OPEN_BALANCE_REJECT_SUMMARY_INTERVAL_US
         {
-            error!(
-                "{}: {:?} {} 余额不足，拒绝开仓 summary: suppressed={} last_strategy_id={} last_symbol={} side={:?} asset={} max_required={:.8} min_available={:.8}",
-                input.strategy_name,
-                input.venue,
-                input.gate,
-                state.suppressed,
-                state.last_strategy_id,
-                state.last_symbol,
-                input.side,
-                input.asset,
-                state.max_required,
-                state.min_available
-            );
+            if !suppress_pre_submit_hot_path_logs() {
+                error!(
+                    "{}: {:?} {} 余额不足，拒绝开仓 summary: suppressed={} last_strategy_id={} last_symbol={} side={:?} asset={} max_required={:.8} min_available={:.8}",
+                    input.strategy_name,
+                    input.venue,
+                    input.gate,
+                    state.suppressed,
+                    state.last_strategy_id,
+                    state.last_symbol,
+                    input.side,
+                    input.asset,
+                    state.max_required,
+                    state.min_available
+                );
+            }
             state.last_log_ts_us = input.now_us;
             state.suppressed = 0;
             state.max_required = 0.0;
@@ -1639,16 +1641,18 @@ pub trait OpenStrategyCommon {
 
         match response.request_kind() {
             TradeRequestKind::Open => {
-                warn!(
-                    "{}: strategy_id={} open_failed: req_type={} status={} code={}({}) client_order_id={}",
-                    self.strategy_name(),
-                    self.strategy_id(),
-                    response.req_type(),
-                    response.status(),
-                    response.error_code(),
-                    code_desc,
-                    client_order_id
-                );
+                if !suppress_pre_submit_hot_path_logs() {
+                    warn!(
+                        "{}: strategy_id={} open_failed: req_type={} status={} code={}({}) client_order_id={}",
+                        self.strategy_name(),
+                        self.strategy_id(),
+                        response.req_type(),
+                        response.status(),
+                        response.error_code(),
+                        code_desc,
+                        client_order_id
+                    );
+                }
                 self.register_open_failure_signal_throttle(response, client_order_id);
                 self.handle_open_failed_cleanup(client_order_id);
             }
