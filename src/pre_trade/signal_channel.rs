@@ -577,7 +577,6 @@ fn handle_trade_signal(signal: TradeSignal) {
                     warn!("ArbOpen: invalid side {}", open_ctx.side);
                     return;
                 };
-                let from_key = String::from_utf8_lossy(&open_ctx.from_key).to_string();
                 let symbol_throttle_hit = check_signal_throttle(&symbol, side);
                 let account_throttle_hit = check_account_signal_throttle();
                 let account_open_block_hit = check_account_open_block();
@@ -736,14 +735,17 @@ fn handle_trade_signal(signal: TradeSignal) {
                 if strategy.is_active() {
                     // hedge_timeout 已不再做 close_ts 延迟（强制 0），原本根据这个字段
                     // 推断 MM/MT 的标签也就失效，去掉。
-                    debug!(
-                        "🔔 收到 ArbOpen 信号: opening={} {:?} side={:?} price={:.6} hedging={} {:?} | amount={:.4} spread_rate={:.6} from_key='{}'",
-                        symbol, opening_venue, side, signal_price,
-                        hedging_symbol, hedging_venue,
-                        signal_amount,
-                        signal_spread_rate,
-                        from_key
-                    );
+                    if log::log_enabled!(log::Level::Debug) {
+                        let from_key = String::from_utf8_lossy(&strategy.open_state().from_key);
+                        debug!(
+                            "🔔 收到 ArbOpen 信号: opening={} {:?} side={:?} price={:.6} hedging={} {:?} | amount={:.4} spread_rate={:.6} from_key='{}'",
+                            symbol, opening_venue, side, signal_price,
+                            hedging_symbol, hedging_venue,
+                            signal_amount,
+                            signal_spread_rate,
+                            from_key
+                        );
+                    }
                     debug!(
                         "✅ ArbOpenStrategy: strategy_id={} {} 已创建并激活",
                         strategy_id, symbol

@@ -1,3 +1,4 @@
+use crate::pre_trade::runtime_flags::suppress_pre_submit_hot_path_logs;
 use bytes::Bytes;
 use log::{info, warn};
 pub use order_common::{
@@ -511,7 +512,9 @@ impl PreTradeOrderRequestExt for Order {
                             resolved.price_text()
                         ));
                     }
-                    if !(use_binance_ws_margin && self.side == Side::Sell) {
+                    if !suppress_pre_submit_hot_path_logs()
+                        && !(use_binance_ws_margin && self.side == Side::Sell)
+                    {
                         warn!(
                             "💰 余额不足将借币: 资产={} 需要={:.8} 可用={:.8} 需借={:.8} symbol={} side={:?} qty={} price={}",
                             check_asset, required_amount, available_balance, borrow_amount,
@@ -521,13 +524,13 @@ impl PreTradeOrderRequestExt for Order {
                             resolved.price_text()
                         );
                     }
-                    if use_binance_ws_margin {
+                    if use_binance_ws_margin && !suppress_pre_submit_hot_path_logs() {
                         info!(
                             "BinanceMargin STANDARD mode: omit sideEffectType for symbol={} side={:?}",
                             self.symbol, self.side
                         );
                     }
-                } else {
+                } else if !suppress_pre_submit_hot_path_logs() {
                     info!(
                         "✅ 余额充足: 资产={} 需要={:.8} 可用={:.8} symbol={} side={:?}",
                         check_asset, required_amount, available_balance, self.symbol, self.side
@@ -550,15 +553,17 @@ impl PreTradeOrderRequestExt for Order {
                     ws_um_response_result: false,
                     ws_margin_limit_maker: use_binance_ws_margin,
                 };
-                info!(
-                    "OrderManager: venue={:?} client_order_id={} symbol={} side={:?} type={:?} reduce_only={} typed_params=binance_new_order",
-                    self.venue,
-                    self.client_order_id,
-                    self.symbol,
-                    self.side,
-                    self.order_type,
-                    self.reduce_only
-                );
+                if !suppress_pre_submit_hot_path_logs() {
+                    info!(
+                        "OrderManager: venue={:?} client_order_id={} symbol={} side={:?} type={:?} reduce_only={} typed_params=binance_new_order",
+                        self.venue,
+                        self.client_order_id,
+                        self.symbol,
+                        self.side,
+                        self.order_type,
+                        self.reduce_only
+                    );
+                }
                 if use_binance_ws_margin {
                     let request = BinanceWsNewMarginOrderRequest::create_typed(
                         local_create_ts,
@@ -593,15 +598,17 @@ impl PreTradeOrderRequestExt for Order {
                     ws_um_response_result: use_binance_ws_um,
                     ws_margin_limit_maker: false,
                 };
-                info!(
-                    "OrderManager: venue={:?} client_order_id={} symbol={} side={:?} type={:?} reduce_only={} typed_params=binance_new_order",
-                    self.venue,
-                    self.client_order_id,
-                    self.symbol,
-                    self.side,
-                    self.order_type,
-                    self.reduce_only
-                );
+                if !suppress_pre_submit_hot_path_logs() {
+                    info!(
+                        "OrderManager: venue={:?} client_order_id={} symbol={} side={:?} type={:?} reduce_only={} typed_params=binance_new_order",
+                        self.venue,
+                        self.client_order_id,
+                        self.symbol,
+                        self.side,
+                        self.order_type,
+                        self.reduce_only
+                    );
+                }
                 if use_binance_ws_um {
                     let request = BinanceWsNewUMOrderRequest::create_typed(
                         local_create_ts,

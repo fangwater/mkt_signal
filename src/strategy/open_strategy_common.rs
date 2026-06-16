@@ -7,6 +7,7 @@ use crate::pre_trade::monitor_channel::{MonitorChannel, OpenExposureRiskError};
 use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
 use crate::pre_trade::order_manager::{PreTradeOrderManagerRequestExt, PreTradeOrderRequestExt};
 use crate::pre_trade::params_load::PreTradeParamsLoader;
+use crate::pre_trade::runtime_flags::suppress_pre_submit_hot_path_logs;
 use crate::pre_trade::signal_throttle::register_signal_throttle;
 use crate::pre_trade::{QueryEngHub, TradeEngHub};
 use crate::strategy::manager::{OpenPriceMapEntry, OrphanHandoff, OrphanStrategyRole, Strategy};
@@ -260,7 +261,7 @@ pub struct OpenStrategyState {
     pub open_venue: Option<TradingVenue>,
     pub order: OpenOrderState,
     pub signal_ts: i64,
-    pub from_key: String,
+    pub from_key: Vec<u8>,
     pub price_qv: QuantizedValue,
     pub price_offset: f64,
     pub alive: bool,
@@ -327,7 +328,7 @@ impl OpenStrategyState {
             open_venue: None,
             order: OpenOrderState::default(),
             signal_ts: 0,
-            from_key: String::new(),
+            from_key: Vec::new(),
             price_qv: QuantizedValue::zero(),
             price_offset: 0.0,
             alive: true,
@@ -748,15 +749,17 @@ pub trait OpenStrategyCommon {
                 client_order_id,
                 get_timestamp_us(),
             );
-            info!(
-                "{}: strategy_id={} {} order action recorded client_order_id={} count_10s={} count_1m={}",
-                self.strategy_name(),
-                self.strategy_id(),
-                self.open_order_action_log_name(),
-                client_order_id,
-                stats.count_10s,
-                stats.count_1m
-            );
+            if !suppress_pre_submit_hot_path_logs() {
+                info!(
+                    "{}: strategy_id={} {} order action recorded client_order_id={} count_10s={} count_1m={}",
+                    self.strategy_name(),
+                    self.strategy_id(),
+                    self.open_order_action_log_name(),
+                    client_order_id,
+                    stats.count_10s,
+                    stats.count_1m
+                );
+            }
         }
         if let Err(e) = TradeEngHub::publish_order_request_for(client_order_id, exchange, req_bin) {
             return Err(format!(
@@ -802,9 +805,12 @@ pub trait OpenStrategyCommon {
 
     fn uniform_open_publish_ctx(&self) -> UniformPublishCtx {
         let open_state = self.open_state();
+        let mut from_key = Vec::with_capacity(5 + open_state.from_key.len());
+        from_key.extend_from_slice(b"open|");
+        from_key.extend_from_slice(&open_state.from_key);
         UniformPublishCtx {
             signal_ts: open_state.signal_ts,
-            from_key: format!("open|{}", open_state.from_key).into_bytes(),
+            from_key,
             price_offset: open_state.price_offset,
         }
     }
@@ -1287,19 +1293,21 @@ pub trait OpenStrategyCommon {
                 get_timestamp_us().saturating_sub(request_build_start_us),
             );
         }
-        info!(
-            "📤 {}订单已创建: strategy_id={} client_order_id={} symbol={} {:?} side={:?} qty={} price={} qty_multiplier={:.8} from_key_len={}",
-            input.order_log_name,
-            self.strategy_id(),
-            client_order_id,
-            symbol,
-            venue,
-            side,
-            qv_decimal_or_fallback(order_qty),
-            qv_decimal_or_fallback(order_price),
-            qty_multiplier,
-            input.from_key_len
-        );
+        if !suppress_pre_submit_hot_path_logs() {
+            info!(
+                "📤 {}订单已创建: strategy_id={} client_order_id={} symbol={} {:?} side={:?} qty={} price={} qty_multiplier={:.8} from_key_len={}",
+                input.order_log_name,
+                self.strategy_id(),
+                client_order_id,
+                symbol,
+                venue,
+                side,
+                qv_decimal_or_fallback(order_qty),
+                qv_decimal_or_fallback(order_price),
+                qty_multiplier,
+                input.from_key_len
+            );
+        }
 
         let publish_start_us = get_timestamp_us();
         if let Err(err) = self.send_open_order_request_common(
@@ -1318,7 +1326,7 @@ pub trait OpenStrategyCommon {
             self.mark_open_strategy_inactive(format!("open order send failed: {}", err));
             self.handle_open_failed_cleanup(client_order_id);
             return None;
-        } else {
+        } else if !suppress_pre_submit_hot_path_logs() {
             info!(
                 "✅ {}订单已发送: strategy_id={} client_order_id={}",
                 input.order_log_name,
@@ -1340,7 +1348,7 @@ pub trait OpenStrategyCommon {
             let state = self.open_state_mut();
             state.open_symbol = symbol;
             state.signal_ts = input.create_ts;
-            state.from_key = String::from_utf8_lossy(&input.from_key).to_string();
+            state.from_key = input.from_key;
             state.price_qv = input.price_qv;
             state.price_offset = input.price_offset;
         }

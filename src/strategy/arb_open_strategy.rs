@@ -229,10 +229,14 @@ impl OpenStrategyCommon for ArbOpenStrategy {
     /// 便于事后用信号时刻盘口和成交对齐分析。
     fn uniform_open_publish_ctx(&self) -> UniformPublishCtx {
         let open_state = self.open_state();
+        let order_id = open_state.order.open_order_id.to_string();
+        let mut from_key = Vec::with_capacity(order_id.len() + 1 + open_state.from_key.len());
+        from_key.extend_from_slice(order_id.as_bytes());
+        from_key.push(b'|');
+        from_key.extend_from_slice(&open_state.from_key);
         UniformPublishCtx {
             signal_ts: open_state.signal_ts,
-            from_key: format!("{}|{}", open_state.order.open_order_id, open_state.from_key)
-                .into_bytes(),
+            from_key,
             price_offset: open_state.price_offset,
         }
     }

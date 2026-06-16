@@ -4,6 +4,7 @@ use crate::pre_trade::open_order_rate_limiter::OrderRateLimiter;
 use crate::pre_trade::query_eng_channel::QueryEngHub;
 use crate::pre_trade::reactor_latency::{record_stage_latency, ReactorStage};
 use crate::pre_trade::resample_channel::ResampleChannel;
+use crate::pre_trade::runtime_flags::enable_ipc_fast_poll;
 use crate::pre_trade::signal_channel::SignalChannel;
 use crate::pre_trade::signal_throttle::log_active_signal_throttles;
 use crate::pre_trade::taker_decision_model::PreTradeTakerDecisionModel;
@@ -17,30 +18,6 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 pub struct PreTrade {}
-
-fn parse_bool_env(value: &str) -> Option<bool> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "y" | "on" => Some(true),
-        "0" | "false" | "no" | "n" | "off" => Some(false),
-        _ => None,
-    }
-}
-
-fn enable_ipc_fast_poll() -> bool {
-    for name in ["enable_ipc_fast_poll", "ENABLE_IPC_FAST_POLL"] {
-        if let Ok(value) = std::env::var(name) {
-            if let Some(enabled) = parse_bool_env(&value) {
-                return enabled;
-            }
-            warn!(
-                "invalid {}='{}', treating enable_ipc_fast_poll as disabled",
-                name, value
-            );
-            return false;
-        }
-    }
-    false
-}
 
 fn drive_strategy_manager_period_clock_rc(
     strategy_mgr: &Rc<RefCell<StrategyManager>>,
@@ -263,10 +240,7 @@ impl PreTrade {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        drive_orphan_manager_period_clock_rc, drive_strategy_manager_period_clock_rc,
-        enable_ipc_fast_poll, parse_bool_env,
-    };
+    use super::{drive_orphan_manager_period_clock_rc, drive_strategy_manager_period_clock_rc};
     use crate::strategy::orphan_order_strategy::OrphanOrderStrategy;
     use crate::strategy::{OrphanStrategyManager, Strategy, StrategyManager};
     use order_common::{OrderUpdate, TradeUpdate};
@@ -415,34 +389,5 @@ mod tests {
         assert_eq!(inspected, 1);
         assert!(!manager.borrow().contains(303));
         assert!(manager.borrow().is_empty());
-    }
-
-    #[test]
-    fn parse_bool_env_accepts_common_values() {
-        assert_eq!(parse_bool_env("1"), Some(true));
-        assert_eq!(parse_bool_env("true"), Some(true));
-        assert_eq!(parse_bool_env("on"), Some(true));
-        assert_eq!(parse_bool_env("0"), Some(false));
-        assert_eq!(parse_bool_env("false"), Some(false));
-        assert_eq!(parse_bool_env("off"), Some(false));
-        assert_eq!(parse_bool_env("maybe"), None);
-    }
-
-    #[test]
-    fn enable_ipc_fast_poll_defaults_off() {
-        std::env::remove_var("ENABLE_IPC_FAST_POLL");
-        std::env::remove_var("enable_ipc_fast_poll");
-        assert!(!enable_ipc_fast_poll());
-    }
-
-    #[test]
-    fn enable_ipc_fast_poll_honors_upper_and_lower_case_env_names() {
-        std::env::set_var("ENABLE_IPC_FAST_POLL", "1");
-        assert!(enable_ipc_fast_poll());
-        std::env::remove_var("ENABLE_IPC_FAST_POLL");
-
-        std::env::set_var("enable_ipc_fast_poll", "yes");
-        assert!(enable_ipc_fast_poll());
-        std::env::remove_var("enable_ipc_fast_poll");
     }
 }
