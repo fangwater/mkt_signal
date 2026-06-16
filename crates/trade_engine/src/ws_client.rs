@@ -2797,6 +2797,36 @@ impl TradeWsClient {
             .current_remote_addr
             .map(|addr| addr.to_string())
             .unwrap_or_else(|| "unknown".to_string());
+        if trace.ws_response_mode == "ACK" {
+            info!(
+                "TakerOrderTrace: exchange=binance venue=um_ws endpoint_id={} local_ip={} remote_addr={} ws_url={} req_type={:?} client_order_id={} transport_id={} symbol={} side={} order_type={} quantity={} reduce_only={} ws_response_mode=ACK status={} code={} order_id={} create_time_us={} ws_send_done_us={} response_local_us={} create_to_ipc_recv_us={:?} ipc_recv_to_ws_send_done_us={:?} create_to_ws_send_done_us={:?} ws_rtt_us={} create_to_local_recv_us={:?} error_msg={}",
+                self.id,
+                self.local_ip,
+                remote_addr,
+                self.url,
+                meta.req_type,
+                meta.client_order_id,
+                transport_id,
+                trace.symbol,
+                trace.side,
+                trace.order_type,
+                trace.quantity,
+                trace.reduce_only,
+                Self::binance_status(resp),
+                resp.error_code.unwrap_or(0),
+                order_id,
+                trace.create_time_us,
+                meta.sent_at_us,
+                local_recv_us,
+                trace.create_to_ipc_recv_us,
+                trace.ipc_recv_to_ws_send_done_us,
+                trace.create_to_ws_send_done_us,
+                ws_rtt_us,
+                create_to_local_recv_us,
+                resp.error_msg.as_deref().unwrap_or("")
+            );
+            return;
+        }
         info!(
             "TakerOrderTrace: exchange=binance venue=um_ws endpoint_id={} local_ip={} remote_addr={} ws_url={} req_type={:?} client_order_id={} transport_id={} symbol={} side={} order_type={} quantity={} reduce_only={} ws_response_mode={} status={} code={} order_id={} order_status_u8={} executed_qty={:.12} response_price={:.12} create_time_us={} ws_send_done_us={} response_local_us={} exchange_update_time_ms={} create_to_ipc_recv_us={:?} ipc_recv_to_ws_send_done_us={:?} create_to_ws_send_done_us={:?} ws_send_done_to_exchange_update_us={:?} exchange_update_to_local_recv_us={:?} ws_rtt_us={} create_to_local_recv_us={:?} error_msg={}",
             self.id,
