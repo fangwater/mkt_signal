@@ -55,6 +55,7 @@ impl SessionRestartPolicy {
 /// Binance user data stream connection using listenKey URL. No subscribe message is sent.
 pub struct BinanceUserDataConnection {
     base_connection: MktConnection,
+    connection_label: String,
     delay_interval: Duration,
     ping_interval: Duration,
     restart_policy: Option<SessionRestartPolicy>,
@@ -65,11 +66,17 @@ impl BinanceUserDataConnection {
     pub fn new(connection: MktConnection, restart_policy: Option<SessionRestartPolicy>) -> Self {
         Self {
             base_connection: connection,
+            connection_label: "user-data".to_string(),
             delay_interval: Duration::from_secs(5),
             ping_interval: Duration::from_secs(180),
             restart_policy,
             raw_handler: None,
         }
+    }
+
+    pub fn with_connection_label(mut self, label: impl Into<String>) -> Self {
+        self.connection_label = label.into();
+        self
     }
 
     pub fn set_raw_handler(&mut self, handler: RawAccountMessageHandler) {
@@ -188,8 +195,14 @@ impl MktConnectionHandler for BinanceUserDataConnection {
             match connect_result {
                 Ok(connection) => {
                     debug!(
-                        "Connected to Binance user-data: {:?}",
-                        connection.connected_at
+                        "[{}] Connected to Binance user-data: {:?} url={} local_ip={}",
+                        self.connection_label,
+                        connection.connected_at,
+                        self.base_connection.url,
+                        self.base_connection
+                            .local_ip
+                            .as_deref()
+                            .unwrap_or("system-default")
                     );
                     self.base_connection.connection = Some(connection);
                     self.run_connection().await?;
@@ -202,7 +215,16 @@ impl MktConnectionHandler for BinanceUserDataConnection {
                     }
                 }
                 Err(e) => {
-                    error!("Failed to connect to user-data WS: {:?}", e);
+                    error!(
+                        "[{}] Failed to connect to user-data WS: {:?} url={} local_ip={}",
+                        self.connection_label,
+                        e,
+                        self.base_connection.url,
+                        self.base_connection
+                            .local_ip
+                            .as_deref()
+                            .unwrap_or("system-default")
+                    );
                     time::sleep(Duration::from_secs(5)).await;
                 }
             }

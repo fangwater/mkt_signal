@@ -457,7 +457,11 @@ async fn main() -> Result<()> {
                 .ok()
                 .filter(|v| !v.trim().is_empty())
                 .unwrap_or_else(|| default_fapi_base_url.to_string());
-            let fee_burn_local_ip = local_ips.first().copied();
+            let fee_burn_local_ip = if binance_um_ip_whitelist_mode {
+                binance_um_whitelist_ip.or_else(|| local_ips.first().copied())
+            } else {
+                local_ips.first().copied()
+            };
             info!(
                 "checking binance feeBurn (STANDARD mode) base_url={} local_ip={}",
                 base_url,

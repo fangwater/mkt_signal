@@ -451,17 +451,14 @@ async fn main() -> Result<()> {
     const BINANCE_PM_REST: &str = "https://papi.binance.com";
     const BINANCE_STD_FAPI_WS: &str = "wss://fstream.binance.com/private";
     const BINANCE_STD_FAPI_REST: &str = "https://fapi.binance.com";
-    const BINANCE_STD_FAPI_MM_WS: &str = "wss://fstream-mm.binance.com/private";
     const BINANCE_STD_FAPI_MM_REST: &str = "https://fapi-mm.binance.com";
     const BINANCE_STD_SPOT_WS_API: &str = "wss://ws-api.binance.com:443/ws-api/v3";
     const BINANCE_STD_SPOT_REST: &str = "https://api.binance.com";
     let binance_is_standard = binance_account_mode == BinanceAccountMode::Standard;
     let binance_um_ip_whitelist_mode = binance_um_ip_whitelist_mode_enabled();
-    let std_fapi_ws = if binance_um_ip_whitelist_mode {
-        BINANCE_STD_FAPI_MM_WS
-    } else {
-        BINANCE_STD_FAPI_WS
-    };
+    // Binance's MM REST host accepts listenKey/snapshot requests from the whitelist IP,
+    // but the futures user-data WS is served by the normal private stream host.
+    let std_fapi_ws = BINANCE_STD_FAPI_WS;
     let std_fapi_rest = if binance_um_ip_whitelist_mode {
         BINANCE_STD_FAPI_MM_REST
     } else {
@@ -789,7 +786,12 @@ fn stream_local_ips(
 ) -> (String, String) {
     if stream_label == "fapi" {
         if let Some(ip) = binance_um_whitelist_ip {
-            return (ip.to_string(), non_um_secondary_ip.to_string());
+            let secondary_ip = if non_um_primary_ip != ip {
+                non_um_primary_ip
+            } else {
+                non_um_secondary_ip
+            };
+            return (ip.to_string(), secondary_ip.to_string());
         }
     }
     (
@@ -870,7 +872,8 @@ fn spawn_user_stream_path(
 
             let mut runner: Box<dyn MktConnectionHandler> = match &stream_kind {
                 UserStreamKind::ListenKeyUrl => {
-                    let mut runner = BinanceUserDataConnection::new(conn, restart_policy);
+                    let mut runner = BinanceUserDataConnection::new(conn, restart_policy)
+                        .with_connection_label(name.clone());
                     runner.set_raw_handler(raw_handler);
                     Box::new(runner)
                 }
