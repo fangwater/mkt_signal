@@ -9,7 +9,7 @@ use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::query_eng_channel::QueryEngHub;
 use crate::pre_trade::reactor_latency::{record_stage_latency, ReactorStage};
 use crate::pre_trade::resample_channel::ResampleChannel;
-use crate::pre_trade::runtime_flags::enable_ipc_fast_poll;
+use crate::pre_trade::runtime_flags::{enable_ipc_fast_poll, suppress_pre_submit_hot_path_logs};
 use crate::pre_trade::signal_channel::{OpenSignalDropReason, SignalChannel};
 use crate::pre_trade::signal_throttle::log_active_signal_throttles;
 use crate::pre_trade::taker_decision_model::PreTradeTakerDecisionModel;
@@ -32,6 +32,31 @@ const INTRA_BWD_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 const LEVERAGE_GUARD_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 const SNAPSHOT_QUERY_INTERVAL: Duration = Duration::from_secs(60);
 const EXPOSURE_TABLE_PRINT_INTERVAL: Duration = Duration::from_secs(10);
+
+#[derive(Clone, Copy, Debug)]
+struct FastPollDispatchBudgets {
+    signal: usize,
+    trade_resp: usize,
+    monitor_state: usize,
+    query_resp: usize,
+    model_update: usize,
+    period_strategy: usize,
+    period_orphan: usize,
+}
+
+impl FastPollDispatchBudgets {
+    fn from_env() -> Self {
+        Self {
+            signal: fast_poll_budget("PRE_TRADE_FAST_SIGNAL_BUDGET", 16),
+            trade_resp: fast_poll_budget("PRE_TRADE_FAST_TRADE_RESP_BUDGET", 16),
+            monitor_state: fast_poll_budget("PRE_TRADE_FAST_MONITOR_STATE_BUDGET", 16),
+            query_resp: fast_poll_budget("PRE_TRADE_FAST_QUERY_RESP_BUDGET", 16),
+            model_update: fast_poll_budget("PRE_TRADE_FAST_MODEL_UPDATE_BUDGET", 16),
+            period_strategy: fast_poll_budget("PRE_TRADE_FAST_PERIOD_STRATEGY_BUDGET", 16),
+            period_orphan: fast_poll_budget("PRE_TRADE_FAST_PERIOD_ORPHAN_BUDGET", 16),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct ParamRefreshConfig {
@@ -102,7 +127,15 @@ fn drive_strategy_manager_period_clock_rc(
     strategy_mgr: &Rc<RefCell<StrategyManager>>,
     now: i64,
 ) -> usize {
-    let iterations = strategy_mgr.borrow().len();
+    drive_strategy_manager_period_clock_rc_limit(strategy_mgr, now, usize::MAX)
+}
+
+fn drive_strategy_manager_period_clock_rc_limit(
+    strategy_mgr: &Rc<RefCell<StrategyManager>>,
+    now: i64,
+    max_inspect: usize,
+) -> usize {
+    let iterations = strategy_mgr.borrow().len().min(max_inspect);
     let mut inspected = 0usize;
     for _ in 0..iterations {
         let strategy_opt = { strategy_mgr.borrow_mut().take_next_queued() };
@@ -122,7 +155,15 @@ fn drive_orphan_manager_period_clock_rc(
     orphan_strategy_mgr: &Rc<RefCell<OrphanStrategyManager>>,
     now: i64,
 ) -> usize {
-    let iterations = orphan_strategy_mgr.borrow().len();
+    drive_orphan_manager_period_clock_rc_limit(orphan_strategy_mgr, now, usize::MAX)
+}
+
+fn drive_orphan_manager_period_clock_rc_limit(
+    orphan_strategy_mgr: &Rc<RefCell<OrphanStrategyManager>>,
+    now: i64,
+    max_inspect: usize,
+) -> usize {
+    let iterations = orphan_strategy_mgr.borrow().len().min(max_inspect);
     let mut inspected = 0usize;
     for _ in 0..iterations {
         let strategy_opt = { orphan_strategy_mgr.borrow_mut().take_next_queued() };
@@ -143,9 +184,19 @@ fn drive_strategy_manager_period_clock(now: i64) {
     let _ = drive_strategy_manager_period_clock_rc(&strategy_mgr, now);
 }
 
+fn drive_strategy_manager_period_clock_limit(now: i64, max_inspect: usize) -> usize {
+    let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+    drive_strategy_manager_period_clock_rc_limit(&strategy_mgr, now, max_inspect)
+}
+
 fn drive_orphan_manager_period_clock(now: i64) {
     let orphan_strategy_mgr = MonitorChannel::instance().orphan_strategy_mgr();
     let _ = drive_orphan_manager_period_clock_rc(&orphan_strategy_mgr, now);
+}
+
+fn drive_orphan_manager_period_clock_limit(now: i64, max_inspect: usize) -> usize {
+    let orphan_strategy_mgr = MonitorChannel::instance().orphan_strategy_mgr();
+    drive_orphan_manager_period_clock_rc_limit(&orphan_strategy_mgr, now, max_inspect)
 }
 
 pub fn publish_snapshot_queries(config: &SnapshotQueryConfig) -> bool {
@@ -291,6 +342,14 @@ fn select_slower_open_drop_reason(
     }
 }
 
+fn fast_poll_budget(name: &str, default_value: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default_value)
+}
+
 impl Default for PreTrade {
     fn default() -> Self {
         Self::new()
@@ -362,6 +421,7 @@ impl PreTrade {
         let mut next_account_open_block_poll =
             std::time::Instant::now() + account_open_block_poll_interval;
         let fast_poll = enable_ipc_fast_poll();
+        let fast_poll_budgets = FastPollDispatchBudgets::from_env();
         if !fast_poll {
             if let Some(refresh_cfg) = param_refresh.as_ref() {
                 PreTradeParamsLoader::start_background_refresh(
@@ -409,6 +469,8 @@ impl PreTrade {
         // IPC hot path 不等待这个 tick；空闲时先做 bounded busy-poll，超过预算才 yield。
         let period_clock_interval = Duration::from_millis(20);
         let mut next_period_clock = Instant::now();
+        let mut pending_period_strategy_inspect = 0usize;
+        let mut pending_period_orphan_inspect = 0usize;
         let idle_spin_iters = if fast_poll {
             std::env::var("PRE_TRADE_REACTOR_IDLE_SPIN_ITERS")
                 .ok()
@@ -425,24 +487,85 @@ impl PreTrade {
             idle_spin_iters,
             idle_sleep.as_micros()
         );
+        info!(
+            "pre_trade hot-path log suppression configured (suppress_pre_submit_hot_path_logs={})",
+            suppress_pre_submit_hot_path_logs()
+        );
+        if fast_poll {
+            info!(
+                "pre_trade fast-poll dispatch budgets configured signal={} trade_resp={} monitor_state={} query_resp={} model_update={} period_strategy={} period_orphan={}",
+                fast_poll_budgets.signal,
+                fast_poll_budgets.trade_resp,
+                fast_poll_budgets.monitor_state,
+                fast_poll_budgets.query_resp,
+                fast_poll_budgets.model_update,
+                fast_poll_budgets.period_strategy,
+                fast_poll_budgets.period_orphan
+            );
+        }
 
         loop {
             let loop_start_us = get_timestamp_us();
-            let mut open_drop_reason = pending_maintenance_open_drop_reason.take();
+            let open_drop_reason = pending_maintenance_open_drop_reason.take();
             let mut next_loop_open_drop_reason = None;
 
             let mut has_work = false;
-            has_work |= TradeEngHub::drain_pending_responses();
+            macro_rules! finish_fast_poll_work {
+                ($drop_reason:expr) => {{
+                    idle_spin_count = 0;
+                    let loop_end_us = get_timestamp_us();
+                    record_stage_latency(ReactorStage::PreviousLoop, loop_start_us, loop_end_us);
+                    pending_maintenance_open_drop_reason = $drop_reason;
+                    last_loop_end_us = loop_end_us;
+                    continue;
+                }};
+            }
+
+            if fast_poll {
+                let before_signal_us = get_timestamp_us();
+                let (signal_has_work, signal_budget_exhausted) =
+                    SignalChannel::drain_pending_with_open_drop_limit(
+                        open_drop_reason,
+                        fast_poll_budgets.signal,
+                    );
+                if signal_has_work {
+                    record_stage_latency(ReactorStage::ReactorGap, last_loop_end_us, loop_start_us);
+                    record_stage_latency(
+                        ReactorStage::BeforeSignal,
+                        loop_start_us,
+                        before_signal_us,
+                    );
+                    if signal_budget_exhausted {
+                        finish_fast_poll_work!(open_drop_reason);
+                    }
+                    finish_fast_poll_work!(None);
+                }
+                next_loop_open_drop_reason =
+                    select_slower_open_drop_reason(next_loop_open_drop_reason, open_drop_reason);
+            }
+
+            if fast_poll {
+                if TradeEngHub::drain_pending_responses_limit(fast_poll_budgets.trade_resp) {
+                    finish_fast_poll_work!(next_loop_open_drop_reason);
+                }
+            } else {
+                has_work |= TradeEngHub::drain_pending_responses();
+            }
 
             let monitor_refresh_start_us = get_timestamp_us();
-            let (monitor_has_work, basic_state_refreshed) =
-                MonitorChannel::drain_pending_state_updates_with_refresh();
+            let (monitor_has_work, basic_state_refreshed) = if fast_poll {
+                MonitorChannel::drain_pending_state_updates_with_refresh_limit(
+                    fast_poll_budgets.monitor_state,
+                )
+            } else {
+                MonitorChannel::drain_pending_state_updates_with_refresh()
+            };
             has_work |= monitor_has_work;
             if fast_poll && basic_state_refreshed {
                 let refresh_elapsed_us =
                     get_timestamp_us().saturating_sub(monitor_refresh_start_us);
-                open_drop_reason = select_slower_open_drop_reason(
-                    open_drop_reason,
+                next_loop_open_drop_reason = select_slower_open_drop_reason(
+                    next_loop_open_drop_reason,
                     Some(OpenSignalDropReason {
                         source: "basic_state_refresh",
                         elapsed_us: refresh_elapsed_us,
@@ -450,14 +573,22 @@ impl PreTrade {
                     }),
                 );
             }
+            if fast_poll && monitor_has_work {
+                finish_fast_poll_work!(next_loop_open_drop_reason);
+            }
 
-            has_work |= QueryEngHub::drain_pending_responses();
+            if fast_poll {
+                if QueryEngHub::drain_pending_responses_limit(fast_poll_budgets.query_resp) {
+                    finish_fast_poll_work!(next_loop_open_drop_reason);
+                }
+            } else {
+                has_work |= QueryEngHub::drain_pending_responses();
+            }
 
             let instant_now = Instant::now();
             if fast_poll {
                 if let Some(refresh_cfg) = param_refresh.as_ref() {
                     if instant_now >= next_param_refresh {
-                        has_work = true;
                         let refresh_start_us = get_timestamp_us();
                         let refresh_elapsed_us = match PreTradeParamsLoader::instance()
                             .load_from_redis_blocking(
@@ -469,21 +600,23 @@ impl PreTrade {
                             Ok(()) => {
                                 let elapsed_us =
                                     get_timestamp_us().saturating_sub(refresh_start_us);
-                                info!("pre_trade blocking risk params refresh ok elapsed_us={elapsed_us}");
+                                info!(
+                                    "pre_trade blocking risk params refresh ok elapsed_us={elapsed_us}"
+                                );
                                 elapsed_us
                             }
                             Err(err) => {
                                 let elapsed_us =
                                     get_timestamp_us().saturating_sub(refresh_start_us);
                                 warn!(
-                                "pre_trade blocking risk params refresh failed elapsed_us={} err={:#}",
-                                elapsed_us, err
-                            );
+                                    "pre_trade blocking risk params refresh failed elapsed_us={} err={:#}",
+                                    elapsed_us, err
+                                );
                                 elapsed_us
                             }
                         };
-                        open_drop_reason = select_slower_open_drop_reason(
-                            open_drop_reason,
+                        next_loop_open_drop_reason = select_slower_open_drop_reason(
+                            next_loop_open_drop_reason,
                             Some(OpenSignalDropReason {
                                 source: "param_refresh",
                                 elapsed_us: refresh_elapsed_us,
@@ -493,11 +626,11 @@ impl PreTrade {
                         while instant_now >= next_param_refresh {
                             next_param_refresh += PARAM_REFRESH_INTERVAL;
                         }
+                        finish_fast_poll_work!(next_loop_open_drop_reason);
                     }
                 }
                 if let Some(refresh_cfg) = intra_bwd_refresh.as_ref() {
                     if instant_now >= next_intra_bwd_refresh {
-                        has_work = true;
                         let refresh_start_us = get_timestamp_us();
                         let refresh_elapsed_us = match IntraBwdSymbolList::load_from_redis_blocking(
                             &refresh_cfg.redis,
@@ -507,22 +640,22 @@ impl PreTrade {
                                 let elapsed_us =
                                     get_timestamp_us().saturating_sub(refresh_start_us);
                                 info!(
-                                        "pre_trade blocking intra_bwd refresh ok elapsed_us={elapsed_us}"
-                                    );
+                                    "pre_trade blocking intra_bwd refresh ok elapsed_us={elapsed_us}"
+                                );
                                 elapsed_us
                             }
                             Err(err) => {
                                 let elapsed_us =
                                     get_timestamp_us().saturating_sub(refresh_start_us);
                                 warn!(
-                                        "pre_trade blocking intra_bwd refresh failed elapsed_us={} err={:#}",
-                                        elapsed_us, err
-                                    );
+                                    "pre_trade blocking intra_bwd refresh failed elapsed_us={} err={:#}",
+                                    elapsed_us, err
+                                );
                                 elapsed_us
                             }
                         };
-                        open_drop_reason = select_slower_open_drop_reason(
-                            open_drop_reason,
+                        next_loop_open_drop_reason = select_slower_open_drop_reason(
+                            next_loop_open_drop_reason,
                             Some(OpenSignalDropReason {
                                 source: "intra_bwd_refresh",
                                 elapsed_us: refresh_elapsed_us,
@@ -532,6 +665,7 @@ impl PreTrade {
                         while instant_now >= next_intra_bwd_refresh {
                             next_intra_bwd_refresh += INTRA_BWD_REFRESH_INTERVAL;
                         }
+                        finish_fast_poll_work!(next_loop_open_drop_reason);
                     }
                 }
                 let scheduled_leverage_refresh = instant_now >= next_leverage_guard_refresh;
@@ -539,7 +673,6 @@ impl PreTrade {
                 let leverage_refresh_source = requested_leverage_refresh
                     .or_else(|| scheduled_leverage_refresh.then_some("background_interval"));
                 if let Some(leverage_refresh_source) = leverage_refresh_source {
-                    has_work = true;
                     let refresh_start_us = get_timestamp_us();
                     let refresh_elapsed_us = match LeverageGuard::refresh_blocking_for_fast_poll(
                         leverage_refresh_source,
@@ -547,23 +680,23 @@ impl PreTrade {
                         Ok(true) => {
                             let elapsed_us = get_timestamp_us().saturating_sub(refresh_start_us);
                             info!(
-                                    "pre_trade blocking leverage guard refresh ok elapsed_us={elapsed_us}"
-                                );
+                                "pre_trade blocking leverage guard refresh ok elapsed_us={elapsed_us}"
+                            );
                             Some(elapsed_us)
                         }
                         Ok(false) => None,
                         Err(err) => {
                             let elapsed_us = get_timestamp_us().saturating_sub(refresh_start_us);
                             warn!(
-                                    "pre_trade blocking leverage guard refresh failed elapsed_us={} err={:#}",
-                                    elapsed_us, err
-                                );
+                                "pre_trade blocking leverage guard refresh failed elapsed_us={} err={:#}",
+                                elapsed_us, err
+                            );
                             Some(elapsed_us)
                         }
                     };
                     if let Some(refresh_elapsed_us) = refresh_elapsed_us {
-                        open_drop_reason = select_slower_open_drop_reason(
-                            open_drop_reason,
+                        next_loop_open_drop_reason = select_slower_open_drop_reason(
+                            next_loop_open_drop_reason,
                             Some(OpenSignalDropReason {
                                 source: leverage_refresh_source,
                                 elapsed_us: refresh_elapsed_us,
@@ -571,22 +704,22 @@ impl PreTrade {
                             }),
                         );
                     }
-                }
-                if scheduled_leverage_refresh {
-                    while instant_now >= next_leverage_guard_refresh {
-                        next_leverage_guard_refresh += LEVERAGE_GUARD_REFRESH_INTERVAL;
+                    if scheduled_leverage_refresh {
+                        while instant_now >= next_leverage_guard_refresh {
+                            next_leverage_guard_refresh += LEVERAGE_GUARD_REFRESH_INTERVAL;
+                        }
                     }
+                    finish_fast_poll_work!(next_loop_open_drop_reason);
                 }
                 if let Some(snapshot_cfg) = snapshot_query.as_ref() {
                     if instant_now >= next_snapshot_query {
                         let snapshot_start_us = get_timestamp_us();
                         let published = publish_snapshot_queries(snapshot_cfg);
-                        has_work |= published;
                         if published {
                             let snapshot_elapsed_us =
                                 get_timestamp_us().saturating_sub(snapshot_start_us);
-                            open_drop_reason = select_slower_open_drop_reason(
-                                open_drop_reason,
+                            next_loop_open_drop_reason = select_slower_open_drop_reason(
+                                next_loop_open_drop_reason,
                                 Some(OpenSignalDropReason {
                                     source: "snapshot_query",
                                     elapsed_us: snapshot_elapsed_us,
@@ -597,17 +730,17 @@ impl PreTrade {
                         while instant_now >= next_snapshot_query {
                             next_snapshot_query += SNAPSHOT_QUERY_INTERVAL;
                         }
+                        finish_fast_poll_work!(next_loop_open_drop_reason);
                     }
                 }
                 if let Some(auto_repay) = auto_repay.as_ref() {
                     if instant_now >= next_auto_repay {
-                        has_work = true;
                         let repay_start_us = get_timestamp_us();
                         auto_repay.run_once("fast_poll_tick").await;
                         let repay_elapsed_us = get_timestamp_us().saturating_sub(repay_start_us);
                         info!("pre_trade auto-repay completed elapsed_us={repay_elapsed_us}");
-                        open_drop_reason = select_slower_open_drop_reason(
-                            open_drop_reason,
+                        next_loop_open_drop_reason = select_slower_open_drop_reason(
+                            next_loop_open_drop_reason,
                             Some(OpenSignalDropReason {
                                 source: "auto_repay",
                                 elapsed_us: repay_elapsed_us,
@@ -616,11 +749,11 @@ impl PreTrade {
                         );
                         next_auto_repay =
                             Instant::now() + AutoRepayService::time_until_next_55min();
+                        finish_fast_poll_work!(next_loop_open_drop_reason);
                     }
                 }
                 if let Some(auto_collection) = auto_collection.as_ref() {
                     if instant_now >= next_auto_collection {
-                        has_work = true;
                         let collection_start_us = get_timestamp_us();
                         auto_collection.run_once("fast_poll_tick").await;
                         let collection_elapsed_us =
@@ -628,8 +761,8 @@ impl PreTrade {
                         info!(
                             "pre_trade auto-collection completed elapsed_us={collection_elapsed_us}"
                         );
-                        open_drop_reason = select_slower_open_drop_reason(
-                            open_drop_reason,
+                        next_loop_open_drop_reason = select_slower_open_drop_reason(
+                            next_loop_open_drop_reason,
                             Some(OpenSignalDropReason {
                                 source: "auto_collection",
                                 elapsed_us: collection_elapsed_us,
@@ -638,13 +771,18 @@ impl PreTrade {
                         );
                         next_auto_collection =
                             Instant::now() + AutoCollectionService::time_until_next_shanghai_noon();
+                        finish_fast_poll_work!(next_loop_open_drop_reason);
                     }
                 }
             }
 
             if fast_poll {
                 let before_signal_us = get_timestamp_us();
-                let signal_has_work = SignalChannel::drain_pending_with_open_drop(open_drop_reason);
+                let (signal_has_work, signal_budget_exhausted) =
+                    SignalChannel::drain_pending_with_open_drop_limit(
+                        next_loop_open_drop_reason,
+                        fast_poll_budgets.signal,
+                    );
                 if signal_has_work {
                     record_stage_latency(ReactorStage::ReactorGap, last_loop_end_us, loop_start_us);
                     record_stage_latency(
@@ -652,13 +790,22 @@ impl PreTrade {
                         loop_start_us,
                         before_signal_us,
                     );
+                    if signal_budget_exhausted {
+                        finish_fast_poll_work!(next_loop_open_drop_reason);
+                    }
+                    finish_fast_poll_work!(None);
                 }
-                has_work |= signal_has_work;
             } else {
                 has_work |= SignalChannel::drain_pending();
             }
 
-            let model_updates = PreTradeTakerDecisionModel::poll_updates_global();
+            let model_updates = if fast_poll {
+                PreTradeTakerDecisionModel::poll_updates_global_limit(
+                    fast_poll_budgets.model_update,
+                )
+            } else {
+                PreTradeTakerDecisionModel::poll_updates_global()
+            };
             if !model_updates.is_empty() {
                 has_work = true;
                 let now = get_timestamp_us();
@@ -672,11 +819,138 @@ impl PreTrade {
                     );
                     let _ = mgr.trigger_arb_open_cancel_on_model_update(&update.symbol, now);
                 }
+                if fast_poll {
+                    finish_fast_poll_work!(next_loop_open_drop_reason);
+                }
             }
 
             let instant_now = Instant::now();
             let mut ran_periodic = false;
-            if instant_now >= next_period_clock {
+            if fast_poll {
+                if pending_period_strategy_inspect == 0
+                    && pending_period_orphan_inspect == 0
+                    && instant_now >= next_period_clock
+                {
+                    pending_period_strategy_inspect =
+                        MonitorChannel::instance().strategy_mgr().borrow().len();
+                    pending_period_orphan_inspect = MonitorChannel::instance()
+                        .orphan_strategy_mgr()
+                        .borrow()
+                        .len();
+                    while instant_now >= next_period_clock {
+                        next_period_clock += period_clock_interval;
+                    }
+                }
+
+                if pending_period_strategy_inspect > 0 || pending_period_orphan_inspect > 0 {
+                    let periodic_start_us = get_timestamp_us();
+                    let now = get_timestamp_us();
+                    let strategy_budget =
+                        pending_period_strategy_inspect.min(fast_poll_budgets.period_strategy);
+                    let strategy_inspected =
+                        drive_strategy_manager_period_clock_limit(now, strategy_budget);
+                    if strategy_inspected < strategy_budget {
+                        pending_period_strategy_inspect = 0;
+                    } else {
+                        pending_period_strategy_inspect =
+                            pending_period_strategy_inspect.saturating_sub(strategy_inspected);
+                    }
+
+                    let orphan_budget =
+                        pending_period_orphan_inspect.min(fast_poll_budgets.period_orphan);
+                    let orphan_inspected =
+                        drive_orphan_manager_period_clock_limit(now, orphan_budget);
+                    if orphan_inspected < orphan_budget {
+                        pending_period_orphan_inspect = 0;
+                    } else {
+                        pending_period_orphan_inspect =
+                            pending_period_orphan_inspect.saturating_sub(orphan_inspected);
+                    }
+
+                    record_stage_latency(
+                        ReactorStage::Periodic,
+                        periodic_start_us,
+                        get_timestamp_us(),
+                    );
+                    finish_fast_poll_work!(next_loop_open_drop_reason);
+                }
+
+                if instant_now >= next_resample {
+                    let result = ResampleChannel::with(|ch| ch.publish_resample_entries());
+                    if let Err(err) = result {
+                        warn!("pre_trade resample publish failed: {err:#}");
+                        next_resample = Instant::now() + resample_interval;
+                    } else {
+                        while instant_now >= next_resample {
+                            next_resample += resample_interval;
+                        }
+                    }
+                    finish_fast_poll_work!(next_loop_open_drop_reason);
+                }
+
+                if instant_now >= next_exposure_table_print {
+                    let exposure_table_print_start_us = get_timestamp_us();
+                    ResampleChannel::with(|ch| ch.print_exposure_table_snapshot());
+                    let exposure_table_print_elapsed_us =
+                        get_timestamp_us().saturating_sub(exposure_table_print_start_us);
+                    while instant_now >= next_exposure_table_print {
+                        next_exposure_table_print += EXPOSURE_TABLE_PRINT_INTERVAL;
+                    }
+                    next_loop_open_drop_reason = select_slower_open_drop_reason(
+                        next_loop_open_drop_reason,
+                        Some(OpenSignalDropReason {
+                            source: "exposure_table_print",
+                            elapsed_us: exposure_table_print_elapsed_us,
+                            threshold_us: 0,
+                        }),
+                    );
+                    finish_fast_poll_work!(next_loop_open_drop_reason);
+                }
+
+                if instant_now >= next_throttle_log {
+                    log_active_signal_throttles(50);
+                    while instant_now >= next_throttle_log {
+                        next_throttle_log += throttle_log_interval;
+                    }
+                    finish_fast_poll_work!(next_loop_open_drop_reason);
+                }
+
+                if instant_now >= next_order_rate_cleanup {
+                    let now = get_timestamp_us();
+                    OrderRateLimiter::cleanup_expired(now);
+                    while instant_now >= next_order_rate_cleanup {
+                        next_order_rate_cleanup += order_rate_cleanup_interval;
+                    }
+                    finish_fast_poll_work!(next_loop_open_drop_reason);
+                }
+
+                if instant_now >= next_account_open_block_poll {
+                    let now = get_timestamp_us();
+                    drive_account_open_block_capacity_poll(now);
+                    while instant_now >= next_account_open_block_poll {
+                        next_account_open_block_poll += account_open_block_poll_interval;
+                    }
+                    finish_fast_poll_work!(next_loop_open_drop_reason);
+                }
+
+                if instant_now >= next_arb_startup_net_log {
+                    let status = MonitorChannel::instance().arb_startup_net_gate_status();
+                    if status.enabled && !status.ready {
+                        warn!(
+                            "双边net还没有初始化: open_ready={} hedge_ready={} open_ts_us={} hedge_ts_us={} dropped_arb_signals={}",
+                            status.open_ready,
+                            status.hedge_ready,
+                            status.open_ts_us,
+                            status.hedge_ts_us,
+                            status.dropped_signals
+                        );
+                    }
+                    while instant_now >= next_arb_startup_net_log {
+                        next_arb_startup_net_log += arb_startup_net_log_interval;
+                    }
+                    finish_fast_poll_work!(next_loop_open_drop_reason);
+                }
+            } else if instant_now >= next_period_clock {
                 ran_periodic = true;
                 let periodic_start_us = get_timestamp_us();
                 let now = get_timestamp_us();
@@ -695,28 +969,6 @@ impl PreTrade {
                         break;
                     }
                     next_resample += resample_interval;
-                }
-
-                if fast_poll {
-                    let mut printed_exposure_table = false;
-                    let exposure_table_print_start_us = get_timestamp_us();
-                    while instant_now >= next_exposure_table_print {
-                        ResampleChannel::with(|ch| ch.print_exposure_table_snapshot());
-                        printed_exposure_table = true;
-                        next_exposure_table_print += EXPOSURE_TABLE_PRINT_INTERVAL;
-                    }
-                    if printed_exposure_table {
-                        let exposure_table_print_elapsed_us =
-                            get_timestamp_us().saturating_sub(exposure_table_print_start_us);
-                        next_loop_open_drop_reason = select_slower_open_drop_reason(
-                            next_loop_open_drop_reason,
-                            Some(OpenSignalDropReason {
-                                source: "exposure_table_print",
-                                elapsed_us: exposure_table_print_elapsed_us,
-                                threshold_us: 0,
-                            }),
-                        );
-                    }
                 }
 
                 while instant_now >= next_throttle_log {
@@ -769,11 +1021,17 @@ impl PreTrade {
             if idle_spin_count < idle_spin_iters {
                 idle_spin_count += 1;
                 std::hint::spin_loop();
+                if fast_poll {
+                    pending_maintenance_open_drop_reason = next_loop_open_drop_reason;
+                }
                 last_loop_end_us = get_timestamp_us();
                 continue;
             }
             idle_spin_count = 0;
 
+            if fast_poll {
+                pending_maintenance_open_drop_reason = next_loop_open_drop_reason;
+            }
             last_loop_end_us = get_timestamp_us();
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => break,

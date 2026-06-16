@@ -8,7 +8,6 @@ use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
 use crate::common::min_qty_table::MinQtyTable;
-use crate::pre_trade::PersistChannel;
 use crate::pre_trade::basic_balance_manager::BasicBalanceManager;
 use crate::pre_trade::basic_um_manager::BasicUmManager;
 use crate::pre_trade::close_inventory::{CloseInventoryLedger, CloseReservationGrant};
@@ -18,11 +17,12 @@ use crate::pre_trade::price_table::PriceTable;
 use crate::pre_trade::symbol_mapper::create_symbol_mapper;
 use crate::pre_trade::symbol_util::extract_base_asset;
 use crate::pre_trade::usdt_balance_manager::{UsdtBalanceManager, UsdtBalanceSnapshot};
+use crate::pre_trade::PersistChannel;
 use account_common::pm_ipc::{PM_HISTORY_SIZE, PM_MAX_SUBSCRIBERS, PM_SUBSCRIBER_MAX_BUFFER_SIZE};
 use mkt_parsers::msg::basic_account_msg::{
-    BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope, BasicBalanceMsg,
-    BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg, BasicUmUnrealizedMsg,
-    BinanceBasicOrderMsg, GateBasicOrderMsg, OkexOrderMsg, split_basic_account_event,
+    split_basic_account_event, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
+    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg,
+    BasicUmUnrealizedMsg, BinanceBasicOrderMsg, GateBasicOrderMsg, OkexOrderMsg,
 };
 use mkt_parsers::msg::bitget_account_msg::BitgetBasicOrderMsg;
 use mkt_parsers::msg::bybit_account_msg::BybitBasicOrderMsg;
@@ -203,10 +203,10 @@ pub fn hash64(parts: &[u64]) -> u64 {
 
 // ==================== Monitor Channel ====================
 
-use crate::common::msg_parser::{MktMsgType, get_msg_type, parse_index_price, parse_mark_price};
+use crate::common::msg_parser::{get_msg_type, parse_index_price, parse_mark_price, MktMsgType};
 use crate::pre_trade::order_manager::OrderManager;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
-use crate::pre_trade::reactor_latency::{ReactorStage, record_stage_latency};
+use crate::pre_trade::reactor_latency::{record_stage_latency, ReactorStage};
 use crate::strategy::OrphanStrategyManager;
 use account_common::BinanceAccountMode;
 use order_common::{OrderUpdate, TradeUpdate, TradeUpdateLite};
@@ -215,6 +215,8 @@ use signal_common::venue_min_qty_table::VenueMinQtyTable;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+
+const MONITOR_FAST_POLL_RAW_MULTIPLIER: usize = 8;
 
 /// 合约腿管理器句柄对：(UmManager, MinQtyTable)。
 type UmMgrPair = (Rc<RefCell<BasicUmManager>>, Rc<RefCell<MinQtyTable>>);
@@ -288,14 +290,36 @@ struct MonitorStateListeners {
 }
 
 impl MonitorStateListeners {
-    fn drain_pending(&mut self) -> bool {
+    fn drain_pending_limit(&mut self, max_weight: usize) -> (bool, usize) {
         let mut has_message = false;
+        let mut consumed_weight = 0usize;
+        let mut raw_remaining = monitor_fast_poll_raw_limit(max_weight);
         for listener in &mut self.account_listeners {
-            has_message |= listener.drain_pending();
+            if consumed_weight >= max_weight || raw_remaining == 0 {
+                break;
+            }
+            let (listener_has_message, listener_weight, listener_raw_received) =
+                listener.drain_pending_limit(max_weight - consumed_weight, raw_remaining);
+            consumed_weight += listener_weight;
+            raw_remaining = raw_remaining.saturating_sub(listener_raw_received);
+            has_message |= listener_has_message;
         }
-        has_message |= self.derivatives_listener.drain_pending();
-        has_message
+        if consumed_weight < max_weight && raw_remaining > 0 {
+            let (listener_has_message, listener_weight, listener_raw_received) = self
+                .derivatives_listener
+                .drain_pending_limit(max_weight - consumed_weight, raw_remaining);
+            consumed_weight += listener_weight;
+            let _ = listener_raw_received;
+            has_message |= listener_has_message;
+        }
+        (has_message, consumed_weight)
     }
+}
+
+fn monitor_fast_poll_raw_limit(weight_limit: usize) -> usize {
+    weight_limit
+        .saturating_mul(MONITOR_FAST_POLL_RAW_MULTIPLIER)
+        .max(1)
 }
 
 struct BasicAccountListener {
@@ -437,12 +461,18 @@ impl BasicAccountListener {
         }
     }
 
-    fn drain_pending(&mut self) -> bool {
+    fn drain_pending_limit(
+        &mut self,
+        max_weight: usize,
+        max_raw_messages: usize,
+    ) -> (bool, usize, usize) {
         if !self.ensure_subscriber() {
-            return false;
+            return (false, 0, 0);
         }
         let mut has_message = false;
-        loop {
+        let mut consumed_weight = 0usize;
+        let mut received = 0usize;
+        while consumed_weight < max_weight && received < max_raw_messages {
             let receive_result = self
                 .subscriber
                 .as_ref()
@@ -450,8 +480,10 @@ impl BasicAccountListener {
                 .receive();
             match receive_result {
                 Ok(Some(sample)) => {
+                    received += 1;
                     has_message = true;
-                    self.process_payload(sample.payload());
+                    let weight = self.process_payload(sample.payload());
+                    consumed_weight = consumed_weight.saturating_add(weight);
                 }
                 Ok(None) => break,
                 Err(err) => {
@@ -462,23 +494,24 @@ impl BasicAccountListener {
                 }
             }
         }
-        has_message
+        (has_message, consumed_weight, received)
     }
 
-    fn process_payload(&mut self, payload: &[u8]) {
+    fn process_payload(&mut self, payload: &[u8]) -> usize {
         let Some((msg_type, account_scope, data)) = split_basic_account_event(payload) else {
-            return;
+            return 1;
         };
 
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         payload.hash(&mut hasher);
         let key = hasher.finish();
         if !self.dedup.insert_check(key) {
-            return;
+            return 0;
         }
 
         match msg_type {
             BasicAccountEventType::BalanceUpdate => {
+                let mut weight = 0usize;
                 if let Ok(msg) = BasicBalanceMsg::from_bytes(data) {
                     if msg.symbol.eq_ignore_ascii_case("USDT") {
                         if let Some(mgr) = self.usdt_mgrs.get(&account_scope) {
@@ -497,10 +530,12 @@ impl BasicAccountListener {
                                 self.open_venue,
                                 "account_balance",
                             );
-                            MonitorChannel::queue_arb_margin_net_risk_check(
+                            if MonitorChannel::queue_arb_margin_net_risk_check(
                                 &msg.symbol,
                                 msg.timestamp.max(0).saturating_mul(1000),
-                            );
+                            ) {
+                                weight = 1;
+                            }
                         }
                     }
                     if scope_matches_venue(
@@ -519,6 +554,7 @@ impl BasicAccountListener {
                     }
                     MonitorChannel::mark_basic_state_dirty();
                 }
+                weight
             }
             BasicAccountEventType::PositionUpdate => {
                 if let Ok(msg) = BasicPositionMsg::from_bytes(data) {
@@ -534,7 +570,7 @@ impl BasicAccountListener {
                             msg.position_amount,
                             msg.timestamp
                         );
-                        return;
+                        return 1;
                     }
                     if scope_matches_venue(
                         account_scope,
@@ -576,6 +612,7 @@ impl BasicAccountListener {
                     }
                     MonitorChannel::mark_basic_state_dirty();
                 }
+                1
             }
             BasicAccountEventType::UnrealizedPnlUpdate => {
                 if let Ok(msg) = BasicUmUnrealizedMsg::from_bytes(data) {
@@ -601,8 +638,10 @@ impl BasicAccountListener {
                     }
                     MonitorChannel::mark_basic_state_dirty();
                 }
+                0
             }
             BasicAccountEventType::BorrowInterest => {
+                let mut weight = 0usize;
                 if let Ok(msg) = BasicBorrowInterestMsg::from_bytes(data) {
                     if msg.symbol.eq_ignore_ascii_case("USDT") {
                         if let Some(mgr) = self.usdt_mgrs.get(&account_scope) {
@@ -621,10 +660,12 @@ impl BasicAccountListener {
                                 self.open_venue,
                                 "account_borrow_interest",
                             );
-                            MonitorChannel::queue_arb_margin_net_risk_check(
+                            if MonitorChannel::queue_arb_margin_net_risk_check(
                                 &msg.symbol,
                                 msg.timestamp.max(0).saturating_mul(1000),
-                            );
+                            ) {
+                                weight = 1;
+                            }
                         }
                     }
                     if scope_matches_venue(
@@ -643,35 +684,39 @@ impl BasicAccountListener {
                     }
                     MonitorChannel::mark_basic_state_dirty();
                 }
+                weight
             }
-            BasicAccountEventType::OrderUpdate => match self.exchange {
-                Exchange::Okex => {
-                    if let Ok(msg) = OkexOrderMsg::from_bytes(data) {
-                        dispatch_order_update_generic(&self.strategy_mgr, &msg);
+            BasicAccountEventType::OrderUpdate => {
+                match self.exchange {
+                    Exchange::Okex => {
+                        if let Ok(msg) = OkexOrderMsg::from_bytes(data) {
+                            dispatch_order_update_generic(&self.strategy_mgr, &msg);
+                        }
                     }
-                }
-                Exchange::Binance => {
-                    if let Ok(msg) = BinanceBasicOrderMsg::from_bytes(data) {
-                        dispatch_order_update_generic(&self.strategy_mgr, &msg);
+                    Exchange::Binance => {
+                        if let Ok(msg) = BinanceBasicOrderMsg::from_bytes(data) {
+                            dispatch_order_update_generic(&self.strategy_mgr, &msg);
+                        }
                     }
-                }
-                Exchange::Gate => {
-                    if let Ok(msg) = GateBasicOrderMsg::from_bytes(data) {
-                        dispatch_order_update_generic(&self.strategy_mgr, &msg);
+                    Exchange::Gate => {
+                        if let Ok(msg) = GateBasicOrderMsg::from_bytes(data) {
+                            dispatch_order_update_generic(&self.strategy_mgr, &msg);
+                        }
                     }
-                }
-                Exchange::Bitget => {
-                    if let Ok(msg) = BitgetBasicOrderMsg::from_bytes(data) {
-                        dispatch_order_update_generic(&self.strategy_mgr, &msg);
+                    Exchange::Bitget => {
+                        if let Ok(msg) = BitgetBasicOrderMsg::from_bytes(data) {
+                            dispatch_order_update_generic(&self.strategy_mgr, &msg);
+                        }
                     }
-                }
-                Exchange::Bybit => {
-                    if let Ok(msg) = BybitBasicOrderMsg::from_bytes(data) {
-                        dispatch_order_update_generic(&self.strategy_mgr, &msg);
+                    Exchange::Bybit => {
+                        if let Ok(msg) = BybitBasicOrderMsg::from_bytes(data) {
+                            dispatch_order_update_generic(&self.strategy_mgr, &msg);
+                        }
                     }
+                    _ => {}
                 }
-                _ => {}
-            },
+                1
+            }
             BasicAccountEventType::TradeUpdateLite => {
                 // 仅在已验证轻量成交频道的同所路径启用 TradeLite 派发。
                 if trade_update_lite_enabled_for_venues(self.open_venue, self.hedge_venue) {
@@ -679,18 +724,23 @@ impl BasicAccountListener {
                         dispatch_trade_update_lite_generic(&self.strategy_mgr, &msg);
                     }
                 }
+                1
             }
             BasicAccountEventType::AccountRisk => match BasicAccountRiskMsg::from_bytes(data) {
                 Ok(msg) => {
                     MonitorChannel::instance().apply_account_risk(account_scope, msg);
                     MonitorChannel::mark_basic_state_dirty();
+                    0
                 }
-                Err(err) => warn!(
-                    "AccountRisk decode failed: scope={} err={err:#}",
-                    account_scope.as_str()
-                ),
+                Err(err) => {
+                    warn!(
+                        "AccountRisk decode failed: scope={} err={err:#}",
+                        account_scope.as_str()
+                    );
+                    0
+                }
             },
-            BasicAccountEventType::Error => {}
+            BasicAccountEventType::Error => 0,
         }
     }
 }
@@ -798,12 +848,17 @@ impl DerivativesPriceListener {
         }
     }
 
-    fn drain_pending(&mut self) -> bool {
+    fn drain_pending_limit(
+        &mut self,
+        max_weight: usize,
+        max_raw_messages: usize,
+    ) -> (bool, usize, usize) {
         if !self.ensure_subscriber() {
-            return false;
+            return (false, 0, 0);
         }
         let mut has_message = false;
-        loop {
+        let mut received = 0usize;
+        while max_weight > 0 && received < max_raw_messages {
             let receive_result = self
                 .subscriber
                 .as_ref()
@@ -811,6 +866,7 @@ impl DerivativesPriceListener {
                 .receive();
             match receive_result {
                 Ok(Some(sample)) => {
+                    received += 1;
                     has_message = true;
                     self.process_payload(sample.payload());
                 }
@@ -826,7 +882,7 @@ impl DerivativesPriceListener {
                 }
             }
         }
-        has_message
+        (has_message, 0, received)
     }
 
     fn process_payload(&mut self, payload: &[u8]) {
@@ -1066,11 +1122,15 @@ impl MonitorChannel {
     }
 
     pub fn drain_pending_state_updates_with_refresh() -> (bool, bool) {
-        let mut has_message = MONITOR_STATE_LISTENERS.with(|listeners| {
+        Self::drain_pending_state_updates_with_refresh_limit(usize::MAX)
+    }
+
+    pub fn drain_pending_state_updates_with_refresh_limit(max_messages: usize) -> (bool, bool) {
+        let (mut has_message, _) = MONITOR_STATE_LISTENERS.with(|listeners| {
             let mut listeners = listeners.borrow_mut();
             match listeners.as_mut() {
-                Some(listeners) => listeners.drain_pending(),
-                None => false,
+                Some(listeners) => listeners.drain_pending_limit(max_messages),
+                None => (false, 0),
             }
         });
         let mut refreshed = false;
@@ -1298,15 +1358,16 @@ impl MonitorChannel {
         });
     }
 
-    fn queue_arb_margin_net_risk_check(asset: &str, e_ts: i64) {
+    fn queue_arb_margin_net_risk_check(asset: &str, e_ts: i64) -> bool {
         let asset = asset.trim().to_uppercase();
         if asset.is_empty() || asset == "USDT" {
-            return;
+            return false;
         }
         PENDING_RISK_CHECKS.with(|pending| {
             let mut pending = pending.borrow_mut();
             PendingRiskChecks::insert_latest(&mut pending.arb_margin_assets, asset, e_ts);
         });
+        true
     }
 
     fn queue_arb_startup_net_check(ready_ts: i64) {
@@ -4614,11 +4675,9 @@ mod tests {
 
         // max_pos_u default = 1000.0 (PreTradeParamsLoader::default)
         // FIL mark = 100.0, contracts=2, mult=10 => base=20 => notional=2000 > 1000
-        assert!(
-            MonitorChannel::instance()
-                .ensure_max_pos_u("FIL-USDT-SWAP", 2.0, 100.0)
-                .is_err()
-        );
+        assert!(MonitorChannel::instance()
+            .ensure_max_pos_u("FIL-USDT-SWAP", 2.0, 100.0)
+            .is_err());
     }
 
     #[test]
@@ -4670,19 +4729,17 @@ mod tests {
         });
         MonitorChannel::mark_basic_state_dirty();
 
-        assert!(
-            MonitorChannel::instance()
-                .ensure_max_pos_u_for_base_delta(
-                    "FILUSDT",
-                    TradingVenue::BinanceFutures,
-                    0.0,
-                    2.0,
-                    100.0,
-                    2.0,
-                    1.0,
-                )
-                .is_ok()
-        );
+        assert!(MonitorChannel::instance()
+            .ensure_max_pos_u_for_base_delta(
+                "FILUSDT",
+                TradingVenue::BinanceFutures,
+                0.0,
+                2.0,
+                100.0,
+                2.0,
+                1.0,
+            )
+            .is_ok());
 
         MonitorChannel::refresh_basic_state_cache();
         let err = MonitorChannel::instance()
@@ -4745,11 +4802,9 @@ mod tests {
         MonitorChannel::refresh_basic_state_cache();
 
         // 当前持仓 20 * 100 = 2000 > max_pos_u(1000)，但减少仓位应放行。
-        assert!(
-            MonitorChannel::instance()
-                .ensure_max_pos_u("FILUSDT", -5.0, 100.0)
-                .is_ok()
-        );
+        assert!(MonitorChannel::instance()
+            .ensure_max_pos_u("FILUSDT", -5.0, 100.0)
+            .is_ok());
     }
 
     #[test]
@@ -4809,16 +4864,9 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("名义金额"), "err={err}");
 
-        assert!(
-            MonitorChannel::instance()
-                .check_min_trading_requirements(
-                    TradingVenue::GateMargin,
-                    "CCUSDT",
-                    40.0,
-                    Some(0.14653)
-                )
-                .is_ok()
-        );
+        assert!(MonitorChannel::instance()
+            .check_min_trading_requirements(TradingVenue::GateMargin, "CCUSDT", 40.0, Some(0.14653))
+            .is_ok());
     }
 
     fn install_binance_arb_hedge_exposure_fixture(
@@ -5068,12 +5116,10 @@ mod tests {
         let state = MonitorChannel::compute_basic_state(&inner);
         assert!(!state.exposures.contains_key("DOGE"));
         assert!(state.exposures.contains_key("FIL"));
-        assert!(
-            !state
-                .margin_balances_by_scope
-                .values()
-                .any(|balances| balances.contains_key("DOGE"))
-        );
+        assert!(!state
+            .margin_balances_by_scope
+            .values()
+            .any(|balances| balances.contains_key("DOGE")));
         assert!((state.total_position_usdt - 100.0).abs() < 1e-12);
     }
 
@@ -5420,11 +5466,9 @@ mod tests {
     fn arb_hedge_exposure_risk_allows_reducing_when_current_over_limit() {
         install_binance_arb_hedge_exposure_fixture(20.0, 0.0, false);
 
-        assert!(
-            MonitorChannel::instance()
-                .check_arb_hedge_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, -5.0)
-                .is_ok()
-        );
+        assert!(MonitorChannel::instance()
+            .check_arb_hedge_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, -5.0)
+            .is_ok());
     }
 
     #[test]
@@ -5441,11 +5485,9 @@ mod tests {
     fn arb_hedge_exposure_risk_allows_expanding_when_current_within_limit() {
         install_binance_arb_hedge_exposure_fixture(1.0, 0.0, false);
 
-        assert!(
-            MonitorChannel::instance()
-                .check_arb_hedge_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, 5.0)
-                .is_ok()
-        );
+        assert!(MonitorChannel::instance()
+            .check_arb_hedge_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, 5.0)
+            .is_ok());
     }
 
     #[test]
@@ -5488,22 +5530,18 @@ mod tests {
         assert_eq!(strategy_mgr.borrow().len(), 0);
 
         MonitorChannel::refresh_basic_state_cache();
-        assert!(
-            MonitorChannel::instance()
-                .check_symbol_exposure("FILUSDT")
-                .is_ok()
-        );
+        assert!(MonitorChannel::instance()
+            .check_symbol_exposure("FILUSDT")
+            .is_ok());
 
         open_bal
             .borrow_mut()
             .apply_balance(&BasicBalanceMsg::create(0, "FIL".to_string(), 20.0));
         MonitorChannel::mark_basic_state_dirty();
 
-        assert!(
-            MonitorChannel::instance()
-                .check_symbol_exposure("FILUSDT")
-                .is_ok()
-        );
+        assert!(MonitorChannel::instance()
+            .check_symbol_exposure("FILUSDT")
+            .is_ok());
 
         MonitorChannel::refresh_basic_state_cache();
         let err = MonitorChannel::instance()
@@ -5520,11 +5558,9 @@ mod tests {
             .apply_balance(&BasicBalanceMsg::create(0, "FIL".to_string(), 1.0));
 
         MonitorChannel::refresh_basic_state_cache();
-        assert!(
-            MonitorChannel::instance()
-                .check_symbol_exposure("FILUSDT")
-                .is_ok()
-        );
+        assert!(MonitorChannel::instance()
+            .check_symbol_exposure("FILUSDT")
+            .is_ok());
 
         MonitorChannel::with_inner(|inner| {
             inner
@@ -5534,11 +5570,9 @@ mod tests {
         });
         MonitorChannel::mark_basic_state_dirty();
 
-        assert!(
-            MonitorChannel::instance()
-                .check_symbol_exposure("FILUSDT")
-                .is_ok()
-        );
+        assert!(MonitorChannel::instance()
+            .check_symbol_exposure("FILUSDT")
+            .is_ok());
 
         MonitorChannel::refresh_basic_state_cache();
         let err = MonitorChannel::instance()

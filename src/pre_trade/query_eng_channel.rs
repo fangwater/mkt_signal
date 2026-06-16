@@ -151,10 +151,24 @@ impl QueryEngHub {
         Self::with(|hub| hub.drain_pending_responses_inner())
     }
 
+    pub fn drain_pending_responses_limit(max_responses: usize) -> bool {
+        Self::with(|hub| hub.drain_pending_responses_inner_limit(max_responses))
+    }
+
     fn drain_pending_responses_inner(&self) -> bool {
+        self.drain_pending_responses_inner_limit(usize::MAX)
+    }
+
+    fn drain_pending_responses_inner_limit(&self, max_responses: usize) -> bool {
         let mut any = false;
+        let mut received = 0usize;
         for channel in self.channels.borrow_mut().values_mut() {
-            any |= channel.drain_query_responses();
+            if received >= max_responses {
+                break;
+            }
+            let count = channel.drain_query_responses_limit(max_responses - received);
+            received += count;
+            any |= count > 0;
         }
         any
     }
@@ -338,14 +352,14 @@ impl QueryEngChannel {
         Ok((node, subscriber))
     }
 
-    fn drain_query_responses(&mut self) -> bool {
+    fn drain_query_responses_limit(&mut self, max_responses: usize) -> usize {
         let exchange = self.exchange.as_str();
         let exchange_enum = self.exchange_enum;
-        let mut has_message = false;
-        loop {
+        let mut received = 0usize;
+        while received < max_responses {
             match self.resp_subscriber.receive() {
                 Ok(Some(sample)) => {
-                    has_message = true;
+                    received += 1;
                     let payload = sample.payload();
                     match QueryEngineResponseMessage::from_payload(payload) {
                         Ok(resp) => {
@@ -371,7 +385,9 @@ impl QueryEngChannel {
                                     "error_marker"
                                 } else if actual_len == 1 && body[0] == b'N' {
                                     "not_found_marker"
-                                } else if parse_compact_order_query_resp(resp.body_bytes()).is_some() {
+                                } else if parse_compact_order_query_resp(resp.body_bytes())
+                                    .is_some()
+                                {
                                     "compact_order"
                                 } else {
                                     "opaque"
@@ -805,7 +821,7 @@ impl QueryEngChannel {
                 }
             }
         }
-        has_message
+        received
     }
 }
 

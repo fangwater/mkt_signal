@@ -380,10 +380,20 @@ impl SignalListener {
     }
 
     fn drain_pending(&mut self, open_drop_reason: Option<OpenSignalDropReason>) -> bool {
+        self.drain_pending_limit(open_drop_reason, usize::MAX).0
+    }
+
+    fn drain_pending_limit(
+        &mut self,
+        open_drop_reason: Option<OpenSignalDropReason>,
+        max_messages: usize,
+    ) -> (bool, bool) {
         let mut has_message = false;
-        loop {
+        let mut received = 0usize;
+        while received < max_messages {
             match self.subscriber.receive() {
                 Ok(Some(sample)) => {
+                    received += 1;
                     has_message = true;
                     let receive_us = get_timestamp_us();
                     let payload = sample.payload();
@@ -478,7 +488,7 @@ impl SignalListener {
                 }
             }
         }
-        has_message
+        (has_message, received >= max_messages)
     }
 }
 
@@ -581,6 +591,17 @@ impl SignalChannel {
 
     pub fn drain_pending_with_open_drop(reason: Option<OpenSignalDropReason>) -> bool {
         Self::with(|ch| ch.listener.borrow_mut().drain_pending(reason))
+    }
+
+    pub fn drain_pending_with_open_drop_limit(
+        reason: Option<OpenSignalDropReason>,
+        max_messages: usize,
+    ) -> (bool, bool) {
+        Self::with(|ch| {
+            ch.listener
+                .borrow_mut()
+                .drain_pending_limit(reason, max_messages)
+        })
     }
 
     /// 生成信号节点名称
@@ -720,10 +741,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                 {
                     warn!(
                         "ArbOpen: signal venue mismatch, configured_open={:?} configured_hedge={:?} but got open={:?} hedge={:?}, ignore",
-                        configured_open_venue,
-                        configured_hedge_venue,
-                        opening_venue,
-                        hedging_venue
+                        configured_open_venue, configured_hedge_venue, opening_venue, hedging_venue
                     );
                     return;
                 }
@@ -863,8 +881,12 @@ fn handle_trade_signal(signal: TradeSignal) {
                         let from_key = String::from_utf8_lossy(&strategy.open_state().from_key);
                         debug!(
                             "🔔 收到 ArbOpen 信号: opening={} {:?} side={:?} price={:.6} hedging={} {:?} | amount={:.4} spread_rate={:.6} from_key='{}'",
-                            log_symbol, opening_venue, side, signal_price,
-                            hedging_symbol, hedging_venue,
+                            log_symbol,
+                            opening_venue,
+                            side,
+                            signal_price,
+                            hedging_symbol,
+                            hedging_venue,
                             signal_amount,
                             signal_spread_rate,
                             from_key
@@ -973,8 +995,14 @@ fn handle_trade_signal(signal: TradeSignal) {
                     if strategy.is_active() {
                         debug!(
                             "🔔 收到 ArbClose 信号: opening={} {:?} hedging={} {:?} | side={:?} open_pos={:.4} hedge_pos={:.4} price={:.6}",
-                            opening_symbol, opening_venue, hedging_symbol, hedging_venue,
-                            close_side, opening_pos, hedging_pos, close_ctx.price_value()
+                            opening_symbol,
+                            opening_venue,
+                            hedging_symbol,
+                            hedging_venue,
+                            close_side,
+                            opening_pos,
+                            hedging_pos,
+                            close_ctx.price_value()
                         );
                         strategy_mgr.borrow_mut().insert(Box::new(strategy));
                     }
@@ -1005,10 +1033,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                 {
                     warn!(
                         "ArbCancel: signal venue mismatch, configured_open={:?} configured_hedge={:?} but got open={:?} hedge={:?}, ignore",
-                        configured_open_venue,
-                        configured_hedge_venue,
-                        opening_venue,
-                        hedging_venue
+                        configured_open_venue, configured_hedge_venue, opening_venue, hedging_venue
                     );
                     return;
                 }
@@ -1029,9 +1054,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                     if !exists {
                         debug!(
                             "ArbCancel: targeted strategy missing strategy_id={} symbol={} trigger_ts={}",
-                            strategy_id,
-                            symbol,
-                            cancel_ctx.trigger_ts
+                            strategy_id, symbol, cancel_ctx.trigger_ts
                         );
                         return;
                     }
@@ -1202,16 +1225,16 @@ fn handle_trade_signal(signal: TradeSignal) {
                     }
                     flush_chunk(&mut chunk, &mut published_chunks, &mut published_items);
                     debug!(
-                    "ArbCancelTrigger: dynamic index published chunks={} items={} indexed_strategies={} symbols={} sample={} strategies={} trigger_ts={} freq_ms={}",
-                    published_chunks,
-                    published_items,
-                    indexed_strategy_count,
-                    symbol_count,
-                    symbol_sample,
-                    strategy_sample,
-                    trigger_ctx.trigger_ts,
-                    trigger_ctx.freq_ms
-                );
+                        "ArbCancelTrigger: dynamic index published chunks={} items={} indexed_strategies={} symbols={} sample={} strategies={} trigger_ts={} freq_ms={}",
+                        published_chunks,
+                        published_items,
+                        indexed_strategy_count,
+                        symbol_count,
+                        symbol_sample,
+                        strategy_sample,
+                        trigger_ctx.trigger_ts,
+                        trigger_ctx.freq_ms
+                    );
                 }
                 Err(err) => warn!("failed to decode ArbCancelTrigger context: {err}"),
             }
@@ -1439,9 +1462,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                     if !exists {
                         debug!(
                             "MMCancel: targeted strategy missing strategy_id={} symbol={} trigger_ts={}",
-                            strategy_id,
-                            symbol,
-                            cancel_ctx.trigger_ts
+                            strategy_id, symbol, cancel_ctx.trigger_ts
                         );
                         return;
                     }
@@ -1539,9 +1560,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                 if exec_venue != configured_open_venue && exec_venue != configured_hedge_venue {
                     warn!(
                         "ExecRequest: signal venue mismatch, configured_open={:?} configured_hedge={:?} but got {:?}, ignore",
-                        configured_open_venue,
-                        configured_hedge_venue,
-                        exec_venue
+                        configured_open_venue, configured_hedge_venue, exec_venue
                     );
                     return;
                 }

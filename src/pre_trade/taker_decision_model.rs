@@ -347,12 +347,16 @@ impl PreTradeTakerDecisionModel {
     }
 
     pub fn poll_updates_global() -> Vec<ModelUpdateEvent> {
+        Self::poll_updates_global_limit(MODEL_OUTPUT_POLL_MAX_PER_LOOP)
+    }
+
+    pub fn poll_updates_global_limit(max_updates: usize) -> Vec<ModelUpdateEvent> {
         TAKER_DECISION_MODEL.with(|cell| {
             let mut guard = cell.borrow_mut();
             let Some(model) = guard.as_mut() else {
                 return Vec::new();
             };
-            model.poll_updates()
+            model.poll_updates_limit(max_updates)
         })
     }
 
@@ -383,10 +387,10 @@ impl PreTradeTakerDecisionModel {
         })
     }
 
-    fn poll_updates(&mut self) -> Vec<ModelUpdateEvent> {
+    fn poll_updates_limit(&mut self, max_updates: usize) -> Vec<ModelUpdateEvent> {
         let mut events = Vec::new();
         let mut polled = 0usize;
-        while polled < MODEL_OUTPUT_POLL_MAX_PER_LOOP {
+        while polled < max_updates {
             match self.subscriber.receive() {
                 Ok(Some(sample)) => {
                     polled += 1;

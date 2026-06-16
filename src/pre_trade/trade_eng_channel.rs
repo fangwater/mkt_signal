@@ -100,12 +100,24 @@ impl TradeEngHub {
         Self::with(|hub| hub.drain_pending_responses_inner())
     }
 
+    pub fn drain_pending_responses_limit(max_responses: usize) -> bool {
+        Self::with(|hub| hub.drain_pending_responses_inner_limit(max_responses))
+    }
+
     fn drain_pending_responses_inner(&self) -> bool {
+        self.drain_pending_responses_inner_limit(usize::MAX)
+    }
+
+    fn drain_pending_responses_inner_limit(&self, max_responses: usize) -> bool {
         let mut responses = Vec::new();
         {
             let mut channels = self.channels.borrow_mut();
             for channel in channels.values_mut() {
-                channel.drain_trade_responses_into(&mut responses);
+                if responses.len() >= max_responses {
+                    break;
+                }
+                let remaining = max_responses.saturating_sub(responses.len());
+                channel.drain_trade_responses_into_limit(&mut responses, remaining);
             }
         }
         let any = !responses.is_empty();
@@ -320,10 +332,16 @@ impl TradeEngChannel {
         Ok((node, subscriber))
     }
 
-    fn drain_trade_responses_into(&mut self, responses: &mut Vec<TradeEngineResponseMessage>) {
-        loop {
+    fn drain_trade_responses_into_limit(
+        &mut self,
+        responses: &mut Vec<TradeEngineResponseMessage>,
+        max_responses: usize,
+    ) {
+        let mut received = 0usize;
+        while received < max_responses {
             match self.resp_subscriber.receive() {
                 Ok(Some(sample)) => {
+                    received += 1;
                     let payload = sample.payload();
 
                     if payload.len() < TRADE_RESP_HEADER_LEN {
