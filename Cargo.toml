@@ -216,6 +216,10 @@ path = "src/bin/inspect_model_output.rs"
 name = "inspect_model_input"
 path = "src/bin/inspect_model_input.rs"
 
+[[bin]]
+name = "intra_funding_trace"
+path = "src/bin/intra_funding_trace.rs"
+
 [dependencies]
 account_common = { path = "crates/account_common" }
 account_monitor_common = { path = "crates/account_monitor_common" }

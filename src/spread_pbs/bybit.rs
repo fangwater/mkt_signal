@@ -531,6 +531,24 @@ mod tests {
     }
 
     #[test]
+    fn decodes_delta_funding_without_next_funding_time() {
+        let ticker = r#"{
+            "topic":"tickers.HOMEUSDT","type":"delta","ts":1700000000456,
+            "data":{"symbol":"HOMEUSDT","fundingRate":"-0.00054238","markPrice":"0.0279"}
+        }"#;
+        let bytes = parse_derivatives_frame(&v(ticker)).unwrap();
+        assert_eq!(bytes.len(), 2);
+        assert_eq!(MarkPriceMsg::get_symbol(&bytes[0]), "HOMEUSDT");
+        assert_eq!(FundingRateMsg::get_symbol(&bytes[1]), "HOMEUSDT");
+        assert!((FundingRateMsg::get_funding_rate(&bytes[1]) + 0.00054238).abs() < 1e-12);
+        assert_eq!(FundingRateMsg::get_next_funding_time(&bytes[1]), 0);
+        assert_eq!(
+            FundingRateMsg::get_timestamp(&bytes[1]),
+            1_700_000_000_456_000
+        );
+    }
+
+    #[test]
     fn derivatives_subscribe_is_futures_only() {
         let futures = BybitAdapter::new(TradingVenue::BybitFutures);
         let msgs = futures.build_derivatives_subscribe(&["BTCUSDT".to_string()]);

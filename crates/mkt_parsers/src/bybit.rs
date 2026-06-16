@@ -399,12 +399,12 @@ fn parse_ticker_derivatives(value: &Value) -> Vec<Derivative> {
             });
         }
     }
-    if let (Some(funding_rate), Some(next_funding_time_us)) = (
-        data.get("fundingRate").and_then(parse_f64_loose),
-        data.get("nextFundingTime")
+    if let Some(funding_rate) = data.get("fundingRate").and_then(parse_f64_loose) {
+        let next_funding_time_us = data
+            .get("nextFundingTime")
             .and_then(parse_i64_loose)
-            .map(normalize_ts_to_us),
-    ) {
+            .map(normalize_ts_to_us)
+            .unwrap_or(0);
         out.push(Derivative::FundingRate {
             symbol,
             funding_rate,
@@ -677,6 +677,25 @@ mod tests {
                 next_funding_time_us: 1_700_003_600_000_000,
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn parses_derivatives_delta_funding_without_next_time() {
+        let ticker = r#"{
+            "topic":"tickers.HOMEUSDT","type":"delta","ts":1700000000456,
+            "data":{"symbol":"HOMEUSDT","fundingRate":"-0.00054238","markPrice":"0.0279"}
+        }"#;
+        let out = parse_derivatives_json(&v(ticker));
+        assert_eq!(out.len(), 2);
+        assert!(matches!(
+            &out[1],
+            Derivative::FundingRate {
+                symbol,
+                funding_rate,
+                next_funding_time_us: 0,
+                timestamp_us: 1_700_000_000_456_000,
+            } if symbol == "HOMEUSDT" && (*funding_rate + 0.00054238).abs() < 1e-12
         ));
     }
 
